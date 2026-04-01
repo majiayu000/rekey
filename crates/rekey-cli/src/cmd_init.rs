@@ -12,6 +12,9 @@ pub fn db_path() -> PathBuf {
 }
 
 pub fn prompt_password(prompt: &str) -> Result<String> {
+    if let Ok(pw) = std::env::var("REKEY_PASSWORD") {
+        return Ok(pw);
+    }
     rpassword::prompt_password(prompt).context("failed to read password")
 }
 

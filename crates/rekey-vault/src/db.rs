@@ -4,14 +4,15 @@ use rusqlite::Connection;
 pub fn init_db(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS secrets (
-            id          TEXT PRIMARY KEY,
-            name        TEXT UNIQUE NOT NULL,
-            provider    TEXT NOT NULL,
-            ciphertext  BLOB NOT NULL,
-            iv          BLOB NOT NULL,
-            host_pattern TEXT NOT NULL,
-            created_at  INTEGER NOT NULL,
-            updated_at  INTEGER NOT NULL
+            id              TEXT PRIMARY KEY,
+            name            TEXT UNIQUE NOT NULL,
+            provider        TEXT NOT NULL DEFAULT '',
+            credential_type TEXT NOT NULL DEFAULT 'api-key',
+            ciphertext      BLOB NOT NULL,
+            iv              BLOB NOT NULL,
+            host_pattern    TEXT NOT NULL DEFAULT '',
+            created_at      INTEGER NOT NULL,
+            updated_at      INTEGER NOT NULL
         );
         CREATE TABLE IF NOT EXISTS injection_rules (
             id          TEXT PRIMARY KEY,

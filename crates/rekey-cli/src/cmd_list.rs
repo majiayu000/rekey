@@ -6,13 +6,29 @@ pub fn run() -> Result<()> {
     rekey_vault::db::init_db(&conn)?;
     let secrets = rekey_vault::secrets::list_secrets(&conn)?;
     if secrets.is_empty() {
-        println!("No secrets configured. Run: rekey add <provider> <key>");
+        println!("No credentials stored. Run: rekey store <name> or rekey add <provider> <key>");
         return Ok(());
     }
-    println!("{:<15} {:<12} {:<30}", "NAME", "PROVIDER", "HOST");
-    println!("{}", "-".repeat(57));
+    println!(
+        "{:<20} {:<10} {:<12} {:<30}",
+        "NAME", "TYPE", "PROVIDER", "HOST"
+    );
+    println!("{}", "-".repeat(72));
     for s in &secrets {
-        println!("{:<15} {:<12} {:<30}", s.name, s.provider, s.host_pattern);
+        let provider = if s.provider.is_empty() {
+            "-"
+        } else {
+            &s.provider
+        };
+        let host = if s.host_pattern.is_empty() {
+            "-"
+        } else {
+            &s.host_pattern
+        };
+        println!(
+            "{:<20} {:<10} {:<12} {:<30}",
+            s.name, s.credential_type, provider, host
+        );
     }
     Ok(())
 }
