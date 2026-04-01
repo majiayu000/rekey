@@ -1,0 +1,25 @@
+[package]
+name = "rekey-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "rekey"
+path = "src/main.rs"
+
+[dependencies]
+rekey-vault.workspace = true
+rekey-ca.workspace = true
+rekey-proxy.workspace = true
+rekey-web.workspace = true
+clap = { version = "4", features = ["derive"] }
+tokio.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+rpassword = "7"
+open = "5"
+dirs = "6"
+rand = "0.9"
+rusqlite = { version = "0.34", features = ["bundled"] }
+secrecy = { version = "0.10", features = ["serde"] }

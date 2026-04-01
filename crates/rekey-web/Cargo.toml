@@ -1,0 +1,17 @@
+[package]
+name = "rekey-web"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rekey-vault.workspace = true
+axum = "0.8"
+tokio.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rust-embed = "8"
+mime_guess = "2"
+tokio-stream = "0.1"
+rusqlite = { version = "0.34", features = ["bundled"] }

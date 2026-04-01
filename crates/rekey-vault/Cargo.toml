@@ -1,0 +1,16 @@
+[package]
+name = "rekey-vault"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rusqlite = { version = "0.34", features = ["bundled"] }
+aes-gcm = "0.10"
+argon2 = "0.5"
+secrecy = { version = "0.10", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+anyhow.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rand = "0.9"

@@ -1,0 +1,40 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/rekey-vault",
+    "crates/rekey-ca",
+    "crates/rekey-proxy",
+    "crates/rekey-web",
+    "crates/rekey-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/majiayu000/rekey"
+
+[workspace.dependencies]
+rekey-vault = { path = "crates/rekey-vault" }
+rekey-ca = { path = "crates/rekey-ca" }
+rekey-proxy = { path = "crates/rekey-proxy" }
+rekey-web = { path = "crates/rekey-web" }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+
+[package]
+name = "rekey-integration"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dev-dependencies]
+rekey-vault = { path = "crates/rekey-vault" }
+rekey-ca = { path = "crates/rekey-ca" }
+rusqlite = { version = "0.34", features = ["bundled"] }
+tempfile = { workspace = true }
