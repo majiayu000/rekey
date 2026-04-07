@@ -1,6 +1,7 @@
 use anyhow::Result;
+use axum::{Router, body::Body as AxumBody};
 use bytes::Bytes;
-use http_body_util::Full;
+use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -8,9 +9,12 @@ use hyper::{Method, Request, Response};
 use rekey_ca::authority::CertificateAuthority;
 use rekey_ca::leaf::LeafCertCache;
 use rekey_vault::crypto::MasterKey;
+use rekey_web::routes::WebState;
+use rekey_web::sse::{TrafficBroadcaster, new_broadcaster};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
+use tower::util::ServiceExt;
 
 pub struct ProxyServer {
     ca: Arc<CertificateAuthority>,
@@ -18,6 +22,8 @@ pub struct ProxyServer {
     master_key: Arc<MasterKey>,
     db_path: String,
     addr: SocketAddr,
+    web_router: Arc<Router>,
+    traffic_tx: TrafficBroadcaster,
 }
 
 impl ProxyServer {
@@ -27,12 +33,18 @@ impl ProxyServer {
         db_path: String,
         port: u16,
     ) -> Self {
+        let traffic_tx = new_broadcaster(1024);
+        let web_state = Arc::new(WebState::new(db_path.clone(), traffic_tx.clone()));
+        let web_router = rekey_web::routes::api_router(web_state);
+
         Self {
             ca: Arc::new(ca),
             leaf_cache: Arc::new(LeafCertCache::new()),
             master_key: Arc::new(master_key),
             db_path,
             addr: SocketAddr::from(([127, 0, 0, 1], port)),
+            web_router: Arc::new(web_router),
+            traffic_tx,
         }
     }
 
@@ -40,41 +52,57 @@ impl ProxyServer {
         let listener = TcpListener::bind(self.addr).await?;
         tracing::info!("rekey proxy listening on {}", self.addr);
 
+        let shutdown = shutdown_signal();
+        tokio::pin!(shutdown);
+
         loop {
-            let (stream, _) = listener.accept().await?;
-            let ca = self.ca.clone();
-            let leaf_cache = self.leaf_cache.clone();
-            let master_key = self.master_key.clone();
-            let db_path = self.db_path.clone();
-
-            tokio::spawn(async move {
-                let io = hyper_util::rt::TokioIo::new(stream);
-
-                let service = service_fn(move |req: Request<Incoming>| {
-                    let ca = ca.clone();
-                    let leaf_cache = leaf_cache.clone();
-                    let master_key = master_key.clone();
-                    let db_path = db_path.clone();
-
-                    async move {
-                        if req.method() == Method::CONNECT {
-                            handle_connect(req, ca, leaf_cache, master_key, db_path).await
-                        } else {
-                            handle_http(req, master_key, db_path).await
-                        }
-                    }
-                });
-
-                if let Err(e) = http1::Builder::new()
-                    .preserve_header_case(true)
-                    .serve_connection(io, service)
-                    .with_upgrades()
-                    .await
-                {
-                    tracing::error!("connection error: {e}");
+            tokio::select! {
+                _ = &mut shutdown => {
+                    tracing::info!("received shutdown signal");
+                    break;
                 }
-            });
+                accepted = listener.accept() => {
+                    let (stream, _) = accepted?;
+                    let ca = self.ca.clone();
+                    let leaf_cache = self.leaf_cache.clone();
+                    let master_key = self.master_key.clone();
+                    let db_path = self.db_path.clone();
+                    let web_router = self.web_router.clone();
+                    let traffic_tx = self.traffic_tx.clone();
+
+                    tokio::spawn(async move {
+                        let io = hyper_util::rt::TokioIo::new(stream);
+
+                        let service = service_fn(move |req: Request<Incoming>| {
+                            let ca = ca.clone();
+                            let leaf_cache = leaf_cache.clone();
+                            let master_key = master_key.clone();
+                            let db_path = db_path.clone();
+                            let web_router = web_router.clone();
+                            let traffic_tx = traffic_tx.clone();
+
+                            async move {
+                                if req.method() == Method::CONNECT {
+                                    handle_connect(req, ca, leaf_cache, master_key, db_path, traffic_tx).await
+                                } else {
+                                    handle_http(req, master_key, db_path, web_router, traffic_tx).await
+                                }
+                            }
+                        });
+
+                        if let Err(e) = http1::Builder::new()
+                            .preserve_header_case(true)
+                            .serve_connection(io, service)
+                            .with_upgrades()
+                            .await
+                        {
+                            tracing::error!("connection error: {e}");
+                        }
+                    });
+                }
+            }
         }
+        Ok(())
     }
 }
 
@@ -84,7 +112,8 @@ async fn handle_connect(
     leaf_cache: Arc<LeafCertCache>,
     master_key: Arc<MasterKey>,
     db_path: String,
-) -> Result<Response<Full<Bytes>>, hyper::Error> {
+    traffic_tx: TrafficBroadcaster,
+) -> Result<Response<AxumBody>, hyper::Error> {
     let host_port = req
         .uri()
         .authority()
@@ -94,13 +123,17 @@ async fn handle_connect(
 
     tracing::debug!("CONNECT {hostname}:{port}");
 
-    // Check if we have injection rules for this host
-    let has_rules = match rusqlite::Connection::open(&db_path) {
-        Ok(conn) => rekey_vault::rules::find_rules_for_host(&conn, &hostname)
-            .map(|r| !r.is_empty())
-            .unwrap_or(false),
-        Err(_) => false,
-    };
+    let lookup_path = db_path.clone();
+    let lookup_host = hostname.clone();
+    let has_rules = tokio::task::spawn_blocking(move || {
+        let conn = rekey_vault::db::open_connection(&lookup_path)?;
+        let rules = rekey_vault::rules::find_rules_for_host(&conn, &lookup_host)?;
+        Ok::<bool, anyhow::Error>(!rules.is_empty())
+    })
+    .await
+    .ok()
+    .and_then(|r| r.ok())
+    .unwrap_or(false);
 
     tokio::spawn(async move {
         match hyper::upgrade::on(req).await {
@@ -112,8 +145,9 @@ async fn handle_connect(
                         port,
                         &ca,
                         &leaf_cache,
-                        &master_key,
+                        master_key,
                         &db_path,
+                        traffic_tx,
                     )
                     .await;
                 } else {
@@ -124,8 +158,7 @@ async fn handle_connect(
         }
     });
 
-    // Return 200 to signal tunnel established
-    Ok(Response::new(Full::new(Bytes::new())))
+    Ok(Response::new(AxumBody::empty()))
 }
 
 async fn handle_mitm_tunnel(
@@ -134,31 +167,36 @@ async fn handle_mitm_tunnel(
     port: u16,
     ca: &CertificateAuthority,
     leaf_cache: &LeafCertCache,
-    master_key: &MasterKey,
+    master_key: Arc<MasterKey>,
     db_path: &str,
+    traffic_tx: TrafficBroadcaster,
 ) {
     let io = hyper_util::rt::TokioIo::new(upgraded);
     let (reader, writer) = tokio::io::split(io);
     let stream = tokio::io::join(reader, writer);
 
-    let conn = match rusqlite::Connection::open(db_path) {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!("DB open failed: {e}");
-            return;
-        }
-    };
-    let rules = match rekey_vault::rules::find_rules_for_host(&conn, hostname) {
-        Ok(r) => r,
-        Err(e) => {
+    let lookup_path = db_path.to_string();
+    let lookup_host = hostname.to_string();
+    let rules = match tokio::task::spawn_blocking(move || -> Result<_> {
+        let conn = rekey_vault::db::open_connection(&lookup_path)?;
+        let rules = rekey_vault::rules::find_rules_for_host(&conn, &lookup_host)?;
+        Ok(rules)
+    })
+    .await
+    {
+        Ok(Ok(rules)) => rules,
+        Ok(Err(e)) => {
             tracing::error!("rules lookup failed: {e}");
             return;
         }
+        Err(e) => {
+            tracing::error!("rules lookup task failed: {e}");
+            return;
+        }
     };
-    drop(conn);
 
     if let Err(e) = crate::mitm::mitm_intercept(
-        stream, hostname, port, ca, leaf_cache, &rules, master_key, db_path,
+        stream, hostname, port, ca, leaf_cache, &rules, master_key, db_path, traffic_tx,
     )
     .await
     {
@@ -184,26 +222,79 @@ async fn handle_http(
     req: Request<Incoming>,
     master_key: Arc<MasterKey>,
     db_path: String,
-) -> Result<Response<Full<Bytes>>, hyper::Error> {
+    web_router: Arc<Router>,
+    traffic_tx: TrafficBroadcaster,
+) -> Result<Response<AxumBody>, hyper::Error> {
     let path = req.uri().path().to_string();
 
-    // API gateway: /proxy/{provider}/{path}
     if path.starts_with("/proxy/") {
-        return crate::gateway::handle_gateway_request(req, &master_key, &db_path).await;
+        let response =
+            crate::gateway::handle_gateway_request(req, master_key, &db_path, traffic_tx).await?;
+        let (parts, body) = response.into_parts();
+        let bytes = match body.collect().await {
+            Ok(body) => body.to_bytes(),
+            Err(e) => {
+                return Ok(Response::builder()
+                    .status(502)
+                    .body(AxumBody::from(Bytes::from(format!(
+                        "response body error: {e}"
+                    ))))
+                    .unwrap_or_else(|_| {
+                        Response::new(AxumBody::from(Bytes::from("response body error")))
+                    }));
+            }
+        };
+        return Ok(Response::from_parts(parts, AxumBody::from(bytes)));
     }
 
-    // Dashboard / API placeholder
     if path.starts_with("/dashboard") || path.starts_with("/api/") {
-        return Ok(Response::builder()
-            .status(200)
-            .body(Full::new(Bytes::from("dashboard placeholder")))
-            .unwrap_or_else(|_| Response::new(Full::new(Bytes::from("internal error")))));
+        return Ok(serve_web_request(req, web_router).await);
     }
 
     Ok(Response::builder()
         .status(404)
-        .body(Full::new(Bytes::from("not found")))
-        .unwrap_or_else(|_| Response::new(Full::new(Bytes::from("not found")))))
+        .body(AxumBody::from(Bytes::from("not found")))
+        .unwrap_or_else(|_| Response::new(AxumBody::from(Bytes::from("not found")))))
+}
+
+async fn serve_web_request(req: Request<Incoming>, web_router: Arc<Router>) -> Response<AxumBody> {
+    let (parts, body) = req.into_parts();
+    let body_bytes = match body.collect().await {
+        Ok(body) => body.to_bytes(),
+        Err(e) => {
+            return Response::builder()
+                .status(502)
+                .body(AxumBody::from(Bytes::from(format!("body read error: {e}"))))
+                .unwrap_or_else(|_| Response::new(AxumBody::from(Bytes::from("body read error"))));
+        }
+    };
+    let axum_req = Request::from_parts(parts, AxumBody::from(body_bytes));
+
+    let axum_resp = match web_router.as_ref().clone().oneshot(axum_req).await {
+        Ok(resp) => resp,
+        Err(e) => {
+            return Response::builder()
+                .status(500)
+                .body(AxumBody::from(Bytes::from(format!("router error: {e}"))))
+                .unwrap_or_else(|_| Response::new(AxumBody::from(Bytes::from("router error"))));
+        }
+    };
+    axum_resp
+}
+
+#[cfg(unix)]
+async fn shutdown_signal() {
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut terminate = signal(SignalKind::terminate()).expect("SIGTERM handler");
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {},
+        _ = terminate.recv() => {},
+    }
+}
+
+#[cfg(not(unix))]
+async fn shutdown_signal() {
+    let _ = tokio::signal::ctrl_c().await;
 }
 
 fn parse_host_port(authority: &str) -> (String, u16) {

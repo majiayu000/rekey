@@ -43,6 +43,8 @@ Agent ──CONNECT──▶ rekey:10800
 - **Proxy**: CONNECT tunnel routing, header injection, audit logging
 - **Gateway**: REST API mode at `/proxy/{provider}/{path}`
 - **Dashboard**: Embedded web UI at `/dashboard`
+  - REST: `/api/secrets`, `/api/audit`, `/api/stats`
+  - SSE: `/api/traffic/stream`
 
 ## Commands
 
@@ -54,9 +56,13 @@ Agent ──CONNECT──▶ rekey:10800
 | `rekey remove <name>` | Remove a secret |
 | `rekey rotate <name> <key>` | Rotate a secret value |
 | `rekey start` | Start the proxy server |
+| `rekey stop` | Stop the daemonized proxy |
+| `rekey status` | Show running status, pid, port, uptime, request count |
 | `rekey env` | Print shell exports for agent configuration |
 | `rekey dashboard` | Open web dashboard in browser |
 | `rekey destroy` | Remove all rekey data and CA from system |
+
+Runtime state is stored at `~/.rekey/runtime.json` and `~/.rekey/rekey.pid`.
 
 ## Supported Providers
 

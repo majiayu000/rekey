@@ -2,7 +2,7 @@ use anyhow::Result;
 
 pub fn run() -> Result<()> {
     let path = super::cmd_init::db_path();
-    let conn = rusqlite::Connection::open(path)?;
+    let conn = rekey_vault::db::open_connection(path)?;
     rekey_vault::db::init_db(&conn)?;
     let secrets = rekey_vault::secrets::list_secrets(&conn)?;
     if secrets.is_empty() {

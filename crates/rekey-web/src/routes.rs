@@ -1,12 +1,14 @@
+use crate::sse::{TrafficBroadcaster, traffic_sse};
 use axum::{
     Router,
     body::Body,
-    extract::State,
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Json, Response},
     routing::get,
 };
 use rust_embed::Embed;
+use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
 
@@ -14,8 +16,27 @@ use std::sync::Arc;
 #[folder = "assets/"]
 struct Assets;
 
+#[derive(Clone)]
 pub struct WebState {
     pub db_path: String,
+    pub traffic_tx: TrafficBroadcaster,
+}
+
+impl WebState {
+    pub fn new(db_path: String, traffic_tx: TrafficBroadcaster) -> Self {
+        Self {
+            db_path,
+            traffic_tx,
+        }
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct AuditQuery {
+    secret_name: Option<String>,
+    provider: Option<String>,
+    since: Option<i64>,
+    limit: Option<u32>,
 }
 
 pub fn api_router(state: Arc<WebState>) -> Router {
@@ -23,6 +44,7 @@ pub fn api_router(state: Arc<WebState>) -> Router {
         .route("/api/secrets", get(list_secrets))
         .route("/api/audit", get(list_audit))
         .route("/api/stats", get(get_stats))
+        .route("/api/traffic/stream", get(stream_traffic))
         .route("/dashboard/{*path}", get(serve_dashboard))
         .route(
             "/dashboard",
@@ -32,7 +54,7 @@ pub fn api_router(state: Arc<WebState>) -> Router {
 }
 
 async fn list_secrets(State(state): State<Arc<WebState>>) -> impl IntoResponse {
-    let conn = match rusqlite::Connection::open(&state.db_path) {
+    let conn = match rekey_vault::db::open_connection(&state.db_path) {
         Ok(c) => c,
         Err(e) => {
             return (
@@ -50,8 +72,11 @@ async fn list_secrets(State(state): State<Arc<WebState>>) -> impl IntoResponse {
     }
 }
 
-async fn list_audit(State(state): State<Arc<WebState>>) -> impl IntoResponse {
-    let conn = match rusqlite::Connection::open(&state.db_path) {
+async fn list_audit(
+    State(state): State<Arc<WebState>>,
+    Query(query): Query<AuditQuery>,
+) -> impl IntoResponse {
+    let conn = match rekey_vault::db::open_connection(&state.db_path) {
         Ok(c) => c,
         Err(e) => {
             return (
@@ -60,7 +85,15 @@ async fn list_audit(State(state): State<Arc<WebState>>) -> impl IntoResponse {
             );
         }
     };
-    match rekey_vault::audit::query_audit(&conn, None, None, 200) {
+
+    let limit = query.limit.unwrap_or(200).clamp(1, 1000);
+    match rekey_vault::audit::query_audit(
+        &conn,
+        query.secret_name.as_deref(),
+        query.provider.as_deref(),
+        query.since,
+        limit,
+    ) {
         Ok(logs) => (StatusCode::OK, Json(json!(logs))),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -70,7 +103,7 @@ async fn list_audit(State(state): State<Arc<WebState>>) -> impl IntoResponse {
 }
 
 async fn get_stats(State(state): State<Arc<WebState>>) -> impl IntoResponse {
-    let conn = match rusqlite::Connection::open(&state.db_path) {
+    let conn = match rekey_vault::db::open_connection(&state.db_path) {
         Ok(c) => c,
         Err(e) => {
             return (
@@ -86,7 +119,7 @@ async fn get_stats(State(state): State<Arc<WebState>>) -> impl IntoResponse {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
-        now - (now % 86400)
+        now - (now % 86_400)
     };
 
     let total_today: i64 = conn
@@ -114,7 +147,11 @@ async fn get_stats(State(state): State<Arc<WebState>>) -> impl IntoResponse {
     )
 }
 
-async fn serve_dashboard(axum::extract::Path(path): axum::extract::Path<String>) -> Response<Body> {
+async fn stream_traffic(State(state): State<Arc<WebState>>) -> impl IntoResponse {
+    traffic_sse(state.traffic_tx.clone())
+}
+
+async fn serve_dashboard(Path(path): Path<String>) -> Response<Body> {
     let path = if path.is_empty() {
         "index.html".to_string()
     } else {

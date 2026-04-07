@@ -15,6 +15,22 @@ pub fn inject_header(headers: &mut HeaderMap, name: &str, value: &str) {
     }
 }
 
+pub fn is_hop_by_hop_header(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "connection"
+            | "proxy-connection"
+            | "keep-alive"
+            | "proxy-authenticate"
+            | "proxy-authorization"
+            | "te"
+            | "trailer"
+            | "transfer-encoding"
+            | "upgrade"
+            | "host"
+    )
+}
+
 /// Check if a request path matches a glob-like pattern.
 /// Supports `*` (match everything) and prefix matching with `*` suffix.
 pub fn path_matches(pattern: &str, path: &str) -> bool {
@@ -76,5 +92,13 @@ mod tests {
     fn path_exact_match() {
         assert!(path_matches("/v1/chat", "/v1/chat"));
         assert!(!path_matches("/v1/chat", "/v1/other"));
+    }
+
+    #[test]
+    fn hop_by_hop_headers_detected() {
+        assert!(is_hop_by_hop_header("Connection"));
+        assert!(is_hop_by_hop_header("transfer-encoding"));
+        assert!(is_hop_by_hop_header("HOST"));
+        assert!(!is_hop_by_hop_header("x-api-key"));
     }
 }

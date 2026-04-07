@@ -72,7 +72,7 @@ fn full_vault_lifecycle() {
         "proxy",
     )
     .unwrap();
-    let logs = audit::query_audit(&conn, None, None, 10).unwrap();
+    let logs = audit::query_audit(&conn, None, None, None, 10).unwrap();
     assert_eq!(logs.len(), 1);
 
     // Remove

@@ -3,6 +3,7 @@ use dashmap::DashMap;
 use rcgen::{CertificateParams, DistinguishedName, DnType, DnValue, KeyPair, SanType};
 use rustls_pki_types::CertificateDer;
 use std::time::{Duration, Instant};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::authority::CertificateAuthority;
 
@@ -58,8 +59,10 @@ fn generate_leaf(hostname: &str, ca: &CertificateAuthority) -> Result<LeafCert> 
     params.subject_alt_names = vec![SanType::DnsName(
         hostname.try_into().context("invalid hostname for SAN")?,
     )];
-    params.not_before = rcgen::date_time_ymd(2024, 1, 1);
-    params.not_after = rcgen::date_time_ymd(2034, 1, 1);
+    let (y, m, d) = current_utc_ymd();
+    let (next_y, next_m, next_d) = add_days(y, m, d, 1);
+    params.not_before = rcgen::date_time_ymd(y, m, d);
+    params.not_after = rcgen::date_time_ymd(next_y, next_m, next_d);
 
     let ca_der: CertificateDer<'_> = ca.ca_cert_der().into();
     let ca_cert_params =
@@ -77,6 +80,47 @@ fn generate_leaf(hostname: &str, ca: &CertificateAuthority) -> Result<LeafCert> 
         key_der: leaf_key.serialize_der(),
         created_at: Instant::now(),
     })
+}
+
+fn current_utc_ymd() -> (i32, u8, u8) {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let days = now / 86_400;
+    civil_from_days(days)
+}
+
+fn add_days(year: i32, month: u8, day: u8, delta: i64) -> (i32, u8, u8) {
+    let z = days_from_civil(year, month, day) + delta;
+    civil_from_days(z)
+}
+
+fn days_from_civil(year: i32, month: u8, day: u8) -> i64 {
+    let mut y = i64::from(year);
+    let m = i64::from(month);
+    let d = i64::from(day);
+    y -= if m <= 2 { 1 } else { 0 };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+fn civil_from_days(z: i64) -> (i32, u8, u8) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = mp + if mp < 10 { 3 } else { -9 };
+    let year = y + if m <= 2 { 1 } else { 0 };
+
+    (year as i32, m as u8, d as u8)
 }
 
 #[cfg(test)]
@@ -113,5 +157,12 @@ mod tests {
         let c1 = cache.get_or_create("api.anthropic.com", &ca).unwrap();
         let c2 = cache.get_or_create("api.openai.com", &ca).unwrap();
         assert_ne!(c1.cert_der, c2.cert_der);
+    }
+
+    #[test]
+    fn add_days_rollover() {
+        assert_eq!(add_days(2026, 12, 31, 1), (2027, 1, 1));
+        assert_eq!(add_days(2024, 2, 28, 1), (2024, 2, 29));
+        assert_eq!(add_days(2025, 2, 28, 1), (2025, 3, 1));
     }
 }

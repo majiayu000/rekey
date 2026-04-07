@@ -2,6 +2,7 @@ use anyhow::Result;
 use std::fs;
 
 pub fn run() -> Result<()> {
+    super::cmd_runtime::cleanup_runtime_files();
     let dir = super::cmd_init::rekey_dir();
     if !dir.exists() {
         println!("Nothing to destroy");

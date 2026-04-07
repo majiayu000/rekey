@@ -38,6 +38,7 @@ pub fn log_access(
 pub fn query_audit(
     conn: &Connection,
     secret_name_filter: Option<&str>,
+    provider_filter: Option<&str>,
     since: Option<i64>,
     limit: u32,
 ) -> Result<Vec<AuditEntry>> {
@@ -50,6 +51,12 @@ pub fn query_audit(
     if let Some(name) = secret_name_filter {
         sql.push_str(" AND secret_name = ?");
         params.push(Box::new(name.to_string()));
+    }
+    if let Some(provider) = provider_filter {
+        sql.push_str(
+            " AND EXISTS (SELECT 1 FROM secrets s WHERE s.name = audit_log.secret_name AND s.provider = ?)",
+        );
+        params.push(Box::new(provider.to_string()));
     }
     if let Some(ts) = since {
         sql.push_str(" AND timestamp >= ?");
@@ -105,7 +112,7 @@ mod tests {
         )
         .unwrap();
 
-        let entries = query_audit(&conn, None, None, 100).unwrap();
+        let entries = query_audit(&conn, None, None, None, 100).unwrap();
         assert_eq!(entries.len(), 2);
         // Most recent first (both have same second-resolution timestamp, but rowid order is DESC)
         assert_eq!(entries[0].secret_name, "anthropic-key");
@@ -138,7 +145,7 @@ mod tests {
         )
         .unwrap();
 
-        let entries = query_audit(&conn, Some("openai-key"), None, 100).unwrap();
+        let entries = query_audit(&conn, Some("openai-key"), None, None, 100).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].secret_name, "openai-key");
         assert_eq!(entries[0].target_host, "api.openai.com");

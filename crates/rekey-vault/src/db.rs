@@ -1,7 +1,20 @@
 use anyhow::Result;
 use rusqlite::Connection;
+use std::path::Path;
+
+pub fn prepare_connection(conn: &Connection) -> Result<()> {
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    Ok(())
+}
+
+pub fn open_connection(path: impl AsRef<Path>) -> Result<Connection> {
+    let conn = Connection::open(path)?;
+    prepare_connection(&conn)?;
+    Ok(conn)
+}
 
 pub fn init_db(conn: &Connection) -> Result<()> {
+    prepare_connection(conn)?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS secrets (
             id              TEXT PRIMARY KEY,
@@ -32,6 +45,8 @@ pub fn init_db(conn: &Connection) -> Result<()> {
             latency_ms  INTEGER,
             source      TEXT NOT NULL
         );
+        CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON audit_log(timestamp DESC);
+        CREATE INDEX IF NOT EXISTS idx_audit_log_secret_name ON audit_log(secret_name);
         CREATE TABLE IF NOT EXISTS config (
             key   TEXT PRIMARY KEY,
             value BLOB NOT NULL

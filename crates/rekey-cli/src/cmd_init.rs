@@ -23,7 +23,7 @@ pub fn open_vault() -> Result<(rusqlite::Connection, rekey_vault::crypto::Master
     if !path.exists() {
         bail!("vault not found — run `rekey init` first");
     }
-    let conn = rusqlite::Connection::open(&path)?;
+    let conn = rekey_vault::db::open_connection(&path)?;
     let password = prompt_password("Master password: ")?;
 
     let salt: Vec<u8> = conn
@@ -56,7 +56,7 @@ pub fn run() -> Result<()> {
 
     let _master_key = rekey_vault::crypto::derive_master_key(&password, &salt)?;
 
-    let conn = rusqlite::Connection::open(db_path())?;
+    let conn = rekey_vault::db::open_connection(db_path())?;
     rekey_vault::db::init_db(&conn)?;
     conn.execute(
         "INSERT INTO config (key, value) VALUES ('salt', ?1)",

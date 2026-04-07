@@ -7,6 +7,7 @@ mod cmd_list;
 mod cmd_remove;
 mod cmd_request;
 mod cmd_rotate;
+mod cmd_runtime;
 mod cmd_start;
 mod cmd_status;
 mod cmd_stop;
@@ -15,7 +16,11 @@ mod cmd_store;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "rekey", about = "Encrypted credential vault for AI agents", version)]
+#[command(
+    name = "rekey",
+    about = "Encrypted credential vault for AI agents",
+    version
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -59,14 +64,9 @@ enum Commands {
     /// List all stored credentials
     List,
     /// Remove a credential
-    Remove {
-        name: String,
-    },
+    Remove { name: String },
     /// Rotate an API key value
-    Rotate {
-        name: String,
-        value: String,
-    },
+    Rotate { name: String, value: String },
     /// Start the MITM proxy
     Start {
         #[arg(short, long)]

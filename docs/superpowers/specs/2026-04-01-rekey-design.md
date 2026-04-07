@@ -159,6 +159,10 @@ rekey env                           # Output env vars for agent configuration
 rekey destroy                       # Remove CA from trust store + delete all data
 ```
 
+Runtime files:
+- `~/.rekey/runtime.json` — running pid/port/start timestamp
+- `~/.rekey/rekey.pid` — daemon pid file
+
 ## Web Dashboard
 
 Embedded in binary via `rust-embed`. Accessible at `http://localhost:10800/dashboard`.
@@ -179,12 +183,13 @@ Embedded in binary via `rust-embed`. Accessible at `http://localhost:10800/dashb
 - Reverse-chronological key usage records
 - Filter by provider / time range
 - Export JSON
+  - API query params: `secret_name`, `provider`, `since`, `limit`
 
 ### Tech
 
 - Frontend: static HTML + vanilla JS (or Alpine.js), zero Node.js
 - Backend API: axum routes (`/api/secrets`, `/api/audit`, `/api/stats`)
-- Real-time: SSE push to frontend
+- Real-time: SSE push to frontend (`/api/traffic/stream`)
 
 ## Security Model
 
