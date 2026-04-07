@@ -1,15 +1,15 @@
-# rekey — AI Agent API Key Proxy
+# rekey — Universal Credential Proxy
 
-> Single-binary, zero-dependency credential proxy for AI agents.
-> Agents never touch real API keys.
+> Single-binary, zero-dependency credential proxy for local tools and automations.
+> Clients never touch real credentials directly.
 
 ## Problem
 
-93% of open-source AI agent projects store API keys in plaintext `.env` files. AI agents are non-deterministic — they can leak keys into generated code, commit messages, PR descriptions, or even send them to LLM providers via prompts. Existing solutions (OneCLI, AgentKeys) require PostgreSQL, Node.js, or complex setup.
+Many local tools and automations store credentials in plaintext `.env` files. This creates spill risk into logs, generated code, shell history, and process environments. Existing solutions (OneCLI, AgentKeys) require PostgreSQL, Node.js, or complex setup.
 
 ## Solution
 
-`rekey` is a lightweight MITM HTTP proxy that intercepts agent requests and injects real API keys at the transport layer. The agent only ever sees a placeholder value (`REKEY_PLACEHOLDER`). A single Rust binary handles proxy, API gateway, and web dashboard.
+`rekey` is a lightweight MITM HTTP proxy + credential requester that injects real secrets at transport time. Clients only ever see placeholder values (`REKEY_PLACEHOLDER`) or call `rekey request` with named credentials. A single Rust binary handles proxy, API gateway, requester, and web dashboard.
 
 ## Architecture
 
@@ -17,9 +17,10 @@
                          rekey (single binary)
                     +-----------------------------+
                     |                             |
-   agent --CONNECT-->  MITM Proxy (:10800)       |---> api.anthropic.com
+   client --CONNECT->  MITM Proxy (:10800)       |---> api.anthropic.com
                     |    | shared vault           |---> api.openai.com
-   agent --GET/POST->  API Gateway (/proxy/*)    |---> ...
+   client --GET/POST-> API Gateway (/proxy/*)    |---> ...
+   cli ----request---> Credential Requester       |---> arbitrary APIs
                     |    |                        |
    browser -------->  Web UI (/dashboard)        |
                     |    |                        |
@@ -27,11 +28,12 @@
                     +-----------------------------+
 ```
 
-Single process, single port, three entry points sharing one SQLite store:
+Single process, single port, four entry points sharing one SQLite store:
 
 1. **MITM Proxy** — Handles CONNECT tunnels, dynamically generates leaf certificates, intercepts and injects keys
 2. **API Gateway** — HTTP routes at `/proxy/{provider}/...`, forwards with key injection (fallback for tools that don't respect `HTTPS_PROXY`)
 3. **Web UI** — Embedded static assets at `/dashboard`, manages secrets + shows traffic
+4. **Credential Requester** — CLI path (`rekey request`) for direct authenticated requests using stored credentials
 
 ## Key Storage
 
@@ -48,7 +50,7 @@ Single process, single port, three entry points sharing one SQLite store:
 ```sql
 secrets (
   id          TEXT PRIMARY KEY,
-  name        TEXT UNIQUE,         -- "anthropic", "openai", "github"
+  name        TEXT UNIQUE,         -- arbitrary credential name
   provider    TEXT,                -- predefined provider or "generic"
   ciphertext  BLOB,
   iv          BLOB,
@@ -78,7 +80,7 @@ audit_log (
 )
 ```
 
-**Predefined providers** auto-generate injection rules:
+**Built-in provider presets** auto-generate injection rules:
 
 | Provider | host_pattern | header | format |
 |----------|-------------|--------|--------|
@@ -98,13 +100,13 @@ audit_log (
 
 ### Request Flow
 
-1. Agent sends `CONNECT api.anthropic.com:443`
+1. Client sends `CONNECT api.anthropic.com:443`
 2. rekey extracts hostname from request
 3. Queries SQLite: host_pattern matches `api.anthropic.com` → finds secret + injection_rule
 4. **Match found → MITM mode**:
    a. Replies `200 OK`
    b. Generates leaf certificate for `api.anthropic.com` via rcgen (CA-signed, 24h cached)
-   c. Completes TLS handshake with agent using leaf cert
+   c. Completes TLS handshake with client using leaf cert
    d. Reads plaintext request
    e. Decrypts secret (AES-256-GCM)
    f. Injects header per injection_rule (replaces FAKE_KEY → real key)
@@ -113,10 +115,10 @@ audit_log (
    i. Writes audit log
 5. **No match → pure TCP tunnel** (transparent passthrough, no MITM, no logging)
 
-### API Gateway Mode (fallback entry)
+### API Gateway Mode (preset fallback entry)
 
 ```
-agent → POST http://localhost:10800/proxy/anthropic/v1/messages
+client → POST http://localhost:10800/proxy/anthropic/v1/messages
 ```
 
 1. Extracts provider from path
@@ -135,6 +137,8 @@ rekey init                          # Set password + generate CA + install + cre
 rekey add anthropic sk-ant-xxx      # Predefined provider, auto injection rules
 rekey add openai sk-proj-xxx
 rekey add generic myapi --host api.example.com --header x-api-key
+rekey store internal-basic --type basic
+rekey request internal-basic https://api.example.com/me
 rekey list                          # List secrets (names only, no values)
 rekey remove anthropic
 rekey rotate anthropic sk-ant-new   # Replace secret value
@@ -149,7 +153,7 @@ rekey status                        # Running state + port + request count
 rekey dashboard                     # Open browser to Web UI
 
 # Helper
-rekey env                           # Output env vars for agent configuration
+rekey env                           # Output env vars for client/tool configuration
   # export HTTPS_PROXY=http://localhost:10800
   # export HTTP_PROXY=http://localhost:10800
   # export ANTHROPIC_API_KEY=REKEY_PLACEHOLDER
@@ -199,8 +203,8 @@ Embedded in binary via `rust-embed`. Accessible at `http://localhost:10800/dashb
 |-------|--------|---------|
 | Storage | Disk read | AES-256-GCM, master key not on disk |
 | Memory | Process dump | `secrecy::Secret<String>`, zero-fill on Drop |
-| Transport | Agent sees key | MITM proxy injection, agent only holds FAKE_KEY |
-| Output | Key leaks to code | Agent never contacts real value, nothing to leak |
+| Transport | Client sees key | MITM proxy injection, client only holds placeholders |
+| Output | Key leaks to code/logs | Client avoids direct real-secret usage, reducing spill surface |
 | Dashboard | Unauthorized access | localhost only, optional basic auth |
 
 ### Unmatched Request Handling
@@ -217,7 +221,7 @@ Requests to hosts not in the secret table → pure TCP tunnel passthrough. No MI
 
 - No request/response body logging
 - No remote access (127.0.0.1 only)
-- No multi-user / multi-agent auth (single-user tool)
+- No multi-user auth (single-user tool)
 
 ## Crate Structure
 
@@ -257,7 +261,7 @@ rekey/
 | Storage | PostgreSQL | SQLite single file |
 | Dashboard | Separate Next.js process | Embedded in binary |
 | Config | Web panel click-through | CLI-first: `rekey add anthropic sk-xxx` |
-| Setup | Create Account → Agent → Secret → Assign | `rekey init && rekey add anthropic sk-xxx && rekey start` |
-| Target users | Teams / enterprise | Individual devs + small teams |
+| Setup | Create Account → Client → Secret → Assign | `rekey init && rekey add anthropic sk-xxx && rekey start` |
+| Target users | Teams / enterprise | Individual devs, local automation, and small teams |
 
-**One-liner**: OneCLI's lightweight alternative — single binary, zero deps, 30-second setup.
+**One-liner**: OneCLI's lightweight alternative — single binary, zero deps, 30-second setup for generic credential workflows.

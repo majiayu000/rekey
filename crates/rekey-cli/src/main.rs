@@ -18,7 +18,7 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(
     name = "rekey",
-    about = "Encrypted credential vault for AI agents",
+    about = "Encrypted credential vault and local proxy for tools/automations",
     version
 )]
 struct Cli {
@@ -30,7 +30,7 @@ struct Cli {
 enum Commands {
     /// Initialize vault with master password
     Init,
-    /// Add an API key (auto-detects known providers)
+    /// Add a single-value secret (auto-detects built-in providers)
     Add {
         name: String,
         value: String,
@@ -45,7 +45,7 @@ enum Commands {
         #[arg(long, short = 't')]
         r#type: Option<String>,
     },
-    /// Make an authenticated HTTP request (agents call this)
+    /// Make an authenticated HTTP request using a stored credential
     Request {
         /// Credential name
         name: String,
