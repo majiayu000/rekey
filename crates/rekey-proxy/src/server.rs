@@ -214,3 +214,62 @@ fn parse_host_port(authority: &str) -> (String, u16) {
         (authority.to_string(), 443)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+    use tokio::net::TcpStream;
+
+    #[tokio::test]
+    async fn run_accepts_local_connections() -> anyhow::Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let ca = CertificateAuthority::generate(tmp.path())?;
+        let db_path = tmp.path().join("vault");
+        let conn = rusqlite::Connection::open(&db_path)?;
+        rekey_vault::db::init_db(&conn)?;
+        drop(conn);
+
+        let master_key =
+            rekey_vault::crypto::derive_master_key("test-password", b"0123456789abcdef")?;
+        let addr = SocketAddr::from(([127, 0, 0, 1], unused_local_port()?));
+        let server = ProxyServer::new(
+            ca,
+            master_key,
+            db_path.to_string_lossy().to_string(),
+            addr.port(),
+        );
+
+        let server_task = tokio::spawn(async move { server.run().await });
+        let stream =
+            tokio::time::timeout(Duration::from_secs(2), connect_when_ready(addr)).await??;
+        drop(stream);
+
+        server_task.abort();
+        match server_task.await {
+            Err(error) if error.is_cancelled() => {}
+            result => panic!("proxy server task ended unexpectedly: {result:?}"),
+        }
+
+        Ok(())
+    }
+
+    async fn connect_when_ready(addr: SocketAddr) -> std::io::Result<TcpStream> {
+        let mut last_error = None;
+        for _ in 0..50 {
+            match TcpStream::connect(addr).await {
+                Ok(stream) => return Ok(stream),
+                Err(error) => {
+                    last_error = Some(error);
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            }
+        }
+        Err(last_error.unwrap_or_else(|| std::io::Error::other("proxy listener was not ready")))
+    }
+
+    fn unused_local_port() -> std::io::Result<u16> {
+        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
+        Ok(listener.local_addr()?.port())
+    }
+}
