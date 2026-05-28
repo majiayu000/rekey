@@ -67,10 +67,7 @@ fn encrypt_fields(
     encrypt(master_key, json.as_bytes())
 }
 
-fn decrypt_fields(
-    master_key: &MasterKey,
-    blob: &EncryptedBlob,
-) -> Result<HashMap<String, String>> {
+fn decrypt_fields(master_key: &MasterKey, blob: &EncryptedBlob) -> Result<HashMap<String, String>> {
     let plaintext = decrypt(master_key, blob)?;
     let json_str = String::from_utf8(plaintext).context("credential data is not valid UTF-8")?;
     serde_json::from_str(&json_str).context("credential data is not valid JSON")
@@ -138,7 +135,14 @@ pub fn add_secret(
     )
     .context("failed to insert secret (name may already exist)")?;
     if let Some(pc) = get_provider(provider) {
-        add_injection_rule(conn, &id, pc.header_name, pc.value_format, pc.path_pattern, "*")?;
+        add_injection_rule(
+            conn,
+            &id,
+            pc.header_name,
+            pc.value_format,
+            pc.path_pattern,
+            "*",
+        )?;
     }
     Ok(id)
 }

@@ -15,7 +15,11 @@ mod cmd_store;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "rekey", about = "Encrypted credential vault for AI agents", version)]
+#[command(
+    name = "rekey",
+    about = "Encrypted credential vault for AI agents",
+    version
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -59,14 +63,9 @@ enum Commands {
     /// List all stored credentials
     List,
     /// Remove a credential
-    Remove {
-        name: String,
-    },
+    Remove { name: String },
     /// Rotate an API key value
-    Rotate {
-        name: String,
-        value: String,
-    },
+    Rotate { name: String, value: String },
     /// Start the MITM proxy
     Start {
         #[arg(short, long)]
