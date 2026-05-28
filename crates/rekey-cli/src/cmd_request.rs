@@ -17,8 +17,9 @@ pub fn run(
         .build()
         .context("failed to create HTTP client")?;
 
-    let http_method: reqwest::Method =
-        method.parse().with_context(|| format!("invalid HTTP method: {method}"))?;
+    let http_method: reqwest::Method = method
+        .parse()
+        .with_context(|| format!("invalid HTTP method: {method}"))?;
 
     let mut req = client.request(http_method, url);
 
