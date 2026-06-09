@@ -7,27 +7,34 @@ use std::time::Instant;
 
 use crate::inject::format_header_value;
 
+fn split_gateway_target(uri: &http::Uri) -> Option<(String, String)> {
+    let path_and_query = uri.path_and_query()?.as_str();
+    let parts: Vec<&str> = path_and_query.splitn(4, '/').collect();
+    if parts.len() < 4 {
+        return None;
+    }
+
+    Some((parts[2].to_string(), format!("/{}", parts[3])))
+}
+
 pub async fn handle_gateway_request(
     req: Request<Incoming>,
     master_key: &MasterKey,
     db_path: &str,
 ) -> Result<Response<Full<Bytes>>, hyper::Error> {
-    let path = req.uri().path().to_string();
     let start = Instant::now();
 
-    // Parse /proxy/{provider}/{api_path...}
-    let parts: Vec<&str> = path.splitn(4, '/').collect();
-    if parts.len() < 4 {
-        return Ok(Response::builder()
-            .status(400)
-            .body(Full::new(Bytes::from("usage: /proxy/{provider}/{path}")))
-            .unwrap_or_else(|_| Response::new(Full::new(Bytes::from("bad request")))));
-    }
+    let (provider_name, api_path) = match split_gateway_target(req.uri()) {
+        Some((provider_name, api_path)) => (provider_name, api_path),
+        None => {
+            return Ok(Response::builder()
+                .status(400)
+                .body(Full::new(Bytes::from("usage: /proxy/{provider}/{path}")))
+                .unwrap_or_else(|_| Response::new(Full::new(Bytes::from("bad request")))));
+        }
+    };
 
-    let provider_name = parts[2];
-    let api_path = format!("/{}", parts[3]);
-
-    let provider = match rekey_vault::providers::get_provider(provider_name) {
+    let provider = match rekey_vault::providers::get_provider(&provider_name) {
         Some(p) => p,
         None => {
             return Ok(Response::builder()
@@ -51,7 +58,7 @@ pub async fn handle_gateway_request(
     };
 
     let secret_value =
-        match rekey_vault::secrets::get_secret_value(&conn, master_key, provider_name) {
+        match rekey_vault::secrets::get_secret_value(&conn, master_key, &provider_name) {
             Ok(v) => v,
             Err(e) => {
                 tracing::error!("secret lookup failed for {provider_name}: {e}");
@@ -64,7 +71,7 @@ pub async fn handle_gateway_request(
             }
         };
 
-    let url = format!("https://{}{api_path}", provider.host_pattern);
+    let url = format!("https://{}{}", provider.host_pattern, api_path);
     let formatted_value = format_header_value(provider.value_format, &secret_value);
 
     let client = reqwest::Client::builder()
@@ -129,7 +136,7 @@ pub async fn handle_gateway_request(
     // Audit log
     if let Err(e) = rekey_vault::audit::log_access(
         &conn,
-        provider_name,
+        &provider_name,
         provider.host_pattern,
         &api_path,
         Some(status as i32),
@@ -146,4 +153,41 @@ pub async fn handle_gateway_request(
         .status(resp_status)
         .body(Full::new(resp_bytes))
         .unwrap_or_else(|_| Response::new(Full::new(Bytes::from("internal error")))))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_gateway_target;
+
+    #[test]
+    fn gateway_target_keeps_query_string() {
+        let uri = match "/proxy/openai/v1/models?limit=10".parse::<http::Uri>() {
+            Ok(uri) => uri,
+            Err(error) => panic!("test URI should parse: {error}"),
+        };
+
+        let (provider, path_and_query) = match split_gateway_target(&uri) {
+            Some(target) => target,
+            None => panic!("gateway target should split"),
+        };
+
+        assert_eq!(provider, "openai");
+        assert_eq!(path_and_query, "/v1/models?limit=10");
+    }
+
+    #[test]
+    fn gateway_target_without_query_is_unchanged() {
+        let uri = match "/proxy/openai/v1/models".parse::<http::Uri>() {
+            Ok(uri) => uri,
+            Err(error) => panic!("test URI should parse: {error}"),
+        };
+
+        let (provider, path_and_query) = match split_gateway_target(&uri) {
+            Some(target) => target,
+            None => panic!("gateway target should split"),
+        };
+
+        assert_eq!(provider, "openai");
+        assert_eq!(path_and_query, "/v1/models");
+    }
 }

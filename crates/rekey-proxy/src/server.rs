@@ -1,5 +1,6 @@
 use anyhow::Result;
 use bytes::Bytes;
+use http_body_util::BodyExt;
 use http_body_util::Full;
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
@@ -11,6 +12,7 @@ use rekey_vault::crypto::MasterKey;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
+use tower::ServiceExt;
 
 pub struct ProxyServer {
     ca: Arc<CertificateAuthority>,
@@ -194,16 +196,60 @@ async fn handle_http(
 
     // Dashboard / API placeholder
     if path.starts_with("/dashboard") || path.starts_with("/api/") {
-        return Ok(Response::builder()
-            .status(200)
-            .body(Full::new(Bytes::from("dashboard placeholder")))
-            .unwrap_or_else(|_| Response::new(Full::new(Bytes::from("internal error")))));
+        return handle_web_request(req, db_path).await;
     }
 
     Ok(Response::builder()
         .status(404)
         .body(Full::new(Bytes::from("not found")))
         .unwrap_or_else(|_| Response::new(Full::new(Bytes::from("not found")))))
+}
+
+async fn handle_web_request(
+    req: Request<Incoming>,
+    db_path: String,
+) -> Result<Response<Full<Bytes>>, hyper::Error> {
+    let (parts, body) = req.into_parts();
+    let body_bytes = match body.collect().await {
+        Ok(body) => body.to_bytes(),
+        Err(error) => {
+            return Ok(Response::builder()
+                .status(502)
+                .body(Full::new(Bytes::from(format!("body read error: {error}"))))
+                .unwrap_or_else(|_| Response::new(Full::new(Bytes::from("body error")))));
+        }
+    };
+
+    let request = http::Request::from_parts(parts, axum::body::Body::from(body_bytes));
+    let state = Arc::new(rekey_web::routes::WebState { db_path });
+    let router = rekey_web::routes::api_router(state);
+    let response = match router.oneshot(request).await {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+    let (parts, body) = response.into_parts();
+    let body_bytes = match axum::body::to_bytes(body, usize::MAX).await {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return Ok(Response::builder()
+                .status(500)
+                .body(Full::new(Bytes::from(format!(
+                    "dashboard response error: {error}"
+                ))))
+                .unwrap_or_else(|_| Response::new(Full::new(Bytes::from("internal error")))));
+        }
+    };
+
+    let mut builder = Response::builder().status(parts.status);
+    for (name, value) in parts.headers {
+        if let Some(name) = name {
+            builder = builder.header(name, value);
+        }
+    }
+
+    Ok(builder
+        .body(Full::new(body_bytes))
+        .unwrap_or_else(|_| Response::new(Full::new(Bytes::from("internal error")))))
 }
 
 fn parse_host_port(authority: &str) -> (String, u16) {
@@ -254,6 +300,54 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn run_serves_dashboard_and_api_routes() -> anyhow::Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let ca = CertificateAuthority::generate(tmp.path())?;
+        let db_path = tmp.path().join("vault");
+        let conn = rusqlite::Connection::open(&db_path)?;
+        rekey_vault::db::init_db(&conn)?;
+        drop(conn);
+
+        let master_key =
+            rekey_vault::crypto::derive_master_key("test-password", b"0123456789abcdef")?;
+        let addr = SocketAddr::from(([127, 0, 0, 1], unused_local_port()?));
+        let server = ProxyServer::new(
+            ca,
+            master_key,
+            db_path.to_string_lossy().to_string(),
+            addr.port(),
+        );
+
+        let server_task = tokio::spawn(async move { server.run().await });
+        let client = reqwest::Client::new();
+        let base_url = format!("http://{addr}");
+        let dashboard = tokio::time::timeout(
+            Duration::from_secs(2),
+            get_when_ready(&client, &format!("{base_url}/dashboard/index.html")),
+        )
+        .await??;
+        assert_eq!(dashboard.status(), reqwest::StatusCode::OK);
+        assert!(
+            dashboard
+                .text()
+                .await?
+                .contains("<title>rekey dashboard</title>")
+        );
+
+        let secrets = client.get(format!("{base_url}/api/secrets")).send().await?;
+        assert_eq!(secrets.status(), reqwest::StatusCode::OK);
+        assert_eq!(secrets.text().await?, "[]");
+
+        server_task.abort();
+        match server_task.await {
+            Err(error) if error.is_cancelled() => {}
+            result => panic!("proxy server task ended unexpectedly: {result:?}"),
+        }
+
+        Ok(())
+    }
+
     async fn connect_when_ready(addr: SocketAddr) -> std::io::Result<TcpStream> {
         let mut last_error = None;
         for _ in 0..50 {
@@ -266,6 +360,27 @@ mod tests {
             }
         }
         Err(last_error.unwrap_or_else(|| std::io::Error::other("proxy listener was not ready")))
+    }
+
+    async fn get_when_ready(
+        client: &reqwest::Client,
+        url: &str,
+    ) -> Result<reqwest::Response, reqwest::Error> {
+        let mut last_error = None;
+        for _ in 0..50 {
+            match client.get(url).send().await {
+                Ok(response) => return Ok(response),
+                Err(error) => {
+                    last_error = Some(error);
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            }
+        }
+
+        match last_error {
+            Some(error) => Err(error),
+            None => client.get(url).send().await,
+        }
     }
 
     fn unused_local_port() -> std::io::Result<u16> {

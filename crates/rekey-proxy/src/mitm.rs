@@ -100,7 +100,7 @@ async fn handle_mitm_request(
     let path = req.uri().path().to_string();
     let method_str = req.method().to_string();
 
-    let url = format!("https://{hostname}{path}");
+    let url = build_upstream_url(hostname, req.uri());
 
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -203,4 +203,27 @@ fn error_response(status: u16, msg: &str) -> hyper::Response<Full<Bytes>> {
         .status(status)
         .body(Full::new(Bytes::from(msg.to_string())))
         .unwrap_or_else(|_| hyper::Response::new(Full::new(Bytes::from("internal error"))))
+}
+
+fn build_upstream_url(hostname: &str, uri: &http::Uri) -> String {
+    let path_and_query = uri.path_and_query().map_or("/", |value| value.as_str());
+    format!("https://{hostname}{path_and_query}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_upstream_url;
+
+    #[test]
+    fn upstream_url_keeps_v1_models_query_string() {
+        let uri = match "/v1/models?limit=10".parse::<http::Uri>() {
+            Ok(uri) => uri,
+            Err(error) => panic!("test URI should parse: {error}"),
+        };
+
+        assert_eq!(
+            build_upstream_url("api.openai.com", &uri),
+            "https://api.openai.com/v1/models?limit=10"
+        );
+    }
 }

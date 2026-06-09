@@ -1615,6 +1615,7 @@ name = "rekey-proxy"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
  "bytes",
  "futures-util",
  "http",
@@ -1623,6 +1624,7 @@ dependencies = [
  "hyper-util",
  "rekey-ca",
  "rekey-vault",
+ "rekey-web",
  "reqwest",
  "rusqlite",
  "rustls",
@@ -1632,6 +1634,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-rustls",
+ "tower",
  "tracing",
 ]
 
