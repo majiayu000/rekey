@@ -32,15 +32,21 @@ impl LeafCertCache {
     }
 
     pub fn get_or_create(&self, hostname: &str, ca: &CertificateAuthority) -> Result<LeafCert> {
-        if let Some(entry) = self.cache.get(hostname) {
-            if !entry.is_expired() {
-                return Ok(entry.clone());
-            }
+        if let Some(entry) = self.cache.get(hostname)
+            && !entry.is_expired()
+        {
+            return Ok(entry.clone());
         }
 
         let leaf = generate_leaf(hostname, ca)?;
         self.cache.insert(hostname.to_string(), leaf.clone());
         Ok(leaf)
+    }
+}
+
+impl Default for LeafCertCache {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

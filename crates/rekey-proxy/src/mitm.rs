@@ -13,6 +13,7 @@ use tokio_rustls::TlsAcceptor;
 
 use crate::inject::{format_header_value, path_matches};
 
+#[allow(clippy::too_many_arguments)]
 pub async fn mitm_intercept<S>(
     stream: S,
     hostname: &str,

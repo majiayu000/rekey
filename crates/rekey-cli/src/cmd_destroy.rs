@@ -8,10 +8,10 @@ pub fn run() -> Result<()> {
         return Ok(());
     }
 
-    if let Ok(ca) = rekey_ca::authority::CertificateAuthority::load(&dir) {
-        if let Err(e) = ca.remove_from_system() {
-            tracing::warn!("failed to remove CA from system: {e}");
-        }
+    if let Ok(ca) = rekey_ca::authority::CertificateAuthority::load(&dir)
+        && let Err(e) = ca.remove_from_system()
+    {
+        tracing::warn!("failed to remove CA from system: {e}");
     }
 
     fs::remove_dir_all(&dir)?;
