@@ -122,6 +122,7 @@ impl CertificateAuthority {
 
     /// Remove CA cert from system trust store.
     pub fn remove_from_system(&self) -> Result<()> {
+        #[cfg(target_os = "macos")]
         let pem_path = self.base_dir.join("ca.pem");
         #[cfg(target_os = "macos")]
         {
