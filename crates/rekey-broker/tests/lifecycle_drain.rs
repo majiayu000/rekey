@@ -505,8 +505,7 @@ async fn session_create_during_drain_is_rejected() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn drain_cancel_is_scoped_to_one_running_epoch() {
-    let broker =
-        common::start_broker_with(Duration::from_secs(300), Duration::from_millis(60)).await;
+    let broker = common::start_broker_with(Duration::from_secs(300), Duration::from_secs(1)).await;
     common::unlock(&broker).await;
     let credential_id = common::add_credential(&broker, "cancel", b"v").await;
     let (action_id, version) = common::create_action(&broker, &credential_id).await;
@@ -518,7 +517,7 @@ async fn drain_cancel_is_scoped_to_one_running_epoch() {
             headers: vec![("content-type".to_owned(), "application/json".to_owned())],
             body: b"{\"ok\":true}".to_vec().into(),
         }),
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     );
 
     let agent = broker.agent_sock();
@@ -534,7 +533,16 @@ async fn drain_cancel_is_scoped_to_one_running_epoch() {
         )
         .await
     });
-    tokio::time::sleep(Duration::from_millis(40)).await;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if !broker.fake.requests.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("execution must reach the delayed upstream before lock begins");
     common::call(&admin, Channel::Admin, admin_msg::LOCK, b"{}", &[])
         .await
         .ok();
