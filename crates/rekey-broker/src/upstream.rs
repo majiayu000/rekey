@@ -51,6 +51,64 @@ pub trait UpstreamTransport: Send + Sync {
     fn send(&self, request: UpstreamRequest) -> UpstreamFuture<'_>;
 }
 
+fn second_segment_matches_prefix(segment: u16, network: u16, prefix_len: u8) -> bool {
+    let bits = prefix_len - 16;
+    let mask = u16::MAX << (16 - bits);
+    segment & mask == network
+}
+
+fn allocated_public_ipv6(segments: &[u16; 8]) -> bool {
+    let [first, second, ..] = *segments;
+    match first {
+        0x2001 => {
+            let public_ietf_exception = (second == 1
+                && segments[2..7] == [0, 0, 0, 0, 0]
+                && (1..=3).contains(&segments[7]))
+                || second == 3
+                || (second == 4 && segments[2] == 0x0112)
+                || (second & 0xfff0) == 0x0020
+                || (second & 0xfff0) == 0x0030;
+            let allocated = [
+                (0x0200, 23),
+                (0x0400, 23),
+                (0x0600, 23),
+                (0x0800, 22),
+                (0x0c00, 23),
+                (0x0e00, 23),
+                (0x1200, 23),
+                (0x1400, 22),
+                (0x1800, 23),
+                (0x1a00, 23),
+                (0x1c00, 22),
+                (0x2000, 19),
+                (0x4000, 23),
+                (0x4200, 23),
+                (0x4400, 23),
+                (0x4600, 23),
+                (0x4800, 23),
+                (0x4a00, 23),
+                (0x4c00, 23),
+                (0x5000, 20),
+                (0x8000, 19),
+                (0xa000, 20),
+                (0xb000, 20),
+            ]
+            .iter()
+            .any(|&(network, prefix)| second_segment_matches_prefix(second, network, prefix));
+            public_ietf_exception || (allocated && second != 0x0db8)
+        }
+        0x2003 => second_segment_matches_prefix(second, 0, 18),
+        0x2400..=0x241f => true,
+        0x2600..=0x260f => true,
+        0x2610 | 0x2620 => second_segment_matches_prefix(second, 0, 23),
+        0x2630..=0x263f => true,
+        0x2800..=0x280f => true,
+        0x2a00..=0x2a1f => true,
+        0x2c00..=0x2c0f => true,
+        _ => false,
+    }
+}
+
 /// Default-deny for anything that is not covered by the explicit public
 /// unicast contract. Translation addresses are accepted only when their
 /// embedded IPv4 destination independently passes the IPv4 contract.
@@ -100,25 +158,7 @@ pub fn ip_is_public(ip: IpAddr) -> bool {
                 );
                 return ip_is_public(IpAddr::V4(embedded));
             }
-            // Native IPv6 is allowlisted to the global-unicast allocation.
-            if (s[0] & 0xe000) != 0x2000 {
-                return false;
-            }
-            // Most of 2001::/23 is reserved for IETF protocols and is not
-            // globally reachable. Keep only its public anycast/AMT/AS112
-            // allocations; 6to4 was handled above.
-            if s[0] == 0x2001 && s[1] < 0x0200 {
-                let public_anycast =
-                    s[1] == 1 && s[2..7] == [0, 0, 0, 0, 0] && (1..=3).contains(&s[7]);
-                let public_amt = s[1] == 3;
-                let public_as112 = s[1] == 4 && s[2] == 0x0112;
-                return public_anycast || public_amt || public_as112;
-            }
-            // Documentation prefixes are not public destinations.
-            if (s[0] == 0x2001 && s[1] == 0x0db8) || (s[0] == 0x3fff && (s[1] & 0xf000) == 0) {
-                return false;
-            }
-            true
+            allocated_public_ipv6(&s)
         }
     }
 }
@@ -318,13 +358,28 @@ mod tests {
             "2001:2::1",
             "2001:4:111::1",
             "2001:10::1",
-            "2001:20::1",
-            "2001:30::1",
             "2001:100::1",
             "2001:db8::1",
             "2002:7f00:1::1",
             "3fff::1",
             "3fff:fff::1",
+            "3fff:1000::1",
+            "3ffe::1",
+            "3f00::1",
+            "3e00::1",
+            "3c00::1",
+            "3800::1",
+            "3000::1",
+            "2e00::1",
+            "2d00::1",
+            "2c10::1",
+            "2a20::1",
+            "2640::1",
+            "2620:200::1",
+            "2610:200::1",
+            "2420::1",
+            "2003:4000::1",
+            "2001:4e00::1",
             "5f00::1",
             "fec0::1",
             "ff02::1",
@@ -339,8 +394,26 @@ mod tests {
             "2001:1::1",
             "2001:3::1",
             "2001:4:112::1",
+            "2001:20::1",
+            "2001:30::1",
             "2001:200::1",
-            "3fff:1000::1",
+            "2001:9ff::1",
+            "2001:1fff::1",
+            "2001:3fff::1",
+            "2001:4dff::1",
+            "2001:5fff::1",
+            "2001:9fff::1",
+            "2001:afff::1",
+            "2001:bfff::1",
+            "2003:3fff::1",
+            "241f::1",
+            "260f::1",
+            "2610:1ff::1",
+            "2620:1ff::1",
+            "263f::1",
+            "280f::1",
+            "2a1f::1",
+            "2c0f::1",
             "64:ff9b::5db8:d822",
             "2002:5db8:d822::1",
         ] {
@@ -353,7 +426,7 @@ mod tests {
     fn mixed_dns_answer_is_rejected_before_selection() {
         let addrs = [
             "93.184.216.34:443".parse().unwrap(),
-            "[fd00::1]:443".parse().unwrap(),
+            "[3000::1]:443".parse().unwrap(),
         ];
         assert!(matches!(
             select_public_endpoint("example.com", &addrs),

@@ -89,6 +89,35 @@ fn assert_reopen_rejects_unknown_discriminator(update: &str) {
 
     assert!(matches!(
         SqliteRecordStore::open(&db),
+        Err(AuthorityError::UnsupportedFormatVersion | AuthorityError::StorageIntegrityFailed)
+    ));
+}
+
+fn assert_reopen_rejects_null_discriminator(table: &str, declaration: &str, update: &str) {
+    let vault = common::init_test_vault();
+    let db = paths::vault_db(&vault.state_dir);
+    let connection = rusqlite::Connection::open(&db).unwrap();
+    connection
+        .execute_batch("PRAGMA writable_schema = ON;")
+        .unwrap();
+    let nullable = declaration.replace(" NOT NULL", "");
+    assert_eq!(
+        connection
+            .execute(
+                "UPDATE sqlite_schema SET sql = replace(sql, ?2, ?3)
+                 WHERE type = 'table' AND name = ?1",
+                [table, declaration, &nullable],
+            )
+            .unwrap(),
+        1
+    );
+    drop(connection);
+
+    let connection = rusqlite::Connection::open(&db).unwrap();
+    connection.execute(update, []).unwrap();
+    drop(connection);
+    assert!(matches!(
+        SqliteRecordStore::open(&db),
         Err(AuthorityError::UnsupportedFormatVersion)
     ));
 }
@@ -130,9 +159,89 @@ fn opening_rejects_unknown_credential_suite_and_aad_version() {
 
         assert!(matches!(
             SqliteRecordStore::open(&db),
+            Err(AuthorityError::UnsupportedFormatVersion | AuthorityError::StorageIntegrityFailed)
+        ));
+    }
+}
+
+#[test]
+fn opening_rejects_null_crypto_discriminators() {
+    assert_reopen_rejects_null_discriminator(
+        "vault_header",
+        "crypto_suite       TEXT NOT NULL",
+        "UPDATE vault_header SET crypto_suite = NULL",
+    );
+    assert_reopen_rejects_null_discriminator(
+        "key_wrappers",
+        "kdf_algorithm      TEXT NOT NULL",
+        "UPDATE key_wrappers SET kdf_algorithm = NULL WHERE wrapper_kind = 'recovery'",
+    );
+
+    for (declaration, update) in [
+        (
+            "aad_version        INTEGER NOT NULL",
+            "UPDATE credential_versions SET aad_version = NULL",
+        ),
+        (
+            "crypto_suite       TEXT NOT NULL",
+            "UPDATE credential_versions SET crypto_suite = NULL",
+        ),
+    ] {
+        let (vault, mut store) = open_store();
+        let record = credential("nullable-marker");
+        store
+            .insert_credential(
+                &record,
+                &version(record.credential_id, 1),
+                audit(event_type::CREDENTIAL_CREATED),
+            )
+            .unwrap();
+        drop(store);
+        let db = paths::vault_db(&vault.state_dir);
+        let connection = rusqlite::Connection::open(&db).unwrap();
+        connection
+            .execute_batch("PRAGMA writable_schema = ON;")
+            .unwrap();
+        let nullable = declaration.replace(" NOT NULL", "");
+        connection
+            .execute(
+                "UPDATE sqlite_schema SET sql = replace(sql, ?2, ?3)
+                 WHERE type = 'table' AND name = ?1",
+                ["credential_versions", declaration, &nullable],
+            )
+            .unwrap();
+        drop(connection);
+        let connection = rusqlite::Connection::open(&db).unwrap();
+        connection.execute(update, []).unwrap();
+        drop(connection);
+        assert!(matches!(
+            SqliteRecordStore::open(&db),
             Err(AuthorityError::UnsupportedFormatVersion)
         ));
     }
+}
+
+#[test]
+fn empty_or_incomplete_database_is_unsupported_layout() {
+    let empty = tempfile::tempdir().unwrap();
+    let empty_db = empty.path().join("empty.sqlite3");
+    drop(rusqlite::Connection::open(&empty_db).unwrap());
+    assert!(matches!(
+        SqliteRecordStore::open(&empty_db),
+        Err(AuthorityError::UnsupportedVaultLayout)
+    ));
+
+    let vault = common::init_test_vault();
+    let db = paths::vault_db(&vault.state_dir);
+    let connection = rusqlite::Connection::open(&db).unwrap();
+    connection
+        .execute_batch("DROP TABLE key_wrappers;")
+        .unwrap();
+    drop(connection);
+    assert!(matches!(
+        SqliteRecordStore::open(&db),
+        Err(AuthorityError::UnsupportedVaultLayout)
+    ));
 }
 
 #[test]

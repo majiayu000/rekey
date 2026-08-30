@@ -67,13 +67,33 @@ impl SqliteRecordStore {
             conn,
             path: path.to_owned(),
         };
-        store.validate_format_discriminators()?;
         store.quick_check()?;
+        store.verify_required_layout()?;
+        store.validate_format_discriminators()?;
         let header = store.load_header()?;
         if header.schema_digest != schema_digest() {
             return Err(AuthorityError::StorageIntegrityFailed);
         }
         Ok(store)
+    }
+
+    fn verify_required_layout(&self) -> Result<(), AuthorityError> {
+        let table_count: u8 = self
+            .conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_schema
+                 WHERE type = 'table' AND name IN (
+                    'vault_header', 'key_wrappers', 'credentials',
+                    'credential_versions', 'actions', 'audit_events'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        if table_count != 6 {
+            return Err(AuthorityError::UnsupportedVaultLayout);
+        }
+        Ok(())
     }
 
     /// Rejects every persisted crypto discriminator before any row can be
@@ -84,37 +104,44 @@ impl SqliteRecordStore {
             .query_row(
                 "SELECT EXISTS(
                     SELECT 1 FROM vault_header
-                    WHERE format_version != ?1 OR crypto_suite != ?2
+                    WHERE typeof(format_version) IS NOT 'integer'
+                       OR format_version IS NOT ?1
+                       OR typeof(crypto_suite) IS NOT 'text'
+                       OR crypto_suite IS NOT ?2
                 )",
                 params![FORMAT_VERSION, CRYPTO_SUITE_V1],
                 |row| row.get(0),
             )
-            .map_err(storage)?;
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
         let unknown_wrappers: bool = self
             .conn
             .query_row(
                 "SELECT EXISTS(
                     SELECT 1 FROM key_wrappers
-                    WHERE NOT (
-                        (wrapper_kind = 'password' AND kdf_algorithm = ?1) OR
-                        (wrapper_kind = 'recovery' AND kdf_algorithm = ?2)
-                    )
+                    WHERE typeof(wrapper_kind) IS NOT 'text'
+                       OR typeof(kdf_algorithm) IS NOT 'text'
+                       OR (wrapper_kind IS 'password' AND kdf_algorithm IS NOT ?1)
+                       OR (wrapper_kind IS 'recovery' AND kdf_algorithm IS NOT ?2)
+                       OR (wrapper_kind IS NOT 'password' AND wrapper_kind IS NOT 'recovery')
                 )",
                 params![KDF_ALGORITHM_ARGON2ID, KDF_ALGORITHM_HKDF_SHA256],
                 |row| row.get(0),
             )
-            .map_err(storage)?;
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
         let unknown_versions: bool = self
             .conn
             .query_row(
                 "SELECT EXISTS(
                     SELECT 1 FROM credential_versions
-                    WHERE aad_version != ?1 OR crypto_suite != ?2
+                    WHERE typeof(aad_version) IS NOT 'integer'
+                       OR aad_version IS NOT ?1
+                       OR typeof(crypto_suite) IS NOT 'text'
+                       OR crypto_suite IS NOT ?2
                 )",
                 params![AAD_VERSION_V1, CRYPTO_SUITE_V1],
                 |row| row.get(0),
             )
-            .map_err(storage)?;
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
         if unknown_header || unknown_wrappers || unknown_versions {
             return Err(AuthorityError::UnsupportedFormatVersion);
         }
