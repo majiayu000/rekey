@@ -178,7 +178,7 @@ fn cmd_init(state_dir: Option<PathBuf>, password_stdin: bool) -> Result<(), Reke
     println!("state directory: {}", state_dir.display());
     println!();
     println!("RECOVERY KEY (shown exactly once, store it offline):");
-    println!("{}", &*outcome.recovery_key_display);
+    println!("{}", *outcome.recovery_key_display);
     if !password_stdin {
         let tail: String = outcome
             .recovery_key_display
