@@ -101,10 +101,28 @@ assert_secret_absent() {
   esac
 }
 
+unique_jwt_canaries() {
+  awk '
+    /^jwt\.canary=/ {
+      canary = substr($0, length("jwt.canary=") + 1)
+      if (!seen[canary]++) print canary
+    }
+  ' "$1"
+}
+
 assert_all_jwt_canaries_absent() {
-  local trace="$1" label="$2" canary count=0
+  local trace="$1" label="$2" canaries canary producer_rc=0
   [[ -f "$trace" ]] || {
     echo "$label trace is missing: $trace" >&2
+    return 1
+  }
+  canaries="$(unique_jwt_canaries "$trace")" || producer_rc=$?
+  if [[ "$producer_rc" -ne 0 ]]; then
+    echo "$label producer failed with exit $producer_rc" >&2
+    return "$producer_rc"
+  fi
+  [[ -n "$canaries" ]] || {
+    echo "$label trace contains no JWT canaries" >&2
     return 1
   }
   while IFS= read -r canary; do
@@ -113,17 +131,7 @@ assert_all_jwt_canaries_absent() {
       return 1
     }
     assert_secret_absent "$label" "$canary"
-    count=$((count + 1))
-  done < <(awk '
-    /^jwt\.canary=/ {
-      canary = substr($0, length("jwt.canary=") + 1)
-      if (!seen[canary]++) print canary
-    }
-  ' "$trace")
-  [[ "$count" -gt 0 ]] || {
-    echo "$label trace contains no JWT canaries" >&2
-    return 1
-  }
+  done <<<"$canaries"
 }
 
 assert_raw_private_key_absent() {
@@ -181,6 +189,17 @@ fixed_string_scan '-jwt-canary' "$RG_SELFTEST" || RG_SELFTEST_RC=$?
   exit 1
 }
 rm "$RG_SELFTEST"
+
+JWT_PRODUCER_SELFTEST_INPUT="$WORKDIR/missing-jwt-producer-input"
+JWT_PRODUCER_SELFTEST_OUTPUT=""
+JWT_PRODUCER_SELFTEST_RC=0
+JWT_PRODUCER_SELFTEST_OUTPUT="$(
+  unique_jwt_canaries "$JWT_PRODUCER_SELFTEST_INPUT" 2>/dev/null
+)" || JWT_PRODUCER_SELFTEST_RC=$?
+[[ "$JWT_PRODUCER_SELFTEST_RC" -ne 0 && -z "$JWT_PRODUCER_SELFTEST_OUTPUT" ]] || {
+  echo "JWT canary producer failure self-test did not propagate a nonzero exit" >&2
+  exit 1
+}
 
 printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin >/dev/null
 openssl genrsa -traditional -out "$PRIVATE_KEY" 2048 >/dev/null 2>&1
