@@ -1,30 +1,28 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/rekey-domain",
     "crates/rekey-vault",
-    "crates/rekey-ca",
-    "crates/rekey-proxy",
-    "crates/rekey-web",
+    "crates/rekey-broker",
     "crates/rekey-cli",
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "2.0.0-dev"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/majiayu000/rekey"
 
 [workspace.dependencies]
+rekey-domain = { path = "crates/rekey-domain" }
 rekey-vault = { path = "crates/rekey-vault" }
-rekey-ca = { path = "crates/rekey-ca" }
-rekey-proxy = { path = "crates/rekey-proxy" }
-rekey-web = { path = "crates/rekey-web" }
-tokio = { version = "1", features = ["full"] }
-anyhow = "1"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rekey-broker = { path = "crates/rekey-broker" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+thiserror = "1"
+uuid = { version = "1", features = ["v4"] }
+tokio = { version = "1", default-features = false }
+tracing = "0.1"
 tempfile = "3"
 
 [package]
@@ -33,8 +31,13 @@ version.workspace = true
 edition.workspace = true
 publish = false
 
-[dev-dependencies]
-rekey-vault = { path = "crates/rekey-vault" }
-rekey-ca = { path = "crates/rekey-ca" }
-rusqlite = { version = "0.34", features = ["bundled"] }
+[dependencies]
+rekey-domain = { workspace = true }
+rekey-vault = { workspace = true }
+rekey-broker = { workspace = true }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
+serde_json = { workspace = true }
 tempfile = { workspace = true }
+
+[dev-dependencies]
+zeroize = "1"

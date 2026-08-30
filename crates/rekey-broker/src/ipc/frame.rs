@@ -1,0 +1,142 @@
+//! Async frame IO over Unix sockets, built on the pure codec in
+//! rekey-domain. One in-flight frame per connection; 30s deadline per read
+//! and write; every malformed input closes the connection.
+
+use std::time::Duration;
+
+use rekey_domain::ids::RequestId;
+use rekey_domain::ipc::{
+    Channel, ErrorEnvelope, FRAME_HEADER_LEN, FrameError, FrameHeader, METADATA_MAX_BYTES,
+};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use zeroize::Zeroizing;
+
+pub const FRAME_IO_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Debug, thiserror::Error)]
+pub enum FrameIoError {
+    #[error("connection closed")]
+    Closed,
+    #[error("frame io timeout")]
+    Timeout,
+    #[error(transparent)]
+    Frame(#[from] FrameError),
+    #[error("frame io failure")]
+    Io(#[source] std::io::Error),
+}
+
+pub struct IncomingFrame {
+    pub header: FrameHeader,
+    pub metadata: Vec<u8>,
+    /// Bodies may carry secrets; zeroized on drop.
+    pub body: Zeroizing<Vec<u8>>,
+}
+
+async fn timed<T>(
+    fut: impl std::future::Future<Output = std::io::Result<T>>,
+) -> Result<T, FrameIoError> {
+    match tokio::time::timeout(FRAME_IO_TIMEOUT, fut).await {
+        Ok(Ok(v)) => Ok(v),
+        Ok(Err(err)) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
+            Err(FrameIoError::Closed)
+        }
+        Ok(Err(err)) => Err(FrameIoError::Io(err)),
+        Err(_) => Err(FrameIoError::Timeout),
+    }
+}
+
+pub async fn read_frame<S: AsyncRead + Unpin>(
+    stream: &mut S,
+    expected_channel: Channel,
+    max_body: u32,
+) -> Result<IncomingFrame, FrameIoError> {
+    let mut header_buf = [0u8; FRAME_HEADER_LEN];
+    timed(stream.read_exact(&mut header_buf)).await?;
+    let header = FrameHeader::decode(&header_buf)?;
+    if header.channel != expected_channel {
+        return Err(FrameIoError::Frame(FrameError::UnknownChannel));
+    }
+    if header.metadata_len > METADATA_MAX_BYTES || header.body_len > max_body {
+        return Err(FrameIoError::Frame(FrameError::SectionTooLarge));
+    }
+    let mut metadata = vec![0u8; header.metadata_len as usize];
+    timed(stream.read_exact(&mut metadata)).await?;
+    let mut body = Zeroizing::new(vec![0u8; header.body_len as usize]);
+    timed(stream.read_exact(&mut body)).await?;
+    Ok(IncomingFrame {
+        header,
+        metadata,
+        body,
+    })
+}
+
+pub async fn write_frame<S: AsyncWrite + Unpin>(
+    stream: &mut S,
+    channel: Channel,
+    message_type: u16,
+    request_id: RequestId,
+    metadata: &[u8],
+    body: &[u8],
+) -> Result<(), FrameIoError> {
+    let header = FrameHeader {
+        channel,
+        flags: 0,
+        message_type,
+        request_id,
+        metadata_len: metadata.len() as u32,
+        body_len: body.len() as u32,
+    };
+    let header_bytes = header.encode();
+    timed(stream.write_all(&header_bytes)).await?;
+    timed(stream.write_all(metadata)).await?;
+    if !body.is_empty() {
+        timed(stream.write_all(body)).await?;
+    }
+    timed(stream.flush()).await?;
+    Ok(())
+}
+
+pub async fn write_ok<S: AsyncWrite + Unpin>(
+    stream: &mut S,
+    channel: Channel,
+    request_id: RequestId,
+    metadata: &[u8],
+    body: &[u8],
+) -> Result<(), FrameIoError> {
+    write_frame(
+        stream,
+        channel,
+        rekey_domain::ipc::resp_msg::OK,
+        request_id,
+        metadata,
+        body,
+    )
+    .await
+}
+
+pub async fn write_error<S: AsyncWrite + Unpin>(
+    stream: &mut S,
+    channel: Channel,
+    request_id: RequestId,
+    code: &str,
+    message: &str,
+    retryable: bool,
+) -> Result<(), FrameIoError> {
+    let envelope = ErrorEnvelope {
+        request_id,
+        code: code.to_owned(),
+        message: message.to_owned(),
+        retryable,
+    };
+    let metadata =
+        serde_json::to_vec(&envelope).map_err(|_| FrameIoError::Frame(FrameError::InvalidField))?;
+    write_frame(
+        stream,
+        channel,
+        rekey_domain::ipc::resp_msg::ERROR,
+        request_id,
+        &metadata,
+        &[],
+    )
+    .await
+}

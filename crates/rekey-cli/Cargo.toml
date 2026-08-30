@@ -7,23 +7,15 @@ edition.workspace = true
 name = "rekey"
 path = "src/main.rs"
 
+# Contract: this crate is an IPC client only. It must never depend on
+# rusqlite, aes-gcm, argon2, reqwest, or rekey-vault/rekey-broker; offline
+# bootstrap and the broker itself live in the separate `rekeyd` binary.
 [dependencies]
-rekey-vault.workspace = true
-rekey-ca.workspace = true
-rekey-proxy.workspace = true
-rekey-web.workspace = true
+rekey-domain = { workspace = true }
 clap = { version = "4", features = ["derive"] }
-tokio.workspace = true
-anyhow.workspace = true
-tracing.workspace = true
-tracing-subscriber.workspace = true
 rpassword = "7"
-open = "5"
-dirs = "6"
-rand = "0.9"
-rusqlite = { version = "0.34", features = ["bundled"] }
-secrecy = { version = "0.10", features = ["serde"] }
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls-webpki-roots"] }
-base64 = "0.22"
-serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true }
+zeroize = "1"
+
+[dev-dependencies]
+tempfile = { workspace = true }

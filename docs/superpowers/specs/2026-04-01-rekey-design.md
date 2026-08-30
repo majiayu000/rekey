@@ -1,5 +1,7 @@
 # rekey — Universal Credential Proxy
 
+> **Superseded by [Credential Authority v2 Foundation](../specs/2026-08-28-credential-authority-v2-foundation.md).** 本文档仅作历史证据保留；v2 行为不以本文档为来源。
+
 > Single-binary, zero-dependency credential proxy for local tools and automations.
 > Clients never touch real credentials directly.
 

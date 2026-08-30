@@ -4,13 +4,24 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-rusqlite = { version = "0.34", features = ["bundled"] }
+rekey-domain = { workspace = true }
 aes-gcm = "0.10"
 argon2 = "0.5"
-secrecy = { version = "0.10", features = ["serde"] }
-uuid = { version = "1", features = ["v4"] }
-anyhow.workspace = true
-tracing.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-rand = "0.9"
+data-encoding = "2"
+hkdf = "0.12"
+libc = "0.2"
+rand = "0.9.3"
+rusqlite = { version = "0.34", features = ["bundled", "backup"] }
+secrecy = "0.10"
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.10"
+subtle = "2"
+thiserror = { workspace = true }
+tokio = { version = "1", default-features = false, features = ["sync"] }
+tracing = { workspace = true }
+zeroize = "1"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { version = "1", default-features = false, features = ["sync", "rt", "rt-multi-thread", "macros", "time"] }

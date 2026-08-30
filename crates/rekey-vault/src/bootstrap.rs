@@ -1,0 +1,525 @@
+//! Offline bootstrap: `init` and `restore`. Both run while no broker holds
+//! the state directory and never touch a v1 vault.
+
+use std::fs;
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use rekey_domain::ids::{VaultId, WrapperId};
+use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
+
+use crate::crypto::aad::{AadPurpose, AadV1};
+use crate::crypto::kdf::{
+    Argon2Params, KDF_ALGORITHM_ARGON2ID, KDF_ALGORITHM_HKDF_SHA256, derive_password_kek,
+    derive_recovery_kek,
+};
+use crate::crypto::keys::{DataKey, Kek, RootKey};
+
+/// Known plaintext sealed under the VRK so an empty vault still has an
+/// internal AEAD check at restore time.
+const VAULT_INTEGRITY_MARK: &[u8] = b"rekey-vault-integrity-v1";
+use crate::crypto::recovery::{encode_recovery_key, parse_recovery_key};
+use crate::crypto::{CRYPTO_SUITE_V1, KEY_LEN, SALT_LEN, aead, random_array};
+use crate::error::AuthorityError;
+use crate::model::{
+    AuditEvent, FORMAT_VERSION, KeyWrapperRecord, VaultHeaderRecord, WrapperKind, WrapperState,
+    event_type, outcome,
+};
+use crate::paths;
+use crate::secret::SecretInput;
+use crate::store::SqliteRecordStore;
+use crate::store::schema::schema_digest;
+
+pub struct InitOutcome {
+    pub vault_id: VaultId,
+    /// Displayed exactly once; never persisted anywhere.
+    pub recovery_key_display: Zeroizing<String>,
+}
+
+pub enum RestoreProof {
+    Password(SecretInput),
+    RecoveryKey(SecretInput),
+}
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+fn dir_is_empty(dir: &Path) -> Result<bool, AuthorityError> {
+    let mut entries = fs::read_dir(dir).map_err(AuthorityError::storage)?;
+    Ok(entries.next().is_none())
+}
+
+pub fn verify_state_dir_permissions(dir: &Path) -> Result<(), AuthorityError> {
+    let meta = fs::metadata(dir).map_err(AuthorityError::storage)?;
+    if meta.permissions().mode() & 0o077 != 0 {
+        return Err(AuthorityError::InsecureStatePermissions);
+    }
+    Ok(())
+}
+
+fn sqlite_sidecars(db: &Path) -> [PathBuf; 2] {
+    let name = db
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let dir = db.parent().unwrap_or_else(|| Path::new("."));
+    [
+        dir.join(format!("{name}-wal")),
+        dir.join(format!("{name}-shm")),
+    ]
+}
+
+fn remove_sqlite_bundle(db: &Path) {
+    let _ = fs::remove_file(db);
+    for side in sqlite_sidecars(db) {
+        let _ = fs::remove_file(side);
+    }
+}
+
+/// Drops a vault written by a failed init (including confirmation abort).
+pub fn discard_vault_files(state_dir: &Path) {
+    remove_sqlite_bundle(&paths::vault_db(state_dir));
+    let _ = fs::remove_file(paths::broker_lock(state_dir));
+    let _ = fs::remove_dir_all(paths::runtime_dir(state_dir));
+    if dir_is_empty(state_dir).unwrap_or(false) {
+        let _ = fs::remove_dir(state_dir);
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest
+        .iter()
+        .fold(String::with_capacity(digest.len() * 2), |mut s, b| {
+            use std::fmt::Write;
+            let _ = write!(s, "{b:02x}");
+            s
+        })
+}
+
+/// Held for the duration of an offline bootstrap operation.
+struct BootstrapLock {
+    _file: fs::File,
+}
+
+impl BootstrapLock {
+    fn acquire(state_dir: &Path) -> Result<Self, AuthorityError> {
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(paths::broker_lock(state_dir))
+            .map_err(AuthorityError::storage)?;
+        fs::set_permissions(
+            paths::broker_lock(state_dir),
+            fs::Permissions::from_mode(0o600),
+        )
+        .map_err(AuthorityError::storage)?;
+        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if rc != 0 {
+            return Err(AuthorityError::storage(std::io::Error::last_os_error()));
+        }
+        Ok(Self { _file: file })
+    }
+}
+
+fn wrap_vrk(
+    vault_id: VaultId,
+    wrapper_id: WrapperId,
+    kek: &Kek,
+    vrk: &RootKey,
+) -> Result<([u8; 12], Vec<u8>), AuthorityError> {
+    let aad = AadV1 {
+        purpose: AadPurpose::WrapVrk,
+        vault_id,
+        object_id: *wrapper_id.as_bytes(),
+        object_version: 1,
+        credential_kind: 0,
+        constraints_hash: [0u8; 32],
+    }
+    .encode();
+    let sealed = aead::seal(kek.bytes(), &aad, vrk.bytes())?;
+    Ok((sealed.nonce, sealed.ciphertext))
+}
+
+pub(crate) fn unwrap_vrk(
+    vault_id: VaultId,
+    wrapper: &KeyWrapperRecord,
+    kek: &Kek,
+) -> Result<RootKey, AuthorityError> {
+    let aad = AadV1 {
+        purpose: AadPurpose::WrapVrk,
+        vault_id,
+        object_id: *wrapper.wrapper_id.as_bytes(),
+        object_version: 1,
+        credential_kind: 0,
+        constraints_hash: [0u8; 32],
+    }
+    .encode();
+    let plain = aead::open(kek.bytes(), &aad, &wrapper.nonce, &wrapper.wrapped_vrk)
+        .map_err(|_| AuthorityError::InvalidUnlockCredential)?;
+    let bytes: [u8; KEY_LEN] = plain
+        .as_slice()
+        .try_into()
+        .map_err(|_| AuthorityError::InvalidUnlockCredential)?;
+    Ok(RootKey::from_bytes(bytes))
+}
+
+pub(crate) fn kek_for_wrapper(
+    wrapper: &KeyWrapperRecord,
+    proof: &SecretInput,
+) -> Result<Kek, AuthorityError> {
+    match wrapper.kind {
+        WrapperKind::Password => {
+            if wrapper.kdf_algorithm != KDF_ALGORITHM_ARGON2ID {
+                return Err(AuthorityError::CryptoFailure);
+            }
+            let params = Argon2Params::from_json(&wrapper.kdf_params_json)?;
+            derive_password_kek(proof.expose(), &wrapper.salt, &params)
+        }
+        WrapperKind::Recovery => {
+            if wrapper.kdf_algorithm != KDF_ALGORITHM_HKDF_SHA256 {
+                return Err(AuthorityError::CryptoFailure);
+            }
+            let text = std::str::from_utf8(proof.expose())
+                .map_err(|_| AuthorityError::InvalidUnlockCredential)?;
+            let key = parse_recovery_key(text)?;
+            derive_recovery_kek(&key, &wrapper.salt)
+        }
+    }
+}
+
+pub fn init_vault(
+    state_dir: &Path,
+    password: &SecretInput,
+    params: Argon2Params,
+) -> Result<InitOutcome, AuthorityError> {
+    params.validate()?;
+    if password.is_empty() {
+        return Err(AuthorityError::InvalidUnlockCredential);
+    }
+    let created_dir = if state_dir.exists() {
+        if !dir_is_empty(state_dir)? {
+            return Err(AuthorityError::StateDirectoryNotEmpty);
+        }
+        fs::set_permissions(state_dir, fs::Permissions::from_mode(0o700))
+            .map_err(AuthorityError::storage)?;
+        false
+    } else {
+        fs::create_dir_all(state_dir).map_err(AuthorityError::storage)?;
+        fs::set_permissions(state_dir, fs::Permissions::from_mode(0o700))
+            .map_err(AuthorityError::storage)?;
+        true
+    };
+
+    match init_vault_inner(state_dir, password, params) {
+        Ok(outcome) => Ok(outcome),
+        Err(err) => {
+            if created_dir {
+                let _ = fs::remove_dir_all(state_dir);
+            } else {
+                discard_vault_files(state_dir);
+            }
+            Err(err)
+        }
+    }
+}
+
+fn init_vault_inner(
+    state_dir: &Path,
+    password: &SecretInput,
+    params: Argon2Params,
+) -> Result<InitOutcome, AuthorityError> {
+    let _lock = BootstrapLock::acquire(state_dir)?;
+
+    let vault_id = VaultId::new_random();
+    let vrk = RootKey::generate()?;
+    let recovery_key: Zeroizing<[u8; KEY_LEN]> = Zeroizing::new(random_array()?);
+    let password_salt: [u8; SALT_LEN] = random_array()?;
+    let recovery_salt: [u8; SALT_LEN] = random_array()?;
+    let password_wrapper_id = WrapperId::new_random();
+    let recovery_wrapper_id = WrapperId::new_random();
+    let now = now_ms();
+
+    let password_kek = derive_password_kek(password.expose(), &password_salt, &params)?;
+    let recovery_kek = derive_recovery_kek(&recovery_key, &recovery_salt)?;
+
+    let (pw_nonce, pw_ct) = wrap_vrk(vault_id, password_wrapper_id, &password_kek, &vrk)?;
+    let (rk_nonce, rk_ct) = wrap_vrk(vault_id, recovery_wrapper_id, &recovery_kek, &vrk)?;
+    let integrity = seal_integrity(vault_id, &vrk)?;
+
+    let wrappers = [
+        KeyWrapperRecord {
+            wrapper_id: password_wrapper_id,
+            kind: WrapperKind::Password,
+            state: WrapperState::Active,
+            kdf_algorithm: KDF_ALGORITHM_ARGON2ID.to_owned(),
+            kdf_params_json: params.to_json(),
+            salt: password_salt,
+            nonce: pw_nonce,
+            wrapped_vrk: pw_ct,
+            created_at_ms: now,
+            disabled_at_ms: None,
+        },
+        KeyWrapperRecord {
+            wrapper_id: recovery_wrapper_id,
+            kind: WrapperKind::Recovery,
+            state: WrapperState::Active,
+            kdf_algorithm: KDF_ALGORITHM_HKDF_SHA256.to_owned(),
+            kdf_params_json: "{}".to_owned(),
+            salt: recovery_salt,
+            nonce: rk_nonce,
+            wrapped_vrk: rk_ct,
+            created_at_ms: now,
+            disabled_at_ms: None,
+        },
+    ];
+
+    let header = VaultHeaderRecord {
+        vault_id,
+        format_version: FORMAT_VERSION,
+        crypto_suite: CRYPTO_SUITE_V1.to_owned(),
+        created_at_ms: now,
+        schema_digest: schema_digest(),
+        integrity_nonce: integrity.nonce,
+        integrity_ciphertext: integrity.ciphertext,
+    };
+
+    let mut store = SqliteRecordStore::create(&paths::vault_db(state_dir))?;
+    store.initialize(
+        &header,
+        &wrappers,
+        AuditEvent {
+            event_id: random_array()?,
+            request_id: None,
+            session_id: None,
+            action_id: None,
+            action_version: None,
+            credential_id: None,
+            credential_version: None,
+            event_type: event_type::VAULT_INITIALIZED,
+            outcome: outcome::SUCCESS,
+            reason_code: "init".to_owned(),
+            upstream_status: None,
+            latency_ms: None,
+            created_at_ms: now,
+        },
+    )?;
+    drop(store);
+
+    // Re-open and prove both wrappers recover the same VRK before reporting
+    // success to the human.
+    let reopened = SqliteRecordStore::open(&paths::vault_db(state_dir))?;
+    let pw_wrapper = reopened.active_wrapper(WrapperKind::Password)?;
+    let rk_wrapper = reopened.active_wrapper(WrapperKind::Recovery)?;
+    let recovery_display = encode_recovery_key(&recovery_key);
+    let vrk_a = unwrap_vrk(
+        vault_id,
+        &pw_wrapper,
+        &kek_for_wrapper(&pw_wrapper, password)?,
+    )?;
+    let recovery_input = SecretInput::from_slice(recovery_display.as_bytes());
+    let vrk_b = unwrap_vrk(
+        vault_id,
+        &rk_wrapper,
+        &kek_for_wrapper(&rk_wrapper, &recovery_input)?,
+    )?;
+    if vrk_a.bytes() != vrk.bytes() || vrk_b.bytes() != vrk.bytes() {
+        return Err(AuthorityError::CryptoFailure);
+    }
+
+    Ok(InitOutcome {
+        vault_id,
+        recovery_key_display: recovery_display,
+    })
+}
+
+/// Offline restore of a v2 backup into an empty target state directory.
+/// `expected_sha256_hex` is the backup receipt hash and is mandatory.
+pub fn restore_vault(
+    backup_file: &Path,
+    target_state_dir: &Path,
+    proof: RestoreProof,
+    expected_sha256_hex: &str,
+) -> Result<VaultId, AuthorityError> {
+    let created_dir = if target_state_dir.exists() {
+        if !dir_is_empty(target_state_dir)? {
+            return Err(AuthorityError::StateDirectoryNotEmpty);
+        }
+        false
+    } else {
+        fs::create_dir_all(target_state_dir).map_err(AuthorityError::storage)?;
+        true
+    };
+    fs::set_permissions(target_state_dir, fs::Permissions::from_mode(0o700))
+        .map_err(AuthorityError::storage)?;
+
+    match restore_inner(backup_file, target_state_dir, proof, expected_sha256_hex) {
+        Ok(vault_id) => Ok(vault_id),
+        Err(err) => {
+            if created_dir {
+                let _ = fs::remove_dir_all(target_state_dir);
+            } else {
+                discard_vault_files(target_state_dir);
+                let staging = target_state_dir.join(".incoming-vault.sqlite3");
+                remove_sqlite_bundle(&staging);
+            }
+            Err(err)
+        }
+    }
+}
+
+fn restore_inner(
+    backup_file: &Path,
+    target_state_dir: &Path,
+    proof: RestoreProof,
+    expected_sha256_hex: &str,
+) -> Result<VaultId, AuthorityError> {
+    let _lock = BootstrapLock::acquire(target_state_dir)?;
+    if !is_sha256_hex(expected_sha256_hex) {
+        return Err(AuthorityError::RestoreFailed);
+    }
+    let bytes = fs::read(backup_file).map_err(|_| AuthorityError::RestoreFailed)?;
+    let digest = sha256_hex(&bytes);
+    if !digest.eq_ignore_ascii_case(expected_sha256_hex) {
+        return Err(AuthorityError::RestoreFailed);
+    }
+
+    let staging = target_state_dir.join(".incoming-vault.sqlite3");
+    fs::write(&staging, &bytes).map_err(|_| AuthorityError::RestoreFailed)?;
+    fs::set_permissions(&staging, fs::Permissions::from_mode(0o600))
+        .map_err(AuthorityError::storage)?;
+
+    let mut store = SqliteRecordStore::open(&staging).map_err(|err| match err {
+        AuthorityError::StorageIntegrityFailed
+        | AuthorityError::UnsupportedFormatVersion
+        | AuthorityError::UnsupportedVaultLayout => err,
+        _ => AuthorityError::RestoreFailed,
+    })?;
+    let header = store.load_header()?;
+
+    let (wrapper, secret) = match &proof {
+        RestoreProof::Password(secret) => (store.active_wrapper(WrapperKind::Password)?, secret),
+        RestoreProof::RecoveryKey(secret) => (store.active_wrapper(WrapperKind::Recovery)?, secret),
+    };
+    let kek = kek_for_wrapper(&wrapper, secret)?;
+    let vrk = unwrap_vrk(header.vault_id, &wrapper, &kek)?;
+    prove_integrity(&header, &vrk)?;
+    prove_all_payloads(&store, header.vault_id, &vrk)?;
+
+    store.append_audit(&AuditEvent {
+        event_id: random_array()?,
+        request_id: None,
+        session_id: None,
+        action_id: None,
+        action_version: None,
+        credential_id: None,
+        credential_version: None,
+        event_type: event_type::RESTORE_COMPLETED,
+        outcome: outcome::SUCCESS,
+        reason_code: "restore".to_owned(),
+        upstream_status: None,
+        latency_ms: None,
+        created_at_ms: now_ms(),
+    })?;
+    store.wal_checkpoint()?;
+    drop(store);
+
+    let installed = paths::vault_db(target_state_dir);
+    crate::durable::fsync(&staging).map_err(|_| AuthorityError::RestoreFailed)?;
+    fs::rename(&staging, &installed).map_err(|_| AuthorityError::RestoreFailed)?;
+    crate::durable::fsync(target_state_dir).map_err(|_| AuthorityError::RestoreFailed)?;
+    for side in sqlite_sidecars(&staging) {
+        let _ = fs::remove_file(side);
+    }
+    Ok(header.vault_id)
+}
+
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+fn integrity_aad(vault_id: VaultId) -> [u8; crate::crypto::aad::AAD_LEN] {
+    AadV1 {
+        purpose: AadPurpose::VaultIntegrity,
+        vault_id,
+        object_id: *vault_id.as_bytes(),
+        object_version: 1,
+        credential_kind: 0,
+        constraints_hash: [0u8; 32],
+    }
+    .encode()
+}
+
+fn seal_integrity(vault_id: VaultId, vrk: &RootKey) -> Result<aead::Sealed, AuthorityError> {
+    aead::seal(vrk.bytes(), &integrity_aad(vault_id), VAULT_INTEGRITY_MARK)
+}
+
+fn prove_integrity(header: &VaultHeaderRecord, vrk: &RootKey) -> Result<(), AuthorityError> {
+    let plain = aead::open(
+        vrk.bytes(),
+        &integrity_aad(header.vault_id),
+        &header.integrity_nonce,
+        &header.integrity_ciphertext,
+    )
+    .map_err(|_| AuthorityError::CryptoFailure)?;
+    if plain.as_slice() != VAULT_INTEGRITY_MARK {
+        return Err(AuthorityError::CryptoFailure);
+    }
+    Ok(())
+}
+
+fn prove_all_payloads(
+    store: &SqliteRecordStore,
+    vault_id: VaultId,
+    vrk: &RootKey,
+) -> Result<(), AuthorityError> {
+    for (kind, version) in store.list_all_versions()? {
+        let dek_aad = AadV1 {
+            purpose: AadPurpose::WrapDek,
+            vault_id,
+            object_id: *version.credential_id.as_bytes(),
+            object_version: version.version,
+            credential_kind: 0,
+            constraints_hash: [0u8; 32],
+        }
+        .encode();
+        let dek_bytes = aead::open(
+            vrk.bytes(),
+            &dek_aad,
+            &version.dek_nonce,
+            &version.wrapped_dek,
+        )
+        .map_err(|_| AuthorityError::CryptoFailure)?;
+        let dek_arr: [u8; 32] = dek_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| AuthorityError::CryptoFailure)?;
+        let dek = DataKey::from_bytes(dek_arr);
+        let payload_aad = AadV1 {
+            purpose: AadPurpose::CredentialPayload,
+            vault_id,
+            object_id: *version.credential_id.as_bytes(),
+            object_version: version.version,
+            credential_kind: kind.aad_code(),
+            constraints_hash: [0u8; 32],
+        }
+        .encode();
+        let payload = aead::open(
+            dek.bytes(),
+            &payload_aad,
+            &version.payload_nonce,
+            &version.encrypted_payload,
+        )
+        .map_err(|_| AuthorityError::CryptoFailure)?;
+        drop(payload);
+    }
+    Ok(())
+}
