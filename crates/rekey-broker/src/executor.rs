@@ -49,36 +49,30 @@ pub struct ActionExecutor {
 }
 
 struct StartedGuard {
-    authority: AuthorityHandle,
     terminals: Arc<TerminalAuditTracker>,
     ctx: ExecutionAuditContext,
-    completed: bool,
+    terminal_submitted: bool,
 }
 
 impl StartedGuard {
-    fn new(
-        authority: AuthorityHandle,
-        terminals: Arc<TerminalAuditTracker>,
-        ctx: ExecutionAuditContext,
-    ) -> Self {
+    fn new(terminals: Arc<TerminalAuditTracker>, ctx: ExecutionAuditContext) -> Self {
         Self {
-            authority,
             terminals,
             ctx,
-            completed: false,
+            terminal_submitted: false,
         }
     }
 
     fn is_completed(&self) -> bool {
-        self.completed
+        self.terminal_submitted
     }
 
     async fn blocked(&mut self, reason: &'static str) -> Result<(), BrokerError> {
-        self.authority
-            .commit_audit(execution_blocked(&self.ctx, reason))
-            .await?;
-        self.completed = true;
-        Ok(())
+        self.terminal_submitted = true;
+        self.terminals
+            .commit(execution_blocked(&self.ctx, reason))
+            .await
+            .map_err(BrokerError::Authority)
     }
 
     async fn finished(
@@ -87,8 +81,9 @@ impl StartedGuard {
         upstream_status: u16,
         latency_ms: i64,
     ) -> Result<(), BrokerError> {
-        self.authority
-            .commit_audit(execution_finished(
+        self.terminal_submitted = true;
+        self.terminals
+            .commit(execution_finished(
                 &self.ctx,
                 credential_version,
                 upstream_status,
@@ -101,14 +96,13 @@ impl StartedGuard {
                 }
                 other => BrokerError::Authority(other),
             })?;
-        self.completed = true;
         Ok(())
     }
 }
 
 impl Drop for StartedGuard {
     fn drop(&mut self) {
-        if !self.completed {
+        if !self.terminal_submitted {
             self.terminals
                 .submit(execution_blocked(&self.ctx, "abandoned"));
         }
@@ -217,8 +211,7 @@ impl ActionExecutor {
 
         // Step 6: ExecutionStarted must commit before any credential effect.
         self.authority.append_audit(execution_started(&ctx)).await?;
-        let mut started =
-            StartedGuard::new(self.authority.clone(), Arc::clone(&self.terminals), ctx);
+        let mut started = StartedGuard::new(Arc::clone(&self.terminals), ctx);
 
         let mut cancel = self.lifecycle.subscribe_cancel();
         if *cancel.borrow() {
@@ -472,6 +465,10 @@ fn filter_response_headers(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audit::spawn_terminal_worker_with;
+    use rekey_domain::ids::{ActionId, CredentialId, SessionId};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::Notify;
 
     #[test]
     fn sealing_detects_direct_and_encoded_secret() {
@@ -495,5 +492,52 @@ mod tests {
         assert!(headers_contain_secret(&leak, &needles));
         let clean = vec![("content-type".to_owned(), "application/json".to_owned())];
         assert!(!headers_contain_secret(&clean, &needles));
+    }
+
+    #[tokio::test]
+    async fn cancellation_after_terminal_submission_does_not_submit_fallback() {
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let commits = Arc::new(AtomicUsize::new(0));
+        let (tracker, worker) = spawn_terminal_worker_with({
+            let entered = Arc::clone(&entered);
+            let release = Arc::clone(&release);
+            let commits = Arc::clone(&commits);
+            move |_| {
+                let entered = Arc::clone(&entered);
+                let release = Arc::clone(&release);
+                let commits = Arc::clone(&commits);
+                async move {
+                    commits.fetch_add(1, Ordering::SeqCst);
+                    entered.notify_one();
+                    release.notified().await;
+                    Ok(())
+                }
+            }
+        });
+        let guard = StartedGuard::new(
+            Arc::clone(&tracker),
+            ExecutionAuditContext {
+                request_id: RequestId::new_random(),
+                session_id: SessionId::new_random(),
+                action: ActionVersionRef {
+                    action_id: ActionId::new_random(),
+                    version: 1,
+                },
+                credential_id: CredentialId::new_random(),
+            },
+        );
+        let commit = tokio::spawn(async move {
+            let mut guard = guard;
+            guard.blocked("test-cancel").await
+        });
+        entered.notified().await;
+        commit.abort();
+        drop(commit.await);
+        release.notify_one();
+        tracker.wait_idle(Duration::from_secs(1)).await.unwrap();
+        assert_eq!(commits.load(Ordering::SeqCst), 1);
+        drop(tracker);
+        worker.await.unwrap();
     }
 }

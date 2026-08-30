@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use rekey_domain::capability::ActionVersionRef;
+use rekey_domain::ids::RequestId;
 use rekey_domain::ipc::{self, Channel, agent_msg};
 use tokio::net::UnixStream;
 
@@ -66,7 +67,9 @@ async fn dispatch(
             let meta: ipc::ExecuteMeta = serde_json::from_slice(&frame.metadata)
                 .map_err(|_| BrokerError::Frame(rekey_domain::ipc::FrameError::InvalidField))?;
             let request = ExecuteRequest {
-                request_id: frame.header.request_id,
+                // The frame ID is untrusted transport correlation only. Audit
+                // lifecycle identity is minted by the Broker per execution.
+                request_id: RequestId::new_random(),
                 capability_token: meta.capability_token,
                 action: ActionVersionRef {
                     action_id: meta.action_id,

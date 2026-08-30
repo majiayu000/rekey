@@ -362,9 +362,8 @@ async fn direct_terminal_commit_failure_reaches_tracker_and_fails_shutdown() {
     let (action_id, version) = common::create_action(&broker, &credential_id).await;
     let token = common::create_session(&broker, &action_id, version).await;
 
-    // Let execution.started commit, but reject both direct and Drop fallback
-    // terminal rows. The direct failure must leave StartedGuard incomplete so
-    // Drop submits abandoned to TerminalAuditTracker.
+    // Let execution.started commit, then reject the tracker-owned terminal.
+    // The failure must remain visible so shutdown cannot report success.
     let db = rekey_vault::paths::vault_db(&broker.state_dir);
     let tamper = rusqlite::Connection::open(&db).unwrap();
     tamper

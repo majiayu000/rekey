@@ -700,7 +700,7 @@ Broker:
 
 `SessionRegistry::begin` 为每一次执行返回 RAII permit；Drop 必须释放并发槽，不能依赖成功路径上的手工 `finish()`。创建 Session 与 `close_and_revoke_all` 必须共享同一把 registry 锁，避免 revoke 之后再 mint。
 
-一旦 `execution.started` 提交成功：同一 `request_id` 必须恰好有一个 terminal 事件（`execution.finished` 或 `execution.blocked`）。取消是 execute 的显式 async 分支，必须 `await` terminal audit commit，不能只靠 Drop 里的 `try_send`。`StartedGuard` 只能在 terminal commit 成功后标记完成；直接 commit 失败时 Drop 必须把 `blocked/abandoned` 交给独立 audit worker，使 tracker 记录失败并阻止后续 lock/shutdown 被报告为成功。Drop/panic 路径使用同一 worker，该 worker 在 Authority shutdown 之前必须排空。进程重启后内存 Session 全部作废；启动时扫描无 terminal 的 started，**追加** `execution.blocked(abandoned-on-restart)`，不改写原 started 行。
+一旦 `execution.started` 提交成功：同一内部 audit ID 必须恰好有一个 terminal 事件（`execution.finished` 或 `execution.blocked`）。terminal 必须在第一次 await 前把唯一提交所有权同步转移给独立 audit worker；调用任务随后被取消也不能取消该 durable commit，`StartedGuard::drop` 也不能再次提交 terminal。worker 的 commit error 或未排空状态必须由 tracker 阻止后续 lock/shutdown 被报告为成功。只有尚未转移 terminal 所有权的 Drop/panic 路径才提交 `blocked/abandoned`；worker 在 Authority shutdown 之前必须排空。进程重启后内存 Session 全部作废；启动时扫描无 terminal 的 started，**追加** `execution.blocked(abandoned-on-restart)`，不改写原 started 行。
 
 状态转换不通过多个 `Arc<RwLock<MasterKey>>` 或单独的 `AtomicBool draining` 隐式完成。
 
@@ -761,6 +761,9 @@ body           raw bytes
   `request_id` 还必须与 frame header 相同。任何错配都返回 `INVALID_FRAME`。
 - 客户端必须在分配 response buffer 之前执行 64 KiB metadata / 4 MiB body
   上限检查。Error response 的 body 必须为空。
+- Frame `request_id` 只用于该连接上的请求/响应关联，是不可信的客户端输入；
+  每次 Execute 进入 Broker 后必须生成新的内部 execution audit ID。客户端提供
+  的 ID 不得写入 audit，也不得参与 started/terminal 配对或重启 reconciliation。
 - 所有 typed metadata DTO 使用 strict JSON object；unknown field 必须拒绝，
   不能由 serde 默认忽略。Broker 序列化 response 失败必须显式失败，不能降级成 `{}`。
 
@@ -792,7 +795,6 @@ ExecuteFixedHttpAction {
   capability_token,
   action_id,
   action_version,
-  request_id,
   content_type,
   extra_headers,
   body
@@ -1007,6 +1009,11 @@ backup.created
 restore.completed
 runtime.faulted
 ~~~
+
+每次执行的内部 audit ID 由 Broker 生成。数据库必须拒绝同一内部 ID 的第二条
+`execution.started` 或第二条 terminal（`execution.finished` /
+`execution.blocked`）；重启 reconciliation 只按该内部 ID 配对。Agent 重用
+frame `request_id` 不得合并两次执行的审计生命周期。
 
 禁止字段：
 

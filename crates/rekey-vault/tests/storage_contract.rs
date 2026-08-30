@@ -4,7 +4,7 @@
 mod common;
 
 use rekey_domain::credential::{CredentialKind, CredentialState, VersionState};
-use rekey_domain::ids::CredentialId;
+use rekey_domain::ids::{CredentialId, RequestId};
 use rekey_vault::error::AuthorityError;
 use rekey_vault::model::{
     AuditEvent, CredentialRecord, CredentialVersionRecord, event_type, outcome,
@@ -28,6 +28,12 @@ fn audit(event_type: &'static str) -> AuditEvent {
         latency_ms: None,
         created_at_ms: 0,
     }
+}
+
+fn execution_audit(request_id: RequestId, event_type: &'static str) -> AuditEvent {
+    let mut event = audit(event_type);
+    event.request_id = Some(request_id);
+    event
 }
 
 fn rand_bytes() -> [u8; 16] {
@@ -183,6 +189,27 @@ fn audit_rows_commit_with_mutations() {
     let types = store.audit_event_types().unwrap();
     assert!(types.contains(&event_type::VAULT_INITIALIZED.to_owned()));
     assert!(types.contains(&event_type::CREDENTIAL_CREATED.to_owned()));
+}
+
+#[test]
+fn execution_audit_rejects_duplicate_started_and_terminal() {
+    let (_vault, mut store) = open_store();
+    let request_id = RequestId::new_random();
+    store
+        .append_audit(&execution_audit(request_id, event_type::EXECUTION_STARTED))
+        .unwrap();
+    assert!(matches!(
+        store.append_audit(&execution_audit(request_id, event_type::EXECUTION_STARTED)),
+        Err(AuthorityError::AuditCommitFailed)
+    ));
+
+    store
+        .append_audit(&execution_audit(request_id, event_type::EXECUTION_BLOCKED))
+        .unwrap();
+    assert!(matches!(
+        store.append_audit(&execution_audit(request_id, event_type::EXECUTION_FINISHED)),
+        Err(AuthorityError::AuditCommitFailed)
+    ));
 }
 
 #[test]

@@ -731,6 +731,10 @@ impl Worker {
         self.require_unlocked()?;
         self.verify_proof(&proof)?;
         let tmp = output.with_extension("rkbackup.tmp");
+        crate::durable::ensure_outside_tree(&output, &self.config.state_dir)
+            .map_err(|_| AuthorityError::BackupFailed)?;
+        crate::durable::ensure_outside_tree(&tmp, &self.config.state_dir)
+            .map_err(|_| AuthorityError::BackupFailed)?;
         if tmp.exists() {
             std::fs::remove_file(&tmp).map_err(|_| AuthorityError::BackupFailed)?;
         }

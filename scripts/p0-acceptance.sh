@@ -227,6 +227,32 @@ locked_status="$("$REKEY" --state-dir "$STATE" status)"
 printf '%s\n' "$locked_status" | grep -q locked
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" unlock --password-stdin >/dev/null
 
+echo "== reject backup overlap with live state"
+ln -s "$STATE" "$WORKDIR/state-alias"
+for protected_output in \
+  "$STATE/vault.sqlite3" \
+  "$STATE/broker.lock" \
+  "$STATE/runtime/admin.sock" \
+  "$WORKDIR/state-alias/vault.sqlite3"; do
+  set +e
+  printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" backup --output "$protected_output" --password-stdin >/dev/null 2>&1
+  protected_rc=$?
+  set -e
+  [[ "$protected_rc" -eq 5 ]] || {
+    echo "expected protected backup output exit 5, got $protected_rc: $protected_output"
+    exit 1
+  }
+done
+set +e
+"$REKEYD" serve --state-dir "$STATE" --idle-lock 15m >/dev/null 2>&1
+second_serve_rc=$?
+set -e
+[[ "$second_serve_rc" -eq 5 ]] || {
+  echo "expected second broker exit 5 after rejected lock overwrite, got $second_serve_rc"
+  exit 1
+}
+"$REKEY" --state-dir "$STATE" credential list | grep -q acceptance
+
 echo "== backup"
 backup="$WORKDIR/out.rkbackup"
 backup_json="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" backup --output "$backup" --password-stdin)"

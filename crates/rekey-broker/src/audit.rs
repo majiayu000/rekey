@@ -14,23 +14,47 @@ use rekey_vault::AuthorityError;
 use rekey_vault::command::AuditDraft;
 use rekey_vault::handle::AuthorityHandle;
 use rekey_vault::model::{event_type, outcome};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 /// Accepts terminal audits from Drop/panic paths and waits them to commit
 /// before Authority shutdown. Commit errors and timeouts are never ignored.
 pub struct TerminalAuditTracker {
-    tx: mpsc::UnboundedSender<AuditDraft>,
+    tx: mpsc::UnboundedSender<TerminalSubmission>,
     pending: Arc<AtomicUsize>,
     failed: Arc<AtomicBool>,
 }
 
+struct TerminalSubmission {
+    draft: AuditDraft,
+    reply: Option<oneshot::Sender<Result<(), AuthorityError>>>,
+}
+
 impl TerminalAuditTracker {
     pub fn submit(&self, draft: AuditDraft) {
+        self.enqueue(draft, None);
+    }
+
+    fn enqueue(
+        &self,
+        draft: AuditDraft,
+        reply: Option<oneshot::Sender<Result<(), AuthorityError>>>,
+    ) {
         self.pending.fetch_add(1, Ordering::SeqCst);
-        if self.tx.send(draft).is_err() {
+        if self.tx.send(TerminalSubmission { draft, reply }).is_err() {
             self.failed.store(true, Ordering::SeqCst);
             self.pending.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    /// Transfers ownership of a terminal commit to the tracker before the
+    /// first await. Cancelling the caller cannot cancel the durable commit.
+    pub async fn commit(&self, draft: AuditDraft) -> Result<(), AuthorityError> {
+        let (reply, result) = oneshot::channel();
+        self.enqueue(draft, Some(reply));
+        match result.await {
+            Ok(result) => result,
+            Err(_) => Err(AuthorityError::AuditCommitFailed),
         }
     }
 
@@ -68,20 +92,26 @@ pub fn spawn_terminal_worker(
     })
 }
 
-fn spawn_terminal_worker_with<F, Fut>(commit: F) -> (Arc<TerminalAuditTracker>, JoinHandle<()>)
+pub(crate) fn spawn_terminal_worker_with<F, Fut>(
+    commit: F,
+) -> (Arc<TerminalAuditTracker>, JoinHandle<()>)
 where
     F: Fn(AuditDraft) -> Fut + Send + 'static,
     Fut: Future<Output = Result<(), AuthorityError>> + Send + 'static,
 {
-    let (tx, mut rx) = mpsc::unbounded_channel::<AuditDraft>();
+    let (tx, mut rx) = mpsc::unbounded_channel::<TerminalSubmission>();
     let pending = Arc::new(AtomicUsize::new(0));
     let failed = Arc::new(AtomicBool::new(false));
     let pending_worker = Arc::clone(&pending);
     let failed_worker = Arc::clone(&failed);
     let join = tokio::spawn(async move {
-        while let Some(draft) = rx.recv().await {
-            if commit(draft).await.is_err() {
+        while let Some(submission) = rx.recv().await {
+            let result = commit(submission.draft).await;
+            if result.is_err() {
                 failed_worker.store(true, Ordering::SeqCst);
+            }
+            if let Some(reply) = submission.reply {
+                drop(reply.send(result));
             }
             pending_worker.fetch_sub(1, Ordering::SeqCst);
         }

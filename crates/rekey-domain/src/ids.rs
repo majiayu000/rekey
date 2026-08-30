@@ -96,7 +96,7 @@ typed_id!(
     SessionId
 );
 typed_id!(
-    /// Correlates one request across IPC, execution, and audit.
+    /// Correlates one transport request or one Broker-minted execution audit.
     RequestId
 );
 typed_id!(

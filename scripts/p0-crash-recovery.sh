@@ -75,6 +75,66 @@ action_ref="$(printf '%s\n' "$action_json" | python3 -c 'import json,sys; d=json
 session_json="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" session create --action "$action_ref" --ttl 10m --max-uses 20 --password-stdin)"
 token="$(printf '%s\n' "$session_json" | json_field '"capability_token"')"
 
+# Reuse one attacker-controlled frame request_id for two real executions. The
+# transport responses must echo it, while durable execution IDs stay distinct.
+python3 - "$STATE/runtime/agent.sock" "$STATE/vault.sqlite3" "$token" "${action_ref%@*}" "${action_ref#*@}" <<'PY'
+import json, socket, sqlite3, struct, sys, uuid
+
+sock_path, db, token, action_id, action_version = sys.argv[1:]
+frame_id = uuid.UUID("11111111-1111-4111-8111-111111111111").bytes
+metadata = json.dumps({
+    "capability_token": token,
+    "action_id": action_id,
+    "action_version": int(action_version),
+    "content_type": None,
+    "extra_headers": [],
+}, separators=(",", ":")).encode()
+header = struct.pack(">4sHBBHH16sII", b"RKIP", 1, 2, 0, 1, 0, frame_id, len(metadata), 0)
+
+def recv_exact(stream, length):
+    chunks = []
+    remaining = length
+    while remaining:
+        chunk = stream.recv(remaining)
+        if not chunk:
+            raise SystemExit("broker closed duplicate-id test connection")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+baseline = con.execute("SELECT coalesce(max(sequence), 0) FROM audit_events").fetchone()[0]
+con.close()
+
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stream:
+    stream.connect(sock_path)
+    for _ in range(2):
+        stream.sendall(header + metadata)
+        raw = recv_exact(stream, 36)
+        magic, version, channel, flags, message_type, reserved, response_id, meta_len, body_len = struct.unpack(
+            ">4sHBBHH16sII", raw
+        )
+        recv_exact(stream, meta_len + body_len)
+        if (magic, version, channel, flags, message_type, reserved, response_id) != (
+            b"RKIP", 1, 2, 0, 100, 0, frame_id
+        ):
+            raise SystemExit("invalid response to duplicate frame-id execution")
+
+con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+rows = con.execute("""
+    SELECT hex(s.request_id),
+           (SELECT count(*) FROM audit_events t
+            WHERE t.request_id = s.request_id
+              AND t.event_type IN ('execution.finished', 'execution.blocked'))
+    FROM audit_events s
+    WHERE s.sequence > ? AND s.event_type = 'execution.started'
+    ORDER BY s.sequence
+""", (baseline,)).fetchall()
+con.close()
+if len(rows) != 2 or len({row[0] for row in rows}) != 2 or any(row[1] != 1 for row in rows):
+    raise SystemExit(f"frame request_id contaminated audit pairing: {rows}")
+PY
+
 # Poll the real WAL database. The moment an unmatched started row is visible,
 # SIGKILL the actual rekeyd process—not the CLI wrapper.
 python3 - "$STATE/vault.sqlite3" "$BROKER_PID" <<'PY' &
@@ -106,7 +166,7 @@ PY
 POLL_PID=$!
 
 EXEC_PIDS=""
-for n in 1 2 3 4; do
+for n in $(seq 1 16); do
   "$REKEY" --state-dir "$STATE" execute "$action_ref" --capability "$token" >"$WORKDIR/execute-$n.out" 2>"$WORKDIR/execute-$n.err" &
   EXEC_PIDS="$EXEC_PIDS $!"
 done

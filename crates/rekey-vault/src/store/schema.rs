@@ -98,6 +98,13 @@ CREATE TABLE audit_events (
     latency_ms          INTEGER,
     created_at_ms       INTEGER NOT NULL
 ) STRICT;
+
+CREATE UNIQUE INDEX one_execution_started_per_request
+ON audit_events(request_id) WHERE event_type = 'execution.started';
+
+CREATE UNIQUE INDEX one_execution_terminal_per_request
+ON audit_events(request_id)
+WHERE event_type IN ('execution.finished', 'execution.blocked');
 "#;
 
 pub fn schema_digest() -> [u8; 32] {
