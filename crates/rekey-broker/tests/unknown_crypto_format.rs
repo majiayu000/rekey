@@ -16,7 +16,7 @@ const TEST_PARAMS: Argon2Params = Argon2Params {
     parallelism: 1,
 };
 
-fn run_rekeyd_bounded(state_dir: &std::path::Path) -> ExitStatus {
+fn run_rekeyd_bounded(state_dir: &std::path::Path, case_name: &str) -> ExitStatus {
     let mut child = Command::new(env!("CARGO_BIN_EXE_rekeyd"))
         .args([
             "serve",
@@ -38,7 +38,7 @@ fn run_rekeyd_bounded(state_dir: &std::path::Path) -> ExitStatus {
         if Instant::now() >= deadline {
             child.kill().unwrap();
             child.wait().unwrap();
-            panic!("rekeyd did not reject the unsupported format within 5 seconds");
+            panic!("rekeyd did not reject {case_name} within 5 seconds");
         }
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -46,16 +46,19 @@ fn run_rekeyd_bounded(state_dir: &std::path::Path) -> ExitStatus {
 
 #[test]
 fn real_rekeyd_rejects_unknown_crypto_format_before_binding_uds() {
-    for (schema_edit, update) in [
+    for (case_name, schema_edit, update) in [
         (
+            "unknown crypto suite",
             None,
             "UPDATE vault_header SET crypto_suite = 'future-suite'",
         ),
         (
+            "unknown KDF algorithm",
             None,
             "UPDATE key_wrappers SET state = 'disabled', kdf_algorithm = 'future-kdf' WHERE wrapper_kind = 'recovery'",
         ),
         (
+            "NULL crypto suite",
             Some((
                 "vault_header",
                 "crypto_suite       TEXT NOT NULL",
@@ -92,7 +95,7 @@ fn real_rekeyd_rejects_unknown_crypto_format_before_binding_uds() {
             drop(connection);
         }
 
-        assert_eq!(run_rekeyd_bounded(&state_dir).code(), Some(5));
+        assert_eq!(run_rekeyd_bounded(&state_dir, case_name).code(), Some(5));
         assert!(!state_dir.join("runtime/admin.sock").exists());
         assert!(!state_dir.join("runtime/agent.sock").exists());
     }
