@@ -4,9 +4,13 @@
 mod common;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
-use rekey_broker::upstream::UpstreamResponse;
+use rekey_broker::testing::FakeUpstreamTransport;
+use rekey_broker::upstream::{
+    UpstreamFuture, UpstreamRequest, UpstreamResponse, UpstreamTransport,
+};
 use rekey_domain::ids::RequestId;
 use rekey_domain::ipc::{Channel, FrameHeader, admin_msg, agent_msg};
 use rekey_vault::store::SqliteRecordStore;
@@ -32,6 +36,14 @@ fn assert_each_started_has_one_terminal(log: &[(Vec<u8>, String)]) {
             1,
             "started without exactly one terminal for {id:?}"
         );
+    }
+}
+
+struct PanicTransport;
+
+impl UpstreamTransport for PanicTransport {
+    fn send(&self, _request: UpstreamRequest) -> UpstreamFuture<'_> {
+        Box::pin(async { panic!("injected execution child panic") })
     }
 }
 
@@ -236,6 +248,70 @@ async fn shutdown_waits_for_disconnected_admitted_execution() {
         "shutdown cancelled admitted execution: {log:?}"
     );
     drop(dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn execution_child_panic_faults_runtime_and_closes_admission() {
+    let fake = Arc::new(FakeUpstreamTransport::new());
+    let broker = common::start_broker_with_transport(
+        Duration::from_secs(300),
+        Duration::from_secs(2),
+        fake,
+        Arc::new(PanicTransport),
+    )
+    .await;
+    common::unlock(&broker).await;
+    let credential_id = common::add_credential(&broker, "panic", b"v").await;
+    let (action_id, version) = common::create_action(&broker, &credential_id).await;
+    let token = common::create_session(&broker, &action_id, version).await;
+    let metadata = common::execute_meta(&token, &action_id, version)
+        .to_string()
+        .into_bytes();
+    let header = FrameHeader {
+        channel: Channel::Agent,
+        flags: 0,
+        message_type: agent_msg::EXECUTE_FIXED_HTTP_ACTION,
+        request_id: RequestId::new_random(),
+        metadata_len: metadata.len() as u32,
+        body_len: 2,
+    };
+    let mut request = header.encode().to_vec();
+    request.extend_from_slice(&metadata);
+    request.extend_from_slice(b"{}");
+
+    let _first_response = common::send_raw(&broker.agent_sock(), &request).await;
+    let _second_response = common::send_raw(&broker.agent_sock(), &request).await;
+
+    let state_dir = broker.state_dir.clone();
+    let admin_sock = broker.admin_sock();
+    let agent_sock = broker.agent_sock();
+    let result = tokio::time::timeout(Duration::from_secs(3), broker.serve_task)
+        .await
+        .expect("runtime join must be bounded")
+        .expect("serve task join");
+    assert!(
+        result.is_err(),
+        "execution actor failure reported clean serve"
+    );
+    let store = SqliteRecordStore::open(&rekey_vault::paths::vault_db(&state_dir)).unwrap();
+    let log = store.audit_execution_log().unwrap();
+    assert_eq!(
+        log.iter()
+            .filter(|(_, event)| event == "execution.started")
+            .count(),
+        1,
+        "new admission continued after actor failure: {log:?}"
+    );
+    assert_each_started_has_one_terminal(&log);
+    assert_eq!(
+        log.iter()
+            .filter(|(_, event)| event == "execution.blocked")
+            .count(),
+        1,
+        "panic must produce one abandoned terminal: {log:?}"
+    );
+    assert!(!admin_sock.exists() && !agent_sock.exists());
+    drop(broker.dir);
 }
 
 #[tokio::test(flavor = "multi_thread")]

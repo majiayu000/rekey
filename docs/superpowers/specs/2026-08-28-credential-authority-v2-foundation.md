@@ -1443,6 +1443,12 @@ unit。macOS 本机跑临时 `gui/$UID` label；普通 required `ubuntu-latest` 
 PID 1 是 systemd，不满足直接失败，不能把 exit 77 转绿。workflow 未远端运行前 systemd
 Feature Truth 只能写 “CI gate implemented, not run”。
 
+任一 execution child `JoinError` 必须立即关闭 supervisor admission、停止 spawn 并让
+supervisor 返回错误；supervisor actor 自身 panic、异常或意外 clean exit 也必须由 runtime
+root select 视作 fault。若 root 已取得 actor 的 completed `JoinHandle` result，central stop
+必须消费该 result，不能再次 poll 已完成的 handle。真实 panic transport 验收必须证明随后
+请求不再产生 `execution.started`、原 started 恰一 terminal、`serve` 非零且 joins bounded。
+
 ### P2
 
 #### P2.1 GitHub App Installation 内置凭据动作

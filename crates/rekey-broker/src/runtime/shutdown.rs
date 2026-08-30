@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use rekey_vault::AuthorityError;
 use rekey_vault::command::UnlockProof;
-use tokio::task::JoinHandle;
+use tokio::task::{JoinError, JoinHandle};
 
 use super::BrokerCtx;
 use crate::error::BrokerError;
@@ -31,6 +31,8 @@ pub(super) enum StopDisposition {
     Stopped(Option<BrokerError>),
 }
 
+pub(super) type ExecutionTaskResult = Result<Result<(), BrokerError>, JoinError>;
+
 pub(super) fn deadline(drain_timeout: Duration) -> tokio::time::Instant {
     tokio::time::Instant::now() + drain_timeout + FINALIZE_GRACE
 }
@@ -53,6 +55,7 @@ impl BrokerCtx {
         cause: StopCause,
         stop_deadline: tokio::time::Instant,
         execution_task: &mut JoinHandle<Result<(), BrokerError>>,
+        completed_execution: Option<ExecutionTaskResult>,
     ) -> StopDisposition {
         let lock_reason = match &cause {
             StopCause::Admin(_) => "admin-shutdown",
@@ -64,7 +67,9 @@ impl BrokerCtx {
             Ok(owner) => owner,
             Err(_) => {
                 self.publish_shutdown();
-                execution_task.abort();
+                if completed_execution.is_none() {
+                    execution_task.abort();
+                }
                 return StopDisposition::Stopped(Some(BrokerError::Authority(
                     AuthorityError::Faulted,
                 )));
@@ -140,14 +145,20 @@ impl BrokerCtx {
             );
         }
 
-        match tokio::time::timeout_at(stop_deadline, &mut *execution_task).await {
-            Ok(Ok(Ok(()))) => {}
-            Ok(Ok(Err(err))) => remember(&mut first_error, err),
-            Ok(Err(_)) => remember(
+        let execution_result = match completed_execution {
+            Some(result) => Some(result),
+            None => tokio::time::timeout_at(stop_deadline, &mut *execution_task)
+                .await
+                .ok(),
+        };
+        match execution_result {
+            Some(Ok(Ok(()))) => {}
+            Some(Ok(Err(err))) => remember(&mut first_error, err),
+            Some(Err(_)) => remember(
                 &mut first_error,
                 BrokerError::Authority(AuthorityError::Faulted),
             ),
-            Err(_) => {
+            None => {
                 execution_task.abort();
                 remember(
                     &mut first_error,

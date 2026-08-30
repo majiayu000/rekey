@@ -617,6 +617,7 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
         },
         Signal(&'static str),
         Fault,
+        Execution(shutdown::ExecutionTaskResult),
     }
 
     let (mut runtime_error, stop_deadline) = loop {
@@ -629,19 +630,30 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
             },
             _ = sigterm.recv() => SelectedStop::Signal("sigterm"),
             _ = sigint.recv() => SelectedStop::Signal("sigint"),
+            result = &mut execution_task => SelectedStop::Execution(result),
         };
         let deadline = shutdown::deadline(config.drain_timeout);
-        let (cause, admin_reply) = match selected {
+        let (cause, admin_reply, completed_execution) = match selected {
             SelectedStop::Admin { proof, reply } => {
-                (shutdown::StopCause::Admin(proof), Some(reply))
+                (shutdown::StopCause::Admin(proof), Some(reply), None)
             }
             SelectedStop::Signal(signal) => {
                 tracing::info!(event = "runtime.signal_received", signal);
-                (shutdown::StopCause::Signal, None)
+                (shutdown::StopCause::Signal, None, None)
             }
-            SelectedStop::Fault => (shutdown::StopCause::Fault, None),
+            SelectedStop::Fault => (shutdown::StopCause::Fault, None, None),
+            SelectedStop::Execution(result) => {
+                tracing::error!(
+                    event = "runtime.execution_supervisor_stopped",
+                    code = "FAULTED"
+                );
+                (shutdown::StopCause::Fault, None, Some(result))
+            }
         };
-        match ctx.central_stop(cause, deadline, &mut execution_task).await {
+        match ctx
+            .central_stop(cause, deadline, &mut execution_task, completed_execution)
+            .await
+        {
             shutdown::StopDisposition::Rejected(err) => {
                 if let Some(reply) = admin_reply {
                     if reply.send(Err(err)).is_err() {

@@ -37,15 +37,24 @@ pub async fn start_broker() -> TestBroker {
 }
 
 pub async fn start_broker_with(idle_lock: Duration, drain_timeout: Duration) -> TestBroker {
+    let fake = Arc::new(FakeUpstreamTransport::new());
+    let transport = Arc::clone(&fake) as Arc<dyn rekey_broker::upstream::UpstreamTransport>;
+    start_broker_with_transport(idle_lock, drain_timeout, fake, transport).await
+}
+
+pub async fn start_broker_with_transport(
+    idle_lock: Duration,
+    drain_timeout: Duration,
+    fake: Arc<FakeUpstreamTransport>,
+    transport: Arc<dyn rekey_broker::upstream::UpstreamTransport>,
+) -> TestBroker {
     let dir = tempfile::tempdir().expect("tempdir");
     let state_dir = dir.path().join("state");
     init_vault(&state_dir, &SecretInput::from_slice(PASSWORD), TEST_PARAMS).expect("init");
 
-    let fake = Arc::new(FakeUpstreamTransport::new());
     let mut config = BrokerConfig::new(state_dir.clone());
     config.idle_lock = idle_lock;
-    config.transport =
-        Some(Arc::clone(&fake) as Arc<dyn rekey_broker::upstream::UpstreamTransport>);
+    config.transport = Some(transport);
     config.unlock_backoff_base = Duration::from_millis(20);
     config.drain_timeout = drain_timeout;
     let serve_task = tokio::spawn(async move { serve(config).await });

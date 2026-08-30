@@ -213,11 +213,11 @@ stop_manager() {
   else
     run_root_bounded 15 systemctl stop "$UNIT"
   fi
-  MANAGER_ACTIVE=0
   wait_pid_bounded "$MANAGER_PID" 15
   [[ $((SECONDS - started)) -le 15 ]]
   [[ ! -e "$STATE/runtime/admin.sock" && ! -e "$STATE/runtime/agent.sock" ]]
   capture_log
+  MANAGER_ACTIVE=0
   MANAGER_PID=""
 }
 
@@ -374,15 +374,20 @@ PY
 ADMIN_PID="$MANAGER_PID"
 "$REKEY" --state-dir "$STATE" shutdown >"$WORKDIR/admin-shutdown.out"
 grep -q '"shutdown": true' "$WORKDIR/admin-shutdown.out"
-for _ in $(seq 1 100); do pid_running "$ADMIN_PID" || break; sleep 0.05; done
-pid_running "$ADMIN_PID" && { echo "Admin shutdown did not stop original manager PID" >&2; exit 1; }
+wait_pid_bounded "$ADMIN_PID" 15
 # KeepAlive may already have restarted it; unload the label/unit with bounded cleanup.
 if [[ "$PLATFORM" == Darwin ]]; then
-  run_bounded 10 launchctl bootout "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || true
+  run_bounded 10 launchctl bootout "gui/$(id -u)/$LABEL" >/dev/null 2>&1
 else
-  run_root_bounded 10 systemctl stop "$UNIT" >/dev/null 2>&1 || true
+  run_root_bounded 10 systemctl stop "$UNIT" >/dev/null 2>&1
+fi
+CURRENT_PID="$(manager_pid 2>/dev/null || true)"
+if [[ "$CURRENT_PID" =~ ^[1-9][0-9]*$ ]] && pid_running "$CURRENT_PID"; then
+  echo "native manager still owns a live process after final unload" >&2
+  exit 1
 fi
 MANAGER_ACTIVE=0
+MANAGER_PID=""
 
 if rg -a -q "$SECRET|$PASSWORD" "$WORKDIR"; then
   echo "service-manager artifacts leaked an acceptance secret" >&2
