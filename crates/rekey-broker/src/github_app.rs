@@ -299,7 +299,12 @@ impl GitHubAppCredential {
         {
             return Err(GitHubError::ResourceScope);
         }
-        Ok(response)
+        let body = serde_json::to_vec(&scope).map_err(|_| GitHubError::ResourceScope)?;
+        Ok(UpstreamResponse {
+            status: 200,
+            headers: vec![("content-type".to_owned(), "application/json".to_owned())],
+            body: Zeroizing::new(body),
+        })
     }
 
     pub(crate) async fn revoke(
@@ -538,10 +543,7 @@ fn probe_tokens(body: &[u8]) -> TokenProbe {
             continue;
         }
         let value = &body[value_start..cursor];
-        if value.is_empty()
-            || value.len() > 512
-            || !value.iter().all(|byte| byte.is_ascii_graphic())
-        {
+        if value.is_empty() || !value.iter().all(|byte| byte.is_ascii_graphic()) {
             offset = cursor + 1;
             continue;
         }
@@ -612,13 +614,13 @@ struct ExchangeResponse<'a> {
     repository_selection: &'a str,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct RepositoryList {
     total_count: u64,
     repositories: Vec<RepositoryRef>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct RepositoryRef {
     id: u64,
 }

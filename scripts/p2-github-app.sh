@@ -14,6 +14,7 @@ REKEYD="$ROOT/target/release/rekeyd"
 FIXTURE="$ROOT/target/release/examples/p2_github_app_fixture"
 PASSWORD="p2 github app acceptance password"
 TOKEN_CANARY="P2-INSTALLATION-TOKEN-CANARY"
+STATELESS_TOKEN_CANARY="P2-STATELESS-INSTALLATION-TOKEN-CANARY"
 
 cargo build --release -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd
 cargo build --release -p rekey-broker --example p2_github_app_fixture
@@ -362,6 +363,21 @@ printf '%s\n' success >"$MODE"
   >"$WORKDIR/success.out" 2>"$WORKDIR/success.err"
 grep -q '"id":616161' "$WORKDIR/success.out"
 
+printf '%s\n' stateless-token >"$MODE"
+"$REKEY" --state-dir "$STATE" execute "$ACTION_REF" --capability "$CAPABILITY" \
+  >"$WORKDIR/stateless-token.out" 2>"$WORKDIR/stateless-token.err"
+grep -q '"id":616161' "$WORKDIR/stateless-token.out"
+
+printf '%s\n' provider-extra >"$MODE"
+"$REKEY" --state-dir "$STATE" execute "$ACTION_REF" --capability "$CAPABILITY" \
+  >"$WORKDIR/provider-extra.out" 2>"$WORKDIR/provider-extra.err"
+grep -q '"id":616161' "$WORKDIR/provider-extra.out"
+if rg -q 'debug_hex|50322d494e5354414c4c4154494f4e2d544f4b454e2d43414e415259' \
+  "$WORKDIR/provider-extra.out"; then
+  echo "provider-controlled extra field escaped the typed connector" >&2
+  exit 1
+fi
+
 expect_failure bad-scope 6
 expect_failure malformed-scope 6
 expect_failure exchange-error 6
@@ -371,7 +387,14 @@ expect_failure duplicate-token 6
 expect_failure resource-error 6
 expect_failure wrong-repository 6
 expect_failure revoke-error 6
-expect_failure reflect-token 8
+printf '%s\n' reflect-token >"$MODE"
+"$REKEY" --state-dir "$STATE" execute "$ACTION_REF" --capability "$CAPABILITY" \
+  >"$WORKDIR/reflect-token.out" 2>"$WORKDIR/reflect-token.err"
+grep -q '"id":616161' "$WORKDIR/reflect-token.out"
+if rg -q "$TOKEN_CANARY" "$WORKDIR/reflect-token.out"; then
+  echo "typed connector leaked a provider-controlled secret field" >&2
+  exit 1
+fi
 DEADLINE_STARTED="$(python3 -c 'import time; print(time.monotonic())')"
 expect_failure deadline-resource 6
 DEADLINE_ELAPSED="$(python3 - "$DEADLINE_STARTED" <<'PY'
@@ -537,20 +560,20 @@ if types != expected:
 PY
 
 python3 - "$STATE/vault.sqlite3" "$PRIVATE_KEY_BASE64_CANARY" \
-  "$PRIVATE_KEY_RAW_CANARY_HEX" "$TOKEN_CANARY" <<'PY'
+  "$PRIVATE_KEY_RAW_CANARY_HEX" "$TOKEN_CANARY" "$STATELESS_TOKEN_CANARY" <<'PY'
 import pathlib, re, sqlite3, sys
-db_path, key_base64_canary, key_raw_canary_hex, token_canary = sys.argv[1:]
+db_path, key_base64_canary, key_raw_canary_hex, token_canary, stateless_token_canary = sys.argv[1:]
 db = sqlite3.connect(db_path)
 def scalar(sql): return db.execute(sql).fetchone()[0]
-if scalar("SELECT count(*) FROM audit_events WHERE event_type='execution.started'") != 14:
-    raise SystemExit("expected fourteen started audits")
-if scalar("SELECT count(*) FROM audit_events WHERE event_type IN ('execution.finished','execution.blocked')") != 14:
-    raise SystemExit("expected fourteen terminal audits")
-if scalar("SELECT count(*) FROM audit_events WHERE event_type='execution.finished'") != 3:
-    raise SystemExit("expected three successful executions")
-if scalar("SELECT count(*) FROM audit_events WHERE event_type='connector.github.authorized'") != 14:
+if scalar("SELECT count(*) FROM audit_events WHERE event_type='execution.started'") != 16:
+    raise SystemExit("expected sixteen started audits")
+if scalar("SELECT count(*) FROM audit_events WHERE event_type IN ('execution.finished','execution.blocked')") != 16:
+    raise SystemExit("expected sixteen terminal audits")
+if scalar("SELECT count(*) FROM audit_events WHERE event_type='execution.finished'") != 6:
+    raise SystemExit("expected six successful executions")
+if scalar("SELECT count(*) FROM audit_events WHERE event_type='connector.github.authorized'") != 16:
     raise SystemExit("missing connector authorization commitments")
-if scalar("SELECT count(*) FROM audit_events WHERE event_type='connector.github.token_revoked'") != 13:
+if scalar("SELECT count(*) FROM audit_events WHERE event_type='connector.github.token_revoked'") != 15:
     raise SystemExit("unexpected revoke audit count")
 if scalar("SELECT count(*) FROM audit_events WHERE event_type='connector.github.token_revoked' AND outcome='failure'") != 1:
     raise SystemExit("missing revoke failure audit")
@@ -569,8 +592,8 @@ rows = db.execute("""
 chains = {}
 for row in rows:
     chains.setdefault(row[1], []).append(row)
-if len(chains) != 14:
-    raise SystemExit(f"expected fourteen non-vacuous request audit chains, got {len(chains)}")
+if len(chains) != 16:
+    raise SystemExit(f"expected sixteen non-vacuous request audit chains, got {len(chains)}")
 without_revoke = 0
 for request_id, chain in chains.items():
     types = [row[2] for row in chain]
@@ -604,24 +627,26 @@ if without_revoke != 1:
 raw = pathlib.Path(db_path).read_bytes()
 if (key_base64_canary.encode() in raw
         or bytes.fromhex(key_raw_canary_hex) in raw
-        or token_canary.encode() in raw):
+        or token_canary.encode() in raw
+        or stateless_token_canary.encode() in raw):
     raise SystemExit("connector secret leaked into SQLite")
 PY
 
-[[ "$(grep -c '^exchange.ok$' "$TRACE")" -eq 13 ]]
+[[ "$(grep -c '^exchange.ok$' "$TRACE")" -eq 15 ]]
 [[ "$(grep -c '^exchange.error$' "$TRACE")" -eq 1 ]]
 RESOURCE_OK_COUNT="$(grep -c '^resource.ok$' "$TRACE")"
-[[ "$RESOURCE_OK_COUNT" -eq 7 ]] || {
-  echo "expected seven resource.ok traces, got $RESOURCE_OK_COUNT"
+[[ "$RESOURCE_OK_COUNT" -eq 9 ]] || {
+  echo "expected nine resource.ok traces, got $RESOURCE_OK_COUNT"
   cat "$TRACE"
   exit 1
 }
 [[ "$(grep -c '^resource.error$' "$TRACE")" -eq 1 ]]
-[[ "$(grep -c '^revoke.ok$' "$TRACE")" -eq 12 ]]
+[[ "$(grep -c '^revoke.ok$' "$TRACE")" -eq 14 ]]
 [[ "$(grep -c '^revoke.error$' "$TRACE")" -eq 1 ]]
 
 assert_secret_absent "base64 private-key canary" "$PRIVATE_KEY_BASE64_CANARY"
 assert_secret_absent "installation token canary" "$TOKEN_CANARY"
+assert_secret_absent "stateless installation token canary" "$STATELESS_TOKEN_CANARY"
 assert_all_jwt_canaries_absent "$TRACE" "GitHub JWT canary"
 assert_raw_private_key_absent
 
@@ -699,8 +724,8 @@ grep -q '"id":616161' "$WORKDIR/restored-success.out"
 python3 - "$STATE/vault.sqlite3" <<'PY'
 import re, sqlite3, sys
 db = sqlite3.connect(sys.argv[1])
-if db.execute("SELECT count(*) FROM audit_events WHERE event_type='execution.started'").fetchone()[0] != 15:
-    raise SystemExit("restored execution did not append the fifteenth start")
+if db.execute("SELECT count(*) FROM audit_events WHERE event_type='execution.started'").fetchone()[0] != 17:
+    raise SystemExit("restored execution did not append the seventeenth start")
 request_id = db.execute("SELECT request_id FROM audit_events WHERE event_type='execution.started' ORDER BY sequence DESC LIMIT 1").fetchone()[0]
 chain = db.execute("SELECT event_type, reason_code FROM audit_events WHERE request_id=? ORDER BY sequence", (request_id,)).fetchall()
 if [row[0] for row in chain] != ['execution.started', 'connector.github.authorized', 'connector.github.token_revoked', 'execution.finished']:
@@ -712,6 +737,7 @@ if not re.fullmatch(r"success;binding-sha256=[0-9a-f]{64}", chain[2][1]):
 PY
 assert_secret_absent "base64 private-key canary after restore" "$PRIVATE_KEY_BASE64_CANARY"
 assert_secret_absent "installation token canary after restore" "$TOKEN_CANARY"
+assert_secret_absent "stateless installation token canary after restore" "$STATELESS_TOKEN_CANARY"
 assert_all_jwt_canaries_absent "$TRACE" "GitHub JWT canary after restore"
 assert_all_jwt_canaries_absent "$RESTORED_TRACE" "restored GitHub JWT canary"
 assert_raw_private_key_absent

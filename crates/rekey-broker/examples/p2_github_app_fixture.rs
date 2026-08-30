@@ -22,6 +22,28 @@ const HOST: &str = "api.github.com";
 const CLIENT_ID: &str = "Iv1.8a61f9b3a7aba766";
 const INSTALLATION_ID: u64 = 515_151;
 const REPOSITORY_ID: u64 = 616_161;
+const STATELESS_TOKEN_CANARY: &str = "P2-STATELESS-INSTALLATION-TOKEN-CANARY";
+
+fn installation_token(mode: &str) -> String {
+    if mode == "stateless-token" {
+        return format!(
+            "ghs_424242_{}.{}{}.{}",
+            "a".repeat(160),
+            STATELESS_TOKEN_CANARY,
+            "b".repeat(160),
+            "c".repeat(160)
+        );
+    }
+    format!("P2-INSTALLATION-TOKEN-CANARY-{mode}")
+}
+
+fn hex(value: &str) -> String {
+    value
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
 
 struct LocalTlsTransport {
     address: SocketAddr,
@@ -285,7 +307,7 @@ async fn serve_mock(
                     } else {
                         json!({"metadata":"read"})
                     };
-                    let token = format!("P2-INSTALLATION-TOKEN-CANARY-{mode}");
+                    let token = installation_token(&mode);
                     let mut body = serde_json::to_vec(&json!({
                         "token": token,
                         "expires_at": "2099-01-01T00:00:00Z",
@@ -310,7 +332,7 @@ async fn serve_mock(
                 }
             } else if req.method == "GET" && req.path == "/installation/repositories" {
                 let token_ok = bearer(&req)
-                    .map(|token| token == format!("P2-INSTALLATION-TOKEN-CANARY-{mode}"))
+                    .map(|token| token == installation_token(&mode))
                     .unwrap_or(false);
                 if !token_ok || !api_headers_ok {
                     respond(&mut tls, "401 Unauthorized", br#"{"error":"token"}"#).await
@@ -343,16 +365,19 @@ async fn serve_mock(
                     } else {
                         "fixture".to_owned()
                     };
-                    let body = serde_json::to_vec(&json!({
+                    let mut body = json!({
                         "total_count": 1,
                         "repositories": [{"id": repository_id, "name": name}]
-                    }))
-                    .unwrap_or_default();
+                    });
+                    if mode == "provider-extra" {
+                        body["debug_hex"] = json!(hex(&installation_token(&mode)));
+                    }
+                    let body = serde_json::to_vec(&body).unwrap_or_default();
                     respond(&mut tls, "200 OK", &body).await
                 }
             } else if req.method == "DELETE" && req.path == "/installation/token" {
                 let token_ok = bearer(&req)
-                    .map(|token| token == format!("P2-INSTALLATION-TOKEN-CANARY-{mode}"))
+                    .map(|token| token == installation_token(&mode))
                     .unwrap_or(false);
                 if !token_ok || !api_headers_ok {
                     respond(&mut tls, "401 Unauthorized", br#"{"error":"token"}"#).await

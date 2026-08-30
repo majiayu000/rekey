@@ -1512,13 +1512,17 @@ connector registry、provider SDK、控制面或 Agent 可调用的签名/换票
   断言，缺失或变化即失败。
 - Exchange 必须返回唯一 token、`permissions` 精确只有 `metadata=read` 且
   `repository_selection=selected`，否则 fail closed。Broker 用该 token 调用固定
-  `GET /installation/repositories`，并验证成功响应只包含配置的 repository ID。
+  `GET /installation/repositories`，并验证成功响应只包含配置的 repository ID。Agent
+  只能收到 Broker 按 allowlist 重建的 `total_count` 和 repository `id`；provider 原始
+  JSON 字段与响应头不得透传，不能依赖有限的 secret encoding 枚举来阻止字段逃逸。
 - Exchange response body 在检查 HTTP status 或完整 schema 前即进入 zeroizing buffer。
   Broker 先对有界 body 做 best-effort token probe，再检查 status/schema：支持首个 JSON
   value 后有 trailing garbage，以及常见的重复 `token` 字段；捕获到的 token 即使来自
   500 或畸形 response 也进入 revoke。probe 最多捕获 4 个不同的简单 ASCII GitHub token，
   并在总 cleanup deadline 内逐个 revoke；超过捕获上限、转义 token、网络层响应不确定性
   或 deadline 耗尽时无法承诺绝对远程清理，必须 fail closed 且不得声称已全部 revoke。
+  token probe 只能受已经验证的 response body 上限约束，不得假设 installation token 的
+  固定长度；local acceptance 必须覆盖 GitHub 约 520 字符的 stateless `ghs_` token。
 - 无论 resource request 成功或失败，Broker 都立即调用固定
   `DELETE /installation/token`。只有 revoke 返回 204 且 resource response 通过原有
   bounded-body、redirect 和 secret-sealing 检查后，Agent 才能收到成功；revoke 失败
