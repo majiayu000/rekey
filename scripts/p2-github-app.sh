@@ -3,6 +3,11 @@
 # dual UDS + SQLite, and a local CA/TLS GitHub App exchange/resource/revoke chain.
 set -euo pipefail
 
+command -v rg >/dev/null || {
+  echo "p2-github-app requires ripgrep (rg)" >&2
+  exit 1
+}
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 REKEY="$ROOT/target/release/rekey"
 REKEYD="$ROOT/target/release/rekeyd"

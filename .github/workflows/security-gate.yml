@@ -26,6 +26,15 @@ jobs:
           components: clippy,rustfmt
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
+      - name: Install Linux acceptance dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep
+      - name: Install macOS acceptance dependencies
+        if: runner.os == 'macOS'
+        run: brew install ripgrep
+
       - name: Workspace contracts
         run: |
           cargo fmt --all --check

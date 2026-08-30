@@ -4,6 +4,11 @@
 set -euo pipefail
 umask 077
 
+command -v rg >/dev/null || {
+  echo "p1-service-manager requires ripgrep (rg)" >&2
+  exit 1
+}
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 REKEY="$ROOT/target/release/rekey"
 REKEYD="$ROOT/target/release/rekeyd"

@@ -4,6 +4,11 @@
 set -euo pipefail
 umask 077
 
+command -v rg >/dev/null || {
+  echo "p0-crash-recovery requires ripgrep (rg)" >&2
+  exit 1
+}
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN_DIR="${BIN_DIR:-$ROOT/target/release}"
 REKEY="${BIN_DIR}/rekey"
@@ -147,7 +152,10 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stream:
         if (magic, version, channel, flags, message_type, reserved, response_id) != (
             b"RKIP", 1, 2, 0, 100, 0, frame_id
         ):
-            raise SystemExit("invalid response to duplicate frame-id execution")
+            raise SystemExit(
+                "invalid response to duplicate frame-id execution: "
+                f"{(magic, version, channel, flags, message_type, reserved, response_id.hex())}"
+            )
 
 con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
 rows = con.execute("""
@@ -164,8 +172,10 @@ if len(rows) != 2 or len({row[0] for row in rows}) != 2 or any(row[1] != 1 for r
     raise SystemExit(f"frame request_id contaminated audit pairing: {rows}")
 PY
 
-# Poll the real WAL database. The moment an unmatched started row is visible,
-# SIGKILL the actual rekeyd process—not the CLI wrapper.
+# Poll the real WAL database. The moment any unmatched started row is visible,
+# SIGKILL the actual rekeyd process—not the CLI wrapper. Capture the durable
+# unmatched set after exit because the observed row may finish before SIGKILL
+# is scheduled.
 python3 - "$STATE/vault.sqlite3" "$BROKER_PID" <<'PY' &
 import os, signal, sqlite3, sys, time
 db, pid = sys.argv[1], int(sys.argv[2])
@@ -185,8 +195,6 @@ while time.monotonic() < deadline:
     """).fetchone()
     con.close()
     if row:
-        pathlib = __import__('pathlib')
-        pathlib.Path(sys.argv[1] + ".killed-request").write_text(row[0])
         os.kill(pid, signal.SIGKILL)
         raise SystemExit(0)
     time.sleep(0.002)
@@ -209,26 +217,48 @@ for pid in $EXEC_PIDS; do
 done
 EXEC_PIDS=""
 
+python3 - "$STATE/vault.sqlite3" "$STATE/vault.sqlite3.killed-requests" <<'PY'
+import pathlib, sqlite3, sys
+
+con = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+rows = con.execute("""
+    SELECT hex(s.request_id)
+    FROM audit_events s
+    WHERE s.event_type = 'execution.started'
+      AND NOT EXISTS (
+        SELECT 1 FROM audit_events t
+        WHERE t.request_id = s.request_id
+          AND t.event_type IN ('execution.finished', 'execution.blocked')
+      )
+    ORDER BY s.sequence
+""").fetchall()
+con.close()
+if not rows:
+    raise SystemExit("SIGKILL left no durable unmatched execution.started row")
+pathlib.Path(sys.argv[2]).write_text("".join(f"{row[0]}\n" for row in rows))
+PY
+
 "$REKEYD" serve --state-dir "$STATE" --idle-lock 15m >"$WORKDIR/serve-2.out" 2>"$WORKDIR/serve-2.jsonl" &
 BROKER_PID=$!
 wait_for_socket
 
-python3 - "$STATE/vault.sqlite3" "$STATE/vault.sqlite3.killed-request" <<'PY'
+python3 - "$STATE/vault.sqlite3" "$STATE/vault.sqlite3.killed-requests" <<'PY'
 import pathlib, sqlite3, sys
-request_hex = pathlib.Path(sys.argv[2]).read_text().strip()
+request_ids = pathlib.Path(sys.argv[2]).read_text().splitlines()
 con = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
-rows = con.execute("""
-    SELECT event_type, reason_code, principal_id, policy_version, policy_digest,
-           policy_rule_id, resource_type, resource_id, parameter_hash
-    FROM audit_events
-    WHERE hex(request_id) = ? ORDER BY sequence
-""", (request_hex,)).fetchall()
-started = [row for row in rows if row[0] == 'execution.started']
-terminal = [row for row in rows if row[0] in ('execution.finished', 'execution.blocked')]
-if len(started) != 1 or len(terminal) != 1 or terminal[0][:2] != ('execution.blocked', 'abandoned-on-restart'):
-    raise SystemExit(f"bad crash reconciliation: {rows}")
-if any(value is None for value in started[0][2:]) or terminal[0][2:] != started[0][2:]:
-    raise SystemExit(f"crash reconciliation lost authorization evidence: {rows}")
+for request_hex in request_ids:
+    rows = con.execute("""
+        SELECT event_type, reason_code, principal_id, policy_version, policy_digest,
+               policy_rule_id, resource_type, resource_id, parameter_hash
+        FROM audit_events
+        WHERE hex(request_id) = ? ORDER BY sequence
+    """, (request_hex,)).fetchall()
+    started = [row for row in rows if row[0] == 'execution.started']
+    terminal = [row for row in rows if row[0] in ('execution.finished', 'execution.blocked')]
+    if len(started) != 1 or len(terminal) != 1 or terminal[0][:2] != ('execution.blocked', 'abandoned-on-restart'):
+        raise SystemExit(f"bad crash reconciliation for {request_hex}: {rows}")
+    if any(value is None for value in started[0][2:]) or terminal[0][2:] != started[0][2:]:
+        raise SystemExit(f"crash reconciliation lost authorization evidence for {request_hex}: {rows}")
 unpaired = con.execute("""
     SELECT count(*) FROM audit_events s
     WHERE s.event_type = 'execution.started'
@@ -238,6 +268,7 @@ unpaired = con.execute("""
 """).fetchone()[0]
 if unpaired:
     raise SystemExit(f"found {unpaired} started rows without exactly one terminal")
+con.close()
 PY
 
 "$REKEY" --state-dir "$STATE" shutdown >/dev/null

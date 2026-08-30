@@ -79,8 +79,18 @@ fn io_err(err: std::io::Error) -> CliError {
 
 impl Client {
     pub fn connect(socket: &Path, channel: Channel) -> Result<Self, CliError> {
+        Self::connect_with_response_timeout(socket, channel, IO_TIMEOUT)
+    }
+
+    pub fn connect_with_response_timeout(
+        socket: &Path,
+        channel: Channel,
+        response_timeout: Duration,
+    ) -> Result<Self, CliError> {
         let stream = UnixStream::connect(socket).map_err(io_err)?;
-        stream.set_read_timeout(Some(IO_TIMEOUT)).map_err(io_err)?;
+        stream
+            .set_read_timeout(Some(response_timeout))
+            .map_err(io_err)?;
         stream.set_write_timeout(Some(IO_TIMEOUT)).map_err(io_err)?;
         Ok(Self { stream, channel })
     }
