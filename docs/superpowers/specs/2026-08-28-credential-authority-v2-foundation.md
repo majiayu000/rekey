@@ -1430,6 +1430,15 @@ notice、回收双 UDS connection/idle tasks、关闭 Authority sender，再 bou
 terminal task 与 Authority thread。任何 coordinate/inner/join 失败仍必须发布 notice 并
 使 `rekeyd` 非零退出；不能在 lock 与 shutdown 之间释放 coordinator 让 Admin unlock。
 
+Stop source selection must synchronously close the single GitHub remote-effect
+admission gate before any Authority await. After the durable connector-authorized
+audit and before JWT signing or exchange, `run_github` atomically tries that same
+gate. A try-begin ordered after closure commits one blocked terminal and performs
+no exchange; a try-begin ordered before closure owns the already-begun effect and
+continues under its existing bounded cleanup contract. A rejected Admin Shutdown
+may reopen the gate only while the same coordinator still proves the Broker is
+Running.
+
 生产 action timeout hard max 为 120 秒。central stop 只有一个绝对 deadline：当前
 `drain_timeout` 加 5 秒 terminal/finalize grace，production 约 125 秒；所有 execution、
 terminal、connection、supervisor、Authority join 共享该 deadline，不能逐层重置。
@@ -1515,7 +1524,9 @@ connector registry、provider SDK、控制面或 Agent 可调用的签名/换票
   session in-flight permit 保持到 revoke 和 revoke audit 完成。若超过 drain deadline，
   lock/shutdown 返回 busy 并保持 fail closed，不能通过提前释放 permit 遗留远程 token。
 - Action 的 `timeout_ms` 是整个 GitHub effect 的单一总 deadline，不是每阶段各自可用的
-  timeout。GitHub action 最小 2 秒；总 deadline 最后 500ms 固定保留给 cleanup。
+  timeout。绝对 deadline 从 supervisor 开始 admission 时锚定，不能在 credential prepare、
+  connector-authorized audit 或进入 `execute_effect` 后重新获得完整 timeout。GitHub action
+  最小 2 秒；总 deadline 最后 500ms 固定保留给 cleanup。
   exchange/resource 每次只获得 business deadline 的剩余时间，revoke 只获得总 deadline
   的剩余时间；Broker 自己也对 transport future 套同一剩余时间，确保不依赖 transport
   是否遵守 request timeout。超过 business deadline 后不得再开始 resource，但已捕获

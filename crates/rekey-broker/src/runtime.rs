@@ -22,7 +22,7 @@ use rekey_vault::handle::{AuthorityConfig, AuthorityHandle};
 use rekey_vault::paths;
 use tokio::net::UnixListener;
 use tokio::sync::{RwLock, mpsc, oneshot, watch};
-use tokio::task::JoinSet;
+use tokio::task::{JoinHandle, JoinSet};
 
 use crate::audit::{TerminalAuditTracker, spawn_terminal_worker};
 use crate::error::BrokerError;
@@ -454,6 +454,38 @@ fn validate_agent_endpoint(config: &BrokerConfig) -> Result<(), BrokerError> {
     Ok(())
 }
 
+enum SelectedStop {
+    Admin {
+        proof: Option<UnlockProof>,
+        reply: oneshot::Sender<Result<(), BrokerError>>,
+    },
+    Signal(&'static str),
+    Fault,
+    Execution(shutdown::ExecutionTaskResult),
+}
+
+async fn select_stop(
+    lifecycle: &Lifecycle,
+    stop_rx: &mut mpsc::UnboundedReceiver<shutdown::StopCommand>,
+    sigterm: &mut tokio::signal::unix::Signal,
+    sigint: &mut tokio::signal::unix::Signal,
+    execution_task: &mut JoinHandle<Result<(), BrokerError>>,
+) -> SelectedStop {
+    let selected = tokio::select! {
+        command = stop_rx.recv() => match command {
+            Some(shutdown::StopCommand::Admin { proof, reply }) => {
+                SelectedStop::Admin { proof, reply }
+            }
+            Some(shutdown::StopCommand::Fault) | None => SelectedStop::Fault,
+        },
+        _ = sigterm.recv() => SelectedStop::Signal("sigterm"),
+        _ = sigint.recv() => SelectedStop::Signal("sigint"),
+        result = &mut *execution_task => SelectedStop::Execution(result),
+    };
+    lifecycle.close_remote_effect_admission();
+    selected
+}
+
 /// Runs the broker until an admin Shutdown arrives. Foreground only.
 pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
     verify_state_dir_permissions(&config.state_dir)?;
@@ -610,28 +642,15 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
         false,
     ));
 
-    enum SelectedStop {
-        Admin {
-            proof: Option<UnlockProof>,
-            reply: oneshot::Sender<Result<(), BrokerError>>,
-        },
-        Signal(&'static str),
-        Fault,
-        Execution(shutdown::ExecutionTaskResult),
-    }
-
     let (mut runtime_error, stop_deadline) = loop {
-        let selected = tokio::select! {
-            command = stop_rx.recv() => match command {
-                Some(shutdown::StopCommand::Admin { proof, reply }) => {
-                    SelectedStop::Admin { proof, reply }
-                }
-                Some(shutdown::StopCommand::Fault) | None => SelectedStop::Fault,
-            },
-            _ = sigterm.recv() => SelectedStop::Signal("sigterm"),
-            _ = sigint.recv() => SelectedStop::Signal("sigint"),
-            result = &mut execution_task => SelectedStop::Execution(result),
-        };
+        let selected = select_stop(
+            &ctx.lifecycle,
+            &mut stop_rx,
+            &mut sigterm,
+            &mut sigint,
+            &mut execution_task,
+        )
+        .await;
         let deadline = shutdown::deadline(config.drain_timeout);
         let (cause, admin_reply, completed_execution) = match selected {
             SelectedStop::Admin { proof, reply } => {
@@ -751,32 +770,4 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn agent_runtime_rejects_parent_segments_and_symlink_aliases_into_state() {
-        let dir = tempfile::tempdir().unwrap();
-        let state = dir.path().join("state");
-        let outside = dir.path().join("outside");
-        fs::create_dir(&state).unwrap();
-        fs::create_dir(&outside).unwrap();
-
-        let mut config = BrokerConfig::new(state.clone());
-        config.agent_runtime_dir = Some(outside.join("../state/agent"));
-        assert_eq!(
-            validate_agent_endpoint(&config).unwrap_err().code(),
-            "INSECURE_STATE_PERMISSIONS"
-        );
-
-        std::os::unix::fs::symlink(&state, outside.join("state-alias")).unwrap();
-        config.agent_runtime_dir = Some(outside.join("state-alias/agent"));
-        assert_eq!(
-            validate_agent_endpoint(&config).unwrap_err().code(),
-            "INSECURE_STATE_PERMISSIONS"
-        );
-
-        config.agent_runtime_dir = Some(outside.join("agent"));
-        validate_agent_endpoint(&config).unwrap();
-    }
-}
+mod tests;

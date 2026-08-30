@@ -150,6 +150,7 @@ impl GitHubAppCredential {
             || request.content_type.is_some()
             || !request.extra_headers.is_empty()
             || !request.body.is_empty()
+            || Duration::from_millis(action.timeout_ms as u64) < MIN_TOTAL_TIMEOUT
         {
             return Err(GitHubError::ProfileMismatch);
         }
@@ -333,15 +334,12 @@ impl GitHubAppCredential {
     pub(crate) async fn execute_effect(
         &self,
         transport: &dyn UpstreamTransport,
-        timeout: Duration,
+        total_deadline: Instant,
         response_max_bytes: u32,
     ) -> GitHubEffect {
-        if timeout < MIN_TOTAL_TIMEOUT {
+        let Some(business_deadline) = total_deadline.checked_sub(CLEANUP_BUDGET) else {
             return GitHubEffect::WithoutToken(GitHubError::Deadline);
-        }
-        let started = Instant::now();
-        let total_deadline = started + timeout;
-        let business_deadline = total_deadline - CLEANUP_BUDGET;
+        };
         let exchange_timeout = match remaining(business_deadline) {
             Ok(value) => value,
             Err(error) => return GitHubEffect::WithoutToken(error),
@@ -629,6 +627,14 @@ struct RepositoryRef {
 mod tests {
     use super::*;
 
+    struct PanicTransport;
+
+    impl UpstreamTransport for PanicTransport {
+        fn send(&self, _request: UpstreamRequest) -> crate::upstream::UpstreamFuture<'_> {
+            Box::pin(async { panic!("expired effect deadline reached transport") })
+        }
+    }
+
     #[test]
     fn marked_invalid_profile_fails_closed() {
         assert!(matches!(
@@ -636,6 +642,29 @@ mod tests {
                 br#"{"credential_type":"github-app-installation-v1","client_id":"x"}"#,
             ),
             Err(GitHubError::InvalidCredential)
+        ));
+    }
+
+    #[tokio::test]
+    async fn max_timeout_deadline_is_not_reset_at_effect_entry() {
+        let profile = GitHubAppCredential {
+            client_id: "test".to_owned(),
+            app_id: 1,
+            installation_id: 1,
+            repository_id: 1,
+            private_key_pkcs1_der: Zeroizing::new(Vec::new()),
+        };
+        let admission_started = Instant::now() - Duration::from_secs(121);
+        let result = profile
+            .execute_effect(
+                &PanicTransport,
+                admission_started + Duration::from_secs(120),
+                RESPONSE_LIMIT,
+            )
+            .await;
+        assert!(matches!(
+            result,
+            GitHubEffect::WithoutToken(GitHubError::Deadline)
         ));
     }
 }

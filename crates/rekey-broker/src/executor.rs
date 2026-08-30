@@ -51,6 +51,7 @@ pub struct AdmittedExecution {
     executor: Arc<ActionExecutor>,
     request: ExecuteRequest,
     action: FixedHttpAction,
+    effect_deadline: Instant,
     started: StartedGuard,
     _permit: ExecutionPermit,
 }
@@ -187,6 +188,7 @@ impl ActionExecutor {
         self: &Arc<Self>,
         request: ExecuteRequest,
     ) -> Result<AdmittedExecution, BrokerError> {
+        let admission_started = Instant::now();
         self.refuse_unless_running()?;
         // Step 3: capability authentication reserves one use and one
         // concurrency slot; the permit releases the slot on every path.
@@ -195,7 +197,8 @@ impl ActionExecutor {
             .acquire(&request.capability_token, request.action, now_ts())?;
         self.refuse_unless_running()?;
         let principal = permit.principal;
-        self.admit_authorized(request, principal, permit).await
+        self.admit_authorized(request, principal, permit, admission_started)
+            .await
     }
 
     async fn admit_authorized(
@@ -203,6 +206,7 @@ impl ActionExecutor {
         request: ExecuteRequest,
         principal: Principal,
         permit: ExecutionPermit,
+        admission_started: Instant,
     ) -> Result<AdmittedExecution, BrokerError> {
         // Step 4: pin the immutable action version.
         let pinned = self
@@ -308,6 +312,7 @@ impl ActionExecutor {
         Ok(AdmittedExecution {
             executor: Arc::clone(self),
             request,
+            effect_deadline: admission_started + Duration::from_millis(action.timeout_ms as u64),
             action,
             started: StartedGuard::new(Arc::clone(&self.terminals), ctx),
             _permit: permit,
@@ -323,6 +328,7 @@ impl ActionExecutor {
         started: &mut StartedGuard,
         request: &ExecuteRequest,
         action: &FixedHttpAction,
+        effect_deadline: Instant,
         connector_effect_started: &AtomicBool,
     ) -> Result<ExecuteOutcome, BrokerError> {
         // Steps 7-8: credential eligibility and preparation (single owner).
@@ -381,7 +387,14 @@ impl ActionExecutor {
 
         if let PreparedExecution::GitHub(prepared) = prepared {
             return self
-                .run_github(started, request, action, prepared, connector_effect_started)
+                .run_github(
+                    started,
+                    request,
+                    action,
+                    prepared,
+                    effect_deadline,
+                    connector_effect_started,
+                )
                 .await;
         }
         let PreparedExecution::Opaque {
@@ -448,6 +461,7 @@ impl ActionExecutor {
         request: &ExecuteRequest,
         action: &FixedHttpAction,
         prepared: GitHubPrepared,
+        effect_deadline: Instant,
         connector_effect_started: &AtomicBool,
     ) -> Result<ExecuteOutcome, BrokerError> {
         let profile = match prepared.profile {
@@ -461,9 +475,6 @@ impl ActionExecutor {
             started.blocked(err.reason()).await?;
             return Err(BrokerError::Denied(err.reason()));
         }
-        // A lifecycle cancellation must not strand a minted remote token.
-        connector_effect_started.store(true, Ordering::SeqCst);
-
         // This durable event proves the exact non-secret connector binding
         // was authorized before JWT signing or token exchange.
         self.authority
@@ -475,11 +486,16 @@ impl ActionExecutor {
             ))
             .await?;
 
+        try_begin_remote_effect(&self.lifecycle, started).await?;
+        // No await separates the gate's linearization point from this flag.
+        // Once begun, lifecycle cancellation must not strand a remote token.
+        connector_effect_started.store(true, Ordering::SeqCst);
+
         let send_started = Instant::now();
         let effect = profile
             .execute_effect(
                 self.transport.as_ref(),
-                Duration::from_millis(action.timeout_ms as u64),
+                effect_deadline,
                 action.response_policy.max_body_bytes,
             )
             .await;
@@ -578,6 +594,7 @@ impl AdmittedExecution {
                 &mut self.started,
                 &self.request,
                 &self.action,
+                self.effect_deadline,
                 &connector_effect_started,
             );
             tokio::pin!(run);
@@ -604,6 +621,17 @@ async fn wait_for_cancel(mut cancel: tokio::sync::watch::Receiver<bool>) {
             return;
         }
     }
+}
+
+async fn try_begin_remote_effect(
+    lifecycle: &Lifecycle,
+    started: &mut StartedGuard,
+) -> Result<(), BrokerError> {
+    if lifecycle.try_begin_remote_effect() {
+        return Ok(());
+    }
+    started.blocked("remote-effect-admission-closed").await?;
+    Err(BrokerError::Authority(AuthorityError::Draining))
 }
 
 fn prepare_block_reason(err: &AuthorityError) -> &'static str {
@@ -756,82 +784,4 @@ fn filter_response_headers(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::audit::spawn_terminal_worker_with;
-    use rekey_domain::ids::{ActionId, CredentialId, SessionId};
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use tokio::sync::Notify;
-
-    #[test]
-    fn sealing_detects_direct_and_encoded_secret() {
-        let secret = b"ghp_super_secret_token_value";
-        let auth = b"Bearer ghp_super_secret_token_value";
-        let needles = sealing_needles(secret, auth);
-
-        assert!(contains_secret(
-            b"before ghp_super_secret_token_value after",
-            &needles
-        ));
-        let b64 = BASE64.encode(secret);
-        assert!(contains_secret(format!("x{b64}y").as_bytes(), &needles));
-        let url = BASE64URL_NOPAD.encode(auth);
-        assert!(contains_secret(url.as_bytes(), &needles));
-        let pct = percent_encode(auth, true);
-        assert!(contains_secret(pct.as_bytes(), &needles));
-        assert!(!contains_secret(b"clean response body", &needles));
-
-        let leak = vec![("content-type".to_owned(), format!("text/plain; {b64}"))];
-        assert!(headers_contain_secret(&leak, &needles));
-        let clean = vec![("content-type".to_owned(), "application/json".to_owned())];
-        assert!(!headers_contain_secret(&clean, &needles));
-    }
-
-    #[tokio::test]
-    async fn cancellation_after_terminal_submission_does_not_submit_fallback() {
-        let entered = Arc::new(Notify::new());
-        let release = Arc::new(Notify::new());
-        let commits = Arc::new(AtomicUsize::new(0));
-        let (tracker, worker) = spawn_terminal_worker_with({
-            let entered = Arc::clone(&entered);
-            let release = Arc::clone(&release);
-            let commits = Arc::clone(&commits);
-            move |_| {
-                let entered = Arc::clone(&entered);
-                let release = Arc::clone(&release);
-                let commits = Arc::clone(&commits);
-                async move {
-                    commits.fetch_add(1, Ordering::SeqCst);
-                    entered.notify_one();
-                    release.notified().await;
-                    Ok(())
-                }
-            }
-        });
-        let guard = StartedGuard::new(
-            Arc::clone(&tracker),
-            ExecutionAuditContext {
-                request_id: RequestId::new_random(),
-                session_id: SessionId::new_random(),
-                action: ActionVersionRef {
-                    action_id: ActionId::new_random(),
-                    version: 1,
-                },
-                credential_id: CredentialId::new_random(),
-                authorization: None,
-            },
-        );
-        let commit = tokio::spawn(async move {
-            let mut guard = guard;
-            guard.blocked("test-cancel").await
-        });
-        entered.notified().await;
-        commit.abort();
-        drop(commit.await);
-        release.notify_one();
-        tracker.wait_idle(Duration::from_secs(1)).await.unwrap();
-        assert_eq!(commits.load(Ordering::SeqCst), 1);
-        drop(tracker);
-        worker.await.unwrap();
-    }
-}
+mod tests;

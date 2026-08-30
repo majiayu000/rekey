@@ -99,6 +99,7 @@ impl BrokerCtx {
                 .is_some_and(|status| status.state == "unlocked")
         {
             let Some(proof) = proof else {
+                self.lifecycle.resume_remote_effect_admission_if_running();
                 drop(owner);
                 return StopDisposition::Rejected(BrokerError::Authority(
                     AuthorityError::AuthenticationFailed,
@@ -111,6 +112,7 @@ impl BrokerCtx {
                     | AuthorityError::InvalidUnlockCredential
                     | AuthorityError::UnlockRateLimited),
                 )) => {
+                    self.lifecycle.resume_remote_effect_admission_if_running();
                     drop(owner);
                     return StopDisposition::Rejected(BrokerError::Authority(err));
                 }
