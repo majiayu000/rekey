@@ -4,6 +4,8 @@
 
 use std::fs;
 use std::os::fd::AsRawFd;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -38,6 +40,12 @@ pub fn default_drain_timeout() -> Duration {
 
 pub struct BrokerConfig {
     pub state_dir: PathBuf,
+    /// P1 seam: an isolated Agent endpoint may live outside the private state tree.
+    pub agent_runtime_dir: Option<PathBuf>,
+    /// OS-verified peer UIDs accepted on the Agent endpoint.
+    pub allowed_agent_uids: Vec<u32>,
+    /// Optional shared group for an isolated Agent endpoint (directory 0770, socket 0660).
+    pub agent_socket_gid: Option<u32>,
     pub idle_lock: Duration,
     /// Test seam: production always uses ReqwestUpstreamTransport.
     pub transport: Option<Arc<dyn UpstreamTransport>>,
@@ -50,6 +58,9 @@ impl BrokerConfig {
     pub fn new(state_dir: PathBuf) -> Self {
         Self {
             state_dir,
+            agent_runtime_dir: None,
+            allowed_agent_uids: vec![unsafe { libc::geteuid() }],
+            agent_socket_gid: None,
             idle_lock: rekey_vault::handle::DEFAULT_IDLE_LOCK,
             transport: None,
             unlock_backoff_base: Duration::from_secs(1),
@@ -68,6 +79,7 @@ pub struct BrokerCtx {
     drain_timeout: Duration,
     shutdown_flag: AtomicBool,
     shutdown_tx: watch::Sender<bool>,
+    allowed_agent_uids: Arc<[u32]>,
 }
 
 impl BrokerCtx {
@@ -131,6 +143,10 @@ impl BrokerCtx {
 
     pub fn shutdown_requested(&self) -> bool {
         self.shutdown_flag.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn agent_uid_allowed(&self, uid: u32) -> bool {
+        self.allowed_agent_uids.contains(&uid)
     }
 
     pub async fn unlock(&self, proof: UnlockProof) -> Result<(), BrokerError> {
@@ -294,18 +310,64 @@ fn acquire_serve_lock(state_dir: &std::path::Path) -> Result<ServeLock, Authorit
     Ok(ServeLock { _file: file })
 }
 
-fn bind_socket(path: &std::path::Path) -> Result<UnixListener, BrokerError> {
+fn set_group(path: &std::path::Path, gid: u32) -> Result<(), BrokerError> {
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+        BrokerError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "socket path contains NUL",
+        ))
+    })?;
+    let rc = unsafe { libc::chown(path.as_ptr(), libc::uid_t::MAX, gid) };
+    if rc != 0 {
+        return Err(BrokerError::Io(std::io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
+fn prepare_runtime_dir(
+    path: &std::path::Path,
+    mode: u32,
+    gid: Option<u32>,
+) -> Result<(), BrokerError> {
+    fs::create_dir_all(path).map_err(BrokerError::Io)?;
+    let metadata = fs::metadata(path).map_err(BrokerError::Io)?;
+    if metadata.uid() != unsafe { libc::geteuid() } {
+        return Err(BrokerError::Authority(
+            AuthorityError::InsecureStatePermissions,
+        ));
+    }
+    if let Some(gid) = gid {
+        set_group(path, gid)?;
+    }
+    fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(BrokerError::Io)?;
+    let metadata = fs::metadata(path).map_err(BrokerError::Io)?;
+    if metadata.permissions().mode() & 0o777 != mode
+        || gid.is_some_and(|expected| metadata.gid() != expected)
+    {
+        return Err(BrokerError::Authority(
+            AuthorityError::InsecureStatePermissions,
+        ));
+    }
+    Ok(())
+}
+
+fn bind_socket(
+    path: &std::path::Path,
+    mode: u32,
+    gid: Option<u32>,
+) -> Result<UnixListener, BrokerError> {
     if path.exists() {
         fs::remove_file(path).map_err(BrokerError::Io)?;
     }
     let listener = UnixListener::bind(path).map_err(BrokerError::Io)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(BrokerError::Io)?;
-    let mode = fs::metadata(path)
-        .map_err(BrokerError::Io)?
-        .permissions()
-        .mode()
-        & 0o777;
-    if mode != 0o600 {
+    if let Some(gid) = gid {
+        set_group(path, gid)?;
+    }
+    fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(BrokerError::Io)?;
+    let metadata = fs::metadata(path).map_err(BrokerError::Io)?;
+    if metadata.permissions().mode() & 0o777 != mode
+        || gid.is_some_and(|expected| metadata.gid() != expected)
+    {
         return Err(BrokerError::Authority(
             AuthorityError::InsecureStatePermissions,
         ));
@@ -313,9 +375,41 @@ fn bind_socket(path: &std::path::Path) -> Result<UnixListener, BrokerError> {
     Ok(listener)
 }
 
+fn validate_agent_endpoint(config: &BrokerConfig) -> Result<(), BrokerError> {
+    let broker_uid = unsafe { libc::geteuid() };
+    if config.allowed_agent_uids.is_empty()
+        || (config.agent_runtime_dir.is_none()
+            && (config.agent_socket_gid.is_some()
+                || config
+                    .allowed_agent_uids
+                    .iter()
+                    .any(|uid| *uid != broker_uid)))
+        || (config
+            .allowed_agent_uids
+            .iter()
+            .any(|uid| *uid != broker_uid)
+            && config.agent_socket_gid.is_none())
+    {
+        return Err(BrokerError::Authority(
+            AuthorityError::InsecureStatePermissions,
+        ));
+    }
+    if let Some(agent_dir) = &config.agent_runtime_dir {
+        let state_dir = std::path::absolute(&config.state_dir).map_err(BrokerError::Io)?;
+        let agent_dir = std::path::absolute(agent_dir).map_err(BrokerError::Io)?;
+        if agent_dir.starts_with(state_dir) {
+            return Err(BrokerError::Authority(
+                AuthorityError::InsecureStatePermissions,
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Runs the broker until an admin Shutdown arrives. Foreground only.
 pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
     verify_state_dir_permissions(&config.state_dir)?;
+    validate_agent_endpoint(&config)?;
     let _lock = acquire_serve_lock(&config.state_dir)?;
 
     let mut authority_config = AuthorityConfig::new(config.state_dir.clone());
@@ -324,11 +418,32 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
     let (authority, authority_join) = rekey_vault::authority::spawn_authority(authority_config)?;
 
     let runtime_dir = paths::runtime_dir(&config.state_dir);
-    fs::create_dir_all(&runtime_dir).map_err(BrokerError::Io)?;
-    fs::set_permissions(&runtime_dir, fs::Permissions::from_mode(0o700))
-        .map_err(BrokerError::Io)?;
-    let admin_listener = bind_socket(&paths::admin_socket(&config.state_dir))?;
-    let agent_listener = bind_socket(&paths::agent_socket(&config.state_dir))?;
+    prepare_runtime_dir(&runtime_dir, 0o700, None)?;
+    let agent_runtime_dir = config
+        .agent_runtime_dir
+        .clone()
+        .unwrap_or_else(|| runtime_dir.clone());
+    if config.agent_runtime_dir.is_some() && agent_runtime_dir == runtime_dir {
+        return Err(BrokerError::Authority(
+            AuthorityError::InsecureStatePermissions,
+        ));
+    }
+    if config.agent_runtime_dir.is_some() {
+        let agent_dir_mode = if config.agent_socket_gid.is_some() {
+            0o770
+        } else {
+            0o700
+        };
+        prepare_runtime_dir(&agent_runtime_dir, agent_dir_mode, config.agent_socket_gid)?;
+    }
+    let agent_socket = agent_runtime_dir.join(paths::AGENT_SOCKET_FILE);
+    let admin_listener = bind_socket(&paths::admin_socket(&config.state_dir), 0o600, None)?;
+    let agent_mode = if config.agent_socket_gid.is_some() {
+        0o660
+    } else {
+        0o600
+    };
+    let agent_listener = bind_socket(&agent_socket, agent_mode, config.agent_socket_gid)?;
 
     let sessions = Arc::new(SessionRegistry::new());
     let transport = config
@@ -356,6 +471,7 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
         drain_timeout: config.drain_timeout,
         shutdown_flag: AtomicBool::new(false),
         shutdown_tx,
+        allowed_agent_uids: config.allowed_agent_uids.into(),
     });
 
     // Reserve Admin capacity. An untrusted Agent can exhaust only its own
@@ -468,7 +584,7 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
     }
 
     let _ = fs::remove_file(paths::admin_socket(&config.state_dir));
-    let _ = fs::remove_file(paths::agent_socket(&config.state_dir));
+    let _ = fs::remove_file(agent_socket);
 
     // The authority worker exits after processing Shutdown; joining here
     // guarantees the VRK owner is gone before serve returns.

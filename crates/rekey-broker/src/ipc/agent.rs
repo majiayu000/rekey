@@ -24,7 +24,7 @@ fn agent_code(err: &BrokerError) -> &'static str {
 
 pub async fn handle_agent_conn(mut stream: UnixStream, ctx: Arc<BrokerCtx>) {
     match peer::peer_uid(&stream) {
-        Ok(uid) if uid == peer::current_uid() => {}
+        Ok(uid) if ctx.agent_uid_allowed(uid) => {}
         _ => return,
     }
     loop {

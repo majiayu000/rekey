@@ -177,15 +177,12 @@ async fn restart_revokes_all_sessions() {
 
     // Boot a second broker over the same state directory.
     let fake = std::sync::Arc::new(rekey_broker::testing::FakeUpstreamTransport::new());
-    let config = rekey_broker::runtime::BrokerConfig {
-        state_dir: state_dir.clone(),
-        idle_lock: std::time::Duration::from_secs(300),
-        transport: Some(
-            fake.clone() as std::sync::Arc<dyn rekey_broker::upstream::UpstreamTransport>
-        ),
-        unlock_backoff_base: std::time::Duration::from_millis(20),
-        drain_timeout: std::time::Duration::from_secs(2),
-    };
+    let mut config = rekey_broker::runtime::BrokerConfig::new(state_dir.clone());
+    config.idle_lock = std::time::Duration::from_secs(300);
+    config.transport =
+        Some(fake.clone() as std::sync::Arc<dyn rekey_broker::upstream::UpstreamTransport>);
+    config.unlock_backoff_base = std::time::Duration::from_millis(20);
+    config.drain_timeout = std::time::Duration::from_secs(2);
     let serve_task = tokio::spawn(async move {
         rekey_broker::runtime::serve(config)
             .await

@@ -5,6 +5,24 @@ mod common;
 
 use rekey_domain::ipc::{Channel, admin_msg, agent_msg};
 
+#[tokio::test]
+async fn empty_agent_uid_allowlist_fails_closed() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state_dir = dir.path().join("state");
+    rekey_vault::bootstrap::init_vault(
+        &state_dir,
+        &rekey_vault::secret::SecretInput::from_slice(common::PASSWORD),
+        common::TEST_PARAMS,
+    )
+    .expect("init vault");
+    let mut config = rekey_broker::runtime::BrokerConfig::new(state_dir);
+    config.allowed_agent_uids.clear();
+    let err = rekey_broker::runtime::serve(config)
+        .await
+        .expect_err("empty Agent UID allowlist must reject startup");
+    assert_eq!(err.code(), "INSECURE_STATE_PERMISSIONS");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn admin_messages_rejected_on_agent_socket() {
     let broker = common::start_broker().await;

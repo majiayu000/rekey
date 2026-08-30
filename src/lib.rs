@@ -61,13 +61,12 @@ pub mod harness {
             "initialize test vault",
         );
         let fake = Arc::new(FakeUpstreamTransport::new());
-        let config = BrokerConfig {
-            state_dir: state_dir.clone(),
-            idle_lock: Duration::from_secs(300),
-            transport: Some(Arc::clone(&fake) as Arc<dyn rekey_broker::upstream::UpstreamTransport>),
-            unlock_backoff_base: Duration::from_millis(20),
-            drain_timeout: Duration::from_secs(2),
-        };
+        let mut config = BrokerConfig::new(state_dir.clone());
+        config.idle_lock = Duration::from_secs(300);
+        config.transport =
+            Some(Arc::clone(&fake) as Arc<dyn rekey_broker::upstream::UpstreamTransport>);
+        config.unlock_backoff_base = Duration::from_millis(20);
+        config.drain_timeout = Duration::from_secs(2);
         let serve_task = tokio::spawn(async move {
             must(serve(config).await, "serve test broker");
         });

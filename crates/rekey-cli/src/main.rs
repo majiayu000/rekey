@@ -19,6 +19,9 @@ struct Cli {
     /// State directory (default ~/.rekey).
     #[arg(long, global = true)]
     state_dir: Option<PathBuf>,
+    /// Agent socket path for an isolated data-plane endpoint.
+    #[arg(long, global = true)]
+    agent_socket: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
@@ -190,6 +193,9 @@ fn main() {
             std::process::exit(err.exit_code());
         }
     };
+    let agent_socket = cli
+        .agent_socket
+        .unwrap_or_else(|| state_dir.join("runtime").join("agent.sock"));
     let result = match cli.command {
         Command::Init { password_stdin } => {
             commands::delegate_rekeyd(&state_dir, "init", &[], password_stdin)
@@ -278,7 +284,7 @@ fn main() {
             content_type,
             headers,
         } => commands::execute(
-            &state_dir,
+            &agent_socket,
             &action,
             &capability,
             body_file.as_deref(),

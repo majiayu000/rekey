@@ -731,6 +731,32 @@ Broker:
 
 P0 两个 socket 都是 mode 0600。Linux 使用 `SO_PEERCRED`，macOS 使用 `getpeereid` 获取 peer UID；失败时拒绝，不使用客户端自报 UID。
 
+P1 Linux G2 reference deployment keeps the Admin endpoint under the private
+state runtime directory, but may place the Agent endpoint in a separate runtime
+directory that is the only Broker path mounted into the Agent sandbox. Its
+contract is deliberately small:
+
+- no flags keeps the P0 topology, mode 0600, and current Broker UID as the only
+  allowed Agent peer;
+- an isolated Agent endpoint requires an explicit non-empty Agent UID allowlist;
+- optional group sharing uses a Broker-owned directory at mode 0770 and a
+  socket at mode 0660; mode 0666 is forbidden;
+- peer identity always comes from `SO_PEERCRED`; a claimed UID in an IPC frame
+  is never accepted;
+- directory ownership, group assignment, permission application, or an empty
+  allowlist failure aborts startup rather than falling back to the P0 endpoint;
+- the Agent sandbox never receives the state directory, Admin socket, Docker
+  socket, or unrestricted egress.
+
+The reference attack harness runs the Broker as a non-root Linux UID and an
+Agent attacker as root in a separate container with all capabilities dropped,
+`no-new-privileges`, a read-only root filesystem, separate PID/mount/network
+namespaces, and an internal-only network. It must prove state/Admin/Docker
+socket denial, peer-UID denial, direct-egress denial, and one real capability-
+authorized execution. Passing this harness establishes only the documented
+container/namespace G2 reference boundary; it does not claim resistance to a
+Docker daemon, Linux kernel, VM host, or container-runtime compromise.
+
 ### 12.2 Frame v1
 
 ~~~text

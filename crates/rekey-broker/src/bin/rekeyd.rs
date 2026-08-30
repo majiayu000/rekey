@@ -84,6 +84,15 @@ enum Command {
         /// Idle auto-lock, e.g. 15m, 1h. Range 1m..=120m.
         #[arg(long, default_value = "15m")]
         idle_lock: String,
+        /// Separate directory that exposes only agent.sock to an isolated Agent.
+        #[arg(long)]
+        agent_runtime_dir: Option<PathBuf>,
+        /// OS peer UID accepted on agent.sock (repeatable; defaults to Broker UID).
+        #[arg(long = "agent-uid")]
+        agent_uids: Vec<u32>,
+        /// Shared GID for an isolated agent.sock (directory 0770, socket 0660).
+        #[arg(long)]
+        agent_gid: Option<u32>,
     },
     /// Restore a v2 backup into an empty state directory (offline).
     Restore {
@@ -219,11 +228,31 @@ fn cmd_restore(
     Ok(())
 }
 
-fn cmd_serve(state_dir: Option<PathBuf>, idle_lock: &str) -> Result<(), RekeydError> {
+fn cmd_serve(
+    state_dir: Option<PathBuf>,
+    idle_lock: &str,
+    agent_runtime_dir: Option<PathBuf>,
+    mut agent_uids: Vec<u32>,
+    agent_gid: Option<u32>,
+) -> Result<(), RekeydError> {
     let state_dir = resolve_state_dir(state_dir)?;
     let idle = parse_duration(idle_lock)?;
     if idle < Duration::from_secs(60) || idle > Duration::from_secs(120 * 60) {
         return Err(usage("idle lock must be between 1m and 120m"));
+    }
+    let broker_uid = unsafe { libc::geteuid() };
+    if agent_uids.is_empty() {
+        agent_uids.push(broker_uid);
+    }
+    agent_uids.sort_unstable();
+    agent_uids.dedup();
+    if agent_runtime_dir.is_none() && (agent_gid.is_some() || agent_uids != [broker_uid]) {
+        return Err(usage(
+            "custom Agent identity requires --agent-runtime-dir and --agent-gid",
+        ));
+    }
+    if agent_uids.iter().any(|uid| *uid != broker_uid) && agent_gid.is_none() {
+        return Err(usage("a different --agent-uid requires --agent-gid"));
     }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -231,6 +260,9 @@ fn cmd_serve(state_dir: Option<PathBuf>, idle_lock: &str) -> Result<(), RekeydEr
         .map_err(|err| usage(format!("cannot start runtime: {err}")))?;
     let config = BrokerConfig {
         state_dir,
+        agent_runtime_dir,
+        allowed_agent_uids: agent_uids,
+        agent_socket_gid: agent_gid,
         idle_lock: idle,
         transport: None,
         unlock_backoff_base: Duration::from_secs(1),
@@ -259,7 +291,16 @@ fn main() {
         Command::Serve {
             state_dir,
             idle_lock,
-        } => cmd_serve(state_dir, &idle_lock),
+            agent_runtime_dir,
+            agent_uids,
+            agent_gid,
+        } => cmd_serve(
+            state_dir,
+            &idle_lock,
+            agent_runtime_dir,
+            agent_uids,
+            agent_gid,
+        ),
         Command::Restore {
             input,
             state_dir,

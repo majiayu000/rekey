@@ -134,16 +134,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         hits_path,
     ));
 
-    serve(BrokerConfig {
-        state_dir,
-        idle_lock: Duration::from_secs(15 * 60),
-        transport: Some(Arc::new(LocalTlsTransport {
-            address,
-            ca_der: Arc::new(ca_der),
-        })),
-        unlock_backoff_base: Duration::from_millis(250),
-        drain_timeout: Duration::from_secs(30),
-    })
-    .await?;
+    let mut config = BrokerConfig::new(state_dir);
+    config.idle_lock = Duration::from_secs(15 * 60);
+    config.transport = Some(Arc::new(LocalTlsTransport {
+        address,
+        ca_der: Arc::new(ca_der),
+    }));
+    config.unlock_backoff_base = Duration::from_millis(250);
+    config.drain_timeout = Duration::from_secs(30);
+    serve(config).await?;
     Ok(())
 }

@@ -23,16 +23,12 @@ fn admin_socket(state_dir: &Path) -> PathBuf {
     state_dir.join("runtime").join("admin.sock")
 }
 
-fn agent_socket(state_dir: &Path) -> PathBuf {
-    state_dir.join("runtime").join("agent.sock")
-}
-
 fn admin(state_dir: &Path) -> Result<Client, CliError> {
     Client::connect(&admin_socket(state_dir), Channel::Admin)
 }
 
-fn agent(state_dir: &Path) -> Result<Client, CliError> {
-    Client::connect(&agent_socket(state_dir), Channel::Agent)
+fn agent(socket: &Path) -> Result<Client, CliError> {
+    Client::connect(socket, Channel::Agent)
 }
 
 fn print_json(metadata: &[u8]) {
@@ -423,7 +419,7 @@ pub fn policy_status(state_dir: &Path) -> Result<(), CliError> {
 }
 
 pub fn execute(
-    state_dir: &Path,
+    agent_socket: &Path,
     action: &str,
     capability: &str,
     body_file: Option<&Path>,
@@ -456,7 +452,7 @@ pub fn execute(
         "content_type": content_type,
         "extra_headers": extra_headers,
     });
-    let (meta, response_body) = agent(state_dir)?.call(
+    let (meta, response_body) = agent(agent_socket)?.call(
         agent_msg::EXECUTE_FIXED_HTTP_ACTION,
         metadata.to_string().as_bytes(),
         &body,
