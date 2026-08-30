@@ -967,16 +967,18 @@ Agent 输入 fake 的契约测试仍使用 injected `UpstreamTransport`。第 2 
 - 只能由 Unlocked Broker 在 Admin step-up 后执行。
 - 使用 SQLite Online Backup API 获取一致快照，不直接复制主 DB。
 - 输出只包含 SQLite ciphertext、wrapped keys 和 metadata，不包含 VRK/DEK/plaintext。
-- final output 和临时 sibling 都必须在 canonical state tree 之外；相对路径、直接子路径和通过 symlink alias 指回 state tree 的路径一律在删除、snapshot 或 rename 前拒绝。
-- 输出文件先写临时 sibling，fsync 文件，原子 rename，再 fsync 父目录。open 或 fsync 失败必须返回 `BackupFailed`，不得忽略。最终 mode 0600。
-- backup receipt 包含 vault_id、format_version、created_at、SHA-256，不含路径外的敏感数据。
+- final output 必须在 canonical state tree 之外；相对路径、直接子路径和通过 symlink alias 指回 state tree 的路径一律在 open 前拒绝。SQLite Online Backup 只写 state tree 内的保护性内部 snapshot；不得在 external sibling 生成可预测 tmp。内部 snapshot 是 Rekey 保留路径，必须 create-new + no-follow 打开；它在释放审计前不得离开 protected tree。
+- 内部 snapshot fsync 后，必须在任何 external byte 写入前先持久提交 `backup.release_authorized`。该事件是安全边界证据，表示 Authority 已授权一次 ciphertext backup 释放，不表示调用者已收到 receipt。然后以 create-new + no-follow 直接打开 final output，立即对已打开 fd 执行 `fchmod(0600)` 并以 `fstat` 验证，不依赖 umask。用固定大小 buffer 从内部 snapshot 流式复制并同时计算 SHA-256，fsync final 和父目录。backup/restore 不得为 hash 或 copy 将整个文件读入内存。
+- final output 在 file fsync + 父目录 fsync + `backup.created` 成功提交前不是成功 backup。external final 一旦 create-new 成功，任何后续普通失败都不得再通过 pathname 自动 unlink，因为 inode 校验与 pathname unlink 无法原子绑定，自动清理可删除替换后的非 Rekey 文件。失败不返回 receipt，只清理 protected internal snapshot；内部清理无法持久化时 Authority 进入 Faulted。跨 SQLite 与 filesystem 不声称原子性：`backup.release_authorized` 之后的失败或 SIGKILL 可能留下 partial 或 complete external file，但必定有先行 release audit，且没有 `backup.created` 或 receipt 成功声明。调用方只能信任已获得 receipt 且 SHA-256 匹配的 artifact；其他遗留文件必须视为未成功、由人工处置的 authorized artifact。
+- backup receipt 只在上述成功点后返回，包含 vault_id、format_version、created_at、SHA-256，不含路径外的敏感数据。
 
 ### 16.2 Restore
 
 - restore 是离线 bootstrap operation；Broker 必须未运行，目标 state-dir 必须为空。
 - 调用方必须提供 backup receipt 的 SHA-256（64 hex）；缺失、格式错误或 mismatch 都失败，不得安装。
 - 验证 SQLite quick_check、schema_digest、format_version、至少一个 wrapper 行、VRK 解包、header 内 encrypted integrity record，以及 **每一条** `credential_versions` payload。不能只检查数据库结构或只解密第一条 Credential。
-- 先写入 staging 文件并完成上述验证，fsync 文件，rename 到 `vault.sqlite3`，再 fsync 父目录。失败删除 staging 与任何半恢复文件，不留下可启动的 vault。
+- 在写 staging 前先持久化 incomplete marker；Broker 见到 marker 必须拒绝启动。输入以固定大小 buffer 流式复制到 staging 并同时计算 SHA-256，对 staging 完成上述验证与 `restore.completed` 提交，fsync 文件，rename 到 `vault.sqlite3`，再 fsync 父目录。
+- 只有安装文件已持久化后才能删除 marker 并再次 fsync 父目录；这是 restore 成功点。成功点之前的失败必须删除 staging、installed DB 及 SQLite sidecar，并持久化清理；无法证明清理完成时必须保留 marker，确保不留下可启动的半恢复 vault。后续 restore 只能在取得 offline lock 后清理该 marker 所标记的已中断内部 artifact，不得删除未知文件。
 - 只恢复 format version 3；不支持 v1/v2 或未来未知版本。
 
 ## 17. Error Taxonomy
@@ -1058,6 +1060,7 @@ session.revoked
 execution.started
 execution.finished
 execution.blocked
+backup.release_authorized
 backup.created
 restore.completed
 runtime.faulted
@@ -1389,7 +1392,7 @@ daemon，也不得进入生产 `rekeyd` 路径。
 | Agent IPC | frame parser | message allowlist | execute | arbitrary URL/auth/message type |
 | Capability | TTL/use/hash | session matrix | restart revoke | replay/cross-action |
 | HTTP Action | validation | transport fake | TLS upstream | SSRF/redirect/reflection |
-| Backup | hash/format | online snapshot | restore/open | truncate/tamper/wrong key |
+| Backup/restore | streaming hash/format | online snapshot/marker cleanup | real `rekeyd` backup/restore | audit fault/SIGKILL/bounded RSS via `scripts/p0-durability.sh` |
 | Audit | event schema | no-secret fields | execution sequence | write failure/canary |
 
 额外机械检查：

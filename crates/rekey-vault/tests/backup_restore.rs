@@ -10,23 +10,17 @@ use rekey_domain::credential::CredentialLabel;
 use rekey_vault::bootstrap::{RestoreProof, restore_vault};
 use rekey_vault::error::AuthorityError;
 use rekey_vault::secret::SecretInput;
-use sha2::{Digest, Sha256};
 
 const SECRET_CANARY: &[u8] = b"backup-canary-secret-0xDEADBEEF";
 
 fn file_sha256(path: &Path) -> String {
-    let bytes = fs::read(path).unwrap();
-    Sha256::digest(&bytes)
-        .iter()
-        .fold(String::with_capacity(64), |mut s, b| {
-            use std::fmt::Write;
-            let _ = write!(s, "{b:02x}");
-            s
-        })
+    rekey_vault::durable::sha256_file(path).unwrap()
 }
 
 #[tokio::test]
 async fn backup_roundtrip_and_restore() {
+    use std::os::unix::fs::PermissionsExt;
+
     let vault = common::init_test_vault();
     let (handle, join) = common::spawn(&vault.state_dir);
     handle.unlock(common::password_proof()).await.unwrap();
@@ -47,6 +41,30 @@ async fn backup_roundtrip_and_restore() {
     assert_eq!(receipt.format_version, 3);
     assert_eq!(receipt.vault_id, vault.outcome.vault_id);
     assert_eq!(receipt.sha256_hex.len(), 64);
+    assert_eq!(
+        fs::metadata(&backup_path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let audit = rekey_vault::store::SqliteRecordStore::open(&rekey_vault::paths::vault_db(
+        &vault.state_dir,
+    ))
+    .unwrap()
+    .audit_event_types()
+    .unwrap();
+    assert_eq!(
+        audit
+            .iter()
+            .filter(|kind| *kind == "backup.created")
+            .count(),
+        1
+    );
+    assert_eq!(
+        audit
+            .iter()
+            .filter(|kind| *kind == "backup.release_authorized")
+            .count(),
+        1
+    );
 
     // Ciphertext-only: the backup bytes never contain the plaintext secret.
     let bytes = fs::read(&backup_path).unwrap();
@@ -182,6 +200,7 @@ async fn restore_rejects_wrong_sha256_without_installing() {
     assert!(matches!(err, AuthorityError::RestoreFailed));
     assert!(!rekey_vault::paths::vault_db(&target).exists());
     assert!(!target.join(".incoming-vault.sqlite3").exists());
+    assert!(!rekey_vault::paths::restore_incomplete(&target).exists());
 }
 
 #[tokio::test]
@@ -321,7 +340,7 @@ async fn backup_fails_when_parent_directory_cannot_be_fsynced() {
     fs::set_permissions(&dest, perms).unwrap();
 
     let err = handle
-        .backup(output, common::password_proof())
+        .backup(output.clone(), common::password_proof())
         .await
         .unwrap_err();
     assert!(
@@ -332,6 +351,227 @@ async fn backup_fails_when_parent_directory_cannot_be_fsynced() {
     let mut perms = fs::metadata(&dest).unwrap().permissions();
     perms.set_mode(0o700);
     fs::set_permissions(&dest, perms).unwrap();
+    assert!(
+        output.exists(),
+        "an authorized external artifact is never pathname-unlinked after creation"
+    );
+    assert!(!rekey_vault::paths::backup_snapshot(&vault.state_dir).exists());
+    let audit = rusqlite::Connection::open(rekey_vault::paths::vault_db(&vault.state_dir)).unwrap();
+    assert_eq!(
+        audit
+            .query_row(
+                "SELECT count(*) FROM audit_events WHERE event_type = 'backup.release_authorized'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        audit
+            .query_row(
+                "SELECT count(*) FROM audit_events WHERE event_type = 'backup.created'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        0
+    );
+    assert_eq!(handle.status().await.unwrap().state, "unlocked");
+    handle
+        .shutdown(Some(common::password_proof()))
+        .await
+        .unwrap();
+    join.join().unwrap();
+}
+
+#[tokio::test]
+async fn backup_audit_failure_leaves_authorized_artifact_without_receipt() {
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+
+    let db = rekey_vault::paths::vault_db(&vault.state_dir);
+    let tamper = rusqlite::Connection::open(&db).unwrap();
+    tamper
+        .execute_batch(
+            "CREATE TRIGGER fail_backup_created
+             BEFORE INSERT ON audit_events
+             WHEN NEW.event_type = 'backup.created'
+             BEGIN SELECT RAISE(ABORT, 'injected final backup audit failure'); END;",
+        )
+        .unwrap();
+    drop(tamper);
+
+    let output = vault.dir.path().join("audit-failure.rkbackup");
+    let err = handle
+        .backup(output.clone(), common::password_proof())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AuthorityError::AuditCommitFailed));
+    assert!(
+        output.exists(),
+        "authorized artifact must not be pathname-unlinked after creation"
+    );
+    let artifact = rusqlite::Connection::open(&output).unwrap();
+    assert_eq!(
+        artifact
+            .query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0))
+            .unwrap(),
+        "ok"
+    );
+    drop(artifact);
+    assert!(!rekey_vault::paths::backup_snapshot(&vault.state_dir).exists());
+    assert_eq!(handle.status().await.unwrap().state, "faulted");
+    let audit = rusqlite::Connection::open(&db).unwrap();
+    assert_eq!(
+        audit
+            .query_row(
+                "SELECT count(*) FROM audit_events WHERE event_type = 'backup.release_authorized'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        audit
+            .query_row(
+                "SELECT count(*) FROM audit_events WHERE event_type = 'backup.created'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        0
+    );
+
+    handle.shutdown(None).await.unwrap();
+    join.join().unwrap();
+}
+
+#[tokio::test]
+async fn backup_refuses_to_overwrite_an_existing_artifact() {
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+
+    let output = vault.dir.path().join("existing.rkbackup");
+    fs::write(&output, b"keep-existing-backup").unwrap();
+    let err = handle
+        .backup(output.clone(), common::password_proof())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AuthorityError::BackupFailed));
+    assert_eq!(fs::read(&output).unwrap(), b"keep-existing-backup");
+
+    handle
+        .shutdown(Some(common::password_proof()))
+        .await
+        .unwrap();
+    join.join().unwrap();
+}
+
+#[tokio::test]
+async fn backup_never_touches_external_sibling_or_symlink_target() {
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+
+    let output = vault.dir.path().join("owned-output.rkbackup");
+    let old_style_sibling = output.with_extension("rkbackup.tmp");
+    let victim = vault.dir.path().join("victim");
+    fs::write(&old_style_sibling, b"unowned-sibling").unwrap();
+    fs::write(&victim, b"unowned-victim").unwrap();
+    std::os::unix::fs::symlink(&victim, &output).unwrap();
+
+    let err = handle
+        .backup(output.clone(), common::password_proof())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AuthorityError::BackupFailed));
+    assert_eq!(fs::read(&victim).unwrap(), b"unowned-victim");
+    assert_eq!(fs::read(&old_style_sibling).unwrap(), b"unowned-sibling");
+    fs::remove_file(&output).unwrap();
+
+    let internal = rekey_vault::paths::backup_snapshot(&vault.state_dir);
+    std::os::unix::fs::symlink(&victim, &internal).unwrap();
+    handle
+        .backup(output.clone(), common::password_proof())
+        .await
+        .unwrap();
+    assert_eq!(fs::read(&victim).unwrap(), b"unowned-victim");
+    assert_eq!(fs::read(&old_style_sibling).unwrap(), b"unowned-sibling");
+    assert!(!internal.exists());
+
+    handle
+        .shutdown(Some(common::password_proof()))
+        .await
+        .unwrap();
+    join.join().unwrap();
+}
+
+#[tokio::test]
+async fn internal_snapshot_cleanup_failure_faults_authority() {
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+
+    let internal = rekey_vault::paths::backup_snapshot(&vault.state_dir);
+    fs::create_dir(&internal).unwrap();
+    let output = vault.dir.path().join("must-not-exist.rkbackup");
+    let err = handle
+        .backup(output.clone(), common::password_proof())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AuthorityError::BackupFailed));
+    assert!(!output.exists());
+    assert_eq!(handle.status().await.unwrap().state, "faulted");
+
+    handle.shutdown(None).await.unwrap();
+    join.join().unwrap();
+}
+
+#[tokio::test]
+async fn restore_recovers_only_marked_internal_artifacts_before_retry() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+    let backup_path = vault.dir.path().join("retry-source.rkbackup");
+    let receipt = handle
+        .backup(backup_path.clone(), common::password_proof())
+        .await
+        .unwrap();
+    handle
+        .shutdown(Some(common::password_proof()))
+        .await
+        .unwrap();
+    join.join().unwrap();
+
+    let target = vault.dir.path().join("interrupted-restore");
+    fs::create_dir(&target).unwrap();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::copy(&backup_path, rekey_vault::paths::vault_db(&target)).unwrap();
+    fs::copy(&backup_path, target.join(".incoming-vault.sqlite3")).unwrap();
+    fs::write(
+        rekey_vault::paths::restore_incomplete(&target),
+        b"rekey-restore-incomplete-v1\n",
+    )
+    .unwrap();
+
+    let restored_id = restore_vault(
+        &backup_path,
+        &target,
+        RestoreProof::Password(common::password_input()),
+        &receipt.sha256_hex,
+    )
+    .unwrap();
+    assert_eq!(restored_id, vault.outcome.vault_id);
+    assert!(!rekey_vault::paths::restore_incomplete(&target).exists());
+    assert!(!target.join(".incoming-vault.sqlite3").exists());
+
+    let (handle, join) = common::spawn(&target);
     handle
         .shutdown(Some(common::password_proof()))
         .await

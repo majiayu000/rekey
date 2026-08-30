@@ -200,6 +200,7 @@ pub mod event_type {
     pub const EXECUTION_STARTED: &str = "execution.started";
     pub const EXECUTION_FINISHED: &str = "execution.finished";
     pub const EXECUTION_BLOCKED: &str = "execution.blocked";
+    pub const BACKUP_RELEASE_AUTHORIZED: &str = "backup.release_authorized";
     pub const BACKUP_CREATED: &str = "backup.created";
     pub const RESTORE_COMPLETED: &str = "restore.completed";
     pub const RUNTIME_FAULTED: &str = "runtime.faulted";

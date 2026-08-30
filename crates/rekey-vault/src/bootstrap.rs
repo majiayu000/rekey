@@ -2,13 +2,13 @@
 //! the state directory and never touch a v1 vault.
 
 use std::fs;
+use std::io::Write;
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rekey_domain::ids::{VaultId, WrapperId};
-use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::crypto::aad::{AadPurpose, AadV1};
@@ -56,6 +56,15 @@ fn dir_is_empty(dir: &Path) -> Result<bool, AuthorityError> {
     Ok(entries.next().is_none())
 }
 
+fn dir_is_restore_empty(dir: &Path) -> Result<bool, AuthorityError> {
+    let mut entries = fs::read_dir(dir).map_err(AuthorityError::storage)?;
+    Ok(entries.all(|entry| {
+        entry
+            .map(|entry| entry.file_name() == paths::BROKER_LOCK_FILE)
+            .unwrap_or(false)
+    }))
+}
+
 pub fn verify_state_dir_permissions(dir: &Path) -> Result<(), AuthorityError> {
     let meta = fs::metadata(dir).map_err(AuthorityError::storage)?;
     if meta.permissions().mode() & 0o077 != 0 {
@@ -91,17 +100,6 @@ pub fn discard_vault_files(state_dir: &Path) {
     if dir_is_empty(state_dir).unwrap_or(false) {
         let _ = fs::remove_dir(state_dir);
     }
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    digest
-        .iter()
-        .fold(String::with_capacity(digest.len() * 2), |mut s, b| {
-            use std::fmt::Write;
-            let _ = write!(s, "{b:02x}");
-            s
-        })
 }
 
 /// Held for the duration of an offline bootstrap operation.
@@ -342,7 +340,7 @@ fn init_vault_inner(
     })
 }
 
-/// Offline restore of a v2 backup into an empty target state directory.
+/// Offline restore of a v3 backup into an empty target state directory.
 /// `expected_sha256_hex` is the backup receipt hash and is mandatory.
 pub fn restore_vault(
     backup_file: &Path,
@@ -350,31 +348,35 @@ pub fn restore_vault(
     proof: RestoreProof,
     expected_sha256_hex: &str,
 ) -> Result<VaultId, AuthorityError> {
-    let created_dir = if target_state_dir.exists() {
-        if !dir_is_empty(target_state_dir)? {
+    if target_state_dir.exists() {
+        if !restore_marker_is_regular(target_state_dir)? && !dir_is_restore_empty(target_state_dir)?
+        {
             return Err(AuthorityError::StateDirectoryNotEmpty);
         }
-        false
     } else {
         fs::create_dir_all(target_state_dir).map_err(AuthorityError::storage)?;
-        true
-    };
+    }
     fs::set_permissions(target_state_dir, fs::Permissions::from_mode(0o700))
         .map_err(AuthorityError::storage)?;
 
-    match restore_inner(backup_file, target_state_dir, proof, expected_sha256_hex) {
-        Ok(vault_id) => Ok(vault_id),
-        Err(err) => {
-            if created_dir {
-                let _ = fs::remove_dir_all(target_state_dir);
-            } else {
-                discard_vault_files(target_state_dir);
-                let staging = target_state_dir.join(".incoming-vault.sqlite3");
-                remove_sqlite_bundle(&staging);
-            }
-            Err(err)
-        }
+    let _lock = BootstrapLock::acquire(target_state_dir)?;
+    if restore_marker_is_regular(target_state_dir)? {
+        cleanup_restore_artifacts(target_state_dir).map_err(|_| AuthorityError::RestoreFailed)?;
+        remove_restore_marker(target_state_dir).map_err(|_| AuthorityError::RestoreFailed)?;
     }
+    if !dir_is_restore_empty(target_state_dir)? {
+        return Err(AuthorityError::StateDirectoryNotEmpty);
+    }
+    create_restore_marker(target_state_dir).map_err(|_| AuthorityError::RestoreFailed)?;
+
+    let result = restore_inner(backup_file, target_state_dir, proof, expected_sha256_hex);
+    if result.is_err() {
+        if cleanup_failed_restore(target_state_dir).is_err() {
+            return Err(AuthorityError::RestoreFailed);
+        }
+        return result;
+    }
+    result
 }
 
 fn restore_inner(
@@ -383,20 +385,15 @@ fn restore_inner(
     proof: RestoreProof,
     expected_sha256_hex: &str,
 ) -> Result<VaultId, AuthorityError> {
-    let _lock = BootstrapLock::acquire(target_state_dir)?;
     if !is_sha256_hex(expected_sha256_hex) {
         return Err(AuthorityError::RestoreFailed);
     }
-    let bytes = fs::read(backup_file).map_err(|_| AuthorityError::RestoreFailed)?;
-    let digest = sha256_hex(&bytes);
+    let staging = target_state_dir.join(".incoming-vault.sqlite3");
+    let digest = crate::durable::copy_and_sha256(backup_file, &staging)
+        .map_err(|_| AuthorityError::RestoreFailed)?;
     if !digest.eq_ignore_ascii_case(expected_sha256_hex) {
         return Err(AuthorityError::RestoreFailed);
     }
-
-    let staging = target_state_dir.join(".incoming-vault.sqlite3");
-    fs::write(&staging, &bytes).map_err(|_| AuthorityError::RestoreFailed)?;
-    fs::set_permissions(&staging, fs::Permissions::from_mode(0o600))
-        .map_err(AuthorityError::storage)?;
 
     let mut store = SqliteRecordStore::open(&staging).map_err(|err| match err {
         AuthorityError::StorageIntegrityFailed
@@ -439,9 +436,68 @@ fn restore_inner(
     fs::rename(&staging, &installed).map_err(|_| AuthorityError::RestoreFailed)?;
     crate::durable::fsync(target_state_dir).map_err(|_| AuthorityError::RestoreFailed)?;
     for side in sqlite_sidecars(&staging) {
-        let _ = fs::remove_file(side);
+        remove_if_present(&side).map_err(|_| AuthorityError::RestoreFailed)?;
     }
+    crate::durable::fsync(target_state_dir).map_err(|_| AuthorityError::RestoreFailed)?;
+    remove_restore_marker(target_state_dir).map_err(|_| AuthorityError::RestoreFailed)?;
     Ok(header.vault_id)
+}
+
+fn restore_marker_is_regular(state_dir: &Path) -> Result<bool, AuthorityError> {
+    match fs::symlink_metadata(paths::restore_incomplete(state_dir)) {
+        Ok(metadata) if metadata.file_type().is_file() => Ok(true),
+        Ok(_) => Err(AuthorityError::UnsupportedVaultLayout),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(AuthorityError::storage(err)),
+    }
+}
+
+fn create_restore_marker(state_dir: &Path) -> std::io::Result<()> {
+    let marker = paths::restore_incomplete(state_dir);
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&marker)?;
+    file.write_all(b"rekey-restore-incomplete-v1\n")?;
+    file.sync_all()?;
+    crate::durable::fsync(state_dir)
+}
+
+fn remove_restore_marker(state_dir: &Path) -> std::io::Result<()> {
+    crate::durable::remove_file_and_sync(&paths::restore_incomplete(state_dir))
+}
+
+fn cleanup_failed_restore(state_dir: &Path) -> std::io::Result<()> {
+    if !paths::restore_incomplete(state_dir).exists() {
+        create_restore_marker(state_dir)?;
+    }
+    cleanup_restore_artifacts(state_dir)?;
+    remove_restore_marker(state_dir)
+}
+
+fn cleanup_restore_artifacts(state_dir: &Path) -> std::io::Result<()> {
+    let staging = state_dir.join(".incoming-vault.sqlite3");
+    let installed = paths::vault_db(state_dir);
+    for path in [
+        installed.clone(),
+        sqlite_sidecars(&installed)[0].clone(),
+        sqlite_sidecars(&installed)[1].clone(),
+        staging.clone(),
+        sqlite_sidecars(&staging)[0].clone(),
+        sqlite_sidecars(&staging)[1].clone(),
+    ] {
+        remove_if_present(&path)?;
+    }
+    crate::durable::fsync(state_dir)
+}
+
+fn remove_if_present(path: &Path) -> std::io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
 }
 
 fn is_sha256_hex(value: &str) -> bool {

@@ -84,6 +84,20 @@ fn empty_dir_serve_reports_not_initialized() {
 }
 
 #[test]
+fn incomplete_restore_marker_blocks_authority_startup() {
+    let vault = common::init_test_vault();
+    fs::write(
+        paths::restore_incomplete(&vault.state_dir),
+        b"rekey-restore-incomplete-v1\n",
+    )
+    .unwrap();
+    let err = common::expect_err(rekey_vault::authority::spawn_authority(
+        common::test_config(&vault.state_dir),
+    ));
+    assert!(matches!(err, AuthorityError::UnsupportedVaultLayout));
+}
+
+#[test]
 fn insecure_permissions_rejected() {
     let vault = common::init_test_vault();
     fs::set_permissions(&vault.state_dir, fs::Permissions::from_mode(0o755)).unwrap();

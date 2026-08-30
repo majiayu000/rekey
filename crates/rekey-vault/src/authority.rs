@@ -2,7 +2,6 @@
 //! VRK, and every credential mutation. Runs on a dedicated blocking thread;
 //! everything else talks to it through the bounded queue in `handle`.
 
-use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rekey_domain::action::FixedHttpAction;
@@ -10,16 +9,14 @@ use rekey_domain::credential::{
     CredentialKind, CredentialLabel, CredentialMetadata, CredentialState, VersionState,
 };
 use rekey_domain::ids::{ActionId, CredentialId};
-use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 use zeroize::Zeroizing;
 
 use crate::bootstrap::{kek_for_wrapper, unwrap_vrk, verify_state_dir_permissions};
 use crate::command::{
-    ActionDefinition, AuditDraft, AuthorityCommand, BackupInfo, PinnedAction, StatusInfo,
-    UnlockProof,
+    ActionDefinition, AuditDraft, AuthorityCommand, PinnedAction, StatusInfo, UnlockProof,
 };
-use crate::convert::{action_to_record, hex, record_to_action, record_to_metadata};
+use crate::convert::{action_to_record, record_to_action, record_to_metadata};
 use crate::crypto::aad::{AadPurpose, AadV1};
 use crate::crypto::keys::{DataKey, RootKey};
 use crate::crypto::{AAD_VERSION_V1, CRYPTO_SUITE_V1, aead, random_array};
@@ -31,6 +28,8 @@ use crate::model::{
 use crate::paths;
 use crate::secret::{PreparedCredential, SecretInput};
 use crate::store::SqliteRecordStore;
+
+mod backup;
 
 const FREE_UNLOCK_FAILURES: u32 = 3;
 const UNLOCK_BACKOFF_CAP: Duration = Duration::from_secs(30);
@@ -87,6 +86,11 @@ pub fn spawn_authority(
 ) -> Result<(AuthorityHandle, std::thread::JoinHandle<()>), AuthorityError> {
     config.validate()?;
     verify_state_dir_permissions(&config.state_dir)?;
+    match std::fs::symlink_metadata(paths::restore_incomplete(&config.state_dir)) {
+        Ok(_) => return Err(AuthorityError::UnsupportedVaultLayout),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(AuthorityError::storage(err)),
+    }
     let db = paths::vault_db(&config.state_dir);
     if !db.exists() {
         let mut entries = std::fs::read_dir(&config.state_dir).map_err(AuthorityError::storage)?;
@@ -724,42 +728,6 @@ impl Worker {
             credential_id,
             version.version,
         ))
-    }
-
-    fn backup(
-        &mut self,
-        output: PathBuf,
-        proof: UnlockProof,
-    ) -> Result<BackupInfo, AuthorityError> {
-        self.require_unlocked()?;
-        self.verify_proof(&proof)?;
-        let tmp = output.with_extension("rkbackup.tmp");
-        crate::durable::ensure_outside_tree(&output, &self.config.state_dir)
-            .map_err(|_| AuthorityError::BackupFailed)?;
-        crate::durable::ensure_outside_tree(&tmp, &self.config.state_dir)
-            .map_err(|_| AuthorityError::BackupFailed)?;
-        if tmp.exists() {
-            std::fs::remove_file(&tmp).map_err(|_| AuthorityError::BackupFailed)?;
-        }
-        self.store.backup_to(&tmp)?;
-        crate::durable::fsync(&tmp).map_err(|_| AuthorityError::BackupFailed)?;
-        std::fs::rename(&tmp, &output).map_err(|_| AuthorityError::BackupFailed)?;
-        crate::durable::fsync_parent(&output).map_err(|_| AuthorityError::BackupFailed)?;
-        let bytes = std::fs::read(&output).map_err(|_| AuthorityError::BackupFailed)?;
-        let sha256_hex = hex(&Sha256::digest(&bytes));
-        let info = BackupInfo {
-            vault_id: self.header.vault_id,
-            format_version: self.header.format_version,
-            created_at_ms: now_ms(),
-            sha256_hex,
-            output_path: output,
-        };
-        self.append_audit(unlock_audit(
-            event_type::BACKUP_CREATED,
-            outcome::SUCCESS,
-            "backup",
-        ))?;
-        Ok(info)
     }
 }
 

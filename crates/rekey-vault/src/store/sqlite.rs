@@ -2,9 +2,9 @@ use std::path::{Path, PathBuf};
 
 use rekey_domain::credential::{CredentialKind, CredentialState, VersionState};
 use rekey_domain::ids::{ActionId, CredentialId, VaultId, WrapperId};
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 
-use super::connection::{open_existing, open_new, secure_file, secure_sqlite_bundle};
+use super::connection::{open_existing, open_new, secure_sqlite_bundle};
 use super::schema::{SCHEMA_SQL, schema_digest};
 use crate::error::AuthorityError;
 use crate::model::{
@@ -508,9 +508,24 @@ impl SqliteRecordStore {
 
     /// Consistent online snapshot via the SQLite Backup API; never a plain
     /// file copy of a live WAL database.
-    pub fn backup_to(&self, dest: &Path) -> Result<(), AuthorityError> {
-        let mut dst = Connection::open(dest).map_err(|_| AuthorityError::BackupFailed)?;
-        secure_file(dest)?;
+    pub fn backup_to(
+        &self,
+        dest: &Path,
+        created_file: &std::fs::File,
+    ) -> Result<(), AuthorityError> {
+        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW;
+        let name = dest.file_name().ok_or(AuthorityError::BackupFailed)?;
+        let resolved = crate::durable::parent_dir(dest)
+            .canonicalize()
+            .map_err(|_| AuthorityError::BackupFailed)?
+            .join(name);
+        let mut dst = Connection::open_with_flags(&resolved, flags)
+            .map_err(|_| AuthorityError::BackupFailed)?;
+        if !crate::durable::same_file(created_file, &resolved)
+            .map_err(|_| AuthorityError::BackupFailed)?
+        {
+            return Err(AuthorityError::BackupFailed);
+        }
         let backup = rusqlite::backup::Backup::new(&self.conn, &mut dst)
             .map_err(|_| AuthorityError::BackupFailed)?;
         backup
