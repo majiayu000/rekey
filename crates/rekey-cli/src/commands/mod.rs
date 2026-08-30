@@ -3,6 +3,7 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use rekey_domain::ids::{ActionId, CredentialId, SessionId};
 use rekey_domain::ipc::{self, Channel, ProofKind, admin_msg, agent_msg};
@@ -10,6 +11,10 @@ use serde::Deserialize;
 use zeroize::Zeroizing;
 
 use crate::client::{CliError, Client};
+
+const ACTION_RESPONSE_TIMEOUT: Duration = Duration::from_secs(130);
+const DRAIN_RESPONSE_TIMEOUT: Duration = Duration::from_secs(130);
+const BACKUP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Deserialize)]
 struct GitHubProfileMarker<'a> {
@@ -34,8 +39,15 @@ fn admin(state_dir: &Path) -> Result<Client, CliError> {
     Client::connect(&admin_socket(state_dir), Channel::Admin)
 }
 
-fn agent(socket: &Path) -> Result<Client, CliError> {
-    Client::connect(socket, Channel::Agent)
+fn admin_with_response_timeout(
+    state_dir: &Path,
+    response_timeout: Duration,
+) -> Result<Client, CliError> {
+    Client::connect_with_response_timeout(
+        &admin_socket(state_dir),
+        Channel::Admin,
+        response_timeout,
+    )
 }
 
 fn print_json(metadata: &[u8]) {
@@ -176,7 +188,11 @@ pub fn unlock(state_dir: &Path, recovery: bool, password_stdin: bool) -> Result<
 }
 
 pub fn lock(state_dir: &Path) -> Result<(), CliError> {
-    let (meta, _) = admin(state_dir)?.call(admin_msg::LOCK, b"{}", &[])?;
+    let (meta, _) = admin_with_response_timeout(state_dir, DRAIN_RESPONSE_TIMEOUT)?.call(
+        admin_msg::LOCK,
+        b"{}",
+        &[],
+    )?;
     print_json(&meta);
     Ok(())
 }
@@ -188,7 +204,7 @@ pub fn status(state_dir: &Path) -> Result<(), CliError> {
 }
 
 pub fn shutdown(state_dir: &Path, password_stdin: bool) -> Result<(), CliError> {
-    let mut client = admin(state_dir)?;
+    let mut client = admin_with_response_timeout(state_dir, DRAIN_RESPONSE_TIMEOUT)?;
     // Locked brokers shut down without proof; unlocked brokers require it.
     match client.call(admin_msg::SHUTDOWN, b"{}", &[]) {
         Ok((meta, _)) => {
@@ -198,7 +214,11 @@ pub fn shutdown(state_dir: &Path, password_stdin: bool) -> Result<(), CliError> 
         Err(err) if err.code == "AUTHENTICATION_FAILED" => {
             let password = read_password(password_stdin, "Vault password: ")?;
             let body = proof_body(&password);
-            let (meta, _) = admin(state_dir)?.call(admin_msg::SHUTDOWN, b"{}", &body)?;
+            let (meta, _) = admin_with_response_timeout(state_dir, DRAIN_RESPONSE_TIMEOUT)?.call(
+                admin_msg::SHUTDOWN,
+                b"{}",
+                &body,
+            )?;
             print_json(&meta);
             Ok(())
         }
@@ -517,7 +537,12 @@ pub fn execute(
         "content_type": content_type,
         "extra_headers": extra_headers,
     });
-    let (meta, response_body) = agent(agent_socket)?.call(
+    let (meta, response_body) = Client::connect_with_response_timeout(
+        agent_socket,
+        Channel::Agent,
+        ACTION_RESPONSE_TIMEOUT,
+    )?
+    .call(
         agent_msg::EXECUTE_FIXED_HTTP_ACTION,
         metadata.to_string().as_bytes(),
         &body,
@@ -536,8 +561,11 @@ pub fn backup(state_dir: &Path, output: &Path, password_stdin: bool) -> Result<(
     let password = read_password(password_stdin, "Vault password (step-up): ")?;
     let metadata = serde_json::json!({ "output_path": output.display().to_string() });
     let body = proof_body(&password);
-    let (meta, _) =
-        admin(state_dir)?.call(admin_msg::BACKUP, metadata.to_string().as_bytes(), &body)?;
+    let (meta, _) = admin_with_response_timeout(state_dir, BACKUP_RESPONSE_TIMEOUT)?.call(
+        admin_msg::BACKUP,
+        metadata.to_string().as_bytes(),
+        &body,
+    )?;
     print_json(&meta);
     Ok(())
 }

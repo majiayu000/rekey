@@ -828,7 +828,10 @@ body           raw bytes
 - P0 `flags` 必须为 zero；任何非 zero flag 都按 unknown frame 处理。
 - unknown version/type、nonzero reserved、长度溢出、truncated frame、额外尾随数据全部显式拒绝并关闭连接。
 - 每个连接同一时间最多一个 in-flight frame；P0 不做 multiplexing。
-- socket read/write 都有 30s handshake/frame deadline。
+- socket 上接收请求帧、发送响应帧的单次 IO inactivity deadline 为 30s；它不等于
+  Broker 处理请求的总时限。CLI 等待 Execute、lock/shutdown、backup 的响应上限分别为
+  130s、130s、300s，覆盖 120s Action hard max、125s central stop deadline 和大文件
+  流式备份，同时仍保持有界等待。
 - 客户端只接受与请求完全相同的 `channel` 和 `request_id`；ErrorEnvelope 的
   `request_id` 还必须与 frame header 相同。任何错配都返回 `INVALID_FRAME`。
 - 客户端必须在分配 response buffer 之前执行 64 KiB metadata / 4 MiB body
@@ -1620,7 +1623,7 @@ P0 目标不是 benchmark parity，而是有界行为：
 | Agent request body | Action limit, max 1 MiB |
 | Agent response body | Action limit, max 4 MiB |
 | Upstream timeout | max 120s |
-| IPC handshake/frame timeout | 30s |
+| IPC frame IO inactivity / CLI long-operation response | 30s / Execute 130s, lock/shutdown 130s, backup 300s |
 | Argon memory | 64 MiB per derivation |
 | Unlock derivations | serialized in AuthorityWorker |
 
