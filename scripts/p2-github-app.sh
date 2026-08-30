@@ -78,6 +78,59 @@ jwt_canary() {
   awk -F= '/^jwt\.canary=/{print $2; exit}' "$1"
 }
 
+fixed_string_scan() {
+  local needle="$1" rc
+  shift
+  if rg -a -F --glob '!trace' --glob '!restored-trace' -- "$needle" "$@" >/dev/null; then
+    return 0
+  else
+    rc=$?
+    return "$rc"
+  fi
+}
+
+assert_secret_absent() {
+  local label="$1" needle="$2" rc=0
+  fixed_string_scan "$needle" "$STATE" "$WORKDIR" || rc=$?
+  case "$rc" in
+    0)
+      echo "$label leaked into Agent-visible or durable output" >&2
+      return 1
+      ;;
+    1) return 0 ;;
+    *)
+      echo "$label scan failed with rg exit $rc" >&2
+      return "$rc"
+      ;;
+  esac
+}
+
+assert_raw_private_key_absent() {
+  local restored_trace="${RESTORED_TRACE:-}"
+  python3 - "$PRIVATE_KEY_RAW_CANARY_HEX" "$STATE" "$WORKDIR" \
+    "$TRACE" "$restored_trace" "$PROFILE" "$INVALID_PROFILE" \
+    "$LATE_INVALID_KEY_PROFILE" "$PRIVATE_KEY" "$PRIVATE_KEY_DER" <<'PY'
+import pathlib, sys
+
+needle = bytes.fromhex(sys.argv[1])
+roots = [pathlib.Path(value) for value in sys.argv[2:4]]
+excluded = {pathlib.Path(value).resolve() for value in sys.argv[4:] if value}
+seen = set()
+for root in roots:
+    for path in [root, *root.rglob("*")]:
+        try:
+            resolved = path.resolve()
+            if resolved in seen or resolved in excluded or not path.is_file():
+                continue
+            seen.add(resolved)
+            data = path.read_bytes()
+        except OSError as error:
+            raise SystemExit(f"raw private-key scan failed for {path}: {error}")
+        if needle in data:
+            raise SystemExit(f"raw private-key canary leaked into {path}")
+PY
+}
+
 expect_failure() {
   local mode="$1"
   local expected="$2"
@@ -97,6 +150,16 @@ expect_failure() {
     exit 1
   }
 }
+
+RG_SELFTEST="$WORKDIR/rg-leading-hyphen-self-test"
+printf '%s\n' '-jwt-canary' >"$RG_SELFTEST"
+RG_SELFTEST_RC=0
+fixed_string_scan '-jwt-canary' "$RG_SELFTEST" || RG_SELFTEST_RC=$?
+[[ "$RG_SELFTEST_RC" -eq 0 ]] || {
+  echo "hyphen-leading fixed-string scan self-test failed with exit $RG_SELFTEST_RC" >&2
+  exit 1
+}
+rm "$RG_SELFTEST"
 
 printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin >/dev/null
 openssl genrsa -traditional -out "$PRIVATE_KEY" 2048 >/dev/null 2>&1
@@ -130,6 +193,29 @@ if len(large_profile) >= target_size:
     raise SystemExit("fixture profile unexpectedly exceeds large-profile target")
 pathlib.Path(sys.argv[3]).write_text(large_profile + " " * (target_size - len(large_profile)))
 PY
+PRIVATE_KEY_CANARIES="$(python3 - "$PRIVATE_KEY_DER" "$PUBLIC_KEY_DER" <<'PY'
+import base64, pathlib, sys
+
+private = pathlib.Path(sys.argv[1]).read_bytes()
+public = pathlib.Path(sys.argv[2]).read_bytes()
+window_size = 24
+first = ((len(private) // 2) + 2) // 3 * 3
+for start in range(first, len(private) - window_size + 1, 3):
+    window = private[start:start + window_size]
+    if window not in public:
+        encoded = base64.b64encode(window).decode()
+        if encoded not in base64.b64encode(private).decode():
+            raise SystemExit("aligned private window missing from base64 profile")
+        print(f"{window.hex()}:{encoded}")
+        break
+else:
+    raise SystemExit("no private-only PKCS#1 DER window found")
+PY
+)"
+PRIVATE_KEY_RAW_CANARY_HEX="${PRIVATE_KEY_CANARIES%%:*}"
+PRIVATE_KEY_BASE64_CANARY="${PRIVATE_KEY_CANARIES#*:}"
+[[ "$PRIVATE_KEY_RAW_CANARY_HEX" =~ ^[0-9a-f]{48}$ ]]
+[[ ${#PRIVATE_KEY_BASE64_CANARY} -eq 32 ]]
 rm "$PRIVATE_KEY" "$PRIVATE_KEY_DER"
 printf '%s\n' success >"$MODE"
 "$FIXTURE" "$STATE" "$READY" "$MODE" "$TRACE" "$PUBLIC_KEY_DER" \
@@ -144,14 +230,6 @@ done
   cat "$WORKDIR/broker.err"
   exit 1
 }
-PRIVATE_KEY_CANARY="$(python3 - "$PROFILE" <<'PY'
-import json, sys
-encoded = json.load(open(sys.argv[1]))["private_key_pkcs1_der_base64"]
-print(encoded[80:112])
-PY
-)"
-[[ ${#PRIVATE_KEY_CANARY} -eq 32 ]]
-
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" unlock --password-stdin >/dev/null
 WRONG_PROOF_RC=0
 printf '%s\n' "definitely-wrong-password" | "$REKEY" --state-dir "$STATE" credential \
@@ -413,9 +491,10 @@ if types != expected:
     raise SystemExit(f"signal scenario audit chain is not exact: {types}")
 PY
 
-python3 - "$STATE/vault.sqlite3" "$PRIVATE_KEY_CANARY" "$TOKEN_CANARY" <<'PY'
+python3 - "$STATE/vault.sqlite3" "$PRIVATE_KEY_BASE64_CANARY" \
+  "$PRIVATE_KEY_RAW_CANARY_HEX" "$TOKEN_CANARY" <<'PY'
 import pathlib, re, sqlite3, sys
-db_path, key_canary, token_canary = sys.argv[1:]
+db_path, key_base64_canary, key_raw_canary_hex, token_canary = sys.argv[1:]
 db = sqlite3.connect(db_path)
 def scalar(sql): return db.execute(sql).fetchone()[0]
 if scalar("SELECT count(*) FROM audit_events WHERE event_type='execution.started'") != 14:
@@ -478,7 +557,9 @@ for request_id, chain in chains.items():
 if without_revoke != 1:
     raise SystemExit(f"expected exactly one exchange-without-token chain, got {without_revoke}")
 raw = pathlib.Path(db_path).read_bytes()
-if key_canary.encode() in raw or token_canary.encode() in raw:
+if (key_base64_canary.encode() in raw
+        or bytes.fromhex(key_raw_canary_hex) in raw
+        or token_canary.encode() in raw):
     raise SystemExit("connector secret leaked into SQLite")
 PY
 
@@ -497,18 +578,10 @@ RESOURCE_OK_COUNT="$(grep -c '^resource.ok$' "$TRACE")"
 JWT_CANARY="$(jwt_canary "$TRACE")"
 [[ ${#JWT_CANARY} -eq 32 ]]
 
-if rg -a -F "$PRIVATE_KEY_CANARY" "$STATE" "$WORKDIR" --glob '!trace' --glob '!restored-trace' >/dev/null; then
-  echo "private key canary leaked into Agent-visible or durable output"
-  exit 1
-fi
-if rg -a -F "$TOKEN_CANARY" "$STATE" "$WORKDIR" --glob '!trace' --glob '!restored-trace' >/dev/null; then
-  echo "installation token leaked into Agent-visible or durable output"
-  exit 1
-fi
-if rg -a -F "$JWT_CANARY" "$STATE" "$WORKDIR" --glob '!trace' --glob '!restored-trace' >/dev/null; then
-  echo "GitHub JWT canary leaked into Agent-visible or durable output"
-  exit 1
-fi
+assert_secret_absent "base64 private-key canary" "$PRIVATE_KEY_BASE64_CANARY"
+assert_secret_absent "installation token canary" "$TOKEN_CANARY"
+assert_secret_absent "GitHub JWT canary" "$JWT_CANARY"
+assert_raw_private_key_absent
 
 READY="$WORKDIR/restarted-ready"
 printf '%s\n' success >"$MODE"
@@ -597,20 +670,12 @@ if not re.fullmatch(r"success;binding-sha256=[0-9a-f]{64}", chain[2][1]):
 PY
 RESTORED_JWT_CANARY="$(jwt_canary "$RESTORED_TRACE")"
 [[ ${#RESTORED_JWT_CANARY} -eq 32 ]]
-if rg -a -F "$PRIVATE_KEY_CANARY" "$STATE" "$WORKDIR" --glob '!trace' --glob '!restored-trace' >/dev/null; then
-  echo "private key canary leaked after restore"
-  exit 1
-fi
-if rg -a -F "$TOKEN_CANARY" "$STATE" "$WORKDIR" --glob '!trace' --glob '!restored-trace' >/dev/null; then
-  echo "installation token leaked after restore"
-  exit 1
-fi
+assert_secret_absent "base64 private-key canary after restore" "$PRIVATE_KEY_BASE64_CANARY"
+assert_secret_absent "installation token canary after restore" "$TOKEN_CANARY"
 for canary in "$JWT_CANARY" "$RESTORED_JWT_CANARY"; do
-  if rg -a -F "$canary" "$STATE" "$WORKDIR" --glob '!trace' --glob '!restored-trace' >/dev/null; then
-    echo "GitHub JWT canary leaked after restore"
-    exit 1
-  fi
+  assert_secret_absent "GitHub JWT canary after restore" "$canary"
 done
+assert_raw_private_key_absent
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" shutdown --password-stdin >/dev/null
 wait "$BROKER_PID"
 BROKER_PID=""
