@@ -1326,7 +1326,8 @@ scripts/p0-runtime-faults.sh
 | Linux G2 launcher | Agent 独立 UID/namespace，不能读 socket/DB/ptrace/直连 | `scripts/p1-linux-g2.sh`（Linux Docker gate） |
 | Typed parameter policy | Action 参数 canonicalization + default deny | `cargo test -p rekey-policy` |
 | Chunk-boundary response sealing | bounded buffered response 中跨 HTTP/TLS chunk 的 secret variant 在任何 Agent response frame/body 写出前被拒绝 | `scripts/p1-streaming-sealing.sh` |
-| systemd/launchd | locked boot、受保护 unlock、clean shutdown | `cargo test -p rekey-e2e --test service_manager` |
+| launchd | locked boot、受保护 unlock、central stop、locked restart | `scripts/p1-service-manager.sh`（macOS required） |
+| systemd | 同一真实 native-manager gate；合入前只称 implemented, not run | `scripts/p1-service-manager.sh`（`ubuntu-latest` PID 1 systemd required） |
 | OS key wrapper | Keychain/TPM wrapper 是可选第三 wrapper | `cargo test -p rekey-vault --test os_wrapper_contract` |
 
 Chunk-boundary sealing 的 release-process gate 必须运行真实 `rekey` CLI、独立
@@ -1393,6 +1394,54 @@ expired/ambiguous input 在 upstream 与 credential effect 前拒绝，并至少
 policy-permitted 的本地 TLS upstream 调用。产品 `rekeyd serve` 参数解析和生产
 transport wiring 由 `scripts/p0-acceptance.sh` 独立覆盖；fixture 不得被描述为产品
 daemon，也不得进入生产 `rekeyd` 路径。
+
+#### P1.2 Runtime-Owned Execution And Native Stop
+
+Agent connection 不拥有 Action effect。`ActionExecutor::admit` 只执行 capability、固定
+Action/policy/parameter 校验并 durable commit `execution.started`，随后返回
+`AdmittedExecution`；后者持有 Session permit、terminal guard、Credential/upstream
+effect 所需对象，并由 `AdmittedExecution::run` 完成 effect 与唯一 terminal audit。
+`ExecutionSupervisor` 是 BrokerRuntime 的单用途 child：mpsc 接收 `ExecuteRequest`，
+自己的 `JoinSet` 持有每个 admit/run task，结果通过 oneshot 返回 Agent connection。
+connection 丢弃 response receiver 只丢客户端响应，不能取消 supervisor-owned task。
+未来 P2 remote-token revoke/cleanup 必须放在 `AdmittedExecution` ownership 内，不得重新
+绑定到 connection lifetime。本批不实现 P2 effect。
+
+Admin Shutdown、SIGTERM、SIGINT、listener/idle fault 必须进入同一个 central stop router，
+且不可逆 stop 只由一次 lifecycle coordinator owner 执行。Admin 在 Locked 时不需要
+proof；在 Running 时先验证 proof，失败必须保持服务可用。进入不可逆 stop 后立即关闭
+Session admission、撤销 token、关闭 execution submission、通知 partial frame reader 与
+response waiter 退出，但 supervisor-owned admitted task 继续。stop 聚合第一个错误而不
+早退：等待 ordinary execution、必要时 lifecycle cancel、等待 supervisor、使用绝对
+deadline 等 terminal tracker、lock/清空 policy、Authority shutdown、发布 shutdown
+notice、回收双 UDS connection/idle tasks、关闭 Authority sender，再 bounded join
+terminal task 与 Authority thread。任何 coordinate/inner/join 失败仍必须发布 notice 并
+使 `rekeyd` 非零退出；不能在 lock 与 shutdown 之间释放 coordinator 让 Admin unlock。
+
+生产 action timeout hard max 为 120 秒。central stop 只有一个绝对 deadline：当前
+`drain_timeout` 加 5 秒 terminal/finalize grace，production 约 125 秒；所有 execution、
+terminal、connection、supervisor、Authority join 共享该 deadline，不能逐层重置。
+native manager hard ceiling 取 130 秒，只给 125 秒应用 deadline 少量调度余量；无
+in-flight 的 manager acceptance SLA 仍是 15 秒，130 秒不能被当成 clean-stop SLA。
+
+Agent/Admin frame read 必须监听 shutdown notice，所以 1 byte RKIP half-frame 不能拖住
+stop。Admin Shutdown connection 必须在 central stop 返回后收到一个完整 CLI response；
+其他 response waiter 可以随 notice 关闭。Terminal tracker 提供
+`wait_idle_until(absolute_deadline)`，sticky failure 在 pending 已清零后仍返回错误。
+
+launchd generator 只产生当前 GUI user LaunchAgent；systemd generator 必须从本机 passwd
+database 验证显式 `--run-as-user` 存在且 UID 非 0，并在 unit 中将 `$` 转义为 `$$`。
+模板不得包含 password、secret env 或自动 unlock，启动/重启始终 Locked。真实 gate
+使用 release `rekey` 与安装到临时路径的 release BrokerRuntime local-CA/TLS fixture、临时
+真实 state、双 UDS 与 SQLite；production `rekeyd` 的 public HTTPS wiring 仍由 P0 gate
+独立覆盖。它必须覆盖：half-frame；signal 发生时 slow ordinary execution 已有 started 且
+client 可断连，最终仍恰一 terminal；sticky terminal audit failure 非零并由重启
+reconcile orphan；unlock race 后最后事件仍为 signal lock；Admin Shutdown CLI response；
+launchd/systemd locked boot、clean stop、restart 仍 Locked。cleanup 的 manager query、
+launchctl/systemctl、TERM、KILL 与 child wait 全部 bounded，只有进程退出后才 wait/remove
+unit。macOS 本机跑临时 `gui/$UID` label；普通 required `ubuntu-latest` 必须先硬断言
+PID 1 是 systemd，不满足直接失败，不能把 exit 77 转绿。workflow 未远端运行前 systemd
+Feature Truth 只能写 “CI gate implemented, not run”。
 
 ### P2
 

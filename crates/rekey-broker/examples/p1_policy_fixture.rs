@@ -255,6 +255,13 @@ async fn write_sealing_response(
             write_fragmented(tls, b"40\r\npartial-agent-body").await?;
             tls.shutdown().await
         }
+        "slow" => {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            write_chunked_headers(tls).await?;
+            write_chunk(tls, b"{\"ok\":true}").await?;
+            write_fragmented(tls, b"0\r\n\r\n").await?;
+            tls.shutdown().await
+        }
         _ => Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "unknown sealing mode",
@@ -309,13 +316,33 @@ async fn serve_tls(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut args = std::env::args_os().skip(1);
-    let state_dir = PathBuf::from(args.next().ok_or("missing state dir")?);
-    let ready_path = PathBuf::from(args.next().ok_or("missing ready path")?);
-    let hits_path = PathBuf::from(args.next().ok_or("missing hits path")?);
-    if args.next().is_some() {
-        return Err("unexpected argument".into());
-    }
+    tracing_subscriber::fmt()
+        .json()
+        .with_writer(std::io::stderr)
+        .with_target(false)
+        .with_current_span(false)
+        .with_span_list(false)
+        .init();
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    let (state_dir, ready_path, hits_path) = if args.len() == 3 && args[0] == "serve" {
+        if args[1] != "--state-dir" {
+            return Err("expected --state-dir".into());
+        }
+        let state = PathBuf::from(&args[2]);
+        (
+            state.clone(),
+            state.join("fixture.port"),
+            state.join("fixture.hits"),
+        )
+    } else if args.len() == 3 {
+        (
+            PathBuf::from(&args[0]),
+            PathBuf::from(&args[1]),
+            PathBuf::from(&args[2]),
+        )
+    } else {
+        return Err("expected STATE READY HITS or serve --state-dir STATE".into());
+    };
 
     let (ca_der, server) = tls_config()?;
     let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -336,7 +363,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ca_der: Arc::new(ca_der),
     }));
     config.unlock_backoff_base = Duration::from_millis(250);
-    config.drain_timeout = Duration::from_secs(30);
-    serve(config).await?;
-    Ok(())
+    tracing::info!(event = "runtime.starting");
+    match serve(config).await {
+        Ok(()) => {
+            tracing::info!(event = "runtime.stopped");
+            Ok(())
+        }
+        Err(error) => {
+            tracing::error!(event = "rekeyd.command_failed", code = error.code());
+            Err(error.into())
+        }
+    }
 }

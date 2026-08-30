@@ -18,6 +18,7 @@ use rekey_vault::command::{ActionDefinition, AuditDraft, UnlockProof};
 use rekey_vault::model::{ActionState, event_type, outcome};
 use rekey_vault::secret::SecretInput;
 use tokio::net::UnixStream;
+use tokio::sync::watch;
 
 use crate::error::BrokerError;
 use crate::ipc::frame::{FrameIoError, IncomingFrame, read_frame, write_error, write_ok};
@@ -61,39 +62,65 @@ fn now_ts() -> Timestamp {
     )
 }
 
-pub async fn handle_admin_conn(mut stream: UnixStream, ctx: Arc<BrokerCtx>) {
+pub async fn handle_admin_conn(
+    mut stream: UnixStream,
+    ctx: Arc<BrokerCtx>,
+    mut shutdown: watch::Receiver<bool>,
+) {
     match peer::peer_uid(&stream) {
         Ok(uid) if uid == peer::current_uid() => {}
         _ => return,
     }
     loop {
-        let frame = match read_frame(
-            &mut stream,
-            Channel::Admin,
-            ipc::ADMIN_SECRET_BODY_MAX_BYTES,
-        )
-        .await
-        {
+        if *shutdown.borrow() {
+            return;
+        }
+        let frame = match tokio::select! {
+            _ = shutdown.changed() => return,
+            frame = read_frame(
+                &mut stream,
+                Channel::Admin,
+                ipc::ADMIN_SECRET_BODY_MAX_BYTES,
+            ) => frame,
+        } {
             Ok(frame) => frame,
             Err(FrameIoError::Closed) => return,
             Err(_) => return,
         };
         let request_id = frame.header.request_id;
-        let response = dispatch(&frame, &ctx).await;
-        let io_result = match response {
-            Ok((metadata, body)) => {
-                write_ok(&mut stream, Channel::Admin, request_id, &metadata, &body).await
+        let is_shutdown = frame.header.message_type == admin_msg::SHUTDOWN;
+        let response = if is_shutdown {
+            dispatch(&frame, &ctx).await
+        } else {
+            tokio::select! {
+                _ = shutdown.changed() => return,
+                response = dispatch(&frame, &ctx) => response,
             }
-            Err(err) => {
-                write_error(
-                    &mut stream,
-                    Channel::Admin,
-                    request_id,
-                    err.code(),
-                    &err.to_string(),
-                    err.retryable(),
-                )
-                .await
+        };
+        let write_response = async {
+            match response {
+                Ok((metadata, body)) => {
+                    write_ok(&mut stream, Channel::Admin, request_id, &metadata, &body).await
+                }
+                Err(err) => {
+                    write_error(
+                        &mut stream,
+                        Channel::Admin,
+                        request_id,
+                        err.code(),
+                        &err.to_string(),
+                        err.retryable(),
+                    )
+                    .await
+                }
+            }
+        };
+        let io_result = if is_shutdown {
+            write_response.await
+        } else {
+            tokio::select! {
+                _ = shutdown.changed() => return,
+                result = write_response => result,
             }
         };
         if io_result.is_err() {
@@ -342,7 +369,7 @@ async fn dispatch(
                 let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
                 Some(proof_from(kind, proof))
             };
-            ctx.drain_and_shutdown(proof).await?;
+            ctx.request_admin_shutdown(proof).await?;
             Ok((json(&serde_json::json!({"shutdown": true}))?, Vec::new()))
         }
         _ => Err(BrokerError::Frame(

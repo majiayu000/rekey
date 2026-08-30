@@ -29,7 +29,7 @@ pub struct TestBroker {
     pub dir: tempfile::TempDir,
     pub state_dir: PathBuf,
     pub fake: Arc<FakeUpstreamTransport>,
-    pub serve_task: tokio::task::JoinHandle<()>,
+    pub serve_task: tokio::task::JoinHandle<Result<(), rekey_broker::error::BrokerError>>,
 }
 
 pub async fn start_broker() -> TestBroker {
@@ -48,9 +48,7 @@ pub async fn start_broker_with(idle_lock: Duration, drain_timeout: Duration) -> 
         Some(Arc::clone(&fake) as Arc<dyn rekey_broker::upstream::UpstreamTransport>);
     config.unlock_backoff_base = Duration::from_millis(20);
     config.drain_timeout = drain_timeout;
-    let serve_task = tokio::spawn(async move {
-        serve(config).await.expect("broker serve");
-    });
+    let serve_task = tokio::spawn(async move { serve(config).await });
 
     let admin_sock = state_dir.join("runtime").join("admin.sock");
     for _ in 0..200 {

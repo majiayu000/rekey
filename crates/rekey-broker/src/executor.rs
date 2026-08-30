@@ -27,7 +27,7 @@ use crate::audit::{
 use crate::error::BrokerError;
 use crate::github_app::{GitHubAppCredential, GitHubEffect, GitHubError};
 use crate::lifecycle::{BrokerPhase, Lifecycle};
-use crate::session::SessionRegistry;
+use crate::session::{ExecutionPermit, SessionRegistry};
 use crate::upstream::{UpstreamRequest, UpstreamTransport};
 
 pub struct ExecuteRequest {
@@ -43,6 +43,16 @@ pub struct ExecuteOutcome {
     pub upstream_status: u16,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+}
+
+/// Runtime-owned after `execution.started` commits. Dropping a client response
+/// receiver cannot drop this object; the ExecutionSupervisor owns `run`.
+pub struct AdmittedExecution {
+    executor: Arc<ActionExecutor>,
+    request: ExecuteRequest,
+    action: FixedHttpAction,
+    started: StartedGuard,
+    _permit: ExecutionPermit,
 }
 
 pub struct ActionExecutor {
@@ -173,7 +183,10 @@ impl ActionExecutor {
         }
     }
 
-    pub async fn execute(&self, request: ExecuteRequest) -> Result<ExecuteOutcome, BrokerError> {
+    pub async fn admit(
+        self: &Arc<Self>,
+        request: ExecuteRequest,
+    ) -> Result<AdmittedExecution, BrokerError> {
         self.refuse_unless_running()?;
         // Step 3: capability authentication reserves one use and one
         // concurrency slot; the permit releases the slot on every path.
@@ -182,14 +195,15 @@ impl ActionExecutor {
             .acquire(&request.capability_token, request.action, now_ts())?;
         self.refuse_unless_running()?;
         let principal = permit.principal;
-        self.execute_authorized(&request, principal).await
+        self.admit_authorized(request, principal, permit).await
     }
 
-    async fn execute_authorized(
-        &self,
-        request: &ExecuteRequest,
+    async fn admit_authorized(
+        self: &Arc<Self>,
+        request: ExecuteRequest,
         principal: Principal,
-    ) -> Result<ExecuteOutcome, BrokerError> {
+        permit: ExecutionPermit,
+    ) -> Result<AdmittedExecution, BrokerError> {
         // Step 4: pin the immutable action version.
         let pinned = self
             .authority
@@ -211,7 +225,7 @@ impl ActionExecutor {
         }
 
         // Step 5: request validation against the pinned policy.
-        if let Err(reason) = validate_request(&action, request) {
+        if let Err(reason) = validate_request(&action, &request) {
             self.authority
                 .append_audit(execution_blocked(&ctx, reason))
                 .await?;
@@ -291,32 +305,13 @@ impl ActionExecutor {
 
         // Step 6: ExecutionStarted must commit before any credential effect.
         self.authority.append_audit(execution_started(&ctx)).await?;
-        let mut started = StartedGuard::new(Arc::clone(&self.terminals), ctx);
-
-        let mut cancel = self.lifecycle.subscribe_cancel();
-        if *cancel.borrow() {
-            started.blocked("abandoned").await?;
-            return Err(BrokerError::Authority(AuthorityError::Draining));
-        }
-
-        let connector_effect_started = AtomicBool::new(false);
-        {
-            let run = self.run_started(&mut started, request, &action, &connector_effect_started);
-            tokio::pin!(run);
-            tokio::select! {
-                biased;
-                _ = cancel.changed() => {
-                    if connector_effect_started.load(Ordering::SeqCst) {
-                        return run.await;
-                    }
-                }
-                result = &mut run => return result,
-            }
-        }
-        if !started.is_completed() {
-            started.blocked("abandoned").await?;
-        }
-        Err(BrokerError::Authority(AuthorityError::Draining))
+        Ok(AdmittedExecution {
+            executor: Arc::clone(self),
+            request,
+            action,
+            started: StartedGuard::new(Arc::clone(&self.terminals), ctx),
+            _permit: permit,
+        })
     }
 
     async fn lifecycle_policy(&self) -> Option<Arc<rekey_policy::ValidatedSnapshot>> {
@@ -566,6 +561,49 @@ struct GitHubPrepared {
     credential_version: u64,
     profile: Result<GitHubAppCredential, GitHubError>,
     needles: Vec<Zeroizing<Vec<u8>>>,
+}
+
+impl AdmittedExecution {
+    pub async fn run(mut self) -> Result<ExecuteOutcome, BrokerError> {
+        let cancel = self.executor.lifecycle.subscribe_cancel();
+        if *cancel.borrow() {
+            self.started.blocked("abandoned").await?;
+            return Err(BrokerError::Authority(AuthorityError::Draining));
+        }
+
+        let executor = Arc::clone(&self.executor);
+        let connector_effect_started = AtomicBool::new(false);
+        {
+            let run = executor.run_started(
+                &mut self.started,
+                &self.request,
+                &self.action,
+                &connector_effect_started,
+            );
+            tokio::pin!(run);
+            tokio::select! {
+                biased;
+                _ = wait_for_cancel(cancel) => {
+                    if connector_effect_started.load(Ordering::SeqCst) {
+                        return run.await;
+                    }
+                }
+                result = &mut run => return result,
+            }
+        }
+        if !self.started.is_completed() {
+            self.started.blocked("abandoned").await?;
+        }
+        Err(BrokerError::Authority(AuthorityError::Draining))
+    }
+}
+
+async fn wait_for_cancel(mut cancel: tokio::sync::watch::Receiver<bool>) {
+    while !*cancel.borrow_and_update() {
+        if cancel.changed().await.is_err() {
+            return;
+        }
+    }
 }
 
 fn prepare_block_reason(err: &AuthorityError) -> &'static str {

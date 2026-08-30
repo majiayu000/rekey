@@ -67,6 +67,19 @@ jobs:
         run: scripts/p1-streaming-sealing.sh
       - name: P2 GitHub App local acceptance
         run: scripts/p2-github-app.sh
+      - name: P1 native launchd service-manager acceptance
+        if: runner.os == 'macOS'
+        run: scripts/p1-service-manager.sh
+      - name: P1 native systemd service-manager acceptance
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(ps -p 1 -o comm= | tr -d ' ')" == "systemd" ]] || {
+            echo "::error::Required ubuntu-latest systemd gate does not have systemd as PID 1"
+            exit 1
+          }
+          scripts/p1-service-manager.sh
 
   g2-linux:
     name: Linux container G2 reference boundary

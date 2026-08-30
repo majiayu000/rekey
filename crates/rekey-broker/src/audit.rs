@@ -67,7 +67,16 @@ impl TerminalAuditTracker {
     /// `timeout`, or if any commit/submit failed. Callers must not treat
     /// lock/shutdown as success when this errors.
     pub async fn wait_idle(&self, timeout: Duration) -> Result<(), AuthorityError> {
-        let deadline = tokio::time::Instant::now() + timeout;
+        self.wait_idle_until(tokio::time::Instant::now() + timeout)
+            .await
+    }
+
+    /// Same contract using the central stop's absolute deadline. Callers must
+    /// not create a fresh relative timeout at each shutdown layer.
+    pub async fn wait_idle_until(
+        &self,
+        deadline: tokio::time::Instant,
+    ) -> Result<(), AuthorityError> {
         loop {
             if self.pending.load(Ordering::SeqCst) == 0 {
                 break;

@@ -3,6 +3,7 @@
 
 pub mod audit;
 pub mod error;
+pub(crate) mod execution_supervisor;
 pub mod executor;
 mod github_app;
 pub mod ipc;

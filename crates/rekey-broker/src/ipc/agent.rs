@@ -7,6 +7,7 @@ use rekey_domain::capability::ActionVersionRef;
 use rekey_domain::ids::RequestId;
 use rekey_domain::ipc::{self, Channel, agent_msg};
 use tokio::net::UnixStream;
+use tokio::sync::watch;
 
 use crate::error::BrokerError;
 use crate::executor::ExecuteRequest;
@@ -22,32 +23,52 @@ fn agent_code(err: &BrokerError) -> &'static str {
     }
 }
 
-pub async fn handle_agent_conn(mut stream: UnixStream, ctx: Arc<BrokerCtx>) {
+pub async fn handle_agent_conn(
+    mut stream: UnixStream,
+    ctx: Arc<BrokerCtx>,
+    mut shutdown: watch::Receiver<bool>,
+) {
     match peer::peer_uid(&stream) {
         Ok(uid) if ctx.agent_uid_allowed(uid) => {}
         _ => return,
     }
     loop {
-        let frame = match read_frame(&mut stream, Channel::Agent, ipc::AGENT_BODY_MAX_BYTES).await {
+        if *shutdown.borrow() {
+            return;
+        }
+        let frame = match tokio::select! {
+            _ = shutdown.changed() => return,
+            frame = read_frame(&mut stream, Channel::Agent, ipc::AGENT_BODY_MAX_BYTES) => frame,
+        } {
             Ok(frame) => frame,
             Err(_) => return,
         };
         let request_id = frame.header.request_id;
-        let io_result = match dispatch(&frame, &ctx).await {
-            Ok((metadata, body)) => {
-                write_ok(&mut stream, Channel::Agent, request_id, &metadata, &body).await
+        let response = tokio::select! {
+            _ = shutdown.changed() => return,
+            response = dispatch(&frame, &ctx) => response,
+        };
+        let write_response = async {
+            match response {
+                Ok((metadata, body)) => {
+                    write_ok(&mut stream, Channel::Agent, request_id, &metadata, &body).await
+                }
+                Err(err) => {
+                    write_error(
+                        &mut stream,
+                        Channel::Agent,
+                        request_id,
+                        agent_code(&err),
+                        &err.agent_message(),
+                        err.retryable(),
+                    )
+                    .await
+                }
             }
-            Err(err) => {
-                write_error(
-                    &mut stream,
-                    Channel::Agent,
-                    request_id,
-                    agent_code(&err),
-                    &err.agent_message(),
-                    err.retryable(),
-                )
-                .await
-            }
+        };
+        let io_result = tokio::select! {
+            _ = shutdown.changed() => return,
+            result = write_response => result,
         };
         if io_result.is_err() {
             return;
@@ -79,7 +100,12 @@ async fn dispatch(
                 extra_headers: meta.extra_headers,
                 body: frame.body.to_vec(),
             };
-            let outcome = ctx.executor.execute(request).await?;
+            let outcome = ctx
+                .executions
+                .submit(request)
+                .await?
+                .await
+                .map_err(|_| BrokerError::Authority(rekey_vault::AuthorityError::Faulted))??;
             let response_meta = ipc::ExecuteResponseMeta {
                 upstream_status: outcome.upstream_status,
                 headers: outcome.headers,

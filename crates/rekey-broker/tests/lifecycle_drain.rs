@@ -7,8 +7,11 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use rekey_broker::upstream::UpstreamResponse;
-use rekey_domain::ipc::{Channel, admin_msg, agent_msg};
+use rekey_domain::ids::RequestId;
+use rekey_domain::ipc::{Channel, FrameHeader, admin_msg, agent_msg};
 use rekey_vault::store::SqliteRecordStore;
+use tokio::io::AsyncWriteExt;
+use tokio::net::UnixStream;
 
 fn assert_each_started_has_one_terminal(log: &[(Vec<u8>, String)]) {
     let mut started: HashMap<Vec<u8>, u32> = HashMap::new();
@@ -114,6 +117,125 @@ async fn lock_waits_for_in_flight_execute() {
     let exec = exec.await.unwrap();
     assert_eq!(exec.ok()["upstream_status"], 200);
     broker.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn client_disconnect_does_not_cancel_supervisor_owned_execution() {
+    let broker = common::start_broker().await;
+    common::unlock(&broker).await;
+    let credential_id = common::add_credential(&broker, "detached", b"v").await;
+    let (action_id, version) = common::create_action(&broker, &credential_id).await;
+    let token = common::create_session(&broker, &action_id, version).await;
+    broker.fake.push_response_delayed(
+        Ok(UpstreamResponse {
+            status: 200,
+            headers: vec![("content-type".to_owned(), "application/json".to_owned())],
+            body: b"{\"ok\":true}".to_vec().into(),
+        }),
+        Duration::from_millis(150),
+    );
+
+    let metadata = common::execute_meta(&token, &action_id, version)
+        .to_string()
+        .into_bytes();
+    let body = b"{}";
+    let header = FrameHeader {
+        channel: Channel::Agent,
+        flags: 0,
+        message_type: agent_msg::EXECUTE_FIXED_HTTP_ACTION,
+        request_id: RequestId::new_random(),
+        metadata_len: metadata.len() as u32,
+        body_len: body.len() as u32,
+    };
+    let mut stream = UnixStream::connect(broker.agent_sock()).await.unwrap();
+    stream.write_all(&header.encode()).await.unwrap();
+    stream.write_all(&metadata).await.unwrap();
+    stream.write_all(body).await.unwrap();
+    for _ in 0..100 {
+        if !broker.fake.requests.lock().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(!broker.fake.requests.lock().unwrap().is_empty());
+    drop(stream);
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    let state_dir = broker.state_dir.clone();
+    let _dir = broker.shutdown_keep_dir().await;
+    let store = SqliteRecordStore::open(&rekey_vault::paths::vault_db(&state_dir)).unwrap();
+    let log = store.audit_execution_log().unwrap();
+    assert_each_started_has_one_terminal(&log);
+    assert_eq!(
+        log.iter()
+            .filter(|(_, event)| event == "execution.finished")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shutdown_waits_for_disconnected_admitted_execution() {
+    let broker = common::start_broker_with(Duration::from_secs(300), Duration::from_secs(2)).await;
+    common::unlock(&broker).await;
+    let credential_id = common::add_credential(&broker, "detached-stop", b"v").await;
+    let (action_id, version) = common::create_action(&broker, &credential_id).await;
+    let token = common::create_session(&broker, &action_id, version).await;
+    broker.fake.push_response_delayed(
+        Ok(UpstreamResponse {
+            status: 200,
+            headers: vec![("content-type".to_owned(), "application/json".to_owned())],
+            body: b"{\"ok\":true}".to_vec().into(),
+        }),
+        Duration::from_millis(300),
+    );
+
+    let metadata = common::execute_meta(&token, &action_id, version)
+        .to_string()
+        .into_bytes();
+    let header = FrameHeader {
+        channel: Channel::Agent,
+        flags: 0,
+        message_type: agent_msg::EXECUTE_FIXED_HTTP_ACTION,
+        request_id: RequestId::new_random(),
+        metadata_len: metadata.len() as u32,
+        body_len: 2,
+    };
+    let mut stream = UnixStream::connect(broker.agent_sock()).await.unwrap();
+    stream.write_all(&header.encode()).await.unwrap();
+    stream.write_all(&metadata).await.unwrap();
+    stream.write_all(b"{}").await.unwrap();
+    for _ in 0..100 {
+        if !broker.fake.requests.lock().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(!broker.fake.requests.lock().unwrap().is_empty());
+    drop(stream);
+
+    let shutdown = common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::SHUTDOWN,
+        b"{}",
+        &common::proof_body(common::PASSWORD),
+    )
+    .await;
+    shutdown.ok();
+    let state_dir = broker.state_dir.clone();
+    let dir = broker.dir;
+    assert!(broker.serve_task.await.unwrap().is_ok());
+    let store = SqliteRecordStore::open(&rekey_vault::paths::vault_db(&state_dir)).unwrap();
+    let log = store.audit_execution_log().unwrap();
+    assert_eq!(
+        log.iter()
+            .filter(|(_, event)| event == "execution.finished")
+            .count(),
+        1,
+        "shutdown cancelled admitted execution: {log:?}"
+    );
+    drop(dir);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -402,5 +524,6 @@ async fn direct_terminal_commit_failure_reaches_tracker_and_fails_shutdown() {
     tokio::time::timeout(Duration::from_secs(5), broker.serve_task)
         .await
         .expect("broker stops after failed shutdown response")
-        .expect("serve task joins");
+        .expect("serve task joins")
+        .expect_err("sticky terminal failure must make serve nonzero");
 }
