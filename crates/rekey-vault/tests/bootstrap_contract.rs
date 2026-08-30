@@ -6,7 +6,7 @@ mod common;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
-use rekey_vault::bootstrap::{discard_vault_files, init_vault};
+use rekey_vault::bootstrap::{confirm_vault_init, discard_vault_files, init_vault};
 use rekey_vault::error::AuthorityError;
 use rekey_vault::paths;
 use rekey_vault::secret::SecretInput;
@@ -30,8 +30,57 @@ fn discard_after_init_leaves_no_servable_vault() {
     let vault = common::init_test_vault();
     let db = paths::vault_db(&vault.state_dir);
     assert!(db.exists());
-    discard_vault_files(&vault.state_dir);
+    discard_vault_files(&vault.state_dir).unwrap();
     assert!(!db.exists());
+}
+
+#[tokio::test]
+async fn init_is_not_servable_until_recovery_confirmation_is_durable() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    let _outcome = init_vault(
+        &state_dir,
+        &SecretInput::from_slice(common::PASSWORD),
+        common::TEST_PARAMS,
+    )
+    .unwrap();
+
+    assert!(paths::init_incomplete(&state_dir).exists());
+    let err = common::expect_err(rekey_vault::authority::spawn_authority(
+        common::test_config(&state_dir),
+    ));
+    assert!(matches!(err, AuthorityError::UnsupportedVaultLayout));
+
+    confirm_vault_init(&state_dir).unwrap();
+    assert!(!paths::init_incomplete(&state_dir).exists());
+    let (handle, join) = common::spawn(&state_dir);
+    handle.shutdown(None).await.unwrap();
+    join.join().unwrap();
+}
+
+#[test]
+fn failed_discard_keeps_init_marker_and_blocks_serve() {
+    let vault = common::init_test_vault();
+    let runtime = paths::runtime_dir(&vault.state_dir);
+    fs::create_dir(&runtime).unwrap();
+    fs::write(
+        runtime.join("unexpected"),
+        b"must not be recursively deleted",
+    )
+    .unwrap();
+
+    let err = discard_vault_files(&vault.state_dir).unwrap_err();
+    assert!(matches!(err, AuthorityError::StorageUnavailable(_)));
+    assert!(paths::init_incomplete(&vault.state_dir).exists());
+    assert!(runtime.join("unexpected").exists());
+    let err = common::expect_err(rekey_vault::authority::spawn_authority(
+        common::test_config(&vault.state_dir),
+    ));
+    assert!(matches!(err, AuthorityError::UnsupportedVaultLayout));
+
+    fs::remove_file(runtime.join("unexpected")).unwrap();
+    discard_vault_files(&vault.state_dir).unwrap();
+    assert!(!vault.state_dir.exists());
 }
 
 #[test]

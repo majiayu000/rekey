@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 pub const VAULT_DB_FILE: &str = "vault.sqlite3";
 pub const BROKER_LOCK_FILE: &str = "broker.lock";
 pub const BACKUP_SNAPSHOT_FILE: &str = ".backup-snapshot.sqlite3";
+pub const INIT_INCOMPLETE_FILE: &str = ".init-incomplete";
 pub const RESTORE_INCOMPLETE_FILE: &str = ".restore-incomplete";
 pub const RUNTIME_DIR: &str = "runtime";
 pub const ADMIN_SOCKET_FILE: &str = "admin.sock";
@@ -18,6 +19,10 @@ pub fn broker_lock(state_dir: &Path) -> PathBuf {
 
 pub fn backup_snapshot(state_dir: &Path) -> PathBuf {
     state_dir.join(BACKUP_SNAPSHOT_FILE)
+}
+
+pub fn init_incomplete(state_dir: &Path) -> PathBuf {
+    state_dir.join(INIT_INCOMPLETE_FILE)
 }
 
 pub fn restore_incomplete(state_dir: &Path) -> PathBuf {

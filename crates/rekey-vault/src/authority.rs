@@ -9,8 +9,8 @@ use rekey_domain::credential::{
     CredentialKind, CredentialLabel, CredentialMetadata, CredentialState, VersionState,
 };
 use rekey_domain::ids::{ActionId, CredentialId};
+use subtle::ConstantTimeEq;
 use tokio::sync::mpsc;
-use zeroize::Zeroizing;
 
 use crate::bootstrap::{kek_for_wrapper, unwrap_vrk, verify_state_dir_permissions};
 use crate::command::{
@@ -26,10 +26,11 @@ use crate::model::{
     AuditEvent, CredentialRecord, CredentialVersionRecord, WrapperKind, event_type, outcome,
 };
 use crate::paths;
-use crate::secret::{PreparedCredential, SecretInput};
+use crate::secret::SecretInput;
 use crate::store::SqliteRecordStore;
 
 mod backup;
+mod credential;
 
 const FREE_UNLOCK_FAILURES: u32 = 3;
 const UNLOCK_BACKOFF_CAP: Duration = Duration::from_secs(30);
@@ -86,10 +87,15 @@ pub fn spawn_authority(
 ) -> Result<(AuthorityHandle, std::thread::JoinHandle<()>), AuthorityError> {
     config.validate()?;
     verify_state_dir_permissions(&config.state_dir)?;
-    match std::fs::symlink_metadata(paths::restore_incomplete(&config.state_dir)) {
-        Ok(_) => return Err(AuthorityError::UnsupportedVaultLayout),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-        Err(err) => return Err(AuthorityError::storage(err)),
+    for marker in [
+        paths::init_incomplete(&config.state_dir),
+        paths::restore_incomplete(&config.state_dir),
+    ] {
+        match std::fs::symlink_metadata(marker) {
+            Ok(_) => return Err(AuthorityError::UnsupportedVaultLayout),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(AuthorityError::storage(err)),
+        }
     }
     let db = paths::vault_db(&config.state_dir);
     if !db.exists() {
@@ -367,15 +373,22 @@ impl Worker {
     }
 
     fn verify_proof(&self, proof: &UnlockProof) -> Result<(), AuthorityError> {
+        let current_vrk = self.require_unlocked()?;
         let (kind, secret) = match proof {
             UnlockProof::Password(secret) => (WrapperKind::Password, secret),
             UnlockProof::Recovery(secret) => (WrapperKind::Recovery, secret),
         };
-        let wrapper = self.store.active_wrapper(kind)?;
-        let kek = kek_for_wrapper(&wrapper, secret)
-            .map_err(|_| AuthorityError::InvalidUnlockCredential)?;
-        unwrap_vrk(self.header.vault_id, &wrapper, &kek)?;
-        Ok(())
+        let candidate = (|| {
+            let wrapper = self.store.active_wrapper(kind)?;
+            let kek = kek_for_wrapper(&wrapper, secret)?;
+            unwrap_vrk(self.header.vault_id, &wrapper, &kek)
+        })()
+        .map_err(|_| AuthorityError::InvalidUnlockCredential)?;
+        if bool::from(candidate.bytes().ct_eq(current_vrk.bytes())) {
+            Ok(())
+        } else {
+            Err(AuthorityError::InvalidUnlockCredential)
+        }
     }
 
     fn unlock(&mut self, proof: UnlockProof) -> Result<(), AuthorityError> {
@@ -682,69 +695,6 @@ impl Worker {
             action: record_to_action(&record)?,
             state: record.state,
         })
-    }
-
-    /// Decrypts the current active version. Every call re-checks persisted
-    /// credential state, so a revoked credential can never produce a new
-    /// lease even if in-memory session cleanup failed.
-    fn prepare_credential(
-        &mut self,
-        credential_id: CredentialId,
-    ) -> Result<PreparedCredential, AuthorityError> {
-        let vrk = self.require_unlocked()?;
-        let credential = self.store.get_credential(credential_id)?;
-        if credential.state != CredentialState::Active {
-            return Err(AuthorityError::CredentialRevoked);
-        }
-        let version = self
-            .store
-            .get_version(credential_id, credential.current_version)?;
-        if version.state != VersionState::Active {
-            return Err(AuthorityError::CredentialRevoked);
-        }
-        let dek_aad = AadV1 {
-            purpose: AadPurpose::WrapDek,
-            vault_id: self.header.vault_id,
-            object_id: *credential_id.as_bytes(),
-            object_version: version.version,
-            credential_kind: 0,
-            constraints_hash: [0u8; 32],
-        }
-        .encode();
-        let dek_bytes = aead::open(
-            vrk.bytes(),
-            &dek_aad,
-            &version.dek_nonce,
-            &version.wrapped_dek,
-        )
-        .map_err(|_| AuthorityError::CryptoFailure)?;
-        let dek_arr: [u8; 32] = dek_bytes
-            .as_slice()
-            .try_into()
-            .map_err(|_| AuthorityError::CryptoFailure)?;
-        let dek = DataKey::from_bytes(dek_arr);
-        let payload_aad = AadV1 {
-            purpose: AadPurpose::CredentialPayload,
-            vault_id: self.header.vault_id,
-            object_id: *credential_id.as_bytes(),
-            object_version: version.version,
-            credential_kind: credential.kind.aad_code(),
-            constraints_hash: [0u8; 32],
-        }
-        .encode();
-        let payload = aead::open(
-            dek.bytes(),
-            &payload_aad,
-            &version.payload_nonce,
-            &version.encrypted_payload,
-        )
-        .map_err(|_| AuthorityError::CryptoFailure)?;
-        Ok(PreparedCredential::new(
-            Zeroizing::new(payload.to_vec()),
-            credential_id,
-            credential.kind,
-            version.version,
-        ))
     }
 }
 

@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use rekey_vault::bootstrap::{InitOutcome, init_vault};
+use rekey_vault::bootstrap::{InitOutcome, confirm_vault_init, init_vault};
 use rekey_vault::crypto::kdf::Argon2Params;
 use rekey_vault::handle::{AuthorityConfig, AuthorityHandle};
 use rekey_vault::secret::SecretInput;
@@ -27,6 +27,7 @@ pub fn init_test_vault() -> TestVault {
     let state_dir = dir.path().join("state");
     let outcome = init_vault(&state_dir, &SecretInput::from_slice(PASSWORD), TEST_PARAMS)
         .expect("init vault");
+    confirm_vault_init(&state_dir).expect("confirm init");
     TestVault {
         dir,
         state_dir,

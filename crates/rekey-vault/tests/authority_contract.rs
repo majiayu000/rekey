@@ -5,16 +5,21 @@ mod common;
 
 use std::collections::BTreeSet;
 
+use argon2::{Algorithm, Argon2, Params, Version};
 use rekey_domain::action::{
     ActionName, ExactPath, FixedMethod, HeaderCredentialUse, HeaderName, HeaderPrefix, HttpsOrigin,
     RequestPolicy, ResponsePolicy,
 };
 use rekey_domain::credential::{CredentialKind, CredentialLabel, CredentialState};
 use rekey_vault::command::{ActionDefinition, UnlockProof};
+use rekey_vault::crypto::aad::{AadPurpose, AadV1};
+use rekey_vault::crypto::aead;
+use rekey_vault::crypto::kdf::Argon2Params;
 use rekey_vault::error::AuthorityError;
-use rekey_vault::model::ActionState;
+use rekey_vault::model::{ActionState, WrapperKind};
 use rekey_vault::secret::SecretInput;
 use rekey_vault::store::SqliteRecordStore;
+use zeroize::Zeroize;
 
 fn action_definition(credential_id: rekey_domain::ids::CredentialId) -> ActionDefinition {
     ActionDefinition {
@@ -251,5 +256,139 @@ async fn no_secret_export_api() {
         .shutdown(Some(common::password_proof()))
         .await
         .unwrap();
+    join.join().unwrap();
+}
+
+#[tokio::test]
+async fn step_up_rejects_valid_wrapper_for_a_different_root_key() {
+    let vault = common::init_test_vault();
+    let db = rekey_vault::paths::vault_db(&vault.state_dir);
+    let store = SqliteRecordStore::open(&db).unwrap();
+    let header = store.load_header().unwrap();
+    let wrapper = store.active_wrapper(WrapperKind::Password).unwrap();
+    let params = Argon2Params::from_json(&wrapper.kdf_params_json).unwrap();
+    let argon_params = Params::new(
+        params.memory_kib,
+        params.iterations,
+        params.parallelism,
+        Some(rekey_vault::crypto::KEY_LEN),
+    )
+    .unwrap();
+    let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, argon_params);
+    let mut kek = [0u8; rekey_vault::crypto::KEY_LEN];
+    argon
+        .hash_password_into(common::PASSWORD, &wrapper.salt, &mut kek)
+        .unwrap();
+    let mut alternate_vrk =
+        rekey_vault::crypto::random_array::<{ rekey_vault::crypto::KEY_LEN }>().unwrap();
+    let aad = AadV1 {
+        purpose: AadPurpose::WrapVrk,
+        vault_id: header.vault_id,
+        object_id: *wrapper.wrapper_id.as_bytes(),
+        object_version: 1,
+        credential_kind: 0,
+        constraints_hash: [0u8; 32],
+    }
+    .encode();
+    let alternate = aead::seal(&kek, &aad, &alternate_vrk).unwrap();
+    kek.zeroize();
+    alternate_vrk.zeroize();
+    drop(store);
+
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+    let connection = rusqlite::Connection::open(&db).unwrap();
+    connection
+        .execute(
+            "UPDATE key_wrappers SET nonce = ?1, wrapped_vrk = ?2 WHERE wrapper_id = ?3",
+            rusqlite::params![
+                alternate.nonce.as_slice(),
+                alternate.ciphertext,
+                wrapper.wrapper_id.as_bytes().as_slice()
+            ],
+        )
+        .unwrap();
+    drop(connection);
+
+    let err = handle
+        .verify_proof(common::password_proof())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AuthorityError::InvalidUnlockCredential));
+    assert_eq!(handle.status().await.unwrap().state, "unlocked");
+    handle.lock("test").await.unwrap();
+    handle.shutdown(None).await.unwrap();
+    join.join().unwrap();
+}
+
+#[tokio::test]
+async fn payload_authentication_failure_faults_and_zeroizes_authority() {
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+    let meta = handle
+        .credential_add(
+            CredentialLabel::new("tampered-payload").unwrap(),
+            CredentialKind::OpaqueToken,
+            SecretInput::from_slice(b"secret"),
+            common::password_proof(),
+        )
+        .await
+        .unwrap();
+    let connection =
+        rusqlite::Connection::open(rekey_vault::paths::vault_db(&vault.state_dir)).unwrap();
+    connection
+        .execute(
+            "UPDATE credential_versions SET encrypted_payload = X'00' WHERE credential_id = ?1",
+            [meta.id.as_bytes().as_slice()],
+        )
+        .unwrap();
+    drop(connection);
+
+    let err = handle.prepare_credential(meta.id).await.unwrap_err();
+    assert!(matches!(err, AuthorityError::CryptoFailure));
+    assert_eq!(handle.status().await.unwrap().state, "faulted");
+    let err = handle.prepare_credential(meta.id).await.unwrap_err();
+    assert!(matches!(err, AuthorityError::Faulted));
+    handle.shutdown(None).await.unwrap();
+    join.join().unwrap();
+}
+
+#[tokio::test]
+async fn malformed_runtime_record_faults_and_zeroizes_authority() {
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+    let meta = handle
+        .credential_add(
+            CredentialLabel::new("malformed-record").unwrap(),
+            CredentialKind::OpaqueToken,
+            SecretInput::from_slice(b"secret"),
+            common::password_proof(),
+        )
+        .await
+        .unwrap();
+    let connection =
+        rusqlite::Connection::open(rekey_vault::paths::vault_db(&vault.state_dir)).unwrap();
+    connection
+        .execute_batch("PRAGMA ignore_check_constraints = ON;")
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE credential_versions SET payload_nonce = X'00' WHERE credential_id = ?1",
+            [meta.id.as_bytes().as_slice()],
+        )
+        .unwrap();
+    drop(connection);
+
+    let err = handle.prepare_credential(meta.id).await.unwrap_err();
+    assert!(matches!(err, AuthorityError::StorageIntegrityFailed));
+    assert_eq!(handle.status().await.unwrap().state, "faulted");
+    let err = handle
+        .verify_proof(common::password_proof())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AuthorityError::Faulted));
+    handle.shutdown(None).await.unwrap();
     join.join().unwrap();
 }

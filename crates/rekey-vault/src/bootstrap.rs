@@ -85,21 +85,48 @@ fn sqlite_sidecars(db: &Path) -> [PathBuf; 2] {
     ]
 }
 
-fn remove_sqlite_bundle(db: &Path) {
-    let _ = fs::remove_file(db);
+fn remove_sqlite_bundle(db: &Path) -> std::io::Result<()> {
+    remove_if_present(db)?;
     for side in sqlite_sidecars(db) {
-        let _ = fs::remove_file(side);
+        remove_if_present(&side)?;
     }
+    crate::durable::fsync_parent(db)
 }
 
 /// Drops a vault written by a failed init (including confirmation abort).
-pub fn discard_vault_files(state_dir: &Path) {
-    remove_sqlite_bundle(&paths::vault_db(state_dir));
-    let _ = fs::remove_file(paths::broker_lock(state_dir));
-    let _ = fs::remove_dir_all(paths::runtime_dir(state_dir));
-    if dir_is_empty(state_dir).unwrap_or(false) {
-        let _ = fs::remove_dir(state_dir);
+pub fn discard_vault_files(state_dir: &Path) -> Result<(), AuthorityError> {
+    if !state_dir.exists() {
+        return Ok(());
     }
+    let lock = BootstrapLock::acquire(state_dir)?;
+    ensure_init_marker(state_dir)?;
+    remove_sqlite_bundle(&paths::vault_db(state_dir)).map_err(AuthorityError::storage)?;
+    let runtime = paths::runtime_dir(state_dir);
+    match fs::remove_dir(&runtime) {
+        Ok(()) => crate::durable::fsync(state_dir).map_err(AuthorityError::storage)?,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(AuthorityError::storage(err)),
+    }
+    drop(lock);
+    crate::durable::remove_file_and_sync(&paths::broker_lock(state_dir))
+        .map_err(AuthorityError::storage)?;
+    remove_init_marker(state_dir)?;
+    if dir_is_empty(state_dir)? {
+        fs::remove_dir(state_dir).map_err(AuthorityError::storage)?;
+        crate::durable::fsync_parent(state_dir).map_err(AuthorityError::storage)?;
+    }
+    Ok(())
+}
+
+/// Marks the recovery-key confirmation boundary durable. Until this succeeds,
+/// the authority refuses to serve the newly-created database.
+pub fn confirm_vault_init(state_dir: &Path) -> Result<(), AuthorityError> {
+    let _lock = BootstrapLock::acquire(state_dir)?;
+    if !init_marker_is_regular(state_dir)? {
+        return Err(AuthorityError::UnsupportedVaultLayout);
+    }
+    SqliteRecordStore::open(&paths::vault_db(state_dir))?;
+    remove_init_marker(state_dir)
 }
 
 /// Held for the duration of an offline bootstrap operation.
@@ -203,28 +230,26 @@ pub fn init_vault(
     if password.is_empty() {
         return Err(AuthorityError::InvalidUnlockCredential);
     }
-    let created_dir = if state_dir.exists() {
-        if !dir_is_empty(state_dir)? {
+    if state_dir.exists() {
+        let interrupted = init_marker_is_regular(state_dir)?;
+        if !interrupted && !dir_is_empty(state_dir)? {
+            return Err(AuthorityError::StateDirectoryNotEmpty);
+        }
+        if interrupted && !dir_has_only_init_artifacts(state_dir)? {
             return Err(AuthorityError::StateDirectoryNotEmpty);
         }
         fs::set_permissions(state_dir, fs::Permissions::from_mode(0o700))
             .map_err(AuthorityError::storage)?;
-        false
     } else {
         fs::create_dir_all(state_dir).map_err(AuthorityError::storage)?;
         fs::set_permissions(state_dir, fs::Permissions::from_mode(0o700))
             .map_err(AuthorityError::storage)?;
-        true
-    };
+    }
 
     match init_vault_inner(state_dir, password, params) {
         Ok(outcome) => Ok(outcome),
         Err(err) => {
-            if created_dir {
-                let _ = fs::remove_dir_all(state_dir);
-            } else {
-                discard_vault_files(state_dir);
-            }
+            discard_vault_files(state_dir)?;
             Err(err)
         }
     }
@@ -236,6 +261,11 @@ fn init_vault_inner(
     params: Argon2Params,
 ) -> Result<InitOutcome, AuthorityError> {
     let _lock = BootstrapLock::acquire(state_dir)?;
+    if init_marker_is_regular(state_dir)? {
+        remove_sqlite_bundle(&paths::vault_db(state_dir)).map_err(AuthorityError::storage)?;
+    } else {
+        create_init_marker(state_dir)?;
+    }
 
     let vault_id = VaultId::new_random();
     let vrk = RootKey::generate()?;
@@ -338,6 +368,61 @@ fn init_vault_inner(
         vault_id,
         recovery_key_display: recovery_display,
     })
+}
+
+fn init_marker_is_regular(state_dir: &Path) -> Result<bool, AuthorityError> {
+    match fs::symlink_metadata(paths::init_incomplete(state_dir)) {
+        Ok(metadata) if metadata.file_type().is_file() => Ok(true),
+        Ok(_) => Err(AuthorityError::UnsupportedVaultLayout),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(AuthorityError::storage(err)),
+    }
+}
+
+fn dir_has_only_init_artifacts(state_dir: &Path) -> Result<bool, AuthorityError> {
+    let db = paths::vault_db(state_dir);
+    let sidecars = sqlite_sidecars(&db);
+    let allowed = [
+        paths::init_incomplete(state_dir),
+        paths::broker_lock(state_dir),
+        db,
+        sidecars[0].clone(),
+        sidecars[1].clone(),
+    ];
+    for entry in fs::read_dir(state_dir).map_err(AuthorityError::storage)? {
+        let path = entry.map_err(AuthorityError::storage)?.path();
+        if !allowed.iter().any(|candidate| candidate == &path) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn create_init_marker(state_dir: &Path) -> Result<(), AuthorityError> {
+    let marker = paths::init_incomplete(state_dir);
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(marker)
+        .map_err(AuthorityError::storage)?;
+    file.write_all(b"rekey-init-incomplete-v1\n")
+        .map_err(AuthorityError::storage)?;
+    file.sync_all().map_err(AuthorityError::storage)?;
+    crate::durable::fsync(state_dir).map_err(AuthorityError::storage)
+}
+
+fn ensure_init_marker(state_dir: &Path) -> Result<(), AuthorityError> {
+    if init_marker_is_regular(state_dir)? {
+        Ok(())
+    } else {
+        create_init_marker(state_dir)
+    }
+}
+
+fn remove_init_marker(state_dir: &Path) -> Result<(), AuthorityError> {
+    crate::durable::remove_file_and_sync(&paths::init_incomplete(state_dir))
+        .map_err(AuthorityError::storage)
 }
 
 /// Offline restore of a v4 backup into an empty target state directory.

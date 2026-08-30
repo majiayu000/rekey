@@ -328,6 +328,67 @@ async fn restore_rejects_corrupt_later_credential() {
 }
 
 #[tokio::test]
+async fn restore_rejects_orphan_credential_version() {
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+    let source = handle
+        .credential_add(
+            CredentialLabel::new("orphan-source").unwrap(),
+            CredentialKind::OpaqueToken,
+            SecretInput::from_slice(b"secret"),
+            common::password_proof(),
+        )
+        .await
+        .unwrap();
+    let backup_path = vault.dir.path().join("orphan.rkbackup");
+    handle
+        .backup(backup_path.clone(), common::password_proof())
+        .await
+        .unwrap();
+    handle
+        .shutdown(Some(common::password_proof()))
+        .await
+        .unwrap();
+    join.join().unwrap();
+
+    let orphan = rekey_domain::ids::CredentialId::new_random();
+    let connection = rusqlite::Connection::open(&backup_path).unwrap();
+    connection
+        .execute_batch("PRAGMA foreign_keys = OFF;")
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO credential_versions (
+                credential_id, version, state, aad_version, crypto_suite,
+                dek_nonce, wrapped_dek, payload_nonce, encrypted_payload,
+                created_at_ms, retired_at_ms
+             )
+             SELECT ?1, 1, state, aad_version, crypto_suite, dek_nonce,
+                    wrapped_dek, payload_nonce, encrypted_payload,
+                    created_at_ms, retired_at_ms
+             FROM credential_versions WHERE credential_id = ?2 AND version = 1",
+            rusqlite::params![
+                orphan.as_bytes().as_slice(),
+                source.id.as_bytes().as_slice()
+            ],
+        )
+        .unwrap();
+    drop(connection);
+
+    let target = vault.dir.path().join("restored-orphan");
+    let err = restore_vault(
+        &backup_path,
+        &target,
+        RestoreProof::Password(common::password_input()),
+        &file_sha256(&backup_path),
+    )
+    .unwrap_err();
+    assert!(matches!(err, AuthorityError::StorageIntegrityFailed));
+    assert!(!rekey_vault::paths::vault_db(&target).exists());
+}
+
+#[tokio::test]
 async fn backup_fails_when_parent_directory_cannot_be_fsynced() {
     use std::os::unix::fs::PermissionsExt;
 

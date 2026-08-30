@@ -245,6 +245,78 @@ fn empty_or_incomplete_database_is_unsupported_layout() {
 }
 
 #[test]
+fn opening_rejects_orphan_credential_version() {
+    let (vault, mut store) = open_store();
+    let record = credential("orphan-source");
+    store
+        .insert_credential(
+            &record,
+            &version(record.credential_id, 1),
+            audit(event_type::CREDENTIAL_CREATED),
+        )
+        .unwrap();
+    drop(store);
+
+    let orphan = CredentialId::new_random();
+    let connection = rusqlite::Connection::open(paths::vault_db(&vault.state_dir)).unwrap();
+    connection
+        .execute_batch("PRAGMA foreign_keys = OFF;")
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO credential_versions (
+                credential_id, version, state, aad_version, crypto_suite,
+                dek_nonce, wrapped_dek, payload_nonce, encrypted_payload,
+                created_at_ms, retired_at_ms
+             )
+             SELECT ?1, 1, state, aad_version, crypto_suite, dek_nonce,
+                    wrapped_dek, payload_nonce, encrypted_payload,
+                    created_at_ms, retired_at_ms
+             FROM credential_versions WHERE credential_id = ?2 AND version = 1",
+            rusqlite::params![
+                orphan.as_bytes().as_slice(),
+                record.credential_id.as_bytes().as_slice()
+            ],
+        )
+        .unwrap();
+    drop(connection);
+
+    assert!(matches!(
+        SqliteRecordStore::open(&paths::vault_db(&vault.state_dir)),
+        Err(AuthorityError::StorageIntegrityFailed)
+    ));
+}
+
+#[test]
+fn opening_rejects_current_version_state_mismatch() {
+    let (vault, mut store) = open_store();
+    let record = credential("state-mismatch");
+    store
+        .insert_credential(
+            &record,
+            &version(record.credential_id, 1),
+            audit(event_type::CREDENTIAL_CREATED),
+        )
+        .unwrap();
+    drop(store);
+
+    let connection = rusqlite::Connection::open(paths::vault_db(&vault.state_dir)).unwrap();
+    connection
+        .execute(
+            "UPDATE credential_versions SET state = 'retired', retired_at_ms = 1
+             WHERE credential_id = ?1 AND version = 1",
+            [record.credential_id.as_bytes().as_slice()],
+        )
+        .unwrap();
+    drop(connection);
+
+    assert!(matches!(
+        SqliteRecordStore::open(&paths::vault_db(&vault.state_dir)),
+        Err(AuthorityError::StorageIntegrityFailed)
+    ));
+}
+
+#[test]
 fn duplicate_label_leaves_no_partial_rows() {
     let (_vault, mut store) = open_store();
     let a = credential("dup");
