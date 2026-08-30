@@ -25,7 +25,12 @@ PRIVATE_KEY="$WORKDIR/github-app-key.pem"
 PRIVATE_KEY_DER="$WORKDIR/github-app-key.der"
 PUBLIC_KEY_DER="$WORKDIR/github-app-public.der"
 BROKER_PID=""
+DISCONNECT_PID=""
 cleanup() {
+  if [[ -n "$DISCONNECT_PID" ]]; then
+    kill "$DISCONNECT_PID" 2>/dev/null || true
+    wait "$DISCONNECT_PID" 2>/dev/null || true
+  fi
   if [[ -n "$BROKER_PID" ]]; then
     kill "$BROKER_PID" 2>/dev/null || true
     wait "$BROKER_PID" 2>/dev/null || true
@@ -35,7 +40,9 @@ cleanup() {
 failure() {
   local rc=$?
   [[ ! -f "$WORKDIR/success.err" ]] || cat "$WORKDIR/success.err" >&2
+  [[ ! -f "$WORKDIR/disconnected-agent.err" ]] || cat "$WORKDIR/disconnected-agent.err" >&2
   [[ ! -f "$WORKDIR/broker.err" ]] || cat "$WORKDIR/broker.err" >&2
+  [[ ! -f "$TRACE" ]] || tail -80 "$TRACE" >&2
   echo "P2 GitHub acceptance failed at line $1 (exit $rc)" >&2
   exit "$rc"
 }
@@ -44,6 +51,31 @@ trap 'failure "$LINENO"' ERR
 
 json_field() {
   python3 -c 'import json,sys; print(json.load(sys.stdin)[sys.argv[1]])' "$1"
+}
+
+pid_running() {
+  local pid="$1" state
+  kill -0 "$pid" 2>/dev/null || return 1
+  state="$(ps -o stat= -p "$pid" 2>/dev/null || true)"
+  [[ -n "$state" && "$state" != Z* ]]
+}
+
+wait_pid_bounded() {
+  local pid="$1" seconds="$2" ticks
+  ticks=$((seconds * 40))
+  for _ in $(seq 1 "$ticks"); do
+    pid_running "$pid" || return 0
+    sleep 0.025
+  done
+  return 1
+}
+
+trace_count() {
+  grep -c "^$1$" "$TRACE" 2>/dev/null || true
+}
+
+jwt_canary() {
+  awk -F= '/^jwt\.canary=/{print $2; exit}' "$1"
 }
 
 expect_failure() {
@@ -255,20 +287,146 @@ wait "$SLOW_PID"
 grep -q '"id":616161' "$WORKDIR/slow-resource.out"
 "$REKEY" --state-dir "$STATE" lock >/dev/null
 
+# The lock-busy path intentionally raised the lifecycle cancellation epoch.
+# Restart locked so the signal/disconnect scenario begins in a fresh runtime
+# while preserving the same vault, audit log, action, and typed credential.
+"$REKEY" --state-dir "$STATE" shutdown >/dev/null
+wait_pid_bounded "$BROKER_PID" 6
+wait "$BROKER_PID"
+BROKER_PID=""
+READY="$WORKDIR/pre-signal-restart-ready"
+printf '%s\n' success >"$MODE"
+"$FIXTURE" "$STATE" "$READY" "$MODE" "$TRACE" "$PUBLIC_KEY_DER" \
+  >"$WORKDIR/pre-signal-restart-broker.out" 2>"$WORKDIR/pre-signal-restart-broker.err" &
+BROKER_PID=$!
+for _ in $(seq 1 400); do
+  [[ -f "$READY" && -S "$STATE/runtime/admin.sock" ]] && break
+  sleep 0.025
+done
+[[ -f "$READY" && -S "$STATE/runtime/admin.sock" ]] || {
+  echo "P2 GitHub fixture did not restart before signal scenario"
+  cat "$WORKDIR/pre-signal-restart-broker.err"
+  exit 1
+}
+
+# The combined supervisor/connector gate: after the resource request proves a
+# token exists, disconnect the Agent and signal the real BrokerRuntime. The
+# supervisor must retain ownership through revoke, terminal audit, and stop.
+printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" unlock --password-stdin >/dev/null
+SIGNAL_SESSION_JSON="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" session create \
+  --action "$ACTION_REF" --ttl 10m --max-uses 2 --password-stdin)"
+SIGNAL_PRINCIPAL_ID="$(printf '%s\n' "$SIGNAL_SESSION_JSON" | json_field principal_id)"
+SIGNAL_CAPABILITY="$(printf '%s\n' "$SIGNAL_SESSION_JSON" | json_field capability_token)"
+python3 - "$WORKDIR/policy.json" "$SIGNAL_PRINCIPAL_ID" <<'PY'
+import json, pathlib, sys, time, uuid
+path = pathlib.Path(sys.argv[1])
+policy = json.loads(path.read_text())
+policy["version"] = 2
+policy["expires_at_ms"] = int(time.time() * 1000) + 600000
+policy["rules"][0]["id"] = str(uuid.uuid4())
+policy["rules"][0]["principal_id"] = sys.argv[2]
+path.write_text(json.dumps(policy))
+PY
+printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate \
+  --file "$WORKDIR/policy.json" --password-stdin >/dev/null
+
+printf '%s\n' slow-resource >"$MODE"
+SIGNAL_RESOURCE_BEFORE="$(trace_count resource.ok)"
+SIGNAL_REVOKE_BEFORE="$(trace_count revoke.ok)"
+"$REKEY" --state-dir "$STATE" execute "$ACTION_REF" --capability "$SIGNAL_CAPABILITY" \
+  >"$WORKDIR/disconnected-agent.out" 2>"$WORKDIR/disconnected-agent.err" &
+DISCONNECT_PID=$!
+SIGNAL_RESOURCE_TARGET=$((SIGNAL_RESOURCE_BEFORE + 1))
+for _ in $(seq 1 200); do
+  [[ "$(trace_count resource.ok)" -eq "$SIGNAL_RESOURCE_TARGET" ]] && break
+  sleep 0.01
+done
+[[ "$(trace_count resource.ok)" -eq "$SIGNAL_RESOURCE_TARGET" ]] || {
+  echo "signal scenario did not observe exactly one new resource request"
+  cat "$WORKDIR/disconnected-agent.err" >&2 || true
+  tail -80 "$TRACE" >&2 || true
+  exit 1
+}
+pid_running "$DISCONNECT_PID"
+pid_running "$BROKER_PID"
+SIGNAL_STOP_STARTED="$(python3 -c 'import time; print(time.monotonic())')"
+kill -TERM "$DISCONNECT_PID"
+kill -TERM "$BROKER_PID"
+wait_pid_bounded "$DISCONNECT_PID" 2 || {
+  echo "Agent CLI did not disconnect within two seconds"
+  exit 1
+}
+DISCONNECT_RC=0
+wait "$DISCONNECT_PID" || DISCONNECT_RC=$?
+DISCONNECT_PID=""
+[[ "$DISCONNECT_RC" -ne 0 && ! -s "$WORKDIR/disconnected-agent.out" ]] || {
+  echo "disconnected Agent unexpectedly received a successful response"
+  exit 1
+}
+wait_pid_bounded "$BROKER_PID" 6 || {
+  echo "SIGTERM stop exceeded the absolute deadline"
+  exit 1
+}
+BROKER_RC=0
+wait "$BROKER_PID" || BROKER_RC=$?
+BROKER_PID=""
+[[ "$BROKER_RC" -eq 0 ]] || {
+  echo "SIGTERM stop returned $BROKER_RC"
+  exit 1
+}
+SIGNAL_STOP_ELAPSED="$(python3 - "$SIGNAL_STOP_STARTED" <<'PY'
+import sys, time
+print(time.monotonic() - float(sys.argv[1]))
+PY
+)"
+python3 - "$SIGNAL_STOP_ELAPSED" <<'PY'
+import sys
+if float(sys.argv[1]) >= 6.0:
+    raise SystemExit("SIGTERM stop exceeded the six-second absolute test bound")
+PY
+[[ "$(trace_count revoke.ok)" -eq "$((SIGNAL_REVOKE_BEFORE + 1))" ]] || {
+  echo "signal scenario did not revoke exactly one installation token"
+  exit 1
+}
+python3 - "$STATE/vault.sqlite3" <<'PY'
+import sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+row = db.execute("""
+    SELECT request_id FROM audit_events
+    WHERE event_type='execution.started'
+    ORDER BY sequence DESC LIMIT 1
+""").fetchone()
+if row is None or row[0] is None:
+    raise SystemExit("signal scenario has no request_id")
+chain = db.execute("""
+    SELECT event_type FROM audit_events
+    WHERE request_id=?
+      AND event_type IN ('execution.started', 'connector.github.authorized',
+                         'connector.github.token_revoked', 'execution.finished',
+                         'execution.blocked')
+    ORDER BY sequence
+""", (row[0],)).fetchall()
+types = [item[0] for item in chain]
+expected = ['execution.started', 'connector.github.authorized',
+            'connector.github.token_revoked', 'execution.finished']
+if types != expected:
+    raise SystemExit(f"signal scenario audit chain is not exact: {types}")
+PY
+
 python3 - "$STATE/vault.sqlite3" "$PRIVATE_KEY_CANARY" "$TOKEN_CANARY" <<'PY'
 import pathlib, re, sqlite3, sys
 db_path, key_canary, token_canary = sys.argv[1:]
 db = sqlite3.connect(db_path)
 def scalar(sql): return db.execute(sql).fetchone()[0]
-if scalar("SELECT count(*) FROM audit_events WHERE event_type='execution.started'") != 13:
-    raise SystemExit("expected thirteen started audits")
-if scalar("SELECT count(*) FROM audit_events WHERE event_type IN ('execution.finished','execution.blocked')") != 13:
-    raise SystemExit("expected thirteen terminal audits")
-if scalar("SELECT count(*) FROM audit_events WHERE event_type='execution.finished'") != 2:
-    raise SystemExit("expected two successful executions")
-if scalar("SELECT count(*) FROM audit_events WHERE event_type='connector.github.authorized'") != 13:
+if scalar("SELECT count(*) FROM audit_events WHERE event_type='execution.started'") != 14:
+    raise SystemExit("expected fourteen started audits")
+if scalar("SELECT count(*) FROM audit_events WHERE event_type IN ('execution.finished','execution.blocked')") != 14:
+    raise SystemExit("expected fourteen terminal audits")
+if scalar("SELECT count(*) FROM audit_events WHERE event_type='execution.finished'") != 3:
+    raise SystemExit("expected three successful executions")
+if scalar("SELECT count(*) FROM audit_events WHERE event_type='connector.github.authorized'") != 14:
     raise SystemExit("missing connector authorization commitments")
-if scalar("SELECT count(*) FROM audit_events WHERE event_type='connector.github.token_revoked'") != 12:
+if scalar("SELECT count(*) FROM audit_events WHERE event_type='connector.github.token_revoked'") != 13:
     raise SystemExit("unexpected revoke audit count")
 if scalar("SELECT count(*) FROM audit_events WHERE event_type='connector.github.token_revoked' AND outcome='failure'") != 1:
     raise SystemExit("missing revoke failure audit")
@@ -287,8 +445,8 @@ rows = db.execute("""
 chains = {}
 for row in rows:
     chains.setdefault(row[1], []).append(row)
-if len(chains) != 13:
-    raise SystemExit(f"expected thirteen non-vacuous request audit chains, got {len(chains)}")
+if len(chains) != 14:
+    raise SystemExit(f"expected fourteen non-vacuous request audit chains, got {len(chains)}")
 without_revoke = 0
 for request_id, chain in chains.items():
     types = [row[2] for row in chain]
@@ -324,26 +482,48 @@ if key_canary.encode() in raw or token_canary.encode() in raw:
     raise SystemExit("connector secret leaked into SQLite")
 PY
 
-[[ "$(grep -c '^exchange.ok$' "$TRACE")" -eq 12 ]]
+[[ "$(grep -c '^exchange.ok$' "$TRACE")" -eq 13 ]]
 [[ "$(grep -c '^exchange.error$' "$TRACE")" -eq 1 ]]
 RESOURCE_OK_COUNT="$(grep -c '^resource.ok$' "$TRACE")"
-[[ "$RESOURCE_OK_COUNT" -eq 6 ]] || {
-  echo "expected six resource.ok traces, got $RESOURCE_OK_COUNT"
+[[ "$RESOURCE_OK_COUNT" -eq 7 ]] || {
+  echo "expected seven resource.ok traces, got $RESOURCE_OK_COUNT"
   cat "$TRACE"
   exit 1
 }
 [[ "$(grep -c '^resource.error$' "$TRACE")" -eq 1 ]]
-[[ "$(grep -c '^revoke.ok$' "$TRACE")" -eq 11 ]]
+[[ "$(grep -c '^revoke.ok$' "$TRACE")" -eq 12 ]]
 [[ "$(grep -c '^revoke.error$' "$TRACE")" -eq 1 ]]
 
-if rg -a -F "$PRIVATE_KEY_CANARY" "$STATE" "$WORKDIR" --glob '!trace' >/dev/null; then
+JWT_CANARY="$(jwt_canary "$TRACE")"
+[[ ${#JWT_CANARY} -eq 32 ]]
+
+if rg -a -F "$PRIVATE_KEY_CANARY" "$STATE" "$WORKDIR" --glob '!trace' --glob '!restored-trace' >/dev/null; then
   echo "private key canary leaked into Agent-visible or durable output"
   exit 1
 fi
-if rg -a -F "$TOKEN_CANARY" "$STATE" "$WORKDIR" --glob '!trace' >/dev/null; then
+if rg -a -F "$TOKEN_CANARY" "$STATE" "$WORKDIR" --glob '!trace' --glob '!restored-trace' >/dev/null; then
   echo "installation token leaked into Agent-visible or durable output"
   exit 1
 fi
+if rg -a -F "$JWT_CANARY" "$STATE" "$WORKDIR" --glob '!trace' --glob '!restored-trace' >/dev/null; then
+  echo "GitHub JWT canary leaked into Agent-visible or durable output"
+  exit 1
+fi
+
+READY="$WORKDIR/restarted-ready"
+printf '%s\n' success >"$MODE"
+"$FIXTURE" "$STATE" "$READY" "$MODE" "$TRACE" "$PUBLIC_KEY_DER" \
+  >"$WORKDIR/restarted-broker.out" 2>"$WORKDIR/restarted-broker.err" &
+BROKER_PID=$!
+for _ in $(seq 1 400); do
+  [[ -f "$READY" && -S "$STATE/runtime/admin.sock" ]] && break
+  sleep 0.025
+done
+[[ -f "$READY" && -S "$STATE/runtime/admin.sock" ]] || {
+  echo "P2 GitHub fixture did not restart after SIGTERM"
+  cat "$WORKDIR/restarted-broker.err"
+  exit 1
+}
 
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" unlock --password-stdin >/dev/null
 BACKUP="$WORKDIR/github-app.backup"
@@ -404,8 +584,8 @@ grep -q '"id":616161' "$WORKDIR/restored-success.out"
 python3 - "$STATE/vault.sqlite3" <<'PY'
 import re, sqlite3, sys
 db = sqlite3.connect(sys.argv[1])
-if db.execute("SELECT count(*) FROM audit_events WHERE event_type='execution.started'").fetchone()[0] != 14:
-    raise SystemExit("restored execution did not append the fourteenth start")
+if db.execute("SELECT count(*) FROM audit_events WHERE event_type='execution.started'").fetchone()[0] != 15:
+    raise SystemExit("restored execution did not append the fifteenth start")
 request_id = db.execute("SELECT request_id FROM audit_events WHERE event_type='execution.started' ORDER BY sequence DESC LIMIT 1").fetchone()[0]
 chain = db.execute("SELECT event_type, reason_code FROM audit_events WHERE request_id=? ORDER BY sequence", (request_id,)).fetchall()
 if [row[0] for row in chain] != ['execution.started', 'connector.github.authorized', 'connector.github.token_revoked', 'execution.finished']:
@@ -415,14 +595,22 @@ if not re.fullmatch(r"binding-sha256=[0-9a-f]{64}", chain[1][1]):
 if not re.fullmatch(r"success;binding-sha256=[0-9a-f]{64}", chain[2][1]):
     raise SystemExit("restored revoke binding invalid")
 PY
-if rg -a -F "$PRIVATE_KEY_CANARY" "$STATE" "$WORKDIR" --glob '!trace' >/dev/null; then
+RESTORED_JWT_CANARY="$(jwt_canary "$RESTORED_TRACE")"
+[[ ${#RESTORED_JWT_CANARY} -eq 32 ]]
+if rg -a -F "$PRIVATE_KEY_CANARY" "$STATE" "$WORKDIR" --glob '!trace' --glob '!restored-trace' >/dev/null; then
   echo "private key canary leaked after restore"
   exit 1
 fi
-if rg -a -F "$TOKEN_CANARY" "$STATE" "$WORKDIR" --glob '!trace' >/dev/null; then
+if rg -a -F "$TOKEN_CANARY" "$STATE" "$WORKDIR" --glob '!trace' --glob '!restored-trace' >/dev/null; then
   echo "installation token leaked after restore"
   exit 1
 fi
+for canary in "$JWT_CANARY" "$RESTORED_JWT_CANARY"; do
+  if rg -a -F "$canary" "$STATE" "$WORKDIR" --glob '!trace' --glob '!restored-trace' >/dev/null; then
+    echo "GitHub JWT canary leaked after restore"
+    exit 1
+  fi
+done
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" shutdown --password-stdin >/dev/null
 wait "$BROKER_PID"
 BROKER_PID=""

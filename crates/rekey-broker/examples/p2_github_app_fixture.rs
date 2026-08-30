@@ -203,6 +203,17 @@ fn append_trace(path: &Path, event: &str) -> std::io::Result<()> {
     file.sync_all()
 }
 
+fn append_jwt_canary(path: &Path, jwt: &str) -> std::io::Result<()> {
+    let signature = jwt
+        .rsplit('.')
+        .next()
+        .filter(|value| value.len() >= 32)
+        .ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "JWT signature too short")
+        })?;
+    append_trace(path, &format!("jwt.canary={}", &signature[..32]))
+}
+
 async fn serve_mock(
     listener: TcpListener,
     acceptor: TlsAcceptor,
@@ -238,7 +249,16 @@ async fn serve_mock(
             let result = if req.method == "POST"
                 && req.path == format!("/app/installations/{INSTALLATION_ID}/access_tokens")
             {
-                let jwt = bearer(&req).and_then(|jwt| verify_jwt(jwt, &public_key_der));
+                let jwt_value = bearer(&req);
+                let jwt = jwt_value.and_then(|jwt| verify_jwt(jwt, &public_key_der));
+                if jwt.is_ok() {
+                    let Ok(jwt_value) = jwt_value else {
+                        return;
+                    };
+                    if append_jwt_canary(&trace_path, jwt_value).is_err() {
+                        return;
+                    }
+                }
                 let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
                 let scope_ok = body
                     == json!({"repository_ids":[REPOSITORY_ID],"permissions":{"metadata":"read"}});
