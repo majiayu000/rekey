@@ -1327,8 +1327,7 @@ scripts/p0-runtime-faults.sh
 | Typed parameter policy | Action 参数 canonicalization + default deny | `cargo test -p rekey-policy` |
 | Chunk-boundary response sealing | bounded buffered response 中跨 HTTP/TLS chunk 的 secret variant 在任何 Agent response frame/body 写出前被拒绝 | `scripts/p1-streaming-sealing.sh` |
 | launchd | locked boot、受保护 unlock、central stop、locked restart | `scripts/p1-service-manager.sh`（macOS required） |
-| systemd | 同一真实 native-manager gate；合入前只称 implemented, not run | `scripts/p1-service-manager.sh`（`ubuntu-latest` PID 1 systemd required） |
-| OS key wrapper | Keychain/TPM wrapper 是可选第三 wrapper | `cargo test -p rekey-vault --test os_wrapper_contract` |
+| systemd | 同一真实 native-manager gate 已实现；required Ubuntu job 产生通过证据前只称 CI gate implemented, not run | `scripts/p1-service-manager.sh`（`ubuntu-latest` PID 1 systemd required） |
 
 Chunk-boundary sealing 的 release-process gate 必须运行真实 `rekey` CLI、独立
 BrokerRuntime 进程、Admin/Agent 双 UDS、SQLite audit 和 local CA/TLS upstream。
@@ -1404,10 +1403,13 @@ effect 所需对象，并由 `AdmittedExecution::run` 完成 effect 与唯一 te
 `ExecutionSupervisor` 是 BrokerRuntime 的单用途 child：mpsc 接收 `ExecuteRequest`，
 自己的 `JoinSet` 持有每个 admit/run task，结果通过 oneshot 返回 Agent connection。
 connection 丢弃 response receiver 只丢客户端响应，不能取消 supervisor-owned task。
-未来 P2 remote-token revoke/cleanup 必须放在 `AdmittedExecution` ownership 内，不得重新
-绑定到 connection lifetime。本批不实现 P2 effect。
+P2.1 GitHub remote-token effect 位于 `AdmittedExecution` ownership 内，不得重新绑定到
+connection lifetime。Agent connection 丢失 response receiver 后，已经开始的 GitHub
+effect 仍由 supervisor-owned task 持有到该 Action 的单一总 deadline；对已捕获 token
+按 §P2.1 完成有界 revoke attempt、revoke audit 和唯一 terminal，不得承诺 deadline
+耗尽后的绝对远程清理。
 
-Admin Shutdown、SIGTERM、SIGINT、listener/idle fault 必须进入同一个 central stop router，
+Admin Shutdown、SIGTERM、SIGINT、listener/idle/execution-supervisor fault 必须进入同一个 central stop router，
 且不可逆 stop 只由一次 lifecycle coordinator owner 执行。Admin 在 Locked 时不需要
 proof；在 Running 时先验证 proof，失败必须保持服务可用。进入不可逆 stop 后立即关闭
 Session admission、撤销 token、关闭 execution submission、通知 partial frame reader 与
@@ -1440,8 +1442,8 @@ reconcile orphan；unlock race 后最后事件仍为 signal lock；Admin Shutdow
 launchd/systemd locked boot、clean stop、restart 仍 Locked。cleanup 的 manager query、
 launchctl/systemctl、TERM、KILL 与 child wait 全部 bounded，只有进程退出后才 wait/remove
 unit。macOS 本机跑临时 `gui/$UID` label；普通 required `ubuntu-latest` 必须先硬断言
-PID 1 是 systemd，不满足直接失败，不能把 exit 77 转绿。workflow 未远端运行前 systemd
-Feature Truth 只能写 “CI gate implemented, not run”。
+PID 1 是 systemd，不满足直接失败，不能把 exit 77 转绿。在 `security-gate` required Ubuntu
+job 产生通过证据前，systemd Feature Truth 只能写 “CI gate implemented, not run”。
 
 任一 execution child `JoinError` 必须立即关闭 supervisor admission、停止 spawn 并让
 supervisor 返回错误；supervisor actor 自身 panic、异常或意外 clean exit 也必须由 runtime
@@ -1523,16 +1525,17 @@ connector registry、provider SDK、控制面或 Agent 可调用的签名/换票
   response。真实本地 acceptance 只允许通过 test-only `ScreenedEndpoint` 与本地 CA
   注入，不得放宽生产私网规则。
 
-本地 acceptance 必须使用 release `rekey`/`rekeyd`、真实双 UDS、SQLite 与本地
-CA/TLS mock GitHub，验证 JWT 签名和 claims、exchange 的 repository/permission scope、
+本地 acceptance 必须使用 release `rekey`、release `rekeyd` 的 init/backup/restore 路径、
+独立 release BrokerRuntime fixture、真实双 UDS、SQLite 与本地 CA/TLS mock GitHub，验证
+JWT 签名和 claims、exchange 的 repository/permission scope、
 resource 调用、成功/失败后的 revoke、每个 request_id 的非空且严格有序 audit chain；
 捕获到 token 的 chain 必须是 started→authorized→token-revoked→terminal，确定未观察到
 token 的 exchange failure 必须是 started→authorized→terminal 且单独计数，不能以空集合
 通过。还必须验证全盘 canary，以及 GitHub typed credential 经
 backup→restore→再次真实三段执行仍可用。
-真正
-`github.com` live E2E 需要用户提供 GitHub App、installation 和 test repository，未执行
-前只能声明 local black-box verified，不能伪造或声称 provider field validation。
+真正的 `github.com` live E2E 需要用户提供 GitHub App、installation 和 test repository；
+在取得该证据前只能声明 local black-box verified，P2.1 provider profile 不得标记
+`Field Validated`，也不得声称 live GitHub interoperability 已验证。
 
 | Work | Done when | Verification |
 | --- | --- | --- |
@@ -1540,6 +1543,15 @@ backup→restore→再次真实三段执行仍可用。
 | External CredentialSource | GitHub live E2E 后再抽象；P2.1 不创建 registry/SDK | user-provided GitHub App fixture |
 | Enterprise multi-tenant | tenant 进入所有 key/query/session/audit | `cargo test -p rekey-control --test tenant_isolation` |
 | HA/DR | 明确 RPO/RTO、恢复和 split-brain 行为 | `./scripts/verify_dr_drill.sh --report artifacts/dr/latest.json` |
+
+#### Deferred：OS key wrapper
+
+OS Keychain、Secret Service、TPM 或 Secure Enclave wrapper 当前不进入 P1/P2 完成范围。
+在“仍要求 password/recovery step-up、禁止自动解锁”的合同下，它只增加额外一条 VRK unwrap
+路径和跨存储原子性、备份恢复、平台测试负担，却没有形成明确的用户流程收益。只有真实用户
+需求接受“平台 user-presence 可以独立构成一次 step-up”时才重新设计；届时先做单一平台、
+不可导出/用户在场的 closed wrapper 和真实签名二进制 E2E，不引入 1Password、OpenBao 或
+其他付费/外部服务作为 Community 运行前置条件。
 
 ## 23. Validation Matrix
 
@@ -1627,7 +1639,8 @@ Review 必问：
 - 除 P2.1 封闭的 GitHub App Installation 换票外，不实现通用 OAuth、SSH、HSM、
   动态数据库 Secret 或任意 provider operation。
 - 不支持 Windows。
-- 不承诺 G2、FIPS validation、mlock、防宿主 root 或防内核取证。
+- 不承诺默认拓扑或通用 release 达到 G2、FIPS validation、mlock、防宿主 root 或防内核取证；
+  P1 只证明有界 Linux container/namespace G2 reference boundary。
 - 不支持 Agent-visible 流式 request/response、SSE passthrough、frame v2、自动
   retry、redirect 或 arbitrary HTTP proxy。P1 chunk-boundary sealing 仍先在 Action
   `response_max_bytes` 和 4 MiB 全局上限内完整缓冲 upstream response，再扫描 raw、
@@ -1644,7 +1657,8 @@ Review 必问：
 - P0 用两个 UDS 分离 Admin/Agent。
 - P0 不做 daemon background 模式。
 - P0 用 FixedHttpAction 证明纵向闭环。
-- P0 明确 G1；G2 后置。
+- P0 默认拓扑明确为 G1；P1 已落地有界 Linux container/namespace G2 reference，不升级
+  一般产品声明。
 - 不做任何 v1 compatibility 或 migration。
 - P1.1 使用内置 typed default-deny evaluator；不引入 Cedar 或 evaluator abstraction。
 
@@ -1653,13 +1667,17 @@ Review 必问：
 1. P2.1 已选择 GitHub App Installation 作为第一个内置 provider profile；P0 contract
    仍使用 provider-neutral FixedHttpAction。
 2. recovery key 是否在 P1 增加 threshold split；P0 使用单一 recovery key。
-3. P1 Linux G2 使用 namespace、gVisor 还是 Firecracker。
-4. 产品最终名称和许可证；阻塞公开发布，不阻塞本地实现。
+3. 产品最终名称和许可证；阻塞公开发布，不阻塞本地实现。
 
 ## 28. Readiness
 
 本规格完整到可以严格按 P0.1–P0.7 顺序实施 `Credential Authority v2 Foundation`。它已经给出状态所有者、删除范围、密码学层级、AAD、schema、IPC frame、CLI、错误、生命周期、验证命令和非目标。
 
-P0 代码、P1.1 typed authorization kernel 和 workspace 测试已经存在；当前定位是 **G1 开发候选**，不是 G1 安全发布候选。独立密码学、IPC 边界和 audit/failure-semantics 审查尚未进行。因此当前仓库不能声称 Security Baseline Complete、G2、生产就绪或优于 1Password/OpenBao/Aperture 等完整产品。功能是否“可用”只以 `docs/product-foundation/feature-truth-matrix.md` 为准。
+P0、P1 typed authorization/runtime ownership/sealing/service-manager、Linux G2 reference 和
+P2.1 local black-box 实现已经存在；systemd required-job 与 GitHub live E2E 尚无通过证据。
+当前默认拓扑仍定位为 **G1 开发候选**，不是 G1 安全发布候选。独立密码学、IPC 边界和
+audit/failure-semantics 人工审查尚未进行。因此当前仓库不能声称 Security Baseline Complete、
+通用 G2、生产就绪或优于 1Password/OpenBao/Aperture 等完整产品。功能是否“可用”只以
+`docs/product-foundation/feature-truth-matrix.md` 为准。
 
 实现过程中如果发现 spec 与可验证事实冲突，必须先修改本 spec 和相关基线，再修改代码；不得用临时兼容层或 warning fallback 绕过合同。
