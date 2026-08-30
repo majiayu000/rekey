@@ -98,13 +98,13 @@ impl Lifecycle {
     }
 
     pub fn enter_locked(&self) {
-        let _ = self.cancel_tx.send(false);
+        self.cancel_tx.send_replace(false);
         self.phase
             .store(BrokerPhase::Locked as u8, Ordering::SeqCst);
     }
 
     pub fn enter_running(&self) {
-        let _ = self.cancel_tx.send(false);
+        self.cancel_tx.send_replace(false);
         self.phase
             .store(BrokerPhase::Running as u8, Ordering::SeqCst);
     }

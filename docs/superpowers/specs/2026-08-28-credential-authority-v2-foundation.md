@@ -731,6 +731,14 @@ Broker:
     same drain as above, then stop the worker; never return to Running
 ~~~
 
+The retained cancellation value belongs only to the current Running-to-Draining
+epoch. It must remain set while that drain still has an in-flight execution, but
+after the drain proves in-flight is zero and successfully enters Locked, the
+transition must synchronously reset the retained value even when no cancellation
+receiver exists. A later unlock starts a fresh Running epoch whose newly admitted
+executions observe cancellation as false; a busy drain that remains Draining must
+not reset it.
+
 `SessionRegistry::begin` 为每一次执行返回 RAII permit；Drop 必须释放并发槽，不能依赖成功路径上的手工 `finish()`。创建 Session 与 `close_and_revoke_all` 必须共享同一把 registry 锁，避免 revoke 之后再 mint。
 
 一旦 `execution.started` 提交成功：同一内部 audit ID 必须恰好有一个 terminal 事件（`execution.finished` 或 `execution.blocked`）。terminal 必须在第一次 await 前把唯一提交所有权同步转移给独立 audit worker；调用任务随后被取消也不能取消该 durable commit，`StartedGuard::drop` 也不能再次提交 terminal。worker 的 commit error 或未排空状态必须由 tracker 阻止后续 lock/shutdown 被报告为成功。只有尚未转移 terminal 所有权的 Drop/panic 路径才提交 `blocked/abandoned`；worker 在 Authority shutdown 之前必须排空。进程重启后内存 Session 全部作废；启动时扫描无 terminal 的 started，**追加** `execution.blocked(abandoned-on-restart)`，不改写原 started 行。

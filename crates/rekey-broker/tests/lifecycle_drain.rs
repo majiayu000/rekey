@@ -504,7 +504,7 @@ async fn session_create_during_drain_is_rejected() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn drain_timeout_commits_abandoned_terminal() {
+async fn drain_cancel_is_scoped_to_one_running_epoch() {
     let broker =
         common::start_broker_with(Duration::from_secs(300), Duration::from_millis(60)).await;
     common::unlock(&broker).await;
@@ -541,14 +541,38 @@ async fn drain_timeout_commits_abandoned_terminal() {
     let exec = exec.await.unwrap();
     assert_eq!(exec.err_code(), "DRAINING");
 
+    common::unlock(&broker).await;
+    let new_token = common::create_session(&broker, &action_id, version).await;
+    let new_execution = common::call(
+        &broker.agent_sock(),
+        Channel::Agent,
+        agent_msg::EXECUTE_FIXED_HTTP_ACTION,
+        common::execute_meta(&new_token, &action_id, version)
+            .to_string()
+            .as_bytes(),
+        b"{}",
+    )
+    .await;
+    assert_eq!(new_execution.ok()["upstream_status"], 200);
+
     let state_dir = broker.state_dir.clone();
     let _dir = broker.shutdown_keep_dir().await;
     let store = SqliteRecordStore::open(&rekey_vault::paths::vault_db(&state_dir)).unwrap();
     let log = store.audit_execution_log().unwrap();
     assert_each_started_has_one_terminal(&log);
-    assert!(
-        log.iter().any(|(_, t)| t == "execution.blocked"),
-        "cancelled execute must leave a terminal blocked row: {log:?}"
+    assert_eq!(
+        log.iter()
+            .filter(|(_, event)| event == "execution.blocked")
+            .count(),
+        1,
+        "old epoch cancellation must leave one blocked terminal: {log:?}"
+    );
+    assert_eq!(
+        log.iter()
+            .filter(|(_, event)| event == "execution.finished")
+            .count(),
+        1,
+        "fresh Running epoch must finish independently: {log:?}"
     );
 }
 
