@@ -58,3 +58,17 @@ jobs:
         run: scripts/p0-runtime-faults.sh
       - name: Crash recovery acceptance
         run: scripts/p0-crash-recovery.sh
+      - name: Backup and restore durability acceptance
+        if: runner.os == 'macOS'
+        run: scripts/p0-durability.sh
+      - name: P1 typed-policy acceptance
+        run: scripts/p1-policy-acceptance.sh
+
+  g2-linux:
+    name: Linux container G2 reference boundary
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Namespace and peer-identity attack acceptance
+        run: scripts/p1-linux-g2.sh
