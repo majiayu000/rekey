@@ -147,7 +147,7 @@ impl SqliteRecordStore {
         for w in wrappers {
             insert_wrapper(&tx, w)?;
         }
-        insert_audit(&tx, &audit)?;
+        super::audit::insert(&tx, &audit)?;
         tx.commit().map_err(storage)
     }
 
@@ -225,7 +225,7 @@ impl SqliteRecordStore {
             return Err(AuthorityError::CredentialConflict);
         }
         insert_version(&tx, version)?;
-        insert_audit(&tx, &audit)?;
+        super::audit::insert(&tx, &audit)?;
         tx.commit().map_err(storage)
     }
 
@@ -258,7 +258,7 @@ impl SqliteRecordStore {
         if updated == 0 {
             return Err(AuthorityError::CredentialNotFound);
         }
-        insert_audit(&tx, &audit)?;
+        super::audit::insert(&tx, &audit)?;
         tx.commit().map_err(storage)
     }
 
@@ -285,7 +285,7 @@ impl SqliteRecordStore {
             params![credential_id.as_bytes().as_slice(), now_ms],
         )
         .map_err(storage)?;
-        insert_audit(&tx, &audit)?;
+        super::audit::insert(&tx, &audit)?;
         tx.commit().map_err(storage)
     }
 
@@ -373,7 +373,7 @@ impl SqliteRecordStore {
             ],
         )
         .map_err(storage)?;
-        insert_audit(&tx, &audit)?;
+        super::audit::insert(&tx, &audit)?;
         tx.commit().map_err(storage)
     }
 
@@ -392,7 +392,7 @@ impl SqliteRecordStore {
         if updated == 0 {
             return Err(AuthorityError::ActionNotFound);
         }
-        insert_audit(&tx, &audit)?;
+        super::audit::insert(&tx, &audit)?;
         tx.commit().map_err(storage)
     }
 
@@ -463,7 +463,7 @@ impl SqliteRecordStore {
             .conn
             .transaction()
             .map_err(|_| AuthorityError::AuditCommitFailed)?;
-        insert_audit(&tx, event).map_err(|_| AuthorityError::AuditCommitFailed)?;
+        super::audit::insert(&tx, event).map_err(|_| AuthorityError::AuditCommitFailed)?;
         tx.commit().map_err(|_| AuthorityError::AuditCommitFailed)
     }
 
@@ -638,30 +638,6 @@ fn insert_version(tx: &Transaction<'_>, v: &CredentialVersionRecord) -> Result<(
         ],
     )
     .map_err(storage)?;
-    Ok(())
-}
-
-fn insert_audit(tx: &Transaction<'_>, e: &AuditEvent) -> Result<(), AuthorityError> {
-    tx.execute(
-        "INSERT INTO audit_events (event_id, request_id, session_id, action_id, action_version, credential_id, credential_version, event_type, outcome, reason_code, upstream_status, latency_ms, created_at_ms)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-        params![
-            e.event_id.as_slice(),
-            e.request_id.as_ref().map(|v| v.as_bytes().as_slice()),
-            e.session_id.as_ref().map(|v| v.as_bytes().as_slice()),
-            e.action_id.as_ref().map(|v| v.as_bytes().as_slice()),
-            e.action_version.map(|v| v as i64),
-            e.credential_id.as_ref().map(|v| v.as_bytes().as_slice()),
-            e.credential_version.map(|v| v as i64),
-            e.event_type,
-            e.outcome,
-            e.reason_code,
-            e.upstream_status,
-            e.latency_ms,
-            e.created_at_ms,
-        ],
-    )
-    .map_err(|_| AuthorityError::AuditCommitFailed)?;
     Ok(())
 }
 

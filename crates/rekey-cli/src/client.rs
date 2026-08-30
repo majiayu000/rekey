@@ -32,7 +32,7 @@ impl CliError {
     /// Exit codes per the CLI contract.
     pub fn exit_code(&self) -> i32 {
         match self.code.as_str() {
-            "INVALID_INPUT" | "INVALID_FRAME" | "USAGE" => 2,
+            "INVALID_INPUT" | "INVALID_FRAME" | "POLICY_INVALID" | "USAGE" => 2,
             "INVALID_UNLOCK_CREDENTIAL"
             | "UNLOCK_RATE_LIMITED"
             | "AUTHENTICATION_FAILED"

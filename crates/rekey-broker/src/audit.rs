@@ -13,6 +13,7 @@ use rekey_domain::ids::{CredentialId, RequestId, SessionId};
 use rekey_vault::AuthorityError;
 use rekey_vault::command::AuditDraft;
 use rekey_vault::handle::AuthorityHandle;
+use rekey_vault::model::AuthorizationEvidence;
 use rekey_vault::model::{event_type, outcome};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -131,6 +132,7 @@ pub struct ExecutionAuditContext {
     pub session_id: SessionId,
     pub action: ActionVersionRef,
     pub credential_id: CredentialId,
+    pub authorization: Option<AuthorizationEvidence>,
 }
 
 fn base(ctx: &ExecutionAuditContext) -> AuditDraft {
@@ -141,6 +143,7 @@ fn base(ctx: &ExecutionAuditContext) -> AuditDraft {
         action_version: Some(ctx.action.version),
         credential_id: Some(ctx.credential_id),
         credential_version: None,
+        authorization: ctx.authorization.clone().map(Box::new),
         event_type: event_type::EXECUTION_STARTED,
         outcome: outcome::SUCCESS,
         reason_code: String::new(),
@@ -190,6 +193,7 @@ mod tests {
             action_version: None,
             credential_id: None,
             credential_version: None,
+            authorization: None,
             event_type: event_type::EXECUTION_BLOCKED,
             outcome: outcome::DENIED,
             reason_code: "abandoned".to_owned(),

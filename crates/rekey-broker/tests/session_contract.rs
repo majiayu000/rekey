@@ -125,10 +125,15 @@ async fn use_count_exhaustion_revokes() {
         &common::proof_body(common::PASSWORD),
     )
     .await;
-    let token = response.ok()["capability_token"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let ok = response.ok();
+    let token = ok["capability_token"].as_str().unwrap().to_owned();
+    common::activate_test_policy(
+        &broker,
+        &action_id,
+        version,
+        ok["principal_id"].as_str().unwrap(),
+    )
+    .await;
 
     for _ in 0..2 {
         let meta = common::execute_meta(&token, &action_id, version);

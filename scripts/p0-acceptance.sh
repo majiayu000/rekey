@@ -169,6 +169,38 @@ set -e
 echo "== fresh session"
 session_json="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" session create --action "$action_ref" --ttl 10m --max-uses 5 --password-stdin)"
 token="$(printf '%s\n' "$session_json" | json_field '"capability_token"')"
+principal_id="$(printf '%s\n' "$session_json" | json_field '"principal_id"')"
+
+echo "== activate typed authorization policy"
+policy_file="$WORKDIR/policy.json"
+python3 - "$policy_file" "$action_id" "$action_ver" "$principal_id" <<'PY'
+import json, pathlib, sys, time, uuid
+path, action_id, action_version, principal_id = sys.argv[1:]
+resource = {"type": "fixed-http-action", "id": action_id}
+pathlib.Path(path).write_text(json.dumps({
+    "format_version": 1,
+    "version": 1,
+    "expires_at_ms": int(time.time() * 1000) + 600000,
+    "bindings": [{
+        "action_id": action_id,
+        "version": int(action_version),
+        "resource": resource,
+        "parameter_schema_id": "p0-empty/v1",
+        "parameter_schema": {"type": "null"},
+    }],
+    "rules": [{
+        "id": str(uuid.uuid4()),
+        "effect": "permit",
+        "principal_id": principal_id,
+        "action_id": action_id,
+        "version": int(action_version),
+        "resource": resource,
+        "parameters": {"kind": "any_validated"},
+    }],
+}))
+PY
+printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate --file "$policy_file" --password-stdin >/dev/null
+"$REKEY" --state-dir "$STATE" policy status | grep -q '"version": 1'
 
 if [[ "${REKEY_ACCEPTANCE_SKIP_EXECUTE:-}" != "1" ]]; then
   echo "== execute (production HTTPS transport, origin $ORIGIN$EXACT_PATH)"

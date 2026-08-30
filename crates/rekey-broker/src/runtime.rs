@@ -11,13 +11,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use rekey_domain::action::ACTION_TIMEOUT_HARD_MAX_MS;
+use rekey_domain::ipc::PolicyStatusResponse;
+use rekey_policy::ValidatedSnapshot;
 use rekey_vault::AuthorityError;
 use rekey_vault::bootstrap::verify_state_dir_permissions;
 use rekey_vault::command::UnlockProof;
 use rekey_vault::handle::{AuthorityConfig, AuthorityHandle};
 use rekey_vault::paths;
 use tokio::net::UnixListener;
-use tokio::sync::watch;
+use tokio::sync::{RwLock, watch};
 use tokio::task::JoinSet;
 
 use crate::audit::{TerminalAuditTracker, spawn_terminal_worker};
@@ -61,6 +63,7 @@ pub struct BrokerCtx {
     pub sessions: Arc<SessionRegistry>,
     pub executor: Arc<ActionExecutor>,
     pub lifecycle: Arc<Lifecycle>,
+    policy: Arc<RwLock<Option<Arc<ValidatedSnapshot>>>>,
     terminals: Arc<TerminalAuditTracker>,
     drain_timeout: Duration,
     shutdown_flag: AtomicBool,
@@ -68,6 +71,59 @@ pub struct BrokerCtx {
 }
 
 impl BrokerCtx {
+    pub async fn policy_status(&self) -> PolicyStatusResponse {
+        let guard = self.policy.read().await;
+        match guard.as_ref() {
+            Some(snapshot) => PolicyStatusResponse {
+                active: true,
+                version: Some(snapshot.version().get()),
+                expires_at_ms: Some(snapshot.expires_at_ms()),
+                sha256_hex: Some(data_encoding::HEXLOWER.encode(&snapshot.digest())),
+            },
+            None => PolicyStatusResponse {
+                active: false,
+                version: None,
+                expires_at_ms: None,
+                sha256_hex: None,
+            },
+        }
+    }
+
+    pub async fn activate_policy(
+        &self,
+        snapshot: ValidatedSnapshot,
+        proof: UnlockProof,
+    ) -> Result<(), BrokerError> {
+        self.lifecycle.reject_if_not_running()?;
+        self.authority.verify_proof(proof).await?;
+        self.lifecycle.reject_if_not_running()?;
+        let mut guard = self.policy.write().await;
+        if guard
+            .as_ref()
+            .is_some_and(|current| snapshot.version() <= current.version())
+        {
+            return Err(BrokerError::Denied("policy-version-not-increasing"));
+        }
+        self.authority
+            .append_audit(rekey_vault::command::AuditDraft {
+                request_id: None,
+                session_id: None,
+                action_id: None,
+                action_version: None,
+                credential_id: None,
+                credential_version: None,
+                authorization: None,
+                event_type: rekey_vault::model::event_type::POLICY_ACTIVATED,
+                outcome: rekey_vault::model::outcome::SUCCESS,
+                reason_code: "policy-activated".to_owned(),
+                upstream_status: None,
+                latency_ms: None,
+            })
+            .await?;
+        *guard = Some(Arc::new(snapshot));
+        Ok(())
+    }
+
     pub fn request_shutdown(&self) {
         self.shutdown_flag.store(true, Ordering::SeqCst);
         let _ = self.shutdown_tx.send(true);
@@ -117,6 +173,7 @@ impl BrokerCtx {
         self.wait_executes_drained().await?;
         let audit = self.terminals.wait_idle(self.drain_timeout).await;
         self.authority.lock(reason).await?;
+        *self.policy.write().await = None;
         self.lifecycle.enter_locked();
         tracing::info!(event = "authority.state", state = "locked", reason);
         audit.map_err(BrokerError::Authority)
@@ -139,6 +196,7 @@ impl BrokerCtx {
             return Err(BrokerError::Authority(AuthorityError::AuditCommitFailed));
         }
         self.authority.shutdown(proof).await?;
+        *self.policy.write().await = None;
         tracing::info!(event = "authority.state", state = "shutting_down");
         self.request_shutdown();
         audit.map_err(BrokerError::Authority)
@@ -278,12 +336,14 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
         .unwrap_or_else(|| Arc::new(ReqwestUpstreamTransport));
     let lifecycle = Arc::new(Lifecycle::new());
     let (terminals, terminal_task) = spawn_terminal_worker(authority.clone());
+    let policy = Arc::new(RwLock::new(None));
     let executor = Arc::new(ActionExecutor::new(
         authority.clone(),
         Arc::clone(&sessions),
         transport,
         Arc::clone(&lifecycle),
         Arc::clone(&terminals),
+        Arc::clone(&policy),
     ));
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
     let ctx = Arc::new(BrokerCtx {
@@ -291,6 +351,7 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
         sessions,
         executor,
         lifecycle,
+        policy,
         terminals,
         drain_timeout: config.drain_timeout,
         shutdown_flag: AtomicBool::new(false),

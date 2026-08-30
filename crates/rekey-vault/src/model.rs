@@ -1,7 +1,9 @@
 use rekey_domain::credential::{CredentialKind, CredentialState, VersionState};
-use rekey_domain::ids::{ActionId, CredentialId, RequestId, SessionId, VaultId, WrapperId};
+use rekey_domain::ids::{
+    ActionId, CredentialId, PolicyRuleId, PrincipalId, RequestId, SessionId, VaultId, WrapperId,
+};
 
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 3;
 
 #[derive(Debug, Clone)]
 pub struct VaultHeaderRecord {
@@ -161,12 +163,24 @@ pub struct AuditEvent {
     pub action_version: Option<u64>,
     pub credential_id: Option<CredentialId>,
     pub credential_version: Option<u64>,
+    pub authorization: Option<AuthorizationEvidence>,
     pub event_type: &'static str,
     pub outcome: &'static str,
     pub reason_code: String,
     pub upstream_status: Option<u16>,
     pub latency_ms: Option<i64>,
     pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct AuthorizationEvidence {
+    pub principal_id: PrincipalId,
+    pub policy_version: u64,
+    pub policy_digest: [u8; 32],
+    pub policy_rule_id: Option<PolicyRuleId>,
+    pub resource_type: String,
+    pub resource_id: String,
+    pub parameter_hash: [u8; 32],
 }
 
 pub mod event_type {
@@ -182,6 +196,7 @@ pub mod event_type {
     pub const ACTION_DISABLED: &str = "action.disabled";
     pub const SESSION_CREATED: &str = "session.created";
     pub const SESSION_REVOKED: &str = "session.revoked";
+    pub const POLICY_ACTIVATED: &str = "policy.activated";
     pub const EXECUTION_STARTED: &str = "execution.started";
     pub const EXECUTION_FINISHED: &str = "execution.finished";
     pub const EXECUTION_BLOCKED: &str = "execution.blocked";

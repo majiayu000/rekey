@@ -6,7 +6,8 @@ credentials**. Secrets live in an encrypted SQLite vault owned by a single
 broker process; the CLI, agents, and everything they spawn talk to it only
 over two permission-separated Unix sockets.
 
-> Status: v2 foundation (P0) **G1 development candidate**, not a G1 security
+> Status: v2 foundation plus the P1.1 local typed-authorization kernel,
+> **G1 development candidate**, not a G1 security
 > release and not G2. Credentials never appear in agent-facing APIs, process
 > arguments, environment variables, logs, or audit records. Same-user
 > `ptrace`, process memory, and filesystem access are out of G1. Canonical
@@ -52,9 +53,15 @@ rekey unlock                     # hidden password prompt
 rekey credential add github-token
 rekey action create --file action.json
 rekey session create --action <ACTION_ID>@1 --ttl 1h --max-uses 100
+# put the returned principal_id and Action version in a typed snapshot:
+rekey policy activate --file policy.json
 # hand the printed capability token to the agent, then:
 rekey execute <ACTION_ID>@1 --capability - --body-file req.json
 ```
+
+Policy snapshots are JSON-only, default-deny, in-memory, and exact-principal;
+lock or restart clears the active snapshot. The normative snapshot schema is
+in the P1.1 section of the implementation spec linked below.
 
 `action.json`:
 
@@ -94,6 +101,9 @@ Design: `docs/superpowers/specs/2026-08-28-credential-authority-v2-foundation.md
 Feature status: `docs/product-foundation/feature-truth-matrix.md`
 
 P0 acceptance (release binaries, no FakeTransport): `scripts/p0-acceptance.sh`
+
+P1.1 release-process acceptance (UDS, SQLite, local TLS):
+`scripts/p1-policy-acceptance.sh`
 
 GitHub create-issue dogfood (opt-in, dedicated fine-grained token entered
 through a hidden TTY prompt; exits nonzero unless GitHub returns 201):

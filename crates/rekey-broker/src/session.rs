@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use data_encoding::BASE64URL_NOPAD;
+use rekey_domain::authorization::Principal;
 use rekey_domain::capability::{
     ActionVersionRef, CAPABILITY_TOKEN_BYTES, SESSION_MAX_CONCURRENT_EXECUTIONS, SessionGrant,
 };
@@ -31,6 +32,7 @@ struct Entry {
 
 pub struct SessionTicket {
     pub session_id: SessionId,
+    pub principal: Principal,
     pub action: ActionVersionRef,
 }
 
@@ -39,6 +41,7 @@ pub struct SessionTicket {
 pub struct ExecutionPermit {
     registry: Arc<SessionRegistry>,
     pub session_id: SessionId,
+    pub principal: Principal,
     pub action: ActionVersionRef,
 }
 
@@ -186,6 +189,7 @@ impl SessionRegistry {
         }
         Ok(SessionTicket {
             session_id: entry.grant.id,
+            principal: entry.grant.principal,
             action: wanted,
         })
     }
@@ -201,6 +205,7 @@ impl SessionRegistry {
         Ok(ExecutionPermit {
             registry: Arc::clone(self),
             session_id: ticket.session_id,
+            principal: ticket.principal,
             action: ticket.action,
         })
     }
@@ -287,7 +292,8 @@ impl SessionRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rekey_domain::ids::ActionId;
+    use rekey_domain::authorization::Principal;
+    use rekey_domain::ids::{ActionId, PrincipalId, TenantId};
 
     fn now(ms: i64) -> Timestamp {
         Timestamp::from_unix_ms(ms)
@@ -298,8 +304,20 @@ mod tests {
             action_id: ActionId::new_random(),
             version: 1,
         };
-        let g =
-            SessionGrant::new(SessionId::new_random(), vec![r], now(0), 10_000, max_uses).unwrap();
+        let session_id = SessionId::new_random();
+        let g = SessionGrant::new(
+            session_id,
+            Principal {
+                tenant_id: TenantId::new_random(),
+                principal_id: PrincipalId::new_random(),
+                session_id,
+            },
+            vec![r],
+            now(0),
+            10_000,
+            max_uses,
+        )
+        .unwrap();
         (g, r)
     }
 

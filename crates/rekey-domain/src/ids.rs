@@ -103,6 +103,18 @@ typed_id!(
     /// Identifies one VRK key wrapper row.
     WrapperId
 );
+typed_id!(
+    /// Identifies one local authorization tenant. P1 maps one vault to one tenant.
+    TenantId
+);
+typed_id!(
+    /// Identifies the server-minted principal bound to one local session.
+    PrincipalId
+);
+typed_id!(
+    /// Identifies one determining rule inside a policy snapshot.
+    PolicyRuleId
+);
 
 #[cfg(test)]
 mod tests {

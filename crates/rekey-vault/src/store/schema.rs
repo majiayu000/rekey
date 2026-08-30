@@ -1,11 +1,11 @@
 use sha2::{Digest, Sha256};
 
-/// Schema v2. This SQL text is the single source of truth; `schema_digest()`
+/// Schema v3. This SQL text is the single source of truth; `schema_digest()`
 /// hashes its normalized form to detect accidental drift, not tampering.
 pub const SCHEMA_SQL: &str = r#"
 CREATE TABLE vault_header (
     singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
-    format_version     INTEGER NOT NULL CHECK (format_version = 2),
+    format_version     INTEGER NOT NULL CHECK (format_version = 3),
     vault_id           BLOB NOT NULL CHECK (length(vault_id) = 16),
     crypto_suite       TEXT NOT NULL,
     created_at_ms      INTEGER NOT NULL,
@@ -91,12 +91,28 @@ CREATE TABLE audit_events (
     action_version      INTEGER,
     credential_id       BLOB CHECK (credential_id IS NULL OR length(credential_id) = 16),
     credential_version  INTEGER,
+    principal_id        BLOB CHECK (principal_id IS NULL OR length(principal_id) = 16),
+    policy_version      INTEGER,
+    policy_digest       BLOB CHECK (policy_digest IS NULL OR length(policy_digest) = 32),
+    policy_rule_id      BLOB CHECK (policy_rule_id IS NULL OR length(policy_rule_id) = 16),
+    resource_type       TEXT,
+    resource_id         TEXT,
+    parameter_hash      BLOB CHECK (parameter_hash IS NULL OR length(parameter_hash) = 32),
     event_type          TEXT NOT NULL,
     outcome             TEXT NOT NULL,
     reason_code         TEXT NOT NULL,
     upstream_status     INTEGER,
     latency_ms          INTEGER,
-    created_at_ms       INTEGER NOT NULL
+    created_at_ms       INTEGER NOT NULL,
+    CHECK (
+        (principal_id IS NULL AND policy_version IS NULL AND policy_digest IS NULL
+            AND policy_rule_id IS NULL AND resource_type IS NULL
+            AND resource_id IS NULL AND parameter_hash IS NULL)
+        OR
+        (principal_id IS NOT NULL AND policy_version >= 1 AND policy_digest IS NOT NULL
+            AND resource_type IS NOT NULL AND resource_id IS NOT NULL
+            AND parameter_hash IS NOT NULL)
+    )
 ) STRICT;
 
 CREATE UNIQUE INDEX one_execution_started_per_request

@@ -1263,6 +1263,52 @@ scripts/p0-runtime-faults.sh
 | systemd/launchd | locked boot、受保护 unlock、clean shutdown | `cargo test -p rekey-e2e --test service_manager` |
 | OS key wrapper | Keychain/TPM wrapper 是可选第三 wrapper | `cargo test -p rekey-vault --test os_wrapper_contract` |
 
+#### P1.1 Typed Authorization Kernel
+
+第一批 P1 只实现本地、会话级、JSON typed、内存 policy snapshot；它不包含
+Cedar、签名或持久化 snapshot、Approval、Connector、Control plane 或可复用
+human/workload identity。
+
+- Broker 在 `SessionCreate` 时生成 `PrincipalId`，并把
+  `tenant_id + principal_id + session_id` 存入 server-owned session；Agent 不得
+  自报 Principal。
+- Admin 通过独立 Admin UDS 和 step-up proof 原子激活一个最大 64 KiB 的
+  snapshot。Snapshot 只存在于 Broker 内存；lock、shutdown 或进程重启后清空，
+  无 active snapshot 时全部 Action 默认拒绝。
+- Snapshot 包含非零单调 `PolicyVersion`、expiry、Action version 到固定
+  `ResourceRef + JSON Schema` 的唯一 binding，以及 exact-principal rules。
+  Empty snapshot 合法且表示 deny-all。
+- 首个 evaluator 是内置 total function：匹配 rule 中任何 `forbid` 优先拒绝；
+  否则确定性选择匹配 permit；无 permit 或任何 evaluator error 均拒绝。P1.1
+  不引入 evaluator trait 或 Cedar policy language。
+- 非空 Agent body 只接受 JSON；duplicate key、invalid UTF-8、trailing data、
+  非 JSON content type 和 schema failure 全部拒绝。Extra Header lowercase 后排序，
+  duplicate/collision 拒绝。Body、normalized content type 和 Headers 使用 RFC 8785
+  canonical JSON；hash 额外绑定 Action version、schema 和 Resource。
+- Rule parameter scope 只有 `any_validated` 和 `exact_hash`。前者仍要求绑定 schema
+  已通过；后者要求 canonical SHA-256 精确相等。不支持 glob、regex、wildcard
+  principal、条件表达式、imports 或 obligations。
+- Capability 认证、Action pinning、snapshot pinning、schema/canonicalization、policy
+  evaluation 和 denied audit 全部发生在 `ExecutionStarted` 与任何 credential effect
+  之前。一次请求固定同一个 snapshot version/digest，不混用并发激活的新版本。
+- Execution audit 必须记录 principal、policy version/digest、determining rule、
+  resource 和 parameter hash；不得记录 schema 或 canonical/request body。该 breaking
+  schema change 将 durable format bump 到 3；旧非空状态明确拒绝，不迁移或覆盖。
+- Snapshot activation 先完整验证并提交无秘密 audit，再一次 swap；失败保留旧
+  snapshot。Lock/restart 后必须重新激活。
+
+验证命令：
+
+~~~bash
+cargo test -p rekey-policy
+cargo test --test policy_e2e
+~~~
+
+真实 E2E 必须启动 release `rekeyd`/`rekey` 进程，经过 Admin/Agent UDS 和真实
+SQLite，证明 missing/no-match/forbid/expired/ambiguous input 在 upstream 与 credential
+effect 前拒绝，并至少完成一次 policy-permitted 的本地 TLS upstream 调用。Unit 或
+FakeTransport 不能替代此验收。
+
 ### P2
 
 | Work | Done when | Verification |
@@ -1372,19 +1418,19 @@ Review 必问：
 - P0 用 FixedHttpAction 证明纵向闭环。
 - P0 明确 G1；G2 后置。
 - 不做任何 v1 compatibility 或 migration。
+- P1.1 使用内置 typed default-deny evaluator；不引入 Cedar 或 evaluator abstraction。
 
-### Open But Non-Blocking For P0.1–P0.4
+### Open But Non-Blocking For P0.1–P1.1
 
 1. 第一个公开内置 Action 示例选 GitHub、OpenAI 还是 Anthropic；P0 contract 使用 provider-neutral FixedHttpAction。
 2. recovery key 是否在 P1 增加 threshold split；P0 使用单一 recovery key。
 3. P1 Linux G2 使用 namespace、gVisor 还是 Firecracker。
-4. P1 policy evaluator 是否 Cedar-first。
-5. 产品最终名称和许可证；阻塞公开发布，不阻塞本地实现。
+4. 产品最终名称和许可证；阻塞公开发布，不阻塞本地实现。
 
 ## 28. Readiness
 
 本规格完整到可以严格按 P0.1–P0.7 顺序实施 `Credential Authority v2 Foundation`。它已经给出状态所有者、删除范围、密码学层级、AAD、schema、IPC frame、CLI、错误、生命周期、验证命令和非目标。
 
-P0 代码和 workspace 测试已经存在；当前定位是 **G1 开发候选**，不是 G1 安全发布候选。独立密码学、IPC 边界和 audit/failure-semantics 审查尚未进行。因此当前仓库不能声称 Security Baseline Complete、G2、生产就绪或优于 1Password/OpenBao/Aperture 等完整产品。功能是否“可用”只以 `docs/product-foundation/feature-truth-matrix.md` 为准。
+P0 代码、P1.1 typed authorization kernel 和 workspace 测试已经存在；当前定位是 **G1 开发候选**，不是 G1 安全发布候选。独立密码学、IPC 边界和 audit/failure-semantics 审查尚未进行。因此当前仓库不能声称 Security Baseline Complete、G2、生产就绪或优于 1Password/OpenBao/Aperture 等完整产品。功能是否“可用”只以 `docs/product-foundation/feature-truth-matrix.md` 为准。
 
 实现过程中如果发现 spec 与可验证事实冲突，必须先修改本 spec 和相关基线，再修改代码；不得用临时兼容层或 warning fallback 绕过合同。

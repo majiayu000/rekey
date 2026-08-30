@@ -1,5 +1,6 @@
 use rekey_domain::DomainError;
 use rekey_domain::ipc::FrameError;
+use rekey_policy::PolicyError;
 use rekey_vault::AuthorityError;
 use thiserror::Error;
 
@@ -12,6 +13,8 @@ pub enum BrokerError {
     Authority(#[from] AuthorityError),
     #[error(transparent)]
     Domain(#[from] DomainError),
+    #[error(transparent)]
+    Policy(#[from] PolicyError),
     #[error("invalid frame")]
     Frame(#[from] FrameError),
     #[error("request denied: {0}")]
@@ -37,6 +40,7 @@ impl BrokerError {
             Self::Domain(DomainError::RequestTooLarge) => "REQUEST_TOO_LARGE",
             Self::Domain(DomainError::ResponseTooLarge) => "RESPONSE_TOO_LARGE",
             Self::Domain(_) => "INVALID_INPUT",
+            Self::Policy(_) => "POLICY_INVALID",
             Self::Frame(_) => "INVALID_FRAME",
             Self::Denied(_) => "REQUEST_DENIED",
             Self::Upstream(_) => "UPSTREAM_FAILED",

@@ -60,6 +60,8 @@ pub mod admin_msg {
     pub const BACKUP: u16 = 14;
     pub const LOCK: u16 = 15;
     pub const SHUTDOWN: u16 = 16;
+    pub const POLICY_ACTIVATE: u16 = 17;
+    pub const POLICY_STATUS: u16 = 18;
 }
 
 /// Agent channel message types.
@@ -319,10 +321,19 @@ pub struct SessionCreateMeta {
 #[serde(deny_unknown_fields)]
 pub struct SessionCreatedResponse {
     pub session_id: SessionId,
+    pub principal_id: crate::ids::PrincipalId,
     /// Short-lived capability, shown exactly once. Not a stored secret.
     pub capability_token: String,
     pub expires_at_ms: i64,
     pub max_uses: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyStatusResponse {
+    pub active: bool,
+    pub version: Option<u64>,
+    pub expires_at_ms: Option<i64>,
+    pub sha256_hex: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

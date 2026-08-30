@@ -9,6 +9,7 @@ path = "src/bin/rekeyd.rs"
 
 [dependencies]
 rekey-domain = { workspace = true }
+rekey-policy = { workspace = true }
 rekey-vault = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 data-encoding = "2"

@@ -125,6 +125,7 @@ async fn startup_reconciles_unterminated_started() {
                 action_version: None,
                 credential_id: None,
                 credential_version: None,
+                authorization: None,
                 event_type: event_type::EXECUTION_STARTED,
                 outcome: outcome::SUCCESS,
                 reason_code: "started".to_owned(),

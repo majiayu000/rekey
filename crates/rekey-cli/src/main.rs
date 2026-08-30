@@ -73,6 +73,9 @@ enum Command {
     /// Capability session administration.
     #[command(subcommand)]
     Session(SessionCommand),
+    /// Typed authorization policy administration.
+    #[command(subcommand)]
+    Policy(PolicyCommand),
     /// Execute a fixed action through the agent channel.
     Execute {
         /// ACTION_ID@VERSION
@@ -165,6 +168,19 @@ enum SessionCommand {
     },
 }
 
+#[derive(Subcommand)]
+enum PolicyCommand {
+    /// Validate and activate a complete in-memory policy snapshot.
+    Activate {
+        #[arg(long)]
+        file: PathBuf,
+        #[arg(long)]
+        password_stdin: bool,
+    },
+    /// Show the active policy version and digest.
+    Status,
+}
+
 fn main() {
     let cli = Cli::parse();
     let state_dir = match commands::resolve_state_dir(cli.state_dir) {
@@ -247,6 +263,13 @@ fn main() {
                 session_id,
                 password_stdin,
             } => commands::session_revoke(&state_dir, &session_id, password_stdin),
+        },
+        Command::Policy(cmd) => match cmd {
+            PolicyCommand::Activate {
+                file,
+                password_stdin,
+            } => commands::policy_activate(&state_dir, &file, password_stdin),
+            PolicyCommand::Status => commands::policy_status(&state_dir),
         },
         Command::Execute {
             action,

@@ -12,6 +12,8 @@ pub enum DomainError {
     InvalidActionDefinition(String),
     #[error("invalid capability")]
     InvalidCapability,
+    #[error("invalid authorization data: {0}")]
+    InvalidAuthorization(String),
     #[error("capability expired")]
     CapabilityExpired,
     #[error("capability exhausted")]

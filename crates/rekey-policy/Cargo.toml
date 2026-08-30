@@ -1,0 +1,17 @@
+[package]
+name = "rekey-policy"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rekey-domain = { workspace = true }
+data-encoding = "2"
+jsonschema = { version = "0.52", default-features = false }
+serde = { workspace = true }
+serde_jcs = "0.2"
+serde_json = { workspace = true }
+sha2 = "0.10"
+thiserror = { workspace = true }
+
+[dev-dependencies]
+uuid = { workspace = true }

@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/rekey-domain",
+    "crates/rekey-policy",
     "crates/rekey-vault",
     "crates/rekey-broker",
     "crates/rekey-cli",
@@ -15,6 +16,7 @@ repository = "https://github.com/majiayu000/rekey"
 
 [workspace.dependencies]
 rekey-domain = { path = "crates/rekey-domain" }
+rekey-policy = { path = "crates/rekey-policy" }
 rekey-vault = { path = "crates/rekey-vault" }
 rekey-broker = { path = "crates/rekey-broker" }
 serde = { version = "1", features = ["derive"] }

@@ -5,11 +5,12 @@ pub mod harness {
     use std::fmt::Debug;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
 
     use rekey_broker::runtime::{BrokerConfig, serve};
     use rekey_broker::testing::FakeUpstreamTransport;
-    use rekey_domain::ids::RequestId;
+    use rekey_domain::ids::{PolicyRuleId, RequestId};
     use rekey_domain::ipc::{self, Channel, FRAME_HEADER_LEN, FrameHeader, ProofKind, admin_msg};
     use rekey_vault::bootstrap::init_vault;
     use rekey_vault::crypto::kdf::Argon2Params;
@@ -268,7 +269,57 @@ pub mod harness {
             &proof_body(PASSWORD),
         )
         .await;
-        required_str(&response.ok()["capability_token"], "capability_token").to_owned()
+        let ok = response.ok();
+        let token = required_str(&ok["capability_token"], "capability_token").to_owned();
+        activate_test_policy(
+            broker,
+            action_id,
+            version,
+            required_str(&ok["principal_id"], "principal_id"),
+        )
+        .await;
+        token
+    }
+
+    async fn activate_test_policy(
+        broker: &TestBroker,
+        action_id: &str,
+        action_version: u64,
+        principal_id: &str,
+    ) {
+        static VERSION: AtomicU64 = AtomicU64::new(1);
+        let version = VERSION.fetch_add(1, Ordering::Relaxed);
+        let resource = serde_json::json!({"type": "test-action", "id": action_id});
+        let snapshot = serde_json::json!({
+            "format_version": 1,
+            "version": version,
+            "expires_at_ms": i64::MAX,
+            "bindings": [{
+                "action_id": action_id,
+                "version": action_version,
+                "resource": resource,
+                "parameter_schema_id": "test-any-json/v1",
+                "parameter_schema": {},
+            }],
+            "rules": [{
+                "id": PolicyRuleId::new_random().to_string(),
+                "effect": "permit",
+                "principal_id": principal_id,
+                "action_id": action_id,
+                "version": action_version,
+                "resource": resource,
+                "parameters": {"kind": "any_validated"},
+            }],
+        });
+        call(
+            &broker.admin_sock(),
+            Channel::Admin,
+            admin_msg::POLICY_ACTIVATE,
+            snapshot.to_string().as_bytes(),
+            &proof_body(PASSWORD),
+        )
+        .await
+        .ok();
     }
 
     pub fn execute_meta(token: &str, action_id: &str, version: u64) -> serde_json::Value {

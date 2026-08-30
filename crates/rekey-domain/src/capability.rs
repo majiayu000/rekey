@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::authorization::Principal;
 use crate::error::DomainError;
 use crate::ids::{ActionId, SessionId};
 use crate::time::Timestamp;
@@ -20,6 +21,7 @@ pub struct ActionVersionRef {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionGrant {
     pub id: SessionId,
+    pub principal: Principal,
     pub allowed_actions: Vec<ActionVersionRef>,
     pub issued_at: Timestamp,
     pub expires_at: Timestamp,
@@ -29,6 +31,7 @@ pub struct SessionGrant {
 impl SessionGrant {
     pub fn new(
         id: SessionId,
+        principal: Principal,
         allowed_actions: Vec<ActionVersionRef>,
         issued_at: Timestamp,
         ttl_ms: i64,
@@ -48,6 +51,7 @@ impl SessionGrant {
         }
         Ok(Self {
             id,
+            principal,
             allowed_actions,
             issued_at,
             expires_at: issued_at.saturating_add_ms(ttl_ms),
@@ -67,6 +71,15 @@ impl SessionGrant {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ids::{PrincipalId, TenantId};
+
+    fn principal(session_id: SessionId) -> Principal {
+        Principal {
+            tenant_id: TenantId::new_random(),
+            principal_id: PrincipalId::new_random(),
+            session_id,
+        }
+    }
 
     fn any_ref() -> ActionVersionRef {
         ActionVersionRef {
@@ -79,15 +92,34 @@ mod tests {
     fn grant_bounds() {
         let now = Timestamp::from_unix_ms(1_000);
         let id = SessionId::new_random();
-        assert!(SessionGrant::new(id, vec![], now, 1000, 1).is_err());
-        assert!(SessionGrant::new(id, vec![any_ref()], now, 0, 1).is_err());
-        assert!(SessionGrant::new(id, vec![any_ref()], now, SESSION_TTL_MAX_MS + 1, 1).is_err());
-        assert!(SessionGrant::new(id, vec![any_ref()], now, 1000, 0).is_err());
+        let principal = principal(id);
+        assert!(SessionGrant::new(id, principal, vec![], now, 1000, 1).is_err());
+        assert!(SessionGrant::new(id, principal, vec![any_ref()], now, 0, 1).is_err());
         assert!(
-            SessionGrant::new(id, vec![any_ref()], now, 1000, SESSION_MAX_USES_MAX + 1).is_err()
+            SessionGrant::new(
+                id,
+                principal,
+                vec![any_ref()],
+                now,
+                SESSION_TTL_MAX_MS + 1,
+                1,
+            )
+            .is_err()
+        );
+        assert!(SessionGrant::new(id, principal, vec![any_ref()], now, 1000, 0).is_err());
+        assert!(
+            SessionGrant::new(
+                id,
+                principal,
+                vec![any_ref()],
+                now,
+                1000,
+                SESSION_MAX_USES_MAX + 1,
+            )
+            .is_err()
         );
 
-        let grant = SessionGrant::new(id, vec![any_ref()], now, 1000, 5).unwrap();
+        let grant = SessionGrant::new(id, principal, vec![any_ref()], now, 1000, 5).unwrap();
         assert!(!grant.expired_at(Timestamp::from_unix_ms(1_999)));
         assert!(grant.expired_at(Timestamp::from_unix_ms(2_000)));
     }
@@ -96,7 +128,8 @@ mod tests {
     fn allows_only_exact_action_version() {
         let now = Timestamp::from_unix_ms(0);
         let r = any_ref();
-        let grant = SessionGrant::new(SessionId::new_random(), vec![r], now, 1000, 1).unwrap();
+        let id = SessionId::new_random();
+        let grant = SessionGrant::new(id, principal(id), vec![r], now, 1000, 1).unwrap();
         assert!(grant.allows(r));
         assert!(!grant.allows(ActionVersionRef {
             action_id: r.action_id,

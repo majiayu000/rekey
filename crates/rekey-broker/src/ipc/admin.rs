@@ -10,8 +10,9 @@ use rekey_domain::action::{
     ActionName, ExactPath, FixedMethod, HeaderCredentialUse, HeaderName, HeaderPrefix, HttpsOrigin,
     RequestPolicy, ResponsePolicy,
 };
+use rekey_domain::authorization::Principal;
 use rekey_domain::capability::SessionGrant;
-use rekey_domain::ids::SessionId;
+use rekey_domain::ids::{PrincipalId, SessionId, TenantId};
 use rekey_domain::ipc::{self, Channel, ProofKind, admin_msg};
 use rekey_vault::command::{ActionDefinition, AuditDraft, UnlockProof};
 use rekey_vault::model::{ActionState, event_type, outcome};
@@ -235,8 +236,17 @@ async fn dispatch(
                 }
             }
             let session_id = SessionId::new_random();
+            let principal_id = PrincipalId::new_random();
+            let vault_id = ctx.authority.status().await?.vault_id;
+            let principal = Principal {
+                tenant_id: TenantId::from_bytes(*vault_id.as_bytes())
+                    .map_err(BrokerError::Domain)?,
+                principal_id,
+                session_id,
+            };
             let grant = SessionGrant::new(
                 session_id,
+                principal,
                 create.actions,
                 now_ts(),
                 create.ttl_ms,
@@ -256,11 +266,28 @@ async fn dispatch(
                 .await?;
             let response = ipc::SessionCreatedResponse {
                 session_id,
+                principal_id,
                 capability_token: token,
                 expires_at_ms,
                 max_uses,
             };
             Ok((json(&response)?, Vec::new()))
+        }
+        admin_msg::POLICY_ACTIVATE => {
+            let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
+            let snapshot = rekey_policy::parse_and_validate_snapshot(&frame.metadata, now_ts())?;
+            ctx.activate_policy(snapshot, proof_from(kind, proof))
+                .await?;
+            Ok((json(&ctx.policy_status().await)?, Vec::new()))
+        }
+        admin_msg::POLICY_STATUS => {
+            empty_meta(frame)?;
+            if !frame.body.is_empty() {
+                return Err(BrokerError::Frame(
+                    rekey_domain::ipc::FrameError::InvalidField,
+                ));
+            }
+            Ok((json(&ctx.policy_status().await)?, Vec::new()))
         }
         admin_msg::SESSION_REVOKE => {
             ctx.lifecycle.reject_if_not_running()?;
@@ -323,6 +350,7 @@ fn session_audit(event_type: &'static str, session_id: SessionId) -> AuditDraft 
         action_version: None,
         credential_id: None,
         credential_version: None,
+        authorization: None,
         event_type,
         outcome: outcome::SUCCESS,
         reason_code: "admin".to_owned(),

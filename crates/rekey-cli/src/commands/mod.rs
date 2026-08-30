@@ -402,6 +402,26 @@ pub fn session_revoke(
     Ok(())
 }
 
+pub fn policy_activate(
+    state_dir: &Path,
+    file: &Path,
+    password_stdin: bool,
+) -> Result<(), CliError> {
+    let snapshot = std::fs::read(file)
+        .map_err(|err| CliError::local("USAGE", format!("cannot read policy file: {err}")))?;
+    let password = read_password(password_stdin, "Vault password (step-up): ")?;
+    let body = proof_body(&password);
+    let (meta, _) = admin(state_dir)?.call(admin_msg::POLICY_ACTIVATE, &snapshot, &body)?;
+    print_json(&meta);
+    Ok(())
+}
+
+pub fn policy_status(state_dir: &Path) -> Result<(), CliError> {
+    let (meta, _) = admin(state_dir)?.call(admin_msg::POLICY_STATUS, b"{}", &[])?;
+    print_json(&meta);
+    Ok(())
+}
+
 pub fn execute(
     state_dir: &Path,
     action: &str,

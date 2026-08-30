@@ -8,12 +8,15 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use data_encoding::{BASE64, BASE64_NOPAD, BASE64URL, BASE64URL_NOPAD};
 use rekey_domain::action::FixedHttpAction;
+use rekey_domain::authorization::{AuthorizationRequest, Decision, DenyReason, Principal};
 use rekey_domain::capability::ActionVersionRef;
 use rekey_domain::ids::RequestId;
 use rekey_domain::{DomainError, Timestamp};
 use rekey_vault::AuthorityError;
 use rekey_vault::handle::AuthorityHandle;
 use rekey_vault::model::ActionState;
+use rekey_vault::model::AuthorizationEvidence;
+use tokio::sync::RwLock;
 use zeroize::Zeroizing;
 
 use crate::audit::{
@@ -46,6 +49,7 @@ pub struct ActionExecutor {
     transport: Arc<dyn UpstreamTransport>,
     lifecycle: Arc<Lifecycle>,
     terminals: Arc<TerminalAuditTracker>,
+    policy: Arc<RwLock<Option<Arc<rekey_policy::ValidatedSnapshot>>>>,
 }
 
 struct StartedGuard {
@@ -145,6 +149,7 @@ impl ActionExecutor {
         transport: Arc<dyn UpstreamTransport>,
         lifecycle: Arc<Lifecycle>,
         terminals: Arc<TerminalAuditTracker>,
+        policy: Arc<RwLock<Option<Arc<rekey_policy::ValidatedSnapshot>>>>,
     ) -> Self {
         Self {
             authority,
@@ -152,6 +157,7 @@ impl ActionExecutor {
             transport,
             lifecycle,
             terminals,
+            policy,
         }
     }
 
@@ -173,14 +179,14 @@ impl ActionExecutor {
             .sessions
             .acquire(&request.capability_token, request.action, now_ts())?;
         self.refuse_unless_running()?;
-        let session_id = permit.session_id;
-        self.execute_authorized(&request, session_id).await
+        let principal = permit.principal;
+        self.execute_authorized(&request, principal).await
     }
 
     async fn execute_authorized(
         &self,
         request: &ExecuteRequest,
-        session_id: rekey_domain::ids::SessionId,
+        principal: Principal,
     ) -> Result<ExecuteOutcome, BrokerError> {
         // Step 4: pin the immutable action version.
         let pinned = self
@@ -188,11 +194,12 @@ impl ActionExecutor {
             .action_get(request.action.action_id, request.action.version)
             .await?;
         let action = pinned.action;
-        let ctx = ExecutionAuditContext {
+        let mut ctx = ExecutionAuditContext {
             request_id: request.request_id,
-            session_id,
+            session_id: principal.session_id,
             action: request.action,
             credential_id: action.credential_id,
+            authorization: None,
         };
         if pinned.state == ActionState::Disabled || !action.enabled {
             self.authority
@@ -207,6 +214,77 @@ impl ActionExecutor {
                 .append_audit(execution_blocked(&ctx, reason))
                 .await?;
             return Err(BrokerError::Denied(reason));
+        }
+
+        let Some(snapshot) = self.lifecycle_policy().await else {
+            self.authority
+                .append_audit(execution_blocked(&ctx, DenyReason::NoActiveSnapshot.code()))
+                .await?;
+            return Err(BrokerError::Denied(DenyReason::NoActiveSnapshot.code()));
+        };
+        if snapshot.binding(request.action).is_none() {
+            self.authority
+                .append_audit(execution_blocked(&ctx, DenyReason::ActionNotBound.code()))
+                .await?;
+            return Err(BrokerError::Denied(DenyReason::ActionNotBound.code()));
+        }
+        let (resource, parameters) = match snapshot.canonicalize(
+            request.action,
+            request.content_type.as_deref(),
+            &request.extra_headers,
+            &request.body,
+        ) {
+            Ok(value) => value,
+            Err(_) => {
+                self.authority
+                    .append_audit(execution_blocked(
+                        &ctx,
+                        DenyReason::InvalidParameters.code(),
+                    ))
+                    .await?;
+                return Err(BrokerError::Denied(DenyReason::InvalidParameters.code()));
+            }
+        };
+        let authorization_request = AuthorizationRequest {
+            principal,
+            action: request.action,
+            resource: resource.clone(),
+            parameters: parameters.clone(),
+        };
+        let decision = rekey_policy::evaluate(&snapshot, &authorization_request, now_ts());
+        let (policy_version, policy_digest, policy_rule_id) = match &decision {
+            Decision::Allow {
+                policy_version,
+                snapshot_digest,
+                determining_rule,
+            } => (*policy_version, *snapshot_digest, Some(*determining_rule)),
+            Decision::Deny {
+                policy_version: Some(policy_version),
+                snapshot_digest: Some(snapshot_digest),
+                determining_rule,
+                ..
+            } => (*policy_version, *snapshot_digest, *determining_rule),
+            Decision::Deny { reason, .. } => {
+                self.authority
+                    .append_audit(execution_blocked(&ctx, reason.code()))
+                    .await?;
+                return Err(BrokerError::Denied(reason.code()));
+            }
+        };
+        ctx.authorization = Some(AuthorizationEvidence {
+            principal_id: principal.principal_id,
+            policy_version: policy_version.get(),
+            policy_digest,
+            policy_rule_id,
+            resource_type: resource.resource_type,
+            resource_id: resource.id,
+            parameter_hash: parameters.canonical_hash,
+        });
+        if let Decision::Deny { reason, .. } = decision {
+            self.authority
+                .append_audit(execution_blocked(&ctx, reason.code()))
+                .await?;
+            return Err(BrokerError::Denied(reason.code()));
         }
 
         // Step 6: ExecutionStarted must commit before any credential effect.
@@ -228,6 +306,10 @@ impl ActionExecutor {
             started.blocked("abandoned").await?;
         }
         Err(BrokerError::Authority(AuthorityError::Draining))
+    }
+
+    async fn lifecycle_policy(&self) -> Option<Arc<rekey_policy::ValidatedSnapshot>> {
+        self.policy.read().await.clone()
     }
 
     async fn run_started(
@@ -525,6 +607,7 @@ mod tests {
                     version: 1,
                 },
                 credential_id: CredentialId::new_random(),
+                authorization: None,
             },
         );
         let commit = tokio::spawn(async move {

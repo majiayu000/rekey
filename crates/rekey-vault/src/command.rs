@@ -8,7 +8,7 @@ use rekey_domain::ids::{ActionId, CredentialId, RequestId, SessionId, VaultId};
 use tokio::sync::oneshot;
 
 use crate::error::AuthorityError;
-use crate::model::ActionState;
+use crate::model::{ActionState, AuthorizationEvidence};
 use crate::secret::{PreparedCredential, SecretInput};
 
 pub type Reply<T> = oneshot::Sender<Result<T, AuthorityError>>;
@@ -43,6 +43,7 @@ pub struct AuditDraft {
     pub action_version: Option<u64>,
     pub credential_id: Option<CredentialId>,
     pub credential_version: Option<u64>,
+    pub authorization: Option<Box<AuthorizationEvidence>>,
     pub event_type: &'static str,
     pub outcome: &'static str,
     pub reason_code: String,

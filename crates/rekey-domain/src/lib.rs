@@ -4,6 +4,7 @@
 //! environment variables, or the filesystem.
 
 pub mod action;
+pub mod authorization;
 pub mod capability;
 pub mod credential;
 pub mod error;
