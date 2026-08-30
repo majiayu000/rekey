@@ -109,7 +109,12 @@ fn main() {
             frame.extend_from_slice(&2u32.to_be_bytes());
             frame.extend_from_slice(&0u32.to_be_bytes());
             frame.extend_from_slice(b"{}");
-            stream.write_all(&frame).expect("write Agent status frame");
+            if let Err(error) = stream.write_all(&frame) {
+                if expectation == "denied" {
+                    return;
+                }
+                panic!("write Agent status frame: {error}");
+            }
             let mut response = [0u8; 36];
             let received = stream.read_exact(&mut response).is_ok();
             match expectation.as_str() {
