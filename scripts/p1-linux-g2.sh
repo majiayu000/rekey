@@ -32,6 +32,13 @@ command -v curl >/dev/null || fail "curl is required for authoritative DNS looku
 command -v python3 >/dev/null || fail "python3 is required"
 docker info >/dev/null 2>&1 || fail "docker daemon is unavailable"
 [[ "$(docker info --format '{{.OSType}}')" == "linux" ]] || fail "docker daemon is not Linux"
+DOCKER_ENGINE_VERSION="$(docker version --format '{{.Server.Version}}')" \
+  || fail "cannot read Docker Engine version"
+DOCKER_ENGINE_MAJOR="${DOCKER_ENGINE_VERSION%%.*}"
+[[ "$DOCKER_ENGINE_MAJOR" =~ ^[0-9]+$ ]] \
+  || fail "unrecognized Docker Engine version: $DOCKER_ENGINE_VERSION"
+(( DOCKER_ENGINE_MAJOR >= 26 )) \
+  || fail "Docker Engine >=26 is required; older/backported builds are not accepted by this gate (found $DOCKER_ENGINE_VERSION)"
 
 # This host uses a TUN fake-DNS range that Rekey correctly rejects. Resolve a
 # real public endpoint through DNS-over-HTTPS, then pin it in the Broker's
@@ -54,7 +61,7 @@ cat >"$BUILD_DIR/g2_probe.rs" <<'RUST'
 use std::ffi::c_void;
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::os::unix::net::UnixStream;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::time::Duration;
 
@@ -74,6 +81,21 @@ fn main() {
                 .flatten()
                 .any(|addr| TcpStream::connect_timeout(&addr, Duration::from_secs(3)).is_ok());
             std::process::exit(if connected { 0 } else { 1 });
+        }
+        Some("resolve") => {
+            let host = args.get(2).expect("DNS hostname");
+            let resolved = (host.as_str(), 443)
+                .to_socket_addrs()
+                .ok()
+                .is_some_and(|mut addresses| addresses.next().is_some());
+            std::process::exit(if resolved { 0 } else { 1 });
+        }
+        Some("replace-socket") => {
+            let path = args.get(2).expect("Agent socket path");
+            if std::fs::remove_file(path).is_err() {
+                std::process::exit(1);
+            }
+            let _listener = UnixListener::bind(path).expect("replace Agent socket");
         }
         Some("ptrace") => {
             let pid: i32 = args.get(2).expect("pid").parse().expect("numeric pid");
@@ -126,7 +148,7 @@ fn main() {
             }
         }
         _ => panic!(
-            "usage: g2-probe connect HOST:PORT | ptrace PID | agent-status SOCKET allowed|denied"
+            "usage: g2-probe connect HOST:PORT | resolve HOST | ptrace PID | agent-status SOCKET allowed|denied | replace-socket SOCKET"
         ),
     }
 }
@@ -155,7 +177,7 @@ docker run --rm \
     chown 10001:10001 /state
     chmod 0700 /state
     chown 10001:20000 /run/rekey-agent
-    chmod 0770 /run/rekey-agent
+    chmod 0750 /run/rekey-agent
   '
 
 PASSWORD="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
@@ -190,6 +212,8 @@ docker exec "$BROKER" test -S /run/rekey-agent/agent.sock || fail "agent socket 
   || fail "admin socket ownership or mode is insecure"
 [[ "$(docker exec "$BROKER" stat -c '%a:%u:%g' /run/rekey-agent/agent.sock)" == "660:10001:20000" ]] \
   || fail "agent socket ownership or mode is insecure"
+[[ "$(docker exec "$BROKER" stat -c '%a:%u:%g' /run/rekey-agent)" == "750:10001:20000" ]] \
+  || fail "agent runtime directory ownership or mode permits endpoint replacement"
 
 printf '%s\n' "$PASSWORD" | docker exec -i "$BROKER" \
   rekey --state-dir /state unlock --password-stdin >/dev/null
@@ -281,6 +305,27 @@ docker exec "$AGENT" test ! -S /var/run/docker.sock || fail "Docker socket is vi
 if docker exec "$AGENT" g2-probe connect example.com:443 >/dev/null 2>&1; then
   fail "Agent has direct egress"
 fi
+if docker exec "$AGENT" g2-probe resolve www.cloudflare.com >/dev/null 2>&1; then
+  fail "Agent has DNS egress from an internal network (CVE-2024-29018 boundary failed)"
+fi
+
+# The read-only reference mount is defense in depth, not the endpoint's only
+# replacement barrier. A distinct UID with the shared group and a writable
+# mount must still be unable to unlink and impersonate the Broker socket.
+if docker run --rm \
+  --user 12345:20000 \
+  --group-add 20000 \
+  --read-only \
+  --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --network "$NETWORK" \
+  --volume "$AGENT_VOLUME:/run/rekey-agent:rw" \
+  --tmpfs /tmp:rw,noexec,nosuid,nodev,mode=1777 \
+  "$IMAGE" g2-probe replace-socket /run/rekey-agent/agent.sock >/dev/null 2>&1; then
+  fail "shared Agent group replaced the Broker socket through a writable mount"
+fi
+docker exec "$BROKER" test -S /run/rekey-agent/agent.sock \
+  || fail "replacement attack removed the Broker socket"
 
 BROKER_HOST_PID="$(docker inspect "$BROKER" --format '{{.State.Pid}}')"
 docker exec "$AGENT" g2-probe ptrace "$BROKER_HOST_PID" \
@@ -316,7 +361,7 @@ printf '%s\n' "$PASSWORD" | docker exec -i "$BROKER" \
   rekey --state-dir /state shutdown --password-stdin >/dev/null
 
 echo "linux-g2: PASS"
-echo "linux-g2: kernel=$(docker version --format '{{.Server.KernelVersion}}') arch=$(docker version --format '{{.Server.Arch}}')"
+echo "linux-g2: engine=$DOCKER_ENGINE_VERSION kernel=$(docker version --format '{{.Server.KernelVersion}}') arch=$(docker version --format '{{.Server.Arch}}')"
 echo "linux-g2: public-endpoint=example.com/$EXAMPLE_IP (DoH-pinned; direct TLS)"
-echo "linux-g2: proved=uid,pid,ptrace,state,admin,docker-socket,direct-egress,approved-execute"
+echo "linux-g2: proved=uid,pid,ptrace,state,admin,docker-socket,socket-replacement,direct-egress,dns-egress,broker-peer,approved-execute"
 echo "linux-g2: limitation=does-not-cover-kernel,docker-daemon,vm-host,container-runtime-compromise"

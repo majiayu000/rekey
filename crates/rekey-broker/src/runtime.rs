@@ -47,7 +47,7 @@ pub struct BrokerConfig {
     pub agent_runtime_dir: Option<PathBuf>,
     /// OS-verified peer UIDs accepted on the Agent endpoint.
     pub allowed_agent_uids: Vec<u32>,
-    /// Optional shared group for an isolated Agent endpoint (directory 0770, socket 0660).
+    /// Optional shared group for an isolated Agent endpoint (directory 0750, socket 0660).
     pub agent_socket_gid: Option<u32>,
     pub idle_lock: Duration,
     /// Test seam: production always uses ReqwestUpstreamTransport.
@@ -341,7 +341,8 @@ fn prepare_runtime_dir(
     }
     fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(BrokerError::Io)?;
     let metadata = fs::metadata(path).map_err(BrokerError::Io)?;
-    if metadata.permissions().mode() & 0o777 != mode
+    if metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.permissions().mode() & 0o777 != mode
         || gid.is_some_and(|expected| metadata.gid() != expected)
     {
         return Err(BrokerError::Authority(
@@ -365,7 +366,8 @@ fn bind_socket(
     }
     fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(BrokerError::Io)?;
     let metadata = fs::metadata(path).map_err(BrokerError::Io)?;
-    if metadata.permissions().mode() & 0o777 != mode
+    if metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.permissions().mode() & 0o777 != mode
         || gid.is_some_and(|expected| metadata.gid() != expected)
     {
         return Err(BrokerError::Authority(
@@ -516,7 +518,10 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
     }
     if config.agent_runtime_dir.is_some() {
         let agent_dir_mode = if config.agent_socket_gid.is_some() {
-            0o770
+            // The shared group only needs to traverse the Broker-owned
+            // directory to connect to agent.sock. Group write would let an
+            // Agent unlink and replace the Broker endpoint.
+            0o750
         } else {
             0o700
         };

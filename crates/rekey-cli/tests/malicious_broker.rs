@@ -2,6 +2,7 @@
 //! same-user process impersonates the Broker and sends a forged RKIP response.
 
 use std::io::{Read, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -30,7 +31,12 @@ fn run_attack(attack: Attack) -> std::process::Output {
     let state_dir = dir.path().join("state");
     let runtime_dir = state_dir.join("runtime");
     std::fs::create_dir_all(&runtime_dir).expect("runtime dir");
-    let listener = UnixListener::bind(runtime_dir.join("admin.sock")).expect("bind fake broker");
+    std::fs::set_permissions(&runtime_dir, std::fs::Permissions::from_mode(0o700))
+        .expect("protect runtime dir");
+    let socket = runtime_dir.join("admin.sock");
+    let listener = UnixListener::bind(&socket).expect("bind fake broker");
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))
+        .expect("protect fake broker socket");
 
     let server = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().expect("accept CLI");

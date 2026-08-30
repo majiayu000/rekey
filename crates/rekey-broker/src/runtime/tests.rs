@@ -28,6 +28,26 @@ fn agent_runtime_rejects_parent_segments_and_symlink_aliases_into_state() {
     validate_agent_endpoint(&config).unwrap();
 }
 
+#[tokio::test]
+async fn shared_agent_runtime_is_traversable_but_not_group_writable() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = dir.path().join("agent-runtime");
+    let gid = unsafe { libc::getegid() };
+
+    prepare_runtime_dir(&runtime, 0o750, Some(gid)).unwrap();
+    let listener = bind_socket(&runtime.join("agent.sock"), 0o660, Some(gid)).unwrap();
+
+    let runtime_metadata = fs::metadata(&runtime).unwrap();
+    assert_eq!(runtime_metadata.uid(), unsafe { libc::geteuid() });
+    assert_eq!(runtime_metadata.gid(), gid);
+    assert_eq!(runtime_metadata.permissions().mode() & 0o777, 0o750);
+    let socket_metadata = fs::metadata(runtime.join("agent.sock")).unwrap();
+    assert_eq!(socket_metadata.uid(), unsafe { libc::geteuid() });
+    assert_eq!(socket_metadata.gid(), gid);
+    assert_eq!(socket_metadata.permissions().mode() & 0o777, 0o660);
+    drop(listener);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn sigterm_selection_closes_paused_remote_effect_admission() {
     let lifecycle = Arc::new(Lifecycle::new());

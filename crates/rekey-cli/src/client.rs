@@ -2,6 +2,8 @@
 //! never derives keys; it only frames requests to the broker.
 
 use std::io::{Read, Write};
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::Duration;
@@ -77,6 +79,88 @@ fn io_err(err: std::io::Error) -> CliError {
     CliError::local("IPC_UNAVAILABLE", format!("broker unreachable: {err}"))
 }
 
+#[cfg(target_os = "macos")]
+fn peer_uid(stream: &UnixStream) -> std::io::Result<u32> {
+    let mut uid: libc::uid_t = 0;
+    let mut gid: libc::gid_t = 0;
+    let rc = unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(uid)
+}
+
+#[cfg(target_os = "linux")]
+fn peer_uid(stream: &UnixStream) -> std::io::Result<u32> {
+    let mut cred = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    let rc = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            &mut cred as *mut _ as *mut libc::c_void,
+            &mut len,
+        )
+    };
+    if rc != 0 || len as usize != std::mem::size_of::<libc::ucred>() {
+        return Err(if rc != 0 {
+            std::io::Error::last_os_error()
+        } else {
+            std::io::Error::other("unexpected SO_PEERCRED length")
+        });
+    }
+    Ok(cred.uid)
+}
+
+fn verify_socket_contract(socket: &Path) -> Result<std::fs::Metadata, CliError> {
+    let socket_metadata = std::fs::symlink_metadata(socket).map_err(io_err)?;
+    if !socket_metadata.file_type().is_socket() || socket_metadata.permissions().mode() & 0o007 != 0
+    {
+        return Err(CliError::local(
+            "IPC_UNAVAILABLE",
+            "broker socket type or permissions are insecure",
+        ));
+    }
+    let parent = socket.parent().ok_or_else(|| {
+        CliError::local("IPC_UNAVAILABLE", "broker socket has no parent directory")
+    })?;
+    let parent_metadata = std::fs::symlink_metadata(parent).map_err(io_err)?;
+    if !parent_metadata.is_dir()
+        || parent_metadata.uid() != socket_metadata.uid()
+        || parent_metadata.permissions().mode() & 0o022 != 0
+    {
+        return Err(CliError::local(
+            "IPC_UNAVAILABLE",
+            "broker runtime directory ownership or permissions are insecure",
+        ));
+    }
+    Ok(socket_metadata)
+}
+
+fn verify_connected_peer(
+    stream: &UnixStream,
+    socket: &Path,
+    before: &std::fs::Metadata,
+) -> Result<(), CliError> {
+    let after = verify_socket_contract(socket)?;
+    if before.dev() != after.dev()
+        || before.ino() != after.ino()
+        || before.uid() != after.uid()
+        || peer_uid(stream).map_err(io_err)? != after.uid()
+    {
+        return Err(CliError::local(
+            "IPC_UNAVAILABLE",
+            "connected peer is not the Broker that owns the protected socket",
+        ));
+    }
+    Ok(())
+}
+
 impl Client {
     pub fn connect(socket: &Path, channel: Channel) -> Result<Self, CliError> {
         Self::connect_with_response_timeout(socket, channel, IO_TIMEOUT)
@@ -87,7 +171,9 @@ impl Client {
         channel: Channel,
         response_timeout: Duration,
     ) -> Result<Self, CliError> {
+        let socket_metadata = verify_socket_contract(socket)?;
         let stream = UnixStream::connect(socket).map_err(io_err)?;
+        verify_connected_peer(&stream, socket, &socket_metadata)?;
         stream
             .set_read_timeout(Some(response_timeout))
             .map_err(io_err)?;
@@ -184,5 +270,55 @@ impl Client {
             }
             _ => Err(CliError::local("INVALID_FRAME", "unexpected response type")),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::UnixListener;
+
+    fn protected_listener() -> (tempfile::TempDir, std::path::PathBuf, UnixListener) {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = dir.path().join("runtime");
+        std::fs::create_dir(&runtime).unwrap();
+        std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let socket = runtime.join("agent.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+        (dir, socket, listener)
+    }
+
+    #[test]
+    fn connect_accepts_owner_peer_in_protected_runtime() {
+        let (_dir, socket, listener) = protected_listener();
+        let accept = std::thread::spawn(move || listener.accept().unwrap());
+        let client = Client::connect(&socket, Channel::Agent).unwrap();
+        drop(client);
+        drop(accept.join().unwrap());
+    }
+
+    #[test]
+    fn connect_rejects_group_writable_runtime() {
+        let (_dir, socket, _listener) = protected_listener();
+        std::fs::set_permissions(
+            socket.parent().unwrap(),
+            std::fs::Permissions::from_mode(0o770),
+        )
+        .unwrap();
+        let err = Client::connect(&socket, Channel::Agent).err().unwrap();
+        assert_eq!(err.code, "IPC_UNAVAILABLE");
+        assert!(err.message.contains("runtime directory"));
+    }
+
+    #[test]
+    fn connect_rejects_symlinked_socket() {
+        let (dir, socket, _listener) = protected_listener();
+        let alias = dir.path().join("runtime/alias.sock");
+        std::os::unix::fs::symlink(&socket, &alias).unwrap();
+        let err = Client::connect(&alias, Channel::Agent).err().unwrap();
+        assert_eq!(err.code, "IPC_UNAVAILABLE");
+        assert!(err.message.contains("socket type"));
     }
 }
