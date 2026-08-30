@@ -84,7 +84,7 @@ enum Command {
         /// ACTION_ID@VERSION
         action: String,
         /// Capability token, or '-' to read it from stdin (recommended).
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         capability: String,
         #[arg(long)]
         body_file: Option<PathBuf>,

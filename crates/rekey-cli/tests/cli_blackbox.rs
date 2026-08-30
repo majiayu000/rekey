@@ -233,6 +233,22 @@ fn cli_end_to_end() {
     );
     assert_eq!(output.status, 4, "stderr: {}", output.stderr);
 
+    // Capability tokens use base64url and may legitimately begin with '-'.
+    // They must reach the broker instead of being parsed as another CLI flag.
+    let output = run(
+        &rekey_bin(),
+        &[
+            "--state-dir",
+            state,
+            "execute",
+            &action_ref,
+            "--capability",
+            "-m90LWEtcmVhbC10b2tlbg",
+        ],
+        None,
+    );
+    assert_eq!(output.status, 4, "stderr: {}", output.stderr);
+
     // No secret ever reaches stdout/stderr of any command after add.
     assert!(!output.stdout.contains(SECRET) && !output.stderr.contains(SECRET));
 

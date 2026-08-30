@@ -364,6 +364,8 @@ pub struct SessionGrant {
 Capability token：
 
 - 32 random bytes，base64url-no-pad 传输。
+- base64url token 可能以 `-` 开头；CLI 的 `--capability TOKEN` 必须把这种值作为参数值，
+  不能误解析为 flag。单独的 `-` 保留为从 stdin 读取 token 的显式入口。
 - Broker 内只保存 SHA-256(token) 和 SessionGrant；比较使用 constant-time equality。
 - 最大 TTL P0 为 24h，默认 1h。
 - `max_uses` 范围 1–10,000，默认 100。
