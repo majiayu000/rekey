@@ -5,7 +5,7 @@ mod common;
 
 use std::time::Duration;
 
-use rekey_domain::credential::CredentialLabel;
+use rekey_domain::credential::{CredentialKind, CredentialLabel};
 use rekey_vault::command::UnlockProof;
 use rekey_vault::error::AuthorityError;
 use rekey_vault::secret::SecretInput;
@@ -22,6 +22,7 @@ async fn lock_clears_lease_ability() {
     let meta = handle
         .credential_add(
             CredentialLabel::new("t").unwrap(),
+            CredentialKind::OpaqueToken,
             SecretInput::from_slice(b"v"),
             common::password_proof(),
         )

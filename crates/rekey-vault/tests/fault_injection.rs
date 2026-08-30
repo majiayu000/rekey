@@ -4,7 +4,7 @@ mod common;
 
 use std::fs;
 
-use rekey_domain::credential::CredentialLabel;
+use rekey_domain::credential::{CredentialKind, CredentialLabel};
 use rekey_vault::error::AuthorityError;
 use rekey_vault::paths;
 use rekey_vault::secret::SecretInput;
@@ -50,6 +50,7 @@ async fn audit_commit_failure_faults_the_worker() {
     handle
         .credential_add(
             CredentialLabel::new("pre-fault").unwrap(),
+            CredentialKind::OpaqueToken,
             SecretInput::from_slice(b"v"),
             common::password_proof(),
         )

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use rekey_domain::action::FixedHttpAction;
-use rekey_domain::credential::{CredentialLabel, CredentialMetadata};
+use rekey_domain::credential::{CredentialKind, CredentialLabel, CredentialMetadata};
 use rekey_domain::ids::{ActionId, CredentialId};
 use tokio::sync::{mpsc, oneshot};
 
@@ -104,11 +104,13 @@ impl AuthorityHandle {
     pub async fn credential_add(
         &self,
         label: CredentialLabel,
+        kind: CredentialKind,
         secret: SecretInput,
         proof: UnlockProof,
     ) -> Result<CredentialMetadata, AuthorityError> {
         call!(self, |reply| AuthorityCommand::CredentialAdd {
             label,
+            kind,
             secret,
             proof,
             reply

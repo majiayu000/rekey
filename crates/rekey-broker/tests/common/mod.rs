@@ -205,7 +205,7 @@ pub async fn unlock(broker: &TestBroker) {
 }
 
 pub async fn add_credential(broker: &TestBroker, label: &str, value: &[u8]) -> String {
-    let meta = serde_json::json!({ "label": label });
+    let meta = serde_json::json!({ "label": label, "kind": "opaque-token" });
     let response = call(
         &broker.admin_sock(),
         Channel::Admin,

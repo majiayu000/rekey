@@ -6,9 +6,16 @@ use std::path::{Path, PathBuf};
 
 use rekey_domain::ids::{ActionId, CredentialId, SessionId};
 use rekey_domain::ipc::{self, Channel, ProofKind, admin_msg, agent_msg};
+use serde::Deserialize;
 use zeroize::Zeroizing;
 
 use crate::client::{CliError, Client};
+
+#[derive(Deserialize)]
+struct GitHubProfileMarker<'a> {
+    #[serde(borrow)]
+    credential_type: &'a str,
+}
 
 pub fn resolve_state_dir(flag: Option<PathBuf>) -> Result<PathBuf, CliError> {
     if let Some(dir) = flag {
@@ -211,9 +218,63 @@ pub fn credential_add(state_dir: &Path, label: &str, stdin_secrets: bool) -> Res
             prompt_secret("Credential value: ")?,
         )
     };
-    let metadata = serde_json::json!({ "label": label });
-    let mut body = Zeroizing::new(Vec::new());
+    let metadata = serde_json::json!({ "label": label, "kind": "opaque-token" });
+    let body_len = 1 + 4 + password.len() + 4 + secret.len();
+    let mut body = Zeroizing::new(Vec::with_capacity(body_len));
+    let body_capacity = body.capacity();
     ipc::encode_proof_and_secret_body(ProofKind::Password, &password, &secret, &mut body);
+    debug_assert_eq!(body.len(), body_len);
+    debug_assert_eq!(body.capacity(), body_capacity);
+    let (meta, _) = admin(state_dir)?.call(
+        admin_msg::CREDENTIAL_ADD,
+        metadata.to_string().as_bytes(),
+        &body,
+    )?;
+    print_json(&meta);
+    Ok(())
+}
+
+pub fn credential_add_github_app(
+    state_dir: &Path,
+    label: &str,
+    file: &Path,
+    password_stdin: bool,
+) -> Result<(), CliError> {
+    let profile_file = std::fs::File::open(file)
+        .map_err(|err| CliError::local("USAGE", format!("cannot open profile file: {err}")))?;
+    let limit = ipc::ADMIN_SECRET_BODY_MAX_BYTES as usize;
+    let profile_capacity = limit + 1;
+    let mut secret = Zeroizing::new(Vec::with_capacity(profile_capacity));
+    profile_file
+        .take((limit + 1) as u64)
+        .read_to_end(&mut secret)
+        .map_err(|err| CliError::local("USAGE", format!("cannot read profile file: {err}")))?;
+    debug_assert_eq!(secret.capacity(), profile_capacity);
+    if secret.is_empty() || secret.len() > ipc::ADMIN_SECRET_BODY_MAX_BYTES as usize {
+        return Err(CliError::local(
+            "USAGE",
+            "GitHub App profile must be 1..=64 KiB",
+        ));
+    }
+    let marker: GitHubProfileMarker<'_> = serde_json::from_slice(&secret)
+        .map_err(|_| CliError::local("USAGE", "invalid GitHub App profile JSON"))?;
+    if marker.credential_type != "github-app-installation-v1" {
+        return Err(CliError::local(
+            "USAGE",
+            "GitHub App profile has the wrong credential_type",
+        ));
+    }
+    let password = read_password(password_stdin, "Vault password (step-up): ")?;
+    let metadata = serde_json::json!({
+        "label": label,
+        "kind": "github-app-installation"
+    });
+    let body_len = 1 + 4 + password.len() + 4 + secret.len();
+    let mut body = Zeroizing::new(Vec::with_capacity(body_len));
+    let body_capacity = body.capacity();
+    ipc::encode_proof_and_secret_body(ProofKind::Password, &password, &secret, &mut body);
+    debug_assert_eq!(body.len(), body_len);
+    debug_assert_eq!(body.capacity(), body_capacity);
     let (meta, _) = admin(state_dir)?.call(
         admin_msg::CREDENTIAL_ADD,
         metadata.to_string().as_bytes(),
@@ -249,8 +310,12 @@ pub fn credential_rotate(
         )
     };
     let metadata = serde_json::json!({ "credential_id": credential_id.to_string() });
-    let mut body = Zeroizing::new(Vec::new());
+    let body_len = 1 + 4 + password.len() + 4 + secret.len();
+    let mut body = Zeroizing::new(Vec::with_capacity(body_len));
+    let body_capacity = body.capacity();
     ipc::encode_proof_and_secret_body(ProofKind::Password, &password, &secret, &mut body);
+    debug_assert_eq!(body.len(), body_len);
+    debug_assert_eq!(body.capacity(), body_capacity);
     let (meta, _) = admin(state_dir)?.call(
         admin_msg::CREDENTIAL_ROTATE,
         metadata.to_string().as_bytes(),

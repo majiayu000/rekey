@@ -181,6 +181,19 @@ pub fn execution_blocked(ctx: &ExecutionAuditContext, reason_code: &str) -> Audi
     draft
 }
 
+pub fn connector_event(
+    ctx: &ExecutionAuditContext,
+    event_type: &'static str,
+    event_outcome: &'static str,
+    reason_code: String,
+) -> AuditDraft {
+    let mut draft = base(ctx);
+    draft.event_type = event_type;
+    draft.outcome = event_outcome;
+    draft.reason_code = reason_code;
+    draft
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

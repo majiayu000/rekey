@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use rekey_domain::action::{
     ExactPath, FixedMethod, HeaderCredentialUse, HttpsOrigin, RequestPolicy, ResponsePolicy,
 };
-use rekey_domain::credential::{CredentialLabel, CredentialMetadata};
+use rekey_domain::credential::{CredentialKind, CredentialLabel, CredentialMetadata};
 use rekey_domain::ids::{ActionId, CredentialId, RequestId, SessionId, VaultId};
 use tokio::sync::oneshot;
 
@@ -97,6 +97,7 @@ pub enum AuthorityCommand {
     },
     CredentialAdd {
         label: CredentialLabel,
+        kind: CredentialKind,
         secret: SecretInput,
         proof: UnlockProof,
         reply: Reply<CredentialMetadata>,

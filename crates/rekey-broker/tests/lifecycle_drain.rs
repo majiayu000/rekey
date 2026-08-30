@@ -90,7 +90,7 @@ async fn lock_waits_for_in_flight_execute() {
         Ok(UpstreamResponse {
             status: 200,
             headers: vec![("content-type".to_owned(), "application/json".to_owned())],
-            body: b"{\"ok\":true}".to_vec(),
+            body: b"{\"ok\":true}".to_vec().into(),
         }),
         Duration::from_millis(150),
     );
@@ -128,7 +128,7 @@ async fn draining_rejects_new_execute_without_started() {
         Ok(UpstreamResponse {
             status: 200,
             headers: vec![("content-type".to_owned(), "application/json".to_owned())],
-            body: b"{\"ok\":true}".to_vec(),
+            body: b"{\"ok\":true}".to_vec().into(),
         }),
         Duration::from_millis(200),
     );
@@ -206,7 +206,7 @@ async fn every_started_has_terminal_on_success_and_block() {
     broker.fake.push_response(Ok(UpstreamResponse {
         status: 200,
         headers: vec![("content-type".to_owned(), "text/plain".to_owned())],
-        body: b"leaked secret-token-value".to_vec(),
+        body: b"leaked secret-token-value".to_vec().into(),
     }));
     let blocked = common::call(
         &broker.agent_sock(),
@@ -241,7 +241,7 @@ async fn session_create_during_drain_is_rejected() {
         Ok(UpstreamResponse {
             status: 200,
             headers: vec![("content-type".to_owned(), "application/json".to_owned())],
-            body: b"{\"ok\":true}".to_vec(),
+            body: b"{\"ok\":true}".to_vec().into(),
         }),
         Duration::from_millis(200),
     );
@@ -318,7 +318,7 @@ async fn drain_timeout_commits_abandoned_terminal() {
         Ok(UpstreamResponse {
             status: 200,
             headers: vec![("content-type".to_owned(), "application/json".to_owned())],
-            body: b"{\"ok\":true}".to_vec(),
+            body: b"{\"ok\":true}".to_vec().into(),
         }),
         Duration::from_secs(2),
     );

@@ -28,7 +28,7 @@ pub struct UpstreamRequest {
 pub struct UpstreamResponse {
     pub status: u16,
     pub headers: Vec<(String, String)>,
-    pub body: Vec<u8>,
+    pub body: Zeroizing<Vec<u8>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -278,8 +278,11 @@ pub async fn send_screened(
         })
         .collect();
 
-    let mut body: Vec<u8> = Vec::new();
     let limit = request.response_max_bytes as usize;
+    // Product actions cap this at 4 MiB. Reserving the full bounded response
+    // avoids reallocations that could leave stale secret-bearing heap copies.
+    let mut body = Zeroizing::new(Vec::with_capacity(limit));
+    let body_capacity = body.capacity();
     let mut stream = response;
     while let Some(chunk) = stream.chunk().await.map_err(|err| {
         if err.is_timeout() {
@@ -293,6 +296,7 @@ pub async fn send_screened(
             return Err(UpstreamError::ResponseTooLarge);
         }
         body.extend_from_slice(&chunk);
+        debug_assert_eq!(body.capacity(), body_capacity);
     }
 
     Ok(UpstreamResponse {

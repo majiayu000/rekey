@@ -259,6 +259,7 @@ pub struct StatusResponse {
 #[serde(deny_unknown_fields)]
 pub struct CredentialAddMeta {
     pub label: CredentialLabel,
+    pub kind: crate::credential::CredentialKind,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -449,8 +450,16 @@ mod tests {
 
     #[test]
     fn proof_body_roundtrip() {
-        let mut buf = Vec::new();
-        encode_proof_and_secret_body(ProofKind::Password, b"pw", b"token-value", &mut buf);
+        let proof = b"pw";
+        let secret = b"token-value";
+        let expected_len = 1 + 4 + proof.len() + 4 + secret.len();
+        let mut buf = Vec::with_capacity(expected_len);
+        let original_capacity = buf.capacity();
+        let original_pointer = buf.as_ptr();
+        encode_proof_and_secret_body(ProofKind::Password, proof, secret, &mut buf);
+        assert_eq!(buf.len(), expected_len);
+        assert_eq!(buf.capacity(), original_capacity);
+        assert_eq!(buf.as_ptr(), original_pointer);
         let (kind, proof, secret) = parse_proof_and_secret_body(&buf).unwrap();
         assert_eq!(kind, ProofKind::Password);
         assert_eq!(proof, b"pw");

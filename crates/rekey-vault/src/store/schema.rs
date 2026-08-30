@@ -1,11 +1,11 @@
 use sha2::{Digest, Sha256};
 
-/// Schema v3. This SQL text is the single source of truth; `schema_digest()`
+/// Schema v4. This SQL text is the single source of truth; `schema_digest()`
 /// hashes its normalized form to detect accidental drift, not tampering.
 pub const SCHEMA_SQL: &str = r#"
 CREATE TABLE vault_header (
     singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
-    format_version     INTEGER NOT NULL CHECK (format_version = 3),
+    format_version     INTEGER NOT NULL CHECK (format_version = 4),
     vault_id           BLOB NOT NULL CHECK (length(vault_id) = 16),
     crypto_suite       TEXT NOT NULL CHECK (crypto_suite = 'rkca-aes256gcm-argon2id-hkdfsha256-v1'),
     created_at_ms      INTEGER NOT NULL,
@@ -36,7 +36,7 @@ ON key_wrappers(wrapper_kind) WHERE wrapper_kind = 'password' AND state = 'activ
 CREATE TABLE credentials (
     credential_id      BLOB PRIMARY KEY CHECK (length(credential_id) = 16),
     label              TEXT NOT NULL UNIQUE,
-    kind               TEXT NOT NULL CHECK (kind = 'opaque-token'),
+    kind               TEXT NOT NULL CHECK (kind IN ('opaque-token', 'github-app-installation')),
     state              TEXT NOT NULL CHECK (state IN ('active', 'revoked')),
     current_version    INTEGER NOT NULL CHECK (current_version >= 1),
     created_at_ms      INTEGER NOT NULL,

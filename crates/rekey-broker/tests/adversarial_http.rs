@@ -128,7 +128,7 @@ async fn forbidden_response_headers_are_stripped() {
             ("www-authenticate".to_owned(), "Basic realm=x".to_owned()),
             ("x-internal".to_owned(), "not-allowlisted".to_owned()),
         ],
-        body: b"{}".to_vec(),
+        body: b"{}".to_vec().into(),
     }));
     let meta = common::execute_meta(&token, &action_id, version);
     let response = execute_with_meta(&broker, meta, b"{}").await;

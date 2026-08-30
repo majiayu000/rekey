@@ -266,6 +266,7 @@ pub struct CredentialMetadata {
 
 pub enum CredentialKind {
     OpaqueToken,
+    GitHubAppInstallation,
 }
 
 pub enum CredentialState {
@@ -274,7 +275,11 @@ pub enum CredentialState {
 }
 ~~~
 
-P0 只实现 `OpaqueToken`。Basic Auth、OAuth Refresh Token、SSH key 和多字段自定义 Header 在类型和安全语义明确后进入 P1；不再用 `HashMap<String, String>` 表示任意秘密。
+P0 只实现 `OpaqueToken`。P2.1 新增独立的 `GitHubAppInstallation` kind；它不是
+`OpaqueToken` 的 payload 约定。kind 必须进入 credential payload AAD，generic add/rotate
+只能创建或轮换 `OpaqueToken`，不能创建、覆盖或降级 GitHub App credential。Basic Auth、
+OAuth Refresh Token、SSH key 和多字段自定义 Header 在类型和安全语义明确后进入后续版本；
+不再用 `HashMap<String, String>` 表示任意秘密。
 
 `CredentialLabel`：
 
@@ -527,12 +532,12 @@ PRAGMA busy_timeout = 5000;
 - 不允许其他进程打开 SQLite；Admin/Web 读取也通过 AuthorityWorker。
 - 每次启动运行 `PRAGMA quick_check`；失败后保持 Locked 并返回 `StorageIntegrityFailed`。
 
-### 10.3 Schema v3
+### 10.3 Schema v4
 
 ~~~sql
 CREATE TABLE vault_header (
     singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
-    format_version     INTEGER NOT NULL CHECK (format_version = 3),
+    format_version     INTEGER NOT NULL CHECK (format_version = 4),
     vault_id           BLOB NOT NULL CHECK (length(vault_id) = 16),
     crypto_suite       TEXT NOT NULL CHECK (crypto_suite = 'rkca-aes256gcm-argon2id-hkdfsha256-v1'),
     created_at_ms      INTEGER NOT NULL,
@@ -563,7 +568,7 @@ ON key_wrappers(wrapper_kind) WHERE wrapper_kind = 'password' AND state = 'activ
 CREATE TABLE credentials (
     credential_id      BLOB PRIMARY KEY CHECK (length(credential_id) = 16),
     label              TEXT NOT NULL UNIQUE,
-    kind               TEXT NOT NULL CHECK (kind = 'opaque-token'),
+    kind               TEXT NOT NULL CHECK (kind IN ('opaque-token', 'github-app-installation')),
     state              TEXT NOT NULL CHECK (state IN ('active', 'revoked')),
     current_version    INTEGER NOT NULL CHECK (current_version >= 1),
     created_at_ms      INTEGER NOT NULL,
@@ -1370,7 +1375,7 @@ human/workload identity。
   determining rule（无匹配 rule 时为 NULL）、resource 和 parameter hash；不得记录
   schema 或 canonical/request body。`policy-missing`、`action-unbound` 和参数无法
   canonicalize 等 evaluator 前拒绝没有并不存在的完整 authorization evidence，只以
-  明确 reason code 记录。该 breaking schema change 将 durable format bump 到 3；
+  明确 reason code 记录。该 policy breaking schema change 先将 durable format bump 到 3；
   旧非空状态明确拒绝，不迁移或覆盖。
 - Snapshot activation 先完整验证并提交无秘密 audit，再一次 swap；失败保留旧
   snapshot。Lock/restart 后必须重新激活。
@@ -1391,10 +1396,93 @@ daemon，也不得进入生产 `rekeyd` 路径。
 
 ### P2
 
+#### P2.1 GitHub App Installation 内置凭据动作
+
+新增 typed credential kind 的 breaking schema change 将 durable format bump 到 4；旧非空
+state dir 继续明确拒绝，不提供迁移或兼容读取。
+
+首个 P2 垂直切片是一个封闭的 GitHub App Installation profile，不创建通用
+connector registry、provider SDK、控制面或 Agent 可调用的签名/换票接口：
+
+- Admin 使用现有 Credential mutation trust boundary 保存一个版本化、拒绝未知字段的
+  `github-app-installation-v1` payload。payload 包含 base64 编码的 PKCS#1 DER RSA
+  private key、GitHub
+  client ID、app ID、installation ID 和唯一 repository ID；整个 payload 作为现有
+  `GitHubAppInstallation` CredentialVersion 信封加密，kind 必须进入 AAD，明文不得进入
+  metadata、argv、环境变量或 audit。Admin `add-github-app` 必须在 Authority 持久化之前
+  完成拒绝未知字段、非零 ID、client ID 和 PKCS#1 RSA key 的完整验证；generic add 固定
+  创建 `OpaqueToken`。P2.1 不提供 GitHub profile rotation，generic rotate 遇到
+  `GitHubAppInstallation` 必须明确拒绝，不能把它改成 opaque payload。
+- `add-github-app --file` 以 64 KiB 上限直接读入 zeroizing buffer，不能先通过
+  `std::fs::read` 创建普通 `Vec`。Admin 收到 add 后先以现有 Authority step-up 验证 proof，
+  验证通过才允许 base64/RSA profile 解析，最后由 credential mutation 再次验证 proof 并
+  原子持久化；错误 proof 不能触发昂贵的 RSA parse。CLI profile buffer 一次预分配
+  `limit+1`，proof+secret IPC body 按 `1+4+proof.len+4+secret.len` 一次精确预分配；编码与
+  bounded read 不能通过 reallocation 留下旧 heap 副本。
+- Agent API 不变，仍只有 `ExecuteFixedHttpAction`。只有 action 精确等于
+  `GET https://api.github.com/installation/repositories`、无 Agent body/content-type/
+  extra headers、认证槽为 `authorization: Bearer ` 时，Broker 才把该 payload 解释为
+  GitHub App profile；任何偏差默认拒绝，绝不回退为普通 token 请求。
+- Broker 在一次 execution 内解析 PKCS#1 key，在内存中签 RS256 JWT。JWT 的 `iss`
+  固定为 client ID，`iat` 为当前时间减 60 秒，`exp` 不超过 9 分钟；随后固定调用
+  `POST /app/installations/{installation_id}/access_tokens`，body 只允许一个
+  `repository_ids` 项和 `permissions.metadata=read`。RSA signer 必须在 drop 时清零其
+  私钥表示；JWT signing input、signature encoding 与输出都是 zeroizing 临时值。
+- exchange、resource 和 revoke 三段请求都必须携带固定
+  `User-Agent: rekey/<package-version>`、固定 Accept 和 API version；fixture 对三段精确
+  断言，缺失或变化即失败。
+- Exchange 必须返回唯一 token、`permissions` 精确只有 `metadata=read` 且
+  `repository_selection=selected`，否则 fail closed。Broker 用该 token 调用固定
+  `GET /installation/repositories`，并验证成功响应只包含配置的 repository ID。
+- Exchange response body 在检查 HTTP status 或完整 schema 前即进入 zeroizing buffer。
+  Broker 先对有界 body 做 best-effort token probe，再检查 status/schema：支持首个 JSON
+  value 后有 trailing garbage，以及常见的重复 `token` 字段；捕获到的 token 即使来自
+  500 或畸形 response 也进入 revoke。probe 最多捕获 4 个不同的简单 ASCII GitHub token，
+  并在总 cleanup deadline 内逐个 revoke；超过捕获上限、转义 token、网络层响应不确定性
+  或 deadline 耗尽时无法承诺绝对远程清理，必须 fail closed 且不得声称已全部 revoke。
+- 无论 resource request 成功或失败，Broker 都立即调用固定
+  `DELETE /installation/token`。只有 revoke 返回 204 且 resource response 通过原有
+  bounded-body、redirect 和 secret-sealing 检查后，Agent 才能收到成功；revoke 失败
+  时丢弃已取得的 resource response 并以 terminal blocked 收口。
+- JWT/exchange 网络 effect 开始后，drain cancellation 不得 drop 该 execution future；
+  session in-flight permit 保持到 revoke 和 revoke audit 完成。若超过 drain deadline，
+  lock/shutdown 返回 busy 并保持 fail closed，不能通过提前释放 permit 遗留远程 token。
+- Action 的 `timeout_ms` 是整个 GitHub effect 的单一总 deadline，不是每阶段各自可用的
+  timeout。GitHub action 最小 2 秒；总 deadline 最后 500ms 固定保留给 cleanup。
+  exchange/resource 每次只获得 business deadline 的剩余时间，revoke 只获得总 deadline
+  的剩余时间；Broker 自己也对 transport future 套同一剩余时间，确保不依赖 transport
+  是否遵守 request timeout。超过 business deadline 后不得再开始 resource，但已捕获
+  token 仍应使用预留 cleanup budget 尝试 revoke；整个 effect 必须在总 deadline 内有界。
+- private key、JWT、installation token 及其编码变体都属于敏感中间值。base64 解码从
+  `decode_len` 预分配的 zeroizing output 开始，late decode error 也清零；Rekey 自己创建的
+  upstream response accumulator 从第一个字节起就是 zeroizing buffer，timeout、oversize、
+  truncated 和 sealing failure 的 partial/full body 都在 drop 时清零，只有通过 sealing 的
+  clean body 才能 move 给 Agent。accumulator 在读取前一次预分配 `response_max_bytes`；
+  产品上限为每个 response 4 MiB，这是为避免 secret-bearing reallocation 接受的有界内存
+  tradeoff。该清零声明只覆盖 Rekey-owned buffers，不声称控制
+  reqwest `HeaderValue`、TLS 实现或操作系统内部可能产生的副本。敏感值同时进入 response
+  sealing needles；不得出现在 Agent frame、日志、SQLite 或错误文本。Audit 只记录
+  credential/action/request 的现有 typed ID，以及
+  app/installation/repository ID 的 SHA-256 commitment、阶段和稳定结果码。
+- 生产请求继续使用 public-IP screening、固定 SNI、禁 proxy/redirect 和 bounded
+  response。真实本地 acceptance 只允许通过 test-only `ScreenedEndpoint` 与本地 CA
+  注入，不得放宽生产私网规则。
+
+本地 acceptance 必须使用 release `rekey`/`rekeyd`、真实双 UDS、SQLite 与本地
+CA/TLS mock GitHub，验证 JWT 签名和 claims、exchange 的 repository/permission scope、
+resource 调用、成功/失败后的 revoke、每个 request_id 的非空且严格有序 audit chain；
+捕获到 token 的 chain 必须是 started→authorized→token-revoked→terminal，确定未观察到
+token 的 exchange failure 必须是 started→authorized→terminal 且单独计数，不能以空集合
+通过。还必须验证全盘 canary，以及 GitHub typed credential 经
+backup→restore→再次真实三段执行仍可用。
+真正
+`github.com` live E2E 需要用户提供 GitHub App、installation 和 test repository，未执行
+前只能声明 local black-box verified，不能伪造或声称 provider field validation。
+
 | Work | Done when | Verification |
 | --- | --- | --- |
-| External CredentialSource | 至少一个真实 provider，不改变 Agent API | `cargo test -p rekey-credentials --test provider_contract` |
-| OperationProvider | sign/exchange 不导出根 Secret | `cargo test -p rekey-credentials --test operation_contract` |
+| GitHub App Installation | 内置封闭 profile，不改变 Agent API；local TLS 三段链和 revoke/canary 通过 | `./scripts/p2-github-app.sh` |
+| External CredentialSource | GitHub live E2E 后再抽象；P2.1 不创建 registry/SDK | user-provided GitHub App fixture |
 | Enterprise multi-tenant | tenant 进入所有 key/query/session/audit | `cargo test -p rekey-control --test tenant_isolation` |
 | HA/DR | 明确 RPO/RTO、恢复和 split-brain 行为 | `./scripts/verify_dr_drill.sh --report artifacts/dr/latest.json` |
 
@@ -1481,7 +1569,8 @@ Review 必问：
 - 不做通用密码管理器、浏览器自动填充、个人密码同步。
 - 不接 1Password、OpenBao、Vault、Infisical 或云 Secret Manager。
 - 不做多租户、SSO、SCIM、企业控制面、HA 或多区域。
-- 不实现 OAuth、SSH、HSM、动态数据库 Secret。
+- 除 P2.1 封闭的 GitHub App Installation 换票外，不实现通用 OAuth、SSH、HSM、
+  动态数据库 Secret 或任意 provider operation。
 - 不支持 Windows。
 - 不承诺 G2、FIPS validation、mlock、防宿主 root 或防内核取证。
 - 不支持 Agent-visible 流式 request/response、SSE passthrough、frame v2、自动
@@ -1504,9 +1593,10 @@ Review 必问：
 - 不做任何 v1 compatibility 或 migration。
 - P1.1 使用内置 typed default-deny evaluator；不引入 Cedar 或 evaluator abstraction。
 
-### Open But Non-Blocking For P0.1–P1.1
+### Open But Non-Blocking For P0.1–P2.1
 
-1. 第一个公开内置 Action 示例选 GitHub、OpenAI 还是 Anthropic；P0 contract 使用 provider-neutral FixedHttpAction。
+1. P2.1 已选择 GitHub App Installation 作为第一个内置 provider profile；P0 contract
+   仍使用 provider-neutral FixedHttpAction。
 2. recovery key 是否在 P1 增加 threshold split；P0 使用单一 recovery key。
 3. P1 Linux G2 使用 namespace、gVisor 还是 Firecracker。
 4. 产品最终名称和许可证；阻塞公开发布，不阻塞本地实现。

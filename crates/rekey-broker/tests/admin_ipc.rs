@@ -15,7 +15,7 @@ async fn admin_lifecycle_and_step_up() {
     assert_eq!(response.ok()["state"], "locked");
 
     // Mutations while locked fail closed.
-    let meta = serde_json::json!({"label": "x"});
+    let meta = serde_json::json!({"label": "x", "kind": "opaque-token"});
     let response = common::call(
         &admin,
         Channel::Admin,

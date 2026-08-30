@@ -3,7 +3,7 @@ use rekey_domain::ids::{
     ActionId, CredentialId, PolicyRuleId, PrincipalId, RequestId, SessionId, VaultId, WrapperId,
 };
 
-pub const FORMAT_VERSION: u32 = 3;
+pub const FORMAT_VERSION: u32 = 4;
 
 #[derive(Debug, Clone)]
 pub struct VaultHeaderRecord {
@@ -197,6 +197,8 @@ pub mod event_type {
     pub const SESSION_CREATED: &str = "session.created";
     pub const SESSION_REVOKED: &str = "session.revoked";
     pub const POLICY_ACTIVATED: &str = "policy.activated";
+    pub const GITHUB_CONNECTOR_AUTHORIZED: &str = "connector.github.authorized";
+    pub const GITHUB_TOKEN_REVOKED: &str = "connector.github.token_revoked";
     pub const EXECUTION_STARTED: &str = "execution.started";
     pub const EXECUTION_FINISHED: &str = "execution.finished";
     pub const EXECUTION_BLOCKED: &str = "execution.blocked";

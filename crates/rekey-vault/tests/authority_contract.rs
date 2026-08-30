@@ -9,7 +9,7 @@ use rekey_domain::action::{
     ActionName, ExactPath, FixedMethod, HeaderCredentialUse, HeaderName, HeaderPrefix, HttpsOrigin,
     RequestPolicy, ResponsePolicy,
 };
-use rekey_domain::credential::{CredentialLabel, CredentialState};
+use rekey_domain::credential::{CredentialKind, CredentialLabel, CredentialState};
 use rekey_vault::command::{ActionDefinition, UnlockProof};
 use rekey_vault::error::AuthorityError;
 use rekey_vault::model::ActionState;
@@ -52,6 +52,7 @@ async fn unlock_and_credential_lifecycle() {
     let err = handle
         .credential_add(
             CredentialLabel::new("gh").unwrap(),
+            CredentialKind::OpaqueToken,
             SecretInput::from_slice(b"tok"),
             common::password_proof(),
         )
@@ -82,6 +83,7 @@ async fn unlock_and_credential_lifecycle() {
     let err = handle
         .credential_add(
             CredentialLabel::new("gh").unwrap(),
+            CredentialKind::OpaqueToken,
             SecretInput::from_slice(b"tok"),
             UnlockProof::Password(SecretInput::from_slice(b"wrong")),
         )
@@ -93,6 +95,7 @@ async fn unlock_and_credential_lifecycle() {
     let meta = handle
         .credential_add(
             CredentialLabel::new("github token").unwrap(),
+            CredentialKind::OpaqueToken,
             SecretInput::from_slice(b"ghp_secret_v1"),
             common::password_proof(),
         )
@@ -112,6 +115,7 @@ async fn unlock_and_credential_lifecycle() {
     let err = handle
         .credential_add(
             CredentialLabel::new("github token").unwrap(),
+            CredentialKind::OpaqueToken,
             SecretInput::from_slice(b"other"),
             common::password_proof(),
         )
@@ -187,6 +191,7 @@ async fn audit_trail_is_written() {
     let meta = handle
         .credential_add(
             CredentialLabel::new("audited").unwrap(),
+            CredentialKind::OpaqueToken,
             SecretInput::from_slice(b"v"),
             common::password_proof(),
         )
@@ -233,6 +238,7 @@ async fn no_secret_export_api() {
     handle
         .credential_add(
             CredentialLabel::new("canary").unwrap(),
+            CredentialKind::OpaqueToken,
             SecretInput::from_slice(secret),
             common::password_proof(),
         )

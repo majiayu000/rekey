@@ -4,6 +4,7 @@
 pub mod audit;
 pub mod error;
 pub mod executor;
+mod github_app;
 pub mod ipc;
 pub mod lifecycle;
 pub mod runtime;

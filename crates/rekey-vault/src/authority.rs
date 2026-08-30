@@ -204,11 +204,12 @@ impl Worker {
             }
             AuthorityCommand::CredentialAdd {
                 label,
+                kind,
                 secret,
                 proof,
                 reply,
             } => {
-                let result = self.credential_add(label, secret, proof);
+                let result = self.credential_add(label, kind, secret, proof);
                 self.touch_if_ok(&result);
                 let _ = reply.send(result);
             }
@@ -445,6 +446,7 @@ impl Worker {
         &self,
         credential_id: CredentialId,
         version: u64,
+        kind: CredentialKind,
         secret: &SecretInput,
         vrk: &RootKey,
     ) -> Result<CredentialVersionRecord, AuthorityError> {
@@ -454,7 +456,7 @@ impl Worker {
             vault_id: self.header.vault_id,
             object_id: *credential_id.as_bytes(),
             object_version: version,
-            credential_kind: CredentialKind::OpaqueToken.aad_code(),
+            credential_kind: kind.aad_code(),
             constraints_hash: [0u8; 32],
         }
         .encode();
@@ -487,6 +489,7 @@ impl Worker {
     fn credential_add(
         &mut self,
         label: CredentialLabel,
+        kind: CredentialKind,
         secret: SecretInput,
         proof: UnlockProof,
     ) -> Result<CredentialMetadata, AuthorityError> {
@@ -502,11 +505,11 @@ impl Worker {
         };
         let credential_id = CredentialId::new_random();
         let now = now_ms();
-        let version = self.encrypt_new_version(credential_id, 1, &secret, vrk)?;
+        let version = self.encrypt_new_version(credential_id, 1, kind, &secret, vrk)?;
         let record = CredentialRecord {
             credential_id,
             label: label.as_str().to_owned(),
-            kind: CredentialKind::OpaqueToken,
+            kind,
             state: CredentialState::Active,
             current_version: 1,
             created_at_ms: now,
@@ -544,11 +547,24 @@ impl Worker {
         if existing.state != CredentialState::Active {
             return Err(AuthorityError::CredentialRevoked);
         }
+        if existing.kind != CredentialKind::OpaqueToken {
+            return Err(AuthorityError::Domain(
+                rekey_domain::DomainError::InvalidActionDefinition(
+                    "generic rotate only supports opaque-token credentials".to_owned(),
+                ),
+            ));
+        }
         let VaultState::Unlocked { vrk } = &self.state else {
             return Err(AuthorityError::Locked);
         };
         let next = existing.current_version + 1;
-        let version = self.encrypt_new_version(credential_id, next, &secret, vrk)?;
+        let version = self.encrypt_new_version(
+            credential_id,
+            next,
+            CredentialKind::OpaqueToken,
+            &secret,
+            vrk,
+        )?;
         let audit = self.audit_event(credential_audit(
             event_type::CREDENTIAL_ROTATED,
             credential_id,
@@ -726,6 +742,7 @@ impl Worker {
         Ok(PreparedCredential::new(
             Zeroizing::new(payload.to_vec()),
             credential_id,
+            credential.kind,
             version.version,
         ))
     }

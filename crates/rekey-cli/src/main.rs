@@ -112,6 +112,15 @@ enum CredentialCommand {
         #[arg(long)]
         stdin_secrets: bool,
     },
+    /// Add an encrypted GitHub App Installation profile from a JSON file.
+    AddGithubApp {
+        label: String,
+        /// JSON containing the private key and fixed GitHub identifiers.
+        #[arg(long)]
+        file: PathBuf,
+        #[arg(long)]
+        password_stdin: bool,
+    },
     List,
     Rotate {
         credential_id: String,
@@ -232,6 +241,11 @@ fn main() {
                 label,
                 stdin_secrets,
             } => commands::credential_add(&state_dir, &label, stdin_secrets),
+            CredentialCommand::AddGithubApp {
+                label,
+                file,
+                password_stdin,
+            } => commands::credential_add_github_app(&state_dir, &label, &file, password_stdin),
             CredentialCommand::List => commands::credential_list(&state_dir),
             CredentialCommand::Rotate {
                 credential_id,

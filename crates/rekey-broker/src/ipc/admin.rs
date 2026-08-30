@@ -137,10 +137,19 @@ async fn dispatch(
             ctx.lifecycle.reject_if_not_running()?;
             let add_meta: ipc::CredentialAddMeta = meta(frame)?;
             let (kind, proof, secret) = ipc::parse_proof_and_secret_body(&frame.body)?;
+            if add_meta.kind == rekey_domain::credential::CredentialKind::GitHubAppInstallation {
+                ctx.authority.verify_proof(proof_from(kind, proof)).await?;
+                crate::github_app::GitHubAppCredential::validate_profile(secret).map_err(|_| {
+                    BrokerError::Domain(rekey_domain::DomainError::InvalidActionDefinition(
+                        "invalid GitHub App credential profile".to_owned(),
+                    ))
+                })?;
+            }
             let metadata = ctx
                 .authority
                 .credential_add(
                     add_meta.label,
+                    add_meta.kind,
                     SecretInput::from_slice(secret),
                     proof_from(kind, proof),
                 )

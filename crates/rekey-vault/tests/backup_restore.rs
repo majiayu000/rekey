@@ -6,7 +6,7 @@ mod common;
 use std::fs;
 use std::path::Path;
 
-use rekey_domain::credential::CredentialLabel;
+use rekey_domain::credential::{CredentialKind, CredentialLabel};
 use rekey_vault::bootstrap::{RestoreProof, restore_vault};
 use rekey_vault::error::AuthorityError;
 use rekey_vault::secret::SecretInput;
@@ -27,6 +27,7 @@ async fn backup_roundtrip_and_restore() {
     let meta = handle
         .credential_add(
             CredentialLabel::new("backed-up").unwrap(),
+            CredentialKind::OpaqueToken,
             SecretInput::from_slice(SECRET_CANARY),
             common::password_proof(),
         )
@@ -38,7 +39,7 @@ async fn backup_roundtrip_and_restore() {
         .backup(backup_path.clone(), common::password_proof())
         .await
         .unwrap();
-    assert_eq!(receipt.format_version, 3);
+    assert_eq!(receipt.format_version, 4);
     assert_eq!(receipt.vault_id, vault.outcome.vault_id);
     assert_eq!(receipt.sha256_hex.len(), 64);
     assert_eq!(
@@ -273,6 +274,7 @@ async fn restore_rejects_corrupt_later_credential() {
     handle
         .credential_add(
             CredentialLabel::new("first").unwrap(),
+            CredentialKind::OpaqueToken,
             SecretInput::from_slice(b"secret-one"),
             common::password_proof(),
         )
@@ -281,6 +283,7 @@ async fn restore_rejects_corrupt_later_credential() {
     let second = handle
         .credential_add(
             CredentialLabel::new("second").unwrap(),
+            CredentialKind::OpaqueToken,
             SecretInput::from_slice(b"secret-two"),
             common::password_proof(),
         )

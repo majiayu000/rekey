@@ -41,7 +41,7 @@ pub(super) fn blob32(v: Vec<u8>) -> Result<[u8; 32], AuthorityError> {
 }
 
 impl SqliteRecordStore {
-    /// Creates a brand-new database file with schema v3. Fails if the file
+    /// Creates a brand-new database file with schema v4. Fails if the file
     /// already exists.
     pub fn create(path: &Path) -> Result<Self, AuthorityError> {
         if path.exists() {

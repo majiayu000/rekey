@@ -1,7 +1,7 @@
 //! Authority blackbox: everything through public API only — no direct table
 //! access, no crypto internals — proving the lifecycle holds end to end.
 
-use rekey_domain::credential::CredentialLabel;
+use rekey_domain::credential::{CredentialKind, CredentialLabel};
 use rekey_integration::harness as h;
 use rekey_vault::authority::spawn_authority;
 use rekey_vault::bootstrap::init_vault;
@@ -40,6 +40,7 @@ async fn full_lifecycle_via_public_api() {
     let meta = handle
         .credential_add(
             CredentialLabel::new("blackbox").unwrap(),
+            CredentialKind::OpaqueToken,
             SecretInput::from_slice(b"blackbox-secret"),
             UnlockProof::Password(SecretInput::from_slice(h::PASSWORD)),
         )

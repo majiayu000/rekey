@@ -1,0 +1,429 @@
+#!/usr/bin/env bash
+# P2.1 local black-box acceptance: release CLI/daemon bootstrap, real broker
+# dual UDS + SQLite, and a local CA/TLS GitHub App exchange/resource/revoke chain.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+REKEY="$ROOT/target/release/rekey"
+REKEYD="$ROOT/target/release/rekeyd"
+FIXTURE="$ROOT/target/release/examples/p2_github_app_fixture"
+PASSWORD="p2 github app acceptance password"
+TOKEN_CANARY="P2-INSTALLATION-TOKEN-CANARY"
+
+cargo build --release -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd
+cargo build --release -p rekey-broker --example p2_github_app_fixture
+
+WORKDIR="$(mktemp -d /tmp/rkp2github.XXXXXX)"
+STATE="$WORKDIR/state"
+READY="$WORKDIR/ready"
+MODE="$WORKDIR/mode"
+TRACE="$WORKDIR/trace"
+PROFILE="$WORKDIR/github-app.json"
+INVALID_PROFILE="$WORKDIR/github-app-invalid.json"
+LATE_INVALID_KEY_PROFILE="$WORKDIR/github-app-late-invalid-key.json"
+PRIVATE_KEY="$WORKDIR/github-app-key.pem"
+PRIVATE_KEY_DER="$WORKDIR/github-app-key.der"
+PUBLIC_KEY_DER="$WORKDIR/github-app-public.der"
+BROKER_PID=""
+cleanup() {
+  if [[ -n "$BROKER_PID" ]]; then
+    kill "$BROKER_PID" 2>/dev/null || true
+    wait "$BROKER_PID" 2>/dev/null || true
+  fi
+  rm -rf "$WORKDIR"
+}
+failure() {
+  local rc=$?
+  [[ ! -f "$WORKDIR/success.err" ]] || cat "$WORKDIR/success.err" >&2
+  [[ ! -f "$WORKDIR/broker.err" ]] || cat "$WORKDIR/broker.err" >&2
+  echo "P2 GitHub acceptance failed at line $1 (exit $rc)" >&2
+  exit "$rc"
+}
+trap cleanup EXIT
+trap 'failure "$LINENO"' ERR
+
+json_field() {
+  python3 -c 'import json,sys; print(json.load(sys.stdin)[sys.argv[1]])' "$1"
+}
+
+expect_failure() {
+  local mode="$1"
+  local expected="$2"
+  printf '%s\n' "$mode" >"$MODE"
+  set +e
+  "$REKEY" --state-dir "$STATE" execute "$ACTION_REF" --capability "$CAPABILITY" \
+    >"$WORKDIR/$mode.out" 2>"$WORKDIR/$mode.err"
+  local rc=$?
+  set -e
+  [[ "$rc" -eq "$expected" ]] || {
+    echo "$mode: expected exit $expected, got $rc"
+    cat "$WORKDIR/$mode.err"
+    exit 1
+  }
+  [[ ! -s "$WORKDIR/$mode.out" ]] || {
+    echo "$mode: Agent received response bytes on a failed execution"
+    exit 1
+  }
+}
+
+printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin >/dev/null
+openssl genrsa -traditional -out "$PRIVATE_KEY" 2048 >/dev/null 2>&1
+openssl rsa -in "$PRIVATE_KEY" -RSAPublicKey_out -outform DER -out "$PUBLIC_KEY_DER" \
+  >/dev/null 2>&1
+openssl rsa -in "$PRIVATE_KEY" -traditional -outform DER -out "$PRIVATE_KEY_DER" \
+  >/dev/null 2>&1
+python3 - "$PROFILE" "$PRIVATE_KEY_DER" <<'PY'
+import base64, json, pathlib, sys
+pathlib.Path(sys.argv[1]).write_text(json.dumps({
+    "credential_type": "github-app-installation-v1",
+    "client_id": "Iv1.8a61f9b3a7aba766",
+    "app_id": 424242,
+    "installation_id": 515151,
+    "repository_id": 616161,
+    "private_key_pkcs1_der_base64": base64.b64encode(pathlib.Path(sys.argv[2]).read_bytes()).decode()
+}))
+PY
+python3 - "$PROFILE" "$INVALID_PROFILE" "$LATE_INVALID_KEY_PROFILE" <<'PY'
+import json, pathlib, sys
+profile = json.load(open(sys.argv[1]))
+profile["unexpected"] = "must-be-rejected"
+pathlib.Path(sys.argv[2]).write_text(json.dumps(profile))
+profile.pop("unexpected")
+encoded = profile["private_key_pkcs1_der_base64"]
+position = len(encoded.rstrip("=")) - 1
+profile["private_key_pkcs1_der_base64"] = encoded[:position] + "!" + encoded[position + 1:]
+large_profile = json.dumps(profile)
+target_size = 60 * 1024
+if len(large_profile) >= target_size:
+    raise SystemExit("fixture profile unexpectedly exceeds large-profile target")
+pathlib.Path(sys.argv[3]).write_text(large_profile + " " * (target_size - len(large_profile)))
+PY
+rm "$PRIVATE_KEY" "$PRIVATE_KEY_DER"
+printf '%s\n' success >"$MODE"
+"$FIXTURE" "$STATE" "$READY" "$MODE" "$TRACE" "$PUBLIC_KEY_DER" \
+  >"$WORKDIR/broker.out" 2>"$WORKDIR/broker.err" &
+BROKER_PID=$!
+for _ in $(seq 1 400); do
+  [[ -f "$READY" && -S "$STATE/runtime/admin.sock" ]] && break
+  sleep 0.025
+done
+[[ -f "$READY" && -S "$STATE/runtime/admin.sock" ]] || {
+  echo "P2 GitHub fixture did not start"
+  cat "$WORKDIR/broker.err"
+  exit 1
+}
+PRIVATE_KEY_CANARY="$(python3 - "$PROFILE" <<'PY'
+import json, sys
+encoded = json.load(open(sys.argv[1]))["private_key_pkcs1_der_base64"]
+print(encoded[80:112])
+PY
+)"
+[[ ${#PRIVATE_KEY_CANARY} -eq 32 ]]
+
+printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" unlock --password-stdin >/dev/null
+WRONG_PROOF_RC=0
+printf '%s\n' "definitely-wrong-password" | "$REKEY" --state-dir "$STATE" credential \
+  add-github-app wrong-proof --file "$LATE_INVALID_KEY_PROFILE" --password-stdin \
+  >"$WORKDIR/wrong-proof.out" 2>"$WORKDIR/wrong-proof.err" || WRONG_PROOF_RC=$?
+[[ "$WRONG_PROOF_RC" -eq 3 && ! -s "$WORKDIR/wrong-proof.out" ]] || {
+  echo "wrong step-up proof did not fail before GitHub RSA validation"
+  exit 1
+}
+LATE_INVALID_RC=0
+printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" credential \
+  add-github-app late-invalid-key --file "$LATE_INVALID_KEY_PROFILE" --password-stdin \
+  >"$WORKDIR/late-invalid.out" 2>"$WORKDIR/late-invalid.err" || LATE_INVALID_RC=$?
+[[ "$LATE_INVALID_RC" -eq 2 && ! -s "$WORKDIR/late-invalid.out" ]] || {
+  echo "late-invalid base64 was not rejected after valid step-up"
+  exit 1
+}
+INVALID_ADD_RC=0
+printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" credential \
+  add-github-app invalid-github --file "$INVALID_PROFILE" --password-stdin \
+  >"$WORKDIR/invalid-add.out" 2>"$WORKDIR/invalid-add.err" || INVALID_ADD_RC=$?
+[[ "$INVALID_ADD_RC" -eq 2 && ! -s "$WORKDIR/invalid-add.out" ]] || {
+  echo "invalid GitHub profile was not rejected before storage"
+  exit 1
+}
+CREDENTIAL_JSON="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" credential \
+  add-github-app p2-github --file "$PROFILE" --password-stdin)"
+CREDENTIAL_ID="$(printf '%s\n' "$CREDENTIAL_JSON" | json_field id)"
+[[ "$(printf '%s\n' "$CREDENTIAL_JSON" | json_field kind)" == "github-app-installation" ]]
+ROTATE_RC=0
+printf '%s\n%s\n' "$PASSWORD" "opaque-overwrite" | "$REKEY" --state-dir "$STATE" credential \
+  rotate "$CREDENTIAL_ID" --stdin-secrets >"$WORKDIR/rotate.out" 2>"$WORKDIR/rotate.err" || ROTATE_RC=$?
+[[ "$ROTATE_RC" -eq 2 && ! -s "$WORKDIR/rotate.out" ]] || {
+  echo "generic rotate did not reject GitHub App credential"
+  exit 1
+}
+rm "$PROFILE" "$INVALID_PROFILE" "$LATE_INVALID_KEY_PROFILE"
+
+python3 - "$WORKDIR/action.json" "$CREDENTIAL_ID" <<'PY'
+import json, pathlib, sys
+pathlib.Path(sys.argv[1]).write_text(json.dumps({
+    "name": "github-installation-repositories",
+    "credential_id": sys.argv[2],
+    "origin": "https://api.github.com",
+    "method": "GET",
+    "exact_path": "/installation/repositories",
+    "auth_header": "authorization",
+    "auth_prefix": "Bearer ",
+    "timeout_ms": 2000,
+    "request_max_bytes": 1,
+    "allowed_extra_headers": [],
+    "response_max_bytes": 262144,
+    "allowed_response_headers": ["content-type"]
+}))
+PY
+ACTION_JSON="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" action create \
+  --file "$WORKDIR/action.json" --password-stdin)"
+ACTION_ID="$(printf '%s\n' "$ACTION_JSON" | json_field id)"
+ACTION_VERSION="$(printf '%s\n' "$ACTION_JSON" | json_field version)"
+ACTION_REF="$ACTION_ID@$ACTION_VERSION"
+SESSION_JSON="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" session create \
+  --action "$ACTION_REF" --ttl 10m --max-uses 20 --password-stdin)"
+PRINCIPAL_ID="$(printf '%s\n' "$SESSION_JSON" | json_field principal_id)"
+CAPABILITY="$(printf '%s\n' "$SESSION_JSON" | json_field capability_token)"
+
+python3 - "$WORKDIR/policy.json" "$ACTION_ID" "$ACTION_VERSION" "$PRINCIPAL_ID" <<'PY'
+import json, pathlib, sys, time, uuid
+path, action, version, principal = sys.argv[1:]
+resource = {"type": "github-installation-repositories", "id": action}
+binding = {"action_id": action, "version": int(version), "resource": resource,
+    "parameter_schema_id": "github-installation-repositories/v1",
+    "parameter_schema": {"type": "null"}}
+rule = {"id": str(uuid.uuid4()), "effect": "permit", "principal_id": principal,
+    "action_id": action, "version": int(version), "resource": resource,
+    "parameters": {"kind": "any_validated"}}
+pathlib.Path(path).write_text(json.dumps({"format_version": 1, "version": 1,
+    "expires_at_ms": int(time.time() * 1000) + 600000,
+    "bindings": [binding], "rules": [rule]}))
+PY
+printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate \
+  --file "$WORKDIR/policy.json" --password-stdin >/dev/null
+
+printf '%s\n' success >"$MODE"
+"$REKEY" --state-dir "$STATE" execute "$ACTION_REF" --capability "$CAPABILITY" \
+  >"$WORKDIR/success.out" 2>"$WORKDIR/success.err"
+grep -q '"id":616161' "$WORKDIR/success.out"
+
+expect_failure bad-scope 6
+expect_failure malformed-scope 6
+expect_failure exchange-error 6
+expect_failure exchange-status-token 6
+expect_failure trailing-token 6
+expect_failure duplicate-token 6
+expect_failure resource-error 6
+expect_failure wrong-repository 6
+expect_failure revoke-error 6
+expect_failure reflect-token 8
+DEADLINE_STARTED="$(python3 -c 'import time; print(time.monotonic())')"
+expect_failure deadline-resource 6
+DEADLINE_ELAPSED="$(python3 - "$DEADLINE_STARTED" <<'PY'
+import sys, time
+print(time.monotonic() - float(sys.argv[1]))
+PY
+)"
+python3 - "$DEADLINE_ELAPSED" <<'PY'
+import sys
+if float(sys.argv[1]) >= 2.5:
+    raise SystemExit("GitHub effect exceeded total deadline bound")
+PY
+
+# Cancellation after exchange must keep the in-flight permit until the
+# resource finishes and the remote token is revoked.
+printf '%s\n' slow-resource >"$MODE"
+RESOURCE_BEFORE="$(grep -c '^resource.ok$' "$TRACE" || true)"
+"$REKEY" --state-dir "$STATE" execute "$ACTION_REF" --capability "$CAPABILITY" \
+  >"$WORKDIR/slow-resource.out" 2>"$WORKDIR/slow-resource.err" &
+SLOW_PID=$!
+for _ in $(seq 1 200); do
+  [[ "$(grep -c '^resource.ok$' "$TRACE" || true)" -ge "$((RESOURCE_BEFORE + 1))" ]] && break
+  sleep 0.01
+done
+[[ "$(grep -c '^resource.ok$' "$TRACE" || true)" -ge "$((RESOURCE_BEFORE + 1))" ]]
+if "$REKEY" --state-dir "$STATE" lock >"$WORKDIR/lock-busy.out" 2>"$WORKDIR/lock-busy.err"; then
+  LOCK_RC=0
+else
+  LOCK_RC=$?
+fi
+[[ "$LOCK_RC" -eq 7 ]] || {
+  echo "expected cancellation-shielded lock to exit 7, got $LOCK_RC"
+  exit 1
+}
+wait "$SLOW_PID"
+grep -q '"id":616161' "$WORKDIR/slow-resource.out"
+"$REKEY" --state-dir "$STATE" lock >/dev/null
+
+python3 - "$STATE/vault.sqlite3" "$PRIVATE_KEY_CANARY" "$TOKEN_CANARY" <<'PY'
+import pathlib, re, sqlite3, sys
+db_path, key_canary, token_canary = sys.argv[1:]
+db = sqlite3.connect(db_path)
+def scalar(sql): return db.execute(sql).fetchone()[0]
+if scalar("SELECT count(*) FROM audit_events WHERE event_type='execution.started'") != 13:
+    raise SystemExit("expected thirteen started audits")
+if scalar("SELECT count(*) FROM audit_events WHERE event_type IN ('execution.finished','execution.blocked')") != 13:
+    raise SystemExit("expected thirteen terminal audits")
+if scalar("SELECT count(*) FROM audit_events WHERE event_type='execution.finished'") != 2:
+    raise SystemExit("expected two successful executions")
+if scalar("SELECT count(*) FROM audit_events WHERE event_type='connector.github.authorized'") != 13:
+    raise SystemExit("missing connector authorization commitments")
+if scalar("SELECT count(*) FROM audit_events WHERE event_type='connector.github.token_revoked'") != 12:
+    raise SystemExit("unexpected revoke audit count")
+if scalar("SELECT count(*) FROM audit_events WHERE event_type='connector.github.token_revoked' AND outcome='failure'") != 1:
+    raise SystemExit("missing revoke failure audit")
+reasons = [row[0] for row in db.execute("SELECT reason_code FROM audit_events")]
+if any("binding-sha256=" in value and len(value.rsplit("binding-sha256=",1)[1]) != 64 for value in reasons):
+    raise SystemExit("invalid connector binding commitment")
+binding_re = re.compile(r"binding-sha256=([0-9a-f]{64})")
+rows = db.execute("""
+    SELECT sequence, hex(request_id), event_type, outcome, reason_code
+    FROM audit_events
+    WHERE request_id IS NOT NULL
+      AND event_type IN ('execution.started', 'connector.github.authorized',
+                         'connector.github.token_revoked', 'execution.finished', 'execution.blocked')
+    ORDER BY sequence
+""").fetchall()
+chains = {}
+for row in rows:
+    chains.setdefault(row[1], []).append(row)
+if len(chains) != 13:
+    raise SystemExit(f"expected thirteen non-vacuous request audit chains, got {len(chains)}")
+without_revoke = 0
+for request_id, chain in chains.items():
+    types = [row[2] for row in chain]
+    if types[0] != 'execution.started' or types[-1] not in ('execution.finished', 'execution.blocked'):
+        raise SystemExit(f"bad terminal ordering for {request_id}: {types}")
+    if types.count('execution.started') != 1 or types.count('connector.github.authorized') != 1:
+        raise SystemExit(f"missing or duplicate start/authorized for {request_id}: {types}")
+    if sum(t in ('execution.finished', 'execution.blocked') for t in types) != 1:
+        raise SystemExit(f"missing or duplicate terminal for {request_id}: {types}")
+    authorized = next(row for row in chain if row[2] == 'connector.github.authorized')
+    match = binding_re.fullmatch(authorized[4])
+    if not match or not (chain[0][0] < authorized[0] < chain[-1][0]):
+        raise SystemExit(f"invalid authorized binding/order for {request_id}")
+    revoke_rows = [row for row in chain if row[2] == 'connector.github.token_revoked']
+    if not revoke_rows:
+        without_revoke += 1
+        continue
+    if len(revoke_rows) != 1:
+        raise SystemExit(f"duplicate revoke audit for {request_id}")
+    revoke = revoke_rows[0]
+    revoke_match = re.fullmatch(
+        r"(?:success|github-token-revoke-rejected);binding-sha256=([0-9a-f]{64})",
+        revoke[4],
+    )
+    if not revoke_match or revoke_match.group(1) != match.group(1):
+        raise SystemExit(f"revoke binding mismatch for {request_id}")
+    if not (authorized[0] < revoke[0] < chain[-1][0]):
+        raise SystemExit(f"bad revoke ordering for {request_id}")
+if without_revoke != 1:
+    raise SystemExit(f"expected exactly one exchange-without-token chain, got {without_revoke}")
+raw = pathlib.Path(db_path).read_bytes()
+if key_canary.encode() in raw or token_canary.encode() in raw:
+    raise SystemExit("connector secret leaked into SQLite")
+PY
+
+[[ "$(grep -c '^exchange.ok$' "$TRACE")" -eq 12 ]]
+[[ "$(grep -c '^exchange.error$' "$TRACE")" -eq 1 ]]
+RESOURCE_OK_COUNT="$(grep -c '^resource.ok$' "$TRACE")"
+[[ "$RESOURCE_OK_COUNT" -eq 6 ]] || {
+  echo "expected six resource.ok traces, got $RESOURCE_OK_COUNT"
+  cat "$TRACE"
+  exit 1
+}
+[[ "$(grep -c '^resource.error$' "$TRACE")" -eq 1 ]]
+[[ "$(grep -c '^revoke.ok$' "$TRACE")" -eq 11 ]]
+[[ "$(grep -c '^revoke.error$' "$TRACE")" -eq 1 ]]
+
+if rg -a -F "$PRIVATE_KEY_CANARY" "$STATE" "$WORKDIR" --glob '!trace' >/dev/null; then
+  echo "private key canary leaked into Agent-visible or durable output"
+  exit 1
+fi
+if rg -a -F "$TOKEN_CANARY" "$STATE" "$WORKDIR" --glob '!trace' >/dev/null; then
+  echo "installation token leaked into Agent-visible or durable output"
+  exit 1
+fi
+
+printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" unlock --password-stdin >/dev/null
+BACKUP="$WORKDIR/github-app.backup"
+BACKUP_JSON="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" backup \
+  --output "$BACKUP" --password-stdin)"
+BACKUP_SHA256="$(printf '%s\n' "$BACKUP_JSON" | json_field sha256_hex)"
+printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" shutdown --password-stdin >/dev/null
+wait "$BROKER_PID"
+BROKER_PID=""
+
+RESTORED_STATE="$WORKDIR/restored-state"
+printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$RESTORED_STATE" restore \
+  --input "$BACKUP" --sha256 "$BACKUP_SHA256" --password-stdin >/dev/null
+STATE="$RESTORED_STATE"
+READY="$WORKDIR/restored-ready"
+RESTORED_TRACE="$WORKDIR/restored-trace"
+printf '%s\n' success >"$MODE"
+"$FIXTURE" "$STATE" "$READY" "$MODE" "$RESTORED_TRACE" "$PUBLIC_KEY_DER" \
+  >"$WORKDIR/restored-broker.out" 2>"$WORKDIR/restored-broker.err" &
+BROKER_PID=$!
+for _ in $(seq 1 400); do
+  [[ -f "$READY" && -S "$STATE/runtime/admin.sock" ]] && break
+  sleep 0.025
+done
+[[ -f "$READY" && -S "$STATE/runtime/admin.sock" ]] || {
+  echo "restored P2 GitHub fixture did not start"
+  cat "$WORKDIR/restored-broker.err"
+  exit 1
+}
+printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" unlock --password-stdin >/dev/null
+RESTORED_CREDENTIALS="$("$REKEY" --state-dir "$STATE" credential list)"
+printf '%s\n' "$RESTORED_CREDENTIALS" | python3 -c '
+import json, sys
+credentials = json.load(sys.stdin)["credentials"]
+matches = [item for item in credentials if item["id"] == sys.argv[1]]
+if len(matches) != 1 or matches[0]["kind"] != "github-app-installation":
+    raise SystemExit("restored GitHub credential lost its typed kind")
+' "$CREDENTIAL_ID"
+RESTORED_SESSION="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" session create \
+  --action "$ACTION_REF" --ttl 10m --max-uses 2 --password-stdin)"
+RESTORED_PRINCIPAL="$(printf '%s\n' "$RESTORED_SESSION" | json_field principal_id)"
+RESTORED_CAPABILITY="$(printf '%s\n' "$RESTORED_SESSION" | json_field capability_token)"
+python3 - "$WORKDIR/policy.json" "$RESTORED_PRINCIPAL" <<'PY'
+import json, pathlib, sys, time, uuid
+path = pathlib.Path(sys.argv[1])
+policy = json.loads(path.read_text())
+policy["version"] = 2
+policy["expires_at_ms"] = int(time.time() * 1000) + 600000
+policy["rules"][0]["id"] = str(uuid.uuid4())
+policy["rules"][0]["principal_id"] = sys.argv[2]
+path.write_text(json.dumps(policy))
+PY
+printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate \
+  --file "$WORKDIR/policy.json" --password-stdin >/dev/null
+"$REKEY" --state-dir "$STATE" execute "$ACTION_REF" --capability "$RESTORED_CAPABILITY" \
+  >"$WORKDIR/restored-success.out" 2>"$WORKDIR/restored-success.err"
+grep -q '"id":616161' "$WORKDIR/restored-success.out"
+python3 - "$STATE/vault.sqlite3" <<'PY'
+import re, sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+if db.execute("SELECT count(*) FROM audit_events WHERE event_type='execution.started'").fetchone()[0] != 14:
+    raise SystemExit("restored execution did not append the fourteenth start")
+request_id = db.execute("SELECT request_id FROM audit_events WHERE event_type='execution.started' ORDER BY sequence DESC LIMIT 1").fetchone()[0]
+chain = db.execute("SELECT event_type, reason_code FROM audit_events WHERE request_id=? ORDER BY sequence", (request_id,)).fetchall()
+if [row[0] for row in chain] != ['execution.started', 'connector.github.authorized', 'connector.github.token_revoked', 'execution.finished']:
+    raise SystemExit(f"restored execution audit chain invalid: {chain}")
+if not re.fullmatch(r"binding-sha256=[0-9a-f]{64}", chain[1][1]):
+    raise SystemExit("restored authorized binding invalid")
+if not re.fullmatch(r"success;binding-sha256=[0-9a-f]{64}", chain[2][1]):
+    raise SystemExit("restored revoke binding invalid")
+PY
+if rg -a -F "$PRIVATE_KEY_CANARY" "$STATE" "$WORKDIR" --glob '!trace' >/dev/null; then
+  echo "private key canary leaked after restore"
+  exit 1
+fi
+if rg -a -F "$TOKEN_CANARY" "$STATE" "$WORKDIR" --glob '!trace' >/dev/null; then
+  echo "installation token leaked after restore"
+  exit 1
+fi
+printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" shutdown --password-stdin >/dev/null
+wait "$BROKER_PID"
+BROKER_PID=""
+echo "P2 GitHub App local acceptance passed"

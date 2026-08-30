@@ -1,5 +1,6 @@
 use std::fmt;
 
+use rekey_domain::credential::CredentialKind;
 use rekey_domain::ids::CredentialId;
 use zeroize::Zeroizing;
 
@@ -37,6 +38,7 @@ impl fmt::Debug for SecretInput {
 pub struct PreparedCredential {
     bytes: Zeroizing<Vec<u8>>,
     credential_id: CredentialId,
+    kind: CredentialKind,
     version: u64,
 }
 
@@ -44,17 +46,23 @@ impl PreparedCredential {
     pub(crate) fn new(
         bytes: Zeroizing<Vec<u8>>,
         credential_id: CredentialId,
+        kind: CredentialKind,
         version: u64,
     ) -> Self {
         Self {
             bytes,
             credential_id,
+            kind,
             version,
         }
     }
 
     pub fn credential_id(&self) -> CredentialId {
         self.credential_id
+    }
+
+    pub fn kind(&self) -> CredentialKind {
+        self.kind
     }
 
     pub fn version(&self) -> u64 {

@@ -4,6 +4,7 @@
 //! accounting, cleanup.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use data_encoding::{BASE64, BASE64_NOPAD, BASE64URL, BASE64URL_NOPAD};
@@ -20,10 +21,11 @@ use tokio::sync::RwLock;
 use zeroize::Zeroizing;
 
 use crate::audit::{
-    ExecutionAuditContext, TerminalAuditTracker, execution_blocked, execution_finished,
-    execution_started,
+    ExecutionAuditContext, TerminalAuditTracker, connector_event, execution_blocked,
+    execution_finished, execution_started,
 };
 use crate::error::BrokerError;
+use crate::github_app::{GitHubAppCredential, GitHubEffect, GitHubError};
 use crate::lifecycle::{BrokerPhase, Lifecycle};
 use crate::session::SessionRegistry;
 use crate::upstream::{UpstreamRequest, UpstreamTransport};
@@ -297,10 +299,19 @@ impl ActionExecutor {
             return Err(BrokerError::Authority(AuthorityError::Draining));
         }
 
-        tokio::select! {
-            biased;
-            _ = cancel.changed() => {}
-            result = self.run_started(&mut started, request, &action) => return result,
+        let connector_effect_started = AtomicBool::new(false);
+        {
+            let run = self.run_started(&mut started, request, &action, &connector_effect_started);
+            tokio::pin!(run);
+            tokio::select! {
+                biased;
+                _ = cancel.changed() => {
+                    if connector_effect_started.load(Ordering::SeqCst) {
+                        return run.await;
+                    }
+                }
+                result = &mut run => return result,
+            }
         }
         if !started.is_completed() {
             started.blocked("abandoned").await?;
@@ -317,6 +328,7 @@ impl ActionExecutor {
         started: &mut StartedGuard,
         request: &ExecuteRequest,
         action: &FixedHttpAction,
+        connector_effect_started: &AtomicBool,
     ) -> Result<ExecuteOutcome, BrokerError> {
         // Steps 7-8: credential eligibility and preparation (single owner).
         let prepared = match self
@@ -331,25 +343,65 @@ impl ActionExecutor {
             }
         };
         let credential_version = prepared.version();
+        let credential_kind = prepared.kind();
 
-        // Step 9: build the upstream request; the server owns origin, method,
-        // path, and the single auth header.
-        let mut needles = Vec::new();
-        let upstream_request = prepared.consume(|secret| {
-            let mut auth_value = Zeroizing::new(Vec::with_capacity(
-                action.auth.prefix.as_str().len() + secret.len(),
-            ));
-            auth_value.extend_from_slice(action.auth.prefix.as_str().as_bytes());
-            auth_value.extend_from_slice(secret);
-            needles = sealing_needles(secret, &auth_value);
-            build_upstream(action, request, auth_value)
+        // Step 9: select the closed credential effect. Ordinary credentials
+        // retain the fixed-header path. A marked GitHub App payload may only
+        // enter its one built-in profile; malformed marked payloads never
+        // fall back to bearer-token behavior.
+        let prepared = prepared.consume(|secret| match credential_kind {
+            rekey_domain::credential::CredentialKind::OpaqueToken
+                if !GitHubAppCredential::action_is_reserved(action) =>
+            {
+                let mut auth_value = Zeroizing::new(Vec::with_capacity(
+                    action.auth.prefix.as_str().len() + secret.len(),
+                ));
+                auth_value.extend_from_slice(action.auth.prefix.as_str().as_bytes());
+                auth_value.extend_from_slice(secret);
+                let needles = sealing_needles(secret, &auth_value);
+                PreparedExecution::Opaque {
+                    upstream: build_upstream(action, request, auth_value),
+                    needles,
+                }
+            }
+            rekey_domain::credential::CredentialKind::OpaqueToken => {
+                PreparedExecution::GitHub(GitHubPrepared {
+                    credential_version,
+                    needles: Vec::new(),
+                    profile: Err(GitHubError::InvalidCredential),
+                })
+            }
+            rekey_domain::credential::CredentialKind::GitHubAppInstallation => {
+                let profile = GitHubAppCredential::parse_profile(secret);
+                PreparedExecution::GitHub(GitHubPrepared {
+                    credential_version,
+                    needles: profile
+                        .as_ref()
+                        .map(|profile| sealing_needles(secret, profile.private_key_bytes()))
+                        .unwrap_or_default(),
+                    profile,
+                })
+            }
         });
+
+        if let PreparedExecution::GitHub(prepared) = prepared {
+            return self
+                .run_github(started, request, action, prepared, connector_effect_started)
+                .await;
+        }
+        let PreparedExecution::Opaque {
+            upstream: upstream_request,
+            needles,
+        } = prepared
+        else {
+            unreachable!("credential execution variant was matched above")
+        };
 
         // Steps 10-11: fixed HTTPS send with bounded response.
         let send_started = Instant::now();
         let response = self.transport.send(upstream_request).await;
         let latency_ms = send_started.elapsed().as_millis() as i64;
-        let response = match response {
+        let mut response = match response {
             Ok(response) => response,
             Err(err) => {
                 let reason = match &err {
@@ -385,14 +437,135 @@ impl ActionExecutor {
         started
             .finished(credential_version, response.status, latency_ms)
             .await?;
+        let body = std::mem::take(&mut *response.body);
 
         // Steps 15-16 (accounting + cleanup) happen in Drop of permit and secrets.
         Ok(ExecuteOutcome {
             upstream_status: response.status,
             headers,
-            body: response.body,
+            body,
         })
     }
+
+    async fn run_github(
+        &self,
+        started: &mut StartedGuard,
+        request: &ExecuteRequest,
+        action: &FixedHttpAction,
+        prepared: GitHubPrepared,
+        connector_effect_started: &AtomicBool,
+    ) -> Result<ExecuteOutcome, BrokerError> {
+        let profile = match prepared.profile {
+            Ok(profile) => profile,
+            Err(err) => {
+                started.blocked(err.reason()).await?;
+                return Err(BrokerError::Denied(err.reason()));
+            }
+        };
+        if let Err(err) = profile.validate_action(action, request) {
+            started.blocked(err.reason()).await?;
+            return Err(BrokerError::Denied(err.reason()));
+        }
+        // A lifecycle cancellation must not strand a minted remote token.
+        connector_effect_started.store(true, Ordering::SeqCst);
+
+        // This durable event proves the exact non-secret connector binding
+        // was authorized before JWT signing or token exchange.
+        self.authority
+            .append_audit(connector_event(
+                &started.ctx,
+                rekey_vault::model::event_type::GITHUB_CONNECTOR_AUTHORIZED,
+                rekey_vault::model::outcome::SUCCESS,
+                profile.commitment(),
+            ))
+            .await?;
+
+        let send_started = Instant::now();
+        let effect = profile
+            .execute_effect(
+                self.transport.as_ref(),
+                Duration::from_millis(action.timeout_ms as u64),
+                action.response_policy.max_body_bytes,
+            )
+            .await;
+        let latency_ms = send_started.elapsed().as_millis() as i64;
+        let GitHubEffect::WithToken {
+            resource,
+            revoke,
+            sealing_sources,
+        } = effect
+        else {
+            let GitHubEffect::WithoutToken(err) = effect else {
+                unreachable!("GitHub effect variant was matched above")
+            };
+            started.blocked(err.reason()).await?;
+            return Err(BrokerError::Upstream(err.reason()));
+        };
+        let mut needles = prepared.needles;
+        for source in sealing_sources {
+            needles.extend(sealing_needles(&source, &source));
+        }
+        let (revoke_outcome, revoke_reason) = match revoke {
+            Ok(()) => (
+                rekey_vault::model::outcome::SUCCESS,
+                format!("success;{}", profile.commitment()),
+            ),
+            Err(err) => (
+                rekey_vault::model::outcome::FAILURE,
+                format!("{};{}", err.reason(), profile.commitment()),
+            ),
+        };
+        self.authority
+            .append_audit(connector_event(
+                &started.ctx,
+                rekey_vault::model::event_type::GITHUB_TOKEN_REVOKED,
+                revoke_outcome,
+                revoke_reason,
+            ))
+            .await?;
+        if let Err(err) = revoke {
+            started.blocked(err.reason()).await?;
+            return Err(BrokerError::Upstream(err.reason()));
+        }
+
+        let mut response = match resource {
+            Ok(response) => response,
+            Err(err) => {
+                started.blocked(err.reason()).await?;
+                return Err(BrokerError::Upstream(err.reason()));
+            }
+        };
+        if contains_secret(&response.body, &needles)
+            || headers_contain_secret(&response.headers, &needles)
+        {
+            started.blocked("reflected-secret").await?;
+            return Err(BrokerError::ResponseSecurityViolation);
+        }
+        let headers = filter_response_headers(action, &response.headers);
+        started
+            .finished(prepared.credential_version, response.status, latency_ms)
+            .await?;
+        let body = std::mem::take(&mut *response.body);
+        Ok(ExecuteOutcome {
+            upstream_status: response.status,
+            headers,
+            body,
+        })
+    }
+}
+
+enum PreparedExecution {
+    Opaque {
+        upstream: UpstreamRequest,
+        needles: Vec<Zeroizing<Vec<u8>>>,
+    },
+    GitHub(GitHubPrepared),
+}
+
+struct GitHubPrepared {
+    credential_version: u64,
+    profile: Result<GitHubAppCredential, GitHubError>,
+    needles: Vec<Zeroizing<Vec<u8>>>,
 }
 
 fn prepare_block_reason(err: &AuthorityError) -> &'static str {

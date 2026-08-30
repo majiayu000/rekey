@@ -19,7 +19,7 @@ async fn run_with_reflection(body: Vec<u8>) -> String {
     broker.fake.push_response(Ok(UpstreamResponse {
         status: 200,
         headers: vec![("content-type".to_owned(), "text/plain".to_owned())],
-        body,
+        body: body.into(),
     }));
 
     let meta = common::execute_meta(&token, &action_id, version);
@@ -104,7 +104,7 @@ async fn content_type_header_reflection_blocked() {
             "content-type".to_owned(),
             String::from_utf8(content_type).unwrap(),
         )],
-        body: b"{\"ok\":true}".to_vec(),
+        body: b"{\"ok\":true}".to_vec().into(),
     }));
 
     let meta = common::execute_meta(&token, &action_id, version);
@@ -134,7 +134,7 @@ async fn content_type_base64_header_reflection_blocked() {
             "content-type".to_owned(),
             format!("application/json; x={}", BASE64.encode(SECRET)),
         )],
-        body: b"{\"ok\":true}".to_vec(),
+        body: b"{\"ok\":true}".to_vec().into(),
     }));
 
     let meta = common::execute_meta(&token, &action_id, version);

@@ -51,18 +51,22 @@ impl<'de> Deserialize<'de> for CredentialLabel {
 #[serde(rename_all = "kebab-case")]
 pub enum CredentialKind {
     OpaqueToken,
+    #[serde(rename = "github-app-installation")]
+    GitHubAppInstallation,
 }
 
 impl CredentialKind {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::OpaqueToken => "opaque-token",
+            Self::GitHubAppInstallation => "github-app-installation",
         }
     }
 
     pub fn parse(s: &str) -> Result<Self, DomainError> {
         match s {
             "opaque-token" => Ok(Self::OpaqueToken),
+            "github-app-installation" => Ok(Self::GitHubAppInstallation),
             _ => Err(DomainError::InvalidId),
         }
     }
@@ -71,6 +75,7 @@ impl CredentialKind {
     pub fn aad_code(&self) -> u16 {
         match self {
             Self::OpaqueToken => 1,
+            Self::GitHubAppInstallation => 2,
         }
     }
 }
@@ -164,5 +169,15 @@ mod tests {
         assert!(CredentialLabel::new("a\0b").is_err());
         assert!(CredentialLabel::new(&"x".repeat(129)).is_err());
         assert!(CredentialLabel::new(&"x".repeat(128)).is_ok());
+    }
+
+    #[test]
+    fn github_kind_wire_name_matches_durable_name() {
+        let encoded = serde_json::to_string(&CredentialKind::GitHubAppInstallation).unwrap();
+        assert_eq!(encoded, r#""github-app-installation""#);
+        assert_eq!(
+            serde_json::from_str::<CredentialKind>(&encoded).unwrap(),
+            CredentialKind::GitHubAppInstallation
+        );
     }
 }

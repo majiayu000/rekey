@@ -126,7 +126,8 @@ async fn screened_tls_roundtrip() {
     .await
     .expect("tls send");
     assert_eq!(response.status, 200);
-    assert_eq!(response.body, body);
+    assert_eq!(response.body.as_slice(), body);
+    assert_eq!(response.body.capacity(), 1024);
     assert!(
         response
             .headers
@@ -195,5 +196,26 @@ async fn screened_truncated_body_is_transport_error() {
         Err(UpstreamError::Transport | UpstreamError::Timeout) => {}
         Err(err) => panic!("expected transport/timeout, got {err:?}"),
         Ok(_) => panic!("expected transport/timeout, got success"),
+    }
+}
+
+#[tokio::test]
+async fn screened_chunked_error_drops_partial_canary_body() {
+    const PARTIAL_CANARY: &[u8] = b"CHUNKED-PARTIAL-SECRET-CANARY";
+    let mut response = b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n".to_vec();
+    response.extend_from_slice(format!("{:x}\r\n", PARTIAL_CANARY.len()).as_bytes());
+    response.extend_from_slice(PARTIAL_CANARY);
+    response.extend_from_slice(b"\r\n5\r\nshort");
+    let fixture = spawn_https(response, true).await;
+    match send_screened(
+        request(fixture.port, 1024),
+        endpoint(fixture.port),
+        Some(&fixture.ca_der),
+    )
+    .await
+    {
+        Err(UpstreamError::Transport | UpstreamError::Timeout) => {}
+        Err(err) => panic!("expected chunked transport/timeout, got {err:?}"),
+        Ok(_) => panic!("expected chunked transport/timeout, got success"),
     }
 }

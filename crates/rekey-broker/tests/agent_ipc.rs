@@ -136,7 +136,7 @@ async fn capability_token_is_not_admin_proof() {
     let token = common::create_session(&broker, &action_id, version).await;
 
     // Using the capability token as a step-up proof must fail.
-    let meta = serde_json::json!({"label": "escalation"});
+    let meta = serde_json::json!({"label": "escalation", "kind": "opaque-token"});
     let response = common::call(
         &broker.admin_sock(),
         Channel::Admin,

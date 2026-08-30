@@ -84,7 +84,7 @@ impl UpstreamTransport for FakeUpstreamTransport {
                 Ok(UpstreamResponse {
                     status: 200,
                     headers: vec![("content-type".to_owned(), "application/json".to_owned())],
-                    body: b"{\"ok\":true}".to_vec(),
+                    body: b"{\"ok\":true}".to_vec().into(),
                 })
             }
         })

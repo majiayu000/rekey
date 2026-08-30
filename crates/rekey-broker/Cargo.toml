@@ -13,6 +13,7 @@ rekey-policy = { workspace = true }
 rekey-vault = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 data-encoding = "2"
+aws-lc-rs = "1.18"
 libc = "0.2"
 rand = "0.9.3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
