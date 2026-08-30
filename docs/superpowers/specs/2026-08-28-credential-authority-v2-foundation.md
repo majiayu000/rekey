@@ -999,7 +999,7 @@ Agent 输入 fake 的契约测试仍使用 injected `UpstreamTransport`。第 2 
 - 验证 SQLite quick_check、schema_digest、format_version、至少一个 wrapper 行、VRK 解包、header 内 encrypted integrity record，以及 **每一条** `credential_versions` payload。不能只检查数据库结构或只解密第一条 Credential。
 - 在写 staging 前先持久化 incomplete marker；Broker 见到 marker 必须拒绝启动。输入以固定大小 buffer 流式复制到 staging 并同时计算 SHA-256，对 staging 完成上述验证与 `restore.completed` 提交，fsync 文件，rename 到 `vault.sqlite3`，再 fsync 父目录。
 - 只有安装文件已持久化后才能删除 marker 并再次 fsync 父目录；这是 restore 成功点。成功点之前的失败必须删除 staging、installed DB 及 SQLite sidecar，并持久化清理；无法证明清理完成时必须保留 marker，确保不留下可启动的半恢复 vault。后续 restore 只能在取得 offline lock 后清理该 marker 所标记的已中断内部 artifact，不得删除未知文件。
-- 只恢复 format version 3；不支持 v1/v2 或未来未知版本。
+- 只恢复 format version 4；不支持 v1/v2/v3 或未来未知版本。
 
 ## 17. Error Taxonomy
 
@@ -1682,13 +1682,13 @@ Review 必问：
   一般产品声明。
 - 不做任何 v1 compatibility 或 migration。
 - P1.1 使用内置 typed default-deny evaluator；不引入 Cedar 或 evaluator abstraction。
+- 产品名为 Rekey，仓库许可证为 MIT。
 
 ### Open But Non-Blocking For P0.1–P2.1
 
 1. P2.1 已选择 GitHub App Installation 作为第一个内置 provider profile；P0 contract
    仍使用 provider-neutral FixedHttpAction。
 2. recovery key 是否在 P1 增加 threshold split；P0 使用单一 recovery key。
-3. 产品最终名称和许可证；阻塞公开发布，不阻塞本地实现。
 
 ## 28. Readiness
 

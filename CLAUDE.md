@@ -19,9 +19,11 @@ single-port proxy, or TCP passthrough exists anymore.
 
 ## Architecture
 
-Cargo workspace, 4 crates + root integration-test host:
+Cargo workspace, 5 crates + root integration-test host:
 
 - `rekey-domain` — pure models, invariants, typed errors, IPC wire codec (no IO)
+- `rekey-policy` — canonical typed policy snapshots, schema validation, and a
+  deterministic default-deny evaluator (no credential IO)
 - `rekey-vault` — envelope crypto (Argon2id/HKDF → VRK → per-version DEK → payload,
   84-byte binary AAD), SQLite store (WAL + synchronous=FULL, STRICT tables),
   offline bootstrap (init/restore), AuthorityWorker (single owner of the DB
@@ -44,8 +46,8 @@ Cargo workspace, 4 crates + root integration-test host:
   before any credential is decrypted
 - Upstream: fixed origin/method/path, redirects disabled, proxy env ignored,
   non-public IPs refused, bounded bodies, reflected-secret sealing
-- P0 security level is G1 (same-user local). Do NOT claim G2 anywhere until
-  the Linux isolation work (P1) lands with attack tests
+- The default topology remains G1 (same-user local). G2 claims are limited to
+  the bounded Linux container/namespace reference topology and its attack harness
 - No backward compatibility: non-empty legacy state dirs are rejected, never
   migrated or overwritten
 

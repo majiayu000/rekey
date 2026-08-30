@@ -340,7 +340,7 @@ fn init_vault_inner(
     })
 }
 
-/// Offline restore of a v3 backup into an empty target state directory.
+/// Offline restore of a v4 backup into an empty target state directory.
 /// `expected_sha256_hex` is the backup receipt hash and is mandatory.
 pub fn restore_vault(
     backup_file: &Path,

@@ -6,7 +6,7 @@ credentials**. Secrets live in an encrypted SQLite vault owned by a single
 broker process; the CLI, agents, and everything they spawn talk to it only
 over two permission-separated Unix sockets.
 
-> Status: v2 foundation plus the P1.1 local typed-authorization kernel,
+> Status: v2 foundation with bounded P1 and P2.1 implementations,
 > **G1 development candidate**, not a G1 security
 > release and not G2. Credentials never appear in agent-facing APIs, process
 > arguments, environment variables, logs, or audit records. Same-user
@@ -102,8 +102,12 @@ Feature status: `docs/product-foundation/feature-truth-matrix.md`
 
 P0 acceptance (release binaries, no FakeTransport): `scripts/p0-acceptance.sh`
 
-P1.1 release-process acceptance (UDS, SQLite, local TLS):
+Typed-policy release-process acceptance (UDS, SQLite, local TLS):
 `scripts/p1-policy-acceptance.sh`
+
+The Linux G2 harness proves only the documented container/namespace reference
+topology; it does not upgrade the default G1 product claim:
+`scripts/p1-linux-g2.sh`
 
 GitHub create-issue dogfood (opt-in, dedicated fine-grained token entered
 through a hidden TTY prompt; exits nonzero unless GitHub returns 201):
