@@ -581,6 +581,17 @@ mod tests {
             )
             .is_err()
         );
+
+        let mut nested_unknown: Value =
+            serde_json::from_slice(&snapshot_json(action, principal_id, rule)).unwrap();
+        nested_unknown["bindings"][0]["resource"]["tenant"] = Value::String("ignored".into());
+        assert!(
+            parse_and_validate_snapshot(
+                &serde_json::to_vec(&nested_unknown).unwrap(),
+                Timestamp::from_unix_ms(1)
+            )
+            .is_err()
+        );
     }
 
     #[test]

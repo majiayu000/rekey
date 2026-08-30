@@ -74,6 +74,35 @@ action_json="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" action 
 action_ref="$(printf '%s\n' "$action_json" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["id"]+"@"+str(d["version"]))')"
 session_json="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" session create --action "$action_ref" --ttl 10m --max-uses 20 --password-stdin)"
 token="$(printf '%s\n' "$session_json" | json_field '"capability_token"')"
+principal_id="$(printf '%s\n' "$session_json" | json_field '"principal_id"')"
+
+python3 - "$WORKDIR/policy.json" "${action_ref%@*}" "${action_ref#*@}" "$principal_id" <<'PY'
+import json, pathlib, sys, time, uuid
+path, action_id, action_version, principal_id = sys.argv[1:]
+resource = {"type": "fixed-http-action", "id": action_id}
+pathlib.Path(path).write_text(json.dumps({
+    "format_version": 1,
+    "version": 1,
+    "expires_at_ms": int(time.time() * 1000) + 600000,
+    "bindings": [{
+        "action_id": action_id,
+        "version": int(action_version),
+        "resource": resource,
+        "parameter_schema_id": "p0-crash-empty/v1",
+        "parameter_schema": {"type": "null"},
+    }],
+    "rules": [{
+        "id": str(uuid.uuid4()),
+        "effect": "permit",
+        "principal_id": principal_id,
+        "action_id": action_id,
+        "version": int(action_version),
+        "resource": resource,
+        "parameters": {"kind": "any_validated"},
+    }],
+}))
+PY
+printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate --file "$WORKDIR/policy.json" --password-stdin >/dev/null
 
 # Reuse one attacker-controlled frame request_id for two real executions. The
 # transport responses must echo it, while durable execution IDs stay distinct.
@@ -189,13 +218,17 @@ import pathlib, sqlite3, sys
 request_hex = pathlib.Path(sys.argv[2]).read_text().strip()
 con = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
 rows = con.execute("""
-    SELECT event_type, reason_code FROM audit_events
+    SELECT event_type, reason_code, principal_id, policy_version, policy_digest,
+           policy_rule_id, resource_type, resource_id, parameter_hash
+    FROM audit_events
     WHERE hex(request_id) = ? ORDER BY sequence
 """, (request_hex,)).fetchall()
 started = [row for row in rows if row[0] == 'execution.started']
 terminal = [row for row in rows if row[0] in ('execution.finished', 'execution.blocked')]
-if len(started) != 1 or terminal != [('execution.blocked', 'abandoned-on-restart')]:
+if len(started) != 1 or len(terminal) != 1 or terminal[0][:2] != ('execution.blocked', 'abandoned-on-restart'):
     raise SystemExit(f"bad crash reconciliation: {rows}")
+if any(value is None for value in started[0][2:]) or terminal[0][2:] != started[0][2:]:
+    raise SystemExit(f"crash reconciliation lost authorization evidence: {rows}")
 unpaired = con.execute("""
     SELECT count(*) FROM audit_events s
     WHERE s.event_type = 'execution.started'

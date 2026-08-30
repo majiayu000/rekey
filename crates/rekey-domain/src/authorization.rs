@@ -33,6 +33,7 @@ impl ResourceRef {
 impl<'de> Deserialize<'de> for ResourceRef {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct Raw {
             #[serde(rename = "type")]
             resource_type: String,

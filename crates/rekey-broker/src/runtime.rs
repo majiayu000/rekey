@@ -7,7 +7,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -375,6 +375,54 @@ fn bind_socket(
     Ok(listener)
 }
 
+fn resolved_future_path(path: &Path) -> std::io::Result<PathBuf> {
+    let absolute = if path.is_absolute() {
+        path.to_owned()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                normalized.push(component.as_os_str());
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "path escapes filesystem root",
+                    ));
+                }
+            }
+        }
+    }
+
+    let mut cursor = normalized.as_path();
+    let mut missing = Vec::new();
+    while !cursor.exists() {
+        let name = cursor.file_name().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "path has no existing ancestor",
+            )
+        })?;
+        missing.push(name.to_owned());
+        cursor = cursor.parent().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "path has no existing ancestor",
+            )
+        })?;
+    }
+    let mut resolved = cursor.canonicalize()?;
+    for name in missing.into_iter().rev() {
+        resolved.push(name);
+    }
+    Ok(resolved)
+}
+
 fn validate_agent_endpoint(config: &BrokerConfig) -> Result<(), BrokerError> {
     let broker_uid = unsafe { libc::geteuid() };
     if config.allowed_agent_uids.is_empty()
@@ -395,9 +443,9 @@ fn validate_agent_endpoint(config: &BrokerConfig) -> Result<(), BrokerError> {
         ));
     }
     if let Some(agent_dir) = &config.agent_runtime_dir {
-        let state_dir = std::path::absolute(&config.state_dir).map_err(BrokerError::Io)?;
-        let agent_dir = std::path::absolute(agent_dir).map_err(BrokerError::Io)?;
-        if agent_dir.starts_with(state_dir) {
+        let state_dir = config.state_dir.canonicalize().map_err(BrokerError::Io)?;
+        let agent_dir = resolved_future_path(agent_dir).map_err(BrokerError::Io)?;
+        if agent_dir.starts_with(&state_dir) || state_dir.starts_with(&agent_dir) {
             return Err(BrokerError::Authority(
                 AuthorityError::InsecureStatePermissions,
             ));
@@ -598,5 +646,36 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
     match runtime_error {
         Some(err) => Err(err),
         None => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_runtime_rejects_parent_segments_and_symlink_aliases_into_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        let outside = dir.path().join("outside");
+        fs::create_dir(&state).unwrap();
+        fs::create_dir(&outside).unwrap();
+
+        let mut config = BrokerConfig::new(state.clone());
+        config.agent_runtime_dir = Some(outside.join("../state/agent"));
+        assert_eq!(
+            validate_agent_endpoint(&config).unwrap_err().code(),
+            "INSECURE_STATE_PERMISSIONS"
+        );
+
+        std::os::unix::fs::symlink(&state, outside.join("state-alias")).unwrap();
+        config.agent_runtime_dir = Some(outside.join("state-alias/agent"));
+        assert_eq!(
+            validate_agent_endpoint(&config).unwrap_err().code(),
+            "INSECURE_STATE_PERMISSIONS"
+        );
+
+        config.agent_runtime_dir = Some(outside.join("agent"));
+        validate_agent_endpoint(&config).unwrap();
     }
 }

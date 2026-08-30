@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use rekey_domain::credential::{CredentialKind, CredentialState, VersionState};
-use rekey_domain::ids::{ActionId, CredentialId, RequestId, SessionId, VaultId, WrapperId};
+use rekey_domain::ids::{ActionId, CredentialId, VaultId, WrapperId};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use super::connection::{open_existing, open_new, secure_file, secure_sqlite_bundle};
@@ -15,47 +15,15 @@ use crate::model::{
 /// The only read/write connection to the vault database. Owned exclusively by
 /// the AuthorityWorker thread (or an offline bootstrap process).
 pub struct SqliteRecordStore {
-    conn: Connection,
+    pub(super) conn: Connection,
     path: PathBuf,
 }
 
-fn storage(err: rusqlite::Error) -> AuthorityError {
+pub(super) fn storage(err: rusqlite::Error) -> AuthorityError {
     AuthorityError::storage(err)
 }
 
-pub struct UnterminatedExecution {
-    pub request_id: RequestId,
-    pub session_id: Option<SessionId>,
-    pub action_id: Option<ActionId>,
-    pub action_version: Option<u64>,
-    pub credential_id: Option<CredentialId>,
-}
-
-fn optional_session(bytes: Option<Vec<u8>>) -> Result<Option<SessionId>, AuthorityError> {
-    bytes
-        .map(|b| {
-            SessionId::from_bytes(blob16(b)?).map_err(|_| AuthorityError::StorageIntegrityFailed)
-        })
-        .transpose()
-}
-
-fn optional_action(bytes: Option<Vec<u8>>) -> Result<Option<ActionId>, AuthorityError> {
-    bytes
-        .map(|b| {
-            ActionId::from_bytes(blob16(b)?).map_err(|_| AuthorityError::StorageIntegrityFailed)
-        })
-        .transpose()
-}
-
-fn optional_credential(bytes: Option<Vec<u8>>) -> Result<Option<CredentialId>, AuthorityError> {
-    bytes
-        .map(|b| {
-            CredentialId::from_bytes(blob16(b)?).map_err(|_| AuthorityError::StorageIntegrityFailed)
-        })
-        .transpose()
-}
-
-fn blob16(v: Vec<u8>) -> Result<[u8; 16], AuthorityError> {
+pub(super) fn blob16(v: Vec<u8>) -> Result<[u8; 16], AuthorityError> {
     v.try_into()
         .map_err(|_| AuthorityError::StorageIntegrityFailed)
 }
@@ -65,13 +33,13 @@ fn blob12(v: Vec<u8>) -> Result<[u8; 12], AuthorityError> {
         .map_err(|_| AuthorityError::StorageIntegrityFailed)
 }
 
-fn blob32(v: Vec<u8>) -> Result<[u8; 32], AuthorityError> {
+pub(super) fn blob32(v: Vec<u8>) -> Result<[u8; 32], AuthorityError> {
     v.try_into()
         .map_err(|_| AuthorityError::StorageIntegrityFailed)
 }
 
 impl SqliteRecordStore {
-    /// Creates a brand-new database file with schema v2. Fails if the file
+    /// Creates a brand-new database file with schema v3. Fails if the file
     /// already exists.
     pub fn create(path: &Path) -> Result<Self, AuthorityError> {
         if path.exists() {
@@ -86,7 +54,7 @@ impl SqliteRecordStore {
         })
     }
 
-    /// Opens an existing v2 database, verifying pragmas, integrity, format
+    /// Opens an existing v3 database, verifying pragmas, integrity, format
     /// version, and schema digest. Never migrates and never creates.
     pub fn open(path: &Path) -> Result<Self, AuthorityError> {
         if !path.exists() {
@@ -515,52 +483,6 @@ impl SqliteRecordStore {
                     .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
                 Ok((kind, version))
             })
-            .collect()
-    }
-
-    /// `execution.started` rows that have no finished/blocked twin.
-    pub fn unterminated_executions(&self) -> Result<Vec<UnterminatedExecution>, AuthorityError> {
-        let mut stmt = self
-            .conn
-            .prepare(
-                "SELECT a.request_id, a.session_id, a.action_id, a.action_version, a.credential_id
-                 FROM audit_events a
-                 WHERE a.event_type = 'execution.started'
-                   AND a.request_id IS NOT NULL
-                   AND NOT EXISTS (
-                     SELECT 1 FROM audit_events b
-                     WHERE b.request_id = a.request_id
-                       AND b.event_type IN ('execution.finished', 'execution.blocked')
-                   )
-                 ORDER BY a.sequence",
-            )
-            .map_err(storage)?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok((
-                    r.get::<_, Vec<u8>>(0)?,
-                    r.get::<_, Option<Vec<u8>>>(1)?,
-                    r.get::<_, Option<Vec<u8>>>(2)?,
-                    r.get::<_, Option<i64>>(3)?,
-                    r.get::<_, Option<Vec<u8>>>(4)?,
-                ))
-            })
-            .map_err(storage)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(storage)?;
-        rows.into_iter()
-            .map(
-                |(request_id, session_id, action_id, action_version, credential_id)| {
-                    Ok(UnterminatedExecution {
-                        request_id: RequestId::from_bytes(blob16(request_id)?)
-                            .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
-                        session_id: optional_session(session_id)?,
-                        action_id: optional_action(action_id)?,
-                        action_version: action_version.map(|v| v as u64),
-                        credential_id: optional_credential(credential_id)?,
-                    })
-                },
-            )
             .collect()
     }
 

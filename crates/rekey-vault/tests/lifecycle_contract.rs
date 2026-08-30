@@ -107,13 +107,22 @@ async fn shutdown_requires_proof_only_when_unlocked() {
 
 #[tokio::test]
 async fn startup_reconciles_unterminated_started() {
-    use rekey_domain::ids::RequestId;
-    use rekey_vault::model::{AuditEvent, event_type, outcome};
+    use rekey_domain::ids::{PolicyRuleId, PrincipalId, RequestId};
+    use rekey_vault::model::{AuditEvent, AuthorizationEvidence, event_type, outcome};
     use rekey_vault::paths;
     use rekey_vault::store::SqliteRecordStore;
 
     let vault = common::init_test_vault();
     let request_id = RequestId::new_random();
+    let authorization = AuthorizationEvidence {
+        principal_id: PrincipalId::new_random(),
+        policy_version: 7,
+        policy_digest: [3; 32],
+        policy_rule_id: Some(PolicyRuleId::new_random()),
+        resource_type: "fixed-http-action".to_owned(),
+        resource_id: "test-action".to_owned(),
+        parameter_hash: [5; 32],
+    };
     {
         let mut store = SqliteRecordStore::open(&paths::vault_db(&vault.state_dir)).unwrap();
         store
@@ -125,7 +134,7 @@ async fn startup_reconciles_unterminated_started() {
                 action_version: None,
                 credential_id: None,
                 credential_version: None,
-                authorization: None,
+                authorization: Some(authorization.clone()),
                 event_type: event_type::EXECUTION_STARTED,
                 outcome: outcome::SUCCESS,
                 reason_code: "started".to_owned(),
@@ -156,4 +165,47 @@ async fn startup_reconciles_unterminated_started() {
         .count();
     assert_eq!(started, 1);
     assert_eq!(blocked, 1);
+
+    let connection = rusqlite::Connection::open(paths::vault_db(&vault.state_dir)).unwrap();
+    let mut statement = connection
+        .prepare(
+            "SELECT principal_id, policy_version, policy_digest, policy_rule_id,
+                    resource_type, resource_id, parameter_hash
+             FROM audit_events
+             WHERE request_id = ?1 AND event_type LIKE 'execution.%'
+             ORDER BY sequence",
+        )
+        .unwrap();
+    let evidence_rows = statement
+        .query_map(
+            [request_id.as_bytes().as_slice()],
+            |row| -> rusqlite::Result<_> {
+                Ok((
+                    row.get::<_, Option<Vec<u8>>>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, Option<Vec<u8>>>(2)?,
+                    row.get::<_, Option<Vec<u8>>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<Vec<u8>>>(6)?,
+                ))
+            },
+        )
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(evidence_rows.len(), 2);
+    assert_eq!(evidence_rows[0], evidence_rows[1]);
+    assert_eq!(
+        evidence_rows[0].0.as_deref(),
+        Some(authorization.principal_id.as_bytes().as_slice())
+    );
+    assert_eq!(
+        evidence_rows[0].1,
+        Some(authorization.policy_version as i64)
+    );
+    assert_eq!(
+        evidence_rows[0].2.as_deref(),
+        Some(authorization.policy_digest.as_slice())
+    );
 }

@@ -525,12 +525,12 @@ PRAGMA busy_timeout = 5000;
 - 不允许其他进程打开 SQLite；Admin/Web 读取也通过 AuthorityWorker。
 - 每次启动运行 `PRAGMA quick_check`；失败后保持 Locked 并返回 `StorageIntegrityFailed`。
 
-### 10.3 Schema v2
+### 10.3 Schema v3
 
 ~~~sql
 CREATE TABLE vault_header (
     singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
-    format_version     INTEGER NOT NULL CHECK (format_version = 2),
+    format_version     INTEGER NOT NULL CHECK (format_version = 3),
     vault_id           BLOB NOT NULL CHECK (length(vault_id) = 16),
     crypto_suite       TEXT NOT NULL,
     created_at_ms      INTEGER NOT NULL,
@@ -614,13 +614,36 @@ CREATE TABLE audit_events (
     action_version      INTEGER,
     credential_id       BLOB CHECK (credential_id IS NULL OR length(credential_id) = 16),
     credential_version  INTEGER,
+    principal_id        BLOB CHECK (principal_id IS NULL OR length(principal_id) = 16),
+    policy_version      INTEGER,
+    policy_digest       BLOB CHECK (policy_digest IS NULL OR length(policy_digest) = 32),
+    policy_rule_id      BLOB CHECK (policy_rule_id IS NULL OR length(policy_rule_id) = 16),
+    resource_type       TEXT,
+    resource_id         TEXT,
+    parameter_hash      BLOB CHECK (parameter_hash IS NULL OR length(parameter_hash) = 32),
     event_type          TEXT NOT NULL,
     outcome             TEXT NOT NULL,
     reason_code         TEXT NOT NULL,
     upstream_status     INTEGER,
     latency_ms          INTEGER,
-    created_at_ms       INTEGER NOT NULL
+    created_at_ms       INTEGER NOT NULL,
+    CHECK (
+        (principal_id IS NULL AND policy_version IS NULL AND policy_digest IS NULL
+            AND policy_rule_id IS NULL AND resource_type IS NULL
+            AND resource_id IS NULL AND parameter_hash IS NULL)
+        OR
+        (principal_id IS NOT NULL AND policy_version >= 1 AND policy_digest IS NOT NULL
+            AND resource_type IS NOT NULL AND resource_id IS NOT NULL
+            AND parameter_hash IS NOT NULL)
+    )
 ) STRICT;
+
+CREATE UNIQUE INDEX one_execution_started_per_request
+ON audit_events(request_id) WHERE event_type = 'execution.started';
+
+CREATE UNIQUE INDEX one_execution_terminal_per_request
+ON audit_events(request_id)
+WHERE event_type IN ('execution.finished', 'execution.blocked');
 ~~~
 
 schema SQL 是唯一来源；`schema_digest` 是规范化 schema 文件的 SHA-256，用于发现意外 schema drift，不作为恶意管理员防篡改证明。
@@ -739,6 +762,9 @@ contract is deliberately small:
 - no flags keeps the P0 topology, mode 0600, and current Broker UID as the only
   allowed Agent peer;
 - an isolated Agent endpoint requires an explicit non-empty Agent UID allowlist;
+- its resolved path must be disjoint from the resolved state tree: relative
+  paths, `..`, symlink aliases, descendants, and ancestors that overlap the
+  state tree are rejected before directory permissions are changed;
 - optional group sharing uses a Broker-owned directory at mode 0770 and a
   socket at mode 0660; mode 0666 is forbidden;
 - peer identity always comes from `SO_PEERCRED`; a claimed UID in an IPC frame
@@ -941,6 +967,7 @@ Agent 输入 fake 的契约测试仍使用 injected `UpstreamTransport`。第 2 
 - 只能由 Unlocked Broker 在 Admin step-up 后执行。
 - 使用 SQLite Online Backup API 获取一致快照，不直接复制主 DB。
 - 输出只包含 SQLite ciphertext、wrapped keys 和 metadata，不包含 VRK/DEK/plaintext。
+- final output 和临时 sibling 都必须在 canonical state tree 之外；相对路径、直接子路径和通过 symlink alias 指回 state tree 的路径一律在删除、snapshot 或 rename 前拒绝。
 - 输出文件先写临时 sibling，fsync 文件，原子 rename，再 fsync 父目录。open 或 fsync 失败必须返回 `BackupFailed`，不得忽略。最终 mode 0600。
 - backup receipt 包含 vault_id、format_version、created_at、SHA-256，不含路径外的敏感数据。
 
@@ -950,7 +977,7 @@ Agent 输入 fake 的契约测试仍使用 injected `UpstreamTransport`。第 2 
 - 调用方必须提供 backup receipt 的 SHA-256（64 hex）；缺失、格式错误或 mismatch 都失败，不得安装。
 - 验证 SQLite quick_check、schema_digest、format_version、至少一个 wrapper 行、VRK 解包、header 内 encrypted integrity record，以及 **每一条** `credential_versions` payload。不能只检查数据库结构或只解密第一条 Credential。
 - 先写入 staging 文件并完成上述验证，fsync 文件，rename 到 `vault.sqlite3`，再 fsync 父目录。失败删除 staging 与任何半恢复文件，不留下可启动的 vault。
-- 只恢复 format version 2；不支持 v1 或未来未知版本。
+- 只恢复 format version 3；不支持 v1/v2 或未来未知版本。
 
 ## 17. Error Taxonomy
 
@@ -1185,7 +1212,7 @@ cargo test -p rekey-vault --test secret_type_contract
 - init 双 wrapper roundtrip。
 - nonempty/v1 directory 明确拒绝。
 - transaction failure 不留部分 Credential。
-- backup/restore 只处理 v2 ciphertext。
+- backup/restore 只处理 v3 ciphertext。
 
 验证：
 
@@ -1283,7 +1310,7 @@ scripts/p0-runtime-faults.sh
 
 | Work | Done when | Verification |
 | --- | --- | --- |
-| Linux G2 launcher | Agent 独立 UID/namespace，不能读 socket/DB/ptrace/直连 | `cargo test -p rekey-e2e --test linux_g2` |
+| Linux G2 launcher | Agent 独立 UID/namespace，不能读 socket/DB/ptrace/直连 | `scripts/p1-linux-g2.sh`（Linux Docker gate） |
 | Typed parameter policy | Action 参数 canonicalization + default deny | `cargo test -p rekey-policy` |
 | Streaming response sealing | 跨 chunk secret variant 可检测并终止 | `cargo test -p rekey-broker --test streaming_sealing` |
 | systemd/launchd | locked boot、受保护 unlock、clean shutdown | `cargo test -p rekey-e2e --test service_manager` |
@@ -1317,9 +1344,12 @@ human/workload identity。
 - Capability 认证、Action pinning、snapshot pinning、schema/canonicalization、policy
   evaluation 和 denied audit 全部发生在 `ExecutionStarted` 与任何 credential effect
   之前。一次请求固定同一个 snapshot version/digest，不混用并发激活的新版本。
-- Execution audit 必须记录 principal、policy version/digest、determining rule、
-  resource 和 parameter hash；不得记录 schema 或 canonical/request body。该 breaking
-  schema change 将 durable format bump 到 3；旧非空状态明确拒绝，不迁移或覆盖。
+- 到达 evaluator 的 Execution audit 必须记录 principal、policy version/digest、
+  determining rule（无匹配 rule 时为 NULL）、resource 和 parameter hash；不得记录
+  schema 或 canonical/request body。`policy-missing`、`action-unbound` 和参数无法
+  canonicalize 等 evaluator 前拒绝没有并不存在的完整 authorization evidence，只以
+  明确 reason code 记录。该 breaking schema change 将 durable format bump 到 3；
+  旧非空状态明确拒绝，不迁移或覆盖。
 - Snapshot activation 先完整验证并提交无秘密 audit，再一次 swap；失败保留旧
   snapshot。Lock/restart 后必须重新激活。
 
@@ -1330,10 +1360,12 @@ cargo test -p rekey-policy
 cargo test --test policy_e2e
 ~~~
 
-真实 E2E 必须启动 release `rekeyd`/`rekey` 进程，经过 Admin/Agent UDS 和真实
-SQLite，证明 missing/no-match/forbid/expired/ambiguous input 在 upstream 与 credential
-effect 前拒绝，并至少完成一次 policy-permitted 的本地 TLS upstream 调用。Unit 或
-FakeTransport 不能替代此验收。
+真实 P1 acceptance 使用 release `rekey`、真实 BrokerRuntime 双 UDS、真实 SQLite，
+以及仅为本地 CA/TLS 注入 transport 的 release fixture，证明 missing/no-match/forbid/
+expired/ambiguous input 在 upstream 与 credential effect 前拒绝，并至少完成一次
+policy-permitted 的本地 TLS upstream 调用。产品 `rekeyd serve` 参数解析和生产
+transport wiring 由 `scripts/p0-acceptance.sh` 独立覆盖；fixture 不得被描述为产品
+daemon，也不得进入生产 `rekeyd` 路径。
 
 ### P2
 

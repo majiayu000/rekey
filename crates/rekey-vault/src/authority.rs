@@ -45,7 +45,7 @@ fn reconcile_abandoned_executions(store: &mut SqliteRecordStore) -> Result<(), A
             action_version: row.action_version,
             credential_id: row.credential_id,
             credential_version: None,
-            authorization: None,
+            authorization: row.authorization,
             event_type: event_type::EXECUTION_BLOCKED,
             outcome: outcome::DENIED,
             reason_code: "abandoned-on-restart".to_owned(),

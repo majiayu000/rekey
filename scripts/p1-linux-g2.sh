@@ -52,7 +52,9 @@ print(addresses[0])
 tar -C "$ROOT" --exclude=.git --exclude=target -cf - . | tar -C "$BUILD_DIR" -xf -
 cat >"$BUILD_DIR/g2_probe.rs" <<'RUST'
 use std::ffi::c_void;
+use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
+use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::Duration;
 
@@ -90,7 +92,37 @@ fn main() {
                 std::process::exit(2);
             }
         }
-        _ => panic!("usage: g2-probe connect HOST:PORT | ptrace PID"),
+        Some("agent-status") => {
+            let path = args.get(2).expect("agent socket path");
+            let expectation = args.get(3).expect("allowed or denied");
+            let mut stream = UnixStream::connect(path).expect("connect Agent socket");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .expect("set read timeout");
+            let mut frame = Vec::with_capacity(38);
+            frame.extend_from_slice(b"RKIP");
+            frame.extend_from_slice(&1u16.to_be_bytes());
+            frame.extend_from_slice(&[2, 0]);
+            frame.extend_from_slice(&2u16.to_be_bytes());
+            frame.extend_from_slice(&0u16.to_be_bytes());
+            frame.extend_from_slice(&[0x11; 16]);
+            frame.extend_from_slice(&2u32.to_be_bytes());
+            frame.extend_from_slice(&0u32.to_be_bytes());
+            frame.extend_from_slice(b"{}");
+            stream.write_all(&frame).expect("write Agent status frame");
+            let mut response = [0u8; 36];
+            let received = stream.read_exact(&mut response).is_ok();
+            match expectation.as_str() {
+                "allowed" if received && &response[..4] == b"RKIP" => {}
+                "denied" if !received => {}
+                _ => panic!(
+                    "Agent peer-UID expectation failed: {expectation}, received={received}"
+                ),
+            }
+        }
+        _ => panic!(
+            "usage: g2-probe connect HOST:PORT | ptrace PID | agent-status SOCKET allowed|denied"
+        ),
     }
 }
 RUST
@@ -182,6 +214,36 @@ ACTION_REF="$(printf '%s' "$ACTION_JSON" | python3 -c 'import json,sys; d=json.l
 SESSION_JSON="$(printf '%s\n' "$PASSWORD" | docker exec -i "$BROKER" \
   rekey --state-dir /state session create --action "$ACTION_REF" --ttl 10m --max-uses 3 --password-stdin)"
 CAPABILITY="$(printf '%s' "$SESSION_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["capability_token"])')"
+PRINCIPAL_ID="$(printf '%s' "$SESSION_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["principal_id"])')"
+ACTION_ID="${ACTION_REF%@*}"
+ACTION_VERSION="${ACTION_REF#*@}"
+POLICY_RULE_ID="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+POLICY_EXPIRES_MS="$(python3 -c 'import time; print(int(time.time() * 1000) + 600000)')"
+cat <<EOF | docker exec -i "$BROKER" sh -c 'cat >/tmp/policy.json'
+{
+  "format_version": 1,
+  "version": 1,
+  "expires_at_ms": $POLICY_EXPIRES_MS,
+  "bindings": [{
+    "action_id": "$ACTION_ID",
+    "version": $ACTION_VERSION,
+    "resource": {"type": "fixed-http-action", "id": "$ACTION_ID"},
+    "parameter_schema_id": "g2-empty/v1",
+    "parameter_schema": {"type": "null"}
+  }],
+  "rules": [{
+    "id": "$POLICY_RULE_ID",
+    "effect": "permit",
+    "principal_id": "$PRINCIPAL_ID",
+    "action_id": "$ACTION_ID",
+    "version": $ACTION_VERSION,
+    "resource": {"type": "fixed-http-action", "id": "$ACTION_ID"},
+    "parameters": {"kind": "any_validated"}
+  }]
+}
+EOF
+printf '%s\n' "$PASSWORD" | docker exec -i "$BROKER" \
+  rekey --state-dir /state policy activate --file /tmp/policy.json --password-stdin >/dev/null
 
 docker run -d --name "$AGENT" \
   --user 0:0 \
@@ -219,7 +281,9 @@ BROKER_HOST_PID="$(docker inspect "$BROKER" --format '{{.State.Pid}}')"
 docker exec "$AGENT" g2-probe ptrace "$BROKER_HOST_PID" \
   || fail "Broker process is visible or ptraceable from Agent"
 
-if printf '%s\n' "$CAPABILITY" | docker run --rm -i \
+docker exec "$AGENT" g2-probe agent-status /run/rekey-agent/agent.sock allowed \
+  || fail "allowlisted Agent UID could not reach the data plane"
+docker run --rm \
   --user 12345:20000 \
   --group-add 20000 \
   --read-only \
@@ -228,10 +292,8 @@ if printf '%s\n' "$CAPABILITY" | docker run --rm -i \
   --network "$NETWORK" \
   --volume "$AGENT_VOLUME:/run/rekey-agent:ro" \
   --tmpfs /tmp:rw,noexec,nosuid,nodev,mode=1777 \
-  "$IMAGE" rekey --state-dir /tmp/unused --agent-socket /run/rekey-agent/agent.sock \
-    execute "$ACTION_REF" --capability - >/dev/null 2>&1; then
-  fail "unlisted Agent UID reached the data plane"
-fi
+  "$IMAGE" g2-probe agent-status /run/rekey-agent/agent.sock denied \
+  || fail "unlisted Agent UID reached the data plane"
 
 EXECUTE_OUTPUT="$(printf '%s\n' "$CAPABILITY" | docker exec -i "$AGENT" \
   rekey --state-dir /tmp/unused --agent-socket /run/rekey-agent/agent.sock \
