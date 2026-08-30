@@ -6,6 +6,8 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 
 use super::connection::{open_existing, open_new, secure_sqlite_bundle};
 use super::schema::{SCHEMA_SQL, schema_digest};
+use crate::crypto::kdf::{KDF_ALGORITHM_ARGON2ID, KDF_ALGORITHM_HKDF_SHA256};
+use crate::crypto::{AAD_VERSION_V1, CRYPTO_SUITE_V1};
 use crate::error::AuthorityError;
 use crate::model::{
     ActionRecord, ActionState, AuditEvent, CredentialRecord, CredentialVersionRecord,
@@ -65,15 +67,58 @@ impl SqliteRecordStore {
             conn,
             path: path.to_owned(),
         };
+        store.validate_format_discriminators()?;
         store.quick_check()?;
         let header = store.load_header()?;
-        if header.format_version != FORMAT_VERSION {
-            return Err(AuthorityError::UnsupportedFormatVersion);
-        }
         if header.schema_digest != schema_digest() {
             return Err(AuthorityError::StorageIntegrityFailed);
         }
         Ok(store)
+    }
+
+    /// Rejects every persisted crypto discriminator before any row can be
+    /// interpreted using the only suite implemented by this binary.
+    fn validate_format_discriminators(&self) -> Result<(), AuthorityError> {
+        let unknown_header: bool = self
+            .conn
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM vault_header
+                    WHERE format_version != ?1 OR crypto_suite != ?2
+                )",
+                params![FORMAT_VERSION, CRYPTO_SUITE_V1],
+                |row| row.get(0),
+            )
+            .map_err(storage)?;
+        let unknown_wrappers: bool = self
+            .conn
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM key_wrappers
+                    WHERE NOT (
+                        (wrapper_kind = 'password' AND kdf_algorithm = ?1) OR
+                        (wrapper_kind = 'recovery' AND kdf_algorithm = ?2)
+                    )
+                )",
+                params![KDF_ALGORITHM_ARGON2ID, KDF_ALGORITHM_HKDF_SHA256],
+                |row| row.get(0),
+            )
+            .map_err(storage)?;
+        let unknown_versions: bool = self
+            .conn
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM credential_versions
+                    WHERE aad_version != ?1 OR crypto_suite != ?2
+                )",
+                params![AAD_VERSION_V1, CRYPTO_SUITE_V1],
+                |row| row.get(0),
+            )
+            .map_err(storage)?;
+        if unknown_header || unknown_wrappers || unknown_versions {
+            return Err(AuthorityError::UnsupportedFormatVersion);
+        }
+        Ok(())
     }
 
     pub fn path(&self) -> &Path {

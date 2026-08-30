@@ -388,6 +388,8 @@ random source          = OS CSPRNG
 
 Argon2 parameters来自 RFC 9106 的 64 MiB second recommended profile。参数完整持久化到 wrapper row，未来可以新增 wrapper 重新包装 VRK；不能在打开旧 row 时用编译期默认覆盖持久化参数。读取持久化参数时必须校验上下限（memory 8 KiB..=256 MiB，iterations 1..=16，parallelism 1..=8）；越界视为 `StorageIntegrityFailed`，不得交给 Argon2 实现去分配极端内存。
 
+持久化的密码格式标识是必须在打开 vault 时一次验证的可信边界，不得等到某条记录被解密时才检查。`vault_header.crypto_suite` 和每条 `credential_versions.crypto_suite` 必须精确为上述 suite ID，`credential_versions.aad_version` 必须为 1，每条 password/recovery wrapper 的 `kdf_algorithm` 必须分别为 `argon2id` / `hkdf-sha256`。任一 active、disabled、retired 或 revoked row 出现未知 suite、algorithm 或 version，整个 vault 以 `UnsupportedFormatVersion` fail closed；不得把未知值按当前 suite 重新解释。
+
 ### 9.2 Key Hierarchy
 
 ~~~text
@@ -532,7 +534,7 @@ CREATE TABLE vault_header (
     singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
     format_version     INTEGER NOT NULL CHECK (format_version = 3),
     vault_id           BLOB NOT NULL CHECK (length(vault_id) = 16),
-    crypto_suite       TEXT NOT NULL,
+    crypto_suite       TEXT NOT NULL CHECK (crypto_suite = 'rkca-aes256gcm-argon2id-hkdfsha256-v1'),
     created_at_ms      INTEGER NOT NULL,
     schema_digest      BLOB NOT NULL CHECK (length(schema_digest) = 32),
     integrity_nonce    BLOB NOT NULL CHECK (length(integrity_nonce) = 12),
@@ -543,7 +545,10 @@ CREATE TABLE key_wrappers (
     wrapper_id         BLOB PRIMARY KEY CHECK (length(wrapper_id) = 16),
     wrapper_kind       TEXT NOT NULL CHECK (wrapper_kind IN ('password', 'recovery')),
     state              TEXT NOT NULL CHECK (state IN ('active', 'disabled')),
-    kdf_algorithm      TEXT NOT NULL,
+    kdf_algorithm      TEXT NOT NULL CHECK (
+        (wrapper_kind = 'password' AND kdf_algorithm = 'argon2id') OR
+        (wrapper_kind = 'recovery' AND kdf_algorithm = 'hkdf-sha256')
+    ),
     kdf_params_json    TEXT NOT NULL,
     salt               BLOB NOT NULL,
     nonce              BLOB NOT NULL CHECK (length(nonce) = 12),
@@ -571,7 +576,7 @@ CREATE TABLE credential_versions (
     version            INTEGER NOT NULL CHECK (version >= 1),
     state              TEXT NOT NULL CHECK (state IN ('active', 'retired', 'revoked')),
     aad_version        INTEGER NOT NULL CHECK (aad_version = 1),
-    crypto_suite       TEXT NOT NULL,
+    crypto_suite       TEXT NOT NULL CHECK (crypto_suite = 'rkca-aes256gcm-argon2id-hkdfsha256-v1'),
     dek_nonce          BLOB NOT NULL CHECK (length(dek_nonce) = 12),
     wrapped_dek        BLOB NOT NULL,
     payload_nonce      BLOB NOT NULL CHECK (length(payload_nonce) = 12),
@@ -955,7 +960,7 @@ P0 不自动 retry。任何 retry 必须在未来重新经过 deadline、Capabil
 
 `ReqwestUpstreamTransport` 分两层，生产路径两层都走：
 
-1. **Screen**：DNS resolve + 默认拒绝 loopback、link-local、multicast、unspecified 和 RFC1918/private 地址；混合答案视为 rebinding，整组拒绝。输出 `ScreenedEndpoint`。
+1. **Screen**：DNS resolve + public-unicast allow contract。IPv4 必须是排除专用、保留、文档、multicast 后的公网 unicast。IPv6 默认拒绝，只允许 `2000::/3` 内的原生 global unicast；`2001::/23` 中只允许明确的 `2001:1::1..3` anycast、`2001:3::/32` AMT 和 `2001:4:112::/48` AS112，其余 IETF protocol 保留地址（包含 Teredo、benchmarking、ORCHID/ORCHIDv2）拒绝，`2001:db8::/32` 和 `3fff::/20` 文档网段也拒绝。另外只允许经内嵌 IPv4 再次通过同一 IPv4 public-unicast 校验的 IPv4-mapped、well-known NAT64 `64:ff9b::/96` 和 6to4 `2002::/16`。因此 loopback、link-local、ULA、multicast、unspecified、site-local、文档和其他未明确允许类别都被拒绝。DNS 混合答案只要含任一非公网地址就视为 rebinding 并整组拒绝；只从全部通过后的同一组结果选择和 pin 一个 `ScreenedEndpoint`。
 2. **Send**：rustls TLS；SNI / URL host / HTTP Host 来自同一 Action；`.resolve` pin 到已筛选地址；redirect policy `none`，**任何 3xx 都映射为 `Blocked("redirect")`**，即使 client 把 3xx 当成最终响应；不读取 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`NO_PROXY`；connect timeout <= 10s，总 timeout <= Action timeout 且 <= 120s；超过 response limit 立即失败，不截断成功；不持久化 Cookie；不得缓存 Authorization Header 或完整 RequestBuilder。
 
 Agent 输入 fake 的契约测试仍使用 injected `UpstreamTransport`。第 2 层的 TLS/SNI/redirect/size/read-error 测试使用本地 HTTPS fixture **和注入的 `ScreenedEndpoint`**，不得放宽第 1 层私网规则。

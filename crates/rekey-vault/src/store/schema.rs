@@ -7,7 +7,7 @@ CREATE TABLE vault_header (
     singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
     format_version     INTEGER NOT NULL CHECK (format_version = 3),
     vault_id           BLOB NOT NULL CHECK (length(vault_id) = 16),
-    crypto_suite       TEXT NOT NULL,
+    crypto_suite       TEXT NOT NULL CHECK (crypto_suite = 'rkca-aes256gcm-argon2id-hkdfsha256-v1'),
     created_at_ms      INTEGER NOT NULL,
     schema_digest      BLOB NOT NULL CHECK (length(schema_digest) = 32),
     integrity_nonce    BLOB NOT NULL CHECK (length(integrity_nonce) = 12),
@@ -18,7 +18,10 @@ CREATE TABLE key_wrappers (
     wrapper_id         BLOB PRIMARY KEY CHECK (length(wrapper_id) = 16),
     wrapper_kind       TEXT NOT NULL CHECK (wrapper_kind IN ('password', 'recovery')),
     state              TEXT NOT NULL CHECK (state IN ('active', 'disabled')),
-    kdf_algorithm      TEXT NOT NULL,
+    kdf_algorithm      TEXT NOT NULL CHECK (
+        (wrapper_kind = 'password' AND kdf_algorithm = 'argon2id') OR
+        (wrapper_kind = 'recovery' AND kdf_algorithm = 'hkdf-sha256')
+    ),
     kdf_params_json    TEXT NOT NULL,
     salt               BLOB NOT NULL,
     nonce              BLOB NOT NULL CHECK (length(nonce) = 12),
@@ -46,7 +49,7 @@ CREATE TABLE credential_versions (
     version            INTEGER NOT NULL CHECK (version >= 1),
     state              TEXT NOT NULL CHECK (state IN ('active', 'retired', 'revoked')),
     aad_version        INTEGER NOT NULL CHECK (aad_version = 1),
-    crypto_suite       TEXT NOT NULL,
+    crypto_suite       TEXT NOT NULL CHECK (crypto_suite = 'rkca-aes256gcm-argon2id-hkdfsha256-v1'),
     dek_nonce          BLOB NOT NULL CHECK (length(dek_nonce) = 12),
     wrapped_dek        BLOB NOT NULL,
     payload_nonce      BLOB NOT NULL CHECK (length(payload_nonce) = 12),

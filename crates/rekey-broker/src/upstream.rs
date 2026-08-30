@@ -51,8 +51,9 @@ pub trait UpstreamTransport: Send + Sync {
     fn send(&self, request: UpstreamRequest) -> UpstreamFuture<'_>;
 }
 
-/// Default-deny for anything that is not a public unicast address:
-/// loopback, unspecified, multicast, link-local, RFC1918, CGNAT, ULA.
+/// Default-deny for anything that is not covered by the explicit public
+/// unicast contract. Translation addresses are accepted only when their
+/// embedded IPv4 destination independently passes the IPv4 contract.
 pub fn ip_is_public(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
@@ -99,22 +100,25 @@ pub fn ip_is_public(ip: IpAddr) -> bool {
                 );
                 return ip_is_public(IpAddr::V4(embedded));
             }
-            !(v6.is_loopback()
-                || v6.is_unspecified()
-                || v6.is_multicast()
-                // link-local fe80::/10
-                || (s[0] & 0xffc0) == 0xfe80
-                // unique-local fc00::/7
-                || (s[0] & 0xfe00) == 0xfc00
-                // discard-only 100::/64 and local-use NAT64 64:ff9b:1::/48
-                || (s[0] == 0x0100 && s[1] == 0 && s[2] == 0 && s[3] == 0)
-                || (s[0] == 0x0064 && s[1] == 0xff9b && s[2] == 1)
-                // Teredo, benchmarking, ORCHID, ORCHIDv2, and documentation.
-                || (s[0] == 0x2001 && s[1] == 0)
-                || (s[0] == 0x2001 && s[1] == 2)
-                || (s[0] == 0x2001 && (s[1] & 0xfff0) == 0x0010)
-                || (s[0] == 0x2001 && (s[1] & 0xfff0) == 0x0020)
-                || (s[0] == 0x2001 && s[1] == 0x0db8))
+            // Native IPv6 is allowlisted to the global-unicast allocation.
+            if (s[0] & 0xe000) != 0x2000 {
+                return false;
+            }
+            // Most of 2001::/23 is reserved for IETF protocols and is not
+            // globally reachable. Keep only its public anycast/AMT/AS112
+            // allocations; 6to4 was handled above.
+            if s[0] == 0x2001 && s[1] < 0x0200 {
+                let public_anycast =
+                    s[1] == 1 && s[2..7] == [0, 0, 0, 0, 0] && (1..=3).contains(&s[7]);
+                let public_amt = s[1] == 3;
+                let public_as112 = s[1] == 4 && s[2] == 0x0112;
+                return public_anycast || public_amt || public_as112;
+            }
+            // Documentation prefixes are not public destinations.
+            if (s[0] == 0x2001 && s[1] == 0x0db8) || (s[0] == 0x3fff && (s[1] & 0xf000) == 0) {
+                return false;
+            }
+            true
         }
     }
 }
@@ -143,6 +147,13 @@ pub async fn screen_public_endpoint(
         .await
         .map_err(|_| UpstreamError::Transport)?
         .collect();
+    select_public_endpoint(host, &addrs)
+}
+
+fn select_public_endpoint(
+    host: &str,
+    addrs: &[SocketAddr],
+) -> Result<ScreenedEndpoint, UpstreamError> {
     if addrs.is_empty() {
         return Err(UpstreamError::Transport);
     }
@@ -302,9 +313,21 @@ mod tests {
             "64:ff9b:1::1",
             "100::1",
             "2001::1",
+            "2001:1::4",
+            "2001:1:0:1::1",
             "2001:2::1",
+            "2001:4:111::1",
+            "2001:10::1",
+            "2001:20::1",
+            "2001:30::1",
+            "2001:100::1",
             "2001:db8::1",
             "2002:7f00:1::1",
+            "3fff::1",
+            "3fff:fff::1",
+            "5f00::1",
+            "fec0::1",
+            "ff02::1",
         ] {
             let ip: IpAddr = bad.parse().unwrap();
             assert!(!ip_is_public(ip), "{bad} must be rejected");
@@ -313,12 +336,40 @@ mod tests {
             "93.184.216.34",
             "1.1.1.1",
             "2606:4700:4700::1111",
+            "2001:1::1",
+            "2001:3::1",
+            "2001:4:112::1",
+            "2001:200::1",
+            "3fff:1000::1",
             "64:ff9b::5db8:d822",
             "2002:5db8:d822::1",
         ] {
             let ip: IpAddr = good.parse().unwrap();
             assert!(ip_is_public(ip), "{good} must be allowed");
         }
+    }
+
+    #[test]
+    fn mixed_dns_answer_is_rejected_before_selection() {
+        let addrs = [
+            "93.184.216.34:443".parse().unwrap(),
+            "[fd00::1]:443".parse().unwrap(),
+        ];
+        assert!(matches!(
+            select_public_endpoint("example.com", &addrs),
+            Err(UpstreamError::Blocked("private-address"))
+        ));
+    }
+
+    #[test]
+    fn all_public_dns_answer_pins_one_screened_endpoint() {
+        let addrs = [
+            "93.184.216.34:443".parse().unwrap(),
+            "[2606:4700:4700::1111]:443".parse().unwrap(),
+        ];
+        let endpoint = select_public_endpoint("example.com", &addrs).unwrap();
+        assert_eq!(endpoint.host, "example.com");
+        assert_eq!(endpoint.addr, addrs[0]);
     }
 
     #[tokio::test]
@@ -337,6 +388,27 @@ mod tests {
     async fn production_transport_blocks_rfc1918_literal() {
         match ReqwestUpstreamTransport
             .send(loopback_request("10.0.0.1"))
+            .await
+        {
+            Err(UpstreamError::Blocked("private-address")) => {}
+            Err(err) => panic!("expected private-address, got {err:?}"),
+            Ok(_) => panic!("expected private-address, got success"),
+        }
+    }
+
+    #[tokio::test]
+    async fn production_transport_blocks_ipv6_loopback_literal() {
+        match ReqwestUpstreamTransport.send(loopback_request("::1")).await {
+            Err(UpstreamError::Blocked("private-address")) => {}
+            Err(err) => panic!("expected private-address, got {err:?}"),
+            Ok(_) => panic!("expected private-address, got success"),
+        }
+    }
+
+    #[tokio::test]
+    async fn production_transport_blocks_ipv6_documentation_literal() {
+        match ReqwestUpstreamTransport
+            .send(loopback_request("3fff::1"))
             .await
         {
             Err(UpstreamError::Blocked("private-address")) => {}

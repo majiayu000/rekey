@@ -5,6 +5,7 @@ mod common;
 
 use rekey_domain::credential::{CredentialKind, CredentialState, VersionState};
 use rekey_domain::ids::{CredentialId, RequestId};
+use rekey_vault::crypto::{AAD_VERSION_V1, CRYPTO_SUITE_V1};
 use rekey_vault::error::AuthorityError;
 use rekey_vault::model::{
     AuditEvent, CredentialRecord, CredentialVersionRecord, event_type, outcome,
@@ -46,8 +47,8 @@ fn version(credential_id: CredentialId, version: u64) -> CredentialVersionRecord
         credential_id,
         version,
         state: VersionState::Active,
-        aad_version: 1,
-        crypto_suite: "test-suite".to_owned(),
+        aad_version: AAD_VERSION_V1,
+        crypto_suite: CRYPTO_SUITE_V1.to_owned(),
         dek_nonce: [0u8; 12],
         wrapped_dek: vec![1, 2, 3],
         payload_nonce: [0u8; 12],
@@ -74,6 +75,64 @@ fn open_store() -> (common::TestVault, SqliteRecordStore) {
     let vault = common::init_test_vault();
     let store = SqliteRecordStore::open(&paths::vault_db(&vault.state_dir)).unwrap();
     (vault, store)
+}
+
+fn assert_reopen_rejects_unknown_discriminator(update: &str) {
+    let vault = common::init_test_vault();
+    let db = paths::vault_db(&vault.state_dir);
+    let connection = rusqlite::Connection::open(&db).unwrap();
+    connection
+        .execute_batch("PRAGMA ignore_check_constraints = ON;")
+        .unwrap();
+    connection.execute(update, []).unwrap();
+    drop(connection);
+
+    assert!(matches!(
+        SqliteRecordStore::open(&db),
+        Err(AuthorityError::UnsupportedFormatVersion)
+    ));
+}
+
+#[test]
+fn opening_rejects_unknown_header_suite_and_wrapper_algorithm() {
+    assert_reopen_rejects_unknown_discriminator(
+        "UPDATE vault_header SET crypto_suite = 'future-suite'",
+    );
+    assert_reopen_rejects_unknown_discriminator(
+        "UPDATE key_wrappers SET state = 'disabled', kdf_algorithm = 'future-kdf' WHERE wrapper_kind = 'recovery'",
+    );
+}
+
+#[test]
+fn opening_rejects_unknown_credential_suite_and_aad_version() {
+    for update in [
+        "UPDATE credential_versions SET state = 'retired', crypto_suite = 'future-suite'",
+        "UPDATE credential_versions SET state = 'revoked', aad_version = 2",
+    ] {
+        let (vault, mut store) = open_store();
+        let record = credential("format-marker");
+        store
+            .insert_credential(
+                &record,
+                &version(record.credential_id, 1),
+                audit(event_type::CREDENTIAL_CREATED),
+            )
+            .unwrap();
+        drop(store);
+
+        let db = paths::vault_db(&vault.state_dir);
+        let connection = rusqlite::Connection::open(&db).unwrap();
+        connection
+            .execute_batch("PRAGMA ignore_check_constraints = ON;")
+            .unwrap();
+        connection.execute(update, []).unwrap();
+        drop(connection);
+
+        assert!(matches!(
+            SqliteRecordStore::open(&db),
+            Err(AuthorityError::UnsupportedFormatVersion)
+        ));
+    }
 }
 
 #[test]
