@@ -4,6 +4,11 @@
 # of leaving one channel silently dead inside a half-alive daemon.
 set -euo pipefail
 
+command -v rg >/dev/null || {
+  echo "p0-runtime-faults requires ripgrep (rg)" >&2
+  exit 1
+}
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN_DIR="${BIN_DIR:-$ROOT/target/release}"
 REKEY="${BIN_DIR}/rekey"
