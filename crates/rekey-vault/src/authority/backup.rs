@@ -97,13 +97,11 @@ impl Worker {
             sha256_hex,
             output_path: output,
         };
-        if let Err(err) = self.append_audit(unlock_audit(
+        self.append_audit(unlock_audit(
             event_type::BACKUP_CREATED,
             outcome::SUCCESS,
             "backup",
-        )) {
-            return Err(err);
-        }
+        ))?;
         Ok(info)
     }
 
