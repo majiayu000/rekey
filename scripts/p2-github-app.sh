@@ -74,10 +74,6 @@ trace_count() {
   grep -c "^$1$" "$TRACE" 2>/dev/null || true
 }
 
-jwt_canary() {
-  awk -F= '/^jwt\.canary=/{print $2; exit}' "$1"
-}
-
 fixed_string_scan() {
   local needle="$1" rc
   shift
@@ -103,6 +99,31 @@ assert_secret_absent() {
       return "$rc"
       ;;
   esac
+}
+
+assert_all_jwt_canaries_absent() {
+  local trace="$1" label="$2" canary count=0
+  [[ -f "$trace" ]] || {
+    echo "$label trace is missing: $trace" >&2
+    return 1
+  }
+  while IFS= read -r canary; do
+    [[ "$canary" =~ ^[A-Za-z0-9_-]{32}$ ]] || {
+      echo "$label has malformed JWT canary" >&2
+      return 1
+    }
+    assert_secret_absent "$label" "$canary"
+    count=$((count + 1))
+  done < <(awk '
+    /^jwt\.canary=/ {
+      canary = substr($0, length("jwt.canary=") + 1)
+      if (!seen[canary]++) print canary
+    }
+  ' "$trace")
+  [[ "$count" -gt 0 ]] || {
+    echo "$label trace contains no JWT canaries" >&2
+    return 1
+  }
 }
 
 assert_raw_private_key_absent() {
@@ -575,12 +596,9 @@ RESOURCE_OK_COUNT="$(grep -c '^resource.ok$' "$TRACE")"
 [[ "$(grep -c '^revoke.ok$' "$TRACE")" -eq 12 ]]
 [[ "$(grep -c '^revoke.error$' "$TRACE")" -eq 1 ]]
 
-JWT_CANARY="$(jwt_canary "$TRACE")"
-[[ ${#JWT_CANARY} -eq 32 ]]
-
 assert_secret_absent "base64 private-key canary" "$PRIVATE_KEY_BASE64_CANARY"
 assert_secret_absent "installation token canary" "$TOKEN_CANARY"
-assert_secret_absent "GitHub JWT canary" "$JWT_CANARY"
+assert_all_jwt_canaries_absent "$TRACE" "GitHub JWT canary"
 assert_raw_private_key_absent
 
 READY="$WORKDIR/restarted-ready"
@@ -668,13 +686,10 @@ if not re.fullmatch(r"binding-sha256=[0-9a-f]{64}", chain[1][1]):
 if not re.fullmatch(r"success;binding-sha256=[0-9a-f]{64}", chain[2][1]):
     raise SystemExit("restored revoke binding invalid")
 PY
-RESTORED_JWT_CANARY="$(jwt_canary "$RESTORED_TRACE")"
-[[ ${#RESTORED_JWT_CANARY} -eq 32 ]]
 assert_secret_absent "base64 private-key canary after restore" "$PRIVATE_KEY_BASE64_CANARY"
 assert_secret_absent "installation token canary after restore" "$TOKEN_CANARY"
-for canary in "$JWT_CANARY" "$RESTORED_JWT_CANARY"; do
-  assert_secret_absent "GitHub JWT canary after restore" "$canary"
-done
+assert_all_jwt_canaries_absent "$TRACE" "GitHub JWT canary after restore"
+assert_all_jwt_canaries_absent "$RESTORED_TRACE" "restored GitHub JWT canary"
 assert_raw_private_key_absent
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" shutdown --password-stdin >/dev/null
 wait "$BROKER_PID"
