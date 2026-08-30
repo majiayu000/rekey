@@ -240,6 +240,12 @@ RESTORE_PID=$!
 PIDS="$PIDS $RESTORE_PID"
 MARKER_DEADLINE=$((SECONDS + 60))
 while [[ ! -f "$CRASH_TARGET/.restore-incomplete" && "$SECONDS" -lt "$MARKER_DEADLINE" ]]; do
+  kill -0 "$RESTORE_PID" 2>/dev/null || {
+    echo "restore exited before persisting its incomplete marker" >&2
+    cat "$WORKDIR/crash-restore.err" >&2
+    wait "$RESTORE_PID" 2>/dev/null || true
+    exit 1
+  }
   sleep 0.05
 done
 [[ -f "$CRASH_TARGET/.restore-incomplete" ]] || {
