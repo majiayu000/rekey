@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use data_encoding::{BASE64, BASE64URL_NOPAD};
 use rekey_broker::runtime::{BrokerConfig, serve};
 use rekey_broker::upstream::{
     ScreenedEndpoint, UpstreamFuture, UpstreamRequest, UpstreamTransport, send_screened,
@@ -63,6 +64,204 @@ fn write_hits(path: &Path, hits: u64) -> std::io::Result<()> {
     std::fs::write(path, format!("{hits}\n"))
 }
 
+struct FixtureRequest {
+    path: String,
+    mode: Option<String>,
+    secret: Vec<u8>,
+}
+
+async fn read_request(
+    tls: &mut tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
+) -> std::io::Result<FixtureRequest> {
+    let mut request = Vec::new();
+    let mut buffer = [0u8; 2048];
+    let header_end = loop {
+        if request.len() > 64 * 1024 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "request headers too large",
+            ));
+        }
+        let read = tls.read(&mut buffer).await?;
+        if read == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "request truncated",
+            ));
+        }
+        request.extend_from_slice(&buffer[..read]);
+        if let Some(offset) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+            break offset + 4;
+        }
+    };
+
+    let headers = std::str::from_utf8(&request[..header_end])
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid headers"))?;
+    let request_line = headers.lines().next().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, "missing request line")
+    })?;
+    let path = request_line
+        .split_ascii_whitespace()
+        .nth(1)
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "missing path"))?
+        .to_owned();
+    let mut content_length = 0usize;
+    let mut secret = None;
+    for line in headers.split("\r\n") {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case("content-length") {
+            content_length = value.trim().parse().map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "bad content length")
+            })?;
+        } else if name.eq_ignore_ascii_case("authorization") {
+            secret = Some(
+                value
+                    .trim()
+                    .strip_prefix("Bearer ")
+                    .ok_or_else(|| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "missing bearer prefix",
+                        )
+                    })?
+                    .as_bytes()
+                    .to_vec(),
+            );
+        }
+    }
+    while request.len() < header_end + content_length {
+        let read = tls.read(&mut buffer).await?;
+        if read == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "request body truncated",
+            ));
+        }
+        request.extend_from_slice(&buffer[..read]);
+    }
+    let body = &request[header_end..header_end + content_length];
+    let mode = if path == "/v1/sealing" {
+        let value: serde_json::Value = serde_json::from_slice(body).map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid request json")
+        })?;
+        Some(
+            value
+                .get("mode")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, "missing mode")
+                })?
+                .to_owned(),
+        )
+    } else {
+        None
+    };
+    Ok(FixtureRequest {
+        path,
+        mode,
+        secret: secret.ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "missing credential")
+        })?,
+    })
+}
+
+async fn write_fragmented(
+    tls: &mut tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
+    bytes: &[u8],
+) -> std::io::Result<()> {
+    for fragment in bytes.chunks(3) {
+        tls.write_all(fragment).await?;
+        tls.flush().await?;
+        tokio::task::yield_now().await;
+    }
+    Ok(())
+}
+
+async fn write_chunk(
+    tls: &mut tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
+    bytes: &[u8],
+) -> std::io::Result<()> {
+    write_fragmented(tls, format!("{:x}\r\n", bytes.len()).as_bytes()).await?;
+    write_fragmented(tls, bytes).await?;
+    write_fragmented(tls, b"\r\n").await
+}
+
+async fn write_chunked_headers(
+    tls: &mut tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
+) -> std::io::Result<()> {
+    write_fragmented(
+        tls,
+        b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n",
+    )
+    .await
+}
+
+fn fixture_percent_encode(bytes: &[u8]) -> Vec<u8> {
+    let mut output = String::with_capacity(bytes.len() * 3);
+    for byte in bytes {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            output.push(*byte as char);
+        } else {
+            output.push_str(&format!("%{byte:02x}"));
+        }
+    }
+    output.into_bytes()
+}
+
+async fn write_reflection(
+    tls: &mut tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
+    variant: &[u8],
+) -> std::io::Result<()> {
+    write_chunked_headers(tls).await?;
+    let split = (variant.len() / 2).max(1).min(variant.len());
+    let mut first = b"before:".to_vec();
+    first.extend_from_slice(&variant[..split]);
+    let mut second = variant[split..].to_vec();
+    second.extend_from_slice(b":after");
+    write_chunk(tls, &first).await?;
+    write_chunk(tls, &second).await?;
+    write_fragmented(tls, b"0\r\n\r\n").await?;
+    tls.shutdown().await
+}
+
+async fn write_sealing_response(
+    tls: &mut tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
+    mode: &str,
+    secret: &[u8],
+) -> std::io::Result<()> {
+    match mode {
+        "raw" => write_reflection(tls, secret).await,
+        "base64" => write_reflection(tls, BASE64.encode(secret).as_bytes()).await,
+        "base64url" => write_reflection(tls, BASE64URL_NOPAD.encode(secret).as_bytes()).await,
+        "percent" => write_reflection(tls, &fixture_percent_encode(secret)).await,
+        "clean" => {
+            write_chunked_headers(tls).await?;
+            write_chunk(tls, b"{\"ok\":").await?;
+            write_chunk(tls, b"true}").await?;
+            write_fragmented(tls, b"0\r\n\r\n").await?;
+            tls.shutdown().await
+        }
+        "oversize" => {
+            write_chunked_headers(tls).await?;
+            write_chunk(tls, &vec![b'x'; 768]).await?;
+            write_chunk(tls, &vec![b'y'; 768]).await?;
+            write_fragmented(tls, b"0\r\n\r\n").await?;
+            tls.shutdown().await
+        }
+        "midstream" => {
+            write_chunked_headers(tls).await?;
+            write_fragmented(tls, b"40\r\npartial-agent-body").await?;
+            tls.shutdown().await
+        }
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "unknown sealing mode",
+        )),
+    }
+}
+
 async fn serve_tls(
     listener: TcpListener,
     acceptor: TlsAcceptor,
@@ -80,22 +279,18 @@ async fn serve_tls(
             let Ok(mut tls) = acceptor.accept(stream).await else {
                 return;
             };
-            let mut request = Vec::new();
-            let mut chunk = [0u8; 2048];
-            while request.len() <= 64 * 1024 {
-                let Ok(read) = tls.read(&mut chunk).await else {
-                    return;
-                };
-                if read == 0 {
-                    return;
-                }
-                request.extend_from_slice(&chunk[..read]);
-                if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                    break;
-                }
-            }
+            let Ok(request) = read_request(&mut tls).await else {
+                return;
+            };
             let count = hits.fetch_add(1, Ordering::SeqCst) + 1;
             if write_hits(&hits_path, count).is_err() {
+                return;
+            }
+            if request.path == "/v1/sealing" {
+                let Some(mode) = request.mode else {
+                    return;
+                };
+                let _ = write_sealing_response(&mut tls, &mode, &request.secret).await;
                 return;
             }
             let body = br#"{"ok":true}"#;

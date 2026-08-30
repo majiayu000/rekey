@@ -63,6 +63,8 @@ jobs:
         run: scripts/p0-durability.sh
       - name: P1 typed-policy acceptance
         run: scripts/p1-policy-acceptance.sh
+      - name: P1 chunk-boundary response sealing acceptance
+        run: scripts/p1-streaming-sealing.sh
 
   g2-linux:
     name: Linux container G2 reference boundary

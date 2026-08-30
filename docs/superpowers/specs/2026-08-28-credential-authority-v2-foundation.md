@@ -1315,9 +1315,23 @@ scripts/p0-runtime-faults.sh
 | --- | --- | --- |
 | Linux G2 launcher | Agent 独立 UID/namespace，不能读 socket/DB/ptrace/直连 | `scripts/p1-linux-g2.sh`（Linux Docker gate） |
 | Typed parameter policy | Action 参数 canonicalization + default deny | `cargo test -p rekey-policy` |
-| Streaming response sealing | 跨 chunk secret variant 可检测并终止 | `cargo test -p rekey-broker --test streaming_sealing` |
+| Chunk-boundary response sealing | bounded buffered response 中跨 HTTP/TLS chunk 的 secret variant 在任何 Agent response frame/body 写出前被拒绝 | `scripts/p1-streaming-sealing.sh` |
 | systemd/launchd | locked boot、受保护 unlock、clean shutdown | `cargo test -p rekey-e2e --test service_manager` |
 | OS key wrapper | Keychain/TPM wrapper 是可选第三 wrapper | `cargo test -p rekey-vault --test os_wrapper_contract` |
+
+Chunk-boundary sealing 的 release-process gate 必须运行真实 `rekey` CLI、独立
+BrokerRuntime 进程、Admin/Agent 双 UDS、SQLite audit 和 local CA/TLS upstream。
+upstream 使用 HTTP/1.1 chunked encoding，并把实际注入的 Credential 之 raw、base64、
+base64url、percent-encoded variant 分隔在不同 HTTP chunk 且通过多次 TLS write 发送。
+每个 reflection 必须返回 exit 8，stdout、stderr、audit、runtime log 均无 canary；
+`execution.started` 必须恰有一个 `execution.blocked(reflected-secret)` terminal，不能有
+`execution.finished` 或 orphan。Clean chunked response 必须完整成功；oversize 和
+mid-stream close 必须返回 upstream/size failure，且 Agent 不得收到 partial body。
+失败路径还必须用透明单连接 Agent UDS proxy 捕获完整 broker-to-client response（不得
+持久化 capability request），并证明响应恰为一个 Agent channel Frame v1 ERROR：
+`body_len=0`、metadata code 匹配、总长度严格等于 `36 + metadata_len`，无 trailing
+bytes 或 partial upstream body。capture 文件同样必须通过 canary/partial 扫描。
+fixture 只能注入 screened endpoint 和 test CA，不能放宽生产 private-IP screening。
 
 #### P1.1 Typed Authorization Kernel
 
@@ -1465,7 +1479,11 @@ Review 必问：
 - 不实现 OAuth、SSH、HSM、动态数据库 Secret。
 - 不支持 Windows。
 - 不承诺 G2、FIPS validation、mlock、防宿主 root 或防内核取证。
-- 不支持流式 request/response、自动 retry、redirect 或 arbitrary HTTP proxy。
+- 不支持 Agent-visible 流式 request/response、SSE passthrough、frame v2、自动
+  retry、redirect 或 arbitrary HTTP proxy。P1 chunk-boundary sealing 仍先在 Action
+  `response_max_bytes` 和 4 MiB 全局上限内完整缓冲 upstream response，再扫描 raw、
+  base64、base64url 和 percent-encoded secret variants；它验证 HTTP chunk 与 TLS write
+  边界不能绕过 sealing，但不声称边读边扫描或在 upstream EOF 前提前终止。
 
 ## 27. Resolved And Open Questions
 
