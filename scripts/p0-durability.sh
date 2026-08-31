@@ -127,7 +127,9 @@ db = sys.argv[1]
 snapshot = pathlib.Path(sys.argv[2])
 output = pathlib.Path(sys.argv[3])
 pid = int(sys.argv[4])
-deadline = time.monotonic() + 30
+# Hosted macOS runners can take longer than 30 seconds to copy the 256 MiB
+# fixture. Keep the watcher bounded below the CLI's 300-second backup timeout.
+deadline = time.monotonic() + 240
 locker = None
 expected_size = None
 while time.monotonic() < deadline:
