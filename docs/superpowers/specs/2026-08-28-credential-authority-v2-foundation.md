@@ -1698,7 +1698,9 @@ Review 必问：
 本规格完整到可以严格按 P0.1–P0.7 顺序实施 `Credential Authority v2 Foundation`。它已经给出状态所有者、删除范围、密码学层级、AAD、schema、IPC frame、CLI、错误、生命周期、验证命令和非目标。
 
 P0、P1 typed authorization/runtime ownership/sealing/service-manager、Linux G2 reference 和
-P2.1 local black-box 实现已经存在；systemd required-job 与 GitHub live E2E 尚无通过证据。
+P2.1 local black-box 实现已经存在；systemd required-job 已由
+[security-gate run 33345442076](https://github.com/majiayu000/rekey/actions/runs/33345442076)
+的 Ubuntu P0 在 systemd PID 1 和非 root service account 下通过，GitHub live E2E 尚无通过证据。
 当前默认拓扑仍定位为 **G1 开发候选**，不是 G1 安全发布候选。独立密码学、IPC 边界和
 audit/failure-semantics 人工审查尚未进行。因此当前仓库不能声称 Security Baseline Complete、
 通用 G2、生产就绪或优于 1Password/OpenBao/Aperture 等完整产品。功能是否“可用”只以

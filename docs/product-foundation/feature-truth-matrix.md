@@ -16,8 +16,8 @@
 | v4 backup/restore 与 crash/durability 边界 | Implemented | `scripts/p0-durability.sh`、`crates/rekey-vault/tests/backup_restore.rs` |
 | typed default-deny policy | Implemented | `scripts/p1-policy-acceptance.sh`、`rekey-policy` tests |
 | chunk-boundary response sealing | Implemented | `scripts/p1-streaming-sealing.sh` |
-| launchd service-manager 流程 | Implemented | `scripts/p1-service-manager.sh`；真实签名/安装仍需发布环境复跑 |
-| systemd required-job | Evidence pending | 尚无真实 systemd required-job 通过记录 |
+| launchd service-manager 流程 | Implemented | `scripts/p1-service-manager.sh`；[security-gate run 33345442076](https://github.com/majiayu000/rekey/actions/runs/33345442076) 的 macOS P0 通过 |
+| systemd required-job | Implemented | 同一 security-gate 的 Ubuntu P0 在 systemd PID 1、非 root service account 下通过 |
 | Linux container/namespace G2 | Reference only | `scripts/p1-linux-g2.sh`；不代表默认拓扑或通用 G2 |
 | GitHub App Installation 本地 TLS black-box | Implemented | `scripts/p2-github-app.sh` |
 | GitHub App live E2E | Evidence pending | 需要用户提供专用 GitHub App fixture，不能由本地 mock 替代 |

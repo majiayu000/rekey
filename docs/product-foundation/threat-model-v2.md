@@ -50,7 +50,8 @@ Linux G2 参考拓扑额外把 broker 和 Agent 放在不同 UID、PID namespace
 ## 发布前未闭合风险
 
 - 密码学、IPC、审计与 failure semantics 尚缺独立人工安全审查记录。
-- systemd required-job 尚缺真实平台证据。
+- systemd 与 launchd native manager 已有 security-gate 平台证据；签名发行物的安装体验不在该
+  harness 证明范围内。
 - GitHub App 只有本地 TLS black-box harness，尚缺用户提供 fixture 的 GitHub live E2E。
 - 默认 G1 拓扑不能防同用户内存、文件和 `ptrace` 攻击，因此不得宣传为通用 G2。
 
