@@ -4,7 +4,7 @@
 //! accounting, cleanup.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use data_encoding::{BASE64, BASE64_NOPAD, BASE64URL, BASE64URL_NOPAD};
@@ -21,8 +21,8 @@ use tokio::sync::RwLock;
 use zeroize::Zeroizing;
 
 use crate::audit::{
-    ExecutionAuditContext, TerminalAuditTracker, connector_event, execution_blocked,
-    execution_finished, execution_started,
+    ExecutionAuditContext, StartedAuditGuard, TerminalAuditTracker, connector_event,
+    execution_blocked,
 };
 use crate::error::BrokerError;
 use crate::github_app::{GitHubAppCredential, GitHubEffect, GitHubError};
@@ -52,7 +52,7 @@ pub struct AdmittedExecution {
     request: ExecuteRequest,
     action: FixedHttpAction,
     effect_deadline: Instant,
-    started: StartedGuard,
+    started: StartedAuditGuard,
     _permit: ExecutionPermit,
 }
 
@@ -65,66 +65,9 @@ pub struct ActionExecutor {
     policy: Arc<RwLock<Option<Arc<rekey_policy::ValidatedSnapshot>>>>,
 }
 
-struct StartedGuard {
-    terminals: Arc<TerminalAuditTracker>,
-    ctx: ExecutionAuditContext,
-    terminal_submitted: bool,
-}
-
-impl StartedGuard {
-    fn new(terminals: Arc<TerminalAuditTracker>, ctx: ExecutionAuditContext) -> Self {
-        Self {
-            terminals,
-            ctx,
-            terminal_submitted: false,
-        }
-    }
-
-    fn is_completed(&self) -> bool {
-        self.terminal_submitted
-    }
-
-    async fn blocked(&mut self, reason: &'static str) -> Result<(), BrokerError> {
-        self.terminal_submitted = true;
-        self.terminals
-            .commit(execution_blocked(&self.ctx, reason))
-            .await
-            .map_err(BrokerError::Authority)
-    }
-
-    async fn finished(
-        &mut self,
-        credential_version: u64,
-        upstream_status: u16,
-        latency_ms: i64,
-    ) -> Result<(), BrokerError> {
-        self.terminal_submitted = true;
-        self.terminals
-            .commit(execution_finished(
-                &self.ctx,
-                credential_version,
-                upstream_status,
-                latency_ms,
-            ))
-            .await
-            .map_err(|err| match err {
-                AuthorityError::AuditCommitFailed => {
-                    BrokerError::Authority(AuthorityError::AuditCommitFailedAfterExecution)
-                }
-                other => BrokerError::Authority(other),
-            })?;
-        Ok(())
-    }
-}
-
-impl Drop for StartedGuard {
-    fn drop(&mut self) {
-        if !self.terminal_submitted {
-            self.terminals
-                .submit(execution_blocked(&self.ctx, "abandoned"));
-        }
-    }
-}
+const EFFECT_NOT_STARTED: u8 = 0;
+const EFFECT_ORDINARY_HTTP: u8 = 1;
+const EFFECT_GITHUB_CONNECTOR: u8 = 2;
 
 /// Response headers stripped unconditionally, before the allowlist applies.
 const FORBIDDEN_RESPONSE_HEADERS: &[&str] = &[
@@ -307,14 +250,16 @@ impl ActionExecutor {
             return Err(BrokerError::Denied(reason.code()));
         }
 
-        // Step 6: ExecutionStarted must commit before any credential effect.
-        self.authority.append_audit(execution_started(&ctx)).await?;
+        // Step 6: this final point linearizes with drain. Earlier Running
+        // checks are advisory; no drain may transition between this re-check
+        // and transfer of durable started/terminal ownership.
+        let started = commit_started_while_running(&self.lifecycle, &self.terminals, ctx).await?;
         Ok(AdmittedExecution {
             executor: Arc::clone(self),
             request,
             effect_deadline: admission_started + Duration::from_millis(action.timeout_ms as u64),
             action,
-            started: StartedGuard::new(Arc::clone(&self.terminals), ctx),
+            started,
             _permit: permit,
         })
     }
@@ -325,11 +270,11 @@ impl ActionExecutor {
 
     async fn run_started(
         &self,
-        started: &mut StartedGuard,
+        started: &mut StartedAuditGuard,
         request: &ExecuteRequest,
         action: &FixedHttpAction,
         effect_deadline: Instant,
-        connector_effect_started: &AtomicBool,
+        effect_kind: &AtomicU8,
     ) -> Result<ExecuteOutcome, BrokerError> {
         // Steps 7-8: credential eligibility and preparation (single owner).
         let prepared = match self
@@ -393,7 +338,7 @@ impl ActionExecutor {
                     action,
                     prepared,
                     effect_deadline,
-                    connector_effect_started,
+                    effect_kind,
                 )
                 .await;
         }
@@ -406,6 +351,11 @@ impl ActionExecutor {
         };
 
         // Steps 10-11: fixed HTTPS send with bounded response.
+        try_begin_remote_effect(&self.lifecycle, started).await?;
+        // No await separates the gate from this marker. Cancellation after
+        // this point cannot truthfully claim the upstream saw no effect.
+        started.mark_remote_effect_started();
+        effect_kind.store(EFFECT_ORDINARY_HTTP, Ordering::SeqCst);
         let send_started = Instant::now();
         let response = self.transport.send(upstream_request).await;
         let latency_ms = send_started.elapsed().as_millis() as i64;
@@ -418,7 +368,16 @@ impl ActionExecutor {
                     crate::upstream::UpstreamError::Timeout => "upstream-timeout",
                     crate::upstream::UpstreamError::Transport => "upstream-transport",
                 };
-                started.blocked(reason).await?;
+                match err {
+                    crate::upstream::UpstreamError::Timeout
+                    | crate::upstream::UpstreamError::Transport => {
+                        started.indeterminate(reason).await?
+                    }
+                    crate::upstream::UpstreamError::Blocked(_)
+                    | crate::upstream::UpstreamError::ResponseTooLarge => {
+                        started.blocked(reason).await?
+                    }
+                }
                 return Err(match err {
                     crate::upstream::UpstreamError::ResponseTooLarge => {
                         BrokerError::Domain(DomainError::ResponseTooLarge)
@@ -457,12 +416,12 @@ impl ActionExecutor {
 
     async fn run_github(
         &self,
-        started: &mut StartedGuard,
+        started: &mut StartedAuditGuard,
         request: &ExecuteRequest,
         action: &FixedHttpAction,
         prepared: GitHubPrepared,
         effect_deadline: Instant,
-        connector_effect_started: &AtomicBool,
+        effect_kind: &AtomicU8,
     ) -> Result<ExecuteOutcome, BrokerError> {
         let profile = match prepared.profile {
             Ok(profile) => profile,
@@ -479,7 +438,7 @@ impl ActionExecutor {
         // was authorized before JWT signing or token exchange.
         self.authority
             .append_audit(connector_event(
-                &started.ctx,
+                started.context(),
                 rekey_vault::model::event_type::GITHUB_CONNECTOR_AUTHORIZED,
                 rekey_vault::model::outcome::SUCCESS,
                 profile.commitment(),
@@ -489,7 +448,8 @@ impl ActionExecutor {
         try_begin_remote_effect(&self.lifecycle, started).await?;
         // No await separates the gate's linearization point from this flag.
         // Once begun, lifecycle cancellation must not strand a remote token.
-        connector_effect_started.store(true, Ordering::SeqCst);
+        started.mark_remote_effect_started();
+        effect_kind.store(EFFECT_GITHUB_CONNECTOR, Ordering::SeqCst);
 
         let send_started = Instant::now();
         let effect = profile
@@ -528,7 +488,7 @@ impl ActionExecutor {
         };
         self.authority
             .append_audit(connector_event(
-                &started.ctx,
+                started.context(),
                 rekey_vault::model::event_type::GITHUB_TOKEN_REVOKED,
                 revoke_outcome,
                 revoke_reason,
@@ -588,28 +548,37 @@ impl AdmittedExecution {
         }
 
         let executor = Arc::clone(&self.executor);
-        let connector_effect_started = AtomicBool::new(false);
+        let effect_kind = AtomicU8::new(EFFECT_NOT_STARTED);
+        let mut cancelled_after_ordinary_effect = false;
         {
             let run = executor.run_started(
                 &mut self.started,
                 &self.request,
                 &self.action,
                 self.effect_deadline,
-                &connector_effect_started,
+                &effect_kind,
             );
             tokio::pin!(run);
             tokio::select! {
                 biased;
                 _ = wait_for_cancel(cancel) => {
-                    if connector_effect_started.load(Ordering::SeqCst) {
-                        return run.await;
+                    match effect_kind.load(Ordering::SeqCst) {
+                        EFFECT_GITHUB_CONNECTOR => return run.await,
+                        EFFECT_ORDINARY_HTTP => cancelled_after_ordinary_effect = true,
+                        _ => {}
                     }
                 }
                 result = &mut run => return result,
             }
         }
         if !self.started.is_completed() {
-            self.started.blocked("abandoned").await?;
+            if cancelled_after_ordinary_effect {
+                self.started
+                    .indeterminate("cancelled-after-remote-effect")
+                    .await?;
+            } else {
+                self.started.blocked("abandoned").await?;
+            }
         }
         Err(BrokerError::Authority(AuthorityError::Draining))
     }
@@ -625,13 +594,26 @@ async fn wait_for_cancel(mut cancel: tokio::sync::watch::Receiver<bool>) {
 
 async fn try_begin_remote_effect(
     lifecycle: &Lifecycle,
-    started: &mut StartedGuard,
+    started: &mut StartedAuditGuard,
 ) -> Result<(), BrokerError> {
     if lifecycle.try_begin_remote_effect() {
         return Ok(());
     }
     started.blocked("remote-effect-admission-closed").await?;
     Err(BrokerError::Authority(AuthorityError::Draining))
+}
+
+async fn commit_started_while_running(
+    lifecycle: &Lifecycle,
+    terminals: &TerminalAuditTracker,
+    ctx: ExecutionAuditContext,
+) -> Result<StartedAuditGuard, BrokerError> {
+    let _coordinator = lifecycle.coordinate().await;
+    lifecycle.reject_if_not_running()?;
+    terminals
+        .commit_started(ctx)
+        .await
+        .map_err(BrokerError::Authority)
 }
 
 fn prepare_block_reason(err: &AuthorityError) -> &'static str {

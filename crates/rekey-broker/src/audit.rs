@@ -18,12 +18,24 @@ use rekey_vault::model::{event_type, outcome};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
+use crate::error::BrokerError;
+
 /// Accepts terminal audits from Drop/panic paths and waits them to commit
 /// before Authority shutdown. Commit errors and timeouts are never ignored.
 pub struct TerminalAuditTracker {
-    tx: mpsc::UnboundedSender<TerminalSubmission>,
+    queue: AuditSubmissionQueue,
+}
+
+#[derive(Clone)]
+struct AuditSubmissionQueue {
+    tx: mpsc::UnboundedSender<AuditSubmission>,
     pending: Arc<AtomicUsize>,
     failed: Arc<AtomicBool>,
+}
+
+enum AuditSubmission {
+    Terminal(TerminalSubmission),
+    Started(Box<StartedSubmission>),
 }
 
 struct TerminalSubmission {
@@ -31,28 +43,160 @@ struct TerminalSubmission {
     reply: Option<oneshot::Sender<Result<(), AuthorityError>>>,
 }
 
-impl TerminalAuditTracker {
-    pub fn submit(&self, draft: AuditDraft) {
-        self.enqueue(draft, None);
+struct StartedSubmission {
+    draft: AuditDraft,
+    ctx: ExecutionAuditContext,
+    queue: AuditSubmissionQueue,
+    reply: oneshot::Sender<Result<StartedAuditGuard, AuthorityError>>,
+}
+
+/// Unique ownership of the terminal event paired with a committed
+/// `execution.started`. The owner itself crosses the worker reply channel, so
+/// cancellation anywhere in that handoff drops the guard and durably queues
+/// the fallback terminal.
+pub(crate) struct StartedAuditGuard {
+    queue: AuditSubmissionQueue,
+    ctx: ExecutionAuditContext,
+    terminal_submitted: bool,
+    remote_effect_started: bool,
+}
+
+impl StartedAuditGuard {
+    #[cfg(test)]
+    pub(crate) fn new_for_test(tracker: &TerminalAuditTracker, ctx: ExecutionAuditContext) -> Self {
+        Self::new(tracker.queue.clone(), ctx)
     }
 
-    fn enqueue(
+    fn new(queue: AuditSubmissionQueue, ctx: ExecutionAuditContext) -> Self {
+        Self {
+            queue,
+            ctx,
+            terminal_submitted: false,
+            remote_effect_started: false,
+        }
+    }
+
+    pub(crate) fn context(&self) -> &ExecutionAuditContext {
+        &self.ctx
+    }
+
+    pub(crate) fn is_completed(&self) -> bool {
+        self.terminal_submitted
+    }
+
+    pub(crate) fn mark_remote_effect_started(&mut self) {
+        self.remote_effect_started = true;
+    }
+
+    pub(crate) async fn blocked(&mut self, reason: &'static str) -> Result<(), BrokerError> {
+        self.commit_terminal(execution_blocked(&self.ctx, reason))
+            .await
+            .map_err(BrokerError::Authority)
+    }
+
+    pub(crate) async fn indeterminate(&mut self, reason: &'static str) -> Result<(), BrokerError> {
+        self.commit_terminal(execution_indeterminate(&self.ctx, reason))
+            .await
+            .map_err(BrokerError::Authority)
+    }
+
+    pub(crate) async fn finished(
+        &mut self,
+        credential_version: u64,
+        upstream_status: u16,
+        latency_ms: i64,
+    ) -> Result<(), BrokerError> {
+        self.commit_terminal(execution_finished(
+            &self.ctx,
+            credential_version,
+            upstream_status,
+            latency_ms,
+        ))
+        .await
+        .map_err(|err| match err {
+            AuthorityError::AuditCommitFailed => {
+                BrokerError::Authority(AuthorityError::AuditCommitFailedAfterExecution)
+            }
+            other => BrokerError::Authority(other),
+        })
+    }
+
+    async fn commit_terminal(&mut self, draft: AuditDraft) -> Result<(), AuthorityError> {
+        self.terminal_submitted = true;
+        let (reply, result) = oneshot::channel();
+        self.queue.enqueue_terminal(draft, Some(reply));
+        match result.await {
+            Ok(result) => result,
+            Err(_) => Err(AuthorityError::AuditCommitFailed),
+        }
+    }
+}
+
+impl Drop for StartedAuditGuard {
+    fn drop(&mut self) {
+        if !self.terminal_submitted {
+            let draft = if self.remote_effect_started {
+                execution_indeterminate(&self.ctx, "abandoned-after-remote-effect")
+            } else {
+                execution_blocked(&self.ctx, "abandoned")
+            };
+            self.queue.enqueue_terminal(draft, None);
+        }
+    }
+}
+
+impl AuditSubmissionQueue {
+    fn enqueue_terminal(
         &self,
         draft: AuditDraft,
         reply: Option<oneshot::Sender<Result<(), AuthorityError>>>,
     ) {
+        self.enqueue(AuditSubmission::Terminal(TerminalSubmission {
+            draft,
+            reply,
+        }));
+    }
+
+    fn enqueue(&self, submission: AuditSubmission) {
         self.pending.fetch_add(1, Ordering::SeqCst);
-        if self.tx.send(TerminalSubmission { draft, reply }).is_err() {
+        if self.tx.send(submission).is_err() {
             self.failed.store(true, Ordering::SeqCst);
             self.pending.fetch_sub(1, Ordering::SeqCst);
         }
+    }
+}
+
+impl TerminalAuditTracker {
+    pub fn submit(&self, draft: AuditDraft) {
+        self.queue.enqueue_terminal(draft, None);
     }
 
     /// Transfers ownership of a terminal commit to the tracker before the
     /// first await. Cancelling the caller cannot cancel the durable commit.
     pub async fn commit(&self, draft: AuditDraft) -> Result<(), AuthorityError> {
         let (reply, result) = oneshot::channel();
-        self.enqueue(draft, Some(reply));
+        self.queue.enqueue_terminal(draft, Some(reply));
+        match result.await {
+            Ok(result) => result,
+            Err(_) => Err(AuthorityError::AuditCommitFailed),
+        }
+    }
+
+    /// Transfers `execution.started` commit and its future terminal ownership
+    /// to the worker before awaiting Authority capacity or a reply.
+    pub(crate) async fn commit_started(
+        &self,
+        ctx: ExecutionAuditContext,
+    ) -> Result<StartedAuditGuard, AuthorityError> {
+        let draft = execution_started(&ctx);
+        let (reply, result) = oneshot::channel();
+        self.queue
+            .enqueue(AuditSubmission::Started(Box::new(StartedSubmission {
+                draft,
+                ctx,
+                queue: self.queue.clone(),
+                reply,
+            })));
         match result.await {
             Ok(result) => result,
             Err(_) => Err(AuthorityError::AuditCommitFailed),
@@ -60,7 +204,7 @@ impl TerminalAuditTracker {
     }
 
     pub fn has_pending(&self) -> bool {
-        self.pending.load(Ordering::SeqCst) > 0
+        self.queue.pending.load(Ordering::SeqCst) > 0
     }
 
     /// Returns `Err(AuditCommitFailed)` if a terminal is still queued after
@@ -78,7 +222,7 @@ impl TerminalAuditTracker {
         deadline: tokio::time::Instant,
     ) -> Result<(), AuthorityError> {
         loop {
-            if self.pending.load(Ordering::SeqCst) == 0 {
+            if self.queue.pending.load(Ordering::SeqCst) == 0 {
                 break;
             }
             if tokio::time::Instant::now() >= deadline {
@@ -86,7 +230,7 @@ impl TerminalAuditTracker {
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
-        if self.failed.load(Ordering::SeqCst) {
+        if self.queue.failed.load(Ordering::SeqCst) {
             return Err(AuthorityError::AuditCommitFailed);
         }
         Ok(())
@@ -109,31 +253,49 @@ where
     F: Fn(AuditDraft) -> Fut + Send + 'static,
     Fut: Future<Output = Result<(), AuthorityError>> + Send + 'static,
 {
-    let (tx, mut rx) = mpsc::unbounded_channel::<TerminalSubmission>();
+    let (tx, mut rx) = mpsc::unbounded_channel::<AuditSubmission>();
     let pending = Arc::new(AtomicUsize::new(0));
     let failed = Arc::new(AtomicBool::new(false));
-    let pending_worker = Arc::clone(&pending);
-    let failed_worker = Arc::clone(&failed);
+    let queue = AuditSubmissionQueue {
+        tx,
+        pending: Arc::clone(&pending),
+        failed: Arc::clone(&failed),
+    };
     let join = tokio::spawn(async move {
         while let Some(submission) = rx.recv().await {
-            let result = commit(submission.draft).await;
-            if result.is_err() {
-                failed_worker.store(true, Ordering::SeqCst);
+            match submission {
+                AuditSubmission::Terminal(submission) => {
+                    let result = commit(submission.draft).await;
+                    if result.is_err() {
+                        failed.store(true, Ordering::SeqCst);
+                    }
+                    if let Some(reply) = submission.reply {
+                        drop(reply.send(result));
+                    }
+                }
+                AuditSubmission::Started(submission) => {
+                    let StartedSubmission {
+                        draft,
+                        ctx,
+                        queue,
+                        reply,
+                    } = *submission;
+                    let result = commit(draft)
+                        .await
+                        .map(|()| StartedAuditGuard::new(queue, ctx));
+                    if result.is_err() {
+                        failed.store(true, Ordering::SeqCst);
+                    }
+                    // If the caller was cancelled before receiving the
+                    // committed ownership, send returns the armed guard and
+                    // dropping it queues the fallback terminal synchronously.
+                    drop(reply.send(result));
+                }
             }
-            if let Some(reply) = submission.reply {
-                drop(reply.send(result));
-            }
-            pending_worker.fetch_sub(1, Ordering::SeqCst);
+            pending.fetch_sub(1, Ordering::SeqCst);
         }
     });
-    (
-        Arc::new(TerminalAuditTracker {
-            tx,
-            pending,
-            failed,
-        }),
-        join,
-    )
+    (Arc::new(TerminalAuditTracker { queue }), join)
 }
 
 pub struct ExecutionAuditContext {
@@ -190,6 +352,14 @@ pub fn execution_blocked(ctx: &ExecutionAuditContext, reason_code: &str) -> Audi
     draft
 }
 
+pub fn execution_indeterminate(ctx: &ExecutionAuditContext, reason_code: &str) -> AuditDraft {
+    let mut draft = base(ctx);
+    draft.event_type = "execution.indeterminate";
+    draft.outcome = "unknown";
+    draft.reason_code = reason_code.to_owned();
+    draft
+}
+
 pub fn connector_event(
     ctx: &ExecutionAuditContext,
     event_type: &'static str,
@@ -205,6 +375,11 @@ pub fn connector_event(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
+    use rekey_domain::ids::ActionId;
+    use tokio::sync::Barrier;
+
     use super::*;
 
     fn draft() -> AuditDraft {
@@ -224,13 +399,80 @@ mod tests {
         }
     }
 
+    fn execution_context() -> ExecutionAuditContext {
+        ExecutionAuditContext {
+            request_id: RequestId::new_random(),
+            session_id: SessionId::new_random(),
+            action: ActionVersionRef {
+                action_id: ActionId::new_random(),
+                version: 1,
+            },
+            credential_id: CredentialId::new_random(),
+            authorization: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn started_commit_reply_cancellation_still_has_terminal() {
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let committed = Arc::new(Mutex::new(Vec::new()));
+        let (tracker, worker) = spawn_terminal_worker_with({
+            let entered = Arc::clone(&entered);
+            let release = Arc::clone(&release);
+            let committed = Arc::clone(&committed);
+            move |draft| {
+                let entered = Arc::clone(&entered);
+                let release = Arc::clone(&release);
+                committed.lock().unwrap().push((
+                    draft.event_type,
+                    draft.outcome,
+                    draft.reason_code.clone(),
+                ));
+                async move {
+                    if draft.event_type == event_type::EXECUTION_STARTED {
+                        entered.wait().await;
+                        release.wait().await;
+                    }
+                    Ok(())
+                }
+            }
+        });
+        let caller = tokio::spawn({
+            let tracker = Arc::clone(&tracker);
+            async move { tracker.commit_started(execution_context()).await }
+        });
+        entered.wait().await;
+        caller.abort();
+        drop(caller.await);
+        release.wait().await;
+        tracker.wait_idle(Duration::from_secs(1)).await.unwrap();
+
+        {
+            let committed = committed.lock().unwrap();
+            assert_eq!(committed.len(), 2, "expected started plus one terminal");
+            assert_eq!(
+                committed[0],
+                ("execution.started", "success", "started".into())
+            );
+            assert_eq!(
+                committed[1],
+                ("execution.blocked", "denied", "abandoned".into())
+            );
+        }
+        drop(tracker);
+        worker.await.unwrap();
+    }
+
     #[tokio::test]
     async fn wait_idle_errors_when_pending_times_out() {
         let (tx, _rx) = mpsc::unbounded_channel();
         let tracker = TerminalAuditTracker {
-            tx,
-            pending: Arc::new(AtomicUsize::new(1)),
-            failed: Arc::new(AtomicBool::new(false)),
+            queue: AuditSubmissionQueue {
+                tx,
+                pending: Arc::new(AtomicUsize::new(1)),
+                failed: Arc::new(AtomicBool::new(false)),
+            },
         };
         let err = tracker
             .wait_idle(Duration::from_millis(20))
@@ -245,9 +487,11 @@ mod tests {
         let (tx, rx) = mpsc::unbounded_channel();
         drop(rx);
         let tracker = TerminalAuditTracker {
-            tx,
-            pending: Arc::new(AtomicUsize::new(0)),
-            failed: Arc::new(AtomicBool::new(false)),
+            queue: AuditSubmissionQueue {
+                tx,
+                pending: Arc::new(AtomicUsize::new(0)),
+                failed: Arc::new(AtomicBool::new(false)),
+            },
         };
         tracker.submit(draft());
         let err = tracker

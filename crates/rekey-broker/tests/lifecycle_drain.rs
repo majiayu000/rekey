@@ -23,7 +23,7 @@ fn assert_each_started_has_one_terminal(log: &[(Vec<u8>, String)]) {
     for (id, ty) in log {
         match ty.as_str() {
             "execution.started" => *started.entry(id.clone()).or_default() += 1,
-            "execution.finished" | "execution.blocked" => {
+            "execution.finished" | "execution.blocked" | "execution.indeterminate" => {
                 *terminal.entry(id.clone()).or_default() += 1;
             }
             _ => {}
@@ -305,10 +305,10 @@ async fn execution_child_panic_faults_runtime_and_closes_admission() {
     assert_each_started_has_one_terminal(&log);
     assert_eq!(
         log.iter()
-            .filter(|(_, event)| event == "execution.blocked")
+            .filter(|(_, event)| event == "execution.indeterminate")
             .count(),
         1,
-        "panic must produce one abandoned terminal: {log:?}"
+        "panic after transport admission must produce one unknown terminal: {log:?}"
     );
     assert!(!admin_sock.exists() && !agent_sock.exists());
     drop(broker.dir);
@@ -570,10 +570,10 @@ async fn drain_cancel_is_scoped_to_one_running_epoch() {
     assert_each_started_has_one_terminal(&log);
     assert_eq!(
         log.iter()
-            .filter(|(_, event)| event == "execution.blocked")
+            .filter(|(_, event)| event == "execution.indeterminate")
             .count(),
         1,
-        "old epoch cancellation must leave one blocked terminal: {log:?}"
+        "old epoch cancellation after send must leave one unknown terminal: {log:?}"
     );
     assert_eq!(
         log.iter()

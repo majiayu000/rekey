@@ -7,6 +7,51 @@ use tokio::sync::Notify;
 use super::*;
 use crate::audit::spawn_terminal_worker_with;
 
+fn execution_context() -> ExecutionAuditContext {
+    ExecutionAuditContext {
+        request_id: RequestId::new_random(),
+        session_id: SessionId::new_random(),
+        action: ActionVersionRef {
+            action_id: ActionId::new_random(),
+            version: 1,
+        },
+        credential_id: CredentialId::new_random(),
+        authorization: None,
+    }
+}
+
+#[tokio::test]
+async fn drain_linearizes_before_started() {
+    let commits = Arc::new(AtomicUsize::new(0));
+    let (tracker, worker) = spawn_terminal_worker_with({
+        let commits = Arc::clone(&commits);
+        move |_| {
+            commits.fetch_add(1, Ordering::SeqCst);
+            async { Ok(()) }
+        }
+    });
+    let lifecycle = Arc::new(Lifecycle::new());
+    lifecycle.enter_running();
+    let coordinator = lifecycle.coordinate().await;
+    let admission = tokio::spawn({
+        let lifecycle = Arc::clone(&lifecycle);
+        let tracker = Arc::clone(&tracker);
+        async move { commit_started_while_running(&lifecycle, &tracker, execution_context()).await }
+    });
+    tokio::task::yield_now().await;
+
+    lifecycle.enter_draining();
+    drop(coordinator);
+    let err = match admission.await.unwrap() {
+        Ok(_) => panic!("draining admission unexpectedly committed started"),
+        Err(err) => err,
+    };
+    assert_eq!(err.code(), "DRAINING");
+    assert_eq!(commits.load(Ordering::SeqCst), 0);
+    drop(tracker);
+    worker.await.unwrap();
+}
+
 #[test]
 fn sealing_detects_direct_and_encoded_secret() {
     let secret = b"ghp_super_secret_token_value";
@@ -52,19 +97,7 @@ async fn cancellation_after_terminal_submission_does_not_submit_fallback() {
             }
         }
     });
-    let guard = StartedGuard::new(
-        Arc::clone(&tracker),
-        ExecutionAuditContext {
-            request_id: RequestId::new_random(),
-            session_id: SessionId::new_random(),
-            action: ActionVersionRef {
-                action_id: ActionId::new_random(),
-                version: 1,
-            },
-            credential_id: CredentialId::new_random(),
-            authorization: None,
-        },
-    );
+    let guard = StartedAuditGuard::new_for_test(&tracker, execution_context());
     let commit = tokio::spawn(async move {
         let mut guard = guard;
         guard.blocked("test-cancel").await
@@ -89,19 +122,7 @@ async fn closed_remote_effect_gate_commits_one_blocked_terminal() {
             async { Ok(()) }
         }
     });
-    let mut guard = StartedGuard::new(
-        Arc::clone(&tracker),
-        ExecutionAuditContext {
-            request_id: RequestId::new_random(),
-            session_id: SessionId::new_random(),
-            action: ActionVersionRef {
-                action_id: ActionId::new_random(),
-                version: 1,
-            },
-            credential_id: CredentialId::new_random(),
-            authorization: None,
-        },
-    );
+    let mut guard = StartedAuditGuard::new_for_test(&tracker, execution_context());
     let lifecycle = Lifecycle::new();
     let error = try_begin_remote_effect(&lifecycle, &mut guard)
         .await
