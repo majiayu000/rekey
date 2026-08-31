@@ -162,7 +162,7 @@ rows = con.execute("""
     SELECT hex(s.request_id),
            (SELECT count(*) FROM audit_events t
             WHERE t.request_id = s.request_id
-              AND t.event_type IN ('execution.finished', 'execution.blocked'))
+              AND t.event_type IN ('execution.finished', 'execution.blocked', 'execution.indeterminate'))
     FROM audit_events s
     WHERE s.sequence > ? AND s.event_type = 'execution.started'
     ORDER BY s.sequence
@@ -189,7 +189,7 @@ while time.monotonic() < deadline:
           AND NOT EXISTS (
             SELECT 1 FROM audit_events t
             WHERE t.request_id = s.request_id
-              AND t.event_type IN ('execution.finished', 'execution.blocked')
+              AND t.event_type IN ('execution.finished', 'execution.blocked', 'execution.indeterminate')
           )
         ORDER BY s.sequence DESC LIMIT 1
     """).fetchone()
@@ -228,7 +228,7 @@ rows = con.execute("""
       AND NOT EXISTS (
         SELECT 1 FROM audit_events t
         WHERE t.request_id = s.request_id
-          AND t.event_type IN ('execution.finished', 'execution.blocked')
+          AND t.event_type IN ('execution.finished', 'execution.blocked', 'execution.indeterminate')
       )
     ORDER BY s.sequence
 """).fetchall()
@@ -254,8 +254,8 @@ for request_hex in request_ids:
         WHERE hex(request_id) = ? ORDER BY sequence
     """, (request_hex,)).fetchall()
     started = [row for row in rows if row[0] == 'execution.started']
-    terminal = [row for row in rows if row[0] in ('execution.finished', 'execution.blocked')]
-    if len(started) != 1 or len(terminal) != 1 or terminal[0][:2] != ('execution.blocked', 'abandoned-on-restart'):
+    terminal = [row for row in rows if row[0] in ('execution.finished', 'execution.blocked', 'execution.indeterminate')]
+    if len(started) != 1 or len(terminal) != 1 or terminal[0][:2] != ('execution.indeterminate', 'abandoned-on-restart'):
         raise SystemExit(f"bad crash reconciliation for {request_hex}: {rows}")
     if any(value is None for value in started[0][2:]) or terminal[0][2:] != started[0][2:]:
         raise SystemExit(f"crash reconciliation lost authorization evidence for {request_hex}: {rows}")
@@ -264,7 +264,7 @@ unpaired = con.execute("""
     WHERE s.event_type = 'execution.started'
       AND (SELECT count(*) FROM audit_events t
            WHERE t.request_id = s.request_id
-             AND t.event_type IN ('execution.finished', 'execution.blocked')) != 1
+             AND t.event_type IN ('execution.finished', 'execution.blocked', 'execution.indeterminate')) != 1
 """).fetchone()[0]
 if unpaired:
     raise SystemExit(f"found {unpaired} started rows without exactly one terminal")

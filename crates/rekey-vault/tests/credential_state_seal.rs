@@ -174,7 +174,7 @@ async fn retired_version_reactivation_faults_runtime() {
 }
 
 #[tokio::test]
-async fn old_current_version_rollback_faults_even_when_rows_are_consistent() {
+async fn unsealed_current_version_rewrite_faults_even_when_rows_are_consistent() {
     let (vault, handle, join, id) = rotated_vault().await;
     let connection =
         rusqlite::Connection::open(rekey_vault::paths::vault_db(&vault.state_dir)).unwrap();

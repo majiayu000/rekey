@@ -324,7 +324,7 @@ if len(by_request) != 7:
     raise SystemExit(f"expected 7 audited executions, got {len(by_request)}")
 for request_id, events in by_request.items():
     started = sum(event == "execution.started" for event, _ in events)
-    terminal = sum(event in ("execution.finished", "execution.blocked") for event, _ in events)
+    terminal = sum(event in ("execution.finished", "execution.blocked", "execution.indeterminate") for event, _ in events)
     if started != 1 or terminal != 1:
         raise SystemExit(f"orphan or duplicate terminal for {request_id}: {events}")
 blocked = collections.Counter(
@@ -333,9 +333,13 @@ blocked = collections.Counter(
 if blocked != collections.Counter({
     "reflected-secret": 4,
     "response-too-large": 1,
-    "upstream-transport": 1,
 }):
     raise SystemExit(f"unexpected blocked audit reasons: {blocked}")
+indeterminate = collections.Counter(
+    reason for _, event, reason in rows if event == "execution.indeterminate"
+)
+if indeterminate != collections.Counter({"upstream-transport": 1}):
+    raise SystemExit(f"unexpected indeterminate audit reasons: {indeterminate}")
 if sum(event == "execution.finished" for _, event, _ in rows) != 1:
     raise SystemExit("clean request did not have exactly one finished terminal")
 PY

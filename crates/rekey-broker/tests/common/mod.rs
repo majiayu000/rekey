@@ -51,6 +51,7 @@ pub async fn start_broker_with_transport(
     let dir = tempfile::tempdir().expect("tempdir");
     let state_dir = dir.path().join("state");
     init_vault(&state_dir, &SecretInput::from_slice(PASSWORD), TEST_PARAMS).expect("init");
+    rekey_vault::bootstrap::confirm_vault_init(&state_dir).expect("confirm");
 
     let mut config = BrokerConfig::new(state_dir.clone());
     config.idle_lock = idle_lock;
@@ -60,13 +61,15 @@ pub async fn start_broker_with_transport(
     let serve_task = tokio::spawn(async move { serve(config).await });
 
     let admin_sock = state_dir.join("runtime").join("admin.sock");
+    let mut ready = false;
     for _ in 0..200 {
-        if admin_sock.exists() {
+        if UnixStream::connect(&admin_sock).await.is_ok() {
+            ready = true;
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    assert!(admin_sock.exists(), "broker did not come up");
+    assert!(ready, "broker did not come up");
 
     TestBroker {
         dir,

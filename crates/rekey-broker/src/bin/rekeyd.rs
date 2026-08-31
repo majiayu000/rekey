@@ -194,12 +194,13 @@ fn cmd_init(state_dir: Option<PathBuf>, password_stdin: bool) -> Result<(), Reke
         )
         .map_err(|err| usage(format!("cannot read from tty: {err}")))?;
         if confirmed.trim() != tail {
-            rekey_vault::bootstrap::discard_vault_files(&state_dir);
+            rekey_vault::bootstrap::discard_vault_files(&state_dir)?;
             return Err(usage(
                 "recovery key confirmation mismatch; the vault from this init was discarded",
             ));
         }
     }
+    rekey_vault::bootstrap::confirm_vault_init(&state_dir)?;
     Ok(())
 }
 

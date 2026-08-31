@@ -608,7 +608,13 @@ async fn commit_started_while_running(
     terminals: &TerminalAuditTracker,
     ctx: ExecutionAuditContext,
 ) -> Result<StartedAuditGuard, BrokerError> {
-    let _coordinator = lifecycle.coordinate().await;
+    let _coordinator = match lifecycle.try_coordinate() {
+        Ok(owner) => owner,
+        Err(_) if lifecycle.phase() == BrokerPhase::Running => {
+            return Err(BrokerError::Authority(AuthorityError::AuthorityBusy));
+        }
+        Err(_) => return Err(BrokerError::Authority(AuthorityError::Draining)),
+    };
     lifecycle.reject_if_not_running()?;
     terminals
         .commit_started(ctx)

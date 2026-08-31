@@ -412,6 +412,7 @@ PY
 # resource finishes and the remote token is revoked.
 printf '%s\n' slow-resource >"$MODE"
 RESOURCE_BEFORE="$(grep -c '^resource.ok$' "$TRACE" || true)"
+REVOKE_BEFORE="$(grep -c '^revoke.ok$' "$TRACE" || true)"
 "$REKEY" --state-dir "$STATE" execute "$ACTION_REF" --capability "$CAPABILITY" \
   >"$WORKDIR/slow-resource.out" 2>"$WORKDIR/slow-resource.err" &
 SLOW_PID=$!
@@ -420,21 +421,19 @@ for _ in $(seq 1 200); do
   sleep 0.01
 done
 [[ "$(grep -c '^resource.ok$' "$TRACE" || true)" -ge "$((RESOURCE_BEFORE + 1))" ]]
-if "$REKEY" --state-dir "$STATE" lock >"$WORKDIR/lock-busy.out" 2>"$WORKDIR/lock-busy.err"; then
-  LOCK_RC=0
-else
-  LOCK_RC=$?
-fi
-[[ "$LOCK_RC" -eq 7 ]] || {
-  echo "expected cancellation-shielded lock to exit 7, got $LOCK_RC"
+if ! "$REKEY" --state-dir "$STATE" lock >"$WORKDIR/lock.out" 2>"$WORKDIR/lock.err"; then
+  echo "lock did not wait for the cancellation-shielded GitHub effect" >&2
+  cat "$WORKDIR/lock.err" >&2
   exit 1
-}
+fi
 wait "$SLOW_PID"
 grep -q '"id":616161' "$WORKDIR/slow-resource.out"
-"$REKEY" --state-dir "$STATE" lock >/dev/null
+[[ "$(grep -c '^revoke.ok$' "$TRACE" || true)" -eq "$((REVOKE_BEFORE + 1))" ]] || {
+  echo "lock returned before the installation token was revoked" >&2
+  exit 1
+}
 
-# The lock-busy path intentionally raised the lifecycle cancellation epoch.
-# Restart locked so the signal/disconnect scenario begins in a fresh runtime
+# Restart from the completed Locked state so the signal/disconnect scenario begins in a fresh runtime
 # while preserving the same vault, audit log, action, and typed credential.
 "$REKEY" --state-dir "$STATE" shutdown >/dev/null
 wait_pid_bounded "$BROKER_PID" 6
@@ -549,7 +548,7 @@ chain = db.execute("""
     WHERE request_id=?
       AND event_type IN ('execution.started', 'connector.github.authorized',
                          'connector.github.token_revoked', 'execution.finished',
-                         'execution.blocked')
+                         'execution.blocked', 'execution.indeterminate')
     ORDER BY sequence
 """, (row[0],)).fetchall()
 types = [item[0] for item in chain]
@@ -567,7 +566,7 @@ db = sqlite3.connect(db_path)
 def scalar(sql): return db.execute(sql).fetchone()[0]
 if scalar("SELECT count(*) FROM audit_events WHERE event_type='execution.started'") != 16:
     raise SystemExit("expected sixteen started audits")
-if scalar("SELECT count(*) FROM audit_events WHERE event_type IN ('execution.finished','execution.blocked')") != 16:
+if scalar("SELECT count(*) FROM audit_events WHERE event_type IN ('execution.finished','execution.blocked','execution.indeterminate')") != 16:
     raise SystemExit("expected sixteen terminal audits")
 if scalar("SELECT count(*) FROM audit_events WHERE event_type='execution.finished'") != 6:
     raise SystemExit("expected six successful executions")
@@ -586,7 +585,8 @@ rows = db.execute("""
     FROM audit_events
     WHERE request_id IS NOT NULL
       AND event_type IN ('execution.started', 'connector.github.authorized',
-                         'connector.github.token_revoked', 'execution.finished', 'execution.blocked')
+                         'connector.github.token_revoked', 'execution.finished', 'execution.blocked',
+                         'execution.indeterminate')
     ORDER BY sequence
 """).fetchall()
 chains = {}
@@ -597,11 +597,11 @@ if len(chains) != 16:
 without_revoke = 0
 for request_id, chain in chains.items():
     types = [row[2] for row in chain]
-    if types[0] != 'execution.started' or types[-1] not in ('execution.finished', 'execution.blocked'):
+    if types[0] != 'execution.started' or types[-1] not in ('execution.finished', 'execution.blocked', 'execution.indeterminate'):
         raise SystemExit(f"bad terminal ordering for {request_id}: {types}")
     if types.count('execution.started') != 1 or types.count('connector.github.authorized') != 1:
         raise SystemExit(f"missing or duplicate start/authorized for {request_id}: {types}")
-    if sum(t in ('execution.finished', 'execution.blocked') for t in types) != 1:
+    if sum(t in ('execution.finished', 'execution.blocked', 'execution.indeterminate') for t in types) != 1:
         raise SystemExit(f"missing or duplicate terminal for {request_id}: {types}")
     authorized = next(row for row in chain if row[2] == 'connector.github.authorized')
     match = binding_re.fullmatch(authorized[4])

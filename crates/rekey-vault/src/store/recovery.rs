@@ -73,7 +73,7 @@ fn authorization_from_columns(
 }
 
 impl SqliteRecordStore {
-    /// `execution.started` rows that have no finished/blocked twin.
+    /// `execution.started` rows that have no terminal twin.
     pub fn unterminated_executions(&self) -> Result<Vec<UnterminatedExecution>, AuthorityError> {
         let mut stmt = self
             .conn
@@ -87,7 +87,9 @@ impl SqliteRecordStore {
                    AND NOT EXISTS (
                      SELECT 1 FROM audit_events b
                      WHERE b.request_id = a.request_id
-                       AND b.event_type IN ('execution.finished', 'execution.blocked')
+                       AND b.event_type IN (
+                         'execution.finished', 'execution.blocked', 'execution.indeterminate'
+                       )
                    )
                  ORDER BY a.sequence",
             )

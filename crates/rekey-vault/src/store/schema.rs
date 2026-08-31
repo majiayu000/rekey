@@ -1,6 +1,6 @@
 use sha2::{Digest, Sha256};
 
-/// Schema v4. This SQL text is the single source of truth; `schema_digest()`
+/// Schema v5. This SQL text is the single source of truth; `schema_digest()`
 /// hashes its normalized form to detect accidental drift, not tampering.
 pub const SCHEMA_SQL: &str = r#"
 CREATE TABLE vault_header (
@@ -125,7 +125,7 @@ ON audit_events(request_id) WHERE event_type = 'execution.started';
 
 CREATE UNIQUE INDEX one_execution_terminal_per_request
 ON audit_events(request_id)
-WHERE event_type IN ('execution.finished', 'execution.blocked');
+WHERE event_type IN ('execution.finished', 'execution.blocked', 'execution.indeterminate');
 "#;
 
 pub fn schema_digest() -> [u8; 32] {

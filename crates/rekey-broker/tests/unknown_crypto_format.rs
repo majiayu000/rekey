@@ -70,6 +70,7 @@ fn real_rekeyd_rejects_unknown_crypto_format_before_binding_uds() {
         let temp = tempfile::tempdir().unwrap();
         let state_dir = temp.path().join("state");
         init_vault(&state_dir, &SecretInput::from_slice(PASSWORD), TEST_PARAMS).unwrap();
+        rekey_vault::bootstrap::confirm_vault_init(&state_dir).unwrap();
 
         let connection = rusqlite::Connection::open(paths::vault_db(&state_dir)).unwrap();
         if let Some((table, declaration, nullable)) = schema_edit {

@@ -204,6 +204,7 @@ pub mod event_type {
     pub const EXECUTION_STARTED: &str = "execution.started";
     pub const EXECUTION_FINISHED: &str = "execution.finished";
     pub const EXECUTION_BLOCKED: &str = "execution.blocked";
+    pub const EXECUTION_INDETERMINATE: &str = "execution.indeterminate";
     pub const BACKUP_RELEASE_AUTHORIZED: &str = "backup.release_authorized";
     pub const BACKUP_CREATED: &str = "backup.created";
     pub const RESTORE_COMPLETED: &str = "restore.completed";
@@ -214,4 +215,5 @@ pub mod outcome {
     pub const SUCCESS: &str = "success";
     pub const FAILURE: &str = "failure";
     pub const DENIED: &str = "denied";
+    pub const UNKNOWN: &str = "unknown";
 }

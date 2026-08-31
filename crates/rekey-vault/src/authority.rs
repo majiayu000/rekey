@@ -40,8 +40,8 @@ fn reconcile_abandoned_executions(store: &mut SqliteRecordStore) -> Result<(), A
             credential_id: row.credential_id,
             credential_version: None,
             authorization: row.authorization,
-            event_type: event_type::EXECUTION_BLOCKED,
-            outcome: outcome::DENIED,
+            event_type: event_type::EXECUTION_INDETERMINATE,
+            outcome: outcome::UNKNOWN,
             reason_code: "abandoned-on-restart".to_owned(),
             upstream_status: None,
             latency_ms: None,
@@ -283,7 +283,17 @@ impl Worker {
                 let _ = reply.send(result);
             }
             AuthorityCommand::AppendAudit { draft, reply } => {
-                let _ = reply.send(self.append_audit(draft));
+                let execution_completed = matches!(
+                    draft.event_type,
+                    event_type::EXECUTION_FINISHED
+                        | event_type::EXECUTION_BLOCKED
+                        | event_type::EXECUTION_INDETERMINATE
+                );
+                let result = self.append_audit(draft);
+                if execution_completed {
+                    self.touch_if_ok(&result);
+                }
+                let _ = reply.send(result);
             }
             AuthorityCommand::Backup {
                 output,

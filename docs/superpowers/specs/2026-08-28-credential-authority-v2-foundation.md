@@ -348,6 +348,9 @@ pub struct HeaderCredentialUse {
 - prefix 只能是空串或可打印 ASCII + 单个尾随空格，最大 32 bytes；不能包含 CR/LF/NUL。
 - redirect 永远 disabled。
 - Action mutation 创建新 version；已有 session 固定 Action version。
+- SessionCreate 对 Action Active 状态的最终检查与 session mint 必须和
+  ActionUpdate/Disable 的 retirement 线性化；不能在 Active 检查后、mint 前被并发
+  retirement 穿透而签发新的 Retired version session。
 
 ### 8.5 Capability Session
 
@@ -370,6 +373,8 @@ Capability token：
 - 最大 TTL P0 为 24h，默认 1h。
 - `max_uses` 范围 1–10,000，默认 100。
 - restart、lock、shutdown 立即撤销所有 session。
+- SessionRegistry 同时保存基于单调时钟计算的 deadline；墙钟只用于可读审计时间，
+  不能因系统时间回拨延长 capability 的进程内有效期。
 - 每个 Agent request 必须包含 token、ActionId、Action version、RequestId。
 - token 是短期权能，允许交给 Agent；它不能用于 Admin API 或读取 Secret。
 
@@ -435,7 +440,8 @@ DEK --AES-GCM--> encrypted OpaqueToken payload
 ~~~text
 magic               4 bytes  "RKAD"
 aad_version         u16      1
-purpose             u16      1=wrap-vrk, 2=wrap-dek, 3=credential-payload, 4=vault-integrity
+purpose             u16      1=wrap-vrk, 2=wrap-dek, 3=credential-payload, 4=vault-integrity,
+                             5=credential-state
 vault_id            16 bytes
 object_id           16 bytes WrapperId or CredentialId
 object_version      u64
@@ -451,6 +457,24 @@ constraints_hash    32 bytes SHA-256(canonical constraint bytes), zero for P0 pa
 - wrap-vrk：object_id=WrapperId，object_version=1。
 - wrap-dek：object_id=CredentialId，object_version=CredentialVersion。
 - credential-payload：同 CredentialId/version，kind=OpaqueToken。
+- credential-state：object_id=CredentialId，object_version=current_version，kind 为
+  CredentialKind，constraints_hash 为下述 canonical lifecycle record 的 SHA-256。
+
+Credential lifecycle seal 使用 VRK 和独立随机 nonce 对 empty plaintext 做 AES-GCM；
+ciphertext 只有 authentication tag，所有被保护值通过 credential-state AAD 绑定。
+canonical lifecycle record 固定编码为 `"RKCS" || u16(1) || credential_id[16] ||
+u16(label_len) || label_utf8 || u16(kind) || u16(state) || u64(current_version) ||
+i64(created_at_ms) || i64(updated_at_ms) || i64(revoked_at_ms_or_minus_1)`。add、rotate、
+revoke 必须在同一 SQLite transaction 内更新 seal；prepare、list 和后续 mutation 在使用
+metadata 前都先验证 seal。修改 label/kind/state/current_version/timestamps、将 Retired
+version 重新设为 Active，或跨 Credential 复制 seal 均须 `StorageIntegrityFailed` 并使
+已解锁 Authority 进入 Faulted。
+
+该 seal 发现未认证的字段篡改、跨对象复制和只改 current_version/state 的局部修改，
+但无法识别任何以前合法认证过的旧 record、credential subgraph 或完整数据库快照 replay。
+攻击者若预先保存旧 credential row、对应 version rows 和 seal，可能恢复当时的 revoked/
+active 状态。G1 不宣称 rollback freshness；只有 G2 阻止 Agent 访问状态文件，或企业版
+引入数据库外的单调锚点/远程透明日志，才能关闭这类已认证旧状态 replay。
 
 ### 9.4 Nonce Strategy
 
@@ -534,12 +558,12 @@ PRAGMA busy_timeout = 5000;
 - 不允许其他进程打开 SQLite；Admin/Web 读取也通过 AuthorityWorker。
 - 每次启动运行 `PRAGMA quick_check`；失败后保持 Locked 并返回 `StorageIntegrityFailed`。
 
-### 10.3 Schema v4
+### 10.3 Schema v5
 
 ~~~sql
 CREATE TABLE vault_header (
     singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
-    format_version     INTEGER NOT NULL CHECK (format_version = 4),
+    format_version     INTEGER NOT NULL CHECK (format_version = 5),
     vault_id           BLOB NOT NULL CHECK (length(vault_id) = 16),
     crypto_suite       TEXT NOT NULL CHECK (crypto_suite = 'rkca-aes256gcm-argon2id-hkdfsha256-v1'),
     created_at_ms      INTEGER NOT NULL,
@@ -575,7 +599,9 @@ CREATE TABLE credentials (
     current_version    INTEGER NOT NULL CHECK (current_version >= 1),
     created_at_ms      INTEGER NOT NULL,
     updated_at_ms      INTEGER NOT NULL,
-    revoked_at_ms      INTEGER
+    revoked_at_ms      INTEGER,
+    state_nonce        BLOB NOT NULL CHECK (length(state_nonce) = 12),
+    state_ciphertext   BLOB NOT NULL CHECK (length(state_ciphertext) = 16)
 ) STRICT;
 
 CREATE TABLE credential_versions (
@@ -655,16 +681,16 @@ ON audit_events(request_id) WHERE event_type = 'execution.started';
 
 CREATE UNIQUE INDEX one_execution_terminal_per_request
 ON audit_events(request_id)
-WHERE event_type IN ('execution.finished', 'execution.blocked');
+WHERE event_type IN ('execution.finished', 'execution.blocked', 'execution.indeterminate');
 ~~~
 
 schema SQL 是唯一来源；`schema_digest` 是规范化 schema 文件的 SHA-256，用于发现意外 schema drift，不作为恶意管理员防篡改证明。
 
 ### 10.4 Transaction Invariants
 
-- add Credential：insert credentials + version 1 + audit event，一个 transaction。
-- rotate：insert N+1 + retire N + update current_version + audit，一个 transaction。
-- revoke 的 SQLite transaction 只原子提交 credential state、active version state 和 audit。commit 后、Admin 成功响应前，Broker 同步失效所有引用该 Credential 的内存 session；若内存失效失败，Broker 进入 Faulted。两类状态不能伪装成同一数据库事务。即使 session 清理发生故障，每次 Lease 解析仍重新检查持久化 credential state，因此已撤销 Credential 不能产生新 Lease；已经发出的 in-flight Lease 只运行到原有 deadline，P0 不承诺远程撤回已发出的上游请求。
+- add Credential：insert credentials + version 1 + credential-state seal + audit event，一个 transaction。
+- rotate：insert N+1 + retire N + update current_version/state seal + audit，一个 transaction。
+- revoke 的 SQLite transaction 只原子提交 credential state、active version state、credential-state seal 和 audit。commit 后、Admin 成功响应前，Broker 同步失效所有引用该 Credential 的内存 session；若内存失效失败，Broker 进入 Faulted。两类状态不能伪装成同一数据库事务。即使 session 清理发生故障，每次 Lease 解析仍重新检查并认证持久化 credential state，因此已撤销 Credential 不能产生新 Lease；已经发出的 in-flight Lease 只运行到原有 deadline，P0 不承诺远程撤回已发出的上游请求。
 - action create/update：新 version + retire 旧 version + audit，一个 transaction。
 - capability session 不持久化；Broker restart 全部失效。
 - execution started audit commit 成功后才能请求 Credential Lease 和调用上游。
@@ -713,11 +739,15 @@ Broker:
   Draining
     single coordinator (idle / explicit lock / shutdown share one mutex)
     1. set phase Draining; refuse SessionCreate, unlock, credential/action
-       mutations, and new execute (no new execution.started)
+       mutations, and new execute (no new execution.started). Execute admission
+       must take the same lifecycle coordinator only at its final linearization
+       point, re-check Running, and durably enqueue started ownership while the
+       coordinator is held; earlier Running checks are advisory only.
     2. close the session registry and revoke every Session (tokens never
        resurrect after a later unlock)
     3. already-admitted executions continue to their existing deadline
-    4. wait in-flight executions (cap = Action timeout hard max, 120s)
+    4. wait in-flight executions against the one absolute drain deadline
+       (cap = Action timeout hard max, 120s); no nested wait may reset it
     5. if any remain, signal cancel; execute's async abandoned branch must
        commit a terminal audit before returning
     6. wait until every started row has a committed terminal event;
@@ -743,14 +773,14 @@ not reset it.
 
 `SessionRegistry::begin` 为每一次执行返回 RAII permit；Drop 必须释放并发槽，不能依赖成功路径上的手工 `finish()`。创建 Session 与 `close_and_revoke_all` 必须共享同一把 registry 锁，避免 revoke 之后再 mint。
 
-一旦 `execution.started` 提交成功：同一内部 audit ID 必须恰好有一个 terminal 事件（`execution.finished` 或 `execution.blocked`）。terminal 必须在第一次 await 前把唯一提交所有权同步转移给独立 audit worker；调用任务随后被取消也不能取消该 durable commit，`StartedGuard::drop` 也不能再次提交 terminal。worker 的 commit error 或未排空状态必须由 tracker 阻止后续 lock/shutdown 被报告为成功。只有尚未转移 terminal 所有权的 Drop/panic 路径才提交 `blocked/abandoned`；worker 在 Authority shutdown 之前必须排空。进程重启后内存 Session 全部作废；启动时扫描无 terminal 的 started，**追加** `execution.blocked(abandoned-on-restart)`，不改写原 started 行。
+一旦 `execution.started` 提交成功：同一内部 audit ID 必须恰好有一个 terminal 事件（`execution.finished`、`execution.blocked` 或 `execution.indeterminate`）。started 本身也必须先同步转移提交所有权，再允许调用任务进入第一次 await：队列拒绝时不得 arm guard；Authority 明确证明未提交时才能 disarm；提交成功但调用任务在回执前取消时，独立 owner 必须提交唯一 terminal。terminal 同样必须在第一次 await 前把唯一提交所有权同步转移给独立 audit worker；调用任务随后被取消也不能取消该 durable commit，`StartedGuard::drop` 也不能再次提交 terminal。worker 的 commit error 或未排空状态必须由 tracker 阻止后续 lock/shutdown 被报告为成功。只有确定尚未开始远程 effect 的路径可以提交 `blocked/denied`；请求可能已经被上游接收、但响应超时、断链、取消或重启时必须提交 `execution.indeterminate/outcome=unknown`，不能声称 denied。worker 在 Authority shutdown 之前必须排空。进程重启后内存 Session 全部作废；启动时扫描无 terminal 的 started，**追加** `execution.indeterminate(abandoned-on-restart)`，不改写原 started 行。
 
 状态转换不通过多个 `Arc<RwLock<MasterKey>>` 或单独的 `AtomicBool draining` 隐式完成。
 
 ### 11.3 Idle Lock
 
 - 默认 idle timeout 15 minutes，可在 startup config 设置 1–120 minutes。
-- 成功的 Admin command 或 Agent execution completion 更新 worker activity；Broker 读取该时钟并走与 explicit lock 相同的 Draining 路径。
+- 成功的 Admin command 或 Agent execution completion 更新 worker activity；execution completion 的更新时间不得停留在 credential preparation。Broker 读取该时钟并走与 explicit lock 相同的 Draining 路径。
 - 正在执行的 Action 不被 idle timer 中途清除 credential：进入 Draining 后不接受新请求，但已获得 permit 的请求继续到其既有 deadline，然后才 zeroize VRK。
 - 上游 Action P0 最大 timeout 120 seconds；Draining 等待上限与此相同。
 - 显式 lock 等待 in-flight 到其既有 deadline，不生成新重试；完成后 zeroize。
@@ -785,10 +815,13 @@ contract is deliberately small:
 - its resolved path must be disjoint from the resolved state tree: relative
   paths, `..`, symlink aliases, descendants, and ancestors that overlap the
   state tree are rejected before directory permissions are changed;
-- optional group sharing uses a Broker-owned directory at mode 0770 and a
+- optional group sharing uses a Broker-owned directory at mode 0750 and a
   socket at mode 0660; mode 0666 is forbidden;
 - peer identity always comes from `SO_PEERCRED`; a claimed UID in an IPC frame
   is never accepted;
+- every CLI IPC connection verifies that the server socket peer UID is the
+  expected Broker/state owner before sending any frame; pathname ownership is
+  not a substitute for peer verification;
 - directory ownership, group assignment, permission application, or an empty
   allowlist failure aborts startup rather than falling back to the P0 endpoint;
 - the Agent sandbox never receives the state directory, Admin socket, Docker
@@ -802,6 +835,11 @@ socket denial, peer-UID denial, direct-egress denial, and one real capability-
 authorized execution. Passing this harness establishes only the documented
 container/namespace G2 reference boundary; it does not claim resistance to a
 Docker daemon, Linux kernel, VM host, or container-runtime compromise.
+
+The Linux G2 gate requires Docker Engine 26 or newer and must actively prove
+that a canary DNS query from the internal-only Agent network cannot reach an
+external authoritative resolver. A version check alone is insufficient: the
+gate fails if either direct TCP/UDP egress or DNS-based egress succeeds.
 
 ### 12.2 Frame v1
 
@@ -877,6 +915,10 @@ ExecuteFixedHttpAction {
 ~~~
 
 `extra_headers` 只能携带该 Action request policy allowlist 内的普通 Header；出现 allowlist 之外或禁止列表内的 Header 时拒绝整个请求，不做静默剥离。
+
+Agent `Status` 只接受 empty metadata/body；任何额外 body 都按 `INVALID_FRAME`
+拒绝，不能为了状态查询分配或忽略 1 MiB 不透明 payload。Frame header、metadata、
+body 读取共享同一个 30 秒 absolute inactivity deadline，不能按 section 重新计时。
 
 Agent 不能提供：
 
@@ -1083,6 +1125,7 @@ session.revoked
 execution.started
 execution.finished
 execution.blocked
+execution.indeterminate
 backup.release_authorized
 backup.created
 restore.completed
@@ -1091,7 +1134,7 @@ runtime.faulted
 
 每次执行的内部 audit ID 由 Broker 生成。数据库必须拒绝同一内部 ID 的第二条
 `execution.started` 或第二条 terminal（`execution.finished` /
-`execution.blocked`）；重启 reconciliation 只按该内部 ID 配对。Agent 重用
+`execution.blocked` / `execution.indeterminate`）；重启 reconciliation 只按该内部 ID 配对。Agent 重用
 frame `request_id` 不得合并两次执行的审计生命周期。
 
 禁止字段：
@@ -1413,6 +1456,10 @@ Agent connection 不拥有 Action effect。`ActionExecutor::admit` 只执行 cap
 Action/policy/parameter 校验并 durable commit `execution.started`，随后返回
 `AdmittedExecution`；后者持有 Session permit、terminal guard、Credential/upstream
 effect 所需对象，并由 `AdmittedExecution::run` 完成 effect 与唯一 terminal audit。
+admit 在最后提交 started 前必须短暂取得 lifecycle coordinator 并重新检查 Running；
+该锁不得覆盖前面的 Action/policy/parameter 慢路径。started 的独立提交 owner 必须在
+同一次无 await 的入队操作中先取得所有权，再 arm guard；调用任务在 Authority commit
+回执窗口被取消也必须产生唯一 terminal。
 `ExecutionSupervisor` 是 BrokerRuntime 的单用途 child：mpsc 接收 `ExecuteRequest`，
 自己的 `JoinSet` 持有每个 admit/run task，结果通过 oneshot 返回 Agent connection。
 connection 丢弃 response receiver 只丢客户端响应，不能取消 supervisor-owned task。
@@ -1421,6 +1468,12 @@ connection lifetime。Agent connection 丢失 response receiver 后，已经开�
 effect 仍由 supervisor-owned task 持有到该 Action 的单一总 deadline；对已捕获 token
 按 §P2.1 完成有界 revoke attempt、revoke audit 和唯一 terminal，不得承诺 deadline
 耗尽后的绝对远程清理。
+
+普通 HTTP transport 在调用 `send_screened` 前标记 remote effect 已开始。其后发生的
+响应 timeout、断链、drain cancellation 或进程重启均记录唯一
+`execution.indeterminate/outcome=unknown`；只有该标记之前的拒绝才能记录
+`execution.blocked/outcome=denied`。对抗 fixture 必须让本地 TLS upstream 完整读取并
+落盘一个 POST 后不响应，证明最终 terminal 是 indeterminate，且绝不是 denied。
 
 Admin Shutdown、SIGTERM、SIGINT、listener/idle/execution-supervisor fault 必须进入同一个 central stop router，
 且不可逆 stop 只由一次 lifecycle coordinator owner 执行。Admin 在 Locked 时不需要
@@ -1479,6 +1532,8 @@ root select 视作 fault。若 root 已取得 actor 的 completed `JoinHandle` r
 
 新增 typed credential kind 的 breaking schema change 将 durable format bump 到 4；旧非空
 state dir 继续明确拒绝，不提供迁移或兼容读取。
+随后 credential lifecycle seal 将最终 foundation format bump 到 5；当前实现只接受 v5，
+不保留 v4 兼容读取或迁移入口。
 
 首个 P2 垂直切片是一个封闭的 GitHub App Installation profile，不创建通用
 connector registry、provider SDK、控制面或 Agent 可调用的签名/换票接口：

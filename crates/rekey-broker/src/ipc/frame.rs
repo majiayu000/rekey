@@ -32,10 +32,11 @@ pub struct IncomingFrame {
     pub body: Zeroizing<Vec<u8>>,
 }
 
-async fn timed<T>(
+async fn timed_until<T>(
+    deadline: tokio::time::Instant,
     fut: impl std::future::Future<Output = std::io::Result<T>>,
 ) -> Result<T, FrameIoError> {
-    match tokio::time::timeout(FRAME_IO_TIMEOUT, fut).await {
+    match tokio::time::timeout_at(deadline, fut).await {
         Ok(Ok(v)) => Ok(v),
         Ok(Err(err)) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
             Err(FrameIoError::Closed)
@@ -50,8 +51,9 @@ pub async fn read_frame<S: AsyncRead + Unpin>(
     expected_channel: Channel,
     max_body: u32,
 ) -> Result<IncomingFrame, FrameIoError> {
+    let deadline = tokio::time::Instant::now() + FRAME_IO_TIMEOUT;
     let mut header_buf = [0u8; FRAME_HEADER_LEN];
-    timed(stream.read_exact(&mut header_buf)).await?;
+    timed_until(deadline, stream.read_exact(&mut header_buf)).await?;
     let header = FrameHeader::decode(&header_buf)?;
     if header.channel != expected_channel {
         return Err(FrameIoError::Frame(FrameError::UnknownChannel));
@@ -60,9 +62,9 @@ pub async fn read_frame<S: AsyncRead + Unpin>(
         return Err(FrameIoError::Frame(FrameError::SectionTooLarge));
     }
     let mut metadata = vec![0u8; header.metadata_len as usize];
-    timed(stream.read_exact(&mut metadata)).await?;
+    timed_until(deadline, stream.read_exact(&mut metadata)).await?;
     let mut body = Zeroizing::new(vec![0u8; header.body_len as usize]);
-    timed(stream.read_exact(&mut body)).await?;
+    timed_until(deadline, stream.read_exact(&mut body)).await?;
     Ok(IncomingFrame {
         header,
         metadata,
@@ -78,6 +80,7 @@ pub async fn write_frame<S: AsyncWrite + Unpin>(
     metadata: &[u8],
     body: &[u8],
 ) -> Result<(), FrameIoError> {
+    let deadline = tokio::time::Instant::now() + FRAME_IO_TIMEOUT;
     let header = FrameHeader {
         channel,
         flags: 0,
@@ -87,12 +90,12 @@ pub async fn write_frame<S: AsyncWrite + Unpin>(
         body_len: body.len() as u32,
     };
     let header_bytes = header.encode();
-    timed(stream.write_all(&header_bytes)).await?;
-    timed(stream.write_all(metadata)).await?;
+    timed_until(deadline, stream.write_all(&header_bytes)).await?;
+    timed_until(deadline, stream.write_all(metadata)).await?;
     if !body.is_empty() {
-        timed(stream.write_all(body)).await?;
+        timed_until(deadline, stream.write_all(body)).await?;
     }
-    timed(stream.flush()).await?;
+    timed_until(deadline, stream.flush()).await?;
     Ok(())
 }
 

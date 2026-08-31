@@ -352,7 +352,7 @@ TOKEN="$(printf '%s\n' "$SESSION_JSON" | json_field capability_token)"
 activate_policy 2 "$PRINCIPAL"
 sqlite3 "$STATE/vault.sqlite3" <<'SQL'
 CREATE TRIGGER fail_execution_terminal BEFORE INSERT ON audit_events
-WHEN NEW.event_type IN ('execution.finished','execution.blocked')
+WHEN NEW.event_type IN ('execution.finished','execution.blocked','execution.indeterminate')
 BEGIN SELECT RAISE(ABORT, 'injected terminal audit failure'); END;
 SQL
 set +e
@@ -372,7 +372,7 @@ import sqlite3, sys
 db=sqlite3.connect(sys.argv[1])
 rows=db.execute("""SELECT request_id, group_concat(event_type, ',') FROM
  (SELECT request_id,event_type,sequence FROM audit_events WHERE event_type LIKE 'execution.%' ORDER BY sequence)
- GROUP BY request_id HAVING group_concat(event_type, ',')='execution.started,execution.blocked'""").fetchall()
+ GROUP BY request_id HAVING group_concat(event_type, ',')='execution.started,execution.indeterminate'""").fetchall()
 if len(rows)!=1: raise SystemExit(f"reconcile rows: {rows}")
 PY
 

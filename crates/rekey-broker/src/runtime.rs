@@ -209,20 +209,32 @@ impl BrokerCtx {
             self.lifecycle.enter_draining();
             self.sessions.close_and_revoke_all();
         }
-        self.wait_executes_drained().await?;
-        let audit = self.terminals.wait_idle(self.drain_timeout).await;
-        self.authority.lock(reason).await?;
+        let natural_deadline = tokio::time::Instant::now() + self.drain_timeout;
+        let stop_deadline = natural_deadline + Duration::from_secs(5);
+        self.wait_executes_drained_until(natural_deadline, stop_deadline)
+            .await?;
+        let audit = self.terminals.wait_idle_until(stop_deadline).await;
+        match tokio::time::timeout_at(stop_deadline, self.authority.lock(reason)).await {
+            Ok(result) => result?,
+            Err(_) => {
+                return Err(BrokerError::Authority(AuthorityError::AuthorityBusy));
+            }
+        }
         *self.policy.write().await = None;
         self.lifecycle.enter_locked();
         tracing::info!(event = "authority.state", state = "locked", reason);
         audit.map_err(BrokerError::Authority)
     }
 
-    async fn wait_executes_drained(&self) -> Result<(), BrokerError> {
-        wait_in_flight(&self.sessions, self.drain_timeout).await;
+    async fn wait_executes_drained_until(
+        &self,
+        natural_deadline: tokio::time::Instant,
+        stop_deadline: tokio::time::Instant,
+    ) -> Result<(), BrokerError> {
+        wait_in_flight_until(&self.sessions, natural_deadline).await;
         if self.sessions.in_flight_total() > 0 {
             self.lifecycle.signal_cancel();
-            wait_in_flight(&self.sessions, self.drain_timeout).await;
+            wait_in_flight_until(&self.sessions, stop_deadline).await;
         }
         if self.sessions.in_flight_total() > 0 {
             return Err(BrokerError::Authority(AuthorityError::AuthorityBusy));
@@ -231,8 +243,7 @@ impl BrokerCtx {
     }
 }
 
-async fn wait_in_flight(sessions: &SessionRegistry, timeout: Duration) {
-    let deadline = tokio::time::Instant::now() + timeout;
+async fn wait_in_flight_until(sessions: &SessionRegistry, deadline: tokio::time::Instant) {
     loop {
         if sessions.in_flight_total() == 0 {
             return;

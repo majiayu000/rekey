@@ -60,6 +60,10 @@ pub mod harness {
             init_vault(&state_dir, &SecretInput::from_slice(PASSWORD), TEST_PARAMS),
             "initialize test vault",
         );
+        must(
+            rekey_vault::bootstrap::confirm_vault_init(&state_dir),
+            "confirm test vault",
+        );
         let fake = Arc::new(FakeUpstreamTransport::new());
         let mut config = BrokerConfig::new(state_dir.clone());
         config.idle_lock = Duration::from_secs(300);
@@ -71,13 +75,15 @@ pub mod harness {
             must(serve(config).await, "serve test broker");
         });
         let admin_sock = state_dir.join("runtime").join("admin.sock");
+        let mut ready = false;
         for _ in 0..200 {
-            if admin_sock.exists() {
+            if tokio::net::UnixStream::connect(&admin_sock).await.is_ok() {
+                ready = true;
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        assert!(admin_sock.exists(), "broker did not come up");
+        assert!(ready, "broker did not come up");
         TestBroker {
             dir,
             state_dir,

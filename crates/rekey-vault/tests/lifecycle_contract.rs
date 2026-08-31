@@ -88,6 +88,43 @@ async fn idle_timeout_locks() {
 }
 
 #[tokio::test]
+async fn terminal_audit_resets_idle_activity() {
+    use rekey_domain::ids::RequestId;
+    use rekey_vault::command::AuditDraft;
+    use rekey_vault::model::{event_type, outcome};
+
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let before = handle.status().await.unwrap().idle_for_ms;
+    handle
+        .append_audit(AuditDraft {
+            request_id: Some(RequestId::new_random()),
+            session_id: None,
+            action_id: None,
+            action_version: None,
+            credential_id: None,
+            credential_version: None,
+            authorization: None,
+            event_type: event_type::EXECUTION_BLOCKED,
+            outcome: outcome::DENIED,
+            reason_code: "test-complete".to_owned(),
+            upstream_status: None,
+            latency_ms: None,
+        })
+        .await
+        .unwrap();
+    let after = handle.status().await.unwrap().idle_for_ms;
+    assert!(after < before, "terminal audit did not reset activity");
+    handle
+        .shutdown(Some(common::password_proof()))
+        .await
+        .unwrap();
+    join.join().unwrap();
+}
+
+#[tokio::test]
 async fn shutdown_requires_proof_only_when_unlocked() {
     let vault = common::init_test_vault();
 
@@ -160,14 +197,14 @@ async fn startup_reconciles_unterminated_started() {
             id.as_slice() == request_id.as_bytes().as_slice() && ty == "execution.started"
         })
         .count();
-    let blocked = log
+    let indeterminate = log
         .iter()
         .filter(|(id, ty)| {
-            id.as_slice() == request_id.as_bytes().as_slice() && ty == "execution.blocked"
+            id.as_slice() == request_id.as_bytes().as_slice() && ty == "execution.indeterminate"
         })
         .count();
     assert_eq!(started, 1);
-    assert_eq!(blocked, 1);
+    assert_eq!(indeterminate, 1);
 
     let connection = rusqlite::Connection::open(paths::vault_db(&vault.state_dir)).unwrap();
     let mut statement = connection

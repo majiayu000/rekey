@@ -116,6 +116,11 @@ async fn dispatch(
             Ok((metadata, outcome.body))
         }
         agent_msg::AGENT_STATUS => {
+            if !frame.body.is_empty() {
+                return Err(BrokerError::Frame(
+                    rekey_domain::ipc::FrameError::InvalidField,
+                ));
+            }
             let metadata: serde_json::Value = serde_json::from_slice(&frame.metadata)
                 .map_err(|_| BrokerError::Frame(rekey_domain::ipc::FrameError::InvalidField))?;
             if !matches!(metadata, serde_json::Value::Object(ref fields) if fields.is_empty()) {

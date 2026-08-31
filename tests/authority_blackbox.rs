@@ -4,7 +4,7 @@
 use rekey_domain::credential::{CredentialKind, CredentialLabel};
 use rekey_integration::harness as h;
 use rekey_vault::authority::spawn_authority;
-use rekey_vault::bootstrap::init_vault;
+use rekey_vault::bootstrap::{confirm_vault_init, init_vault};
 use rekey_vault::command::UnlockProof;
 use rekey_vault::handle::AuthorityConfig;
 use rekey_vault::secret::SecretInput;
@@ -19,6 +19,7 @@ async fn full_lifecycle_via_public_api() {
         h::TEST_PARAMS,
     )
     .unwrap();
+    confirm_vault_init(&state_dir).unwrap();
 
     let mut config = AuthorityConfig::new(state_dir.clone());
     config.unlock_backoff_base = std::time::Duration::from_millis(10);

@@ -224,7 +224,6 @@ async fn dispatch(
             Ok((json(&metadata)?, Vec::new()))
         }
         admin_msg::ACTION_CREATE | admin_msg::ACTION_UPDATE => {
-            ctx.lifecycle.reject_if_not_running()?;
             let (existing, definition_meta) =
                 if frame.header.message_type == admin_msg::ACTION_UPDATE {
                     let update: ipc::ActionUpdateMeta = meta(frame)?;
@@ -234,6 +233,8 @@ async fn dispatch(
                 };
             let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
             let definition = definition_from_meta(definition_meta)?;
+            let _owner = ctx.lifecycle.coordinate().await;
+            ctx.lifecycle.reject_if_not_running()?;
             let action = ctx
                 .authority
                 .action_upsert(existing, definition, proof_from(kind, proof))
@@ -241,9 +242,10 @@ async fn dispatch(
             Ok((json(&action)?, Vec::new()))
         }
         admin_msg::ACTION_DISABLE => {
-            ctx.lifecycle.reject_if_not_running()?;
             let ref_meta: ipc::ActionRefMeta = meta(frame)?;
             let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
+            let _owner = ctx.lifecycle.coordinate().await;
+            ctx.lifecycle.reject_if_not_running()?;
             ctx.authority
                 .action_disable(ref_meta.action_id, proof_from(kind, proof))
                 .await?;
@@ -260,6 +262,7 @@ async fn dispatch(
             let create: ipc::SessionCreateMeta = meta(frame)?;
             let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
             ctx.authority.verify_proof(proof_from(kind, proof)).await?;
+            let _owner = ctx.lifecycle.coordinate().await;
             ctx.lifecycle.reject_if_not_running()?;
             // New sessions may pin only Active versions. Retired stays
             // executable for grants issued while it was Active.

@@ -354,8 +354,8 @@ pub fn execution_blocked(ctx: &ExecutionAuditContext, reason_code: &str) -> Audi
 
 pub fn execution_indeterminate(ctx: &ExecutionAuditContext, reason_code: &str) -> AuditDraft {
     let mut draft = base(ctx);
-    draft.event_type = "execution.indeterminate";
-    draft.outcome = "unknown";
+    draft.event_type = event_type::EXECUTION_INDETERMINATE;
+    draft.outcome = outcome::UNKNOWN;
     draft.reason_code = reason_code.to_owned();
     draft
 }

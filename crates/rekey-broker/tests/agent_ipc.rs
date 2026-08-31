@@ -15,6 +15,7 @@ async fn empty_agent_uid_allowlist_fails_closed() {
         common::TEST_PARAMS,
     )
     .expect("init vault");
+    rekey_vault::bootstrap::confirm_vault_init(&state_dir).expect("confirm vault");
     let mut config = rekey_broker::runtime::BrokerConfig::new(state_dir);
     config.allowed_agent_uids.clear();
     let err = rekey_broker::runtime::serve(config)
@@ -89,6 +90,16 @@ async fn agent_status_is_redacted() {
     assert!(ok.get("vault_id").is_none());
     assert!(ok.get("format_version").is_none());
     assert!(ok.get("sessions_active").is_none());
+
+    let response = common::call(
+        &broker.agent_sock(),
+        Channel::Agent,
+        agent_msg::AGENT_STATUS,
+        b"{}",
+        b"unexpected-body",
+    )
+    .await;
+    assert_eq!(response.err_code(), "INVALID_FRAME");
     broker.shutdown().await;
 }
 

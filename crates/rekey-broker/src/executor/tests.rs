@@ -1,7 +1,9 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use rekey_domain::ids::{ActionId, CredentialId, SessionId};
+use rekey_domain::authorization::Principal;
+use rekey_domain::capability::SessionGrant;
+use rekey_domain::ids::{ActionId, CredentialId, PrincipalId, SessionId, TenantId};
 use tokio::sync::Notify;
 
 use super::*;
@@ -32,22 +34,66 @@ async fn drain_linearizes_before_started() {
     });
     let lifecycle = Arc::new(Lifecycle::new());
     lifecycle.enter_running();
-    let coordinator = lifecycle.coordinate().await;
-    let admission = tokio::spawn({
-        let lifecycle = Arc::clone(&lifecycle);
-        let tracker = Arc::clone(&tracker);
-        async move { commit_started_while_running(&lifecycle, &tracker, execution_context()).await }
-    });
-    tokio::task::yield_now().await;
-
+    let _coordinator = lifecycle.coordinate().await;
     lifecycle.enter_draining();
-    drop(coordinator);
-    let err = match admission.await.unwrap() {
+    let err = match commit_started_while_running(&lifecycle, &tracker, execution_context()).await {
         Ok(_) => panic!("draining admission unexpectedly committed started"),
         Err(err) => err,
     };
     assert_eq!(err.code(), "DRAINING");
     assert_eq!(commits.load(Ordering::SeqCst), 0);
+    drop(tracker);
+    worker.await.unwrap();
+}
+
+#[tokio::test]
+async fn running_coordinator_contention_fails_without_waiting() {
+    let (tracker, worker) = spawn_terminal_worker_with(|_| async { Ok(()) });
+    let lifecycle = Arc::new(Lifecycle::new());
+    lifecycle.enter_running();
+    let sessions = Arc::new(SessionRegistry::new());
+    sessions.open_for_admission();
+    let action = ActionVersionRef {
+        action_id: ActionId::new_random(),
+        version: 1,
+    };
+    let session_id = SessionId::new_random();
+    let token = sessions
+        .admit(
+            SessionGrant::new(
+                session_id,
+                Principal {
+                    tenant_id: TenantId::new_random(),
+                    principal_id: PrincipalId::new_random(),
+                    session_id,
+                },
+                vec![action],
+                Timestamp::from_unix_ms(0),
+                60_000,
+                1,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let permit = sessions
+        .acquire(&token, action, Timestamp::from_unix_ms(1))
+        .unwrap();
+    assert_eq!(sessions.in_flight_total(), 1);
+    let _coordinator = lifecycle.coordinate().await;
+
+    let result = tokio::time::timeout(
+        Duration::from_millis(50),
+        commit_started_while_running(&lifecycle, &tracker, execution_context()),
+    )
+    .await
+    .expect("final admission gate must not wait behind the drain coordinator");
+    let err = match result {
+        Ok(_) => panic!("contended admission unexpectedly committed started"),
+        Err(err) => err,
+    };
+    assert_eq!(err.code(), "AUTHORITY_BUSY");
+    drop(permit);
+    assert_eq!(sessions.in_flight_total(), 0);
     drop(tracker);
     worker.await.unwrap();
 }

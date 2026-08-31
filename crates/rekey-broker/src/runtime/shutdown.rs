@@ -172,6 +172,18 @@ impl BrokerCtx {
         if let Err(err) = self.terminals.wait_idle_until(stop_deadline).await {
             remember(&mut first_error, BrokerError::Authority(err));
         }
+        if self.terminals.has_pending() {
+            // Never enqueue Authority lock/shutdown behind terminal work that
+            // still belongs to the independent tracker. The bounded runtime
+            // exits non-zero; restart reconciliation closes durable started
+            // rows, but this stop must not claim or reorder a clean shutdown.
+            self.lifecycle.enter_shutting_down();
+            self.publish_shutdown();
+            drop(owner);
+            return StopDisposition::Stopped(first_error.or(Some(BrokerError::Authority(
+                AuthorityError::AuditCommitFailed,
+            ))));
+        }
 
         if status
             .as_ref()

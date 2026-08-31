@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use data_encoding::BASE64URL_NOPAD;
 use rekey_domain::authorization::Principal;
@@ -28,6 +29,7 @@ struct Entry {
     uses_left: u32,
     in_flight: u32,
     revoked: bool,
+    monotonic_deadline: Instant,
 }
 
 pub struct SessionTicket {
@@ -117,11 +119,19 @@ impl SessionRegistry {
     /// `INVALID_CAPABILITY`.
     pub fn admit(&self, grant: SessionGrant) -> Result<String, CreateSessionError> {
         let (raw, encoded) = entropy_token().map_err(CreateSessionError::Domain)?;
+        let ttl_ms = grant
+            .expires_at
+            .as_unix_ms()
+            .saturating_sub(grant.issued_at.as_unix_ms());
+        let monotonic_deadline = Instant::now()
+            .checked_add(Duration::from_millis(ttl_ms as u64))
+            .ok_or(CreateSessionError::Domain(DomainError::InvalidCapability))?;
         let entry = Entry {
             token_hash: hash_token(raw.as_ref()),
             uses_left: grant.max_uses,
             in_flight: 0,
             revoked: false,
+            monotonic_deadline,
             grant,
         };
         let mut inner = self.lock_inner();
@@ -167,7 +177,7 @@ impl SessionRegistry {
         if entry.revoked {
             return Err(DomainError::InvalidCapability);
         }
-        if entry.grant.expired_at(now) {
+        if entry.grant.expired_at(now) || Instant::now() >= entry.monotonic_deadline {
             entry.revoked = true;
             return Err(DomainError::CapabilityExpired);
         }
@@ -275,7 +285,9 @@ impl SessionRegistry {
         self.lock_inner()
             .entries
             .iter()
-            .filter(|e| !e.revoked && !e.grant.expired_at(now))
+            .filter(|e| {
+                !e.revoked && !e.grant.expired_at(now) && Instant::now() < e.monotonic_deadline
+            })
             .count() as u32
     }
 
@@ -381,6 +393,35 @@ mod tests {
         registry.revoke(session_id);
         registry.revoke_all();
         assert!(registry.begin(&token2, r2, now(1)).is_err());
+    }
+
+    #[test]
+    fn monotonic_deadline_survives_wall_clock_rollback() {
+        let registry = open_registry();
+        let r = ActionVersionRef {
+            action_id: ActionId::new_random(),
+            version: 1,
+        };
+        let session_id = SessionId::new_random();
+        let grant = SessionGrant::new(
+            session_id,
+            Principal {
+                tenant_id: TenantId::new_random(),
+                principal_id: PrincipalId::new_random(),
+                session_id,
+            },
+            vec![r],
+            now(0),
+            1,
+            1,
+        )
+        .unwrap();
+        let token = registry.create(grant).unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(matches!(
+            registry.begin(&token, r, now(0)),
+            Err(DomainError::CapabilityExpired)
+        ));
     }
 
     #[test]
