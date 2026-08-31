@@ -117,6 +117,36 @@ fn peer_uid(stream: &UnixStream) -> std::io::Result<u32> {
     Ok(cred.uid)
 }
 
+fn verify_cross_uid_ancestors(
+    mut ancestor: &Path,
+    socket_device: u64,
+    agent_uid: u32,
+) -> Result<(), CliError> {
+    loop {
+        let metadata = std::fs::symlink_metadata(ancestor).map_err(io_err)?;
+        // A device change marks the mount boundary. The Agent cannot rename
+        // the mounted runtime directory through a writable directory above
+        // that boundary; the deployment supplies the mount itself.
+        if metadata.dev() != socket_device {
+            return Ok(());
+        }
+        let mode = metadata.permissions().mode();
+        if !metadata.is_dir()
+            || mode & 0o022 != 0
+            || (metadata.uid() == agent_uid && mode & 0o200 != 0)
+        {
+            return Err(CliError::local(
+                "IPC_UNAVAILABLE",
+                "broker socket has a replaceable runtime ancestor",
+            ));
+        }
+        let Some(parent) = ancestor.parent() else {
+            return Ok(());
+        };
+        ancestor = parent;
+    }
+}
+
 fn verify_socket_contract(socket: &Path) -> Result<std::fs::Metadata, CliError> {
     let socket_metadata = std::fs::symlink_metadata(socket).map_err(io_err)?;
     if !socket_metadata.file_type().is_socket() || socket_metadata.permissions().mode() & 0o007 != 0
@@ -138,6 +168,10 @@ fn verify_socket_contract(socket: &Path) -> Result<std::fs::Metadata, CliError> 
             "IPC_UNAVAILABLE",
             "broker runtime directory ownership or permissions are insecure",
         ));
+    }
+    let agent_uid = unsafe { libc::geteuid() };
+    if socket_metadata.uid() != agent_uid {
+        verify_cross_uid_ancestors(parent, socket_metadata.dev(), agent_uid)?;
     }
     Ok(socket_metadata)
 }
@@ -320,5 +354,30 @@ mod tests {
         let err = Client::connect(&alias, Channel::Agent).err().unwrap();
         assert_eq!(err.code, "IPC_UNAVAILABLE");
         assert!(err.message.contains("socket type"));
+    }
+
+    #[test]
+    fn cross_uid_contract_rejects_agent_owned_writable_ancestor() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let metadata = std::fs::metadata(dir.path()).unwrap();
+        let err = verify_cross_uid_ancestors(dir.path(), metadata.dev(), metadata.uid())
+            .err()
+            .unwrap();
+        assert_eq!(err.code, "IPC_UNAVAILABLE");
+        assert!(err.message.contains("replaceable runtime ancestor"));
+    }
+
+    #[test]
+    fn cross_uid_contract_rejects_group_writable_ancestor() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o770)).unwrap();
+        let metadata = std::fs::metadata(dir.path()).unwrap();
+        let foreign_uid = metadata.uid().wrapping_add(1);
+        let err = verify_cross_uid_ancestors(dir.path(), metadata.dev(), foreign_uid)
+            .err()
+            .unwrap();
+        assert_eq!(err.code, "IPC_UNAVAILABLE");
+        assert!(err.message.contains("replaceable runtime ancestor"));
     }
 }

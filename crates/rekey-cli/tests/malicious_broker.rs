@@ -1,5 +1,6 @@
-//! Process-level attack test: a real `rekey` binary must fail closed when a
-//! same-user process impersonates the Broker and sends a forged RKIP response.
+//! Process-level framing test: a same-UID listener sends forged RKIP responses.
+//! Broker peer-identity authentication is covered by the Linux G2 harness;
+//! this test covers response binding and strict parsing only.
 
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;

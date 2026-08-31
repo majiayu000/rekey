@@ -8,15 +8,18 @@ RUN_ID="rekey-g2-$$"
 IMAGE="$RUN_ID:local"
 BROKER="$RUN_ID-broker"
 AGENT="$RUN_ID-agent"
+FAKE_BROKER="$RUN_ID-fake-broker"
+DNS_TARGET="$RUN_ID-dns-target"
 NETWORK="$RUN_ID-internal"
 STATE_VOLUME="$RUN_ID-state"
 AGENT_VOLUME="$RUN_ID-agent-runtime"
+FAKE_VOLUME="$RUN_ID-fake-runtime"
 BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/rekey-g2.XXXXXX")"
 
 cleanup() {
-  docker rm -f "$AGENT" "$BROKER" >/dev/null 2>&1 || true
+  docker rm -f "$AGENT" "$BROKER" "$FAKE_BROKER" "$DNS_TARGET" >/dev/null 2>&1 || true
   docker network rm "$NETWORK" >/dev/null 2>&1 || true
-  docker volume rm "$STATE_VOLUME" "$AGENT_VOLUME" >/dev/null 2>&1 || true
+  docker volume rm "$STATE_VOLUME" "$AGENT_VOLUME" "$FAKE_VOLUME" >/dev/null 2>&1 || true
   docker image rm "$IMAGE" >/dev/null 2>&1 || true
   rm -rf "$BUILD_DIR"
 }
@@ -58,15 +61,20 @@ print(addresses[0])
 
 tar -C "$ROOT" --exclude=.git --exclude=target -cf - . | tar -C "$BUILD_DIR" -xf -
 cat >"$BUILD_DIR/g2_probe.rs" <<'RUST'
-use std::ffi::c_void;
+use std::ffi::{CString, c_char, c_void};
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::time::Duration;
 
 unsafe extern "C" {
     fn ptrace(request: i32, pid: i32, addr: *mut c_void, data: *mut c_void) -> i64;
+    fn chown(path: *const c_char, owner: u32, group: u32) -> i32;
+    fn chmod(path: *const c_char, mode: u32) -> i32;
+    fn setgid(gid: u32) -> i32;
+    fn setuid(uid: u32) -> i32;
 }
 
 fn main() {
@@ -96,6 +104,21 @@ fn main() {
                 std::process::exit(1);
             }
             let _listener = UnixListener::bind(path).expect("replace Agent socket");
+        }
+        Some("fake-broker") => {
+            let path = Path::new(args.get(2).expect("fake socket path"));
+            let parent = path.parent().expect("fake runtime parent");
+            std::fs::create_dir_all(parent).expect("create fake runtime");
+            let parent_c = CString::new(parent.as_os_str().as_bytes()).expect("parent CString");
+            assert_eq!(unsafe { chown(parent_c.as_ptr(), 10001, 20000) }, 0);
+            assert_eq!(unsafe { chmod(parent_c.as_ptr(), 0o750) }, 0);
+            let listener = UnixListener::bind(path).expect("bind fake Broker");
+            let path_c = CString::new(path.as_os_str().as_bytes()).expect("path CString");
+            assert_eq!(unsafe { chown(path_c.as_ptr(), 10001, 20000) }, 0);
+            assert_eq!(unsafe { chmod(path_c.as_ptr(), 0o660) }, 0);
+            assert_eq!(unsafe { setgid(12345) }, 0);
+            assert_eq!(unsafe { setuid(12345) }, 0);
+            let _stream = listener.accept().expect("accept attacked CLI").0;
         }
         Some("ptrace") => {
             let pid: i32 = args.get(2).expect("pid").parse().expect("numeric pid");
@@ -148,7 +171,7 @@ fn main() {
             }
         }
         _ => panic!(
-            "usage: g2-probe connect HOST:PORT | resolve HOST | ptrace PID | agent-status SOCKET allowed|denied | replace-socket SOCKET"
+            "usage: g2-probe connect HOST:PORT | resolve HOST | ptrace PID | agent-status SOCKET allowed|denied | replace-socket SOCKET | fake-broker SOCKET"
         ),
     }
 }
@@ -170,6 +193,7 @@ docker build --pull=false --quiet --tag "$IMAGE" "$BUILD_DIR" >/dev/null
 docker network create --internal "$NETWORK" >/dev/null
 docker volume create "$STATE_VOLUME" >/dev/null
 docker volume create "$AGENT_VOLUME" >/dev/null
+docker volume create "$FAKE_VOLUME" >/dev/null
 docker run --rm \
   --volume "$STATE_VOLUME:/state" \
   --volume "$AGENT_VOLUME:/run/rekey-agent" \
@@ -286,6 +310,13 @@ docker run -d --name "$AGENT" \
   --tmpfs /tmp:rw,noexec,nosuid,nodev,mode=1777 \
   "$IMAGE" sleep infinity >/dev/null
 
+docker run -d --name "$DNS_TARGET" \
+  --read-only \
+  --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --network "$NETWORK" \
+  "$IMAGE" sleep infinity >/dev/null
+
 INSPECT="$(docker inspect "$AGENT" --format '{{json .HostConfig}}')"
 printf '%s' "$INSPECT" | python3 -c '
 import json,sys
@@ -305,8 +336,14 @@ docker exec "$AGENT" test ! -S /var/run/docker.sock || fail "Docker socket is vi
 if docker exec "$AGENT" g2-probe connect example.com:443 >/dev/null 2>&1; then
   fail "Agent has direct egress"
 fi
+# Positive control: Docker's embedded resolver can still resolve peers on the
+# internal network. The negative assertion below proves only that public-name
+# resolution is blocked; without authoritative telemetry it does not prove
+# that no external DNS query packet was emitted.
+docker exec "$AGENT" g2-probe resolve "$DNS_TARGET" >/dev/null 2>&1 \
+  || fail "internal-network DNS positive control failed"
 if docker exec "$AGENT" g2-probe resolve www.cloudflare.com >/dev/null 2>&1; then
-  fail "Agent has DNS egress from an internal network (CVE-2024-29018 boundary failed)"
+  fail "external DNS resolution succeeded from an internal network"
 fi
 
 # The read-only reference mount is defense in depth, not the endpoint's only
@@ -326,6 +363,38 @@ if docker run --rm \
 fi
 docker exec "$BROKER" test -S /run/rekey-agent/agent.sock \
   || fail "replacement attack removed the Broker socket"
+
+# Metadata alone is not Broker authentication. This listener makes its path
+# look Broker-owned, then drops to a foreign UID before the real release CLI
+# connects. The CLI must reject the SO_PEERCRED mismatch before sending the
+# capability or any RKIP frame.
+docker run -d --name "$FAKE_BROKER" \
+  --volume "$FAKE_VOLUME:/run/rekey-fake" \
+  "$IMAGE" g2-probe fake-broker /run/rekey-fake/agent.sock >/dev/null
+for _ in $(seq 1 200); do
+  docker exec "$FAKE_BROKER" test -S /run/rekey-fake/agent.sock && break
+  sleep 0.05
+done
+docker exec "$FAKE_BROKER" test -S /run/rekey-fake/agent.sock \
+  || fail "foreign-UID fake Broker socket missing"
+set +e
+FAKE_OUTPUT="$(printf '%s\n' "$CAPABILITY" | docker run --rm -i \
+  --user 0:0 \
+  --group-add 20000 \
+  --read-only \
+  --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --network "$NETWORK" \
+  --volume "$FAKE_VOLUME:/run/rekey-fake:ro" \
+  --tmpfs /tmp:rw,noexec,nosuid,nodev,mode=1777 \
+  "$IMAGE" rekey --state-dir /tmp/unused \
+    --agent-socket /run/rekey-fake/agent.sock execute "$ACTION_REF" --capability - 2>&1)"
+FAKE_STATUS=$?
+set -e
+[[ "$FAKE_STATUS" == "7" ]] \
+  || fail "foreign-UID fake Broker returned exit $FAKE_STATUS instead of IPC_UNAVAILABLE: $FAKE_OUTPUT"
+printf '%s' "$FAKE_OUTPUT" | grep -Fq 'connected peer is not the Broker' \
+  || fail "foreign-UID fake Broker did not fail on peer mismatch: $FAKE_OUTPUT"
 
 BROKER_HOST_PID="$(docker inspect "$BROKER" --format '{{.State.Pid}}')"
 docker exec "$AGENT" g2-probe ptrace "$BROKER_HOST_PID" \
@@ -363,5 +432,5 @@ printf '%s\n' "$PASSWORD" | docker exec -i "$BROKER" \
 echo "linux-g2: PASS"
 echo "linux-g2: engine=$DOCKER_ENGINE_VERSION kernel=$(docker version --format '{{.Server.KernelVersion}}') arch=$(docker version --format '{{.Server.Arch}}')"
 echo "linux-g2: public-endpoint=example.com/$EXAMPLE_IP (DoH-pinned; direct TLS)"
-echo "linux-g2: proved=uid,pid,ptrace,state,admin,docker-socket,socket-replacement,direct-egress,dns-egress,broker-peer,approved-execute"
+echo "linux-g2: proved=uid,pid,ptrace,state,admin,docker-socket,socket-replacement,direct-egress,internal-dns-positive,external-dns-resolution-blocked,broker-peer-mismatch,approved-execute"
 echo "linux-g2: limitation=does-not-cover-kernel,docker-daemon,vm-host,container-runtime-compromise"
