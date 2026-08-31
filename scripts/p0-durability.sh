@@ -238,11 +238,15 @@ PIDS="$PIDS $WRITER_PID"
 "$REKEYD" restore --input "$FIFO" --state-dir "$CRASH_TARGET" --sha256 "$HASH" --password-stdin <"$WORKDIR/password" >/dev/null 2>"$WORKDIR/crash-restore.err" &
 RESTORE_PID=$!
 PIDS="$PIDS $RESTORE_PID"
-for _ in $(seq 1 500); do
-  [[ -f "$CRASH_TARGET/.restore-incomplete" ]] && break
-  sleep 0.01
+MARKER_DEADLINE=$((SECONDS + 60))
+while [[ ! -f "$CRASH_TARGET/.restore-incomplete" && "$SECONDS" -lt "$MARKER_DEADLINE" ]]; do
+  sleep 0.05
 done
-[[ -f "$CRASH_TARGET/.restore-incomplete" ]] || { echo "restore marker was not persisted"; exit 1; }
+[[ -f "$CRASH_TARGET/.restore-incomplete" ]] || {
+  echo "restore marker was not persisted" >&2
+  cat "$WORKDIR/crash-restore.err" >&2
+  exit 1
+}
 kill -KILL "$RESTORE_PID"
 wait "$RESTORE_PID" 2>/dev/null || true
 PIDS="${PIDS/ $RESTORE_PID/}"

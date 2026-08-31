@@ -79,6 +79,13 @@ pub fn copy_files_and_sha256(
 ) -> io::Result<String> {
     source.seek(SeekFrom::Start(0))?;
     destination.seek(SeekFrom::Start(0))?;
+    copy_reader_and_sha256(source, destination)
+}
+
+fn copy_reader_and_sha256(
+    source: &mut impl Read,
+    destination: &mut fs::File,
+) -> io::Result<String> {
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; COPY_BUFFER_BYTES];
     loop {
@@ -98,7 +105,7 @@ pub fn copy_files_and_sha256(
 pub fn copy_and_sha256(source: &Path, destination: &Path) -> io::Result<String> {
     let mut source = fs::File::open(source)?;
     let mut destination = create_new_file(destination)?;
-    copy_files_and_sha256(&mut source, &mut destination)
+    copy_reader_and_sha256(&mut source, &mut destination)
 }
 
 pub fn remove_file_and_sync(path: &Path) -> io::Result<()> {
@@ -151,6 +158,8 @@ pub fn ensure_outside_tree(destination: &Path, protected_root: &Path) -> io::Res
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
@@ -197,6 +206,25 @@ mod tests {
 
         remove_file_and_sync(&destination).unwrap();
         assert!(!destination.exists());
+    }
+
+    #[test]
+    fn streaming_copy_accepts_fifo_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.fifo");
+        let destination = dir.path().join("destination");
+        let source_c = CString::new(source.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(source_c.as_ptr(), 0o600) }, 0);
+
+        let payload = vec![0x5a; COPY_BUFFER_BYTES * 3 + 17];
+        let writer_payload = payload.clone();
+        let writer_source = source.clone();
+        let writer = std::thread::spawn(move || fs::write(writer_source, writer_payload));
+
+        let copied_hash = copy_and_sha256(&source, &destination).unwrap();
+        writer.join().unwrap().unwrap();
+        assert_eq!(copied_hash, sha256_file(&destination).unwrap());
+        assert_eq!(fs::read(destination).unwrap(), payload);
     }
 
     #[test]
