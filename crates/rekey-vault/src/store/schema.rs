@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 pub const SCHEMA_SQL: &str = r#"
 CREATE TABLE vault_header (
     singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
-    format_version     INTEGER NOT NULL CHECK (format_version = 4),
+    format_version     INTEGER NOT NULL CHECK (format_version = 5),
     vault_id           BLOB NOT NULL CHECK (length(vault_id) = 16),
     crypto_suite       TEXT NOT NULL CHECK (crypto_suite = 'rkca-aes256gcm-argon2id-hkdfsha256-v1'),
     created_at_ms      INTEGER NOT NULL,
@@ -41,7 +41,9 @@ CREATE TABLE credentials (
     current_version    INTEGER NOT NULL CHECK (current_version >= 1),
     created_at_ms      INTEGER NOT NULL,
     updated_at_ms      INTEGER NOT NULL,
-    revoked_at_ms      INTEGER
+    revoked_at_ms      INTEGER,
+    state_nonce        BLOB NOT NULL CHECK (length(state_nonce) = 12),
+    state_ciphertext   BLOB NOT NULL CHECK (length(state_ciphertext) = 16)
 ) STRICT;
 
 CREATE TABLE credential_versions (

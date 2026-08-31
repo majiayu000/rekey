@@ -39,7 +39,7 @@ pub(super) fn blob32(v: Vec<u8>) -> Result<[u8; 32], AuthorityError> {
 }
 
 impl SqliteRecordStore {
-    /// Creates a brand-new database file with schema v4. Fails if the file
+    /// Creates a brand-new database file with schema v5. Fails if the file
     /// already exists.
     pub fn create(path: &Path) -> Result<Self, AuthorityError> {
         if path.exists() {
@@ -54,7 +54,7 @@ impl SqliteRecordStore {
         })
     }
 
-    /// Opens an existing v3 database, verifying pragmas, integrity, format
+    /// Opens an existing v5 database, verifying pragmas, integrity, format
     /// version, and schema digest. Never migrates and never creates.
     pub fn open(path: &Path) -> Result<Self, AuthorityError> {
         if !path.exists() {
@@ -166,8 +166,8 @@ impl SqliteRecordStore {
     ) -> Result<(), AuthorityError> {
         let tx = self.conn.transaction().map_err(storage)?;
         let inserted = tx.execute(
-            "INSERT OR IGNORE INTO credentials (credential_id, label, kind, state, current_version, created_at_ms, updated_at_ms, revoked_at_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL)",
+            "INSERT OR IGNORE INTO credentials (credential_id, label, kind, state, current_version, created_at_ms, updated_at_ms, revoked_at_ms, state_nonce, state_ciphertext)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 record.credential_id.as_bytes().as_slice(),
                 record.label,
@@ -176,6 +176,9 @@ impl SqliteRecordStore {
                 record.current_version as i64,
                 record.created_at_ms,
                 record.updated_at_ms,
+                record.revoked_at_ms,
+                record.state_nonce.as_slice(),
+                record.state_ciphertext.as_slice(),
             ],
         )
         .map_err(storage)?;
@@ -189,11 +192,12 @@ impl SqliteRecordStore {
 
     pub fn rotate_credential(
         &mut self,
-        credential_id: CredentialId,
+        updated_record: &CredentialRecord,
         new_version: &CredentialVersionRecord,
         now_ms: i64,
         audit: AuditEvent,
     ) -> Result<(), AuthorityError> {
+        let credential_id = updated_record.credential_id;
         let tx = self.conn.transaction().map_err(storage)?;
         tx.execute(
             "UPDATE credential_versions SET state = 'retired', retired_at_ms = ?2
@@ -204,12 +208,15 @@ impl SqliteRecordStore {
         insert_version(&tx, new_version)?;
         let updated = tx
             .execute(
-                "UPDATE credentials SET current_version = ?2, updated_at_ms = ?3
+                "UPDATE credentials SET current_version = ?2, updated_at_ms = ?3,
+                        state_nonce = ?4, state_ciphertext = ?5
                  WHERE credential_id = ?1 AND state = 'active'",
                 params![
                     credential_id.as_bytes().as_slice(),
-                    new_version.version as i64,
-                    now_ms
+                    updated_record.current_version as i64,
+                    updated_record.updated_at_ms,
+                    updated_record.state_nonce.as_slice(),
+                    updated_record.state_ciphertext.as_slice(),
                 ],
             )
             .map_err(storage)?;
@@ -222,16 +229,24 @@ impl SqliteRecordStore {
 
     pub fn revoke_credential(
         &mut self,
-        credential_id: CredentialId,
+        updated_record: &CredentialRecord,
         now_ms: i64,
         audit: AuditEvent,
     ) -> Result<(), AuthorityError> {
+        let credential_id = updated_record.credential_id;
         let tx = self.conn.transaction().map_err(storage)?;
         let updated = tx
             .execute(
-                "UPDATE credentials SET state = 'revoked', revoked_at_ms = ?2, updated_at_ms = ?2
+                "UPDATE credentials SET state = 'revoked', revoked_at_ms = ?2, updated_at_ms = ?3,
+                        state_nonce = ?4, state_ciphertext = ?5
                  WHERE credential_id = ?1 AND state = 'active'",
-                params![credential_id.as_bytes().as_slice(), now_ms],
+                params![
+                    credential_id.as_bytes().as_slice(),
+                    updated_record.revoked_at_ms,
+                    updated_record.updated_at_ms,
+                    updated_record.state_nonce.as_slice(),
+                    updated_record.state_ciphertext.as_slice(),
+                ],
             )
             .map_err(storage)?;
         if updated == 0 {
@@ -250,7 +265,7 @@ impl SqliteRecordStore {
     pub fn get_credential(&self, id: CredentialId) -> Result<CredentialRecord, AuthorityError> {
         self.conn
             .query_row(
-                "SELECT credential_id, label, kind, state, current_version, created_at_ms, updated_at_ms, revoked_at_ms
+                "SELECT credential_id, label, kind, state, current_version, created_at_ms, updated_at_ms, revoked_at_ms, state_nonce, state_ciphertext
                  FROM credentials WHERE credential_id = ?1",
                 params![id.as_bytes().as_slice()],
                 credential_from_row,
@@ -265,7 +280,7 @@ impl SqliteRecordStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT credential_id, label, kind, state, current_version, created_at_ms, updated_at_ms, revoked_at_ms
+                "SELECT credential_id, label, kind, state, current_version, created_at_ms, updated_at_ms, revoked_at_ms, state_nonce, state_ciphertext
                  FROM credentials ORDER BY created_at_ms",
             )
             .map_err(storage)?;
@@ -609,6 +624,8 @@ fn credential_from_row(r: &rusqlite::Row<'_>) -> RowResult<CredentialRecord> {
     let created_at_ms: i64 = r.get(5)?;
     let updated_at_ms: i64 = r.get(6)?;
     let revoked_at_ms: Option<i64> = r.get(7)?;
+    let state_nonce: Vec<u8> = r.get(8)?;
+    let state_ciphertext: Vec<u8> = r.get(9)?;
     Ok((|| {
         Ok(CredentialRecord {
             credential_id: CredentialId::from_bytes(blob16(credential_id)?)
@@ -622,6 +639,8 @@ fn credential_from_row(r: &rusqlite::Row<'_>) -> RowResult<CredentialRecord> {
             created_at_ms,
             updated_at_ms,
             revoked_at_ms,
+            state_nonce: blob12(state_nonce)?,
+            state_ciphertext: blob16(state_ciphertext)?,
         })
     })())
 }

@@ -104,7 +104,7 @@ impl SqliteRecordStore {
     }
 
     /// Proves the cross-row state machine that runtime decryption assumes.
-    pub(super) fn validate_credential_version_invariants(&self) -> Result<(), AuthorityError> {
+    pub fn validate_credential_version_invariants(&self) -> Result<(), AuthorityError> {
         let inconsistent: bool = self
             .conn
             .query_row(

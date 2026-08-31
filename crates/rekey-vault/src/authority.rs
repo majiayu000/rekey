@@ -5,9 +5,7 @@
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rekey_domain::action::FixedHttpAction;
-use rekey_domain::credential::{
-    CredentialKind, CredentialLabel, CredentialMetadata, CredentialState, VersionState,
-};
+use rekey_domain::credential::CredentialState;
 use rekey_domain::ids::{ActionId, CredentialId};
 use subtle::ConstantTimeEq;
 use tokio::sync::mpsc;
@@ -16,17 +14,13 @@ use crate::bootstrap::{kek_for_wrapper, unwrap_vrk, verify_state_dir_permissions
 use crate::command::{
     ActionDefinition, AuditDraft, AuthorityCommand, PinnedAction, StatusInfo, UnlockProof,
 };
-use crate::convert::{action_to_record, record_to_action, record_to_metadata};
-use crate::crypto::aad::{AadPurpose, AadV1};
-use crate::crypto::keys::{DataKey, RootKey};
-use crate::crypto::{AAD_VERSION_V1, CRYPTO_SUITE_V1, aead, random_array};
+use crate::convert::{action_to_record, record_to_action};
+use crate::crypto::keys::RootKey;
+use crate::crypto::random_array;
 use crate::error::AuthorityError;
 use crate::handle::{AuthorityConfig, AuthorityHandle};
-use crate::model::{
-    AuditEvent, CredentialRecord, CredentialVersionRecord, WrapperKind, event_type, outcome,
-};
+use crate::model::{AuditEvent, WrapperKind, event_type, outcome};
 use crate::paths;
-use crate::secret::SecretInput;
 use crate::store::SqliteRecordStore;
 
 mod backup;
@@ -455,163 +449,6 @@ impl Worker {
         ))
     }
 
-    fn encrypt_new_version(
-        &self,
-        credential_id: CredentialId,
-        version: u64,
-        kind: CredentialKind,
-        secret: &SecretInput,
-        vrk: &RootKey,
-    ) -> Result<CredentialVersionRecord, AuthorityError> {
-        let dek = DataKey::generate()?;
-        let payload_aad = AadV1 {
-            purpose: AadPurpose::CredentialPayload,
-            vault_id: self.header.vault_id,
-            object_id: *credential_id.as_bytes(),
-            object_version: version,
-            credential_kind: kind.aad_code(),
-            constraints_hash: [0u8; 32],
-        }
-        .encode();
-        let payload = aead::seal(dek.bytes(), &payload_aad, secret.expose())?;
-        let dek_aad = AadV1 {
-            purpose: AadPurpose::WrapDek,
-            vault_id: self.header.vault_id,
-            object_id: *credential_id.as_bytes(),
-            object_version: version,
-            credential_kind: 0,
-            constraints_hash: [0u8; 32],
-        }
-        .encode();
-        let wrapped = aead::seal(vrk.bytes(), &dek_aad, dek.bytes())?;
-        Ok(CredentialVersionRecord {
-            credential_id,
-            version,
-            state: VersionState::Active,
-            aad_version: AAD_VERSION_V1,
-            crypto_suite: CRYPTO_SUITE_V1.to_owned(),
-            dek_nonce: wrapped.nonce,
-            wrapped_dek: wrapped.ciphertext,
-            payload_nonce: payload.nonce,
-            encrypted_payload: payload.ciphertext,
-            created_at_ms: now_ms(),
-            retired_at_ms: None,
-        })
-    }
-
-    fn credential_add(
-        &mut self,
-        label: CredentialLabel,
-        kind: CredentialKind,
-        secret: SecretInput,
-        proof: UnlockProof,
-    ) -> Result<CredentialMetadata, AuthorityError> {
-        self.require_unlocked()?;
-        self.verify_proof(&proof)?;
-        if secret.is_empty() {
-            return Err(AuthorityError::Domain(
-                rekey_domain::DomainError::InvalidCapability,
-            ));
-        }
-        let VaultState::Unlocked { vrk } = &self.state else {
-            return Err(AuthorityError::Locked);
-        };
-        let credential_id = CredentialId::new_random();
-        let now = now_ms();
-        let version = self.encrypt_new_version(credential_id, 1, kind, &secret, vrk)?;
-        let record = CredentialRecord {
-            credential_id,
-            label: label.as_str().to_owned(),
-            kind,
-            state: CredentialState::Active,
-            current_version: 1,
-            created_at_ms: now,
-            updated_at_ms: now,
-            revoked_at_ms: None,
-        };
-        let audit = self.audit_event(credential_audit(
-            event_type::CREDENTIAL_CREATED,
-            credential_id,
-            1,
-            "add",
-        ))?;
-        self.store.insert_credential(&record, &version, audit)?;
-        record_to_metadata(&record)
-    }
-
-    fn credential_list(&self) -> Result<Vec<CredentialMetadata>, AuthorityError> {
-        self.require_unlocked()?;
-        self.store
-            .list_credentials()?
-            .iter()
-            .map(record_to_metadata)
-            .collect()
-    }
-
-    fn credential_rotate(
-        &mut self,
-        credential_id: CredentialId,
-        secret: SecretInput,
-        proof: UnlockProof,
-    ) -> Result<CredentialMetadata, AuthorityError> {
-        self.require_unlocked()?;
-        self.verify_proof(&proof)?;
-        let existing = self.store.get_credential(credential_id)?;
-        if existing.state != CredentialState::Active {
-            return Err(AuthorityError::CredentialRevoked);
-        }
-        if existing.kind != CredentialKind::OpaqueToken {
-            return Err(AuthorityError::Domain(
-                rekey_domain::DomainError::InvalidActionDefinition(
-                    "generic rotate only supports opaque-token credentials".to_owned(),
-                ),
-            ));
-        }
-        let VaultState::Unlocked { vrk } = &self.state else {
-            return Err(AuthorityError::Locked);
-        };
-        let next = existing.current_version + 1;
-        let version = self.encrypt_new_version(
-            credential_id,
-            next,
-            CredentialKind::OpaqueToken,
-            &secret,
-            vrk,
-        )?;
-        let audit = self.audit_event(credential_audit(
-            event_type::CREDENTIAL_ROTATED,
-            credential_id,
-            next,
-            "rotate",
-        ))?;
-        self.store
-            .rotate_credential(credential_id, &version, now_ms(), audit)?;
-        self.store
-            .get_credential(credential_id)
-            .and_then(|r| record_to_metadata(&r))
-    }
-
-    fn credential_revoke(
-        &mut self,
-        credential_id: CredentialId,
-        proof: UnlockProof,
-    ) -> Result<CredentialMetadata, AuthorityError> {
-        self.require_unlocked()?;
-        self.verify_proof(&proof)?;
-        let existing = self.store.get_credential(credential_id)?;
-        let audit = self.audit_event(credential_audit(
-            event_type::CREDENTIAL_REVOKED,
-            credential_id,
-            existing.current_version,
-            "revoke",
-        ))?;
-        self.store
-            .revoke_credential(credential_id, now_ms(), audit)?;
-        self.store
-            .get_credential(credential_id)
-            .and_then(|r| record_to_metadata(&r))
-    }
-
     fn action_upsert(
         &mut self,
         existing: Option<ActionId>,
@@ -620,7 +457,7 @@ impl Worker {
     ) -> Result<FixedHttpAction, AuthorityError> {
         self.require_unlocked()?;
         self.verify_proof(&proof)?;
-        let credential = self.store.get_credential(definition.credential_id)?;
+        let credential = self.load_verified_credential(definition.credential_id)?;
         if credential.state != CredentialState::Active {
             return Err(AuthorityError::CredentialRevoked);
         }

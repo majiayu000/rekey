@@ -1,5 +1,6 @@
 pub mod aad;
 pub mod aead;
+pub mod credential_state;
 pub mod kdf;
 pub mod keys;
 pub mod recovery;

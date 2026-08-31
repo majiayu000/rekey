@@ -12,6 +12,7 @@ use rekey_domain::ids::{VaultId, WrapperId};
 use zeroize::Zeroizing;
 
 use crate::crypto::aad::{AadPurpose, AadV1};
+use crate::crypto::credential_state;
 use crate::crypto::kdf::{
     Argon2Params, KDF_ALGORITHM_ARGON2ID, KDF_ALGORITHM_HKDF_SHA256, derive_password_kek,
     derive_recovery_kek,
@@ -425,7 +426,7 @@ fn remove_init_marker(state_dir: &Path) -> Result<(), AuthorityError> {
         .map_err(AuthorityError::storage)
 }
 
-/// Offline restore of a v4 backup into an empty target state directory.
+/// Offline restore of a v5 backup into an empty target state directory.
 /// `expected_sha256_hex` is the backup receipt hash and is mandatory.
 pub fn restore_vault(
     backup_file: &Path,
@@ -495,6 +496,7 @@ fn restore_inner(
     let kek = kek_for_wrapper(&wrapper, secret)?;
     let vrk = unwrap_vrk(header.vault_id, &wrapper, &kek)?;
     prove_integrity(&header, &vrk)?;
+    prove_all_credential_states(&store, header.vault_id, &vrk)?;
     prove_all_payloads(&store, header.vault_id, &vrk)?;
 
     store.append_audit(&AuditEvent {
@@ -663,6 +665,18 @@ fn prove_all_payloads(
         )
         .map_err(|_| AuthorityError::CryptoFailure)?;
         drop(payload);
+    }
+    Ok(())
+}
+
+fn prove_all_credential_states(
+    store: &SqliteRecordStore,
+    vault_id: VaultId,
+    vrk: &RootKey,
+) -> Result<(), AuthorityError> {
+    store.validate_credential_version_invariants()?;
+    for record in store.list_credentials()? {
+        credential_state::verify(vrk.bytes(), vault_id, &record)?;
     }
     Ok(())
 }

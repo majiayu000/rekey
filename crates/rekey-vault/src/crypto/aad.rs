@@ -11,6 +11,7 @@ pub enum AadPurpose {
     WrapDek,
     CredentialPayload,
     VaultIntegrity,
+    CredentialState,
 }
 
 impl AadPurpose {
@@ -20,6 +21,7 @@ impl AadPurpose {
             Self::WrapDek => 2,
             Self::CredentialPayload => 3,
             Self::VaultIntegrity => 4,
+            Self::CredentialState => 5,
         }
     }
 }
@@ -103,6 +105,10 @@ mod tests {
             },
             AadV1 {
                 purpose: AadPurpose::VaultIntegrity,
+                ..base
+            },
+            AadV1 {
+                purpose: AadPurpose::CredentialState,
                 ..base
             },
             AadV1 {

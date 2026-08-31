@@ -68,6 +68,8 @@ fn credential(label: &str) -> CredentialRecord {
         created_at_ms: 0,
         updated_at_ms: 0,
         revoked_at_ms: None,
+        state_nonce: [0u8; 12],
+        state_ciphertext: [0u8; 16],
     }
 }
 
@@ -130,6 +132,25 @@ fn opening_rejects_unknown_header_suite_and_wrapper_algorithm() {
     assert_reopen_rejects_unknown_discriminator(
         "UPDATE key_wrappers SET state = 'disabled', kdf_algorithm = 'future-kdf' WHERE wrapper_kind = 'recovery'",
     );
+}
+
+#[test]
+fn opening_rejects_v4_without_migration() {
+    let vault = common::init_test_vault();
+    let db = paths::vault_db(&vault.state_dir);
+    let connection = rusqlite::Connection::open(&db).unwrap();
+    connection
+        .execute_batch("PRAGMA ignore_check_constraints = ON;")
+        .unwrap();
+    connection
+        .execute("UPDATE vault_header SET format_version = 4", [])
+        .unwrap();
+    drop(connection);
+
+    assert!(matches!(
+        SqliteRecordStore::open(&db),
+        Err(AuthorityError::UnsupportedFormatVersion | AuthorityError::StorageIntegrityFailed)
+    ));
 }
 
 #[test]
@@ -357,9 +378,12 @@ fn rotate_keeps_single_active_version() {
             audit(event_type::CREDENTIAL_CREATED),
         )
         .unwrap();
+    let mut rotated = c.clone();
+    rotated.current_version = 2;
+    rotated.updated_at_ms = 1000;
     store
         .rotate_credential(
-            c.credential_id,
+            &rotated,
             &version(c.credential_id, 2),
             1000,
             audit(event_type::CREDENTIAL_ROTATED),
@@ -391,8 +415,12 @@ fn revoke_is_terminal_and_transactional() {
             audit(event_type::CREDENTIAL_CREATED),
         )
         .unwrap();
+    let mut revoked = c.clone();
+    revoked.state = CredentialState::Revoked;
+    revoked.updated_at_ms = 2000;
+    revoked.revoked_at_ms = Some(2000);
     store
-        .revoke_credential(c.credential_id, 2000, audit(event_type::CREDENTIAL_REVOKED))
+        .revoke_credential(&revoked, 2000, audit(event_type::CREDENTIAL_REVOKED))
         .unwrap();
 
     let rec = store.get_credential(c.credential_id).unwrap();
@@ -404,9 +432,12 @@ fn revoke_is_terminal_and_transactional() {
     );
 
     // Rotating a revoked credential fails and adds nothing.
+    let mut rejected = revoked.clone();
+    rejected.current_version = 2;
+    rejected.updated_at_ms = 3000;
     let err = store
         .rotate_credential(
-            c.credential_id,
+            &rejected,
             &version(c.credential_id, 2),
             3000,
             audit(event_type::CREDENTIAL_ROTATED),

@@ -3,7 +3,7 @@ use rekey_domain::ids::{
     ActionId, CredentialId, PolicyRuleId, PrincipalId, RequestId, SessionId, VaultId, WrapperId,
 };
 
-pub const FORMAT_VERSION: u32 = 4;
+pub const FORMAT_VERSION: u32 = 5;
 
 #[derive(Debug, Clone)]
 pub struct VaultHeaderRecord {
@@ -88,6 +88,8 @@ pub struct CredentialRecord {
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
     pub revoked_at_ms: Option<i64>,
+    pub state_nonce: [u8; 12],
+    pub state_ciphertext: [u8; 16],
 }
 
 /// One immutable encrypted credential version.
