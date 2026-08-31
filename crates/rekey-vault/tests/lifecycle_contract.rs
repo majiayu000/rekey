@@ -46,7 +46,9 @@ async fn lock_clears_lease_ability() {
 #[tokio::test]
 async fn unlock_backoff_rate_limits() {
     let vault = common::init_test_vault();
-    let (handle, join) = common::spawn(&vault.state_dir);
+    let mut config = common::test_config(&vault.state_dir);
+    config.unlock_backoff_base = Duration::from_millis(250);
+    let (handle, join) = rekey_vault::authority::spawn_authority(config).unwrap();
 
     // First three failures carry no delay.
     for _ in 0..3 {
@@ -59,7 +61,7 @@ async fn unlock_backoff_rate_limits() {
     assert!(matches!(err, AuthorityError::UnlockRateLimited));
 
     // After the window passes, a correct unlock succeeds and resets counters.
-    tokio::time::sleep(Duration::from_millis(60)).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
     handle.unlock(common::password_proof()).await.unwrap();
     assert_eq!(handle.status().await.unwrap().state, "unlocked");
 
