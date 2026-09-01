@@ -126,7 +126,7 @@ M-03 已批准公开跟踪 `feature-truth-matrix.md` 和 `threat-model-v2.md` �
 
 ### M-01 决定并统一密码修改与恢复合同
 
-**状态：** `[~]`　**优先级：** 阻塞合并　**依赖：** 无
+**状态：** `[x]`　**优先级：** 阻塞合并　**依赖：** 无
 
 **决定：** Foundation 不承诺修改密码、恢复后设置新密码或 wrapper 替换。recovery key 只用于解锁运行中的 Broker 或验证离线 backup restore；完整密码生命周期保留在 P-01。
 
@@ -138,7 +138,7 @@ M-03 已批准公开跟踪 `feature-truth-matrix.md` 和 `threat-model-v2.md` �
 - [x] 删除超出 Foundation 的承诺，不新增密码生命周期实现。
 - [x] 同步 Foundation spec、threat model、README、Feature Truth Matrix 和 CLI help。
 - [x] 在公开限制中明确 recovery key 当前只用于解锁/恢复备份，不等于密码重置流程。
-- [ ] 在最终提交 SHA 上记录验证证据后将本项转为 `[x]`。
+- [x] 在最终提交 SHA 上记录验证证据。
 
 **验收标准：**
 
@@ -150,9 +150,17 @@ M-03 已批准公开跟踪 `feature-truth-matrix.md` 和 `threat-model-v2.md` �
 
 **证据：** spec diff、CLI help、对应测试命令和结果；若删除承诺，附决策说明。
 
+- 完成日期：2026-09-01
+- 提交：`65c2ae608de10eeccc806926f8534c79ffa4c3ac`
+- 执行环境：macOS arm64；rustc 1.95.0；cargo 1.95.0
+- 命令或 Review：`cargo check --workspace`；`cargo test -p rekey-cli --test cli_blackbox`；`cargo test --workspace`；行为声明搜索
+- 结果：PASS
+- 证据：Foundation spec、Threat Model、Feature Truth Matrix、README 和 CLI help 已统一为 recovery unlock/restore-only
+- 遗留限制：密码修改、重置和 wrapper 替换保留在 P-01
+
 ### M-02 统一秘密 stdin 参数名称
 
-**状态：** `[~]`　**优先级：** 阻塞合并　**依赖：** M-01
+**状态：** `[x]`　**优先级：** 阻塞合并　**依赖：** M-01
 
 **决定：** 正式参数为实现和测试已使用的 `--stdin-secrets`；不增加 `--secret-stdin` alias。
 
@@ -163,7 +171,7 @@ M-03 已批准公开跟踪 `feature-truth-matrix.md` 和 `threat-model-v2.md` �
 - [x] 选定唯一正式参数名 `--stdin-secrets`。
 - [x] 同步 CLI、测试、spec、README 和注释。
 - [x] 不增加兼容 alias；v2 是 breaking rewrite。
-- [ ] 在最终提交 SHA 上验证秘密仍不允许通过 argv value 或环境变量传递，并将本项转为 `[x]`。
+- [x] 在最终提交 SHA 上验证秘密仍不允许通过 argv value 或环境变量传递。
 
 **验收标准：**
 
@@ -174,9 +182,17 @@ M-03 已批准公开跟踪 `feature-truth-matrix.md` 和 `threat-model-v2.md` �
 
 **证据：** 搜索结果、CLI help 摘要、测试输出。
 
+- 完成日期：2026-09-01
+- 提交：`65c2ae608de10eeccc806926f8534c79ffa4c3ac`
+- 执行环境：macOS arm64；rustc 1.95.0；cargo 1.95.0
+- 命令或 Review：add/rotate `--help`；`cargo test -p rekey-cli --test cli_blackbox`；`cargo test --workspace`；机械 API 搜索
+- 结果：PASS
+- 证据：add/rotate 均显示 `--stdin-secrets` 和相同两行输入合同；`secret_canary` PASS；无 `--secret-stdin`
+- 遗留限制：none
+
 ### M-03 决定 product-foundation 文档边界并消除远端断链
 
-**状态：** `[~]`　**优先级：** 阻塞合并　**依赖：** 无
+**状态：** `[x]`　**优先级：** 阻塞合并　**依赖：** 无
 
 **决定：** 采用受限的方案 A：公开跟踪 Feature Truth Matrix 与 Threat Model；三份产品、企业和商业研究继续保留在本地。公开文件不得链接或依赖这三份本地资料。本 closeout 清单一并进入 Git，供 PR Review 使用。
 
@@ -192,7 +208,7 @@ M-03 已批准公开跟踪 `feature-truth-matrix.md` 和 `threat-model-v2.md` �
 - [x] 将公开行为事实收敛到 Feature Truth Matrix、Threat Model、Foundation spec 与 README。
 - [x] 删除公开文档和仓库规则对三份本地研究资料的链接与依赖。
 - [x] 保留三份本地研究文件，不纳入本轮提交。
-- [ ] 在最终提交中纳入两份技术基线和本清单，记录链接检查证据后将本项转为 `[x]`。
+- [x] 在最终提交中纳入两份技术基线和本清单，并记录链接检查证据。
 
 **验收标准：**
 
@@ -210,6 +226,14 @@ rg -n 'docs/product-foundation|product-foundation/' README.md AGENTS.md CLAUDE.m
 ```
 
 **证据：** 边界决策、最终 `git ls-files`、链接检查结果。
+
+- 完成日期：2026-09-01
+- 提交：`65c2ae608de10eeccc806926f8534c79ffa4c3ac`
+- 执行环境：macOS arm64
+- 命令或 Review：7-file relative Markdown link check；`git ls-files docs/product-foundation`；公开文件敏感模式扫描
+- 结果：PASS
+- 证据：Git 只跟踪 Feature Truth Matrix 与 Threat Model；全部相对链接存在；本清单已跟踪
+- 遗留限制：三份产品、企业和商业研究继续在本机保持未跟踪
 
 ### M-04 完成独立密码学与持久化 Review
 
@@ -800,22 +824,21 @@ git diff --check
 
 ## 11. 推荐执行顺序
 
-1. 在最终提交 SHA 上验证并关闭已实施的 M-01、M-02、M-03。
-2. 安排 M-04、M-05、M-06 三类独立 Review；可以合并为一份报告的三个章节，但 Reviewer 不能是本轮主要实现者。
-3. 修复 Review findings，并在最终修改后重新验证。
-4. 完成 M-07，更新 PR 证据和限制。
-5. 经确认后执行 M-08 历史整理。
-6. 完成 M-09，关闭 v1 遗留队列。
-7. 执行 M-10，合并并验证 main。
-8. 进入 A-01，单独冻结 Alpha 范围；不要自动把全部 P/H/E 项拉入首发。
-9. A 阶段完成后再发布 Alpha。
+1. 安排 M-04、M-05、M-06 三类独立 Review；可以合并为一份报告的三个章节，但 Reviewer 不能是本轮主要实现者。
+2. 修复 Review findings，并在最终修改后重新验证。
+3. 完成 M-07，更新 PR 证据和限制。
+4. 经确认后执行 M-08 历史整理。
+5. 完成 M-09，关闭 v1 遗留队列。
+6. 执行 M-10，合并并验证 main。
+7. 进入 A-01，单独冻结 Alpha 范围；不要自动把全部 P/H/E 项拉入首发。
+8. A 阶段完成后再发布 Alpha。
 
 ## 12. 当前总判定
 
 | 结论 | 状态 | 说明 |
 | --- | --- | --- |
 | v2 Foundation 核心实现 | 基本完成 | P0 主要链路达到 black-box/adversarial evidence，最新 CI 全绿 |
-| PR #10 可立即合并 | 否 | M-01～M-03 待最终证据；M-04～M-10 未完成 |
+| PR #10 可立即合并 | 否 | M-01～M-03 已完成；M-04～M-10 未完成 |
 | 所有规范与代码一致 | 待独立 Review | 已知 password/recovery 和 stdin flag 冲突已修正；M-04～M-06 尚未完成 |
 | 所有文档完成 | 否 | product-foundation 边界、用户文档、运维和治理文档未闭合 |
 | 可公开 Alpha | 否 | 无正式版本、发行物、安装流程、release workflow 和 release smoke |
