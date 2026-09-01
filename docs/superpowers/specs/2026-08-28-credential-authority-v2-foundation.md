@@ -5,7 +5,7 @@
 范围：P0 本地 Credential Authority、Broker、Admin/Agent IPC、固定 HTTP Action 纵向切片
 架构类型：安全敏感的长运行 Runtime + 本地服务 + CLI
 兼容策略：Breaking rewrite，不兼容 v1 数据、命令、端口、数据库或代理行为
-相关基线：[北极星](../../product-foundation/north-star-and-positioning.md) · [威胁模型](../../product-foundation/threat-model-v2.md) · [企业架构](../../product-foundation/enterprise-architecture-v2.md) · [开源商业边界](../../product-foundation/oss-enterprise-boundary.md)
+相关基线：[威胁模型](../../product-foundation/threat-model-v2.md) · [功能事实矩阵](../../product-foundation/feature-truth-matrix.md)
 
 ## 1. Objective
 
@@ -30,7 +30,7 @@ P0 的核心证明不是“数据库已加密”，而是同时满足：
 | 状态所有者 | Broker Runtime 唯一拥有 SQLite connection、VRK、DEK 解析和 mutation | 消除 CLI/Web/Proxy 多写者和秘密扩散 |
 | 外部 Vault | 不进入 P0；不是运行前置条件 | 先证明第一方内置路径 |
 | 密码学 | Argon2id + AES-256-GCM + HKDF-SHA-256，使用成熟 crate | 不自创算法；保留未来算法版本 |
-| 密钥层级 | password/recovery KEK -> VRK -> per-version DEK -> payload | 支持换密码、恢复、版本轮换和密码学删除 |
+| 密钥层级 | password/recovery KEK -> VRK -> per-version DEK -> payload | 支持独立 password/recovery 解锁、凭据版本轮换和密码学删除；Foundation 不提供改密或 wrapper 替换 |
 | 持久化 | 单一 SQLite 文件，WAL + synchronous=FULL | 本地单写者、事务和崩溃恢复足够 |
 | IPC | 两个 Unix Domain Socket，长度前缀二进制 frame + JSON metadata + raw body | 管理/Agent 权限分离；避免 Secret 被 JSON/base64 复制 |
 | Agent API | Capability + Action Execute；无 read/export Secret | 权能使用不等于权能转移 |
@@ -491,7 +491,7 @@ active 状态。G1 不宣称 rollback freshness；只有 G2 阻止 Agent 访问�
 - 显示为分组 uppercase base32，附加 4-byte checksum，格式版本前缀 `RKREC1-`。
 - parser 忽略 ASCII `-` 和空格，但严格检查版本、长度和 checksum。
 - recovery key 不写数据库、配置、日志或 telemetry；数据库只存 salt 和 wrapped VRK。
-- `recover` 成功后立即创建新 password wrapper，并禁用旧 password wrapper；recovery wrapper 默认保持有效。
+- Foundation 只允许 recovery key 解锁运行中的 Broker，或验证离线 backup restore；它不创建新 password wrapper、不禁用旧 wrapper，也不构成密码重置。修改密码和 wrapper 替换属于后续独立能力。
 
 ### 9.6 Secret Memory Types
 
@@ -975,7 +975,7 @@ rekey shutdown
 输入规则：
 
 - password、recovery key、Credential value 默认使用 hidden TTY prompt。
-- 自动化场景仅允许显式 `--password-stdin` / `--secret-stdin`，不提供值参数和环境变量。
+- 自动化场景只允许显式 stdin 模式：密码或 recovery key 使用 `--password-stdin`，credential add/rotate 的 step-up proof 与 Credential value 使用 `--stdin-secrets`；不提供秘密值参数和环境变量。
 - `--body-file` 只在 Agent CLI 进程读取普通 Action body；Broker 不接受文件路径。
 - Capability 可以通过参数或 stdin 传递，因为它是短期 Agent 权能；CLI 帮助明确 shell history 风险并推荐 stdin。
 - `serve` 前台运行，locked 启动。P0 没有 `--daemon`；systemd/launchd integration 进入 P1。
@@ -1644,7 +1644,7 @@ OS Keychain、Secret Service、TPM 或 Secure Enclave wrapper 当前不进入 P1
 | Security property | Unit | Contract | Integration | Adversarial |
 | --- | --- | --- | --- | --- |
 | Password KDF | parameter/golden | wrapper roundtrip | init/unlock | wrong/replay/backoff |
-| Envelope encryption | AAD/AEAD vectors | key hierarchy | rotate/recover | ciphertext/AAD swap |
+| Envelope encryption | AAD/AEAD vectors | key hierarchy | credential rotate/recovery unlock | ciphertext/AAD swap |
 | Secret types | trait assertions | expose scope review | canary | log/error/response scan |
 | SQLite | schema/invariants | transaction fault | crash/reopen | corrupt/WAL/permission |
 | Authority lifecycle | state transitions | command queue | lock/drain/restart | race/fault injection |

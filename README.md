@@ -59,6 +59,15 @@ rekey policy activate --file policy.json
 rekey execute <ACTION_ID>@1 --capability - --body-file req.json
 ```
 
+The recovery key can unlock the running broker or verify an offline backup
+restore. The current Foundation does not change/reset the vault password or
+replace key wrappers.
+
+For explicit automation, password/recovery-only commands use
+`--password-stdin`; `rekey credential add` and `rekey credential rotate` use
+`--stdin-secrets` for the step-up proof and Credential value. Secrets are
+never accepted as argument values or environment variables.
+
 Policy snapshots are JSON-only, default-deny, in-memory, and exact-principal;
 lock or restart clears the active snapshot. The normative snapshot schema is
 in the P1.1 section of the implementation spec linked below.

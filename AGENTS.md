@@ -54,6 +54,10 @@ Cargo workspace, 5 crates + root integration-test host:
 ## Spec & Baselines
 
 - Implementation spec: `docs/superpowers/specs/2026-08-28-credential-authority-v2-foundation.md`
-- Baselines: `docs/product-foundation/*.md`
+- Public technical baselines:
+  - `docs/product-foundation/feature-truth-matrix.md`
+  - `docs/product-foundation/threat-model-v2.md`
+- Other product/enterprise research under `docs/product-foundation/` is not a
+  repository behavior source unless it is explicitly tracked later
 - If code and spec disagree, fix the spec (and baselines) first, then the code
 - 2026-04-01 design/plan docs are superseded; never treat them as behavior sources

@@ -1,7 +1,8 @@
 //! rekeyd: the broker daemon and offline bootstrap binary. The `rekey` CLI
 //! is a pure IPC client; everything that must touch the database, crypto, or
-//! the network lives here. Secrets arrive only via hidden TTY prompt or an
-//! explicit --password-stdin/--secret-stdin; never via argv or environment.
+//! the network lives here. Secrets arrive only via hidden TTY prompts or the
+//! explicit stdin flags exposed by `rekey`/`rekeyd`; never via argv values or
+//! environment variables.
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -100,7 +101,7 @@ enum Command {
         input: PathBuf,
         #[arg(long)]
         state_dir: Option<PathBuf>,
-        /// Verify with the recovery key instead of the password.
+        /// Verify with the recovery key; does not reset the vault password.
         #[arg(long)]
         recovery: bool,
         #[arg(long)]

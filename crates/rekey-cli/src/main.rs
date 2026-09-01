@@ -42,6 +42,7 @@ enum Command {
     Restore {
         #[arg(long)]
         input: PathBuf,
+        /// Verify the backup with the recovery key; does not reset the password.
         #[arg(long)]
         recovery: bool,
         #[arg(long)]
@@ -52,7 +53,7 @@ enum Command {
     },
     /// Unlock the running broker.
     Unlock {
-        /// Use the recovery key instead of the password.
+        /// Use the recovery key to unlock; does not reset the password.
         #[arg(long)]
         recovery: bool,
         #[arg(long)]
@@ -124,6 +125,7 @@ enum CredentialCommand {
     List,
     Rotate {
         credential_id: String,
+        /// Read step-up password (line 1) and credential value (line 2) from stdin.
         #[arg(long)]
         stdin_secrets: bool,
     },
