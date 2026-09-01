@@ -331,17 +331,17 @@ rg -n 'docs/product-foundation|product-foundation/' README.md AGENTS.md CLAUDE.m
 
 ### M-07 修正 PR 描述和证据陈述
 
-**状态：** `[ ]`　**优先级：** 阻塞 Ready for review　**依赖：** M-04 至 M-06
+**状态：** `[x]`　**优先级：** 阻塞 Ready for review　**依赖：** M-04 至 M-06
 
 **必须完成：**
 
-- [ ] 删除“live GitHub App pending”。
-- [ ] 删除“required systemd CI pending”。
-- [ ] 更新测试数量或不再维护易过期的单一总数。
-- [ ] 将“local independent security ledger”改为真实、可证明的 Review 状态。
-- [ ] 链接最新 required CI。
-- [ ] 写明默认 G1、有界 Linux G2 和单一 GitHub provider 证据范围。
-- [ ] 列出未实现能力和已知限制。
+- [x] 删除“live GitHub App pending”。
+- [x] 删除“required systemd CI pending”。
+- [x] 不再维护易过期的单一测试总数。
+- [x] 将“local independent security ledger”改为真实、可证明的 Review 状态。
+- [x] 链接最新 required CI。
+- [x] 写明默认 G1、有界 Linux G2 和单一 GitHub provider 证据范围。
+- [x] 列出未实现能力和已知限制。
 
 **验收标准：**
 
@@ -352,19 +352,28 @@ rg -n 'docs/product-foundation|product-foundation/' README.md AGENTS.md CLAUDE.m
 
 **证据：** 最终 PR body URL 和快照。
 
+- 完成日期：2026-09-01
+- PR：[PR #10](https://github.com/majiayu000/rekey/pull/10)
+- PR body head：`75c5edc9f59d7752cc71d3b8d8204890c235d8fe`
+- 最新 CI：[security-gate run 33513840039](https://github.com/majiayu000/rekey/actions/runs/33513840039)
+- 结果：PASS（PR 陈述验收）；CI 结论由 M-10 在最终 SHA 单独判定
+- 遗留限制：PR 仍为 Draft，待最终 CI 后切换 Ready for review
+
 ### M-08 整理 DCO 与提交历史
 
-**状态：** `[ ]`　**优先级：** 阻塞合并　**依赖：** M-01 至 M-07
+**状态：** `[~]`　**优先级：** 阻塞合并　**依赖：** M-01 至 M-07
+
+**决定：** 使用 GitHub signed squash merge。功能分支不做 rebase、历史改写或 force-push；M-10 合并时创建唯一进入 `main` 的 squash commit，并在 commit body 写入有效 `Signed-off-by:`。这样保留 PR 中的完整开发历史和作者记录，同时避免把 3 个开发期 merge commit 或未签名中间提交带入 `main`。
 
 **当前问题：** 52 个分支提交中仅 19 个检测到 `Signed-off-by:`，并存在 3 个 merge commit。历史改写属于高风险动作，必须另行确认后执行。
 
 **必须完成：**
 
-- [ ] 确定 signed squash 或带 sign-off 的线性 rebase 策略。
-- [ ] 保留所有 v2 有效变更和作者归属。
-- [ ] 移除无必要 merge commit。
-- [ ] 防止本地未跟踪 product-foundation 文档在 rebase 中丢失。
-- [ ] 历史改写后 force-push 前确认目标分支。
+- [x] 确定 signed squash 策略。
+- [x] 记录合并前 tree SHA，PR 保留完整开发历史和作者记录。
+- [ ] M-10 执行 squash 后确认 `main` 只新增一个无 merge parent 的提交。
+- [x] 不改写工作树；三份本地未跟踪 product-foundation 文档保持原状。
+- [-] 不执行历史改写或 force-push；signed squash 不需要该步骤。
 
 **验收标准：**
 
@@ -375,6 +384,12 @@ rg -n 'docs/product-foundation|product-foundation/' README.md AGENTS.md CLAUDE.m
 5. 改写后完整 CI 重新通过，旧 CI 不作为完成证据。
 
 **证据：** 改写前后 tree SHA、DCO 检查、最终 log、最新 CI。
+
+- 策略确认日期：2026-09-01
+- 合并前 tree：`4878f8bfb8b1a8dbb79b26a3e07f54319f02513b`
+- GitHub 设置：仓库允许 squash merge
+- 书面保留理由：3 个 merge commit 仅保留在合并后可删除的功能分支，用于 PR 开发溯源；signed squash 不会把它们带入 `main`
+- 待完成：M-10 的实际 squash SHA、DCO trailer、tree 等价性和 main CI
 
 ### M-09 处理旧 PR #9 和 v1 遗留队列
 
@@ -865,9 +880,9 @@ git diff --check
 
 | 结论 | 状态 | 说明 |
 | --- | --- | --- |
-| v2 Foundation 核心实现 | 基本完成 | P0 主要链路达到 black-box/adversarial evidence，最新 CI 全绿 |
-| PR #10 可立即合并 | 否 | M-01～M-03 已完成；M-04～M-10 未完成 |
-| 所有规范与代码一致 | 待独立 Review | 已知 password/recovery 和 stdin flag 冲突已修正；M-04～M-06 尚未完成 |
+| v2 Foundation 核心实现 | 基本完成 | P0 主要链路达到 black-box/adversarial evidence；最终 SHA CI 正在运行 |
+| PR #10 可立即合并 | 否 | M-01～M-07、M-09 已完成；M-08 等待实际 squash，M-10 仍需最终 CI 与独立 Approval |
+| 所有规范与代码一致 | 已复核 | M-04～M-06 Review 完成；Critical/High 0，2 个 Medium 和 3 个 Low 已修复 |
 | 所有文档完成 | 否 | product-foundation 边界、用户文档、运维和治理文档未闭合 |
 | 可公开 Alpha | 否 | 无正式版本、发行物、安装流程、release workflow 和 release smoke |
 | 可宣称通用 G2 | 否 | 只有有界 Linux reference；默认仍是 G1 |
