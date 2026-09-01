@@ -128,7 +128,7 @@ M-03 已批准公开跟踪 `feature-truth-matrix.md` 和 `threat-model-v2.md` �
 
 **状态：** `[x]`　**优先级：** 阻塞合并　**依赖：** 无
 
-**决定：** Foundation 不承诺修改密码、恢复后设置新密码或 wrapper 替换。recovery key 只用于解锁运行中的 Broker 或验证离线 backup restore；完整密码生命周期保留在 P-01。
+**决定：** Foundation 不承诺修改密码、恢复后设置新密码或 wrapper 替换。recovery key 只用于解锁运行中的 Broker、显式 Admin step-up 或验证离线 backup restore；完整密码生命周期保留在 P-01。
 
 **问题：** Foundation spec 宣称密钥层级支持 password change/recovery，并规定 `recover` 成功后创建新 password wrapper、禁用旧 wrapper；当前产品只有使用 recovery key 解锁，没有修改密码、恢复后换密或 wrapper 替换命令。
 
@@ -137,7 +137,7 @@ M-03 已批准公开跟踪 `feature-truth-matrix.md` 和 `threat-model-v2.md` �
 - [x] 明确 Foundation 不承诺“恢复后设置新密码”和“修改密码”。
 - [x] 删除超出 Foundation 的承诺，不新增密码生命周期实现。
 - [x] 同步 Foundation spec、threat model、README、Feature Truth Matrix 和 CLI help。
-- [x] 在公开限制中明确 recovery key 当前只用于解锁/恢复备份，不等于密码重置流程。
+- [x] 在公开限制中明确 recovery key 当前只用于解锁/Admin step-up/恢复备份，不等于密码重置流程。
 - [x] 在最终提交 SHA 上记录验证证据。
 
 **验收标准：**
@@ -155,7 +155,7 @@ M-03 已批准公开跟踪 `feature-truth-matrix.md` 和 `threat-model-v2.md` �
 - 执行环境：macOS arm64；rustc 1.95.0；cargo 1.95.0
 - 命令或 Review：`cargo check --workspace`；`cargo test -p rekey-cli --test cli_blackbox`；`cargo test --workspace`；行为声明搜索
 - 结果：PASS
-- 证据：Foundation spec、Threat Model、Feature Truth Matrix、README 和 CLI help 已统一为 recovery unlock/restore-only
+- 证据：Foundation spec、Threat Model、Feature Truth Matrix、README 和 CLI help 已统一为 recovery unlock/step-up/restore-only
 - 遗留限制：密码修改、重置和 wrapper 替换保留在 P-01
 
 ### M-02 统一秘密 stdin 参数名称
@@ -260,10 +260,10 @@ rg -n 'docs/product-foundation|product-foundation/' README.md AGENTS.md CLAUDE.m
 **证据：** PR Review 或独立报告路径、findings ledger、修复 SHA、测试链接。
 
 - 完成日期：2026-09-01
-- 修复提交：`3b2b3e60cd8b787678871de03a75671b8b534460`、`28dfb95235544af4ef341e4d36b57b7ac85fa1fc`
+- 修复提交：`3b2b3e60cd8b787678871de03a75671b8b534460`、`28dfb95235544af4ef341e4d36b57b7ac85fa1fc`、`93201384e3b90d0e5f8c5d312f754483f0836b2b`、`3ed327017282d3a90d61b605e5a45f0694aea32e`、`b6224f8f14a05f2c33857ff6d11e3645f780beb0`、`fe2c3b0aa70a2c3913d775b9a51644b37639146b`、`1cad5f7b486045371c75eabaf896b8d4061edb83`、`89d31a5fbda0a47ea1bb14e338ccbf522c996faa`、`601ad028b69f4678b751df500c323d38524004b2`、`62a99e54276be0dbd7488e91132c1f5f64f21d34`、`f32f6aebd5009a0920792515e95f9e0a6355a6bf`、`d09684e199405c065d9f3cfaed520dd377303138`、`afbc4a3b19f704edae826896c618e88fdd984d9e`、`f6687884c57a75d43d60ebdfe67ed51d6bd40f24`、`2fcd3d00d320feadb26ee95db0f4cccbe672bda8`
 - Reviewer：Codex 当前 closeout-review 会话；独立于既有核心实现，但不是第三方人工审计
 - Review：[v2 closeout security review](../../security/2026-09-01-v2-closeout-independent-review.md)
-- 结果：PASS；Critical 0、High 0、Medium 2 fixed / 0 open、Low 1 fixed / 0 open
+- 结果：PASS；涉及 M-04 的 findings（跨范围重复计数）：Critical 0、High 0、Medium 15 fixed / 0 open、Low 12 fixed / 0 open
 - 验证：`cargo test -p rekey-vault`、`scripts/p0-acceptance.sh`、`scripts/p0-durability.sh`、`cargo test --workspace`、`cargo audit`
 - 遗留限制：完整有效数据库快照回放在 G1 中仍不可检测，未误报为已实现
 
@@ -292,9 +292,9 @@ rg -n 'docs/product-foundation|product-foundation/' README.md AGENTS.md CLAUDE.m
 **证据：** Review 记录、相关测试和 CI run。
 
 - 完成日期：2026-09-01
-- 修复提交：`3b2b3e60cd8b787678871de03a75671b8b534460`、`28dfb95235544af4ef341e4d36b57b7ac85fa1fc`
+- 修复提交：`3b2b3e60cd8b787678871de03a75671b8b534460`、`28dfb95235544af4ef341e4d36b57b7ac85fa1fc`、`93201384e3b90d0e5f8c5d312f754483f0836b2b`、`c3d6d02703873c9715fd06961d5a44f04552e0a5`、`3ed327017282d3a90d61b605e5a45f0694aea32e`、`b6224f8f14a05f2c33857ff6d11e3645f780beb0`、`fe2c3b0aa70a2c3913d775b9a51644b37639146b`、`1cad5f7b486045371c75eabaf896b8d4061edb83`、`89d31a5fbda0a47ea1bb14e338ccbf522c996faa`、`b123b8c4f6948ae273f8a62c1fd29898bbc3ec91`、`601ad028b69f4678b751df500c323d38524004b2`、`62a99e54276be0dbd7488e91132c1f5f64f21d34`、`0adb1e8121a1110cb2864229f1143656aad8e940`、`f32f6aebd5009a0920792515e95f9e0a6355a6bf`、`d09684e199405c065d9f3cfaed520dd377303138`、`afbc4a3b19f704edae826896c618e88fdd984d9e`、`f6687884c57a75d43d60ebdfe67ed51d6bd40f24`、`2fcd3d00d320feadb26ee95db0f4cccbe672bda8`、`645bab6176ee72c290db9de7d5f8b76a19fd0f81`、`89cc7455cb3337873f150e7160f49997f08dc411`、`9b50c7d80ef9c491f7ac6d2bae1e3e56202ad9b5`、`1f008d16141b1106ccd0e0caa1bef9dd59c82bed`、`38d67cfa2898c8aa95af83809c7fedea79e2f8fc`、`ac2e513c938e4abe349be445bcd6a6b1b9da252c`
 - Review：[v2 closeout security review](../../security/2026-09-01-v2-closeout-independent-review.md)
-- 结果：PASS；Critical 0、High 0、Medium 3 fixed / 0 open、Low 3 fixed / 0 open
+- 结果：PASS；涉及 M-05 的 findings（跨范围重复计数）：Critical 0、High 0、Medium 30 fixed / 0 open、Low 46 fixed / 0 open
 - 验证：`cargo test -p rekey-broker`、`cargo test -p rekey-cli --test malicious_broker`、`cargo test --workspace`；Linux G2 仍以 CI reference job 为限
 - 遗留限制：本报告不是 M-10 所需的独立 GitHub `Approved`；G2 证据不外推到默认部署、macOS、host root 或内核攻击者
 
@@ -323,9 +323,9 @@ rg -n 'docs/product-foundation|product-foundation/' README.md AGENTS.md CLAUDE.m
 **证据：** Review 记录、攻击测试、live provider 证据范围说明。
 
 - 完成日期：2026-09-01
-- 修复提交：`3b2b3e60cd8b787678871de03a75671b8b534460`、`28dfb95235544af4ef341e4d36b57b7ac85fa1fc`
+- 修复提交：`3b2b3e60cd8b787678871de03a75671b8b534460`、`28dfb95235544af4ef341e4d36b57b7ac85fa1fc`、`93201384e3b90d0e5f8c5d312f754483f0836b2b`、`3ed327017282d3a90d61b605e5a45f0694aea32e`、`b6224f8f14a05f2c33857ff6d11e3645f780beb0`、`fe2c3b0aa70a2c3913d775b9a51644b37639146b`、`1cad5f7b486045371c75eabaf896b8d4061edb83`、`89d31a5fbda0a47ea1bb14e338ccbf522c996faa`、`b123b8c4f6948ae273f8a62c1fd29898bbc3ec91`、`601ad028b69f4678b751df500c323d38524004b2`、`62a99e54276be0dbd7488e91132c1f5f64f21d34`、`f32f6aebd5009a0920792515e95f9e0a6355a6bf`、`d09684e199405c065d9f3cfaed520dd377303138`、`afbc4a3b19f704edae826896c618e88fdd984d9e`、`f6687884c57a75d43d60ebdfe67ed51d6bd40f24`、`2fcd3d00d320feadb26ee95db0f4cccbe672bda8`、`89cc7455cb3337873f150e7160f49997f08dc411`、`38d67cfa2898c8aa95af83809c7fedea79e2f8fc`、`ac2e513c938e4abe349be445bcd6a6b1b9da252c`
 - Review：[v2 closeout security review](../../security/2026-09-01-v2-closeout-independent-review.md)
-- 结果：PASS；Critical 0、High 0、Medium 2 fixed / 0 open、Low 1 fixed / 0 open
+- 结果：PASS；涉及 M-06 的 findings（跨范围重复计数）：Critical 0、High 0、Medium 23 fixed / 0 open、Low 6 fixed / 0 open
 - 验证：`scripts/p0-acceptance.sh`、`scripts/p1-streaming-sealing.sh`、`scripts/p2-github-app.sh`、`upstream_screened`、`reflected_secret`
 - 遗留限制：live provider 证据仍只限 Feature Truth Matrix 记录的一次 disposable GitHub App/repository；不是通用 Connector 或发布证据
 
@@ -354,10 +354,10 @@ rg -n 'docs/product-foundation|product-foundation/' README.md AGENTS.md CLAUDE.m
 
 - 完成日期：2026-09-01
 - PR：[PR #10](https://github.com/majiayu000/rekey/pull/10)
-- PR body code head：`28dfb95235544af4ef341e4d36b57b7ac85fa1fc`
-- 最近一次已完成 CI：[security-gate run 33514084525](https://github.com/majiayu000/rekey/actions/runs/33514084525)
-- 结果：PASS（PR 陈述验收）；CI 结论由 M-10 在最终 SHA 单独判定
-- 遗留限制：PR 仍为 Draft，待最终 CI 后切换 Ready for review
+- PR body code head：`ac2e513c938e4abe349be445bcd6a6b1b9da252c`
+- 当前 code-head CI：[security-gate run 33569032881](https://github.com/majiayu000/rekey/actions/runs/33569032881)（Ubuntu P0、macOS P0 和有界 Linux G2 reference 全部通过）
+- 结果：PASS（PR 陈述与 code-head CI 验收）
+- 遗留限制：PR 已为 Ready；M-10 仍要求独立 GitHub `Approved`
 
 ### M-08 整理 DCO 与提交历史
 
@@ -365,7 +365,7 @@ rg -n 'docs/product-foundation|product-foundation/' README.md AGENTS.md CLAUDE.m
 
 **决定：** 使用 GitHub signed squash merge。功能分支不做 rebase、历史改写或 force-push；M-10 合并时创建唯一进入 `main` 的 squash commit，并在 commit body 写入有效 `Signed-off-by:`。这样保留 PR 中的完整开发历史和作者记录，同时避免把 3 个开发期 merge commit 或未签名中间提交带入 `main`。
 
-**当前问题：** 52 个分支提交中仅 19 个检测到 `Signed-off-by:`，并存在 3 个 merge commit。历史改写属于高风险动作，必须另行确认后执行。
+**当前问题：** 代码头 `ac2e513c938e4abe349be445bcd6a6b1b9da252c` 相对 `origin/main` 有 84 个分支提交，其中 51 个检测到 `Signed-off-by:`，并存在 3 个 merge commit；tree 为 `fa934210bc70a20943deafd24f01b4facc407025`。历史改写属于高风险动作，必须另行确认后执行。
 
 **必须完成：**
 
@@ -386,7 +386,7 @@ rg -n 'docs/product-foundation|product-foundation/' README.md AGENTS.md CLAUDE.m
 **证据：** 改写前后 tree SHA、DCO 检查、最终 log、最新 CI。
 
 - 策略确认日期：2026-09-01
-- 策略确认时 tree：`4878f8bfb8b1a8dbb79b26a3e07f54319f02513b`；最终合并前 tree 由 M-10 记录
+- 策略确认时 tree：`4878f8bfb8b1a8dbb79b26a3e07f54319f02513b`；当前 code-head tree：`fa934210bc70a20943deafd24f01b4facc407025`；最终合并前 tree 由 M-10 记录
 - GitHub 设置：仓库允许 squash merge
 - 书面保留理由：3 个 merge commit 仅保留在合并后可删除的功能分支，用于 PR 开发溯源；signed squash 不会把它们带入 `main`
 - 待完成：M-10 的实际 squash SHA、DCO trailer、tree 等价性和 main CI
@@ -441,6 +441,13 @@ git diff --check
 8. 合并后 `main` 再次运行 CI 并通过。
 
 **证据：** 最终 SHA、PR approval、CI run、merge commit/squash SHA、main CI。
+
+- 当前 code head：`ac2e513c938e4abe349be445bcd6a6b1b9da252c`
+- 本地验收：本节全部命令、release check/build、P0/P1/P2 harness、Linux G2 attack harness 和 `cargo audit` 均通过
+- code-head CI：[security-gate run 33569032881](https://github.com/majiayu000/rekey/actions/runs/33569032881) 全部通过
+- PR 状态：Ready、`MERGEABLE`、`CLEAN`；未解决 Review conversation 为 0
+- 独立 Approval：0；当前仓库协作者仅 PR 作者 `majiayu000`，无法由现有协作者提供非作者 Approval
+- 当前阻塞：必须先取得独立非作者 GitHub `Approved`；之后才可执行 M-08 signed squash、验证 squash tree/DCO，并运行合并后 main CI
 
 ## 6. A 阶段：公开 Alpha 发布门
 
@@ -880,10 +887,10 @@ git diff --check
 
 | 结论 | 状态 | 说明 |
 | --- | --- | --- |
-| v2 Foundation 核心实现 | 基本完成 | P0 主要链路达到 black-box/adversarial evidence；第二轮 findings 已在 `28dfb95235544af4ef341e4d36b57b7ac85fa1fc` 修复，最终文档 SHA CI 待验证 |
-| PR #10 可立即合并 | 否 | M-01～M-07、M-09 已完成；M-08 等待实际 squash，M-10 仍需最终 CI、复审线程关闭与独立 Approval |
-| 所有规范与代码一致 | 已复核 | M-04～M-06 两轮 Review 完成；Critical/High 0，6 个 Medium 和 6 个 Low 已修复 |
-| 所有文档完成 | 否 | product-foundation 边界、用户文档、运维和治理文档未闭合 |
+| v2 Foundation 核心实现 | 完成 | P0 主要链路达到 black-box/adversarial evidence；截至 code head `ac2e513c938e4abe349be445bcd6a6b1b9da252c` 的 107 个 findings 全部修复，code-head security-gate 全绿 |
+| PR #10 可立即合并 | 否 | M-01～M-07、M-09 已完成；M-08 等待实际 signed squash，M-10 被独立非作者 Approval 阻塞，其后还需合并和 main CI |
+| 所有规范与代码一致 | 完成 | M-04～M-06 的 107 个 findings 已全部修复；Critical/High 0，51 个 Medium 和 56 个 Low 已修复；第 22 次 exact-head Codex Review 对 `ac2e513c` 未发现 major issue |
+| 所有文档完成 | 否 | M 阶段 closeout 记录已闭合；Alpha 用户、运维、发行和治理文档属于冻结的 A 阶段，尚未实施 |
 | 可公开 Alpha | 否 | 无正式版本、发行物、安装流程、release workflow 和 release smoke |
 | 可宣称通用 G2 | 否 | 只有有界 Linux reference；默认仍是 G1 |
 | 可宣称通用 Connector | 否 | 只有 fixed HTTPS Action 和 closed GitHub App profile |
