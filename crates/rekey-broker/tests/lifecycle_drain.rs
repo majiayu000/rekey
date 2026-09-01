@@ -164,7 +164,16 @@ async fn lock_waits_for_in_flight_execute() {
         )
         .await
     });
-    tokio::time::sleep(Duration::from_millis(40)).await;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if !broker.fake.requests.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("execution did not reach upstream");
     let lock = common::call(&admin, Channel::Admin, admin_msg::LOCK, b"{}", &[]).await;
     lock.ok();
     let exec = exec.await.unwrap();
@@ -388,7 +397,16 @@ async fn draining_rejects_new_execute_without_started() {
             .await
         }
     });
-    tokio::time::sleep(Duration::from_millis(40)).await;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if !broker.fake.requests.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("execution did not reach upstream");
 
     let lock = tokio::spawn(async move {
         common::call(&admin, Channel::Admin, admin_msg::LOCK, b"{}", &[]).await
