@@ -175,10 +175,9 @@ if len(rows) != 2 or len({row[0] for row in rows}) != 2 or any(row[1] != 1 for r
     raise SystemExit(f"frame request_id contaminated audit pairing: {rows}")
 PY
 
-# Poll the real WAL database. When an unmatched started row is visible, stop
-# the actual rekeyd process—not the CLI wrapper—and confirm the row is still
-# unmatched before SIGKILL. A very fast upstream may finish between the first
-# observation and SIGSTOP; resume in that case and keep looking.
+# Step the actual rekeyd process—not the CLI wrapper—in short run intervals.
+# Inspecting the real WAL while rekeyd is stopped makes the committed-started
+# boundary observable even when the public upstream returns very quickly.
 python3 - "$STATE/vault.sqlite3" "$BROKER_PID" <<'PY' &
 import os, signal, sqlite3, sys, time
 db, pid = sys.argv[1], int(sys.argv[2])
@@ -199,17 +198,24 @@ def unmatched_request():
     con.close()
     return row
 
-deadline = time.monotonic() + 10
-while time.monotonic() < deadline:
-    if unmatched_request():
+deadline = time.monotonic() + 15
+stopped = False
+try:
+    while time.monotonic() < deadline:
         os.kill(pid, signal.SIGSTOP)
-        time.sleep(0.01)
+        stopped = True
+        time.sleep(0.001)
         if unmatched_request():
             os.kill(pid, signal.SIGKILL)
+            stopped = False
             raise SystemExit(0)
         os.kill(pid, signal.SIGCONT)
-    time.sleep(0.002)
-raise SystemExit("did not observe an unmatched execution.started")
+        stopped = False
+        time.sleep(0.001)
+finally:
+    if stopped:
+        os.kill(pid, signal.SIGCONT)
+raise SystemExit("did not observe an unmatched execution.started while stepping rekeyd")
 PY
 POLL_PID=$!
 
