@@ -405,7 +405,7 @@ impl SqliteRecordStore {
             .map_err(|_| AuthorityError::StorageIntegrityFailed)
     }
 
-    pub fn list_active_actions_for_credential(
+    pub fn list_actions_for_credential(
         &self,
         credential_id: CredentialId,
     ) -> Result<Vec<ActionRecord>, AuthorityError> {
@@ -413,7 +413,7 @@ impl SqliteRecordStore {
             .conn
             .prepare(
                 "SELECT action_id, version, name, state, credential_id, origin, method, exact_path, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms
-                 FROM actions WHERE credential_id = ?1 AND state = 'active'",
+                 FROM actions WHERE credential_id = ?1",
             )
             .map_err(storage)?;
         let rows = stmt

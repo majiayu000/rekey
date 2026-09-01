@@ -207,6 +207,10 @@ impl TerminalAuditTracker {
         self.queue.pending.load(Ordering::SeqCst) > 0
     }
 
+    pub fn has_failed(&self) -> bool {
+        self.queue.failed.load(Ordering::SeqCst)
+    }
+
     /// Returns `Err(AuditCommitFailed)` if a terminal is still queued after
     /// `timeout`, or if any commit/submit failed. Callers must not treat
     /// lock/shutdown as success when this errors.

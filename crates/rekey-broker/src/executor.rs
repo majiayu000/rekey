@@ -335,14 +335,20 @@ impl ActionExecutor {
                 .await;
         }
         let PreparedExecution::Opaque {
-            upstream: upstream_request,
+            upstream: mut upstream_request,
             needles,
         } = prepared
         else {
             unreachable!("credential execution variant was matched above")
         };
 
-        // Steps 10-11: fixed HTTPS send with bounded response.
+        // Steps 10-11: fixed HTTPS send with bounded response. Credential
+        // preparation consumes the same action deadline as DNS and HTTP.
+        upstream_request.timeout = effect_deadline.saturating_duration_since(Instant::now());
+        if upstream_request.timeout.is_zero() {
+            started.blocked("upstream-timeout").await?;
+            return Err(BrokerError::Upstream("upstream-timeout"));
+        }
         try_begin_remote_effect(&self.lifecycle, started).await?;
         // No await separates the gate from this marker. Cancellation after
         // this point cannot truthfully claim the upstream saw no effect.

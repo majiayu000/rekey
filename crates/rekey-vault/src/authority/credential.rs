@@ -163,6 +163,11 @@ impl Worker {
     ) -> Result<CredentialMetadata, AuthorityError> {
         self.require_unlocked()?;
         self.verify_proof(&proof)?;
+        if secret.is_empty() {
+            return Err(AuthorityError::Domain(
+                rekey_domain::DomainError::InvalidCapability,
+            ));
+        }
         let mut updated = self.load_verified_credential(credential_id)?;
         if updated.state != CredentialState::Active {
             return Err(AuthorityError::CredentialRevoked);

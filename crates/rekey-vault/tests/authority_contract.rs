@@ -128,6 +128,28 @@ async fn unlock_and_credential_lifecycle() {
         .unwrap_err();
     assert!(matches!(err, AuthorityError::CredentialConflict));
 
+    // Empty rotations fail without retiring the current usable version.
+    let err = handle
+        .credential_rotate(
+            meta.id,
+            SecretInput::from_slice(b""),
+            common::password_proof(),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        AuthorityError::Domain(rekey_domain::DomainError::InvalidCapability)
+    ));
+    let unchanged = handle
+        .credential_list()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|credential| credential.id == meta.id)
+        .unwrap();
+    assert_eq!(unchanged.current_version, 1);
+
     // Rotate: new version becomes the only preparable one.
     let rotated = handle
         .credential_rotate(
@@ -151,10 +173,19 @@ async fn unlock_and_credential_lifecycle() {
     let pinned = handle.action_get(action.id, 1).await.unwrap();
     assert_eq!(pinned.state, ActionState::Active);
 
+    let replacement = handle
+        .credential_add(
+            CredentialLabel::new("replacement token").unwrap(),
+            CredentialKind::OpaqueToken,
+            SecretInput::from_slice(b"replacement_secret"),
+            common::password_proof(),
+        )
+        .await
+        .unwrap();
     let updated = handle
         .action_upsert(
             Some(action.id),
-            action_definition(meta.id),
+            action_definition(replacement.id),
             common::password_proof(),
         )
         .await
@@ -164,6 +195,17 @@ async fn unlock_and_credential_lifecycle() {
     let pinned_v1 = handle.action_get(action.id, 1).await.unwrap();
     assert_eq!(pinned_v1.state, ActionState::Retired);
     assert!(pinned_v1.action.enabled);
+    assert_eq!(
+        handle.action_ids_for_credential(meta.id).await.unwrap(),
+        vec![action.id]
+    );
+    assert_eq!(
+        handle
+            .action_ids_for_credential(replacement.id)
+            .await
+            .unwrap(),
+        vec![action.id]
+    );
 
     handle
         .action_disable(action.id, common::password_proof())

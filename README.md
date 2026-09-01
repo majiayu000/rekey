@@ -57,7 +57,7 @@ admin.sock ──────► rekeyd broker ◄────── agent.sock
 ## Quick start
 
 ```bash
-cargo build --release   # produces `rekey` (CLI) and `rekeyd` (broker)
+cargo build --release -p rekey-cli -p rekey-broker   # produces `rekey` and `rekeyd`
 
 rekey init                       # create vault; shows recovery key ONCE
 rekey serve                      # run broker in foreground (starts locked)

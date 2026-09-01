@@ -59,7 +59,9 @@ struct Inner {
 }
 
 fn compact_entries(entries: &mut Vec<Entry>) {
-    entries.retain(|entry| !entry.revoked || entry.in_flight > 0);
+    let now = Instant::now();
+    entries
+        .retain(|entry| entry.in_flight > 0 || (!entry.revoked && now < entry.monotonic_deadline));
 }
 
 impl Default for Inner {
@@ -502,5 +504,34 @@ mod tests {
         assert_eq!(registry.entry_count(), 1);
         drop(permit);
         assert_eq!(registry.entry_count(), 0);
+    }
+
+    #[test]
+    fn expired_unused_history_is_compacted_on_next_admission() {
+        let registry = open_registry();
+        let action = ActionVersionRef {
+            action_id: ActionId::new_random(),
+            version: 1,
+        };
+        let session_id = SessionId::new_random();
+        let expiring = SessionGrant::new(
+            session_id,
+            Principal {
+                tenant_id: TenantId::new_random(),
+                principal_id: PrincipalId::new_random(),
+                session_id,
+            },
+            vec![action],
+            now(0),
+            1,
+            1,
+        )
+        .unwrap();
+        registry.admit(expiring).unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+
+        let (live, _) = grant(1);
+        registry.admit(live).unwrap();
+        assert_eq!(registry.entry_count(), 1);
     }
 }

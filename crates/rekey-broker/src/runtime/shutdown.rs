@@ -43,6 +43,10 @@ fn remember(first: &mut Option<BrokerError>, error: BrokerError) {
     }
 }
 
+fn admin_requires_proof(status_state: Option<&str>) -> bool {
+    status_state != Some("locked")
+}
+
 async fn wait_in_flight_until(ctx: &BrokerCtx, deadline: tokio::time::Instant) {
     while ctx.sessions.in_flight_total() > 0 && tokio::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(5)).await;
@@ -76,8 +80,13 @@ impl BrokerCtx {
             }
         };
 
-        let mut first_error = matches!(cause, StopCause::Fault)
-            .then_some(BrokerError::Authority(AuthorityError::Faulted));
+        let terminal_audit_failed = self.terminals.has_failed();
+        let mut first_error = if terminal_audit_failed {
+            Some(BrokerError::Authority(AuthorityError::AuditCommitFailed))
+        } else {
+            matches!(cause, StopCause::Fault)
+                .then_some(BrokerError::Authority(AuthorityError::Faulted))
+        };
         let status = match tokio::time::timeout_at(stop_deadline, self.authority.status()).await {
             Ok(Ok(status)) => Some(status),
             Ok(Err(err)) => {
@@ -93,10 +102,13 @@ impl BrokerCtx {
             }
         };
 
-        if let StopCause::Admin(proof) = cause
+        let terminal_failure_already_faulted = terminal_audit_failed
             && status
                 .as_ref()
-                .is_some_and(|status| status.state == "unlocked")
+                .is_some_and(|status| status.state == "faulted");
+        if let StopCause::Admin(proof) = cause
+            && admin_requires_proof(status.as_ref().map(|status| status.state))
+            && !terminal_failure_already_faulted
         {
             let Some(proof) = proof else {
                 self.lifecycle.resume_remote_effect_admission_if_running();
@@ -107,21 +119,17 @@ impl BrokerCtx {
             };
             match tokio::time::timeout_at(stop_deadline, self.authority.verify_proof(proof)).await {
                 Ok(Ok(())) => {}
-                Ok(Err(
-                    err @ (AuthorityError::AuthenticationFailed
-                    | AuthorityError::InvalidUnlockCredential
-                    | AuthorityError::UnlockRateLimited),
-                )) => {
+                Ok(Err(err)) => {
                     self.lifecycle.resume_remote_effect_admission_if_running();
                     drop(owner);
                     return StopDisposition::Rejected(BrokerError::Authority(err));
                 }
-                Ok(Err(err)) => remember(&mut first_error, BrokerError::Authority(err)),
                 Err(_) => {
-                    remember(
-                        &mut first_error,
-                        BrokerError::Authority(AuthorityError::Faulted),
-                    );
+                    self.lifecycle.resume_remote_effect_admission_if_running();
+                    drop(owner);
+                    return StopDisposition::Rejected(BrokerError::Authority(
+                        AuthorityError::Faulted,
+                    ));
                 }
             }
         }
@@ -222,5 +230,18 @@ impl BrokerCtx {
         self.publish_shutdown();
         drop(owner);
         StopDisposition::Stopped(first_error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::admin_requires_proof;
+
+    #[test]
+    fn only_a_positively_locked_authority_allows_proofless_admin_stop() {
+        assert!(!admin_requires_proof(Some("locked")));
+        assert!(admin_requires_proof(Some("unlocked")));
+        assert!(admin_requires_proof(Some("faulted")));
+        assert!(admin_requires_proof(None));
     }
 }

@@ -264,8 +264,16 @@ impl Worker {
             } => {
                 let result = self
                     .store
-                    .list_active_actions_for_credential(credential_id)
-                    .map(|records| records.into_iter().map(|r| r.action_id).collect());
+                    .list_actions_for_credential(credential_id)
+                    .map(|records| {
+                        let mut action_ids = records
+                            .into_iter()
+                            .map(|record| record.action_id)
+                            .collect::<Vec<_>>();
+                        action_ids.sort_unstable();
+                        action_ids.dedup();
+                        action_ids
+                    });
                 let _ = reply.send(result);
             }
             AuthorityCommand::PrepareCredential {
@@ -360,7 +368,13 @@ impl Worker {
     /// Audit failure is fail-closed: the worker faults instead of continuing
     /// without evidence.
     fn append_audit(&mut self, draft: AuditDraft) -> Result<(), AuthorityError> {
-        let event = self.audit_event(draft)?;
+        let event = match self.audit_event(draft) {
+            Ok(event) => event,
+            Err(err) => {
+                self.fault("audit-event-construction-failed");
+                return Err(err);
+            }
+        };
         match self.store.append_audit(&event) {
             Ok(()) => Ok(()),
             Err(err) => {

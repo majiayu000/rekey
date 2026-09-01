@@ -208,8 +208,18 @@ fn select_public_endpoint(
     })
 }
 
-async fn send_via_reqwest(request: UpstreamRequest) -> Result<UpstreamResponse, UpstreamError> {
-    let endpoint = screen_public_endpoint(&request.host, request.port).await?;
+async fn send_via_reqwest(mut request: UpstreamRequest) -> Result<UpstreamResponse, UpstreamError> {
+    let deadline = tokio::time::Instant::now() + request.timeout;
+    let endpoint = tokio::time::timeout_at(
+        deadline,
+        screen_public_endpoint(&request.host, request.port),
+    )
+    .await
+    .map_err(|_| UpstreamError::Timeout)??;
+    request.timeout = deadline.saturating_duration_since(tokio::time::Instant::now());
+    if request.timeout.is_zero() {
+        return Err(UpstreamError::Timeout);
+    }
     send_screened(request, endpoint, None).await
 }
 
@@ -459,6 +469,16 @@ mod tests {
             Err(err) => panic!("expected private-address, got {err:?}"),
             Ok(_) => panic!("expected private-address, got success"),
         }
+    }
+
+    #[tokio::test]
+    async fn production_transport_applies_timeout_to_dns() {
+        let mut request = loopback_request("localhost");
+        request.timeout = Duration::ZERO;
+        assert!(matches!(
+            ReqwestUpstreamTransport.send(request).await,
+            Err(UpstreamError::Timeout)
+        ));
     }
 
     #[tokio::test]
