@@ -42,7 +42,10 @@ json_field() {
 
 wait_for_socket() {
   for _ in $(seq 1 200); do
-    [[ -S "$STATE/runtime/admin.sock" ]] && return
+    if [[ -S "$STATE/runtime/admin.sock" ]] \
+      && "$REKEY" --state-dir "$STATE" status >/dev/null 2>&1; then
+      return
+    fi
     sleep 0.02
   done
   echo "broker did not start"
