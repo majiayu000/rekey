@@ -178,8 +178,7 @@ async fn bodyless_admin_messages_reject_attached_bodies() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn admin_and_policy_status_keep_an_unlocked_broker_active() {
-    let broker =
-        common::start_broker_with(Duration::from_millis(120), Duration::from_secs(2)).await;
+    let broker = common::start_broker_with(Duration::from_secs(2), Duration::from_secs(2)).await;
     common::unlock(&broker).await;
 
     for message in [
@@ -188,13 +187,13 @@ async fn admin_and_policy_status_keep_an_unlocked_broker_active() {
         admin_msg::POLICY_STATUS,
         admin_msg::POLICY_STATUS,
     ] {
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(700)).await;
         let response =
             common::call(&broker.admin_sock(), Channel::Admin, message, b"{}", &[]).await;
         response.ok();
     }
 
-    tokio::time::sleep(Duration::from_millis(70)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
     let status = common::call(
         &broker.admin_sock(),
         Channel::Admin,
@@ -220,7 +219,7 @@ async fn unlock_does_not_queue_behind_an_active_drain() {
             headers: Vec::new().into(),
             body: b"{}".to_vec().into(),
         }),
-        Duration::from_millis(400),
+        Duration::from_secs(2),
     );
 
     let agent = broker.agent_sock();
@@ -251,7 +250,7 @@ async fn unlock_does_not_queue_behind_an_active_drain() {
     });
     tokio::time::sleep(Duration::from_millis(30)).await;
     let unlock = tokio::time::timeout(
-        Duration::from_millis(100),
+        Duration::from_secs(1),
         common::call(
             &admin,
             Channel::Admin,

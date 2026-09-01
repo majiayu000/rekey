@@ -95,8 +95,7 @@ async fn idle_lock_revokes_sessions_permanently() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn completed_execution_refresh_prevents_stale_idle_lock() {
-    let broker =
-        common::start_broker_with(Duration::from_millis(150), Duration::from_secs(2)).await;
+    let broker = common::start_broker_with(Duration::from_secs(1), Duration::from_secs(2)).await;
     common::unlock(&broker).await;
     let credential_id = common::add_credential(&broker, "idle-race", b"v").await;
     let (action_id, version) = common::create_action(&broker, &credential_id).await;
@@ -108,7 +107,7 @@ async fn completed_execution_refresh_prevents_stale_idle_lock() {
             headers: vec![("content-type".to_owned(), "application/json".to_owned())].into(),
             body: b"{\"ok\":true}".to_vec().into(),
         }),
-        Duration::from_millis(250),
+        Duration::from_millis(1500),
     );
     let meta = common::execute_meta(&token, &action_id, version);
     let response = common::call(
@@ -120,7 +119,7 @@ async fn completed_execution_refresh_prevents_stale_idle_lock() {
     )
     .await;
     assert_eq!(response.ok()["upstream_status"], 200);
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
 
     let status = common::call(
         &broker.agent_sock(),
@@ -516,7 +515,16 @@ async fn session_create_during_drain_is_rejected() {
         )
         .await
     });
-    tokio::time::sleep(Duration::from_millis(40)).await;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if !broker.fake.requests.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("execution did not reach upstream");
 
     let lock_admin = admin.clone();
     let lock = tokio::spawn(async move {
