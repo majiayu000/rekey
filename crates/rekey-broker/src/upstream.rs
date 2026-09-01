@@ -210,17 +210,28 @@ fn select_public_endpoint(
 
 async fn send_via_reqwest(mut request: UpstreamRequest) -> Result<UpstreamResponse, UpstreamError> {
     let deadline = tokio::time::Instant::now() + request.timeout;
-    let endpoint = tokio::time::timeout_at(
+    let endpoint = resolve_before_deadline(
         deadline,
         screen_public_endpoint(&request.host, request.port),
     )
-    .await
-    .map_err(|_| UpstreamError::Timeout)??;
+    .await?;
     request.timeout = deadline.saturating_duration_since(tokio::time::Instant::now());
     if request.timeout.is_zero() {
         return Err(UpstreamError::Timeout);
     }
     send_screened(request, endpoint, None).await
+}
+
+async fn resolve_before_deadline<F>(
+    deadline: tokio::time::Instant,
+    resolution: F,
+) -> Result<ScreenedEndpoint, UpstreamError>
+where
+    F: Future<Output = Result<ScreenedEndpoint, UpstreamError>>,
+{
+    tokio::time::timeout_at(deadline, resolution)
+        .await
+        .map_err(|_| UpstreamError::Timeout)?
 }
 
 /// Layer 2: TLS, SNI, redirect-none, DNS pin, bounded body.
@@ -472,11 +483,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn production_transport_applies_timeout_to_dns() {
-        let mut request = loopback_request("localhost");
-        request.timeout = Duration::ZERO;
+    async fn production_dns_deadline_times_out_a_stalled_resolver() {
+        let deadline = tokio::time::Instant::now();
         assert!(matches!(
-            ReqwestUpstreamTransport.send(request).await,
+            resolve_before_deadline(deadline, std::future::pending()).await,
             Err(UpstreamError::Timeout)
         ));
     }
