@@ -1760,8 +1760,8 @@ Review 必问：
 本规格完整到可以严格按 P0.1–P0.7 顺序实施 `Credential Authority v2 Foundation`。它已经给出状态所有者、删除范围、密码学层级、AAD、schema、IPC frame、CLI、错误、生命周期、验证命令和非目标。
 
 P0、P1 typed authorization/runtime ownership/sealing/service-manager、Linux G2 reference 和
-P2.1 local black-box 实现已经存在；当前提交 `976cd6f` 的
-[security-gate run 33362526481](https://github.com/majiayu000/rekey/actions/runs/33362526481)
+P2.1 local black-box 实现已经存在；2026-09-01 的证据
+[security-gate run 33501794930](https://github.com/majiayu000/rekey/actions/runs/33501794930)
 已通过 required macOS、Ubuntu PID 1 systemd/non-root service account 和有界 Linux G2-reference
 jobs。一次真实 `github.com` GitHub App E2E 也已验证 exchange、resource、revoke 和严格有序
 audit chain；证据边界仅为一个一次性 App、installation、provider 和 test repository。
