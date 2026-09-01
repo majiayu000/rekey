@@ -7,7 +7,10 @@ use std::time::Duration;
 
 use rekey_domain::ids::{ActionId, CredentialId, SessionId};
 use rekey_domain::ipc::{self, Channel, ProofKind, admin_msg, agent_msg};
-use rekey_domain::{action::FixedHttpAction, credential::CredentialMetadata};
+use rekey_domain::{
+    action::{FixedHttpAction, HeaderName},
+    credential::CredentialMetadata,
+};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use zeroize::Zeroizing;
 
@@ -635,10 +638,12 @@ pub fn execute(
     };
     let mut extra_headers = Vec::new();
     for header in headers {
-        let (name, value) = header
+        let (raw_name, value) = header
             .split_once(':')
             .ok_or_else(|| CliError::local("USAGE", "header must be NAME:VALUE"))?;
-        extra_headers.push((name.trim().to_owned(), value.trim().to_owned()));
+        let name =
+            HeaderName::new(raw_name).map_err(|err| CliError::local("USAGE", err.to_string()))?;
+        extra_headers.push((name.as_str().to_owned(), value.trim().to_owned()));
     }
     let metadata = serde_json::json!({
         "capability_token": capability_token,
@@ -682,8 +687,11 @@ pub fn backup(
     recovery: bool,
     password_stdin: bool,
 ) -> Result<(), CliError> {
+    let output_path = output
+        .to_str()
+        .ok_or_else(|| CliError::local("USAGE", "backup output path must be valid UTF-8"))?;
     let proof = read_step_up(recovery, password_stdin)?;
-    let metadata = serde_json::json!({ "output_path": output.display().to_string() });
+    let metadata = serde_json::json!({ "output_path": output_path });
     let body = proof_body(recovery, &proof);
     let (meta, _) = admin_with_response_timeout(state_dir, BACKUP_RESPONSE_TIMEOUT)?.call(
         admin_msg::BACKUP,
@@ -718,5 +726,17 @@ mod tests {
         let input = std::io::Cursor::new(vec![b'x'; 18]);
         let error = read_bounded(input, 16, "test input").unwrap_err();
         assert_eq!(error.code, "INVALID_FRAME");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn backup_rejects_non_utf8_output_before_reading_proof() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let output = PathBuf::from(OsString::from_vec(b"backup-\xff.rkbackup".to_vec()));
+        let error = backup(Path::new("missing-state"), &output, false, false).unwrap_err();
+        assert_eq!(error.code, "USAGE");
+        assert!(error.message.contains("valid UTF-8"));
     }
 }

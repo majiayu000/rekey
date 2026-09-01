@@ -74,11 +74,12 @@ pub(super) fn validate_request(
     {
         return Err("invalid-content-type");
     }
-    for (name, value) in &request.extra_headers {
-        let Ok(name) = rekey_domain::action::HeaderName::new(name) else {
+    for (raw_name, value) in &request.extra_headers {
+        let Ok(name) = rekey_domain::action::HeaderName::new(raw_name) else {
             return Err("invalid-extra-header");
         };
-        if name.is_forbidden()
+        if raw_name != name.as_str()
+            || name.is_forbidden()
             || name == action.auth.header_name
             || name.as_str() == "authorization"
             || name.as_str() == "content-type"

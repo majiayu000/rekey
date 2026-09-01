@@ -65,6 +65,8 @@ async fn auth_and_forbidden_extra_headers_rejected() {
         ("content-length", "999999"),
         ("transfer-encoding", "chunked"),
         ("x-not-allowlisted", "value"),
+        (" x-request-id ", "ambiguous"),
+        ("X-Request-Id", "noncanonical"),
         ("x-request-id", "bad\r\ninjected: 1"),
     ] {
         let mut meta = common::execute_meta(&token, &action_id, version);

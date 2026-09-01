@@ -2,7 +2,7 @@ use rusqlite::{OptionalExtension, params};
 
 use super::SqliteRecordStore;
 use crate::crypto::kdf::{Argon2Params, KDF_ALGORITHM_ARGON2ID, KDF_ALGORITHM_HKDF_SHA256};
-use crate::crypto::{AAD_VERSION_V1, CRYPTO_SUITE_V1};
+use crate::crypto::{AAD_VERSION_V1, CRYPTO_SUITE_V1, KEY_LEN, NONCE_LEN, SALT_LEN};
 use crate::error::AuthorityError;
 use crate::model::FORMAT_VERSION;
 
@@ -99,6 +99,32 @@ impl SqliteRecordStore {
             .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
         if unknown_header || unknown_wrappers || unknown_versions {
             return Err(AuthorityError::UnsupportedFormatVersion);
+        }
+        let malformed_wrappers: bool = self
+            .conn
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM key_wrappers
+                    WHERE typeof(wrapper_id) IS NOT 'blob'
+                       OR length(wrapper_id) IS NOT 16
+                       OR typeof(state) IS NOT 'text'
+                       OR typeof(kdf_params_json) IS NOT 'text'
+                       OR typeof(salt) IS NOT 'blob'
+                       OR length(salt) IS NOT ?1
+                       OR typeof(nonce) IS NOT 'blob'
+                       OR length(nonce) IS NOT ?2
+                       OR typeof(wrapped_vrk) IS NOT 'blob'
+                       OR length(wrapped_vrk) IS NOT ?3
+                       OR typeof(created_at_ms) IS NOT 'integer'
+                       OR (disabled_at_ms IS NOT NULL
+                           AND typeof(disabled_at_ms) IS NOT 'integer')
+                )",
+                params![SALT_LEN, NONCE_LEN, KEY_LEN + 16],
+                |row| row.get(0),
+            )
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        if malformed_wrappers {
+            return Err(AuthorityError::StorageIntegrityFailed);
         }
         let active_wrappers: (u8, u8) = self
             .conn

@@ -155,6 +155,25 @@ fn opening_rejects_corrupt_persisted_kdf_parameters() {
 }
 
 #[test]
+fn opening_rejects_malformed_wrapper_crypto_fields() {
+    for update in [
+        "UPDATE key_wrappers SET salt = zeroblob(15) WHERE wrapper_kind = 'password'",
+        "UPDATE key_wrappers SET wrapped_vrk = zeroblob(47) WHERE wrapper_kind = 'recovery'",
+    ] {
+        let vault = common::init_test_vault();
+        let db = paths::vault_db(&vault.state_dir);
+        let connection = rusqlite::Connection::open(&db).unwrap();
+        connection.execute(update, []).unwrap();
+        drop(connection);
+
+        assert!(matches!(
+            SqliteRecordStore::open(&db),
+            Err(AuthorityError::StorageIntegrityFailed)
+        ));
+    }
+}
+
+#[test]
 fn opening_rejects_v4_without_migration() {
     let vault = common::init_test_vault();
     let db = paths::vault_db(&vault.state_dir);
