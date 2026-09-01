@@ -103,15 +103,58 @@ fn prompt_secret(prompt: &str) -> Result<Zeroizing<Vec<u8>>, CliError> {
     Ok(Zeroizing::new(value.as_bytes().to_vec()))
 }
 
+fn read_bounded(
+    reader: impl Read,
+    limit: usize,
+    label: &'static str,
+) -> Result<Zeroizing<Vec<u8>>, CliError> {
+    let capacity = limit + 1;
+    let mut buf = Zeroizing::new(Vec::with_capacity(capacity));
+    reader
+        .take(capacity as u64)
+        .read_to_end(&mut buf)
+        .map_err(|err| CliError::local("USAGE", format!("failed to read {label}: {err}")))?;
+    debug_assert_eq!(buf.capacity(), capacity);
+    if buf.len() > limit {
+        return Err(CliError::local(
+            "INVALID_FRAME",
+            format!("{label} exceeds {limit} bytes"),
+        ));
+    }
+    Ok(buf)
+}
+
+fn read_regular_file_bounded(
+    path: &Path,
+    limit: usize,
+    label: &'static str,
+) -> Result<Zeroizing<Vec<u8>>, CliError> {
+    let metadata = std::fs::metadata(path)
+        .map_err(|err| CliError::local("USAGE", format!("cannot inspect {label}: {err}")))?;
+    if !metadata.is_file() {
+        return Err(CliError::local(
+            "USAGE",
+            format!("{label} must be a regular file"),
+        ));
+    }
+    let file = std::fs::File::open(path)
+        .map_err(|err| CliError::local("USAGE", format!("cannot open {label}: {err}")))?;
+    read_bounded(file, limit, label)
+}
+
 fn stdin_lines(expected: usize) -> Result<Vec<Zeroizing<Vec<u8>>>, CliError> {
-    let mut buf = Zeroizing::new(String::new());
-    std::io::stdin()
-        .read_to_string(&mut buf)
-        .map_err(|err| CliError::local("USAGE", format!("failed to read stdin: {err}")))?;
+    let buf = read_bounded(
+        std::io::stdin().lock(),
+        ipc::ADMIN_SECRET_BODY_MAX_BYTES as usize,
+        "stdin",
+    )?;
     let lines: Vec<Zeroizing<Vec<u8>>> = buf
-        .lines()
+        .split(|byte| *byte == b'\n')
         .take(expected)
-        .map(|l| Zeroizing::new(l.trim_end_matches('\r').as_bytes().to_vec()))
+        .map(|line| {
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            Zeroizing::new(line.to_vec())
+        })
         .collect();
     if lines.len() != expected || lines.iter().any(|l| l.is_empty()) {
         return Err(CliError::local(
@@ -322,17 +365,9 @@ pub fn credential_add_github_app(
     recovery: bool,
     password_stdin: bool,
 ) -> Result<(), CliError> {
-    let profile_file = std::fs::File::open(file)
-        .map_err(|err| CliError::local("USAGE", format!("cannot open profile file: {err}")))?;
     let limit = ipc::ADMIN_SECRET_BODY_MAX_BYTES as usize;
-    let profile_capacity = limit + 1;
-    let mut secret = Zeroizing::new(Vec::with_capacity(profile_capacity));
-    profile_file
-        .take((limit + 1) as u64)
-        .read_to_end(&mut secret)
-        .map_err(|err| CliError::local("USAGE", format!("cannot read profile file: {err}")))?;
-    debug_assert_eq!(secret.capacity(), profile_capacity);
-    if secret.is_empty() || secret.len() > ipc::ADMIN_SECRET_BODY_MAX_BYTES as usize {
+    let secret = read_regular_file_bounded(file, limit, "GitHub App profile")?;
+    if secret.is_empty() {
         return Err(CliError::local(
             "USAGE",
             "GitHub App profile must be 1..=64 KiB",
@@ -435,8 +470,8 @@ pub fn action_create(
     recovery: bool,
     password_stdin: bool,
 ) -> Result<(), CliError> {
-    let definition = std::fs::read(file)
-        .map_err(|err| CliError::local("USAGE", format!("cannot read action file: {err}")))?;
+    let definition =
+        read_regular_file_bounded(file, ipc::METADATA_MAX_BYTES as usize, "action file")?;
     // Validate shape client-side for a friendly error; the broker re-validates.
     serde_json::from_slice::<ipc::ActionCreateMeta>(&definition)
         .map_err(|err| CliError::local("USAGE", format!("invalid action definition: {err}")))?;
@@ -457,8 +492,8 @@ pub fn action_update(
     let action_id: ActionId = action_id
         .parse()
         .map_err(|_| CliError::local("USAGE", "invalid action id"))?;
-    let definition = std::fs::read(file)
-        .map_err(|err| CliError::local("USAGE", format!("cannot read action file: {err}")))?;
+    let definition =
+        read_regular_file_bounded(file, ipc::METADATA_MAX_BYTES as usize, "action file")?;
     let definition: ipc::ActionCreateMeta = serde_json::from_slice(&definition)
         .map_err(|err| CliError::local("USAGE", format!("invalid action definition: {err}")))?;
     let metadata = ipc::ActionUpdateMeta {
@@ -562,8 +597,8 @@ pub fn policy_activate(
     recovery: bool,
     password_stdin: bool,
 ) -> Result<(), CliError> {
-    let snapshot = std::fs::read(file)
-        .map_err(|err| CliError::local("USAGE", format!("cannot read policy file: {err}")))?;
+    let snapshot =
+        read_regular_file_bounded(file, ipc::METADATA_MAX_BYTES as usize, "policy file")?;
     let proof = read_step_up(recovery, password_stdin)?;
     let body = proof_body(recovery, &proof);
     let (meta, _) = admin(state_dir)?.call(admin_msg::POLICY_ACTIVATE, &snapshot, &body)?;
@@ -593,9 +628,10 @@ pub fn execute(
         capability.to_owned()
     };
     let body = match body_file {
-        Some(path) => std::fs::read(path)
-            .map_err(|err| CliError::local("USAGE", format!("cannot read body file: {err}")))?,
-        None => Vec::new(),
+        Some(path) => {
+            read_regular_file_bounded(path, ipc::AGENT_BODY_MAX_BYTES as usize, "body file")?
+        }
+        None => Zeroizing::new(Vec::new()),
     };
     let mut extra_headers = Vec::new();
     for header in headers {
@@ -675,5 +711,12 @@ mod tests {
         let (kind, proof) = ipc::parse_proof_body(&body).unwrap();
         assert_eq!(kind, ProofKind::Recovery);
         assert_eq!(proof, b"RKREC1-test");
+    }
+
+    #[test]
+    fn bounded_reader_rejects_before_growing_past_the_limit() {
+        let input = std::io::Cursor::new(vec![b'x'; 18]);
+        let error = read_bounded(input, 16, "test input").unwrap_err();
+        assert_eq!(error.code, "INVALID_FRAME");
     }
 }

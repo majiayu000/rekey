@@ -100,6 +100,20 @@ impl SqliteRecordStore {
         if unknown_header || unknown_wrappers || unknown_versions {
             return Err(AuthorityError::UnsupportedFormatVersion);
         }
+        let active_wrappers: (u8, u8) = self
+            .conn
+            .query_row(
+                "SELECT
+                    SUM(CASE WHEN wrapper_kind = 'password' AND state = 'active' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN wrapper_kind = 'recovery' AND state = 'active' THEN 1 ELSE 0 END)
+                 FROM key_wrappers",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        if active_wrappers != (1, 1) {
+            return Err(AuthorityError::StorageIntegrityFailed);
+        }
         let mut statement = self
             .conn
             .prepare("SELECT wrapper_kind, kdf_params_json FROM key_wrappers")

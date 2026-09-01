@@ -191,7 +191,9 @@ async fn cancellation_after_terminal_submission_does_not_submit_fallback() {
     let guard = StartedAuditGuard::new_for_test(&tracker, execution_context());
     let commit = tokio::spawn(async move {
         let mut guard = guard;
-        guard.blocked("test-cancel").await
+        guard
+            .blocked_until(Instant::now() + Duration::from_secs(1), "test-cancel")
+            .await
     });
     entered.notified().await;
     commit.abort();
@@ -215,9 +217,13 @@ async fn closed_remote_effect_gate_commits_one_blocked_terminal() {
     });
     let mut guard = StartedAuditGuard::new_for_test(&tracker, execution_context());
     let lifecycle = Lifecycle::new();
-    let error = try_begin_remote_effect(&lifecycle, &mut guard)
-        .await
-        .unwrap_err();
+    let error = try_begin_remote_effect(
+        &lifecycle,
+        &mut guard,
+        Instant::now() + Duration::from_secs(1),
+    )
+    .await
+    .unwrap_err();
     assert_eq!(error.code(), "DRAINING");
     tracker.wait_idle(Duration::from_secs(1)).await.unwrap();
     {

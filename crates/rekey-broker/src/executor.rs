@@ -302,11 +302,13 @@ impl ActionExecutor {
         {
             Ok(Ok(prepared)) => prepared,
             Ok(Err(err)) => {
-                started.blocked(prepare_block_reason(&err)).await?;
+                started
+                    .blocked_until(effect_deadline, prepare_block_reason(&err))
+                    .await?;
                 return Err(BrokerError::Authority(err));
             }
             Err(_) => {
-                started.blocked("upstream-timeout").await?;
+                started.submit_blocked("upstream-timeout");
                 return Err(BrokerError::Upstream("upstream-timeout"));
             }
         };
@@ -376,10 +378,10 @@ impl ActionExecutor {
         // preparation consumes the same action deadline as DNS and HTTP.
         upstream_request.timeout = effect_deadline.saturating_duration_since(Instant::now());
         if upstream_request.timeout.is_zero() {
-            started.blocked("upstream-timeout").await?;
+            started.submit_blocked("upstream-timeout");
             return Err(BrokerError::Upstream("upstream-timeout"));
         }
-        try_begin_remote_effect(&self.lifecycle, started).await?;
+        try_begin_remote_effect(&self.lifecycle, started, effect_deadline).await?;
         // No await separates the gate from this marker. Cancellation after
         // this point cannot truthfully claim the upstream saw no effect.
         started.mark_remote_effect_started();
@@ -397,9 +399,9 @@ impl ActionExecutor {
                     crate::upstream::UpstreamError::Transport => "upstream-transport",
                 };
                 if upstream_failure_is_indeterminate(&err) {
-                    started.indeterminate(reason).await?;
+                    started.indeterminate_until(effect_deadline, reason).await?;
                 } else {
-                    started.blocked(reason).await?;
+                    started.blocked_until(effect_deadline, reason).await?;
                 }
                 return Err(match err {
                     crate::upstream::UpstreamError::ResponseTooLarge => {
@@ -415,21 +417,30 @@ impl ActionExecutor {
         if contains_secret(&response.body, &needles)
             || headers_contain_secret(&response.headers, &needles)
         {
-            started.indeterminate("reflected-secret").await?;
+            started
+                .indeterminate_until(effect_deadline, "reflected-secret")
+                .await?;
             return Err(BrokerError::ResponseSecurityViolation);
         }
 
         // Step 13: response header filtering (allowlist only).
         let headers = filter_response_headers(action, &response.headers);
         if !response_metadata_fits(response.status, &headers, response.body.len()) {
-            started.indeterminate("response-metadata-too-large").await?;
+            started
+                .indeterminate_until(effect_deadline, "response-metadata-too-large")
+                .await?;
             return Err(BrokerError::Domain(DomainError::ResponseTooLarge));
         }
 
         // Step 14: ExecutionFinished must commit; upstream success without
         // evidence is not success.
         started
-            .finished(credential_version, response.status, latency_ms)
+            .finished_until(
+                effect_deadline,
+                credential_version,
+                response.status,
+                latency_ms,
+            )
             .await?;
         let body = std::mem::take(&mut *response.body);
 
@@ -453,26 +464,28 @@ impl ActionExecutor {
         let profile = match prepared.profile {
             Ok(profile) => profile,
             Err(err) => {
-                started.blocked(err.reason()).await?;
+                started.blocked_until(effect_deadline, err.reason()).await?;
                 return Err(BrokerError::Denied(err.reason()));
             }
         };
         if let Err(err) = profile.validate_action(action, request) {
-            started.blocked(err.reason()).await?;
+            started.blocked_until(effect_deadline, err.reason()).await?;
             return Err(BrokerError::Denied(err.reason()));
         }
         // This durable event proves the exact non-secret connector binding
         // was authorized before JWT signing or token exchange.
-        if let Err(err) = deadline::await_authority(
-            effect_deadline,
-            self.authority.append_audit(connector_event(
-                started.context(),
-                rekey_vault::model::event_type::GITHUB_CONNECTOR_AUTHORIZED,
-                rekey_vault::model::outcome::SUCCESS,
-                profile.commitment(),
-            )),
-        )
-        .await
+        if let Err(err) = self
+            .terminals
+            .commit_until(
+                effect_deadline,
+                connector_event(
+                    started.context(),
+                    rekey_vault::model::event_type::GITHUB_CONNECTOR_AUTHORIZED,
+                    rekey_vault::model::outcome::SUCCESS,
+                    profile.commitment(),
+                ),
+            )
+            .await
         {
             if matches!(err, BrokerError::Upstream("upstream-timeout")) {
                 started.submit_blocked("upstream-timeout");
@@ -480,7 +493,7 @@ impl ActionExecutor {
             return Err(err);
         }
 
-        try_begin_remote_effect(&self.lifecycle, started).await?;
+        try_begin_remote_effect(&self.lifecycle, started, effect_deadline).await?;
         // No await separates the gate's linearization point from this flag.
         // Once begun, lifecycle cancellation must not strand a remote token.
         started.mark_remote_effect_started();
@@ -509,9 +522,13 @@ impl ActionExecutor {
                 unreachable!("GitHub effect variant was matched above")
             };
             if remote_effect_possible {
-                started.indeterminate(error.reason()).await?;
+                started
+                    .indeterminate_until(effect_deadline, error.reason())
+                    .await?;
             } else {
-                started.blocked(error.reason()).await?;
+                started
+                    .blocked_until(effect_deadline, error.reason())
+                    .await?;
             }
             return Err(BrokerError::Upstream(error.reason()));
         };
@@ -529,39 +546,65 @@ impl ActionExecutor {
                 format!("{};{}", err.reason(), profile.commitment()),
             ),
         };
-        self.authority
-            .append_audit(connector_event(
-                started.context(),
-                rekey_vault::model::event_type::GITHUB_TOKEN_REVOKED,
-                revoke_outcome,
-                revoke_reason,
-            ))
-            .await?;
+        if let Err(err) = self
+            .terminals
+            .commit_until(
+                effect_deadline,
+                connector_event(
+                    started.context(),
+                    rekey_vault::model::event_type::GITHUB_TOKEN_REVOKED,
+                    revoke_outcome,
+                    revoke_reason,
+                ),
+            )
+            .await
+        {
+            let reason = if matches!(err, BrokerError::Upstream("upstream-timeout")) {
+                "upstream-timeout"
+            } else {
+                "connector-audit-failed"
+            };
+            started.submit_indeterminate(reason);
+            return Err(err);
+        }
         if let Err(err) = revoke {
-            started.indeterminate(err.reason()).await?;
+            started
+                .indeterminate_until(effect_deadline, err.reason())
+                .await?;
             return Err(BrokerError::Upstream(err.reason()));
         }
 
         let mut response = match resource {
             Ok(response) => response,
             Err(err) => {
-                started.indeterminate(err.reason()).await?;
+                started
+                    .indeterminate_until(effect_deadline, err.reason())
+                    .await?;
                 return Err(BrokerError::Upstream(err.reason()));
             }
         };
         if contains_secret(&response.body, &needles)
             || headers_contain_secret(&response.headers, &needles)
         {
-            started.indeterminate("reflected-secret").await?;
+            started
+                .indeterminate_until(effect_deadline, "reflected-secret")
+                .await?;
             return Err(BrokerError::ResponseSecurityViolation);
         }
         let headers = filter_response_headers(action, &response.headers);
         if !response_metadata_fits(response.status, &headers, response.body.len()) {
-            started.indeterminate("response-metadata-too-large").await?;
+            started
+                .indeterminate_until(effect_deadline, "response-metadata-too-large")
+                .await?;
             return Err(BrokerError::Domain(DomainError::ResponseTooLarge));
         }
         started
-            .finished(prepared.credential_version, response.status, latency_ms)
+            .finished_until(
+                effect_deadline,
+                prepared.credential_version,
+                response.status,
+                latency_ms,
+            )
             .await?;
         let body = std::mem::take(&mut *response.body);
         Ok(ExecuteOutcome {
@@ -590,7 +633,7 @@ impl AdmittedExecution {
     pub async fn run(mut self) -> Result<ExecuteOutcome, BrokerError> {
         let cancel = self.executor.lifecycle.subscribe_cancel();
         if *cancel.borrow() {
-            self.started.blocked("abandoned").await?;
+            self.started.submit_blocked("abandoned");
             return Err(BrokerError::Authority(AuthorityError::Draining));
         }
 
@@ -621,10 +664,9 @@ impl AdmittedExecution {
         if !self.started.is_completed() {
             if cancelled_after_ordinary_effect {
                 self.started
-                    .indeterminate("cancelled-after-remote-effect")
-                    .await?;
+                    .submit_indeterminate("cancelled-after-remote-effect");
             } else {
-                self.started.blocked("abandoned").await?;
+                self.started.submit_blocked("abandoned");
             }
         }
         Err(BrokerError::Authority(AuthorityError::Draining))
@@ -642,11 +684,14 @@ async fn wait_for_cancel(mut cancel: tokio::sync::watch::Receiver<bool>) {
 async fn try_begin_remote_effect(
     lifecycle: &Lifecycle,
     started: &mut StartedAuditGuard,
+    effect_deadline: Instant,
 ) -> Result<(), BrokerError> {
     if lifecycle.try_begin_remote_effect() {
         return Ok(());
     }
-    started.blocked("remote-effect-admission-closed").await?;
+    started
+        .blocked_until(effect_deadline, "remote-effect-admission-closed")
+        .await?;
     Err(BrokerError::Authority(AuthorityError::Draining))
 }
 

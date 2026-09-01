@@ -6,7 +6,7 @@
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rekey_domain::capability::ActionVersionRef;
 use rekey_domain::ids::{CredentialId, RequestId, SessionId};
@@ -88,52 +88,68 @@ impl StartedAuditGuard {
         self.remote_effect_started = true;
     }
 
-    pub(crate) async fn blocked(&mut self, reason: &'static str) -> Result<(), BrokerError> {
-        self.commit_terminal(execution_blocked(&self.ctx, reason))
-            .await
-            .map_err(BrokerError::Authority)
-    }
-
     pub(crate) fn submit_blocked(&mut self, reason: &'static str) {
         self.terminal_submitted = true;
         self.queue
             .enqueue_terminal(execution_blocked(&self.ctx, reason), None);
     }
 
-    pub(crate) async fn indeterminate(&mut self, reason: &'static str) -> Result<(), BrokerError> {
-        self.commit_terminal(execution_indeterminate(&self.ctx, reason))
-            .await
-            .map_err(BrokerError::Authority)
+    pub(crate) fn submit_indeterminate(&mut self, reason: &'static str) {
+        self.terminal_submitted = true;
+        self.queue
+            .enqueue_terminal(execution_indeterminate(&self.ctx, reason), None);
     }
 
-    pub(crate) async fn finished(
+    pub(crate) async fn blocked_until(
         &mut self,
+        deadline: Instant,
+        reason: &'static str,
+    ) -> Result<(), BrokerError> {
+        self.commit_terminal_until(execution_blocked(&self.ctx, reason), deadline)
+            .await
+    }
+
+    pub(crate) async fn indeterminate_until(
+        &mut self,
+        deadline: Instant,
+        reason: &'static str,
+    ) -> Result<(), BrokerError> {
+        self.commit_terminal_until(execution_indeterminate(&self.ctx, reason), deadline)
+            .await
+    }
+
+    pub(crate) async fn finished_until(
+        &mut self,
+        deadline: Instant,
         credential_version: u64,
         upstream_status: u16,
         latency_ms: i64,
     ) -> Result<(), BrokerError> {
-        self.commit_terminal(execution_finished(
-            &self.ctx,
-            credential_version,
-            upstream_status,
-            latency_ms,
-        ))
+        self.commit_terminal_until(
+            execution_finished(&self.ctx, credential_version, upstream_status, latency_ms),
+            deadline,
+        )
         .await
         .map_err(|err| match err {
-            AuthorityError::AuditCommitFailed => {
+            BrokerError::Authority(AuthorityError::AuditCommitFailed) => {
                 BrokerError::Authority(AuthorityError::AuditCommitFailedAfterExecution)
             }
-            other => BrokerError::Authority(other),
+            other => other,
         })
     }
 
-    async fn commit_terminal(&mut self, draft: AuditDraft) -> Result<(), AuthorityError> {
+    async fn commit_terminal_until(
+        &mut self,
+        draft: AuditDraft,
+        deadline: Instant,
+    ) -> Result<(), BrokerError> {
         self.terminal_submitted = true;
         let (reply, result) = oneshot::channel();
         self.queue.enqueue_terminal(draft, Some(reply));
-        match result.await {
-            Ok(result) => result,
-            Err(_) => Err(AuthorityError::AuditCommitFailed),
+        match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), result).await {
+            Ok(Ok(result)) => result.map_err(BrokerError::Authority),
+            Ok(Err(_)) => Err(BrokerError::Authority(AuthorityError::AuditCommitFailed)),
+            Err(_) => Err(BrokerError::Upstream("upstream-timeout")),
         }
     }
 }
@@ -185,6 +201,22 @@ impl TerminalAuditTracker {
         match result.await {
             Ok(result) => result,
             Err(_) => Err(AuthorityError::AuditCommitFailed),
+        }
+    }
+
+    /// Transfers an audit commit to the tracker before applying the caller's
+    /// absolute deadline. Timeout cannot cancel the queued durable write.
+    pub(crate) async fn commit_until(
+        &self,
+        deadline: Instant,
+        draft: AuditDraft,
+    ) -> Result<(), BrokerError> {
+        let (reply, result) = oneshot::channel();
+        self.queue.enqueue_terminal(draft, Some(reply));
+        match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), result).await {
+            Ok(Ok(result)) => result.map_err(BrokerError::Authority),
+            Ok(Err(_)) => Err(BrokerError::Authority(AuthorityError::AuditCommitFailed)),
+            Err(_) => Err(BrokerError::Upstream("upstream-timeout")),
         }
     }
 
@@ -388,7 +420,7 @@ mod tests {
     use std::sync::Mutex;
 
     use rekey_domain::ids::ActionId;
-    use tokio::sync::Barrier;
+    use tokio::sync::{Barrier, Notify};
 
     use super::*;
 
@@ -496,6 +528,50 @@ mod tests {
         assert_eq!(
             committed.lock().unwrap().as_slice(),
             &[("execution.blocked", "denied", "upstream-timeout".to_owned())]
+        );
+        drop(tracker);
+        worker.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn timed_out_connector_audit_stays_ordered_before_terminal() {
+        let release = Arc::new(Notify::new());
+        let committed = Arc::new(Mutex::new(Vec::new()));
+        let (tracker, worker) = spawn_terminal_worker_with({
+            let release = Arc::clone(&release);
+            let committed = Arc::clone(&committed);
+            move |draft| {
+                let release = Arc::clone(&release);
+                committed.lock().unwrap().push(draft.event_type);
+                async move {
+                    if draft.event_type == event_type::GITHUB_TOKEN_REVOKED {
+                        release.notified().await;
+                    }
+                    Ok(())
+                }
+            }
+        });
+        let mut connector = draft();
+        connector.event_type = event_type::GITHUB_TOKEN_REVOKED;
+        let error = tracker
+            .commit_until(Instant::now() + Duration::from_millis(20), connector)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "UPSTREAM_FAILED");
+
+        let mut guard = StartedAuditGuard::new_for_test(&tracker, execution_context());
+        guard.mark_remote_effect_started();
+        guard.submit_indeterminate("upstream-timeout");
+        drop(guard);
+        release.notify_one();
+        tracker.wait_idle(Duration::from_secs(1)).await.unwrap();
+
+        assert_eq!(
+            committed.lock().unwrap().as_slice(),
+            &[
+                event_type::GITHUB_TOKEN_REVOKED,
+                event_type::EXECUTION_INDETERMINATE
+            ]
         );
         drop(tracker);
         worker.await.unwrap();

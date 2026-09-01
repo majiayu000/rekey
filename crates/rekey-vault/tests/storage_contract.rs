@@ -286,6 +286,20 @@ fn empty_or_incomplete_database_is_unsupported_layout() {
 }
 
 #[test]
+fn opening_rejects_missing_key_wrappers() {
+    let vault = common::init_test_vault();
+    let db = paths::vault_db(&vault.state_dir);
+    let connection = rusqlite::Connection::open(&db).unwrap();
+    connection.execute("DELETE FROM key_wrappers", []).unwrap();
+    drop(connection);
+
+    assert!(matches!(
+        SqliteRecordStore::open(&db),
+        Err(AuthorityError::StorageIntegrityFailed)
+    ));
+}
+
+#[test]
 fn opening_rejects_orphan_credential_version() {
     let (vault, mut store) = open_store();
     let record = credential("orphan-source");

@@ -348,3 +348,43 @@ fn cli_end_to_end() {
     assert!(output.stdout.contains("cli-cred"));
     assert!(!output.stdout.contains(SECRET));
 }
+
+#[test]
+fn cli_rejects_oversized_file_and_stdin_before_connecting() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("missing-state");
+    let body_file = dir.path().join("oversized-body");
+    std::fs::write(&body_file, vec![b'x'; 1024 * 1024 + 1]).unwrap();
+    let action = format!("{}@1", rekey_domain::ids::ActionId::new_random());
+
+    let output = run(
+        &rekey_bin(),
+        &[
+            "--state-dir",
+            state_dir.to_str().unwrap(),
+            "execute",
+            &action,
+            "--capability",
+            "test-capability",
+            "--body-file",
+            body_file.to_str().unwrap(),
+        ],
+        None,
+    );
+    assert_eq!(output.status, 2, "stderr: {}", output.stderr);
+    assert!(output.stderr.contains("INVALID_FRAME"));
+
+    let oversized_stdin = format!("{}\n", "x".repeat(64 * 1024 + 1));
+    let output = run(
+        &rekey_bin(),
+        &[
+            "--state-dir",
+            state_dir.to_str().unwrap(),
+            "unlock",
+            "--password-stdin",
+        ],
+        Some(&oversized_stdin),
+    );
+    assert_eq!(output.status, 2, "stderr: {}", output.stderr);
+    assert!(output.stderr.contains("INVALID_FRAME"));
+}
