@@ -145,6 +145,7 @@ async fn dispatch(
     match frame.header.message_type {
         admin_msg::STATUS => {
             empty_request(frame)?;
+            let _owner = ctx.lifecycle.coordinate().await;
             let status = ctx.authority.admin_status().await?;
             let response = ipc::StatusResponse {
                 state: status.state.to_owned(),
@@ -193,6 +194,7 @@ async fn dispatch(
         }
         admin_msg::CREDENTIAL_LIST => {
             empty_request(frame)?;
+            let _owner = ctx.lifecycle.coordinate().await;
             let credentials = ctx.authority.credential_list().await?;
             Ok((
                 json(&ipc::CredentialListResponse { credentials })?,
@@ -263,6 +265,7 @@ async fn dispatch(
         }
         admin_msg::ACTION_LIST => {
             empty_request(frame)?;
+            let _owner = ctx.lifecycle.coordinate().await;
             let actions = ctx.authority.action_list().await?;
             Ok((json(&ipc::ActionListResponse { actions })?, Vec::new()))
         }
@@ -342,6 +345,7 @@ async fn dispatch(
         }
         admin_msg::POLICY_STATUS => {
             empty_request(frame)?;
+            let _owner = ctx.lifecycle.coordinate().await;
             let response = ctx.policy_status().await;
             ctx.authority.admin_status().await?;
             Ok((json(&response)?, Vec::new()))
