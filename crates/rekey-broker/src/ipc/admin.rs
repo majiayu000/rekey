@@ -162,6 +162,8 @@ async fn dispatch(
                     ))
                 })?;
             }
+            let _owner = ctx.lifecycle.coordinate().await;
+            ctx.lifecycle.reject_if_not_running()?;
             let metadata = ctx
                 .authority
                 .credential_add(
@@ -185,6 +187,8 @@ async fn dispatch(
             ctx.lifecycle.reject_if_not_running()?;
             let ref_meta: ipc::CredentialRefMeta = meta(frame)?;
             let (kind, proof, secret) = ipc::parse_proof_and_secret_body(&frame.body)?;
+            let _owner = ctx.lifecycle.coordinate().await;
+            ctx.lifecycle.reject_if_not_running()?;
             let metadata = ctx
                 .authority
                 .credential_rotate(
@@ -201,16 +205,13 @@ async fn dispatch(
             let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
             let _owner = ctx.lifecycle.coordinate().await;
             ctx.lifecycle.reject_if_not_running()?;
-            let metadata = ctx
-                .authority
-                .credential_revoke(ref_meta.credential_id, proof_from(kind, proof))
-                .await?;
-            // Revocation commits first; then in-memory sessions bound to the
-            // credential's actions are invalidated. Lease resolution re-checks
-            // persisted state anyway, so this is defense in depth.
             let action_ids = ctx
                 .authority
                 .action_ids_for_credential(ref_meta.credential_id)
+                .await?;
+            let metadata = ctx
+                .authority
+                .credential_revoke(ref_meta.credential_id, proof_from(kind, proof))
                 .await?;
             ctx.sessions.revoke_by_actions(&action_ids);
             Ok((json(&metadata)?, Vec::new()))

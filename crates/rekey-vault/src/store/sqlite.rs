@@ -23,6 +23,10 @@ pub(super) fn storage(err: rusqlite::Error) -> AuthorityError {
     AuthorityError::storage(err)
 }
 
+fn commit_audited(tx: Transaction<'_>) -> Result<(), AuthorityError> {
+    tx.commit().map_err(|_| AuthorityError::AuditCommitFailed)
+}
+
 pub(super) fn blob16(v: Vec<u8>) -> Result<[u8; 16], AuthorityError> {
     v.try_into()
         .map_err(|_| AuthorityError::StorageIntegrityFailed)
@@ -106,7 +110,7 @@ impl SqliteRecordStore {
             insert_wrapper(&tx, w)?;
         }
         super::audit::insert(&tx, &audit)?;
-        tx.commit().map_err(storage)
+        commit_audited(tx)
     }
 
     pub fn load_header(&self) -> Result<VaultHeaderRecord, AuthorityError> {
@@ -187,7 +191,7 @@ impl SqliteRecordStore {
         }
         insert_version(&tx, version)?;
         super::audit::insert(&tx, &audit)?;
-        tx.commit().map_err(storage)
+        commit_audited(tx)
     }
 
     pub fn rotate_credential(
@@ -224,7 +228,7 @@ impl SqliteRecordStore {
             return Err(AuthorityError::CredentialNotFound);
         }
         super::audit::insert(&tx, &audit)?;
-        tx.commit().map_err(storage)
+        commit_audited(tx)
     }
 
     pub fn revoke_credential(
@@ -259,7 +263,7 @@ impl SqliteRecordStore {
         )
         .map_err(storage)?;
         super::audit::insert(&tx, &audit)?;
-        tx.commit().map_err(storage)
+        commit_audited(tx)
     }
 
     pub fn get_credential(&self, id: CredentialId) -> Result<CredentialRecord, AuthorityError> {
@@ -347,7 +351,7 @@ impl SqliteRecordStore {
         )
         .map_err(storage)?;
         super::audit::insert(&tx, &audit)?;
-        tx.commit().map_err(storage)
+        commit_audited(tx)
     }
 
     pub fn disable_action(
@@ -366,7 +370,7 @@ impl SqliteRecordStore {
             return Err(AuthorityError::ActionNotFound);
         }
         super::audit::insert(&tx, &audit)?;
-        tx.commit().map_err(storage)
+        commit_audited(tx)
     }
 
     pub fn get_action(
@@ -437,7 +441,7 @@ impl SqliteRecordStore {
             .transaction()
             .map_err(|_| AuthorityError::AuditCommitFailed)?;
         super::audit::insert(&tx, event).map_err(|_| AuthorityError::AuditCommitFailed)?;
-        tx.commit().map_err(|_| AuthorityError::AuditCommitFailed)
+        commit_audited(tx)
     }
 
     pub fn wal_checkpoint(&self) -> Result<(), AuthorityError> {
@@ -715,4 +719,31 @@ fn action_from_row(r: &rusqlite::Row<'_>) -> RowResult<ActionRecord> {
             created_at_ms,
         })
     })())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deferred_commit_failure_is_an_audit_failure() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE parent (id INTEGER PRIMARY KEY);
+             CREATE TABLE child (parent_id INTEGER REFERENCES parent(id));",
+        )
+        .unwrap();
+        let tx = conn.transaction().unwrap();
+        tx.execute_batch(
+            "PRAGMA defer_foreign_keys = ON;
+             INSERT INTO child (parent_id) VALUES (1);",
+        )
+        .unwrap();
+
+        assert!(matches!(
+            commit_audited(tx),
+            Err(AuthorityError::AuditCommitFailed)
+        ));
+    }
 }

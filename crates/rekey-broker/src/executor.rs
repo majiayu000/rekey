@@ -273,15 +273,20 @@ impl ActionExecutor {
         effect_kind: &AtomicU8,
     ) -> Result<ExecuteOutcome, BrokerError> {
         // Steps 7-8: credential eligibility and preparation (single owner).
-        let prepared = match self
-            .authority
-            .prepare_credential(action.credential_id)
-            .await
+        let prepared = match tokio::time::timeout_at(
+            tokio::time::Instant::from_std(effect_deadline),
+            self.authority.prepare_credential(action.credential_id),
+        )
+        .await
         {
-            Ok(prepared) => prepared,
-            Err(err) => {
+            Ok(Ok(prepared)) => prepared,
+            Ok(Err(err)) => {
                 started.blocked(prepare_block_reason(&err)).await?;
                 return Err(BrokerError::Authority(err));
+            }
+            Err(_) => {
+                started.blocked("upstream-timeout").await?;
+                return Err(BrokerError::Upstream("upstream-timeout"));
             }
         };
         let credential_version = prepared.version();
