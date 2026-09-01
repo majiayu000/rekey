@@ -120,7 +120,10 @@ impl BrokerCtx {
     }
 
     pub async fn unlock(&self, proof: UnlockProof) -> Result<(), BrokerError> {
-        let _owner = self.lifecycle.coordinate().await;
+        let _owner = self
+            .lifecycle
+            .try_coordinate()
+            .map_err(|_| BrokerError::Authority(AuthorityError::AuthorityBusy))?;
         self.lifecycle.reject_if_busy()?;
         self.authority.unlock(proof).await?;
         self.sessions.open_for_admission();

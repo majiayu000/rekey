@@ -861,7 +861,9 @@ body           raw bytes
 
 - metadata <= 64 KiB。
 - Admin 的单个 proof 或 secret 字段 <= 64 KiB；proof-only body <= 64 KiB + 5 bytes，
-  proof+secret body <= 128 KiB + 9 bytes（包含 kind 和两个长度字段）。
+  proof+secret body <= 128 KiB + 9 bytes（包含 kind 和两个长度字段）。Broker 必须按
+  message type 在分配前限制 body，并在 zero-copy decode 后再次检查每个字段；CLI 的
+  stdin 模式按每一行分别执行 64 KiB 上限，换行符不计入字段长度。
 - Agent request body <= Action `request_max_bytes` 且全局 <= 1 MiB。
 - response body <= Action `response_max_bytes` 且全局 <= 4 MiB。
 - P0 `flags` 必须为 zero；任何非 zero flag 都按 unknown frame 处理。
@@ -899,6 +901,16 @@ body           raw bytes
 | Shutdown | yes | password/recovery when unlocked | proof body | receipt |
 
 Step-up password/recovery proof 只在 AuthorityWorker 内派生 KEK 并验证 wrapper，成功后立即 zeroize；不能因为 Broker 已 Unlocked 就跳过敏感 mutation 的人类证明。
+
+`SessionCreate` / `SessionRevoke` 的 durable audit 只能在 25 秒 Admin mutation deadline
+前进入 Authority queue。AuthorityWorker 一旦开始 SQLite commit，Broker 不取消等待，
+并在返回 Admin response 前完成与 audit 匹配的内存状态。若 commit 完成时 deadline 已过，
+create 必须先撤销新 session 并持久化 `session.revoked` 后返回 `AUTHORITY_BUSY`；revoke
+必须先完成幂等内存撤销再返回 `AUTHORITY_BUSY`。因此超时后不存在仍可用但调用者未收到
+token 的 session，也不存在 `session.revoked(success)` 与仍可用 session 并存。
+
+Unlock 在 lifecycle coordinator 已被 lock、idle lock 或 shutdown 占用时立即返回 busy /
+draining，不能排队到 drain 完成后重新打开 admission。
 
 ### 12.4 Agent Messages
 

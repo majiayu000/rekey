@@ -16,6 +16,7 @@ pub const FRAME_VERSION: u16 = 1;
 pub const FRAME_HEADER_LEN: usize = 36;
 pub const METADATA_MAX_BYTES: u32 = 64 * 1024;
 pub const ADMIN_SECRET_FIELD_MAX_BYTES: u32 = 64 * 1024;
+pub const ADMIN_PROOF_BODY_MAX_BYTES: u32 = ADMIN_SECRET_FIELD_MAX_BYTES + 5;
 pub const ADMIN_SECRET_BODY_MAX_BYTES: u32 = 2 * ADMIN_SECRET_FIELD_MAX_BYTES + 9;
 pub const AGENT_BODY_MAX_BYTES: u32 = 1024 * 1024;
 pub const RESPONSE_BODY_MAX_BYTES: u32 = 4 * 1024 * 1024;
@@ -214,6 +215,9 @@ fn read_u32(body: &[u8], at: usize) -> Result<u32, FrameError> {
 pub fn parse_proof_body(body: &[u8]) -> Result<(ProofKind, &[u8]), FrameError> {
     let kind = ProofKind::from_code(*body.first().ok_or(FrameError::Truncated)?)?;
     let plen = read_u32(body, 1)? as usize;
+    if plen > ADMIN_SECRET_FIELD_MAX_BYTES as usize {
+        return Err(FrameError::SectionTooLarge);
+    }
     let proof = body.get(5..5 + plen).ok_or(FrameError::Truncated)?;
     if body.len() != 5 + plen {
         return Err(FrameError::InvalidField);
@@ -225,8 +229,14 @@ pub fn parse_proof_body(body: &[u8]) -> Result<(ProofKind, &[u8]), FrameError> {
 pub fn parse_proof_and_secret_body(body: &[u8]) -> Result<(ProofKind, &[u8], &[u8]), FrameError> {
     let kind = ProofKind::from_code(*body.first().ok_or(FrameError::Truncated)?)?;
     let plen = read_u32(body, 1)? as usize;
+    if plen > ADMIN_SECRET_FIELD_MAX_BYTES as usize {
+        return Err(FrameError::SectionTooLarge);
+    }
     let proof = body.get(5..5 + plen).ok_or(FrameError::Truncated)?;
     let slen = read_u32(body, 5 + plen)? as usize;
+    if slen > ADMIN_SECRET_FIELD_MAX_BYTES as usize {
+        return Err(FrameError::SectionTooLarge);
+    }
     let secret = body
         .get(9 + plen..9 + plen + slen)
         .ok_or(FrameError::Truncated)?;
@@ -487,5 +497,19 @@ mod tests {
         encode_proof_and_secret_body(ProofKind::Password, &proof, &secret, &mut body);
         assert_eq!(body.len(), ADMIN_SECRET_BODY_MAX_BYTES as usize);
         assert!(parse_proof_and_secret_body(&body).is_ok());
+
+        let oversized = vec![b'x'; ADMIN_SECRET_FIELD_MAX_BYTES as usize + 1];
+        let mut proof_body = Vec::new();
+        encode_proof_body(ProofKind::Password, &oversized, &mut proof_body);
+        assert_eq!(
+            parse_proof_body(&proof_body),
+            Err(FrameError::SectionTooLarge)
+        );
+        let mut secret_body = Vec::new();
+        encode_proof_and_secret_body(ProofKind::Password, b"p", &oversized, &mut secret_body);
+        assert_eq!(
+            parse_proof_and_secret_body(&secret_body),
+            Err(FrameError::SectionTooLarge)
+        );
     }
 }

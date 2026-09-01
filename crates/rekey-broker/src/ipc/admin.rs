@@ -31,6 +31,27 @@ use crate::session::CreateSessionError;
 
 const ADMIN_MUTATION_TIMEOUT: Duration = Duration::from_secs(25);
 
+fn admin_body_limit(message_type: u16) -> u32 {
+    match message_type {
+        admin_msg::UNLOCK_PASSWORD | admin_msg::UNLOCK_RECOVERY => {
+            ipc::ADMIN_SECRET_FIELD_MAX_BYTES
+        }
+        admin_msg::CREDENTIAL_ADD | admin_msg::CREDENTIAL_ROTATE => {
+            ipc::ADMIN_SECRET_BODY_MAX_BYTES
+        }
+        admin_msg::CREDENTIAL_REVOKE
+        | admin_msg::ACTION_CREATE
+        | admin_msg::ACTION_UPDATE
+        | admin_msg::ACTION_DISABLE
+        | admin_msg::SESSION_CREATE
+        | admin_msg::SESSION_REVOKE
+        | admin_msg::BACKUP
+        | admin_msg::SHUTDOWN
+        | admin_msg::POLICY_ACTIVATE => ipc::ADMIN_PROOF_BODY_MAX_BYTES,
+        _ => ipc::ADMIN_SECRET_BODY_MAX_BYTES,
+    }
+}
+
 fn proof_from(kind: ProofKind, bytes: &[u8]) -> UnlockProof {
     match kind {
         ProofKind::Password => UnlockProof::Password(SecretInput::from_slice(bytes)),
@@ -92,7 +113,7 @@ pub async fn handle_admin_conn(
             frame = read_frame(
                 &mut stream,
                 Channel::Admin,
-                |_| ipc::ADMIN_SECRET_BODY_MAX_BYTES,
+                admin_body_limit,
             ) => frame,
         } {
             Ok(frame) => frame,
@@ -369,18 +390,29 @@ async fn dispatch(
                     }
                     CreateSessionError::Domain(err) => BrokerError::Domain(err),
                 })?;
-            if let Err(err) = authority_until(
-                deadline,
-                ctx.authority.commit_audit_before(
+            if let Err(err) = ctx
+                .authority
+                .commit_audit_before(
                     session_audit(event_type::SESSION_CREATED, session_id),
                     Some(deadline.into_std()),
-                ),
-            )
-            .await
+                )
+                .await
             {
                 ctx.sessions.revoke(session_id);
                 ctx.request_fault();
-                return Err(err);
+                return Err(err.into());
+            }
+            if let Err(expired) = reject_if_deadline_elapsed(deadline) {
+                ctx.sessions.revoke(session_id);
+                if let Err(err) = ctx
+                    .authority
+                    .commit_audit(session_audit(event_type::SESSION_REVOKED, session_id))
+                    .await
+                {
+                    ctx.request_fault();
+                    return Err(err.into());
+                }
+                return Err(expired);
             }
             let response = ipc::SessionCreatedResponse {
                 session_id,
@@ -420,19 +452,19 @@ async fn dispatch(
             )
             .await?;
             reject_if_deadline_elapsed(deadline)?;
-            if let Err(err) = authority_until(
-                deadline,
-                ctx.authority.commit_audit_before(
+            if let Err(err) = ctx
+                .authority
+                .commit_audit_before(
                     session_audit(event_type::SESSION_REVOKED, revoke.session_id),
                     Some(deadline.into_std()),
-                ),
-            )
-            .await
+                )
+                .await
             {
                 ctx.request_fault();
-                return Err(err);
+                return Err(err.into());
             }
             let existed = ctx.sessions.revoke(revoke.session_id);
+            reject_if_deadline_elapsed(deadline)?;
             Ok((json(&serde_json::json!({"revoked": existed}))?, Vec::new()))
         }
         admin_msg::BACKUP => {
