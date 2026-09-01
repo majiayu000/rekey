@@ -315,9 +315,22 @@ fn prepare_runtime_dir(
     mode: u32,
     gid: Option<u32>,
 ) -> Result<(), BrokerError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(BrokerError::Authority(
+                AuthorityError::InsecureStatePermissions,
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(BrokerError::Io(error)),
+    }
     fs::create_dir_all(path).map_err(BrokerError::Io)?;
-    let metadata = fs::metadata(path).map_err(BrokerError::Io)?;
-    if metadata.uid() != unsafe { libc::geteuid() } {
+    let metadata = fs::symlink_metadata(path).map_err(BrokerError::Io)?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_dir()
+        || metadata.uid() != unsafe { libc::geteuid() }
+    {
         return Err(BrokerError::Authority(
             AuthorityError::InsecureStatePermissions,
         ));
@@ -326,8 +339,10 @@ fn prepare_runtime_dir(
         set_group(path, gid)?;
     }
     fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(BrokerError::Io)?;
-    let metadata = fs::metadata(path).map_err(BrokerError::Io)?;
-    if metadata.uid() != unsafe { libc::geteuid() }
+    let metadata = fs::symlink_metadata(path).map_err(BrokerError::Io)?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_dir()
+        || metadata.uid() != unsafe { libc::geteuid() }
         || metadata.permissions().mode() & 0o777 != mode
         || gid.is_some_and(|expected| metadata.gid() != expected)
     {

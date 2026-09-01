@@ -4,11 +4,12 @@
 mod common;
 
 use rekey_domain::credential::{CredentialKind, CredentialState, VersionState};
-use rekey_domain::ids::{CredentialId, RequestId};
+use rekey_domain::ids::{ActionId, CredentialId, RequestId};
 use rekey_vault::crypto::{AAD_VERSION_V1, CRYPTO_SUITE_V1};
 use rekey_vault::error::AuthorityError;
 use rekey_vault::model::{
-    AuditEvent, CredentialRecord, CredentialVersionRecord, event_type, outcome,
+    ActionRecord, ActionState, AuditEvent, CredentialRecord, CredentialVersionRecord, event_type,
+    outcome,
 };
 use rekey_vault::paths;
 use rekey_vault::store::SqliteRecordStore;
@@ -70,6 +71,27 @@ fn credential(label: &str) -> CredentialRecord {
         revoked_at_ms: None,
         state_nonce: [0u8; 12],
         state_ciphertext: [0u8; 16],
+    }
+}
+
+fn action(action_id: ActionId, credential_id: CredentialId, version: u64) -> ActionRecord {
+    ActionRecord {
+        action_id,
+        version,
+        name: "catalog-action".to_owned(),
+        state: ActionState::Active,
+        credential_id,
+        origin: "https://example.com".to_owned(),
+        method: "POST".to_owned(),
+        exact_path: "/v1/action".to_owned(),
+        auth_header: "authorization".to_owned(),
+        auth_prefix: "Bearer ".to_owned(),
+        request_max_bytes: 1_024,
+        allowed_extra_headers_json: "[]".to_owned(),
+        response_max_bytes: 1_024,
+        allowed_response_headers_json: "[]".to_owned(),
+        timeout_ms: 1_000,
+        created_at_ms: version as i64,
     }
 }
 
@@ -489,6 +511,44 @@ fn rotate_keeps_single_active_version() {
             .unwrap()
             .current_version,
         2
+    );
+}
+
+#[test]
+fn action_update_retires_a_disabled_version() {
+    let (_vault, mut store) = open_store();
+    let credential = credential("action-owner");
+    store
+        .insert_credential(
+            &credential,
+            &version(credential.credential_id, 1),
+            audit(event_type::CREDENTIAL_CREATED),
+        )
+        .unwrap();
+    let action_id = ActionId::new_random();
+    store
+        .insert_action(
+            &action(action_id, credential.credential_id, 1),
+            audit(event_type::ACTION_CREATED),
+        )
+        .unwrap();
+    store
+        .disable_action(action_id, audit(event_type::ACTION_DISABLED))
+        .unwrap();
+    store
+        .insert_action(
+            &action(action_id, credential.credential_id, 2),
+            audit(event_type::ACTION_UPDATED),
+        )
+        .unwrap();
+
+    let listed = store.list_actions().unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].version, 2);
+    assert_eq!(listed[0].state, ActionState::Active);
+    assert_eq!(
+        store.get_action(action_id, 1).unwrap().state,
+        ActionState::Retired
     );
 }
 

@@ -3,6 +3,25 @@ use std::sync::atomic::AtomicUsize;
 use tokio::sync::Barrier;
 
 #[test]
+fn runtime_directory_rejects_symlink_before_chmod() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("target");
+    fs::create_dir(&target).unwrap();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
+    let alias = dir.path().join("runtime");
+    std::os::unix::fs::symlink(&target, &alias).unwrap();
+
+    assert_eq!(
+        prepare_runtime_dir(&alias, 0o700, None).unwrap_err().code(),
+        "INSECURE_STATE_PERMISSIONS"
+    );
+    assert_eq!(
+        fs::metadata(target).unwrap().permissions().mode() & 0o777,
+        0o755
+    );
+}
+
+#[test]
 fn agent_runtime_rejects_parent_segments_and_symlink_aliases_into_state() {
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");

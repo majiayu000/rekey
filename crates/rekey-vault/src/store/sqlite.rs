@@ -324,7 +324,7 @@ impl SqliteRecordStore {
     ) -> Result<(), AuthorityError> {
         let tx = self.conn.transaction().map_err(storage)?;
         tx.execute(
-            "UPDATE actions SET state = 'retired' WHERE action_id = ?1 AND state = 'active'",
+            "UPDATE actions SET state = 'retired' WHERE action_id = ?1 AND state != 'retired'",
             params![record.action_id.as_bytes().as_slice()],
         )
         .map_err(storage)?;
