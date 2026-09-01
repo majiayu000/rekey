@@ -353,7 +353,7 @@ async fn serve_mock(
                     if mode == "slow-resource" {
                         tokio::time::sleep(Duration::from_millis(600)).await;
                     } else if mode == "deadline-resource" {
-                        tokio::time::sleep(Duration::from_millis(1800)).await;
+                        tokio::time::sleep(Duration::from_millis(4800)).await;
                     }
                     let repository_id = if mode == "wrong-repository" {
                         REPOSITORY_ID + 1

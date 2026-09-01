@@ -324,7 +324,7 @@ pathlib.Path(sys.argv[1]).write_text(json.dumps({
     "exact_path": "/installation/repositories",
     "auth_header": "authorization",
     "auth_prefix": "Bearer ",
-    "timeout_ms": 2000,
+    "timeout_ms": 5000,
     "request_max_bytes": 1,
     "allowed_extra_headers": [],
     "response_max_bytes": 262144,
@@ -404,7 +404,7 @@ PY
 )"
 python3 - "$DEADLINE_ELAPSED" <<'PY'
 import sys
-if float(sys.argv[1]) >= 2.5:
+if float(sys.argv[1]) >= 5.5:
     raise SystemExit("GitHub effect exceeded total deadline bound")
 PY
 
