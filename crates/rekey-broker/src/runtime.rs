@@ -126,7 +126,17 @@ impl BrokerCtx {
             .map_err(|_| BrokerError::Authority(AuthorityError::AuthorityBusy))?;
         self.lifecycle.reject_if_busy()?;
         self.authority.unlock(proof).await?;
-        self.lifecycle.enter_running()?;
+        if let Err(transition_error) = self.lifecycle.enter_running() {
+            self.sessions.close_and_revoke_all();
+            let lock_result = self.authority.lock("stop-during-unlock").await;
+            *self.policy.write().await = None;
+            self.lifecycle.enter_locked();
+            if let Err(lock_error) = lock_result {
+                self.request_fault();
+                return Err(lock_error.into());
+            }
+            return Err(transition_error);
+        }
         self.sessions.open_for_admission();
         tracing::info!(event = "authority.state", state = "running");
         Ok(())

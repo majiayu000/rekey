@@ -66,6 +66,7 @@ impl BrokerCtx {
             StopCause::Signal => "service-manager-signal",
             StopCause::Fault => "runtime-fault",
         };
+        let must_record_signal_lock = matches!(&cause, StopCause::Signal);
         let owner = match tokio::time::timeout_at(stop_deadline, self.lifecycle.coordinate()).await
         {
             Ok(owner) => owner,
@@ -193,9 +194,10 @@ impl BrokerCtx {
             ))));
         }
 
-        if status
-            .as_ref()
-            .is_some_and(|status| status.state == "unlocked")
+        if must_record_signal_lock
+            || status
+                .as_ref()
+                .is_some_and(|status| status.state == "unlocked")
         {
             match tokio::time::timeout_at(stop_deadline, self.authority.lock(lock_reason)).await {
                 Ok(Ok(())) => {

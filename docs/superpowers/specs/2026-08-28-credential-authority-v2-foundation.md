@@ -914,8 +914,12 @@ token 的 session，也不存在 `session.revoked(success)` 与仍可用 session
 Unlock 在 lifecycle coordinator 已被 lock、idle lock 或 shutdown 占用时立即返回 busy /
 draining，不能排队到 drain 完成后重新打开 admission。signal、fault 或 Admin Shutdown
 一旦被 central stop router 选中，stop-pending 必须 sticky 地关闭 remote-effect admission；
-并发 unlock 即使已经持有 coordinator，也不能再次进入 Running。只有 Admin Shutdown
-在验证阶段被明确拒绝时才清除 stop-pending 并恢复原 Running epoch。
+并发 unlock 即使已经持有 coordinator，也不能再次进入 Running。stop-pending 与
+remote-effect admission 必须由同一个原子 gate 状态表达，不能在两个 atomics 之间留下
+短暂 reopen 窗口。若 Authority 已成功 unlock、但 stop 赢得 gate 转换，Broker 必须在释放
+coordinator 前撤销 session admission、重新 lock Authority、清空 active policy，并恢复
+lifecycle 的 Locked 状态。只有 Admin Shutdown 在验证阶段被明确拒绝时才清除
+stop-pending；仅当原 lifecycle 仍是 Running 时才恢复该 epoch 的 remote-effect admission。
 
 `SessionRevoke` 在 durable success audit 前先以 SessionRegistry 的同一互斥区将目标
 session 标记为 revoked，从该线性化点起不能再取得新 execution permit；audit 失败按既有
