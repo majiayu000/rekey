@@ -6,7 +6,6 @@ use std::io::Write;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use rekey_domain::ids::{VaultId, WrapperId};
 use zeroize::Zeroizing;
@@ -29,6 +28,7 @@ use crate::model::{
     AuditEvent, FORMAT_VERSION, KeyWrapperRecord, VaultHeaderRecord, WrapperKind, WrapperState,
     event_type, outcome,
 };
+use crate::now_ms;
 use crate::paths;
 use crate::secret::SecretInput;
 use crate::store::SqliteRecordStore;
@@ -43,13 +43,6 @@ pub struct InitOutcome {
 pub enum RestoreProof {
     Password(SecretInput),
     RecoveryKey(SecretInput),
-}
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 fn dir_is_empty(dir: &Path) -> Result<bool, AuthorityError> {
@@ -275,7 +268,7 @@ fn init_vault_inner(
     let recovery_salt: [u8; SALT_LEN] = random_array()?;
     let password_wrapper_id = WrapperId::new_random();
     let recovery_wrapper_id = WrapperId::new_random();
-    let now = now_ms();
+    let now = now_ms()?;
 
     let password_kek = derive_password_kek(password.expose(), &password_salt, &params)?;
     let recovery_kek = derive_recovery_kek(&recovery_key, &recovery_salt)?;
@@ -513,7 +506,7 @@ fn restore_inner(
         reason_code: "restore".to_owned(),
         upstream_status: None,
         latency_ms: None,
-        created_at_ms: now_ms(),
+        created_at_ms: now_ms()?,
     })?;
     store.wal_checkpoint()?;
     drop(store);

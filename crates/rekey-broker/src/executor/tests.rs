@@ -1,6 +1,7 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use rekey_domain::Timestamp;
 use rekey_domain::authorization::Principal;
 use rekey_domain::capability::SessionGrant;
 use rekey_domain::ids::{ActionId, CredentialId, PrincipalId, SessionId, TenantId};

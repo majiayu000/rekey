@@ -19,6 +19,19 @@ answers, domain-based Actions fail closed until the host supplies real DNS;
 Rekey does not silently allow the fake-IP range or honor proxy environment
 variables.
 
+To diagnose a blocked domain Action, resolve its exact Action host before
+changing Rekey:
+
+```bash
+dig +short api.github.com
+```
+
+If every answer is inside `198.18.0.0/15`, configure the TUN client to return
+real DNS for that exact host (for Clash, add it to `dns.fake-ip-filter`), then
+rerun `dig` and the Action. Do not solve this by adding private ranges to
+Rekey, disabling endpoint screening, or setting HTTP proxy environment
+variables.
+
 ## How it works
 
 ```

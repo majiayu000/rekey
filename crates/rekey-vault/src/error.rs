@@ -24,6 +24,8 @@ pub enum AuthorityError {
     UnlockRateLimited,
     #[error("operating system entropy source is unavailable")]
     EntropyUnavailable,
+    #[error("system clock is unavailable")]
+    ClockUnavailable,
     #[error("cryptographic operation failed")]
     CryptoFailure,
     #[error("authentication failed")]
@@ -77,6 +79,7 @@ impl AuthorityError {
             Self::InvalidUnlockCredential => "INVALID_UNLOCK_CREDENTIAL",
             Self::UnlockRateLimited => "UNLOCK_RATE_LIMITED",
             Self::EntropyUnavailable => "ENTROPY_UNAVAILABLE",
+            Self::ClockUnavailable => "CLOCK_UNAVAILABLE",
             Self::CryptoFailure => "CRYPTO_FAILURE",
             Self::AuthenticationFailed => "AUTHENTICATION_FAILED",
             Self::StorageUnavailable(_) => "STORAGE_UNAVAILABLE",

@@ -3,8 +3,9 @@ use std::path::{Path, PathBuf};
 use crate::command::{BackupInfo, UnlockProof};
 use crate::error::AuthorityError;
 use crate::model::{event_type, outcome};
+use crate::now_ms;
 
-use super::{Worker, now_ms, unlock_audit};
+use super::{Worker, unlock_audit};
 
 impl Worker {
     pub(super) fn backup(
@@ -14,6 +15,7 @@ impl Worker {
     ) -> Result<BackupInfo, AuthorityError> {
         self.require_unlocked()?;
         self.verify_proof(&proof)?;
+        let created_at_ms = now_ms()?;
         if !output.is_absolute() {
             return Err(AuthorityError::BackupFailed);
         }
@@ -93,7 +95,7 @@ impl Worker {
         let info = BackupInfo {
             vault_id: self.header.vault_id,
             format_version: self.header.format_version,
-            created_at_ms: now_ms(),
+            created_at_ms,
             sha256_hex,
             output_path: output,
         };

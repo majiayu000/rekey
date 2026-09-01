@@ -1,7 +1,7 @@
 //! Command implementations. Secrets are read from a hidden TTY prompt or,
 //! for automation, explicit stdin flags — never argv or environment.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -50,14 +50,15 @@ fn admin_with_response_timeout(
     )
 }
 
-fn print_json(metadata: &[u8]) {
-    match serde_json::from_slice::<serde_json::Value>(metadata) {
-        Ok(value) => println!(
-            "{}",
-            serde_json::to_string_pretty(&value).unwrap_or_default()
-        ),
-        Err(_) => println!("{}", String::from_utf8_lossy(metadata)),
-    }
+fn print_json(metadata: &[u8]) -> Result<(), CliError> {
+    let value = serde_json::from_slice::<serde_json::Value>(metadata)
+        .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid JSON"))?;
+    let mut output = serde_json::to_vec_pretty(&value)
+        .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid JSON"))?;
+    output.push(b'\n');
+    std::io::stdout()
+        .write_all(&output)
+        .map_err(|err| CliError::local("OUTPUT_FAILED", format!("cannot write output: {err}")))
 }
 
 fn prompt_secret(prompt: &str) -> Result<Zeroizing<Vec<u8>>, CliError> {
@@ -183,7 +184,7 @@ pub fn unlock(state_dir: &Path, recovery: bool, password_stdin: bool) -> Result<
         admin_msg::UNLOCK_PASSWORD
     };
     let (meta, _) = admin(state_dir)?.call(message, b"{}", &secret)?;
-    print_json(&meta);
+    print_json(&meta)?;
     Ok(())
 }
 
@@ -193,13 +194,13 @@ pub fn lock(state_dir: &Path) -> Result<(), CliError> {
         b"{}",
         &[],
     )?;
-    print_json(&meta);
+    print_json(&meta)?;
     Ok(())
 }
 
 pub fn status(state_dir: &Path) -> Result<(), CliError> {
     let (meta, _) = admin(state_dir)?.call(admin_msg::STATUS, b"{}", &[])?;
-    print_json(&meta);
+    print_json(&meta)?;
     Ok(())
 }
 
@@ -208,7 +209,7 @@ pub fn shutdown(state_dir: &Path, password_stdin: bool) -> Result<(), CliError> 
     // Locked brokers shut down without proof; unlocked brokers require it.
     match client.call(admin_msg::SHUTDOWN, b"{}", &[]) {
         Ok((meta, _)) => {
-            print_json(&meta);
+            print_json(&meta)?;
             Ok(())
         }
         Err(err) if err.code == "AUTHENTICATION_FAILED" => {
@@ -219,7 +220,7 @@ pub fn shutdown(state_dir: &Path, password_stdin: bool) -> Result<(), CliError> 
                 b"{}",
                 &body,
             )?;
-            print_json(&meta);
+            print_json(&meta)?;
             Ok(())
         }
         Err(err) => Err(err),
@@ -250,7 +251,7 @@ pub fn credential_add(state_dir: &Path, label: &str, stdin_secrets: bool) -> Res
         metadata.to_string().as_bytes(),
         &body,
     )?;
-    print_json(&meta);
+    print_json(&meta)?;
     Ok(())
 }
 
@@ -300,13 +301,13 @@ pub fn credential_add_github_app(
         metadata.to_string().as_bytes(),
         &body,
     )?;
-    print_json(&meta);
+    print_json(&meta)?;
     Ok(())
 }
 
 pub fn credential_list(state_dir: &Path) -> Result<(), CliError> {
     let (meta, _) = admin(state_dir)?.call(admin_msg::CREDENTIAL_LIST, b"{}", &[])?;
-    print_json(&meta);
+    print_json(&meta)?;
     Ok(())
 }
 
@@ -341,7 +342,7 @@ pub fn credential_rotate(
         metadata.to_string().as_bytes(),
         &body,
     )?;
-    print_json(&meta);
+    print_json(&meta)?;
     Ok(())
 }
 
@@ -361,7 +362,7 @@ pub fn credential_revoke(
         metadata.to_string().as_bytes(),
         &body,
     )?;
-    print_json(&meta);
+    print_json(&meta)?;
     Ok(())
 }
 
@@ -374,7 +375,7 @@ pub fn action_create(state_dir: &Path, file: &Path, password_stdin: bool) -> Res
     let password = read_password(password_stdin, "Vault password (step-up): ")?;
     let body = proof_body(&password);
     let (meta, _) = admin(state_dir)?.call(admin_msg::ACTION_CREATE, &definition, &body)?;
-    print_json(&meta);
+    print_json(&meta)?;
     Ok(())
 }
 
@@ -400,13 +401,13 @@ pub fn action_update(
     let password = read_password(password_stdin, "Vault password (step-up): ")?;
     let body = proof_body(&password);
     let (meta, _) = admin(state_dir)?.call(admin_msg::ACTION_UPDATE, &metadata, &body)?;
-    print_json(&meta);
+    print_json(&meta)?;
     Ok(())
 }
 
 pub fn action_list(state_dir: &Path) -> Result<(), CliError> {
     let (meta, _) = admin(state_dir)?.call(admin_msg::ACTION_LIST, b"{}", &[])?;
-    print_json(&meta);
+    print_json(&meta)?;
     Ok(())
 }
 
@@ -426,7 +427,7 @@ pub fn action_disable(
         metadata.to_string().as_bytes(),
         &body,
     )?;
-    print_json(&meta);
+    print_json(&meta)?;
     Ok(())
 }
 
@@ -459,7 +460,7 @@ pub fn session_create(
         &body,
     )?;
     // Shown exactly once; prefer piping to the agent instead of shell history.
-    print_json(&meta);
+    print_json(&meta)?;
     Ok(())
 }
 
@@ -479,7 +480,7 @@ pub fn session_revoke(
         metadata.to_string().as_bytes(),
         &body,
     )?;
-    print_json(&meta);
+    print_json(&meta)?;
     Ok(())
 }
 
@@ -493,13 +494,13 @@ pub fn policy_activate(
     let password = read_password(password_stdin, "Vault password (step-up): ")?;
     let body = proof_body(&password);
     let (meta, _) = admin(state_dir)?.call(admin_msg::POLICY_ACTIVATE, &snapshot, &body)?;
-    print_json(&meta);
+    print_json(&meta)?;
     Ok(())
 }
 
 pub fn policy_status(state_dir: &Path) -> Result<(), CliError> {
     let (meta, _) = admin(state_dir)?.call(admin_msg::POLICY_STATUS, b"{}", &[])?;
-    print_json(&meta);
+    print_json(&meta)?;
     Ok(())
 }
 
@@ -547,12 +548,21 @@ pub fn execute(
         metadata.to_string().as_bytes(),
         &body,
     )?;
-    print_json(&meta);
+    print_json(&meta)?;
     if !response_body.is_empty() {
-        use std::io::Write;
         let mut stdout = std::io::stdout();
-        let _ = stdout.write_all(&response_body);
-        let _ = stdout.write_all(b"\n");
+        stdout.write_all(&response_body).map_err(|err| {
+            CliError::local(
+                "OUTPUT_FAILED",
+                format!("cannot write response body: {err}"),
+            )
+        })?;
+        stdout.write_all(b"\n").map_err(|err| {
+            CliError::local(
+                "OUTPUT_FAILED",
+                format!("cannot finish response body: {err}"),
+            )
+        })?;
     }
     Ok(())
 }
@@ -566,6 +576,6 @@ pub fn backup(state_dir: &Path, output: &Path, password_stdin: bool) -> Result<(
         metadata.to_string().as_bytes(),
         &body,
     )?;
-    print_json(&meta);
+    print_json(&meta)?;
     Ok(())
 }

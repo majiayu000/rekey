@@ -5,7 +5,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use rekey_domain::Timestamp;
 use rekey_domain::action::{
     ActionName, ExactPath, FixedMethod, HeaderCredentialUse, HeaderName, HeaderPrefix, HttpsOrigin,
     RequestPolicy, ResponsePolicy,
@@ -51,15 +50,6 @@ fn empty_meta(frame: &IncomingFrame) -> Result<(), BrokerError> {
 fn json<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, BrokerError> {
     serde_json::to_vec(value)
         .map_err(|_| BrokerError::Frame(rekey_domain::ipc::FrameError::InvalidField))
-}
-
-fn now_ts() -> Timestamp {
-    Timestamp::from_unix_ms(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0),
-    )
 }
 
 pub async fn handle_admin_conn(
@@ -144,7 +134,7 @@ async fn dispatch(
                 state: status.state.to_owned(),
                 format_version: status.format_version,
                 runtime_version: env!("CARGO_PKG_VERSION").to_owned(),
-                sessions_active: ctx.sessions.active_count(now_ts()),
+                sessions_active: ctx.sessions.active_count(crate::now_ts()?),
             };
             Ok((json(&response)?, Vec::new()))
         }
@@ -287,7 +277,7 @@ async fn dispatch(
                 session_id,
                 principal,
                 create.actions,
-                now_ts(),
+                crate::now_ts()?,
                 create.ttl_ms,
                 create.max_uses,
             )
@@ -314,7 +304,8 @@ async fn dispatch(
         }
         admin_msg::POLICY_ACTIVATE => {
             let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
-            let snapshot = rekey_policy::parse_and_validate_snapshot(&frame.metadata, now_ts())?;
+            let snapshot =
+                rekey_policy::parse_and_validate_snapshot(&frame.metadata, crate::now_ts()?)?;
             ctx.activate_policy(snapshot, proof_from(kind, proof))
                 .await?;
             Ok((json(&ctx.policy_status().await)?, Vec::new()))

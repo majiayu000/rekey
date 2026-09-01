@@ -2,7 +2,7 @@
 //! VRK, and every credential mutation. Runs on a dedicated blocking thread;
 //! everything else talks to it through the bounded queue in `handle`.
 
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use rekey_domain::action::FixedHttpAction;
 use rekey_domain::credential::CredentialState;
@@ -20,6 +20,7 @@ use crate::crypto::random_array;
 use crate::error::AuthorityError;
 use crate::handle::{AuthorityConfig, AuthorityHandle};
 use crate::model::{AuditEvent, WrapperKind, event_type, outcome};
+use crate::now_ms;
 use crate::paths;
 use crate::store::SqliteRecordStore;
 
@@ -45,17 +46,10 @@ fn reconcile_abandoned_executions(store: &mut SqliteRecordStore) -> Result<(), A
             reason_code: "abandoned-on-restart".to_owned(),
             upstream_status: None,
             latency_ms: None,
-            created_at_ms: now_ms(),
+            created_at_ms: now_ms()?,
         })?;
     }
     Ok(())
-}
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 enum VaultState {
@@ -324,7 +318,7 @@ impl Worker {
 
     fn fault(&mut self, reason: &'static str) {
         self.state = VaultState::Faulted;
-        if let Ok(event_id) = random_array() {
+        if let (Ok(event_id), Ok(created_at_ms)) = (random_array(), now_ms()) {
             let _ = self.store.append_audit(&AuditEvent {
                 event_id,
                 request_id: None,
@@ -339,7 +333,7 @@ impl Worker {
                 reason_code: reason.to_owned(),
                 upstream_status: None,
                 latency_ms: None,
-                created_at_ms: now_ms(),
+                created_at_ms,
             });
         }
     }
@@ -359,7 +353,7 @@ impl Worker {
             reason_code: draft.reason_code,
             upstream_status: draft.upstream_status,
             latency_ms: draft.latency_ms,
-            created_at_ms: now_ms(),
+            created_at_ms: now_ms()?,
         })
     }
 
@@ -500,7 +494,7 @@ impl Worker {
             response_policy: definition.response_policy,
         };
         action.validate()?;
-        let record = action_to_record(&action, now_ms())?;
+        let record = action_to_record(&action, now_ms()?)?;
         let mut draft = credential_audit(event, definition.credential_id, 0, "upsert");
         draft.credential_version = None;
         draft.action_id = Some(action_id);

@@ -21,6 +21,7 @@ enum Attack {
     MismatchedErrorEnvelope,
     UnknownErrorField,
     ErrorWithBody,
+    InvalidOkMetadata,
 }
 
 fn rekey_bin() -> PathBuf {
@@ -121,6 +122,14 @@ fn run_attack(attack: Attack) -> std::process::Output {
                 1,
                 vec![b'x'],
             ),
+            Attack::InvalidOkMetadata => (
+                Channel::Admin,
+                request.request_id,
+                resp_msg::OK,
+                b"not-json".to_vec(),
+                0,
+                Vec::new(),
+            ),
         };
 
         let response = FrameHeader {
@@ -131,13 +140,13 @@ fn run_attack(attack: Attack) -> std::process::Output {
             metadata_len: metadata.len() as u32,
             body_len,
         };
+        let mut forged_frame = Vec::with_capacity(FRAME_HEADER_LEN + metadata.len() + body.len());
+        forged_frame.extend_from_slice(&response.encode());
+        forged_frame.extend_from_slice(&metadata);
+        forged_frame.extend_from_slice(&body);
         stream
-            .write_all(&response.encode())
-            .expect("write forged header");
-        stream.write_all(&metadata).expect("write forged metadata");
-        if !body.is_empty() {
-            stream.write_all(&body).expect("write forged body");
-        }
+            .write_all(&forged_frame)
+            .expect("write forged response");
         stream.flush().expect("flush forged response");
     });
 
@@ -165,6 +174,7 @@ fn cli_rejects_forged_broker_responses() {
         Attack::MismatchedErrorEnvelope,
         Attack::UnknownErrorField,
         Attack::ErrorWithBody,
+        Attack::InvalidOkMetadata,
     ] {
         let output = run_attack(attack);
         assert_eq!(

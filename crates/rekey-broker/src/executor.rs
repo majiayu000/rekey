@@ -5,14 +5,14 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use data_encoding::{BASE64, BASE64_NOPAD, BASE64URL, BASE64URL_NOPAD};
+use rekey_domain::DomainError;
 use rekey_domain::action::FixedHttpAction;
 use rekey_domain::authorization::{AuthorizationRequest, Decision, DenyReason, Principal};
 use rekey_domain::capability::ActionVersionRef;
 use rekey_domain::ids::RequestId;
-use rekey_domain::{DomainError, Timestamp};
 use rekey_vault::AuthorityError;
 use rekey_vault::handle::AuthorityHandle;
 use rekey_vault::model::ActionState;
@@ -86,14 +86,6 @@ const FORBIDDEN_RESPONSE_HEADERS: &[&str] = &[
     "www-authenticate",
 ];
 
-fn now_ts() -> Timestamp {
-    let ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
-    Timestamp::from_unix_ms(ms)
-}
-
 fn header_value_is_safe(value: &str) -> bool {
     value.len() <= 8 * 1024 && !value.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0)
 }
@@ -135,9 +127,9 @@ impl ActionExecutor {
         self.refuse_unless_running()?;
         // Step 3: capability authentication reserves one use and one
         // concurrency slot; the permit releases the slot on every path.
-        let permit = self
-            .sessions
-            .acquire(&request.capability_token, request.action, now_ts())?;
+        let permit =
+            self.sessions
+                .acquire(&request.capability_token, request.action, crate::now_ts()?)?;
         self.refuse_unless_running()?;
         let principal = permit.principal;
         self.admit_authorized(request, principal, permit, admission_started)
@@ -214,7 +206,7 @@ impl ActionExecutor {
             resource: resource.clone(),
             parameters: parameters.clone(),
         };
-        let decision = rekey_policy::evaluate(&snapshot, &authorization_request, now_ts());
+        let decision = rekey_policy::evaluate(&snapshot, &authorization_request, crate::now_ts()?);
         let (policy_version, policy_digest, policy_rule_id) = match &decision {
             Decision::Allow {
                 policy_version,

@@ -4,7 +4,7 @@ use rekey_domain::credential::{
 use rekey_domain::ids::CredentialId;
 use zeroize::Zeroizing;
 
-use super::{VaultState, Worker, credential_audit, now_ms};
+use super::{VaultState, Worker, credential_audit};
 use crate::command::UnlockProof;
 use crate::convert::record_to_metadata;
 use crate::crypto::aad::{AadPurpose, AadV1};
@@ -14,6 +14,7 @@ use crate::crypto::keys::DataKey;
 use crate::crypto::{AAD_VERSION_V1, CRYPTO_SUITE_V1};
 use crate::error::AuthorityError;
 use crate::model::{CredentialRecord, CredentialVersionRecord, event_type};
+use crate::now_ms;
 use crate::secret::{PreparedCredential, SecretInput};
 
 impl Worker {
@@ -112,7 +113,7 @@ impl Worker {
             ));
         }
         let credential_id = CredentialId::new_random();
-        let now = now_ms();
+        let now = now_ms()?;
         let version = self.encrypt_new_version(credential_id, 1, kind, &secret, now)?;
         let mut record = CredentialRecord {
             credential_id,
@@ -174,7 +175,7 @@ impl Worker {
             ));
         }
         let next = updated.current_version + 1;
-        let now = now_ms();
+        let now = now_ms()?;
         let version = self.encrypt_new_version(
             credential_id,
             next,
@@ -204,7 +205,7 @@ impl Worker {
         self.require_unlocked()?;
         self.verify_proof(&proof)?;
         let mut updated = self.load_verified_credential(credential_id)?;
-        let now = now_ms();
+        let now = now_ms()?;
         updated.state = CredentialState::Revoked;
         updated.updated_at_ms = now;
         updated.revoked_at_ms = Some(now);

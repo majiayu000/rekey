@@ -62,6 +62,7 @@ impl CliError {
             | "BACKUP_FAILED"
             | "RESTORE_FAILED"
             | "ENTROPY_UNAVAILABLE"
+            | "CLOCK_UNAVAILABLE"
             | "FAULTED" => 5,
             "UPSTREAM_FAILED" | "RESPONSE_TOO_LARGE" => 6,
             "RESPONSE_SECURITY_VIOLATION" | "AUDIT_COMMIT_FAILED_AFTER_EXECUTION" => 8,
