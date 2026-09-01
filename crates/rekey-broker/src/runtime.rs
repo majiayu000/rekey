@@ -110,6 +110,7 @@ impl BrokerCtx {
         snapshot: ValidatedSnapshot,
         proof: UnlockProof,
     ) -> Result<(), BrokerError> {
+        let _owner = self.lifecycle.coordinate().await;
         self.lifecycle.reject_if_not_running()?;
         self.authority.verify_proof(proof).await?;
         self.lifecycle.reject_if_not_running()?;

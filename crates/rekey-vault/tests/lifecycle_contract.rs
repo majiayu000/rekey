@@ -125,6 +125,31 @@ async fn terminal_audit_resets_idle_activity() {
 }
 
 #[tokio::test]
+async fn successful_admin_lists_reset_idle_activity() {
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let before_credentials = handle.status().await.unwrap().idle_for_ms;
+    handle.credential_list().await.unwrap();
+    let after_credentials = handle.status().await.unwrap().idle_for_ms;
+    assert!(after_credentials < before_credentials);
+
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let before_actions = handle.status().await.unwrap().idle_for_ms;
+    handle.action_list().await.unwrap();
+    let after_actions = handle.status().await.unwrap().idle_for_ms;
+    assert!(after_actions < before_actions);
+
+    handle
+        .shutdown(Some(common::password_proof()))
+        .await
+        .unwrap();
+    join.join().unwrap();
+}
+
+#[tokio::test]
 async fn shutdown_requires_proof_only_when_unlocked() {
     let vault = common::init_test_vault();
 

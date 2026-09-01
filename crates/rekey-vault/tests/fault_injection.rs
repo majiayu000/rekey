@@ -78,6 +78,39 @@ async fn audit_commit_failure_faults_the_worker() {
     join.join().unwrap();
 }
 
+#[tokio::test]
+async fn transactional_mutation_audit_failure_faults_the_worker() {
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+
+    let db = paths::vault_db(&vault.state_dir);
+    let tamper = rusqlite_open(&db);
+    tamper
+        .execute_batch(
+            "CREATE TRIGGER fail_credential_audit
+             BEFORE INSERT ON audit_events
+             WHEN NEW.event_type = 'credential.created'
+             BEGIN SELECT RAISE(ABORT, 'injected mutation audit fault'); END;",
+        )
+        .unwrap();
+    drop(tamper);
+
+    let err = handle
+        .credential_add(
+            CredentialLabel::new("faulted mutation").unwrap(),
+            CredentialKind::OpaqueToken,
+            SecretInput::from_slice(b"v"),
+            common::password_proof(),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AuthorityError::AuditCommitFailed));
+    assert_eq!(handle.status().await.unwrap().state, "faulted");
+    handle.shutdown(None).await.unwrap();
+    join.join().unwrap();
+}
+
 fn rusqlite_open(path: &std::path::Path) -> rusqlite::Connection {
     rusqlite::Connection::open(path).unwrap()
 }

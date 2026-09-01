@@ -208,7 +208,9 @@ impl Worker {
                 let _ = reply.send(result);
             }
             AuthorityCommand::CredentialList(reply) => {
-                let _ = reply.send(self.credential_list());
+                let result = self.credential_list();
+                self.touch_if_ok(&result);
+                let _ = reply.send(result);
             }
             AuthorityCommand::CredentialRotate {
                 credential_id,
@@ -249,7 +251,9 @@ impl Worker {
                 let _ = reply.send(result);
             }
             AuthorityCommand::ActionList(reply) => {
-                let _ = reply.send(self.action_list());
+                let result = self.action_list();
+                self.touch_if_ok(&result);
+                let _ = reply.send(result);
             }
             AuthorityCommand::ActionGet {
                 action_id,
@@ -365,16 +369,30 @@ impl Worker {
         })
     }
 
+    fn audit_event_or_fault(&mut self, draft: AuditDraft) -> Result<AuditEvent, AuthorityError> {
+        match self.audit_event(draft) {
+            Ok(event) => Ok(event),
+            Err(err) => {
+                self.fault("audit-event-construction-failed");
+                Err(err)
+            }
+        }
+    }
+
+    fn fault_on_audit_failure<T>(
+        &mut self,
+        result: Result<T, AuthorityError>,
+    ) -> Result<T, AuthorityError> {
+        if matches!(result, Err(AuthorityError::AuditCommitFailed)) {
+            self.fault("audit-commit-failed");
+        }
+        result
+    }
+
     /// Audit failure is fail-closed: the worker faults instead of continuing
     /// without evidence.
     fn append_audit(&mut self, draft: AuditDraft) -> Result<(), AuthorityError> {
-        let event = match self.audit_event(draft) {
-            Ok(event) => event,
-            Err(err) => {
-                self.fault("audit-event-construction-failed");
-                return Err(err);
-            }
-        };
+        let event = self.audit_event_or_fault(draft)?;
         match self.store.append_audit(&event) {
             Ok(()) => Ok(()),
             Err(err) => {
@@ -513,8 +531,9 @@ impl Worker {
         draft.credential_version = None;
         draft.action_id = Some(action_id);
         draft.action_version = Some(version);
-        let audit = self.audit_event(draft)?;
-        self.store.insert_action(&record, audit)?;
+        let audit = self.audit_event_or_fault(draft)?;
+        let result = self.store.insert_action(&record, audit);
+        self.fault_on_audit_failure(result)?;
         Ok(action)
     }
 
@@ -527,8 +546,9 @@ impl Worker {
         self.verify_proof(&proof)?;
         let mut draft = unlock_audit(event_type::ACTION_DISABLED, outcome::SUCCESS, "disable");
         draft.action_id = Some(action_id);
-        let audit = self.audit_event(draft)?;
-        self.store.disable_action(action_id, audit)
+        let audit = self.audit_event_or_fault(draft)?;
+        let result = self.store.disable_action(action_id, audit);
+        self.fault_on_audit_failure(result)
     }
 
     fn action_list(&self) -> Result<Vec<FixedHttpAction>, AuthorityError> {

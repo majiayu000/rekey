@@ -1,6 +1,7 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use data_encoding::{BASE64, BASE64URL_NOPAD};
 use rekey_domain::Timestamp;
 use rekey_domain::authorization::Principal;
 use rekey_domain::capability::SessionGrant;
@@ -115,12 +116,27 @@ fn sealing_detects_direct_and_encoded_secret() {
     assert!(contains_secret(url.as_bytes(), &needles));
     let pct = percent_encode(auth, true);
     assert!(contains_secret(pct.as_bytes(), &needles));
+    let mixed_percent = sealing_needles(b"+/=", b"+/=");
+    assert!(contains_secret(b"prefix-%2B%2f%3D-suffix", &mixed_percent));
     assert!(!contains_secret(b"clean response body", &needles));
 
     let leak = vec![("content-type".to_owned(), format!("text/plain; {b64}"))];
     assert!(headers_contain_secret(&leak, &needles));
     let clean = vec![("content-type".to_owned(), "application/json".to_owned())];
     assert!(!headers_contain_secret(&clean, &needles));
+}
+
+#[test]
+fn post_response_failures_are_indeterminate() {
+    assert!(upstream_failure_is_indeterminate(
+        &crate::upstream::UpstreamError::ResponseTooLarge
+    ));
+    assert!(upstream_failure_is_indeterminate(
+        &crate::upstream::UpstreamError::Blocked("redirect")
+    ));
+    assert!(!upstream_failure_is_indeterminate(
+        &crate::upstream::UpstreamError::Blocked("private-address")
+    ));
 }
 
 #[tokio::test]

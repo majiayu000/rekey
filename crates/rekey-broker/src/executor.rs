@@ -7,7 +7,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
-use data_encoding::{BASE64, BASE64_NOPAD, BASE64URL, BASE64URL_NOPAD};
 use rekey_domain::DomainError;
 use rekey_domain::action::FixedHttpAction;
 use rekey_domain::authorization::{AuthorizationRequest, Decision, DenyReason, Principal};
@@ -29,6 +28,11 @@ use crate::github_app::{GitHubAppCredential, GitHubEffect, GitHubError};
 use crate::lifecycle::{BrokerPhase, Lifecycle};
 use crate::session::{ExecutionPermit, SessionRegistry};
 use crate::upstream::{UpstreamRequest, UpstreamTransport};
+
+mod sealing;
+#[cfg(test)]
+use sealing::percent_encode;
+use sealing::{contains_secret, headers_contain_secret, sealing_needles};
 
 pub struct ExecuteRequest {
     pub request_id: RequestId,
@@ -366,15 +370,10 @@ impl ActionExecutor {
                     crate::upstream::UpstreamError::Timeout => "upstream-timeout",
                     crate::upstream::UpstreamError::Transport => "upstream-transport",
                 };
-                match err {
-                    crate::upstream::UpstreamError::Timeout
-                    | crate::upstream::UpstreamError::Transport => {
-                        started.indeterminate(reason).await?
-                    }
-                    crate::upstream::UpstreamError::Blocked(_)
-                    | crate::upstream::UpstreamError::ResponseTooLarge => {
-                        started.blocked(reason).await?
-                    }
+                if upstream_failure_is_indeterminate(&err) {
+                    started.indeterminate(reason).await?;
+                } else {
+                    started.blocked(reason).await?;
                 }
                 return Err(match err {
                     crate::upstream::UpstreamError::ResponseTooLarge => {
@@ -640,6 +639,16 @@ fn reason_static(reason: &str) -> &'static str {
     }
 }
 
+fn upstream_failure_is_indeterminate(err: &crate::upstream::UpstreamError) -> bool {
+    matches!(
+        err,
+        crate::upstream::UpstreamError::Timeout
+            | crate::upstream::UpstreamError::Transport
+            | crate::upstream::UpstreamError::ResponseTooLarge
+            | crate::upstream::UpstreamError::Blocked("redirect")
+    )
+}
+
 fn validate_request(
     action: &FixedHttpAction,
     request: &ExecuteRequest,
@@ -696,57 +705,6 @@ fn build_upstream(
         timeout: Duration::from_millis(action.timeout_ms as u64),
         response_max_bytes: action.response_policy.max_body_bytes,
     }
-}
-
-/// Direct encodings of the secret (and the full auth header value) that a
-/// reflecting upstream could echo: raw, base64 standard/url with and without
-/// padding, and full percent-encoding in both hex cases.
-fn sealing_needles(secret: &[u8], auth_value: &[u8]) -> Vec<Zeroizing<Vec<u8>>> {
-    let mut needles = Vec::new();
-    for source in [secret, auth_value] {
-        if source.is_empty() {
-            continue;
-        }
-        needles.push(Zeroizing::new(source.to_vec()));
-        needles.push(Zeroizing::new(BASE64.encode(source).into_bytes()));
-        needles.push(Zeroizing::new(BASE64_NOPAD.encode(source).into_bytes()));
-        needles.push(Zeroizing::new(BASE64URL.encode(source).into_bytes()));
-        needles.push(Zeroizing::new(BASE64URL_NOPAD.encode(source).into_bytes()));
-        needles.push(Zeroizing::new(percent_encode(source, false).into_bytes()));
-        needles.push(Zeroizing::new(percent_encode(source, true).into_bytes()));
-    }
-    needles
-}
-
-fn percent_encode(bytes: &[u8], uppercase: bool) -> String {
-    let mut out = String::with_capacity(bytes.len() * 3);
-    for b in bytes {
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
-            out.push(*b as char);
-        } else if uppercase {
-            out.push_str(&format!("%{b:02X}"));
-        } else {
-            out.push_str(&format!("%{b:02x}"));
-        }
-    }
-    out
-}
-
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> bool {
-    if needle.is_empty() || needle.len() > haystack.len() {
-        return false;
-    }
-    haystack.windows(needle.len()).any(|w| w == needle)
-}
-
-fn contains_secret(haystack: &[u8], needles: &[Zeroizing<Vec<u8>>]) -> bool {
-    needles.iter().any(|n| find_subslice(haystack, n))
-}
-
-fn headers_contain_secret(headers: &[(String, String)], needles: &[Zeroizing<Vec<u8>>]) -> bool {
-    headers.iter().any(|(name, value)| {
-        contains_secret(name.as_bytes(), needles) || contains_secret(value.as_bytes(), needles)
-    })
 }
 
 fn filter_response_headers(

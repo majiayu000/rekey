@@ -6,6 +6,7 @@ mod common;
 
 use rekey_broker::upstream::{UpstreamError, UpstreamResponse};
 use rekey_domain::ipc::{Channel, agent_msg};
+use rekey_vault::store::SqliteRecordStore;
 
 async fn setup() -> (common::TestBroker, String, u64, String) {
     let broker = common::start_broker().await;
@@ -114,7 +115,26 @@ async fn upstream_failures_map_to_denials() {
     let response = execute_with_meta(&broker, meta, b"{}").await;
     assert_eq!(response.err_code(), "UPSTREAM_FAILED");
 
-    broker.shutdown().await;
+    let state_dir = broker.state_dir.clone();
+    let _dir = broker.shutdown_keep_dir().await;
+    let store = SqliteRecordStore::open(&rekey_vault::paths::vault_db(&state_dir)).unwrap();
+    let event_types: Vec<_> = store
+        .audit_execution_log()
+        .unwrap()
+        .into_iter()
+        .map(|(_, event_type)| event_type)
+        .collect();
+    assert_eq!(
+        event_types,
+        vec![
+            "execution.started",
+            "execution.blocked",
+            "execution.started",
+            "execution.indeterminate",
+            "execution.started",
+            "execution.indeterminate",
+        ]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

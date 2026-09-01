@@ -87,6 +87,32 @@ async fn percent_encoded_reflection_blocked() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn mixed_case_percent_encoded_reflection_blocked() {
+    let broker = common::start_broker().await;
+    common::unlock(&broker).await;
+    let credential_id = common::add_credential(&broker, "mixed-percent", b"+/=").await;
+    let (action_id, version) = common::create_action(&broker, &credential_id).await;
+    let token = common::create_session(&broker, &action_id, version).await;
+    broker.fake.push_response(Ok(UpstreamResponse {
+        status: 200,
+        headers: vec![("content-type".to_owned(), "text/plain".to_owned())],
+        body: b"leaked=%2B%2f%3D".to_vec().into(),
+    }));
+
+    let meta = common::execute_meta(&token, &action_id, version);
+    let response = common::call(
+        &broker.agent_sock(),
+        Channel::Agent,
+        agent_msg::EXECUTE_FIXED_HTTP_ACTION,
+        meta.to_string().as_bytes(),
+        b"{}",
+    )
+    .await;
+    assert_eq!(response.err_code(), "RESPONSE_SECURITY_VIOLATION");
+    broker.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn content_type_header_reflection_blocked() {
     // Body is clean; the only copy of the secret is an allowlisted header.
     // This is the C1 leak: Content-Type is in the default response allowlist.

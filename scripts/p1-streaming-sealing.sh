@@ -332,13 +332,15 @@ blocked = collections.Counter(
 )
 if blocked != collections.Counter({
     "reflected-secret": 4,
-    "response-too-large": 1,
 }):
     raise SystemExit(f"unexpected blocked audit reasons: {blocked}")
 indeterminate = collections.Counter(
     reason for _, event, reason in rows if event == "execution.indeterminate"
 )
-if indeterminate != collections.Counter({"upstream-transport": 1}):
+if indeterminate != collections.Counter({
+    "response-too-large": 1,
+    "upstream-transport": 1,
+}):
     raise SystemExit(f"unexpected indeterminate audit reasons: {indeterminate}")
 if sum(event == "execution.finished" for _, event, _ in rows) != 1:
     raise SystemExit("clean request did not have exactly one finished terminal")

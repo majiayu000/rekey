@@ -199,6 +199,8 @@ async fn dispatch(
             ctx.lifecycle.reject_if_not_running()?;
             let ref_meta: ipc::CredentialRefMeta = meta(frame)?;
             let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
+            let _owner = ctx.lifecycle.coordinate().await;
+            ctx.lifecycle.reject_if_not_running()?;
             let metadata = ctx
                 .authority
                 .credential_revoke(ref_meta.credential_id, proof_from(kind, proof))

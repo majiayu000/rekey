@@ -128,13 +128,14 @@ impl Worker {
             state_ciphertext: [0u8; 16],
         };
         self.refresh_state_seal(&mut record)?;
-        let audit = self.audit_event(credential_audit(
+        let audit = self.audit_event_or_fault(credential_audit(
             event_type::CREDENTIAL_CREATED,
             credential_id,
             1,
             "add",
         ))?;
-        self.store.insert_credential(&record, &version, audit)?;
+        let result = self.store.insert_credential(&record, &version, audit);
+        self.fault_on_audit_failure(result)?;
         record_to_metadata(&record)
     }
 
@@ -191,14 +192,14 @@ impl Worker {
         updated.current_version = next;
         updated.updated_at_ms = now;
         self.refresh_state_seal(&mut updated)?;
-        let audit = self.audit_event(credential_audit(
+        let audit = self.audit_event_or_fault(credential_audit(
             event_type::CREDENTIAL_ROTATED,
             credential_id,
             next,
             "rotate",
         ))?;
-        self.store
-            .rotate_credential(&updated, &version, now, audit)?;
+        let result = self.store.rotate_credential(&updated, &version, now, audit);
+        self.fault_on_audit_failure(result)?;
         record_to_metadata(&updated)
     }
 
@@ -215,13 +216,14 @@ impl Worker {
         updated.updated_at_ms = now;
         updated.revoked_at_ms = Some(now);
         self.refresh_state_seal(&mut updated)?;
-        let audit = self.audit_event(credential_audit(
+        let audit = self.audit_event_or_fault(credential_audit(
             event_type::CREDENTIAL_REVOKED,
             credential_id,
             updated.current_version,
             "revoke",
         ))?;
-        self.store.revoke_credential(&updated, now, audit)?;
+        let result = self.store.revoke_credential(&updated, now, audit);
+        self.fault_on_audit_failure(result)?;
         record_to_metadata(&updated)
     }
 
