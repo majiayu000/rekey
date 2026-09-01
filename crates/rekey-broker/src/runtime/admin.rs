@@ -62,7 +62,9 @@ impl BrokerCtx {
             }),
         )
         .await?;
-        reject_if_elapsed(deadline)?;
+        // The durable success audit and in-memory publication form one
+        // linearized activation. Publication is infallible, so a deadline
+        // crossing after the audit must not leave the audit without state.
         *guard = Some(Arc::new(snapshot));
         Ok(())
     }
@@ -76,11 +78,4 @@ async fn authority_until<T>(
         .await
         .map_err(|_| BrokerError::Authority(AuthorityError::AuthorityBusy))?
         .map_err(BrokerError::Authority)
-}
-
-fn reject_if_elapsed(deadline: tokio::time::Instant) -> Result<(), BrokerError> {
-    if tokio::time::Instant::now() >= deadline {
-        return Err(BrokerError::Authority(AuthorityError::AuthorityBusy));
-    }
-    Ok(())
 }

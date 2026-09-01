@@ -146,11 +146,43 @@ fn read_regular_file_bounded(
 }
 
 fn stdin_lines(expected: usize) -> Result<Vec<Zeroizing<Vec<u8>>>, CliError> {
-    let buf = read_bounded(
+    read_lines_bounded(
         std::io::stdin().lock(),
+        expected,
         ipc::ADMIN_SECRET_BODY_MAX_BYTES as usize,
         "stdin",
-    )?;
+    )
+}
+
+fn read_lines_bounded(
+    mut reader: impl Read,
+    expected: usize,
+    limit: usize,
+    label: &'static str,
+) -> Result<Vec<Zeroizing<Vec<u8>>>, CliError> {
+    let capacity = limit + 1;
+    let mut buf = Zeroizing::new(Vec::with_capacity(capacity));
+    let mut newlines = 0;
+    while newlines < expected {
+        let mut byte = [0u8; 1];
+        let read = reader
+            .read(&mut byte)
+            .map_err(|err| CliError::local("USAGE", format!("failed to read {label}: {err}")))?;
+        if read == 0 {
+            break;
+        }
+        buf.push(byte[0]);
+        if buf.len() > limit {
+            return Err(CliError::local(
+                "INVALID_FRAME",
+                format!("{label} exceeds {limit} bytes"),
+            ));
+        }
+        if byte[0] == b'\n' {
+            newlines += 1;
+        }
+    }
+    debug_assert_eq!(buf.capacity(), capacity);
     let lines: Vec<Zeroizing<Vec<u8>>> = buf
         .split(|byte| *byte == b'\n')
         .take(expected)
@@ -726,6 +758,31 @@ mod tests {
         let input = std::io::Cursor::new(vec![b'x'; 18]);
         let error = read_bounded(input, 16, "test input").unwrap_err();
         assert_eq!(error.code, "INVALID_FRAME");
+    }
+
+    #[test]
+    fn secret_line_reader_stops_at_the_required_newline() {
+        struct OneByteReader {
+            bytes: &'static [u8],
+            offset: usize,
+        }
+
+        impl Read for OneByteReader {
+            fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+                assert!(self.offset < self.bytes.len(), "reader polled past newline");
+                output[0] = self.bytes[self.offset];
+                self.offset += 1;
+                Ok(1)
+            }
+        }
+
+        let mut reader = OneByteReader {
+            bytes: b"secret\nproducer-stays-open",
+            offset: 0,
+        };
+        let lines = read_lines_bounded(&mut reader, 1, 64, "test input").unwrap();
+        assert_eq!(lines[0].as_slice(), b"secret");
+        assert_eq!(reader.offset, b"secret\n".len());
     }
 
     #[cfg(unix)]

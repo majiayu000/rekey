@@ -22,6 +22,8 @@ pub enum FrameIoError {
     Timeout,
     #[error(transparent)]
     Frame(#[from] FrameError),
+    #[error("inbound frame section exceeds limit")]
+    InboundSectionTooLarge(RequestId),
     #[error("frame io failure")]
     Io(#[source] std::io::Error),
 }
@@ -50,7 +52,7 @@ async fn timed_until<T>(
 pub async fn read_frame<S: AsyncRead + Unpin>(
     stream: &mut S,
     expected_channel: Channel,
-    max_body: u32,
+    max_body_for_message: impl FnOnce(u16) -> u32,
 ) -> Result<IncomingFrame, FrameIoError> {
     let deadline = tokio::time::Instant::now() + FRAME_IO_TIMEOUT;
     let mut header_buf = [0u8; FRAME_HEADER_LEN];
@@ -59,8 +61,10 @@ pub async fn read_frame<S: AsyncRead + Unpin>(
     if header.channel != expected_channel {
         return Err(FrameIoError::Frame(FrameError::UnknownChannel));
     }
-    if header.metadata_len > METADATA_MAX_BYTES || header.body_len > max_body {
-        return Err(FrameIoError::Frame(FrameError::SectionTooLarge));
+    if header.metadata_len > METADATA_MAX_BYTES
+        || header.body_len > max_body_for_message(header.message_type)
+    {
+        return Err(FrameIoError::InboundSectionTooLarge(header.request_id));
     }
     let mut metadata = vec![0u8; header.metadata_len as usize];
     timed_until(deadline, stream.read_exact(&mut metadata)).await?;
@@ -180,5 +184,26 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn message_specific_body_limit_is_checked_before_body_read() {
+        let (mut writer, mut reader) = tokio::io::duplex(128);
+        let header = FrameHeader {
+            channel: Channel::Agent,
+            flags: 0,
+            message_type: rekey_domain::ipc::agent_msg::AGENT_STATUS,
+            request_id: RequestId::new_random(),
+            metadata_len: 0,
+            body_len: 1,
+        };
+        writer.write_all(&header.encode()).await.unwrap();
+
+        let result = read_frame(&mut reader, Channel::Agent, |_| 0).await;
+        assert!(matches!(
+            result,
+            Err(FrameIoError::InboundSectionTooLarge(request_id))
+                if request_id == header.request_id
+        ));
     }
 }

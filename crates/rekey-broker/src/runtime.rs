@@ -428,12 +428,50 @@ fn validate_agent_endpoint(config: &BrokerConfig) -> Result<(), BrokerError> {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(BrokerError::Io(error)),
         }
+        if config
+            .allowed_agent_uids
+            .iter()
+            .any(|uid| *uid != broker_uid)
+        {
+            reject_existing_symlink_components(agent_dir)?;
+        }
         let state_dir = config.state_dir.canonicalize().map_err(BrokerError::Io)?;
         let agent_dir = resolved_future_path(agent_dir).map_err(BrokerError::Io)?;
         if agent_dir.starts_with(&state_dir) || state_dir.starts_with(&agent_dir) {
             return Err(BrokerError::Authority(
                 AuthorityError::InsecureStatePermissions,
             ));
+        }
+    }
+    Ok(())
+}
+
+fn reject_existing_symlink_components(path: &Path) -> Result<(), BrokerError> {
+    let absolute = if path.is_absolute() {
+        path.to_owned()
+    } else {
+        std::env::current_dir().map_err(BrokerError::Io)?.join(path)
+    };
+    let mut cursor = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir => cursor.push(component.as_os_str()),
+            Component::CurDir => continue,
+            Component::ParentDir => {
+                cursor.pop();
+                continue;
+            }
+            Component::Normal(_) => cursor.push(component.as_os_str()),
+        }
+        match fs::symlink_metadata(&cursor) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(BrokerError::Authority(
+                    AuthorityError::InsecureStatePermissions,
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => return Err(BrokerError::Io(error)),
         }
     }
     Ok(())

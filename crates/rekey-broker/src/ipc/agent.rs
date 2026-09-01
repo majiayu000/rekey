@@ -40,9 +40,30 @@ pub async fn handle_agent_conn(
         }
         let frame = match tokio::select! {
             _ = shutdown.changed() => return,
-            frame = read_frame(&mut stream, Channel::Agent, ipc::AGENT_BODY_MAX_BYTES) => frame,
+            frame = read_frame(&mut stream, Channel::Agent, |message_type| {
+                if message_type == agent_msg::EXECUTE_FIXED_HTTP_ACTION {
+                    ipc::AGENT_BODY_MAX_BYTES
+                } else {
+                    0
+                }
+            }) => frame,
         } {
             Ok(frame) => frame,
+            Err(crate::ipc::frame::FrameIoError::InboundSectionTooLarge(request_id)) => {
+                if let Err(error) = write_error(
+                    &mut stream,
+                    Channel::Agent,
+                    request_id,
+                    "INVALID_FRAME",
+                    "frame section exceeds limit",
+                    false,
+                )
+                .await
+                {
+                    tracing::debug!(event = "agent.invalid_frame_reply_failed", %error);
+                }
+                return;
+            }
             Err(_) => return,
         };
         let request_id = frame.header.request_id;

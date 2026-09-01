@@ -73,9 +73,9 @@ pub enum RuleEffect {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ParameterScope {
-    AnyValidated,
+    AnyValidated {},
     ExactHash { sha256: String },
 }
 
@@ -310,7 +310,7 @@ fn minimum(current: Option<PolicyRuleId>, candidate: PolicyRuleId) -> Option<Pol
 
 fn scope_matches(scope: &ParameterScope, hash: [u8; 32]) -> bool {
     match scope {
-        ParameterScope::AnyValidated => true,
+        ParameterScope::AnyValidated {} => true,
         ParameterScope::ExactHash { sha256 } => HEXLOWER.encode(&hash) == *sha256,
     }
 }
@@ -588,6 +588,17 @@ mod tests {
         assert!(
             parse_and_validate_snapshot(
                 &serde_json::to_vec(&nested_unknown).unwrap(),
+                Timestamp::from_unix_ms(1)
+            )
+            .is_err()
+        );
+
+        let mut unknown_scope: Value =
+            serde_json::from_slice(&snapshot_json(action, principal_id, rule)).unwrap();
+        unknown_scope["rules"][0]["parameters"]["future_constraint"] = Value::Bool(true);
+        assert!(
+            parse_and_validate_snapshot(
+                &serde_json::to_vec(&unknown_scope).unwrap(),
                 Timestamp::from_unix_ms(1)
             )
             .is_err()

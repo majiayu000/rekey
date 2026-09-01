@@ -36,6 +36,18 @@ fn agent_runtime_rejects_parent_segments_and_symlink_aliases_into_state() {
         validate_agent_endpoint(&config).unwrap_err().code(),
         "INSECURE_STATE_PERMISSIONS"
     );
+
+    let ancestor_target = outside.join("ancestor-target");
+    fs::create_dir(&ancestor_target).unwrap();
+    let ancestor_alias = outside.join("ancestor-alias");
+    std::os::unix::fs::symlink(&ancestor_target, &ancestor_alias).unwrap();
+    config.allowed_agent_uids = vec![unsafe { libc::geteuid() }.wrapping_add(1)];
+    config.agent_socket_gid = Some(unsafe { libc::getegid() });
+    config.agent_runtime_dir = Some(ancestor_alias.join("agent"));
+    assert_eq!(
+        validate_agent_endpoint(&config).unwrap_err().code(),
+        "INSECURE_STATE_PERMISSIONS"
+    );
 }
 
 #[tokio::test]

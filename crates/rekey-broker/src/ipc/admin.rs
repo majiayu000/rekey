@@ -6,13 +6,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use rekey_domain::Timestamp;
 use rekey_domain::action::{
     ActionName, ExactPath, FixedHttpAction, FixedMethod, HeaderCredentialUse, HeaderName,
     HeaderPrefix, HttpsOrigin, RequestPolicy, ResponsePolicy,
 };
 use rekey_domain::authorization::Principal;
 use rekey_domain::capability::SessionGrant;
-use rekey_domain::ids::{ActionId, PrincipalId, SessionId, TenantId};
+use rekey_domain::credential::{CredentialKind, CredentialMetadata, CredentialState};
+use rekey_domain::ids::{ActionId, CredentialId, PrincipalId, SessionId, TenantId};
 use rekey_domain::ipc::{self, Channel, ProofKind, admin_msg};
 use rekey_vault::AuthorityError;
 use rekey_vault::command::{ActionDefinition, AuditDraft, UnlockProof};
@@ -90,7 +92,7 @@ pub async fn handle_admin_conn(
             frame = read_frame(
                 &mut stream,
                 Channel::Admin,
-                ipc::ADMIN_SECRET_BODY_MAX_BYTES,
+                |_| ipc::ADMIN_SECRET_BODY_MAX_BYTES,
             ) => frame,
         } {
             Ok(frame) => frame,
@@ -190,6 +192,8 @@ async fn dispatch(
                     ))
                 })?;
             }
+            let credentials = authority_until(deadline, ctx.authority.credential_list()).await?;
+            ensure_credential_catalog_fits(credentials, &add_meta.label, add_meta.kind)?;
             let metadata = authority_until(
                 deadline,
                 ctx.authority.credential_add_before(
@@ -270,7 +274,7 @@ async fn dispatch(
             let _owner = ctx.lifecycle.coordinate_until(deadline).await?;
             ctx.lifecycle.reject_if_not_running()?;
             let actions = authority_until(deadline, ctx.authority.action_list()).await?;
-            ensure_action_catalog_fits(actions, &definition)?;
+            ensure_action_catalog_fits(actions, existing, &definition)?;
             let action = authority_until(
                 deadline,
                 ctx.authority.action_upsert_before(
@@ -539,8 +543,12 @@ fn definition_from_meta(meta: ipc::ActionCreateMeta) -> Result<ActionDefinition,
 
 fn ensure_action_catalog_fits(
     mut actions: Vec<FixedHttpAction>,
+    existing: Option<ActionId>,
     definition: &ActionDefinition,
 ) -> Result<(), BrokerError> {
+    if let Some(existing) = existing {
+        actions.retain(|action| action.id != existing);
+    }
     let probe = FixedHttpAction {
         id: ActionId::from_random_bytes([0xff; 16]),
         name: definition.name.clone(),
@@ -557,6 +565,23 @@ fn ensure_action_catalog_fits(
     };
     actions.push(probe);
     json(&ipc::ActionListResponse { actions }).map(|_| ())
+}
+
+fn ensure_credential_catalog_fits(
+    mut credentials: Vec<CredentialMetadata>,
+    label: &rekey_domain::credential::CredentialLabel,
+    kind: CredentialKind,
+) -> Result<(), BrokerError> {
+    credentials.push(CredentialMetadata {
+        id: CredentialId::from_random_bytes([0xff; 16]),
+        label: label.clone(),
+        kind,
+        state: CredentialState::Active,
+        current_version: u64::MAX,
+        created_at: Timestamp::from_unix_ms(i64::MIN),
+        updated_at: Timestamp::from_unix_ms(i64::MIN),
+    });
+    json(&ipc::CredentialListResponse { credentials }).map(|_| ())
 }
 
 #[cfg(test)]
@@ -592,7 +617,7 @@ mod tests {
         };
 
         assert!(matches!(
-            ensure_action_catalog_fits(Vec::new(), &definition),
+            ensure_action_catalog_fits(Vec::new(), None, &definition),
             Err(BrokerError::Frame(ipc::FrameError::SectionTooLarge))
         ));
     }
@@ -636,7 +661,78 @@ mod tests {
         };
 
         assert!(matches!(
-            ensure_action_catalog_fits(vec![existing; 256], &definition),
+            ensure_action_catalog_fits(vec![existing; 256], None, &definition),
+            Err(BrokerError::Frame(ipc::FrameError::SectionTooLarge))
+        ));
+    }
+
+    #[test]
+    fn action_update_replaces_the_existing_catalog_entry() {
+        let headers = (0..2_200)
+            .map(|index| HeaderName::new(&format!("x-update-{index:04}")).unwrap())
+            .collect();
+        let definition = ActionDefinition {
+            name: ActionName::new("large-update").unwrap(),
+            credential_id: CredentialId::from_random_bytes([1; 16]),
+            origin: HttpsOrigin::parse("https://example.com").unwrap(),
+            method: FixedMethod::Post,
+            exact_path: ExactPath::parse("/v1/action").unwrap(),
+            auth: HeaderCredentialUse::new(
+                HeaderName::new("x-api-key").unwrap(),
+                HeaderPrefix::new("Bearer ").unwrap(),
+            )
+            .unwrap(),
+            timeout_ms: 1_000,
+            request_policy: RequestPolicy {
+                max_body_bytes: 1_024,
+                allowed_extra_headers: headers,
+            },
+            response_policy: ResponsePolicy {
+                max_body_bytes: 1_024,
+                allowed_headers: Default::default(),
+            },
+        };
+        let existing = FixedHttpAction {
+            id: ActionId::from_random_bytes([2; 16]),
+            name: definition.name.clone(),
+            version: 1,
+            enabled: true,
+            credential_id: definition.credential_id,
+            origin: definition.origin.clone(),
+            method: definition.method,
+            exact_path: definition.exact_path.clone(),
+            auth: definition.auth.clone(),
+            timeout_ms: definition.timeout_ms,
+            request_policy: definition.request_policy.clone(),
+            response_policy: definition.response_policy.clone(),
+        };
+
+        assert!(ensure_action_catalog_fits(vec![existing.clone()], None, &definition).is_err());
+        assert!(
+            ensure_action_catalog_fits(vec![existing.clone()], Some(existing.id), &definition)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn aggregate_credential_catalog_is_rejected_before_add() {
+        let label = rekey_domain::credential::CredentialLabel::new(&"x".repeat(128)).unwrap();
+        let existing = CredentialMetadata {
+            id: CredentialId::from_random_bytes([3; 16]),
+            label: label.clone(),
+            kind: CredentialKind::OpaqueToken,
+            state: CredentialState::Active,
+            current_version: 1,
+            created_at: Timestamp::from_unix_ms(1_000_000_000_000),
+            updated_at: Timestamp::from_unix_ms(1_000_000_000_000),
+        };
+
+        assert!(matches!(
+            ensure_credential_catalog_fits(
+                vec![existing; 256],
+                &label,
+                CredentialKind::OpaqueToken,
+            ),
             Err(BrokerError::Frame(ipc::FrameError::SectionTooLarge))
         ));
     }
