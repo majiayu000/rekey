@@ -4,7 +4,6 @@
 //! API. It only supports the one fixed GitHub operation documented in the
 //! foundation spec.
 
-use std::collections::BTreeMap;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use aws_lc_rs::rand::SystemRandom;
@@ -250,10 +249,7 @@ impl GitHubAppCredential {
             token: probed_token,
             jwt,
         };
-        if raw.permissions.len() != 1
-            || raw.permissions.get("metadata").map(String::as_str) != Some("read")
-            || raw.repository_selection != "selected"
-        {
+        if raw.permissions.metadata != "read" || raw.repository_selection != "selected" {
             let InstallationToken { token, jwt } = token;
             return Err(ExchangeFailure::with_tokens(
                 GitHubError::ExchangeScope,
@@ -372,21 +368,37 @@ impl GitHubAppCredential {
             }
         };
         let sealing_sources = sealing_sources(&jwt, &tokens);
+        let revoke = self
+            .revoke_captured_tokens(transport, &tokens, total_deadline)
+            .await;
+        GitHubEffect::WithToken {
+            resource,
+            revoke,
+            sealing_sources,
+        }
+    }
+
+    async fn revoke_captured_tokens(
+        &self,
+        transport: &dyn UpstreamTransport,
+        tokens: &[Zeroizing<String>],
+        total_deadline: Instant,
+    ) -> Result<(), GitHubError> {
         let mut revoke = Ok(());
-        for token in &tokens {
+        for (index, token) in tokens.iter().enumerate() {
             let token_revoke = match remaining(total_deadline) {
-                Ok(revoke_timeout) => self.revoke(transport, token, revoke_timeout).await,
+                Ok(cleanup_remaining) => {
+                    let attempts_left = (tokens.len() - index) as u32;
+                    self.revoke(transport, token, cleanup_remaining / attempts_left)
+                        .await
+                }
                 Err(error) => Err(error),
             };
             if revoke.is_ok() {
                 revoke = token_revoke;
             }
         }
-        GitHubEffect::WithToken {
-            resource,
-            revoke,
-            sealing_sources,
-        }
+        revoke
     }
 
     fn sign_jwt(&self) -> Result<Zeroizing<String>, GitHubError> {
@@ -636,9 +648,15 @@ struct ExchangeResponse<'a> {
     token: &'a str,
     #[serde(rename = "expires_at")]
     _expires_at: String,
-    permissions: BTreeMap<String, String>,
+    permissions: ExchangeResponsePermissions,
     #[serde(borrow)]
     repository_selection: &'a str,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExchangeResponsePermissions {
+    metadata: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -655,12 +673,34 @@ struct RepositoryRef {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct PanicTransport;
 
     impl UpstreamTransport for PanicTransport {
         fn send(&self, _request: UpstreamRequest) -> crate::upstream::UpstreamFuture<'_> {
             Box::pin(async { panic!("expired effect deadline reached transport") })
+        }
+    }
+
+    struct StallingFirstRevoke {
+        calls: AtomicUsize,
+    }
+
+    impl UpstreamTransport for StallingFirstRevoke {
+        fn send(&self, _request: UpstreamRequest) -> crate::upstream::UpstreamFuture<'_> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                if call == 0 {
+                    std::future::pending().await
+                } else {
+                    Ok(UpstreamResponse {
+                        status: 204,
+                        headers: Vec::new().into(),
+                        body: Zeroizing::new(Vec::new()),
+                    })
+                }
+            })
         }
     }
 
@@ -708,5 +748,40 @@ mod tests {
 
         let preflight = ExchangeFailure::without_token(GitHubError::Deadline);
         assert!(!preflight.remote_effect_possible);
+    }
+
+    #[test]
+    fn duplicate_exchange_permission_keys_are_rejected() {
+        let response = br#"{"token":"t","expires_at":"later","permissions":{"metadata":"write","metadata":"read"},"repository_selection":"selected"}"#;
+        assert!(serde_json::from_slice::<ExchangeResponse<'_>>(response).is_err());
+    }
+
+    #[tokio::test]
+    async fn stalled_revoke_preserves_an_attempt_for_each_later_token() {
+        let profile = GitHubAppCredential {
+            client_id: "test".to_owned(),
+            app_id: 1,
+            installation_id: 1,
+            repository_id: 1,
+            private_key_pkcs1_der: Zeroizing::new(Vec::new()),
+        };
+        let transport = StallingFirstRevoke {
+            calls: AtomicUsize::new(0),
+        };
+        let tokens = vec![
+            Zeroizing::new("first".to_owned()),
+            Zeroizing::new("second".to_owned()),
+        ];
+
+        let result = profile
+            .revoke_captured_tokens(
+                &transport,
+                &tokens,
+                Instant::now() + Duration::from_millis(100),
+            )
+            .await;
+
+        assert_eq!(result, Err(GitHubError::Deadline));
+        assert_eq!(transport.calls.load(Ordering::SeqCst), 2);
     }
 }

@@ -233,10 +233,13 @@ fn verify_cross_uid_ancestors(
     }
 }
 
-fn verify_socket_contract(socket: &Path) -> Result<std::fs::Metadata, CliError> {
+fn verify_socket_contract(socket: &Path, channel: Channel) -> Result<std::fs::Metadata, CliError> {
     let socket_metadata = std::fs::symlink_metadata(socket).map_err(io_err)?;
-    if !socket_metadata.file_type().is_socket() || socket_metadata.permissions().mode() & 0o007 != 0
-    {
+    let socket_mode = socket_metadata.permissions().mode() & 0o777;
+    let caller_uid = unsafe { libc::geteuid() };
+    let insecure = !socket_metadata.file_type().is_socket()
+        || !socket_access_is_secure(channel, socket_mode, socket_metadata.uid(), caller_uid);
+    if insecure {
         return Err(CliError::local(
             "IPC_UNAVAILABLE",
             "broker socket type or permissions are insecure",
@@ -255,19 +258,26 @@ fn verify_socket_contract(socket: &Path) -> Result<std::fs::Metadata, CliError> 
             "broker runtime directory ownership or permissions are insecure",
         ));
     }
-    let agent_uid = unsafe { libc::geteuid() };
-    if socket_metadata.uid() != agent_uid {
-        verify_cross_uid_ancestors(parent, socket_metadata.dev(), agent_uid)?;
+    if socket_metadata.uid() != caller_uid {
+        verify_cross_uid_ancestors(parent, socket_metadata.dev(), caller_uid)?;
     }
     Ok(socket_metadata)
+}
+
+fn socket_access_is_secure(channel: Channel, mode: u32, socket_uid: u32, caller_uid: u32) -> bool {
+    match channel {
+        Channel::Admin => socket_uid == caller_uid && mode == 0o600,
+        Channel::Agent => mode & 0o007 == 0,
+    }
 }
 
 fn verify_connected_peer(
     stream: &UnixStream,
     socket: &Path,
     before: &std::fs::Metadata,
+    channel: Channel,
 ) -> Result<(), CliError> {
-    let after = verify_socket_contract(socket)?;
+    let after = verify_socket_contract(socket, channel)?;
     if before.dev() != after.dev()
         || before.ino() != after.ino()
         || before.uid() != after.uid()
@@ -291,9 +301,9 @@ impl Client {
         channel: Channel,
         response_timeout: Duration,
     ) -> Result<Self, CliError> {
-        let socket_metadata = verify_socket_contract(socket)?;
+        let socket_metadata = verify_socket_contract(socket, channel)?;
         let stream = UnixStream::connect(socket).map_err(io_err)?;
-        verify_connected_peer(&stream, socket, &socket_metadata)?;
+        verify_connected_peer(&stream, socket, &socket_metadata, channel)?;
         stream
             .set_read_timeout(Some(response_timeout))
             .map_err(io_err)?;
@@ -425,6 +435,30 @@ mod tests {
         let client = Client::connect(&socket, Channel::Agent).unwrap();
         drop(client);
         drop(accept.join().unwrap());
+    }
+
+    #[test]
+    fn admin_contract_requires_caller_owned_mode_0600() {
+        let (_dir, socket, _listener) = protected_listener();
+        std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o660)).unwrap();
+        let err = Client::connect(&socket, Channel::Admin).err().unwrap();
+        assert_eq!(err.code, "IPC_UNAVAILABLE");
+        assert!(err.message.contains("socket type or permissions"));
+
+        let caller_uid = unsafe { libc::geteuid() };
+        let foreign_uid = if caller_uid == 0 { 1 } else { 0 };
+        assert!(!socket_access_is_secure(
+            Channel::Admin,
+            0o600,
+            foreign_uid,
+            caller_uid,
+        ));
+        assert!(socket_access_is_secure(
+            Channel::Agent,
+            0o660,
+            foreign_uid,
+            caller_uid,
+        ));
     }
 
     #[test]
