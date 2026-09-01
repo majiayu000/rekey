@@ -150,6 +150,28 @@ async fn successful_admin_lists_reset_idle_activity() {
 }
 
 #[tokio::test]
+async fn only_admin_status_refreshes_idle_activity() {
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    let first_internal = handle.status().await.unwrap().idle_for_ms;
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    let second_internal = handle.status().await.unwrap().idle_for_ms;
+    assert!(second_internal > first_internal);
+
+    let refreshed = handle.admin_status().await.unwrap().idle_for_ms;
+    assert!(refreshed < second_internal);
+
+    handle
+        .shutdown(Some(common::password_proof()))
+        .await
+        .unwrap();
+    join.join().unwrap();
+}
+
+#[tokio::test]
 async fn shutdown_requires_proof_only_when_unlocked() {
     let vault = common::init_test_vault();
 

@@ -298,6 +298,7 @@ impl<'de> Deserialize<'de> for HeaderPrefix {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HeaderCredentialUse {
     pub header_name: HeaderName,
     pub prefix: HeaderPrefix,
@@ -323,6 +324,7 @@ impl HeaderCredentialUse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RequestPolicy {
     pub max_body_bytes: u32,
     /// Plain headers the agent may supply via `extra_headers`. Anything not
@@ -347,6 +349,7 @@ impl RequestPolicy {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ResponsePolicy {
     pub max_body_bytes: u32,
     /// Response headers returned to the agent. Everything else is removed.
@@ -375,6 +378,7 @@ impl ResponsePolicy {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FixedHttpAction {
     pub id: ActionId,
     pub name: ActionName,

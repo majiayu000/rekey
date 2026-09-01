@@ -204,8 +204,8 @@ impl GitHubAppCredential {
             }),
         )
         .await
-        .map_err(|_| ExchangeFailure::without_token(GitHubError::Deadline))?
-        .map_err(|_| ExchangeFailure::without_token(GitHubError::ExchangeTransport))?;
+        .map_err(|_| ExchangeFailure::uncertain_without_token(GitHubError::Deadline))?
+        .map_err(|_| ExchangeFailure::uncertain_without_token(GitHubError::ExchangeTransport))?;
         let body = response.body;
         let mut probe = probe_tokens(&body);
         if response.status != 201 {
@@ -343,11 +343,11 @@ impl GitHubAppCredential {
         response_max_bytes: u32,
     ) -> GitHubEffect {
         let Some(business_deadline) = total_deadline.checked_sub(CLEANUP_BUDGET) else {
-            return GitHubEffect::WithoutToken(GitHubError::Deadline);
+            return GitHubEffect::without_token(GitHubError::Deadline, false);
         };
         let exchange_timeout = match remaining(business_deadline) {
             Ok(value) => value,
-            Err(error) => return GitHubEffect::WithoutToken(error),
+            Err(error) => return GitHubEffect::without_token(error, false),
         };
         let (resource, tokens, jwt) = match self.exchange(transport, exchange_timeout).await {
             Ok(token) => (
@@ -363,7 +363,10 @@ impl GitHubAppCredential {
             ),
             Err(failure) => {
                 if failure.tokens.is_empty() {
-                    return GitHubEffect::WithoutToken(failure.reason);
+                    return GitHubEffect::without_token(
+                        failure.reason,
+                        failure.remote_effect_possible,
+                    );
                 }
                 (Err(failure.reason), failure.tokens, failure.jwt)
             }
@@ -425,6 +428,7 @@ pub(crate) struct ExchangeFailure {
     pub(crate) reason: GitHubError,
     pub(crate) tokens: Vec<Zeroizing<String>>,
     pub(crate) jwt: Zeroizing<String>,
+    remote_effect_possible: bool,
 }
 
 impl ExchangeFailure {
@@ -433,6 +437,16 @@ impl ExchangeFailure {
             reason,
             tokens: Vec::new(),
             jwt: Zeroizing::new(String::new()),
+            remote_effect_possible: false,
+        }
+    }
+
+    fn uncertain_without_token(reason: GitHubError) -> Self {
+        Self {
+            reason,
+            tokens: Vec::new(),
+            jwt: Zeroizing::new(String::new()),
+            remote_effect_possible: true,
         }
     }
 
@@ -445,6 +459,7 @@ impl ExchangeFailure {
             reason,
             tokens,
             jwt,
+            remote_effect_possible: true,
         }
     }
 }
@@ -461,12 +476,24 @@ pub(crate) struct InstallationToken {
 }
 
 pub(crate) enum GitHubEffect {
-    WithoutToken(GitHubError),
+    WithoutToken {
+        error: GitHubError,
+        remote_effect_possible: bool,
+    },
     WithToken {
         resource: Result<UpstreamResponse, GitHubError>,
         revoke: Result<(), GitHubError>,
         sealing_sources: Vec<Zeroizing<Vec<u8>>>,
     },
+}
+
+impl GitHubEffect {
+    fn without_token(error: GitHubError, remote_effect_possible: bool) -> Self {
+        Self::WithoutToken {
+            error,
+            remote_effect_possible,
+        }
+    }
 }
 
 fn remaining(deadline: Instant) -> Result<Duration, GitHubError> {
@@ -666,7 +693,20 @@ mod tests {
             .await;
         assert!(matches!(
             result,
-            GitHubEffect::WithoutToken(GitHubError::Deadline)
+            GitHubEffect::WithoutToken {
+                error: GitHubError::Deadline,
+                remote_effect_possible: false
+            }
         ));
+    }
+
+    #[test]
+    fn exchange_transport_uncertainty_is_preserved_without_a_token() {
+        let failure = ExchangeFailure::uncertain_without_token(GitHubError::ExchangeTransport);
+        assert!(failure.remote_effect_possible);
+        assert!(failure.tokens.is_empty());
+
+        let preflight = ExchangeFailure::without_token(GitHubError::Deadline);
+        assert!(!preflight.remote_effect_possible);
     }
 }

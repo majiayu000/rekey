@@ -22,6 +22,8 @@ enum Attack {
     UnknownErrorField,
     ErrorWithBody,
     InvalidOkMetadata,
+    MissingOkFields,
+    UnknownOkField,
 }
 
 fn rekey_bin() -> PathBuf {
@@ -130,6 +132,22 @@ fn run_attack(attack: Attack) -> std::process::Output {
                 0,
                 Vec::new(),
             ),
+            Attack::MissingOkFields => (
+                Channel::Admin,
+                request.request_id,
+                resp_msg::OK,
+                b"{}".to_vec(),
+                0,
+                Vec::new(),
+            ),
+            Attack::UnknownOkField => (
+                Channel::Admin,
+                request.request_id,
+                resp_msg::OK,
+                br#"{"state":"locked","format_version":5,"runtime_version":"2.0.0-dev","sessions_active":0,"secret_hint":"forged"}"#.to_vec(),
+                0,
+                Vec::new(),
+            ),
         };
 
         let response = FrameHeader {
@@ -175,6 +193,8 @@ fn cli_rejects_forged_broker_responses() {
         Attack::UnknownErrorField,
         Attack::ErrorWithBody,
         Attack::InvalidOkMetadata,
+        Attack::MissingOkFields,
+        Attack::UnknownOkField,
     ] {
         let output = run_attack(attack);
         assert_eq!(

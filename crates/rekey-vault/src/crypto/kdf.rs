@@ -16,6 +16,7 @@ pub const RECOVERY_KEK_INFO: &[u8] = b"rekey/recovery-kek/v1";
 /// authoritative when opening an existing wrapper; compiled defaults apply
 /// only to newly created wrappers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Argon2Params {
     pub memory_kib: u32,
     pub iterations: u32,

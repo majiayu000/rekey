@@ -330,6 +330,7 @@ pub struct SessionCreatedResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PolicyStatusResponse {
     pub active: bool,
     pub version: Option<u64>,

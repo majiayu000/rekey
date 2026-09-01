@@ -7,7 +7,8 @@ use std::time::Duration;
 
 use rekey_domain::ids::{ActionId, CredentialId, SessionId};
 use rekey_domain::ipc::{self, Channel, ProofKind, admin_msg, agent_msg};
-use serde::Deserialize;
+use rekey_domain::{action::FixedHttpAction, credential::CredentialMetadata};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use zeroize::Zeroizing;
 
 use crate::client::{CliError, Client};
@@ -20,6 +21,36 @@ const BACKUP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(300);
 struct GitHubProfileMarker<'a> {
     #[serde(borrow)]
     credential_type: &'a str,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct UnlockResponse {
+    unlocked: bool,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct LockResponse {
+    locked: bool,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ShutdownResponse {
+    shutdown: bool,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RevokeResponse {
+    revoked: bool,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct DisableResponse {
+    disabled: bool,
 }
 
 pub fn resolve_state_dir(flag: Option<PathBuf>) -> Result<PathBuf, CliError> {
@@ -50,11 +81,11 @@ fn admin_with_response_timeout(
     )
 }
 
-fn print_json(metadata: &[u8]) -> Result<(), CliError> {
-    let value = serde_json::from_slice::<serde_json::Value>(metadata)
-        .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid JSON"))?;
+fn print_json<T: DeserializeOwned + Serialize>(metadata: &[u8]) -> Result<(), CliError> {
+    let value = serde_json::from_slice::<T>(metadata)
+        .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid response"))?;
     let mut output = serde_json::to_vec_pretty(&value)
-        .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid JSON"))?;
+        .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid response"))?;
     output.push(b'\n');
     std::io::stdout()
         .write_all(&output)
@@ -184,7 +215,7 @@ pub fn unlock(state_dir: &Path, recovery: bool, password_stdin: bool) -> Result<
         admin_msg::UNLOCK_PASSWORD
     };
     let (meta, _) = admin(state_dir)?.call(message, b"{}", &secret)?;
-    print_json(&meta)?;
+    print_json::<UnlockResponse>(&meta)?;
     Ok(())
 }
 
@@ -194,13 +225,13 @@ pub fn lock(state_dir: &Path) -> Result<(), CliError> {
         b"{}",
         &[],
     )?;
-    print_json(&meta)?;
+    print_json::<LockResponse>(&meta)?;
     Ok(())
 }
 
 pub fn status(state_dir: &Path) -> Result<(), CliError> {
     let (meta, _) = admin(state_dir)?.call(admin_msg::STATUS, b"{}", &[])?;
-    print_json(&meta)?;
+    print_json::<ipc::StatusResponse>(&meta)?;
     Ok(())
 }
 
@@ -209,7 +240,7 @@ pub fn shutdown(state_dir: &Path, password_stdin: bool) -> Result<(), CliError> 
     // Locked brokers shut down without proof; unlocked brokers require it.
     match client.call(admin_msg::SHUTDOWN, b"{}", &[]) {
         Ok((meta, _)) => {
-            print_json(&meta)?;
+            print_json::<ShutdownResponse>(&meta)?;
             Ok(())
         }
         Err(err) if err.code == "AUTHENTICATION_FAILED" => {
@@ -220,7 +251,7 @@ pub fn shutdown(state_dir: &Path, password_stdin: bool) -> Result<(), CliError> 
                 b"{}",
                 &body,
             )?;
-            print_json(&meta)?;
+            print_json::<ShutdownResponse>(&meta)?;
             Ok(())
         }
         Err(err) => Err(err),
@@ -251,7 +282,7 @@ pub fn credential_add(state_dir: &Path, label: &str, stdin_secrets: bool) -> Res
         metadata.to_string().as_bytes(),
         &body,
     )?;
-    print_json(&meta)?;
+    print_json::<CredentialMetadata>(&meta)?;
     Ok(())
 }
 
@@ -301,13 +332,13 @@ pub fn credential_add_github_app(
         metadata.to_string().as_bytes(),
         &body,
     )?;
-    print_json(&meta)?;
+    print_json::<CredentialMetadata>(&meta)?;
     Ok(())
 }
 
 pub fn credential_list(state_dir: &Path) -> Result<(), CliError> {
     let (meta, _) = admin(state_dir)?.call(admin_msg::CREDENTIAL_LIST, b"{}", &[])?;
-    print_json(&meta)?;
+    print_json::<ipc::CredentialListResponse>(&meta)?;
     Ok(())
 }
 
@@ -342,7 +373,7 @@ pub fn credential_rotate(
         metadata.to_string().as_bytes(),
         &body,
     )?;
-    print_json(&meta)?;
+    print_json::<CredentialMetadata>(&meta)?;
     Ok(())
 }
 
@@ -362,7 +393,7 @@ pub fn credential_revoke(
         metadata.to_string().as_bytes(),
         &body,
     )?;
-    print_json(&meta)?;
+    print_json::<CredentialMetadata>(&meta)?;
     Ok(())
 }
 
@@ -375,7 +406,7 @@ pub fn action_create(state_dir: &Path, file: &Path, password_stdin: bool) -> Res
     let password = read_password(password_stdin, "Vault password (step-up): ")?;
     let body = proof_body(&password);
     let (meta, _) = admin(state_dir)?.call(admin_msg::ACTION_CREATE, &definition, &body)?;
-    print_json(&meta)?;
+    print_json::<FixedHttpAction>(&meta)?;
     Ok(())
 }
 
@@ -401,13 +432,13 @@ pub fn action_update(
     let password = read_password(password_stdin, "Vault password (step-up): ")?;
     let body = proof_body(&password);
     let (meta, _) = admin(state_dir)?.call(admin_msg::ACTION_UPDATE, &metadata, &body)?;
-    print_json(&meta)?;
+    print_json::<FixedHttpAction>(&meta)?;
     Ok(())
 }
 
 pub fn action_list(state_dir: &Path) -> Result<(), CliError> {
     let (meta, _) = admin(state_dir)?.call(admin_msg::ACTION_LIST, b"{}", &[])?;
-    print_json(&meta)?;
+    print_json::<ipc::ActionListResponse>(&meta)?;
     Ok(())
 }
 
@@ -427,7 +458,7 @@ pub fn action_disable(
         metadata.to_string().as_bytes(),
         &body,
     )?;
-    print_json(&meta)?;
+    print_json::<DisableResponse>(&meta)?;
     Ok(())
 }
 
@@ -460,7 +491,7 @@ pub fn session_create(
         &body,
     )?;
     // Shown exactly once; prefer piping to the agent instead of shell history.
-    print_json(&meta)?;
+    print_json::<ipc::SessionCreatedResponse>(&meta)?;
     Ok(())
 }
 
@@ -480,7 +511,7 @@ pub fn session_revoke(
         metadata.to_string().as_bytes(),
         &body,
     )?;
-    print_json(&meta)?;
+    print_json::<RevokeResponse>(&meta)?;
     Ok(())
 }
 
@@ -494,13 +525,13 @@ pub fn policy_activate(
     let password = read_password(password_stdin, "Vault password (step-up): ")?;
     let body = proof_body(&password);
     let (meta, _) = admin(state_dir)?.call(admin_msg::POLICY_ACTIVATE, &snapshot, &body)?;
-    print_json(&meta)?;
+    print_json::<ipc::PolicyStatusResponse>(&meta)?;
     Ok(())
 }
 
 pub fn policy_status(state_dir: &Path) -> Result<(), CliError> {
     let (meta, _) = admin(state_dir)?.call(admin_msg::POLICY_STATUS, b"{}", &[])?;
-    print_json(&meta)?;
+    print_json::<ipc::PolicyStatusResponse>(&meta)?;
     Ok(())
 }
 
@@ -548,7 +579,7 @@ pub fn execute(
         metadata.to_string().as_bytes(),
         &body,
     )?;
-    print_json(&meta)?;
+    print_json::<ipc::ExecuteResponseMeta>(&meta)?;
     if !response_body.is_empty() {
         let mut stdout = std::io::stdout();
         stdout.write_all(&response_body).map_err(|err| {
@@ -576,6 +607,6 @@ pub fn backup(state_dir: &Path, output: &Path, password_stdin: bool) -> Result<(
         metadata.to_string().as_bytes(),
         &body,
     )?;
-    print_json(&meta)?;
+    print_json::<ipc::BackupReceipt>(&meta)?;
     Ok(())
 }

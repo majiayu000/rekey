@@ -18,7 +18,9 @@ use crate::runtime::BrokerCtx;
 /// Agents must not distinguish credential-layer failures.
 fn agent_code(err: &BrokerError) -> &'static str {
     match err.code() {
-        "CRYPTO_FAILURE" | "CREDENTIAL_CONFLICT" => "CREDENTIAL_UNAVAILABLE",
+        "CRYPTO_FAILURE" | "STORAGE_INTEGRITY_FAILED" | "CREDENTIAL_CONFLICT" => {
+            "CREDENTIAL_UNAVAILABLE"
+        }
         code => code,
     }
 }
@@ -137,5 +139,18 @@ async fn dispatch(
         _ => Err(BrokerError::Frame(
             rekey_domain::ipc::FrameError::InvalidField,
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rekey_vault::AuthorityError;
+
+    #[test]
+    fn storage_integrity_failures_are_credential_unavailable_to_agents() {
+        let error = BrokerError::Authority(AuthorityError::StorageIntegrityFailed);
+        assert_eq!(agent_code(&error), "CREDENTIAL_UNAVAILABLE");
+        assert_eq!(error.agent_message(), "credential unavailable");
     }
 }

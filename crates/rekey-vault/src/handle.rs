@@ -82,7 +82,17 @@ macro_rules! call {
 
 impl AuthorityHandle {
     pub async fn status(&self) -> Result<StatusInfo, AuthorityError> {
-        call!(self, AuthorityCommand::Status)
+        call!(self, |reply| AuthorityCommand::Status {
+            refresh_activity: false,
+            reply
+        })
+    }
+
+    pub async fn admin_status(&self) -> Result<StatusInfo, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::Status {
+            refresh_activity: true,
+            reply
+        })
     }
 
     pub async fn unlock(&self, proof: UnlockProof) -> Result<(), AuthorityError> {

@@ -468,11 +468,19 @@ impl ActionExecutor {
             sealing_sources,
         } = effect
         else {
-            let GitHubEffect::WithoutToken(err) = effect else {
+            let GitHubEffect::WithoutToken {
+                error,
+                remote_effect_possible,
+            } = effect
+            else {
                 unreachable!("GitHub effect variant was matched above")
             };
-            started.blocked(err.reason()).await?;
-            return Err(BrokerError::Upstream(err.reason()));
+            if remote_effect_possible {
+                started.indeterminate(error.reason()).await?;
+            } else {
+                started.blocked(error.reason()).await?;
+            }
+            return Err(BrokerError::Upstream(error.reason()));
         };
         let mut needles = prepared.needles;
         for source in sealing_sources {

@@ -132,6 +132,7 @@ impl VersionState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CredentialMetadata {
     pub id: CredentialId,
     pub label: CredentialLabel,

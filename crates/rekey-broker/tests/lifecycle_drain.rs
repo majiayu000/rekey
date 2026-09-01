@@ -585,6 +585,63 @@ async fn drain_cancel_is_scoped_to_one_running_epoch() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn shutdown_reply_survives_an_exhausted_drain_deadline() {
+    let broker =
+        common::start_broker_with(Duration::from_secs(300), Duration::from_millis(100)).await;
+    common::unlock(&broker).await;
+    let credential_id = common::add_credential(&broker, "shutdown-reply", b"v").await;
+    let (action_id, version) = common::create_action(&broker, &credential_id).await;
+    let token = common::create_session(&broker, &action_id, version).await;
+    broker.fake.push_response_delayed(
+        Ok(UpstreamResponse {
+            status: 200,
+            headers: vec![],
+            body: Vec::new().into(),
+        }),
+        Duration::from_secs(5),
+    );
+
+    let agent = broker.agent_sock();
+    let execute_meta = common::execute_meta(&token, &action_id, version);
+    let execute = tokio::spawn(async move {
+        common::call(
+            &agent,
+            Channel::Agent,
+            agent_msg::EXECUTE_FIXED_HTTP_ACTION,
+            execute_meta.to_string().as_bytes(),
+            b"{}",
+        )
+        .await
+    });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if !broker.fake.requests.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("execution must consume the drain deadline");
+
+    let shutdown = common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::SHUTDOWN,
+        b"{}",
+        &common::proof_body(common::PASSWORD),
+    )
+    .await;
+    assert_eq!(shutdown.ok()["shutdown"], true);
+    let _ = execute.await;
+    let runtime = tokio::time::timeout(Duration::from_secs(3), broker.serve_task)
+        .await
+        .expect("runtime did not stop")
+        .expect("runtime task panicked");
+    assert!(runtime.is_ok(), "runtime returned {runtime:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn direct_terminal_commit_failure_reaches_tracker_and_fails_shutdown() {
     let broker = common::start_broker().await;
     common::unlock(&broker).await;

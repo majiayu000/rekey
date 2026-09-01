@@ -145,7 +145,13 @@ impl Worker {
     /// Returns true when the worker should stop.
     fn handle(&mut self, cmd: AuthorityCommand) -> bool {
         match cmd {
-            AuthorityCommand::Status(reply) => {
+            AuthorityCommand::Status {
+                refresh_activity,
+                reply,
+            } => {
+                if refresh_activity && matches!(self.state, VaultState::Unlocked { .. }) {
+                    self.last_activity = Instant::now();
+                }
                 let idle_for_ms = if matches!(self.state, VaultState::Unlocked { .. }) {
                     self.last_activity.elapsed().as_millis() as u64
                 } else {

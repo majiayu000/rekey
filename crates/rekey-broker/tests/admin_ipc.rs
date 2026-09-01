@@ -3,6 +3,8 @@
 
 mod common;
 
+use std::time::Duration;
+
 use rekey_domain::ipc::{Channel, admin_msg};
 
 #[tokio::test(flavor = "multi_thread")]
@@ -111,5 +113,36 @@ async fn malformed_frames_close_connection() {
         let response = common::send_raw(&broker.admin_sock(), &bytes).await;
         assert!(response.is_none(), "malformed frame must not get a reply");
     }
+    broker.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn admin_and_policy_status_keep_an_unlocked_broker_active() {
+    let broker =
+        common::start_broker_with(Duration::from_millis(120), Duration::from_secs(2)).await;
+    common::unlock(&broker).await;
+
+    for message in [
+        admin_msg::STATUS,
+        admin_msg::STATUS,
+        admin_msg::POLICY_STATUS,
+        admin_msg::POLICY_STATUS,
+    ] {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let response =
+            common::call(&broker.admin_sock(), Channel::Admin, message, b"{}", &[]).await;
+        response.ok();
+    }
+
+    tokio::time::sleep(Duration::from_millis(70)).await;
+    let status = common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::STATUS,
+        b"{}",
+        &[],
+    )
+    .await;
+    assert_eq!(status.ok()["state"], "unlocked");
     broker.shutdown().await;
 }

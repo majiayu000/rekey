@@ -77,7 +77,10 @@ pub struct PinnedAction {
 }
 
 pub enum AuthorityCommand {
-    Status(Reply<StatusInfo>),
+    Status {
+        refresh_activity: bool,
+        reply: Reply<StatusInfo>,
+    },
     Unlock {
         proof: UnlockProof,
         reply: Reply<()>,

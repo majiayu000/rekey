@@ -1,7 +1,7 @@
 use rusqlite::{OptionalExtension, params};
 
 use super::SqliteRecordStore;
-use crate::crypto::kdf::{KDF_ALGORITHM_ARGON2ID, KDF_ALGORITHM_HKDF_SHA256};
+use crate::crypto::kdf::{Argon2Params, KDF_ALGORITHM_ARGON2ID, KDF_ALGORITHM_HKDF_SHA256};
 use crate::crypto::{AAD_VERSION_V1, CRYPTO_SUITE_V1};
 use crate::error::AuthorityError;
 use crate::model::FORMAT_VERSION;
@@ -99,6 +99,27 @@ impl SqliteRecordStore {
             .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
         if unknown_header || unknown_wrappers || unknown_versions {
             return Err(AuthorityError::UnsupportedFormatVersion);
+        }
+        let mut statement = self
+            .conn
+            .prepare("SELECT wrapper_kind, kdf_params_json FROM key_wrappers")
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        let params = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        for row in params {
+            let (kind, value) = row.map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+            match kind.as_str() {
+                "password" => {
+                    Argon2Params::from_json(&value)
+                        .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+                }
+                "recovery" if value == "{}" => {}
+                "recovery" => return Err(AuthorityError::StorageIntegrityFailed),
+                _ => return Err(AuthorityError::StorageIntegrityFailed),
+            }
         }
         Ok(())
     }

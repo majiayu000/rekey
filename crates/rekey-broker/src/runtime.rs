@@ -148,7 +148,7 @@ impl BrokerCtx {
         }
     }
 
-    fn request_fault(&self) {
+    pub(crate) fn request_fault(&self) {
         let _ = self.stop_tx.send(shutdown::StopCommand::Fault);
     }
 
@@ -710,7 +710,13 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
     };
 
     let mut idle_task = idle_task;
-    match tokio::time::timeout_at(stop_deadline, async {
+    // central_stop may consume the full stop budget. Preserve a bounded tail
+    // for the admin connection to flush the already-produced shutdown reply.
+    let connection_deadline = std::cmp::max(
+        stop_deadline,
+        tokio::time::Instant::now() + Duration::from_secs(1),
+    );
+    match tokio::time::timeout_at(connection_deadline, async {
         tokio::join!(&mut admin_task, &mut agent_task, &mut idle_task)
     })
     .await

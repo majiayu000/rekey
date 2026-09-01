@@ -65,7 +65,8 @@ impl BrokerError {
             Self::Authority(
                 AuthorityError::CredentialNotFound
                 | AuthorityError::CredentialRevoked
-                | AuthorityError::CryptoFailure,
+                | AuthorityError::CryptoFailure
+                | AuthorityError::StorageIntegrityFailed,
             ) => "credential unavailable".to_owned(),
             other => other.to_string(),
         }

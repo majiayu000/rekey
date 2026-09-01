@@ -129,7 +129,7 @@ async fn dispatch(
     match frame.header.message_type {
         admin_msg::STATUS => {
             empty_meta(frame)?;
-            let status = ctx.authority.status().await?;
+            let status = ctx.authority.admin_status().await?;
             let response = ipc::StatusResponse {
                 state: status.state.to_owned(),
                 format_version: status.format_version,
@@ -293,9 +293,15 @@ async fn dispatch(
                 }
                 CreateSessionError::Domain(err) => BrokerError::Domain(err),
             })?;
-            ctx.authority
-                .append_audit(session_audit(event_type::SESSION_CREATED, session_id))
-                .await?;
+            if let Err(err) = ctx
+                .authority
+                .commit_audit(session_audit(event_type::SESSION_CREATED, session_id))
+                .await
+            {
+                ctx.sessions.revoke(session_id);
+                ctx.request_fault();
+                return Err(err.into());
+            }
             let response = ipc::SessionCreatedResponse {
                 session_id,
                 principal_id,
@@ -320,20 +326,29 @@ async fn dispatch(
                     rekey_domain::ipc::FrameError::InvalidField,
                 ));
             }
-            Ok((json(&ctx.policy_status().await)?, Vec::new()))
+            let response = ctx.policy_status().await;
+            ctx.authority.admin_status().await?;
+            Ok((json(&response)?, Vec::new()))
         }
         admin_msg::SESSION_REVOKE => {
             ctx.lifecycle.reject_if_not_running()?;
             let revoke: ipc::SessionRevokeMeta = meta(frame)?;
             let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
             ctx.authority.verify_proof(proof_from(kind, proof)).await?;
+            let _owner = ctx.lifecycle.coordinate().await;
+            ctx.lifecycle.reject_if_not_running()?;
             let existed = ctx.sessions.revoke(revoke.session_id);
-            ctx.authority
-                .append_audit(session_audit(
+            if let Err(err) = ctx
+                .authority
+                .commit_audit(session_audit(
                     event_type::SESSION_REVOKED,
                     revoke.session_id,
                 ))
-                .await?;
+                .await
+            {
+                ctx.request_fault();
+                return Err(err.into());
+            }
             Ok((json(&serde_json::json!({"revoked": existed}))?, Vec::new()))
         }
         admin_msg::BACKUP => {
