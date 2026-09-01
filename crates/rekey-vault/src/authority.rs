@@ -289,14 +289,15 @@ impl Worker {
                 let _ = reply.send(result);
             }
             AuthorityCommand::AppendAudit { draft, reply } => {
-                let execution_completed = matches!(
+                let refreshes_idle = matches!(
                     draft.event_type,
                     event_type::EXECUTION_FINISHED
                         | event_type::EXECUTION_BLOCKED
                         | event_type::EXECUTION_INDETERMINATE
+                        | event_type::SESSION_CREATED
                 );
                 let result = self.append_audit(draft);
-                if execution_completed {
+                if refreshes_idle {
                     self.touch_if_ok(&result);
                 }
                 let _ = reply.send(result);

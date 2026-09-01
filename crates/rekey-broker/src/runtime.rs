@@ -190,12 +190,18 @@ impl BrokerCtx {
     }
 
     /// Idle must not become a second drain owner: skip if lock/shutdown holds
-    /// the coordinator.
-    pub async fn try_drain_lock(&self, reason: &'static str) -> Result<(), BrokerError> {
+    /// the coordinator, then re-read activity under the coordinator so a
+    /// completed admin operation cannot be followed by a drain from stale
+    /// status.
+    pub async fn try_idle_lock(&self, idle_lock: Duration) -> Result<(), BrokerError> {
         let Ok(_owner) = self.lifecycle.try_coordinate() else {
             return Ok(());
         };
-        self.run_drain_lock(reason).await
+        let status = self.authority.status().await?;
+        if status.state == "unlocked" && status.idle_for_ms >= idle_lock.as_millis() as u64 {
+            self.run_drain_lock("idle-timeout").await?;
+        }
+        Ok(())
     }
 
     async fn run_drain_lock(&self, reason: &'static str) -> Result<(), BrokerError> {
@@ -599,43 +605,21 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
                     if idle_ctx.lifecycle.phase() != BrokerPhase::Running {
                         continue;
                     }
-                    let status = match idle_ctx.authority.status().await {
-                        Ok(status) => status,
-                        Err(AuthorityError::AuthorityBusy) => {
+                    match idle_ctx.try_idle_lock(idle_lock).await {
+                        Ok(()) => {}
+                        Err(BrokerError::Authority(AuthorityError::AuthorityBusy)) => {
                             tracing::warn!(
-                                event = "runtime.idle_check_deferred",
+                                event = "runtime.idle_lock_deferred",
                                 code = "AUTHORITY_BUSY"
                             );
-                            continue;
                         }
                         Err(err) => {
                             tracing::error!(
-                                event = "runtime.idle_check_fault",
+                                event = "runtime.idle_lock_fault",
                                 code = err.code()
                             );
                             idle_ctx.request_fault();
-                            return Err(BrokerError::Authority(err));
-                        }
-                    };
-                    if status.state == "unlocked"
-                        && status.idle_for_ms >= idle_lock.as_millis() as u64
-                    {
-                        match idle_ctx.try_drain_lock("idle-timeout").await {
-                            Ok(()) => {}
-                            Err(BrokerError::Authority(AuthorityError::AuthorityBusy)) => {
-                                tracing::warn!(
-                                    event = "runtime.idle_lock_deferred",
-                                    code = "AUTHORITY_BUSY"
-                                );
-                            }
-                            Err(err) => {
-                                tracing::error!(
-                                    event = "runtime.idle_lock_fault",
-                                    code = err.code()
-                                );
-                                idle_ctx.request_fault();
-                                return Err(err);
-                            }
+                            return Err(err);
                         }
                     }
                 }
