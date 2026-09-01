@@ -7,6 +7,7 @@ use std::time::Duration;
 use rekey_domain::ids::RequestId;
 use rekey_domain::ipc::{
     Channel, ErrorEnvelope, FRAME_HEADER_LEN, FrameError, FrameHeader, METADATA_MAX_BYTES,
+    RESPONSE_BODY_MAX_BYTES,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use zeroize::Zeroizing;
@@ -80,14 +81,21 @@ pub async fn write_frame<S: AsyncWrite + Unpin>(
     metadata: &[u8],
     body: &[u8],
 ) -> Result<(), FrameIoError> {
+    let metadata_len = u32::try_from(metadata.len())
+        .map_err(|_| FrameIoError::Frame(FrameError::SectionTooLarge))?;
+    let body_len =
+        u32::try_from(body.len()).map_err(|_| FrameIoError::Frame(FrameError::SectionTooLarge))?;
+    if metadata_len > METADATA_MAX_BYTES || body_len > RESPONSE_BODY_MAX_BYTES {
+        return Err(FrameIoError::Frame(FrameError::SectionTooLarge));
+    }
     let deadline = tokio::time::Instant::now() + FRAME_IO_TIMEOUT;
     let header = FrameHeader {
         channel,
         flags: 0,
         message_type,
         request_id,
-        metadata_len: metadata.len() as u32,
-        body_len: body.len() as u32,
+        metadata_len,
+        body_len,
     };
     let header_bytes = header.encode();
     timed_until(deadline, stream.write_all(&header_bytes)).await?;
@@ -142,4 +150,35 @@ pub async fn write_error<S: AsyncWrite + Unpin>(
         &[],
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::AsyncReadExt;
+
+    #[tokio::test]
+    async fn oversized_metadata_is_rejected_before_any_frame_bytes() {
+        let (mut writer, mut reader) = tokio::io::duplex(128);
+        let metadata = vec![0u8; METADATA_MAX_BYTES as usize + 1];
+        let result = write_ok(
+            &mut writer,
+            Channel::Admin,
+            RequestId::new_random(),
+            &metadata,
+            &[],
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(FrameIoError::Frame(FrameError::SectionTooLarge))
+        ));
+
+        let mut byte = [0u8; 1];
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), reader.read_exact(&mut byte))
+                .await
+                .is_err()
+        );
+    }
 }

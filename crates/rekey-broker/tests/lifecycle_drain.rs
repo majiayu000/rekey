@@ -383,7 +383,7 @@ async fn draining_rejects_new_execute_without_started() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn every_started_has_terminal_on_success_and_block() {
+async fn every_started_has_terminal_on_success_and_indeterminate_response() {
     let broker = common::start_broker().await;
     common::unlock(&broker).await;
     let credential_id = common::add_credential(&broker, "pair", b"secret-token-value").await;
@@ -424,7 +424,7 @@ async fn every_started_has_terminal_on_success_and_block() {
     let log = store.audit_execution_log().unwrap();
     assert_each_started_has_one_terminal(&log);
     assert!(log.iter().any(|(_, t)| t == "execution.finished"));
-    assert!(log.iter().any(|(_, t)| t == "execution.blocked"));
+    assert!(log.iter().any(|(_, t)| t == "execution.indeterminate"));
 }
 
 #[tokio::test(flavor = "multi_thread")]

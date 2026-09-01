@@ -36,10 +36,14 @@ fn debug_output_is_redacted_without_length() {
     let input = SecretInput::new(b"super-secret-value".to_vec());
     assert_eq!(format!("{input:?}"), "SecretInput([REDACTED])");
 
-    let key = RootKey::from_bytes([7u8; 32]);
+    let mut root_bytes = [7u8; 32];
+    let key = RootKey::from_bytes(&mut root_bytes);
+    assert_eq!(root_bytes, [0u8; 32]);
     assert_eq!(format!("{key:?}"), "RootKey([REDACTED])");
 
-    let dk = DataKey::from_bytes([8u8; 32]);
+    let mut data_bytes = [8u8; 32];
+    let dk = DataKey::from_bytes(&mut data_bytes);
+    assert_eq!(data_bytes, [0u8; 32]);
     assert_eq!(format!("{dk:?}"), "DataKey([REDACTED])");
 }
 

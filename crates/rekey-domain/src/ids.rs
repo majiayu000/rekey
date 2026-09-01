@@ -27,8 +27,15 @@ macro_rules! typed_id {
         pub struct $name(Uuid);
 
         impl $name {
+            #[cfg(any(test, debug_assertions))]
             pub fn new_random() -> Self {
-                Self(Uuid::new_v4())
+                use std::sync::atomic::{AtomicU64, Ordering};
+
+                static NEXT_TEST_ID: AtomicU64 = AtomicU64::new(1);
+                let value = NEXT_TEST_ID.fetch_add(1, Ordering::Relaxed);
+                let mut bytes = [0u8; 16];
+                bytes[8..].copy_from_slice(&value.to_be_bytes());
+                Self(Uuid::from_bytes(bytes))
             }
 
             pub fn from_bytes(bytes: [u8; 16]) -> Result<Self, DomainError> {
@@ -130,7 +137,7 @@ mod tests {
 
     #[test]
     fn rejects_non_canonical_forms() {
-        let id = CredentialId::new_random();
+        let id = CredentialId::from_bytes([0xab; 16]).unwrap();
         let upper = id.to_string().to_uppercase();
         assert_eq!(upper.parse::<CredentialId>(), Err(DomainError::InvalidId));
         let simple = id.to_string().replace('-', "");

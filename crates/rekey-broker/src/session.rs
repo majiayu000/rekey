@@ -26,6 +26,7 @@ pub enum CreateSessionError {
 struct Entry {
     token_hash: [u8; 32],
     grant: SessionGrant,
+    action_timeouts: Vec<(ActionVersionRef, u32)>,
     uses_left: u32,
     in_flight: u32,
     revoked: bool,
@@ -36,6 +37,7 @@ pub struct SessionTicket {
     pub session_id: SessionId,
     pub principal: Principal,
     pub action: ActionVersionRef,
+    pub timeout_ms: u32,
 }
 
 /// RAII permit for one execution. Drop always releases the concurrency slot,
@@ -45,6 +47,7 @@ pub struct ExecutionPermit {
     pub session_id: SessionId,
     pub principal: Principal,
     pub action: ActionVersionRef,
+    pub timeout_ms: u32,
 }
 
 impl Drop for ExecutionPermit {
@@ -108,8 +111,15 @@ impl SessionRegistry {
     }
 
     /// Creates a session and returns the capability token exactly once.
+    #[cfg(test)]
     pub fn create(&self, grant: SessionGrant) -> Result<String, DomainError> {
-        match self.admit(grant) {
+        let action_timeouts = grant
+            .allowed_actions
+            .iter()
+            .copied()
+            .map(|action| (action, rekey_domain::action::ACTION_TIMEOUT_HARD_MAX_MS))
+            .collect();
+        match self.admit(grant, action_timeouts) {
             Ok(token) => Ok(token),
             Err(CreateSessionError::Closed) => Err(DomainError::InvalidCapability),
             Err(CreateSessionError::Domain(err)) => Err(err),
@@ -119,7 +129,11 @@ impl SessionRegistry {
     /// Same as `create`, but distinguishes a closed (draining/locked) registry
     /// from a domain error so Admin can return `DRAINING` rather than
     /// `INVALID_CAPABILITY`.
-    pub fn admit(&self, grant: SessionGrant) -> Result<String, CreateSessionError> {
+    pub fn admit(
+        &self,
+        grant: SessionGrant,
+        action_timeouts: Vec<(ActionVersionRef, u32)>,
+    ) -> Result<String, CreateSessionError> {
         let (raw, encoded) = entropy_token().map_err(CreateSessionError::Domain)?;
         let ttl_ms = grant
             .expires_at
@@ -130,6 +144,7 @@ impl SessionRegistry {
             .ok_or(CreateSessionError::Domain(DomainError::InvalidCapability))?;
         let entry = Entry {
             token_hash: hash_token(raw.as_ref()),
+            action_timeouts,
             uses_left: grant.max_uses,
             in_flight: 0,
             revoked: false,
@@ -186,6 +201,11 @@ impl SessionRegistry {
         if !entry.grant.allows(wanted) {
             return Err(DomainError::ActionNotAllowed);
         }
+        let timeout_ms = entry
+            .action_timeouts
+            .iter()
+            .find_map(|(action, timeout_ms)| (*action == wanted).then_some(*timeout_ms))
+            .ok_or(DomainError::InvalidCapability)?;
         if entry.uses_left == 0 {
             entry.revoked = true;
             return Err(DomainError::CapabilityExhausted);
@@ -203,6 +223,7 @@ impl SessionRegistry {
             session_id: entry.grant.id,
             principal: entry.grant.principal,
             action: wanted,
+            timeout_ms,
         })
     }
 
@@ -219,6 +240,7 @@ impl SessionRegistry {
             session_id: ticket.session_id,
             principal: ticket.principal,
             action: ticket.action,
+            timeout_ms: ticket.timeout_ms,
         })
     }
 
@@ -339,6 +361,15 @@ mod tests {
         let registry = SessionRegistry::new();
         registry.open_for_admission();
         registry
+    }
+
+    fn timeouts(grant: &SessionGrant) -> Vec<(ActionVersionRef, u32)> {
+        grant
+            .allowed_actions
+            .iter()
+            .copied()
+            .map(|action| (action, 1_000))
+            .collect()
     }
 
     #[test]
@@ -474,14 +505,16 @@ mod tests {
         let token = registry.create(g).unwrap();
         registry.close_and_revoke_all();
         let (g2, _) = grant(10);
+        let g2_timeouts = timeouts(&g2);
         assert!(matches!(
-            registry.admit(g2),
+            registry.admit(g2, g2_timeouts),
             Err(CreateSessionError::Closed)
         ));
         assert!(registry.begin(&token, r, now(1)).is_err());
         registry.open_for_admission();
         let (g3, r3) = grant(10);
-        let token3 = registry.admit(g3).unwrap();
+        let g3_timeouts = timeouts(&g3);
+        let token3 = registry.admit(g3, g3_timeouts).unwrap();
         registry.begin(&token3, r3, now(1)).unwrap();
     }
 
@@ -491,15 +524,18 @@ mod tests {
         for _ in 0..1_000 {
             let (grant, _) = grant(1);
             let id = grant.id;
-            registry.admit(grant).unwrap();
+            let action_timeouts = timeouts(&grant);
+            registry.admit(grant, action_timeouts).unwrap();
             assert!(registry.revoke(id));
         }
         assert_eq!(registry.entry_count(), 0);
 
         let (grant, action) = grant(10);
         let id = grant.id;
-        let token = registry.admit(grant).unwrap();
+        let action_timeouts = timeouts(&grant);
+        let token = registry.admit(grant, action_timeouts).unwrap();
         let permit = registry.acquire(&token, action, now(1)).unwrap();
+        assert_eq!(permit.timeout_ms, 1_000);
         assert!(registry.revoke(id));
         assert_eq!(registry.entry_count(), 1);
         drop(permit);
@@ -527,11 +563,13 @@ mod tests {
             1,
         )
         .unwrap();
-        registry.admit(expiring).unwrap();
+        let expiring_timeouts = timeouts(&expiring);
+        registry.admit(expiring, expiring_timeouts).unwrap();
         std::thread::sleep(Duration::from_millis(5));
 
         let (live, _) = grant(1);
-        registry.admit(live).unwrap();
+        let live_timeouts = timeouts(&live);
+        registry.admit(live, live_timeouts).unwrap();
         assert_eq!(registry.entry_count(), 1);
     }
 }

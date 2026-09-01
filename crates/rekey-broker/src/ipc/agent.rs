@@ -92,7 +92,7 @@ async fn dispatch(
             let request = ExecuteRequest {
                 // The frame ID is untrusted transport correlation only. Audit
                 // lifecycle identity is minted by the Broker per execution.
-                request_id: RequestId::new_random(),
+                request_id: crate::random_id(RequestId::from_bytes)?,
                 capability_token: meta.capability_token,
                 action: ActionVersionRef {
                     action_id: meta.action_id,

@@ -11,15 +11,16 @@ macro_rules! key_type {
         pub struct $name(SecretBox<[u8; super::KEY_LEN]>);
 
         impl $name {
-            /// Takes ownership of the bytes and zeroizes the input copy.
-            pub fn from_bytes(mut bytes: [u8; super::KEY_LEN]) -> Self {
-                let boxed = SecretBox::new(Box::new(bytes));
+            /// Copies bytes into protected ownership and zeroizes the caller buffer.
+            pub fn from_bytes(bytes: &mut [u8; super::KEY_LEN]) -> Self {
+                let boxed = SecretBox::new(Box::new(*bytes));
                 bytes.zeroize();
                 Self(boxed)
             }
 
             pub fn generate() -> Result<Self, AuthorityError> {
-                Ok(Self::from_bytes(super::random_array()?))
+                let mut bytes = super::random_array()?;
+                Ok(Self::from_bytes(&mut bytes))
             }
 
             pub(crate) fn bytes(&self) -> &[u8; super::KEY_LEN] {

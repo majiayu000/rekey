@@ -44,7 +44,7 @@ fn remember(first: &mut Option<BrokerError>, error: BrokerError) {
 }
 
 fn admin_requires_proof(status_state: Option<&str>) -> bool {
-    status_state != Some("locked")
+    !matches!(status_state, Some("locked" | "faulted"))
 }
 
 async fn wait_in_flight_until(ctx: &BrokerCtx, deadline: tokio::time::Instant) {
@@ -238,10 +238,10 @@ mod tests {
     use super::admin_requires_proof;
 
     #[test]
-    fn only_a_positively_locked_authority_allows_proofless_admin_stop() {
+    fn only_a_positively_safe_authority_state_allows_proofless_admin_stop() {
         assert!(!admin_requires_proof(Some("locked")));
+        assert!(!admin_requires_proof(Some("faulted")));
         assert!(admin_requires_proof(Some("unlocked")));
-        assert!(admin_requires_proof(Some("faulted")));
         assert!(admin_requires_proof(None));
     }
 }

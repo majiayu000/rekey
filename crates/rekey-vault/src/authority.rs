@@ -272,18 +272,16 @@ impl Worker {
                 credential_id,
                 reply,
             } => {
-                let result = self
-                    .store
-                    .list_actions_for_credential(credential_id)
-                    .map(|records| {
-                        let mut action_ids = records
-                            .into_iter()
-                            .map(|record| record.action_id)
-                            .collect::<Vec<_>>();
-                        action_ids.sort_unstable();
-                        action_ids.dedup();
-                        action_ids
-                    });
+                let records = self.store.list_actions_for_credential(credential_id);
+                let result = self.fault_on_integrity(records).map(|records| {
+                    let mut action_ids = records
+                        .into_iter()
+                        .map(|record| record.action_id)
+                        .collect::<Vec<_>>();
+                    action_ids.sort_unstable();
+                    action_ids.dedup();
+                    action_ids
+                });
                 let _ = reply.send(result);
             }
             AuthorityCommand::PrepareCredential {
@@ -325,6 +323,18 @@ impl Worker {
         if result.is_ok() {
             self.last_activity = Instant::now();
         }
+    }
+
+    fn fault_on_integrity<T>(
+        &mut self,
+        result: Result<T, AuthorityError>,
+    ) -> Result<T, AuthorityError> {
+        if matches!(result, Err(AuthorityError::StorageIntegrityFailed))
+            && !matches!(self.state, VaultState::Faulted)
+        {
+            self.fault("persisted-state-integrity-failed");
+        }
+        result
     }
 
     fn require_unlocked(&self) -> Result<&RootKey, AuthorityError> {
@@ -506,9 +516,9 @@ impl Worker {
         }
         let (action_id, version, event) = match existing {
             Some(id) => {
+                let records = self.store.list_actions();
                 let current = self
-                    .store
-                    .list_actions()?
+                    .fault_on_integrity(records)?
                     .iter()
                     .filter(|r| r.action_id == id)
                     .map(|r| r.version)
@@ -516,7 +526,11 @@ impl Worker {
                     .ok_or(AuthorityError::ActionNotFound)?;
                 (id, current + 1, event_type::ACTION_UPDATED)
             }
-            None => (ActionId::new_random(), 1, event_type::ACTION_CREATED),
+            None => (
+                ActionId::from_bytes(random_array()?)?,
+                1,
+                event_type::ACTION_CREATED,
+            ),
         };
         let action = FixedHttpAction {
             id: action_id,
@@ -558,25 +572,26 @@ impl Worker {
         self.fault_on_audit_failure(result)
     }
 
-    fn action_list(&self) -> Result<Vec<FixedHttpAction>, AuthorityError> {
+    fn action_list(&mut self) -> Result<Vec<FixedHttpAction>, AuthorityError> {
         self.require_unlocked()?;
-        self.store
-            .list_actions()?
-            .iter()
-            .map(record_to_action)
-            .collect()
+        let records = self.store.list_actions();
+        let result = records.and_then(|records| records.iter().map(record_to_action).collect());
+        self.fault_on_integrity(result)
     }
 
     fn action_get(
-        &self,
+        &mut self,
         action_id: ActionId,
         version: u64,
     ) -> Result<PinnedAction, AuthorityError> {
-        let record = self.store.get_action(action_id, version)?;
-        Ok(PinnedAction {
-            action: record_to_action(&record)?,
-            state: record.state,
-        })
+        let result = (|| {
+            let record = self.store.get_action(action_id, version)?;
+            Ok(PinnedAction {
+                action: record_to_action(&record)?,
+                state: record.state,
+            })
+        })();
+        self.fault_on_integrity(result)
     }
 }
 

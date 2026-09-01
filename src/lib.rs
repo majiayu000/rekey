@@ -32,6 +32,15 @@ pub mod harness {
         }
     }
 
+    fn next_test_id<T>(
+        from_bytes: impl FnOnce([u8; 16]) -> Result<T, rekey_domain::DomainError>,
+    ) -> T {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+        let mut bytes = [0u8; 16];
+        bytes[8..].copy_from_slice(&NEXT_ID.fetch_add(1, Ordering::Relaxed).to_be_bytes());
+        must(from_bytes(bytes), "create deterministic test id")
+    }
+
     fn required_str<'a>(value: &'a serde_json::Value, field: &str) -> &'a str {
         match value.as_str() {
             Some(value) => value,
@@ -159,7 +168,7 @@ pub mod harness {
             channel,
             flags: 0,
             message_type,
-            request_id: RequestId::new_random(),
+            request_id: next_test_id(RequestId::from_bytes),
             metadata_len: metadata.len() as u32,
             body_len: body.len() as u32,
         };
@@ -307,7 +316,7 @@ pub mod harness {
                 "parameter_schema": {},
             }],
             "rules": [{
-                "id": PolicyRuleId::new_random().to_string(),
+                "id": next_test_id(PolicyRuleId::from_bytes).to_string(),
                 "effect": "permit",
                 "principal_id": principal_id,
                 "action_id": action_id,

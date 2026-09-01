@@ -21,7 +21,7 @@ pub fn encode_recovery_key(key: &[u8; KEY_LEN]) -> Zeroizing<String> {
     let mut payload = [0u8; KEY_LEN + CHECKSUM_LEN];
     payload[..KEY_LEN].copy_from_slice(key);
     payload[KEY_LEN..].copy_from_slice(&checksum(key));
-    let raw = BASE32_NOPAD.encode(&payload);
+    let raw = Zeroizing::new(BASE32_NOPAD.encode(&payload));
     payload.zeroize();
 
     let mut grouped = String::with_capacity(RECOVERY_PREFIX.len() + raw.len() + raw.len() / GROUP);
@@ -41,11 +41,12 @@ pub fn parse_recovery_key(input: &str) -> Result<Zeroizing<[u8; KEY_LEN]>, Autho
     let rest = trimmed
         .strip_prefix(RECOVERY_PREFIX)
         .ok_or(AuthorityError::InvalidUnlockCredential)?;
-    let compact: String = rest
-        .chars()
-        .filter(|c| *c != '-' && *c != ' ')
-        .map(|c| c.to_ascii_uppercase())
-        .collect();
+    let compact = Zeroizing::new(
+        rest.chars()
+            .filter(|c| *c != '-' && *c != ' ')
+            .map(|c| c.to_ascii_uppercase())
+            .collect::<String>(),
+    );
     let mut decoded = BASE32_NOPAD
         .decode(compact.as_bytes())
         .map_err(|_| AuthorityError::InvalidUnlockCredential)?;

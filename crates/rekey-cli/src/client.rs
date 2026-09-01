@@ -8,6 +8,7 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::Duration;
 
+use rand::TryRngCore;
 use rekey_domain::ids::RequestId;
 use rekey_domain::ipc::{
     ADMIN_SECRET_BODY_MAX_BYTES, AGENT_BODY_MAX_BYTES, Channel, ErrorEnvelope, FRAME_HEADER_LEN,
@@ -78,6 +79,15 @@ pub struct Client {
 
 fn io_err(err: std::io::Error) -> CliError {
     CliError::local("IPC_UNAVAILABLE", format!("broker unreachable: {err}"))
+}
+
+fn random_request_id() -> Result<RequestId, CliError> {
+    let mut bytes = [0u8; 16];
+    rand::rngs::OsRng
+        .try_fill_bytes(&mut bytes)
+        .map_err(|_| CliError::local("ENTROPY_UNAVAILABLE", "cannot create request id"))?;
+    RequestId::from_bytes(bytes)
+        .map_err(|_| CliError::local("ENTROPY_UNAVAILABLE", "cannot create request id"))
 }
 
 #[cfg(target_os = "macos")]
@@ -244,7 +254,7 @@ impl Client {
                 "request body is too large",
             ));
         }
-        let request_id = RequestId::new_random();
+        let request_id = random_request_id()?;
         let header = FrameHeader {
             channel: self.channel,
             flags: 0,

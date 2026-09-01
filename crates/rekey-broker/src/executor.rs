@@ -12,6 +12,7 @@ use rekey_domain::action::FixedHttpAction;
 use rekey_domain::authorization::{AuthorizationRequest, Decision, DenyReason, Principal};
 use rekey_domain::capability::ActionVersionRef;
 use rekey_domain::ids::RequestId;
+use rekey_domain::ipc::{ExecuteResponseMeta, METADATA_MAX_BYTES};
 use rekey_vault::AuthorityError;
 use rekey_vault::handle::AuthorityHandle;
 use rekey_vault::model::ActionState;
@@ -134,9 +135,10 @@ impl ActionExecutor {
         let permit =
             self.sessions
                 .acquire(&request.capability_token, request.action, crate::now_ts()?)?;
+        let effect_deadline = admission_started + Duration::from_millis(permit.timeout_ms as u64);
         self.refuse_unless_running()?;
         let principal = permit.principal;
-        self.admit_authorized(request, principal, permit, admission_started)
+        self.admit_authorized(request, principal, permit, effect_deadline)
             .await
     }
 
@@ -145,13 +147,16 @@ impl ActionExecutor {
         request: ExecuteRequest,
         principal: Principal,
         permit: ExecutionPermit,
-        admission_started: Instant,
+        effect_deadline: Instant,
     ) -> Result<AdmittedExecution, BrokerError> {
         // Step 4: pin the immutable action version.
-        let pinned = self
-            .authority
-            .action_get(request.action.action_id, request.action.version)
-            .await?;
+        let pinned = tokio::time::timeout_at(
+            tokio::time::Instant::from_std(effect_deadline),
+            self.authority
+                .action_get(request.action.action_id, request.action.version),
+        )
+        .await
+        .map_err(|_| BrokerError::Upstream("upstream-timeout"))??;
         let action = pinned.action;
         let mut ctx = ExecutionAuditContext {
             request_id: request.request_id,
@@ -175,7 +180,7 @@ impl ActionExecutor {
             return Err(BrokerError::Denied(reason));
         }
 
-        let Some(snapshot) = self.lifecycle_policy().await else {
+        let Some(snapshot) = self.lifecycle_policy(effect_deadline).await? else {
             self.authority
                 .append_audit(execution_blocked(&ctx, DenyReason::NoActiveSnapshot.code()))
                 .await?;
@@ -249,19 +254,33 @@ impl ActionExecutor {
         // Step 6: this final point linearizes with drain. Earlier Running
         // checks are advisory; no drain may transition between this re-check
         // and transfer of durable started/terminal ownership.
-        let started = commit_started_while_running(&self.lifecycle, &self.terminals, ctx).await?;
+        let started = tokio::time::timeout_at(
+            tokio::time::Instant::from_std(effect_deadline),
+            commit_started_while_running(&self.lifecycle, &self.terminals, ctx),
+        )
+        .await
+        .map_err(|_| BrokerError::Upstream("upstream-timeout"))??;
         Ok(AdmittedExecution {
             executor: Arc::clone(self),
             request,
-            effect_deadline: admission_started + Duration::from_millis(action.timeout_ms as u64),
+            effect_deadline,
             action,
             started,
             _permit: permit,
         })
     }
 
-    async fn lifecycle_policy(&self) -> Option<Arc<rekey_policy::ValidatedSnapshot>> {
-        self.policy.read().await.clone()
+    async fn lifecycle_policy(
+        &self,
+        effect_deadline: Instant,
+    ) -> Result<Option<Arc<rekey_policy::ValidatedSnapshot>>, BrokerError> {
+        tokio::time::timeout_at(
+            tokio::time::Instant::from_std(effect_deadline),
+            self.policy.read(),
+        )
+        .await
+        .map(|guard| guard.clone())
+        .map_err(|_| BrokerError::Upstream("upstream-timeout"))
     }
 
     async fn run_started(
@@ -394,12 +413,16 @@ impl ActionExecutor {
         if contains_secret(&response.body, &needles)
             || headers_contain_secret(&response.headers, &needles)
         {
-            started.blocked("reflected-secret").await?;
+            started.indeterminate("reflected-secret").await?;
             return Err(BrokerError::ResponseSecurityViolation);
         }
 
         // Step 13: response header filtering (allowlist only).
         let headers = filter_response_headers(action, &response.headers);
+        if !response_metadata_fits(response.status, &headers, response.body.len()) {
+            started.indeterminate("response-metadata-too-large").await?;
+            return Err(BrokerError::Domain(DomainError::ResponseTooLarge));
+        }
 
         // Step 14: ExecutionFinished must commit; upstream success without
         // evidence is not success.
@@ -505,24 +528,28 @@ impl ActionExecutor {
             ))
             .await?;
         if let Err(err) = revoke {
-            started.blocked(err.reason()).await?;
+            started.indeterminate(err.reason()).await?;
             return Err(BrokerError::Upstream(err.reason()));
         }
 
         let mut response = match resource {
             Ok(response) => response,
             Err(err) => {
-                started.blocked(err.reason()).await?;
+                started.indeterminate(err.reason()).await?;
                 return Err(BrokerError::Upstream(err.reason()));
             }
         };
         if contains_secret(&response.body, &needles)
             || headers_contain_secret(&response.headers, &needles)
         {
-            started.blocked("reflected-secret").await?;
+            started.indeterminate("reflected-secret").await?;
             return Err(BrokerError::ResponseSecurityViolation);
         }
         let headers = filter_response_headers(action, &response.headers);
+        if !response_metadata_fits(response.status, &headers, response.body.len()) {
+            started.indeterminate("response-metadata-too-large").await?;
+            return Err(BrokerError::Domain(DomainError::ResponseTooLarge));
+        }
         started
             .finished(prepared.credential_version, response.status, latency_ms)
             .await?;
@@ -533,6 +560,18 @@ impl ActionExecutor {
             body,
         })
     }
+}
+
+fn response_metadata_fits(status: u16, headers: &[(String, String)], body_len: usize) -> bool {
+    let Ok(body_len) = u32::try_from(body_len) else {
+        return false;
+    };
+    serde_json::to_vec(&ExecuteResponseMeta {
+        upstream_status: status,
+        headers: headers.to_vec(),
+        body_len,
+    })
+    .is_ok_and(|metadata| metadata.len() <= METADATA_MAX_BYTES as usize)
 }
 
 enum PreparedExecution {

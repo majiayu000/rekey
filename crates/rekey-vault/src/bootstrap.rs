@@ -184,11 +184,11 @@ pub(crate) fn unwrap_vrk(
     .encode();
     let plain = aead::open(kek.bytes(), &aad, &wrapper.nonce, &wrapper.wrapped_vrk)
         .map_err(|_| AuthorityError::InvalidUnlockCredential)?;
-    let bytes: [u8; KEY_LEN] = plain
+    let mut bytes: [u8; KEY_LEN] = plain
         .as_slice()
         .try_into()
         .map_err(|_| AuthorityError::InvalidUnlockCredential)?;
-    Ok(RootKey::from_bytes(bytes))
+    Ok(RootKey::from_bytes(&mut bytes))
 }
 
 pub(crate) fn kek_for_wrapper(
@@ -261,13 +261,13 @@ fn init_vault_inner(
         create_init_marker(state_dir)?;
     }
 
-    let vault_id = VaultId::new_random();
+    let vault_id = VaultId::from_bytes(random_array()?)?;
     let vrk = RootKey::generate()?;
     let recovery_key: Zeroizing<[u8; KEY_LEN]> = Zeroizing::new(random_array()?);
     let password_salt: [u8; SALT_LEN] = random_array()?;
     let recovery_salt: [u8; SALT_LEN] = random_array()?;
-    let password_wrapper_id = WrapperId::new_random();
-    let recovery_wrapper_id = WrapperId::new_random();
+    let password_wrapper_id = WrapperId::from_bytes(random_array()?)?;
+    let recovery_wrapper_id = WrapperId::from_bytes(random_array()?)?;
     let now = now_ms()?;
 
     let password_kek = derive_password_kek(password.expose(), &password_salt, &params)?;
@@ -636,11 +636,11 @@ fn prove_all_payloads(
             &version.wrapped_dek,
         )
         .map_err(|_| AuthorityError::CryptoFailure)?;
-        let dek_arr: [u8; 32] = dek_bytes
+        let mut dek_arr: [u8; 32] = dek_bytes
             .as_slice()
             .try_into()
             .map_err(|_| AuthorityError::CryptoFailure)?;
-        let dek = DataKey::from_bytes(dek_arr);
+        let dek = DataKey::from_bytes(&mut dek_arr);
         let payload_aad = AadV1 {
             purpose: AadPurpose::CredentialPayload,
             vault_id,

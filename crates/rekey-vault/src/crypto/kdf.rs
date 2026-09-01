@@ -1,12 +1,10 @@
+use super::keys::Kek;
+use super::{KEY_LEN, SALT_LEN};
+use crate::error::AuthorityError;
 use argon2::{Algorithm, Argon2, Params, Version};
 use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
-use zeroize::Zeroize;
-
-use super::keys::Kek;
-use super::{KEY_LEN, SALT_LEN};
-use crate::error::AuthorityError;
 
 pub const KDF_ALGORITHM_ARGON2ID: &str = "argon2id";
 pub const KDF_ALGORITHM_HKDF_SHA256: &str = "hkdf-sha256";
@@ -82,8 +80,7 @@ pub fn derive_password_kek(
     argon
         .hash_password_into(password, salt, &mut out)
         .map_err(|_| AuthorityError::CryptoFailure)?;
-    let kek = Kek::from_bytes(out);
-    out.zeroize();
+    let kek = Kek::from_bytes(&mut out);
     Ok(kek)
 }
 
@@ -95,8 +92,7 @@ pub fn derive_recovery_kek(
     let mut out = [0u8; KEY_LEN];
     hk.expand(RECOVERY_KEK_INFO, &mut out)
         .map_err(|_| AuthorityError::CryptoFailure)?;
-    let kek = Kek::from_bytes(out);
-    out.zeroize();
+    let kek = Kek::from_bytes(&mut out);
     Ok(kek)
 }
 

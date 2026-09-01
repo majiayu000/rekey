@@ -18,18 +18,6 @@ use crate::now_ms;
 use crate::secret::{PreparedCredential, SecretInput};
 
 impl Worker {
-    fn fault_on_integrity<T>(
-        &mut self,
-        result: Result<T, AuthorityError>,
-    ) -> Result<T, AuthorityError> {
-        if matches!(result, Err(AuthorityError::StorageIntegrityFailed))
-            && !matches!(self.state, VaultState::Faulted)
-        {
-            self.fault("credential-state-integrity-failed");
-        }
-        result
-    }
-
     fn refresh_state_seal(&self, record: &mut CredentialRecord) -> Result<(), AuthorityError> {
         let vrk = self.require_unlocked()?;
         let seal = credential_state::seal(vrk.bytes(), self.header.vault_id, record)?;
@@ -112,7 +100,7 @@ impl Worker {
                 rekey_domain::DomainError::InvalidCapability,
             ));
         }
-        let credential_id = CredentialId::new_random();
+        let credential_id = CredentialId::from_bytes(crate::crypto::random_array()?)?;
         let now = now_ms()?;
         let version = self.encrypt_new_version(credential_id, 1, kind, &secret, now)?;
         let mut record = CredentialRecord {
@@ -276,11 +264,11 @@ impl Worker {
             &version.wrapped_dek,
         )
         .map_err(|_| AuthorityError::CryptoFailure)?;
-        let dek_arr: [u8; 32] = dek_bytes
+        let mut dek_arr: [u8; 32] = dek_bytes
             .as_slice()
             .try_into()
             .map_err(|_| AuthorityError::CryptoFailure)?;
-        let dek = DataKey::from_bytes(dek_arr);
+        let dek = DataKey::from_bytes(&mut dek_arr);
         let payload_aad = AadV1 {
             purpose: AadPurpose::CredentialPayload,
             vault_id: self.header.vault_id,

@@ -24,6 +24,12 @@ fn execution_context() -> ExecutionAuditContext {
     }
 }
 
+#[test]
+fn oversized_execute_response_metadata_is_rejected_before_success() {
+    let headers = vec![("x-response".to_owned(), "v".repeat(65_536))];
+    assert!(!response_metadata_fits(200, &headers, 0));
+}
+
 #[tokio::test]
 async fn drain_linearizes_before_started() {
     let commits = Arc::new(AtomicUsize::new(0));
@@ -75,11 +81,13 @@ async fn running_coordinator_contention_fails_without_waiting() {
                 1,
             )
             .unwrap(),
+            vec![(action, 50)],
         )
         .unwrap();
     let permit = sessions
         .acquire(&token, action, Timestamp::from_unix_ms(1))
         .unwrap();
+    assert_eq!(permit.timeout_ms, 50);
     assert_eq!(sessions.in_flight_total(), 1);
     let _coordinator = lifecycle.coordinate().await;
 

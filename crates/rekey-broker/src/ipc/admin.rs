@@ -48,8 +48,14 @@ fn empty_meta(frame: &IncomingFrame) -> Result<(), BrokerError> {
 }
 
 fn json<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, BrokerError> {
-    serde_json::to_vec(value)
-        .map_err(|_| BrokerError::Frame(rekey_domain::ipc::FrameError::InvalidField))
+    let metadata = serde_json::to_vec(value)
+        .map_err(|_| BrokerError::Frame(rekey_domain::ipc::FrameError::InvalidField))?;
+    if metadata.len() > ipc::METADATA_MAX_BYTES as usize {
+        return Err(BrokerError::Frame(
+            rekey_domain::ipc::FrameError::SectionTooLarge,
+        ));
+    }
+    Ok(metadata)
 }
 
 pub async fn handle_admin_conn(
@@ -259,6 +265,7 @@ async fn dispatch(
             ctx.lifecycle.reject_if_not_running()?;
             // New sessions may pin only Active versions. Retired stays
             // executable for grants issued while it was Active.
+            let mut action_timeouts = Vec::with_capacity(create.actions.len());
             for r in &create.actions {
                 let pinned = ctx.authority.action_get(r.action_id, r.version).await?;
                 if pinned.state != ActionState::Active {
@@ -266,9 +273,10 @@ async fn dispatch(
                         rekey_domain::DomainError::ActionDisabled,
                     ));
                 }
+                action_timeouts.push((*r, pinned.action.timeout_ms));
             }
-            let session_id = SessionId::new_random();
-            let principal_id = PrincipalId::new_random();
+            let session_id = crate::random_id(SessionId::from_bytes)?;
+            let principal_id = crate::random_id(PrincipalId::from_bytes)?;
             let vault_id = ctx.authority.status().await?.vault_id;
             let principal = Principal {
                 tenant_id: TenantId::from_bytes(*vault_id.as_bytes())
@@ -287,12 +295,15 @@ async fn dispatch(
             .map_err(BrokerError::Domain)?;
             let expires_at_ms = grant.expires_at.as_unix_ms();
             let max_uses = grant.max_uses;
-            let token = ctx.sessions.admit(grant).map_err(|err| match err {
-                CreateSessionError::Closed => {
-                    BrokerError::Authority(rekey_vault::AuthorityError::Draining)
-                }
-                CreateSessionError::Domain(err) => BrokerError::Domain(err),
-            })?;
+            let token = ctx
+                .sessions
+                .admit(grant, action_timeouts)
+                .map_err(|err| match err {
+                    CreateSessionError::Closed => {
+                        BrokerError::Authority(rekey_vault::AuthorityError::Draining)
+                    }
+                    CreateSessionError::Domain(err) => BrokerError::Domain(err),
+                })?;
             if let Err(err) = ctx
                 .authority
                 .commit_audit(session_audit(event_type::SESSION_CREATED, session_id))

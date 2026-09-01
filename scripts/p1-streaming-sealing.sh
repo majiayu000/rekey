@@ -330,14 +330,13 @@ for request_id, events in by_request.items():
 blocked = collections.Counter(
     reason for _, event, reason in rows if event == "execution.blocked"
 )
-if blocked != collections.Counter({
-    "reflected-secret": 4,
-}):
+if blocked:
     raise SystemExit(f"unexpected blocked audit reasons: {blocked}")
 indeterminate = collections.Counter(
     reason for _, event, reason in rows if event == "execution.indeterminate"
 )
 if indeterminate != collections.Counter({
+    "reflected-secret": 4,
     "response-too-large": 1,
     "upstream-transport": 1,
 }):
