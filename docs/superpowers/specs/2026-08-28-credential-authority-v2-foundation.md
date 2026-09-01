@@ -1383,7 +1383,7 @@ scripts/p0-runtime-faults.sh
 | Typed parameter policy | Action 参数 canonicalization + default deny | `cargo test -p rekey-policy` |
 | Chunk-boundary response sealing | bounded buffered response 中跨 HTTP/TLS chunk 的 secret variant 在任何 Agent response frame/body 写出前被拒绝 | `scripts/p1-streaming-sealing.sh` |
 | launchd | locked boot、受保护 unlock、central stop、locked restart | `scripts/p1-service-manager.sh`（macOS required） |
-| systemd | 同一真实 native-manager gate 已实现；required Ubuntu job 产生通过证据前只称 CI gate implemented, not run | `scripts/p1-service-manager.sh`（`ubuntu-latest` PID 1 systemd required） |
+| systemd | 同一真实 native-manager gate 已在 required Ubuntu job 通过；证据限定为测试过的 PID 1 systemd 和非 root service account 环境 | `scripts/p1-service-manager.sh`（`ubuntu-latest` PID 1 systemd required） |
 
 Chunk-boundary sealing 的 release-process gate 必须运行真实 `rekey` CLI、独立
 BrokerRuntime 进程、Admin/Agent 双 UDS、SQLite audit 和 local CA/TLS upstream。
@@ -1517,8 +1517,8 @@ reconcile orphan；unlock race 后最后事件仍为 signal lock；Admin Shutdow
 launchd/systemd locked boot、clean stop、restart 仍 Locked。cleanup 的 manager query、
 launchctl/systemctl、TERM、KILL 与 child wait 全部 bounded，只有进程退出后才 wait/remove
 unit。macOS 本机跑临时 `gui/$UID` label；普通 required `ubuntu-latest` 必须先硬断言
-PID 1 是 systemd，不满足直接失败，不能把 exit 77 转绿。在 `security-gate` required Ubuntu
-job 产生通过证据前，systemd Feature Truth 只能写 “CI gate implemented, not run”。
+PID 1 是 systemd，不满足直接失败，不能把 exit 77 转绿。`security-gate` required Ubuntu
+job 的通过证据只能升级已测试环境的 systemd Feature Truth，不能外推为所有发行版保证。
 
 任一 execution child `JoinError` 必须立即关闭 supervisor admission、停止 spawn 并让
 supervisor 返回错误；supervisor actor 自身 panic、异常或意外 clean exit 也必须由 runtime
@@ -1616,14 +1616,17 @@ resource 调用、成功/失败后的 revoke、每个 request_id 的非空且严
 token 的 exchange failure 必须是 started→authorized→terminal 且单独计数，不能以空集合
 通过。还必须验证全盘 canary，以及 GitHub typed credential 经
 backup→restore→再次真实三段执行仍可用。
-真正的 `github.com` live E2E 需要用户提供 GitHub App、installation 和 test repository；
-在取得该证据前只能声明 local black-box verified，P2.1 provider profile 不得标记
-`Field Validated`，也不得声称 live GitHub interoperability 已验证。
+真正的 `github.com` live E2E 需要用户提供 GitHub App、installation 和 test repository。
+2026-08-31 的一次性 live acceptance 已在 `majiayu000/rekey-ci-dogfood` 验证真实
+`api.github.com` exchange、resource request、revoke-before-success，以及
+`execution.started→connector.github.authorized→connector.github.token_revoked→execution.finished`
+的严格 audit chain；临时 App 和凭据随后删除。该证据允许把封闭 GitHub profile 标记为
+`Field Validated`，但只限一个 provider/host/fixture，不构成通用 Connector 或发布声明。
 
 | Work | Done when | Verification |
 | --- | --- | --- |
 | GitHub App Installation | 内置封闭 profile，不改变 Agent API；local TLS 三段链和 revoke/canary 通过 | `./scripts/p2-github-app.sh` |
-| External CredentialSource | GitHub live E2E 后再抽象；P2.1 不创建 registry/SDK | user-provided GitHub App fixture |
+| External CredentialSource | GitHub live E2E 前置证据已取得；仍须单独设计，P2.1 不创建 registry/SDK | separate implementation spec |
 | Enterprise multi-tenant | tenant 进入所有 key/query/session/audit | `cargo test -p rekey-control --test tenant_isolation` |
 | HA/DR | 明确 RPO/RTO、恢复和 split-brain 行为 | `./scripts/verify_dr_drill.sh --report artifacts/dr/latest.json` |
 
@@ -1757,9 +1760,11 @@ Review 必问：
 本规格完整到可以严格按 P0.1–P0.7 顺序实施 `Credential Authority v2 Foundation`。它已经给出状态所有者、删除范围、密码学层级、AAD、schema、IPC frame、CLI、错误、生命周期、验证命令和非目标。
 
 P0、P1 typed authorization/runtime ownership/sealing/service-manager、Linux G2 reference 和
-P2.1 local black-box 实现已经存在；systemd required-job 已由
-[security-gate run 33345442076](https://github.com/majiayu000/rekey/actions/runs/33345442076)
-的 Ubuntu P0 在 systemd PID 1 和非 root service account 下通过，GitHub live E2E 尚无通过证据。
+P2.1 local black-box 实现已经存在；当前提交 `976cd6f` 的
+[security-gate run 33362526481](https://github.com/majiayu000/rekey/actions/runs/33362526481)
+已通过 required macOS、Ubuntu PID 1 systemd/non-root service account 和有界 Linux G2-reference
+jobs。一次真实 `github.com` GitHub App E2E 也已验证 exchange、resource、revoke 和严格有序
+audit chain；证据边界仅为一个一次性 App、installation、provider 和 test repository。
 当前默认拓扑仍定位为 **G1 开发候选**，不是 G1 安全发布候选。独立密码学、IPC 边界和
 audit/failure-semantics 人工审查尚未进行。因此当前仓库不能声称 Security Baseline Complete、
 通用 G2、生产就绪或优于 1Password/OpenBao/Aperture 等完整产品。功能是否“可用”只以
