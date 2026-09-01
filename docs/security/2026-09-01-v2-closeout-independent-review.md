@@ -2,7 +2,8 @@
 
 Date: 2026-09-01
 
-Remediation commit: `3b2b3e60cd8b787678871de03a75671b8b534460`
+Remediation commits: `3b2b3e60cd8b787678871de03a75671b8b534460`,
+`28dfb95235544af4ef341e4d36b57b7ac85fa1fc`
 
 Reviewer: Codex, in a fresh closeout-review session independent of the pre-existing core implementation
 
@@ -12,6 +13,11 @@ GitHub App implementation being reviewed. The reviewer did author the
 remediations listed below. This is an independent implementation review for
 the PR record; it is not a third-party human audit and does not satisfy the
 separate M-10 GitHub `Approved` requirement.
+
+After the first remediation, the GitHub Codex integration reviewed commit
+`00d2e99e60c7324d4e8dbebb7e673e8cbd59c3f2` and reported seven additional
+findings in [PR review 5078854490](https://github.com/majiayu000/rekey/pull/10#pullrequestreview-5078854490).
+All seven were reproduced, fixed, regression-tested, and included below.
 
 ## Threat assumptions and method
 
@@ -45,8 +51,15 @@ API/dependency searches. Files inspected included:
 | R-03 | Low | M-05 | Successful broker metadata was printed as lossy text when it was not JSON, and CLI response-body writes ignored stdout errors. | Fixed in the remediation commit. Invalid success metadata returns `INVALID_FRAME`; all JSON/body writes propagate `OUTPUT_FAILED`; the malicious-broker suite includes invalid success JSON. |
 | R-04 | Low | M-05 | The forged-response test wrote header and payload separately. A correctly rejecting macOS client could close after the forged header and make the test server panic on the later write. | Fixed in the remediation commit by sending the complete small forged frame in one write; rejection assertions are unchanged. |
 | R-05 | Low | M-06 | Fake-IP refusal was documented, but the closeout gate required an executable diagnostic and a safe remediation boundary. | Fixed in the remediation commit. README now gives a `dig` check, exact-host Clash `dns.fake-ip-filter` direction, and explicitly forbids weakening IP screening or using proxy environment variables. |
+| R-06 | Medium | M-04 | Audit event clock or entropy failure returned before the fail-closed branch, so unlock could report failure while leaving the worker unlocked with the VRK resident. | Fixed in the second remediation commit. Audit event construction errors now fault the worker before returning. |
+| R-07 | Medium | M-05 | Credential revocation only found active Action versions, so a session pinned to a retired version was not invalidated when that version referenced the revoked credential. | Fixed in the second remediation commit. Every Action version is queried and Action IDs are deduplicated; the authority contract covers an old and new credential across an Action update. |
+| R-08 | Medium | M-05/M-06 | DNS resolution was outside the Action timeout, and ordinary HTTP credential preparation did not reduce the remaining upstream budget. | Fixed in the second remediation commit. One absolute Action deadline now covers preparation, DNS, and HTTP; DNS has a timeout regression test. |
+| R-09 | Medium | M-05 | A failed or timed-out Authority status request skipped shutdown proof verification, permitting a proofless stop while the vault might be unlocked. | Fixed in the second remediation commit. Proof is required unless Authority positively reports `locked`; unknown state and verification errors reject. The already-faulted terminal-audit fail-stop path preserves its sticky audit error. |
+| R-10 | Low | M-05 | The root quick-start build command did not select the CLI or broker binaries because the integration host is the only default workspace member. | Fixed in the second remediation commit. README explicitly builds `rekey-cli` and `rekey-broker`. |
+| R-11 | Low | M-05 | Unused expired sessions were never removed from the in-memory registry during compaction. | Fixed in the second remediation commit. Compaction drops monotonic-expired entries while retaining in-flight entries; a regression test covers repeated admission. |
+| R-12 | Low | M-04 | Credential rotation accepted an empty Secret and could retire the usable version in favor of an empty credential. | Fixed in the second remediation commit. Rotation applies the creation-time non-empty invariant before loading or mutating the credential; the lifecycle contract proves the version remains unchanged. |
 
-Final finding counts: Critical 0, High 0, Medium 2 fixed / 0 open, Low 3 fixed / 0 open.
+Final finding counts: Critical 0, High 0, Medium 6 fixed / 0 open, Low 6 fixed / 0 open.
 
 ## M-04 verdict: crypto and persistence
 

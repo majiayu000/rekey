@@ -260,10 +260,10 @@ rg -n 'docs/product-foundation|product-foundation/' README.md AGENTS.md CLAUDE.m
 **证据：** PR Review 或独立报告路径、findings ledger、修复 SHA、测试链接。
 
 - 完成日期：2026-09-01
-- 修复提交：`3b2b3e60cd8b787678871de03a75671b8b534460`
+- 修复提交：`3b2b3e60cd8b787678871de03a75671b8b534460`、`28dfb95235544af4ef341e4d36b57b7ac85fa1fc`
 - Reviewer：Codex 当前 closeout-review 会话；独立于既有核心实现，但不是第三方人工审计
 - Review：[v2 closeout security review](../../security/2026-09-01-v2-closeout-independent-review.md)
-- 结果：PASS；Critical 0、High 0、Medium 1 fixed / 0 open、Low 0 open
+- 结果：PASS；Critical 0、High 0、Medium 2 fixed / 0 open、Low 1 fixed / 0 open
 - 验证：`cargo test -p rekey-vault`、`scripts/p0-acceptance.sh`、`scripts/p0-durability.sh`、`cargo test --workspace`、`cargo audit`
 - 遗留限制：完整有效数据库快照回放在 G1 中仍不可检测，未误报为已实现
 
@@ -292,9 +292,9 @@ rg -n 'docs/product-foundation|product-foundation/' README.md AGENTS.md CLAUDE.m
 **证据：** Review 记录、相关测试和 CI run。
 
 - 完成日期：2026-09-01
-- 修复提交：`3b2b3e60cd8b787678871de03a75671b8b534460`
+- 修复提交：`3b2b3e60cd8b787678871de03a75671b8b534460`、`28dfb95235544af4ef341e4d36b57b7ac85fa1fc`
 - Review：[v2 closeout security review](../../security/2026-09-01-v2-closeout-independent-review.md)
-- 结果：PASS；Critical 0、High 0、Medium 1 fixed / 0 open、Low 2 fixed / 0 open
+- 结果：PASS；Critical 0、High 0、Medium 3 fixed / 0 open、Low 3 fixed / 0 open
 - 验证：`cargo test -p rekey-broker`、`cargo test -p rekey-cli --test malicious_broker`、`cargo test --workspace`；Linux G2 仍以 CI reference job 为限
 - 遗留限制：本报告不是 M-10 所需的独立 GitHub `Approved`；G2 证据不外推到默认部署、macOS、host root 或内核攻击者
 
@@ -323,9 +323,9 @@ rg -n 'docs/product-foundation|product-foundation/' README.md AGENTS.md CLAUDE.m
 **证据：** Review 记录、攻击测试、live provider 证据范围说明。
 
 - 完成日期：2026-09-01
-- 修复提交：`3b2b3e60cd8b787678871de03a75671b8b534460`
+- 修复提交：`3b2b3e60cd8b787678871de03a75671b8b534460`、`28dfb95235544af4ef341e4d36b57b7ac85fa1fc`
 - Review：[v2 closeout security review](../../security/2026-09-01-v2-closeout-independent-review.md)
-- 结果：PASS；Critical 0、High 0、Medium 0 open、Low 1 fixed / 0 open
+- 结果：PASS；Critical 0、High 0、Medium 2 fixed / 0 open、Low 1 fixed / 0 open
 - 验证：`scripts/p0-acceptance.sh`、`scripts/p1-streaming-sealing.sh`、`scripts/p2-github-app.sh`、`upstream_screened`、`reflected_secret`
 - 遗留限制：live provider 证据仍只限 Feature Truth Matrix 记录的一次 disposable GitHub App/repository；不是通用 Connector 或发布证据
 
@@ -354,8 +354,8 @@ rg -n 'docs/product-foundation|product-foundation/' README.md AGENTS.md CLAUDE.m
 
 - 完成日期：2026-09-01
 - PR：[PR #10](https://github.com/majiayu000/rekey/pull/10)
-- PR body head：`75c5edc9f59d7752cc71d3b8d8204890c235d8fe`
-- 最新 CI：[security-gate run 33513840039](https://github.com/majiayu000/rekey/actions/runs/33513840039)
+- PR body code head：`28dfb95235544af4ef341e4d36b57b7ac85fa1fc`
+- 最近一次已完成 CI：[security-gate run 33514084525](https://github.com/majiayu000/rekey/actions/runs/33514084525)
 - 结果：PASS（PR 陈述验收）；CI 结论由 M-10 在最终 SHA 单独判定
 - 遗留限制：PR 仍为 Draft，待最终 CI 后切换 Ready for review
 
@@ -386,7 +386,7 @@ rg -n 'docs/product-foundation|product-foundation/' README.md AGENTS.md CLAUDE.m
 **证据：** 改写前后 tree SHA、DCO 检查、最终 log、最新 CI。
 
 - 策略确认日期：2026-09-01
-- 合并前 tree：`4878f8bfb8b1a8dbb79b26a3e07f54319f02513b`
+- 策略确认时 tree：`4878f8bfb8b1a8dbb79b26a3e07f54319f02513b`；最终合并前 tree 由 M-10 记录
 - GitHub 设置：仓库允许 squash merge
 - 书面保留理由：3 个 merge commit 仅保留在合并后可删除的功能分支，用于 PR 开发溯源；signed squash 不会把它们带入 `main`
 - 待完成：M-10 的实际 squash SHA、DCO trailer、tree 等价性和 main CI
@@ -412,7 +412,7 @@ rg -n 'docs/product-foundation|product-foundation/' README.md AGENTS.md CLAUDE.m
 
 ### M-10 最终合并验收
 
-**状态：** `[ ]`　**优先级：** 最终门　**依赖：** M-01 至 M-09
+**状态：** `[~]`　**优先级：** 最终门　**依赖：** M-01 至 M-09
 
 **本地验收命令：**
 
@@ -880,9 +880,9 @@ git diff --check
 
 | 结论 | 状态 | 说明 |
 | --- | --- | --- |
-| v2 Foundation 核心实现 | 基本完成 | P0 主要链路达到 black-box/adversarial evidence；最终 SHA CI 正在运行 |
-| PR #10 可立即合并 | 否 | M-01～M-07、M-09 已完成；M-08 等待实际 squash，M-10 仍需最终 CI 与独立 Approval |
-| 所有规范与代码一致 | 已复核 | M-04～M-06 Review 完成；Critical/High 0，2 个 Medium 和 3 个 Low 已修复 |
+| v2 Foundation 核心实现 | 基本完成 | P0 主要链路达到 black-box/adversarial evidence；第二轮 findings 已在 `28dfb95235544af4ef341e4d36b57b7ac85fa1fc` 修复，最终文档 SHA CI 待验证 |
+| PR #10 可立即合并 | 否 | M-01～M-07、M-09 已完成；M-08 等待实际 squash，M-10 仍需最终 CI、复审线程关闭与独立 Approval |
+| 所有规范与代码一致 | 已复核 | M-04～M-06 两轮 Review 完成；Critical/High 0，6 个 Medium 和 6 个 Low 已修复 |
 | 所有文档完成 | 否 | product-foundation 边界、用户文档、运维和治理文档未闭合 |
 | 可公开 Alpha | 否 | 无正式版本、发行物、安装流程、release workflow 和 release smoke |
 | 可宣称通用 G2 | 否 | 只有有界 Linux reference；默认仍是 G1 |
