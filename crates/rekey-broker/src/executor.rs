@@ -19,6 +19,7 @@ use rekey_vault::model::AuthorizationEvidence;
 use tokio::sync::RwLock;
 use zeroize::Zeroizing;
 
+use crate::active_policy::ActivePolicy;
 use crate::audit::{
     ExecutionAuditContext, StartedAuditGuard, TerminalAuditTracker, connector_event,
     execution_blocked,
@@ -72,7 +73,7 @@ pub struct ActionExecutor {
     transport: Arc<dyn UpstreamTransport>,
     lifecycle: Arc<Lifecycle>,
     terminals: Arc<TerminalAuditTracker>,
-    policy: Arc<RwLock<Option<Arc<rekey_policy::ValidatedSnapshot>>>>,
+    policy: Arc<RwLock<Option<Arc<ActivePolicy>>>>,
 }
 
 const EFFECT_NOT_STARTED: u8 = 0;
@@ -80,13 +81,13 @@ const EFFECT_ORDINARY_HTTP: u8 = 1;
 const EFFECT_GITHUB_CONNECTOR: u8 = 2;
 
 impl ActionExecutor {
-    pub fn new(
+    pub(crate) fn new(
         authority: AuthorityHandle,
         sessions: Arc<SessionRegistry>,
         transport: Arc<dyn UpstreamTransport>,
         lifecycle: Arc<Lifecycle>,
         terminals: Arc<TerminalAuditTracker>,
-        policy: Arc<RwLock<Option<Arc<rekey_policy::ValidatedSnapshot>>>>,
+        policy: Arc<RwLock<Option<Arc<ActivePolicy>>>>,
     ) -> Self {
         Self {
             authority,
@@ -177,7 +178,7 @@ impl ActionExecutor {
             .await?;
             return Err(BrokerError::Denied(DenyReason::NoActiveSnapshot.code()));
         };
-        if snapshot.binding(request.action).is_none() {
+        if snapshot.snapshot().binding(request.action).is_none() {
             deadline::await_authority(
                 effect_deadline,
                 self.authority
@@ -186,7 +187,7 @@ impl ActionExecutor {
             .await?;
             return Err(BrokerError::Denied(DenyReason::ActionNotBound.code()));
         }
-        let (resource, parameters) = match snapshot.canonicalize(
+        let (resource, parameters) = match snapshot.snapshot().canonicalize(
             request.action,
             request.content_type.as_deref(),
             &request.extra_headers,
@@ -211,7 +212,13 @@ impl ActionExecutor {
             resource: resource.clone(),
             parameters: parameters.clone(),
         };
-        let decision = rekey_policy::evaluate(&snapshot, &authorization_request, crate::now_ts()?);
+        let now = crate::now_ts()?;
+        let decision = rekey_policy::evaluate(
+            snapshot.snapshot(),
+            &authorization_request,
+            now,
+            snapshot.is_expired(now),
+        );
         let (policy_version, policy_digest, policy_rule_id) = match &decision {
             Decision::Allow {
                 policy_version,
@@ -275,7 +282,7 @@ impl ActionExecutor {
     async fn lifecycle_policy(
         &self,
         effect_deadline: Instant,
-    ) -> Result<Option<Arc<rekey_policy::ValidatedSnapshot>>, BrokerError> {
+    ) -> Result<Option<Arc<ActivePolicy>>, BrokerError> {
         tokio::time::timeout_at(
             tokio::time::Instant::from_std(effect_deadline),
             self.policy.read(),

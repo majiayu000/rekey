@@ -94,6 +94,47 @@ async fn idle_lock_revokes_sessions_permanently() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn completed_execution_refresh_prevents_stale_idle_lock() {
+    let broker =
+        common::start_broker_with(Duration::from_millis(150), Duration::from_secs(2)).await;
+    common::unlock(&broker).await;
+    let credential_id = common::add_credential(&broker, "idle-race", b"v").await;
+    let (action_id, version) = common::create_action(&broker, &credential_id).await;
+    let token = common::create_session(&broker, &action_id, version).await;
+
+    broker.fake.push_response_delayed(
+        Ok(UpstreamResponse {
+            status: 200,
+            headers: vec![("content-type".to_owned(), "application/json".to_owned())].into(),
+            body: b"{\"ok\":true}".to_vec().into(),
+        }),
+        Duration::from_millis(250),
+    );
+    let meta = common::execute_meta(&token, &action_id, version);
+    let response = common::call(
+        &broker.agent_sock(),
+        Channel::Agent,
+        agent_msg::EXECUTE_FIXED_HTTP_ACTION,
+        meta.to_string().as_bytes(),
+        b"{}",
+    )
+    .await;
+    assert_eq!(response.ok()["upstream_status"], 200);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let status = common::call(
+        &broker.agent_sock(),
+        Channel::Agent,
+        agent_msg::AGENT_STATUS,
+        b"{}",
+        &[],
+    )
+    .await;
+    assert_eq!(status.ok()["state"], "unlocked");
+    broker.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn lock_waits_for_in_flight_execute() {
     let broker = common::start_broker().await;
     common::unlock(&broker).await;

@@ -5,7 +5,7 @@ use super::schema::SCHEMA_SQL;
 use crate::crypto::kdf::{Argon2Params, KDF_ALGORITHM_ARGON2ID, KDF_ALGORITHM_HKDF_SHA256};
 use crate::crypto::{AAD_VERSION_V1, CRYPTO_SUITE_V1, KEY_LEN, NONCE_LEN, SALT_LEN};
 use crate::error::AuthorityError;
-use crate::model::FORMAT_VERSION;
+use crate::model::{FORMAT_VERSION, VAULT_INTEGRITY_CIPHERTEXT_LEN};
 
 impl SqliteRecordStore {
     pub(super) fn verify_required_tables(&self) -> Result<(), AuthorityError> {
@@ -115,6 +115,28 @@ impl SqliteRecordStore {
             .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
         if unknown_header || unknown_wrappers || unknown_versions {
             return Err(AuthorityError::UnsupportedFormatVersion);
+        }
+        let malformed_header: bool = self
+            .conn
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM vault_header
+                    WHERE typeof(vault_id) IS NOT 'blob'
+                       OR length(vault_id) IS NOT 16
+                       OR typeof(created_at_ms) IS NOT 'integer'
+                       OR typeof(schema_digest) IS NOT 'blob'
+                       OR length(schema_digest) IS NOT 32
+                       OR typeof(integrity_nonce) IS NOT 'blob'
+                       OR length(integrity_nonce) IS NOT ?1
+                       OR typeof(integrity_ciphertext) IS NOT 'blob'
+                       OR length(integrity_ciphertext) IS NOT ?2
+                )",
+                params![NONCE_LEN, VAULT_INTEGRITY_CIPHERTEXT_LEN],
+                |row| row.get(0),
+            )
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        if malformed_header {
+            return Err(AuthorityError::StorageIntegrityFailed);
         }
         let malformed_wrappers: bool = self
             .conn

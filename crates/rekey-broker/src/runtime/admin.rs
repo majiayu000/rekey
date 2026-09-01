@@ -6,17 +6,18 @@ use rekey_vault::AuthorityError;
 use rekey_vault::command::{AuditDraft, UnlockProof};
 
 use super::BrokerCtx;
+use crate::active_policy::ActivePolicy;
 use crate::error::BrokerError;
 
 impl BrokerCtx {
     pub async fn policy_status(&self) -> PolicyStatusResponse {
         let guard = self.policy.read().await;
         match guard.as_ref() {
-            Some(snapshot) => PolicyStatusResponse {
+            Some(active) => PolicyStatusResponse {
                 active: true,
-                version: Some(snapshot.version().get()),
-                expires_at_ms: Some(snapshot.expires_at_ms()),
-                sha256_hex: Some(data_encoding::HEXLOWER.encode(&snapshot.digest())),
+                version: Some(active.snapshot().version().get()),
+                expires_at_ms: Some(active.snapshot().expires_at_ms()),
+                sha256_hex: Some(data_encoding::HEXLOWER.encode(&active.snapshot().digest())),
             },
             None => PolicyStatusResponse {
                 active: false,
@@ -37,10 +38,11 @@ impl BrokerCtx {
         self.lifecycle.reject_if_not_running()?;
         authority_until(deadline, self.authority.verify_proof(proof)).await?;
         self.lifecycle.reject_if_not_running()?;
+        let active = ActivePolicy::activate(snapshot, crate::now_ts()?)?;
         let mut guard = self.policy.write().await;
         if guard
             .as_ref()
-            .is_some_and(|current| snapshot.version() <= current.version())
+            .is_some_and(|current| active.snapshot().version() <= current.snapshot().version())
         {
             return Err(BrokerError::Denied("policy-version-not-increasing"));
         }
@@ -65,7 +67,7 @@ impl BrokerCtx {
         // The durable success audit and in-memory publication form one
         // linearized activation. Publication is infallible, so a deadline
         // crossing after the audit must not leave the audit without state.
-        *guard = Some(Arc::new(snapshot));
+        *guard = Some(Arc::new(active));
         Ok(())
     }
 }

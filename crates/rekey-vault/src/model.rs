@@ -4,6 +4,7 @@ use rekey_domain::ids::{
 };
 
 pub const FORMAT_VERSION: u32 = 5;
+pub const VAULT_INTEGRITY_CIPHERTEXT_LEN: usize = 40;
 
 #[derive(Debug, Clone)]
 pub struct VaultHeaderRecord {

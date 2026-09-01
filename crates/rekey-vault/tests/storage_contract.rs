@@ -174,6 +174,25 @@ fn opening_rejects_malformed_wrapper_crypto_fields() {
 }
 
 #[test]
+fn opening_rejects_malformed_vault_integrity_ciphertext() {
+    let vault = common::init_test_vault();
+    let db = paths::vault_db(&vault.state_dir);
+    let connection = rusqlite::Connection::open(&db).unwrap();
+    connection
+        .execute(
+            "UPDATE vault_header SET integrity_ciphertext = zeroblob(39)",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+
+    assert!(matches!(
+        SqliteRecordStore::open(&db),
+        Err(AuthorityError::StorageIntegrityFailed)
+    ));
+}
+
+#[test]
 fn opening_rejects_v4_without_migration() {
     let vault = common::init_test_vault();
     let db = paths::vault_db(&vault.state_dir);

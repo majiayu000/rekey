@@ -13,7 +13,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use rekey_domain::action::ACTION_TIMEOUT_HARD_MAX_MS;
-use rekey_policy::ValidatedSnapshot;
 use rekey_vault::AuthorityError;
 use rekey_vault::bootstrap::verify_state_dir_permissions;
 use rekey_vault::command::UnlockProof;
@@ -23,6 +22,7 @@ use tokio::net::UnixListener;
 use tokio::sync::{RwLock, mpsc, oneshot, watch};
 use tokio::task::{JoinHandle, JoinSet};
 
+use crate::active_policy::ActivePolicy;
 use crate::audit::{TerminalAuditTracker, spawn_terminal_worker};
 use crate::error::BrokerError;
 use crate::execution_supervisor::ExecutionSupervisorHandle;
@@ -77,7 +77,7 @@ pub struct BrokerCtx {
     pub sessions: Arc<SessionRegistry>,
     pub(crate) executions: ExecutionSupervisorHandle,
     pub lifecycle: Arc<Lifecycle>,
-    policy: Arc<RwLock<Option<Arc<ValidatedSnapshot>>>>,
+    policy: Arc<RwLock<Option<Arc<ActivePolicy>>>>,
     terminals: Arc<TerminalAuditTracker>,
     drain_timeout: Duration,
     shutdown_flag: AtomicBool,
@@ -147,7 +147,20 @@ impl BrokerCtx {
             return Ok(());
         };
         let status = self.authority.status().await?;
-        if status.state == "unlocked" && status.idle_for_ms >= idle_lock.as_millis() as u64 {
+        if status.state == "unlocked"
+            && status.idle_for_ms >= idle_lock.as_millis() as u64
+            && self.sessions.in_flight_total() == 0
+        {
+            // A terminal audit refreshes activity before its execution permit
+            // drops. Re-reading after observing zero in-flight prevents stale
+            // pre-completion status from immediately locking the authority.
+            let status = self.authority.status().await?;
+            if status.state != "unlocked"
+                || status.idle_for_ms < idle_lock.as_millis() as u64
+                || self.sessions.in_flight_total() != 0
+            {
+                return Ok(());
+            }
             let natural_deadline = tokio::time::Instant::now() + self.drain_timeout;
             let stop_deadline = natural_deadline + Duration::from_secs(5);
             self.run_drain_lock("idle-timeout", natural_deadline, stop_deadline)
@@ -433,7 +446,11 @@ fn validate_agent_endpoint(config: &BrokerConfig) -> Result<(), BrokerError> {
             .iter()
             .any(|uid| *uid != broker_uid)
         {
-            reject_existing_symlink_components(agent_dir)?;
+            crate::ipc::peer::verify_cross_uid_runtime_ancestors(
+                agent_dir,
+                broker_uid,
+                &config.allowed_agent_uids,
+            )?;
         }
         let state_dir = config.state_dir.canonicalize().map_err(BrokerError::Io)?;
         let agent_dir = resolved_future_path(agent_dir).map_err(BrokerError::Io)?;
@@ -441,37 +458,6 @@ fn validate_agent_endpoint(config: &BrokerConfig) -> Result<(), BrokerError> {
             return Err(BrokerError::Authority(
                 AuthorityError::InsecureStatePermissions,
             ));
-        }
-    }
-    Ok(())
-}
-
-fn reject_existing_symlink_components(path: &Path) -> Result<(), BrokerError> {
-    let absolute = if path.is_absolute() {
-        path.to_owned()
-    } else {
-        std::env::current_dir().map_err(BrokerError::Io)?.join(path)
-    };
-    let mut cursor = PathBuf::new();
-    for component in absolute.components() {
-        match component {
-            Component::Prefix(_) | Component::RootDir => cursor.push(component.as_os_str()),
-            Component::CurDir => continue,
-            Component::ParentDir => {
-                cursor.pop();
-                continue;
-            }
-            Component::Normal(_) => cursor.push(component.as_os_str()),
-        }
-        match fs::symlink_metadata(&cursor) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                return Err(BrokerError::Authority(
-                    AuthorityError::InsecureStatePermissions,
-                ));
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
-            Err(error) => return Err(BrokerError::Io(error)),
         }
     }
     Ok(())

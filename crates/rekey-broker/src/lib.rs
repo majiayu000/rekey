@@ -8,6 +8,7 @@ use rekey_domain::Timestamp;
 
 use crate::error::BrokerError;
 
+mod active_policy;
 pub mod audit;
 pub mod error;
 pub(crate) mod execution_supervisor;

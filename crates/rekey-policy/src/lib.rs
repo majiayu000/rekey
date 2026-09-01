@@ -241,8 +241,9 @@ pub fn evaluate(
     snapshot: &ValidatedSnapshot,
     request: &AuthorizationRequest,
     now: Timestamp,
+    irrevocably_expired: bool,
 ) -> Decision {
-    if snapshot.expires_at_ms <= now.as_unix_ms() {
+    if irrevocably_expired || snapshot.expires_at_ms <= now.as_unix_ms() {
         return deny(snapshot, DenyReason::SnapshotExpired, None);
     }
     let mut permit: Option<PolicyRuleId> = None;
@@ -542,7 +543,7 @@ mod tests {
             parameters,
         };
         assert!(matches!(
-            evaluate(&snapshot, &request, Timestamp::from_unix_ms(2)),
+            evaluate(&snapshot, &request, Timestamp::from_unix_ms(2), false),
             Decision::Allow { determining_rule, .. } if determining_rule == rule
         ));
     }
@@ -642,7 +643,7 @@ mod tests {
             parameters,
         };
         assert!(matches!(
-            evaluate(&snapshot, &request, Timestamp::from_unix_ms(2)),
+            evaluate(&snapshot, &request, Timestamp::from_unix_ms(2), false),
             Decision::Deny {
                 reason: DenyReason::ExplicitForbid,
                 determining_rule: Some(rule),
@@ -651,14 +652,21 @@ mod tests {
         ));
         request.principal.principal_id = PrincipalId::new_random();
         assert!(matches!(
-            evaluate(&snapshot, &request, Timestamp::from_unix_ms(2)),
+            evaluate(&snapshot, &request, Timestamp::from_unix_ms(2), false),
             Decision::Deny {
                 reason: DenyReason::NoMatchingPermit,
                 ..
             }
         ));
         assert!(matches!(
-            evaluate(&snapshot, &request, Timestamp::from_unix_ms(10_000)),
+            evaluate(&snapshot, &request, Timestamp::from_unix_ms(10_000), false,),
+            Decision::Deny {
+                reason: DenyReason::SnapshotExpired,
+                ..
+            }
+        ));
+        assert!(matches!(
+            evaluate(&snapshot, &request, Timestamp::from_unix_ms(2), true),
             Decision::Deny {
                 reason: DenyReason::SnapshotExpired,
                 ..

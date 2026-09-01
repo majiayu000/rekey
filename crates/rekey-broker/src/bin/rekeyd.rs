@@ -207,20 +207,19 @@ fn cmd_init(state_dir: Option<PathBuf>, password_stdin: bool) -> Result<(), Reke
     println!("RECOVERY KEY (shown exactly once, store it offline):");
     println!("{}", *outcome.recovery_key_display);
     if !password_stdin {
-        let tail: String = outcome
+        let tail_start = outcome
             .recovery_key_display
-            .chars()
-            .rev()
-            .take(6)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect();
-        let confirmed = rpassword::prompt_password(
-            "Type the last 6 characters of the recovery key to confirm you saved it: ",
-        )
-        .map_err(|err| usage(format!("cannot read from tty: {err}")))?;
-        if confirmed.trim() != tail {
+            .len()
+            .checked_sub(6)
+            .ok_or_else(|| usage("generated recovery key is too short"))?;
+        let tail = Zeroizing::new(outcome.recovery_key_display.as_bytes()[tail_start..].to_vec());
+        let confirmed = Zeroizing::new(
+            rpassword::prompt_password(
+                "Type the last 6 characters of the recovery key to confirm you saved it: ",
+            )
+            .map_err(|err| usage(format!("cannot read from tty: {err}")))?,
+        );
+        if confirmed.trim().as_bytes() != tail.as_slice() {
             rekey_vault::bootstrap::discard_vault_files(&state_dir)?;
             return Err(usage(
                 "recovery key confirmation mismatch; the vault from this init was discarded",
