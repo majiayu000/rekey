@@ -463,6 +463,16 @@ fn validate_agent_endpoint(config: &BrokerConfig) -> Result<(), BrokerError> {
         ));
     }
     if let Some(agent_dir) = &config.agent_runtime_dir {
+        match fs::symlink_metadata(agent_dir) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(BrokerError::Authority(
+                    AuthorityError::InsecureStatePermissions,
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(BrokerError::Io(error)),
+        }
         let state_dir = config.state_dir.canonicalize().map_err(BrokerError::Io)?;
         let agent_dir = resolved_future_path(agent_dir).map_err(BrokerError::Io)?;
         if agent_dir.starts_with(&state_dir) || state_dir.starts_with(&agent_dir) {

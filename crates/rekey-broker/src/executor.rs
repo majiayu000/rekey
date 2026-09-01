@@ -12,7 +12,6 @@ use rekey_domain::action::FixedHttpAction;
 use rekey_domain::authorization::{AuthorizationRequest, Decision, DenyReason, Principal};
 use rekey_domain::capability::ActionVersionRef;
 use rekey_domain::ids::RequestId;
-use rekey_domain::ipc::{ExecuteResponseMeta, METADATA_MAX_BYTES};
 use rekey_vault::AuthorityError;
 use rekey_vault::handle::AuthorityHandle;
 use rekey_vault::model::ActionState;
@@ -30,7 +29,13 @@ use crate::lifecycle::{BrokerPhase, Lifecycle};
 use crate::session::{ExecutionPermit, SessionRegistry};
 use crate::upstream::{UpstreamRequest, UpstreamTransport};
 
+mod deadline;
+mod http;
 mod sealing;
+use http::{
+    build_upstream, filter_response_headers, reason_static, response_metadata_fits,
+    upstream_failure_is_indeterminate, validate_request,
+};
 #[cfg(test)]
 use sealing::percent_encode;
 use sealing::{contains_secret, headers_contain_secret, sealing_needles};
@@ -73,27 +78,6 @@ pub struct ActionExecutor {
 const EFFECT_NOT_STARTED: u8 = 0;
 const EFFECT_ORDINARY_HTTP: u8 = 1;
 const EFFECT_GITHUB_CONNECTOR: u8 = 2;
-
-/// Response headers stripped unconditionally, before the allowlist applies.
-const FORBIDDEN_RESPONSE_HEADERS: &[&str] = &[
-    "authentication-info",
-    "authorization",
-    "connection",
-    "keep-alive",
-    "proxy-authenticate",
-    "proxy-authorization",
-    "proxy-connection",
-    "set-cookie",
-    "te",
-    "trailer",
-    "transfer-encoding",
-    "upgrade",
-    "www-authenticate",
-];
-
-fn header_value_is_safe(value: &str) -> bool {
-    value.len() <= 8 * 1024 && !value.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0)
-}
 
 impl ActionExecutor {
     pub fn new(
@@ -150,13 +134,12 @@ impl ActionExecutor {
         effect_deadline: Instant,
     ) -> Result<AdmittedExecution, BrokerError> {
         // Step 4: pin the immutable action version.
-        let pinned = tokio::time::timeout_at(
-            tokio::time::Instant::from_std(effect_deadline),
+        let pinned = deadline::await_authority(
+            effect_deadline,
             self.authority
                 .action_get(request.action.action_id, request.action.version),
         )
-        .await
-        .map_err(|_| BrokerError::Upstream("upstream-timeout"))??;
+        .await?;
         let action = pinned.action;
         let mut ctx = ExecutionAuditContext {
             request_id: request.request_id,
@@ -166,30 +149,41 @@ impl ActionExecutor {
             authorization: None,
         };
         if pinned.state == ActionState::Disabled || !action.enabled {
-            self.authority
-                .append_audit(execution_blocked(&ctx, "action-disabled"))
-                .await?;
+            deadline::await_authority(
+                effect_deadline,
+                self.authority
+                    .append_audit(execution_blocked(&ctx, "action-disabled")),
+            )
+            .await?;
             return Err(BrokerError::Domain(DomainError::ActionDisabled));
         }
 
         // Step 5: request validation against the pinned policy.
         if let Err(reason) = validate_request(&action, &request) {
-            self.authority
-                .append_audit(execution_blocked(&ctx, reason))
-                .await?;
+            deadline::await_authority(
+                effect_deadline,
+                self.authority.append_audit(execution_blocked(&ctx, reason)),
+            )
+            .await?;
             return Err(BrokerError::Denied(reason));
         }
 
         let Some(snapshot) = self.lifecycle_policy(effect_deadline).await? else {
-            self.authority
-                .append_audit(execution_blocked(&ctx, DenyReason::NoActiveSnapshot.code()))
-                .await?;
+            deadline::await_authority(
+                effect_deadline,
+                self.authority
+                    .append_audit(execution_blocked(&ctx, DenyReason::NoActiveSnapshot.code())),
+            )
+            .await?;
             return Err(BrokerError::Denied(DenyReason::NoActiveSnapshot.code()));
         };
         if snapshot.binding(request.action).is_none() {
-            self.authority
-                .append_audit(execution_blocked(&ctx, DenyReason::ActionNotBound.code()))
-                .await?;
+            deadline::await_authority(
+                effect_deadline,
+                self.authority
+                    .append_audit(execution_blocked(&ctx, DenyReason::ActionNotBound.code())),
+            )
+            .await?;
             return Err(BrokerError::Denied(DenyReason::ActionNotBound.code()));
         }
         let (resource, parameters) = match snapshot.canonicalize(
@@ -200,12 +194,14 @@ impl ActionExecutor {
         ) {
             Ok(value) => value,
             Err(_) => {
-                self.authority
-                    .append_audit(execution_blocked(
+                deadline::await_authority(
+                    effect_deadline,
+                    self.authority.append_audit(execution_blocked(
                         &ctx,
                         DenyReason::InvalidParameters.code(),
-                    ))
-                    .await?;
+                    )),
+                )
+                .await?;
                 return Err(BrokerError::Denied(DenyReason::InvalidParameters.code()));
             }
         };
@@ -229,9 +225,12 @@ impl ActionExecutor {
                 ..
             } => (*policy_version, *snapshot_digest, *determining_rule),
             Decision::Deny { reason, .. } => {
-                self.authority
-                    .append_audit(execution_blocked(&ctx, reason.code()))
-                    .await?;
+                deadline::await_authority(
+                    effect_deadline,
+                    self.authority
+                        .append_audit(execution_blocked(&ctx, reason.code())),
+                )
+                .await?;
                 return Err(BrokerError::Denied(reason.code()));
             }
         };
@@ -245,9 +244,12 @@ impl ActionExecutor {
             parameter_hash: parameters.canonical_hash,
         });
         if let Decision::Deny { reason, .. } = decision {
-            self.authority
-                .append_audit(execution_blocked(&ctx, reason.code()))
-                .await?;
+            deadline::await_authority(
+                effect_deadline,
+                self.authority
+                    .append_audit(execution_blocked(&ctx, reason.code())),
+            )
+            .await?;
             return Err(BrokerError::Denied(reason.code()));
         }
 
@@ -562,18 +564,6 @@ impl ActionExecutor {
     }
 }
 
-fn response_metadata_fits(status: u16, headers: &[(String, String)], body_len: usize) -> bool {
-    let Ok(body_len) = u32::try_from(body_len) else {
-        return false;
-    };
-    serde_json::to_vec(&ExecuteResponseMeta {
-        upstream_status: status,
-        headers: headers.to_vec(),
-        body_len,
-    })
-    .is_ok_and(|metadata| metadata.len() <= METADATA_MAX_BYTES as usize)
-}
-
 enum PreparedExecution {
     Opaque {
         upstream: UpstreamRequest,
@@ -680,103 +670,6 @@ fn prepare_block_reason(err: &AuthorityError) -> &'static str {
         AuthorityError::CryptoFailure => "crypto-failure",
         _ => "credential-unavailable",
     }
-}
-
-fn reason_static(reason: &str) -> &'static str {
-    match reason {
-        "private-address" => "private-address",
-        "redirect" => "redirect",
-        "upstream-timeout" => "upstream-timeout",
-        _ => "upstream-transport",
-    }
-}
-
-fn upstream_failure_is_indeterminate(err: &crate::upstream::UpstreamError) -> bool {
-    matches!(
-        err,
-        crate::upstream::UpstreamError::Timeout
-            | crate::upstream::UpstreamError::Transport
-            | crate::upstream::UpstreamError::ResponseTooLarge
-            | crate::upstream::UpstreamError::Blocked("redirect")
-    )
-}
-
-fn validate_request(
-    action: &FixedHttpAction,
-    request: &ExecuteRequest,
-) -> Result<(), &'static str> {
-    if request.body.len() > action.request_policy.max_body_bytes as usize {
-        return Err("request-too-large");
-    }
-    if let Some(ct) = &request.content_type
-        && (!header_value_is_safe(ct) || ct.is_empty())
-    {
-        return Err("invalid-content-type");
-    }
-    for (name, value) in &request.extra_headers {
-        let Ok(name) = rekey_domain::action::HeaderName::new(name) else {
-            return Err("invalid-extra-header");
-        };
-        // Anything outside the allowlist rejects the whole request; nothing
-        // is silently stripped.
-        if name.is_forbidden()
-            || name == action.auth.header_name
-            || name.as_str() == "authorization"
-            || name.as_str() == "content-type"
-            || !action.request_policy.allowed_extra_headers.contains(&name)
-        {
-            return Err("extra-header-not-allowed");
-        }
-        if !header_value_is_safe(value) {
-            return Err("invalid-extra-header");
-        }
-    }
-    Ok(())
-}
-
-fn build_upstream(
-    action: &FixedHttpAction,
-    request: &ExecuteRequest,
-    auth_value: Zeroizing<Vec<u8>>,
-) -> UpstreamRequest {
-    let mut headers = Vec::with_capacity(request.extra_headers.len() + 1);
-    if let Some(ct) = &request.content_type {
-        headers.push(("content-type".to_owned(), ct.clone()));
-    }
-    for (name, value) in &request.extra_headers {
-        headers.push((name.to_ascii_lowercase(), value.clone()));
-    }
-    UpstreamRequest {
-        host: action.origin.host().to_owned(),
-        port: action.origin.port(),
-        method: action.method,
-        path: action.exact_path.as_str().to_owned(),
-        headers,
-        auth_header: (action.auth.header_name.as_str().to_owned(), auth_value),
-        body: request.body.clone(),
-        timeout: Duration::from_millis(action.timeout_ms as u64),
-        response_max_bytes: action.response_policy.max_body_bytes,
-    }
-}
-
-fn filter_response_headers(
-    action: &FixedHttpAction,
-    headers: &[(String, String)],
-) -> Vec<(String, String)> {
-    let auth_slot = action.auth.header_name.as_str();
-    headers
-        .iter()
-        .filter(|(name, _)| {
-            let lower = name.to_ascii_lowercase();
-            if FORBIDDEN_RESPONSE_HEADERS.contains(&lower.as_str()) || lower == auth_slot {
-                return false;
-            }
-            rekey_domain::action::HeaderName::new(&lower)
-                .map(|n| action.response_policy.allowed_headers.contains(&n))
-                .unwrap_or(false)
-        })
-        .map(|(name, value)| (name.to_ascii_lowercase(), value.clone()))
-        .collect()
 }
 
 #[cfg(test)]

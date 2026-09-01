@@ -128,6 +128,10 @@ fn sealing_detects_direct_and_encoded_secret() {
         b"%67%68%70%5f%73%75%70%65%72%5f%73%65%63%72%65%74%5f%74%6f%6b%65%6e%5f%76%61%6c%75%65",
         &needles
     ));
+    assert!(contains_secret(
+        b"ghp_%73uper_%73ecret_token_value",
+        &needles
+    ));
     let mixed_percent = sealing_needles(b"+/=", b"+/=");
     assert!(contains_secret(b"prefix-%2B%2f%3D-suffix", &mixed_percent));
     assert!(!contains_secret(b"clean response body", &needles));
@@ -136,6 +140,18 @@ fn sealing_detects_direct_and_encoded_secret() {
     assert!(headers_contain_secret(&leak, &needles));
     let clean = vec![("content-type".to_owned(), "application/json".to_owned())];
     assert!(!headers_contain_secret(&clean, &needles));
+}
+
+#[tokio::test]
+async fn authority_waits_respect_the_action_deadline() {
+    let deadline = Instant::now() + Duration::from_millis(20);
+    let error = deadline::await_authority(
+        deadline,
+        std::future::pending::<Result<(), AuthorityError>>(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code(), "UPSTREAM_FAILED");
 }
 
 #[test]

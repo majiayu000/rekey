@@ -59,11 +59,39 @@ pub(super) fn contains_secret(haystack: &[u8], needles: &[Zeroizing<Vec<u8>>]) -
     if needles.iter().any(|needle| find_subslice(haystack, needle)) {
         return true;
     }
+    let decoded_haystack = percent_decode(haystack);
+    if needles
+        .iter()
+        .any(|needle| find_subslice(&decoded_haystack, needle))
+    {
+        return true;
+    }
     let normalized_haystack = normalize_percent_hex(haystack);
     needles.iter().any(|needle| {
         let normalized_needle = normalize_percent_hex(needle);
         find_subslice(&normalized_haystack, &normalized_needle)
     })
+}
+
+fn percent_decode(bytes: &[u8]) -> Zeroizing<Vec<u8>> {
+    let mut decoded = Zeroizing::new(Vec::with_capacity(bytes.len()));
+    let mut index = 0;
+    while index < bytes.len() {
+        if index + 2 < bytes.len()
+            && bytes[index] == b'%'
+            && bytes[index + 1].is_ascii_hexdigit()
+            && bytes[index + 2].is_ascii_hexdigit()
+        {
+            let high = (bytes[index + 1] as char).to_digit(16).unwrap_or(0) as u8;
+            let low = (bytes[index + 2] as char).to_digit(16).unwrap_or(0) as u8;
+            decoded.push((high << 4) | low);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    decoded
 }
 
 fn normalize_percent_hex(bytes: &[u8]) -> Zeroizing<Vec<u8>> {

@@ -1390,7 +1390,7 @@ BrokerRuntime 进程、Admin/Agent 双 UDS、SQLite audit 和 local CA/TLS upstr
 upstream 使用 HTTP/1.1 chunked encoding，并把实际注入的 Credential 之 raw、base64、
 base64url、percent-encoded variant 分隔在不同 HTTP chunk 且通过多次 TLS write 发送。
 每个 reflection 必须返回 exit 8，stdout、stderr、audit、runtime log 均无 canary；
-`execution.started` 必须恰有一个 `execution.blocked(reflected-secret)` terminal，不能有
+`execution.started` 必须恰有一个 `execution.indeterminate(reflected-secret)` terminal，不能有
 `execution.finished` 或 orphan。Clean chunked response 必须完整成功；oversize 和
 mid-stream close 必须返回 upstream/size failure，且 Agent 不得收到 partial body。
 失败路径还必须用透明单连接 Agent UDS proxy 捕获完整 broker-to-client response（不得

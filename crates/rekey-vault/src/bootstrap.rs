@@ -4,7 +4,7 @@
 use std::fs;
 use std::io::Write;
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use rekey_domain::ids::{VaultId, WrapperId};
@@ -61,10 +61,14 @@ fn dir_is_restore_empty(dir: &Path) -> Result<bool, AuthorityError> {
 
 pub fn verify_state_dir_permissions(dir: &Path) -> Result<(), AuthorityError> {
     let meta = fs::metadata(dir).map_err(AuthorityError::storage)?;
-    if meta.permissions().mode() & 0o077 != 0 {
+    if !state_dir_metadata_is_secure(&meta, unsafe { libc::geteuid() }) {
         return Err(AuthorityError::InsecureStatePermissions);
     }
     Ok(())
+}
+
+fn state_dir_metadata_is_secure(meta: &fs::Metadata, expected_uid: u32) -> bool {
+    meta.uid() == expected_uid && meta.permissions().mode() & 0o077 == 0
 }
 
 fn sqlite_sidecars(db: &Path) -> [PathBuf; 2] {
@@ -239,6 +243,7 @@ pub fn init_vault(
         fs::set_permissions(state_dir, fs::Permissions::from_mode(0o700))
             .map_err(AuthorityError::storage)?;
     }
+    verify_state_dir_permissions(state_dir)?;
 
     match init_vault_inner(state_dir, password, params) {
         Ok(outcome) => Ok(outcome),
@@ -437,6 +442,7 @@ pub fn restore_vault(
     }
     fs::set_permissions(target_state_dir, fs::Permissions::from_mode(0o700))
         .map_err(AuthorityError::storage)?;
+    verify_state_dir_permissions(target_state_dir)?;
 
     let _lock = BootstrapLock::acquire(target_state_dir)?;
     if restore_marker_is_regular(target_state_dir)? {
@@ -672,4 +678,21 @@ fn prove_all_credential_states(
         credential_state::verify(vrk.bytes(), vault_id, &record)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn state_directory_security_requires_the_broker_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let metadata = fs::metadata(dir.path()).unwrap();
+        assert!(state_dir_metadata_is_secure(&metadata, metadata.uid()));
+        assert!(!state_dir_metadata_is_secure(
+            &metadata,
+            metadata.uid().wrapping_add(1)
+        ));
+    }
 }

@@ -26,6 +26,16 @@ fn agent_runtime_rejects_parent_segments_and_symlink_aliases_into_state() {
 
     config.agent_runtime_dir = Some(outside.join("agent"));
     validate_agent_endpoint(&config).unwrap();
+
+    let target = outside.join("agent-target");
+    fs::create_dir(&target).unwrap();
+    let alias = outside.join("agent-alias");
+    std::os::unix::fs::symlink(&target, &alias).unwrap();
+    config.agent_runtime_dir = Some(alias);
+    assert_eq!(
+        validate_agent_endpoint(&config).unwrap_err().code(),
+        "INSECURE_STATE_PERMISSIONS"
+    );
 }
 
 #[tokio::test]

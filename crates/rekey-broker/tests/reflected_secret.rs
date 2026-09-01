@@ -99,6 +99,16 @@ async fn fully_percent_encoded_unreserved_bytes_are_blocked() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn selectively_percent_encoded_bytes_are_blocked() {
+    let mut body = SECRET.to_vec();
+    body.splice(4..5, format!("%{:02x}", SECRET[4]).into_bytes());
+    assert_eq!(
+        run_with_reflection(body).await,
+        "RESPONSE_SECURITY_VIOLATION"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn mixed_case_percent_encoded_reflection_blocked() {
     let broker = common::start_broker().await;
     common::unlock(&broker).await;

@@ -219,6 +219,14 @@ fn fixture_percent_encode_all(bytes: &[u8]) -> Vec<u8> {
     output
 }
 
+fn fixture_percent_encode_selective(bytes: &[u8]) -> Vec<u8> {
+    let mut output = bytes.to_vec();
+    if let Some(byte) = output.get(4).copied() {
+        output.splice(4..5, format!("%{byte:02x}").into_bytes());
+    }
+    output
+}
+
 async fn write_reflection(
     tls: &mut tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
     variant: &[u8],
@@ -246,6 +254,9 @@ async fn write_sealing_response(
         "base64url" => write_reflection(tls, BASE64URL_NOPAD.encode(secret).as_bytes()).await,
         "percent" => write_reflection(tls, &fixture_percent_encode(secret)).await,
         "percent-all" => write_reflection(tls, &fixture_percent_encode_all(secret)).await,
+        "percent-selective" => {
+            write_reflection(tls, &fixture_percent_encode_selective(secret)).await
+        }
         "clean" => {
             write_chunked_headers(tls).await?;
             write_chunk(tls, b"{\"ok\":").await?;

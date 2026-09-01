@@ -154,15 +154,19 @@ fn parse_ttl_ms(input: &str) -> Result<i64, CliError> {
     let n: i64 = value
         .parse()
         .map_err(|_| CliError::local("USAGE", format!("invalid ttl: {input}")))?;
-    match unit {
-        "s" => Ok(n * 1000),
-        "m" => Ok(n * 60 * 1000),
-        "h" => Ok(n * 3600 * 1000),
-        _ => Err(CliError::local(
-            "USAGE",
-            format!("invalid ttl unit: {input}"),
-        )),
-    }
+    let multiplier = match unit {
+        "s" => 1_000,
+        "m" => 60_000,
+        "h" => 3_600_000,
+        _ => {
+            return Err(CliError::local(
+                "USAGE",
+                format!("invalid ttl unit: {input}"),
+            ));
+        }
+    };
+    n.checked_mul(multiplier)
+        .ok_or_else(|| CliError::local("USAGE", format!("invalid ttl: {input}")))
 }
 
 /// Locates the rekeyd binary: next to the current executable first, then PATH.
@@ -609,4 +613,16 @@ pub fn backup(state_dir: &Path, output: &Path, password_stdin: bool) -> Result<(
     )?;
     print_json::<ipc::BackupReceipt>(&meta)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ttl_parser_rejects_overflow() {
+        assert_eq!(parse_ttl_ms("1h").unwrap(), 3_600_000);
+        let error = parse_ttl_ms("2305843009213693953s").unwrap_err();
+        assert_eq!(error.code, "USAGE");
+    }
 }
