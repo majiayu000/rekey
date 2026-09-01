@@ -185,8 +185,11 @@ impl BrokerCtx {
 
     /// Revoke sessions, wait in-flight executes, then zeroize the VRK.
     pub async fn drain_lock(&self, reason: &'static str) -> Result<(), BrokerError> {
-        let _owner = self.lifecycle.coordinate().await;
-        self.run_drain_lock(reason).await
+        let natural_deadline = tokio::time::Instant::now() + self.drain_timeout;
+        let stop_deadline = natural_deadline + Duration::from_secs(5);
+        let _owner = self.lifecycle.coordinate_until(stop_deadline).await?;
+        self.run_drain_lock(reason, natural_deadline, stop_deadline)
+            .await
     }
 
     /// Idle must not become a second drain owner: skip if lock/shutdown holds
@@ -199,12 +202,20 @@ impl BrokerCtx {
         };
         let status = self.authority.status().await?;
         if status.state == "unlocked" && status.idle_for_ms >= idle_lock.as_millis() as u64 {
-            self.run_drain_lock("idle-timeout").await?;
+            let natural_deadline = tokio::time::Instant::now() + self.drain_timeout;
+            let stop_deadline = natural_deadline + Duration::from_secs(5);
+            self.run_drain_lock("idle-timeout", natural_deadline, stop_deadline)
+                .await?;
         }
         Ok(())
     }
 
-    async fn run_drain_lock(&self, reason: &'static str) -> Result<(), BrokerError> {
+    async fn run_drain_lock(
+        &self,
+        reason: &'static str,
+        natural_deadline: tokio::time::Instant,
+        stop_deadline: tokio::time::Instant,
+    ) -> Result<(), BrokerError> {
         match self.lifecycle.phase() {
             BrokerPhase::ShuttingDown => {
                 return Err(BrokerError::Authority(AuthorityError::Draining));
@@ -216,8 +227,6 @@ impl BrokerCtx {
             self.lifecycle.enter_draining();
             self.sessions.close_and_revoke_all();
         }
-        let natural_deadline = tokio::time::Instant::now() + self.drain_timeout;
-        let stop_deadline = natural_deadline + Duration::from_secs(5);
         self.wait_executes_drained_until(natural_deadline, stop_deadline)
             .await?;
         let audit = self.terminals.wait_idle_until(stop_deadline).await;

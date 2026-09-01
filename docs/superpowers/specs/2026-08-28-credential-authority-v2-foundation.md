@@ -1581,7 +1581,7 @@ connector registry、provider SDK、控制面或 Agent 可调用的签名/换票
 - 无论 resource request 成功或失败，Broker 都立即调用固定
   `DELETE /installation/token`。只有 revoke 返回 204 且 resource response 通过原有
   bounded-body、redirect 和 secret-sealing 检查后，Agent 才能收到成功；revoke 失败
-  时丢弃已取得的 resource response 并以 terminal blocked 收口。
+  时丢弃已取得的 resource response 并以 `execution.indeterminate` terminal 收口。
 - JWT/exchange 网络 effect 开始后，drain cancellation 不得 drop 该 execution future；
   session in-flight permit 保持到 revoke 和 revoke audit 完成。若超过 drain deadline，
   lock/shutdown 返回 busy 并保持 fail closed，不能通过提前释放 permit 遗留远程 token。

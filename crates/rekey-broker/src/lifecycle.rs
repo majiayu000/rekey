@@ -84,6 +84,15 @@ impl Lifecycle {
         self.coordinator.lock().await
     }
 
+    pub async fn coordinate_until(
+        &self,
+        deadline: tokio::time::Instant,
+    ) -> Result<MutexGuard<'_, ()>, BrokerError> {
+        tokio::time::timeout_at(deadline, self.coordinator.lock())
+            .await
+            .map_err(|_| BrokerError::Authority(AuthorityError::AuthorityBusy))
+    }
+
     pub fn try_coordinate(&self) -> Result<MutexGuard<'_, ()>, TryLockError> {
         self.coordinator.try_lock()
     }
@@ -162,5 +171,18 @@ mod tests {
         lifecycle.enter_draining();
         lifecycle.resume_remote_effect_admission_if_running();
         assert!(!lifecycle.try_begin_remote_effect());
+    }
+
+    #[tokio::test]
+    async fn bounded_coordinator_wait_does_not_acquire_later() {
+        let lifecycle = Lifecycle::new();
+        let owner = lifecycle.coordinate().await;
+        let error = lifecycle
+            .coordinate_until(tokio::time::Instant::now() + std::time::Duration::from_millis(20))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "AUTHORITY_BUSY");
+        drop(owner);
+        assert!(lifecycle.try_coordinate().is_ok());
     }
 }

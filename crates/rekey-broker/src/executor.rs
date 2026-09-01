@@ -463,14 +463,22 @@ impl ActionExecutor {
         }
         // This durable event proves the exact non-secret connector binding
         // was authorized before JWT signing or token exchange.
-        self.authority
-            .append_audit(connector_event(
+        if let Err(err) = deadline::await_authority(
+            effect_deadline,
+            self.authority.append_audit(connector_event(
                 started.context(),
                 rekey_vault::model::event_type::GITHUB_CONNECTOR_AUTHORIZED,
                 rekey_vault::model::outcome::SUCCESS,
                 profile.commitment(),
-            ))
-            .await?;
+            )),
+        )
+        .await
+        {
+            if matches!(err, BrokerError::Upstream("upstream-timeout")) {
+                started.blocked("upstream-timeout").await?;
+            }
+            return Err(err);
+        }
 
         try_begin_remote_effect(&self.lifecycle, started).await?;
         // No await separates the gate's linearization point from this flag.
