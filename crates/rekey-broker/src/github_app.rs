@@ -302,7 +302,7 @@ impl GitHubAppCredential {
         let body = serde_json::to_vec(&scope).map_err(|_| GitHubError::ResourceScope)?;
         Ok(UpstreamResponse {
             status: 200,
-            headers: vec![("content-type".to_owned(), "application/json".to_owned())],
+            headers: vec![("content-type".to_owned(), "application/json".to_owned())].into(),
             body: Zeroizing::new(body),
         })
     }

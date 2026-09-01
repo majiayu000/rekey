@@ -46,6 +46,32 @@ fn action_definition(credential_id: rekey_domain::ids::CredentialId) -> ActionDe
 }
 
 #[tokio::test]
+async fn expired_mutation_command_never_commits_later() {
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+
+    let error = handle
+        .credential_add_before(
+            CredentialLabel::new("expired").unwrap(),
+            CredentialKind::OpaqueToken,
+            SecretInput::from_slice(b"must-not-persist"),
+            common::password_proof(),
+            Some(std::time::Instant::now()),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, AuthorityError::AuthorityBusy));
+    assert!(handle.credential_list().await.unwrap().is_empty());
+
+    handle
+        .shutdown(Some(common::password_proof()))
+        .await
+        .unwrap();
+    join.join().unwrap();
+}
+
+#[tokio::test]
 async fn unlock_and_credential_lifecycle() {
     let vault = common::init_test_vault();
     let (handle, join) = common::spawn(&vault.state_dir);

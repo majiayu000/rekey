@@ -3,7 +3,7 @@ use rekey_domain::credential::{
 };
 use rekey_domain::ids::CredentialId;
 
-use super::{VaultState, Worker, credential_audit};
+use super::{VaultState, Worker, credential_audit, ensure_mutation_current};
 use crate::command::UnlockProof;
 use crate::convert::record_to_metadata;
 use crate::crypto::aad::{AadPurpose, AadV1};
@@ -91,6 +91,7 @@ impl Worker {
         kind: CredentialKind,
         secret: SecretInput,
         proof: UnlockProof,
+        not_after: Option<std::time::Instant>,
     ) -> Result<CredentialMetadata, AuthorityError> {
         self.require_unlocked()?;
         self.verify_proof(&proof)?;
@@ -121,6 +122,7 @@ impl Worker {
             1,
             "add",
         ))?;
+        ensure_mutation_current(not_after)?;
         let result = self.store.insert_credential(&record, &version, audit);
         self.fault_on_audit_failure(result)?;
         record_to_metadata(&record)
@@ -148,6 +150,7 @@ impl Worker {
         credential_id: CredentialId,
         secret: SecretInput,
         proof: UnlockProof,
+        not_after: Option<std::time::Instant>,
     ) -> Result<CredentialMetadata, AuthorityError> {
         self.require_unlocked()?;
         self.verify_proof(&proof)?;
@@ -185,6 +188,7 @@ impl Worker {
             next,
             "rotate",
         ))?;
+        ensure_mutation_current(not_after)?;
         let result = self.store.rotate_credential(&updated, &version, now, audit);
         self.fault_on_audit_failure(result)?;
         record_to_metadata(&updated)
@@ -194,6 +198,7 @@ impl Worker {
         &mut self,
         credential_id: CredentialId,
         proof: UnlockProof,
+        not_after: Option<std::time::Instant>,
     ) -> Result<CredentialMetadata, AuthorityError> {
         self.require_unlocked()?;
         self.verify_proof(&proof)?;
@@ -209,6 +214,7 @@ impl Worker {
             updated.current_version,
             "revoke",
         ))?;
+        ensure_mutation_current(not_after)?;
         let result = self.store.revoke_credential(&updated, now, audit);
         self.fault_on_audit_failure(result)?;
         record_to_metadata(&updated)

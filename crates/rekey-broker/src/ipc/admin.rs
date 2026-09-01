@@ -4,6 +4,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use rekey_domain::action::{
     ActionName, ExactPath, FixedHttpAction, FixedMethod, HeaderCredentialUse, HeaderName,
@@ -13,6 +14,7 @@ use rekey_domain::authorization::Principal;
 use rekey_domain::capability::SessionGrant;
 use rekey_domain::ids::{ActionId, PrincipalId, SessionId, TenantId};
 use rekey_domain::ipc::{self, Channel, ProofKind, admin_msg};
+use rekey_vault::AuthorityError;
 use rekey_vault::command::{ActionDefinition, AuditDraft, UnlockProof};
 use rekey_vault::model::{ActionState, event_type, outcome};
 use rekey_vault::secret::SecretInput;
@@ -24,6 +26,8 @@ use crate::ipc::frame::{FrameIoError, IncomingFrame, read_frame, write_error, wr
 use crate::ipc::peer;
 use crate::runtime::BrokerCtx;
 use crate::session::CreateSessionError;
+
+const ADMIN_MUTATION_TIMEOUT: Duration = Duration::from_secs(25);
 
 fn proof_from(kind: ProofKind, bytes: &[u8]) -> UnlockProof {
     match kind {
@@ -168,28 +172,35 @@ async fn dispatch(
             Ok((json(&serde_json::json!({"unlocked": true}))?, Vec::new()))
         }
         admin_msg::CREDENTIAL_ADD => {
+            let deadline = admin_mutation_deadline();
             ctx.lifecycle.reject_if_not_running()?;
             let add_meta: ipc::CredentialAddMeta = meta(frame)?;
             let (kind, proof, secret) = ipc::parse_proof_and_secret_body(&frame.body)?;
+            let _owner = ctx.lifecycle.coordinate_until(deadline).await?;
+            ctx.lifecycle.reject_if_not_running()?;
             if add_meta.kind == rekey_domain::credential::CredentialKind::GitHubAppInstallation {
-                ctx.authority.verify_proof(proof_from(kind, proof)).await?;
+                authority_until(
+                    deadline,
+                    ctx.authority.verify_proof(proof_from(kind, proof)),
+                )
+                .await?;
                 crate::github_app::GitHubAppCredential::validate_profile(secret).map_err(|_| {
                     BrokerError::Domain(rekey_domain::DomainError::InvalidActionDefinition(
                         "invalid GitHub App credential profile".to_owned(),
                     ))
                 })?;
             }
-            let _owner = ctx.lifecycle.coordinate().await;
-            ctx.lifecycle.reject_if_not_running()?;
-            let metadata = ctx
-                .authority
-                .credential_add(
+            let metadata = authority_until(
+                deadline,
+                ctx.authority.credential_add_before(
                     add_meta.label,
                     add_meta.kind,
                     SecretInput::from_slice(secret),
                     proof_from(kind, proof),
-                )
-                .await?;
+                    Some(deadline.into_std()),
+                ),
+            )
+            .await?;
             Ok((json(&metadata)?, Vec::new()))
         }
         admin_msg::CREDENTIAL_LIST => {
@@ -202,39 +213,51 @@ async fn dispatch(
             ))
         }
         admin_msg::CREDENTIAL_ROTATE => {
+            let deadline = admin_mutation_deadline();
             ctx.lifecycle.reject_if_not_running()?;
             let ref_meta: ipc::CredentialRefMeta = meta(frame)?;
             let (kind, proof, secret) = ipc::parse_proof_and_secret_body(&frame.body)?;
-            let _owner = ctx.lifecycle.coordinate().await;
+            let _owner = ctx.lifecycle.coordinate_until(deadline).await?;
             ctx.lifecycle.reject_if_not_running()?;
-            let metadata = ctx
-                .authority
-                .credential_rotate(
+            let metadata = authority_until(
+                deadline,
+                ctx.authority.credential_rotate_before(
                     ref_meta.credential_id,
                     SecretInput::from_slice(secret),
                     proof_from(kind, proof),
-                )
-                .await?;
+                    Some(deadline.into_std()),
+                ),
+            )
+            .await?;
             Ok((json(&metadata)?, Vec::new()))
         }
         admin_msg::CREDENTIAL_REVOKE => {
+            let deadline = admin_mutation_deadline();
             ctx.lifecycle.reject_if_not_running()?;
             let ref_meta: ipc::CredentialRefMeta = meta(frame)?;
             let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
-            let _owner = ctx.lifecycle.coordinate().await;
+            let _owner = ctx.lifecycle.coordinate_until(deadline).await?;
             ctx.lifecycle.reject_if_not_running()?;
-            let action_ids = ctx
-                .authority
-                .action_ids_for_credential(ref_meta.credential_id)
-                .await?;
-            let metadata = ctx
-                .authority
-                .credential_revoke(ref_meta.credential_id, proof_from(kind, proof))
-                .await?;
+            let action_ids = authority_until(
+                deadline,
+                ctx.authority
+                    .action_ids_for_credential(ref_meta.credential_id),
+            )
+            .await?;
+            let metadata = authority_until(
+                deadline,
+                ctx.authority.credential_revoke_before(
+                    ref_meta.credential_id,
+                    proof_from(kind, proof),
+                    Some(deadline.into_std()),
+                ),
+            )
+            .await?;
             ctx.sessions.revoke_by_actions(&action_ids);
             Ok((json(&metadata)?, Vec::new()))
         }
         admin_msg::ACTION_CREATE | admin_msg::ACTION_UPDATE => {
+            let deadline = admin_mutation_deadline();
             let (existing, definition_meta) =
                 if frame.header.message_type == admin_msg::ACTION_UPDATE {
                     let update: ipc::ActionUpdateMeta = meta(frame)?;
@@ -244,23 +267,37 @@ async fn dispatch(
                 };
             let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
             let definition = definition_from_meta(definition_meta)?;
-            ensure_action_response_fits(&definition)?;
-            let _owner = ctx.lifecycle.coordinate().await;
+            let _owner = ctx.lifecycle.coordinate_until(deadline).await?;
             ctx.lifecycle.reject_if_not_running()?;
-            let action = ctx
-                .authority
-                .action_upsert(existing, definition, proof_from(kind, proof))
-                .await?;
+            let actions = authority_until(deadline, ctx.authority.action_list()).await?;
+            ensure_action_catalog_fits(actions, &definition)?;
+            let action = authority_until(
+                deadline,
+                ctx.authority.action_upsert_before(
+                    existing,
+                    definition,
+                    proof_from(kind, proof),
+                    Some(deadline.into_std()),
+                ),
+            )
+            .await?;
             Ok((json(&action)?, Vec::new()))
         }
         admin_msg::ACTION_DISABLE => {
+            let deadline = admin_mutation_deadline();
             let ref_meta: ipc::ActionRefMeta = meta(frame)?;
             let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
-            let _owner = ctx.lifecycle.coordinate().await;
+            let _owner = ctx.lifecycle.coordinate_until(deadline).await?;
             ctx.lifecycle.reject_if_not_running()?;
-            ctx.authority
-                .action_disable(ref_meta.action_id, proof_from(kind, proof))
-                .await?;
+            authority_until(
+                deadline,
+                ctx.authority.action_disable_before(
+                    ref_meta.action_id,
+                    proof_from(kind, proof),
+                    Some(deadline.into_std()),
+                ),
+            )
+            .await?;
             ctx.sessions.revoke_by_actions(&[ref_meta.action_id]);
             Ok((json(&serde_json::json!({"disabled": true}))?, Vec::new()))
         }
@@ -271,17 +308,24 @@ async fn dispatch(
             Ok((json(&ipc::ActionListResponse { actions })?, Vec::new()))
         }
         admin_msg::SESSION_CREATE => {
+            let deadline = admin_mutation_deadline();
             ctx.lifecycle.reject_if_not_running()?;
             let create: ipc::SessionCreateMeta = meta(frame)?;
             let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
-            ctx.authority.verify_proof(proof_from(kind, proof)).await?;
-            let _owner = ctx.lifecycle.coordinate().await;
+            let _owner = ctx.lifecycle.coordinate_until(deadline).await?;
             ctx.lifecycle.reject_if_not_running()?;
+            authority_until(
+                deadline,
+                ctx.authority.verify_proof(proof_from(kind, proof)),
+            )
+            .await?;
             // New sessions may pin only Active versions. Retired stays
             // executable for grants issued while it was Active.
             let mut action_timeouts = Vec::with_capacity(create.actions.len());
             for r in &create.actions {
-                let pinned = ctx.authority.action_get(r.action_id, r.version).await?;
+                let pinned =
+                    authority_until(deadline, ctx.authority.action_get(r.action_id, r.version))
+                        .await?;
                 if pinned.state != ActionState::Active {
                     return Err(BrokerError::Domain(
                         rekey_domain::DomainError::ActionDisabled,
@@ -291,7 +335,9 @@ async fn dispatch(
             }
             let session_id = crate::random_id(SessionId::from_random_bytes)?;
             let principal_id = crate::random_id(PrincipalId::from_random_bytes)?;
-            let vault_id = ctx.authority.status().await?.vault_id;
+            let vault_id = authority_until(deadline, ctx.authority.status())
+                .await?
+                .vault_id;
             let principal = Principal {
                 tenant_id: TenantId::from_bytes(*vault_id.as_bytes())
                     .map_err(BrokerError::Domain)?,
@@ -307,6 +353,7 @@ async fn dispatch(
                 create.max_uses,
             )
             .map_err(BrokerError::Domain)?;
+            reject_if_deadline_elapsed(deadline)?;
             let expires_at_ms = grant.expires_at.as_unix_ms();
             let max_uses = grant.max_uses;
             let token = ctx
@@ -337,10 +384,11 @@ async fn dispatch(
             Ok((json(&response)?, Vec::new()))
         }
         admin_msg::POLICY_ACTIVATE => {
+            let deadline = admin_mutation_deadline();
             let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
             let snapshot =
                 rekey_policy::parse_and_validate_snapshot(&frame.metadata, crate::now_ts()?)?;
-            ctx.activate_policy(snapshot, proof_from(kind, proof))
+            ctx.activate_policy_until(snapshot, proof_from(kind, proof), deadline)
                 .await?;
             Ok((json(&ctx.policy_status().await)?, Vec::new()))
         }
@@ -352,12 +400,18 @@ async fn dispatch(
             Ok((json(&response)?, Vec::new()))
         }
         admin_msg::SESSION_REVOKE => {
+            let deadline = admin_mutation_deadline();
             ctx.lifecycle.reject_if_not_running()?;
             let revoke: ipc::SessionRevokeMeta = meta(frame)?;
             let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
-            ctx.authority.verify_proof(proof_from(kind, proof)).await?;
-            let _owner = ctx.lifecycle.coordinate().await;
+            let _owner = ctx.lifecycle.coordinate_until(deadline).await?;
             ctx.lifecycle.reject_if_not_running()?;
+            authority_until(
+                deadline,
+                ctx.authority.verify_proof(proof_from(kind, proof)),
+            )
+            .await?;
+            reject_if_deadline_elapsed(deadline)?;
             let existed = ctx.sessions.revoke(revoke.session_id);
             if let Err(err) = ctx
                 .authority
@@ -376,6 +430,8 @@ async fn dispatch(
             ctx.lifecycle.reject_if_not_running()?;
             let backup: ipc::BackupMeta = meta(frame)?;
             let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
+            let _owner = ctx.lifecycle.coordinate().await;
+            ctx.lifecycle.reject_if_not_running()?;
             let info = ctx
                 .authority
                 .backup(PathBuf::from(&backup.output_path), proof_from(kind, proof))
@@ -409,6 +465,27 @@ async fn dispatch(
             rekey_domain::ipc::FrameError::InvalidField,
         )),
     }
+}
+
+fn admin_mutation_deadline() -> tokio::time::Instant {
+    tokio::time::Instant::now() + ADMIN_MUTATION_TIMEOUT
+}
+
+async fn authority_until<T>(
+    deadline: tokio::time::Instant,
+    operation: impl std::future::Future<Output = Result<T, AuthorityError>>,
+) -> Result<T, BrokerError> {
+    tokio::time::timeout_at(deadline, operation)
+        .await
+        .map_err(|_| BrokerError::Authority(AuthorityError::AuthorityBusy))?
+        .map_err(BrokerError::Authority)
+}
+
+fn reject_if_deadline_elapsed(deadline: tokio::time::Instant) -> Result<(), BrokerError> {
+    if tokio::time::Instant::now() >= deadline {
+        return Err(BrokerError::Authority(AuthorityError::AuthorityBusy));
+    }
+    Ok(())
 }
 
 fn session_audit(event_type: &'static str, session_id: SessionId) -> AuditDraft {
@@ -460,7 +537,10 @@ fn definition_from_meta(meta: ipc::ActionCreateMeta) -> Result<ActionDefinition,
     })
 }
 
-fn ensure_action_response_fits(definition: &ActionDefinition) -> Result<(), BrokerError> {
+fn ensure_action_catalog_fits(
+    mut actions: Vec<FixedHttpAction>,
+    definition: &ActionDefinition,
+) -> Result<(), BrokerError> {
     let probe = FixedHttpAction {
         id: ActionId::from_random_bytes([0xff; 16]),
         name: definition.name.clone(),
@@ -475,7 +555,8 @@ fn ensure_action_response_fits(definition: &ActionDefinition) -> Result<(), Brok
         request_policy: definition.request_policy.clone(),
         response_policy: definition.response_policy.clone(),
     };
-    json(&probe).map(|_| ())
+    actions.push(probe);
+    json(&ipc::ActionListResponse { actions }).map(|_| ())
 }
 
 #[cfg(test)]
@@ -511,7 +592,51 @@ mod tests {
         };
 
         assert!(matches!(
-            ensure_action_response_fits(&definition),
+            ensure_action_catalog_fits(Vec::new(), &definition),
+            Err(BrokerError::Frame(ipc::FrameError::SectionTooLarge))
+        ));
+    }
+
+    #[test]
+    fn aggregate_action_catalog_is_rejected_before_upsert() {
+        let definition = ActionDefinition {
+            name: ActionName::new("catalog-entry").unwrap(),
+            credential_id: CredentialId::from_random_bytes([1; 16]),
+            origin: HttpsOrigin::parse("https://example.com").unwrap(),
+            method: FixedMethod::Get,
+            exact_path: ExactPath::parse("/v1/action").unwrap(),
+            auth: HeaderCredentialUse::new(
+                HeaderName::new("x-api-key").unwrap(),
+                HeaderPrefix::new("Bearer ").unwrap(),
+            )
+            .unwrap(),
+            timeout_ms: 1_000,
+            request_policy: RequestPolicy {
+                max_body_bytes: 1_024,
+                allowed_extra_headers: Default::default(),
+            },
+            response_policy: ResponsePolicy {
+                max_body_bytes: 1_024,
+                allowed_headers: Default::default(),
+            },
+        };
+        let existing = FixedHttpAction {
+            id: ActionId::from_random_bytes([2; 16]),
+            name: definition.name.clone(),
+            version: 1,
+            enabled: true,
+            credential_id: definition.credential_id,
+            origin: definition.origin.clone(),
+            method: definition.method,
+            exact_path: definition.exact_path.clone(),
+            auth: definition.auth.clone(),
+            timeout_ms: definition.timeout_ms,
+            request_policy: definition.request_policy.clone(),
+            response_policy: definition.response_policy.clone(),
+        };
+
+        assert!(matches!(
+            ensure_action_catalog_fits(vec![existing; 256], &definition),
             Err(BrokerError::Frame(ipc::FrameError::SectionTooLarge))
         ));
     }

@@ -148,22 +148,26 @@ fn read_stdin_secret_line() -> Result<SecretInput, RekeydError> {
     read_bounded_stdin_line(std::io::stdin())
 }
 
-fn read_bounded_stdin_line(reader: impl Read) -> Result<SecretInput, RekeydError> {
+fn read_bounded_stdin_line(mut reader: impl Read) -> Result<SecretInput, RekeydError> {
     let capacity = ADMIN_SECRET_BODY_MAX_BYTES as usize + 1;
     let mut buf = Zeroizing::new(Vec::with_capacity(capacity));
-    reader
-        .take(capacity as u64)
-        .read_to_end(&mut buf)
-        .map_err(|err| usage(format!("failed to read stdin: {err}")))?;
-    debug_assert_eq!(buf.capacity(), capacity);
-    if buf.len() > ADMIN_SECRET_BODY_MAX_BYTES as usize {
-        return Err(usage("stdin secret exceeds 65536 bytes"));
+    let mut byte = Zeroizing::new([0u8; 1]);
+    loop {
+        match reader.read(&mut *byte) {
+            Ok(0) => break,
+            Ok(_) if byte[0] == b'\n' => break,
+            Ok(_) => {
+                if buf.len() == ADMIN_SECRET_BODY_MAX_BYTES as usize {
+                    return Err(usage("stdin secret exceeds 65536 bytes"));
+                }
+                buf.push(byte[0]);
+                byte[0] = 0;
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(err) => return Err(usage(format!("failed to read stdin: {err}"))),
+        }
     }
-    let line_len = buf
-        .iter()
-        .position(|byte| *byte == b'\n')
-        .unwrap_or(buf.len());
-    buf.truncate(line_len);
+    debug_assert_eq!(buf.capacity(), capacity);
     if buf.last() == Some(&b'\r') {
         buf.pop();
     }
@@ -361,5 +365,34 @@ mod tests {
             read_bounded_stdin_line(input),
             Err(RekeydError::Usage(_))
         ));
+    }
+
+    #[test]
+    fn delegated_secret_reader_stops_at_first_newline() {
+        struct NoReadPastNewline {
+            bytes: std::io::Cursor<Vec<u8>>,
+            newline_seen: bool,
+        }
+
+        impl Read for NoReadPastNewline {
+            fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+                assert!(
+                    !self.newline_seen,
+                    "reader was polled after the first newline"
+                );
+                let read = self.bytes.read(output)?;
+                if output[..read].contains(&b'\n') {
+                    self.newline_seen = true;
+                }
+                Ok(read)
+            }
+        }
+
+        let input = NoReadPastNewline {
+            bytes: std::io::Cursor::new(b"complete\npipe-remains-open".to_vec()),
+            newline_seen: false,
+        };
+        let secret = read_bounded_stdin_line(input).unwrap();
+        assert_eq!(secret.expose(), b"complete");
     }
 }

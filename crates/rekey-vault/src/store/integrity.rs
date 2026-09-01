@@ -1,13 +1,14 @@
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use super::SqliteRecordStore;
+use super::schema::SCHEMA_SQL;
 use crate::crypto::kdf::{Argon2Params, KDF_ALGORITHM_ARGON2ID, KDF_ALGORITHM_HKDF_SHA256};
 use crate::crypto::{AAD_VERSION_V1, CRYPTO_SUITE_V1, KEY_LEN, NONCE_LEN, SALT_LEN};
 use crate::error::AuthorityError;
 use crate::model::FORMAT_VERSION;
 
 impl SqliteRecordStore {
-    pub(super) fn verify_required_layout(&self) -> Result<(), AuthorityError> {
+    pub(super) fn verify_required_tables(&self) -> Result<(), AuthorityError> {
         let table_count: u8 = self
             .conn
             .query_row(
@@ -21,6 +22,21 @@ impl SqliteRecordStore {
             )
             .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
         if table_count != 6 {
+            return Err(AuthorityError::UnsupportedVaultLayout);
+        }
+        Ok(())
+    }
+
+    pub(super) fn verify_required_layout(&self) -> Result<(), AuthorityError> {
+        let expected = Connection::open_in_memory()
+            .and_then(|conn| {
+                conn.execute_batch(SCHEMA_SQL)?;
+                schema_layout(&conn)
+            })
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        let actual =
+            schema_layout(&self.conn).map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        if actual != expected {
             return Err(AuthorityError::UnsupportedVaultLayout);
         }
         Ok(())
@@ -196,4 +212,17 @@ impl SqliteRecordStore {
         }
         Ok(())
     }
+}
+
+fn schema_layout(conn: &Connection) -> rusqlite::Result<Vec<(String, String, String, String)>> {
+    let mut statement = conn.prepare(
+        "SELECT type, name, tbl_name, sql FROM sqlite_schema
+         WHERE sql IS NOT NULL AND name NOT GLOB 'sqlite_*'
+         ORDER BY type, name",
+    )?;
+    statement
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })?
+        .collect()
 }

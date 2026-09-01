@@ -7,7 +7,7 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use rekey_domain::action::FixedMethod;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -27,8 +27,35 @@ pub struct UpstreamRequest {
 
 pub struct UpstreamResponse {
     pub status: u16,
-    pub headers: Vec<(String, String)>,
+    pub headers: ResponseHeaders,
     pub body: Zeroizing<Vec<u8>>,
+}
+
+/// Rekey-owned copies of upstream headers remain wipe-on-drop until response
+/// sealing has proved that an allowlisted value is safe to materialize.
+pub struct ResponseHeaders(Vec<(String, String)>);
+
+impl From<Vec<(String, String)>> for ResponseHeaders {
+    fn from(headers: Vec<(String, String)>) -> Self {
+        Self(headers)
+    }
+}
+
+impl std::ops::Deref for ResponseHeaders {
+    type Target = [(String, String)];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Drop for ResponseHeaders {
+    fn drop(&mut self) {
+        for (name, value) in &mut self.0 {
+            name.zeroize();
+            value.zeroize();
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -49,6 +76,16 @@ pub type UpstreamFuture<'a> =
 
 pub trait UpstreamTransport: Send + Sync {
     fn send(&self, request: UpstreamRequest) -> UpstreamFuture<'_>;
+}
+
+/// Validate the complete request, including credential bytes, before the
+/// executor crosses the remote-effect admission gate.
+pub fn outbound_headers_are_valid(request: &UpstreamRequest) -> bool {
+    request.headers.iter().all(|(name, value)| {
+        reqwest::header::HeaderName::from_bytes(name.as_bytes()).is_ok()
+            && reqwest::header::HeaderValue::from_bytes(value.as_bytes()).is_ok()
+    }) && reqwest::header::HeaderName::from_bytes(request.auth_header.0.as_bytes()).is_ok()
+        && reqwest::header::HeaderValue::from_bytes(&request.auth_header.1).is_ok()
 }
 
 fn second_segment_matches_prefix(segment: u16, network: u16, prefix_len: u8) -> bool {
@@ -289,7 +326,7 @@ pub async fn send_screened(
     if (300..400).contains(&status) {
         return Err(UpstreamError::Blocked("redirect"));
     }
-    let headers = response
+    let headers: ResponseHeaders = response
         .headers()
         .iter()
         .filter_map(|(k, v)| {
@@ -297,7 +334,8 @@ pub async fn send_screened(
                 .ok()
                 .map(|value| (k.as_str().to_owned(), value.to_owned()))
         })
-        .collect();
+        .collect::<Vec<_>>()
+        .into();
 
     let limit = request.response_max_bytes as usize;
     // Product actions cap this at 4 MiB. Reserving the full bounded response

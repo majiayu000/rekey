@@ -118,11 +118,24 @@ impl AuthorityHandle {
         secret: SecretInput,
         proof: UnlockProof,
     ) -> Result<CredentialMetadata, AuthorityError> {
+        self.credential_add_before(label, kind, secret, proof, None)
+            .await
+    }
+
+    pub async fn credential_add_before(
+        &self,
+        label: CredentialLabel,
+        kind: CredentialKind,
+        secret: SecretInput,
+        proof: UnlockProof,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<CredentialMetadata, AuthorityError> {
         call!(self, |reply| AuthorityCommand::CredentialAdd {
             label,
             kind,
             secret,
             proof,
+            not_after,
             reply
         })
     }
@@ -137,10 +150,22 @@ impl AuthorityHandle {
         secret: SecretInput,
         proof: UnlockProof,
     ) -> Result<CredentialMetadata, AuthorityError> {
+        self.credential_rotate_before(credential_id, secret, proof, None)
+            .await
+    }
+
+    pub async fn credential_rotate_before(
+        &self,
+        credential_id: CredentialId,
+        secret: SecretInput,
+        proof: UnlockProof,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<CredentialMetadata, AuthorityError> {
         call!(self, |reply| AuthorityCommand::CredentialRotate {
             credential_id,
             secret,
             proof,
+            not_after,
             reply
         })
     }
@@ -150,9 +175,20 @@ impl AuthorityHandle {
         credential_id: CredentialId,
         proof: UnlockProof,
     ) -> Result<CredentialMetadata, AuthorityError> {
+        self.credential_revoke_before(credential_id, proof, None)
+            .await
+    }
+
+    pub async fn credential_revoke_before(
+        &self,
+        credential_id: CredentialId,
+        proof: UnlockProof,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<CredentialMetadata, AuthorityError> {
         call!(self, |reply| AuthorityCommand::CredentialRevoke {
             credential_id,
             proof,
+            not_after,
             reply
         })
     }
@@ -163,10 +199,22 @@ impl AuthorityHandle {
         definition: ActionDefinition,
         proof: UnlockProof,
     ) -> Result<FixedHttpAction, AuthorityError> {
+        self.action_upsert_before(existing, definition, proof, None)
+            .await
+    }
+
+    pub async fn action_upsert_before(
+        &self,
+        existing: Option<ActionId>,
+        definition: ActionDefinition,
+        proof: UnlockProof,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<FixedHttpAction, AuthorityError> {
         call!(self, |reply| AuthorityCommand::ActionUpsert {
             existing,
             definition: Box::new(definition),
             proof,
+            not_after,
             reply
         })
     }
@@ -176,9 +224,19 @@ impl AuthorityHandle {
         action_id: ActionId,
         proof: UnlockProof,
     ) -> Result<(), AuthorityError> {
+        self.action_disable_before(action_id, proof, None).await
+    }
+
+    pub async fn action_disable_before(
+        &self,
+        action_id: ActionId,
+        proof: UnlockProof,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<(), AuthorityError> {
         call!(self, |reply| AuthorityCommand::ActionDisable {
             action_id,
             proof,
+            not_after,
             reply
         })
     }

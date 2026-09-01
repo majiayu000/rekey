@@ -24,7 +24,10 @@ const FORBIDDEN_RESPONSE_HEADERS: &[&str] = &[
 ];
 
 fn header_value_is_safe(value: &str) -> bool {
-    value.len() <= 8 * 1024 && !value.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0)
+    value.len() <= 8 * 1024
+        && value
+            .bytes()
+            .all(|byte| matches!(byte, b'\t' | 0x20..=0x7e))
 }
 
 pub(super) fn response_metadata_fits(

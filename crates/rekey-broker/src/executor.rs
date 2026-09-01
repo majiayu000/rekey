@@ -27,7 +27,7 @@ use crate::error::BrokerError;
 use crate::github_app::{GitHubAppCredential, GitHubEffect, GitHubError};
 use crate::lifecycle::{BrokerPhase, Lifecycle};
 use crate::session::{ExecutionPermit, SessionRegistry};
-use crate::upstream::{UpstreamRequest, UpstreamTransport};
+use crate::upstream::{UpstreamRequest, UpstreamTransport, outbound_headers_are_valid};
 
 mod deadline;
 mod http;
@@ -380,6 +380,12 @@ impl ActionExecutor {
         if upstream_request.timeout.is_zero() {
             started.submit_blocked("upstream-timeout");
             return Err(BrokerError::Upstream("upstream-timeout"));
+        }
+        if !outbound_headers_are_valid(&upstream_request) {
+            started
+                .blocked_until(effect_deadline, "invalid-upstream-header")
+                .await?;
+            return Err(BrokerError::Denied("invalid-upstream-header"));
         }
         try_begin_remote_effect(&self.lifecycle, started, effect_deadline).await?;
         // No await separates the gate from this marker. Cancellation after

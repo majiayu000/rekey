@@ -207,9 +207,14 @@ impl Worker {
                 kind,
                 secret,
                 proof,
+                not_after,
                 reply,
             } => {
-                let result = self.credential_add(label, kind, secret, proof);
+                let result = if mutation_expired(not_after) {
+                    Err(AuthorityError::AuthorityBusy)
+                } else {
+                    self.credential_add(label, kind, secret, proof, not_after)
+                };
                 self.touch_if_ok(&result);
                 let _ = reply.send(result);
             }
@@ -222,18 +227,28 @@ impl Worker {
                 credential_id,
                 secret,
                 proof,
+                not_after,
                 reply,
             } => {
-                let result = self.credential_rotate(credential_id, secret, proof);
+                let result = if mutation_expired(not_after) {
+                    Err(AuthorityError::AuthorityBusy)
+                } else {
+                    self.credential_rotate(credential_id, secret, proof, not_after)
+                };
                 self.touch_if_ok(&result);
                 let _ = reply.send(result);
             }
             AuthorityCommand::CredentialRevoke {
                 credential_id,
                 proof,
+                not_after,
                 reply,
             } => {
-                let result = self.credential_revoke(credential_id, proof);
+                let result = if mutation_expired(not_after) {
+                    Err(AuthorityError::AuthorityBusy)
+                } else {
+                    self.credential_revoke(credential_id, proof, not_after)
+                };
                 self.touch_if_ok(&result);
                 let _ = reply.send(result);
             }
@@ -241,18 +256,28 @@ impl Worker {
                 existing,
                 definition,
                 proof,
+                not_after,
                 reply,
             } => {
-                let result = self.action_upsert(existing, *definition, proof);
+                let result = if mutation_expired(not_after) {
+                    Err(AuthorityError::AuthorityBusy)
+                } else {
+                    self.action_upsert(existing, *definition, proof, not_after)
+                };
                 self.touch_if_ok(&result);
                 let _ = reply.send(result);
             }
             AuthorityCommand::ActionDisable {
                 action_id,
                 proof,
+                not_after,
                 reply,
             } => {
-                let result = self.action_disable(action_id, proof);
+                let result = if mutation_expired(not_after) {
+                    Err(AuthorityError::AuthorityBusy)
+                } else {
+                    self.action_disable(action_id, proof, not_after)
+                };
                 self.touch_if_ok(&result);
                 let _ = reply.send(result);
             }
@@ -507,6 +532,7 @@ impl Worker {
         existing: Option<ActionId>,
         definition: ActionDefinition,
         proof: UnlockProof,
+        not_after: Option<Instant>,
     ) -> Result<FixedHttpAction, AuthorityError> {
         self.require_unlocked()?;
         self.verify_proof(&proof)?;
@@ -553,6 +579,7 @@ impl Worker {
         draft.action_id = Some(action_id);
         draft.action_version = Some(version);
         let audit = self.audit_event_or_fault(draft)?;
+        ensure_mutation_current(not_after)?;
         let result = self.store.insert_action(&record, audit);
         self.fault_on_audit_failure(result)?;
         Ok(action)
@@ -562,12 +589,14 @@ impl Worker {
         &mut self,
         action_id: ActionId,
         proof: UnlockProof,
+        not_after: Option<Instant>,
     ) -> Result<(), AuthorityError> {
         self.require_unlocked()?;
         self.verify_proof(&proof)?;
         let mut draft = unlock_audit(event_type::ACTION_DISABLED, outcome::SUCCESS, "disable");
         draft.action_id = Some(action_id);
         let audit = self.audit_event_or_fault(draft)?;
+        ensure_mutation_current(not_after)?;
         let result = self.store.disable_action(action_id, audit);
         self.fault_on_audit_failure(result)
     }
@@ -593,6 +622,17 @@ impl Worker {
         })();
         self.fault_on_integrity(result)
     }
+}
+
+fn mutation_expired(not_after: Option<Instant>) -> bool {
+    not_after.is_some_and(|deadline| Instant::now() >= deadline)
+}
+
+fn ensure_mutation_current(not_after: Option<Instant>) -> Result<(), AuthorityError> {
+    if mutation_expired(not_after) {
+        return Err(AuthorityError::AuthorityBusy);
+    }
+    Ok(())
 }
 
 fn unlock_audit(event_type: &'static str, outcome: &'static str, reason: &str) -> AuditDraft {

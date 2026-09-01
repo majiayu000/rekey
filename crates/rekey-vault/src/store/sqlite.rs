@@ -70,9 +70,10 @@ impl SqliteRecordStore {
             path: path.to_owned(),
         };
         store.quick_check()?;
+        store.verify_required_tables()?;
+        store.validate_format_discriminators()?;
         store.verify_required_layout()?;
         store.foreign_key_check()?;
-        store.validate_format_discriminators()?;
         store.validate_credential_version_invariants()?;
         let header = store.load_header()?;
         if header.schema_digest != schema_digest() {

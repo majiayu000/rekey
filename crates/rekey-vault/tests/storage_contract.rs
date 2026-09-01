@@ -305,6 +305,22 @@ fn empty_or_incomplete_database_is_unsupported_layout() {
 }
 
 #[test]
+fn opening_rejects_missing_required_index() {
+    let vault = common::init_test_vault();
+    let db = paths::vault_db(&vault.state_dir);
+    let connection = rusqlite::Connection::open(&db).unwrap();
+    connection
+        .execute_batch("DROP INDEX one_execution_terminal_per_request;")
+        .unwrap();
+    drop(connection);
+
+    assert!(matches!(
+        SqliteRecordStore::open(&db),
+        Err(AuthorityError::UnsupportedVaultLayout)
+    ));
+}
+
+#[test]
 fn opening_rejects_missing_key_wrappers() {
     let vault = common::init_test_vault();
     let db = paths::vault_db(&vault.state_dir);

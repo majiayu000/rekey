@@ -18,7 +18,7 @@ async fn run_with_reflection(body: Vec<u8>) -> String {
 
     broker.fake.push_response(Ok(UpstreamResponse {
         status: 200,
-        headers: vec![("content-type".to_owned(), "text/plain".to_owned())],
+        headers: vec![("content-type".to_owned(), "text/plain".to_owned())].into(),
         body: body.into(),
     }));
 
@@ -117,7 +117,7 @@ async fn mixed_case_percent_encoded_reflection_blocked() {
     let token = common::create_session(&broker, &action_id, version).await;
     broker.fake.push_response(Ok(UpstreamResponse {
         status: 200,
-        headers: vec![("content-type".to_owned(), "text/plain".to_owned())],
+        headers: vec![("content-type".to_owned(), "text/plain".to_owned())].into(),
         body: b"leaked=%2B%2f%3D".to_vec().into(),
     }));
 
@@ -151,7 +151,8 @@ async fn content_type_header_reflection_blocked() {
         headers: vec![(
             "content-type".to_owned(),
             String::from_utf8(content_type).unwrap(),
-        )],
+        )]
+        .into(),
         body: b"{\"ok\":true}".to_vec().into(),
     }));
 
@@ -181,7 +182,8 @@ async fn content_type_base64_header_reflection_blocked() {
         headers: vec![(
             "content-type".to_owned(),
             format!("application/json; x={}", BASE64.encode(SECRET)),
-        )],
+        )]
+        .into(),
         body: b"{\"ok\":true}".to_vec().into(),
     }));
 

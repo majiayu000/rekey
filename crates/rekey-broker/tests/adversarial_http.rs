@@ -68,6 +68,7 @@ async fn auth_and_forbidden_extra_headers_rejected() {
         (" x-request-id ", "ambiguous"),
         ("X-Request-Id", "noncanonical"),
         ("x-request-id", "bad\r\ninjected: 1"),
+        ("x-request-id", "café"),
     ] {
         let mut meta = common::execute_meta(&token, &action_id, version);
         meta["extra_headers"] = serde_json::json!([[name, value]]);
@@ -75,9 +76,38 @@ async fn auth_and_forbidden_extra_headers_rejected() {
         let code = response.err_code();
         assert_eq!(code, "REQUEST_DENIED", "header {name} must be rejected");
     }
+    let mut meta = common::execute_meta(&token, &action_id, version);
+    meta["content_type"] = serde_json::json!("text/plain; title=café");
+    let response = execute_with_meta(&broker, meta, b"{}").await;
+    assert_eq!(response.err_code(), "REQUEST_DENIED");
     // Nothing reached the upstream.
     assert!(broker.fake.take_requests().is_empty());
     broker.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn malformed_credential_header_is_blocked_before_upstream() {
+    let broker = common::start_broker().await;
+    common::unlock(&broker).await;
+    let credential_id = common::add_credential(&broker, "malformed", b"token\r\ninjected: 1").await;
+    let (action_id, version) = common::create_action(&broker, &credential_id).await;
+    let token = common::create_session(&broker, &action_id, version).await;
+
+    let meta = common::execute_meta(&token, &action_id, version);
+    let response = execute_with_meta(&broker, meta, b"{}").await;
+    assert_eq!(response.err_code(), "REQUEST_DENIED");
+    assert!(broker.fake.take_requests().is_empty());
+
+    let state_dir = broker.state_dir.clone();
+    let _dir = broker.shutdown_keep_dir().await;
+    let store = SqliteRecordStore::open(&rekey_vault::paths::vault_db(&state_dir)).unwrap();
+    let event_types: Vec<_> = store
+        .audit_execution_log()
+        .unwrap()
+        .into_iter()
+        .map(|(_, event_type)| event_type)
+        .collect();
+    assert_eq!(event_types, vec!["execution.started", "execution.blocked"]);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -149,7 +179,8 @@ async fn forbidden_response_headers_are_stripped() {
             ("set-cookie".to_owned(), "sid=secret".to_owned()),
             ("www-authenticate".to_owned(), "Basic realm=x".to_owned()),
             ("x-internal".to_owned(), "not-allowlisted".to_owned()),
-        ],
+        ]
+        .into(),
         body: b"{}".to_vec().into(),
     }));
     let meta = common::execute_meta(&token, &action_id, version);

@@ -104,7 +104,7 @@ async fn lock_waits_for_in_flight_execute() {
     broker.fake.push_response_delayed(
         Ok(UpstreamResponse {
             status: 200,
-            headers: vec![("content-type".to_owned(), "application/json".to_owned())],
+            headers: vec![("content-type".to_owned(), "application/json".to_owned())].into(),
             body: b"{\"ok\":true}".to_vec().into(),
         }),
         Duration::from_millis(150),
@@ -141,7 +141,7 @@ async fn client_disconnect_does_not_cancel_supervisor_owned_execution() {
     broker.fake.push_response_delayed(
         Ok(UpstreamResponse {
             status: 200,
-            headers: vec![("content-type".to_owned(), "application/json".to_owned())],
+            headers: vec![("content-type".to_owned(), "application/json".to_owned())].into(),
             body: b"{\"ok\":true}".to_vec().into(),
         }),
         Duration::from_millis(150),
@@ -196,7 +196,7 @@ async fn shutdown_waits_for_disconnected_admitted_execution() {
     broker.fake.push_response_delayed(
         Ok(UpstreamResponse {
             status: 200,
-            headers: vec![("content-type".to_owned(), "application/json".to_owned())],
+            headers: vec![("content-type".to_owned(), "application/json".to_owned())].into(),
             body: b"{\"ok\":true}".to_vec().into(),
         }),
         Duration::from_millis(300),
@@ -325,7 +325,7 @@ async fn draining_rejects_new_execute_without_started() {
     broker.fake.push_response_delayed(
         Ok(UpstreamResponse {
             status: 200,
-            headers: vec![("content-type".to_owned(), "application/json".to_owned())],
+            headers: vec![("content-type".to_owned(), "application/json".to_owned())].into(),
             body: b"{\"ok\":true}".to_vec().into(),
         }),
         Duration::from_millis(200),
@@ -403,7 +403,7 @@ async fn every_started_has_terminal_on_success_and_indeterminate_response() {
 
     broker.fake.push_response(Ok(UpstreamResponse {
         status: 200,
-        headers: vec![("content-type".to_owned(), "text/plain".to_owned())],
+        headers: vec![("content-type".to_owned(), "text/plain".to_owned())].into(),
         body: b"leaked secret-token-value".to_vec().into(),
     }));
     let blocked = common::call(
@@ -438,7 +438,7 @@ async fn session_create_during_drain_is_rejected() {
     broker.fake.push_response_delayed(
         Ok(UpstreamResponse {
             status: 200,
-            headers: vec![("content-type".to_owned(), "application/json".to_owned())],
+            headers: vec![("content-type".to_owned(), "application/json".to_owned())].into(),
             body: b"{\"ok\":true}".to_vec().into(),
         }),
         Duration::from_millis(200),
@@ -514,7 +514,7 @@ async fn drain_cancel_is_scoped_to_one_running_epoch() {
     broker.fake.push_response_delayed(
         Ok(UpstreamResponse {
             status: 200,
-            headers: vec![("content-type".to_owned(), "application/json".to_owned())],
+            headers: vec![("content-type".to_owned(), "application/json".to_owned())].into(),
             body: b"{\"ok\":true}".to_vec().into(),
         }),
         Duration::from_secs(5),
@@ -595,7 +595,7 @@ async fn shutdown_reply_survives_an_exhausted_drain_deadline() {
     broker.fake.push_response_delayed(
         Ok(UpstreamResponse {
             status: 200,
-            headers: vec![],
+            headers: vec![].into(),
             body: Vec::new().into(),
         }),
         Duration::from_secs(5),

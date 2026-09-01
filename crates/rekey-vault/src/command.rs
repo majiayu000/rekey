@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::Instant;
 
 use rekey_domain::action::{
     ExactPath, FixedMethod, HeaderCredentialUse, HttpsOrigin, RequestPolicy, ResponsePolicy,
@@ -103,6 +104,7 @@ pub enum AuthorityCommand {
         kind: CredentialKind,
         secret: SecretInput,
         proof: UnlockProof,
+        not_after: Option<Instant>,
         reply: Reply<CredentialMetadata>,
     },
     CredentialList(Reply<Vec<CredentialMetadata>>),
@@ -110,22 +112,26 @@ pub enum AuthorityCommand {
         credential_id: CredentialId,
         secret: SecretInput,
         proof: UnlockProof,
+        not_after: Option<Instant>,
         reply: Reply<CredentialMetadata>,
     },
     CredentialRevoke {
         credential_id: CredentialId,
         proof: UnlockProof,
+        not_after: Option<Instant>,
         reply: Reply<CredentialMetadata>,
     },
     ActionUpsert {
         existing: Option<ActionId>,
         definition: Box<ActionDefinition>,
         proof: UnlockProof,
+        not_after: Option<Instant>,
         reply: Reply<rekey_domain::action::FixedHttpAction>,
     },
     ActionDisable {
         action_id: ActionId,
         proof: UnlockProof,
+        not_after: Option<Instant>,
         reply: Reply<()>,
     },
     ActionList(Reply<Vec<rekey_domain::action::FixedHttpAction>>),

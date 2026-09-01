@@ -13,7 +13,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use rekey_domain::action::ACTION_TIMEOUT_HARD_MAX_MS;
-use rekey_domain::ipc::PolicyStatusResponse;
 use rekey_policy::ValidatedSnapshot;
 use rekey_vault::AuthorityError;
 use rekey_vault::bootstrap::verify_state_dir_permissions;
@@ -32,6 +31,7 @@ use crate::lifecycle::{BrokerPhase, Lifecycle};
 use crate::session::SessionRegistry;
 use crate::upstream::{ReqwestUpstreamTransport, UpstreamTransport};
 
+mod admin;
 mod shutdown;
 
 pub const MAX_AGENT_CONNECTIONS: usize = 120;
@@ -87,60 +87,6 @@ pub struct BrokerCtx {
 }
 
 impl BrokerCtx {
-    pub async fn policy_status(&self) -> PolicyStatusResponse {
-        let guard = self.policy.read().await;
-        match guard.as_ref() {
-            Some(snapshot) => PolicyStatusResponse {
-                active: true,
-                version: Some(snapshot.version().get()),
-                expires_at_ms: Some(snapshot.expires_at_ms()),
-                sha256_hex: Some(data_encoding::HEXLOWER.encode(&snapshot.digest())),
-            },
-            None => PolicyStatusResponse {
-                active: false,
-                version: None,
-                expires_at_ms: None,
-                sha256_hex: None,
-            },
-        }
-    }
-
-    pub async fn activate_policy(
-        &self,
-        snapshot: ValidatedSnapshot,
-        proof: UnlockProof,
-    ) -> Result<(), BrokerError> {
-        let _owner = self.lifecycle.coordinate().await;
-        self.lifecycle.reject_if_not_running()?;
-        self.authority.verify_proof(proof).await?;
-        self.lifecycle.reject_if_not_running()?;
-        let mut guard = self.policy.write().await;
-        if guard
-            .as_ref()
-            .is_some_and(|current| snapshot.version() <= current.version())
-        {
-            return Err(BrokerError::Denied("policy-version-not-increasing"));
-        }
-        self.authority
-            .append_audit(rekey_vault::command::AuditDraft {
-                request_id: None,
-                session_id: None,
-                action_id: None,
-                action_version: None,
-                credential_id: None,
-                credential_version: None,
-                authorization: None,
-                event_type: rekey_vault::model::event_type::POLICY_ACTIVATED,
-                outcome: rekey_vault::model::outcome::SUCCESS,
-                reason_code: "policy-activated".to_owned(),
-                upstream_status: None,
-                latency_ms: None,
-            })
-            .await?;
-        *guard = Some(Arc::new(snapshot));
-        Ok(())
-    }
-
     pub(crate) fn publish_shutdown(&self) {
         self.shutdown_flag.store(true, Ordering::SeqCst);
         if self.shutdown_tx.send(true).is_err() {
