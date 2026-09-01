@@ -251,7 +251,7 @@ fn rekeyd_binary() -> PathBuf {
 pub fn delegate_rekeyd(
     state_dir: &Path,
     subcommand: &str,
-    extra_args: &[String],
+    extra_args: &[std::ffi::OsString],
     password_stdin: bool,
 ) -> Result<(), CliError> {
     let mut cmd = std::process::Command::new(rekeyd_binary());

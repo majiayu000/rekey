@@ -11,6 +11,7 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 use rekey_broker::error::BrokerError;
 use rekey_broker::runtime::{BrokerConfig, serve};
+use rekey_domain::ipc::ADMIN_SECRET_BODY_MAX_BYTES;
 use rekey_vault::AuthorityError;
 use rekey_vault::bootstrap::{RestoreProof, init_vault, restore_vault};
 use rekey_vault::crypto::kdf::Argon2Params;
@@ -144,15 +145,32 @@ fn parse_duration(input: &str) -> Result<Duration, RekeydError> {
 }
 
 fn read_stdin_secret_line() -> Result<SecretInput, RekeydError> {
-    let mut buf = Zeroizing::new(String::new());
-    std::io::stdin()
-        .read_to_string(&mut buf)
+    read_bounded_stdin_line(std::io::stdin())
+}
+
+fn read_bounded_stdin_line(reader: impl Read) -> Result<SecretInput, RekeydError> {
+    let capacity = ADMIN_SECRET_BODY_MAX_BYTES as usize + 1;
+    let mut buf = Zeroizing::new(Vec::with_capacity(capacity));
+    reader
+        .take(capacity as u64)
+        .read_to_end(&mut buf)
         .map_err(|err| usage(format!("failed to read stdin: {err}")))?;
-    let line = buf.lines().next().unwrap_or("").trim_end_matches('\r');
-    if line.is_empty() {
+    debug_assert_eq!(buf.capacity(), capacity);
+    if buf.len() > ADMIN_SECRET_BODY_MAX_BYTES as usize {
+        return Err(usage("stdin secret exceeds 65536 bytes"));
+    }
+    let line_len = buf
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .unwrap_or(buf.len());
+    buf.truncate(line_len);
+    if buf.last() == Some(&b'\r') {
+        buf.pop();
+    }
+    if buf.is_empty() {
         return Err(usage("empty secret on stdin"));
     }
-    Ok(SecretInput::from_slice(line.as_bytes()))
+    Ok(SecretInput::new(std::mem::take(&mut *buf)))
 }
 
 fn prompt_secret(prompt: &str) -> Result<SecretInput, RekeydError> {
@@ -334,5 +352,14 @@ mod tests {
     fn duration_parser_rejects_overflow() {
         assert_eq!(parse_duration("1h").unwrap(), Duration::from_secs(3_600));
         assert!(parse_duration("4611686018427387905m").is_err());
+    }
+
+    #[test]
+    fn delegated_secret_reader_rejects_oversized_input() {
+        let input = std::io::Cursor::new(vec![b'x'; ADMIN_SECRET_BODY_MAX_BYTES as usize + 1]);
+        assert!(matches!(
+            read_bounded_stdin_line(input),
+            Err(RekeydError::Usage(_))
+        ));
     }
 }

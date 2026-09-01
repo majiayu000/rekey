@@ -4,7 +4,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rand::TryRngCore;
-use rekey_domain::{DomainError, Timestamp};
+use rekey_domain::Timestamp;
 
 use crate::error::BrokerError;
 
@@ -34,13 +34,13 @@ pub(crate) fn now_ts() -> Result<Timestamp, BrokerError> {
 }
 
 pub(crate) fn random_id<T>(
-    from_bytes: impl FnOnce([u8; 16]) -> Result<T, DomainError>,
+    from_random_bytes: impl FnOnce([u8; 16]) -> T,
 ) -> Result<T, BrokerError> {
     let mut bytes = [0u8; 16];
     rand::rngs::OsRng
         .try_fill_bytes(&mut bytes)
         .map_err(|_| rekey_vault::AuthorityError::EntropyUnavailable)?;
-    from_bytes(bytes).map_err(BrokerError::Domain)
+    Ok(from_random_bytes(bytes))
 }
 
 #[cfg(test)]

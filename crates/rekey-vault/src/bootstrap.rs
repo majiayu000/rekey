@@ -266,13 +266,13 @@ fn init_vault_inner(
         create_init_marker(state_dir)?;
     }
 
-    let vault_id = VaultId::from_bytes(random_array()?)?;
+    let vault_id = VaultId::from_random_bytes(random_array()?);
     let vrk = RootKey::generate()?;
     let recovery_key: Zeroizing<[u8; KEY_LEN]> = Zeroizing::new(random_array()?);
     let password_salt: [u8; SALT_LEN] = random_array()?;
     let recovery_salt: [u8; SALT_LEN] = random_array()?;
-    let password_wrapper_id = WrapperId::from_bytes(random_array()?)?;
-    let recovery_wrapper_id = WrapperId::from_bytes(random_array()?)?;
+    let password_wrapper_id = WrapperId::from_random_bytes(random_array()?);
+    let recovery_wrapper_id = WrapperId::from_random_bytes(random_array()?);
     let now = now_ms()?;
 
     let password_kek = derive_password_kek(password.expose(), &password_salt, &params)?;

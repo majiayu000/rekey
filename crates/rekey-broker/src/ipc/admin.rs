@@ -6,12 +6,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use rekey_domain::action::{
-    ActionName, ExactPath, FixedMethod, HeaderCredentialUse, HeaderName, HeaderPrefix, HttpsOrigin,
-    RequestPolicy, ResponsePolicy,
+    ActionName, ExactPath, FixedHttpAction, FixedMethod, HeaderCredentialUse, HeaderName,
+    HeaderPrefix, HttpsOrigin, RequestPolicy, ResponsePolicy,
 };
 use rekey_domain::authorization::Principal;
 use rekey_domain::capability::SessionGrant;
-use rekey_domain::ids::{PrincipalId, SessionId, TenantId};
+use rekey_domain::ids::{ActionId, PrincipalId, SessionId, TenantId};
 use rekey_domain::ipc::{self, Channel, ProofKind, admin_msg};
 use rekey_vault::command::{ActionDefinition, AuditDraft, UnlockProof};
 use rekey_vault::model::{ActionState, event_type, outcome};
@@ -244,6 +244,7 @@ async fn dispatch(
                 };
             let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
             let definition = definition_from_meta(definition_meta)?;
+            ensure_action_response_fits(&definition)?;
             let _owner = ctx.lifecycle.coordinate().await;
             ctx.lifecycle.reject_if_not_running()?;
             let action = ctx
@@ -288,8 +289,8 @@ async fn dispatch(
                 }
                 action_timeouts.push((*r, pinned.action.timeout_ms));
             }
-            let session_id = crate::random_id(SessionId::from_bytes)?;
-            let principal_id = crate::random_id(PrincipalId::from_bytes)?;
+            let session_id = crate::random_id(SessionId::from_random_bytes)?;
+            let principal_id = crate::random_id(PrincipalId::from_random_bytes)?;
             let vault_id = ctx.authority.status().await?.vault_id;
             let principal = Principal {
                 tenant_id: TenantId::from_bytes(*vault_id.as_bytes())
@@ -457,4 +458,61 @@ fn definition_from_meta(meta: ipc::ActionCreateMeta) -> Result<ActionDefinition,
             allowed_headers: allowed_response_headers,
         },
     })
+}
+
+fn ensure_action_response_fits(definition: &ActionDefinition) -> Result<(), BrokerError> {
+    let probe = FixedHttpAction {
+        id: ActionId::from_random_bytes([0xff; 16]),
+        name: definition.name.clone(),
+        version: u64::MAX,
+        enabled: true,
+        credential_id: definition.credential_id,
+        origin: definition.origin.clone(),
+        method: definition.method,
+        exact_path: definition.exact_path.clone(),
+        auth: definition.auth.clone(),
+        timeout_ms: definition.timeout_ms,
+        request_policy: definition.request_policy.clone(),
+        response_policy: definition.response_policy.clone(),
+    };
+    json(&probe).map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rekey_domain::ids::CredentialId;
+
+    #[test]
+    fn oversized_action_response_is_rejected_before_upsert() {
+        let headers = (0..4_096)
+            .map(|index| HeaderName::new(&format!("x-header-{index:04}")).unwrap())
+            .collect();
+        let definition = ActionDefinition {
+            name: ActionName::new("large-response").unwrap(),
+            credential_id: CredentialId::from_random_bytes([1; 16]),
+            origin: HttpsOrigin::parse("https://example.com").unwrap(),
+            method: FixedMethod::Post,
+            exact_path: ExactPath::parse("/v1/action").unwrap(),
+            auth: HeaderCredentialUse::new(
+                HeaderName::new("x-api-key").unwrap(),
+                HeaderPrefix::new("Bearer ").unwrap(),
+            )
+            .unwrap(),
+            timeout_ms: 1_000,
+            request_policy: RequestPolicy {
+                max_body_bytes: 1_024,
+                allowed_extra_headers: headers,
+            },
+            response_policy: ResponsePolicy {
+                max_body_bytes: 1_024,
+                allowed_headers: Default::default(),
+            },
+        };
+
+        assert!(matches!(
+            ensure_action_response_fits(&definition),
+            Err(BrokerError::Frame(ipc::FrameError::SectionTooLarge))
+        ));
+    }
 }

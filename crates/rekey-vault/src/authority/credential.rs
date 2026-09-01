@@ -2,7 +2,6 @@ use rekey_domain::credential::{
     CredentialKind, CredentialLabel, CredentialMetadata, CredentialState, VersionState,
 };
 use rekey_domain::ids::CredentialId;
-use zeroize::Zeroizing;
 
 use super::{VaultState, Worker, credential_audit};
 use crate::command::UnlockProof;
@@ -100,7 +99,7 @@ impl Worker {
                 rekey_domain::DomainError::InvalidCapability,
             ));
         }
-        let credential_id = CredentialId::from_bytes(crate::crypto::random_array()?)?;
+        let credential_id = CredentialId::from_random_bytes(crate::crypto::random_array()?);
         let now = now_ms()?;
         let version = self.encrypt_new_version(credential_id, 1, kind, &secret, now)?;
         let mut record = CredentialRecord {
@@ -286,7 +285,7 @@ impl Worker {
         )
         .map_err(|_| AuthorityError::CryptoFailure)?;
         Ok(PreparedCredential::new(
-            Zeroizing::new(payload.to_vec()),
+            payload,
             credential_id,
             credential.kind,
             version.version,

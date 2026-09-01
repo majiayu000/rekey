@@ -35,6 +35,12 @@ macro_rules! typed_id {
                 let value = NEXT_TEST_ID.fetch_add(1, Ordering::Relaxed);
                 let mut bytes = [0u8; 16];
                 bytes[8..].copy_from_slice(&value.to_be_bytes());
+                Self::from_random_bytes(bytes)
+            }
+
+            pub fn from_random_bytes(mut bytes: [u8; 16]) -> Self {
+                bytes[6] = (bytes[6] & 0x0f) | 0x40;
+                bytes[8] = (bytes[8] & 0x3f) | 0x80;
                 Self(Uuid::from_bytes(bytes))
             }
 
@@ -156,5 +162,12 @@ mod tests {
         let bytes = *CredentialId::new_random().as_bytes();
         assert!(CredentialId::from_bytes(bytes).is_ok());
         assert!(CredentialId::from_bytes([0u8; 16]).is_err());
+    }
+
+    #[test]
+    fn random_bytes_are_normalized_to_uuid_v4() {
+        let id = CredentialId::from_random_bytes([0xff; 16]);
+        assert_eq!(id.as_bytes()[6] >> 4, 4);
+        assert_eq!(id.as_bytes()[8] >> 6, 2);
     }
 }

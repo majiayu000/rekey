@@ -230,7 +230,7 @@ fn main() {
         Command::Serve { idle_lock } => commands::delegate_rekeyd(
             &state_dir,
             "serve",
-            &["--idle-lock".to_owned(), idle_lock],
+            &["--idle-lock".into(), idle_lock.into()],
             false,
         ),
         Command::Restore {
@@ -239,12 +239,12 @@ fn main() {
             password_stdin,
             sha256,
         } => {
-            let mut args = vec!["--input".to_owned(), input.display().to_string()];
+            let mut args = vec!["--input".into(), input.into_os_string()];
             if recovery {
-                args.push("--recovery".to_owned());
+                args.push("--recovery".into());
             }
-            args.push("--sha256".to_owned());
-            args.push(sha256);
+            args.push("--sha256".into());
+            args.push(sha256.into());
             commands::delegate_rekeyd(&state_dir, "restore", &args, password_stdin)
         }
         Command::Unlock {

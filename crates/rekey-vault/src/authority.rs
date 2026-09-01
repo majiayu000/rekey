@@ -527,7 +527,7 @@ impl Worker {
                 (id, current + 1, event_type::ACTION_UPDATED)
             }
             None => (
-                ActionId::from_bytes(random_array()?)?,
+                ActionId::from_random_bytes(random_array()?),
                 1,
                 event_type::ACTION_CREATED,
             ),

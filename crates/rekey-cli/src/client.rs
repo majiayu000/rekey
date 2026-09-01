@@ -162,8 +162,7 @@ fn random_request_id() -> Result<RequestId, CliError> {
     rand::rngs::OsRng
         .try_fill_bytes(&mut bytes)
         .map_err(|_| CliError::local("ENTROPY_UNAVAILABLE", "cannot create request id"))?;
-    RequestId::from_bytes(bytes)
-        .map_err(|_| CliError::local("ENTROPY_UNAVAILABLE", "cannot create request id"))
+    Ok(RequestId::from_random_bytes(bytes))
 }
 
 #[cfg(target_os = "macos")]
