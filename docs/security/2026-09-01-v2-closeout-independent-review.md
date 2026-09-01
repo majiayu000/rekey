@@ -183,6 +183,17 @@ below. The exact-head follow-up then
 [reported no major issues](https://github.com/majiayu000/rekey/pull/10#issuecomment-5501637084),
 and a second exact-head run independently returned the same result.
 
+The final branch-head CI replay then exposed two nondeterministic acceptance
+preconditions rather than product-code failures. Two lifecycle tests used a
+fixed delay instead of observing upstream admission; this was corrected in
+`27ba2f85924dbd54691717e455cc240167138a3d`. The ordinary GitHub App success
+flow also used the minimum two-second Action deadline for three TLS legs and
+durable fixture traces; `9551fe1caa75f89f4591916e8b7440b3974240fe`
+separated that ordinary acceptance budget from the dedicated deadline case.
+The lifecycle suite passed ten consecutive runs, the GitHub App harness passed
+three consecutive runs, and the exact-head follow-up on `9551fe1caa`
+[reported no major issues](https://github.com/majiayu000/rekey/pull/10#issuecomment-5502049226).
+
 ## Threat assumptions and method
 
 The review used the documented G1 default: an untrusted Agent may control
@@ -434,8 +445,8 @@ advisories and reported no vulnerability. Both mechanical API searches had no
 matches. The CLI dependency tree contained none of `rusqlite`, `aes-gcm`,
 `argon2`, `reqwest`, `rekey-vault`, or `rekey-broker`.
 
-The final local evidence above was collected at
-`ac2e513c938e4abe349be445bcd6a6b1b9da252c`. GitHub Actions
-[security-gate run 33569032881](https://github.com/majiayu000/rekey/actions/runs/33569032881)
+The final local evidence above was collected at validation head
+`9551fe1caa75f89f4591916e8b7440b3974240fe`. GitHub Actions
+[security-gate run 33571564907](https://github.com/majiayu000/rekey/actions/runs/33571564907)
 is the corresponding successful cross-platform run: Ubuntu P0, macOS P0, and
 the bounded Linux G2 reference job all passed.
