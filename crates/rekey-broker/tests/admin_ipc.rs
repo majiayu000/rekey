@@ -208,7 +208,7 @@ async fn admin_and_policy_status_keep_an_unlocked_broker_active() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn unlock_does_not_queue_behind_an_active_drain() {
-    let broker = common::start_broker_with(Duration::from_secs(300), Duration::from_secs(2)).await;
+    let broker = common::start_broker_with(Duration::from_secs(300), Duration::from_secs(5)).await;
     common::unlock(&broker).await;
     let credential_id = common::add_credential(&broker, "drain-unlock", b"v").await;
     let (action_id, version) = common::create_action(&broker, &credential_id).await;
