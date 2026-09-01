@@ -18,8 +18,18 @@ pub(super) fn sealing_needles(secret: &[u8], auth_value: &[u8]) -> Vec<Zeroizing
         needles.push(Zeroizing::new(BASE64URL_NOPAD.encode(source).into_bytes()));
         needles.push(Zeroizing::new(percent_encode(source, false).into_bytes()));
         needles.push(Zeroizing::new(percent_encode(source, true).into_bytes()));
+        needles.push(Zeroizing::new(percent_encode_all(source)));
     }
     needles
+}
+
+fn percent_encode_all(bytes: &[u8]) -> Vec<u8> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = Vec::with_capacity(bytes.len() * 3);
+    for byte in bytes {
+        out.extend_from_slice(&[b'%', HEX[(byte >> 4) as usize], HEX[(byte & 0x0f) as usize]]);
+    }
+    out
 }
 
 pub(super) fn percent_encode(bytes: &[u8], uppercase: bool) -> String {

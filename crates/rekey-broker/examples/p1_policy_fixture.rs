@@ -210,6 +210,15 @@ fn fixture_percent_encode(bytes: &[u8]) -> Vec<u8> {
     output.into_bytes()
 }
 
+fn fixture_percent_encode_all(bytes: &[u8]) -> Vec<u8> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = Vec::with_capacity(bytes.len() * 3);
+    for byte in bytes {
+        output.extend_from_slice(&[b'%', HEX[(byte >> 4) as usize], HEX[(byte & 0x0f) as usize]]);
+    }
+    output
+}
+
 async fn write_reflection(
     tls: &mut tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
     variant: &[u8],
@@ -236,6 +245,7 @@ async fn write_sealing_response(
         "base64" => write_reflection(tls, BASE64.encode(secret).as_bytes()).await,
         "base64url" => write_reflection(tls, BASE64URL_NOPAD.encode(secret).as_bytes()).await,
         "percent" => write_reflection(tls, &fixture_percent_encode(secret)).await,
+        "percent-all" => write_reflection(tls, &fixture_percent_encode_all(secret)).await,
         "clean" => {
             write_chunked_headers(tls).await?;
             write_chunk(tls, b"{\"ok\":").await?;

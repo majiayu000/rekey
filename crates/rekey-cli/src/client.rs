@@ -1,12 +1,12 @@
 //! Blocking Unix-socket IPC client. This binary never opens the database and
 //! never derives keys; it only frames requests to the broker.
 
-use std::io::{Read, Write};
+use std::io::Write;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rand::TryRngCore;
 use rekey_domain::ids::RequestId;
@@ -75,10 +75,86 @@ impl CliError {
 pub struct Client {
     stream: UnixStream,
     channel: Channel,
+    response_timeout: Duration,
 }
 
 fn io_err(err: std::io::Error) -> CliError {
     CliError::local("IPC_UNAVAILABLE", format!("broker unreachable: {err}"))
+}
+
+fn read_exact_until(
+    stream: &UnixStream,
+    mut buffer: &mut [u8],
+    deadline: Instant,
+) -> Result<(), CliError> {
+    while !buffer.is_empty() {
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| {
+                io_err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "broker response deadline exceeded",
+                ))
+            })?;
+        let timeout_nanos = remaining.as_nanos().saturating_add(999_999);
+        let timeout_millis = (timeout_nanos / 1_000_000).min(i32::MAX as u128) as i32;
+        let mut poll_fd = libc::pollfd {
+            fd: stream.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ready = unsafe { libc::poll(&mut poll_fd, 1, timeout_millis) };
+        if ready == 0 {
+            return Err(io_err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "broker response deadline exceeded",
+            )));
+        }
+        if ready < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(io_err(error));
+        }
+
+        let read = unsafe {
+            libc::recv(
+                stream.as_raw_fd(),
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+                libc::MSG_DONTWAIT,
+            )
+        };
+        if read == 0 {
+            return Err(io_err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "broker closed a partial response",
+            )));
+        }
+        if read < 0 {
+            let error = std::io::Error::last_os_error();
+            match error.kind() {
+                std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock => continue,
+                _ => return Err(io_err(error)),
+            }
+        } else {
+            let read = usize::try_from(read).map_err(|_| {
+                io_err(std::io::Error::other(
+                    "broker returned an invalid response length",
+                ))
+            })?;
+            if read > buffer.len() {
+                return Err(io_err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "broker returned an oversized response fragment",
+                )));
+            }
+            buffer = &mut buffer[read..];
+        }
+    }
+    Ok(())
 }
 
 fn random_request_id() -> Result<RequestId, CliError> {
@@ -223,7 +299,11 @@ impl Client {
             .set_read_timeout(Some(response_timeout))
             .map_err(io_err)?;
         stream.set_write_timeout(Some(IO_TIMEOUT)).map_err(io_err)?;
-        Ok(Self { stream, channel })
+        Ok(Self {
+            stream,
+            channel,
+            response_timeout,
+        })
     }
 
     /// Sends one frame and reads one response. `body` may carry secrets and
@@ -270,8 +350,11 @@ impl Client {
         }
         self.stream.flush().map_err(io_err)?;
 
+        let response_deadline = Instant::now()
+            .checked_add(self.response_timeout)
+            .ok_or_else(|| CliError::local("IPC_UNAVAILABLE", "invalid response timeout"))?;
         let mut header_buf = [0u8; FRAME_HEADER_LEN];
-        self.stream.read_exact(&mut header_buf).map_err(io_err)?;
+        read_exact_until(&self.stream, &mut header_buf, response_deadline)?;
         let response = FrameHeader::decode(&header_buf)
             .map_err(|err| CliError::local("INVALID_FRAME", err.to_string()))?;
         if response.channel != self.channel || response.request_id != request_id {
@@ -287,9 +370,9 @@ impl Client {
             ));
         }
         let mut response_meta = vec![0u8; response.metadata_len as usize];
-        self.stream.read_exact(&mut response_meta).map_err(io_err)?;
+        read_exact_until(&self.stream, &mut response_meta, response_deadline)?;
         let mut response_body = Zeroizing::new(vec![0u8; response.body_len as usize]);
-        self.stream.read_exact(&mut response_body).map_err(io_err)?;
+        read_exact_until(&self.stream, &mut response_body, response_deadline)?;
 
         match response.message_type {
             rekey_domain::ipc::resp_msg::OK => Ok((response_meta, response_body.to_vec())),
@@ -321,6 +404,7 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixListener;
 
@@ -390,5 +474,44 @@ mod tests {
             .unwrap();
         assert_eq!(err.code, "IPC_UNAVAILABLE");
         assert!(err.message.contains("replaceable runtime ancestor"));
+    }
+
+    #[test]
+    fn response_sections_share_one_absolute_deadline() {
+        let (_dir, socket, listener) = protected_listener();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request_header = [0u8; FRAME_HEADER_LEN];
+            stream.read_exact(&mut request_header).unwrap();
+            let request = FrameHeader::decode(&request_header).unwrap();
+            let mut payload = vec![0u8; (request.metadata_len + request.body_len) as usize];
+            stream.read_exact(&mut payload).unwrap();
+
+            let response = FrameHeader {
+                channel: Channel::Agent,
+                flags: 0,
+                message_type: rekey_domain::ipc::resp_msg::OK,
+                request_id: request.request_id,
+                metadata_len: 2,
+                body_len: 0,
+            };
+            stream.write_all(&response.encode()).unwrap();
+            std::thread::sleep(Duration::from_millis(20));
+            let _ = stream.write_all(b"{");
+            std::thread::sleep(Duration::from_millis(20));
+            let _ = stream.write_all(b"}");
+        });
+
+        let mut client = Client::connect_with_response_timeout(
+            &socket,
+            Channel::Agent,
+            Duration::from_millis(30),
+        )
+        .unwrap();
+        let started = Instant::now();
+        let error = client.call(1, b"{}", &[]).unwrap_err();
+        assert_eq!(error.code, "IPC_UNAVAILABLE");
+        assert!(started.elapsed() < Duration::from_millis(100));
+        server.join().unwrap();
     }
 }

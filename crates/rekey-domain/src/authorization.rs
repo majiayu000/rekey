@@ -79,8 +79,8 @@ pub struct PolicyVersion(u64);
 
 impl PolicyVersion {
     pub fn new(value: u64) -> Result<Self, DomainError> {
-        if value == 0 {
-            return Err(invalid("policy version must be nonzero"));
+        if value == 0 || value > i64::MAX as u64 {
+            return Err(invalid("policy version must fit the durable signed range"));
         }
         Ok(Self(value))
     }
@@ -158,4 +158,15 @@ pub enum Decision {
         reason: DenyReason,
         determining_rule: Option<PolicyRuleId>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn policy_versions_fit_the_durable_signed_range() {
+        assert!(PolicyVersion::new(i64::MAX as u64).is_ok());
+        assert!(PolicyVersion::new(i64::MAX as u64 + 1).is_err());
+    }
 }

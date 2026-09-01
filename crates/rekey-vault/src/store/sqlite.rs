@@ -639,7 +639,7 @@ fn credential_from_row(r: &rusqlite::Row<'_>) -> RowResult<CredentialRecord> {
                 .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
             state: CredentialState::parse(&state)
                 .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
-            current_version: current_version as u64,
+            current_version: positive_version(current_version)?,
             created_at_ms,
             updated_at_ms,
             revoked_at_ms,
@@ -665,7 +665,7 @@ fn version_from_row(r: &rusqlite::Row<'_>) -> RowResult<CredentialVersionRecord>
         Ok(CredentialVersionRecord {
             credential_id: CredentialId::from_bytes(blob16(credential_id)?)
                 .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
-            version: version as u64,
+            version: positive_version(version)?,
             state: VersionState::parse(&state)
                 .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
             aad_version,
@@ -701,7 +701,7 @@ fn action_from_row(r: &rusqlite::Row<'_>) -> RowResult<ActionRecord> {
         Ok(ActionRecord {
             action_id: ActionId::from_bytes(blob16(action_id)?)
                 .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
-            version: version as u64,
+            version: positive_version(version)?,
             name,
             state: ActionState::parse(&state).ok_or(AuthorityError::StorageIntegrityFailed)?,
             credential_id: CredentialId::from_bytes(blob16(credential_id)?)
@@ -719,6 +719,13 @@ fn action_from_row(r: &rusqlite::Row<'_>) -> RowResult<ActionRecord> {
             created_at_ms,
         })
     })())
+}
+
+fn positive_version(version: i64) -> Result<u64, AuthorityError> {
+    u64::try_from(version)
+        .ok()
+        .filter(|version| *version > 0)
+        .ok_or(AuthorityError::StorageIntegrityFailed)
 }
 
 #[cfg(test)]

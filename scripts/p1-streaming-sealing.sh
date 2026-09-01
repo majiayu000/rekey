@@ -285,7 +285,7 @@ PY
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate \
   --file "$WORKDIR/policy.json" --password-stdin >/dev/null
 
-for mode in raw base64 base64url percent; do
+for mode in raw base64 base64url percent percent-all; do
   expect_failure "$mode" 8 RESPONSE_SECURITY_VIOLATION
 done
 
@@ -299,8 +299,8 @@ grep -q '{"ok":true}' "$WORKDIR/clean.out"
 
 expect_failure oversize 6 RESPONSE_TOO_LARGE
 expect_failure midstream 6 UPSTREAM_FAILED
-[[ "$(tr -d '\n' <"$HITS")" -eq 7 ]] || {
-  echo "expected seven real TLS upstream requests" >&2
+[[ "$(tr -d '\n' <"$HITS")" -eq 8 ]] || {
+  echo "expected eight real TLS upstream requests" >&2
   exit 1
 }
 
@@ -320,8 +320,8 @@ rows = db.execute("""
 by_request = collections.defaultdict(list)
 for request_id, event_type, reason in rows:
     by_request[request_id].append((event_type, reason))
-if len(by_request) != 7:
-    raise SystemExit(f"expected 7 audited executions, got {len(by_request)}")
+if len(by_request) != 8:
+    raise SystemExit(f"expected 8 audited executions, got {len(by_request)}")
 for request_id, events in by_request.items():
     started = sum(event == "execution.started" for event, _ in events)
     terminal = sum(event in ("execution.finished", "execution.blocked", "execution.indeterminate") for event, _ in events)
@@ -336,7 +336,7 @@ indeterminate = collections.Counter(
     reason for _, event, reason in rows if event == "execution.indeterminate"
 )
 if indeterminate != collections.Counter({
-    "reflected-secret": 4,
+    "reflected-secret": 5,
     "response-too-large": 1,
     "upstream-transport": 1,
 }):

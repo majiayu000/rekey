@@ -117,6 +117,48 @@ async fn malformed_frames_close_connection() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn bodyless_admin_messages_reject_attached_bodies() {
+    let broker = common::start_broker().await;
+    for message in [
+        admin_msg::STATUS,
+        admin_msg::CREDENTIAL_LIST,
+        admin_msg::ACTION_LIST,
+        admin_msg::POLICY_STATUS,
+    ] {
+        let response = common::call(
+            &broker.admin_sock(),
+            Channel::Admin,
+            message,
+            b"{}",
+            b"unexpected",
+        )
+        .await;
+        assert_eq!(response.err_code(), "INVALID_FRAME");
+    }
+
+    common::unlock(&broker).await;
+    let response = common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::LOCK,
+        b"{}",
+        b"unexpected",
+    )
+    .await;
+    assert_eq!(response.err_code(), "INVALID_FRAME");
+    let status = common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::STATUS,
+        b"{}",
+        &[],
+    )
+    .await;
+    assert_eq!(status.ok()["state"], "unlocked");
+    broker.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn admin_and_policy_status_keep_an_unlocked_broker_active() {
     let broker =
         common::start_broker_with(Duration::from_millis(120), Duration::from_secs(2)).await;

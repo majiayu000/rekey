@@ -482,3 +482,46 @@ async fn malformed_action_record_faults_and_zeroizes_authority() {
     handle.shutdown(None).await.unwrap();
     join.join().unwrap();
 }
+
+#[tokio::test]
+async fn negative_action_version_faults_and_zeroizes_authority() {
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+    let credential = handle
+        .credential_add(
+            CredentialLabel::new("negative-action-version").unwrap(),
+            CredentialKind::OpaqueToken,
+            SecretInput::from_slice(b"secret"),
+            common::password_proof(),
+        )
+        .await
+        .unwrap();
+    let action = handle
+        .action_upsert(
+            None,
+            action_definition(credential.id),
+            common::password_proof(),
+        )
+        .await
+        .unwrap();
+
+    let connection =
+        rusqlite::Connection::open(rekey_vault::paths::vault_db(&vault.state_dir)).unwrap();
+    connection
+        .execute_batch("PRAGMA ignore_check_constraints = ON;")
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE actions SET version = -1 WHERE action_id = ?1",
+            [action.id.as_bytes().as_slice()],
+        )
+        .unwrap();
+    drop(connection);
+
+    let err = handle.action_get(action.id, u64::MAX).await.unwrap_err();
+    assert!(matches!(err, AuthorityError::StorageIntegrityFailed));
+    assert_eq!(handle.status().await.unwrap().state, "faulted");
+    handle.shutdown(None).await.unwrap();
+    join.join().unwrap();
+}

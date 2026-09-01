@@ -124,6 +124,10 @@ fn sealing_detects_direct_and_encoded_secret() {
     assert!(contains_secret(url.as_bytes(), &needles));
     let pct = percent_encode(auth, true);
     assert!(contains_secret(pct.as_bytes(), &needles));
+    assert!(contains_secret(
+        b"%67%68%70%5f%73%75%70%65%72%5f%73%65%63%72%65%74%5f%74%6f%6b%65%6e%5f%76%61%6c%75%65",
+        &needles
+    ));
     let mixed_percent = sealing_needles(b"+/=", b"+/=");
     assert!(contains_secret(b"prefix-%2B%2f%3D-suffix", &mixed_percent));
     assert!(!contains_secret(b"clean response body", &needles));
