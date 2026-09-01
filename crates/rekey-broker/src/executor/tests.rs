@@ -41,7 +41,7 @@ async fn drain_linearizes_before_started() {
         }
     });
     let lifecycle = Arc::new(Lifecycle::new());
-    lifecycle.enter_running();
+    lifecycle.enter_running().unwrap();
     let _coordinator = lifecycle.coordinate().await;
     lifecycle.enter_draining();
     let err = match commit_started_while_running(&lifecycle, &tracker, execution_context()).await {
@@ -58,7 +58,7 @@ async fn drain_linearizes_before_started() {
 async fn running_coordinator_contention_fails_without_waiting() {
     let (tracker, worker) = spawn_terminal_worker_with(|_| async { Ok(()) });
     let lifecycle = Arc::new(Lifecycle::new());
-    lifecycle.enter_running();
+    lifecycle.enter_running().unwrap();
     let sessions = Arc::new(SessionRegistry::new());
     sessions.open_for_admission();
     let action = ActionVersionRef {

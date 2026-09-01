@@ -126,8 +126,8 @@ impl BrokerCtx {
             .map_err(|_| BrokerError::Authority(AuthorityError::AuthorityBusy))?;
         self.lifecycle.reject_if_busy()?;
         self.authority.unlock(proof).await?;
+        self.lifecycle.enter_running()?;
         self.sessions.open_for_admission();
-        self.lifecycle.enter_running();
         tracing::info!(event = "authority.state", state = "running");
         Ok(())
     }
@@ -509,7 +509,7 @@ async fn select_stop(
         _ = sigint.recv() => SelectedStop::Signal("sigint"),
         result = &mut *execution_task => SelectedStop::Execution(result),
     };
-    lifecycle.close_remote_effect_admission();
+    lifecycle.mark_stop_pending();
     selected
 }
 

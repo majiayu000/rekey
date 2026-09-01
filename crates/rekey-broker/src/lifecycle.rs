@@ -33,6 +33,7 @@ pub struct Lifecycle {
     coordinator: Mutex<()>,
     cancel_tx: watch::Sender<bool>,
     remote_effect_admission_open: AtomicBool,
+    stop_pending: AtomicBool,
 }
 
 impl Lifecycle {
@@ -43,6 +44,7 @@ impl Lifecycle {
             coordinator: Mutex::new(()),
             cancel_tx,
             remote_effect_admission_open: AtomicBool::new(false),
+            stop_pending: AtomicBool::new(false),
         }
     }
 
@@ -72,6 +74,9 @@ impl Lifecycle {
     /// Unlock is allowed from Locked/Running, never while a drain owns the
     /// lifecycle. Callers must hold the coordinator lock.
     pub fn reject_if_busy(&self) -> Result<(), BrokerError> {
+        if self.stop_pending.load(Ordering::SeqCst) {
+            return Err(BrokerError::Authority(AuthorityError::Draining));
+        }
         match self.phase() {
             BrokerPhase::Locked | BrokerPhase::Running => Ok(()),
             BrokerPhase::Draining | BrokerPhase::ShuttingDown => {
@@ -117,12 +122,22 @@ impl Lifecycle {
             .store(BrokerPhase::Locked as u8, Ordering::SeqCst);
     }
 
-    pub fn enter_running(&self) {
+    pub fn enter_running(&self) -> Result<(), BrokerError> {
+        let previous = self.phase();
+        if self.stop_pending.load(Ordering::SeqCst) {
+            return Err(BrokerError::Authority(AuthorityError::Draining));
+        }
         self.cancel_tx.send_replace(false);
-        self.remote_effect_admission_open
-            .store(true, Ordering::SeqCst);
         self.phase
             .store(BrokerPhase::Running as u8, Ordering::SeqCst);
+        self.remote_effect_admission_open
+            .store(true, Ordering::SeqCst);
+        if self.stop_pending.load(Ordering::SeqCst) {
+            self.close_remote_effect_admission();
+            self.phase.store(previous as u8, Ordering::SeqCst);
+            return Err(BrokerError::Authority(AuthorityError::Draining));
+        }
+        Ok(())
     }
 
     pub(crate) fn try_begin_remote_effect(&self) -> bool {
@@ -136,10 +151,16 @@ impl Lifecycle {
             .store(false, Ordering::SeqCst);
     }
 
+    pub(crate) fn mark_stop_pending(&self) {
+        self.stop_pending.store(true, Ordering::SeqCst);
+        self.close_remote_effect_admission();
+    }
+
     /// Only a rejected stop may resume the current Running epoch. Its caller
     /// holds the lifecycle coordinator, so no drain transition can race this.
     pub(crate) fn resume_remote_effect_admission_if_running(&self) {
         if self.phase() == BrokerPhase::Running {
+            self.stop_pending.store(false, Ordering::SeqCst);
             self.remote_effect_admission_open
                 .store(true, Ordering::SeqCst);
         }
@@ -163,8 +184,14 @@ mod tests {
     #[test]
     fn rejected_stop_reopens_remote_effects_only_while_running() {
         let lifecycle = Lifecycle::new();
-        lifecycle.enter_running();
+        lifecycle.enter_running().unwrap();
         lifecycle.close_remote_effect_admission();
+        lifecycle.resume_remote_effect_admission_if_running();
+        assert!(lifecycle.try_begin_remote_effect());
+
+        lifecycle.mark_stop_pending();
+        assert_eq!(lifecycle.enter_running().unwrap_err().code(), "DRAINING");
+        assert!(!lifecycle.try_begin_remote_effect());
         lifecycle.resume_remote_effect_admission_if_running();
         assert!(lifecycle.try_begin_remote_effect());
 

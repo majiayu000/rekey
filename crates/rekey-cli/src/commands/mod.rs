@@ -161,7 +161,7 @@ fn read_lines_bounded(
     label: &'static str,
 ) -> Result<Vec<Zeroizing<Vec<u8>>>, CliError> {
     let capacity = expected
-        .checked_mul(limit + 1)
+        .checked_mul(limit + 2)
         .ok_or_else(|| CliError::local("USAGE", "stdin size limit overflow"))?;
     let mut buf = Zeroizing::new(Vec::with_capacity(capacity));
     let mut newlines = 0;
@@ -180,7 +180,7 @@ fn read_lines_bounded(
             line_len = 0;
         } else {
             line_len += 1;
-            if line_len > limit {
+            if line_len > limit && !(line_len == limit + 1 && byte[0] == b'\r') {
                 return Err(CliError::local(
                     "INVALID_FRAME",
                     format!("{label} line exceeds {limit} bytes"),

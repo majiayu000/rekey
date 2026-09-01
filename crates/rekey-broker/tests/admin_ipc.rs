@@ -156,37 +156,23 @@ async fn bodyless_admin_messages_reject_attached_bodies() {
         admin_msg::CREDENTIAL_LIST,
         admin_msg::ACTION_LIST,
         admin_msg::POLICY_STATUS,
-    ] {
-        let response = common::call(
-            &broker.admin_sock(),
-            Channel::Admin,
-            message,
-            b"{}",
-            b"unexpected",
-        )
-        .await;
-        assert_eq!(response.err_code(), "INVALID_FRAME");
-    }
-
-    common::unlock(&broker).await;
-    let response = common::call(
-        &broker.admin_sock(),
-        Channel::Admin,
         admin_msg::LOCK,
-        b"{}",
-        b"unexpected",
-    )
-    .await;
-    assert_eq!(response.err_code(), "INVALID_FRAME");
-    let status = common::call(
-        &broker.admin_sock(),
-        Channel::Admin,
-        admin_msg::STATUS,
-        b"{}",
-        &[],
-    )
-    .await;
-    assert_eq!(status.ok()["state"], "unlocked");
+        u16::MAX,
+    ] {
+        let header = FrameHeader {
+            channel: Channel::Admin,
+            flags: 0,
+            message_type: message,
+            request_id: RequestId::new_random(),
+            metadata_len: 2,
+            body_len: 1,
+        };
+        let response = common::send_raw(&broker.admin_sock(), &header.encode()).await;
+        assert!(
+            response.is_none(),
+            "bodyless Admin frame must close before body read"
+        );
+    }
     broker.shutdown().await;
 }
 

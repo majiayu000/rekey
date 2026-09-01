@@ -92,7 +92,7 @@ async fn shared_agent_runtime_is_traversable_but_not_group_writable() {
 #[tokio::test(flavor = "multi_thread")]
 async fn sigterm_selection_closes_paused_remote_effect_admission() {
     let lifecycle = Arc::new(Lifecycle::new());
-    lifecycle.enter_running();
+    lifecycle.enter_running().unwrap();
     let paused = Arc::new(Barrier::new(2));
     let release = Arc::new(Barrier::new(2));
     let exchanges = Arc::new(AtomicUsize::new(0));
@@ -120,6 +120,7 @@ async fn sigterm_selection_closes_paused_remote_effect_admission() {
         std::future::pending::<()>().await;
         Ok(())
     });
+    let _unlock_owner = lifecycle.coordinate().await;
     assert_eq!(unsafe { libc::kill(libc::getpid(), libc::SIGTERM) }, 0);
     let selected = tokio::time::timeout(
         Duration::from_secs(1),
@@ -134,6 +135,7 @@ async fn sigterm_selection_closes_paused_remote_effect_admission() {
     .await
     .expect("SIGTERM stop selection must be bounded");
     assert!(matches!(selected, SelectedStop::Signal("sigterm")));
+    assert_eq!(lifecycle.reject_if_busy().unwrap_err().code(), "DRAINING");
 
     release.wait().await;
     admission.await.unwrap();

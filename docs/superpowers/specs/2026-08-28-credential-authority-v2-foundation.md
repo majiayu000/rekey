@@ -863,7 +863,9 @@ body           raw bytes
 - Admin 的单个 proof 或 secret 字段 <= 64 KiB；proof-only body <= 64 KiB + 5 bytes，
   proof+secret body <= 128 KiB + 9 bytes（包含 kind 和两个长度字段）。Broker 必须按
   message type 在分配前限制 body，并在 zero-copy decode 后再次检查每个字段；CLI 的
-  stdin 模式按每一行分别执行 64 KiB 上限，换行符不计入字段长度。
+  stdin 模式按每一行分别执行 64 KiB 上限，LF 或 CRLF 行终止符不计入字段长度。
+- bodyless Admin message 和 unknown Admin message 的 pre-allocation body limit 为 zero；
+  声明非空 body 时在读取 body 前关闭连接，不能先分配再由 dispatcher 拒绝。
 - Agent request body <= Action `request_max_bytes` 且全局 <= 1 MiB。
 - response body <= Action `response_max_bytes` 且全局 <= 4 MiB。
 - P0 `flags` 必须为 zero；任何非 zero flag 都按 unknown frame 处理。
@@ -910,7 +912,15 @@ create 必须先撤销新 session 并持久化 `session.revoked` 后返回 `AUTH
 token 的 session，也不存在 `session.revoked(success)` 与仍可用 session 并存。
 
 Unlock 在 lifecycle coordinator 已被 lock、idle lock 或 shutdown 占用时立即返回 busy /
-draining，不能排队到 drain 完成后重新打开 admission。
+draining，不能排队到 drain 完成后重新打开 admission。signal、fault 或 Admin Shutdown
+一旦被 central stop router 选中，stop-pending 必须 sticky 地关闭 remote-effect admission；
+并发 unlock 即使已经持有 coordinator，也不能再次进入 Running。只有 Admin Shutdown
+在验证阶段被明确拒绝时才清除 stop-pending 并恢复原 Running epoch。
+
+`SessionRevoke` 在 durable success audit 前先以 SessionRegistry 的同一互斥区将目标
+session 标记为 revoked，从该线性化点起不能再取得新 execution permit；audit 失败按既有
+fail-stop 合同 fault runtime。在线性化点前已经取得的 in-flight permit 仍按原 deadline
+完成，不能被误报为 revoke 后新接纳。
 
 ### 12.4 Agent Messages
 

@@ -33,6 +33,11 @@ fn secret_line_reader_applies_the_limit_to_each_line() {
     assert_eq!(lines[0].len(), limit);
     assert_eq!(lines[1].len(), limit);
 
+    let mut crlf = vec![b'p'; limit];
+    crlf.extend_from_slice(b"\r\n");
+    let lines = read_lines_bounded(crlf.as_slice(), 1, limit, "test input").unwrap();
+    assert_eq!(lines[0].len(), limit);
+
     let error =
         read_lines_bounded(vec![b'x'; limit + 1].as_slice(), 1, limit, "test input").unwrap_err();
     assert_eq!(error.code, "INVALID_FRAME");

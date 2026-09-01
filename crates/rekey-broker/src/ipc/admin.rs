@@ -48,7 +48,7 @@ fn admin_body_limit(message_type: u16) -> u32 {
         | admin_msg::BACKUP
         | admin_msg::SHUTDOWN
         | admin_msg::POLICY_ACTIVATE => ipc::ADMIN_PROOF_BODY_MAX_BYTES,
-        _ => ipc::ADMIN_SECRET_BODY_MAX_BYTES,
+        _ => 0,
     }
 }
 
@@ -452,6 +452,7 @@ async fn dispatch(
             )
             .await?;
             reject_if_deadline_elapsed(deadline)?;
+            let existed = ctx.sessions.revoke(revoke.session_id);
             if let Err(err) = ctx
                 .authority
                 .commit_audit_before(
@@ -463,7 +464,6 @@ async fn dispatch(
                 ctx.request_fault();
                 return Err(err.into());
             }
-            let existed = ctx.sessions.revoke(revoke.session_id);
             reject_if_deadline_elapsed(deadline)?;
             Ok((json(&serde_json::json!({"revoked": existed}))?, Vec::new()))
         }
