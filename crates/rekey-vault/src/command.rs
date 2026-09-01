@@ -150,6 +150,7 @@ pub enum AuthorityCommand {
     },
     AppendAudit {
         draft: AuditDraft,
+        not_after: Option<Instant>,
         reply: Reply<()>,
     },
     Backup {

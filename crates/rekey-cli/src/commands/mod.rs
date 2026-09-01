@@ -100,8 +100,8 @@ fn prompt_secret(prompt: &str) -> Result<Zeroizing<Vec<u8>>, CliError> {
         rpassword::prompt_password(prompt)
             .map_err(|err| CliError::local("USAGE", format!("cannot read from tty: {err}")))?,
     );
-    if value.is_empty() {
-        return Err(CliError::local("USAGE", "empty input"));
+    if value.is_empty() || value.len() > ipc::ADMIN_SECRET_FIELD_MAX_BYTES as usize {
+        return Err(CliError::local("USAGE", "empty or oversized input"));
     }
     Ok(Zeroizing::new(value.as_bytes().to_vec()))
 }
@@ -149,7 +149,7 @@ fn stdin_lines(expected: usize) -> Result<Vec<Zeroizing<Vec<u8>>>, CliError> {
     read_lines_bounded(
         std::io::stdin().lock(),
         expected,
-        ipc::ADMIN_SECRET_BODY_MAX_BYTES as usize,
+        ipc::ADMIN_SECRET_FIELD_MAX_BYTES as usize,
         "stdin",
     )
 }
@@ -400,7 +400,7 @@ pub fn credential_add_github_app(
     recovery: bool,
     password_stdin: bool,
 ) -> Result<(), CliError> {
-    let limit = ipc::ADMIN_SECRET_BODY_MAX_BYTES as usize;
+    let limit = ipc::ADMIN_SECRET_FIELD_MAX_BYTES as usize;
     let secret = read_regular_file_bounded(file, limit, "GitHub App profile")?;
     if secret.is_empty() {
         return Err(CliError::local(

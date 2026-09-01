@@ -369,14 +369,18 @@ async fn dispatch(
                     }
                     CreateSessionError::Domain(err) => BrokerError::Domain(err),
                 })?;
-            if let Err(err) = ctx
-                .authority
-                .commit_audit(session_audit(event_type::SESSION_CREATED, session_id))
-                .await
+            if let Err(err) = authority_until(
+                deadline,
+                ctx.authority.commit_audit_before(
+                    session_audit(event_type::SESSION_CREATED, session_id),
+                    Some(deadline.into_std()),
+                ),
+            )
+            .await
             {
                 ctx.sessions.revoke(session_id);
                 ctx.request_fault();
-                return Err(err.into());
+                return Err(err);
             }
             let response = ipc::SessionCreatedResponse {
                 session_id,
@@ -416,18 +420,19 @@ async fn dispatch(
             )
             .await?;
             reject_if_deadline_elapsed(deadline)?;
-            let existed = ctx.sessions.revoke(revoke.session_id);
-            if let Err(err) = ctx
-                .authority
-                .commit_audit(session_audit(
-                    event_type::SESSION_REVOKED,
-                    revoke.session_id,
-                ))
-                .await
+            if let Err(err) = authority_until(
+                deadline,
+                ctx.authority.commit_audit_before(
+                    session_audit(event_type::SESSION_REVOKED, revoke.session_id),
+                    Some(deadline.into_std()),
+                ),
+            )
+            .await
             {
                 ctx.request_fault();
-                return Err(err.into());
+                return Err(err);
             }
+            let existed = ctx.sessions.revoke(revoke.session_id);
             Ok((json(&serde_json::json!({"revoked": existed}))?, Vec::new()))
         }
         admin_msg::BACKUP => {

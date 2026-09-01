@@ -88,7 +88,7 @@ async fn idle_timeout_locks() {
 }
 
 #[tokio::test]
-async fn terminal_audit_resets_idle_activity() {
+async fn successful_activity_audits_reset_idle_activity() {
     use rekey_domain::ids::RequestId;
     use rekey_vault::command::AuditDraft;
     use rekey_vault::model::{event_type, outcome};
@@ -96,27 +96,33 @@ async fn terminal_audit_resets_idle_activity() {
     let vault = common::init_test_vault();
     let (handle, join) = common::spawn(&vault.state_dir);
     handle.unlock(common::password_proof()).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(30)).await;
-    let before = handle.status().await.unwrap().idle_for_ms;
-    handle
-        .append_audit(AuditDraft {
-            request_id: Some(RequestId::new_random()),
-            session_id: None,
-            action_id: None,
-            action_version: None,
-            credential_id: None,
-            credential_version: None,
-            authorization: None,
-            event_type: event_type::EXECUTION_BLOCKED,
-            outcome: outcome::DENIED,
-            reason_code: "test-complete".to_owned(),
-            upstream_status: None,
-            latency_ms: None,
-        })
-        .await
-        .unwrap();
-    let after = handle.status().await.unwrap().idle_for_ms;
-    assert!(after < before, "terminal audit did not reset activity");
+    for (kind, audit_outcome) in [
+        (event_type::EXECUTION_BLOCKED, outcome::DENIED),
+        (event_type::SESSION_REVOKED, outcome::SUCCESS),
+        (event_type::POLICY_ACTIVATED, outcome::SUCCESS),
+    ] {
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let before = handle.status().await.unwrap().idle_for_ms;
+        handle
+            .append_audit(AuditDraft {
+                request_id: Some(RequestId::new_random()),
+                session_id: None,
+                action_id: None,
+                action_version: None,
+                credential_id: None,
+                credential_version: None,
+                authorization: None,
+                event_type: kind,
+                outcome: audit_outcome,
+                reason_code: "test-complete".to_owned(),
+                upstream_status: None,
+                latency_ms: None,
+            })
+            .await
+            .unwrap();
+        let after = handle.status().await.unwrap().idle_for_ms;
+        assert!(after < before, "{kind} audit did not reset activity");
+    }
     handle
         .shutdown(Some(common::password_proof()))
         .await

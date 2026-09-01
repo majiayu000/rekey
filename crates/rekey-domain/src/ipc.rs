@@ -15,7 +15,8 @@ pub const FRAME_MAGIC: [u8; 4] = *b"RKIP";
 pub const FRAME_VERSION: u16 = 1;
 pub const FRAME_HEADER_LEN: usize = 36;
 pub const METADATA_MAX_BYTES: u32 = 64 * 1024;
-pub const ADMIN_SECRET_BODY_MAX_BYTES: u32 = 64 * 1024;
+pub const ADMIN_SECRET_FIELD_MAX_BYTES: u32 = 64 * 1024;
+pub const ADMIN_SECRET_BODY_MAX_BYTES: u32 = 2 * ADMIN_SECRET_FIELD_MAX_BYTES + 9;
 pub const AGENT_BODY_MAX_BYTES: u32 = 1024 * 1024;
 pub const RESPONSE_BODY_MAX_BYTES: u32 = 4 * 1024 * 1024;
 
@@ -476,5 +477,15 @@ mod tests {
         assert_eq!(kind, ProofKind::Recovery);
         assert_eq!(proof, b"rk");
         assert!(parse_proof_body(&only[..3]).is_err());
+    }
+
+    #[test]
+    fn maximum_admin_proof_and_secret_fit_the_body_limit() {
+        let proof = vec![b'p'; ADMIN_SECRET_FIELD_MAX_BYTES as usize];
+        let secret = vec![b's'; ADMIN_SECRET_FIELD_MAX_BYTES as usize];
+        let mut body = Vec::with_capacity(ADMIN_SECRET_BODY_MAX_BYTES as usize);
+        encode_proof_and_secret_body(ProofKind::Password, &proof, &secret, &mut body);
+        assert_eq!(body.len(), ADMIN_SECRET_BODY_MAX_BYTES as usize);
+        assert!(parse_proof_and_secret_body(&body).is_ok());
     }
 }

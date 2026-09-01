@@ -860,7 +860,8 @@ body           raw bytes
 限制：
 
 - metadata <= 64 KiB。
-- Admin secret body <= 64 KiB。
+- Admin 的单个 proof 或 secret 字段 <= 64 KiB；proof-only body <= 64 KiB + 5 bytes，
+  proof+secret body <= 128 KiB + 9 bytes（包含 kind 和两个长度字段）。
 - Agent request body <= Action `request_max_bytes` 且全局 <= 1 MiB。
 - response body <= Action `response_max_bytes` 且全局 <= 4 MiB。
 - P0 `flags` 必须为 zero；任何非 zero flag 都按 unknown frame 处理。
@@ -1551,7 +1552,8 @@ connector registry、provider SDK、控制面或 Agent 可调用的签名/换票
   `std::fs::read` 创建普通 `Vec`。Admin 收到 add 后先以现有 Authority step-up 验证 proof，
   验证通过才允许 base64/RSA profile 解析，最后由 credential mutation 再次验证 proof 并
   原子持久化；错误 proof 不能触发昂贵的 RSA parse。CLI profile buffer 一次预分配
-  `limit+1`，proof+secret IPC body 按 `1+4+proof.len+4+secret.len` 一次精确预分配；编码与
+  `limit+1`，proof 也受相同的 64 KiB 单字段上限约束，proof+secret IPC body 按
+  `1+4+proof.len+4+secret.len` 一次精确预分配；编码与
   bounded read 不能通过 reallocation 留下旧 heap 副本。
 - Agent API 不变，仍只有 `ExecuteFixedHttpAction`。只有 action 精确等于
   `GET https://api.github.com/installation/repositories`、无 Agent body/content-type/
@@ -1681,7 +1683,7 @@ P0 目标不是 benchmark parity，而是有界行为：
 | Broker simultaneous IPC connections | 128 default: 120 Agent + 8 Admin reserved; one channel cannot consume the other's capacity |
 | Per-session concurrent executions | 4 default |
 | Admin metadata | 64 KiB |
-| Credential input | 64 KiB |
+| Admin proof / credential input | each 64 KiB; encoded proof+secret body max 128 KiB + 9 bytes |
 | Agent request body | Action limit, max 1 MiB |
 | Agent response body | Action limit, max 4 MiB |
 | Upstream timeout | max 120s |

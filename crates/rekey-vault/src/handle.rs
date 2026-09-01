@@ -278,15 +278,31 @@ impl AuthorityHandle {
     }
 
     pub async fn append_audit(&self, draft: AuditDraft) -> Result<(), AuthorityError> {
-        call!(self, |reply| AuthorityCommand::AppendAudit { draft, reply })
+        call!(self, |reply| AuthorityCommand::AppendAudit {
+            draft,
+            not_after: None,
+            reply
+        })
     }
 
     /// Wait for queue capacity, then commit. Used for terminal audits after
     /// `execution.started` so a full command queue cannot drop the pair.
     pub async fn commit_audit(&self, draft: AuditDraft) -> Result<(), AuthorityError> {
+        self.commit_audit_before(draft, None).await
+    }
+
+    pub async fn commit_audit_before(
+        &self,
+        draft: AuditDraft,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<(), AuthorityError> {
         let (tx, rx) = oneshot::channel();
         self.tx
-            .send(AuthorityCommand::AppendAudit { draft, reply: tx })
+            .send(AuthorityCommand::AppendAudit {
+                draft,
+                not_after,
+                reply: tx,
+            })
             .await
             .map_err(|_| AuthorityError::Faulted)?;
         rx.await.map_err(|_| AuthorityError::Faulted)?

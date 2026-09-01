@@ -317,15 +317,25 @@ impl Worker {
                 self.touch_if_ok(&result);
                 let _ = reply.send(result);
             }
-            AuthorityCommand::AppendAudit { draft, reply } => {
+            AuthorityCommand::AppendAudit {
+                draft,
+                not_after,
+                reply,
+            } => {
                 let refreshes_idle = matches!(
                     draft.event_type,
                     event_type::EXECUTION_FINISHED
                         | event_type::EXECUTION_BLOCKED
                         | event_type::EXECUTION_INDETERMINATE
                         | event_type::SESSION_CREATED
+                        | event_type::SESSION_REVOKED
+                        | event_type::POLICY_ACTIVATED
                 );
-                let result = self.append_audit(draft);
+                let result = if mutation_expired(not_after) {
+                    Err(AuthorityError::AuthorityBusy)
+                } else {
+                    self.append_audit(draft)
+                };
                 if refreshes_idle {
                     self.touch_if_ok(&result);
                 }

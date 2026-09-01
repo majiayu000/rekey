@@ -11,12 +11,12 @@ use rekey_domain::action::{
     RequestPolicy, ResponsePolicy,
 };
 use rekey_domain::credential::{CredentialKind, CredentialLabel, CredentialState};
-use rekey_vault::command::{ActionDefinition, UnlockProof};
+use rekey_vault::command::{ActionDefinition, AuditDraft, UnlockProof};
 use rekey_vault::crypto::aad::{AadPurpose, AadV1};
 use rekey_vault::crypto::aead;
 use rekey_vault::crypto::kdf::Argon2Params;
 use rekey_vault::error::AuthorityError;
-use rekey_vault::model::{ActionState, WrapperKind};
+use rekey_vault::model::{ActionState, WrapperKind, event_type, outcome};
 use rekey_vault::secret::SecretInput;
 use rekey_vault::store::SqliteRecordStore;
 use zeroize::Zeroize;
@@ -64,11 +64,42 @@ async fn expired_mutation_command_never_commits_later() {
     assert!(matches!(error, AuthorityError::AuthorityBusy));
     assert!(handle.credential_list().await.unwrap().is_empty());
 
+    let audit_error = handle
+        .commit_audit_before(
+            AuditDraft {
+                request_id: None,
+                session_id: Some(rekey_domain::ids::SessionId::new_random()),
+                action_id: None,
+                action_version: None,
+                credential_id: None,
+                credential_version: None,
+                authorization: None,
+                event_type: event_type::SESSION_CREATED,
+                outcome: outcome::SUCCESS,
+                reason_code: "expired-test".to_owned(),
+                upstream_status: None,
+                latency_ms: None,
+            },
+            Some(std::time::Instant::now()),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(audit_error, AuthorityError::AuthorityBusy));
+
     handle
         .shutdown(Some(common::password_proof()))
         .await
         .unwrap();
     join.join().unwrap();
+
+    let store = SqliteRecordStore::open(&rekey_vault::paths::vault_db(&vault.state_dir)).unwrap();
+    assert!(
+        !store
+            .audit_event_types()
+            .unwrap()
+            .iter()
+            .any(|kind| kind == event_type::SESSION_CREATED)
+    );
 }
 
 #[tokio::test]
