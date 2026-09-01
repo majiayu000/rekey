@@ -131,12 +131,16 @@ fn parse_duration(input: &str) -> Result<Duration, RekeydError> {
     let n: u64 = value
         .parse()
         .map_err(|_| usage(format!("invalid duration: {input}")))?;
-    match unit {
-        "s" => Ok(Duration::from_secs(n)),
-        "m" => Ok(Duration::from_secs(n * 60)),
-        "h" => Ok(Duration::from_secs(n * 3600)),
-        _ => Err(usage(format!("invalid duration unit in: {input}"))),
-    }
+    let multiplier = match unit {
+        "s" => 1,
+        "m" => 60,
+        "h" => 3_600,
+        _ => return Err(usage(format!("invalid duration unit in: {input}"))),
+    };
+    let seconds = n
+        .checked_mul(multiplier)
+        .ok_or_else(|| usage(format!("invalid duration: {input}")))?;
+    Ok(Duration::from_secs(seconds))
 }
 
 fn read_stdin_secret_line() -> Result<SecretInput, RekeydError> {
@@ -319,5 +323,16 @@ fn main() {
             message = %err
         );
         std::process::exit(exit_code);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn duration_parser_rejects_overflow() {
+        assert_eq!(parse_duration("1h").unwrap(), Duration::from_secs(3_600));
+        assert!(parse_duration("4611686018427387905m").is_err());
     }
 }

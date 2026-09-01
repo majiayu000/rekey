@@ -82,6 +82,12 @@ fn cli_end_to_end() {
     assert_eq!(output.status, 0, "init failed: {}", output.stderr);
     assert!(output.stdout.contains("RKREC1-"), "recovery key not shown");
     assert!(!output.stdout.contains(PASSWORD));
+    let recovery_key = output
+        .stdout
+        .lines()
+        .find(|line| line.starts_with("RKREC1-"))
+        .expect("recovery key line")
+        .to_owned();
 
     // Second init must refuse.
     let output = run(
@@ -130,7 +136,7 @@ fn cli_end_to_end() {
     );
     assert_eq!(output.status, 0, "{}", output.stderr);
 
-    // credential add via stdin secrets (password line, secret line).
+    // Recovery step-up works for a mutation with a second Secret body.
     let output = run(
         &rekey_bin(),
         &[
@@ -139,9 +145,10 @@ fn cli_end_to_end() {
             "credential",
             "add",
             "cli-cred",
+            "--recovery",
             "--stdin-secrets",
         ],
-        Some(&format!("{PASSWORD}\n{SECRET}\n")),
+        Some(&format!("{recovery_key}\n{SECRET}\n")),
     );
     assert_eq!(output.status, 0, "{}", output.stderr);
     let credential_id = serde_json::from_str::<serde_json::Value>(&output.stdout).unwrap()["id"]
@@ -252,7 +259,7 @@ fn cli_end_to_end() {
     // No secret ever reaches stdout/stderr of any command after add.
     assert!(!output.stdout.contains(SECRET) && !output.stderr.contains(SECRET));
 
-    // backup writes a receipt.
+    // Recovery step-up also works for a proof-only mutation.
     let backup_path = dir.path().join("out.rkbackup");
     let output = run(
         &rekey_bin(),
@@ -262,9 +269,10 @@ fn cli_end_to_end() {
             "backup",
             "--output",
             backup_path.to_str().unwrap(),
+            "--recovery",
             "--password-stdin",
         ],
-        Some(&format!("{PASSWORD}\n")),
+        Some(&format!("{recovery_key}\n")),
     );
     assert_eq!(output.status, 0, "{}", output.stderr);
     assert!(backup_path.exists());

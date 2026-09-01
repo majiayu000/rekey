@@ -94,6 +94,12 @@ impl StartedAuditGuard {
             .map_err(BrokerError::Authority)
     }
 
+    pub(crate) fn submit_blocked(&mut self, reason: &'static str) {
+        self.terminal_submitted = true;
+        self.queue
+            .enqueue_terminal(execution_blocked(&self.ctx, reason), None);
+    }
+
     pub(crate) async fn indeterminate(&mut self, reason: &'static str) -> Result<(), BrokerError> {
         self.commit_terminal(execution_indeterminate(&self.ctx, reason))
             .await
@@ -464,6 +470,33 @@ mod tests {
                 ("execution.blocked", "denied", "abandoned".into())
             );
         }
+        drop(tracker);
+        worker.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn deferred_blocked_terminal_is_queued_exactly_once() {
+        let committed = Arc::new(Mutex::new(Vec::new()));
+        let (tracker, worker) = spawn_terminal_worker_with({
+            let committed = Arc::clone(&committed);
+            move |draft| {
+                committed.lock().unwrap().push((
+                    draft.event_type,
+                    draft.outcome,
+                    draft.reason_code.clone(),
+                ));
+                async { Ok(()) }
+            }
+        });
+        let mut guard = StartedAuditGuard::new_for_test(&tracker, execution_context());
+        guard.submit_blocked("upstream-timeout");
+        drop(guard);
+        tracker.wait_idle(Duration::from_secs(1)).await.unwrap();
+
+        assert_eq!(
+            committed.lock().unwrap().as_slice(),
+            &[("execution.blocked", "denied", "upstream-timeout".to_owned())]
+        );
         drop(tracker);
         worker.await.unwrap();
     }

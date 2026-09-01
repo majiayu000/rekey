@@ -475,7 +475,7 @@ impl ActionExecutor {
         .await
         {
             if matches!(err, BrokerError::Upstream("upstream-timeout")) {
-                started.blocked("upstream-timeout").await?;
+                started.submit_blocked("upstream-timeout");
             }
             return Err(err);
         }

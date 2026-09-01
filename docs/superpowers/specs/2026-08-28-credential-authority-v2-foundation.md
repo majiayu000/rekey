@@ -491,7 +491,7 @@ active 状态。G1 不宣称 rollback freshness；只有 G2 阻止 Agent 访问�
 - 显示为分组 uppercase base32，附加 4-byte checksum，格式版本前缀 `RKREC1-`。
 - parser 忽略 ASCII `-` 和空格，但严格检查版本、长度和 checksum。
 - recovery key 不写数据库、配置、日志或 telemetry；数据库只存 salt 和 wrapped VRK。
-- Foundation 只允许 recovery key 解锁运行中的 Broker，或验证离线 backup restore；它不创建新 password wrapper、不禁用旧 wrapper，也不构成密码重置。修改密码和 wrapper 替换属于后续独立能力。
+- Foundation 只允许 recovery key 解锁运行中的 Broker、作为显式 Admin step-up proof，或验证离线 backup restore；它不创建新 password wrapper、不禁用旧 wrapper，也不构成密码重置。修改密码和 wrapper 替换属于后续独立能力。
 
 ### 9.6 Secret Memory Types
 
@@ -975,7 +975,7 @@ rekey shutdown
 输入规则：
 
 - password、recovery key、Credential value 默认使用 hidden TTY prompt。
-- 自动化场景只允许显式 stdin 模式：密码或 recovery key 使用 `--password-stdin`，credential add/rotate 的 step-up proof 与 Credential value 使用 `--stdin-secrets`；不提供秘密值参数和环境变量。
+- 自动化场景只允许显式 stdin 模式：密码或 recovery key 使用 `--password-stdin`，credential add/rotate 的 step-up proof 与 Credential value 使用 `--stdin-secrets`；Admin mutation 使用 recovery proof 时还必须显式传 `--recovery`。不提供秘密值参数和环境变量。
 - `--body-file` 只在 Agent CLI 进程读取普通 Action body；Broker 不接受文件路径。
 - Capability 可以通过参数或 stdin 传递，因为它是短期 Agent 权能；CLI 帮助明确 shell history 风险并推荐 stdin。
 - `serve` 前台运行，locked 启动。P0 没有 `--daemon`；systemd/launchd integration 进入 P1。

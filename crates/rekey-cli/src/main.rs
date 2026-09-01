@@ -7,7 +7,17 @@ mod commands;
 
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
+
+#[derive(Args)]
+struct StepUpArgs {
+    /// Use the recovery key for step-up proof; does not reset the password.
+    #[arg(long)]
+    recovery: bool,
+    /// Read the step-up proof from stdin instead of the TTY.
+    #[arg(long)]
+    password_stdin: bool,
+}
 
 #[derive(Parser)]
 #[command(
@@ -65,8 +75,8 @@ enum Command {
     Status,
     /// Stop the running broker (step-up proof required while unlocked).
     Shutdown {
-        #[arg(long)]
-        password_stdin: bool,
+        #[command(flatten)]
+        step_up: StepUpArgs,
     },
     /// Credential administration.
     #[command(subcommand)]
@@ -99,8 +109,8 @@ enum Command {
     Backup {
         #[arg(long)]
         output: PathBuf,
-        #[arg(long)]
-        password_stdin: bool,
+        #[command(flatten)]
+        step_up: StepUpArgs,
     },
 }
 
@@ -109,7 +119,10 @@ enum CredentialCommand {
     /// Add a credential (prompts for step-up password and the value).
     Add {
         label: String,
-        /// Read step-up password (line 1) and credential value (line 2) from stdin.
+        /// Use the recovery key for step-up proof; does not reset the password.
+        #[arg(long)]
+        recovery: bool,
+        /// Read step-up proof (line 1) and credential value (line 2) from stdin.
         #[arg(long)]
         stdin_secrets: bool,
     },
@@ -119,20 +132,23 @@ enum CredentialCommand {
         /// JSON containing the private key and fixed GitHub identifiers.
         #[arg(long)]
         file: PathBuf,
-        #[arg(long)]
-        password_stdin: bool,
+        #[command(flatten)]
+        step_up: StepUpArgs,
     },
     List,
     Rotate {
         credential_id: String,
-        /// Read step-up password (line 1) and credential value (line 2) from stdin.
+        /// Use the recovery key for step-up proof; does not reset the password.
+        #[arg(long)]
+        recovery: bool,
+        /// Read step-up proof (line 1) and credential value (line 2) from stdin.
         #[arg(long)]
         stdin_secrets: bool,
     },
     Revoke {
         credential_id: String,
-        #[arg(long)]
-        password_stdin: bool,
+        #[command(flatten)]
+        step_up: StepUpArgs,
     },
 }
 
@@ -142,22 +158,22 @@ enum ActionCommand {
     Create {
         #[arg(long)]
         file: PathBuf,
-        #[arg(long)]
-        password_stdin: bool,
+        #[command(flatten)]
+        step_up: StepUpArgs,
     },
     /// Create a new immutable version of an existing action.
     Update {
         action_id: String,
         #[arg(long)]
         file: PathBuf,
-        #[arg(long)]
-        password_stdin: bool,
+        #[command(flatten)]
+        step_up: StepUpArgs,
     },
     List,
     Disable {
         action_id: String,
-        #[arg(long)]
-        password_stdin: bool,
+        #[command(flatten)]
+        step_up: StepUpArgs,
     },
 }
 
@@ -172,13 +188,13 @@ enum SessionCommand {
         ttl: String,
         #[arg(long, default_value_t = 100)]
         max_uses: u32,
-        #[arg(long)]
-        password_stdin: bool,
+        #[command(flatten)]
+        step_up: StepUpArgs,
     },
     Revoke {
         session_id: String,
-        #[arg(long)]
-        password_stdin: bool,
+        #[command(flatten)]
+        step_up: StepUpArgs,
     },
 }
 
@@ -188,8 +204,8 @@ enum PolicyCommand {
     Activate {
         #[arg(long)]
         file: PathBuf,
-        #[arg(long)]
-        password_stdin: bool,
+        #[command(flatten)]
+        step_up: StepUpArgs,
     },
     /// Show the active policy version and digest.
     Status,
@@ -237,60 +253,96 @@ fn main() {
         } => commands::unlock(&state_dir, recovery, password_stdin),
         Command::Lock => commands::lock(&state_dir),
         Command::Status => commands::status(&state_dir),
-        Command::Shutdown { password_stdin } => commands::shutdown(&state_dir, password_stdin),
+        Command::Shutdown { step_up } => {
+            commands::shutdown(&state_dir, step_up.recovery, step_up.password_stdin)
+        }
         Command::Credential(cmd) => match cmd {
             CredentialCommand::Add {
                 label,
+                recovery,
                 stdin_secrets,
-            } => commands::credential_add(&state_dir, &label, stdin_secrets),
+            } => commands::credential_add(&state_dir, &label, recovery, stdin_secrets),
             CredentialCommand::AddGithubApp {
                 label,
                 file,
-                password_stdin,
-            } => commands::credential_add_github_app(&state_dir, &label, &file, password_stdin),
+                step_up,
+            } => commands::credential_add_github_app(
+                &state_dir,
+                &label,
+                &file,
+                step_up.recovery,
+                step_up.password_stdin,
+            ),
             CredentialCommand::List => commands::credential_list(&state_dir),
             CredentialCommand::Rotate {
                 credential_id,
+                recovery,
                 stdin_secrets,
-            } => commands::credential_rotate(&state_dir, &credential_id, stdin_secrets),
+            } => commands::credential_rotate(&state_dir, &credential_id, recovery, stdin_secrets),
             CredentialCommand::Revoke {
                 credential_id,
-                password_stdin,
-            } => commands::credential_revoke(&state_dir, &credential_id, password_stdin),
+                step_up,
+            } => commands::credential_revoke(
+                &state_dir,
+                &credential_id,
+                step_up.recovery,
+                step_up.password_stdin,
+            ),
         },
         Command::Action(cmd) => match cmd {
-            ActionCommand::Create {
-                file,
-                password_stdin,
-            } => commands::action_create(&state_dir, &file, password_stdin),
+            ActionCommand::Create { file, step_up } => {
+                commands::action_create(&state_dir, &file, step_up.recovery, step_up.password_stdin)
+            }
             ActionCommand::Update {
                 action_id,
                 file,
-                password_stdin,
-            } => commands::action_update(&state_dir, &action_id, &file, password_stdin),
+                step_up,
+            } => commands::action_update(
+                &state_dir,
+                &action_id,
+                &file,
+                step_up.recovery,
+                step_up.password_stdin,
+            ),
             ActionCommand::List => commands::action_list(&state_dir),
-            ActionCommand::Disable {
-                action_id,
-                password_stdin,
-            } => commands::action_disable(&state_dir, &action_id, password_stdin),
+            ActionCommand::Disable { action_id, step_up } => commands::action_disable(
+                &state_dir,
+                &action_id,
+                step_up.recovery,
+                step_up.password_stdin,
+            ),
         },
         Command::Session(cmd) => match cmd {
             SessionCommand::Create {
                 actions,
                 ttl,
                 max_uses,
-                password_stdin,
-            } => commands::session_create(&state_dir, &actions, &ttl, max_uses, password_stdin),
+                step_up,
+            } => commands::session_create(
+                &state_dir,
+                &actions,
+                &ttl,
+                max_uses,
+                step_up.recovery,
+                step_up.password_stdin,
+            ),
             SessionCommand::Revoke {
                 session_id,
-                password_stdin,
-            } => commands::session_revoke(&state_dir, &session_id, password_stdin),
+                step_up,
+            } => commands::session_revoke(
+                &state_dir,
+                &session_id,
+                step_up.recovery,
+                step_up.password_stdin,
+            ),
         },
         Command::Policy(cmd) => match cmd {
-            PolicyCommand::Activate {
-                file,
-                password_stdin,
-            } => commands::policy_activate(&state_dir, &file, password_stdin),
+            PolicyCommand::Activate { file, step_up } => commands::policy_activate(
+                &state_dir,
+                &file,
+                step_up.recovery,
+                step_up.password_stdin,
+            ),
             PolicyCommand::Status => commands::policy_status(&state_dir),
         },
         Command::Execute {
@@ -307,10 +359,12 @@ fn main() {
             content_type,
             &headers,
         ),
-        Command::Backup {
-            output,
-            password_stdin,
-        } => commands::backup(&state_dir, &output, password_stdin),
+        Command::Backup { output, step_up } => commands::backup(
+            &state_dir,
+            &output,
+            step_up.recovery,
+            step_up.password_stdin,
+        ),
     };
     if let Err(err) = result {
         eprintln!("error [{}]: {}", err.code, err.message);
