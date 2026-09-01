@@ -237,7 +237,7 @@ rg -n 'docs/product-foundation|product-foundation/' README.md AGENTS.md CLAUDE.m
 
 ### M-04 完成独立密码学与持久化 Review
 
-**状态：** `[ ]`　**优先级：** 阻塞合并　**依赖：** M-01
+**状态：** `[x]`　**优先级：** 阻塞合并　**依赖：** M-01
 
 **Review 范围：**
 
@@ -259,9 +259,17 @@ rg -n 'docs/product-foundation|product-foundation/' README.md AGENTS.md CLAUDE.m
 
 **证据：** PR Review 或独立报告路径、findings ledger、修复 SHA、测试链接。
 
+- 完成日期：2026-09-01
+- 修复提交：`3b2b3e60cd8b787678871de03a75671b8b534460`
+- Reviewer：Codex 当前 closeout-review 会话；独立于既有核心实现，但不是第三方人工审计
+- Review：[v2 closeout security review](../../security/2026-09-01-v2-closeout-independent-review.md)
+- 结果：PASS；Critical 0、High 0、Medium 1 fixed / 0 open、Low 0 open
+- 验证：`cargo test -p rekey-vault`、`scripts/p0-acceptance.sh`、`scripts/p0-durability.sh`、`cargo test --workspace`、`cargo audit`
+- 遗留限制：完整有效数据库快照回放在 G1 中仍不可检测，未误报为已实现
+
 ### M-05 完成独立 IPC、身份与生命周期 Review
 
-**状态：** `[ ]`　**优先级：** 阻塞合并　**依赖：** 无
+**状态：** `[x]`　**优先级：** 阻塞合并　**依赖：** 无
 
 **Review 范围：**
 
@@ -283,9 +291,16 @@ rg -n 'docs/product-foundation|product-foundation/' README.md AGENTS.md CLAUDE.m
 
 **证据：** Review 记录、相关测试和 CI run。
 
+- 完成日期：2026-09-01
+- 修复提交：`3b2b3e60cd8b787678871de03a75671b8b534460`
+- Review：[v2 closeout security review](../../security/2026-09-01-v2-closeout-independent-review.md)
+- 结果：PASS；Critical 0、High 0、Medium 1 fixed / 0 open、Low 2 fixed / 0 open
+- 验证：`cargo test -p rekey-broker`、`cargo test -p rekey-cli --test malicious_broker`、`cargo test --workspace`；Linux G2 仍以 CI reference job 为限
+- 遗留限制：本报告不是 M-10 所需的独立 GitHub `Approved`；G2 证据不外推到默认部署、macOS、host root 或内核攻击者
+
 ### M-06 完成独立执行、SSRF、Secret Sealing 与 GitHub App Review
 
-**状态：** `[ ]`　**优先级：** 阻塞合并　**依赖：** 无
+**状态：** `[x]`　**优先级：** 阻塞合并　**依赖：** 无
 
 **Review 范围：**
 
@@ -306,6 +321,13 @@ rg -n 'docs/product-foundation|product-foundation/' README.md AGENTS.md CLAUDE.m
 5. Critical/High findings 为 0；其余 findings 有处置。
 
 **证据：** Review 记录、攻击测试、live provider 证据范围说明。
+
+- 完成日期：2026-09-01
+- 修复提交：`3b2b3e60cd8b787678871de03a75671b8b534460`
+- Review：[v2 closeout security review](../../security/2026-09-01-v2-closeout-independent-review.md)
+- 结果：PASS；Critical 0、High 0、Medium 0 open、Low 1 fixed / 0 open
+- 验证：`scripts/p0-acceptance.sh`、`scripts/p1-streaming-sealing.sh`、`scripts/p2-github-app.sh`、`upstream_screened`、`reflected_secret`
+- 遗留限制：live provider 证据仍只限 Feature Truth Matrix 记录的一次 disposable GitHub App/repository；不是通用 Connector 或发布证据
 
 ### M-07 修正 PR 描述和证据陈述
 
@@ -356,7 +378,7 @@ rg -n 'docs/product-foundation|product-foundation/' README.md AGENTS.md CLAUDE.m
 
 ### M-09 处理旧 PR #9 和 v1 遗留队列
 
-**状态：** `[ ]`　**优先级：** 合并前建议　**依赖：** M-08
+**状态：** `[x]`　**优先级：** 合并前建议　**依赖：** M-08
 
 **验收标准：**
 
@@ -366,6 +388,12 @@ rg -n 'docs/product-foundation|product-foundation/' README.md AGENTS.md CLAUDE.m
 4. 没有开放 issue/PR 继续把 MITM、CA、dashboard 或 passthrough 当作当前产品事实。
 
 **证据：** PR #9 最终状态、比对说明或对应 v2 修复 SHA。
+
+- 完成日期：2026-09-01（先于 M-08 完成，不涉及历史改写）
+- PR 状态：[PR #9](https://github.com/majiayu000/rekey/pull/9) 已标记 superseded 并关闭
+- 比对：PR #9 的 CI、`rekey-ca`、`rekey-proxy` 和 v1 CLI 修复均已由 v2 workspace/安全门替代，不整体合并 v1 拓扑
+- 队列复查：开放 PR 仅 #10；开放 issue 为 0；没有其他开放项继续把 MITM、CA、dashboard 或 passthrough 当作当前产品事实
+- 遗留限制：M-08 若改变最终 tree，须重新确认本项内容比对仍成立
 
 ### M-10 最终合并验收
 
