@@ -81,47 +81,31 @@ async fn reject_over_capacity(mut stream: UnixStream, channel: Channel) {
             return;
         }
     };
-    match tokio::time::timeout_at(
-        deadline,
-        crate::ipc::frame::write_error(
-            &mut stream,
-            channel,
-            header.request_id,
-            "AUTHORITY_BUSY",
-            "connection capacity exhausted",
-            true,
-        ),
+    match crate::ipc::frame::write_error(
+        &mut stream,
+        channel,
+        header.request_id,
+        "AUTHORITY_BUSY",
+        "connection capacity exhausted",
+        true,
     )
     .await
     {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => {
+        Ok(()) => {}
+        Err(error) => {
             tracing::debug!(event = "runtime.capacity_reply_write_failed", %error);
-        }
-        Err(_) => {
-            tracing::debug!(event = "runtime.capacity_reply_write_timeout");
+            return;
         }
     }
-    let drain_deadline = tokio::time::Instant::now() + crate::ipc::frame::FRAME_IO_TIMEOUT;
     let mut buffer = Zeroizing::new([0u8; 8 * 1024]);
-    if let Err(error) = drain_exact_until(
-        &mut stream,
-        header.metadata_len,
-        &mut buffer[..],
-        drain_deadline,
-    )
-    .await
+    if let Err(error) =
+        drain_exact_until(&mut stream, header.metadata_len, &mut buffer[..], deadline).await
     {
         tracing::debug!(event = "runtime.capacity_reply_metadata_drain_failed", %error);
         return;
     }
-    if let Err(error) = drain_exact_until(
-        &mut stream,
-        header.body_len,
-        &mut buffer[..],
-        drain_deadline,
-    )
-    .await
+    if let Err(error) =
+        drain_exact_until(&mut stream, header.body_len, &mut buffer[..], deadline).await
     {
         tracing::debug!(event = "runtime.capacity_reply_body_drain_failed", %error);
     }
