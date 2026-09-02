@@ -7,6 +7,7 @@ use rekey_domain::action::{
 use rekey_domain::credential::{CredentialKind, CredentialLabel, CredentialMetadata};
 use rekey_domain::ids::{ActionId, CredentialId, RequestId, SessionId, VaultId};
 use tokio::sync::oneshot;
+use zeroize::Zeroizing;
 
 use crate::error::AuthorityError;
 use crate::model::{ActionState, AuthorizationEvidence};
@@ -98,6 +99,17 @@ pub enum AuthorityCommand {
     VerifyProof {
         proof: UnlockProof,
         reply: Reply<()>,
+    },
+    PasswordChange {
+        proof: UnlockProof,
+        new_password: SecretInput,
+        not_after: Option<Instant>,
+        reply: Reply<()>,
+    },
+    RecoveryRotate {
+        password: SecretInput,
+        not_after: Option<Instant>,
+        reply: Reply<Zeroizing<String>>,
     },
     CredentialAdd {
         label: CredentialLabel,

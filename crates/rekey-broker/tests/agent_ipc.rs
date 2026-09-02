@@ -53,6 +53,8 @@ async fn admin_messages_rejected_on_agent_socket() {
         admin_msg::CREDENTIAL_LIST,
         admin_msg::SESSION_CREATE,
         admin_msg::BACKUP,
+        admin_msg::PASSWORD_CHANGE,
+        admin_msg::RECOVERY_ROTATE,
         admin_msg::SHUTDOWN,
     ] {
         // Same numeric ids exist on the agent channel only for EXECUTE(1) and

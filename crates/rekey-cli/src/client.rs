@@ -322,7 +322,7 @@ impl Client {
         message_type: u16,
         metadata: &[u8],
         body: &[u8],
-    ) -> Result<(Vec<u8>, Vec<u8>), CliError> {
+    ) -> Result<(Vec<u8>, Zeroizing<Vec<u8>>), CliError> {
         let metadata_len = u32::try_from(metadata.len())
             .map_err(|_| CliError::local("INVALID_FRAME", "request metadata is too large"))?;
         if metadata_len > METADATA_MAX_BYTES {
@@ -384,7 +384,7 @@ impl Client {
         read_exact_until(&self.stream, &mut response_body, response_deadline)?;
 
         match response.message_type {
-            rekey_domain::ipc::resp_msg::OK => Ok((response_meta, response_body.to_vec())),
+            rekey_domain::ipc::resp_msg::OK => Ok((response_meta, response_body)),
             rekey_domain::ipc::resp_msg::ERROR => {
                 if !response_body.is_empty() {
                     return Err(CliError::local(

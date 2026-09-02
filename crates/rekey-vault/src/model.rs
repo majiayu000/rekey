@@ -191,6 +191,10 @@ pub mod event_type {
     pub const VAULT_UNLOCKED: &str = "vault.unlocked";
     pub const VAULT_UNLOCK_FAILED: &str = "vault.unlock_failed";
     pub const VAULT_LOCKED: &str = "vault.locked";
+    pub const VAULT_PASSWORD_CHANGED: &str = "vault.password_changed";
+    pub const VAULT_PASSWORD_CHANGE_FAILED: &str = "vault.password_change_failed";
+    pub const VAULT_RECOVERY_ROTATED: &str = "vault.recovery_rotated";
+    pub const VAULT_RECOVERY_ROTATION_FAILED: &str = "vault.recovery_rotation_failed";
     pub const CREDENTIAL_CREATED: &str = "credential.created";
     pub const CREDENTIAL_ROTATED: &str = "credential.rotated";
     pub const CREDENTIAL_REVOKED: &str = "credential.revoked";

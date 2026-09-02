@@ -12,6 +12,7 @@ use rekey_vault::error::AuthorityError;
 use rekey_vault::secret::SecretInput;
 
 const SECRET_CANARY: &[u8] = b"backup-canary-secret-0xDEADBEEF";
+const NEW_PASSWORD: &[u8] = b"replacement horse battery staple";
 
 fn file_sha256(path: &Path) -> String {
     rekey_vault::durable::sha256_file(path).unwrap()
@@ -102,6 +103,100 @@ async fn backup_roundtrip_and_restore() {
         .shutdown(Some(common::password_proof()))
         .await
         .unwrap();
+    join.join().unwrap();
+}
+
+#[tokio::test]
+async fn backups_keep_the_wrapper_generation_captured_at_snapshot_time() {
+    use rekey_vault::command::UnlockProof;
+
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+    let credential = handle
+        .credential_add(
+            CredentialLabel::new("wrapper-generation").unwrap(),
+            CredentialKind::OpaqueToken,
+            SecretInput::from_slice(SECRET_CANARY),
+            common::password_proof(),
+        )
+        .await
+        .unwrap();
+
+    let old_backup = vault.dir.path().join("before-wrapper-change.rkbackup");
+    let old_receipt = handle
+        .backup(old_backup.clone(), common::password_proof())
+        .await
+        .unwrap();
+    handle
+        .password_change_before(
+            common::password_proof(),
+            SecretInput::from_slice(NEW_PASSWORD),
+            None,
+        )
+        .await
+        .unwrap();
+    let new_recovery = handle
+        .recovery_rotate_before(SecretInput::from_slice(NEW_PASSWORD), None)
+        .await
+        .unwrap();
+    let new_password_proof = || UnlockProof::Password(SecretInput::from_slice(NEW_PASSWORD));
+    let new_backup = vault.dir.path().join("after-wrapper-change.rkbackup");
+    let new_receipt = handle
+        .backup(new_backup.clone(), new_password_proof())
+        .await
+        .unwrap();
+    handle.shutdown(Some(new_password_proof())).await.unwrap();
+    join.join().unwrap();
+
+    let old_target = vault.dir.path().join("restore-old-generation");
+    restore_vault(
+        &old_backup,
+        &old_target,
+        RestoreProof::RecoveryKey(SecretInput::from_slice(
+            vault.outcome.recovery_key_display.as_bytes(),
+        )),
+        &old_receipt.sha256_hex,
+    )
+    .unwrap();
+    let wrong_old_target = vault.dir.path().join("restore-old-with-new-password");
+    let error = restore_vault(
+        &old_backup,
+        &wrong_old_target,
+        RestoreProof::Password(SecretInput::from_slice(NEW_PASSWORD)),
+        &old_receipt.sha256_hex,
+    )
+    .unwrap_err();
+    assert!(matches!(error, AuthorityError::InvalidUnlockCredential));
+
+    let wrong_new_target = vault.dir.path().join("restore-new-with-old-recovery");
+    let error = restore_vault(
+        &new_backup,
+        &wrong_new_target,
+        RestoreProof::RecoveryKey(SecretInput::from_slice(
+            vault.outcome.recovery_key_display.as_bytes(),
+        )),
+        &new_receipt.sha256_hex,
+    )
+    .unwrap_err();
+    assert!(matches!(error, AuthorityError::InvalidUnlockCredential));
+
+    let new_target = vault.dir.path().join("restore-new-generation");
+    restore_vault(
+        &new_backup,
+        &new_target,
+        RestoreProof::RecoveryKey(SecretInput::from_slice(new_recovery.as_bytes())),
+        &new_receipt.sha256_hex,
+    )
+    .unwrap();
+    let (handle, join) = common::spawn(&new_target);
+    handle.unlock(new_password_proof()).await.unwrap();
+    handle
+        .prepare_credential(credential.id)
+        .await
+        .unwrap()
+        .consume(|bytes| assert_eq!(bytes, SECRET_CANARY));
+    handle.shutdown(Some(new_password_proof())).await.unwrap();
     join.join().unwrap();
 }
 

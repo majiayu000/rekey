@@ -22,6 +22,7 @@ use rekey_vault::model::{ActionState, event_type, outcome};
 use rekey_vault::secret::SecretInput;
 use tokio::net::UnixStream;
 use tokio::sync::watch;
+use zeroize::Zeroizing;
 
 use crate::error::BrokerError;
 use crate::ipc::frame::{FrameIoError, IncomingFrame, read_frame, write_error, write_ok};
@@ -30,12 +31,14 @@ use crate::session::CreateSessionError;
 
 const ADMIN_MUTATION_TIMEOUT: Duration = Duration::from_secs(25);
 
+mod password_lifecycle;
+
 fn admin_body_limit(message_type: u16) -> u32 {
     match message_type {
         admin_msg::UNLOCK_PASSWORD | admin_msg::UNLOCK_RECOVERY => {
             ipc::ADMIN_SECRET_FIELD_MAX_BYTES
         }
-        admin_msg::CREDENTIAL_ADD | admin_msg::CREDENTIAL_ROTATE => {
+        admin_msg::CREDENTIAL_ADD | admin_msg::CREDENTIAL_ROTATE | admin_msg::PASSWORD_CHANGE => {
             ipc::ADMIN_SECRET_BODY_MAX_BYTES
         }
         admin_msg::CREDENTIAL_REVOKE
@@ -46,7 +49,8 @@ fn admin_body_limit(message_type: u16) -> u32 {
         | admin_msg::SESSION_REVOKE
         | admin_msg::BACKUP
         | admin_msg::SHUTDOWN
-        | admin_msg::POLICY_ACTIVATE => ipc::ADMIN_PROOF_BODY_MAX_BYTES,
+        | admin_msg::POLICY_ACTIVATE
+        | admin_msg::RECOVERY_ROTATE => ipc::ADMIN_PROOF_BODY_MAX_BYTES,
         _ => 0,
     }
 }
@@ -128,6 +132,7 @@ pub async fn handle_admin_conn(
         let write_response = async {
             match response {
                 Ok((metadata, body)) => {
+                    let body = Zeroizing::new(body);
                     write_ok(&mut stream, Channel::Admin, request_id, &metadata, &body).await
                 }
                 Err(err) => {
@@ -189,6 +194,8 @@ async fn dispatch(
             ctx.unlock(proof).await?;
             Ok((json(&serde_json::json!({"unlocked": true}))?, Vec::new()))
         }
+        admin_msg::PASSWORD_CHANGE => password_lifecycle::handle_password_change(frame, ctx).await,
+        admin_msg::RECOVERY_ROTATE => password_lifecycle::handle_recovery_rotate(frame, ctx).await,
         admin_msg::CREDENTIAL_ADD => {
             let deadline = admin_mutation_deadline();
             ctx.lifecycle.reject_if_not_running()?;

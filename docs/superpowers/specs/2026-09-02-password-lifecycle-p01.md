@@ -132,6 +132,9 @@ request metadata. A RecoveryRotate frame selecting recovery proof is rejected as
 Admin mutation coordination and the 25-second deadline apply before Authority
 queue admission. Once the Authority begins the transaction, the Broker waits
 for its definitive result and does not cancel an in-progress wrapper mutation.
+The CLI uses a 130-second lifecycle response deadline for both commands so its
+ordinary 30-second Admin timeout cannot expire after an admitted mutation has
+committed or while the one-time recovery-key response is still pending.
 
 ## 7. Backup, restore, and lost-factor policy
 

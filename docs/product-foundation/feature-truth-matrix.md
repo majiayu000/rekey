@@ -69,7 +69,7 @@ topology or establish a general G2 release.
 | Linux container/namespace G2 reference | Adversarially Verified | — | `scripts/p1-linux-g2.sh` proved bounded UID/PID/ptrace/state/Admin/Docker-socket/direct-egress boundary plus approved production TLS execution on one LinuxKit arm64 environment; excludes kernel, daemon, runtime, VM host, native Linux and availability isolation |
 | P1.1 typed authorization kernel | Black-box Verified | `v2.0.0-alpha.1` | Default-deny in-memory snapshot, exact principal/action/resource/parameter rules, durable decision evidence; release `rekey` + real BrokerRuntime UDS/SQLite/local CA-TLS fixture |
 | Runtime-owned execution and central stop | Adversarially Verified | `v2.0.0-alpha.1` | Agent disconnect cannot own/cancel admitted effects; supervisor panic fail-stops; stop closes remote-effect admission before Authority waits; one absolute deadline; sticky cancellation is scoped to one Running epoch |
-| Password change/reset and wrapper replacement | Specified | — | P-01 behavior is specified in `docs/superpowers/specs/2026-09-02-password-lifecycle-p01.md`; implementation is pending |
+| Password and recovery wrapper lifecycle | Adversarially Verified | — | `rekey password change` and `rekey recovery rotate`; Authority, Admin IPC, and real CLI tests cover password/recovery step-up, old-factor rejection, response-loss retry, wrapper/audit rollback, backup generations, SIGKILL/reopen atomicity, and argv/env/log/file canaries; no VRK/DEK rotation, historical-backup invalidation, escrow, or release inclusion |
 | Approvals / signed or persistent policy | Specified | — | Not implemented |
 | Connector SDK / MCP / OAuth | Specified | — | P1+ |
 | Control plane / multi-tenant / SSO / HA / SIEM | Specified | — | Enterprise |

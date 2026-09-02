@@ -23,7 +23,7 @@ pub(super) fn storage(err: rusqlite::Error) -> AuthorityError {
     AuthorityError::storage(err)
 }
 
-fn commit_audited(tx: Transaction<'_>) -> Result<(), AuthorityError> {
+pub(super) fn commit_audited(tx: Transaction<'_>) -> Result<(), AuthorityError> {
     tx.commit().map_err(|_| AuthorityError::AuditCommitFailed)
 }
 
@@ -108,7 +108,7 @@ impl SqliteRecordStore {
         )
         .map_err(storage)?;
         for w in wrappers {
-            insert_wrapper(&tx, w)?;
+            super::wrapper::insert_wrapper(&tx, w)?;
         }
         super::audit::insert(&tx, &audit)?;
         commit_audited(tx)
@@ -552,27 +552,6 @@ impl SqliteRecordStore {
             .map_err(|_| AuthorityError::BackupFailed)?;
         Ok(())
     }
-}
-
-fn insert_wrapper(tx: &Transaction<'_>, w: &KeyWrapperRecord) -> Result<(), AuthorityError> {
-    tx.execute(
-        "INSERT INTO key_wrappers (wrapper_id, wrapper_kind, state, kdf_algorithm, kdf_params_json, salt, nonce, wrapped_vrk, created_at_ms, disabled_at_ms)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-        params![
-            w.wrapper_id.as_bytes().as_slice(),
-            w.kind.as_str(),
-            w.state.as_str(),
-            w.kdf_algorithm,
-            w.kdf_params_json,
-            w.salt.as_slice(),
-            w.nonce.as_slice(),
-            w.wrapped_vrk,
-            w.created_at_ms,
-            w.disabled_at_ms,
-        ],
-    )
-    .map_err(storage)?;
-    Ok(())
 }
 
 fn insert_version(tx: &Transaction<'_>, v: &CredentialVersionRecord) -> Result<(), AuthorityError> {

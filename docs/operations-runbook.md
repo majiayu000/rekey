@@ -92,9 +92,18 @@ binaries plus their matching pre-upgrade backup restored into an empty path.
 
 ## Lost keys
 
-- Password lost, recovery key available: recovery can unlock and provide
-  step-up/restore proof, but this Alpha cannot set a replacement password.
-- Recovery key lost, password available: create and verify a new backup, but
-  there is no recovery-key rotation in this Alpha.
+- Password lost, recovery key available: unlock with recovery, then run
+  `rekey password change --recovery`; optionally rotate recovery afterward
+  using the new password.
+- Recovery key lost, password available: run `rekey recovery rotate` and save
+  the newly displayed key offline.
+- New recovery-key output lost, password available: rotate recovery again.
+  Only the latest successfully displayed key is active.
 - Both lost: encrypted credentials and backups are permanently inaccessible.
   Rekey has no backdoor, escrow, reset, or export operation.
+
+Factor changes are not retroactive. A backup made before replacement still
+requires its historical password or recovery key; a later backup uses the
+wrapper generation active when it was created. Never delete historical factor
+material while a retained backup still depends on it; otherwise that backup is
+permanently unrecoverable.
