@@ -9,6 +9,8 @@ use super::BrokerCtx;
 use crate::active_policy::ActivePolicy;
 use crate::error::BrokerError;
 
+const POLICY_RECONCILE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 impl BrokerCtx {
     pub async fn policy_status(&self) -> Result<PolicyStatusResponse, BrokerError> {
         let authority = self.authority.admin_status().await?;
@@ -82,7 +84,18 @@ impl BrokerCtx {
             }
         };
         *self.policy_trust.write().await = trust;
-        *self.policy.write().await = active;
+        let mut guard = self.policy.write().await;
+        let preserve_expiry_latch = match (guard.as_ref(), active.as_ref()) {
+            (Some(current), Some(loaded)) => {
+                current.signer_id() == loaded.signer_id()
+                    && current.snapshot().version() == loaded.snapshot().version()
+                    && current.bundle_digest() == loaded.bundle_digest()
+            }
+            _ => false,
+        };
+        if !preserve_expiry_latch {
+            *guard = active;
+        }
         Ok(())
     }
 
@@ -135,18 +148,40 @@ impl BrokerCtx {
             bundle_json: verified.canonical_bytes().to_vec(),
         };
         let active = ActivePolicy::activate_bundle(verified, crate::now_ts()?)?;
-        let mut guard = self.policy.write().await;
-        let preserve_expiry_latch = guard.as_ref().is_some_and(|current| {
-            current.signer_id() == Some(input.signer_id)
-                && current.snapshot().version().get() == input.version
-                && current.bundle_digest() == Some(input.bundle_digest)
-        });
-        authority_until(
+        let activated_identity = (input.signer_id, input.version, input.bundle_digest);
+        let activation = tokio::time::timeout_at(
             deadline,
             self.authority
                 .policy_bundle_activate_before(input, proof, Some(deadline.into_std())),
         )
-        .await?;
+        .await;
+        match activation {
+            Ok(result) => {
+                result.map_err(BrokerError::Authority)?;
+            }
+            Err(_) => {
+                let reconciled = tokio::time::timeout(
+                    POLICY_RECONCILE_TIMEOUT,
+                    self.reload_policy_after_unlock(),
+                )
+                .await;
+                if matches!(reconciled, Ok(Ok(()))) {
+                    return Err(BrokerError::Authority(AuthorityError::AuthorityBusy));
+                }
+                self.sessions.close_and_revoke_all();
+                *self.policy.write().await = None;
+                *self.policy_trust.write().await = None;
+                self.lifecycle.enter_locked();
+                self.request_fault();
+                return Err(BrokerError::Authority(AuthorityError::Faulted));
+            }
+        }
+        let mut guard = self.policy.write().await;
+        let preserve_expiry_latch = guard.as_ref().is_some_and(|current| {
+            current.signer_id() == Some(activated_identity.0)
+                && current.snapshot().version().get() == activated_identity.1
+                && current.bundle_digest() == Some(activated_identity.2)
+        });
         if !preserve_expiry_latch {
             *guard = Some(Arc::new(active));
         }

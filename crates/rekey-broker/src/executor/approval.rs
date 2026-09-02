@@ -278,7 +278,7 @@ impl ActionExecutor {
         evaluated: &EvaluatedAuthorization,
         raw_grants: &[String],
         deadline_at: Instant,
-    ) -> Result<Vec<AuditDraft>, BrokerError> {
+    ) -> Result<(Vec<AuditDraft>, Instant), BrokerError> {
         if raw_grants.len() > 2 {
             self.reject_approval(
                 &evaluated.ctx,
@@ -328,18 +328,22 @@ impl ActionExecutor {
                 return Err(BrokerError::Denied(error.code()));
             }
         };
-        Ok(evidence
-            .into_iter()
-            .map(|evidence| {
-                approval_audit(
-                    &evaluated.ctx,
-                    event_type::APPROVAL_ACCEPTED,
-                    outcome::SUCCESS,
-                    "accepted",
-                    Some(evidence),
-                )
-            })
-            .collect())
+        Ok((
+            evidence
+                .evidence
+                .into_iter()
+                .map(|evidence| {
+                    approval_audit(
+                        &evaluated.ctx,
+                        event_type::APPROVAL_ACCEPTED,
+                        outcome::SUCCESS,
+                        "accepted",
+                        Some(evidence),
+                    )
+                })
+                .collect(),
+            evidence.not_after,
+        ))
     }
 
     async fn reject_approval(

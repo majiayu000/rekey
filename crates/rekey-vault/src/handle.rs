@@ -361,15 +361,31 @@ impl AuthorityHandle {
 
     /// Commits related audit events atomically in their supplied order.
     pub async fn commit_audits(&self, drafts: Vec<AuditDraft>) -> Result<(), AuthorityError> {
+        self.commit_audits_before(drafts, None).await
+    }
+
+    pub async fn commit_audits_before(
+        &self,
+        drafts: Vec<AuditDraft>,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<(), AuthorityError> {
         let (tx, rx) = oneshot::channel();
-        self.tx
-            .send(AuthorityCommand::AppendAudits {
-                drafts,
-                not_after: None,
-                reply: tx,
-            })
-            .await
-            .map_err(|_| AuthorityError::Faulted)?;
+        let command = AuthorityCommand::AppendAudits {
+            drafts,
+            not_after,
+            reply: tx,
+        };
+        if not_after.is_some() {
+            self.tx.try_send(command).map_err(|error| match error {
+                mpsc::error::TrySendError::Full(_) => AuthorityError::AuthorityBusy,
+                mpsc::error::TrySendError::Closed(_) => AuthorityError::Faulted,
+            })?;
+        } else {
+            self.tx
+                .send(command)
+                .await
+                .map_err(|_| AuthorityError::Faulted)?;
+        }
         rx.await.map_err(|_| AuthorityError::Faulted)?
     }
 

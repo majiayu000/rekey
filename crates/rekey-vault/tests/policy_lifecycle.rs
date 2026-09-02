@@ -82,6 +82,18 @@ async fn trust_is_immutable_and_policy_versions_are_consecutive_across_restart()
         .await
         .unwrap_err();
     assert!(matches!(gap, AuthorityError::PolicyVersionConflict));
+    let expired = handle
+        .policy_bundle_activate_before(
+            PolicyBundleInput {
+                expires_at_ms: 1,
+                ..bundle_input(trust.signer_id, 1, 1)
+            },
+            common::password_proof(),
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(expired, AuthorityError::PolicyVersionConflict));
     let first = bundle_input(trust.signer_id, 1, 1);
     handle
         .policy_bundle_activate_before(first.clone(), common::password_proof(), None)

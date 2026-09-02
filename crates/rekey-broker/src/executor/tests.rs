@@ -44,13 +44,18 @@ async fn drain_linearizes_before_started() {
     lifecycle.enter_running().unwrap();
     let _coordinator = lifecycle.coordinate().await;
     lifecycle.enter_draining();
-    let err =
-        match commit_started_while_running(&lifecycle, &tracker, execution_context(), Vec::new())
-            .await
-        {
-            Ok(_) => panic!("draining admission unexpectedly committed started"),
-            Err(err) => err,
-        };
+    let err = match commit_started_while_running(
+        &lifecycle,
+        &tracker,
+        execution_context(),
+        Vec::new(),
+        None,
+    )
+    .await
+    {
+        Ok(_) => panic!("draining admission unexpectedly committed started"),
+        Err(err) => err,
+    };
     assert_eq!(err.code(), "DRAINING");
     assert_eq!(commits.load(Ordering::SeqCst), 0);
     drop(tracker);
@@ -96,7 +101,7 @@ async fn running_coordinator_contention_fails_without_waiting() {
 
     let result = tokio::time::timeout(
         Duration::from_millis(50),
-        commit_started_while_running(&lifecycle, &tracker, execution_context(), Vec::new()),
+        commit_started_while_running(&lifecycle, &tracker, execution_context(), Vec::new(), None),
     )
     .await
     .expect("final admission gate must not wait behind the drain coordinator");

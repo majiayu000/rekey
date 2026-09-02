@@ -135,6 +135,9 @@ impl Worker {
             "policy-activated",
         ))?;
         ensure_mutation_current(not_after)?;
+        if bundle.expires_at_ms <= now_ms()? {
+            return Err(AuthorityError::PolicyVersionConflict);
+        }
         let result = self.store.activate_policy_bundle(&state, &bundle, event);
         self.fault_on_audit_failure(result)?;
         self.policy_material()

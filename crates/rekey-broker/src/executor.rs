@@ -167,8 +167,8 @@ impl ActionExecutor {
         let evaluated = self
             .evaluate_request(&request, permit.principal, effect_deadline)
             .await?;
-        let accepted = match &evaluated.decision {
-            Decision::Allow { .. } if request.approval_grants.is_empty() => Vec::new(),
+        let (accepted, approval_deadline) = match &evaluated.decision {
+            Decision::Allow { .. } if request.approval_grants.is_empty() => (Vec::new(), None),
             Decision::Allow { .. } => {
                 deadline::await_authority(
                     effect_deadline,
@@ -179,12 +179,14 @@ impl ActionExecutor {
                 return Err(BrokerError::Denied("approval-not-required"));
             }
             Decision::RequireApproval { .. } => {
-                self.verify_and_reserve_approvals(
-                    &evaluated,
-                    &request.approval_grants,
-                    effect_deadline,
-                )
-                .await?
+                let (accepted, deadline) = self
+                    .verify_and_reserve_approvals(
+                        &evaluated,
+                        &request.approval_grants,
+                        effect_deadline,
+                    )
+                    .await?;
+                (accepted, Some(deadline))
             }
             Decision::Deny { .. } => return Err(BrokerError::Denied("policy-evaluation-failed")),
         };
@@ -192,9 +194,18 @@ impl ActionExecutor {
         // Step 6: this final point linearizes with drain. Earlier Running
         // checks are advisory; no drain may transition between this re-check
         // and transfer of durable started/terminal ownership.
+        let admission_deadline = approval_deadline
+            .map(|approval_deadline| effect_deadline.min(approval_deadline))
+            .unwrap_or(effect_deadline);
         let started = tokio::time::timeout_at(
-            tokio::time::Instant::from_std(effect_deadline),
-            commit_started_while_running(&self.lifecycle, &self.terminals, evaluated.ctx, accepted),
+            tokio::time::Instant::from_std(admission_deadline),
+            commit_started_while_running(
+                &self.lifecycle,
+                &self.terminals,
+                evaluated.ctx,
+                accepted,
+                approval_deadline,
+            ),
         )
         .await
         .map_err(|_| BrokerError::Upstream("upstream-timeout"))??;
@@ -642,6 +653,7 @@ async fn commit_started_while_running(
     terminals: &TerminalAuditTracker,
     ctx: ExecutionAuditContext,
     preceding: Vec<rekey_vault::command::AuditDraft>,
+    not_after: Option<Instant>,
 ) -> Result<StartedAuditGuard, BrokerError> {
     let _coordinator = match lifecycle.try_coordinate() {
         Ok(owner) => owner,
@@ -652,7 +664,7 @@ async fn commit_started_while_running(
     };
     lifecycle.reject_if_not_running()?;
     terminals
-        .commit_started(ctx, preceding)
+        .commit_started(ctx, preceding, not_after)
         .await
         .map_err(BrokerError::Authority)
 }

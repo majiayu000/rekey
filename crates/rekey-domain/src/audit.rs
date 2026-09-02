@@ -197,18 +197,24 @@ impl AuditPage {
 }
 
 fn approval_fields_match_event(event: &AuditRecord) -> bool {
+    let has_authorization = event.principal_id.is_some()
+        && event.policy_version.is_some()
+        && event.policy_digest_hex.is_some()
+        && event.policy_rule_id.is_some();
     match event.event_type.as_str() {
         "approval.requested" => {
-            event.approval_request_id.is_some()
+            has_authorization
+                && event.approval_request_id.is_some()
                 && event.approval_id.is_none()
                 && event.approver_id.is_none()
         }
         "approval.accepted" => {
-            event.approval_request_id.is_some()
+            has_authorization
+                && event.approval_request_id.is_some()
                 && event.approval_id.is_some()
                 && event.approver_id.is_some()
         }
-        "approval.rejected" => true,
+        "approval.rejected" => has_authorization,
         _ => {
             event.approval_request_id.is_none()
                 && event.approval_id.is_none()
@@ -321,5 +327,29 @@ mod tests {
         let mut malformed = valid;
         malformed.events[0].event_id = "ABC".to_owned();
         assert!(malformed.validate_for(&query()).is_err());
+    }
+
+    #[test]
+    fn approval_events_require_complete_authorization_evidence() {
+        for event_type in [
+            "approval.requested",
+            "approval.accepted",
+            "approval.rejected",
+        ] {
+            let mut event = record(1);
+            event.event_type = event_type.to_owned();
+            event.approval_request_id = Some(ApprovalRequestId::new_random());
+            if event_type == "approval.accepted" {
+                event.approval_id = Some(ApprovalId::new_random());
+                event.approver_id = Some(ApproverId::new_random());
+            }
+            let page = AuditPage {
+                schema: AUDIT_SCHEMA_V2.to_owned(),
+                snapshot_max_sequence: 1,
+                events: vec![event],
+                next_before_sequence: None,
+            };
+            assert!(page.validate_for(&query()).is_err());
+        }
     }
 }

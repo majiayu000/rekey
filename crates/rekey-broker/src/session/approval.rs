@@ -41,6 +41,11 @@ pub(super) struct ExpiredApproval {
     grant_digest: [u8; 32],
 }
 
+pub(crate) struct ApprovalReservation {
+    pub(crate) evidence: Vec<ApprovalEvidence>,
+    pub(crate) not_after: Instant,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ApprovalRejection(&'static str);
 
@@ -89,7 +94,7 @@ impl SessionRegistry {
         context: &ApprovalContext,
         grants: &[VerifiedApprovalGrant],
         now: Timestamp,
-    ) -> Result<Vec<ApprovalEvidence>, ApprovalRejection> {
+    ) -> Result<ApprovalReservation, ApprovalRejection> {
         if grants.is_empty() || grants.len() > 2 {
             return Err(reject("approval-insufficient-quorum"));
         }
@@ -122,6 +127,7 @@ impl SessionRegistry {
         let challenge = &stored.challenge;
         let mut approval_ids = BTreeSet::new();
         let mut approver_ids = BTreeSet::new();
+        let mut not_after = stored.monotonic_deadline;
         for verified in grants {
             let grant = verified.grant();
             if !approval_ids.insert(grant.approval_id) {
@@ -148,7 +154,14 @@ impl SessionRegistry {
                 });
                 return Err(reject("approval-expired"));
             }
-            validate_grant(verified, challenge, context, now, stored, monotonic_now)?;
+            not_after = not_after.min(validate_grant(
+                verified,
+                challenge,
+                context,
+                now,
+                stored,
+                monotonic_now,
+            )?);
             if let Some(usage) = entry
                 .approval_uses
                 .iter()
@@ -187,7 +200,10 @@ impl SessionRegistry {
                 approver_id: Some(grant.approver_id),
             });
         }
-        Ok(evidence)
+        Ok(ApprovalReservation {
+            evidence,
+            not_after,
+        })
     }
 }
 
@@ -230,7 +246,7 @@ fn validate_grant(
     now: Timestamp,
     stored: &StoredChallenge,
     monotonic_now: Instant,
-) -> Result<(), ApprovalRejection> {
+) -> Result<Instant, ApprovalRejection> {
     let grant = verified.grant();
     if grant.tenant_id != challenge.tenant_id
         || grant.principal_id != challenge.principal_id
@@ -276,7 +292,7 @@ fn validate_grant(
     if monotonic_now >= derived_deadline {
         return Err(reject("approval-expired"));
     }
-    Ok(())
+    Ok(derived_deadline)
 }
 
 fn monotonic_expiry_offset(
