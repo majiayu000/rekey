@@ -6,9 +6,9 @@ credentials**. Secrets live in an encrypted SQLite vault owned by a single
 broker process; the CLI, agents, and everything they spawn talk to it only
 over two permission-separated Unix sockets.
 
-> Status: v2 foundation with bounded P1 and P2.1 implementations,
-> **G1 development candidate**, not a G1 security
-> release and not G2. Credentials never appear in agent-facing APIs, process
+> Status: `2.0.0-alpha.1` public Alpha candidate with bounded P1 and P2.1
+> implementations. The default product is G1 and is not G2. Credentials never
+> appear in agent-facing APIs, process
 > arguments, environment variables, logs, or audit records. Same-user
 > `ptrace`, process memory, and filesystem access are out of G1. Canonical
 > feature status: `docs/product-foundation/feature-truth-matrix.md`.
@@ -56,9 +56,10 @@ admin.sock ──────► rekeyd broker ◄────── agent.sock
 
 ## Quick start
 
-```bash
-cargo build --release -p rekey-cli -p rekey-broker   # produces `rekey` and `rekeyd`
+Download, checksum, and attest the supported GitHub Release archive by following
+[`docs/installation.md`](docs/installation.md). Then:
 
+```bash
 rekey init                       # create vault; shows recovery key ONCE
 rekey serve                      # run broker in foreground (starts locked)
 
@@ -119,9 +120,20 @@ cargo test --workspace
 cargo fmt --all
 ```
 
+The repository pins Rust/MSRV `1.95.0`. No crate is published to crates.io in
+this Alpha.
+
 Design: `docs/superpowers/specs/2026-08-28-credential-authority-v2-foundation.md`
 
 Feature status: `docs/product-foundation/feature-truth-matrix.md`
+
+Alpha scope and platform matrix: `docs/alpha-scope.md`
+
+Install/service/uninstall: `docs/installation.md`
+
+User guide: `docs/user-guide.md`
+
+Operations and recovery: `docs/operations-runbook.md`
 
 P0 acceptance (release binaries, no FakeTransport): `scripts/p0-acceptance.sh`
 

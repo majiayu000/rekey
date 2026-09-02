@@ -9,8 +9,9 @@ members = [
 ]
 
 [workspace.package]
-version = "2.0.0-dev"
+version = "2.0.0-alpha.1"
 edition = "2024"
+rust-version = "1.95"
 license = "MIT"
 repository = "https://github.com/majiayu000/rekey"
 
@@ -31,6 +32,10 @@ tempfile = "3"
 name = "rekey-integration"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Integration-test host for the Rekey local Credential Authority"
 publish = false
 
 [dependencies]

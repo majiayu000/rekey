@@ -111,7 +111,7 @@ M-03 已批准公开跟踪 `feature-truth-matrix.md` 和 `threat-model-v2.md` �
 | PR 规模 | 157 files，+27,856 / -3,950 | 大型安全重写 |
 | Review | 无 Reviewer、无正式 Review、无 Approved | 阻塞合并 |
 | 最新 CI | [run 33502567132](https://github.com/majiayu000/rekey/actions/runs/33502567132) | Ubuntu、macOS、Linux G2 reference 全绿 |
-| 版本 | `2.0.0-dev` | 未进入正式发行版本 |
+| 版本 | `2.0.0-alpha.1` | Alpha 发行准备中；尚未创建公开 tag/Release |
 | Release | 无 tag、无 GitHub Release | 未发布 |
 | 历史 | 52 commits；19 个含 sign-off；3 个 merge commit | 需 DCO/历史整理 |
 | 主分支保护 | 无 branch protection、无 ruleset | 需治理 |
@@ -361,7 +361,7 @@ rg -n 'docs/product-foundation|product-foundation/' README.md AGENTS.md CLAUDE.m
 
 ### M-08 整理 DCO 与提交历史
 
-**状态：** `[~]`　**优先级：** 阻塞合并　**依赖：** M-01 至 M-07
+**状态：** `[x]`　**优先级：** 阻塞合并　**依赖：** M-01 至 M-07
 
 **决定：** 使用 GitHub signed squash merge。功能分支不做 rebase、历史改写或 force-push；M-10 合并时创建唯一进入 `main` 的 squash commit，并在 commit body 写入有效 `Signed-off-by:`。这样保留 PR 中的完整开发历史和作者记录，同时避免把 3 个开发期 merge commit 或未签名中间提交带入 `main`。
 
@@ -371,7 +371,7 @@ rg -n 'docs/product-foundation|product-foundation/' README.md AGENTS.md CLAUDE.m
 
 - [x] 确定 signed squash 策略。
 - [x] 记录合并前 tree SHA，PR 保留完整开发历史和作者记录。
-- [ ] M-10 执行 squash 后确认 `main` 只新增一个无 merge parent 的提交。
+- [x] M-10 执行 squash 后确认 `main` 只新增一个无 merge parent 的提交。
 - [x] 不改写工作树；三份本地未跟踪 product-foundation 文档保持原状。
 - [-] 不执行历史改写或 force-push；signed squash 不需要该步骤。
 
@@ -389,7 +389,7 @@ rg -n 'docs/product-foundation|product-foundation/' README.md AGENTS.md CLAUDE.m
 - 策略确认时 tree：`4878f8bfb8b1a8dbb79b26a3e07f54319f02513b`；当前 validation-head tree：`36700d3cf9df4f2eb90312997333a048deea7c37`；最终合并前 tree 由 M-10 记录
 - GitHub 设置：仓库允许 squash merge
 - 书面保留理由：3 个 merge commit 仅保留在合并后可删除的功能分支，用于 PR 开发溯源；signed squash 不会把它们带入 `main`
-- 待完成：M-10 的实际 squash SHA、DCO trailer、tree 等价性和 main CI
+- 完成：PR #10 于 2026-09-02 signed squash 为 `4bfe1d55ace4f7e5e1390c068f55fa61b794f49e`；该提交只有一个 parent，tree `73b7132fc826a3a6a349d7600769d360f692d2bc` 与最终 PR head 完全一致，包含有效 `Signed-off-by:`；[main security-gate run 33583488353](https://github.com/majiayu000/rekey/actions/runs/33583488353) 全部通过
 
 ### M-09 处理旧 PR #9 和 v1 遗留队列
 
@@ -412,7 +412,7 @@ rg -n 'docs/product-foundation|product-foundation/' README.md AGENTS.md CLAUDE.m
 
 ### M-10 最终合并验收
 
-**状态：** `[~]`　**优先级：** 最终门　**依赖：** M-01 至 M-09
+**状态：** `[x]`　**优先级：** 最终门　**依赖：** M-01 至 M-09
 
 **本地验收命令：**
 
@@ -448,13 +448,13 @@ git diff --check
 - 稳定性复验：早期 `lifecycle_drain` 连续 10 轮、P2 GitHub App harness 连续 3 轮通过；最终 Admin/policy 与 post-completion idle 各 3 轮、drain phase probe 20 轮、完整 frame status 30 轮、确定性 crash gate 10 轮通过；`5792640` [exact-head Codex Review](https://github.com/majiayu000/rekey/pull/10#issuecomment-5502610898) 未发现 major issue
 - PR 状态：Ready、`MERGEABLE`、`CLEAN`；未解决 Review conversation 为 0
 - Review 决定：维护者明确确认不要求非作者 Approval；以最终 SHA 的 Codex Review 无重大问题作为合并审查门
-- 当前待办：取得最终文档 SHA 的 clean Codex Review 和 CI 后，执行 M-08 signed squash、验证 squash tree/DCO，并运行合并后 main CI
+- 完成证据：最终 head `b69dfd2be4591b390da8628c261f4e8d7a718e69` 的 [Codex Review](https://github.com/majiayu000/rekey/pull/10#issuecomment-5503410778) 未发现重大问题；signed squash `4bfe1d55ace4f7e5e1390c068f55fa61b794f49e` 的 tree/DCO 验证通过；[main CI](https://github.com/majiayu000/rekey/actions/runs/33583488353) 全绿
 
 ## 6. A 阶段：公开 Alpha 发布门
 
 ### A-01 冻结 Alpha 范围与版本
 
-**状态：** `[ ]`　**依赖：** M 阶段完成
+**状态：** `[~]`　**依赖：** M 阶段完成
 
 **必须决定：**
 
@@ -471,9 +471,14 @@ git diff --check
 3. Windows、macOS G2 和通用 Linux G2 不被暗示支持。
 4. 每个承诺平台都有最终发行物测试计划。
 
+**执行中证据（2026-09-02）：** 已冻结 `2.0.0-alpha.1`、Rust 1.95、Ubuntu
+24.04 x86_64 与 macOS 14+ arm64；仅通过 GitHub Release 分发预编译包。默认
+G1、有界 Linux G2 reference、升级/回滚和不支持范围记录在
+`docs/alpha-scope.md`。最终 tag/Release 一致性由 A-11 关闭。
+
 ### A-02 补齐 release workflow
 
-**状态：** `[ ]`　**依赖：** A-01
+**状态：** `[~]`　**依赖：** A-01
 
 **验收标准：**
 
@@ -486,9 +491,15 @@ git diff --check
 7. workflow actions 固定到 commit SHA。
 8. secrets 权限最小化，日志不输出 token 或签名材料。
 
+**执行中证据（2026-09-02）：** `.github/workflows/release.yml` 已实现 tag-only、
+完整 reusable security gate、双平台 release build、SHA-256、SPDX SBOM、GitHub
+Sigstore provenance/SBOM attestation、不可变 workflow artifact、公开前 fresh-install、
+公开 URL 双平台 smoke，以及失败自动撤回为 Draft；所有第三方 Actions 固定 commit
+SHA。最终证据等待真实 tag workflow。
+
 ### A-03 从发行物完成 fresh-install 验收
 
-**状态：** `[ ]`　**依赖：** A-02
+**状态：** `[~]`　**依赖：** A-02
 
 **验收场景：**
 
@@ -504,9 +515,14 @@ git diff --check
 4. 默认权限满足 state/admin/agent socket 合同。
 5. 卸载后无运行进程或遗留 service；保留/删除数据由用户明确选择。
 
+**执行中证据（2026-09-02）：** 本机 macOS arm64 从独立 tarball 运行
+`scripts/release-smoke.sh`，完成 checksum、版本、P0 生命周期、真实 HTTPS、权限、
+备份恢复和磁盘 secret canary；同一发行物通过 launchd service-manager 安装/重启/
+drain/卸载验收。Ubuntu x86_64 与公开 URL 证据等待 tag workflow。
+
 ### A-04 产品化安装与卸载
 
-**状态：** `[ ]`　**依赖：** A-01
+**状态：** `[~]`　**依赖：** A-01
 
 **验收标准：**
 
@@ -516,9 +532,13 @@ git diff --check
 4. 卸载分别说明“保留数据”和“删除数据”。
 5. 安装脚本若存在，禁止静默 sudo、远程执行未校验脚本或覆盖非 Rekey 文件。
 
+**执行中证据（2026-09-02）：** `docs/installation.md` 已覆盖验证、无 sudo 用户安装、
+显式 systemd 特权步骤、版本/路径确认、升级、回滚、保留数据卸载和显式删数据；未增加
+远程安装脚本。
+
 ### A-05 产品化 service manager 流程
 
-**状态：** `[ ]`　**依赖：** A-03
+**状态：** `[~]`　**依赖：** A-03
 
 当前 `scripts/rekey-service-unit.py` 只负责生成定义，不构成完整安装体验。
 
@@ -530,9 +550,13 @@ git diff --check
 4. locked boot、unlock、SIGTERM drain、Admin shutdown、crash restart 均在发行物上通过。
 5. `rekey serve` 与 `rekeyd serve` 的职责不产生误导。
 
+**执行中证据（2026-09-02）：** 安装文档已覆盖 launchd/systemd 全生命周期和 G2
+参数边界；`scripts/p1-service-manager.sh` 已支持强制使用发行物二进制，本机 macOS
+arm64 发行物验收通过。Ubuntu systemd 发行物证据等待 tag workflow。
+
 ### A-06 完成用户文档
 
-**状态：** `[ ]`　**依赖：** M-03、A-03
+**状态：** `[~]`　**依赖：** M-03、A-03
 
 **README/指南至少覆盖：**
 
@@ -555,9 +579,13 @@ git diff --check
 3. 示例不包含真实密钥、无效路径或本地-only 链接。
 4. 文档不把 Field Validated 写成 Released。
 
+**执行中证据（2026-09-02）：** `docs/user-guide.md` 已覆盖本节全部主题，命令由本机
+发行物 P0/P1 验收；Feature Truth Matrix 尚未提升为 Released。最终双平台文档回归
+等待 tag workflow。
+
 ### A-07 完成运维 runbook
 
-**状态：** `[ ]`　**依赖：** A-03
+**状态：** `[~]`　**依赖：** A-03
 
 **必须覆盖：**
 
@@ -572,9 +600,13 @@ git diff --check
 
 **验收标准：** 每个 runbook 至少由一次干净环境演练验证；危险步骤明确标注数据影响和可恢复性。
 
+**执行中证据（2026-09-02）：** `docs/operations-runbook.md` 已覆盖列出的故障和数据
+影响；本机发行物 P0、workspace backup/restore、bootstrap、fault-injection、storage
+contract 与 native service-manager 验收通过。最终 Ubuntu 发行物演练等待 tag workflow。
+
 ### A-08 补齐开源治理文档
 
-**状态：** `[ ]`　**依赖：** M 阶段完成
+**状态：** `[~]`　**依赖：** M 阶段完成
 
 **需要：**
 
@@ -592,9 +624,14 @@ git diff --check
 3. CHANGELOG 与 Alpha tag 对应。
 4. 文档不承诺当前无法提供的 24x7、SLA 或企业支持。
 
+**执行中证据（2026-09-02）：** 已新增 `CHANGELOG.md`、`SECURITY.md`、
+`CONTRIBUTING.md`、`CODE_OF_CONDUCT.md` 和 `SUPPORT.md`；private vulnerability
+reporting 已启用，文档明确 best-effort Alpha、无 SLA/24x7/企业支持承诺。最终版本
+链接等待 Release。
+
 ### A-09 补齐 crate 与 toolchain 元数据
 
-**状态：** `[ ]`　**依赖：** A-01
+**状态：** `[~]`　**依赖：** A-01
 
 **验收标准：**
 
@@ -604,9 +641,14 @@ git diff --check
 4. Rust toolchain/MSRV 有书面政策并进入 CI。
 5. 若发布 crates.io，`cargo package --list` 和 `cargo package` 通过且不包含秘密、fixtures 私钥或无关大型文件。
 
+**执行中证据（2026-09-02）：** workspace 和全部 crate 已统一 version、edition、
+rust-version、license、repository、description，并全部 `publish = false`；
+`rust-toolchain.toml` 与 CI 固定 Rust 1.95.0。Alpha 不发布 crates.io，因此 package
+门不适用。
+
 ### A-10 更新 GitHub 仓库治理与产品身份
 
-**状态：** `[ ]`　**依赖：** M-10
+**状态：** `[x]`　**依赖：** M-10
 
 **必须完成：**
 
@@ -619,6 +661,16 @@ git diff --check
 - 公开发布前决定 Rekey 名称、域名、包名和相邻 `rekey.dev` 风险。
 
 **验收标准：** GitHub API 返回的设置与上述政策一致；仓库首页不再出现 v1 产品定位。
+
+**完成证据（2026-09-02）：** 仓库 description/topics 已改为 v2 Credential
+Authority；[main ruleset 22063399](https://github.com/majiayu000/rekey/rules/22063399)
+强制 PR、squash-only、linear history、三项 security-gate required checks、review
+conversation resolution，并禁止删除和 force-push；按维护者决定 approval count 为 0，
+last-push/unattributed-change 额外 Approval 均关闭。Dependabot alerts/security updates、
+private vulnerability reporting、secret scanning 和 push protection 已启用。名称决定记录在
+`docs/alpha-scope.md`：本 Alpha 仅使用 “Rekey Credential Authority” GitHub 项目身份，
+不使用或关联已被其他产品使用的 `rekey.dev`，不占用包管理器 namespace；商业化前另做
+名称和商标清查。
 
 ### A-11 Alpha 发布与发布后验证
 
