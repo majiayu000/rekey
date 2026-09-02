@@ -737,7 +737,7 @@ Matrix 的发布前状态已通过公开 Release erratum 说明；没有替换�
 
 ### H-03 密码限速重启边界
 
-**状态：** `[ ]`
+**状态：** `[x]`
 
 **验收标准：**
 
@@ -745,9 +745,14 @@ Matrix 的发布前状态已通过公开 Release erratum 说明；没有替换�
 2. Alpha 发布决策明确接受该 G1 限制或实现持久化方案。
 3. 不为单机 Foundation 引入分布式限速基础设施。
 
+**完成证据（2026-09-02）：** threat model、用户指南、Feature Truth Matrix 和 Alpha
+Release notes 均明确 backoff 是进程内状态、`rekeyd` 重启后重置。G1 public Alpha
+显式接受该限制，未引入持久化或分布式限速基础设施；`lifecycle_contract` 验证单进程
+backoff 行为。
+
 ### H-04 完整数据库回放风险
 
-**状态：** `[ ]`
+**状态：** `[x]`
 
 **验收标准：**
 
@@ -755,9 +760,13 @@ Matrix 的发布前状态已通过公开 Release erratum 说明；没有替换�
 2. 任何 G1 声明不包含 monotonic rollback protection。
 3. 若未来实现外部 anchor，必须有独立 spec、故障模型和恢复合同。
 
+**完成证据（2026-09-02）：** threat model 的 replay 行、用户指南和 Alpha Release
+notes 均明确完整有效 vault 快照回放不可检测，G1 不包含 monotonic rollback
+protection。外部 anchor 保持未来独立 spec 范围，当前实现和声明均未加入该能力。
+
 ### H-05 response sealing 能力边界
 
-**状态：** `[ ]`
+**状态：** `[x]`
 
 **验收标准：**
 
@@ -766,13 +775,25 @@ Matrix 的发布前状态已通过公开 Release erratum 说明；没有替换�
 3. 文案不声称阻止“一切形式”的 Secret 泄漏。
 4. 新增 canonicalization 规则必须配攻击测试。
 
+**完成证据（2026-09-02）：** threat model、用户指南和 Release notes 明确列出 raw、
+base64、base64url、percent-encoded 与 chunk-boundary 覆盖，并排除任意压缩、加密、
+哈希派生、拆分和业务自定义编码。`reflected_secret` 与
+`scripts/p1-streaming-sealing.sh` 覆盖现有 canonicalization 及跨 HTTP/TLS chunk 攻击；
+文档没有“一切形式泄漏”声明。
+
 ### H-06 平台与发行物测试矩阵
 
-**状态：** `[ ]`
+**状态：** `[x]`
 
 **候选范围：** Ubuntu systemd、额外 Linux distro、Linux arm64、macOS arm64/x86_64、release artifact install、不同 umask。
 
 **验收标准：** 每个公开支持组合都有独立结果；未测试组合标为 experimental/unsupported，不从相邻环境外推。
+
+**完成证据（2026-09-02）：** `docs/alpha-scope.md` 只公开支持 Ubuntu 24.04
+x86_64 systemd 与 macOS 14+ arm64，并把其他 glibc Linux、Linux arm64、macOS Intel
+和 Windows 明确标为 experimental/unsupported。release run 33592538786 对两个支持
+组合分别完成 build、attestation、fresh-install、原生 service manager 和 public-URL
+smoke；没有从 Linux G2 reference 或相邻架构外推支持。
 
 ### H-07 性能、容量与 soak 基线
 
@@ -789,11 +810,27 @@ Matrix 的发布前状态已通过公开 Release erratum 说明；没有替换�
 
 ### H-08 Rust 与供应链附加门槛
 
-**状态：** `[ ]`
+**状态：** `[x]`
 
 **候选项：** coverage、Miri、sanitizers、Loom、cargo-deny、license allowlist、unused dependency、reproducible build。
 
 **验收标准：** 逐项决定 required、scheduled 或 deferred；不得为了清单完整一次性引入无维护能力的工具堆栈。
+
+**Alpha 决定（2026-09-02）：**
+
+| 项目 | 决定 | 依据与重开条件 |
+| --- | --- | --- |
+| `cargo audit`、Dependabot | Required | 每次 security gate 运行 audit；仓库 alerts/updates 开启，公开 Alpha 后告警为 0 open |
+| SPDX SBOM、provenance/SBOM attestation | Required | 每个公开 archive 生成并随 Release 发布；fresh-install 与 public-URL smoke 验证 attestation |
+| coverage | Deferred | 当前 contract/adversarial gate 以行为证据为准；Beta 前选定稳定阈值和报告所有者后重开 |
+| Miri | Deferred | 先限定不依赖 OS/SQLite/async runtime 的纯 Rust target；形成可维护 target 清单后重开 |
+| sanitizers | Deferred | Beta 前在独立 Linux job 评估 ASan/LSan；不得把不支持的平台结果外推 |
+| Loom | Deferred | 仅在 session/audit/execution 并发模型发生实质变化时引入对应模型测试 |
+| `cargo-deny`、license allowlist | Deferred | crates.io 或 Beta 分发前由 SBOM 形成明确许可证政策后重开 |
+| unused-dependency gate | Deferred | CLI 的关键负向依赖边界继续 Required；全 workspace 检测待选定低误报工具后重开 |
+| reproducible build | Deferred | 当前只声明可验证 provenance，不声明 bit-for-bit reproducible；Beta 前先定义 runner/toolchain/归档时间戳合同 |
+
+以上是明确取舍，不代表 deferred 项已验证；Alpha 不为清单完整引入附加工具堆栈。
 
 ## 8. P 阶段：后续产品能力
 
@@ -967,7 +1004,7 @@ Matrix 的发布前状态已通过公开 Release erratum 说明；没有替换�
 | 所有规范与代码一致 | 完成 | M-04～M-06 的 107 个实现 findings 与 M-07/M-10 的 5 个验证有效性 findings 已全部修复；51 个 Medium 和 61 个 Low 已修复，最终 exact-head Review 无 finding |
 | Alpha 文档 | 完成（含 erratum） | 用户、安装、运维、发行、开源治理和支持范围已完成；archive 内嵌发布前 Matrix 的状态差异由公开 Release erratum 和当前仓库矩阵明确衔接 |
 | 可公开 Alpha | 是 | [v2.0.0-alpha.1](https://github.com/majiayu000/rekey/releases/tag/v2.0.0-alpha.1) 已公开；双平台 fresh-install、attestation 和 public-URL smoke 通过 |
-| H 安全与可靠性补强 | 未完成 | 持续 fuzz、ENOSPC/文件系统注入、平台扩展、性能/soak 和供应链附加决策仍需独立证据；H-03～H-05 的既有文档事实待单独关闭 |
+| H 安全与可靠性补强 | 部分完成 | H-03～H-06、H-08 已以边界文档、公开双平台发行证据和明确供应链取舍关闭；H-01 持续 fuzz、H-02 ENOSPC/文件系统注入、H-07 性能/soak 仍需独立实现与证据 |
 | 可宣称通用 G2 | 否 | 只有有界 Linux reference；默认仍是 G1 |
 | 可宣称通用 Connector | 否 | 只有 fixed HTTPS Action 和 closed GitHub App profile |
 | 企业就绪 | 否 | 控制面、身份、HA/DR、合规、运营和商业门槛均未完成 |

@@ -117,6 +117,12 @@ rekey policy status
 
 Policy and capabilities are in memory and disappear on lock or restart.
 
+Failed password throttling is also process-local and resets when `rekeyd`
+restarts. The G1 public Alpha accepts this limitation; restarting the broker is
+not an authentication defense. Rekey also cannot detect replay of a complete,
+previously valid vault snapshot. G1 therefore has no monotonic rollback
+protection. Restore only a backup and receipt you intentionally selected.
+
 ## Execute without exposing the token in argv
 
 Create a request body such as `request.json`, then pipe the capability token:

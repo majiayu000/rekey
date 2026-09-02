@@ -260,7 +260,10 @@ approver
 - 限制响应体大小；超限明确报错，不能截断后返回 200。
 - 禁止把完整响应写入审计。
 
-精确 Secret Sealing 不能识别上游对秘密进行任意加密、拆分或不可预测变换后的结果，因此类型化 Action 和最小响应 schema 比通用透明代理更强。
+当前 Secret Sealing 检测 raw、base64、base64url、percent-encoded 和跨 chunk
+反射。它不保证识别任意压缩、加密、哈希派生、拆分或业务自定义编码，因此类型化
+Action 和最小响应 schema 比通用透明代理更强。任何新增 canonicalization 规则都必须
+配套攻击测试。
 
 ## 11. 主要攻击与控制
 
@@ -273,6 +276,7 @@ approver
 | 密文跨 Credential/版本替换 | AEAD AAD 绑定完整记录身份和版本 | ciphertext_record_swap_rejected |
 | Vault 未认证篡改/跨记录复制 | Credential lifecycle seal 与 AAD identity binding | credential_state_tamper_rejected |
 | 旧的已认证 Credential record/subgraph replay | G1 不防 freshness replay；G2 阻止 Agent 访问状态，企业版需数据库外单调锚点或远程透明日志 | G1 明示限制；企业 gate 待设计 |
+| 重启绕过密码尝试限速 | 当前 backoff 为进程内状态，重启后重置；G1 Alpha 明示接受，不把重启视为认证防线 | lifecycle_contract + 用户文档限制 |
 | 未授权管理 IPC | 独立 socket/pipe、peer identity、权限和 capability | agent_cannot_call_admin_api |
 | 备份或恢复泄密 | 只输出版本化密文；恢复先验证完整性和所有权 | backup_restore_no_plaintext |
 | 修改 host/path/policy 导流 | 策略只读签名快照；管理面独立；目标固定 | tampered_policy_rejected |
