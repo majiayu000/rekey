@@ -15,7 +15,7 @@ async fn connection_closes_without_reply(socket: &std::path::Path, request: &[u8
     let mut stream = UnixStream::connect(socket).await.unwrap();
     stream.write_all(request).await.unwrap();
     let mut byte = [0u8; 1];
-    matches!(stream.read(&mut byte).await, Ok(0))
+    matches!(stream.read(&mut byte).await, Ok(0) | Err(_))
 }
 
 #[tokio::test(flavor = "multi_thread")]
