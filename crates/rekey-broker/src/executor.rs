@@ -41,6 +41,48 @@ use http::{
 use sealing::percent_encode;
 use sealing::{contains_secret, headers_contain_secret, sealing_needles};
 
+/// Exercises the production response-sealing implementation from the external
+/// fuzz package without exposing its secret-derived needles.
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub fn fuzz_response_sealing(
+    secret: &[u8],
+    auth_value: &[u8],
+    response: &[u8],
+    as_header: bool,
+) -> bool {
+    let needles = sealing_needles(secret, auth_value);
+    if as_header {
+        headers_contain_secret(
+            &[(
+                "x-fuzz".to_owned(),
+                String::from_utf8_lossy(response).into(),
+            )],
+            &needles,
+        )
+    } else {
+        contains_secret(response, &needles)
+    }
+}
+
+/// Exercises the response-header-name branch independently from header values.
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub fn fuzz_response_header_name_sealing(
+    secret: &[u8],
+    auth_value: &[u8],
+    response_name: &[u8],
+) -> bool {
+    let needles = sealing_needles(secret, auth_value);
+    headers_contain_secret(
+        &[(
+            String::from_utf8_lossy(response_name).into(),
+            "unrelated-header-value".to_owned(),
+        )],
+        &needles,
+    )
+}
+
 pub struct ExecuteRequest {
     pub request_id: RequestId,
     pub capability_token: String,

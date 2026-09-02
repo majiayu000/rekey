@@ -711,7 +711,7 @@ Matrix 的发布前状态已通过公开 Release erratum 说明；没有替换�
 
 ### H-01 持续 fuzzing
 
-**状态：** `[ ]`
+**状态：** `[x]`
 
 **目标 targets：** IPC frame decoder、action normalization、policy parser、response sealing、backup/restore envelope。
 
@@ -721,6 +721,14 @@ Matrix 的发布前状态已通过公开 Release erratum 说明；没有替换�
 2. CI 运行短时 smoke；定时任务运行长时 fuzz。
 3. 不存在 panic、无限循环、越界资源使用或策略解析分歧。
 4. 发现的 crash 均转成稳定回归测试。
+
+**完成证据（2026-09-02）：** `fuzz/` 提供 IPC、Action normalization、policy
+parser、response sealing 和 backup/restore admission 五个独立 libFuzzer target 及各自
+seed corpus；`docs/fuzzing.md` 记录复现、最小化和稳定回归流程。PR #16 的
+[PR #16 checks](https://github.com/majiayu000/rekey/pull/16/checks) 在 exact head 对五个
+target 各完成 2,000 次有界 smoke，全部成功且无 crash；
+workflow 同时安装每周每 target 15 分钟的长时任务。本机相同五 target smoke 也全部
+通过，restore target 峰值 RSS 318 MiB，低于 2 GiB 限额。
 
 ### H-02 ENOSPC 与文件系统故障注入
 
@@ -1004,7 +1012,7 @@ smoke；没有从 Linux G2 reference 或相邻架构外推支持。
 | 所有规范与代码一致 | 完成 | M-04～M-06 的 107 个实现 findings 与 M-07/M-10 的 5 个验证有效性 findings 已全部修复；51 个 Medium 和 61 个 Low 已修复，最终 exact-head Review 无 finding |
 | Alpha 文档 | 完成（含 erratum） | 用户、安装、运维、发行、开源治理和支持范围已完成；archive 内嵌发布前 Matrix 的状态差异由公开 Release erratum 和当前仓库矩阵明确衔接 |
 | 可公开 Alpha | 是 | [v2.0.0-alpha.1](https://github.com/majiayu000/rekey/releases/tag/v2.0.0-alpha.1) 已公开；双平台 fresh-install、attestation 和 public-URL smoke 通过 |
-| H 安全与可靠性补强 | 部分完成 | H-03～H-06、H-08 已以边界文档、公开双平台发行证据和明确供应链取舍关闭；H-01 持续 fuzz、H-02 ENOSPC/文件系统注入、H-07 性能/soak 仍需独立实现与证据 |
+| H 安全与可靠性补强 | 部分完成 | H-01、H-03～H-06、H-08 已以持续 fuzz、边界文档、公开双平台发行证据和明确供应链取舍关闭；H-02 ENOSPC/文件系统注入、H-07 性能/soak 仍需独立实现与证据 |
 | 可宣称通用 G2 | 否 | 只有有界 Linux reference；默认仍是 G1 |
 | 可宣称通用 Connector | 否 | 只有 fixed HTTPS Action 和 closed GitHub App profile |
 | 企业就绪 | 否 | 控制面、身份、HA/DR、合规、运营和商业门槛均未完成 |

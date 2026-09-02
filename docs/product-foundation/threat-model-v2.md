@@ -377,10 +377,10 @@ Action 和最小响应 schema 比通用透明代理更强。任何新增 canonic
 | P1 | 流式响应 | cargo test -p rekey-broker --test streaming_sealing | 跨 chunk 反射可检测并中止 |
 | P1+ | macOS 隔离 | cargo test -p rekey-e2e --test macos_sandbox | Agent 子进程无秘密、无全局 CA、无旁路 |
 | P1+ | Connector 契约 | cargo test -p rekey-connectors --test contract | origin、Header、redirect、body、response 策略一致 |
-| P1+ | Fuzz | cargo fuzz run action_normalization | 规范化无解析分歧、panic 或策略绕过 |
+| H | 持续 Fuzz | `cargo fuzz run <ipc|action|policy|response_sealing|restore>` | 五个边界无 crash、hang、越界资源使用或解析分歧 |
 | P2 | 多租户 | cargo test -p rekey-control --test tenant_isolation | 跨租户读取、缓存和 token 全拒绝 |
 
-上表里标为 P0 且 crate 已存在的命令（`authority_contract`、`bootstrap_contract`、`broker_ipc`、`adversarial_http`、`reflected_secret`、`secret_canary`、`fault_injection`）已经在本仓库实现，并以 `docs/product-foundation/feature-truth-matrix.md` 为是否“通过”的唯一状态源。P1 typed policy、bounded Linux G2 reference、chunk-boundary sealing 和 native service-manager，以及 P2.1 GitHub App local profile 已有对应实现和门槛；通用 Connector SDK、fuzz、macOS G2、企业多租户 control plane 与 HA/DR 仍是计划合同，不能视为已经通过。
+上表里标为 P0 且 crate 已存在的命令（`authority_contract`、`bootstrap_contract`、`broker_ipc`、`adversarial_http`、`reflected_secret`、`secret_canary`、`fault_injection`）已经在本仓库实现，并以 `docs/product-foundation/feature-truth-matrix.md` 为是否“通过”的唯一状态源。P1 typed policy、bounded Linux G2 reference、chunk-boundary sealing 和 native service-manager，P2.1 GitHub App local profile，以及 H-01 持续 fuzz 已有对应实现和门槛；通用 Connector SDK、macOS G2、企业多租户 control plane 与 HA/DR 仍是计划合同，不能视为已经通过。
 
 ## 16. 已锁定与待决事项
 

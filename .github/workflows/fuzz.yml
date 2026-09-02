@@ -1,0 +1,79 @@
+name: fuzz
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/fuzz.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "fuzz/**"
+      - "crates/rekey-domain/**"
+      - "crates/rekey-policy/**"
+      - "crates/rekey-vault/**"
+      - "crates/rekey-broker/**"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/fuzz.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "fuzz/**"
+      - "crates/rekey-domain/**"
+      - "crates/rekey-policy/**"
+      - "crates/rekey-vault/**"
+      - "crates/rekey-broker/**"
+  schedule:
+    - cron: "23 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  foundation-fuzz:
+    name: fuzz ${{ matrix.target }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [ipc, action, policy, response_sealing, restore]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: nightly-2026-09-01
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked --version 0.13.2
+      - name: Shared dependency lock alignment
+        if: matrix.target == 'ipc'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo metadata --locked --format-version 1 > /tmp/rekey-root-metadata.json
+          cargo metadata --locked --manifest-path fuzz/Cargo.toml --format-version 1 > /tmp/rekey-fuzz-metadata.json
+          jq -e -n \
+            --slurpfile root /tmp/rekey-root-metadata.json \
+            --slurpfile fuzz /tmp/rekey-fuzz-metadata.json '
+              def versions($doc):
+                reduce $doc.packages[] as $package ({};
+                  .[$package.name] = ((.[$package.name] // []) + [$package.version] | unique));
+              (versions($root[0])) as $production
+              | [
+                  $fuzz[0].packages[] as $package
+                  | select($production[$package.name] != null)
+                  | select(($production[$package.name] | index($package.version)) == null)
+                  | {name: $package.name, fuzz: $package.version, production: $production[$package.name]}
+                ] as $drift
+              | if ($drift | length) == 0 then true else error($drift | tostring) end
+            '
+      - name: Short pull-request and push smoke
+        if: github.event_name != 'schedule'
+        run: cargo +nightly-2026-09-01 fuzz run ${{ matrix.target }} -- -runs=2000 -max_len=65536 -timeout=10 -rss_limit_mb=2048
+      - name: Scheduled long fuzz
+        if: github.event_name == 'schedule'
+        run: cargo +nightly-2026-09-01 fuzz run ${{ matrix.target }} -- -max_total_time=900 -max_len=65536 -timeout=10 -rss_limit_mb=2048
