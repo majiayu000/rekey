@@ -37,9 +37,17 @@ pub async fn start_broker() -> TestBroker {
 }
 
 pub async fn start_broker_with(idle_lock: Duration, drain_timeout: Duration) -> TestBroker {
+    start_broker_with_kdf(idle_lock, drain_timeout, TEST_PARAMS).await
+}
+
+pub async fn start_broker_with_kdf(
+    idle_lock: Duration,
+    drain_timeout: Duration,
+    kdf: Argon2Params,
+) -> TestBroker {
     let fake = Arc::new(FakeUpstreamTransport::new());
     let transport = Arc::clone(&fake) as Arc<dyn rekey_broker::upstream::UpstreamTransport>;
-    start_broker_with_transport(idle_lock, drain_timeout, fake, transport).await
+    start_broker_configured(idle_lock, drain_timeout, kdf, fake, transport).await
 }
 
 pub async fn start_broker_with_transport(
@@ -48,9 +56,19 @@ pub async fn start_broker_with_transport(
     fake: Arc<FakeUpstreamTransport>,
     transport: Arc<dyn rekey_broker::upstream::UpstreamTransport>,
 ) -> TestBroker {
+    start_broker_configured(idle_lock, drain_timeout, TEST_PARAMS, fake, transport).await
+}
+
+async fn start_broker_configured(
+    idle_lock: Duration,
+    drain_timeout: Duration,
+    kdf: Argon2Params,
+    fake: Arc<FakeUpstreamTransport>,
+    transport: Arc<dyn rekey_broker::upstream::UpstreamTransport>,
+) -> TestBroker {
     let dir = tempfile::tempdir().expect("tempdir");
     let state_dir = dir.path().join("state");
-    init_vault(&state_dir, &SecretInput::from_slice(PASSWORD), TEST_PARAMS).expect("init");
+    init_vault(&state_dir, &SecretInput::from_slice(PASSWORD), kdf).expect("init");
     rekey_vault::bootstrap::confirm_vault_init(&state_dir).expect("confirm");
 
     let mut config = BrokerConfig::new(state_dir.clone());

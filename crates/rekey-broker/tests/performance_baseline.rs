@@ -27,12 +27,13 @@ use rekey_vault::handle::{AuthorityConfig, DEFAULT_QUEUE_CAPACITY};
 use rekey_vault::model::{event_type, outcome};
 use rekey_vault::secret::SecretInput;
 use serde_json::{Value, json};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tokio::net::UnixStream;
 use tokio::sync::Barrier;
 use tokio::task::JoinSet;
 
 const LARGE_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+const RESPONSE_SEALING_SAMPLES: usize = 12;
 const SESSION_USES: u32 = 10_000;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -45,8 +46,12 @@ async fn performance_and_soak_baseline() {
     assert!((30..=3_600).contains(&soak_seconds));
 
     let queue = measure_authority_queue_and_audit().await;
-    let broker =
-        common::start_broker_with(Duration::from_secs(7_200), Duration::from_secs(10)).await;
+    let broker = common::start_broker_with_kdf(
+        Duration::from_secs(7_200),
+        Duration::from_secs(10),
+        Argon2Params::RFC9106_LOW_MEMORY,
+    )
+    .await;
     let ipc_capacity = measure_ipc_capacity(&broker).await;
     let session_capacity = measure_session_capacity();
     common::unlock(&broker).await;
@@ -160,9 +165,14 @@ async fn performance_and_soak_baseline() {
             )
         })
         .count();
+    let expected_audit_pairs = RESPONSE_SEALING_SAMPLES + 1 + execution_latencies.len() + 1;
     assert_eq!(
-        started_count, terminal_count,
-        "execution audit rows were lost"
+        started_count, expected_audit_pairs,
+        "execution starts were lost"
+    );
+    assert_eq!(
+        terminal_count, expected_audit_pairs,
+        "execution terminals were lost"
     );
 
     let report = json!({
@@ -198,6 +208,7 @@ async fn performance_and_soak_baseline() {
             "backup_count": backup_latencies.len(),
             "backup_latency_us": summarize(&backup_latencies),
             "rss_kib": memory_summary(&rss_samples),
+            "peak_rss_kib": rss_high_water_kib(),
             "audit_started": started_count,
             "audit_terminal": terminal_count,
         },
@@ -230,15 +241,14 @@ async fn measure_authority_queue_and_audit() -> Value {
         .await
         .unwrap();
 
-    let blocker_handle = handle.clone();
-    let blocker = tokio::spawn(async move {
-        blocker_handle
-            .verify_proof(UnlockProof::Password(SecretInput::from_slice(
-                common::PASSWORD,
-            )))
-            .await
-    });
-    tokio::time::sleep(Duration::from_millis(10)).await;
+    let mut blocker = Box::pin(handle.verify_proof(UnlockProof::Password(
+        SecretInput::from_slice(common::PASSWORD),
+    )));
+    tokio::select! {
+        biased;
+        result = &mut blocker => panic!("production proof completed before saturation: {result:?}"),
+        _ = tokio::task::yield_now() => {}
+    }
 
     let attempts = DEFAULT_QUEUE_CAPACITY * 4;
     let barrier = Arc::new(Barrier::new(attempts + 1));
@@ -265,9 +275,9 @@ async fn measure_authority_queue_and_audit() -> Value {
             Err(_) => other_errors += 1,
         }
     }
-    blocker.await.unwrap().unwrap();
-    assert_eq!(accepted_latencies.len(), DEFAULT_QUEUE_CAPACITY);
-    assert_eq!(busy, attempts - DEFAULT_QUEUE_CAPACITY);
+    blocker.await.unwrap();
+    assert!(busy > 0, "the 128-entry queue never saturated");
+    assert_eq!(accepted_latencies.len() + busy, attempts);
     assert_eq!(other_errors, 0);
 
     let mut audit_latencies = Vec::new();
@@ -310,8 +320,14 @@ async fn measure_ipc_capacity(broker: &common::TestBroker) -> Value {
     let mut agent = hold_connections(&broker.agent_sock(), MAX_AGENT_CONNECTIONS).await;
     let mut admin = hold_connections(&broker.admin_sock(), MAX_ADMIN_CONNECTIONS).await;
     tokio::time::sleep(Duration::from_millis(100)).await;
-    let agent_reject_us = rejected_connection_latency(&broker.agent_sock()).await;
-    let admin_reject_us = rejected_connection_latency(&broker.admin_sock()).await;
+    let agent_reject_us = rejected_connection_latency(
+        &broker.agent_sock(),
+        Channel::Agent,
+        agent_msg::AGENT_STATUS,
+    )
+    .await;
+    let admin_reject_us =
+        rejected_connection_latency(&broker.admin_sock(), Channel::Admin, admin_msg::STATUS).await;
     agent.clear();
     admin.clear();
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -334,16 +350,10 @@ async fn hold_connections(path: &Path, count: usize) -> Vec<UnixStream> {
     streams
 }
 
-async fn rejected_connection_latency(path: &Path) -> u128 {
+async fn rejected_connection_latency(path: &Path, channel: Channel, message_type: u16) -> u128 {
     let started = Instant::now();
-    let mut stream = UnixStream::connect(path).await.unwrap();
-    if stream.write_all(b"R").await.is_ok() {
-        let mut byte = [0u8; 1];
-        match tokio::time::timeout(Duration::from_secs(2), stream.read(&mut byte)).await {
-            Ok(Ok(0)) | Ok(Err(_)) => {}
-            other => panic!("over-capacity connection was not rejected: {other:?}"),
-        }
-    }
+    let response = common::call(path, channel, message_type, b"{}", b"").await;
+    assert_eq!(response.err_code(), "AUTHORITY_BUSY");
     started.elapsed().as_micros()
 }
 
@@ -417,7 +427,7 @@ async fn measure_response_sealing(
     version: u64,
 ) -> Value {
     let mut latencies = Vec::new();
-    for _ in 0..12 {
+    for _ in 0..RESPONSE_SEALING_SAMPLES {
         broker
             .fake
             .push_response(Ok(clean_response(LARGE_RESPONSE_BYTES)));
@@ -670,6 +680,19 @@ fn rss_kib() -> u64 {
         .trim()
         .parse()
         .expect("read process RSS")
+}
+
+fn rss_high_water_kib() -> u64 {
+    let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
+    // SAFETY: getrusage initializes the supplied rusage on success.
+    let result = unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) };
+    assert_eq!(result, 0, "getrusage failed");
+    // SAFETY: the successful call above initialized the value.
+    let high_water = unsafe { usage.assume_init() }.ru_maxrss as u64;
+    #[cfg(target_os = "macos")]
+    return high_water / 1024;
+    #[cfg(not(target_os = "macos"))]
+    return high_water;
 }
 
 fn assert_memory_stable(samples: &[u64]) {

@@ -14,13 +14,15 @@ The ignored `performance_and_soak_baseline` integration test records:
   production 128-entry queue, including accepted latency and explicit
   `AUTHORITY_BUSY` counts.
 - 120 Agent plus 8 Admin IPC connections held simultaneously. One additional
-  connection on each socket must close instead of waiting without a bound.
+  connection on each socket must receive retryable `AUTHORITY_BUSY` instead of
+  being silently dropped or waiting without a bound.
 - Four held execution permits for one session. A fifth permit must return
   `INVALID_CAPABILITY`, and a released slot must be reusable.
 - Twelve 4 MiB response-sealing samples with p50/p95/p99/max latency and RSS.
 - 500 durable audit commits with p50/p95/p99/max latency and commits per second.
-- Repeated fixed-action execution, periodic lock/unlock, periodic backup, RSS
-  samples, error rate, and durable started/terminal audit counts during soak.
+- Repeated fixed-action execution with the production 64 MiB Argon2 profile,
+  periodic lock/unlock, periodic backup, current and high-water RSS, error rate,
+  and exact durable started/terminal audit counts during soak.
 - Backup while one remote effect is in flight, and shutdown while one admitted
   disconnected execution is in flight.
 
@@ -31,11 +33,14 @@ one environment instead of extrapolating between machines.
 ## Pass conditions
 
 The run fails unless every saturated boundary rejects explicitly, every soak
-request succeeds, execution-started and terminal audit counts are equal after
-reopening SQLite, and the final-quarter RSS average is no more than 64 MiB above
-the first-quarter average. Shutdown must drain the admitted execution. These are
-correctness and boundedness gates; the recorded latency and throughput values
-are baselines for detecting regressions, not product guarantees.
+request succeeds, and execution-started and terminal audit counts both match the
+known execution total after reopening SQLite. The final-quarter RSS average may
+be no more than 64 MiB above the first-quarter average, and shutdown must drain
+the admitted execution. These are correctness and boundedness gates; the
+recorded latency and throughput values
+are not product guarantees. Values from GitHub-hosted runners are descriptive
+unless their full hardware fingerprints match. The H-07 closeout comparison is
+anchored to one recorded run on a fixed host.
 
 Pull requests and pushes run a 60-second smoke. The weekly schedule and the H-07
 closeout run use 1,800 seconds. GitHub Actions uploads the JSON report, complete

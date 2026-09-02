@@ -20,7 +20,7 @@ use rekey_vault::handle::{AuthorityConfig, AuthorityHandle};
 use rekey_vault::paths;
 use tokio::net::UnixListener;
 use tokio::sync::{RwLock, mpsc, oneshot, watch};
-use tokio::task::{JoinHandle, JoinSet};
+use tokio::task::JoinHandle;
 
 use crate::active_policy::ActivePolicy;
 use crate::audit::{TerminalAuditTracker, spawn_terminal_worker};
@@ -32,6 +32,7 @@ use crate::session::SessionRegistry;
 use crate::upstream::{ReqwestUpstreamTransport, UpstreamTransport};
 
 mod admin;
+mod connections;
 mod shutdown;
 
 pub const MAX_AGENT_CONNECTIONS: usize = 120;
@@ -241,51 +242,6 @@ async fn wait_in_flight_until(sessions: &SessionRegistry, deadline: tokio::time:
         }
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
-}
-
-async fn accept_loop(
-    listener: UnixListener,
-    ctx: Arc<BrokerCtx>,
-    slots: Arc<tokio::sync::Semaphore>,
-    mut shutdown: watch::Receiver<bool>,
-    admin: bool,
-) -> Result<(), BrokerError> {
-    let mut conns = JoinSet::new();
-    loop {
-        tokio::select! {
-            accepted = listener.accept() => {
-                let (stream, _) = match accepted {
-                    Ok(accepted) => accepted,
-                    Err(err) => {
-                        tracing::error!(
-                            event = "runtime.listener_fault",
-                            channel = if admin { "admin" } else { "agent" },
-                            code = "IPC_UNAVAILABLE"
-                        );
-                        ctx.request_fault();
-                        return Err(BrokerError::Io(err));
-                    }
-                };
-                let Ok(permit) = Arc::clone(&slots).try_acquire_owned() else {
-                    continue;
-                };
-                let ctx = Arc::clone(&ctx);
-                let conn_shutdown = shutdown.clone();
-                conns.spawn(async move {
-                    if admin {
-                        crate::ipc::admin::handle_admin_conn(stream, ctx, conn_shutdown).await;
-                    } else {
-                        crate::ipc::agent::handle_agent_conn(stream, ctx, conn_shutdown).await;
-                    }
-                    drop(permit);
-                });
-            }
-            _ = shutdown.changed() => break,
-            Some(_) = conns.join_next(), if !conns.is_empty() => {}
-        }
-    }
-    while conns.join_next().await.is_some() {}
-    Ok(())
 }
 
 struct ServeLock {
@@ -645,14 +601,14 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
         }
     });
 
-    let mut admin_task = tokio::spawn(accept_loop(
+    let mut admin_task = tokio::spawn(connections::accept_loop(
         admin_listener,
         Arc::clone(&ctx),
         admin_slots,
         shutdown_rx.clone(),
         true,
     ));
-    let mut agent_task = tokio::spawn(accept_loop(
+    let mut agent_task = tokio::spawn(connections::accept_loop(
         agent_listener,
         Arc::clone(&ctx),
         agent_slots,
