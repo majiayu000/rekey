@@ -65,13 +65,21 @@ GitHub-hosted run unless the full environment fingerprint matches.
 
 The fixed-host 1,800-second closeout passed on 2026-09-02 at merge commit
 `83da2233f73dbd996d9c23af0e12937840a41c03`: macOS 26.5.1 (Darwin 25.5.0),
-Apple M3 Max, 128 GiB memory, Rust 1.95.0, aarch64. The sanitized complete
-report is [`evidence/h07-performance-2026-09-02.json`](evidence/h07-performance-2026-09-02.json);
-it records the SHA-256 of the raw report while removing only the local hostname.
+Apple M3 Max, 128 GiB memory, Rust 1.95.0, aarch64. The checked-in
+evidence is [`evidence/h07-performance-2026-09-02.json`](evidence/h07-performance-2026-09-02.json).
+It is a normalized summary rather than a byte-for-byte copy of the raw report:
+all benchmark result objects are preserved, the raw `uname -a`, `rustc -Vv`, and
+decimal memory strings are replaced with explicit OS, architecture, CPU,
+integer-memory, Rust release/host, and LLVM fields, and an `evidence` object adds
+capture time plus process timing/RSS metadata. The local hostname, kernel build
+string, and full Rust commit metadata are omitted. The raw report SHA-256 is
+`ed25a01cdf563a291180796e194ebba2b4701ead3c7d538e453d5fa4ed8a7403`.
 
 The run completed 63,798 soak executions with zero unexpected errors. Durable
 audit counts reopened at exactly 63,812 started, terminal, and finished rows.
-It exercised 29 lock/unlock cycles and 14 concurrent backups. Across 181 RSS
+It exercised 29 lock/unlock cycles and 14 periodic backups; those soak backups
+did not overlap executions. The separate backup-interference measurement in the
+report covers one backup concurrent with one in-flight execution. Across 181 RSS
 samples, the first-window average was 49,513 KiB and the last-window average was
 47,308 KiB, with a sampled maximum of 93,536 KiB. Queue overload returned 384
 explicit `AUTHORITY_BUSY` responses from 512 attempts; the total IPC boundary
