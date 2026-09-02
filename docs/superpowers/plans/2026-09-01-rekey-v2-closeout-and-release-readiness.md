@@ -522,6 +522,8 @@ SHA；[release run 33592538786](https://github.com/majiayu000/rekey/actions/runs
 备份恢复和磁盘 secret canary；同一发行物通过 launchd service-manager 安装/重启/
 drain/卸载验收。release run 的 Ubuntu x86_64 与 macOS arm64 fresh-install 均从
 workflow artifact 验签并通过原生 service manager；发布后两个 public-URL smoke 均通过。
+archive 内嵌 Feature Truth Matrix 是 tag 时的发布前快照；公开 Release notes 已发布
+erratum，且没有替换同名 artifact。
 
 ### A-04 产品化安装与卸载
 
@@ -584,8 +586,9 @@ arm64 发行物验收通过。release run 的双平台 fresh-install 使用打�
 4. 文档不把公开发行状态冒充为 Field Validated。
 
 **完成证据（2026-09-02）：** `docs/user-guide.md` 已覆盖本节全部主题，命令由本机
-发行物 P0/P1 与 release run 双平台 fresh-install 验收；Feature Truth Matrix 仅在
-`v2.0.0-alpha.1` 实际公开的行记录该 Release，同时保留原验证成熟度。
+发行物 P0/P1 与 release run 双平台 fresh-install 验收；Feature Truth Matrix 的发布后
+仓库快照仅在 `v2.0.0-alpha.1` 实际公开的行记录该 Release，同时保留原验证成熟度。
+archive 内嵌发布前快照的状态差异已在公开 Release notes 明示为文档 erratum。
 
 ### A-07 完成运维 runbook
 
@@ -701,7 +704,8 @@ private vulnerability reporting、secret scanning 和 push protection 已启用�
 launchd/systemd、公开 prerelease 发布和双平台 public-URL smoke；withdraw job 跳过。
 Release 含 2 个 archive、各自 checksum/SPDX SBOM/provenance/SBOM attestation 及汇总
 `SHA256SUMS`。发布后本机从公开 URL 再次下载 macOS arm64 包，attestation、checksum、
-完整 P0 生命周期、生产 HTTPS、备份恢复和磁盘 secret canary 全部通过。
+完整 P0 生命周期、生产 HTTPS、备份恢复和磁盘 secret canary 全部通过。archive 内嵌
+Matrix 的发布前状态已通过公开 Release erratum 说明；没有替换任何已发布制品。
 
 ## 7. H 阶段：安全与可靠性补强
 
@@ -961,7 +965,7 @@ Release 含 2 个 archive、各自 checksum/SPDX SBOM/provenance/SBOM attestatio
 | v2 Foundation 核心实现 | 已发布 Alpha | P0 主要链路达到 black-box/adversarial evidence，并由 `v2.0.0-alpha.1` 双平台发行物验收；实现与验证 findings 全部关闭，Critical/High 0 |
 | PR #10 | 已合并 | exact-head Codex Review、CI、signed squash tree/DCO 和合并后 main CI 均已验证；merge SHA `4bfe1d55ace4f7e5e1390c068f55fa61b794f49e` |
 | 所有规范与代码一致 | 完成 | M-04～M-06 的 107 个实现 findings 与 M-07/M-10 的 5 个验证有效性 findings 已全部修复；51 个 Medium 和 61 个 Low 已修复，最终 exact-head Review 无 finding |
-| Alpha 文档 | 完成 | 用户、安装、运维、发行、开源治理、支持范围和 Feature Truth Matrix 已与公开发行物对齐 |
+| Alpha 文档 | 完成（含 erratum） | 用户、安装、运维、发行、开源治理和支持范围已完成；archive 内嵌发布前 Matrix 的状态差异由公开 Release erratum 和当前仓库矩阵明确衔接 |
 | 可公开 Alpha | 是 | [v2.0.0-alpha.1](https://github.com/majiayu000/rekey/releases/tag/v2.0.0-alpha.1) 已公开；双平台 fresh-install、attestation 和 public-URL smoke 通过 |
 | H 安全与可靠性补强 | 未完成 | 持续 fuzz、ENOSPC/文件系统注入、平台扩展、性能/soak 和供应链附加决策仍需独立证据；H-03～H-05 的既有文档事实待单独关闭 |
 | 可宣称通用 G2 | 否 | 只有有界 Linux reference；默认仍是 G1 |

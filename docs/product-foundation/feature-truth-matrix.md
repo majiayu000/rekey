@@ -29,6 +29,12 @@ audit chain passed. The temporary App and credentials were deleted after the
 run; the test repository was retained. This is one-provider evidence, not a
 general connector or enterprise claim.
 
+The released archives contain the pre-publication snapshot of this file, which
+still says that nothing is released and calls P0 a development candidate. The
+public Release notes carry an explicit erratum; no artifact was replaced. This
+repository file is the post-release record and keeps release inclusion separate
+from verification maturity.
+
 Security grade for every P0 row: **G1 public Alpha**. The separate Linux
 container recipe has bounded G2 evidence; that does not upgrade the default P0
 topology or establish a general G2 release.
