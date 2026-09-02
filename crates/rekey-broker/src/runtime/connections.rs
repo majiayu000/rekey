@@ -1,16 +1,17 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use rekey_domain::ipc::{self, Channel};
+use rekey_domain::ipc::{Channel, FRAME_HEADER_LEN, FrameHeader};
+use tokio::io::AsyncReadExt;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 
 use super::BrokerCtx;
 use crate::error::BrokerError;
-use crate::ipc::frame::read_frame;
 
 const CAPACITY_REPLY_TIMEOUT: Duration = Duration::from_millis(250);
+const MAX_CAPACITY_REPLY_TASKS: usize = 128;
 
 pub(super) async fn accept_loop(
     listener: UnixListener,
@@ -20,6 +21,7 @@ pub(super) async fn accept_loop(
     admin: bool,
 ) -> Result<(), BrokerError> {
     let mut conns = JoinSet::new();
+    let mut capacity_replies = JoinSet::new();
     loop {
         tokio::select! {
             accepted = listener.accept() => {
@@ -36,10 +38,14 @@ pub(super) async fn accept_loop(
                     }
                 };
                 let Ok(permit) = Arc::clone(&slots).try_acquire_owned() else {
-                    reject_over_capacity(
-                        stream,
-                        if admin { Channel::Admin } else { Channel::Agent },
-                    ).await;
+                    if capacity_replies.len() < MAX_CAPACITY_REPLY_TASKS {
+                        capacity_replies.spawn(reject_over_capacity(
+                            stream,
+                            if admin { Channel::Admin } else { Channel::Agent },
+                        ));
+                    } else {
+                        tracing::debug!(event = "runtime.capacity_reply_limit_reached");
+                    }
                     continue;
                 };
                 let ctx = Arc::clone(&ctx);
@@ -55,39 +61,38 @@ pub(super) async fn accept_loop(
             }
             _ = shutdown.changed() => break,
             Some(_) = conns.join_next(), if !conns.is_empty() => {}
+            Some(_) = capacity_replies.join_next(), if !capacity_replies.is_empty() => {}
         }
     }
     while conns.join_next().await.is_some() {}
+    while capacity_replies.join_next().await.is_some() {}
     Ok(())
 }
 
 async fn reject_over_capacity(mut stream: UnixStream, channel: Channel) {
     let deadline = tokio::time::Instant::now() + CAPACITY_REPLY_TIMEOUT;
-    let body_limit = if channel == Channel::Agent {
-        ipc::AGENT_BODY_MAX_BYTES
-    } else {
-        ipc::ADMIN_SECRET_BODY_MAX_BYTES
+    let mut header_bytes = [0u8; FRAME_HEADER_LEN];
+    let header = match tokio::time::timeout_at(deadline, stream.read_exact(&mut header_bytes)).await
+    {
+        Ok(Ok(_)) => match FrameHeader::decode(&header_bytes) {
+            Ok(header) if header.channel == channel => header,
+            Ok(_) | Err(_) => return,
+        },
+        Ok(Err(error)) => {
+            tracing::debug!(event = "runtime.capacity_reply_read_failed", %error);
+            return;
+        }
+        Err(_) => {
+            tracing::debug!(event = "runtime.capacity_reply_read_timeout");
+            return;
+        }
     };
-    let frame =
-        match tokio::time::timeout_at(deadline, read_frame(&mut stream, channel, |_| body_limit))
-            .await
-        {
-            Ok(Ok(frame)) => frame,
-            Ok(Err(error)) => {
-                tracing::debug!(event = "runtime.capacity_reply_read_failed", %error);
-                return;
-            }
-            Err(_) => {
-                tracing::debug!(event = "runtime.capacity_reply_read_timeout");
-                return;
-            }
-        };
     match tokio::time::timeout_at(
         deadline,
         crate::ipc::frame::write_error(
             &mut stream,
             channel,
-            frame.header.request_id,
+            header.request_id,
             "AUTHORITY_BUSY",
             "connection capacity exhausted",
             true,
@@ -108,7 +113,7 @@ async fn reject_over_capacity(mut stream: UnixStream, channel: Channel) {
 #[cfg(test)]
 mod tests {
     use rekey_domain::ids::RequestId;
-    use rekey_domain::ipc::{ErrorEnvelope, FRAME_HEADER_LEN, FrameHeader};
+    use rekey_domain::ipc::{self, ErrorEnvelope, FRAME_HEADER_LEN, FrameHeader};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::*;

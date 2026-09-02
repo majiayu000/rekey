@@ -34,9 +34,10 @@ one environment instead of extrapolating between machines.
 
 The run fails unless every saturated boundary rejects explicitly, every soak
 request succeeds, and execution-started and terminal audit counts both match the
-known execution total after reopening SQLite. The final-quarter RSS average may
-be no more than 64 MiB above the first-quarter average, and shutdown must drain
-the admitted execution. These are correctness and boundedness gates; the
+known execution total after reopening SQLite. Every terminal must be
+`execution.finished`. The final-quarter RSS average may be no more than 64 MiB
+above the first-quarter average, and shutdown must drain the admitted execution.
+These are correctness and boundedness gates; the
 recorded latency and throughput values
 are not product guarantees. Values from GitHub-hosted runners are descriptive
 unless their full hardware fingerprints match. The H-07 closeout comparison is

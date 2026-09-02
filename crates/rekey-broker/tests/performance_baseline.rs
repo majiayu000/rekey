@@ -165,6 +165,10 @@ async fn performance_and_soak_baseline() {
             )
         })
         .count();
+    let finished_count = audit
+        .iter()
+        .filter(|(_, kind)| kind == event_type::EXECUTION_FINISHED)
+        .count();
     let expected_audit_pairs = RESPONSE_SEALING_SAMPLES + 1 + execution_latencies.len() + 1;
     assert_eq!(
         started_count, expected_audit_pairs,
@@ -173,6 +177,10 @@ async fn performance_and_soak_baseline() {
     assert_eq!(
         terminal_count, expected_audit_pairs,
         "execution terminals were lost"
+    );
+    assert_eq!(
+        finished_count, expected_audit_pairs,
+        "a successful execution was blocked or indeterminate"
     );
 
     let report = json!({
@@ -211,6 +219,7 @@ async fn performance_and_soak_baseline() {
             "peak_rss_kib": rss_high_water_kib(),
             "audit_started": started_count,
             "audit_terminal": terminal_count,
+            "audit_finished": finished_count,
         },
         "shutdown_drain": {
             "latency_us": shutdown_drain.as_micros(),
@@ -294,13 +303,17 @@ async fn measure_authority_queue_and_audit() -> Value {
         .await
         .unwrap();
     join.join().unwrap();
-    let audit_count =
+    let audit_events =
         rekey_vault::store::SqliteRecordStore::open(&rekey_vault::paths::vault_db(&state_dir))
             .unwrap()
             .audit_event_types()
-            .unwrap()
-            .len();
-    assert!(audit_count >= audit_latencies.len());
+            .unwrap();
+    let audit_count = audit_events.len();
+    let benchmark_audit_count = audit_events
+        .iter()
+        .filter(|kind| kind.as_str() == event_type::POLICY_ACTIVATED)
+        .count();
+    assert_eq!(benchmark_audit_count, audit_latencies.len());
 
     json!({
         "attempts": attempts,
@@ -309,6 +322,7 @@ async fn measure_authority_queue_and_audit() -> Value {
         "other_errors": other_errors,
         "accepted_latency_us": summarize(&accepted_latencies),
         "audit_commits": audit_latencies.len(),
+        "benchmark_audit_rows_after_reopen": benchmark_audit_count,
         "audit_rows_after_reopen": audit_count,
         "audit_commits_per_second": audit_latencies.len() as f64 * 1_000_000.0 / audit_elapsed_us as f64,
         "audit_latency_us": summarize(&audit_latencies),
