@@ -25,6 +25,10 @@ ORIGIN="${REKEY_ACCEPTANCE_ORIGIN:-https://1.1.1.1}"
 EXACT_PATH="${REKEY_ACCEPTANCE_PATH:-/cdn-cgi/trace}"
 
 if [[ ! -x "$REKEY" || ! -x "$REKEYD" ]]; then
+  if [[ "${REKEY_ACCEPTANCE_REQUIRE_BINARIES:-}" == "1" ]]; then
+    echo "required release binaries are missing from BIN_DIR: $BIN_DIR" >&2
+    exit 1
+  fi
   echo "building release binaries…"
   cargo build --release -p rekey-cli -p rekey-broker
 fi

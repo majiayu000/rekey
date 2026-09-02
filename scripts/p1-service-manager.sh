@@ -10,10 +10,11 @@ command -v rg >/dev/null || {
 }
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-REKEY="$ROOT/target/release/rekey"
-REKEYD="$ROOT/target/release/rekeyd"
-FIXTURE="$ROOT/target/release/examples/p1_policy_fixture"
-GENERATOR="$ROOT/scripts/rekey-service-unit.py"
+BIN_DIR="${BIN_DIR:-$ROOT/target/release}"
+REKEY="$BIN_DIR/rekey"
+REKEYD="$BIN_DIR/rekeyd"
+FIXTURE="${REKEY_SERVICE_FIXTURE:-$ROOT/target/release/examples/p1_policy_fixture}"
+GENERATOR="${REKEY_SERVICE_GENERATOR:-$ROOT/scripts/rekey-service-unit.py}"
 PASSWORD="p1 service manager horse battery staple"
 SECRET="P1-SERVICE-MANAGER-CANARY"
 PLATFORM="$(uname -s)"
@@ -81,7 +82,13 @@ terminate_pid() {
   fi
 }
 
-cargo build --release -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd
+if [[ ! -x "$REKEY" || ! -x "$REKEYD" ]]; then
+  if [[ "${REKEY_SERVICE_REQUIRE_BINARIES:-}" == "1" ]]; then
+    echo "required release binaries are missing from BIN_DIR: $BIN_DIR" >&2
+    exit 1
+  fi
+  cargo build --release -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd
+fi
 cargo build --release -p rekey-broker --example p1_policy_fixture
 
 WORKDIR="$(mktemp -d /tmp/rksvc.XXXXXX)"

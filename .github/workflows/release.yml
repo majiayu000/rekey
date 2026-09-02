@@ -1,0 +1,211 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  security-gate:
+    uses: ./.github/workflows/security-gate.yml
+
+  build:
+    needs: security-gate
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: macos-14
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.95.0
+      - name: Validate tag, version, and runner architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
+          [[ "$GITHUB_REF_NAME" == "v$version" ]]
+          [[ "$(rustc -vV | awk '/^host:/ {print $2}')" == "${{ matrix.target }}" ]]
+      - name: Build release binaries
+        run: cargo build --locked --release -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd
+      - name: Package release archive
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="rekey-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz"
+          stage="dist/rekey-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir -p "$stage"
+          install -m 0755 target/release/rekey target/release/rekeyd "$stage/"
+          install -m 0755 scripts/rekey-service-unit.py "$stage/"
+          install -m 0644 LICENSE README.md "$stage/"
+          install -m 0644 CHANGELOG.md SECURITY.md SUPPORT.md "$stage/"
+          mkdir -p "$stage/docs" "$stage/examples"
+          install -m 0644 docs/alpha-scope.md docs/installation.md docs/user-guide.md \
+            docs/operations-runbook.md "$stage/docs/"
+          install -m 0644 examples/github-create-issue.json "$stage/examples/"
+          tar -czf "dist/$archive" -C dist "$(basename "$stage")"
+          (cd dist && shasum -a 256 "$archive" > "$archive.sha256")
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          echo "stage=$stage" >> "$GITHUB_OUTPUT"
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          path: ${{ steps.package.outputs.stage }}
+          format: spdx-json
+          output-file: dist/${{ steps.package.outputs.archive }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Attest build provenance
+        id: provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/${{ steps.package.outputs.archive }}
+      - name: Preserve provenance bundle
+        run: cp "${{ steps.provenance.outputs.bundle-path }}" "dist/${{ steps.package.outputs.archive }}.provenance.intoto.jsonl"
+      - name: Attest SBOM
+        id: sbom-attestation
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/${{ steps.package.outputs.archive }}
+          sbom-path: dist/${{ steps.package.outputs.archive }}.spdx.json
+      - name: Preserve SBOM attestation bundle
+        run: cp "${{ steps.sbom-attestation.outputs.bundle-path }}" "dist/${{ steps.package.outputs.archive }}.sbom.intoto.jsonl"
+      - name: Upload immutable build output
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rekey-${{ matrix.target }}
+          path: |
+            dist/${{ steps.package.outputs.archive }}
+            dist/${{ steps.package.outputs.archive }}.sha256
+            dist/${{ steps.package.outputs.archive }}.spdx.json
+            dist/${{ steps.package.outputs.archive }}.provenance.intoto.jsonl
+            dist/${{ steps.package.outputs.archive }}.sbom.intoto.jsonl
+          if-no-files-found: error
+
+  fresh-install:
+    needs: build
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: macos-14
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      attestations: read
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: rekey-${{ matrix.target }}
+          path: downloaded
+      - name: Exercise downloaded release artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="downloaded/rekey-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz"
+          gh attestation verify "$archive" --repo "$GITHUB_REPOSITORY"
+          scripts/release-smoke.sh "$archive" "$archive.sha256" "${GITHUB_REF_NAME#v}"
+          mkdir installed
+          tar -xzf "$archive" -C installed
+          release_dir="$PWD/installed/rekey-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          BIN_DIR="$release_dir" \
+          REKEY_SERVICE_GENERATOR="$release_dir/rekey-service-unit.py" \
+          REKEY_SERVICE_REQUIRE_BINARIES=1 \
+            scripts/p1-service-manager.sh
+
+  publish:
+    needs: fresh-install
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: rekey-*
+          path: dist
+          merge-multiple: true
+      - name: Assemble release checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat dist/*.sha256 | sort -k2 > dist/SHA256SUMS
+      - name: Publish only after every platform passed
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --draft \
+            --prerelease \
+            --verify-tag \
+            --title "Rekey $GITHUB_REF_NAME" \
+            --notes-file "docs/releases/${GITHUB_REF_NAME}.md"
+          gh release edit "$GITHUB_REF_NAME" --draft=false --latest=false
+
+  public-url-smoke:
+    needs: publish
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: macos-14
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      attestations: read
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Download the public release artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="rekey-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz"
+          mkdir downloaded
+          gh release download "$GITHUB_REF_NAME" --dir downloaded \
+            --pattern "$archive" \
+            --pattern "$archive.sha256"
+          gh attestation verify "downloaded/$archive" --repo "$GITHUB_REPOSITORY"
+          scripts/release-smoke.sh \
+            "downloaded/$archive" \
+            "downloaded/$archive.sha256" \
+            "${GITHUB_REF_NAME#v}"
+
+  withdraw-on-public-smoke-failure:
+    needs: public-url-smoke
+    if: ${{ failure() }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Withdraw the failed prerelease without replacing its artifacts
+        run: gh release edit "$GITHUB_REF_NAME" --draft

@@ -2,6 +2,11 @@
 name = "rekey-domain"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pure domain models and IPC codec for Rekey"
+publish = false
 
 [dependencies]
 serde = { workspace = true }

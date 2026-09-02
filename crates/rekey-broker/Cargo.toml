@@ -2,6 +2,11 @@
 name = "rekey-broker"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Local broker and authority daemon for Rekey"
+publish = false
 
 [[bin]]
 name = "rekeyd"
