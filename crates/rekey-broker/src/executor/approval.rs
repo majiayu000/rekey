@@ -317,12 +317,17 @@ impl ActionExecutor {
         ) {
             Ok(evidence) => evidence,
             Err(error) => {
-                let grant = verified.first().map(VerifiedApprovalGrant::grant);
-                let audit_evidence = grant.map(|grant| ApprovalEvidence {
-                    approval_request_id: grant.approval_request_id,
-                    approval_id: Some(grant.approval_id),
-                    approver_id: Some(grant.approver_id),
-                });
+                let audit_evidence = match verified.as_slice() {
+                    [verified] => {
+                        let grant = verified.grant();
+                        Some(ApprovalEvidence {
+                            approval_request_id: grant.approval_request_id,
+                            approval_id: Some(grant.approval_id),
+                            approver_id: Some(grant.approver_id),
+                        })
+                    }
+                    _ => None,
+                };
                 self.reject_approval(&evaluated.ctx, error.code(), audit_evidence, deadline_at)
                     .await?;
                 return Err(BrokerError::Denied(error.code()));

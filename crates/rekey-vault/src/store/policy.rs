@@ -121,29 +121,33 @@ impl SqliteRecordStore {
     pub fn load_policy_trust(&self) -> Result<Option<PolicyTrustRecord>, AuthorityError> {
         self.conn
             .query_row(
-                "SELECT signer_id, public_key, installed_at_ms, seal_nonce, seal_ciphertext
+                "SELECT signer_id, algorithm, public_key, installed_at_ms, seal_nonce, seal_ciphertext
                  FROM policy_trust WHERE singleton = 1",
                 [],
                 |row| {
                     Ok((
                         row.get::<_, Vec<u8>>(0)?,
-                        row.get::<_, Vec<u8>>(1)?,
-                        row.get::<_, i64>(2)?,
-                        row.get::<_, Vec<u8>>(3)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                        row.get::<_, i64>(3)?,
                         row.get::<_, Vec<u8>>(4)?,
+                        row.get::<_, Vec<u8>>(5)?,
                     ))
                 },
             )
             .optional()
             .map_err(storage)?
             .map(|row| {
+                if row.1 != "ed25519" {
+                    return Err(AuthorityError::StorageIntegrityFailed);
+                }
                 Ok(PolicyTrustRecord {
                     signer_id: PolicySignerId::from_bytes(blob16(row.0)?)
                         .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
-                    public_key: blob32(row.1)?,
-                    installed_at_ms: row.2,
-                    seal_nonce: blob12(row.3)?,
-                    seal_ciphertext: blob16(row.4)?,
+                    public_key: blob32(row.2)?,
+                    installed_at_ms: row.3,
+                    seal_nonce: blob12(row.4)?,
+                    seal_ciphertext: blob16(row.5)?,
                 })
             })
             .transpose()

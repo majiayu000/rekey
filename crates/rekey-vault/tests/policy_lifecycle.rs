@@ -238,6 +238,23 @@ async fn deleted_or_tampered_policy_records_fail_closed_on_unlock() {
         handle.shutdown(None).await.unwrap();
         join.join().unwrap();
     }
+
+    let vault = common::init_test_vault();
+    persist_policy(&vault).await;
+    let connection = rusqlite::Connection::open(paths::vault_db(&vault.state_dir)).unwrap();
+    connection
+        .execute_batch(
+            "PRAGMA ignore_check_constraints=ON;
+             UPDATE policy_trust SET algorithm='unknown' WHERE singleton=1;",
+        )
+        .unwrap();
+    drop(connection);
+    assert!(matches!(
+        common::expect_err(rekey_vault::authority::spawn_authority(
+            common::test_config(&vault.state_dir,)
+        )),
+        AuthorityError::StorageIntegrityFailed
+    ));
 }
 
 #[test]

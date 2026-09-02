@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
@@ -13,11 +14,13 @@ use super::{
     read_step_up, stdin_lines,
 };
 
+type FileIdentity = (u64, u64);
+
 fn read_regular_nosymlink(
     path: &Path,
     limit: usize,
     label: &'static str,
-) -> Result<Zeroizing<Vec<u8>>, CliError> {
+) -> Result<(Zeroizing<Vec<u8>>, FileIdentity), CliError> {
     let file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
@@ -32,7 +35,8 @@ fn read_regular_nosymlink(
             format!("{label} must be a regular non-symlink file"),
         ));
     }
-    read_bounded(file, limit, label)
+    let identity = (metadata.dev(), metadata.ino());
+    read_bounded(file, limit, label).map(|bytes| (bytes, identity))
 }
 
 pub fn policy_trust_install(
@@ -41,7 +45,7 @@ pub fn policy_trust_install(
     recovery: bool,
     password_stdin: bool,
 ) -> Result<(), CliError> {
-    let trust = read_regular_nosymlink(file, 4 * 1024, "policy trust file")?;
+    let (trust, _) = read_regular_nosymlink(file, 4 * 1024, "policy trust file")?;
     let proof = read_step_up(recovery, password_stdin)?;
     let body = proof_body(recovery, &proof);
     let (meta, _) = admin(state_dir)?.call(admin_msg::POLICY_TRUST_INSTALL, &trust, &body)?;
@@ -54,7 +58,7 @@ pub fn policy_activate(
     recovery: bool,
     password_stdin: bool,
 ) -> Result<(), CliError> {
-    let bundle = read_regular_nosymlink(file, 64 * 1024, "policy bundle")?;
+    let (bundle, _) = read_regular_nosymlink(file, 64 * 1024, "policy bundle")?;
     let proof = read_step_up(recovery, password_stdin)?;
     let body = proof_body(recovery, &proof);
     let (meta, _) = admin(state_dir)?.call(admin_msg::POLICY_ACTIVATE, &bundle, &body)?;
@@ -85,10 +89,10 @@ pub(super) fn read_approval_files(paths: &[PathBuf]) -> Result<Vec<String>, CliE
     let mut seen = BTreeSet::new();
     let mut grants = Vec::with_capacity(paths.len());
     for path in paths {
-        if !seen.insert(path.clone()) {
-            return Err(CliError::local("USAGE", "duplicate approval file path"));
+        let (bytes, identity) = read_regular_nosymlink(path, 4 * 1024, "approval file")?;
+        if !seen.insert(identity) {
+            return Err(CliError::local("USAGE", "duplicate approval file"));
         }
-        let bytes = read_regular_nosymlink(path, 4 * 1024, "approval file")?;
         grants.push(
             String::from_utf8(bytes.to_vec())
                 .map_err(|_| CliError::local("USAGE", "approval file must be utf-8 JSON"))?,
@@ -188,5 +192,15 @@ mod tests {
             tx.send(result.is_err()).expect("receiver remains alive");
         });
         assert!(rx.recv_timeout(Duration::from_secs(1)).unwrap());
+    }
+
+    #[test]
+    fn approval_reader_rejects_hard_link_aliases() {
+        let dir = tempfile::tempdir().unwrap();
+        let grant = dir.path().join("grant.json");
+        let alias = dir.path().join("alias.json");
+        std::fs::write(&grant, b"{}").unwrap();
+        std::fs::hard_link(&grant, &alias).unwrap();
+        assert!(read_approval_files(&[grant, alias]).is_err());
     }
 }

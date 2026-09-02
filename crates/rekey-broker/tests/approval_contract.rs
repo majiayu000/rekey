@@ -276,6 +276,19 @@ async fn two_person_quorum_rejects_one_and_accepts_two_distinct_approvers() {
         .err_code(),
         "REQUEST_DENIED"
     );
+    let duplicate_approver = signed_grant(&challenge, first_id, &first_key, 1);
+    assert_eq!(
+        execute(
+            &broker,
+            &session.capability_token,
+            &action,
+            version,
+            vec![first.clone(), duplicate_approver],
+        )
+        .await
+        .err_code(),
+        "REQUEST_DENIED"
+    );
     broker.fake.push_response(upstream_ok());
     execute(
         &broker,
@@ -287,6 +300,36 @@ async fn two_person_quorum_rejects_one_and_accepts_two_distinct_approvers() {
     .await
     .ok();
     assert_eq!(broker.fake.requests.lock().unwrap().len(), 1);
+
+    let response = common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::AUDIT_QUERY,
+        &serde_json::to_vec(&AuditQuery {
+            request_id: None,
+            session_id: Some(challenge.session_id),
+            action_id: None,
+            credential_id: None,
+            outcome: None,
+            since_ms: None,
+            until_ms: None,
+            snapshot_max_sequence: None,
+            before_sequence: None,
+            limit: 100,
+        })
+        .unwrap(),
+        &[],
+    )
+    .await;
+    let page: AuditPage = serde_json::from_slice(&response.body).unwrap();
+    let rejected = page
+        .events
+        .iter()
+        .find(|event| event.reason_code == "approval-approver-duplicate")
+        .unwrap();
+    assert!(rejected.approval_request_id.is_none());
+    assert!(rejected.approval_id.is_none());
+    assert!(rejected.approver_id.is_none());
     broker.shutdown().await;
 }
 
