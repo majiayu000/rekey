@@ -14,7 +14,7 @@ use crate::json::parse_unique_json;
 use crate::{
     APPROVAL_GRANT_MAX_BYTES, PolicyError, SNAPSHOT_MAX_BYTES, SignatureAlgorithm, TRUST_MAX_BYTES,
     ValidatedSnapshot, decode_lower_hex_32, parse_and_validate_snapshot,
-    parse_and_validate_snapshot_for_load,
+    parse_and_validate_snapshot_for_load, validate_ed25519_public_key,
 };
 
 const POLICY_FORMAT_VERSION: u32 = 1;
@@ -161,7 +161,7 @@ pub fn parse_policy_trust(bytes: &[u8]) -> Result<ValidatedPolicyTrust, PolicyEr
     if trust.format_version != POLICY_FORMAT_VERSION {
         return Err(PolicyError::UnsupportedFormat);
     }
-    let public_key = decode_lower_hex_32(&trust.public_key)?;
+    let public_key = validate_ed25519_public_key(&trust.public_key)?;
     let canonical = serde_jcs::to_vec(&value).map_err(|_| PolicyError::Malformed)?;
     Ok(ValidatedPolicyTrust {
         signer_id: trust.signer_id,
@@ -413,6 +413,16 @@ mod tests {
         let mut unknown: Value = serde_json::from_slice(trust.canonical_bytes()).unwrap();
         unknown["extra"] = true.into();
         assert!(parse_policy_trust(&serde_json::to_vec(&unknown).unwrap()).is_err());
+
+        for public_key in [[0u8; 32], [0xffu8; 32]] {
+            let malformed = json!({
+                "format_version": 1,
+                "signer_id": PolicySignerId::new_random(),
+                "algorithm": "ed25519",
+                "public_key": HEXLOWER.encode(&public_key),
+            });
+            assert!(parse_policy_trust(&serde_json::to_vec(&malformed).unwrap()).is_err());
+        }
     }
 
     #[test]

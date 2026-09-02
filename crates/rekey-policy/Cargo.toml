@@ -11,6 +11,7 @@ publish = false
 [dependencies]
 rekey-domain = { workspace = true }
 aws-lc-rs = "1.18"
+curve25519-dalek = { version = "4.1", default-features = false }
 data-encoding = "2"
 jsonschema = { version = "0.52", default-features = false }
 serde = { workspace = true }

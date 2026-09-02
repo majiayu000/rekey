@@ -265,14 +265,43 @@ fn validate_grant(
     {
         return Err(reject("approval-window-invalid"));
     }
-    let from_creation_ms = grant.expires_at_ms.saturating_sub(challenge.created_at_ms);
     let derived_deadline = stored
         .monotonic_anchor
-        .checked_add(Duration::from_millis(from_creation_ms as u64))
+        .checked_add(monotonic_expiry_offset(
+            grant.expires_at_ms,
+            challenge.created_at_ms,
+        )?)
         .ok_or_else(|| reject("approval-window-invalid"))?
         .min(stored.monotonic_deadline);
     if monotonic_now >= derived_deadline {
         return Err(reject("approval-expired"));
     }
     Ok(())
+}
+
+fn monotonic_expiry_offset(
+    expires_at_ms: i64,
+    challenge_created_at_ms: i64,
+) -> Result<Duration, ApprovalRejection> {
+    let duration_ms = expires_at_ms
+        .checked_sub(challenge_created_at_ms)
+        .filter(|duration| *duration > 0)
+        .ok_or_else(|| reject("approval-window-invalid"))?;
+    Ok(Duration::from_millis(duration_ms as u64))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn monotonic_expiry_requires_time_after_challenge_creation() {
+        assert_eq!(
+            monotonic_expiry_offset(101, 100).unwrap(),
+            Duration::from_millis(1)
+        );
+        assert!(monotonic_expiry_offset(100, 100).is_err());
+        assert!(monotonic_expiry_offset(99, 100).is_err());
+        assert!(monotonic_expiry_offset(i64::MAX, -1).is_err());
+    }
 }

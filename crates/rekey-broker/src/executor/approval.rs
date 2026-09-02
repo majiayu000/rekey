@@ -279,6 +279,16 @@ impl ActionExecutor {
         raw_grants: &[String],
         deadline_at: Instant,
     ) -> Result<Vec<AuditDraft>, BrokerError> {
+        if raw_grants.len() > 2 {
+            self.reject_approval(
+                &evaluated.ctx,
+                "approval-insufficient-quorum",
+                None,
+                deadline_at,
+            )
+            .await?;
+            return Err(BrokerError::Denied("approval-insufficient-quorum"));
+        }
         let verified = match raw_grants
             .iter()
             .map(|grant| {

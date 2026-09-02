@@ -142,6 +142,19 @@ async fn one_time_grant_admits_exactly_once_under_a_race() {
     .await;
     let challenge = prepare(&broker, &session.capability_token, &action, version).await;
     assert_eq!(challenge.record_type, "rekey.approval.challenge.v1");
+    let excessive = execute(
+        &broker,
+        &session.capability_token,
+        &action,
+        version,
+        vec!["not-json".to_owned(); 3],
+    )
+    .await;
+    assert_eq!(excessive.err_code(), "REQUEST_DENIED");
+    assert_eq!(
+        excessive.metadata["message"],
+        "request denied: approval-insufficient-quorum"
+    );
     let grant = signed_grant(&challenge, approver_id, &key, 1);
     broker.fake.push_response(upstream_ok());
 

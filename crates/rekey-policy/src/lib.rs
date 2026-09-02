@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use curve25519_dalek::edwards::CompressedEdwardsY;
 use data_encoding::HEXLOWER;
 use jsonschema::{Draft, Validator};
 use rekey_domain::Timestamp;
@@ -237,7 +238,7 @@ fn parse_and_validate_snapshot_inner(
     let mut approvers = BTreeMap::new();
     let mut public_keys = BTreeSet::new();
     for approver in &snapshot.approvers {
-        let key = decode_lower_hex_32(&approver.public_key)?;
+        let key = validate_ed25519_public_key(&approver.public_key)?;
         if approvers.insert(approver.approver_id, key).is_some() || !public_keys.insert(key) {
             return Err(PolicyError::Invalid);
         }
@@ -471,6 +472,16 @@ pub(crate) fn decode_lower_hex_32(value: &str) -> Result<[u8; 32], PolicyError> 
         return Err(PolicyError::Invalid);
     }
     decoded.try_into().map_err(|_| PolicyError::Invalid)
+}
+
+pub(crate) fn validate_ed25519_public_key(value: &str) -> Result<[u8; 32], PolicyError> {
+    let public_key = decode_lower_hex_32(value)?;
+    let compressed = CompressedEdwardsY(public_key);
+    let point = compressed.decompress().ok_or(PolicyError::Invalid)?;
+    if point.is_small_order() || point.compress().to_bytes() != public_key {
+        return Err(PolicyError::Invalid);
+    }
+    Ok(public_key)
 }
 
 fn normalize_content_type(

@@ -20,7 +20,7 @@ fn read_regular_nosymlink(
 ) -> Result<Zeroizing<Vec<u8>>, CliError> {
     let file = std::fs::OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)
         .map_err(|err| CliError::local("USAGE", format!("cannot open {label}: {err}")))?;
     let metadata = file
@@ -161,4 +161,32 @@ pub(super) fn request_headers(headers: &[String]) -> Result<Vec<(String, String)
             Ok((name.as_str().to_owned(), value.trim().to_owned()))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::process::Command;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use super::*;
+
+    #[test]
+    fn policy_artifact_reader_rejects_fifo_without_blocking() {
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("policy.fifo");
+        assert!(
+            Command::new("mkfifo")
+                .arg(&fifo)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result = read_regular_nosymlink(&fifo, 4 * 1024, "policy file");
+            tx.send(result.is_err()).expect("receiver remains alive");
+        });
+        assert!(rx.recv_timeout(Duration::from_secs(1)).unwrap());
+    }
 }

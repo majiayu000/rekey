@@ -136,13 +136,20 @@ impl BrokerCtx {
         };
         let active = ActivePolicy::activate_bundle(verified, crate::now_ts()?)?;
         let mut guard = self.policy.write().await;
+        let preserve_expiry_latch = guard.as_ref().is_some_and(|current| {
+            current.signer_id() == Some(input.signer_id)
+                && current.snapshot().version().get() == input.version
+                && current.bundle_digest() == Some(input.bundle_digest)
+        });
         authority_until(
             deadline,
             self.authority
                 .policy_bundle_activate_before(input, proof, Some(deadline.into_std())),
         )
         .await?;
-        *guard = Some(Arc::new(active));
+        if !preserve_expiry_latch {
+            *guard = Some(Arc::new(active));
+        }
         Ok(())
     }
 }
