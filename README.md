@@ -1,71 +1,143 @@
 # rekey
 
-AI agent API key proxy — single binary, zero dependencies, 30-second setup.
+Local credential authority for AI agents: agents execute fixed, pre-registered
+actions through short-lived capability tokens and **never see real
+credentials**. Secrets live in an encrypted SQLite vault owned by a single
+broker process; the CLI, agents, and everything they spawn talk to it only
+over two permission-separated Unix sockets.
 
-Agents never touch your real API keys. rekey intercepts HTTPS requests via MITM proxy and injects credentials at the transport layer.
+> Status: v2 foundation with bounded P1 and P2.1 implementations,
+> **G1 development candidate**, not a G1 security
+> release and not G2. Credentials never appear in agent-facing APIs, process
+> arguments, environment variables, logs, or audit records. Same-user
+> `ptrace`, process memory, and filesystem access are out of G1. Canonical
+> feature status: `docs/product-foundation/feature-truth-matrix.md`.
 
-## Install
+The production transport rejects all non-public address ranges, including
+`198.18.0.0/15`. On systems where a TUN proxy returns that range as fake DNS
+answers, domain-based Actions fail closed until the host supplies real DNS;
+Rekey does not silently allow the fake-IP range or honor proxy environment
+variables.
+
+To diagnose a blocked domain Action, resolve its exact Action host before
+changing Rekey:
 
 ```bash
-cargo install rekey
+dig +short api.github.com
 ```
 
-## Quick Start
+If every answer is inside `198.18.0.0/15`, configure the TUN client to return
+real DNS for that exact host (for Clash, add it to `dns.fake-ip-filter`), then
+rerun `dig` and the Action. Do not solve this by adding private ranges to
+Rekey, disabling endpoint screening, or setting HTTP proxy environment
+variables.
+
+## How it works
+
+```
+admin (you)                      agent (untrusted)
+  │ rekey unlock / credential /     │ rekey execute ACTION@V --capability TOKEN
+  │ action / session …              │
+  ▼                                 ▼
+admin.sock ──────► rekeyd broker ◄────── agent.sock
+                     │  AuthorityWorker: SQLite + envelope crypto
+                     │  (Argon2id → VRK → per-version DEK → payload)
+                     ▼
+              fixed HTTPS upstream (origin/method/path/auth pinned by admin)
+```
+
+- Credentials are stored envelope-encrypted (AES-256-GCM, binary AAD binding
+  vault/credential/version/purpose) and decrypted only after capability,
+  action, and audit checks pass — once per request, zeroized after use.
+- The agent wire protocol has no secret-read operation and no way to choose
+  origin, method, path, auth headers, or redirects.
+- Responses are size-bounded, header-filtered, and scanned for reflected
+  secrets (raw, base64, base64url, percent-encoded) before the agent sees them.
+
+## Quick start
 
 ```bash
-rekey init                          # Set password, generate CA
-rekey add anthropic sk-ant-xxx      # Add your API key
-rekey add openai sk-proj-xxx        # Add another
-rekey start                         # Start proxy on :10800
+cargo build --release -p rekey-cli -p rekey-broker   # produces `rekey` and `rekeyd`
 
-# In your agent's terminal:
-eval $(rekey env)                   # Set proxy + placeholder keys
+rekey init                       # create vault; shows recovery key ONCE
+rekey serve                      # run broker in foreground (starts locked)
+
+rekey unlock                     # hidden password prompt
+rekey credential add github-token
+rekey action create --file action.json
+rekey session create --action <ACTION_ID>@1 --ttl 1h --max-uses 100
+# put the returned principal_id and Action version in a typed snapshot:
+rekey policy activate --file policy.json
+# hand the printed capability token to the agent, then:
+rekey execute <ACTION_ID>@1 --capability - --body-file req.json
 ```
 
-## How It Works
+The recovery key can unlock the running broker, satisfy an explicit Admin
+step-up with `--recovery`, or verify an offline backup restore. The current
+Foundation does not change/reset the vault password or replace key wrappers.
 
-1. Agent sends requests through `HTTPS_PROXY=localhost:10800`
-2. Agent uses placeholder API keys (`REKEY_PLACEHOLDER`)
-3. rekey intercepts via MITM, replaces placeholders with real keys
-4. Real keys never enter the agent's process memory
+For explicit automation, password/recovery-only commands use
+`--password-stdin`; `rekey credential add` and `rekey credential rotate` use
+`--stdin-secrets` for the step-up proof and Credential value. Add `--recovery`
+when that proof is the recovery key. Secrets are never accepted as argument
+values or environment variables.
 
-## Architecture
+Policy snapshots are JSON-only, default-deny, in-memory, and exact-principal;
+lock or restart clears the active snapshot. The normative snapshot schema is
+in the P1.1 section of the implementation spec linked below.
 
+`action.json`:
+
+```json
+{
+  "name": "github-create-issue",
+  "credential_id": "<CREDENTIAL_ID>",
+  "origin": "https://api.github.com",
+  "method": "POST",
+  "exact_path": "/repos/you/repo/issues",
+  "auth_header": "authorization",
+  "auth_prefix": "Bearer ",
+  "timeout_ms": 30000,
+  "request_max_bytes": 65536,
+  "allowed_extra_headers": ["x-request-id"],
+  "response_max_bytes": 262144,
+  "allowed_response_headers": ["content-type"]
+}
 ```
-Agent ──CONNECT──▶ rekey:10800
-                      │
-                      ├─ matched host? ──▶ MITM: TLS terminate, inject key, forward
-                      └─ unmatched?    ──▶ TCP passthrough (no inspection)
+
+## Not compatible with v1
+
+This is a breaking rewrite. There is no MITM proxy, system CA, dashboard,
+single port, or TCP passthrough, and v1 vaults are neither read nor migrated —
+a non-empty legacy state directory is rejected untouched. History lives in Git.
+
+## Development
+
+```bash
+cargo check --workspace
+cargo test --workspace
+cargo fmt --all
 ```
 
-- **Vault**: SQLite + AES-256-GCM encrypted storage, Argon2id key derivation
-- **CA**: Auto-generated local CA with per-host leaf cert cache (DashMap)
-- **Proxy**: CONNECT tunnel routing, header injection, audit logging
-- **Gateway**: REST API mode at `/proxy/{provider}/{path}`
-- **Dashboard**: Embedded web UI at `/dashboard`
+Design: `docs/superpowers/specs/2026-08-28-credential-authority-v2-foundation.md`
 
-## Commands
+Feature status: `docs/product-foundation/feature-truth-matrix.md`
 
-| Command | Description |
-|---------|-------------|
-| `rekey init` | Set master password, generate CA, create vault |
-| `rekey add <name> <key>` | Add an API key (auto-detects known providers) |
-| `rekey list` | List configured secrets |
-| `rekey remove <name>` | Remove a secret |
-| `rekey rotate <name> <key>` | Rotate a secret value |
-| `rekey start` | Start the proxy server |
-| `rekey env` | Print shell exports for agent configuration |
-| `rekey dashboard` | Open web dashboard in browser |
-| `rekey destroy` | Remove all rekey data and CA from system |
+P0 acceptance (release binaries, no FakeTransport): `scripts/p0-acceptance.sh`
 
-## Supported Providers
+Typed-policy release-process acceptance (UDS, SQLite, local TLS):
+`scripts/p1-policy-acceptance.sh`
 
-| Provider | Host | Header |
-|----------|------|--------|
-| Anthropic | `api.anthropic.com` | `x-api-key: {value}` |
-| OpenAI | `api.openai.com` | `Authorization: Bearer {value}` |
-| GitHub | `api.github.com` | `Authorization: Bearer {value}` |
-| Custom | `--host <host>` | `--header <name>` |
+The Linux G2 harness proves only the documented container/namespace reference
+topology; it does not upgrade the default G1 product claim:
+`scripts/p1-linux-g2.sh`
+
+GitHub create-issue dogfood (opt-in, dedicated fine-grained token entered
+through a hidden TTY prompt; exits nonzero unless GitHub returns 201):
+
+```bash
+scripts/dogfood-github.sh --repo owner/name
+```
 
 ## License
 

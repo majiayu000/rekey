@@ -1,0 +1,36 @@
+[package]
+name = "rekey-broker"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "rekeyd"
+path = "src/bin/rekeyd.rs"
+
+[dependencies]
+rekey-domain = { workspace = true }
+rekey-policy = { workspace = true }
+rekey-vault = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+data-encoding = "2"
+aws-lc-rs = "1.18"
+libc = "0.2"
+rand = "0.9.3"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+rpassword = "7"
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.10"
+subtle = "2"
+thiserror = { workspace = true }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "signal"] }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["json"] }
+zeroize = "1"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+rcgen = "0.13"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rusqlite = { version = "0.34", features = ["bundled"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }

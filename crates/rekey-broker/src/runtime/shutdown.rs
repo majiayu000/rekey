@@ -1,0 +1,249 @@
+//! The single irreversible BrokerRuntime stop path.
+
+use std::time::Duration;
+
+use rekey_vault::AuthorityError;
+use rekey_vault::command::UnlockProof;
+use tokio::task::{JoinError, JoinHandle};
+
+use super::BrokerCtx;
+use crate::error::BrokerError;
+use crate::lifecycle::BrokerPhase;
+
+const FINALIZE_GRACE: Duration = Duration::from_secs(5);
+
+pub(super) enum StopCommand {
+    Admin {
+        proof: Option<UnlockProof>,
+        reply: tokio::sync::oneshot::Sender<Result<(), BrokerError>>,
+    },
+    Fault,
+}
+
+pub(super) enum StopCause {
+    Admin(Option<UnlockProof>),
+    Signal,
+    Fault,
+}
+
+pub(super) enum StopDisposition {
+    Rejected(BrokerError),
+    Stopped(Option<BrokerError>),
+}
+
+pub(super) type ExecutionTaskResult = Result<Result<(), BrokerError>, JoinError>;
+
+pub(super) fn deadline(drain_timeout: Duration) -> tokio::time::Instant {
+    tokio::time::Instant::now() + drain_timeout + FINALIZE_GRACE
+}
+
+fn remember(first: &mut Option<BrokerError>, error: BrokerError) {
+    if first.is_none() {
+        *first = Some(error);
+    }
+}
+
+fn admin_requires_proof(status_state: Option<&str>) -> bool {
+    !matches!(status_state, Some("locked" | "faulted"))
+}
+
+async fn wait_in_flight_until(ctx: &BrokerCtx, deadline: tokio::time::Instant) {
+    while ctx.sessions.in_flight_total() > 0 && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+impl BrokerCtx {
+    pub(super) async fn central_stop(
+        &self,
+        cause: StopCause,
+        stop_deadline: tokio::time::Instant,
+        execution_task: &mut JoinHandle<Result<(), BrokerError>>,
+        completed_execution: Option<ExecutionTaskResult>,
+    ) -> StopDisposition {
+        let lock_reason = match &cause {
+            StopCause::Admin(_) => "admin-shutdown",
+            StopCause::Signal => "service-manager-signal",
+            StopCause::Fault => "runtime-fault",
+        };
+        let must_record_signal_lock = matches!(&cause, StopCause::Signal);
+        let owner = match tokio::time::timeout_at(stop_deadline, self.lifecycle.coordinate()).await
+        {
+            Ok(owner) => owner,
+            Err(_) => {
+                self.publish_shutdown();
+                if completed_execution.is_none() {
+                    execution_task.abort();
+                }
+                return StopDisposition::Stopped(Some(BrokerError::Authority(
+                    AuthorityError::Faulted,
+                )));
+            }
+        };
+
+        let terminal_audit_failed = self.terminals.has_failed();
+        let mut first_error = if terminal_audit_failed {
+            Some(BrokerError::Authority(AuthorityError::AuditCommitFailed))
+        } else {
+            matches!(cause, StopCause::Fault)
+                .then_some(BrokerError::Authority(AuthorityError::Faulted))
+        };
+        let status = match tokio::time::timeout_at(stop_deadline, self.authority.status()).await {
+            Ok(Ok(status)) => Some(status),
+            Ok(Err(err)) => {
+                remember(&mut first_error, BrokerError::Authority(err));
+                None
+            }
+            Err(_) => {
+                remember(
+                    &mut first_error,
+                    BrokerError::Authority(AuthorityError::Faulted),
+                );
+                None
+            }
+        };
+
+        let terminal_failure_already_faulted = terminal_audit_failed
+            && status
+                .as_ref()
+                .is_some_and(|status| status.state == "faulted");
+        if let StopCause::Admin(proof) = cause
+            && admin_requires_proof(status.as_ref().map(|status| status.state))
+            && !terminal_failure_already_faulted
+        {
+            let Some(proof) = proof else {
+                self.lifecycle.resume_remote_effect_admission_if_running();
+                drop(owner);
+                return StopDisposition::Rejected(BrokerError::Authority(
+                    AuthorityError::AuthenticationFailed,
+                ));
+            };
+            match tokio::time::timeout_at(stop_deadline, self.authority.verify_proof(proof)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => {
+                    self.lifecycle.resume_remote_effect_admission_if_running();
+                    drop(owner);
+                    return StopDisposition::Rejected(BrokerError::Authority(err));
+                }
+                Err(_) => {
+                    self.lifecycle.resume_remote_effect_admission_if_running();
+                    drop(owner);
+                    return StopDisposition::Rejected(BrokerError::Authority(
+                        AuthorityError::Faulted,
+                    ));
+                }
+            }
+        }
+
+        if self.lifecycle.phase() == BrokerPhase::Running {
+            self.lifecycle.enter_draining();
+        }
+        self.sessions.close_and_revoke_all();
+        self.publish_shutdown();
+
+        let natural_deadline = stop_deadline
+            .checked_sub(FINALIZE_GRACE)
+            .unwrap_or(stop_deadline);
+        wait_in_flight_until(self, natural_deadline).await;
+        if self.sessions.in_flight_total() > 0 {
+            self.lifecycle.signal_cancel();
+            wait_in_flight_until(self, stop_deadline).await;
+        }
+        if self.sessions.in_flight_total() > 0 {
+            remember(
+                &mut first_error,
+                BrokerError::Authority(AuthorityError::AuthorityBusy),
+            );
+        }
+
+        let execution_result = match completed_execution {
+            Some(result) => Some(result),
+            None => tokio::time::timeout_at(stop_deadline, &mut *execution_task)
+                .await
+                .ok(),
+        };
+        match execution_result {
+            Some(Ok(Ok(()))) => {}
+            Some(Ok(Err(err))) => remember(&mut first_error, err),
+            Some(Err(_)) => remember(
+                &mut first_error,
+                BrokerError::Authority(AuthorityError::Faulted),
+            ),
+            None => {
+                execution_task.abort();
+                remember(
+                    &mut first_error,
+                    BrokerError::Authority(AuthorityError::Faulted),
+                );
+            }
+        }
+
+        if let Err(err) = self.terminals.wait_idle_until(stop_deadline).await {
+            remember(&mut first_error, BrokerError::Authority(err));
+        }
+        if self.terminals.has_pending() {
+            // Never enqueue Authority lock/shutdown behind terminal work that
+            // still belongs to the independent tracker. The bounded runtime
+            // exits non-zero; restart reconciliation closes durable started
+            // rows, but this stop must not claim or reorder a clean shutdown.
+            self.lifecycle.enter_shutting_down();
+            self.publish_shutdown();
+            drop(owner);
+            return StopDisposition::Stopped(first_error.or(Some(BrokerError::Authority(
+                AuthorityError::AuditCommitFailed,
+            ))));
+        }
+
+        if must_record_signal_lock
+            || status
+                .as_ref()
+                .is_some_and(|status| status.state == "unlocked")
+        {
+            match tokio::time::timeout_at(stop_deadline, self.authority.lock(lock_reason)).await {
+                Ok(Ok(())) => {
+                    *self.policy.write().await = None;
+                    self.lifecycle.enter_locked();
+                    tracing::info!(
+                        event = "authority.state",
+                        state = "locked",
+                        reason = lock_reason
+                    );
+                }
+                Ok(Err(err)) => remember(&mut first_error, BrokerError::Authority(err)),
+                Err(_) => remember(
+                    &mut first_error,
+                    BrokerError::Authority(AuthorityError::Faulted),
+                ),
+            }
+        }
+
+        self.lifecycle.enter_shutting_down();
+        match tokio::time::timeout_at(stop_deadline, self.authority.shutdown(None)).await {
+            Ok(Ok(())) => {
+                *self.policy.write().await = None;
+                tracing::info!(event = "authority.state", state = "shutting_down");
+            }
+            Ok(Err(err)) => remember(&mut first_error, BrokerError::Authority(err)),
+            Err(_) => remember(
+                &mut first_error,
+                BrokerError::Authority(AuthorityError::Faulted),
+            ),
+        }
+        self.publish_shutdown();
+        drop(owner);
+        StopDisposition::Stopped(first_error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::admin_requires_proof;
+
+    #[test]
+    fn only_a_positively_safe_authority_state_allows_proofless_admin_stop() {
+        assert!(!admin_requires_proof(Some("locked")));
+        assert!(!admin_requires_proof(Some("faulted")));
+        assert!(admin_requires_proof(Some("unlocked")));
+        assert!(admin_requires_proof(None));
+    }
+}

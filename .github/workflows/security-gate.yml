@@ -1,0 +1,100 @@
+name: security-gate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  p0:
+    name: P0 (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: stable
+          components: clippy,rustfmt
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Install Linux acceptance dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep
+      - name: Install macOS acceptance dependencies
+        if: runner.os == 'macOS'
+        run: brew install ripgrep
+
+      - name: Workspace contracts
+        run: |
+          cargo fmt --all --check
+          cargo check --workspace --all-targets
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace --offline
+
+      - name: Dependency boundary contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          if rg -n 'REKEY_PASSWORD|get_secret_value|/proxy/|passthrough' crates tests src; then
+            exit 1
+          fi
+          if rg -n 'get_secret\b|read_secret|export_secret' crates/rekey-domain crates/rekey-broker crates/rekey-cli; then
+            exit 1
+          fi
+          if cargo tree -p rekey-cli -e normal | rg 'rusqlite|aes-gcm|argon2|reqwest|rekey-vault|rekey-broker'; then
+            exit 1
+          fi
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+      - name: Dependency audit
+        run: cargo audit
+
+      - name: Real release-process acceptance
+        run: scripts/p0-acceptance.sh
+      - name: Runtime fail-stop acceptance
+        run: scripts/p0-runtime-faults.sh
+      - name: Crash recovery acceptance
+        run: scripts/p0-crash-recovery.sh
+      - name: Backup and restore durability acceptance
+        if: runner.os == 'macOS'
+        run: scripts/p0-durability.sh
+      - name: P1 typed-policy acceptance
+        run: scripts/p1-policy-acceptance.sh
+      - name: P1 chunk-boundary response sealing acceptance
+        run: scripts/p1-streaming-sealing.sh
+      - name: P2 GitHub App local acceptance
+        run: scripts/p2-github-app.sh
+      - name: P1 native launchd service-manager acceptance
+        if: runner.os == 'macOS'
+        run: scripts/p1-service-manager.sh
+      - name: P1 native systemd service-manager acceptance
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(ps -p 1 -o comm= | tr -d ' ')" == "systemd" ]] || {
+            echo "::error::Required ubuntu-latest systemd gate does not have systemd as PID 1"
+            exit 1
+          }
+          scripts/p1-service-manager.sh
+
+  g2-linux:
+    name: Linux container G2 reference boundary
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Namespace and peer-identity attack acceptance
+        run: scripts/p1-linux-g2.sh

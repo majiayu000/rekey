@@ -1,0 +1,14 @@
+{
+  "name": "github-create-issue",
+  "credential_id": "<CREDENTIAL_ID>",
+  "origin": "https://api.github.com",
+  "method": "POST",
+  "exact_path": "/repos/<OWNER>/<REPO>/issues",
+  "auth_header": "authorization",
+  "auth_prefix": "Bearer ",
+  "timeout_ms": 30000,
+  "request_max_bytes": 65536,
+  "allowed_extra_headers": ["accept", "x-github-api-version"],
+  "response_max_bytes": 262144,
+  "allowed_response_headers": ["content-type"]
+}

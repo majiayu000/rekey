@@ -1,5 +1,7 @@
 # rekey Implementation Plan
 
+> **Superseded by [Credential Authority v2 Foundation](../specs/2026-08-28-credential-authority-v2-foundation.md).** 本文档仅作历史证据保留；v2 行为不以本文档为来源。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build `rekey`, a single-binary Rust MITM proxy that injects API keys for AI agents so they never touch real credentials.
