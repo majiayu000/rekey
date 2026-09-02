@@ -1629,12 +1629,15 @@ dependencies = [
 name = "rekey-cli"
 version = "2.0.0-alpha.1"
 dependencies = [
+ "aws-lc-rs",
  "clap",
+ "data-encoding",
  "libc",
  "rand 0.9.5",
  "rekey-domain",
  "rpassword",
  "serde",
+ "serde_jcs",
  "serde_json",
  "tempfile",
  "zeroize",
@@ -1680,7 +1683,9 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror 1.0.69",
+ "url",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

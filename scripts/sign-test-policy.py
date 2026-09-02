@@ -80,8 +80,8 @@ def sign_policy(args: argparse.Namespace) -> None:
     args.trust.write_bytes(canonical(trust))
 
     snapshot = json.loads(args.snapshot.read_text(encoding="utf-8"))
-    if snapshot.get("format_version") != 2:
-        raise SystemExit("test policy snapshot must use format_version 2")
+    if snapshot.get("format_version") not in (2, 3):
+        raise SystemExit("test policy snapshot must use format_version 2 or 3")
     unsigned = {"format_version": 1, "signer_id": signer_id, "snapshot": snapshot}
     bundle = dict(unsigned)
     bundle["signature"] = sign_bytes(key_path, b"RKPOLICY\0\x01" + canonical(unsigned))
@@ -143,6 +143,43 @@ def sign_approval(args: argparse.Namespace) -> None:
     args.output.write_bytes(canonical(grant))
 
 
+def workload_key(args: argparse.Namespace) -> None:
+    _, _, public_key = ensure_identity(
+        args.key_dir, "workload-key.pem", "workload-key-id"
+    )
+    raw = bytes.fromhex(public_key)
+    print(
+        canonical(
+            {
+                "algorithm": "ed25519",
+                "kid": args.kid,
+                "x": base64.urlsafe_b64encode(raw).rstrip(b"=").decode(),
+            }
+        ).decode()
+    )
+
+
+def sign_workload_token(args: argparse.Namespace) -> None:
+    key_path, _, _ = ensure_identity(
+        args.key_dir, "workload-key.pem", "workload-key-id"
+    )
+    header = {"alg": "EdDSA", "kid": args.kid, "typ": "JWT"}
+    claims = {
+        "iss": args.issuer,
+        "sub": args.subject,
+        "aud": [args.audience],
+        "jti": args.jti,
+        "iat": args.now,
+        "nbf": args.now,
+        "exp": args.now + args.validity_seconds,
+    }
+    encoded_header = base64.urlsafe_b64encode(canonical(header)).rstrip(b"=")
+    encoded_claims = base64.urlsafe_b64encode(canonical(claims)).rstrip(b"=")
+    signing_input = encoded_header + b"." + encoded_claims
+    signature = sign_bytes(key_path, signing_input).encode()
+    print((signing_input + b"." + signature).decode())
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -162,8 +199,26 @@ def main() -> None:
     approval.add_argument("--max-uses", required=True, type=int)
     approval.add_argument("--validity-ms", required=True, type=int)
     approval.set_defaults(func=sign_approval)
+    workload_public = subparsers.add_parser("workload-key")
+    workload_public.add_argument("--key-dir", required=True, type=pathlib.Path)
+    workload_public.add_argument("--kid", required=True)
+    workload_public.set_defaults(func=workload_key)
+    workload_token = subparsers.add_parser("workload-token")
+    workload_token.add_argument("--key-dir", required=True, type=pathlib.Path)
+    workload_token.add_argument("--kid", required=True)
+    workload_token.add_argument("--issuer", required=True)
+    workload_token.add_argument("--subject", required=True)
+    workload_token.add_argument("--audience", required=True)
+    workload_token.add_argument("--jti", required=True)
+    workload_token.add_argument("--now", required=True, type=int)
+    workload_token.add_argument("--validity-seconds", required=True, type=int)
+    workload_token.set_defaults(func=sign_workload_token)
     args = parser.parse_args()
-    if getattr(args, "max_uses", 1) < 1 or getattr(args, "validity_ms", 1) < 1:
+    if (
+        getattr(args, "max_uses", 1) < 1
+        or getattr(args, "validity_ms", 1) < 1
+        or getattr(args, "validity_seconds", 1) < 1
+    ):
         raise SystemExit("max uses and validity must be positive")
     args.func(args)
 

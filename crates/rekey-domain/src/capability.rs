@@ -12,6 +12,12 @@ pub const SESSION_MAX_USES_DEFAULT: u32 = 100;
 pub const SESSION_MAX_CONCURRENT_EXECUTIONS: u32 = 4;
 pub const CAPABILITY_TOKEN_BYTES: usize = 32;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionProvenance {
+    Admin,
+    Workload,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ActionVersionRef {
     pub action_id: ActionId,

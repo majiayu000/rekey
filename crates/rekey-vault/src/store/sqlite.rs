@@ -43,7 +43,7 @@ pub(super) fn blob32(v: Vec<u8>) -> Result<[u8; 32], AuthorityError> {
 }
 
 impl SqliteRecordStore {
-    /// Creates a brand-new database file with schema v5. Fails if the file
+    /// Creates a brand-new database file with schema v7. Fails if the file
     /// already exists.
     pub fn create(path: &Path) -> Result<Self, AuthorityError> {
         if path.exists() {
@@ -58,7 +58,7 @@ impl SqliteRecordStore {
         })
     }
 
-    /// Opens an existing v6 database, verifying pragmas, integrity, format
+    /// Opens an existing v7 database, verifying pragmas, integrity, format
     /// version, and schema digest. Never migrates and never creates.
     pub fn open(path: &Path) -> Result<Self, AuthorityError> {
         if !path.exists() {
@@ -75,6 +75,7 @@ impl SqliteRecordStore {
         store.verify_required_layout()?;
         store.foreign_key_check()?;
         store.validate_credential_version_invariants()?;
+        store.validate_workload_replay_invariants()?;
         let policy_state = store.load_policy_state()?;
         if policy_state.trust_installed != store.load_policy_trust()?.is_some()
             || policy_state.bundle_activated != store.load_policy_bundle()?.is_some()

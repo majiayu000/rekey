@@ -6,6 +6,7 @@ mod policy;
 mod recovery;
 pub mod schema;
 pub mod sqlite;
+mod workload;
 mod wrapper;
 
 pub use sqlite::SqliteRecordStore;

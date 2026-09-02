@@ -1,10 +1,12 @@
 mod common;
 
-use rekey_domain::ids::{PolicySignerId, VaultId};
-use rekey_vault::command::{PolicyBundleInput, PolicyTrustInput};
+use rekey_domain::ids::{PolicySignerId, SessionId, VaultId};
+use rekey_vault::command::{AuditDraft, PolicyBundleInput, PolicyTrustInput};
 use rekey_vault::crypto::policy_state;
 use rekey_vault::error::AuthorityError;
-use rekey_vault::model::{PolicyBundleRecord, PolicyStateRecord, PolicyTrustRecord};
+use rekey_vault::model::{
+    PolicyBundleRecord, PolicyStateRecord, PolicyTrustRecord, event_type, outcome,
+};
 use rekey_vault::paths;
 use rekey_vault::store::SqliteRecordStore;
 use sha2::{Digest, Sha256};
@@ -25,6 +27,24 @@ fn bundle_input(signer_id: PolicySignerId, version: u64, marker: u8) -> PolicyBu
         policy_digest: [marker; 32],
         bundle_digest: Sha256::digest(&bundle_json).into(),
         bundle_json,
+    }
+}
+
+fn workload_audit() -> AuditDraft {
+    AuditDraft {
+        request_id: None,
+        session_id: Some(SessionId::new_random()),
+        action_id: None,
+        action_version: None,
+        credential_id: None,
+        credential_version: None,
+        authorization: None,
+        approval: None,
+        event_type: event_type::SESSION_CREATED,
+        outcome: outcome::SUCCESS,
+        reason_code: "workload-attested".to_owned(),
+        upstream_status: None,
+        latency_ms: None,
     }
 }
 
@@ -142,6 +162,63 @@ async fn trust_is_immutable_and_policy_versions_are_consecutive_across_restart()
 }
 
 #[tokio::test]
+async fn policy_roll_forward_clears_replays_but_exact_retry_does_not() {
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+    let trust = trust_input();
+    handle
+        .policy_trust_install_before(trust.clone(), common::password_proof(), None)
+        .await
+        .unwrap();
+    let first = bundle_input(trust.signer_id, 1, 1);
+    handle
+        .policy_bundle_activate_before(first.clone(), common::password_proof(), None)
+        .await
+        .unwrap();
+    handle
+        .consume_workload_token_before([9; 32], 4_102_444_800_000, workload_audit(), None)
+        .await
+        .unwrap();
+
+    handle
+        .policy_bundle_activate_before(first, common::password_proof(), None)
+        .await
+        .unwrap();
+    let connection = rusqlite::Connection::open(paths::vault_db(&vault.state_dir)).unwrap();
+    let after_retry: i64 = connection
+        .query_row("SELECT COUNT(*) FROM workload_token_uses", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(after_retry, 1);
+    drop(connection);
+
+    handle
+        .policy_bundle_activate_before(
+            bundle_input(trust.signer_id, 2, 2),
+            common::password_proof(),
+            None,
+        )
+        .await
+        .unwrap();
+    let connection = rusqlite::Connection::open(paths::vault_db(&vault.state_dir)).unwrap();
+    let after_roll_forward: i64 = connection
+        .query_row("SELECT COUNT(*) FROM workload_token_uses", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(after_roll_forward, 0);
+    drop(connection);
+
+    handle
+        .shutdown(Some(common::password_proof()))
+        .await
+        .unwrap();
+    join.join().unwrap();
+}
+
+#[tokio::test]
 async fn policy_activation_audit_failure_rolls_back_and_faults() {
     let vault = common::init_test_vault();
     let (handle, join) = common::spawn(&vault.state_dir);
@@ -149,6 +226,18 @@ async fn policy_activation_audit_failure_rolls_back_and_faults() {
     let trust = trust_input();
     handle
         .policy_trust_install_before(trust.clone(), common::password_proof(), None)
+        .await
+        .unwrap();
+    handle
+        .policy_bundle_activate_before(
+            bundle_input(trust.signer_id, 1, 1),
+            common::password_proof(),
+            None,
+        )
+        .await
+        .unwrap();
+    handle
+        .consume_workload_token_before([8; 32], 4_102_444_800_000, workload_audit(), None)
         .await
         .unwrap();
     let connection = rusqlite::Connection::open(paths::vault_db(&vault.state_dir)).unwrap();
@@ -163,7 +252,7 @@ async fn policy_activation_audit_failure_rolls_back_and_faults() {
     drop(connection);
     let error = handle
         .policy_bundle_activate_before(
-            bundle_input(trust.signer_id, 1, 1),
+            bundle_input(trust.signer_id, 2, 2),
             common::password_proof(),
             None,
         )
@@ -185,8 +274,22 @@ async fn policy_activation_audit_failure_rolls_back_and_faults() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(bundle_count, 0);
-    assert!(!activated);
+    let version: i64 = connection
+        .query_row(
+            "SELECT version FROM policy_bundle WHERE singleton=1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let replay_count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM workload_token_uses", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(bundle_count, 1);
+    assert!(activated);
+    assert_eq!(version, 1);
+    assert_eq!(replay_count, 1);
 }
 
 #[test]

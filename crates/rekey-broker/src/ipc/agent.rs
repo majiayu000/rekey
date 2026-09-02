@@ -41,6 +41,8 @@ pub async fn handle_agent_conn(
                     agent_msg::EXECUTE_FIXED_HTTP_ACTION | agent_msg::PREPARE_APPROVAL
                 ) {
                     ipc::AGENT_BODY_MAX_BYTES
+                } else if message_type == agent_msg::WORKLOAD_SESSION_CREATE {
+                    ipc::WORKLOAD_TOKEN_MAX_BYTES
                 } else {
                     0
                 }
@@ -173,6 +175,16 @@ async fn dispatch(
             // Redacted subset: state only. No vault id, no counts, no config.
             let status = ctx.authority.status().await?;
             let metadata = serde_json::to_vec(&serde_json::json!({ "state": status.state }))
+                .map_err(|_| BrokerError::Frame(rekey_domain::ipc::FrameError::InvalidField))?;
+            Ok((metadata, Vec::new()))
+        }
+        agent_msg::WORKLOAD_SESSION_CREATE => {
+            let create: ipc::SessionCreateMeta = serde_json::from_slice(&frame.metadata)
+                .map_err(|_| BrokerError::Frame(rekey_domain::ipc::FrameError::InvalidField))?;
+            let response = ctx
+                .create_workload_session(create, frame.body.to_vec())
+                .await?;
+            let metadata = serde_json::to_vec(&response)
                 .map_err(|_| BrokerError::Frame(rekey_domain::ipc::FrameError::InvalidField))?;
             Ok((metadata, Vec::new()))
         }

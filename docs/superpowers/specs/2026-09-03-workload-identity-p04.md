@@ -1,7 +1,7 @@
 # Rekey v2 P-04 Workload Identity
 
 **Date:** 2026-09-03
-**Status:** Accepted for implementation
+**Status:** Implemented; exact-head CI and merge evidence pending
 **Depends on:** Credential Authority v2 Foundation, P-03
 **Scope:** offline-verifiable workload JWTs that mint bounded local capability sessions
 
@@ -167,7 +167,9 @@ Validation is total and fail-closed:
    replay data.
 6. Require string `iss`, string `sub`, string `jti`, integer `iat`, optional
    integer `nbf`, integer `exp`, and `aud` as one string or a nonempty string
-   array. Standard claim types outside these forms are invalid.
+   array. The time claims are whole-second JWT NumericDate values and are
+   converted to milliseconds with checked arithmetic before comparison.
+   Standard claim types outside these forms are invalid.
 7. Require exact issuer and profile subject. The token audience set must equal
    the configured audience set after duplicate rejection and sorting.
 8. Require `iat <= now`, `nbf <= now` when present, `now < exp`,
@@ -205,8 +207,10 @@ deadline:
    live until its ordinary expiry or revocation. This is deliberately
    fail-closed and matches the existing session-create response-loss contract.
 
-Policy activation revokes all workload-minted sessions before publishing the
-new snapshot. Admin-minted sessions keep their current behavior. Lock,
+A successful new-version policy activation revokes all workload-minted sessions
+before publishing the new snapshot. Retrying the exact active bundle preserves
+both workload- and Admin-minted sessions, including the active policy expiry
+latch. Admin-minted sessions otherwise keep their current behavior. Lock,
 shutdown, process restart, explicit session revoke, Action disable, Credential
 revoke, expiry, max-use exhaustion, and concurrency caps continue to revoke or
 deny workload capabilities through existing paths.
@@ -219,16 +223,21 @@ Schema v7 adds:
 CREATE TABLE workload_token_uses (
     replay_digest BLOB PRIMARY KEY CHECK (length(replay_digest) = 32),
     expires_at_ms INTEGER NOT NULL,
-    created_at_ms INTEGER NOT NULL
+    created_at_ms INTEGER NOT NULL,
+    CHECK (created_at_ms >= 0 AND expires_at_ms > created_at_ms)
 ) STRICT;
 ```
 
 The insert and success audit share one SQLite transaction. Raw issuer, subject,
 audience, `jti`, signature, claims, and JWT are never stored. Replay rows are
-bounded to 65,536. Expired rows may be deleted only inside a successful insert
-transaction; if the cap is still reached, admission fails closed. A wall-clock
-rollback may retain rows longer but cannot make an already stored replay key
-usable again.
+bounded to 65,536 for one active policy. They are not deleted from token expiry
+because wall-clock rollback could make that token valid again. A successful
+new-version policy activation atomically replaces the policy, clears the prior
+policy's replay rows, and commits its audit event; the replay digest already
+includes the policy digest, so those rows cannot apply to the new policy. An
+exact same-bundle activation retry does not clear rows. At the cap, admission
+fails closed until policy roll-forward. Failed activation retains every prior
+replay row.
 
 Restore validates every replay digest length and time field through schema and
 integrity checks. Backup naturally includes ciphertext-independent replay
@@ -274,8 +283,9 @@ P-04 is complete only when all are fresh and passing:
    activation revocation, lock/restart/revoke/expiry/use exhaustion, inactive or
    unauthorized Actions, and audit failure before capability release.
 3. Store tests prove atomic replay/audit commit, duplicate denial, cap behavior,
-   expired cleanup, ENOSPC/commit rollback, backup/restore, schema tamper, and
-   v6/unknown-version refusal.
+   wall-clock rollback denial, atomic policy-roll-forward cleanup,
+   ENOSPC/commit rollback, backup/restore, schema tamper, and v6/unknown-version
+   refusal.
 4. CLI black-box covers stdin-only token input, one success response, malformed
    Broker responses, body/metadata bounds, and all mutual exclusions.
 5. A real `rekeyd` plus `rekey` acceptance script activates a signed policy,

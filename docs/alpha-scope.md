@@ -16,6 +16,12 @@ Version: `2.0.0-alpha.1`
 Distribution is limited to signed GitHub Release artifacts. Rekey is not
 published to crates.io, Homebrew, or another package registry in this Alpha.
 
+Post-Alpha development-head capabilities are not retroactively part of these
+artifacts. This includes password/recovery wrapper lifecycle, local audit
+query/export, signed persistent policy and approvals, workload identity session
+minting, and durable workload-token replay protection. Their repository test
+evidence does not change the scope or support promise of `v2.0.0-alpha.1`.
+
 ## Product identity decision
 
 This Alpha uses the descriptive project name **Rekey Credential Authority**

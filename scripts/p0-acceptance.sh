@@ -182,10 +182,11 @@ import json, pathlib, sys, time, uuid
 path, action_id, action_version, principal_id = sys.argv[1:]
 resource = {"type": "fixed-http-action", "id": action_id}
 pathlib.Path(path).write_text(json.dumps({
-    "format_version": 2,
+    "format_version": 3,
     "version": 1,
     "expires_at_ms": int(time.time() * 1000) + 600000,
     "approvers": [],
+    "workload_identities": [],
     "bindings": [{
         "action_id": action_id,
         "version": int(action_version),

@@ -6,8 +6,9 @@ credentials**. Secrets live in an encrypted SQLite vault owned by a single
 broker process; the CLI, agents, and everything they spawn talk to it only
 over two permission-separated Unix sockets.
 
-> Status: `2.0.0-alpha.1` is the public Alpha. Password lifecycle and local
-> audit query/export are verified post-Alpha changes not included in that tag.
+> Status: `2.0.0-alpha.1` is the public Alpha. Password lifecycle, local audit
+> query/export, signed approvals/policy, and workload identity are verified
+> post-Alpha changes not included in that tag.
 > The default product is G1 and is not G2. Credentials never
 > appear in agent-facing APIs, process
 > arguments, environment variables, logs, or audit records. Same-user
@@ -112,6 +113,23 @@ consecutive versions, and are reverified after each unlock. Rekey verifies exter
 signatures but never creates or stores policy-signing or approver private keys.
 Lock and restart revoke capability sessions, challenges, and approval-use state,
 while the persisted policy reloads only after a successful unlock.
+
+Policy snapshot v3 may also map exact generic OIDC, SPIFFE JWT-SVID,
+Kubernetes service-account, or CI/cloud identities to policy principals using
+pinned Ed25519 or RS256 public keys. A workload can then mint a bounded session
+through `agent.sock` without an Admin step-up:
+
+```bash
+rekey session create --action <ACTION_ID>@1 --ttl 15m --max-uses 20 \
+  --workload-token-stdin < workload.jwt
+```
+
+The JWT is consumed once and replay denial persists across restart and any
+restore whose backup already contains the consumption record. A new-version
+policy activation revokes workload-minted sessions; an exact same-bundle retry
+preserves them. Rekey does
+not fetch JWKS, discover issuers, introspect tokens, or hold issuer private
+keys; see [`docs/user-guide.md`](docs/user-guide.md#create-a-workload-attested-session).
 
 For a `require-approval` rule, prepare the exact typed request, send the emitted
 challenge to an external approver, and execute with one or two returned grants:

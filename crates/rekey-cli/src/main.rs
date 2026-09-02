@@ -215,6 +215,9 @@ enum SessionCommand {
         ttl: String,
         #[arg(long, default_value_t = 100)]
         max_uses: u32,
+        /// Read a workload JWT from stdin and mint through the Agent socket.
+        #[arg(long, conflicts_with_all = ["recovery", "password_stdin"])]
+        workload_token_stdin: bool,
         #[command(flatten)]
         step_up: StepUpArgs,
     },
@@ -458,15 +461,22 @@ fn main() {
                 actions,
                 ttl,
                 max_uses,
+                workload_token_stdin,
                 step_up,
-            } => commands::session_create(
-                &state_dir,
-                &actions,
-                &ttl,
-                max_uses,
-                step_up.recovery,
-                step_up.password_stdin,
-            ),
+            } => {
+                if workload_token_stdin {
+                    commands::workload_session_create(&agent_socket, &actions, &ttl, max_uses)
+                } else {
+                    commands::session_create(
+                        &state_dir,
+                        &actions,
+                        &ttl,
+                        max_uses,
+                        step_up.recovery,
+                        step_up.password_stdin,
+                    )
+                }
+            }
             SessionCommand::Revoke {
                 session_id,
                 step_up,

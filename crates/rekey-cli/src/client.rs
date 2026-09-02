@@ -49,7 +49,8 @@ impl CliError {
             | "REQUEST_DENIED"
             | "REQUEST_TOO_LARGE"
             | "CREDENTIAL_UNAVAILABLE"
-            | "CREDENTIAL_CONFLICT" => 4,
+            | "CREDENTIAL_CONFLICT"
+            | "WORKLOAD_IDENTITY_INVALID" => 4,
             "STORAGE_UNAVAILABLE"
             | "STORAGE_INTEGRITY_FAILED"
             | "CRYPTO_FAILURE"

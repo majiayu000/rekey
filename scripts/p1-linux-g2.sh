@@ -275,10 +275,11 @@ POLICY_RULE_ID="$(python3 -c 'import uuid; print(uuid.uuid4())')"
 POLICY_EXPIRES_MS="$(python3 -c 'import time; print(int(time.time() * 1000) + 600000)')"
 cat >"$BUILD_DIR/policy-snapshot.json" <<EOF
 {
-  "format_version": 2,
+  "format_version": 3,
   "version": 1,
   "expires_at_ms": $POLICY_EXPIRES_MS,
   "approvers": [],
+  "workload_identities": [],
   "bindings": [{
     "action_id": "$ACTION_ID",
     "version": $ACTION_VERSION,

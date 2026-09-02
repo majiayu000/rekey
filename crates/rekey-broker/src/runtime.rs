@@ -35,6 +35,7 @@ use crate::upstream::{ReqwestUpstreamTransport, UpstreamTransport};
 mod admin;
 mod connections;
 mod shutdown;
+mod workload;
 
 pub const MAX_AGENT_CONNECTIONS: usize = 120;
 pub const MAX_ADMIN_CONNECTIONS: usize = 8;

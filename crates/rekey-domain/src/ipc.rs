@@ -25,6 +25,7 @@ pub const ADMIN_SECRET_FIELD_MAX_BYTES: u32 = 64 * 1024;
 pub const ADMIN_PROOF_BODY_MAX_BYTES: u32 = ADMIN_SECRET_FIELD_MAX_BYTES + 5;
 pub const ADMIN_SECRET_BODY_MAX_BYTES: u32 = 2 * ADMIN_SECRET_FIELD_MAX_BYTES + 9;
 pub const AGENT_BODY_MAX_BYTES: u32 = 1024 * 1024;
+pub const WORKLOAD_TOKEN_MAX_BYTES: u32 = 16 * 1024;
 pub const RESPONSE_BODY_MAX_BYTES: u32 = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,6 +82,7 @@ pub mod agent_msg {
     pub const EXECUTE_FIXED_HTTP_ACTION: u16 = 1;
     pub const AGENT_STATUS: u16 = 2;
     pub const PREPARE_APPROVAL: u16 = 3;
+    pub const WORKLOAD_SESSION_CREATE: u16 = 4;
 }
 
 /// Response message types shared by both channels.

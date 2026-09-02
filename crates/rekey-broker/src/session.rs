@@ -10,6 +10,7 @@ use data_encoding::BASE64URL_NOPAD;
 use rekey_domain::authorization::Principal;
 use rekey_domain::capability::{
     ActionVersionRef, CAPABILITY_TOKEN_BYTES, SESSION_MAX_CONCURRENT_EXECUTIONS, SessionGrant,
+    SessionProvenance,
 };
 use rekey_domain::ids::{ActionId, SessionId};
 use rekey_domain::{DomainError, Timestamp};
@@ -29,6 +30,7 @@ pub enum CreateSessionError {
 struct Entry {
     token_hash: [u8; 32],
     grant: SessionGrant,
+    provenance: SessionProvenance,
     action_timeouts: Vec<(ActionVersionRef, u32)>,
     uses_left: u32,
     in_flight: u32,
@@ -145,6 +147,15 @@ impl SessionRegistry {
         grant: SessionGrant,
         action_timeouts: Vec<(ActionVersionRef, u32)>,
     ) -> Result<String, CreateSessionError> {
+        self.admit_with_provenance(grant, action_timeouts, SessionProvenance::Admin)
+    }
+
+    pub fn admit_with_provenance(
+        &self,
+        grant: SessionGrant,
+        action_timeouts: Vec<(ActionVersionRef, u32)>,
+        provenance: SessionProvenance,
+    ) -> Result<String, CreateSessionError> {
         let (raw, encoded) = entropy_token().map_err(CreateSessionError::Domain)?;
         let ttl_ms = grant
             .expires_at
@@ -165,6 +176,7 @@ impl SessionRegistry {
             approval_uses: Vec::new(),
             expired_approvals: Vec::new(),
             grant,
+            provenance,
         };
         let mut inner = self.lock_inner();
         if inner.closed {
@@ -286,6 +298,16 @@ impl SessionRegistry {
         let mut inner = self.lock_inner();
         for entry in &mut inner.entries {
             entry.revoked = true;
+        }
+        compact_entries(&mut inner.entries);
+    }
+
+    pub fn revoke_workload(&self) {
+        let mut inner = self.lock_inner();
+        for entry in &mut inner.entries {
+            if entry.provenance == SessionProvenance::Workload {
+                entry.revoked = true;
+            }
         }
         compact_entries(&mut inner.entries);
     }

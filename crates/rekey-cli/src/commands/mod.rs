@@ -616,6 +616,48 @@ pub fn session_create(
     Ok(())
 }
 
+pub fn workload_session_create(
+    agent_socket: &Path,
+    actions: &[String],
+    ttl: &str,
+    max_uses: u32,
+) -> Result<(), CliError> {
+    let actions = actions
+        .iter()
+        .map(|action| {
+            let (action_id, version) = parse_action_ref(action)?;
+            Ok(rekey_domain::capability::ActionVersionRef { action_id, version })
+        })
+        .collect::<Result<Vec<_>, CliError>>()?;
+    let metadata = ipc::SessionCreateMeta {
+        actions,
+        ttl_ms: parse_ttl_ms(ttl)?,
+        max_uses,
+    };
+    let metadata = serde_json::to_vec(&metadata)
+        .map_err(|_| CliError::local("USAGE", "cannot encode session request"))?;
+    let token = read_bounded(
+        std::io::stdin().lock(),
+        ipc::WORKLOAD_TOKEN_MAX_BYTES as usize,
+        "workload token",
+    )?;
+    if token.is_empty() {
+        return Err(CliError::local("USAGE", "workload token is empty"));
+    }
+    let (response, body) = Client::connect(agent_socket, Channel::Agent)?.call(
+        agent_msg::WORKLOAD_SESSION_CREATE,
+        &metadata,
+        &token,
+    )?;
+    if !body.is_empty() {
+        return Err(CliError::local(
+            "INVALID_FRAME",
+            "broker returned an unexpected response body",
+        ));
+    }
+    print_json::<ipc::SessionCreatedResponse>(&response)
+}
+
 pub fn session_revoke(
     state_dir: &Path,
     session_id: &str,

@@ -17,6 +17,7 @@ rekey-vault = { path = "../crates/rekey-vault" }
 serde_json = "1"
 sha2 = "0.10"
 tempfile = "3"
+zeroize = "1"
 
 [[bin]]
 name = "ipc"

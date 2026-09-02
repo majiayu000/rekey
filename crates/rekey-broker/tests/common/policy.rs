@@ -49,10 +49,11 @@ pub async fn activate_test_policy(
 ) {
     let resource = serde_json::json!({"type": "test-action", "id": action_id});
     let snapshot = serde_json::json!({
-        "format_version": 2,
+        "format_version": 3,
         "version": broker.policy_version.fetch_add(1, Ordering::Relaxed),
         "expires_at_ms": 4_102_444_800_000_i64,
         "approvers": [],
+        "workload_identities": [],
         "bindings": [binding(action_id, action_version, &resource)],
         "rules": [{
             "id": PolicyRuleId::new_random(),
@@ -97,7 +98,7 @@ pub async fn activate_approval_policy(
             .insert("max_window_ms".to_owned(), max_window_ms.into());
     }
     let snapshot = serde_json::json!({
-        "format_version": 2,
+        "format_version": 3,
         "version": broker.policy_version.fetch_add(1, Ordering::Relaxed),
         "expires_at_ms": 4_102_444_800_000_i64,
         "approvers": policy.approvers.iter().map(|(id, key)| serde_json::json!({
@@ -105,6 +106,7 @@ pub async fn activate_approval_policy(
             "algorithm": "ed25519",
             "public_key": HEXLOWER.encode(key),
         })).collect::<Vec<_>>(),
+        "workload_identities": [],
         "bindings": [binding(action_id, action_version, &resource)],
         "rules": [{
             "id": rule_id,
@@ -121,6 +123,45 @@ pub async fn activate_approval_policy(
     rule_id
 }
 
+pub async fn activate_workload_policy(
+    broker: &TestBroker,
+    action_id: &str,
+    action_version: u64,
+    workload_identity: serde_json::Value,
+    additional_principals: &[&str],
+) -> Vec<u8> {
+    let resource = serde_json::json!({"type": "test-action", "id": action_id});
+    let workload_principal = workload_identity["principal_id"]
+        .as_str()
+        .expect("workload principal");
+    let mut principals = vec![workload_principal];
+    principals.extend_from_slice(additional_principals);
+    let rules = principals
+        .into_iter()
+        .map(|principal_id| {
+            serde_json::json!({
+                "id": PolicyRuleId::new_random(),
+                "effect": "permit",
+                "principal_id": principal_id,
+                "action_id": action_id,
+                "version": action_version,
+                "resource": resource,
+                "parameters": {"kind": "any_validated"},
+            })
+        })
+        .collect::<Vec<_>>();
+    let snapshot = serde_json::json!({
+        "format_version": 3,
+        "version": broker.policy_version.fetch_add(1, Ordering::Relaxed),
+        "expires_at_ms": 4_102_444_800_000_i64,
+        "approvers": [],
+        "workload_identities": [workload_identity],
+        "bindings": [binding(action_id, action_version, &resource)],
+        "rules": rules,
+    });
+    activate_snapshot(broker, snapshot).await
+}
+
 fn binding(action_id: &str, version: u64, resource: &serde_json::Value) -> serde_json::Value {
     serde_json::json!({
         "action_id": action_id,
@@ -131,7 +172,7 @@ fn binding(action_id: &str, version: u64, resource: &serde_json::Value) -> serde
     })
 }
 
-async fn activate_snapshot(broker: &TestBroker, snapshot: serde_json::Value) {
+pub(crate) async fn activate_snapshot(broker: &TestBroker, snapshot: serde_json::Value) -> Vec<u8> {
     let trust = serde_json::json!({
         "format_version": 1,
         "signer_id": broker.policy_signer_id,
@@ -160,13 +201,15 @@ async fn activate_snapshot(broker: &TestBroker, snapshot: serde_json::Value) {
         .as_object_mut()
         .expect("policy envelope object")
         .insert("signature".to_owned(), serde_json::Value::String(signature));
+    let bundle = serde_jcs::to_vec(&bundle).expect("canonical bundle");
     call(
         &broker.admin_sock(),
         Channel::Admin,
         admin_msg::POLICY_ACTIVATE,
-        &serde_jcs::to_vec(&bundle).expect("canonical bundle"),
+        &bundle,
         &proof_body(PASSWORD),
     )
     .await
     .ok();
+    bundle
 }

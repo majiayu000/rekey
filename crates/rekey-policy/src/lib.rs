@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-pub const SNAPSHOT_FORMAT_VERSION: u32 = 2;
+pub const SNAPSHOT_FORMAT_VERSION: u32 = 3;
 pub const SNAPSHOT_MAX_BYTES: usize = 64 * 1024;
 pub const TRUST_MAX_BYTES: usize = 4 * 1024;
 pub const APPROVAL_GRANT_MAX_BYTES: usize = 4 * 1024;
@@ -23,6 +23,8 @@ mod json;
 use json::parse_unique_json;
 mod signed;
 pub use signed::*;
+mod workload;
+pub use workload::*;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PolicyError {
@@ -49,6 +51,7 @@ pub struct PolicySnapshot {
     pub version: PolicyVersion,
     pub expires_at_ms: i64,
     pub approvers: Vec<Approver>,
+    pub workload_identities: Vec<WorkloadIdentity>,
     pub bindings: Vec<ActionBinding>,
     pub rules: Vec<PolicyRule>,
 }
@@ -118,6 +121,7 @@ pub struct ValidatedSnapshot {
     bindings: Vec<CompiledBinding>,
     rules: Vec<PolicyRule>,
     approvers: BTreeMap<ApproverId, [u8; 32]>,
+    workload_catalog: WorkloadCatalog,
 }
 
 impl ValidatedSnapshot {
@@ -142,6 +146,30 @@ impl ValidatedSnapshot {
             .iter()
             .find(|binding| binding.definition.action() == action)
             .map(|binding| &binding.definition)
+    }
+
+    pub fn verify_workload_token(
+        &self,
+        token: &[u8],
+        now: Timestamp,
+    ) -> Result<VerifiedWorkloadIdentity, PolicyError> {
+        self.workload_catalog.verify(token, now, self.digest)
+    }
+
+    pub fn workload_principal_may_request(
+        &self,
+        principal_id: PrincipalId,
+        action: ActionVersionRef,
+    ) -> bool {
+        self.binding(action).is_some()
+            && self.rules.iter().any(|rule| {
+                rule.principal_id == principal_id
+                    && rule.action() == action
+                    && matches!(
+                        rule.effect,
+                        RuleEffect::Permit | RuleEffect::RequireApproval
+                    )
+            })
     }
 
     pub fn canonicalize(
@@ -308,6 +336,9 @@ fn parse_and_validate_snapshot_inner(
         }
     }
 
+    let workload_catalog =
+        WorkloadCatalog::compile(&snapshot.workload_identities, &snapshot.rules)?;
+
     let canonical = serde_jcs::to_vec(&value).map_err(|_| PolicyError::Malformed)?;
     let mut digest = [0u8; 32];
     digest.copy_from_slice(&Sha256::digest(canonical));
@@ -318,6 +349,7 @@ fn parse_and_validate_snapshot_inner(
         bindings: compiled,
         rules: snapshot.rules,
         approvers,
+        workload_catalog,
     })
 }
 
@@ -590,10 +622,11 @@ mod tests {
         rule: PolicyRuleId,
     ) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
-            "format_version": 2,
+            "format_version": 3,
             "version": 1,
             "expires_at_ms": 10_000,
             "approvers": [],
+            "workload_identities": [],
             "bindings": [{
                 "action_id": action.action_id,
                 "version": action.version,
