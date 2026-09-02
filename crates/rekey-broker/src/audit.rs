@@ -359,7 +359,8 @@ where
                     let result = commit(drafts, not_after, wall_not_after_ms)
                         .await
                         .map(|()| StartedAuditGuard::new(queue, ctx));
-                    if result.is_err() {
+                    if matches!(&result, Err(error) if !matches!(error, AuthorityError::AuthorityBusy))
+                    {
                         failed.store(true, Ordering::SeqCst);
                     }
                     // If the caller was cancelled before receiving the
@@ -577,6 +578,30 @@ mod tests {
             (Some(deadline), Some(wall_deadline_ms))
         );
         drop(guard);
+        drop(tracker);
+        worker.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn expired_started_admission_does_not_poison_tracker() {
+        let (tracker, worker) = spawn_terminal_worker_with_batch(|_, _, _| async {
+            Err(AuthorityError::AuthorityBusy)
+        });
+        let error = match tracker
+            .commit_started(
+                execution_context(),
+                Vec::new(),
+                Some(Instant::now()),
+                Some(0),
+            )
+            .await
+        {
+            Ok(_) => panic!("expired admission unexpectedly committed"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, AuthorityError::AuthorityBusy));
+        tracker.wait_idle(Duration::from_secs(1)).await.unwrap();
+        assert!(!tracker.has_failed());
         drop(tracker);
         worker.await.unwrap();
     }
