@@ -4,6 +4,7 @@
 //! Requires both binaries to be built (`cargo test --workspace` builds them).
 
 use std::io::Write;
+use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
@@ -58,6 +59,12 @@ fn run(binary: &Path, args: &[&str], stdin: Option<&str>) -> Output {
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
     }
+}
+
+fn run_audit(state_dir: &str, args: &[&str]) -> Output {
+    let mut command = vec!["--state-dir", state_dir, "audit"];
+    command.extend_from_slice(args);
+    run(&rekey_bin(), &command, None)
 }
 
 fn run_with_process_boundary(
@@ -243,7 +250,7 @@ fn cli_end_to_end() {
         serde_json::json!({
             "name": "cli-action",
             "credential_id": credential_id,
-            "origin": "https://api.example.com",
+            "origin": "https://127.0.0.1",
             "method": "GET",
             "exact_path": "/v1/ping",
             "auth_header": "authorization",
@@ -287,13 +294,195 @@ fn cli_end_to_end() {
             "--ttl",
             "10m",
             "--max-uses",
-            "5",
+            "200",
             "--password-stdin",
         ],
         Some(&format!("{PASSWORD}\n")),
     );
     assert_eq!(output.status, 0, "{}", output.stderr);
-    assert!(output.stdout.contains("capability_token"));
+    let session = serde_json::from_str::<serde_json::Value>(&output.stdout).unwrap();
+    let capability = session["capability_token"].as_str().unwrap().to_owned();
+
+    for _ in 0..105 {
+        let output = run(
+            &rekey_bin(),
+            &[
+                "--state-dir",
+                state,
+                "execute",
+                &action_ref,
+                "--capability",
+                &capability,
+            ],
+            None,
+        );
+        assert_ne!(output.status, 0, "loopback target must be screened");
+        assert!(!output.stdout.contains(SECRET) && !output.stderr.contains(SECRET));
+    }
+
+    let first = run_audit(state, &["list", "--limit", "1"]);
+    assert_eq!(first.status, 0, "{}", first.stderr);
+    let first_page: serde_json::Value = serde_json::from_str(&first.stdout).unwrap();
+    let snapshot = first_page["snapshot_max_sequence"].as_u64().unwrap();
+    let before = first_page["next_before_sequence"].as_u64().unwrap();
+    let sample = &first_page["events"][0];
+    let request_id = sample["request_id"].as_str().unwrap();
+    let session_id = sample["session_id"].as_str().unwrap();
+    let action_id = sample["action_id"].as_str().unwrap();
+    let audit_credential_id = sample["credential_id"].as_str().unwrap();
+    let audit_outcome = sample["outcome"].as_str().unwrap();
+    let audit_time = sample["created_at_ms"].as_i64().unwrap().to_string();
+
+    let output = run(&rekey_bin(), &["--state-dir", state, "lock"], None);
+    assert_eq!(output.status, 0, "{}", output.stderr);
+    let snapshot_text = snapshot.to_string();
+    let before_text = before.to_string();
+    let continued = run_audit(
+        state,
+        &[
+            "list",
+            "--snapshot-max-sequence",
+            &snapshot_text,
+            "--before-sequence",
+            &before_text,
+            "--limit",
+            "100",
+        ],
+    );
+    assert_eq!(continued.status, 0, "{}", continued.stderr);
+    let continued_page: serde_json::Value = serde_json::from_str(&continued.stdout).unwrap();
+    assert_eq!(continued_page["snapshot_max_sequence"], snapshot);
+    assert!(
+        continued_page["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|event| {
+                event["sequence"].as_u64().unwrap() < before
+                    && event["sequence"].as_u64().unwrap() <= snapshot
+            })
+    );
+
+    let filter_cases: [Vec<&str>; 7] = [
+        vec!["--request", request_id],
+        vec!["--session", session_id],
+        vec!["--action", action_id],
+        vec!["--credential", audit_credential_id],
+        vec!["--outcome", audit_outcome],
+        vec!["--since-ms", &audit_time],
+        vec!["--until-ms", &audit_time],
+    ];
+    for filter in filter_cases {
+        let mut args = vec!["list", "--limit", "100"];
+        args.extend(filter);
+        let output = run_audit(state, &args);
+        assert_eq!(output.status, 0, "{}", output.stderr);
+        let page: serde_json::Value = serde_json::from_str(&output.stdout).unwrap();
+        assert!(!page["events"].as_array().unwrap().is_empty());
+    }
+    let intersection = run_audit(
+        state,
+        &[
+            "list",
+            "--request",
+            request_id,
+            "--session",
+            session_id,
+            "--action",
+            action_id,
+            "--credential",
+            audit_credential_id,
+            "--outcome",
+            audit_outcome,
+            "--since-ms",
+            &audit_time,
+            "--until-ms",
+            &audit_time,
+        ],
+    );
+    assert_eq!(intersection.status, 0, "{}", intersection.stderr);
+    assert!(
+        !serde_json::from_str::<serde_json::Value>(&intersection.stdout).unwrap()["events"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    let empty = run_audit(
+        state,
+        &["list", "--request", "ffffffff-ffff-4fff-bfff-ffffffffffff"],
+    );
+    assert_eq!(empty.status, 0, "{}", empty.stderr);
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&empty.stdout).unwrap()["events"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    let export_path = dir.path().join("audit.jsonl");
+    let export = run_audit(
+        state,
+        &["export", "--output", export_path.to_str().unwrap()],
+    );
+    assert_eq!(export.status, 0, "{}", export.stderr);
+    let receipt: serde_json::Value = serde_json::from_str(&export.stdout).unwrap();
+    assert!(receipt["row_count"].as_u64().unwrap() > 100);
+    let metadata = std::fs::metadata(&export_path).unwrap();
+    assert!(metadata.file_type().is_file());
+    assert_eq!(metadata.uid(), unsafe { libc::geteuid() });
+    assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+    let export_text = std::fs::read_to_string(&export_path).unwrap();
+    let lines: Vec<serde_json::Value> = export_text
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(
+        lines.first().unwrap()["record_type"],
+        "rekey.audit.export.v1"
+    );
+    assert_eq!(
+        lines.last().unwrap()["record_type"],
+        "rekey.audit.export.complete.v1"
+    );
+    assert_eq!(lines.last().unwrap()["row_count"], (lines.len() - 2) as u64);
+    for needle in [
+        SECRET,
+        PASSWORD,
+        capability.as_str(),
+        "resource_id",
+        "parameter_hash",
+    ] {
+        assert!(
+            !export_text.contains(needle),
+            "audit export leaked {needle}"
+        );
+    }
+
+    let existing = run_audit(
+        state,
+        &["export", "--output", export_path.to_str().unwrap()],
+    );
+    assert_ne!(existing.status, 0);
+    assert!(!existing.stdout.contains("\"exported\": true"));
+    let symlink_path = dir.path().join("audit-link.jsonl");
+    let symlink_target = dir.path().join("must-stay-empty");
+    std::fs::write(&symlink_target, b"").unwrap();
+    symlink(&symlink_target, &symlink_path).unwrap();
+    let linked = run_audit(
+        state,
+        &["export", "--output", symlink_path.to_str().unwrap()],
+    );
+    assert_ne!(linked.status, 0);
+    assert!(!linked.stdout.contains("\"exported\": true"));
+    assert_eq!(std::fs::read(&symlink_target).unwrap(), b"");
+
+    let output = run(
+        &rekey_bin(),
+        &["--state-dir", state, "unlock", "--password-stdin"],
+        Some(&format!("{PASSWORD}\n")),
+    );
+    assert_eq!(output.status, 0, "{}", output.stderr);
 
     // execute with a garbage capability: policy denial, exit 4, no panic.
     let output = run(

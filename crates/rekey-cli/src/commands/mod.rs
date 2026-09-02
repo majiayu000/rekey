@@ -18,6 +18,8 @@ use crate::client::{CliError, Client};
 
 mod password_lifecycle;
 pub use password_lifecycle::{password_change, recovery_rotate};
+mod audit;
+pub use audit::{audit_export, audit_list};
 
 const ACTION_RESPONSE_TIMEOUT: Duration = Duration::from_secs(130);
 const DRAIN_RESPONSE_TIMEOUT: Duration = Duration::from_secs(130);

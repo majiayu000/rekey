@@ -14,7 +14,10 @@ pub struct UnterminatedExecution {
     pub authorization: Option<AuthorizationEvidence>,
 }
 
-fn optional_id<T, F>(bytes: Option<Vec<u8>>, decode: F) -> Result<Option<T>, AuthorityError>
+pub(super) fn optional_id<T, F>(
+    bytes: Option<Vec<u8>>,
+    decode: F,
+) -> Result<Option<T>, AuthorityError>
 where
     F: FnOnce([u8; 16]) -> Result<T, DomainError>,
 {
@@ -24,7 +27,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-fn authorization_from_columns(
+pub(super) fn authorization_from_columns(
     principal_id: Option<Vec<u8>>,
     policy_version: Option<i64>,
     policy_digest: Option<Vec<u8>>,

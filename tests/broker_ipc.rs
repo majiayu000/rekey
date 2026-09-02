@@ -2,8 +2,21 @@
 //! capability, secret export does not exist on the wire, and the two sockets
 //! stay separated.
 
-use rekey_domain::ipc::{Channel, admin_msg, agent_msg};
+use rekey_domain::audit::{AUDIT_SCHEMA_V1, AuditPage, AuditQuery};
+use rekey_domain::ids::RequestId;
+use rekey_domain::ipc::{Channel, FrameHeader, RESPONSE_BODY_MAX_BYTES, admin_msg, agent_msg};
 use rekey_integration::harness as h;
+use rekey_vault::model::AuditEvent;
+use rekey_vault::{paths, store::SqliteRecordStore};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::UnixStream;
+
+async fn connection_closes_without_reply(socket: &std::path::Path, request: &[u8]) -> bool {
+    let mut stream = UnixStream::connect(socket).await.unwrap();
+    stream.write_all(request).await.unwrap();
+    let mut byte = [0u8; 1];
+    matches!(stream.read(&mut byte).await, Ok(0))
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn agent_socket_has_no_admin_or_export_surface() {
@@ -73,5 +86,113 @@ async fn credential_list_returns_metadata_only() {
     .await;
     let serialized = response.ok().to_string();
     assert!(!serialized.contains(std::str::from_utf8(secret).unwrap()));
+    broker.shutdown_keep_dir().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn audit_query_is_admin_only_bounded_and_available_while_locked() {
+    let broker = h::start_broker().await;
+    let query = AuditQuery {
+        request_id: None,
+        session_id: None,
+        action_id: None,
+        credential_id: None,
+        outcome: None,
+        since_ms: None,
+        until_ms: None,
+        snapshot_max_sequence: None,
+        before_sequence: None,
+        limit: 10,
+    };
+    let metadata = serde_json::to_vec(&query).unwrap();
+    let response = h::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::AUDIT_QUERY,
+        &metadata,
+        &[],
+    )
+    .await;
+    assert_eq!(response.ok(), &serde_json::json!({}));
+    let page: AuditPage = serde_json::from_slice(&response.body).unwrap();
+    page.validate_for(&query).unwrap();
+    assert_eq!(page.schema, AUDIT_SCHEMA_V1);
+    assert!(!page.events.is_empty());
+
+    let body_header = FrameHeader {
+        channel: Channel::Admin,
+        flags: 0,
+        message_type: admin_msg::AUDIT_QUERY,
+        request_id: RequestId::new_random(),
+        metadata_len: metadata.len() as u32,
+        body_len: 1,
+    };
+    let mut body_request = body_header.encode().to_vec();
+    body_request.extend_from_slice(&metadata);
+    body_request.push(b'x');
+    assert!(
+        connection_closes_without_reply(&broker.admin_sock(), &body_request).await,
+        "audit query bodies must close the admin connection"
+    );
+
+    let mut invalid = query;
+    invalid.limit = 0;
+    let response = h::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::AUDIT_QUERY,
+        &serde_json::to_vec(&invalid).unwrap(),
+        &[],
+    )
+    .await;
+    assert_eq!(response.err_code(), "INVALID_INPUT");
+    broker.shutdown_keep_dir().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn oversized_audit_page_fails_before_a_success_frame() {
+    let broker = h::start_broker().await;
+    let mut store = SqliteRecordStore::open(&paths::vault_db(&broker.state_dir)).unwrap();
+    store
+        .append_audit(&AuditEvent {
+            event_id: [0xee; 16],
+            request_id: None,
+            session_id: None,
+            action_id: None,
+            action_version: None,
+            credential_id: None,
+            credential_version: None,
+            authorization: None,
+            event_type: "test.oversized",
+            outcome: "failure",
+            reason_code: "x".repeat(RESPONSE_BODY_MAX_BYTES as usize),
+            upstream_status: None,
+            latency_ms: None,
+            created_at_ms: 1,
+        })
+        .unwrap();
+    drop(store);
+    let metadata = serde_json::to_vec(&AuditQuery {
+        request_id: None,
+        session_id: None,
+        action_id: None,
+        credential_id: None,
+        outcome: None,
+        since_ms: None,
+        until_ms: None,
+        snapshot_max_sequence: None,
+        before_sequence: None,
+        limit: 1,
+    })
+    .unwrap();
+    let response = h::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::AUDIT_QUERY,
+        &metadata,
+        &[],
+    )
+    .await;
+    assert_eq!(response.err_code(), "RESPONSE_TOO_LARGE");
     broker.shutdown_keep_dir().await;
 }

@@ -44,6 +44,17 @@ security incident; preserve the directory for inspection.
 
 Never edit SQLite rows, WAL files, crypto discriminators, or audit records.
 
+For incident triage, prefer `rekey audit list` over opening SQLite. Preserve a
+stable traversal by carrying both returned sequence cursors between pages. Use
+`rekey audit export --output NEW_PATH` for a complete JSONL snapshot; the path
+must not exist and a receipt is success evidence only after file and parent
+directory sync. Treat a retained partial file as failure evidence, choose a new
+path for retry, and do not append or resume it. Exports are redacted but still
+sensitive operational metadata and are not encrypted Credential backups.
+
+Local rows are append-only for the vault lifetime. There is no supported audit
+deletion, TTL, pruning, legal hold, WORM sink, SIEM delivery, or remote durability.
+
 ## ENOSPC and filesystem errors
 
 Stop new requests, retain all files, and inspect free bytes and inodes with

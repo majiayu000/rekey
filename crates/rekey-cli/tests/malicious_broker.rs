@@ -24,6 +24,9 @@ enum Attack {
     InvalidOkMetadata,
     MissingOkFields,
     UnknownOkField,
+    AuditNonEmptyMetadata,
+    AuditUnknownPageField,
+    AuditMalformedRecord,
 }
 
 fn rekey_bin() -> PathBuf {
@@ -148,6 +151,30 @@ fn run_attack(attack: Attack) -> std::process::Output {
                 0,
                 Vec::new(),
             ),
+            Attack::AuditNonEmptyMetadata => (
+                Channel::Admin,
+                request.request_id,
+                resp_msg::OK,
+                br#"{"unexpected":true}"#.to_vec(),
+                valid_empty_audit_page().len() as u32,
+                valid_empty_audit_page(),
+            ),
+            Attack::AuditUnknownPageField => (
+                Channel::Admin,
+                request.request_id,
+                resp_msg::OK,
+                b"{}".to_vec(),
+                br#"{"schema":"rekey.audit.v1","snapshot_max_sequence":1,"events":[],"next_before_sequence":null,"secret_hint":"forged"}"#.len() as u32,
+                br#"{"schema":"rekey.audit.v1","snapshot_max_sequence":1,"events":[],"next_before_sequence":null,"secret_hint":"forged"}"#.to_vec(),
+            ),
+            Attack::AuditMalformedRecord => (
+                Channel::Admin,
+                request.request_id,
+                resp_msg::OK,
+                b"{}".to_vec(),
+                malformed_audit_page().len() as u32,
+                malformed_audit_page(),
+            ),
         };
 
         let response = FrameHeader {
@@ -168,12 +195,19 @@ fn run_attack(attack: Attack) -> std::process::Output {
         stream.flush().expect("flush forged response");
     });
 
+    let mut args = vec!["--state-dir", state_dir.to_str().expect("utf8 path")];
+    if matches!(
+        attack,
+        Attack::AuditNonEmptyMetadata
+            | Attack::AuditUnknownPageField
+            | Attack::AuditMalformedRecord
+    ) {
+        args.extend(["audit", "list", "--limit", "1"]);
+    } else {
+        args.push("status");
+    }
     let output = Command::new(rekey_bin())
-        .args([
-            "--state-dir",
-            state_dir.to_str().expect("utf8 path"),
-            "status",
-        ])
+        .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -195,6 +229,9 @@ fn cli_rejects_forged_broker_responses() {
         Attack::InvalidOkMetadata,
         Attack::MissingOkFields,
         Attack::UnknownOkField,
+        Attack::AuditNonEmptyMetadata,
+        Attack::AuditUnknownPageField,
+        Attack::AuditMalformedRecord,
     ] {
         let output = run_attack(attack);
         assert_eq!(
@@ -205,4 +242,27 @@ fn cli_rejects_forged_broker_responses() {
             String::from_utf8_lossy(&output.stderr),
         );
     }
+}
+
+fn valid_empty_audit_page() -> Vec<u8> {
+    br#"{"schema":"rekey.audit.v1","snapshot_max_sequence":1,"events":[],"next_before_sequence":null}"#.to_vec()
+}
+
+fn malformed_audit_page() -> Vec<u8> {
+    serde_json::json!({
+        "schema": "rekey.audit.v1",
+        "snapshot_max_sequence": 1,
+        "events": [{
+            "record_type": "rekey.audit.v1", "sequence": 1, "event_id": "ABC",
+            "request_id": null, "session_id": null, "action_id": null,
+            "action_version": null, "credential_id": null, "credential_version": null,
+            "principal_id": null, "policy_version": null, "policy_digest_hex": null,
+            "policy_rule_id": null, "event_type": "test", "outcome": "success",
+            "reason_code": "test", "upstream_status": null, "latency_ms": null,
+            "created_at_ms": 1
+        }],
+        "next_before_sequence": 1
+    })
+    .to_string()
+    .into_bytes()
 }

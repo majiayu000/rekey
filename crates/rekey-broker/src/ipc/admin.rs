@@ -31,6 +31,7 @@ use crate::session::CreateSessionError;
 
 const ADMIN_MUTATION_TIMEOUT: Duration = Duration::from_secs(25);
 
+mod audit_query;
 mod password_lifecycle;
 
 fn admin_body_limit(message_type: u16) -> u32 {
@@ -196,6 +197,7 @@ async fn dispatch(
         }
         admin_msg::PASSWORD_CHANGE => password_lifecycle::handle_password_change(frame, ctx).await,
         admin_msg::RECOVERY_ROTATE => password_lifecycle::handle_recovery_rotate(frame, ctx).await,
+        admin_msg::AUDIT_QUERY => audit_query::handle_audit_query(frame, ctx).await,
         admin_msg::CREDENTIAL_ADD => {
             let deadline = admin_mutation_deadline();
             ctx.lifecycle.reject_if_not_running()?;

@@ -369,6 +369,16 @@ impl Worker {
                 }
                 let _ = reply.send(result);
             }
+            AuthorityCommand::AuditQuery { query, reply } => {
+                let result = if matches!(self.state, VaultState::Faulted) {
+                    Err(AuthorityError::Faulted)
+                } else {
+                    let result = self.store.audit_query(&query);
+                    self.fault_on_integrity(result)
+                };
+                self.touch_if_ok(&result);
+                let _ = reply.send(result);
+            }
             AuthorityCommand::Backup {
                 output,
                 proof,

@@ -21,7 +21,7 @@ sink, SIEM protocol, WORM store, legal hold, or automatic deletion policy.
 rekey audit list [--request ID] [--session ID] [--action ID]
                  [--credential ID] [--outcome VALUE]
                  [--since-ms EPOCH_MS] [--until-ms EPOCH_MS]
-                 [--before-sequence N] [--limit N]
+                 [--snapshot-max-sequence N] [--before-sequence N] [--limit N]
 
 rekey audit export --output FILE [--request ID] [--session ID]
                    [--action ID] [--credential ID] [--outcome VALUE]
@@ -29,8 +29,9 @@ rekey audit export --output FILE [--request ID] [--session ID]
 ```
 
 `audit list` prints one JSON page to stdout. Its default limit is 50 and its
-hard maximum is 100. `--before-sequence` is an exclusive cursor returned by the
-previous page; callers do not construct or reinterpret it as a time value.
+hard maximum is 100. A continuation passes both `snapshot_max_sequence` and the
+exclusive `next_before_sequence` returned by the previous page; callers do not
+construct or reinterpret either value as a time.
 
 All supplied filters are intersected. `since_ms` and `until_ms` are inclusive,
 must be non-negative, and are rejected when `since_ms > until_ms`. IDs and
@@ -95,8 +96,9 @@ The P-02 JSON schema is `rekey.audit.v1`. Each record contains only:
 - nullable action, credential, and policy versions;
 - nullable policy digest, upstream status, and latency.
 
-Binary identifiers use their canonical text form and the policy digest uses
-lowercase hexadecimal. Numbers stay JSON numbers and absent values stay `null`.
+Typed identifiers use their canonical UUID text form; the 16-byte event ID and
+policy digest use lowercase hexadecimal. Numbers stay JSON numbers and absent
+values stay `null`.
 
 `authorization.resource_id` and `authorization.parameter_hash` are deliberately
 omitted from list and export output. They can enable correlation or offline
