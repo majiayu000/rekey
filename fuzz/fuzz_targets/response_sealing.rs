@@ -1,6 +1,6 @@
 #![no_main]
 
-use data_encoding::{BASE64, BASE64URL_NOPAD};
+use data_encoding::{BASE64, BASE64_NOPAD, BASE64URL, BASE64URL_NOPAD};
 use libfuzzer_sys::fuzz_target;
 use rekey_broker::executor::fuzz_response_sealing;
 
@@ -22,8 +22,12 @@ fuzz_target!(|data: &[u8]| {
     let variants = [
         secret.to_vec(),
         BASE64.encode(secret).into_bytes(),
+        BASE64_NOPAD.encode(secret).into_bytes(),
+        BASE64URL.encode(secret).into_bytes(),
         BASE64URL_NOPAD.encode(secret).into_bytes(),
-        percent_encode_all(secret),
+        percent_encode(secret, false, false),
+        percent_encode(secret, true, false),
+        percent_encode(secret, false, true),
     ];
     for variant in variants {
         assert!(fuzz_response_sealing(secret, secret, &variant, false));
@@ -33,11 +37,23 @@ fuzz_target!(|data: &[u8]| {
     }
 });
 
-fn percent_encode_all(bytes: &[u8]) -> Vec<u8> {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
+fn percent_encode(bytes: &[u8], uppercase: bool, encode_all: bool) -> Vec<u8> {
+    const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
+    const UPPER_HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let hex = if uppercase { UPPER_HEX } else { LOWER_HEX };
     let mut encoded = Vec::with_capacity(bytes.len() * 3);
     for byte in bytes {
-        encoded.extend_from_slice(&[b'%', HEX[(byte >> 4) as usize], HEX[(byte & 0x0f) as usize]]);
+        if !encode_all
+            && (byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~'))
+        {
+            encoded.push(*byte);
+        } else {
+            encoded.extend_from_slice(&[
+                b'%',
+                hex[(byte >> 4) as usize],
+                hex[(byte & 0x0f) as usize],
+            ]);
+        }
     }
     encoded
 }
