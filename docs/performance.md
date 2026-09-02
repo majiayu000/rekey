@@ -58,4 +58,30 @@ cargo test --locked -p rekey-broker --test performance_baseline \
 ```
 
 Set `REKEY_SOAK_SECONDS` from 30 through 3600. Local results are diagnostic;
-closeout evidence comes from the fixed `ubuntu-24.04` workflow runner.
+closeout evidence must identify one fixed host and must not be compared with a
+GitHub-hosted run unless the full environment fingerprint matches.
+
+## H-07 closeout result
+
+The fixed-host 1,800-second closeout passed on 2026-09-02 at merge commit
+`83da2233f73dbd996d9c23af0e12937840a41c03`: macOS 26.5.1 (Darwin 25.5.0),
+Apple M3 Max, 128 GiB memory, Rust 1.95.0, aarch64. The sanitized complete
+report is [`evidence/h07-performance-2026-09-02.json`](evidence/h07-performance-2026-09-02.json);
+it records the SHA-256 of the raw report while removing only the local hostname.
+
+The run completed 63,798 soak executions with zero unexpected errors. Durable
+audit counts reopened at exactly 63,812 started, terminal, and finished rows.
+It exercised 29 lock/unlock cycles and 14 concurrent backups. Across 181 RSS
+samples, the first-window average was 49,513 KiB and the last-window average was
+47,308 KiB, with a sampled maximum of 93,536 KiB. Queue overload returned 384
+explicit `AUTHORITY_BUSY` responses from 512 attempts; the total IPC boundary
+held 128 connections and rejected both extra connections explicitly. Session
+concurrency rejected the fifth permit and reused a released slot. Shutdown
+drained one admitted execution.
+
+PR [#18](https://github.com/majiayu000/rekey/pull/18) supplied the implementation.
+Its exact head `9bddae2fda319bc6ce0b872496298933f5821a59` passed all nine security,
+fuzz, and performance jobs before squash merge. The merge commit then passed
+[security](https://github.com/majiayu000/rekey/actions/runs/33633015752),
+[fuzz](https://github.com/majiayu000/rekey/actions/runs/33633015820), and
+[performance](https://github.com/majiayu000/rekey/actions/runs/33633015821) again.
