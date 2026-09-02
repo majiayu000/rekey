@@ -9,7 +9,21 @@ permissions:
   contents: read
 
 jobs:
+  release-source:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Require the tag commit to be reachable from protected main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
+
   security-gate:
+    needs: release-source
     uses: ./.github/workflows/security-gate.yml
 
   build:
@@ -54,9 +68,16 @@ jobs:
           install -m 0755 scripts/rekey-service-unit.py "$stage/"
           install -m 0644 LICENSE README.md "$stage/"
           install -m 0644 CHANGELOG.md SECURITY.md SUPPORT.md "$stage/"
-          mkdir -p "$stage/docs" "$stage/examples"
+          mkdir -p "$stage/docs/product-foundation" "$stage/docs/releases" \
+            "$stage/docs/superpowers/specs" "$stage/examples"
           install -m 0644 docs/alpha-scope.md docs/installation.md docs/user-guide.md \
             docs/operations-runbook.md "$stage/docs/"
+          install -m 0644 docs/product-foundation/feature-truth-matrix.md \
+            docs/product-foundation/threat-model-v2.md "$stage/docs/product-foundation/"
+          install -m 0644 docs/releases/${GITHUB_REF_NAME}.md "$stage/docs/releases/"
+          install -m 0644 \
+            docs/superpowers/specs/2026-08-28-credential-authority-v2-foundation.md \
+            "$stage/docs/superpowers/specs/"
           install -m 0644 examples/github-create-issue.json "$stage/examples/"
           tar -czf "dist/$archive" -C dist "$(basename "$stage")"
           (cd dist && shasum -a 256 "$archive" > "$archive.sha256")
@@ -200,8 +221,8 @@ jobs:
             "${GITHUB_REF_NAME#v}"
 
   withdraw-on-public-smoke-failure:
-    needs: public-url-smoke
-    if: ${{ failure() }}
+    needs: [publish, public-url-smoke]
+    if: ${{ always() && needs.publish.result == 'success' && needs.public-url-smoke.result != 'success' }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write

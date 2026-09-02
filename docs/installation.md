@@ -95,7 +95,7 @@ sudo install -m 0755 "$REKEY_RELEASE_DIR/rekey" /usr/local/bin/rekey
 sudo install -m 0755 "$REKEY_RELEASE_DIR/rekeyd" /usr/local/bin/rekeyd
 sudo install -d -m 0700 -o rekey -g rekey /var/lib/rekey/state
 sudo -u rekey /usr/local/bin/rekey --state-dir /var/lib/rekey/state init
-python3 "$REKEY_RELEASE_DIR/rekey-service-unit.py" systemd \
+sudo python3 "$REKEY_RELEASE_DIR/rekey-service-unit.py" systemd \
   --rekeyd /usr/local/bin/rekeyd \
   --state-dir /var/lib/rekey/state \
   --run-as-user rekey > rekey.service
