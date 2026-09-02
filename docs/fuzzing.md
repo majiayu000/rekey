@@ -7,18 +7,22 @@ Each target has its own seed corpus under `fuzz/corpus/<target>/`.
 The IPC harness exercises both arbitrary decoders and constructed valid
 frames/bodies on every input. Action and policy corpora include valid aggregate
 definitions. Restore decodes one committed initialized-vault snapshot, then
-applies input-driven mutations; the fixed bytes make crash replay and
-minimization deterministic, while separate seeds prove both password and
-recovery-key restore paths. Response sealing asserts that every supported raw
-or encoded credential and full authorization reflection is detected in bodies
-and valid textual headers, and that unrelated responses are not rejected.
+applies input-driven byte changes, truncation, or extension; the fixed bytes
+make crash replay and minimization deterministic, while separate seeds prove
+both password and recovery-key restore paths. Failed restores assert that no
+installed, staging, sidecar, or incomplete-marker artifact remains, and a
+failure seed proves same-directory retry. Response sealing asserts that every
+supported raw or encoded credential and full authorization reflection is
+detected in bodies, header values, and header names, and that unrelated
+responses are not rejected.
 
 CI runs 2,000 inputs for pull requests and relevant pushes. The Monday schedule
 runs for 15 minutes. Both modes cap inputs at 64 KiB, each unit at 10 seconds,
 and RSS at 2 GiB so a hang or resource-bound violation fails clearly.
 The fuzz lock starts from the production lock and adds only fuzz-only packages;
-root `Cargo.lock` changes trigger these jobs so shared dependency versions stay
-aligned with the shipped graph.
+root `Cargo.lock` changes trigger these jobs; the IPC lane compares both
+resolved graphs and fails when any shared fuzz package version is absent from
+the shipped graph.
 
 Run the same smoke locally for each target:
 

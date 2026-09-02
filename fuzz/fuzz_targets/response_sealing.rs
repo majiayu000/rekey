@@ -2,7 +2,7 @@
 
 use data_encoding::{BASE64, BASE64_NOPAD, BASE64URL, BASE64URL_NOPAD};
 use libfuzzer_sys::fuzz_target;
-use rekey_broker::executor::fuzz_response_sealing;
+use rekey_broker::executor::{fuzz_response_header_name_sealing, fuzz_response_sealing};
 
 fuzz_target!(|data: &[u8]| {
     let first = data.len() / 3;
@@ -48,6 +48,20 @@ fuzz_target!(|data: &[u8]| {
         negative_auth,
         unrelated,
         true,
+    ));
+
+    let mut header_name = b"x-rekey-".to_vec();
+    header_name.extend(
+        data.iter()
+            .take(32)
+            .map(|byte| b'a'.saturating_add(byte % 26)),
+    );
+    let mut header_auth = b"Bearer ".to_vec();
+    header_auth.extend_from_slice(&header_name);
+    assert!(fuzz_response_header_name_sealing(
+        &header_name,
+        &header_auth,
+        &header_name,
     ));
 });
 

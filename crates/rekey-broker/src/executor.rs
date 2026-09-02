@@ -65,6 +65,24 @@ pub fn fuzz_response_sealing(
     }
 }
 
+/// Exercises the response-header-name branch independently from header values.
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub fn fuzz_response_header_name_sealing(
+    secret: &[u8],
+    auth_value: &[u8],
+    response_name: &[u8],
+) -> bool {
+    let needles = sealing_needles(secret, auth_value);
+    headers_contain_secret(
+        &[(
+            String::from_utf8_lossy(response_name).into(),
+            "unrelated-header-value".to_owned(),
+        )],
+        &needles,
+    )
+}
+
 pub struct ExecuteRequest {
     pub request_id: RequestId,
     pub capability_token: String,
