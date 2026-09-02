@@ -582,3 +582,228 @@ async fn negative_action_version_faults_and_zeroizes_authority() {
     handle.shutdown(None).await.unwrap();
     join.join().unwrap();
 }
+
+#[tokio::test]
+async fn password_replacement_supports_password_and_recovery_step_up() {
+    const NEW_PASSWORD: &[u8] = b"new password after ordinary change";
+    const RECOVERED_PASSWORD: &[u8] = b"new password after recovery";
+
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+    let credential = handle
+        .credential_add(
+            CredentialLabel::new("password-lifecycle").unwrap(),
+            CredentialKind::OpaqueToken,
+            SecretInput::from_slice(b"preserved-secret"),
+            common::password_proof(),
+        )
+        .await
+        .unwrap();
+
+    let error = handle
+        .password_change_before(
+            UnlockProof::Password(SecretInput::from_slice(b"wrong")),
+            SecretInput::from_slice(NEW_PASSWORD),
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, AuthorityError::InvalidUnlockCredential));
+
+    for invalid in [Vec::new(), vec![b'x'; 64 * 1024 + 1]] {
+        let error = handle
+            .password_change_before(common::password_proof(), SecretInput::new(invalid), None)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            AuthorityError::Domain(rekey_domain::DomainError::InvalidActionDefinition(_))
+        ));
+    }
+
+    handle
+        .password_change_before(
+            common::password_proof(),
+            SecretInput::from_slice(NEW_PASSWORD),
+            None,
+        )
+        .await
+        .unwrap();
+    handle
+        .prepare_credential(credential.id)
+        .await
+        .unwrap()
+        .consume(|secret| assert_eq!(secret, b"preserved-secret"));
+
+    handle.lock("password-change-test").await.unwrap();
+    let error = handle.unlock(common::password_proof()).await.unwrap_err();
+    assert!(matches!(error, AuthorityError::InvalidUnlockCredential));
+    handle
+        .unlock(UnlockProof::Password(SecretInput::from_slice(NEW_PASSWORD)))
+        .await
+        .unwrap();
+    handle.lock("recovery-change-test").await.unwrap();
+    let recovery = || {
+        UnlockProof::Recovery(SecretInput::from_slice(
+            vault.outcome.recovery_key_display.as_bytes(),
+        ))
+    };
+    handle.unlock(recovery()).await.unwrap();
+    let error = handle
+        .password_change_before(
+            UnlockProof::Recovery(SecretInput::from_slice(b"RKREC1-WRONG")),
+            SecretInput::from_slice(RECOVERED_PASSWORD),
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, AuthorityError::InvalidUnlockCredential));
+    handle
+        .password_change_before(
+            recovery(),
+            SecretInput::from_slice(RECOVERED_PASSWORD),
+            None,
+        )
+        .await
+        .unwrap();
+
+    handle.lock("recovered-password-test").await.unwrap();
+    let error = handle
+        .unlock(UnlockProof::Password(SecretInput::from_slice(NEW_PASSWORD)))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, AuthorityError::InvalidUnlockCredential));
+    let recovered_proof = || UnlockProof::Password(SecretInput::from_slice(RECOVERED_PASSWORD));
+    handle.unlock(recovered_proof()).await.unwrap();
+    handle
+        .prepare_credential(credential.id)
+        .await
+        .unwrap()
+        .consume(|secret| assert_eq!(secret, b"preserved-secret"));
+    handle.shutdown(Some(recovered_proof())).await.unwrap();
+    join.join().unwrap();
+
+    let connection =
+        rusqlite::Connection::open(rekey_vault::paths::vault_db(&vault.state_dir)).unwrap();
+    let tombstones: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM key_wrappers
+             WHERE wrapper_kind = 'password' AND state = 'disabled'
+               AND salt = zeroblob(16) AND nonce = zeroblob(12)
+               AND wrapped_vrk = zeroblob(48)",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(tombstones, 2);
+    let events = SqliteRecordStore::open(&rekey_vault::paths::vault_db(&vault.state_dir))
+        .unwrap()
+        .audit_event_types()
+        .unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| *event == event_type::VAULT_PASSWORD_CHANGED)
+            .count(),
+        2
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| *event == event_type::VAULT_PASSWORD_CHANGE_FAILED)
+            .count(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn recovery_rotation_is_retryable_when_the_first_response_is_lost() {
+    let vault = common::init_test_vault();
+    let old_recovery = vault.outcome.recovery_key_display.as_bytes();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+    let credential = handle
+        .credential_add(
+            CredentialLabel::new("recovery-lifecycle").unwrap(),
+            CredentialKind::OpaqueToken,
+            SecretInput::from_slice(b"preserved-secret"),
+            common::password_proof(),
+        )
+        .await
+        .unwrap();
+
+    let error = handle
+        .recovery_rotate_before(SecretInput::from_slice(b"wrong"), None)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, AuthorityError::InvalidUnlockCredential));
+
+    let first_recovery = handle
+        .recovery_rotate_before(common::password_input(), None)
+        .await
+        .unwrap();
+    let current_recovery = handle
+        .recovery_rotate_before(common::password_input(), None)
+        .await
+        .unwrap();
+
+    handle.lock("recovery-rotation-test").await.unwrap();
+    for stale in [old_recovery, first_recovery.as_bytes()] {
+        let error = handle
+            .unlock(UnlockProof::Recovery(SecretInput::from_slice(stale)))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, AuthorityError::InvalidUnlockCredential));
+    }
+    handle
+        .unlock(UnlockProof::Recovery(SecretInput::from_slice(
+            current_recovery.as_bytes(),
+        )))
+        .await
+        .unwrap();
+    handle
+        .prepare_credential(credential.id)
+        .await
+        .unwrap()
+        .consume(|secret| assert_eq!(secret, b"preserved-secret"));
+    handle.lock("password-remains-valid").await.unwrap();
+    handle.unlock(common::password_proof()).await.unwrap();
+    handle
+        .shutdown(Some(common::password_proof()))
+        .await
+        .unwrap();
+    join.join().unwrap();
+
+    let connection =
+        rusqlite::Connection::open(rekey_vault::paths::vault_db(&vault.state_dir)).unwrap();
+    let tombstones: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM key_wrappers
+             WHERE wrapper_kind = 'recovery' AND state = 'disabled'
+               AND salt = zeroblob(16) AND nonce = zeroblob(12)
+               AND wrapped_vrk = zeroblob(48)",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(tombstones, 2);
+    let events = SqliteRecordStore::open(&rekey_vault::paths::vault_db(&vault.state_dir))
+        .unwrap()
+        .audit_event_types()
+        .unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| *event == event_type::VAULT_RECOVERY_ROTATED)
+            .count(),
+        2
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| *event == event_type::VAULT_RECOVERY_ROTATION_FAILED)
+            .count(),
+        1
+    );
+}

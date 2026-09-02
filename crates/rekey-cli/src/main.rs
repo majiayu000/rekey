@@ -90,6 +90,12 @@ enum Command {
     /// Typed authorization policy administration.
     #[command(subcommand)]
     Policy(PolicyCommand),
+    /// Vault password lifecycle.
+    #[command(subcommand)]
+    Password(PasswordCommand),
+    /// Recovery-key lifecycle.
+    #[command(subcommand)]
+    Recovery(RecoveryCommand),
     /// Execute a fixed action through the agent channel.
     Execute {
         /// ACTION_ID@VERSION
@@ -209,6 +215,28 @@ enum PolicyCommand {
     },
     /// Show the active policy version and digest.
     Status,
+}
+
+#[derive(Subcommand)]
+enum PasswordCommand {
+    /// Replace the password; use --recovery when the old password is lost.
+    Change {
+        #[arg(long)]
+        recovery: bool,
+        /// Read step-up proof (line 1) and new password (line 2) from stdin.
+        #[arg(long)]
+        stdin_secrets: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum RecoveryCommand {
+    /// Replace the recovery key and display the new key once.
+    Rotate {
+        /// Read the required password proof from stdin.
+        #[arg(long)]
+        password_stdin: bool,
+    },
 }
 
 fn main() {
@@ -345,6 +373,13 @@ fn main() {
             ),
             PolicyCommand::Status => commands::policy_status(&state_dir),
         },
+        Command::Password(PasswordCommand::Change {
+            recovery,
+            stdin_secrets,
+        }) => commands::password_change(&state_dir, recovery, stdin_secrets),
+        Command::Recovery(RecoveryCommand::Rotate { password_stdin }) => {
+            commands::recovery_rotate(&state_dir, password_stdin)
+        }
         Command::Execute {
             action,
             capability,

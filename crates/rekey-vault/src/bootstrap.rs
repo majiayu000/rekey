@@ -153,7 +153,7 @@ impl BootstrapLock {
     }
 }
 
-fn wrap_vrk(
+pub(crate) fn wrap_vrk(
     vault_id: VaultId,
     wrapper_id: WrapperId,
     kek: &Kek,

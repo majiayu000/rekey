@@ -182,7 +182,7 @@ password / recovery key / OS keystore / enterprise KMS
 
 首个实现继续使用经过维护的 Argon2id 和 AES-256-GCM 库，不自行设计密码学算法。每个 CredentialVersion 使用独立随机 nonce，并以 vault、tenant、credential、version、type、provider 和约束元数据作为 AAD，防止密文跨记录替换。
 
-当前 Foundation 在初始化时创建 password 和 recovery 两个 VRK wrapper；recovery key 只用于解锁、显式 Admin step-up 或验证离线 backup restore，不修改密码或替换 wrapper。未来若单独实现修改密码或新增恢复方式，只应重新包装 VRK。轮换单个凭据生成新版本和新 DEK；旧版本按保留策略撤销或密码学删除，不允许原地覆盖唯一可恢复版本。
+Foundation 在初始化时创建 password 和 recovery 两个 VRK wrapper。P-01 在不轮换 VRK、DEK 或 Credential ciphertext 的前提下，原子替换其中一个 wrapper：密码可由当前密码或 recovery step-up 更换，recovery key 只能由当前密码轮换。旧 wrapper 的密钥材料在同一事务中 tombstone；历史 backup 仍受其快照中的历史 factor 保护，不宣称对 SSD、快照或旧 backup 做追溯销毁。轮换单个凭据生成新版本和新 DEK；旧版本按保留策略撤销或密码学删除，不允许原地覆盖唯一可恢复版本。
 
 ### 8.2 解锁与运行时生命周期
 
@@ -406,7 +406,7 @@ Action 和最小响应 schema 比通用透明代理更强。任何新增 canonic
 - Audit 使用本地 SQLite/WAL fail-closed；尚未设计 enterprise outbox。
 - Secret Sealing 命中即中止并返回空 Agent error response，不做脱敏回退。
 - 本地恢复材料使用单一 recovery key。
-- recovery key 当前只用于解锁、显式 Admin step-up 或验证 backup restore；Foundation 不提供密码修改、重置或 wrapper 替换。
+- recovery key 可用于解锁、显式 Admin step-up、验证 backup restore，或在 P-01 中为丢失的密码设置替代值；recovery 自身轮换仍必须使用当前密码。
 - idle lock、central stop 和 in-flight drain 行为由 Foundation spec 锁定并已有攻击测试。
 
 ### 未来范围待决

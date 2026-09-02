@@ -876,13 +876,23 @@ lock/unlock、14 次 backup 和 1 个实际 shutdown drain 全部成功。Author
 
 ### P-01 密码生命周期
 
-**独立 spec：** [`2026-09-02-password-lifecycle-p01.md`](../specs/2026-09-02-password-lifecycle-p01.md) 已接受；实现与验收在后续 PR 完成。
+**状态：** `[x]`
+
+**独立 spec：** [`2026-09-02-password-lifecycle-p01.md`](../specs/2026-09-02-password-lifecycle-p01.md)
 
 - 修改密码。
 - recovery 后设置新密码。
 - 原子替换并禁用旧 password wrapper。
 - recovery key 轮换与丢失策略。
 - 对应审计、故障注入和备份恢复合同。
+
+**完成证据（2026-09-02）：** Authority、Admin IPC 和真实 `rekeyd` + `rekey`
+black-box 覆盖 password/recovery step-up、错误 proof、旧 factor 失效、新 recovery
+响应丢失后重试、Credential 解密保持和一次性 stdout。事务故障注入覆盖 wrapper
+写入、success/denial audit 和 commit 回滚；真实子进程在事务内及提交后 SIGKILL/reopen
+只能观察完整旧代或完整新代。备份测试验证历史与新 wrapper generation；进程和文件
+canary 验证密码/recovery 不进入 argv、环境、daemon 日志、审计或状态文件。能力未进入
+`v2.0.0-alpha.1`，也不改变默认 G1、有界 Linux G2 或企业就绪判定。
 
 ### P-02 审计查询与导出
 
@@ -1026,14 +1036,12 @@ lock/unlock、14 次 backup 和 1 个实际 shutdown drain 全部成功。Author
 
 ## 11. 推荐执行顺序
 
-1. 安排 M-04、M-05、M-06 三类独立 Review；可以合并为一份报告的三个章节，但 Reviewer 不能是本轮主要实现者。
-2. 修复 Review findings，并在最终修改后重新验证。
-3. 完成 M-07，更新 PR 证据和限制。
-4. 经确认后执行 M-08 历史整理。
-5. 完成 M-09，关闭 v1 遗留队列。
-6. 执行 M-10，合并并验证 main。
-7. 进入 A-01，单独冻结 Alpha 范围；不要自动把全部 P/H/E 项拉入首发。
-8. A 阶段完成后再发布 Alpha。
+1. `[x]` 关闭 M、A、H 和 P-01，并保留各自 exact-head/merge 后证据。
+2. P-02 审计查询与导出，为后续 SIEM/retention 建立最小查询边界。
+3. P-03 审批与持久化策略，再推进依赖它的长期授权流程。
+4. P-04 通用 workload identity。
+5. P-05 Connector SDK；P-06 GitHub App 扩展只能建立在该合同之上。
+6. E 阶段按 E-01～E-06 推进；需要客户、第三方或运营证据的门不得由内部测试替代。
 
 ## 12. 当前总判定
 
@@ -1045,9 +1053,10 @@ lock/unlock、14 次 backup 和 1 个实际 shutdown drain 全部成功。Author
 | Alpha 文档 | 完成（含 erratum） | 用户、安装、运维、发行、开源治理和支持范围已完成；archive 内嵌发布前 Matrix 的状态差异由公开 Release erratum 和当前仓库矩阵明确衔接 |
 | 可公开 Alpha | 是 | [v2.0.0-alpha.1](https://github.com/majiayu000/rekey/releases/tag/v2.0.0-alpha.1) 已公开；双平台 fresh-install、attestation 和 public-URL smoke 通过 |
 | H 安全与可靠性补强 | 完成 | H-01～H-08 已以持续 fuzz、真实 ENOSPC/文件系统故障注入、边界文档、公开双平台发行证据、供应链取舍以及固定主机 1,800 秒性能/容量/soak 证据全部关闭 |
+| P 后续产品能力 | 进行中 | P-01 密码/recovery wrapper 生命周期已完成 adversarial/black-box 验收但尚未发布；P-02～P-06 未开始 |
 | 可宣称通用 G2 | 否 | 只有有界 Linux reference；默认仍是 G1 |
 | 可宣称通用 Connector | 否 | 只有 fixed HTTPS Action 和 closed GitHub App profile |
 | 企业就绪 | 否 | 控制面、身份、HA/DR、合规、运营和商业门槛均未完成 |
 
-M、A 与 H 阶段已经关闭。后续 P、E 必须继续按独立 spec、PR 和真实证据推进，
+M、A、H 与 P-01 已经关闭。后续 P、E 必须继续按独立 spec、PR 和真实证据推进，
 不得回写或扩大已经发布的 `v2.0.0-alpha.1` 范围。

@@ -26,6 +26,7 @@ use crate::store::SqliteRecordStore;
 
 mod backup;
 mod credential;
+mod wrapper;
 
 const FREE_UNLOCK_FAILURES: u32 = 3;
 const UNLOCK_BACKOFF_CAP: Duration = Duration::from_secs(30);
@@ -199,6 +200,33 @@ impl Worker {
                     .require_unlocked()
                     .map(|_| ())
                     .and_then(|_| self.verify_proof(&proof));
+                self.touch_if_ok(&result);
+                let _ = reply.send(result);
+            }
+            AuthorityCommand::PasswordChange {
+                proof,
+                new_password,
+                not_after,
+                reply,
+            } => {
+                let result = if mutation_expired(not_after) {
+                    Err(AuthorityError::AuthorityBusy)
+                } else {
+                    self.password_change(proof, new_password, not_after)
+                };
+                self.touch_if_ok(&result);
+                let _ = reply.send(result);
+            }
+            AuthorityCommand::RecoveryRotate {
+                password,
+                not_after,
+                reply,
+            } => {
+                let result = if mutation_expired(not_after) {
+                    Err(AuthorityError::AuthorityBusy)
+                } else {
+                    self.recovery_rotate(password, not_after)
+                };
                 self.touch_if_ok(&result);
                 let _ = reply.send(result);
             }

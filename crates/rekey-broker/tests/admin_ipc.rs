@@ -7,7 +7,10 @@ use std::time::Duration;
 
 use rekey_broker::upstream::UpstreamResponse;
 use rekey_domain::ids::RequestId;
-use rekey_domain::ipc::{self, Channel, FrameHeader, admin_msg, agent_msg};
+use rekey_domain::ipc::{self, Channel, FrameHeader, ProofKind, admin_msg, agent_msg};
+
+const NEW_PASSWORD: &[u8] = b"replacement horse battery staple";
+const FINAL_PASSWORD: &[u8] = b"recovered horse battery staple";
 
 #[tokio::test(flavor = "multi_thread")]
 async fn admin_lifecycle_and_step_up() {
@@ -70,6 +73,137 @@ async fn admin_lifecycle_and_step_up() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn password_and_recovery_lifecycle_is_exposed_over_admin_ipc() {
+    let broker = common::start_broker().await;
+    let admin = broker.admin_sock();
+
+    let response = common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::PASSWORD_CHANGE,
+        b"{}",
+        &common::proof_and_secret_body(common::PASSWORD, NEW_PASSWORD),
+    )
+    .await;
+    assert_eq!(response.err_code(), "LOCKED");
+
+    common::unlock(&broker).await;
+    let credential = common::add_credential(&broker, "wrapper-session", b"secret").await;
+    let (action, version) = common::create_action(&broker, &credential).await;
+    let _token = common::create_session(&broker, &action, version).await;
+    let response = common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::PASSWORD_CHANGE,
+        b"{}",
+        &common::proof_and_secret_body(b"wrong", NEW_PASSWORD),
+    )
+    .await;
+    assert_eq!(response.err_code(), "INVALID_UNLOCK_CREDENTIAL");
+
+    let response = common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::PASSWORD_CHANGE,
+        b"{}",
+        &common::proof_and_secret_body(common::PASSWORD, NEW_PASSWORD),
+    )
+    .await;
+    assert_eq!(response.ok()["changed"], true);
+    assert!(response.body.is_empty());
+    let response = common::call(&admin, Channel::Admin, admin_msg::STATUS, b"{}", &[]).await;
+    assert_eq!(response.ok()["sessions_active"], 1);
+
+    let response = common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::RECOVERY_ROTATE,
+        b"{}",
+        &common::proof_body(common::PASSWORD),
+    )
+    .await;
+    assert_eq!(response.err_code(), "INVALID_UNLOCK_CREDENTIAL");
+
+    let mut wrong_kind = Vec::new();
+    ipc::encode_proof_body(ProofKind::Recovery, b"RKREC1-NOT-A-KEY", &mut wrong_kind);
+    let response = common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::RECOVERY_ROTATE,
+        b"{}",
+        &wrong_kind,
+    )
+    .await;
+    assert_eq!(response.err_code(), "INVALID_INPUT");
+
+    let response = common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::RECOVERY_ROTATE,
+        b"{}",
+        &common::proof_body(NEW_PASSWORD),
+    )
+    .await;
+    assert_eq!(response.ok()["rotated"], true);
+    assert!(response.body.starts_with(b"RKREC1-"));
+    let recovery = response.body;
+
+    let mut recovery_change = Vec::new();
+    ipc::encode_proof_and_secret_body(
+        ProofKind::Recovery,
+        &recovery,
+        FINAL_PASSWORD,
+        &mut recovery_change,
+    );
+    let response = common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::PASSWORD_CHANGE,
+        b"{}",
+        &recovery_change,
+    )
+    .await;
+    assert_eq!(response.ok()["changed"], true);
+
+    common::call(&admin, Channel::Admin, admin_msg::LOCK, b"{}", &[])
+        .await
+        .ok();
+    let response = common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::UNLOCK_PASSWORD,
+        b"{}",
+        NEW_PASSWORD,
+    )
+    .await;
+    assert_eq!(response.err_code(), "INVALID_UNLOCK_CREDENTIAL");
+    let response = common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::UNLOCK_RECOVERY,
+        b"{}",
+        &recovery,
+    )
+    .await;
+    assert_eq!(response.ok()["unlocked"], true);
+
+    let response = common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::SHUTDOWN,
+        b"{}",
+        &common::proof_body(FINAL_PASSWORD),
+    )
+    .await;
+    assert_eq!(response.ok()["shutdown"], true);
+    tokio::time::timeout(Duration::from_secs(5), broker.serve_task)
+        .await
+        .expect("broker shutdown timed out")
+        .expect("serve task panicked")
+        .expect("broker shutdown failed");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn agent_channel_frames_rejected_on_admin_socket() {
     let broker = common::start_broker().await;
     // A frame tagged with the agent channel must be rejected by the admin
@@ -128,6 +262,14 @@ async fn admin_reader_rejects_oversized_fields_before_body_allocation() {
         ),
         (
             admin_msg::SESSION_CREATE,
+            ipc::ADMIN_PROOF_BODY_MAX_BYTES + 1,
+        ),
+        (
+            admin_msg::PASSWORD_CHANGE,
+            ipc::ADMIN_SECRET_BODY_MAX_BYTES + 1,
+        ),
+        (
+            admin_msg::RECOVERY_ROTATE,
             ipc::ADMIN_PROOF_BODY_MAX_BYTES + 1,
         ),
     ] {

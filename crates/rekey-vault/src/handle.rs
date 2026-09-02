@@ -7,6 +7,7 @@ use rekey_domain::action::FixedHttpAction;
 use rekey_domain::credential::{CredentialKind, CredentialLabel, CredentialMetadata};
 use rekey_domain::ids::{ActionId, CredentialId};
 use tokio::sync::{mpsc, oneshot};
+use zeroize::Zeroizing;
 
 use crate::command::{
     ActionDefinition, AuditDraft, AuthorityCommand, BackupInfo, PinnedAction, StatusInfo,
@@ -109,6 +110,32 @@ impl AuthorityHandle {
 
     pub async fn verify_proof(&self, proof: UnlockProof) -> Result<(), AuthorityError> {
         call!(self, |reply| AuthorityCommand::VerifyProof { proof, reply })
+    }
+
+    pub async fn password_change_before(
+        &self,
+        proof: UnlockProof,
+        new_password: SecretInput,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<(), AuthorityError> {
+        call!(self, |reply| AuthorityCommand::PasswordChange {
+            proof,
+            new_password,
+            not_after,
+            reply
+        })
+    }
+
+    pub async fn recovery_rotate_before(
+        &self,
+        password: SecretInput,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<Zeroizing<String>, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::RecoveryRotate {
+            password,
+            not_after,
+            reply
+        })
     }
 
     pub async fn credential_add(

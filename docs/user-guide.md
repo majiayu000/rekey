@@ -21,6 +21,26 @@ Credential add/rotate accepts `--stdin-secrets`, with proof on line 1 and the
 credential on line 2. Do not place secrets in argv, environment variables,
 JSON metadata, logs, or Action files.
 
+## Replace password or recovery key
+
+Both operations require an unlocked broker and rewrap the existing VRK; they
+do not rewrite Credentials or revoke current capability sessions.
+
+```bash
+rekey password change              # current password, then new password twice
+rekey password change --recovery   # current recovery key, then new password
+rekey recovery rotate              # current password; new key is shown once
+```
+
+For deliberate automation, password replacement uses `--stdin-secrets` with
+the current proof on line 1 and new password on line 2. Recovery rotation uses
+`--password-stdin`. Save the newly displayed recovery key before closing the
+terminal. If that output is lost, the password remains valid: rotate recovery
+again and retain only the latest key.
+
+Rotation does not invalidate historical backups. Each backup remains tied to
+the password and recovery wrappers captured in that snapshot.
+
 ## Create a fixed HTTPS Action
 
 Add an opaque token and retain the returned credential ID:

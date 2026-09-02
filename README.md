@@ -74,14 +74,17 @@ rekey execute <ACTION_ID>@1 --capability - --body-file req.json
 ```
 
 The recovery key can unlock the running broker, satisfy an explicit Admin
-step-up with `--recovery`, or verify an offline backup restore. The current
-Foundation does not change/reset the vault password or replace key wrappers.
+step-up with `--recovery`, or verify an offline backup restore. With the broker
+unlocked, `rekey password change` atomically replaces the password wrapper;
+add `--recovery` when the current password is lost. `rekey recovery rotate`
+requires the current password, replaces the recovery wrapper, and displays the
+new recovery key once. Neither operation rotates the VRK or Credential data.
 
-For explicit automation, password/recovery-only commands use
-`--password-stdin`; `rekey credential add` and `rekey credential rotate` use
-`--stdin-secrets` for the step-up proof and Credential value. Add `--recovery`
-when that proof is the recovery key. Secrets are never accepted as argument
-values or environment variables.
+For explicit automation, proof-only commands use `--password-stdin`;
+`rekey password change --stdin-secrets`, `rekey credential add`, and
+`rekey credential rotate` read the step-up proof on line 1 and the new secret
+on line 2. Add `--recovery` when that proof is the recovery key. Secrets are
+never accepted as argument values or environment variables.
 
 Policy snapshots are JSON-only, default-deny, in-memory, and exact-principal;
 lock or restart clears the active snapshot. The normative snapshot schema is

@@ -9,6 +9,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 const PASSWORD: &str = "blackbox horse battery staple";
+const NEW_PASSWORD: &str = "blackbox replacement battery staple";
+const FINAL_PASSWORD: &str = "blackbox recovered battery staple";
 const SECRET: &str = "CLI-CANARY-SECRET-0x5eed";
 
 fn rekey_bin() -> PathBuf {
@@ -58,12 +60,80 @@ fn run(binary: &Path, args: &[&str], stdin: Option<&str>) -> Output {
     }
 }
 
-struct ServeGuard(Child);
+fn run_with_process_boundary(
+    binary: &Path,
+    args: &[&str],
+    stdin: &str,
+    secret_canaries: &[&str],
+) -> Output {
+    let mut child = Command::new(binary)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn");
+    let process = Command::new("ps")
+        .args(["-eww", "-o", "command=", "-p", &child.id().to_string()])
+        .output()
+        .expect("inspect process boundary");
+    assert!(process.status.success(), "cannot inspect CLI process");
+    for canary in secret_canaries {
+        assert!(
+            !process
+                .stdout
+                .windows(canary.len())
+                .any(|part| part == canary.as_bytes()),
+            "secret appeared in CLI argv or environment"
+        );
+    }
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(stdin.as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().expect("wait");
+    Output {
+        status: output.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    }
+}
+
+fn assert_files_exclude(root: &Path, secret_canaries: &[&str]) {
+    for entry in std::fs::read_dir(root).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            assert_files_exclude(&path, secret_canaries);
+        } else if let Ok(bytes) = std::fs::read(&path) {
+            for canary in secret_canaries {
+                assert!(
+                    !bytes
+                        .windows(canary.len())
+                        .any(|part| part == canary.as_bytes()),
+                    "secret appeared in Rekey-created file {}",
+                    path.display()
+                );
+            }
+        }
+    }
+}
+
+struct ServeGuard(Option<Child>);
+
+impl ServeGuard {
+    fn finish(mut self) -> std::process::Output {
+        self.0.take().unwrap().wait_with_output().unwrap()
+    }
+}
 
 impl Drop for ServeGuard {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        if let Some(child) = self.0.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 
@@ -105,7 +175,7 @@ fn cli_end_to_end() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn rekeyd serve");
-    let _guard = ServeGuard(child);
+    let guard = ServeGuard(Some(child));
     let admin_sock = state_dir.join("runtime").join("admin.sock");
     for _ in 0..300 {
         if admin_sock.exists() {
@@ -284,13 +354,164 @@ fn cli_end_to_end() {
             .any(|w| w == SECRET.as_bytes())
     );
 
+    // Replace the password without changing the root key or stored credential.
+    let output = run_with_process_boundary(
+        &rekey_bin(),
+        &[
+            "--state-dir",
+            state,
+            "password",
+            "change",
+            "--stdin-secrets",
+        ],
+        &format!("{PASSWORD}\n{NEW_PASSWORD}\n"),
+        &[PASSWORD, NEW_PASSWORD],
+    );
+    assert_eq!(output.status, 0, "{}", output.stderr);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&output.stdout).unwrap()["changed"],
+        true
+    );
+    assert!(!output.stdout.contains(PASSWORD) && !output.stdout.contains(NEW_PASSWORD));
+
+    let output = run(&rekey_bin(), &["--state-dir", state, "lock"], None);
+    assert_eq!(output.status, 0, "{}", output.stderr);
+    let output = run(
+        &rekey_bin(),
+        &["--state-dir", state, "unlock", "--password-stdin"],
+        Some(&format!("{PASSWORD}\n")),
+    );
+    assert_eq!(output.status, 3, "stderr: {}", output.stderr);
+    let output = run(
+        &rekey_bin(),
+        &["--state-dir", state, "unlock", "--password-stdin"],
+        Some(&format!("{NEW_PASSWORD}\n")),
+    );
+    assert_eq!(output.status, 0, "{}", output.stderr);
+
+    // Recovery rotation requires the current password and prints only the new
+    // recovery material, exactly once.
+    let output = run_with_process_boundary(
+        &rekey_bin(),
+        &[
+            "--state-dir",
+            state,
+            "recovery",
+            "rotate",
+            "--password-stdin",
+        ],
+        &format!("{NEW_PASSWORD}\n"),
+        &[NEW_PASSWORD],
+    );
+    assert_eq!(output.status, 0, "{}", output.stderr);
+    assert!(!output.stdout.contains(NEW_PASSWORD));
+    let new_recovery = output
+        .stdout
+        .lines()
+        .find(|line| line.starts_with("RKREC1-"))
+        .expect("rotated recovery key line")
+        .to_owned();
+    assert_eq!(
+        output
+            .stdout
+            .lines()
+            .filter(|line| line.starts_with("RKREC1-"))
+            .count(),
+        1
+    );
+    assert!(!output.stderr.contains(&new_recovery));
+
+    let output = run(&rekey_bin(), &["--state-dir", state, "lock"], None);
+    assert_eq!(output.status, 0, "{}", output.stderr);
+    let output = run(
+        &rekey_bin(),
+        &[
+            "--state-dir",
+            state,
+            "unlock",
+            "--recovery",
+            "--password-stdin",
+        ],
+        Some(&format!("{recovery_key}\n")),
+    );
+    assert_eq!(output.status, 3, "stderr: {}", output.stderr);
+    let output = run(
+        &rekey_bin(),
+        &[
+            "--state-dir",
+            state,
+            "unlock",
+            "--recovery",
+            "--password-stdin",
+        ],
+        Some(&format!("{new_recovery}\n")),
+    );
+    assert_eq!(output.status, 0, "{}", output.stderr);
+
+    // The rotated recovery key can replace a lost password.
+    let output = run_with_process_boundary(
+        &rekey_bin(),
+        &[
+            "--state-dir",
+            state,
+            "password",
+            "change",
+            "--recovery",
+            "--stdin-secrets",
+        ],
+        &format!("{new_recovery}\n{FINAL_PASSWORD}\n"),
+        &[&new_recovery, FINAL_PASSWORD],
+    );
+    assert_eq!(output.status, 0, "{}", output.stderr);
+    assert!(!output.stdout.contains(&new_recovery) && !output.stdout.contains(FINAL_PASSWORD));
+
+    let output = run(&rekey_bin(), &["--state-dir", state, "lock"], None);
+    assert_eq!(output.status, 0, "{}", output.stderr);
+    let output = run(
+        &rekey_bin(),
+        &["--state-dir", state, "unlock", "--password-stdin"],
+        Some(&format!("{NEW_PASSWORD}\n")),
+    );
+    assert_eq!(output.status, 3, "stderr: {}", output.stderr);
+    let output = run(
+        &rekey_bin(),
+        &["--state-dir", state, "unlock", "--password-stdin"],
+        Some(&format!("{FINAL_PASSWORD}\n")),
+    );
+    assert_eq!(output.status, 0, "{}", output.stderr);
+
     // shutdown with step-up proof (broker unlocked).
     let output = run(
         &rekey_bin(),
         &["--state-dir", state, "shutdown", "--password-stdin"],
-        Some(&format!("{PASSWORD}\n")),
+        Some(&format!("{FINAL_PASSWORD}\n")),
     );
     assert_eq!(output.status, 0, "{}", output.stderr);
+
+    let serve_output = guard.finish();
+    assert!(serve_output.status.success());
+    let canaries = [
+        PASSWORD,
+        NEW_PASSWORD,
+        FINAL_PASSWORD,
+        recovery_key.as_str(),
+        new_recovery.as_str(),
+    ];
+    for canary in canaries {
+        assert!(
+            !serve_output
+                .stdout
+                .windows(canary.len())
+                .any(|part| part == canary.as_bytes())
+        );
+        assert!(
+            !serve_output
+                .stderr
+                .windows(canary.len())
+                .any(|part| part == canary.as_bytes())
+        );
+    }
+    assert_files_exclude(&state_dir, &canaries);
 
     // IPC gone after shutdown: exit 7.
     std::thread::sleep(Duration::from_millis(300));
@@ -324,7 +545,7 @@ fn cli_end_to_end() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn restored rekeyd");
-    let _restored_guard = ServeGuard(child);
+    let _restored_guard = ServeGuard(Some(child));
     let restored_admin = restored.join("runtime").join("admin.sock");
     for _ in 0..300 {
         if restored_admin.exists() {
