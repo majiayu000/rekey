@@ -170,9 +170,11 @@ For a matching approval rule it returns `rekey.approval.challenge.v1` containing
 The challenge is safe for the Agent to see because the Agent supplied the
 request and already knows its resource and parameters. It contains no action
 credential, request header outside the policy allowlist, request body, or
-capability token. Preparing a challenge does not consume session use count, but
-it does require a currently valid non-revoked session and is covered by the
-normal connection, frame-size, and deadline limits.
+capability token. Preparing a challenge consumes one session use under the
+existing strict accounting rule, even though it performs no upstream effect.
+This bounds Agent-driven durable challenge and audit growth by the Admin-issued
+session grant. It also requires a currently valid non-revoked session and is
+covered by the normal concurrency, frame-size, and deadline limits.
 
 The maximum expiry is the earliest of policy expiry, session expiry, challenge
 creation plus ten minutes for one-time mode, or challenge creation plus the
@@ -333,7 +335,8 @@ P-03 is complete only when all of the following are fresh and passing:
 3. Approval tests cover exact tuple binding, one-time replay including a
    concurrent race and restart, reusable time windows, two distinct approvers,
    duplicate grants, policy/session/action/parameter changes, and all expiry
-   boundaries.
+   boundaries. Challenge tests also prove one session use per durable request
+   and no record or audit amplification after capability exhaustion.
 4. Fault injection proves approval consumption and `execution.started` are
    atomic, audit failure prevents the remote effect, and post-admission failure
    does not restore one-time approval.
