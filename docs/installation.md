@@ -19,6 +19,7 @@ gh attestation verify "rekey-${REKEY_VERSION}-${REKEY_TARGET}.tar.gz" \
   --repo majiayu000/rekey
 shasum -a 256 -c SHA256SUMS --ignore-missing
 tar -xzf "rekey-${REKEY_VERSION}-${REKEY_TARGET}.tar.gz"
+REKEY_RELEASE_DIR="$PWD/rekey-${REKEY_VERSION}-${REKEY_TARGET}"
 ```
 
 `gh attestation verify` verifies the GitHub/Sigstore build provenance. The
@@ -31,8 +32,8 @@ This path does not use `sudo`:
 
 ```bash
 mkdir -p "$HOME/.local/bin"
-install -m 0755 "rekey-${REKEY_VERSION}-${REKEY_TARGET}/rekey" "$HOME/.local/bin/rekey"
-install -m 0755 "rekey-${REKEY_VERSION}-${REKEY_TARGET}/rekeyd" "$HOME/.local/bin/rekeyd"
+install -m 0755 "$REKEY_RELEASE_DIR/rekey" "$HOME/.local/bin/rekey"
+install -m 0755 "$REKEY_RELEASE_DIR/rekeyd" "$HOME/.local/bin/rekeyd"
 export PATH="$HOME/.local/bin:$PATH"
 command -v rekey rekeyd
 rekey --version
@@ -60,7 +61,7 @@ before installing the service, then generate and load a user LaunchAgent:
 
 ```bash
 mkdir -p "$HOME/Library/LaunchAgents"
-python3 rekey-service-unit.py launchd \
+python3 "$REKEY_RELEASE_DIR/rekey-service-unit.py" launchd \
   --rekeyd "$HOME/.local/bin/rekeyd" \
   --state-dir "$HOME/.rekey" \
   --label io.github.majiayu000.rekey \
@@ -90,11 +91,11 @@ privileged step:
 
 ```bash
 sudo useradd --system --create-home --home-dir /var/lib/rekey --shell /usr/sbin/nologin rekey
-sudo install -m 0755 rekey /usr/local/bin/rekey
-sudo install -m 0755 rekeyd /usr/local/bin/rekeyd
+sudo install -m 0755 "$REKEY_RELEASE_DIR/rekey" /usr/local/bin/rekey
+sudo install -m 0755 "$REKEY_RELEASE_DIR/rekeyd" /usr/local/bin/rekeyd
 sudo install -d -m 0700 -o rekey -g rekey /var/lib/rekey/state
 sudo -u rekey /usr/local/bin/rekey --state-dir /var/lib/rekey/state init
-python3 rekey-service-unit.py systemd \
+python3 "$REKEY_RELEASE_DIR/rekey-service-unit.py" systemd \
   --rekeyd /usr/local/bin/rekeyd \
   --state-dir /var/lib/rekey/state \
   --run-as-user rekey > rekey.service

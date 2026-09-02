@@ -15,6 +15,13 @@ REKEY="$BIN_DIR/rekey"
 REKEYD="$BIN_DIR/rekeyd"
 FIXTURE="${REKEY_SERVICE_FIXTURE:-$ROOT/target/release/examples/p1_policy_fixture}"
 GENERATOR="${REKEY_SERVICE_GENERATOR:-$ROOT/scripts/rekey-service-unit.py}"
+MANAGED_DAEMON_SOURCE="${REKEY_SERVICE_MANAGED_DAEMON:-}"
+ARTIFACT_DAEMON_MODE=0
+if [[ -n "$MANAGED_DAEMON_SOURCE" ]]; then
+  ARTIFACT_DAEMON_MODE=1
+else
+  MANAGED_DAEMON_SOURCE="$FIXTURE"
+fi
 PASSWORD="p1 service manager horse battery staple"
 SECRET="P1-SERVICE-MANAGER-CANARY"
 PLATFORM="$(uname -s)"
@@ -89,11 +96,17 @@ if [[ ! -x "$REKEY" || ! -x "$REKEYD" ]]; then
   fi
   cargo build --release -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd
 fi
-cargo build --release -p rekey-broker --example p1_policy_fixture
+if [[ "$ARTIFACT_DAEMON_MODE" -eq 0 ]]; then
+  cargo build --release -p rekey-broker --example p1_policy_fixture
+fi
+[[ -x "$MANAGED_DAEMON_SOURCE" ]] || {
+  echo "managed daemon is not executable: $MANAGED_DAEMON_SOURCE" >&2
+  exit 1
+}
 
 WORKDIR="$(mktemp -d /tmp/rksvc.XXXXXX)"
 STATE="$WORKDIR/state"
-MANAGED_FIXTURE="$WORKDIR/p1_policy_fixture"
+MANAGED_DAEMON="$WORKDIR/managed-rekeyd"
 LABEL="com.openai.rekey.p1.$(id -u).$$"
 UNIT="rekey-p1-$(id -u)-$$.service"
 PLIST="$WORKDIR/$LABEL.plist"
@@ -147,24 +160,24 @@ trap cleanup EXIT
 
 # LaunchAgents may not execute a developer binary beneath a TCC-protected
 # Desktop checkout. Exercise the exact release artifact from its install path.
-install -m 0755 "$FIXTURE" "$MANAGED_FIXTURE"
+install -m 0755 "$MANAGED_DAEMON_SOURCE" "$MANAGED_DAEMON"
 
 # Generator contract: real non-root passwd entry, no UID-0 alias, escaped '$'.
 GOLDEN_STATE="$WORKDIR/systemd\$state"
 mkdir -p "$GOLDEN_STATE"
 for bad_user in root "rekey-no-such-user-$$"; do
-  if python3 "$GENERATOR" systemd --rekeyd "$MANAGED_FIXTURE" --state-dir "$GOLDEN_STATE" \
+  if python3 "$GENERATOR" systemd --rekeyd "$MANAGED_DAEMON" --state-dir "$GOLDEN_STATE" \
     --run-as-user "$bad_user" >/dev/null 2>&1; then
     echo "generator accepted forbidden user: $bad_user" >&2
     exit 1
   fi
 done
-if python3 "$GENERATOR" systemd --rekeyd "$MANAGED_FIXTURE" --state-dir "$GOLDEN_STATE" \
+if python3 "$GENERATOR" systemd --rekeyd "$MANAGED_DAEMON" --state-dir "$GOLDEN_STATE" \
   >/dev/null 2>&1; then
   echo "generator accepted missing --run-as-user" >&2
   exit 1
 fi
-python3 "$GENERATOR" systemd --rekeyd "$MANAGED_FIXTURE" --state-dir "$GOLDEN_STATE" \
+python3 "$GENERATOR" systemd --rekeyd "$MANAGED_DAEMON" --state-dir "$GOLDEN_STATE" \
   --run-as-user "$(id -un)" >"$WORKDIR/golden.service"
 grep -Fq 'TimeoutStopSec=130s' "$WORKDIR/golden.service"
 grep -Fq "systemd\$\$state" "$WORKDIR/golden.service"
@@ -273,11 +286,11 @@ PY
 
 printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin >/dev/null
 if [[ "$PLATFORM" == Darwin ]]; then
-  python3 "$GENERATOR" launchd --rekeyd "$MANAGED_FIXTURE" --state-dir "$STATE" --label "$LABEL" >"$PLIST"
+  python3 "$GENERATOR" launchd --rekeyd "$MANAGED_DAEMON" --state-dir "$STATE" --label "$LABEL" >"$PLIST"
   plutil -lint "$PLIST" >/dev/null
   if rg -n 'EnvironmentVariables|REKEY_PASSWORD|--password|--unlock' "$PLIST"; then exit 1; fi
 else
-  python3 "$GENERATOR" systemd --rekeyd "$MANAGED_FIXTURE" --state-dir "$STATE" \
+  python3 "$GENERATOR" systemd --rekeyd "$MANAGED_DAEMON" --state-dir "$STATE" \
     --run-as-user "$(id -un)" >"$UNIT_FILE"
   systemd-analyze verify "$UNIT_FILE"
   if rg -n 'Environment=|REKEY_PASSWORD|--password|--unlock' "$UNIT_FILE"; then exit 1; fi
@@ -288,6 +301,49 @@ fi
 
 start_manager
 [[ "$("$REKEY" --state-dir "$STATE" status | json_field state)" == locked ]]
+if [[ "$ARTIFACT_DAEMON_MODE" -eq 1 ]]; then
+  printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" unlock --password-stdin >/dev/null
+  stop_manager
+  grep -q '"event":"runtime.signal_received"' "$WORKDIR/round-1.log"
+  grep -q '"event":"runtime.stopped"' "$WORKDIR/round-1.log"
+
+  start_manager
+  [[ "$("$REKEY" --state-dir "$STATE" status | json_field state)" == locked ]]
+  CRASHED_PID="$MANAGER_PID"
+  kill -KILL "$CRASHED_PID"
+  wait_pid_bounded "$CRASHED_PID" 5
+  for _ in $(seq 1 400); do
+    if [[ -S "$STATE/runtime/admin.sock" ]] && "$REKEY" --state-dir "$STATE" status >/dev/null 2>&1; then
+      MANAGER_PID="$(manager_pid)"
+      if [[ "$MANAGER_PID" =~ ^[1-9][0-9]*$ && "$MANAGER_PID" != "$CRASHED_PID" ]] && pid_running "$MANAGER_PID"; then
+        break
+      fi
+    fi
+    sleep 0.05
+  done
+  [[ "$MANAGER_PID" =~ ^[1-9][0-9]*$ && "$MANAGER_PID" != "$CRASHED_PID" ]] && pid_running "$MANAGER_PID"
+  [[ "$("$REKEY" --state-dir "$STATE" status | json_field state)" == locked ]]
+  printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" unlock --password-stdin >/dev/null
+
+  ADMIN_PID="$MANAGER_PID"
+  printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" shutdown --password-stdin >"$WORKDIR/admin-shutdown.out"
+  grep -q '"shutdown": true' "$WORKDIR/admin-shutdown.out"
+  wait_pid_bounded "$ADMIN_PID" 15
+  if [[ "$PLATFORM" == Darwin ]]; then
+    run_bounded 10 launchctl bootout "gui/$(id -u)/$LABEL" >/dev/null 2>&1
+  else
+    run_root_bounded 10 systemctl stop "$UNIT" >/dev/null 2>&1
+  fi
+  CURRENT_PID="$(manager_pid 2>/dev/null || true)"
+  if [[ "$CURRENT_PID" =~ ^[1-9][0-9]*$ ]] && pid_running "$CURRENT_PID"; then
+    echo "native manager still owns a live process after final unload" >&2
+    exit 1
+  fi
+  MANAGER_ACTIVE=0
+  MANAGER_PID=""
+  echo "P1 release-daemon service-manager acceptance passed on $PLATFORM"
+  exit 0
+fi
 PORT="$(tr -d '\n' <"$STATE/fixture.port")"
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" unlock --password-stdin >/dev/null
 CRED_JSON="$(printf '%s\n%s\n' "$PASSWORD" "$SECRET" | "$REKEY" --state-dir "$STATE" credential add service --stdin-secrets)"

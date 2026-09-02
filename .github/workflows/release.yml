@@ -131,6 +131,7 @@ jobs:
           release_dir="$PWD/installed/rekey-${GITHUB_REF_NAME}-${{ matrix.target }}"
           BIN_DIR="$release_dir" \
           REKEY_SERVICE_GENERATOR="$release_dir/rekey-service-unit.py" \
+          REKEY_SERVICE_MANAGED_DAEMON="$release_dir/rekeyd" \
           REKEY_SERVICE_REQUIRE_BINARIES=1 \
             scripts/p1-service-manager.sh
 
@@ -208,4 +209,4 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Withdraw the failed prerelease without replacing its artifacts
-        run: gh release edit "$GITHUB_REF_NAME" --draft
+        run: gh release edit "$GITHUB_REF_NAME" --draft --repo "$GITHUB_REPOSITORY"
