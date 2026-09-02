@@ -4,12 +4,18 @@
 //! IPC-only CLI can share one implementation. Secret bytes travel only in the
 //! raw frame body, never inside JSON metadata.
 
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 
 use crate::action::{FixedHttpAction, HttpsOrigin};
+use crate::authorization::{ApprovalMode, PolicyVersion, ResourceRef, SchemaId};
 use crate::capability::ActionVersionRef;
 use crate::credential::{CredentialLabel, CredentialMetadata};
-use crate::ids::{ActionId, CredentialId, RequestId, SessionId};
+use crate::ids::{
+    ActionId, ApprovalRequestId, ApproverId, CredentialId, PolicyRuleId, PolicySignerId, RequestId,
+    SessionId,
+};
 
 pub const FRAME_MAGIC: [u8; 4] = *b"RKIP";
 pub const FRAME_VERSION: u16 = 1;
@@ -67,12 +73,14 @@ pub mod admin_msg {
     pub const PASSWORD_CHANGE: u16 = 19;
     pub const RECOVERY_ROTATE: u16 = 20;
     pub const AUDIT_QUERY: u16 = 21;
+    pub const POLICY_TRUST_INSTALL: u16 = 22;
 }
 
 /// Agent channel message types.
 pub mod agent_msg {
     pub const EXECUTE_FIXED_HTTP_ACTION: u16 = 1;
     pub const AGENT_STATUS: u16 = 2;
+    pub const PREPARE_APPROVAL: u16 = 3;
 }
 
 /// Response message types shared by both channels.
@@ -346,10 +354,53 @@ pub struct SessionCreatedResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PolicyStatusResponse {
-    pub active: bool,
+    pub trust_installed: bool,
+    pub bundle_persisted: bool,
+    pub status: String,
+    pub signer_id: Option<PolicySignerId>,
     pub version: Option<u64>,
     pub expires_at_ms: Option<i64>,
-    pub sha256_hex: Option<String>,
+    pub policy_sha256: Option<String>,
+    pub bundle_sha256: Option<String>,
+}
+
+impl PolicyStatusResponse {
+    pub fn validate(&self) -> Result<(), crate::DomainError> {
+        if self.bundle_persisted && !self.trust_installed {
+            return Err(invalid_response());
+        }
+        let details_present = self.signer_id.is_some()
+            && self.version.is_some()
+            && self.expires_at_ms.is_some()
+            && self.policy_sha256.is_some()
+            && self.bundle_sha256.is_some();
+        match self.status.as_str() {
+            "unavailable"
+                if self.signer_id.is_none()
+                    && self.version.is_none()
+                    && self.expires_at_ms.is_none()
+                    && self.policy_sha256.is_none()
+                    && self.bundle_sha256.is_none() => {}
+            "active" | "expired"
+                if self.trust_installed
+                    && self.bundle_persisted
+                    && details_present
+                    && self
+                        .version
+                        .is_some_and(|value| PolicyVersion::new(value).is_ok())
+                    && self.expires_at_ms.is_some_and(|value| value >= 0)
+                    && self
+                        .policy_sha256
+                        .as_deref()
+                        .is_some_and(|value| is_lower_hex(value, 64))
+                    && self
+                        .bundle_sha256
+                        .as_deref()
+                        .is_some_and(|value| is_lower_hex(value, 64)) => {}
+            _ => return Err(invalid_response()),
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -384,6 +435,83 @@ pub struct ExecuteMeta {
     pub content_type: Option<String>,
     /// Plain headers, only those on the action's request-policy allowlist.
     pub extra_headers: Vec<(String, String)>,
+    #[serde(default)]
+    pub approval_grants: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrepareApprovalMeta {
+    pub capability_token: String,
+    pub action_id: ActionId,
+    pub action_version: u64,
+    pub content_type: Option<String>,
+    pub extra_headers: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalChallenge {
+    pub record_type: String,
+    pub approval_request_id: ApprovalRequestId,
+    pub tenant_id: crate::ids::TenantId,
+    pub principal_id: crate::ids::PrincipalId,
+    pub session_id: SessionId,
+    pub action_id: ActionId,
+    pub action_version: u64,
+    pub resource: ResourceRef,
+    pub schema_id: SchemaId,
+    pub parameter_sha256: String,
+    pub policy_version: u64,
+    pub policy_sha256: String,
+    pub policy_rule_id: PolicyRuleId,
+    pub mode: ApprovalMode,
+    pub quorum: u8,
+    pub approver_ids: Vec<ApproverId>,
+    pub max_uses: u32,
+    pub created_at_ms: i64,
+    pub max_expires_at_ms: i64,
+}
+
+impl ApprovalChallenge {
+    pub fn validate(&self) -> Result<(), crate::DomainError> {
+        let approvers: BTreeSet<_> = self.approver_ids.iter().copied().collect();
+        let valid_common = self.record_type == "rekey.approval.challenge.v1"
+            && self.action_version > 0
+            && PolicyVersion::new(self.policy_version).is_ok()
+            && is_lower_hex(&self.parameter_sha256, 64)
+            && is_lower_hex(&self.policy_sha256, 64)
+            && !self.approver_ids.is_empty()
+            && self.approver_ids.len() <= 32
+            && approvers.len() == self.approver_ids.len()
+            && self.approver_ids.windows(2).all(|pair| pair[0] < pair[1])
+            && (1..=2).contains(&self.quorum)
+            && usize::from(self.quorum) <= approvers.len()
+            && self.created_at_ms >= 0
+            && self.max_expires_at_ms > self.created_at_ms;
+        let window_ms = self.max_expires_at_ms.saturating_sub(self.created_at_ms);
+        let valid_mode = match self.mode {
+            ApprovalMode::OneTime => self.max_uses == 1 && window_ms <= 10 * 60 * 1_000,
+            ApprovalMode::TimeWindow => {
+                (1..=10_000).contains(&self.max_uses) && window_ms <= 8 * 60 * 60 * 1_000
+            }
+        };
+        if !valid_common || !valid_mode {
+            return Err(invalid_response());
+        }
+        Ok(())
+    }
+}
+
+fn is_lower_hex(value: &str, expected_len: usize) -> bool {
+    value.len() == expected_len
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn invalid_response() -> crate::DomainError {
+    crate::DomainError::InvalidAuthorization("invalid broker response".to_owned())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

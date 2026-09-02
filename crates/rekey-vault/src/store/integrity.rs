@@ -15,13 +15,14 @@ impl SqliteRecordStore {
                 "SELECT count(*) FROM sqlite_schema
                  WHERE type = 'table' AND name IN (
                     'vault_header', 'key_wrappers', 'credentials',
-                    'credential_versions', 'actions', 'audit_events'
+                    'credential_versions', 'actions', 'policy_state',
+                    'policy_trust', 'policy_bundle', 'audit_events'
                  )",
                 [],
                 |row| row.get(0),
             )
             .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
-        if table_count != 6 {
+        if table_count != 9 {
             return Err(AuthorityError::UnsupportedVaultLayout);
         }
         Ok(())

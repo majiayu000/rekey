@@ -45,6 +45,9 @@ rekey-broker = { workspace = true }
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
+aws-lc-rs = "1.18"
+data-encoding = "2"
+serde_jcs = "0.2"
 
 [dev-dependencies]
 zeroize = "1"

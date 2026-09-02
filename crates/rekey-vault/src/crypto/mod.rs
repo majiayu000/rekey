@@ -3,6 +3,7 @@ pub mod aead;
 pub mod credential_state;
 pub mod kdf;
 pub mod keys;
+pub mod policy_state;
 pub mod recovery;
 
 /// CryptoSuite v1 identifier persisted with every encrypted record.

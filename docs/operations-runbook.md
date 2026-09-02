@@ -38,6 +38,10 @@ security incident; preserve the directory for inspection.
 - `AUDIT_COMMIT_FAILED` or `FAULTED`: the worker fails closed. Do not continue
   mutations or execution. Resolve disk/filesystem failure, restart locked, and
   verify audit reconciliation before service restoration.
+- `POLICY_INVALID`, `POLICY_VERSION_CONFLICT`, or `POLICY_VERSION_EXHAUSTED`:
+  retain the rejected artifact, current status, and signer identity. Do not edit
+  SQLite or retry with an unsigned snapshot. Reissue the intended contents as
+  the next consecutive signed version; the terminal version is reserved.
 - `AUDIT_COMMIT_FAILED_AFTER_EXECUTION` or another indeterminate result: a
   remote effect may already exist. Check the upstream system and request ID
   before retrying.
@@ -85,7 +89,30 @@ the wrong user. Fix the exact cause; do not relax the client checks.
 
 Expected boot state is locked. `SIGTERM` drains accepted work before exit;
 Admin shutdown requires step-up while unlocked. A crash restart also starts
-locked and reconciles unterminated `execution.started` audit rows.
+locked and reconciles unterminated `execution.started` audit rows. A persisted
+policy reports `unavailable` until the first successful unlock reverifies and
+loads its signed bundle. `expired` is terminal for that loaded bundle; clock
+rollback does not revive it.
+
+## Policy and approval operations
+
+Keep policy-signing and approver private keys outside Rekey state, processes,
+and backups. Rekey stores only the immutable policy trust public key,
+VRK-authenticated signed bundles, and redacted approval audit identifiers. It never signs policy
+or approval artifacts.
+
+Install the trust root once with `rekey policy trust install --file TRUST.json
+--step-up-stdin`. Exact retries are idempotent; a different signer or key is a
+replacement attempt and is refused. Activate only a verified next-version
+bundle with `rekey policy activate --file BUNDLE.json --step-up-stdin`, then
+confirm signer, version, expiry, digest, and `active` status.
+
+For an approval incident, preserve the challenge, grant, policy status, and
+redacted `approval.requested`, `approval.accepted`, or `approval.rejected`
+events. Do not retry an uncertain upstream write merely by issuing a new grant.
+Locking or restarting intentionally revokes every capability, challenge, and
+in-memory approval use record; create a new session and challenge afterward.
+There is no remote approval availability fallback or offline bypass.
 
 ## DNS, network, and Clash/TUN Fake-IP
 
@@ -96,10 +123,12 @@ does not follow redirects or honor HTTP proxy environment variables.
 
 ## Upgrade, rollback, and rejected state
 
-Follow [installation.md](installation.md). v1 state and any non-v5/unknown
+Follow [installation.md](installation.md). v1 state and any non-v6/unknown
 layout are intentionally rejected and never migrated or overwritten. Preserve
-the old directory and initialize v2 separately. Rollback requires the prior
-binaries plus their matching pre-upgrade backup restored into an empty path.
+the old directory and initialize v2 separately. Existing v5 vaults require the
+earlier binary; P-03 provides no in-place reader or migration. Rollback requires
+the prior binaries plus their matching pre-upgrade backup restored into an empty
+path.
 
 ## Lost keys
 
@@ -112,6 +141,13 @@ binaries plus their matching pre-upgrade backup restored into an empty path.
   Only the latest successfully displayed key is active.
 - Both lost: encrypted credentials and backups are permanently inaccessible.
   Rekey has no backdoor, escrow, reset, or export operation.
+- Policy-signing private key lost: the current signed policy can continue until
+  expiry, but no next version can be issued. The immutable trust root cannot be
+  replaced; initialize a new vault and recreate state through supported Admin
+  operations.
+- Approver private key lost: remove that approver in the next signed policy
+  version using the policy signer. Rekey cannot recover, rotate, or impersonate
+  an external approver.
 
 Factor changes are not retroactive. A backup made before replacement still
 requires its historical password or recovery key; a later backup uses the

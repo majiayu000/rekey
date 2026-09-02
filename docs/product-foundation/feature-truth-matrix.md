@@ -39,11 +39,15 @@ Security grade for every P0 row: **G1 public Alpha**. The separate Linux
 container recipe has bounded G2 evidence; that does not upgrade the default P0
 topology or establish a general G2 release.
 
+Development-head evidence after that release additionally covers P-01, P-02,
+and P-03. A row with `Release` set to `—` is not part of the public Alpha even
+when its local state is `Adversarially Verified`.
+
 ## P0 local authority
 
 | Feature | User story / entry | State | Release | Implementation | Black-box / contract | Failure paths | Limits | Public docs |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Init empty v5 vault | `rekey init` / `rekeyd init` | Black-box Verified | `v2.0.0-alpha.1` | `crates/rekey-vault/src/bootstrap.rs`, `crates/rekey-broker/src/bin/rekeyd.rs` | `cargo test -p rekey-vault --test bootstrap_contract`; `cargo test -p rekey-cli --test cli_blackbox` | empty password, nonempty dir, legacy/non-v5 state, unknown/NULL crypto discriminator, confirm mismatch discards | Recovery key shown once; no installer or migration | README Quick start |
+| Init empty v6 vault | `rekey init` / `rekeyd init` | Black-box Verified | `v2.0.0-alpha.1` (v5 artifact) | `crates/rekey-vault/src/bootstrap.rs`, `crates/rekey-broker/src/bin/rekeyd.rs` | `cargo test -p rekey-vault --test bootstrap_contract`; `cargo test -p rekey-cli --test cli_blackbox` | empty password, nonempty dir, legacy/non-v6 state, unknown/NULL crypto discriminator, confirm mismatch discards | Development head is breaking v6 with no v5 reader/migration; Alpha artifact remains v5 | README Quick start |
 | Password / recovery proof | `rekey unlock`; Admin mutation `--recovery` | Black-box Verified | `v2.0.0-alpha.1` | `crates/rekey-vault/src/authority.rs`, `crates/rekey-broker/src/ipc/admin.rs`, CLI commands | `cli_blackbox`; `lifecycle_contract` | wrong password exit 3, backoff, recovery mutation proof | G1; recovery unlock/step-up/restore only, no password change/reset or wrapper replacement; no rate-limit across process restarts | README |
 | lock / idle lock / shutdown | `rekey lock`, idle timer, `rekey shutdown` | Adversarially Verified | `v2.0.0-alpha.1` | `crates/rekey-broker/src/lifecycle.rs`, `runtime.rs`, `execution_supervisor.rs` | `scripts/p0-acceptance.sh`; `scripts/p1-service-manager.sh`; `lifecycle_drain` (10); required macOS launchd and Ubuntu systemd CI gates | partial frame, disconnected in-flight work, execution panic, terminal-audit fault, Busy→lock→unlock Running epoch | Default topology remains G1; native-manager evidence is bounded to tested macOS/Ubuntu environments | spec §11.2 / P1.2 |
 | Credential add/list | `rekey credential add/list` | Black-box Verified | `v2.0.0-alpha.1` | `crates/rekey-vault/src/authority.rs`, CLI commands | `cli_blackbox`; `scripts/p0-acceptance.sh` | duplicate label | Values only via TTY/stdin, never argv/env | README |
@@ -67,11 +71,11 @@ topology or establish a general G2 release.
 | Feature | State | Release | Notes |
 | --- | --- | --- | --- |
 | Linux container/namespace G2 reference | Adversarially Verified | — | `scripts/p1-linux-g2.sh` proved bounded UID/PID/ptrace/state/Admin/Docker-socket/direct-egress boundary plus approved production TLS execution on one LinuxKit arm64 environment; excludes kernel, daemon, runtime, VM host, native Linux and availability isolation |
-| P1.1 typed authorization kernel | Black-box Verified | `v2.0.0-alpha.1` | Default-deny in-memory snapshot, exact principal/action/resource/parameter rules, durable decision evidence; release `rekey` + real BrokerRuntime UDS/SQLite/local CA-TLS fixture |
+| P1.1 typed authorization kernel | Black-box Verified | `v2.0.0-alpha.1` | Default-deny exact principal/action/resource/parameter rules and durable decision evidence; the release used an in-memory v1 snapshot, while development head accepts only signed persisted v2 bundles |
 | Runtime-owned execution and central stop | Adversarially Verified | `v2.0.0-alpha.1` | Agent disconnect cannot own/cancel admitted effects; supervisor panic fail-stops; stop closes remote-effect admission before Authority waits; one absolute deadline; sticky cancellation is scoped to one Running epoch |
 | Password and recovery wrapper lifecycle | Adversarially Verified | — | `rekey password change` and `rekey recovery rotate`; Authority, Admin IPC, and real CLI tests cover password/recovery step-up, old-factor rejection, response-loss retry, wrapper/audit rollback, backup generations, SIGKILL/reopen atomicity, and argv/env/log/file canaries; no VRK/DEK rotation, historical-backup invalidation, escrow, or release inclusion |
 | Local audit query and JSONL export | Adversarially Verified | — | Owner-checked Admin-only stable sequence snapshots, exact filters, 1,000-row bounded scans with continuation cursors, bounded result pages, locked reads, strict forged-response parsing, create-new mode-0600 export, pathname-inode verification, partial/final-sync failures, response-size rejection and secret/resource canaries; no Agent API, deletion, configurable retention, SIEM, WORM, legal hold, remote delivery, or release inclusion |
-| Approvals / signed or persistent policy | Specified | — | Not implemented |
+| Approvals / signed persistent policy | Adversarially Verified | — | Immutable Ed25519 public trust root; sealed durable consecutive bundles; unlock-time reload; one-time/time-window and distinct two-person grants; exact tuple/policy/rule/expiry/use binding; atomic accepted+started audit; `approval_contract`, `policy_lifecycle`, `approval_policy`, and real `scripts/p3-approval-acceptance.sh` cover replay, concurrent exhaustion, parameter/policy/session change, lock/restart, tamper, deletion, expiry, audit rollback, CLI file bounds and list/export evidence. Verifier-only: no private-key custody, remote approval, control plane, enterprise identity, maturity upgrade, or inclusion in `v2.0.0-alpha.1`. |
 | Connector SDK / MCP / OAuth | Specified | — | P1+ |
 | Control plane / multi-tenant / SSO / HA / SIEM | Specified | — | Enterprise |
 | Windows | Specified unsupported | — | P0 macOS+Linux only |

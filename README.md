@@ -68,8 +68,11 @@ rekey unlock                     # hidden password prompt
 rekey credential add github-token
 rekey action create --file action.json
 rekey session create --action <ACTION_ID>@1 --ttl 1h --max-uses 100
-# put the returned principal_id and Action version in a typed snapshot:
-rekey policy activate --file policy.json
+# have an external Ed25519 signer create trust.json and a signed bundle.json:
+printf '%s\n' "$STEP_UP_PROOF" | \
+  rekey policy trust install --file trust.json --step-up-stdin
+printf '%s\n' "$STEP_UP_PROOF" | \
+  rekey policy activate --file bundle.json --step-up-stdin
 # hand the printed capability token to the agent, then:
 rekey execute <ACTION_ID>@1 --capability - --body-file req.json
 ```
@@ -102,9 +105,32 @@ For explicit automation, proof-only commands use `--password-stdin`;
 on line 2. Add `--recovery` when that proof is the recovery key. Secrets are
 never accepted as argument values or environment variables.
 
-Policy snapshots are JSON-only, default-deny, in-memory, and exact-principal;
-lock or restart clears the active snapshot. The normative snapshot schema is
-in the P1.1 section of the implementation spec linked below.
+Policy trust installation and signed-bundle activation use the P03-specific
+`--step-up-stdin` flag. The one Ed25519 trust root is immutable per vault;
+signed bundles have VRK-authenticated lifecycle seals, activate only at
+consecutive versions, and are reverified after each unlock. Rekey verifies externally produced
+signatures but never creates or stores policy-signing or approver private keys.
+Lock and restart revoke capability sessions, challenges, and approval-use state,
+while the persisted policy reloads only after a successful unlock.
+
+For a `require-approval` rule, prepare the exact typed request, send the emitted
+challenge to an external approver, and execute with one or two returned grants:
+
+```bash
+printf '%s\n' "$CAPABILITY_FROM_SECURE_STORAGE" | \
+  rekey approval prepare <ACTION_ID>@1 --capability - \
+    --body-file req.json --content-type application/json >challenge.json
+
+printf '%s\n' "$CAPABILITY_FROM_SECURE_STORAGE" | \
+  rekey execute <ACTION_ID>@1 --capability - \
+    --body-file req.json --content-type application/json \
+    --approval grant.json
+```
+
+The grant is bound to the challenge, session, principal, exact Action/resource,
+canonical parameters, determining rule, policy version/digest, validity window,
+and use limit. Rekey provides no remote approval service, notification UI,
+human directory, private-key custody, or approval survival across lock/restart.
 
 `action.json`:
 
@@ -158,6 +184,9 @@ P0 acceptance (release binaries, no FakeTransport): `scripts/p0-acceptance.sh`
 
 Typed-policy release-process acceptance (UDS, SQLite, local TLS):
 `scripts/p1-policy-acceptance.sh`
+
+Signed persistent-policy and approval acceptance:
+`scripts/p3-approval-acceptance.sh`
 
 The Linux G2 harness proves only the documented container/namespace reference
 topology; it does not upgrade the default G1 product claim:

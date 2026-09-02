@@ -11,8 +11,8 @@ use tokio::sync::{mpsc, oneshot};
 use zeroize::Zeroizing;
 
 use crate::command::{
-    ActionDefinition, AuditDraft, AuthorityCommand, BackupInfo, PinnedAction, StatusInfo,
-    UnlockProof,
+    ActionDefinition, AuditDraft, AuthorityCommand, BackupInfo, PinnedAction, PolicyBundleInput,
+    PolicyMaterial, PolicyTrustInput, StatusInfo, UnlockProof,
 };
 use crate::error::AuthorityError;
 use crate::secret::{PreparedCredential, SecretInput};
@@ -317,10 +317,60 @@ impl AuthorityHandle {
         call!(self, |reply| AuthorityCommand::AuditQuery { query, reply })
     }
 
+    pub async fn policy_material(&self) -> Result<PolicyMaterial, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::PolicyMaterial { reply })
+    }
+
+    pub async fn policy_trust_install_before(
+        &self,
+        input: PolicyTrustInput,
+        proof: UnlockProof,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<PolicyMaterial, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::PolicyTrustInstall {
+            input,
+            proof,
+            not_after,
+            reply
+        })
+    }
+
+    pub async fn policy_bundle_activate_before(
+        &self,
+        input: PolicyBundleInput,
+        proof: UnlockProof,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<PolicyMaterial, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::PolicyBundleActivate {
+            input,
+            proof,
+            not_after,
+            reply
+        })
+    }
+
+    pub async fn fault_integrity(&self) -> Result<(), AuthorityError> {
+        call!(self, |reply| AuthorityCommand::FaultIntegrity { reply })
+    }
+
     /// Wait for queue capacity, then commit. Used for terminal audits after
     /// `execution.started` so a full command queue cannot drop the pair.
     pub async fn commit_audit(&self, draft: AuditDraft) -> Result<(), AuthorityError> {
         self.commit_audit_before(draft, None).await
+    }
+
+    /// Commits related audit events atomically in their supplied order.
+    pub async fn commit_audits(&self, drafts: Vec<AuditDraft>) -> Result<(), AuthorityError> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(AuthorityCommand::AppendAudits {
+                drafts,
+                not_after: None,
+                reply: tx,
+            })
+            .await
+            .map_err(|_| AuthorityError::Faulted)?;
+        rx.await.map_err(|_| AuthorityError::Faulted)?
     }
 
     pub async fn commit_audit_before(

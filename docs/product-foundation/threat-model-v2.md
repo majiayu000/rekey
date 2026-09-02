@@ -217,34 +217,42 @@ Agent 数据面和公开 Runtime 接口永久禁止：
 
 ## 9. Capability 与批准模型
 
-Agent 获得的 Capability 不是真实上游凭据。
-
-首版建议使用：
+Agent 获得的 Capability 不是真实上游凭据。当前实现使用：
 
 - 不透明随机 Token。
 - 服务器端会话记录。
 - 短 TTL。
-- 明确 tenant、human、agent、workload、task 和 audience。
+- 明确 tenant、principal、session 和固定 Action version。
 - 可立即撤销。
-- 绑定数据面实例或 mTLS 通道。
+- 只在本进程的 Agent UDS 数据面有效，锁定和重启即失效。
 - 不作为 Vault API Token。
 
-批准必须绑定：
+P-03 的 policy bundle 由外部 Ed25519 policy signer 生成。每个 vault 只安装
+一个不可替换的 public trust root；Authority 以 VRK-authenticated lifecycle seal
+持久化 trust、bundle 和最高版本，Broker 每次解锁重新验证签名后才加载。Rekey
+不生成或保存 policy/approver 私钥，也不远程获取 policy。
+
+P-03 批准签名绑定：
 
 ~~~text
 tenant
 principal tuple
-connector
-operation
+session and approval request
+fixed Action ID and version
 resource
+parameter schema
 canonical parameter hash
-policy version
-expiry
+determining rule and policy version/digest
+not-before and expiry
 max uses
 approver
 ~~~
 
-参数变化、策略变化、身份变化或超时后必须重新授权。批准不能只绑定自然语言说明。
+一次性、时间窗口和一至两人 quorum 都在 SessionRegistry 内计数。参数、策略、
+Action、身份、session 或时间边界变化后必须重新授权；grant 不会在 lock、session
+撤销或重启后恢复。`approval.accepted` 与 `execution.started` 在同一 Authority
+transaction 中提交，失败时不发生远程 effect。没有远程 approval service、通知、
+dashboard、目录或离线 bypass。
 
 ## 10. 响应方向保护
 
@@ -373,6 +381,7 @@ Action 和最小响应 schema 比通用透明代理更强。任何新增 canonic
 | P0 | 日志 | cargo test --test secret_canary | 所有日志、错误和审计中不存在 canary |
 | P0 | 故障注入 | cargo test -p rekey-vault --test fault_injection | storage/audit/crypto 故障按合同 fail closed |
 | P1 | 策略引擎 | cargo test -p rekey-policy | default-deny、forbid、schema、参数哈希和错误矩阵全通过 |
+| P-03 | 签名策略与审批 | `scripts/p3-approval-acceptance.sh` | trust 安装、连续版本、重启 reload、单人/双人 grant、重放/篡改/过期拒绝和 audit list/export 全通过 |
 | P1 | Linux 隔离 | cargo test -p rekey-e2e --test linux_g2 | Agent root 仍不能读 Broker/Vault 或直连 |
 | P1 | 流式响应 | cargo test -p rekey-broker --test streaming_sealing | 跨 chunk 反射可检测并中止 |
 | P1+ | macOS 隔离 | cargo test -p rekey-e2e --test macos_sandbox | Agent 子进程无秘密、无全局 CA、无旁路 |
@@ -403,6 +412,9 @@ Action 和最小响应 schema 比通用透明代理更强。任何新增 canonic
 - Linux container/namespace recipe 是首个有界 G2 reference；默认部署仍为 G1。
 - macOS 当前只承诺 G1，不提供通用强隔离保证。
 - Capability 是双 UDS 上的内存短期 bearer token，不持久化、不复制，重启即失效。
+- P-03 policy trust 和 signed bundle 持久化并在 unlock 后重新验证；approval
+  challenge、grant 使用计数和 capability session 仍只存在内存，lock/restart 清空。
+  Rekey 只是签名验证与 enforcement point，不提供私钥托管或远程审批控制面。
 - Audit 使用本地 SQLite/WAL fail-closed；P-02 只通过 owner-checked Admin socket
   提供每次最多扫描 1,000 行、游标续查的稳定快照脱敏查询和 mode-0600 JSONL 导出，
   Agent socket 无此接口。
@@ -423,4 +435,4 @@ Action 和最小响应 schema 比通用透明代理更强。任何新增 canonic
 
 ## 17. Readiness
 
-本威胁模型已经锁定内置 Credential Authority 的密钥层级、状态所有权和禁止接口。当前 P0/P1/P2.1 local gates 的实际状态以 Feature Truth Matrix 为准；required systemd gate 和一次真实 `github.com` GitHub App provider 验证已经完成。默认同用户拓扑仍只有 G1，有界 Linux container/namespace recipe 的 G2 证据不能外推为通用产品保证；单一 GitHub provider/host 证据也不能外推为通用 Connector 保证。在独立 crypto、IPC 边界和 audit/failure-semantics 人工审查完成前，不能对外声称恶意 Agent 在所有部署中永远无法获得或重定向密钥。
+本威胁模型已经锁定内置 Credential Authority 的密钥层级、状态所有权和禁止接口。当前 P0/P1/P2.1/P-03 local gates 的实际状态以 Feature Truth Matrix 为准；required systemd gate 和一次真实 `github.com` GitHub App provider 验证已经完成。P-03 的开发分支证据不代表进入已发布 `v2.0.0-alpha.1`。默认同用户拓扑仍只有 G1，有界 Linux container/namespace recipe 的 G2 证据不能外推为通用产品保证；签名 policy/approval 也不建立远程控制面、企业身份或通用 Connector。在独立 crypto、IPC 边界和 audit/failure-semantics 人工审查完成前，不能对外声称恶意 Agent 在所有部署中永远无法获得或重定向密钥。

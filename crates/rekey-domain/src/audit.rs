@@ -1,9 +1,12 @@
 use serde::{Deserialize, Serialize};
 
 use crate::DomainError;
-use crate::ids::{ActionId, CredentialId, PolicyRuleId, PrincipalId, RequestId, SessionId};
+use crate::ids::{
+    ActionId, ApprovalId, ApprovalRequestId, ApproverId, CredentialId, PolicyRuleId, PrincipalId,
+    RequestId, SessionId,
+};
 
-pub const AUDIT_SCHEMA_V1: &str = "rekey.audit.v1";
+pub const AUDIT_SCHEMA_V2: &str = "rekey.audit.v2";
 pub const AUDIT_PAGE_DEFAULT_LIMIT: u32 = 50;
 pub const AUDIT_PAGE_MAX_LIMIT: u32 = 100;
 pub const AUDIT_SCAN_MAX_ROWS: u32 = 1_000;
@@ -108,6 +111,9 @@ pub struct AuditRecord {
     pub policy_version: Option<u64>,
     pub policy_digest_hex: Option<String>,
     pub policy_rule_id: Option<PolicyRuleId>,
+    pub approval_request_id: Option<ApprovalRequestId>,
+    pub approval_id: Option<ApprovalId>,
+    pub approver_id: Option<ApproverId>,
     pub event_type: String,
     pub outcome: String,
     pub reason_code: String,
@@ -128,7 +134,7 @@ pub struct AuditPage {
 impl AuditPage {
     pub fn validate_for(&self, query: &AuditQuery) -> Result<(), DomainError> {
         query.validate()?;
-        if self.schema != AUDIT_SCHEMA_V1 || self.snapshot_max_sequence == 0 {
+        if self.schema != AUDIT_SCHEMA_V2 || self.snapshot_max_sequence == 0 {
             return Err(invalid("invalid audit page schema or snapshot"));
         }
         if query
@@ -143,7 +149,7 @@ impl AuditPage {
 
         let mut previous = None;
         for event in &self.events {
-            if event.record_type != AUDIT_SCHEMA_V1
+            if event.record_type != AUDIT_SCHEMA_V2
                 || event.sequence == 0
                 || event.sequence > self.snapshot_max_sequence
                 || !is_lower_hex(&event.event_id, 32)
@@ -157,6 +163,9 @@ impl AuditPage {
                 || event.policy_version.is_some() != event.principal_id.is_some()
                 || event.policy_digest_hex.is_some() != event.principal_id.is_some()
                 || (event.policy_rule_id.is_some() && event.principal_id.is_none())
+                || (event.approval_id.is_some() && event.approval_request_id.is_none())
+                || (event.approver_id.is_some() && event.approval_request_id.is_none())
+                || !approval_fields_match_event(event)
                 || event.event_type.is_empty()
                 || event.outcome.is_empty()
                 || event.reason_code.is_empty()
@@ -184,6 +193,27 @@ impl AuditPage {
             Some(_) => return Err(invalid("invalid audit page cursor")),
         }
         Ok(())
+    }
+}
+
+fn approval_fields_match_event(event: &AuditRecord) -> bool {
+    match event.event_type.as_str() {
+        "approval.requested" => {
+            event.approval_request_id.is_some()
+                && event.approval_id.is_none()
+                && event.approver_id.is_none()
+        }
+        "approval.accepted" => {
+            event.approval_request_id.is_some()
+                && event.approval_id.is_some()
+                && event.approver_id.is_some()
+        }
+        "approval.rejected" => true,
+        _ => {
+            event.approval_request_id.is_none()
+                && event.approval_id.is_none()
+                && event.approver_id.is_none()
+        }
     }
 }
 
@@ -219,7 +249,7 @@ mod tests {
 
     fn record(sequence: u64) -> AuditRecord {
         AuditRecord {
-            record_type: AUDIT_SCHEMA_V1.to_owned(),
+            record_type: AUDIT_SCHEMA_V2.to_owned(),
             sequence,
             event_id: format!("{sequence:032x}"),
             request_id: None,
@@ -232,6 +262,9 @@ mod tests {
             policy_version: None,
             policy_digest_hex: None,
             policy_rule_id: None,
+            approval_request_id: None,
+            approval_id: None,
+            approver_id: None,
             event_type: "test.event".to_owned(),
             outcome: "success".to_owned(),
             reason_code: "test".to_owned(),
@@ -263,7 +296,7 @@ mod tests {
     fn page_rejects_order_cursor_and_filter_violations() {
         let value = query();
         let valid = AuditPage {
-            schema: AUDIT_SCHEMA_V1.to_owned(),
+            schema: AUDIT_SCHEMA_V2.to_owned(),
             snapshot_max_sequence: 3,
             events: vec![record(3), record(2)],
             next_before_sequence: Some(2),
@@ -278,7 +311,7 @@ mod tests {
         filtered.outcome = Some("denied".to_owned());
         assert!(valid.validate_for(&filtered).is_err());
         let empty_scan_window = AuditPage {
-            schema: AUDIT_SCHEMA_V1.to_owned(),
+            schema: AUDIT_SCHEMA_V2.to_owned(),
             snapshot_max_sequence: 3,
             events: Vec::new(),
             next_before_sequence: Some(2),

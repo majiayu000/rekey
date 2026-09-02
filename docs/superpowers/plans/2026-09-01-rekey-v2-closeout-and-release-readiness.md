@@ -1055,7 +1055,8 @@ PR #23 已于 2026-09-03 squash merge 为
 - [x] P0 不支持 Windows。
 - [x] 默认 G1 不宣称 hostile-agent G2。
 - [x] Foundation 不强制依赖外部 Vault/KMS/HSM。
-- [x] Capability session 和当前 policy snapshot 重启失效是现有设计，不是数据迁移缺陷。
+- [x] Capability session、approval challenge 和 grant 使用计数重启失效是现有设计；
+  P-03 signed policy bundle 则持久化并只在成功 unlock 后重新验证加载。
 
 任何重新打开上述项目的提案必须：
 

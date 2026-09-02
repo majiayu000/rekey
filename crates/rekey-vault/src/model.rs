@@ -1,9 +1,10 @@
 use rekey_domain::credential::{CredentialKind, CredentialState, VersionState};
 use rekey_domain::ids::{
-    ActionId, CredentialId, PolicyRuleId, PrincipalId, RequestId, SessionId, VaultId, WrapperId,
+    ActionId, ApprovalId, ApprovalRequestId, ApproverId, CredentialId, PolicyRuleId,
+    PolicySignerId, PrincipalId, RequestId, SessionId, VaultId, WrapperId,
 };
 
-pub const FORMAT_VERSION: u32 = 5;
+pub const FORMAT_VERSION: u32 = 6;
 pub const VAULT_INTEGRITY_CIPHERTEXT_LEN: usize = 40;
 
 #[derive(Debug, Clone)]
@@ -155,6 +156,41 @@ pub struct ActionRecord {
     pub created_at_ms: i64,
 }
 
+#[derive(Debug, Clone)]
+pub struct PolicyStateRecord {
+    pub trust_installed: bool,
+    pub bundle_activated: bool,
+    pub signer_id: Option<PolicySignerId>,
+    pub highest_version: Option<u64>,
+    pub policy_digest: Option<[u8; 32]>,
+    pub bundle_digest: Option<[u8; 32]>,
+    pub updated_at_ms: i64,
+    pub seal_nonce: [u8; 12],
+    pub seal_ciphertext: [u8; 16],
+}
+
+#[derive(Debug, Clone)]
+pub struct PolicyTrustRecord {
+    pub signer_id: PolicySignerId,
+    pub public_key: [u8; 32],
+    pub installed_at_ms: i64,
+    pub seal_nonce: [u8; 12],
+    pub seal_ciphertext: [u8; 16],
+}
+
+#[derive(Debug, Clone)]
+pub struct PolicyBundleRecord {
+    pub signer_id: PolicySignerId,
+    pub version: u64,
+    pub expires_at_ms: i64,
+    pub policy_digest: [u8; 32],
+    pub bundle_digest: [u8; 32],
+    pub bundle_json: Vec<u8>,
+    pub activated_at_ms: i64,
+    pub seal_nonce: [u8; 12],
+    pub seal_ciphertext: [u8; 16],
+}
+
 /// Audit event. Field discipline is enforced at construction: no secrets, no
 /// bodies, no raw errors — only identifiers, codes, and counters.
 #[derive(Debug, Clone)]
@@ -167,12 +203,20 @@ pub struct AuditEvent {
     pub credential_id: Option<CredentialId>,
     pub credential_version: Option<u64>,
     pub authorization: Option<AuthorizationEvidence>,
+    pub approval: Option<ApprovalEvidence>,
     pub event_type: &'static str,
     pub outcome: &'static str,
     pub reason_code: String,
     pub upstream_status: Option<u16>,
     pub latency_ms: Option<i64>,
     pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ApprovalEvidence {
+    pub approval_request_id: ApprovalRequestId,
+    pub approval_id: Option<ApprovalId>,
+    pub approver_id: Option<ApproverId>,
 }
 
 #[derive(Debug, Clone)]
@@ -204,6 +248,10 @@ pub mod event_type {
     pub const SESSION_CREATED: &str = "session.created";
     pub const SESSION_REVOKED: &str = "session.revoked";
     pub const POLICY_ACTIVATED: &str = "policy.activated";
+    pub const POLICY_TRUST_INSTALLED: &str = "policy.trust_installed";
+    pub const APPROVAL_REQUESTED: &str = "approval.requested";
+    pub const APPROVAL_ACCEPTED: &str = "approval.accepted";
+    pub const APPROVAL_REJECTED: &str = "approval.rejected";
     pub const GITHUB_CONNECTOR_AUTHORIZED: &str = "connector.github.authorized";
     pub const GITHUB_TOKEN_REVOKED: &str = "connector.github.token_revoked";
     pub const EXECUTION_STARTED: &str = "execution.started";

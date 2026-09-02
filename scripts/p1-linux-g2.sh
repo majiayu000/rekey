@@ -33,6 +33,7 @@ fail() {
 command -v docker >/dev/null || fail "docker is required"
 command -v curl >/dev/null || fail "curl is required for authoritative DNS lookup"
 command -v python3 >/dev/null || fail "python3 is required"
+command -v openssl >/dev/null || fail "openssl is required"
 docker info >/dev/null 2>&1 || fail "docker daemon is unavailable"
 [[ "$(docker info --format '{{.OSType}}')" == "linux" ]] || fail "docker daemon is not Linux"
 DOCKER_ENGINE_VERSION="$(docker version --format '{{.Server.Version}}')" \
@@ -272,11 +273,12 @@ ACTION_ID="${ACTION_REF%@*}"
 ACTION_VERSION="${ACTION_REF#*@}"
 POLICY_RULE_ID="$(python3 -c 'import uuid; print(uuid.uuid4())')"
 POLICY_EXPIRES_MS="$(python3 -c 'import time; print(int(time.time() * 1000) + 600000)')"
-cat <<EOF | docker exec -i "$BROKER" sh -c 'cat >/tmp/policy.json'
+cat >"$BUILD_DIR/policy-snapshot.json" <<EOF
 {
-  "format_version": 1,
+  "format_version": 2,
   "version": 1,
   "expires_at_ms": $POLICY_EXPIRES_MS,
+  "approvers": [],
   "bindings": [{
     "action_id": "$ACTION_ID",
     "version": $ACTION_VERSION,
@@ -295,8 +297,16 @@ cat <<EOF | docker exec -i "$BROKER" sh -c 'cat >/tmp/policy.json'
   }]
 }
 EOF
+python3 "$ROOT/scripts/sign-test-policy.py" policy --key-dir "$BUILD_DIR/policy-key" \
+  --snapshot "$BUILD_DIR/policy-snapshot.json" --bundle "$BUILD_DIR/policy.json" \
+  --trust "$BUILD_DIR/policy-trust.json"
+docker cp "$BUILD_DIR/policy.json" "$BROKER:/tmp/policy.json"
+docker cp "$BUILD_DIR/policy-trust.json" "$BROKER:/tmp/policy-trust.json"
 printf '%s\n' "$PASSWORD" | docker exec -i "$BROKER" \
-  rekey --state-dir /state policy activate --file /tmp/policy.json --password-stdin >/dev/null
+  rekey --state-dir /state policy trust install --file /tmp/policy-trust.json \
+  --step-up-stdin >/dev/null
+printf '%s\n' "$PASSWORD" | docker exec -i "$BROKER" \
+  rekey --state-dir /state policy activate --file /tmp/policy.json --step-up-stdin >/dev/null
 
 docker run -d --name "$AGENT" \
   --user 0:0 \

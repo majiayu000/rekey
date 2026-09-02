@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use rekey_domain::action::ACTION_TIMEOUT_HARD_MAX_MS;
+use rekey_policy::ValidatedPolicyTrust;
 use rekey_vault::AuthorityError;
 use rekey_vault::bootstrap::verify_state_dir_permissions;
 use rekey_vault::command::UnlockProof;
@@ -82,8 +83,10 @@ pub struct BrokerCtx {
     pub authority: AuthorityHandle,
     pub sessions: Arc<SessionRegistry>,
     pub(crate) executions: ExecutionSupervisorHandle,
+    pub(crate) executor: Arc<ActionExecutor>,
     pub lifecycle: Arc<Lifecycle>,
     policy: Arc<RwLock<Option<Arc<ActivePolicy>>>>,
+    policy_trust: Arc<RwLock<Option<ValidatedPolicyTrust>>>,
     terminals: Arc<TerminalAuditTracker>,
     drain_timeout: Duration,
     shutdown_flag: AtomicBool,
@@ -132,10 +135,22 @@ impl BrokerCtx {
             .map_err(|_| BrokerError::Authority(AuthorityError::AuthorityBusy))?;
         self.lifecycle.reject_if_busy()?;
         self.authority.unlock(proof).await?;
+        if let Err(error) = self.reload_policy_after_unlock().await {
+            self.sessions.close_and_revoke_all();
+            let lock_result = self.authority.lock("policy-reload-failed").await;
+            *self.policy.write().await = None;
+            *self.policy_trust.write().await = None;
+            self.lifecycle.enter_locked();
+            if lock_result.is_err() {
+                self.request_fault();
+            }
+            return Err(error);
+        }
         if let Err(transition_error) = self.lifecycle.enter_running() {
             self.sessions.close_and_revoke_all();
             let lock_result = self.authority.lock("stop-during-unlock").await;
             *self.policy.write().await = None;
+            *self.policy_trust.write().await = None;
             self.lifecycle.enter_locked();
             if let Err(lock_error) = lock_result {
                 self.request_fault();
@@ -215,6 +230,7 @@ impl BrokerCtx {
             }
         }
         *self.policy.write().await = None;
+        *self.policy_trust.write().await = None;
         self.lifecycle.enter_locked();
         tracing::info!(event = "authority.state", state = "locked", reason);
         audit.map_err(BrokerError::Authority)
@@ -539,6 +555,7 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
     let lifecycle = Arc::new(Lifecycle::new());
     let (terminals, terminal_task) = spawn_terminal_worker(authority.clone());
     let policy = Arc::new(RwLock::new(None));
+    let policy_trust = Arc::new(RwLock::new(None));
     let executor = Arc::new(ActionExecutor::new(
         authority.clone(),
         Arc::clone(&sessions),
@@ -548,15 +565,18 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
         Arc::clone(&policy),
     ));
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let (executions, execution_supervisor) = crate::execution_supervisor::new(executor);
+    let (executions, execution_supervisor) =
+        crate::execution_supervisor::new(Arc::clone(&executor));
     let mut execution_task = tokio::spawn(execution_supervisor.run(shutdown_rx.clone()));
     let (stop_tx, mut stop_rx) = mpsc::unbounded_channel();
     let ctx = Arc::new(BrokerCtx {
         authority: authority.clone(),
         sessions,
         executions,
+        executor,
         lifecycle,
         policy,
+        policy_trust,
         terminals,
         drain_timeout: config.drain_timeout,
         shutdown_flag: AtomicBool::new(false),

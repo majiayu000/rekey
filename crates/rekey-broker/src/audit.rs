@@ -34,7 +34,7 @@ struct AuditSubmissionQueue {
 }
 
 enum AuditSubmission {
-    Terminal(TerminalSubmission),
+    Terminal(Box<TerminalSubmission>),
     Started(Box<StartedSubmission>),
 }
 
@@ -44,7 +44,7 @@ struct TerminalSubmission {
 }
 
 struct StartedSubmission {
-    draft: AuditDraft,
+    drafts: Vec<AuditDraft>,
     ctx: ExecutionAuditContext,
     queue: AuditSubmissionQueue,
     reply: oneshot::Sender<Result<StartedAuditGuard, AuthorityError>>,
@@ -173,10 +173,10 @@ impl AuditSubmissionQueue {
         draft: AuditDraft,
         reply: Option<oneshot::Sender<Result<(), AuthorityError>>>,
     ) {
-        self.enqueue(AuditSubmission::Terminal(TerminalSubmission {
+        self.enqueue(AuditSubmission::Terminal(Box::new(TerminalSubmission {
             draft,
             reply,
-        }));
+        })));
     }
 
     fn enqueue(&self, submission: AuditSubmission) {
@@ -225,12 +225,13 @@ impl TerminalAuditTracker {
     pub(crate) async fn commit_started(
         &self,
         ctx: ExecutionAuditContext,
+        mut preceding: Vec<AuditDraft>,
     ) -> Result<StartedAuditGuard, AuthorityError> {
-        let draft = execution_started(&ctx);
+        preceding.push(execution_started(&ctx));
         let (reply, result) = oneshot::channel();
         self.queue
             .enqueue(AuditSubmission::Started(Box::new(StartedSubmission {
-                draft,
+                drafts: preceding,
                 ctx,
                 queue: self.queue.clone(),
                 reply,
@@ -282,17 +283,37 @@ impl TerminalAuditTracker {
 pub fn spawn_terminal_worker(
     authority: AuthorityHandle,
 ) -> (Arc<TerminalAuditTracker>, JoinHandle<()>) {
-    spawn_terminal_worker_with(move |draft| {
+    spawn_terminal_worker_with_batch(move |drafts| {
         let authority = authority.clone();
-        async move { authority.commit_audit(draft).await }
+        async move { authority.commit_audits(drafts).await }
     })
 }
 
+#[cfg(test)]
 pub(crate) fn spawn_terminal_worker_with<F, Fut>(
     commit: F,
 ) -> (Arc<TerminalAuditTracker>, JoinHandle<()>)
 where
-    F: Fn(AuditDraft) -> Fut + Send + 'static,
+    F: Fn(AuditDraft) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<(), AuthorityError>> + Send + 'static,
+{
+    let commit = Arc::new(commit);
+    spawn_terminal_worker_with_batch(move |drafts| {
+        let commit = Arc::clone(&commit);
+        async move {
+            for draft in drafts {
+                commit(draft).await?;
+            }
+            Ok(())
+        }
+    })
+}
+
+fn spawn_terminal_worker_with_batch<F, Fut>(
+    commit: F,
+) -> (Arc<TerminalAuditTracker>, JoinHandle<()>)
+where
+    F: Fn(Vec<AuditDraft>) -> Fut + Send + 'static,
     Fut: Future<Output = Result<(), AuthorityError>> + Send + 'static,
 {
     let (tx, mut rx) = mpsc::unbounded_channel::<AuditSubmission>();
@@ -307,7 +328,8 @@ where
         while let Some(submission) = rx.recv().await {
             match submission {
                 AuditSubmission::Terminal(submission) => {
-                    let result = commit(submission.draft).await;
+                    let submission = *submission;
+                    let result = commit(vec![submission.draft]).await;
                     if result.is_err() {
                         failed.store(true, Ordering::SeqCst);
                     }
@@ -317,12 +339,12 @@ where
                 }
                 AuditSubmission::Started(submission) => {
                     let StartedSubmission {
-                        draft,
+                        drafts,
                         ctx,
                         queue,
                         reply,
                     } = *submission;
-                    let result = commit(draft)
+                    let result = commit(drafts)
                         .await
                         .map(|()| StartedAuditGuard::new(queue, ctx));
                     if result.is_err() {
@@ -357,6 +379,7 @@ fn base(ctx: &ExecutionAuditContext) -> AuditDraft {
         credential_id: Some(ctx.credential_id),
         credential_version: None,
         authorization: ctx.authorization.clone().map(Box::new),
+        approval: None,
         event_type: event_type::EXECUTION_STARTED,
         outcome: outcome::SUCCESS,
         reason_code: String::new(),
@@ -433,6 +456,7 @@ mod tests {
             credential_id: None,
             credential_version: None,
             authorization: None,
+            approval: None,
             event_type: event_type::EXECUTION_BLOCKED,
             outcome: outcome::DENIED,
             reason_code: "abandoned".to_owned(),
@@ -482,7 +506,11 @@ mod tests {
         });
         let caller = tokio::spawn({
             let tracker = Arc::clone(&tracker);
-            async move { tracker.commit_started(execution_context()).await }
+            async move {
+                tracker
+                    .commit_started(execution_context(), Vec::new())
+                    .await
+            }
         });
         entered.wait().await;
         caller.abort();

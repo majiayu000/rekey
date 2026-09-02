@@ -1,7 +1,9 @@
 # User guide
 
 This guide assumes the verified Alpha binaries are installed and the broker is
-running. Read [the security and platform scope](alpha-scope.md) first.
+running. Read [the security and platform scope](alpha-scope.md) first. Sections
+covering signed persistent policy and approval describe development head P-03;
+those commands are not included in the published `v2.0.0-alpha.1` artifacts.
 
 ## Start, unlock, and status
 
@@ -123,14 +125,15 @@ Create a capability session and record its `principal_id` and token:
 rekey session create --action ACTION_ID@1 --ttl 1h --max-uses 10
 ```
 
-Create `policy.json`, replacing all UUIDs and the Action version with returned
-values. `expires_at_ms` must be a future Unix epoch in milliseconds.
+Create a policy snapshot, replacing all UUIDs and the Action version with
+returned values. `expires_at_ms` must be a future Unix epoch in milliseconds.
 
 ```json
 {
-  "format_version": 1,
+  "format_version": 2,
   "version": 1,
   "expires_at_ms": 1900000000000,
+  "approvers": [],
   "bindings": [
     {
       "action_id": "00000000-0000-4000-8000-000000000000",
@@ -165,12 +168,76 @@ values. `expires_at_ms` must be a future Unix epoch in milliseconds.
 }
 ```
 
+An external Ed25519 policy signer wraps this snapshot in
+`rekey.policy.bundle.v1` and signs the canonical bytes defined by the
+[P-03 specification](superpowers/specs/2026-09-03-approvals-persistent-policy-p03.md).
+Rekey does not create or store that private key. Install its public trust root
+once, then activate the signed bundle:
+
+```json
+{
+  "format_version": 1,
+  "signer_id": "00000000-0000-4000-8000-000000000010",
+  "algorithm": "ed25519",
+  "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+}
+```
+
 ```bash
-rekey policy activate --file policy.json
+printf '%s\n' "$STEP_UP_PROOF" | \
+  rekey policy trust install --file trust.json --step-up-stdin
+printf '%s\n' "$STEP_UP_PROOF" | \
+  rekey policy activate --file bundle.json --step-up-stdin
 rekey policy status
 ```
 
-Policy and capabilities are in memory and disappear on lock or restart.
+There is one immutable trust root per vault. Policy version 1 must be first;
+later bundles must be exactly consecutive. A malformed, unsigned, expired,
+wrong-signer, skipped-version, or rollback bundle is rejected without changing
+the active policy. Lock clears the compiled policy and a successful unlock
+reverifies the signed, lifecycle-sealed persisted bundle before loading it. Before that unlock,
+status is `unavailable`. Capability sessions still disappear on lock or restart.
+
+To require approval, add approvers to the snapshot catalog and use a
+`require-approval` rule. The rule names the allowed approvers, quorum 1 or 2,
+`one-time` or `time-window` mode, and its use/window ceilings. For example:
+
+```json
+{
+  "effect": "require-approval",
+  "approval": {
+    "approver_ids": ["00000000-0000-4000-8000-000000000020"],
+    "quorum": 1,
+    "mode": "one-time",
+    "max_uses": 1
+  }
+}
+```
+
+Prepare the exact request and give the challenge JSON to an external approver:
+
+```bash
+printf '%s\n' "$CAPABILITY_FROM_SECURE_STORAGE" | \
+  rekey approval prepare ACTION_ID@1 --capability - \
+    --body-file request.json --content-type application/json >challenge.json
+```
+
+After the approver returns a signed grant, execute the same request:
+
+```bash
+printf '%s\n' "$CAPABILITY_FROM_SECURE_STORAGE" | \
+  rekey execute ACTION_ID@1 --capability - \
+    --body-file request.json --content-type application/json \
+    --approval grant.json
+```
+
+Two-person rules require two distinct `--approval` files. Each file must be a
+regular non-symlink UTF-8 JSON file no larger than 4 KiB. A grant is bound to
+the exact challenge/session/principal/Action/resource/canonical parameters,
+determining rule, policy version/digest, expiry, and signed use count. Approval
+requests and usage are memory-only and vanish on session revocation, lock, or
+restart. Rekey has no remote approval service, notifications, dashboard, human
+directory, or private-key custody.
 
 Failed password throttling is also process-local and resets when `rekeyd`
 restarts. The G1 public Alpha accepts this limitation; restarting the broker is

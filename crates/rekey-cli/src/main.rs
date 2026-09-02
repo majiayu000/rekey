@@ -21,6 +21,16 @@ struct StepUpArgs {
     password_stdin: bool,
 }
 
+#[derive(Args)]
+struct PolicyStepUpArgs {
+    /// Use the recovery key for step-up proof; does not reset the password.
+    #[arg(long)]
+    recovery: bool,
+    /// Read the step-up proof from stdin instead of the TTY.
+    #[arg(long)]
+    step_up_stdin: bool,
+}
+
 #[derive(Parser)]
 #[command(
     name = "rekey",
@@ -92,6 +102,9 @@ enum Command {
     /// Typed authorization policy administration.
     #[command(subcommand)]
     Policy(PolicyCommand),
+    /// Prepare a signed-approval challenge.
+    #[command(subcommand)]
+    Approval(ApprovalCommand),
     /// Vault password lifecycle.
     #[command(subcommand)]
     Password(PasswordCommand),
@@ -115,6 +128,9 @@ enum Command {
         /// Extra header NAME:VALUE (repeatable; must be on the action's allowlist).
         #[arg(long = "header")]
         headers: Vec<String>,
+        /// Signed approval grant JSON file (repeatable, at most two).
+        #[arg(long = "approval")]
+        approvals: Vec<PathBuf>,
     },
     /// Write an encrypted backup (broker must be unlocked).
     Backup {
@@ -211,15 +227,45 @@ enum SessionCommand {
 
 #[derive(Subcommand)]
 enum PolicyCommand {
-    /// Validate and activate a complete in-memory policy snapshot.
+    /// Install the vault's immutable policy signer trust root.
+    #[command(subcommand)]
+    Trust(PolicyTrustCommand),
+    /// Validate, verify, persist, and activate a signed policy bundle.
     Activate {
         #[arg(long)]
         file: PathBuf,
         #[command(flatten)]
-        step_up: StepUpArgs,
+        step_up: PolicyStepUpArgs,
     },
     /// Show the active policy version and digest.
     Status,
+}
+
+#[derive(Subcommand)]
+enum PolicyTrustCommand {
+    Install {
+        #[arg(long)]
+        file: PathBuf,
+        #[command(flatten)]
+        step_up: PolicyStepUpArgs,
+    },
+}
+
+#[derive(Subcommand)]
+enum ApprovalCommand {
+    Prepare {
+        /// ACTION_ID@VERSION
+        action: String,
+        /// Capability token, or '-' to read it from stdin (recommended).
+        #[arg(long, allow_hyphen_values = true)]
+        capability: String,
+        #[arg(long)]
+        body_file: Option<PathBuf>,
+        #[arg(long)]
+        content_type: Option<String>,
+        #[arg(long = "header")]
+        headers: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -432,14 +478,36 @@ fn main() {
             ),
         },
         Command::Policy(cmd) => match cmd {
+            PolicyCommand::Trust(PolicyTrustCommand::Install { file, step_up }) => {
+                commands::policy_trust_install(
+                    &state_dir,
+                    &file,
+                    step_up.recovery,
+                    step_up.step_up_stdin,
+                )
+            }
             PolicyCommand::Activate { file, step_up } => commands::policy_activate(
                 &state_dir,
                 &file,
                 step_up.recovery,
-                step_up.password_stdin,
+                step_up.step_up_stdin,
             ),
             PolicyCommand::Status => commands::policy_status(&state_dir),
         },
+        Command::Approval(ApprovalCommand::Prepare {
+            action,
+            capability,
+            body_file,
+            content_type,
+            headers,
+        }) => commands::approval_prepare(
+            &agent_socket,
+            &action,
+            &capability,
+            body_file.as_deref(),
+            content_type,
+            &headers,
+        ),
         Command::Password(PasswordCommand::Change {
             recovery,
             stdin_secrets,
@@ -467,6 +535,7 @@ fn main() {
             body_file,
             content_type,
             headers,
+            approvals,
         } => commands::execute(
             &agent_socket,
             &action,
@@ -474,6 +543,7 @@ fn main() {
             body_file.as_deref(),
             content_type,
             &headers,
+            &approvals,
         ),
         Command::Backup { output, step_up } => commands::backup(
             &state_dir,

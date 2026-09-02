@@ -1,8 +1,10 @@
 use data_encoding::HEXLOWER;
 use rekey_domain::audit::{
-    AUDIT_SCAN_MAX_ROWS, AUDIT_SCHEMA_V1, AuditPage, AuditQuery, AuditRecord,
+    AUDIT_SCAN_MAX_ROWS, AUDIT_SCHEMA_V2, AuditPage, AuditQuery, AuditRecord,
 };
-use rekey_domain::ids::{ActionId, CredentialId, RequestId, SessionId};
+use rekey_domain::ids::{
+    ActionId, ApprovalId, ApprovalRequestId, ApproverId, CredentialId, RequestId, SessionId,
+};
 use rusqlite::params;
 
 use super::recovery::{authorization_from_columns, optional_id};
@@ -25,6 +27,9 @@ struct RawAuditRow {
     resource_type: Option<String>,
     resource_id: Option<String>,
     parameter_hash: Option<Vec<u8>>,
+    approval_request_id: Option<Vec<u8>>,
+    approval_id: Option<Vec<u8>>,
+    approver_id: Option<Vec<u8>>,
     event_type: String,
     outcome: String,
     reason_code: String,
@@ -59,7 +64,8 @@ impl SqliteRecordStore {
                 "SELECT sequence, event_id, request_id, session_id, action_id, action_version,
                     credential_id, credential_version, principal_id, policy_version,
                     policy_digest, policy_rule_id, resource_type, resource_id, parameter_hash,
-                    event_type, outcome, reason_code, upstream_status, latency_ms, created_at_ms
+                    approval_request_id, approval_id, approver_id, event_type, outcome,
+                    reason_code, upstream_status, latency_ms, created_at_ms
              FROM audit_events
              WHERE sequence <= ?1
              ORDER BY sequence DESC LIMIT ?2",
@@ -96,7 +102,7 @@ impl SqliteRecordStore {
         }
 
         let page = AuditPage {
-            schema: AUDIT_SCHEMA_V1.to_owned(),
+            schema: AUDIT_SCHEMA_V2.to_owned(),
             snapshot_max_sequence,
             events,
             next_before_sequence,
@@ -124,12 +130,15 @@ fn raw_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawAuditRow> {
         resource_type: row.get(12)?,
         resource_id: row.get(13)?,
         parameter_hash: row.get(14)?,
-        event_type: row.get(15)?,
-        outcome: row.get(16)?,
-        reason_code: row.get(17)?,
-        upstream_status: row.get(18)?,
-        latency_ms: row.get(19)?,
-        created_at_ms: row.get(20)?,
+        approval_request_id: row.get(15)?,
+        approval_id: row.get(16)?,
+        approver_id: row.get(17)?,
+        event_type: row.get(18)?,
+        outcome: row.get(19)?,
+        reason_code: row.get(20)?,
+        upstream_status: row.get(21)?,
+        latency_ms: row.get(22)?,
+        created_at_ms: row.get(23)?,
     })
 }
 
@@ -157,7 +166,7 @@ fn record_from_raw(raw: RawAuditRow) -> Result<AuditRecord, AuthorityError> {
         .map(|value| u16::try_from(value).map_err(|_| AuthorityError::StorageIntegrityFailed))
         .transpose()?;
     Ok(AuditRecord {
-        record_type: AUDIT_SCHEMA_V1.to_owned(),
+        record_type: AUDIT_SCHEMA_V2.to_owned(),
         sequence: positive_u64(raw.sequence)?,
         event_id: HEXLOWER.encode(&event_id),
         request_id: optional_id(raw.request_id, RequestId::from_bytes)?,
@@ -172,6 +181,9 @@ fn record_from_raw(raw: RawAuditRow) -> Result<AuditRecord, AuthorityError> {
             .as_ref()
             .map(|value| HEXLOWER.encode(&value.policy_digest)),
         policy_rule_id: authorization.and_then(|value| value.policy_rule_id),
+        approval_request_id: optional_id(raw.approval_request_id, ApprovalRequestId::from_bytes)?,
+        approval_id: optional_id(raw.approval_id, ApprovalId::from_bytes)?,
+        approver_id: optional_id(raw.approver_id, ApproverId::from_bytes)?,
         event_type: raw.event_type,
         outcome: raw.outcome,
         reason_code: raw.reason_code,

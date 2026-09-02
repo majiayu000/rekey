@@ -44,6 +44,16 @@ expect_denied() {
   }
 }
 
+activate_policy_file() {
+  python3 "$ROOT/scripts/sign-test-policy.py" policy --key-dir "$WORKDIR/policy-key" \
+    --snapshot "$WORKDIR/policy.json" --bundle "$WORKDIR/policy-bundle.json" \
+    --trust "$WORKDIR/policy-trust.json"
+  printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy trust install \
+    --file "$WORKDIR/policy-trust.json" --step-up-stdin >/dev/null
+  printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate \
+    --file "$WORKDIR/policy-bundle.json" --step-up-stdin >/dev/null
+}
+
 printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin >/dev/null
 "$FIXTURE" "$STATE" "$READY" "$HITS" >"$WORKDIR/broker.out" 2>"$WORKDIR/broker.err" &
 BROKER_PID=$!
@@ -89,7 +99,7 @@ token="$(printf '%s\n' "$session_json" | json_field capability_token)"
 printf '%s\n' '{"message":"allowed"}' >"$WORKDIR/allowed.json"
 
 status="$($REKEY --state-dir "$STATE" policy status)"
-printf '%s\n' "$status" | grep -q '"active": false'
+printf '%s\n' "$status" | grep -q '"status": "unavailable"'
 expect_denied "$REKEY" --state-dir "$STATE" execute "$action_ref" --capability "$token" --body-file "$WORKDIR/allowed.json" --content-type application/json
 [[ "$(tr -d '\n' <"$HITS")" -eq 0 ]]
 
@@ -98,9 +108,10 @@ import json, pathlib, sys, time, uuid
 path, action, version, principal, policy_version, mode = sys.argv[1:]
 resource = {"type": "fixed-http-action", "id": action}
 snapshot = {
-    "format_version": 1,
+    "format_version": 2,
     "version": int(policy_version),
     "expires_at_ms": int(time.time() * 1000) + 600000,
+    "approvers": [],
     "bindings": [{
         "action_id": action, "version": int(version), "resource": resource,
         "parameter_schema_id": "p1-message/v1",
@@ -111,7 +122,7 @@ snapshot = {
 }
 pathlib.Path(path).write_text(json.dumps(snapshot))
 PY
-printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate --file "$WORKDIR/policy.json" --password-stdin >/dev/null
+activate_policy_file
 expect_denied "$REKEY" --state-dir "$STATE" execute "$action_ref" --capability "$token" --body-file "$WORKDIR/allowed.json" --content-type application/json
 [[ "$(tr -d '\n' <"$HITS")" -eq 0 ]]
 
@@ -126,10 +137,11 @@ binding = {"action_id": action, "version": int(version), "resource": resource,
 rule = {"id": str(uuid.uuid4()), "effect": "permit", "principal_id": principal,
     "action_id": action, "version": int(version), "resource": resource,
     "parameters": {"kind": "any_validated"}}
-pathlib.Path(path).write_text(json.dumps({"format_version": 1, "version": 2,
-    "expires_at_ms": int(time.time() * 1000) + 600000, "bindings": [binding], "rules": [rule]}))
+pathlib.Path(path).write_text(json.dumps({"format_version": 2, "version": 2,
+    "expires_at_ms": int(time.time() * 1000) + 600000, "approvers": [],
+    "bindings": [binding], "rules": [rule]}))
 PY
-printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate --file "$WORKDIR/policy.json" --password-stdin >/dev/null
+activate_policy_file
 status="$($REKEY --state-dir "$STATE" policy status)"
 printf '%s\n' "$status" | grep -q '"version": 2'
 execute_out="$($REKEY --state-dir "$STATE" execute "$action_ref" --capability "$token" --body-file "$WORKDIR/allowed.json" --content-type application/json)"
@@ -142,7 +154,7 @@ db = sqlite3.connect(sys.argv[1])
 row = db.execute("SELECT lower(hex(parameter_hash)) FROM audit_events WHERE event_type='execution.finished' ORDER BY created_at_ms DESC LIMIT 1").fetchone()
 if not row or not row[0]: raise SystemExit("missing durable parameter hash")
 header = db.execute("SELECT format_version FROM vault_header").fetchone()
-if not header or header[0] != 5: raise SystemExit("durable format is not 5")
+if not header or header[0] != 6: raise SystemExit("durable format is not 6")
 print(row[0])
 PY
 )"
@@ -158,10 +170,11 @@ binding = {"action_id": action, "version": int(version), "resource": resource,
 rule = {"id": str(uuid.uuid4()), "effect": "permit", "principal_id": principal,
     "action_id": action, "version": int(version), "resource": resource,
     "parameters": {"kind": "any_validated"}}
-pathlib.Path(path).write_text(json.dumps({"format_version": 1, "version": 3,
-    "expires_at_ms": int(time.time() * 1000) + 300, "bindings": [binding], "rules": [rule]}))
+pathlib.Path(path).write_text(json.dumps({"format_version": 2, "version": 3,
+    "expires_at_ms": int(time.time() * 1000) + 300, "approvers": [],
+    "bindings": [binding], "rules": [rule]}))
 PY
-printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate --file "$WORKDIR/policy.json" --password-stdin >/dev/null
+activate_policy_file
 sleep 0.5
 expect_denied "$REKEY" --state-dir "$STATE" execute "$action_ref" --capability "$token" --body-file "$WORKDIR/allowed.json" --content-type application/json
 [[ "$(tr -d '\n' <"$HITS")" -eq 1 ]]
@@ -179,10 +192,11 @@ def rule(effect, parameters): return {"id": str(uuid.uuid4()), "effect": effect,
     "resource": resource, "parameters": parameters}
 rules = [rule("permit", {"kind": "any_validated"}),
     rule("forbid", {"kind": "exact_hash", "sha256": parameter_hash})]
-pathlib.Path(path).write_text(json.dumps({"format_version": 1, "version": 4,
-    "expires_at_ms": int(time.time() * 1000) + 600000, "bindings": [binding], "rules": rules}))
+pathlib.Path(path).write_text(json.dumps({"format_version": 2, "version": 4,
+    "expires_at_ms": int(time.time() * 1000) + 600000, "approvers": [],
+    "bindings": [binding], "rules": rules}))
 PY
-printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate --file "$WORKDIR/policy.json" --password-stdin >/dev/null
+activate_policy_file
 expect_denied "$REKEY" --state-dir "$STATE" execute "$action_ref" --capability "$token" --body-file "$WORKDIR/allowed.json" --content-type application/json
 printf '%s\n' '{"message":"one","message":"two"}' >"$WORKDIR/ambiguous.json"
 expect_denied "$REKEY" --state-dir "$STATE" execute "$action_ref" --capability "$token" --body-file "$WORKDIR/ambiguous.json" --content-type application/json

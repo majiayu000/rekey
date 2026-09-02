@@ -2,7 +2,7 @@
 //! capability, secret export does not exist on the wire, and the two sockets
 //! stay separated.
 
-use rekey_domain::audit::{AUDIT_SCHEMA_V1, AuditPage, AuditQuery};
+use rekey_domain::audit::{AUDIT_SCHEMA_V2, AuditPage, AuditQuery};
 use rekey_domain::ids::RequestId;
 use rekey_domain::ipc::{Channel, FrameHeader, RESPONSE_BODY_MAX_BYTES, admin_msg, agent_msg};
 use rekey_integration::harness as h;
@@ -116,7 +116,7 @@ async fn audit_query_is_admin_only_bounded_and_available_while_locked() {
     assert_eq!(response.ok(), &serde_json::json!({}));
     let page: AuditPage = serde_json::from_slice(&response.body).unwrap();
     page.validate_for(&query).unwrap();
-    assert_eq!(page.schema, AUDIT_SCHEMA_V1);
+    assert_eq!(page.schema, AUDIT_SCHEMA_V2);
     assert!(!page.events.is_empty());
 
     let body_header = FrameHeader {
@@ -173,6 +173,7 @@ async fn oversized_audit_page_fails_before_a_success_frame() {
             credential_id: None,
             credential_version: None,
             authorization: None,
+            approval: None,
             event_type: "test.oversized",
             outcome: "failure",
             reason_code: "x".repeat(RESPONSE_BODY_MAX_BYTES as usize),

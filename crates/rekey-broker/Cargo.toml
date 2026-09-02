@@ -38,6 +38,7 @@ zeroize = "1"
 
 [dev-dependencies]
 tempfile = { workspace = true }
+serde_jcs = "0.2"
 rcgen = "0.13"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rusqlite = { version = "0.34", features = ["bundled"] }

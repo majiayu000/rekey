@@ -74,6 +74,7 @@ async fn expired_mutation_command_never_commits_later() {
                 credential_id: None,
                 credential_version: None,
                 authorization: None,
+                approval: None,
                 event_type: event_type::SESSION_CREATED,
                 outcome: outcome::SUCCESS,
                 reason_code: "expired-test".to_owned(),

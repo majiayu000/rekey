@@ -17,6 +17,9 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
+mod approval;
+pub(crate) use approval::ApprovalContext;
+
 #[derive(Debug)]
 pub enum CreateSessionError {
     Closed,
@@ -30,7 +33,11 @@ struct Entry {
     uses_left: u32,
     in_flight: u32,
     revoked: bool,
+    exhausted: bool,
     monotonic_deadline: Instant,
+    approval_challenges: Vec<approval::StoredChallenge>,
+    approval_uses: Vec<approval::ApprovalUsage>,
+    expired_approvals: Vec<approval::ExpiredApproval>,
 }
 
 pub struct SessionTicket {
@@ -38,6 +45,7 @@ pub struct SessionTicket {
     pub principal: Principal,
     pub action: ActionVersionRef,
     pub timeout_ms: u32,
+    pub expires_at_ms: i64,
 }
 
 /// RAII permit for one execution. Drop always releases the concurrency slot,
@@ -48,6 +56,7 @@ pub struct ExecutionPermit {
     pub principal: Principal,
     pub action: ActionVersionRef,
     pub timeout_ms: u32,
+    pub expires_at_ms: i64,
 }
 
 impl Drop for ExecutionPermit {
@@ -63,8 +72,10 @@ struct Inner {
 
 fn compact_entries(entries: &mut Vec<Entry>) {
     let now = Instant::now();
-    entries
-        .retain(|entry| entry.in_flight > 0 || (!entry.revoked && now < entry.monotonic_deadline));
+    entries.retain(|entry| {
+        entry.in_flight > 0
+            || (!entry.revoked && !entry.exhausted && now < entry.monotonic_deadline)
+    });
 }
 
 impl Default for Inner {
@@ -148,7 +159,11 @@ impl SessionRegistry {
             uses_left: grant.max_uses,
             in_flight: 0,
             revoked: false,
+            exhausted: false,
             monotonic_deadline,
+            approval_challenges: Vec::new(),
+            approval_uses: Vec::new(),
+            expired_approvals: Vec::new(),
             grant,
         };
         let mut inner = self.lock_inner();
@@ -207,7 +222,7 @@ impl SessionRegistry {
             .find_map(|(action, timeout_ms)| (*action == wanted).then_some(*timeout_ms))
             .ok_or(DomainError::InvalidCapability)?;
         if entry.uses_left == 0 {
-            entry.revoked = true;
+            entry.exhausted = true;
             return Err(DomainError::CapabilityExhausted);
         }
         if entry.in_flight >= SESSION_MAX_CONCURRENT_EXECUTIONS {
@@ -217,13 +232,14 @@ impl SessionRegistry {
         entry.in_flight += 1;
         if entry.uses_left == 0 {
             // Exhausted after this reservation: no further executions.
-            entry.revoked = true;
+            entry.exhausted = true;
         }
         Ok(SessionTicket {
             session_id: entry.grant.id,
             principal: entry.grant.principal,
             action: wanted,
             timeout_ms,
+            expires_at_ms: entry.grant.expires_at.as_unix_ms(),
         })
     }
 
@@ -241,6 +257,7 @@ impl SessionRegistry {
             principal: ticket.principal,
             action: ticket.action,
             timeout_ms: ticket.timeout_ms,
+            expires_at_ms: ticket.expires_at_ms,
         })
     }
 
@@ -310,7 +327,10 @@ impl SessionRegistry {
             .entries
             .iter()
             .filter(|e| {
-                !e.revoked && !e.grant.expired_at(now) && Instant::now() < e.monotonic_deadline
+                !e.revoked
+                    && !e.exhausted
+                    && !e.grant.expired_at(now)
+                    && Instant::now() < e.monotonic_deadline
             })
             .count() as u32
     }

@@ -7,10 +7,7 @@ use std::time::Duration;
 
 use rekey_domain::ids::{ActionId, CredentialId, SessionId};
 use rekey_domain::ipc::{self, Channel, ProofKind, admin_msg, agent_msg};
-use rekey_domain::{
-    action::{FixedHttpAction, HeaderName},
-    credential::CredentialMetadata,
-};
+use rekey_domain::{action::FixedHttpAction, credential::CredentialMetadata};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use zeroize::Zeroizing;
 
@@ -20,6 +17,8 @@ mod password_lifecycle;
 pub use password_lifecycle::{password_change, recovery_rotate};
 mod audit;
 pub use audit::{audit_export, audit_list};
+mod policy_approval;
+pub use policy_approval::{approval_prepare, policy_activate, policy_status, policy_trust_install};
 
 const ACTION_RESPONSE_TIMEOUT: Duration = Duration::from_secs(130);
 const DRAIN_RESPONSE_TIMEOUT: Duration = Duration::from_secs(130);
@@ -638,27 +637,6 @@ pub fn session_revoke(
     Ok(())
 }
 
-pub fn policy_activate(
-    state_dir: &Path,
-    file: &Path,
-    recovery: bool,
-    password_stdin: bool,
-) -> Result<(), CliError> {
-    let snapshot =
-        read_regular_file_bounded(file, ipc::METADATA_MAX_BYTES as usize, "policy file")?;
-    let proof = read_step_up(recovery, password_stdin)?;
-    let body = proof_body(recovery, &proof);
-    let (meta, _) = admin(state_dir)?.call(admin_msg::POLICY_ACTIVATE, &snapshot, &body)?;
-    print_json::<ipc::PolicyStatusResponse>(&meta)?;
-    Ok(())
-}
-
-pub fn policy_status(state_dir: &Path) -> Result<(), CliError> {
-    let (meta, _) = admin(state_dir)?.call(admin_msg::POLICY_STATUS, b"{}", &[])?;
-    print_json::<ipc::PolicyStatusResponse>(&meta)?;
-    Ok(())
-}
-
 pub fn execute(
     agent_socket: &Path,
     action: &str,
@@ -666,35 +644,20 @@ pub fn execute(
     body_file: Option<&Path>,
     content_type: Option<String>,
     headers: &[String],
+    approvals: &[PathBuf],
 ) -> Result<(), CliError> {
     let (action_id, version) = parse_action_ref(action)?;
-    let capability_token = if capability == "-" {
-        String::from_utf8(stdin_lines(1)?.remove(0).to_vec())
-            .map_err(|_| CliError::local("USAGE", "capability token must be utf-8"))?
-    } else {
-        capability.to_owned()
-    };
-    let body = match body_file {
-        Some(path) => {
-            read_regular_file_bounded(path, ipc::AGENT_BODY_MAX_BYTES as usize, "body file")?
-        }
-        None => Zeroizing::new(Vec::new()),
-    };
-    let mut extra_headers = Vec::new();
-    for header in headers {
-        let (raw_name, value) = header
-            .split_once(':')
-            .ok_or_else(|| CliError::local("USAGE", "header must be NAME:VALUE"))?;
-        let name =
-            HeaderName::new(raw_name).map_err(|err| CliError::local("USAGE", err.to_string()))?;
-        extra_headers.push((name.as_str().to_owned(), value.trim().to_owned()));
-    }
+    let capability_token = policy_approval::capability_value(capability)?;
+    let body = policy_approval::request_body(body_file)?;
+    let extra_headers = policy_approval::request_headers(headers)?;
+    let approval_grants = policy_approval::read_approval_files(approvals)?;
     let metadata = serde_json::json!({
         "capability_token": capability_token,
         "action_id": action_id.to_string(),
         "action_version": version,
         "content_type": content_type,
         "extra_headers": extra_headers,
+        "approval_grants": approval_grants,
     });
     let (meta, response_body) = Client::connect_with_response_timeout(
         agent_socket,

@@ -149,6 +149,7 @@ mod tests {
                 content_type: None,
                 extra_headers: Vec::new(),
                 body: Vec::new(),
+                approval_grants: Vec::new(),
             },
             response,
         }

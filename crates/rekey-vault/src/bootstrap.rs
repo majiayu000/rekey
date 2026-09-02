@@ -17,6 +17,7 @@ use crate::crypto::kdf::{
     derive_recovery_kek,
 };
 use crate::crypto::keys::{DataKey, Kek, RootKey};
+use crate::crypto::policy_state;
 
 /// Known plaintext sealed under the VRK so an empty vault still has an
 /// internal AEAD check at restore time.
@@ -25,8 +26,8 @@ use crate::crypto::recovery::{encode_recovery_key, parse_recovery_key};
 use crate::crypto::{CRYPTO_SUITE_V1, KEY_LEN, SALT_LEN, aead, random_array};
 use crate::error::AuthorityError;
 use crate::model::{
-    AuditEvent, FORMAT_VERSION, KeyWrapperRecord, VaultHeaderRecord, WrapperKind, WrapperState,
-    event_type, outcome,
+    AuditEvent, FORMAT_VERSION, KeyWrapperRecord, PolicyStateRecord, VaultHeaderRecord,
+    WrapperKind, WrapperState, event_type, outcome,
 };
 use crate::now_ms;
 use crate::paths;
@@ -319,10 +320,26 @@ fn init_vault_inner(
         integrity_ciphertext: integrity.ciphertext,
     };
 
+    let mut policy_state_record = PolicyStateRecord {
+        trust_installed: false,
+        bundle_activated: false,
+        signer_id: None,
+        highest_version: None,
+        policy_digest: None,
+        bundle_digest: None,
+        updated_at_ms: now,
+        seal_nonce: [0u8; 12],
+        seal_ciphertext: [0u8; 16],
+    };
+    let policy_seal = policy_state::seal_state(vrk.bytes(), vault_id, &policy_state_record)?;
+    policy_state_record.seal_nonce = policy_seal.nonce;
+    policy_state_record.seal_ciphertext = policy_seal.ciphertext;
+
     let mut store = SqliteRecordStore::create(&paths::vault_db(state_dir))?;
     store.initialize(
         &header,
         &wrappers,
+        &policy_state_record,
         AuditEvent {
             event_id: random_array()?,
             request_id: None,
@@ -332,6 +349,7 @@ fn init_vault_inner(
             credential_id: None,
             credential_version: None,
             authorization: None,
+            approval: None,
             event_type: event_type::VAULT_INITIALIZED,
             outcome: outcome::SUCCESS,
             reason_code: "init".to_owned(),
@@ -497,6 +515,7 @@ fn restore_inner(
     prove_integrity(&header, &vrk)?;
     prove_all_credential_states(&store, header.vault_id, &vrk)?;
     prove_all_payloads(&store, header.vault_id, &vrk)?;
+    store.verified_policy_material(vrk.bytes(), header.vault_id)?;
 
     store.append_audit(&AuditEvent {
         event_id: random_array()?,
@@ -507,6 +526,7 @@ fn restore_inner(
         credential_id: None,
         credential_version: None,
         authorization: None,
+        approval: None,
         event_type: event_type::RESTORE_COMPLETED,
         outcome: outcome::SUCCESS,
         reason_code: "restore".to_owned(),

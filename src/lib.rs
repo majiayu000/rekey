@@ -8,9 +8,12 @@ pub mod harness {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
 
+    use aws_lc_rs::rand::SystemRandom;
+    use aws_lc_rs::signature::{Ed25519KeyPair, KeyPair};
+    use data_encoding::{BASE64URL_NOPAD, HEXLOWER};
     use rekey_broker::runtime::{BrokerConfig, serve};
     use rekey_broker::testing::FakeUpstreamTransport;
-    use rekey_domain::ids::{PolicyRuleId, RequestId};
+    use rekey_domain::ids::{PolicyRuleId, PolicySignerId, RequestId};
     use rekey_domain::ipc::{self, Channel, FRAME_HEADER_LEN, FrameHeader, ProofKind, admin_msg};
     use rekey_vault::bootstrap::init_vault;
     use rekey_vault::crypto::kdf::Argon2Params;
@@ -60,6 +63,9 @@ pub mod harness {
         pub state_dir: PathBuf,
         pub fake: Arc<FakeUpstreamTransport>,
         pub serve_task: tokio::task::JoinHandle<()>,
+        policy_signer_id: PolicySignerId,
+        policy_signer: Arc<Ed25519KeyPair>,
+        policy_version: AtomicU64,
     }
 
     pub async fn start_broker() -> TestBroker {
@@ -83,6 +89,14 @@ pub mod harness {
         let serve_task = tokio::spawn(async move {
             must(serve(config).await, "serve test broker");
         });
+        let key_document = must(
+            Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()),
+            "generate policy key",
+        );
+        let policy_signer = Arc::new(must(
+            Ed25519KeyPair::from_pkcs8(key_document.as_ref()),
+            "parse generated policy key",
+        ));
         let admin_sock = state_dir.join("runtime").join("admin.sock");
         let mut ready = false;
         for _ in 0..200 {
@@ -98,6 +112,9 @@ pub mod harness {
             state_dir,
             fake,
             serve_task,
+            policy_signer_id: next_test_id(PolicySignerId::from_bytes),
+            policy_signer,
+            policy_version: AtomicU64::new(1),
         }
     }
 
@@ -301,13 +318,28 @@ pub mod harness {
         action_version: u64,
         principal_id: &str,
     ) {
-        static VERSION: AtomicU64 = AtomicU64::new(1);
-        let version = VERSION.fetch_add(1, Ordering::Relaxed);
+        let trust = serde_json::json!({
+            "format_version": 1,
+            "signer_id": broker.policy_signer_id,
+            "algorithm": "ed25519",
+            "public_key": HEXLOWER.encode(broker.policy_signer.public_key().as_ref()),
+        });
+        call(
+            &broker.admin_sock(),
+            Channel::Admin,
+            admin_msg::POLICY_TRUST_INSTALL,
+            trust.to_string().as_bytes(),
+            &proof_body(PASSWORD),
+        )
+        .await
+        .ok();
+        let version = broker.policy_version.fetch_add(1, Ordering::Relaxed);
         let resource = serde_json::json!({"type": "test-action", "id": action_id});
         let snapshot = serde_json::json!({
-            "format_version": 1,
+            "format_version": 2,
             "version": version,
-            "expires_at_ms": i64::MAX,
+            "expires_at_ms": 4_102_444_800_000_i64,
+            "approvers": [],
             "bindings": [{
                 "action_id": action_id,
                 "version": action_version,
@@ -325,11 +357,27 @@ pub mod harness {
                 "parameters": {"kind": "any_validated"},
             }],
         });
+        let unsigned = serde_json::json!({
+            "format_version": 1,
+            "signer_id": broker.policy_signer_id,
+            "snapshot": snapshot,
+        });
+        let mut message = b"RKPOLICY\0\x01".to_vec();
+        message.extend_from_slice(&must(serde_jcs::to_vec(&unsigned), "canonical policy"));
+        let signature = BASE64URL_NOPAD.encode(broker.policy_signer.sign(&message).as_ref());
+        let mut bundle = unsigned;
+        must(
+            bundle
+                .as_object_mut()
+                .ok_or("policy envelope is not an object"),
+            "policy envelope",
+        )
+        .insert("signature".to_owned(), serde_json::Value::String(signature));
         call(
             &broker.admin_sock(),
             Channel::Admin,
             admin_msg::POLICY_ACTIVATE,
-            snapshot.to_string().as_bytes(),
+            &must(serde_jcs::to_vec(&bundle), "canonical bundle"),
             &proof_body(PASSWORD),
         )
         .await
@@ -343,6 +391,7 @@ pub mod harness {
             "action_version": version,
             "content_type": "application/json",
             "extra_headers": [],
+            "approval_grants": [],
         })
     }
 }

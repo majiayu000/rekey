@@ -128,6 +128,22 @@ typed_id!(
     /// Identifies one determining rule inside a policy snapshot.
     PolicyRuleId
 );
+typed_id!(
+    /// Identifies the immutable signer trusted for policy bundles.
+    PolicySignerId
+);
+typed_id!(
+    /// Identifies one approver public key inside a policy snapshot.
+    ApproverId
+);
+typed_id!(
+    /// Identifies one Broker-created approval challenge.
+    ApprovalRequestId
+);
+typed_id!(
+    /// Identifies one signed approval grant and its use counter.
+    ApprovalId
+);
 
 #[cfg(test)]
 mod tests {

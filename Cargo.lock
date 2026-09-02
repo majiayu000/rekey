@@ -1581,6 +1581,7 @@ dependencies = [
  "rusqlite",
  "rustls",
  "serde",
+ "serde_jcs",
  "serde_json",
  "sha2",
  "subtle",
@@ -1622,9 +1623,12 @@ dependencies = [
 name = "rekey-integration"
 version = "2.0.0-alpha.1"
 dependencies = [
+ "aws-lc-rs",
+ "data-encoding",
  "rekey-broker",
  "rekey-domain",
  "rekey-vault",
+ "serde_jcs",
  "serde_json",
  "tempfile",
  "tokio",
@@ -1635,6 +1639,7 @@ dependencies = [
 name = "rekey-policy"
 version = "2.0.0-alpha.1"
 dependencies = [
+ "aws-lc-rs",
  "data-encoding",
  "jsonschema",
  "rekey-domain",

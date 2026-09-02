@@ -182,9 +182,10 @@ import json, pathlib, sys, time, uuid
 path, action_id, action_version, principal_id = sys.argv[1:]
 resource = {"type": "fixed-http-action", "id": action_id}
 pathlib.Path(path).write_text(json.dumps({
-    "format_version": 1,
+    "format_version": 2,
     "version": 1,
     "expires_at_ms": int(time.time() * 1000) + 600000,
+    "approvers": [],
     "bindings": [{
         "action_id": action_id,
         "version": int(action_version),
@@ -203,7 +204,13 @@ pathlib.Path(path).write_text(json.dumps({
     }],
 }))
 PY
-printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate --file "$policy_file" --password-stdin >/dev/null
+python3 "$ROOT/scripts/sign-test-policy.py" policy --key-dir "$WORKDIR/policy-key" \
+  --snapshot "$policy_file" --bundle "$WORKDIR/policy-bundle.json" \
+  --trust "$WORKDIR/policy-trust.json"
+printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy trust install \
+  --file "$WORKDIR/policy-trust.json" --step-up-stdin >/dev/null
+printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate \
+  --file "$WORKDIR/policy-bundle.json" --step-up-stdin >/dev/null
 "$REKEY" --state-dir "$STATE" policy status | grep -q '"version": 1'
 
 if [[ "${REKEY_ACCEPTANCE_SKIP_EXECUTE:-}" != "1" ]]; then
