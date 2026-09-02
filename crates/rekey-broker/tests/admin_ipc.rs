@@ -178,32 +178,29 @@ async fn bodyless_admin_messages_reject_attached_bodies() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn admin_and_policy_status_keep_an_unlocked_broker_active() {
-    let broker = common::start_broker_with(Duration::from_secs(2), Duration::from_secs(2)).await;
-    common::unlock(&broker).await;
+    for message in [admin_msg::STATUS, admin_msg::POLICY_STATUS] {
+        let broker =
+            common::start_broker_with(Duration::from_secs(1), Duration::from_secs(2)).await;
+        common::unlock(&broker).await;
 
-    for message in [
-        admin_msg::STATUS,
-        admin_msg::STATUS,
-        admin_msg::POLICY_STATUS,
-        admin_msg::POLICY_STATUS,
-    ] {
-        tokio::time::sleep(Duration::from_millis(700)).await;
-        let response =
-            common::call(&broker.admin_sock(), Channel::Admin, message, b"{}", &[]).await;
-        response.ok();
+        for _ in 0..5 {
+            tokio::time::sleep(Duration::from_millis(700)).await;
+            common::call(&broker.admin_sock(), Channel::Admin, message, b"{}", &[])
+                .await
+                .ok();
+        }
+
+        let status = common::call(
+            &broker.agent_sock(),
+            Channel::Agent,
+            agent_msg::AGENT_STATUS,
+            b"{}",
+            &[],
+        )
+        .await;
+        assert_eq!(status.ok()["state"], "unlocked", "message {message}");
+        broker.shutdown().await;
     }
-
-    tokio::time::sleep(Duration::from_secs(1)).await;
-    let status = common::call(
-        &broker.admin_sock(),
-        Channel::Admin,
-        admin_msg::STATUS,
-        b"{}",
-        &[],
-    )
-    .await;
-    assert_eq!(status.ok()["state"], "unlocked");
-    broker.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

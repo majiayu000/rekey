@@ -16,6 +16,7 @@ use rekey_domain::ipc::{Channel, FrameHeader, admin_msg, agent_msg};
 use rekey_vault::store::SqliteRecordStore;
 use tokio::io::AsyncWriteExt;
 use tokio::net::UnixStream;
+use tokio::sync::Semaphore;
 
 fn assert_each_started_has_one_terminal(log: &[(Vec<u8>, String)]) {
     let mut started: HashMap<Vec<u8>, u32> = HashMap::new();
@@ -44,6 +45,27 @@ struct PanicTransport;
 impl UpstreamTransport for PanicTransport {
     fn send(&self, _request: UpstreamRequest) -> UpstreamFuture<'_> {
         Box::pin(async { panic!("injected execution child panic") })
+    }
+}
+
+struct GatedTransport {
+    admitted: Arc<Semaphore>,
+    release: Arc<Semaphore>,
+}
+
+impl UpstreamTransport for GatedTransport {
+    fn send(&self, _request: UpstreamRequest) -> UpstreamFuture<'_> {
+        let admitted = Arc::clone(&self.admitted);
+        let release = Arc::clone(&self.release);
+        Box::pin(async move {
+            admitted.add_permits(1);
+            release.acquire_owned().await.unwrap().forget();
+            Ok(UpstreamResponse {
+                status: 200,
+                headers: vec![("content-type".to_owned(), "application/json".to_owned())].into(),
+                body: b"{\"ok\":true}".to_vec().into(),
+            })
+        })
     }
 }
 
@@ -95,7 +117,7 @@ async fn idle_lock_revokes_sessions_permanently() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn completed_execution_refresh_prevents_stale_idle_lock() {
-    let broker = common::start_broker_with(Duration::from_secs(1), Duration::from_secs(2)).await;
+    let broker = common::start_broker_with(Duration::from_secs(8), Duration::from_secs(2)).await;
     common::unlock(&broker).await;
     let credential_id = common::add_credential(&broker, "idle-race", b"v").await;
     let (action_id, version) = common::create_action(&broker, &credential_id).await;
@@ -107,7 +129,7 @@ async fn completed_execution_refresh_prevents_stale_idle_lock() {
             headers: vec![("content-type".to_owned(), "application/json".to_owned())].into(),
             body: b"{\"ok\":true}".to_vec().into(),
         }),
-        Duration::from_millis(1500),
+        Duration::from_secs(6),
     );
     let meta = common::execute_meta(&token, &action_id, version);
     let response = common::call(
@@ -119,7 +141,9 @@ async fn completed_execution_refresh_prevents_stale_idle_lock() {
     )
     .await;
     assert_eq!(response.ok()["upstream_status"], 200);
-    tokio::time::sleep(Duration::from_millis(250)).await;
+    // The idle task checks at most every five seconds. This crosses at least
+    // one post-completion sweep while remaining inside the eight-second window.
+    tokio::time::sleep(Duration::from_secs(6)).await;
 
     let status = common::call(
         &broker.agent_sock(),
@@ -487,20 +511,23 @@ async fn every_started_has_terminal_on_success_and_indeterminate_response() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn session_create_during_drain_is_rejected() {
-    let broker = common::start_broker().await;
+    let admitted = Arc::new(Semaphore::new(0));
+    let release = Arc::new(Semaphore::new(0));
+    let fake = Arc::new(FakeUpstreamTransport::new());
+    let broker = common::start_broker_with_transport(
+        Duration::from_secs(300),
+        Duration::from_secs(2),
+        fake,
+        Arc::new(GatedTransport {
+            admitted: Arc::clone(&admitted),
+            release: Arc::clone(&release),
+        }),
+    )
+    .await;
     common::unlock(&broker).await;
     let credential_id = common::add_credential(&broker, "race", b"v").await;
     let (action_id, version) = common::create_action(&broker, &credential_id).await;
     let token = common::create_session(&broker, &action_id, version).await;
-
-    broker.fake.push_response_delayed(
-        Ok(UpstreamResponse {
-            status: 200,
-            headers: vec![("content-type".to_owned(), "application/json".to_owned())].into(),
-            body: b"{\"ok\":true}".to_vec().into(),
-        }),
-        Duration::from_millis(200),
-    );
 
     let agent = broker.agent_sock();
     let admin = broker.admin_sock();
@@ -515,22 +542,37 @@ async fn session_create_during_drain_is_rejected() {
         )
         .await
     });
-    tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            if !broker.fake.requests.lock().unwrap().is_empty() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .expect("execution did not reach upstream");
+    tokio::time::timeout(Duration::from_secs(2), admitted.acquire())
+        .await
+        .expect("execution did not reach upstream")
+        .unwrap()
+        .forget();
 
     let lock_admin = admin.clone();
     let lock = tokio::spawn(async move {
         common::call(&lock_admin, Channel::Admin, admin_msg::LOCK, b"{}", &[]).await
     });
-    tokio::time::sleep(Duration::from_millis(20)).await;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let probe = common::call(
+                &broker.agent_sock(),
+                Channel::Agent,
+                agent_msg::EXECUTE_FIXED_HTTP_ACTION,
+                common::execute_meta("invalid", &action_id, version)
+                    .to_string()
+                    .as_bytes(),
+                b"{}",
+            )
+            .await;
+            match probe.err_code().as_str() {
+                "DRAINING" => break,
+                "INVALID_CAPABILITY" => tokio::time::sleep(Duration::from_millis(5)).await,
+                code => panic!("unexpected drain probe result: {code}"),
+            }
+        }
+    })
+    .await
+    .expect("lock did not enter draining");
 
     let create_meta = serde_json::json!({
         "actions": [{"action_id": action_id, "version": version}],
@@ -545,12 +587,9 @@ async fn session_create_during_drain_is_rejected() {
         &common::proof_body(common::PASSWORD),
     )
     .await;
-    assert!(
-        ["DRAINING", "LOCKED"].contains(&created.err_code().as_str()),
-        "SessionCreate during drain must fail, got {}",
-        created.err_code()
-    );
+    assert_eq!(created.err_code(), "DRAINING");
 
+    release.add_permits(2);
     exec.await.unwrap().ok();
     lock.await.unwrap().ok();
 

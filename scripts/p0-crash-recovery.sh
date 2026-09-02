@@ -179,8 +179,22 @@ PY
 # Inspecting the real WAL while rekeyd is stopped makes the committed-started
 # boundary observable even when the public upstream returns very quickly.
 python3 - "$STATE/vault.sqlite3" "$BROKER_PID" <<'PY' &
-import os, signal, sqlite3, sys, time
+import os, signal, sqlite3, subprocess, sys, time
 db, pid = sys.argv[1], int(sys.argv[2])
+
+def wait_stopped():
+    deadline = time.monotonic() + 1
+    while time.monotonic() < deadline:
+        try:
+            state = subprocess.check_output(
+                ["ps", "-o", "state=", "-p", str(pid)], text=True
+            ).strip()
+        except subprocess.CalledProcessError:
+            raise SystemExit("rekeyd exited before its stopped state was observable")
+        if state.startswith("T"):
+            return
+        time.sleep(0.001)
+    raise SystemExit("rekeyd did not enter stopped state")
 
 def unmatched_request():
     con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=0.1)
@@ -204,7 +218,7 @@ try:
     while time.monotonic() < deadline:
         os.kill(pid, signal.SIGSTOP)
         stopped = True
-        time.sleep(0.001)
+        wait_stopped()
         if unmatched_request():
             os.kill(pid, signal.SIGKILL)
             stopped = False
