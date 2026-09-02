@@ -386,6 +386,7 @@ impl Worker {
             AuthorityCommand::AppendAudits {
                 drafts,
                 not_after,
+                wall_not_after_ms,
                 reply,
             } => {
                 let refreshes_idle = drafts.iter().any(|draft| {
@@ -399,11 +400,17 @@ impl Worker {
                             | event_type::POLICY_ACTIVATED
                     )
                 });
-                let result = if mutation_expired(not_after) {
-                    Err(AuthorityError::AuthorityBusy)
-                } else {
+                let result = (|| {
+                    if mutation_expired(not_after) {
+                        return Err(AuthorityError::AuthorityBusy);
+                    }
+                    if let Some(deadline_ms) = wall_not_after_ms
+                        && now_ms()? >= deadline_ms
+                    {
+                        return Err(AuthorityError::AuthorityBusy);
+                    }
                     self.append_audits(drafts)
-                };
+                })();
                 if refreshes_idle {
                     self.touch_if_ok(&result);
                 }

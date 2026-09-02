@@ -87,6 +87,30 @@ async fn expired_mutation_command_never_commits_later() {
         .unwrap_err();
     assert!(matches!(audit_error, AuthorityError::AuthorityBusy));
 
+    let wall_expired_error = handle
+        .commit_audits_before(
+            vec![AuditDraft {
+                request_id: None,
+                session_id: Some(rekey_domain::ids::SessionId::new_random()),
+                action_id: None,
+                action_version: None,
+                credential_id: None,
+                credential_version: None,
+                authorization: None,
+                approval: None,
+                event_type: event_type::SESSION_REVOKED,
+                outcome: outcome::SUCCESS,
+                reason_code: "wall-expired-test".to_owned(),
+                upstream_status: None,
+                latency_ms: None,
+            }],
+            None,
+            Some(0),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(wall_expired_error, AuthorityError::AuthorityBusy));
+
     handle
         .shutdown(Some(common::password_proof()))
         .await
@@ -94,13 +118,9 @@ async fn expired_mutation_command_never_commits_later() {
     join.join().unwrap();
 
     let store = SqliteRecordStore::open(&rekey_vault::paths::vault_db(&vault.state_dir)).unwrap();
-    assert!(
-        !store
-            .audit_event_types()
-            .unwrap()
-            .iter()
-            .any(|kind| kind == event_type::SESSION_CREATED)
-    );
+    assert!(!store.audit_event_types().unwrap().iter().any(|kind| {
+        kind == event_type::SESSION_CREATED || kind == event_type::SESSION_REVOKED
+    }));
 }
 
 #[tokio::test]

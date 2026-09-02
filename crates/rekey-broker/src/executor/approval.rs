@@ -278,7 +278,7 @@ impl ActionExecutor {
         evaluated: &EvaluatedAuthorization,
         raw_grants: &[String],
         deadline_at: Instant,
-    ) -> Result<(Vec<AuditDraft>, Instant), BrokerError> {
+    ) -> Result<(Vec<AuditDraft>, Instant, i64), BrokerError> {
         if raw_grants.len() > 2 {
             self.reject_approval(
                 &evaluated.ctx,
@@ -328,6 +328,8 @@ impl ActionExecutor {
                 return Err(BrokerError::Denied(error.code()));
             }
         };
+        let not_after = evidence.not_after;
+        let wall_not_after_ms = evidence.wall_not_after_ms;
         Ok((
             evidence
                 .evidence
@@ -342,7 +344,8 @@ impl ActionExecutor {
                     )
                 })
                 .collect(),
-            evidence.not_after,
+            not_after,
+            wall_not_after_ms,
         ))
     }
 

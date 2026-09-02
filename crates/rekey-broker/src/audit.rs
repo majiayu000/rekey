@@ -46,6 +46,7 @@ struct TerminalSubmission {
 struct StartedSubmission {
     drafts: Vec<AuditDraft>,
     not_after: Option<Instant>,
+    wall_not_after_ms: Option<i64>,
     ctx: ExecutionAuditContext,
     queue: AuditSubmissionQueue,
     reply: oneshot::Sender<Result<StartedAuditGuard, AuthorityError>>,
@@ -228,6 +229,7 @@ impl TerminalAuditTracker {
         ctx: ExecutionAuditContext,
         mut preceding: Vec<AuditDraft>,
         not_after: Option<Instant>,
+        wall_not_after_ms: Option<i64>,
     ) -> Result<StartedAuditGuard, AuthorityError> {
         preceding.push(execution_started(&ctx));
         let (reply, result) = oneshot::channel();
@@ -235,6 +237,7 @@ impl TerminalAuditTracker {
             .enqueue(AuditSubmission::Started(Box::new(StartedSubmission {
                 drafts: preceding,
                 not_after,
+                wall_not_after_ms,
                 ctx,
                 queue: self.queue.clone(),
                 reply,
@@ -286,9 +289,13 @@ impl TerminalAuditTracker {
 pub fn spawn_terminal_worker(
     authority: AuthorityHandle,
 ) -> (Arc<TerminalAuditTracker>, JoinHandle<()>) {
-    spawn_terminal_worker_with_batch(move |drafts, not_after| {
+    spawn_terminal_worker_with_batch(move |drafts, not_after, wall_not_after_ms| {
         let authority = authority.clone();
-        async move { authority.commit_audits_before(drafts, not_after).await }
+        async move {
+            authority
+                .commit_audits_before(drafts, not_after, wall_not_after_ms)
+                .await
+        }
     })
 }
 
@@ -301,7 +308,7 @@ where
     Fut: Future<Output = Result<(), AuthorityError>> + Send + 'static,
 {
     let commit = Arc::new(commit);
-    spawn_terminal_worker_with_batch(move |drafts, _| {
+    spawn_terminal_worker_with_batch(move |drafts, _, _| {
         let commit = Arc::clone(&commit);
         async move {
             for draft in drafts {
@@ -316,7 +323,7 @@ fn spawn_terminal_worker_with_batch<F, Fut>(
     commit: F,
 ) -> (Arc<TerminalAuditTracker>, JoinHandle<()>)
 where
-    F: Fn(Vec<AuditDraft>, Option<Instant>) -> Fut + Send + 'static,
+    F: Fn(Vec<AuditDraft>, Option<Instant>, Option<i64>) -> Fut + Send + 'static,
     Fut: Future<Output = Result<(), AuthorityError>> + Send + 'static,
 {
     let (tx, mut rx) = mpsc::unbounded_channel::<AuditSubmission>();
@@ -332,7 +339,7 @@ where
             match submission {
                 AuditSubmission::Terminal(submission) => {
                     let submission = *submission;
-                    let result = commit(vec![submission.draft], None).await;
+                    let result = commit(vec![submission.draft], None, None).await;
                     if result.is_err() {
                         failed.store(true, Ordering::SeqCst);
                     }
@@ -344,11 +351,12 @@ where
                     let StartedSubmission {
                         drafts,
                         not_after,
+                        wall_not_after_ms,
                         ctx,
                         queue,
                         reply,
                     } = *submission;
-                    let result = commit(drafts, not_after)
+                    let result = commit(drafts, not_after, wall_not_after_ms)
                         .await
                         .map(|()| StartedAuditGuard::new(queue, ctx));
                     if result.is_err() {
@@ -512,7 +520,7 @@ mod tests {
             let tracker = Arc::clone(&tracker);
             async move {
                 tracker
-                    .commit_started(execution_context(), Vec::new(), None)
+                    .commit_started(execution_context(), Vec::new(), None, None)
                     .await
             }
         });
@@ -543,19 +551,31 @@ mod tests {
         let observed = Arc::new(Mutex::new(Vec::new()));
         let (tracker, worker) = spawn_terminal_worker_with_batch({
             let observed = Arc::clone(&observed);
-            move |_, not_after| {
-                observed.lock().unwrap().push(not_after);
+            move |_, not_after, wall_not_after_ms| {
+                observed
+                    .lock()
+                    .unwrap()
+                    .push((not_after, wall_not_after_ms));
                 async { Ok(()) }
             }
         });
         let deadline = Instant::now() + Duration::from_secs(1);
+        let wall_deadline_ms = 1_900_000_000_000;
         let mut guard = tracker
-            .commit_started(execution_context(), Vec::new(), Some(deadline))
+            .commit_started(
+                execution_context(),
+                Vec::new(),
+                Some(deadline),
+                Some(wall_deadline_ms),
+            )
             .await
             .unwrap();
         guard.submit_blocked("test-complete");
         tracker.wait_idle(Duration::from_secs(1)).await.unwrap();
-        assert_eq!(observed.lock().unwrap()[0], Some(deadline));
+        assert_eq!(
+            observed.lock().unwrap()[0],
+            (Some(deadline), Some(wall_deadline_ms))
+        );
         drop(guard);
         drop(tracker);
         worker.await.unwrap();

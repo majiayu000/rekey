@@ -11,6 +11,7 @@ use rekey_domain::DomainError;
 use rekey_domain::action::FixedHttpAction;
 use rekey_domain::authorization::Decision;
 use rekey_domain::capability::ActionVersionRef;
+use rekey_domain::ids::PolicySignerId;
 use rekey_domain::ids::RequestId;
 use rekey_vault::AuthorityError;
 use rekey_vault::handle::AuthorityHandle;
@@ -90,6 +91,25 @@ pub struct ExecuteRequest {
     pub extra_headers: Vec<(String, String)>,
     pub body: Vec<u8>,
     pub approval_grants: Vec<String>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct PolicyIdentity {
+    signer_id: Option<PolicySignerId>,
+    version: u64,
+    policy_digest: [u8; 32],
+    bundle_digest: Option<[u8; 32]>,
+}
+
+impl PolicyIdentity {
+    fn of(policy: &ActivePolicy) -> Self {
+        Self {
+            signer_id: policy.signer_id(),
+            version: policy.snapshot().version().get(),
+            policy_digest: policy.snapshot().digest(),
+            bundle_digest: policy.bundle_digest(),
+        }
+    }
 }
 
 pub struct ExecuteOutcome {
@@ -179,14 +199,14 @@ impl ActionExecutor {
                 return Err(BrokerError::Denied("approval-not-required"));
             }
             Decision::RequireApproval { .. } => {
-                let (accepted, deadline) = self
+                let (accepted, deadline, wall_deadline_ms) = self
                     .verify_and_reserve_approvals(
                         &evaluated,
                         &request.approval_grants,
                         effect_deadline,
                     )
                     .await?;
-                (accepted, Some(deadline))
+                (accepted, Some((deadline, wall_deadline_ms)))
             }
             Decision::Deny { .. } => return Err(BrokerError::Denied("policy-evaluation-failed")),
         };
@@ -195,13 +215,15 @@ impl ActionExecutor {
         // checks are advisory; no drain may transition between this re-check
         // and transfer of durable started/terminal ownership.
         let admission_deadline = approval_deadline
-            .map(|approval_deadline| effect_deadline.min(approval_deadline))
+            .map(|(approval_deadline, _)| effect_deadline.min(approval_deadline))
             .unwrap_or(effect_deadline);
         let started = tokio::time::timeout_at(
             tokio::time::Instant::from_std(admission_deadline),
             commit_started_while_running(
                 &self.lifecycle,
                 &self.terminals,
+                &self.policy,
+                Some(PolicyIdentity::of(&evaluated.snapshot)),
                 evaluated.ctx,
                 accepted,
                 approval_deadline,
@@ -651,9 +673,11 @@ async fn try_begin_remote_effect(
 async fn commit_started_while_running(
     lifecycle: &Lifecycle,
     terminals: &TerminalAuditTracker,
+    policy: &RwLock<Option<Arc<ActivePolicy>>>,
+    expected_policy: Option<PolicyIdentity>,
     ctx: ExecutionAuditContext,
     preceding: Vec<rekey_vault::command::AuditDraft>,
-    not_after: Option<Instant>,
+    approval_deadline: Option<(Instant, i64)>,
 ) -> Result<StartedAuditGuard, BrokerError> {
     let _coordinator = match lifecycle.try_coordinate() {
         Ok(owner) => owner,
@@ -663,8 +687,19 @@ async fn commit_started_while_running(
         Err(_) => return Err(BrokerError::Authority(AuthorityError::Draining)),
     };
     lifecycle.reject_if_not_running()?;
+    let current_policy = policy.read().await;
+    if current_policy.as_deref().map(PolicyIdentity::of) != expected_policy {
+        drop(current_policy);
+        terminals
+            .commit(execution_blocked(&ctx, "policy-changed"))
+            .await
+            .map_err(BrokerError::Authority)?;
+        return Err(BrokerError::Denied("policy-changed"));
+    }
+    drop(current_policy);
+    let (not_after, wall_not_after_ms) = approval_deadline.unzip();
     terminals
-        .commit_started(ctx, preceding, not_after)
+        .commit_started(ctx, preceding, not_after, wall_not_after_ms)
         .await
         .map_err(BrokerError::Authority)
 }

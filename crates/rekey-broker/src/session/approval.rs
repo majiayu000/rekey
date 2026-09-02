@@ -45,6 +45,7 @@ pub(super) struct ExpiredApproval {
 pub(crate) struct ApprovalReservation {
     pub(crate) evidence: Vec<ApprovalEvidence>,
     pub(crate) not_after: Instant,
+    pub(crate) wall_not_after_ms: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,6 +131,7 @@ impl SessionRegistry {
         let mut approval_ids = BTreeSet::new();
         let mut approver_ids = BTreeSet::new();
         let mut not_after = stored.monotonic_deadline;
+        let mut wall_not_after_ms = challenge.max_expires_at_ms;
         for verified in grants {
             let grant = verified.grant();
             if !approval_ids.insert(grant.approval_id) {
@@ -164,6 +166,7 @@ impl SessionRegistry {
                 stored,
                 monotonic_now,
             )?);
+            wall_not_after_ms = wall_not_after_ms.min(grant.expires_at_ms);
             if let Some(usage) = entry
                 .approval_uses
                 .iter()
@@ -205,6 +208,7 @@ impl SessionRegistry {
         Ok(ApprovalReservation {
             evidence,
             not_after,
+            wall_not_after_ms,
         })
     }
 }

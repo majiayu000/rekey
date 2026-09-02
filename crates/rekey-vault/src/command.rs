@@ -195,6 +195,7 @@ pub enum AuthorityCommand {
     AppendAudits {
         drafts: Vec<AuditDraft>,
         not_after: Option<Instant>,
+        wall_not_after_ms: Option<i64>,
         reply: Reply<()>,
     },
     AuditQuery {

@@ -214,7 +214,15 @@ fn approval_fields_match_event(event: &AuditRecord) -> bool {
                 && event.approval_id.is_some()
                 && event.approver_id.is_some()
         }
-        "approval.rejected" => has_authorization,
+        "approval.rejected" => {
+            let identifiers_are_complete = event.approval_request_id.is_some()
+                && event.approval_id.is_some()
+                && event.approver_id.is_some();
+            let identifiers_are_absent = event.approval_request_id.is_none()
+                && event.approval_id.is_none()
+                && event.approver_id.is_none();
+            has_authorization && (identifiers_are_complete || identifiers_are_absent)
+        }
         _ => {
             event.approval_request_id.is_none()
                 && event.approval_id.is_none()
@@ -351,5 +359,26 @@ mod tests {
             };
             assert!(page.validate_for(&query()).is_err());
         }
+    }
+
+    #[test]
+    fn rejected_approval_identifiers_are_complete_or_absent() {
+        let mut event = record(1);
+        event.event_type = "approval.rejected".to_owned();
+        event.principal_id = Some(PrincipalId::new_random());
+        event.policy_version = Some(1);
+        event.policy_digest_hex = Some("00".repeat(32));
+        event.policy_rule_id = Some(PolicyRuleId::new_random());
+        event.approval_request_id = Some(ApprovalRequestId::new_random());
+        let mut page = AuditPage {
+            schema: AUDIT_SCHEMA_V2.to_owned(),
+            snapshot_max_sequence: 1,
+            events: vec![event],
+            next_before_sequence: None,
+        };
+        assert!(page.validate_for(&query()).is_err());
+        page.events[0].approval_id = Some(ApprovalId::new_random());
+        page.events[0].approver_id = Some(ApproverId::new_random());
+        assert!(page.validate_for(&query()).is_ok());
     }
 }
