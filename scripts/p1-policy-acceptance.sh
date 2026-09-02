@@ -171,11 +171,16 @@ rule = {"id": str(uuid.uuid4()), "effect": "permit", "principal_id": principal,
     "action_id": action, "version": int(version), "resource": resource,
     "parameters": {"kind": "any_validated"}}
 pathlib.Path(path).write_text(json.dumps({"format_version": 2, "version": 3,
-    "expires_at_ms": int(time.time() * 1000) + 300, "approvers": [],
+    "expires_at_ms": int(time.time() * 1000) + 5000, "approvers": [],
     "bindings": [binding], "rules": [rule]}))
 PY
 activate_policy_file
-sleep 0.5
+for _ in $(seq 1 60); do
+  status="$($REKEY --state-dir "$STATE" policy status)"
+  printf '%s\n' "$status" | grep -q '"status": "expired"' && break
+  sleep 0.1
+done
+printf '%s\n' "$status" | grep -q '"status": "expired"'
 expect_denied "$REKEY" --state-dir "$STATE" execute "$action_ref" --capability "$token" --body-file "$WORKDIR/allowed.json" --content-type application/json
 [[ "$(tr -d '\n' <"$HITS")" -eq 1 ]]
 
