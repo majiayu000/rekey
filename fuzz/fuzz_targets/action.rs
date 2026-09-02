@@ -9,5 +9,7 @@ fuzz_target!(|data: &[u8]| {
     let _ = HttpsOrigin::parse(&text);
     let _ = ExactPath::parse(&text);
     let _ = HeaderName::new(&text);
-    let _ = serde_json::from_slice::<FixedHttpAction>(data);
+    if let Ok(action) = serde_json::from_slice::<FixedHttpAction>(data) {
+        let _ = action.validate();
+    }
 });

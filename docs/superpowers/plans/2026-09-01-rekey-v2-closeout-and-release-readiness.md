@@ -725,8 +725,8 @@ Matrix 的发布前状态已通过公开 Release erratum 说明；没有替换�
 **完成证据（2026-09-02）：** `fuzz/` 提供 IPC、Action normalization、policy
 parser、response sealing 和 backup/restore admission 五个独立 libFuzzer target 及各自
 seed corpus；`docs/fuzzing.md` 记录复现、最小化和稳定回归流程。PR #16 的
-[fuzz run](https://github.com/majiayu000/rekey/actions/runs/33599268943) 在 exact
-implementation head 对五个 target 各完成 2,000 次有界 smoke，全部成功且无 crash；
+[PR #16 checks](https://github.com/majiayu000/rekey/pull/16/checks) 在 exact head 对五个
+target 各完成 2,000 次有界 smoke，全部成功且无 crash；
 workflow 同时安装每周每 target 15 分钟的长时任务。本机相同五 target smoke 也全部
 通过，restore target 峰值 RSS 318 MiB，低于 2 GiB 限额。
 

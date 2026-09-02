@@ -45,16 +45,24 @@ use sealing::{contains_secret, headers_contain_secret, sealing_needles};
 /// fuzz package without exposing its secret-derived needles.
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
-pub fn fuzz_response_sealing(secret: &[u8], auth_value: &[u8], response: &[u8]) -> bool {
+pub fn fuzz_response_sealing(
+    secret: &[u8],
+    auth_value: &[u8],
+    response: &[u8],
+    as_header: bool,
+) -> bool {
     let needles = sealing_needles(secret, auth_value);
-    contains_secret(response, &needles)
-        || headers_contain_secret(
+    if as_header {
+        headers_contain_secret(
             &[(
                 "x-fuzz".to_owned(),
                 String::from_utf8_lossy(response).into(),
             )],
             &needles,
         )
+    } else {
+        contains_secret(response, &needles)
+    }
 }
 
 pub struct ExecuteRequest {

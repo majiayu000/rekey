@@ -1519,6 +1519,7 @@ dependencies = [
 name = "rekey-fuzz"
 version = "0.0.0"
 dependencies = [
+ "data-encoding",
  "libfuzzer-sys",
  "rekey-broker",
  "rekey-domain",

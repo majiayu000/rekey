@@ -8,6 +8,7 @@ publish = false
 cargo-fuzz = true
 
 [dependencies]
+data-encoding = "2"
 libfuzzer-sys = "0.4.13"
 rekey-broker = { path = "../crates/rekey-broker", features = ["fuzzing"] }
 rekey-domain = { path = "../crates/rekey-domain" }
