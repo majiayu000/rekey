@@ -1,6 +1,6 @@
 # Install, upgrade, service, and uninstall
 
-The public Alpha ships only two supported archives: macOS arm64 and Ubuntu
+The public Alpha ships only two supported archives: macOS 14 arm64 and Ubuntu
 24.04 x86_64. See [the platform matrix](alpha-scope.md) before installing.
 
 ## Download and verify
@@ -9,7 +9,7 @@ Set the version and target for your platform:
 
 ```bash
 REKEY_VERSION=v2.0.0-alpha.1
-REKEY_TARGET=aarch64-apple-darwin       # macOS arm64
+REKEY_TARGET=aarch64-apple-darwin       # macOS 14 arm64
 # REKEY_TARGET=x86_64-unknown-linux-gnu # Ubuntu 24.04 x86_64
 
 gh release download "$REKEY_VERSION" --repo majiayu000/rekey \

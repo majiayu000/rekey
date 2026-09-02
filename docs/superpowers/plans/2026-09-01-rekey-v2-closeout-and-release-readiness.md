@@ -472,7 +472,7 @@ git diff --check
 4. 每个承诺平台都有最终发行物测试计划。
 
 **完成证据（2026-09-02）：** 已冻结 `2.0.0-alpha.1`、Rust 1.95、Ubuntu
-24.04 x86_64 与 macOS 14+ arm64；仅通过 GitHub Release 分发预编译包。默认
+24.04 x86_64 与 macOS 14 arm64；仅通过 GitHub Release 分发预编译包。默认
 G1、有界 Linux G2 reference、升级/回滚和不支持范围记录在
 `docs/alpha-scope.md`。tag、Cargo/CLI version 和 Release 名称均为
 `v2.0.0-alpha.1` / `2.0.0-alpha.1`。
@@ -790,7 +790,7 @@ base64、base64url、percent-encoded 与 chunk-boundary 覆盖，并排除任意
 **验收标准：** 每个公开支持组合都有独立结果；未测试组合标为 experimental/unsupported，不从相邻环境外推。
 
 **完成证据（2026-09-02）：** `docs/alpha-scope.md` 只公开支持 Ubuntu 24.04
-x86_64 systemd 与 macOS 14+ arm64，并把其他 glibc Linux、Linux arm64、macOS Intel
+x86_64 systemd 与 macOS 14 arm64，并把其他 glibc Linux、Linux arm64、macOS Intel
 和 Windows 明确标为 experimental/unsupported。release run 33592538786 对两个支持
 组合分别完成 build、attestation、fresh-install、原生 service manager 和 public-URL
 smoke；没有从 Linux G2 reference 或相邻架构外推支持。

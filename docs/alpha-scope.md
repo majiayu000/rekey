@@ -7,7 +7,7 @@ Version: `2.0.0-alpha.1`
 | Platform | Architecture | Status | Artifact |
 | --- | --- | --- | --- |
 | Ubuntu 24.04 with systemd | x86_64 | Supported and release-tested | `rekey-v2.0.0-alpha.1-x86_64-unknown-linux-gnu.tar.gz` |
-| macOS 14 or newer | Apple silicon arm64 | Supported and release-tested | `rekey-v2.0.0-alpha.1-aarch64-apple-darwin.tar.gz` |
+| macOS 14 | Apple silicon arm64 | Supported and release-tested | `rekey-v2.0.0-alpha.1-aarch64-apple-darwin.tar.gz` |
 | Other glibc Linux distributions | x86_64 | Experimental source build only | None |
 | Linux arm64 | arm64 | Experimental; bounded G2 development evidence is not release support | None |
 | macOS Intel | x86_64 | Unsupported in this Alpha | None |
