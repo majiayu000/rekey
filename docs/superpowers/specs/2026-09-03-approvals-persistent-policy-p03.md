@@ -49,6 +49,10 @@ supplying a different signer ID or public key is replacement and is rejected.
 }
 ```
 
+The trust file is parsed once as a closed object with recursive duplicate-key
+and unknown-field rejection before any record is committed. Its signer ID,
+algorithm, and public key must all be canonical.
+
 `policy activate` now accepts only a signed policy bundle. An unsigned snapshot,
 unknown signer, malformed signature, expired snapshot, or invalid policy
 version fails without changing the active bundle. The first version is `1` and
@@ -126,26 +130,40 @@ mode requires `max_uses` to equal `1`; time-window mode requires a positive
 `max_uses` no greater than 10,000. `permit` and `forbid` rules must not contain
 `approval`.
 
-A required quorum cannot exceed the distinct allowlisted approvers. A
-time-window rule also declares `max_window_ms`, which must be positive and at
-most eight hours. A one-time rule has no window setting. `forbid` continues to
-win over both permit and approval rules. A direct permit wins only when no
-matching approval rule exists; policy authors cannot accidentally bypass an
-approval rule by adding a broad permit.
+A referenced approver ID must exist in the same snapshot's approver catalog,
+and quorum cannot exceed the distinct allowlisted approvers. A time-window rule
+also declares `max_window_ms`, which must be positive and at most eight hours.
+A one-time rule has no window setting. `forbid` continues to win over both
+permit and approval rules. A direct permit wins only when no matching approval
+rule exists; policy authors cannot accidentally bypass an approval rule by
+adding a broad permit.
 
 Overlapping approval rules for the same principal, action, and resource must
-have identical approver allowlists, quorum, mode, and window. `any-validated`
-overlaps every exact parameter hash and equal exact hashes overlap each other;
-a snapshot with conflicting requirements is invalid. When identical rules
-match, the lowest rule ID remains the deterministic determining rule.
+have identical approver allowlists, quorum, mode, `max_uses`, and window.
+`any-validated` overlaps every exact parameter hash and equal exact hashes
+overlap each other; a snapshot with conflicting requirements is invalid. When
+identical rules match, the lowest rule ID remains the deterministic determining
+rule.
 
 ## 4. Durable policy lifecycle
 
-The vault schema stores one sealed trust record and one current signed bundle.
+The vault schema initializes one mandatory sealed policy-state singleton with
+every new vault. It records whether trust has ever been installed, whether a
+bundle has ever been activated, the immutable signer ID, highest accepted
+version, policy digest, bundle digest, and update time, using nullable fields
+only in the never-installed or never-activated states. Optional sealed trust and
+current-bundle rows must exactly match that singleton. Missing singleton state,
+an impossible field combination, a missing row named by the state, or any seal
+mismatch faults the Authority; deleting an entire optional row can never look
+like a fresh vault.
+
 Trust installation and bundle activation are AuthorityWorker mutations. Each
-commits its durable record and success audit in one SQLite transaction; an audit
-failure rolls back the mutation and faults the Authority under the existing
-fail-closed contract.
+updates the mandatory state, its corresponding record, and the success audit in
+one SQLite transaction; an audit failure rolls back the mutation and faults the
+Authority under the existing fail-closed contract. The singleton's initial
+authenticated state is created while `init` still holds the VRK. Replaying an
+older previously valid singleton together with its matching rows remains within
+the explicitly documented authenticated-state replay limitation.
 
 P-03 raises the vault format to schema v6. There is no in-place v5 migration or
 compatibility reader; existing v5 vaults remain usable only by the earlier
@@ -333,11 +351,14 @@ principal, action, resource, parameter hash, policy version, digest, and
 determining rule. Signatures, public keys, grant JSON, request bodies, headers,
 and capability tokens are never audit fields.
 
-P-03 advances the public audit record to `rekey.audit.v2` and the export header
-to `rekey.audit.export.v2`; both add only the three nullable approval IDs. The
-P-02 pagination, scan bound, redaction, create-new output, inode check, fsync,
-partial-file, and retention contracts stay unchanged. The CLI rejects unknown
-response fields and never silently reads a v1 record as v2.
+P-03 uses `rekey.audit.v2` for both the paginated page's `schema` field and each
+event's `record_type`. Export uses `rekey.audit.export.v2` for the header,
+`rekey.audit.v2` for every event, and `rekey.audit.export.complete.v2` for the
+trailer. These objects add only the three nullable approval IDs. The P-02
+pagination, scan bound, redaction, create-new output, inode check, fsync,
+partial-file, and retention contracts stay unchanged. The CLI requires this
+exact version combination, rejects unknown response fields, and never silently
+reads a v1 object as v2.
 
 Required approval event types are `approval.requested`, `approval.accepted`, and
 `approval.rejected`. Approval use is represented by the accepted event and the
@@ -369,11 +390,13 @@ P-03 is complete only when all of the following are fresh and passing:
 
 1. Policy tests cover canonical signing bytes, duplicate keys, malformed keys
    and signatures, unknown signer, tampering of every bound field, approver
-   catalog limits, forbid precedence, approval precedence, consecutive versions,
-   the reserved terminal value, and default deny.
+   catalog membership and limits, overlap conflicts including `max_uses`, forbid
+   precedence, approval precedence, consecutive versions, the reserved terminal
+   value, and default deny.
 2. Store tests cover one-time trust installation, sealed trust and bundle row
-   tampering, atomic activation/audit rollback, consecutive versions,
-   roll-forward of old contents, restart reload, expiry, and backup/restore.
+   tampering and deletion, mandatory policy-state absence and mismatch, atomic
+   activation/audit rollback, consecutive versions, roll-forward of old
+   contents, restart reload, expiry, and backup/restore.
 3. Approval tests cover exact tuple binding, one-time replay including a
    concurrent race and restart, reusable time windows, two distinct approvers,
    duplicate JSON keys and grants, signed use exhaustion including a concurrent
