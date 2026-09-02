@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use rekey_domain::ipc::{self, Channel, FRAME_HEADER_LEN, FrameHeader};
 use tokio::io::AsyncReadExt;
@@ -8,11 +7,8 @@ use tokio::sync::watch;
 use tokio::task::JoinSet;
 use zeroize::Zeroizing;
 
-use super::BrokerCtx;
+use super::{BrokerCtx, CAPACITY_REPLY_CONNECTIONS_PER_CHANNEL};
 use crate::error::BrokerError;
-
-const CAPACITY_REPLY_TIMEOUT: Duration = Duration::from_millis(250);
-const MAX_CAPACITY_REPLY_TASKS: usize = 128;
 
 pub(super) async fn accept_loop(
     listener: UnixListener,
@@ -25,7 +21,7 @@ pub(super) async fn accept_loop(
     let mut capacity_replies = JoinSet::new();
     loop {
         tokio::select! {
-            accepted = listener.accept(), if capacity_replies.len() < MAX_CAPACITY_REPLY_TASKS => {
+            accepted = listener.accept(), if slots.available_permits() > 0 || capacity_replies.len() < CAPACITY_REPLY_CONNECTIONS_PER_CHANNEL => {
                 let (stream, _) = match accepted {
                     Ok(accepted) => accepted,
                     Err(err) => {
@@ -38,6 +34,10 @@ pub(super) async fn accept_loop(
                         return Err(BrokerError::Io(err));
                     }
                 };
+                if !peer_allowed(&stream, &ctx, admin) {
+                    tracing::debug!(event = "runtime.peer_rejected");
+                    continue;
+                }
                 let Ok(permit) = Arc::clone(&slots).try_acquire_owned() else {
                     capacity_replies.spawn(reject_over_capacity(
                         stream,
@@ -68,7 +68,7 @@ pub(super) async fn accept_loop(
 }
 
 async fn reject_over_capacity(mut stream: UnixStream, channel: Channel) {
-    let deadline = tokio::time::Instant::now() + CAPACITY_REPLY_TIMEOUT;
+    let deadline = tokio::time::Instant::now() + crate::ipc::frame::FRAME_IO_TIMEOUT;
     let body_limit = if channel == Channel::Agent {
         ipc::AGENT_BODY_MAX_BYTES
     } else {
@@ -127,6 +127,14 @@ async fn reject_over_capacity(mut stream: UnixStream, channel: Channel) {
     }
 }
 
+fn peer_allowed(stream: &UnixStream, ctx: &BrokerCtx, admin: bool) -> bool {
+    match crate::ipc::peer::peer_uid(stream) {
+        Ok(uid) if admin => uid == crate::ipc::peer::current_uid(),
+        Ok(uid) => ctx.agent_uid_allowed(uid),
+        Err(_) => false,
+    }
+}
+
 async fn read_rejected_header(
     stream: &mut UnixStream,
     channel: Channel,
@@ -180,6 +188,8 @@ async fn read_exact_until(
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use rekey_domain::ids::RequestId;
     use rekey_domain::ipc::{self, ErrorEnvelope, FRAME_HEADER_LEN, FrameHeader};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -231,9 +241,12 @@ mod tests {
         };
         let rejection = tokio::spawn(reject_over_capacity(server, Channel::Agent));
         let client_task = tokio::spawn(async move {
-            client.write_all(&request.encode()).await.unwrap();
+            let encoded = request.encode();
+            client.write_all(&encoded[..1]).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            client.write_all(&encoded[1..]).await.unwrap();
             client.write_all(b"{}").await.unwrap();
-            tokio::time::sleep(CAPACITY_REPLY_TIMEOUT + Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(300)).await;
             client.write_all(&body).await.unwrap();
 
             let mut response_bytes = [0u8; FRAME_HEADER_LEN];

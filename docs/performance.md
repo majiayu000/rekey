@@ -13,9 +13,10 @@ The ignored `performance_and_soak_baseline` integration test records:
 - Authority queue saturation from 512 simultaneous submissions against the
   production 128-entry queue, including accepted latency and explicit
   `AUTHORITY_BUSY` counts.
-- 120 Agent plus 8 Admin IPC connections held simultaneously. One additional
-  connection on each socket must receive retryable `AUTHORITY_BUSY` instead of
-  being silently dropped or waiting without a bound.
+- The 128-connection Broker budget: 119 Agent plus 7 Admin request handlers
+  held simultaneously, with one overload responder reserved inside each
+  channel's 120/8 budget. Concurrent additional connections on both sockets
+  must receive retryable `AUTHORITY_BUSY` instead of a silent close.
 - Four held execution permits for one session. A fifth permit must return
   `INVALID_CAPABILITY`, and a released slot must be reusable.
 - Twelve 4 MiB response-sealing samples with p50/p95/p99/max latency and RSS.

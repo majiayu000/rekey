@@ -11,7 +11,10 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use rekey_broker::runtime::{MAX_ADMIN_CONNECTIONS, MAX_AGENT_CONNECTIONS};
+use rekey_broker::runtime::{
+    CAPACITY_REPLY_CONNECTIONS_PER_CHANNEL, MAX_ADMIN_CONNECTIONS, MAX_ADMIN_REQUEST_CONNECTIONS,
+    MAX_AGENT_CONNECTIONS, MAX_AGENT_REQUEST_CONNECTIONS,
+};
 use rekey_broker::session::SessionRegistry;
 use rekey_broker::upstream::UpstreamResponse;
 use rekey_domain::Timestamp;
@@ -198,8 +201,12 @@ async fn performance_and_soak_baseline() {
         },
         "data_scale": {
             "authority_queue_capacity": DEFAULT_QUEUE_CAPACITY,
-            "agent_connection_capacity": MAX_AGENT_CONNECTIONS,
-            "admin_connection_capacity": MAX_ADMIN_CONNECTIONS,
+            "agent_connection_budget": MAX_AGENT_CONNECTIONS,
+            "agent_request_handlers": MAX_AGENT_REQUEST_CONNECTIONS,
+            "admin_connection_budget": MAX_ADMIN_CONNECTIONS,
+            "admin_request_handlers": MAX_ADMIN_REQUEST_CONNECTIONS,
+            "capacity_reply_reserve_per_channel": CAPACITY_REPLY_CONNECTIONS_PER_CHANNEL,
+            "total_connection_budget": MAX_AGENT_CONNECTIONS + MAX_ADMIN_CONNECTIONS,
             "session_concurrency": 4,
             "large_response_bytes": LARGE_RESPONSE_BYTES,
             "soak_seconds": soak_seconds,
@@ -338,29 +345,29 @@ async fn measure_ipc_capacity(broker: &common::TestBroker) -> Value {
         &broker.agent_sock(),
         Channel::Agent,
         agent_msg::AGENT_STATUS,
-        MAX_AGENT_CONNECTIONS,
+        MAX_AGENT_REQUEST_CONNECTIONS,
     )
     .await;
     let admin = hold_connections(
         &broker.admin_sock(),
         Channel::Admin,
         admin_msg::STATUS,
-        MAX_ADMIN_CONNECTIONS,
+        MAX_ADMIN_REQUEST_CONNECTIONS,
     )
     .await;
     let open_all_latency = started.elapsed();
-    let agent_reject_us = rejected_connection_latency(
-        &broker.agent_sock(),
-        Channel::Agent,
-        agent_msg::AGENT_STATUS,
-    )
-    .await;
-    let admin_reject_us =
-        rejected_connection_latency(&broker.admin_sock(), Channel::Admin, admin_msg::STATUS).await;
+    let agent_socket = broker.agent_sock();
+    let admin_socket = broker.admin_sock();
+    let (agent_reject_us, admin_reject_us) = tokio::join!(
+        rejected_connection_latency(&agent_socket, Channel::Agent, agent_msg::AGENT_STATUS,),
+        rejected_connection_latency(&admin_socket, Channel::Admin, admin_msg::STATUS),
+    );
     tokio::join!(release_connections(agent), release_connections(admin));
     json!({
-        "held_agent": MAX_AGENT_CONNECTIONS,
-        "held_admin": MAX_ADMIN_CONNECTIONS,
+        "held_agent_request_handlers": MAX_AGENT_REQUEST_CONNECTIONS,
+        "held_admin_request_handlers": MAX_ADMIN_REQUEST_CONNECTIONS,
+        "simultaneous_capacity_responders": 2 * CAPACITY_REPLY_CONNECTIONS_PER_CHANNEL,
+        "total_broker_connections_at_rejection": MAX_AGENT_CONNECTIONS + MAX_ADMIN_CONNECTIONS,
         "open_all_latency_us": open_all_latency.as_micros(),
         "extra_agent_rejected_us": agent_reject_us,
         "extra_admin_rejected_us": admin_reject_us,
@@ -658,9 +665,7 @@ async fn measure_shutdown_drain(
     version: u64,
 ) -> (Duration, usize) {
     broker.fake.take_requests();
-    broker
-        .fake
-        .push_response_delayed(Ok(clean_response(32)), Duration::from_millis(250));
+    let release_effect = broker.fake.push_response_gated(Ok(clean_response(32)));
     let metadata = common::execute_meta(token, action_id, version)
         .to_string()
         .into_bytes();
@@ -685,17 +690,59 @@ async fn measure_shutdown_drain(
     .expect("execution did not reach upstream before shutdown");
     drop(execution);
     let started = Instant::now();
-    common::call(
-        &broker.admin_sock(),
-        Channel::Admin,
-        admin_msg::SHUTDOWN,
-        b"{}",
-        &common::proof_body(common::PASSWORD),
-    )
-    .await
-    .ok();
+    let admin_socket = broker.admin_sock();
+    let proof = common::proof_body(common::PASSWORD);
+    let shutdown = tokio::spawn(async move {
+        common::call(
+            &admin_socket,
+            Channel::Admin,
+            admin_msg::SHUTDOWN,
+            b"{}",
+            &proof,
+        )
+        .await
+    });
+    wait_for_agent_shutdown(&broker.agent_sock()).await;
+    release_effect.notify_one();
+    shutdown.await.unwrap().ok();
     let latency = started.elapsed();
     (latency, 1)
+}
+
+async fn wait_for_agent_shutdown(path: &Path) {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let Ok(mut stream) = UnixStream::connect(path).await else {
+                return;
+            };
+            let request = FrameHeader {
+                channel: Channel::Agent,
+                flags: 0,
+                message_type: agent_msg::AGENT_STATUS,
+                request_id: RequestId::new_random(),
+                metadata_len: 2,
+                body_len: 0,
+            };
+            if stream.write_all(&request.encode()).await.is_err()
+                || stream.write_all(b"{}").await.is_err()
+            {
+                return;
+            }
+            let mut response_bytes = [0u8; ipc::FRAME_HEADER_LEN];
+            if stream.read_exact(&mut response_bytes).await.is_err() {
+                return;
+            }
+            let response = FrameHeader::decode(&response_bytes).unwrap();
+            let mut metadata = vec![0u8; response.metadata_len as usize];
+            stream.read_exact(&mut metadata).await.unwrap();
+            let mut body = vec![0u8; response.body_len as usize];
+            stream.read_exact(&mut body).await.unwrap();
+            assert_eq!(response.message_type, ipc::resp_msg::OK);
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("broker never entered shutdown while the effect was in flight");
 }
 
 fn clean_response(size: usize) -> UpstreamResponse {

@@ -37,6 +37,11 @@ mod shutdown;
 
 pub const MAX_AGENT_CONNECTIONS: usize = 120;
 pub const MAX_ADMIN_CONNECTIONS: usize = 8;
+pub const CAPACITY_REPLY_CONNECTIONS_PER_CHANNEL: usize = 1;
+pub const MAX_AGENT_REQUEST_CONNECTIONS: usize =
+    MAX_AGENT_CONNECTIONS - CAPACITY_REPLY_CONNECTIONS_PER_CHANNEL;
+pub const MAX_ADMIN_REQUEST_CONNECTIONS: usize =
+    MAX_ADMIN_CONNECTIONS - CAPACITY_REPLY_CONNECTIONS_PER_CHANNEL;
 
 pub fn default_drain_timeout() -> Duration {
     Duration::from_millis(ACTION_TIMEOUT_HARD_MAX_MS as u64)
@@ -562,8 +567,8 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
 
     // Reserve Admin capacity. An untrusted Agent can exhaust only its own
     // channel and must never make lock or shutdown unreachable.
-    let admin_slots = Arc::new(tokio::sync::Semaphore::new(MAX_ADMIN_CONNECTIONS));
-    let agent_slots = Arc::new(tokio::sync::Semaphore::new(MAX_AGENT_CONNECTIONS));
+    let admin_slots = Arc::new(tokio::sync::Semaphore::new(MAX_ADMIN_REQUEST_CONNECTIONS));
+    let agent_slots = Arc::new(tokio::sync::Semaphore::new(MAX_AGENT_REQUEST_CONNECTIONS));
 
     let idle_ctx = Arc::clone(&ctx);
     let idle_lock = config.idle_lock;

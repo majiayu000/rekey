@@ -12,7 +12,6 @@ use tokio::sync::watch;
 use crate::error::BrokerError;
 use crate::executor::ExecuteRequest;
 use crate::ipc::frame::{IncomingFrame, read_frame, write_error, write_ok};
-use crate::ipc::peer;
 use crate::runtime::BrokerCtx;
 
 /// Agents must not distinguish credential-layer failures.
@@ -30,10 +29,6 @@ pub async fn handle_agent_conn(
     ctx: Arc<BrokerCtx>,
     mut shutdown: watch::Receiver<bool>,
 ) {
-    match peer::peer_uid(&stream) {
-        Ok(uid) if ctx.agent_uid_allowed(uid) => {}
-        _ => return,
-    }
     loop {
         if *shutdown.borrow() {
             return;

@@ -25,7 +25,6 @@ use tokio::sync::watch;
 
 use crate::error::BrokerError;
 use crate::ipc::frame::{FrameIoError, IncomingFrame, read_frame, write_error, write_ok};
-use crate::ipc::peer;
 use crate::runtime::BrokerCtx;
 use crate::session::CreateSessionError;
 
@@ -100,10 +99,6 @@ pub async fn handle_admin_conn(
     ctx: Arc<BrokerCtx>,
     mut shutdown: watch::Receiver<bool>,
 ) {
-    match peer::peer_uid(&stream) {
-        Ok(uid) if uid == peer::current_uid() => {}
-        _ => return,
-    }
     loop {
         if *shutdown.borrow() {
             return;

@@ -1706,7 +1706,7 @@ P0 目标不是 benchmark parity，而是有界行为：
 | Resource | Limit |
 | --- | --- |
 | Authority command queue | 128 |
-| Broker simultaneous IPC connections | 128 default: 120 Agent + 8 Admin reserved; one channel cannot consume the other's capacity |
+| Broker simultaneous IPC connections | 128 default: 120 Agent budget (119 request handlers + 1 overload responder) and 8 Admin budget (7 request handlers + 1 overload responder); one channel cannot consume the other's capacity |
 | Per-session concurrent executions | 4 default |
 | Admin metadata | 64 KiB |
 | Admin proof / credential input | each 64 KiB; encoded proof+secret body max 128 KiB + 9 bytes |
@@ -1718,6 +1718,11 @@ P0 目标不是 benchmark parity，而是有界行为：
 | Unlock derivations | serialized in AuthorityWorker |
 
 超限必须显式错误，不能截断、drop、warning 或无限排队。
+The per-channel overload responder is part of, not additional to, the stated
+120/8 connection budget. Once that responder is occupied, further sockets stay
+in the OS accept backlog until the bounded responder becomes available; the
+Broker must not accept them into an uncounted task. Peer identity is verified
+before either a request-handler or overload-responder slot is used.
 
 ## 25. Security Review Checklist
 
