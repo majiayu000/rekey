@@ -876,6 +876,8 @@ lock/unlock、14 次 backup 和 1 个实际 shutdown drain 全部成功。Author
 
 ### P-01 密码生命周期
 
+**独立 spec：** [`2026-09-02-password-lifecycle-p01.md`](../specs/2026-09-02-password-lifecycle-p01.md) 已接受；实现与验收在后续 PR 完成。
+
 - 修改密码。
 - recovery 后设置新密码。
 - 原子替换并禁用旧 password wrapper。
