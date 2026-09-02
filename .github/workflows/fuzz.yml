@@ -54,8 +54,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo metadata --locked --offline --format-version 1 > /tmp/rekey-root-metadata.json
-          cargo metadata --locked --offline --manifest-path fuzz/Cargo.toml --format-version 1 > /tmp/rekey-fuzz-metadata.json
+          cargo metadata --locked --format-version 1 > /tmp/rekey-root-metadata.json
+          cargo metadata --locked --manifest-path fuzz/Cargo.toml --format-version 1 > /tmp/rekey-fuzz-metadata.json
           jq -e -n \
             --slurpfile root /tmp/rekey-root-metadata.json \
             --slurpfile fuzz /tmp/rekey-fuzz-metadata.json '
