@@ -158,9 +158,10 @@ pub async fn call(
         metadata_len: metadata.len() as u32,
         body_len: body.len() as u32,
     };
-    stream.write_all(&header.encode()).await.unwrap();
-    stream.write_all(metadata).await.unwrap();
-    stream.write_all(body).await.unwrap();
+    let mut request = header.encode().to_vec();
+    request.extend_from_slice(metadata);
+    request.extend_from_slice(body);
+    stream.write_all(&request).await.unwrap();
 
     let mut header_buf = [0u8; FRAME_HEADER_LEN];
     stream
