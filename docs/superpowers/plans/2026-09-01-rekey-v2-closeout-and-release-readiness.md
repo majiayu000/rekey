@@ -354,8 +354,8 @@ rg -n 'docs/product-foundation|product-foundation/' README.md AGENTS.md CLAUDE.m
 
 - 完成日期：2026-09-01
 - PR：[PR #10](https://github.com/majiayu000/rekey/pull/10)
-- PR body 生产代码 head：`ac2e513c938e4abe349be445bcd6a6b1b9da252c`；最终验证 head：`9551fe1caa75f89f4591916e8b7440b3974240fe`
-- 当前 validation-head CI：[security-gate run 33571564907](https://github.com/majiayu000/rekey/actions/runs/33571564907)（Ubuntu P0、macOS P0 和有界 Linux G2 reference 全部通过）
+- PR body 生产代码 head：`ac2e513c938e4abe349be445bcd6a6b1b9da252c`；最终验证 head：`57926402a817fb36ba296cfe695bb7206684c51c`
+- 当前 validation-head CI：[security-gate run 33576290992](https://github.com/majiayu000/rekey/actions/runs/33576290992)（Ubuntu P0、macOS P0 和有界 Linux G2 reference 全部通过）
 - 结果：PASS（PR 陈述与 validation-head CI 验收）
 - 遗留限制：PR 已为 Ready；M-10 仍要求独立 GitHub `Approved`
 
@@ -365,7 +365,7 @@ rg -n 'docs/product-foundation|product-foundation/' README.md AGENTS.md CLAUDE.m
 
 **决定：** 使用 GitHub signed squash merge。功能分支不做 rebase、历史改写或 force-push；M-10 合并时创建唯一进入 `main` 的 squash commit，并在 commit body 写入有效 `Signed-off-by:`。这样保留 PR 中的完整开发历史和作者记录，同时避免把 3 个开发期 merge commit 或未签名中间提交带入 `main`。
 
-**当前问题：** 验证头 `9551fe1caa75f89f4591916e8b7440b3974240fe` 相对 `origin/main` 有 87 个分支提交，其中 54 个检测到 `Signed-off-by:`，并存在 3 个 merge commit；tree 为 `ff338b10732530ab8e013dff4313f995eff955b8`。历史改写属于高风险动作，必须另行确认后执行。
+**当前问题：** 验证头 `57926402a817fb36ba296cfe695bb7206684c51c` 相对 `origin/main` 有 95 个分支提交，其中 62 个检测到 `Signed-off-by:`，并存在 3 个 merge commit；tree 为 `36700d3cf9df4f2eb90312997333a048deea7c37`。历史改写属于高风险动作，必须另行确认后执行。
 
 **必须完成：**
 
@@ -386,7 +386,7 @@ rg -n 'docs/product-foundation|product-foundation/' README.md AGENTS.md CLAUDE.m
 **证据：** 改写前后 tree SHA、DCO 检查、最终 log、最新 CI。
 
 - 策略确认日期：2026-09-01
-- 策略确认时 tree：`4878f8bfb8b1a8dbb79b26a3e07f54319f02513b`；当前 validation-head tree：`ff338b10732530ab8e013dff4313f995eff955b8`；最终合并前 tree 由 M-10 记录
+- 策略确认时 tree：`4878f8bfb8b1a8dbb79b26a3e07f54319f02513b`；当前 validation-head tree：`36700d3cf9df4f2eb90312997333a048deea7c37`；最终合并前 tree 由 M-10 记录
 - GitHub 设置：仓库允许 squash merge
 - 书面保留理由：3 个 merge commit 仅保留在合并后可删除的功能分支，用于 PR 开发溯源；signed squash 不会把它们带入 `main`
 - 待完成：M-10 的实际 squash SHA、DCO trailer、tree 等价性和 main CI
@@ -442,10 +442,10 @@ git diff --check
 
 **证据：** 最终 SHA、PR approval、CI run、merge commit/squash SHA、main CI。
 
-- 当前生产代码 head：`ac2e513c938e4abe349be445bcd6a6b1b9da252c`；最终验证 head：`9551fe1caa75f89f4591916e8b7440b3974240fe`
+- 当前生产代码 head：`ac2e513c938e4abe349be445bcd6a6b1b9da252c`；最终验证 head：`57926402a817fb36ba296cfe695bb7206684c51c`
 - 本地验收：本节全部命令、release check/build、P0/P1/P2 harness、Linux G2 attack harness 和 `cargo audit` 均通过
-- validation-head CI：[security-gate run 33571564907](https://github.com/majiayu000/rekey/actions/runs/33571564907) 全部通过
-- 稳定性复验：`lifecycle_drain` 连续 10 轮通过；P2 GitHub App harness 连续 3 轮通过；`9551fe1caa` exact-head Codex Review 未发现 major issue
+- validation-head CI：[security-gate run 33576290992](https://github.com/majiayu000/rekey/actions/runs/33576290992) 全部通过
+- 稳定性复验：早期 `lifecycle_drain` 连续 10 轮、P2 GitHub App harness 连续 3 轮通过；最终 Admin/policy 与 post-completion idle 各 3 轮、drain phase probe 20 轮、完整 frame status 30 轮、确定性 crash gate 10 轮通过；`5792640` [exact-head Codex Review](https://github.com/majiayu000/rekey/pull/10#issuecomment-5502610898) 未发现 major issue
 - PR 状态：Ready、`MERGEABLE`、`CLEAN`；未解决 Review conversation 为 0
 - 独立 Approval：0；当前仓库协作者仅 PR 作者 `majiayu000`，无法由现有协作者提供非作者 Approval
 - 当前阻塞：必须先取得独立非作者 GitHub `Approved`；之后才可执行 M-08 signed squash、验证 squash tree/DCO，并运行合并后 main CI
@@ -888,9 +888,9 @@ git diff --check
 
 | 结论 | 状态 | 说明 |
 | --- | --- | --- |
-| v2 Foundation 核心实现 | 完成 | P0 主要链路达到 black-box/adversarial evidence；截至生产代码 head `ac2e513c938e4abe349be445bcd6a6b1b9da252c` 的 107 个 findings 全部修复，验证 head `9551fe1caa75f89f4591916e8b7440b3974240fe` 的 security-gate 全绿 |
+| v2 Foundation 核心实现 | 完成 | P0 主要链路达到 black-box/adversarial evidence；截至生产代码 head `ac2e513c938e4abe349be445bcd6a6b1b9da252c` 的 107 个实现 findings 全部修复，另有 5 个验证有效性 findings 在 validation head `57926402a817fb36ba296cfe695bb7206684c51c` 全部修复，security-gate 全绿 |
 | PR #10 可立即合并 | 否 | M-01～M-07、M-09 已完成；M-08 等待实际 signed squash，M-10 被独立非作者 Approval 阻塞，其后还需合并和 main CI |
-| 所有规范与代码一致 | 完成 | M-04～M-06 的 107 个 findings 已全部修复；Critical/High 0，51 个 Medium 和 56 个 Low 已修复；最新 exact-head Codex Review 对 `9551fe1caa` 未发现 major issue |
+| 所有规范与代码一致 | 完成 | M-04～M-06 的 107 个实现 findings 与 M-07/M-10 的 5 个验证有效性 findings 已全部修复；Critical/High 0，51 个 Medium 和 61 个 Low 已修复；最新 exact-head Codex Review 对 `5792640` 未发现 major issue |
 | 所有文档完成 | 否 | M 阶段 closeout 记录已闭合；Alpha 用户、运维、发行和治理文档属于冻结的 A 阶段，尚未实施 |
 | 可公开 Alpha | 否 | 无正式版本、发行物、安装流程、release workflow 和 release smoke |
 | 可宣称通用 G2 | 否 | 只有有界 Linux reference；默认仍是 G1 |

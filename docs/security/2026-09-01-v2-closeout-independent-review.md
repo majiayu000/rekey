@@ -183,16 +183,37 @@ below. The exact-head follow-up then
 [reported no major issues](https://github.com/majiayu000/rekey/pull/10#issuecomment-5501637084),
 and a second exact-head run independently returned the same result.
 
-The final branch-head CI replay then exposed two nondeterministic acceptance
-preconditions rather than product-code failures. Two lifecycle tests used a
-fixed delay instead of observing upstream admission; this was corrected in
-`27ba2f85924dbd54691717e455cc240167138a3d`. The ordinary GitHub App success
-flow also used the minimum two-second Action deadline for three TLS legs and
-durable fixture traces; `9551fe1caa75f89f4591916e8b7440b3974240fe`
-separated that ordinary acceptance budget from the dedicated deadline case.
-The lifecycle suite passed ten consecutive runs, the GitHub App harness passed
-three consecutive runs, and the exact-head follow-up on `9551fe1caa`
-[reported no major issues](https://github.com/majiayu000/rekey/pull/10#issuecomment-5502049226).
+The final branch-head CI replays then exposed validation-harness races rather
+than product-code failures. `27ba2f85924dbd54691717e455cc240167138a3d`
+replaced fixed lifecycle admission delays with an observed upstream request,
+and `9551fe1caa75f89f4591916e8b7440b3974240fe` separated the ordinary GitHub
+App acceptance budget from its dedicated deadline case. Those suites passed
+ten and three consecutive runs respectively.
+
+A twenty-second GitHub Codex review of
+`8f50a8ef8558ae2305338a8523ddcc825034f9ed` reported two test-validity findings
+in [PR review 5084297301](https://github.com/majiayu000/rekey/pull/10#pullrequestreview-5084297301).
+A twenty-third review of `0ca8951e17b8ba1219cb4015d35d55b3da7fbfab`
+reported two more in
+[PR review 5084322115](https://github.com/majiayu000/rekey/pull/10#pullrequestreview-5084322115).
+`bddb9ca2e1b8937ac0327472073431c9dbcdd6c9` replaced the affected timing guesses
+with independent non-refreshing observation, a guaranteed post-completion idle
+sweep, explicit response gating, and confirmed process-stop observation. A
+macOS replay then exposed split client writes racing an expected early frame
+rejection; `0ae138add0b24cd8fd1427a3046081335dc90c58` made the test client write a
+complete RKIP frame atomically.
+
+A twenty-fourth review of `172ac9842479288878b1963c35ef50b01990aa73`
+reported that holding a connection through an assumed third-party port behavior
+was still nondeterministic in
+[PR review 5084472869](https://github.com/majiayu000/rekey/pull/10#pullrequestreview-5084472869).
+`57926402a817fb36ba296cfe695bb7206684c51c` instead gates only terminal-audit
+insertion through temporary deterministic SQLite work, confirms the stopped
+`rekeyd` process, removes the trigger offline, and then verifies restart
+reconciliation. The drain probe passed 20 consecutive runs, Admin/policy and
+post-completion idle checks passed three each, complete-frame status passed 30,
+and the final crash gate passed ten. The exact-head follow-up on `5792640`
+[reported no major issues](https://github.com/majiayu000/rekey/pull/10#issuecomment-5502610898).
 
 ## Threat assumptions and method
 
@@ -328,8 +349,14 @@ API/dependency searches. Files inspected included:
 | R-105 | Low | M-05 | Bodyless and unknown Admin messages could force allocation and reading of a large body before dispatcher rejection. | Fixed in `38d67cfa2898c8aa95af83809c7fedea79e2f8fc`. Their pre-allocation body limit is zero and the connection closes before body read. |
 | R-106 | Medium | M-05/M-06 | Separate stop-pending and admission atomics left a short observable gate-reopen window even with a second stop check. | Fixed in `ac2e513c938e4abe349be445bcd6a6b1b9da252c`. One atomic gate state now linearizes CLOSED-to-OPEN against STOP_PENDING, so the losing transition cannot expose admission. |
 | R-107 | Low | M-05 | If stop won after Authority unlock but before lifecycle Running, the Authority remained unlocked while lifecycle stayed Locked and future operations wedged. | Fixed in `ac2e513c938e4abe349be445bcd6a6b1b9da252c`. The losing unlock path revokes sessions, relocks Authority, clears policy, restores Locked lifecycle, and the service-manager race proves the final causal signal-lock audit. |
+| R-108 | Low | M-07/M-10 | The combined Admin/policy status test could refresh activity with its final Admin status call before any idle sweep observed whether policy status itself refreshed. | Fixed in `bddb9ca2e1b8937ac0327472073431c9dbcdd6c9`. Each message now runs independently across multiple sweeps and is observed through non-refreshing Agent status. |
+| R-109 | Low | M-07/M-10 | The completed-execution idle test observed state before a guaranteed post-completion sweep, so missing terminal activity refresh could pass. | Fixed in `bddb9ca2e1b8937ac0327472073431c9dbcdd6c9`. The observation crosses the five-second sweep bound while remaining inside the eight-second refreshed idle window. |
+| R-110 | Low | M-07/M-10 | The crash harness read the WAL after a fixed one-millisecond SIGSTOP delay without proving the multi-threaded process had stopped. | Fixed in `bddb9ca2e1b8937ac0327472073431c9dbcdd6c9` and retained in `57926402a817fb36ba296cfe695bb7206684c51c`. Portable process-state observation must report `T` before the stopped WAL recheck and SIGKILL. |
+| R-111 | Low | M-07/M-10 | SessionCreate drain coverage could outlive its delayed fake response, accept `LOCKED`, and pass without exercising Draining. | Fixed in `bddb9ca2e1b8937ac0327472073431c9dbcdd6c9`. A semaphore holds the admitted response, a no-effect probe observes Draining, and SessionCreate must return exactly `DRAINING` before release. |
+| R-112 | Low | M-07/M-10 | The crash gate briefly assumed a third-party public port would remain pending; active rejection or future service could collapse the observation window. | Fixed in `57926402a817fb36ba296cfe695bb7206684c51c`. A temporary local SQLite trigger deterministically holds only terminal-audit insertion after a real durable start and is removed offline before recovery. |
 
-Final finding counts: Critical 0, High 0, Medium 51 fixed / 0 open, Low 56 fixed / 0 open.
+Final finding counts (112 total): Critical 0, High 0, Medium 51 fixed / 0 open,
+Low 61 fixed / 0 open.
 
 ## M-04 verdict: crypto and persistence
 
@@ -446,7 +473,7 @@ matches. The CLI dependency tree contained none of `rusqlite`, `aes-gcm`,
 `argon2`, `reqwest`, `rekey-vault`, or `rekey-broker`.
 
 The final local evidence above was collected at validation head
-`9551fe1caa75f89f4591916e8b7440b3974240fe`. GitHub Actions
-[security-gate run 33571564907](https://github.com/majiayu000/rekey/actions/runs/33571564907)
+`57926402a817fb36ba296cfe695bb7206684c51c`. GitHub Actions
+[security-gate run 33576290992](https://github.com/majiayu000/rekey/actions/runs/33576290992)
 is the corresponding successful cross-platform run: Ubuntu P0, macOS P0, and
 the bounded Linux G2 reference job all passed.
