@@ -277,11 +277,17 @@ binding = {"action_id":action, "version":int(version), "resource":resource,
 rule = {"id":str(uuid.uuid4()), "effect":"permit", "principal_id":principal,
  "action_id":action, "version":int(version), "resource":resource,
  "parameters":{"kind":"any_validated"}}
-pathlib.Path(path).write_text(json.dumps({"format_version":1,"version":int(policy_version),
- "expires_at_ms":int(time.time()*1000)+600000,"bindings":[binding],"rules":[rule]}))
+pathlib.Path(path).write_text(json.dumps({"format_version":2,"version":int(policy_version),
+ "expires_at_ms":int(time.time()*1000)+600000,"approvers":[],
+ "bindings":[binding],"rules":[rule]}))
 PY
+  python3 "$ROOT/scripts/sign-test-policy.py" policy --key-dir "$WORKDIR/policy-key" \
+    --snapshot "$WORKDIR/policy.json" --bundle "$WORKDIR/policy-bundle.json" \
+    --trust "$WORKDIR/policy-trust.json"
+  printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy trust install \
+    --file "$WORKDIR/policy-trust.json" --step-up-stdin >/dev/null
   printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate \
-    --file "$WORKDIR/policy.json" --password-stdin >/dev/null
+    --file "$WORKDIR/policy-bundle.json" --step-up-stdin >/dev/null
 }
 
 printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin >/dev/null

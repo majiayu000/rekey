@@ -1,9 +1,12 @@
 use serde::{Deserialize, Serialize};
 
 use crate::DomainError;
-use crate::ids::{ActionId, CredentialId, PolicyRuleId, PrincipalId, RequestId, SessionId};
+use crate::ids::{
+    ActionId, ApprovalId, ApprovalRequestId, ApproverId, CredentialId, PolicyRuleId, PrincipalId,
+    RequestId, SessionId,
+};
 
-pub const AUDIT_SCHEMA_V1: &str = "rekey.audit.v1";
+pub const AUDIT_SCHEMA_V2: &str = "rekey.audit.v2";
 pub const AUDIT_PAGE_DEFAULT_LIMIT: u32 = 50;
 pub const AUDIT_PAGE_MAX_LIMIT: u32 = 100;
 pub const AUDIT_SCAN_MAX_ROWS: u32 = 1_000;
@@ -108,6 +111,9 @@ pub struct AuditRecord {
     pub policy_version: Option<u64>,
     pub policy_digest_hex: Option<String>,
     pub policy_rule_id: Option<PolicyRuleId>,
+    pub approval_request_id: Option<ApprovalRequestId>,
+    pub approval_id: Option<ApprovalId>,
+    pub approver_id: Option<ApproverId>,
     pub event_type: String,
     pub outcome: String,
     pub reason_code: String,
@@ -128,7 +134,7 @@ pub struct AuditPage {
 impl AuditPage {
     pub fn validate_for(&self, query: &AuditQuery) -> Result<(), DomainError> {
         query.validate()?;
-        if self.schema != AUDIT_SCHEMA_V1 || self.snapshot_max_sequence == 0 {
+        if self.schema != AUDIT_SCHEMA_V2 || self.snapshot_max_sequence == 0 {
             return Err(invalid("invalid audit page schema or snapshot"));
         }
         if query
@@ -143,7 +149,7 @@ impl AuditPage {
 
         let mut previous = None;
         for event in &self.events {
-            if event.record_type != AUDIT_SCHEMA_V1
+            if event.record_type != AUDIT_SCHEMA_V2
                 || event.sequence == 0
                 || event.sequence > self.snapshot_max_sequence
                 || !is_lower_hex(&event.event_id, 32)
@@ -157,6 +163,9 @@ impl AuditPage {
                 || event.policy_version.is_some() != event.principal_id.is_some()
                 || event.policy_digest_hex.is_some() != event.principal_id.is_some()
                 || (event.policy_rule_id.is_some() && event.principal_id.is_none())
+                || (event.approval_id.is_some() && event.approval_request_id.is_none())
+                || (event.approver_id.is_some() && event.approval_request_id.is_none())
+                || !approval_fields_match_event(event)
                 || event.event_type.is_empty()
                 || event.outcome.is_empty()
                 || event.reason_code.is_empty()
@@ -184,6 +193,41 @@ impl AuditPage {
             Some(_) => return Err(invalid("invalid audit page cursor")),
         }
         Ok(())
+    }
+}
+
+fn approval_fields_match_event(event: &AuditRecord) -> bool {
+    let has_authorization = event.principal_id.is_some()
+        && event.policy_version.is_some()
+        && event.policy_digest_hex.is_some()
+        && event.policy_rule_id.is_some();
+    match event.event_type.as_str() {
+        "approval.requested" => {
+            has_authorization
+                && event.approval_request_id.is_some()
+                && event.approval_id.is_none()
+                && event.approver_id.is_none()
+        }
+        "approval.accepted" => {
+            has_authorization
+                && event.approval_request_id.is_some()
+                && event.approval_id.is_some()
+                && event.approver_id.is_some()
+        }
+        "approval.rejected" => {
+            let identifiers_are_complete = event.approval_request_id.is_some()
+                && event.approval_id.is_some()
+                && event.approver_id.is_some();
+            let identifiers_are_absent = event.approval_request_id.is_none()
+                && event.approval_id.is_none()
+                && event.approver_id.is_none();
+            has_authorization && (identifiers_are_complete || identifiers_are_absent)
+        }
+        _ => {
+            event.approval_request_id.is_none()
+                && event.approval_id.is_none()
+                && event.approver_id.is_none()
+        }
     }
 }
 
@@ -219,7 +263,7 @@ mod tests {
 
     fn record(sequence: u64) -> AuditRecord {
         AuditRecord {
-            record_type: AUDIT_SCHEMA_V1.to_owned(),
+            record_type: AUDIT_SCHEMA_V2.to_owned(),
             sequence,
             event_id: format!("{sequence:032x}"),
             request_id: None,
@@ -232,6 +276,9 @@ mod tests {
             policy_version: None,
             policy_digest_hex: None,
             policy_rule_id: None,
+            approval_request_id: None,
+            approval_id: None,
+            approver_id: None,
             event_type: "test.event".to_owned(),
             outcome: "success".to_owned(),
             reason_code: "test".to_owned(),
@@ -263,7 +310,7 @@ mod tests {
     fn page_rejects_order_cursor_and_filter_violations() {
         let value = query();
         let valid = AuditPage {
-            schema: AUDIT_SCHEMA_V1.to_owned(),
+            schema: AUDIT_SCHEMA_V2.to_owned(),
             snapshot_max_sequence: 3,
             events: vec![record(3), record(2)],
             next_before_sequence: Some(2),
@@ -278,7 +325,7 @@ mod tests {
         filtered.outcome = Some("denied".to_owned());
         assert!(valid.validate_for(&filtered).is_err());
         let empty_scan_window = AuditPage {
-            schema: AUDIT_SCHEMA_V1.to_owned(),
+            schema: AUDIT_SCHEMA_V2.to_owned(),
             snapshot_max_sequence: 3,
             events: Vec::new(),
             next_before_sequence: Some(2),
@@ -288,5 +335,50 @@ mod tests {
         let mut malformed = valid;
         malformed.events[0].event_id = "ABC".to_owned();
         assert!(malformed.validate_for(&query()).is_err());
+    }
+
+    #[test]
+    fn approval_events_require_complete_authorization_evidence() {
+        for event_type in [
+            "approval.requested",
+            "approval.accepted",
+            "approval.rejected",
+        ] {
+            let mut event = record(1);
+            event.event_type = event_type.to_owned();
+            event.approval_request_id = Some(ApprovalRequestId::new_random());
+            if event_type == "approval.accepted" {
+                event.approval_id = Some(ApprovalId::new_random());
+                event.approver_id = Some(ApproverId::new_random());
+            }
+            let page = AuditPage {
+                schema: AUDIT_SCHEMA_V2.to_owned(),
+                snapshot_max_sequence: 1,
+                events: vec![event],
+                next_before_sequence: None,
+            };
+            assert!(page.validate_for(&query()).is_err());
+        }
+    }
+
+    #[test]
+    fn rejected_approval_identifiers_are_complete_or_absent() {
+        let mut event = record(1);
+        event.event_type = "approval.rejected".to_owned();
+        event.principal_id = Some(PrincipalId::new_random());
+        event.policy_version = Some(1);
+        event.policy_digest_hex = Some("00".repeat(32));
+        event.policy_rule_id = Some(PolicyRuleId::new_random());
+        event.approval_request_id = Some(ApprovalRequestId::new_random());
+        let mut page = AuditPage {
+            schema: AUDIT_SCHEMA_V2.to_owned(),
+            snapshot_max_sequence: 1,
+            events: vec![event],
+            next_before_sequence: None,
+        };
+        assert!(page.validate_for(&query()).is_err());
+        page.events[0].approval_id = Some(ApprovalId::new_random());
+        page.events[0].approver_id = Some(ApproverId::new_random());
+        assert!(page.validate_for(&query()).is_ok());
     }
 }

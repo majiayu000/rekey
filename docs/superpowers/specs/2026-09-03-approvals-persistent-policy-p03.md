@@ -1,7 +1,7 @@
 # Rekey v2 P-03 Approvals and Persistent Policy
 
 **Date:** 2026-09-03
-**Status:** Proposed
+**Status:** Implemented and verified
 **Depends on:** Credential Authority v2 Foundation, P-01, P-02
 **Scope:** signed local policy bundles, durable activation, and signed one-time or time-window approvals
 

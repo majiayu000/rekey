@@ -36,7 +36,10 @@ pub async fn handle_agent_conn(
         let frame = match tokio::select! {
             _ = shutdown.changed() => return,
             frame = read_frame(&mut stream, Channel::Agent, |message_type| {
-                if message_type == agent_msg::EXECUTE_FIXED_HTTP_ACTION {
+                if matches!(
+                    message_type,
+                    agent_msg::EXECUTE_FIXED_HTTP_ACTION | agent_msg::PREPARE_APPROVAL
+                ) {
                     ipc::AGENT_BODY_MAX_BYTES
                 } else {
                     0
@@ -117,6 +120,7 @@ async fn dispatch(
                 content_type: meta.content_type,
                 extra_headers: meta.extra_headers,
                 body: frame.body.to_vec(),
+                approval_grants: meta.approval_grants,
             };
             let outcome = ctx
                 .executions
@@ -132,6 +136,26 @@ async fn dispatch(
             let metadata = serde_json::to_vec(&response_meta)
                 .map_err(|_| BrokerError::Frame(rekey_domain::ipc::FrameError::InvalidField))?;
             Ok((metadata, outcome.body))
+        }
+        agent_msg::PREPARE_APPROVAL => {
+            let meta: ipc::PrepareApprovalMeta = serde_json::from_slice(&frame.metadata)
+                .map_err(|_| BrokerError::Frame(rekey_domain::ipc::FrameError::InvalidField))?;
+            let request = ExecuteRequest {
+                request_id: crate::random_id(RequestId::from_random_bytes)?,
+                capability_token: meta.capability_token,
+                action: ActionVersionRef {
+                    action_id: meta.action_id,
+                    version: meta.action_version,
+                },
+                content_type: meta.content_type,
+                extra_headers: meta.extra_headers,
+                body: frame.body.to_vec(),
+                approval_grants: Vec::new(),
+            };
+            let challenge = ctx.executor.prepare_approval(request).await?;
+            let metadata = serde_json::to_vec(&challenge)
+                .map_err(|_| BrokerError::Frame(rekey_domain::ipc::FrameError::InvalidField))?;
+            Ok((metadata, Vec::new()))
         }
         agent_msg::AGENT_STATUS => {
             if !frame.body.is_empty() {

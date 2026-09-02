@@ -24,6 +24,7 @@ fn audit(event_type: &'static str) -> AuditEvent {
         credential_id: None,
         credential_version: None,
         authorization: None,
+        approval: None,
         event_type,
         outcome: outcome::SUCCESS,
         reason_code: "test".to_owned(),

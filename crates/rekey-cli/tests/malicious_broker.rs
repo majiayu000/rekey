@@ -24,6 +24,8 @@ enum Attack {
     InvalidOkMetadata,
     MissingOkFields,
     UnknownOkField,
+    InvalidPolicyStatus,
+    InvalidApprovalChallenge,
     AuditNonEmptyMetadata,
     AuditUnknownPageField,
     AuditMalformedRecord,
@@ -40,7 +42,11 @@ fn run_attack(attack: Attack) -> std::process::Output {
     std::fs::create_dir_all(&runtime_dir).expect("runtime dir");
     std::fs::set_permissions(&runtime_dir, std::fs::Permissions::from_mode(0o700))
         .expect("protect runtime dir");
-    let socket = runtime_dir.join("admin.sock");
+    let socket = runtime_dir.join(if matches!(attack, Attack::InvalidApprovalChallenge) {
+        "agent.sock"
+    } else {
+        "admin.sock"
+    });
     let listener = UnixListener::bind(&socket).expect("bind fake broker");
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))
         .expect("protect fake broker socket");
@@ -151,6 +157,47 @@ fn run_attack(attack: Attack) -> std::process::Output {
                 0,
                 Vec::new(),
             ),
+            Attack::InvalidPolicyStatus => (
+                Channel::Admin,
+                request.request_id,
+                resp_msg::OK,
+                br#"{"trust_installed":true,"bundle_persisted":true,"status":"active","signer_id":null,"version":null,"expires_at_ms":null,"policy_sha256":null,"bundle_sha256":null}"#.to_vec(),
+                0,
+                Vec::new(),
+            ),
+            Attack::InvalidApprovalChallenge => (
+                Channel::Agent,
+                request.request_id,
+                resp_msg::OK,
+                serde_json::json!({
+                    "record_type": "rekey.approval.challenge.v1",
+                    "approval_request_id": "00000000-0000-4000-8000-000000000001",
+                    "tenant_id": "00000000-0000-4000-8000-000000000002",
+                    "principal_id": "00000000-0000-4000-8000-000000000003",
+                    "session_id": "00000000-0000-4000-8000-000000000004",
+                    "action_id": "00000000-0000-4000-8000-000000000005",
+                    "action_version": 1,
+                    "resource": {"type": "test.resource", "id": "one"},
+                    "schema_id": "test/v1",
+                    "parameter_sha256": "00".repeat(32),
+                    "policy_version": 1,
+                    "policy_sha256": "11".repeat(32),
+                    "policy_rule_id": "00000000-0000-4000-8000-000000000006",
+                    "mode": "one-time",
+                    "quorum": 1,
+                    "approver_ids": [
+                        "00000000-0000-4000-8000-000000000008",
+                        "00000000-0000-4000-8000-000000000007"
+                    ],
+                    "max_uses": 1,
+                    "created_at_ms": 1,
+                    "max_expires_at_ms": 2,
+                })
+                .to_string()
+                .into_bytes(),
+                0,
+                Vec::new(),
+            ),
             Attack::AuditNonEmptyMetadata => (
                 Channel::Admin,
                 request.request_id,
@@ -164,8 +211,8 @@ fn run_attack(attack: Attack) -> std::process::Output {
                 request.request_id,
                 resp_msg::OK,
                 b"{}".to_vec(),
-                br#"{"schema":"rekey.audit.v1","snapshot_max_sequence":1,"events":[],"next_before_sequence":null,"secret_hint":"forged"}"#.len() as u32,
-                br#"{"schema":"rekey.audit.v1","snapshot_max_sequence":1,"events":[],"next_before_sequence":null,"secret_hint":"forged"}"#.to_vec(),
+                br#"{"schema":"rekey.audit.v2","snapshot_max_sequence":1,"events":[],"next_before_sequence":null,"secret_hint":"forged"}"#.len() as u32,
+                br#"{"schema":"rekey.audit.v2","snapshot_max_sequence":1,"events":[],"next_before_sequence":null,"secret_hint":"forged"}"#.to_vec(),
             ),
             Attack::AuditMalformedRecord => (
                 Channel::Admin,
@@ -196,7 +243,19 @@ fn run_attack(attack: Attack) -> std::process::Output {
     });
 
     let mut args = vec!["--state-dir", state_dir.to_str().expect("utf8 path")];
-    if matches!(
+    if matches!(attack, Attack::InvalidPolicyStatus) {
+        args.extend(["policy", "status"]);
+    } else if matches!(attack, Attack::InvalidApprovalChallenge) {
+        args.extend([
+            "--agent-socket",
+            socket.to_str().expect("utf8 socket"),
+            "approval",
+            "prepare",
+            "00000000-0000-4000-8000-000000000005@1",
+            "--capability",
+            "test-token",
+        ]);
+    } else if matches!(
         attack,
         Attack::AuditNonEmptyMetadata
             | Attack::AuditUnknownPageField
@@ -229,6 +288,8 @@ fn cli_rejects_forged_broker_responses() {
         Attack::InvalidOkMetadata,
         Attack::MissingOkFields,
         Attack::UnknownOkField,
+        Attack::InvalidPolicyStatus,
+        Attack::InvalidApprovalChallenge,
         Attack::AuditNonEmptyMetadata,
         Attack::AuditUnknownPageField,
         Attack::AuditMalformedRecord,
@@ -259,7 +320,7 @@ fn audit_export_continues_after_an_empty_scan_window() {
 
     let pages = [
         serde_json::json!({
-            "schema": "rekey.audit.v1",
+            "schema": "rekey.audit.v2",
             "snapshot_max_sequence": 3,
             "events": [],
             "next_before_sequence": 2,
@@ -338,15 +399,15 @@ fn audit_export_continues_after_an_empty_scan_window() {
 }
 
 fn valid_empty_audit_page() -> Vec<u8> {
-    br#"{"schema":"rekey.audit.v1","snapshot_max_sequence":1,"events":[],"next_before_sequence":null}"#.to_vec()
+    br#"{"schema":"rekey.audit.v2","snapshot_max_sequence":1,"events":[],"next_before_sequence":null}"#.to_vec()
 }
 
 fn malformed_audit_page() -> Vec<u8> {
     serde_json::json!({
-        "schema": "rekey.audit.v1",
+        "schema": "rekey.audit.v2",
         "snapshot_max_sequence": 1,
         "events": [{
-            "record_type": "rekey.audit.v1", "sequence": 1, "event_id": "ABC",
+            "record_type": "rekey.audit.v2", "sequence": 1, "event_id": "ABC",
             "request_id": null, "session_id": null, "action_id": null,
             "action_version": null, "credential_id": null, "credential_version": null,
             "principal_id": null, "policy_version": null, "policy_digest_hex": null,
@@ -362,10 +423,10 @@ fn malformed_audit_page() -> Vec<u8> {
 
 fn valid_audit_page_with_one_event() -> Vec<u8> {
     serde_json::json!({
-        "schema": "rekey.audit.v1",
+        "schema": "rekey.audit.v2",
         "snapshot_max_sequence": 3,
         "events": [{
-            "record_type": "rekey.audit.v1", "sequence": 1,
+            "record_type": "rekey.audit.v2", "sequence": 1,
             "event_id": "0123456789abcdef0123456789abcdef",
             "request_id": null, "session_id": null, "action_id": null,
             "action_version": null, "credential_id": null, "credential_version": null,

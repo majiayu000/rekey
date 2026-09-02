@@ -1,83 +1,211 @@
 use std::sync::Arc;
 
 use rekey_domain::ipc::PolicyStatusResponse;
-use rekey_policy::ValidatedSnapshot;
+use rekey_policy::{ValidatedPolicyTrust, parse_and_verify_policy_bundle_for_load};
 use rekey_vault::AuthorityError;
-use rekey_vault::command::{AuditDraft, UnlockProof};
+use rekey_vault::command::UnlockProof;
 
 use super::BrokerCtx;
 use crate::active_policy::ActivePolicy;
 use crate::error::BrokerError;
 
+const POLICY_RECONCILE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 impl BrokerCtx {
-    pub async fn policy_status(&self) -> PolicyStatusResponse {
+    pub async fn policy_status(&self) -> Result<PolicyStatusResponse, BrokerError> {
+        let authority = self.authority.admin_status().await?;
         let guard = self.policy.read().await;
         match guard.as_ref() {
-            Some(active) => PolicyStatusResponse {
-                active: true,
+            Some(active) => Ok(PolicyStatusResponse {
+                trust_installed: authority.policy_trust_installed,
+                bundle_persisted: authority.policy_bundle_persisted,
+                status: if active.is_expired(crate::now_ts()?) {
+                    "expired".to_owned()
+                } else {
+                    "active".to_owned()
+                },
+                signer_id: active.signer_id(),
                 version: Some(active.snapshot().version().get()),
                 expires_at_ms: Some(active.snapshot().expires_at_ms()),
-                sha256_hex: Some(data_encoding::HEXLOWER.encode(&active.snapshot().digest())),
-            },
-            None => PolicyStatusResponse {
-                active: false,
+                policy_sha256: Some(data_encoding::HEXLOWER.encode(&active.snapshot().digest())),
+                bundle_sha256: active
+                    .bundle_digest()
+                    .map(|digest| data_encoding::HEXLOWER.encode(&digest)),
+            }),
+            None => Ok(PolicyStatusResponse {
+                trust_installed: authority.policy_trust_installed,
+                bundle_persisted: authority.policy_bundle_persisted,
+                status: "unavailable".to_owned(),
+                signer_id: None,
                 version: None,
                 expires_at_ms: None,
-                sha256_hex: None,
-            },
+                policy_sha256: None,
+                bundle_sha256: None,
+            }),
         }
     }
 
-    pub async fn activate_policy_until(
+    pub(crate) async fn reload_policy_after_unlock(&self) -> Result<(), BrokerError> {
+        let material = self.authority.policy_material().await?;
+        let trust = material
+            .trust
+            .map(|record| ValidatedPolicyTrust::from_parts(record.signer_id, record.public_key));
+        let active = match (trust.as_ref(), material.bundle) {
+            (_, None) => None,
+            (Some(trust), Some(record)) => {
+                let verified =
+                    match parse_and_verify_policy_bundle_for_load(&record.bundle_json, trust) {
+                        Ok(verified)
+                            if verified.signer_id() == record.signer_id
+                                && verified.snapshot().version().get() == record.version
+                                && verified.snapshot().expires_at_ms() == record.expires_at_ms
+                                && verified.policy_digest() == record.policy_digest
+                                && verified.bundle_digest() == record.bundle_digest =>
+                        {
+                            verified
+                        }
+                        _ => {
+                            drop(self.authority.fault_integrity().await);
+                            return Err(BrokerError::Authority(
+                                AuthorityError::StorageIntegrityFailed,
+                            ));
+                        }
+                    };
+                Some(Arc::new(ActivePolicy::load_bundle(
+                    verified,
+                    crate::now_ts()?,
+                )))
+            }
+            (None, Some(_)) => {
+                drop(self.authority.fault_integrity().await);
+                return Err(BrokerError::Authority(
+                    AuthorityError::StorageIntegrityFailed,
+                ));
+            }
+        };
+        *self.policy_trust.write().await = trust;
+        let mut guard = self.policy.write().await;
+        let preserve_expiry_latch = match (guard.as_ref(), active.as_ref()) {
+            (Some(current), Some(loaded)) => {
+                current.signer_id() == loaded.signer_id()
+                    && current.snapshot().version() == loaded.snapshot().version()
+                    && current.bundle_digest() == loaded.bundle_digest()
+            }
+            _ => false,
+        };
+        if !preserve_expiry_latch {
+            *guard = active;
+        }
+        Ok(())
+    }
+
+    pub async fn install_policy_trust_until(
         &self,
-        snapshot: ValidatedSnapshot,
+        trust: ValidatedPolicyTrust,
         proof: UnlockProof,
         deadline: tokio::time::Instant,
     ) -> Result<(), BrokerError> {
         let _owner = self.lifecycle.coordinate_until(deadline).await?;
         self.lifecycle.reject_if_not_running()?;
-        authority_until(deadline, self.authority.verify_proof(proof)).await?;
-        self.lifecycle.reject_if_not_running()?;
-        let active = ActivePolicy::activate(snapshot, crate::now_ts()?)?;
-        let mut guard = self.policy.write().await;
-        if guard
-            .as_ref()
-            .is_some_and(|current| active.snapshot().version() <= current.snapshot().version())
-        {
-            return Err(BrokerError::Denied("policy-version-not-increasing"));
-        }
-        authority_until(
+        let installation = tokio::time::timeout_at(
             deadline,
-            self.authority.append_audit(AuditDraft {
-                request_id: None,
-                session_id: None,
-                action_id: None,
-                action_version: None,
-                credential_id: None,
-                credential_version: None,
-                authorization: None,
-                event_type: rekey_vault::model::event_type::POLICY_ACTIVATED,
-                outcome: rekey_vault::model::outcome::SUCCESS,
-                reason_code: "policy-activated".to_owned(),
-                upstream_status: None,
-                latency_ms: None,
-            }),
+            self.authority.policy_trust_install_before(
+                rekey_vault::command::PolicyTrustInput {
+                    signer_id: trust.signer_id(),
+                    public_key: *trust.public_key(),
+                },
+                proof,
+                Some(deadline.into_std()),
+            ),
         )
-        .await?;
-        // The durable success audit and in-memory publication form one
-        // linearized activation. Publication is infallible, so a deadline
-        // crossing after the audit must not leave the audit without state.
-        *guard = Some(Arc::new(active));
+        .await;
+        match installation {
+            Ok(result) => {
+                result.map_err(BrokerError::Authority)?;
+            }
+            Err(_) => {
+                let reconciled = tokio::time::timeout(
+                    POLICY_RECONCILE_TIMEOUT,
+                    self.reload_policy_after_unlock(),
+                )
+                .await;
+                if matches!(reconciled, Ok(Ok(()))) {
+                    return Err(BrokerError::Authority(AuthorityError::AuthorityBusy));
+                }
+                self.sessions.close_and_revoke_all();
+                *self.policy.write().await = None;
+                *self.policy_trust.write().await = None;
+                self.lifecycle.enter_locked();
+                self.request_fault();
+                return Err(BrokerError::Authority(AuthorityError::Faulted));
+            }
+        }
+        *self.policy_trust.write().await = Some(trust);
         Ok(())
     }
-}
 
-async fn authority_until<T>(
-    deadline: tokio::time::Instant,
-    operation: impl std::future::Future<Output = Result<T, AuthorityError>>,
-) -> Result<T, BrokerError> {
-    tokio::time::timeout_at(deadline, operation)
-        .await
-        .map_err(|_| BrokerError::Authority(AuthorityError::AuthorityBusy))?
-        .map_err(BrokerError::Authority)
+    pub async fn activate_policy_until(
+        &self,
+        bundle_bytes: &[u8],
+        proof: UnlockProof,
+        deadline: tokio::time::Instant,
+    ) -> Result<(), BrokerError> {
+        let _owner = self.lifecycle.coordinate_until(deadline).await?;
+        self.lifecycle.reject_if_not_running()?;
+        let trust = self
+            .policy_trust
+            .read()
+            .await
+            .clone()
+            .ok_or(BrokerError::Authority(AuthorityError::PolicyUnavailable))?;
+        let verified =
+            rekey_policy::parse_and_verify_policy_bundle(bundle_bytes, &trust, crate::now_ts()?)?;
+        let input = rekey_vault::command::PolicyBundleInput {
+            signer_id: verified.signer_id(),
+            version: verified.snapshot().version().get(),
+            expires_at_ms: verified.snapshot().expires_at_ms(),
+            policy_digest: verified.policy_digest(),
+            bundle_digest: verified.bundle_digest(),
+            bundle_json: verified.canonical_bytes().to_vec(),
+        };
+        let active = ActivePolicy::activate_bundle(verified, crate::now_ts()?)?;
+        let activated_identity = (input.signer_id, input.version, input.bundle_digest);
+        let activation = tokio::time::timeout_at(
+            deadline,
+            self.authority
+                .policy_bundle_activate_before(input, proof, Some(deadline.into_std())),
+        )
+        .await;
+        match activation {
+            Ok(result) => {
+                result.map_err(BrokerError::Authority)?;
+            }
+            Err(_) => {
+                let reconciled = tokio::time::timeout(
+                    POLICY_RECONCILE_TIMEOUT,
+                    self.reload_policy_after_unlock(),
+                )
+                .await;
+                if matches!(reconciled, Ok(Ok(()))) {
+                    return Err(BrokerError::Authority(AuthorityError::AuthorityBusy));
+                }
+                self.sessions.close_and_revoke_all();
+                *self.policy.write().await = None;
+                *self.policy_trust.write().await = None;
+                self.lifecycle.enter_locked();
+                self.request_fault();
+                return Err(BrokerError::Authority(AuthorityError::Faulted));
+            }
+        }
+        let mut guard = self.policy.write().await;
+        let preserve_expiry_latch = guard.as_ref().is_some_and(|current| {
+            current.signer_id() == Some(activated_identity.0)
+                && current.snapshot().version().get() == activated_identity.1
+                && current.bundle_digest() == Some(activated_identity.2)
+        });
+        if !preserve_expiry_latch {
+            *guard = Some(Arc::new(active));
+        }
+        Ok(())
+    }
 }

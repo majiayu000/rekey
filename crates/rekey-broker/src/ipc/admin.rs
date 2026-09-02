@@ -51,6 +51,7 @@ fn admin_body_limit(message_type: u16) -> u32 {
         | admin_msg::BACKUP
         | admin_msg::SHUTDOWN
         | admin_msg::POLICY_ACTIVATE
+        | admin_msg::POLICY_TRUST_INSTALL
         | admin_msg::RECOVERY_ROTATE => ipc::ADMIN_PROOF_BODY_MAX_BYTES,
         _ => 0,
     }
@@ -430,17 +431,22 @@ async fn dispatch(
         admin_msg::POLICY_ACTIVATE => {
             let deadline = admin_mutation_deadline();
             let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
-            let snapshot =
-                rekey_policy::parse_and_validate_snapshot(&frame.metadata, crate::now_ts()?)?;
-            ctx.activate_policy_until(snapshot, proof_from(kind, proof), deadline)
+            ctx.activate_policy_until(&frame.metadata, proof_from(kind, proof), deadline)
                 .await?;
-            Ok((json(&ctx.policy_status().await)?, Vec::new()))
+            Ok((json(&ctx.policy_status().await?)?, Vec::new()))
+        }
+        admin_msg::POLICY_TRUST_INSTALL => {
+            let deadline = admin_mutation_deadline();
+            let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
+            let trust = rekey_policy::parse_policy_trust(&frame.metadata)?;
+            ctx.install_policy_trust_until(trust, proof_from(kind, proof), deadline)
+                .await?;
+            Ok((json(&ctx.policy_status().await?)?, Vec::new()))
         }
         admin_msg::POLICY_STATUS => {
             empty_request(frame)?;
             let _owner = ctx.lifecycle.coordinate().await;
-            let response = ctx.policy_status().await;
-            ctx.authority.admin_status().await?;
+            let response = ctx.policy_status().await?;
             Ok((json(&response)?, Vec::new()))
         }
         admin_msg::SESSION_REVOKE => {
@@ -542,6 +548,7 @@ fn session_audit(event_type: &'static str, session_id: SessionId) -> AuditDraft 
         credential_id: None,
         credential_version: None,
         authorization: None,
+        approval: None,
         event_type,
         outcome: outcome::SUCCESS,
         reason_code: "admin".to_owned(),

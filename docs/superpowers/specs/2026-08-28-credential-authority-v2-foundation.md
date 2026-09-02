@@ -558,12 +558,15 @@ PRAGMA busy_timeout = 5000;
 - 不允许其他进程打开 SQLite；Admin/Web 读取也通过 AuthorityWorker。
 - 每次启动运行 `PRAGMA quick_check`；失败后保持 Locked 并返回 `StorageIntegrityFailed`。
 
-### 10.3 Schema v5
+### 10.3 Schema v6
+
+当前开发实现由 P-03 将 durable schema 提升为 v6；已发布的
+`v2.0.0-alpha.1` 制品仍使用 v5。v6 不提供 v5 migration 或 compatibility reader。
 
 ~~~sql
 CREATE TABLE vault_header (
     singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
-    format_version     INTEGER NOT NULL CHECK (format_version = 5),
+    format_version     INTEGER NOT NULL CHECK (format_version = 6),
     vault_id           BLOB NOT NULL CHECK (length(vault_id) = 16),
     crypto_suite       TEXT NOT NULL CHECK (crypto_suite = 'rkca-aes256gcm-argon2id-hkdfsha256-v1'),
     created_at_ms      INTEGER NOT NULL,
@@ -623,25 +626,73 @@ CREATE UNIQUE INDEX one_active_version_per_credential
 ON credential_versions(credential_id) WHERE state = 'active';
 
 CREATE TABLE actions (
-    action_id           BLOB NOT NULL CHECK (length(action_id) = 16),
-    version             INTEGER NOT NULL CHECK (version >= 1),
-    name                TEXT NOT NULL,
-    state               TEXT NOT NULL CHECK (state IN ('active', 'retired', 'disabled')),
-    credential_id       BLOB NOT NULL REFERENCES credentials(credential_id),
-    origin              TEXT NOT NULL,
-    method              TEXT NOT NULL,
-    exact_path          TEXT NOT NULL,
-    auth_header         TEXT NOT NULL,
-    auth_prefix         TEXT NOT NULL,
-    request_max_bytes   INTEGER NOT NULL,
-    response_max_bytes  INTEGER NOT NULL,
-    timeout_ms          INTEGER NOT NULL,
-    created_at_ms       INTEGER NOT NULL,
+    action_id                     BLOB NOT NULL CHECK (length(action_id) = 16),
+    version                       INTEGER NOT NULL CHECK (version >= 1),
+    name                          TEXT NOT NULL,
+    state                         TEXT NOT NULL CHECK (state IN ('active', 'retired', 'disabled')),
+    credential_id                 BLOB NOT NULL REFERENCES credentials(credential_id),
+    origin                        TEXT NOT NULL,
+    method                        TEXT NOT NULL,
+    exact_path                    TEXT NOT NULL,
+    auth_header                   TEXT NOT NULL,
+    auth_prefix                   TEXT NOT NULL,
+    request_max_bytes             INTEGER NOT NULL,
+    allowed_extra_headers_json    TEXT NOT NULL,
+    response_max_bytes            INTEGER NOT NULL,
+    allowed_response_headers_json TEXT NOT NULL,
+    timeout_ms                    INTEGER NOT NULL,
+    created_at_ms                 INTEGER NOT NULL,
     PRIMARY KEY (action_id, version)
 ) STRICT;
 
 CREATE UNIQUE INDEX one_active_action_version
 ON actions(action_id) WHERE state = 'active';
+
+CREATE TABLE policy_state (
+    singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
+    trust_installed    INTEGER NOT NULL CHECK (trust_installed IN (0, 1)),
+    bundle_activated   INTEGER NOT NULL CHECK (bundle_activated IN (0, 1)),
+    signer_id          BLOB CHECK (signer_id IS NULL OR length(signer_id) = 16),
+    highest_version    INTEGER,
+    policy_digest      BLOB CHECK (policy_digest IS NULL OR length(policy_digest) = 32),
+    bundle_digest      BLOB CHECK (bundle_digest IS NULL OR length(bundle_digest) = 32),
+    updated_at_ms      INTEGER NOT NULL,
+    seal_nonce         BLOB NOT NULL CHECK (length(seal_nonce) = 12),
+    seal_ciphertext    BLOB NOT NULL CHECK (length(seal_ciphertext) = 16),
+    CHECK (
+        (trust_installed = 0 AND signer_id IS NULL) OR
+        (trust_installed = 1 AND signer_id IS NOT NULL)
+    ),
+    CHECK (
+        (bundle_activated = 0 AND highest_version IS NULL
+            AND policy_digest IS NULL AND bundle_digest IS NULL) OR
+        (bundle_activated = 1 AND trust_installed = 1 AND highest_version >= 1
+            AND policy_digest IS NOT NULL AND bundle_digest IS NOT NULL)
+    )
+) STRICT;
+
+CREATE TABLE policy_trust (
+    singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
+    signer_id          BLOB NOT NULL UNIQUE CHECK (length(signer_id) = 16),
+    algorithm          TEXT NOT NULL CHECK (algorithm = 'ed25519'),
+    public_key         BLOB NOT NULL CHECK (length(public_key) = 32),
+    installed_at_ms    INTEGER NOT NULL,
+    seal_nonce         BLOB NOT NULL CHECK (length(seal_nonce) = 12),
+    seal_ciphertext    BLOB NOT NULL CHECK (length(seal_ciphertext) = 16)
+) STRICT;
+
+CREATE TABLE policy_bundle (
+    singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
+    signer_id          BLOB NOT NULL CHECK (length(signer_id) = 16),
+    version            INTEGER NOT NULL CHECK (version >= 1),
+    expires_at_ms      INTEGER NOT NULL,
+    policy_digest      BLOB NOT NULL CHECK (length(policy_digest) = 32),
+    bundle_digest      BLOB NOT NULL CHECK (length(bundle_digest) = 32),
+    bundle_json        BLOB NOT NULL CHECK (length(bundle_json) <= 65536),
+    activated_at_ms    INTEGER NOT NULL,
+    seal_nonce         BLOB NOT NULL CHECK (length(seal_nonce) = 12),
+    seal_ciphertext    BLOB NOT NULL CHECK (length(seal_ciphertext) = 16)
+) STRICT;
 
 CREATE TABLE audit_events (
     sequence            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -656,6 +707,9 @@ CREATE TABLE audit_events (
     policy_version      INTEGER,
     policy_digest       BLOB CHECK (policy_digest IS NULL OR length(policy_digest) = 32),
     policy_rule_id      BLOB CHECK (policy_rule_id IS NULL OR length(policy_rule_id) = 16),
+    approval_request_id BLOB CHECK (approval_request_id IS NULL OR length(approval_request_id) = 16),
+    approval_id         BLOB CHECK (approval_id IS NULL OR length(approval_id) = 16),
+    approver_id         BLOB CHECK (approver_id IS NULL OR length(approver_id) = 16),
     resource_type       TEXT,
     resource_id         TEXT,
     parameter_hash      BLOB CHECK (parameter_hash IS NULL OR length(parameter_hash) = 32),
@@ -1075,7 +1129,7 @@ Agent 输入 fake 的契约测试仍使用 injected `UpstreamTransport`。第 2 
 - 验证 SQLite quick_check、schema_digest、format_version、至少一个 wrapper 行、VRK 解包、header 内 encrypted integrity record，以及 **每一条** `credential_versions` payload。不能只检查数据库结构或只解密第一条 Credential。
 - 在写 staging 前先持久化 incomplete marker；Broker 见到 marker 必须拒绝启动。输入以固定大小 buffer 流式复制到 staging 并同时计算 SHA-256，对 staging 完成上述验证与 `restore.completed` 提交，fsync 文件，rename 到 `vault.sqlite3`，再 fsync 父目录。
 - 只有安装文件已持久化后才能删除 marker 并再次 fsync 父目录；这是 restore 成功点。成功点之前的失败必须删除 staging、installed DB 及 SQLite sidecar，并持久化清理；无法证明清理完成时必须保留 marker，确保不留下可启动的半恢复 vault。后续 restore 只能在取得 offline lock 后清理该 marker 所标记的已中断内部 artifact，不得删除未知文件。
-- 只恢复 format version 5；不支持 v1/v2/v3/v4 或未来未知版本。
+- 当前开发实现只恢复 format version 6；不支持 v1/v2/v3/v4/v5 或未来未知版本。
 
 ## 17. Error Taxonomy
 
@@ -1567,8 +1621,9 @@ root select 视作 fault。若 root 已取得 actor 的 completed `JoinHandle` r
 
 新增 typed credential kind 的 breaking schema change 将 durable format bump 到 4；旧非空
 state dir 继续明确拒绝，不提供迁移或兼容读取。
-随后 credential lifecycle seal 将最终 foundation format bump 到 5；当前实现只接受 v5，
-不保留 v4 兼容读取或迁移入口。
+随后 credential lifecycle seal 将 foundation format bump 到 5；P-03 的 durable policy
+又将当前开发实现 bump 到 6。当前实现只接受 v6，不保留 v4/v5 兼容读取或迁移入口；
+已发布的 `v2.0.0-alpha.1` 制品仍是 v5。
 
 首个 P2 垂直切片是一个封闭的 GitHub App Installation profile，不创建通用
 connector registry、provider SDK、控制面或 Agent 可调用的签名/换票接口：

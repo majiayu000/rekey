@@ -42,9 +42,20 @@ async fn drain_linearizes_before_started() {
     });
     let lifecycle = Arc::new(Lifecycle::new());
     lifecycle.enter_running().unwrap();
+    let policy = RwLock::new(None);
     let _coordinator = lifecycle.coordinate().await;
     lifecycle.enter_draining();
-    let err = match commit_started_while_running(&lifecycle, &tracker, execution_context()).await {
+    let err = match commit_started_while_running(
+        &lifecycle,
+        &tracker,
+        &policy,
+        None,
+        execution_context(),
+        Vec::new(),
+        None,
+    )
+    .await
+    {
         Ok(_) => panic!("draining admission unexpectedly committed started"),
         Err(err) => err,
     };
@@ -59,6 +70,7 @@ async fn running_coordinator_contention_fails_without_waiting() {
     let (tracker, worker) = spawn_terminal_worker_with(|_| async { Ok(()) });
     let lifecycle = Arc::new(Lifecycle::new());
     lifecycle.enter_running().unwrap();
+    let policy = RwLock::new(None);
     let sessions = Arc::new(SessionRegistry::new());
     sessions.open_for_admission();
     let action = ActionVersionRef {
@@ -93,7 +105,15 @@ async fn running_coordinator_contention_fails_without_waiting() {
 
     let result = tokio::time::timeout(
         Duration::from_millis(50),
-        commit_started_while_running(&lifecycle, &tracker, execution_context()),
+        commit_started_while_running(
+            &lifecycle,
+            &tracker,
+            &policy,
+            None,
+            execution_context(),
+            Vec::new(),
+            None,
+        ),
     )
     .await
     .expect("final admission gate must not wait behind the drain coordinator");
@@ -104,6 +124,52 @@ async fn running_coordinator_contention_fails_without_waiting() {
     assert_eq!(err.code(), "AUTHORITY_BUSY");
     drop(permit);
     assert_eq!(sessions.in_flight_total(), 0);
+    drop(tracker);
+    worker.await.unwrap();
+}
+
+#[tokio::test]
+async fn changed_policy_blocks_before_started_commit() {
+    let commits = Arc::new(Mutex::new(Vec::new()));
+    let (tracker, worker) = spawn_terminal_worker_with({
+        let commits = Arc::clone(&commits);
+        move |draft| {
+            commits.lock().unwrap().push(draft);
+            async { Ok(()) }
+        }
+    });
+    let lifecycle = Lifecycle::new();
+    lifecycle.enter_running().unwrap();
+    let policy = RwLock::new(None);
+    let expected_policy = PolicyIdentity {
+        signer_id: None,
+        version: 1,
+        policy_digest: [7; 32],
+        bundle_digest: None,
+    };
+
+    let error = match commit_started_while_running(
+        &lifecycle,
+        &tracker,
+        &policy,
+        Some(expected_policy),
+        execution_context(),
+        Vec::new(),
+        None,
+    )
+    .await
+    {
+        Ok(_) => panic!("changed policy unexpectedly committed started"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code(), "REQUEST_DENIED");
+    tracker.wait_idle(Duration::from_secs(1)).await.unwrap();
+    {
+        let commits = commits.lock().unwrap();
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].event_type, "execution.blocked");
+        assert_eq!(commits[0].reason_code, "policy-changed");
+    }
     drop(tracker);
     worker.await.unwrap();
 }

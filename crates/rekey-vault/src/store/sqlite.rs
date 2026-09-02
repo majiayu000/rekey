@@ -32,7 +32,7 @@ pub(super) fn blob16(v: Vec<u8>) -> Result<[u8; 16], AuthorityError> {
         .map_err(|_| AuthorityError::StorageIntegrityFailed)
 }
 
-fn blob12(v: Vec<u8>) -> Result<[u8; 12], AuthorityError> {
+pub(super) fn blob12(v: Vec<u8>) -> Result<[u8; 12], AuthorityError> {
     v.try_into()
         .map_err(|_| AuthorityError::StorageIntegrityFailed)
 }
@@ -58,7 +58,7 @@ impl SqliteRecordStore {
         })
     }
 
-    /// Opens an existing v5 database, verifying pragmas, integrity, format
+    /// Opens an existing v6 database, verifying pragmas, integrity, format
     /// version, and schema digest. Never migrates and never creates.
     pub fn open(path: &Path) -> Result<Self, AuthorityError> {
         if !path.exists() {
@@ -75,6 +75,12 @@ impl SqliteRecordStore {
         store.verify_required_layout()?;
         store.foreign_key_check()?;
         store.validate_credential_version_invariants()?;
+        let policy_state = store.load_policy_state()?;
+        if policy_state.trust_installed != store.load_policy_trust()?.is_some()
+            || policy_state.bundle_activated != store.load_policy_bundle()?.is_some()
+        {
+            return Err(AuthorityError::StorageIntegrityFailed);
+        }
         let header = store.load_header()?;
         if header.schema_digest != schema_digest() {
             return Err(AuthorityError::StorageIntegrityFailed);
@@ -90,6 +96,7 @@ impl SqliteRecordStore {
         &mut self,
         header: &VaultHeaderRecord,
         wrappers: &[KeyWrapperRecord],
+        policy_state: &crate::model::PolicyStateRecord,
         audit: AuditEvent,
     ) -> Result<(), AuthorityError> {
         let tx = self.conn.transaction().map_err(storage)?;
@@ -110,6 +117,7 @@ impl SqliteRecordStore {
         for w in wrappers {
             super::wrapper::insert_wrapper(&tx, w)?;
         }
+        super::policy::insert_initial_state(&tx, policy_state)?;
         super::audit::insert(&tx, &audit)?;
         commit_audited(tx)
     }
@@ -445,6 +453,18 @@ impl SqliteRecordStore {
         commit_audited(tx)
     }
 
+    /// Commits a related sequence of audit events in one transaction.
+    pub fn append_audits(&mut self, events: &[AuditEvent]) -> Result<(), AuthorityError> {
+        let tx = self
+            .conn
+            .transaction()
+            .map_err(|_| AuthorityError::AuditCommitFailed)?;
+        for event in events {
+            super::audit::insert(&tx, event).map_err(|_| AuthorityError::AuditCommitFailed)?;
+        }
+        commit_audited(tx)
+    }
+
     pub fn wal_checkpoint(&self) -> Result<(), AuthorityError> {
         let (busy, log_frames, checkpointed_frames): (i64, i64, i64) = self
             .conn
@@ -710,7 +730,7 @@ fn action_from_row(r: &rusqlite::Row<'_>) -> RowResult<ActionRecord> {
     })())
 }
 
-fn positive_version(version: i64) -> Result<u64, AuthorityError> {
+pub(super) fn positive_version(version: i64) -> Result<u64, AuthorityError> {
     u64::try_from(version)
         .ok()
         .filter(|version| *version > 0)

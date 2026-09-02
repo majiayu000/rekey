@@ -144,6 +144,7 @@ fn audit_draft() -> AuditDraft {
         credential_id: None,
         credential_version: None,
         authorization: None,
+        approval: None,
         event_type: event_type::POLICY_ACTIVATED,
         outcome: outcome::SUCCESS,
         reason_code: "enospc-probe".to_owned(),

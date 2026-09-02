@@ -5,12 +5,14 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
+use aws_lc_rs::rand::SystemRandom;
+use aws_lc_rs::signature::Ed25519KeyPair;
 use rekey_broker::runtime::{BrokerConfig, serve};
 use rekey_broker::testing::FakeUpstreamTransport;
-use rekey_domain::ids::{PolicyRuleId, RequestId};
+use rekey_domain::ids::{PolicySignerId, RequestId};
 use rekey_domain::ipc::{self, Channel, FRAME_HEADER_LEN, FrameHeader, ProofKind, admin_msg};
 use rekey_vault::bootstrap::init_vault;
 use rekey_vault::crypto::kdf::Argon2Params;
@@ -25,11 +27,17 @@ pub const TEST_PARAMS: Argon2Params = Argon2Params {
     parallelism: 1,
 };
 
+pub(crate) mod policy;
+pub use policy::activate_test_policy;
+
 pub struct TestBroker {
     pub dir: tempfile::TempDir,
     pub state_dir: PathBuf,
     pub fake: Arc<FakeUpstreamTransport>,
     pub serve_task: tokio::task::JoinHandle<Result<(), rekey_broker::error::BrokerError>>,
+    policy_signer_id: PolicySignerId,
+    policy_signer: Arc<Ed25519KeyPair>,
+    policy_version: AtomicU64,
 }
 
 pub async fn start_broker() -> TestBroker {
@@ -77,6 +85,10 @@ async fn start_broker_configured(
     config.unlock_backoff_base = Duration::from_millis(20);
     config.drain_timeout = drain_timeout;
     let serve_task = tokio::spawn(async move { serve(config).await });
+    let key_document = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).expect("policy key");
+    let policy_signer = Arc::new(
+        Ed25519KeyPair::from_pkcs8(key_document.as_ref()).expect("parse generated policy key"),
+    );
 
     let admin_sock = state_dir.join("runtime").join("admin.sock");
     let mut ready = false;
@@ -94,6 +106,9 @@ async fn start_broker_configured(
         state_dir,
         fake,
         serve_task,
+        policy_signer_id: PolicySignerId::new_random(),
+        policy_signer,
+        policy_version: AtomicU64::new(1),
     }
 }
 
@@ -280,70 +295,9 @@ pub async fn create_action(broker: &TestBroker, credential_id: &str) -> (String,
 }
 
 pub async fn create_session(broker: &TestBroker, action_id: &str, version: u64) -> String {
-    let meta = serde_json::json!({
-        "actions": [{"action_id": action_id, "version": version}],
-        "ttl_ms": 3_600_000,
-        "max_uses": 100,
-    });
-    let response = call(
-        &broker.admin_sock(),
-        Channel::Admin,
-        admin_msg::SESSION_CREATE,
-        meta.to_string().as_bytes(),
-        &proof_body(PASSWORD),
-    )
-    .await;
-    let ok = response.ok();
-    let token = ok["capability_token"].as_str().unwrap().to_owned();
-    activate_test_policy(
-        broker,
-        action_id,
-        version,
-        ok["principal_id"].as_str().unwrap(),
-    )
-    .await;
-    token
-}
-
-pub async fn activate_test_policy(
-    broker: &TestBroker,
-    action_id: &str,
-    action_version: u64,
-    principal_id: &str,
-) {
-    static VERSION: AtomicU64 = AtomicU64::new(1);
-    let version = VERSION.fetch_add(1, Ordering::Relaxed);
-    let resource = serde_json::json!({"type": "test-action", "id": action_id});
-    let snapshot = serde_json::json!({
-        "format_version": 1,
-        "version": version,
-        "expires_at_ms": i64::MAX,
-        "bindings": [{
-            "action_id": action_id,
-            "version": action_version,
-            "resource": resource,
-            "parameter_schema_id": "test-any-json/v1",
-            "parameter_schema": {},
-        }],
-        "rules": [{
-            "id": PolicyRuleId::new_random().to_string(),
-            "effect": "permit",
-            "principal_id": principal_id,
-            "action_id": action_id,
-            "version": action_version,
-            "resource": resource,
-            "parameters": {"kind": "any_validated"},
-        }],
-    });
-    call(
-        &broker.admin_sock(),
-        Channel::Admin,
-        admin_msg::POLICY_ACTIVATE,
-        snapshot.to_string().as_bytes(),
-        &proof_body(PASSWORD),
-    )
-    .await
-    .ok();
+    let session = policy::create_session_grant(broker, action_id, version, 100).await;
+    activate_test_policy(broker, action_id, version, &session.principal_id).await;
+    session.capability_token
 }
 
 pub fn execute_meta(token: &str, action_id: &str, version: u64) -> serde_json::Value {
@@ -353,5 +307,6 @@ pub fn execute_meta(token: &str, action_id: &str, version: u64) -> serde_json::V
         "action_version": version,
         "content_type": "application/json",
         "extra_headers": [],
+        "approval_grants": [],
     })
 }

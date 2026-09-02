@@ -6,12 +6,12 @@ use rekey_domain::action::{
 };
 use rekey_domain::audit::{AuditPage, AuditQuery};
 use rekey_domain::credential::{CredentialKind, CredentialLabel, CredentialMetadata};
-use rekey_domain::ids::{ActionId, CredentialId, RequestId, SessionId, VaultId};
+use rekey_domain::ids::{ActionId, CredentialId, PolicySignerId, RequestId, SessionId, VaultId};
 use tokio::sync::oneshot;
 use zeroize::Zeroizing;
 
 use crate::error::AuthorityError;
-use crate::model::{ActionState, AuthorizationEvidence};
+use crate::model::{ActionState, ApprovalEvidence, AuthorizationEvidence};
 use crate::secret::{PreparedCredential, SecretInput};
 
 pub type Reply<T> = oneshot::Sender<Result<T, AuthorityError>>;
@@ -47,6 +47,7 @@ pub struct AuditDraft {
     pub credential_id: Option<CredentialId>,
     pub credential_version: Option<u64>,
     pub authorization: Option<Box<AuthorizationEvidence>>,
+    pub approval: Option<ApprovalEvidence>,
     pub event_type: &'static str,
     pub outcome: &'static str,
     pub reason_code: String,
@@ -61,6 +62,8 @@ pub struct StatusInfo {
     pub format_version: u32,
     /// Time since last successful mutation or credential prepare. Zero when locked.
     pub idle_for_ms: u64,
+    pub policy_trust_installed: bool,
+    pub policy_bundle_persisted: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -77,6 +80,29 @@ pub struct BackupInfo {
 pub struct PinnedAction {
     pub action: rekey_domain::action::FixedHttpAction,
     pub state: ActionState,
+}
+
+#[derive(Debug, Clone)]
+pub struct PolicyTrustInput {
+    pub signer_id: PolicySignerId,
+    pub public_key: [u8; 32],
+}
+
+#[derive(Debug, Clone)]
+pub struct PolicyBundleInput {
+    pub signer_id: PolicySignerId,
+    pub version: u64,
+    pub expires_at_ms: i64,
+    pub policy_digest: [u8; 32],
+    pub bundle_digest: [u8; 32],
+    pub bundle_json: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PolicyMaterial {
+    pub state: crate::model::PolicyStateRecord,
+    pub trust: Option<crate::model::PolicyTrustRecord>,
+    pub bundle: Option<crate::model::PolicyBundleRecord>,
 }
 
 pub enum AuthorityCommand {
@@ -166,9 +192,33 @@ pub enum AuthorityCommand {
         not_after: Option<Instant>,
         reply: Reply<()>,
     },
+    AppendAudits {
+        drafts: Vec<AuditDraft>,
+        not_after: Option<Instant>,
+        wall_not_after_ms: Option<i64>,
+        reply: Reply<()>,
+    },
     AuditQuery {
         query: AuditQuery,
         reply: Reply<AuditPage>,
+    },
+    PolicyMaterial {
+        reply: Reply<PolicyMaterial>,
+    },
+    PolicyTrustInstall {
+        input: PolicyTrustInput,
+        proof: UnlockProof,
+        not_after: Option<Instant>,
+        reply: Reply<PolicyMaterial>,
+    },
+    PolicyBundleActivate {
+        input: PolicyBundleInput,
+        proof: UnlockProof,
+        not_after: Option<Instant>,
+        reply: Reply<PolicyMaterial>,
+    },
+    FaultIntegrity {
+        reply: Reply<()>,
     },
     Backup {
         output: PathBuf,

@@ -341,7 +341,7 @@ SESSION_JSON="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" sessio
 PRINCIPAL_ID="$(printf '%s\n' "$SESSION_JSON" | json_field principal_id)"
 CAPABILITY="$(printf '%s\n' "$SESSION_JSON" | json_field capability_token)"
 
-python3 - "$WORKDIR/policy.json" "$ACTION_ID" "$ACTION_VERSION" "$PRINCIPAL_ID" <<'PY'
+python3 - "$WORKDIR/policy-snapshot.json" "$ACTION_ID" "$ACTION_VERSION" "$PRINCIPAL_ID" <<'PY'
 import json, pathlib, sys, time, uuid
 path, action, version, principal = sys.argv[1:]
 resource = {"type": "github-installation-repositories", "id": action}
@@ -351,12 +351,17 @@ binding = {"action_id": action, "version": int(version), "resource": resource,
 rule = {"id": str(uuid.uuid4()), "effect": "permit", "principal_id": principal,
     "action_id": action, "version": int(version), "resource": resource,
     "parameters": {"kind": "any_validated"}}
-pathlib.Path(path).write_text(json.dumps({"format_version": 1, "version": 1,
+pathlib.Path(path).write_text(json.dumps({"format_version": 2, "version": 1,
     "expires_at_ms": int(time.time() * 1000) + 600000,
-    "bindings": [binding], "rules": [rule]}))
+    "approvers": [], "bindings": [binding], "rules": [rule]}))
 PY
+python3 "$ROOT/scripts/sign-test-policy.py" policy --key-dir "$WORKDIR/policy-key" \
+  --snapshot "$WORKDIR/policy-snapshot.json" --bundle "$WORKDIR/policy.json" \
+  --trust "$WORKDIR/policy-trust.json"
+printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy trust install \
+  --file "$WORKDIR/policy-trust.json" --step-up-stdin >/dev/null
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate \
-  --file "$WORKDIR/policy.json" --password-stdin >/dev/null
+  --file "$WORKDIR/policy.json" --step-up-stdin >/dev/null
 
 printf '%s\n' success >"$MODE"
 "$REKEY" --state-dir "$STATE" execute "$ACTION_REF" --capability "$CAPABILITY" \
@@ -462,7 +467,7 @@ SIGNAL_SESSION_JSON="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE"
   --action "$ACTION_REF" --ttl 10m --max-uses 2 --password-stdin)"
 SIGNAL_PRINCIPAL_ID="$(printf '%s\n' "$SIGNAL_SESSION_JSON" | json_field principal_id)"
 SIGNAL_CAPABILITY="$(printf '%s\n' "$SIGNAL_SESSION_JSON" | json_field capability_token)"
-python3 - "$WORKDIR/policy.json" "$SIGNAL_PRINCIPAL_ID" <<'PY'
+python3 - "$WORKDIR/policy-snapshot.json" "$SIGNAL_PRINCIPAL_ID" <<'PY'
 import json, pathlib, sys, time, uuid
 path = pathlib.Path(sys.argv[1])
 policy = json.loads(path.read_text())
@@ -472,8 +477,11 @@ policy["rules"][0]["id"] = str(uuid.uuid4())
 policy["rules"][0]["principal_id"] = sys.argv[2]
 path.write_text(json.dumps(policy))
 PY
+python3 "$ROOT/scripts/sign-test-policy.py" policy --key-dir "$WORKDIR/policy-key" \
+  --snapshot "$WORKDIR/policy-snapshot.json" --bundle "$WORKDIR/policy.json" \
+  --trust "$WORKDIR/policy-trust.json"
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate \
-  --file "$WORKDIR/policy.json" --password-stdin >/dev/null
+  --file "$WORKDIR/policy.json" --step-up-stdin >/dev/null
 
 printf '%s\n' slow-resource >"$MODE"
 SIGNAL_RESOURCE_BEFORE="$(trace_count resource.ok)"
@@ -706,18 +714,21 @@ RESTORED_SESSION="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" se
   --action "$ACTION_REF" --ttl 10m --max-uses 2 --password-stdin)"
 RESTORED_PRINCIPAL="$(printf '%s\n' "$RESTORED_SESSION" | json_field principal_id)"
 RESTORED_CAPABILITY="$(printf '%s\n' "$RESTORED_SESSION" | json_field capability_token)"
-python3 - "$WORKDIR/policy.json" "$RESTORED_PRINCIPAL" <<'PY'
+python3 - "$WORKDIR/policy-snapshot.json" "$RESTORED_PRINCIPAL" <<'PY'
 import json, pathlib, sys, time, uuid
 path = pathlib.Path(sys.argv[1])
 policy = json.loads(path.read_text())
-policy["version"] = 2
+policy["version"] = 3
 policy["expires_at_ms"] = int(time.time() * 1000) + 600000
 policy["rules"][0]["id"] = str(uuid.uuid4())
 policy["rules"][0]["principal_id"] = sys.argv[2]
 path.write_text(json.dumps(policy))
 PY
+python3 "$ROOT/scripts/sign-test-policy.py" policy --key-dir "$WORKDIR/policy-key" \
+  --snapshot "$WORKDIR/policy-snapshot.json" --bundle "$WORKDIR/policy.json" \
+  --trust "$WORKDIR/policy-trust.json"
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate \
-  --file "$WORKDIR/policy.json" --password-stdin >/dev/null
+  --file "$WORKDIR/policy.json" --step-up-stdin >/dev/null
 "$REKEY" --state-dir "$STATE" execute "$ACTION_REF" --capability "$RESTORED_CAPABILITY" \
   >"$WORKDIR/restored-success.out" 2>"$WORKDIR/restored-success.err"
 grep -q '"id":616161' "$WORKDIR/restored-success.out"

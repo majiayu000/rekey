@@ -1,11 +1,11 @@
 use sha2::{Digest, Sha256};
 
-/// Schema v5. This SQL text is the single source of truth; `schema_digest()`
+/// Schema v6. This SQL text is the single source of truth; `schema_digest()`
 /// hashes its normalized form to detect accidental drift, not tampering.
 pub const SCHEMA_SQL: &str = r#"
 CREATE TABLE vault_header (
     singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
-    format_version     INTEGER NOT NULL CHECK (format_version = 5),
+    format_version     INTEGER NOT NULL CHECK (format_version = 6),
     vault_id           BLOB NOT NULL CHECK (length(vault_id) = 16),
     crypto_suite       TEXT NOT NULL CHECK (crypto_suite = 'rkca-aes256gcm-argon2id-hkdfsha256-v1'),
     created_at_ms      INTEGER NOT NULL,
@@ -87,6 +87,52 @@ CREATE TABLE actions (
 CREATE UNIQUE INDEX one_active_action_version
 ON actions(action_id) WHERE state = 'active';
 
+CREATE TABLE policy_state (
+    singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
+    trust_installed    INTEGER NOT NULL CHECK (trust_installed IN (0, 1)),
+    bundle_activated   INTEGER NOT NULL CHECK (bundle_activated IN (0, 1)),
+    signer_id          BLOB CHECK (signer_id IS NULL OR length(signer_id) = 16),
+    highest_version    INTEGER,
+    policy_digest      BLOB CHECK (policy_digest IS NULL OR length(policy_digest) = 32),
+    bundle_digest      BLOB CHECK (bundle_digest IS NULL OR length(bundle_digest) = 32),
+    updated_at_ms      INTEGER NOT NULL,
+    seal_nonce         BLOB NOT NULL CHECK (length(seal_nonce) = 12),
+    seal_ciphertext    BLOB NOT NULL CHECK (length(seal_ciphertext) = 16),
+    CHECK (
+        (trust_installed = 0 AND signer_id IS NULL) OR
+        (trust_installed = 1 AND signer_id IS NOT NULL)
+    ),
+    CHECK (
+        (bundle_activated = 0 AND highest_version IS NULL
+            AND policy_digest IS NULL AND bundle_digest IS NULL) OR
+        (bundle_activated = 1 AND trust_installed = 1 AND highest_version >= 1
+            AND policy_digest IS NOT NULL AND bundle_digest IS NOT NULL)
+    )
+) STRICT;
+
+CREATE TABLE policy_trust (
+    singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
+    signer_id          BLOB NOT NULL UNIQUE CHECK (length(signer_id) = 16),
+    algorithm          TEXT NOT NULL CHECK (algorithm = 'ed25519'),
+    public_key         BLOB NOT NULL CHECK (length(public_key) = 32),
+    installed_at_ms    INTEGER NOT NULL,
+    seal_nonce         BLOB NOT NULL CHECK (length(seal_nonce) = 12),
+    seal_ciphertext    BLOB NOT NULL CHECK (length(seal_ciphertext) = 16)
+) STRICT;
+
+CREATE TABLE policy_bundle (
+    singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
+    signer_id          BLOB NOT NULL CHECK (length(signer_id) = 16),
+    version            INTEGER NOT NULL CHECK (version >= 1),
+    expires_at_ms      INTEGER NOT NULL,
+    policy_digest      BLOB NOT NULL CHECK (length(policy_digest) = 32),
+    bundle_digest      BLOB NOT NULL CHECK (length(bundle_digest) = 32),
+    bundle_json        BLOB NOT NULL CHECK (length(bundle_json) <= 65536),
+    activated_at_ms    INTEGER NOT NULL,
+    seal_nonce         BLOB NOT NULL CHECK (length(seal_nonce) = 12),
+    seal_ciphertext    BLOB NOT NULL CHECK (length(seal_ciphertext) = 16)
+) STRICT;
+
 CREATE TABLE audit_events (
     sequence            INTEGER PRIMARY KEY AUTOINCREMENT,
     event_id            BLOB NOT NULL UNIQUE CHECK (length(event_id) = 16),
@@ -100,6 +146,9 @@ CREATE TABLE audit_events (
     policy_version      INTEGER,
     policy_digest       BLOB CHECK (policy_digest IS NULL OR length(policy_digest) = 32),
     policy_rule_id      BLOB CHECK (policy_rule_id IS NULL OR length(policy_rule_id) = 16),
+    approval_request_id BLOB CHECK (approval_request_id IS NULL OR length(approval_request_id) = 16),
+    approval_id         BLOB CHECK (approval_id IS NULL OR length(approval_id) = 16),
+    approver_id         BLOB CHECK (approver_id IS NULL OR length(approver_id) = 16),
     resource_type       TEXT,
     resource_id         TEXT,
     parameter_hash      BLOB CHECK (parameter_hash IS NULL OR length(parameter_hash) = 32),

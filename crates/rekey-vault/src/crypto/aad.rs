@@ -12,6 +12,9 @@ pub enum AadPurpose {
     CredentialPayload,
     VaultIntegrity,
     CredentialState,
+    PolicyState,
+    PolicyTrust,
+    PolicyBundle,
 }
 
 impl AadPurpose {
@@ -22,6 +25,9 @@ impl AadPurpose {
             Self::CredentialPayload => 3,
             Self::VaultIntegrity => 4,
             Self::CredentialState => 5,
+            Self::PolicyState => 6,
+            Self::PolicyTrust => 7,
+            Self::PolicyBundle => 8,
         }
     }
 }
@@ -109,6 +115,18 @@ mod tests {
             },
             AadV1 {
                 purpose: AadPurpose::CredentialState,
+                ..base
+            },
+            AadV1 {
+                purpose: AadPurpose::PolicyState,
+                ..base
+            },
+            AadV1 {
+                purpose: AadPurpose::PolicyTrust,
+                ..base
+            },
+            AadV1 {
+                purpose: AadPurpose::PolicyBundle,
                 ..base
             },
             AadV1 {

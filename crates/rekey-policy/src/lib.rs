@@ -1,21 +1,28 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use curve25519_dalek::edwards::CompressedEdwardsY;
 use data_encoding::HEXLOWER;
 use jsonschema::{Draft, Validator};
 use rekey_domain::Timestamp;
 use rekey_domain::authorization::{
-    AuthorizationRequest, CanonicalParameters, Decision, DenyReason, PolicyVersion, ResourceRef,
-    SchemaId,
+    ApprovalMode, ApprovalRequirement, AuthorizationRequest, CanonicalParameters, Decision,
+    DenyReason, PolicyVersion, ResourceRef, SchemaId,
 };
 use rekey_domain::capability::ActionVersionRef;
-use rekey_domain::ids::{ActionId, PolicyRuleId, PrincipalId};
-use serde::de::{MapAccess, SeqAccess, Visitor};
-use serde::{Deserialize, Deserializer, Serialize};
-use serde_json::{Map, Number, Value};
+use rekey_domain::ids::{ActionId, ApproverId, PolicyRuleId, PrincipalId};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-pub const SNAPSHOT_FORMAT_VERSION: u32 = 1;
+pub const SNAPSHOT_FORMAT_VERSION: u32 = 2;
 pub const SNAPSHOT_MAX_BYTES: usize = 64 * 1024;
+pub const TRUST_MAX_BYTES: usize = 4 * 1024;
+pub const APPROVAL_GRANT_MAX_BYTES: usize = 4 * 1024;
+
+mod json;
+use json::parse_unique_json;
+mod signed;
+pub use signed::*;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PolicyError {
@@ -31,6 +38,8 @@ pub enum PolicyError {
     Invalid,
     #[error("request parameters are invalid")]
     InvalidParameters,
+    #[error("signature verification failed")]
+    InvalidSignature,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,8 +48,23 @@ pub struct PolicySnapshot {
     pub format_version: u32,
     pub version: PolicyVersion,
     pub expires_at_ms: i64,
+    pub approvers: Vec<Approver>,
     pub bindings: Vec<ActionBinding>,
     pub rules: Vec<PolicyRule>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Approver {
+    pub approver_id: ApproverId,
+    pub algorithm: SignatureAlgorithm,
+    pub public_key: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SignatureAlgorithm {
+    Ed25519,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,6 +87,8 @@ pub struct PolicyRule {
     pub version: u64,
     pub resource: ResourceRef,
     pub parameters: ParameterScope,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<ApprovalRequirement>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,6 +96,7 @@ pub struct PolicyRule {
 pub enum RuleEffect {
     Permit,
     Forbid,
+    RequireApproval,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,6 +117,7 @@ pub struct ValidatedSnapshot {
     digest: [u8; 32],
     bindings: Vec<CompiledBinding>,
     rules: Vec<PolicyRule>,
+    approvers: BTreeMap<ApproverId, [u8; 32]>,
 }
 
 impl ValidatedSnapshot {
@@ -103,6 +131,10 @@ impl ValidatedSnapshot {
 
     pub fn digest(&self) -> [u8; 32] {
         self.digest
+    }
+
+    pub fn approver_key(&self, approver_id: ApproverId) -> Option<&[u8; 32]> {
+        self.approvers.get(&approver_id)
     }
 
     pub fn binding(&self, action: ActionVersionRef) -> Option<&ActionBinding> {
@@ -170,6 +202,21 @@ pub fn parse_and_validate_snapshot(
     bytes: &[u8],
     now: Timestamp,
 ) -> Result<ValidatedSnapshot, PolicyError> {
+    parse_and_validate_snapshot_inner(bytes, Some(now))
+}
+
+/// Validates a persisted signed snapshot without treating wall-clock expiry as
+/// malformed. The Broker publishes it as expired and keeps execution denied.
+pub fn parse_and_validate_snapshot_for_load(
+    bytes: &[u8],
+) -> Result<ValidatedSnapshot, PolicyError> {
+    parse_and_validate_snapshot_inner(bytes, None)
+}
+
+fn parse_and_validate_snapshot_inner(
+    bytes: &[u8],
+    now: Option<Timestamp>,
+) -> Result<ValidatedSnapshot, PolicyError> {
     if bytes.len() > SNAPSHOT_MAX_BYTES {
         return Err(PolicyError::TooLarge);
     }
@@ -179,8 +226,22 @@ pub fn parse_and_validate_snapshot(
     if snapshot.format_version != SNAPSHOT_FORMAT_VERSION {
         return Err(PolicyError::UnsupportedFormat);
     }
-    if snapshot.expires_at_ms <= now.as_unix_ms() {
+    if snapshot.expires_at_ms < 0
+        || now.is_some_and(|now| snapshot.expires_at_ms <= now.as_unix_ms())
+    {
         return Err(PolicyError::Expired);
+    }
+
+    if snapshot.approvers.len() > 32 {
+        return Err(PolicyError::Invalid);
+    }
+    let mut approvers = BTreeMap::new();
+    let mut public_keys = BTreeSet::new();
+    for approver in &snapshot.approvers {
+        let key = validate_ed25519_public_key(&approver.public_key)?;
+        if approvers.insert(approver.approver_id, key).is_some() || !public_keys.insert(key) {
+            return Err(PolicyError::Invalid);
+        }
     }
 
     let mut seen_bindings = BTreeSet::new();
@@ -216,10 +277,32 @@ pub fn parse_and_validate_snapshot(
             return Err(PolicyError::Invalid);
         }
         if let ParameterScope::ExactHash { sha256 } = &rule.parameters {
-            let decoded = HEXLOWER
-                .decode(sha256.as_bytes())
-                .map_err(|_| PolicyError::Invalid)?;
-            if decoded.len() != 32 || HEXLOWER.encode(&decoded) != *sha256 {
+            decode_lower_hex_32(sha256)?;
+        }
+        match (rule.effect, rule.approval.as_ref()) {
+            (RuleEffect::Permit | RuleEffect::Forbid, None) => {}
+            (RuleEffect::RequireApproval, Some(requirement)) => {
+                validate_requirement(requirement, &approvers)?;
+            }
+            _ => return Err(PolicyError::Invalid),
+        }
+    }
+
+    for (index, left) in snapshot.rules.iter().enumerate() {
+        if left.effect != RuleEffect::RequireApproval {
+            continue;
+        }
+        for right in snapshot.rules.iter().skip(index + 1) {
+            if right.effect == RuleEffect::RequireApproval
+                && left.principal_id == right.principal_id
+                && left.action() == right.action()
+                && left.resource == right.resource
+                && scopes_overlap(&left.parameters, &right.parameters)
+                && !requirements_equivalent(
+                    left.approval.as_ref().ok_or(PolicyError::Invalid)?,
+                    right.approval.as_ref().ok_or(PolicyError::Invalid)?,
+                )
+            {
                 return Err(PolicyError::Invalid);
             }
         }
@@ -234,6 +317,7 @@ pub fn parse_and_validate_snapshot(
         digest,
         bindings: compiled,
         rules: snapshot.rules,
+        approvers,
     })
 }
 
@@ -248,6 +332,7 @@ pub fn evaluate(
     }
     let mut permit: Option<PolicyRuleId> = None;
     let mut forbid: Option<PolicyRuleId> = None;
+    let mut approval: Option<(PolicyRuleId, &ApprovalRequirement)> = None;
     for rule in &snapshot.rules {
         if rule.principal_id != request.principal.principal_id
             || rule.action() != request.action
@@ -259,10 +344,25 @@ pub fn evaluate(
         match rule.effect {
             RuleEffect::Forbid => forbid = minimum(forbid, rule.id),
             RuleEffect::Permit => permit = minimum(permit, rule.id),
+            RuleEffect::RequireApproval => {
+                let Some(requirement) = rule.approval.as_ref() else {
+                    return deny(snapshot, DenyReason::EvaluationFailed, Some(rule.id));
+                };
+                if approval.is_none_or(|current| rule.id < current.0) {
+                    approval = Some((rule.id, requirement));
+                }
+            }
         }
     }
     if let Some(rule) = forbid {
         deny(snapshot, DenyReason::ExplicitForbid, Some(rule))
+    } else if let Some((rule, requirement)) = approval {
+        Decision::RequireApproval {
+            policy_version: snapshot.version,
+            snapshot_digest: snapshot.digest,
+            determining_rule: rule,
+            requirement: requirement.clone(),
+        }
     } else if let Some(rule) = permit {
         Decision::Allow {
             policy_version: snapshot.version,
@@ -314,6 +414,74 @@ fn scope_matches(scope: &ParameterScope, hash: [u8; 32]) -> bool {
         ParameterScope::AnyValidated {} => true,
         ParameterScope::ExactHash { sha256 } => HEXLOWER.encode(&hash) == *sha256,
     }
+}
+
+fn scopes_overlap(left: &ParameterScope, right: &ParameterScope) -> bool {
+    match (left, right) {
+        (ParameterScope::AnyValidated {}, _) | (_, ParameterScope::AnyValidated {}) => true,
+        (
+            ParameterScope::ExactHash { sha256: left },
+            ParameterScope::ExactHash { sha256: right },
+        ) => left == right,
+    }
+}
+
+fn validate_requirement(
+    requirement: &ApprovalRequirement,
+    approvers: &BTreeMap<ApproverId, [u8; 32]>,
+) -> Result<(), PolicyError> {
+    if requirement.approver_ids.is_empty() || requirement.approver_ids.len() > 32 {
+        return Err(PolicyError::Invalid);
+    }
+    let distinct: BTreeSet<_> = requirement.approver_ids.iter().copied().collect();
+    if distinct.len() != requirement.approver_ids.len()
+        || distinct.iter().any(|id| !approvers.contains_key(id))
+        || !(1..=2).contains(&requirement.quorum)
+        || usize::from(requirement.quorum) > distinct.len()
+    {
+        return Err(PolicyError::Invalid);
+    }
+    match requirement.mode {
+        ApprovalMode::OneTime
+            if requirement.max_uses == 1 && requirement.max_window_ms.is_none() => {}
+        ApprovalMode::TimeWindow
+            if (1..=10_000).contains(&requirement.max_uses)
+                && requirement
+                    .max_window_ms
+                    .is_some_and(|window| (1..=8 * 60 * 60 * 1_000).contains(&window)) => {}
+        _ => return Err(PolicyError::Invalid),
+    }
+    Ok(())
+}
+
+fn requirements_equivalent(left: &ApprovalRequirement, right: &ApprovalRequirement) -> bool {
+    let left_ids: BTreeSet<_> = left.approver_ids.iter().copied().collect();
+    let right_ids: BTreeSet<_> = right.approver_ids.iter().copied().collect();
+    left_ids == right_ids
+        && left.quorum == right.quorum
+        && left.mode == right.mode
+        && left.max_uses == right.max_uses
+        && left.max_window_ms == right.max_window_ms
+}
+
+pub(crate) fn decode_lower_hex_32(value: &str) -> Result<[u8; 32], PolicyError> {
+    let decoded = HEXLOWER
+        .decode(value.as_bytes())
+        .map_err(|_| PolicyError::Invalid)?;
+    if decoded.len() != 32 || HEXLOWER.encode(&decoded) != value {
+        return Err(PolicyError::Invalid);
+    }
+    decoded.try_into().map_err(|_| PolicyError::Invalid)
+}
+
+pub(crate) fn validate_ed25519_public_key(value: &str) -> Result<[u8; 32], PolicyError> {
+    let public_key = decode_lower_hex_32(value)?;
+    let compressed = CompressedEdwardsY(public_key);
+    let point = compressed.decompress().ok_or(PolicyError::Invalid)?;
+    if point.is_small_order() || point.compress().to_bytes() != public_key {
+        return Err(PolicyError::Invalid);
+    }
+    Ok(public_key)
 }
 
 fn normalize_content_type(
@@ -400,83 +568,6 @@ fn reject_remote_refs(value: &Value) -> Result<(), PolicyError> {
     Ok(())
 }
 
-struct UniqueValue(Value);
-
-impl<'de> Deserialize<'de> for UniqueValue {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        deserializer.deserialize_any(UniqueVisitor)
-    }
-}
-
-struct UniqueVisitor;
-
-impl<'de> Visitor<'de> for UniqueVisitor {
-    type Value = UniqueValue;
-
-    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("valid JSON without duplicate object keys")
-    }
-
-    fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
-        Ok(UniqueValue(Value::Bool(value)))
-    }
-
-    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
-        Ok(UniqueValue(Value::Number(Number::from(value))))
-    }
-
-    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
-        Ok(UniqueValue(Value::Number(Number::from(value))))
-    }
-
-    fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<Self::Value, E> {
-        Number::from_f64(value)
-            .map(|number| UniqueValue(Value::Number(number)))
-            .ok_or_else(|| E::custom("non-finite JSON number"))
-    }
-
-    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
-        Ok(UniqueValue(Value::String(value.to_owned())))
-    }
-
-    fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
-        Ok(UniqueValue(Value::String(value)))
-    }
-
-    fn visit_none<E>(self) -> Result<Self::Value, E> {
-        Ok(UniqueValue(Value::Null))
-    }
-
-    fn visit_unit<E>(self) -> Result<Self::Value, E> {
-        Ok(UniqueValue(Value::Null))
-    }
-
-    fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> Result<Self::Value, A::Error> {
-        let mut values = Vec::new();
-        while let Some(value) = sequence.next_element::<UniqueValue>()? {
-            values.push(value.0);
-        }
-        Ok(UniqueValue(Value::Array(values)))
-    }
-
-    fn visit_map<A: MapAccess<'de>>(self, mut access: A) -> Result<Self::Value, A::Error> {
-        let mut values = BTreeMap::new();
-        while let Some((key, value)) = access.next_entry::<String, UniqueValue>()? {
-            if values.insert(key, value.0).is_some() {
-                return Err(serde::de::Error::custom("duplicate JSON object key"));
-            }
-        }
-        Ok(UniqueValue(Value::Object(Map::from_iter(values))))
-    }
-}
-
-fn parse_unique_json(bytes: &[u8]) -> Result<Value, PolicyError> {
-    let mut deserializer = serde_json::Deserializer::from_slice(bytes);
-    let value = UniqueValue::deserialize(&mut deserializer).map_err(|_| PolicyError::Malformed)?;
-    deserializer.end().map_err(|_| PolicyError::Malformed)?;
-    Ok(value.0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -499,9 +590,10 @@ mod tests {
         rule: PolicyRuleId,
     ) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
-            "format_version": 1,
+            "format_version": 2,
             "version": 1,
             "expires_at_ms": 10_000,
+            "approvers": [],
             "bindings": [{
                 "action_id": action.action_id,
                 "version": action.version,

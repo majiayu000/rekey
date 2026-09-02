@@ -24,8 +24,10 @@ use crate::now_ms;
 use crate::paths;
 use crate::store::SqliteRecordStore;
 
+mod audit;
 mod backup;
 mod credential;
+mod policy;
 mod wrapper;
 
 const FREE_UNLOCK_FAILURES: u32 = 3;
@@ -42,6 +44,7 @@ fn reconcile_abandoned_executions(store: &mut SqliteRecordStore) -> Result<(), A
             credential_id: row.credential_id,
             credential_version: None,
             authorization: row.authorization,
+            approval: None,
             event_type: event_type::EXECUTION_INDETERMINATE,
             outcome: outcome::UNKNOWN,
             reason_code: "abandoned-on-restart".to_owned(),
@@ -150,6 +153,15 @@ impl Worker {
                 refresh_activity,
                 reply,
             } => {
+                let policy_state = self.store.load_policy_state();
+                let policy_state = self.fault_on_integrity(policy_state);
+                let (policy_trust_installed, policy_bundle_persisted) = match policy_state {
+                    Ok(state) => (state.trust_installed, state.bundle_activated),
+                    Err(error) => {
+                        drop(reply.send(Err(error)));
+                        return false;
+                    }
+                };
                 if refresh_activity && matches!(self.state, VaultState::Unlocked { .. }) {
                     self.last_activity = Instant::now();
                 }
@@ -163,6 +175,8 @@ impl Worker {
                     vault_id: self.header.vault_id,
                     format_version: self.header.format_version,
                     idle_for_ms,
+                    policy_trust_installed,
+                    policy_bundle_persisted,
                 }));
             }
             AuthorityCommand::Unlock { proof, reply } => {
@@ -369,6 +383,39 @@ impl Worker {
                 }
                 let _ = reply.send(result);
             }
+            AuthorityCommand::AppendAudits {
+                drafts,
+                not_after,
+                wall_not_after_ms,
+                reply,
+            } => {
+                let refreshes_idle = drafts.iter().any(|draft| {
+                    matches!(
+                        draft.event_type,
+                        event_type::EXECUTION_FINISHED
+                            | event_type::EXECUTION_BLOCKED
+                            | event_type::EXECUTION_INDETERMINATE
+                            | event_type::SESSION_CREATED
+                            | event_type::SESSION_REVOKED
+                            | event_type::POLICY_ACTIVATED
+                    )
+                });
+                let result = (|| {
+                    if mutation_expired(not_after) {
+                        return Err(AuthorityError::AuthorityBusy);
+                    }
+                    if let Some(deadline_ms) = wall_not_after_ms
+                        && now_ms()? >= deadline_ms
+                    {
+                        return Err(AuthorityError::AuthorityBusy);
+                    }
+                    self.append_audits(drafts)
+                })();
+                if refreshes_idle {
+                    self.touch_if_ok(&result);
+                }
+                drop(reply.send(result));
+            }
             AuthorityCommand::AuditQuery { query, reply } => {
                 let result = if matches!(self.state, VaultState::Faulted) {
                     Err(AuthorityError::Faulted)
@@ -378,6 +425,46 @@ impl Worker {
                 };
                 self.touch_if_ok(&result);
                 let _ = reply.send(result);
+            }
+            AuthorityCommand::PolicyMaterial { reply } => {
+                let result = self.policy_material();
+                let result = self.fault_on_integrity(result);
+                self.touch_if_ok(&result);
+                drop(reply.send(result));
+            }
+            AuthorityCommand::PolicyTrustInstall {
+                input,
+                proof,
+                not_after,
+                reply,
+            } => {
+                let result = if mutation_expired(not_after) {
+                    Err(AuthorityError::AuthorityBusy)
+                } else {
+                    self.policy_trust_install(input, proof, not_after)
+                };
+                let result = self.fault_on_integrity(result);
+                self.touch_if_ok(&result);
+                drop(reply.send(result));
+            }
+            AuthorityCommand::PolicyBundleActivate {
+                input,
+                proof,
+                not_after,
+                reply,
+            } => {
+                let result = if mutation_expired(not_after) {
+                    Err(AuthorityError::AuthorityBusy)
+                } else {
+                    self.policy_bundle_activate(input, proof, not_after)
+                };
+                let result = self.fault_on_integrity(result);
+                self.touch_if_ok(&result);
+                drop(reply.send(result));
+            }
+            AuthorityCommand::FaultIntegrity { reply } => {
+                self.fault("persisted-policy-validation-failed");
+                drop(reply.send(Err(AuthorityError::StorageIntegrityFailed)));
             }
             AuthorityCommand::Backup {
                 output,
@@ -415,80 +502,6 @@ impl Worker {
             VaultState::Unlocked { vrk } => Ok(vrk),
             VaultState::Locked => Err(AuthorityError::Locked),
             VaultState::Faulted => Err(AuthorityError::Faulted),
-        }
-    }
-
-    fn fault(&mut self, reason: &'static str) {
-        self.state = VaultState::Faulted;
-        if let (Ok(event_id), Ok(created_at_ms)) = (random_array(), now_ms()) {
-            let _ = self.store.append_audit(&AuditEvent {
-                event_id,
-                request_id: None,
-                session_id: None,
-                action_id: None,
-                action_version: None,
-                credential_id: None,
-                credential_version: None,
-                authorization: None,
-                event_type: event_type::RUNTIME_FAULTED,
-                outcome: outcome::FAILURE,
-                reason_code: reason.to_owned(),
-                upstream_status: None,
-                latency_ms: None,
-                created_at_ms,
-            });
-        }
-    }
-
-    fn audit_event(&self, draft: AuditDraft) -> Result<AuditEvent, AuthorityError> {
-        Ok(AuditEvent {
-            event_id: random_array()?,
-            request_id: draft.request_id,
-            session_id: draft.session_id,
-            action_id: draft.action_id,
-            action_version: draft.action_version,
-            credential_id: draft.credential_id,
-            credential_version: draft.credential_version,
-            authorization: draft.authorization.map(|evidence| *evidence),
-            event_type: draft.event_type,
-            outcome: draft.outcome,
-            reason_code: draft.reason_code,
-            upstream_status: draft.upstream_status,
-            latency_ms: draft.latency_ms,
-            created_at_ms: now_ms()?,
-        })
-    }
-
-    fn audit_event_or_fault(&mut self, draft: AuditDraft) -> Result<AuditEvent, AuthorityError> {
-        match self.audit_event(draft) {
-            Ok(event) => Ok(event),
-            Err(err) => {
-                self.fault("audit-event-construction-failed");
-                Err(err)
-            }
-        }
-    }
-
-    fn fault_on_audit_failure<T>(
-        &mut self,
-        result: Result<T, AuthorityError>,
-    ) -> Result<T, AuthorityError> {
-        if matches!(result, Err(AuthorityError::AuditCommitFailed)) {
-            self.fault("audit-commit-failed");
-        }
-        result
-    }
-
-    /// Audit failure is fail-closed: the worker faults instead of continuing
-    /// without evidence.
-    fn append_audit(&mut self, draft: AuditDraft) -> Result<(), AuthorityError> {
-        let event = self.audit_event_or_fault(draft)?;
-        match self.store.append_audit(&event) {
-            Ok(()) => Ok(()),
-            Err(err) => {
-                self.fault("audit-commit-failed");
-                Err(err)
-            }
         }
     }
 
@@ -534,6 +547,10 @@ impl Worker {
                 self.next_unlock_at = Instant::now();
                 self.state = VaultState::Unlocked { vrk };
                 self.last_activity = Instant::now();
+                if let Err(error) = self.policy_material() {
+                    self.fault("persisted-policy-integrity-failed");
+                    return Err(error);
+                }
                 self.append_audit(unlock_audit(
                     event_type::VAULT_UNLOCKED,
                     outcome::SUCCESS,
@@ -692,6 +709,7 @@ fn unlock_audit(event_type: &'static str, outcome: &'static str, reason: &str) -
         credential_id: None,
         credential_version: None,
         authorization: None,
+        approval: None,
         event_type,
         outcome,
         reason_code: reason.to_owned(),
@@ -714,6 +732,7 @@ fn credential_audit(
         credential_id: Some(credential_id),
         credential_version: Some(version),
         authorization: None,
+        approval: None,
         event_type,
         outcome: outcome::SUCCESS,
         reason_code: reason.to_owned(),

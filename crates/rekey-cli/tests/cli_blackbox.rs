@@ -439,11 +439,11 @@ fn cli_end_to_end() {
         .collect();
     assert_eq!(
         lines.first().unwrap()["record_type"],
-        "rekey.audit.export.v1"
+        "rekey.audit.export.v2"
     );
     assert_eq!(
         lines.last().unwrap()["record_type"],
-        "rekey.audit.export.complete.v1"
+        "rekey.audit.export.complete.v2"
     );
     assert_eq!(lines.last().unwrap()["row_count"], (lines.len() - 2) as u64);
     for needle in [

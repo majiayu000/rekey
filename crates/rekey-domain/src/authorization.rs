@@ -2,7 +2,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::capability::ActionVersionRef;
 use crate::error::DomainError;
-use crate::ids::{PolicyRuleId, PrincipalId, SessionId, TenantId};
+use crate::ids::{ApproverId, PolicyRuleId, PrincipalId, SessionId, TenantId};
 
 fn invalid(message: &str) -> DomainError {
     DomainError::InvalidAuthorization(message.to_owned())
@@ -79,8 +79,10 @@ pub struct PolicyVersion(u64);
 
 impl PolicyVersion {
     pub fn new(value: u64) -> Result<Self, DomainError> {
-        if value == 0 || value > i64::MAX as u64 {
-            return Err(invalid("policy version must fit the durable signed range"));
+        if value == 0 || value >= i64::MAX as u64 {
+            return Err(invalid(
+                "policy version must fit the durable range below the reserved terminal value",
+            ));
         }
         Ok(Self(value))
     }
@@ -131,6 +133,24 @@ pub enum DenyReason {
     EvaluationFailed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ApprovalMode {
+    OneTime,
+    TimeWindow,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalRequirement {
+    pub approver_ids: Vec<ApproverId>,
+    pub quorum: u8,
+    pub mode: ApprovalMode,
+    pub max_uses: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_window_ms: Option<i64>,
+}
+
 impl DenyReason {
     pub fn code(self) -> &'static str {
         match self {
@@ -152,6 +172,12 @@ pub enum Decision {
         snapshot_digest: [u8; 32],
         determining_rule: PolicyRuleId,
     },
+    RequireApproval {
+        policy_version: PolicyVersion,
+        snapshot_digest: [u8; 32],
+        determining_rule: PolicyRuleId,
+        requirement: ApprovalRequirement,
+    },
     Deny {
         policy_version: Option<PolicyVersion>,
         snapshot_digest: Option<[u8; 32]>,
@@ -166,7 +192,7 @@ mod tests {
 
     #[test]
     fn policy_versions_fit_the_durable_signed_range() {
-        assert!(PolicyVersion::new(i64::MAX as u64).is_ok());
-        assert!(PolicyVersion::new(i64::MAX as u64 + 1).is_err());
+        assert!(PolicyVersion::new(i64::MAX as u64 - 1).is_ok());
+        assert!(PolicyVersion::new(i64::MAX as u64).is_err());
     }
 }

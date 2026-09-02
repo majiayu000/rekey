@@ -5,7 +5,7 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rekey_domain::audit::{AUDIT_SCHEMA_V1, AuditPage, AuditQuery};
+use rekey_domain::audit::{AUDIT_SCHEMA_V2, AuditPage, AuditQuery};
 use rekey_domain::ipc::admin_msg;
 use serde::Serialize;
 
@@ -42,8 +42,8 @@ pub fn audit_export(
     let (mut file, resolved) = create_export_file(output)?;
 
     let header = ExportHeader {
-        record_type: "rekey.audit.export.v1",
-        schema: AUDIT_SCHEMA_V1,
+        record_type: "rekey.audit.export.v2",
+        schema: AUDIT_SCHEMA_V2,
         created_at_ms,
         snapshot_max_sequence,
         request_id: query.request_id.map(|value| value.to_string()),
@@ -76,7 +76,7 @@ pub fn audit_export(
     write_json_line(
         &mut file,
         &ExportTrailer {
-            record_type: "rekey.audit.export.complete.v1",
+            record_type: "rekey.audit.export.complete.v2",
             row_count,
         },
     )?;

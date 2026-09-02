@@ -272,6 +272,14 @@ async fn admin_reader_rejects_oversized_fields_before_body_allocation() {
             admin_msg::RECOVERY_ROTATE,
             ipc::ADMIN_PROOF_BODY_MAX_BYTES + 1,
         ),
+        (
+            admin_msg::POLICY_TRUST_INSTALL,
+            ipc::ADMIN_PROOF_BODY_MAX_BYTES + 1,
+        ),
+        (
+            admin_msg::POLICY_ACTIVATE,
+            ipc::ADMIN_PROOF_BODY_MAX_BYTES + 1,
+        ),
     ] {
         let header = FrameHeader {
             channel: Channel::Admin,

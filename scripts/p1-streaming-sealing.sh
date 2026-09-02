@@ -275,15 +275,21 @@ rule = {
     "parameters": {"kind": "any_validated"},
 }
 pathlib.Path(path).write_text(json.dumps({
-    "format_version": 1,
+    "format_version": 2,
     "version": 1,
     "expires_at_ms": int(time.time() * 1000) + 600000,
+    "approvers": [],
     "bindings": [binding],
     "rules": [rule],
 }))
 PY
+python3 "$ROOT/scripts/sign-test-policy.py" policy --key-dir "$WORKDIR/policy-key" \
+  --snapshot "$WORKDIR/policy.json" --bundle "$WORKDIR/policy-bundle.json" \
+  --trust "$WORKDIR/policy-trust.json"
+printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy trust install \
+  --file "$WORKDIR/policy-trust.json" --step-up-stdin >/dev/null
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate \
-  --file "$WORKDIR/policy.json" --password-stdin >/dev/null
+  --file "$WORKDIR/policy-bundle.json" --step-up-stdin >/dev/null
 
 for mode in raw base64 base64url percent percent-all percent-selective; do
   expect_failure "$mode" 8 RESPONSE_SECURITY_VIOLATION

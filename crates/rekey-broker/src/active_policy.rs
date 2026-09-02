@@ -3,12 +3,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use rekey_domain::Timestamp;
-use rekey_policy::{PolicyError, ValidatedSnapshot};
+use rekey_domain::ids::PolicySignerId;
+use rekey_policy::{PolicyError, ValidatedPolicyBundle, ValidatedSnapshot};
 
 pub(crate) struct ActivePolicy {
     snapshot: Arc<ValidatedSnapshot>,
     monotonic_deadline: tokio::time::Instant,
     expired: AtomicBool,
+    signer_id: Option<PolicySignerId>,
+    bundle_digest: Option<[u8; 32]>,
 }
 
 impl ActivePolicy {
@@ -28,11 +31,51 @@ impl ActivePolicy {
             snapshot: Arc::new(snapshot),
             monotonic_deadline,
             expired: AtomicBool::new(false),
+            signer_id: None,
+            bundle_digest: None,
         })
+    }
+
+    pub(crate) fn activate_bundle(
+        bundle: ValidatedPolicyBundle,
+        now: Timestamp,
+    ) -> Result<Self, PolicyError> {
+        let signer_id = bundle.signer_id();
+        let bundle_digest = bundle.bundle_digest();
+        let mut active = Self::activate(bundle.into_snapshot(), now)?;
+        active.signer_id = Some(signer_id);
+        active.bundle_digest = Some(bundle_digest);
+        Ok(active)
+    }
+
+    pub(crate) fn load_bundle(bundle: ValidatedPolicyBundle, now: Timestamp) -> Self {
+        let signer_id = bundle.signer_id();
+        let bundle_digest = bundle.bundle_digest();
+        let snapshot = bundle.into_snapshot();
+        let remaining_ms = snapshot.expires_at_ms().saturating_sub(now.as_unix_ms());
+        let expired = remaining_ms <= 0;
+        let monotonic_deadline = tokio::time::Instant::now()
+            .checked_add(Duration::from_millis(remaining_ms.max(0) as u64))
+            .unwrap_or_else(tokio::time::Instant::now);
+        Self {
+            snapshot: Arc::new(snapshot),
+            monotonic_deadline,
+            expired: AtomicBool::new(expired),
+            signer_id: Some(signer_id),
+            bundle_digest: Some(bundle_digest),
+        }
     }
 
     pub(crate) fn snapshot(&self) -> &ValidatedSnapshot {
         &self.snapshot
+    }
+
+    pub(crate) fn signer_id(&self) -> Option<PolicySignerId> {
+        self.signer_id
+    }
+
+    pub(crate) fn bundle_digest(&self) -> Option<[u8; 32]> {
+        self.bundle_digest
     }
 
     /// Expiry is irreversible for an activated snapshot. A forward wall-clock
@@ -59,9 +102,10 @@ mod tests {
     fn snapshot(expires_at_ms: i64) -> ValidatedSnapshot {
         rekey_policy::parse_and_validate_snapshot(
             &serde_json::to_vec(&json!({
-                "format_version": 1,
+                "format_version": 2,
                 "version": PolicyVersion::new(1).unwrap(),
                 "expires_at_ms": expires_at_ms,
+                "approvers": [],
                 "bindings": [],
                 "rules": []
             }))

@@ -1,6 +1,6 @@
 mod common;
 
-use rekey_domain::audit::{AUDIT_SCAN_MAX_ROWS, AUDIT_SCHEMA_V1, AuditQuery};
+use rekey_domain::audit::{AUDIT_SCAN_MAX_ROWS, AUDIT_SCHEMA_V2, AuditQuery};
 use rekey_domain::ids::{ActionId, CredentialId, PolicyRuleId, PrincipalId, RequestId, SessionId};
 use rekey_vault::error::AuthorityError;
 use rekey_vault::model::{AuditEvent, AuthorizationEvidence};
@@ -60,7 +60,7 @@ fn filters_and_stable_snapshot_exclude_later_rows() {
     assert_eq!(first.events.len(), 1);
     assert_eq!(first.events[0].created_at_ms, 300);
     assert_eq!(first.next_before_sequence, Some(first.events[0].sequence));
-    assert_eq!(first.events[0].record_type, AUDIT_SCHEMA_V1);
+    assert_eq!(first.events[0].record_type, AUDIT_SCHEMA_V2);
 
     store
         .append_audit(&event(
@@ -294,6 +294,7 @@ fn event(
             resource_id: "private/repository-name".to_owned(),
             parameter_hash: [0xab; 32],
         }),
+        approval: None,
         event_type: "test.audit",
         outcome,
         reason_code: "test".to_owned(),

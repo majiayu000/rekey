@@ -57,7 +57,7 @@ fuzz_target!(|data: &[u8]| {
 
 const PASSWORD: &[u8] = b"fuzz-fixture-password";
 const RECOVERY_KEY: &[u8] =
-    b"RKREC1-EVVJDV-IKDIP7-2KSCPN-N5D26G-Y6MJS2-AYI7HZ-4JZP6Z-TZ5MGK-WKTOLR-GVVQ";
+    b"RKREC1-YE5N3F-UOZDVC-GQIOVC-HEXJXM-M6WIKY-KYBVVM-GW2P5W-UO6EDC-RVAZT4-45IE";
 const FIXTURE_BASE64: &str = include_str!("../fixtures/restore.rkbackup.base64");
 
 fn proof(data: &[u8]) -> RestoreProof {

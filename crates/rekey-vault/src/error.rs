@@ -48,6 +48,14 @@ pub enum AuthorityError {
     CredentialRevoked,
     #[error("action not found")]
     ActionNotFound,
+    #[error("policy trust root conflicts with the installed root")]
+    PolicyTrustConflict,
+    #[error("policy is unavailable")]
+    PolicyUnavailable,
+    #[error("policy version is invalid")]
+    PolicyVersionConflict,
+    #[error("policy version space is exhausted")]
+    PolicyVersionExhausted,
     #[error("authority command queue is full")]
     AuthorityBusy,
     #[error("audit commit failed")]
@@ -91,6 +99,10 @@ impl AuthorityError {
             Self::CredentialConflict => "CREDENTIAL_CONFLICT",
             Self::CredentialRevoked => "CREDENTIAL_UNAVAILABLE",
             Self::ActionNotFound => "ACTION_NOT_FOUND",
+            Self::PolicyTrustConflict => "POLICY_TRUST_CONFLICT",
+            Self::PolicyUnavailable => "POLICY_UNAVAILABLE",
+            Self::PolicyVersionConflict => "POLICY_VERSION_CONFLICT",
+            Self::PolicyVersionExhausted => "POLICY_VERSION_EXHAUSTED",
             Self::AuthorityBusy => "AUTHORITY_BUSY",
             Self::AuditCommitFailed => "AUDIT_COMMIT_FAILED",
             Self::AuditCommitFailedAfterExecution => "AUDIT_COMMIT_FAILED_AFTER_EXECUTION",

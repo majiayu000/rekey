@@ -9,13 +9,12 @@ use std::time::{Duration, Instant};
 
 use rekey_domain::DomainError;
 use rekey_domain::action::FixedHttpAction;
-use rekey_domain::authorization::{AuthorizationRequest, Decision, DenyReason, Principal};
+use rekey_domain::authorization::Decision;
 use rekey_domain::capability::ActionVersionRef;
+use rekey_domain::ids::PolicySignerId;
 use rekey_domain::ids::RequestId;
 use rekey_vault::AuthorityError;
 use rekey_vault::handle::AuthorityHandle;
-use rekey_vault::model::ActionState;
-use rekey_vault::model::AuthorizationEvidence;
 use tokio::sync::RwLock;
 use zeroize::Zeroizing;
 
@@ -30,6 +29,7 @@ use crate::lifecycle::{BrokerPhase, Lifecycle};
 use crate::session::{ExecutionPermit, SessionRegistry};
 use crate::upstream::{UpstreamRequest, UpstreamTransport, outbound_headers_are_valid};
 
+mod approval;
 mod deadline;
 mod http;
 mod sealing;
@@ -90,6 +90,26 @@ pub struct ExecuteRequest {
     pub content_type: Option<String>,
     pub extra_headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+    pub approval_grants: Vec<String>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct PolicyIdentity {
+    signer_id: Option<PolicySignerId>,
+    version: u64,
+    policy_digest: [u8; 32],
+    bundle_digest: Option<[u8; 32]>,
+}
+
+impl PolicyIdentity {
+    fn of(policy: &ActivePolicy) -> Self {
+        Self {
+            signer_id: policy.signer_id(),
+            version: policy.snapshot().version().get(),
+            policy_digest: policy.snapshot().digest(),
+            bundle_digest: policy.bundle_digest(),
+        }
+    }
 }
 
 pub struct ExecuteOutcome {
@@ -164,150 +184,50 @@ impl ActionExecutor {
                 .acquire(&request.capability_token, request.action, crate::now_ts()?)?;
         let effect_deadline = admission_started + Duration::from_millis(permit.timeout_ms as u64);
         self.refuse_unless_running()?;
-        let principal = permit.principal;
-        self.admit_authorized(request, principal, permit, effect_deadline)
-            .await
-    }
-
-    async fn admit_authorized(
-        self: &Arc<Self>,
-        request: ExecuteRequest,
-        principal: Principal,
-        permit: ExecutionPermit,
-        effect_deadline: Instant,
-    ) -> Result<AdmittedExecution, BrokerError> {
-        // Step 4: pin the immutable action version.
-        let pinned = deadline::await_authority(
-            effect_deadline,
-            self.authority
-                .action_get(request.action.action_id, request.action.version),
-        )
-        .await?;
-        let action = pinned.action;
-        let mut ctx = ExecutionAuditContext {
-            request_id: request.request_id,
-            session_id: principal.session_id,
-            action: request.action,
-            credential_id: action.credential_id,
-            authorization: None,
-        };
-        if pinned.state == ActionState::Disabled || !action.enabled {
-            deadline::await_authority(
-                effect_deadline,
-                self.authority
-                    .append_audit(execution_blocked(&ctx, "action-disabled")),
-            )
+        let evaluated = self
+            .evaluate_request(&request, permit.principal, effect_deadline)
             .await?;
-            return Err(BrokerError::Domain(DomainError::ActionDisabled));
-        }
-
-        // Step 5: request validation against the pinned policy.
-        if let Err(reason) = validate_request(&action, &request) {
-            deadline::await_authority(
-                effect_deadline,
-                self.authority.append_audit(execution_blocked(&ctx, reason)),
-            )
-            .await?;
-            return Err(BrokerError::Denied(reason));
-        }
-
-        let Some(snapshot) = self.lifecycle_policy(effect_deadline).await? else {
-            deadline::await_authority(
-                effect_deadline,
-                self.authority
-                    .append_audit(execution_blocked(&ctx, DenyReason::NoActiveSnapshot.code())),
-            )
-            .await?;
-            return Err(BrokerError::Denied(DenyReason::NoActiveSnapshot.code()));
-        };
-        if snapshot.snapshot().binding(request.action).is_none() {
-            deadline::await_authority(
-                effect_deadline,
-                self.authority
-                    .append_audit(execution_blocked(&ctx, DenyReason::ActionNotBound.code())),
-            )
-            .await?;
-            return Err(BrokerError::Denied(DenyReason::ActionNotBound.code()));
-        }
-        let (resource, parameters) = match snapshot.snapshot().canonicalize(
-            request.action,
-            request.content_type.as_deref(),
-            &request.extra_headers,
-            &request.body,
-        ) {
-            Ok(value) => value,
-            Err(_) => {
-                deadline::await_authority(
-                    effect_deadline,
-                    self.authority.append_audit(execution_blocked(
-                        &ctx,
-                        DenyReason::InvalidParameters.code(),
-                    )),
-                )
-                .await?;
-                return Err(BrokerError::Denied(DenyReason::InvalidParameters.code()));
-            }
-        };
-        let authorization_request = AuthorizationRequest {
-            principal,
-            action: request.action,
-            resource: resource.clone(),
-            parameters: parameters.clone(),
-        };
-        let now = crate::now_ts()?;
-        let decision = rekey_policy::evaluate(
-            snapshot.snapshot(),
-            &authorization_request,
-            now,
-            snapshot.is_expired(now),
-        );
-        let (policy_version, policy_digest, policy_rule_id) = match &decision {
-            Decision::Allow {
-                policy_version,
-                snapshot_digest,
-                determining_rule,
-            } => (*policy_version, *snapshot_digest, Some(*determining_rule)),
-            Decision::Deny {
-                policy_version: Some(policy_version),
-                snapshot_digest: Some(snapshot_digest),
-                determining_rule,
-                ..
-            } => (*policy_version, *snapshot_digest, *determining_rule),
-            Decision::Deny { reason, .. } => {
+        let (accepted, approval_deadline) = match &evaluated.decision {
+            Decision::Allow { .. } if request.approval_grants.is_empty() => (Vec::new(), None),
+            Decision::Allow { .. } => {
                 deadline::await_authority(
                     effect_deadline,
                     self.authority
-                        .append_audit(execution_blocked(&ctx, reason.code())),
+                        .append_audit(execution_blocked(&evaluated.ctx, "approval-not-required")),
                 )
                 .await?;
-                return Err(BrokerError::Denied(reason.code()));
+                return Err(BrokerError::Denied("approval-not-required"));
             }
+            Decision::RequireApproval { .. } => {
+                let (accepted, deadline, wall_deadline_ms) = self
+                    .verify_and_reserve_approvals(
+                        &evaluated,
+                        &request.approval_grants,
+                        effect_deadline,
+                    )
+                    .await?;
+                (accepted, Some((deadline, wall_deadline_ms)))
+            }
+            Decision::Deny { .. } => return Err(BrokerError::Denied("policy-evaluation-failed")),
         };
-        ctx.authorization = Some(AuthorizationEvidence {
-            principal_id: principal.principal_id,
-            policy_version: policy_version.get(),
-            policy_digest,
-            policy_rule_id,
-            resource_type: resource.resource_type,
-            resource_id: resource.id,
-            parameter_hash: parameters.canonical_hash,
-        });
-        if let Decision::Deny { reason, .. } = decision {
-            deadline::await_authority(
-                effect_deadline,
-                self.authority
-                    .append_audit(execution_blocked(&ctx, reason.code())),
-            )
-            .await?;
-            return Err(BrokerError::Denied(reason.code()));
-        }
 
         // Step 6: this final point linearizes with drain. Earlier Running
         // checks are advisory; no drain may transition between this re-check
         // and transfer of durable started/terminal ownership.
+        let admission_deadline = approval_deadline
+            .map(|(approval_deadline, _)| effect_deadline.min(approval_deadline))
+            .unwrap_or(effect_deadline);
         let started = tokio::time::timeout_at(
-            tokio::time::Instant::from_std(effect_deadline),
-            commit_started_while_running(&self.lifecycle, &self.terminals, ctx),
+            tokio::time::Instant::from_std(admission_deadline),
+            commit_started_while_running(
+                &self.lifecycle,
+                &self.terminals,
+                &self.policy,
+                Some(PolicyIdentity::of(&evaluated.snapshot)),
+                evaluated.ctx,
+                accepted,
+                approval_deadline,
+            ),
         )
         .await
         .map_err(|_| BrokerError::Upstream("upstream-timeout"))??;
@@ -315,7 +235,7 @@ impl ActionExecutor {
             executor: Arc::clone(self),
             request,
             effect_deadline,
-            action,
+            action: evaluated.action,
             started,
             _permit: permit,
         })
@@ -753,7 +673,11 @@ async fn try_begin_remote_effect(
 async fn commit_started_while_running(
     lifecycle: &Lifecycle,
     terminals: &TerminalAuditTracker,
+    policy: &RwLock<Option<Arc<ActivePolicy>>>,
+    expected_policy: Option<PolicyIdentity>,
     ctx: ExecutionAuditContext,
+    preceding: Vec<rekey_vault::command::AuditDraft>,
+    approval_deadline: Option<(Instant, i64)>,
 ) -> Result<StartedAuditGuard, BrokerError> {
     let _coordinator = match lifecycle.try_coordinate() {
         Ok(owner) => owner,
@@ -763,8 +687,19 @@ async fn commit_started_while_running(
         Err(_) => return Err(BrokerError::Authority(AuthorityError::Draining)),
     };
     lifecycle.reject_if_not_running()?;
+    let current_policy = policy.read().await;
+    if current_policy.as_deref().map(PolicyIdentity::of) != expected_policy {
+        drop(current_policy);
+        terminals
+            .commit(execution_blocked(&ctx, "policy-changed"))
+            .await
+            .map_err(BrokerError::Authority)?;
+        return Err(BrokerError::Denied("policy-changed"));
+    }
+    drop(current_policy);
+    let (not_after, wall_not_after_ms) = approval_deadline.unzip();
     terminals
-        .commit_started(ctx)
+        .commit_started(ctx, preceding, not_after, wall_not_after_ms)
         .await
         .map_err(BrokerError::Authority)
 }
