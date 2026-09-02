@@ -20,7 +20,7 @@ rekey-domain = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 libc = "0.2"
 rand = "0.9.3"
-rpassword = "7"
+rpassword = "7.5.0"
 serde = { workspace = true }
 serde_json = { workspace = true }
 zeroize = "1"
