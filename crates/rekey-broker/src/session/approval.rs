@@ -28,6 +28,7 @@ pub(super) struct StoredChallenge {
     challenge: ApprovalChallenge,
     monotonic_anchor: Instant,
     monotonic_deadline: Instant,
+    expired: bool,
 }
 
 pub(super) struct ApprovalUsage {
@@ -85,6 +86,7 @@ impl SessionRegistry {
             challenge,
             monotonic_anchor,
             monotonic_deadline,
+            expired: false,
         });
         Ok(())
     }
@@ -119,7 +121,7 @@ impl SessionRegistry {
             .ok_or_else(|| reject("approval-session-unavailable"))?;
         let stored = entry
             .approval_challenges
-            .iter()
+            .iter_mut()
             .find(|stored| stored.challenge.approval_request_id == request_id)
             .ok_or_else(|| reject("approval-challenge-unknown"))?;
         validate_challenge(stored, context, now, monotonic_now)?;
@@ -208,7 +210,7 @@ impl SessionRegistry {
 }
 
 fn validate_challenge(
-    stored: &StoredChallenge,
+    stored: &mut StoredChallenge,
     context: &ApprovalContext,
     now: Timestamp,
     monotonic_now: Instant,
@@ -232,8 +234,12 @@ fn validate_challenge(
     {
         return Err(reject("approval-tuple-mismatch"));
     }
+    if stored.expired {
+        return Err(reject("approval-challenge-expired"));
+    }
     if now.as_unix_ms() >= challenge.max_expires_at_ms || monotonic_now >= stored.monotonic_deadline
     {
+        stored.expired = true;
         return Err(reject("approval-challenge-expired"));
     }
     Ok(())
