@@ -272,9 +272,9 @@ The evaluator remains deterministic and default-deny:
 - schema/canonicalization failure denies;
 - explicit forbid denies;
 - a matching approval rule without sufficient valid grants denies;
-- signature-verification or approval-store error denies;
-- evaluator panic or internal error faults the request path and never becomes
-  permit;
+- signature-verification or typed evaluator error denies;
+- approval-request or consumption-store error faults the Authority and keeps
+  execution closed;
 - only an explicit permit or a fully satisfied approval rule can allow.
 
 P-03 has no network approval dependency. If an external approver or signing
