@@ -6,6 +6,7 @@ use crate::ids::{ActionId, CredentialId, PolicyRuleId, PrincipalId, RequestId, S
 pub const AUDIT_SCHEMA_V1: &str = "rekey.audit.v1";
 pub const AUDIT_PAGE_DEFAULT_LIMIT: u32 = 50;
 pub const AUDIT_PAGE_MAX_LIMIT: u32 = 100;
+pub const AUDIT_SCAN_MAX_ROWS: u32 = 1_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -58,6 +59,28 @@ impl AuditQuery {
             return Err(invalid("sequence cursor exceeds the storage range"));
         }
         Ok(())
+    }
+
+    pub fn matches(&self, event: &AuditRecord) -> bool {
+        self.request_id
+            .is_none_or(|id| event.request_id == Some(id))
+            && self
+                .session_id
+                .is_none_or(|id| event.session_id == Some(id))
+            && self.action_id.is_none_or(|id| event.action_id == Some(id))
+            && self
+                .credential_id
+                .is_none_or(|id| event.credential_id == Some(id))
+            && self
+                .outcome
+                .as_ref()
+                .is_none_or(|value| event.outcome == *value)
+            && self
+                .since_ms
+                .is_none_or(|since| event.created_at_ms >= since)
+            && self
+                .until_ms
+                .is_none_or(|until| event.created_at_ms <= until)
     }
 }
 
@@ -135,7 +158,7 @@ impl AuditPage {
                     .before_sequence
                     .is_some_and(|before| event.sequence >= before)
                 || previous.is_some_and(|older| event.sequence >= older)
-                || !matches_query(event, query)
+                || !query.matches(event)
             {
                 return Err(invalid("audit page violates query bounds"));
             }
@@ -144,11 +167,11 @@ impl AuditPage {
 
         match self.next_before_sequence {
             Some(next)
-                if self.events.len() == query.limit as usize
-                    && self
-                        .events
-                        .last()
-                        .is_some_and(|event| event.sequence == next) => {}
+                if next > 0
+                    && next <= self.snapshot_max_sequence
+                    && query.before_sequence.is_none_or(|before| next < before)
+                    && self.events.iter().all(|event| event.sequence >= next)
+                    && (!self.events.is_empty() || next < self.snapshot_max_sequence) => {}
             None => {}
             Some(_) => return Err(invalid("invalid audit page cursor")),
         }
@@ -161,29 +184,6 @@ fn is_lower_hex(value: &str, expected_len: usize) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
-fn matches_query(event: &AuditRecord, query: &AuditQuery) -> bool {
-    query
-        .request_id
-        .is_none_or(|id| event.request_id == Some(id))
-        && query
-            .session_id
-            .is_none_or(|id| event.session_id == Some(id))
-        && query.action_id.is_none_or(|id| event.action_id == Some(id))
-        && query
-            .credential_id
-            .is_none_or(|id| event.credential_id == Some(id))
-        && query
-            .outcome
-            .as_ref()
-            .is_none_or(|value| event.outcome == *value)
-        && query
-            .since_ms
-            .is_none_or(|since| event.created_at_ms >= since)
-        && query
-            .until_ms
-            .is_none_or(|until| event.created_at_ms <= until)
 }
 
 fn invalid(message: &str) -> DomainError {
@@ -266,6 +266,13 @@ mod tests {
         let mut filtered = value;
         filtered.outcome = Some("denied".to_owned());
         assert!(valid.validate_for(&filtered).is_err());
+        let empty_scan_window = AuditPage {
+            schema: AUDIT_SCHEMA_V1.to_owned(),
+            snapshot_max_sequence: 3,
+            events: Vec::new(),
+            next_before_sequence: Some(2),
+        };
+        assert!(empty_scan_window.validate_for(&filtered).is_ok());
 
         let mut malformed = valid;
         malformed.events[0].event_id = "ABC".to_owned();

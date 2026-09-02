@@ -54,9 +54,17 @@ sequence < before_sequence
 ```
 
 New audit commits therefore never duplicate, reorder, or enter an in-progress
-pagination snapshot. Deletions are not part of P-02. A page returns at most the
-requested limit plus a nullable `next_before_sequence`; an empty page is a valid
-result and never fabricates a cursor.
+pagination snapshot. Deletions are not part of P-02. Each Authority request
+reads at most 1,000 consecutive rows in sequence order plus one lookahead row,
+then applies the requested filters inside that bounded window. A page returns at
+most the requested number of matching records plus a nullable
+`next_before_sequence`.
+
+The cursor is the exclusive sequence bound after the last scanned row. It can
+therefore be present on an empty or underfilled page when more rows remain to be
+scanned. Clients must continue until the cursor is null; `audit export` does so
+automatically. This scan bound prevents a selective or no-match filter from
+occupying the single AuthorityWorker for an unbounded table scan.
 
 The query executes as one bounded read inside AuthorityWorker and does not keep
 a SQLite transaction or lock alive while the response is written. A malformed
@@ -151,7 +159,8 @@ delivery exists.
 P-02 is complete only when all of the following are fresh and passing:
 
 1. Store contracts cover each filter, filter intersection, inclusive time
-   bounds, newest-first ordering, empty results, hard page bounds, and stable
+   bounds, newest-first ordering, empty results, the 1,000-row scan bound,
+   continuation after an empty scan window, hard page bounds, and stable
    high-water pagination while new rows are committed.
 2. Persisted negative versions, malformed identifier lengths, oversized output,
    and storage failures fail clearly without returning partial rows.

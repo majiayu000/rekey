@@ -55,7 +55,10 @@ rekey audit list --request REQUEST_ID --session SESSION_ID \
 
 To continue a page, pass both the returned `snapshot_max_sequence` and
 `next_before_sequence` as `--snapshot-max-sequence` and `--before-sequence`.
-The high-water mark prevents newly committed rows entering that traversal.
+The high-water mark prevents newly committed rows entering that traversal. A
+selective query can return no records and still include a continuation cursor:
+each request scans at most 1,000 audit rows, so continue until the cursor is
+null.
 
 Export captures the complete matching snapshot in bounded pages:
 

@@ -1,7 +1,9 @@
 use data_encoding::HEXLOWER;
-use rekey_domain::audit::{AUDIT_SCHEMA_V1, AuditPage, AuditQuery, AuditRecord};
+use rekey_domain::audit::{
+    AUDIT_SCAN_MAX_ROWS, AUDIT_SCHEMA_V1, AuditPage, AuditQuery, AuditRecord,
+};
 use rekey_domain::ids::{ActionId, CredentialId, RequestId, SessionId};
-use rusqlite::types::Value;
+use rusqlite::params;
 
 use super::recovery::{authorization_from_columns, optional_id};
 use super::sqlite::{SqliteRecordStore, blob16, storage};
@@ -46,78 +48,53 @@ impl SqliteRecordStore {
                 positive_u64(value.ok_or(AuthorityError::StorageIntegrityFailed)?)?
             }
         };
+        let scan_max_sequence = query
+            .before_sequence
+            .map(|value| value - 1)
+            .unwrap_or(snapshot_max_sequence);
 
-        let mut sql = String::from(
-            "SELECT sequence, event_id, request_id, session_id, action_id, action_version,
+        let mut statement = self
+            .conn
+            .prepare(
+                "SELECT sequence, event_id, request_id, session_id, action_id, action_version,
                     credential_id, credential_version, principal_id, policy_version,
                     policy_digest, policy_rule_id, resource_type, resource_id, parameter_hash,
                     event_type, outcome, reason_code, upstream_status, latency_ms, created_at_ms
-             FROM audit_events WHERE sequence <= ?",
-        );
-        let mut params = vec![Value::Integer(snapshot_max_sequence as i64)];
-        push_id_filter(
-            &mut sql,
-            &mut params,
-            "request_id",
-            query.request_id.as_ref().map(|id| id.as_bytes()),
-        );
-        push_id_filter(
-            &mut sql,
-            &mut params,
-            "session_id",
-            query.session_id.as_ref().map(|id| id.as_bytes()),
-        );
-        push_id_filter(
-            &mut sql,
-            &mut params,
-            "action_id",
-            query.action_id.as_ref().map(|id| id.as_bytes()),
-        );
-        push_id_filter(
-            &mut sql,
-            &mut params,
-            "credential_id",
-            query.credential_id.as_ref().map(|id| id.as_bytes()),
-        );
-        if let Some(outcome) = &query.outcome {
-            sql.push_str(" AND outcome = ?");
-            params.push(Value::Text(outcome.clone()));
-        }
-        if let Some(since_ms) = query.since_ms {
-            sql.push_str(" AND created_at_ms >= ?");
-            params.push(Value::Integer(since_ms));
-        }
-        if let Some(until_ms) = query.until_ms {
-            sql.push_str(" AND created_at_ms <= ?");
-            params.push(Value::Integer(until_ms));
-        }
-        if let Some(before) = query.before_sequence {
-            sql.push_str(" AND sequence < ?");
-            params.push(Value::Integer(before as i64));
-        }
-        sql.push_str(" ORDER BY sequence DESC LIMIT ?");
-        params.push(Value::Integer(i64::from(query.limit) + 1));
-
-        let mut statement = self.conn.prepare(&sql).map_err(storage)?;
+             FROM audit_events
+             WHERE sequence <= ?1
+             ORDER BY sequence DESC LIMIT ?2",
+            )
+            .map_err(storage)?;
         let raw = statement
-            .query_map(rusqlite::params_from_iter(params.iter()), raw_row)
+            .query_map(
+                params![scan_max_sequence as i64, i64::from(AUDIT_SCAN_MAX_ROWS) + 1,],
+                raw_row,
+            )
             .map_err(storage)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(storage)?;
-        let mut events = raw
-            .into_iter()
-            .map(record_from_raw)
-            .collect::<Result<Vec<_>, _>>()?;
-        let has_more = events.len() > query.limit as usize;
-        if has_more {
-            events.pop();
+
+        let raw_count = raw.len();
+        let scan_count = raw_count.min(AUDIT_SCAN_MAX_ROWS as usize);
+        let mut events = Vec::with_capacity(query.limit as usize);
+        let mut next_before_sequence = None;
+        for (index, raw) in raw.into_iter().take(scan_count).enumerate() {
+            let event = record_from_raw(raw)?;
+            let sequence = event.sequence;
+            if query.matches(&event) {
+                events.push(event);
+                if events.len() == query.limit as usize {
+                    if index + 1 < raw_count {
+                        next_before_sequence = Some(sequence);
+                    }
+                    break;
+                }
+            }
+            if index + 1 == scan_count && raw_count > scan_count {
+                next_before_sequence = Some(sequence);
+            }
         }
-        let next_before_sequence = has_more.then(|| {
-            events
-                .last()
-                .expect("limit validation guarantees a retained event")
-                .sequence
-        });
+
         let page = AuditPage {
             schema: AUDIT_SCHEMA_V1.to_owned(),
             snapshot_max_sequence,
@@ -127,15 +104,6 @@ impl SqliteRecordStore {
         page.validate_for(query)
             .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
         Ok(page)
-    }
-}
-
-fn push_id_filter(sql: &mut String, params: &mut Vec<Value>, column: &str, id: Option<&[u8; 16]>) {
-    if let Some(id) = id {
-        sql.push_str(" AND ");
-        sql.push_str(column);
-        sql.push_str(" = ?");
-        params.push(Value::Blob(id.to_vec()));
     }
 }
 
