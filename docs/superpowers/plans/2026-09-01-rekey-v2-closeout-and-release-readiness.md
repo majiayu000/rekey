@@ -907,17 +907,21 @@ canary 验证密码/recovery 不进入 argv、环境、daemon 日志、审计或
 - 后续 SIEM 输出边界。
 
 **完成证据（2026-09-03）：** [PR #23](https://github.com/majiayu000/rekey/pull/23)
-在实现 head `d44c5012dabeea07a6fd234336a5e205ffc66b9a` 上通过 Ubuntu P0、
-macOS P0、有界 Linux G2、五个 fuzz target 和 performance 共 9 个 exact-head jobs。
+在 review remediation head `ba603e0d9d022a280386d2aaebc9c2c7ec625486` 上通过
+Ubuntu P0、macOS P0、有界 Linux G2、五个 fuzz target 和 performance 共 9 个
+exact-head jobs（security `33657856039`、fuzz `33657856052`、performance
+`33657856059`）。Codex final-head review 完成且无新增 finding，两个既有 P2 thread
+已回复并 resolved。
 Authority/Store、Admin IPC 和真实 `rekeyd` + `rekey` black-box 覆盖全部过滤器、
 交集、inclusive time、空结果、锁定读取、fault/storage/integrity failure、稳定高水位
-分页和 4 MiB 响应上限；CLI 导出超过 100 行完成多页快照，并验证 JSONL
-header/event/trailer、owner-only mode 0600、普通文件、create-new/no-follow、partial
-保留、file/parent fsync、失败不打印成功 receipt，以及 Secret、password、recovery、
-capability、body/header、resource ID 和 parameter hash canary。伪造 Broker 的 metadata、
-unknown field 和 malformed record 均被拒绝；Agent wire surface 与 CLI 负依赖机械合同保持
-不变。能力不在 `v2.0.0-alpha.1` 内，不提升默认 G1、有界 Linux G2、Connector、SIEM
-或企业就绪判定。
+分页、每次最多 1,000 行的主键窗口扫描、空页游标续查和 4 MiB 响应上限；CLI 导出
+超过 100 行完成多页快照，并验证 JSONL header/event/trailer、owner-only mode 0600、
+普通文件、create-new/no-follow、目标 pathname 与已打开 inode 一致、partial 保留、
+file/parent fsync、失败不打印成功 receipt，以及 Secret、password、recovery、capability、
+body/header、resource ID 和 parameter hash canary。伪造 Broker 的 metadata、unknown
+field 和 malformed record 均被拒绝；Agent wire surface 与 CLI 负依赖机械合同保持不变。
+能力不在 `v2.0.0-alpha.1` 内，不提升默认 G1、有界 Linux G2、Connector、SIEM 或企业
+就绪判定。
 
 ### P-03 审批与持久化策略
 
