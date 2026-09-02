@@ -296,7 +296,7 @@ rg -n 'docs/product-foundation|product-foundation/' README.md AGENTS.md CLAUDE.m
 - Review：[v2 closeout security review](../../security/2026-09-01-v2-closeout-independent-review.md)
 - 结果：PASS；涉及 M-05 的 findings（跨范围重复计数）：Critical 0、High 0、Medium 30 fixed / 0 open、Low 46 fixed / 0 open
 - 验证：`cargo test -p rekey-broker`、`cargo test -p rekey-cli --test malicious_broker`、`cargo test --workspace`；Linux G2 仍以 CI reference job 为限
-- 遗留限制：本报告不是 M-10 所需的独立 GitHub `Approved`；G2 证据不外推到默认部署、macOS、host root 或内核攻击者
+- 遗留限制：本报告不是第三方人工审计；维护者明确接受最终 SHA 上无重大问题的 Codex Review 作为 M-10 合并审查门；G2 证据不外推到默认部署、macOS、host root 或内核攻击者
 
 ### M-06 完成独立执行、SSRF、Secret Sealing 与 GitHub App Review
 
@@ -357,7 +357,7 @@ rg -n 'docs/product-foundation|product-foundation/' README.md AGENTS.md CLAUDE.m
 - PR body 生产代码 head：`ac2e513c938e4abe349be445bcd6a6b1b9da252c`；最终验证 head：`57926402a817fb36ba296cfe695bb7206684c51c`
 - 当前 validation-head CI：[security-gate run 33576290992](https://github.com/majiayu000/rekey/actions/runs/33576290992)（Ubuntu P0、macOS P0 和有界 Linux G2 reference 全部通过）
 - 结果：PASS（PR 陈述与 validation-head CI 验收）
-- 遗留限制：PR 已为 Ready；M-10 仍要求独立 GitHub `Approved`
+- 遗留限制：PR 已为 Ready；M-10 仍需最终 SHA 的 Codex Review 无重大问题、signed squash 和合并后 main CI
 
 ### M-08 整理 DCO 与提交历史
 
@@ -434,21 +434,21 @@ git diff --check
 1. 所有本地命令在最终 SHA 上通过。
 2. required GitHub Actions 在最终 SHA 上通过。
 3. PR 已取消 Draft。
-4. 至少一个独立 Reviewer Approved。
+4. 最终 SHA 的 Codex Review 未发现重大问题，且维护者明确接受该 Review 作为合并审查门；不要求非作者 GitHub `Approved`。
 5. 所有 Review conversation resolved。
 6. PR 状态为 mergeable，无过期 required check。
 7. 产品基线和 README 不存在已知断链或过度声明。
 8. 合并后 `main` 再次运行 CI 并通过。
 
-**证据：** 最终 SHA、PR approval、CI run、merge commit/squash SHA、main CI。
+**证据：** 最终 SHA、Codex Review、维护者决定、CI run、merge commit/squash SHA、main CI。
 
 - 当前生产代码 head：`ac2e513c938e4abe349be445bcd6a6b1b9da252c`；最终验证 head：`57926402a817fb36ba296cfe695bb7206684c51c`
 - 本地验收：本节全部命令、release check/build、P0/P1/P2 harness、Linux G2 attack harness 和 `cargo audit` 均通过
 - validation-head CI：[security-gate run 33576290992](https://github.com/majiayu000/rekey/actions/runs/33576290992) 全部通过
 - 稳定性复验：早期 `lifecycle_drain` 连续 10 轮、P2 GitHub App harness 连续 3 轮通过；最终 Admin/policy 与 post-completion idle 各 3 轮、drain phase probe 20 轮、完整 frame status 30 轮、确定性 crash gate 10 轮通过；`5792640` [exact-head Codex Review](https://github.com/majiayu000/rekey/pull/10#issuecomment-5502610898) 未发现 major issue
 - PR 状态：Ready、`MERGEABLE`、`CLEAN`；未解决 Review conversation 为 0
-- 独立 Approval：0；当前仓库协作者仅 PR 作者 `majiayu000`，无法由现有协作者提供非作者 Approval
-- 当前阻塞：必须先取得独立非作者 GitHub `Approved`；之后才可执行 M-08 signed squash、验证 squash tree/DCO，并运行合并后 main CI
+- Review 决定：维护者明确确认不要求非作者 Approval；以最终 SHA 的 Codex Review 无重大问题作为合并审查门
+- 当前待办：取得最终文档 SHA 的 clean Codex Review 和 CI 后，执行 M-08 signed squash、验证 squash tree/DCO，并运行合并后 main CI
 
 ## 6. A 阶段：公开 Alpha 发布门
 
@@ -889,7 +889,7 @@ git diff --check
 | 结论 | 状态 | 说明 |
 | --- | --- | --- |
 | v2 Foundation 核心实现 | 完成 | P0 主要链路达到 black-box/adversarial evidence；截至生产代码 head `ac2e513c938e4abe349be445bcd6a6b1b9da252c` 的 107 个实现 findings 全部修复，另有 5 个验证有效性 findings 在 validation head `57926402a817fb36ba296cfe695bb7206684c51c` 全部修复，security-gate 全绿 |
-| PR #10 可立即合并 | 否 | M-01～M-07、M-09 已完成；M-08 等待实际 signed squash，M-10 被独立非作者 Approval 阻塞，其后还需合并和 main CI |
+| PR #10 可立即合并 | 待最终自动验收 | M-01～M-07、M-09 已完成；维护者已取消非作者 Approval 要求，最终文档 SHA 的 Codex Review 与 CI 通过后即可执行 signed squash，并验证 tree、DCO 和 main CI |
 | 所有规范与代码一致 | 完成 | M-04～M-06 的 107 个实现 findings 与 M-07/M-10 的 5 个验证有效性 findings 已全部修复；Critical/High 0，51 个 Medium 和 61 个 Low 已修复；最新 exact-head Codex Review 对 `5792640` 未发现 major issue |
 | 所有文档完成 | 否 | M 阶段 closeout 记录已闭合；Alpha 用户、运维、发行和治理文档属于冻结的 A 阶段，尚未实施 |
 | 可公开 Alpha | 否 | 无正式版本、发行物、安装流程、release workflow 和 release smoke |

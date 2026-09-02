@@ -36,8 +36,9 @@ This report covers the M-04, M-05, and M-06 review scopes. The reviewer did
 not author the pre-existing crypto, persistence, IPC, lifecycle, upstream, or
 GitHub App implementation being reviewed. The reviewer did author the
 remediations listed below. This is an independent implementation review for
-the PR record; it is not a third-party human audit and does not satisfy the
-separate M-10 GitHub `Approved` requirement.
+the PR record; it is not a third-party human audit. For M-10, the maintainer
+explicitly accepts a clean exact-head Codex review as the merge review gate;
+a separate non-author GitHub `Approved` review is not required.
 
 After the first remediation, the GitHub Codex integration reviewed commit
 `00d2e99e60c7324d4e8dbebb7e673e8cbd59c3f2` and reported seven additional
