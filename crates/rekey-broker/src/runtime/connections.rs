@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use rekey_domain::ids::RequestId;
 use rekey_domain::ipc::{self, Channel, FRAME_HEADER_LEN, FrameHeader};
 use tokio::io::AsyncReadExt;
 use tokio::net::{UnixListener, UnixStream};
@@ -63,6 +62,7 @@ pub(super) async fn accept_loop(
         }
     }
     while conns.join_next().await.is_some() {}
+    capacity_replies.abort_all();
     while capacity_replies.join_next().await.is_some() {}
     Ok(())
 }
@@ -74,8 +74,8 @@ async fn reject_over_capacity(mut stream: UnixStream, channel: Channel) {
     } else {
         ipc::ADMIN_SECRET_BODY_MAX_BYTES
     };
-    let request_id = match drain_rejected_frame(&mut stream, channel, body_limit, deadline).await {
-        Ok(request_id) => request_id,
+    let header = match read_rejected_header(&mut stream, channel, body_limit, deadline).await {
+        Ok(header) => header,
         Err(error) => {
             tracing::debug!(event = "runtime.capacity_reply_read_failed", %error);
             return;
@@ -86,7 +86,7 @@ async fn reject_over_capacity(mut stream: UnixStream, channel: Channel) {
         crate::ipc::frame::write_error(
             &mut stream,
             channel,
-            request_id,
+            header.request_id,
             "AUTHORITY_BUSY",
             "connection capacity exhausted",
             true,
@@ -102,14 +102,37 @@ async fn reject_over_capacity(mut stream: UnixStream, channel: Channel) {
             tracing::debug!(event = "runtime.capacity_reply_write_timeout");
         }
     }
+    let drain_deadline = tokio::time::Instant::now() + crate::ipc::frame::FRAME_IO_TIMEOUT;
+    let mut buffer = Zeroizing::new([0u8; 8 * 1024]);
+    if let Err(error) = drain_exact_until(
+        &mut stream,
+        header.metadata_len,
+        &mut buffer[..],
+        drain_deadline,
+    )
+    .await
+    {
+        tracing::debug!(event = "runtime.capacity_reply_metadata_drain_failed", %error);
+        return;
+    }
+    if let Err(error) = drain_exact_until(
+        &mut stream,
+        header.body_len,
+        &mut buffer[..],
+        drain_deadline,
+    )
+    .await
+    {
+        tracing::debug!(event = "runtime.capacity_reply_body_drain_failed", %error);
+    }
 }
 
-async fn drain_rejected_frame(
+async fn read_rejected_header(
     stream: &mut UnixStream,
     channel: Channel,
     body_limit: u32,
     deadline: tokio::time::Instant,
-) -> std::io::Result<RequestId> {
+) -> std::io::Result<FrameHeader> {
     let mut header_bytes = [0u8; FRAME_HEADER_LEN];
     read_exact_until(stream, &mut header_bytes, deadline).await?;
     let header = FrameHeader::decode(&header_bytes)
@@ -124,10 +147,7 @@ async fn drain_rejected_frame(
         ));
     }
 
-    let mut buffer = Zeroizing::new([0u8; 8 * 1024]);
-    drain_exact_until(stream, header.metadata_len, &mut buffer[..], deadline).await?;
-    drain_exact_until(stream, header.body_len, &mut buffer[..], deadline).await?;
-    Ok(header.request_id)
+    Ok(header)
 }
 
 async fn drain_exact_until(
@@ -213,6 +233,7 @@ mod tests {
         let client_task = tokio::spawn(async move {
             client.write_all(&request.encode()).await.unwrap();
             client.write_all(b"{}").await.unwrap();
+            tokio::time::sleep(CAPACITY_REPLY_TIMEOUT + Duration::from_millis(50)).await;
             client.write_all(&body).await.unwrap();
 
             let mut response_bytes = [0u8; FRAME_HEADER_LEN];
@@ -226,13 +247,10 @@ mod tests {
             assert!(error.retryable);
         });
 
-        tokio::time::timeout(
-            CAPACITY_REPLY_TIMEOUT + Duration::from_millis(250),
-            client_task,
-        )
-        .await
-        .expect("large legal request did not receive a bounded capacity reply")
-        .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), client_task)
+            .await
+            .expect("large legal request did not receive a bounded capacity reply")
+            .unwrap();
         rejection.await.unwrap();
     }
 }

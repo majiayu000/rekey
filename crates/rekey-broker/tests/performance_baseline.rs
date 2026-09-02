@@ -27,7 +27,7 @@ use rekey_vault::handle::{AuthorityConfig, DEFAULT_QUEUE_CAPACITY};
 use rekey_vault::model::{event_type, outcome};
 use rekey_vault::secret::SecretInput;
 use serde_json::{Value, json};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::sync::Barrier;
 use tokio::task::JoinSet;
@@ -334,10 +334,21 @@ async fn measure_authority_queue_and_audit() -> Value {
 
 async fn measure_ipc_capacity(broker: &common::TestBroker) -> Value {
     let started = Instant::now();
-    let mut agent = hold_connections(&broker.agent_sock(), MAX_AGENT_CONNECTIONS).await;
-    let mut admin = hold_connections(&broker.admin_sock(), MAX_ADMIN_CONNECTIONS).await;
+    let mut agent = hold_connections(
+        &broker.agent_sock(),
+        Channel::Agent,
+        agent_msg::AGENT_STATUS,
+        MAX_AGENT_CONNECTIONS,
+    )
+    .await;
+    let mut admin = hold_connections(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::STATUS,
+        MAX_ADMIN_CONNECTIONS,
+    )
+    .await;
     let open_all_latency = started.elapsed();
-    tokio::time::sleep(Duration::from_millis(100)).await;
     let agent_reject_us = rejected_connection_latency(
         &broker.agent_sock(),
         Channel::Agent,
@@ -358,12 +369,46 @@ async fn measure_ipc_capacity(broker: &common::TestBroker) -> Value {
     })
 }
 
-async fn hold_connections(path: &Path, count: usize) -> Vec<UnixStream> {
+async fn hold_connections(
+    path: &Path,
+    channel: Channel,
+    message_type: u16,
+    count: usize,
+) -> Vec<UnixStream> {
     let mut streams = Vec::with_capacity(count);
-    for _ in 0..count {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while streams.len() < count {
         let mut stream = UnixStream::connect(path).await.unwrap();
-        stream.write_all(b"R").await.unwrap();
-        streams.push(stream);
+        let request = FrameHeader {
+            channel,
+            flags: 0,
+            message_type,
+            request_id: RequestId::new_random(),
+            metadata_len: 2,
+            body_len: 0,
+        };
+        stream.write_all(&request.encode()).await.unwrap();
+        stream.write_all(b"{}").await.unwrap();
+
+        let mut response_bytes = [0u8; ipc::FRAME_HEADER_LEN];
+        stream.read_exact(&mut response_bytes).await.unwrap();
+        let response = FrameHeader::decode(&response_bytes).unwrap();
+        let mut metadata = vec![0u8; response.metadata_len as usize];
+        stream.read_exact(&mut metadata).await.unwrap();
+        let mut body = vec![0u8; response.body_len as usize];
+        stream.read_exact(&mut body).await.unwrap();
+        if response.message_type == ipc::resp_msg::OK {
+            streams.push(stream);
+            continue;
+        }
+
+        let error: ipc::ErrorEnvelope = serde_json::from_slice(&metadata).unwrap();
+        assert_eq!(error.code, "AUTHORITY_BUSY");
+        assert!(
+            Instant::now() < deadline,
+            "connection admission did not settle"
+        );
+        tokio::task::yield_now().await;
     }
     streams
 }
