@@ -12,9 +12,10 @@ use sha2::{Digest, Sha256};
 
 use crate::json::parse_unique_json;
 use crate::{
-    APPROVAL_GRANT_MAX_BYTES, PolicyError, SNAPSHOT_MAX_BYTES, SignatureAlgorithm, TRUST_MAX_BYTES,
-    ValidatedSnapshot, decode_lower_hex_32, parse_and_validate_snapshot,
-    parse_and_validate_snapshot_for_load, validate_ed25519_public_key,
+    APPROVAL_GRANT_MAX_BYTES, PolicyError, PolicySnapshot, SNAPSHOT_FORMAT_VERSION,
+    SNAPSHOT_MAX_BYTES, SignatureAlgorithm, TRUST_MAX_BYTES, ValidatedSnapshot,
+    decode_lower_hex_32, parse_and_validate_snapshot, parse_and_validate_snapshot_for_load,
+    validate_ed25519_public_key,
 };
 
 const POLICY_FORMAT_VERSION: u32 = 1;
@@ -201,6 +202,11 @@ fn parse_and_verify_policy_bundle_inner(
     }
     if envelope.signer_id != trust.signer_id {
         return Err(PolicyError::InvalidSignature);
+    }
+    let snapshot_shape: PolicySnapshot =
+        serde_json::from_value(envelope.snapshot.clone()).map_err(|_| PolicyError::Malformed)?;
+    if snapshot_shape.format_version != SNAPSHOT_FORMAT_VERSION {
+        return Err(PolicyError::UnsupportedFormat);
     }
     verify_signed_value(
         &value,
@@ -413,6 +419,18 @@ mod tests {
         let mut unknown: Value = serde_json::from_slice(trust.canonical_bytes()).unwrap();
         unknown["extra"] = true.into();
         assert!(parse_policy_trust(&serde_json::to_vec(&unknown).unwrap()).is_err());
+
+        let mut malformed_snapshot: Value = serde_json::from_slice(&canonical).unwrap();
+        malformed_snapshot["snapshot"]["unknown"] = true.into();
+        malformed_snapshot["signature"] = "invalid".into();
+        assert!(matches!(
+            parse_and_verify_policy_bundle(
+                &serde_json::to_vec(&malformed_snapshot).unwrap(),
+                &trust,
+                Timestamp::from_unix_ms(1),
+            ),
+            Err(PolicyError::Malformed)
+        ));
 
         for public_key in [[0u8; 32], [0xffu8; 32]] {
             let malformed = json!({

@@ -107,7 +107,7 @@ impl BrokerCtx {
     ) -> Result<(), BrokerError> {
         let _owner = self.lifecycle.coordinate_until(deadline).await?;
         self.lifecycle.reject_if_not_running()?;
-        authority_until(
+        let installation = tokio::time::timeout_at(
             deadline,
             self.authority.policy_trust_install_before(
                 rekey_vault::command::PolicyTrustInput {
@@ -118,7 +118,28 @@ impl BrokerCtx {
                 Some(deadline.into_std()),
             ),
         )
-        .await?;
+        .await;
+        match installation {
+            Ok(result) => {
+                result.map_err(BrokerError::Authority)?;
+            }
+            Err(_) => {
+                let reconciled = tokio::time::timeout(
+                    POLICY_RECONCILE_TIMEOUT,
+                    self.reload_policy_after_unlock(),
+                )
+                .await;
+                if matches!(reconciled, Ok(Ok(()))) {
+                    return Err(BrokerError::Authority(AuthorityError::AuthorityBusy));
+                }
+                self.sessions.close_and_revoke_all();
+                *self.policy.write().await = None;
+                *self.policy_trust.write().await = None;
+                self.lifecycle.enter_locked();
+                self.request_fault();
+                return Err(BrokerError::Authority(AuthorityError::Faulted));
+            }
+        }
         *self.policy_trust.write().await = Some(trust);
         Ok(())
     }
@@ -187,14 +208,4 @@ impl BrokerCtx {
         }
         Ok(())
     }
-}
-
-async fn authority_until<T>(
-    deadline: tokio::time::Instant,
-    operation: impl std::future::Future<Output = Result<T, AuthorityError>>,
-) -> Result<T, BrokerError> {
-    tokio::time::timeout_at(deadline, operation)
-        .await
-        .map_err(|_| BrokerError::Authority(AuthorityError::AuthorityBusy))?
-        .map_err(BrokerError::Authority)
 }

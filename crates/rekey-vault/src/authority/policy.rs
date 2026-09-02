@@ -1,4 +1,5 @@
 use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
 
 use super::{Worker, ensure_mutation_current, unlock_audit};
 use crate::command::{PolicyBundleInput, PolicyMaterial, PolicyTrustInput, UnlockProof};
@@ -9,7 +10,7 @@ use crate::now_ms;
 
 impl Worker {
     pub(super) fn policy_material(&mut self) -> Result<PolicyMaterial, AuthorityError> {
-        let key = *self.require_unlocked()?.bytes();
+        let key = Zeroizing::new(*self.require_unlocked()?.bytes());
         self.store
             .verified_policy_material(&key, self.header.vault_id)
     }
@@ -30,7 +31,7 @@ impl Worker {
             };
         }
         ensure_mutation_current(not_after)?;
-        let key = *self.require_unlocked()?.bytes();
+        let key = Zeroizing::new(*self.require_unlocked()?.bytes());
         let now = now_ms()?;
         let mut trust = PolicyTrustRecord {
             signer_id: input.signer_id,
@@ -99,7 +100,7 @@ impl Worker {
             return Err(AuthorityError::PolicyVersionConflict);
         }
         ensure_mutation_current(not_after)?;
-        let key = *self.require_unlocked()?.bytes();
+        let key = Zeroizing::new(*self.require_unlocked()?.bytes());
         let now = now_ms()?;
         let mut bundle = PolicyBundleRecord {
             signer_id: input.signer_id,
