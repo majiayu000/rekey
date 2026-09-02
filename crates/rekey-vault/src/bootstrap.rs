@@ -517,16 +517,20 @@ fn restore_inner(
     store.wal_checkpoint()?;
     drop(store);
 
-    let installed = paths::vault_db(target_state_dir);
     crate::durable::fsync(&staging).map_err(|_| AuthorityError::RestoreFailed)?;
-    fs::rename(&staging, &installed).map_err(|_| AuthorityError::RestoreFailed)?;
-    crate::durable::fsync(target_state_dir).map_err(|_| AuthorityError::RestoreFailed)?;
+    install_staging(&staging, target_state_dir)?;
     for side in sqlite_sidecars(&staging) {
         remove_if_present(&side).map_err(|_| AuthorityError::RestoreFailed)?;
     }
     crate::durable::fsync(target_state_dir).map_err(|_| AuthorityError::RestoreFailed)?;
     remove_restore_marker(target_state_dir).map_err(|_| AuthorityError::RestoreFailed)?;
     Ok(header.vault_id)
+}
+
+fn install_staging(staging: &Path, target_state_dir: &Path) -> Result<(), AuthorityError> {
+    fs::rename(staging, paths::vault_db(target_state_dir))
+        .map_err(|_| AuthorityError::RestoreFailed)?;
+    crate::durable::fsync(target_state_dir).map_err(|_| AuthorityError::RestoreFailed)
 }
 
 fn restore_marker_is_regular(state_dir: &Path) -> Result<bool, AuthorityError> {
@@ -694,5 +698,34 @@ mod tests {
             &metadata,
             metadata.uid().wrapping_add(1)
         ));
+    }
+
+    #[test]
+    fn final_rename_failure_keeps_restore_blocked_until_cleanup() {
+        let target = tempfile::tempdir().unwrap();
+        create_restore_marker(target.path()).unwrap();
+        let staging = target.path().join(".incoming-vault.sqlite3");
+        fs::write(&staging, b"staged vault").unwrap();
+        let installed = paths::vault_db(target.path());
+        fs::create_dir(&installed).unwrap();
+
+        assert!(matches!(
+            install_staging(&staging, target.path()),
+            Err(AuthorityError::RestoreFailed)
+        ));
+        assert!(cleanup_failed_restore(target.path()).is_err());
+        assert!(paths::restore_incomplete(target.path()).exists());
+        assert!(staging.exists());
+
+        fs::remove_dir(&installed).unwrap();
+        cleanup_failed_restore(target.path()).unwrap();
+        assert!(!paths::restore_incomplete(target.path()).exists());
+        assert!(!staging.exists());
+
+        create_restore_marker(target.path()).unwrap();
+        fs::write(&staging, b"retry vault").unwrap();
+        install_staging(&staging, target.path()).unwrap();
+        remove_restore_marker(target.path()).unwrap();
+        assert!(installed.is_file());
     }
 }

@@ -732,7 +732,7 @@ workflow 同时安装每周每 target 15 分钟的长时任务。本机相同五
 
 ### H-02 ENOSPC 与文件系统故障注入
 
-**状态：** `[ ]`
+**状态：** `[x]`
 
 **覆盖：** audit commit、credential mutation、WAL/checkpoint、backup、restore、rename/fsync、权限变化。
 
@@ -742,6 +742,20 @@ workflow 同时安装每周每 target 15 分钟的长时任务。本机相同五
 2. 不产生可 serve 的半初始化或半恢复 vault。
 3. audit 失败按合同使 worker fault/fail closed。
 4. retry 前置状态和残留文件有确定行为。
+
+**完成证据（2026-09-02）：** 实现提交
+`14fd5f61fb0c71ff0ba2f67141e38e9803c94681` 增加真实存储耗尽门与 WAL
+checkpoint 结果验证；[PR #17 checks](https://github.com/majiayu000/rekey/pull/17/checks)
+在最终 head 上执行 Ubuntu 32 MiB owner-only tmpfs ENOSPC 测试，覆盖 audit commit、
+credential mutation、backup 和 restore 的失败、残留与恢复空间后的 retry。macOS 本机另以
+64 MiB 可卸载 HFS+ 镜像执行四项 ENOSPC 场景和挂载安全 guard，5/5 通过。
+`enospc_root_must_be_a_bounded_dedicated_mount` 要求独立的 8～128 MiB 文件系统，避免误填满
+普通目录；`busy_wal_checkpoint_is_not_reported_as_success`
+证明 busy/incomplete checkpoint 返回明确存储错误；既有 `backup_restore`、
+`bootstrap_contract`、`durable` 和 broker runtime/peer tests 继续覆盖 fsync、incomplete
+marker 与权限变化；`final_rename_failure_keeps_restore_blocked_until_cleanup` 直接注入最终安装
+rename 失败，证明未知 blocker 不被删除、marker 保留且移除 blocker 后状态可重试。完整矩阵
+和复现边界记录于 `docs/fault-injection.md`。
 
 ### H-03 密码限速重启边界
 
@@ -1012,7 +1026,7 @@ smoke；没有从 Linux G2 reference 或相邻架构外推支持。
 | 所有规范与代码一致 | 完成 | M-04～M-06 的 107 个实现 findings 与 M-07/M-10 的 5 个验证有效性 findings 已全部修复；51 个 Medium 和 61 个 Low 已修复，最终 exact-head Review 无 finding |
 | Alpha 文档 | 完成（含 erratum） | 用户、安装、运维、发行、开源治理和支持范围已完成；archive 内嵌发布前 Matrix 的状态差异由公开 Release erratum 和当前仓库矩阵明确衔接 |
 | 可公开 Alpha | 是 | [v2.0.0-alpha.1](https://github.com/majiayu000/rekey/releases/tag/v2.0.0-alpha.1) 已公开；双平台 fresh-install、attestation 和 public-URL smoke 通过 |
-| H 安全与可靠性补强 | 部分完成 | H-01、H-03～H-06、H-08 已以持续 fuzz、边界文档、公开双平台发行证据和明确供应链取舍关闭；H-02 ENOSPC/文件系统注入、H-07 性能/soak 仍需独立实现与证据 |
+| H 安全与可靠性补强 | 部分完成 | H-01～H-06、H-08 已以持续 fuzz、真实 ENOSPC/文件系统故障注入、边界文档、公开双平台发行证据和明确供应链取舍关闭；H-07 性能/soak 仍需独立实现与证据 |
 | 可宣称通用 G2 | 否 | 只有有界 Linux reference；默认仍是 G1 |
 | 可宣称通用 Connector | 否 | 只有 fixed HTTPS Action 和 closed GitHub App profile |
 | 企业就绪 | 否 | 控制面、身份、HA/DR、合规、运营和商业门槛均未完成 |
