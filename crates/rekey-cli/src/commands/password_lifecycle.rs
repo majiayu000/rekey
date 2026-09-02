@@ -6,7 +6,8 @@ use serde::Deserialize;
 use zeroize::Zeroizing;
 
 use super::{
-    admin, print_json, prompt_secret, proof_body, proof_kind, stdin_lines, step_up_prompt,
+    LIFECYCLE_RESPONSE_TIMEOUT, admin_with_response_timeout, print_json, prompt_secret, proof_body,
+    proof_kind, stdin_lines, step_up_prompt,
 };
 use crate::client::CliError;
 
@@ -44,8 +45,15 @@ pub fn password_change(
     let body_len = 1 + 4 + proof.len() + 4 + new_password.len();
     let mut body = Zeroizing::new(Vec::with_capacity(body_len));
     ipc::encode_proof_and_secret_body(proof_kind(recovery), &proof, &new_password, &mut body);
-    let (metadata, response_body) =
-        admin(state_dir)?.call(admin_msg::PASSWORD_CHANGE, b"{}", &body)?;
+    // The Broker bounds queue admission at 25 seconds, then deliberately
+    // waits for an admitted transaction's definitive result. Keep the client
+    // alive for that post-admission completion instead of reverting to the
+    // ordinary 30-second Admin response timeout.
+    let (metadata, response_body) = admin_with_response_timeout(
+        state_dir,
+        LIFECYCLE_RESPONSE_TIMEOUT,
+    )?
+    .call(admin_msg::PASSWORD_CHANGE, b"{}", &body)?;
     if !response_body.is_empty() {
         return Err(CliError::local(
             "INVALID_FRAME",
@@ -58,7 +66,8 @@ pub fn password_change(
 pub fn recovery_rotate(state_dir: &Path, password_stdin: bool) -> Result<(), CliError> {
     let password = super::read_password(password_stdin, "Vault password (step-up): ")?;
     let body = proof_body(false, &password);
-    let (metadata, recovery) = admin(state_dir)?.call(admin_msg::RECOVERY_ROTATE, b"{}", &body)?;
+    let (metadata, recovery) = admin_with_response_timeout(state_dir, LIFECYCLE_RESPONSE_TIMEOUT)?
+        .call(admin_msg::RECOVERY_ROTATE, b"{}", &body)?;
     let receipt: RecoveryRotatedResponse = serde_json::from_slice(&metadata)
         .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid response"))?;
     if !receipt.rotated

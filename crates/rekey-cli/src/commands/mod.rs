@@ -22,6 +22,7 @@ pub use password_lifecycle::{password_change, recovery_rotate};
 const ACTION_RESPONSE_TIMEOUT: Duration = Duration::from_secs(130);
 const DRAIN_RESPONSE_TIMEOUT: Duration = Duration::from_secs(130);
 const BACKUP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(300);
+const LIFECYCLE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(130);
 
 #[derive(Deserialize)]
 struct GitHubProfileMarker<'a> {
