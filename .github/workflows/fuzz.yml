@@ -47,7 +47,7 @@ jobs:
         run: cargo install cargo-fuzz --locked --version 0.13.2
       - name: Short pull-request and push smoke
         if: github.event_name != 'schedule'
-        run: cargo fuzz run ${{ matrix.target }} -- -runs=2000 -max_len=65536 -timeout=10 -rss_limit_mb=2048
+        run: cargo +nightly-2026-09-01 fuzz run ${{ matrix.target }} -- -runs=2000 -max_len=65536 -timeout=10 -rss_limit_mb=2048
       - name: Scheduled long fuzz
         if: github.event_name == 'schedule'
-        run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=900 -max_len=65536 -timeout=10 -rss_limit_mb=2048
+        run: cargo +nightly-2026-09-01 fuzz run ${{ matrix.target }} -- -max_total_time=900 -max_len=65536 -timeout=10 -rss_limit_mb=2048
