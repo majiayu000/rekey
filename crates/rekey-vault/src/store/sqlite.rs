@@ -446,9 +446,18 @@ impl SqliteRecordStore {
     }
 
     pub fn wal_checkpoint(&self) -> Result<(), AuthorityError> {
-        self.conn
-            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
-            .map_err(storage)
+        let (busy, log_frames, checkpointed_frames): (i64, i64, i64) = self
+            .conn
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .map_err(storage)?;
+        if busy != 0 || log_frames != checkpointed_frames {
+            return Err(AuthorityError::storage(std::io::Error::other(
+                "WAL checkpoint did not complete",
+            )));
+        }
+        Ok(())
     }
 
     pub fn audit_event_types(&self) -> Result<Vec<String>, AuthorityError> {
@@ -753,5 +762,32 @@ mod tests {
             commit_audited(tx),
             Err(AuthorityError::AuditCommitFailed)
         ));
+    }
+
+    #[test]
+    fn busy_wal_checkpoint_is_not_reported_as_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("checkpoint.sqlite3");
+        let store = SqliteRecordStore::create(&db).unwrap();
+        store
+            .conn
+            .execute_batch("CREATE TABLE checkpoint_probe (value INTEGER NOT NULL);")
+            .unwrap();
+
+        let reader = Connection::open(&db).unwrap();
+        reader
+            .execute_batch("BEGIN; SELECT count(*) FROM checkpoint_probe;")
+            .unwrap();
+        store
+            .conn
+            .execute_batch("INSERT INTO checkpoint_probe VALUES (1);")
+            .unwrap();
+
+        assert!(matches!(
+            store.wal_checkpoint(),
+            Err(AuthorityError::StorageUnavailable(_))
+        ));
+        reader.execute_batch("ROLLBACK;").unwrap();
+        store.wal_checkpoint().unwrap();
     }
 }
