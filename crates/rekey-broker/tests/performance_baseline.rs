@@ -334,14 +334,14 @@ async fn measure_authority_queue_and_audit() -> Value {
 
 async fn measure_ipc_capacity(broker: &common::TestBroker) -> Value {
     let started = Instant::now();
-    let mut agent = hold_connections(
+    let agent = hold_connections(
         &broker.agent_sock(),
         Channel::Agent,
         agent_msg::AGENT_STATUS,
         MAX_AGENT_CONNECTIONS,
     )
     .await;
-    let mut admin = hold_connections(
+    let admin = hold_connections(
         &broker.admin_sock(),
         Channel::Admin,
         admin_msg::STATUS,
@@ -357,9 +357,7 @@ async fn measure_ipc_capacity(broker: &common::TestBroker) -> Value {
     .await;
     let admin_reject_us =
         rejected_connection_latency(&broker.admin_sock(), Channel::Admin, admin_msg::STATUS).await;
-    agent.clear();
-    admin.clear();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::join!(release_connections(agent), release_connections(admin));
     json!({
         "held_agent": MAX_AGENT_CONNECTIONS,
         "held_admin": MAX_ADMIN_CONNECTIONS,
@@ -418,6 +416,18 @@ async fn rejected_connection_latency(path: &Path, channel: Channel, message_type
     let response = common::call(path, channel, message_type, b"{}", b"").await;
     assert_eq!(response.err_code(), "AUTHORITY_BUSY");
     started.elapsed().as_micros()
+}
+
+async fn release_connections(streams: Vec<UnixStream>) {
+    for mut stream in streams {
+        stream.shutdown().await.unwrap();
+        let mut eof = [0u8; 1];
+        let read = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut eof))
+            .await
+            .expect("connection handler did not release its stream")
+            .unwrap();
+        assert_eq!(read, 0, "connection handler wrote unexpected trailing data");
+    }
 }
 
 async fn create_large_action(broker: &common::TestBroker, credential_id: &str) -> (String, u64) {
