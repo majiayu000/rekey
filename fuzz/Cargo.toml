@@ -1,0 +1,56 @@
+[package]
+name = "rekey-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+rekey-broker = { path = "../crates/rekey-broker", features = ["fuzzing"] }
+rekey-domain = { path = "../crates/rekey-domain" }
+rekey-policy = { path = "../crates/rekey-policy" }
+rekey-vault = { path = "../crates/rekey-vault" }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+
+[[bin]]
+name = "ipc"
+path = "fuzz_targets/ipc.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "action"
+path = "fuzz_targets/action.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "policy"
+path = "fuzz_targets/policy.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "response_sealing"
+path = "fuzz_targets/response_sealing.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "restore"
+path = "fuzz_targets/restore.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

@@ -1,0 +1,53 @@
+name: fuzz
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/fuzz.yml"
+      - "fuzz/**"
+      - "crates/rekey-domain/**"
+      - "crates/rekey-policy/**"
+      - "crates/rekey-vault/**"
+      - "crates/rekey-broker/**"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/fuzz.yml"
+      - "fuzz/**"
+      - "crates/rekey-domain/**"
+      - "crates/rekey-policy/**"
+      - "crates/rekey-vault/**"
+      - "crates/rekey-broker/**"
+  schedule:
+    - cron: "23 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  foundation-fuzz:
+    name: fuzz ${{ matrix.target }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [ipc, action, policy, response_sealing, restore]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: nightly-2026-09-01
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked --version 0.13.2
+      - name: Short pull-request and push smoke
+        if: github.event_name != 'schedule'
+        run: cargo fuzz run ${{ matrix.target }} -- -runs=2000 -max_len=65536 -timeout=10 -rss_limit_mb=2048
+      - name: Scheduled long fuzz
+        if: github.event_name == 'schedule'
+        run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=900 -max_len=65536 -timeout=10 -rss_limit_mb=2048
