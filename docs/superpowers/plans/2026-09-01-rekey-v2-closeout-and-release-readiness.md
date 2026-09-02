@@ -819,7 +819,7 @@ smoke；没有从 Linux G2 reference 或相邻架构外推支持。
 
 ### H-07 性能、容量与 soak 基线
 
-**状态：** `[ ]`
+**状态：** `[x]`
 
 **必须测量：** Authority queue 128、IPC 连接 128、每 session 并发 4、响应 sealing、audit 吞吐、长期内存、频繁 lock/unlock、backup 干扰、shutdown/drain。
 
@@ -829,6 +829,22 @@ smoke；没有从 Linux G2 reference 或相邻架构外推支持。
 2. 记录 p50/p95/p99、峰值 RSS、错误率和饱和行为。
 3. 超限时明确拒绝，不静默排队、截断或降级。
 4. 至少一个长时间 soak 无持续内存增长或审计丢失。
+
+**完成证据（2026-09-02）：** PR
+[#18](https://github.com/majiayu000/rekey/pull/18) 在 exact head
+`9bddae2fda319bc6ce0b872496298933f5821a59` 通过 security、fuzz、performance
+全部 9 个 job 后 squash merge 为
+`83da2233f73dbd996d9c23af0e12937840a41c03`；该 merge commit 的
+[security](https://github.com/majiayu000/rekey/actions/runs/33633015752)、
+[fuzz](https://github.com/majiayu000/rekey/actions/runs/33633015820) 和
+[performance](https://github.com/majiayu000/rekey/actions/runs/33633015821) 再次全部通过。
+固定 Apple M3 Max/macOS 26.5.1/aarch64/Rust 1.95.0 主机的 1,800 秒 run 完成
+63,798 次执行且错误率为 0；63,812 个 started/terminal/finished audit 精确配对；
+181 个 RSS 样本从首窗平均 49,513 KiB 降至末窗 47,308 KiB；29 次
+lock/unlock、14 次 backup 和 1 个实际 shutdown drain 全部成功。Authority 512
+次饱和提交明确接受 128、拒绝 384，IPC 在总连接 128 时对 Agent/Admin 额外连接均
+明确返回 `AUTHORITY_BUSY`。完整去主机名报告及原始 SHA-256 见
+[`docs/evidence/h07-performance-2026-09-02.json`](../../evidence/h07-performance-2026-09-02.json)。
 
 ### H-08 Rust 与供应链附加门槛
 
@@ -1026,10 +1042,10 @@ smoke；没有从 Linux G2 reference 或相邻架构外推支持。
 | 所有规范与代码一致 | 完成 | M-04～M-06 的 107 个实现 findings 与 M-07/M-10 的 5 个验证有效性 findings 已全部修复；51 个 Medium 和 61 个 Low 已修复，最终 exact-head Review 无 finding |
 | Alpha 文档 | 完成（含 erratum） | 用户、安装、运维、发行、开源治理和支持范围已完成；archive 内嵌发布前 Matrix 的状态差异由公开 Release erratum 和当前仓库矩阵明确衔接 |
 | 可公开 Alpha | 是 | [v2.0.0-alpha.1](https://github.com/majiayu000/rekey/releases/tag/v2.0.0-alpha.1) 已公开；双平台 fresh-install、attestation 和 public-URL smoke 通过 |
-| H 安全与可靠性补强 | 部分完成 | H-01～H-06、H-08 已以持续 fuzz、真实 ENOSPC/文件系统故障注入、边界文档、公开双平台发行证据和明确供应链取舍关闭；H-07 性能/soak 仍需独立实现与证据 |
+| H 安全与可靠性补强 | 完成 | H-01～H-08 已以持续 fuzz、真实 ENOSPC/文件系统故障注入、边界文档、公开双平台发行证据、供应链取舍以及固定主机 1,800 秒性能/容量/soak 证据全部关闭 |
 | 可宣称通用 G2 | 否 | 只有有界 Linux reference；默认仍是 G1 |
 | 可宣称通用 Connector | 否 | 只有 fixed HTTPS Action 和 closed GitHub App profile |
 | 企业就绪 | 否 | 控制面、身份、HA/DR、合规、运营和商业门槛均未完成 |
 
-M 与 A 阶段已经关闭。后续 H、P、E 必须继续按独立 spec、PR 和真实证据推进，
+M、A 与 H 阶段已经关闭。后续 P、E 必须继续按独立 spec、PR 和真实证据推进，
 不得回写或扩大已经发布的 `v2.0.0-alpha.1` 范围。

@@ -1,0 +1,125 @@
+{
+  "evidence": {
+    "captured_at": "2026-09-02T21:31:08+08:00",
+    "raw_report_sha256": "ed25a01cdf563a291180796e194ebba2b4701ead3c7d538e453d5fa4ed8a7403",
+    "hostname_redacted": true,
+    "wall_clock_seconds": 1867.32,
+    "test_seconds": 1845.11,
+    "time_maximum_resident_bytes": 618053632
+  },
+  "schema_version": 1,
+  "commit": "83da2233f73dbd996d9c23af0e12937840a41c03",
+  "environment": {
+    "os": "macOS 26.5.1 (25F80), Darwin 25.5.0",
+    "arch": "aarch64",
+    "cpu": "Apple M3 Max",
+    "memory_bytes": 137438953472,
+    "rust": "rustc 1.95.0 (59807616e 2026-04-14)",
+    "rust_host": "aarch64-apple-darwin",
+    "llvm": "22.1.2"
+  },
+  "data_scale": {
+    "authority_queue_capacity": 128,
+    "agent_connection_budget": 120,
+    "agent_request_handlers": 119,
+    "admin_connection_budget": 8,
+    "admin_request_handlers": 7,
+    "capacity_reply_reserve_per_channel": 1,
+    "total_connection_budget": 128,
+    "session_concurrency": 4,
+    "large_response_bytes": 4194304,
+    "soak_seconds": 1800
+  },
+  "authority_queue_and_audit": {
+    "attempts": 512,
+    "accepted": 128,
+    "authority_busy": 384,
+    "other_errors": 0,
+    "accepted_latency_us": {
+      "p50": 1185160,
+      "p95": 1185196,
+      "p99": 1185211,
+      "max": 1185213
+    },
+    "audit_commits": 500,
+    "audit_commits_per_second": 12141.226749550775,
+    "audit_latency_us": {
+      "p50": 78,
+      "p95": 99,
+      "p99": 135,
+      "max": 585
+    },
+    "benchmark_audit_rows_after_reopen": 500,
+    "audit_rows_after_reopen": 502
+  },
+  "ipc_capacity": {
+    "held_agent_request_handlers": 119,
+    "held_admin_request_handlers": 7,
+    "simultaneous_capacity_responders": 2,
+    "total_broker_connections_at_rejection": 128,
+    "open_all_latency_us": 8883,
+    "extra_agent_rejected_us": 138,
+    "extra_admin_rejected_us": 142
+  },
+  "session_capacity": {
+    "capacity": 4,
+    "fifth_attempt_error": "INVALID_CAPABILITY",
+    "slot_reusable_after_release": true
+  },
+  "response_sealing": {
+    "bytes_per_response": 4194304,
+    "samples": 12,
+    "latency_us": {
+      "p50": 2325399,
+      "p95": 2397398,
+      "p99": 2397398,
+      "max": 2397398
+    },
+    "rss_after_kib": 27536
+  },
+  "backup_interference": {
+    "concurrent_executions": 1,
+    "execution_errors": 0,
+    "execution_latency_us": 1216709,
+    "backup_latency_us": 1208923
+  },
+  "soak": {
+    "executions": 63798,
+    "unexpected_errors": 0,
+    "error_rate": 0.0,
+    "execution_latency_us": {
+      "p50": 3305,
+      "p95": 5659,
+      "p99": 9952,
+      "max": 41851
+    },
+    "lock_unlock_count": 29,
+    "lock_unlock_latency_us": {
+      "p50": 1219390,
+      "p95": 1234156,
+      "p99": 1247921,
+      "max": 1247921
+    },
+    "backup_count": 14,
+    "backup_latency_us": {
+      "p50": 2616547,
+      "p95": 3948580,
+      "p99": 3948580,
+      "max": 3948580
+    },
+    "rss_kib": {
+      "samples": 181,
+      "first_window_average": 49513,
+      "last_window_average": 47308,
+      "max": 93536
+    },
+    "peak_rss_kib": 103152,
+    "audit_started": 63812,
+    "audit_terminal": 63812,
+    "audit_finished": 63812
+  },
+  "shutdown_drain": {
+    "latency_us": 1223758,
+    "drained_executions": 1
+  }
+}
