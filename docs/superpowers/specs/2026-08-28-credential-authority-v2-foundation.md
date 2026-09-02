@@ -1,6 +1,6 @@
 # Rekey Credential Authority v2 Foundation 实施规格
 
-状态：Implemented as G1 development candidate; release gates remain open
+状态：Implemented and published as G1 public Alpha `v2.0.0-alpha.1`; H/P/E gates remain open
 日期：2026-08-28
 范围：P0 本地 Credential Authority、Broker、Admin/Agent IPC、固定 HTTP Action 纵向切片
 架构类型：安全敏感的长运行 Runtime + 本地服务 + CLI
