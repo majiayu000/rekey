@@ -748,10 +748,14 @@ workflow 同时安装每周每 target 15 分钟的长时任务。本机相同五
 checkpoint 结果验证；[PR #17 checks](https://github.com/majiayu000/rekey/pull/17/checks)
 在最终 head 上执行 Ubuntu 32 MiB owner-only tmpfs ENOSPC 测试，覆盖 audit commit、
 credential mutation、backup 和 restore 的失败、残留与恢复空间后的 retry。macOS 本机另以
-64 MiB 可卸载 HFS+ 镜像执行相同四项测试，4/4 通过。`busy_wal_checkpoint_is_not_reported_as_success`
+64 MiB 可卸载 HFS+ 镜像执行四项 ENOSPC 场景和挂载安全 guard，5/5 通过。
+`enospc_root_must_be_a_bounded_dedicated_mount` 要求独立的 8～128 MiB 文件系统，避免误填满
+普通目录；`busy_wal_checkpoint_is_not_reported_as_success`
 证明 busy/incomplete checkpoint 返回明确存储错误；既有 `backup_restore`、
-`bootstrap_contract`、`durable` 和 broker runtime/peer tests 继续覆盖 rename、fsync、
-incomplete marker 与权限变化。完整矩阵和复现边界记录于 `docs/fault-injection.md`。
+`bootstrap_contract`、`durable` 和 broker runtime/peer tests 继续覆盖 fsync、incomplete
+marker 与权限变化；`final_rename_failure_keeps_restore_blocked_until_cleanup` 直接注入最终安装
+rename 失败，证明未知 blocker 不被删除、marker 保留且移除 blocker 后状态可重试。完整矩阵
+和复现边界记录于 `docs/fault-injection.md`。
 
 ### H-03 密码限速重启边界
 

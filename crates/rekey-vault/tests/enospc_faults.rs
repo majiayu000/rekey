@@ -5,7 +5,9 @@ mod common;
 
 use std::fs::{self, File};
 use std::io::Write;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use rekey_domain::credential::{CredentialKind, CredentialLabel};
 use rekey_vault::bootstrap::{RestoreProof, confirm_vault_init, init_vault, restore_vault};
@@ -18,13 +20,58 @@ use rekey_vault::secret::SecretInput;
 const RESERVE_BYTES: usize = 16 * 1024;
 
 fn mounted_case(prefix: &str) -> Option<tempfile::TempDir> {
-    let root = std::env::var_os("REKEY_ENOSPC_DIR").map(PathBuf::from)?;
+    let configured = std::env::var_os("REKEY_ENOSPC_DIR").map(PathBuf::from)?;
+    let root = fs::canonicalize(configured).expect("canonicalize REKEY_ENOSPC_DIR");
+    validate_bounded_mount(&root).expect("REKEY_ENOSPC_DIR must be a bounded dedicated mount");
     Some(
         tempfile::Builder::new()
             .prefix(prefix)
             .tempdir_in(root)
             .expect("create ENOSPC case directory"),
     )
+}
+
+fn validate_bounded_mount(root: &Path) -> Result<(), String> {
+    let parent = root
+        .parent()
+        .ok_or_else(|| "mount has no parent".to_owned())?;
+    let root_device = fs::metadata(root).map_err(|error| error.to_string())?.dev();
+    let parent_device = fs::metadata(parent)
+        .map_err(|error| error.to_string())?
+        .dev();
+    if root_device == parent_device {
+        return Err("path is not a distinct filesystem mount".to_owned());
+    }
+
+    let output = Command::new("df")
+        .args(["-kP"])
+        .arg(root)
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err("df failed for configured mount".to_owned());
+    }
+    let stdout = String::from_utf8(output.stdout).map_err(|error| error.to_string())?;
+    let blocks = stdout
+        .lines()
+        .last()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or_else(|| "df did not report mount capacity".to_owned())?;
+    if !(8 * 1024..=128 * 1024).contains(&blocks) {
+        return Err(format!(
+            "mount capacity must be 8..=128 MiB, got {blocks} KiB"
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn enospc_root_must_be_a_bounded_dedicated_mount() {
+    let dir = tempfile::tempdir().unwrap();
+    let nested = dir.path().join("ordinary-directory");
+    fs::create_dir(&nested).unwrap();
+    assert!(validate_bounded_mount(&nested).is_err());
 }
 
 fn init_at(state_dir: &Path) {
