@@ -175,9 +175,41 @@ if len(rows) != 2 or len({row[0] for row in rows}) != 2 or any(row[1] != 1 for r
     raise SystemExit(f"frame request_id contaminated audit pairing: {rows}")
 PY
 
-# Step the actual rekeyd process—not the CLI wrapper—in short run intervals.
-# Inspecting the real WAL while rekeyd is stopped makes the committed-started
-# boundary observable even when the public upstream returns very quickly.
+# Move the Action to a public address with a deliberately non-serving TLS port.
+# The production connect timeout keeps the real execution in flight after its
+# started audit, without a test-only Broker hook or a private-address bypass.
+python3 - "$action_file" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+action = json.loads(path.read_text())
+action["origin"] = "https://1.1.1.1:81"
+path.write_text(json.dumps(action))
+PY
+action_json="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" action update "${action_ref%@*}" --file "$action_file" --password-stdin)"
+action_ref="$(printf '%s\n' "$action_json" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["id"]+"@"+str(d["version"]))')"
+session_json="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" session create --action "$action_ref" --ttl 10m --max-uses 4 --password-stdin)"
+token="$(printf '%s\n' "$session_json" | json_field '"capability_token"')"
+principal_id="$(printf '%s\n' "$session_json" | json_field '"principal_id"')"
+python3 - "$WORKDIR/policy.json" "${action_ref#*@}" "$principal_id" <<'PY'
+import json, pathlib, sys
+path, action_version, principal_id = pathlib.Path(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
+policy = json.loads(path.read_text())
+policy["version"] += 1
+policy["bindings"][0]["version"] = action_version
+policy["rules"][0]["version"] = action_version
+policy["rules"][0]["principal_id"] = principal_id
+path.write_text(json.dumps(policy))
+PY
+printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate --file "$WORKDIR/policy.json" --password-stdin >/dev/null
+
+EXEC_PIDS=""
+for n in $(seq 1 4); do
+  "$REKEY" --state-dir "$STATE" execute "$action_ref" --capability "$token" >"$WORKDIR/execute-$n.out" 2>"$WORKDIR/execute-$n.err" &
+  EXEC_PIDS="$EXEC_PIDS $!"
+done
+
+# Once the WAL exposes a committed unmatched start, stop the real rekeyd
+# process, confirm the stopped state, and recheck the row before SIGKILL.
 python3 - "$STATE/vault.sqlite3" "$BROKER_PID" <<'PY' &
 import os, signal, sqlite3, subprocess, sys, time
 db, pid = sys.argv[1], int(sys.argv[2])
@@ -216,28 +248,23 @@ deadline = time.monotonic() + 15
 stopped = False
 try:
     while time.monotonic() < deadline:
-        os.kill(pid, signal.SIGSTOP)
-        stopped = True
-        wait_stopped()
         if unmatched_request():
-            os.kill(pid, signal.SIGKILL)
+            os.kill(pid, signal.SIGSTOP)
+            stopped = True
+            wait_stopped()
+            if unmatched_request():
+                os.kill(pid, signal.SIGKILL)
+                stopped = False
+                raise SystemExit(0)
+            os.kill(pid, signal.SIGCONT)
             stopped = False
-            raise SystemExit(0)
-        os.kill(pid, signal.SIGCONT)
-        stopped = False
-        time.sleep(0.001)
+        time.sleep(0.005)
 finally:
     if stopped:
         os.kill(pid, signal.SIGCONT)
-raise SystemExit("did not observe an unmatched execution.started while stepping rekeyd")
+raise SystemExit("did not preserve an unmatched execution.started before the connect timeout")
 PY
 POLL_PID=$!
-
-EXEC_PIDS=""
-for n in $(seq 1 16); do
-  "$REKEY" --state-dir "$STATE" execute "$action_ref" --capability "$token" >"$WORKDIR/execute-$n.out" 2>"$WORKDIR/execute-$n.err" &
-  EXEC_PIDS="$EXEC_PIDS $!"
-done
 wait "$POLL_PID"
 set +e
 wait "$BROKER_PID"
