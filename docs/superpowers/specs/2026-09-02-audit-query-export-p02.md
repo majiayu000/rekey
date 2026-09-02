@@ -1,7 +1,7 @@
 # Rekey v2 P-02 Audit Query and Export
 
 **Date:** 2026-09-02
-**Status:** Accepted for implementation
+**Status:** Implemented and verified
 **Depends on:** Credential Authority v2 Foundation, P-01
 **Scope:** local Admin audit queries, stable pagination, redacted JSON, and secure local export
 

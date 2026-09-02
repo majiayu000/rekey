@@ -896,7 +896,7 @@ canary 验证密码/recovery 不进入 argv、环境、daemon 日志、审计或
 
 ### P-02 审计查询与导出
 
-**状态：** `[~]`
+**状态：** `[x]`
 
 **独立 spec：** [`2026-09-02-audit-query-export-p02.md`](../specs/2026-09-02-audit-query-export-p02.md)
 
@@ -905,6 +905,19 @@ canary 验证密码/recovery 不进入 argv、环境、daemon 日志、审计或
 - 有界分页和 JSON 输出。
 - 安全导出、retention 和字段脱敏。
 - 后续 SIEM 输出边界。
+
+**完成证据（2026-09-03）：** [PR #23](https://github.com/majiayu000/rekey/pull/23)
+在实现 head `d44c5012dabeea07a6fd234336a5e205ffc66b9a` 上通过 Ubuntu P0、
+macOS P0、有界 Linux G2、五个 fuzz target 和 performance 共 9 个 exact-head jobs。
+Authority/Store、Admin IPC 和真实 `rekeyd` + `rekey` black-box 覆盖全部过滤器、
+交集、inclusive time、空结果、锁定读取、fault/storage/integrity failure、稳定高水位
+分页和 4 MiB 响应上限；CLI 导出超过 100 行完成多页快照，并验证 JSONL
+header/event/trailer、owner-only mode 0600、普通文件、create-new/no-follow、partial
+保留、file/parent fsync、失败不打印成功 receipt，以及 Secret、password、recovery、
+capability、body/header、resource ID 和 parameter hash canary。伪造 Broker 的 metadata、
+unknown field 和 malformed record 均被拒绝；Agent wire surface 与 CLI 负依赖机械合同保持
+不变。能力不在 `v2.0.0-alpha.1` 内，不提升默认 G1、有界 Linux G2、Connector、SIEM
+或企业就绪判定。
 
 ### P-03 审批与持久化策略
 
@@ -1041,7 +1054,7 @@ canary 验证密码/recovery 不进入 argv、环境、daemon 日志、审计或
 ## 11. 推荐执行顺序
 
 1. `[x]` 关闭 M、A、H 和 P-01，并保留各自 exact-head/merge 后证据。
-2. P-02 审计查询与导出，为后续 SIEM/retention 建立最小查询边界。
+2. `[x]` P-02 审计查询与导出，为后续 SIEM/retention 建立最小查询边界。
 3. P-03 审批与持久化策略，再推进依赖它的长期授权流程。
 4. P-04 通用 workload identity。
 5. P-05 Connector SDK；P-06 GitHub App 扩展只能建立在该合同之上。
@@ -1057,10 +1070,10 @@ canary 验证密码/recovery 不进入 argv、环境、daemon 日志、审计或
 | Alpha 文档 | 完成（含 erratum） | 用户、安装、运维、发行、开源治理和支持范围已完成；archive 内嵌发布前 Matrix 的状态差异由公开 Release erratum 和当前仓库矩阵明确衔接 |
 | 可公开 Alpha | 是 | [v2.0.0-alpha.1](https://github.com/majiayu000/rekey/releases/tag/v2.0.0-alpha.1) 已公开；双平台 fresh-install、attestation 和 public-URL smoke 通过 |
 | H 安全与可靠性补强 | 完成 | H-01～H-08 已以持续 fuzz、真实 ENOSPC/文件系统故障注入、边界文档、公开双平台发行证据、供应链取舍以及固定主机 1,800 秒性能/容量/soak 证据全部关闭 |
-| P 后续产品能力 | 进行中 | P-01 密码/recovery wrapper 生命周期已完成 adversarial/black-box 验收但尚未发布；P-02 spec 已接受、实现未开始；P-03～P-06 未开始 |
+| P 后续产品能力 | 进行中 | P-01 密码/recovery wrapper 生命周期与 P-02 本地审计查询/导出均已完成 adversarial/black-box 验收但尚未发布；P-03～P-06 未开始 |
 | 可宣称通用 G2 | 否 | 只有有界 Linux reference；默认仍是 G1 |
 | 可宣称通用 Connector | 否 | 只有 fixed HTTPS Action 和 closed GitHub App profile |
 | 企业就绪 | 否 | 控制面、身份、HA/DR、合规、运营和商业门槛均未完成 |
 
-M、A、H 与 P-01 已经关闭。后续 P、E 必须继续按独立 spec、PR 和真实证据推进，
+M、A、H、P-01 与 P-02 已经关闭。后续 P、E 必须继续按独立 spec、PR 和真实证据推进，
 不得回写或扩大已经发布的 `v2.0.0-alpha.1` 范围。
