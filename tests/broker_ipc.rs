@@ -135,8 +135,9 @@ async fn audit_query_is_admin_only_bounded_and_available_while_locked() {
         "audit query bodies must close the admin connection"
     );
 
-    let mut invalid = query;
-    invalid.limit = 0;
+    let mut invalid = query.clone();
+    invalid.snapshot_max_sequence = Some(10);
+    invalid.before_sequence = Some(11);
     let response = h::call(
         &broker.admin_sock(),
         Channel::Admin,
@@ -146,6 +147,15 @@ async fn audit_query_is_admin_only_bounded_and_available_while_locked() {
     )
     .await;
     assert_eq!(response.err_code(), "INVALID_INPUT");
+    let response = h::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::AUDIT_QUERY,
+        &serde_json::to_vec(&query).unwrap(),
+        &[],
+    )
+    .await;
+    assert_eq!(response.ok(), &serde_json::json!({}));
     broker.shutdown_keep_dir().await;
 }
 

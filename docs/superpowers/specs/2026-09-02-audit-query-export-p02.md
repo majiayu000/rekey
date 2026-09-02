@@ -36,7 +36,9 @@ construct or reinterpret either value as a time.
 All supplied filters are intersected. `since_ms` and `until_ms` are inclusive,
 must be non-negative, and are rejected when `since_ms > until_ms`. IDs and
 outcomes are exact matches. Unknown flags, malformed IDs, zero/oversized limits,
-and invalid time bounds fail as `USAGE` before IPC.
+invalid time bounds, a cursor without a snapshot, and a cursor above its
+snapshot high-water mark fail as `USAGE` before IPC. The same metadata received
+directly by the Broker fails as invalid input without faulting the Authority.
 
 `audit export` captures one stable high-water mark, fetches bounded pages, and
 writes a JSON Lines snapshot to a new local file. It does not accept a cursor or

@@ -49,6 +49,14 @@ impl AuditQuery {
         if self.before_sequence.is_some() && self.snapshot_max_sequence.is_none() {
             return Err(invalid("before_sequence requires snapshot_max_sequence"));
         }
+        if matches!(
+            (self.snapshot_max_sequence, self.before_sequence),
+            (Some(snapshot), Some(before)) if before > snapshot
+        ) {
+            return Err(invalid(
+                "before_sequence must not exceed snapshot_max_sequence",
+            ));
+        }
         if self
             .snapshot_max_sequence
             .is_some_and(|value| value > i64::MAX as u64)
@@ -245,6 +253,9 @@ mod tests {
         value.since_ms = None;
         value.until_ms = None;
         value.before_sequence = Some(0);
+        assert!(value.validate().is_err());
+        value.before_sequence = Some(2);
+        value.snapshot_max_sequence = Some(1);
         assert!(value.validate().is_err());
     }
 
