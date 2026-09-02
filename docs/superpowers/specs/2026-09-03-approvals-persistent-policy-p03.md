@@ -176,6 +176,45 @@ tampering, cross-vault copying, signer substitution, or changing the persisted
 version or digest fails integrity verification. The signed bundle is also
 verified against the sealed trust root every time it is loaded.
 
+All three lifecycle seals reuse the existing 84-byte `AadV1` encoding and seal
+an empty plaintext, producing a 12-byte stored nonce and a 16-byte
+authentication tag. P-03 assigns purpose codes `6` (`PolicyState`), `7`
+(`PolicyTrust`), and `8` (`PolicyBundle`). `credential_kind` is zero for all
+three. Their remaining AAD fields are exact:
+
+| Purpose | `object_id` | `object_version` | `constraints_hash` |
+|---|---|---:|---|
+| `PolicyState` | sixteen zero bytes | `1` | SHA-256 of the canonical policy-state record |
+| `PolicyTrust` | raw 16-byte signer UUID | `1` | SHA-256 of the canonical trust record |
+| `PolicyBundle` | raw 16-byte signer UUID | policy version as `u64` | SHA-256 of the canonical bundle record |
+
+The canonical records use the concatenations below. All integer fields are
+big-endian; UUIDs are their raw 16 bytes; digests and public keys are decoded
+raw bytes; the algorithm code for Ed25519 is `1`; booleans are exactly `0` or
+`1`.
+
+```text
+policy-state =
+  "RKPS" || u16(1) || vault_id[16] || u8(trust_installed) ||
+  u8(bundle_activated) || signer_id_or_zero[16] ||
+  u64(highest_version_or_zero) || policy_digest_or_zero[32] ||
+  bundle_digest_or_zero[32] || i64(updated_at_ms)
+
+policy-trust =
+  "RKPT" || u16(1) || vault_id[16] || signer_id[16] ||
+  u16(1) || public_key[32] || i64(installed_at_ms)
+
+policy-bundle =
+  "RKPB" || u16(1) || vault_id[16] || signer_id[16] ||
+  u64(policy_version) || i64(expires_at_ms) || policy_digest[32] ||
+  bundle_digest[32] || i64(activated_at_ms)
+```
+
+The zero sentinels in `policy-state` are valid only before the corresponding
+trust or bundle exists. Once `trust_installed` is `1`, the signer ID is nonzero
+and immutable. Once `bundle_activated` is `1`, the version is positive and both
+digests are nonzero. Any other combination is an integrity failure.
+
 On startup the Broker does not publish policy while locked. The first successful
 unlock verifies the trust seal, bundle seal, signature, schema, version, and
 expiry before publishing an `ActivePolicy`. A malformed persisted record or bad
@@ -198,38 +237,64 @@ decrypts a credential or contacts the upstream. It validates the live session
 and action, canonicalizes parameters through the active policy binding, and
 evaluates forbid/permit/approval precedence.
 
-For a matching approval rule it returns `rekey.approval.challenge.v1` containing:
+For a matching approval rule it returns this exact closed JSON object:
 
-- a random approval request ID;
-- tenant, principal, and session IDs;
-- action ID and version;
-- resource type and ID;
-- schema ID and canonical parameter SHA-256;
-- policy version and digest;
-- approval mode, quorum, allowed approver IDs, maximum uses, and maximum expiry.
+```json
+{
+  "record_type": "rekey.approval.challenge.v1",
+  "approval_request_id": "UUID",
+  "tenant_id": "UUID",
+  "principal_id": "UUID",
+  "session_id": "UUID",
+  "action_id": "UUID",
+  "action_version": 1,
+  "resource": {"type": "TYPE", "id": "ID"},
+  "schema_id": "SCHEMA",
+  "parameter_sha256": "LOWERCASE_HEX",
+  "policy_version": 1,
+  "policy_sha256": "LOWERCASE_HEX",
+  "policy_rule_id": "UUID",
+  "mode": "one-time",
+  "quorum": 1,
+  "approver_ids": ["UUID"],
+  "max_uses": 1,
+  "created_at_ms": 0,
+  "max_expires_at_ms": 0
+}
+```
+
+The approval request ID is random. UUIDs are canonical lowercase hyphenated
+strings; both SHA-256 values are exactly 64 lowercase hexadecimal characters;
+the resource object is itself closed; and `approver_ids` contains distinct
+canonical UUIDs sorted by raw UUID bytes. Parsers reject duplicate keys at any
+depth, unknown fields, missing fields, non-canonical encodings, and any value
+outside the policy bounds. `record_type` is the only discriminator and must
+equal the literal shown above.
 
 The challenge is safe for the Agent to see because the Agent supplied the
 request and already knows its resource and parameters. It contains no action
 credential, request header outside the policy allowlist, request body, or
 capability token. Preparing a challenge consumes one session use under the
 existing strict accounting rule, even though it performs no upstream effect.
-This bounds Agent-driven durable challenge and audit growth by the Admin-issued
+This bounds Agent-driven challenge and audit growth by the Admin-issued
 session grant. It also requires a currently valid non-revoked session and is
 covered by the normal concurrency, frame-size, and deadline limits.
 
 The maximum expiry is the earliest of policy expiry, session expiry, challenge
 creation plus ten minutes for one-time mode, or challenge creation plus the
-rule's bounded window for time-window mode. `PrepareApproval` returns
-`approval-not-required` instead of a challenge for a direct permit.
+rule's bounded window for time-window mode. At challenge creation the
+SessionRegistry also captures the current monotonic instant and derives an
+irreversible monotonic deadline for that maximum expiry. `PrepareApproval`
+returns `approval-not-required` instead of a challenge for a direct permit.
 
-Every successful challenge creation inserts a durable approval-request record
-and commits `approval.requested` in one Authority transaction before the
-response is returned. The record stores the approval request ID, exact
-authorization tuple, rule, mode, quorum, allowed approvers, maximum uses,
-creation time, and maximum expiry; it contains no request body, header,
-capability, credential, or signature. If that transaction fails, no challenge
-is returned and the Authority faults. A request matching `forbid` or no
-authorization rule is denied without producing an approval challenge.
+The exact challenge and its monotonic time anchor live only in the existing
+in-memory SessionRegistry and are bound to that session. They are cleared by
+session revocation, lock, or process restart; P-03 adds no durable approval
+request or approval-usage table. The Authority commits `approval.requested`
+before the challenge is returned. If that audit transaction fails, no challenge
+is returned, its consumed session use is not restored, and the Authority
+faults. A request matching `forbid` or no authorization rule is denied without
+producing an approval challenge.
 
 ## 6. Signed approval grant
 
@@ -251,6 +316,7 @@ An external approver signs `rekey.approval.grant.v1`:
   "parameter_sha256": "HEX",
   "policy_version": 1,
   "policy_sha256": "HEX",
+  "policy_rule_id": "UUID",
   "mode": "one-time",
   "not_before_ms": 0,
   "expires_at_ms": 0,
@@ -264,15 +330,16 @@ The signature input is `RKAPPROVAL\0\x01` followed by JCS encoding with
 key and unknown-field rejection before canonicalization or authorization. The
 execution request carries at most two grants. Every field except `approval_id`,
 `approver_id`, validity bounds, signed use limit, and signature must exactly
-equal the prepared challenge and current execution authorization tuple. The
-approver must exist in the active signed snapshot and be allowed by the
-determining rule.
+equal the prepared challenge and current execution authorization tuple. This
+includes the determining `policy_rule_id`. The approver must exist in the active
+signed snapshot and be allowed by that rule.
 
-`approval_request_id` names the durable challenge and is distinct from the new
-execution request ID assigned to each execute attempt. `policy_sha256` is the
-policy digest defined in Section 3, not the bundle digest. The signed grant
-digest used for durable usage identity is exactly `SHA-256(JCS(grant))`,
-including its signature; raw whitespace and member order do not affect it.
+`approval_request_id` names the session-bound challenge and is distinct from
+the new execution request ID assigned to each execute attempt. `policy_sha256`
+is the policy digest defined in Section 3, not the bundle digest. The signed
+grant digest used for in-memory usage identity is exactly
+`SHA-256(JCS(grant))`, including its signature; raw whitespace and member order
+do not affect it.
 
 The Broker rejects grants with an invalid signature, future `not_before_ms`,
 expired validity, validity beyond the challenge maximum, a wrong mode, duplicate
@@ -290,34 +357,43 @@ expiry, or policy expiry. Session revocation, policy change, parameter change,
 or action-version change therefore invalidates the grant without a separate
 revocation list.
 
-On first acceptance of a time-window grant, the Authority derives a monotonic
-deadline from its effective remaining wall-clock duration and retains an
-irreversible expired latch for that approval ID for the process lifetime. A
-forward wall-clock jump or monotonic deadline can expire it early; a later
-rollback cannot revive it in the same process. After restart the deadline is
-rebuilt from signed wall time, matching the documented full-vault replay and
-host-clock limitation.
+For every presented grant, the Broker derives its monotonic expiry from the
+challenge's stored creation wall time and monotonic anchor, capped by the
+challenge's stored monotonic deadline. First and later admission require both
+the signed wall-clock expiry and this derived monotonic expiry to remain valid.
+A wall-clock rollback between challenge creation and first execution therefore
+cannot extend either a one-time or time-window grant. Restart does not rebuild
+the deadline: it destroys the session and challenge, so every grant bound to
+them is invalid.
 
 ## 7. Execution and transaction ordering
 
 Approval verification happens after capability, action, and parameter
-canonicalization but before credential preparation. For an approved execution,
-the Authority commits the following admission atomically:
+canonicalization but before credential preparation. Under the SessionRegistry
+lock, an approved execution atomically:
 
-1. load the durable approval request and require an exact current tuple, rule,
-   policy, session, and expiry match;
-2. reject an exhausted approval ID or a prior row whose signed grant digest does
-   not match;
-3. insert or increment each grant's durable usage row without exceeding its
-   signed `max_uses`;
-4. append one `approval.accepted` event per accepted grant;
-5. append the existing `execution.started` event.
+1. loads the session-bound challenge and requires an exact current tuple, rule,
+   policy, session, and wall-clock plus monotonic expiry match;
+2. verifies each grant and rejects an exhausted approval ID or a prior entry
+   whose signed grant digest does not match;
+3. reserves one use from each grant's in-memory counter without exceeding its
+   signed `max_uses`, and verifies distinct approvers satisfy quorum.
 
+After that reservation, the Authority appends one `approval.accepted` event per
+grant and the existing `execution.started` event in one SQLite transaction.
 Only after that transaction commits may the worker decrypt a credential and the
 Broker enter the remote-effect gate. Concurrent reuse can therefore admit at
 most the signed use count, and a one-time grant can admit exactly one execution.
-Cancellation or upstream failure after admission does not restore any approval
-use; the normal terminal execution audit records the outcome.
+Cancellation, upstream failure, or audit failure after the memory reservation
+does not restore any approval use; audit failure permits no remote effect and
+faults the Authority. The normal terminal execution audit records outcomes
+after successful admission.
+
+Approval counters are keyed by approval ID and signed grant digest inside the
+owning session. Reusing an approval ID with different signed content is denied.
+Because the capability session, challenge, and counters share one volatile
+lifetime, deletion or rollback of SQLite rows cannot restore approval capacity;
+restart or lock instead invalidates the entire authorization context.
 
 Rejected signatures, tuple mismatches, insufficient quorum, expired grants, and
 exhausted-use attempts append `approval.rejected` with a bounded reason code
@@ -333,8 +409,8 @@ The evaluator remains deterministic and default-deny:
 - explicit forbid denies;
 - a matching approval rule without sufficient valid grants denies;
 - signature-verification or typed evaluator error denies;
-- approval-request or usage-store error faults the Authority and keeps
-  execution closed;
+- inconsistent or unavailable session approval state denies, and poisoned
+  session state follows the existing Broker fail-stop behavior;
 - only an explicit permit or a fully satisfied approval rule can allow.
 
 P-03 has no network approval dependency. If an external approver or signing
@@ -361,10 +437,11 @@ exact version combination, rejects unknown response fields, and never silently
 reads a v1 object as v2.
 
 Required approval event types are `approval.requested`, `approval.accepted`, and
-`approval.rejected`. Approval use is represented by the accepted event and the
-durable usage row in the same admission transaction; no separate success event
-may drift from execution admission. Approval-request and usage rows are retained
-with the vault in P-03; automatic pruning remains future retention work.
+`approval.rejected`. Each admission transaction keeps its accepted events and
+`execution.started` together; there is no separate durable approval state that
+can drift from execution admission. Challenge and usage state is intentionally
+absent from backup and restore because it is part of the volatile capability
+session and becomes invalid on lock or restart.
 
 ## 10. Bounds and error contract
 
@@ -381,8 +458,8 @@ with the vault in P-03; automatic pruning remains future retention work.
 
 Malformed or oversized input returns invalid input before expensive signature
 or schema work. A bad policy artifact leaves the current bundle active. A bad
-approval artifact denies only that request unless the durable store or audit
-commit fails, in which case the existing Authority fail-stop rules apply.
+approval artifact denies only that request unless the audit commit fails, in
+which case the existing Authority fail-stop rules apply.
 
 ## 11. Required verification
 
@@ -394,19 +471,23 @@ P-03 is complete only when all of the following are fresh and passing:
    precedence, approval precedence, consecutive versions, the reserved terminal
    value, and default deny.
 2. Store tests cover one-time trust installation, sealed trust and bundle row
-   tampering and deletion, mandatory policy-state absence and mismatch, atomic
+   tampering and deletion, mandatory policy-state absence and mismatch, all
+   three seal golden vectors and every bound-field mutation, atomic
    activation/audit rollback, consecutive versions, roll-forward of old
    contents, restart reload, expiry, and backup/restore.
-3. Approval tests cover exact tuple binding, one-time replay including a
-   concurrent race and restart, reusable time windows, two distinct approvers,
-   duplicate JSON keys and grants, signed use exhaustion including a concurrent
-   race and restart, policy/session/action/parameter changes, wall-clock rollback
-   after observed expiry, and all expiry boundaries. Challenge tests also prove
-   one session use per durable request and no record or audit amplification after
-   capability exhaustion.
-4. Fault injection proves approval usage and `execution.started` are atomic,
-   audit failure prevents the remote effect, and post-admission failure does not
-   restore an approval use.
+3. Approval tests cover exact tuple and determining-rule binding, one-time replay
+   including a concurrent race, reusable time windows, two distinct approvers,
+   duplicate and unknown challenge or grant fields at every depth, duplicate
+   grants, signed use exhaustion including a concurrent race,
+   policy/session/action/parameter changes, wall-clock rollback before first
+   execution and after observed expiry, and all expiry boundaries. Restart and
+   lock tests prove the session, challenge, and all grants become invalid rather
+   than restoring approval use. Challenge tests also prove one session use per
+   request and no challenge or audit amplification after capability exhaustion.
+4. Fault injection proves in-memory approval use is reserved before the atomic
+   `approval.accepted` plus `execution.started` audit transaction, audit failure
+   prevents the remote effect without restoring use, and post-admission failure
+   does not restore use.
 5. Admin and Agent IPC adversarial tests enforce channel separation, empty or
    bounded bodies, response binding, unknown-field rejection, and deadlines.
 6. Real `rekeyd` plus `rekey` black-box tests install a trust root, activate a
@@ -437,6 +518,7 @@ P-03 is complete only when all of the following are fresh and passing:
 - Trust-root replacement or multiple concurrent policy signers in one vault.
 - Approval revocation lists beyond exact session, policy, action, tuple, and
   expiry binding.
+- Approval survival across session revocation, lock, or process restart.
 - Full-vault replay detection, external monotonic counters, transparency logs,
   WORM audit, or enterprise SIEM delivery.
 - Inclusion in `v2.0.0-alpha.1` or any increase to the current G1 and bounded
