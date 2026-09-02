@@ -175,32 +175,29 @@ if len(rows) != 2 or len({row[0] for row in rows}) != 2 or any(row[1] != 1 for r
     raise SystemExit(f"frame request_id contaminated audit pairing: {rows}")
 PY
 
-# Move the Action to a public address with a deliberately non-serving TLS port.
-# The production connect timeout keeps the real execution in flight after its
-# started audit, without a test-only Broker hook or a private-address bypass.
-python3 - "$action_file" <<'PY'
-import json, pathlib, sys
-path = pathlib.Path(sys.argv[1])
-action = json.loads(path.read_text())
-action["origin"] = "https://1.1.1.1:81"
-path.write_text(json.dumps(action))
+# Hold only terminal audit insertion behind deterministic SQLite work. Started
+# commits remain real and durable; the temporary trigger is removed offline
+# after SIGKILL, before recovery starts.
+python3 - "$STATE/vault.sqlite3" <<'PY'
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+con.executescript("""
+CREATE TRIGGER crash_hold_terminal
+BEFORE INSERT ON audit_events
+WHEN NEW.event_type IN ('execution.finished', 'execution.blocked', 'execution.indeterminate')
+BEGIN
+  SELECT sum(value) FROM (
+    WITH RECURSIVE counter(value) AS (
+      VALUES(0)
+      UNION ALL
+      SELECT value + 1 FROM counter WHERE value < 100000000
+    )
+    SELECT value FROM counter
+  );
+END;
+""")
+con.close()
 PY
-action_json="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" action update "${action_ref%@*}" --file "$action_file" --password-stdin)"
-action_ref="$(printf '%s\n' "$action_json" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["id"]+"@"+str(d["version"]))')"
-session_json="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" session create --action "$action_ref" --ttl 10m --max-uses 4 --password-stdin)"
-token="$(printf '%s\n' "$session_json" | json_field '"capability_token"')"
-principal_id="$(printf '%s\n' "$session_json" | json_field '"principal_id"')"
-python3 - "$WORKDIR/policy.json" "${action_ref#*@}" "$principal_id" <<'PY'
-import json, pathlib, sys
-path, action_version, principal_id = pathlib.Path(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
-policy = json.loads(path.read_text())
-policy["version"] += 1
-policy["bindings"][0]["version"] = action_version
-policy["rules"][0]["version"] = action_version
-policy["rules"][0]["principal_id"] = principal_id
-path.write_text(json.dumps(policy))
-PY
-printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate --file "$WORKDIR/policy.json" --password-stdin >/dev/null
 
 EXEC_PIDS=""
 for n in $(seq 1 4); do
@@ -262,7 +259,7 @@ try:
 finally:
     if stopped:
         os.kill(pid, signal.SIGCONT)
-raise SystemExit("did not preserve an unmatched execution.started before the connect timeout")
+raise SystemExit("did not preserve an unmatched execution.started before terminal audit")
 PY
 POLL_PID=$!
 wait "$POLL_PID"
@@ -278,7 +275,7 @@ EXEC_PIDS=""
 python3 - "$STATE/vault.sqlite3" "$STATE/vault.sqlite3.killed-requests" <<'PY'
 import pathlib, sqlite3, sys
 
-con = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+con = sqlite3.connect(sys.argv[1])
 rows = con.execute("""
     SELECT hex(s.request_id)
     FROM audit_events s
@@ -290,6 +287,8 @@ rows = con.execute("""
       )
     ORDER BY s.sequence
 """).fetchall()
+con.execute("DROP TRIGGER crash_hold_terminal")
+con.commit()
 con.close()
 if not rows:
     raise SystemExit("SIGKILL left no durable unmatched execution.started row")
