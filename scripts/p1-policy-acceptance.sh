@@ -100,7 +100,7 @@ resource = {"type": "fixed-http-action", "id": action}
 snapshot = {
     "format_version": 1,
     "version": int(policy_version),
-    "expires_at_ms": int(time.time() * 1000) + 60000,
+    "expires_at_ms": int(time.time() * 1000) + 600000,
     "bindings": [{
         "action_id": action, "version": int(version), "resource": resource,
         "parameter_schema_id": "p1-message/v1",
@@ -127,7 +127,7 @@ rule = {"id": str(uuid.uuid4()), "effect": "permit", "principal_id": principal,
     "action_id": action, "version": int(version), "resource": resource,
     "parameters": {"kind": "any_validated"}}
 pathlib.Path(path).write_text(json.dumps({"format_version": 1, "version": 2,
-    "expires_at_ms": int(time.time() * 1000) + 60000, "bindings": [binding], "rules": [rule]}))
+    "expires_at_ms": int(time.time() * 1000) + 600000, "bindings": [binding], "rules": [rule]}))
 PY
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate --file "$WORKDIR/policy.json" --password-stdin >/dev/null
 status="$($REKEY --state-dir "$STATE" policy status)"
@@ -180,7 +180,7 @@ def rule(effect, parameters): return {"id": str(uuid.uuid4()), "effect": effect,
 rules = [rule("permit", {"kind": "any_validated"}),
     rule("forbid", {"kind": "exact_hash", "sha256": parameter_hash})]
 pathlib.Path(path).write_text(json.dumps({"format_version": 1, "version": 4,
-    "expires_at_ms": int(time.time() * 1000) + 60000, "bindings": [binding], "rules": rules}))
+    "expires_at_ms": int(time.time() * 1000) + 600000, "bindings": [binding], "rules": rules}))
 PY
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate --file "$WORKDIR/policy.json" --password-stdin >/dev/null
 expect_denied "$REKEY" --state-dir "$STATE" execute "$action_ref" --capability "$token" --body-file "$WORKDIR/allowed.json" --content-type application/json
