@@ -1591,6 +1591,7 @@ dependencies = [
 name = "rekey-policy"
 version = "2.0.0-alpha.1"
 dependencies = [
+ "aws-lc-rs",
  "data-encoding",
  "jsonschema",
  "rekey-domain",
