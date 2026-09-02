@@ -68,12 +68,13 @@ rekey audit export --output /secure/new/audit.jsonl --outcome failure
 
 The destination must not exist. Rekey creates a regular owner-only mode-0600
 JSONL file, refuses symlinks and overwrites, syncs the file and parent directory,
-and prints a receipt only after completion. On failure, a partial new file may
-remain for inspection and is never resumed. Output omits credentials, recovery
-material, capability tokens, bodies, headers, resource IDs, and parameter
-hashes. Protect it as sensitive metadata. Rekey keeps local audit rows for the
-vault lifetime; there is no delete, pruning, configurable retention, SIEM,
-WORM, legal hold, or remote delivery in this capability.
+verifies the destination pathname still names that file, and prints a receipt
+only after completion. On failure, a partial new file may remain for inspection
+and is never resumed. Output omits credentials, recovery material, capability
+tokens, bodies, headers, resource IDs, and parameter hashes. Protect it as
+sensitive metadata. Rekey keeps local audit rows for the vault lifetime; there
+is no delete, pruning, configurable retention, SIEM, WORM, legal hold, or remote
+delivery in this capability.
 
 ## Create a fixed HTTPS Action
 

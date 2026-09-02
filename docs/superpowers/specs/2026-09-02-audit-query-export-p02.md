@@ -132,7 +132,10 @@ The CLI opens the requested path with create-new and mode `0600`, refuses an
 existing path or symlink, writes only records returned by the Admin endpoint,
 flushes and `fsync`s the file, then `fsync`s its parent directory before printing
 a success receipt. It re-checks the opened file is a regular file owned by the
-current effective UID with mode `0600` before writing audit data.
+current effective UID with mode `0600` before writing audit data. After the file
+sync and before the parent sync, it also requires the destination pathname's
+device and inode to still match the opened file; unlink or rename replacement
+therefore fails without a success receipt.
 
 If IPC, decoding, output, flush, file sync, or parent sync fails, the command
 returns a non-zero error and no success receipt. A partial create-new file may
@@ -171,8 +174,9 @@ P-02 is complete only when all of the following are fresh and passing:
 5. Real `rekeyd` + `rekey` black-box tests exercise every filter, pagination,
    empty output, JSON decoding, and a snapshot that excludes later audit rows.
 6. Export tests prove header/event/trailer counts, `0600`, owner and regular-file
-   checks, create-new behavior, symlink/existing-file rejection, parent-fsync
-   failure, partial-file failure semantics, and no success receipt on failure.
+   checks, create-new behavior, symlink/existing-file and pathname-replacement
+   rejection, parent-fsync failure, partial-file failure semantics, and no
+   success receipt on failure.
 7. Canary scans prove credentials, passwords, recovery keys, capability tokens,
    request/response bodies, resource IDs, and parameter hashes do not enter list
    or export output.

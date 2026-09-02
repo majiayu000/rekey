@@ -83,6 +83,7 @@ pub fn audit_export(
     file.flush()
         .and_then(|_| file.sync_all())
         .map_err(output_error)?;
+    verify_export_path(&file, &resolved).map_err(output_error)?;
     fsync_parent(&resolved).map_err(output_error)?;
 
     let receipt = serde_json::json!({
@@ -161,6 +162,17 @@ fn create_export_file(path: &Path) -> Result<(File, PathBuf), CliError> {
 
 fn fsync_parent(path: &Path) -> io::Result<()> {
     File::open(path.parent().unwrap_or_else(|| Path::new(".")))?.sync_all()
+}
+
+fn verify_export_path(file: &File, path: &Path) -> io::Result<()> {
+    let opened = file.metadata()?;
+    let named = fs::symlink_metadata(path)?;
+    if opened.dev() != named.dev() || opened.ino() != named.ino() {
+        return Err(io::Error::other(
+            "audit export path no longer names the created file",
+        ));
+    }
+    Ok(())
 }
 
 fn write_json_line(file: &mut File, value: &impl Serialize) -> Result<(), CliError> {
@@ -242,5 +254,20 @@ mod tests {
         fs::remove_dir(&parent).unwrap();
         file.sync_all().unwrap();
         assert!(fsync_parent(&resolved).is_err());
+    }
+
+    #[test]
+    fn replaced_export_path_is_rejected_before_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("audit.jsonl");
+        let (mut file, resolved) = create_export_file(&output).unwrap();
+        file.write_all(b"complete export\n").unwrap();
+        fs::remove_file(&resolved).unwrap();
+        fs::write(&resolved, b"replacement\n").unwrap();
+        file.sync_all().unwrap();
+
+        let error = verify_export_path(&file, &resolved).unwrap_err();
+        assert!(error.to_string().contains("no longer names"));
+        assert_eq!(fs::read(&resolved).unwrap(), b"replacement\n");
     }
 }
