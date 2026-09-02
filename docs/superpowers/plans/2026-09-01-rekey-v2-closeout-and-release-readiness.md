@@ -924,7 +924,16 @@ field 和 malformed record 均被拒绝；Agent wire surface 与 CLI 负依赖�
 能力不在 `v2.0.0-alpha.1` 内，不提升默认 G1、有界 Linux G2、Connector、SIEM 或企业
 就绪判定。
 
+PR #23 已于 2026-09-03 squash merge 为
+`bf3be526da6d132009607de0c31bd19412a9e8b7`，提交只有一个 parent 且含有效
+`Signed-off-by`。合并后 `main` 的 security `33664332472`、fuzz `33664332339`
+和 performance `33664332359` 全部成功。
+
 ### P-03 审批与持久化策略
+
+**状态：** `[ ]`
+
+**独立 spec：** [`2026-09-03-approvals-persistent-policy-p03.md`](../specs/2026-09-03-approvals-persistent-policy-p03.md)
 
 - 一次性、时间窗口和双人审批。
 - signed policy bundle、版本、回滚和过期。
