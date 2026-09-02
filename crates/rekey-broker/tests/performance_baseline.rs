@@ -122,11 +122,13 @@ async fn performance_and_soak_baseline() {
             next_backup += Duration::from_secs(backup_interval);
         }
         if now >= next_sample {
+            broker.fake.take_requests();
             rss_samples.push(rss_kib());
             next_sample += Duration::from_secs(sample_interval);
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    broker.fake.take_requests();
     rss_samples.push(rss_kib());
     assert_eq!(
         unexpected_errors, 0,
@@ -333,6 +335,7 @@ async fn measure_ipc_capacity(broker: &common::TestBroker) -> Value {
     let started = Instant::now();
     let mut agent = hold_connections(&broker.agent_sock(), MAX_AGENT_CONNECTIONS).await;
     let mut admin = hold_connections(&broker.admin_sock(), MAX_ADMIN_CONNECTIONS).await;
+    let open_all_latency = started.elapsed();
     tokio::time::sleep(Duration::from_millis(100)).await;
     let agent_reject_us = rejected_connection_latency(
         &broker.agent_sock(),
@@ -348,7 +351,7 @@ async fn measure_ipc_capacity(broker: &common::TestBroker) -> Value {
     json!({
         "held_agent": MAX_AGENT_CONNECTIONS,
         "held_admin": MAX_ADMIN_CONNECTIONS,
-        "open_all_latency_us": started.elapsed().as_micros(),
+        "open_all_latency_us": open_all_latency.as_micros(),
         "extra_agent_rejected_us": agent_reject_us,
         "extra_admin_rejected_us": admin_reject_us,
     })
