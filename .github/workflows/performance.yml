@@ -1,0 +1,100 @@
+name: performance
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/performance.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/rekey-broker/**"
+      - "crates/rekey-domain/**"
+      - "crates/rekey-policy/**"
+      - "crates/rekey-vault/**"
+      - "docs/performance.md"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/performance.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/rekey-broker/**"
+      - "crates/rekey-domain/**"
+      - "crates/rekey-policy/**"
+      - "crates/rekey-vault/**"
+      - "docs/performance.md"
+  schedule:
+    - cron: "41 4 * * 2"
+  workflow_dispatch:
+    inputs:
+      duration_seconds:
+        description: Soak duration in seconds
+        required: true
+        default: "1800"
+        type: choice
+        options:
+          - "60"
+          - "1800"
+          - "3600"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: performance-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  baseline:
+    name: capacity and soak baseline
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Select bounded duration
+        shell: bash
+        run: |
+          set -euo pipefail
+          seconds=60
+          if [[ "${{ github.event_name }}" == "schedule" ]]; then
+            seconds=1800
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            seconds="${{ inputs.duration_seconds }}"
+          fi
+          echo "REKEY_SOAK_SECONDS=$seconds" >> "$GITHUB_ENV"
+      - name: Capture runner environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target
+          {
+            uname -a
+            lscpu
+            free -b
+            rustc -Vv
+            git rev-parse HEAD
+          } > target/performance-environment.txt
+      - name: Run performance and soak baseline
+        shell: bash
+        env:
+          REKEY_PERF_REPORT: ${{ github.workspace }}/target/performance-report.json
+        run: |
+          set -euo pipefail
+          /usr/bin/time -v -o target/performance-time.txt \
+            cargo test --locked -p rekey-broker --test performance_baseline \
+              performance_and_soak_baseline -- --ignored --exact --nocapture \
+              2>&1 | tee target/performance-test.log
+      - name: Upload exact-run evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: performance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/performance-report.json
+            target/performance-environment.txt
+            target/performance-test.log
+            target/performance-time.txt
+          if-no-files-found: error

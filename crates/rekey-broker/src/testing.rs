@@ -6,12 +6,15 @@ use std::collections::VecDeque;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
+use tokio::sync::Notify;
+
 use crate::upstream::{
     UpstreamError, UpstreamFuture, UpstreamRequest, UpstreamResponse, UpstreamTransport,
 };
 
 struct QueuedResponse {
     delay: Duration,
+    release: Option<std::sync::Arc<Notify>>,
     response: Result<UpstreamResponse, UpstreamError>,
 }
 
@@ -53,7 +56,24 @@ impl FakeUpstreamTransport {
         response: Result<UpstreamResponse, UpstreamError>,
         delay: Duration,
     ) {
-        lock_test_mutex(&self.responses).push_back(QueuedResponse { delay, response });
+        lock_test_mutex(&self.responses).push_back(QueuedResponse {
+            delay,
+            release: None,
+            response,
+        });
+    }
+
+    pub fn push_response_gated(
+        &self,
+        response: Result<UpstreamResponse, UpstreamError>,
+    ) -> std::sync::Arc<Notify> {
+        let release = std::sync::Arc::new(Notify::new());
+        lock_test_mutex(&self.responses).push_back(QueuedResponse {
+            delay: Duration::ZERO,
+            release: Some(std::sync::Arc::clone(&release)),
+            response,
+        });
+        release
     }
 
     pub fn take_requests(&self) -> Vec<RecordedRequest> {
@@ -78,6 +98,9 @@ impl UpstreamTransport for FakeUpstreamTransport {
             if let Some(queued) = queued {
                 if !queued.delay.is_zero() {
                     tokio::time::sleep(queued.delay).await;
+                }
+                if let Some(release) = queued.release {
+                    release.notified().await;
                 }
                 queued.response
             } else {
