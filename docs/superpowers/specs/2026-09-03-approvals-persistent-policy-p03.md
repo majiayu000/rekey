@@ -24,6 +24,11 @@ payloads specified below and return signed JSON artifacts.
 rekey policy trust install --file TRUST.json --step-up-stdin
 rekey policy activate --file BUNDLE.json --step-up-stdin
 rekey policy status
+rekey approval prepare ACTION_ID@VERSION --capability - [--body-file FILE]
+                       [--content-type TYPE] [--header NAME:VALUE]
+rekey execute ACTION_ID@VERSION --capability - [--body-file FILE]
+              [--content-type TYPE] [--header NAME:VALUE]
+              [--approval FILE]...
 ```
 
 Trust installation is a one-time operation for a vault. `TRUST.json` contains
@@ -45,12 +50,15 @@ supplying a different signer ID or public key is replacement and is rejected.
 ```
 
 `policy activate` now accepts only a signed policy bundle. An unsigned snapshot,
-unknown signer, malformed signature, expired snapshot, or non-increasing policy
-version fails without changing the active bundle. Operators perform rollback by
-reissuing the previously accepted policy contents under a strictly higher
-version; downgrade activation is never allowed.
-Retrying the exact active version and digest after a lost response is
-idempotent; the same version with different bytes is rejected.
+unknown signer, malformed signature, expired snapshot, or invalid policy
+version fails without changing the active bundle. The first version is `1` and
+every later activation must be exactly the next integer. Operators perform
+rollback by reissuing the previously accepted contents as that next version;
+downgrades and version gaps are never allowed. Retrying the exact active version
+and canonical bundle digest after a lost response is idempotent; the same
+version with different canonical content is rejected. `i64::MAX` is reserved
+and cannot be activated; version exhaustion fails closed as
+`policy-version-exhausted` instead of accepting a terminal expiring bundle.
 
 `policy status` reports whether a trust root is installed and whether a
 persisted bundle is loaded, plus the signer ID, policy version, expiry, digest,
@@ -62,6 +70,13 @@ unverified signer, version, expiry, and digest fields remain null.
 No Rekey command creates private keys or signatures. That remains the external
 signer's responsibility and avoids turning the IPC-only `rekey` client into a
 second credential store.
+
+`approval prepare` prints one challenge JSON document to stdout. It shares the
+existing execute request-file, header, content-type, capability-stdin, and size
+contracts. `execute --approval` accepts one or two repeated paths to regular
+files, each bounded to 4 KiB; the CLI rejects stdin, directories, symlinks,
+duplicate paths, and more than two grants before connecting. Grant files are
+signed authorization artifacts, never private signing keys.
 
 ## 3. Signed policy bundle
 
@@ -82,6 +97,12 @@ keys, unknown fields, non-canonical UUIDs, non-canonical base64url, signatures
 other than 64 bytes, and bundles over 64 KiB before verification. Ed25519 is the
 only P-03 algorithm and there is exactly one immutable trust root per vault.
 
+The policy digest is exactly `SHA-256(JCS(snapshot))`. The canonical bundle
+digest is exactly `SHA-256(JCS(envelope))`, including the signature. Status,
+authorization evidence, challenges, and grants use the policy digest; the
+persisted bundle seal and activation idempotency use the canonical bundle
+digest. Raw JSON whitespace and member order affect neither digest.
+
 The existing `PolicySnapshot` remains the signed payload. Its format version is
 raised from `1` to `2` for the breaking P-03 schema and adds a bounded approver
 catalog. Each approver has a canonical `approver_id` UUID and one raw Ed25519 public key. The
@@ -100,8 +121,10 @@ The snapshot uses `approvers` as an array of
 `{"approver_id":"UUID","algorithm":"ed25519","public_key":"LOWERCASE_HEX"}`.
 Each policy rule keeps the existing string `effect`; `require-approval` also
 requires an `approval` object containing `approver_ids`, `quorum`, `mode`, and
-`max_window_ms` only for time-window mode. `permit` and `forbid` rules must not
-contain `approval`.
+`max_uses`; time-window mode additionally requires `max_window_ms`. One-time
+mode requires `max_uses` to equal `1`; time-window mode requires a positive
+`max_uses` no greater than 10,000. `permit` and `forbid` rules must not contain
+`approval`.
 
 A required quorum cannot exceed the distinct allowlisted approvers. A
 time-window rule also declares `max_window_ms`, which must be positive and at
@@ -165,7 +188,7 @@ For a matching approval rule it returns `rekey.approval.challenge.v1` containing
 - resource type and ID;
 - schema ID and canonical parameter SHA-256;
 - policy version and digest;
-- approval mode, quorum, allowed approver IDs, and maximum expiry.
+- approval mode, quorum, allowed approver IDs, maximum uses, and maximum expiry.
 
 The challenge is safe for the Agent to see because the Agent supplied the
 request and already knows its resource and parameters. It contains no action
@@ -183,12 +206,12 @@ rule's bounded window for time-window mode. `PrepareApproval` returns
 
 Every successful challenge creation inserts a durable approval-request record
 and commits `approval.requested` in one Authority transaction before the
-response is returned. The record stores the request ID, exact authorization
-tuple, rule, mode, quorum, allowed approvers, creation time, and maximum expiry;
-it contains no request body, header, capability, credential, or signature. If
-that transaction fails, no challenge is returned and the Authority faults. A
-request matching `forbid` or no authorization rule is denied without producing
-an approval challenge.
+response is returned. The record stores the approval request ID, exact
+authorization tuple, rule, mode, quorum, allowed approvers, maximum uses,
+creation time, and maximum expiry; it contains no request body, header,
+capability, credential, or signature. If that transaction fails, no challenge
+is returned and the Authority faults. A request matching `forbid` or no
+authorization rule is denied without producing an approval challenge.
 
 ## 6. Signed approval grant
 
@@ -213,34 +236,49 @@ An external approver signs `rekey.approval.grant.v1`:
   "mode": "one-time",
   "not_before_ms": 0,
   "expires_at_ms": 0,
+  "max_uses": 1,
   "signature": "BASE64URL_NO_PAD"
 }
 ```
 
 The signature input is `RKAPPROVAL\0\x01` followed by JCS encoding with
-`signature` omitted. The execution request carries at most two grants. Every
-field except `approval_id`, `approver_id`, validity bounds, and signature must
-exactly equal the prepared challenge and current execution authorization tuple.
-The approver must exist in the active signed snapshot and be allowed by the
+`signature` omitted. The complete grant is parsed once with recursive duplicate
+key and unknown-field rejection before canonicalization or authorization. The
+execution request carries at most two grants. Every field except `approval_id`,
+`approver_id`, validity bounds, signed use limit, and signature must exactly
+equal the prepared challenge and current execution authorization tuple. The
+approver must exist in the active signed snapshot and be allowed by the
 determining rule.
 
 `approval_request_id` names the durable challenge and is distinct from the new
 execution request ID assigned to each execute attempt. `policy_sha256` is the
-digest of the canonical snapshot, not the enclosing bundle or its signature.
+policy digest defined in Section 3, not the bundle digest. The signed grant
+digest used for durable usage identity is exactly `SHA-256(JCS(grant))`,
+including its signature; raw whitespace and member order do not affect it.
 
 The Broker rejects grants with an invalid signature, future `not_before_ms`,
 expired validity, validity beyond the challenge maximum, a wrong mode, duplicate
-approval ID, duplicate approver ID, or any tuple mismatch. Two-person approval
-requires two valid grants from distinct allowed approvers. Invalid or
-insufficient approval never falls back to permit, never decrypts the credential,
-and never reaches the upstream.
+approval ID, duplicate approver ID, zero or over-limit `max_uses`, or any tuple
+mismatch. Two-person approval requires two valid grants from distinct allowed
+approvers. Each signed `max_uses` must be no greater than the rule and challenge
+ceiling. Invalid or insufficient approval never falls back to permit, never
+decrypts the credential, and never reaches the upstream.
 
-A one-time grant may be valid for at most ten minutes and is consumed by its
-`approval_id` exactly once across processes and restarts. A time-window grant may
-be reused only within the same bound session and only until the earlier of its
-signed expiry, the rule's maximum window, the session expiry, or policy expiry.
-Session revocation, policy change, parameter change, or action-version change
-therefore invalidates the grant without a separate revocation list.
+A one-time grant may be valid for at most ten minutes and has `max_uses = 1`.
+A time-window grant may be reused only within the same bound session and until
+both its signed use count and validity window are exhausted. Its effective
+expiry is the earlier of signed expiry, the rule's maximum window, session
+expiry, or policy expiry. Session revocation, policy change, parameter change,
+or action-version change therefore invalidates the grant without a separate
+revocation list.
+
+On first acceptance of a time-window grant, the Authority derives a monotonic
+deadline from its effective remaining wall-clock duration and retains an
+irreversible expired latch for that approval ID for the process lifetime. A
+forward wall-clock jump or monotonic deadline can expire it early; a later
+rollback cannot revive it in the same process. After restart the deadline is
+rebuilt from signed wall time, matching the documented full-vault replay and
+host-clock limitation.
 
 ## 7. Execution and transaction ordering
 
@@ -250,21 +288,23 @@ the Authority commits the following admission atomically:
 
 1. load the durable approval request and require an exact current tuple, rule,
    policy, session, and expiry match;
-2. reject any previously consumed one-time approval ID;
-3. insert the one-time consumption rows, if any;
+2. reject an exhausted approval ID or a prior row whose signed grant digest does
+   not match;
+3. insert or increment each grant's durable usage row without exceeding its
+   signed `max_uses`;
 4. append one `approval.accepted` event per accepted grant;
 5. append the existing `execution.started` event.
 
 Only after that transaction commits may the worker decrypt a credential and the
-Broker enter the remote-effect gate. A concurrent replay of a one-time grant can
-therefore produce at most one admitted execution. Cancellation or upstream
-failure after admission does not restore a one-time grant; the normal terminal
-execution audit records the outcome.
+Broker enter the remote-effect gate. Concurrent reuse can therefore admit at
+most the signed use count, and a one-time grant can admit exactly one execution.
+Cancellation or upstream failure after admission does not restore any approval
+use; the normal terminal execution audit records the outcome.
 
 Rejected signatures, tuple mismatches, insufficient quorum, expired grants, and
-replay attempts append `approval.rejected` with a bounded reason code before
-returning denial. Audit failure itself fails closed. Time-window reuse appends
-fresh `approval.accepted` evidence for every admitted execution.
+exhausted-use attempts append `approval.rejected` with a bounded reason code
+before returning denial. Audit failure itself fails closed. Time-window reuse
+appends fresh `approval.accepted` evidence for every admitted execution.
 
 ## 8. Evaluator and unavailable behavior
 
@@ -275,7 +315,7 @@ The evaluator remains deterministic and default-deny:
 - explicit forbid denies;
 - a matching approval rule without sufficient valid grants denies;
 - signature-verification or typed evaluator error denies;
-- approval-request or consumption-store error faults the Authority and keeps
+- approval-request or usage-store error faults the Authority and keeps
   execution closed;
 - only an explicit permit or a fully satisfied approval rule can allow.
 
@@ -300,11 +340,10 @@ partial-file, and retention contracts stay unchanged. The CLI rejects unknown
 response fields and never silently reads a v1 record as v2.
 
 Required approval event types are `approval.requested`, `approval.accepted`, and
-`approval.rejected`. One-time consumption is represented by the accepted event
-and the durable consumption row in the same admission transaction; no separate
-success event may drift from execution admission. Approval-request and
-consumption rows are retained with the vault in P-03; automatic pruning remains
-future retention work.
+`approval.rejected`. Approval use is represented by the accepted event and the
+durable usage row in the same admission transaction; no separate success event
+may drift from execution admission. Approval-request and usage rows are retained
+with the vault in P-03; automatic pruning remains future retention work.
 
 ## 10. Bounds and error contract
 
@@ -315,6 +354,8 @@ future retention work.
 - Execution grants: at most 2, each at most 4 KiB encoded.
 - One-time validity: at most 10 minutes.
 - Time-window validity: positive and at most the rule limit and eight hours.
+- Grant uses: exactly 1 for one-time; 1 through 10,000 for time-window and no
+  greater than the signed policy-rule ceiling.
 - Signature algorithms, format versions, and encodings are closed sets.
 
 Malformed or oversized input returns invalid input before expensive signature
@@ -328,18 +369,21 @@ P-03 is complete only when all of the following are fresh and passing:
 
 1. Policy tests cover canonical signing bytes, duplicate keys, malformed keys
    and signatures, unknown signer, tampering of every bound field, approver
-   catalog limits, forbid precedence, approval precedence, and default deny.
+   catalog limits, forbid precedence, approval precedence, consecutive versions,
+   the reserved terminal value, and default deny.
 2. Store tests cover one-time trust installation, sealed trust and bundle row
-   tampering, atomic activation/audit rollback, strictly increasing versions,
+   tampering, atomic activation/audit rollback, consecutive versions,
    roll-forward of old contents, restart reload, expiry, and backup/restore.
 3. Approval tests cover exact tuple binding, one-time replay including a
    concurrent race and restart, reusable time windows, two distinct approvers,
-   duplicate grants, policy/session/action/parameter changes, and all expiry
-   boundaries. Challenge tests also prove one session use per durable request
-   and no record or audit amplification after capability exhaustion.
-4. Fault injection proves approval consumption and `execution.started` are
-   atomic, audit failure prevents the remote effect, and post-admission failure
-   does not restore one-time approval.
+   duplicate JSON keys and grants, signed use exhaustion including a concurrent
+   race and restart, policy/session/action/parameter changes, wall-clock rollback
+   after observed expiry, and all expiry boundaries. Challenge tests also prove
+   one session use per durable request and no record or audit amplification after
+   capability exhaustion.
+4. Fault injection proves approval usage and `execution.started` are atomic,
+   audit failure prevents the remote effect, and post-admission failure does not
+   restore an approval use.
 5. Admin and Agent IPC adversarial tests enforce channel separation, empty or
    bounded bodies, response binding, unknown-field rejection, and deadlines.
 6. Real `rekeyd` plus `rekey` black-box tests install a trust root, activate a
