@@ -3,18 +3,14 @@
 use std::fs;
 use std::sync::OnceLock;
 
+use data_encoding::BASE64;
 use libfuzzer_sys::fuzz_target;
-use rekey_vault::bootstrap::{RestoreProof, confirm_vault_init, init_vault, restore_vault};
-use rekey_vault::crypto::kdf::Argon2Params;
-use rekey_vault::durable;
-use rekey_vault::paths;
+use rekey_vault::bootstrap::{RestoreProof, restore_vault};
 use rekey_vault::secret::SecretInput;
-use rekey_vault::store::SqliteRecordStore;
 use sha2::{Digest, Sha256};
 
 fuzz_target!(|data: &[u8]| {
-    let fixture = fixture();
-    let mut candidate = fixture.backup.clone();
+    let mut candidate = fixture().to_vec();
     let mutations = data
         .iter()
         .skip(1)
@@ -36,7 +32,7 @@ fuzz_target!(|data: &[u8]| {
     }
     let digest = format!("{:x}", Sha256::digest(&candidate));
     let proof = if data.first() == Some(&b'R') {
-        RestoreProof::RecoveryKey(SecretInput::from_slice(&fixture.recovery_key))
+        RestoreProof::RecoveryKey(SecretInput::from_slice(RECOVERY_KEY))
     } else {
         RestoreProof::Password(SecretInput::from_slice(PASSWORD))
     };
@@ -47,41 +43,19 @@ fuzz_target!(|data: &[u8]| {
 });
 
 const PASSWORD: &[u8] = b"fuzz-fixture-password";
-const TEST_PARAMS: Argon2Params = Argon2Params {
-    memory_kib: 8,
-    iterations: 1,
-    parallelism: 1,
-};
+const RECOVERY_KEY: &[u8] =
+    b"RKREC1-EVVJDV-IKDIP7-2KSCPN-N5D26G-Y6MJS2-AYI7HZ-4JZP6Z-TZ5MGK-WKTOLR-GVVQ";
+const FIXTURE_BASE64: &str = include_str!("../fixtures/restore.rkbackup.base64");
 
-struct Fixture {
-    backup: Vec<u8>,
-    recovery_key: Vec<u8>,
-}
-
-fn fixture() -> &'static Fixture {
-    static FIXTURE: OnceLock<Fixture> = OnceLock::new();
+fn fixture() -> &'static [u8] {
+    static FIXTURE: OnceLock<Vec<u8>> = OnceLock::new();
     FIXTURE.get_or_init(|| {
-        let work = tempfile::tempdir().expect("create fuzz fixture directory");
-        let state = work.path().join("state");
-        let outcome = init_vault(&state, &SecretInput::from_slice(PASSWORD), TEST_PARAMS)
-            .expect("initialize fuzz fixture vault");
-        confirm_vault_init(&state).expect("confirm fuzz fixture vault");
-
-        let source =
-            SqliteRecordStore::open(&paths::vault_db(&state)).expect("open fuzz fixture vault");
-        let backup_path = work.path().join("fixture.rkbackup");
-        let backup_file =
-            durable::create_new_file(&backup_path).expect("create fuzz fixture backup");
-        source
-            .backup_to(&backup_path, &backup_file)
-            .expect("snapshot fuzz fixture vault");
-        backup_file.sync_all().expect("sync fuzz fixture backup");
-        drop(backup_file);
-        drop(source);
-
-        Fixture {
-            backup: fs::read(backup_path).expect("read fuzz fixture backup"),
-            recovery_key: outcome.recovery_key_display.as_bytes().to_vec(),
-        }
+        let encoded = FIXTURE_BASE64
+            .bytes()
+            .filter(|byte| !byte.is_ascii_whitespace())
+            .collect::<Vec<_>>();
+        BASE64
+            .decode(&encoded)
+            .expect("decode fixed restore fixture")
     })
 }

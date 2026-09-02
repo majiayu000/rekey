@@ -19,23 +19,50 @@ fuzz_target!(|data: &[u8]| {
     } else {
         data
     };
-    let variants = [
-        secret.to_vec(),
-        BASE64.encode(secret).into_bytes(),
-        BASE64_NOPAD.encode(secret).into_bytes(),
-        BASE64URL.encode(secret).into_bytes(),
-        BASE64URL_NOPAD.encode(secret).into_bytes(),
-        percent_encode(secret, false, false),
-        percent_encode(secret, true, false),
-        percent_encode(secret, false, true),
-    ];
-    for variant in variants {
-        assert!(fuzz_response_sealing(secret, secret, &variant, false));
+    let mut auth_value = b"Bearer ".to_vec();
+    auth_value.extend_from_slice(secret);
+    for variant in sealing_variants(secret) {
+        assert!(fuzz_response_sealing(secret, &auth_value, &variant, false));
         if std::str::from_utf8(&variant).is_ok() {
-            assert!(fuzz_response_sealing(secret, secret, &variant, true));
+            assert!(fuzz_response_sealing(secret, &auth_value, &variant, true));
         }
     }
+    for variant in sealing_variants(&auth_value) {
+        assert!(fuzz_response_sealing(secret, &auth_value, &variant, false));
+        if std::str::from_utf8(&variant).is_ok() {
+            assert!(fuzz_response_sealing(secret, &auth_value, &variant, true));
+        }
+    }
+
+    let negative_secret = b"negative-case-secret-0x8f7e6d5c";
+    let negative_auth = b"Bearer negative-case-secret-0x8f7e6d5c";
+    let unrelated = b"upstream response without credential material";
+    assert!(!fuzz_response_sealing(
+        negative_secret,
+        negative_auth,
+        unrelated,
+        false,
+    ));
+    assert!(!fuzz_response_sealing(
+        negative_secret,
+        negative_auth,
+        unrelated,
+        true,
+    ));
 });
+
+fn sealing_variants(value: &[u8]) -> [Vec<u8>; 8] {
+    [
+        value.to_vec(),
+        BASE64.encode(value).into_bytes(),
+        BASE64_NOPAD.encode(value).into_bytes(),
+        BASE64URL.encode(value).into_bytes(),
+        BASE64URL_NOPAD.encode(value).into_bytes(),
+        percent_encode(value, false, false),
+        percent_encode(value, true, false),
+        percent_encode(value, false, true),
+    ]
+}
 
 fn percent_encode(bytes: &[u8], uppercase: bool, encode_all: bool) -> Vec<u8> {
     const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
