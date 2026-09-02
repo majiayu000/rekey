@@ -80,7 +80,7 @@ jobs:
       - name: Run performance and soak baseline
         shell: bash
         env:
-          REKEY_PERF_REPORT: target/performance-report.json
+          REKEY_PERF_REPORT: ${{ github.workspace }}/target/performance-report.json
         run: |
           set -euo pipefail
           /usr/bin/time -v -o target/performance-time.txt \
