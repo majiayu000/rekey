@@ -907,10 +907,11 @@ canary 验证密码/recovery 不进入 argv、环境、daemon 日志、审计或
 - 后续 SIEM 输出边界。
 
 **完成证据（2026-09-03）：** [PR #23](https://github.com/majiayu000/rekey/pull/23)
-在 review remediation head `ba603e0d9d022a280386d2aaebc9c2c7ec625486` 上通过
+在 review remediation head `a60996c316330a061a5bcf3dc95cd55e8ddd2ef2` 上通过
 Ubuntu P0、macOS P0、有界 Linux G2、五个 fuzz target 和 performance 共 9 个
-exact-head jobs（security `33657856039`、fuzz `33657856052`、performance
-`33657856059`）。Codex review findings 均已修复、回复并 resolved。
+exact-head jobs（security `33660737410`、fuzz `33660737469`、performance
+`33660737350`）。Codex final-head review 完成且无新增 finding；全部 review findings
+均已修复、回复并 resolved。
 Authority/Store、Admin IPC 和真实 `rekeyd` + `rekey` black-box 覆盖全部过滤器、
 交集、inclusive time、空结果、锁定读取、fault/storage/integrity failure、稳定高水位
 分页、快照/游标一致性拒绝、每次最多 1,000 行的主键窗口扫描、空页游标续查和
