@@ -28,8 +28,8 @@ rekey policy status
 
 Trust installation is a one-time operation for a vault. `TRUST.json` contains
 one Ed25519 policy signer identifier and one raw 32-byte public key encoded as
-lowercase hexadecimal. It is public verification material, but the CLI still
-requires a regular bounded file and sends it only through the owner-checked
+exactly 64 lowercase hexadecimal characters. It is public verification
+material, but the CLI still requires a regular bounded file and sends it only through the owner-checked
 Admin socket. The Authority requires an unlock proof, refuses replacement, and
 stores the trust record with a VRK-authenticated lifecycle seal.
 Retrying the exact same trust record after a lost response is idempotent;
@@ -83,8 +83,8 @@ other than 64 bytes, and bundles over 64 KiB before verification. Ed25519 is the
 only P-03 algorithm and there is exactly one immutable trust root per vault.
 
 The existing `PolicySnapshot` remains the signed payload. Its format version is
-raised for the breaking P-03 schema and adds a bounded approver catalog. Each
-approver has a canonical `approver_id` UUID and one raw Ed25519 public key. The
+raised from `1` to `2` for the breaking P-03 schema and adds a bounded approver
+catalog. Each approver has a canonical `approver_id` UUID and one raw Ed25519 public key. The
 snapshot contains at most 32 distinct approvers; duplicate IDs or public keys
 are invalid.
 
@@ -196,7 +196,7 @@ An external approver signs `rekey.approval.grant.v1`:
 {
   "format_version": 1,
   "approval_id": "UUID",
-  "request_id": "UUID",
+  "approval_request_id": "UUID",
   "approver_id": "UUID",
   "tenant_id": "UUID",
   "principal_id": "UUID",
@@ -221,6 +221,10 @@ field except `approval_id`, `approver_id`, validity bounds, and signature must
 exactly equal the prepared challenge and current execution authorization tuple.
 The approver must exist in the active signed snapshot and be allowed by the
 determining rule.
+
+`approval_request_id` names the durable challenge and is distinct from the new
+execution request ID assigned to each execute attempt. `policy_sha256` is the
+digest of the canonical snapshot, not the enclosing bundle or its signature.
 
 The Broker rejects grants with an invalid signature, future `not_before_ms`,
 expired validity, validity beyond the challenge maximum, a wrong mode, duplicate
@@ -302,6 +306,7 @@ future retention work.
 
 ## 10. Bounds and error contract
 
+- Trust file: at most 4 KiB.
 - Policy bundle: at most 64 KiB.
 - Approver catalog: at most 32 entries.
 - Rule approval allowlist: at most 32 entries; quorum only 1 or 2.
