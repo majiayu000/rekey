@@ -581,11 +581,11 @@ arm64 发行物验收通过。release run 的双平台 fresh-install 使用打�
 1. 新用户在不阅读源码的情况下能完成一次真实固定 Action。
 2. 所有命令均从 release artifact 验证，参数与实际 help 一致。
 3. 示例不包含真实密钥、无效路径或本地-only 链接。
-4. 文档不把 Field Validated 写成 Released。
+4. 文档不把公开发行状态冒充为 Field Validated。
 
 **完成证据（2026-09-02）：** `docs/user-guide.md` 已覆盖本节全部主题，命令由本机
-发行物 P0/P1 与 release run 双平台 fresh-install 验收；Feature Truth Matrix 仅将
-`v2.0.0-alpha.1` 实际公开的行提升为 `Released`。
+发行物 P0/P1 与 release run 双平台 fresh-install 验收；Feature Truth Matrix 仅在
+`v2.0.0-alpha.1` 实际公开的行记录该 Release，同时保留原验证成熟度。
 
 ### A-07 完成运维 runbook
 
@@ -688,7 +688,7 @@ private vulnerability reporting、secret scanning 和 push protection 已启用�
 2. GitHub Release 包含版本、范围、已知限制、升级说明和 checksums。
 3. 所有发行物签名/SBOM/provenance 可下载并验证。
 4. 发布后从公开 URL 重做至少一次 macOS 和 Linux smoke test。
-5. Feature Truth Matrix 只把真正公开发行的对应行提升为 `Released`。
+5. Feature Truth Matrix 只在真正公开发行的对应行记录 Release，不覆盖验证成熟度。
 6. 发现发布阻塞缺陷时撤回或标记有问题的发行物，不静默替换同名 artifact。
 
 **完成证据（2026-09-02）：** 初次 tag run
