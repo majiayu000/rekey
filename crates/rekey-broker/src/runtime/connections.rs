@@ -1,14 +1,16 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use rekey_domain::ipc::{self, Channel};
+use rekey_domain::ids::RequestId;
+use rekey_domain::ipc::{self, Channel, FRAME_HEADER_LEN, FrameHeader};
+use tokio::io::AsyncReadExt;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::watch;
 use tokio::task::JoinSet;
+use zeroize::Zeroizing;
 
 use super::BrokerCtx;
 use crate::error::BrokerError;
-use crate::ipc::frame::read_frame;
 
 const CAPACITY_REPLY_TIMEOUT: Duration = Duration::from_millis(250);
 const MAX_CAPACITY_REPLY_TASKS: usize = 128;
@@ -72,26 +74,19 @@ async fn reject_over_capacity(mut stream: UnixStream, channel: Channel) {
     } else {
         ipc::ADMIN_SECRET_BODY_MAX_BYTES
     };
-    let frame =
-        match tokio::time::timeout_at(deadline, read_frame(&mut stream, channel, |_| body_limit))
-            .await
-        {
-            Ok(Ok(frame)) => frame,
-            Ok(Err(error)) => {
-                tracing::debug!(event = "runtime.capacity_reply_read_failed", %error);
-                return;
-            }
-            Err(_) => {
-                tracing::debug!(event = "runtime.capacity_reply_read_timeout");
-                return;
-            }
-        };
+    let request_id = match drain_rejected_frame(&mut stream, channel, body_limit, deadline).await {
+        Ok(request_id) => request_id,
+        Err(error) => {
+            tracing::debug!(event = "runtime.capacity_reply_read_failed", %error);
+            return;
+        }
+    };
     match tokio::time::timeout_at(
         deadline,
         crate::ipc::frame::write_error(
             &mut stream,
             channel,
-            frame.header.request_id,
+            request_id,
             "AUTHORITY_BUSY",
             "connection capacity exhausted",
             true,
@@ -106,6 +101,60 @@ async fn reject_over_capacity(mut stream: UnixStream, channel: Channel) {
         Err(_) => {
             tracing::debug!(event = "runtime.capacity_reply_write_timeout");
         }
+    }
+}
+
+async fn drain_rejected_frame(
+    stream: &mut UnixStream,
+    channel: Channel,
+    body_limit: u32,
+    deadline: tokio::time::Instant,
+) -> std::io::Result<RequestId> {
+    let mut header_bytes = [0u8; FRAME_HEADER_LEN];
+    read_exact_until(stream, &mut header_bytes, deadline).await?;
+    let header = FrameHeader::decode(&header_bytes)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    if header.channel != channel
+        || header.metadata_len > ipc::METADATA_MAX_BYTES
+        || header.body_len > body_limit
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "rejected frame exceeds its channel contract",
+        ));
+    }
+
+    let mut buffer = Zeroizing::new([0u8; 8 * 1024]);
+    drain_exact_until(stream, header.metadata_len, &mut buffer[..], deadline).await?;
+    drain_exact_until(stream, header.body_len, &mut buffer[..], deadline).await?;
+    Ok(header.request_id)
+}
+
+async fn drain_exact_until(
+    stream: &mut UnixStream,
+    mut remaining: u32,
+    buffer: &mut [u8],
+    deadline: tokio::time::Instant,
+) -> std::io::Result<()> {
+    while remaining > 0 {
+        let chunk = usize::min(remaining as usize, buffer.len());
+        read_exact_until(stream, &mut buffer[..chunk], deadline).await?;
+        remaining -= chunk as u32;
+    }
+    Ok(())
+}
+
+async fn read_exact_until(
+    stream: &mut UnixStream,
+    buffer: &mut [u8],
+    deadline: tokio::time::Instant,
+) -> std::io::Result<()> {
+    match tokio::time::timeout_at(deadline, stream.read_exact(buffer)).await {
+        Ok(result) => result.map(|_| ()),
+        Err(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "capacity reply read timed out",
+        )),
     }
 }
 

@@ -104,9 +104,10 @@ async fn performance_and_soak_baseline() {
             .await
             .ok();
             common::unlock(&broker).await;
+            let lock_unlock_latency = started.elapsed();
             token = create_session(&broker, &action_id, version).await;
             session_uses = 0;
-            lock_latencies.push(started.elapsed().as_micros());
+            lock_latencies.push(lock_unlock_latency.as_micros());
             next_lock += Duration::from_secs(lock_interval);
         }
         if now >= next_backup {
@@ -517,6 +518,7 @@ async fn measure_backup_interference(
     broker
         .fake
         .push_response_delayed(Ok(clean_response(32)), Duration::from_millis(100));
+    let execution_started = Instant::now();
     let executions = concurrent_execute_task(broker, token, action_id, version, 1);
     tokio::time::timeout(Duration::from_secs(2), async {
         while broker.fake.requests.lock().unwrap().is_empty() {
@@ -530,6 +532,7 @@ async fn measure_backup_interference(
     backup(broker, &output).await;
     let backup_latency = started.elapsed();
     let responses = executions.await.unwrap();
+    let execution_latency = execution_started.elapsed();
     assert!(
         responses
             .iter()
@@ -539,6 +542,7 @@ async fn measure_backup_interference(
     json!({
         "concurrent_executions": responses.len(),
         "execution_errors": 0,
+        "execution_latency_us": execution_latency.as_micros(),
         "backup_latency_us": backup_latency.as_micros(),
     })
 }
