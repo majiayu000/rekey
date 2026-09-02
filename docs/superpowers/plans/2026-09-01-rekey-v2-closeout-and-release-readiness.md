@@ -931,7 +931,7 @@ PR #23 已于 2026-09-03 squash merge 为
 
 ### P-03 审批与持久化策略
 
-**状态：** `[ ]`
+**状态：** `[x]`
 
 **独立 spec：** [`2026-09-03-approvals-persistent-policy-p03.md`](../specs/2026-09-03-approvals-persistent-policy-p03.md)
 
@@ -940,6 +940,28 @@ PR #23 已于 2026-09-03 squash merge 为
 - 持久化 policy snapshot。
 - evaluator error/default deny 和审批不可用合同。
 - 审批全过程审计。
+
+**完成证据（2026-09-03）：** [PR #25](https://github.com/majiayu000/rekey/pull/25)
+在实现与 review remediation head `fc86bbe00e09a265b12bcad5740b1fabc1b9d432`
+上通过 Ubuntu P0、macOS P0、有界 Linux G2、五个 fuzz target 和 performance
+共 9 个 exact-head jobs（security `33689478062`、fuzz `33689478037`、performance
+`33689478030`）。全部 review finding 已修复、回复并 resolved；最终 exact-head 自审
+未发现新增安全、逻辑或范围问题。
+
+实现覆盖 immutable Ed25519 trust root、sealed durable consecutive policy bundles、
+unlock 后重新验证加载、default deny、forbid precedence、一次性和时间窗口 grant、
+不同 approver 的双人 quorum、精确 principal/session/action/resource/parameter/policy/rule
+绑定，以及 approval accepted 与 execution started 的原子审计准入。Authority、Store、
+Admin/Agent IPC、并发与故障注入测试覆盖签名/格式/算法/持久化记录篡改、删除、回滚、
+过期、wall-clock rollback、replay、重复 approver、use exhaustion、lock/restart 失效、
+审计提交失败和远程 effect fail-closed；真实 `rekeyd` + `rekey` 黑盒脚本
+`scripts/p3-approval-acceptance.sh` 通过。CLI 只从有界、普通、no-follow 文件读取 policy
+和 grant，并以已打开文件的 device/inode 身份拒绝硬链接重复输入。`cargo fmt`、
+workspace check/clippy/tests、机械禁用面和 CLI 负依赖合同全部通过。
+
+该能力不进入 `v2.0.0-alpha.1`；Rekey 仍只负责验证与执行，不托管私钥、不提供远程
+审批、控制面或企业身份，也不提升默认 G1、有界 Linux G2、Connector、SIEM 或企业
+就绪判定。
 
 ### P-04 通用 workload identity
 
@@ -1070,7 +1092,7 @@ PR #23 已于 2026-09-03 squash merge 为
 
 1. `[x]` 关闭 M、A、H 和 P-01，并保留各自 exact-head/merge 后证据。
 2. `[x]` P-02 审计查询与导出，为后续 SIEM/retention 建立最小查询边界。
-3. P-03 审批与持久化策略，再推进依赖它的长期授权流程。
+3. `[x]` P-03 审批与持久化策略，为后续长期授权流程建立签名与持久化边界。
 4. P-04 通用 workload identity。
 5. P-05 Connector SDK；P-06 GitHub App 扩展只能建立在该合同之上。
 6. E 阶段按 E-01～E-06 推进；需要客户、第三方或运营证据的门不得由内部测试替代。
@@ -1085,10 +1107,10 @@ PR #23 已于 2026-09-03 squash merge 为
 | Alpha 文档 | 完成（含 erratum） | 用户、安装、运维、发行、开源治理和支持范围已完成；archive 内嵌发布前 Matrix 的状态差异由公开 Release erratum 和当前仓库矩阵明确衔接 |
 | 可公开 Alpha | 是 | [v2.0.0-alpha.1](https://github.com/majiayu000/rekey/releases/tag/v2.0.0-alpha.1) 已公开；双平台 fresh-install、attestation 和 public-URL smoke 通过 |
 | H 安全与可靠性补强 | 完成 | H-01～H-08 已以持续 fuzz、真实 ENOSPC/文件系统故障注入、边界文档、公开双平台发行证据、供应链取舍以及固定主机 1,800 秒性能/容量/soak 证据全部关闭 |
-| P 后续产品能力 | 进行中 | P-01 密码/recovery wrapper 生命周期与 P-02 本地审计查询/导出均已完成 adversarial/black-box 验收但尚未发布；P-03～P-06 未开始 |
+| P 后续产品能力 | 进行中 | P-01 密码/recovery wrapper 生命周期、P-02 本地审计查询/导出和 P-03 审批/持久化策略均已完成 adversarial/black-box 验收但尚未发布；P-04～P-10 未开始 |
 | 可宣称通用 G2 | 否 | 只有有界 Linux reference；默认仍是 G1 |
 | 可宣称通用 Connector | 否 | 只有 fixed HTTPS Action 和 closed GitHub App profile |
 | 企业就绪 | 否 | 控制面、身份、HA/DR、合规、运营和商业门槛均未完成 |
 
-M、A、H、P-01 与 P-02 已经关闭。后续 P、E 必须继续按独立 spec、PR 和真实证据推进，
+M、A、H、P-01、P-02 与 P-03 已经关闭。后续 P、E 必须继续按独立 spec、PR 和真实证据推进，
 不得回写或扩大已经发布的 `v2.0.0-alpha.1` 范围。
