@@ -6,8 +6,9 @@ credentials**. Secrets live in an encrypted SQLite vault owned by a single
 broker process; the CLI, agents, and everything they spawn talk to it only
 over two permission-separated Unix sockets.
 
-> Status: `2.0.0-alpha.1` public Alpha candidate with bounded P1 and P2.1
-> implementations. The default product is G1 and is not G2. Credentials never
+> Status: `2.0.0-alpha.1` is the public Alpha. Password lifecycle and local
+> audit query/export are verified post-Alpha changes not included in that tag.
+> The default product is G1 and is not G2. Credentials never
 > appear in agent-facing APIs, process
 > arguments, environment variables, logs, or audit records. Same-user
 > `ptrace`, process memory, and filesystem access are out of G1. Canonical
@@ -79,6 +80,21 @@ unlocked, `rekey password change` atomically replaces the password wrapper;
 add `--recovery` when the current password is lost. `rekey recovery rotate`
 requires the current password, replaces the recovery wrapper, and displays the
 new recovery key once. Neither operation rotates the VRK or Credential data.
+
+Operators can inspect redacted local audit metadata while the broker is locked:
+
+```bash
+rekey audit list --limit 50
+rekey audit list --request REQUEST_ID --outcome denied
+rekey audit export --output /secure/new/audit.jsonl
+```
+
+List results use a stable sequence snapshot and bounded pages. Export creates a
+new mode-0600 JSONL file and never overwrites or follows a symlink. Audit output
+omits secrets, bodies, headers, capability tokens, resource IDs, and parameter
+hashes. It is sensitive operational metadata, not an encrypted backup. Local
+retention is append-only for the vault lifetime; SIEM, WORM, legal hold, remote
+delivery, configurable retention, and audit deletion are not implemented.
 
 For explicit automation, proof-only commands use `--password-stdin`;
 `rekey password change --stdin-secrets`, `rekey credential add`, and

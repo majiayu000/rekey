@@ -8,6 +8,8 @@ mod commands;
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
+use rekey_domain::audit::{AUDIT_PAGE_DEFAULT_LIMIT, AUDIT_PAGE_MAX_LIMIT, AuditQuery};
+use rekey_domain::ids::{ActionId, CredentialId, RequestId, SessionId};
 
 #[derive(Args)]
 struct StepUpArgs {
@@ -96,6 +98,9 @@ enum Command {
     /// Recovery-key lifecycle.
     #[command(subcommand)]
     Recovery(RecoveryCommand),
+    /// Query or export the local audit trail.
+    #[command(subcommand)]
+    Audit(AuditCommand),
     /// Execute a fixed action through the agent channel.
     Execute {
         /// ACTION_ID@VERSION
@@ -236,6 +241,68 @@ enum RecoveryCommand {
         /// Read the required password proof from stdin.
         #[arg(long)]
         password_stdin: bool,
+    },
+}
+
+#[derive(Args)]
+struct AuditFilterArgs {
+    #[arg(long)]
+    request: Option<RequestId>,
+    #[arg(long)]
+    session: Option<SessionId>,
+    #[arg(long)]
+    action: Option<ActionId>,
+    #[arg(long)]
+    credential: Option<CredentialId>,
+    #[arg(long)]
+    outcome: Option<String>,
+    #[arg(long)]
+    since_ms: Option<i64>,
+    #[arg(long)]
+    until_ms: Option<i64>,
+}
+
+impl AuditFilterArgs {
+    fn into_query(
+        self,
+        snapshot_max_sequence: Option<u64>,
+        before_sequence: Option<u64>,
+        limit: u32,
+    ) -> AuditQuery {
+        AuditQuery {
+            request_id: self.request,
+            session_id: self.session,
+            action_id: self.action,
+            credential_id: self.credential,
+            outcome: self.outcome,
+            since_ms: self.since_ms,
+            until_ms: self.until_ms,
+            snapshot_max_sequence,
+            before_sequence,
+            limit,
+        }
+    }
+}
+
+#[derive(Subcommand)]
+enum AuditCommand {
+    /// Print one bounded page of redacted audit events.
+    List {
+        #[command(flatten)]
+        filters: AuditFilterArgs,
+        #[arg(long)]
+        snapshot_max_sequence: Option<u64>,
+        #[arg(long)]
+        before_sequence: Option<u64>,
+        #[arg(long, default_value_t = AUDIT_PAGE_DEFAULT_LIMIT, value_parser = clap::value_parser!(u32).range(1..=i64::from(AUDIT_PAGE_MAX_LIMIT)))]
+        limit: u32,
+    },
+    /// Write a complete stable snapshot as a new mode-0600 JSONL file.
+    Export {
+        #[arg(long)]
+        output: PathBuf,
+        #[command(flatten)]
+        filters: AuditFilterArgs,
     },
 }
 
@@ -380,6 +447,20 @@ fn main() {
         Command::Recovery(RecoveryCommand::Rotate { password_stdin }) => {
             commands::recovery_rotate(&state_dir, password_stdin)
         }
+        Command::Audit(AuditCommand::List {
+            filters,
+            snapshot_max_sequence,
+            before_sequence,
+            limit,
+        }) => commands::audit_list(
+            &state_dir,
+            filters.into_query(snapshot_max_sequence, before_sequence, limit),
+        ),
+        Command::Audit(AuditCommand::Export { output, filters }) => commands::audit_export(
+            &state_dir,
+            &output,
+            filters.into_query(None, None, AUDIT_PAGE_MAX_LIMIT),
+        ),
         Command::Execute {
             action,
             capability,

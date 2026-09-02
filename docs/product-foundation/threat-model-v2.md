@@ -403,7 +403,11 @@ Action 和最小响应 schema 比通用透明代理更强。任何新增 canonic
 - Linux container/namespace recipe 是首个有界 G2 reference；默认部署仍为 G1。
 - macOS 当前只承诺 G1，不提供通用强隔离保证。
 - Capability 是双 UDS 上的内存短期 bearer token，不持久化、不复制，重启即失效。
-- Audit 使用本地 SQLite/WAL fail-closed；尚未设计 enterprise outbox。
+- Audit 使用本地 SQLite/WAL fail-closed；P-02 只通过 owner-checked Admin socket
+  提供每次最多扫描 1,000 行、游标续查的稳定快照脱敏查询和 mode-0600 JSONL 导出，
+  Agent socket 无此接口。
+  输出省略 Secret、body/header、capability、resource ID 和 parameter hash。尚未设计
+  删除、可配置 retention、enterprise outbox、WORM、legal hold 或 SIEM/远程交付。
 - Secret Sealing 命中即中止并返回空 Agent error response，不做脱敏回退。
 - 本地恢复材料使用单一 recovery key。
 - recovery key 可用于解锁、显式 Admin step-up、验证 backup restore，或在 P-01 中为丢失的密码设置替代值；recovery 自身轮换仍必须使用当前密码。

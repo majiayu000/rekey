@@ -1,7 +1,7 @@
 # Rekey v2 P-02 Audit Query and Export
 
 **Date:** 2026-09-02
-**Status:** Accepted for implementation
+**Status:** Implemented and verified
 **Depends on:** Credential Authority v2 Foundation, P-01
 **Scope:** local Admin audit queries, stable pagination, redacted JSON, and secure local export
 
@@ -21,7 +21,7 @@ sink, SIEM protocol, WORM store, legal hold, or automatic deletion policy.
 rekey audit list [--request ID] [--session ID] [--action ID]
                  [--credential ID] [--outcome VALUE]
                  [--since-ms EPOCH_MS] [--until-ms EPOCH_MS]
-                 [--before-sequence N] [--limit N]
+                 [--snapshot-max-sequence N] [--before-sequence N] [--limit N]
 
 rekey audit export --output FILE [--request ID] [--session ID]
                    [--action ID] [--credential ID] [--outcome VALUE]
@@ -29,13 +29,16 @@ rekey audit export --output FILE [--request ID] [--session ID]
 ```
 
 `audit list` prints one JSON page to stdout. Its default limit is 50 and its
-hard maximum is 100. `--before-sequence` is an exclusive cursor returned by the
-previous page; callers do not construct or reinterpret it as a time value.
+hard maximum is 100. A continuation passes both `snapshot_max_sequence` and the
+exclusive `next_before_sequence` returned by the previous page; callers do not
+construct or reinterpret either value as a time.
 
 All supplied filters are intersected. `since_ms` and `until_ms` are inclusive,
 must be non-negative, and are rejected when `since_ms > until_ms`. IDs and
 outcomes are exact matches. Unknown flags, malformed IDs, zero/oversized limits,
-and invalid time bounds fail as `USAGE` before IPC.
+invalid time bounds, a cursor without a snapshot, and a cursor above its
+snapshot high-water mark fail as `USAGE` before IPC. The same metadata received
+directly by the Broker fails as invalid input without faulting the Authority.
 
 `audit export` captures one stable high-water mark, fetches bounded pages, and
 writes a JSON Lines snapshot to a new local file. It does not accept a cursor or
@@ -53,9 +56,17 @@ sequence < before_sequence
 ```
 
 New audit commits therefore never duplicate, reorder, or enter an in-progress
-pagination snapshot. Deletions are not part of P-02. A page returns at most the
-requested limit plus a nullable `next_before_sequence`; an empty page is a valid
-result and never fabricates a cursor.
+pagination snapshot. Deletions are not part of P-02. Each Authority request
+reads at most 1,000 consecutive rows in sequence order plus one lookahead row,
+then applies the requested filters inside that bounded window. A page returns at
+most the requested number of matching records plus a nullable
+`next_before_sequence`.
+
+The cursor is the exclusive sequence bound after the last scanned row. It can
+therefore be present on an empty or underfilled page when more rows remain to be
+scanned. Clients must continue until the cursor is null; `audit export` does so
+automatically. This scan bound prevents a selective or no-match filter from
+occupying the single AuthorityWorker for an unbounded table scan.
 
 The query executes as one bounded read inside AuthorityWorker and does not keep
 a SQLite transaction or lock alive while the response is written. A malformed
@@ -95,8 +106,9 @@ The P-02 JSON schema is `rekey.audit.v1`. Each record contains only:
 - nullable action, credential, and policy versions;
 - nullable policy digest, upstream status, and latency.
 
-Binary identifiers use their canonical text form and the policy digest uses
-lowercase hexadecimal. Numbers stay JSON numbers and absent values stay `null`.
+Typed identifiers use their canonical UUID text form; the 16-byte event ID and
+policy digest use lowercase hexadecimal. Numbers stay JSON numbers and absent
+values stay `null`.
 
 `authorization.resource_id` and `authorization.parameter_hash` are deliberately
 omitted from list and export output. They can enable correlation or offline
@@ -122,7 +134,10 @@ The CLI opens the requested path with create-new and mode `0600`, refuses an
 existing path or symlink, writes only records returned by the Admin endpoint,
 flushes and `fsync`s the file, then `fsync`s its parent directory before printing
 a success receipt. It re-checks the opened file is a regular file owned by the
-current effective UID with mode `0600` before writing audit data.
+current effective UID with mode `0600` before writing audit data. After the file
+sync and before the parent sync, it also requires the destination pathname's
+device and inode to still match the opened file; unlink or rename replacement
+therefore fails without a success receipt.
 
 If IPC, decoding, output, flush, file sync, or parent sync fails, the command
 returns a non-zero error and no success receipt. A partial create-new file may
@@ -149,7 +164,8 @@ delivery exists.
 P-02 is complete only when all of the following are fresh and passing:
 
 1. Store contracts cover each filter, filter intersection, inclusive time
-   bounds, newest-first ordering, empty results, hard page bounds, and stable
+   bounds, newest-first ordering, empty results, the 1,000-row scan bound,
+   continuation after an empty scan window, hard page bounds, and stable
    high-water pagination while new rows are committed.
 2. Persisted negative versions, malformed identifier lengths, oversized output,
    and storage failures fail clearly without returning partial rows.
@@ -160,8 +176,9 @@ P-02 is complete only when all of the following are fresh and passing:
 5. Real `rekeyd` + `rekey` black-box tests exercise every filter, pagination,
    empty output, JSON decoding, and a snapshot that excludes later audit rows.
 6. Export tests prove header/event/trailer counts, `0600`, owner and regular-file
-   checks, create-new behavior, symlink/existing-file rejection, parent-fsync
-   failure, partial-file failure semantics, and no success receipt on failure.
+   checks, create-new behavior, symlink/existing-file and pathname-replacement
+   rejection, parent-fsync failure, partial-file failure semantics, and no
+   success receipt on failure.
 7. Canary scans prove credentials, passwords, recovery keys, capability tokens,
    request/response bodies, resource IDs, and parameter hashes do not enter list
    or export output.

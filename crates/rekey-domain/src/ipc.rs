@@ -66,6 +66,7 @@ pub mod admin_msg {
     pub const POLICY_STATUS: u16 = 18;
     pub const PASSWORD_CHANGE: u16 = 19;
     pub const RECOVERY_ROTATE: u16 = 20;
+    pub const AUDIT_QUERY: u16 = 21;
 }
 
 /// Agent channel message types.

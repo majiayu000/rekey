@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use rekey_domain::action::FixedHttpAction;
+use rekey_domain::audit::{AuditPage, AuditQuery};
 use rekey_domain::credential::{CredentialKind, CredentialLabel, CredentialMetadata};
 use rekey_domain::ids::{ActionId, CredentialId};
 use tokio::sync::{mpsc, oneshot};
@@ -310,6 +311,10 @@ impl AuthorityHandle {
             not_after: None,
             reply
         })
+    }
+
+    pub async fn audit_query(&self, query: AuditQuery) -> Result<AuditPage, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::AuditQuery { query, reply })
     }
 
     /// Wait for queue capacity, then commit. Used for terminal audits after

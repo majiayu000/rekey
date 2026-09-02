@@ -1,4 +1,5 @@
 mod audit;
+mod audit_query;
 mod connection;
 mod integrity;
 mod recovery;

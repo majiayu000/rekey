@@ -4,6 +4,7 @@ use std::time::Instant;
 use rekey_domain::action::{
     ExactPath, FixedMethod, HeaderCredentialUse, HttpsOrigin, RequestPolicy, ResponsePolicy,
 };
+use rekey_domain::audit::{AuditPage, AuditQuery};
 use rekey_domain::credential::{CredentialKind, CredentialLabel, CredentialMetadata};
 use rekey_domain::ids::{ActionId, CredentialId, RequestId, SessionId, VaultId};
 use tokio::sync::oneshot;
@@ -164,6 +165,10 @@ pub enum AuthorityCommand {
         draft: AuditDraft,
         not_after: Option<Instant>,
         reply: Reply<()>,
+    },
+    AuditQuery {
+        query: AuditQuery,
+        reply: Reply<AuditPage>,
     },
     Backup {
         output: PathBuf,
