@@ -172,6 +172,30 @@ enum CredentialCommand {
         #[arg(long)]
         stdin_secrets: bool,
     },
+    /// Rotate a GitHub App Installation profile from a JSON file.
+    RotateGithubApp {
+        credential_id: String,
+        #[arg(long)]
+        file: PathBuf,
+        #[command(flatten)]
+        step_up: StepUpArgs,
+    },
+    /// Apply an authenticated installation_repositories webhook delivery.
+    ApplyGithubWebhook {
+        credential_id: String,
+        #[arg(long)]
+        expected_version: u64,
+        #[arg(long)]
+        event: String,
+        #[arg(long)]
+        delivery: String,
+        #[arg(long)]
+        signature: String,
+        #[arg(long)]
+        file: PathBuf,
+        #[command(flatten)]
+        step_up: StepUpArgs,
+    },
     Revoke {
         credential_id: String,
         #[command(flatten)]
@@ -423,6 +447,36 @@ fn main() {
                 recovery,
                 stdin_secrets,
             } => commands::credential_rotate(&state_dir, &credential_id, recovery, stdin_secrets),
+            CredentialCommand::RotateGithubApp {
+                credential_id,
+                file,
+                step_up,
+            } => commands::credential_rotate_github_app(
+                &state_dir,
+                &credential_id,
+                &file,
+                step_up.recovery,
+                step_up.password_stdin,
+            ),
+            CredentialCommand::ApplyGithubWebhook {
+                credential_id,
+                expected_version,
+                event,
+                delivery,
+                signature,
+                file,
+                step_up,
+            } => commands::credential_apply_github_webhook(
+                &state_dir,
+                &credential_id,
+                expected_version,
+                &event,
+                &delivery,
+                &signature,
+                &file,
+                step_up.recovery,
+                step_up.password_stdin,
+            ),
             CredentialCommand::Revoke {
                 credential_id,
                 step_up,

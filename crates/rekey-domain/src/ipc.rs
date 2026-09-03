@@ -75,6 +75,8 @@ pub mod admin_msg {
     pub const RECOVERY_ROTATE: u16 = 20;
     pub const AUDIT_QUERY: u16 = 21;
     pub const POLICY_TRUST_INSTALL: u16 = 22;
+    pub const CREDENTIAL_ROTATE_GITHUB_APP: u16 = 23;
+    pub const GITHUB_WEBHOOK_APPLY: u16 = 24;
 }
 
 /// Agent channel message types.
@@ -290,6 +292,16 @@ pub struct CredentialAddMeta {
 #[serde(deny_unknown_fields)]
 pub struct CredentialRefMeta {
     pub credential_id: CredentialId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GitHubWebhookApplyMeta {
+    pub credential_id: CredentialId,
+    pub expected_version: u64,
+    pub event: String,
+    pub delivery: String,
+    pub signature: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

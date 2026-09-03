@@ -298,17 +298,22 @@ encryption, hashes, derivations, or application-specific encodings.
 
 ## GitHub App closed profile
 
-This is not a general GitHub connector. It supports only one selected
-repository, `metadata=read`, and the fixed
-`GET https://api.github.com/installation/repositories` Action. The profile is:
+This post-Alpha development feature is not a general GitHub connector. One
+profile binds one installation, 1-16 exact repositories, `metadata=read`, and
+optional `issues=write`. It supports only repository listing and issue
+creation at a configured repository path. The profile is:
 
 ```json
 {
-  "credential_type": "github-app-installation-v1",
+  "credential_type": "github-app-installation-v2",
   "client_id": "Iv1.REPLACE_ME",
   "app_id": 123456,
   "installation_id": 234567,
-  "repository_id": 345678,
+  "repositories": [
+    {"id": 345678, "owner": "OWNER", "name": "REPOSITORY"}
+  ],
+  "permissions": {"metadata": "read", "issues": "write"},
+  "webhook_secret": "REPLACE_WITH_32_OR_MORE_BYTES",
   "private_key_pkcs1_der_base64": "REPLACE_WITH_BASE64_PKCS1_DER"
 }
 ```
@@ -316,9 +321,32 @@ repository, `metadata=read`, and the fixed
 Add it with `rekey credential add-github-app LABEL --file profile.json`. Keep
 the profile owner-readable only and delete the plaintext file after the
 encrypted mutation succeeds. The corresponding Action must use origin
-`https://api.github.com`, method `GET`, path `/installation/repositories`,
-`authorization` with prefix `Bearer `, no request body/extra headers, and an
-allowlisted JSON response.
+`https://api.github.com`, `authorization` with prefix `Bearer `, and either
+`GET /installation/repositories` with no body or
+`POST /repos/OWNER/REPOSITORY/issues` with a closed JSON `title`/`body` input.
+Provider responses are reduced to the documented non-secret fields.
+
+Rotate the whole typed profile from a regular file:
+
+```bash
+rekey credential rotate-github-app CREDENTIAL_ID --file profile.json
+```
+
+There is no public webhook listener. Forward a raw GitHub delivery through the
+owner-only Admin socket; the signature covers the exact file bytes and the
+expected version makes a successful delivery non-repeatable:
+
+```bash
+rekey credential apply-github-webhook CREDENTIAL_ID \
+  --expected-version 3 --event installation_repositories \
+  --delivery DELIVERY_UUID --signature 'sha256=LOWERCASE_HEX' \
+  --file payload.json
+```
+
+Only a non-empty `added` or `removed` repository delta for the exact
+installation is accepted. Exchange, create-issue, revoke, transport failures,
+and mutative effects are never retried; repository listing may retry once only
+for a bounded canonical `Retry-After` response.
 
 ## Connector SDK contract
 

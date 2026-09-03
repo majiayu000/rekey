@@ -216,11 +216,13 @@ openssl rsa -in "$PRIVATE_KEY" -traditional -outform DER -out "$PRIVATE_KEY_DER"
 python3 - "$PROFILE" "$PRIVATE_KEY_DER" <<'PY'
 import base64, json, pathlib, sys
 pathlib.Path(sys.argv[1]).write_text(json.dumps({
-    "credential_type": "github-app-installation-v1",
+    "credential_type": "github-app-installation-v2",
     "client_id": "Iv1.8a61f9b3a7aba766",
     "app_id": 424242,
     "installation_id": 515151,
-    "repository_id": 616161,
+    "repositories": [{"id": 616161, "owner": "fixture-owner", "name": "fixture"}],
+    "permissions": {"metadata": "read"},
+    "webhook_secret": "P2-WEBHOOK-SECRET-CANARY-0123456789",
     "private_key_pkcs1_der_base64": base64.b64encode(pathlib.Path(sys.argv[2]).read_bytes()).decode()
 }))
 PY

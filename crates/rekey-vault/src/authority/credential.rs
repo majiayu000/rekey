@@ -152,6 +152,25 @@ impl Worker {
         proof: UnlockProof,
         not_after: Option<std::time::Instant>,
     ) -> Result<CredentialMetadata, AuthorityError> {
+        self.credential_rotate_typed(
+            credential_id,
+            CredentialKind::OpaqueToken,
+            None,
+            secret,
+            proof,
+            not_after,
+        )
+    }
+
+    pub(super) fn credential_rotate_typed(
+        &mut self,
+        credential_id: CredentialId,
+        expected_kind: CredentialKind,
+        expected_version: Option<u64>,
+        secret: SecretInput,
+        proof: UnlockProof,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<CredentialMetadata, AuthorityError> {
         self.require_unlocked()?;
         self.verify_proof(&proof)?;
         if secret.is_empty() {
@@ -163,22 +182,23 @@ impl Worker {
         if updated.state != CredentialState::Active {
             return Err(AuthorityError::CredentialRevoked);
         }
-        if updated.kind != CredentialKind::OpaqueToken {
+        if updated.kind != expected_kind {
             return Err(AuthorityError::Domain(
                 rekey_domain::DomainError::InvalidActionDefinition(
-                    "generic rotate only supports opaque-token credentials".to_owned(),
+                    "credential kind does not match rotation command".to_owned(),
+                ),
+            ));
+        }
+        if expected_version.is_some_and(|version| version != updated.current_version) {
+            return Err(AuthorityError::Domain(
+                rekey_domain::DomainError::InvalidActionDefinition(
+                    "credential version does not match expected version".to_owned(),
                 ),
             ));
         }
         let next = updated.current_version + 1;
         let now = now_ms()?;
-        let version = self.encrypt_new_version(
-            credential_id,
-            next,
-            CredentialKind::OpaqueToken,
-            &secret,
-            now,
-        )?;
+        let version = self.encrypt_new_version(credential_id, next, expected_kind, &secret, now)?;
         updated.current_version = next;
         updated.updated_at_ms = now;
         self.refresh_state_seal(&mut updated)?;

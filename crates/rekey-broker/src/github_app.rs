@@ -8,21 +8,19 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use aws_lc_rs::rand::SystemRandom;
 use aws_lc_rs::signature::{RSA_PKCS1_SHA256, RsaKeyPair};
-use data_encoding::{BASE64, BASE64URL_NOPAD};
-use rekey_domain::action::{FixedHttpAction, FixedMethod};
+use data_encoding::BASE64URL_NOPAD;
+use rekey_domain::action::FixedMethod;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
-use crate::executor::ExecuteRequest;
+use crate::github_profile::GitHubAction;
+pub(crate) use crate::github_profile::GitHubAppProfile as GitHubAppCredential;
 use crate::upstream::{UpstreamRequest, UpstreamResponse, UpstreamTransport};
 
-const CREDENTIAL_TYPE: &str = "github-app-installation-v1";
 const GITHUB_HOST: &str = "api.github.com";
 const RESOURCE_PATH: &str = "/installation/repositories";
 const API_VERSION: &str = "2022-11-28";
 const RESPONSE_LIMIT: u32 = 256 * 1024;
-const MIN_TOTAL_TIMEOUT: Duration = Duration::from_secs(2);
 const CLEANUP_BUDGET: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,6 +36,8 @@ pub(crate) enum GitHubError {
     ResourceScope,
     RevokeTransport,
     RevokeRejected,
+    WebhookSignature,
+    WebhookPayload,
     Deadline,
 }
 
@@ -55,132 +55,37 @@ impl GitHubError {
             Self::ResourceScope => "github-resource-scope-invalid",
             Self::RevokeTransport => "github-token-revoke-transport",
             Self::RevokeRejected => "github-token-revoke-rejected",
+            Self::WebhookSignature => "github-webhook-signature-invalid",
+            Self::WebhookPayload => "github-webhook-payload-invalid",
             Self::Deadline => "github-action-deadline",
         }
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawCredential<'a> {
-    #[serde(borrow)]
-    credential_type: &'a str,
-    #[serde(borrow)]
-    client_id: &'a str,
-    app_id: u64,
-    installation_id: u64,
-    repository_id: u64,
-    #[serde(borrow)]
-    private_key_pkcs1_der_base64: &'a str,
-}
-
-pub(crate) struct GitHubAppCredential {
-    client_id: String,
-    app_id: u64,
-    installation_id: u64,
-    repository_id: u64,
-    private_key_pkcs1_der: Zeroizing<Vec<u8>>,
-}
-
 impl GitHubAppCredential {
-    pub(crate) fn validate_profile(input: &[u8]) -> Result<(), GitHubError> {
-        Self::parse(input).map(|_| ())
-    }
-
-    pub(crate) fn parse_profile(input: &[u8]) -> Result<Self, GitHubError> {
-        Self::parse(input)
-    }
-
-    pub(crate) fn action_is_reserved(action: &FixedHttpAction) -> bool {
-        rekey_connector::github_action_is_reserved(action)
-    }
-
-    fn parse(input: &[u8]) -> Result<Self, GitHubError> {
-        let raw: RawCredential<'_> =
-            serde_json::from_slice(input).map_err(|_| GitHubError::InvalidCredential)?;
-        if raw.credential_type != CREDENTIAL_TYPE
-            || raw.client_id.is_empty()
-            || raw.client_id.len() > 128
-            || !raw
-                .client_id
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
-            || raw.app_id == 0
-            || raw.installation_id == 0
-            || raw.repository_id == 0
-            || raw.private_key_pkcs1_der_base64.is_empty()
-            || raw.private_key_pkcs1_der_base64.len() > 48 * 1024
-        {
-            return Err(GitHubError::InvalidCredential);
-        }
-        let encoded_key = raw.private_key_pkcs1_der_base64.as_bytes();
-        let decoded_len = BASE64
-            .decode_len(encoded_key.len())
-            .map_err(|_| GitHubError::InvalidCredential)?;
-        let mut der = Zeroizing::new(vec![0u8; decoded_len]);
-        let written = BASE64
-            .decode_mut(encoded_key, &mut der)
-            .map_err(|_| GitHubError::InvalidCredential)?;
-        der.truncate(written);
-        // PKCS#8 and malformed material fail before any network effect.
-        // aws-lc-rs owns private components through managed EVP/RSA pointers;
-        // its pointer contract zeroizes allocations in every *_free path.
-        RsaKeyPair::from_der(&der).map_err(|_| GitHubError::InvalidCredential)?;
-        Ok(Self {
-            client_id: raw.client_id.to_owned(),
-            app_id: raw.app_id,
-            installation_id: raw.installation_id,
-            repository_id: raw.repository_id,
-            private_key_pkcs1_der: der,
-        })
-    }
-
-    pub(crate) fn validate_action(
-        &self,
-        action: &FixedHttpAction,
-        request: &ExecuteRequest,
-    ) -> Result<(), GitHubError> {
-        if !Self::action_is_reserved(action)
-            || request.content_type.is_some()
-            || !request.extra_headers.is_empty()
-            || !request.body.is_empty()
-            || Duration::from_millis(action.timeout_ms as u64) < MIN_TOTAL_TIMEOUT
-        {
-            return Err(GitHubError::ProfileMismatch);
-        }
-        Ok(())
-    }
-
-    pub(crate) fn commitment(&self) -> String {
-        let mut hasher = Sha256::new();
-        let app_id = self.app_id.to_string();
-        let installation_id = self.installation_id.to_string();
-        let repository_id = self.repository_id.to_string();
-        for field in [
-            self.client_id.as_bytes(),
-            app_id.as_bytes(),
-            installation_id.as_bytes(),
-            repository_id.as_bytes(),
-        ] {
-            hasher.update((field.len() as u64).to_be_bytes());
-            hasher.update(field);
-        }
-        format!("binding-sha256={:x}", hasher.finalize())
-    }
-
-    pub(crate) fn private_key_bytes(&self) -> &[u8] {
-        &self.private_key_pkcs1_der
-    }
-
     pub(crate) async fn exchange(
         &self,
         transport: &dyn UpstreamTransport,
+        action: GitHubAction,
         timeout: Duration,
     ) -> Result<InstallationToken, ExchangeFailure> {
         let jwt = self.sign_jwt()?;
+        let repository_ids = match action {
+            GitHubAction::ListRepositories => self
+                .repositories
+                .iter()
+                .map(|repository| repository.id)
+                .collect(),
+            GitHubAction::CreateIssue { repository_index } => {
+                vec![self.repositories[repository_index].id]
+            }
+        };
         let body = serde_json::to_vec(&ExchangeRequest {
-            repository_ids: [self.repository_id],
-            permissions: ExchangePermissions { metadata: "read" },
+            repository_ids,
+            permissions: ExchangePermissions {
+                metadata: "read",
+                issues: matches!(action, GitHubAction::CreateIssue { .. }).then_some("write"),
+            },
         })
         .map_err(|_| ExchangeFailure::without_token(GitHubError::InvalidCredential))?;
         let response = tokio::time::timeout(
@@ -244,7 +149,29 @@ impl GitHubAppCredential {
             token: probed_token,
             jwt,
         };
-        if raw.permissions.metadata != "read" || raw.repository_selection != "selected" {
+        let expected_ids: Vec<u64> = match action {
+            GitHubAction::ListRepositories => self
+                .repositories
+                .iter()
+                .map(|repository| repository.id)
+                .collect(),
+            GitHubAction::CreateIssue { repository_index } => {
+                vec![self.repositories[repository_index].id]
+            }
+        };
+        let mut returned_ids: Vec<u64> = raw
+            .repositories
+            .iter()
+            .map(|repository| repository.id)
+            .collect();
+        returned_ids.sort_unstable();
+        let permissions_match = raw.permissions.metadata == "read"
+            && raw.permissions.issues
+                == matches!(action, GitHubAction::CreateIssue { .. }).then_some("write");
+        if !permissions_match
+            || raw.repository_selection != "selected"
+            || returned_ids != expected_ids
+        {
             let InstallationToken { token, jwt } = token;
             return Err(ExchangeFailure::with_tokens(
                 GitHubError::ExchangeScope,
@@ -259,43 +186,111 @@ impl GitHubAppCredential {
         &self,
         transport: &dyn UpstreamTransport,
         token: &InstallationToken,
+        action: GitHubAction,
+        request_body: Vec<u8>,
         timeout: Duration,
         response_max_bytes: u32,
     ) -> Result<UpstreamResponse, GitHubError> {
-        let response = tokio::time::timeout(
-            timeout,
-            transport.send(UpstreamRequest {
-                host: GITHUB_HOST.to_owned(),
-                port: 443,
-                method: FixedMethod::Get,
-                path: RESOURCE_PATH.to_owned(),
-                headers: github_headers(None),
-                auth_header: ("authorization".to_owned(), bearer(&token.token)),
-                body: Vec::new(),
-                timeout,
-                response_max_bytes,
-            }),
-        )
-        .await
-        .map_err(|_| GitHubError::Deadline)?
-        .map_err(|_| GitHubError::ResourceTransport)?;
+        let (method, path, content_type) = match action {
+            GitHubAction::ListRepositories => (FixedMethod::Get, RESOURCE_PATH.to_owned(), None),
+            GitHubAction::CreateIssue { repository_index } => {
+                let repository = &self.repositories[repository_index];
+                (
+                    FixedMethod::Post,
+                    format!("/repos/{}/{}/issues", repository.owner, repository.name),
+                    Some("application/json"),
+                )
+            }
+        };
+        let resource_request =
+            ResourceRequest(method, path, content_type, request_body, response_max_bytes);
+        let started = Instant::now();
+        let mut response = send_resource(transport, token, &resource_request, timeout).await?;
+        if matches!(action, GitHubAction::ListRepositories) && matches!(response.status, 403 | 429)
+        {
+            let delay = retry_after(&response).ok_or(GitHubError::ResourceRejected)?;
+            let remaining = timeout
+                .checked_sub(started.elapsed())
+                .and_then(|value| value.checked_sub(delay))
+                .filter(|value| !value.is_zero())
+                .ok_or(GitHubError::Deadline)?;
+            tokio::time::sleep(delay).await;
+            response = send_resource(transport, token, &resource_request, remaining).await?;
+        }
+        match action {
+            GitHubAction::ListRepositories => self.validate_repository_list(response),
+            GitHubAction::CreateIssue { repository_index } => {
+                self.validate_created_issue(response, repository_index)
+            }
+        }
+    }
+
+    fn validate_repository_list(
+        &self,
+        response: UpstreamResponse,
+    ) -> Result<UpstreamResponse, GitHubError> {
         if response.status != 200 {
             return Err(GitHubError::ResourceRejected);
         }
-        let scope: RepositoryList =
+        let mut scope: RepositoryList =
             serde_json::from_slice(&response.body).map_err(|_| GitHubError::ResourceScope)?;
-        if scope.total_count != 1
-            || scope.repositories.len() != 1
-            || scope.repositories[0].id != self.repository_id
+        scope.repositories.sort_by_key(|repository| repository.id);
+        if scope.total_count as usize != self.repositories.len()
+            || scope.repositories.len() != self.repositories.len()
+            || !scope
+                .repositories
+                .iter()
+                .zip(&self.repositories)
+                .all(|(returned, expected)| {
+                    returned.id == expected.id
+                        && returned
+                            .full_name
+                            .eq_ignore_ascii_case(&format!("{}/{}", expected.owner, expected.name))
+                })
         {
             return Err(GitHubError::ResourceScope);
         }
-        let body = serde_json::to_vec(&scope).map_err(|_| GitHubError::ResourceScope)?;
-        Ok(UpstreamResponse {
-            status: 200,
-            headers: vec![("content-type".to_owned(), "application/json".to_owned())].into(),
-            body: Zeroizing::new(body),
+        let body = serde_json::to_vec(&RepositoryListOutput {
+            total_count: self.repositories.len(),
+            repositories: &self.repositories,
         })
+        .map_err(|_| GitHubError::ResourceScope)?;
+        Ok(json_response(200, body))
+    }
+
+    fn validate_created_issue(
+        &self,
+        response: UpstreamResponse,
+        repository_index: usize,
+    ) -> Result<UpstreamResponse, GitHubError> {
+        if response.status != 201 {
+            return Err(GitHubError::ResourceRejected);
+        }
+        let issue: CreatedIssue =
+            serde_json::from_slice(&response.body).map_err(|_| GitHubError::ResourceScope)?;
+        let repository = &self.repositories[repository_index];
+        if issue.id == 0
+            || issue.number == 0
+            || issue.repository_url
+                != format!(
+                    "https://api.github.com/repos/{}/{}",
+                    repository.owner, repository.name
+                )
+            || issue.html_url
+                != format!(
+                    "https://github.com/{}/{}/issues/{}",
+                    repository.owner, repository.name, issue.number
+                )
+        {
+            return Err(GitHubError::ResourceScope);
+        }
+        let body = serde_json::to_vec(&CreatedIssueOutput {
+            id: issue.id,
+            number: issue.number,
+            html_url: issue.html_url,
+        })
+        .map_err(|_| GitHubError::ResourceScope)?;
+        Ok(json_response(201, body))
     }
 
     pub(crate) async fn revoke(
@@ -330,6 +325,8 @@ impl GitHubAppCredential {
     pub(crate) async fn execute_effect(
         &self,
         transport: &dyn UpstreamTransport,
+        action: GitHubAction,
+        request_body: Vec<u8>,
         total_deadline: Instant,
         response_max_bytes: u32,
     ) -> GitHubEffect {
@@ -340,12 +337,20 @@ impl GitHubAppCredential {
             Ok(value) => value,
             Err(error) => return GitHubEffect::without_token(error, false),
         };
-        let (resource, tokens, jwt) = match self.exchange(transport, exchange_timeout).await {
+        let (resource, tokens, jwt) = match self.exchange(transport, action, exchange_timeout).await
+        {
             Ok(token) => (
                 match remaining(business_deadline) {
                     Ok(resource_timeout) => {
-                        self.resource(transport, &token, resource_timeout, response_max_bytes)
-                            .await
+                        self.resource(
+                            transport,
+                            &token,
+                            action,
+                            request_body,
+                            resource_timeout,
+                            response_max_bytes,
+                        )
+                        .await
                     }
                     Err(error) => Err(error),
                 },
@@ -628,155 +633,135 @@ struct JwtClaims<'a> {
 
 #[derive(Serialize)]
 struct ExchangeRequest {
-    repository_ids: [u64; 1],
+    repository_ids: Vec<u64>,
     permissions: ExchangePermissions,
 }
 
 #[derive(Serialize)]
 struct ExchangePermissions {
     metadata: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    issues: Option<&'static str>,
 }
 
 #[derive(Deserialize)]
 struct ExchangeResponse<'a> {
     #[serde(borrow)]
     token: &'a str,
-    #[serde(rename = "expires_at")]
-    _expires_at: String,
-    permissions: ExchangeResponsePermissions,
+    #[serde(rename = "expires_at", borrow)]
+    _expires_at: &'a str,
+    #[serde(borrow)]
+    permissions: ExchangeResponsePermissions<'a>,
+    repositories: Vec<ExchangeRepositoryRef>,
     #[serde(borrow)]
     repository_selection: &'a str,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ExchangeResponsePermissions {
-    metadata: String,
+struct ExchangeResponsePermissions<'a> {
+    #[serde(borrow)]
+    metadata: &'a str,
+    #[serde(default, borrow)]
+    issues: Option<&'a str>,
 }
 
-#[derive(Deserialize, Serialize)]
-struct RepositoryList {
-    total_count: u64,
-    repositories: Vec<RepositoryRef>,
-}
-
-#[derive(Deserialize, Serialize)]
-struct RepositoryRef {
+#[derive(Deserialize)]
+struct ExchangeRepositoryRef {
     id: u64,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+#[derive(Deserialize)]
+struct RepositoryList<'a> {
+    total_count: u64,
+    #[serde(borrow)]
+    repositories: Vec<RepositoryRef<'a>>,
+}
 
-    struct PanicTransport;
+#[derive(Deserialize)]
+struct RepositoryRef<'a> {
+    id: u64,
+    #[serde(borrow)]
+    full_name: &'a str,
+}
 
-    impl UpstreamTransport for PanicTransport {
-        fn send(&self, _request: UpstreamRequest) -> crate::upstream::UpstreamFuture<'_> {
-            Box::pin(async { panic!("expired effect deadline reached transport") })
-        }
+#[derive(Serialize)]
+struct RepositoryListOutput<'a> {
+    total_count: usize,
+    repositories: &'a [crate::github_profile::GitHubRepository],
+}
+
+#[derive(Deserialize)]
+struct CreatedIssue<'a> {
+    id: u64,
+    number: u64,
+    #[serde(borrow)]
+    repository_url: &'a str,
+    #[serde(borrow)]
+    html_url: &'a str,
+}
+
+#[derive(Serialize)]
+struct CreatedIssueOutput<'a> {
+    id: u64,
+    number: u64,
+    html_url: &'a str,
+}
+
+struct ResourceRequest(FixedMethod, String, Option<&'static str>, Vec<u8>, u32);
+
+async fn send_resource(
+    transport: &dyn UpstreamTransport,
+    token: &InstallationToken,
+    request: &ResourceRequest,
+    timeout: Duration,
+) -> Result<UpstreamResponse, GitHubError> {
+    tokio::time::timeout(
+        timeout,
+        transport.send(UpstreamRequest {
+            host: GITHUB_HOST.to_owned(),
+            port: 443,
+            method: request.0,
+            path: request.1.clone(),
+            headers: github_headers(request.2),
+            auth_header: ("authorization".to_owned(), bearer(&token.token)),
+            body: request.3.clone(),
+            timeout,
+            response_max_bytes: request.4,
+        }),
+    )
+    .await
+    .map_err(|_| GitHubError::Deadline)?
+    .map_err(|_| GitHubError::ResourceTransport)
+}
+
+fn retry_after(response: &UpstreamResponse) -> Option<Duration> {
+    let mut values = response
+        .headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("retry-after"))
+        .map(|(_, value)| value.as_str());
+    let value = values.next()?;
+    if values.next().is_some()
+        || value.is_empty()
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
     }
+    let seconds: u64 = value.parse().ok()?;
+    (1..=30)
+        .contains(&seconds)
+        .then(|| Duration::from_secs(seconds))
+}
 
-    struct StallingFirstRevoke {
-        calls: AtomicUsize,
-    }
-
-    impl UpstreamTransport for StallingFirstRevoke {
-        fn send(&self, _request: UpstreamRequest) -> crate::upstream::UpstreamFuture<'_> {
-            let call = self.calls.fetch_add(1, Ordering::SeqCst);
-            Box::pin(async move {
-                if call == 0 {
-                    std::future::pending().await
-                } else {
-                    Ok(UpstreamResponse {
-                        status: 204,
-                        headers: Vec::new().into(),
-                        body: Zeroizing::new(Vec::new()),
-                    })
-                }
-            })
-        }
-    }
-
-    #[test]
-    fn marked_invalid_profile_fails_closed() {
-        assert!(matches!(
-            GitHubAppCredential::validate_profile(
-                br#"{"credential_type":"github-app-installation-v1","client_id":"x"}"#,
-            ),
-            Err(GitHubError::InvalidCredential)
-        ));
-    }
-
-    #[tokio::test]
-    async fn max_timeout_deadline_is_not_reset_at_effect_entry() {
-        let profile = GitHubAppCredential {
-            client_id: "test".to_owned(),
-            app_id: 1,
-            installation_id: 1,
-            repository_id: 1,
-            private_key_pkcs1_der: Zeroizing::new(Vec::new()),
-        };
-        let admission_started = Instant::now() - Duration::from_secs(121);
-        let result = profile
-            .execute_effect(
-                &PanicTransport,
-                admission_started + Duration::from_secs(120),
-                RESPONSE_LIMIT,
-            )
-            .await;
-        assert!(matches!(
-            result,
-            GitHubEffect::WithoutToken {
-                error: GitHubError::Deadline,
-                remote_effect_possible: false
-            }
-        ));
-    }
-
-    #[test]
-    fn exchange_transport_uncertainty_is_preserved_without_a_token() {
-        let failure = ExchangeFailure::uncertain_without_token(GitHubError::ExchangeTransport);
-        assert!(failure.remote_effect_possible);
-        assert!(failure.tokens.is_empty());
-
-        let preflight = ExchangeFailure::without_token(GitHubError::Deadline);
-        assert!(!preflight.remote_effect_possible);
-    }
-
-    #[test]
-    fn duplicate_exchange_permission_keys_are_rejected() {
-        let response = br#"{"token":"t","expires_at":"later","permissions":{"metadata":"write","metadata":"read"},"repository_selection":"selected"}"#;
-        assert!(serde_json::from_slice::<ExchangeResponse<'_>>(response).is_err());
-    }
-
-    #[tokio::test]
-    async fn stalled_revoke_preserves_an_attempt_for_each_later_token() {
-        let profile = GitHubAppCredential {
-            client_id: "test".to_owned(),
-            app_id: 1,
-            installation_id: 1,
-            repository_id: 1,
-            private_key_pkcs1_der: Zeroizing::new(Vec::new()),
-        };
-        let transport = StallingFirstRevoke {
-            calls: AtomicUsize::new(0),
-        };
-        let tokens = vec![
-            Zeroizing::new("first".to_owned()),
-            Zeroizing::new("second".to_owned()),
-        ];
-
-        let result = profile
-            .revoke_captured_tokens(
-                &transport,
-                &tokens,
-                Instant::now() + Duration::from_millis(100),
-            )
-            .await;
-
-        assert_eq!(result, Err(GitHubError::Deadline));
-        assert_eq!(transport.calls.load(Ordering::SeqCst), 2);
+fn json_response(status: u16, body: Vec<u8>) -> UpstreamResponse {
+    UpstreamResponse {
+        status,
+        headers: vec![("content-type".to_owned(), "application/json".to_owned())].into(),
+        body: Zeroizing::new(body),
     }
 }
+
+#[cfg(test)]
+#[path = "github_app_tests.rs"]
+mod tests;

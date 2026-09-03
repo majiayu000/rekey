@@ -22,6 +22,9 @@ const HOST: &str = "api.github.com";
 const CLIENT_ID: &str = "Iv1.8a61f9b3a7aba766";
 const INSTALLATION_ID: u64 = 515_151;
 const REPOSITORY_ID: u64 = 616_161;
+const P6_INSTALLATION_ID: u64 = 818_180;
+const P6_REPOSITORY_ID: u64 = 818_181;
+const P6_SECOND_REPOSITORY_ID: u64 = 818_182;
 const STATELESS_TOKEN_CANARY: &str = "P2-STATELESS-INSTALLATION-TOKEN-CANARY";
 
 fn installation_token(mode: &str) -> String {
@@ -35,6 +38,49 @@ fn installation_token(mode: &str) -> String {
         );
     }
     format!("P2-INSTALLATION-TOKEN-CANARY-{mode}")
+}
+
+fn expected_exchange(mode: &str) -> (u64, Vec<u64>, Value) {
+    match mode {
+        "p6-list" => (
+            P6_INSTALLATION_ID,
+            vec![P6_REPOSITORY_ID, P6_SECOND_REPOSITORY_ID],
+            json!({"metadata":"read"}),
+        ),
+        "p6-issue" => (
+            P6_INSTALLATION_ID,
+            vec![P6_SECOND_REPOSITORY_ID],
+            json!({"metadata":"read","issues":"write"}),
+        ),
+        "p6-rotated-list" => (
+            P6_INSTALLATION_ID,
+            vec![P6_REPOSITORY_ID],
+            json!({"metadata":"read"}),
+        ),
+        "p6-webhook-list" => (
+            P6_INSTALLATION_ID,
+            vec![P6_REPOSITORY_ID, P6_SECOND_REPOSITORY_ID],
+            json!({"metadata":"read"}),
+        ),
+        _ => (
+            INSTALLATION_ID,
+            vec![REPOSITORY_ID],
+            json!({"metadata":"read"}),
+        ),
+    }
+}
+
+fn repositories_for(mode: &str) -> Vec<Value> {
+    match mode {
+        "p6-list" | "p6-webhook-list" => vec![
+            json!({"id":P6_SECOND_REPOSITORY_ID,"full_name":"p6-owner/beta"}),
+            json!({"id":P6_REPOSITORY_ID,"full_name":"p6-owner/alpha"}),
+        ],
+        "p6-rotated-list" => {
+            vec![json!({"id":P6_REPOSITORY_ID,"full_name":"p6-owner/alpha"})]
+        }
+        _ => vec![json!({"id":REPOSITORY_ID,"full_name":"fixture-owner/fixture"})],
+    }
 }
 
 fn hex(value: &str) -> String {
@@ -268,8 +314,10 @@ async fn serve_mock(
                     == Some("application/vnd.github+json")
                 && req.headers.get("user-agent").map(String::as_str)
                     == Some(concat!("rekey/", env!("CARGO_PKG_VERSION")));
+            let (expected_installation, expected_repositories, expected_permissions) =
+                expected_exchange(&mode);
             let result = if req.method == "POST"
-                && req.path == format!("/app/installations/{INSTALLATION_ID}/access_tokens")
+                && req.path == format!("/app/installations/{expected_installation}/access_tokens")
             {
                 let jwt_value = bearer(&req);
                 let jwt = jwt_value.and_then(|jwt| verify_jwt(jwt, &public_key_der));
@@ -283,7 +331,10 @@ async fn serve_mock(
                 }
                 let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
                 let scope_ok = body
-                    == json!({"repository_ids":[REPOSITORY_ID],"permissions":{"metadata":"read"}});
+                    == json!({
+                        "repository_ids":expected_repositories,
+                        "permissions":expected_permissions
+                    });
                 if jwt.is_err() || !scope_ok || !api_headers_ok {
                     respond(&mut tls, "400 Bad Request", br#"{"error":"invalid"}"#).await
                 } else if mode == "exchange-error" {
@@ -305,13 +356,17 @@ async fn serve_mock(
                     } else if mode == "malformed-scope" {
                         json!("malformed")
                     } else {
-                        json!({"metadata":"read"})
+                        expected_permissions
                     };
                     let token = installation_token(&mode);
                     let mut body = serde_json::to_vec(&json!({
                         "token": token,
                         "expires_at": "2099-01-01T00:00:00Z",
                         "permissions": permissions,
+                        "repositories": expected_repositories
+                            .iter()
+                            .map(|id| json!({"id":id}))
+                            .collect::<Vec<_>>(),
                         "repository_selection": "selected"
                     }))
                     .unwrap_or_default();
@@ -319,7 +374,7 @@ async fn serve_mock(
                         body.extend_from_slice(b" trailing-garbage");
                     } else if mode == "duplicate-token" {
                         body = format!(
-                            "{{\"token\":\"{token}\",\"token\":\"{token}\",\"expires_at\":\"2099-01-01T00:00:00Z\",\"permissions\":{{\"metadata\":\"read\"}},\"repository_selection\":\"selected\"}}"
+                            "{{\"token\":\"{token}\",\"token\":\"{token}\",\"expires_at\":\"2099-01-01T00:00:00Z\",\"permissions\":{{\"metadata\":\"read\"}},\"repositories\":[{{\"id\":{REPOSITORY_ID}}}],\"repository_selection\":\"selected\"}}"
                         )
                         .into_bytes();
                     }
@@ -355,25 +410,49 @@ async fn serve_mock(
                     } else if mode == "deadline-resource" {
                         tokio::time::sleep(Duration::from_millis(4800)).await;
                     }
-                    let repository_id = if mode == "wrong-repository" {
-                        REPOSITORY_ID + 1
-                    } else {
-                        REPOSITORY_ID
-                    };
+                    let mut repositories = repositories_for(&mode);
+                    if mode == "wrong-repository" {
+                        repositories[0]["id"] = json!(REPOSITORY_ID + 1);
+                    }
                     let name = if mode == "reflect-token" {
                         format!("P2-INSTALLATION-TOKEN-CANARY-{mode}")
                     } else {
                         "fixture".to_owned()
                     };
                     let mut body = json!({
-                        "total_count": 1,
-                        "repositories": [{"id": repository_id, "name": name}]
+                        "total_count": repositories.len(),
+                        "repositories": repositories
                     });
+                    body["repositories"][0]["name"] = json!(name);
                     if mode == "provider-extra" {
                         body["debug_hex"] = json!(hex(&installation_token(&mode)));
                     }
                     let body = serde_json::to_vec(&body).unwrap_or_default();
                     respond(&mut tls, "200 OK", &body).await
+                }
+            } else if req.method == "POST" && req.path == "/repos/p6-owner/beta/issues" {
+                let token_ok = bearer(&req)
+                    .map(|token| token == installation_token(&mode))
+                    .unwrap_or(false);
+                let issue: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
+                if mode != "p6-issue"
+                    || !token_ok
+                    || !api_headers_ok
+                    || req.headers.get("content-type").map(String::as_str)
+                        != Some("application/json")
+                    || issue != json!({"title":"P6 issue","body":"P6 issue body canary"})
+                {
+                    respond(&mut tls, "400 Bad Request", br#"{"error":"issue"}"#).await
+                } else {
+                    if append_trace(&trace_path, "issue.ok").is_err() {
+                        return;
+                    }
+                    respond(
+                        &mut tls,
+                        "201 Created",
+                        br#"{"id":919191,"number":7,"repository_url":"https://api.github.com/repos/p6-owner/beta","html_url":"https://github.com/p6-owner/beta/issues/7","provider_extra":"removed"}"#,
+                    )
+                    .await
                 }
             } else if req.method == "DELETE" && req.path == "/installation/token" {
                 let token_ok = bearer(&req)
