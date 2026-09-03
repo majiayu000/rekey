@@ -74,7 +74,7 @@ fn selection_preserves_the_reserved_github_no_fallback_boundary() {
     );
     assert_eq!(
         resolve_builtin(CredentialKind::OpaqueToken, &github),
-        Err(ConnectorSelectionError::ProfileMismatch)
+        Err(ConnectorSelectionError::SelectionRejected)
     );
     assert_eq!(
         resolve_builtin(CredentialKind::GitHubAppInstallation, &ordinary),

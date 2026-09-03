@@ -147,7 +147,7 @@ does not validate runtime plugins because P-05 has none.
 ## 6. Selection and Broker integration
 
 `resolve_builtin(credential_kind, action)` returns one `BuiltInConnector` or a
-closed `ConnectorSelectionError::ProfileMismatch`:
+closed `ConnectorSelectionError::SelectionRejected`:
 
 1. `OpaqueToken` plus a non-reserved fixed HTTPS action resolves to
    `FixedHttpHeaderV1`.

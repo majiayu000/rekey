@@ -114,7 +114,7 @@ pub fn registry() -> &'static [ConnectorContract] {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ConnectorSelectionError {
     #[error("credential and action do not match a built-in connector")]
-    ProfileMismatch,
+    SelectionRejected,
 }
 
 /// The public portion of the existing closed GitHub App action profile.
@@ -136,7 +136,7 @@ pub fn resolve_builtin(
         CredentialKind::OpaqueToken if !github_action_is_reserved(action) => {
             Ok(BuiltInConnector::FixedHttpHeaderV1)
         }
-        CredentialKind::OpaqueToken => Err(ConnectorSelectionError::ProfileMismatch),
+        CredentialKind::OpaqueToken => Err(ConnectorSelectionError::SelectionRejected),
         CredentialKind::GitHubAppInstallation => Ok(BuiltInConnector::GitHubAppInstallationV1),
     }
 }
