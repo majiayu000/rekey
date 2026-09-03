@@ -197,7 +197,7 @@ fn workload_stdin_flag_conflicts_with_admin_proof_flags() {
                 "--workload-token-stdin",
                 conflicting,
             ],
-            Some(b"a.b.c\n"),
+            None,
         );
         assert_eq!(output.status, 2);
     }

@@ -558,15 +558,16 @@ PRAGMA busy_timeout = 5000;
 - 不允许其他进程打开 SQLite；Admin/Web 读取也通过 AuthorityWorker。
 - 每次启动运行 `PRAGMA quick_check`；失败后保持 Locked 并返回 `StorageIntegrityFailed`。
 
-### 10.3 Schema v7
+### 10.3 Schema v8
 
-当前开发实现由 P-04 将 durable schema 提升为 v7；已发布的
-`v2.0.0-alpha.1` 制品仍使用 v5。v7 不提供 v6/v5 migration 或 compatibility reader。
+当前开发实现先由 P-04 将 durable schema 提升为 v7，再由 P-07A 为新的
+`vault-kv-v2-source` credential kind 提升为 v8；已发布的
+`v2.0.0-alpha.1` 制品仍使用 v5。v8 不提供 v7/v6/v5 migration 或 compatibility reader。
 
 ~~~sql
 CREATE TABLE vault_header (
     singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
-    format_version     INTEGER NOT NULL CHECK (format_version = 7),
+    format_version     INTEGER NOT NULL CHECK (format_version = 8),
     vault_id           BLOB NOT NULL CHECK (length(vault_id) = 16),
     crypto_suite       TEXT NOT NULL CHECK (crypto_suite = 'rkca-aes256gcm-argon2id-hkdfsha256-v1'),
     created_at_ms      INTEGER NOT NULL,
@@ -597,7 +598,7 @@ ON key_wrappers(wrapper_kind) WHERE wrapper_kind = 'password' AND state = 'activ
 CREATE TABLE credentials (
     credential_id      BLOB PRIMARY KEY CHECK (length(credential_id) = 16),
     label              TEXT NOT NULL UNIQUE,
-    kind               TEXT NOT NULL CHECK (kind IN ('opaque-token', 'github-app-installation')),
+    kind               TEXT NOT NULL CHECK (kind IN ('opaque-token', 'github-app-installation', 'vault-kv-v2-source')),
     state              TEXT NOT NULL CHECK (state IN ('active', 'revoked')),
     current_version    INTEGER NOT NULL CHECK (current_version >= 1),
     created_at_ms      INTEGER NOT NULL,
@@ -1136,7 +1137,7 @@ Agent 输入 fake 的契约测试仍使用 injected `UpstreamTransport`。第 2 
 - 验证 SQLite quick_check、schema_digest、format_version、至少一个 wrapper 行、VRK 解包、header 内 encrypted integrity record，以及 **每一条** `credential_versions` payload。不能只检查数据库结构或只解密第一条 Credential。
 - 在写 staging 前先持久化 incomplete marker；Broker 见到 marker 必须拒绝启动。输入以固定大小 buffer 流式复制到 staging 并同时计算 SHA-256，对 staging 完成上述验证与 `restore.completed` 提交，fsync 文件，rename 到 `vault.sqlite3`，再 fsync 父目录。
 - 只有安装文件已持久化后才能删除 marker 并再次 fsync 父目录；这是 restore 成功点。成功点之前的失败必须删除 staging、installed DB 及 SQLite sidecar，并持久化清理；无法证明清理完成时必须保留 marker，确保不留下可启动的半恢复 vault。后续 restore 只能在取得 offline lock 后清理该 marker 所标记的已中断内部 artifact，不得删除未知文件。
-- 当前开发实现只恢复 format version 7；不支持 v1/v2/v3/v4/v5/v6 或未来未知版本。
+- 当前开发实现只恢复 format version 8；不支持 v1/v2/v3/v4/v5/v6/v7 或未来未知版本。
 
 ## 17. Error Taxonomy
 
@@ -1629,7 +1630,7 @@ root select 视作 fault。若 root 已取得 actor 的 completed `JoinHandle` r
 新增 typed credential kind 的 breaking schema change 将 durable format bump 到 4；旧非空
 state dir 继续明确拒绝，不提供迁移或兼容读取。
 随后 credential lifecycle seal 将 foundation format bump 到 5；P-03 的 durable policy
-又由 P-04 将当前开发实现 bump 到 7。当前实现只接受 v7，不保留 v4/v5/v6 兼容读取或迁移入口；
+又由 P-04 bump 到 7、P-07A bump 到 8。当前实现只接受 v8，不保留 v4/v5/v6/v7 兼容读取或迁移入口；
 已发布的 `v2.0.0-alpha.1` 制品仍是 v5。
 
 首个 P2 垂直切片是一个封闭的 GitHub App Installation profile，不创建通用
@@ -1823,7 +1824,8 @@ Review 必问：
 - 不做 MITM、系统 CA、透明代理或 passthrough。
 - 不做 Dashboard 或浏览器 UI。
 - 不做通用密码管理器、浏览器自动填充、个人密码同步。
-- 不接 1Password、OpenBao、Vault、Infisical 或云 Secret Manager。
+- 除 P-07A 封闭的 Vault KV v2 固定版本 CredentialSource 外，不接
+  1Password、OpenBao、Infisical、其他 Vault 能力或云 Secret Manager。
 - 不做多租户、SSO、SCIM、企业控制面、HA 或多区域。
 - 除 P2.1 封闭的 GitHub App Installation 换票外，不实现通用 OAuth、SSH、HSM、
   动态数据库 Secret 或任意 provider operation。

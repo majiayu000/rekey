@@ -388,6 +388,7 @@ Action 和最小响应 schema 比通用透明代理更强。任何新增 canonic
 | P1 | 流式响应 | cargo test -p rekey-broker --test streaming_sealing | 跨 chunk 反射可检测并中止 |
 | P1+ | macOS 隔离 | cargo test -p rekey-e2e --test macos_sandbox | Agent 子进程无秘密、无全局 CA、无旁路 |
 | P-05 | Connector 契约 | `scripts/p5-connector-sdk.sh` | 静态 registry、effect/lifecycle、MCP/OAuth projection 和 reserved GitHub no-fallback 一致 |
+| P-07A | Vault KV v2 固定版本源 | `cargo test -p rekey-broker --test vault_source_contract`; `scripts/p7-vault-kv-source.sh` | 精确版本读取、源与结果 sealing、drain 准入、轮换、重启及备份恢复通过；不外推为通用 Vault |
 | H | 持续 Fuzz | `cargo fuzz run <ipc|action|policy|response_sealing|restore>` | 五个边界无 crash、hang、越界资源使用或解析分歧 |
 | P2 | 多租户 | cargo test -p rekey-control --test tenant_isolation | 跨租户读取、缓存和 token 全拒绝 |
 
@@ -423,9 +424,14 @@ Action 和最小响应 schema 比通用透明代理更强。任何新增 canonic
   撤销 workload-minted session，exact same-bundle retry 保留现有 session；默认拓扑
   和已发布 Alpha 范围不变。
 - P-05 `rekey-connector` 只是编译期静态 contract registry。它描述既有 opaque
-  header inject 和 closed GitHub App 的 effect/lifecycle，由 Broker 继续持有 Secret、
+  header inject、closed GitHub App 和 closed Vault KV v2 source 的 effect/lifecycle，由 Broker 继续持有 Secret、
   IO、deadline、audit、sealing 和 revoke。MCP/OAuth adapter 只做无秘密投影，不提供
   MCP server、live generic OAuth、dynamic plugin/registry 或新 Agent operation。
+- P-07A 只允许管理员登记一个 public HTTPS Vault KV v2 origin、mount、path、精确
+  非零版本、精确 string key 和 bootstrap token。Broker 在 durable started audit 与
+  remote-effect admission 后执行一次无重试 GET，解析后只把值注入既有 fixed Action；
+  Agent 不能选择 source 或取得 token/value。该边界不包含 private Vault 网络、latest、
+  Vault auth、namespace、dynamic lease、cloud KMS/secrets、1Password、HSM 或 keychain。
 - Audit 使用本地 SQLite/WAL fail-closed；P-02 只通过 owner-checked Admin socket
   提供每次最多扫描 1,000 行、游标续查的稳定快照脱敏查询和 mode-0600 JSONL 导出，
   Agent socket 无此接口。

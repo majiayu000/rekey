@@ -348,18 +348,57 @@ installation is accepted. Exchange, create-issue, revoke, transport failures,
 and mutative effects are never retried; repository listing may retry once only
 for a bounded canonical `Retry-After` response.
 
+## Vault KV v2 fixed-version source
+
+This post-Alpha development feature resolves one exact string from one exact
+HashiCorp Vault KV v2 version and uses it only as the credential for an existing
+fixed HTTPS Action. Create an owner-readable profile and delete it after the
+encrypted Admin mutation succeeds:
+
+```json
+{
+  "credential_type": "vault-kv-v2-source-v1",
+  "origin": "https://vault.example.com",
+  "mount": "secret",
+  "path": "agents/github",
+  "key": "token",
+  "version": 7,
+  "vault_token": "hvs.REPLACE_ME"
+}
+```
+
+```bash
+rekey credential add-vault-kv LABEL --file profile.json
+rekey credential rotate-vault-kv CREDENTIAL_ID --file profile.json
+```
+
+The Broker issues only `GET /v1/MOUNT/data/PATH?version=N` with
+`X-Vault-Token`, through the existing public-address HTTPS screen. It does not
+retry the source request. The selected response field must be the only field in
+`data.data`, must be a visible-ASCII string no larger than 8 KiB, and must match
+the configured nonzero version. Deleted, destroyed, malformed, reflected, or
+wrong-version results stop before the final Action request.
+
+The Agent cannot select the Vault location or read either the Vault token or
+resolved value. Private Vault networks, private CA configuration, latest/alias
+resolution, dynamic secrets and leases, Vault authentication flows, namespaces,
+cloud secret/KMS providers, 1Password, HSM, keychain, and generic source
+templates are not supported.
+
 ## Connector SDK contract
 
 The post-Alpha development tree contains the IO-free `rekey-connector` library.
 Its compile-time registry gives integrators stable versioned descriptors for
-the existing opaque-header and closed GitHub App paths. It also provides a pure
+the existing opaque-header, closed GitHub App, and closed Vault KV v2 source
+paths. It also provides a pure
 MCP tool projection for authorized Actions whose policy input schema explicitly
 has an object root, plus a redacted RFC 8693 OAuth exchange descriptor that
 contains only fixed public metadata.
 
 This does not add a CLI command, MCP server, OAuth authorization flow, provider
-discovery, live generic token exchange, dynamic connector, or secret-bearing
-adapter. An MCP host must keep the Rekey capability outside tool arguments and
+discovery, live generic token exchange, or dynamic connector. The built-in
+Vault source is Broker-owned and is not exposed as a generic SDK adapter. An MCP
+host must keep the Rekey capability outside tool arguments and
 call the existing Agent IPC operation. MCP client tokens must never be reused
 as upstream provider tokens. Connector selection does not move credential,
 network, audit, deadline, sealing, lease, or revoke ownership out of `rekeyd`.

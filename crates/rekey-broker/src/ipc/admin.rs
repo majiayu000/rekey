@@ -32,8 +32,10 @@ use crate::session::CreateSessionError;
 const ADMIN_MUTATION_TIMEOUT: Duration = Duration::from_secs(25);
 
 mod audit_query;
+mod credential_profiles;
 mod github;
 mod password_lifecycle;
+mod vault_kv;
 
 fn admin_body_limit(message_type: u16) -> u32 {
     match message_type {
@@ -43,9 +45,9 @@ fn admin_body_limit(message_type: u16) -> u32 {
         admin_msg::CREDENTIAL_ADD | admin_msg::CREDENTIAL_ROTATE | admin_msg::PASSWORD_CHANGE => {
             ipc::ADMIN_SECRET_BODY_MAX_BYTES
         }
-        admin_msg::CREDENTIAL_ROTATE_GITHUB_APP | admin_msg::GITHUB_WEBHOOK_APPLY => {
-            ipc::ADMIN_SECRET_BODY_MAX_BYTES
-        }
+        admin_msg::CREDENTIAL_ROTATE_GITHUB_APP
+        | admin_msg::GITHUB_WEBHOOK_APPLY
+        | admin_msg::CREDENTIAL_ROTATE_VAULT_KV => ipc::ADMIN_SECRET_BODY_MAX_BYTES,
         admin_msg::CREDENTIAL_REVOKE
         | admin_msg::ACTION_CREATE
         | admin_msg::ACTION_UPDATE
@@ -210,18 +212,8 @@ async fn dispatch(
             let (kind, proof, secret) = ipc::parse_proof_and_secret_body(&frame.body)?;
             let _owner = ctx.lifecycle.coordinate_until(deadline).await?;
             ctx.lifecycle.reject_if_not_running()?;
-            if add_meta.kind == rekey_domain::credential::CredentialKind::GitHubAppInstallation {
-                authority_until(
-                    deadline,
-                    ctx.authority.verify_proof(proof_from(kind, proof)),
-                )
+            credential_profiles::validate_add(ctx, deadline, add_meta.kind, kind, proof, secret)
                 .await?;
-                crate::github_app::GitHubAppCredential::validate_profile(secret).map_err(|_| {
-                    BrokerError::Domain(rekey_domain::DomainError::InvalidActionDefinition(
-                        "invalid GitHub App credential profile".to_owned(),
-                    ))
-                })?;
-            }
             let credentials = authority_until(deadline, ctx.authority.credential_list()).await?;
             ensure_credential_catalog_fits(credentials, &add_meta.label, add_meta.kind)?;
             let metadata = authority_until(
@@ -267,6 +259,7 @@ async fn dispatch(
         }
         admin_msg::CREDENTIAL_ROTATE_GITHUB_APP => github::handle_rotate(frame, ctx).await,
         admin_msg::GITHUB_WEBHOOK_APPLY => github::handle_webhook(frame, ctx).await,
+        admin_msg::CREDENTIAL_ROTATE_VAULT_KV => vault_kv::handle_rotate(frame, ctx).await,
         admin_msg::CREDENTIAL_REVOKE => {
             let deadline = admin_mutation_deadline();
             ctx.lifecycle.reject_if_not_running()?;

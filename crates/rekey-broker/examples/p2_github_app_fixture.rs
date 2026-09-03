@@ -19,6 +19,12 @@ use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 
 const HOST: &str = "api.github.com";
+const VAULT_HOST: &str = "vault.test.local";
+const ACTION_HOST: &str = "api.test.local";
+const P7_SOURCE_TOKEN_ONE: &str = "P7-VAULT-SOURCE-TOKEN-ONE-CANARY";
+const P7_SOURCE_TOKEN_TWO: &str = "P7-VAULT-SOURCE-TOKEN-TWO-CANARY";
+const P7_RESOLVED_ONE: &str = "P7-RESOLVED-VALUE-ONE-CANARY";
+const P7_RESOLVED_TWO: &str = "P7-RESOLVED-VALUE-TWO-CANARY";
 const CLIENT_ID: &str = "Iv1.8a61f9b3a7aba766";
 const INSTALLATION_ID: u64 = 515_151;
 const REPOSITORY_ID: u64 = 616_161;
@@ -113,7 +119,11 @@ fn tls_config() -> Result<(Vec<u8>, rustls::ServerConfig), Box<dyn std::error::E
     ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
     let ca_key = rcgen::KeyPair::generate()?;
     let ca_cert = ca_params.self_signed(&ca_key)?;
-    let leaf_params = rcgen::CertificateParams::new(vec![HOST.to_owned()])?;
+    let leaf_params = rcgen::CertificateParams::new(vec![
+        HOST.to_owned(),
+        VAULT_HOST.to_owned(),
+        ACTION_HOST.to_owned(),
+    ])?;
     let leaf_key = rcgen::KeyPair::generate()?;
     let leaf = leaf_params.signed_by(&leaf_key, &ca_cert, &ca_key)?;
     let certs = vec![rustls::pki_types::CertificateDer::from(leaf.der().to_vec())];
@@ -321,7 +331,67 @@ async fn serve_mock(
                     == Some(concat!("rekey/", env!("CARGO_PKG_VERSION")));
             let (expected_installation, expected_repositories, expected_permissions) =
                 expected_exchange(&mode);
-            let result = if req.method == "POST"
+            let result = if mode.starts_with("p7-")
+                && req.method == "GET"
+                && req
+                    .path
+                    .starts_with("/v1/secret/data/agents/github?version=")
+            {
+                let (version, source_token, resolved) = if mode == "p7-v2" {
+                    (8, P7_SOURCE_TOKEN_TWO, P7_RESOLVED_TWO)
+                } else {
+                    (7, P7_SOURCE_TOKEN_ONE, P7_RESOLVED_ONE)
+                };
+                let token_ok =
+                    req.headers.get("x-vault-token").map(String::as_str) == Some(source_token);
+                let path_ok =
+                    req.path == format!("/v1/secret/data/agents/github?version={version}");
+                let accept_ok =
+                    req.headers.get("accept").map(String::as_str) == Some("application/json");
+                if !token_ok || !path_ok || !accept_ok || !req.body.is_empty() {
+                    respond(&mut tls, "400 Bad Request", br#"{"error":"source"}"#).await
+                } else {
+                    if append_trace(&trace_path, "p7.source.ok").is_err() {
+                        return;
+                    }
+                    let returned_version = if mode == "p7-wrong-version" {
+                        version + 1
+                    } else {
+                        version
+                    };
+                    let body = if mode == "p7-reflect-source-token" {
+                        json!({
+                            "data":{"data":{"token":resolved},"metadata":{"version":returned_version,"deletion_time":"","destroyed":false}},
+                            "debug":source_token
+                        })
+                    } else {
+                        json!({
+                            "data":{"data":{"token":resolved},"metadata":{"version":returned_version,"deletion_time":"","destroyed":false}}
+                        })
+                    };
+                    respond(
+                        &mut tls,
+                        "200 OK",
+                        &serde_json::to_vec(&body).unwrap_or_default(),
+                    )
+                    .await
+                }
+            } else if mode.starts_with("p7-") && req.method == "POST" && req.path == "/v1/things" {
+                let expected = if mode == "p7-v2" {
+                    P7_RESOLVED_TWO
+                } else {
+                    P7_RESOLVED_ONE
+                };
+                let token_ok = bearer(&req).map(|value| value == expected).unwrap_or(false);
+                if !token_ok || req.body != br#"{"operation":"bounded"}"# {
+                    respond(&mut tls, "400 Bad Request", br#"{"error":"action"}"#).await
+                } else {
+                    if append_trace(&trace_path, "p7.action.ok").is_err() {
+                        return;
+                    }
+                    respond(&mut tls, "200 OK", br#"{"result":"p7-ok"}"#).await
+                }
+            } else if req.method == "POST"
                 && req.path == format!("/app/installations/{expected_installation}/access_tokens")
             {
                 let jwt_value = bearer(&req);

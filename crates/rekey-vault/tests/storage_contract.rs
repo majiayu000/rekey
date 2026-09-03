@@ -216,22 +216,24 @@ fn opening_rejects_malformed_vault_integrity_ciphertext() {
 }
 
 #[test]
-fn opening_rejects_v6_without_migration() {
-    let vault = common::init_test_vault();
-    let db = paths::vault_db(&vault.state_dir);
-    let connection = rusqlite::Connection::open(&db).unwrap();
-    connection
-        .execute_batch("PRAGMA ignore_check_constraints = ON;")
-        .unwrap();
-    connection
-        .execute("UPDATE vault_header SET format_version = 6", [])
-        .unwrap();
-    drop(connection);
+fn opening_rejects_prior_versions_without_migration() {
+    for version in [6, 7] {
+        let vault = common::init_test_vault();
+        let db = paths::vault_db(&vault.state_dir);
+        let connection = rusqlite::Connection::open(&db).unwrap();
+        connection
+            .execute_batch("PRAGMA ignore_check_constraints = ON;")
+            .unwrap();
+        connection
+            .execute("UPDATE vault_header SET format_version = ?1", [version])
+            .unwrap();
+        drop(connection);
 
-    assert!(matches!(
-        SqliteRecordStore::open(&db),
-        Err(AuthorityError::UnsupportedFormatVersion | AuthorityError::StorageIntegrityFailed)
-    ));
+        assert!(matches!(
+            SqliteRecordStore::open(&db),
+            Err(AuthorityError::UnsupportedFormatVersion | AuthorityError::StorageIntegrityFailed)
+        ));
+    }
 }
 
 #[test]
