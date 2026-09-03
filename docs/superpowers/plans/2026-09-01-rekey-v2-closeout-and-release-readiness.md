@@ -1000,11 +1000,21 @@ fuzz `33702733897` 和 performance `33702733883` 全部成功。该能力不进�
 
 **跟踪：** [Issue #27](https://github.com/majiayu000/rekey/issues/27)
 
+**独立 spec：** [`2026-09-03-connector-sdk-p05.md`](../specs/2026-09-03-connector-sdk-p05.md)
+
 - typed action/effect schema。
 - credential effect：inject、sign、exchange、lease、revoke。
 - connector 生命周期、能力声明、测试工具和版本合同。
 - MCP/OAuth adapter。
 - registry、来源验证和隔离边界。
+
+**当前证据（2026-09-03）：** IO-free `rekey-connector` contract format v1、两个
+compile-time built-in descriptors、ordered inject/sign/exchange/lease/revoke effects、
+Broker registry routing、public contract testkit、MCP object-schema projection 和
+RFC 8693 public-metadata projection 已实现。完整 workspace fmt/check/clippy/test、
+P0 真实 HTTPS、P2 GitHub App、P5 SDK、root/fuzz audit、nightly fuzz build、机械禁用项与
+CLI 负依赖本地全绿。exact-head CI、review、merge 与 post-main 证据尚待完成，因此本项
+保持进行中。
 
 ### P-06 GitHub App 扩展
 
@@ -1136,7 +1146,7 @@ fuzz `33702733897` 和 performance `33702733883` 全部成功。该能力不进�
 | Alpha 文档 | 完成（含 erratum） | 用户、安装、运维、发行、开源治理和支持范围已完成；archive 内嵌发布前 Matrix 的状态差异由公开 Release erratum 和当前仓库矩阵明确衔接 |
 | 可公开 Alpha | 是 | [v2.0.0-alpha.1](https://github.com/majiayu000/rekey/releases/tag/v2.0.0-alpha.1) 已公开；双平台 fresh-install、attestation 和 public-URL smoke 通过 |
 | H 安全与可靠性补强 | 完成 | H-01～H-08 已以持续 fuzz、真实 ENOSPC/文件系统故障注入、边界文档、公开双平台发行证据、供应链取舍以及固定主机 1,800 秒性能/容量/soak 证据全部关闭 |
-| P 后续产品能力 | 进行中 | P-01～P-04 均已完成 adversarial/black-box、exact-head、merge 和 post-main 验收但尚未发布；P-05 已进入 issue/spec 阶段，P-06～P-10 未开始 |
+| P 后续产品能力 | 进行中 | P-01～P-04 均已完成 adversarial/black-box、exact-head、merge 和 post-main 验收但尚未发布；P-05 已进入实现与本地验收阶段，P-06～P-10 未开始 |
 | 可宣称通用 G2 | 否 | 只有有界 Linux reference；默认仍是 G1 |
 | 可宣称通用 Connector | 否 | 只有 fixed HTTPS Action 和 closed GitHub App profile |
 | 企业就绪 | 否 | 控制面、身份、HA/DR、合规、运营和商业门槛均未完成 |

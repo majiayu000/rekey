@@ -387,11 +387,11 @@ Action 和最小响应 schema 比通用透明代理更强。任何新增 canonic
 | P1 | Linux 隔离 | cargo test -p rekey-e2e --test linux_g2 | Agent root 仍不能读 Broker/Vault 或直连 |
 | P1 | 流式响应 | cargo test -p rekey-broker --test streaming_sealing | 跨 chunk 反射可检测并中止 |
 | P1+ | macOS 隔离 | cargo test -p rekey-e2e --test macos_sandbox | Agent 子进程无秘密、无全局 CA、无旁路 |
-| P1+ | Connector 契约 | cargo test -p rekey-connectors --test contract | origin、Header、redirect、body、response 策略一致 |
+| P-05 | Connector 契约 | `scripts/p5-connector-sdk.sh` | 静态 registry、effect/lifecycle、MCP/OAuth projection 和 reserved GitHub no-fallback 一致 |
 | H | 持续 Fuzz | `cargo fuzz run <ipc|action|policy|response_sealing|restore>` | 五个边界无 crash、hang、越界资源使用或解析分歧 |
 | P2 | 多租户 | cargo test -p rekey-control --test tenant_isolation | 跨租户读取、缓存和 token 全拒绝 |
 
-上表里标为 P0 且 crate 已存在的命令（`authority_contract`、`bootstrap_contract`、`broker_ipc`、`adversarial_http`、`reflected_secret`、`secret_canary`、`fault_injection`）已经在本仓库实现，并以 `docs/product-foundation/feature-truth-matrix.md` 为是否“通过”的唯一状态源。P1 typed policy、bounded Linux G2 reference、chunk-boundary sealing 和 native service-manager，P2.1 GitHub App local profile，以及 H-01 持续 fuzz 已有对应实现和门槛；通用 Connector SDK、macOS G2、企业多租户 control plane 与 HA/DR 仍是计划合同，不能视为已经通过。
+上表里标为 P0 且 crate 已存在的命令（`authority_contract`、`bootstrap_contract`、`broker_ipc`、`adversarial_http`、`reflected_secret`、`secret_canary`、`fault_injection`）已经在本仓库实现，并以 `docs/product-foundation/feature-truth-matrix.md` 为是否“通过”的唯一状态源。P1 typed policy、bounded Linux G2 reference、chunk-boundary sealing 和 native service-manager，P2.1 GitHub App local profile、P-05 静态 Connector contract，以及 H-01 持续 fuzz 已有对应实现和门槛。P-05 只有 IO-free SDK、两个内置 descriptor 和纯 MCP/OAuth projection，不是通用 provider、MCP server 或 live OAuth 互操作证据；macOS G2、企业多租户 control plane 与 HA/DR 仍是计划合同。
 
 ## 16. 已锁定与待决事项
 
@@ -422,6 +422,10 @@ Action 和最小响应 schema 比通用透明代理更强。任何新增 canonic
   CI 或 cloud API。JWT replay digest 持久化，只有 new-version policy activation
   撤销 workload-minted session，exact same-bundle retry 保留现有 session；默认拓扑
   和已发布 Alpha 范围不变。
+- P-05 `rekey-connector` 只是编译期静态 contract registry。它描述既有 opaque
+  header inject 和 closed GitHub App 的 effect/lifecycle，由 Broker 继续持有 Secret、
+  IO、deadline、audit、sealing 和 revoke。MCP/OAuth adapter 只做无秘密投影，不提供
+  MCP server、live generic OAuth、dynamic plugin/registry 或新 Agent operation。
 - Audit 使用本地 SQLite/WAL fail-closed；P-02 只通过 owner-checked Admin socket
   提供每次最多扫描 1,000 行、游标续查的稳定快照脱敏查询和 mode-0600 JSONL 导出，
   Agent socket 无此接口。
@@ -442,4 +446,4 @@ Action 和最小响应 schema 比通用透明代理更强。任何新增 canonic
 
 ## 17. Readiness
 
-本威胁模型已经锁定内置 Credential Authority 的密钥层级、状态所有权和禁止接口。当前 P0/P1/P2.1/P-03/P-04 local gates 的实际状态以 Feature Truth Matrix 为准；required systemd gate 和一次真实 `github.com` GitHub App provider 验证已经完成。P-03 与 P-04 的开发分支证据不代表进入已发布 `v2.0.0-alpha.1`。默认同用户拓扑仍只有 G1，有界 Linux container/namespace recipe 的 G2 证据不能外推为通用产品保证；签名 policy/approval 和静态 workload JWT 验证也不建立远程控制面、企业身份、在线 IdP 集成或通用 Connector。在独立 crypto、IPC 边界和 audit/failure-semantics 人工审查完成前，不能对外声称恶意 Agent 在所有部署中永远无法获得或重定向密钥。
+本威胁模型已经锁定内置 Credential Authority 的密钥层级、状态所有权和禁止接口。当前 P0/P1/P2.1/P-03/P-04/P-05 local gates 的实际状态以 Feature Truth Matrix 为准；required systemd gate 和一次真实 `github.com` GitHub App provider 验证已经完成。P-03～P-05 的开发分支证据不代表进入已发布 `v2.0.0-alpha.1`。默认同用户拓扑仍只有 G1，有界 Linux container/namespace recipe 的 G2 证据不能外推为通用产品保证；签名 policy/approval、静态 workload JWT 验证和 Connector contract 也不建立远程控制面、企业身份、在线 IdP、通用 provider、MCP server 或 live OAuth 互操作。在独立 crypto、IPC 边界和 audit/failure-semantics 人工审查完成前，不能对外声称恶意 Agent 在所有部署中永远无法获得或重定向密钥。

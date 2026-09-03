@@ -16,6 +16,7 @@ name = "rekeyd"
 path = "src/bin/rekeyd.rs"
 
 [dependencies]
+rekey-connector = { workspace = true }
 rekey-domain = { workspace = true }
 rekey-policy = { workspace = true }
 rekey-vault = { workspace = true }

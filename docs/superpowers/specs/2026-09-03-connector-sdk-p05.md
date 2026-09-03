@@ -121,6 +121,8 @@ pub struct ConnectorContract {
     pub version: u16,
     pub credential_kind: CredentialKind,
     pub effects: &'static [CredentialEffect],
+    pub source: ConnectorSource,
+    pub isolation: ConnectorIsolation,
     pub remote_effect: bool,
     pub revoke_before_success: bool,
 }
@@ -128,16 +130,18 @@ pub struct ConnectorContract {
 
 The exact built-in contracts are:
 
-| Connector | Credential kind | Ordered effects | Remote | Revoke before success |
-| --- | --- | --- | --- | --- |
-| `fixed-http-header@1` | `opaque-token` | `inject` | yes | no |
-| `github-app-installation@1` | `github-app-installation` | `sign → exchange → lease → revoke` | yes | yes |
+| Connector | Credential kind | Ordered effects | Source / isolation | Remote | Revoke before success |
+| --- | --- | --- | --- | --- | --- |
+| `fixed-http-header@1` | `opaque-token` | `inject` | built-in binary / Broker process | yes | no |
+| `github-app-installation@1` | `github-app-installation` | `sign → exchange → lease → revoke` | built-in binary / Broker process | yes | yes |
 
 The registry is a deterministic static slice ordered by `(id, version)`. IDs
 use lowercase ASCII letters, digits, and hyphens; versions are non-zero. The
 contract testkit checks uniqueness, ordering, format version, non-empty effect
 sequences, and the two lifecycle invariants: `lease` requires later `revoke`,
-and `revoke_before_success` requires a final `revoke` effect. This test helper
+and `revoke_before_success` requires a final `revoke` effect. Source and
+isolation are closed to `BuiltInBinary` and `BrokerProcess`; independent
+connector signatures and stronger isolation belong to P-10. This test helper
 does not validate runtime plugins because P-05 has none.
 
 ## 6. Selection and Broker integration
@@ -147,11 +151,11 @@ closed `ConnectorSelectionError::ProfileMismatch`:
 
 1. `OpaqueToken` plus a non-reserved fixed HTTPS action resolves to
    `FixedHttpHeaderV1`.
-2. `GitHubAppInstallation` plus the exact existing GitHub repository-list
-   profile resolves to `GitHubAppInstallationV1`.
-3. `OpaqueToken` plus that reserved profile is rejected, preserving the current
+2. `GitHubAppInstallation` resolves to `GitHubAppInstallationV1`; the existing
+   Broker-owned profile validation then rejects every non-matching action before
+   signing or network IO.
+3. `OpaqueToken` plus the reserved GitHub profile is rejected, preserving the current
    no-fallback rule.
-4. `GitHubAppInstallation` plus every other action is rejected.
 
 The exact GitHub origin, method, path, auth header, prefix, empty-body, and
 header conditions continue to be checked by `GitHubAppCredential::validate_action`.
@@ -178,7 +182,9 @@ tool descriptor. It does not list actions by itself and cannot open either UDS.
 - Input schema: the binding's existing JSON Schema, only when its root explicitly
   declares `"type": "object"`. Every other root returns
   `UnsupportedInputSchema`; P-05 does not partially evaluate composition, wrap
-  the schema, or silently change request semantics.
+  the schema, or silently change request semantics. A schema containing
+  `x-mcp-header` at any depth is also rejected so arguments cannot be mirrored
+  into transport headers.
 - Output schema: absent. Existing fixed Actions may return arbitrary bounded
   bytes, so claiming structured output would be false.
 - Ordering: projections are sorted by `(name, action_id, version)`.
@@ -232,11 +238,13 @@ built-in connectors:
 
 Repository integration tests additionally prove that runtime selection matches
 the descriptor and that the existing opaque and GitHub execution paths keep
-their exact outcomes. The real P-05 acceptance runs release binaries, a real
-BrokerRuntime, Admin/Agent UDS, SQLite, and the existing local TLS fixtures. It
-must execute one opaque Action and the closed GitHub three-stage flow, then
-scan state, logs, audit, MCP/OAuth projections, and captured Agent responses for
-credential, JWT, installation-token, capability, and subject-token canaries.
+their exact outcomes. The real P-05 acceptance is the single security job's
+combination of `scripts/p0-acceptance.sh`, `scripts/p2-github-app.sh`, and the
+focused `scripts/p5-connector-sdk.sh` contract gate. Together they run release
+binaries, a real BrokerRuntime, Admin/Agent UDS, SQLite, and the existing local
+TLS fixtures; execute one opaque Action and the closed GitHub three-stage flow;
+and scan state, logs, audit, projections, and captured Agent responses for
+credential, JWT, installation-token, capability, and subject-token fields.
 
 Required local gates:
 

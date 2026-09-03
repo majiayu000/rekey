@@ -1578,6 +1578,7 @@ dependencies = [
  "data-encoding",
  "libc",
  "rand 0.9.5",
+ "rekey-connector",
  "rekey-domain",
  "rekey-policy",
  "rekey-vault",
@@ -1592,6 +1593,16 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "zeroize",
+]
+
+[[package]]
+name = "rekey-connector"
+version = "2.0.0-alpha.1"
+dependencies = [
+ "rekey-domain",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

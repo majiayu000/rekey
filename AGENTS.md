@@ -15,13 +15,15 @@ single-port proxy, or TCP passthrough exists anymore.
 - Mechanical contracts (must stay clean):
   - `rg -n 'REKEY_PASSWORD|get_secret_value|/proxy/|passthrough' crates tests src` → no matches
   - `rg -n 'get_secret\b|read_secret|export_secret' crates/rekey-domain crates/rekey-broker crates/rekey-cli` → no matches
-  - `cargo tree -p rekey-cli -e normal` → no rusqlite / aes-gcm / argon2 / reqwest / rekey-vault / rekey-broker
+  - `cargo tree -p rekey-cli -e normal` → no rusqlite / aes-gcm / argon2 / reqwest / rekey-vault / rekey-broker / rekey-connector
 
 ## Architecture
 
-Cargo workspace, 5 crates + root integration-test host:
+Cargo workspace, 6 crates + root integration-test host:
 
 - `rekey-domain` — pure models, invariants, typed errors, IPC wire codec (no IO)
+- `rekey-connector` — versioned compile-time connector contracts, built-in
+  registry, testkit, and pure MCP/OAuth projections (no IO or secrets)
 - `rekey-policy` — canonical typed policy snapshots, schema validation, and a
   deterministic default-deny evaluator (no credential IO)
 - `rekey-vault` — envelope crypto (Argon2id/HKDF → VRK → per-version DEK → payload,
