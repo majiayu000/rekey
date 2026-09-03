@@ -170,6 +170,11 @@ impl BrokerCtx {
         };
         let active = ActivePolicy::activate_bundle(verified, crate::now_ts()?)?;
         let activated_identity = (input.signer_id, input.version, input.bundle_digest);
+        let was_target_active = self.policy.read().await.as_ref().is_some_and(|current| {
+            current.signer_id() == Some(activated_identity.0)
+                && current.snapshot().version().get() == activated_identity.1
+                && current.bundle_digest() == Some(activated_identity.2)
+        });
         let activation = tokio::time::timeout_at(
             deadline,
             self.authority
@@ -187,6 +192,15 @@ impl BrokerCtx {
                 )
                 .await;
                 if matches!(reconciled, Ok(Ok(()))) {
+                    let target_is_active =
+                        self.policy.read().await.as_ref().is_some_and(|current| {
+                            current.signer_id() == Some(activated_identity.0)
+                                && current.snapshot().version().get() == activated_identity.1
+                                && current.bundle_digest() == Some(activated_identity.2)
+                        });
+                    if !was_target_active && target_is_active {
+                        self.sessions.revoke_workload();
+                    }
                     return Err(BrokerError::Authority(AuthorityError::AuthorityBusy));
                 }
                 self.sessions.close_and_revoke_all();
@@ -197,13 +211,9 @@ impl BrokerCtx {
                 return Err(BrokerError::Authority(AuthorityError::Faulted));
             }
         }
-        let mut guard = self.policy.write().await;
-        let preserve_expiry_latch = guard.as_ref().is_some_and(|current| {
-            current.signer_id() == Some(activated_identity.0)
-                && current.snapshot().version().get() == activated_identity.1
-                && current.bundle_digest() == Some(activated_identity.2)
-        });
-        if !preserve_expiry_latch {
+        if !was_target_active {
+            self.sessions.revoke_workload();
+            let mut guard = self.policy.write().await;
             *guard = Some(Arc::new(active));
         }
         Ok(())

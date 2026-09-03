@@ -1616,6 +1616,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+ "zeroize",
 ]
 
 [[package]]
@@ -1632,6 +1633,8 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror 1.0.69",
+ "url",
+ "zeroize",
 ]
 
 [[package]]

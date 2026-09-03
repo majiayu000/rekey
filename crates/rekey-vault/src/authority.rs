@@ -416,6 +416,27 @@ impl Worker {
                 }
                 drop(reply.send(result));
             }
+            AuthorityCommand::ConsumeWorkloadToken {
+                replay_digest,
+                expires_at_ms,
+                audit,
+                not_after,
+                reply,
+            } => {
+                let result = (|| {
+                    if mutation_expired(not_after) {
+                        return Err(AuthorityError::AuthorityBusy);
+                    }
+                    self.require_unlocked().map(|_| ())?;
+                    let event = self.audit_event_or_fault(audit)?;
+                    let result =
+                        self.store
+                            .consume_workload_token(replay_digest, expires_at_ms, event);
+                    self.fault_on_audit_failure(result)
+                })();
+                self.touch_if_ok(&result);
+                drop(reply.send(result));
+            }
             AuthorityCommand::AuditQuery { query, reply } => {
                 let result = if matches!(self.state, VaultState::Faulted) {
                     Err(AuthorityError::Faulted)

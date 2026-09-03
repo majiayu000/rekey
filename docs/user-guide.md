@@ -2,8 +2,9 @@
 
 This guide assumes the verified Alpha binaries are installed and the broker is
 running. Read [the security and platform scope](alpha-scope.md) first. Sections
-covering signed persistent policy and approval describe development head P-03;
-those commands are not included in the published `v2.0.0-alpha.1` artifacts.
+covering signed persistent policy, approval, and workload identity describe
+post-Alpha development head; those commands are not included in the published
+`v2.0.0-alpha.1` artifacts.
 
 ## Start, unlock, and status
 
@@ -130,10 +131,11 @@ returned values. `expires_at_ms` must be a future Unix epoch in milliseconds.
 
 ```json
 {
-  "format_version": 2,
+  "format_version": 3,
   "version": 1,
   "expires_at_ms": 1900000000000,
   "approvers": [],
+  "workload_identities": [],
   "bindings": [
     {
       "action_id": "00000000-0000-4000-8000-000000000000",
@@ -197,6 +199,40 @@ wrong-signer, skipped-version, or rollback bundle is rejected without changing
 the active policy. Lock clears the compiled policy and a successful unlock
 reverifies the signed, lifecycle-sealed persisted bundle before loading it. Before that unlock,
 status is `unavailable`. Capability sessions still disappear on lock or restart.
+
+### Create a workload-attested session
+
+Policy snapshot v3 can map a generic OIDC, SPIFFE JWT-SVID, Kubernetes service
+account, or CI/cloud JWT subject to a Rekey `principal_id`. Each mapping pins an
+exact HTTPS issuer, exact subject/profile, canonical audience set, maximum token
+age, and static Ed25519 or RS256 verification keys. See the
+[P-04 specification](superpowers/specs/2026-09-03-workload-identity-p04.md) for
+the closed JSON schema.
+
+After activating that signed policy, send the workload JWT only through stdin:
+
+```bash
+printf '%s\n' "$WORKLOAD_TOKEN" | rekey session create \
+  --action ACTION_ID@1 --ttl 15m --max-uses 20 \
+  --workload-token-stdin
+```
+
+This uses `agent.sock` and does not require an Admin step-up. Rekey verifies the
+signature and exact claims, checks that the mapped principal may request every
+Action, and atomically consumes the token replay identity before returning the
+capability. Replay remains denied after restart and after restoring a backup
+that already contains the consumption record. A valid backup created before
+consumption cannot contain that record; restoring it is complete-vault rollback
+and is outside the G1 freshness guarantee described below. Activating a new
+policy version revokes workload-minted sessions but preserves Admin-minted
+sessions. Retrying the exact active bundle preserves both kinds of session.
+Lock, restart, expiry, use exhaustion, and explicit revoke still end the
+resulting capability.
+
+Rekey does not fetch JWKS, perform OIDC discovery or introspection, contact
+SPIRE or Kubernetes APIs, or hold issuer private keys. Rotate a workload
+verification key by signing and activating the next consecutive policy bundle;
+the old policy activation revokes existing workload sessions.
 
 To require approval, add approvers to the snapshot catalog and use a
 `require-approval` rule. The rule names the allowed approvers, quorum 1 or 2,

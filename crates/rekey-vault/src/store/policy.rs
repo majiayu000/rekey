@@ -247,6 +247,12 @@ impl SqliteRecordStore {
             ],
         )
         .map_err(storage)?;
+        // Replay digests are scoped to the policy digest. A successful,
+        // irreversible version roll-forward makes every prior digest
+        // unverifiable, so this is the only safe bounded cleanup point under
+        // wall-clock rollback. Exact same-bundle retries return before here.
+        tx.execute("DELETE FROM workload_token_uses", [])
+            .map_err(storage)?;
         update_state(&tx, state)?;
         audit::insert(&tx, &event)?;
         commit_audited(tx)

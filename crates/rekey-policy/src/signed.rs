@@ -348,7 +348,7 @@ mod tests {
             "format_version": 1,
             "signer_id": signer_id,
             "snapshot": {
-                "format_version": 2,
+                "format_version": 3,
                 "version": 1,
                 "expires_at_ms": 10_000,
                 "approvers": [{
@@ -356,6 +356,7 @@ mod tests {
                     "algorithm": "ed25519",
                     "public_key": HEXLOWER.encode(approver.public_key().as_ref()),
                 }],
+                "workload_identities": [],
                 "bindings": [{
                     "action_id": action_id,
                     "version": 1,

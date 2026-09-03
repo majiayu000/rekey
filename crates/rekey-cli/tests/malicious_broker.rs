@@ -29,6 +29,8 @@ enum Attack {
     AuditNonEmptyMetadata,
     AuditUnknownPageField,
     AuditMalformedRecord,
+    WorkloadResponseBody,
+    WorkloadUnknownResponseField,
 }
 
 fn rekey_bin() -> PathBuf {
@@ -42,11 +44,17 @@ fn run_attack(attack: Attack) -> std::process::Output {
     std::fs::create_dir_all(&runtime_dir).expect("runtime dir");
     std::fs::set_permissions(&runtime_dir, std::fs::Permissions::from_mode(0o700))
         .expect("protect runtime dir");
-    let socket = runtime_dir.join(if matches!(attack, Attack::InvalidApprovalChallenge) {
-        "agent.sock"
-    } else {
-        "admin.sock"
-    });
+    let workload_attack = matches!(
+        attack,
+        Attack::WorkloadResponseBody | Attack::WorkloadUnknownResponseField
+    );
+    let socket = runtime_dir.join(
+        if matches!(attack, Attack::InvalidApprovalChallenge) || workload_attack {
+            "agent.sock"
+        } else {
+            "admin.sock"
+        },
+    );
     let listener = UnixListener::bind(&socket).expect("bind fake broker");
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))
         .expect("protect fake broker socket");
@@ -222,6 +230,29 @@ fn run_attack(attack: Attack) -> std::process::Output {
                 malformed_audit_page().len() as u32,
                 malformed_audit_page(),
             ),
+            Attack::WorkloadResponseBody => (
+                Channel::Agent,
+                request.request_id,
+                resp_msg::OK,
+                valid_session_response(),
+                1,
+                vec![b'x'],
+            ),
+            Attack::WorkloadUnknownResponseField => (
+                Channel::Agent,
+                request.request_id,
+                resp_msg::OK,
+                serde_json::json!({
+                    "session_id":"00000000-0000-4000-8000-000000000001",
+                    "principal_id":"00000000-0000-4000-8000-000000000002",
+                    "capability_token":"test-capability",
+                    "expires_at_ms":1000,
+                    "max_uses":1,
+                    "secret_hint":"forged"
+                }).to_string().into_bytes(),
+                0,
+                Vec::new(),
+            ),
         };
 
         let response = FrameHeader {
@@ -255,6 +286,16 @@ fn run_attack(attack: Attack) -> std::process::Output {
             "--capability",
             "test-token",
         ]);
+    } else if workload_attack {
+        args.extend([
+            "--agent-socket",
+            socket.to_str().expect("utf8 socket"),
+            "session",
+            "create",
+            "--action",
+            "00000000-0000-4000-8000-000000000005@1",
+            "--workload-token-stdin",
+        ]);
     } else if matches!(
         attack,
         Attack::AuditNonEmptyMetadata
@@ -265,13 +306,23 @@ fn run_attack(attack: Attack) -> std::process::Output {
     } else {
         args.push("status");
     }
-    let output = Command::new(rekey_bin())
+    let mut command = Command::new(rekey_bin());
+    command
         .args(args)
-        .stdin(Stdio::null())
+        .stdin(if workload_attack {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("run rekey");
+        .stderr(Stdio::piped());
+    let output = if workload_attack {
+        let mut child = command.spawn().expect("run rekey");
+        child.stdin.as_mut().unwrap().write_all(b"a.b.c\n").unwrap();
+        child.wait_with_output().expect("wait for rekey")
+    } else {
+        command.output().expect("run rekey")
+    };
     server.join().expect("fake broker thread");
     output
 }
@@ -293,6 +344,8 @@ fn cli_rejects_forged_broker_responses() {
         Attack::AuditNonEmptyMetadata,
         Attack::AuditUnknownPageField,
         Attack::AuditMalformedRecord,
+        Attack::WorkloadResponseBody,
+        Attack::WorkloadUnknownResponseField,
     ] {
         let output = run_attack(attack);
         assert_eq!(
@@ -303,6 +356,18 @@ fn cli_rejects_forged_broker_responses() {
             String::from_utf8_lossy(&output.stderr),
         );
     }
+}
+
+fn valid_session_response() -> Vec<u8> {
+    serde_json::json!({
+        "session_id":"00000000-0000-4000-8000-000000000001",
+        "principal_id":"00000000-0000-4000-8000-000000000002",
+        "capability_token":"test-capability",
+        "expires_at_ms":1000,
+        "max_uses":1
+    })
+    .to_string()
+    .into_bytes()
 }
 
 #[test]

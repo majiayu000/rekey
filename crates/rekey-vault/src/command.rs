@@ -198,6 +198,13 @@ pub enum AuthorityCommand {
         wall_not_after_ms: Option<i64>,
         reply: Reply<()>,
     },
+    ConsumeWorkloadToken {
+        replay_digest: [u8; 32],
+        expires_at_ms: i64,
+        audit: AuditDraft,
+        not_after: Option<Instant>,
+        reply: Reply<()>,
+    },
     AuditQuery {
         query: AuditQuery,
         reply: Reply<AuditPage>,

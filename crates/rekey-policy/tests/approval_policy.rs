@@ -23,10 +23,11 @@ fn policy_fixture() -> Fixture {
         action,
         principal,
         value: json!({
-            "format_version": 2,
+            "format_version": 3,
             "version": 1,
             "expires_at_ms": 10_000,
             "approvers": [],
+            "workload_identities": [],
             "bindings": [{
                 "action_id": action.action_id,
                 "version": action.version,

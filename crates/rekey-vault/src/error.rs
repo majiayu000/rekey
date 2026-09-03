@@ -56,6 +56,8 @@ pub enum AuthorityError {
     PolicyVersionConflict,
     #[error("policy version space is exhausted")]
     PolicyVersionExhausted,
+    #[error("workload identity token is invalid")]
+    WorkloadIdentityInvalid,
     #[error("authority command queue is full")]
     AuthorityBusy,
     #[error("audit commit failed")]
@@ -103,6 +105,7 @@ impl AuthorityError {
             Self::PolicyUnavailable => "POLICY_UNAVAILABLE",
             Self::PolicyVersionConflict => "POLICY_VERSION_CONFLICT",
             Self::PolicyVersionExhausted => "POLICY_VERSION_EXHAUSTED",
+            Self::WorkloadIdentityInvalid => "WORKLOAD_IDENTITY_INVALID",
             Self::AuthorityBusy => "AUTHORITY_BUSY",
             Self::AuditCommitFailed => "AUDIT_COMMIT_FAILED",
             Self::AuditCommitFailedAfterExecution => "AUDIT_COMMIT_FAILED_AFTER_EXECUTION",

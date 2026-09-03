@@ -90,6 +90,8 @@ jobs:
         run: scripts/p1-policy-acceptance.sh
       - name: P3 signed-policy and approval acceptance
         run: scripts/p3-approval-acceptance.sh
+      - name: P4 workload identity acceptance
+        run: scripts/p4-workload-identity-acceptance.sh
       - name: P1 chunk-boundary response sealing acceptance
         run: scripts/p1-streaming-sealing.sh
       - name: P2 GitHub App local acceptance

@@ -8,7 +8,9 @@ use std::path::Path;
 
 use rekey_domain::credential::{CredentialKind, CredentialLabel};
 use rekey_vault::bootstrap::{RestoreProof, restore_vault};
+use rekey_vault::command::AuditDraft;
 use rekey_vault::error::AuthorityError;
+use rekey_vault::model::{event_type, outcome};
 use rekey_vault::secret::SecretInput;
 
 const SECRET_CANARY: &[u8] = b"backup-canary-secret-0xDEADBEEF";
@@ -34,13 +36,36 @@ async fn backup_roundtrip_and_restore() {
         )
         .await
         .unwrap();
+    handle
+        .consume_workload_token_before(
+            [0x5a; 32],
+            4_102_444_800_000,
+            AuditDraft {
+                request_id: None,
+                session_id: None,
+                action_id: None,
+                action_version: None,
+                credential_id: None,
+                credential_version: None,
+                authorization: None,
+                approval: None,
+                event_type: event_type::SESSION_CREATED,
+                outcome: outcome::SUCCESS,
+                reason_code: "workload-attested".to_owned(),
+                upstream_status: None,
+                latency_ms: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
 
     let backup_path = vault.dir.path().join("out.rkbackup");
     let receipt = handle
         .backup(backup_path.clone(), common::password_proof())
         .await
         .unwrap();
-    assert_eq!(receipt.format_version, 6);
+    assert_eq!(receipt.format_version, 7);
     assert_eq!(receipt.vault_id, vault.outcome.vault_id);
     assert_eq!(receipt.sha256_hex.len(), 64);
     assert_eq!(
@@ -99,6 +124,30 @@ async fn backup_roundtrip_and_restore() {
     handle.unlock(common::password_proof()).await.unwrap();
     let prepared = handle.prepare_credential(meta.id).await.unwrap();
     prepared.consume(|bytes| assert_eq!(bytes, SECRET_CANARY));
+    let replay = handle
+        .consume_workload_token_before(
+            [0x5a; 32],
+            4_102_444_800_000,
+            AuditDraft {
+                request_id: None,
+                session_id: None,
+                action_id: None,
+                action_version: None,
+                credential_id: None,
+                credential_version: None,
+                authorization: None,
+                approval: None,
+                event_type: event_type::SESSION_CREATED,
+                outcome: outcome::SUCCESS,
+                reason_code: "workload-attested".to_owned(),
+                upstream_status: None,
+                latency_ms: None,
+            },
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(replay, AuthorityError::WorkloadIdentityInvalid));
     handle
         .shutdown(Some(common::password_proof()))
         .await

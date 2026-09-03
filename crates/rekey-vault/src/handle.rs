@@ -416,6 +416,35 @@ impl AuthorityHandle {
         rx.await.map_err(|_| AuthorityError::Faulted)?
     }
 
+    pub async fn consume_workload_token_before(
+        &self,
+        replay_digest: [u8; 32],
+        expires_at_ms: i64,
+        audit: AuditDraft,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<(), AuthorityError> {
+        let (tx, rx) = oneshot::channel();
+        let command = AuthorityCommand::ConsumeWorkloadToken {
+            replay_digest,
+            expires_at_ms,
+            audit,
+            not_after,
+            reply: tx,
+        };
+        if not_after.is_some() {
+            self.tx.try_send(command).map_err(|error| match error {
+                mpsc::error::TrySendError::Full(_) => AuthorityError::AuthorityBusy,
+                mpsc::error::TrySendError::Closed(_) => AuthorityError::Faulted,
+            })?;
+        } else {
+            self.tx
+                .send(command)
+                .await
+                .map_err(|_| AuthorityError::Faulted)?;
+        }
+        rx.await.map_err(|_| AuthorityError::Faulted)?
+    }
+
     pub async fn backup(
         &self,
         output: PathBuf,

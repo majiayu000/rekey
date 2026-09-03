@@ -336,10 +336,11 @@ pub mod harness {
         let version = broker.policy_version.fetch_add(1, Ordering::Relaxed);
         let resource = serde_json::json!({"type": "test-action", "id": action_id});
         let snapshot = serde_json::json!({
-            "format_version": 2,
+            "format_version": 3,
             "version": version,
             "expires_at_ms": 4_102_444_800_000_i64,
             "approvers": [],
+            "workload_identities": [],
             "bindings": [{
                 "action_id": action_id,
                 "version": action_version,

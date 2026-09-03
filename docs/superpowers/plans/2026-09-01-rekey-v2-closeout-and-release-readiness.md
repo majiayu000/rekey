@@ -965,9 +965,19 @@ workspace check/clippy/tests、机械禁用面和 CLI 负依赖合同全部通�
 
 ### P-04 通用 workload identity
 
+**状态：** `[~]`
+
+**独立 spec：** [`2026-09-03-workload-identity-p04.md`](../specs/2026-09-03-workload-identity-p04.md)
+
 - OIDC、SPIFFE/SPIRE、Kubernetes service account、CI/cloud identity。
 - 身份证明的 audience、issuer、expiry、replay 和撤销合同。
 - principal 到 policy/capability 的绑定。
+
+**当前证据（2026-09-03）：** policy v3、schema v7、四种 closed JWT profile、
+静态 Ed25519/RS256 验证、Agent-only stdin mint、持久 replay consumption、policy
+activation revocation 和 redacted audit 已实现。Policy、Broker、Vault、CLI 黑盒及
+`scripts/p4-workload-identity-acceptance.sh` 本地通过；exact-head CI、合并与合并后
+main 证据尚待完成，因此本项保持进行中。
 
 ### P-05 Connector SDK
 
@@ -1093,7 +1103,7 @@ workspace check/clippy/tests、机械禁用面和 CLI 负依赖合同全部通�
 1. `[x]` 关闭 M、A、H 和 P-01，并保留各自 exact-head/merge 后证据。
 2. `[x]` P-02 审计查询与导出，为后续 SIEM/retention 建立最小查询边界。
 3. `[x]` P-03 审批与持久化策略，为后续长期授权流程建立签名与持久化边界。
-4. P-04 通用 workload identity。
+4. `[~]` P-04 通用 workload identity。
 5. P-05 Connector SDK；P-06 GitHub App 扩展只能建立在该合同之上。
 6. E 阶段按 E-01～E-06 推进；需要客户、第三方或运营证据的门不得由内部测试替代。
 
@@ -1107,7 +1117,7 @@ workspace check/clippy/tests、机械禁用面和 CLI 负依赖合同全部通�
 | Alpha 文档 | 完成（含 erratum） | 用户、安装、运维、发行、开源治理和支持范围已完成；archive 内嵌发布前 Matrix 的状态差异由公开 Release erratum 和当前仓库矩阵明确衔接 |
 | 可公开 Alpha | 是 | [v2.0.0-alpha.1](https://github.com/majiayu000/rekey/releases/tag/v2.0.0-alpha.1) 已公开；双平台 fresh-install、attestation 和 public-URL smoke 通过 |
 | H 安全与可靠性补强 | 完成 | H-01～H-08 已以持续 fuzz、真实 ENOSPC/文件系统故障注入、边界文档、公开双平台发行证据、供应链取舍以及固定主机 1,800 秒性能/容量/soak 证据全部关闭 |
-| P 后续产品能力 | 进行中 | P-01 密码/recovery wrapper 生命周期、P-02 本地审计查询/导出和 P-03 审批/持久化策略均已完成 adversarial/black-box 验收但尚未发布；P-04～P-10 未开始 |
+| P 后续产品能力 | 进行中 | P-01 密码/recovery wrapper 生命周期、P-02 本地审计查询/导出和 P-03 审批/持久化策略均已完成 adversarial/black-box 验收但尚未发布；P-04 已完成本地实现与验收，exact-head CI/merge 进行中；P-05～P-10 未开始 |
 | 可宣称通用 G2 | 否 | 只有有界 Linux reference；默认仍是 G1 |
 | 可宣称通用 Connector | 否 | 只有 fixed HTTPS Action 和 closed GitHub App profile |
 | 企业就绪 | 否 | 控制面、身份、HA/DR、合规、运营和商业门槛均未完成 |

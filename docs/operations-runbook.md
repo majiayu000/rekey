@@ -114,6 +114,34 @@ Locking or restarting intentionally revokes every capability, challenge, and
 in-memory approval use record; create a new session and challenge afterward.
 There is no remote approval availability fallback or offline bypass.
 
+For workload identity, keep issuer private keys outside Rekey and place only
+the intended static Ed25519 or RS256 public keys in the signed policy. Rekey
+does not fetch JWKS, perform issuer discovery or introspection, or call SPIRE,
+Kubernetes, CI, or cloud APIs. Rotate verification keys by signing the next
+consecutive policy version with the replacement key set, activate it, and
+confirm status before issuing new workload tokens. A new-version activation
+revokes all workload-minted sessions while preserving Admin-minted sessions.
+Retrying the exact active bundle preserves both kinds of session.
+
+`WORKLOAD_IDENTITY_INVALID` deliberately covers malformed, expired, replayed,
+wrong-issuer, wrong-subject, wrong-audience, wrong-key, and otherwise
+unverifiable workload tokens without exposing the failed check. An unauthorized
+Action returns `REQUEST_DENIED` before replay consumption, so the same valid
+token may be retried with an authorized Action. Once durable admission is
+attempted, do not retry an uncertain token: successful consumption stores its
+`jti` digest atomically with the redacted `session.created` audit event, and
+replay denial survives token expiry, wall-clock rollback, restart, and restore
+of a backup that already contains the consumption record until a successful
+new-version policy activation. A pre-consumption backup cannot preserve that
+later record and remains subject to the documented G1 complete-vault rollback
+limit. Policy roll-forward atomically clears replay rows scoped to the prior
+policy digest; an exact activation retry does not clear them.
+`AUDIT_COMMIT_FAILED` or a durable-admission timeout faults the broker; preserve
+state and follow the database/audit fault procedure. A definite pre-mutation
+`AUTHORITY_BUSY` response is retryable.
+Audit output must never contain the JWT, `jti`, external subject, signing key,
+or capability token.
+
 ## DNS, network, and Clash/TUN Fake-IP
 
 Resolve the exact Action host with `dig +short HOST`. Private/reserved answers,
@@ -123,12 +151,12 @@ does not follow redirects or honor HTTP proxy environment variables.
 
 ## Upgrade, rollback, and rejected state
 
-Follow [installation.md](installation.md). v1 state and any non-v6/unknown
+Follow [installation.md](installation.md). v1 state and any non-v7/unknown
 layout are intentionally rejected and never migrated or overwritten. Preserve
 the old directory and initialize v2 separately. Existing v5 vaults require the
-earlier binary; P-03 provides no in-place reader or migration. Rollback requires
-the prior binaries plus their matching pre-upgrade backup restored into an empty
-path.
+earlier binary; P-03 schema v6 vaults also require their matching earlier binary.
+P-04 provides no in-place reader or migration. Rollback requires the prior
+binaries plus their matching pre-upgrade backup restored into an empty path.
 
 ## Lost keys
 

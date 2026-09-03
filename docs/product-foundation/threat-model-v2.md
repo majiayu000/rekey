@@ -296,7 +296,9 @@ Action 和最小响应 schema 比通用透明代理更强。任何新增 canonic
 | Agent 绕过代理直连 | 宿主/Hypervisor egress deny-by-default | direct_egress_denied |
 | 调用 Vault API | Vault endpoint 不可路由；Broker 身份不可读 | vault_unreachable_from_agent |
 | Capability 重放 | audience/channel/task/TTL/use-count 绑定 | capability_replay_denied |
-| 跨 Agent 使用 | 绑定 workload attestation 和 session | cross_agent_token_denied |
+| 伪造或错配 workload JWT | P-04 signed policy 固定 issuer、subject/profile、audience、token age、kid/alg 和 Ed25519/RS256 公钥；验证失败统一拒绝 | workload_identity_invalid |
+| workload JWT 重放 | policy digest + issuer + subject + jti 的持久 replay digest 与 session.created audit 原子提交 | workload_token_replay_denied |
+| 跨 Agent 使用 | workload identity 映射为固定 policy principal，session 只允许 policy 已授权 Action | cross_agent_token_denied |
 | 审批后改参数 | canonical parameter hash | approval_parameter_tamper_denied |
 | 策略服务离线 | 有效快照内按策略运行；过期后拒绝 | expired_policy_fails_closed |
 | 审计失败后继续高危写入 | 高风险动作将关键审计写入视为提交条件 | critical_audit_failure_denies |
@@ -415,6 +417,11 @@ Action 和最小响应 schema 比通用透明代理更强。任何新增 canonic
 - P-03 policy trust 和 signed bundle 持久化并在 unlock 后重新验证；approval
   challenge、grant 使用计数和 capability session 仍只存在内存，lock/restart 清空。
   Rekey 只是签名验证与 enforcement point，不提供私钥托管或远程审批控制面。
+- P-04 workload identity 只接受 signed policy 内静态 Ed25519/RS256 公钥和四种
+  closed JWT profile；不做 JWKS/discovery/introspection，也不调用 SPIRE、Kubernetes、
+  CI 或 cloud API。JWT replay digest 持久化，只有 new-version policy activation
+  撤销 workload-minted session，exact same-bundle retry 保留现有 session；默认拓扑
+  和已发布 Alpha 范围不变。
 - Audit 使用本地 SQLite/WAL fail-closed；P-02 只通过 owner-checked Admin socket
   提供每次最多扫描 1,000 行、游标续查的稳定快照脱敏查询和 mode-0600 JSONL 导出，
   Agent socket 无此接口。
@@ -435,4 +442,4 @@ Action 和最小响应 schema 比通用透明代理更强。任何新增 canonic
 
 ## 17. Readiness
 
-本威胁模型已经锁定内置 Credential Authority 的密钥层级、状态所有权和禁止接口。当前 P0/P1/P2.1/P-03 local gates 的实际状态以 Feature Truth Matrix 为准；required systemd gate 和一次真实 `github.com` GitHub App provider 验证已经完成。P-03 的开发分支证据不代表进入已发布 `v2.0.0-alpha.1`。默认同用户拓扑仍只有 G1，有界 Linux container/namespace recipe 的 G2 证据不能外推为通用产品保证；签名 policy/approval 也不建立远程控制面、企业身份或通用 Connector。在独立 crypto、IPC 边界和 audit/failure-semantics 人工审查完成前，不能对外声称恶意 Agent 在所有部署中永远无法获得或重定向密钥。
+本威胁模型已经锁定内置 Credential Authority 的密钥层级、状态所有权和禁止接口。当前 P0/P1/P2.1/P-03/P-04 local gates 的实际状态以 Feature Truth Matrix 为准；required systemd gate 和一次真实 `github.com` GitHub App provider 验证已经完成。P-03 与 P-04 的开发分支证据不代表进入已发布 `v2.0.0-alpha.1`。默认同用户拓扑仍只有 G1，有界 Linux container/namespace recipe 的 G2 证据不能外推为通用产品保证；签名 policy/approval 和静态 workload JWT 验证也不建立远程控制面、企业身份、在线 IdP 集成或通用 Connector。在独立 crypto、IPC 边界和 audit/failure-semantics 人工审查完成前，不能对外声称恶意 Agent 在所有部署中永远无法获得或重定向密钥。

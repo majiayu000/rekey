@@ -1,11 +1,11 @@
 use sha2::{Digest, Sha256};
 
-/// Schema v6. This SQL text is the single source of truth; `schema_digest()`
+/// Schema v7. This SQL text is the single source of truth; `schema_digest()`
 /// hashes its normalized form to detect accidental drift, not tampering.
 pub const SCHEMA_SQL: &str = r#"
 CREATE TABLE vault_header (
     singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
-    format_version     INTEGER NOT NULL CHECK (format_version = 6),
+    format_version     INTEGER NOT NULL CHECK (format_version = 7),
     vault_id           BLOB NOT NULL CHECK (length(vault_id) = 16),
     crypto_suite       TEXT NOT NULL CHECK (crypto_suite = 'rkca-aes256gcm-argon2id-hkdfsha256-v1'),
     created_at_ms      INTEGER NOT NULL,
@@ -131,6 +131,13 @@ CREATE TABLE policy_bundle (
     activated_at_ms    INTEGER NOT NULL,
     seal_nonce         BLOB NOT NULL CHECK (length(seal_nonce) = 12),
     seal_ciphertext    BLOB NOT NULL CHECK (length(seal_ciphertext) = 16)
+) STRICT;
+
+CREATE TABLE workload_token_uses (
+    replay_digest      BLOB PRIMARY KEY CHECK (length(replay_digest) = 32),
+    expires_at_ms      INTEGER NOT NULL,
+    created_at_ms      INTEGER NOT NULL,
+    CHECK (created_at_ms >= 0 AND expires_at_ms > created_at_ms)
 ) STRICT;
 
 CREATE TABLE audit_events (

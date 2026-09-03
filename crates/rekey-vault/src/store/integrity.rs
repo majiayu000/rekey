@@ -16,13 +16,14 @@ impl SqliteRecordStore {
                  WHERE type = 'table' AND name IN (
                     'vault_header', 'key_wrappers', 'credentials',
                     'credential_versions', 'actions', 'policy_state',
-                    'policy_trust', 'policy_bundle', 'audit_events'
+                    'policy_trust', 'policy_bundle', 'workload_token_uses',
+                    'audit_events'
                  )",
                 [],
                 |row| row.get(0),
             )
             .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
-        if table_count != 9 {
+        if table_count != 10 {
             return Err(AuthorityError::UnsupportedVaultLayout);
         }
         Ok(())
@@ -231,6 +232,29 @@ impl SqliteRecordStore {
             )
             .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
         if inconsistent {
+            return Err(AuthorityError::StorageIntegrityFailed);
+        }
+        Ok(())
+    }
+
+    pub(super) fn validate_workload_replay_invariants(&self) -> Result<(), AuthorityError> {
+        let malformed: bool = self
+            .conn
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM workload_token_uses
+                    WHERE typeof(replay_digest) IS NOT 'blob'
+                       OR length(replay_digest) IS NOT 32
+                       OR typeof(expires_at_ms) IS NOT 'integer'
+                       OR typeof(created_at_ms) IS NOT 'integer'
+                       OR created_at_ms < 0
+                       OR expires_at_ms <= created_at_ms
+                )",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        if malformed {
             return Err(AuthorityError::StorageIntegrityFailed);
         }
         Ok(())

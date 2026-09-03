@@ -231,6 +231,62 @@ async fn credential_mutation_enospc_is_atomic_and_retryable() {
 }
 
 #[tokio::test]
+async fn workload_replay_enospc_is_atomic_and_retryable() {
+    let Some(case) = mounted_case("workload-replay-") else {
+        return;
+    };
+    let state_dir = case.path().join("state");
+    init_at(&state_dir);
+    let (mut handle, mut join) = common::spawn(&state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+    let exhausted = exhaust_space(case.path(), 0);
+    let replay_digest = [0xa7; 32];
+    let error = handle
+        .consume_workload_token_before(
+            replay_digest,
+            4_102_444_800_000,
+            workload_audit_draft(),
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        AuthorityError::StorageUnavailable(_) | AuthorityError::AuditCommitFailed
+    ));
+    let faulted = handle.status().await.unwrap().state == "faulted";
+    exhausted.release();
+    if faulted {
+        handle.shutdown(None).await.unwrap();
+        join.join().unwrap();
+        (handle, join) = common::spawn(&state_dir);
+        handle.unlock(common::password_proof()).await.unwrap();
+    }
+    handle
+        .consume_workload_token_before(
+            replay_digest,
+            4_102_444_800_000,
+            workload_audit_draft(),
+            None,
+        )
+        .await
+        .expect("failed consume must not retain replay state");
+    handle
+        .shutdown(Some(common::password_proof()))
+        .await
+        .unwrap();
+    join.join().unwrap();
+}
+
+fn workload_audit_draft() -> AuditDraft {
+    AuditDraft {
+        event_type: event_type::SESSION_CREATED,
+        reason_code: "workload-attested".to_owned(),
+        ..audit_draft()
+    }
+}
+
+#[tokio::test]
 async fn backup_enospc_returns_no_receipt_and_requires_a_new_path() {
     let Some(case) = mounted_case("backup-") else {
         return;
