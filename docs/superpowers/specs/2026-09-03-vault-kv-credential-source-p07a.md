@@ -1,10 +1,10 @@
 # P-07A Vault KV v2 CredentialSource
 
-> Status: accepted for implementation
+> Status: locally verified; exact-head CI and merge pending
 >
 > Date: 2026-09-03
 >
-> Tracking: [Issue #31](https://github.com/majiayu000/rekey/issues/31)
+> Tracking: [Issue #32](https://github.com/majiayu000/rekey/issues/32), parent [#31](https://github.com/majiayu000/rekey/issues/31)
 >
 > Depends on: P-05 Connector SDK, P-06 GitHub App extension
 
@@ -138,8 +138,8 @@ Success requires status 200 and this bounded semantic shape:
 }
 ```
 
-The selected field must exist as a string with 1 through 16,384 visible ASCII
-bytes. The returned metadata version must exactly equal the configured version,
+`data.data` must contain exactly the selected field, whose value is a string
+with 1 through 8,192 visible ASCII bytes. The returned metadata version must exactly equal the configured version,
 `destroyed` must be false, and `deletion_time` must be empty. Missing, null,
 binary, nested, oversized, deleted, destroyed, wrong-version, malformed, or
 non-200 responses fail closed before final action IO.
@@ -221,4 +221,3 @@ ready", or "P-07 complete".
 - arbitrary URL/header/JSONPath templates, plugin loading, provider registry,
   Agent source selection, or any Secret read/export API;
 - migration of v7 state or inclusion in the published `v2.0.0-alpha.1` archive.
-

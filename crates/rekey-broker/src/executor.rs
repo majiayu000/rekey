@@ -34,6 +34,7 @@ mod approval;
 mod deadline;
 mod http;
 mod sealing;
+pub(crate) mod vault_source;
 use http::{
     build_upstream, filter_response_headers, reason_static, response_metadata_fits,
     upstream_failure_is_indeterminate, validate_request,
@@ -41,6 +42,7 @@ use http::{
 #[cfg(test)]
 use sealing::percent_encode;
 use sealing::{contains_secret, headers_contain_secret, sealing_needles};
+use vault_source::{VaultKvError, VaultKvProfile, VaultPrepared};
 
 /// Exercises the production response-sealing implementation from the external
 /// fuzz package without exposing its secret-derived needles.
@@ -142,6 +144,7 @@ pub struct ActionExecutor {
 const EFFECT_NOT_STARTED: u8 = 0;
 const EFFECT_ORDINARY_HTTP: u8 = 1;
 const EFFECT_GITHUB_CONNECTOR: u8 = 2;
+const EFFECT_READ_ONLY_HTTP: u8 = 3;
 
 impl ActionExecutor {
     pub(crate) fn new(
@@ -288,7 +291,12 @@ impl ActionExecutor {
             Ok(connector) => connector,
             Err(_) => {
                 drop(prepared);
-                let reason = GitHubError::InvalidCredential.reason();
+                let reason = match credential_kind {
+                    rekey_domain::credential::CredentialKind::VaultKvV2Source => {
+                        VaultKvError::InvalidCredential.reason()
+                    }
+                    _ => GitHubError::InvalidCredential.reason(),
+                };
                 started.blocked_until(effect_deadline, reason).await?;
                 return Err(BrokerError::Denied(reason));
             }
@@ -320,6 +328,16 @@ impl ActionExecutor {
                     profile,
                 })
             }
+            BuiltInConnector::VaultKvV2SourceV1 => {
+                let profile = VaultKvProfile::parse_profile(secret);
+                PreparedExecution::Vault(VaultPrepared {
+                    needles: profile
+                        .as_ref()
+                        .map(|profile| sealing_needles(secret, profile.token()))
+                        .unwrap_or_default(),
+                    profile,
+                })
+            }
         });
 
         if let PreparedExecution::GitHub(prepared) = prepared {
@@ -334,6 +352,20 @@ impl ActionExecutor {
                 )
                 .await;
         }
+        let prepared = match prepared {
+            PreparedExecution::Vault(prepared) => {
+                self.resolve_vault_source(
+                    started,
+                    request,
+                    action,
+                    prepared,
+                    effect_deadline,
+                    effect_kind,
+                )
+                .await?
+            }
+            other => other,
+        };
         let PreparedExecution::Opaque {
             upstream: mut upstream_request,
             needles,
@@ -626,6 +658,7 @@ enum PreparedExecution {
         needles: Vec<Zeroizing<Vec<u8>>>,
     },
     GitHub(GitHubPrepared),
+    Vault(VaultPrepared),
 }
 
 struct GitHubPrepared {

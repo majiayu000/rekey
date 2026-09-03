@@ -53,6 +53,7 @@ pub enum CredentialKind {
     OpaqueToken,
     #[serde(rename = "github-app-installation")]
     GitHubAppInstallation,
+    VaultKvV2Source,
 }
 
 impl CredentialKind {
@@ -60,6 +61,7 @@ impl CredentialKind {
         match self {
             Self::OpaqueToken => "opaque-token",
             Self::GitHubAppInstallation => "github-app-installation",
+            Self::VaultKvV2Source => "vault-kv-v2-source",
         }
     }
 
@@ -67,6 +69,7 @@ impl CredentialKind {
         match s {
             "opaque-token" => Ok(Self::OpaqueToken),
             "github-app-installation" => Ok(Self::GitHubAppInstallation),
+            "vault-kv-v2-source" => Ok(Self::VaultKvV2Source),
             _ => Err(DomainError::InvalidId),
         }
     }
@@ -76,6 +79,7 @@ impl CredentialKind {
         match self {
             Self::OpaqueToken => 1,
             Self::GitHubAppInstallation => 2,
+            Self::VaultKvV2Source => 3,
         }
     }
 }
@@ -173,12 +177,18 @@ mod tests {
     }
 
     #[test]
-    fn github_kind_wire_name_matches_durable_name() {
+    fn typed_kind_wire_names_match_durable_names() {
         let encoded = serde_json::to_string(&CredentialKind::GitHubAppInstallation).unwrap();
         assert_eq!(encoded, r#""github-app-installation""#);
         assert_eq!(
             serde_json::from_str::<CredentialKind>(&encoded).unwrap(),
             CredentialKind::GitHubAppInstallation
+        );
+        let encoded = serde_json::to_string(&CredentialKind::VaultKvV2Source).unwrap();
+        assert_eq!(encoded, r#""vault-kv-v2-source""#);
+        assert_eq!(
+            serde_json::from_str::<CredentialKind>(&encoded).unwrap(),
+            CredentialKind::VaultKvV2Source
         );
     }
 }

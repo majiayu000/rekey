@@ -172,10 +172,11 @@ human directory, private-key custody, or approval survival across lock/restart.
 ## Connector contract SDK
 
 Development head includes the IO-free `rekey-connector` crate. Its versioned,
-compile-time registry describes the two existing built-ins:
+compile-time registry describes the three existing built-ins:
 `fixed-http-header@1` (`inject`) and `github-app-installation@1`
-(`sign → exchange → lease → revoke`). Broker code still owns every credential,
-network effect, deadline, audit event, response-sealing decision, and cleanup.
+(`sign → exchange → lease → revoke`), plus `vault-kv-v2-source@1`
+(`resolve → inject`). Broker code still owns every credential, network effect,
+deadline, audit event, response-sealing decision, and cleanup.
 
 The SDK can project an object-shaped authorized Action schema into a stable MCP
 tool descriptor and can describe the public fields of an RFC 8693 OAuth token
@@ -185,6 +186,23 @@ dynamic plugin. Development head now extends the same closed GitHub connector
 through P-06 with 1-16 exact repositories, bounded issue creation, typed
 rotation, Admin-forwarded signed repository deltas, and read-only bounded
 retry. Those additions are not part of the published `v2.0.0-alpha.1` archive.
+
+Development head also supports one closed HashiCorp Vault KV v2 source for an
+existing fixed HTTPS Action. The encrypted profile pins one public HTTPS Vault
+origin, mount, path, exact nonzero version, exact string key, and Vault token.
+Each execution performs one non-retried versioned KV read, seals the source
+token and resolved value, and then injects that value into the already-fixed
+Action request. Add or rotate the profile with:
+
+```bash
+rekey credential add-vault-kv LABEL --file profile.json
+rekey credential rotate-vault-kv CREDENTIAL_ID --file profile.json
+```
+
+This is not general Vault support: there is no latest-version lookup, private
+Vault network exception, dynamic lease, Vault auth flow, cloud secret/KMS,
+1Password, HSM, keychain, generic URL/JSONPath adapter, or new Agent secret API.
+It is not included in the published `v2.0.0-alpha.1` archive.
 
 ## Not compatible with v1
 

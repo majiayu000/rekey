@@ -1023,7 +1023,7 @@ performance `33706878865` 全绿。该能力未进入 `v2.0.0-alpha.1`。
 
 ### P-06 GitHub App 扩展
 
-**状态：** `[~]`
+**状态：** `[x]`
 
 **跟踪：** [Issue #29](https://github.com/majiayu000/rekey/issues/29)
 
@@ -1036,13 +1036,31 @@ performance `33706878865` 全绿。该能力未进入 `v2.0.0-alpha.1`。
 
 当前 closed profile 只验证一个 App、一个安装、一个仓库和 metadata read，不得在 P-06 前称为通用 GitHub connector。
 
+**完成证据（2026-09-03）：** [PR #30](https://github.com/majiayu000/rekey/pull/30)
+在 final head `20c00a83c9b7ef1b3099e8cf9cfaeca32e421619` 上通过 Ubuntu P0、
+macOS P0、有界 Linux G2、五个 fuzz target 和 performance 共 9 个 jobs（security
+`33711553201`、fuzz `33711553162`、performance `33711553079`）。四个有效 review
+finding 均在 `20c00a83c9b7ef1b3099e8cf9cfaeca32e421619` 修复并 resolved，最终自审
+记录为 [comment 5519901919](https://github.com/majiayu000/rekey/pull/30#issuecomment-5519901919)。
+
+实现覆盖 exact 多仓库 selection、closed issue create、typed profile rotation、HMAC
+installation repository webhook apply、bounded read-only Retry-After、写后
+`UPSTREAM_INDETERMINATE`、token/JWT sealing 和 revoke-before-success。真实 release
+`rekeyd` + `rekey`、dual UDS、SQLite 与 local CA/TLS 的 P2/P6 black-box、完整
+workspace、root/fuzz audit、nightly fuzz build、机械禁用项和 CLI 负依赖均通过。
+
+PR #30 已 signed squash merge 为 `1d242c946d660bb11d28a09125db722bcf6dd05f`，
+只有一个 parent；Issue #29 已关闭且远端分支已删除。post-main security
+`33712055205`、fuzz `33712055219`、performance `33712055258` 全部成功。该能力
+未进入 `v2.0.0-alpha.1`，不构成通用 GitHub connector、通用 G2 或企业就绪声明。
+
 ### P-07 外部 CredentialSource
 
 **状态：** `[~]`
 
 **跟踪：** [Issue #31](https://github.com/majiayu000/rekey/issues/31)
 
-**首个增量 spec：** [`2026-09-03-vault-kv-credential-source-p07a.md`](../specs/2026-09-03-vault-kv-credential-source-p07a.md)
+**首个增量：** P-07A [Issue #32](https://github.com/majiayu000/rekey/issues/32) · [`2026-09-03-vault-kv-credential-source-p07a.md`](../specs/2026-09-03-vault-kv-credential-source-p07a.md) · 本地完整门禁通过，exact-head CI/merge 待完成
 
 - HashiCorp Vault。
 - AWS/GCP/Azure secrets/KMS。
@@ -1151,8 +1169,9 @@ performance `33706878865` 全绿。该能力未进入 `v2.0.0-alpha.1`。
 3. `[x]` P-03 审批与持久化策略，为后续长期授权流程建立签名与持久化边界。
 4. `[x]` P-04 通用 workload identity。
 5. `[x]` P-05 Connector SDK。
-6. `[~]` P-06 GitHub App 有界扩展。
-7. E 阶段按 E-01～E-06 推进；需要客户、第三方或运营证据的门不得由内部测试替代。
+6. `[x]` P-06 GitHub App 有界扩展。
+7. `[~]` P-07 外部 CredentialSource，先完成 Vault KV v2 固定版本纵切，再逐项推进其余 provider 语义。
+8. E 阶段按 E-01～E-06 推进；需要客户、第三方或运营证据的门不得由内部测试替代。
 
 ## 12. 当前总判定
 
@@ -1164,10 +1183,10 @@ performance `33706878865` 全绿。该能力未进入 `v2.0.0-alpha.1`。
 | Alpha 文档 | 完成（含 erratum） | 用户、安装、运维、发行、开源治理和支持范围已完成；archive 内嵌发布前 Matrix 的状态差异由公开 Release erratum 和当前仓库矩阵明确衔接 |
 | 可公开 Alpha | 是 | [v2.0.0-alpha.1](https://github.com/majiayu000/rekey/releases/tag/v2.0.0-alpha.1) 已公开；双平台 fresh-install、attestation 和 public-URL smoke 通过 |
 | H 安全与可靠性补强 | 完成 | H-01～H-08 已以持续 fuzz、真实 ENOSPC/文件系统故障注入、边界文档、公开双平台发行证据、供应链取舍以及固定主机 1,800 秒性能/容量/soak 证据全部关闭 |
-| P 后续产品能力 | 进行中 | P-01～P-05 均已完成 adversarial/black-box、exact-head、merge 和 post-main 验收但尚未发布；P-06 已进入 issue/spec 阶段，P-07～P-10 未开始 |
+| P 后续产品能力 | 进行中 | P-01～P-06 均已完成 adversarial/black-box、exact-head、merge 和 post-main 验收但尚未发布；P-07A Vault KV v2 本地完整门禁已通过，exact-head CI/merge 待完成，P-07 其余 provider 与 P-08～P-10 未开始 |
 | 可宣称通用 G2 | 否 | 只有有界 Linux reference；默认仍是 G1 |
 | 可宣称通用 Connector | 否 | 只有 fixed HTTPS Action 和 closed GitHub App profile |
 | 企业就绪 | 否 | 控制面、身份、HA/DR、合规、运营和商业门槛均未完成 |
 
-M、A、H、P-01、P-02、P-03、P-04 与 P-05 已经关闭。后续 P、E 必须继续按独立 spec、PR 和真实证据推进，
+M、A、H、P-01、P-02、P-03、P-04、P-05 与 P-06 已经关闭。后续 P、E 必须继续按独立 spec、PR 和真实证据推进，
 不得回写或扩大已经发布的 `v2.0.0-alpha.1` 范围。

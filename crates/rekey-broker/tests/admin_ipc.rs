@@ -11,6 +11,15 @@ use rekey_domain::ipc::{self, Channel, FrameHeader, ProofKind, admin_msg, agent_
 
 const NEW_PASSWORD: &[u8] = b"replacement horse battery staple";
 const FINAL_PASSWORD: &[u8] = b"recovered horse battery staple";
+const VAULT_PROFILE: &[u8] = br#"{
+  "credential_type":"vault-kv-v2-source-v1",
+  "origin":"https://vault.example.com",
+  "mount":"secret",
+  "path":"agents/github",
+  "key":"token",
+  "version":7,
+  "vault_token":"hvs.source-canary"
+}"#;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn admin_lifecycle_and_step_up() {
@@ -68,6 +77,77 @@ async fn admin_lifecycle_and_step_up() {
     assert_eq!(response.ok()["locked"], true);
     let response = common::call(&admin, Channel::Admin, admin_msg::STATUS, b"{}", &[]).await;
     assert_eq!(response.ok()["state"], "locked");
+
+    broker.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn vault_profile_admin_checks_proof_before_profile_and_preserves_kind() {
+    let broker = common::start_broker().await;
+    common::unlock(&broker).await;
+    let admin = broker.admin_sock();
+    let add_meta = serde_json::json!({"label":"vault","kind":"vault-kv-v2-source"});
+
+    let response = common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::CREDENTIAL_ADD,
+        add_meta.to_string().as_bytes(),
+        &common::proof_and_secret_body(b"wrong-password", b"not-json"),
+    )
+    .await;
+    assert_eq!(response.err_code(), "INVALID_UNLOCK_CREDENTIAL");
+
+    let response = common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::CREDENTIAL_ADD,
+        add_meta.to_string().as_bytes(),
+        &common::proof_and_secret_body(common::PASSWORD, VAULT_PROFILE),
+    )
+    .await;
+    let vault_id = response.ok()["id"].as_str().unwrap().to_owned();
+    assert_eq!(response.ok()["current_version"], 1);
+
+    let opaque_id = common::add_credential(&broker, "opaque", b"secret").await;
+    for (credential_id, profile) in [(&opaque_id, VAULT_PROFILE), (&vault_id, b"not-json")] {
+        let rotate_meta = serde_json::json!({"credential_id":credential_id});
+        let response = common::call(
+            &admin,
+            Channel::Admin,
+            admin_msg::CREDENTIAL_ROTATE_VAULT_KV,
+            rotate_meta.to_string().as_bytes(),
+            &common::proof_and_secret_body(common::PASSWORD, profile),
+        )
+        .await;
+        assert_eq!(response.err_code(), "INVALID_INPUT");
+    }
+
+    let response = common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::CREDENTIAL_LIST,
+        b"{}",
+        &[],
+    )
+    .await;
+    let credentials = response.ok()["credentials"].as_array().unwrap();
+    assert!(
+        credentials
+            .iter()
+            .all(|credential| credential["current_version"] == 1)
+    );
+
+    let rotate_meta = serde_json::json!({"credential_id":vault_id});
+    let response = common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::CREDENTIAL_ROTATE_VAULT_KV,
+        rotate_meta.to_string().as_bytes(),
+        &common::proof_and_secret_body(common::PASSWORD, VAULT_PROFILE),
+    )
+    .await;
+    assert_eq!(response.ok()["current_version"], 2);
 
     broker.shutdown().await;
 }

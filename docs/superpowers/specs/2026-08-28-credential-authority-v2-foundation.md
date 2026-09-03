@@ -558,15 +558,16 @@ PRAGMA busy_timeout = 5000;
 - 不允许其他进程打开 SQLite；Admin/Web 读取也通过 AuthorityWorker。
 - 每次启动运行 `PRAGMA quick_check`；失败后保持 Locked 并返回 `StorageIntegrityFailed`。
 
-### 10.3 Schema v7
+### 10.3 Schema v8
 
-当前开发实现由 P-04 将 durable schema 提升为 v7；已发布的
-`v2.0.0-alpha.1` 制品仍使用 v5。v7 不提供 v6/v5 migration 或 compatibility reader。
+当前开发实现先由 P-04 将 durable schema 提升为 v7，再由 P-07A 为新的
+`vault-kv-v2-source` credential kind 提升为 v8；已发布的
+`v2.0.0-alpha.1` 制品仍使用 v5。v8 不提供 v7/v6/v5 migration 或 compatibility reader。
 
 ~~~sql
 CREATE TABLE vault_header (
     singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
-    format_version     INTEGER NOT NULL CHECK (format_version = 7),
+    format_version     INTEGER NOT NULL CHECK (format_version = 8),
     vault_id           BLOB NOT NULL CHECK (length(vault_id) = 16),
     crypto_suite       TEXT NOT NULL CHECK (crypto_suite = 'rkca-aes256gcm-argon2id-hkdfsha256-v1'),
     created_at_ms      INTEGER NOT NULL,
@@ -1629,7 +1630,7 @@ root select 视作 fault。若 root 已取得 actor 的 completed `JoinHandle` r
 新增 typed credential kind 的 breaking schema change 将 durable format bump 到 4；旧非空
 state dir 继续明确拒绝，不提供迁移或兼容读取。
 随后 credential lifecycle seal 将 foundation format bump 到 5；P-03 的 durable policy
-又由 P-04 将当前开发实现 bump 到 7。当前实现只接受 v7，不保留 v4/v5/v6 兼容读取或迁移入口；
+又由 P-04 bump 到 7、P-07A bump 到 8。当前实现只接受 v8，不保留 v4/v5/v6/v7 兼容读取或迁移入口；
 已发布的 `v2.0.0-alpha.1` 制品仍是 v5。
 
 首个 P2 垂直切片是一个封闭的 GitHub App Installation profile，不创建通用

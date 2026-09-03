@@ -65,7 +65,7 @@ async fn backup_roundtrip_and_restore() {
         .backup(backup_path.clone(), common::password_proof())
         .await
         .unwrap();
-    assert_eq!(receipt.format_version, 7);
+    assert_eq!(receipt.format_version, 8);
     assert_eq!(receipt.vault_id, vault.outcome.vault_id);
     assert_eq!(receipt.sha256_hex.len(), 64);
     assert_eq!(

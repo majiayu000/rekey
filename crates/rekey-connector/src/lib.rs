@@ -20,6 +20,8 @@ const GITHUB_APP_EFFECTS: &[CredentialEffect] = &[
     CredentialEffect::Lease,
     CredentialEffect::Revoke,
 ];
+const VAULT_KV_SOURCE_EFFECTS: &[CredentialEffect] =
+    &[CredentialEffect::Resolve, CredentialEffect::Inject];
 
 const CONTRACTS: &[ConnectorContract] = &[
     ConnectorContract {
@@ -46,6 +48,18 @@ const CONTRACTS: &[ConnectorContract] = &[
         remote_effect: true,
         revoke_before_success: true,
     },
+    ConnectorContract {
+        format_version: CONNECTOR_CONTRACT_FORMAT_VERSION,
+        id: "vault-kv-v2-source",
+        version: 1,
+        credential_kind: CredentialKind::VaultKvV2Source,
+        effects: VAULT_KV_SOURCE_EFFECTS,
+        exchange_protocol: None,
+        source: ConnectorSource::BuiltInBinary,
+        isolation: ConnectorIsolation::BrokerProcess,
+        remote_effect: true,
+        revoke_before_success: false,
+    },
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -53,6 +67,7 @@ const CONTRACTS: &[ConnectorContract] = &[
 pub enum BuiltInConnector {
     FixedHttpHeaderV1,
     GitHubAppInstallationV1,
+    VaultKvV2SourceV1,
 }
 
 impl BuiltInConnector {
@@ -60,6 +75,7 @@ impl BuiltInConnector {
         match self {
             Self::FixedHttpHeaderV1 => &CONTRACTS[0],
             Self::GitHubAppInstallationV1 => &CONTRACTS[1],
+            Self::VaultKvV2SourceV1 => &CONTRACTS[2],
         }
     }
 }
@@ -67,6 +83,7 @@ impl BuiltInConnector {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CredentialEffect {
+    Resolve,
     Inject,
     Sign,
     Exchange,
@@ -148,6 +165,10 @@ pub fn resolve_builtin(
         }
         CredentialKind::OpaqueToken => Err(ConnectorSelectionError::SelectionRejected),
         CredentialKind::GitHubAppInstallation => Ok(BuiltInConnector::GitHubAppInstallationV1),
+        CredentialKind::VaultKvV2Source if !github_action_is_reserved(action) => {
+            Ok(BuiltInConnector::VaultKvV2SourceV1)
+        }
+        CredentialKind::VaultKvV2Source => Err(ConnectorSelectionError::SelectionRejected),
     }
 }
 

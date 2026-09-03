@@ -98,6 +98,8 @@ jobs:
         run: scripts/p2-github-app.sh
       - name: P6 GitHub App extension acceptance
         run: scripts/p6-github-app-extension.sh
+      - name: P7 Vault KV source acceptance
+        run: scripts/p7-vault-kv-source.sh
       - name: P5 connector SDK contract acceptance
         run: scripts/p5-connector-sdk.sh
       - name: P1 native launchd service-manager acceptance

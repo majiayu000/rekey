@@ -77,6 +77,7 @@ pub mod admin_msg {
     pub const POLICY_TRUST_INSTALL: u16 = 22;
     pub const CREDENTIAL_ROTATE_GITHUB_APP: u16 = 23;
     pub const GITHUB_WEBHOOK_APPLY: u16 = 24;
+    pub const CREDENTIAL_ROTATE_VAULT_KV: u16 = 25;
 }
 
 /// Agent channel message types.

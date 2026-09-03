@@ -151,7 +151,7 @@ does not follow redirects or honor HTTP proxy environment variables.
 
 ## Upgrade, rollback, and rejected state
 
-Follow [installation.md](installation.md). v1 state and any non-v7/unknown
+Follow [installation.md](installation.md). v1 state and any non-v8/unknown
 layout are intentionally rejected and never migrated or overwritten. Preserve
 the old directory and initialize v2 separately. Existing v5 vaults require the
 earlier binary; P-03 schema v6 vaults also require their matching earlier binary.
