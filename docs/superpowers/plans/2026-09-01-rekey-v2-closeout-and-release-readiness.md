@@ -1038,6 +1038,12 @@ performance `33706878865` 全绿。该能力未进入 `v2.0.0-alpha.1`。
 
 ### P-07 外部 CredentialSource
 
+**状态：** `[~]`
+
+**跟踪：** [Issue #31](https://github.com/majiayu000/rekey/issues/31)
+
+**首个增量 spec：** [`2026-09-03-vault-kv-credential-source-p07a.md`](../specs/2026-09-03-vault-kv-credential-source-p07a.md)
+
 - HashiCorp Vault。
 - AWS/GCP/Azure secrets/KMS。
 - 1Password、HSM、OS keychain wrapper。
