@@ -15,6 +15,8 @@ use crate::client::{CliError, Client};
 
 mod password_lifecycle;
 pub use password_lifecycle::{password_change, recovery_rotate};
+mod github_admin;
+pub use github_admin::{credential_apply_github_webhook, credential_rotate_github_app};
 mod audit;
 pub use audit::{audit_export, audit_list};
 mod policy_approval;
@@ -421,7 +423,7 @@ pub fn credential_add_github_app(
     }
     let marker: GitHubProfileMarker<'_> = serde_json::from_slice(&secret)
         .map_err(|_| CliError::local("USAGE", "invalid GitHub App profile JSON"))?;
-    if marker.credential_type != "github-app-installation-v1" {
+    if marker.credential_type != "github-app-installation-v2" {
         return Err(CliError::local(
             "USAGE",
             "GitHub App profile has the wrong credential_type",

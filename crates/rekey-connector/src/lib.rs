@@ -120,10 +120,20 @@ pub enum ConnectorSelectionError {
 /// The public portion of the existing closed GitHub App action profile.
 /// Request-body, header, and deadline constraints remain Broker-owned.
 pub fn github_action_is_reserved(action: &FixedHttpAction) -> bool {
+    let path = action.exact_path.as_str();
+    let closed_path = (action.method == rekey_domain::action::FixedMethod::Get
+        && path == "/installation/repositories")
+        || (action.method == rekey_domain::action::FixedMethod::Post
+            && path.strip_prefix("/repos/").is_some_and(|tail| {
+                let mut segments = tail.split('/');
+                segments.next().is_some_and(|value| !value.is_empty())
+                    && segments.next().is_some_and(|value| !value.is_empty())
+                    && segments.next() == Some("issues")
+                    && segments.next().is_none()
+            }));
     action.origin.host() == "api.github.com"
         && action.origin.port() == 443
-        && action.method == rekey_domain::action::FixedMethod::Get
-        && action.exact_path.as_str() == "/installation/repositories"
+        && closed_path
         && action.auth.header_name.as_str() == "authorization"
         && action.auth.prefix.as_str() == "Bearer "
 }

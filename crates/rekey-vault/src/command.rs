@@ -154,6 +154,15 @@ pub enum AuthorityCommand {
         not_after: Option<Instant>,
         reply: Reply<CredentialMetadata>,
     },
+    CredentialRotateTyped {
+        credential_id: CredentialId,
+        expected_kind: CredentialKind,
+        expected_version: Option<u64>,
+        secret: SecretInput,
+        proof: UnlockProof,
+        not_after: Option<Instant>,
+        reply: Reply<CredentialMetadata>,
+    },
     CredentialRevoke {
         credential_id: CredentialId,
         proof: UnlockProof,

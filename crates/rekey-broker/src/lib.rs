@@ -14,6 +14,7 @@ pub mod error;
 pub(crate) mod execution_supervisor;
 pub mod executor;
 mod github_app;
+mod github_profile;
 pub mod ipc;
 pub mod lifecycle;
 pub mod runtime;

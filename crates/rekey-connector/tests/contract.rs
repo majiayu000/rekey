@@ -79,14 +79,21 @@ fn testkit_rejects_a_lease_after_the_last_revoke() {
 fn selection_preserves_the_reserved_github_no_fallback_boundary() {
     let ordinary = action("https://api.example.com", "/v1/run");
     let github = action("https://api.github.com", "/installation/repositories");
+    let mut github_issue = action("https://api.github.com", "/repos/owner/repo/issues");
+    github_issue.method = FixedMethod::Post;
     assert!(!github_action_is_reserved(&ordinary));
     assert!(github_action_is_reserved(&github));
+    assert!(github_action_is_reserved(&github_issue));
     assert_eq!(
         resolve_builtin(CredentialKind::OpaqueToken, &ordinary),
         Ok(BuiltInConnector::FixedHttpHeaderV1)
     );
     assert_eq!(
         resolve_builtin(CredentialKind::OpaqueToken, &github),
+        Err(ConnectorSelectionError::SelectionRejected)
+    );
+    assert_eq!(
+        resolve_builtin(CredentialKind::OpaqueToken, &github_issue),
         Err(ConnectorSelectionError::SelectionRejected)
     );
     assert_eq!(

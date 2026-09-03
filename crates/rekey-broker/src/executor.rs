@@ -442,10 +442,25 @@ impl ActionExecutor {
                 return Err(BrokerError::Denied(err.reason()));
             }
         };
-        if let Err(err) = profile.validate_action(action, request) {
-            started.blocked_until(effect_deadline, err.reason()).await?;
-            return Err(BrokerError::Denied(err.reason()));
-        }
+        let github_action = match profile.action(action, request) {
+            Ok(action) => action,
+            Err(err) => {
+                started.blocked_until(effect_deadline, err.reason()).await?;
+                return Err(BrokerError::Denied(err.reason()));
+            }
+        };
+        let request_body = match github_action {
+            crate::github_profile::GitHubAction::ListRepositories => Vec::new(),
+            crate::github_profile::GitHubAction::CreateIssue { .. } => {
+                match GitHubAppCredential::issue_body(request) {
+                    Ok(body) => body,
+                    Err(err) => {
+                        started.blocked_until(effect_deadline, err.reason()).await?;
+                        return Err(BrokerError::Denied(err.reason()));
+                    }
+                }
+            }
+        };
         // This durable event proves the exact non-secret connector binding
         // was authorized before JWT signing or token exchange.
         if let Err(err) = self
@@ -477,6 +492,8 @@ impl ActionExecutor {
         let effect = profile
             .execute_effect(
                 self.transport.as_ref(),
+                github_action,
+                request_body,
                 effect_deadline,
                 action.response_policy.max_body_bytes,
             )
@@ -545,7 +562,7 @@ impl ActionExecutor {
             started
                 .indeterminate_until(effect_deadline, err.reason())
                 .await?;
-            return Err(BrokerError::Upstream(err.reason()));
+            return Err(github_post_effect_error(github_action, err.reason()));
         }
 
         let mut response = match resource {
@@ -554,7 +571,7 @@ impl ActionExecutor {
                 started
                     .indeterminate_until(effect_deadline, err.reason())
                     .await?;
-                return Err(BrokerError::Upstream(err.reason()));
+                return Err(github_post_effect_error(github_action, err.reason()));
             }
         };
         if contains_secret(&response.body, &needles)
@@ -586,6 +603,20 @@ impl ActionExecutor {
             headers,
             body,
         })
+    }
+}
+
+fn github_post_effect_error(
+    action: crate::github_profile::GitHubAction,
+    reason: &'static str,
+) -> BrokerError {
+    if matches!(
+        action,
+        crate::github_profile::GitHubAction::CreateIssue { .. }
+    ) {
+        BrokerError::Indeterminate(reason)
+    } else {
+        BrokerError::Upstream(reason)
     }
 }
 

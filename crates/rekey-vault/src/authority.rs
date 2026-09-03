@@ -280,6 +280,30 @@ impl Worker {
                 self.touch_if_ok(&result);
                 let _ = reply.send(result);
             }
+            AuthorityCommand::CredentialRotateTyped {
+                credential_id,
+                expected_kind,
+                expected_version,
+                secret,
+                proof,
+                not_after,
+                reply,
+            } => {
+                let result = if mutation_expired(not_after) {
+                    Err(AuthorityError::AuthorityBusy)
+                } else {
+                    self.credential_rotate_typed(
+                        credential_id,
+                        expected_kind,
+                        expected_version,
+                        secret,
+                        proof,
+                        not_after,
+                    )
+                };
+                self.touch_if_ok(&result);
+                let _ = reply.send(result);
+            }
             AuthorityCommand::CredentialRevoke {
                 credential_id,
                 proof,

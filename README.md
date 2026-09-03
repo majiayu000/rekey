@@ -181,8 +181,10 @@ The SDK can project an object-shaped authorized Action schema into a stable MCP
 tool descriptor and can describe the public fields of an RFC 8693 OAuth token
 exchange. These are pure library contracts, not an MCP server or a live generic
 OAuth connector. They accept no provider token, client secret, capability, or
-dynamic plugin. GitHub remains the same single-repository, metadata-read closed
-profile until P-06.
+dynamic plugin. Development head now extends the same closed GitHub connector
+through P-06 with 1-16 exact repositories, bounded issue creation, typed
+rotation, Admin-forwarded signed repository deltas, and read-only bounded
+retry. Those additions are not part of the published `v2.0.0-alpha.1` archive.
 
 ## Not compatible with v1
 

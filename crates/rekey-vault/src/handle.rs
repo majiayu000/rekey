@@ -198,6 +198,26 @@ impl AuthorityHandle {
         })
     }
 
+    pub async fn credential_rotate_typed_before(
+        &self,
+        credential_id: CredentialId,
+        expected_kind: CredentialKind,
+        expected_version: Option<u64>,
+        secret: SecretInput,
+        proof: UnlockProof,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<CredentialMetadata, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::CredentialRotateTyped {
+            credential_id,
+            expected_kind,
+            expected_version,
+            secret,
+            proof,
+            not_after,
+            reply
+        })
+    }
+
     pub async fn credential_revoke(
         &self,
         credential_id: CredentialId,
