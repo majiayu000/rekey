@@ -100,6 +100,8 @@ jobs:
         run: scripts/p6-github-app-extension.sh
       - name: P7 Vault KV source acceptance
         run: scripts/p7-vault-kv-source.sh
+      - name: P7B Vault dynamic source acceptance
+        run: scripts/p7-vault-dynamic-source.sh
       - name: P5 connector SDK contract acceptance
         run: scripts/p5-connector-sdk.sh
       - name: P1 native launchd service-manager acceptance

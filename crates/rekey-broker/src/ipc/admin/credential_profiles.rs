@@ -33,6 +33,11 @@ pub(super) async fn validate_add(
                 .err()
                 .map(|_| "invalid Vault KV credential profile")
         }
+        CredentialKind::VaultDynamicSource => {
+            crate::executor::vault_dynamic::VaultDynamicProfile::validate_profile(secret)
+                .err()
+                .map(|_| "invalid Vault dynamic credential profile")
+        }
     };
     if let Some(message) = error {
         return Err(BrokerError::Domain(DomainError::InvalidActionDefinition(

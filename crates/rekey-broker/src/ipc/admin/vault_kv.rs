@@ -12,6 +12,37 @@ pub(super) async fn handle_rotate(
     frame: &IncomingFrame,
     ctx: &BrokerCtx,
 ) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
+    handle_rotate_kind(
+        frame,
+        ctx,
+        CredentialKind::VaultKvV2Source,
+        VaultKvProfile::validate_profile,
+        "invalid Vault KV credential profile",
+    )
+    .await
+}
+
+pub(super) async fn handle_rotate_dynamic(
+    frame: &IncomingFrame,
+    ctx: &BrokerCtx,
+) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
+    handle_rotate_kind(
+        frame,
+        ctx,
+        CredentialKind::VaultDynamicSource,
+        crate::executor::vault_dynamic::VaultDynamicProfile::validate_profile,
+        "invalid Vault dynamic credential profile",
+    )
+    .await
+}
+
+async fn handle_rotate_kind<E>(
+    frame: &IncomingFrame,
+    ctx: &BrokerCtx,
+    expected_kind: CredentialKind,
+    validate: fn(&[u8]) -> Result<(), E>,
+    error_message: &'static str,
+) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
     let deadline = admin_mutation_deadline();
     ctx.lifecycle.reject_if_not_running()?;
     let reference: ipc::CredentialRefMeta = meta(frame)?;
@@ -27,18 +58,18 @@ pub(super) async fn handle_rotate(
     if credentials
         .iter()
         .find(|credential| credential.id == reference.credential_id)
-        .is_none_or(|credential| credential.kind != CredentialKind::VaultKvV2Source)
-        || VaultKvProfile::validate_profile(secret).is_err()
+        .is_none_or(|credential| credential.kind != expected_kind)
+        || validate(secret).is_err()
     {
         return Err(BrokerError::Domain(DomainError::InvalidActionDefinition(
-            "invalid Vault KV credential profile".to_owned(),
+            error_message.to_owned(),
         )));
     }
     let metadata = authority_until(
         deadline,
         ctx.authority.credential_rotate_typed_before(
             reference.credential_id,
-            CredentialKind::VaultKvV2Source,
+            expected_kind,
             None,
             SecretInput::from_slice(secret),
             proof_from(kind, proof),

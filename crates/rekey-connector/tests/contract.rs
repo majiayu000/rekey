@@ -45,7 +45,7 @@ fn action(origin: &str, path: &str) -> FixedHttpAction {
 #[test]
 fn registry_is_versioned_ordered_and_lifecycle_complete() {
     rekey_connector::testkit::assert_registry(registry());
-    assert_eq!(registry().len(), 3);
+    assert_eq!(registry().len(), 4);
     assert!(registry().iter().all(|contract| {
         contract.source == ConnectorSource::BuiltInBinary
             && contract.isolation == ConnectorIsolation::BrokerProcess
@@ -62,6 +62,16 @@ fn registry_is_versioned_ordered_and_lifecycle_complete() {
     );
     assert_eq!(
         registry()[2].effects,
+        &[
+            CredentialEffect::Resolve,
+            CredentialEffect::Lease,
+            CredentialEffect::Inject,
+            CredentialEffect::Revoke,
+        ]
+    );
+    assert!(registry()[2].revoke_before_success);
+    assert_eq!(
+        registry()[3].effects,
         &[CredentialEffect::Resolve, CredentialEffect::Inject]
     );
 }
@@ -110,6 +120,14 @@ fn selection_preserves_the_reserved_github_no_fallback_boundary() {
     );
     assert_eq!(
         resolve_builtin(CredentialKind::VaultKvV2Source, &github),
+        Err(ConnectorSelectionError::SelectionRejected)
+    );
+    assert_eq!(
+        resolve_builtin(CredentialKind::VaultDynamicSource, &ordinary),
+        Ok(BuiltInConnector::VaultDynamicSourceV1)
+    );
+    assert_eq!(
+        resolve_builtin(CredentialKind::VaultDynamicSource, &github),
         Err(ConnectorSelectionError::SelectionRejected)
     );
 }

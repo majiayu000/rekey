@@ -1060,7 +1060,25 @@ PR #30 已 signed squash merge 为 `1d242c946d660bb11d28a09125db722bcf6dd05f`，
 
 **跟踪：** [Issue #31](https://github.com/majiayu000/rekey/issues/31)
 
-**首个增量：** P-07A [Issue #32](https://github.com/majiayu000/rekey/issues/32) · [`2026-09-03-vault-kv-credential-source-p07a.md`](../specs/2026-09-03-vault-kv-credential-source-p07a.md) · 本地完整门禁通过，exact-head CI/merge 待完成
+**首个增量：** P-07A [Issue #32](https://github.com/majiayu000/rekey/issues/32) · [`2026-09-03-vault-kv-credential-source-p07a.md`](../specs/2026-09-03-vault-kv-credential-source-p07a.md) · 已完成 exact-head、merge 和 post-main 验收
+
+**P-07A 完成证据（2026-09-03）：** [PR #33](https://github.com/majiayu000/rekey/pull/33)
+在 final head `b7113585ef48dfcd124acd6bf293168c34b20e22` 上通过 security
+`33716874951`、fuzz `33716874939`、performance `33716875002` 共 9 个 jobs；
+四个有效 review finding 均已修复并 resolved。signed squash merge SHA 为
+`5214d7f27235a40ef9c6acabe56ea71e5c65a5fd`，只有一个 parent；Issue #32
+已关闭且远端分支已删除。post-main security `33717430247`、fuzz
+`33717430231`、performance `33717430241` 均在 merge SHA 上成功。该能力未进入
+`v2.0.0-alpha.1`，不构成通用 Vault、通用 G2 或企业就绪声明。
+
+**第二增量：** P-07B [Issue #34](https://github.com/majiayu000/rekey/issues/34) · [`2026-09-03-vault-dynamic-lease-source-p07b.md`](../specs/2026-09-03-vault-dynamic-lease-source-p07b.md) · 实现与本地门禁完成，等待 exact-head CI、合并和 post-main 验收
+
+**P-07B 本地证据（2026-09-03）：** schema v9、typed add/rotate、内建
+`vault-dynamic-source@1`、one-shot 获取/注入/同步精确回收、审计、反射封堵、deadline、
+restart 和 backup/restore 已实现。workspace fmt/check/clippy/tests、root/fuzz audit、固定
+nightly build、五个 target 各 2,000 次 fuzz、机械边界以及完整 macOS security-gate
+acceptance 集均通过；Ubuntu/macOS exact-head、review closeout、signed squash merge 和
+post-main CI 仍待 PR 证据。
 
 - HashiCorp Vault。
 - AWS/GCP/Azure secrets/KMS。
@@ -1183,10 +1201,10 @@ PR #30 已 signed squash merge 为 `1d242c946d660bb11d28a09125db722bcf6dd05f`，
 | Alpha 文档 | 完成（含 erratum） | 用户、安装、运维、发行、开源治理和支持范围已完成；archive 内嵌发布前 Matrix 的状态差异由公开 Release erratum 和当前仓库矩阵明确衔接 |
 | 可公开 Alpha | 是 | [v2.0.0-alpha.1](https://github.com/majiayu000/rekey/releases/tag/v2.0.0-alpha.1) 已公开；双平台 fresh-install、attestation 和 public-URL smoke 通过 |
 | H 安全与可靠性补强 | 完成 | H-01～H-08 已以持续 fuzz、真实 ENOSPC/文件系统故障注入、边界文档、公开双平台发行证据、供应链取舍以及固定主机 1,800 秒性能/容量/soak 证据全部关闭 |
-| P 后续产品能力 | 进行中 | P-01～P-06 均已完成 adversarial/black-box、exact-head、merge 和 post-main 验收但尚未发布；P-07A Vault KV v2 本地完整门禁已通过，exact-head CI/merge 待完成，P-07 其余 provider 与 P-08～P-10 未开始 |
+| P 后续产品能力 | 进行中 | P-01～P-07A 均已完成 adversarial/black-box、exact-head、merge 和 post-main 验收但尚未发布；P-07B 动态租约实现与本地门禁已完成，等待 PR exact-head/merge/post-main；P-07 其余 provider 与 P-08～P-10 未开始 |
 | 可宣称通用 G2 | 否 | 只有有界 Linux reference；默认仍是 G1 |
 | 可宣称通用 Connector | 否 | 只有 fixed HTTPS Action 和 closed GitHub App profile |
 | 企业就绪 | 否 | 控制面、身份、HA/DR、合规、运营和商业门槛均未完成 |
 
-M、A、H、P-01、P-02、P-03、P-04、P-05 与 P-06 已经关闭。后续 P、E 必须继续按独立 spec、PR 和真实证据推进，
+M、A、H、P-01、P-02、P-03、P-04、P-05、P-06 与 P-07A 已经关闭。后续 P、E 必须继续按独立 spec、PR 和真实证据推进，
 不得回写或扩大已经发布的 `v2.0.0-alpha.1` 范围。

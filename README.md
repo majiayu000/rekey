@@ -172,10 +172,11 @@ human directory, private-key custody, or approval survival across lock/restart.
 ## Connector contract SDK
 
 Development head includes the IO-free `rekey-connector` crate. Its versioned,
-compile-time registry describes the three existing built-ins:
+compile-time registry describes the four existing built-ins:
 `fixed-http-header@1` (`inject`) and `github-app-installation@1`
 (`sign → exchange → lease → revoke`), plus `vault-kv-v2-source@1`
-(`resolve → inject`). Broker code still owns every credential, network effect,
+(`resolve → inject`) and `vault-dynamic-source@1`
+(`resolve → lease → inject → revoke`). Broker code still owns every credential, network effect,
 deadline, audit event, response-sealing decision, and cleanup.
 
 The SDK can project an object-shaped authorized Action schema into a stable MCP
@@ -200,9 +201,24 @@ rekey credential rotate-vault-kv CREDENTIAL_ID --file profile.json
 ```
 
 This is not general Vault support: there is no latest-version lookup, private
-Vault network exception, dynamic lease, Vault auth flow, cloud secret/KMS,
+Vault network exception, Vault auth flow, cloud secret/KMS,
 1Password, HSM, keychain, generic URL/JSONPath adapter, or new Agent secret API.
 It is not included in the published `v2.0.0-alpha.1` archive.
+
+Development head also supports one closed one-shot Vault dynamic source. Each
+execution performs one `GET /v1/MOUNT/creds/ROLE`, uses one selected string in
+the fixed Action, and withholds the Action response until
+`POST /v1/sys/leases/revoke` succeeds for the exact lease with `sync: true`:
+
+```bash
+rekey credential add-vault-dynamic LABEL --file profile.json
+rekey credential rotate-vault-dynamic CREDENTIAL_ID --file profile.json
+```
+
+Lease duration is restricted to 5–300 seconds. Rekey does not renew leases or
+claim cleanup after process/host crash; provider expiry bounds that residual
+exposure. There is no background lease registry, private Vault networking,
+generic provider adapter, or inclusion in `v2.0.0-alpha.1`.
 
 ## Not compatible with v1
 

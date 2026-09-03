@@ -78,6 +78,7 @@ pub mod admin_msg {
     pub const CREDENTIAL_ROTATE_GITHUB_APP: u16 = 23;
     pub const GITHUB_WEBHOOK_APPLY: u16 = 24;
     pub const CREDENTIAL_ROTATE_VAULT_KV: u16 = 25;
+    pub const CREDENTIAL_ROTATE_VAULT_DYNAMIC: u16 = 26;
 }
 
 /// Agent channel message types.
