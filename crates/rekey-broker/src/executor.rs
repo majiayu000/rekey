@@ -287,6 +287,7 @@ impl ActionExecutor {
         let connector = match resolve_builtin(credential_kind, action) {
             Ok(connector) => connector,
             Err(_) => {
+                drop(prepared);
                 let reason = GitHubError::InvalidCredential.reason();
                 started.blocked_until(effect_deadline, reason).await?;
                 return Err(BrokerError::Denied(reason));

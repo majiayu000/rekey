@@ -15,4 +15,9 @@ if cargo tree -p rekey-connector -e normal \
   exit 1
 fi
 
+if cargo tree -p rekey-cli -e normal | rg 'rekey-connector'; then
+  echo "rekey-cli must remain independent of rekey-connector" >&2
+  exit 1
+fi
+
 echo "P-05 connector SDK contract gate passed"

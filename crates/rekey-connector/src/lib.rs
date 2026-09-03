@@ -364,11 +364,11 @@ pub mod testkit {
         let lease = contract
             .effects
             .iter()
-            .position(|effect| *effect == CredentialEffect::Lease);
+            .rposition(|effect| *effect == CredentialEffect::Lease);
         let revoke = contract
             .effects
             .iter()
-            .position(|effect| *effect == CredentialEffect::Revoke);
+            .rposition(|effect| *effect == CredentialEffect::Revoke);
         if let Some(lease) = lease {
             assert!(
                 revoke.is_some_and(|revoke| revoke > lease),

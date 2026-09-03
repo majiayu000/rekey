@@ -63,6 +63,19 @@ fn registry_is_versioned_ordered_and_lifecycle_complete() {
 }
 
 #[test]
+#[should_panic(expected = "lease must be revoked later")]
+fn testkit_rejects_a_lease_after_the_last_revoke() {
+    const EFFECTS: &[CredentialEffect] = &[
+        CredentialEffect::Lease,
+        CredentialEffect::Revoke,
+        CredentialEffect::Lease,
+    ];
+    let mut contract = *registry().first().unwrap();
+    contract.effects = EFFECTS;
+    rekey_connector::testkit::assert_contract(&contract);
+}
+
+#[test]
 fn selection_preserves_the_reserved_github_no_fallback_boundary() {
     let ordinary = action("https://api.example.com", "/v1/run");
     let github = action("https://api.github.com", "/installation/repositories");
