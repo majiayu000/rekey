@@ -65,6 +65,7 @@ openssl rsa -in "$KEY_ONE" -traditional -outform DER -out "$KEY_ONE_DER" >/dev/n
 openssl rsa -in "$KEY_ONE" -RSAPublicKey_out -outform DER -out "$KEY_ONE_PUBLIC" >/dev/null 2>&1
 openssl genrsa -traditional -out "$KEY_TWO" 2048 >/dev/null 2>&1
 openssl rsa -in "$KEY_TWO" -traditional -outform DER -out "$KEY_TWO_DER" >/dev/null 2>&1
+KEY_TWO_BASE64_CANARY="$(python3 -c 'import base64,pathlib,sys; data=pathlib.Path(sys.argv[1]).read_bytes(); print(base64.b64encode(data[300:324]).decode())' "$KEY_TWO_DER")"
 
 python3 - "$PROFILE" "$KEY_ROTATION_PROFILE" "$ROTATED_PROFILE" "$INVALID_PROFILE" \
   "$KEY_ONE_DER" "$KEY_TWO_DER" "$WEBHOOK_SECRET" <<'PY'
@@ -258,13 +259,19 @@ printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" credential rotate-gith
 rm "$KEY_ONE" "$KEY_ONE_DER" "$KEY_TWO" "$KEY_TWO_DER" "$PROFILE" \
   "$KEY_ROTATION_PROFILE" "$ROTATED_PROFILE" "$INVALID_PROFILE" "$PAYLOAD_ADD" \
   "$PAYLOAD_REMOVE" "$ISSUE_BODY"
-for canary in "$WEBHOOK_SECRET" "$TOKEN_CANARY" "$ISSUE_BODY_CANARY" "$CAPABILITY" \
+for canary in "$KEY_TWO_BASE64_CANARY" "$WEBHOOK_SECRET" "$TOKEN_CANARY" "$ISSUE_BODY_CANARY" "$CAPABILITY" \
   "$ADD_SIGNATURE" "$REMOVE_SIGNATURE"; do
   if rg -a -F --glob '!trace' -- "$canary" "$STATE" "$WORKDIR" >/dev/null; then
     echo "P6 secret/canary escaped: $canary" >&2
     exit 1
   fi
 done
+while IFS= read -r jwt_canary; do
+  if rg -a -F --glob '!trace' -- "$jwt_canary" "$STATE" "$WORKDIR" >/dev/null; then
+    echo "P6 JWT canary escaped" >&2
+    exit 1
+  fi
+done < <(sed -n 's/^jwt\.canary=//p' "$TRACE" | sort -u)
 
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" shutdown --password-stdin >/dev/null
 wait "$BROKER_PID"
