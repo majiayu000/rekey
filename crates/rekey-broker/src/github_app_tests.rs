@@ -191,8 +191,8 @@ async fn create_issue_binds_path_body_response_and_never_retries() {
         serde_json::json!({
             "id":44,
             "number":7,
-            "repository_url":"https://api.github.com/repos/owner/repo",
-            "html_url":"https://github.com/owner/repo/issues/7",
+            "repository_url":"https://api.github.com/repos/Owner/Repo",
+            "html_url":"https://github.com/Owner/Repo/issues/7",
             "body":"provider extra"
         }),
         Vec::new(),
@@ -215,7 +215,7 @@ async fn create_issue_binds_path_body_response_and_never_retries() {
         serde_json::json!({
             "id":44,
             "number":7,
-            "html_url":"https://github.com/owner/repo/issues/7"
+            "html_url":"https://github.com/Owner/Repo/issues/7"
         })
     );
     assert_eq!(
@@ -225,6 +225,37 @@ async fn create_issue_binds_path_body_response_and_never_retries() {
             path: "/repos/owner/repo/issues".to_owned(),
             body,
         }]
+    );
+}
+
+#[tokio::test]
+async fn create_issue_rejects_a_different_response_host() {
+    let profile = GitHubAppCredential::test_profile();
+    let transport = SequenceTransport::new(vec![json_upstream(
+        201,
+        serde_json::json!({
+            "id":44,
+            "number":7,
+            "repository_url":"https://example.com/repos/owner/repo",
+            "html_url":"https://github.com/owner/repo/issues/7"
+        }),
+        Vec::new(),
+    )]);
+    assert_eq!(
+        profile
+            .resource(
+                &transport,
+                &test_token(),
+                GitHubAction::CreateIssue {
+                    repository_index: 0,
+                },
+                br#"{"title":"bounded"}"#.to_vec(),
+                Duration::from_secs(2),
+                RESPONSE_LIMIT,
+            )
+            .await
+            .map(|_| ()),
+        Err(GitHubError::ResourceScope)
     );
 }
 

@@ -21,6 +21,8 @@ pub enum BrokerError {
     Denied(&'static str),
     #[error("upstream request failed")]
     Upstream(&'static str),
+    #[error("upstream effect outcome is indeterminate")]
+    Indeterminate(&'static str),
     #[error("response blocked by security policy")]
     ResponseSecurityViolation,
     #[error("ipc unavailable")]
@@ -44,6 +46,7 @@ impl BrokerError {
             Self::Frame(_) => "INVALID_FRAME",
             Self::Denied(_) => "REQUEST_DENIED",
             Self::Upstream(_) => "UPSTREAM_FAILED",
+            Self::Indeterminate(_) => "UPSTREAM_INDETERMINATE",
             Self::ResponseSecurityViolation => "RESPONSE_SECURITY_VIOLATION",
             Self::Io(_) => "IPC_UNAVAILABLE",
         }
@@ -70,5 +73,17 @@ impl BrokerError {
             ) => "credential unavailable".to_owned(),
             other => other.to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BrokerError;
+
+    #[test]
+    fn indeterminate_upstream_effect_is_not_retryable() {
+        let error = BrokerError::Indeterminate("resource-transport");
+        assert_eq!(error.code(), "UPSTREAM_INDETERMINATE");
+        assert!(!error.retryable());
     }
 }

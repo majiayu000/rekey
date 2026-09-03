@@ -25,6 +25,7 @@ KEY_ONE_DER="$WORKDIR/key-one.der"
 KEY_ONE_PUBLIC="$WORKDIR/key-one-public.der"
 KEY_TWO="$WORKDIR/key-two.pem"
 KEY_TWO_DER="$WORKDIR/key-two.der"
+KEY_TWO_PUBLIC="$WORKDIR/key-two-public.der"
 PROFILE="$WORKDIR/profile.json"
 KEY_ROTATION_PROFILE="$WORKDIR/key-rotation-profile.json"
 ROTATED_PROFILE="$WORKDIR/rotated-profile.json"
@@ -65,6 +66,7 @@ openssl rsa -in "$KEY_ONE" -traditional -outform DER -out "$KEY_ONE_DER" >/dev/n
 openssl rsa -in "$KEY_ONE" -RSAPublicKey_out -outform DER -out "$KEY_ONE_PUBLIC" >/dev/null 2>&1
 openssl genrsa -traditional -out "$KEY_TWO" 2048 >/dev/null 2>&1
 openssl rsa -in "$KEY_TWO" -traditional -outform DER -out "$KEY_TWO_DER" >/dev/null 2>&1
+openssl rsa -in "$KEY_TWO" -RSAPublicKey_out -outform DER -out "$KEY_TWO_PUBLIC" >/dev/null 2>&1
 KEY_TWO_BASE64_CANARY="$(python3 -c 'import base64,pathlib,sys; data=pathlib.Path(sys.argv[1]).read_bytes(); print(base64.b64encode(data[300:324]).decode())' "$KEY_TWO_DER")"
 
 python3 - "$PROFILE" "$KEY_ROTATION_PROFILE" "$ROTATED_PROFILE" "$INVALID_PROFILE" \
@@ -96,7 +98,7 @@ PY
 
 printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin >/dev/null
 printf '%s\n' p6-list >"$MODE"
-"$FIXTURE" "$STATE" "$READY" "$MODE" "$TRACE" "$KEY_ONE_PUBLIC" \
+"$FIXTURE" "$STATE" "$READY" "$MODE" "$TRACE" "$KEY_ONE_PUBLIC" "$KEY_TWO_PUBLIC" \
   >"$WORKDIR/broker.out" 2>"$WORKDIR/broker.err" &
 BROKER_PID=$!
 for _ in $(seq 1 400); do
@@ -201,6 +203,12 @@ grep -q 'https://github.com/p6-owner/beta/issues/7' "$WORKDIR/issue.out"
 ROTATED_JSON="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" credential \
   rotate-github-app "$CREDENTIAL_ID" --file "$KEY_ROTATION_PROFILE" --password-stdin)"
 [[ "$(printf '%s\n' "$ROTATED_JSON" | json_field current_version)" == "2" ]]
+printf '%s\n' p6-key-two-list >"$MODE"
+KEY_TWO_RESOURCE_BEFORE="$(grep -c '^resource.ok$' "$TRACE")"
+"$REKEY" --state-dir "$STATE" execute "$LIST_REF" --capability "$CAPABILITY" \
+  >"$WORKDIR/key-two-list.out"
+grep -q '"total_count":1' "$WORKDIR/key-two-list.out"
+[[ "$(grep -c '^resource.ok$' "$TRACE")" == "$((KEY_TWO_RESOURCE_BEFORE + 1))" ]]
 TRACE_BEFORE="$(wc -l <"$TRACE")"
 DENIED_RC=0
 "$REKEY" --state-dir "$STATE" execute "$ISSUE_REF" --capability "$CAPABILITY" \
@@ -256,7 +264,7 @@ printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" credential rotate-gith
 [[ "$INVALID_RC" == "2" && "$(credential_version "$CREDENTIAL_ID")" == "5" ]]
 
 "$REKEY" --state-dir "$STATE" audit export --output "$WORKDIR/audit.jsonl" >/dev/null
-rm "$KEY_ONE" "$KEY_ONE_DER" "$KEY_TWO" "$KEY_TWO_DER" "$PROFILE" \
+rm "$KEY_ONE" "$KEY_ONE_DER" "$KEY_TWO" "$KEY_TWO_DER" "$KEY_TWO_PUBLIC" "$PROFILE" \
   "$KEY_ROTATION_PROFILE" "$ROTATED_PROFILE" "$INVALID_PROFILE" "$PAYLOAD_ADD" \
   "$PAYLOAD_REMOVE" "$ISSUE_BODY"
 for canary in "$KEY_TWO_BASE64_CANARY" "$WEBHOOK_SECRET" "$TOKEN_CANARY" "$ISSUE_BODY_CANARY" "$CAPABILITY" \

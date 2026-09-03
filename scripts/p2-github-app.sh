@@ -266,7 +266,7 @@ PRIVATE_KEY_BASE64_CANARY="${PRIVATE_KEY_CANARIES#*:}"
 [[ ${#PRIVATE_KEY_BASE64_CANARY} -eq 32 ]]
 rm "$PRIVATE_KEY" "$PRIVATE_KEY_DER"
 printf '%s\n' success >"$MODE"
-"$FIXTURE" "$STATE" "$READY" "$MODE" "$TRACE" "$PUBLIC_KEY_DER" \
+"$FIXTURE" "$STATE" "$READY" "$MODE" "$TRACE" "$PUBLIC_KEY_DER" "$PUBLIC_KEY_DER" \
   >"$WORKDIR/broker.out" 2>"$WORKDIR/broker.err" &
 BROKER_PID=$!
 for _ in $(seq 1 400); do
@@ -448,7 +448,7 @@ wait "$BROKER_PID"
 BROKER_PID=""
 READY="$WORKDIR/pre-signal-restart-ready"
 printf '%s\n' success >"$MODE"
-"$FIXTURE" "$STATE" "$READY" "$MODE" "$TRACE" "$PUBLIC_KEY_DER" \
+"$FIXTURE" "$STATE" "$READY" "$MODE" "$TRACE" "$PUBLIC_KEY_DER" "$PUBLIC_KEY_DER" \
   >"$WORKDIR/pre-signal-restart-broker.out" 2>"$WORKDIR/pre-signal-restart-broker.err" &
 BROKER_PID=$!
 for _ in $(seq 1 400); do
@@ -662,7 +662,7 @@ assert_raw_private_key_absent
 
 READY="$WORKDIR/restarted-ready"
 printf '%s\n' success >"$MODE"
-"$FIXTURE" "$STATE" "$READY" "$MODE" "$TRACE" "$PUBLIC_KEY_DER" \
+"$FIXTURE" "$STATE" "$READY" "$MODE" "$TRACE" "$PUBLIC_KEY_DER" "$PUBLIC_KEY_DER" \
   >"$WORKDIR/restarted-broker.out" 2>"$WORKDIR/restarted-broker.err" &
 BROKER_PID=$!
 for _ in $(seq 1 400); do
@@ -691,7 +691,7 @@ STATE="$RESTORED_STATE"
 READY="$WORKDIR/restored-ready"
 RESTORED_TRACE="$WORKDIR/restored-trace"
 printf '%s\n' success >"$MODE"
-"$FIXTURE" "$STATE" "$READY" "$MODE" "$RESTORED_TRACE" "$PUBLIC_KEY_DER" \
+"$FIXTURE" "$STATE" "$READY" "$MODE" "$RESTORED_TRACE" "$PUBLIC_KEY_DER" "$PUBLIC_KEY_DER" \
   >"$WORKDIR/restored-broker.out" 2>"$WORKDIR/restored-broker.err" &
 BROKER_PID=$!
 for _ in $(seq 1 400); do

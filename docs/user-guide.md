@@ -388,7 +388,7 @@ verify with the recovery key. A successful restore does not reset the password.
 | 5 | Durable state, crypto, audit, or bootstrap failure | `STORAGE_UNAVAILABLE`, `FAULTED`, `RESTORE_FAILED` |
 | 6 | Upstream transport/size failure | `UPSTREAM_FAILED`, `RESPONSE_TOO_LARGE` |
 | 7 | Other explicit failure | code shown on stderr |
-| 8 | Post-effect security/audit uncertainty | `RESPONSE_SECURITY_VIOLATION`, `AUDIT_COMMIT_FAILED_AFTER_EXECUTION` |
+| 8 | Post-effect security/audit uncertainty | `UPSTREAM_INDETERMINATE`, `RESPONSE_SECURITY_VIOLATION`, `AUDIT_COMMIT_FAILED_AFTER_EXECUTION` |
 
 An exit 8 means a remote effect may have occurred; do not blindly retry.
 

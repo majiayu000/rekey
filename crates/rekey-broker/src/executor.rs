@@ -562,7 +562,7 @@ impl ActionExecutor {
             started
                 .indeterminate_until(effect_deadline, err.reason())
                 .await?;
-            return Err(BrokerError::Upstream(err.reason()));
+            return Err(github_post_effect_error(github_action, err.reason()));
         }
 
         let mut response = match resource {
@@ -571,7 +571,7 @@ impl ActionExecutor {
                 started
                     .indeterminate_until(effect_deadline, err.reason())
                     .await?;
-                return Err(BrokerError::Upstream(err.reason()));
+                return Err(github_post_effect_error(github_action, err.reason()));
             }
         };
         if contains_secret(&response.body, &needles)
@@ -603,6 +603,20 @@ impl ActionExecutor {
             headers,
             body,
         })
+    }
+}
+
+fn github_post_effect_error(
+    action: crate::github_profile::GitHubAction,
+    reason: &'static str,
+) -> BrokerError {
+    if matches!(
+        action,
+        crate::github_profile::GitHubAction::CreateIssue { .. }
+    ) {
+        BrokerError::Indeterminate(reason)
+    } else {
+        BrokerError::Upstream(reason)
     }
 }
 

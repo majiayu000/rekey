@@ -67,7 +67,9 @@ impl CliError {
             | "CLOCK_UNAVAILABLE"
             | "FAULTED" => 5,
             "UPSTREAM_FAILED" | "RESPONSE_TOO_LARGE" => 6,
-            "RESPONSE_SECURITY_VIOLATION" | "AUDIT_COMMIT_FAILED_AFTER_EXECUTION" => 8,
+            "RESPONSE_SECURITY_VIOLATION"
+            | "AUDIT_COMMIT_FAILED_AFTER_EXECUTION"
+            | "UPSTREAM_INDETERMINATE" => 8,
             _ => 7,
         }
     }

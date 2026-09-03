@@ -204,18 +204,20 @@ impl GitHubAppCredential {
         };
         let resource_request =
             ResourceRequest(method, path, content_type, request_body, response_max_bytes);
-        let started = Instant::now();
-        let mut response = send_resource(transport, token, &resource_request, timeout).await?;
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .ok_or(GitHubError::Deadline)?;
+        let mut response =
+            send_resource(transport, token, &resource_request, remaining(deadline)?).await?;
         if matches!(action, GitHubAction::ListRepositories) && matches!(response.status, 403 | 429)
         {
             let delay = retry_after(&response).ok_or(GitHubError::ResourceRejected)?;
-            let remaining = timeout
-                .checked_sub(started.elapsed())
-                .and_then(|value| value.checked_sub(delay))
-                .filter(|value| !value.is_zero())
-                .ok_or(GitHubError::Deadline)?;
+            if delay >= remaining(deadline)? {
+                return Err(GitHubError::Deadline);
+            }
             tokio::time::sleep(delay).await;
-            response = send_resource(transport, token, &resource_request, remaining).await?;
+            response =
+                send_resource(transport, token, &resource_request, remaining(deadline)?).await?;
         }
         match action {
             GitHubAction::ListRepositories => self.validate_repository_list(response),
@@ -269,19 +271,20 @@ impl GitHubAppCredential {
         let issue: CreatedIssue =
             serde_json::from_slice(&response.body).map_err(|_| GitHubError::ResourceScope)?;
         let repository = &self.repositories[repository_index];
-        if issue.id == 0
-            || issue.number == 0
-            || issue.repository_url
-                != format!(
-                    "https://api.github.com/repos/{}/{}",
-                    repository.owner, repository.name
-                )
-            || issue.html_url
-                != format!(
-                    "https://github.com/{}/{}/issues/{}",
-                    repository.owner, repository.name, issue.number
-                )
-        {
+        let expected_repository = format!("{}/{}", repository.owner, repository.name);
+        let repository_matches = issue
+            .repository_url
+            .strip_prefix("https://api.github.com/repos/")
+            .is_some_and(|value| value.eq_ignore_ascii_case(&expected_repository));
+        let issue_matches = issue
+            .html_url
+            .strip_prefix("https://github.com/")
+            .and_then(|value| value.rsplit_once("/issues/"))
+            .is_some_and(|(returned_repository, returned_number)| {
+                returned_repository.eq_ignore_ascii_case(&expected_repository)
+                    && returned_number == issue.number.to_string()
+            });
+        if issue.id == 0 || issue.number == 0 || !repository_matches || !issue_matches {
             return Err(GitHubError::ResourceScope);
         }
         let body = serde_json::to_vec(&CreatedIssueOutput {

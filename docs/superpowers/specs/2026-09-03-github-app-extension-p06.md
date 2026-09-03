@@ -145,6 +145,8 @@ values fail without retry and proceed to revoke.
 Exchange, create-issue, revoke, 5xx, transport failures, and every response for
 which a remote mutation may have happened are never retried. A create-issue
 transport failure is indeterminate, not a denial that invites automatic retry.
+Such post-write upstream uncertainty returns `UPSTREAM_INDETERMINATE` with
+`retryable=false` (CLI exit 8).
 
 ## 8. Typed rotation
 

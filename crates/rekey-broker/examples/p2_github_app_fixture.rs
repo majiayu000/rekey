@@ -52,7 +52,7 @@ fn expected_exchange(mode: &str) -> (u64, Vec<u64>, Value) {
             vec![P6_SECOND_REPOSITORY_ID],
             json!({"metadata":"read","issues":"write"}),
         ),
-        "p6-rotated-list" => (
+        "p6-key-two-list" | "p6-rotated-list" => (
             P6_INSTALLATION_ID,
             vec![P6_REPOSITORY_ID],
             json!({"metadata":"read"}),
@@ -76,7 +76,7 @@ fn repositories_for(mode: &str) -> Vec<Value> {
             json!({"id":P6_SECOND_REPOSITORY_ID,"full_name":"p6-owner/beta"}),
             json!({"id":P6_REPOSITORY_ID,"full_name":"p6-owner/alpha"}),
         ],
-        "p6-rotated-list" => {
+        "p6-key-two-list" | "p6-rotated-list" => {
             vec![json!({"id":P6_REPOSITORY_ID,"full_name":"p6-owner/alpha"})]
         }
         _ => vec![json!({"id":REPOSITORY_ID,"full_name":"fixture-owner/fixture"})],
@@ -285,7 +285,7 @@ fn append_jwt_canary(path: &Path, jwt: &str) -> std::io::Result<()> {
 async fn serve_mock(
     listener: TcpListener,
     acceptor: TlsAcceptor,
-    public_key_der: Arc<Vec<u8>>,
+    public_key_ders: Arc<[Vec<u8>; 2]>,
     mode_path: PathBuf,
     trace_path: PathBuf,
 ) {
@@ -294,7 +294,7 @@ async fn serve_mock(
             return;
         };
         let acceptor = acceptor.clone();
-        let public_key_der = Arc::clone(&public_key_der);
+        let public_key_ders = Arc::clone(&public_key_ders);
         let mode_path = mode_path.clone();
         let trace_path = trace_path.clone();
         tokio::spawn(async move {
@@ -308,6 +308,11 @@ async fn serve_mock(
                 .unwrap_or_default()
                 .trim()
                 .to_owned();
+            let public_key_der = if mode == "p6-key-two-list" {
+                &public_key_ders[1]
+            } else {
+                &public_key_ders[0]
+            };
             let api_headers_ok = req.headers.get("x-github-api-version").map(String::as_str)
                 == Some("2022-11-28")
                 && req.headers.get("accept").map(String::as_str)
@@ -320,7 +325,7 @@ async fn serve_mock(
                 && req.path == format!("/app/installations/{expected_installation}/access_tokens")
             {
                 let jwt_value = bearer(&req);
-                let jwt = jwt_value.and_then(|jwt| verify_jwt(jwt, &public_key_der));
+                let jwt = jwt_value.and_then(|jwt| verify_jwt(jwt, public_key_der));
                 if jwt.is_ok() {
                     let Ok(jwt_value) = jwt_value else {
                         return;
@@ -493,18 +498,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ready_path = PathBuf::from(args.next().ok_or("missing ready path")?);
     let mode_path = PathBuf::from(args.next().ok_or("missing mode path")?);
     let trace_path = PathBuf::from(args.next().ok_or("missing trace path")?);
-    let public_key_path = PathBuf::from(args.next().ok_or("missing public key path")?);
+    let public_key_path = PathBuf::from(args.next().ok_or("missing primary public key path")?);
+    let second_public_key_path =
+        PathBuf::from(args.next().ok_or("missing secondary public key path")?);
     if args.next().is_some() {
         return Err("unexpected argument".into());
     }
-    let public_key_der = Arc::new(std::fs::read(public_key_path)?);
+    let public_key_ders = Arc::new([
+        std::fs::read(public_key_path)?,
+        std::fs::read(second_public_key_path)?,
+    ]);
     let (ca_der, server) = tls_config()?;
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     tokio::spawn(serve_mock(
         listener,
         TlsAcceptor::from(Arc::new(server)),
-        public_key_der,
+        public_key_ders,
         mode_path,
         trace_path,
     ));
