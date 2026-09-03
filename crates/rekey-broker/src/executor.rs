@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
+use rekey_connector::{BuiltInConnector, resolve_builtin};
 use rekey_domain::DomainError;
 use rekey_domain::action::FixedHttpAction;
 use rekey_domain::authorization::Decision;
@@ -283,15 +284,20 @@ impl ActionExecutor {
         };
         let credential_version = prepared.version();
         let credential_kind = prepared.kind();
+        let connector = match resolve_builtin(credential_kind, action) {
+            Ok(connector) => connector,
+            Err(_) => {
+                drop(prepared);
+                let reason = GitHubError::InvalidCredential.reason();
+                started.blocked_until(effect_deadline, reason).await?;
+                return Err(BrokerError::Denied(reason));
+            }
+        };
 
-        // Step 9: select the closed credential effect. Ordinary credentials
-        // retain the fixed-header path. A marked GitHub App payload may only
-        // enter its one built-in profile; malformed marked payloads never
-        // fall back to bearer-token behavior.
-        let prepared = prepared.consume(|secret| match credential_kind {
-            rekey_domain::credential::CredentialKind::OpaqueToken
-                if !GitHubAppCredential::action_is_reserved(action) =>
-            {
+        // Step 9: execute the selected compile-time connector. Registry
+        // selection performs no IO and never receives credential bytes.
+        let prepared = prepared.consume(|secret| match connector {
+            BuiltInConnector::FixedHttpHeaderV1 => {
                 let mut auth_value = Zeroizing::new(Vec::with_capacity(
                     action.auth.prefix.as_str().len() + secret.len(),
                 ));
@@ -303,14 +309,7 @@ impl ActionExecutor {
                     needles,
                 }
             }
-            rekey_domain::credential::CredentialKind::OpaqueToken => {
-                PreparedExecution::GitHub(GitHubPrepared {
-                    credential_version,
-                    needles: Vec::new(),
-                    profile: Err(GitHubError::InvalidCredential),
-                })
-            }
-            rekey_domain::credential::CredentialKind::GitHubAppInstallation => {
+            BuiltInConnector::GitHubAppInstallationV1 => {
                 let profile = GitHubAppCredential::parse_profile(secret);
                 PreparedExecution::GitHub(GitHubPrepared {
                     credential_version,

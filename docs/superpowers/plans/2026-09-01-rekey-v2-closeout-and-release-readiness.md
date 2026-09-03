@@ -965,7 +965,7 @@ workspace check/clippy/tests、机械禁用面和 CLI 负依赖合同全部通�
 
 ### P-04 通用 workload identity
 
-**状态：** `[~]`
+**状态：** `[x]`
 
 **独立 spec：** [`2026-09-03-workload-identity-p04.md`](../specs/2026-09-03-workload-identity-p04.md)
 
@@ -973,19 +973,48 @@ workspace check/clippy/tests、机械禁用面和 CLI 负依赖合同全部通�
 - 身份证明的 audience、issuer、expiry、replay 和撤销合同。
 - principal 到 policy/capability 的绑定。
 
-**当前证据（2026-09-03）：** policy v3、schema v7、四种 closed JWT profile、
-静态 Ed25519/RS256 验证、Agent-only stdin mint、持久 replay consumption、policy
-activation revocation 和 redacted audit 已实现。Policy、Broker、Vault、CLI 黑盒及
-`scripts/p4-workload-identity-acceptance.sh` 本地通过；exact-head CI、合并与合并后
-main 证据尚待完成，因此本项保持进行中。
+**完成证据（2026-09-03）：** [PR #26](https://github.com/majiayu000/rekey/pull/26)
+在实现与 review remediation head `dc0f1662ed6d5361f554b42b6dad02c1058ef3bf`
+上通过 Ubuntu P0、macOS P0、有界 Linux G2、五个 fuzz target 和 performance
+共 9 个 exact-head jobs（security `33702151374`、fuzz `33702151381`、performance
+`33702151382`）。全部 review findings 已修复、回复并 resolved；最终自审无新增
+安全、逻辑或范围问题。
+
+实现覆盖 policy v3、schema v7、generic OIDC、SPIFFE JWT-SVID、Kubernetes service
+account 和 CI/cloud 四种 closed JWT profile、静态 Ed25519/RS256 验证、Agent-only
+stdin mint、持久 replay consumption、new-version policy activation revocation、
+exact same-bundle session preservation 和 redacted audit。Policy、Broker、Vault、CLI
+黑盒及 `scripts/p4-workload-identity-acceptance.sh` 覆盖签名/claims/action 绑定、并发
+replay、wall-clock rollback、restart、restore、audit/ENOSPC fault、token/JTI/signature/
+capability canary 和全生命周期失败路径。完整 workspace、依赖审计、fuzz seed 与机械
+禁用面全部通过。
+
+PR #26 已 squash merge 为 `8c5a035acdce11acac60b22677e642eef176c29e`，提交只有
+一个 parent 且含有效 `Signed-off-by`。合并后 `main` 的 security `33702733890`、
+fuzz `33702733897` 和 performance `33702733883` 全部成功。该能力不进入已发布的
+`v2.0.0-alpha.1`，不提升默认 G1、有界 Linux G2、Connector 或企业就绪判定。
 
 ### P-05 Connector SDK
+
+**状态：** `[~]`
+
+**跟踪：** [Issue #27](https://github.com/majiayu000/rekey/issues/27)
+
+**独立 spec：** [`2026-09-03-connector-sdk-p05.md`](../specs/2026-09-03-connector-sdk-p05.md)
 
 - typed action/effect schema。
 - credential effect：inject、sign、exchange、lease、revoke。
 - connector 生命周期、能力声明、测试工具和版本合同。
 - MCP/OAuth adapter。
 - registry、来源验证和隔离边界。
+
+**当前证据（2026-09-03）：** IO-free `rekey-connector` contract format v1、两个
+compile-time built-in descriptors、ordered inject/sign/exchange/lease/revoke effects、
+Broker registry routing、public contract testkit、MCP object-schema projection 和
+RFC 8693 public-metadata projection 已实现。完整 workspace fmt/check/clippy/test、
+P0 真实 HTTPS、P2 GitHub App、P5 SDK、root/fuzz audit、nightly fuzz build、机械禁用项与
+CLI 负依赖本地全绿。exact-head CI、review、merge 与 post-main 证据尚待完成，因此本项
+保持进行中。
 
 ### P-06 GitHub App 扩展
 
@@ -1103,8 +1132,8 @@ main 证据尚待完成，因此本项保持进行中。
 1. `[x]` 关闭 M、A、H 和 P-01，并保留各自 exact-head/merge 后证据。
 2. `[x]` P-02 审计查询与导出，为后续 SIEM/retention 建立最小查询边界。
 3. `[x]` P-03 审批与持久化策略，为后续长期授权流程建立签名与持久化边界。
-4. `[~]` P-04 通用 workload identity。
-5. P-05 Connector SDK；P-06 GitHub App 扩展只能建立在该合同之上。
+4. `[x]` P-04 通用 workload identity。
+5. `[~]` P-05 Connector SDK；P-06 GitHub App 扩展只能建立在该合同之上。
 6. E 阶段按 E-01～E-06 推进；需要客户、第三方或运营证据的门不得由内部测试替代。
 
 ## 12. 当前总判定
@@ -1117,10 +1146,10 @@ main 证据尚待完成，因此本项保持进行中。
 | Alpha 文档 | 完成（含 erratum） | 用户、安装、运维、发行、开源治理和支持范围已完成；archive 内嵌发布前 Matrix 的状态差异由公开 Release erratum 和当前仓库矩阵明确衔接 |
 | 可公开 Alpha | 是 | [v2.0.0-alpha.1](https://github.com/majiayu000/rekey/releases/tag/v2.0.0-alpha.1) 已公开；双平台 fresh-install、attestation 和 public-URL smoke 通过 |
 | H 安全与可靠性补强 | 完成 | H-01～H-08 已以持续 fuzz、真实 ENOSPC/文件系统故障注入、边界文档、公开双平台发行证据、供应链取舍以及固定主机 1,800 秒性能/容量/soak 证据全部关闭 |
-| P 后续产品能力 | 进行中 | P-01 密码/recovery wrapper 生命周期、P-02 本地审计查询/导出和 P-03 审批/持久化策略均已完成 adversarial/black-box 验收但尚未发布；P-04 已完成本地实现与验收，exact-head CI/merge 进行中；P-05～P-10 未开始 |
+| P 后续产品能力 | 进行中 | P-01～P-04 均已完成 adversarial/black-box、exact-head、merge 和 post-main 验收但尚未发布；P-05 已进入实现与本地验收阶段，P-06～P-10 未开始 |
 | 可宣称通用 G2 | 否 | 只有有界 Linux reference；默认仍是 G1 |
 | 可宣称通用 Connector | 否 | 只有 fixed HTTPS Action 和 closed GitHub App profile |
 | 企业就绪 | 否 | 控制面、身份、HA/DR、合规、运营和商业门槛均未完成 |
 
-M、A、H、P-01、P-02 与 P-03 已经关闭。后续 P、E 必须继续按独立 spec、PR 和真实证据推进，
+M、A、H、P-01、P-02、P-03 与 P-04 已经关闭。后续 P、E 必须继续按独立 spec、PR 和真实证据推进，
 不得回写或扩大已经发布的 `v2.0.0-alpha.1` 范围。

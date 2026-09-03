@@ -7,8 +7,8 @@ broker process; the CLI, agents, and everything they spawn talk to it only
 over two permission-separated Unix sockets.
 
 > Status: `2.0.0-alpha.1` is the public Alpha. Password lifecycle, local audit
-> query/export, signed approvals/policy, and workload identity are verified
-> post-Alpha changes not included in that tag.
+> query/export, signed approvals/policy, workload identity, and the connector
+> contract SDK are post-Alpha development changes not included in that tag.
 > The default product is G1 and is not G2. Credentials never
 > appear in agent-facing APIs, process
 > arguments, environment variables, logs, or audit records. Same-user
@@ -168,6 +168,21 @@ human directory, private-key custody, or approval survival across lock/restart.
   "allowed_response_headers": ["content-type"]
 }
 ```
+
+## Connector contract SDK
+
+Development head includes the IO-free `rekey-connector` crate. Its versioned,
+compile-time registry describes the two existing built-ins:
+`fixed-http-header@1` (`inject`) and `github-app-installation@1`
+(`sign → exchange → lease → revoke`). Broker code still owns every credential,
+network effect, deadline, audit event, response-sealing decision, and cleanup.
+
+The SDK can project an object-shaped authorized Action schema into a stable MCP
+tool descriptor and can describe the public fields of an RFC 8693 OAuth token
+exchange. These are pure library contracts, not an MCP server or a live generic
+OAuth connector. They accept no provider token, client secret, capability, or
+dynamic plugin. GitHub remains the same single-repository, metadata-read closed
+profile until P-06.
 
 ## Not compatible with v1
 

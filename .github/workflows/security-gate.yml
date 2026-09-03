@@ -96,6 +96,8 @@ jobs:
         run: scripts/p1-streaming-sealing.sh
       - name: P2 GitHub App local acceptance
         run: scripts/p2-github-app.sh
+      - name: P5 connector SDK contract acceptance
+        run: scripts/p5-connector-sdk.sh
       - name: P1 native launchd service-manager acceptance
         if: runner.os == 'macOS'
         run: scripts/p1-service-manager.sh

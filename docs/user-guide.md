@@ -320,6 +320,22 @@ encrypted mutation succeeds. The corresponding Action must use origin
 `authorization` with prefix `Bearer `, no request body/extra headers, and an
 allowlisted JSON response.
 
+## Connector SDK contract
+
+The post-Alpha development tree contains the IO-free `rekey-connector` library.
+Its compile-time registry gives integrators stable versioned descriptors for
+the existing opaque-header and closed GitHub App paths. It also provides a pure
+MCP tool projection for authorized Actions whose policy input schema explicitly
+has an object root, plus a redacted RFC 8693 OAuth exchange descriptor that
+contains only fixed public metadata.
+
+This does not add a CLI command, MCP server, OAuth authorization flow, provider
+discovery, live generic token exchange, dynamic connector, or secret-bearing
+adapter. An MCP host must keep the Rekey capability outside tool arguments and
+call the existing Agent IPC operation. MCP client tokens must never be reused
+as upstream provider tokens. Connector selection does not move credential,
+network, audit, deadline, sealing, lease, or revoke ownership out of `rekeyd`.
+
 ## Backup and restore
 
 ```bash

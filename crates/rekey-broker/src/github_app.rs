@@ -92,12 +92,7 @@ impl GitHubAppCredential {
     }
 
     pub(crate) fn action_is_reserved(action: &FixedHttpAction) -> bool {
-        action.origin.host() == GITHUB_HOST
-            && action.origin.port() == 443
-            && action.method == FixedMethod::Get
-            && action.exact_path.as_str() == RESOURCE_PATH
-            && action.auth.header_name.as_str() == "authorization"
-            && action.auth.prefix.as_str() == "Bearer "
+        rekey_connector::github_action_is_reserved(action)
     }
 
     fn parse(input: &[u8]) -> Result<Self, GitHubError> {
