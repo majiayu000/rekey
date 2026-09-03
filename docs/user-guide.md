@@ -381,16 +381,49 @@ wrong-version results stop before the final Action request.
 
 The Agent cannot select the Vault location or read either the Vault token or
 resolved value. Private Vault networks, private CA configuration, latest/alias
-resolution, dynamic secrets and leases, Vault authentication flows, namespaces,
-cloud secret/KMS providers, 1Password, HSM, keychain, and generic source
-templates are not supported.
+resolution, Vault authentication flows, namespaces, cloud secret/KMS
+providers, 1Password, HSM, keychain, and generic source templates are not
+supported.
+
+## Vault one-shot dynamic lease source
+
+This post-Alpha development feature acquires one bounded Vault dynamic lease,
+uses one selected string as the credential for an existing fixed HTTPS Action,
+and synchronously revokes the exact lease before returning success:
+
+```json
+{
+  "credential_type": "vault-dynamic-source-v1",
+  "origin": "https://vault.example.com",
+  "mount": "database",
+  "role": "agent-api-token",
+  "key": "token",
+  "vault_token": "hvs.REPLACE_ME"
+}
+```
+
+```bash
+rekey credential add-vault-dynamic LABEL --file profile.json
+rekey credential rotate-vault-dynamic CREDENTIAL_ID --file profile.json
+```
+
+The Broker sends one non-retried `GET /v1/MOUNT/creds/ROLE`, accepts only a
+5–300 second lease with one exact selected visible-ASCII string, executes the
+fixed Action, then sends `POST /v1/sys/leases/revoke` with the exact lease ID
+and `sync: true`. A revoke failure hides any Action response and returns a
+non-retryable indeterminate result.
+
+Rekey does not renew leases or persist an outstanding-lease registry. A hard
+process or host crash may leave the lease active until Vault expires it, so
+this feature does not claim crash-time cleanup, general Vault support, private
+network support, or release inclusion.
 
 ## Connector SDK contract
 
 The post-Alpha development tree contains the IO-free `rekey-connector` library.
 Its compile-time registry gives integrators stable versioned descriptors for
-the existing opaque-header, closed GitHub App, and closed Vault KV v2 source
-paths. It also provides a pure
+the existing opaque-header, closed GitHub App, closed Vault KV v2 source, and
+one-shot Vault dynamic source paths. It also provides a pure
 MCP tool projection for authorized Actions whose policy input schema explicitly
 has an object root, plus a redacted RFC 8693 OAuth exchange descriptor that
 contains only fixed public metadata.

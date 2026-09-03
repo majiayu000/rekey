@@ -25,6 +25,12 @@ const P7_SOURCE_TOKEN_ONE: &str = "P7-VAULT-SOURCE-TOKEN-ONE-CANARY";
 const P7_SOURCE_TOKEN_TWO: &str = "P7-VAULT-SOURCE-TOKEN-TWO-CANARY";
 const P7_RESOLVED_ONE: &str = "P7-RESOLVED-VALUE-ONE-CANARY";
 const P7_RESOLVED_TWO: &str = "P7-RESOLVED-VALUE-TWO-CANARY";
+const P7B_SOURCE_TOKEN_ONE: &str = "P7B-VAULT-SOURCE-TOKEN-ONE-CANARY";
+const P7B_SOURCE_TOKEN_TWO: &str = "P7B-VAULT-SOURCE-TOKEN-TWO-CANARY";
+const P7B_RESOLVED_ONE: &str = "P7B-DYNAMIC-VALUE-ONE-CANARY";
+const P7B_RESOLVED_TWO: &str = "P7B-DYNAMIC-VALUE-TWO-CANARY";
+const P7B_LEASE_ONE: &str = "database/creds/agent-api-token/p7b-one-canary";
+const P7B_LEASE_TWO: &str = "database/creds/agent-api-token/p7b-two-canary";
 const CLIENT_ID: &str = "Iv1.8a61f9b3a7aba766";
 const INSTALLATION_ID: u64 = 515_151;
 const REPOSITORY_ID: u64 = 616_161;
@@ -331,7 +337,108 @@ async fn serve_mock(
                     == Some(concat!("rekey/", env!("CARGO_PKG_VERSION")));
             let (expected_installation, expected_repositories, expected_permissions) =
                 expected_exchange(&mode);
-            let result = if mode.starts_with("p7-")
+            let result = if mode.starts_with("p7b-")
+                && req.method == "GET"
+                && req.path == "/v1/database/creds/agent-api-token"
+            {
+                let second = mode == "p7b-v2";
+                let source_token = if second {
+                    P7B_SOURCE_TOKEN_TWO
+                } else {
+                    P7B_SOURCE_TOKEN_ONE
+                };
+                let resolved = if second {
+                    P7B_RESOLVED_TWO
+                } else {
+                    P7B_RESOLVED_ONE
+                };
+                let lease_id = if second { P7B_LEASE_TWO } else { P7B_LEASE_ONE };
+                let valid = req.headers.get("x-vault-token").map(String::as_str)
+                    == Some(source_token)
+                    && req.headers.get("accept").map(String::as_str) == Some("application/json")
+                    && req.body.is_empty();
+                if !valid {
+                    respond(&mut tls, "400 Bad Request", br#"{"error":"source"}"#).await
+                } else {
+                    if append_trace(&trace_path, "p7b.issue.ok").is_err() {
+                        return;
+                    }
+                    let body = if mode == "p7b-malformed" {
+                        json!({"lease_id":lease_id,"lease_duration":60,"renewable":true,"data":{}})
+                    } else {
+                        json!({
+                            "lease_id":lease_id,
+                            "lease_duration":60,
+                            "renewable":true,
+                            "data":{"username":"ignored","token":resolved}
+                        })
+                    };
+                    respond(
+                        &mut tls,
+                        "200 OK",
+                        &serde_json::to_vec(&body).unwrap_or_default(),
+                    )
+                    .await
+                }
+            } else if mode.starts_with("p7b-") && req.method == "POST" && req.path == "/v1/things" {
+                let expected = if mode == "p7b-v2" {
+                    P7B_RESOLVED_TWO
+                } else {
+                    P7B_RESOLVED_ONE
+                };
+                let token_ok = bearer(&req).map(|value| value == expected).unwrap_or(false);
+                if !token_ok || req.body != br#"{"operation":"bounded"}"# {
+                    respond(&mut tls, "400 Bad Request", br#"{"error":"action"}"#).await
+                } else {
+                    if append_trace(&trace_path, "p7b.action.ok").is_err() {
+                        return;
+                    }
+                    let body = if mode == "p7b-reflect-action" {
+                        format!(r#"{{"debug":"{expected}"}}"#).into_bytes()
+                    } else {
+                        br#"{"result":"p7b-ok"}"#.to_vec()
+                    };
+                    respond(&mut tls, "200 OK", &body).await
+                }
+            } else if mode.starts_with("p7b-")
+                && req.method == "POST"
+                && req.path == "/v1/sys/leases/revoke"
+            {
+                let expected_lease = if mode == "p7b-v2" {
+                    P7B_LEASE_TWO
+                } else {
+                    P7B_LEASE_ONE
+                };
+                let revoke: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
+                let valid = req.headers.get("x-vault-token").map(String::as_str)
+                    == Some(if mode == "p7b-v2" {
+                        P7B_SOURCE_TOKEN_TWO
+                    } else {
+                        P7B_SOURCE_TOKEN_ONE
+                    })
+                    && req.headers.get("content-type").map(String::as_str)
+                        == Some("application/json")
+                    && req.headers.get("accept").map(String::as_str) == Some("application/json")
+                    && revoke == json!({"lease_id":expected_lease,"sync":true});
+                if !valid {
+                    respond(&mut tls, "400 Bad Request", br#"{"error":"revoke"}"#).await
+                } else if mode == "p7b-revoke-error" {
+                    if append_trace(&trace_path, "p7b.revoke.error").is_err() {
+                        return;
+                    }
+                    respond(
+                        &mut tls,
+                        "500 Internal Server Error",
+                        br#"{"error":"revoke"}"#,
+                    )
+                    .await
+                } else {
+                    if append_trace(&trace_path, "p7b.revoke.ok").is_err() {
+                        return;
+                    }
+                    respond(&mut tls, "204 No Content", b"").await
+                }
+            } else if mode.starts_with("p7-")
                 && req.method == "GET"
                 && req
                     .path

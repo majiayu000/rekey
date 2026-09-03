@@ -54,6 +54,7 @@ pub enum CredentialKind {
     #[serde(rename = "github-app-installation")]
     GitHubAppInstallation,
     VaultKvV2Source,
+    VaultDynamicSource,
 }
 
 impl CredentialKind {
@@ -62,6 +63,7 @@ impl CredentialKind {
             Self::OpaqueToken => "opaque-token",
             Self::GitHubAppInstallation => "github-app-installation",
             Self::VaultKvV2Source => "vault-kv-v2-source",
+            Self::VaultDynamicSource => "vault-dynamic-source",
         }
     }
 
@@ -70,6 +72,7 @@ impl CredentialKind {
             "opaque-token" => Ok(Self::OpaqueToken),
             "github-app-installation" => Ok(Self::GitHubAppInstallation),
             "vault-kv-v2-source" => Ok(Self::VaultKvV2Source),
+            "vault-dynamic-source" => Ok(Self::VaultDynamicSource),
             _ => Err(DomainError::InvalidId),
         }
     }
@@ -80,6 +83,7 @@ impl CredentialKind {
             Self::OpaqueToken => 1,
             Self::GitHubAppInstallation => 2,
             Self::VaultKvV2Source => 3,
+            Self::VaultDynamicSource => 4,
         }
     }
 }
@@ -189,6 +193,12 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<CredentialKind>(&encoded).unwrap(),
             CredentialKind::VaultKvV2Source
+        );
+        let encoded = serde_json::to_string(&CredentialKind::VaultDynamicSource).unwrap();
+        assert_eq!(encoded, r#""vault-dynamic-source""#);
+        assert_eq!(
+            serde_json::from_str::<CredentialKind>(&encoded).unwrap(),
+            CredentialKind::VaultDynamicSource
         );
     }
 }

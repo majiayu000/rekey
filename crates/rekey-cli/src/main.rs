@@ -170,6 +170,14 @@ enum CredentialCommand {
         #[command(flatten)]
         step_up: StepUpArgs,
     },
+    /// Add a closed one-shot Vault dynamic lease source profile.
+    AddVaultDynamic {
+        label: String,
+        #[arg(long)]
+        file: PathBuf,
+        #[command(flatten)]
+        step_up: StepUpArgs,
+    },
     List,
     Rotate {
         credential_id: String,
@@ -190,6 +198,14 @@ enum CredentialCommand {
     },
     /// Rotate a Vault KV v2 fixed-version source profile.
     RotateVaultKv {
+        credential_id: String,
+        #[arg(long)]
+        file: PathBuf,
+        #[command(flatten)]
+        step_up: StepUpArgs,
+    },
+    /// Rotate a one-shot Vault dynamic lease source profile.
+    RotateVaultDynamic {
         credential_id: String,
         #[arg(long)]
         file: PathBuf,
@@ -468,6 +484,17 @@ fn main() {
                 step_up.recovery,
                 step_up.password_stdin,
             ),
+            CredentialCommand::AddVaultDynamic {
+                label,
+                file,
+                step_up,
+            } => commands::credential_add_vault_dynamic(
+                &state_dir,
+                &label,
+                &file,
+                step_up.recovery,
+                step_up.password_stdin,
+            ),
             CredentialCommand::List => commands::credential_list(&state_dir),
             CredentialCommand::Rotate {
                 credential_id,
@@ -490,6 +517,17 @@ fn main() {
                 file,
                 step_up,
             } => commands::credential_rotate_vault_kv(
+                &state_dir,
+                &credential_id,
+                &file,
+                step_up.recovery,
+                step_up.password_stdin,
+            ),
+            CredentialCommand::RotateVaultDynamic {
+                credential_id,
+                file,
+                step_up,
+            } => commands::credential_rotate_vault_dynamic(
                 &state_dir,
                 &credential_id,
                 &file,

@@ -1,6 +1,6 @@
 # P-07A Vault KV v2 CredentialSource
 
-> Status: locally verified; exact-head CI and merge pending
+> Status: complete; exact-head CI, signed squash merge, and post-main CI verified
 >
 > Date: 2026-09-03
 >
@@ -221,3 +221,19 @@ ready", or "P-07 complete".
 - arbitrary URL/header/JSONPath templates, plugin loading, provider registry,
   Agent source selection, or any Secret read/export API;
 - migration of v7 state or inclusion in the published `v2.0.0-alpha.1` archive.
+
+## 13. Completion evidence
+
+[PR #33](https://github.com/majiayu000/rekey/pull/33) completed the implementation
+at final head `b7113585ef48dfcd124acd6bf293168c34b20e22`. Exact-head security
+`33716874951`, fuzz `33716874939`, and performance `33716875002` passed all
+nine required jobs. Four valid review findings were fixed and resolved before
+the final self-review recorded in [comment 5520342366](https://github.com/majiayu000/rekey/pull/33#issuecomment-5520342366).
+
+The PR was signed squash merged as
+`5214d7f27235a40ef9c6acabe56ea71e5c65a5fd` with the single parent
+`1d242c946d660bb11d28a09125db722bcf6dd05f`; Issue #32 is closed and the remote
+feature branch was deleted. Post-main security `33717430247`, fuzz
+`33717430231`, and performance `33717430241` all passed on the merge SHA. This
+capability is not part of `v2.0.0-alpha.1` and does not imply general Vault,
+general G2, or enterprise-ready support.

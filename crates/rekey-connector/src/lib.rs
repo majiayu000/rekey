@@ -22,6 +22,12 @@ const GITHUB_APP_EFFECTS: &[CredentialEffect] = &[
 ];
 const VAULT_KV_SOURCE_EFFECTS: &[CredentialEffect] =
     &[CredentialEffect::Resolve, CredentialEffect::Inject];
+const VAULT_DYNAMIC_SOURCE_EFFECTS: &[CredentialEffect] = &[
+    CredentialEffect::Resolve,
+    CredentialEffect::Lease,
+    CredentialEffect::Inject,
+    CredentialEffect::Revoke,
+];
 
 const CONTRACTS: &[ConnectorContract] = &[
     ConnectorContract {
@@ -50,6 +56,18 @@ const CONTRACTS: &[ConnectorContract] = &[
     },
     ConnectorContract {
         format_version: CONNECTOR_CONTRACT_FORMAT_VERSION,
+        id: "vault-dynamic-source",
+        version: 1,
+        credential_kind: CredentialKind::VaultDynamicSource,
+        effects: VAULT_DYNAMIC_SOURCE_EFFECTS,
+        exchange_protocol: None,
+        source: ConnectorSource::BuiltInBinary,
+        isolation: ConnectorIsolation::BrokerProcess,
+        remote_effect: true,
+        revoke_before_success: true,
+    },
+    ConnectorContract {
+        format_version: CONNECTOR_CONTRACT_FORMAT_VERSION,
         id: "vault-kv-v2-source",
         version: 1,
         credential_kind: CredentialKind::VaultKvV2Source,
@@ -68,6 +86,7 @@ pub enum BuiltInConnector {
     FixedHttpHeaderV1,
     GitHubAppInstallationV1,
     VaultKvV2SourceV1,
+    VaultDynamicSourceV1,
 }
 
 impl BuiltInConnector {
@@ -75,7 +94,8 @@ impl BuiltInConnector {
         match self {
             Self::FixedHttpHeaderV1 => &CONTRACTS[0],
             Self::GitHubAppInstallationV1 => &CONTRACTS[1],
-            Self::VaultKvV2SourceV1 => &CONTRACTS[2],
+            Self::VaultKvV2SourceV1 => &CONTRACTS[3],
+            Self::VaultDynamicSourceV1 => &CONTRACTS[2],
         }
     }
 }
@@ -169,6 +189,10 @@ pub fn resolve_builtin(
             Ok(BuiltInConnector::VaultKvV2SourceV1)
         }
         CredentialKind::VaultKvV2Source => Err(ConnectorSelectionError::SelectionRejected),
+        CredentialKind::VaultDynamicSource if !github_action_is_reserved(action) => {
+            Ok(BuiltInConnector::VaultDynamicSourceV1)
+        }
+        CredentialKind::VaultDynamicSource => Err(ConnectorSelectionError::SelectionRejected),
     }
 }
 

@@ -20,6 +20,14 @@ const VAULT_PROFILE: &[u8] = br#"{
   "version":7,
   "vault_token":"hvs.source-canary"
 }"#;
+const VAULT_DYNAMIC_PROFILE: &[u8] = br#"{
+  "credential_type":"vault-dynamic-source-v1",
+  "origin":"https://vault.example.com",
+  "mount":"database",
+  "role":"agent-api-token",
+  "key":"token",
+  "vault_token":"hvs.dynamic-canary"
+}"#;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn admin_lifecycle_and_step_up() {
@@ -148,6 +156,62 @@ async fn vault_profile_admin_checks_proof_before_profile_and_preserves_kind() {
     )
     .await;
     assert_eq!(response.ok()["current_version"], 2);
+
+    broker.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn vault_dynamic_admin_checks_proof_before_profile_and_preserves_kind() {
+    let broker = common::start_broker().await;
+    common::unlock(&broker).await;
+    let admin = broker.admin_sock();
+    let add_meta = serde_json::json!({"label":"dynamic","kind":"vault-dynamic-source"});
+
+    let bad_proof = common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::CREDENTIAL_ADD,
+        add_meta.to_string().as_bytes(),
+        &common::proof_and_secret_body(b"wrong-password", b"not-json"),
+    )
+    .await;
+    assert_eq!(bad_proof.err_code(), "INVALID_UNLOCK_CREDENTIAL");
+
+    let added = common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::CREDENTIAL_ADD,
+        add_meta.to_string().as_bytes(),
+        &common::proof_and_secret_body(common::PASSWORD, VAULT_DYNAMIC_PROFILE),
+    )
+    .await;
+    let credential_id = added.ok()["id"].as_str().unwrap().to_owned();
+    let opaque_id = common::add_credential(&broker, "dynamic-opaque", b"secret").await;
+    for (target, profile) in [
+        (opaque_id.as_str(), VAULT_DYNAMIC_PROFILE),
+        (credential_id.as_str(), b"not-json".as_slice()),
+    ] {
+        let rotate_meta = serde_json::json!({"credential_id":target});
+        let rejected = common::call(
+            &admin,
+            Channel::Admin,
+            admin_msg::CREDENTIAL_ROTATE_VAULT_DYNAMIC,
+            rotate_meta.to_string().as_bytes(),
+            &common::proof_and_secret_body(common::PASSWORD, profile),
+        )
+        .await;
+        assert_eq!(rejected.err_code(), "INVALID_INPUT");
+    }
+    let rotate_meta = serde_json::json!({"credential_id":credential_id});
+    let rotated = common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::CREDENTIAL_ROTATE_VAULT_DYNAMIC,
+        rotate_meta.to_string().as_bytes(),
+        &common::proof_and_secret_body(common::PASSWORD, VAULT_DYNAMIC_PROFILE),
+    )
+    .await;
+    assert_eq!(rotated.ok()["current_version"], 2);
 
     broker.shutdown().await;
 }

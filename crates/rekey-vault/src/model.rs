@@ -4,7 +4,7 @@ use rekey_domain::ids::{
     PolicySignerId, PrincipalId, RequestId, SessionId, VaultId, WrapperId,
 };
 
-pub const FORMAT_VERSION: u32 = 8;
+pub const FORMAT_VERSION: u32 = 9;
 pub const VAULT_INTEGRITY_CIPHERTEXT_LEN: usize = 40;
 
 #[derive(Debug, Clone)]
@@ -254,6 +254,8 @@ pub mod event_type {
     pub const APPROVAL_REJECTED: &str = "approval.rejected";
     pub const GITHUB_CONNECTOR_AUTHORIZED: &str = "connector.github.authorized";
     pub const GITHUB_TOKEN_REVOKED: &str = "connector.github.token_revoked";
+    pub const VAULT_LEASE_ISSUED: &str = "vault.lease.issued";
+    pub const VAULT_LEASE_REVOKED: &str = "vault.lease.revoked";
     pub const EXECUTION_STARTED: &str = "execution.started";
     pub const EXECUTION_FINISHED: &str = "execution.finished";
     pub const EXECUTION_BLOCKED: &str = "execution.blocked";
