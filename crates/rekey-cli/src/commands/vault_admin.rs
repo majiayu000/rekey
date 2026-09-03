@@ -6,7 +6,9 @@ use rekey_domain::ipc::{self, admin_msg};
 use serde::Deserialize;
 use zeroize::Zeroizing;
 
-use super::{CliError, admin, print_json, proof_kind, read_regular_file_bounded, read_step_up};
+use super::{
+    CliError, admin, print_json, proof_kind, read_regular_file_bounded_nofollow, read_step_up,
+};
 
 #[derive(Deserialize)]
 struct VaultProfileMarker<'a> {
@@ -59,7 +61,7 @@ pub fn credential_rotate_vault_kv(
 }
 
 fn vault_profile_file(file: &Path) -> Result<Zeroizing<Vec<u8>>, CliError> {
-    let profile = read_regular_file_bounded(
+    let profile = read_regular_file_bounded_nofollow(
         file,
         ipc::ADMIN_SECRET_FIELD_MAX_BYTES as usize,
         "Vault KV profile",
@@ -97,6 +99,10 @@ mod tests {
         let file = dir.path().join("profile.json");
         std::fs::write(&file, br#"{"credential_type":"vault-kv-v2-source-v1"}"#).unwrap();
         assert!(vault_profile_file(&file).is_ok());
+
+        let symlink = dir.path().join("profile-link.json");
+        std::os::unix::fs::symlink(&file, &symlink).unwrap();
+        assert_eq!(vault_profile_file(&symlink).unwrap_err().code, "USAGE");
 
         std::fs::write(&file, br#"{"credential_type":"other"}"#).unwrap();
         assert_eq!(vault_profile_file(&file).unwrap_err().code, "USAGE");

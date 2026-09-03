@@ -598,7 +598,7 @@ ON key_wrappers(wrapper_kind) WHERE wrapper_kind = 'password' AND state = 'activ
 CREATE TABLE credentials (
     credential_id      BLOB PRIMARY KEY CHECK (length(credential_id) = 16),
     label              TEXT NOT NULL UNIQUE,
-    kind               TEXT NOT NULL CHECK (kind IN ('opaque-token', 'github-app-installation')),
+    kind               TEXT NOT NULL CHECK (kind IN ('opaque-token', 'github-app-installation', 'vault-kv-v2-source')),
     state              TEXT NOT NULL CHECK (state IN ('active', 'revoked')),
     current_version    INTEGER NOT NULL CHECK (current_version >= 1),
     created_at_ms      INTEGER NOT NULL,
@@ -1824,7 +1824,8 @@ Review 必问：
 - 不做 MITM、系统 CA、透明代理或 passthrough。
 - 不做 Dashboard 或浏览器 UI。
 - 不做通用密码管理器、浏览器自动填充、个人密码同步。
-- 不接 1Password、OpenBao、Vault、Infisical 或云 Secret Manager。
+- 除 P-07A 封闭的 Vault KV v2 固定版本 CredentialSource 外，不接
+  1Password、OpenBao、Infisical、其他 Vault 能力或云 Secret Manager。
 - 不做多租户、SSO、SCIM、企业控制面、HA 或多区域。
 - 除 P2.1 封闭的 GitHub App Installation 换票外，不实现通用 OAuth、SSH、HSM、
   动态数据库 Secret 或任意 provider operation。

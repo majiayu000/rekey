@@ -99,16 +99,14 @@ impl<'de> Deserialize<'de> for SingleSecretField {
                 let (key, value) = map
                     .next_entry::<String, String>()?
                     .ok_or_else(|| serde::de::Error::custom("missing secret field"))?;
+                let value = Zeroizing::new(value);
                 if map
                     .next_entry::<serde::de::IgnoredAny, serde::de::IgnoredAny>()?
                     .is_some()
                 {
                     return Err(serde::de::Error::custom("multiple secret fields"));
                 }
-                Ok(SingleSecretField {
-                    key,
-                    value: Zeroizing::new(value),
-                })
+                Ok(SingleSecretField { key, value })
             }
         }
 
