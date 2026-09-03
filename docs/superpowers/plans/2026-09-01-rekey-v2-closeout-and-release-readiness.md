@@ -996,7 +996,7 @@ fuzz `33702733897` 和 performance `33702733883` 全部成功。该能力不进�
 
 ### P-05 Connector SDK
 
-**状态：** `[~]`
+**状态：** `[x]`
 
 **跟踪：** [Issue #27](https://github.com/majiayu000/rekey/issues/27)
 
@@ -1008,15 +1008,26 @@ fuzz `33702733897` 和 performance `33702733883` 全部成功。该能力不进�
 - MCP/OAuth adapter。
 - registry、来源验证和隔离边界。
 
-**当前证据（2026-09-03）：** IO-free `rekey-connector` contract format v1、两个
+**完成证据（2026-09-03）：** IO-free `rekey-connector` contract format v1、两个
 compile-time built-in descriptors、ordered inject/sign/exchange/lease/revoke effects、
 Broker registry routing、public contract testkit、MCP object-schema projection 和
 RFC 8693 public-metadata projection 已实现。完整 workspace fmt/check/clippy/test、
 P0 真实 HTTPS、P2 GitHub App、P5 SDK、root/fuzz audit、nightly fuzz build、机械禁用项与
-CLI 负依赖本地全绿。exact-head CI、review、merge 与 post-main 证据尚待完成，因此本项
-保持进行中。
+CLI 负依赖本地全绿。PR [#28](https://github.com/majiayu000/rekey/pull/28)
+在 exact head `aaeffd197f915e369fa8f1e338f439941ba9b8ef` 上关闭 3 个有效 review
+finding，所有线程 resolved，security `33706290408`、fuzz `33706290362` 和
+performance `33706290437` 共 9 个 jobs 全绿。signed squash merge
+`b82cb45c1289f79277884a5d87e9fe843670b9e5` 只有一个 parent 且含 DCO；Issue #27
+已关闭、远端分支已删除。post-main security `33706878794`、fuzz `33706878806` 和
+performance `33706878865` 全绿。该能力未进入 `v2.0.0-alpha.1`。
 
 ### P-06 GitHub App 扩展
+
+**状态：** `[~]`
+
+**跟踪：** [Issue #29](https://github.com/majiayu000/rekey/issues/29)
+
+**独立 spec：** [`2026-09-03-github-app-extension-p06.md`](../specs/2026-09-03-github-app-extension-p06.md)
 
 - 写操作和更丰富 permissions。
 - 多 repository selection 和 installation 变化。
@@ -1133,8 +1144,9 @@ CLI 负依赖本地全绿。exact-head CI、review、merge 与 post-main 证据�
 2. `[x]` P-02 审计查询与导出，为后续 SIEM/retention 建立最小查询边界。
 3. `[x]` P-03 审批与持久化策略，为后续长期授权流程建立签名与持久化边界。
 4. `[x]` P-04 通用 workload identity。
-5. `[~]` P-05 Connector SDK；P-06 GitHub App 扩展只能建立在该合同之上。
-6. E 阶段按 E-01～E-06 推进；需要客户、第三方或运营证据的门不得由内部测试替代。
+5. `[x]` P-05 Connector SDK。
+6. `[~]` P-06 GitHub App 有界扩展。
+7. E 阶段按 E-01～E-06 推进；需要客户、第三方或运营证据的门不得由内部测试替代。
 
 ## 12. 当前总判定
 
@@ -1146,10 +1158,10 @@ CLI 负依赖本地全绿。exact-head CI、review、merge 与 post-main 证据�
 | Alpha 文档 | 完成（含 erratum） | 用户、安装、运维、发行、开源治理和支持范围已完成；archive 内嵌发布前 Matrix 的状态差异由公开 Release erratum 和当前仓库矩阵明确衔接 |
 | 可公开 Alpha | 是 | [v2.0.0-alpha.1](https://github.com/majiayu000/rekey/releases/tag/v2.0.0-alpha.1) 已公开；双平台 fresh-install、attestation 和 public-URL smoke 通过 |
 | H 安全与可靠性补强 | 完成 | H-01～H-08 已以持续 fuzz、真实 ENOSPC/文件系统故障注入、边界文档、公开双平台发行证据、供应链取舍以及固定主机 1,800 秒性能/容量/soak 证据全部关闭 |
-| P 后续产品能力 | 进行中 | P-01～P-04 均已完成 adversarial/black-box、exact-head、merge 和 post-main 验收但尚未发布；P-05 已进入实现与本地验收阶段，P-06～P-10 未开始 |
+| P 后续产品能力 | 进行中 | P-01～P-05 均已完成 adversarial/black-box、exact-head、merge 和 post-main 验收但尚未发布；P-06 已进入 issue/spec 阶段，P-07～P-10 未开始 |
 | 可宣称通用 G2 | 否 | 只有有界 Linux reference；默认仍是 G1 |
 | 可宣称通用 Connector | 否 | 只有 fixed HTTPS Action 和 closed GitHub App profile |
 | 企业就绪 | 否 | 控制面、身份、HA/DR、合规、运营和商业门槛均未完成 |
 
-M、A、H、P-01、P-02、P-03 与 P-04 已经关闭。后续 P、E 必须继续按独立 spec、PR 和真实证据推进，
+M、A、H、P-01、P-02、P-03、P-04 与 P-05 已经关闭。后续 P、E 必须继续按独立 spec、PR 和真实证据推进，
 不得回写或扩大已经发布的 `v2.0.0-alpha.1` 范围。
