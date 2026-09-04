@@ -90,7 +90,7 @@ fn issued_response_extracts_one_bounded_selected_value() {
 }
 
 #[test]
-fn lease_probe_is_bounded_and_rejects_escaped_values() {
+fn lease_probe_is_bounded_and_decodes_json_string_escapes() {
     let probe = probe_lease_ids(
         br#"{"lease_id":"one","nested":{"lease_id":"two"},"more":[{"lease_id":"three"},{"lease_id":"four"},{"lease_id":"five"}]}"#,
     );
@@ -98,7 +98,36 @@ fn lease_probe_is_bounded_and_rejects_escaped_values() {
     assert_eq!(probe.lease_ids.len(), LEASE_CAPTURE_LIMIT);
     assert!(probe.truncated);
 
-    let escaped = probe_lease_ids(br#"{"lease_id":"escaped\\u002did"}"#);
-    assert_eq!(escaped.occurrences, 0);
-    assert!(escaped.lease_ids.is_empty());
+    let slash = br#"{"lease_id":"database\/creds\/role\/abc"}"#;
+    let slash_probe = probe_lease_ids(slash);
+    assert_eq!(slash_probe.occurrences, 1);
+    assert_eq!(slash_probe.lease_ids[0].as_str(), "database/creds/role/abc");
+
+    let quoted = br#"{"lease_id":"foo\"bar"}"#;
+    let quoted_probe = probe_lease_ids(quoted);
+    assert_eq!(quoted_probe.occurrences, 1);
+    assert_eq!(quoted_probe.lease_ids[0].as_str(), r#"foo"bar"#);
+
+    let backslash = br#"{"lease_id":"foo\\bar"}"#;
+    let backslash_probe = probe_lease_ids(backslash);
+    assert_eq!(backslash_probe.occurrences, 1);
+    assert_eq!(backslash_probe.lease_ids[0].as_str(), r"foo\bar");
+
+    let unicode = br#"{"lease_id":"role\u002dname"}"#;
+    let unicode_probe = probe_lease_ids(unicode);
+    assert_eq!(unicode_probe.occurrences, 1);
+    assert_eq!(unicode_probe.lease_ids[0].as_str(), "role-name");
+    assert_eq!(
+        parse_issued(
+            br#"{"lease_id":"role\u002dname","lease_duration":60,"renewable":true,"data":{"token":"x"}}"#
+        )
+        .unwrap()
+        .lease_id
+        .as_str(),
+        "role-name"
+    );
+
+    let unterminated = probe_lease_ids(br#"{"lease_id":"issued-id"#);
+    assert_eq!(unterminated.occurrences, 0);
+    assert!(unterminated.lease_ids.is_empty());
 }

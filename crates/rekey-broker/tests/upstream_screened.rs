@@ -87,7 +87,7 @@ fn request(port: u16, max_bytes: u32) -> UpstreamRequest {
             "authorization".to_owned(),
             Zeroizing::new(b"Bearer test-token".to_vec()),
         ),
-        body: vec![],
+        body: Zeroizing::new(Vec::new()),
         timeout: Duration::from_secs(5),
         response_max_bytes: max_bytes,
     }

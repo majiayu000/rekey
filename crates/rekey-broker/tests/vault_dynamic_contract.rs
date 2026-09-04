@@ -125,9 +125,26 @@ async fn malformed_issuance_with_a_candidate_revokes_before_failing() {
     let requests = broker.fake.take_requests();
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[1].path, "/v1/sys/leases/revoke");
-    assert!(
-        String::from_utf8_lossy(&requests[1].body).contains("recoverable"),
-        "the captured exact lease must be revoked"
+    broker.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn escaped_lease_id_is_revoked_when_semantic_parse_fails() {
+    let (broker, _, action_id, action_version, capability) = setup().await;
+    broker.fake.push_response(Ok(response(
+        200,
+        br#"{"lease_id":"database\/creds\/agent-api-token\/recoverable","lease_duration":60,"renewable":true,"data":{}}"#,
+    )));
+    broker.fake.push_response(Ok(response(204, b"")));
+
+    let failed = execute(&broker, &capability, &action_id, action_version).await;
+    assert_eq!(failed.err_code(), "UPSTREAM_INDETERMINATE");
+    let requests = broker.fake.take_requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1].path, "/v1/sys/leases/revoke");
+    assert_eq!(
+        requests[1].body,
+        br#"{"lease_id":"database/creds/agent-api-token/recoverable","sync":true}"#
     );
     broker.shutdown().await;
 }
