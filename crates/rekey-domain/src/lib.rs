@@ -11,6 +11,7 @@ pub mod credential;
 pub mod error;
 pub mod ids;
 pub mod ipc;
+pub mod sandbox;
 pub mod time;
 
 pub use error::DomainError;

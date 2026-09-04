@@ -73,6 +73,14 @@ enum Command {
         #[arg(long)]
         sha256: String,
     },
+    /// Launch an Agent command with deny-by-default IP egress (delegates to rekeyd).
+    AgentRun {
+        /// Read the capability token from stdin (first line).
+        #[arg(long)]
+        capability_stdin: bool,
+        #[arg(last = true, required = true)]
+        command: Vec<std::ffi::OsString>,
+    },
     /// Unlock the running broker.
     Unlock {
         /// Use the recovery key to unlock; does not reset the password.
@@ -447,6 +455,10 @@ fn main() {
             args.push(sha256.into());
             commands::delegate_rekeyd(&state_dir, "restore", &args, password_stdin)
         }
+        Command::AgentRun {
+            capability_stdin,
+            command,
+        } => commands::delegate_agent_run(&state_dir, &agent_socket, capability_stdin, command),
         Command::Unlock {
             recovery,
             password_stdin,

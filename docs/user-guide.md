@@ -296,6 +296,25 @@ detects raw, base64, base64url, percent-encoded, header, and chunk-boundary
 reflections. It does not guarantee detection of arbitrary compression,
 encryption, hashes, derivations, or application-specific encodings.
 
+## Launch an Agent with deny-by-default IP egress (Linux)
+
+This post-Alpha development command is Linux-only and requires bubblewrap. It
+does not upgrade default G1 or replace the Docker G2 reference harness. The
+Agent socket must be disjoint from the state directory; the default
+`runtime/agent.sock` is rejected.
+
+```bash
+rekeyd serve --state-dir /var/lib/rekey/state \
+  --agent-runtime-dir /run/rekey-agent
+rekey --state-dir /var/lib/rekey/state \
+  --agent-socket /run/rekey-agent/agent.sock \
+  agent-run -- /usr/bin/my-agent
+```
+
+The child has no IP/TCP/UDP path, cannot see the vault or Admin socket, and
+can still connect to `agent.sock`. macOS returns `UNSUPPORTED_PLATFORM`. See
+[the P-09 specification](superpowers/specs/2026-09-04-agent-egress-launcher-p09.md).
+
 ## GitHub App closed profile
 
 This post-Alpha development feature is not a general GitHub connector. One

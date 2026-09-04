@@ -798,3 +798,30 @@ fn cli_rejects_oversized_file_and_stdin_before_connecting() {
     assert_eq!(output.status, 2, "stderr: {}", output.stderr);
     assert!(output.stderr.contains("INVALID_FRAME"));
 }
+
+#[test]
+fn agent_run_rejects_the_default_colocated_socket() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    let output = run(
+        &rekey_bin(),
+        &[
+            "--state-dir",
+            state_dir.to_str().unwrap(),
+            "agent-run",
+            "--",
+            "/bin/echo",
+            "blocked",
+        ],
+        None,
+    );
+    assert_eq!(output.status, 2, "stderr: {}", output.stderr);
+    assert!(
+        output.stderr.contains("disjoint")
+            || output.stderr.contains("INVALID_INPUT")
+            || output.stderr.contains("invalid launch plan"),
+        "stderr: {}",
+        output.stderr
+    );
+    assert!(!output.stdout.contains("blocked"));
+}
