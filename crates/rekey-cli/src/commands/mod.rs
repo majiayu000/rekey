@@ -345,6 +345,24 @@ pub fn delegate_rekeyd(
     }
 }
 
+pub fn delegate_agent_run(
+    state_dir: &Path,
+    agent_socket: &Path,
+    capability_stdin: bool,
+    command: Vec<std::ffi::OsString>,
+) -> Result<(), CliError> {
+    let mut extra = vec![
+        std::ffi::OsString::from("--agent-socket"),
+        agent_socket.as_os_str().to_owned(),
+    ];
+    if capability_stdin {
+        extra.push(std::ffi::OsString::from("--capability-stdin"));
+    }
+    extra.push(std::ffi::OsString::from("--"));
+    extra.extend(command);
+    delegate_rekeyd(state_dir, "agent-run", &extra, false)
+}
+
 pub fn unlock(state_dir: &Path, recovery: bool, password_stdin: bool) -> Result<(), CliError> {
     let prompt = if recovery {
         "Recovery key: "

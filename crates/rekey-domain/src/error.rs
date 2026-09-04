@@ -16,6 +16,8 @@ pub enum DomainError {
     InvalidAuthorization(String),
     #[error("invalid audit query: {0}")]
     InvalidAuditQuery(String),
+    #[error("invalid launch plan: {0}")]
+    InvalidLaunchPlan(String),
     #[error("capability expired")]
     CapabilityExpired,
     #[error("capability exhausted")]

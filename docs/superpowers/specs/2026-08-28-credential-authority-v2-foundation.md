@@ -904,6 +904,13 @@ that a canary DNS query from the internal-only Agent network cannot reach an
 external authoritative resolver. A version check alone is insufficient: the
 gate fails if either direct TCP/UDP egress or DNS-based egress succeeds.
 
+P-09 adds a native Linux launcher, `rekey agent-run` / `rekeyd agent-run`,
+with closed profile `linux-netns-v1`. It uses system bubblewrap to unshare
+user/net/pid namespaces, overlay the state directory, and exec one absolute
+command. It requires the disjoint Agent endpoint above and does not replace
+this Docker G2 harness, change default G1, or claim macOS isolation. See
+`docs/superpowers/specs/2026-09-04-agent-egress-launcher-p09.md`.
+
 ### 12.2 Frame v1
 
 ~~~text

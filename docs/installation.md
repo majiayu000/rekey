@@ -123,6 +123,10 @@ For the bounded Linux G2 reference, use `--agent-socket` with the UID/GID and
 runtime-directory layout documented by `scripts/p1-linux-g2.sh`. Do not make
 the state directory or Admin socket group-writable.
 
+Linux `rekey agent-run` additionally needs `bubblewrap` and that same disjoint
+Agent socket. It denies IP egress for one launched command. It is not macOS
+G2 and is not a substitute for the Docker attack harness.
+
 ## Upgrade and rollback
 
 1. Create and verify a backup as described in the operations runbook.

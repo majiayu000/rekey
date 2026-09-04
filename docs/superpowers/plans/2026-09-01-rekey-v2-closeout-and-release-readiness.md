@@ -1071,7 +1071,7 @@ PR #30 已 signed squash merge 为 `1d242c946d660bb11d28a09125db722bcf6dd05f`，
 `33717430231`、performance `33717430241` 均在 merge SHA 上成功。该能力未进入
 `v2.0.0-alpha.1`，不构成通用 Vault、通用 G2 或企业就绪声明。
 
-**第二增量：** P-07B [Issue #34](https://github.com/majiayu000/rekey/issues/34) · [`2026-09-03-vault-dynamic-lease-source-p07b.md`](../specs/2026-09-03-vault-dynamic-lease-source-p07b.md) · 已 signed squash merge，PR exact-head 与 post-main 均已通过；不得标 `[x]`，因为 squash 之后到达的 Codex P1/P2 尚未关闭
+**第二增量：** P-07B [Issue #34](https://github.com/majiayu000/rekey/issues/34) · [`2026-09-03-vault-dynamic-lease-source-p07b.md`](../specs/2026-09-03-vault-dynamic-lease-source-p07b.md) · 已 signed squash merge；残余 Codex P1/P2 已由 [#37](https://github.com/majiayu000/rekey/pull/37) / `1ed064349bfbf0c045d791e35ee88fc2aa035e70` 关闭，本增量标 `[x]`。其余 provider 仍暂停。
 
 **P-07B 合并证据（2026-09-03 / 2026-09-04）：** [PR #35](https://github.com/majiayu000/rekey/pull/35)
 在 exact head `c8a6e4816809ac2292f2afa0cf4180074222f416` 上通过 security
@@ -1087,11 +1087,12 @@ PR #30 已 signed squash merge 为 `1d242c946d660bb11d28a09125db722bcf6dd05f`，
 Linux G2 成功；2026-09-04 对该失败 job 复跑后同一 run 成功。该能力未进入
 `v2.0.0-alpha.1`，不构成通用 Vault、动态租约产品、通用 G2 或企业就绪声明。
 
-**P-07B 残余门：** `[!]`
+**P-07B 残余门：** `[x]`
 
-单独处置 squash 之后到达的 Codex review（2 个 P1、1 个 P2）：escaped
-`lease_id` 探测无法回收、unterminated candidate 使 probe offset 越界 panic、
-revoke body 离开 `Zeroizing`。这些 finding 不是当时的 merge 阻塞项，但不能静默忽略。
+squash 之后到达的 Codex review（escaped `lease_id` 探测、unterminated candidate
+panic、revoke body 离开 `Zeroizing`）已由 [#37](https://github.com/majiayu000/rekey/pull/37)
+关闭，merge SHA `1ed064349bfbf0c045d791e35ee88fc2aa035e70`。post-main security/fuzz/
+performance 在该 SHA 上成功。
 
 **其余增量：** 未开始。在有真实单 provider 需求前不开 P07C，也不把剩余来源合成一张
 issue 或一个 PR。
@@ -1109,10 +1110,22 @@ issue 或一个 PR。
 
 ### P-09 Agent egress sandbox/launcher
 
-- 受控启动 Agent。
-- 禁止绕过 Rekey 直接访问网络。
-- namespace/firewall/egress policy。
-- 生命周期回收和攻击测试。
+**能力：** 受控启动 Agent，禁止绕过 Rekey 直接访问网络。
+
+**当前切片：** `linux-netns-v1`（[Issue #38](https://github.com/majiayu000/rekey/issues/38)，
+spec `docs/superpowers/specs/2026-09-04-agent-egress-launcher-p09.md`）。Linux
+`rekey agent-run` 通过系统 bubblewrap unshare user/net/pid，tmpfs 覆盖 state
+directory，只保留 disjoint `agent.sock`。不替换 `scripts/p1-linux-g2.sh`，不升级
+默认 G1，不含 macOS seatbelt、Landlock、cgroup 或 P-10 connector sandbox。
+
+**验收标准：**
+
+1. 默认 G1 共置 `agent.sock` 在 spawn 前被拒绝。
+2. Linux 子进程对公网 TCP/UDP 失败；读不到 vault/Admin socket；不继承
+   `REKEY_PASSWORD`。
+3. 同一子进程仍可通过 disjoint Unix socket 完成一次 capability-authorized execute。
+4. macOS 返回 `UNSUPPORTED_PLATFORM` 且不在宿主机执行 COMMAND。
+5. `scripts/p9-linux-agent-run.sh` 进入 Ubuntu security-gate。
 
 ### P-10 Connector 隔离
 
@@ -1204,9 +1217,10 @@ issue 或一个 PR。
 4. `[x]` P-04 通用 workload identity。
 5. `[x]` P-05 Connector SDK。
 6. `[x]` P-06 GitHub App 有界扩展。
-7. `[~]` P-07 外部 CredentialSource：P-07A 已关闭；P-07B 已合并且 post-main 复跑通过，
-   但 squash 后 Codex P1/P2 未关闭；其余 provider 暂停，不合成大 PR。
-8. E 阶段按 E-01～E-06 推进；需要客户、第三方或运营证据的门不得由内部测试替代。
+7. `[x]` P-07 外部 CredentialSource：P-07A/P-07B 已关闭；其余 provider 暂停，不合成大 PR。
+8. `[~]` P-09 Agent egress launcher：`linux-netns-v1` 独立 spec + Issue #38；P-08
+   与 P-10 仍未开始。
+9. E 阶段按 E-01～E-06 推进；需要客户、第三方或运营证据的门不得由内部测试替代。
 
 ## 12. 当前总判定
 
@@ -1218,11 +1232,11 @@ issue 或一个 PR。
 | Alpha 文档 | 完成（含 erratum） | 用户、安装、运维、发行、开源治理和支持范围已完成；archive 内嵌发布前 Matrix 的状态差异由公开 Release erratum 和当前仓库矩阵明确衔接 |
 | 可公开 Alpha | 是 | [v2.0.0-alpha.1](https://github.com/majiayu000/rekey/releases/tag/v2.0.0-alpha.1) 已公开；双平台 fresh-install、attestation 和 public-URL smoke 通过 |
 | H 安全与可靠性补强 | 完成 | H-01～H-08 已以持续 fuzz、真实 ENOSPC/文件系统故障注入、边界文档、公开双平台发行证据、供应链取舍以及固定主机 1,800 秒性能/容量/soak 证据全部关闭 |
-| P 后续产品能力 | 进行中 | P-01～P-07A 均已完成 adversarial/black-box、exact-head、merge 和 post-main 验收但尚未发布；P-07B 已 signed squash merge（#35 / `6441e12`），PR exact-head 9 jobs 通过，post-main security `33722301902` 经 2026-09-04 复跑成功，但 squash 后 Codex P1/P2 未关闭，故不得标完成；其余 P-07 provider 暂停，P-08～P-10 未开始 |
+| P 后续产品能力 | 进行中 | P-01～P-07B 均已完成 adversarial/black-box、exact-head、merge 和 post-main 验收但尚未发布；其余 P-07 provider 暂停；P-09 `linux-netns-v1` 已开 spec/#38；P-08 与 P-10 未开始 |
 | 可宣称通用 G2 | 否 | 只有有界 Linux reference；默认仍是 G1 |
 | 可宣称通用 Connector | 否 | 只有 fixed HTTPS Action 和 closed GitHub App profile |
 | 企业就绪 | 否 | 控制面、身份、HA/DR、合规、运营和商业门槛均未完成 |
 
-M、A、H、P-01、P-02、P-03、P-04、P-05、P-06 与 P-07A 已经关闭。P-07B 已合并但残余门未关闭。
-后续 P、E 必须继续按独立 spec、PR 和真实证据推进，不得回写或扩大已经发布的
+M、A、H、P-01、P-02、P-03、P-04、P-05、P-06、P-07A 与 P-07B 已经关闭。P-09 第一刀是
+Linux `agent-run`。后续 P、E 必须继续按独立 spec、PR 和真实证据推进，不得回写或扩大已经发布的
 `v2.0.0-alpha.1` 范围。

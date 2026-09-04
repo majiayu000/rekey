@@ -23,9 +23,10 @@ coordinate a fix and disclosure. There is no bug bounty or guaranteed embargo.
 Read `docs/alpha-scope.md` and the threat model before reporting an intended
 G1 limitation as a vulnerability. Host root/kernel compromise, same-user
 process inspection, and direct Agent egress outside the bounded G2 reference
-are not claimed protections. Secret exposure through a documented supported
-boundary, authentication bypass, unsafe remote effect, cryptographic misuse,
-or durable audit/integrity failure is in scope.
+or the Linux `agent-run` netns launcher are not claimed protections. Secret
+exposure through a documented supported boundary, authentication bypass,
+unsafe remote effect, cryptographic misuse, or durable audit/integrity
+failure is in scope.
 
 Never test against systems, repositories, credentials, or users you do not own
 or have explicit permission to assess.

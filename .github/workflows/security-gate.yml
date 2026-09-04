@@ -31,7 +31,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y ripgrep
+          sudo apt-get install -y ripgrep bubblewrap
       - name: Install macOS acceptance dependencies
         if: runner.os == 'macOS'
         run: brew install ripgrep
@@ -104,6 +104,9 @@ jobs:
         run: scripts/p7-vault-dynamic-source.sh
       - name: P5 connector SDK contract acceptance
         run: scripts/p5-connector-sdk.sh
+      - name: P9 Linux agent-run netns launcher
+        if: runner.os == 'Linux'
+        run: scripts/p9-linux-agent-run.sh
       - name: P1 native launchd service-manager acceptance
         if: runner.os == 'macOS'
         run: scripts/p1-service-manager.sh
