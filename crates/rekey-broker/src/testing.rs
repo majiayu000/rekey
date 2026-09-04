@@ -92,7 +92,7 @@ impl UpstreamTransport for FakeUpstreamTransport {
                 headers: request.headers.clone(),
                 auth_name: request.auth_header.0.clone(),
                 auth_value: request.auth_header.1.to_vec(),
-                body: request.body.clone(),
+                body: request.body.to_vec(),
             });
             let queued = lock_test_mutex(&self.responses).pop_front();
             if let Some(queued) = queued {

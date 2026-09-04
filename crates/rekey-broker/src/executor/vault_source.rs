@@ -166,7 +166,7 @@ impl VaultKvProfile {
                 "x-vault-token".to_owned(),
                 Zeroizing::new(self.token.to_vec()),
             ),
-            body: Vec::new(),
+            body: Zeroizing::new(Vec::new()),
             timeout,
             response_max_bytes: SOURCE_RESPONSE_MAX_BYTES,
         }

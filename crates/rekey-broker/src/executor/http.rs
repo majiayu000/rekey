@@ -116,7 +116,7 @@ pub(super) fn build_upstream(
         path: action.exact_path.as_str().to_owned(),
         headers,
         auth_header: (action.auth.header_name.as_str().to_owned(), auth_value),
-        body: request.body.clone(),
+        body: Zeroizing::new(request.body.clone()),
         timeout: Duration::from_millis(action.timeout_ms as u64),
         response_max_bytes: action.response_policy.max_body_bytes,
     }

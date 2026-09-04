@@ -41,7 +41,7 @@ impl UpstreamTransport for SequenceTransport {
         self.requests.lock().unwrap().push(ObservedRequest {
             method: request.method,
             path: request.path,
-            body: request.body,
+            body: request.body.to_vec(),
         });
         let response = self.responses.lock().unwrap().pop_front();
         Box::pin(async move { response.ok_or(crate::upstream::UpstreamError::Transport) })

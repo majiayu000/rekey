@@ -134,7 +134,7 @@ impl VaultDynamicProfile {
                 "x-vault-token".to_owned(),
                 Zeroizing::new(self.token.to_vec()),
             ),
-            body: Vec::new(),
+            body: Zeroizing::new(Vec::new()),
             timeout,
             response_max_bytes: SOURCE_RESPONSE_MAX_BYTES,
         }
@@ -284,7 +284,7 @@ impl VaultDynamicProfile {
                 "x-vault-token".to_owned(),
                 Zeroizing::new(self.token.to_vec()),
             ),
-            body: std::mem::take(&mut *body),
+            body,
             timeout,
             response_max_bytes: 1024,
         };
@@ -528,10 +528,13 @@ fn probe_lease_ids(body: &[u8]) -> LeaseProbe {
     };
     let key = br#""lease_id""#;
     let mut offset = 0;
-    while let Some(relative) = body[offset..]
-        .windows(key.len())
-        .position(|window| window == key)
-    {
+    while offset < body.len() {
+        let Some(relative) = body[offset..]
+            .windows(key.len())
+            .position(|window| window == key)
+        else {
+            break;
+        };
         let mut cursor = offset + relative + key.len();
         while body.get(cursor).is_some_and(u8::is_ascii_whitespace) {
             cursor += 1;
@@ -548,39 +551,167 @@ fn probe_lease_ids(body: &[u8]) -> LeaseProbe {
             offset += relative + key.len();
             continue;
         }
-        cursor += 1;
-        let start = cursor;
-        while body
-            .get(cursor)
-            .is_some_and(|byte| *byte != b'"' && *byte != b'\\')
-        {
-            cursor += 1;
-        }
-        if body.get(cursor) != Some(&b'"') {
-            offset = cursor.saturating_add(1);
-            continue;
-        }
-        let value = &body[start..cursor];
-        if !value.is_empty()
-            && value.len() <= LEASE_ID_MAX_BYTES
-            && value.iter().all(|byte| byte.is_ascii_graphic())
-        {
-            result.occurrences = result.occurrences.saturating_add(1);
-            if !result
-                .lease_ids
-                .iter()
-                .any(|known| known.as_bytes() == value)
-            {
-                if result.lease_ids.len() == LEASE_CAPTURE_LIMIT {
-                    result.truncated = true;
-                } else if let Ok(id) = String::from_utf8(value.to_vec()) {
-                    result.lease_ids.push(Zeroizing::new(id));
+        match scan_json_string(body, cursor + 1) {
+            JsonStringScan::Unterminated => break,
+            JsonStringScan::Invalid { next_offset } => {
+                offset = next_offset.max(offset + relative + key.len());
+            }
+            JsonStringScan::Closed {
+                decoded,
+                closing_quote,
+            } => {
+                let value = decoded.as_bytes();
+                if !value.is_empty()
+                    && value.len() <= LEASE_ID_MAX_BYTES
+                    && value.iter().all(|byte| matches!(byte, 0x21..=0x7e))
+                {
+                    result.occurrences = result.occurrences.saturating_add(1);
+                    if !result
+                        .lease_ids
+                        .iter()
+                        .any(|known| known.as_bytes() == value)
+                    {
+                        if result.lease_ids.len() == LEASE_CAPTURE_LIMIT {
+                            result.truncated = true;
+                        } else {
+                            result.lease_ids.push(decoded);
+                        }
+                    }
                 }
+                offset = closing_quote.saturating_add(1);
             }
         }
-        offset = cursor + 1;
     }
     result
+}
+
+enum JsonStringScan {
+    Closed {
+        decoded: Zeroizing<String>,
+        closing_quote: usize,
+    },
+    Unterminated,
+    Invalid {
+        next_offset: usize,
+    },
+}
+
+fn scan_json_string(body: &[u8], mut cursor: usize) -> JsonStringScan {
+    let mut decoded = Vec::new();
+    loop {
+        let Some(byte) = body.get(cursor).copied() else {
+            decoded.zeroize();
+            return JsonStringScan::Unterminated;
+        };
+        match byte {
+            b'"' => {
+                return match String::from_utf8(decoded) {
+                    Ok(text) => JsonStringScan::Closed {
+                        decoded: Zeroizing::new(text),
+                        closing_quote: cursor,
+                    },
+                    Err(err) => {
+                        let mut bytes = err.into_bytes();
+                        bytes.zeroize();
+                        JsonStringScan::Invalid {
+                            next_offset: next_scan_offset(body, cursor),
+                        }
+                    }
+                };
+            }
+            b'\\' => {
+                cursor += 1;
+                let Some(escaped) = body.get(cursor).copied() else {
+                    decoded.zeroize();
+                    return JsonStringScan::Unterminated;
+                };
+                let pushed = match escaped {
+                    b'"' | b'\\' | b'/' => escaped,
+                    b'u' => match decode_json_hex_byte(body, cursor) {
+                        HexByte::Unterminated => {
+                            decoded.zeroize();
+                            return JsonStringScan::Unterminated;
+                        }
+                        HexByte::Invalid { next_offset } => {
+                            decoded.zeroize();
+                            return JsonStringScan::Invalid { next_offset };
+                        }
+                        HexByte::Byte(value) => {
+                            cursor += 4;
+                            value
+                        }
+                    },
+                    _ => {
+                        decoded.zeroize();
+                        return JsonStringScan::Invalid {
+                            next_offset: next_scan_offset(body, cursor),
+                        };
+                    }
+                };
+                if decoded.len() >= LEASE_ID_MAX_BYTES {
+                    decoded.zeroize();
+                    return JsonStringScan::Invalid {
+                        next_offset: next_scan_offset(body, cursor),
+                    };
+                }
+                decoded.push(pushed);
+            }
+            0x20..=0x7e => {
+                if decoded.len() >= LEASE_ID_MAX_BYTES {
+                    decoded.zeroize();
+                    return JsonStringScan::Invalid {
+                        next_offset: next_scan_offset(body, cursor),
+                    };
+                }
+                decoded.push(byte);
+            }
+            _ => {
+                decoded.zeroize();
+                return JsonStringScan::Invalid {
+                    next_offset: next_scan_offset(body, cursor),
+                };
+            }
+        }
+        cursor += 1;
+    }
+}
+
+enum HexByte {
+    Byte(u8),
+    Unterminated,
+    Invalid { next_offset: usize },
+}
+
+fn decode_json_hex_byte(body: &[u8], unicode_marker: usize) -> HexByte {
+    if body.len() < unicode_marker + 5 {
+        return HexByte::Unterminated;
+    }
+    let hex = &body[unicode_marker + 1..unicode_marker + 5];
+    let mut code = 0u16;
+    for &digit in hex {
+        code <<= 4;
+        code |= match digit {
+            b'0'..=b'9' => u16::from(digit - b'0'),
+            b'a'..=b'f' => u16::from(digit - b'a' + 10),
+            b'A'..=b'F' => u16::from(digit - b'A' + 10),
+            _ => {
+                return HexByte::Invalid {
+                    next_offset: next_scan_offset(body, unicode_marker),
+                };
+            }
+        };
+    }
+    if (0x21..=0x7e).contains(&code) {
+        HexByte::Byte(code as u8)
+    } else {
+        HexByte::Invalid {
+            next_offset: next_scan_offset(body, unicode_marker + 4),
+        }
+    }
+}
+
+fn next_scan_offset(body: &[u8], cursor: usize) -> usize {
+    cursor.saturating_add(1).min(body.len())
 }
 
 fn append_json_string(value: &str, output: &mut Vec<u8>) -> Result<(), VaultDynamicError> {

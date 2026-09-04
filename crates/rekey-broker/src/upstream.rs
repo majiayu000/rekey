@@ -20,7 +20,9 @@ pub struct UpstreamRequest {
     pub headers: Vec<(String, String)>,
     /// The single credential header: name and full value bytes.
     pub auth_header: (String, Zeroizing<Vec<u8>>),
-    pub body: Vec<u8>,
+    /// Request body bytes. Lease IDs and other secret-bearing payloads stay
+    /// wipe-on-drop until the transport copies them.
+    pub body: Zeroizing<Vec<u8>>,
     pub timeout: Duration,
     pub response_max_bytes: u32,
 }
@@ -309,7 +311,7 @@ pub async fn send_screened(
     header_value.set_sensitive(true);
     req = req.header(auth_name, header_value);
     if !request.body.is_empty() {
-        req = req.body(request.body);
+        req = req.body(request.body.to_vec());
     }
 
     let response = req.send().await.map_err(|err| {
@@ -381,7 +383,7 @@ mod tests {
                 "authorization".to_owned(),
                 Zeroizing::new(b"Bearer test".to_vec()),
             ),
-            body: vec![],
+            body: Zeroizing::new(Vec::new()),
             timeout: Duration::from_secs(5),
             response_max_bytes: 1024,
         }
