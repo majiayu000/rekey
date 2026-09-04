@@ -1071,19 +1071,35 @@ PR #30 已 signed squash merge 为 `1d242c946d660bb11d28a09125db722bcf6dd05f`，
 `33717430231`、performance `33717430241` 均在 merge SHA 上成功。该能力未进入
 `v2.0.0-alpha.1`，不构成通用 Vault、通用 G2 或企业就绪声明。
 
-**第二增量：** P-07B [Issue #34](https://github.com/majiayu000/rekey/issues/34) · [`2026-09-03-vault-dynamic-lease-source-p07b.md`](../specs/2026-09-03-vault-dynamic-lease-source-p07b.md) · 实现与本地门禁完成，等待 exact-head CI、合并和 post-main 验收
+**第二增量：** P-07B [Issue #34](https://github.com/majiayu000/rekey/issues/34) · [`2026-09-03-vault-dynamic-lease-source-p07b.md`](../specs/2026-09-03-vault-dynamic-lease-source-p07b.md) · 已 signed squash merge，PR exact-head 与 post-main 均已通过；不得标 `[x]`，因为 squash 之后到达的 Codex P1/P2 尚未关闭
 
-**P-07B 本地证据（2026-09-03）：** schema v9、typed add/rotate、内建
-`vault-dynamic-source@1`、one-shot 获取/注入/同步精确回收、审计、反射封堵、deadline、
-restart 和 backup/restore 已实现。workspace fmt/check/clippy/tests、root/fuzz audit、固定
-nightly build、五个 target 各 2,000 次 fuzz、机械边界以及完整 macOS security-gate
-acceptance 集均通过；Ubuntu/macOS exact-head、review closeout、signed squash merge 和
-post-main CI 仍待 PR 证据。
+**P-07B 合并证据（2026-09-03 / 2026-09-04）：** [PR #35](https://github.com/majiayu000/rekey/pull/35)
+在 exact head `c8a6e4816809ac2292f2afa0cf4180074222f416` 上通过 security
+`33721654919`、fuzz `33721654922`、performance `33721654889` 共 9 个 jobs。
+作者 self-review 记录了两个合并前修复（lease TTL 取 request 前单调时钟；JSON key
+从 zeroizing buffer 借 `&str`），并声明无未关闭 finding。signed squash merge SHA 为
+`6441e12d7cc2eb85cb95817497b2bb4df41c486b`，只有一个 parent；Issue #34
+已关闭且远端分支已删除。post-main fuzz `33722301839` 与 performance
+`33722301859` 在 merge SHA 上成功。post-main security `33722301902` 首次失败：macOS
+`P0 (macos-latest)` 的 `rekey-vault` test
+`fault_injection::wrapper_success_audit_failure_rolls_back_and_faults` 在
+`confirm init` 上报 `StorageUnavailable(WouldBlock)`，同一次 run 的 Ubuntu P0 与
+Linux G2 成功；2026-09-04 对该失败 job 复跑后同一 run 成功。该能力未进入
+`v2.0.0-alpha.1`，不构成通用 Vault、动态租约产品、通用 G2 或企业就绪声明。
 
-- HashiCorp Vault。
+**P-07B 残余门：** `[!]`
+
+单独处置 squash 之后到达的 Codex review（2 个 P1、1 个 P2）：escaped
+`lease_id` 探测无法回收、unterminated candidate 使 probe offset 越界 panic、
+revoke body 离开 `Zeroizing`。这些 finding 不是当时的 merge 阻塞项，但不能静默忽略。
+
+**其余增量：** 未开始。在有真实单 provider 需求前不开 P07C，也不把剩余来源合成一张
+issue 或一个 PR。
+
+- 其他 Vault 操作、私网 source、generic adapter。
 - AWS/GCP/Azure secrets/KMS。
-- 1Password、HSM、OS keychain wrapper。
-- provider 不可用、版本、撤销和租约语义。
+- 1Password、PKCS#11/HSM。
+- OS keychain wrapper（Feature Truth Matrix 已推迟：不得破坏 Admin step-up）。
 
 ### P-08 可观测性
 
@@ -1188,7 +1204,8 @@ post-main CI 仍待 PR 证据。
 4. `[x]` P-04 通用 workload identity。
 5. `[x]` P-05 Connector SDK。
 6. `[x]` P-06 GitHub App 有界扩展。
-7. `[~]` P-07 外部 CredentialSource，先完成 Vault KV v2 固定版本纵切，再逐项推进其余 provider 语义。
+7. `[~]` P-07 外部 CredentialSource：P-07A 已关闭；P-07B 已合并且 post-main 复跑通过，
+   但 squash 后 Codex P1/P2 未关闭；其余 provider 暂停，不合成大 PR。
 8. E 阶段按 E-01～E-06 推进；需要客户、第三方或运营证据的门不得由内部测试替代。
 
 ## 12. 当前总判定
@@ -1201,10 +1218,11 @@ post-main CI 仍待 PR 证据。
 | Alpha 文档 | 完成（含 erratum） | 用户、安装、运维、发行、开源治理和支持范围已完成；archive 内嵌发布前 Matrix 的状态差异由公开 Release erratum 和当前仓库矩阵明确衔接 |
 | 可公开 Alpha | 是 | [v2.0.0-alpha.1](https://github.com/majiayu000/rekey/releases/tag/v2.0.0-alpha.1) 已公开；双平台 fresh-install、attestation 和 public-URL smoke 通过 |
 | H 安全与可靠性补强 | 完成 | H-01～H-08 已以持续 fuzz、真实 ENOSPC/文件系统故障注入、边界文档、公开双平台发行证据、供应链取舍以及固定主机 1,800 秒性能/容量/soak 证据全部关闭 |
-| P 后续产品能力 | 进行中 | P-01～P-07A 均已完成 adversarial/black-box、exact-head、merge 和 post-main 验收但尚未发布；P-07B 动态租约实现与本地门禁已完成，等待 PR exact-head/merge/post-main；P-07 其余 provider 与 P-08～P-10 未开始 |
+| P 后续产品能力 | 进行中 | P-01～P-07A 均已完成 adversarial/black-box、exact-head、merge 和 post-main 验收但尚未发布；P-07B 已 signed squash merge（#35 / `6441e12`），PR exact-head 9 jobs 通过，post-main security `33722301902` 经 2026-09-04 复跑成功，但 squash 后 Codex P1/P2 未关闭，故不得标完成；其余 P-07 provider 暂停，P-08～P-10 未开始 |
 | 可宣称通用 G2 | 否 | 只有有界 Linux reference；默认仍是 G1 |
 | 可宣称通用 Connector | 否 | 只有 fixed HTTPS Action 和 closed GitHub App profile |
 | 企业就绪 | 否 | 控制面、身份、HA/DR、合规、运营和商业门槛均未完成 |
 
-M、A、H、P-01、P-02、P-03、P-04、P-05、P-06 与 P-07A 已经关闭。后续 P、E 必须继续按独立 spec、PR 和真实证据推进，
-不得回写或扩大已经发布的 `v2.0.0-alpha.1` 范围。
+M、A、H、P-01、P-02、P-03、P-04、P-05、P-06 与 P-07A 已经关闭。P-07B 已合并但残余门未关闭。
+后续 P、E 必须继续按独立 spec、PR 和真实证据推进，不得回写或扩大已经发布的
+`v2.0.0-alpha.1` 范围。
