@@ -162,10 +162,14 @@ The parser borrows strings from the zeroizing source response or copies them
 immediately into zeroizing buffers. It must not leave an ordinary allocated
 `String` containing a provider secret on any success or error path.
 
-The Broker performs a bounded raw probe for candidate `lease_id` strings before
-semantic validation. If later validation fails, every captured valid candidate
-is synchronously revoked within the remaining cleanup budget. A successful
-issuance response without one unambiguous revocable lease ID is indeterminate.
+The Broker performs a bounded probe for candidate `lease_id` strings before
+semantic validation. The probe decodes JSON string escapes (`\"`, `\\`, `\/`,
+and `\uXXXX` that yield one visible ASCII byte) so captured identifiers match
+the semantic parser. Unterminated strings stop the scan without panicking or
+advancing past the response body. If later validation fails, every captured
+valid candidate is synchronously revoked within the remaining cleanup budget.
+A successful issuance response without one unambiguous revocable lease ID is
+indeterminate.
 
 ## 8. Lease and action deadlines
 
