@@ -121,8 +121,10 @@ origins.
   refuses those product claims).
 - OpenBao compatibility as a declared target (incidental OSS protocol match
   is not a support promise).
-- Inclusion in `v2.0.0-alpha.1`. Next-Alpha inclusion of the Vault kinds
-  remains optional even after Layer A, per the alignment plan.
+- Inclusion in `v2.0.0-alpha.1`. A later Alpha cut from current head
+  includes the Vault kinds in the binary (Shape A in the alignment plan).
+  Holding them out of that archive is a separate product-cut spec, not a
+  documentation checkbox. Layer A does not by itself change packaging.
 - Other P-07 providers.
 
 ## 4. Completion criteria
