@@ -155,7 +155,6 @@ fn bwrap_args(
     gid: u32,
     docker_hides: Vec<PathBuf>,
 ) -> Vec<OsString> {
-    let _ = agent_socket;
     let mut args = vec![
         OsString::from("--die-with-parent"),
         OsString::from("--new-session"),
@@ -177,6 +176,11 @@ fn bwrap_args(
         OsString::from("/tmp"),
         OsString::from("--tmpfs"),
         state_dir.as_os_str().to_owned(),
+        // `--tmpfs /tmp` hides a disjoint Agent socket under /tmp. Re-bind
+        // only that inode after both overlays; do not publish the parent dir.
+        OsString::from("--bind"),
+        agent_socket.as_os_str().to_owned(),
+        agent_socket.as_os_str().to_owned(),
     ];
     for hide in docker_hides {
         args.push(OsString::from("--bind"));
@@ -378,7 +382,7 @@ mod tests {
 
         let prepared = prepare(LaunchRequest {
             state_dir: state.clone(),
-            agent_socket: socket,
+            agent_socket: socket.clone(),
             argv: vec![command.into(), OsString::from("ok")],
             capability: Some(Zeroizing::new("cap-token-example".into())),
         })
@@ -395,10 +399,24 @@ mod tests {
         assert!(joined.contains("--unshare-pid"));
         assert!(joined.contains("--unshare-user"));
         assert!(joined.contains("--die-with-parent"));
-        assert!(joined.contains(&format!(
-            "--tmpfs\n{}",
-            state.canonicalize().unwrap().display()
-        )));
+        let canonical_state = state.canonicalize().unwrap().display().to_string();
+        let socket_path = socket.canonicalize().unwrap().display().to_string();
+        let tmpfs_tmp = args
+            .windows(2)
+            .position(|pair| pair[0] == "--tmpfs" && pair[1] == "/tmp")
+            .expect("child HOME overlay");
+        let tmpfs_state = args
+            .windows(2)
+            .position(|pair| pair[0] == "--tmpfs" && pair[1] == canonical_state)
+            .expect("state overlay");
+        let rebound = args
+            .windows(3)
+            .position(|triple| {
+                triple[0] == "--bind" && triple[1] == socket_path && triple[2] == socket_path
+            })
+            .expect("agent socket remount");
+        assert!(tmpfs_tmp < rebound);
+        assert!(tmpfs_state < rebound);
         assert!(!joined.contains("--share-net"));
         assert!(!joined.contains(CAPABILITY_ENV));
         assert!(!joined.contains("cap-token-example"));

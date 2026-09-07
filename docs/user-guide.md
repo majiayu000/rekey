@@ -312,7 +312,9 @@ rekey --state-dir /var/lib/rekey/state \
 ```
 
 The child has no IP/TCP/UDP path, cannot see the vault or Admin socket, and
-can still connect to `agent.sock`. macOS returns `UNSUPPORTED_PLATFORM`. See
+can still connect to `agent.sock`, including when that socket is under `/tmp`
+(the launcher bind-mounts the socket inode back after overlaying `/tmp`).
+macOS returns `UNSUPPORTED_PLATFORM`. See
 [the P-09 specification](superpowers/specs/2026-09-04-agent-egress-launcher-p09.md).
 
 ## GitHub App closed profile

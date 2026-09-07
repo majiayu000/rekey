@@ -1,6 +1,8 @@
 # P-09 Agent Egress Launcher (`linux-netns-v1`)
 
-> Status: implemented locally; Linux black-box and exact-head CI pending
+> Status: implemented; Ubuntu black-box blocked on ERR-trap false failure
+> and `/tmp` socket overlay until this revision's launcher remount and
+> acceptance-script fix are re-run on exact-head CI
 >
 > Date: 2026-09-04
 >
@@ -151,6 +153,7 @@ bwrap
   --dev /dev
   --tmpfs /tmp
   --tmpfs <canonical-state-dir>
+  --bind <canonical-agent-socket> <canonical-agent-socket>
   [--bind /dev/null /var/run/docker.sock]   # only if that path exists as a socket
   [--bind /dev/null /run/docker.sock]       # same, and not the Agent socket
   --chdir /tmp
@@ -159,13 +162,20 @@ bwrap
 ```
 
 `--unshare-net` gives a network namespace with no veth and no default route.
-Loopback is not configured. AF_UNIX is a mount-namespace path and still works
-for the disjoint Agent socket.
+Loopback is not configured. AF_UNIX is a mount-namespace path.
+
+`--tmpfs /tmp` gives the child an empty `HOME`. If the disjoint Agent socket
+lives under `/tmp` (including a typical `mktemp -d /tmp/...` workdir), that
+overlay would hide the inode. The launcher therefore bind-mounts the
+canonical socket onto the same path after both tmpfs overlays. This is a
+single-inode remount, not a directory publish, and it does not weaken the
+state-directory overlay. The child can then connect to that path.
+
+`--tmpfs <state-dir>` hides vault DB, Admin socket, and recovery material.
 
 `--unshare-pid` plus `--proc /proc` hides host PIDs so the child cannot open
 host `/proc/<pid>/ns/net` as an egress escape.
 
-`--tmpfs <state-dir>` hides vault DB, Admin socket, and recovery material.
 `--bind /dev/null` on well-known Docker sockets is defense in depth, not a
 claim that every container runtime socket is covered.
 
@@ -258,8 +268,11 @@ This slice is complete only when:
 3. macOS returns `UNSUPPORTED_PLATFORM` without executing `COMMAND` on the host.
 4. Linux black-box with system bubblewrap proves: public TCP denied, state
    hidden, parent env canary absent, Unix connect to disjoint `agent.sock`
-   works, one capability-authorized `rekey execute` succeeds through that
-   socket, credential canary never appears in child output.
+   works (including when that socket is under `/tmp` after the HOME overlay),
+   one capability-authorized `rekey execute` succeeds through that
+   socket, credential canary never appears in child output. Expected-nonzero
+   steps in `scripts/p9-linux-agent-run.sh` must not trip `ERR` (Bash `set +e`
+   does not disable the trap).
 5. Public docs say Linux launcher, not general G2.
 6. Exact-head CI includes the Linux script on Ubuntu.
 

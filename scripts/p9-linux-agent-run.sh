@@ -35,6 +35,8 @@ if [[ ! -x "$REKEY" || ! -x "$REKEYD" ]]; then
 fi
 
 WORKDIR="$(mktemp -d /tmp/rkp9.XXXXXX)"
+# Workdir is under /tmp on purpose: linux-netns-v1 overlays /tmp, then must
+# bind the disjoint agent socket back or later Unix connect is path-shadowed.
 STATE="$WORKDIR/s"
 AGENT_RUN="$WORKDIR/a"
 AGENT_SOCK="$AGENT_RUN/agent.sock"
@@ -60,18 +62,22 @@ json_field() {
   python3 -c 'import json,sys; print(json.load(sys.stdin)[sys.argv[1]])' "$1"
 }
 
+# Bash ERR traps fire on failing commands even after `set +e`. Expected
+# non-zero steps must be the left-hand side of `||` so the trap does not run.
+capture_cmd() {
+  CAPTURE_RC=0
+  CAPTURE_OUT="$("$@" 2>&1)" || CAPTURE_RC=$?
+}
+
 echo "== overlap default G1 socket is rejected"
 printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin >/dev/null
-set +e
-overlap_out="$("$REKEY" --state-dir "$STATE" agent-run -- "$PYTHON" -c 'print(1)' 2>&1)"
-overlap_rc=$?
-set -e
-[[ "$overlap_rc" -eq 2 ]] || {
-  echo "expected overlapping agent-run exit 2, got $overlap_rc: $overlap_out"
+capture_cmd "$REKEY" --state-dir "$STATE" agent-run -- "$PYTHON" -c 'print(1)'
+[[ "$CAPTURE_RC" -eq 2 ]] || {
+  echo "expected overlapping agent-run exit 2, got $CAPTURE_RC: $CAPTURE_OUT"
   exit 1
 }
-printf '%s\n' "$overlap_out" | rg -q 'disjoint|INVALID_INPUT|invalid launch plan' \
-  || { echo "overlap error did not mention launch plan: $overlap_out"; exit 1; }
+printf '%s\n' "$CAPTURE_OUT" | rg -q 'disjoint|INVALID_INPUT|invalid launch plan' \
+  || { echo "overlap error did not mention launch plan: $CAPTURE_OUT"; exit 1; }
 
 echo "== serve with disjoint Agent endpoint"
 mkdir -p "$AGENT_RUN"
@@ -154,14 +160,11 @@ printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate \
   --file "$WORKDIR/policy-bundle.json" --step-up-stdin >/dev/null
 
 echo "== child cannot use public TCP"
-set +e
-tcp_out="$(REKEY_PASSWORD="$PARENT_CANARY" "$REKEY" --state-dir "$STATE" \
+capture_cmd env REKEY_PASSWORD="$PARENT_CANARY" "$REKEY" --state-dir "$STATE" \
   --agent-socket "$AGENT_SOCK" agent-run -- "$PYTHON" -c \
-  'import socket; s=socket.socket(); s.settimeout(2); s.connect(("1.1.1.1", 443))' 2>&1)"
-tcp_rc=$?
-set -e
-[[ "$tcp_rc" -ne 0 ]] || {
-  echo "sandboxed child connected to 1.1.1.1:443: $tcp_out"
+  'import socket; s=socket.socket(); s.settimeout(2); s.connect(("1.1.1.1", 443))'
+[[ "$CAPTURE_RC" -ne 0 ]] || {
+  echo "sandboxed child connected to 1.1.1.1:443: $CAPTURE_OUT"
   exit 1
 }
 
