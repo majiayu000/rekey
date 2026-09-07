@@ -261,6 +261,11 @@ The Linux G2 harness proves only the documented container/namespace reference
 topology; it does not upgrade the default G1 product claim:
 `scripts/p1-linux-g2.sh`
 
+Linux `rekey agent-run` (`linux-netns-v1`) is a separate deny-by-default IP
+egress launcher. It requires bubblewrap, a disjoint `--agent-socket`, and does
+not make macOS or general G2:
+`scripts/p9-linux-agent-run.sh`
+
 GitHub create-issue dogfood (opt-in, dedicated fine-grained token entered
 through a hidden TTY prompt; exits nonzero unless GitHub returns 201):
 

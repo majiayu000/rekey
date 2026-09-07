@@ -35,7 +35,11 @@ impl CliError {
     /// Exit codes per the CLI contract.
     pub fn exit_code(&self) -> i32 {
         match self.code.as_str() {
-            "INVALID_INPUT" | "INVALID_FRAME" | "POLICY_INVALID" | "USAGE" => 2,
+            "INVALID_INPUT"
+            | "INVALID_FRAME"
+            | "POLICY_INVALID"
+            | "USAGE"
+            | "UNSUPPORTED_PLATFORM" => 2,
             "INVALID_UNLOCK_CREDENTIAL"
             | "UNLOCK_RATE_LIMITED"
             | "AUTHENTICATION_FAILED"
@@ -65,7 +69,8 @@ impl CliError {
             | "RESTORE_FAILED"
             | "ENTROPY_UNAVAILABLE"
             | "CLOCK_UNAVAILABLE"
-            | "FAULTED" => 5,
+            | "FAULTED"
+            | "LAUNCHER_UNAVAILABLE" => 5,
             "UPSTREAM_FAILED" | "RESPONSE_TOO_LARGE" => 6,
             "RESPONSE_SECURITY_VIOLATION"
             | "AUDIT_COMMIT_FAILED_AFTER_EXECUTION"

@@ -35,6 +35,7 @@ impl RekeydError {
             Self::Authority(err) => authority_exit_code(err),
             Self::Broker(BrokerError::Authority(err)) => authority_exit_code(err),
             Self::Broker(BrokerError::Domain(_)) | Self::Broker(BrokerError::Frame(_)) => 2,
+            Self::Broker(BrokerError::UnsupportedPlatform) => 2,
             Self::Broker(_) => 5,
         }
     }
@@ -110,6 +111,18 @@ enum Command {
         /// SHA-256 of the backup file from the backup receipt (64 hex chars).
         #[arg(long)]
         sha256: String,
+    },
+    /// Launch one Agent command in the closed Linux netns profile.
+    AgentRun {
+        #[arg(long)]
+        state_dir: Option<PathBuf>,
+        #[arg(long)]
+        agent_socket: PathBuf,
+        /// Read the capability token from stdin (first line).
+        #[arg(long)]
+        capability_stdin: bool,
+        #[arg(last = true, required = true)]
+        command: Vec<std::ffi::OsString>,
     },
 }
 
@@ -307,6 +320,39 @@ fn cmd_serve(
     result
 }
 
+fn cmd_agent_run(
+    state_dir: Option<PathBuf>,
+    agent_socket: PathBuf,
+    capability_stdin: bool,
+    command: Vec<std::ffi::OsString>,
+) -> Result<(), RekeydError> {
+    use rekey_broker::sandbox::{LaunchRequest, run};
+    use rekey_domain::sandbox::validate_capability_token;
+    use zeroize::Zeroizing;
+
+    let state_dir = resolve_state_dir(state_dir)?;
+    let capability = if capability_stdin {
+        let secret = read_stdin_secret_line()?;
+        let token = std::str::from_utf8(secret.expose())
+            .map_err(|_| usage("capability must be UTF-8 visible ASCII"))?;
+        validate_capability_token(token).map_err(BrokerError::from)?;
+        Some(Zeroizing::new(token.to_owned()))
+    } else {
+        None
+    };
+    let code = run(LaunchRequest {
+        state_dir,
+        agent_socket,
+        argv: command,
+        capability,
+    })?;
+    if code == 0 {
+        Ok(())
+    } else {
+        std::process::exit(code);
+    }
+}
+
 fn main() {
     init_logging();
     let cli = Cli::parse();
@@ -335,6 +381,12 @@ fn main() {
             password_stdin,
             sha256,
         } => cmd_restore(input, state_dir, recovery, password_stdin, sha256),
+        Command::AgentRun {
+            state_dir,
+            agent_socket,
+            capability_stdin,
+            command,
+        } => cmd_agent_run(state_dir, agent_socket, capability_stdin, command),
     };
     if let Err(err) = result {
         let exit_code = err.exit_code();

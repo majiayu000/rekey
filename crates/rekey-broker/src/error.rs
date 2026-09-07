@@ -27,6 +27,10 @@ pub enum BrokerError {
     ResponseSecurityViolation,
     #[error("ipc unavailable")]
     Io(#[source] std::io::Error),
+    #[error("unsupported on this platform")]
+    UnsupportedPlatform,
+    #[error("launcher unavailable")]
+    LauncherUnavailable,
 }
 
 impl BrokerError {
@@ -49,6 +53,8 @@ impl BrokerError {
             Self::Indeterminate(_) => "UPSTREAM_INDETERMINATE",
             Self::ResponseSecurityViolation => "RESPONSE_SECURITY_VIOLATION",
             Self::Io(_) => "IPC_UNAVAILABLE",
+            Self::UnsupportedPlatform => "UNSUPPORTED_PLATFORM",
+            Self::LauncherUnavailable => "LAUNCHER_UNAVAILABLE",
         }
     }
 
@@ -85,5 +91,19 @@ mod tests {
         let error = BrokerError::Indeterminate("resource-transport");
         assert_eq!(error.code(), "UPSTREAM_INDETERMINATE");
         assert!(!error.retryable());
+    }
+
+    #[test]
+    fn launcher_error_codes_are_stable() {
+        assert_eq!(
+            BrokerError::UnsupportedPlatform.code(),
+            "UNSUPPORTED_PLATFORM"
+        );
+        assert_eq!(
+            BrokerError::LauncherUnavailable.code(),
+            "LAUNCHER_UNAVAILABLE"
+        );
+        assert!(!BrokerError::UnsupportedPlatform.retryable());
+        assert!(!BrokerError::LauncherUnavailable.retryable());
     }
 }

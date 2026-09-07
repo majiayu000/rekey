@@ -18,6 +18,7 @@ mod github_profile;
 pub mod ipc;
 pub mod lifecycle;
 pub mod runtime;
+pub mod sandbox;
 pub mod session;
 pub mod testing;
 pub mod upstream;

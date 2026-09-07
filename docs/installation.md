@@ -123,6 +123,23 @@ For the bounded Linux G2 reference, use `--agent-socket` with the UID/GID and
 runtime-directory layout documented by `scripts/p1-linux-g2.sh`. Do not make
 the state directory or Admin socket group-writable.
 
+Linux `rekey agent-run` additionally needs `bubblewrap` and that same disjoint
+Agent socket. It denies IP egress for one launched command. It is not macOS
+G2 and is not a substitute for the Docker attack harness.
+
+On Ubuntu 24.04 and later, AppArmor restricts unprivileged user namespaces.
+`bwrap --unshare-user --unshare-net` then fails with `RTM_NEWADDR: Operation
+not permitted` unless a bwrap userns profile is loaded. Install
+`apparmor-profiles` and load the extra profile; do not disable
+`kernel.apparmor_restrict_unprivileged_userns`.
+
+```bash
+sudo apt-get install -y bubblewrap apparmor-profiles
+sudo cp /usr/share/apparmor/extra-profiles/bwrap-userns-restrict \
+  /etc/apparmor.d/bwrap-userns-restrict
+sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+```
+
 ## Upgrade and rollback
 
 1. Create and verify a backup as described in the operations runbook.

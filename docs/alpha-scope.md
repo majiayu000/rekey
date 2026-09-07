@@ -19,8 +19,9 @@ published to crates.io, Homebrew, or another package registry in this Alpha.
 Post-Alpha development-head capabilities are not retroactively part of these
 artifacts. This includes password/recovery wrapper lifecycle, local audit
 query/export, signed persistent policy and approvals, workload identity session
-minting, and durable workload-token replay protection. Their repository test
-evidence does not change the scope or support promise of `v2.0.0-alpha.1`.
+minting, durable workload-token replay protection, and the Linux `agent-run`
+netns launcher. Their repository test evidence does not change the scope or
+support promise of `v2.0.0-alpha.1`.
 
 ## Product identity decision
 
@@ -53,3 +54,11 @@ Before upgrading, stop the broker and create a verified encrypted backup plus
 receipt. Rollback means restoring the matching pre-upgrade backup into an empty
 state directory with the older binaries. Never open newer incompatible state
 with an older binary.
+
+## Next published Alpha
+
+`v2.0.0-alpha.1` remains the only supported public archive. A later Alpha is
+not implied by development-head evidence. Candidate scope, schema break, and
+verification gates are drafted in
+[the next-Alpha alignment plan](superpowers/plans/2026-09-07-next-alpha-and-verification-alignment.md).
+That draft does not widen this file's support promise.

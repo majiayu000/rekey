@@ -30,8 +30,25 @@ jobs:
       - name: Install Linux acceptance dependencies
         if: runner.os == 'Linux'
         run: |
+          set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y ripgrep
+          sudo apt-get install -y ripgrep bubblewrap apparmor-profiles
+          # Ubuntu 24.04+ blocks unprivileged userns unless bwrap has a profile.
+          # Do not disable kernel.apparmor_restrict_unprivileged_userns.
+          if [[ -f /usr/share/apparmor/extra-profiles/bwrap-userns-restrict ]]; then
+            sudo cp -f /usr/share/apparmor/extra-profiles/bwrap-userns-restrict \
+              /etc/apparmor.d/bwrap-userns-restrict
+            sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+          else
+            printf '%s\n' \
+              'profile bwrap /usr/bin/bwrap flags=(unconfined) {' \
+              '  userns,' \
+              '}' | sudo tee /etc/apparmor.d/bwrap >/dev/null
+            sudo apparmor_parser -r /etc/apparmor.d/bwrap
+          fi
+          /usr/bin/bwrap --die-with-parent --unshare-user --uid "$(id -u)" --gid "$(id -g)" \
+            --unshare-net --unshare-pid --ro-bind / / --proc /proc --dev /dev \
+            --tmpfs /tmp --chdir /tmp -- /bin/true
       - name: Install macOS acceptance dependencies
         if: runner.os == 'macOS'
         run: brew install ripgrep
@@ -104,6 +121,9 @@ jobs:
         run: scripts/p7-vault-dynamic-source.sh
       - name: P5 connector SDK contract acceptance
         run: scripts/p5-connector-sdk.sh
+      - name: P9 Linux agent-run netns launcher
+        if: runner.os == 'Linux'
+        run: scripts/p9-linux-agent-run.sh
       - name: P1 native launchd service-manager acceptance
         if: runner.os == 'macOS'
         run: scripts/p1-service-manager.sh
