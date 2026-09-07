@@ -203,13 +203,11 @@ fn docker_hides(agent_socket: &Path) -> Vec<PathBuf> {
         if canonical == agent_socket {
             continue;
         }
-        match fs::symlink_metadata(&canonical) {
-            Ok(metadata) if metadata.file_type().is_socket() => {
-                if !hides.contains(&canonical) {
-                    hides.push(canonical);
-                }
-            }
-            _ => {}
+        if let Ok(metadata) = fs::symlink_metadata(&canonical)
+            && metadata.file_type().is_socket()
+            && !hides.contains(&canonical)
+        {
+            hides.push(canonical);
         }
     }
     hides
