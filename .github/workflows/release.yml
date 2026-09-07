@@ -77,6 +77,10 @@ jobs:
           install -m 0644 docs/releases/${GITHUB_REF_NAME}.md "$stage/docs/releases/"
           install -m 0644 \
             docs/superpowers/specs/2026-08-28-credential-authority-v2-foundation.md \
+            docs/superpowers/specs/2026-09-02-password-lifecycle-p01.md \
+            docs/superpowers/specs/2026-09-03-approvals-persistent-policy-p03.md \
+            docs/superpowers/specs/2026-09-03-workload-identity-p04.md \
+            docs/superpowers/specs/2026-09-04-agent-egress-launcher-p09.md \
             "$stage/docs/superpowers/specs/"
           install -m 0644 examples/github-create-issue.json "$stage/examples/"
           tar -czf "dist/$archive" -C dist "$(basename "$stage")"

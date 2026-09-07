@@ -6,14 +6,17 @@ credentials**. Secrets live in an encrypted SQLite vault owned by a single
 broker process; the CLI, agents, and everything they spawn talk to it only
 over two permission-separated Unix sockets.
 
-> Status: `2.0.0-alpha.1` is the public Alpha. Password lifecycle, local audit
-> query/export, signed approvals/policy, workload identity, and the connector
-> contract SDK are post-Alpha development changes not included in that tag.
-> The default product is G1 and is not G2. Credentials never
-> appear in agent-facing APIs, process
-> arguments, environment variables, logs, or audit records. Same-user
-> `ptrace`, process memory, and filesystem access are out of G1. Canonical
-> feature status: `docs/product-foundation/feature-truth-matrix.md`.
+> Status: `2.0.0-alpha.1` is the only public Alpha (vault schema v5). Password
+> lifecycle, local audit query/export, signed approvals/policy, workload
+> identity, Vault KV v2 / dynamic lease sources, Linux `agent-run`, and the
+> connector contract SDK exist on development head (schema v9) and are frozen
+> for a later `v2.0.0-alpha.2` candidate; they are not in the published tag.
+> There is no in-place upgrade from alpha.1. The default product is G1 and is
+> not G2. Credentials never appear in agent-facing APIs, process arguments,
+> environment variables, logs, or audit records. Same-user `ptrace`, process
+> memory, and filesystem access are out of G1. Canonical feature status:
+> `docs/product-foundation/feature-truth-matrix.md`. Candidate packaging:
+> `docs/alpha-scope.md`.
 
 The production transport rejects all non-public address ranges, including
 `198.18.0.0/15`. On systems where a TUN proxy returns that range as fake DNS

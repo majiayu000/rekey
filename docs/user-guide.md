@@ -1,10 +1,15 @@
 # User guide
 
-This guide assumes the verified Alpha binaries are installed and the broker is
-running. Read [the security and platform scope](alpha-scope.md) first. Sections
-covering signed persistent policy, approval, and workload identity describe
-post-Alpha development head; those commands are not included in the published
-`v2.0.0-alpha.1` artifacts.
+This guide assumes verified binaries are installed and the broker is running.
+Read [the security and platform scope](alpha-scope.md) first.
+
+The published `v2.0.0-alpha.1` archive is vault schema v5. Development head and
+the frozen `v2.0.0-alpha.2` candidate use schema v9. Sections on password
+replacement, audit export, signed persistent policy, approval, workload
+identity, Vault sources, and Linux `agent-run` describe that later tree; those
+commands are not in the published `v2.0.0-alpha.1` artifacts. There is no
+in-place migration. Keep the old binaries and a verified backup to roll back;
+initialize v9 in a new empty directory.
 
 ## Start, unlock, and status
 
@@ -298,8 +303,9 @@ encryption, hashes, derivations, or application-specific encodings.
 
 ## Launch an Agent with deny-by-default IP egress (Linux)
 
-This post-Alpha development command is Linux-only and requires bubblewrap. It
-does not upgrade default G1 or replace the Docker G2 reference harness. The
+This Linux-only command requires bubblewrap. It is not in
+`v2.0.0-alpha.1`. It does not upgrade default G1 or replace the Docker G2
+reference harness. The
 Agent socket must be disjoint from the state directory; the default
 `runtime/agent.sock` is rejected.
 
@@ -319,7 +325,10 @@ macOS returns `UNSUPPORTED_PLATFORM`. See
 
 ## GitHub App closed profile
 
-This post-Alpha development feature is not a general GitHub connector. One
+Published `v2.0.0-alpha.1` includes a closed GitHub App profile. Development
+head and the alpha.2 candidate use `github-app-installation-v2` with the bounds
+below. Live `api.github.com` evidence does not cover every added Admin path.
+This is not a general GitHub connector. One
 profile binds one installation, 1-16 exact repositories, `metadata=read`, and
 optional `issues=write`. It supports only repository listing and issue
 creation at a configured repository path. The profile is:
@@ -371,10 +380,10 @@ for a bounded canonical `Retry-After` response.
 
 ## Vault KV v2 fixed-version source
 
-This post-Alpha development feature resolves one exact string from one exact
-HashiCorp Vault KV v2 version and uses it only as the credential for an existing
-fixed HTTPS Action. Create an owner-readable profile and delete it after the
-encrypted Admin mutation succeeds:
+This fixture-bounded feature is not in `v2.0.0-alpha.1`. It resolves one exact
+string from one exact HashiCorp Vault KV v2 version and uses it only as the
+credential for an existing fixed HTTPS Action. Create an owner-readable profile
+and delete it after the encrypted Admin mutation succeeds:
 
 ```json
 {
@@ -408,9 +417,10 @@ supported.
 
 ## Vault one-shot dynamic lease source
 
-This post-Alpha development feature acquires one bounded Vault dynamic lease,
-uses one selected string as the credential for an existing fixed HTTPS Action,
-and synchronously revokes the exact lease before returning success:
+This fixture-bounded feature is not in `v2.0.0-alpha.1`. It acquires one bounded
+Vault dynamic lease, uses one selected string as the credential for an existing
+fixed HTTPS Action, and synchronously revokes the exact lease before returning
+success:
 
 ```json
 {
@@ -441,7 +451,8 @@ network support, or release inclusion.
 
 ## Connector SDK contract
 
-The post-Alpha development tree contains the IO-free `rekey-connector` library.
+The development tree contains the IO-free `rekey-connector` library. It is not
+an MCP server in `v2.0.0-alpha.1` or in the frozen `v2.0.0-alpha.2` candidate.
 Its compile-time registry gives integrators stable versioned descriptors for
 the existing opaque-header, closed GitHub App, closed Vault KV v2 source, and
 one-shot Vault dynamic source paths. It also provides a pure

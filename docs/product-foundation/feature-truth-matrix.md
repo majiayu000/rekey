@@ -40,14 +40,16 @@ container recipe has bounded G2 evidence; that does not upgrade the default P0
 topology or establish a general G2 release.
 
 Development-head evidence after that release additionally covers P-01 through
-P-05. A row with `Release` set to `—` is not part of the public Alpha even when
-its local state is `Adversarially Verified`.
+P-07B and P-09 on schema v9. A row with `Release` set to `—` is not part of the
+public Alpha even when its local state is `Adversarially Verified`. The frozen
+`v2.0.0-alpha.2` candidate (Shape A) is recorded in `docs/alpha-scope.md`; that
+is packaging intent, not a public artifact.
 
 ## P0 local authority
 
 | Feature | User story / entry | State | Release | Implementation | Black-box / contract | Failure paths | Limits | Public docs |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Init empty v8 vault | `rekey init` / `rekeyd init` | Black-box Verified | `v2.0.0-alpha.1` (v5 artifact) | `crates/rekey-vault/src/bootstrap.rs`, `crates/rekey-broker/src/bin/rekeyd.rs` | `cargo test -p rekey-vault --test bootstrap_contract`; `cargo test -p rekey-cli --test cli_blackbox` | empty password, nonempty dir, legacy/non-v8 state, unknown/NULL crypto discriminator, confirm mismatch discards | Development head is breaking v8 with no v5/v6/v7 reader or migration; Alpha artifact remains v5 | README Quick start |
+| Init empty vault | `rekey init` / `rekeyd init` | Black-box Verified | `v2.0.0-alpha.1` (v5 artifact) | `crates/rekey-vault/src/bootstrap.rs`, `crates/rekey-broker/src/bin/rekeyd.rs` | `cargo test -p rekey-vault --test bootstrap_contract`; `cargo test -p rekey-cli --test cli_blackbox` | empty password, nonempty dir, legacy/mismatched format, unknown/NULL crypto discriminator, confirm mismatch discards | Development head initializes schema v9 and rejects v5–v8 with no reader or migration; the published Alpha artifact remains v5. Do not write `v2.0.0-alpha.2` into Release until that tag exists | README Quick start |
 | Password / recovery proof | `rekey unlock`; Admin mutation `--recovery` | Black-box Verified | `v2.0.0-alpha.1` | `crates/rekey-vault/src/authority.rs`, `crates/rekey-broker/src/ipc/admin.rs`, CLI commands | `cli_blackbox`; `lifecycle_contract` | wrong password exit 3, backoff, recovery mutation proof | G1; recovery unlock/step-up/restore only, no password change/reset or wrapper replacement; no rate-limit across process restarts | README |
 | lock / idle lock / shutdown | `rekey lock`, idle timer, `rekey shutdown` | Adversarially Verified | `v2.0.0-alpha.1` | `crates/rekey-broker/src/lifecycle.rs`, `runtime.rs`, `execution_supervisor.rs` | `scripts/p0-acceptance.sh`; `scripts/p1-service-manager.sh`; `lifecycle_drain` (10); required macOS launchd and Ubuntu systemd CI gates | partial frame, disconnected in-flight work, execution panic, terminal-audit fault, Busy→lock→unlock Running epoch | Default topology remains G1; native-manager evidence is bounded to tested macOS/Ubuntu environments | spec §11.2 / P1.2 |
 | Credential add/list | `rekey credential add/list` | Black-box Verified | `v2.0.0-alpha.1` | `crates/rekey-vault/src/authority.rs`, CLI commands | `cli_blackbox`; `scripts/p0-acceptance.sh` | duplicate label | Values only via TTY/stdin, never argv/env | README |
