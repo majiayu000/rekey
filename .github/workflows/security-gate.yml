@@ -40,11 +40,10 @@ jobs:
               /etc/apparmor.d/bwrap-userns-restrict
             sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
           else
-            sudo tee /etc/apparmor.d/bwrap >/dev/null <<'EOF'
-profile bwrap /usr/bin/bwrap flags=(unconfined) {
-  userns,
-}
-EOF
+            printf '%s\n' \
+              'profile bwrap /usr/bin/bwrap flags=(unconfined) {' \
+              '  userns,' \
+              '}' | sudo tee /etc/apparmor.d/bwrap >/dev/null
             sudo apparmor_parser -r /etc/apparmor.d/bwrap
           fi
           /usr/bin/bwrap --die-with-parent --unshare-user --uid "$(id -u)" --gid "$(id -g)" \
