@@ -1,6 +1,7 @@
 # Next public Alpha and verification alignment
 
-> Status: draft planning only; does not change `v2.0.0-alpha.1` support
+> Status: adopted candidate scope for `v2.0.0-alpha.2`; does not change
+> `v2.0.0-alpha.1` support or fill Matrix `Release` cells
 >
 > Date: 2026-09-07
 >
@@ -29,8 +30,9 @@ It is not a release checklist and does not move any Feature Truth Matrix
    commit; signed squash merge and post-main CI pass.
 3. Dual-platform attested archives, native launchd/systemd fresh-install, and
    public-URL smoke follow the `v2.0.0-alpha.1` release shape.
-4. The published `docs/alpha-scope.md` is rewritten for the new tag only at
-   release time. This draft must not be copied into user docs as a promise.
+4. The published `docs/alpha-scope.md` keeps `v2.0.0-alpha.1` as the only
+   public archive until tag time. The frozen candidate table in that file is
+   not a download or support promise.
 5. Vault packaging is decided by the section below *before* the tag. Omitting
    Vault from notes while shipping HEAD binaries is not a decision.
 
@@ -48,22 +50,29 @@ empty directory, and restore only with matching binaries.
 | Linux `agent-run` | absent | `9565f9e` / PR #39 | include; not general G2 |
 | Windows / macOS isolation | unsupported / unimplemented | unchanged | unchanged |
 
-## Candidate inclusion (already verified on head, not in alpha.1)
+## Frozen `v2.0.0-alpha.2` inclusion (verified on head, not in alpha.1)
 
-Include only rows that remain at least `Black-box Verified` on the release
-commit. Security-facing rows still need `Adversarially Verified`.
+The next tag is `v2.0.0-alpha.2` if gates pass. Include only rows that remain
+at least `Black-box Verified` on the release commit. Security-facing rows still
+need `Adversarially Verified`. Release engineering during the cut only fixes
+blockers; it does not add providers or product modules.
 
-| Capability | Head maturity | Include? | Limit that must stay in the Alpha notes |
+| Capability | Head maturity | alpha.2 | Limit that must stay in the Alpha notes |
 | --- | --- | --- | --- |
-| Password / recovery wrapper lifecycle | Adversarially Verified | yes | no VRK/DEK rotation; no historical-backup invalidation |
-| Local audit query / JSONL export | Adversarially Verified | yes | no SIEM, deletion, retention, or remote delivery |
-| Signed persistent policy and approvals | Adversarially Verified | yes | verifier-only; external signer; no control plane |
-| Workload identity session mint | Adversarially Verified | yes | static keys only; no JWKS/discovery |
-| Connector SDK / MCP and OAuth projections | Contract Tested | library only | no MCP server, no live generic OAuth |
-| GitHub App closed profile | already in alpha.1 | keep | not a general GitHub connector |
-| Vault KV v2 source | Black-box Verified | **in the HEAD cut** | local CA/TLS fixture only; no live Vault; see packaging section |
-| Vault one-shot dynamic lease | Black-box Verified | **in the HEAD cut** | same; no renewal or crash-time revoke |
-| Linux `agent-run` | Black-box Verified (Ubuntu `34082334618`) | yes | not general G2; needs bubblewrap; Ubuntu 24.04 needs a bwrap userns profile |
+| Local credentials, fixed Action, backup/restore | Adversarially Verified | keep | G1, one local Authority |
+| Password / recovery wrapper lifecycle | Adversarially Verified | include | no VRK/DEK rotation; no historical-backup invalidation |
+| Local audit query / JSONL export | Adversarially Verified | include | no SIEM, deletion, retention, or remote delivery |
+| Signed persistent policy and approvals | Adversarially Verified | include | verifier-only; external signer; no control plane or key custody |
+| Workload identity session mint | Adversarially Verified | include | static keys only; no JWKS/discovery |
+| Connector SDK / MCP and OAuth projections | Contract Tested | source only | no MCP server, no live generic OAuth |
+| GitHub App closed profile and P-06 bounds | Black-box Verified (live create-issue is a separate Field Validated row) | include | one installation; 1–16 exact repositories; `GET /installation/repositories` and `POST /repos/OWNER/REPOSITORY/issues` only; Admin webhook-delta and typed rotation are fixture-covered; live `api.github.com` does not cover every added path |
+| Vault KV v2 source | Black-box Verified | **Shape A HEAD cut** | local CA/TLS fixture only; closed protocol; no live Vault; no private-network |
+| Vault one-shot dynamic lease | Black-box Verified | **Shape A HEAD cut** | same; no renewal or crash-time revoke |
+| Linux `agent-run` | Black-box Verified (Ubuntu `34082334618`) | include | bubblewrap; disjoint socket; Ubuntu 24.04 bwrap userns profile; cite black-box facts only |
+
+Platforms stay macOS 14 arm64 and Ubuntu 24.04 x86_64. No new migration,
+compat reader, or compile-time cut switch. Do not widen G2, enterprise, or
+human-audit claims.
 
 GitHub App in alpha.1 shipped on local-fixture evidence, with live
 `api.github.com` as a separate Field Validated row that is still not in the

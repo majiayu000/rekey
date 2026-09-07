@@ -151,12 +151,17 @@ does not follow redirects or honor HTTP proxy environment variables.
 
 ## Upgrade, rollback, and rejected state
 
-Follow [installation.md](installation.md). v1 state and any non-v8/unknown
-layout are intentionally rejected and never migrated or overwritten. Preserve
-the old directory and initialize v2 separately. Existing v5 vaults require the
-earlier binary; P-03 schema v6 vaults also require their matching earlier binary.
-P-04 provides no in-place reader or migration. Rollback requires the prior
-binaries plus their matching pre-upgrade backup restored into an empty path.
+Follow [installation.md](installation.md). Current development head and the
+frozen `v2.0.0-alpha.2` candidate initialize vault schema **v9**. The published
+`v2.0.0-alpha.1` archive initializes schema **v5**. There is no reader or
+migration for v1, v5, v6, v7, or v8. Unknown or mismatched layouts are
+rejected and never overwritten.
+
+A backup made with an older binary restores only with that same generation of
+binaries into an empty directory. It is not an import path into v9. Rollback
+means the preserved old binaries plus their matching backup; never point those
+binaries at a directory a v9 process has opened, and never point a v9 binary at
+older state.
 
 ## Lost keys
 

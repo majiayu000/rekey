@@ -1,7 +1,12 @@
 # Install, upgrade, service, and uninstall
 
-The public Alpha ships only two supported archives: macOS 14 arm64 and Ubuntu
-24.04 x86_64. See [the platform matrix](alpha-scope.md) before installing.
+The only supported public Alpha is still `v2.0.0-alpha.1` (vault schema v5).
+It ships two archives: macOS 14 arm64 and Ubuntu 24.04 x86_64. See
+[the platform matrix](alpha-scope.md) before installing.
+
+Development head and the frozen `v2.0.0-alpha.2` candidate use vault schema v9.
+That later tag is not implied by these install steps until it exists. There is
+no in-place upgrade from v5–v8.
 
 ## Download and verify
 
@@ -120,7 +125,8 @@ sudo systemctl daemon-reload
 ```
 
 For the bounded Linux G2 reference, use `--agent-socket` with the UID/GID and
-runtime-directory layout documented by `scripts/p1-linux-g2.sh`. Do not make
+runtime-directory layout documented in the repository file
+`scripts/p1-linux-g2.sh` (not shipped in the release archive). Do not make
 the state directory or Admin socket group-writable.
 
 Linux `rekey agent-run` additionally needs `bubblewrap` and that same disjoint
@@ -140,15 +146,49 @@ sudo cp /usr/share/apparmor/extra-profiles/bwrap-userns-restrict \
 sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
 ```
 
-## Upgrade and rollback
+## Cross-version install and rollback
 
-1. Create and verify a backup as described in the operations runbook.
-2. Stop the service and confirm both sockets and the process are gone.
-3. Verify the new archive and replace only `rekey` and `rekeyd`.
-4. Start locked, check status, unlock, and run one fixed Action.
+These steps apply whenever the new archive uses a different vault format,
+including `v2.0.0-alpha.1` (schema v5) to development head or `v2.0.0-alpha.2`
+(schema v9). Release notes that say the format is unchanged may replace only
+the two binaries; **do not treat that as the path from alpha.1 to v9**.
 
-If the new version opened incompatible state, do not reuse that directory with
-the old binary. Restore the pre-upgrade backup into an empty directory instead.
+### Keep the old environment
+
+1. Using the **old** binaries, create and verify a backup as described in the
+   operations runbook. Save the receipt and its SHA-256 off the state
+   directory.
+2. Stop the old service and confirm both sockets and the process are gone.
+3. Leave the old state directory untouched. Keep the matching old `rekey` and
+   `rekeyd` binaries (copy them aside before installing new ones into the same
+   PATH directory).
+
+The old backup restores only with those old binaries into a newly created
+empty directory. It is not a migration entry into v9.
+
+### Install the new version into a new directory
+
+1. Verify the new archive (checksum and attestation).
+2. Install the new `rekey` and `rekeyd` without pointing them at the old state
+   directory.
+3. Initialize a **new empty** state directory (`rekey --state-dir NEW_DIR init`).
+4. Recreate credentials, Actions, policy trust, signed policy, and any
+   workload or Vault source profiles through supported Admin operations.
+5. Unlock, mint a new session, and complete one authorized execute.
+
+`rekey status` on a v9 broker reports `"format_version": 9`. A v5 archive
+reports `5`. Mismatched state is rejected and left untouched.
+
+### Roll back
+
+1. Stop the new broker.
+2. Leave any v9 directory alone; do not open it with the old binaries.
+3. Restore the saved pre-cut backup into a **new empty** directory using the
+   old binaries and the matching SHA-256.
+4. Start the old broker locked, unlock, and run one fixed Action.
+
+Never point an older binary at state already opened by a newer incompatible
+version. Never point a v9 binary at v5/v6/v7/v8 or v1 state.
 
 ## Uninstall
 
