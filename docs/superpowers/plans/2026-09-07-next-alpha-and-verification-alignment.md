@@ -135,10 +135,13 @@ Allowed, if the gates pass:
 
 - "Public Alpha `v2.0.0-alpha.N` is a local G1 Credential Authority on the
   tested macOS arm64 and Ubuntu 24.04 x86_64 archives, with vault schema v9."
-- "Linux `agent-run` (`linux-netns-v1`) denies IP egress for one launched argv
-  when bubblewrap is installed and the Agent endpoint is disjoint."
+- "Linux `agent-run` (`linux-netns-v1`) is Black-box Verified on Ubuntu: with
+  bubblewrap and a disjoint Agent socket, the harnessed child could not open
+  public TCP, could not see vault files, and could still use `agent.sock`."
 
 Not allowed:
 
 - production-ready G2, enterprise-ready, general Vault, general GitHub
   connector, live IdP, or "users can download everything that exists on main."
+- An Adversarially Verified isolation claim, or unqualified "denies IP
+  egress," while the matrix row remains `Black-box Verified`.
