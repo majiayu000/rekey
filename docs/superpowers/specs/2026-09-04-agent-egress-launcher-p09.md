@@ -181,6 +181,13 @@ claim that every container runtime socket is covered.
 
 Missing `bwrap` is `LAUNCHER_UNAVAILABLE`. Spawn failure is fail-closed.
 
+On Ubuntu 24.04 and later, `kernel.apparmor_restrict_unprivileged_userns=1`
+blocks unprivileged user namespaces unless `bwrap` has an AppArmor profile
+that allows `userns`. Without that profile, `--unshare-net` dies with
+`loopback: Failed RTM_NEWADDR: Operation not permitted`. That is a host
+configuration requirement for `linux-netns-v1`, not a private-address
+exception and not a reason to pass `--share-net`. See `docs/installation.md`.
+
 The launcher waits, reaps, and forwards the child exit status. A signal death
 without a status code maps to exit 5. `PR_SET_PDEATHSIG` is supplied by
 `--die-with-parent`.

@@ -13,10 +13,26 @@ command -v rg >/dev/null || {
   echo "p9-linux-agent-run requires ripgrep (rg)" >&2
   exit 1
 }
-[[ -x /usr/bin/bwrap || -x /bin/bwrap ]] || {
+BWRAP_BIN=""
+if [[ -x /usr/bin/bwrap ]]; then
+  BWRAP_BIN=/usr/bin/bwrap
+elif [[ -x /bin/bwrap ]]; then
+  BWRAP_BIN=/bin/bwrap
+else
   echo "p9-linux-agent-run requires bubblewrap (/usr/bin/bwrap or /bin/bwrap)" >&2
   exit 1
-}
+fi
+# Ubuntu 24.04+ AppArmor userns restriction makes --unshare-net fail during
+# loopback setup unless a bwrap profile is loaded. Probe with the launcher's
+# uid mapping so a later TCP-deny cannot pass on spawn failure.
+if ! probe_err="$("$BWRAP_BIN" --die-with-parent --unshare-user --uid "$(id -u)" \
+  --gid "$(id -g)" --unshare-net --unshare-pid --ro-bind / / --proc /proc --dev /dev \
+  --tmpfs /tmp --chdir /tmp -- /bin/true 2>&1)"; then
+  echo "p9-linux-agent-run: bwrap cannot unshare user+net as this user" >&2
+  echo "Ubuntu 24.04 needs an AppArmor bwrap userns profile; see docs/installation.md" >&2
+  printf '%s\n' "$probe_err" >&2
+  exit 1
+fi
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN_DIR="${BIN_DIR:-$ROOT/target/release}"
@@ -165,6 +181,10 @@ capture_cmd env REKEY_PASSWORD="$PARENT_CANARY" "$REKEY" --state-dir "$STATE" \
   'import socket; s=socket.socket(); s.settimeout(2); s.connect(("1.1.1.1", 443))'
 [[ "$CAPTURE_RC" -ne 0 ]] || {
   echo "sandboxed child connected to 1.1.1.1:443: $CAPTURE_OUT"
+  exit 1
+}
+printf '%s\n' "$CAPTURE_OUT" | rg -q 'bwrap:|RTM_NEWADDR|Operation not permitted' && {
+  echo "TCP deny passed on launcher spawn failure, not a running child: $CAPTURE_OUT"
   exit 1
 }
 
