@@ -154,8 +154,7 @@ bwrap
   --tmpfs /tmp
   --tmpfs <canonical-state-dir>
   --bind <canonical-agent-socket> <canonical-agent-socket>
-  [--bind /dev/null /var/run/docker.sock]   # only if that path exists as a socket
-  [--bind /dev/null /run/docker.sock]       # same, and not the Agent socket
+  [--bind /dev/null <canonical-docker-socket>]
   --chdir /tmp
   --
   COMMAND ARGS...
@@ -177,7 +176,11 @@ state-directory overlay. The child can then connect to that path.
 host `/proc/<pid>/ns/net` as an egress escape.
 
 `--bind /dev/null` on well-known Docker sockets is defense in depth, not a
-claim that every container runtime socket is covered.
+claim that every container runtime socket is covered. Candidates are
+`/var/run/docker.sock` and `/run/docker.sock`. Each path is canonicalized,
+deduplicated, skipped when it is the Agent socket, and bound only if the
+canonical inode is a Unix socket. Binding the `/var/run` alias on a read-only
+root fails when `/var/run` is a symlink to `/run` (Ubuntu GitHub runners).
 
 Missing `bwrap` is `LAUNCHER_UNAVAILABLE`. Spawn failure is fail-closed.
 

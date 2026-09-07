@@ -197,12 +197,18 @@ fn bwrap_args(
 fn docker_hides(agent_socket: &Path) -> Vec<PathBuf> {
     let mut hides = Vec::new();
     for candidate in DOCKER_SOCKETS {
-        let path = Path::new(candidate);
-        if path == agent_socket {
+        let Ok(canonical) = Path::new(candidate).canonicalize() else {
+            continue;
+        };
+        if canonical == agent_socket {
             continue;
         }
-        match fs::symlink_metadata(path) {
-            Ok(metadata) if metadata.file_type().is_socket() => hides.push(path.to_path_buf()),
+        match fs::symlink_metadata(&canonical) {
+            Ok(metadata) if metadata.file_type().is_socket() => {
+                if !hides.contains(&canonical) {
+                    hides.push(canonical);
+                }
+            }
             _ => {}
         }
     }
