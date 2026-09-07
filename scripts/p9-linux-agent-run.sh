@@ -46,9 +46,17 @@ EXACT_PATH="${REKEY_ACCEPTANCE_PATH:-/cdn-cgi/trace}"
 PARENT_CANARY="p09-parent-env-canary-secret"
 
 if [[ ! -x "$REKEY" || ! -x "$REKEYD" ]]; then
+  if [[ "${REKEY_ACCEPTANCE_REQUIRE_BINARIES:-}" == "1" ]]; then
+    echo "required release binaries are missing from BIN_DIR: $BIN_DIR" >&2
+    exit 1
+  fi
   echo "building release binaries…"
   cargo build --release -p rekey-cli -p rekey-broker
 fi
+
+echo "p9-linux-agent-run: BIN_DIR=$BIN_DIR"
+echo "p9-linux-agent-run: rekey=$REKEY ($("$REKEY" --version))"
+echo "p9-linux-agent-run: rekeyd=$REKEYD ($("$REKEYD" --version))"
 
 WORKDIR="$(mktemp -d /tmp/rkp9.XXXXXX)"
 # Workdir is under /tmp on purpose: linux-netns-v1 overlays /tmp, then must
@@ -175,7 +183,7 @@ printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy trust install \
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate \
   --file "$WORKDIR/policy-bundle.json" --step-up-stdin >/dev/null
 
-echo "== child cannot use public TCP"
+echo "== child cannot use public TCP or UDP"
 capture_cmd env REKEY_PASSWORD="$PARENT_CANARY" "$REKEY" --state-dir "$STATE" \
   --agent-socket "$AGENT_SOCK" agent-run -- "$PYTHON" -c \
   'import socket; s=socket.socket(); s.settimeout(2); s.connect(("1.1.1.1", 443))'
@@ -185,6 +193,17 @@ capture_cmd env REKEY_PASSWORD="$PARENT_CANARY" "$REKEY" --state-dir "$STATE" \
 }
 printf '%s\n' "$CAPTURE_OUT" | rg -q 'bwrap:|RTM_NEWADDR|Operation not permitted' && {
   echo "TCP deny passed on launcher spawn failure, not a running child: $CAPTURE_OUT"
+  exit 1
+}
+capture_cmd env REKEY_PASSWORD="$PARENT_CANARY" "$REKEY" --state-dir "$STATE" \
+  --agent-socket "$AGENT_SOCK" agent-run -- "$PYTHON" -c \
+  'import socket; s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(2); s.sendto(b"x", ("1.1.1.1", 53)); s.recvfrom(64)'
+[[ "$CAPTURE_RC" -ne 0 ]] || {
+  echo "sandboxed child completed UDP to 1.1.1.1:53: $CAPTURE_OUT"
+  exit 1
+}
+printf '%s\n' "$CAPTURE_OUT" | rg -q 'bwrap:|RTM_NEWADDR|Operation not permitted' && {
+  echo "UDP deny passed on launcher spawn failure, not a running child: $CAPTURE_OUT"
   exit 1
 }
 
@@ -240,5 +259,5 @@ SERVE_PID=""
 
 echo "p9-linux-agent-run: PASS"
 echo "p9-linux-agent-run: profile=linux-netns-v1 bwrap=$(command -v bwrap || true)"
-echo "p9-linux-agent-run: proved=overlap-reject,public-tcp-denied,state-hidden,parent-env-dropped,unix-agent-socket,approved-execute"
+echo "p9-linux-agent-run: proved=overlap-reject,public-tcp-denied,public-udp-denied,state-hidden,parent-env-dropped,unix-agent-socket,approved-execute"
 echo "p9-linux-agent-run: limitation=not-general-G2,not-macos,not-kernel-or-host-root"

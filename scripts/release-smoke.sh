@@ -38,8 +38,23 @@ REKEYD="$BIN_DIR/rekeyd"
 [[ "$($REKEY --version)" == "rekey $EXPECTED_VERSION" ]]
 [[ "$($REKEYD --version)" == "rekeyd $EXPECTED_VERSION" ]]
 
+echo "release-smoke: archive=$ARCHIVE"
+echo "release-smoke: bin_dir=$BIN_DIR"
+echo "release-smoke: expected_version=$EXPECTED_VERSION"
+python3 "$ROOT/scripts/release-archive-inventory.py" "$BIN_DIR" "$EXPECTED_VERSION"
+
 BIN_DIR="$BIN_DIR" \
 REKEY_ACCEPTANCE_REQUIRE_BINARIES=1 \
 "$ROOT/scripts/p0-acceptance.sh"
+
+BIN_DIR="$BIN_DIR" \
+REKEY_ACCEPTANCE_REQUIRE_BINARIES=1 \
+"$ROOT/scripts/release-archive-acceptance.sh"
+
+if [[ "$(uname -s)" == Linux ]]; then
+  BIN_DIR="$BIN_DIR" \
+  REKEY_ACCEPTANCE_REQUIRE_BINARIES=1 \
+  "$ROOT/scripts/p9-linux-agent-run.sh"
+fi
 
 echo "release artifact smoke passed: $EXPECTED_VERSION"
