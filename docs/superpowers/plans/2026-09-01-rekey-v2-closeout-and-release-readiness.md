@@ -1122,10 +1122,10 @@ spec `docs/superpowers/specs/2026-09-04-agent-egress-launcher-p09.md`）。Linux
 不替换 `scripts/p1-linux-g2.sh`，不升级默认 G1，不含 macOS seatbelt、Landlock、
 cgroup 或 P-10 connector sandbox。
 
-[PR #39](https://github.com/majiayu000/rekey/pull/39) 在 `bda8bc8` 上 Ubuntu
-主检查失败：验收脚本对预期 exit 2 的 overlap 拒绝仍触发 `ERR` trap（`set +e`
-不会关闭该 trap）；启动器 `--tmpfs /tmp` 遮蔽了验收放在 `/tmp/rkp9…` 下的
-Agent socket。本修订按 spec 修复这两项，Linux black-box 仍须 Ubuntu 复跑。
+[PR #39](https://github.com/majiayu000/rekey/pull/39) signed squash merge
+`9565f9e`。Ubuntu `P0` security-gate `34082334618` 上
+`scripts/p9-linux-agent-run.sh` 为 `PASS`。合并前还修了 AppArmor userns、
+`/var/run` Docker socket 别名绑定和验收脚本对 bwrap 启动失败的误判。
 
 **验收标准：**
 
@@ -1227,11 +1227,14 @@ Agent socket。本修订按 spec 修复这两项，Linux black-box 仍须 Ubuntu
 5. `[x]` P-05 Connector SDK。
 6. `[x]` P-06 GitHub App 有界扩展。
 7. `[x]` P-07 外部 CredentialSource：P-07A/P-07B 已关闭；其余 provider 暂停，不合成大 PR。
-8. `[~]` P-09 Agent egress launcher：`linux-netns-v1` 独立 spec + Issue #38 +
-   PR #39；ERR-trap 与 `/tmp` socket 遮蔽修复后待 Ubuntu 复跑。P-08 与 P-10
-   仍未开始。下一版公开 Alpha 与 Vault OSS 互通不得并入本 PR，见
-   [`2026-09-07-next-alpha-and-verification-alignment.md`](2026-09-07-next-alpha-and-verification-alignment.md)
-   与 [`2026-09-07-vault-oss-interop.md`](../specs/2026-09-07-vault-oss-interop.md)。
+8. `[x]` P-09 Agent egress launcher：`linux-netns-v1` signed squash merge
+   `9565f9e` / [PR #39](https://github.com/majiayu000/rekey/pull/39)；Ubuntu
+   `scripts/p9-linux-agent-run.sh` `PASS` on security-gate `34082334618`。
+   P-08 与 P-10 仍未开始。下一版公开 Alpha 默认 Shape A（HEAD 含 Vault 实现）；
+   从笔记里省略 Vault 不算裁剪，见
+   [`2026-09-07-next-alpha-and-verification-alignment.md`](2026-09-07-next-alpha-and-verification-alignment.md)。
+   Vault OSS 互通仍独立：
+   [`2026-09-07-vault-oss-interop.md`](../specs/2026-09-07-vault-oss-interop.md)。
 9. E 阶段按 E-01～E-06 推进；需要客户、第三方或运营证据的门不得由内部测试替代。
 
 ## 12. 当前总判定
@@ -1244,11 +1247,11 @@ Agent socket。本修订按 spec 修复这两项，Linux black-box 仍须 Ubuntu
 | Alpha 文档 | 完成（含 erratum） | 用户、安装、运维、发行、开源治理和支持范围已完成；archive 内嵌发布前 Matrix 的状态差异由公开 Release erratum 和当前仓库矩阵明确衔接 |
 | 可公开 Alpha | 是 | [v2.0.0-alpha.1](https://github.com/majiayu000/rekey/releases/tag/v2.0.0-alpha.1) 已公开；双平台 fresh-install、attestation 和 public-URL smoke 通过 |
 | H 安全与可靠性补强 | 完成 | H-01～H-08 已以持续 fuzz、真实 ENOSPC/文件系统故障注入、边界文档、公开双平台发行证据、供应链取舍以及固定主机 1,800 秒性能/容量/soak 证据全部关闭 |
-| P 后续产品能力 | 进行中 | P-01～P-07B 均已完成 adversarial/black-box、exact-head、merge 和 post-main 验收但尚未发布；其余 P-07 provider 暂停；P-09 `linux-netns-v1` 为 PR #39，Ubuntu black-box 在 overlap ERR-trap 与 `/tmp` socket 遮蔽修复前失败；P-08 与 P-10 未开始 |
+| P 后续产品能力 | 进行中 | P-01～P-07B 与 P-09 均已 merge；P-09 Ubuntu black-box `PASS`（`9565f9e`）。尚未进入公开 Alpha。其余 P-07 provider 暂停；P-08 与 P-10 未开始。下一版 Alpha 从 HEAD 打包即含 Vault 实现（Shape A），文档省略不是裁剪 |
 | 可宣称通用 G2 | 否 | 只有有界 Linux reference；默认仍是 G1 |
 | 可宣称通用 Connector | 否 | 只有 fixed HTTPS Action 和 closed GitHub App profile |
 | 企业就绪 | 否 | 控制面、身份、HA/DR、合规、运营和商业门槛均未完成 |
 
-M、A、H、P-01、P-02、P-03、P-04、P-05、P-06、P-07A 与 P-07B 已经关闭。P-09 第一刀是
-Linux `agent-run`，必须先把 PR #39 修到 Ubuntu security-gate 通过。下一版公开
-Alpha 不得回写 `v2.0.0-alpha.1`；范围与 Vault OSS 互通按独立 spec/PR 推进。
+M、A、H、P-01 至 P-07B 与 P-09 已经关闭（P-09 merge `9565f9e`）。下一版公开
+Alpha 不得回写 `v2.0.0-alpha.1`。从当前 head 打包默认带上 Vault 实现（Shape A）；
+OSS 互通与 Shape B 裁剪仍按独立 spec/PR 推进。

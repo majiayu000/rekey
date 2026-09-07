@@ -1,8 +1,7 @@
 # P-09 Agent Egress Launcher (`linux-netns-v1`)
 
-> Status: implemented; Ubuntu black-box blocked on ERR-trap false failure
-> and `/tmp` socket overlay until this revision's launcher remount and
-> acceptance-script fix are re-run on exact-head CI
+> Status: complete; Ubuntu black-box `PASS` on security-gate `34082334618`;
+> signed squash merge `9565f9e` / [PR #39](https://github.com/majiayu000/rekey/pull/39)
 >
 > Date: 2026-09-04
 >
