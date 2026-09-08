@@ -33,7 +33,10 @@ published to crates.io, Homebrew, or another package registry in this Alpha.
 | GitHub App closed profile and P-06 bounds | included | one installation; 1–16 exact repositories; `GET /installation/repositories` and `POST /repos/OWNER/REPOSITORY/issues` only; live `api.github.com` evidence does not cover every added Admin path |
 | Vault KV v2 and one-shot dynamic lease | included (Shape A) | fixture-only closed protocol; no private-network source |
 | Linux `agent-run` | included | bubblewrap; disjoint socket; Ubuntu AppArmor profile; Black-box Verified facts only |
-| Connector SDK | ship in source | do not announce an MCP server or generic OAuth connector |
+
+The IO-free `rekey-connector` crate is in the git tree at this tag, not in the
+downloadable archive. It is not an MCP server or generic OAuth connector. Matrix
+`Release` for that row remains `—`.
 
 Out of this Alpha: Shape B Vault cut, other cloud secret sources, MCP server,
 online JWKS, P-08 metrics, P-10 plugin isolation, macOS sandbox, general G2,
