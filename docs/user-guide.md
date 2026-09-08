@@ -3,13 +3,10 @@
 This guide assumes verified binaries are installed and the broker is running.
 Read [the security and platform scope](alpha-scope.md) first.
 
-The published `v2.0.0-alpha.1` archive is vault schema v5. Development head and
-the frozen `v2.0.0-alpha.2` candidate use schema v9. Sections on password
-replacement, audit export, signed persistent policy, approval, workload
-identity, Vault sources, and Linux `agent-run` describe that later tree; those
-commands are not in the published `v2.0.0-alpha.1` artifacts. There is no
-in-place migration. Keep the old binaries and a verified backup to roll back;
-initialize v9 in a new empty directory.
+This Alpha (`v2.0.0-alpha.2`) is vault schema v9. The historical
+`v2.0.0-alpha.1` archive was schema v5. There is no in-place migration. Keep
+the old binaries and a verified backup to roll back; initialize v9 in a new
+empty directory.
 
 ## Start, unlock, and status
 
@@ -303,11 +300,9 @@ encryption, hashes, derivations, or application-specific encodings.
 
 ## Launch an Agent with deny-by-default IP egress (Linux)
 
-This Linux-only command requires bubblewrap. It is not in
-`v2.0.0-alpha.1`. It does not upgrade default G1 or replace the Docker G2
-reference harness. The
-Agent socket must be disjoint from the state directory; the default
-`runtime/agent.sock` is rejected.
+This Linux-only command requires bubblewrap. It does not upgrade default G1 or
+replace the Docker G2 reference harness. The Agent socket must be disjoint from
+the state directory; the default `runtime/agent.sock` is rejected.
 
 ```bash
 rekeyd serve --state-dir /var/lib/rekey/state \
@@ -317,21 +312,21 @@ rekey --state-dir /var/lib/rekey/state \
   agent-run -- /usr/bin/my-agent
 ```
 
-The child has no IP/TCP/UDP path, cannot see the vault or Admin socket, and
-can still connect to `agent.sock`, including when that socket is under `/tmp`
-(the launcher bind-mounts the socket inode back after overlaying `/tmp`).
-macOS returns `UNSUPPORTED_PLATFORM`. See
+The Ubuntu black-box harness recorded that the child had no IP/TCP/UDP path,
+could not see the vault or Admin socket, and could still connect to
+`agent.sock`, including when that socket is under `/tmp` (the launcher
+bind-mounts the socket inode back after overlaying `/tmp`). Those facts are
+not Adversarially Verified isolation. macOS returns `UNSUPPORTED_PLATFORM`. See
 [the P-09 specification](superpowers/specs/2026-09-04-agent-egress-launcher-p09.md).
 
 ## GitHub App closed profile
 
-Published `v2.0.0-alpha.1` includes a closed GitHub App profile. Development
-head and the alpha.2 candidate use `github-app-installation-v2` with the bounds
-below. Live `api.github.com` evidence does not cover every added Admin path.
-This is not a general GitHub connector. One
-profile binds one installation, 1-16 exact repositories, `metadata=read`, and
-optional `issues=write`. It supports only repository listing and issue
-creation at a configured repository path. The profile is:
+This Alpha uses `github-app-installation-v2` with the bounds below. Live
+`api.github.com` evidence does not cover every added Admin path. This is not a
+general GitHub connector. One profile binds one installation, 1-16 exact
+repositories, `metadata=read`, and optional `issues=write`. It supports only
+repository listing and issue creation at a configured repository path. The
+profile is:
 
 ```json
 {
@@ -380,7 +375,7 @@ for a bounded canonical `Retry-After` response.
 
 ## Vault KV v2 fixed-version source
 
-This fixture-bounded feature is not in `v2.0.0-alpha.1`. It resolves one exact
+This fixture-bounded feature is in this Alpha archive. It resolves one exact
 string from one exact HashiCorp Vault KV v2 version and uses it only as the
 credential for an existing fixed HTTPS Action. Create an owner-readable profile
 and delete it after the encrypted Admin mutation succeeds:
@@ -417,7 +412,7 @@ supported.
 
 ## Vault one-shot dynamic lease source
 
-This fixture-bounded feature is not in `v2.0.0-alpha.1`. It acquires one bounded
+This fixture-bounded feature is in this Alpha archive. It acquires one bounded
 Vault dynamic lease, uses one selected string as the credential for an existing
 fixed HTTPS Action, and synchronously revokes the exact lease before returning
 success:
@@ -446,13 +441,13 @@ non-retryable indeterminate result.
 
 Rekey does not renew leases or persist an outstanding-lease registry. A hard
 process or host crash may leave the lease active until Vault expires it, so
-this feature does not claim crash-time cleanup, general Vault support, private
-network support, or release inclusion.
+this feature does not claim crash-time cleanup, general Vault support, or
+private-network support.
 
 ## Connector SDK contract
 
 The development tree contains the IO-free `rekey-connector` library. It is not
-an MCP server in `v2.0.0-alpha.1` or in the frozen `v2.0.0-alpha.2` candidate.
+an MCP server in this Alpha.
 Its compile-time registry gives integrators stable versioned descriptors for
 the existing opaque-header, closed GitHub App, closed Vault KV v2 source, and
 one-shot Vault dynamic source paths. It also provides a pure

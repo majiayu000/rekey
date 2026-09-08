@@ -6,16 +6,16 @@ credentials**. Secrets live in an encrypted SQLite vault owned by a single
 broker process; the CLI, agents, and everything they spawn talk to it only
 over two permission-separated Unix sockets.
 
-> Status: `2.0.0-alpha.1` is the only public Alpha (vault schema v5). Password
-> lifecycle, local audit query/export, signed approvals/policy, workload
-> identity, Vault KV v2 / dynamic lease sources, Linux `agent-run`, and the
-> connector contract SDK exist on development head (schema v9) and are frozen
-> for a later `v2.0.0-alpha.2` candidate; they are not in the published tag.
-> There is no in-place upgrade from alpha.1. The default product is G1 and is
-> not G2. Credentials never appear in agent-facing APIs, process arguments,
-> environment variables, logs, or audit records. Same-user `ptrace`, process
-> memory, and filesystem access are out of G1. Canonical feature status:
-> `docs/product-foundation/feature-truth-matrix.md`. Candidate packaging:
+> Status: `2.0.0-alpha.2` is the current Alpha archive (vault schema v9,
+> Shape A). The tagged workflow publishes a prerelease before public-URL
+> smoke. Treat `v2.0.0-alpha.2` as the completed public download only after that
+> smoke succeeds; until then, `v2.0.0-alpha.1` remains the last completed public
+> download (schema v5). There is no in-place upgrade
+> from alpha.1. The default product is G1 and is not G2. Credentials never appear
+> in agent-facing APIs, process arguments, environment variables, logs, or audit
+> records. Same-user `ptrace`, process memory, and filesystem access are out of
+> G1. Canonical feature status:
+> `docs/product-foundation/feature-truth-matrix.md`. Archive scope:
 > `docs/alpha-scope.md`.
 
 The production transport rejects all non-public address ranges, including
@@ -174,8 +174,9 @@ human directory, private-key custody, or approval survival across lock/restart.
 
 ## Connector contract SDK
 
-Development head includes the IO-free `rekey-connector` crate. Its versioned,
-compile-time registry describes the four existing built-ins:
+This tree includes the IO-free `rekey-connector` crate. It is a source
+contract, not an announced product binary, MCP server, or live generic OAuth
+connector. Its versioned, compile-time registry describes the four existing built-ins:
 `fixed-http-header@1` (`inject`) and `github-app-installation@1`
 (`sign → exchange → lease → revoke`), plus `vault-kv-v2-source@1`
 (`resolve → inject`) and `vault-dynamic-source@1`
@@ -184,14 +185,13 @@ deadline, audit event, response-sealing decision, and cleanup.
 
 The SDK can project an object-shaped authorized Action schema into a stable MCP
 tool descriptor and can describe the public fields of an RFC 8693 OAuth token
-exchange. These are pure library contracts, not an MCP server or a live generic
-OAuth connector. They accept no provider token, client secret, capability, or
-dynamic plugin. Development head now extends the same closed GitHub connector
-through P-06 with 1-16 exact repositories, bounded issue creation, typed
+exchange. These are pure library contracts. They accept no provider token, client
+secret, capability, or dynamic plugin. This archive's closed GitHub connector
+uses P-06 bounds: 1-16 exact repositories, bounded issue creation, typed
 rotation, Admin-forwarded signed repository deltas, and read-only bounded
-retry. Those additions are not part of the published `v2.0.0-alpha.1` archive.
+retry. Live `api.github.com` evidence does not cover every added Admin path.
 
-Development head also supports one closed HashiCorp Vault KV v2 source for an
+This archive also supports one closed HashiCorp Vault KV v2 source for an
 existing fixed HTTPS Action. The encrypted profile pins one public HTTPS Vault
 origin, mount, path, exact nonzero version, exact string key, and Vault token.
 Each execution performs one non-retried versioned KV read, seals the source
@@ -206,9 +206,10 @@ rekey credential rotate-vault-kv CREDENTIAL_ID --file profile.json
 This is not general Vault support: there is no latest-version lookup, private
 Vault network exception, Vault auth flow, cloud secret/KMS,
 1Password, HSM, keychain, generic URL/JSONPath adapter, or new Agent secret API.
-It is not included in the published `v2.0.0-alpha.1` archive.
+The protocol is fixture-bounded in this archive; live Vault OSS
+interoperability is not claimed.
 
-Development head also supports one closed one-shot Vault dynamic source. Each
+This archive also supports one closed one-shot Vault dynamic source. Each
 execution performs one `GET /v1/MOUNT/creds/ROLE`, uses one selected string in
 the fixed Action, and withholds the Action response until
 `POST /v1/sys/leases/revoke` succeeds for the exact lease with `sync: true`:
@@ -220,8 +221,8 @@ rekey credential rotate-vault-dynamic CREDENTIAL_ID --file profile.json
 
 Lease duration is restricted to 5–300 seconds. Rekey does not renew leases or
 claim cleanup after process/host crash; provider expiry bounds that residual
-exposure. There is no background lease registry, private Vault networking,
-generic provider adapter, or inclusion in `v2.0.0-alpha.1`.
+exposure. There is no background lease registry, private Vault networking, or
+generic provider adapter.
 
 ## Not compatible with v1
 

@@ -2,8 +2,16 @@
 
 ## Supported version
 
-Only `2.0.0-alpha.1` is supported until superseded by a later prerelease. The
-project provides best-effort fixes and makes no SLA or response-time promise.
+Until public-URL smoke for `v2.0.0-alpha.2` succeeds, `2.0.0-alpha.1` remains
+the last completed public download (schema v5) and the supported prerelease.
+The tagged workflow publishes a prerelease before that smoke; a smoke failure
+withdraws it to draft.
+
+This archive is `2.0.0-alpha.2` (vault schema v9). After that public-URL smoke
+succeeds, it is the current supported prerelease. `2.0.0-alpha.1` then
+becomes a historical v5 archive: keep its binaries for rollback only; there is
+no security backport, dual-format support, or migration into v9. The project
+provides best-effort fixes and makes no SLA or response-time promise.
 
 ## Report a vulnerability privately
 

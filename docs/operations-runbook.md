@@ -151,11 +151,10 @@ does not follow redirects or honor HTTP proxy environment variables.
 
 ## Upgrade, rollback, and rejected state
 
-Follow [installation.md](installation.md). Current development head and the
-frozen `v2.0.0-alpha.2` candidate initialize vault schema **v9**. The published
-`v2.0.0-alpha.1` archive initializes schema **v5**. There is no reader or
-migration for v1, v5, v6, v7, or v8. Unknown or mismatched layouts are
-rejected and never overwritten.
+Follow [installation.md](installation.md). This Alpha (`v2.0.0-alpha.2`)
+initializes vault schema **v9**. The historical `v2.0.0-alpha.1` archive
+initialized schema **v5**. There is no reader or migration for any other format,
+including v1 and v4–v8. Unknown or mismatched layouts are rejected and never overwritten.
 
 A backup made with an older binary restores only with that same generation of
 binaries into an empty directory. It is not an import path into v9. Rollback
