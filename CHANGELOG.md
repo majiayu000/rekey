@@ -26,8 +26,9 @@ matching old binaries.
 
 ### Changed
 
-- Vault format is v9. v5–v8 and v1 state is rejected with no reader or
-  migration. Signed persisted policy replaces the alpha.1 in-memory snapshot.
+- Vault format is v9. Any other format, including v1 and v4–v8, is rejected
+  with no reader or migration. Signed persisted policy replaces the alpha.1
+  in-memory snapshot.
 
 ### Known limitations
 

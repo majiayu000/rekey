@@ -15,9 +15,10 @@ Rules:
 - Enterprise / multi-tenant claims require `Field Validated`.
 - Release inclusion is orthogonal to verification maturity. A version in the
   `Release` column means the row is present in that named public archive. It does
-  not widen the row's documented topology, provider, or maturity limits. Presence
-  in a later archive is implied unless the notes say the later artifact dropped
-  or replaced the behavior.
+  not widen the row's documented topology, provider, or maturity limits.
+  Later archives also contain earlier P0 rows unless the notes say otherwise.
+  Limits are version-specific: do not apply an older limit to a later archive
+  when a later row records the replacement.
 - `v2.0.0-alpha.2` in `Release` is archive membership for this tag's packed
   docs. It is not by itself proof that the GitHub Release URL has passed
   public-URL smoke.
@@ -58,8 +59,8 @@ G2 harness).
 
 | Feature | User story / entry | State | Release | Implementation | Black-box / contract | Failure paths | Limits | Public docs |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Init empty vault | `rekey init` / `rekeyd init` | Black-box Verified | `v2.0.0-alpha.1` (v5); `v2.0.0-alpha.2` (v9) | `crates/rekey-vault/src/bootstrap.rs`, `crates/rekey-broker/src/bin/rekeyd.rs` | `cargo test -p rekey-vault --test bootstrap_contract`; `cargo test -p rekey-cli --test cli_blackbox` | empty password, nonempty dir, legacy/mismatched format, unknown/NULL crypto discriminator, confirm mismatch discards | This archive initializes schema v9 and rejects v5–v8 with no reader or migration. The historical `v2.0.0-alpha.1` artifact initialized v5 | README Quick start |
-| Password / recovery proof | `rekey unlock`; Admin mutation `--recovery` | Black-box Verified | `v2.0.0-alpha.1` | `crates/rekey-vault/src/authority.rs`, `crates/rekey-broker/src/ipc/admin.rs`, CLI commands | `cli_blackbox`; `lifecycle_contract` | wrong password exit 3, backoff, recovery mutation proof | G1; recovery unlock/step-up/restore only, no password change/reset or wrapper replacement; no rate-limit across process restarts | README |
+| Init empty vault | `rekey init` / `rekeyd init` | Black-box Verified | `v2.0.0-alpha.1` (v5); `v2.0.0-alpha.2` (v9) | `crates/rekey-vault/src/bootstrap.rs`, `crates/rekey-broker/src/bin/rekeyd.rs` | `cargo test -p rekey-vault --test bootstrap_contract`; `cargo test -p rekey-cli --test cli_blackbox` | empty password, nonempty dir, legacy/mismatched format, unknown/NULL crypto discriminator, confirm mismatch discards | This archive initializes schema v9 and rejects every other format, including v1 and v4–v8, with no reader or migration. The historical `v2.0.0-alpha.1` artifact initialized v5 | README Quick start |
+| Password / recovery proof | `rekey unlock`; Admin mutation `--recovery` | Black-box Verified | `v2.0.0-alpha.1` | `crates/rekey-vault/src/authority.rs`, `crates/rekey-broker/src/ipc/admin.rs`, CLI commands | `cli_blackbox`; `lifecycle_contract` | wrong password exit 3, backoff, recovery mutation proof | G1 unlock/step-up/restore proof. `v2.0.0-alpha.1` had no password change on this surface. Wrapper replacement in `v2.0.0-alpha.2` is the separate Password and recovery wrapper lifecycle row. No rate-limit across process restarts | README |
 | lock / idle lock / shutdown | `rekey lock`, idle timer, `rekey shutdown` | Adversarially Verified | `v2.0.0-alpha.1` | `crates/rekey-broker/src/lifecycle.rs`, `runtime.rs`, `execution_supervisor.rs` | `scripts/p0-acceptance.sh`; `scripts/p1-service-manager.sh`; `lifecycle_drain` (10); required macOS launchd and Ubuntu systemd CI gates | partial frame, disconnected in-flight work, execution panic, terminal-audit fault, Busy→lock→unlock Running epoch | Default topology remains G1; native-manager evidence is bounded to tested macOS/Ubuntu environments | spec §11.2 / P1.2 |
 | Credential add/list | `rekey credential add/list` | Black-box Verified | `v2.0.0-alpha.1` | `crates/rekey-vault/src/authority.rs`, CLI commands | `cli_blackbox`; `scripts/p0-acceptance.sh` | duplicate label | Values only via TTY/stdin, never argv/env | README |
 | Credential rotate/revoke | `rekey credential rotate/revoke` | Black-box Verified | `v2.0.0-alpha.1` | `crates/rekey-vault/src/authority.rs`, CLI commands | `scripts/p0-acceptance.sh`; `authority_contract` | revoke then execute | One clean-install host; not Field Validated | README |

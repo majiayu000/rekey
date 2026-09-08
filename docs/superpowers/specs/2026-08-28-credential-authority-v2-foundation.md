@@ -563,7 +563,7 @@ PRAGMA busy_timeout = 5000;
 当前开发实现先由 P-04 将 durable schema 提升为 v7，再由 P-07A 为新的
 `vault-kv-v2-source` credential kind 提升为 v8，最后由 P-07B 为
 `vault-dynamic-source` 提升为 v9。当前 archive `v2.0.0-alpha.2` 只接受 v9；
-历史 `v2.0.0-alpha.1` 制品是 v5。v9 不提供 v8/v7/v6/v5 migration 或 compatibility reader。
+历史 `v2.0.0-alpha.1` 制品是 v5。v9 不提供 v1 或 v4–v8 migration 或 compatibility reader。
 
 ~~~sql
 CREATE TABLE vault_header (

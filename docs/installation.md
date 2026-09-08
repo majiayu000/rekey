@@ -6,7 +6,8 @@ two archives: macOS 14 arm64 and Ubuntu 24.04 x86_64. See
 
 Download the GitHub Release of the same name after it is published. Until that
 Release's public-URL smoke passes, `v2.0.0-alpha.1` remains the last completed
-public download (schema v5). There is no in-place upgrade from v5–v8.
+public download (schema v5). There is no in-place upgrade from any pre-v9
+format, including v1 and v4–v8.
 
 ## Download and verify
 
@@ -190,7 +191,7 @@ reports `5`. Mismatched state is rejected and left untouched.
 4. Start the old broker locked, unlock, and run one fixed Action.
 
 Never point an older binary at state already opened by a newer incompatible
-version. Never point a v9 binary at v5/v6/v7/v8 or v1 state.
+version. Never point a v9 binary at v1, v4–v8, or any other pre-v9 state.
 
 ## Uninstall
 

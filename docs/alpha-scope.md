@@ -68,7 +68,7 @@ public issue tracker and private security channel; no SLA, 24x7 coverage, or
 guaranteed response time is offered.
 
 `v2.0.0-alpha.2` state is vault schema v9. There is no reader or migration for
-v1, v5, v6, v7, or v8. Follow [installation.md](installation.md): make and verify
+any other format, including v1 and v4–v8. Follow [installation.md](installation.md): make and verify
 a backup with the old binaries, keep those binaries and the old directory,
 initialize the new version in an empty path, and recreate Admin
 configuration. The old backup restores only with the matching old binaries; it
