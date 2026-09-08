@@ -17,6 +17,70 @@ def canonical(value: object) -> bytes:
     ).encode()
 
 
+def _supports_rawin(binary: str) -> bool:
+    try:
+        help_text = subprocess.run(
+            [binary, "pkeyutl", "-help"],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        ).stdout
+    except FileNotFoundError:
+        return False
+    return "-rawin" in help_text
+
+
+def _brew_openssl3():
+    try:
+        prefix = subprocess.run(
+            ["brew", "--prefix", "openssl@3"],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except FileNotFoundError:
+        return None
+    if prefix.returncode != 0:
+        return None
+    binary = str(pathlib.Path(prefix.stdout.strip()) / "bin" / "openssl")
+    return binary if pathlib.Path(binary).is_file() else None
+
+
+_OPENSSL_BIN = None
+
+
+def openssl_bin() -> str:
+    """Prefer OpenSSL 3. macOS 14 /usr/bin/openssl is LibreSSL and lacks -rawin."""
+    global _OPENSSL_BIN
+    if _OPENSSL_BIN is not None:
+        return _OPENSSL_BIN
+    candidates = []
+    explicit = os.environ.get("OPENSSL_BIN")
+    if explicit:
+        candidates.append(explicit)
+    brew_openssl = _brew_openssl3()
+    if brew_openssl:
+        candidates.append(brew_openssl)
+    candidates.append("openssl")
+    seen = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if _supports_rawin(candidate):
+            _OPENSSL_BIN = candidate
+            return candidate
+    raise SystemExit(
+        "OpenSSL 3 with pkeyutl -rawin is required; macOS LibreSSL /usr/bin/openssl is not enough"
+    )
+
+
+def openssl_cmd(*args: str) -> list[str]:
+    return [openssl_bin(), *args]
+
+
 def ensure_identity(
     key_dir: pathlib.Path, key_name: str, id_name: str
 ) -> tuple[pathlib.Path, str, str]:
@@ -25,7 +89,7 @@ def ensure_identity(
     id_path = key_dir / id_name
     if not key_path.exists():
         subprocess.run(
-            ["openssl", "genpkey", "-algorithm", "ED25519", "-out", str(key_path)],
+            openssl_cmd("genpkey", "-algorithm", "ED25519", "-out", str(key_path)),
             check=True,
             stdout=subprocess.DEVNULL,
         )
@@ -34,7 +98,7 @@ def ensure_identity(
         os.chmod(id_path, 0o600)
     identity_id = id_path.read_text(encoding="ascii").strip()
     public_der = subprocess.run(
-        ["openssl", "pkey", "-in", str(key_path), "-pubout", "-outform", "DER"],
+        openssl_cmd("pkey", "-in", str(key_path), "-pubout", "-outform", "DER"),
         check=True,
         stdout=subprocess.PIPE,
     ).stdout
@@ -49,8 +113,7 @@ def sign_bytes(key_path: pathlib.Path, message: bytes) -> str:
         signature_path = pathlib.Path(temp_dir) / "signature"
         message_path.write_bytes(message)
         subprocess.run(
-            [
-                "openssl",
+            openssl_cmd(
                 "pkeyutl",
                 "-sign",
                 "-rawin",
@@ -60,7 +123,7 @@ def sign_bytes(key_path: pathlib.Path, message: bytes) -> str:
                 str(message_path),
                 "-out",
                 str(signature_path),
-            ],
+            ),
             check=True,
             stdout=subprocess.DEVNULL,
         )
