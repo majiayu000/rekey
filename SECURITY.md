@@ -2,7 +2,9 @@
 
 ## Supported version
 
-Only `2.0.0-alpha.1` is supported until superseded by a later prerelease. The
+The current supported prerelease is `2.0.0-alpha.2` (vault schema v9).
+`2.0.0-alpha.1` is a historical v5 archive: keep its binaries for rollback only;
+there is no security backport, dual-format support, or migration into v9. The
 project provides best-effort fixes and makes no SLA or response-time promise.
 
 ## Report a vulnerability privately

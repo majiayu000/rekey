@@ -1,19 +1,19 @@
 # Install, upgrade, service, and uninstall
 
-The only supported public Alpha is still `v2.0.0-alpha.1` (vault schema v5).
-It ships two archives: macOS 14 arm64 and Ubuntu 24.04 x86_64. See
+This file describes the `v2.0.0-alpha.2` archive (vault schema v9). It ships
+two archives: macOS 14 arm64 and Ubuntu 24.04 x86_64. See
 [the platform matrix](alpha-scope.md) before installing.
 
-Development head and the frozen `v2.0.0-alpha.2` candidate use vault schema v9.
-That later tag is not implied by these install steps until it exists. There is
-no in-place upgrade from v5–v8.
+Download the GitHub Release of the same name after it is published. Until that
+Release's public-URL smoke passes, `v2.0.0-alpha.1` remains the last completed
+public download (schema v5). There is no in-place upgrade from v5–v8.
 
 ## Download and verify
 
 Set the version and target for your platform:
 
 ```bash
-REKEY_VERSION=v2.0.0-alpha.1
+REKEY_VERSION=v2.0.0-alpha.2
 REKEY_TARGET=aarch64-apple-darwin       # macOS 14 arm64
 # REKEY_TARGET=x86_64-unknown-linux-gnu # Ubuntu 24.04 x86_64
 
@@ -45,7 +45,7 @@ rekey --version
 rekeyd --version
 ```
 
-Both commands must print `2.0.0-alpha.1`. Rekey finds `rekeyd` beside `rekey`
+Both commands must print `2.0.0-alpha.2`. Rekey finds `rekeyd` beside `rekey`
 or on `PATH`; install both into the same directory.
 
 ## Initialize
@@ -130,8 +130,10 @@ runtime-directory layout documented in the repository file
 the state directory or Admin socket group-writable.
 
 Linux `rekey agent-run` additionally needs `bubblewrap` and that same disjoint
-Agent socket. It denies IP egress for one launched command. It is not macOS
-G2 and is not a substitute for the Docker attack harness.
+Agent socket. Ubuntu black-box evidence is limited to the harnessed child
+failing public TCP/UDP probes while still using `agent.sock`. It is not macOS
+G2, not Adversarially Verified isolation, and not a substitute for the Docker
+attack harness.
 
 On Ubuntu 24.04 and later, AppArmor restricts unprivileged user namespaces.
 `bwrap --unshare-user --unshare-net` then fails with `RTM_NEWADDR: Operation
@@ -149,9 +151,9 @@ sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
 ## Cross-version install and rollback
 
 These steps apply whenever the new archive uses a different vault format,
-including `v2.0.0-alpha.1` (schema v5) to development head or `v2.0.0-alpha.2`
-(schema v9). Release notes that say the format is unchanged may replace only
-the two binaries; **do not treat that as the path from alpha.1 to v9**.
+including `v2.0.0-alpha.1` (schema v5) to `v2.0.0-alpha.2` (schema v9).
+Release notes that say the format is unchanged may replace only the two
+binaries; **do not treat that as the path from alpha.1 to v9**.
 
 ### Keep the old environment
 

@@ -1247,11 +1247,11 @@ cgroup 或 P-10 connector sandbox。
 | Alpha 文档 | 完成（含 erratum） | 用户、安装、运维、发行、开源治理和支持范围已完成；archive 内嵌发布前 Matrix 的状态差异由公开 Release erratum 和当前仓库矩阵明确衔接 |
 | 可公开 Alpha | 是 | [v2.0.0-alpha.1](https://github.com/majiayu000/rekey/releases/tag/v2.0.0-alpha.1) 已公开；双平台 fresh-install、attestation 和 public-URL smoke 通过 |
 | H 安全与可靠性补强 | 完成 | H-01～H-08 已以持续 fuzz、真实 ENOSPC/文件系统故障注入、边界文档、公开双平台发行证据、供应链取舍以及固定主机 1,800 秒性能/容量/soak 证据全部关闭 |
-| P 后续产品能力 | 进行中 | P-01～P-07B 与 P-09 均已 merge；P-09 Ubuntu black-box `PASS`（`9565f9e`）。尚未进入公开 Alpha。其余 P-07 provider 暂停；P-08 与 P-10 未开始。下一版 Alpha 从 HEAD 打包即含 Vault 实现（Shape A），文档省略不是裁剪 |
+| P 后续产品能力 | 进行中 | P-01～P-07B 与 P-09 均已 merge；P-09 Ubuntu black-box `PASS`（`9565f9e`）。`v2.0.0-alpha.2` 归档成员资格已写入 Matrix `Release`；公开 GitHub Release 仍待 tag。其余 P-07 provider 暂停；P-08 与 P-10 未开始。Vault 按 Shape A HEAD cut 进入该归档 |
 | 可宣称通用 G2 | 否 | 只有有界 Linux reference；默认仍是 G1 |
 | 可宣称通用 Connector | 否 | 只有 fixed HTTPS Action 和 closed GitHub App profile |
 | 企业就绪 | 否 | 控制面、身份、HA/DR、合规、运营和商业门槛均未完成 |
 
 M、A、H、P-01 至 P-07B 与 P-09 已经关闭（P-09 merge `9565f9e`）。下一版公开
-Alpha 不得回写 `v2.0.0-alpha.1`。从当前 head 打包默认带上 Vault 实现（Shape A）；
+Alpha 不得回写 `v2.0.0-alpha.1`。`v2.0.0-alpha.2` 从 head 打包带上 Vault 实现（Shape A）；
 OSS 互通与 Shape B 裁剪仍按独立 spec/PR 推进。

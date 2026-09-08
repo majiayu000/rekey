@@ -1,6 +1,6 @@
 # Rekey Credential Authority v2 Foundation 实施规格
 
-状态：Implemented and published as G1 public Alpha `v2.0.0-alpha.1`; H/P/E gates remain open
+状态：Implemented as G1 public Alpha; current archive `v2.0.0-alpha.2` is vault schema v9; historical `v2.0.0-alpha.1` was v5; H/P/E gates remain open
 日期：2026-08-28
 范围：P0 本地 Credential Authority、Broker、Admin/Agent IPC、固定 HTTP Action 纵向切片
 架构类型：安全敏感的长运行 Runtime + 本地服务 + CLI
@@ -562,8 +562,8 @@ PRAGMA busy_timeout = 5000;
 
 当前开发实现先由 P-04 将 durable schema 提升为 v7，再由 P-07A 为新的
 `vault-kv-v2-source` credential kind 提升为 v8，最后由 P-07B 为
-`vault-dynamic-source` 提升为 v9；已发布的 `v2.0.0-alpha.1` 制品仍使用 v5。
-v9 不提供 v8/v7/v6/v5 migration 或 compatibility reader。
+`vault-dynamic-source` 提升为 v9。当前 archive `v2.0.0-alpha.2` 只接受 v9；
+历史 `v2.0.0-alpha.1` 制品是 v5。v9 不提供 v8/v7/v6/v5 migration 或 compatibility reader。
 
 ~~~sql
 CREATE TABLE vault_header (
@@ -1640,8 +1640,8 @@ root select 视作 fault。若 root 已取得 actor 的 completed `JoinHandle` r
 state dir 继续明确拒绝，不提供迁移或兼容读取。
 随后 credential lifecycle seal 将 foundation format bump 到 5；P-03 的 durable policy
 又由 P-04 bump 到 7、P-07A bump 到 8、P-07B bump 到 9。当前实现只接受 v9，不保留
-v4/v5/v6/v7/v8 兼容读取或迁移入口；
-已发布的 `v2.0.0-alpha.1` 制品仍是 v5。
+v4/v5/v6/v7/v8 兼容读取或迁移入口；当前 archive `v2.0.0-alpha.2` 是 v9，历史
+`v2.0.0-alpha.1` 制品是 v5。
 
 首个 P2 垂直切片是一个封闭的 GitHub App Installation profile，不创建通用
 connector registry、provider SDK、控制面或 Agent 可调用的签名/换票接口：

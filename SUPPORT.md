@@ -1,7 +1,8 @@
 # Support
 
-Rekey `2.0.0-alpha.1` is an experimental public Alpha with best-effort
-community support. There is no SLA, 24x7 response, guaranteed fix time,
+Rekey `2.0.0-alpha.2` is an experimental public Alpha with best-effort
+community support. `2.0.0-alpha.1` is a historical v5 archive for rollback with
+matching old binaries only. There is no SLA, 24x7 response, guaranteed fix time,
 commercial support, or enterprise escalation path.
 
 Before opening an issue, verify the supported platform in

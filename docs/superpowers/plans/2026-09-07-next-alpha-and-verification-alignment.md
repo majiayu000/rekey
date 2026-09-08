@@ -1,9 +1,10 @@
 # Next public Alpha and verification alignment
 
-> Status: adopted candidate scope for `v2.0.0-alpha.2`; does not change
-> `v2.0.0-alpha.1` support or fill Matrix `Release` cells
+> Status: `v2.0.0-alpha.2` release-prep records archive membership in Matrix
+> `Release` and `docs/alpha-scope.md`. Public GitHub Release / public-URL smoke
+> remain post-tag. Historical `v2.0.0-alpha.1` is a v5 rollback archive.
 >
-> Date: 2026-09-07
+> Date: 2026-09-07; status updated 2026-09-08
 >
 > Depends on: Feature Truth Matrix, `docs/alpha-scope.md`, P-09 merge
 > `9565f9e` / [PR #39](https://github.com/majiayu000/rekey/pull/39)
@@ -12,14 +13,15 @@
 
 Development head already has password lifecycle, local audit export, signed
 policy/approvals, workload identity, Vault KV v2 / dynamic lease sources, and
-a Linux `agent-run` launcher. The only public archive is still
+a Linux `agent-run` launcher. The last completed public download is still
 [`v2.0.0-alpha.1`](https://github.com/majiayu000/rekey/releases/tag/v2.0.0-alpha.1)
-(vault schema v5). Users who download that archive cannot use those later
-capabilities. This file is the candidate list for a later Alpha so
-implementation, verification, and the downloadable version stay aligned.
+(vault schema v5) until the `v2.0.0-alpha.2` GitHub Release's public-URL smoke
+passes. This file was the candidate list so implementation, verification, and the
+downloadable version stay aligned.
 
-It is not a release checklist and does not move any Feature Truth Matrix
-`Release` cell.
+Archive membership for `v2.0.0-alpha.2` is now recorded in `docs/alpha-scope.md`
+and the Feature Truth Matrix `Release` column. That is not GitHub Release
+success.
 
 ## Hard gates before cutting a later Alpha
 
@@ -30,9 +32,8 @@ It is not a release checklist and does not move any Feature Truth Matrix
    commit; signed squash merge and post-main CI pass.
 3. Dual-platform attested archives, native launchd/systemd fresh-install, and
    public-URL smoke follow the `v2.0.0-alpha.1` release shape.
-4. The published `docs/alpha-scope.md` keeps `v2.0.0-alpha.1` as the only
-   public archive until tag time. The frozen candidate table in that file is
-   not a download or support promise.
+4. `[x]` `docs/alpha-scope.md` now describes the `v2.0.0-alpha.2` archive.
+   Public download still requires the tagged GitHub Release.
 5. Vault packaging is decided by the section below *before* the tag. Omitting
    Vault from notes while shipping HEAD binaries is not a decision.
 
@@ -136,7 +137,7 @@ G1. Shipping `agent-run` does not change that default.
 | HashiCorp Vault OSS protocol interop | KV/dynamic are mock-HTTP today; does not hold back Shape A | yes, Vault OSS spec |
 | Optional public-HTTPS Vault dogfood | Field Validated analog of `scripts/dogfood-github.sh` | same spec; not CI secrets |
 | Shape B Vault cut (only if product refuses Shape A) | must name CLI/IPC/schema/connector surfaces | yes, before the tag |
-| Alpha.2 release engineering | align archive, schema v9, Matrix `Release` cells, Shape A notes | release PR |
+| Alpha.2 release engineering | archive membership recorded in release-prep; public GitHub Release pending tag | this PR |
 
 ## Honest product claims after a later Alpha
 
