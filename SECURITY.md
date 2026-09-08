@@ -2,10 +2,15 @@
 
 ## Supported version
 
-The current supported prerelease is `2.0.0-alpha.2` (vault schema v9).
-`2.0.0-alpha.1` is a historical v5 archive: keep its binaries for rollback only;
-there is no security backport, dual-format support, or migration into v9. The
-project provides best-effort fixes and makes no SLA or response-time promise.
+Until the `v2.0.0-alpha.2` GitHub Release exists and its public-URL smoke has
+passed, `2.0.0-alpha.1` remains the last completed public download (schema v5)
+and the supported prerelease.
+
+This archive is `2.0.0-alpha.2` (vault schema v9). After that Release is
+published, it is the current supported prerelease. `2.0.0-alpha.1` then
+becomes a historical v5 archive: keep its binaries for rollback only; there is
+no security backport, dual-format support, or migration into v9. The project
+provides best-effort fixes and makes no SLA or response-time promise.
 
 ## Report a vulnerability privately
 

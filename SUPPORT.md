@@ -1,8 +1,11 @@
 # Support
 
-Rekey `2.0.0-alpha.2` is an experimental public Alpha with best-effort
-community support. `2.0.0-alpha.1` is a historical v5 archive for rollback with
-matching old binaries only. There is no SLA, 24x7 response, guaranteed fix time,
+Until the `v2.0.0-alpha.2` GitHub Release exists and public-URL smoke has
+passed, reproduce against the last completed public download
+`v2.0.0-alpha.1`. After that Release is published, `2.0.0-alpha.2` is the
+experimental public Alpha with best-effort community support, and
+`2.0.0-alpha.1` is a historical v5 archive for rollback with matching old
+binaries only. There is no SLA, 24x7 response, guaranteed fix time,
 commercial support, or enterprise escalation path.
 
 Before opening an issue, verify the supported platform in
