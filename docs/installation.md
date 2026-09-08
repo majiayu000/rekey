@@ -4,9 +4,10 @@ This file describes the `v2.0.0-alpha.2` archive (vault schema v9). It ships
 two archives: macOS 14 arm64 and Ubuntu 24.04 x86_64. See
 [the platform matrix](alpha-scope.md) before installing.
 
-Download the GitHub Release of the same name after it is published. Until that
-Release's public-URL smoke passes, `v2.0.0-alpha.1` remains the last completed
-public download (schema v5). There is no in-place upgrade from any pre-v9
+The tagged workflow publishes a prerelease before public-URL smoke. Install
+`v2.0.0-alpha.2` from GitHub only after that smoke succeeds; a smoke failure
+withdraws the Release to draft. Until then, `v2.0.0-alpha.1` remains the last
+completed public download (schema v5). There is no in-place upgrade from any pre-v9
 format, including v1 and v4–v8.
 
 ## Download and verify

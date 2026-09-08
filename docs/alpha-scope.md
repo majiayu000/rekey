@@ -3,8 +3,9 @@
 Version: `2.0.0-alpha.2`
 
 This file describes the `v2.0.0-alpha.2` archive (vault schema v9, Shape A).
-A version string here is archive membership. The GitHub Release of the same
-name exists only after the tagged release workflow's public-URL smoke passes.
+A version string here is archive membership. The tagged workflow publishes a
+prerelease before public-URL smoke. Treat that Release as the completed public
+download only after smoke succeeds; a smoke failure withdraws it to draft.
 Until then, `v2.0.0-alpha.1` remains the last completed public download.
 
 ## Distribution and platform matrix

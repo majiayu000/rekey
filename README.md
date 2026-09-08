@@ -7,9 +7,10 @@ broker process; the CLI, agents, and everything they spawn talk to it only
 over two permission-separated Unix sockets.
 
 > Status: `2.0.0-alpha.2` is the current Alpha archive (vault schema v9,
-> Shape A). Download the GitHub Release of the same name after it is published;
-> until that Release's public-URL smoke passes, `v2.0.0-alpha.1` remains the
-> last completed public download (schema v5). There is no in-place upgrade
+> Shape A). The tagged workflow publishes a prerelease before public-URL
+> smoke. Treat `v2.0.0-alpha.2` as the completed public download only after that
+> smoke succeeds; until then, `v2.0.0-alpha.1` remains the last completed public
+> download (schema v5). There is no in-place upgrade
 > from alpha.1. The default product is G1 and is not G2. Credentials never appear
 > in agent-facing APIs, process arguments, environment variables, logs, or audit
 > records. Same-user `ptrace`, process memory, and filesystem access are out of

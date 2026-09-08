@@ -2,9 +2,10 @@
 
 ## Supported version
 
-Until the `v2.0.0-alpha.2` GitHub Release exists and its public-URL smoke has
-passed, `2.0.0-alpha.1` remains the last completed public download (schema v5)
-and the supported prerelease.
+Until public-URL smoke for `v2.0.0-alpha.2` succeeds, `2.0.0-alpha.1` remains
+the last completed public download (schema v5) and the supported prerelease.
+The tagged workflow publishes a prerelease before that smoke; a smoke failure
+withdraws it to draft.
 
 This archive is `2.0.0-alpha.2` (vault schema v9). After that public-URL smoke
 succeeds, it is the current supported prerelease. `2.0.0-alpha.1` then
