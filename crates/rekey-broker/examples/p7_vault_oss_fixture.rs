@@ -158,11 +158,14 @@ fn append_trace(path: &Path, line: &str) -> std::io::Result<()> {
     writeln!(file, "{line}")
 }
 
+fn bearer_from(req: &HttpRequest) -> Option<&str> {
+    req.headers
+        .get("authorization")
+        .and_then(|value| value.strip_prefix("Bearer "))
+}
+
 fn bearer_ok(req: &HttpRequest, expected: &str) -> bool {
-    let Some(value) = req.headers.get("authorization") else {
-        return false;
-    };
-    let Some(token) = value.strip_prefix("Bearer ") else {
+    let Some(token) = bearer_from(req) else {
         return false;
     };
     if expected == "*" {
@@ -172,10 +175,18 @@ fn bearer_ok(req: &HttpRequest, expected: &str) -> bool {
     }
 }
 
+fn write_seen(path: &Path, req: &HttpRequest) {
+    let token = bearer_from(req).unwrap_or("");
+    if std::fs::write(path, token).is_err() {
+        eprintln!("p7oss cannot record seen bearer");
+    }
+}
+
 async fn serve_action(
     listener: TcpListener,
     acceptor: TlsAcceptor,
     expected_path: PathBuf,
+    seen_path: PathBuf,
     trace_path: PathBuf,
 ) {
     loop {
@@ -184,6 +195,7 @@ async fn serve_action(
         };
         let acceptor = acceptor.clone();
         let expected_path = expected_path.clone();
+        let seen_path = seen_path.clone();
         let trace_path = trace_path.clone();
         tokio::spawn(async move {
             let Ok(mut tls) = acceptor.accept(stream).await else {
@@ -192,6 +204,7 @@ async fn serve_action(
             let Ok(req) = read_request(&mut tls).await else {
                 return;
             };
+            write_seen(&seen_path, &req);
             let expected = std::fs::read_to_string(&expected_path)
                 .unwrap_or_default()
                 .trim()
@@ -231,6 +244,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .parse()?;
     let vault_ca = Arc::new(std::fs::read(args.next().ok_or("missing vault CA DER")?)?);
     let expected_path = PathBuf::from(args.next().ok_or("missing expected-bearer path")?);
+    let seen_path = PathBuf::from(args.next().ok_or("missing seen-bearer path")?);
     if args.next().is_some() {
         return Err("unexpected argument".into());
     }
@@ -242,6 +256,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         listener,
         TlsAcceptor::from(Arc::new(server)),
         expected_path,
+        seen_path,
         trace_path,
     ));
     std::fs::write(&ready_path, format!("{}\n", action_addr.port()))?;

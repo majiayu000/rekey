@@ -25,6 +25,10 @@ command -v openssl >/dev/null || {
   echo "p7-vault-oss-interop requires openssl" >&2
   exit 1
 }
+command -v curl >/dev/null || {
+  echo "p7-vault-oss-interop requires curl" >&2
+  exit 1
+}
 command -v unzip >/dev/null || {
   echo "p7-vault-oss-interop requires unzip" >&2
   exit 1
@@ -49,6 +53,8 @@ STATE="$WORKDIR/state"
 READY="$WORKDIR/ready"
 TRACE="$WORKDIR/trace"
 EXPECTED="$WORKDIR/expected-bearer"
+SEEN="$WORKDIR/seen-bearer"
+VAULT_ADDR=""
 PROFILE_KV_ONE="$WORKDIR/profile-kv-one.json"
 PROFILE_KV_TWO="$WORKDIR/profile-kv-two.json"
 PROFILE_KV_MISSING="$WORKDIR/profile-kv-missing.json"
@@ -92,6 +98,51 @@ trap 'failure "$LINENO"' ERR
 
 json_field() {
   python3 -c 'import json,sys; print(json.load(sys.stdin)[sys.argv[1]])' "$1"
+}
+
+vault_cli() {
+  env -u VAULT_TOKEN \
+    HOME="$WORKDIR" \
+    VAULT_ADDR="$VAULT_ADDR" \
+    VAULT_CACERT="$CA_PEM" \
+    VAULT_TLS_SERVER_NAME="vault.test.local" \
+    "$VAULT_BIN" "$@"
+}
+
+execute_meta_status() {
+  python3 -c 'import json,sys; print(json.JSONDecoder().raw_decode(open(sys.argv[1]).read())[0]["upstream_status"])' "$1"
+}
+
+issued_row() {
+  docker exec "$PG_CONTAINER" psql -U vault -d postgres -Atc "$1"
+}
+
+assert_selected_password() {
+  local seen issued username
+  seen="$(tr -d '\n' <"$SEEN")"
+  issued="$(issued_row "SELECT p FROM rekey_issued ORDER BY ctid DESC LIMIT 1")"
+  username="$(issued_row "SELECT n FROM rekey_issued ORDER BY ctid DESC LIMIT 1")"
+  [[ -n "$seen" && -n "$issued" && "$seen" == "$issued" && "$seen" != "$username" ]]
+}
+
+issue_then_revoke_token() {
+  local policy=$1
+  local dest=$2
+  vault_cli token create -policy="$policy" -ttl=5m -format=json >"$WORKDIR/tmp-token.json"
+  chmod 0600 "$WORKDIR/tmp-token.json"
+  local accessor
+  accessor="$(python3 - "$WORKDIR/tmp-token.json" "$dest" <<'PY'
+import json, pathlib, sys
+data = json.loads(pathlib.Path(sys.argv[1]).read_text())
+dest = pathlib.Path(sys.argv[2])
+dest.write_text(data["auth"]["client_token"] + "\n")
+dest.chmod(0o600)
+print(data["auth"]["accessor"])
+PY
+)"
+  chmod 0600 "$dest"
+  vault_cli token revoke -accessor "$accessor" >/dev/null
+  rm -f "$WORKDIR/tmp-token.json"
 }
 
 install_vault() {
@@ -147,14 +198,12 @@ listener "tcp" {
   tls_key_file  = "${WORKDIR}/leaf.key"
 }
 EOF
-  "$VAULT_BIN" server -config "$WORKDIR/vault.hcl" >"$WORKDIR/vault.log" 2>&1 &
+  env -u VAULT_TOKEN "$VAULT_BIN" server -config "$WORKDIR/vault.hcl" >"$WORKDIR/vault.log" 2>&1 &
   VAULT_PID=$!
-  export VAULT_ADDR="https://127.0.0.1:${port}"
-  export VAULT_CACERT="$CA_PEM"
-  export VAULT_TLS_SERVER_NAME="vault.test.local"
+  VAULT_ADDR="https://127.0.0.1:${port}"
   for _ in $(seq 1 150); do
     status_rc=0
-    "$VAULT_BIN" status >/dev/null 2>&1 || status_rc=$?
+    vault_cli status >/dev/null 2>&1 || status_rc=$?
     if [[ "$status_rc" -eq 0 || "$status_rc" -eq 2 ]]; then
       return 0
     fi
@@ -165,26 +214,39 @@ EOF
 }
 
 init_vault() {
-  local init
-  init="$("$VAULT_BIN" operator init -key-shares=1 -key-threshold=1 -format=json)"
-  local unseal
-  unseal="$(printf '%s\n' "$init" | python3 -c 'import json,sys; print(json.load(sys.stdin)["unseal_keys_b64"][0])')"
-  printf '%s\n' "$init" | python3 -c 'import json,sys; print(json.load(sys.stdin)["root_token"])' >"$WORKDIR/root-token"
-  chmod 0600 "$WORKDIR/root-token"
-  "$VAULT_BIN" operator unseal "$unseal" >/dev/null
-  export VAULT_TOKEN
-  VAULT_TOKEN="$(cat "$WORKDIR/root-token")"
+  vault_cli operator init -key-shares=1 -key-threshold=1 -format=json >"$WORKDIR/init.json"
+  chmod 0600 "$WORKDIR/init.json"
+  local port="${VAULT_ADDR##*:}"
+  python3 - "$WORKDIR/init.json" "$WORKDIR/.vault-token" "$WORKDIR/unseal-body.json" <<'PY'
+import json, pathlib, sys
+data = json.loads(pathlib.Path(sys.argv[1]).read_text())
+token = pathlib.Path(sys.argv[2])
+token.write_text(data["root_token"] + "\n")
+token.chmod(0o600)
+body = pathlib.Path(sys.argv[3])
+body.write_text(json.dumps({"key": data["unseal_keys_b64"][0]}))
+body.chmod(0o600)
+PY
+  curl -fsS \
+    --cacert "$CA_PEM" \
+    --resolve "vault.test.local:${port}:127.0.0.1" \
+    -H "Content-Type: application/json" \
+    --data-binary @"$WORKDIR/unseal-body.json" \
+    "https://vault.test.local:${port}/v1/sys/unseal" >"$WORKDIR/unseal.json"
+  python3 -c 'import json,sys; data=json.load(open(sys.argv[1])); assert data.get("sealed") is False, data' \
+    "$WORKDIR/unseal.json"
+  rm -f "$WORKDIR/init.json" "$WORKDIR/unseal-body.json" "$WORKDIR/unseal.json"
 }
 
 setup_kv() {
-  "$VAULT_BIN" secrets enable -path=secret kv-v2 >/dev/null
+  vault_cli secrets enable -path=secret kv-v2 >/dev/null
   local i
   for i in $(seq 1 6); do
-    "$VAULT_BIN" kv put secret/agents/github token="placeholder-${i}" >/dev/null
+    vault_cli kv put secret/agents/github token="placeholder-${i}" >/dev/null
   done
-  "$VAULT_BIN" kv put secret/agents/github token="$RESOLVED_ONE" >/dev/null
-  "$VAULT_BIN" kv put secret/agents/github token="$RESOLVED_TWO" >/dev/null
-  "$VAULT_BIN" kv put secret/agents/missing other="not-the-token" >/dev/null
+  vault_cli kv put secret/agents/github token="$RESOLVED_ONE" >/dev/null
+  vault_cli kv put secret/agents/github token="$RESOLVED_TWO" >/dev/null
+  vault_cli kv put secret/agents/missing other="not-the-token" >/dev/null
 }
 
 start_postgres() {
@@ -208,25 +270,37 @@ start_postgres() {
 
 setup_database_engine() {
   local pg_port=$1
-  "$VAULT_BIN" secrets enable database >/dev/null
-  "$VAULT_BIN" write database/config/rekey \
+  vault_cli secrets enable database >/dev/null
+  vault_cli write database/config/rekey \
     plugin_name=postgresql-database-plugin \
     allowed_roles=agent-api-token \
     connection_url="postgresql://{{username}}:{{password}}@127.0.0.1:${pg_port}/postgres?sslmode=disable" \
     username="vault" \
     password="$PG_PASSWORD" >/dev/null
-  "$VAULT_BIN" write database/roles/agent-api-token \
-    db_name=rekey \
-    creation_statements="CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}';" \
-    default_ttl=60 \
-    max_ttl=60 >/dev/null
+  python3 - "$WORKDIR/db-role.json" <<'PY'
+import json, pathlib, sys
+pathlib.Path(sys.argv[1]).write_text(json.dumps({
+    "db_name": "rekey",
+    "creation_statements": [
+        "CREATE TABLE IF NOT EXISTS rekey_issued (n text, p text);",
+        "INSERT INTO rekey_issued (n, p) VALUES ('{{name}}', '{{password}}');",
+        "CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}';",
+    ],
+    "default_ttl": 60,
+    "max_ttl": 60,
+}))
+PY
+  vault_cli write database/roles/agent-api-token @"$WORKDIR/db-role.json" >/dev/null
+  rm -f "$WORKDIR/db-role.json"
 }
 
 start_fixture() {
   local ready=$1
   : >"$TRACE"
+  : >"$SEEN"
+  chmod 0600 "$SEEN"
   printf '%s\n' "$2" >"$EXPECTED"
-  "$FIXTURE" "$STATE" "$ready" "$TRACE" "127.0.0.1:${VAULT_PORT}" "$CA_DER" "$EXPECTED" \
+  env -u VAULT_TOKEN "$FIXTURE" "$STATE" "$ready" "$TRACE" "127.0.0.1:${VAULT_PORT}" "$CA_DER" "$EXPECTED" "$SEEN" \
     >"$WORKDIR/broker.out" 2>"$WORKDIR/broker.err" &
   BROKER_PID=$!
   for _ in $(seq 1 400); do
@@ -272,7 +346,7 @@ PY
 }
 
 leases_empty() {
-  if "$VAULT_BIN" list -format=json sys/leases/lookup/database/creds/agent-api-token \
+  if vault_cli list -format=json sys/leases/lookup/database/creds/agent-api-token \
     >"$WORKDIR/leases.json" 2>"$WORKDIR/leases.err"; then
     echo "expected no outstanding database leases" >&2
     cat "$WORKDIR/leases.json" >&2
@@ -281,22 +355,41 @@ leases_empty() {
 }
 
 ROOT_TOKEN=""
+REVOKED_KV=""
+REVOKED_DYN=""
 install_vault
 make_tls
 VAULT_PORT="$(free_port)"
 PG_PORT="$(free_port)"
 start_vault "$VAULT_PORT"
 init_vault
-ROOT_TOKEN="$(cat "$WORKDIR/root-token")"
+ROOT_TOKEN="$(tr -d '\n' <"$WORKDIR/.vault-token")"
 setup_kv
 start_postgres "$PG_PORT"
 setup_database_engine "$PG_PORT"
 
+vault_cli policy write p7oss-kv - >/dev/null <<'EOF'
+path "secret/data/agents/*" {
+  capabilities = ["read"]
+}
+EOF
+vault_cli policy write p7oss-dyn - >/dev/null <<'EOF'
+path "database/creds/agent-api-token" {
+  capabilities = ["read"]
+}
+EOF
+issue_then_revoke_token p7oss-kv "$WORKDIR/revoked-kv-token"
+issue_then_revoke_token p7oss-dyn "$WORKDIR/revoked-dyn-token"
+REVOKED_KV="$(tr -d '\n' <"$WORKDIR/revoked-kv-token")"
+REVOKED_DYN="$(tr -d '\n' <"$WORKDIR/revoked-dyn-token")"
+
 python3 - "$PROFILE_KV_ONE" "$PROFILE_KV_TWO" "$PROFILE_KV_MISSING" \
-  "$PROFILE_KV_BAD_VERSION" "$PROFILE_KV_BAD_TOKEN" "$ROOT_TOKEN" \
-  "$RESOLVED_ONE" "$RESOLVED_TWO" <<'PY'
+  "$PROFILE_KV_BAD_VERSION" "$PROFILE_KV_BAD_TOKEN" \
+  "$WORKDIR/.vault-token" "$WORKDIR/revoked-kv-token" <<'PY'
 import json, pathlib, sys
-one, two, missing, bad_ver, bad_token, token, resolved_one, resolved_two = sys.argv[1:]
+one, two, missing, bad_ver, bad_token, token_path, revoked_path = sys.argv[1:]
+token = pathlib.Path(token_path).read_text().strip()
+revoked = pathlib.Path(revoked_path).read_text().strip()
 def kv(version, key="token", path="agents/github", vault_token=None):
     return {"credential_type":"vault-kv-v2-source-v1","origin":"https://vault.test.local",
             "mount":"secret","path":path,"key":key,"version":int(version),
@@ -305,16 +398,19 @@ pathlib.Path(one).write_text(json.dumps(kv(7)))
 pathlib.Path(two).write_text(json.dumps(kv(8)))
 pathlib.Path(missing).write_text(json.dumps(kv(1, path="agents/missing")))
 pathlib.Path(bad_ver).write_text(json.dumps(kv(99)))
-pathlib.Path(bad_token).write_text(json.dumps(kv(7, vault_token="hvs.invalid-oss-token")))
+pathlib.Path(bad_token).write_text(json.dumps(kv(7, vault_token=revoked)))
 PY
-python3 - "$PROFILE_DYN" "$PROFILE_DYN_BAD" "$ROOT_TOKEN" <<'PY'
+python3 - "$PROFILE_DYN" "$PROFILE_DYN_BAD" \
+  "$WORKDIR/.vault-token" "$WORKDIR/revoked-dyn-token" <<'PY'
 import json, pathlib, sys
-one, bad, token = sys.argv[1:]
+one, bad, token_path, revoked_path = sys.argv[1:]
+token = pathlib.Path(token_path).read_text().strip()
+revoked = pathlib.Path(revoked_path).read_text().strip()
 def dyn(vault_token):
     return {"credential_type":"vault-dynamic-source-v1","origin":"https://vault.test.local",
             "mount":"database","role":"agent-api-token","key":"password","vault_token":vault_token}
 pathlib.Path(one).write_text(json.dumps(dyn(token)))
-pathlib.Path(bad).write_text(json.dumps(dyn("hvs.invalid-oss-token")))
+pathlib.Path(bad).write_text(json.dumps(dyn(revoked)))
 PY
 printf '%s' '{"operation":"bounded"}' >"$REQUEST_BODY"
 
@@ -379,17 +475,31 @@ printf '%s\n' "$RESOLVED_TWO" >"$EXPECTED"
 grep -q '"result":"p7oss-ok"' "$WORKDIR/kv-v2.out"
 [[ "$(grep -c '^p7oss.action.ok$' "$TRACE")" == "2" ]]
 
-rg -F "$ROOT_TOKEN" "$WORKDIR/kv-v1.out" "$WORKDIR/kv-v2.out" && {
+rg -F "$ROOT_TOKEN" "$WORKDIR/kv-v1.out" "$WORKDIR/kv-v2.out" "$WORKDIR/wrong.err" \
+  "$WORKDIR/missing.err" "$WORKDIR/bad-token.err" && {
   echo "vault token reached agent output" >&2
   exit 1
 }
-rg -F "$RESOLVED_ONE" "$WORKDIR/kv-v1.out" "$WORKDIR/kv-v2.out" && {
+rg -F "$RESOLVED_ONE" "$WORKDIR/kv-v1.out" "$WORKDIR/kv-v2.out" "$WORKDIR/wrong.err" \
+  "$WORKDIR/missing.err" "$WORKDIR/bad-token.err" && {
   echo "resolved KV value reached agent output" >&2
+  exit 1
+}
+rg -F "$RESOLVED_TWO" "$WORKDIR/kv-v1.out" "$WORKDIR/kv-v2.out" "$WORKDIR/wrong.err" \
+  "$WORKDIR/missing.err" "$WORKDIR/bad-token.err" && {
+  echo "rotated KV value reached agent output" >&2
+  exit 1
+}
+rg -F "$REVOKED_KV" "$WORKDIR/kv-v1.out" "$WORKDIR/kv-v2.out" "$WORKDIR/wrong.err" \
+  "$WORKDIR/missing.err" "$WORKDIR/bad-token.err" && {
+  echo "revoked KV token reached agent output" >&2
   exit 1
 }
 
 stop_fixture
 READY="$WORKDIR/dyn-ready"
+# "*" accepts the first unknown DB password; selected-field proof is
+# assert_selected_password against the postgres table Vault just wrote.
 start_fixture "$READY" "*"
 
 DYN_JSON="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" credential \
@@ -419,15 +529,24 @@ activate_policy "$PRINCIPAL_ID" 2
 "$REKEY" --state-dir "$STATE" execute "$ACTION_REF" --capability "$CAPABILITY" \
   --body-file "$REQUEST_BODY" --content-type application/json >"$WORKDIR/dyn-ok.out"
 grep -q '"result":"p7oss-ok"' "$WORKDIR/dyn-ok.out"
+[[ "$(execute_meta_status "$WORKDIR/dyn-ok.out")" == "200" ]]
+assert_selected_password
 leases_empty
 
 printf '%s\n' "wrong-expected-bearer" >"$EXPECTED"
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" credential rotate-vault-dynamic \
   "$DYN_ID" --file "$PROFILE_DYN" --password-stdin >/dev/null
-FAIL_RC=0
 "$REKEY" --state-dir "$STATE" execute "$ACTION_REF" --capability "$CAPABILITY" \
-  --body-file "$REQUEST_BODY" --content-type application/json >/dev/null 2>"$WORKDIR/dyn-fail.err" || FAIL_RC=$?
-[[ "$FAIL_RC" != "0" ]]
+  --body-file "$REQUEST_BODY" --content-type application/json \
+  >"$WORKDIR/dyn-fail.out" 2>"$WORKDIR/dyn-fail.err"
+[[ "$(execute_meta_status "$WORKDIR/dyn-fail.out")" == "400" ]]
+grep -q '"error":"action"' "$WORKDIR/dyn-fail.out"
+grep -q '"result":"p7oss-ok"' "$WORKDIR/dyn-fail.out" && {
+  echo "action-deny path returned success body" >&2
+  exit 1
+}
+[[ "$(grep -c '^p7oss.action.deny$' "$TRACE")" == "1" ]]
+assert_selected_password
 leases_empty
 
 BAD_DYN_RC=0
@@ -440,12 +559,22 @@ printf '%s\n' "*" >"$EXPECTED"
 leases_empty
 
 "$REKEY" --state-dir "$STATE" audit export --output "$WORKDIR/audit.jsonl" >/dev/null
-python3 - "$WORKDIR/audit.jsonl" "$ROOT_TOKEN" "$RESOLVED_ONE" "$RESOLVED_TWO" "$SOURCE_CANARY" <<'PY'
+issued_row "SELECT p FROM rekey_issued" >"$WORKDIR/issued-passwords"
+chmod 0600 "$WORKDIR/issued-passwords"
+python3 - "$WORKDIR/audit.jsonl" "$WORKDIR/.vault-token" "$WORKDIR/revoked-kv-token" \
+  "$WORKDIR/revoked-dyn-token" "$WORKDIR/issued-passwords" <<'PY'
 import json, pathlib, sys
-path, *needles = sys.argv[1:]
-text = pathlib.Path(path).read_text()
+path = pathlib.Path(sys.argv[1])
+needles = [pathlib.Path(p).read_text().strip() for p in sys.argv[2:5]]
+needles.extend(line.strip() for line in pathlib.Path(sys.argv[5]).read_text().splitlines() if line.strip())
+needles.extend([
+    "P7OSS-RESOLVED-VALUE-ONE-CANARY",
+    "P7OSS-RESOLVED-VALUE-TWO-CANARY",
+    "P7OSS-VAULT-SOURCE-TOKEN-CANARY",
+])
+text = path.read_text()
 for needle in needles:
-    assert needle not in text, needle
+    assert needle and needle not in text, needle[:12]
 rows=[json.loads(line) for line in text.splitlines() if line.strip()]
 events=[row["event_type"] for row in rows if "event_type" in row]
 assert "execution.started" in events
@@ -453,12 +582,25 @@ assert "execution.finished" in events
 assert "execution.blocked" in events
 PY
 
-rg -F "$ROOT_TOKEN" "$WORKDIR/dyn-ok.out" "$WORKDIR/broker.out" "$WORKDIR/broker.err" && {
-  echo "vault token reached logs or agent output" >&2
-  exit 1
-}
+while IFS= read -r needle; do
+  [[ -n "$needle" ]] || continue
+  if rg -F "$needle" "$WORKDIR/dyn-ok.out" "$WORKDIR/dyn-fail.out" "$WORKDIR/dyn-fail.err" \
+    "$WORKDIR/dyn-bad.err" "$WORKDIR/broker.out" "$WORKDIR/broker.err"; then
+    echo "vault secret reached logs or agent output" >&2
+    exit 1
+  fi
+done <"$WORKDIR/issued-passwords"
+for needle in "$ROOT_TOKEN" "$RESOLVED_ONE" "$RESOLVED_TWO" "$SOURCE_CANARY" \
+  "$REVOKED_KV" "$REVOKED_DYN"; do
+  if rg -F "$needle" "$WORKDIR/dyn-ok.out" "$WORKDIR/dyn-fail.out" "$WORKDIR/dyn-fail.err" \
+    "$WORKDIR/dyn-bad.err" "$WORKDIR/broker.out" "$WORKDIR/broker.err"; then
+    echo "vault secret reached logs or agent output" >&2
+    exit 1
+  fi
+done
 
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" shutdown --password-stdin >/dev/null
+wait "$BROKER_PID"
 BROKER_PID=""
 echo "p7-vault-oss-interop: PASS"
 echo "p7-vault-oss-interop: vault=${VAULT_VERSION} engine=database+postgres"
