@@ -11,7 +11,7 @@ use std::time::Duration;
 use rekey_broker::runtime::{BrokerConfig, serve};
 use rekey_broker::upstream::{
     ScreenedEndpoint, UpstreamError, UpstreamFuture, UpstreamRequest, UpstreamTransport,
-    send_screened,
+    select_public_endpoint, send_screened,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -27,6 +27,18 @@ struct SplitTlsTransport {
     action_ca: Arc<Vec<u8>>,
 }
 
+fn inject_after_screen(host: &str, inject: SocketAddr) -> Result<ScreenedEndpoint, UpstreamError> {
+    let public = SocketAddr::from(([1, 1, 1, 1], 443));
+    let screened = select_public_endpoint(host, &[public])?;
+    if select_public_endpoint(host, &[inject]).is_ok() {
+        return Err(UpstreamError::Blocked("private-address"));
+    }
+    Ok(ScreenedEndpoint {
+        host: screened.host,
+        addr: inject,
+    })
+}
+
 impl UpstreamTransport for SplitTlsTransport {
     fn send(&self, request: UpstreamRequest) -> UpstreamFuture<'_> {
         let (addr, ca) = if request.host == VAULT_HOST {
@@ -36,11 +48,10 @@ impl UpstreamTransport for SplitTlsTransport {
         } else {
             return Box::pin(async { Err(UpstreamError::Blocked("private-address")) });
         };
-        let endpoint = ScreenedEndpoint {
-            host: request.host.clone(),
-            addr,
-        };
-        Box::pin(async move { send_screened(request, endpoint, Some(&ca)).await })
+        Box::pin(async move {
+            let endpoint = inject_after_screen(&request.host, addr)?;
+            send_screened(request, endpoint, Some(&ca)).await
+        })
     }
 }
 

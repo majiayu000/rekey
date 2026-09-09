@@ -87,7 +87,8 @@ cleanup() {
 }
 failure() {
   local rc=$?
-  [[ ! -f "$WORKDIR/broker.err" ]] || cat "$WORKDIR/broker.err" >&2
+  [[ ! -f "$WORKDIR/kv.err" ]] || cat "$WORKDIR/kv.err" >&2
+  [[ ! -f "$WORKDIR/dyn.err" ]] || cat "$WORKDIR/dyn.err" >&2
   [[ ! -f "$WORKDIR/vault.log" ]] || tail -80 "$WORKDIR/vault.log" >&2
   [[ ! -f "$TRACE" ]] || tail -80 "$TRACE" >&2
   echo "P7 Vault OSS interop failed at line $1 (exit $rc)" >&2
@@ -123,6 +124,26 @@ assert_selected_password() {
   issued="$(issued_row "SELECT p FROM rekey_issued ORDER BY ctid DESC LIMIT 1")"
   username="$(issued_row "SELECT n FROM rekey_issued ORDER BY ctid DESC LIMIT 1")"
   [[ -n "$seen" && -n "$issued" && "$seen" == "$issued" && "$seen" != "$username" ]]
+}
+
+assert_absent() {
+  local needle=$1
+  shift
+  [[ -n "$needle" ]] || return 0
+  if rg -F -- "$needle" "$@"; then
+    echo "secret reached agent-visible output" >&2
+    exit 1
+  fi
+}
+
+kv_put() {
+  local path=$1
+  local key=$2
+  local value=$3
+  printf '%s' "$value" >"$WORKDIR/kv-payload"
+  chmod 0600 "$WORKDIR/kv-payload"
+  vault_cli kv put "$path" "${key}=@${WORKDIR}/kv-payload" >/dev/null
+  rm -f "$WORKDIR/kv-payload"
 }
 
 issue_then_revoke_token() {
@@ -242,11 +263,11 @@ setup_kv() {
   vault_cli secrets enable -path=secret kv-v2 >/dev/null
   local i
   for i in $(seq 1 6); do
-    vault_cli kv put secret/agents/github token="placeholder-${i}" >/dev/null
+    kv_put secret/agents/github token "placeholder-${i}"
   done
-  vault_cli kv put secret/agents/github token="$RESOLVED_ONE" >/dev/null
-  vault_cli kv put secret/agents/github token="$RESOLVED_TWO" >/dev/null
-  vault_cli kv put secret/agents/missing other="not-the-token" >/dev/null
+  kv_put secret/agents/github token "$RESOLVED_ONE"
+  kv_put secret/agents/github token "$RESOLVED_TWO"
+  kv_put secret/agents/missing other "not-the-token"
 }
 
 start_postgres() {
@@ -296,12 +317,15 @@ PY
 
 start_fixture() {
   local ready=$1
+  local expected=$2
+  local log=$3
+  [[ -n "$ready" && -n "$expected" && -n "$log" ]]
   : >"$TRACE"
   : >"$SEEN"
   chmod 0600 "$SEEN"
-  printf '%s\n' "$2" >"$EXPECTED"
+  printf '%s\n' "$expected" >"$EXPECTED"
   env -u VAULT_TOKEN "$FIXTURE" "$STATE" "$ready" "$TRACE" "127.0.0.1:${VAULT_PORT}" "$CA_DER" "$EXPECTED" "$SEEN" \
-    >"$WORKDIR/broker.out" 2>"$WORKDIR/broker.err" &
+    >"$WORKDIR/${log}.out" 2>"$WORKDIR/${log}.err" &
   BROKER_PID=$!
   for _ in $(seq 1 400); do
     [[ -f "$ready" && -S "$STATE/runtime/admin.sock" ]] && break
@@ -313,8 +337,8 @@ start_fixture() {
 
 stop_fixture() {
   if [[ -n "$BROKER_PID" ]]; then
-    printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" shutdown --password-stdin >/dev/null || true
-    wait "$BROKER_PID" 2>/dev/null || true
+    printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" shutdown --password-stdin >/dev/null
+    wait "$BROKER_PID"
     BROKER_PID=""
   fi
 }
@@ -346,12 +370,26 @@ PY
 }
 
 leases_empty() {
-  if vault_cli list -format=json sys/leases/lookup/database/creds/agent-api-token \
-    >"$WORKDIR/leases.json" 2>"$WORKDIR/leases.err"; then
-    echo "expected no outstanding database leases" >&2
-    cat "$WORKDIR/leases.json" >&2
-    exit 1
+  local rc=0
+  vault_cli list -format=json sys/leases/lookup/database/creds/agent-api-token \
+    >"$WORKDIR/leases.json" 2>"$WORKDIR/leases.err" || rc=$?
+  if [[ "$rc" -eq 0 ]]; then
+    python3 - "$WORKDIR/leases.json" <<'PY'
+import json, pathlib, sys
+raw = pathlib.Path(sys.argv[1]).read_text().strip() or "[]"
+data = json.loads(raw)
+keys = data if isinstance(data, list) else data.get("keys", [])
+if keys:
+    raise SystemExit("outstanding database leases")
+PY
+    return 0
   fi
+  if rg -qi 'no value found|code: 404' "$WORKDIR/leases.err"; then
+    return 0
+  fi
+  echo "lease lookup failed unexpectedly (exit $rc)" >&2
+  cat "$WORKDIR/leases.err" >&2
+  exit 1
 }
 
 ROOT_TOKEN=""
@@ -415,7 +453,7 @@ PY
 printf '%s' '{"operation":"bounded"}' >"$REQUEST_BODY"
 
 printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin >/dev/null
-start_fixture "$READY" "$RESOLVED_ONE"
+start_fixture "$READY" "$RESOLVED_ONE" kv
 
 CREDENTIAL_JSON="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" credential \
   add-vault-kv p7oss-kv --file "$PROFILE_KV_ONE" --password-stdin)"
@@ -475,32 +513,17 @@ printf '%s\n' "$RESOLVED_TWO" >"$EXPECTED"
 grep -q '"result":"p7oss-ok"' "$WORKDIR/kv-v2.out"
 [[ "$(grep -c '^p7oss.action.ok$' "$TRACE")" == "2" ]]
 
-rg -F "$ROOT_TOKEN" "$WORKDIR/kv-v1.out" "$WORKDIR/kv-v2.out" "$WORKDIR/wrong.err" \
-  "$WORKDIR/missing.err" "$WORKDIR/bad-token.err" && {
-  echo "vault token reached agent output" >&2
-  exit 1
-}
-rg -F "$RESOLVED_ONE" "$WORKDIR/kv-v1.out" "$WORKDIR/kv-v2.out" "$WORKDIR/wrong.err" \
-  "$WORKDIR/missing.err" "$WORKDIR/bad-token.err" && {
-  echo "resolved KV value reached agent output" >&2
-  exit 1
-}
-rg -F "$RESOLVED_TWO" "$WORKDIR/kv-v1.out" "$WORKDIR/kv-v2.out" "$WORKDIR/wrong.err" \
-  "$WORKDIR/missing.err" "$WORKDIR/bad-token.err" && {
-  echo "rotated KV value reached agent output" >&2
-  exit 1
-}
-rg -F "$REVOKED_KV" "$WORKDIR/kv-v1.out" "$WORKDIR/kv-v2.out" "$WORKDIR/wrong.err" \
-  "$WORKDIR/missing.err" "$WORKDIR/bad-token.err" && {
-  echo "revoked KV token reached agent output" >&2
-  exit 1
-}
+for needle in "$ROOT_TOKEN" "$RESOLVED_ONE" "$RESOLVED_TWO" "$REVOKED_KV"; do
+  assert_absent "$needle" "$WORKDIR/kv-v1.out" "$WORKDIR/kv-v2.out" \
+    "$WORKDIR/wrong.err" "$WORKDIR/missing.err" "$WORKDIR/bad-token.err" \
+    "$WORKDIR/kv.out" "$WORKDIR/kv.err"
+done
 
 stop_fixture
 READY="$WORKDIR/dyn-ready"
 # "*" accepts the first unknown DB password; selected-field proof is
 # assert_selected_password against the postgres table Vault just wrote.
-start_fixture "$READY" "*"
+start_fixture "$READY" "*" dyn
 
 DYN_JSON="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" credential \
   add-vault-dynamic p7oss-dyn --file "$PROFILE_DYN" --password-stdin)"
@@ -584,19 +607,13 @@ PY
 
 while IFS= read -r needle; do
   [[ -n "$needle" ]] || continue
-  if rg -F "$needle" "$WORKDIR/dyn-ok.out" "$WORKDIR/dyn-fail.out" "$WORKDIR/dyn-fail.err" \
-    "$WORKDIR/dyn-bad.err" "$WORKDIR/broker.out" "$WORKDIR/broker.err"; then
-    echo "vault secret reached logs or agent output" >&2
-    exit 1
-  fi
+  assert_absent "$needle" "$WORKDIR/dyn-ok.out" "$WORKDIR/dyn-fail.out" \
+    "$WORKDIR/dyn-fail.err" "$WORKDIR/dyn-bad.err" "$WORKDIR/dyn.out" "$WORKDIR/dyn.err"
 done <"$WORKDIR/issued-passwords"
 for needle in "$ROOT_TOKEN" "$RESOLVED_ONE" "$RESOLVED_TWO" "$SOURCE_CANARY" \
   "$REVOKED_KV" "$REVOKED_DYN"; do
-  if rg -F "$needle" "$WORKDIR/dyn-ok.out" "$WORKDIR/dyn-fail.out" "$WORKDIR/dyn-fail.err" \
-    "$WORKDIR/dyn-bad.err" "$WORKDIR/broker.out" "$WORKDIR/broker.err"; then
-    echo "vault secret reached logs or agent output" >&2
-    exit 1
-  fi
+  assert_absent "$needle" "$WORKDIR/dyn-ok.out" "$WORKDIR/dyn-fail.out" \
+    "$WORKDIR/dyn-fail.err" "$WORKDIR/dyn-bad.err" "$WORKDIR/dyn.out" "$WORKDIR/dyn.err"
 done
 
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" shutdown --password-stdin >/dev/null
