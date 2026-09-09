@@ -25,7 +25,11 @@ if tar -tzf "$ARCHIVE" | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
   exit 1
 fi
 
-WORKDIR="$(mktemp -d /tmp/rekey-release.XXXXXX)"
+# Unpack outside /tmp: linux-netns-v1 overlays /tmp, so a child argv from this
+# archive would otherwise vanish during P-09 agent-run execute.
+unpack_root="${RUNNER_TEMP:-/var/tmp}"
+mkdir -p "$unpack_root"
+WORKDIR="$(mktemp -d "$unpack_root/rekey-release.XXXXXX")"
 cleanup() { rm -rf "$WORKDIR"; }
 trap cleanup EXIT
 tar -xzf "$ARCHIVE" -C "$WORKDIR"
