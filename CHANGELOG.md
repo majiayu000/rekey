@@ -3,6 +3,14 @@
 All notable public changes are recorded here. Rekey uses semantic versioning
 for release identifiers, but prerelease compatibility is not guaranteed.
 
+## Unreleased
+
+### Added
+
+- Vault OSS Layer A: closed KV v2 and one-shot dynamic-lease profiles against
+  pinned HashiCorp Vault OSS via the local-CA fixture
+  (`scripts/p7-vault-oss-interop.sh`). Not Field Validated.
+
 ## 2.0.0-alpha.2 - 2026-09-08
 
 Schema v9 Alpha archive. Shape A HEAD cut: password/recovery wrapper lifecycle,

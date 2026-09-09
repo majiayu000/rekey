@@ -119,6 +119,9 @@ jobs:
         run: scripts/p7-vault-kv-source.sh
       - name: P7B Vault dynamic source acceptance
         run: scripts/p7-vault-dynamic-source.sh
+      - name: P7 Vault OSS protocol interop
+        if: runner.os == 'Linux'
+        run: scripts/p7-vault-oss-interop.sh
       - name: P5 connector SDK contract acceptance
         run: scripts/p5-connector-sdk.sh
       - name: P9 Linux agent-run netns launcher

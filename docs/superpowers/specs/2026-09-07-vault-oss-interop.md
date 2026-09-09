@@ -1,14 +1,16 @@
 # P-07 Vault OSS protocol interop
 
-> Status: specified; not implemented. Does not change P-07A/P-07B behavior.
+> Status: Layer A implemented; Layer B not implemented. Does not change
+> P-07A/P-07B mock-HTTP behavior.
 >
 > Date: 2026-09-07
 >
-> Tracking: follow-on to [Issue #31](https://github.com/majiayu000/rekey/issues/31)
-> after P-09 PR #39. Open a dedicated child issue before the implementation PR.
+> Tracking: [Issue #47](https://github.com/majiayu000/rekey/issues/47),
+> follow-on to [Issue #31](https://github.com/majiayu000/rekey/issues/31).
 >
 > Depends on: P-07A KV v2 source, P-07B one-shot dynamic lease,
-> Feature Truth Matrix Vault rows (currently Black-box Verified, no live Vault)
+> Feature Truth Matrix Vault rows (Black-box Verified; Layer A is Vault OSS
+> via the local-CA fixture, not Field Validated)
 
 ## Objective
 
@@ -24,8 +26,8 @@ This is not P-07C. Other cloud/KMS/1Password/PKCS#11 sources stay paused.
 
 | Area | Evidence | Implication |
 | --- | --- | --- |
-| KV v2 | `vault_source_contract`, `scripts/p7-vault-kv-source.sh` | Exact versioned read and sealing pass against a mock |
-| Dynamic lease | `vault_dynamic_contract`, `scripts/p7-vault-dynamic-source.sh` | One-shot `creds` + sync revoke pass against a mock |
+| KV v2 | `vault_source_contract`, `scripts/p7-vault-kv-source.sh`, `scripts/p7-vault-oss-interop.sh` | Exact versioned read against mock HTTP and pinned Vault OSS |
+| Dynamic lease | `vault_dynamic_contract`, `scripts/p7-vault-dynamic-source.sh`, `scripts/p7-vault-oss-interop.sh` | One-shot `creds` + sync revoke against mock HTTP and Vault OSS database engine |
 | Production transport | public HTTPS, no redirects, private IP refused | A Vault on `127.0.0.1` cannot be a product origin |
 | GitHub analog | `scripts/dogfood-github.sh` vs `api.github.com` | Field Validated required a public origin and TTY secrets |
 
@@ -132,6 +134,9 @@ origins.
 Layer A is complete only when Ubuntu CI runs HashiCorp Vault OSS against
 both closed profiles through the fixture transport, and the Matrix notes
 say so without upgrading topology or calling it Field Validated.
+`scripts/p7-vault-oss-interop.sh` is that Ubuntu gate. The dynamic profile uses
+Vault's database secrets engine and an ephemeral PostgreSQL. macOS skips
+this script by OS.
 
 Layer B is complete only after one recorded public-HTTPS run with
 disposable credentials, analogous to the GitHub App dogfood row.
