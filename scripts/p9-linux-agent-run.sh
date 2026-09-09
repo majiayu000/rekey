@@ -65,6 +65,17 @@ STATE="$WORKDIR/s"
 AGENT_RUN="$WORKDIR/a"
 AGENT_SOCK="$AGENT_RUN/agent.sock"
 SERVE_PID=""
+STABLE_BIN=""
+CHILD_REKEY="$REKEY"
+# A downloaded archive unpacked under /tmp is hidden by the HOME overlay.
+# Copy the child argv to a path that survives --tmpfs /tmp.
+rekey_abs="$(readlink -f "$REKEY")"
+if [[ "$rekey_abs" == /tmp/* ]]; then
+  STABLE_BIN="$(mktemp -d /var/tmp/rkp9bin.XXXXXX)"
+  install -m 0755 "$REKEY" "$STABLE_BIN/rekey"
+  CHILD_REKEY="$STABLE_BIN/rekey"
+fi
+echo "p9-linux-agent-run: child_rekey=$CHILD_REKEY"
 
 cleanup() {
   if [[ -n "${SERVE_PID:-}" ]]; then
@@ -72,6 +83,7 @@ cleanup() {
     wait "$SERVE_PID" 2>/dev/null || true
   fi
   rm -rf "$WORKDIR"
+  [[ -z "${STABLE_BIN:-}" ]] || rm -rf "$STABLE_BIN"
 }
 failure() {
   local rc=$?
@@ -244,7 +256,7 @@ print("unix-ok")
 
 echo "== capability-authorized execute through the sandbox"
 exec_out="$("$REKEY" --state-dir "$STATE" --agent-socket "$AGENT_SOCK" agent-run -- \
-  "$REKEY" --state-dir "$STATE" --agent-socket "$AGENT_SOCK" \
+  "$CHILD_REKEY" --state-dir "$STATE" --agent-socket "$AGENT_SOCK" \
   execute "$action_ref" --capability "$token")"
 printf '%s\n' "$exec_out" | python3 -c 'import json,sys; v,_=json.JSONDecoder().raw_decode(sys.stdin.read().lstrip());
 assert v["upstream_status"]==200, v'
