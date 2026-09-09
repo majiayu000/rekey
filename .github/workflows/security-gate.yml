@@ -51,7 +51,7 @@ jobs:
             --tmpfs /tmp --chdir /tmp -- /bin/true
       - name: Install macOS acceptance dependencies
         if: runner.os == 'macOS'
-        run: brew install ripgrep
+        run: scripts/ci-install-release-smoke-deps.sh
 
       - name: Workspace contracts
         run: |
