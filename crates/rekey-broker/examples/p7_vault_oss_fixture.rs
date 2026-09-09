@@ -25,6 +25,7 @@ struct SplitTlsTransport {
     vault_ca: Arc<Vec<u8>>,
     action: SocketAddr,
     action_ca: Arc<Vec<u8>>,
+    trace_path: Arc<PathBuf>,
 }
 
 fn inject_after_screen(host: &str, inject: SocketAddr) -> Result<ScreenedEndpoint, UpstreamError> {
@@ -48,9 +49,15 @@ impl UpstreamTransport for SplitTlsTransport {
         } else {
             return Box::pin(async { Err(UpstreamError::Blocked("private-address")) });
         };
+        let revoke_ok = request.host == VAULT_HOST && request.path == "/v1/sys/leases/revoke";
+        let trace_path = Arc::clone(&self.trace_path);
         Box::pin(async move {
             let endpoint = inject_after_screen(&request.host, addr)?;
-            send_screened(request, endpoint, Some(&ca)).await
+            let response = send_screened(request, endpoint, Some(&ca)).await?;
+            if revoke_ok && response.status == 204 {
+                let _ = append_trace(trace_path.as_path(), "p7oss.vault.revoke.ok");
+            }
+            Ok(response)
         })
     }
 }
@@ -263,12 +270,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (action_ca, server) = action_tls()?;
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let action_addr = listener.local_addr()?;
+    let trace_path = Arc::new(trace_path);
     tokio::spawn(serve_action(
         listener,
         TlsAcceptor::from(Arc::new(server)),
         expected_path,
         seen_path,
-        trace_path,
+        PathBuf::clone(trace_path.as_ref()),
     ));
     std::fs::write(&ready_path, format!("{}\n", action_addr.port()))?;
 
@@ -279,6 +287,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         vault_ca,
         action: action_addr,
         action_ca: Arc::new(action_ca),
+        trace_path,
     }));
     config.unlock_backoff_base = Duration::from_millis(250);
     config.drain_timeout = Duration::from_millis(100);

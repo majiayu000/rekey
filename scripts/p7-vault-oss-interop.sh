@@ -89,6 +89,8 @@ failure() {
   local rc=$?
   [[ ! -f "$WORKDIR/kv.err" ]] || cat "$WORKDIR/kv.err" >&2
   [[ ! -f "$WORKDIR/dyn.err" ]] || cat "$WORKDIR/dyn.err" >&2
+  [[ ! -f "$WORKDIR/leases.err" ]] || cat "$WORKDIR/leases.err" >&2
+  [[ ! -f "$WORKDIR/leases.json" ]] || cat "$WORKDIR/leases.json" >&2
   [[ ! -f "$WORKDIR/vault.log" ]] || tail -80 "$WORKDIR/vault.log" >&2
   [[ ! -f "$TRACE" ]] || tail -80 "$TRACE" >&2
   echo "P7 Vault OSS interop failed at line $1 (exit $rc)" >&2
@@ -130,7 +132,7 @@ assert_absent() {
   local needle=$1
   shift
   [[ -n "$needle" ]] || return 0
-  if rg -F -- "$needle" "$@"; then
+  if rg -q -F -- "$needle" "$@"; then
     echo "secret reached agent-visible output" >&2
     exit 1
   fi
@@ -371,6 +373,7 @@ PY
 
 leases_empty() {
   local rc=0
+  local out=""
   vault_cli list -format=json sys/leases/lookup/database/creds/agent-api-token \
     >"$WORKDIR/leases.json" 2>"$WORKDIR/leases.err" || rc=$?
   if [[ "$rc" -eq 0 ]]; then
@@ -384,11 +387,16 @@ if keys:
 PY
     return 0
   fi
-  if rg -qi 'no value found|code: 404' "$WORKDIR/leases.err"; then
+  out="$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).read_text().strip())' "$WORKDIR/leases.json")"
+  if [[ "$rc" -eq 2 && "$out" == "{}" ]]; then
+    return 0
+  fi
+  if rg -qi 'no value found|code: 404|no keys found' "$WORKDIR/leases.err" "$WORKDIR/leases.json"; then
     return 0
   fi
   echo "lease lookup failed unexpectedly (exit $rc)" >&2
   cat "$WORKDIR/leases.err" >&2
+  cat "$WORKDIR/leases.json" >&2
   exit 1
 }
 
@@ -554,6 +562,7 @@ activate_policy "$PRINCIPAL_ID" 2
 grep -q '"result":"p7oss-ok"' "$WORKDIR/dyn-ok.out"
 [[ "$(execute_meta_status "$WORKDIR/dyn-ok.out")" == "200" ]]
 assert_selected_password
+[[ "$(grep -c '^p7oss.vault.revoke.ok$' "$TRACE")" == "1" ]]
 leases_empty
 
 printf '%s\n' "wrong-expected-bearer" >"$EXPECTED"
@@ -570,6 +579,7 @@ grep -q '"result":"p7oss-ok"' "$WORKDIR/dyn-fail.out" && {
 }
 [[ "$(grep -c '^p7oss.action.deny$' "$TRACE")" == "1" ]]
 assert_selected_password
+[[ "$(grep -c '^p7oss.vault.revoke.ok$' "$TRACE")" == "2" ]]
 leases_empty
 
 BAD_DYN_RC=0
@@ -579,6 +589,7 @@ printf '%s\n' "*" >"$EXPECTED"
 "$REKEY" --state-dir "$STATE" execute "$ACTION_REF" --capability "$CAPABILITY" \
   --body-file "$REQUEST_BODY" --content-type application/json >/dev/null 2>"$WORKDIR/dyn-bad.err" || BAD_DYN_RC=$?
 [[ "$BAD_DYN_RC" != "0" ]]
+[[ "$(grep -c '^p7oss.vault.revoke.ok$' "$TRACE")" == "2" ]]
 leases_empty
 
 "$REKEY" --state-dir "$STATE" audit export --output "$WORKDIR/audit.jsonl" >/dev/null
