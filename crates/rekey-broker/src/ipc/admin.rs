@@ -454,6 +454,18 @@ async fn dispatch(
             let response = ctx.policy_status().await?;
             Ok((json(&response)?, Vec::new()))
         }
+        admin_msg::APPROVAL_ORIGIN => {
+            empty_request(frame)?;
+            ctx.lifecycle.reject_if_not_running()?;
+            let _owner = ctx.lifecycle.coordinate().await;
+            ctx.lifecycle.reject_if_not_running()?;
+            let public_key = ctx.authority.approval_origin_public_key().await?;
+            let response = ipc::ApprovalOriginResponse {
+                algorithm: "ed25519".to_owned(),
+                public_key: data_encoding::HEXLOWER.encode(&public_key),
+            };
+            Ok((json(&response)?, Vec::new()))
+        }
         admin_msg::SESSION_REVOKE => {
             let deadline = admin_mutation_deadline();
             ctx.lifecycle.reject_if_not_running()?;

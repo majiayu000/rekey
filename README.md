@@ -158,10 +158,11 @@ printf '%s\n' "$CAPABILITY_FROM_SECURE_STORAGE" | \
 
 The grant is bound to the challenge, session, principal, exact Action/resource,
 canonical parameters, determining rule, policy version/digest, validity window,
-and use limit. Rekey provides no remote approval service, notification UI,
+and use limit. Rekey provides no hosted remote approval service, notification UI,
 human directory, private-key custody, or approval survival across lock/restart.
 Source trees additionally include `rekey-approval-sign` for a local operator's
-single-person one-time review; see
+single-person one-time review of an origin-signed challenge envelope; pin
+`rekey approval origin` and pass `--origin-key`. See
 [`docs/user-guide.md`](docs/user-guide.md#local-independent-approval-endpoint).
 
 `action.json`:

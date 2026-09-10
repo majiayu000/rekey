@@ -10,10 +10,11 @@ use rekey_domain::{
     authorization::{ApprovalMode, AuthorizationRequest, Decision, Principal},
     capability::ActionVersionRef,
     ids::{ApprovalId, ApproverId},
-    ipc::ApprovalChallenge,
+    ipc::SignedApprovalChallenge,
 };
 use rekey_policy::{
-    evaluate, parse_and_verify_approval_grant, parse_and_verify_policy_bundle, parse_policy_trust,
+    evaluate, parse_and_verify_approval_challenge_envelope, parse_and_verify_approval_grant,
+    parse_and_verify_policy_bundle, parse_policy_trust, validate_ed25519_public_key,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -30,11 +31,11 @@ use std::{
 use zeroize::Zeroizing;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
-const USAGE: &str = "rekey-approval-sign review REQUEST.json --policy POLICY.json --trust TRUST.json --action ACTION.json --approver-id UUID\nrekey-approval-sign sign REQUEST.json --policy POLICY.json --trust TRUST.json --action ACTION.json --approver-id UUID --reviewed-sha256 HEX --key-file KEY.der --output NEW_GRANT.json";
+const USAGE: &str = "rekey-approval-sign review REQUEST.json --policy POLICY.json --trust TRUST.json --action ACTION.json --approver-id UUID --origin-key HEX\nrekey-approval-sign sign REQUEST.json --policy POLICY.json --trust TRUST.json --action ACTION.json --approver-id UUID --origin-key HEX --reviewed-sha256 HEX --key-file KEY.der --output NEW_GRANT.json";
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Request {
-    challenge: ApprovalChallenge,
+    challenge: SignedApprovalChallenge,
     content_type: Option<String>,
     headers: Vec<(String, String)>,
     body: String,
@@ -115,6 +116,7 @@ fn run() -> Result<()> {
                 | "--trust"
                 | "--action"
                 | "--approver-id"
+                | "--origin-key"
                 | "--reviewed-sha256"
                 | "--key-file"
                 | "--output"
@@ -123,7 +125,7 @@ fn run() -> Result<()> {
             return Err(USAGE.into());
         }
     }
-    if options.len() != if sign { 7 } else { 4 } {
+    if options.len() != if sign { 8 } else { 5 } {
         return Err(USAGE.into());
     }
     let get = |name| options.get(name).copied().ok_or(USAGE);
@@ -137,9 +139,12 @@ fn run() -> Result<()> {
     let snapshot = policy.snapshot();
     let action: FixedHttpAction = serde_json::from_slice(&read(get("--action")?, 65536)?)?;
     action.validate()?;
+    let origin = validate_ed25519_public_key(get("--origin-key")?)?;
     let request: Request = serde_json::from_slice(&read(&args[1], 2 * 1024 * 1024)?)?;
-    let c = &request.challenge;
-    c.validate()?;
+    let c = parse_and_verify_approval_challenge_envelope(
+        &serde_json::to_vec(&request.challenge)?,
+        &origin,
+    )?;
     let approver: ApproverId = get("--approver-id")?.parse()?;
     if !action.enabled
         || action.id != c.action_id
@@ -201,7 +206,7 @@ fn run() -> Result<()> {
     {
         return Err("policy and challenge mismatch".into());
     }
-    let review = json!({"record_type":"rekey.approval.review.v1", "source_assumption":"Operator relayed from trusted local Broker; challenge source is not cryptographically authenticated", "action":action, "request":request, "approver_id":approver, "policy_signer_id":policy.signer_id(), "policy_sha256":HEXLOWER.encode(&snapshot.digest()), "grant_lifetime_max_ms":60000});
+    let review = json!({"record_type":"rekey.approval.review.v1", "source_assumption":"Operator pinned origin public key from rekey approval origin; envelope authenticates Broker challenge bytes, not Action/policy/trust files or the human's intent", "action":action, "request":request, "approver_id":approver, "policy_signer_id":policy.signer_id(), "policy_sha256":HEXLOWER.encode(&snapshot.digest()), "grant_lifetime_max_ms":60000});
     let digest = HEXLOWER.encode(&Sha256::digest(serde_jcs::to_vec(&review)?));
     if !sign {
         println!(

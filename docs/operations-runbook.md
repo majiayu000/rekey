@@ -163,12 +163,12 @@ in-memory approval use record; create a new session and challenge afterward.
 There is no remote approval availability fallback or offline bypass.
 
 The source-only `rekey-approval-sign` binary is a local one-person, one-time
-review/sign tool. Use operator-owned policy, trust, Action, and PKCS8 files;
-obtain the challenge from this host's `rekey approval prepare`; wrap the original
-request text into `approval-request.json`; review the displayed digest; sign
-only that digest; execute within 60 seconds with the same request. Do not take
-trusted inputs from an Agent directory. Exported challenges are not
-source-authenticated. Operator steps are in
+review/sign tool. Pin `rekey approval origin` on the Broker host; obtain the
+origin-signed envelope from this host's `rekey approval prepare`; wrap the
+original request text into `approval-request.json`; review the displayed digest
+with `--origin-key`; sign only that digest; execute within 60 seconds with the
+same request. Do not take trusted inputs from an Agent directory. This is not a
+hosted approval service. Operator steps are in
 [the user guide](user-guide.md#local-independent-approval-endpoint).
 
 For workload identity, keep issuer private keys outside Rekey and place only

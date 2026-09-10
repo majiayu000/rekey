@@ -101,10 +101,11 @@ def main():
                 changed = write('changed.json', {'message': 'changed'})
                 challenge = json.loads(cli('approval', 'prepare', ref, '--capability', '-',
                                            '--body-file', body, '--content-type', 'application/json', stdin=token))
+                origin = json.loads(cli('approval', 'origin'))
                 request = write('request.json', {'challenge': challenge, 'content_type': 'application/json',
                                                 'headers': [], 'body': body.read_text()})
                 options = [request, '--policy', policy, '--trust', trust, '--action', trusted_action,
-                           '--approver-id', identity['approver_id']]
+                           '--approver-id', identity['approver_id'], '--origin-key', origin['public_key']]
                 review = json.loads(run([binaries / 'rekey-approval-sign', 'review', *options]))
                 grant = root / 'grant.json'
                 run([binaries / 'rekey-approval-sign', 'sign', *options, '--reviewed-sha256',

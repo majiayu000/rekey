@@ -29,11 +29,22 @@ fn id() -> String {
 fn write_json(path: &std::path::Path, value: &Value) {
     fs::write(path, serde_json::to_vec(value).unwrap()).unwrap();
 }
+fn signed_envelope(challenge: &Value, origin: &Ed25519KeyPair) -> Value {
+    let mut message = b"RKCHALLENGE\0\x01".to_vec();
+    message.extend(serde_jcs::to_vec(challenge).unwrap());
+    json!({
+        "record_type": "rekey.approval.challenge.envelope.v1",
+        "challenge": challenge,
+        "signature": BASE64URL_NOPAD.encode(origin.sign(&message).as_ref()),
+    })
+}
 struct Fixture {
     dir: TempDir,
     approver: String,
     request: Value,
     policy_expiry: i64,
+    origin_der: Vec<u8>,
+    origin_hex: String,
 }
 impl Fixture {
     fn new() -> Self {
@@ -42,6 +53,9 @@ impl Fixture {
         let signer = Ed25519KeyPair::from_pkcs8(signer_der.as_ref()).unwrap();
         let approver_der = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
         let key = Ed25519KeyPair::from_pkcs8(approver_der.as_ref()).unwrap();
+        let origin_der = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
+        let origin = Ed25519KeyPair::from_pkcs8(origin_der.as_ref()).unwrap();
+        let origin_hex = HEXLOWER.encode(origin.public_key().as_ref());
         fs::write(dir.path().join("key.der"), approver_der.as_ref()).unwrap();
         fs::set_permissions(
             dir.path().join("key.der"),
@@ -93,19 +107,45 @@ impl Fixture {
             serde_json::from_value(action.clone()).unwrap();
         parsed.validate().unwrap();
         write_json(&dir.path().join("action.json"), &action);
-        let request = json!({"challenge":{"record_type":"rekey.approval.challenge.v1","approval_request_id":id(),"tenant_id":id(),"principal_id":principal,"session_id":id(),"action_id":action_id,"action_version":1,"resource":resource,"schema_id":"test/v1","parameter_sha256":HEXLOWER.encode(&parameters.canonical_hash),"policy_version":1,"policy_sha256":HEXLOWER.encode(&verified.policy_digest()),"policy_rule_id":rule,"mode":"one-time","quorum":1,"approver_ids":[approver],"max_uses":1,"created_at_ms":created,"max_expires_at_ms":created+120_000},"content_type":"application/json","headers":[],"body":body});
+        let inner = json!({"record_type":"rekey.approval.challenge.v1","approval_request_id":id(),"tenant_id":id(),"principal_id":principal,"session_id":id(),"action_id":action_id,"action_version":1,"resource":resource,"schema_id":"test/v1","parameter_sha256":HEXLOWER.encode(&parameters.canonical_hash),"policy_version":1,"policy_sha256":HEXLOWER.encode(&verified.policy_digest()),"policy_rule_id":rule,"mode":"one-time","quorum":1,"approver_ids":[approver],"max_uses":1,"created_at_ms":created,"max_expires_at_ms":created+120_000});
+        let request = json!({"challenge":signed_envelope(&inner, &origin),"content_type":"application/json","headers":[],"body":body});
         write_json(&dir.path().join("request.json"), &request);
         Self {
             dir,
             approver,
             request,
             policy_expiry,
+            origin_der: origin_der.as_ref().to_vec(),
+            origin_hex,
         }
+    }
+    fn origin(&self) -> Ed25519KeyPair {
+        Ed25519KeyPair::from_pkcs8(&self.origin_der).unwrap()
+    }
+    fn inner(&self) -> &Value {
+        &self.request["challenge"]["challenge"]
+    }
+    fn persist_request(&mut self) {
+        write_json(&self.path("request.json"), &self.request);
+    }
+    fn resign_inner(&mut self) {
+        let inner = self.request["challenge"]["challenge"].clone();
+        self.request["challenge"] = signed_envelope(&inner, &self.origin());
+        self.persist_request();
     }
     fn path(&self, name: &str) -> PathBuf {
         self.dir.path().join(name)
     }
     fn invoke(&self, mode: &str, digest: Option<&str>, output: &str) -> Output {
+        self.invoke_with_origin(mode, digest, output, &self.origin_hex)
+    }
+    fn invoke_with_origin(
+        &self,
+        mode: &str,
+        digest: Option<&str>,
+        output: &str,
+        origin_hex: &str,
+    ) -> Output {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_rekey-approval-sign"));
         cmd.arg(mode)
             .arg(self.path("request.json"))
@@ -116,7 +156,9 @@ impl Fixture {
             .arg("--action")
             .arg(self.path("action.json"))
             .arg("--approver-id")
-            .arg(&self.approver);
+            .arg(&self.approver)
+            .arg("--origin-key")
+            .arg(origin_hex);
         if let Some(digest) = digest {
             cmd.arg("--reviewed-sha256")
                 .arg(digest)
@@ -170,24 +212,17 @@ fn valid_grant_verifies_is_private_bounded_and_never_overwrites() {
     let grant = verified.grant();
     assert_eq!(
         grant.approval_request_id.to_string(),
-        f.request["challenge"]["approval_request_id"]
-            .as_str()
-            .unwrap()
+        f.inner()["approval_request_id"].as_str().unwrap()
     );
     assert_eq!(
         grant.parameter_sha256,
-        f.request["challenge"]["parameter_sha256"].as_str().unwrap()
+        f.inner()["parameter_sha256"].as_str().unwrap()
     );
     assert_eq!(grant.max_uses, 1);
     assert!(grant.expires_at_ms > before);
     assert!(grant.expires_at_ms <= after + 60_000);
     assert!(grant.expires_at_ms <= f.policy_expiry);
-    assert!(
-        grant.expires_at_ms
-            <= f.request["challenge"]["max_expires_at_ms"]
-                .as_i64()
-                .unwrap()
-    );
+    assert!(grant.expires_at_ms <= f.inner()["max_expires_at_ms"].as_i64().unwrap());
     assert_eq!(
         fs::metadata(f.path("grant.json")).unwrap().mode() & 0o777,
         0o600
@@ -241,9 +276,36 @@ fn expired_challenge_is_rejected_without_signing() {
     let mut f = Fixture::new();
     let digest = f.review();
     let now = now_ms();
-    f.request["challenge"]["created_at_ms"] = (now - 120_000).into();
-    f.request["challenge"]["max_expires_at_ms"] = (now - 1).into();
-    write_json(&f.path("request.json"), &f.request);
+    f.request["challenge"]["challenge"]["created_at_ms"] = (now - 120_000).into();
+    f.request["challenge"]["challenge"]["max_expires_at_ms"] = (now - 1).into();
+    f.resign_inner();
     assert!(!f.invoke("review", None, "unused").status.success());
     f.reject_sign(&digest);
+}
+
+#[test]
+fn unsigned_or_wrong_origin_challenge_is_rejected() {
+    let mut f = Fixture::new();
+    let digest = f.review();
+    let inner = f.inner().clone();
+    f.request["challenge"] = inner;
+    f.persist_request();
+    assert!(!f.invoke("review", None, "unused").status.success());
+    f.reject_sign(&digest);
+    let f = Fixture::new();
+    let digest = f.review();
+    let other = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
+    let other_key = Ed25519KeyPair::from_pkcs8(other.as_ref()).unwrap();
+    let wrong = HEXLOWER.encode(other_key.public_key().as_ref());
+    assert!(
+        !f.invoke_with_origin("review", None, "unused", &wrong)
+            .status
+            .success()
+    );
+    assert!(
+        !f.invoke_with_origin("sign", Some(&digest), "rejected.json", &wrong)
+            .status
+            .success()
+    );
+    assert!(!f.path("rejected.json").exists());
 }

@@ -251,8 +251,10 @@ approver
 一次性、时间窗口和一至两人 quorum 都在 SessionRegistry 内计数。参数、策略、
 Action、身份、session 或时间边界变化后必须重新授权；grant 不会在 lock、session
 撤销或重启后恢复。`approval.accepted` 与 `execution.started` 在同一 Authority
-transaction 中提交，失败时不发生远程 effect。没有远程 approval service、通知、
-dashboard、目录或离线 bypass。
+transaction 中提交，失败时不发生远程 effect。没有托管远程 approval service、通知、
+dashboard、目录或离线 bypass。`PrepareApproval` 返回 VRK 派生 origin 密钥签名的
+challenge 信封，供操作者把 challenge 搬到自己控制的机器上签发；这不是公网审批
+控制面。
 
 ## 10. 响应方向保护
 

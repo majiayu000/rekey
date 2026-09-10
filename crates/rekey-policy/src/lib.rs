@@ -516,7 +516,7 @@ fn requirements_equivalent(left: &ApprovalRequirement, right: &ApprovalRequireme
         && left.max_window_ms == right.max_window_ms
 }
 
-pub(crate) fn decode_lower_hex_32(value: &str) -> Result<[u8; 32], PolicyError> {
+pub fn decode_lower_hex_32(value: &str) -> Result<[u8; 32], PolicyError> {
     let decoded = HEXLOWER
         .decode(value.as_bytes())
         .map_err(|_| PolicyError::Invalid)?;
@@ -526,7 +526,7 @@ pub(crate) fn decode_lower_hex_32(value: &str) -> Result<[u8; 32], PolicyError> 
     decoded.try_into().map_err(|_| PolicyError::Invalid)
 }
 
-pub(crate) fn validate_ed25519_public_key(value: &str) -> Result<[u8; 32], PolicyError> {
+pub fn validate_ed25519_public_key(value: &str) -> Result<[u8; 32], PolicyError> {
     let public_key = decode_lower_hex_32(value)?;
     let compressed = CompressedEdwardsY(public_key);
     let point = compressed.decompress().ok_or(PolicyError::Invalid)?;

@@ -139,11 +139,13 @@ WID-10 source interoperability passed in GitHub Actions run `34458227976`: real 
 
 These credential-related source changes require human review before merge.
 
-APR-08 local preparation slice (source only): `rekey-approval-sign` supports an
-operator's digest-bound, single-person one-time approval using independently selected
-signed policy/trust and registered Action. Five signer tests and the real Broker
-fixture in `scripts/test-approval-signer-live.py` verify acceptance, parameter/session
-mismatch and replay denial with exactly one upstream request. Evidence:
-`outputs/rekey-apr08-20260910/`. This is a local independent signer, not the remote
-approval service; exported challenges have no source signature. APR-08 remains in
-progress for its original remote scope. Human review is required before merge.
+APR-08 origin-authenticated relocated signing (source only):
+`rekey approval prepare` returns a Broker-signed
+`rekey.approval.challenge.envelope.v1`. `rekey approval origin` pins the
+VRK-derived origin public key. `rekey-approval-sign` requires `--origin-key` and
+rejects unsigned or tampered challenges. Signer tests, Broker approval
+contracts, and the real Broker fixture in `scripts/test-approval-signer-live.py`
+cover acceptance, mismatch, replay, and origin verification. Evidence:
+`outputs/rekey-apr08-20260910/`. This is not a hosted remote approval service,
+notification inbox, or personnel directory. Human review is required before
+merge.

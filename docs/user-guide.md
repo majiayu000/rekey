@@ -279,15 +279,17 @@ regular non-symlink UTF-8 JSON file no larger than 4 KiB. A grant is bound to
 the exact challenge/session/principal/Action/resource/canonical parameters,
 determining rule, policy version/digest, expiry, and signed use count. Approval
 requests and usage are memory-only and vanish on session revocation, lock, or
-restart. Rekey has no remote approval service, notifications, dashboard, human
-directory, or private-key custody.
+restart. Rekey has no hosted remote approval service, notifications, dashboard,
+human directory, or private-key custody.
 
 Source builds also provide `rekey-approval-sign` for a local operator's
-single-person, one-time review. This is not a remote approval service: the
-challenge has no source signature, and another process running as your user
-can still read the same files. Independently choose policy, trust, Action, and
-key files from an operator-owned directory. Do not take them from an Agent
-workspace. The signer only handles `one-time` / `quorum=1` / `max_uses=1`.
+single-person, one-time review. Prepare prints an origin-signed envelope.
+Pin this vault's origin public key with `rekey approval origin` and pass it as
+`--origin-key`. This is not a hosted approval service: another process running
+as your user can still read the same files. Independently choose policy, trust,
+Action, and key files from an operator-owned directory. Do not take them from
+an Agent workspace. The signer only handles `one-time` / `quorum=1` /
+`max_uses=1`.
 
 ### Local independent approval endpoint
 
@@ -310,10 +312,12 @@ openssl pkey -in approver.der -inform DER -pubout -outform DER | tail -c 32 | xx
 Put that public key and a stable approver UUID into the signed policy catalog.
 The `--approver-id` you pass later must be that UUID, and the key must match it.
 
-1. From a trusted terminal, prepare the **exact** request that will later
-   execute. `body` in the approval request must be that same original text.
+1. From a trusted terminal, pin this vault's origin public key, then prepare
+   the **exact** request that will later execute. `body` in the approval request
+   must be that same original text.
 
 ```bash
+rekey approval origin >origin.json
 printf '%s\n' "$CAPABILITY_FROM_SECURE_STORAGE" | \
   rekey approval prepare ACTION_ID@1 --capability - \
     --body-file request.json --content-type application/json >challenge.json
@@ -342,9 +346,11 @@ be `null` when the original call had none.
 
 ```bash
 cargo build -p rekey-policy --bin rekey-approval-sign
+ORIGIN=$(python3 -c 'import json; print(json.load(open("origin.json"))["public_key"])')
 rekey-approval-sign review approval-request.json \
   --policy policy.json --trust trust.json \
-  --action trusted-action.json --approver-id APPROVER_UUID
+  --action trusted-action.json --approver-id APPROVER_UUID \
+  --origin-key "$ORIGIN"
 ```
 
 3. Sign the **same** files and digest. The grant file is created exclusively
@@ -355,6 +361,7 @@ rekey-approval-sign review approval-request.json \
 rekey-approval-sign sign approval-request.json \
   --policy policy.json --trust trust.json \
   --action trusted-action.json --approver-id APPROVER_UUID \
+  --origin-key "$ORIGIN" \
   --reviewed-sha256 REVIEWED_HEX \
   --key-file approver.der --output grant.json
 ```

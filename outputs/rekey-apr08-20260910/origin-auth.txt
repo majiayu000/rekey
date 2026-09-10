@@ -1,0 +1,21 @@
+APR-08 origin authentication (2026-09-10)
+
+Workspace verification after this slice:
+
+- cargo fmt --all
+- cargo check --workspace --all-targets
+- cargo test --workspace (0 failed; 1 ignored performance baseline)
+- mechanical contracts: no REKEY_PASSWORD / get_secret_value / /proxy/ / passthrough
+  matches; CLI tree still excludes rusqlite / aes-gcm / argon2 / reqwest /
+  rekey-vault / rekey-broker / rekey-connector
+
+Covered by unit/contract tests (not a hosted remote approval service):
+
+- crates/rekey-vault origin seed/keypair stability and password-change survival
+- crates/rekey-policy envelope verify / tamper / wrong origin
+- crates/rekey-policy --test approval_signer including unsigned/wrong-origin
+- crates/rekey-broker --test approval_contract prepare envelope + grant path
+- crates/rekey-cli --test malicious_broker InvalidApprovalChallenge envelope shape
+
+Live fixture script updated to pin `rekey approval origin` and pass
+`--origin-key`. That script was not re-run in this slice.

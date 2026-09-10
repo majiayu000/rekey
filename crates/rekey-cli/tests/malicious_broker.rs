@@ -178,6 +178,8 @@ fn run_attack(attack: Attack) -> std::process::Output {
                 request.request_id,
                 resp_msg::OK,
                 serde_json::json!({
+                    "record_type": "rekey.approval.challenge.envelope.v1",
+                    "challenge": {
                     "record_type": "rekey.approval.challenge.v1",
                     "approval_request_id": "00000000-0000-4000-8000-000000000001",
                     "tenant_id": "00000000-0000-4000-8000-000000000002",
@@ -200,6 +202,8 @@ fn run_attack(attack: Attack) -> std::process::Output {
                     "max_uses": 1,
                     "created_at_ms": 1,
                     "max_expires_at_ms": 2,
+                    },
+                    "signature": "A".repeat(86),
                 })
                 .to_string()
                 .into_bytes(),

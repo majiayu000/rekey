@@ -171,6 +171,8 @@ def sign_approval(args: argparse.Namespace) -> None:
         args.key_dir, "approver-key.pem", "approver-id"
     )
     challenge = json.loads(args.challenge.read_text(encoding="utf-8"))
+    if challenge.get("record_type") == "rekey.approval.challenge.envelope.v1":
+        challenge = challenge.get("challenge") or {}
     if challenge.get("record_type") != "rekey.approval.challenge.v1":
         raise SystemExit("invalid approval challenge")
     expires_at_ms = min(

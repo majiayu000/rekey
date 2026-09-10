@@ -336,6 +336,8 @@ enum PolicyTrustCommand {
 
 #[derive(Subcommand)]
 enum ApprovalCommand {
+    /// Pin this vault's approval-origin public key.
+    Origin,
     Prepare {
         /// ACTION_ID@VERSION
         action: String,
@@ -684,6 +686,7 @@ fn main() {
             ),
             PolicyCommand::Status => commands::policy_status(&state_dir),
         },
+        Command::Approval(ApprovalCommand::Origin) => commands::approval_origin(&state_dir),
         Command::Approval(ApprovalCommand::Prepare {
             action,
             capability,

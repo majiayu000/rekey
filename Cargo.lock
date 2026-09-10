@@ -1709,6 +1709,7 @@ version = "2.0.0-alpha.2"
 dependencies = [
  "aes-gcm",
  "argon2",
+ "aws-lc-rs",
  "data-encoding",
  "hkdf",
  "libc",

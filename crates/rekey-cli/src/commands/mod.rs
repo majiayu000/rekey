@@ -21,7 +21,9 @@ pub use github_admin::{credential_apply_github_webhook, credential_rotate_github
 mod audit;
 pub use audit::{audit_export, audit_list};
 mod policy_approval;
-pub use policy_approval::{approval_prepare, policy_activate, policy_status, policy_trust_install};
+pub use policy_approval::{
+    approval_origin, approval_prepare, policy_activate, policy_status, policy_trust_install,
+};
 mod vault_admin;
 pub use vault_admin::{
     credential_add_keycloak, credential_add_vault_dynamic, credential_add_vault_kv,
