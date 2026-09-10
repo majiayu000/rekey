@@ -2,6 +2,7 @@
 """Focused shell handoff tests, plus an opt-in real binary authorization test."""
 
 import argparse
+import base64
 import contextlib
 import importlib.util
 import io
@@ -26,6 +27,37 @@ SPEC.loader.exec_module(APP)
 VAULT_SPEC = importlib.util.spec_from_file_location("vault_dogfood", ROOT / "scripts/dogfood-vault.py")
 VAULT = importlib.util.module_from_spec(VAULT_SPEC)
 VAULT_SPEC.loader.exec_module(VAULT)
+
+REPO = "example/dedicated-test"
+WEBHOOK_SECRET = "QUICKSTART-GITHUB-WEBHOOK-SECRET-0123456789"
+
+
+def write_github_app_profile(path, private_key_der, installation_id=515151):
+    owner, name = REPO.split("/", 1)
+    path.write_text(json.dumps({
+        "credential_type": "github-app-installation-v2",
+        "client_id": "Iv1.8a61f9b3a7aba766",
+        "app_id": 424242,
+        "installation_id": installation_id,
+        "repositories": [{"id": 616161, "owner": owner, "name": name}],
+        "permissions": {"metadata": "read", "issues": "write"},
+        "webhook_secret": WEBHOOK_SECRET,
+        "private_key_pkcs1_der_base64": base64.b64encode(private_key_der).decode(),
+    }))
+
+
+def generate_pkcs1_der(work):
+    pem = work / "github-app.pem"
+    der = work / "github-app.der"
+    subprocess.run(
+        ["openssl", "genrsa", "-traditional", "-out", str(pem), "2048"],
+        check=True, capture_output=True,
+    )
+    subprocess.run(
+        ["openssl", "rsa", "-in", str(pem), "-traditional", "-outform", "DER", "-out", str(der)],
+        check=True, capture_output=True,
+    )
+    return der.read_bytes()
 
 
 def run_terminal(command, responses, expected_exit=0):
@@ -141,6 +173,10 @@ class RealBrokerTests(unittest.TestCase):
             work = Path(directory)
             state = work / "state"
             base = [str(rekey), "--state-dir", str(state)]
+            profile = work / "github-app-profile.json"
+            rotated_profile = work / "github-app-rotated.json"
+            write_github_app_profile(profile, generate_pkcs1_der(work))
+            write_github_app_profile(rotated_profile, generate_pkcs1_der(work), installation_id=515152)
 
             def run(args, secret=None):
                 output = subprocess.run(args, input=secret, capture_output=True, text=True)
@@ -163,14 +199,14 @@ class RealBrokerTests(unittest.TestCase):
                     transcript = run_terminal(
                         [sys.executable, str(ROOT / "scripts/agent-quickstart.py"), "prepare",
                          "--rekey", str(rekey), "--state-dir", str(state),
-                         "--output", str(handoff), "--repo", "example/dedicated-test"],
+                         "--output", str(handoff), "--repo", REPO,
+                         "--github-app-profile", str(profile)],
                         [("Vault password (step-up): ", password),
-                         ("Credential value: ", "UPSTREAM-CANARY"),
                          ("Vault password (step-up): ", password),
                          ("Vault password (step-up): ", password)],
                     )
                     self.assertNotIn(password, transcript)
-                    self.assertNotIn("UPSTREAM-CANARY", transcript)
+                    self.assertNotIn(WEBHOOK_SECRET, transcript)
                     session = APP.read_private(handoff / "session.json")
                     config = APP.read_private(handoff / "agent.json")
                     schema = work / "schema.json"
@@ -202,21 +238,22 @@ class RealBrokerTests(unittest.TestCase):
                     refused = run_terminal(
                         [sys.executable, str(ROOT / "scripts/agent-quickstart.py"), "prepare",
                          "--rekey", str(rekey), "--state-dir", str(state),
-                         "--output", str(rejected_handoff), "--repo", "example/dedicated-test"],
+                         "--output", str(rejected_handoff), "--repo", REPO,
+                         "--github-app-profile", str(profile)],
                         [], expected_exit=2,
                     )
                     self.assertIn("requires a fresh policy", refused)
                     self.assertFalse(rejected_handoff.exists())
                     action = APP.read_private(handoff / "registered-action.json")
                     transcript += run_terminal(
-                        base + ["credential", "rotate", action["credential_id"]],
-                        [("Vault password (step-up): ", password),
-                         ("New credential value: ", "ROTATED-UPSTREAM-CANARY")],
+                        base + ["credential", "rotate-github-app", action["credential_id"],
+                                "--file", str(rotated_profile)],
+                        [("Vault password (step-up): ", password)],
                     )
                     credentials = run(base + ["credential", "list"])["credentials"]
                     self.assertEqual(next(c for c in credentials if c["id"] == action["credential_id"])["current_version"], 2)
                     self.assertNotIn(password, transcript)
-                    self.assertNotIn("UPSTREAM-CANARY", transcript)
+                    self.assertNotIn(WEBHOOK_SECRET, transcript)
                     # A signed session still rejects invalid parameters before
                     # any public HTTP request can be made.
                     body.write_text('{"unexpected":"field"}')
@@ -231,7 +268,7 @@ class RealBrokerTests(unittest.TestCase):
                                     invalid.stdout, invalid.stderr, transcript,
                                     (handoff / "policy-draft.json").read_text()]:
                         self.assertNotIn(session["capability_token"], content)
-                        self.assertNotIn("UPSTREAM-CANARY", content)
+                        self.assertNotIn(WEBHOOK_SECRET, content)
                 finally:
                     broker.terminate()
                     broker.wait(timeout=10)
