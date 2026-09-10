@@ -88,6 +88,39 @@ action_json="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" action 
 action_ref="$(printf '%s\n' "$action_json" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["id"]+"@"+str(d["version"]))')"
 session_json="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" session create --action "$action_ref" --ttl 10m --max-uses 3 --password-stdin)"
 cap="$(printf '%s\n' "$session_json" | json_field '"capability_token"')"
+principal_id="$(printf '%s\n' "$session_json" | json_field '"principal_id"')"
+
+# A capability does not bypass the signed default-deny policy. The signer
+# below is test-only, lives in this disposable directory and is never handed
+# to an Agent. Real deployments use their external policy signer.
+python3 - "$WORKDIR/policy-draft.json" "$action_ref" "$principal_id" <<'PY'
+import json, pathlib, sys, time, uuid
+path, action_ref, principal = sys.argv[1:]
+action_id, version = action_ref.split("@")
+resource = {"type": "fixed-http-action", "id": action_id}
+binding = {
+    "action_id": action_id, "version": int(version), "resource": resource,
+    "parameter_schema_id": "github-dogfood/v1",
+    "parameter_schema": {"type": "object", "additionalProperties": False,
+                         "required": ["title", "body"],
+                         "properties": {"title": {"type": "string"}, "body": {"type": "string"}}},
+}
+pathlib.Path(path).write_text(json.dumps({
+    "format_version": 3, "version": 1,
+    "expires_at_ms": int(time.time() * 1000) + 600000,
+    "approvers": [], "workload_identities": [], "bindings": [binding],
+    "rules": [{"id": str(uuid.uuid4()), "effect": "permit", "principal_id": principal,
+               "action_id": action_id, "version": int(version), "resource": resource,
+               "parameters": {"kind": "any_validated"}}],
+}))
+PY
+python3 "$ROOT/scripts/sign-test-policy.py" policy --key-dir "$WORKDIR/policy-key" \
+  --snapshot "$WORKDIR/policy-draft.json" --bundle "$WORKDIR/policy-bundle.json" \
+  --trust "$WORKDIR/policy-trust.json"
+printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy trust install \
+  --file "$WORKDIR/policy-trust.json" --step-up-stdin >/dev/null
+printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate \
+  --file "$WORKDIR/policy-bundle.json" --step-up-stdin >/dev/null
 
 body="$WORKDIR/issue.json"
 cat >"$body" <<EOF

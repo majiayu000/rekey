@@ -1,0 +1,735 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.31s
+     Running unittests src/lib.rs (target/debug/deps/rekey_broker-3bbc4c2f80b53e70)
+
+running 82 tests
+test error::tests::launcher_error_codes_are_stable ... ok
+test error::tests::indeterminate_upstream_effect_is_not_retryable ... ok
+test audit::tests::wait_idle_errors_when_submit_channel_is_closed ... ok
+test audit::tests::expired_started_admission_does_not_poison_tracker ... ok
+test executor::tests::closed_remote_effect_gate_commits_one_blocked_terminal ... ok
+test executor::tests::drain_linearizes_before_started ... ok
+test executor::tests::changed_policy_blocks_before_started_commit ... ok
+test executor::tests::github_write_post_effect_failures_do_not_invite_retry ... ok
+test executor::tests::post_response_failures_are_indeterminate ... ok
+test executor::vault_dynamic::tests::issued_response_extracts_one_bounded_selected_value ... ok
+test executor::vault_dynamic::tests::lease_probe_is_bounded_and_decodes_json_string_escapes ... ok
+test execution_supervisor::tests::ready_child_panic_wins_over_saturated_admission_queue ... ok
+test executor::tests::oversized_execute_response_metadata_is_rejected_before_success ... ok
+test executor::vault_dynamic::tests::profile_accepts_only_the_closed_shape ... ok
+test active_policy::tests::wall_clock_expiry_cannot_be_revived_by_rollback ... ok
+test active_policy::tests::monotonic_deadline_expires_snapshot ... ok
+test executor::tests::sealing_detects_direct_and_encoded_secret ... ok
+test executor::vault_source::tests::profile_rejects_open_or_unsafe_configuration ... ok
+test github_app::tests::duplicate_exchange_permission_keys_are_rejected ... ok
+test github_app::tests::exchange_transport_uncertainty_is_preserved_without_a_token ... ok
+test executor::vault_source::tests::profile_builds_one_exact_versioned_read ... ok
+test github_app::tests::marked_v1_profile_fails_closed ... ok
+test github_app::tests::max_timeout_deadline_is_not_reset_at_effect_entry ... ok
+test github_app::tests::create_issue_rejects_a_different_response_host ... ok
+test executor::tests::running_coordinator_contention_fails_without_waiting ... ok
+test github_profile::tests::webhook_rejects_mixed_or_wrong_installation_delta ... ok
+test github_app::tests::create_issue_binds_path_body_response_and_never_retries ... ok
+test github_app::tests::list_repositories_accepts_exact_unordered_scope_and_sanitizes_output ... ok
+test github_profile::tests::create_issue_is_closed_to_the_configured_repository_and_body ... ok
+test github_profile::tests::webhook_signature_delta_and_replay_are_bounded ... ok
+test executor::vault_source::tests::response_is_exactly_version_and_single_field_bound ... ok
+test ipc::agent::tests::storage_integrity_failures_are_credential_unavailable_to_agents ... ok
+test audit::tests::wait_idle_propagates_commit_error ... ok
+test audit::tests::wait_idle_ok_when_commit_succeeds ... ok
+test ipc::frame::tests::message_specific_body_limit_is_checked_before_body_read ... ok
+test audit::tests::deferred_blocked_terminal_is_queued_exactly_once ... ok
+test lifecycle::tests::rejected_stop_reopens_remote_effects_only_while_running ... ok
+test ipc::peer::tests::cross_uid_runtime_rejects_agent_owned_or_group_writable_ancestor ... ok
+test runtime::connections::tests::over_capacity_connection_gets_a_bounded_protocol_error ... ok
+test runtime::shutdown::tests::only_a_positively_safe_authority_state_allows_proofless_admin_stop ... ok
+test ipc::admin::tests::aggregate_credential_catalog_is_rejected_before_add ... ok
+test audit::tests::started_commit_carries_approval_deadline ... ok
+test executor::tests::cancellation_after_terminal_submission_does_not_submit_fallback ... ok
+test audit::tests::started_commit_reply_cancellation_still_has_terminal ... ok
+test runtime::workload::tests::definite_pre_mutation_rejections_do_not_fault_the_broker ... ok
+test runtime::tests::runtime_directory_rejects_symlink_before_chmod ... ok
+test runtime::tests::shared_agent_runtime_is_traversable_but_not_group_writable ... ok
+test ipc::admin::tests::aggregate_action_catalog_is_rejected_before_upsert ... ok
+test runtime::tests::sigterm_selection_closes_paused_remote_effect_admission ... ok
+test session::approval::tests::monotonic_expiry_requires_time_after_challenge_creation ... ok
+test session::tests::close_and_revoke_refuses_new_sessions ... ok
+test runtime::tests::agent_runtime_rejects_parent_segments_and_symlink_aliases_into_state ... ok
+test session::tests::concurrency_cap_enforced ... ok
+test session::tests::expiry_wrong_action_and_revocation ... ok
+test session::tests::garbage_tokens_rejected ... ok
+test session::tests::permit_drop_releases_concurrency_slot ... ok
+test sandbox::tests::overlapping_socket_is_rejected_before_spawn ... ok
+test session::tests::token_lifecycle ... ok
+test tests::pre_epoch_clock_fails_closed ... ok
+test upstream::tests::all_public_dns_answer_pins_one_screened_endpoint ... ok
+test upstream::tests::mixed_dns_answer_is_rejected_before_selection ... ok
+test upstream::tests::private_and_special_addresses_rejected ... ok
+test sandbox::tests::non_linux_returns_unsupported_after_a_valid_plan ... ok
+test upstream::tests::production_transport_blocks_ipv6_documentation_literal ... ok
+test upstream::tests::production_transport_blocks_ipv6_loopback_literal ... ok
+test sandbox::tests::prepared_argv_is_closed_and_hides_state ... ok
+test upstream::tests::production_transport_blocks_rfc1918_literal ... ok
+test upstream::tests::production_dns_deadline_times_out_a_stalled_resolver ... ok
+test ipc::admin::tests::oversized_action_response_is_rejected_before_upsert ... ok
+test upstream::tests::production_transport_blocks_loopback_dns ... ok
+test ipc::admin::tests::action_update_replaces_the_existing_catalog_entry ... ok
+test session::tests::expired_unused_history_is_compacted_on_next_admission ... ok
+test session::tests::monotonic_deadline_survives_wall_clock_rollback ... ok
+test audit::tests::wait_idle_errors_when_pending_times_out ... ok
+test executor::tests::authority_waits_respect_the_action_deadline ... ok
+test session::tests::revoked_history_is_compacted_without_dropping_in_flight_entries ... ok
+test ipc::frame::tests::oversized_metadata_is_rejected_before_any_frame_bytes ... ok
+test audit::tests::timed_out_connector_audit_stays_ordered_before_terminal ... ok
+test lifecycle::tests::bounded_coordinator_wait_does_not_acquire_later ... ok
+test github_app::tests::stalled_revoke_preserves_an_attempt_for_each_later_token ... ok
+test runtime::connections::tests::over_capacity_connection_drains_a_large_legal_request ... ok
+test github_app::tests::list_retries_once_only_for_one_canonical_retry_after ... ok
+
+test result: ok. 82 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.02s
+
+     Running unittests src/bin/rekeyd.rs (target/debug/deps/rekeyd-cbacfdd7ff889908)
+
+running 3 tests
+test tests::duration_parser_rejects_overflow ... ok
+test tests::delegated_secret_reader_stops_at_first_newline ... ok
+test tests::delegated_secret_reader_rejects_oversized_input ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/admin_ipc.rs (target/debug/deps/admin_ipc-9220db27643eeb72)
+
+running 10 tests
+test agent_channel_frames_rejected_on_admin_socket ... ok
+test bodyless_admin_messages_reject_attached_bodies ... ok
+test admin_reader_rejects_oversized_fields_before_body_allocation ... ok
+test vault_profile_admin_checks_proof_before_profile_and_preserves_kind ... ok
+test admin_lifecycle_and_step_up ... ok
+test vault_dynamic_admin_checks_proof_before_profile_and_preserves_kind ... ok
+test malformed_frames_close_connection ... ok
+test unlock_does_not_queue_behind_an_active_drain ... ok
+test admin_and_policy_status_keep_an_unlocked_broker_active ... ok
+test password_and_recovery_lifecycle_is_exposed_over_admin_ipc ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.46s
+
+     Running tests/adversarial_http.rs (target/debug/deps/adversarial_http-9a017dd0899d0cbb)
+
+running 6 tests
+test unknown_meta_fields_are_rejected_before_upstream ... ok
+test oversized_request_body_rejected ... ok
+test forbidden_response_headers_are_stripped ... ok
+test auth_and_forbidden_extra_headers_rejected ... ok
+test malformed_credential_header_is_blocked_before_upstream ... ok
+test upstream_failures_map_to_denials ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+
+     Running tests/agent_ipc.rs (target/debug/deps/agent_ipc-36ccf4333bc272a9)
+
+running 5 tests
+test empty_agent_uid_allowlist_fails_closed ... ok
+test agent_status_is_redacted ... ok
+test admin_messages_rejected_on_agent_socket ... ok
+test execute_requires_valid_capability ... ok
+test capability_token_is_not_admin_proof ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+
+     Running tests/approval_contract.rs (target/debug/deps/approval_contract-f0469c91532b7424)
+
+running 6 tests
+test direct_permit_refuses_approval_challenge_and_unexpected_grants ... ok
+test approval_audit_transaction_failure_prevents_the_remote_effect ... ok
+test lock_and_capability_exhaustion_invalidate_challenges_without_amplifying_audit ... ok
+test one_time_grant_admits_exactly_once_under_a_race ... ok
+test two_person_quorum_rejects_one_and_accepts_two_distinct_approvers ... ok
+test time_window_grant_obeys_its_signed_use_limit ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+     Running tests/connector_contract.rs (target/debug/deps/connector_contract-cf7fef8b7c9a8615)
+
+running 1 test
+test reserved_github_action_never_falls_back_to_opaque_header_injection ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests/execution_contract.rs (target/debug/deps/execution_contract-acadbff6f6499425)
+
+running 4 tests
+test disabled_action_refused_and_use_counting_applies ... ok
+test revoked_credential_stops_new_executions ... ok
+test locked_broker_refuses_execution ... ok
+test vertical_slice_executes_with_injected_credential ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.29s
+
+     Running tests/frame_fuzz_vectors.rs (target/debug/deps/frame_fuzz_vectors-6898a656e60b590d)
+
+running 3 tests
+test malformed_classes_rejected ... ok
+test proof_body_fuzz_vectors ... ok
+test single_byte_mutations_never_panic ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/lifecycle_drain.rs (target/debug/deps/lifecycle_drain-118e33929ef11305)
+
+running 12 tests
+test direct_terminal_commit_failure_reaches_tracker_and_fails_shutdown ... ok
+test execution_child_panic_faults_runtime_and_closes_admission ... ok
+test every_started_has_terminal_on_success_and_indeterminate_response ... ok
+test session_create_during_drain_is_rejected ... ok
+test shutdown_reply_survives_an_exhausted_drain_deadline ... ok
+test lock_waits_for_in_flight_execute ... ok
+test draining_rejects_new_execute_without_started ... ok
+test client_disconnect_does_not_cancel_supervisor_owned_execution ... ok
+test idle_lock_revokes_sessions_permanently ... ok
+test shutdown_waits_for_disconnected_admitted_execution ... ok
+test drain_cancel_is_scoped_to_one_running_epoch ... ok
+test completed_execution_refresh_prevents_stale_idle_lock ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.31s
+
+     Running tests/performance_baseline.rs (target/debug/deps/performance_baseline-651b814abbb1e8fb)
+
+running 1 test
+test performance_and_soak_baseline ... ignored, run through the performance-baseline workflow
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/post_effect_audit.rs (target/debug/deps/post_effect_audit-bba4392e42395f41)
+
+running 1 test
+test post_side_effect_timeout_is_indeterminate ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
+
+     Running tests/reflected_secret.rs (target/debug/deps/reflected_secret-58d6ee713c69ea8a)
+
+running 11 tests
+test percent_encoded_reflection_blocked ... ok
+test content_type_base64_header_reflection_blocked ... ok
+test base64url_reflection_blocked ... ok
+test selectively_percent_encoded_bytes_are_blocked ... ok
+test clean_response_passes ... ok
+test content_type_header_reflection_blocked ... ok
+test raw_reflection_blocked ... ok
+test mixed_case_percent_encoded_reflection_blocked ... ok
+test base64_reflection_blocked ... ok
+test fully_percent_encoded_unreserved_bytes_are_blocked ... ok
+test full_auth_header_reflection_blocked ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+
+     Running tests/session_contract.rs (target/debug/deps/session_contract-1f5fbfb4d5156f65)
+
+running 4 tests
+test session_create_requires_step_up_and_valid_actions ... ok
+test new_session_cannot_pin_retired_action_version ... ok
+test use_count_exhaustion_revokes ... ok
+test restart_revokes_all_sessions ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+
+     Running tests/unknown_crypto_format.rs (target/debug/deps/unknown_crypto_format-8dbbe1d01b941275)
+
+running 1 test
+test real_rekeyd_rejects_unknown_crypto_format_before_binding_uds ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.99s
+
+     Running tests/upstream_screened.rs (target/debug/deps/upstream_screened-004c6d29d6624927)
+
+running 5 tests
+test screened_tls_roundtrip ... ok
+test screened_truncated_body_is_transport_error ... ok
+test screened_oversize_body_is_rejected ... ok
+test screened_chunked_error_drops_partial_canary_body ... ok
+test screened_redirect_is_blocked ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/vault_dynamic_contract.rs (target/debug/deps/vault_dynamic_contract-225c85221a1c8536)
+
+running 13 tests
+test action_timeout_below_two_seconds_stops_before_lease_acquisition ... ok
+test revoke_failure_hides_an_already_successful_action_response ... ok
+test issued_audit_failure_skips_the_action_but_still_attempts_revoke ... ok
+test source_preflight_is_definite_but_post_send_uncertainty_is_not_retryable ... ok
+test escaped_lease_id_is_revoked_when_semantic_parse_fails ... ok
+test revoked_audit_failure_hides_the_action_response_and_faults_closed ... ok
+test every_bounded_candidate_is_revoked_after_an_ambiguous_response ... ok
+test malformed_issuance_with_a_candidate_revokes_before_failing ... ok
+test final_and_revoke_timeouts_attempt_cleanup_and_never_return_success ... ok
+test success_is_held_until_exact_synchronous_revoke ... ok
+test issuance_uncertainty_and_final_reflection_fail_closed ... ok
+test source_final_and_revoke_reflections_never_reach_the_agent ... ok
+test lock_waits_for_an_admitted_dynamic_lease_to_revoke ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.34s
+
+     Running tests/vault_source_contract.rs (target/debug/deps/vault_source_contract-0c8fee2a2e9b7ae8)
+
+running 5 tests
+test source_and_resolved_secret_encodings_are_sealed_at_each_boundary ... ok
+test wrong_version_and_source_token_reflection_stop_before_final_action ... ok
+test exact_source_value_is_consumed_by_the_fixed_action_and_rotates ... ok
+test source_failures_remain_retryable_and_never_reach_the_final_action ... ok
+test drain_between_source_read_and_action_closes_final_effect_admission ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+     Running tests/workload_identity.rs (target/debug/deps/workload_identity-13399c73870b078c)
+
+running 8 tests
+test malformed_tokens_share_one_error_and_workload_message_is_agent_only ... ok
+test workload_audit_failure_revokes_capability_and_faults_closed ... ok
+test replay_is_denied_atomically_in_a_concurrent_race ... ok
+test workload_mint_rejects_unauthorized_and_disabled_actions ... ok
+test workload_mint_executes_without_step_up_and_audits_redacted_origin ... ok
+test policy_activation_revokes_only_workload_sessions ... ok
+test workload_sessions_obey_use_expiry_revoke_and_lock_lifecycle ... ok
+test restart_revokes_capability_but_preserves_replay_denial ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+
+     Running unittests src/main.rs (target/debug/deps/rekey-da7b3aef8328d3e0)
+
+running 19 tests
+test commands::tests::recovery_step_up_uses_the_recovery_proof_kind ... ok
+test commands::tests::backup_rejects_non_utf8_output_before_reading_proof ... ok
+test commands::tests::secret_line_reader_stops_at_the_required_newline ... ok
+test client::tests::cross_uid_contract_rejects_agent_owned_writable_ancestor ... ok
+test commands::tests::bounded_reader_rejects_before_growing_past_the_limit ... ok
+test commands::tests::ttl_parser_rejects_overflow ... ok
+test client::tests::connect_rejects_group_writable_runtime ... ok
+test client::tests::cross_uid_contract_rejects_group_writable_ancestor ... ok
+test client::tests::admin_contract_requires_caller_owned_mode_0600 ... ok
+test client::tests::connect_accepts_owner_peer_in_protected_runtime ... ok
+test client::tests::connect_rejects_symlinked_socket ... ok
+test commands::policy_approval::tests::policy_artifact_reader_rejects_fifo_without_blocking ... ok
+test commands::tests::secret_line_reader_applies_the_limit_to_each_line ... ok
+test commands::policy_approval::tests::approval_reader_rejects_hard_link_aliases ... ok
+test commands::audit::tests::failed_write_keeps_the_create_new_partial_file ... ok
+test commands::audit::tests::vanished_parent_makes_the_final_directory_sync_fail ... ok
+test commands::audit::tests::replaced_export_path_is_rejected_before_success ... ok
+test commands::vault_admin::tests::vault_profile_file_requires_the_closed_marker_and_bound ... ok
+test client::tests::response_sections_share_one_absolute_deadline ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/cli_blackbox.rs (target/debug/deps/cli_blackbox-2eb39ef9d94cc692)
+
+running 3 tests
+test agent_run_rejects_the_default_colocated_socket ... ok
+test cli_rejects_oversized_file_and_stdin_before_connecting ... ok
+test cli_end_to_end ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 23.04s
+
+     Running tests/malicious_broker.rs (target/debug/deps/malicious_broker-72327d096cbbc389)
+
+running 2 tests
+test audit_export_continues_after_an_empty_scan_window ... ok
+test cli_rejects_forged_broker_responses ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/workload_blackbox.rs (target/debug/deps/workload_blackbox-8b2e3159d161fbdc)
+
+running 3 tests
+test workload_stdin_is_bounded_before_socket_access ... ok
+test workload_stdin_flag_conflicts_with_admin_proof_flags ... ok
+test real_rekeyd_and_rekey_accept_all_profiles_and_reject_replay_and_tampering ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.19s
+
+     Running unittests src/lib.rs (target/debug/deps/rekey_connector-098740dcb60e140d)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/contract.rs (target/debug/deps/contract-c0b85a3ad523c27b)
+
+running 5 tests
+test registry_is_versioned_ordered_and_lifecycle_complete ... ok
+test selection_preserves_the_reserved_github_no_fallback_boundary ... ok
+test oauth_projection_contains_only_fixed_public_metadata ... ok
+test mcp_projection_is_stable_object_only_and_contains_no_authentication_input ... ok
+test testkit_rejects_a_lease_after_the_last_revoke - should panic ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/rekey_domain-1b159a767b116373)
+
+running 27 tests
+test ids::tests::ids_are_distinct_types ... ok
+test ids::tests::random_bytes_are_normalized_to_uuid_v4 ... ok
+test capability::tests::allows_only_exact_action_version ... ok
+test authorization::tests::policy_versions_fit_the_durable_signed_range ... ok
+test audit::tests::query_rejects_invalid_bounds ... ok
+test capability::tests::grant_bounds ... ok
+test action::tests::prefix_rules ... ok
+test credential::tests::typed_kind_wire_names_match_durable_names ... ok
+test ids::tests::rejects_non_canonical_forms ... ok
+test ids::tests::display_roundtrip ... ok
+test audit::tests::rejected_approval_identifiers_are_complete_or_absent ... ok
+test credential::tests::label_rules ... ok
+test action::tests::response_allowlist_rejects_credential_headers ... ok
+test audit::tests::page_rejects_order_cursor_and_filter_violations ... ok
+test action::tests::header_rules ... ok
+test action::tests::path_rules ... ok
+test audit::tests::approval_events_require_complete_authorization_evidence ... ok
+test ipc::tests::header_rejects_malformed ... ok
+test action::tests::origin_rules ... ok
+test ipc::tests::header_roundtrip ... ok
+test ipc::tests::proof_body_roundtrip ... ok
+test sandbox::tests::bwrap_and_share_net_are_rejected ... ok
+test sandbox::tests::capability_charset_is_closed ... ok
+test ipc::tests::maximum_admin_proof_and_secret_fit_the_body_limit ... ok
+test sandbox::tests::disjoint_paths_accept_isolated_runtime ... ok
+test sandbox::tests::overlapping_default_g1_socket_is_rejected ... ok
+test sandbox::tests::relative_and_dot_paths_are_rejected ... ok
+
+test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/rekey_integration-32d85487ef634618)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/authority_blackbox.rs (target/debug/deps/authority_blackbox-aa7b44988f2c3d57)
+
+running 1 test
+test full_lifecycle_via_public_api ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/broker_ipc.rs (target/debug/deps/broker_ipc-8c6c3e4a30b0aebc)
+
+running 4 tests
+test audit_query_is_admin_only_bounded_and_available_while_locked ... ok
+test credential_list_returns_metadata_only ... ok
+test agent_socket_has_no_admin_or_export_surface ... ok
+test oversized_audit_page_fails_before_a_success_frame ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
+
+     Running tests/fixed_http_action.rs (target/debug/deps/fixed_http_action-9daeb368ba7269b9)
+
+running 1 test
+test end_to_end_fixed_action ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests/policy_e2e.rs (target/debug/deps/policy_e2e-d4f7386dbf5a9181)
+
+running 1 test
+   Compiling ring v0.17.14
+   Compiling rustls v0.23.37
+   Compiling rustls-webpki v0.103.15
+   Compiling tokio-rustls v0.26.4
+   Compiling hyper-rustls v0.27.7
+   Compiling reqwest v0.12.28
+   Compiling rekey-broker v2.0.0-alpha.2 (/Users/lifcc/Desktop/code/AI/tools/rekey/crates/rekey-broker)
+    Finished `release` profile [optimized] target(s) in 15.10s
+   Compiling reqwest v0.12.28
+   Compiling rcgen v0.13.2
+   Compiling rekey-broker v2.0.0-alpha.2 (/Users/lifcc/Desktop/code/AI/tools/rekey/crates/rekey-broker)
+    Finished `release` profile [optimized] target(s) in 8.76s
+P1 policy acceptance passed
+test release_process_policy_acceptance ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 32.68s
+
+     Running tests/secret_canary.rs (target/debug/deps/secret_canary-24520c50eecd3856)
+
+running 1 test
+test canary_never_escapes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+     Running unittests src/lib.rs (target/debug/deps/rekey_policy-0a139212b1c07386)
+
+running 5 tests
+test signed::tests::trust_and_bundle_are_closed_canonical_and_signature_bound ... ok
+test signed::tests::approval_signature_binds_every_authorization_field ... ok
+test tests::validates_and_evaluates_permit ... ok
+test tests::default_deny_forbid_precedence_and_expiry ... ok
+test tests::duplicate_json_keys_and_schema_fail_closed ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/approval_policy.rs (target/debug/deps/approval_policy-f4b4b5fe4fed234b)
+
+running 2 tests
+test approval_wins_over_permit_and_forbid_wins_over_approval ... ok
+test approver_catalog_and_overlapping_requirements_are_closed_and_bounded ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/workload_identity.rs (target/debug/deps/workload_identity-5956158a05bb5a7e)
+
+running 7 tests
+test malformed_compact_jwt_and_duplicate_claims_fail_closed ... ok
+test workload_catalog_rejects_unknown_fields_duplicates_and_unusable_principals ... ok
+test verification_key_is_bound_to_the_matched_identity ... ok
+test non_canonical_or_invalid_spiffe_ids_are_rejected ... ok
+test all_profiles_map_exact_subjects_and_authorized_actions ... ok
+test claims_are_exact_bounded_and_replay_digest_is_stable ... ok
+test rs256_verifies_and_signature_or_selector_tampering_fails ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running unittests src/lib.rs (target/debug/deps/rekey_vault-a91abc99f70383c4)
+
+running 29 tests
+test crypto::credential_state::tests::sentinel_and_state_combinations_are_unambiguous ... ok
+test crypto::aad::tests::golden_vector ... ok
+test crypto::credential_state::tests::canonical_record_is_big_endian_and_stable ... ok
+test crypto::aad::tests::every_field_changes_encoding ... ok
+test bootstrap::tests::state_directory_security_requires_the_broker_owner ... ok
+test crypto::kdf::tests::params_json_roundtrip ... ok
+test crypto::aead::tests::nonces_are_unique_per_seal ... ok
+test crypto::credential_state::tests::seal_binds_every_lifecycle_field ... ok
+test crypto::kdf::tests::recovery_kek_depends_on_key_and_salt ... ok
+test durable::tests::missing_parent_open_fails ... ok
+test crypto::aead::tests::roundtrip_and_tamper_rejection ... ok
+test crypto::recovery::tests::rejects_bad_input ... ok
+test crypto::recovery::tests::roundtrip ... ok
+test tests::pre_epoch_clock_fails_closed ... ok
+test crypto::kdf::tests::password_kek_is_deterministic_per_salt_and_params ... ok
+test store::sqlite::tests::deferred_commit_failure_is_an_audit_failure ... ok
+test durable::tests::unreadable_directory_open_fails ... ok
+test durable::tests::protected_tree_and_symlink_alias_are_rejected ... ok
+test durable::tests::create_new_does_not_follow_symlinks_and_forces_mode_0600 ... ok
+test store::connection::tests::owned_file_validation_rejects_wrong_owner_and_symlink ... ok
+test durable::tests::writable_tempdir_fsyncs ... ok
+test durable::tests::streaming_copy_hashes_and_durably_removes ... ok
+test bootstrap::tests::final_rename_failure_keeps_restore_blocked_until_cleanup ... ok
+test durable::tests::streaming_copy_accepts_fifo_source ... ok
+test store::workload::tests::invalid_times_fail_before_mutation ... ok
+test store::workload::tests::expired_rows_survive_wall_clock_rollback ... ok
+test store::workload::tests::replay_insert_and_audit_are_atomic ... ok
+test store::workload::tests::replay_table_cap_fails_closed_even_after_wall_clock_advances ... ok
+test store::sqlite::tests::busy_wal_checkpoint_is_not_reported_as_success ... ok
+
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.28s
+
+     Running tests/audit_query.rs (target/debug/deps/audit_query-5bff19f2bfdcd1ac)
+
+running 6 tests
+test filters_and_stable_snapshot_exclude_later_rows ... ok
+test malformed_stored_identifier_fails_instead_of_returning_a_partial_page ... ok
+test authority_allows_locked_queries_and_rejects_them_after_fault ... ok
+test query_storage_failure_is_returned_without_partial_rows ... ok
+test malformed_stored_version_fails_instead_of_skipping_the_row ... ok
+test selective_queries_advance_after_a_bounded_scan_window ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+
+     Running tests/authority_contract.rs (target/debug/deps/authority_contract-cd1834df445f49c0)
+
+running 11 tests
+test payload_authentication_failure_faults_and_zeroizes_authority ... ok
+test negative_action_version_faults_and_zeroizes_authority ... ok
+test no_secret_export_api ... ok
+test malformed_runtime_record_faults_and_zeroizes_authority ... ok
+test unlock_and_credential_lifecycle ... ok
+test malformed_action_record_faults_and_zeroizes_authority ... ok
+test audit_trail_is_written ... ok
+test step_up_rejects_valid_wrapper_for_a_different_root_key ... ok
+test expired_mutation_command_never_commits_later ... ok
+test recovery_rotation_is_retryable_when_the_first_response_is_lost ... ok
+test password_replacement_supports_password_and_recovery_step_up ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.96s
+
+     Running tests/backup_restore.rs (target/debug/deps/backup_restore-a7819f835323f340)
+
+running 14 tests
+test internal_snapshot_cleanup_failure_faults_authority ... ok
+test backup_refuses_to_overwrite_an_existing_artifact ... ok
+test restore_rejects_invalid_sha256_format ... ok
+test backup_fails_when_parent_directory_cannot_be_fsynced ... ok
+test backup_audit_failure_leaves_authorized_artifact_without_receipt ... ok
+test backup_never_touches_external_sibling_or_symlink_target ... ok
+test restore_rejects_wrong_sha256_without_installing ... ok
+test restore_empty_vault_still_proves_integrity_record ... ok
+test restore_rejects_corrupt_later_credential ... ok
+test restore_recovers_only_marked_internal_artifacts_before_retry ... ok
+test restore_rejects_orphan_credential_version ... ok
+test restore_rejects_wrong_proof_and_nonempty_target ... ok
+test backup_roundtrip_and_restore ... ok
+test backups_keep_the_wrapper_generation_captured_at_snapshot_time ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.94s
+
+     Running tests/bootstrap_contract.rs (target/debug/deps/bootstrap_contract-72a285ea3a1236dc)
+
+running 10 tests
+test empty_password_rejected ... ok
+test empty_dir_serve_reports_not_initialized ... ok
+test legacy_vault_rejected ... ok
+test fresh_init_creates_secure_layout ... ok
+test second_init_rejected ... ok
+test insecure_permissions_rejected ... ok
+test incomplete_restore_marker_blocks_authority_startup ... ok
+test init_is_not_servable_until_recovery_confirmation_is_durable ... ok
+test discard_after_init_leaves_no_servable_vault ... ok
+test failed_discard_keeps_init_marker_and_blocks_serve ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.23s
+
+     Running tests/credential_state_seal.rs (target/debug/deps/credential_state_seal-76ad551835bd0071)
+
+running 7 tests
+test retired_version_reactivation_faults_runtime ... ok
+test unsealed_current_version_rewrite_faults_even_when_rows_are_consistent ... ok
+test cross_credential_seal_swap_faults_runtime ... ok
+test restore_rejects_tampered_lifecycle_metadata ... ok
+test prepare_and_mutation_verify_state_before_use ... ok
+test lifecycle_seal_survives_rotate_revoke_backup_restore ... ok
+test metadata_tamper_matrix_faults_runtime ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.53s
+
+     Running tests/crypto_contract.rs (target/debug/deps/crypto_contract-d6ff18e323e1c0b0)
+
+running 4 tests
+test cross_vault_swap_rejected ... ok
+test version_rollback_swap_rejected ... ok
+test purpose_separation_rejected ... ok
+test ciphertext_record_swap_rejected ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/enospc_faults.rs (target/debug/deps/enospc_faults-30a6ba2a0a0f898a)
+
+running 6 tests
+test restore_enospc_cleans_internal_artifacts_and_retries ... ok
+test audit_enospc_faults_the_worker ... ok
+test credential_mutation_enospc_is_atomic_and_retryable ... ok
+test workload_replay_enospc_is_atomic_and_retryable ... ok
+test backup_enospc_returns_no_receipt_and_requires_a_new_path ... ok
+test enospc_root_must_be_a_bounded_dedicated_mount ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/fault_injection.rs (target/debug/deps/fault_injection-1223975e24ed35d5)
+
+running 9 tests
+test wrapper_change_crash_child ... ok
+
+running 1 test
+test corrupted_database_fails_integrity_check ... ok
+test transactional_mutation_audit_failure_faults_the_worker ... ok
+test audit_commit_failure_faults_the_worker ... ok
+test wrapper_denial_audit_failure_faults_without_mutation ... ok
+test wrapper_success_audit_failure_rolls_back_and_faults ... ok
+test wrapper_insert_failure_rolls_back_to_the_old_password ... ok
+test wrapper_commit_failure_rolls_back_and_faults ... ok
+
+running 1 test
+test real_process_crash_reopens_either_complete_wrapper_generation ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.13s
+
+     Running tests/lifecycle_contract.rs (target/debug/deps/lifecycle_contract-5b0ba9188ac9418a)
+
+running 8 tests
+test shutdown_requires_proof_only_when_unlocked ... ok
+test lock_clears_lease_ability ... ok
+test startup_reconciles_unterminated_started ... ok
+test only_admin_status_refreshes_idle_activity ... ok
+test successful_admin_lists_reset_idle_activity ... ok
+test idle_timeout_locks ... ok
+test successful_activity_audits_reset_idle_activity ... ok
+test unlock_backoff_rate_limits ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.50s
+
+     Running tests/policy_lifecycle.rs (target/debug/deps/policy_lifecycle-5bf1a0719e1b4c85)
+
+running 6 tests
+test lifecycle_seals_bind_every_canonical_record_field ... ok
+test missing_mandatory_or_named_policy_rows_fail_closed_on_open ... ok
+test policy_roll_forward_clears_replays_but_exact_retry_does_not ... ok
+test policy_activation_audit_failure_rolls_back_and_faults ... ok
+test trust_is_immutable_and_policy_versions_are_consecutive_across_restart ... ok
+test deleted_or_tampered_policy_records_fail_closed_on_unlock ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
+
+     Running tests/secret_type_contract.rs (target/debug/deps/secret_type_contract-3c17c7f665d656f7)
+
+running 2 tests
+test secret_input_exposes_only_via_explicit_call ... ok
+test debug_output_is_redacted_without_length ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/storage_contract.rs (target/debug/deps/storage_contract-d154ce39a0a3fcca)
+
+running 20 tests
+test duplicate_label_leaves_no_partial_rows ... ok
+test opening_rejects_malformed_vault_integrity_ciphertext ... ok
+test empty_or_incomplete_database_is_unsupported_layout ... ok
+test opening_rejects_missing_key_wrappers ... ok
+test opening_rejects_missing_required_index ... ok
+test execution_audit_rejects_duplicate_started_and_terminal ... ok
+test audit_rows_commit_with_mutations ... ok
+test action_update_retires_a_disabled_version ... ok
+test opening_rejects_current_version_state_mismatch ... ok
+test opening_rejects_orphan_credential_version ... ok
+test opening_rejects_prior_versions_without_migration ... ok
+test opening_rejects_malformed_wrapper_crypto_fields ... ok
+test reopen_after_clean_close_succeeds ... ok
+test revoke_is_terminal_and_transactional ... ok
+test rotate_keeps_single_active_version ... ok
+test opening_rejects_unknown_credential_suite_and_aad_version ... ok
+test opening_rejects_unknown_header_suite_and_wrapper_algorithm ... ok
+test opening_rejects_corrupt_persisted_kdf_parameters ... ok
+test opening_rejects_malformed_workload_replay_rows ... ok
+test opening_rejects_null_crypto_discriminators ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.73s
+
+   Doc-tests rekey_broker
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests rekey_connector
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests rekey_domain
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests rekey_integration
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests rekey_policy
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests rekey_vault
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

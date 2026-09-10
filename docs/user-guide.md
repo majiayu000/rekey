@@ -477,6 +477,112 @@ rekey --state-dir /secure/path/restored-state restore \
 Restore is offline and requires an empty destination. Use `--recovery` to
 verify with the recovery key. A successful restore does not reset the password.
 
+## First Agent shell integration (source checkout)
+
+The source-only `scripts/agent-quickstart.py` provides an explicit shell entry
+for a host such as Codex CLI. It prepares one Action and a short session on a
+dedicated, unlocked vault. It refuses existing policy/trust so it cannot replace
+your other grants. This is a bounded onboarding flow, not an MCP server or an
+automatic signing service.
+
+Build with `cargo build --workspace`. In your operator terminal:
+
+```bash
+target/debug/rekey --state-dir /tmp/rekey-agent-demo init
+target/debug/rekey --state-dir /tmp/rekey-agent-demo serve
+# In another operator terminal:
+target/debug/rekey --state-dir /tmp/rekey-agent-demo unlock
+python3 scripts/agent-quickstart.py prepare \
+  --rekey target/debug/rekey --state-dir /tmp/rekey-agent-demo \
+  --repo OWNER/DEDICATED-TEST-REPO --output /tmp/rekey-agent-handoff
+```
+
+Record the recovery key from init. Enter the dedicated GitHub token only in
+the hidden credential prompt, with Issues: Write on that test repository.
+The test repository must also have Issues enabled. After an indeterminate
+write result, inspect the repository and audit trail before any new attempt.
+Every Admin mutation still prompts for its step-up proof. `--credential ID`
+reuses an existing credential. To use an existing fixed Action instead of
+creating the GitHub Action, pass `--action ID@VERSION --schema schema.json`.
+
+Review `policy-draft.json`: it permits one principal to execute one Action
+version, accepts only the indicated request schema, and expires with the
+15-minute/10-use session. Have your external signer produce `trust.json` and
+`bundle.json`. Then activate them in the operator terminal:
+
+```bash
+target/debug/rekey --state-dir /tmp/rekey-agent-demo policy trust install --file trust.json
+target/debug/rekey --state-dir /tmp/rekey-agent-demo policy activate --file bundle.json
+```
+
+For a disposable local demo only, the repository's external **test signer**
+can produce those artifacts; keep the private key outside the Agent workspace:
+
+```bash
+python3 scripts/sign-test-policy.py policy --key-dir /tmp/rekey-demo-signer \
+  --snapshot /tmp/rekey-agent-handoff/policy-draft.json \
+  --trust /tmp/rekey-demo-trust.json --bundle /tmp/rekey-demo-bundle.json
+```
+
+Use these two generated paths in the activation commands. The test signer is
+not a production key-management workflow. Rekey itself never generates or
+stores the signer private key.
+
+Give the host the absolute script and handoff paths plus this instruction:
+
+> To create an issue in the authorized test repository, write a JSON file
+> with `title` and optional `body`, then run `python3 /ABS/REKEY/scripts/agent-quickstart.py
+> execute --handoff /tmp/rekey-agent-handoff --body-file /ABS/request.json`.
+> Report the returned issue URL. On failure, stop and ask the operator to
+> repair access. Never ask for a token or vault password in chat and never
+> automatically retry a write whose outcome is uncertain.
+
+The wrapper uses only `agent.sock` for execution. Capability input travels
+over stdin, not argv or environment. The handoff directory is 0700 and files
+are 0600; it contains a short-lived capability, so do not commit or paste it.
+The wrapper exits nonzero on upstream HTTP errors. A host shell must be able
+to access the script, handoff and Unix socket; this adds no OS isolation.
+
+If the credential becomes unavailable, the operator inspects `credential list`
+and uses `credential rotate ID` in a trusted terminal, then explicitly retries
+after checking whether an effect already occurred. A revoked credential may
+need a new credential and Action version; `rotate` does not undo revocation.
+Lock/restart/expiry requires a new session and a newly signed policy naming its
+new principal. The bounded helper does not renew sessions or edit existing
+policy; use the existing Admin commands for subsequent sessions. To close a
+demo immediately, `rekey --state-dir /tmp/rekey-agent-demo lock` revokes its
+sessions. Remove the temporary handoff and demo signing key when finished.
+
+## Public Vault Layer B acceptance (operator terminal)
+
+Prepare a public HTTPS Vault test origin, an exact KV version or dynamic role,
+and a disposable token. The public source JSON omits `vault_token`, for example:
+
+```json
+{"credential_type":"vault-kv-v2-source-v1","origin":"https://YOUR-VAULT-HOST",
+ "mount":"secret","path":"agents/test","version":1,"key":"token"}
+```
+
+Prepare `action.json` as a fixed HTTPS Action (its credential_id is replaced
+by the harness) and `schema.json` for the request. The target should accept
+the selected credential and return your expected status only on success.
+
+```bash
+cargo build --release -p rekey-cli -p rekey-broker
+python3 scripts/dogfood-vault.py --source source-public.json \
+  --action action.json --schema schema.json --body-file request.json \
+  --expected-status 200 --receipt /tmp/rekey-vault-layer-b.json
+```
+
+Use `vault-dynamic-source-v1` with `mount`, `role`, `key` and public `origin`
+for the dynamic path. A hidden prompt reads the token. The harness creates and
+removes a disposable local vault and test signer, uses production TLS/IP
+screening, and writes a new metadata-only receipt only after the expected HTTP
+status and audit sequence pass. It does not deploy Vault or configure provider
+permissions. Dynamic receipt validation requires `vault.lease.issued` and
+`vault.lease.revoked` before `execution.finished`. Provider expiry still bounds
+crash-time cleanup. No public run is claimed merely by adding this script.
+
 ## Errors and exit codes
 
 | Exit | Meaning | Typical codes |

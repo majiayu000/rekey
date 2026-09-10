@@ -242,6 +242,49 @@ Existing mechanical secret/API and CLI dependency scans remain required. P-06
 closes only after exact-head CI, resolved findings, squash merge, and green
 post-main security, fuzz and performance workflows.
 
+## Field evidence: 2026-09-10
+
+`docs/evidence/github-app-rotation-write-2026-09-10.json` records a production
+release-binary run against `api.github.com`, invoked through the Agent CLI
+helper from the current Codex shell session. The temporary App was installed
+only on `majiayu000/rekey-ci-dogfood` with metadata read and issues write.
+Typed add, rotation between two real App keys to credential version 2, unchanged
+capability reads before/after rotation (200), create issue (201), and denied
+execution after credential revocation (exit 4) passed. Each successful request
+had the exact started/authorized/token-revoked/finished success audit chain.
+
+The initial write returned `UPSTREAM_INDETERMINATE` while the test repository
+had Issues disabled; no issue was observed. After explicitly enabling Issues,
+one new acceptance run succeeded. There was no automatic write retry. The issue
+was closed, the original Issues setting restored, the App uninstalled/deleted
+and downloaded keys removed. This is single-repository evidence; real webhook
+delivery/apply and multi-repository changes remain outside this field claim.
+
+### Two-repository webhook follow-up
+
+`docs/evidence/github-app-repository-webhook-2026-09-10.json` records a
+separate disposable App and A → A+B → A installation scope run. Actual GitHub
+`installation_repositories` deliveries were retrieved through the GitHub App
+delivery REST API. Reconstructed payload bytes were accepted only when their
+HMAC exactly matched GitHub's recorded signature; no test signature replaced
+it. The configured HTTP target returned 403, so this proves delivery-API
+retrieval and Admin CLI apply, not successful public webhook reception.
+
+The added event incremented credential version 1 to 2. A whitespace-tampered
+payload and old expected-version replay were rejected without a version change.
+The same capability listed exactly A+B and created an issue in B with 201.
+The removed event incremented version 2 to 3; the list returned only A, and the
+previously successful B Action was denied with `github-profile-mismatch`.
+Its request-linked audit contained only started and blocked, before GitHub
+authorization or IO. Four successful request chains independently matched
+started/authorized/token-revoked/finished, one session ID and matching binding
+commitments. The receipt preserves those non-sensitive audit fields.
+
+The App, installation, both temporary repositories, local test authority,
+signer and plaintext test secrets were deleted after acceptance. No local hosts
+or proxy setting changed. This follow-up does not add a provider key-rotation
+claim or an HTTP listener to Rekey.
+
 ## 12. Primary references
 
 - [Generating an installation access token for a GitHub App](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app)

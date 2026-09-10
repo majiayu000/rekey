@@ -61,6 +61,12 @@ admin.sock ──────► rekeyd broker ◄────── agent.sock
 
 ## Quick start
 
+For the source-only guided Agent shell flow (fixed GitHub Action, protected
+session handoff, unsigned policy draft, and operator repair), see
+[First Agent shell integration](docs/user-guide.md#first-agent-shell-integration-source-checkout).
+It retains external signing and per-call step-up. Public Vault acceptance is
+documented in [Layer B acceptance](docs/user-guide.md#public-vault-layer-b-acceptance-operator-terminal).
+
 Download, checksum, and attest the supported GitHub Release archive by following
 [`docs/installation.md`](docs/installation.md). Then:
 
@@ -206,8 +212,10 @@ rekey credential rotate-vault-kv CREDENTIAL_ID --file profile.json
 This is not general Vault support: there is no latest-version lookup, private
 Vault network exception, Vault auth flow, cloud secret/KMS,
 1Password, HSM, keychain, generic URL/JSONPath adapter, or new Agent secret API.
-The protocol is fixture-bounded in this archive; live Vault OSS
-interoperability is not claimed.
+The archive baseline is fixture-bounded. The current source tree additionally
+has [one public HTTPS Vault OSS KV v2 validation](docs/evidence/vault-kv-cloudflare-2026-09-10.json)
+through Cloudflare Tunnel; that receipt does not establish broader Vault support
+or public dynamic-lease validation.
 
 This archive also supports one closed one-shot Vault dynamic source. Each
 execution performs one `GET /v1/MOUNT/creds/ROLE`, uses one selected string in

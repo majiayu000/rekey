@@ -1,0 +1,58 @@
+rekey-cli v2.0.0-alpha.2 (/Users/lifcc/Desktop/code/AI/tools/rekey/crates/rekey-cli)
+├── clap v4.6.0
+│   ├── clap_builder v4.6.0
+│   │   ├── anstream v1.0.0
+│   │   │   ├── anstyle v1.0.14
+│   │   │   ├── anstyle-parse v1.0.0
+│   │   │   │   └── utf8parse v0.2.2
+│   │   │   ├── anstyle-query v1.1.5
+│   │   │   ├── colorchoice v1.0.5
+│   │   │   ├── is_terminal_polyfill v1.70.2
+│   │   │   └── utf8parse v0.2.2
+│   │   ├── anstyle v1.0.14
+│   │   ├── clap_lex v1.1.0
+│   │   └── strsim v0.11.1
+│   └── clap_derive v4.6.0 (proc-macro)
+│       ├── heck v0.5.0
+│       ├── proc-macro2 v1.0.106
+│       │   └── unicode-ident v1.0.24
+│       ├── quote v1.0.45
+│       │   └── proc-macro2 v1.0.106 (*)
+│       └── syn v2.0.117
+│           ├── proc-macro2 v1.0.106 (*)
+│           ├── quote v1.0.45 (*)
+│           └── unicode-ident v1.0.24
+├── libc v0.2.183
+├── rand v0.9.5
+│   ├── rand_chacha v0.9.0
+│   │   ├── ppv-lite86 v0.2.21
+│   │   │   └── zerocopy v0.8.48
+│   │   └── rand_core v0.9.5
+│   │       └── getrandom v0.3.4
+│   │           ├── cfg-if v1.0.4
+│   │           └── libc v0.2.183
+│   └── rand_core v0.9.5 (*)
+├── rekey-domain v2.0.0-alpha.2 (/Users/lifcc/Desktop/code/AI/tools/rekey/crates/rekey-domain)
+│   ├── serde v1.0.228
+│   │   ├── serde_core v1.0.228
+│   │   └── serde_derive v1.0.228 (proc-macro)
+│   │       ├── proc-macro2 v1.0.106 (*)
+│   │       ├── quote v1.0.45 (*)
+│   │       └── syn v2.0.117 (*)
+│   ├── thiserror v1.0.69
+│   │   └── thiserror-impl v1.0.69 (proc-macro)
+│   │       ├── proc-macro2 v1.0.106 (*)
+│   │       ├── quote v1.0.45 (*)
+│   │       └── syn v2.0.117 (*)
+│   └── uuid v1.23.0
+├── rpassword v7.5.4
+│   ├── libc v0.2.183
+│   └── rtoolbox v0.0.3
+│       └── libc v0.2.183
+├── serde v1.0.228 (*)
+├── serde_json v1.0.149
+│   ├── itoa v1.0.18
+│   ├── memchr v2.8.0
+│   ├── serde_core v1.0.228
+│   └── zmij v1.0.21
+└── zeroize v1.8.2

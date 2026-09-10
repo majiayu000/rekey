@@ -59,6 +59,7 @@ jobs:
           cargo check --workspace --all-targets
           cargo clippy --workspace --all-targets -- -D warnings
           cargo test --workspace --offline
+          REKEY_QUICKSTART_REAL=1 PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-agent-quickstart.py
 
       - name: Real ENOSPC fault injection
         if: runner.os == 'Linux'

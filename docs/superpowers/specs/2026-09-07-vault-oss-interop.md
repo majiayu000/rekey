@@ -1,6 +1,7 @@
 # P-07 Vault OSS protocol interop
 
-> Status: Layer A implemented; Layer B not implemented. Does not change
+> Status: Layer A implemented; Layer B KV v2 public run verified (2026-09-10);
+> dynamic-lease public run remains pending. Does not change
 > P-07A/P-07B mock-HTTP behavior.
 >
 > Date: 2026-09-07
@@ -112,6 +113,15 @@ Follow `scripts/dogfood-github.sh`:
 - Throwaway vault under `$TMPDIR`; delete on exit.
 - Nonzero unless upstream success matches the closed profile.
 
+`scripts/dogfood-vault.py` takes a non-secret source profile (without
+`vault_token`), an Action definition and a request schema. It prompts for the
+Vault token using a hidden TTY and creates a temporary mode-0600 profile for
+the existing Admin CLI. A throwaway external test signer authorizes only that
+Action and principal; no signing key enters the product. It records metadata
+only (operation, status and matching redacted audit events), not upstream
+response bodies. Dynamic success additionally requires the lease-revoked audit
+event before execution.finished. This harness is not itself public-run evidence.
+
 This layer is not a CI secret. It does not authorize private RFC1918 Vault
 origins.
 
@@ -148,3 +158,53 @@ sources interoperate with HashiCorp Vault OSS in a local-CA test fixture."
 
 Not claimed: general Vault support, private Vault, HA Vault, enterprise
 namespaces, or "live HashiCorp Cloud."
+
+
+## 6. Layer B KV evidence (2026-09-10)
+
+`docs/evidence/vault-kv-cloudflare-2026-09-10.json` records a successful run of
+`scripts/dogfood-vault.py` using production release `rekey` and `rekeyd`.
+A disposable Vault OSS 1.20.3 container served one KV v2 exact-version source
+through a public Cloudflare Tunnel HTTPS origin. Rekey read that value and
+injected it into a second public HTTPS Action. The Action returned 200 only
+with the expected credential; an unauthenticated probe returned 401. The
+harness checked successful execution.started / execution.finished ordering.
+The receipt includes both binary SHA-256 values and the exact source selection.
+
+Cloudflare terminates the public TLS connection; the origin services were
+loopback-only disposable test services reached over the Tunnel. This is not
+Rekey private-network access or a production Vault deployment endorsement.
+The successful run used a temporary process-only Osaka route for cloudflared;
+HTTP/2 and QUIC failed on the prior FTR route. All temporary services,
+credential files, Cloudflare DNS exceptions and the process route were removed.
+The separately authorized api.github.com real-DNS exception remains.
+
+This completes the specification's one-source Layer B criterion for KV v2.
+Dynamic lease, broader operations and GitHub App management are separate
+validation claims and are not upgraded by this receipt.
+
+## 7. Layer B dynamic lease evidence (2026-09-10)
+
+The separate GitHub-hosted run `34447873706` in
+`majiayu000/rekey-acceptance-20260910-ephemeral`, fixture commit
+`ed308529e655932c36716d66fc49b5cba1ef35e4`, passed KV, dynamic lease and
+explicit credential-repair acceptance. The archived evidence is under
+`outputs/rekey-onboarding-acceptance-20260910/`: `public-run.json`,
+`public-evidence/vault-dynamic-receipt.json`, `public-pass-summary.log` and
+`fixture/`. Its source snapshot was `cffaa23df89ffd1dd2ff80ac9e8599c184349489`
+plus the onboarding scripts, not a newly published release.
+
+Vault OSS 1.20.3 issued a PostgreSQL credential for the exact `database`
+mount and `agent-test` role. The fixed public HTTPS Action authenticated
+against PostgreSQL and returned 200. The harness required the unique successful
+started/issued/revoked/finished audit sequence and independently verified that
+the database role was removed after execution. The complete run, including
+cleanup, passed; the intermediate receipt alone is not sufficient evidence.
+
+This is bounded Field Validated evidence for that one-shot dynamic profile.
+Cloudflare terminated public TLS and tunneled to disposable runner services.
+Only the exact temporary hostname was mapped to a public-DNS-verified IPv4 on
+the runner; its mapping, containers, volumes, network, tunnel and temporary
+credentials were removed. This run made no local hosts or proxy changes and
+does not establish renewal, crash cleanup, private-network support or general
+Vault interoperability.

@@ -1,0 +1,22 @@
+{
+  "tested_at": "2026-09-10T07:05:01.626176+00:00",
+  "layer": "B",
+  "source_kind": "vault-kv-v2-source-v1",
+  "source_origin": "https://del-entrance-read-technique.trycloudflare.com",
+  "source_mount": "secret",
+  "action_origin": "https://del-entrance-read-technique.trycloudflare.com",
+  "source_selection": {
+    "path": "agents/test",
+    "version": 1,
+    "key": "token"
+  },
+  "action_method": "POST",
+  "action_path": "/check/kv",
+  "upstream_status": 200,
+  "required_events": [
+    "execution.started",
+    "execution.finished"
+  ],
+  "rekey_version": "rekey 2.0.0-alpha.2",
+  "limitation": "one public HTTPS source and fixed action; not general Vault support"
+}
