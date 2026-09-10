@@ -181,10 +181,19 @@ pub fn github_action_is_reserved(action: &FixedHttpAction) -> bool {
         || (action.method == rekey_domain::action::FixedMethod::Post
             && path.strip_prefix("/repos/").is_some_and(|tail| {
                 let mut segments = tail.split('/');
-                segments.next().is_some_and(|value| !value.is_empty())
-                    && segments.next().is_some_and(|value| !value.is_empty())
-                    && segments.next() == Some("issues")
-                    && segments.next().is_none()
+                let owner_ok = segments.next().is_some_and(|value| !value.is_empty());
+                let repo_ok = segments.next().is_some_and(|value| !value.is_empty());
+                if !(owner_ok && repo_ok && segments.next() == Some("issues")) {
+                    return false;
+                }
+                match (segments.next(), segments.next(), segments.next()) {
+                    (None, _, _) => true,
+                    (Some(number), Some("comments"), None) => number
+                        .parse::<u64>()
+                        .ok()
+                        .is_some_and(|parsed| parsed != 0 && parsed.to_string() == number),
+                    _ => false,
+                }
             }));
     action.origin.host() == "api.github.com"
         && action.origin.port() == 443

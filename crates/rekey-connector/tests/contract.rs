@@ -99,9 +99,21 @@ fn selection_preserves_the_reserved_github_no_fallback_boundary() {
     let github = action("https://api.github.com", "/installation/repositories");
     let mut github_issue = action("https://api.github.com", "/repos/owner/repo/issues");
     github_issue.method = FixedMethod::Post;
+    let mut github_comment = action(
+        "https://api.github.com",
+        "/repos/owner/repo/issues/7/comments",
+    );
+    github_comment.method = FixedMethod::Post;
+    let mut github_comment_bad = action(
+        "https://api.github.com",
+        "/repos/owner/repo/issues/07/comments",
+    );
+    github_comment_bad.method = FixedMethod::Post;
     assert!(!github_action_is_reserved(&ordinary));
     assert!(github_action_is_reserved(&github));
     assert!(github_action_is_reserved(&github_issue));
+    assert!(github_action_is_reserved(&github_comment));
+    assert!(!github_action_is_reserved(&github_comment_bad));
     assert_eq!(
         resolve_builtin(CredentialKind::OpaqueToken, &ordinary),
         Ok(BuiltInConnector::FixedHttpHeaderV1)
@@ -112,6 +124,10 @@ fn selection_preserves_the_reserved_github_no_fallback_boundary() {
     );
     assert_eq!(
         resolve_builtin(CredentialKind::OpaqueToken, &github_issue),
+        Err(ConnectorSelectionError::SelectionRejected)
+    );
+    assert_eq!(
+        resolve_builtin(CredentialKind::OpaqueToken, &github_comment),
         Err(ConnectorSelectionError::SelectionRejected)
     );
     assert_eq!(

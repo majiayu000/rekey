@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import stat
 import subprocess
 import sys
 import uuid
@@ -23,6 +24,35 @@ def digest(path):
         for block in iter(lambda: source.read(1024 * 1024), b''):
             result.update(block)
     return result.hexdigest()
+
+
+def require_private_outbox(path: Path):
+    if path.exists():
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode):
+            raise ValueError('outbox must not be a symlink')
+        if not stat.S_ISDIR(info.st_mode):
+            raise ValueError('outbox must be a directory')
+        if info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise ValueError('outbox must be a current-user-owned 0700 directory')
+    else:
+        path.mkdir(parents=True, mode=0o700)
+        info = path.lstat()
+        if (
+            stat.S_ISLNK(info.st_mode)
+            or not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.getuid()
+            or info.st_mode & 0o077
+        ):
+            raise ValueError('outbox must be a current-user-owned 0700 directory')
+
+
+def require_private_export_dir(path: Path):
+    info = path.lstat()
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise ValueError('outbox contains a non-directory entry: ' + path.name)
+    if info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise ValueError('outbox entry must be a current-user-owned 0700 directory: ' + path.name)
 
 
 def export(args):
@@ -74,8 +104,7 @@ def sync(args):
     for entry in sorted(args.outbox.iterdir()):
         if entry.name.startswith('.'):
             continue  # Unpublished exports are ineligible.
-        if entry.is_symlink() or not entry.is_dir():
-            raise ValueError('outbox contains a non-directory entry: ' + entry.name)
+        require_private_export_dir(entry)
         artifact, receipt_file = entry / 'snapshot.rkbackup', entry / 'receipt.json'
         if artifact.is_symlink() or receipt_file.is_symlink():
             raise ValueError('symlink in export: ' + entry.name)
@@ -122,7 +151,7 @@ def main():
     try:
         if not args.outbox.is_absolute():
             raise ValueError('outbox must be absolute')
-        args.outbox.mkdir(parents=True, exist_ok=True, mode=0o700)
+        require_private_outbox(args.outbox)
         if args.operation == 'export':
             export(args)
         else:

@@ -564,7 +564,7 @@ PRAGMA busy_timeout = 5000;
 `vault-kv-v2-source` credential kind 提升为 v8，最后由 P-07B 为
 `vault-dynamic-source` 提升为 v9，OAU-02 `keycloak-token-exchange` 再提升为 v10。
 当前源码只接受 v10，不迁移或覆盖旧 state/backup。当前 archive `v2.0.0-alpha.2` 只接受 v9；
-历史 `v2.0.0-alpha.1` 制品是 v5。v9 不提供 v1 或 v4–v8 migration 或 compatibility reader。
+历史 `v2.0.0-alpha.1` 制品是 v5。v10 不提供 v1 或 v4–v9 migration 或 compatibility reader。
 
 ~~~sql
 CREATE TABLE vault_header (
@@ -1147,7 +1147,7 @@ Agent 输入 fake 的契约测试仍使用 injected `UpstreamTransport`。第 2 
 - 验证 SQLite quick_check、schema_digest、format_version、至少一个 wrapper 行、VRK 解包、header 内 encrypted integrity record，以及 **每一条** `credential_versions` payload。不能只检查数据库结构或只解密第一条 Credential。
 - 在写 staging 前先持久化 incomplete marker；Broker 见到 marker 必须拒绝启动。输入以固定大小 buffer 流式复制到 staging 并同时计算 SHA-256，对 staging 完成上述验证与 `restore.completed` 提交，fsync 文件，rename 到 `vault.sqlite3`，再 fsync 父目录。
 - 只有安装文件已持久化后才能删除 marker 并再次 fsync 父目录；这是 restore 成功点。成功点之前的失败必须删除 staging、installed DB 及 SQLite sidecar，并持久化清理；无法证明清理完成时必须保留 marker，确保不留下可启动的半恢复 vault。后续 restore 只能在取得 offline lock 后清理该 marker 所标记的已中断内部 artifact，不得删除未知文件。
-- 当前开发实现只恢复 format version 9；不支持 v1/v2/v3/v4/v5/v6/v7/v8 或未来未知版本。
+- 当前开发实现只恢复 format version 10；不支持 v1/v2/v3/v4/v5/v6/v7/v8/v9 或未来未知版本。当前 archive `v2.0.0-alpha.2` 仍只接受 v9。
 
 ## 17. Error Taxonomy
 
@@ -1640,8 +1640,8 @@ root select 视作 fault。若 root 已取得 actor 的 completed `JoinHandle` r
 新增 typed credential kind 的 breaking schema change 将 durable format bump 到 4；旧非空
 state dir 继续明确拒绝，不提供迁移或兼容读取。
 随后 credential lifecycle seal 将 foundation format bump 到 5；P-03 的 durable policy
-又由 P-04 bump 到 7、P-07A bump 到 8、P-07B bump 到 9。当前实现只接受 v9，不保留
-v4/v5/v6/v7/v8 兼容读取或迁移入口；当前 archive `v2.0.0-alpha.2` 是 v9，历史
+又由 P-04 bump 到 7、P-07A bump 到 8、P-07B bump 到 9，OAU-02 再 bump 到 10。当前实现只接受 v10，不保留
+v4/v5/v6/v7/v8/v9 兼容读取或迁移入口；当前 archive `v2.0.0-alpha.2` 是 v9，历史
 `v2.0.0-alpha.1` 制品是 v5。
 
 首个 P2 垂直切片是一个封闭的 GitHub App Installation profile，不创建通用

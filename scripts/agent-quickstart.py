@@ -85,10 +85,28 @@ def prepare(args):
 
     args.output.mkdir(mode=0o700)  # Exclusive: never overwrite a previous handoff.
     if args.repo:
+        # /repos/{owner}/{repo}/issues is GitHub-App-reserved; OpaqueToken cannot bind it.
         credential = args.credential
         if credential is None:
-            print("Enter the vault proof, then the dedicated GitHub token in rekey's hidden prompts.", file=sys.stderr)
-            credential = cli_json(base + ["credential", "add", "agent-quickstart"])["id"]
+            if args.github_app_profile is None:
+                raise InputError(
+                    "prepare --repo requires --credential (GitHub App id) "
+                    "or --github-app-profile PATH"
+                )
+            print(
+                "Enter the vault proof in rekey's hidden prompt for add-github-app.",
+                file=sys.stderr,
+            )
+            credential = cli_json(
+                base
+                + [
+                    "credential",
+                    "add-github-app",
+                    "agent-quickstart",
+                    "--file",
+                    str(args.github_app_profile),
+                ]
+            )["id"]
         definition = {
             "name": "github-create-issue", "credential_id": credential,
             "origin": "https://api.github.com", "method": "POST",
@@ -163,7 +181,12 @@ def main():
     source = setup.add_mutually_exclusive_group(required=True)
     source.add_argument("--repo")
     source.add_argument("--action", help="existing ACTION_ID@VERSION")
-    setup.add_argument("--credential", help="existing credential ID for --repo")
+    setup.add_argument("--credential", help="existing GitHub App credential ID for --repo")
+    setup.add_argument(
+        "--github-app-profile",
+        type=Path,
+        help="GitHub App profile JSON for prepare --repo when --credential is omitted",
+    )
     setup.add_argument("--schema", type=Path)
     run = commands.add_parser("execute", help="Agent shell: execute the one prepared Action")
     run.add_argument("--handoff", type=Path, required=True)

@@ -77,6 +77,30 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+// JSON escapes ASCII controls; also escape Unicode controls/direction markers for terminal review.
+fn terminal_json(value: &serde_json::Value) -> Result<String> {
+    let text = serde_json::to_string_pretty(value)?;
+    let mut safe = String::new();
+    for ch in text.chars() {
+        if (ch.is_control() && ch != '\n')
+            || matches!(
+                ch,
+                '\u{061c}'
+                    | '\u{200e}'..='\u{200f}'
+                    | '\u{202a}'..='\u{202e}'
+                    | '\u{2066}'..='\u{2069}'
+                    | '\u{2028}'..='\u{2029}'
+            )
+        {
+            use std::fmt::Write;
+            write!(safe, "\\u{:04x}", ch as u32)?;
+        } else {
+            safe.push(ch);
+        }
+    }
+    Ok(safe)
+}
+
 fn run() -> Result<()> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     if args.len() == 1 && args[0] == "--help" {
@@ -87,9 +111,7 @@ fn run() -> Result<()> {
         let (snapshot, digest) = draft(Path::new(&args[1]))?;
         println!(
             "{}",
-            serde_json::to_string_pretty(
-                &json!({"snapshot": snapshot, "reviewed_sha256": digest})
-            )?
+            terminal_json(&json!({"snapshot": snapshot, "reviewed_sha256": digest}))?
         );
         return Ok(());
     }
