@@ -26,6 +26,15 @@ impl ActionExecutor {
         };
         let request_body = match github_action {
             crate::github_profile::GitHubAction::ListRepositories => Vec::new(),
+            crate::github_profile::GitHubAction::CreateIssueComment { .. } => {
+                match GitHubAppCredential::comment_body(request) {
+                    Ok(body) => body,
+                    Err(err) => {
+                        started.blocked_until(effect_deadline, err.reason()).await?;
+                        return Err(BrokerError::Denied(err.reason()));
+                    }
+                }
+            }
             crate::github_profile::GitHubAction::CreateIssue { .. } => {
                 match GitHubAppCredential::issue_body(request) {
                     Ok(body) => body,
@@ -184,6 +193,7 @@ pub(super) fn github_post_effect_error(
     if matches!(
         action,
         crate::github_profile::GitHubAction::CreateIssue { .. }
+            | crate::github_profile::GitHubAction::CreateIssueComment { .. }
     ) {
         BrokerError::Indeterminate(reason)
     } else {

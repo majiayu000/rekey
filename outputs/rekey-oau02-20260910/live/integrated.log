@@ -1,0 +1,8 @@
+provider-readiness: passed
+admin-profile-add: passed
+broker-success-revoked-before-expiry: passed
+same-subject-after-issued-revoke: passed
+reflected-token-denied-and-revoked: passed
+Waiting 28.9s for dedicated subject expiry
+expired-subject-denied-without-resource: passed
+Cleanup: {"owned_container_removed": true, "owned_container_absent": true, "temporary_secret_directory_removed": true, "broker_stopped": true}

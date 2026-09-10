@@ -16,6 +16,43 @@ struct VaultProfileMarker<'a> {
     credential_type: &'a str,
 }
 
+pub fn credential_add_keycloak(
+    state_dir: &Path,
+    label: &str,
+    file: &Path,
+    recovery: bool,
+    password_stdin: bool,
+) -> Result<(), CliError> {
+    add_vault_profile(
+        state_dir,
+        label,
+        file,
+        recovery,
+        password_stdin,
+        "keycloak-token-exchange-v1",
+        "keycloak-token-exchange",
+        "Keycloak profile",
+    )
+}
+pub fn credential_rotate_keycloak(
+    state_dir: &Path,
+    credential_id: &str,
+    file: &Path,
+    recovery: bool,
+    password_stdin: bool,
+) -> Result<(), CliError> {
+    rotate_vault_profile(
+        state_dir,
+        credential_id,
+        file,
+        recovery,
+        password_stdin,
+        "keycloak-token-exchange-v1",
+        admin_msg::CREDENTIAL_ROTATE_KEYCLOAK,
+        "Keycloak profile",
+    )
+}
+
 pub fn credential_add_vault_kv(
     state_dir: &Path,
     label: &str,

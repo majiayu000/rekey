@@ -1,0 +1,13 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.17s
+     Running tests/approval_contract.rs (target/debug/deps/approval_contract-971f102914abcb12)
+
+running 6 tests
+test direct_permit_refuses_approval_challenge_and_unexpected_grants ... ok
+test approval_audit_transaction_failure_prevents_the_remote_effect ... ok
+test lock_and_capability_exhaustion_invalidate_challenges_without_amplifying_audit ... ok
+test one_time_grant_admits_exactly_once_under_a_race ... ok
+test two_person_quorum_rejects_one_and_accepts_two_distinct_approvers ... ok
+test time_window_grant_obeys_its_signed_use_limit ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+

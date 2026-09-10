@@ -1,0 +1,13 @@
+{
+  "status_counts": {
+    "已完成": 17,
+    "待设计": 36,
+    "维护": 107,
+    "不排期": 6
+  },
+  "out_of_scope_cells_preserved": true,
+  "styles_and_native_sheet_features_preserved": true,
+  "maintenance_rows": 107,
+  "excluded_rows": 6,
+  "final_handoff_B19_current": true
+}

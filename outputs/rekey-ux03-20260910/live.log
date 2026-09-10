@@ -1,0 +1,2 @@
+PASS: terminal metadata escaped; missing/disabled/GitHub/Vault/revoked registrations reject before rotation
+PASS: real PTY decline unchanged; provide rotates to v2 with zero executions; explicit TLS request uses v2 and succeeds; revoked repair rejected; no secret output

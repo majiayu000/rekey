@@ -324,3 +324,16 @@ async fn closed_remote_effect_gate_commits_one_blocked_terminal() {
     drop(tracker);
     worker.await.unwrap();
 }
+
+#[test]
+fn github_comment_uncertainty_never_invites_retry() {
+    let error = github_post_effect_error(
+        crate::github_profile::GitHubAction::CreateIssueComment {
+            repository_index: 0,
+            issue_number: 7,
+        },
+        "resource-transport",
+    );
+    assert_eq!(error.code(), "UPSTREAM_INDETERMINATE");
+    assert!(!error.retryable());
+}

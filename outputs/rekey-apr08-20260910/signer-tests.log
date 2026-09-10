@@ -1,0 +1,13 @@
+   Compiling rekey-policy v2.0.0-alpha.2 (/Users/lifcc/Desktop/code/AI/tools/rekey/crates/rekey-policy)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.73s
+     Running tests/approval_signer.rs (target/debug/deps/approval_signer-32020ee30ba4fa1d)
+
+running 5 tests
+test expired_challenge_is_rejected_without_signing ... ok
+test changed_trusted_action_requires_new_review ... ok
+test wrong_approver_key_and_non_private_key_are_rejected ... ok
+test reviewed_digest_and_changed_body_are_rejected ... ok
+test valid_grant_verifies_is_private_bounded_and_never_overwrites ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.58s
+

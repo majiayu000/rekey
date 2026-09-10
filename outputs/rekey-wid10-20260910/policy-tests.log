@@ -1,0 +1,20 @@
+   Compiling ahash v0.8.12
+   Compiling jsonschema-value v0.52.0
+   Compiling referencing v0.52.0
+   Compiling jsonschema v0.52.0
+   Compiling rekey-policy v2.0.0-alpha.2 (/Users/lifcc/Desktop/code/AI/tools/rekey/crates/rekey-policy)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.51s
+     Running tests/workload_identity.rs (target/debug/deps/workload_identity-9b157380ada55b27)
+
+running 8 tests
+test verification_key_is_bound_to_the_matched_identity ... ok
+test malformed_compact_jwt_and_duplicate_claims_fail_closed ... ok
+test workload_catalog_rejects_unknown_fields_duplicates_and_unusable_principals ... ok
+test non_canonical_or_invalid_spiffe_ids_are_rejected ... ok
+test all_profiles_map_exact_subjects_and_authorized_actions ... ok
+test claims_are_exact_bounded_and_replay_digest_is_stable ... ok
+test github_x5t_is_bounded_metadata_never_a_key_selector ... ok
+test rs256_verifies_and_signature_or_selector_tampering_fails ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+

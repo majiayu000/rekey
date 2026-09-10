@@ -1,0 +1,21 @@
+{
+  "workspace_test": {
+    "log": "workspace-tests-verified.log",
+    "exit_code": 0
+  },
+  "workspace_check": {
+    "log": "check-final.log",
+    "exit_code": 0
+  },
+  "clippy": {
+    "log": "clippy-verified.log",
+    "exit_code": 0
+  },
+  "mechanical": {
+    "log": "mechanical-final.log",
+    "exit_code": 0
+  },
+  "format_check": true,
+  "root_oauth_live": "../rekey-oau02-20260910/live/integrated/receipt.json",
+  "source_uncommitted": true
+}

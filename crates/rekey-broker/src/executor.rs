@@ -36,6 +36,7 @@ mod github_run;
 #[cfg(test)]
 use github_run::github_post_effect_error;
 mod http;
+pub(crate) mod keycloak;
 mod sealing;
 pub(crate) mod vault_dynamic;
 mod vault_dynamic_run;
@@ -337,6 +338,13 @@ impl ActionExecutor {
                     profile,
                 })
             }
+            BuiltInConnector::KeycloakTokenExchangeV1 => {
+                let profile = keycloak::KeycloakProfile::parse_profile(secret);
+                PreparedExecution::Keycloak(keycloak::KeycloakPrepared {
+                    credential_version,
+                    profile,
+                })
+            }
             BuiltInConnector::VaultKvV2SourceV1 => {
                 let profile = VaultKvProfile::parse_profile(secret);
                 PreparedExecution::Vault(VaultPrepared {
@@ -360,6 +368,18 @@ impl ActionExecutor {
             }
         });
 
+        if let PreparedExecution::Keycloak(prepared) = prepared {
+            return self
+                .run_keycloak(
+                    started,
+                    request,
+                    action,
+                    prepared,
+                    effect_deadline,
+                    effect_kind,
+                )
+                .await;
+        }
         if let PreparedExecution::GitHub(prepared) = prepared {
             return self
                 .run_github(
@@ -499,6 +519,7 @@ enum PreparedExecution {
     GitHub(GitHubPrepared),
     Vault(VaultPrepared),
     VaultDynamic(VaultDynamicPrepared),
+    Keycloak(keycloak::KeycloakPrepared),
 }
 
 struct GitHubPrepared {

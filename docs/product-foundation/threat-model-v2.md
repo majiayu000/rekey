@@ -420,15 +420,25 @@ Action 和最小响应 schema 比通用透明代理更强。任何新增 canonic
 - P-03 policy trust 和 signed bundle 持久化并在 unlock 后重新验证；approval
   challenge、grant 使用计数和 capability session 仍只存在内存，lock/restart 清空。
   Rekey 只是签名验证与 enforcement point，不提供私钥托管或远程审批控制面。
-- P-04 workload identity 只接受 signed policy 内静态 Ed25519/RS256 公钥和四种
-  closed JWT profile；不做 JWKS/discovery/introspection，也不调用 SPIRE、Kubernetes、
-  CI 或 cloud API。JWT replay digest 持久化，只有 new-version policy activation
+- P-04 原始 workload identity 接受 signed policy 内静态 Ed25519/RS256 公钥和四种
+  closed JWT profile。源码 WID-09 另加显式签名选择的固定 GitHub HTTPS JWKS，每次
+  mint 重新获取，不缓存或退回旧 key；远端 key 不修改 policy digest 或 replay 范围。
+  不做 discovery/introspection，也不调用 SPIRE、Kubernetes 或任意 JWT 给出的 URL。
+  JWT replay digest 持久化，只有 new-version policy activation
   撤销 workload-minted session，exact same-bundle retry 保留现有 session；默认拓扑
   和已发布 Alpha 范围不变。
 - P-05 `rekey-connector` 只是编译期静态 contract registry。它描述既有 opaque
   header inject、closed GitHub App、closed Vault KV v2 source 和 one-shot Vault dynamic source 的 effect/lifecycle，由 Broker 继续持有 Secret、
-  IO、deadline、audit、sealing 和 revoke。MCP/OAuth adapter 只做无秘密投影，不提供
-  MCP server、live generic OAuth、dynamic plugin/registry 或新 Agent operation。
+  IO、deadline、audit、sealing 和 revoke。MCP/OAuth adapter 只做无秘密投影；源码
+  MCP-03 的独立 stdio server 仅复用该投影与 Agent IPC，读取 operator 限定的 manifest
+  和受保护 capability 文件，不访问 Vault 或 Admin。Codex 工具发现与直接 MCP 调用
+  分别验收；不由此推导 live generic OAuth、dynamic plugin/registry 或新 Agent operation。
+- 源码 OAU-02 是固定 Keycloak Standard V2 交换、单一 audience/GET 目标和已签发
+  token 的直接撤销。源凭证与标准 JSON 转义表示参与响应 sealing；成功结果要求撤销
+  与审计先完成。Agent 不能取得 token，也不能选 source/target；没有 refresh、后台续期
+  或进程崩溃后的撤销保证。provider introspection inactive 不代表只做离线 JWT 验证的
+  resource 会立即拒绝。真实 Keycloak + Broker 的本地 TLS fixture 不是公网筛选证明。
+  新 kind/AAD code 5 使用 schema 10；旧 state/backup 明确拒绝，不做迁移。
 - P-07A 只允许管理员登记一个 public HTTPS Vault KV v2 origin、mount、path、精确
   非零版本、精确 string key 和 bootstrap token。Broker 在 durable started audit 与
   remote-effect admission 后执行一次无重试 GET，解析后只把值注入既有 fixed Action；

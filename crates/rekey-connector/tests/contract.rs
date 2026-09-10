@@ -45,7 +45,7 @@ fn action(origin: &str, path: &str) -> FixedHttpAction {
 #[test]
 fn registry_is_versioned_ordered_and_lifecycle_complete() {
     rekey_connector::testkit::assert_registry(registry());
-    assert_eq!(registry().len(), 4);
+    assert_eq!(registry().len(), 5);
     assert!(registry().iter().all(|contract| {
         contract.source == ConnectorSource::BuiltInBinary
             && contract.isolation == ConnectorIsolation::BrokerProcess
@@ -61,7 +61,7 @@ fn registry_is_versioned_ordered_and_lifecycle_complete() {
         ]
     );
     assert_eq!(
-        registry()[2].effects,
+        BuiltInConnector::VaultDynamicSourceV1.contract().effects,
         &[
             CredentialEffect::Resolve,
             CredentialEffect::Lease,
@@ -69,9 +69,13 @@ fn registry_is_versioned_ordered_and_lifecycle_complete() {
             CredentialEffect::Revoke,
         ]
     );
-    assert!(registry()[2].revoke_before_success);
+    assert!(
+        BuiltInConnector::VaultDynamicSourceV1
+            .contract()
+            .revoke_before_success
+    );
     assert_eq!(
-        registry()[3].effects,
+        BuiltInConnector::VaultKvV2SourceV1.contract().effects,
         &[CredentialEffect::Resolve, CredentialEffect::Inject]
     );
 }
@@ -210,4 +214,36 @@ fn oauth_projection_contains_only_fixed_public_metadata() {
     ] {
         assert!(!encoded.contains(forbidden));
     }
+}
+
+#[test]
+fn keycloak_contract_requires_exchange_inject_revoke_and_preserves_reserved_paths() {
+    let c = BuiltInConnector::KeycloakTokenExchangeV1.contract();
+    assert_eq!(
+        c.effects,
+        &[
+            CredentialEffect::Exchange,
+            CredentialEffect::Inject,
+            CredentialEffect::Revoke
+        ]
+    );
+    assert!(c.revoke_before_success);
+    assert_eq!(
+        c.exchange_protocol,
+        Some(rekey_connector::ExchangeProtocol::OAuthTokenExchange)
+    );
+    assert_eq!(
+        resolve_builtin(
+            CredentialKind::KeycloakTokenExchange,
+            &action("https://api.example.com", "/fixed")
+        ),
+        Ok(BuiltInConnector::KeycloakTokenExchangeV1)
+    );
+    assert!(
+        resolve_builtin(
+            CredentialKind::KeycloakTokenExchange,
+            &action("https://api.github.com", "/installation/repositories")
+        )
+        .is_err()
+    );
 }

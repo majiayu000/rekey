@@ -22,8 +22,11 @@ The first slice supports four explicit JWT profiles:
 - CI/cloud OIDC workload tokens.
 
 All verifier configuration is carried inside the existing signed policy
-snapshot. Rekey does not discover issuers, fetch JWKS, call token introspection,
-hold issuer private keys, or become an identity provider.
+snapshot. This original slice uses static public keys. The source-only
+[WID-09 extension](2026-09-10-github-actions-jwks.md) adds explicit signed opt-in
+to fresh keys from one fixed GitHub HTTPS endpoint. Rekey does not discover
+issuers, call token introspection, hold issuer private keys, or become an
+identity provider.
 
 ## 2. User-visible flow
 
@@ -159,8 +162,12 @@ Validation is total and fail-closed:
 1. Split into exactly three nonempty compact-JWS segments before decoding.
 2. Decode header and claims with base64url without padding and reject duplicate
    JSON keys or trailing data.
-3. Header permits only `alg`, `kid`, and optional `typ`. `typ`, when present,
-   must be `JWT` or `at+jwt`. `kid` is required.
+3. Header permits only `alg`, `kid`, optional `typ`, and optional RS256
+   `x5t`. `typ`, when present, must be `JWT` or `at+jwt`. `kid` is required.
+   WID-10 adds GitHub's RFC 7515 certificate thumbprint: `x5t` must be a
+   canonical unpadded base64url string decoding to 20 bytes. It is authenticated
+   header metadata only, never a key selector or trust input; no certificate
+   fetch, SHA-1 signature validation, `jku`, `x5u`, `x5c` or `crit` support.
 4. Select exactly one active policy entry by exact issuer and exactly one key
    by exact `kid` plus `alg`.
 5. Verify the compact signing input before trusting subject, audience, time, or
@@ -305,8 +312,9 @@ P-04 is complete only when all are fresh and passing:
 
 ## 11. Non-goals
 
-- OIDC discovery, remote JWKS refresh, introspection, userinfo, revocation
-  endpoints, or outbound identity-provider calls.
+- OIDC discovery, introspection, userinfo, revocation endpoints, arbitrary
+  issuer calls or background key refresh. WID-09 separately specifies fixed
+  GitHub JWKS fetching at mint time.
 - X.509-SVID, mTLS workload API, SPIRE Agent socket integration, TPM, hardware
   attestation, cloud instance metadata, or node identity.
 - SAML, SCIM, human login, groups, roles, organization hierarchy, break-glass,

@@ -24,8 +24,8 @@ mod policy_approval;
 pub use policy_approval::{approval_prepare, policy_activate, policy_status, policy_trust_install};
 mod vault_admin;
 pub use vault_admin::{
-    credential_add_vault_dynamic, credential_add_vault_kv, credential_rotate_vault_dynamic,
-    credential_rotate_vault_kv,
+    credential_add_keycloak, credential_add_vault_dynamic, credential_add_vault_kv,
+    credential_rotate_keycloak, credential_rotate_vault_dynamic, credential_rotate_vault_kv,
 };
 
 const ACTION_RESPONSE_TIMEOUT: Duration = Duration::from_secs(130);

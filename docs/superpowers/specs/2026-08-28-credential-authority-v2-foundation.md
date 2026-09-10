@@ -558,17 +558,18 @@ PRAGMA busy_timeout = 5000;
 - 不允许其他进程打开 SQLite；Admin/Web 读取也通过 AuthorityWorker。
 - 每次启动运行 `PRAGMA quick_check`；失败后保持 Locked 并返回 `StorageIntegrityFailed`。
 
-### 10.3 Schema v9
+### 10.3 Schema v10
 
 当前开发实现先由 P-04 将 durable schema 提升为 v7，再由 P-07A 为新的
 `vault-kv-v2-source` credential kind 提升为 v8，最后由 P-07B 为
-`vault-dynamic-source` 提升为 v9。当前 archive `v2.0.0-alpha.2` 只接受 v9；
+`vault-dynamic-source` 提升为 v9，OAU-02 `keycloak-token-exchange` 再提升为 v10。
+当前源码只接受 v10，不迁移或覆盖旧 state/backup。当前 archive `v2.0.0-alpha.2` 只接受 v9；
 历史 `v2.0.0-alpha.1` 制品是 v5。v9 不提供 v1 或 v4–v8 migration 或 compatibility reader。
 
 ~~~sql
 CREATE TABLE vault_header (
     singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
-    format_version     INTEGER NOT NULL CHECK (format_version = 9),
+    format_version     INTEGER NOT NULL CHECK (format_version = 10),
     vault_id           BLOB NOT NULL CHECK (length(vault_id) = 16),
     crypto_suite       TEXT NOT NULL CHECK (crypto_suite = 'rkca-aes256gcm-argon2id-hkdfsha256-v1'),
     created_at_ms      INTEGER NOT NULL,
@@ -599,7 +600,7 @@ ON key_wrappers(wrapper_kind) WHERE wrapper_kind = 'password' AND state = 'activ
 CREATE TABLE credentials (
     credential_id      BLOB PRIMARY KEY CHECK (length(credential_id) = 16),
     label              TEXT NOT NULL UNIQUE,
-    kind               TEXT NOT NULL CHECK (kind IN ('opaque-token', 'github-app-installation', 'vault-kv-v2-source', 'vault-dynamic-source')),
+    kind               TEXT NOT NULL CHECK (kind IN ('opaque-token', 'github-app-installation', 'vault-kv-v2-source', 'vault-dynamic-source', 'keycloak-token-exchange')),
     state              TEXT NOT NULL CHECK (state IN ('active', 'revoked')),
     current_version    INTEGER NOT NULL CHECK (current_version >= 1),
     created_at_ms      INTEGER NOT NULL,
@@ -1887,3 +1888,7 @@ audit/failure-semantics 人工审查尚未进行。因此当前仓库不能声�
 `docs/product-foundation/feature-truth-matrix.md` 为准。
 
 实现过程中如果发现 spec 与可验证事实冲突，必须先修改本 spec 和相关基线，再修改代码；不得用临时兼容层或 warning fallback 绕过合同。
+
+Current source OAU-02 adds Keycloak kind/AAD code 5 and schema 10. Schema 9 state
+and backups are rejected without migration; historical release evidence remains
+unchanged. See `2026-09-10-keycloak-token-exchange-oau02.md`.

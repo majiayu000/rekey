@@ -231,9 +231,14 @@ sessions. Retrying the exact active bundle preserves both kinds of session.
 Lock, restart, expiry, use exhaustion, and explicit revoke still end the
 resulting capability.
 
-Rekey does not fetch JWKS, perform OIDC discovery or introspection, contact
-SPIRE or Kubernetes APIs, or hold issuer private keys. Rotate a workload
-verification key by signing and activating the next consecutive policy bundle;
+Released Alpha uses static keys. In this source tree, the
+[WID-09 extension](superpowers/specs/2026-09-10-github-actions-jwks.md) also accepts
+the exact GitHub issuer with `keys: []` and
+`online_key_source: "github-actions-jwks"` in the signed identity. The Broker
+fetches only its fixed public HTTPS JWKS for each mint and denies admission on
+outage or invalid keys; no cache, discovery or introspection is used.
+Rekey does not contact SPIRE or Kubernetes APIs or hold issuer private keys.
+Rotate a static workload verification key by signing and activating the next consecutive policy bundle;
 the old policy activation revokes existing workload sessions.
 
 To require approval, add approvers to the snapshot catalog and use a
@@ -276,6 +281,97 @@ determining rule, policy version/digest, expiry, and signed use count. Approval
 requests and usage are memory-only and vanish on session revocation, lock, or
 restart. Rekey has no remote approval service, notifications, dashboard, human
 directory, or private-key custody.
+
+Source builds also provide `rekey-approval-sign` for a local operator's
+single-person, one-time review. This is not a remote approval service: the
+challenge has no source signature, and another process running as your user
+can still read the same files. Independently choose policy, trust, Action, and
+key files from an operator-owned directory. Do not take them from an Agent
+workspace. The signer only handles `one-time` / `quorum=1` / `max_uses=1`.
+
+### Local independent approval endpoint
+
+Keep these files in an operator directory that the Agent cannot write:
+
+- `policy.json` and `trust.json` from `rekey-policy-sign` (or another external
+  signer), already installed/activated on this Broker
+- `trusted-action.json`: the full `FixedHttpAction` printed by
+  `rekey action create` / `rekey action update`, or one object copied from
+  `rekey action list` after you confirm origin, method, path, and version
+- `approver.der`: PKCS8 Ed25519, owned by the current user, mode `0600`, not a
+  symlink. Generate and extract the 32-byte public key as lowercase hex:
+
+```bash
+openssl genpkey -algorithm Ed25519 -outform DER -out approver.der
+chmod 600 approver.der
+openssl pkey -in approver.der -inform DER -pubout -outform DER | tail -c 32 | xxd -p -c 32
+```
+
+Put that public key and a stable approver UUID into the signed policy catalog.
+The `--approver-id` you pass later must be that UUID, and the key must match it.
+
+1. From a trusted terminal, prepare the **exact** request that will later
+   execute. `body` in the approval request must be that same original text.
+
+```bash
+printf '%s\n' "$CAPABILITY_FROM_SECURE_STORAGE" | \
+  rekey approval prepare ACTION_ID@1 --capability - \
+    --body-file request.json --content-type application/json >challenge.json
+python3 - <<'PY'
+import json
+from pathlib import Path
+challenge = json.loads(Path("challenge.json").read_text())
+body = Path("request.json").read_text()
+Path("approval-request.json").write_text(json.dumps({
+    "challenge": challenge,
+    "content_type": "application/json",
+    "headers": [],
+    "body": body,
+}, indent=2) + "\n")
+PY
+chmod 600 approval-request.json
+```
+
+`headers` is an array of `[name, value]` pairs for extra headers that were
+also passed to `approval prepare`. Omit them when unused. `content_type` may
+be `null` when the original call had none.
+
+2. Review on the operator machine. Read the printed Action, request, approver,
+   and `source_assumption`. Copy `reviewed_sha256` only if those fields are the
+   operation you intend to allow.
+
+```bash
+cargo build -p rekey-policy --bin rekey-approval-sign
+rekey-approval-sign review approval-request.json \
+  --policy policy.json --trust trust.json \
+  --action trusted-action.json --approver-id APPROVER_UUID
+```
+
+3. Sign the **same** files and digest. The grant file is created exclusively
+   (`0600`) and will not overwrite an existing path. It is valid for at most 60
+   seconds and still has to pass the live Broker challenge/session/policy checks.
+
+```bash
+rekey-approval-sign sign approval-request.json \
+  --policy policy.json --trust trust.json \
+  --action trusted-action.json --approver-id APPROVER_UUID \
+  --reviewed-sha256 REVIEWED_HEX \
+  --key-file approver.der --output grant.json
+```
+
+4. Immediately execute the **same** body, content type, headers, capability,
+   and Action version:
+
+```bash
+printf '%s\n' "$CAPABILITY_FROM_SECURE_STORAGE" | \
+  rekey execute ACTION_ID@1 --capability - \
+    --body-file request.json --content-type application/json \
+    --approval grant.json
+```
+
+A changed body, a grant from another session, an expired challenge, or a
+replay is rejected by the existing Broker verifier. See the
+[local approval specification](superpowers/specs/2026-09-10-local-approval-endpoint.md).
 
 Failed password throttling is also process-local and resets when `rekeyd`
 restarts. The G1 public Alpha accepts this limitation; restarting the broker is
@@ -446,8 +542,24 @@ private-network support.
 
 ## Connector SDK contract
 
-The development tree contains the IO-free `rekey-connector` library. It is not
-an MCP server in this Alpha.
+The source-only [fixed Keycloak exchange](superpowers/specs/2026-09-10-keycloak-token-exchange-oau02.md)
+stores an operator-owned encrypted profile and executes one registered GET for
+one audience. Use `rekey credential add-keycloak LABEL --file PROFILE` or
+`rekey credential rotate-keycloak ID --file PROFILE`; proof is read through the
+existing hidden TTY flow. Keep the profile file owner-only. It contains the
+client secret and subject access token and must not go through Agent messages.
+The Broker exchanges, executes, seals the response and directly revokes the
+issued token before returning success. There is no refresh or automatic retry;
+replace an expired or withdrawn subject token through the typed rotate command.
+See the spec for exact fields and resource-server revocation limits.
+
+This source uses storage format 10 and rejects older state/backups without
+migration. Published alpha.2 and its recorded backup acceptance use format 9.
+
+The development tree contains the IO-free `rekey-connector` library. The library
+itself is not an MCP server. The source-only
+[MCP-03 stdio executable](superpowers/specs/2026-09-10-local-mcp-stdio.md)
+adds an operator-configured Agent IPC adapter; it is not packaged in this Alpha.
 Its compile-time registry gives integrators stable versioned descriptors for
 the existing opaque-header, closed GitHub App, closed Vault KV v2 source, and
 one-shot Vault dynamic source paths. It also provides a pure

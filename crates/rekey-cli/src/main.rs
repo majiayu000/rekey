@@ -178,6 +178,14 @@ enum CredentialCommand {
         #[command(flatten)]
         step_up: StepUpArgs,
     },
+    /// Add a closed Keycloak standard token exchange profile.
+    AddKeycloak {
+        label: String,
+        #[arg(long)]
+        file: PathBuf,
+        #[command(flatten)]
+        step_up: StepUpArgs,
+    },
     /// Add a closed one-shot Vault dynamic lease source profile.
     AddVaultDynamic {
         label: String,
@@ -206,6 +214,14 @@ enum CredentialCommand {
     },
     /// Rotate a Vault KV v2 fixed-version source profile.
     RotateVaultKv {
+        credential_id: String,
+        #[arg(long)]
+        file: PathBuf,
+        #[command(flatten)]
+        step_up: StepUpArgs,
+    },
+    /// Rotate a closed Keycloak standard token exchange profile.
+    RotateKeycloak {
         credential_id: String,
         #[arg(long)]
         file: PathBuf,
@@ -503,6 +519,28 @@ fn main() {
             } => commands::credential_add_vault_dynamic(
                 &state_dir,
                 &label,
+                &file,
+                step_up.recovery,
+                step_up.password_stdin,
+            ),
+            CredentialCommand::AddKeycloak {
+                label,
+                file,
+                step_up,
+            } => commands::credential_add_keycloak(
+                &state_dir,
+                &label,
+                &file,
+                step_up.recovery,
+                step_up.password_stdin,
+            ),
+            CredentialCommand::RotateKeycloak {
+                credential_id,
+                file,
+                step_up,
+            } => commands::credential_rotate_keycloak(
+                &state_dir,
+                &credential_id,
                 &file,
                 step_up.recovery,
                 step_up.password_stdin,

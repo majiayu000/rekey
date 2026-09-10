@@ -1,0 +1,40 @@
+{
+  "cli_execute": "pass",
+  "mcp_success": "pass",
+  "mcp_policy_denied": "pass",
+  "mcp_locked": "pass",
+  "codex_version": "codex-cli 0.151.0",
+  "codex_initialize_and_tools_list": "pass",
+  "upstream_hits": 2,
+  "secret_output_scan": "pass",
+  "protocol_trace": [
+    {
+      "direction": "in",
+      "method": "initialize",
+      "protocolVersion": "2025-06-18"
+    },
+    {
+      "direction": "out",
+      "id": 0,
+      "tools": 0,
+      "error": null
+    },
+    {
+      "direction": "in",
+      "method": "notifications/initialized",
+      "protocolVersion": null
+    },
+    {
+      "direction": "in",
+      "method": "tools/list",
+      "protocolVersion": null
+    },
+    {
+      "direction": "out",
+      "id": 1,
+      "tools": 1,
+      "error": null
+    }
+  ],
+  "temporary_state_keys_and_capabilities_removed": true
+}

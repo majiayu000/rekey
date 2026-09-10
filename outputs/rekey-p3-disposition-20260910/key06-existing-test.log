@@ -1,0 +1,27 @@
+   Compiling serde_core v1.0.228
+   Compiling cc v1.2.58
+   Compiling serde v1.0.228
+   Compiling serde_json v1.0.149
+   Compiling tracing-core v0.1.36
+   Compiling syn v2.0.117
+   Compiling smallvec v1.15.1
+   Compiling tempfile v3.27.0
+   Compiling libsqlite3-sys v0.32.0
+   Compiling thiserror-impl v1.0.69
+   Compiling serde_derive v1.0.228
+   Compiling tokio-macros v2.6.1
+   Compiling tracing-attributes v0.1.31
+   Compiling tokio v1.50.0
+   Compiling tracing v0.1.44
+   Compiling thiserror v1.0.69
+   Compiling rusqlite v0.34.0
+   Compiling rekey-domain v2.0.0-alpha.2 (/private/tmp/rekey-policy-signer-20260910/crates/rekey-domain)
+   Compiling rekey-vault v2.0.0-alpha.2 (/private/tmp/rekey-policy-signer-20260910/crates/rekey-vault)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.25s
+     Running tests/backup_restore.rs (target/debug/deps/backup_restore-d46313fb48031706)
+
+running 1 test
+test backups_keep_the_wrapper_generation_captured_at_snapshot_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 7.65s
+

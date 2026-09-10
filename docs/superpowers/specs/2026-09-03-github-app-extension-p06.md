@@ -118,6 +118,35 @@ Broker-owned profiles.
   URL, and an HTTPS issue URL under `github.com/{owner}/{repo}/issues/`;
 - Agent output contains only canonical `id`, `number`, and `html_url`.
 
+### 5.3 GHA-12: create comment on one fixed issue
+
+Source extension contract, separate from prior release and live evidence.
+An Admin registers exact `POST /repos/{owner}/{repo}/issues/{number}/comments`.
+The issue number is a canonical positive u64 decimal embedded in the immutable
+Action path; Agent input cannot select another repository or issue. The profile
+must contain the repository and `issues=write`. Exchange uses only that repo
+and `metadata=read,issues=write`, as for create-issue. The request is a closed
+JSON object with only `body`, containing 1..=32768 UTF-8 bytes.
+
+GitHub returns 201. Require positive comment `id`, an `issue_url` matching the
+fixed issue, and an `html_url` matching that same issue plus
+`#issuecomment-{id}`. Only canonical `id` and `html_url` reach the Agent;
+provider body/user/other fields are discarded before existing secret sealing.
+A PR discussion may use this GitHub endpoint, but a `/pull/` response URL is
+outside this issue-only contract and fails closed after a possible remote write.
+The Admin must select an actual issue; this does not guarantee that a PR
+discussion receives no comment when an Admin supplies a PR number. No PR-review
+comment API.
+
+All write uncertainty is indeterminate and non-retryable. Reuse the existing
+exchange, revocation, sealing, deadline and audit lifecycle. Local verification
+must cover exact scope/body, wrong issue/host/id, extra fields, malformed issue
+numbers, non-retry on 429, response projection and revoke-before-success.
+Real comment publication requires a dedicated test issue; local tests alone
+do not extend existing GitHub field-validation claims.
+
+Reference: [GitHub create issue comment](https://docs.github.com/en/rest/issues/comments#create-an-issue-comment).
+
 Every profile mismatch is rejected after `execution.started` but before JWT
 signing or upstream IO. The existing absolute deadline and 500 ms cleanup
 reservation remain in force.
@@ -293,3 +322,19 @@ claim or an HTTP listener to Rekey.
 - [Validating webhook deliveries](https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries)
 - [Best practices for using webhooks](https://docs.github.com/en/webhooks/using-webhooks/best-practices-for-using-webhooks)
 - [Rate limits for the REST API](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api)
+
+
+## GHA-12 local source acceptance (2026-09-10)
+
+The fixed issue-comment extension passed the extended P6 release-binary,
+dual-UDS/SQLite/local-TLS acceptance. The fixture enforces target repository,
+issue number, content type, closed body and exact exchange scope. It returns
+provider token and submitted body in extra response fields; only comment ID
+and URL survive projection and existing secret scans. The comment request has
+one exact started/authorized/token_revoked/finished success chain. Source unit
+tests reject malformed/changed scope and response bindings and prove writes
+are not retried. Fresh workspace tests, all-targets check/clippy, formatting
+and mechanical constraints passed. Logs live in `outputs/rekey-gha12-20260910`.
+No real GitHub comment, release or push occurred. Independent read-only review
+found no blocking code defect; external human review remains required for the
+credential-related source change before merge.

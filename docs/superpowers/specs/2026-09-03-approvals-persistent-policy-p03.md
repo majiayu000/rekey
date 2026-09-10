@@ -71,8 +71,10 @@ signature, approval grant, or private material. Before first successful unlock
 after restart, a persisted bundle is `unavailable`, not optimistically active;
 unverified signer, version, expiry, and digest fields remain null.
 
-No Rekey command creates private keys or signatures. That remains the external
-signer's responsibility and avoids turning the IPC-only `rekey` client into a
+The IPC-only `rekey` client creates neither private keys nor signatures.
+POL-08 adds a separate offline operator executable, documented in
+`2026-09-10-external-policy-signer.md`; it has no Broker connection and does not
+create or custody keys. This keeps signing external and avoids turning the IPC-only client into a
 second credential store.
 
 `approval prepare` prints one challenge JSON document to stdout. It shares the

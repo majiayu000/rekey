@@ -85,6 +85,7 @@ pub struct BrokerCtx {
     pub sessions: Arc<SessionRegistry>,
     pub(crate) executions: ExecutionSupervisorHandle,
     pub(crate) executor: Arc<ActionExecutor>,
+    workload_transport: Arc<dyn UpstreamTransport>,
     pub lifecycle: Arc<Lifecycle>,
     policy: Arc<RwLock<Option<Arc<ActivePolicy>>>>,
     policy_trust: Arc<RwLock<Option<ValidatedPolicyTrust>>>,
@@ -560,7 +561,7 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
     let executor = Arc::new(ActionExecutor::new(
         authority.clone(),
         Arc::clone(&sessions),
-        transport,
+        Arc::clone(&transport),
         Arc::clone(&lifecycle),
         Arc::clone(&terminals),
         Arc::clone(&policy),
@@ -571,6 +572,7 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
     let mut execution_task = tokio::spawn(execution_supervisor.run(shutdown_rx.clone()));
     let (stop_tx, mut stop_rx) = mpsc::unbounded_channel();
     let ctx = Arc::new(BrokerCtx {
+        workload_transport: transport,
         authority: authority.clone(),
         sessions,
         executions,

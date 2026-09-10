@@ -121,3 +121,29 @@ then move state only as far as that command proves. Do not add a version to
 the `Release` column from an ordinary feature PR or a development machine.
 Archive membership is recorded in a release-prep PR. Public GitHub Release
 URL success belongs in the evidence snapshot after that workflow succeeds.
+
+GHA-12 source extension: fixed issue-comment creation is Black-box Verified locally under P-06 §5.3. Canonical fixed issue path, closed body, exact repository/write exchange, response projection, revoke-before-success, request-linked audit chain and canary scans passed via the extended `scripts/p6-github-app-extension.sh`. Unit tests cover malformed numbers, scope/body rejection, wrong response issue/host/id and no write retry. Existing released and field-validated GitHub claims above do not include comments. See `outputs/rekey-gha12-20260910/`.
+
+WID-10 source interoperability passed in GitHub Actions run `34458227976`: real JWT mint, fixed read 200, replay/wrong-audience rejection and natural expiry rejection. Public evidence is in `outputs/rekey-wid10-20260910/static-receipt/`. Released alpha.2 rejects GitHub Actions JWTs containing standard `x5t`; the tested source permits bounded informational RS256 `x5t` without changing pinned `(issuer,kid,algorithm)` trust. This static-key run does not validate online JWKS or change release claims.
+
+
+## Additional source-only P2 slices (2026-09-10)
+
+| Slice | Evidence level | Current boundary |
+| --- | --- | --- |
+| MCP-03 local stdio server | Black-box Verified | `rekey-mcp` reuses connector descriptors and the pure IPC client. Real broker success/denial/expiry/lock/sealing tests passed. Codex 0.151.0 completed actual 2025-06-18 initialization and tool discovery. Only explicitly configured fixed Actions/object schemas; no Admin operations, signing, auto retries or session renewal. Host discovery and direct MCP invocation are separately evidenced in `outputs/rekey-mcp03-20260910/`. Not release-packaged. |
+| POL-08 external operator signer | Black-box Verified | `rekey-policy-sign` reviews a typed draft, binds its RFC8785 digest, reads an operator-owned PKCS8 Ed25519 file and writes new-only trust/bundle files. Existing verifier and real Broker accept the signed artifact and reject tampering; signing alone changes no Broker state. No key generation/custody or activation. `outputs/rekey-pol08-20260910/live.log`. |
+| UX-03 trusted terminal repair | Black-box Verified | `operator-credential-repair.py` displays registered metadata as escaped data, handles provide/decline, and delegates hidden proof/value input to the CLI. Active opaque-token rotation only; unsupported/missing/disabled/revoked cases fail explicitly. Cancel makes no change; provide rotates without execution; later explicit action returns 200 with the new version. No graphical credential card or automatic write retry. `outputs/rekey-ux03-20260910/live.log`. |
+| WID-09 fixed GitHub online JWKS | Field Validated (bounded GitHub issuer) | Explicit signed opt-in with empty static keys; fresh fixed HTTPS fetch per mint, transient keys without policy/replay digest changes. Local tests cover rotation, failures and policy replacement. Real GitHub run `34459644320` passed mint/read200, replay/wrong-audience/natural-expiry rejection and a fresh-token positive control. Temporary repo deleted, API404 confirmed. `outputs/rekey-wid09-20260910/online/`. No Discovery or Introspection; not released. |
+| OAU-02 fixed Keycloak exchange | Black-box Verified (real provider, local TLS transport) | Protected typed add/rotate, fixed audience/GET, exchange/use/direct issued-token revoke and request-linked audit. Real root Broker/CLI with Keycloak 26.7.3 passed resource200, revoke-before-expiry, same-subject reuse for that configuration, reflected-token denial/revoke and expired-subject rejection. JSON-escaped profile-secret reflection regression fixed; six focused contract tests and two local unit tests pass. `outputs/rekey-oau02-20260910/live/integrated/`. No generic OAuth, refresh, private-network permission or crash cleanup claim. Storage format10 rejects old state/backups without migration. |
+
+These credential-related source changes require human review before merge.
+
+APR-08 local preparation slice (source only): `rekey-approval-sign` supports an
+operator's digest-bound, single-person one-time approval using independently selected
+signed policy/trust and registered Action. Five signer tests and the real Broker
+fixture in `scripts/test-approval-signer-live.py` verify acceptance, parameter/session
+mismatch and replay denial with exactly one upstream request. Evidence:
+`outputs/rekey-apr08-20260910/`. This is a local independent signer, not the remote
+approval service; exported challenges have no source signature. APR-08 remains in
+progress for its original remote scope. Human review is required before merge.

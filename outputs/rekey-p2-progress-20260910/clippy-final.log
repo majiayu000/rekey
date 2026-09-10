@@ -1,0 +1,33 @@
+    Checking rekey-domain v2.0.0-alpha.2 (/Users/lifcc/Desktop/code/AI/tools/rekey/crates/rekey-domain)
+    Checking rekey-vault v2.0.0-alpha.2 (/Users/lifcc/Desktop/code/AI/tools/rekey/crates/rekey-vault)
+    Checking rekey-policy v2.0.0-alpha.2 (/Users/lifcc/Desktop/code/AI/tools/rekey/crates/rekey-policy)
+    Checking rekey-connector v2.0.0-alpha.2 (/Users/lifcc/Desktop/code/AI/tools/rekey/crates/rekey-connector)
+    Checking rekey-cli v2.0.0-alpha.2 (/Users/lifcc/Desktop/code/AI/tools/rekey/crates/rekey-cli)
+    Checking rekey-broker v2.0.0-alpha.2 (/Users/lifcc/Desktop/code/AI/tools/rekey/crates/rekey-broker)
+error: this `if` statement can be collapsed
+   --> crates/rekey-broker/src/executor/keycloak.rs:374:9
+    |
+374 | /         if !exchange.tokens.is_empty() {
+375 | |             if let Err(error) = self
+376 | |                 .terminals
+377 | |                 .commit_until(
+...   |
+391 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#collapsible_if
+    = note: `-D clippy::collapsible-if` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::collapsible_if)]`
+help: collapse nested if block
+    |
+374 ~         if !exchange.tokens.is_empty()
+375 ~             && let Err(error) = self
+376 |                 .terminals
+...
+389 |                 return Err(error);
+390 ~             }
+    |
+
+error: could not compile `rekey-broker` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `rekey-broker` (lib test) due to 1 previous error

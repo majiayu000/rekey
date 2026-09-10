@@ -1623,6 +1623,7 @@ dependencies = [
  "tokio-rustls",
  "tracing",
  "tracing-subscriber",
+ "url",
  "zeroize",
 ]
 
@@ -1689,11 +1690,13 @@ dependencies = [
  "curve25519-dalek",
  "data-encoding",
  "jsonschema",
+ "libc",
  "rekey-domain",
  "serde",
  "serde_jcs",
  "serde_json",
  "sha2",
+ "tempfile",
  "thiserror 1.0.69",
  "url",
  "uuid",
