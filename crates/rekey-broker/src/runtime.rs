@@ -285,11 +285,32 @@ fn acquire_serve_lock(state_dir: &std::path::Path) -> Result<ServeLock, Authorit
         .map_err(AuthorityError::storage)?;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
         .map_err(AuthorityError::storage)?;
-    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    if rc != 0 {
-        return Err(AuthorityError::storage(std::io::Error::last_os_error()));
+    // Match bootstrap: brief retry for transient macOS EAGAIN/WouldBlock on LOCK_NB.
+    const ATTEMPTS: u32 = 50;
+    const DELAY: Duration = Duration::from_millis(2);
+    let mut last_err = None;
+    for attempt in 0..ATTEMPTS {
+        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if rc == 0 {
+            return Ok(ServeLock { _file: file });
+        }
+        let err = std::io::Error::last_os_error();
+        match err.kind() {
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                if attempt + 1 < ATTEMPTS =>
+            {
+                last_err = Some(err);
+                std::thread::sleep(DELAY);
+            }
+            _ => return Err(AuthorityError::storage(err)),
+        }
     }
-    Ok(ServeLock { _file: file })
+    Err(AuthorityError::storage(last_err.unwrap_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "broker lock remained unavailable",
+        )
+    })))
 }
 
 fn set_group(path: &std::path::Path, gid: u32) -> Result<(), BrokerError> {
