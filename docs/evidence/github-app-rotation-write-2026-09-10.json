@@ -1,0 +1,210 @@
+{
+  "tested_at": "2026-09-10T06:48:58.471295+00:00",
+  "app_id": 4894459,
+  "client_id": "Iv23liP8AsiMt5kJtvxt",
+  "installation_id": 160527464,
+  "repository": "majiayu000/rekey-ci-dogfood",
+  "repository_id": 1351627721,
+  "permissions": {
+    "metadata": "read",
+    "issues": "write"
+  },
+  "list_before_rotation": [
+    {
+      "upstream_status": 200,
+      "headers": [],
+      "body_len": 99
+    },
+    {
+      "total_count": 1,
+      "repositories": [
+        {
+          "id": 1351627721,
+          "owner": "majiayu000",
+          "name": "rekey-ci-dogfood"
+        }
+      ]
+    }
+  ],
+  "list_after_rotation": [
+    {
+      "upstream_status": 200,
+      "headers": [],
+      "body_len": 99
+    },
+    {
+      "total_count": 1,
+      "repositories": [
+        {
+          "id": 1351627721,
+          "owner": "majiayu000",
+          "name": "rekey-ci-dogfood"
+        }
+      ]
+    }
+  ],
+  "rotate_result": {
+    "id": "61adadf0-c608-4d92-8a69-e073ec7ee774",
+    "label": "real-app-test",
+    "kind": "github-app-installation",
+    "state": "active",
+    "current_version": 2,
+    "created_at": 1789022928302,
+    "updated_at": 1789022932044
+  },
+  "issue": [
+    {
+      "upstream_status": 201,
+      "headers": [],
+      "body_len": 97
+    },
+    {
+      "id": 5408792953,
+      "number": 1,
+      "html_url": "https://github.com/majiayu000/rekey-ci-dogfood/issues/1"
+    }
+  ],
+  "revoked_exit": 4,
+  "audit": [
+    {
+      "sequence": 23,
+      "event_type": "credential.revoked",
+      "outcome": "success"
+    },
+    {
+      "sequence": 22,
+      "event_type": "execution.finished",
+      "outcome": "success"
+    },
+    {
+      "sequence": 21,
+      "event_type": "connector.github.token_revoked",
+      "outcome": "success"
+    },
+    {
+      "sequence": 20,
+      "event_type": "connector.github.authorized",
+      "outcome": "success"
+    },
+    {
+      "sequence": 19,
+      "event_type": "execution.started",
+      "outcome": "success"
+    },
+    {
+      "sequence": 18,
+      "event_type": "execution.finished",
+      "outcome": "success"
+    },
+    {
+      "sequence": 17,
+      "event_type": "connector.github.token_revoked",
+      "outcome": "success"
+    },
+    {
+      "sequence": 16,
+      "event_type": "connector.github.authorized",
+      "outcome": "success"
+    },
+    {
+      "sequence": 15,
+      "event_type": "execution.started",
+      "outcome": "success"
+    },
+    {
+      "sequence": 14,
+      "event_type": "credential.rotated",
+      "outcome": "success"
+    },
+    {
+      "sequence": 13,
+      "event_type": "execution.finished",
+      "outcome": "success"
+    },
+    {
+      "sequence": 12,
+      "event_type": "connector.github.token_revoked",
+      "outcome": "success"
+    },
+    {
+      "sequence": 11,
+      "event_type": "connector.github.authorized",
+      "outcome": "success"
+    },
+    {
+      "sequence": 10,
+      "event_type": "execution.started",
+      "outcome": "success"
+    },
+    {
+      "sequence": 9,
+      "event_type": "policy.activated",
+      "outcome": "success"
+    },
+    {
+      "sequence": 8,
+      "event_type": "policy.trust_installed",
+      "outcome": "success"
+    },
+    {
+      "sequence": 7,
+      "event_type": "session.created",
+      "outcome": "success"
+    },
+    {
+      "sequence": 6,
+      "event_type": "action.created",
+      "outcome": "success"
+    },
+    {
+      "sequence": 5,
+      "event_type": "session.created",
+      "outcome": "success"
+    },
+    {
+      "sequence": 4,
+      "event_type": "action.created",
+      "outcome": "success"
+    },
+    {
+      "sequence": 3,
+      "event_type": "credential.created",
+      "outcome": "success"
+    },
+    {
+      "sequence": 2,
+      "event_type": "vault.unlocked",
+      "outcome": "success"
+    },
+    {
+      "sequence": 1,
+      "event_type": "vault.initialized",
+      "outcome": "success"
+    }
+  ],
+  "binary_sha256": {
+    "rekey": "f32b6daa19775f7ee8c45abedd68ffcb3786c4b94c84e4f0a34e8a71c28b82ae",
+    "rekeyd": "80be275866c186293797e1ee142c87463b165fb0a429dc47cf853e8bf06bbb31"
+  },
+  "limitations": [
+    "single repository installation",
+    "webhook delivery and multi-repository apply not field validated"
+  ],
+  "host": "current Codex session invoking scripts/agent-quickstart.py over agent.sock",
+  "cleanup": {
+    "issue_number": 1,
+    "issue_state_before_restoring_settings": "closed",
+    "repository_has_issues_restored": false,
+    "installation_absent_from_settings": true,
+    "app_deleted_api_status": 404,
+    "local_private_keys_removed": true
+  },
+  "initial_attempt": {
+    "repository_has_issues": false,
+    "create_issue_exit": 8,
+    "error": "UPSTREAM_INDETERMINATE",
+    "issue_count_observed_after_failure": 0,
+    "automatic_write_retries": 0,
+    "resolution": "Operator enabled Issues for one explicit new acceptance run, then restored disabled setting."
+  }
+}

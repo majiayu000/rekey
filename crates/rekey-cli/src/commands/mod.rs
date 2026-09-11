@@ -2,7 +2,6 @@
 //! for automation, explicit stdin flags — never argv or environment.
 
 use std::io::{Read, Write};
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -21,11 +20,13 @@ pub use github_admin::{credential_apply_github_webhook, credential_rotate_github
 mod audit;
 pub use audit::{audit_export, audit_list};
 mod policy_approval;
-pub use policy_approval::{approval_prepare, policy_activate, policy_status, policy_trust_install};
+pub use policy_approval::{
+    approval_origin, approval_prepare, policy_activate, policy_status, policy_trust_install,
+};
 mod vault_admin;
 pub use vault_admin::{
-    credential_add_vault_dynamic, credential_add_vault_kv, credential_rotate_vault_dynamic,
-    credential_rotate_vault_kv,
+    credential_add_keycloak, credential_add_vault_dynamic, credential_add_vault_kv,
+    credential_rotate_keycloak, credential_rotate_vault_dynamic, credential_rotate_vault_kv,
 };
 
 const ACTION_RESPONSE_TIMEOUT: Duration = Duration::from_secs(130);
@@ -119,7 +120,7 @@ fn prompt_secret(prompt: &str) -> Result<Zeroizing<Vec<u8>>, CliError> {
     Ok(Zeroizing::new(value.as_bytes().to_vec()))
 }
 
-fn read_bounded(
+pub(super) fn read_bounded(
     reader: impl Read,
     limit: usize,
     label: &'static str,
@@ -158,26 +159,36 @@ fn read_regular_file_bounded(
     read_bounded(file, limit, label)
 }
 
-fn read_regular_file_bounded_nofollow(
+/// Open with O_NOFOLLOW, require current-user ownership and mode & 0o077 == 0,
+/// then read from the same validated descriptor (no path re-open).
+pub(super) fn read_private_regular_file_bounded(
     path: &Path,
     limit: usize,
     label: &'static str,
 ) -> Result<Zeroizing<Vec<u8>>, CliError> {
-    let file = std::fs::OpenOptions::new()
+    use std::fs::OpenOptions;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+    let opened = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)
         .map_err(|err| CliError::local("USAGE", format!("cannot open {label}: {err}")))?;
-    let metadata = file
+    let metadata = opened
         .metadata()
         .map_err(|err| CliError::local("USAGE", format!("cannot inspect {label}: {err}")))?;
-    if !metadata.is_file() {
+    if !metadata.is_file()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.mode() & 0o077 != 0
+    {
         return Err(CliError::local(
             "USAGE",
-            format!("{label} must be a regular non-symlink file"),
+            format!(
+                "{label} must be a current-user-owned regular file with no group/other permissions"
+            ),
         ));
     }
-    read_bounded(file, limit, label)
+    read_bounded(opened, limit, label)
 }
 
 fn stdin_lines(expected: usize) -> Result<Vec<Zeroizing<Vec<u8>>>, CliError> {
@@ -460,7 +471,7 @@ pub fn credential_add_github_app(
     password_stdin: bool,
 ) -> Result<(), CliError> {
     let limit = ipc::ADMIN_SECRET_FIELD_MAX_BYTES as usize;
-    let secret = read_regular_file_bounded(file, limit, "GitHub App profile")?;
+    let secret = read_private_regular_file_bounded(file, limit, "GitHub App profile")?;
     if secret.is_empty() {
         return Err(CliError::local(
             "USAGE",

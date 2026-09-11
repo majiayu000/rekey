@@ -304,3 +304,32 @@ async fn startup_reconciles_unterminated_started() {
         Some(authorization.policy_digest.as_slice())
     );
 }
+
+#[tokio::test]
+async fn approval_origin_key_requires_unlock_and_survives_password_change() {
+    const NEW_PASSWORD: &[u8] = b"replacement horse battery staple";
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    assert!(matches!(
+        handle.approval_origin_public_key().await.unwrap_err(),
+        AuthorityError::Locked
+    ));
+    handle.unlock(common::password_proof()).await.unwrap();
+    let key = handle.approval_origin_public_key().await.unwrap();
+    handle
+        .password_change_before(
+            common::password_proof(),
+            SecretInput::from_slice(NEW_PASSWORD),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(handle.approval_origin_public_key().await.unwrap(), key);
+    handle
+        .shutdown(Some(UnlockProof::Password(SecretInput::from_slice(
+            NEW_PASSWORD,
+        ))))
+        .await
+        .unwrap();
+    join.join().unwrap();
+}

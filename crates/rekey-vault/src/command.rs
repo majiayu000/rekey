@@ -241,4 +241,11 @@ pub enum AuthorityCommand {
         proof: UnlockProof,
         reply: Reply<BackupInfo>,
     },
+    ApprovalOriginPublicKey {
+        reply: Reply<[u8; 32]>,
+    },
+    SignApprovalOrigin {
+        message: Vec<u8>,
+        reply: Reply<[u8; 64]>,
+    },
 }

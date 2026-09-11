@@ -23,7 +23,30 @@ async fn prepare(
     version: u64,
 ) -> ApprovalChallenge {
     let response = prepare_response(broker, token, action_id, version).await;
-    serde_json::from_value(response.ok().clone()).unwrap()
+    let envelope: ipc::SignedApprovalChallenge =
+        serde_json::from_value(response.ok().clone()).unwrap();
+    envelope.validate().unwrap();
+    let origin = origin_public_key(broker).await;
+    rekey_policy::parse_and_verify_approval_challenge_envelope(
+        &serde_json::to_vec(&envelope).unwrap(),
+        &origin,
+    )
+    .unwrap()
+}
+
+async fn origin_public_key(broker: &common::TestBroker) -> [u8; 32] {
+    let response = common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::APPROVAL_ORIGIN,
+        b"{}",
+        &[],
+    )
+    .await;
+    let origin: ipc::ApprovalOriginResponse =
+        serde_json::from_value(response.ok().clone()).unwrap();
+    origin.validate().unwrap();
+    rekey_policy::validate_ed25519_public_key(&origin.public_key).unwrap()
 }
 
 async fn prepare_response(

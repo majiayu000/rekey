@@ -1,0 +1,961 @@
+acceptance	Set up job	﻿2026-09-10T09:15:39.8126961Z Current runner version: '2.337.0'
+acceptance	Set up job	2026-09-10T09:15:39.8165160Z ##[group]Runner Image Provisioner
+acceptance	Set up job	2026-09-10T09:15:39.8166446Z Hosted Compute Agent
+acceptance	Set up job	2026-09-10T09:15:39.8167526Z Version: 20260828.587
+acceptance	Set up job	2026-09-10T09:15:39.8168610Z Commit: abac92662cab4cc7352de4f9f9d2e2419aad9c29
+acceptance	Set up job	2026-09-10T09:15:39.8170273Z Build Date: 2026-08-28T16:44:25Z
+acceptance	Set up job	2026-09-10T09:15:39.8171387Z Worker ID: {c80eac34-17ee-4bec-ac0e-b9e8ef2be8e7}
+acceptance	Set up job	2026-09-10T09:15:39.8172523Z Azure Region: centralus
+acceptance	Set up job	2026-09-10T09:15:39.8173512Z ##[endgroup]
+acceptance	Set up job	2026-09-10T09:15:39.8175891Z ##[group]Operating System
+acceptance	Set up job	2026-09-10T09:15:39.8176998Z Ubuntu
+acceptance	Set up job	2026-09-10T09:15:39.8177832Z 24.04.4
+acceptance	Set up job	2026-09-10T09:15:39.8178621Z LTS
+acceptance	Set up job	2026-09-10T09:15:39.8179768Z ##[endgroup]
+acceptance	Set up job	2026-09-10T09:15:39.8180728Z ##[group]Runner Image
+acceptance	Set up job	2026-09-10T09:15:39.8181662Z Image: ubuntu-24.04
+acceptance	Set up job	2026-09-10T09:15:39.8182667Z Version: 20260831.293.1
+acceptance	Set up job	2026-09-10T09:15:39.8184379Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20260831.293/images/ubuntu/Ubuntu2404-Readme.md
+acceptance	Set up job	2026-09-10T09:15:39.8187296Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20260831.293
+acceptance	Set up job	2026-09-10T09:15:39.8188817Z ##[endgroup]
+acceptance	Set up job	2026-09-10T09:15:39.8191058Z ##[group]GITHUB_TOKEN Permissions
+acceptance	Set up job	2026-09-10T09:15:39.8194091Z Contents: read
+acceptance	Set up job	2026-09-10T09:15:39.8195365Z Metadata: read
+acceptance	Set up job	2026-09-10T09:15:39.8196251Z ##[endgroup]
+acceptance	Set up job	2026-09-10T09:15:39.8199787Z Secret source: Actions
+acceptance	Set up job	2026-09-10T09:15:39.8201191Z Cache mode: write
+acceptance	Set up job	2026-09-10T09:15:39.8203386Z Prepare workflow directory
+acceptance	Set up job	2026-09-10T09:15:39.9112515Z Prepare all required actions
+acceptance	Set up job	2026-09-10T09:15:39.9245092Z Getting action download info
+acceptance	Set up job	2026-09-10T09:15:40.2000578Z Download action repository 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262' (SHA:11d5960a326750d5838078e36cf38b85af677262)
+acceptance	Set up job	2026-09-10T09:15:40.3577064Z Download action repository 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02' (SHA:ea165f8d65b6e75b540449e92b4886f43607fa02)
+acceptance	Set up job	2026-09-10T09:15:40.5888176Z Complete job name: acceptance
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	﻿2026-09-10T09:15:40.6610783Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.6620307Z ##[group]Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.6621224Z with:
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.6621759Z   repository: majiayu000/rekey-wid10-20260910-1789030338
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.6626070Z   token: ***
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.6626520Z   ssh-strict: true
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.6626974Z   ssh-user: git
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.6627437Z   persist-credentials: true
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.6627947Z   clean: true
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.6628407Z   sparse-checkout-cone-mode: true
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.6628944Z   fetch-depth: 1
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.6629510Z   fetch-tags: false
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.6629971Z   show-progress: true
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.6630455Z   lfs: false
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.6630919Z   submodules: false
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.6631373Z   set-safe-directory: true
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.6631879Z   allow-unsafe-pr-checkout: false
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.6632590Z ##[endgroup]
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.8051043Z Syncing repository: majiayu000/rekey-wid10-20260910-1789030338
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.8053879Z ##[group]Getting Git version info
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.8055369Z Working directory is '/home/runner/work/rekey-wid10-20260910-1789030338/rekey-wid10-20260910-1789030338'
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.8057306Z [command]/usr/bin/git version
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.8059578Z git version 2.55.0
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.8064567Z ##[endgroup]
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.8072437Z Temporarily overriding HOME='/home/runner/work/_temp/18b3d9ee-d1ad-411b-ad23-745b764f5163' before making global git config changes
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.8082534Z Adding repository directory to the temporary git global config as a safe directory
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.8085384Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/rekey-wid10-20260910-1789030338/rekey-wid10-20260910-1789030338
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.8128624Z Deleting the contents of '/home/runner/work/rekey-wid10-20260910-1789030338/rekey-wid10-20260910-1789030338'
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.8145208Z ##[group]Initializing the repository
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.8147479Z [command]/usr/bin/git init /home/runner/work/rekey-wid10-20260910-1789030338/rekey-wid10-20260910-1789030338
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.9250533Z hint: Using 'master' as the name for the initial branch. This default branch name
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.9296196Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.9298032Z hint: to use in all of your new repositories, which will suppress this warning,
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.9300037Z hint: call:
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.9300776Z hint:
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.9302001Z hint: 	git config --global init.defaultBranch <name>
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.9303105Z hint:
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.9304172Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.9305861Z hint: 'development'. The just-created branch can be renamed via this command:
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.9307148Z hint:
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.9307903Z hint: 	git branch -m <name>
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.9308760Z hint:
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.9310020Z hint: Disable this message with "git config set advice.defaultBranchName false"
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.9312741Z Initialized empty Git repository in /home/runner/work/rekey-wid10-20260910-1789030338/rekey-wid10-20260910-1789030338/.git/
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.9317040Z [command]/usr/bin/git remote add origin https://github.com/majiayu000/rekey-wid10-20260910-1789030338
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.9320443Z ##[endgroup]
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.9321716Z ##[group]Disabling automatic garbage collection
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.9322871Z [command]/usr/bin/git config --local gc.auto 0
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.9325283Z ##[endgroup]
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.9326474Z ##[group]Setting up auth
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.9327707Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.9332562Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.9420847Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.9486012Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.9828321Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:40.9862582Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:41.0158408Z [command]/usr/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:41.0323615Z ##[endgroup]
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:41.0324644Z ##[group]Fetching the repository
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:41.0326236Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +18f0fd447adad32eceb1ee1885fcafd2d5e0c6a1:refs/remotes/origin/main
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:41.6097601Z From https://github.com/majiayu000/rekey-wid10-20260910-1789030338
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:41.6099874Z  * [new ref]         18f0fd447adad32eceb1ee1885fcafd2d5e0c6a1 -> origin/main
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:41.6111008Z ##[endgroup]
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:41.6151934Z ##[group]Determining the checkout info
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:41.6153971Z ##[endgroup]
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:41.6182195Z [command]/usr/bin/git sparse-checkout disable
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:41.6201241Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:41.6286258Z ##[group]Checking out the ref
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:41.6288018Z [command]/usr/bin/git checkout --progress --force -B main refs/remotes/origin/main
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:41.6690785Z Switched to a new branch 'main'
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:41.6702938Z branch 'main' set up to track 'origin/main'.
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:41.6734976Z ##[endgroup]
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:41.6783787Z [command]/usr/bin/git log -1 --format=%H
+acceptance	Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:15:41.6811504Z 18f0fd447adad32eceb1ee1885fcafd2d5e0c6a1
+acceptance	Build source with fixed online GitHub JWKS	﻿2026-09-10T09:15:41.7091187Z ##[group]Run cargo test -p rekey-policy --test workload_identity
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:41.7093302Z ^[[36;1mcargo test -p rekey-policy --test workload_identity^[[0m
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:41.7095410Z ^[[36;1mcargo test -p rekey-broker --test github_jwks --test workload_identity^[[0m
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:41.7097763Z ^[[36;1mcargo build --release -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd^[[0m
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:41.7144631Z shell: /usr/bin/bash -e {0}
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:41.7145900Z ##[endgroup]
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:41.7548614Z info: syncing channel updates for 1.95.0-x86_64-unknown-linux-gnu
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:42.0535666Z info: latest update on 2026-04-16 for version 1.95.0 (59807616e 2026-04-14)
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:42.0548560Z info: downloading 5 components
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:52.5013721Z     Updating crates.io index
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.3621260Z  Downloading crates ...
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.6625316Z   Downloaded block-buffer v0.10.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.6660224Z   Downloaded bit-set v0.8.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.6670728Z   Downloaded autocfg v1.5.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.6749297Z   Downloaded bit-vec v0.8.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.6780194Z   Downloaded ahash v0.8.12
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.6821516Z   Downloaded cfg-if v1.0.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.6841552Z   Downloaded unicode-general-category v1.1.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.6879925Z   Downloaded form_urlencoded v1.2.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.6900044Z   Downloaded curve25519-dalek-derive v0.1.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.6911519Z   Downloaded equivalent v1.0.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.6935044Z   Downloaded dunce v1.0.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.6979679Z   Downloaded version_check v0.9.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.7002888Z   Downloaded borrow-or-share v0.2.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.7040879Z   Downloaded uuid v1.23.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.7101674Z   Downloaded utf8_iter v1.0.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.7125738Z   Downloaded untrusted v0.7.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.7142124Z   Downloaded num v0.4.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.7158188Z   Downloaded heck v0.5.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.7181282Z   Downloaded uuid-simd v0.8.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.7227048Z   Downloaded fs_extra v1.3.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.7251604Z   Downloaded zerofrom v0.1.6
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.7270038Z   Downloaded yoke-derive v0.8.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.7290111Z   Downloaded subtle v2.6.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.7310102Z   Downloaded displaydoc v0.2.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.7344661Z   Downloaded itoa v1.0.18
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.7380250Z   Downloaded zerofrom-derive v0.1.6
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.7400098Z   Downloaded num-iter v0.1.46
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.7430118Z   Downloaded vsimd v0.8.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.7456543Z   Downloaded potential_utf v0.1.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.7479245Z   Downloaded jsonschema-regex v0.52.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.7500044Z   Downloaded yoke v0.8.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.7540078Z   Downloaded zmij v1.0.21
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.7559938Z   Downloaded zerovec-derive v0.11.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.7590059Z   Downloaded email_address v0.2.9
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.7630106Z   Downloaded digest v0.10.7
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.7654059Z   Downloaded zerotrie v0.2.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.7722859Z   Downloaded thiserror-impl v1.0.69
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.7749907Z   Downloaded url v2.5.8
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.7789965Z   Downloaded zerovec v0.11.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.7881604Z   Downloaded thiserror v1.0.69
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.7980198Z   Downloaded quote v1.0.45
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.8048714Z   Downloaded serde_core v1.0.228
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.8090079Z   Downloaded serde_derive v1.0.228
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.8140195Z   Downloaded micromap v0.3.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.8202682Z   Downloaded typenum v1.19.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.8248690Z   Downloaded icu_locale_core v2.1.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.8326160Z   Downloaded num-bigint v0.4.8
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.8388984Z   Downloaded fraction v0.17.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.8458843Z   Downloaded zerocopy v0.8.48
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.8701374Z   Downloaded regex v1.13.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.8761936Z   Downloaded serde_json v1.0.149
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.8843601Z   Downloaded icu_properties_data v2.1.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.8959247Z   Downloaded hashbrown v0.17.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.9020026Z   Downloaded aws-lc-rs v1.18.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.9142301Z   Downloaded fancy-regex v0.19.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.9213706Z   Downloaded idna v1.1.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.9254380Z   Downloaded syn v3.0.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.9371322Z   Downloaded syn v2.0.117
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.9491725Z   Downloaded curve25519-dalek v4.1.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.9582527Z   Downloaded aho-corasick v1.1.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.9640578Z   Downloaded icu_collections v2.1.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.9707101Z   Downloaded regex-syntax v0.8.11
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.9781940Z   Downloaded cc v1.2.58
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.9813988Z   Downloaded serde v1.0.228
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.9855105Z   Downloaded referencing v0.52.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.9918908Z   Downloaded memchr v2.8.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:53.9978016Z   Downloaded icu_normalizer v2.1.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.0019293Z   Downloaded icu_provider v2.1.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.0047598Z   Downloaded icu_normalizer_data v2.1.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.0072561Z   Downloaded getrandom v0.3.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.0110608Z   Downloaded ryu-js v0.2.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.0146218Z   Downloaded proc-macro2 v1.0.106
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.0179919Z   Downloaded parking_lot_core v0.9.12
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.0205132Z   Downloaded parking_lot v0.12.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.0232969Z   Downloaded jsonschema v0.52.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.0448376Z   Downloaded jsonschema-value v0.52.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.0470351Z   Downloaded icu_properties v2.1.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.0494104Z   Downloaded regex-automata v0.4.18
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.0644601Z   Downloaded fluent-uri v0.4.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.0677063Z   Downloaded num-traits v0.2.19
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.0706437Z   Downloaded allocator-api2 v0.2.21
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.0734507Z   Downloaded smallvec v1.15.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.0757631Z   Downloaded shlex v1.3.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.0772496Z   Downloaded sha2 v0.10.9
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.0805223Z   Downloaded once_cell v1.21.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.0833147Z   Downloaded libc v0.2.183
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.1244100Z   Downloaded litemap v0.8.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.1268435Z   Downloaded tinystr v0.8.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.1290143Z   Downloaded num-complex v0.4.6
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.1306772Z   Downloaded jobserver v0.1.35
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.1328598Z   Downloaded data-encoding v2.10.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.1340861Z   Downloaded bytecount v0.6.9
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.1363463Z   Downloaded synstructure v0.13.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.1375267Z   Downloaded strum_macros v0.28.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.1401753Z   Downloaded semver v1.0.27
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.1426162Z   Downloaded ref-cast-impl v1.0.27
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.1435755Z   Downloaded pkg-config v0.3.32
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.1455162Z   Downloaded num-rational v0.4.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.1469037Z   Downloaded num-integer v0.1.47
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.1486861Z   Downloaded lock_api v0.4.14
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.1500926Z   Downloaded cpufeatures v0.2.17
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.1516316Z   Downloaded stable_deref_trait v1.2.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.1526595Z   Downloaded outref v0.5.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.1540062Z   Downloaded generic-array v0.14.7
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.1555688Z   Downloaded cmake v0.1.58
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.1571662Z   Downloaded unicode-ident v1.0.24
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.1603752Z   Downloaded rustc_version v0.4.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.1617999Z   Downloaded percent-encoding v2.3.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.1627736Z   Downloaded num-cmp v0.1.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.1637510Z   Downloaded foldhash v0.2.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.1651650Z   Downloaded find-msvc-tools v0.1.9
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.1669182Z   Downloaded zeroize v1.8.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.1684073Z   Downloaded writeable v0.6.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.1819271Z   Downloaded strum v0.28.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.1820380Z   Downloaded serde_jcs v0.2.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.1824161Z   Downloaded scopeguard v1.2.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.1825152Z   Downloaded ref-cast v1.0.27
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.1825751Z   Downloaded idna_adapter v1.2.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.1826345Z   Downloaded crypto-common v0.1.7
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.2431301Z   Downloaded aws-lc-sys v0.44.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.5573229Z    Compiling proc-macro2 v1.0.106
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.5576786Z    Compiling unicode-ident v1.0.24
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.6150631Z    Compiling quote v1.0.45
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:54.7611076Z    Compiling libc v0.2.183
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:55.5440091Z    Compiling syn v2.0.117
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:55.8791103Z    Compiling version_check v0.9.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:56.0850390Z    Compiling stable_deref_trait v1.2.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:56.1124350Z    Compiling autocfg v1.5.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:56.4170366Z    Compiling serde_core v1.0.228
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:56.6060777Z    Compiling num-traits v0.2.19
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:58.8881116Z    Compiling synstructure v0.13.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:15:59.3811094Z    Compiling serde v1.0.228
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:00.2061554Z    Compiling memchr v2.8.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:00.2730796Z    Compiling zerofrom-derive v0.1.6
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:00.9270621Z    Compiling yoke-derive v0.8.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:01.4351377Z    Compiling zerofrom v0.1.6
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:01.5050742Z    Compiling zerovec-derive v0.11.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:01.8221145Z    Compiling yoke v0.8.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:01.9350495Z    Compiling displaydoc v0.2.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:02.4250591Z    Compiling serde_derive v1.0.228
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:02.4350320Z    Compiling zerovec v0.11.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:02.8821338Z    Compiling cfg-if v1.0.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:02.9097355Z    Compiling smallvec v1.15.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:03.0690595Z    Compiling tinystr v0.8.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:03.1880435Z    Compiling num-integer v0.1.47
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:03.4650713Z    Compiling jobserver v0.1.35
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:03.7211198Z    Compiling find-msvc-tools v0.1.9
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:03.8783613Z    Compiling shlex v1.3.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:03.9860721Z    Compiling writeable v0.6.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:04.1033471Z    Compiling typenum v1.19.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:04.3000794Z    Compiling litemap v0.8.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:04.4230599Z    Compiling zmij v1.0.21
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:04.5790668Z    Compiling icu_locale_core v2.1.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:05.5710850Z    Compiling cc v1.2.58
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:05.7760306Z    Compiling potential_utf v0.1.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:05.8570691Z    Compiling zerotrie v0.2.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:06.0800674Z    Compiling generic-array v0.14.7
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:06.1660561Z    Compiling serde_json v1.0.149
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:06.2550684Z    Compiling getrandom v0.3.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:06.4350744Z    Compiling zerocopy v0.8.48
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:06.6920470Z    Compiling icu_properties_data v2.1.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:06.7729017Z    Compiling icu_normalizer_data v2.1.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:06.9070435Z    Compiling cmake v0.1.58
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:06.9610687Z    Compiling icu_provider v2.1.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:07.1810473Z    Compiling icu_collections v2.1.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:07.7400610Z    Compiling num-bigint v0.4.8
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:07.8651911Z    Compiling ahash v0.8.12
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:07.9660459Z    Compiling syn v3.0.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:09.2840802Z    Compiling pkg-config v0.3.32
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:09.7121224Z    Compiling fs_extra v1.3.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:09.9161319Z    Compiling regex-syntax v0.8.11
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:10.1577344Z    Compiling itoa v1.0.18
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:10.2701377Z    Compiling ref-cast v1.0.27
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:10.4381033Z    Compiling parking_lot_core v0.9.12
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:10.5500675Z    Compiling dunce v1.0.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:10.5846475Z    Compiling aws-lc-sys v0.44.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:12.8330750Z    Compiling ref-cast-impl v1.0.27
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:13.1118762Z    Compiling num-rational v0.4.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:13.9160552Z    Compiling num-iter v0.1.46
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:13.9730929Z    Compiling aho-corasick v1.1.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:16.2060670Z    Compiling num-complex v0.4.6
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:16.5865983Z    Compiling semver v1.0.27
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:16.8020596Z    Compiling percent-encoding v2.3.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:16.9150524Z    Compiling once_cell v1.21.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:16.9908601Z    Compiling scopeguard v1.2.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:17.0276349Z    Compiling lock_api v0.4.14
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:17.2160838Z    Compiling rustc_version v0.4.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:17.3490775Z    Compiling num v0.4.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:17.3820754Z    Compiling regex-automata v0.4.18
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:17.4330690Z    Compiling icu_normalizer v2.1.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:18.0090873Z    Compiling icu_properties v2.1.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:22.1380638Z    Compiling thiserror v1.0.69
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:22.2480721Z    Compiling bit-vec v0.8.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:22.3646911Z    Compiling equivalent v1.0.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:22.3865950Z    Compiling borrow-or-share v0.2.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:22.4137972Z    Compiling allocator-api2 v0.2.21
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:22.5991332Z    Compiling unicode-general-category v1.1.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:22.7888153Z    Compiling heck v0.5.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:22.9000853Z    Compiling foldhash v0.2.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:22.9769181Z    Compiling hashbrown v0.17.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:23.3758880Z    Compiling strum_macros v0.28.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:24.9717262Z    Compiling fluent-uri v0.4.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:25.4970582Z    Compiling bit-set v0.8.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:25.5918456Z    Compiling parking_lot v0.12.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:25.8609907Z    Compiling idna_adapter v1.2.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:25.9101943Z    Compiling curve25519-dalek v4.1.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:25.9998888Z    Compiling fraction v0.17.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:26.2980511Z    Compiling block-buffer v0.10.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:26.3616824Z    Compiling crypto-common v0.1.7
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:26.4141170Z    Compiling thiserror-impl v1.0.69
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:27.2440412Z    Compiling outref v0.5.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:27.2798939Z    Compiling micromap v0.3.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:27.4530641Z    Compiling vsimd v0.8.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:27.7411161Z    Compiling bytecount v0.6.9
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:27.8214756Z    Compiling cpufeatures v0.2.17
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:27.8424189Z    Compiling utf8_iter v1.0.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:27.8960997Z    Compiling aws-lc-rs v1.18.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:27.9981944Z    Compiling num-cmp v0.1.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:28.1326251Z    Compiling jsonschema-value v0.52.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:28.4077758Z    Compiling idna v1.1.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:29.0600849Z    Compiling uuid-simd v0.8.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:29.3515508Z    Compiling referencing v0.52.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:30.7677258Z    Compiling digest v0.10.7
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:30.9060636Z    Compiling fancy-regex v0.19.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:32.9111101Z    Compiling strum v0.28.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:32.9590802Z    Compiling regex v1.13.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:33.2875594Z    Compiling form_urlencoded v1.2.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:33.3686216Z    Compiling jsonschema-regex v0.52.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:33.6608780Z    Compiling email_address v0.2.9
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:33.7860752Z    Compiling curve25519-dalek-derive v0.1.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:34.1071886Z    Compiling zeroize v1.8.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:34.1938384Z    Compiling untrusted v0.7.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:34.2332627Z    Compiling uuid v1.23.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:34.4798130Z    Compiling ryu-js v0.2.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:34.5821460Z    Compiling data-encoding v2.10.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:35.2000974Z    Compiling subtle v2.6.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:35.8656019Z    Compiling jsonschema v0.52.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:47.4621102Z    Compiling serde_jcs v0.2.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:47.6181120Z    Compiling rekey-domain v2.0.0-alpha.2 (/home/runner/work/rekey-wid10-20260910-1789030338/rekey-wid10-20260910-1789030338/source/crates/rekey-domain)
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:49.3600650Z    Compiling url v2.5.8
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:16:50.1140841Z    Compiling sha2 v0.10.9
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:10.6293372Z    Compiling rekey-policy v2.0.0-alpha.2 (/home/runner/work/rekey-wid10-20260910-1789030338/rekey-wid10-20260910-1789030338/source/crates/rekey-policy)
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:13.7094531Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 21s
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:13.7757792Z      Running tests/workload_identity.rs (target/debug/deps/workload_identity-40251b963f5a9a7b)
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:13.7792829Z 
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:13.7793090Z running 10 tests
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:13.8250467Z test all_profiles_map_exact_subjects_and_authorized_actions ... ok
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:13.8255603Z test claims_are_exact_bounded_and_replay_digest_is_stable ... ok
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:14.5380490Z test github_jwks_rejects_malformed_ambiguous_or_unusable_key_sets ... ok
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:14.6883389Z test github_online_source_is_explicit_exclusive_and_keeps_static_trust_separate ... ok
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:14.6907988Z test malformed_compact_jwt_and_duplicate_claims_fail_closed ... ok
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:14.6938746Z test non_canonical_or_invalid_spiffe_ids_are_rejected ... ok
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:14.8265848Z test rs256_verifies_and_signature_or_selector_tampering_fails ... ok
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:14.8290406Z test verification_key_is_bound_to_the_matched_identity ... ok
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:14.8308952Z test github_x5t_is_bounded_metadata_never_a_key_selector ... ok
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:14.8317377Z test workload_catalog_rejects_unknown_fields_duplicates_and_unusable_principals ... ok
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:14.8318185Z 
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:14.8318799Z test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.05s
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:14.8319767Z 
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:14.9343576Z  Downloading crates ...
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.0659675Z   Downloaded anstyle-query v1.1.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.0681780Z   Downloaded aead v0.5.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.0708088Z   Downloaded anstyle-parse v1.0.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.0764632Z   Downloaded atomic-waker v1.1.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.0787212Z   Downloaded anstyle v1.0.14
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.0871189Z   Downloaded argon2 v0.5.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.0892387Z   Downloaded base64ct v1.8.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.0923621Z   Downloaded anstream v1.0.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.0965455Z   Downloaded futures-core v0.3.32
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.0986590Z   Downloaded fallible-streaming-iterator v0.1.9
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.1000490Z   Downloaded errno v0.3.14
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.1022465Z   Downloaded tinyvec_macros v0.1.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.1034256Z   Downloaded futures-task v0.3.32
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.1054716Z   Downloaded tower-layer v0.3.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.1068796Z   Downloaded lru-slab v0.1.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.1080940Z   Downloaded serde_urlencoded v0.7.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.1102266Z   Downloaded tower-service v0.3.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.1114245Z   Downloaded rand_pcg v0.10.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.1134642Z   Downloaded powerfmt v0.2.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.1150637Z   Downloaded strsim v0.11.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.1169216Z   Downloaded tokio-macros v2.6.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.1183326Z   Downloaded thread_local v1.1.9
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.1203023Z   Downloaded lazy_static v1.5.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.1228579Z   Downloaded utf8parse v0.2.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.1242563Z   Downloaded untrusted v0.9.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.1265272Z   Downloaded want v0.3.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.1278371Z   Downloaded num-conv v0.2.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.1290565Z   Downloaded tracing-serde v0.2.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.1302819Z   Downloaded rtoolbox v0.0.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.1320540Z   Downloaded colorchoice v1.0.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.1336892Z   Downloaded rustc-hash v2.1.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.1354532Z   Downloaded cpufeatures v0.3.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.1376192Z   Downloaded secrecy v0.10.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.1388059Z   Downloaded bitflags v2.11.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.1442539Z   Downloaded universal-hash v0.5.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.1462804Z   Downloaded try-lock v0.2.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.1475186Z   Downloaded thiserror v2.0.18
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.1555848Z   Downloaded time-core v0.1.9
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.1574776Z   Downloaded tokio-rustls v0.26.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.1600047Z   Downloaded yasna v0.5.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.1624076Z   Downloaded tracing-attributes v0.1.31
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.1658480Z   Downloaded tempfile v3.27.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.1691252Z   Downloaded rustls-pki-types v1.14.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.1727036Z   Downloaded tracing-core v0.1.36
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.1758583Z   Downloaded ryu v1.0.23
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.1802399Z   Downloaded tinyvec v1.11.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.1840924Z   Downloaded clap v4.6.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.1961889Z   Downloaded tower-http v0.6.8
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.2141262Z   Downloaded rand v0.9.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.2142378Z   Downloaded rand v0.10.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.2186072Z   Downloaded http v1.4.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.2240044Z   Downloaded reqwest v0.12.28
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.2299619Z   Downloaded rusqlite v0.34.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.2372912Z   Downloaded tracing-subscriber v0.3.23
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.2467032Z   Downloaded webpki-roots v1.0.6
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.2505643Z   Downloaded vcpkg v0.2.15
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.3102485Z   Downloaded futures-util v0.3.32
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.3247527Z   Downloaded quinn-proto v0.11.17
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.3321034Z   Downloaded time v0.3.55
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.3479153Z   Downloaded hkdf v0.12.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.3505996Z   Downloaded clap_builder v4.6.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.3575921Z   Downloaded iri-string v0.7.12
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.3662041Z   Downloaded rustls v0.23.37
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.3790295Z   Downloaded hyper v1.9.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.3862916Z   Downloaded tracing v0.1.44
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.4031136Z   Downloaded rustix v1.1.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.4320005Z   Downloaded hashbrown v0.15.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.4374526Z   Downloaded hyper-util v0.1.20
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.4440917Z   Downloaded quinn v0.11.9
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.4476877Z   Downloaded mio v1.2.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.4541898Z   Downloaded getrandom v0.4.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.4585872Z   Downloaded aes v0.8.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.4624481Z   Downloaded rustls-webpki v0.103.15
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.4658356Z   Downloaded rcgen v0.13.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.4690603Z   Downloaded bytes v1.11.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.4736694Z   Downloaded socket2 v0.6.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.4757368Z   Downloaded sharded-slab v0.1.7
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.4795041Z   Downloaded log v0.4.29
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.4823267Z   Downloaded clap_derive v4.6.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.4847679Z   Downloaded chacha20 v0.10.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.4875298Z   Downloaded hmac v0.12.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.4897784Z   Downloaded rpassword v7.5.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.4925993Z   Downloaded rand_core v0.10.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.4944630Z   Downloaded rand_chacha v0.9.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.4959149Z   Downloaded blake2 v0.10.6
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.4988044Z   Downloaded quinn-udp v0.5.14
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.5008598Z   Downloaded ipnet v2.12.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.5028662Z   Downloaded tokio v1.50.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.5492514Z   Downloaded hyper-rustls v0.27.7
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.5520219Z   Downloaded httparse v1.10.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.5547686Z   Downloaded hashlink v0.10.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.5567941Z   Downloaded getrandom v0.2.17
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.5601095Z   Downloaded futures-channel v0.3.32
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.5622963Z   Downloaded cipher v0.4.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.5641098Z   Downloaded thiserror-impl v2.0.18
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.5658319Z   Downloaded slab v0.4.12
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.5673883Z   Downloaded ppv-lite86 v0.2.21
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.5689029Z   Downloaded polyval v0.6.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.5709834Z   Downloaded pem v3.0.6
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.5726399Z   Downloaded password-hash v0.5.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.5746621Z   Downloaded nu-ansi-term v0.50.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.5773922Z   Downloaded deranged v0.5.8
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.5789736Z   Downloaded sync_wrapper v1.0.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.5800163Z   Downloaded rand_core v0.9.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.5815608Z   Downloaded rand_core v0.6.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.5832673Z   Downloaded pin-project-lite v0.2.17
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.5896760Z   Downloaded tracing-log v0.2.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.5912622Z   Downloaded http-body-util v0.1.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.5933178Z   Downloaded base64 v0.22.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.5973887Z   Downloaded aes-gcm v0.10.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.6007890Z   Downloaded signal-hook-registry v1.4.8
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.6022856Z   Downloaded foldhash v0.1.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.6036866Z   Downloaded fallible-iterator v0.3.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.6051419Z   Downloaded tower v0.5.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.6162829Z   Downloaded fastrand v2.3.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.6178286Z   Downloaded inout v0.1.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.6191362Z   Downloaded ctr v0.9.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.6215010Z   Downloaded cfg_aliases v0.2.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.6226398Z   Downloaded opaque-debug v0.3.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.6237943Z   Downloaded is_terminal_polyfill v1.70.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.6249954Z   Downloaded http-body v1.0.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.6261688Z   Downloaded ghash v0.5.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.6274739Z   Downloaded ring v0.17.14
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.6724172Z   Downloaded clap_lex v1.1.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.6922965Z   Downloaded linux-raw-sys v0.12.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.7682797Z   Downloaded libsqlite3-sys v0.32.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.8920502Z    Compiling syn v2.0.117
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:15.8921064Z    Compiling getrandom v0.2.17
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:16.0050536Z    Compiling rand_core v0.6.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:16.1036261Z    Compiling subtle v2.6.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:16.1930356Z    Compiling once_cell v1.21.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:16.3240541Z    Compiling crypto-common v0.1.7
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:16.3830611Z    Compiling smallvec v1.15.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:16.5183749Z    Compiling pin-project-lite v0.2.17
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:16.5547341Z    Compiling bytes v1.11.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:17.1481849Z    Compiling getrandom v0.3.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:17.3390874Z    Compiling errno v0.3.14
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:17.4128210Z    Compiling futures-core v0.3.32
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:17.4911103Z    Compiling signal-hook-registry v1.4.8
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:17.8490500Z    Compiling ring v0.17.14
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:18.1970873Z    Compiling mio v1.2.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:18.6501086Z    Compiling socket2 v0.6.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:19.1311493Z    Compiling synstructure v0.13.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:20.4720415Z    Compiling zerofrom-derive v0.1.6
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:21.2480902Z    Compiling serde_derive v1.0.228
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:23.4003498Z    Compiling serde v1.0.228
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:23.8110977Z    Compiling zerofrom v0.1.6
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:23.8781283Z    Compiling yoke-derive v0.8.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:24.0180558Z    Compiling zerovec-derive v0.11.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:24.6941282Z    Compiling yoke v0.8.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:24.8150715Z    Compiling displaydoc v0.2.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:24.9520560Z    Compiling zerovec v0.11.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:25.3090725Z    Compiling tokio-macros v2.6.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:25.4170686Z    Compiling tinystr v0.8.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:25.5410592Z    Compiling icu_locale_core v2.1.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:25.8320640Z    Compiling tokio v1.50.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:26.4901197Z    Compiling potential_utf v0.1.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:26.5709809Z    Compiling zerotrie v0.2.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:26.8020408Z    Compiling tracing-core v0.1.36
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:27.3750721Z    Compiling digest v0.10.7
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:27.5221063Z    Compiling icu_provider v2.1.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:27.7460464Z    Compiling icu_collections v2.1.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:28.2101375Z    Compiling rustls-pki-types v1.14.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:28.6372881Z    Compiling http v1.4.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:29.6090708Z    Compiling untrusted v0.9.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:31.3551590Z    Compiling http-body v1.0.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:31.4311319Z    Compiling slab v0.4.12
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:31.5280901Z    Compiling httparse v1.10.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:31.7160429Z    Compiling bitflags v2.11.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:31.8340472Z    Compiling futures-task v0.3.32
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:31.8864469Z    Compiling icu_properties v2.1.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:31.9210965Z    Compiling futures-util v0.3.32
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:33.1041359Z    Compiling icu_normalizer v2.1.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:33.5891413Z    Compiling tracing-attributes v0.1.31
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:33.6600417Z    Compiling thiserror-impl v1.0.69
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:34.6470454Z    Compiling inout v0.1.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:34.6503222Z    Compiling vcpkg v0.2.15
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:34.7090545Z    Compiling base64 v0.22.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:34.9740611Z    Compiling try-lock v0.2.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:35.0130931Z    Compiling tower-service v0.3.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:35.0473727Z    Compiling rustls v0.23.37
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:35.1373526Z    Compiling want v0.3.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:35.2170984Z    Compiling libsqlite3-sys v0.32.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:35.2215502Z    Compiling cipher v0.4.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:35.3720479Z    Compiling thiserror v1.0.69
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:35.4109963Z    Compiling tracing v0.1.44
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:35.4180213Z    Compiling idna_adapter v1.2.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:35.4730527Z    Compiling ahash v0.8.12
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:35.6390783Z    Compiling parking_lot_core v0.9.12
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:35.8182003Z    Compiling rustls-webpki v0.103.15
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:35.8234380Z    Compiling form_urlencoded v1.2.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:35.9233443Z    Compiling futures-channel v0.3.32
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:36.0741098Z    Compiling universal-hash v0.5.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:36.1340730Z    Compiling atomic-waker v1.1.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:36.1841028Z    Compiling foldhash v0.1.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:36.2796954Z    Compiling utf8parse v0.2.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:36.3227193Z    Compiling opaque-debug v0.3.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:36.3491390Z    Compiling rekey-domain v2.0.0-alpha.2 (/home/runner/work/rekey-wid10-20260910-1789030338/rekey-wid10-20260910-1789030338/source/crates/rekey-domain)
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:36.9228897Z    Compiling polyval v0.6.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:37.0741150Z    Compiling anstyle-parse v1.0.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:38.6720397Z    Compiling hashbrown v0.15.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:39.1550631Z    Compiling fluent-uri v0.4.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:39.8741043Z    Compiling idna v1.1.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:40.6580591Z    Compiling hyper v1.9.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:41.8490494Z    Compiling parking_lot v0.12.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:43.6610582Z    Compiling strum_macros v0.28.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:45.5121230Z    Compiling rand_core v0.9.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:45.6521196Z    Compiling ppv-lite86 v0.2.21
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:45.9270628Z    Compiling sync_wrapper v1.0.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:45.9721082Z    Compiling anstyle-query v1.1.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:46.0115462Z    Compiling is_terminal_polyfill v1.70.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:46.0449287Z    Compiling colorchoice v1.0.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:46.0880503Z    Compiling ipnet v2.12.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:46.5730671Z    Compiling tower-layer v0.3.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:46.6796752Z    Compiling anstyle v1.0.14
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:46.8260874Z    Compiling log v0.4.29
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:46.9567680Z    Compiling base64ct v1.8.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:47.1601311Z    Compiling password-hash v0.5.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:47.5310605Z    Compiling jsonschema-value v0.52.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:47.8950564Z    Compiling referencing v0.52.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:49.8080605Z    Compiling anstream v1.0.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:50.1171207Z    Compiling tower v0.5.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:50.8071391Z    Compiling hyper-util v0.1.20
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:52.1510924Z    Compiling rand_chacha v0.9.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:52.1820408Z    Compiling strum v0.28.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:52.2361051Z    Compiling tokio-rustls v0.26.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:52.4291085Z    Compiling url v2.5.8
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:52.5753905Z    Compiling hashlink v0.10.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:52.8020331Z    Compiling ghash v0.5.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:52.8552434Z    Compiling ctr v0.9.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:52.9610662Z    Compiling aes v0.8.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:53.2741055Z    Compiling webpki-roots v1.0.6
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:53.3357452Z    Compiling hmac v0.12.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:53.4110418Z    Compiling sha2 v0.10.9
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:53.4970487Z    Compiling blake2 v0.10.6
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:53.7439661Z    Compiling email_address v0.2.9
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:53.8835566Z    Compiling curve25519-dalek-derive v0.1.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:53.9231285Z    Compiling aead v0.5.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:54.0050967Z    Compiling clap_lex v1.1.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:54.1631216Z    Compiling fallible-iterator v0.3.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:54.2970858Z    Compiling strsim v0.11.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:54.4310740Z    Compiling ryu v1.0.23
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:54.5450967Z    Compiling lazy_static v1.5.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:54.5807601Z    Compiling iri-string v0.7.12
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:54.6266505Z    Compiling fallible-streaming-iterator v0.1.9
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:54.7080657Z    Compiling serde_jcs v0.2.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:54.8620373Z    Compiling rusqlite v0.34.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:56.1992906Z    Compiling tower-http v0.6.8
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:56.3920378Z    Compiling sharded-slab v0.1.7
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:56.5381023Z    Compiling serde_urlencoded v0.7.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:56.7181063Z    Compiling clap_builder v4.6.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:56.8380582Z    Compiling curve25519-dalek v4.1.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:57.7021296Z    Compiling aes-gcm v0.10.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:17:57.7940456Z    Compiling jsonschema v0.52.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:00.8180545Z    Compiling argon2 v0.5.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:01.2800646Z    Compiling hkdf v0.12.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:01.3590875Z    Compiling hyper-rustls v0.27.7
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:01.5610742Z    Compiling rand v0.9.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:02.1141131Z    Compiling tracing-log v0.2.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:02.2701191Z    Compiling clap_derive v4.6.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:03.8660521Z    Compiling http-body-util v0.1.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:04.0391286Z    Compiling tracing-serde v0.2.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:04.1251120Z    Compiling secrecy v0.10.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:04.1902498Z    Compiling thread_local v1.1.9
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:04.3511686Z    Compiling rtoolbox v0.0.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:04.4908209Z    Compiling num-conv v0.2.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:04.5788559Z    Compiling powerfmt v0.2.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:04.7120966Z    Compiling rustix v1.1.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:04.9160849Z    Compiling getrandom v0.4.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:05.0309988Z    Compiling nu-ansi-term v0.50.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:05.2810536Z    Compiling deranged v0.5.8
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:06.2549640Z    Compiling time-core v0.1.9
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:06.3916517Z    Compiling time v0.3.55
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:07.0090270Z    Compiling tracing-subscriber v0.3.23
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:08.9370391Z    Compiling rpassword v7.5.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:09.1578375Z    Compiling rekey-vault v2.0.0-alpha.2 (/home/runner/work/rekey-wid10-20260910-1789030338/rekey-wid10-20260910-1789030338/source/crates/rekey-vault)
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:11.4531168Z    Compiling reqwest v0.12.28
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:13.6151206Z    Compiling clap v4.6.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:13.6501850Z    Compiling rekey-policy v2.0.0-alpha.2 (/home/runner/work/rekey-wid10-20260910-1789030338/rekey-wid10-20260910-1789030338/source/crates/rekey-policy)
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:15.2892068Z    Compiling rekey-connector v2.0.0-alpha.2 (/home/runner/work/rekey-wid10-20260910-1789030338/rekey-wid10-20260910-1789030338/source/crates/rekey-connector)
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:15.8200675Z    Compiling linux-raw-sys v0.12.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:17.2350957Z    Compiling rekey-broker v2.0.0-alpha.2 (/home/runner/work/rekey-wid10-20260910-1789030338/rekey-wid10-20260910-1789030338/source/crates/rekey-broker)
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:17.9480822Z    Compiling yasna v0.5.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:18.6871078Z    Compiling pem v3.0.6
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:19.0000773Z    Compiling fastrand v2.3.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:19.1611094Z    Compiling tempfile v3.27.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:19.5520652Z    Compiling rcgen v0.13.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:30.1967891Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 15s
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:30.2188524Z      Running tests/github_jwks.rs (target/debug/deps/github_jwks-b0cbb794e1ccecca)
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:30.2216080Z 
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:30.2216690Z running 2 tests
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:30.7718065Z test policy_can_change_during_network_wait_and_the_inflight_mint_is_rejected ... ok
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:31.0582487Z test each_mint_fetches_fresh_and_rotation_errors_expiry_replay_fail_closed ... ok
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:31.0583456Z 
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:31.0584248Z test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.84s
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:31.0584958Z 
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:31.0596099Z      Running tests/workload_identity.rs (target/debug/deps/workload_identity-a25f6609032eab17)
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:31.0619278Z 
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:31.0619834Z running 8 tests
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:31.1830113Z test malformed_tokens_share_one_error_and_workload_message_is_agent_only ... ok
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:31.2096434Z test policy_activation_revokes_only_workload_sessions ... ok
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:31.2619010Z test replay_is_denied_atomically_in_a_concurrent_race ... ok
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:31.3144832Z test restart_revokes_capability_but_preserves_replay_denial ... ok
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:31.3436677Z test workload_audit_failure_revokes_capability_and_faults_closed ... ok
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:31.3967184Z test workload_mint_executes_without_step_up_and_audits_redacted_origin ... ok
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:31.4268151Z test workload_mint_rejects_unauthorized_and_disabled_actions ... ok
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:31.4810663Z test workload_sessions_obey_use_expiry_revoke_and_lock_lifecycle ... ok
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:31.4811659Z 
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:31.4812231Z test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.42s
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:31.4813667Z 
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:31.6700552Z    Compiling libc v0.2.183
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:31.6701427Z    Compiling proc-macro2 v1.0.106
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:31.8630492Z    Compiling quote v1.0.45
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:31.8975494Z    Compiling unicode-ident v1.0.24
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:32.6441014Z    Compiling syn v2.0.117
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:32.8551112Z    Compiling cfg-if v1.0.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:32.8793963Z    Compiling version_check v0.9.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:33.0708705Z    Compiling getrandom v0.2.17
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:34.0471882Z    Compiling jobserver v0.1.35
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:34.3082098Z    Compiling typenum v1.19.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:34.4822443Z    Compiling find-msvc-tools v0.1.9
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:34.6351493Z    Compiling shlex v1.3.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:34.7421208Z    Compiling cc v1.2.58
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:36.1220778Z    Compiling generic-array v0.14.7
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:36.7640910Z    Compiling serde_core v1.0.228
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:37.3780636Z    Compiling itoa v1.0.18
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:37.5503937Z    Compiling synstructure v0.13.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:38.0051167Z    Compiling rand_core v0.6.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:38.1223177Z    Compiling subtle v2.6.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:38.2221232Z    Compiling serde v1.0.228
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:38.3800368Z    Compiling serde_derive v1.0.228
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:39.8190949Z    Compiling crypto-common v0.1.7
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:39.9041742Z    Compiling zerofrom-derive v0.1.6
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:40.8756609Z    Compiling smallvec v1.15.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:41.0520427Z    Compiling once_cell v1.21.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:41.2082646Z    Compiling zerofrom v0.1.6
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:41.2730896Z    Compiling yoke-derive v0.8.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:41.8344527Z    Compiling stable_deref_trait v1.2.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:41.8619969Z    Compiling memchr v2.8.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:42.0806422Z    Compiling yoke v0.8.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:42.2094251Z    Compiling zerovec-derive v0.11.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:43.0510529Z    Compiling autocfg v1.5.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:43.1001480Z    Compiling zerovec v0.11.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:43.3350507Z    Compiling num-traits v0.2.19
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:43.4071781Z    Compiling displaydoc v0.2.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:43.6608593Z    Compiling zmij v1.0.21
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:43.7790735Z    Compiling zeroize v1.8.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:43.8599324Z    Compiling pin-project-lite v0.2.17
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:43.8891156Z    Compiling zerocopy v0.8.48
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:43.8993199Z    Compiling bytes v1.11.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:44.0941281Z    Compiling getrandom v0.3.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:44.3487829Z    Compiling pkg-config v0.3.32
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:44.7480907Z    Compiling serde_json v1.0.149
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:45.7010641Z    Compiling errno v0.3.14
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:45.7841243Z    Compiling futures-core v0.3.32
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:45.8573642Z    Compiling signal-hook-registry v1.4.8
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:48.9289163Z    Compiling tinystr v0.8.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:49.0631152Z    Compiling tokio-macros v2.6.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:49.5690532Z    Compiling mio v1.2.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:50.1080534Z    Compiling socket2 v0.6.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:50.2070659Z    Compiling litemap v0.8.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:50.3436525Z    Compiling writeable v0.6.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:50.5041240Z    Compiling cpufeatures v0.2.17
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:50.5351099Z    Compiling percent-encoding v2.3.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:50.7341205Z    Compiling icu_locale_core v2.1.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:51.0550864Z    Compiling tokio v1.50.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:53.3300492Z    Compiling num-integer v0.1.47
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:53.8400341Z    Compiling zerotrie v0.2.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:54.1930995Z    Compiling potential_utf v0.1.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:54.2833835Z    Compiling tracing-core v0.1.36
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:55.2520941Z    Compiling block-buffer v0.10.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:55.3300678Z    Compiling ring v0.17.14
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:55.6510537Z    Compiling icu_normalizer_data v2.1.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:18:55.7391143Z    Compiling icu_properties_data v2.1.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:01.2262690Z    Compiling digest v0.10.7
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:01.3530512Z    Compiling icu_collections v2.1.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:01.8381014Z    Compiling icu_provider v2.1.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:02.6675023Z    Compiling http v1.4.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:04.3181299Z    Compiling thiserror v1.0.69
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:04.4180451Z    Compiling heck v0.5.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:04.5540636Z    Compiling http-body v1.0.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:04.7561308Z    Compiling num-bigint v0.4.8
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:08.6693261Z    Compiling rustls-pki-types v1.14.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:08.8400344Z    Compiling thiserror-impl v1.0.69
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:09.5100557Z    Compiling cmake v0.1.58
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:09.7870172Z    Compiling ahash v0.8.12
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:09.7883958Z    Compiling syn v3.0.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:09.8669113Z    Compiling regex-syntax v0.8.11
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:11.9235686Z    Compiling httparse v1.10.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:12.0890946Z    Compiling untrusted v0.9.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:12.1451279Z    Compiling dunce v1.0.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:12.1811016Z    Compiling slab v0.4.12
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:12.2981134Z    Compiling futures-task v0.3.32
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:12.3840462Z    Compiling ref-cast v1.0.27
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:12.5230604Z    Compiling parking_lot_core v0.9.12
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:12.6250526Z    Compiling fs_extra v1.3.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:12.8165945Z    Compiling aws-lc-sys v0.44.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:13.8699225Z    Compiling futures-util v0.3.32
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:18.2838384Z    Compiling ref-cast-impl v1.0.27
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:18.6446090Z    Compiling num-rational v0.4.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:20.0410939Z    Compiling icu_properties v2.1.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:20.3530367Z    Compiling icu_normalizer v2.1.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:21.6690872Z    Compiling num-iter v0.1.46
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:21.6780804Z    Compiling num-complex v0.4.6
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:21.7240423Z    Compiling aho-corasick v1.1.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:22.1350878Z    Compiling inout v0.1.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:22.2151137Z    Compiling tracing-attributes v0.1.31
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:23.2441084Z    Compiling vcpkg v0.2.15
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:23.7980569Z    Compiling tower-service v0.3.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:23.8340615Z    Compiling scopeguard v1.2.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:23.8730922Z    Compiling semver v1.0.27
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:24.0890523Z    Compiling try-lock v0.2.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:24.1332172Z    Compiling uuid v1.23.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:24.6110779Z    Compiling utf8parse v0.2.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:24.6603158Z    Compiling rustls v0.23.37
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:24.7381112Z    Compiling anstyle-parse v1.0.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:24.8741207Z    Compiling rekey-domain v2.0.0-alpha.2 (/home/runner/work/rekey-wid10-20260910-1789030338/rekey-wid10-20260910-1789030338/source/crates/rekey-domain)
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:27.6891180Z    Compiling want v0.3.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:27.7840761Z    Compiling rustc_version v0.4.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:27.9771263Z    Compiling lock_api v0.4.14
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:28.1570997Z    Compiling libsqlite3-sys v0.32.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:28.2060456Z    Compiling tracing v0.1.44
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:28.3541129Z    Compiling regex-automata v0.4.18
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:28.5011032Z    Compiling cipher v0.4.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:28.6690927Z    Compiling num v0.4.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:28.6990847Z    Compiling idna_adapter v1.2.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:29.4040359Z    Compiling rustls-webpki v0.103.15
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:43.4710685Z    Compiling form_urlencoded v1.2.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:43.6117319Z    Compiling ppv-lite86 v0.2.21
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:43.8450543Z    Compiling futures-channel v0.3.32
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:43.9975423Z    Compiling rand_core v0.9.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:44.1141825Z    Compiling universal-hash v0.5.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:44.1760486Z    Compiling unicode-general-category v1.1.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:44.4150433Z    Compiling opaque-debug v0.3.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:44.4416516Z    Compiling anstyle-query v1.1.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:44.4851075Z    Compiling foldhash v0.2.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:44.5920643Z    Compiling anstyle v1.0.14
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:44.7236365Z    Compiling is_terminal_polyfill v1.70.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:44.7561127Z    Compiling equivalent v1.0.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:44.7871074Z    Compiling foldhash v0.1.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:44.9331441Z    Compiling utf8_iter v1.0.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:45.0030679Z    Compiling bit-vec v0.8.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:45.1843875Z    Compiling atomic-waker v1.1.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:45.2218694Z    Compiling borrow-or-share v0.2.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:45.2493133Z    Compiling bitflags v2.11.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:45.4847009Z    Compiling colorchoice v1.0.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:45.5164481Z    Compiling allocator-api2 v0.2.21
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:45.7850592Z    Compiling hashbrown v0.17.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:46.3211172Z    Compiling anstream v1.0.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:46.7390374Z    Compiling fluent-uri v0.4.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:48.0454637Z    Compiling hyper v1.9.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:50.7157573Z    Compiling bit-set v0.8.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:50.8103683Z    Compiling idna v1.1.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:52.8630703Z    Compiling hashbrown v0.15.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:53.3690946Z    Compiling polyval v0.6.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:53.8872560Z    Compiling rand_chacha v0.9.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:19:54.3281316Z    Compiling parking_lot v0.12.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:20:13.9020805Z    Compiling fraction v0.17.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:08.4826857Z    Compiling curve25519-dalek v4.1.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:08.5542108Z    Compiling strum_macros v0.28.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:09.8772388Z    Compiling sync_wrapper v1.0.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:09.9099350Z    Compiling vsimd v0.8.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:10.1800953Z    Compiling base64ct v1.8.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:10.3588145Z    Compiling bytecount v0.6.9
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:10.5040516Z    Compiling log v0.4.29
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:10.6312877Z    Compiling strsim v0.11.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:11.2416884Z    Compiling outref v0.5.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:11.2691579Z    Compiling tower-layer v0.3.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:11.3843324Z    Compiling micromap v0.3.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:11.5777730Z    Compiling ipnet v2.12.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:12.5155415Z    Compiling base64 v0.22.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:12.8495316Z    Compiling aws-lc-rs v1.18.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:12.9590464Z    Compiling data-encoding v2.10.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:15.2852630Z    Compiling num-cmp v0.1.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:15.5012975Z    Compiling clap_lex v1.1.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:15.7641103Z    Compiling clap_builder v4.6.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:19.0710976Z    Compiling jsonschema-value v0.52.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:20.0911083Z    Compiling hyper-util v0.1.20
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:22.8668350Z    Compiling referencing v0.52.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:27.9111136Z    Compiling tower v0.5.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:28.4010600Z    Compiling uuid-simd v0.8.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:28.7401021Z    Compiling password-hash v0.5.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:29.7311479Z    Compiling strum v0.28.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:29.9770651Z    Compiling tokio-rustls v0.26.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:30.2006179Z    Compiling rand v0.9.5
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:30.7103785Z    Compiling ghash v0.5.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:30.7761184Z    Compiling hashlink v0.10.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:30.8560760Z    Compiling url v2.5.8
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:31.0576268Z    Compiling fancy-regex v0.19.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:33.5200949Z    Compiling regex v1.13.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:35.0040367Z    Compiling aes v0.8.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:36.0771051Z    Compiling ctr v0.9.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:36.2081138Z    Compiling jsonschema-regex v0.52.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:37.6260771Z    Compiling webpki-roots v1.0.6
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:37.6882645Z    Compiling clap_derive v4.6.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:38.6550688Z    Compiling hmac v0.12.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:38.7410873Z    Compiling blake2 v0.10.6
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:39.2511103Z    Compiling sha2 v0.10.9
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:39.2580621Z    Compiling email_address v0.2.9
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:39.6901095Z    Compiling aead v0.5.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:39.7841147Z    Compiling curve25519-dalek-derive v0.1.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:40.1610526Z    Compiling rtoolbox v0.0.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:40.2890845Z    Compiling fallible-iterator v0.3.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:40.5821120Z    Compiling iri-string v0.7.12
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:40.9200708Z    Compiling lazy_static v1.5.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:40.9610771Z    Compiling fallible-streaming-iterator v0.1.9
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:41.0501869Z    Compiling ryu-js v0.2.2
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:41.3040827Z    Compiling ryu v1.0.23
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:41.5581158Z    Compiling untrusted v0.7.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:43.7730487Z    Compiling tower-http v0.6.8
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:44.7390699Z    Compiling serde_urlencoded v0.7.1
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:44.8950530Z    Compiling serde_jcs v0.2.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:44.9431483Z    Compiling rusqlite v0.34.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:46.1827642Z    Compiling sharded-slab v0.1.7
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:46.7171095Z    Compiling rpassword v7.5.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:47.5021564Z    Compiling aes-gcm v0.10.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:47.6191165Z    Compiling jsonschema v0.52.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:49.3501859Z    Compiling clap v4.6.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:49.3851423Z    Compiling argon2 v0.5.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:50.4740676Z    Compiling hkdf v0.12.4
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:50.5563285Z    Compiling hyper-rustls v0.27.7
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:51.1060935Z    Compiling tracing-log v0.2.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:51.3940625Z    Compiling http-body-util v0.1.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:51.5940726Z    Compiling tracing-serde v0.2.0
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:51.6881275Z    Compiling secrecy v0.10.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:51.7550589Z    Compiling thread_local v1.1.9
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:51.9570658Z    Compiling nu-ansi-term v0.50.3
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:52.4201089Z    Compiling tracing-subscriber v0.3.23
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:21:57.3811636Z    Compiling rekey-policy v2.0.0-alpha.2 (/home/runner/work/rekey-wid10-20260910-1789030338/rekey-wid10-20260910-1789030338/source/crates/rekey-policy)
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:22:26.2891752Z    Compiling rekey-vault v2.0.0-alpha.2 (/home/runner/work/rekey-wid10-20260910-1789030338/rekey-wid10-20260910-1789030338/source/crates/rekey-vault)
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:22:37.5751491Z    Compiling reqwest v0.12.28
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:22:46.7982283Z    Compiling rekey-connector v2.0.0-alpha.2 (/home/runner/work/rekey-wid10-20260910-1789030338/rekey-wid10-20260910-1789030338/source/crates/rekey-connector)
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:22:47.7131685Z    Compiling rekey-broker v2.0.0-alpha.2 (/home/runner/work/rekey-wid10-20260910-1789030338/rekey-wid10-20260910-1789030338/source/crates/rekey-broker)
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:22:53.3773748Z    Compiling rekey-cli v2.0.0-alpha.2 (/home/runner/work/rekey-wid10-20260910-1789030338/rekey-wid10-20260910-1789030338/source/crates/rekey-cli)
+acceptance	Build source with fixed online GitHub JWKS	2026-09-10T09:23:29.3480745Z     Finished `release` profile [optimized] target(s) in 4m 57s
+acceptance	Real issuer and expired JWT acceptance	﻿2026-09-10T09:23:29.3740855Z ##[group]Run python3 drill.py --bin-dir source/target/release --signer signer.py --output receipt.json
+acceptance	Real issuer and expired JWT acceptance	2026-09-10T09:23:29.3741614Z ^[[36;1mpython3 drill.py --bin-dir source/target/release --signer signer.py --output receipt.json^[[0m
+acceptance	Real issuer and expired JWT acceptance	2026-09-10T09:23:29.3782695Z shell: /usr/bin/bash -e {0}
+acceptance	Real issuer and expired JWT acceptance	2026-09-10T09:23:29.3782964Z ##[endgroup]
+acceptance	Real issuer and expired JWT acceptance	2026-09-10T09:23:30.7421222Z JWT header fields: ['alg', 'kid', 'typ', 'x5t'] TTL seconds: 300
+acceptance	Real issuer and expired JWT acceptance	2026-09-10T09:23:31.1913669Z Real OIDC mint, fixed read 200, replay and wrong-audience rejection passed; waiting for natural expiry.
+acceptance	Real issuer and expired JWT acceptance	2026-09-10T09:28:31.5110984Z GitHub Actions real OIDC interoperability: PASS
+acceptance	Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02	﻿2026-09-10T09:28:31.5276372Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+acceptance	Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02	2026-09-10T09:28:31.5278479Z ##[group]Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+acceptance	Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02	2026-09-10T09:28:31.5278866Z with:
+acceptance	Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02	2026-09-10T09:28:31.5279077Z   name: oidc-public-receipt
+acceptance	Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02	2026-09-10T09:28:31.5279324Z   path: receipt.json
+acceptance	Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02	2026-09-10T09:28:31.5279881Z   if-no-files-found: error
+acceptance	Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02	2026-09-10T09:28:31.5280280Z   retention-days: 1
+acceptance	Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02	2026-09-10T09:28:31.5280598Z   compression-level: 6
+acceptance	Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02	2026-09-10T09:28:31.5280926Z   overwrite: false
+acceptance	Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02	2026-09-10T09:28:31.5281226Z   include-hidden-files: false
+acceptance	Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02	2026-09-10T09:28:31.5281465Z ##[endgroup]
+acceptance	Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02	2026-09-10T09:28:31.7489912Z (node:14155) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+acceptance	Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02	2026-09-10T09:28:31.7496734Z (Use `node --trace-deprecation ...` to show where the warning was created)
+acceptance	Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02	2026-09-10T09:28:31.7631439Z With the provided path, there will be 1 file uploaded
+acceptance	Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02	2026-09-10T09:28:31.7668488Z Artifact name is valid!
+acceptance	Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02	2026-09-10T09:28:31.7699233Z Root directory input is valid!
+acceptance	Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02	2026-09-10T09:28:32.0642132Z Beginning upload of artifact content to blob storage
+acceptance	Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02	2026-09-10T09:28:32.0836838Z (node:14155) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+acceptance	Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02	2026-09-10T09:28:32.2807625Z Uploaded bytes 1067
+acceptance	Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02	2026-09-10T09:28:32.3323609Z Finished uploading artifact content to blob storage!
+acceptance	Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02	2026-09-10T09:28:32.3324931Z SHA256 digest of uploaded artifact zip is d8f6b9b952f858f0b1680ef0094357f8cebdf92634c230b2637c059da768fb52
+acceptance	Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02	2026-09-10T09:28:32.3327430Z Finalizing artifact upload
+acceptance	Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02	2026-09-10T09:28:32.6110723Z Artifact oidc-public-receipt.zip successfully finalized. Artifact ID 10145441768
+acceptance	Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02	2026-09-10T09:28:32.6112240Z Artifact oidc-public-receipt has been successfully uploaded! Final size is 1067 bytes. Artifact ID is 10145441768
+acceptance	Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02	2026-09-10T09:28:32.6117693Z Artifact download URL: https://github.com/majiayu000/rekey-wid10-20260910-1789030338/actions/runs/34459644320/artifacts/10145441768
+acceptance	Post Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	﻿2026-09-10T09:28:32.6343835Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+acceptance	Post Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:28:32.6345884Z Post job cleanup.
+acceptance	Post Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:28:32.7336669Z [command]/usr/bin/git version
+acceptance	Post Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:28:32.7430118Z git version 2.55.0
+acceptance	Post Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:28:32.7478101Z Temporarily overriding HOME='/home/runner/work/_temp/cb5fc638-46c7-4dc6-aeff-0e9c4b2e5984' before making global git config changes
+acceptance	Post Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:28:32.7487913Z Adding repository directory to the temporary git global config as a safe directory
+acceptance	Post Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:28:32.7489674Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/rekey-wid10-20260910-1789030338/rekey-wid10-20260910-1789030338
+acceptance	Post Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:28:32.7600201Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+acceptance	Post Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:28:32.7660694Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+acceptance	Post Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:28:32.8023311Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+acceptance	Post Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:28:32.8050986Z http.https://github.com/.extraheader
+acceptance	Post Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:28:32.8077826Z [command]/usr/bin/git config --local --unset-all http.https://github.com/.extraheader
+acceptance	Post Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:28:32.8133656Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+acceptance	Post Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:28:32.8764693Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+acceptance	Post Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262	2026-09-10T09:28:32.8885173Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+acceptance	Complete job	﻿2026-09-10T09:28:32.9765378Z Cleaning up orphan processes
+acceptance	Complete job	2026-09-10T09:28:33.0050449Z ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@11d5960a326750d5838078e36cf38b85af677262, actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/

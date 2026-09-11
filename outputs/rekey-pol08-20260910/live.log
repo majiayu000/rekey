@@ -1,0 +1,2 @@
+PASS: signer leaves Broker unchanged; real trust install succeeds; tampered activation fails; signed activation succeeds
+{"bundle_persisted": true, "bundle_sha256": "0ea566ddb5af3c1cf5c014120fb0abd261589e9dbf720e81c06c6ee270de0045", "expires_at_ms": 1789031674310, "policy_sha256": "ff2d8e11afd066c78d0ac3da075f2ec3538ea2b2bcda27628b3382375767fbd3", "signer_id": "41dd1e30-9ea1-4852-9ad0-510f073e2471", "status": "active", "trust_installed": true, "version": 1}

@@ -1,0 +1,19 @@
+{
+  "source_head": "cffaa23df89ffd1dd2ff80ac9e8599c184349489",
+  "branch": "feat/vault-oss-layer-a",
+  "files": {
+    "scripts/agent-quickstart.py": "ce368a8af42256eccc1a806c90e7327bae3542bc753f25ba15c8d465d24f7c6e",
+    "scripts/test-agent-quickstart.py": "5b6c4f070c5c022e5df2926a6fbfce662ef560c5c3d9cff35cc3db2a6287a272",
+    "scripts/dogfood-vault.py": "df754f210901a9dfc4f08eb07da52ef4572f397738fcb2d6a602692e9cd41fbf",
+    "docs/superpowers/specs/2026-09-10-agent-cli-onboarding.md": "ff596e2cf56827d372d11adab56b9a0f1336ad674643da8fb8e1a1db43884a90"
+  },
+  "local_checks": {
+    "cargo_build_workspace": "passed",
+    "cargo_check_workspace": "passed",
+    "real_quickstart": "4 tests passed",
+    "fixed_http_action": "1 test passed",
+    "cargo_fmt_check": "passed",
+    "mechanical_contracts": "passed",
+    "cli_dependency_boundary": "passed"
+  }
+}

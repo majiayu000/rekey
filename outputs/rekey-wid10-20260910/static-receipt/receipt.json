@@ -1,0 +1,24 @@
+{
+  "issuer": "https://token.actions.githubusercontent.com",
+  "subject": "repo:majiayu000@19658300/rekey-wid10-20260910-1789030338@1363775621:ref:refs/heads/main",
+  "audience": "rekey://github-oidc-acceptance",
+  "kid": "38826b17-6a30-5f9b-b169-8beb8202f723",
+  "public_key_sha256": "e3be89ba65516b7e78bd11dadf24ab7684c22249fb2022a9ffbde8b46dc7c234",
+  "jwt_saved": false,
+  "mint_success": true,
+  "fixed_read_status": 200,
+  "replay_exit": 4,
+  "wrong_audience_exit": 4,
+  "naturally_expired_unused_jwt_exit": 4,
+  "expiry_epoch": 1789031372,
+  "tested_at_epoch": 1789031374,
+  "source_base": "358b3a5",
+  "source_fix": "bounded standard RS256 x5t metadata",
+  "runner_commit": "23888e9eb0f7a464211b93813087508aad8a7f13",
+  "binary_sha256": {
+    "rekey": "014d433d0e9b4ba3276eab3f31aebc0690dfe4f31873852e30ab5589dc36b08f",
+    "rekeyd": "897c34232339c7db97cdfe8dcda7164863e94bfbf7863b083fe4098e3e54a231"
+  },
+  "limitation": "Static pinned GitHub public key; no broker JWKS fetching or general OAuth exchange; anonymous upstream read",
+  "temporary_states_and_secrets_removed": true
+}

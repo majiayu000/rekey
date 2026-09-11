@@ -1,0 +1,10 @@
+{
+  "host": "current Codex session invoking CLI shell wrapper",
+  "origin": "https://api.github.com",
+  "path": "/repos/majiayu000/rekey-ci-dogfood",
+  "upstream_status": 200,
+  "rotation_then_read": 200,
+  "revoked_exit": 4,
+  "limitation": "anonymous public read with synthetic x-api-key; not GitHub App authentication or write validation",
+  "recorded_at": "2026-09-10T05:53:57.174594+00:00"
+}

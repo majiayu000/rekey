@@ -79,6 +79,8 @@ pub mod admin_msg {
     pub const GITHUB_WEBHOOK_APPLY: u16 = 24;
     pub const CREDENTIAL_ROTATE_VAULT_KV: u16 = 25;
     pub const CREDENTIAL_ROTATE_VAULT_DYNAMIC: u16 = 26;
+    pub const CREDENTIAL_ROTATE_KEYCLOAK: u16 = 27;
+    pub const APPROVAL_ORIGIN: u16 = 28;
 }
 
 /// Agent channel message types.
@@ -519,11 +521,58 @@ impl ApprovalChallenge {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SignedApprovalChallenge {
+    pub record_type: String,
+    pub challenge: ApprovalChallenge,
+    pub signature: String,
+}
+
+impl SignedApprovalChallenge {
+    pub fn validate(&self) -> Result<(), crate::DomainError> {
+        if self.record_type != "rekey.approval.challenge.envelope.v1"
+            || !is_canonical_unpadded_base64url(self.signature.as_str(), 64)
+        {
+            return Err(invalid_response());
+        }
+        self.challenge.validate()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalOriginResponse {
+    pub algorithm: String,
+    pub public_key: String,
+}
+
+impl ApprovalOriginResponse {
+    pub fn validate(&self) -> Result<(), crate::DomainError> {
+        if self.algorithm != "ed25519" || !is_lower_hex(&self.public_key, 64) {
+            return Err(invalid_response());
+        }
+        Ok(())
+    }
+}
+
 fn is_lower_hex(value: &str, expected_len: usize) -> bool {
     value.len() == expected_len
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn is_canonical_unpadded_base64url(value: &str, decoded_len: usize) -> bool {
+    let encoded_len = decoded_len
+        .checked_mul(8)
+        .and_then(|bits| bits.checked_add(5))
+        .map(|bits| bits / 6)
+        .unwrap_or(0);
+    value.len() == encoded_len
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
 }
 
 fn invalid_response() -> crate::DomainError {

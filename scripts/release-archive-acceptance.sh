@@ -139,7 +139,7 @@ activate_snapshot() {
     --file "$WORKDIR/policy-bundle.json" --step-up-stdin >/dev/null
 }
 
-echo "== init, serve, unlock, format v9"
+echo "== init, serve, unlock, format v10"
 init_out="$(printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin)"
 printf '%s\n' "$init_out" | rg -q '^RKREC1-' || {
   echo "init did not print a recovery key" >&2
@@ -156,8 +156,8 @@ done
 [[ -S "$STATE/runtime/admin.sock" ]] || { echo "broker did not start"; exit 1; }
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" unlock --password-stdin >/dev/null
 status="$("$REKEY" --state-dir "$STATE" status)"
-printf '%s\n' "$status" | rg -q '"format_version": 9' || {
-  echo "expected format_version 9: $status" >&2
+printf '%s\n' "$status" | rg -q '"format_version": 10' || {
+  echo "expected format_version 10: $status" >&2
   exit 1
 }
 
@@ -365,13 +365,17 @@ def kv(version, token):
 def dyn(token):
     return {"credential_type":"vault-dynamic-source-v1","origin":"https://example.com",
             "mount":"database","role":"agent-api-token","key":"token","vault_token":token}
-pathlib.Path(kv1).write_text(json.dumps(kv(7, token_one)))
-pathlib.Path(kv2).write_text(json.dumps(kv(8, token_two)))
-pathlib.Path(dyn1).write_text(json.dumps(dyn(token_one)))
-pathlib.Path(dyn2).write_text(json.dumps(dyn(token_two)))
+def write_private(path, payload):
+    dest = pathlib.Path(path)
+    dest.write_text(json.dumps(payload))
+    dest.chmod(0o600)
+write_private(kv1, kv(7, token_one))
+write_private(kv2, kv(8, token_two))
+write_private(dyn1, dyn(token_one))
+write_private(dyn2, dyn(token_two))
 bad_profile = kv(9, token_two)
 bad_profile["origin"] = "http://example.com"
-pathlib.Path(bad).write_text(json.dumps(bad_profile))
+write_private(bad, bad_profile)
 PY
 expect_exit 2 pipe_secret "$PASSWORD" "$REKEY" --state-dir "$STATE" credential \
   add-vault-kv archive-bad --file "$WORKDIR/vault-bad.json" --password-stdin

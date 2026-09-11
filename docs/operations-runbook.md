@@ -6,6 +6,12 @@ until a verified backup exists and the target path has been written down.
 
 ## Routine backup and restore drill
 
+For BAK-06's external scheduling boundary and transfer acceptance, see
+[External backup operations](superpowers/specs/2026-09-10-external-backup-operations.md).
+Creating a new snapshot still requires operator step-up. A scheduler may only
+transfer an already completed backup and receipt; it does not hold the unlock
+proof.
+
 1. Unlock the broker and run `rekey backup --output NEW_PATH` where `NEW_PATH`
    does not exist.
 2. Save the successful receipt and its SHA-256 separately from the backup.
@@ -19,6 +25,48 @@ until a verified backup exists and the target path has been written down.
 Missing receipt/SHA-256 means restore is not authorized: locate the original
 receipt or create a new backup. A wrong proof, bad digest, corrupt backup, or
 nonempty destination must fail without producing a servable vault.
+
+## Installed personal backup transfer
+
+On this workstation, use `~/.rekey` as the future default source state and
+`~/.local/share/rekey-backups/outbox` as the export queue. The hourly user launch
+agent uploads completed exports to `apple:/Users/apple/Documents/rekey-backups`
+and also runs at login. No real authority is initialized yet; the installed
+job only transfers snapshots after the operator exports them. Retention is
+keep-all. Desktop/Documents are not used for the local queue because macOS
+TCC denied access from the background process.
+
+After initializing and starting your authority, create a snapshot in a trusted
+terminal using the existing hidden step-up prompt:
+
+```sh
+/usr/bin/python3 "$HOME/Library/Application Support/Rekey/backup-sync.py" \
+  --outbox "$HOME/.local/share/rekey-backups/outbox" export \
+  --state-dir "$HOME/.rekey" \
+  --rekey /Users/lifcc/Desktop/code/AI/tools/rekey/target/debug/rekey
+```
+
+The `--rekey` path must refer to the binary matching your running authority.
+Failed exports remain hidden `.pending-*` directories and are not uploaded.
+Do not rename them into the queue. Retry export into a new directory.
+
+Inspect or trigger the installed transfer job:
+
+```sh
+launchctl print "gui/$(id -u)/io.github.majiayu000.rekey.backup-sync"
+launchctl kickstart "gui/$(id -u)/io.github.majiayu000.rekey.backup-sync"
+tail -n 30 "$HOME/Library/Application Support/Rekey/backup-sync.stdout.log"
+tail -n 30 "$HOME/Library/Application Support/Rekey/backup-sync.stderr.log"
+```
+
+Check the latest exit code and timestamps: old failure lines remain in the log.
+`SYNC OK exports=0` means there was nothing to transfer, not that a snapshot
+was created. `VERIFIED` means the remote digest and receipt matched. Missing
+receipts, digest conflicts and SSH errors fail nonzero. Failed remote uploads
+remain hidden `.upload-*` directories for diagnosis; they are not completed
+backups. No unlock material is stored in the job or sent over SSH. To disable:
+`launchctl bootout "gui/$(id -u)/io.github.majiayu000.rekey.backup-sync"`, then
+remove only its named plist if disabling across future logins as well.
 
 ## Interrupted restore or init
 
@@ -114,10 +162,24 @@ Locking or restarting intentionally revokes every capability, challenge, and
 in-memory approval use record; create a new session and challenge afterward.
 There is no remote approval availability fallback or offline bypass.
 
+The source-only `rekey-approval-sign` binary is a local one-person, one-time
+review/sign tool. Pin `rekey approval origin` on the Broker host; obtain the
+origin-signed envelope from this host's `rekey approval prepare`; wrap the
+original request text into `approval-request.json`; review the displayed digest
+with `--origin-key`; sign only that digest; execute within 60 seconds with the
+same request. Do not take trusted inputs from an Agent directory. This is not a
+hosted approval service. Operator steps are in
+[the user guide](user-guide.md#local-independent-approval-endpoint).
+
 For workload identity, keep issuer private keys outside Rekey and place only
-the intended static Ed25519 or RS256 public keys in the signed policy. Rekey
-does not fetch JWKS, perform issuer discovery or introspection, or call SPIRE,
-Kubernetes, CI, or cloud APIs. Rotate verification keys by signing the next
+the intended static Ed25519 or RS256 public keys in the signed policy. The
+source-only [WID-09 extension](superpowers/specs/2026-09-10-github-actions-jwks.md)
+alternatively accepts `keys: []` and `online_key_source: "github-actions-jwks"`
+for the exact GitHub issuer. Every mint fetches the fixed public HTTPS JWKS;
+outage or invalid keys deny admission, with no stale-key fallback. Remote key
+rotation does not alter the policy digest or reset consumed JWT replay records.
+There is no discovery, introspection, SPIRE or Kubernetes integration.
+For static identities, rotate verification keys by signing the next
 consecutive policy version with the replacement key set, activate it, and
 confirm status before issuing new workload tokens. A new-version activation
 revokes all workload-minted sessions while preserving Admin-minted sessions.
@@ -186,3 +248,43 @@ requires its historical password or recovery key; a later backup uses the
 wrapper generation active when it was created. Never delete historical factor
 material while a retained backup still depends on it; otherwise that backup is
 permanently unrecoverable.
+
+
+## Fixed Keycloak exchange (source only)
+
+Use an owner-only profile with the fixed issuer origin/realm, confidential
+client, subject access token, audience and GET target described in
+`superpowers/specs/2026-09-10-keycloak-token-exchange-oau02.md`. The typed
+`credential add-keycloak` and `rotate-keycloak` commands retain per-call step-up;
+generic rotate rejects this kind. No provider token is returned to the Agent.
+Exchange/revoke uncertainty is nonretryable. Inspect the request-linked
+`oauth.token.issued`, `oauth.token.revoked` and terminal audit events before
+operator recovery; no background renewal or crash-time cleanup is promised.
+Resource servers using only offline JWT verification may continue accepting a
+revoked JWT until expiry; immediate rejection requires their own online check.
+
+Current source storage format is 10; old state/backups are rejected without
+migration. The format-9 backup drill receipts remain historical evidence for
+the recorded binaries and are not format-10 restore evidence.
+
+## Local Agent tools and operator repair
+
+MCP-03's owner-only manifest and Codex launch instructions are in
+[Local MCP stdio](superpowers/specs/2026-09-10-local-mcp-stdio.md). The schema in
+each manifest entry must match its reviewed policy binding. The adapter cannot
+create a session, install trust, activate policies or approve a write.
+
+For a policy draft produced by onboarding, build `rekey-policy-sign` and follow
+[External policy signer](superpowers/specs/2026-09-10-external-policy-signer.md).
+Review the complete draft before supplying its digest and an operator-held key.
+Signing and activation remain separate trusted-terminal steps; retain the key
+outside the Agent workspace and never hand it to a Broker or MCP configuration.
+
+After an opaque credential fails upstream, run the trusted terminal repair helper
+from [Operator credential repair](superpowers/specs/2026-09-10-operator-credential-repair.md).
+It displays the registered Action and credential scope, asks provide/decline,
+and delegates hidden entry to `rekey credential rotate`. Rotation affects all
+Actions sharing that credential. The result alone does not repeat the request;
+the operator or Agent must explicitly choose another execution after inspecting
+any possible earlier write effect. Revoked and provider-specific credentials
+remain outside this ordinary-token repair flow.

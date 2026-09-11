@@ -153,7 +153,27 @@ impl ValidatedSnapshot {
         token: &[u8],
         now: Timestamp,
     ) -> Result<VerifiedWorkloadIdentity, PolicyError> {
-        self.workload_catalog.verify(token, now, self.digest)
+        self.workload_catalog.verify(token, now, self.digest, None)
+    }
+
+    /// Routes bounded, unverified claims to an explicit signed source; does not authenticate.
+    pub fn workload_online_key_source(
+        &self,
+        token: &[u8],
+    ) -> Result<Option<OnlineKeySource>, PolicyError> {
+        self.workload_catalog.online_key_source(token)
+    }
+
+    /// The caller must fetch these keys from the fixed trusted GitHub endpoint.
+    /// Keys are transient; the policy digest and replay scope remain unchanged.
+    pub fn verify_workload_token_with_github_jwks(
+        &self,
+        token: &[u8],
+        now: Timestamp,
+        jwks: &GithubActionsJwks,
+    ) -> Result<VerifiedWorkloadIdentity, PolicyError> {
+        self.workload_catalog
+            .verify(token, now, self.digest, Some(jwks))
     }
 
     pub fn workload_principal_may_request(
@@ -496,7 +516,7 @@ fn requirements_equivalent(left: &ApprovalRequirement, right: &ApprovalRequireme
         && left.max_window_ms == right.max_window_ms
 }
 
-pub(crate) fn decode_lower_hex_32(value: &str) -> Result<[u8; 32], PolicyError> {
+pub fn decode_lower_hex_32(value: &str) -> Result<[u8; 32], PolicyError> {
     let decoded = HEXLOWER
         .decode(value.as_bytes())
         .map_err(|_| PolicyError::Invalid)?;
@@ -506,7 +526,7 @@ pub(crate) fn decode_lower_hex_32(value: &str) -> Result<[u8; 32], PolicyError> 
     decoded.try_into().map_err(|_| PolicyError::Invalid)
 }
 
-pub(crate) fn validate_ed25519_public_key(value: &str) -> Result<[u8; 32], PolicyError> {
+pub fn validate_ed25519_public_key(value: &str) -> Result<[u8; 32], PolicyError> {
     let public_key = decode_lower_hex_32(value)?;
     let compressed = CompressedEdwardsY(public_key);
     let point = compressed.decompress().ok_or(PolicyError::Invalid)?;

@@ -1,0 +1,85 @@
+$ cargo check --workspace
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.28s
+Exit: 0
+
+$ cargo test -p rekey-policy
+
+running 5 tests
+test tests::validates_and_evaluates_permit ... ok
+test tests::default_deny_forbid_precedence_and_expiry ... ok
+test tests::duplicate_json_keys_and_schema_fail_closed ... ok
+test signed::tests::trust_and_bundle_are_closed_canonical_and_signature_bound ... ok
+test signed::tests::approval_signature_binds_every_authorization_field ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+
+running 2 tests
+test approval_wins_over_permit_and_forbid_wins_over_approval ... ok
+test approver_catalog_and_overlapping_requirements_are_closed_and_bounded ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 10 tests
+test malformed_compact_jwt_and_duplicate_claims_fail_closed ... ok
+test verification_key_is_bound_to_the_matched_identity ... ok
+test workload_catalog_rejects_unknown_fields_duplicates_and_unusable_principals ... ok
+test non_canonical_or_invalid_spiffe_ids_are_rejected ... ok
+test claims_are_exact_bounded_and_replay_digest_is_stable ... ok
+test all_profiles_map_exact_subjects_and_authorized_actions ... ok
+test rs256_verifies_and_signature_or_selector_tampering_fails ... ok
+test github_online_source_is_explicit_exclusive_and_keeps_static_trust_separate ... ok
+test github_jwks_rejects_malformed_ambiguous_or_unusable_key_sets ... ok
+test github_x5t_is_bounded_metadata_never_a_key_selector ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Compiling rekey-policy v2.0.0-alpha.2 (/private/tmp/rekey-github-jwks-20260910/crates/rekey-policy)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.52s
+     Running unittests src/lib.rs (target/debug/deps/rekey_policy-6ebeb061414b9feb)
+     Running tests/approval_policy.rs (target/debug/deps/approval_policy-c34a6e248e5d2967)
+     Running tests/workload_identity.rs (target/debug/deps/workload_identity-da097817280a2780)
+   Doc-tests rekey_policy
+Exit: 0
+
+$ cargo test -p rekey-broker --test github_jwks --test workload_identity
+
+running 2 tests
+test policy_can_change_during_network_wait_and_the_inflight_mint_is_rejected ... ok
+test each_mint_fetches_fresh_and_rotation_errors_expiry_replay_fail_closed ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
+
+
+running 8 tests
+test malformed_tokens_share_one_error_and_workload_message_is_agent_only ... ok
+test workload_audit_failure_revokes_capability_and_faults_closed ... ok
+test replay_is_denied_atomically_in_a_concurrent_race ... ok
+test workload_mint_rejects_unauthorized_and_disabled_actions ... ok
+test workload_mint_executes_without_step_up_and_audits_redacted_origin ... ok
+test policy_activation_revokes_only_workload_sessions ... ok
+test workload_sessions_obey_use_expiry_revoke_and_lock_lifecycle ... ok
+test restart_revokes_capability_but_preserves_replay_denial ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.19s
+     Running tests/github_jwks.rs (target/debug/deps/github_jwks-baf587575845bb92)
+     Running tests/workload_identity.rs (target/debug/deps/workload_identity-13399c73870b078c)
+Exit: 0
+
+$ cargo fmt --all -- --check
+Exit: 0
+
+$ git diff --check
+Exit: 0
+
+PASS: mechanical contract no matches REKEY_PASSWORD|get_secret_value|/proxy/|passthrough
+PASS: mechanical contract no matches get_secret\b|read_secret|export_secret
+PASS: CLI normal dependency tree excludes broker/connector/HTTP/crypto/DB

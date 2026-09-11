@@ -7,13 +7,50 @@ use serde::Deserialize;
 use zeroize::Zeroizing;
 
 use super::{
-    CliError, admin, print_json, proof_kind, read_regular_file_bounded_nofollow, read_step_up,
+    CliError, admin, print_json, proof_kind, read_private_regular_file_bounded, read_step_up,
 };
 
 #[derive(Deserialize)]
 struct VaultProfileMarker<'a> {
     #[serde(borrow)]
     credential_type: &'a str,
+}
+
+pub fn credential_add_keycloak(
+    state_dir: &Path,
+    label: &str,
+    file: &Path,
+    recovery: bool,
+    password_stdin: bool,
+) -> Result<(), CliError> {
+    add_vault_profile(
+        state_dir,
+        label,
+        file,
+        recovery,
+        password_stdin,
+        "keycloak-token-exchange-v1",
+        "keycloak-token-exchange",
+        "Keycloak profile",
+    )
+}
+pub fn credential_rotate_keycloak(
+    state_dir: &Path,
+    credential_id: &str,
+    file: &Path,
+    recovery: bool,
+    password_stdin: bool,
+) -> Result<(), CliError> {
+    rotate_vault_profile(
+        state_dir,
+        credential_id,
+        file,
+        recovery,
+        password_stdin,
+        "keycloak-token-exchange-v1",
+        admin_msg::CREDENTIAL_ROTATE_KEYCLOAK,
+        "Keycloak profile",
+    )
 }
 
 pub fn credential_add_vault_kv(
@@ -146,7 +183,7 @@ fn vault_profile_file(
     expected_marker: &str,
     profile_label: &'static str,
 ) -> Result<Zeroizing<Vec<u8>>, CliError> {
-    let profile = read_regular_file_bounded_nofollow(
+    let profile = read_private_regular_file_bounded(
         file,
         ipc::ADMIN_SECRET_FIELD_MAX_BYTES as usize,
         profile_label,
@@ -177,18 +214,24 @@ fn proof_and_profile(recovery: bool, proof: &[u8], profile: &[u8]) -> Zeroizing<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn write_private(path: &Path, bytes: &[u8]) {
+        std::fs::write(path, bytes).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
 
     #[test]
     fn vault_profile_file_requires_the_closed_marker_and_bound() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("profile.json");
-        std::fs::write(&file, br#"{"credential_type":"vault-kv-v2-source-v1"}"#).unwrap();
+        write_private(&file, br#"{"credential_type":"vault-kv-v2-source-v1"}"#);
         assert!(vault_profile_file(&file, "vault-kv-v2-source-v1", "Vault KV profile").is_ok());
-        std::fs::write(&file, br#"{"credential_type":"vault-dynamic-source-v1"}"#).unwrap();
+        write_private(&file, br#"{"credential_type":"vault-dynamic-source-v1"}"#);
         assert!(
             vault_profile_file(&file, "vault-dynamic-source-v1", "Vault dynamic profile").is_ok()
         );
-        std::fs::write(&file, br#"{"credential_type":"vault-kv-v2-source-v1"}"#).unwrap();
+        write_private(&file, br#"{"credential_type":"vault-kv-v2-source-v1"}"#);
 
         let symlink = dir.path().join("profile-link.json");
         std::os::unix::fs::symlink(&file, &symlink).unwrap();
@@ -199,7 +242,7 @@ mod tests {
             "USAGE"
         );
 
-        std::fs::write(&file, br#"{"credential_type":"other"}"#).unwrap();
+        write_private(&file, br#"{"credential_type":"other"}"#);
         assert_eq!(
             vault_profile_file(&file, "vault-kv-v2-source-v1", "Vault KV profile")
                 .unwrap_err()
@@ -207,7 +250,7 @@ mod tests {
             "USAGE"
         );
 
-        std::fs::write(&file, Vec::new()).unwrap();
+        write_private(&file, &[]);
         assert_eq!(
             vault_profile_file(&file, "vault-kv-v2-source-v1", "Vault KV profile")
                 .unwrap_err()
@@ -215,11 +258,19 @@ mod tests {
             "USAGE"
         );
 
-        std::fs::write(
+        write_private(&file, br#"{"credential_type":"vault-kv-v2-source-v1"}"#);
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o640)).unwrap();
+        assert_eq!(
+            vault_profile_file(&file, "vault-kv-v2-source-v1", "Vault KV profile")
+                .unwrap_err()
+                .code,
+            "USAGE"
+        );
+
+        write_private(
             &file,
-            vec![b'x'; ipc::ADMIN_SECRET_FIELD_MAX_BYTES as usize + 1],
-        )
-        .unwrap();
+            &vec![b'x'; ipc::ADMIN_SECRET_FIELD_MAX_BYTES as usize + 1],
+        );
         assert_eq!(
             vault_profile_file(&file, "vault-kv-v2-source-v1", "Vault KV profile")
                 .unwrap_err()

@@ -48,6 +48,7 @@ fn admin_body_limit(message_type: u16) -> u32 {
         admin_msg::CREDENTIAL_ROTATE_GITHUB_APP
         | admin_msg::GITHUB_WEBHOOK_APPLY
         | admin_msg::CREDENTIAL_ROTATE_VAULT_KV
+        | admin_msg::CREDENTIAL_ROTATE_KEYCLOAK
         | admin_msg::CREDENTIAL_ROTATE_VAULT_DYNAMIC => ipc::ADMIN_SECRET_BODY_MAX_BYTES,
         admin_msg::CREDENTIAL_REVOKE
         | admin_msg::ACTION_CREATE
@@ -260,6 +261,7 @@ async fn dispatch(
         }
         admin_msg::CREDENTIAL_ROTATE_GITHUB_APP => github::handle_rotate(frame, ctx).await,
         admin_msg::GITHUB_WEBHOOK_APPLY => github::handle_webhook(frame, ctx).await,
+        admin_msg::CREDENTIAL_ROTATE_KEYCLOAK => vault_kv::handle_rotate_keycloak(frame, ctx).await,
         admin_msg::CREDENTIAL_ROTATE_VAULT_KV => vault_kv::handle_rotate(frame, ctx).await,
         admin_msg::CREDENTIAL_ROTATE_VAULT_DYNAMIC => {
             vault_kv::handle_rotate_dynamic(frame, ctx).await
@@ -450,6 +452,18 @@ async fn dispatch(
             empty_request(frame)?;
             let _owner = ctx.lifecycle.coordinate().await;
             let response = ctx.policy_status().await?;
+            Ok((json(&response)?, Vec::new()))
+        }
+        admin_msg::APPROVAL_ORIGIN => {
+            empty_request(frame)?;
+            ctx.lifecycle.reject_if_not_running()?;
+            let _owner = ctx.lifecycle.coordinate().await;
+            ctx.lifecycle.reject_if_not_running()?;
+            let public_key = ctx.authority.approval_origin_public_key().await?;
+            let response = ipc::ApprovalOriginResponse {
+                algorithm: "ed25519".to_owned(),
+                public_key: data_encoding::HEXLOWER.encode(&public_key),
+            };
             Ok((json(&response)?, Vec::new()))
         }
         admin_msg::SESSION_REVOKE => {

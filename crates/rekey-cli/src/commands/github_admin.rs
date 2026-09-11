@@ -8,8 +8,8 @@ use rekey_domain::ipc::{self, admin_msg};
 use zeroize::Zeroizing;
 
 use super::{
-    CliError, GitHubProfileMarker, admin, print_json, proof_kind, read_regular_file_bounded,
-    read_step_up,
+    CliError, GitHubProfileMarker, admin, print_json, proof_kind,
+    read_private_regular_file_bounded, read_regular_file_bounded, read_step_up,
 };
 
 pub fn credential_rotate_github_app(
@@ -78,7 +78,7 @@ pub fn credential_apply_github_webhook(
 }
 
 fn github_file(file: &Path) -> Result<Zeroizing<Vec<u8>>, CliError> {
-    let profile = read_regular_file_bounded(
+    let profile = read_private_regular_file_bounded(
         file,
         ipc::ADMIN_SECRET_FIELD_MAX_BYTES as usize,
         "GitHub App profile",

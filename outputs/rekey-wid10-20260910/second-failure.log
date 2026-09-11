@@ -1,0 +1,15 @@
+acceptance	Real issuer and expired JWT acceptance	﻿2026-09-10T08:54:45.8715748Z ##[group]Run python3 drill.py --bin-dir rekey-v2.0.0-alpha.2-x86_64-unknown-linux-gnu --signer signer.py --output receipt.json
+acceptance	Real issuer and expired JWT acceptance	2026-09-10T08:54:45.8720076Z ^[[36;1mpython3 drill.py --bin-dir rekey-v2.0.0-alpha.2-x86_64-unknown-linux-gnu --signer signer.py --output receipt.json^[[0m
+acceptance	Real issuer and expired JWT acceptance	2026-09-10T08:54:45.8762540Z shell: /usr/bin/bash -e {0}
+acceptance	Real issuer and expired JWT acceptance	2026-09-10T08:54:45.8763780Z ##[endgroup]
+acceptance	Real issuer and expired JWT acceptance	2026-09-10T08:54:47.7471155Z JWT header fields: ['alg', 'kid', 'typ', 'x5t'] TTL seconds: 300
+acceptance	Real issuer and expired JWT acceptance	2026-09-10T08:54:47.9269695Z Traceback (most recent call last):
+acceptance	Real issuer and expired JWT acceptance	2026-09-10T08:54:47.9271354Z   File "/home/runner/work/rekey-wid10-20260910-1789030338/rekey-wid10-20260910-1789030338/drill.py", line 142, in <module>
+acceptance	Real issuer and expired JWT acceptance	2026-09-10T08:54:47.9289156Z     main()
+acceptance	Real issuer and expired JWT acceptance	2026-09-10T08:54:47.9309648Z   File "/home/runner/work/rekey-wid10-20260910-1789030338/rekey-wid10-20260910-1789030338/drill.py", line 109, in main
+acceptance	Real issuer and expired JWT acceptance	2026-09-10T08:54:47.9329224Z     session = json.loads(run(mint,(jwt+'\n').encode()))
+acceptance	Real issuer and expired JWT acceptance	2026-09-10T08:54:47.9330251Z                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+acceptance	Real issuer and expired JWT acceptance	2026-09-10T08:54:47.9349728Z   File "/home/runner/work/rekey-wid10-20260910-1789030338/rekey-wid10-20260910-1789030338/drill.py", line 29, in run
+acceptance	Real issuer and expired JWT acceptance	2026-09-10T08:54:47.9369306Z     raise RuntimeError('unexpected CLI exit: ' + str(result.returncode))
+acceptance	Real issuer and expired JWT acceptance	2026-09-10T08:54:47.9389025Z RuntimeError: unexpected CLI exit: 4
+acceptance	Real issuer and expired JWT acceptance	2026-09-10T08:54:47.9528881Z ##[error]Process completed with exit code 1.

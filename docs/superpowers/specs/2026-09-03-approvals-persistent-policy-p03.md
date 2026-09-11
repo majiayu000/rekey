@@ -71,13 +71,18 @@ signature, approval grant, or private material. Before first successful unlock
 after restart, a persisted bundle is `unavailable`, not optimistically active;
 unverified signer, version, expiry, and digest fields remain null.
 
-No Rekey command creates private keys or signatures. That remains the external
-signer's responsibility and avoids turning the IPC-only `rekey` client into a
+The IPC-only `rekey` client creates neither private keys nor signatures.
+POL-08 adds a separate offline operator executable, documented in
+`2026-09-10-external-policy-signer.md`; it has no Broker connection and does not
+create or custody keys. This keeps signing external and avoids turning the IPC-only client into a
 second credential store.
 
-`approval prepare` prints one challenge JSON document to stdout. It shares the
+`approval prepare` prints one origin-signed challenge envelope JSON document to
+stdout (`rekey.approval.challenge.envelope.v1` wrapping the inner v1 challenge).
+It shares the
 existing execute request-file, header, content-type, capability-stdin, and size
-contracts. `execute --approval` accepts one or two repeated paths to regular
+contracts. `rekey approval origin` prints this vault's origin public key so an
+operator can pin it independently of the envelope. `execute --approval` accepts one or two repeated paths to regular
 files, each bounded to 4 KiB; the CLI rejects stdin, directories, symlinks,
 duplicate paths, and more than two grants before connecting. Grant files are
 signed authorization artifacts, never private signing keys.
@@ -237,10 +242,14 @@ decrypts a credential or contacts the upstream. It validates the live session
 and action, canonicalizes parameters through the active policy binding, and
 evaluates forbid/permit/approval precedence.
 
-For a matching approval rule it returns this exact closed JSON object:
+For a matching approval rule it returns this exact closed envelope. The inner
+object is still `rekey.approval.challenge.v1` and is what SessionRegistry stores
+and grants bind to:
 
 ```json
 {
+  "record_type": "rekey.approval.challenge.envelope.v1",
+  "challenge": {
   "record_type": "rekey.approval.challenge.v1",
   "approval_request_id": "UUID",
   "tenant_id": "UUID",
@@ -260,16 +269,26 @@ For a matching approval rule it returns this exact closed JSON object:
   "max_uses": 1,
   "created_at_ms": 0,
   "max_expires_at_ms": 0
+  },
+  "signature": "BASE64URL_NO_PAD"
 }
 ```
+
+The origin signature input is the byte prefix `RKCHALLENGE\0\x01` followed by
+RFC 8785 JCS of the inner challenge. The origin public key is derived from the
+unlocked VRK inside AuthorityWorker and pinned with `rekey approval origin`;
+envelopes do not embed that key. See
+`2026-09-10-approval-origin-authentication.md`. This is not a hosted remote
+approval service.
 
 The approval request ID is random. UUIDs are canonical lowercase hyphenated
 strings; both SHA-256 values are exactly 64 lowercase hexadecimal characters;
 the resource object is itself closed; and `approver_ids` contains distinct
 canonical UUIDs sorted by raw UUID bytes. Parsers reject duplicate keys at any
 depth, unknown fields, missing fields, non-canonical encodings, and any value
-outside the policy bounds. `record_type` is the only discriminator and must
-equal the literal shown above.
+outside the policy bounds. Inner `record_type` must equal
+`rekey.approval.challenge.v1`; the envelope discriminator must equal
+`rekey.approval.challenge.envelope.v1`.
 
 The challenge is safe for the Agent to see because the Agent supplied the
 request and already knows its resource and parameters. It contains no action

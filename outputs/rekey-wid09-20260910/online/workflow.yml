@@ -1,0 +1,25 @@
+name: OIDC acceptance
+on: [workflow_dispatch]
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  acceptance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Build source with fixed online GitHub JWKS
+        working-directory: source
+        run: |
+          cargo test -p rekey-policy --test workload_identity
+          cargo test -p rekey-broker --test github_jwks --test workload_identity
+          cargo build --release -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd
+      - name: Real issuer and expired JWT acceptance
+        run: python3 drill.py --bin-dir source/target/release --signer signer.py --output receipt.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: oidc-public-receipt
+          path: receipt.json
+          if-no-files-found: error
+          retention-days: 1

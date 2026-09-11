@@ -215,7 +215,8 @@ openssl rsa -in "$PRIVATE_KEY" -traditional -outform DER -out "$PRIVATE_KEY_DER"
   >/dev/null 2>&1
 python3 - "$PROFILE" "$PRIVATE_KEY_DER" <<'PY'
 import base64, json, pathlib, sys
-pathlib.Path(sys.argv[1]).write_text(json.dumps({
+path = pathlib.Path(sys.argv[1])
+path.write_text(json.dumps({
     "credential_type": "github-app-installation-v2",
     "client_id": "Iv1.8a61f9b3a7aba766",
     "app_id": 424242,
@@ -225,12 +226,15 @@ pathlib.Path(sys.argv[1]).write_text(json.dumps({
     "webhook_secret": "P2-WEBHOOK-SECRET-CANARY-0123456789",
     "private_key_pkcs1_der_base64": base64.b64encode(pathlib.Path(sys.argv[2]).read_bytes()).decode()
 }))
+path.chmod(0o600)
 PY
 python3 - "$PROFILE" "$INVALID_PROFILE" "$LATE_INVALID_KEY_PROFILE" <<'PY'
 import json, pathlib, sys
 profile = json.load(open(sys.argv[1]))
 profile["unexpected"] = "must-be-rejected"
-pathlib.Path(sys.argv[2]).write_text(json.dumps(profile))
+invalid = pathlib.Path(sys.argv[2])
+invalid.write_text(json.dumps(profile))
+invalid.chmod(0o600)
 profile.pop("unexpected")
 encoded = profile["private_key_pkcs1_der_base64"]
 position = len(encoded.rstrip("=")) - 1
@@ -239,7 +243,9 @@ large_profile = json.dumps(profile)
 target_size = 60 * 1024
 if len(large_profile) >= target_size:
     raise SystemExit("fixture profile unexpectedly exceeds large-profile target")
-pathlib.Path(sys.argv[3]).write_text(large_profile + " " * (target_size - len(large_profile)))
+late = pathlib.Path(sys.argv[3])
+late.write_text(large_profile + " " * (target_size - len(large_profile)))
+late.chmod(0o600)
 PY
 PRIVATE_KEY_CANARIES="$(python3 - "$PRIVATE_KEY_DER" "$PUBLIC_KEY_DER" <<'PY'
 import base64, pathlib, sys

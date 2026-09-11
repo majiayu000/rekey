@@ -45,7 +45,7 @@ fn action(origin: &str, path: &str) -> FixedHttpAction {
 #[test]
 fn registry_is_versioned_ordered_and_lifecycle_complete() {
     rekey_connector::testkit::assert_registry(registry());
-    assert_eq!(registry().len(), 4);
+    assert_eq!(registry().len(), 5);
     assert!(registry().iter().all(|contract| {
         contract.source == ConnectorSource::BuiltInBinary
             && contract.isolation == ConnectorIsolation::BrokerProcess
@@ -61,7 +61,7 @@ fn registry_is_versioned_ordered_and_lifecycle_complete() {
         ]
     );
     assert_eq!(
-        registry()[2].effects,
+        BuiltInConnector::VaultDynamicSourceV1.contract().effects,
         &[
             CredentialEffect::Resolve,
             CredentialEffect::Lease,
@@ -69,9 +69,13 @@ fn registry_is_versioned_ordered_and_lifecycle_complete() {
             CredentialEffect::Revoke,
         ]
     );
-    assert!(registry()[2].revoke_before_success);
+    assert!(
+        BuiltInConnector::VaultDynamicSourceV1
+            .contract()
+            .revoke_before_success
+    );
     assert_eq!(
-        registry()[3].effects,
+        BuiltInConnector::VaultKvV2SourceV1.contract().effects,
         &[CredentialEffect::Resolve, CredentialEffect::Inject]
     );
 }
@@ -95,9 +99,21 @@ fn selection_preserves_the_reserved_github_no_fallback_boundary() {
     let github = action("https://api.github.com", "/installation/repositories");
     let mut github_issue = action("https://api.github.com", "/repos/owner/repo/issues");
     github_issue.method = FixedMethod::Post;
+    let mut github_comment = action(
+        "https://api.github.com",
+        "/repos/owner/repo/issues/7/comments",
+    );
+    github_comment.method = FixedMethod::Post;
+    let mut github_comment_bad = action(
+        "https://api.github.com",
+        "/repos/owner/repo/issues/07/comments",
+    );
+    github_comment_bad.method = FixedMethod::Post;
     assert!(!github_action_is_reserved(&ordinary));
     assert!(github_action_is_reserved(&github));
     assert!(github_action_is_reserved(&github_issue));
+    assert!(github_action_is_reserved(&github_comment));
+    assert!(!github_action_is_reserved(&github_comment_bad));
     assert_eq!(
         resolve_builtin(CredentialKind::OpaqueToken, &ordinary),
         Ok(BuiltInConnector::FixedHttpHeaderV1)
@@ -108,6 +124,10 @@ fn selection_preserves_the_reserved_github_no_fallback_boundary() {
     );
     assert_eq!(
         resolve_builtin(CredentialKind::OpaqueToken, &github_issue),
+        Err(ConnectorSelectionError::SelectionRejected)
+    );
+    assert_eq!(
+        resolve_builtin(CredentialKind::OpaqueToken, &github_comment),
         Err(ConnectorSelectionError::SelectionRejected)
     );
     assert_eq!(
@@ -210,4 +230,36 @@ fn oauth_projection_contains_only_fixed_public_metadata() {
     ] {
         assert!(!encoded.contains(forbidden));
     }
+}
+
+#[test]
+fn keycloak_contract_requires_exchange_inject_revoke_and_preserves_reserved_paths() {
+    let c = BuiltInConnector::KeycloakTokenExchangeV1.contract();
+    assert_eq!(
+        c.effects,
+        &[
+            CredentialEffect::Exchange,
+            CredentialEffect::Inject,
+            CredentialEffect::Revoke
+        ]
+    );
+    assert!(c.revoke_before_success);
+    assert_eq!(
+        c.exchange_protocol,
+        Some(rekey_connector::ExchangeProtocol::OAuthTokenExchange)
+    );
+    assert_eq!(
+        resolve_builtin(
+            CredentialKind::KeycloakTokenExchange,
+            &action("https://api.example.com", "/fixed")
+        ),
+        Ok(BuiltInConnector::KeycloakTokenExchangeV1)
+    );
+    assert!(
+        resolve_builtin(
+            CredentialKind::KeycloakTokenExchange,
+            &action("https://api.github.com", "/installation/repositories")
+        )
+        .is_err()
+    );
 }

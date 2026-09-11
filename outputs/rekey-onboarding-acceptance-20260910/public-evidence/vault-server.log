@@ -1,0 +1,81 @@
+
+WARNING: storage configured to use "inmem" which should NOT be used in
+production
+
+==> Vault server configuration:
+
+Administrative Namespace:
+             Api Address: http://127.0.0.1:5579
+                     Cgo: disabled
+         Cluster Address: https://127.0.0.1:5580
+   Environment Variables: HOME, HOSTNAME, NAME, PATH, PWD, SHLVL, VERSION
+              Go Version: go1.24.6
+              Listener 1: tcp (addr: "0.0.0.0:8200", cluster address: "0.0.0.0:8201", disable_request_limiter: "false", max_json_array_element_count: "10000", max_json_depth: "300", max_json_object_entry_count: "10000", max_json_string_value_length: "1048576", max_request_duration: "1m30s", max_request_size: "33554432", tls: "disabled")
+               Log Level:
+                   Mlock: supported: true, enabled: false
+           Recovery Mode: false
+                 Storage: inmem
+                 Version: Vault v1.20.3, built 2025-08-27T10:53:27Z
+             Version Sha: 7665ff29d77e5cb3ea9ddbeaed49ee312e53c6b8
+
+==> Vault server started! Log data will stream in below:
+
+Couldn't start vault with IPC_LOCK. Disabling IPC_LOCK, please use --cap-add IPC_LOCK
+2026-09-10T07:04:26.358Z [INFO]  proxy environment: http_proxy="" https_proxy="" no_proxy=""
+2026-09-10T07:04:26.358Z [INFO]  incrementing seal generation: generation=1
+2026-09-10T07:04:26.359Z [INFO]  core: Initializing version history cache for core
+2026-09-10T07:04:26.359Z [INFO]  events: Starting event system
+2026-09-10T07:04:26.598Z [INFO]  core: security barrier not initialized
+2026-09-10T07:04:26.600Z [INFO]  core: security barrier not initialized
+2026-09-10T07:04:26.600Z [INFO]  core: security barrier initialized: stored=1 shares=1 threshold=1
+2026-09-10T07:04:26.600Z [INFO]  core: post-unseal setup starting
+2026-09-10T07:04:26.621Z [INFO]  core: loaded wrapping token key
+2026-09-10T07:04:26.621Z [INFO]  core: successfully setup plugin runtime catalog
+2026-09-10T07:04:26.621Z [INFO]  core: successfully setup plugin catalog: plugin-directory=""
+2026-09-10T07:04:26.622Z [INFO]  core: no mounts; adding default mount table
+2026-09-10T07:04:26.623Z [INFO]  core: successfully mounted: type=cubbyhole version="v1.20.3+builtin.vault" path=cubbyhole/ namespace="ID: root. Path: "
+2026-09-10T07:04:26.624Z [INFO]  core: successfully mounted: type=system version="v1.20.3+builtin.vault" path=sys/ namespace="ID: root. Path: "
+2026-09-10T07:04:26.625Z [INFO]  core: successfully mounted: type=identity version="v1.20.3+builtin.vault" path=identity/ namespace="ID: root. Path: "
+2026-09-10T07:04:26.626Z [INFO]  core: successfully mounted: type=token version="v1.20.3+builtin.vault" path=token/ namespace="ID: root. Path: "
+2026-09-10T07:04:26.627Z [INFO]  rollback: Starting the rollback manager with 256 workers
+2026-09-10T07:04:26.627Z [INFO]  core: restoring leases
+2026-09-10T07:04:26.627Z [INFO]  rollback: starting rollback manager
+2026-09-10T07:04:26.628Z [INFO]  expiration: lease restore complete
+2026-09-10T07:04:26.628Z [INFO]  identity: entities restored
+2026-09-10T07:04:26.628Z [INFO]  identity: groups restored
+2026-09-10T07:04:26.628Z [INFO]  core: Recorded vault version: vault version=1.20.3 upgrade time="2026-09-10 07:04:26.628803846 +0000 UTC" build date=2025-08-27T10:53:27Z
+2026-09-10T07:04:26.629Z [INFO]  core: post-unseal setup complete
+2026-09-10T07:04:26.629Z [INFO]  core: root token generated
+2026-09-10T07:04:26.629Z [INFO]  core: pre-seal teardown starting
+2026-09-10T07:04:26.629Z [INFO]  rollback: stopping rollback manager
+2026-09-10T07:04:26.630Z [INFO]  core: pre-seal teardown complete
+2026-09-10T07:04:26.630Z [ERROR] activity: could not load existing intent log: error="Vault is sealed"
+2026-09-10T07:04:26.630Z [ERROR] activity: unable to regenerate ACME data: error="error fetching available logs: Vault is sealed"
+2026-09-10T07:04:26.630Z [WARN]  activity: could not list segments: error="Vault is sealed"
+2026-09-10T07:04:26.631Z [INFO]  core: usage gauge collection is disabled
+2026-09-10T07:04:26.632Z [INFO]  core.cluster-listener.tcp: starting listener: listener_address=0.0.0.0:8201
+2026-09-10T07:04:26.632Z [INFO]  core.cluster-listener: serving cluster requests: cluster_listen_address=[::]:8201
+2026-09-10T07:04:26.633Z [INFO]  core: post-unseal setup starting
+2026-09-10T07:04:26.633Z [INFO]  core: loaded wrapping token key
+2026-09-10T07:04:26.633Z [INFO]  core: successfully setup plugin runtime catalog
+2026-09-10T07:04:26.633Z [INFO]  core: successfully setup plugin catalog: plugin-directory=""
+2026-09-10T07:04:26.634Z [INFO]  core: successfully mounted: type=system version="v1.20.3+builtin.vault" path=sys/ namespace="ID: root. Path: "
+2026-09-10T07:04:26.635Z [INFO]  core: successfully mounted: type=identity version="v1.20.3+builtin.vault" path=identity/ namespace="ID: root. Path: "
+2026-09-10T07:04:26.635Z [INFO]  core: successfully mounted: type=cubbyhole version="v1.20.3+builtin.vault" path=cubbyhole/ namespace="ID: root. Path: "
+2026-09-10T07:04:26.636Z [INFO]  core: successfully mounted: type=token version="v1.20.3+builtin.vault" path=token/ namespace="ID: root. Path: "
+2026-09-10T07:04:26.636Z [INFO]  rollback: Starting the rollback manager with 256 workers
+2026-09-10T07:04:26.636Z [INFO]  rollback: starting rollback manager
+2026-09-10T07:04:26.637Z [INFO]  core: restoring leases
+2026-09-10T07:04:26.637Z [INFO]  expiration: lease restore complete
+2026-09-10T07:04:26.637Z [INFO]  identity: entities restored
+2026-09-10T07:04:26.637Z [INFO]  identity: groups restored
+2026-09-10T07:04:26.638Z [INFO]  core: usage gauge collection is disabled
+2026-09-10T07:04:26.638Z [INFO]  core: post-unseal setup complete
+2026-09-10T07:04:26.638Z [INFO]  core: vault is unsealed
+2026-09-10T07:04:27.264Z [INFO]  core: successful mount: namespace="" path=secret/ type=kv version="v0.24.0+builtin"
+2026-09-10T07:04:27.791Z [INFO]  secrets.database.database_c6146791: initializing database rotation queue
+2026-09-10T07:04:27.792Z [INFO]  core: successful mount: namespace="" path=database/ type=database version="v1.20.3+builtin.vault"
+2026-09-10T07:04:27.802Z [INFO]  secrets.database.database_c6146791: populating role rotation queue
+2026-09-10T07:04:27.802Z [INFO]  secrets.database.database_c6146791: starting periodic ticker
+2026-09-10T07:05:29.165Z [INFO]  expiration: revoked lease: lease_id=database/creds/agent-test/KX0qlEqCWdYHjCgwMwqQZNpZ
+2026-09-10T07:06:00.769Z [INFO]  expiration: revoked lease: lease_id=auth/token/create/h93bcf5d3c70725cdc833bc2d960da1b5695597a85633427a84b535c14a75bf7f

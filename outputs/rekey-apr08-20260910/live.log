@@ -1,0 +1,2 @@
+PASS: independent signer grant accepted by real Broker; changed body, wrong session and replay denied; exactly one TLS upstream request
+PASS: disposable state, keys and fixture process cleaned up

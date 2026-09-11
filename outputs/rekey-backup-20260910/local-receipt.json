@@ -1,0 +1,27 @@
+{
+  "tested_at_utc": "2026-09-10T07:58:11Z",
+  "source_commit": "358b3a5a86642327273c358f9a8de8c880db913c",
+  "receipt": {
+    "vault_id": "326bfe8c-f95c-4778-a6ef-0e4f2ffd6624",
+    "format_version": 9,
+    "created_at_ms": 1789027082593,
+    "sha256_hex": "4bf87000cd7415fdf84139584f05fa766a5310555d9fe7cfe2924dba448e10d7"
+  },
+  "independent_hash_match": true,
+  "backup_mode": "0600",
+  "secret_canary_absent": true,
+  "existing_backup_rejected_exit": 5,
+  "bad_hash_rejected_exit": 5,
+  "restore_status": {
+    "state": "locked",
+    "format_version": 9,
+    "runtime_version": "2.0.0-alpha.2",
+    "sessions_active": 0
+  },
+  "restore_started_locked": true,
+  "credential_and_action_ids_preserved": true,
+  "new_session_after_restore": true,
+  "fixed_public_read_status": 200,
+  "limitation": "Anonymous read with synthetic x-api-key; no remote backup transfer or scheduled job",
+  "temporary_states_and_secrets_removed": true
+}

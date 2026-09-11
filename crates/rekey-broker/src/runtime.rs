@@ -44,6 +44,9 @@ pub const MAX_AGENT_REQUEST_CONNECTIONS: usize =
     MAX_AGENT_CONNECTIONS - CAPACITY_REPLY_CONNECTIONS_PER_CHANNEL;
 pub const MAX_ADMIN_REQUEST_CONNECTIONS: usize =
     MAX_ADMIN_CONNECTIONS - CAPACITY_REPLY_CONNECTIONS_PER_CHANNEL;
+/// Dedicated bound for unauthenticated online JWKS fetches. Kept far below
+/// Agent request slots so forged JWTs cannot monopolize the Agent channel.
+pub const MAX_ONLINE_JWKS_FETCHES: usize = 2;
 
 pub fn default_drain_timeout() -> Duration {
     Duration::from_millis(ACTION_TIMEOUT_HARD_MAX_MS as u64)
@@ -85,6 +88,8 @@ pub struct BrokerCtx {
     pub sessions: Arc<SessionRegistry>,
     pub(crate) executions: ExecutionSupervisorHandle,
     pub(crate) executor: Arc<ActionExecutor>,
+    workload_transport: Arc<dyn UpstreamTransport>,
+    online_jwks_slots: Arc<tokio::sync::Semaphore>,
     pub lifecycle: Arc<Lifecycle>,
     policy: Arc<RwLock<Option<Arc<ActivePolicy>>>>,
     policy_trust: Arc<RwLock<Option<ValidatedPolicyTrust>>>,
@@ -280,11 +285,32 @@ fn acquire_serve_lock(state_dir: &std::path::Path) -> Result<ServeLock, Authorit
         .map_err(AuthorityError::storage)?;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
         .map_err(AuthorityError::storage)?;
-    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    if rc != 0 {
-        return Err(AuthorityError::storage(std::io::Error::last_os_error()));
+    // Match bootstrap: brief retry for transient macOS EAGAIN/WouldBlock on LOCK_NB.
+    const ATTEMPTS: u32 = 50;
+    const DELAY: Duration = Duration::from_millis(2);
+    let mut last_err = None;
+    for attempt in 0..ATTEMPTS {
+        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if rc == 0 {
+            return Ok(ServeLock { _file: file });
+        }
+        let err = std::io::Error::last_os_error();
+        match err.kind() {
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                if attempt + 1 < ATTEMPTS =>
+            {
+                last_err = Some(err);
+                std::thread::sleep(DELAY);
+            }
+            _ => return Err(AuthorityError::storage(err)),
+        }
     }
-    Ok(ServeLock { _file: file })
+    Err(AuthorityError::storage(last_err.unwrap_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "broker lock remained unavailable",
+        )
+    })))
 }
 
 fn set_group(path: &std::path::Path, gid: u32) -> Result<(), BrokerError> {
@@ -560,7 +586,7 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
     let executor = Arc::new(ActionExecutor::new(
         authority.clone(),
         Arc::clone(&sessions),
-        transport,
+        Arc::clone(&transport),
         Arc::clone(&lifecycle),
         Arc::clone(&terminals),
         Arc::clone(&policy),
@@ -571,6 +597,8 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
     let mut execution_task = tokio::spawn(execution_supervisor.run(shutdown_rx.clone()));
     let (stop_tx, mut stop_rx) = mpsc::unbounded_channel();
     let ctx = Arc::new(BrokerCtx {
+        workload_transport: transport,
+        online_jwks_slots: Arc::new(tokio::sync::Semaphore::new(MAX_ONLINE_JWKS_FETCHES)),
         authority: authority.clone(),
         sessions,
         executions,

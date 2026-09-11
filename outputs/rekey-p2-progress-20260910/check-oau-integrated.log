@@ -1,0 +1,8 @@
+    Checking rekey-domain v2.0.0-alpha.2 (/Users/lifcc/Desktop/code/AI/tools/rekey/crates/rekey-domain)
+    Checking rekey-policy v2.0.0-alpha.2 (/Users/lifcc/Desktop/code/AI/tools/rekey/crates/rekey-policy)
+    Checking rekey-vault v2.0.0-alpha.2 (/Users/lifcc/Desktop/code/AI/tools/rekey/crates/rekey-vault)
+    Checking rekey-connector v2.0.0-alpha.2 (/Users/lifcc/Desktop/code/AI/tools/rekey/crates/rekey-connector)
+    Checking rekey-cli v2.0.0-alpha.2 (/Users/lifcc/Desktop/code/AI/tools/rekey/crates/rekey-cli)
+    Checking rekey-broker v2.0.0-alpha.2 (/Users/lifcc/Desktop/code/AI/tools/rekey/crates/rekey-broker)
+    Checking rekey-integration v2.0.0-alpha.2 (/Users/lifcc/Desktop/code/AI/tools/rekey)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 12.18s

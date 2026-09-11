@@ -6,6 +6,7 @@ use std::io::Write;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use rekey_domain::ids::{VaultId, WrapperId};
 use zeroize::Zeroizing;
@@ -135,23 +136,49 @@ struct BootstrapLock {
 
 impl BootstrapLock {
     fn acquire(state_dir: &Path) -> Result<Self, AuthorityError> {
+        let path = paths::broker_lock(state_dir);
         let file = fs::OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
-            .open(paths::broker_lock(state_dir))
+            .open(&path)
             .map_err(AuthorityError::storage)?;
-        fs::set_permissions(
-            paths::broker_lock(state_dir),
-            fs::Permissions::from_mode(0o600),
-        )
-        .map_err(AuthorityError::storage)?;
-        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-        if rc != 0 {
-            return Err(AuthorityError::storage(std::io::Error::last_os_error()));
-        }
-        Ok(Self { _file: file })
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+            .map_err(AuthorityError::storage)?;
+        // LOCK_NB can return transient EAGAIN/WouldBlock on macOS immediately
+        // after a prior holder released the same lock (init → confirm). Retry
+        // briefly; sustained contention still fails closed.
+        acquire_exclusive_flock(file).map(|file| Self { _file: file })
     }
+}
+
+const FLOCK_RETRY_ATTEMPTS: u32 = 50;
+const FLOCK_RETRY_DELAY: Duration = Duration::from_millis(2);
+
+fn acquire_exclusive_flock(file: fs::File) -> Result<fs::File, AuthorityError> {
+    let mut last_err = None;
+    for attempt in 0..FLOCK_RETRY_ATTEMPTS {
+        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if rc == 0 {
+            return Ok(file);
+        }
+        let err = std::io::Error::last_os_error();
+        match err.kind() {
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                if attempt + 1 < FLOCK_RETRY_ATTEMPTS =>
+            {
+                last_err = Some(err);
+                std::thread::sleep(FLOCK_RETRY_DELAY);
+            }
+            _ => return Err(AuthorityError::storage(err)),
+        }
+    }
+    Err(AuthorityError::storage(last_err.unwrap_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "broker lock remained unavailable",
+        )
+    })))
 }
 
 pub(crate) fn wrap_vrk(
@@ -718,6 +745,39 @@ mod tests {
             &metadata,
             metadata.uid().wrapping_add(1)
         ));
+    }
+
+    #[test]
+    fn bootstrap_lock_survives_immediate_reacquire_after_release() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        for _ in 0..32 {
+            let held = BootstrapLock::acquire(dir.path()).expect("acquire");
+            drop(held);
+            BootstrapLock::acquire(dir.path()).expect("reacquire after release");
+        }
+    }
+
+    #[test]
+    fn init_then_confirm_survives_immediate_lock_handoff() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("state");
+        init_vault(
+            &state_dir,
+            &SecretInput::from_slice(b"correct horse battery staple"),
+            Argon2Params {
+                memory_kib: 8,
+                iterations: 1,
+                parallelism: 1,
+            },
+        )
+        .expect("init");
+        for _ in 0..8 {
+            // Rapid re-acquire after the previous confirm released the lock.
+            confirm_vault_init(&state_dir).expect("confirm after init");
+            create_init_marker(&state_dir).expect("restore marker for retry");
+        }
+        confirm_vault_init(&state_dir).expect("final confirm");
     }
 
     #[test]

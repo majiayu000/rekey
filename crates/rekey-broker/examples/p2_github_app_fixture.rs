@@ -59,7 +59,7 @@ fn expected_exchange(mode: &str) -> (u64, Vec<u64>, Value) {
             vec![P6_REPOSITORY_ID, P6_SECOND_REPOSITORY_ID],
             json!({"metadata":"read"}),
         ),
-        "p6-issue" => (
+        "p6-issue" | "p6-comment" => (
             P6_INSTALLATION_ID,
             vec![P6_SECOND_REPOSITORY_ID],
             json!({"metadata":"read","issues":"write"}),
@@ -635,6 +635,30 @@ async fn serve_mock(
                         br#"{"id":919191,"number":7,"repository_url":"https://api.github.com/repos/p6-owner/beta","html_url":"https://github.com/p6-owner/beta/issues/7","provider_extra":"removed"}"#,
                     )
                     .await
+                }
+            } else if req.method == "POST" && req.path == "/repos/p6-owner/beta/issues/7/comments" {
+                let token_ok = bearer(&req).is_ok_and(|token| token == installation_token(&mode));
+                let comment: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
+                if mode != "p6-comment"
+                    || !token_ok
+                    || !api_headers_ok
+                    || req.headers.get("content-type").map(String::as_str)
+                        != Some("application/json")
+                    || comment != json!({"body":"P6 issue body canary"})
+                {
+                    respond(&mut tls, "400 Bad Request", br#"{"error":"comment"}"#).await
+                } else {
+                    if append_trace(&trace_path, "comment.ok").is_err() {
+                        return;
+                    }
+                    let Ok(body) = serde_json::to_vec(&json!({"id":929292,
+                        "issue_url":"https://api.github.com/repos/p6-owner/beta/issues/7",
+                        "html_url":"https://github.com/p6-owner/beta/issues/7#issuecomment-929292",
+                        "body":"P6 issue body canary", "provider_token":installation_token(&mode)}))
+                    else {
+                        return;
+                    };
+                    respond(&mut tls, "201 Created", &body).await
                 }
             } else if req.method == "DELETE" && req.path == "/installation/token" {
                 let token_ok = bearer(&req)

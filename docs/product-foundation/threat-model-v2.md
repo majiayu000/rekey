@@ -251,8 +251,10 @@ approver
 一次性、时间窗口和一至两人 quorum 都在 SessionRegistry 内计数。参数、策略、
 Action、身份、session 或时间边界变化后必须重新授权；grant 不会在 lock、session
 撤销或重启后恢复。`approval.accepted` 与 `execution.started` 在同一 Authority
-transaction 中提交，失败时不发生远程 effect。没有远程 approval service、通知、
-dashboard、目录或离线 bypass。
+transaction 中提交，失败时不发生远程 effect。没有托管远程 approval service、通知、
+dashboard、目录或离线 bypass。`PrepareApproval` 返回 VRK 派生 origin 密钥签名的
+challenge 信封，供操作者把 challenge 搬到自己控制的机器上签发；这不是公网审批
+控制面。
 
 ## 10. 响应方向保护
 
@@ -394,7 +396,7 @@ Action 和最小响应 schema 比通用透明代理更强。任何新增 canonic
 | H | 持续 Fuzz | `cargo fuzz run <ipc|action|policy|response_sealing|restore>` | 五个边界无 crash、hang、越界资源使用或解析分歧 |
 | P2 | 多租户 | cargo test -p rekey-control --test tenant_isolation | 跨租户读取、缓存和 token 全拒绝 |
 
-上表里标为 P0 且 crate 已存在的命令（`authority_contract`、`bootstrap_contract`、`broker_ipc`、`adversarial_http`、`reflected_secret`、`secret_canary`、`fault_injection`）已经在本仓库实现，并以 `docs/product-foundation/feature-truth-matrix.md` 为是否“通过”的唯一状态源。P1 typed policy、bounded Linux G2 reference、chunk-boundary sealing 和 native service-manager，P2.1 GitHub App local profile、P-05 静态 Connector contract，以及 H-01 持续 fuzz 已有对应实现和门槛。P-05 只有 IO-free SDK、四个内置 descriptor 和纯 MCP/OAuth projection，不是通用 provider、MCP server 或 live OAuth 互操作证据；macOS G2、企业多租户 control plane 与 HA/DR 仍是计划合同。
+上表里标为 P0 且 crate 已存在的命令（`authority_contract`、`bootstrap_contract`、`broker_ipc`、`adversarial_http`、`reflected_secret`、`secret_canary`、`fault_injection`）已经在本仓库实现，并以 `docs/product-foundation/feature-truth-matrix.md` 为是否“通过”的唯一状态源。P1 typed policy、bounded Linux G2 reference、chunk-boundary sealing 和 native service-manager，P2.1 GitHub App local profile、P-05 静态 Connector contract，以及 H-01 持续 fuzz 已有对应实现和门槛。P-05 是 IO-free SDK、五个内置 descriptor（含 `keycloak-token-exchange@1`）和纯 MCP/OAuth projection；源码 MCP-03 的本地 stdio server 与 OAU-02 固定 Keycloak 交换另有边界验收，但仍不是通用 provider、产品级 MCP server 或 live generic OAuth 互操作证据；macOS G2、企业多租户 control plane 与 HA/DR 仍是计划合同。
 
 ## 16. 已锁定与待决事项
 
@@ -420,15 +422,25 @@ Action 和最小响应 schema 比通用透明代理更强。任何新增 canonic
 - P-03 policy trust 和 signed bundle 持久化并在 unlock 后重新验证；approval
   challenge、grant 使用计数和 capability session 仍只存在内存，lock/restart 清空。
   Rekey 只是签名验证与 enforcement point，不提供私钥托管或远程审批控制面。
-- P-04 workload identity 只接受 signed policy 内静态 Ed25519/RS256 公钥和四种
-  closed JWT profile；不做 JWKS/discovery/introspection，也不调用 SPIRE、Kubernetes、
-  CI 或 cloud API。JWT replay digest 持久化，只有 new-version policy activation
+- P-04 原始 workload identity 接受 signed policy 内静态 Ed25519/RS256 公钥和四种
+  closed JWT profile。源码 WID-09 另加显式签名选择的固定 GitHub HTTPS JWKS，每次
+  mint 重新获取，不缓存或退回旧 key；远端 key 不修改 policy digest 或 replay 范围。
+  不做 discovery/introspection，也不调用 SPIRE、Kubernetes 或任意 JWT 给出的 URL。
+  JWT replay digest 持久化，只有 new-version policy activation
   撤销 workload-minted session，exact same-bundle retry 保留现有 session；默认拓扑
   和已发布 Alpha 范围不变。
 - P-05 `rekey-connector` 只是编译期静态 contract registry。它描述既有 opaque
   header inject、closed GitHub App、closed Vault KV v2 source 和 one-shot Vault dynamic source 的 effect/lifecycle，由 Broker 继续持有 Secret、
-  IO、deadline、audit、sealing 和 revoke。MCP/OAuth adapter 只做无秘密投影，不提供
-  MCP server、live generic OAuth、dynamic plugin/registry 或新 Agent operation。
+  IO、deadline、audit、sealing 和 revoke。MCP/OAuth adapter 只做无秘密投影；源码
+  MCP-03 的独立 stdio server 仅复用该投影与 Agent IPC，读取 operator 限定的 manifest
+  和受保护 capability 文件，不访问 Vault 或 Admin。Codex 工具发现与直接 MCP 调用
+  分别验收；不由此推导 live generic OAuth、dynamic plugin/registry 或新 Agent operation。
+- 源码 OAU-02 是固定 Keycloak Standard V2 交换、单一 audience/GET 目标和已签发
+  token 的直接撤销。源凭证与标准 JSON 转义表示参与响应 sealing；成功结果要求撤销
+  与审计先完成。Agent 不能取得 token，也不能选 source/target；没有 refresh、后台续期
+  或进程崩溃后的撤销保证。provider introspection inactive 不代表只做离线 JWT 验证的
+  resource 会立即拒绝。真实 Keycloak + Broker 的本地 TLS fixture 不是公网筛选证明。
+  新 kind/AAD code 5 使用 schema 10；旧 state/backup 明确拒绝，不做迁移。
 - P-07A 只允许管理员登记一个 public HTTPS Vault KV v2 origin、mount、path、精确
   非零版本、精确 string key 和 bootstrap token。Broker 在 durable started audit 与
   remote-effect admission 后执行一次无重试 GET，解析后只把值注入既有 fixed Action；
@@ -458,4 +470,4 @@ Action 和最小响应 schema 比通用透明代理更强。任何新增 canonic
 
 ## 17. Readiness
 
-本威胁模型已经锁定内置 Credential Authority 的密钥层级、状态所有权和禁止接口。当前 P0/P1/P2.1/P-03/P-04/P-05 local gates 的实际状态以 Feature Truth Matrix 为准；required systemd gate 和一次真实 `github.com` GitHub App provider 验证已经完成。哪些能力进入哪个公开 archive 以 Matrix 的 `Release` 列为准。默认同用户拓扑仍只有 G1，有界 Linux container/namespace recipe 的 G2 证据不能外推为通用产品保证；签名 policy/approval、静态 workload JWT 验证和 Connector contract 也不建立远程控制面、企业身份、在线 IdP、通用 provider、MCP server 或 live OAuth 互操作。在独立 crypto、IPC 边界和 audit/failure-semantics 人工审查完成前，不能对外声称恶意 Agent 在所有部署中永远无法获得或重定向密钥。
+本威胁模型已经锁定内置 Credential Authority 的密钥层级、状态所有权和禁止接口。当前 P0/P1/P2.1/P-03/P-04/P-05 local gates 的实际状态以 Feature Truth Matrix 为准；required systemd gate 和一次真实 `github.com` GitHub App provider 验证已经完成。哪些能力进入哪个公开 archive 以 Matrix 的 `Release` 列为准。默认同用户拓扑仍只有 G1，有界 Linux container/namespace recipe 的 G2 证据不能外推为通用产品保证；签名 policy/approval、静态 workload JWT 验证和 Connector contract 也不建立远程控制面、企业身份、在线 IdP 或通用 provider。源码 MCP-03 / OAU-02 只证明有界本地 stdio 与固定 Keycloak 交换，不能外推为产品级 MCP server 或 live generic OAuth 互操作。在独立 crypto、IPC 边界和 audit/failure-semantics 人工审查完成前，不能对外声称恶意 Agent 在所有部署中永远无法获得或重定向密钥。

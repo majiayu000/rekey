@@ -6,6 +6,7 @@ use rekey_domain::ids::{
     ActionId, ApprovalId, ApprovalRequestId, ApproverId, PolicyRuleId, PolicySignerId, PrincipalId,
     SessionId, TenantId,
 };
+use rekey_domain::ipc::{ApprovalChallenge, SignedApprovalChallenge};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -20,6 +21,7 @@ use crate::{
 
 const POLICY_FORMAT_VERSION: u32 = 1;
 const APPROVAL_FORMAT_VERSION: u32 = 1;
+pub const APPROVAL_CHALLENGE_SIGN_PREFIX: &[u8] = b"RKCHALLENGE\0\x01";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -272,12 +274,6 @@ fn verify_signed_value(
     prefix: &[u8],
     public_key: &[u8; 32],
 ) -> Result<(), PolicyError> {
-    let signature_bytes = BASE64URL_NOPAD
-        .decode(signature.as_bytes())
-        .map_err(|_| PolicyError::InvalidSignature)?;
-    if signature_bytes.len() != 64 || BASE64URL_NOPAD.encode(&signature_bytes) != signature {
-        return Err(PolicyError::InvalidSignature);
-    }
     let mut unsigned = value.clone();
     unsigned
         .as_object_mut()
@@ -288,8 +284,49 @@ fn verify_signed_value(
     let mut message = Vec::with_capacity(prefix.len() + canonical.len());
     message.extend_from_slice(prefix);
     message.extend_from_slice(&canonical);
+    verify_detached(&message, signature, public_key)
+}
+
+pub fn approval_challenge_sign_payload(
+    challenge: &ApprovalChallenge,
+) -> Result<Vec<u8>, PolicyError> {
+    challenge.validate().map_err(|_| PolicyError::Invalid)?;
+    let canonical = serde_jcs::to_vec(challenge).map_err(|_| PolicyError::Malformed)?;
+    let mut message = Vec::with_capacity(APPROVAL_CHALLENGE_SIGN_PREFIX.len() + canonical.len());
+    message.extend_from_slice(APPROVAL_CHALLENGE_SIGN_PREFIX);
+    message.extend_from_slice(&canonical);
+    Ok(message)
+}
+
+pub fn parse_and_verify_approval_challenge_envelope(
+    bytes: &[u8],
+    origin_public_key: &[u8; 32],
+) -> Result<ApprovalChallenge, PolicyError> {
+    if bytes.len() > SNAPSHOT_MAX_BYTES {
+        return Err(PolicyError::TooLarge);
+    }
+    let value = parse_unique_json(bytes)?;
+    let envelope: SignedApprovalChallenge =
+        serde_json::from_value(value).map_err(|_| PolicyError::Malformed)?;
+    envelope.validate().map_err(|_| PolicyError::Invalid)?;
+    let message = approval_challenge_sign_payload(&envelope.challenge)?;
+    verify_detached(&message, &envelope.signature, origin_public_key)?;
+    Ok(envelope.challenge)
+}
+
+fn verify_detached(
+    message: &[u8],
+    signature: &str,
+    public_key: &[u8; 32],
+) -> Result<(), PolicyError> {
+    let signature_bytes = BASE64URL_NOPAD
+        .decode(signature.as_bytes())
+        .map_err(|_| PolicyError::InvalidSignature)?;
+    if signature_bytes.len() != 64 || BASE64URL_NOPAD.encode(&signature_bytes) != signature {
+        return Err(PolicyError::InvalidSignature);
+    }
     UnparsedPublicKey::new(&ED25519, public_key)
-        .verify(&message, &signature_bytes)
+        .verify(message, &signature_bytes)
         .map_err(|_| PolicyError::InvalidSignature)
 }
 
@@ -303,7 +340,10 @@ mod tests {
     use aws_lc_rs::signature::{Ed25519KeyPair, KeyPair};
     use data_encoding::{BASE64URL_NOPAD, HEXLOWER};
     use rekey_domain::authorization::ApprovalMode;
-    use rekey_domain::ids::{ApproverId, PolicySignerId};
+    use rekey_domain::ids::{
+        ActionId, ApprovalId, ApprovalRequestId, ApproverId, PolicyRuleId, PolicySignerId,
+        PrincipalId, SessionId, TenantId,
+    };
     use serde_json::{Value, json};
 
     use super::*;
@@ -528,6 +568,60 @@ mod tests {
             parse_and_verify_approval_grant(
                 &serde_json::to_vec(&resource_tamper).unwrap(),
                 snapshot
+            )
+            .is_err()
+        );
+    }
+
+    fn sample_challenge() -> ApprovalChallenge {
+        let approver = ApproverId::new_random();
+        serde_json::from_value(json!({
+            "record_type": "rekey.approval.challenge.v1",
+            "approval_request_id": ApprovalRequestId::new_random(),
+            "tenant_id": TenantId::new_random(),
+            "principal_id": PrincipalId::new_random(),
+            "session_id": SessionId::new_random(),
+            "action_id": ActionId::new_random(),
+            "action_version": 1,
+            "resource": {"type": "test.resource", "id": "one"},
+            "schema_id": "test/v1",
+            "parameter_sha256": HEXLOWER.encode(&[1u8; 32]),
+            "policy_version": 1,
+            "policy_sha256": HEXLOWER.encode(&[2u8; 32]),
+            "policy_rule_id": PolicyRuleId::new_random(),
+            "mode": "one-time",
+            "quorum": 1,
+            "approver_ids": [approver],
+            "max_uses": 1,
+            "created_at_ms": 1,
+            "max_expires_at_ms": 60_000,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn challenge_envelope_verifies_and_rejects_wrong_origin_or_tamper() {
+        let origin = key_pair();
+        let public_key: [u8; 32] = origin.public_key().as_ref().try_into().unwrap();
+        let challenge = sample_challenge();
+        let mut envelope = json!({
+            "record_type": "rekey.approval.challenge.envelope.v1",
+            "challenge": challenge,
+        });
+        let message = approval_challenge_sign_payload(&challenge).unwrap();
+        envelope["signature"] = BASE64URL_NOPAD
+            .encode(origin.sign(&message).as_ref())
+            .into();
+        let bytes = serde_jcs::to_vec(&envelope).unwrap();
+        let verified = parse_and_verify_approval_challenge_envelope(&bytes, &public_key).unwrap();
+        assert_eq!(verified.approval_request_id, challenge.approval_request_id);
+        let other: [u8; 32] = key_pair().public_key().as_ref().try_into().unwrap();
+        assert!(parse_and_verify_approval_challenge_envelope(&bytes, &other).is_err());
+        envelope["challenge"]["action_version"] = 2.into();
+        assert!(
+            parse_and_verify_approval_challenge_envelope(
+                &serde_json::to_vec(&envelope).unwrap(),
+                &public_key
             )
             .is_err()
         );

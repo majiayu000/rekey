@@ -327,3 +327,93 @@ fn json_upstream(
         body: Zeroizing::new(serde_json::to_vec(&body).unwrap()),
     }
 }
+
+#[tokio::test]
+async fn issue_comment_binds_response_discards_echo_and_never_retries() {
+    let profile = GitHubAppCredential::test_profile();
+    let action = GitHubAction::CreateIssueComment {
+        repository_index: 0,
+        issue_number: 7,
+    };
+    let payload = serde_json::json!({"id":44,
+        "issue_url":"https://api.github.com/repos/owner/repo/issues/7",
+        "html_url":"https://github.com/owner/repo/issues/7#issuecomment-44",
+        "body":"sensitive provider echo", "user":{"token":"ignored"}});
+    let transport = SequenceTransport::new(vec![json_upstream(201, payload.clone(), Vec::new())]);
+    let response = profile
+        .resource(
+            &transport,
+            &test_token(),
+            action,
+            br#"{"body":"done"}"#.to_vec(),
+            Duration::from_secs(2),
+            RESPONSE_LIMIT,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&response.body).unwrap(),
+        serde_json::json!({"id":44,"html_url":"https://github.com/owner/repo/issues/7#issuecomment-44"})
+    );
+    assert_eq!(
+        transport.requests.lock().unwrap().as_slice(),
+        &[ObservedRequest {
+            method: FixedMethod::Post,
+            path: "/repos/owner/repo/issues/7/comments".to_owned(),
+            body: br#"{"body":"done"}"#.to_vec(),
+        }]
+    );
+    for (field, value) in [
+        (
+            "issue_url",
+            serde_json::json!("https://api.github.com/repos/owner/repo/issues/8"),
+        ),
+        (
+            "html_url",
+            serde_json::json!("https://github.com/owner/repo/issues/7#issuecomment-45"),
+        ),
+        (
+            "html_url",
+            serde_json::json!("https://evil.example/owner/repo/issues/7#issuecomment-44"),
+        ),
+        ("id", serde_json::json!(0)),
+    ] {
+        let mut bad = payload.clone();
+        bad[field] = value;
+        let transport = SequenceTransport::new(vec![json_upstream(201, bad, Vec::new())]);
+        assert_eq!(
+            profile
+                .resource(
+                    &transport,
+                    &test_token(),
+                    action,
+                    Vec::new(),
+                    Duration::from_secs(2),
+                    RESPONSE_LIMIT
+                )
+                .await
+                .map(|_| ()),
+            Err(GitHubError::ResourceScope)
+        );
+    }
+    let transport = SequenceTransport::new(vec![json_upstream(
+        429,
+        serde_json::json!({}),
+        vec![("retry-after".to_owned(), "1".to_owned())],
+    )]);
+    assert_eq!(
+        profile
+            .resource(
+                &transport,
+                &test_token(),
+                action,
+                Vec::new(),
+                Duration::from_secs(2),
+                RESPONSE_LIMIT
+            )
+            .await
+            .map(|_| ()),
+        Err(GitHubError::ResourceRejected)
+    );
+    assert_eq!(transport.requests.lock().unwrap().len(), 1);
+}

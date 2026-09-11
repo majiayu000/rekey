@@ -9,6 +9,7 @@ use sha2::Sha256;
 pub const KDF_ALGORITHM_ARGON2ID: &str = "argon2id";
 pub const KDF_ALGORITHM_HKDF_SHA256: &str = "hkdf-sha256";
 pub const RECOVERY_KEK_INFO: &[u8] = b"rekey/recovery-kek/v1";
+pub const APPROVAL_ORIGIN_INFO: &[u8] = b"rekey/approval-origin-ed25519/v1";
 
 /// Argon2id parameters persisted per wrapper row. The persisted values are
 /// authoritative when opening an existing wrapper; compiled defaults apply
@@ -96,6 +97,17 @@ pub fn derive_recovery_kek(
     Ok(kek)
 }
 
+pub fn derive_approval_origin_seed(
+    vrk: &[u8; KEY_LEN],
+    vault_id: &[u8; 16],
+) -> Result<[u8; KEY_LEN], AuthorityError> {
+    let hk = Hkdf::<Sha256>::new(Some(vault_id), vrk);
+    let mut out = [0u8; KEY_LEN];
+    hk.expand(APPROVAL_ORIGIN_INFO, &mut out)
+        .map_err(|_| AuthorityError::CryptoFailure)?;
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,5 +172,18 @@ mod tests {
         assert_eq!(a.bytes(), b.bytes());
         let c = derive_recovery_kek(&[9u8; KEY_LEN], &salt).unwrap();
         assert_ne!(a.bytes(), c.bytes());
+    }
+
+    #[test]
+    fn approval_origin_seed_is_deterministic_per_vrk_and_vault_id() {
+        let vrk = [3u8; KEY_LEN];
+        let vault_id = [4u8; 16];
+        let a = derive_approval_origin_seed(&vrk, &vault_id).unwrap();
+        let b = derive_approval_origin_seed(&vrk, &vault_id).unwrap();
+        assert_eq!(a, b);
+        let other_vault = derive_approval_origin_seed(&vrk, &[5u8; 16]).unwrap();
+        assert_ne!(a, other_vault);
+        let other_vrk = derive_approval_origin_seed(&[6u8; KEY_LEN], &vault_id).unwrap();
+        assert_ne!(a, other_vrk);
     }
 }

@@ -1,0 +1,77 @@
+{
+  "started_at": "2026-09-10T09:16:33.943250+00:00",
+  "scope": "loopback provider probe only; no Rekey Broker or public HTTPS claim",
+  "image": "quay.io/keycloak/keycloak:26.7.3",
+  "container": "rekey-oau02-provider-20260910",
+  "origin": "http://127.0.0.1:5573",
+  "realm": "rekey-oau02-probe",
+  "requester_client": "rekey-requester",
+  "audience": "rekey-target",
+  "steps": [
+    {
+      "step": "ready",
+      "version": "Keycloak 26.7.3\nJVM: 21.0.12.1 (Red Hat, Inc. OpenJDK 64-Bit Server VM 21.0.12.1+1-LTS)\nOS: Linux 6.12.76-linuxkit aarch64"
+    },
+    {
+      "step": "subject-client-credentials",
+      "status": 200,
+      "expires_in": 19
+    },
+    {
+      "step": "exchange-response-metadata",
+      "status": 200,
+      "token_type": "Bearer",
+      "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+      "expires_in": 20,
+      "refresh_token_present": false,
+      "issued_audience": "rekey-target"
+    },
+    {
+      "step": "issued-introspection-metadata",
+      "status": 200,
+      "active": true,
+      "audience": "rekey-target"
+    },
+    {
+      "step": "issued-introspection",
+      "status": 200,
+      "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+      "expires_in": 20,
+      "fixed_audience": [
+        "rekey-target"
+      ],
+      "introspection_active": true
+    },
+    {
+      "step": "direct-issued-token-revoke",
+      "revoke_status": 200,
+      "introspection_status": 200,
+      "active": false,
+      "verified_before_expiry": true,
+      "remaining_ttl_seconds": 19.92473793029785
+    },
+    {
+      "step": "expired-subject-response",
+      "status": 400,
+      "error": "invalid_request",
+      "seconds_after_expiry": 2.015470027923584
+    }
+  ],
+  "pass": false,
+  "image_id": "sha256:ff4257d0d64efbe99ed1ddfaf07765cc3c36dc7518bf8324d41961327f441c54",
+  "image_digests": [
+    "quay.io/keycloak/keycloak@sha256:ff4257d0d64efbe99ed1ddfaf07765cc3c36dc7518bf8324d41961327f441c54"
+  ],
+  "failure": {
+    "stage": "expired-subject-exchange",
+    "class": "AssertionError"
+  },
+  "cleanup": {
+    "container": "rekey-oau02-provider-20260910",
+    "removed": true,
+    "private_realm_file_removed": true,
+    "container_absent": true
+  },
+  "finished_at": "2026-09-10T09:17:11.317779+00:00",
+  "secret_scan_passed": true
+}

@@ -1,0 +1,33 @@
+{
+  "issuer": "https://token.actions.githubusercontent.com",
+  "subject": "repo:majiayu000@19658300/rekey-wid10-20260910-1789030338@1363775621:ref:refs/heads/main",
+  "audience": "rekey://github-oidc-acceptance",
+  "kid": "38826b17-6a30-5f9b-b169-8beb8202f723",
+  "online_key_source": "github-actions-jwks",
+  "jwks_url": "https://token.actions.githubusercontent.com/.well-known/jwks",
+  "inline_policy_key_count": 0,
+  "jwt_saved": false,
+  "mint_success": true,
+  "fixed_read_status": 200,
+  "replay_exit": 4,
+  "wrong_audience_exit": 4,
+  "naturally_expired_unused_jwt_exit": 4,
+  "fresh_same_audience_after_expiry_mint_success": true,
+  "expiry_epoch": 1789032509,
+  "tested_at_epoch": 1789032511,
+  "source_base": "358b3a5",
+  "source_fix": "bounded RS256 x5t plus broker fresh fixed GitHub JWKS",
+  "source_files_sha256": {
+    "crates/rekey-policy/src/workload.rs": "a0663e35fc785c1816091ead9f83678455b798689334fdd57bb560e411ea4e2e",
+    "crates/rekey-policy/src/lib.rs": "707f8ee34a99742472b5678aa8c0c158019eae7e2b4976db419fedbad60e8988",
+    "crates/rekey-broker/src/runtime.rs": "d05708375485becff75097ef3787731bff148f8aa0d0f0a9fe5dd94a71c9cb42",
+    "crates/rekey-broker/src/runtime/workload.rs": "1b17c80b33eb5a074a917b7dc83026ad2b41e0a61c4f8722edff069245e928a6"
+  },
+  "runner_commit": "18f0fd447adad32eceb1ee1885fcafd2d5e0c6a1",
+  "binary_sha256": {
+    "rekey": "014d433d0e9b4ba3276eab3f31aebc0690dfe4f31873852e30ab5589dc36b08f",
+    "rekeyd": "a89e4eb5ee665aadeb3546d6a08ee7cd57ed074334e97d2628e156f37ee623f1"
+  },
+  "limitation": "Fixed GitHub issuer/JWKS only; fresh fetch per mint without cache; no general OAuth exchange; anonymous upstream read",
+  "temporary_states_and_secrets_removed": true
+}

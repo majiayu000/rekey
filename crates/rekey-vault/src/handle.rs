@@ -477,6 +477,19 @@ impl AuthorityHandle {
         })
     }
 
+    pub async fn approval_origin_public_key(&self) -> Result<[u8; 32], AuthorityError> {
+        call!(self, |reply| AuthorityCommand::ApprovalOriginPublicKey {
+            reply
+        })
+    }
+
+    pub async fn sign_approval_origin(&self, message: Vec<u8>) -> Result<[u8; 64], AuthorityError> {
+        call!(self, |reply| AuthorityCommand::SignApprovalOrigin {
+            message,
+            reply
+        })
+    }
+
     pub fn check_idle(&self) {
         let _ = self.tx.try_send(AuthorityCommand::CheckIdle);
     }
