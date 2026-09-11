@@ -279,8 +279,9 @@ async fn online_jwks_fetches_are_bounded_below_agent_request_slots() {
     let (action, _) = setup(&broker).await;
     let agent = broker.agent_sock();
 
+    let request_count = 8;
     let mut tasks = Vec::new();
-    for i in 0..8 {
+    for i in 0..request_count {
         let agent = agent.clone();
         let action = action.clone();
         let tok = token(&key, "rotating-key", &format!("bound-{i}"), false);
@@ -312,13 +313,36 @@ async fn online_jwks_fetches_are_bounded_below_agent_request_slots() {
         rekey_broker::runtime::MAX_ONLINE_JWKS_FETCHES,
         "online JWKS must saturate at the dedicated fetch bound"
     );
-    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Excess requests must fail without waiting on JWKS (non-waiting acquire).
+    let excess = request_count - rekey_broker::runtime::MAX_ONLINE_JWKS_FETCHES;
+    let mut rejected = 0usize;
+    let mut pending = tasks;
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+    while rejected < excess && tokio::time::Instant::now() < deadline {
+        let mut still_pending = Vec::new();
+        for task in pending {
+            if task.is_finished() {
+                let response = task.await.unwrap();
+                assert_eq!(response.err_code(), "WORKLOAD_IDENTITY_INVALID");
+                rejected += 1;
+            } else {
+                still_pending.push(task);
+            }
+        }
+        pending = still_pending;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        rejected, excess,
+        "excess online JWKS requests must fail fast without occupying Agent slots"
+    );
     assert_eq!(
         gate.max_seen.load(Ordering::SeqCst),
         rekey_broker::runtime::MAX_ONLINE_JWKS_FETCHES
     );
     gate.release.send(true).unwrap();
-    for task in tasks {
+    for task in pending {
         task.await.unwrap().ok();
     }
     assert_eq!(

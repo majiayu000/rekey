@@ -44,6 +44,7 @@ def write_github_app_profile(path, private_key_der, installation_id=515151):
         "webhook_secret": WEBHOOK_SECRET,
         "private_key_pkcs1_der_base64": base64.b64encode(private_key_der).decode(),
     }))
+    path.chmod(0o600)
 
 
 def generate_pkcs1_der(work):

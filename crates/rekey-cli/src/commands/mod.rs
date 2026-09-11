@@ -159,6 +159,38 @@ fn read_regular_file_bounded(
     read_bounded(file, limit, label)
 }
 
+/// Open with O_NOFOLLOW, require current-user ownership and mode & 0o077 == 0,
+/// then read from the same validated descriptor (no path re-open).
+pub(super) fn read_private_regular_file_bounded(
+    path: &Path,
+    limit: usize,
+    label: &'static str,
+) -> Result<Zeroizing<Vec<u8>>, CliError> {
+    use std::fs::OpenOptions;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+    let opened = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|err| CliError::local("USAGE", format!("cannot open {label}: {err}")))?;
+    let metadata = opened
+        .metadata()
+        .map_err(|err| CliError::local("USAGE", format!("cannot inspect {label}: {err}")))?;
+    if !metadata.is_file()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.mode() & 0o077 != 0
+    {
+        return Err(CliError::local(
+            "USAGE",
+            format!(
+                "{label} must be a current-user-owned regular file with no group/other permissions"
+            ),
+        ));
+    }
+    read_bounded(opened, limit, label)
+}
+
 fn stdin_lines(expected: usize) -> Result<Vec<Zeroizing<Vec<u8>>>, CliError> {
     read_lines_bounded(
         std::io::stdin().lock(),
@@ -439,7 +471,7 @@ pub fn credential_add_github_app(
     password_stdin: bool,
 ) -> Result<(), CliError> {
     let limit = ipc::ADMIN_SECRET_FIELD_MAX_BYTES as usize;
-    let secret = read_regular_file_bounded(file, limit, "GitHub App profile")?;
+    let secret = read_private_regular_file_bounded(file, limit, "GitHub App profile")?;
     if secret.is_empty() {
         return Err(CliError::local(
             "USAGE",

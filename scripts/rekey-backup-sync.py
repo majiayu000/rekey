@@ -55,6 +55,14 @@ def require_private_export_dir(path: Path):
         raise ValueError('outbox entry must be a current-user-owned 0700 directory: ' + path.name)
 
 
+def sync_dir(path: Path):
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def export(args):
     pending = args.outbox / ('.pending-' + uuid.uuid4().hex)
     pending.mkdir(mode=0o700)
@@ -68,9 +76,15 @@ def export(args):
     receipt.pop('output_path', None)
     receipt['runtime_version'] = run([args.rekey, '--version'],
                                     stdout=subprocess.PIPE).stdout.decode().strip()
-    (pending / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
+    receipt_path = pending / 'receipt.json'
+    with receipt_path.open('w', encoding='utf-8') as handle:
+        handle.write(json.dumps(receipt, indent=2) + '\n')
+        handle.flush()
+        os.fsync(handle.fileno())
+    sync_dir(pending)
     completed = args.outbox / ('backup-' + uuid.uuid4().hex)
     pending.rename(completed)
+    sync_dir(args.outbox)
     print('EXPORTED ' + str(completed), flush=True)
 
 

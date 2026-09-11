@@ -84,16 +84,20 @@ def payload(key, repositories):
         "webhook_secret": webhook,
         "private_key_pkcs1_der_base64": base64.b64encode(pathlib.Path(key).read_bytes()).decode(),
     }
+def write_private(path, text):
+    target = pathlib.Path(path)
+    target.write_text(text)
+    target.chmod(0o600)
 both = [
     {"id": 818181, "owner": "p6-owner", "name": "alpha"},
     {"id": 818182, "owner": "p6-owner", "name": "beta"},
 ]
-pathlib.Path(profile).write_text(json.dumps(payload(key_one, both)))
-pathlib.Path(key_rotation).write_text(json.dumps(payload(key_two, both[:1])))
-pathlib.Path(rotated).write_text(json.dumps(payload(key_one, both[:1])))
+write_private(profile, json.dumps(payload(key_one, both)))
+write_private(key_rotation, json.dumps(payload(key_two, both[:1])))
+write_private(rotated, json.dumps(payload(key_one, both[:1])))
 bad = payload(key_one, both)
 bad["repositories"].append({"id": 818181, "owner": "other", "name": "duplicate"})
-pathlib.Path(invalid).write_text(json.dumps(bad))
+write_private(invalid, json.dumps(bad))
 PY
 
 printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin >/dev/null

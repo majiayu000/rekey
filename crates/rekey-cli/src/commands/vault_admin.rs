@@ -1,5 +1,3 @@
-use std::fs::OpenOptions;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::Path;
 
 use rekey_domain::credential::CredentialMetadata;
@@ -8,7 +6,9 @@ use rekey_domain::ipc::{self, admin_msg};
 use serde::Deserialize;
 use zeroize::Zeroizing;
 
-use super::{CliError, admin, print_json, proof_kind, read_bounded, read_step_up};
+use super::{
+    CliError, admin, print_json, proof_kind, read_private_regular_file_bounded, read_step_up,
+};
 
 #[derive(Deserialize)]
 struct VaultProfileMarker<'a> {
@@ -183,28 +183,8 @@ fn vault_profile_file(
     expected_marker: &str,
     profile_label: &'static str,
 ) -> Result<Zeroizing<Vec<u8>>, CliError> {
-    let opened = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(file)
-        .map_err(|err| CliError::local("USAGE", format!("cannot open {profile_label}: {err}")))?;
-    let metadata = opened.metadata().map_err(|err| {
-        CliError::local("USAGE", format!("cannot inspect {profile_label}: {err}"))
-    })?;
-    if !metadata.is_file()
-        || metadata.uid() != unsafe { libc::geteuid() }
-        || metadata.mode() & 0o077 != 0
-    {
-        return Err(CliError::local(
-            "USAGE",
-            format!(
-                "{profile_label} must be a current-user-owned regular file with no group/other permissions"
-            ),
-        ));
-    }
-    // Read from the same descriptor that passed ownership/mode checks (no path re-open).
-    let profile = read_bounded(
-        opened,
+    let profile = read_private_regular_file_bounded(
+        file,
         ipc::ADMIN_SECRET_FIELD_MAX_BYTES as usize,
         profile_label,
     )?;
