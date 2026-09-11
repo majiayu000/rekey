@@ -163,6 +163,52 @@ class HandoffTests(unittest.TestCase):
                     self.assertFalse(run.call_args.kwargs.get("text", False))
                     self.assertEqual(output.buffer.getvalue(), payload)
 
+    def test_prepare_validates_before_claiming_exclusive_handoff(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            output = work / "handoff"
+            status = json.dumps({"state": "unlocked"}).encode()
+            policy = json.dumps({"bundle_persisted": False, "trust_installed": False}).encode()
+            args = argparse.Namespace(
+                rekey=work / "rekey",
+                state_dir=work / "state",
+                output=output,
+                repo=REPO,
+                credential=None,
+                github_app_profile=None,
+                action=None,
+                schema=None,
+            )
+            with patch.object(APP.sys.stdin, "isatty", return_value=True):
+                with patch.object(
+                    APP.subprocess,
+                    "run",
+                    side_effect=[
+                        subprocess.CompletedProcess([], 0, status.decode()),
+                        subprocess.CompletedProcess([], 0, policy.decode()),
+                    ],
+                ):
+                    with self.assertRaises(APP.InputError):
+                        APP.prepare(args)
+            self.assertFalse(output.exists())
+
+            public_profile = work / "public-profile.json"
+            public_profile.write_text("{}")
+            public_profile.chmod(0o644)
+            args.github_app_profile = public_profile
+            with patch.object(APP.sys.stdin, "isatty", return_value=True):
+                with patch.object(
+                    APP.subprocess,
+                    "run",
+                    side_effect=[
+                        subprocess.CompletedProcess([], 0, status.decode()),
+                        subprocess.CompletedProcess([], 0, policy.decode()),
+                    ],
+                ):
+                    with self.assertRaisesRegex(APP.InputError, "owner-only regular file"):
+                        APP.prepare(args)
+            self.assertFalse(output.exists())
+
 
 @unittest.skipUnless(os.environ.get("REKEY_QUICKSTART_REAL") == "1", "set REKEY_QUICKSTART_REAL=1 after building workspace")
 class RealBrokerTests(unittest.TestCase):

@@ -396,7 +396,7 @@ Action 和最小响应 schema 比通用透明代理更强。任何新增 canonic
 | H | 持续 Fuzz | `cargo fuzz run <ipc|action|policy|response_sealing|restore>` | 五个边界无 crash、hang、越界资源使用或解析分歧 |
 | P2 | 多租户 | cargo test -p rekey-control --test tenant_isolation | 跨租户读取、缓存和 token 全拒绝 |
 
-上表里标为 P0 且 crate 已存在的命令（`authority_contract`、`bootstrap_contract`、`broker_ipc`、`adversarial_http`、`reflected_secret`、`secret_canary`、`fault_injection`）已经在本仓库实现，并以 `docs/product-foundation/feature-truth-matrix.md` 为是否“通过”的唯一状态源。P1 typed policy、bounded Linux G2 reference、chunk-boundary sealing 和 native service-manager，P2.1 GitHub App local profile、P-05 静态 Connector contract，以及 H-01 持续 fuzz 已有对应实现和门槛。P-05 只有 IO-free SDK、四个内置 descriptor 和纯 MCP/OAuth projection，不是通用 provider、MCP server 或 live OAuth 互操作证据；macOS G2、企业多租户 control plane 与 HA/DR 仍是计划合同。
+上表里标为 P0 且 crate 已存在的命令（`authority_contract`、`bootstrap_contract`、`broker_ipc`、`adversarial_http`、`reflected_secret`、`secret_canary`、`fault_injection`）已经在本仓库实现，并以 `docs/product-foundation/feature-truth-matrix.md` 为是否“通过”的唯一状态源。P1 typed policy、bounded Linux G2 reference、chunk-boundary sealing 和 native service-manager，P2.1 GitHub App local profile、P-05 静态 Connector contract，以及 H-01 持续 fuzz 已有对应实现和门槛。P-05 是 IO-free SDK、五个内置 descriptor（含 `keycloak-token-exchange@1`）和纯 MCP/OAuth projection；源码 MCP-03 的本地 stdio server 与 OAU-02 固定 Keycloak 交换另有边界验收，但仍不是通用 provider、产品级 MCP server 或 live generic OAuth 互操作证据；macOS G2、企业多租户 control plane 与 HA/DR 仍是计划合同。
 
 ## 16. 已锁定与待决事项
 
@@ -470,4 +470,4 @@ Action 和最小响应 schema 比通用透明代理更强。任何新增 canonic
 
 ## 17. Readiness
 
-本威胁模型已经锁定内置 Credential Authority 的密钥层级、状态所有权和禁止接口。当前 P0/P1/P2.1/P-03/P-04/P-05 local gates 的实际状态以 Feature Truth Matrix 为准；required systemd gate 和一次真实 `github.com` GitHub App provider 验证已经完成。哪些能力进入哪个公开 archive 以 Matrix 的 `Release` 列为准。默认同用户拓扑仍只有 G1，有界 Linux container/namespace recipe 的 G2 证据不能外推为通用产品保证；签名 policy/approval、静态 workload JWT 验证和 Connector contract 也不建立远程控制面、企业身份、在线 IdP、通用 provider、MCP server 或 live OAuth 互操作。在独立 crypto、IPC 边界和 audit/failure-semantics 人工审查完成前，不能对外声称恶意 Agent 在所有部署中永远无法获得或重定向密钥。
+本威胁模型已经锁定内置 Credential Authority 的密钥层级、状态所有权和禁止接口。当前 P0/P1/P2.1/P-03/P-04/P-05 local gates 的实际状态以 Feature Truth Matrix 为准；required systemd gate 和一次真实 `github.com` GitHub App provider 验证已经完成。哪些能力进入哪个公开 archive 以 Matrix 的 `Release` 列为准。默认同用户拓扑仍只有 G1，有界 Linux container/namespace recipe 的 G2 证据不能外推为通用产品保证；签名 policy/approval、静态 workload JWT 验证和 Connector contract 也不建立远程控制面、企业身份、在线 IdP 或通用 provider。源码 MCP-03 / OAU-02 只证明有界本地 stdio 与固定 Keycloak 交换，不能外推为产品级 MCP server 或 live generic OAuth 互操作。在独立 crypto、IPC 边界和 audit/failure-semantics 人工审查完成前，不能对外声称恶意 Agent 在所有部署中永远无法获得或重定向密钥。

@@ -63,6 +63,27 @@ def policy_draft(action, session, schema):
     }
 
 
+def require_private_regular_file(path, label):
+    """Reject non-private profiles before claiming an exclusive handoff directory."""
+    try:
+        info = path.lstat()
+    except OSError as error:
+        raise InputError(f"{label} is not readable") from error
+    if stat.S_ISLNK(info.st_mode):
+        raise InputError(f"{label} must not be a symlink")
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise InputError(f"{label} must be an owner-only regular file")
+
+
+def release_empty_handoff(path):
+    """Drop an exclusive handoff that never received published files."""
+    try:
+        if path.is_dir() and not any(path.iterdir()):
+            path.rmdir()
+    except OSError:
+        pass
+
+
 def prepare(args):
     if not sys.stdin.isatty():
         raise InputError("prepare requires the operator's trusted interactive terminal")
@@ -73,70 +94,82 @@ def prepare(args):
     policy = cli_json(base + ["policy", "status"])
     if policy["bundle_persisted"] or policy["trust_installed"]:
         raise InputError("prepare requires a fresh policy; use a dedicated demo vault")
+    existing_action = None
     if args.repo:
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+", args.repo):
             raise InputError("repository must be owner/name")
         schema = {"type": "object", "additionalProperties": False, "required": ["title"],
                   "properties": {"title": {"type": "string"}, "body": {"type": "string"}}}
-    else:
-        if args.schema is None:
-            raise InputError("--action requires --schema (JSON Schema for the request body)")
-        schema = json.loads(args.schema.read_text(encoding="utf-8"))
-
-    args.output.mkdir(mode=0o700)  # Exclusive: never overwrite a previous handoff.
-    if args.repo:
-        # /repos/{owner}/{repo}/issues is GitHub-App-reserved; OpaqueToken cannot bind it.
-        credential = args.credential
-        if credential is None:
+        # Validate credential/profile inputs before the exclusive mkdir so a
+        # corrected retry can reuse the same documented --output path.
+        if args.credential is None:
             if args.github_app_profile is None:
                 raise InputError(
                     "prepare --repo requires --credential (GitHub App id) "
                     "or --github-app-profile PATH"
                 )
-            print(
-                "Enter the vault proof in rekey's hidden prompt for add-github-app.",
-                file=sys.stderr,
-            )
-            credential = cli_json(
-                base
-                + [
-                    "credential",
-                    "add-github-app",
-                    "agent-quickstart",
-                    "--file",
-                    str(args.github_app_profile),
-                ]
-            )["id"]
-        definition = {
-            "name": "github-create-issue", "credential_id": credential,
-            "origin": "https://api.github.com", "method": "POST",
-            "exact_path": f"/repos/{args.repo}/issues", "auth_header": "authorization",
-            "auth_prefix": "Bearer ", "timeout_ms": 30000, "request_max_bytes": 65536,
-            # GitHub App connector rejects nonempty extra_headers on execute.
-            "allowed_extra_headers": [],
-            "response_max_bytes": 262144, "allowed_response_headers": ["content-type"],
-        }
-        write_new(args.output / "action.json", definition)
-        action = cli_json(base + ["action", "create", "--file", str(args.output / "action.json")])
+            require_private_regular_file(args.github_app_profile, "GitHub App profile")
     else:
+        if args.schema is None:
+            raise InputError("--action requires --schema (JSON Schema for the request body)")
+        schema = json.loads(args.schema.read_text(encoding="utf-8"))
         actions = cli_json(base + ["action", "list"])["actions"]
-        action = next((a for a in actions if f'{a["id"]}@{a["version"]}' == args.action), None)
-        if action is None:
+        existing_action = next(
+            (a for a in actions if f'{a["id"]}@{a["version"]}' == args.action), None
+        )
+        if existing_action is None:
             raise InputError("requested Action version does not exist")
-    # Persist public IDs before the next mutation so partial setup is inspectable.
-    write_new(args.output / "registered-action.json", action)
-    action_ref = f'{action["id"]}@{action["version"]}'
-    session = cli_json(base + ["session", "create", "--action", action_ref,
-                               "--ttl", "15m", "--max-uses", "10"])
-    write_new(args.output / "session.json", session)
-    write_new(args.output / "policy-draft.json", policy_draft(action, session, schema))
-    write_new(args.output / "agent.json", {
-        "rekey": str(args.rekey.resolve()),
-        "agent_socket": str(args.state_dir.resolve() / "runtime" / "agent.sock"),
-        "action": action_ref,
-        # Empty for GitHub App prepare --repo; the closed connector forbids extra_headers.
-        "headers": [],
-    })
+
+    args.output.mkdir(mode=0o700)  # Exclusive: never overwrite a previous handoff.
+    try:
+        if args.repo:
+            # /repos/{owner}/{repo}/issues is GitHub-App-reserved; OpaqueToken cannot bind it.
+            credential = args.credential
+            if credential is None:
+                print(
+                    "Enter the vault proof in rekey's hidden prompt for add-github-app.",
+                    file=sys.stderr,
+                )
+                credential = cli_json(
+                    base
+                    + [
+                        "credential",
+                        "add-github-app",
+                        "agent-quickstart",
+                        "--file",
+                        str(args.github_app_profile),
+                    ]
+                )["id"]
+            definition = {
+                "name": "github-create-issue", "credential_id": credential,
+                "origin": "https://api.github.com", "method": "POST",
+                "exact_path": f"/repos/{args.repo}/issues", "auth_header": "authorization",
+                "auth_prefix": "Bearer ", "timeout_ms": 30000, "request_max_bytes": 65536,
+                # GitHub App connector rejects nonempty extra_headers on execute.
+                "allowed_extra_headers": [],
+                "response_max_bytes": 262144, "allowed_response_headers": ["content-type"],
+            }
+            write_new(args.output / "action.json", definition)
+            action = cli_json(base + ["action", "create", "--file", str(args.output / "action.json")])
+        else:
+            action = existing_action
+        # Persist public IDs before the next mutation so partial setup is inspectable.
+        write_new(args.output / "registered-action.json", action)
+        action_ref = f'{action["id"]}@{action["version"]}'
+        session = cli_json(base + ["session", "create", "--action", action_ref,
+                                   "--ttl", "15m", "--max-uses", "10"])
+        write_new(args.output / "session.json", session)
+        write_new(args.output / "policy-draft.json", policy_draft(action, session, schema))
+        write_new(args.output / "agent.json", {
+            "rekey": str(args.rekey.resolve()),
+            "agent_socket": str(args.state_dir.resolve() / "runtime" / "agent.sock"),
+            "action": action_ref,
+            # Empty for GitHub App prepare --repo; the closed connector forbids extra_headers.
+            "headers": [],
+        })
+    except BaseException:
+        release_empty_handoff(args.output)
+        raise
     print(f"Prepared {action_ref}. Session expires in 15 minutes; maximum 10 uses.")
     print(f"Review and externally sign {args.output / 'policy-draft.json'}.")
     print("Install the signer trust with rekey policy trust install, then rekey policy activate.")

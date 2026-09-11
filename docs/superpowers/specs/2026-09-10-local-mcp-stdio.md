@@ -68,7 +68,10 @@ write. The adapter never retries a request. EOF exits after the current bounded
 call; forced process termination is available to the host.
 
 Call arguments are JSON objects passed through `adapt_mcp_invocation`. Only
-manifest-controlled headers and action IDs enter IPC. The capability is read
+manifest-controlled headers and action IDs enter IPC. Because that adapter always
+emits a nonempty `application/json` body, manifest load rejects closed no-body
+GET Actions (for example GitHub `GET /installation/repositories` and Keycloak
+target GET) so they are never advertised as tools. The capability is read
 once into zeroizing storage, never accepted from MCP arguments or emitted in
 stdout/stderr/argv/env. A successful broker response is returned as text containing
 upstream status, selected headers and a base64 body (preserving arbitrary bytes).

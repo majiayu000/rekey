@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rekey_connector::{McpToolDescriptor, adapt_mcp_invocation, project_mcp_tool};
-use rekey_domain::action::FixedHttpAction;
+use rekey_domain::action::{FixedHttpAction, FixedMethod};
 use rekey_domain::capability::ActionVersionRef;
 use rekey_domain::ipc::{Channel, ExecuteResponseMeta, agent_msg};
 use serde::{Deserialize, Serialize};
@@ -100,6 +100,12 @@ impl Server {
             let action: FixedHttpAction = private_json(&entry.action_file)?;
             if !action.enabled {
                 return Err("disabled action in manifest");
+            }
+            // adapt_mcp_invocation always sends application/json bodies. Closed
+            // no-body GET profiles (GitHub list-repos, Keycloak target GET) reject
+            // that shape, so refuse to advertise tools that can never succeed.
+            if action.method == FixedMethod::Get {
+                return Err("no-body GET actions are incompatible with MCP JSON invocation");
             }
             let descriptor = project_mcp_tool(&action, &entry.input_schema)
                 .map_err(|_| "invalid manifest action")?;

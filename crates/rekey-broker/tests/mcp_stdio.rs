@@ -260,6 +260,56 @@ fn malformed_json_and_private_file_failures_are_safe() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn no_body_get_actions_are_rejected_at_manifest_load() {
+    let broker = common::start_broker().await;
+    common::unlock(&broker).await;
+    let credential = common::add_credential(&broker, "mcp-get", b"mcp-test-secret").await;
+    let mut meta = common::action_meta(&credential);
+    meta["method"] = json!("GET");
+    let action = common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::ACTION_CREATE,
+        meta.to_string().as_bytes(),
+        &common::proof_body(common::PASSWORD),
+    )
+    .await;
+    let action = action.ok();
+    let token = common::create_session(&broker, action["id"].as_str().unwrap(), 1).await;
+    let dir = broker.dir.path();
+    private(&dir.join("action.json"), &action);
+    private(
+        &dir.join("session.json"),
+        &json!({"capability_token":token}),
+    );
+    let manifest = dir.join("mcp-get.json");
+    private(
+        &manifest,
+        &json!({
+            "agent_socket": broker.agent_sock(),
+            "session_file": dir.join("session.json"),
+            "tools": [{
+                "action_file": dir.join("action.json"),
+                "input_schema": {"type": "object", "additionalProperties": false, "properties": {}}
+            }]
+        }),
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_rekey-mcp"))
+        .arg("--manifest")
+        .arg(&manifest)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("no-body GET actions are incompatible with MCP JSON invocation"),
+        "{stderr}"
+    );
+    broker.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn upstream_http_errors_and_reflected_secrets_are_not_successes() {
     use rekey_broker::upstream::UpstreamResponse;
     let broker = common::start_broker().await;
