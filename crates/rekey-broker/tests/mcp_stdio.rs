@@ -277,7 +277,7 @@ async fn no_body_get_actions_are_rejected_at_manifest_load() {
     let action = action.ok();
     let token = common::create_session(&broker, action["id"].as_str().unwrap(), 1).await;
     let dir = broker.dir.path();
-    private(&dir.join("action.json"), &action);
+    private(&dir.join("action.json"), action);
     private(
         &dir.join("session.json"),
         &json!({"capability_token":token}),
