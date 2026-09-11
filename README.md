@@ -296,11 +296,11 @@ egress launcher. It requires bubblewrap, a disjoint `--agent-socket`, and does
 not make macOS or general G2:
 `scripts/p9-linux-agent-run.sh`
 
-GitHub create-issue dogfood (opt-in, dedicated fine-grained token entered
-through a hidden TTY prompt; exits nonzero unless GitHub returns 201):
+GitHub create-issue dogfood (opt-in, GitHub App profile file; vault password
+stays on stdin only; exits nonzero unless GitHub returns 201):
 
 ```bash
-scripts/dogfood-github.sh --repo owner/name
+scripts/dogfood-github.sh --repo owner/name --github-app-profile /secure/path/profile.json
 ```
 
 ## License

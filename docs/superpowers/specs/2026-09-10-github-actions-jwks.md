@@ -18,9 +18,13 @@ and https://token.actions.githubusercontent.com/.well-known/jwks .
 
 Fetch uses the existing screened HTTPS transport (public DNS/IP checks, TLS,
 no environment proxy, no redirects), a 64 KiB body bound and the workload admission
-25-second absolute deadline. The GET contains only fixed public headers; JWTs and
-credentials never leave the broker in this fetch. The existing transport's header
-slot carries a public Accept value, not an authorization credential.
+25-second absolute deadline. Concurrent online JWKS fetches are capped by a
+dedicated small Broker semaphore (independent of Agent request-handler slots) so
+unauthenticated forged JWTs cannot monopolize the Agent channel while waiting on
+network IO; saturation within the admission deadline fails closed. The GET
+contains only fixed public headers; JWTs and credentials never leave the broker
+in this fetch. The existing transport's header slot carries a public Accept
+value, not an authorization credential.
 
 The pure policy layer routes bounded untrusted identity claims only to the
 signed source choice; this is not verification. The fetched document must contain

@@ -44,6 +44,9 @@ pub const MAX_AGENT_REQUEST_CONNECTIONS: usize =
     MAX_AGENT_CONNECTIONS - CAPACITY_REPLY_CONNECTIONS_PER_CHANNEL;
 pub const MAX_ADMIN_REQUEST_CONNECTIONS: usize =
     MAX_ADMIN_CONNECTIONS - CAPACITY_REPLY_CONNECTIONS_PER_CHANNEL;
+/// Dedicated bound for unauthenticated online JWKS fetches. Kept far below
+/// Agent request slots so forged JWTs cannot monopolize the Agent channel.
+pub const MAX_ONLINE_JWKS_FETCHES: usize = 2;
 
 pub fn default_drain_timeout() -> Duration {
     Duration::from_millis(ACTION_TIMEOUT_HARD_MAX_MS as u64)
@@ -86,6 +89,7 @@ pub struct BrokerCtx {
     pub(crate) executions: ExecutionSupervisorHandle,
     pub(crate) executor: Arc<ActionExecutor>,
     workload_transport: Arc<dyn UpstreamTransport>,
+    online_jwks_slots: Arc<tokio::sync::Semaphore>,
     pub lifecycle: Arc<Lifecycle>,
     policy: Arc<RwLock<Option<Arc<ActivePolicy>>>>,
     policy_trust: Arc<RwLock<Option<ValidatedPolicyTrust>>>,
@@ -573,6 +577,7 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
     let (stop_tx, mut stop_rx) = mpsc::unbounded_channel();
     let ctx = Arc::new(BrokerCtx {
         workload_transport: transport,
+        online_jwks_slots: Arc::new(tokio::sync::Semaphore::new(MAX_ONLINE_JWKS_FETCHES)),
         authority: authority.clone(),
         sessions,
         executions,

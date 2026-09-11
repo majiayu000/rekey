@@ -235,8 +235,10 @@ Released Alpha uses static keys. In this source tree, the
 [WID-09 extension](superpowers/specs/2026-09-10-github-actions-jwks.md) also accepts
 the exact GitHub issuer with `keys: []` and
 `online_key_source: "github-actions-jwks"` in the signed identity. The Broker
-fetches only its fixed public HTTPS JWKS for each mint and denies admission on
-outage or invalid keys; no cache, discovery or introspection is used.
+fetches only its fixed public HTTPS JWKS for each mint, bounds concurrent
+unauthenticated JWKS fetches separately from Agent request slots, and denies
+admission on outage, saturation, or invalid keys; no cache, discovery or
+introspection is used.
 Rekey does not contact SPIRE or Kubernetes APIs or hold issuer private keys.
 Rotate a static workload verification key by signing and activating the next consecutive policy bundle;
 the old policy activation revokes existing workload sessions.
@@ -611,18 +613,24 @@ target/debug/rekey --state-dir /tmp/rekey-agent-demo init
 target/debug/rekey --state-dir /tmp/rekey-agent-demo serve
 # In another operator terminal:
 target/debug/rekey --state-dir /tmp/rekey-agent-demo unlock
+# Prepare an owner-only github-app-installation-v2 profile first (see GitHub App
+# closed profile above), then:
 python3 scripts/agent-quickstart.py prepare \
   --rekey target/debug/rekey --state-dir /tmp/rekey-agent-demo \
-  --repo OWNER/DEDICATED-TEST-REPO --output /tmp/rekey-agent-handoff
+  --repo OWNER/DEDICATED-TEST-REPO \
+  --github-app-profile /secure/path/github-app-profile.json \
+  --output /tmp/rekey-agent-handoff
 ```
 
-Record the recovery key from init. Enter the dedicated GitHub token only in
-the hidden credential prompt, with Issues: Write on that test repository.
-The test repository must also have Issues enabled. After an indeterminate
-write result, inspect the repository and audit trail before any new attempt.
-Every Admin mutation still prompts for its step-up proof. `--credential ID`
-reuses an existing credential. To use an existing fixed Action instead of
-creating the GitHub Action, pass `--action ID@VERSION --schema schema.json`.
+Record the recovery key from init. `prepare --repo` requires a GitHub App
+credential because `/repos/{owner}/{repo}/issues` is reserved for that
+connector; pass `--github-app-profile PATH` or reuse `--credential ID`. Keep
+the profile owner-readable only and delete it after enrollment. The App needs
+Issues: Write on that test repository, and Issues must be enabled there.
+After an indeterminate write result, inspect the repository and audit trail
+before any new attempt. Every Admin mutation still prompts for its step-up
+proof. To use an existing fixed Action instead of creating the GitHub Action,
+pass `--action ID@VERSION --schema schema.json`.
 
 Review `policy-draft.json`: it permits one principal to execute one Action
 version, accepts only the indicated request schema, and expires with the

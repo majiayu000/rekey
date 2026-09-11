@@ -230,3 +230,100 @@ async fn policy_can_change_during_network_wait_and_the_inflight_mint_is_rejected
     assert_eq!(minted.err_code(), "POLICY_UNAVAILABLE");
     broker.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn online_jwks_fetches_are_bounded_below_agent_request_slots() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::watch;
+
+    struct CountingGatedJwks {
+        active: AtomicUsize,
+        max_seen: AtomicUsize,
+        release: watch::Sender<bool>,
+        body: Vec<u8>,
+    }
+
+    impl UpstreamTransport for CountingGatedJwks {
+        fn send(&self, request: UpstreamRequest) -> UpstreamFuture<'_> {
+            Box::pin(async move {
+                assert_eq!(request.host, "token.actions.githubusercontent.com");
+                let current = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+                self.max_seen.fetch_max(current, Ordering::SeqCst);
+                let mut released = self.release.subscribe();
+                while !*released.borrow_and_update() {
+                    if released.changed().await.is_err() {
+                        break;
+                    }
+                }
+                self.active.fetch_sub(1, Ordering::SeqCst);
+                Ok(response(self.body.clone()))
+            })
+        }
+    }
+
+    let key = RsaKeyPair::generate(KeySize::Rsa2048).unwrap();
+    let (release, _) = watch::channel(false);
+    let gate = Arc::new(CountingGatedJwks {
+        active: AtomicUsize::new(0),
+        max_seen: AtomicUsize::new(0),
+        release,
+        body: jwks(&key),
+    });
+    let broker = common::start_broker_with_transport(
+        Duration::from_secs(300),
+        Duration::from_secs(2),
+        Arc::new(FakeUpstreamTransport::new()),
+        Arc::clone(&gate) as Arc<dyn UpstreamTransport>,
+    )
+    .await;
+    let (action, _) = setup(&broker).await;
+    let agent = broker.agent_sock();
+
+    let mut tasks = Vec::new();
+    for i in 0..8 {
+        let agent = agent.clone();
+        let action = action.clone();
+        let tok = token(&key, "rotating-key", &format!("bound-{i}"), false);
+        tasks.push(tokio::spawn(async move {
+            common::call(
+                &agent,
+                Channel::Agent,
+                agent_msg::WORKLOAD_SESSION_CREATE,
+                &serde_json::to_vec(&json!({
+                    "actions":[{"action_id":action,"version":1}],
+                    "ttl_ms":60_000,
+                    "max_uses":1
+                }))
+                .unwrap(),
+                &tok,
+            )
+            .await
+        }));
+    }
+
+    for _ in 0..50 {
+        if gate.max_seen.load(Ordering::SeqCst) >= rekey_broker::runtime::MAX_ONLINE_JWKS_FETCHES {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        gate.max_seen.load(Ordering::SeqCst),
+        rekey_broker::runtime::MAX_ONLINE_JWKS_FETCHES,
+        "online JWKS must saturate at the dedicated fetch bound"
+    );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        gate.max_seen.load(Ordering::SeqCst),
+        rekey_broker::runtime::MAX_ONLINE_JWKS_FETCHES
+    );
+    gate.release.send(true).unwrap();
+    for task in tasks {
+        task.await.unwrap().ok();
+    }
+    assert_eq!(
+        gate.max_seen.load(Ordering::SeqCst),
+        rekey_broker::runtime::MAX_ONLINE_JWKS_FETCHES
+    );
+    broker.shutdown().await;
+}

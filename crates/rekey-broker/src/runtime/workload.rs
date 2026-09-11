@@ -47,6 +47,15 @@ impl BrokerCtx {
             .map_err(|_| invalid())?;
         let jwks = match source {
             Some(OnlineKeySource::GithubActionsJwks) => {
+                // Acquire before the network wait so forged JWTs cannot fill every
+                // Agent handler slot with unbounded online JWKS fetches.
+                let _jwks_permit = tokio::time::timeout_at(
+                    deadline,
+                    self.online_jwks_slots.clone().acquire_owned(),
+                )
+                .await
+                .map_err(|_| invalid())?
+                .map_err(|_| invalid())?;
                 let request = UpstreamRequest {
                     host: "token.actions.githubusercontent.com".to_owned(),
                     port: 443,

@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # Opt-in field dogfood: create one GitHub issue through rekey's fixed Action.
-# Requires a revocable fine-grained token with Issues: Write on one repo.
-# The token is entered directly into rekey's hidden TTY prompt. It is never
-# accepted through env, argv, a shell variable, or a file.
+# Requires a github-app-installation-v2 profile with Issues: Write on one repo.
+# The vault password stays on stdin only; it is never printed to stdout/logs.
 #
-#   scripts/dogfood-github.sh --repo owner/name
+#   scripts/dogfood-github.sh --repo owner/name --github-app-profile PATH
 #
 # Creates a throwaway vault under $TMPDIR and removes it on exit.
 set -euo pipefail
@@ -14,17 +13,36 @@ BIN_DIR="${BIN_DIR:-$ROOT/target/release}"
 REKEY="${BIN_DIR}/rekey"
 REKEYD="${BIN_DIR}/rekeyd"
 
-if [[ "$#" -ne 2 || "$1" != "--repo" ]]; then
-  echo "usage: $0 --repo owner/name" >&2
+REPO=""
+PROFILE=""
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --repo)
+      [[ "$#" -ge 2 ]] || { echo "usage: $0 --repo owner/name --github-app-profile PATH" >&2; exit 2; }
+      REPO="$2"
+      shift 2
+      ;;
+    --github-app-profile)
+      [[ "$#" -ge 2 ]] || { echo "usage: $0 --repo owner/name --github-app-profile PATH" >&2; exit 2; }
+      PROFILE="$2"
+      shift 2
+      ;;
+    *)
+      echo "usage: $0 --repo owner/name --github-app-profile PATH" >&2
+      exit 2
+      ;;
+  esac
+done
+if [[ -z "$REPO" || -z "$PROFILE" ]]; then
+  echo "usage: $0 --repo owner/name --github-app-profile PATH" >&2
   exit 2
 fi
-REPO="$2"
 if [[ ! "$REPO" =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$ ]]; then
   echo "invalid repository; expected owner/name" >&2
   exit 2
 fi
-if [[ ! -t 0 ]]; then
-  echo "dogfood requires a trusted interactive TTY for credential entry" >&2
+if [[ ! -f "$PROFILE" ]]; then
+  echo "github-app-profile must be an existing regular file" >&2
   exit 2
 fi
 PASSWORD="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
@@ -61,10 +79,9 @@ for _ in $(seq 1 100); do
 done
 
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" unlock --password-stdin >/dev/null
-echo "== credential add (trusted TTY)"
-echo "Temporary vault password for the first prompt: $PASSWORD"
-echo "For the second prompt, enter the dedicated fine-grained GitHub token."
-cred_json="$("$REKEY" --state-dir "$STATE" credential add github-dogfood)"
+echo "== credential add-github-app (password-stdin; profile stays on disk until enrollment)"
+cred_json="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" credential \
+  add-github-app github-dogfood --file "$PROFILE" --password-stdin)"
 cred_id="$(printf '%s\n' "$cred_json" | json_field '"id"')"
 
 action_file="$WORKDIR/action.json"
@@ -79,7 +96,7 @@ cat >"$action_file" <<EOF
   "auth_prefix": "Bearer ",
   "timeout_ms": 30000,
   "request_max_bytes": 65536,
-  "allowed_extra_headers": ["accept", "user-agent", "x-github-api-version"],
+  "allowed_extra_headers": [],
   "response_max_bytes": 262144,
   "allowed_response_headers": ["content-type"]
 }
@@ -129,9 +146,6 @@ EOF
 
 execute_json="$(printf '%s\n' "$cap" | "$REKEY" --state-dir "$STATE" execute "$action_ref" --capability - \
   --content-type application/json \
-  --header "accept: application/vnd.github+json" \
-  --header "user-agent: rekey-dogfood/0.1" \
-  --header "x-github-api-version: 2022-11-28" \
   --body-file "$body")"
 printf '%s\n' "$execute_json"
 upstream_status="$(printf '%s\n' "$execute_json" | json_first_field '"upstream_status"')"

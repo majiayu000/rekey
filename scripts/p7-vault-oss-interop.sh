@@ -516,7 +516,7 @@ PRINCIPAL_ID="$(printf '%s\n' "$SESSION_JSON" | json_field principal_id)"
 CAPABILITY="$(printf '%s\n' "$SESSION_JSON" | json_field capability_token)"
 activate_policy "$PRINCIPAL_ID" 1
 
-"$REKEY" --state-dir "$STATE" execute "$ACTION_REF" --capability "$CAPABILITY" \
+printf '%s\n' "$CAPABILITY" | "$REKEY" --state-dir "$STATE" execute "$ACTION_REF" --capability - \
   --body-file "$REQUEST_BODY" --content-type application/json >"$WORKDIR/kv-v1.out"
 grep -q '"result":"p7oss-ok"' "$WORKDIR/kv-v1.out"
 [[ "$(grep -c '^p7oss.action.ok$' "$TRACE")" == "1" ]]
@@ -524,28 +524,28 @@ grep -q '"result":"p7oss-ok"' "$WORKDIR/kv-v1.out"
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" credential rotate-vault-kv \
   "$CREDENTIAL_ID" --file "$PROFILE_KV_BAD_VERSION" --password-stdin >/dev/null
 WRONG_RC=0
-"$REKEY" --state-dir "$STATE" execute "$ACTION_REF" --capability "$CAPABILITY" \
+printf '%s\n' "$CAPABILITY" | "$REKEY" --state-dir "$STATE" execute "$ACTION_REF" --capability - \
   --body-file "$REQUEST_BODY" --content-type application/json >/dev/null 2>"$WORKDIR/wrong.err" || WRONG_RC=$?
 [[ "$WRONG_RC" != "0" && "$(grep -c '^p7oss.action.ok$' "$TRACE")" == "1" ]]
 
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" credential rotate-vault-kv \
   "$CREDENTIAL_ID" --file "$PROFILE_KV_MISSING" --password-stdin >/dev/null
 MISSING_RC=0
-"$REKEY" --state-dir "$STATE" execute "$ACTION_REF" --capability "$CAPABILITY" \
+printf '%s\n' "$CAPABILITY" | "$REKEY" --state-dir "$STATE" execute "$ACTION_REF" --capability - \
   --body-file "$REQUEST_BODY" --content-type application/json >/dev/null 2>"$WORKDIR/missing.err" || MISSING_RC=$?
 [[ "$MISSING_RC" != "0" && "$(grep -c '^p7oss.action.ok$' "$TRACE")" == "1" ]]
 
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" credential rotate-vault-kv \
   "$CREDENTIAL_ID" --file "$PROFILE_KV_BAD_TOKEN" --password-stdin >/dev/null
 BAD_RC=0
-"$REKEY" --state-dir "$STATE" execute "$ACTION_REF" --capability "$CAPABILITY" \
+printf '%s\n' "$CAPABILITY" | "$REKEY" --state-dir "$STATE" execute "$ACTION_REF" --capability - \
   --body-file "$REQUEST_BODY" --content-type application/json >/dev/null 2>"$WORKDIR/bad-token.err" || BAD_RC=$?
 [[ "$BAD_RC" != "0" && "$(grep -c '^p7oss.action.ok$' "$TRACE")" == "1" ]]
 
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" credential rotate-vault-kv \
   "$CREDENTIAL_ID" --file "$PROFILE_KV_TWO" --password-stdin >/dev/null
 printf '%s\n' "$RESOLVED_TWO" >"$EXPECTED"
-"$REKEY" --state-dir "$STATE" execute "$ACTION_REF" --capability "$CAPABILITY" \
+printf '%s\n' "$CAPABILITY" | "$REKEY" --state-dir "$STATE" execute "$ACTION_REF" --capability - \
   --body-file "$REQUEST_BODY" --content-type application/json >"$WORKDIR/kv-v2.out"
 grep -q '"result":"p7oss-ok"' "$WORKDIR/kv-v2.out"
 [[ "$(grep -c '^p7oss.action.ok$' "$TRACE")" == "2" ]]
@@ -586,7 +586,7 @@ PRINCIPAL_ID="$(printf '%s\n' "$SESSION_JSON" | json_field principal_id)"
 CAPABILITY="$(printf '%s\n' "$SESSION_JSON" | json_field capability_token)"
 activate_policy "$PRINCIPAL_ID" 2
 
-"$REKEY" --state-dir "$STATE" execute "$ACTION_REF" --capability "$CAPABILITY" \
+printf '%s\n' "$CAPABILITY" | "$REKEY" --state-dir "$STATE" execute "$ACTION_REF" --capability - \
   --body-file "$REQUEST_BODY" --content-type application/json >"$WORKDIR/dyn-ok.out"
 grep -q '"result":"p7oss-ok"' "$WORKDIR/dyn-ok.out"
 [[ "$(execute_meta_status "$WORKDIR/dyn-ok.out")" == "200" ]]
@@ -597,7 +597,7 @@ leases_empty
 printf '%s\n' "wrong-expected-bearer" >"$EXPECTED"
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" credential rotate-vault-dynamic \
   "$DYN_ID" --file "$PROFILE_DYN" --password-stdin >/dev/null
-"$REKEY" --state-dir "$STATE" execute "$ACTION_REF" --capability "$CAPABILITY" \
+printf '%s\n' "$CAPABILITY" | "$REKEY" --state-dir "$STATE" execute "$ACTION_REF" --capability - \
   --body-file "$REQUEST_BODY" --content-type application/json \
   >"$WORKDIR/dyn-fail.out" 2>"$WORKDIR/dyn-fail.err"
 [[ "$(execute_meta_status "$WORKDIR/dyn-fail.out")" == "400" ]]
@@ -615,7 +615,7 @@ BAD_DYN_RC=0
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" credential rotate-vault-dynamic \
   "$DYN_ID" --file "$PROFILE_DYN_BAD" --password-stdin >/dev/null
 printf '%s\n' "*" >"$EXPECTED"
-"$REKEY" --state-dir "$STATE" execute "$ACTION_REF" --capability "$CAPABILITY" \
+printf '%s\n' "$CAPABILITY" | "$REKEY" --state-dir "$STATE" execute "$ACTION_REF" --capability - \
   --body-file "$REQUEST_BODY" --content-type application/json >/dev/null 2>"$WORKDIR/dyn-bad.err" || BAD_DYN_RC=$?
 [[ "$BAD_DYN_RC" != "0" ]]
 [[ "$(grep -c '^p7oss.vault.revoke.ok$' "$TRACE")" == "2" ]]
