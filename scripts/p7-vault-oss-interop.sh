@@ -275,12 +275,21 @@ setup_kv() {
 start_postgres() {
   local port=$1
   PG_CONTAINER="rekey-p7oss-pg-$$"
+  # Keep the bootstrap password out of docker argv; use a private env file.
+  umask 077
+  {
+    printf 'POSTGRES_USER=vault\n'
+    printf 'POSTGRES_PASSWORD='
+    # shellcheck disable=SC2059
+    printf '%s' "$PG_PASSWORD"
+    printf '\nPOSTGRES_DB=postgres\n'
+  } >"$WORKDIR/pg.env"
+  chmod 0600 "$WORKDIR/pg.env"
   docker run -d --name "$PG_CONTAINER" \
-    -e POSTGRES_USER=vault \
-    -e POSTGRES_PASSWORD="$PG_PASSWORD" \
-    -e POSTGRES_DB=postgres \
+    --env-file "$WORKDIR/pg.env" \
     -p "127.0.0.1:${port}:5432" \
     postgres:16-alpine >/dev/null
+  rm -f "$WORKDIR/pg.env"
   for _ in $(seq 1 60); do
     if docker exec "$PG_CONTAINER" pg_isready -U vault >/dev/null 2>&1; then
       return 0
@@ -294,12 +303,24 @@ start_postgres() {
 setup_database_engine() {
   local pg_port=$1
   vault_cli secrets enable database >/dev/null
-  vault_cli write database/config/rekey \
-    plugin_name=postgresql-database-plugin \
-    allowed_roles=agent-api-token \
-    connection_url="postgresql://{{username}}:{{password}}@127.0.0.1:${pg_port}/postgres?sslmode=disable" \
-    username="vault" \
-    password="$PG_PASSWORD" >/dev/null
+  printf '%s' "$PG_PASSWORD" >"$WORKDIR/pg-password"
+  chmod 0600 "$WORKDIR/pg-password"
+  python3 - "$WORKDIR/db-config.json" "$pg_port" "$WORKDIR/pg-password" <<'PY'
+import json, pathlib, sys
+path, port, password_path = sys.argv[1:]
+password = pathlib.Path(password_path).read_text()
+dest = pathlib.Path(path)
+dest.write_text(json.dumps({
+    "plugin_name": "postgresql-database-plugin",
+    "allowed_roles": "agent-api-token",
+    "connection_url": f"postgresql://{{{{username}}}}:{{{{password}}}}@127.0.0.1:{port}/postgres?sslmode=disable",
+    "username": "vault",
+    "password": password,
+}))
+dest.chmod(0o600)
+PY
+  vault_cli write database/config/rekey @"$WORKDIR/db-config.json" >/dev/null
+  rm -f "$WORKDIR/db-config.json" "$WORKDIR/pg-password"
   python3 - "$WORKDIR/db-role.json" <<'PY'
 import json, pathlib, sys
 pathlib.Path(sys.argv[1]).write_text(json.dumps({
@@ -440,11 +461,15 @@ def kv(version, key="token", path="agents/github", vault_token=None):
     return {"credential_type":"vault-kv-v2-source-v1","origin":"https://vault.test.local",
             "mount":"secret","path":path,"key":key,"version":int(version),
             "vault_token":vault_token or token}
-pathlib.Path(one).write_text(json.dumps(kv(7)))
-pathlib.Path(two).write_text(json.dumps(kv(8)))
-pathlib.Path(missing).write_text(json.dumps(kv(1, path="agents/missing")))
-pathlib.Path(bad_ver).write_text(json.dumps(kv(99)))
-pathlib.Path(bad_token).write_text(json.dumps(kv(7, vault_token=revoked)))
+def write_private(path, payload):
+    dest = pathlib.Path(path)
+    dest.write_text(json.dumps(payload))
+    dest.chmod(0o600)
+write_private(one, kv(7))
+write_private(two, kv(8))
+write_private(missing, kv(1, path="agents/missing"))
+write_private(bad_ver, kv(99))
+write_private(bad_token, kv(7, vault_token=revoked))
 PY
 python3 - "$PROFILE_DYN" "$PROFILE_DYN_BAD" \
   "$WORKDIR/.vault-token" "$WORKDIR/revoked-dyn-token" <<'PY'
@@ -455,8 +480,12 @@ revoked = pathlib.Path(revoked_path).read_text().strip()
 def dyn(vault_token):
     return {"credential_type":"vault-dynamic-source-v1","origin":"https://vault.test.local",
             "mount":"database","role":"agent-api-token","key":"password","vault_token":vault_token}
-pathlib.Path(one).write_text(json.dumps(dyn(token)))
-pathlib.Path(bad).write_text(json.dumps(dyn(revoked)))
+def write_private(path, payload):
+    dest = pathlib.Path(path)
+    dest.write_text(json.dumps(payload))
+    dest.chmod(0o600)
+write_private(one, dyn(token))
+write_private(bad, dyn(revoked))
 PY
 printf '%s' '{"operation":"bounded"}' >"$REQUEST_BODY"
 

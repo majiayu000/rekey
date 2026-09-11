@@ -4,6 +4,7 @@
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -37,7 +38,7 @@ class BackupSyncTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             entry = root / 'backup-test'
-            entry.mkdir()
+            entry.mkdir(mode=0o700)
             (entry / 'snapshot.rkbackup').write_bytes(b'corrupted')
             (entry / 'receipt.json').write_text(json.dumps({'sha256_hex': '0' * 64}))
             with patch.object(MODULE, 'run') as network:
@@ -48,15 +49,17 @@ class BackupSyncTests(unittest.TestCase):
     def test_missing_receipt_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / 'incomplete').mkdir()
+            (root / 'incomplete').mkdir(mode=0o700)
             with self.assertRaises(FileNotFoundError):
                 MODULE.sync(SimpleNamespace(outbox=root))
 
     def test_remote_rejects_hash_mismatch_and_preserves_completed_copy(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            # Remote prepare validates the backup root as a private directory.
+            os.chmod(root, 0o700)
             target = root / 'backup-test'
-            target.mkdir()
+            target.mkdir(mode=0o700)
             artifact = b'encrypted test fixture'
             (target / 'snapshot.rkbackup').write_bytes(artifact)
             receipt = {'sha256_hex': hashlib.sha256(artifact).hexdigest()}
@@ -64,7 +67,7 @@ class BackupSyncTests(unittest.TestCase):
             args = ['/usr/bin/python3', '-c', MODULE.REMOTE, 'prepare', tmp,
                     target.name, json.dumps(receipt), '.upload-test']
             ok = subprocess.run(args, capture_output=True)
-            self.assertEqual(ok.returncode, 0)
+            self.assertEqual(ok.returncode, 0, ok.stderr)
             self.assertEqual(ok.stdout.strip(), b'VERIFIED')
             args[-2] = json.dumps({'sha256_hex': '0' * 64})
             failed = subprocess.run(args, capture_output=True)

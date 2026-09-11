@@ -112,7 +112,8 @@ def prepare(args):
             "origin": "https://api.github.com", "method": "POST",
             "exact_path": f"/repos/{args.repo}/issues", "auth_header": "authorization",
             "auth_prefix": "Bearer ", "timeout_ms": 30000, "request_max_bytes": 65536,
-            "allowed_extra_headers": ["accept", "user-agent", "x-github-api-version"],
+            # GitHub App connector rejects nonempty extra_headers on execute.
+            "allowed_extra_headers": [],
             "response_max_bytes": 262144, "allowed_response_headers": ["content-type"],
         }
         write_new(args.output / "action.json", definition)
@@ -133,8 +134,8 @@ def prepare(args):
         "rekey": str(args.rekey.resolve()),
         "agent_socket": str(args.state_dir.resolve() / "runtime" / "agent.sock"),
         "action": action_ref,
-        "headers": (["accept: application/vnd.github+json", "user-agent: rekey-agent-quickstart",
-                     "x-github-api-version: 2022-11-28"] if args.repo else []),
+        # Empty for GitHub App prepare --repo; the closed connector forbids extra_headers.
+        "headers": [],
     })
     print(f"Prepared {action_ref}. Session expires in 15 minutes; maximum 10 uses.")
     print(f"Review and externally sign {args.output / 'policy-draft.json'}.")

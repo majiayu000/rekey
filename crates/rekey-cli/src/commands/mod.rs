@@ -2,7 +2,6 @@
 //! for automation, explicit stdin flags — never argv or environment.
 
 use std::io::{Read, Write};
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -121,7 +120,7 @@ fn prompt_secret(prompt: &str) -> Result<Zeroizing<Vec<u8>>, CliError> {
     Ok(Zeroizing::new(value.as_bytes().to_vec()))
 }
 
-fn read_bounded(
+pub(super) fn read_bounded(
     reader: impl Read,
     limit: usize,
     label: &'static str,
@@ -157,28 +156,6 @@ fn read_regular_file_bounded(
     }
     let file = std::fs::File::open(path)
         .map_err(|err| CliError::local("USAGE", format!("cannot open {label}: {err}")))?;
-    read_bounded(file, limit, label)
-}
-
-fn read_regular_file_bounded_nofollow(
-    path: &Path,
-    limit: usize,
-    label: &'static str,
-) -> Result<Zeroizing<Vec<u8>>, CliError> {
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)
-        .map_err(|err| CliError::local("USAGE", format!("cannot open {label}: {err}")))?;
-    let metadata = file
-        .metadata()
-        .map_err(|err| CliError::local("USAGE", format!("cannot inspect {label}: {err}")))?;
-    if !metadata.is_file() {
-        return Err(CliError::local(
-            "USAGE",
-            format!("{label} must be a regular non-symlink file"),
-        ));
-    }
     read_bounded(file, limit, label)
 }
 

@@ -75,10 +75,16 @@ def export(args):
 
 
 # Source is fixed; all variable values are positional arguments, shell quoted.
-REMOTE = '''import hashlib,json,os,sys
+REMOTE = '''import hashlib,json,os,stat,sys
 from pathlib import Path
 mode,base,name,expected,stage=sys.argv[1:]
 root=Path(base); target=root/name
+def require_private_dir(path, label):
+ info=path.lstat()
+ if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+  raise ValueError(label+' must be a non-symlink directory')
+ if info.st_uid!=os.getuid() or info.st_mode&0o077:
+  raise ValueError(label+' must be a current-user-owned 0700 directory')
 def verify(p):
  r=json.loads((p/'receipt.json').read_text())
  h=hashlib.sha256()
@@ -88,10 +94,12 @@ def verify(p):
   raise ValueError('remote receipt or digest mismatch')
 os.umask(0o077)
 if mode=='prepare':
- root.mkdir(parents=True,exist_ok=True)
+ if root.exists():require_private_dir(root,'remote-dir')
+ else:root.mkdir(parents=True,mode=0o700);require_private_dir(root,'remote-dir')
  if target.exists():verify(target);print('VERIFIED')
  else:(root/stage).mkdir(mode=0o700);print('UPLOAD')
 else:
+ require_private_dir(root,'remote-dir')
  verify(root/stage)
  if target.exists():raise FileExistsError('completed backup already exists')
  (root/stage).rename(target)

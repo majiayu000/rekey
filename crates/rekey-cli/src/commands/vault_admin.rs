@@ -8,9 +8,7 @@ use rekey_domain::ipc::{self, admin_msg};
 use serde::Deserialize;
 use zeroize::Zeroizing;
 
-use super::{
-    CliError, admin, print_json, proof_kind, read_regular_file_bounded_nofollow, read_step_up,
-};
+use super::{CliError, admin, print_json, proof_kind, read_bounded, read_step_up};
 
 #[derive(Deserialize)]
 struct VaultProfileMarker<'a> {
@@ -204,9 +202,9 @@ fn vault_profile_file(
             ),
         ));
     }
-    drop(opened);
-    let profile = read_regular_file_bounded_nofollow(
-        file,
+    // Read from the same descriptor that passed ownership/mode checks (no path re-open).
+    let profile = read_bounded(
+        opened,
         ipc::ADMIN_SECRET_FIELD_MAX_BYTES as usize,
         profile_label,
     )?;
