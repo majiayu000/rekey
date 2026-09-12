@@ -385,15 +385,17 @@ if rg -q 'debug_hex|50322d494e5354414c4c4154494f4e2d544f4b454e2d43414e415259' \
   exit 1
 fi
 
-expect_failure bad-scope 6
-expect_failure malformed-scope 6
-expect_failure exchange-error 6
-expect_failure exchange-status-token 6
-expect_failure trailing-token 6
-expect_failure duplicate-token 6
-expect_failure resource-error 6
-expect_failure wrong-repository 6
-expect_failure revoke-error 6
+# Exchange/post-effect uncertainty surfaces UPSTREAM_INDETERMINATE (CLI exit 8):
+# tokens may already exist remotely, so Agents must not auto-retry (P-06 §7).
+expect_failure bad-scope 8
+expect_failure malformed-scope 8
+expect_failure exchange-error 8
+expect_failure exchange-status-token 8
+expect_failure trailing-token 8
+expect_failure duplicate-token 8
+expect_failure resource-error 8
+expect_failure wrong-repository 8
+expect_failure revoke-error 8
 printf '%s\n' reflect-token >"$MODE"
 "$REKEY" --state-dir "$STATE" execute "$ACTION_REF" --capability "$CAPABILITY" \
   >"$WORKDIR/reflect-token.out" 2>"$WORKDIR/reflect-token.err"
@@ -403,7 +405,7 @@ if rg -q "$TOKEN_CANARY" "$WORKDIR/reflect-token.out"; then
   exit 1
 fi
 DEADLINE_STARTED="$(python3 -c 'import time; print(time.monotonic())')"
-expect_failure deadline-resource 6
+expect_failure deadline-resource 8
 DEADLINE_ELAPSED="$(python3 - "$DEADLINE_STARTED" <<'PY'
 import sys, time
 print(time.monotonic() - float(sys.argv[1]))
