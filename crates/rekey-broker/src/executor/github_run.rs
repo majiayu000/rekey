@@ -92,7 +92,10 @@ impl ActionExecutor {
                     .blocked_until(effect_deadline, error.reason())
                     .await?;
             }
-            return Err(BrokerError::Upstream(error.reason()));
+            return Err(github_without_token_error(
+                error.reason(),
+                remote_effect_possible,
+            ));
         };
         let mut needles = prepared.needles;
         for source in sealing_sources {
@@ -133,7 +136,7 @@ impl ActionExecutor {
             started
                 .indeterminate_until(effect_deadline, err.reason())
                 .await?;
-            return Err(github_post_effect_error(github_action, err.reason()));
+            return Err(github_post_effect_error(err.reason()));
         }
 
         let mut response = match resource {
@@ -142,7 +145,7 @@ impl ActionExecutor {
                 started
                     .indeterminate_until(effect_deadline, err.reason())
                     .await?;
-                return Err(github_post_effect_error(github_action, err.reason()));
+                return Err(github_post_effect_error(err.reason()));
             }
         };
         if contains_secret(&response.body, &needles)
@@ -177,16 +180,21 @@ impl ActionExecutor {
     }
 }
 
-pub(super) fn github_post_effect_error(
-    action: crate::github_profile::GitHubAction,
+/// Exchange / transport uncertainty with no captured token: never invite retry
+/// when the request may already have reached GitHub (P-06 §7).
+pub(super) fn github_without_token_error(
     reason: &'static str,
+    remote_effect_possible: bool,
 ) -> BrokerError {
-    if matches!(
-        action,
-        crate::github_profile::GitHubAction::CreateIssue { .. }
-    ) {
+    if remote_effect_possible {
         BrokerError::Indeterminate(reason)
     } else {
         BrokerError::Upstream(reason)
     }
+}
+
+/// After remote effect has started, failures must not invite a full Execute
+/// retry that would mint another installation token (P-06 §7).
+pub(super) fn github_post_effect_error(reason: &'static str) -> BrokerError {
+    BrokerError::Indeterminate(reason)
 }

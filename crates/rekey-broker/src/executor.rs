@@ -34,7 +34,7 @@ mod approval;
 mod deadline;
 mod github_run;
 #[cfg(test)]
-use github_run::github_post_effect_error;
+use github_run::{github_post_effect_error, github_without_token_error};
 mod http;
 mod sealing;
 pub(crate) mod vault_dynamic;

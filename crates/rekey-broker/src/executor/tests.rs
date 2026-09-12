@@ -234,22 +234,25 @@ fn post_response_failures_are_indeterminate() {
 }
 
 #[test]
+fn github_uncertain_exchange_without_token_does_not_invite_retry() {
+    let uncertain = github_without_token_error("exchange-timeout", true);
+    assert_eq!(uncertain.code(), "UPSTREAM_INDETERMINATE");
+    assert!(!uncertain.retryable());
+
+    let definite = github_without_token_error("exchange-denied", false);
+    assert_eq!(definite.code(), "UPSTREAM_FAILED");
+    assert!(definite.retryable());
+}
+
+#[test]
 fn github_write_post_effect_failures_do_not_invite_retry() {
-    let write = github_post_effect_error(
-        crate::github_profile::GitHubAction::CreateIssue {
-            repository_index: 0,
-        },
-        "resource-transport",
-    );
+    let write = github_post_effect_error("resource-transport");
     assert_eq!(write.code(), "UPSTREAM_INDETERMINATE");
     assert!(!write.retryable());
 
-    let read = github_post_effect_error(
-        crate::github_profile::GitHubAction::ListRepositories,
-        "resource-transport",
-    );
-    assert_eq!(read.code(), "UPSTREAM_FAILED");
-    assert!(read.retryable());
+    let read = github_post_effect_error("resource-transport");
+    assert_eq!(read.code(), "UPSTREAM_INDETERMINATE");
+    assert!(!read.retryable());
 }
 
 #[tokio::test]
