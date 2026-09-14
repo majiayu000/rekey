@@ -159,3 +159,9 @@ the inbox. Session unit tests and Broker approval contracts cover list, get,
 unknown id, expiry, overflow, and post-execute removal. This is not a GUI,
 push notification, hosted inbox, or Agent-callable sign socket. Human review
 is required before merge.
+
+## Native macOS Admin UI (2026-09-14, source only)
+
+| Feature | State | Release | Limits and evidence |
+| --- | --- | --- | --- |
+| Chinese SwiftUI Admin client | Black-box Verified | — | Local macOS build and observed native credential list/detail/search, protected forms, Action/policy/approval/audit navigation. `scripts/test-macos-ui.swift` exercises the same CLI bridge against a disposable real vault: init, wrong-proof and locked denial, credential lifecycle, Actions, capability lifecycle, policy/approval reads, backup/restore/audit export, stdin-only proof, filtered environment, new-only 0600 results and malformed responses. UI submit paths are not all individually covered by native automation. No independent human audit, notarization, release packaging, remote service, secret reveal or signing-key custody. See `docs/superpowers/specs/2026-09-14-native-admin-ui.md`. |

@@ -142,6 +142,15 @@ jobs:
           }
           scripts/p1-service-manager.sh
 
+      - name: Native macOS Admin UI contracts
+        if: runner.os == 'macOS'
+        run: |
+          scripts/build-macos-ui.sh
+          xcrun swiftc -warnings-as-errors -swift-version 5 -O \
+            -framework SwiftUI -framework AppKit \
+            apps/macos/Model.swift scripts/test-macos-ui.swift -o /tmp/rekey-ui-contract
+          /tmp/rekey-ui-contract target/macos-ui/Rekey.app/Contents/Resources/bin/rekey
+
   g2-linux:
     name: Linux container G2 reference boundary
     runs-on: ubuntu-latest
