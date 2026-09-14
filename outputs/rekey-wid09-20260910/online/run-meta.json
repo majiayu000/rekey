@@ -1,0 +1,78 @@
+{
+  "conclusion": "success",
+  "databaseId": 34459644320,
+  "headSha": "18f0fd447adad32eceb1ee1885fcafd2d5e0c6a1",
+  "jobs": [
+    {
+      "completedAt": "2026-09-10T09:28:34Z",
+      "conclusion": "success",
+      "databaseId": 102814148077,
+      "name": "acceptance",
+      "startedAt": "2026-09-10T09:15:38Z",
+      "status": "completed",
+      "steps": [
+        {
+          "completedAt": "2026-09-10T09:15:40Z",
+          "conclusion": "success",
+          "name": "Set up job",
+          "number": 1,
+          "startedAt": "2026-09-10T09:15:39Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-10T09:15:41Z",
+          "conclusion": "success",
+          "name": "Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+          "number": 2,
+          "startedAt": "2026-09-10T09:15:40Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-10T09:23:29Z",
+          "conclusion": "success",
+          "name": "Build source with fixed online GitHub JWKS",
+          "number": 3,
+          "startedAt": "2026-09-10T09:15:41Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-10T09:28:31Z",
+          "conclusion": "success",
+          "name": "Real issuer and expired JWT acceptance",
+          "number": 4,
+          "startedAt": "2026-09-10T09:23:29Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-10T09:28:32Z",
+          "conclusion": "success",
+          "name": "Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+          "number": 5,
+          "startedAt": "2026-09-10T09:28:31Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-10T09:28:32Z",
+          "conclusion": "success",
+          "name": "Post Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+          "number": 10,
+          "startedAt": "2026-09-10T09:28:32Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-09-10T09:28:33Z",
+          "conclusion": "success",
+          "name": "Complete job",
+          "number": 11,
+          "startedAt": "2026-09-10T09:28:32Z",
+          "status": "completed"
+        }
+      ],
+      "url": "https://github.com/majiayu000/rekey-wid10-20260910-1789030338/actions/runs/34459644320/job/102814148077"
+    }
+  ],
+  "startedAt": "2026-09-10T09:15:34Z",
+  "status": "completed",
+  "updatedAt": "2026-09-10T09:28:35Z",
+  "url": "https://github.com/majiayu000/rekey-wid10-20260910-1789030338/actions/runs/34459644320"
+}

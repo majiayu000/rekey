@@ -154,8 +154,8 @@ async fn dispatch(
                 body: frame.body.to_vec(),
                 approval_grants: Vec::new(),
             };
-            let challenge = ctx.executor.prepare_approval(request).await?;
-            let metadata = serde_json::to_vec(&challenge)
+            let envelope = ctx.executor.prepare_approval(request).await?;
+            let metadata = serde_json::to_vec(&envelope)
                 .map_err(|_| BrokerError::Frame(rekey_domain::ipc::FrameError::InvalidField))?;
             Ok((metadata, Vec::new()))
         }

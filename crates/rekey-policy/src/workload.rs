@@ -14,6 +14,9 @@ use zeroize::{Zeroize, Zeroizing};
 
 use crate::{PolicyError, PolicyRule, RuleEffect, parse_unique_json};
 
+pub const GITHUB_ACTIONS_ISSUER: &str = "https://token.actions.githubusercontent.com";
+pub const GITHUB_JWKS_MAX_BYTES: usize = 64 * 1024;
+
 const MAX_IDENTITIES: usize = 64;
 const MAX_KEYS: usize = 8;
 const MAX_AUDIENCES: usize = 8;
@@ -31,6 +34,59 @@ pub struct WorkloadIdentity {
     pub max_token_age_ms: i64,
     pub profile: WorkloadProfile,
     pub keys: Vec<WorkloadVerificationKey>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub online_key_source: Option<OnlineKeySource>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OnlineKeySource {
+    #[serde(rename = "github-actions-jwks")]
+    GithubActionsJwks,
+}
+
+/// Transient public keys; never inserted into a signed policy snapshot.
+#[derive(Debug)]
+pub struct GithubActionsJwks {
+    keys: BTreeMap<String, VerificationKey>,
+}
+
+impl GithubActionsJwks {
+    pub fn parse(bytes: &[u8]) -> Result<Self, PolicyError> {
+        if bytes.len() > GITHUB_JWKS_MAX_BYTES {
+            return Err(PolicyError::Invalid);
+        }
+        let document = parse_unique_json(bytes)?;
+        let keys = document
+            .get("keys")
+            .and_then(Value::as_array)
+            .filter(|keys| !keys.is_empty() && keys.len() <= MAX_KEYS)
+            .ok_or(PolicyError::Invalid)?;
+        let mut compiled = BTreeMap::new();
+        for key in keys {
+            if key.get("kty").and_then(Value::as_str) != Some("RSA")
+                || key.get("alg").and_then(Value::as_str) != Some("RS256")
+                || key.get("use").and_then(Value::as_str) != Some("sig")
+            {
+                return Err(PolicyError::Invalid);
+            }
+            let text = |name: &str| {
+                key.get(name)
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .ok_or(PolicyError::Invalid)
+            };
+            let key = WorkloadVerificationKey::Rs256 {
+                kid: text("kid")?,
+                n: text("n")?,
+                e: text("e")?,
+            };
+            let (kid, _, material) = compile_key(&key)?;
+            if compiled.insert(kid.to_owned(), material).is_some() {
+                return Err(PolicyError::Invalid);
+            }
+        }
+        Ok(Self { keys: compiled })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,6 +141,7 @@ struct CompiledIdentity {
     audiences: Vec<String>,
     max_token_age_ms: i64,
     key_selectors: Vec<(String, Algorithm)>,
+    online_key_source: Option<OnlineKeySource>,
 }
 
 #[derive(Debug, Default)]
@@ -100,6 +157,8 @@ struct JwtHeader {
     kid: String,
     #[serde(default)]
     typ: Option<String>,
+    #[serde(default, rename = "x5t")]
+    _certificate_thumbprint: Option<String>,
 }
 
 struct Claims {
@@ -166,7 +225,11 @@ impl WorkloadCatalog {
             )) {
                 return Err(PolicyError::Invalid);
             }
-            if identity.keys.is_empty() || identity.keys.len() > MAX_KEYS {
+            if (identity.online_key_source.is_some()
+                && (!identity.keys.is_empty() || identity.issuer != GITHUB_ACTIONS_ISSUER))
+                || (identity.online_key_source.is_none() && identity.keys.is_empty())
+                || identity.keys.len() > MAX_KEYS
+            {
                 return Err(PolicyError::Invalid);
             }
             let mut local_kids = BTreeSet::new();
@@ -197,9 +260,38 @@ impl WorkloadCatalog {
                 audiences: identity.audiences.clone(),
                 max_token_age_ms: identity.max_token_age_ms,
                 key_selectors,
+                online_key_source: identity.online_key_source,
             });
         }
         Ok(catalog)
+    }
+
+    pub(crate) fn online_key_source(
+        &self,
+        token: &[u8],
+    ) -> Result<Option<OnlineKeySource>, PolicyError> {
+        if token.is_empty() || token.len() > MAX_TOKEN_BYTES || !token.is_ascii() {
+            return Err(PolicyError::Malformed);
+        }
+        let mut parts = token.split(|byte| *byte == b'.');
+        parts.next().ok_or(PolicyError::Malformed)?;
+        let claims = parts.next().ok_or(PolicyError::Malformed)?;
+        if parts.next().is_none() || parts.next().is_some() {
+            return Err(PolicyError::Malformed);
+        }
+        let bytes = Zeroizing::new(decode_segment(claims, MAX_TOKEN_BYTES)?);
+        let value = SensitiveJson(parse_unique_json(&bytes)?);
+        let claims = parse_claims(&value.0)?;
+        let identity = self
+            .identities
+            .iter()
+            .filter(|identity| {
+                identity.issuer == claims.issuer
+                    && identity.subject == claims.subject
+                    && identity.audiences == claims.audiences
+            })
+            .exactly_one()?;
+        Ok(identity.online_key_source)
     }
 
     pub(crate) fn verify(
@@ -207,6 +299,7 @@ impl WorkloadCatalog {
         token: &[u8],
         now: Timestamp,
         policy_digest: [u8; 32],
+        github_jwks: Option<&GithubActionsJwks>,
     ) -> Result<VerifiedWorkloadIdentity, PolicyError> {
         if token.is_empty() || token.len() > MAX_TOKEN_BYTES || !token.is_ascii() {
             return Err(PolicyError::Malformed);
@@ -234,6 +327,14 @@ impl WorkloadCatalog {
             Some(Value::String(value)) if matches!(value.as_str(), "JWT" | "at+jwt") => {}
             _ => return Err(PolicyError::InvalidSignature),
         }
+        match header_value.get("x5t") {
+            None => {}
+            Some(Value::String(thumbprint))
+                if header_value["alg"] == "RS256"
+                    && decode_segment(thumbprint.as_bytes(), 20)
+                        .is_ok_and(|bytes| bytes.len() == 20) => {}
+            _ => return Err(PolicyError::Malformed),
+        }
         let header: JwtHeader =
             serde_json::from_value(header_value).map_err(|_| PolicyError::Malformed)?;
         validate_text(&header.kid)?;
@@ -252,17 +353,31 @@ impl WorkloadCatalog {
 
         let claims_bytes = Zeroizing::new(decode_segment(claims_segment, MAX_TOKEN_BYTES)?);
         let claims_value = SensitiveJson(parse_unique_json(&claims_bytes)?);
-        let untrusted_issuer = string_claim(&claims_value.0, "iss")?;
-        let key = self
-            .keys
+        let claims = parse_claims(&claims_value.0)?;
+        let identity = self
+            .identities
             .iter()
-            .find_map(|((issuer, kid, candidate_algorithm), key)| {
-                (issuer == untrusted_issuer
-                    && kid == &header.kid
-                    && *candidate_algorithm == algorithm)
-                    .then_some(key)
+            .filter(|identity| {
+                identity.issuer == claims.issuer
+                    && identity.subject == claims.subject
+                    && identity.audiences == claims.audiences
             })
-            .ok_or(PolicyError::InvalidSignature)?;
+            .exactly_one()?;
+        let key = match identity.online_key_source {
+            Some(OnlineKeySource::GithubActionsJwks) if algorithm == Algorithm::Rs256 => {
+                github_jwks.and_then(|jwks| jwks.keys.get(&header.kid))
+            }
+            Some(_) => None,
+            None if identity
+                .key_selectors
+                .contains(&(header.kid.clone(), algorithm)) =>
+            {
+                self.keys
+                    .get(&(identity.issuer.clone(), header.kid.clone(), algorithm))
+            }
+            None => None,
+        }
+        .ok_or(PolicyError::InvalidSignature)?;
         let signing_input_len = header_segment
             .len()
             .checked_add(1)
@@ -274,22 +389,6 @@ impl WorkloadCatalog {
         let signature = Zeroizing::new(decode_segment(signature_segment, 512)?);
         verify_signature(key, signing_input, &signature)?;
 
-        let claims = parse_claims(&claims_value.0)?;
-        let identity = self
-            .identities
-            .iter()
-            .filter(|identity| {
-                identity.issuer == claims.issuer
-                    && identity.subject == claims.subject
-                    && identity.audiences == claims.audiences
-                    && identity
-                        .key_selectors
-                        .iter()
-                        .any(|(kid, candidate_algorithm)| {
-                            kid == &header.kid && *candidate_algorithm == algorithm
-                        })
-            })
-            .exactly_one()?;
         let now_ms = now.as_unix_ms();
         if claims.issued_at_ms > now_ms
             || claims.not_before_ms.is_some_and(|nbf| nbf > now_ms)

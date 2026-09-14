@@ -3,6 +3,30 @@
 All notable public changes are recorded here. Rekey uses semantic versioning
 for release identifiers, but prerelease compatibility is not guaranteed.
 
+## Unreleased
+
+### Added
+
+- Pinned Vault OSS KV v2 and dynamic-lease interoperability harness; separate
+  bounded public HTTPS receipts cover the recorded KV and dynamic profiles.
+- Source-only local MCP stdio server, external policy and approval signers,
+  protected Agent onboarding and operator credential repair helpers.
+- Fixed GitHub Actions online JWKS opt-in, fixed Keycloak token exchange,
+  and GitHub App issue-comment support.
+- Origin-authenticated approval envelopes and an Admin CLI pending/get inbox.
+
+### Changed
+
+- Development vault format is v10; older state and backups are rejected
+  without migration. Public alpha.2 remains v9.
+- GitHub exchange or post-effect uncertainty returns non-retryable
+  `UPSTREAM_INDETERMINATE`; write failures must not trigger automatic retries.
+- Hardened private profile/handoff files, JWKS admission bounds, MCP input
+  handling, and backup publication.
+
+This is an unpublished candidate. Archive scope and remaining release gates:
+[alpha.3 candidate](docs/releases/v2.0.0-alpha.3.md).
+
 ## 2.0.0-alpha.2 - 2026-09-08
 
 Schema v9 Alpha archive. Shape A HEAD cut: password/recovery wrapper lifecycle,

@@ -4,6 +4,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use rekey_domain::action::HeaderName;
+use rekey_domain::ids::ApprovalRequestId;
 use rekey_domain::ipc::{self, Channel, admin_msg, agent_msg};
 use zeroize::Zeroizing;
 
@@ -70,6 +71,43 @@ pub fn policy_status(state_dir: &Path) -> Result<(), CliError> {
     print_policy_status(&meta)
 }
 
+pub fn approval_origin(state_dir: &Path) -> Result<(), CliError> {
+    let (meta, _) = admin(state_dir)?.call(admin_msg::APPROVAL_ORIGIN, b"{}", &[])?;
+    let origin = serde_json::from_slice::<ipc::ApprovalOriginResponse>(&meta)
+        .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid response"))?;
+    origin
+        .validate()
+        .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid response"))?;
+    print_json::<ipc::ApprovalOriginResponse>(&meta)
+}
+
+pub fn approval_pending(state_dir: &Path) -> Result<(), CliError> {
+    let (meta, _) = admin(state_dir)?.call(admin_msg::APPROVAL_PENDING, b"{}", &[])?;
+    let pending = serde_json::from_slice::<ipc::ApprovalPendingResponse>(&meta)
+        .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid response"))?;
+    pending
+        .validate()
+        .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid response"))?;
+    print_json::<ipc::ApprovalPendingResponse>(&meta)
+}
+
+pub fn approval_get(state_dir: &Path, approval_request_id: &str) -> Result<(), CliError> {
+    let approval_request_id: ApprovalRequestId = approval_request_id
+        .parse()
+        .map_err(|_| CliError::local("USAGE", "invalid approval request id"))?;
+    let metadata = serde_json::to_vec(&ipc::ApprovalGetMeta {
+        approval_request_id,
+    })
+    .map_err(|_| CliError::local("USAGE", "cannot encode approval get request"))?;
+    let (meta, _) = admin(state_dir)?.call(admin_msg::APPROVAL_GET, &metadata, &[])?;
+    let envelope = serde_json::from_slice::<ipc::SignedApprovalChallenge>(&meta)
+        .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid response"))?;
+    envelope
+        .validate()
+        .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid response"))?;
+    print_json::<ipc::SignedApprovalChallenge>(&meta)
+}
+
 fn print_policy_status(metadata: &[u8]) -> Result<(), CliError> {
     let status = serde_json::from_slice::<ipc::PolicyStatusResponse>(metadata)
         .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid response"))?;
@@ -127,12 +165,12 @@ pub fn approval_prepare(
         ACTION_RESPONSE_TIMEOUT,
     )?
     .call(agent_msg::PREPARE_APPROVAL, &metadata, &body)?;
-    let challenge = serde_json::from_slice::<ipc::ApprovalChallenge>(&meta)
+    let envelope = serde_json::from_slice::<ipc::SignedApprovalChallenge>(&meta)
         .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid response"))?;
-    challenge
+    envelope
         .validate()
         .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid response"))?;
-    print_json::<ipc::ApprovalChallenge>(&meta)
+    print_json::<ipc::SignedApprovalChallenge>(&meta)
 }
 
 pub(super) fn capability_value(capability: &str) -> Result<String, CliError> {

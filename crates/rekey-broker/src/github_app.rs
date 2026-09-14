@@ -76,7 +76,10 @@ impl GitHubAppCredential {
                 .iter()
                 .map(|repository| repository.id)
                 .collect(),
-            GitHubAction::CreateIssue { repository_index } => {
+            GitHubAction::CreateIssue { repository_index }
+            | GitHubAction::CreateIssueComment {
+                repository_index, ..
+            } => {
                 vec![self.repositories[repository_index].id]
             }
         };
@@ -84,7 +87,7 @@ impl GitHubAppCredential {
             repository_ids,
             permissions: ExchangePermissions {
                 metadata: "read",
-                issues: matches!(action, GitHubAction::CreateIssue { .. }).then_some("write"),
+                issues: (!matches!(action, GitHubAction::ListRepositories)).then_some("write"),
             },
         })
         .map_err(|_| ExchangeFailure::without_token(GitHubError::InvalidCredential))?;
@@ -155,7 +158,10 @@ impl GitHubAppCredential {
                 .iter()
                 .map(|repository| repository.id)
                 .collect(),
-            GitHubAction::CreateIssue { repository_index } => {
+            GitHubAction::CreateIssue { repository_index }
+            | GitHubAction::CreateIssueComment {
+                repository_index, ..
+            } => {
                 vec![self.repositories[repository_index].id]
             }
         };
@@ -167,7 +173,7 @@ impl GitHubAppCredential {
         returned_ids.sort_unstable();
         let permissions_match = raw.permissions.metadata == "read"
             && raw.permissions.issues
-                == matches!(action, GitHubAction::CreateIssue { .. }).then_some("write");
+                == (!matches!(action, GitHubAction::ListRepositories)).then_some("write");
         if !permissions_match
             || raw.repository_selection != "selected"
             || returned_ids != expected_ids
@@ -201,6 +207,20 @@ impl GitHubAppCredential {
                     Some("application/json"),
                 )
             }
+            GitHubAction::CreateIssueComment {
+                repository_index,
+                issue_number,
+            } => {
+                let repository = &self.repositories[repository_index];
+                (
+                    FixedMethod::Post,
+                    format!(
+                        "/repos/{}/{}/issues/{issue_number}/comments",
+                        repository.owner, repository.name
+                    ),
+                    Some("application/json"),
+                )
+            }
         };
         let resource_request =
             ResourceRequest(method, path, content_type, request_body, response_max_bytes);
@@ -224,6 +244,10 @@ impl GitHubAppCredential {
             GitHubAction::CreateIssue { repository_index } => {
                 self.validate_created_issue(response, repository_index)
             }
+            GitHubAction::CreateIssueComment {
+                repository_index,
+                issue_number,
+            } => self.validate_created_comment(response, repository_index, issue_number),
         }
     }
 
@@ -293,6 +317,45 @@ impl GitHubAppCredential {
             html_url: issue.html_url,
         })
         .map_err(|_| GitHubError::ResourceScope)?;
+        Ok(json_response(201, body))
+    }
+
+    fn validate_created_comment(
+        &self,
+        response: UpstreamResponse,
+        repository_index: usize,
+        issue_number: u64,
+    ) -> Result<UpstreamResponse, GitHubError> {
+        #[derive(Deserialize)]
+        struct Comment {
+            id: u64,
+            issue_url: String,
+            html_url: String,
+        }
+        if response.status != 201 {
+            return Err(GitHubError::ResourceRejected);
+        }
+        let comment: Comment =
+            serde_json::from_slice(&response.body).map_err(|_| GitHubError::ResourceScope)?;
+        let repository = &self.repositories[repository_index];
+        let issue_path = format!(
+            "{}/{}/issues/{issue_number}",
+            repository.owner, repository.name
+        );
+        if comment.id == 0
+            || !comment
+                .issue_url
+                .eq_ignore_ascii_case(&format!("https://api.github.com/repos/{issue_path}"))
+            || !comment.html_url.eq_ignore_ascii_case(&format!(
+                "https://github.com/{issue_path}#issuecomment-{}",
+                comment.id
+            ))
+        {
+            return Err(GitHubError::ResourceScope);
+        }
+        let body =
+            serde_json::to_vec(&serde_json::json!({"id":comment.id,"html_url":comment.html_url}))
+                .map_err(|_| GitHubError::ResourceScope)?;
         Ok(json_response(201, body))
     }
 

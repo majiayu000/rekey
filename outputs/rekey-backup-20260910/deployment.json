@@ -1,0 +1,15 @@
+{
+  "state_directory": "/Users/lifcc/.rekey",
+  "state_initialized": false,
+  "outbox": "/Users/lifcc/.local/share/rekey-backups/outbox",
+  "host": "apple",
+  "remote_directory": "/Users/apple/Documents/rekey-backups",
+  "label": "io.github.majiayu000.rekey.backup-sync",
+  "start_interval_seconds": 3600,
+  "run_at_load": true,
+  "installed_script_sha256": "86d35671784c6920c7a3f379afb9489a60ec4b57d0b08ab806bcc993cdfacef3",
+  "source_script_matches_install": true,
+  "scheduled_drill_receipt": "scheduled-receipt.json",
+  "first_real_snapshot": "pending operator initialization and step-up",
+  "failure_evidence": "Documents TCC failure returned nonzero and stderr; resolved by using .local/share; focused tests cover missing receipt, bad hash and remote mismatch"
+}

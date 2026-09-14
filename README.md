@@ -6,11 +6,12 @@ credentials**. Secrets live in an encrypted SQLite vault owned by a single
 broker process; the CLI, agents, and everything they spawn talk to it only
 over two permission-separated Unix sockets.
 
-> Status: `2.0.0-alpha.2` is the current Alpha archive (vault schema v9,
-> Shape A). The tagged workflow publishes a prerelease before public-URL
-> smoke. Treat `v2.0.0-alpha.2` as the completed public download only after that
-> smoke succeeds; until then, `v2.0.0-alpha.1` remains the last completed public
-> download (schema v5). There is no in-place upgrade
+> Status: `2.0.0-alpha.2` is the latest completed public Alpha download
+> (vault schema v9, Shape A). [Release run 34329532708](https://github.com/majiayu000/rekey/actions/runs/34329532708)
+> passed macOS/Linux fresh installs, publication, and both public-URL smoke jobs.
+> Development source uses vault format v10 and includes additional unpublished
+> features; see [the next Alpha candidate](docs/releases/v2.0.0-alpha.3.md).
+> There is no in-place upgrade
 > from alpha.1. The default product is G1 and is not G2. Credentials never appear
 > in agent-facing APIs, process arguments, environment variables, logs, or audit
 > records. Same-user `ptrace`, process memory, and filesystem access are out of
@@ -60,6 +61,12 @@ admin.sock ──────► rekeyd broker ◄────── agent.sock
   secrets (raw, base64, base64url, percent-encoded) before the agent sees them.
 
 ## Quick start
+
+For the source-only guided Agent shell flow (fixed GitHub Action, protected
+session handoff, unsigned policy draft, and operator repair), see
+[First Agent shell integration](docs/user-guide.md#first-agent-shell-integration-source-checkout).
+It retains external signing and per-call step-up. Public Vault acceptance is
+documented in [Layer B acceptance](docs/user-guide.md#public-vault-layer-b-acceptance-operator-terminal).
 
 Download, checksum, and attest the supported GitHub Release archive by following
 [`docs/installation.md`](docs/installation.md). Then:
@@ -130,9 +137,11 @@ rekey session create --action <ACTION_ID>@1 --ttl 15m --max-uses 20 \
 The JWT is consumed once and replay denial persists across restart and any
 restore whose backup already contains the consumption record. A new-version
 policy activation revokes workload-minted sessions; an exact same-bundle retry
-preserves them. Rekey does
-not fetch JWKS, discover issuers, introspect tokens, or hold issuer private
-keys; see [`docs/user-guide.md`](docs/user-guide.md#create-a-workload-attested-session).
+preserves them. Released Alpha uses static public keys. The source-only
+[WID-09 extension](docs/superpowers/specs/2026-09-10-github-actions-jwks.md)
+allows signed opt-in to fresh fixed GitHub JWKS fetching per mint, without
+discovery, introspection or issuer private keys. See
+[`docs/user-guide.md`](docs/user-guide.md#create-a-workload-attested-session).
 
 For a `require-approval` rule, prepare the exact typed request, send the emitted
 challenge to an external approver, and execute with one or two returned grants:
@@ -150,8 +159,14 @@ printf '%s\n' "$CAPABILITY_FROM_SECURE_STORAGE" | \
 
 The grant is bound to the challenge, session, principal, exact Action/resource,
 canonical parameters, determining rule, policy version/digest, validity window,
-and use limit. Rekey provides no remote approval service, notification UI,
+and use limit. Rekey provides no hosted remote approval service, notification UI,
 human directory, private-key custody, or approval survival across lock/restart.
+Source trees additionally include `rekey-approval-sign` for a local operator's
+single-person one-time review of an origin-signed challenge envelope; pin
+`rekey approval origin` and pass `--origin-key`. Operators can list unused
+challenges with `rekey approval pending` and reprint an envelope with
+`rekey approval get`. See
+[`docs/user-guide.md`](docs/user-guide.md#local-independent-approval-endpoint).
 
 `action.json`:
 
@@ -176,12 +191,24 @@ human directory, private-key custody, or approval survival across lock/restart.
 
 This tree includes the IO-free `rekey-connector` crate. It is a source
 contract, not an announced product binary, MCP server, or live generic OAuth
-connector. Its versioned, compile-time registry describes the four existing built-ins:
+connector. Its versioned, compile-time registry describes the existing built-ins:
 `fixed-http-header@1` (`inject`) and `github-app-installation@1`
 (`sign → exchange → lease → revoke`), plus `vault-kv-v2-source@1`
 (`resolve → inject`) and `vault-dynamic-source@1`
-(`resolve → lease → inject → revoke`). Broker code still owns every credential, network effect,
+(`resolve → lease → inject → revoke`). The source-only
+[fixed Keycloak exchange](docs/superpowers/specs/2026-09-10-keycloak-token-exchange-oau02.md)
+adds `keycloak-token-exchange@1` for one configured audience and GET target.
+Broker code still owns every credential, network effect,
 deadline, audit event, response-sealing decision, and cleanup.
+
+The source-only [local MCP stdio server](docs/superpowers/specs/2026-09-10-local-mcp-stdio.md)
+reuses this projection and Agent IPC for explicitly configured Actions. Its
+operator manifest and capability file stay outside model tool arguments;
+Codex discovery and direct MCP invocation have separate acceptance evidence.
+
+This development source uses storage format 10. It rejects older state and
+backups without migration; published alpha.2 remains format 9. Keep historical
+backup compatibility claims tied to the binary that created/tested them.
 
 The SDK can project an object-shaped authorized Action schema into a stable MCP
 tool descriptor and can describe the public fields of an RFC 8693 OAuth token
@@ -206,8 +233,10 @@ rekey credential rotate-vault-kv CREDENTIAL_ID --file profile.json
 This is not general Vault support: there is no latest-version lookup, private
 Vault network exception, Vault auth flow, cloud secret/KMS,
 1Password, HSM, keychain, generic URL/JSONPath adapter, or new Agent secret API.
-The protocol is fixture-bounded in this archive; live Vault OSS
-interoperability is not claimed.
+The archive baseline is fixture-bounded. The current source tree additionally
+has [one public HTTPS Vault OSS KV v2 validation](docs/evidence/vault-kv-cloudflare-2026-09-10.json)
+through Cloudflare Tunnel; that receipt does not establish broader Vault support
+or public dynamic-lease validation.
 
 This archive also supports one closed one-shot Vault dynamic source. Each
 execution performs one `GET /v1/MOUNT/creds/ROLE`, uses one selected string in
@@ -270,11 +299,11 @@ egress launcher. It requires bubblewrap, a disjoint `--agent-socket`, and does
 not make macOS or general G2:
 `scripts/p9-linux-agent-run.sh`
 
-GitHub create-issue dogfood (opt-in, dedicated fine-grained token entered
-through a hidden TTY prompt; exits nonzero unless GitHub returns 201):
+GitHub create-issue dogfood (opt-in, GitHub App profile file; vault password
+stays on stdin only; exits nonzero unless GitHub returns 201):
 
 ```bash
-scripts/dogfood-github.sh --repo owner/name
+scripts/dogfood-github.sh --repo owner/name --github-app-profile /secure/path/profile.json
 ```
 
 ## License

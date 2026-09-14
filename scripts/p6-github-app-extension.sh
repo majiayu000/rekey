@@ -84,16 +84,20 @@ def payload(key, repositories):
         "webhook_secret": webhook,
         "private_key_pkcs1_der_base64": base64.b64encode(pathlib.Path(key).read_bytes()).decode(),
     }
+def write_private(path, text):
+    target = pathlib.Path(path)
+    target.write_text(text)
+    target.chmod(0o600)
 both = [
     {"id": 818181, "owner": "p6-owner", "name": "alpha"},
     {"id": 818182, "owner": "p6-owner", "name": "beta"},
 ]
-pathlib.Path(profile).write_text(json.dumps(payload(key_one, both)))
-pathlib.Path(key_rotation).write_text(json.dumps(payload(key_two, both[:1])))
-pathlib.Path(rotated).write_text(json.dumps(payload(key_one, both[:1])))
+write_private(profile, json.dumps(payload(key_one, both)))
+write_private(key_rotation, json.dumps(payload(key_two, both[:1])))
+write_private(rotated, json.dumps(payload(key_one, both[:1])))
 bad = payload(key_one, both)
 bad["repositories"].append({"id": 818181, "owner": "other", "name": "duplicate"})
-pathlib.Path(invalid).write_text(json.dumps(bad))
+write_private(invalid, json.dumps(bad))
 PY
 
 printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin >/dev/null
@@ -144,14 +148,25 @@ ISSUE_ID="$(printf '%s\n' "$ISSUE_JSON" | json_field id)"
 LIST_REF="$LIST_ID@1"
 ISSUE_REF="$ISSUE_ID@1"
 
+python3 - "$WORKDIR/issue-action.json" "$WORKDIR/comment-action.json" <<'PYCOMMENT'
+import json, pathlib, sys
+value=json.loads(pathlib.Path(sys.argv[1]).read_text())
+value.update(name="p6-comment", exact_path="/repos/p6-owner/beta/issues/7/comments")
+pathlib.Path(sys.argv[2]).write_text(json.dumps(value))
+PYCOMMENT
+COMMENT_JSON="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" action create \
+  --file "$WORKDIR/comment-action.json" --password-stdin)"
+COMMENT_ID="$(printf '%s\n' "$COMMENT_JSON" | json_field id)"
+COMMENT_REF="$COMMENT_ID@1"
+
 SESSION_JSON="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" session create \
-  --action "$LIST_REF" --action "$ISSUE_REF" --ttl 10m --max-uses 20 --password-stdin)"
+  --action "$LIST_REF" --action "$ISSUE_REF" --action "$COMMENT_REF" --ttl 10m --max-uses 20 --password-stdin)"
 PRINCIPAL_ID="$(printf '%s\n' "$SESSION_JSON" | json_field principal_id)"
 CAPABILITY="$(printf '%s\n' "$SESSION_JSON" | json_field capability_token)"
 
-python3 - "$WORKDIR/policy-snapshot.json" "$LIST_ID" "$ISSUE_ID" "$PRINCIPAL_ID" <<'PY'
+python3 - "$WORKDIR/policy-snapshot.json" "$LIST_ID" "$ISSUE_ID" "$PRINCIPAL_ID" "$COMMENT_ID" <<'PY'
 import json, pathlib, sys, time, uuid
-path, list_id, issue_id, principal = sys.argv[1:]
+path, list_id, issue_id, principal, comment_id = sys.argv[1:]
 bindings = [
   {"action_id":list_id,"version":1,"resource":{"type":"github-repositories","id":list_id},
    "parameter_schema_id":"github-list/v1","parameter_schema":{"type":"null"}},
@@ -159,6 +174,9 @@ bindings = [
    "parameter_schema_id":"github-issue/v1","parameter_schema":{"type":"object","additionalProperties":False,
     "required":["title"],"properties":{"title":{"type":"string"},"body":{"type":"string"}}}},
 ]
+bindings.append({"action_id":comment_id,"version":1,"resource":{"type":"github-issue-comment","id":comment_id},
+ "parameter_schema_id":"github-comment/v1","parameter_schema":{"type":"object","additionalProperties":False,
+ "required":["body"],"properties":{"body":{"type":"string"}}}})
 rules = [{"id":str(uuid.uuid4()),"effect":"permit","principal_id":principal,
           "action_id":b["action_id"],"version":1,"resource":b["resource"],
           "parameters":{"kind":"any_validated"}} for b in bindings]
@@ -199,6 +217,22 @@ printf '%s\n' p6-issue >"$MODE"
   --body-file "$ISSUE_BODY" --content-type application/json >"$WORKDIR/issue.out"
 grep -q 'https://github.com/p6-owner/beta/issues/7' "$WORKDIR/issue.out"
 [[ "$(grep -c '^issue.ok$' "$TRACE")" == "1" ]]
+
+printf '%s' '{"body":"P6 issue body canary"}' >"$WORKDIR/comment.json"
+printf '%s\n' p6-comment >"$MODE"
+printf '%s\n' "$CAPABILITY" | "$REKEY" --state-dir "$STATE" execute "$COMMENT_REF" --capability - \
+  --body-file "$WORKDIR/comment.json" --content-type application/json >"$WORKDIR/comment.out"
+python3 - "$WORKDIR/comment.out" "$TRACE" <<'PYCOMMENT'
+import json,sys
+text=open(sys.argv[1]).read(); decoder=json.JSONDecoder()
+meta,end=decoder.raw_decode(text); body=json.loads(text[end:])
+assert meta['upstream_status']==201
+assert body=={'id':929292,'html_url':'https://github.com/p6-owner/beta/issues/7#issuecomment-929292'}
+trace=open(sys.argv[2]).read().splitlines()
+assert trace.count('comment.ok')==1
+assert 'revoke.ok' in trace[trace.index('comment.ok')+1:]
+PYCOMMENT
+rm "$WORKDIR/comment.json"
 
 ROTATED_JSON="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" credential \
   rotate-github-app "$CREDENTIAL_ID" --file "$KEY_ROTATION_PROFILE" --password-stdin)"
@@ -264,6 +298,17 @@ printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" credential rotate-gith
 [[ "$INVALID_RC" == "2" && "$(credential_version "$CREDENTIAL_ID")" == "5" ]]
 
 "$REKEY" --state-dir "$STATE" audit export --output "$WORKDIR/audit.jsonl" >/dev/null
+python3 - "$WORKDIR/audit.jsonl" "$COMMENT_ID" <<'PYAUDIT'
+import json,sys
+rows=[json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+started=[row for row in rows if row.get('action_id')==sys.argv[2] and row.get('event_type')=='execution.started']
+assert len(started)==1
+rows=sorted([row for row in rows if row.get('request_id')==started[0]['request_id']], key=lambda row:row['sequence'])
+assert all(row['action_id']==sys.argv[2] for row in rows)
+assert [row['event_type'] for row in rows]==[
+ 'execution.started','connector.github.authorized','connector.github.token_revoked','execution.finished']
+assert all(row['outcome']=='success' for row in rows)
+PYAUDIT
 rm "$KEY_ONE" "$KEY_ONE_DER" "$KEY_TWO" "$KEY_TWO_DER" "$KEY_TWO_PUBLIC" "$PROFILE" \
   "$KEY_ROTATION_PROFILE" "$ROTATED_PROFILE" "$INVALID_PROFILE" "$PAYLOAD_ADD" \
   "$PAYLOAD_REMOVE" "$ISSUE_BODY"

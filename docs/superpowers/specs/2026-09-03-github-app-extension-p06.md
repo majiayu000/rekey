@@ -118,6 +118,35 @@ Broker-owned profiles.
   URL, and an HTTPS issue URL under `github.com/{owner}/{repo}/issues/`;
 - Agent output contains only canonical `id`, `number`, and `html_url`.
 
+### 5.3 GHA-12: create comment on one fixed issue
+
+Source extension contract, separate from prior release and live evidence.
+An Admin registers exact `POST /repos/{owner}/{repo}/issues/{number}/comments`.
+The issue number is a canonical positive u64 decimal embedded in the immutable
+Action path; Agent input cannot select another repository or issue. The profile
+must contain the repository and `issues=write`. Exchange uses only that repo
+and `metadata=read,issues=write`, as for create-issue. The request is a closed
+JSON object with only `body`, containing 1..=32768 UTF-8 bytes.
+
+GitHub returns 201. Require positive comment `id`, an `issue_url` matching the
+fixed issue, and an `html_url` matching that same issue plus
+`#issuecomment-{id}`. Only canonical `id` and `html_url` reach the Agent;
+provider body/user/other fields are discarded before existing secret sealing.
+A PR discussion may use this GitHub endpoint, but a `/pull/` response URL is
+outside this issue-only contract and fails closed after a possible remote write.
+The Admin must select an actual issue; this does not guarantee that a PR
+discussion receives no comment when an Admin supplies a PR number. No PR-review
+comment API.
+
+All write uncertainty is indeterminate and non-retryable. Reuse the existing
+exchange, revocation, sealing, deadline and audit lifecycle. Local verification
+must cover exact scope/body, wrong issue/host/id, extra fields, malformed issue
+numbers, non-retry on 429, response projection and revoke-before-success.
+Real comment publication requires a dedicated test issue; local tests alone
+do not extend existing GitHub field-validation claims.
+
+Reference: [GitHub create issue comment](https://docs.github.com/en/rest/issues/comments#create-an-issue-comment).
+
 Every profile mismatch is rejected after `execution.started` but before JWT
 signing or upstream IO. The existing absolute deadline and 500 ms cleanup
 reservation remain in force.
@@ -242,6 +271,49 @@ Existing mechanical secret/API and CLI dependency scans remain required. P-06
 closes only after exact-head CI, resolved findings, squash merge, and green
 post-main security, fuzz and performance workflows.
 
+## Field evidence: 2026-09-10
+
+`docs/evidence/github-app-rotation-write-2026-09-10.json` records a production
+release-binary run against `api.github.com`, invoked through the Agent CLI
+helper from the current Codex shell session. The temporary App was installed
+only on `majiayu000/rekey-ci-dogfood` with metadata read and issues write.
+Typed add, rotation between two real App keys to credential version 2, unchanged
+capability reads before/after rotation (200), create issue (201), and denied
+execution after credential revocation (exit 4) passed. Each successful request
+had the exact started/authorized/token-revoked/finished success audit chain.
+
+The initial write returned `UPSTREAM_INDETERMINATE` while the test repository
+had Issues disabled; no issue was observed. After explicitly enabling Issues,
+one new acceptance run succeeded. There was no automatic write retry. The issue
+was closed, the original Issues setting restored, the App uninstalled/deleted
+and downloaded keys removed. This is single-repository evidence; real webhook
+delivery/apply and multi-repository changes remain outside this field claim.
+
+### Two-repository webhook follow-up
+
+`docs/evidence/github-app-repository-webhook-2026-09-10.json` records a
+separate disposable App and A → A+B → A installation scope run. Actual GitHub
+`installation_repositories` deliveries were retrieved through the GitHub App
+delivery REST API. Reconstructed payload bytes were accepted only when their
+HMAC exactly matched GitHub's recorded signature; no test signature replaced
+it. The configured HTTP target returned 403, so this proves delivery-API
+retrieval and Admin CLI apply, not successful public webhook reception.
+
+The added event incremented credential version 1 to 2. A whitespace-tampered
+payload and old expected-version replay were rejected without a version change.
+The same capability listed exactly A+B and created an issue in B with 201.
+The removed event incremented version 2 to 3; the list returned only A, and the
+previously successful B Action was denied with `github-profile-mismatch`.
+Its request-linked audit contained only started and blocked, before GitHub
+authorization or IO. Four successful request chains independently matched
+started/authorized/token-revoked/finished, one session ID and matching binding
+commitments. The receipt preserves those non-sensitive audit fields.
+
+The App, installation, both temporary repositories, local test authority,
+signer and plaintext test secrets were deleted after acceptance. No local hosts
+or proxy setting changed. This follow-up does not add a provider key-rotation
+claim or an HTTP listener to Rekey.
+
 ## 12. Primary references
 
 - [Generating an installation access token for a GitHub App](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app)
@@ -250,3 +322,19 @@ post-main security, fuzz and performance workflows.
 - [Validating webhook deliveries](https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries)
 - [Best practices for using webhooks](https://docs.github.com/en/webhooks/using-webhooks/best-practices-for-using-webhooks)
 - [Rate limits for the REST API](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api)
+
+
+## GHA-12 local source acceptance (2026-09-10)
+
+The fixed issue-comment extension passed the extended P6 release-binary,
+dual-UDS/SQLite/local-TLS acceptance. The fixture enforces target repository,
+issue number, content type, closed body and exact exchange scope. It returns
+provider token and submitted body in extra response fields; only comment ID
+and URL survive projection and existing secret scans. The comment request has
+one exact started/authorized/token_revoked/finished success chain. Source unit
+tests reject malformed/changed scope and response bindings and prove writes
+are not retried. Fresh workspace tests, all-targets check/clippy, formatting
+and mechanical constraints passed. Logs live in `outputs/rekey-gha12-20260910`.
+No real GitHub comment, release or push occurred. Independent read-only review
+found no blocking code defect; external human review remains required for the
+credential-related source change before merge.

@@ -133,3 +133,47 @@ fn webhook_rejects_mixed_or_wrong_installation_delta() {
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
+
+#[test]
+fn issue_comment_requires_fixed_canonical_issue_and_closed_body() {
+    let mut profile = GitHubAppProfile::test_profile();
+    let create = action(FixedMethod::Post, "/repos/owner/repo/issues/7/comments");
+    let valid = request(&create, serde_json::json!({"body":"done"}));
+    assert_eq!(
+        profile.action(&create, &valid),
+        Ok(GitHubAction::CreateIssueComment {
+            repository_index: 0,
+            issue_number: 7,
+        })
+    );
+    for path in [
+        "/repos/owner/other/issues/7/comments",
+        "/repos/owner/repo/issues/0/comments",
+        "/repos/owner/repo/issues/07/comments",
+        "/repos/owner/repo/issues/+7/comments",
+        "/repos/owner/repo/issues/18446744073709551616/comments",
+        "/repos/owner/repo/issues/7/comments/extra",
+    ] {
+        let bad = action(FixedMethod::Post, path);
+        assert_eq!(
+            profile.action(&bad, &valid),
+            Err(GitHubError::ProfileMismatch)
+        );
+    }
+    for body in [
+        serde_json::json!({"body":""}),
+        serde_json::json!({"body":"x", "issue_number":8}),
+        serde_json::json!({"body":"x".repeat(32769)}),
+        serde_json::json!({"title":"x"}),
+    ] {
+        assert_eq!(
+            profile.action(&create, &request(&create, body)),
+            Err(GitHubError::ProfileMismatch)
+        );
+    }
+    profile.permissions.issues = None;
+    assert_eq!(
+        profile.action(&create, &valid),
+        Err(GitHubError::ProfileMismatch)
+    );
+}

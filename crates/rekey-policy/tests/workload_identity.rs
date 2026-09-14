@@ -106,8 +106,15 @@ fn ed_token_with_header(key: &Ed25519KeyPair, header: &Value, claims: &Value) ->
 }
 
 fn rsa_token(key: &RsaKeyPair, kid: &str, claims: &Value) -> Vec<u8> {
-    let header = BASE64URL_NOPAD
-        .encode(&serde_json::to_vec(&json!({"alg":"RS256","kid":kid,"typ":"at+jwt"})).unwrap());
+    rsa_token_with_header(
+        key,
+        &json!({"alg":"RS256","kid":kid,"typ":"at+jwt"}),
+        claims,
+    )
+}
+
+fn rsa_token_with_header(key: &RsaKeyPair, header: &Value, claims: &Value) -> Vec<u8> {
+    let header = BASE64URL_NOPAD.encode(&serde_json::to_vec(header).unwrap());
     let body = BASE64URL_NOPAD.encode(&serde_json::to_vec(claims).unwrap());
     let input = format!("{header}.{body}");
     let mut signature = vec![0; key.public_modulus_len()];
@@ -460,4 +467,187 @@ fn workload_catalog_rejects_unknown_fields_duplicates_and_unusable_principals() 
         )
         .is_err()
     );
+}
+
+#[test]
+fn github_x5t_is_bounded_metadata_never_a_key_selector() {
+    let key = RsaKeyPair::generate(KeySize::Rsa2048).unwrap();
+    let (bytes, _) = snapshot(vec![identity(
+        PrincipalId::new_random(),
+        json!({"kind":"ci-cloud","subject":"repo:owner/repo:ref:refs/heads/main"}),
+        rsa_jwk(&key, "github-key"),
+    )]);
+    let now = Timestamp::from_unix_ms(NOW_SECONDS * 1000);
+    let policy = parse_and_validate_snapshot(&bytes, now).unwrap();
+    let claims = claims("repo:owner/repo:ref:refs/heads/main", "x5t-test");
+    let mut header =
+        json!({"alg":"RS256","kid":"github-key","typ":"JWT","x5t":BASE64URL_NOPAD.encode(&[7;20])});
+    assert!(
+        policy
+            .verify_workload_token(&rsa_token_with_header(&key, &header, &claims), now)
+            .is_ok()
+    );
+    header["kid"] = json!("untrusted-key");
+    assert!(
+        policy
+            .verify_workload_token(&rsa_token_with_header(&key, &header, &claims), now)
+            .is_err()
+    );
+    header["kid"] = json!("github-key");
+    for value in [
+        Value::Null,
+        json!(7),
+        json!("bad"),
+        json!(BASE64URL_NOPAD.encode(&[7; 21])),
+        json!(format!("{}=", BASE64URL_NOPAD.encode(&[7; 20]))),
+    ] {
+        header["x5t"] = value;
+        assert!(
+            policy
+                .verify_workload_token(&rsa_token_with_header(&key, &header, &claims), now)
+                .is_err()
+        );
+    }
+    header["x5t"] = json!(BASE64URL_NOPAD.encode(&[7; 20]));
+    header["jku"] = json!("https://untrusted.example/keys");
+    assert!(
+        policy
+            .verify_workload_token(&rsa_token_with_header(&key, &header, &claims), now)
+            .is_err()
+    );
+}
+
+fn github_identity(principal: PrincipalId) -> Value {
+    json!({"principal_id":principal,"issuer":rekey_policy::GITHUB_ACTIONS_ISSUER,
+        "audiences":["rekey://test"],"max_token_age_ms":900_000,
+        "profile":{"kind":"ci-cloud","subject":"repo:owner/repo:ref:refs/heads/main"},
+        "keys":[],"online_key_source":"github-actions-jwks"})
+}
+
+fn github_jwk(key: &RsaKeyPair, kid: &str) -> Value {
+    let mut jwk = rsa_jwk(key, kid);
+    jwk.as_object_mut().unwrap().remove("algorithm");
+    jwk["kty"] = json!("RSA");
+    jwk["alg"] = json!("RS256");
+    jwk["use"] = json!("sig");
+    jwk
+}
+
+#[test]
+fn github_online_source_is_explicit_exclusive_and_keeps_static_trust_separate() {
+    use rekey_policy::{GITHUB_ACTIONS_ISSUER, GithubActionsJwks, OnlineKeySource};
+    let now = Timestamp::from_unix_ms(NOW_SECONDS * 1_000);
+    let old = RsaKeyPair::generate(KeySize::Rsa2048).unwrap();
+    let new = RsaKeyPair::generate(KeySize::Rsa2048).unwrap();
+    let online = github_identity(PrincipalId::new_random());
+    let mut pinned = identity(
+        PrincipalId::new_random(),
+        json!({"kind":"ci-cloud","subject":"static"}),
+        rsa_jwk(&old, "same"),
+    );
+    pinned["issuer"] = json!(GITHUB_ACTIONS_ISSUER);
+    let (bytes, _) = snapshot(vec![online.clone(), pinned]);
+    let policy = parse_and_validate_snapshot(&bytes, now).unwrap();
+    let digest = policy.digest();
+    let jwks = GithubActionsJwks::parse(
+        &serde_json::to_vec(&json!({"keys":[github_jwk(&new,"same")]})).unwrap(),
+    )
+    .unwrap();
+    let mut claim = claims("repo:owner/repo:ref:refs/heads/main", "online");
+    claim["iss"] = json!(GITHUB_ACTIONS_ISSUER);
+    let token = rsa_token(&new, "same", &claim);
+    assert_eq!(
+        policy.workload_online_key_source(&token).unwrap(),
+        Some(OnlineKeySource::GithubActionsJwks)
+    );
+    assert!(policy.verify_workload_token(&token, now).is_err());
+    assert!(
+        policy
+            .verify_workload_token_with_github_jwks(&token, now, &jwks)
+            .is_ok()
+    );
+    assert!(
+        policy
+            .verify_workload_token_with_github_jwks(&rsa_token(&old, "same", &claim), now, &jwks)
+            .is_err()
+    );
+    assert!(
+        policy
+            .verify_workload_token_with_github_jwks(&rsa_token(&new, "unknown", &claim), now, &jwks)
+            .is_err()
+    );
+    assert!(
+        policy
+            .verify_workload_token_with_github_jwks(
+                &token,
+                Timestamp::from_unix_ms((NOW_SECONDS + 601) * 1_000),
+                &jwks
+            )
+            .is_err()
+    );
+    claim["sub"] = json!("static");
+    assert!(
+        policy
+            .verify_workload_token_with_github_jwks(&rsa_token(&new, "same", &claim), now, &jwks)
+            .is_err()
+    );
+    assert!(
+        policy
+            .verify_workload_token_with_github_jwks(&rsa_token(&old, "same", &claim), now, &jwks)
+            .is_ok()
+    );
+    assert_eq!(policy.digest(), digest);
+    for (field, value) in [
+        ("issuer", json!("https://other.example")),
+        ("keys", json!([rsa_jwk(&old, "same")])),
+        ("online_key_source", json!("https://attacker.example/jwks")),
+    ] {
+        let mut invalid = online.clone();
+        invalid[field] = value;
+        assert!(parse_and_validate_snapshot(&snapshot(vec![invalid]).0, now).is_err());
+    }
+}
+
+#[test]
+fn github_jwks_rejects_malformed_ambiguous_or_unusable_key_sets() {
+    use rekey_policy::{GITHUB_JWKS_MAX_BYTES, GithubActionsJwks};
+    let key = RsaKeyPair::generate(KeySize::Rsa2048).unwrap();
+    let mut jwk = github_jwk(&key, "one");
+    jwk["x5c"] = json!(["ignored metadata, never certificate trust"]);
+    assert!(
+        GithubActionsJwks::parse(&serde_json::to_vec(&json!({"keys":[jwk.clone()]})).unwrap())
+            .is_ok()
+    );
+    for document in [
+        json!({"keys":[]}),
+        json!({"keys":[jwk.clone(),jwk.clone()]}),
+        json!({"keys":vec![jwk.clone();9]}),
+    ] {
+        assert!(GithubActionsJwks::parse(&serde_json::to_vec(&document).unwrap()).is_err());
+    }
+    for (field, value) in [
+        ("kid", json!("")),
+        ("kty", json!("EC")),
+        ("alg", json!("HS256")),
+        ("use", json!("enc")),
+        ("n", json!("bad")),
+        ("e", json!("Ag")),
+    ] {
+        let mut invalid = jwk.clone();
+        invalid[field] = value;
+        assert!(
+            GithubActionsJwks::parse(&serde_json::to_vec(&json!({"keys":[invalid]})).unwrap())
+                .is_err()
+        );
+    }
+    for field in ["kid", "kty", "alg", "use", "n", "e"] {
+        let mut invalid = jwk.clone();
+        invalid.as_object_mut().unwrap().remove(field);
+        assert!(
+            GithubActionsJwks::parse(&serde_json::to_vec(&json!({"keys":[invalid]})).unwrap())
+                .is_err()
+        );
+    }
+    assert!(GithubActionsJwks::parse(br#"{"keys":[],"keys":[]}"#).is_err());
+    assert!(GithubActionsJwks::parse(&vec![b' '; GITHUB_JWKS_MAX_BYTES + 1]).is_err());
 }

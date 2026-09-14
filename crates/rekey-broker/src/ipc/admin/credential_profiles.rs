@@ -25,6 +25,11 @@ pub(super) async fn validate_add(
     .await?;
     let error = match kind {
         CredentialKind::OpaqueToken => return Ok(()),
+        CredentialKind::KeycloakTokenExchange => {
+            crate::executor::keycloak::KeycloakProfile::validate_profile(secret)
+                .err()
+                .map(|_| "invalid Keycloak credential profile")
+        }
         CredentialKind::GitHubAppInstallation => GitHubAppCredential::validate_profile(secret)
             .err()
             .map(|_| "invalid GitHub App credential profile"),

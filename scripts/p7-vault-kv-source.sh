@@ -66,10 +66,14 @@ def profile(version, token):
     return {"credential_type":"vault-kv-v2-source-v1","origin":"https://vault.test.local",
             "mount":"secret","path":"agents/github","key":"token","version":version,
             "vault_token":token}
-pathlib.Path(one).write_text(json.dumps(profile(7, source_one)))
-pathlib.Path(two).write_text(json.dumps(profile(8, source_two)))
+def write_private(path, payload):
+    dest = pathlib.Path(path)
+    dest.write_text(json.dumps(payload))
+    dest.chmod(0o600)
+write_private(one, profile(7, source_one))
+write_private(two, profile(8, source_two))
 bad=profile(9, source_two); bad["origin"]="http://vault.test.local"
-pathlib.Path(invalid).write_text(json.dumps(bad))
+write_private(invalid, bad)
 PY
 
 printf '%s' '{"operation":"bounded"}' >"$REQUEST_BODY"

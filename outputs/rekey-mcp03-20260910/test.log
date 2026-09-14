@@ -1,0 +1,45 @@
+$ cargo check --workspace
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.10s
+Exit: 0
+
+$ cargo test -p rekey-broker --test mcp_stdio
+
+running 4 tests
+test malformed_json_and_private_file_failures_are_safe ... ok
+test protocol_and_success_use_fixed_action_without_leaking ... ok
+test upstream_http_errors_and_reflected_secrets_are_not_successes ... ok
+test denied_expired_locked_are_explicit_and_do_not_reach_upstream ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.04s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
+     Running tests/mcp_stdio.rs (target/debug/deps/mcp_stdio-e5b0b8091ac92463)
+Exit: 0
+
+$ cargo test -p rekey-broker --bin rekey-mcp
+
+running 7 tests
+test client::tests::cross_uid_contract_rejects_agent_owned_writable_ancestor ... ok
+test client::tests::cross_uid_contract_rejects_group_writable_ancestor ... ok
+test client::tests::connect_accepts_owner_peer_in_protected_runtime ... ok
+test client::tests::admin_contract_requires_caller_owned_mode_0600 ... ok
+test client::tests::connect_rejects_symlinked_socket ... ok
+test client::tests::connect_rejects_group_writable_runtime ... ok
+test client::tests::response_sections_share_one_absolute_deadline ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+   Compiling rekey-broker v2.0.0-alpha.2 (/private/tmp/rekey-mcp-stdio-20260910/crates/rekey-broker)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.30s
+     Running unittests src/bin/rekey-mcp.rs (target/debug/deps/rekey_mcp-fbf8b2417208e678)
+Exit: 0
+
+$ cargo fmt --all -- --check
+Exit: 0
+
+$ git diff --check
+Exit: 0
+
+PASS: rekey-cli normal dependency tree excludes broker/connector/http/crypto/db
+PASS: mechanical search has no matches: REKEY_PASSWORD|get_secret_value|/proxy/|passthrough
+PASS: mechanical search has no matches: get_secret\b|read_secret|export_secret

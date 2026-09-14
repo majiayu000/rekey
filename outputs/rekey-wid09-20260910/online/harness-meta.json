@@ -1,0 +1,14 @@
+{
+  "temporary_repo": "majiayu000/rekey-wid10-20260910-1789030338",
+  "runner_commit": "18f0fd447adad32eceb1ee1885fcafd2d5e0c6a1",
+  "harness_sha256": {
+    "drill.py": "902865d4a9ca92cdb383656e0f71944289892905ccc0cf61a7ac00b4aff3dc6f",
+    "signer.py": "263d06e7adfb76056d110834cb8cac976b0004b467d4c75bd7f0853bf14e8722",
+    "workflow.yml": "d5d551a21fbf081ff063c1f24ea0b75f7cf105ad0b6b6bade9ad7e8711ede89e"
+  },
+  "online_policy": {
+    "issuer": "https://token.actions.githubusercontent.com",
+    "keys": [],
+    "online_key_source": "github-actions-jwks"
+  }
+}

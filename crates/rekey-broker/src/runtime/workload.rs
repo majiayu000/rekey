@@ -1,5 +1,10 @@
 use std::collections::BTreeSet;
+use std::sync::Arc;
 use std::time::Duration;
+
+use crate::upstream::UpstreamRequest;
+use rekey_domain::action::FixedMethod;
+use rekey_policy::{GITHUB_JWKS_MAX_BYTES, GithubActionsJwks, OnlineKeySource};
 
 use rekey_domain::authorization::Principal;
 use rekey_domain::capability::{SESSION_TTL_MAX_MS, SessionGrant, SessionProvenance};
@@ -25,8 +30,6 @@ impl BrokerCtx {
         let deadline = tokio::time::Instant::now() + WORKLOAD_ADMISSION_TIMEOUT;
         self.lifecycle.reject_if_not_running()?;
         let token = normalize_token(token_body)?;
-        let _owner = self.lifecycle.coordinate_until(deadline).await?;
-        self.lifecycle.reject_if_not_running()?;
         let now = crate::now_ts()?;
         let active = self
             .policy
@@ -37,10 +40,67 @@ impl BrokerCtx {
         if active.is_expired(now) {
             return Err(BrokerError::Authority(AuthorityError::PolicyUnavailable));
         }
-        let verified = active
+        let invalid = || BrokerError::Authority(AuthorityError::WorkloadIdentityInvalid);
+        let source = active
             .snapshot()
-            .verify_workload_token(&token, now)
-            .map_err(|_| BrokerError::Authority(AuthorityError::WorkloadIdentityInvalid))?;
+            .workload_online_key_source(&token)
+            .map_err(|_| invalid())?;
+        let jwks = match source {
+            Some(OnlineKeySource::GithubActionsJwks) => {
+                // Non-waiting acquire: excess forged JWTs must release their Agent
+                // handler slot immediately instead of queueing behind slow JWKS.
+                let _jwks_permit = self
+                    .online_jwks_slots
+                    .clone()
+                    .try_acquire_owned()
+                    .map_err(|_| invalid())?;
+                let request = UpstreamRequest {
+                    host: "token.actions.githubusercontent.com".to_owned(),
+                    port: 443,
+                    method: FixedMethod::Get,
+                    path: "/.well-known/jwks".to_owned(),
+                    headers: vec![("user-agent".to_owned(), "rekey-workload-jwks".to_owned())],
+                    auth_header: (
+                        "accept".to_owned(),
+                        Zeroizing::new(b"application/json".to_vec()),
+                    ),
+                    body: Zeroizing::new(Vec::new()),
+                    timeout: deadline.saturating_duration_since(tokio::time::Instant::now()),
+                    response_max_bytes: GITHUB_JWKS_MAX_BYTES as u32,
+                };
+                let response =
+                    tokio::time::timeout_at(deadline, self.workload_transport.send(request))
+                        .await
+                        .map_err(|_| invalid())?
+                        .map_err(|_| invalid())?;
+                if response.status != 200 {
+                    return Err(invalid());
+                }
+                Some(GithubActionsJwks::parse(&response.body).map_err(|_| invalid())?)
+            }
+            None => None,
+        };
+        let _owner = self.lifecycle.coordinate_until(deadline).await?;
+        self.lifecycle.reject_if_not_running()?;
+        let current = self.policy.read().await;
+        if current
+            .as_ref()
+            .is_none_or(|current| !Arc::ptr_eq(current, &active))
+        {
+            return Err(BrokerError::Authority(AuthorityError::PolicyUnavailable));
+        }
+        drop(current);
+        let now = crate::now_ts()?;
+        if active.is_expired(now) {
+            return Err(BrokerError::Authority(AuthorityError::PolicyUnavailable));
+        }
+        let verified = match jwks.as_ref() {
+            Some(jwks) => active
+                .snapshot()
+                .verify_workload_token_with_github_jwks(&token, now, jwks),
+            None => active.snapshot().verify_workload_token(&token, now),
+        }
+        .map_err(|_| invalid())?;
 
         let distinct_actions = create.actions.iter().copied().collect::<BTreeSet<_>>();
         if create.actions.is_empty()

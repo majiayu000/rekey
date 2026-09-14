@@ -12,6 +12,7 @@ publish = false
 rekey-domain = { workspace = true }
 aes-gcm = "0.10"
 argon2 = "0.5"
+aws-lc-rs = "1.18"
 data-encoding = "2"
 hkdf = "0.12"
 libc = "0.2"

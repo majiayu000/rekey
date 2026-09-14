@@ -1,0 +1,10 @@
+{
+  "origin": "https://del-entrance-read-technique.trycloudflare.com",
+  "first_http_status": 401,
+  "first_exit": 1,
+  "operator_rotation": "hidden TTY; no echo",
+  "explicit_retry_http_status": 200,
+  "explicit_retry_exit": 0,
+  "automatic_retry": false,
+  "secrets_absent_from_outputs": true
+}

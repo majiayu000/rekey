@@ -1,0 +1,20 @@
+E
+======================================================================
+ERROR: test_execute_keeps_capability_off_argv_and_never_retries_http_error (__main__.HandoffTests.test_execute_keeps_capability_off_argv_and_never_retries_http_error)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/lifcc/Desktop/code/AI/tools/rekey/scripts/test-agent-quickstart.py", line 126, in test_execute_keeps_capability_off_argv_and_never_retries_http_error
+    self.assertEqual(APP.execute(args), expected)
+                     ^^^^^^^^^^^^^^^^^
+  File "/Users/lifcc/Desktop/code/AI/tools/rekey/scripts/agent-quickstart.py", line 144, in execute
+    metadata, _ = json.JSONDecoder().raw_decode(result.stdout.lstrip())
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.13_2/Frameworks/Python.framework/Versions/3.12/lib/python3.12/json/decoder.py", line 354, in raw_decode
+    obj, end = self.scan_once(s, idx)
+               ^^^^^^^^^^^^^^^^^^^^^^
+TypeError: first argument must be a string, not bytes
+
+----------------------------------------------------------------------
+Ran 1 test in 0.002s
+
+FAILED (errors=1)

@@ -121,10 +121,14 @@ one, two, invalid, source_one, source_two = sys.argv[1:]
 def profile(token):
     return {"credential_type":"vault-dynamic-source-v1","origin":"https://vault.test.local",
             "mount":"database","role":"agent-api-token","key":"token","vault_token":token}
-pathlib.Path(one).write_text(json.dumps(profile(source_one)))
-pathlib.Path(two).write_text(json.dumps(profile(source_two)))
+def write_private(path, payload):
+    dest = pathlib.Path(path)
+    dest.write_text(json.dumps(payload))
+    dest.chmod(0o600)
+write_private(one, profile(source_one))
+write_private(two, profile(source_two))
 bad=profile(source_two); bad["origin"]="http://vault.test.local"
-pathlib.Path(invalid).write_text(json.dumps(bad))
+write_private(invalid, bad)
 PY
 
 printf '%s' '{"operation":"bounded"}' >"$REQUEST_BODY"

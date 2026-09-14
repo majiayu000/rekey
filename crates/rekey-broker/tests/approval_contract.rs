@@ -6,7 +6,7 @@ use data_encoding::BASE64URL_NOPAD;
 use rekey_broker::upstream::UpstreamResponse;
 use rekey_domain::audit::{AuditPage, AuditQuery};
 use rekey_domain::authorization::ApprovalMode;
-use rekey_domain::ids::{ApprovalId, ApproverId};
+use rekey_domain::ids::{ApprovalId, ApprovalRequestId, ApproverId};
 use rekey_domain::ipc::{self, ApprovalChallenge, Channel, admin_msg, agent_msg};
 
 fn approver() -> (ApproverId, Ed25519KeyPair, [u8; 32]) {
@@ -23,7 +23,62 @@ async fn prepare(
     version: u64,
 ) -> ApprovalChallenge {
     let response = prepare_response(broker, token, action_id, version).await;
-    serde_json::from_value(response.ok().clone()).unwrap()
+    let envelope: ipc::SignedApprovalChallenge =
+        serde_json::from_value(response.ok().clone()).unwrap();
+    envelope.validate().unwrap();
+    let origin = origin_public_key(broker).await;
+    rekey_policy::parse_and_verify_approval_challenge_envelope(
+        &serde_json::to_vec(&envelope).unwrap(),
+        &origin,
+    )
+    .unwrap()
+}
+
+async fn origin_public_key(broker: &common::TestBroker) -> [u8; 32] {
+    let response = common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::APPROVAL_ORIGIN,
+        b"{}",
+        &[],
+    )
+    .await;
+    let origin: ipc::ApprovalOriginResponse =
+        serde_json::from_value(response.ok().clone()).unwrap();
+    origin.validate().unwrap();
+    rekey_policy::validate_ed25519_public_key(&origin.public_key).unwrap()
+}
+
+async fn pending_inbox(broker: &common::TestBroker) -> ipc::ApprovalPendingResponse {
+    let response = common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::APPROVAL_PENDING,
+        b"{}",
+        &[],
+    )
+    .await;
+    let pending: ipc::ApprovalPendingResponse =
+        serde_json::from_value(response.ok().clone()).unwrap();
+    pending.validate().unwrap();
+    pending
+}
+
+async fn get_pending_envelope(
+    broker: &common::TestBroker,
+    approval_request_id: ApprovalRequestId,
+) -> common::WireResponse {
+    common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::APPROVAL_GET,
+        &serde_json::to_vec(&ipc::ApprovalGetMeta {
+            approval_request_id,
+        })
+        .unwrap(),
+        &[],
+    )
+    .await
 }
 
 async fn prepare_response(
@@ -582,4 +637,82 @@ async fn approval_audit_transaction_failure_prevents_the_remote_effect() {
         )
         .unwrap();
     assert_eq!(count, 0, "the admission audit transaction must roll back");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn admin_inbox_lists_get_and_drops_reserved_challenges() {
+    let broker = common::start_broker().await;
+    common::unlock(&broker).await;
+    let credential = common::add_credential(&broker, "approval-inbox", b"secret").await;
+    let (action, version) = common::create_action(&broker, &credential).await;
+    let session = common::policy::create_session_grant(&broker, &action, version, 8).await;
+    let (approver_id, key, public_key) = approver();
+    common::policy::activate_approval_policy(
+        &broker,
+        &action,
+        version,
+        common::policy::ApprovalPolicy {
+            principal_id: &session.principal_id,
+            approvers: &[(approver_id, public_key)],
+            quorum: 1,
+            mode: ApprovalMode::OneTime,
+            max_uses: 1,
+            max_window_ms: None,
+        },
+    )
+    .await;
+
+    assert!(pending_inbox(&broker).await.challenges.is_empty());
+    let challenge = prepare(&broker, &session.capability_token, &action, version).await;
+    let pending = pending_inbox(&broker).await;
+    assert_eq!(pending.challenges.len(), 1);
+    assert_eq!(
+        pending.challenges[0].approval_request_id,
+        challenge.approval_request_id
+    );
+    assert_eq!(pending.challenges[0].session_id, challenge.session_id);
+    assert_eq!(pending.challenges[0].action_id, challenge.action_id);
+    assert_eq!(pending.challenges[0].mode, ApprovalMode::OneTime);
+
+    let envelope_response = get_pending_envelope(&broker, challenge.approval_request_id).await;
+    let envelope: ipc::SignedApprovalChallenge =
+        serde_json::from_value(envelope_response.ok().clone()).unwrap();
+    envelope.validate().unwrap();
+    let origin = origin_public_key(&broker).await;
+    let fetched = rekey_policy::parse_and_verify_approval_challenge_envelope(
+        &serde_json::to_vec(&envelope).unwrap(),
+        &origin,
+    )
+    .unwrap();
+    assert_eq!(fetched.approval_request_id, challenge.approval_request_id);
+
+    let unknown = get_pending_envelope(&broker, ApprovalRequestId::new_random()).await;
+    assert_eq!(unknown.err_code(), "REQUEST_DENIED");
+    assert_eq!(
+        unknown.metadata["message"],
+        "request denied: approval-challenge-unknown"
+    );
+
+    let grant = signed_grant(&challenge, approver_id, &key, 1);
+    broker.fake.push_response(upstream_ok());
+    assert_eq!(
+        execute(
+            &broker,
+            &session.capability_token,
+            &action,
+            version,
+            vec![grant],
+        )
+        .await
+        .ok()["upstream_status"],
+        200
+    );
+    assert!(pending_inbox(&broker).await.challenges.is_empty());
+    let consumed = get_pending_envelope(&broker, challenge.approval_request_id).await;
+    assert_eq!(consumed.err_code(), "REQUEST_DENIED");
+    assert_eq!(
+        consumed.metadata["message"],
+        "request denied: approval-challenge-unknown"
+    );
+    broker.shutdown().await;
 }
