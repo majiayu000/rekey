@@ -55,6 +55,7 @@ pub enum CredentialKind {
     GitHubAppInstallation,
     VaultKvV2Source,
     VaultDynamicSource,
+    KeycloakTokenExchange,
 }
 
 impl CredentialKind {
@@ -64,6 +65,7 @@ impl CredentialKind {
             Self::GitHubAppInstallation => "github-app-installation",
             Self::VaultKvV2Source => "vault-kv-v2-source",
             Self::VaultDynamicSource => "vault-dynamic-source",
+            Self::KeycloakTokenExchange => "keycloak-token-exchange",
         }
     }
 
@@ -73,6 +75,7 @@ impl CredentialKind {
             "github-app-installation" => Ok(Self::GitHubAppInstallation),
             "vault-kv-v2-source" => Ok(Self::VaultKvV2Source),
             "vault-dynamic-source" => Ok(Self::VaultDynamicSource),
+            "keycloak-token-exchange" => Ok(Self::KeycloakTokenExchange),
             _ => Err(DomainError::InvalidId),
         }
     }
@@ -84,6 +87,7 @@ impl CredentialKind {
             Self::GitHubAppInstallation => 2,
             Self::VaultKvV2Source => 3,
             Self::VaultDynamicSource => 4,
+            Self::KeycloakTokenExchange => 5,
         }
     }
 }

@@ -36,6 +36,20 @@ pub(super) async fn handle_rotate_dynamic(
     .await
 }
 
+pub(super) async fn handle_rotate_keycloak(
+    frame: &IncomingFrame,
+    ctx: &BrokerCtx,
+) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
+    handle_rotate_kind(
+        frame,
+        ctx,
+        CredentialKind::KeycloakTokenExchange,
+        crate::executor::keycloak::KeycloakProfile::validate_profile,
+        "invalid Keycloak credential profile",
+    )
+    .await
+}
+
 async fn handle_rotate_kind<E>(
     frame: &IncomingFrame,
     ctx: &BrokerCtx,

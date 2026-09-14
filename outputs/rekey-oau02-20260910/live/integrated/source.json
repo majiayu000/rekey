@@ -1,0 +1,15 @@
+{
+  "source_base": "358b3a5a86642327273c358f9a8de8c880db913c",
+  "uncommitted_source": true,
+  "sha256": {
+    "Cargo.lock": "4420dc5c7c85b4b5c1ba5fcd268a499a91ad90e0fe02659bec09e4ff9bfce540",
+    "crates/rekey-broker/src/executor/keycloak.rs": "8df36b98f5db032d108de9011c9acc94bb32d82c2a8eb146795392b324e8db1f",
+    "crates/rekey-domain/src/credential.rs": "30b81b1a5fea249279d9d31350df799cfc0024c0c0edbb2f6e3ba5bbf3e849a0",
+    "crates/rekey-vault/src/store/schema.rs": "64c69b9a87d21bded0f7fcc2f11a4335dc36abca95d78c4c4bebeaf1d68fe74a",
+    "crates/rekey-broker/examples/oau02_keycloak_fixture.rs": "b6cccefb03d7f51e5e92b56e3d2e4494076964dbe74a3af7c4ebfed3028a5ff5",
+    "scripts/test-keycloak-live.py": "94cef9f65a38cf6a6e35207e2ae18487259c2bbfde47b9d27b87e9bdfffad7e9",
+    "target/debug/rekey": "00f3e07e2f85a79d23e1943a7a2453fd3120d557d5791902d1dfa13c832e99a4",
+    "target/debug/rekeyd": "2748563425121ad172ca76b57aeb95087a300fd267d7d7649c0e0207339ae297",
+    "target/debug/examples/oau02_keycloak_fixture": "8594ac2e8b0eef4d6e8d8e6f5c7a0f0ee8af3d5185791b02d13755f1208aa917"
+  }
+}

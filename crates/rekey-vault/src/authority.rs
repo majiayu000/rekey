@@ -520,6 +520,16 @@ impl Worker {
                 self.touch_if_ok(&result);
                 let _ = reply.send(result);
             }
+            AuthorityCommand::ApprovalOriginPublicKey { reply } => {
+                let result = self.approval_origin_public_key();
+                self.touch_if_ok(&result);
+                let _ = reply.send(result);
+            }
+            AuthorityCommand::SignApprovalOrigin { message, reply } => {
+                let result = self.sign_approval_origin(message);
+                self.touch_if_ok(&result);
+                let _ = reply.send(result);
+            }
         }
         false
     }
@@ -548,6 +558,16 @@ impl Worker {
             VaultState::Locked => Err(AuthorityError::Locked),
             VaultState::Faulted => Err(AuthorityError::Faulted),
         }
+    }
+
+    fn approval_origin_public_key(&self) -> Result<[u8; 32], AuthorityError> {
+        let vrk = self.require_unlocked()?;
+        crate::crypto::approval_origin::approval_origin_public_key(vrk, self.header.vault_id)
+    }
+
+    fn sign_approval_origin(&self, message: Vec<u8>) -> Result<[u8; 64], AuthorityError> {
+        let vrk = self.require_unlocked()?;
+        crate::crypto::approval_origin::sign_approval_origin(vrk, self.header.vault_id, &message)
     }
 
     fn verify_proof(&self, proof: &UnlockProof) -> Result<(), AuthorityError> {

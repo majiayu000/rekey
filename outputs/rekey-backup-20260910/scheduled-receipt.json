@@ -1,0 +1,37 @@
+{
+  "tested_at_utc": "2026-09-10T08:30:47Z",
+  "source_commit": "358b3a5a86642327273c358f9a8de8c880db913c",
+  "receipt": {
+    "vault_id": "9f9c2208-3e0e-492e-a548-ffdb75645a2c",
+    "format_version": 9,
+    "created_at_ms": 1789029028329,
+    "sha256_hex": "6f3e9f64c5480f9efae4c532a4a873cae539500c4b28f5274f8f61fd6bf72627"
+  },
+  "independent_hash_match": true,
+  "backup_mode": "0600",
+  "secret_canary_absent": true,
+  "existing_backup_rejected_exit": 5,
+  "bad_hash_rejected_exit": 5,
+  "restore_status": {
+    "state": "locked",
+    "format_version": 9,
+    "runtime_version": "2.0.0-alpha.2",
+    "sessions_active": 0
+  },
+  "restore_started_locked": true,
+  "credential_and_action_ids_preserved": true,
+  "new_session_after_restore": true,
+  "fixed_public_read_status": 200,
+  "scheduler": "launchd kickstart of installed hourly job",
+  "remote_host": "apple",
+  "remote_directory": "/Users/apple/Documents/rekey-backups/drill-20260910T083029Z-1dff72a2",
+  "remote_hash_match": true,
+  "remote_modes": [
+    "700",
+    "600",
+    "600"
+  ],
+  "restored_from_downloaded_remote_copy": true,
+  "limitation": "Disposable synthetic credential; installed hourly transfer job. Remote ciphertext retained; test unlock material destroyed.",
+  "temporary_states_and_secrets_removed": true
+}

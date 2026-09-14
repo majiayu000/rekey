@@ -4,7 +4,7 @@ use rekey_domain::ids::{
     PolicySignerId, PrincipalId, RequestId, SessionId, VaultId, WrapperId,
 };
 
-pub const FORMAT_VERSION: u32 = 9;
+pub const FORMAT_VERSION: u32 = 10;
 pub const VAULT_INTEGRITY_CIPHERTEXT_LEN: usize = 40;
 
 #[derive(Debug, Clone)]

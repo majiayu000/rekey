@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 use rekey_domain::Timestamp;
 use rekey_domain::authorization::{ApprovalRequirement, Principal, ResourceRef, SchemaId};
 use rekey_domain::capability::ActionVersionRef;
-use rekey_domain::ids::{ApprovalId, PolicyRuleId};
-use rekey_domain::ipc::ApprovalChallenge;
+use rekey_domain::ids::{ApprovalId, ApprovalRequestId, PolicyRuleId};
+use rekey_domain::ipc::{APPROVAL_PENDING_MAX, ApprovalChallenge};
 use rekey_policy::VerifiedApprovalGrant;
 use rekey_vault::model::ApprovalEvidence;
 
@@ -29,6 +29,7 @@ pub(super) struct StoredChallenge {
     monotonic_anchor: Instant,
     monotonic_deadline: Instant,
     expired: bool,
+    consumed: bool,
 }
 
 pub(super) struct ApprovalUsage {
@@ -61,35 +62,132 @@ fn reject(code: &'static str) -> ApprovalRejection {
     ApprovalRejection(code)
 }
 
+fn challenge_is_pending(
+    stored: &mut StoredChallenge,
+    now: Timestamp,
+    monotonic_now: Instant,
+) -> bool {
+    if stored.consumed {
+        return false;
+    }
+    if stored.expired
+        || now.as_unix_ms() >= stored.challenge.max_expires_at_ms
+        || monotonic_now >= stored.monotonic_deadline
+    {
+        stored.expired = true;
+        return false;
+    }
+    true
+}
+
+fn pending_count(entries: &mut [super::Entry], now: Timestamp, monotonic_now: Instant) -> usize {
+    let mut count = 0;
+    for entry in entries.iter_mut() {
+        if entry.revoked {
+            continue;
+        }
+        for stored in &mut entry.approval_challenges {
+            if challenge_is_pending(stored, now, monotonic_now) {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
 impl SessionRegistry {
     pub(crate) fn store_approval_challenge(
         &self,
         challenge: ApprovalChallenge,
         monotonic_anchor: Instant,
         monotonic_deadline: Instant,
+        now: Timestamp,
     ) -> Result<(), ApprovalRejection> {
+        let monotonic_now = Instant::now();
         let mut inner = self.lock_inner();
-        let entry = inner
+        super::compact_entries(&mut inner.entries);
+        let index = inner
             .entries
-            .iter_mut()
-            .find(|entry| {
+            .iter()
+            .position(|entry| {
                 entry.grant.id == challenge.session_id && entry.in_flight > 0 && !entry.revoked
             })
             .ok_or_else(|| reject("approval-session-unavailable"))?;
-        if entry
+        if inner.entries[index]
             .approval_challenges
             .iter()
             .any(|stored| stored.challenge.approval_request_id == challenge.approval_request_id)
         {
             return Err(reject("approval-state-conflict"));
         }
-        entry.approval_challenges.push(StoredChallenge {
-            challenge,
-            monotonic_anchor,
-            monotonic_deadline,
-            expired: false,
-        });
+        if pending_count(&mut inner.entries, now, monotonic_now) >= APPROVAL_PENDING_MAX {
+            return Err(reject("approval-inbox-overflow"));
+        }
+        inner.entries[index]
+            .approval_challenges
+            .push(StoredChallenge {
+                challenge,
+                monotonic_anchor,
+                monotonic_deadline,
+                expired: false,
+                consumed: false,
+            });
         Ok(())
+    }
+
+    pub(crate) fn pending_approval_challenges(
+        &self,
+        now: Timestamp,
+    ) -> Result<Vec<ApprovalChallenge>, ApprovalRejection> {
+        let monotonic_now = Instant::now();
+        let mut inner = self.lock_inner();
+        super::compact_entries(&mut inner.entries);
+        let mut out = Vec::new();
+        for entry in inner.entries.iter_mut() {
+            if entry.revoked {
+                continue;
+            }
+            for stored in &mut entry.approval_challenges {
+                if !challenge_is_pending(stored, now, monotonic_now) {
+                    continue;
+                }
+                out.push(stored.challenge.clone());
+                if out.len() > APPROVAL_PENDING_MAX {
+                    return Err(reject("approval-inbox-overflow"));
+                }
+            }
+        }
+        out.sort_by(|left, right| {
+            left.created_at_ms
+                .cmp(&right.created_at_ms)
+                .then_with(|| left.approval_request_id.cmp(&right.approval_request_id))
+        });
+        Ok(out)
+    }
+
+    pub(crate) fn approval_challenge(
+        &self,
+        approval_request_id: ApprovalRequestId,
+        now: Timestamp,
+    ) -> Result<ApprovalChallenge, ApprovalRejection> {
+        let monotonic_now = Instant::now();
+        let mut inner = self.lock_inner();
+        super::compact_entries(&mut inner.entries);
+        for entry in inner.entries.iter_mut() {
+            if entry.revoked {
+                continue;
+            }
+            for stored in &mut entry.approval_challenges {
+                if stored.challenge.approval_request_id != approval_request_id {
+                    continue;
+                }
+                if !challenge_is_pending(stored, now, monotonic_now) {
+                    return Err(reject("approval-challenge-unknown"));
+                }
+                return Ok(stored.challenge.clone());
+            }
+        }
+        Err(reject("approval-challenge-unknown"))
     }
 
     pub(crate) fn reserve_approvals(
@@ -205,6 +303,7 @@ impl SessionRegistry {
                 approver_id: Some(grant.approver_id),
             });
         }
+        stored.consumed = true;
         Ok(ApprovalReservation {
             evidence,
             not_after,
@@ -319,6 +418,83 @@ fn monotonic_expiry_offset(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rekey_domain::authorization::{ApprovalMode, Principal, ResourceRef, SchemaId};
+    use rekey_domain::capability::{ActionVersionRef, SessionGrant};
+    use rekey_domain::ids::{ActionId, ApproverId, PolicyRuleId, PrincipalId, SessionId, TenantId};
+
+    fn now(ms: i64) -> Timestamp {
+        Timestamp::from_unix_ms(ms)
+    }
+
+    fn open_registry() -> SessionRegistry {
+        let registry = SessionRegistry::new();
+        registry.open_for_admission();
+        registry
+    }
+
+    fn grant(max_uses: u32) -> (SessionGrant, ActionVersionRef) {
+        let action = ActionVersionRef {
+            action_id: ActionId::new_random(),
+            version: 1,
+        };
+        let session_id = SessionId::new_random();
+        let grant = SessionGrant::new(
+            session_id,
+            Principal {
+                tenant_id: TenantId::new_random(),
+                principal_id: PrincipalId::new_random(),
+                session_id,
+            },
+            vec![action],
+            now(0),
+            10_000,
+            max_uses,
+        )
+        .unwrap();
+        (grant, action)
+    }
+
+    fn challenge(
+        grant: &SessionGrant,
+        action: ActionVersionRef,
+        created_at_ms: i64,
+        max_expires_at_ms: i64,
+    ) -> ApprovalChallenge {
+        ApprovalChallenge {
+            record_type: "rekey.approval.challenge.v1".to_owned(),
+            approval_request_id: ApprovalRequestId::new_random(),
+            tenant_id: grant.principal.tenant_id,
+            principal_id: grant.principal.principal_id,
+            session_id: grant.id,
+            action_id: action.action_id,
+            action_version: action.version,
+            resource: ResourceRef::new("test.resource".to_owned(), "one".to_owned()).unwrap(),
+            schema_id: SchemaId::new("test/v1".to_owned()).unwrap(),
+            parameter_sha256: "00".repeat(32),
+            policy_version: 1,
+            policy_sha256: "11".repeat(32),
+            policy_rule_id: PolicyRuleId::new_random(),
+            mode: ApprovalMode::OneTime,
+            quorum: 1,
+            approver_ids: vec![ApproverId::new_random()],
+            max_uses: 1,
+            created_at_ms,
+            max_expires_at_ms,
+        }
+    }
+
+    fn store(
+        registry: &SessionRegistry,
+        challenge: ApprovalChallenge,
+        now: Timestamp,
+    ) -> Result<(), ApprovalRejection> {
+        registry.store_approval_challenge(
+            challenge,
+            Instant::now(),
+            Instant::now() + Duration::from_secs(60),
+            now,
+        )
+    }
 
     #[test]
     fn monotonic_expiry_requires_time_after_challenge_creation() {
@@ -329,5 +505,74 @@ mod tests {
         assert!(monotonic_expiry_offset(100, 100).is_err());
         assert!(monotonic_expiry_offset(99, 100).is_err());
         assert!(monotonic_expiry_offset(i64::MAX, -1).is_err());
+    }
+
+    #[test]
+    fn pending_lists_live_challenges_and_hides_expired_or_revoked() {
+        let registry = open_registry();
+        let (grant, action) = grant(4);
+        let session_id = grant.id;
+        let token = registry.create(grant.clone()).unwrap();
+        registry.begin(&token, action, now(1)).unwrap();
+        let live = challenge(&grant, action, 1, 9_000);
+        let expired = challenge(&grant, action, 0, 1);
+        let live_id = live.approval_request_id;
+        store(&registry, live, now(1)).unwrap();
+        store(&registry, expired, now(1)).unwrap();
+        registry.finish(session_id);
+
+        let pending = registry.pending_approval_challenges(now(2)).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].approval_request_id, live_id);
+        assert_eq!(
+            registry
+                .approval_challenge(live_id, now(2))
+                .unwrap()
+                .approval_request_id,
+            live_id
+        );
+        assert_eq!(
+            registry
+                .approval_challenge(ApprovalRequestId::new_random(), now(2))
+                .unwrap_err()
+                .code(),
+            "approval-challenge-unknown"
+        );
+
+        registry.revoke(session_id);
+        assert!(
+            registry
+                .pending_approval_challenges(now(2))
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            registry
+                .approval_challenge(live_id, now(2))
+                .unwrap_err()
+                .code(),
+            "approval-challenge-unknown"
+        );
+    }
+
+    #[test]
+    fn inbox_overflow_fails_closed() {
+        let registry = open_registry();
+        let (grant, action) = grant(1);
+        let token = registry.create(grant.clone()).unwrap();
+        registry.begin(&token, action, now(1)).unwrap();
+        for _ in 0..APPROVAL_PENDING_MAX {
+            store(&registry, challenge(&grant, action, 1, 9_000), now(1)).unwrap();
+        }
+        assert_eq!(
+            store(&registry, challenge(&grant, action, 1, 9_000), now(1))
+                .unwrap_err()
+                .code(),
+            "approval-inbox-overflow"
+        );
+        assert_eq!(
+            registry.pending_approval_challenges(now(1)).unwrap().len(),
+            APPROVAL_PENDING_MAX
+        );
     }
 }

@@ -1,0 +1,49 @@
+{
+  "changed_cells": [
+    [
+      1,
+      "D24"
+    ],
+    [
+      1,
+      "F24"
+    ],
+    [
+      1,
+      "G24"
+    ],
+    [
+      1,
+      "K24"
+    ],
+    [
+      1,
+      "L24"
+    ],
+    [
+      1,
+      "N24"
+    ],
+    [
+      1,
+      "O24"
+    ],
+    [
+      1,
+      "Q24"
+    ],
+    [
+      2,
+      "B18"
+    ]
+  ],
+  "status_counts": {
+    "已完成": 17,
+    "进行中": 1,
+    "待设计": 35,
+    "维护": 107,
+    "不排期": 6
+  },
+  "unrelated_values_formulas_styles_and_native_features_preserved": true,
+  "relationship_ids_resolved_to_targets": true
+}

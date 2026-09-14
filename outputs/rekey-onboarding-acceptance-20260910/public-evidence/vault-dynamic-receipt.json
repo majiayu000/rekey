@@ -1,0 +1,23 @@
+{
+  "tested_at": "2026-09-10T07:05:29.211694+00:00",
+  "layer": "B",
+  "source_kind": "vault-dynamic-source-v1",
+  "source_origin": "https://del-entrance-read-technique.trycloudflare.com",
+  "source_mount": "database",
+  "action_origin": "https://del-entrance-read-technique.trycloudflare.com",
+  "source_selection": {
+    "role": "agent-test",
+    "key": "password"
+  },
+  "action_method": "POST",
+  "action_path": "/check/dynamic",
+  "upstream_status": 200,
+  "required_events": [
+    "execution.started",
+    "vault.lease.issued",
+    "vault.lease.revoked",
+    "execution.finished"
+  ],
+  "rekey_version": "rekey 2.0.0-alpha.2",
+  "limitation": "one public HTTPS source and fixed action; not general Vault support"
+}

@@ -1,0 +1,18 @@
+APR-09 local Admin approval inbox (2026-09-11)
+
+Implemented:
+- Admin APPROVAL_PENDING (29) / APPROVAL_GET (30)
+- CLI: rekey approval pending, rekey approval get UUID
+- SessionRegistry consumed flag; inbox is unused + non-expired
+- Overflow fails closed at 128
+
+Verified locally:
+- cargo fmt --all
+- cargo test --workspace: 0 failed, 1 ignored performance test
+- cargo test -p rekey-broker --test approval_contract admin_inbox_lists_get_and_drops_reserved_challenges
+- cargo test -p rekey-broker pending_lists / inbox_overflow
+- cargo test -p rekey-cli --test malicious_broker
+- mechanical rg contracts and `cargo tree -p rekey-cli -e normal` clean
+
+Not implemented: GUI, push/hosted notifications, APR-10 directory, hosted APR-08 SaaS.
+Signing/key-handling code still needs human review before merge.

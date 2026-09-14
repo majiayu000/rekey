@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use rekey_domain::DomainError;
 use rekey_domain::authorization::{AuthorizationRequest, Decision, DenyReason, Principal};
 use rekey_domain::ids::ApprovalRequestId;
-use rekey_domain::ipc::ApprovalChallenge;
+use rekey_domain::ipc::{ApprovalChallenge, SignedApprovalChallenge};
 use rekey_policy::VerifiedApprovalGrant;
 use rekey_vault::command::AuditDraft;
 use rekey_vault::model::{
@@ -184,7 +184,7 @@ impl ActionExecutor {
     pub(crate) async fn prepare_approval(
         self: &Arc<Self>,
         request: ExecuteRequest,
-    ) -> Result<ApprovalChallenge, BrokerError> {
+    ) -> Result<SignedApprovalChallenge, BrokerError> {
         let started = Instant::now();
         self.refuse_unless_running()?;
         let permit =
@@ -207,12 +207,13 @@ impl ActionExecutor {
         evaluated: EvaluatedAuthorization,
         permit: &ExecutionPermit,
         deadline_at: Instant,
-    ) -> Result<ApprovalChallenge, BrokerError> {
+    ) -> Result<SignedApprovalChallenge, BrokerError> {
         let context = evaluated
             .approval_context
             .as_ref()
             .ok_or(BrokerError::Denied("policy-evaluation-failed"))?;
-        let created = crate::now_ts()?.as_unix_ms();
+        let now = crate::now_ts()?;
+        let created = now.as_unix_ms();
         let window_ms = match context.requirement.mode {
             rekey_domain::authorization::ApprovalMode::OneTime => 10 * 60 * 1_000,
             rekey_domain::authorization::ApprovalMode::TimeWindow => context
@@ -255,8 +256,17 @@ impl ActionExecutor {
             created_at_ms: created,
             max_expires_at_ms,
         };
+        let payload = rekey_policy::approval_challenge_sign_payload(&challenge)?;
+        let signature =
+            deadline::await_authority(deadline_at, self.authority.sign_approval_origin(payload))
+                .await?;
+        let envelope = SignedApprovalChallenge {
+            record_type: "rekey.approval.challenge.envelope.v1".to_owned(),
+            challenge: challenge.clone(),
+            signature: data_encoding::BASE64URL_NOPAD.encode(&signature),
+        };
         self.sessions
-            .store_approval_challenge(challenge.clone(), monotonic_anchor, monotonic_deadline)
+            .store_approval_challenge(challenge.clone(), monotonic_anchor, monotonic_deadline, now)
             .map_err(|error| BrokerError::Denied(error.code()))?;
         let draft = approval_audit(
             &evaluated.ctx,
@@ -270,7 +280,20 @@ impl ActionExecutor {
             }),
         );
         deadline::await_authority(deadline_at, self.authority.append_audit(draft)).await?;
-        Ok(challenge)
+        Ok(envelope)
+    }
+
+    pub(crate) async fn sign_challenge_envelope(
+        &self,
+        challenge: ApprovalChallenge,
+    ) -> Result<SignedApprovalChallenge, BrokerError> {
+        let payload = rekey_policy::approval_challenge_sign_payload(&challenge)?;
+        let signature = self.authority.sign_approval_origin(payload).await?;
+        Ok(SignedApprovalChallenge {
+            record_type: "rekey.approval.challenge.envelope.v1".to_owned(),
+            challenge,
+            signature: data_encoding::BASE64URL_NOPAD.encode(&signature),
+        })
     }
 
     pub(super) async fn verify_and_reserve_approvals(

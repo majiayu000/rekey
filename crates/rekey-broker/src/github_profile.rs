@@ -73,7 +73,13 @@ pub(crate) struct GitHubAppProfile {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GitHubAction {
     ListRepositories,
-    CreateIssue { repository_index: usize },
+    CreateIssue {
+        repository_index: usize,
+    },
+    CreateIssueComment {
+        repository_index: usize,
+        issue_number: u64,
+    },
 }
 
 #[derive(Deserialize, Serialize)]
@@ -82,6 +88,12 @@ pub(crate) struct CreateIssueBody {
     pub(crate) title: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) body: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CreateIssueCommentBody {
+    body: String,
 }
 
 impl GitHubAppProfile {
@@ -174,12 +186,21 @@ impl GitHubAppProfile {
         let path = action.exact_path.as_str();
         let tail = path
             .strip_prefix("/repos/")
-            .and_then(|value| value.strip_suffix("/issues"))
             .ok_or(GitHubError::ProfileMismatch)?;
-        let (owner, name) = tail.split_once('/').ok_or(GitHubError::ProfileMismatch)?;
-        if owner.is_empty() || name.is_empty() || name.contains('/') {
-            return Err(GitHubError::ProfileMismatch);
-        }
+        let parts: Vec<_> = tail.split('/').collect();
+        let (owner, name, issue_number) = match parts.as_slice() {
+            [owner, name, "issues"] => (*owner, *name, None),
+            [owner, name, "issues", number, "comments"] => {
+                let parsed = number
+                    .parse::<u64>()
+                    .map_err(|_| GitHubError::ProfileMismatch)?;
+                if parsed == 0 || parsed.to_string() != *number {
+                    return Err(GitHubError::ProfileMismatch);
+                }
+                (*owner, *name, Some(parsed))
+            }
+            _ => return Err(GitHubError::ProfileMismatch),
+        };
         let repository_index = self
             .repositories
             .iter()
@@ -190,6 +211,17 @@ impl GitHubAppProfile {
             .ok_or(GitHubError::ProfileMismatch)?;
         if self.permissions.issues != Some(IssuesPermission::Write) {
             return Err(GitHubError::ProfileMismatch);
+        }
+        if let Some(issue_number) = issue_number {
+            let comment: CreateIssueCommentBody =
+                serde_json::from_slice(&request.body).map_err(|_| GitHubError::ProfileMismatch)?;
+            if comment.body.is_empty() || comment.body.len() > 32 * 1024 {
+                return Err(GitHubError::ProfileMismatch);
+            }
+            return Ok(GitHubAction::CreateIssueComment {
+                repository_index,
+                issue_number,
+            });
         }
         let issue: CreateIssueBody =
             serde_json::from_slice(&request.body).map_err(|_| GitHubError::ProfileMismatch)?;
@@ -207,6 +239,12 @@ impl GitHubAppProfile {
 
     pub(crate) fn issue_body(request: &ExecuteRequest) -> Result<Vec<u8>, GitHubError> {
         let body: CreateIssueBody =
+            serde_json::from_slice(&request.body).map_err(|_| GitHubError::ProfileMismatch)?;
+        serde_json::to_vec(&body).map_err(|_| GitHubError::ProfileMismatch)
+    }
+
+    pub(crate) fn comment_body(request: &ExecuteRequest) -> Result<Vec<u8>, GitHubError> {
+        let body: CreateIssueCommentBody =
             serde_json::from_slice(&request.body).map_err(|_| GitHubError::ProfileMismatch)?;
         serde_json::to_vec(&body).map_err(|_| GitHubError::ProfileMismatch)
     }

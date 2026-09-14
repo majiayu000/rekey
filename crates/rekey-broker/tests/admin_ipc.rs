@@ -451,6 +451,9 @@ async fn bodyless_admin_messages_reject_attached_bodies() {
         admin_msg::ACTION_LIST,
         admin_msg::POLICY_STATUS,
         admin_msg::LOCK,
+        admin_msg::APPROVAL_ORIGIN,
+        admin_msg::APPROVAL_PENDING,
+        admin_msg::APPROVAL_GET,
         u16::MAX,
     ] {
         let header = FrameHeader {

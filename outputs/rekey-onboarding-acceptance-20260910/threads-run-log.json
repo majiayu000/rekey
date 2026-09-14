@@ -1,0 +1,43 @@
+{
+  "run_phase": "final",
+  "skill": "threads",
+  "mode": "execute_direct",
+  "repo": "/Users/lifcc/Desktop/code/AI/tools/rekey",
+  "outcome": "partial",
+  "native_subagents": "available",
+  "explicit_thread_request": true,
+  "spawn_requirement": "required",
+  "fallback_mode": "none",
+  "native_thread_evidence": {
+    "spawned_agents": [
+      {
+        "lane_id": "onboarding_review",
+        "spawn_tool": "collaboration.spawn_agent",
+        "agent_id_or_thread_id": "/root/onboarding_review",
+        "wait_evidence": "three bounded reviews collected",
+        "close_evidence": "list_agents confirms completed; no close API available",
+        "result_collected": true
+      }
+    ]
+  },
+  "lanes_total": 2,
+  "verification": {
+    "fresh": true,
+    "local": "build/check/real quickstart/fixed HTTP/fmt/contracts passed",
+    "public": "GitHub Actions run 34447873706 success; KV, dynamic, role deletion and 401-rotate-200 passed"
+  },
+  "remaining": [
+    "GitHub App browser authentication",
+    "temporary private repo and manifest callback retained until App acceptance"
+  ],
+  "local_state": {
+    "main_repo_committed": false,
+    "local_hosts_modified": false,
+    "test_volumes_cleaned": 13
+  },
+  "run_log": {
+    "path": "outputs/rekey-onboarding-acceptance-20260910/threads-run-log.json",
+    "write_status": "written",
+    "validation": "append_run_log.py rejected collaboration.spawn_agent; schema allowlist only accepts multi_agent_v1.spawn_agent. Actual tool evidence preserved without inventing a tool name or modifying the skill."
+  }
+}

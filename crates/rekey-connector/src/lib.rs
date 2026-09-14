@@ -56,6 +56,22 @@ const CONTRACTS: &[ConnectorContract] = &[
     },
     ConnectorContract {
         format_version: CONNECTOR_CONTRACT_FORMAT_VERSION,
+        id: "keycloak-token-exchange",
+        version: 1,
+        credential_kind: CredentialKind::KeycloakTokenExchange,
+        effects: &[
+            CredentialEffect::Exchange,
+            CredentialEffect::Inject,
+            CredentialEffect::Revoke,
+        ],
+        exchange_protocol: Some(ExchangeProtocol::OAuthTokenExchange),
+        source: ConnectorSource::BuiltInBinary,
+        isolation: ConnectorIsolation::BrokerProcess,
+        remote_effect: true,
+        revoke_before_success: true,
+    },
+    ConnectorContract {
+        format_version: CONNECTOR_CONTRACT_FORMAT_VERSION,
         id: "vault-dynamic-source",
         version: 1,
         credential_kind: CredentialKind::VaultDynamicSource,
@@ -87,6 +103,7 @@ pub enum BuiltInConnector {
     GitHubAppInstallationV1,
     VaultKvV2SourceV1,
     VaultDynamicSourceV1,
+    KeycloakTokenExchangeV1,
 }
 
 impl BuiltInConnector {
@@ -94,8 +111,9 @@ impl BuiltInConnector {
         match self {
             Self::FixedHttpHeaderV1 => &CONTRACTS[0],
             Self::GitHubAppInstallationV1 => &CONTRACTS[1],
-            Self::VaultKvV2SourceV1 => &CONTRACTS[3],
-            Self::VaultDynamicSourceV1 => &CONTRACTS[2],
+            Self::VaultKvV2SourceV1 => &CONTRACTS[4],
+            Self::VaultDynamicSourceV1 => &CONTRACTS[3],
+            Self::KeycloakTokenExchangeV1 => &CONTRACTS[2],
         }
     }
 }
@@ -163,10 +181,19 @@ pub fn github_action_is_reserved(action: &FixedHttpAction) -> bool {
         || (action.method == rekey_domain::action::FixedMethod::Post
             && path.strip_prefix("/repos/").is_some_and(|tail| {
                 let mut segments = tail.split('/');
-                segments.next().is_some_and(|value| !value.is_empty())
-                    && segments.next().is_some_and(|value| !value.is_empty())
-                    && segments.next() == Some("issues")
-                    && segments.next().is_none()
+                let owner_ok = segments.next().is_some_and(|value| !value.is_empty());
+                let repo_ok = segments.next().is_some_and(|value| !value.is_empty());
+                if !(owner_ok && repo_ok && segments.next() == Some("issues")) {
+                    return false;
+                }
+                match (segments.next(), segments.next(), segments.next()) {
+                    (None, _, _) => true,
+                    (Some(number), Some("comments"), None) => number
+                        .parse::<u64>()
+                        .ok()
+                        .is_some_and(|parsed| parsed != 0 && parsed.to_string() == number),
+                    _ => false,
+                }
             }));
     action.origin.host() == "api.github.com"
         && action.origin.port() == 443
@@ -185,6 +212,10 @@ pub fn resolve_builtin(
         }
         CredentialKind::OpaqueToken => Err(ConnectorSelectionError::SelectionRejected),
         CredentialKind::GitHubAppInstallation => Ok(BuiltInConnector::GitHubAppInstallationV1),
+        CredentialKind::KeycloakTokenExchange if !github_action_is_reserved(action) => {
+            Ok(BuiltInConnector::KeycloakTokenExchangeV1)
+        }
+        CredentialKind::KeycloakTokenExchange => Err(ConnectorSelectionError::SelectionRejected),
         CredentialKind::VaultKvV2Source if !github_action_is_reserved(action) => {
             Ok(BuiltInConnector::VaultKvV2SourceV1)
         }

@@ -13,8 +13,8 @@ use crate::authorization::{ApprovalMode, PolicyVersion, ResourceRef, SchemaId};
 use crate::capability::ActionVersionRef;
 use crate::credential::{CredentialLabel, CredentialMetadata};
 use crate::ids::{
-    ActionId, ApprovalRequestId, ApproverId, CredentialId, PolicyRuleId, PolicySignerId, RequestId,
-    SessionId,
+    ActionId, ApprovalRequestId, ApproverId, CredentialId, PolicyRuleId, PolicySignerId,
+    PrincipalId, RequestId, SessionId,
 };
 
 pub const FRAME_MAGIC: [u8; 4] = *b"RKIP";
@@ -27,6 +27,7 @@ pub const ADMIN_SECRET_BODY_MAX_BYTES: u32 = 2 * ADMIN_SECRET_FIELD_MAX_BYTES + 
 pub const AGENT_BODY_MAX_BYTES: u32 = 1024 * 1024;
 pub const WORKLOAD_TOKEN_MAX_BYTES: u32 = 16 * 1024;
 pub const RESPONSE_BODY_MAX_BYTES: u32 = 4 * 1024 * 1024;
+pub const APPROVAL_PENDING_MAX: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Channel {
@@ -79,6 +80,10 @@ pub mod admin_msg {
     pub const GITHUB_WEBHOOK_APPLY: u16 = 24;
     pub const CREDENTIAL_ROTATE_VAULT_KV: u16 = 25;
     pub const CREDENTIAL_ROTATE_VAULT_DYNAMIC: u16 = 26;
+    pub const CREDENTIAL_ROTATE_KEYCLOAK: u16 = 27;
+    pub const APPROVAL_ORIGIN: u16 = 28;
+    pub const APPROVAL_PENDING: u16 = 29;
+    pub const APPROVAL_GET: u16 = 30;
 }
 
 /// Agent channel message types.
@@ -519,11 +524,146 @@ impl ApprovalChallenge {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SignedApprovalChallenge {
+    pub record_type: String,
+    pub challenge: ApprovalChallenge,
+    pub signature: String,
+}
+
+impl SignedApprovalChallenge {
+    pub fn validate(&self) -> Result<(), crate::DomainError> {
+        if self.record_type != "rekey.approval.challenge.envelope.v1"
+            || !is_canonical_unpadded_base64url(self.signature.as_str(), 64)
+        {
+            return Err(invalid_response());
+        }
+        self.challenge.validate()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalOriginResponse {
+    pub algorithm: String,
+    pub public_key: String,
+}
+
+impl ApprovalOriginResponse {
+    pub fn validate(&self) -> Result<(), crate::DomainError> {
+        if self.algorithm != "ed25519" || !is_lower_hex(&self.public_key, 64) {
+            return Err(invalid_response());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalGetMeta {
+    pub approval_request_id: ApprovalRequestId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalPendingItem {
+    pub approval_request_id: ApprovalRequestId,
+    pub session_id: SessionId,
+    pub principal_id: PrincipalId,
+    pub action_id: ActionId,
+    pub action_version: u64,
+    pub created_at_ms: i64,
+    pub max_expires_at_ms: i64,
+    pub mode: ApprovalMode,
+    pub quorum: u8,
+    pub max_uses: u32,
+    pub parameter_sha256: String,
+}
+
+impl ApprovalPendingItem {
+    pub fn from_challenge(challenge: &ApprovalChallenge) -> Self {
+        Self {
+            approval_request_id: challenge.approval_request_id,
+            session_id: challenge.session_id,
+            principal_id: challenge.principal_id,
+            action_id: challenge.action_id,
+            action_version: challenge.action_version,
+            created_at_ms: challenge.created_at_ms,
+            max_expires_at_ms: challenge.max_expires_at_ms,
+            mode: challenge.mode,
+            quorum: challenge.quorum,
+            max_uses: challenge.max_uses,
+            parameter_sha256: challenge.parameter_sha256.clone(),
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), crate::DomainError> {
+        let valid_common = self.action_version > 0
+            && is_lower_hex(&self.parameter_sha256, 64)
+            && (1..=2).contains(&self.quorum)
+            && self.created_at_ms >= 0
+            && self.max_expires_at_ms > self.created_at_ms;
+        let valid_mode = match self.mode {
+            ApprovalMode::OneTime => self.max_uses == 1,
+            ApprovalMode::TimeWindow => (1..=10_000).contains(&self.max_uses),
+        };
+        if !valid_common || !valid_mode {
+            return Err(invalid_response());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalPendingResponse {
+    pub record_type: String,
+    pub challenges: Vec<ApprovalPendingItem>,
+}
+
+impl ApprovalPendingResponse {
+    pub fn validate(&self) -> Result<(), crate::DomainError> {
+        if self.record_type != "rekey.approval.pending.v1"
+            || self.challenges.len() > APPROVAL_PENDING_MAX
+        {
+            return Err(invalid_response());
+        }
+        let mut seen = BTreeSet::new();
+        for window in self.challenges.windows(2) {
+            let left = (window[0].created_at_ms, window[0].approval_request_id);
+            let right = (window[1].created_at_ms, window[1].approval_request_id);
+            if left > right {
+                return Err(invalid_response());
+            }
+        }
+        for item in &self.challenges {
+            if !seen.insert(item.approval_request_id) {
+                return Err(invalid_response());
+            }
+            item.validate()?;
+        }
+        Ok(())
+    }
+}
+
 fn is_lower_hex(value: &str, expected_len: usize) -> bool {
     value.len() == expected_len
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn is_canonical_unpadded_base64url(value: &str, decoded_len: usize) -> bool {
+    let encoded_len = decoded_len
+        .checked_mul(8)
+        .and_then(|bits| bits.checked_add(5))
+        .map(|bits| bits / 6)
+        .unwrap_or(0);
+    value.len() == encoded_len
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
 }
 
 fn invalid_response() -> crate::DomainError {

@@ -1,0 +1,42 @@
+name: Public Rekey acceptance
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  public-vault:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      RUSTUP_HOME: /tmp/rekey-rustup
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.95.0
+          components: clippy,rustfmt
+      - name: Install test dependencies
+        run: |
+          python3 -m venv /tmp/rekey-test-venv
+          /tmp/rekey-test-venv/bin/pip install 'psycopg[binary]'
+          curl --fail --location https://github.com/cloudflare/cloudflared/releases/download/2026.7.1/cloudflared-linux-amd64 -o /tmp/cloudflared
+          chmod +x /tmp/cloudflared
+          sudo mv /tmp/cloudflared /usr/local/bin/cloudflared
+          docker pull hashicorp/vault:1.20.3
+          docker pull postgres:16-alpine
+      - name: Build exact source snapshot
+        run: cargo build --workspace --locked
+      - name: Run real CLI onboarding tests
+        run: REKEY_QUICKSTART_REAL=1 PYTHONDONTWRITEBYTECODE=1 /tmp/rekey-test-venv/bin/python scripts/test-agent-quickstart.py
+      - name: Public Vault and Agent repair acceptance
+        run: /tmp/rekey-test-venv/bin/python public-vault.py
+      - name: Verify temporary infrastructure cleanup
+        if: always()
+        run: |
+          test -z "$(docker ps -aq --filter name=rekey-public-20260910)"
+          test -z "$(docker network ls -q --filter name=rekey-public-20260910-net)"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: public-acceptance-evidence
+          path: evidence/
+          retention-days: 1

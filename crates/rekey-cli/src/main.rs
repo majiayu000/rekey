@@ -178,6 +178,14 @@ enum CredentialCommand {
         #[command(flatten)]
         step_up: StepUpArgs,
     },
+    /// Add a closed Keycloak standard token exchange profile.
+    AddKeycloak {
+        label: String,
+        #[arg(long)]
+        file: PathBuf,
+        #[command(flatten)]
+        step_up: StepUpArgs,
+    },
     /// Add a closed one-shot Vault dynamic lease source profile.
     AddVaultDynamic {
         label: String,
@@ -206,6 +214,14 @@ enum CredentialCommand {
     },
     /// Rotate a Vault KV v2 fixed-version source profile.
     RotateVaultKv {
+        credential_id: String,
+        #[arg(long)]
+        file: PathBuf,
+        #[command(flatten)]
+        step_up: StepUpArgs,
+    },
+    /// Rotate a closed Keycloak standard token exchange profile.
+    RotateKeycloak {
         credential_id: String,
         #[arg(long)]
         file: PathBuf,
@@ -320,6 +336,12 @@ enum PolicyTrustCommand {
 
 #[derive(Subcommand)]
 enum ApprovalCommand {
+    /// Pin this vault's approval-origin public key.
+    Origin,
+    /// List unused in-memory approval challenges.
+    Pending,
+    /// Print the origin-signed envelope for a pending approval request.
+    Get { approval_request_id: String },
     Prepare {
         /// ACTION_ID@VERSION
         action: String,
@@ -507,6 +529,28 @@ fn main() {
                 step_up.recovery,
                 step_up.password_stdin,
             ),
+            CredentialCommand::AddKeycloak {
+                label,
+                file,
+                step_up,
+            } => commands::credential_add_keycloak(
+                &state_dir,
+                &label,
+                &file,
+                step_up.recovery,
+                step_up.password_stdin,
+            ),
+            CredentialCommand::RotateKeycloak {
+                credential_id,
+                file,
+                step_up,
+            } => commands::credential_rotate_keycloak(
+                &state_dir,
+                &credential_id,
+                &file,
+                step_up.recovery,
+                step_up.password_stdin,
+            ),
             CredentialCommand::List => commands::credential_list(&state_dir),
             CredentialCommand::Rotate {
                 credential_id,
@@ -646,6 +690,11 @@ fn main() {
             ),
             PolicyCommand::Status => commands::policy_status(&state_dir),
         },
+        Command::Approval(ApprovalCommand::Origin) => commands::approval_origin(&state_dir),
+        Command::Approval(ApprovalCommand::Pending) => commands::approval_pending(&state_dir),
+        Command::Approval(ApprovalCommand::Get {
+            approval_request_id,
+        }) => commands::approval_get(&state_dir, &approval_request_id),
         Command::Approval(ApprovalCommand::Prepare {
             action,
             capability,

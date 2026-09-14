@@ -229,7 +229,9 @@ pub async fn screen_public_endpoint(
     select_public_endpoint(host, &addrs)
 }
 
-fn select_public_endpoint(
+/// Screen already-resolved addresses. Fixtures may run this on a public
+/// placeholder, then replace `addr` with a post-screen local inject.
+pub fn select_public_endpoint(
     host: &str,
     addrs: &[SocketAddr],
 ) -> Result<ScreenedEndpoint, UpstreamError> {

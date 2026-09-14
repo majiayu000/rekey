@@ -1,0 +1,33 @@
+{
+  "tested_at": "2026-09-10T06:31:18.470802+00:00",
+  "layer": "B",
+  "source_kind": "vault-kv-v2-source-v1",
+  "source_origin": "https://wrestling-def-reviewed-sum.trycloudflare.com",
+  "source_mount": "secret",
+  "action_origin": "https://hours-watches-further-race.trycloudflare.com",
+  "source_selection": {
+    "path": "rekey/probe",
+    "version": 1,
+    "key": "token"
+  },
+  "action_method": "POST",
+  "action_path": "/check",
+  "upstream_status": 200,
+  "required_events": [
+    "execution.started",
+    "execution.finished"
+  ],
+  "rekey_version": "rekey 2.0.0-alpha.2",
+  "limitation": "one public HTTPS source and fixed action; not general Vault support",
+  "vault_version": "Vault v1.20.3 (7665ff29d77e5cb3ea9ddbeaed49ee312e53c6b8), built 2025-08-27T10:53:27Z",
+  "vault_image_digest": "sha256:1262354cd28697b7982ea3b9b6f159a996bdaad0b5270765e31b67797ce15bea",
+  "tunnel_route": "JP-OSAKA-Reality, temporary process-only rule",
+  "unauthenticated_action_status": 401,
+  "topology": "Cloudflare edge HTTPS -> Cloudflare Tunnel -> loopback Vault OSS / authenticated test API",
+  "trust_boundary": "Cloudflare terminates public TLS; local services contain disposable test credentials only",
+  "scope": "KV v2 exact version read and fixed authenticated Action only; no dynamic lease or GitHub App field claim",
+  "binaries_sha256": {
+    "rekey": "f32b6daa19775f7ee8c45abedd68ffcb3786c4b94c84e4f0a34e8a71c28b82ae",
+    "rekeyd": "80be275866c186293797e1ee142c87463b165fb0a429dc47cf853e8bf06bbb31"
+  }
+}

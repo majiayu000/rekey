@@ -1,0 +1,5 @@
+public-vault	Public Vault and Agent repair acceptance	2026-09-10T07:05:04.3294061Z kv authenticated PASS
+public-vault	Public Vault and Agent repair acceptance	2026-09-10T07:05:31.9354874Z dynamic authenticated PASS
+public-vault	Public Vault and Agent repair acceptance	2026-09-10T07:06:00.7547257Z Agent wrapper public 401 -> hidden TTY rotate -> explicit 200: PASS
+public-vault	Public Vault and Agent repair acceptance	2026-09-10T07:06:00.7691613Z Dynamic database role revoked: PASS
+public-vault	Public Vault and Agent repair acceptance	2026-09-10T07:06:01.7465130Z Temporary containers, anonymous volumes, network, tunnel and secrets cleaned

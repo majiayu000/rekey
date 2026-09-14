@@ -1,0 +1,32 @@
+{
+  "temporary_repo": "majiayu000/rekey-wid10-20260910-1789030338",
+  "deleted": true,
+  "verified_http_status": 404,
+  "active_runs_before_delete": 0,
+  "completed_runs": [
+    {
+      "conclusion": "success",
+      "databaseId": 34459644320,
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "databaseId": 34458227976,
+      "status": "completed"
+    },
+    {
+      "conclusion": "failure",
+      "databaseId": 34457720516,
+      "status": "completed"
+    },
+    {
+      "conclusion": "failure",
+      "databaseId": 34457526999,
+      "status": "completed"
+    }
+  ],
+  "checked_at": "2026-09-10T09:30:25.237047+00:00",
+  "evidence_downloaded_before_delete": true,
+  "receipt_sha256": "b9872f29642ee743890a80b91d1563a1334a0711b51a3a136af9cd2c8e790660",
+  "jwt_like_values_found_in_saved_logs": false
+}
