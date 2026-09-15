@@ -39,7 +39,10 @@ mod vault_kv;
 
 fn admin_body_limit(message_type: u16) -> u32 {
     match message_type {
-        admin_msg::DESKTOP_LOGIN | admin_msg::DESKTOP_REVEAL => ipc::ADMIN_PROOF_BODY_MAX_BYTES,
+        admin_msg::DESKTOP_LOGIN
+        | admin_msg::DESKTOP_REVEAL
+        | admin_msg::DESKTOP_REMEMBER
+        | admin_msg::DESKTOP_RESUME => ipc::ADMIN_PROOF_BODY_MAX_BYTES,
         admin_msg::DESKTOP_ADD => ipc::ADMIN_SECRET_BODY_MAX_BYTES,
         admin_msg::UNLOCK_PASSWORD | admin_msg::UNLOCK_RECOVERY => {
             ipc::ADMIN_SECRET_FIELD_MAX_BYTES
@@ -182,6 +185,30 @@ async fn dispatch(
     ctx: &BrokerCtx,
 ) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
     match frame.header.message_type {
+        admin_msg::DESKTOP_REMEMBER => {
+            let deadline = admin_mutation_deadline();
+            empty_meta(frame)?;
+            let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
+            let _owner = ctx.lifecycle.coordinate_until(deadline).await?;
+            ctx.lifecycle.reject_if_not_running()?;
+            let (key, expires) = ctx
+                .authority
+                .desktop_remember(proof_from(kind, proof), Some(deadline.into_std()))
+                .await?;
+            Ok((
+                json(&serde_json::json!({"expires_at_ms": expires}))?,
+                key.to_vec(),
+            ))
+        }
+        admin_msg::DESKTOP_RESUME => {
+            empty_meta(frame)?;
+            let (_, key) = ipc::parse_proof_body(&frame.body)?;
+            let (token, expires) = ctx.resume_desktop(SecretInput::from_slice(key)).await?;
+            Ok((
+                json(&serde_json::json!({"expires_at_ms": expires}))?,
+                token.to_vec(),
+            ))
+        }
         admin_msg::DESKTOP_LOGIN => {
             empty_meta(frame)?;
             let (kind, proof) = ipc::parse_proof_body(&frame.body)?;

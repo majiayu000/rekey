@@ -97,6 +97,28 @@ impl AuthorityHandle {
         })
     }
 
+    pub async fn desktop_remember(
+        &self,
+        proof: UnlockProof,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<(Zeroizing<Vec<u8>>, i64), AuthorityError> {
+        call!(self, |reply| AuthorityCommand::DesktopRemember {
+            proof,
+            not_after,
+            reply
+        })
+    }
+    pub async fn desktop_resume(
+        &self,
+        token: SecretInput,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<i64, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::DesktopResume {
+            token,
+            not_after,
+            reply
+        })
+    }
     pub async fn desktop_issue(&self) -> Result<Zeroizing<Vec<u8>>, AuthorityError> {
         call!(self, |reply| AuthorityCommand::DesktopIssue { reply })
     }
@@ -132,8 +154,20 @@ impl AuthorityHandle {
         call!(self, |reply| AuthorityCommand::Unlock { proof, reply })
     }
 
+    pub async fn lock_for_restart(&self, reason: &'static str) -> Result<(), AuthorityError> {
+        call!(self, |reply| AuthorityCommand::Lock {
+            reason,
+            preserve_desktop: true,
+            reply
+        })
+    }
+
     pub async fn lock(&self, reason: &'static str) -> Result<(), AuthorityError> {
-        call!(self, |reply| AuthorityCommand::Lock { reason, reply })
+        call!(self, |reply| AuthorityCommand::Lock {
+            reason,
+            preserve_desktop: false,
+            reply
+        })
     }
 
     pub async fn shutdown(&self, proof: Option<UnlockProof>) -> Result<(), AuthorityError> {

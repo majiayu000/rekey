@@ -1,10 +1,54 @@
 import Foundation
 import SwiftUI
 import AppKit
+import Security
 
 struct UIError: LocalizedError {
     let message: String
     var errorDescription: String? { message }
+}
+
+struct RememberedUnlock: Codable {
+    let key: String
+    let expiresAt: Date
+
+    static func receipt(_ data: Data) throws -> RememberedUnlock {
+        guard let text = String(data: data, encoding: .utf8) else { throw UIError(message: "恢复授权响应无效。") }
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        guard lines.count == 2, let milliseconds = Double(lines[0]), milliseconds.isFinite,
+              lines[1].count == 64, lines[1].allSatisfy(\.isHexDigit) else { throw UIError(message: "恢复授权响应无效。") }
+        return RememberedUnlock(key: String(lines[1]), expiresAt: Date(timeIntervalSince1970: milliseconds / 1000))
+    }
+    private static func query(_ directory: String) -> [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword,
+         kSecAttrService as String: "io.github.majiayu000.rekey.remembered-unlock",
+         kSecAttrAccount as String: URL(fileURLWithPath: directory).standardizedFileURL.resolvingSymlinksInPath().path,
+         kSecAttrSynchronizable as String: false]
+    }
+    static func forget(_ directory: String) throws {
+        let code = SecItemDelete(query(directory) as CFDictionary)
+        guard code == errSecSuccess || code == errSecItemNotFound else { throw UIError(message: "无法清除钥匙串中的解锁授权（\(code)）。") }
+    }
+    func save(_ directory: String) throws {
+        try Self.forget(directory)
+        var attributes = Self.query(directory)
+        attributes[kSecValueData as String] = try JSONEncoder().encode(self)
+        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        let code = SecItemAdd(attributes as CFDictionary, nil)
+        guard code == errSecSuccess else { throw UIError(message: "已解锁，但无法保存 7 天恢复授权到钥匙串（\(code)）。") }
+    }
+    static func load(_ directory: String) throws -> RememberedUnlock? {
+        var attributes = query(directory)
+        attributes[kSecReturnData as String] = true
+        attributes[kSecMatchLimit as String] = kSecMatchLimitOne
+        var item: CFTypeRef?
+        let code = SecItemCopyMatching(attributes as CFDictionary, &item)
+        if code == errSecItemNotFound { return nil }
+        guard code == errSecSuccess, let data = item as? Data else { throw UIError(message: "无法读取钥匙串中的解锁授权（\(code)）。") }
+        let record = try JSONDecoder().decode(RememberedUnlock.self, from: data)
+        guard record.expiresAt > Date() else { try forget(directory); return nil }
+        return record
+    }
 }
 
 // Each child receives fixed argv and a private stdin pipe. Nothing invokes a shell.
@@ -226,6 +270,7 @@ final class AppModel: ObservableObject {
     @Published var copiedCredential: String?
     @Published var visibleSecret: String?
     private var desktopExpiry = Date.distantPast
+    private var resumeAttempted = false
     @Published var selectedCredential: String? { didSet { visibleSecret = nil; copiedCredential = nil } }
     @Published var busy = false
     @Published var error: String?
@@ -254,7 +299,7 @@ final class AppModel: ObservableObject {
     }
     var desktopReady: Bool { desktopToken != nil && Date() < desktopExpiry && unlocked }
     func requestDesktopLogin() {
-        operation = Operation(title: "解锁管理会话", detail: "验证一次后，7 天内可连续保存、查看和复制密钥。", arguments: ["unlock"])
+        operation = Operation(title: "解锁管理会话", detail: "验证一次后，7 天内可连续保存、查看和复制密钥，重启也能自动解锁。手动锁定会取消此授权。", arguments: ["unlock"])
     }
     func addAPIKey(label: String, secret: String) async -> Bool {
         guard desktopReady, let token = desktopToken else { desktopToken = nil; error = "管理会话已过期，请关闭窗口并重新解锁。"; return false }
@@ -300,6 +345,7 @@ final class AppModel: ObservableObject {
     }
     func changeDirectory(_ path: String) {
         guard !busy else { return }
+        resumeAttempted = false
         stateDirectory = path
         UserDefaults.standard.set(path, forKey: "stateDirectory")
         status = nil; clearCache(); result = nil; error = nil
@@ -310,16 +356,40 @@ final class AppModel: ObservableObject {
         busy = true
         defer { busy = false }
         let client = cli
+        var resumedAccess = false
         do {
             let current = try await Task.detached { try client.decode(ServiceStatus.self, passive ? ["status", "--passive"] : ["status"]) }.value
+            if status?.unlocked == true && !current.unlocked { resumeAttempted = false }
             status = current; connectionError = nil
             if Date() >= desktopExpiry { desktopToken = nil; visibleSecret = nil; copiedCredential = nil }
             if !current.unlocked { clearCache() }
+            if !desktopReady && !resumeAttempted {
+                resumeAttempted = true
+                do {
+                    if let remembered = try RememberedUnlock.load(stateDirectory) {
+                        let data = try await Task.detached { try client.run(["desktop-resume"], input: remembered.key + "\n") }.value
+                        let resumed = try RememberedUnlock.receipt(data)
+                        desktopToken = resumed.key; desktopExpiry = resumed.expiresAt
+                        resumedAccess = true
+                        self.error = nil
+                        status = try await Task.detached { try client.decode(ServiceStatus.self, ["status", "--passive"]) }.value
+                    }
+                } catch {
+                    desktopToken = nil; desktopExpiry = .distantPast
+                    let retryable = error.localizedDescription.contains("AUTHORITY_BUSY") || error.localizedDescription.contains("DRAINING") || error.localizedDescription.contains("IPC_UNAVAILABLE")
+                    if retryable { resumeAttempted = false }
+                    self.error = (retryable ? "服务暂时忙碌，稍后会自动重试。\n" : "自动解锁失败，请重新输入保险库密码。\n") + error.localizedDescription
+                    if error.localizedDescription.contains("INVALID_UNLOCK_CREDENTIAL") {
+                        do { try RememberedUnlock.forget(stateDirectory) }
+                        catch { self.error = error.localizedDescription }
+                    }
+                }
+            }
         } catch {
-            status = nil; clearCache(); connectionError = error.localizedDescription
+            status = nil; clearCache(); resumeAttempted = false; connectionError = error.localizedDescription
             return
         }
-        if passive { return }
+        if passive && !resumedAccess { return }
         do {
             if unlocked {
                 let lists = try await Task.detached {
@@ -370,6 +440,11 @@ final class AppModel: ObservableObject {
             if desktopLogin {
                 guard output.count == 64 && output.allSatisfy(\.isHexDigit) else { throw UIError(message: "管理会话响应无效。") }
                 desktopToken = output; desktopExpiry = Date().addingTimeInterval(7 * 24 * 60 * 60)
+                let rememberArgs = recovery ? ["desktop-remember", "--recovery"] : ["desktop-remember"]
+                let rememberedData = try await Task.detached { try client.run(rememberArgs, input: body) }.value
+                let remembered = try RememberedUnlock.receipt(rememberedData)
+                try remembered.save(stateDirectory)
+                resumeAttempted = true
             } else { result = ResultMessage(title: op.title + "完成", text: output, sensitive: op.sensitiveResult) }
         } catch { operationError = error.localizedDescription }
         if let file = op.temporaryFile {
@@ -380,6 +455,11 @@ final class AppModel: ObservableObject {
         await refresh()
         if let operationError { self.error = operationError }
         else if op.arguments == ["init"] { startService() }
+    }
+    func startRememberedService() {
+        guard status == nil && !needsSetup else { return }
+        do { if try RememberedUnlock.load(stateDirectory) != nil { startService() } }
+        catch { self.error = error.localizedDescription }
     }
     func startService() {
         guard !busy else { return }
@@ -419,8 +499,12 @@ final class AppModel: ObservableObject {
         } catch { self.error = "无法启动服务：\(error.localizedDescription)" }
     }
     func lock() async {
+        resumeAttempted = true
+        var keychainError: String?
+        do { try RememberedUnlock.forget(stateDirectory) } catch { keychainError = error.localizedDescription }
         await perform(Operation(title: "锁定", detail: "", arguments: ["lock"], proof: false))
         result = nil
+        if let keychainError { error = keychainError }
     }
     func exportApproval(_ item: PendingApproval) async {
         guard let destination = chooseSave("approval-\(item.id).json") else { return }

@@ -150,6 +150,11 @@ jobs:
             -framework SwiftUI -framework AppKit \
             apps/macos/Model.swift scripts/test-macos-ui.swift -o /tmp/rekey-ui-contract
           /tmp/rekey-ui-contract target/macos-ui/Rekey.app/Contents/Resources/bin/rekey
+          python3 scripts/test-human-vault.py target/macos-ui/Rekey.app/Contents/Resources/bin/rekey
+          xcrun swiftc -warnings-as-errors -swift-version 5 -O \
+            -framework SwiftUI -framework AppKit \
+            apps/macos/Model.swift scripts/test-macos-keychain.swift -o /tmp/rekey-keychain-contract
+          /tmp/rekey-keychain-contract
 
   g2-linux:
     name: Linux container G2 reference boundary

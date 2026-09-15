@@ -63,7 +63,7 @@ struct RootView: View {
             }
         }
         .background(canvas).foregroundStyle(ink).tint(green)
-        .task { await model.refresh(); if model.status == nil && model.needsSetup { model.beginSetup() } }
+        .task { await model.refresh(); if model.status == nil && model.needsSetup { model.beginSetup() } else { model.startRememberedService() } }
         .onReceive(Timer.publish(every: 15, on: .main, in: .common).autoconnect()) { _ in
             if phase == .active && !model.busy && model.operation == nil && model.result == nil && !model.showAddCredential && !model.showSession && !showActionForm {
                 Task { await model.refresh(passive: true) }

@@ -61,6 +61,7 @@ impl BrokerCtx {
         execution_task: &mut JoinHandle<Result<(), BrokerError>>,
         completed_execution: Option<ExecutionTaskResult>,
     ) -> StopDisposition {
+        let preserve_desktop = !matches!(&cause, StopCause::Fault);
         let lock_reason = match &cause {
             StopCause::Admin(_) => "admin-shutdown",
             StopCause::Signal => "service-manager-signal",
@@ -194,12 +195,20 @@ impl BrokerCtx {
             ))));
         }
 
-        if must_record_signal_lock
+        if !preserve_desktop
+            || must_record_signal_lock
             || status
                 .as_ref()
                 .is_some_and(|status| status.state == "unlocked")
         {
-            match tokio::time::timeout_at(stop_deadline, self.authority.lock(lock_reason)).await {
+            let lock = async {
+                if !preserve_desktop || first_error.is_some() {
+                    self.authority.lock(lock_reason).await
+                } else {
+                    self.authority.lock_for_restart(lock_reason).await
+                }
+            };
+            match tokio::time::timeout_at(stop_deadline, lock).await {
                 Ok(Ok(())) => {
                     *self.policy.write().await = None;
                     self.lifecycle.enter_locked();

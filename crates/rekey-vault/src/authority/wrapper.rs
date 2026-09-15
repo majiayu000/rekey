@@ -72,6 +72,7 @@ impl Worker {
             reason,
         ))?;
         ensure_mutation_current(not_after)?;
+        self.forget_desktop()?;
         let result = self
             .store
             .replace_wrapper(WrapperKind::Password, &replacement, now, audit);
@@ -123,6 +124,7 @@ impl Worker {
             "password-step-up",
         ))?;
         ensure_mutation_current(not_after)?;
+        self.forget_desktop()?;
         let result = self
             .store
             .replace_wrapper(WrapperKind::Recovery, &replacement, now, audit);

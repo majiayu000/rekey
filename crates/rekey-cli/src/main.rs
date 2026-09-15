@@ -86,6 +86,13 @@ enum Command {
         #[arg(long)]
         recovery: bool,
     },
+    /// Remember this desktop for seven days; proof on stdin, key on stdout.
+    DesktopRemember {
+        #[arg(long)]
+        recovery: bool,
+    },
+    /// Resume a remembered desktop; key on stdin, session on stdout.
+    DesktopResume,
     /// Save an API key; desktop token and value are read as two stdin lines.
     DesktopAdd { label: String },
     /// Reveal a current credential to the human admin; token is read from stdin.
@@ -467,6 +474,10 @@ fn main() {
         .agent_socket
         .unwrap_or_else(|| state_dir.join("runtime").join("agent.sock"));
     let result = match cli.command {
+        Command::DesktopRemember { recovery } => {
+            commands::desktop_restore_access(&state_dir, false, recovery)
+        }
+        Command::DesktopResume => commands::desktop_restore_access(&state_dir, true, false),
         Command::DesktopLogin { recovery } => commands::desktop_login(&state_dir, recovery),
         Command::DesktopAdd { label } => commands::desktop_add(&state_dir, &label),
         Command::DesktopReveal { credential_id } => {

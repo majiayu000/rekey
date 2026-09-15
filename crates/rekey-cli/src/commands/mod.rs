@@ -858,3 +858,31 @@ pub fn desktop_reveal(state_dir: &Path, credential_id: &str) -> Result<(), CliEr
         .write_all(&value)
         .map_err(|e| CliError::local("IO", e.to_string()))
 }
+
+// Expiry is public; the secret remains in the IPC body and explicit stdout pipe.
+pub fn desktop_restore_access(
+    state_dir: &Path,
+    resume: bool,
+    recovery: bool,
+) -> Result<(), CliError> {
+    let proof = read_step_up(recovery, true)?;
+    let mut body = Zeroizing::new(Vec::with_capacity(5 + proof.len()));
+    ipc::encode_proof_body(proof_kind(recovery), &proof, &mut body);
+    let message = if resume {
+        admin_msg::DESKTOP_RESUME
+    } else {
+        admin_msg::DESKTOP_REMEMBER
+    };
+    let (meta, secret) = admin(state_dir)?.call(message, b"{}", &body)?;
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Expiry {
+        expires_at_ms: i64,
+    }
+    let expiry: Expiry = serde_json::from_slice(&meta)
+        .map_err(|_| CliError::local("INVALID_FRAME", "invalid desktop expiry"))?;
+    let mut out = std::io::stdout().lock();
+    writeln!(out, "{}", expiry.expires_at_ms)
+        .and_then(|_| out.write_all(&secret))
+        .map_err(|e| CliError::local("IO", e.to_string()))
+}

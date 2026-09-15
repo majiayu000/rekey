@@ -35,7 +35,7 @@ target/release/rekey-approval-sign --help
 
 签名文件的准备和 Agent shell/MCP 接入继续见根目录 `docs/user-guide.md`。这一版没有自动配置 Agent、GUI 签名、任意执行控制台或常驻通知。
 
-关闭 UI 不会终止 Broker；默认由 Broker 在空闲 7 天后锁定。可主动点击“锁定”或设置里的“停止服务”。不缓存密码；密码验证后在当前 UI 内存中保存 7 天管理会话，允许连续添加 API Key 和显式查看/复制当前有效凭证。复制后 30 秒只清理本应用仍占有的剪贴板内容，无法清理第三方历史记录；短期 capability 和恢复结果只在当前结果窗口中存在，用户可显式保存为新建的 0600 文件。
+关闭 UI 不会终止 Broker；默认由 Broker 在空闲 7 天后锁定。可主动点击“锁定”或设置里的“停止服务”。不缓存密码；手动解锁后，随机恢复密钥保存在 macOS 钥匙串，保险库只保存绑定 vault ID 与到期时间的加密根密钥材料。7 天内重启应用或服务可自动恢复解锁，自动恢复不延长原到期时间。手动锁定、空闲锁定或更改密码/恢复密钥会撤销授权；正常停止服务保留授权。管理会话允许连续添加 API Key 和显式查看/复制当前有效凭证。复制后 30 秒只清理本应用仍占有的剪贴板内容，无法清理第三方历史记录；短期 capability 和恢复结果只在当前结果窗口中存在，用户可显式保存为新建的 0600 文件。
 
 ## 验证
 
@@ -50,3 +50,5 @@ xcrun swiftc -warnings-as-errors -swift-version 5 -O \
 测试使用随机临时保险库和合成凭证，不访问真实 provider。原生界面另行检查空状态、搜索、详情、表单与页面导航。没有把所有 GUI submit 路径宣称为自动化覆盖。
 
 人类密钥管理验收：`python3 scripts/test-human-vault.py target/macos-ui/Rekey.app/Contents/Resources/bin/rekey`。Agent 通道不提供读取，管理会话在锁定后失效。
+
+钥匙串跨进程验证：`xcrun swiftc -swift-version 5 -framework SwiftUI -framework AppKit -framework Security apps/macos/Model.swift scripts/test-macos-keychain.swift -o /tmp/rekey-keychain-contract && /tmp/rekey-keychain-contract`，仅使用随机测试条目，完成后删除。
