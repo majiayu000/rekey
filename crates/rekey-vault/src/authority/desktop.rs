@@ -24,7 +24,9 @@ pub(super) fn begin_runtime(state: &std::path::Path) -> Result<(), AuthorityErro
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => return Err(AuthorityError::storage(e)),
             }
-            fs::remove_file(&marker).map_err(AuthorityError::storage)?;
+            // Keep the existing crash marker throughout recovery. The ticket
+            // deletion must be durable before any later clean stop clears it.
+            return crate::durable::fsync(state).map_err(AuthorityError::storage);
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(AuthorityError::storage(e)),
