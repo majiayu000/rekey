@@ -57,7 +57,7 @@ enum Command {
     },
     /// Run the broker in the foreground (delegates to rekeyd).
     Serve {
-        #[arg(long, default_value = "15m")]
+        #[arg(long, default_value = "7d")]
         idle_lock: String,
     },
     /// Restore a backup into an empty state directory (delegates to rekeyd).
@@ -81,6 +81,15 @@ enum Command {
         #[arg(last = true, required = true)]
         command: Vec<std::ffi::OsString>,
     },
+    /// Desktop admin login; proof is read only from stdin, token written to stdout.
+    DesktopLogin {
+        #[arg(long)]
+        recovery: bool,
+    },
+    /// Save an API key; desktop token and value are read as two stdin lines.
+    DesktopAdd { label: String },
+    /// Reveal a current credential to the human admin; token is read from stdin.
+    DesktopReveal { credential_id: String },
     /// Unlock the running broker.
     Unlock {
         /// Use the recovery key to unlock; does not reset the password.
@@ -92,7 +101,11 @@ enum Command {
     /// Lock the running broker and revoke all sessions.
     Lock,
     /// Show broker status.
-    Status,
+    Status {
+        /// Observe without resetting the idle-lock timer.
+        #[arg(long)]
+        passive: bool,
+    },
     /// Stop the running broker (step-up proof required while unlocked).
     Shutdown {
         #[command(flatten)]
@@ -454,6 +467,11 @@ fn main() {
         .agent_socket
         .unwrap_or_else(|| state_dir.join("runtime").join("agent.sock"));
     let result = match cli.command {
+        Command::DesktopLogin { recovery } => commands::desktop_login(&state_dir, recovery),
+        Command::DesktopAdd { label } => commands::desktop_add(&state_dir, &label),
+        Command::DesktopReveal { credential_id } => {
+            commands::desktop_reveal(&state_dir, &credential_id)
+        }
         Command::Init { password_stdin } => {
             commands::delegate_rekeyd(&state_dir, "init", &[], password_stdin)
         }
@@ -486,7 +504,7 @@ fn main() {
             password_stdin,
         } => commands::unlock(&state_dir, recovery, password_stdin),
         Command::Lock => commands::lock(&state_dir),
-        Command::Status => commands::status(&state_dir),
+        Command::Status { passive } => commands::status(&state_dir, passive),
         Command::Shutdown { step_up } => {
             commands::shutdown(&state_dir, step_up.recovery, step_up.password_stdin)
         }

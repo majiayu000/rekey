@@ -402,8 +402,13 @@ pub fn lock(state_dir: &Path) -> Result<(), CliError> {
     Ok(())
 }
 
-pub fn status(state_dir: &Path) -> Result<(), CliError> {
-    let (meta, _) = admin(state_dir)?.call(admin_msg::STATUS, b"{}", &[])?;
+pub fn status(state_dir: &Path, passive: bool) -> Result<(), CliError> {
+    let message = if passive {
+        admin_msg::PASSIVE_STATUS
+    } else {
+        admin_msg::STATUS
+    };
+    let (meta, _) = admin(state_dir)?.call(message, b"{}", &[])?;
     print_json::<ipc::StatusResponse>(&meta)?;
     Ok(())
 }
@@ -813,3 +818,43 @@ pub fn backup(
 
 #[cfg(test)]
 mod tests;
+
+pub fn desktop_login(state_dir: &Path, recovery: bool) -> Result<(), CliError> {
+    let proof = read_step_up(recovery, true)?;
+    let mut body = Zeroizing::new(Vec::with_capacity(5 + proof.len()));
+    ipc::encode_proof_body(proof_kind(recovery), &proof, &mut body);
+    let (_, token) = admin(state_dir)?.call(admin_msg::DESKTOP_LOGIN, b"{}", &body)?;
+    std::io::stdout()
+        .write_all(&token)
+        .map_err(|e| CliError::local("IO", e.to_string()))
+}
+
+pub fn desktop_add(state_dir: &Path, label: &str) -> Result<(), CliError> {
+    let mut lines = stdin_lines(2)?;
+    let secret = lines.remove(1);
+    let token = lines.remove(0);
+    let mut body = Zeroizing::new(Vec::with_capacity(9 + token.len() + secret.len()));
+    ipc::encode_proof_and_secret_body(ProofKind::Password, &token, &secret, &mut body);
+    let metadata = serde_json::json!({"label":label,"kind":"opaque-token"});
+    let (meta, _) = admin(state_dir)?.call(
+        admin_msg::DESKTOP_ADD,
+        metadata.to_string().as_bytes(),
+        &body,
+    )?;
+    print_json::<CredentialMetadata>(&meta)
+}
+
+pub fn desktop_reveal(state_dir: &Path, credential_id: &str) -> Result<(), CliError> {
+    let token = read_step_up(false, true)?;
+    let mut body = Zeroizing::new(Vec::with_capacity(5 + token.len()));
+    ipc::encode_proof_body(ProofKind::Password, &token, &mut body);
+    let metadata = serde_json::json!({"credential_id":credential_id});
+    let (_, value) = admin(state_dir)?.call(
+        admin_msg::DESKTOP_REVEAL,
+        metadata.to_string().as_bytes(),
+        &body,
+    )?;
+    std::io::stdout()
+        .write_all(&value)
+        .map_err(|e| CliError::local("IO", e.to_string()))
+}

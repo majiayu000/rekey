@@ -84,6 +84,10 @@ pub mod admin_msg {
     pub const APPROVAL_ORIGIN: u16 = 28;
     pub const APPROVAL_PENDING: u16 = 29;
     pub const APPROVAL_GET: u16 = 30;
+    pub const DESKTOP_LOGIN: u16 = 31;
+    pub const DESKTOP_ADD: u16 = 32;
+    pub const DESKTOP_REVEAL: u16 = 33;
+    pub const PASSIVE_STATUS: u16 = 34;
 }
 
 /// Agent channel message types.

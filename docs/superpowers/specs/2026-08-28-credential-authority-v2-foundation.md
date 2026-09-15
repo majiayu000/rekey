@@ -1,3 +1,5 @@
+> 2026-09-15 用户修订：已认证的本机 Admin UI 可以通过短期管理会话添加和读取当前凭证；Agent API 仍禁止读取。该例外覆盖本文 Admin 不可读取/添加必需逐次密码的旧约定，详见 `2026-09-14-native-admin-ui.md` 的个人密钥管理节。
+
 # Rekey Credential Authority v2 Foundation 实施规格
 
 状态：Implemented as G1 public Alpha; current archive `v2.0.0-alpha.2` is vault schema v9; historical `v2.0.0-alpha.1` was v5; H/P/E gates remain open
@@ -516,6 +518,7 @@ pub struct PreparedCredential {
 - Secret buffer 在分配时预设准确 capacity，避免 reallocation copies。
 - 暴露 Secret 只能出现在 crypto 或 executor 的最小 lexical scope。
 - compile-time negative assertion 验证 Secret 类型未实现禁止 trait。
+- Argon2id 派生必须使用释放时清零的工作块和输出缓冲区，包含错误返回路径；启用底层 Argon2/AES 的可用清零支持。
 - 文档明确 zeroize 不能清理寄存器、内核 socket buffer、allocator 历史副本或进程转储；P0 不宣称 mlock。
 
 ## 10. Persistent Storage
@@ -843,7 +846,7 @@ not reset it.
 
 ### 11.3 Idle Lock
 
-- 默认 idle timeout 15 minutes，可在 startup config 设置 1–120 minutes。
+- 默认 idle timeout 7 days，可在 startup config 设置 1 minute–7 days。
 - 成功的 Admin command 或 Agent execution completion 更新 worker activity；execution completion 的更新时间不得停留在 credential preparation。Broker 读取该时钟并走与 explicit lock 相同的 Draining 路径。
 - 正在执行的 Action 不被 idle timer 中途清除 credential：进入 Draining 后不接受新请求，但已获得 permit 的请求继续到其既有 deadline，然后才 zeroize VRK。
 - 上游 Action P0 最大 timeout 120 seconds；Draining 等待上限与此相同。
@@ -1048,7 +1051,7 @@ P0 命令：
 
 ~~~text
 rekey init [--state-dir PATH]
-rekey serve [--state-dir PATH] [--idle-lock 15m]
+rekey serve [--state-dir PATH] [--idle-lock 7d]
 rekey unlock [--recovery]
 rekey lock
 rekey status

@@ -1,5 +1,7 @@
+use aes::Aes256;
 use aes_gcm::aead::{Aead, Payload};
-use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+use aes_gcm::{AesGcm, KeyInit, Nonce, aead::consts::U12};
+type Aes256Gcm = AesGcm<Aes256, U12>;
 use zeroize::Zeroizing;
 
 use super::NONCE_LEN;

@@ -95,6 +95,16 @@ impl Worker {
     ) -> Result<CredentialMetadata, AuthorityError> {
         self.require_unlocked()?;
         self.verify_proof(&proof)?;
+        self.insert_credential(label, kind, secret, not_after)
+    }
+
+    pub(super) fn insert_credential(
+        &mut self,
+        label: CredentialLabel,
+        kind: CredentialKind,
+        secret: SecretInput,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<CredentialMetadata, AuthorityError> {
         if secret.is_empty() {
             return Err(AuthorityError::Domain(
                 rekey_domain::DomainError::InvalidCapability,

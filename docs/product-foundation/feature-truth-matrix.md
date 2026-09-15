@@ -159,3 +159,11 @@ the inbox. Session unit tests and Broker approval contracts cover list, get,
 unknown id, expiry, overflow, and post-execute removal. This is not a GUI,
 push notification, hosted inbox, or Agent-callable sign socket. Human review
 is required before merge.
+
+## Native macOS Admin UI (2026-09-14, source only)
+
+| Feature | State | Release | Limits and evidence |
+| --- | --- | --- | --- |
+| Chinese SwiftUI Admin client | Black-box Verified | — | Local macOS build and observed native credential list/detail/search, protected forms, Action/policy/approval/audit navigation. `scripts/test-macos-ui.swift` exercises the same CLI bridge against a disposable real vault: init, wrong-proof and locked denial, credential lifecycle, Actions, capability lifecycle, policy/approval reads, backup/restore/audit export, stdin-only proof, filtered environment, new-only 0600 results and malformed responses. UI submit paths are not all individually covered by native automation. No independent human audit, notarization, release packaging, remote service or signing-key custody. See `docs/superpowers/specs/2026-09-14-native-admin-ui.md`. |
+
+Human desktop current-secret reveal and API-key add use a password-authenticated 7-day Admin session (source only). Locked/stale/forged sessions and the Agent channel are denied; plaintext is returned only in Admin response bodies after durable audit commits. Verified by `scripts/test-human-vault.py` and `admin_ipc::desktop_values_use_body_and_agent_channel_cannot_reveal`. Native interaction automation for this extension remains pending.

@@ -259,6 +259,25 @@ This is a breaking rewrite. There is no MITM proxy, system CA, dashboard,
 single port, or TCP passthrough, and v1 vaults are neither read nor migrated —
 a non-empty legacy state directory is rejected untouched. History lives in Git.
 
+## Native macOS UI (source preview)
+
+The source tree includes a Chinese SwiftUI Admin client following the local
+credential list/detail design. It bundles this checkout's `rekey` and `rekeyd`,
+uses fixed CLI arguments and stdin proofs, and opens no HTTP listener.
+
+```bash
+scripts/build-macos-ui.sh
+open target/macos-ui/Rekey.app
+```
+
+The UI covers credentials, fixed Actions, capability creation/revocation,
+signed-policy import, approval inbox export, audit, backup/restore, and password
+settings. Authenticated human Admin sessions can reveal and copy current
+credentials; Agent APIs cannot read them. Policy and approval signing still
+use external tools. No automatic signing or Agent execution console is added.
+See [the native UI guide](apps/macos/README.md). This locally signed macOS 14+
+app is source-only and is not in the alpha.2 downloadable archive.
+
 ## Development
 
 ```bash

@@ -18,7 +18,7 @@ rekey status
 
 `rekey serve` delegates to `rekeyd serve`; agents and Admin clients never open
 the SQLite database. `rekey lock` revokes sessions and clears the active
-policy. The default idle lock is 15 minutes. `rekey shutdown` requires a
+policy. The default idle lock is 7 days. `rekey shutdown` requires a
 step-up proof while unlocked.
 
 For deliberate automation, password-only commands accept `--password-stdin`.

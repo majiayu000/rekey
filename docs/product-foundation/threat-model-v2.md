@@ -472,3 +472,17 @@ Action 和最小响应 schema 比通用透明代理更强。任何新增 canonic
 ## 17. Readiness
 
 本威胁模型已经锁定内置 Credential Authority 的密钥层级、状态所有权和禁止接口。当前 P0/P1/P2.1/P-03/P-04/P-05 local gates 的实际状态以 Feature Truth Matrix 为准；required systemd gate 和一次真实 `github.com` GitHub App provider 验证已经完成。哪些能力进入哪个公开 archive 以 Matrix 的 `Release` 列为准。默认同用户拓扑仍只有 G1，有界 Linux container/namespace recipe 的 G2 证据不能外推为通用产品保证；签名 policy/approval、静态 workload JWT 验证和 Connector contract 也不建立远程控制面、企业身份、在线 IdP 或通用 provider。源码 MCP-03 / OAU-02 只证明有界本地 stdio 与固定 Keycloak 交换，不能外推为产品级 MCP server 或 live generic OAuth 互操作。在独立 crypto、IPC 边界和 audit/failure-semantics 人工审查完成前，不能对外声称恶意 Agent 在所有部署中永远无法获得或重定向密钥。
+
+## Source-only native Admin UI
+
+The macOS SwiftUI client is part of the trusted G1 Admin surface. It invokes
+its bundled CLI through fixed Process argument arrays and anonymous stdin
+pipes, without a shell or HTTP listener. It does not read the Vault database.
+Passwords and newly entered values exist in UI/child memory; Swift String
+copies do not provide a verifiable zeroization guarantee. A password-authenticated desktop session permits human API-key add/reveal for 7 days without repeated password entry; other sensitive mutations retain per-call step-up. Agent capabilities cannot authorize reveal. Plaintext reveal travels only in the Admin response body after audit commits. Explicit clipboard copies may be captured by clipboard history applications. Capability/recovery
+results appear once in a result sheet and can be explicitly saved to a new
+0600 file. UserDefaults stores only the non-secret state directory. Closing
+the app does not stop the Broker; idle locking remains the Broker's job.
+
+The local ad-hoc-signed app is not notarized or part of the public Alpha
+archives. UI acceptance does not upgrade G1 or count as human security review.

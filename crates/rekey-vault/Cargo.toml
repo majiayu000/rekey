@@ -10,8 +10,9 @@ publish = false
 
 [dependencies]
 rekey-domain = { workspace = true }
-aes-gcm = "0.10"
-argon2 = "0.5"
+aes = { version = "0.8", features = ["zeroize"] }
+aes-gcm = { version = "0.10", features = ["zeroize"] }
+argon2 = { version = "0.5", features = ["zeroize"] }
 aws-lc-rs = "1.18"
 data-encoding = "2"
 hkdf = "0.12"

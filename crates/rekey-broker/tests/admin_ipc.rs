@@ -560,3 +560,91 @@ async fn unlock_does_not_queue_behind_an_active_drain() {
     assert_eq!(lock.await.unwrap().ok()["locked"], true);
     broker.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn desktop_values_use_body_and_agent_channel_cannot_reveal() {
+    let broker = common::start_broker().await;
+    let admin = broker.admin_sock();
+    let login = common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::DESKTOP_LOGIN,
+        b"{}",
+        &common::proof_body(common::PASSWORD),
+    )
+    .await;
+    assert_eq!(login.ok()["expires_in_seconds"], 604_800);
+    let token = login.body;
+    assert_eq!(token.len(), 64);
+    let metadata = br#"{"label":"GLM","kind":"opaque-token"}"#;
+    let saved = common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::DESKTOP_ADD,
+        metadata,
+        &common::proof_and_secret_body(&token, b"desktop-value-canary"),
+    )
+    .await;
+    let id = saved.ok()["id"].as_str().unwrap().to_owned();
+    let reference = serde_json::json!({"credential_id":id}).to_string();
+    let revealed = common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::DESKTOP_REVEAL,
+        reference.as_bytes(),
+        &common::proof_body(&token),
+    )
+    .await;
+    assert_eq!(revealed.body, b"desktop-value-canary");
+    assert_eq!(revealed.ok(), &serde_json::json!({}));
+    let denied = common::call(
+        &broker.agent_sock(),
+        Channel::Agent,
+        admin_msg::DESKTOP_REVEAL,
+        reference.as_bytes(),
+        &[],
+    )
+    .await;
+    assert!(!denied.err_code().is_empty());
+    common::call(&admin, Channel::Admin, admin_msg::LOCK, b"{}", &[])
+        .await
+        .ok();
+    let locked = common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::DESKTOP_REVEAL,
+        reference.as_bytes(),
+        &common::proof_body(&token),
+    )
+    .await;
+    assert_eq!(locked.err_code(), "LOCKED");
+    broker.shutdown().await;
+}
+
+#[tokio::test]
+async fn passive_status_polling_does_not_postpone_idle_lock() {
+    let broker = common::start_broker_with(
+        std::time::Duration::from_millis(80),
+        std::time::Duration::from_secs(2),
+    )
+    .await;
+    common::unlock(&broker).await;
+    let mut locked = false;
+    for _ in 0..20 {
+        let status = common::call(
+            &broker.admin_sock(),
+            Channel::Admin,
+            admin_msg::PASSIVE_STATUS,
+            b"{}",
+            &[],
+        )
+        .await;
+        if status.ok()["state"] == "locked" {
+            locked = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(locked, "background polling must allow idle locking");
+    broker.shutdown().await;
+}

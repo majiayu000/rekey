@@ -113,6 +113,7 @@ pub fn spawn_authority(
         store,
         header,
         state: VaultState::Locked,
+        desktop_session: None,
         failed_unlocks: 0,
         next_unlock_at: Instant::now(),
         last_activity: Instant::now(),
@@ -126,6 +127,7 @@ pub fn spawn_authority(
 }
 
 struct Worker {
+    desktop_session: Option<(zeroize::Zeroizing<Vec<u8>>, Instant)>,
     store: SqliteRecordStore,
     header: crate::model::VaultHeaderRecord,
     state: VaultState,
@@ -143,12 +145,99 @@ impl Worker {
             }
         }
         // Dropping the state zeroizes the VRK through SecretBox.
+        self.desktop_session = None;
         self.state = VaultState::Locked;
     }
 
     /// Returns true when the worker should stop.
     fn handle(&mut self, cmd: AuthorityCommand) -> bool {
         match cmd {
+            AuthorityCommand::DesktopIssue { reply } => {
+                let result = self.require_unlocked().map(|_| ()).and_then(|_| {
+                    let random = zeroize::Zeroizing::new(crate::crypto::random_array::<32>()?);
+                    let token = zeroize::Zeroizing::new(
+                        data_encoding::HEXLOWER.encode(&*random).into_bytes(),
+                    );
+                    self.desktop_session = Some((
+                        token.clone(),
+                        Instant::now() + Duration::from_secs(7 * 24 * 60 * 60),
+                    ));
+                    Ok(token)
+                });
+                let _ = reply.send(result);
+            }
+            AuthorityCommand::DesktopAdd {
+                token,
+                label,
+                secret,
+                not_after,
+                reply,
+            } => {
+                let result = ensure_mutation_current(not_after)
+                    .and_then(|_| self.verify_desktop(&token))
+                    .and_then(|_| {
+                        self.insert_credential(
+                            label,
+                            rekey_domain::credential::CredentialKind::OpaqueToken,
+                            secret,
+                            not_after,
+                        )
+                    });
+                self.touch_if_ok(&result);
+                let _ = reply.send(result);
+            }
+            AuthorityCommand::DesktopReveal {
+                token,
+                credential_id,
+                not_after,
+                reply,
+            } => {
+                let result = ensure_mutation_current(not_after)
+                    .and_then(|_| self.verify_desktop(&token))
+                    .and_then(|_| {
+                        let record = self.load_verified_credential(credential_id)?;
+                        let audit = credential_audit(
+                            "credential.reveal_started",
+                            credential_id,
+                            record.current_version,
+                            "desktop-session",
+                        );
+                        self.append_audit(audit)?;
+                        ensure_mutation_current(not_after)?;
+                        let value = self
+                            .prepare_credential(credential_id)?
+                            .consume(|value| zeroize::Zeroizing::new(value.to_vec()));
+                        self.append_audit(credential_audit(
+                            "credential.revealed",
+                            credential_id,
+                            record.current_version,
+                            "desktop-session",
+                        ))?;
+                        Ok(value)
+                    });
+                let result = match result {
+                    Err(error) => {
+                        let outcome = if matches!(
+                            error,
+                            AuthorityError::InvalidUnlockCredential
+                                | AuthorityError::Locked
+                                | AuthorityError::CredentialRevoked
+                                | AuthorityError::CredentialNotFound
+                        ) {
+                            outcome::DENIED
+                        } else {
+                            outcome::FAILURE
+                        };
+                        let mut audit =
+                            unlock_audit("credential.reveal_failed", outcome, error.code());
+                        audit.credential_id = Some(credential_id);
+                        self.append_audit(audit).and(Err(error))
+                    }
+                    other => other,
+                };
+                self.touch_if_ok(&result);
+                let _ = reply.send(result);
+            }
             AuthorityCommand::Status {
                 refresh_activity,
                 reply,
@@ -204,6 +293,7 @@ impl Worker {
                 };
                 let ok = result.is_ok();
                 if ok {
+                    self.desktop_session = None;
                     self.state = VaultState::Locked;
                 }
                 let _ = reply.send(result);
@@ -589,6 +679,19 @@ impl Worker {
         }
     }
 
+    fn verify_desktop(&self, token: &crate::secret::SecretInput) -> Result<(), AuthorityError> {
+        self.require_unlocked()?;
+        match &self.desktop_session {
+            Some((expected, expires))
+                if Instant::now() < *expires
+                    && bool::from(expected.as_slice().ct_eq(token.expose())) =>
+            {
+                Ok(())
+            }
+            _ => Err(AuthorityError::InvalidUnlockCredential),
+        }
+    }
+
     fn unlock(&mut self, proof: UnlockProof) -> Result<(), AuthorityError> {
         if matches!(self.state, VaultState::Faulted) {
             return Err(AuthorityError::Faulted);
@@ -610,6 +713,7 @@ impl Worker {
             Ok(vrk) => {
                 self.failed_unlocks = 0;
                 self.next_unlock_at = Instant::now();
+                self.desktop_session = None;
                 self.state = VaultState::Unlocked { vrk };
                 self.last_activity = Instant::now();
                 if let Err(error) = self.policy_material() {
@@ -649,6 +753,7 @@ impl Worker {
         if matches!(self.state, VaultState::Faulted) {
             return Err(AuthorityError::Faulted);
         }
+        self.desktop_session = None;
         self.state = VaultState::Locked;
         self.append_audit(unlock_audit(
             event_type::VAULT_LOCKED,
