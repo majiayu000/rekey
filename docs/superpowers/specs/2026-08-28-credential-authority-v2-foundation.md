@@ -1,3 +1,5 @@
+> 2026-09-15 用户修订：已认证的本机 Admin UI 可以通过短期管理会话添加和读取当前凭证；Agent API 仍禁止读取。该例外覆盖本文 Admin 不可读取/添加必需逐次密码的旧约定，详见 `2026-09-14-native-admin-ui.md` 的个人密钥管理节。
+
 # Rekey Credential Authority v2 Foundation 实施规格
 
 状态：Implemented as G1 public Alpha; current archive `v2.0.0-alpha.2` is vault schema v9; historical `v2.0.0-alpha.1` was v5; H/P/E gates remain open

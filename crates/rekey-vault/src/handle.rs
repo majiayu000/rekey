@@ -97,6 +97,33 @@ impl AuthorityHandle {
         })
     }
 
+    pub async fn desktop_issue(&self) -> Result<Zeroizing<Vec<u8>>, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::DesktopIssue { reply })
+    }
+    pub async fn desktop_add(
+        &self,
+        token: SecretInput,
+        label: CredentialLabel,
+        secret: SecretInput,
+    ) -> Result<CredentialMetadata, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::DesktopAdd {
+            token,
+            label,
+            secret,
+            reply
+        })
+    }
+    pub async fn desktop_reveal(
+        &self,
+        token: SecretInput,
+        credential_id: CredentialId,
+    ) -> Result<Zeroizing<Vec<u8>>, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::DesktopReveal {
+            token,
+            credential_id,
+            reply
+        })
+    }
     pub async fn unlock(&self, proof: UnlockProof) -> Result<(), AuthorityError> {
         call!(self, |reply| AuthorityCommand::Unlock { proof, reply })
     }

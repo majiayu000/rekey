@@ -81,6 +81,15 @@ enum Command {
         #[arg(last = true, required = true)]
         command: Vec<std::ffi::OsString>,
     },
+    /// Desktop admin login; proof is read only from stdin, token written to stdout.
+    DesktopLogin {
+        #[arg(long)]
+        recovery: bool,
+    },
+    /// Save an API key; desktop token and value are read as two stdin lines.
+    DesktopAdd { label: String },
+    /// Reveal a current credential to the human admin; token is read from stdin.
+    DesktopReveal { credential_id: String },
     /// Unlock the running broker.
     Unlock {
         /// Use the recovery key to unlock; does not reset the password.
@@ -454,6 +463,11 @@ fn main() {
         .agent_socket
         .unwrap_or_else(|| state_dir.join("runtime").join("agent.sock"));
     let result = match cli.command {
+        Command::DesktopLogin { recovery } => commands::desktop_login(&state_dir, recovery),
+        Command::DesktopAdd { label } => commands::desktop_add(&state_dir, &label),
+        Command::DesktopReveal { credential_id } => {
+            commands::desktop_reveal(&state_dir, &credential_id)
+        }
         Command::Init { password_stdin } => {
             commands::delegate_rekeyd(&state_dir, "init", &[], password_stdin)
         }

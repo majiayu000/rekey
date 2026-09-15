@@ -135,6 +135,14 @@ impl BrokerCtx {
     }
 
     pub async fn unlock(&self, proof: UnlockProof) -> Result<(), BrokerError> {
+        self.unlock_with_desktop(proof, false).await.map(|_| ())
+    }
+
+    pub(crate) async fn unlock_with_desktop(
+        &self,
+        proof: UnlockProof,
+        desktop: bool,
+    ) -> Result<Option<zeroize::Zeroizing<Vec<u8>>>, BrokerError> {
         let _owner = self
             .lifecycle
             .try_coordinate()
@@ -166,7 +174,11 @@ impl BrokerCtx {
         }
         self.sessions.open_for_admission();
         tracing::info!(event = "authority.state", state = "running");
-        Ok(())
+        if desktop {
+            Ok(Some(self.authority.desktop_issue().await?))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Revoke sessions, wait in-flight executes, then zeroize the VRK.

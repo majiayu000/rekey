@@ -222,7 +222,11 @@ final class AppModel: ObservableObject {
     @Published var policy: PolicyStatus?
     @Published var approvals: [PendingApproval] = []
     @Published var audit: AuditPage?
-    @Published var selectedCredential: String?
+    @Published var desktopToken: String?
+    @Published var copiedCredential: String?
+    @Published var visibleSecret: String?
+    private var desktopExpiry = Date.distantPast
+    @Published var selectedCredential: String? { didSet { visibleSecret = nil; copiedCredential = nil } }
     @Published var busy = false
     @Published var error: String?
     @Published var connectionError: String?
@@ -247,7 +251,44 @@ final class AppModel: ObservableObject {
     func beginSetup() {
         operation = Operation(title: "创建保险库", detail: "设置并确认密码后，应用会自动创建保险库并启动服务。请保存随后显示的恢复密钥。", arguments: ["init"], confirmSecret: true, sensitiveResult: true, recoveryAllowed: false)
     }
+    var desktopReady: Bool { desktopToken != nil && Date() < desktopExpiry && unlocked }
+    func requestDesktopLogin() {
+        operation = Operation(title: "解锁管理会话", detail: "验证一次后，15 分钟内可连续保存、查看和复制密钥。", arguments: ["unlock"])
+    }
+    func addAPIKey(label: String, secret: String) async -> Bool {
+        guard desktopReady, let token = desktopToken else { desktopToken = nil; error = "管理会话已过期，请关闭窗口并重新解锁。"; return false }
+        guard !busy else { return false }
+        busy = true; error = nil
+        let client = cli
+        do {
+            _ = try await Task.detached { try client.run(["desktop-add", label], input: token + "\n" + secret + "\n") }.value
+            busy = false; await refresh(); return true
+        } catch { self.error = error.localizedDescription; busy = false; return false }
+    }
+    func revealCredential(_ id: String, copy: Bool) async {
+        guard desktopReady, let token = desktopToken else { requestDesktopLogin(); return }
+        guard !busy else { return }
+        busy = true; error = nil
+        defer { busy = false }
+        let client = cli
+        do {
+            let data = try await Task.detached { try client.run(["desktop-reveal", id], input: token + "\n") }.value
+            guard unlocked, selectedCredential == id, NSApp.isActive else { return }
+            guard let text = String(data: data, encoding: .utf8) else { throw UIError(message: "此凭证不是可显示的 UTF-8 文本。") }
+            if copy {
+                let board = NSPasteboard.general
+                board.clearContents()
+                guard board.setString(text, forType: .string) else { throw UIError(message: "写入剪贴板失败。") }
+                copiedCredential = id
+                let revision = board.changeCount
+                DispatchQueue.main.asyncAfter(deadline: .now() + 30) {
+                    if board.changeCount == revision { board.clearContents() }
+                }
+            } else { visibleSecret = text }
+        } catch { visibleSecret = nil; self.error = error.localizedDescription }
+    }
     func clearCache() {
+        desktopToken = nil; visibleSecret = nil; copiedCredential = nil
         credentials = []; actions = []; approvals = []; policy = nil; audit = nil; selectedCredential = nil
     }
     func changeDirectory(_ path: String) {
@@ -265,6 +306,7 @@ final class AppModel: ObservableObject {
         do {
             let current = try await Task.detached { try client.decode(ServiceStatus.self, ["status"]) }.value
             status = current; connectionError = nil
+            if Date() >= desktopExpiry { desktopToken = nil; visibleSecret = nil; copiedCredential = nil }
             if !current.unlocked { clearCache() }
         } catch {
             status = nil; clearCache(); connectionError = error.localizedDescription
@@ -303,10 +345,11 @@ final class AppModel: ObservableObject {
         guard !busy else { return }
         busy = true; error = nil
         let client = CLI(binary: cli.binary, stateDirectory: op.targetDirectory ?? stateDirectory)
-        var args = op.arguments
+        let desktopLogin = op.arguments == ["unlock"]
+        var args = desktopLogin ? ["desktop-login"] : op.arguments
         var input = ""
         if op.proof {
-            args.append(op.newSecret ? "--stdin-secrets" : op.proofFlag)
+            if !desktopLogin { args.append(op.newSecret ? "--stdin-secrets" : op.proofFlag) }
             input = proof + "\n"
             if op.newSecret { input += secret + "\n" }
             if recovery && op.recoveryAllowed { args.append("--recovery") }
@@ -316,7 +359,10 @@ final class AppModel: ObservableObject {
         do {
             let data = try await Task.detached { try client.run(command, input: body) }.value
             guard let output = String(data: data, encoding: .utf8) else { throw UIError(message: "命令返回了无法解码的内容，操作结果需重新确认。") }
-            result = ResultMessage(title: op.title + "完成", text: output, sensitive: op.sensitiveResult)
+            if desktopLogin {
+                guard output.count == 64 && output.allSatisfy(\.isHexDigit) else { throw UIError(message: "管理会话响应无效。") }
+                desktopToken = output; desktopExpiry = Date().addingTimeInterval(900)
+            } else { result = ResultMessage(title: op.title + "完成", text: output, sensitive: op.sensitiveResult) }
         } catch { operationError = error.localizedDescription }
         if let file = op.temporaryFile {
             do { try FileManager.default.removeItem(at: file) }

@@ -72,7 +72,7 @@ struct RootView: View {
         .onChange(of: search) { _, _ in model.selectedCredential = filtered.first?.id }
         .onChange(of: type) { _, _ in model.selectedCredential = filtered.first?.id }
         .onChange(of: model.page) { _, _ in Task { await model.refresh() } }
-        .onChange(of: phase) { _, value in if value == .active { Task { await model.refresh() } } }
+        .onChange(of: phase) { _, value in if value == .active { Task { await model.refresh() } } else { model.visibleSecret = nil } }
         .sheet(item: $model.operation) { OperationForm(operation: $0).environmentObject(model) }
         .sheet(isPresented: $model.showAddCredential) { AddCredentialForm().environmentObject(model) }
         .sheet(isPresented: $showActionForm) { ActionForm().environmentObject(model) }
@@ -126,7 +126,7 @@ struct RootView: View {
                 }
                 Spacer()
                 if model.page == .credentials {
-                    Button { model.showAddCredential = true } label: { Label("添加凭证", systemImage: "plus") }.buttonStyle(PrimaryButton()).disabled(!model.unlocked || model.busy)
+                    Button { if model.desktopReady { model.showAddCredential = true } else { model.requestDesktopLogin() } } label: { Label("添加 API Key", systemImage: "plus") }.buttonStyle(PrimaryButton()).disabled(!model.unlocked || model.busy)
                 } else if model.page == .actions {
                     Button { showActionForm = true } label: { Label("创建操作", systemImage: "plus") }.buttonStyle(PrimaryButton()).disabled(!model.unlocked || model.busy)
                 }
@@ -236,6 +236,15 @@ struct RootView: View {
             StatusPill(active: item.active, text: item.active ? "可用" : "已撤销")
             info("类型", item.typeName)
             info("当前版本", "v\(item.current_version)")
+            Text(model.visibleSecret ?? "••••••••••••••••").font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
+            HStack {
+                Button(model.visibleSecret == nil ? "显示密钥" : "隐藏密钥") {
+                    if model.visibleSecret != nil { model.visibleSecret = nil }
+                    else { Task { await model.revealCredential(item.id, copy: false) } }
+                }
+                Button(model.copiedCredential == item.id ? "已复制" : "复制密钥") { Task { await model.revealCredential(item.id, copy: true) } }
+            }.disabled(!item.active || model.busy)
+            Text("复制后 30 秒清理本次剪贴板内容；剪贴板历史工具可能保留副本。").font(.system(size: 11)).foregroundStyle(.secondary)
             Divider().padding(.vertical, 4)
             Text("关联操作").font(.system(size: 14, weight: .semibold))
             ScrollView {

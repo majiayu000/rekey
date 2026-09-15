@@ -479,8 +479,7 @@ The macOS SwiftUI client is part of the trusted G1 Admin surface. It invokes
 its bundled CLI through fixed Process argument arrays and anonymous stdin
 pipes, without a shell or HTTP listener. It does not read the Vault database.
 Passwords and newly entered values exist in UI/child memory; Swift String
-copies do not provide a verifiable zeroization guarantee. Existing per-call
-step-up and Broker authorization remain authoritative. Capability/recovery
+copies do not provide a verifiable zeroization guarantee. A password-authenticated desktop session permits human API-key add/reveal for 15 minutes without repeated password entry; other sensitive mutations retain per-call step-up. Agent capabilities cannot authorize reveal. Plaintext reveal travels only in the Admin response body after audit commits. Explicit clipboard copies may be captured by clipboard history applications. Capability/recovery
 results appear once in a result sheet and can be explicitly saved to a new
 0600 file. UserDefaults stores only the non-secret state directory. Closing
 the app does not stop the Broker; idle locking remains the Broker's job.

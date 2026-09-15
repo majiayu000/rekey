@@ -106,6 +106,20 @@ pub struct PolicyMaterial {
 }
 
 pub enum AuthorityCommand {
+    DesktopIssue {
+        reply: Reply<Zeroizing<Vec<u8>>>,
+    },
+    DesktopAdd {
+        token: SecretInput,
+        label: CredentialLabel,
+        secret: SecretInput,
+        reply: Reply<CredentialMetadata>,
+    },
+    DesktopReveal {
+        token: SecretInput,
+        credential_id: CredentialId,
+        reply: Reply<Zeroizing<Vec<u8>>>,
+    },
     Status {
         refresh_activity: bool,
         reply: Reply<StatusInfo>,

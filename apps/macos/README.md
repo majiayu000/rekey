@@ -11,6 +11,8 @@ open target/macos-ui/Rekey.app
 
 脚本将当前源码的 `rekey` / `rekeyd` 打包到 app 内，并在本机做 ad-hoc 签名。`REKEY_UI_OUTPUT` 可指定构建输出位置，`CARGO_TARGET_DIR` 沿用 Cargo 的构建缓存配置。不包含公证或公开发布。
 
+应用图标源文件为 `Resources/AppIcon.png`（1024 × 1024）。构建脚本使用 macOS 自带的 `sips` 和 `iconutil` 生成标准尺寸的 `AppIcon.icns`，通过 `CFBundleIconFile` 配置 Finder 与 Dock 图标。当前采用用户选定的“双环 · 现代平面”：炭黑背景、米白与橙色双环。图标由内置 imagegen 基于双环参考图生成，提示词为“以参考图为基础，为 Rekey app 创作一个「现代平面设计」风格图标。保留双环相扣的识别结构，材质、配色与表现方式自由发挥。成熟、有个性，避免常见 AI 霓虹渐变。单张正方形图标，无文字。”
+
 首次打开时默认使用 `~/.rekey`。首次启动自动显示密码设置流程；输入并确认密码后自动创建保险库并启动服务，恢复密钥只在完成窗口显示一次。已有保险库请启动服务，再解锁。也可以通过“个人工作区”或设置切换目录。格式不兼容或目录非空时沿用 CLI 的明确拒绝，不迁移、不覆盖。
 
 ## 当前入口
@@ -33,7 +35,7 @@ target/release/rekey-approval-sign --help
 
 签名文件的准备和 Agent shell/MCP 接入继续见根目录 `docs/user-guide.md`。这一版没有自动配置 Agent、GUI 签名、任意执行控制台或常驻通知。
 
-关闭 UI 不会终止 Broker；默认由 Broker 在空闲 15 分钟后锁定。可主动点击“锁定”或设置里的“停止服务”。不缓存密码、不展示已有凭证明文；短期 capability 和恢复结果只在当前结果窗口中存在，用户可显式保存为新建的 0600 文件。
+关闭 UI 不会终止 Broker；默认由 Broker 在空闲 15 分钟后锁定。可主动点击“锁定”或设置里的“停止服务”。不缓存密码；密码验证后在当前 UI 内存中保存 15 分钟管理会话，允许连续添加 API Key 和显式查看/复制当前有效凭证。复制后 30 秒只清理本应用仍占有的剪贴板内容，无法清理第三方历史记录；短期 capability 和恢复结果只在当前结果窗口中存在，用户可显式保存为新建的 0600 文件。
 
 ## 验证
 
@@ -46,3 +48,5 @@ xcrun swiftc -warnings-as-errors -swift-version 5 -O \
 ```
 
 测试使用随机临时保险库和合成凭证，不访问真实 provider。原生界面另行检查空状态、搜索、详情、表单与页面导航。没有把所有 GUI submit 路径宣称为自动化覆盖。
+
+人类密钥管理验收：`python3 scripts/test-human-vault.py target/macos-ui/Rekey.app/Contents/Resources/bin/rekey`。Agent 通道不提供读取，管理会话在锁定后失效。

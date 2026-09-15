@@ -67,37 +67,43 @@ struct AddCredentialForm: View {
     @State private var secret = ""
     @State private var proof = ""
     @State private var profile: URL?
-    private var valid: Bool { !label.trimmingCharacters(in: .whitespaces).isEmpty && singleLine(proof) && (kind == "add" ? singleLine(secret) : profile != nil) }
+    private var valid: Bool { !label.trimmingCharacters(in: .whitespaces).isEmpty && (kind == "add" ? singleLine(secret) : singleLine(proof) && profile != nil) }
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            Text("添加凭证").font(.system(size: 24, weight: .semibold))
-            Text("为凭证取一个容易识别的名称。Agent 只能通过关联操作使用它。").font(.system(size: 13)).foregroundStyle(.secondary)
-            TextField("凭证名称", text: $label).textFieldStyle(.roundedBorder)
-            Picker("类型", selection: $kind) {
-                Text("固定令牌").tag("add")
+            Text("添加 API Key").font(.system(size: 24, weight: .semibold))
+            Text("先保存密钥，之后随时查看、复制，或配置给 Agent 使用。").font(.system(size: 13)).foregroundStyle(.secondary)
+            TextField("名称，例如 智谱 · 个人开发", text: $label).textFieldStyle(.roundedBorder)
+            DisclosureGroup("其他凭证类型") { Picker("类型", selection: $kind) {
+                Text("API Key / 访问令牌").tag("add")
                 Text("GitHub App").tag("add-github-app")
                 Text("Vault KV v2").tag("add-vault-kv")
                 Text("Vault 动态租约").tag("add-vault-dynamic")
                 Text("Keycloak Token Exchange").tag("add-keycloak")
             }
-            if kind == "add" { SecureField("凭证值", text: $secret).textFieldStyle(.roundedBorder) }
+            }
+            if kind == "add" { SecureField("粘贴 API Key，无需 Bearer 前缀", text: $secret).textFieldStyle(.roundedBorder) }
             else {
                 HStack { Text(profile?.lastPathComponent ?? "选择私有 JSON 配置文件").font(.system(size: 12)); Spacer(); Button("选择文件") { profile = chooseFile() } }
                 Text("配置文件须归当前用户所有，且不可被其他用户读取。内容与权限由服务验证。").font(.system(size: 11)).foregroundStyle(.secondary)
             }
-            Divider()
-            SecureField("当前保险库密码", text: $proof).textFieldStyle(.roundedBorder)
+            if kind != "add" { SecureField("当前保险库密码", text: $proof).textFieldStyle(.roundedBorder) }
+            if let error = model.error { Text(error).font(.system(size: 12)).foregroundStyle(.red) }
+            if kind == "add" && !model.desktopReady { Text("管理会话已过期，请关闭此窗口并重新解锁管理会话。").foregroundStyle(.secondary) }
             HStack {
                 Button("取消") { clear(); dismiss() }.keyboardShortcut(.cancelAction)
                 Spacer()
-                Button("添加凭证") {
+                Button("保存") {
+                    if kind == "add" {
+                        Task { if await model.addAPIKey(label: label, secret: secret) { clear(); dismiss() } }
+                        return
+                    }
                     var args = ["credential", kind, label]
                     if let profile, kind != "add" { args += ["--file", profile.path] }
                     let op = Operation(title: "添加凭证", detail: "", arguments: args, newSecret: kind == "add")
                     let p = proof, s = secret
                     clear(); dismiss()
                     Task { await model.perform(op, proof: p, secret: s) }
-                }.buttonStyle(PrimaryButton()).disabled(!valid || model.busy)
+                }.buttonStyle(PrimaryButton()).disabled(!valid || model.busy || (kind == "add" && !model.desktopReady))
             }
         }.padding(30).frame(width: 480).background(canvas).onDisappear { clear() }
     }

@@ -39,6 +39,8 @@ mod vault_kv;
 
 fn admin_body_limit(message_type: u16) -> u32 {
     match message_type {
+        admin_msg::DESKTOP_LOGIN | admin_msg::DESKTOP_REVEAL => ipc::ADMIN_PROOF_BODY_MAX_BYTES,
+        admin_msg::DESKTOP_ADD => ipc::ADMIN_SECRET_BODY_MAX_BYTES,
         admin_msg::UNLOCK_PASSWORD | admin_msg::UNLOCK_RECOVERY => {
             ipc::ADMIN_SECRET_FIELD_MAX_BYTES
         }
@@ -180,6 +182,49 @@ async fn dispatch(
     ctx: &BrokerCtx,
 ) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
     match frame.header.message_type {
+        admin_msg::DESKTOP_LOGIN => {
+            empty_meta(frame)?;
+            let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
+            let token = ctx
+                .unlock_with_desktop(proof_from(kind, proof), true)
+                .await?
+                .ok_or(BrokerError::Authority(AuthorityError::AuthenticationFailed))?;
+            Ok((
+                json(&serde_json::json!({"expires_in_seconds": 900}))?,
+                token.to_vec(),
+            ))
+        }
+        admin_msg::DESKTOP_ADD => {
+            let add: ipc::CredentialAddMeta = meta(frame)?;
+            if add.kind != CredentialKind::OpaqueToken {
+                return Err(BrokerError::Frame(ipc::FrameError::InvalidField));
+            }
+            let (_, token, secret) = ipc::parse_proof_and_secret_body(&frame.body)?;
+            let _owner = ctx.lifecycle.coordinate().await;
+            ctx.lifecycle.reject_if_not_running()?;
+            let credentials = ctx.authority.credential_list().await?;
+            ensure_credential_catalog_fits(credentials, &add.label, add.kind)?;
+            let result = ctx
+                .authority
+                .desktop_add(
+                    SecretInput::from_slice(token),
+                    add.label,
+                    SecretInput::from_slice(secret),
+                )
+                .await?;
+            Ok((json(&result)?, Vec::new()))
+        }
+        admin_msg::DESKTOP_REVEAL => {
+            let reference: ipc::CredentialRefMeta = meta(frame)?;
+            let (_, token) = ipc::parse_proof_body(&frame.body)?;
+            let _owner = ctx.lifecycle.coordinate().await;
+            ctx.lifecycle.reject_if_not_running()?;
+            let value = ctx
+                .authority
+                .desktop_reveal(SecretInput::from_slice(token), reference.credential_id)
+                .await?;
+            Ok((b"{}".to_vec(), value.to_vec()))
+        }
         admin_msg::STATUS => {
             empty_request(frame)?;
             let _owner = ctx.lifecycle.coordinate().await;
