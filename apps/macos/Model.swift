@@ -371,11 +371,14 @@ final class AppModel: ObservableObject {
                         let resumed = try RememberedUnlock.receipt(data)
                         desktopToken = resumed.key; desktopExpiry = resumed.expiresAt
                         resumedAccess = true
+                        self.error = nil
                         status = try await Task.detached { try client.decode(ServiceStatus.self, ["status", "--passive"]) }.value
                     }
                 } catch {
                     desktopToken = nil; desktopExpiry = .distantPast
-                    self.error = "自动解锁失败，请重新输入保险库密码。\n" + error.localizedDescription
+                    let retryable = error.localizedDescription.contains("AUTHORITY_BUSY") || error.localizedDescription.contains("DRAINING") || error.localizedDescription.contains("IPC_UNAVAILABLE")
+                    if retryable { resumeAttempted = false }
+                    self.error = (retryable ? "服务暂时忙碌，稍后会自动重试。\n" : "自动解锁失败，请重新输入保险库密码。\n") + error.localizedDescription
                     if error.localizedDescription.contains("INVALID_UNLOCK_CREDENTIAL") {
                         do { try RememberedUnlock.forget(stateDirectory) }
                         catch { self.error = error.localizedDescription }

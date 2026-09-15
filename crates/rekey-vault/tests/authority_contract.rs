@@ -1132,3 +1132,61 @@ async fn wrapper_changes_revoke_remembered_access_only_after_valid_proof() {
     handle.shutdown(None).await.unwrap();
     join.join().unwrap();
 }
+
+#[tokio::test]
+async fn slow_resume_audit_rolls_back_before_reporting_timeout() {
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+    let (key, _) = handle
+        .desktop_remember(common::password_proof(), None)
+        .await
+        .unwrap();
+    handle.lock_for_restart("restart").await.unwrap();
+    let db = rusqlite::Connection::open(rekey_vault::paths::vault_db(&vault.state_dir)).unwrap();
+    db.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let task = tokio::spawn({
+        let handle = handle.clone();
+        async move {
+            handle
+                .desktop_resume(
+                    SecretInput::from_slice(&key),
+                    Some(std::time::Instant::now() + std::time::Duration::from_millis(500)),
+                )
+                .await
+        }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+    db.execute_batch("COMMIT").unwrap();
+    assert!(matches!(
+        task.await.unwrap(),
+        Err(AuthorityError::AuthorityBusy)
+    ));
+    assert_eq!(handle.status().await.unwrap().state, "locked");
+    assert!(handle.desktop_issue().await.is_err());
+    handle.shutdown(None).await.unwrap();
+    join.join().unwrap();
+}
+
+#[tokio::test]
+async fn unclean_worker_exit_revokes_before_next_resume() {
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+    let (key, _) = handle
+        .desktop_remember(common::password_proof(), None)
+        .await
+        .unwrap();
+    drop(handle);
+    join.join().unwrap();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    assert!(
+        handle
+            .desktop_resume(SecretInput::from_slice(&key), None)
+            .await
+            .is_err()
+    );
+    assert!(!vault.state_dir.join("desktop-unlock.bin").exists());
+    handle.shutdown(None).await.unwrap();
+    join.join().unwrap();
+}

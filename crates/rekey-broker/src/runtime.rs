@@ -196,13 +196,18 @@ impl BrokerCtx {
             .map_err(|_| BrokerError::Authority(AuthorityError::AuthorityBusy))?;
         self.lifecycle.reject_if_busy()?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(25);
-        let expires = tokio::time::timeout_at(
-            deadline,
+        // The worker rolls back a late resume before replying. Do not abandon
+        // its result while it may temporarily own an unlocked root key.
+        let expires = self
+            .authority
+            .desktop_resume(token, Some(deadline.into_std()))
+            .await?;
+        if tokio::time::Instant::now() >= deadline {
             self.authority
-                .desktop_resume(token, Some(deadline.into_std())),
-        )
-        .await
-        .map_err(|_| BrokerError::Authority(AuthorityError::AuthorityBusy))??;
+                .lock_for_restart("desktop-resume-timeout")
+                .await?;
+            return Err(BrokerError::Authority(AuthorityError::AuthorityBusy));
+        }
         self.activate_unlocked().await?;
         Ok((self.authority.desktop_issue().await?, expires))
     }

@@ -13,6 +13,33 @@ use crate::model::outcome;
 use crate::secret::SecretInput;
 
 const FILE: &str = "desktop-unlock.bin";
+const ACTIVE: &str = ".desktop-runtime-active";
+
+pub(super) fn begin_runtime(state: &std::path::Path) -> Result<(), AuthorityError> {
+    let marker = state.join(ACTIVE);
+    match fs::symlink_metadata(&marker) {
+        Ok(_) => {
+            match fs::remove_file(state.join(FILE)) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(AuthorityError::storage(e)),
+            }
+            fs::remove_file(&marker).map_err(AuthorityError::storage)?;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(AuthorityError::storage(e)),
+    }
+    crate::durable::create_new_file(&marker)
+        .map_err(AuthorityError::storage)?
+        .sync_all()
+        .map_err(AuthorityError::storage)?;
+    crate::durable::fsync(state).map_err(AuthorityError::storage)
+}
+
+pub(super) fn finish_runtime(state: &std::path::Path) -> Result<(), AuthorityError> {
+    fs::remove_file(state.join(ACTIVE)).map_err(AuthorityError::storage)?;
+    crate::durable::fsync(state).map_err(AuthorityError::storage)
+}
 const MAGIC: &[u8; 8] = b"RKDSK001";
 const LIFETIME_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 
@@ -75,6 +102,7 @@ impl Worker {
         if matches!(self.state, VaultState::Faulted) {
             return Err(AuthorityError::Locked);
         }
+        let was_locked = matches!(self.state, VaultState::Locked);
         let result = (|| {
             ensure_mutation_current(not_after)?;
             let key = Zeroizing::new(
@@ -140,9 +168,15 @@ impl Worker {
                 outcome::SUCCESS,
                 "keychain",
             ))?;
+            ensure_mutation_current(not_after)?;
             Ok(expires)
         })();
         if let Err(error) = &result {
+            if was_locked && !matches!(self.state, VaultState::Faulted) {
+                self.state = VaultState::Locked;
+                self.desktop_session = None;
+                self.desktop_resume_expiry = None;
+            }
             self.append_audit(unlock_audit(
                 "desktop.resume_failed",
                 outcome::DENIED,

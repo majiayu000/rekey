@@ -149,83 +149,114 @@ async fn fault_while_initially_locked_revokes_remembered_desktop() {
     use rekey_vault::bootstrap::{confirm_vault_init, init_vault};
     use rekey_vault::crypto::kdf::Argon2Params;
     use rekey_vault::secret::SecretInput;
-    let dir = tempfile::tempdir().unwrap();
-    let state = dir.path().join("state");
-    let proof = || UnlockProof::Password(SecretInput::from_slice(b"synthetic-desktop-proof"));
-    init_vault(
-        &state,
-        &SecretInput::from_slice(b"synthetic-desktop-proof"),
-        Argon2Params {
-            memory_kib: 8,
-            iterations: 1,
-            parallelism: 1,
-        },
-    )
-    .unwrap();
-    confirm_vault_init(&state).unwrap();
-    let (authority, join) =
-        rekey_vault::authority::spawn_authority(AuthorityConfig::new(state.clone())).unwrap();
-    authority.unlock(proof()).await.unwrap();
-    authority.desktop_remember(proof(), None).await.unwrap();
-    authority.lock_for_restart("restart").await.unwrap();
-    authority.shutdown(None).await.unwrap();
-    join.join().unwrap();
-    let (authority, join) =
-        rekey_vault::authority::spawn_authority(AuthorityConfig::new(state.clone())).unwrap();
-    assert_eq!(authority.status().await.unwrap().state, "locked");
-    assert!(state.join("desktop-unlock.bin").exists());
-    let sessions = Arc::new(SessionRegistry::new());
-    let transport: Arc<dyn UpstreamTransport> = Arc::new(ReqwestUpstreamTransport);
-    let lifecycle = Arc::new(Lifecycle::new());
-    let (terminals, terminal_task) = spawn_terminal_worker(authority.clone());
-    let policy = Arc::new(RwLock::new(None));
-    let executor = Arc::new(ActionExecutor::new(
-        authority.clone(),
-        sessions.clone(),
-        transport.clone(),
-        lifecycle.clone(),
-        terminals.clone(),
-        policy.clone(),
-    ));
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let (executions, supervisor) = crate::execution_supervisor::new(executor.clone());
-    let mut execution_task = tokio::spawn(supervisor.run(shutdown_rx));
-    let (stop_tx, _stop_rx) = mpsc::unbounded_channel();
-    let ctx = BrokerCtx {
-        authority: authority.clone(),
-        sessions,
-        executions,
-        executor,
-        workload_transport: transport,
-        online_jwks_slots: Arc::new(tokio::sync::Semaphore::new(2)),
-        lifecycle,
-        policy,
-        policy_trust: Arc::new(RwLock::new(None)),
-        terminals,
-        drain_timeout: Duration::from_secs(1),
-        shutdown_flag: AtomicBool::new(false),
-        shutdown_tx,
-        stop_tx,
-        allowed_agent_uids: vec![unsafe { libc::geteuid() }].into(),
-    };
-    let outcome = ctx
-        .central_stop(
-            shutdown::StopCause::Fault,
-            tokio::time::Instant::now() + Duration::from_secs(5),
-            &mut execution_task,
-            None,
+    for coordinator_blocked in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        let proof = || UnlockProof::Password(SecretInput::from_slice(b"synthetic-desktop-proof"));
+        init_vault(
+            &state,
+            &SecretInput::from_slice(b"synthetic-desktop-proof"),
+            Argon2Params {
+                memory_kib: 8,
+                iterations: 1,
+                parallelism: 1,
+            },
         )
-        .await;
-    assert!(matches!(
-        outcome,
-        shutdown::StopDisposition::Stopped(Some(_))
-    ));
-    assert!(
-        !state.join("desktop-unlock.bin").exists(),
-        "fault must revoke a ticket even before resume"
-    );
-    drop(ctx);
-    terminal_task.abort();
-    drop(authority);
-    join.join().unwrap();
+        .unwrap();
+        confirm_vault_init(&state).unwrap();
+        let (authority, join) =
+            rekey_vault::authority::spawn_authority(AuthorityConfig::new(state.clone())).unwrap();
+        authority.unlock(proof()).await.unwrap();
+        let (key, _) = authority.desktop_remember(proof(), None).await.unwrap();
+        authority.lock_for_restart("restart").await.unwrap();
+        authority.shutdown(None).await.unwrap();
+        join.join().unwrap();
+        let (authority, join) =
+            rekey_vault::authority::spawn_authority(AuthorityConfig::new(state.clone())).unwrap();
+        assert_eq!(authority.status().await.unwrap().state, "locked");
+        assert!(state.join("desktop-unlock.bin").exists());
+        let sessions = Arc::new(SessionRegistry::new());
+        let transport: Arc<dyn UpstreamTransport> = Arc::new(ReqwestUpstreamTransport);
+        let lifecycle = Arc::new(Lifecycle::new());
+        let (terminals, terminal_task) = spawn_terminal_worker(authority.clone());
+        let policy = Arc::new(RwLock::new(None));
+        let executor = Arc::new(ActionExecutor::new(
+            authority.clone(),
+            sessions.clone(),
+            transport.clone(),
+            lifecycle.clone(),
+            terminals.clone(),
+            policy.clone(),
+        ));
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (executions, supervisor) = crate::execution_supervisor::new(executor.clone());
+        let mut execution_task = tokio::spawn(supervisor.run(shutdown_rx));
+        let (stop_tx, _stop_rx) = mpsc::unbounded_channel();
+        let ctx = BrokerCtx {
+            authority: authority.clone(),
+            sessions,
+            executions,
+            executor,
+            workload_transport: transport,
+            online_jwks_slots: Arc::new(tokio::sync::Semaphore::new(2)),
+            lifecycle,
+            policy,
+            policy_trust: Arc::new(RwLock::new(None)),
+            terminals,
+            drain_timeout: Duration::from_secs(1),
+            shutdown_flag: AtomicBool::new(false),
+            shutdown_tx,
+            stop_tx,
+            allowed_agent_uids: vec![unsafe { libc::geteuid() }].into(),
+        };
+        let hold = if coordinator_blocked {
+            Some(ctx.lifecycle.coordinate().await)
+        } else {
+            None
+        };
+        let outcome = ctx
+            .central_stop(
+                shutdown::StopCause::Fault,
+                tokio::time::Instant::now()
+                    + if coordinator_blocked {
+                        Duration::from_millis(50)
+                    } else {
+                        Duration::from_secs(5)
+                    },
+                &mut execution_task,
+                None,
+            )
+            .await;
+        assert!(matches!(
+            outcome,
+            shutdown::StopDisposition::Stopped(Some(_))
+        ));
+        if !coordinator_blocked {
+            assert!(!state.join("desktop-unlock.bin").exists());
+        }
+        drop(hold);
+        drop(ctx);
+        terminal_task.abort();
+        let _ = terminal_task.await;
+        if !execution_task.is_finished() {
+            execution_task.abort();
+            let _ = execution_task.await;
+        }
+        drop(authority);
+        join.join().unwrap();
+        let (authority, join) =
+            rekey_vault::authority::spawn_authority(AuthorityConfig::new(state.clone())).unwrap();
+        assert!(
+            !state.join("desktop-unlock.bin").exists(),
+            "even early fault exits must revoke before next resume"
+        );
+        assert!(
+            authority
+                .desktop_resume(SecretInput::from_slice(&key), None)
+                .await
+                .is_err()
+        );
+        authority.shutdown(None).await.unwrap();
+        join.join().unwrap();
+    }
 }

@@ -109,6 +109,7 @@ pub fn spawn_authority(
     let mut store = SqliteRecordStore::open(&db)?;
     let header = store.load_header()?;
     reconcile_abandoned_executions(&mut store)?;
+    desktop::begin_runtime(&config.state_dir)?;
     let (tx, rx) = mpsc::channel(config.queue_capacity);
     let worker = Worker {
         store,
@@ -313,7 +314,14 @@ impl Worker {
                         Err(AuthorityError::AuthenticationFailed)
                     }
                     _ => Ok(()),
-                };
+                }
+                .and_then(|_| {
+                    if matches!(self.state, VaultState::Faulted) {
+                        Ok(())
+                    } else {
+                        desktop::finish_runtime(&self.config.state_dir)
+                    }
+                });
                 let ok = result.is_ok();
                 if ok {
                     self.desktop_session = None;
