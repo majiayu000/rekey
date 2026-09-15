@@ -195,13 +195,14 @@ impl BrokerCtx {
             ))));
         }
 
-        if must_record_signal_lock
+        if !preserve_desktop
+            || must_record_signal_lock
             || status
                 .as_ref()
                 .is_some_and(|status| status.state == "unlocked")
         {
             let lock = async {
-                if !preserve_desktop {
+                if !preserve_desktop || first_error.is_some() {
                     self.authority.lock(lock_reason).await
                 } else {
                     self.authority.lock_for_restart(lock_reason).await
