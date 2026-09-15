@@ -253,7 +253,7 @@ final class AppModel: ObservableObject {
     }
     var desktopReady: Bool { desktopToken != nil && Date() < desktopExpiry && unlocked }
     func requestDesktopLogin() {
-        operation = Operation(title: "解锁管理会话", detail: "验证一次后，15 分钟内可连续保存、查看和复制密钥。", arguments: ["unlock"])
+        operation = Operation(title: "解锁管理会话", detail: "验证一次后，7 天内可连续保存、查看和复制密钥。", arguments: ["unlock"])
     }
     func addAPIKey(label: String, secret: String) async -> Bool {
         guard desktopReady, let token = desktopToken else { desktopToken = nil; error = "管理会话已过期，请关闭窗口并重新解锁。"; return false }
@@ -361,7 +361,7 @@ final class AppModel: ObservableObject {
             guard let output = String(data: data, encoding: .utf8) else { throw UIError(message: "命令返回了无法解码的内容，操作结果需重新确认。") }
             if desktopLogin {
                 guard output.count == 64 && output.allSatisfy(\.isHexDigit) else { throw UIError(message: "管理会话响应无效。") }
-                desktopToken = output; desktopExpiry = Date().addingTimeInterval(900)
+                desktopToken = output; desktopExpiry = Date().addingTimeInterval(7 * 24 * 60 * 60)
             } else { result = ResultMessage(title: op.title + "完成", text: output, sensitive: op.sensitiveResult) }
         } catch { operationError = error.localizedDescription }
         if let file = op.temporaryFile {

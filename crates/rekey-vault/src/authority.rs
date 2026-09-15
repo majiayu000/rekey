@@ -158,8 +158,10 @@ impl Worker {
                     let token = zeroize::Zeroizing::new(
                         data_encoding::HEXLOWER.encode(&*random).into_bytes(),
                     );
-                    self.desktop_session =
-                        Some((token.clone(), Instant::now() + Duration::from_secs(900)));
+                    self.desktop_session = Some((
+                        token.clone(),
+                        Instant::now() + Duration::from_secs(7 * 24 * 60 * 60),
+                    ));
                     Ok(token)
                 });
                 let _ = reply.send(result);

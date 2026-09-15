@@ -57,7 +57,7 @@ enum Command {
     },
     /// Run the broker in the foreground (delegates to rekeyd).
     Serve {
-        #[arg(long, default_value = "15m")]
+        #[arg(long, default_value = "7d")]
         idle_lock: String,
     },
     /// Restore a backup into an empty state directory (delegates to rekeyd).

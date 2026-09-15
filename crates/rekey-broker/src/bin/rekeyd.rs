@@ -84,8 +84,8 @@ enum Command {
     Serve {
         #[arg(long)]
         state_dir: Option<PathBuf>,
-        /// Idle auto-lock, e.g. 15m, 1h. Range 1m..=120m.
-        #[arg(long, default_value = "15m")]
+        /// Idle auto-lock, e.g. 15m, 1h, 7d. Range 1m..=7d.
+        #[arg(long, default_value = "7d")]
         idle_lock: String,
         /// Separate directory that exposes only agent.sock to an isolated Agent.
         #[arg(long)]
@@ -149,6 +149,7 @@ fn parse_duration(input: &str) -> Result<Duration, RekeydError> {
         "s" => 1,
         "m" => 60,
         "h" => 3_600,
+        "d" => 86_400,
         _ => return Err(usage(format!("invalid duration unit in: {input}"))),
     };
     let seconds = n
@@ -277,8 +278,8 @@ fn cmd_serve(
 ) -> Result<(), RekeydError> {
     let state_dir = resolve_state_dir(state_dir)?;
     let idle = parse_duration(idle_lock)?;
-    if idle < Duration::from_secs(60) || idle > Duration::from_secs(120 * 60) {
-        return Err(usage("idle lock must be between 1m and 120m"));
+    if idle < Duration::from_secs(60) || idle > Duration::from_secs(7 * 24 * 60 * 60) {
+        return Err(usage("idle lock must be between 1m and 7d"));
     }
     let broker_uid = unsafe { libc::geteuid() };
     if agent_uids.is_empty() {

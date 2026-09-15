@@ -18,9 +18,9 @@ use crate::error::AuthorityError;
 use crate::secret::{PreparedCredential, SecretInput};
 
 pub const DEFAULT_QUEUE_CAPACITY: usize = 128;
-pub const DEFAULT_IDLE_LOCK: Duration = Duration::from_secs(15 * 60);
+pub const DEFAULT_IDLE_LOCK: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 pub const IDLE_LOCK_MIN: Duration = Duration::from_secs(60);
-pub const IDLE_LOCK_MAX: Duration = Duration::from_secs(120 * 60);
+pub const IDLE_LOCK_MAX: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 #[derive(Clone)]
 pub struct AuthorityConfig {
@@ -42,14 +42,14 @@ impl AuthorityConfig {
         }
     }
 
-    /// The 1–120 minute idle-lock range is a product rule enforced where the
+    /// The 1 minute–7 day idle-lock range is a product rule enforced where the
     /// duration is parsed (rekeyd serve); the worker itself only requires a
     /// nonzero value so tests can exercise idle locking quickly.
     pub(crate) fn validate(&self) -> Result<(), AuthorityError> {
         if self.idle_lock.is_zero() || self.idle_lock > IDLE_LOCK_MAX {
             return Err(AuthorityError::Domain(
                 rekey_domain::DomainError::InvalidActionDefinition(
-                    "idle lock must be nonzero and at most 120 minutes".to_owned(),
+                    "idle lock must be nonzero and at most 7 days".to_owned(),
                 ),
             ));
         }

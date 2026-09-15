@@ -190,7 +190,7 @@ async fn dispatch(
                 .await?
                 .ok_or(BrokerError::Authority(AuthorityError::AuthenticationFailed))?;
             Ok((
-                json(&serde_json::json!({"expires_in_seconds": 900}))?,
+                json(&serde_json::json!({"expires_in_seconds": 7 * 24 * 60 * 60}))?,
                 token.to_vec(),
             ))
         }

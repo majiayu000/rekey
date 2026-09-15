@@ -846,7 +846,7 @@ not reset it.
 
 ### 11.3 Idle Lock
 
-- 默认 idle timeout 15 minutes，可在 startup config 设置 1–120 minutes。
+- 默认 idle timeout 7 days，可在 startup config 设置 1 minute–7 days。
 - 成功的 Admin command 或 Agent execution completion 更新 worker activity；execution completion 的更新时间不得停留在 credential preparation。Broker 读取该时钟并走与 explicit lock 相同的 Draining 路径。
 - 正在执行的 Action 不被 idle timer 中途清除 credential：进入 Draining 后不接受新请求，但已获得 permit 的请求继续到其既有 deadline，然后才 zeroize VRK。
 - 上游 Action P0 最大 timeout 120 seconds；Draining 等待上限与此相同。
@@ -1051,7 +1051,7 @@ P0 命令：
 
 ~~~text
 rekey init [--state-dir PATH]
-rekey serve [--state-dir PATH] [--idle-lock 15m]
+rekey serve [--state-dir PATH] [--idle-lock 7d]
 rekey unlock [--recovery]
 rekey lock
 rekey status

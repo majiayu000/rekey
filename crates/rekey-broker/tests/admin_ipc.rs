@@ -573,7 +573,7 @@ async fn desktop_values_use_body_and_agent_channel_cannot_reveal() {
         &common::proof_body(common::PASSWORD),
     )
     .await;
-    assert_eq!(login.ok()["expires_in_seconds"], 900);
+    assert_eq!(login.ok()["expires_in_seconds"], 604_800);
     let token = login.body;
     assert_eq!(token.len(), 64);
     let metadata = br#"{"label":"GLM","kind":"opaque-token"}"#;
