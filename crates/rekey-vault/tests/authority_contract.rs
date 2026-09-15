@@ -848,26 +848,31 @@ async fn desktop_session_saves_and_reveals_without_password_but_dies_on_lock() {
             SecretInput::from_slice(&token),
             CredentialLabel::new("new GLM").unwrap(),
             SecretInput::from_slice(b"new-key-canary"),
+            None,
         )
         .await
         .unwrap();
     assert_eq!(
         &*handle
-            .desktop_reveal(SecretInput::from_slice(&token), existing.id)
+            .desktop_reveal(SecretInput::from_slice(&token), existing.id, None)
             .await
             .unwrap(),
         b"existing-key-canary"
     );
     assert_eq!(
         &*handle
-            .desktop_reveal(SecretInput::from_slice(&token), saved.id)
+            .desktop_reveal(SecretInput::from_slice(&token), saved.id, None)
             .await
             .unwrap(),
         b"new-key-canary"
     );
     assert!(
         handle
-            .desktop_reveal(SecretInput::from_slice(b"agent-or-forged-token"), saved.id)
+            .desktop_reveal(
+                SecretInput::from_slice(b"agent-or-forged-token"),
+                saved.id,
+                None
+            )
             .await
             .is_err()
     );
@@ -876,23 +881,56 @@ async fn desktop_session_saves_and_reveals_without_password_but_dies_on_lock() {
             .desktop_add(
                 SecretInput::from_slice(b"wrong"),
                 CredentialLabel::new("must not save").unwrap(),
-                SecretInput::from_slice(b"x")
+                SecretInput::from_slice(b"x"),
+                None
             )
             .await
             .is_err()
     );
+    let expired = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+    assert!(matches!(
+        handle
+            .desktop_add(
+                SecretInput::from_slice(&token),
+                CredentialLabel::new("expired save").unwrap(),
+                SecretInput::from_slice(b"must-not-save"),
+                expired,
+            )
+            .await,
+        Err(AuthorityError::AuthorityBusy)
+    ));
+    assert!(matches!(
+        handle
+            .desktop_reveal(SecretInput::from_slice(&token), saved.id, expired)
+            .await,
+        Err(AuthorityError::AuthorityBusy)
+    ));
+    let db = rusqlite::Connection::open(rekey_vault::paths::vault_db(&vault.state_dir)).unwrap();
+    let denied: i64 = db.query_row("SELECT count(*) FROM audit_events WHERE event_type = 'credential.reveal_failed' AND outcome = 'denied'", [], |r| r.get(0)).unwrap();
+    let failed: i64 = db.query_row("SELECT count(*) FROM audit_events WHERE event_type = 'credential.reveal_failed' AND outcome = 'failure'", [], |r| r.get(0)).unwrap();
+    let revealed: i64 = db
+        .query_row(
+            "SELECT count(*) FROM audit_events WHERE event_type = 'credential.revealed'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(denied, 1);
+    assert_eq!(failed, 1);
+    assert_eq!(revealed, 2, "expired reveal never decrypts or succeeds");
+    drop(db);
     assert_eq!(handle.credential_list().await.unwrap().len(), 2);
     handle.lock("test").await.unwrap();
     assert!(
         handle
-            .desktop_reveal(SecretInput::from_slice(&token), saved.id)
+            .desktop_reveal(SecretInput::from_slice(&token), saved.id, None)
             .await
             .is_err()
     );
     handle.unlock(common::password_proof()).await.unwrap();
     assert!(
         handle
-            .desktop_reveal(SecretInput::from_slice(&token), saved.id)
+            .desktop_reveal(SecretInput::from_slice(&token), saved.id, None)
             .await
             .is_err()
     );
@@ -903,7 +941,7 @@ async fn desktop_session_saves_and_reveals_without_password_but_dies_on_lock() {
         .unwrap();
     assert!(
         handle
-            .desktop_reveal(SecretInput::from_slice(&fresh), saved.id)
+            .desktop_reveal(SecretInput::from_slice(&fresh), saved.id, None)
             .await
             .is_err()
     );

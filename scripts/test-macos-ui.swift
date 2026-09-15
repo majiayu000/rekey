@@ -4,6 +4,7 @@ import Darwin
 // Compile with apps/macos/Model.swift; exercises the same subprocess boundary as the app.
 @main
 struct UIContract {
+    @MainActor
     static func main() throws {
         guard CommandLine.arguments.count == 2 else { fatalError("usage: test-macos-ui CLI_BINARY") }
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("rkui-\(UUID().uuidString.prefix(8))")
@@ -107,6 +108,11 @@ struct UIContract {
         try require(json["body"] as? String == password + "\n", "proof reaches stdin exactly")
         try require(json["ambient"] is NSNull, "ambient environment removed")
         try denied({ _ = try boundary.decode(ServiceStatus.self, ["status"]) }, "malformed response fails clearly")
+        let model = AppModel()
+        model.desktopToken = "stale-token"
+        model.visibleSecret = "synthetic-value"
+        model.rejectDesktopSession(UIError(message: "INVALID_UNLOCK_CREDENTIAL"))
+        try require(model.desktopToken == nil && model.visibleSecret == nil, "rejected desktop session is discarded")
         print("PASS: real vault lifecycle, metadata, actions, session lifecycle, policy/approval reads, backup/restore/export, wrong-proof and locked denial, audit canaries, private new-only result files, literal argv and stdin-only proof, filtered child environment, malformed-response rejection")
     }
 }

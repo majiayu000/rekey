@@ -34,7 +34,7 @@ struct CLI: Sendable {
             errors.read(stderr.fileHandleForReading, process: process)
         }
         let timeout = DispatchWorkItem { if process.isRunning { process.terminate() } }
-        DispatchQueue.global().asyncAfter(deadline: .now() + 150, execute: timeout)
+        DispatchQueue.global().asyncAfter(deadline: .now() + (arguments.first == "backup" ? 310 : 150), execute: timeout)
         defer { timeout.cancel() }
         do {
             try stdin.fileHandleForWriting.write(contentsOf: Data(input.utf8))
@@ -237,6 +237,7 @@ final class AppModel: ObservableObject {
     @Published var auditOutcome = ""
     @Published var stateDirectory: String
     private var launchedService: Process?
+    private var launchedServiceDirectory: String?
     var cli: CLI {
         CLI(binary: Bundle.main.resourceURL!.appendingPathComponent("bin/rekey"), stateDirectory: stateDirectory)
     }
@@ -263,7 +264,7 @@ final class AppModel: ObservableObject {
         do {
             _ = try await Task.detached { try client.run(["desktop-add", label], input: token + "\n" + secret + "\n") }.value
             busy = false; await refresh(); return true
-        } catch { self.error = error.localizedDescription; busy = false; return false }
+        } catch { rejectDesktopSession(error); self.error = error.localizedDescription; busy = false; return false }
     }
     func revealCredential(_ id: String, copy: Bool) async {
         guard desktopReady, let token = desktopToken else { requestDesktopLogin(); return }
@@ -285,7 +286,13 @@ final class AppModel: ObservableObject {
                     if board.changeCount == revision { board.clearContents() }
                 }
             } else { visibleSecret = text }
-        } catch { visibleSecret = nil; self.error = error.localizedDescription }
+        } catch { rejectDesktopSession(error); visibleSecret = nil; self.error = error.localizedDescription }
+    }
+    func rejectDesktopSession(_ error: Error) {
+        let message = error.localizedDescription
+        if message.contains("INVALID_UNLOCK_CREDENTIAL") || message.contains("LOCKED") || message.contains("FAULTED") {
+            desktopToken = nil; desktopExpiry = .distantPast; visibleSecret = nil; copiedCredential = nil
+        }
     }
     func clearCache() {
         desktopToken = nil; visibleSecret = nil; copiedCredential = nil
@@ -298,13 +305,13 @@ final class AppModel: ObservableObject {
         status = nil; clearCache(); result = nil; error = nil
         Task { await refresh() }
     }
-    func refresh(nextAuditPage: Bool = false) async {
+    func refresh(nextAuditPage: Bool = false, passive: Bool = false) async {
         guard !busy else { return }
         busy = true
         defer { busy = false }
         let client = cli
         do {
-            let current = try await Task.detached { try client.decode(ServiceStatus.self, ["status"]) }.value
+            let current = try await Task.detached { try client.decode(ServiceStatus.self, passive ? ["status", "--passive"] : ["status"]) }.value
             status = current; connectionError = nil
             if Date() >= desktopExpiry { desktopToken = nil; visibleSecret = nil; copiedCredential = nil }
             if !current.unlocked { clearCache() }
@@ -312,6 +319,7 @@ final class AppModel: ObservableObject {
             status = nil; clearCache(); connectionError = error.localizedDescription
             return
         }
+        if passive { return }
         do {
             if unlocked {
                 let lists = try await Task.detached {
@@ -376,7 +384,7 @@ final class AppModel: ObservableObject {
     func startService() {
         guard !busy else { return }
         guard !needsSetup else { beginSetup(); return }
-        guard launchedService?.isRunning != true else {
+        guard launchedService?.isRunning != true || launchedServiceDirectory != stateDirectory else {
             error = "由此窗口启动的服务仍在运行，请刷新状态。"; return
         }
         let child = Process()
@@ -390,6 +398,8 @@ final class AppModel: ObservableObject {
         do {
             try child.run()
             launchedService = child
+            launchedServiceDirectory = stateDirectory
+            let serviceDirectory = stateDirectory
             busy = true
             // Drain stderr while the service lives; only bounded diagnostics remain in memory.
             let captured = ServiceDiagnostic()
@@ -397,7 +407,7 @@ final class AppModel: ObservableObject {
             child.terminationHandler = { process in
                 errors.fileHandleForReading.readabilityHandler = nil
                 Task { @MainActor [weak self] in
-                    guard let self else { return }
+                    guard let self, self.stateDirectory == serviceDirectory else { return }
                     if process.terminationStatus != 0 { self.error = "服务已退出。\n" + captured.text }
                     await self.refresh()
                 }

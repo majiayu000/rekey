@@ -272,8 +272,9 @@ open target/macos-ui/Rekey.app
 
 The UI covers credentials, fixed Actions, capability creation/revocation,
 signed-policy import, approval inbox export, audit, backup/restore, and password
-settings. Policy and approval signing still use external tools. No stored
-credential reveal, automatic signing, or Agent execution console is added.
+settings. Authenticated human Admin sessions can reveal and copy current
+credentials; Agent APIs cannot read them. Policy and approval signing still
+use external tools. No automatic signing or Agent execution console is added.
 See [the native UI guide](apps/macos/README.md). This locally signed macOS 14+
 app is source-only and is not in the alpha.2 downloadable archive.
 

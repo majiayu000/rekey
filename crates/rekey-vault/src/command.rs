@@ -113,11 +113,13 @@ pub enum AuthorityCommand {
         token: SecretInput,
         label: CredentialLabel,
         secret: SecretInput,
+        not_after: Option<std::time::Instant>,
         reply: Reply<CredentialMetadata>,
     },
     DesktopReveal {
         token: SecretInput,
         credential_id: CredentialId,
+        not_after: Option<std::time::Instant>,
         reply: Reply<Zeroizing<Vec<u8>>>,
     },
     Status {

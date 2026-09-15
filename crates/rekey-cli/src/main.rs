@@ -101,7 +101,11 @@ enum Command {
     /// Lock the running broker and revoke all sessions.
     Lock,
     /// Show broker status.
-    Status,
+    Status {
+        /// Observe without resetting the idle-lock timer.
+        #[arg(long)]
+        passive: bool,
+    },
     /// Stop the running broker (step-up proof required while unlocked).
     Shutdown {
         #[command(flatten)]
@@ -500,7 +504,7 @@ fn main() {
             password_stdin,
         } => commands::unlock(&state_dir, recovery, password_stdin),
         Command::Lock => commands::lock(&state_dir),
-        Command::Status => commands::status(&state_dir),
+        Command::Status { passive } => commands::status(&state_dir, passive),
         Command::Shutdown { step_up } => {
             commands::shutdown(&state_dir, step_up.recovery, step_up.password_stdin)
         }

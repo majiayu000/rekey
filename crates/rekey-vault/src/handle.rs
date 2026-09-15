@@ -105,11 +105,13 @@ impl AuthorityHandle {
         token: SecretInput,
         label: CredentialLabel,
         secret: SecretInput,
+        not_after: Option<std::time::Instant>,
     ) -> Result<CredentialMetadata, AuthorityError> {
         call!(self, |reply| AuthorityCommand::DesktopAdd {
             token,
             label,
             secret,
+            not_after,
             reply
         })
     }
@@ -117,10 +119,12 @@ impl AuthorityHandle {
         &self,
         token: SecretInput,
         credential_id: CredentialId,
+        not_after: Option<std::time::Instant>,
     ) -> Result<Zeroizing<Vec<u8>>, AuthorityError> {
         call!(self, |reply| AuthorityCommand::DesktopReveal {
             token,
             credential_id,
+            not_after,
             reply
         })
     }

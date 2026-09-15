@@ -402,8 +402,13 @@ pub fn lock(state_dir: &Path) -> Result<(), CliError> {
     Ok(())
 }
 
-pub fn status(state_dir: &Path) -> Result<(), CliError> {
-    let (meta, _) = admin(state_dir)?.call(admin_msg::STATUS, b"{}", &[])?;
+pub fn status(state_dir: &Path, passive: bool) -> Result<(), CliError> {
+    let message = if passive {
+        admin_msg::PASSIVE_STATUS
+    } else {
+        admin_msg::STATUS
+    };
+    let (meta, _) = admin(state_dir)?.call(message, b"{}", &[])?;
     print_json::<ipc::StatusResponse>(&meta)?;
     Ok(())
 }

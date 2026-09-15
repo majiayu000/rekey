@@ -66,7 +66,7 @@ struct RootView: View {
         .task { await model.refresh(); if model.status == nil && model.needsSetup { model.beginSetup() } }
         .onReceive(Timer.publish(every: 15, on: .main, in: .common).autoconnect()) { _ in
             if phase == .active && !model.busy && model.operation == nil && model.result == nil && !model.showAddCredential && !model.showSession && !showActionForm {
-                Task { await model.refresh() }
+                Task { await model.refresh(passive: true) }
             }
         }
         .onChange(of: search) { _, _ in model.selectedCredential = filtered.first?.id }
@@ -212,10 +212,12 @@ struct RootView: View {
                 }
             }
             Spacer(minLength: 18)
-            Label("已存储的凭证不提供明文查看", systemImage: "lock").font(.system(size: 12)).foregroundStyle(.secondary).padding(.vertical, 18)
+            Label("你可以查看和复制密钥，Agent 无法读取", systemImage: "lock").font(.system(size: 12)).foregroundStyle(.secondary).padding(.vertical, 18)
             Divider()
             HStack(spacing: 16) {
-                step(1, "添加凭证", "接入所需的凭证") { model.showAddCredential = true }
+                step(1, "添加 API Key", "接入所需的凭证") {
+                    if model.desktopReady { model.showAddCredential = true } else { model.requestDesktopLogin() }
+                }
                 step(2, "配置固定操作", "注册允许执行的请求") { model.page = .actions }
                 step(3, "授予 Agent 权限", "设置范围与有效期") { model.page = .policy }
             }.padding(.vertical, 24)

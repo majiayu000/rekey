@@ -620,3 +620,31 @@ async fn desktop_values_use_body_and_agent_channel_cannot_reveal() {
     assert_eq!(locked.err_code(), "LOCKED");
     broker.shutdown().await;
 }
+
+#[tokio::test]
+async fn passive_status_polling_does_not_postpone_idle_lock() {
+    let broker = common::start_broker_with(
+        std::time::Duration::from_millis(80),
+        std::time::Duration::from_secs(2),
+    )
+    .await;
+    common::unlock(&broker).await;
+    let mut locked = false;
+    for _ in 0..20 {
+        let status = common::call(
+            &broker.admin_sock(),
+            Channel::Admin,
+            admin_msg::PASSIVE_STATUS,
+            b"{}",
+            &[],
+        )
+        .await;
+        if status.ok()["state"] == "locked" {
+            locked = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(locked, "background polling must allow idle locking");
+    broker.shutdown().await;
+}

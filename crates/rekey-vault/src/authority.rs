@@ -170,44 +170,71 @@ impl Worker {
                 token,
                 label,
                 secret,
+                not_after,
                 reply,
             } => {
-                let result = self.verify_desktop(&token).and_then(|_| {
-                    self.insert_credential(
-                        label,
-                        rekey_domain::credential::CredentialKind::OpaqueToken,
-                        secret,
-                        None,
-                    )
-                });
+                let result = ensure_mutation_current(not_after)
+                    .and_then(|_| self.verify_desktop(&token))
+                    .and_then(|_| {
+                        self.insert_credential(
+                            label,
+                            rekey_domain::credential::CredentialKind::OpaqueToken,
+                            secret,
+                            not_after,
+                        )
+                    });
                 self.touch_if_ok(&result);
                 let _ = reply.send(result);
             }
             AuthorityCommand::DesktopReveal {
                 token,
                 credential_id,
+                not_after,
                 reply,
             } => {
-                let result = self.verify_desktop(&token).and_then(|_| {
-                    let record = self.load_verified_credential(credential_id)?;
-                    let audit = credential_audit(
-                        "credential.reveal_started",
-                        credential_id,
-                        record.current_version,
-                        "desktop-session",
-                    );
-                    self.append_audit(audit)?;
-                    let value = self
-                        .prepare_credential(credential_id)?
-                        .consume(|value| zeroize::Zeroizing::new(value.to_vec()));
-                    self.append_audit(credential_audit(
-                        "credential.revealed",
-                        credential_id,
-                        record.current_version,
-                        "desktop-session",
-                    ))?;
-                    Ok(value)
-                });
+                let result = ensure_mutation_current(not_after)
+                    .and_then(|_| self.verify_desktop(&token))
+                    .and_then(|_| {
+                        let record = self.load_verified_credential(credential_id)?;
+                        let audit = credential_audit(
+                            "credential.reveal_started",
+                            credential_id,
+                            record.current_version,
+                            "desktop-session",
+                        );
+                        self.append_audit(audit)?;
+                        ensure_mutation_current(not_after)?;
+                        let value = self
+                            .prepare_credential(credential_id)?
+                            .consume(|value| zeroize::Zeroizing::new(value.to_vec()));
+                        self.append_audit(credential_audit(
+                            "credential.revealed",
+                            credential_id,
+                            record.current_version,
+                            "desktop-session",
+                        ))?;
+                        Ok(value)
+                    });
+                let result = match result {
+                    Err(error) => {
+                        let outcome = if matches!(
+                            error,
+                            AuthorityError::InvalidUnlockCredential
+                                | AuthorityError::Locked
+                                | AuthorityError::CredentialRevoked
+                                | AuthorityError::CredentialNotFound
+                        ) {
+                            outcome::DENIED
+                        } else {
+                            outcome::FAILURE
+                        };
+                        let mut audit =
+                            unlock_audit("credential.reveal_failed", outcome, error.code());
+                        audit.credential_id = Some(credential_id);
+                        self.append_audit(audit).and(Err(error))
+                    }
+                    other => other,
+                };
                 self.touch_if_ok(&result);
                 let _ = reply.send(result);
             }
