@@ -87,12 +87,17 @@ impl Worker {
         self.forget_desktop()?;
         let path = self.config.state_dir.join(FILE);
         let mut file = crate::durable::create_new_file(&path).map_err(AuthorityError::storage)?;
-        file.write_all(&header)
+        let persisted = file
+            .write_all(&header)
             .and_then(|_| file.write_all(&sealed.nonce))
             .and_then(|_| file.write_all(&sealed.ciphertext))
             .and_then(|_| file.sync_all())
-            .map_err(AuthorityError::storage)?;
-        crate::durable::fsync(&self.config.state_dir).map_err(AuthorityError::storage)?;
+            .and_then(|_| crate::durable::fsync(&self.config.state_dir));
+        if let Err(error) = persisted {
+            drop(file);
+            self.forget_desktop()?;
+            return Err(AuthorityError::storage(error));
+        }
         self.append_audit(unlock_audit(
             "desktop.remembered",
             outcome::SUCCESS,
@@ -205,5 +210,51 @@ impl Worker {
             None => LIFETIME_MS,
         };
         Ok(Duration::from_millis(millis as u64))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wall_clock_expiry_rejects_a_still_live_monotonic_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        crate::bootstrap::init_vault(
+            &state,
+            &SecretInput::from_slice(b"synthetic-expiry-test"),
+            crate::crypto::kdf::Argon2Params {
+                memory_kib: 8,
+                iterations: 1,
+                parallelism: 1,
+            },
+        )
+        .unwrap();
+        let store = crate::store::SqliteRecordStore::open(&crate::paths::vault_db(&state)).unwrap();
+        let header = store.load_header().unwrap();
+        let token = SecretInput::from_slice(b"synthetic-session");
+        let mut worker = Worker {
+            store,
+            header,
+            state: VaultState::Unlocked {
+                vrk: RootKey::generate().unwrap(),
+            },
+            desktop_session: Some((
+                Zeroizing::new(token.expose().to_vec()),
+                Instant::now() + Duration::from_secs(60),
+            )),
+            desktop_resume_expiry: Some(crate::now_ms().unwrap() + 60_000),
+            failed_unlocks: 0,
+            next_unlock_at: Instant::now(),
+            last_activity: Instant::now(),
+            config: crate::handle::AuthorityConfig::new(state),
+        };
+        worker.verify_desktop(&token).unwrap();
+        worker.desktop_resume_expiry = Some(crate::now_ms().unwrap() - 1);
+        assert!(matches!(
+            worker.verify_desktop(&token),
+            Err(AuthorityError::InvalidUnlockCredential)
+        ));
     }
 }

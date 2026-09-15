@@ -708,6 +708,8 @@ impl Worker {
 
     fn verify_desktop(&self, token: &crate::secret::SecretInput) -> Result<(), AuthorityError> {
         self.require_unlocked()?;
+        // A resumed grant has both a monotonic limit and its original wall-clock expiry.
+        self.desktop_session_duration()?;
         match &self.desktop_session {
             Some((expected, expires))
                 if Instant::now() < *expires
