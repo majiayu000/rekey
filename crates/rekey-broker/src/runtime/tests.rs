@@ -171,6 +171,7 @@ async fn fault_while_initially_locked_revokes_remembered_desktop() {
         authority.lock_for_restart("restart").await.unwrap();
         authority.shutdown(None).await.unwrap();
         join.join().unwrap();
+        rekey_vault::authority::finish_runtime(&state).unwrap();
         let (authority, join) =
             rekey_vault::authority::spawn_authority(AuthorityConfig::new(state.clone())).unwrap();
         assert_eq!(authority.status().await.unwrap().state, "locked");

@@ -28,6 +28,9 @@ mod audit;
 mod backup;
 mod credential;
 mod desktop;
+/// Clear the crash marker only after every runtime task has joined cleanly,
+/// while the caller still holds the exclusive runtime lock.
+pub use desktop::finish_runtime;
 mod policy;
 mod wrapper;
 
@@ -314,14 +317,7 @@ impl Worker {
                         Err(AuthorityError::AuthenticationFailed)
                     }
                     _ => Ok(()),
-                }
-                .and_then(|_| {
-                    if matches!(self.state, VaultState::Faulted) {
-                        Ok(())
-                    } else {
-                        desktop::finish_runtime(&self.config.state_dir)
-                    }
-                });
+                };
                 let ok = result.is_ok();
                 if ok {
                     self.desktop_session = None;

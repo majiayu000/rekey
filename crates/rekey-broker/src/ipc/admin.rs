@@ -191,12 +191,10 @@ async fn dispatch(
             let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
             let _owner = ctx.lifecycle.coordinate_until(deadline).await?;
             ctx.lifecycle.reject_if_not_running()?;
-            let (key, expires) = authority_until(
-                deadline,
-                ctx.authority
-                    .desktop_remember(proof_from(kind, proof), Some(deadline.into_std())),
-            )
-            .await?;
+            let (key, expires) = ctx
+                .authority
+                .desktop_remember(proof_from(kind, proof), Some(deadline.into_std()))
+                .await?;
             Ok((
                 json(&serde_json::json!({"expires_at_ms": expires}))?,
                 key.to_vec(),

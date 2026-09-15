@@ -981,6 +981,8 @@ async fn remembered_desktop_survives_restart_but_not_manual_lock() {
         .unwrap();
     handle.shutdown(None).await.unwrap();
     join.join().unwrap();
+    assert!(vault.state_dir.join(".desktop-runtime-active").exists());
+    rekey_vault::authority::finish_runtime(&vault.state_dir).unwrap();
     let (handle, join) = common::spawn(&vault.state_dir);
     assert!(
         handle
@@ -1170,23 +1172,31 @@ async fn slow_resume_audit_rolls_back_before_reporting_timeout() {
 
 #[tokio::test]
 async fn unclean_worker_exit_revokes_before_next_resume() {
-    let vault = common::init_test_vault();
-    let (handle, join) = common::spawn(&vault.state_dir);
-    handle.unlock(common::password_proof()).await.unwrap();
-    let (key, _) = handle
-        .desktop_remember(common::password_proof(), None)
-        .await
-        .unwrap();
-    drop(handle);
-    join.join().unwrap();
-    let (handle, join) = common::spawn(&vault.state_dir);
-    assert!(
-        handle
-            .desktop_resume(SecretInput::from_slice(&key), None)
+    for worker_shutdown in [false, true] {
+        let vault = common::init_test_vault();
+        let (handle, join) = common::spawn(&vault.state_dir);
+        handle.unlock(common::password_proof()).await.unwrap();
+        let (key, _) = handle
+            .desktop_remember(common::password_proof(), None)
             .await
-            .is_err()
-    );
-    assert!(!vault.state_dir.join("desktop-unlock.bin").exists());
-    handle.shutdown(None).await.unwrap();
-    join.join().unwrap();
+            .unwrap();
+        if worker_shutdown {
+            handle
+                .shutdown(Some(common::password_proof()))
+                .await
+                .unwrap();
+        }
+        drop(handle);
+        join.join().unwrap();
+        let (handle, join) = common::spawn(&vault.state_dir);
+        assert!(
+            handle
+                .desktop_resume(SecretInput::from_slice(&key), None)
+                .await
+                .is_err()
+        );
+        assert!(!vault.state_dir.join("desktop-unlock.bin").exists());
+        handle.shutdown(None).await.unwrap();
+        join.join().unwrap();
+    }
 }

@@ -208,8 +208,22 @@ impl BrokerCtx {
                 .await?;
             return Err(BrokerError::Authority(AuthorityError::AuthorityBusy));
         }
+        let session = match self.authority.desktop_issue().await {
+            Ok(session) => session,
+            Err(error) => {
+                if let Err(lock_error) = self
+                    .authority
+                    .lock_for_restart("desktop-session-failed")
+                    .await
+                {
+                    self.request_fault();
+                    return Err(lock_error.into());
+                }
+                return Err(error.into());
+            }
+        };
         self.activate_unlocked().await?;
-        Ok((self.authority.desktop_issue().await?, expires))
+        Ok((session, expires))
     }
 
     /// Revoke sessions, wait in-flight executes, then zeroize the VRK.
@@ -848,7 +862,7 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
     }
     match runtime_error {
         Some(err) => Err(err),
-        None => Ok(()),
+        None => rekey_vault::authority::finish_runtime(&config.state_dir).map_err(Into::into),
     }
 }
 
