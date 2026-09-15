@@ -1,10 +1,11 @@
 use super::keys::Kek;
 use super::{KEY_LEN, SALT_LEN};
 use crate::error::AuthorityError;
-use argon2::{Algorithm, Argon2, Params, Version};
+use argon2::{Algorithm, Argon2, Block, Params, Version};
 use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
+use zeroize::Zeroizing;
 
 pub const KDF_ALGORITHM_ARGON2ID: &str = "argon2id";
 pub const KDF_ALGORITHM_HKDF_SHA256: &str = "hkdf-sha256";
@@ -76,10 +77,13 @@ pub fn derive_password_kek(
         Some(KEY_LEN),
     )
     .map_err(|_| AuthorityError::CryptoFailure)?;
+    // The allocating convenience API drops its scratch Vec without wiping it.
+    // Own the blocks here so every return path clears password-derived state.
+    let mut blocks = Zeroizing::new(vec![Block::default(); argon_params.block_count()]);
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, argon_params);
-    let mut out = [0u8; KEY_LEN];
+    let mut out = Zeroizing::new([0u8; KEY_LEN]);
     argon
-        .hash_password_into(password, salt, &mut out)
+        .hash_password_into_with_memory(password, salt, out.as_mut(), blocks.as_mut_slice())
         .map_err(|_| AuthorityError::CryptoFailure)?;
     let kek = Kek::from_bytes(&mut out);
     Ok(kek)
@@ -140,6 +144,26 @@ mod tests {
         };
         let e = derive_password_kek(b"pw", &salt, &more_iters).unwrap();
         assert_ne!(a.bytes(), e.bytes());
+    }
+
+    #[test]
+    fn wiped_workspace_preserves_existing_argon2_output() {
+        let params = Params::new(32, 2, 1, Some(KEY_LEN)).unwrap();
+        let mut expected = Zeroizing::new([0u8; KEY_LEN]);
+        Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
+            .hash_password_into(b"test password", &[11; SALT_LEN], expected.as_mut())
+            .unwrap();
+        let actual = derive_password_kek(
+            b"test password",
+            &[11; SALT_LEN],
+            &Argon2Params {
+                memory_kib: 32,
+                iterations: 2,
+                parallelism: 1,
+            },
+        )
+        .unwrap();
+        assert_eq!(actual.bytes(), &*expected);
     }
 
     #[test]

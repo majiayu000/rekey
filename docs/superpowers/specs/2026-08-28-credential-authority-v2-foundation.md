@@ -516,6 +516,7 @@ pub struct PreparedCredential {
 - Secret buffer 在分配时预设准确 capacity，避免 reallocation copies。
 - 暴露 Secret 只能出现在 crypto 或 executor 的最小 lexical scope。
 - compile-time negative assertion 验证 Secret 类型未实现禁止 trait。
+- Argon2id 派生必须使用释放时清零的工作块和输出缓冲区，包含错误返回路径；启用底层 Argon2/AES 的可用清零支持。
 - 文档明确 zeroize 不能清理寄存器、内核 socket buffer、allocator 历史副本或进程转储；P0 不宣称 mlock。
 
 ## 10. Persistent Storage

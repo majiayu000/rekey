@@ -241,6 +241,12 @@ final class AppModel: ObservableObject {
     init() {
         stateDirectory = UserDefaults.standard.string(forKey: "stateDirectory") ?? NSHomeDirectory() + "/.rekey"
     }
+    var needsSetup: Bool {
+        !FileManager.default.fileExists(atPath: stateDirectory + "/vault.sqlite3")
+    }
+    func beginSetup() {
+        operation = Operation(title: "创建保险库", detail: "设置并确认密码后，应用会自动创建保险库并启动服务。请保存随后显示的恢复密钥。", arguments: ["init"], confirmSecret: true, sensitiveResult: true, recoveryAllowed: false)
+    }
     func clearCache() {
         credentials = []; actions = []; approvals = []; policy = nil; audit = nil; selectedCredential = nil
     }
@@ -319,9 +325,11 @@ final class AppModel: ObservableObject {
         busy = false
         await refresh()
         if let operationError { self.error = operationError }
+        else if op.arguments == ["init"] { startService() }
     }
     func startService() {
         guard !busy else { return }
+        guard !needsSetup else { beginSetup(); return }
         guard launchedService?.isRunning != true else {
             error = "由此窗口启动的服务仍在运行，请刷新状态。"; return
         }

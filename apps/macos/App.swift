@@ -63,7 +63,7 @@ struct RootView: View {
             }
         }
         .background(canvas).foregroundStyle(ink).tint(green)
-        .task { await model.refresh() }
+        .task { await model.refresh(); if model.status == nil && model.needsSetup { model.beginSetup() } }
         .onReceive(Timer.publish(every: 15, on: .main, in: .common).autoconnect()) { _ in
             if phase == .active && !model.busy && model.operation == nil && model.result == nil && !model.showAddCredential && !model.showSession && !showActionForm {
                 Task { await model.refresh() }
@@ -159,11 +159,11 @@ struct RootView: View {
         VStack(alignment: .leading, spacing: 20) {
             Image(systemName: "key.horizontal").font(.system(size: 42, weight: .light)).foregroundStyle(green)
             Text("让 Agent 使用权限，\n让凭证留在本机。").font(.system(size: 29, weight: .medium)).lineSpacing(6)
-            Text("已有保险库可以直接启动服务。首次使用请创建保险库，并妥善保存恢复密钥。").font(.system(size: 14)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text("首次使用只需设置密码，应用会自动创建保险库并启动服务。已有保险库可通过左侧工作区选择目录。").font(.system(size: 14)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Text(model.stateDirectory).font(.system(size: 12, design: .monospaced)).foregroundStyle(.secondary).textSelection(.enabled)
             HStack(spacing: 12) {
-                Button("启动服务") { model.startService() }.buttonStyle(PrimaryButton())
-                Button("创建保险库") { model.operation = Operation(title: "创建保险库", detail: "在当前目录创建全新保险库。请设置密码；恢复密钥将在完成后显示一次。", arguments: ["init"], confirmSecret: true, sensitiveResult: true, recoveryAllowed: false) }.buttonStyle(SecondaryButton())
+                Button(model.needsSetup ? "设置密码并开始" : "启动服务") { model.startService() }.buttonStyle(PrimaryButton())
+
             }.disabled(model.busy)
             if let error = model.connectionError {
                 DisclosureGroup("连接详情") { Text(error).font(.system(size: 11)).foregroundStyle(.secondary).textSelection(.enabled) }.font(.system(size: 12))
