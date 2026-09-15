@@ -165,6 +165,7 @@ impl Worker {
                 reply,
             } => {
                 let result = self.remember_desktop(proof, not_after);
+                self.touch_if_ok(&result);
                 let _ = reply.send(result);
             }
             AuthorityCommand::DesktopResume {
