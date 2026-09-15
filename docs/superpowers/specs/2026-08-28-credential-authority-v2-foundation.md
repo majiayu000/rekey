@@ -1326,7 +1326,7 @@ log_level
 | Root state ownership | AuthorityWorker | domain、crypto、record store、clock/RNG | CLI/Web/Agent direct DB；`Arc<RootKey>` | `authority_single_owner` |
 | Crypto | rekey-vault crypto | aes-gcm、argon2、hkdf、sha2、secrecy/zeroize | caller nonce、custom cipher、logging | `cargo test -p rekey-vault --test crypto_contract` |
 | Storage | SQLiteRecordStore | rusqlite、domain records | plaintext Secret、multiple process access | `cargo test -p rekey-vault --test storage_contract` |
-| Lifecycle | AuthorityWorker 状态机（BrokerRuntime 只编排 drain/shutdown，不自持状态） | Tokio channels、clock | hidden globals、silent auto-unlock | `cargo test -p rekey-vault --test lifecycle_contract` |
+| Lifecycle | AuthorityWorker 状态机（BrokerRuntime 只编排 drain/shutdown，不自持状态） | Tokio channels、clock | hidden globals、无有效本机授权的自动解锁 | `cargo test -p rekey-vault --test lifecycle_contract` |
 | Admin IPC | AdminService | frame、peer UID、AuthorityHandle | Agent capability as admin proof、DB access | `cargo test -p rekey-broker --test admin_ipc` |
 | Agent IPC | AgentService | frame、session、executor | Secret read/export、URL/method/auth inputs | `cargo test -p rekey-broker --test agent_ipc` |
 | Session | SessionRegistry | CSPRNG、SHA-256、clock | persistent long-term token、Vault token | `cargo test -p rekey-broker --test session_contract` |
@@ -1618,13 +1618,14 @@ stop。Admin Shutdown connection 必须在 central stop 返回后收到一个完
 
 launchd generator 只产生当前 GUI user LaunchAgent；systemd generator 必须从本机 passwd
 database 验证显式 `--run-as-user` 存在且 UID 非 0，并在 unit 中将 `$` 转义为 `$$`。
-模板不得包含 password、secret env 或自动 unlock，启动/重启始终 Locked。真实 gate
+模板不得包含 password、secret env 或自动 unlock；Broker 启动/重启先进入 Locked。
+无本机桌面恢复授权时保持 Locked；原生桌面可按下述七天授权协议恢复。真实 gate
 使用 release `rekey` 与安装到临时路径的 release BrokerRuntime local-CA/TLS fixture、临时
 真实 state、双 UDS 与 SQLite；production `rekeyd` 的 public HTTPS wiring 仍由 P0 gate
 独立覆盖。它必须覆盖：half-frame；signal 发生时 slow ordinary execution 已有 started 且
 client 可断连，最终仍恰一 terminal；sticky terminal audit failure 非零并由重启
 reconcile orphan；unlock race 后最后事件仍为 signal lock；Admin Shutdown CLI response；
-launchd/systemd locked boot、clean stop、restart 仍 Locked。cleanup 的 manager query、
+launchd/systemd locked boot、clean stop、无桌面恢复请求时 restart 仍 Locked。cleanup 的 manager query、
 launchctl/systemctl、TERM、KILL 与 child wait 全部 bounded，只有进程退出后才 wait/remove
 unit。macOS 本机跑临时 `gui/$UID` label；普通 required `ubuntu-latest` 必须先硬断言
 PID 1 是 systemd，不满足直接失败，不能把 exit 77 转绿。`security-gate` required Ubuntu
@@ -1895,3 +1896,25 @@ audit/failure-semantics 人工审查尚未进行。因此当前仓库不能声�
 Current source OAU-02 adds Keycloak kind/AAD code 5 and schema 10. Schema 9 state
 and backups are rejected without migration; historical release evidence remains
 unchanged. See `2026-09-10-keycloak-token-exchange-oau02.md`.
+
+
+## Native desktop remembered unlock (2026-09-15)
+
+用户手动解锁后，原生 macOS 桌面可保存固定七天的恢复授权。主密码不持久化：随机
+32-byte 恢复密钥存于当前 Mac 的非同步 login Keychain；Authority 将 VRK 用该密钥
+经 AES-256-GCM 加密至 state 目录的 `desktop-unlock.bin`，AAD 绑定版本、vault ID、
+签发时间与原始到期时间。文件权限为 0600。正常应用/服务重启后，桌面通过 Admin
+DESKTOP_RESUME 请求恢复；Broker 仍先启动为 Locked，Agent 无此 API。恢复须校验
+密钥、完整性、vault ID、绝对到期时间及策略，再签发新的内存桌面会话。恢复不会续期，
+旧 Agent capability 及旧内存桌面 token 在重启后仍失效。
+
+手动/idle lock、密码或 recovery wrapper 变更、Authority fault、非完整关闭均撤销恢复
+授权。runtime active marker 在异常恢复期间保留，旧授权删除并 fsync 后方可继续启动；
+只有全部 Broker/Authority 任务正常结束后才清除 marker。正常退出保留七天授权，
+异常退出后的下一次启动必须先撤销，不能依赖 UI 主动删除 Keychain 记录。
+Remember 操作入队后等待明确结果，不丢弃仍在写入的 worker 回复；Resume 超时或失败
+必须回滚临时解锁，桌面 token 签发失败不能开放 session admission。
+
+验证包括 `authority_contract` 的跨重启/过期/篡改/跨 vault/撤销/异常关闭测试、
+`scripts/test-human-vault.py` 的真实服务重启恢复、`scripts/test-macos-keychain.swift`
+的跨进程 Keychain 与到期测试。物理 Mac 重启未作为本次验证证据。
