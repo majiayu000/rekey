@@ -19,7 +19,7 @@ rekey status
 `rekey serve` delegates to `rekeyd serve`; agents and Admin clients never open
 the SQLite database. `rekey lock` revokes sessions and clears the active
 policy. The default idle lock is 7 days. `rekey shutdown` requires a
-step-up proof while unlocked.
+step-up proof while unlocked. The macOS UI can remember a manual unlock for seven days using the local Keychain; restarting does not extend that deadline, and explicit locking revokes the remembered access.
 
 For deliberate automation, password-only commands accept `--password-stdin`.
 Credential add/rotate accepts `--stdin-secrets`, with proof on line 1 and the

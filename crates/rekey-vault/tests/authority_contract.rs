@@ -951,3 +951,184 @@ async fn desktop_session_saves_and_reveals_without_password_but_dies_on_lock() {
         .unwrap();
     join.join().unwrap();
 }
+
+#[tokio::test]
+async fn remembered_desktop_survives_restart_but_not_manual_lock() {
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+    let saved = handle
+        .credential_add(
+            CredentialLabel::new("restart").unwrap(),
+            CredentialKind::OpaqueToken,
+            SecretInput::from_slice(b"restart-canary"),
+            common::password_proof(),
+        )
+        .await
+        .unwrap();
+    let (key, expires) = handle
+        .desktop_remember(common::password_proof(), None)
+        .await
+        .unwrap();
+    assert_eq!(key.len(), 64);
+    let path = vault.state_dir.join("desktop-unlock.bin");
+    let encrypted = std::fs::read(&path).unwrap();
+    assert_eq!(encrypted.len(), 84);
+    assert!(!encrypted.windows(key.len()).any(|v| v == *key));
+    handle
+        .lock_for_restart("service-manager-signal")
+        .await
+        .unwrap();
+    handle.shutdown(None).await.unwrap();
+    join.join().unwrap();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    assert!(
+        handle
+            .desktop_resume(SecretInput::from_slice(b"forged"), None)
+            .await
+            .is_err()
+    );
+    assert_eq!(handle.status().await.unwrap().state, "locked");
+    assert_eq!(
+        handle
+            .desktop_resume(SecretInput::from_slice(&key), None)
+            .await
+            .unwrap(),
+        expires
+    );
+    assert_eq!(
+        handle
+            .desktop_resume(SecretInput::from_slice(&key), None)
+            .await
+            .unwrap(),
+        expires,
+        "restart cannot extend expiry"
+    );
+    let token = handle.desktop_issue().await.unwrap();
+    assert_eq!(
+        &*handle
+            .desktop_reveal(SecretInput::from_slice(&token), saved.id, None)
+            .await
+            .unwrap(),
+        b"restart-canary"
+    );
+    handle.lock("explicit").await.unwrap();
+    assert!(!path.exists());
+    assert!(
+        handle
+            .desktop_resume(SecretInput::from_slice(&key), None)
+            .await
+            .is_err()
+    );
+    handle.shutdown(None).await.unwrap();
+    join.join().unwrap();
+}
+
+#[tokio::test]
+async fn remembered_desktop_rejects_tampering_expiry_and_cross_vault_use() {
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+    let (key, _) = handle
+        .desktop_remember(common::password_proof(), None)
+        .await
+        .unwrap();
+    let path = vault.state_dir.join("desktop-unlock.bin");
+    let original = std::fs::read(&path).unwrap();
+    handle.lock_for_restart("restart").await.unwrap();
+    let mut tampered = original.clone();
+    tampered[83] ^= 1;
+    std::fs::write(&path, &tampered).unwrap();
+    assert!(
+        handle
+            .desktop_resume(SecretInput::from_slice(&key), None)
+            .await
+            .is_err()
+    );
+    let mut expired = original.clone();
+    expired[8..16].copy_from_slice(&0i64.to_be_bytes());
+    expired[16..24].copy_from_slice(&(7i64 * 24 * 60 * 60 * 1000).to_be_bytes());
+    std::fs::write(&path, &expired).unwrap();
+    assert!(
+        handle
+            .desktop_resume(SecretInput::from_slice(&key), None)
+            .await
+            .is_err()
+    );
+    std::fs::write(&path, &original).unwrap();
+    let other = common::init_test_vault();
+    use std::os::unix::fs::PermissionsExt;
+    let other_path = other.state_dir.join("desktop-unlock.bin");
+    std::fs::write(&other_path, &original).unwrap();
+    std::fs::set_permissions(&other_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let (other_handle, other_join) = common::spawn(&other.state_dir);
+    assert!(
+        other_handle
+            .desktop_resume(SecretInput::from_slice(&key), None)
+            .await
+            .is_err()
+    );
+    other_handle.shutdown(None).await.unwrap();
+    other_join.join().unwrap();
+    handle.shutdown(None).await.unwrap();
+    join.join().unwrap();
+}
+
+#[tokio::test]
+async fn wrapper_changes_revoke_remembered_access_only_after_valid_proof() {
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+    let (key, _) = handle
+        .desktop_remember(common::password_proof(), None)
+        .await
+        .unwrap();
+    let path = vault.state_dir.join("desktop-unlock.bin");
+    assert!(
+        handle
+            .password_change_before(
+                UnlockProof::Password(SecretInput::from_slice(b"wrong")),
+                SecretInput::from_slice(b"new-password-for-test"),
+                None
+            )
+            .await
+            .is_err()
+    );
+    assert!(path.exists());
+    handle
+        .password_change_before(
+            common::password_proof(),
+            SecretInput::from_slice(b"new-password-for-test"),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(!path.exists());
+    assert!(
+        handle
+            .desktop_resume(SecretInput::from_slice(&key), None)
+            .await
+            .is_err()
+    );
+    let (key, _) = handle
+        .desktop_remember(
+            UnlockProof::Password(SecretInput::from_slice(b"new-password-for-test")),
+            None,
+        )
+        .await
+        .unwrap();
+    handle
+        .recovery_rotate_before(SecretInput::from_slice(b"new-password-for-test"), None)
+        .await
+        .unwrap();
+    assert!(!path.exists());
+    assert!(
+        handle
+            .desktop_resume(SecretInput::from_slice(&key), None)
+            .await
+            .is_err()
+    );
+    handle.lock("test").await.unwrap();
+    handle.shutdown(None).await.unwrap();
+    join.join().unwrap();
+}

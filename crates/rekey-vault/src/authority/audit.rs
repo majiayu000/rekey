@@ -9,6 +9,9 @@ use super::{VaultState, Worker};
 impl Worker {
     pub(super) fn fault(&mut self, reason: &'static str) {
         self.state = VaultState::Faulted;
+        if let Err(error) = self.forget_desktop() {
+            tracing::error!(event = "desktop.revocation_failed", code = error.code());
+        }
         if let (Ok(event_id), Ok(created_at_ms)) = (random_array(), now_ms()) {
             drop(self.store.append_audit(&AuditEvent {
                 event_id,

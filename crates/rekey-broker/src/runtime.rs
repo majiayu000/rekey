@@ -149,6 +149,15 @@ impl BrokerCtx {
             .map_err(|_| BrokerError::Authority(AuthorityError::AuthorityBusy))?;
         self.lifecycle.reject_if_busy()?;
         self.authority.unlock(proof).await?;
+        self.activate_unlocked().await?;
+        if desktop {
+            Ok(Some(self.authority.desktop_issue().await?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn activate_unlocked(&self) -> Result<(), BrokerError> {
         if let Err(error) = self.reload_policy_after_unlock().await {
             self.sessions.close_and_revoke_all();
             let lock_result = self.authority.lock("policy-reload-failed").await;
@@ -174,11 +183,28 @@ impl BrokerCtx {
         }
         self.sessions.open_for_admission();
         tracing::info!(event = "authority.state", state = "running");
-        if desktop {
-            Ok(Some(self.authority.desktop_issue().await?))
-        } else {
-            Ok(None)
-        }
+        Ok(())
+    }
+
+    pub(crate) async fn resume_desktop(
+        &self,
+        token: rekey_vault::secret::SecretInput,
+    ) -> Result<(zeroize::Zeroizing<Vec<u8>>, i64), BrokerError> {
+        let _owner = self
+            .lifecycle
+            .try_coordinate()
+            .map_err(|_| BrokerError::Authority(AuthorityError::AuthorityBusy))?;
+        self.lifecycle.reject_if_busy()?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(25);
+        let expires = tokio::time::timeout_at(
+            deadline,
+            self.authority
+                .desktop_resume(token, Some(deadline.into_std())),
+        )
+        .await
+        .map_err(|_| BrokerError::Authority(AuthorityError::AuthorityBusy))??;
+        self.activate_unlocked().await?;
+        Ok((self.authority.desktop_issue().await?, expires))
     }
 
     /// Revoke sessions, wait in-flight executes, then zeroize the VRK.
@@ -231,7 +257,13 @@ impl BrokerCtx {
             BrokerPhase::ShuttingDown => {
                 return Err(BrokerError::Authority(AuthorityError::Draining));
             }
-            BrokerPhase::Locked => return Ok(()),
+            BrokerPhase::Locked => {
+                return self
+                    .authority
+                    .lock(reason)
+                    .await
+                    .map_err(BrokerError::Authority);
+            }
             BrokerPhase::Draining | BrokerPhase::Running => {}
         }
         if self.lifecycle.phase() == BrokerPhase::Running {

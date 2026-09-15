@@ -106,6 +106,16 @@ pub struct PolicyMaterial {
 }
 
 pub enum AuthorityCommand {
+    DesktopRemember {
+        proof: UnlockProof,
+        not_after: Option<std::time::Instant>,
+        reply: Reply<(Zeroizing<Vec<u8>>, i64)>,
+    },
+    DesktopResume {
+        token: SecretInput,
+        not_after: Option<std::time::Instant>,
+        reply: Reply<i64>,
+    },
     DesktopIssue {
         reply: Reply<Zeroizing<Vec<u8>>>,
     },
@@ -132,6 +142,7 @@ pub enum AuthorityCommand {
     },
     Lock {
         reason: &'static str,
+        preserve_desktop: bool,
         reply: Reply<()>,
     },
     CheckIdle,

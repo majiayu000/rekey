@@ -486,3 +486,7 @@ the app does not stop the Broker; idle locking remains the Broker's job.
 
 The local ad-hoc-signed app is not notarized or part of the public Alpha
 archives. UI acceptance does not upgrade G1 or count as human security review.
+
+### Remembered desktop unlock
+
+The native macOS app stores an independent random restore key in the local login Keychain, never the master password. The Authority stores an AES-256-GCM wrapped VRK in a 0600 file; authenticated context binds vault identity, format and the original seven-day validity window. Restart resumes a new memory session capped at the original deadline. Explicit/idle lock, wrapper rotation and faults revoke the local ticket; graceful shutdown preserves it. The Keychain and same-user G1 boundary apply; this is not a claim of protection against a compromised login session or copied key material. Backups contain the vault database, not this local desktop ticket.

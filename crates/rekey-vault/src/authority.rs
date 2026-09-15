@@ -27,6 +27,7 @@ use crate::store::SqliteRecordStore;
 mod audit;
 mod backup;
 mod credential;
+mod desktop;
 mod policy;
 mod wrapper;
 
@@ -114,6 +115,7 @@ pub fn spawn_authority(
         header,
         state: VaultState::Locked,
         desktop_session: None,
+        desktop_resume_expiry: None,
         failed_unlocks: 0,
         next_unlock_at: Instant::now(),
         last_activity: Instant::now(),
@@ -127,6 +129,7 @@ pub fn spawn_authority(
 }
 
 struct Worker {
+    desktop_resume_expiry: Option<i64>,
     desktop_session: Option<(zeroize::Zeroizing<Vec<u8>>, Instant)>,
     store: SqliteRecordStore,
     header: crate::model::VaultHeaderRecord,
@@ -152,6 +155,22 @@ impl Worker {
     /// Returns true when the worker should stop.
     fn handle(&mut self, cmd: AuthorityCommand) -> bool {
         match cmd {
+            AuthorityCommand::DesktopRemember {
+                proof,
+                not_after,
+                reply,
+            } => {
+                let result = self.remember_desktop(proof, not_after);
+                let _ = reply.send(result);
+            }
+            AuthorityCommand::DesktopResume {
+                token,
+                not_after,
+                reply,
+            } => {
+                let result = self.resume_desktop(token, not_after);
+                let _ = reply.send(result);
+            }
             AuthorityCommand::DesktopIssue { reply } => {
                 let result = self.require_unlocked().map(|_| ()).and_then(|_| {
                     let random = zeroize::Zeroizing::new(crate::crypto::random_array::<32>()?);
@@ -160,7 +179,7 @@ impl Worker {
                     );
                     self.desktop_session = Some((
                         token.clone(),
-                        Instant::now() + Duration::from_secs(7 * 24 * 60 * 60),
+                        Instant::now() + self.desktop_session_duration()?,
                     ));
                     Ok(token)
                 });
@@ -272,8 +291,12 @@ impl Worker {
                 let result = self.unlock(proof);
                 let _ = reply.send(result);
             }
-            AuthorityCommand::Lock { reason, reply } => {
-                let result = self.lock(reason);
+            AuthorityCommand::Lock {
+                reason,
+                preserve_desktop,
+                reply,
+            } => {
+                let result = self.set_locked(reason, preserve_desktop);
                 let _ = reply.send(result);
             }
             AuthorityCommand::CheckIdle => {
@@ -711,6 +734,7 @@ impl Worker {
         })();
         match attempt {
             Ok(vrk) => {
+                self.desktop_resume_expiry = None;
                 self.failed_unlocks = 0;
                 self.next_unlock_at = Instant::now();
                 self.desktop_session = None;
@@ -750,9 +774,22 @@ impl Worker {
     }
 
     fn lock(&mut self, reason: &'static str) -> Result<(), AuthorityError> {
+        self.set_locked(reason, false)
+    }
+
+    fn set_locked(
+        &mut self,
+        reason: &'static str,
+        preserve_desktop: bool,
+    ) -> Result<(), AuthorityError> {
         if matches!(self.state, VaultState::Faulted) {
             return Err(AuthorityError::Faulted);
         }
+        if !preserve_desktop && let Err(error) = self.forget_desktop() {
+            self.fault("desktop-revocation-failed");
+            return Err(error);
+        }
+        self.desktop_resume_expiry = None;
         self.desktop_session = None;
         self.state = VaultState::Locked;
         self.append_audit(unlock_audit(

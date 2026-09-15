@@ -88,6 +88,8 @@ pub mod admin_msg {
     pub const DESKTOP_ADD: u16 = 32;
     pub const DESKTOP_REVEAL: u16 = 33;
     pub const PASSIVE_STATUS: u16 = 34;
+    pub const DESKTOP_REMEMBER: u16 = 35;
+    pub const DESKTOP_RESUME: u16 = 36;
 }
 
 /// Agent channel message types.

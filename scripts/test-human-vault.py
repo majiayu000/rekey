@@ -47,6 +47,25 @@ with tempfile.TemporaryDirectory(prefix='rk-human-') as root:
         call(['desktop-reveal', existing['id']], token+'\n', ok=False)
         fresh = call(['desktop-login'], password+'\n').decode()
         call(['desktop-reveal', existing['id']], token+'\n', ok=False)
+        expiry, remember_key = call(['desktop-remember'], password+'\n').decode().split('\n')
+        broker.terminate()
+        broker.wait(timeout=10)
+        broker = subprocess.Popen([str(binary.parent / 'rekeyd'), 'serve', '--state-dir', str(state)],
+                                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(40):
+            try:
+                call(['status', '--passive'])
+                break
+            except RuntimeError:
+                time.sleep(.1)
+        restored_expiry, fresh = call(['desktop-resume'], remember_key+'\n').decode().split('\n')
+        assert restored_expiry == expiry
+        assert call(['desktop-reveal', existing['id']], fresh+'\n') == canary.encode()
+        audit = call(['audit', 'list'])
+        assert remember_key.encode() not in audit
+        call(['lock'])
+        call(['desktop-resume'], remember_key+'\n', ok=False)
+        fresh = call(['desktop-login'], password+'\n').decode()
         # Fail the durable audit before decryption/release: no value may reach stdout.
         db = sqlite3.connect(state/'vault.sqlite3')
         db.execute("CREATE TRIGGER fail_human_audit BEFORE INSERT ON audit_events BEGIN SELECT RAISE(ABORT, 'test audit unavailable'); END")
@@ -54,7 +73,7 @@ with tempfile.TemporaryDirectory(prefix='rk-human-') as root:
         db.close()
         call(['desktop-reveal', existing['id']], fresh+'\n', ok=False)
         assert json.loads(call(['status']))['state'] == 'faulted'
-        print('PASS: existing/new keys, repeated saves, body-only reveal, forged/locked/stale denial, audit canaries, audit failure closes without plaintext')
+        print('PASS: existing/new keys, repeated saves, body-only reveal, forged/locked/stale denial, audit canaries, restart resume, manual revocation, audit failure closes without plaintext')
     finally:
         broker.terminate()
         broker.wait(timeout=10)

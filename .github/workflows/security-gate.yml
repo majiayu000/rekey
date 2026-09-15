@@ -150,6 +150,7 @@ jobs:
             -framework SwiftUI -framework AppKit \
             apps/macos/Model.swift scripts/test-macos-ui.swift -o /tmp/rekey-ui-contract
           /tmp/rekey-ui-contract target/macos-ui/Rekey.app/Contents/Resources/bin/rekey
+          python3 scripts/test-human-vault.py target/macos-ui/Rekey.app/Contents/Resources/bin/rekey
 
   g2-linux:
     name: Linux container G2 reference boundary
