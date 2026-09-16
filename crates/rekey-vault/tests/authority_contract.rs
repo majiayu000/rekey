@@ -1222,15 +1222,21 @@ async fn explicit_github_plugin_registration_fails_closed_on_unsupported_platfor
     definition.github_issue_plugin = Some(rekey_domain::action::GitHubIssuePlugin {
         path: "/tmp/native-plugin".into(),
         sha256: "0".repeat(64),
-        protocol: "github-create-issue-v1".into(),
+        protocol: "github-issues-v1".into(),
     });
-    let error = handle
-        .action_upsert(None, definition, common::password_proof())
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(error,AuthorityError::Domain(rekey_domain::DomainError::InvalidActionDefinition(ref message)) if message=="GitHub issue plugins require macOS")
-    );
+    for path in [
+        "/repos/acme/rekey/issues",
+        "/repos/acme/rekey/issues/1/comments",
+    ] {
+        definition.exact_path = ExactPath::parse(path).unwrap();
+        let error = handle
+            .action_upsert(None, definition.clone(), common::password_proof())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error,AuthorityError::Domain(rekey_domain::DomainError::InvalidActionDefinition(ref message)) if message=="GitHub issue plugins require macOS")
+        );
+    }
     assert!(handle.action_list().await.unwrap().is_empty());
     handle
         .shutdown(Some(common::password_proof()))

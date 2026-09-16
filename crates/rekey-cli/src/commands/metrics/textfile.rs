@@ -52,7 +52,7 @@ fn directory(path: &Path, state: &Path) -> Result<File, CliError> {
         // Sticky shared roots (e.g. /tmp) protect our owned child from other
         // users' renames. All other writable ancestors are rejected.
         if (metadata.uid() != 0 && metadata.uid() != unsafe { libc::geteuid() })
-            || (metadata.mode() & 0o022 != 0 && metadata.mode() & libc::S_ISVTX as u32 == 0)
+            || (metadata.mode() & 0o022 != 0 && metadata.mode() & 0o1000 == 0)
         {
             return Err(failure(
                 "directory ancestors must be trusted and not writable by other users",

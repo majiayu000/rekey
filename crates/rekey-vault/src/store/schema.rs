@@ -1,11 +1,11 @@
 use sha2::{Digest, Sha256};
 
-/// Schema v12. This SQL text is the single source of truth; `schema_digest()`
+/// Schema v13. This SQL text is the single source of truth; `schema_digest()`
 /// hashes its normalized form to detect accidental drift, not tampering.
 pub const SCHEMA_SQL: &str = r#"
 CREATE TABLE vault_header (
     singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
-    format_version     INTEGER NOT NULL CHECK (format_version = 12),
+    format_version     INTEGER NOT NULL CHECK (format_version = 13),
     vault_id           BLOB NOT NULL CHECK (length(vault_id) = 16),
     crypto_suite       TEXT NOT NULL CHECK (crypto_suite = 'rkca-aes256gcm-argon2id-hkdfsha256-v1'),
     created_at_ms      INTEGER NOT NULL,

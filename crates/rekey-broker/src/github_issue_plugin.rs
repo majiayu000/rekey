@@ -1,4 +1,4 @@
-//! Native macOS GitHub CreateIssue protocol with an optional Admin-pinned artifact.
+//! Native macOS GitHub issue operations protocol with an optional Admin-pinned artifact.
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::mem::MaybeUninit;
@@ -8,7 +8,7 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use data_encoding::HEXLOWER;
-use rekey_connector::github_issue::{MAX_ISSUE_WIRE_BYTES, normalize_issue_body};
+use rekey_connector::github_issue::{IssueOperation, MAX_ISSUE_WIRE_BYTES};
 use rekey_domain::action::GitHubIssuePlugin;
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -39,10 +39,11 @@ fn packaged_artifact() -> Result<PathBuf, BrokerError> {
     Ok(directory.join("rekey-github-create-issue"))
 }
 
-/// Only the public body crosses the process boundary. The result cannot alter
-/// any approved parameter: the trusted Broker checks the complete canonical body.
+/// Only the operation and public body cross the process boundary. The result cannot alter
+/// any approved parameter: the trusted Broker checks the complete canonical envelope.
 pub(crate) async fn normalize(
     registration: Option<&GitHubIssuePlugin>,
+    operation: IssueOperation,
     input: &[u8],
     deadline: Instant,
 ) -> Result<Vec<u8>, BrokerError> {
@@ -51,27 +52,33 @@ pub(crate) async fn normalize(
             normalize_with_artifact(
                 Path::new(&plugin.path),
                 Some(&plugin.sha256),
+                operation,
                 input,
                 deadline,
             )
             .await
         }
-        None => normalize_with_artifact(&packaged_artifact()?, None, input, deadline).await,
+        None => {
+            normalize_with_artifact(&packaged_artifact()?, None, operation, input, deadline).await
+        }
     }
 }
 
 async fn normalize_with_artifact(
     artifact: &Path,
     expected_sha256: Option<&str>,
+    operation: IssueOperation,
     input: &[u8],
     deadline: Instant,
 ) -> Result<Vec<u8>, BrokerError> {
-    let expected = normalize_issue_body(input).map_err(|_| denied("plugin-invalid-input"))?;
-    let output = run(artifact, expected_sha256, input, deadline).await?;
+    let (expected, body) = operation
+        .prepare(input)
+        .map_err(|_| denied("plugin-invalid-input"))?;
+    let output = run(artifact, expected_sha256, &expected, deadline).await?;
     if output != expected {
         return Err(denied("plugin-output-mismatch"));
     }
-    Ok(output)
+    Ok(body)
 }
 
 /// Copy an opened artifact to a private immutable-for-the-child execution file.

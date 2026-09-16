@@ -1,8 +1,8 @@
-# GitHub CreateIssue 参考子进程接入
+# GitHub Issue 参考子进程接入
 
-已接受的最小切片：macOS 将公开 title/body 解析及规范序列化移入本仓库固定打包的 `rekey-github-create-issue` sidecar。Broker 仍验证 GitHub profile 与 Action，插件仅收到原始公开 JSON body，Broker 将输出与自己依同一纯合同计算的规范内容逐字节比较。未知字段、内容修改、额外效果均不能进入远程准入。JWT、installation、私钥、token、capability、header、URL 均不进入子进程。
+当前合同包含 CreateIssue 与 CreateIssueComment。macOS 使用本仓库打包的 `rekey-github-create-issue` sidecar，或 Admin 绑定的具体 artifact。Broker 从已验证 Action 选择操作，子进程只收到封闭 operation/body envelope；输出与同一纯合同的完整规范 envelope 逐字节比较。未知字段、操作或内容修改均不能进入远程准入。JWT、installation、私钥、token、capability、header、URL 均不进入子进程。两操作 wire 合同见 [Action 登记规格](2026-09-16-action-plugin-registration.md)。
 
-固定 sidecar 位于宿主可执行文件同目录（Cargo 的 deps/examples 测试宿主寻找其上级目录）。无环境路径覆盖，无注册/市场/自动下载。Broker 打开该文件后复制为私有 0700 临时目录内的只读可执行快照，并核对复制字节 SHA-256；随后仅执行该快照。此摘要核对证明本次快照一致，不等于可信发布摘要登记；安装目录完整性仍由可信宿主管理。SDK-04 不在本切片内。
+打包 sidecar 位于宿主可执行文件同目录（Cargo deps/examples 宿主寻找上级目录）。显式登记则从不可变 Action 读取路径及可信摘要，失败不回退。打开 artifact 后验证实际读取字节，再复制为私有 0700 临时目录内的只读可执行快照，并核对复制字节 SHA-256。未显式登记的默认打包路径依赖可信安装目录；该执行快照摘要不等于发布来源证明。没有市场、环境路径覆盖或自动下载。
 
 macOS 独立 deny-default Seatbelt profile 只允许系统 dylib 读取与精确 sidecar 文件、匿名标准 pipe；没有代码目录、HOME、临时目录的读写授权，也没有任何网络/UDS权限。禁止 fork；exec 仅限该固定快照（不能衍生其他程序）。stdin/stdout 有界为 256 KiB（覆盖现有最大 title/body 的 JSON escape 展开）；stderr 丢弃、环境全清、cwd=/。spawn 前仅调用 async-signal-safe libc 设置 CPU soft/hard 1/2 秒、关闭 core dump，并将实际 FD 快照中的所有 3+ FD 标记 CLOEXEC，包含先打开再降低 soft/hard limit 后存活的高 FD；快照至 fork 之间，可信 Broker 不并发制造非 CLOEXEC FD 或改变 limit，Rust/Tokio 后续 pipe/socket 本身以 CLOEXEC 创建。不声明任意恶意父进程的并发 FD 保证。绝不在 pre_exec 分配或加锁。
 
@@ -10,7 +10,7 @@ runner 使用既有 effect_deadline，包含输入写入、输出读取、退出
 
 非 macOS 保持原有内置解析，不声明插件支持。测试使用真实 sidecar、真实 Broker 与确定性 transport；不访问 GitHub。公开请求匹配、revoke 在 success 前、审计闭合及恶意输出/超量/超时/文件/网络/fork/环境/FD/父退出均须验证。此实现需人工安全审查。
 
-## 本机验证记录
+## 首个单操作切片的历史验证记录
 
 2026-09-16，macOS 26.5.1 / 25F80 / arm64；实验 Seatbelt，不声明 Apple 支持的稳定沙箱 API。`github_issue_plugin.sb` SHA-256 为 `2e67ee1eb738b7b5d5b3ecc2044b459c8b66dff2b39ff9a5fa81f2097f3e4014`。
 
@@ -23,12 +23,12 @@ runner 使用既有 effect_deadline，包含输入写入、输出读取、退出
 - `cargo test -p rekey-broker --test github_issue_plugin -- --nocapture`：1 通过。真实 Authority/Agent IPC、native sidecar、确定性 transport 收到精确规范请求。revoke response 的 gate 未放行时 Agent 无成功结果；放行后返回 201，审计 started → connector authorized → token revoked → finished 顺序闭合。非法公开字段无上游请求。
 - `cargo test -p rekey-broker --lib github_profile`：原 4 项回归通过；格式、diff whitespace、macOS 构建脚本语法检查通过。整库回归由集成线程执行。
 
-限制仍保留：未做外部 GitHub 写入；第三方 artifact 管理/可信摘要登记/SDK-04 未实现；RSS 为采样阈值，完整 P-10 严格内存合同未闭合；父被 SIGKILL 后不保证立即停止空闲子进程；不覆盖恶意父线程并发制造非 CLOEXEC FD；本地同步 artifact IO 没有硬超时；人工安全审查仍是合并门槛。
+当时限制：未做外部 GitHub 写入；第三方 artifact/可信摘要登记随后按下节实现；RSS 为采样阈值，完整 P-10 严格内存合同未闭合；父被 SIGKILL 后不保证立即停止空闲子进程；不覆盖恶意父线程并发制造非 CLOEXEC FD；本地同步 artifact IO 没有硬超时；人工安全审查仍是合并门槛。
 
 
 ## 后续 Action 显式登记
 
-上述固定打包路径继续作为无显式声明时的内置实现。新增的 [SDK-04 单协议登记](2026-09-16-action-plugin-registration.md) 允许 Admin 将具体路径、可信 SHA-256 和协议绑定到不可变 Action 版本；显式绑定失败不回退。该增量不改变本文的 Seatbelt/CPU/RSS/父死边界。
+上述固定打包路径继续作为无显式声明时的内置实现。新增的 [SDK-04 两操作登记](2026-09-16-action-plugin-registration.md) 允许 Admin 将具体路径、可信 SHA-256 和协议绑定到不可变 Action 版本；显式绑定失败不回退。该增量不改变本文的 Seatbelt/CPU/RSS/父死边界。
 
 ## 当前 macOS 硬内存候选的实际探针
 
@@ -46,3 +46,24 @@ runner 使用既有 effect_deadline，包含输入写入、输出读取、退出
 同版本 `RLIMIT_AS` 有实际虚拟地址空间限制，不能笼统说 macOS 未实现：本探针以当前 VM 大小加 16 MiB 设置后，直接运行和自 exec 的 96 MiB mmap 都返回 ENOMEM；但 64 MiB AS 设置返回 EINVAL，原生程序初始虚拟映射约 415 GiB。该值不是 RSS，不能把较小 AS 预算直接用于现有插件。参见 [AS 设置入口](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/kern/kern_resource.c#L1647-L1654)、[映射限额](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/osfmk/vm/vm_map.c#L3903-L3930)、[exec 应用位置](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/kern/kern_exec.c#L2133-L2135)。尚未实测低于 exec 初始映射时的静默丢失分支。
 
 保留当前 CPU 限额、RSS 采样看门狗与 Seatbelt，不新增可信 launcher 或合作式父死监控来冒充内核保障。父 SIGKILL 后立即终止仍未闭合。完整本地源码、逐样本结果及编译记录在主仓库 `.git/codex/threads/remaining-sdk-20260916/resource-probes/`；只代表该 OS build，不代表其他版本支持。
+
+## 2026-09-17 两操作扩展合同
+
+当前实现以 [Action 插件登记合同](2026-09-16-action-plugin-registration.md) 为准：同一参考 artifact 处理 create_issue 与 create_issue_comment，唯一协议为 github-issues-v1，输入输出均为封闭 operation/body envelope；旧裸 body 协议移除。Broker 从可信 Action 选择操作并比对完整规范 envelope，在现有 token exchange 之前拒绝不匹配。两操作增量已通过真实 Broker9项及 macOS/Linux 的 P6 release CLI/本地TLS验收；Linux P6 使用原有进程内实现，显式 artifact 登记在Linux上拒绝。完整资源限制仍按下面的实测边界记录。
+
+## 2026-09-17 最终 exec 与重新 exec 的资源探针
+
+同一 macOS 26.5.1 / 25F80 / arm64 上，每次仅一个 workload、最多触碰 96 MiB、父进程 5 秒兜底，得到如下新结果。未修改生产 runner 或系统设置。
+
+| 启动链 | 本机观测 |
+| --- | --- |
+| direct jetsam64 → 可信进程 sandbox_init → 原地处理 | 393ms 内核 SIGKILL，非 watchdog |
+| sandbox_init → SETEXEC+jetsam64 → artifact | 390ms 内核 SIGKILL，非 watchdog |
+| 上一链 → artifact 再次 exec 自身 | limit_bytes_remaining 从 66,109,128 降为 0；触碰 96 MiB 后正常退出 |
+| direct jetsam64 → sandbox_init 且完全禁止 exec | self-exec 返回 EPERM；386ms 内核 SIGKILL，非 watchdog |
+
+因此仅在最后一次 exec 施加 jetsam 仍不足以限制任意登记 artifact：当前 profile 必须允许启动该文件，也允许它再次执行自身并丢掉限额。固定可信 sidecar 可以在读任务前自设 deny-default 沙箱并完全禁止 exec，但这改变信任/启动合同，不能用来证明任意动态 artifact 已受同等保护。初始化不能放在多线程 Broker 的 post-fork Rust 闭包中。
+
+jetsam 针对 phys_footprint ledger；本轮最大 RSS 达 70,025,216 bytes，不能将 64 MiB footprint 配置写成严格 64 MiB RSS 上限。父 PID 的 kqueue NOTE_EXIT 只是退出通知；同进程 watcher 受 SIGSTOP 或饿死影响，独立监护进程也不是父死同步内核级联。当前保留已有采样、CPU 与存活父进程 deadline 合同，不新增监护层来冒充完整 P-10。
+
+依据：[XNU SETEXEC](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/kern/kern_exec.c#L4363-L4370)、[exec 的 jetsam 参数处理](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/kern/kern_exec.c#L4943-L4976)、[footprint ledger](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/osfmk/kern/task.c#L7199-L7205)、[kevent/NOTE_EXIT](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/kevent.2.html)、[Apple 自定义 Seatbelt 支持边界](https://developer.apple.com/forums/thread/661939)。探针 C 源码、编译和逐样本日志保存于主仓库 `.git/codex/threads/remaining-effects-20260917/resource-research/`；这些实验只证明当前 OS build 的观测。

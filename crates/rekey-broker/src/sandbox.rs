@@ -136,6 +136,7 @@ fn spawn(prepared: &PreparedLaunch) -> Result<i32, BrokerError> {
 
     #[cfg(target_os = "linux")]
     {
+        use std::os::unix::process::CommandExt;
         use std::process::{Command, Stdio};
 
         let bwrap = find_bwrap()?;
@@ -147,6 +148,24 @@ fn spawn(prepared: &PreparedLaunch) -> Result<i32, BrokerError> {
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
+        // Mark, rather than close, so Rust can still report an exec failure
+        // through its error pipe. Covers FDs above a subsequently lowered limit.
+        // SAFETY: the post-fork closure only makes a raw syscall and reads errno;
+        // it neither allocates nor locks. Unsupported/denied calls fail closed.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::syscall(
+                    libc::SYS_close_range,
+                    3_u32,
+                    u32::MAX,
+                    libc::CLOSE_RANGE_CLOEXEC,
+                ) != 0
+                {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
         let status = command.status().map_err(BrokerError::Io)?;
         Ok(status.code().unwrap_or(5))
     }

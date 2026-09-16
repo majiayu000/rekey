@@ -48,15 +48,15 @@
 | KEY-04 | VRK/DEK 轮换 | DEK 与 Locked 状态双因素 VRK 轮换均已实现、通过独立审查及专项验收；不撤销历史备份或替换上游凭证 |
 | NET-07 | Agent 可见流式响应 | 用户已接受独立流式接口及部分响应失败合同；固定 Anthropic 纯文本 Action 已实现并通过真实 TLS/UDS 专项验收，旧非流式合同保留 |
 | OS-05 | macOS 隔离启动器 | 用户已选择 Seatbelt；`macos-seatbelt-v1` 本机实验实现与定向攻击/真实 Broker 授权测试完成，发布前仍需人工安全审查 |
-| OS-06 | 跨平台强隔离 | OS-05 与逐平台威胁模型的汇总验证 |
-| SDK-04 | 动态插件加载 | 单协议 Action 路径/可信摘要/协议登记及实际隔离加载已实现并经专项验收；通用多效果插件与其他平台仍未完成 |
+| OS-06 | 跨平台强隔离 | macOS 本机与 LinuxKit 容器已有专项证据；Linux 新增确定性攻击测试并修复继承 FD 泄露。原生 Ubuntu、其他平台及完整强隔离仍待逐平台验收 |
+| SDK-04 | 动态插件加载 | GitHub CreateIssue/CreateIssueComment 两操作的 Action 路径/可信摘要/协议登记及实际隔离加载已实现；通用多凭证效果插件与其他平台插件后端仍未完成 |
 | UX-04 | 可视化策略审批流程 | 复用 APR-09/POL-09，不单独计实现 |
 | VEX-01 | 私网 Vault | 待输入：固定目标和部署信任；待规格定义 SSRF/DNS 边界 |
 | VEX-02 | Vault 登录方式 | 待输入：AppRole/Kubernetes/OIDC 中选定一种 |
 | VEX-03 | Vault 续期/Namespace/引擎 | 待输入：一个具体新增效果；复用租约生命周期 |
 | VEX-04 | KV 最新版与写入 | 已有具体外部规格：精确版本与写入不确定性，真实挂载/权限仍待输入 |
 | P-08 | 可观测性 | 本机快照及原子 textfile 发布已实现并经本地验收；OTel/远程采集/告警仍未完成 |
-| P-10 | Connector 隔离 | 用户已选 macOS Seatbelt + 本仓库 GitHub CreateIssue 参考插件，真实子进程执行链已实现并通过攻击及 Broker 专项验收；完整资源硬限制与 SDK-04 注册仍单列 |
+| P-10 | Connector 隔离 | 用户已选 macOS Seatbelt + 本仓库 GitHub CreateIssue 参考插件，真实子进程执行链已实现并通过攻击及 Broker 专项验收；Action 登记已完成，完整资源硬限制与父死保障仍未完成 |
 
 隔离与流式的具体提案见 [实施边界](../specs/2026-09-16-local-isolation-and-streaming.md)。macOS 已选择并实现实验 Seatbelt；用户也已接受独立流式接口及 GitHub CreateIssue 参考插件，两条具体执行链均已实现并通过专项验收。
 
@@ -137,3 +137,25 @@
 整合后的 release CLI/Broker/TLS P6 验收通过；整库串行 541 项通过、0 失败、1 项既有忽略项，check all-targets、Clippy、fmt、机械边界及本地打包清单通过。源码格式为 12。新的 Action 绑定插件登记仅限 GitHub CreateIssue 单协议，实际运行验收为 macOS。
 
 剩余工作为通用多效果插件、完整硬资源及父死保障、逐平台验收、P-08 远程采集与告警，以及外部/企业规格的实际目标接入。当前 sandbox-exec 链路的 jetsam 负向结果已明确记录，未用它冒充硬内存隔离。继续保持无合并、无发布部署、无真实外部账号操作；安全相关变更须合并前人工审查。
+
+## 2026-09-17 继续本地实现
+
+最小切片是 GitHub 两操作协议（不新建通用效果框架）与 Linux Agent 启动器的确定性攻击验收。两条实现使用独立 worktree，父线程只整合、更新规格/脚本并运行完整验证。macOS 资源候选独立只读研究。具体结果待新鲜验证后记录，外部/企业仍按此前约定仅为规格。
+
+### 本轮实现与独立审查
+
+- GitHub 两操作：唯一 github-issues-v1，Broker 绑定 operation 并逐字节核对规范 envelope；同一 artifact 支持创建 Issue 和评论，仍无任意效果/网络接口。源码格式13，拒绝旧状态/备份。真实 Broker9项、connector3项、域模型29项、存储24项、备份15项及 GitHub runner/profile26项定向通过；恢复旧格式时保留原本 UnsupportedFormatVersion 分类。
+- Linux：5项真实启动器攻击验收最初4项通过，FD211的state文件读取成功暴露了漏洞；Linux pre_exec 的 close_range(CLOEXEC) 修复后，最终整合源码 root 与 UID/GID65534 各5项通过，包含 file/socket、高FD降低limit、网络成功控制组和真实 Broker/Agent授权请求。Linux all-targets check/Clippy通过，非mac显式插件登记拒绝1项覆盖两操作，connector3项通过。
+- 跨平台 Clippy 发现既有 metrics sticky-bit 常量在 Linux 被判同类型 cast；改用等价 POSIX八进制掩码，未改变权限合同。
+- P-10 新探针再次否定“最后一次 SETEXEC 加 jetsam 即可完成硬隔离”：插件 self-exec 可清空限额。固定可信自设沙箱 sidecar 是另一信任合同，不能用于关闭任意 artifact 或父死立即终止；完整结果已写入参考插件规格。
+- 独立审查覆盖两操作生产路径、Linux攻击测试和FD修复，无安全阻断finding。保留原有 Issue number 响应断言；安全变更仍需合并前人工审查。
+
+日志：主仓库 `.git/codex/threads/remaining-effects-20260917/`。Linux环境为 Docker Desktop LinuxKit6.12.76/arm64 + Debian bookworm，只在专用容器放开 seccomp/systempaths，无宿主挂载、额外capability或privileged；不视为原生Ubuntu或Linux插件实现。最终整库、P6、打包与推送结果在下节记录。
+
+### 最终验证与交付（2026-09-17）
+
+最终源码 `cargo test --workspace --offline -- --test-threads=1`：548项通过、0失败、1项既有忽略（含子进程报告）。macOS/Linux all-targets check、Clippy warnings denied、fmt、机械API/CLI依赖边界均通过；两平台 release CLI/Broker/本地TLS P6通过。实际release工作流复制段生成本地staging后，三个二进制、归档清单与文档链接检查通过；新增隔离规格已加入打包清单。没有发布签名、公证、远程安装或真实GitHub写入。临时测试容器已清理，本机保留构建缓存镜像。
+
+交付分支仍为 `codex/remaining-integration-20260916`，按已有授权提交并推送；未合并、未部署。原 main 的既有修改保持原样。当前格式13，旧库及备份明确拒绝，不做迁移。
+
+后续尚未关闭：通用多凭证效果插件及Linux/其他平台插件后端；任意原生插件硬内存及父死保障；其余系统的现场隔离验收；P-08远程采集/告警及外部/企业25个条目的实际目标接入。后两类按用户此前选择仅交付规格，不创建外部资源。合并前人工安全审查仍必需，自动化与线程审阅不能替代。
