@@ -172,3 +172,9 @@ Human desktop current-secret reveal and API-key add use a password-authenticated
 Remembered native desktop unlock can survive application and broker restart for the original seven-day window using a local Keychain restore key and an authenticated wrapped root key. Manual lock revokes it. Coverage: `authority_contract::remembered_desktop_*`, `scripts/test-human-vault.py`, and the local `scripts/test-macos-keychain.swift` process-restart/expiry contract.
 
 APR-09 native approval binding details (2026-09-16, source only): the native client displays a selected origin-signed challenge envelope, origin public key, and exact-version current Action metadata, and exports the displayed bytes as a new private file. The UI does not verify signatures or display original request parameters, which are absent from the envelope. Native compilation and the extended UIContract passed against disposable Broker and subprocess fixtures; no full native-click or end-to-end signing claim. See `docs/superpowers/specs/2026-09-16-approval-review-ui.md`.
+
+## Local encryption-key rotation (2026-09-16, source only)
+
+| Feature | State | Release | Limits and evidence |
+| --- | --- | --- | --- |
+| KEY-04 all-version DEK rotation | Black-box Verified (bounded DEK slice) | — | `rekey key rotate-dek` reencrypts active, retired and revoked versions under fresh DEKs with unchanged VRK and metadata. Vault/store fault tests prove SQL, audit, corrupt-later-row and precommit-expiry rollback; Admin/Agent and CLI tests prove step-up, capability continuity and body-only secrets. Both backup generations restore independently. Full VRK rotation and historical-backup revocation are not included. See `docs/superpowers/specs/2026-09-16-key04-dek-rotation.md`. |

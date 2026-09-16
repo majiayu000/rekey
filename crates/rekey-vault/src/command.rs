@@ -154,6 +154,11 @@ pub enum AuthorityCommand {
         proof: UnlockProof,
         reply: Reply<()>,
     },
+    RotateDek {
+        proof: UnlockProof,
+        not_after: Option<Instant>,
+        reply: Reply<u64>,
+    },
     PasswordChange {
         proof: UnlockProof,
         new_password: SecretInput,

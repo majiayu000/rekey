@@ -58,3 +58,23 @@ pub(super) async fn handle_recovery_rotate(
         recovery.as_bytes().to_vec(),
     ))
 }
+
+pub(super) async fn handle_dek_rotate(
+    frame: &IncomingFrame,
+    ctx: &BrokerCtx,
+) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
+    let deadline = admin_mutation_deadline();
+    ctx.lifecycle.reject_if_not_running()?;
+    empty_meta(frame)?;
+    let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
+    let _owner = ctx.lifecycle.coordinate_until(deadline).await?;
+    ctx.lifecycle.reject_if_not_running()?;
+    let rotated_versions = ctx
+        .authority
+        .rotate_dek_before(proof_from(kind, proof), Some(deadline.into_std()))
+        .await?;
+    Ok((
+        json(&ipc::DekRotatedResponse { rotated_versions })?,
+        Vec::new(),
+    ))
+}

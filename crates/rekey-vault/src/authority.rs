@@ -335,6 +335,19 @@ impl Worker {
                 self.touch_if_ok(&result);
                 let _ = reply.send(result);
             }
+            AuthorityCommand::RotateDek {
+                proof,
+                not_after,
+                reply,
+            } => {
+                let result = if mutation_expired(not_after) {
+                    Err(AuthorityError::AuthorityBusy)
+                } else {
+                    self.rotate_dek(proof, not_after)
+                };
+                self.touch_if_ok(&result);
+                let _ = reply.send(result);
+            }
             AuthorityCommand::PasswordChange {
                 proof,
                 new_password,

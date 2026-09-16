@@ -16,7 +16,7 @@ use crate::client::{CliError, Client};
 mod metrics;
 pub use metrics::metrics;
 mod password_lifecycle;
-pub use password_lifecycle::{password_change, recovery_rotate};
+pub use password_lifecycle::{key_rotate_dek, password_change, recovery_rotate};
 mod github_admin;
 pub use github_admin::{credential_apply_github_webhook, credential_rotate_github_app};
 mod audit;

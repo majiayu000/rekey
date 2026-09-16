@@ -178,6 +178,18 @@ impl AuthorityHandle {
         call!(self, |reply| AuthorityCommand::VerifyProof { proof, reply })
     }
 
+    pub async fn rotate_dek_before(
+        &self,
+        proof: UnlockProof,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<u64, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::RotateDek {
+            proof,
+            not_after,
+            reply
+        })
+    }
+
     pub async fn password_change_before(
         &self,
         proof: UnlockProof,

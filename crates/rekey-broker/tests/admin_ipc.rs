@@ -682,3 +682,105 @@ async fn metrics_polling_does_not_postpone_idle_lock() {
     assert!(locked, "metrics polling must allow idle locking");
     broker.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dek_rotation_is_admin_step_up_only_and_preserves_existing_capabilities() {
+    let broker = common::start_broker().await;
+    let admin = broker.admin_sock();
+    let proof = common::proof_body(common::PASSWORD);
+    let locked = common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::KEY_ROTATE_DEK,
+        b"{}",
+        &proof,
+    )
+    .await;
+    assert_eq!(locked.err_code(), "LOCKED");
+    let denied = common::call(
+        &broker.agent_sock(),
+        Channel::Agent,
+        admin_msg::KEY_ROTATE_DEK,
+        b"{}",
+        &[],
+    )
+    .await;
+    assert_eq!(denied.err_code(), "INVALID_FRAME");
+    common::unlock(&broker).await;
+    let credential = common::add_credential(&broker, "dek-canary", b"DEK-IPC-PRIVATE-CANARY").await;
+    let (action, version) = common::create_action(&broker, &credential).await;
+    let token = common::create_session(&broker, &action, version).await;
+    let before = common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::CREDENTIAL_LIST,
+        b"{}",
+        &[],
+    )
+    .await;
+    let wrong = common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::KEY_ROTATE_DEK,
+        b"{}",
+        &common::proof_body(b"wrong-proof"),
+    )
+    .await;
+    assert_eq!(wrong.err_code(), "INVALID_UNLOCK_CREDENTIAL");
+    let malformed = common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::KEY_ROTATE_DEK,
+        br#"{"credential_id":"unaccepted-selector"}"#,
+        &proof,
+    )
+    .await;
+    assert_eq!(malformed.err_code(), "INVALID_FRAME");
+    let absent = common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::KEY_ROTATE_DEK,
+        b"{}",
+        &[],
+    )
+    .await;
+    assert_eq!(absent.err_code(), "INVALID_FRAME");
+    let rotated = common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::KEY_ROTATE_DEK,
+        b"{}",
+        &proof,
+    )
+    .await;
+    assert_eq!(rotated.ok(), &serde_json::json!({"rotated_versions": 1}));
+    assert!(rotated.body.is_empty());
+    let after = common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::CREDENTIAL_LIST,
+        b"{}",
+        &[],
+    )
+    .await;
+    assert_eq!(before.ok(), after.ok());
+    broker.fake.push_response(Ok(UpstreamResponse {
+        status: 200,
+        headers: Vec::new().into(),
+        body: b"{}".to_vec().into(),
+    }));
+    let executed = common::call(
+        &broker.agent_sock(),
+        Channel::Agent,
+        agent_msg::EXECUTE_FIXED_HTTP_ACTION,
+        common::execute_meta(&token, &action, version)
+            .to_string()
+            .as_bytes(),
+        b"{}",
+    )
+    .await;
+    assert_eq!(executed.ok()["upstream_status"], 200);
+    assert!(broker.fake.requests.lock().unwrap()[0].auth_value == b"Bearer DEK-IPC-PRIVATE-CANARY");
+    assert!(!executed.ok().to_string().contains("DEK-IPC-PRIVATE-CANARY"));
+    broker.shutdown().await;
+}
