@@ -48,8 +48,8 @@
 | KEY-04 | VRK/DEK 轮换 | DEK 与 Locked 状态双因素 VRK 轮换均已实现、通过独立审查及专项验收；不撤销历史备份或替换上游凭证 |
 | NET-07 | Agent 可见流式响应 | 用户已接受独立流式接口及部分响应失败合同；固定 Anthropic 纯文本 Action 已实现并通过真实 TLS/UDS 专项验收，旧非流式合同保留 |
 | OS-05 | macOS 隔离启动器 | 用户已选择 Seatbelt；`macos-seatbelt-v1` 本机实验实现与定向攻击/真实 Broker 授权测试完成，发布前仍需人工安全审查 |
-| OS-06 | 跨平台强隔离 | macOS 本机与 LinuxKit 容器已有专项证据；Linux 新增确定性攻击测试并修复继承 FD 泄露。原生 Ubuntu、其他平台及完整强隔离仍待逐平台验收 |
-| SDK-04 | 动态插件加载 | GitHub CreateIssue/CreateIssueComment 两操作的 Action 路径/可信摘要/协议登记及 macOS/Linux GNU 隔离加载已实现；LinuxKit arm64 已验收，x86_64/原生 Ubuntu 与通用多凭证效果插件仍未完成 |
+| OS-06 | 跨平台强隔离 | macOS 本机与 LinuxKit 容器已有专项证据；Linux 新增确定性攻击测试并修复继承 FD 泄露。原生 Ubuntu x86_64 P0/G2 已通过 CI 35135342482；其他平台及完整强隔离仍待逐平台验收 |
+| SDK-04 | 动态插件加载 | GitHub CreateIssue/CreateIssueComment 两操作的 Action 路径/可信摘要/协议登记及 macOS/Linux GNU 隔离加载已实现；LinuxKit arm64 与原生 Ubuntu x86_64 已验收；通用多凭证效果插件仍未完成 |
 | UX-04 | 可视化策略审批流程 | 复用 APR-09/POL-09，不单独计实现 |
 | VEX-01 | 私网 Vault | 待输入：固定目标和部署信任；待规格定义 SSRF/DNS 边界 |
 | VEX-02 | Vault 登录方式 | 待输入：AppRole/Kubernetes/OIDC 中选定一种 |
@@ -182,3 +182,14 @@
 macOS CI 的既有 VRK SQL截止测试在并行KDF争用下先耗尽3秒准备时间，尚未到达预期SQL阶段；security-gate改用与本地验收一致的 `--test-threads=1`，保持全部测试、3秒期限、SQL阶段及回滚断言不变。首轮失败记录保留；后续必须以新提交重跑，不能将其他通过项当成整库成功。
 
 FD修复后最终 LinuxKit arm64 整库以 UID65534 串行运行：550项通过、0失败、1项既有忽略（含helper子报告），VRK SQL截止阶段测试通过。all-targets check/Clippy、Mac check、fmt、diff均通过。完整套件须安装procps并使用普通用户：root会绕过不可读目录权限；这两个环境问题均未修改测试断言。修复提交仍需原生CI重新验证。
+
+
+### 原生 CI 第二轮与停止测试收尾修复
+
+security-gate `35135342482`（源码 `c21aee4`）的 Ubuntu x86_64 P0 与 Linux G2 任务通过，包含整库、真实 release 进程、Linux插件两操作/P6及原生 systemd 验收。macOS停止测试的 FAULTED、连接断开、serve失败及崩溃标记断言通过，但一亿次人工SQL递归超过了45秒收尾窗口。
+
+将该测试递归负载调为三千万次，保留全部断言和时间预算。实际停止预算为20ms排空加5秒finalize grace；一千万次候选不足以跨越该预算，在本地被原有断言正确拒绝。三千万次候选在macOS与Linux定向测试分别14.59秒、15.36秒通过；生产代码未变。最终整库与原生CI结果另行记录。
+
+完整回归另捕获测试启动夹具的socket竞态：只等待Admin socket连接成功即可返回，但Agent socket在生产启动中随后才绑定。测试夹具现在在既有2秒窗口内等待两个socket均可连接，再开始请求；没有修改生产启动、IPC断言或延长超时。
+
+最终本地验证：macOS整库548项通过，Linux普通用户整库550项通过，各0失败/1项既有忽略（含helper子报告）；Linux在最后的双socket夹具变更后补跑Admin/Agent/插件29项通过。Mac check、all-targets Clippy、fmt、机械API/依赖合同与diff检查通过；Linux check通过。待新提交的原生CI完成后再更新运行证据。
