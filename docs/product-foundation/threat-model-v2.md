@@ -499,9 +499,14 @@ DEK rotation replaces every stored version's encryption key and ciphertext in
 one audited transaction while retaining the VRK, metadata, values and capability
 bindings. Retired and revoked versions are included. It does not erase old WAL
 pages, revoke copied backups or replace credentials at their providers.
-The separately specified locked-state VRK operation also changes the approval
-origin key and revokes remembered desktop access before database replacement;
-its implementation status is tracked separately in the Feature Truth Matrix.
+The source-only locked-state VRK operation also changes the approval origin
+key and revokes remembered desktop access before database replacement. It
+requires both current factors, retains their values and preserves workload
+replay records. A later SQL failure can leave desktop authorization revoked
+while the database retains its complete old generation. Successful shutdown
+joins the worker; an over-budget stop instead exits nonzero, preserves the crash
+marker and leaves the caller with an unknown rotation result. Independent human
+security review and release status remain tracked by the Feature Truth Matrix.
 
 Local metrics expose only fixed numeric counters and gauges through the Admin
 socket, including while locked. They have no credential labels or new listener,

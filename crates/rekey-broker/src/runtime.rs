@@ -103,6 +103,10 @@ pub struct BrokerCtx {
 }
 
 impl BrokerCtx {
+    pub(crate) fn has_pending_terminals(&self) -> bool {
+        self.terminals.has_pending()
+    }
+
     pub(crate) fn publish_shutdown(&self) {
         self.shutdown_flag.store(true, Ordering::SeqCst);
         if self.shutdown_tx.send(true).is_err() {

@@ -1,6 +1,6 @@
 # KEY-04：Locked状态下原子轮换VRK
 
-日期：2026-09-16。状态：本地实施规格，尚未实现或验收。
+日期：2026-09-16。状态：已实施，本地定向验收；父任务负责全量验证。
 范围是当前保险库的VRK与其全部加密依赖，不包含热切换、schema升级、迁移、配置项、上游凭证轮转或历史备份撤销。
 本规格基于 `remaining-integration` 当前 [DEK轮换切片](2026-09-16-key04-dek-rotation.md) 和下面核实的实现；不能把已有DEK验证结果当作VRK证据。
 
@@ -27,7 +27,7 @@ Worker独立检查自身仍是Locked；Faulted不得操作。整个命令不把�
 ## 验证双因素与准备新密文
 
 1. 沿用既有unlock退避计数/时钟门禁，读取各自唯一active password/recovery wrapper；分别derive KEK并unwrap到局部受保护RootKey。
-2. 以常量时间比较两个候选旧VRK；任一因素错误、recovery格式错误或候选不一致统一拒绝，不暴露哪个因素通过。错误因素更新现有失败计数与拒绝审计，不生成新wrapper。
+2. 以常量时间比较两个候选旧VRK；任一因素错误、recovery格式错误或候选不一致统一拒绝，不暴露哪个因素通过。错误因素更新现有失败计数与拒绝审计，不生成新wrapper。缺失active wrapper沿用相同拒绝及退避/审计；读取、行解析或KDF参数完整性错误仍明确报存储/完整性错误，不伪装为口令错误。
 3. 用共同旧VRK验证header integrity、credential state seals、版本不变量和所有旧版本的认证密文；用 `verified_policy_material` 验证policy state/trust/bundle及它们的交叉摘要绑定。
 4. 不要求策略在当前时间仍可执行才能重封装；已过期但完整性正确的bundle保持原到期时间，轮换不能使其重新有效。
 5. 生成局部随机新VRK。按现有DEK切片逐版本处理旧DEK和payload：认证旧值、生成全新DEK/nonce、重加密同一payload、用新VRK包装新DEK。
@@ -70,7 +70,8 @@ Worker独立检查自身仍是Locked；Faulted不得操作。整个命令不把�
 每个version/credential UPDATE必须恰好一行；header和policy_state各一行，存在的trust/bundle各一行；两个旧active wrapper更新各一行，两个新wrapper插入各一行。缺行/多行/计数不符视为完整性失败并回滚。
 沿用25秒Admin mutation deadline；在取得coordinator、Worker排队/双KDF后、逐项准备过程中和SQL全部更新及成功审计插入后检查，最后一次紧邻commit之前。
 precommit已过期返回现有 `AUTHORITY_BUSY` 并回滚全部SQL替换与成功审计；之前desktop撤销不回滚。不能通过抬高timeout或分批commit让大库绕过本合同。
-一旦进入commit，Broker/Worker等待其确定返回，不套可取消timeout把已经提交的操作报告为Busy。客户端断连也不取消已接受的mutation。核实Admin connection外层shutdown选择分支：关闭连接只能产生未确认结果，不能发送确定失败而Worker仍在提交；不得用丢弃handler future冒充事务已撤销。
+一旦进入commit，Worker与正常活跃的Admin handler等待其确定返回，不套可取消timeout把已经提交的操作报告为Busy。客户端断连也不取消已接受的mutation。核实Admin connection外层shutdown选择分支：关闭连接只能产生未确认结果，不能发送确定失败而Worker仍在提交；不得用丢弃handler future冒充事务已撤销。
+成功停机须先join Worker；既有bounded stop超预算时可detach Worker并以非零/不干净停机结束，保留crash marker。此时轮换连接关闭且结果未知，不声称Runtime无条件join；SQLite恢复仍只接受完整旧或新generation。
 commit成功后只做无失败的内存header替换、成功计数复位与局部key销毁；仍保持Locked。不在此阶段生成随机数、重读数据库、派生公钥、写文件或追加第二条成功审计。
 回执对象提前准备；响应编码/IPC发送失败属于“回执未送达”，不得推翻成功commit或再尝试回滚。SQLite commit报错时按既有审计/存储故障合同进入Faulted并停止服务，不能用内存继续猜测数据库generation。
 
@@ -98,4 +99,7 @@ commit边界或响应丢失时调用方结果未知，不自动重试；先查�
 8. Admin/Agent消息边界、CLI两行stdin/隐藏TTY、秘密canary不进argv/env/metadata/日志/审计；响应错误不展示任何secret。
 
 以上只用临时保险库、合成因素和受控故障；不访问真实 `~/.rekey`，不替换用户运行服务。实施后需授权/秘密处理的人工审查及父任务统一全量验证。
-本次只交付规格并运行cargo check；这不构成VRK轮换已实现的证明。
+实施证据位于 `rekey-vault/tests/vrk_rotation.rs`、Broker的 `approval_contract.rs` / `admin_ipc.rs` 和CLI的 `cli_blackbox.rs` / `malicious_broker.rs`。测试仅使用临时库与合成因素。
+SIGKILL覆盖独立Worker子进程已持有写事务但尚未commit，以及Worker已返回成功但测试子进程尚未向客户端交付回执的两点；重开前仅移除测试注入的SQL trigger，原业务/密文/审计断言保留。
+Broker短stop预算fixture覆盖已接受轮换在最终审计SQL工作期间超预算、连接仅断开、serve报错且crash marker保留，随后重开验证完整generation；不声称精确卡住SQLite COMMIT/fsync。
+未注入磁盘掉电、目录fsync失败或慢COMMIT本身；隐藏TTY沿用既有输入helper，新增实测为两行stdin。它们仍是有限验收边界，不能用本地fixture泛称所有故障时序或真实环境已验收。

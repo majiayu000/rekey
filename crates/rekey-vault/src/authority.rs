@@ -32,6 +32,7 @@ mod desktop;
 /// while the caller still holds the exclusive runtime lock.
 pub use desktop::finish_runtime;
 mod policy;
+mod vrk_rotation;
 mod wrapper;
 
 const FREE_UNLOCK_FAILURES: u32 = 3;
@@ -333,6 +334,15 @@ impl Worker {
                     .map(|_| ())
                     .and_then(|_| self.verify_proof(&proof));
                 self.touch_if_ok(&result);
+                let _ = reply.send(result);
+            }
+            AuthorityCommand::RotateVrk {
+                password,
+                recovery,
+                not_after,
+                reply,
+            } => {
+                let result = self.rotate_vrk(password, recovery, not_after);
                 let _ = reply.send(result);
             }
             AuthorityCommand::RotateDek {

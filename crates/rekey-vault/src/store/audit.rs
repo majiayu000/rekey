@@ -5,7 +5,7 @@ use crate::model::AuditEvent;
 
 pub(super) fn insert(tx: &Transaction<'_>, event: &AuditEvent) -> Result<(), AuthorityError> {
     let authorization = event.authorization.as_ref();
-    tx.execute(
+    let inserted = tx.execute(
         "INSERT INTO audit_events (event_id, request_id, session_id, action_id, action_version, credential_id, credential_version, principal_id, policy_version, policy_digest, policy_rule_id, resource_type, resource_id, parameter_hash, approval_request_id, approval_id, approver_id, event_type, outcome, reason_code, upstream_status, latency_ms, created_at_ms)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
         params![
@@ -35,5 +35,8 @@ pub(super) fn insert(tx: &Transaction<'_>, event: &AuditEvent) -> Result<(), Aut
         ],
     )
     .map_err(|_| AuthorityError::AuditCommitFailed)?;
+    if inserted != 1 {
+        return Err(AuthorityError::AuditCommitFailed);
+    }
     Ok(())
 }
