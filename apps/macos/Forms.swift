@@ -198,6 +198,80 @@ struct SessionForm: View {
     }
 }
 
+struct ApprovalDetailView: View {
+    @EnvironmentObject var model: AppModel
+    @Environment(\.dismiss) var dismiss
+    let details: ApprovalDetails
+    @State private var exportMessage: String?
+    @State private var failure: String?
+    private var challenge: ApprovalChallenge { details.envelope.challenge }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("审批请求详情").font(.system(size: 24, weight: .semibold))
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("信封只有参数摘要，不包含原始请求正文、请求头或内容类型。请在独立签名工具中核对原始请求、操作定义与策略后再授权。").font(.system(size: 13)).foregroundStyle(.secondary)
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        Text(context.date.timeIntervalSince1970 * 1000 >= Double(challenge.max_expires_at_ms) ? "此审批已过期；请重新准备请求。" : "这是读取时的快照；请求可能已被撤销或使用。")
+                            .font(.system(size: 12)).foregroundStyle(.secondary)
+                    }
+                    SectionCard(title: "请求与操作", icon: "doc.text.magnifyingglass") {
+                        row("请求 ID", challenge.approval_request_id)
+                        row("租户", challenge.tenant_id)
+                        row("主体", challenge.principal_id)
+                        row("会话", challenge.session_id)
+                        row("固定操作", "\(challenge.action_id)@\(challenge.action_version)")
+                        row("资源类型", challenge.resource.type)
+                        row("资源 ID", challenge.resource.id)
+                        row("参数 schema", challenge.schema_id)
+                        row("参数 SHA-256", challenge.parameter_sha256)
+                        if let action = details.matchingAction(in: model.actions) {
+                            row("本机当前操作定义（未包含在签名信封内）", "\(action.name)\n\(action.method) \(action.origin)\(action.exact_path)")
+                        } else {
+                            Text("本机列表中没有相同 ID 与版本的操作定义，无法在此显示 HTTP 目标。").font(.system(size: 12)).foregroundStyle(.secondary)
+                        }
+                    }
+                    SectionCard(title: "策略与授权边界", icon: "checkmark.shield") {
+                        row("策略版本", String(challenge.policy_version))
+                        row("策略 SHA-256", challenge.policy_sha256)
+                        row("策略规则", challenge.policy_rule_id)
+                        row("审批模式", challenge.mode)
+                        row("所需签名", "\(challenge.quorum) 人")
+                        row("允许的审批人 ID", challenge.approver_ids.joined(separator: "\n"))
+                        row("最大使用次数", String(challenge.max_uses))
+                        row("创建时间", "\(displayDate(challenge.created_at_ms)) · \(challenge.created_at_ms) ms")
+                        row("有效期至", "\(displayDate(challenge.max_expires_at_ms)) · \(challenge.max_expires_at_ms) ms")
+                    }
+                    SectionCard(title: "来源与签名核验", icon: "signature") {
+                        Text("本窗口未验证信封签名。下方公钥来自当前本机 Authority；请与独立固定的公钥比较，并使用 rekey-approval-sign 验证信封。审批私钥始终留在独立签名工具中。").font(.system(size: 12)).foregroundStyle(.secondary)
+                        row("来源公钥（\(details.origin.algorithm)）", details.origin.public_key)
+                        DisclosureGroup("查看原始签名信封") {
+                            Text(String(decoding: details.data, as: UTF8.self)).font(.system(size: 11, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                }.padding(.trailing, 8)
+            }
+            if let exportMessage { Text(exportMessage).font(.system(size: 12)).textSelection(.enabled) }
+            if let failure { Text(failure).font(.system(size: 12)).foregroundStyle(.red) }
+            HStack {
+                Button("导出此信封快照") {
+                    guard let file = chooseSave("approval-\(details.id).json") else { return }
+                    do { try writePrivateNew(details.data, to: file); failure = nil; exportMessage = "已保存：" + file.path }
+                    catch { exportMessage = nil; failure = error.localizedDescription }
+                }.disabled(model.busy || !model.unlocked)
+                Spacer()
+                Button("关闭") { model.approvalDetails = nil; dismiss() }.keyboardShortcut(.cancelAction)
+            }
+        }.padding(28).frame(width: 740, height: 680).background(canvas)
+    }
+    private func row(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label).font(.system(size: 11)).foregroundStyle(.secondary)
+            Text(value).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
+        }
+    }
+}
+
 struct ResultView: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.dismiss) var dismiss

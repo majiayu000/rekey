@@ -78,6 +78,7 @@ struct RootView: View {
         .sheet(isPresented: $showActionForm) { ActionForm().environmentObject(model) }
         .sheet(isPresented: $model.showSession) { SessionForm().environmentObject(model) }
         .sheet(item: $model.result, onDismiss: { model.result = nil }) { ResultView(result: $0).environmentObject(model) }
+        .sheet(item: $model.approvalDetails) { ApprovalDetailView(details: $0).environmentObject(model) }
     }
 
     private var sidebar: some View {
@@ -138,7 +139,7 @@ struct RootView: View {
         case .credentials: return "管理 Agent 使用的凭证与关联操作"
         case .actions: return "明确每个 Agent 可以执行的请求"
         case .policy: return "让权限范围、使用次数和有效期都清晰可见"
-        case .approvals: return "审阅操作内容，再通过独立签名流程授权"
+        case .approvals: return "查看审批绑定信息，再通过独立工具核对原始请求并签名"
         case .audit: return "查询本机服务已记录的操作与结果"
         case .backup: return "备份加密数据，验证并恢复到新的目录"
         case .settings: return "管理本机服务与解锁方式"
@@ -338,7 +339,10 @@ struct RootView: View {
                         info("所需签名", "\(item.quorum) 人")
                         info("有效期至", displayDate(item.max_expires_at_ms))
                         Text("参数摘要 \(item.parameter_sha256)").font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
-                        Button("导出签名信封") { Task { await model.exportApproval(item) } }.disabled(model.busy)
+                        HStack {
+                            Button("查看审批详情") { Task { await model.reviewApproval(item) } }
+                            Button("导出签名信封") { Task { await model.exportApproval(item) } }
+                        }.disabled(model.busy)
                     }
                 }
                 Text("导出后，使用独立审批签名工具审阅具体请求并签发 grant；本窗口不保管审批私钥。").font(.system(size: 12)).foregroundStyle(.secondary)

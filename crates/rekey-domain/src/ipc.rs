@@ -90,6 +90,7 @@ pub mod admin_msg {
     pub const PASSIVE_STATUS: u16 = 34;
     pub const DESKTOP_REMEMBER: u16 = 35;
     pub const DESKTOP_RESUME: u16 = 36;
+    pub const METRICS: u16 = 37;
 }
 
 /// Agent channel message types.
@@ -292,6 +293,38 @@ pub struct StatusResponse {
     pub format_version: u32,
     pub runtime_version: String,
     pub sessions_active: u32,
+}
+
+/// Process-local, approximate monitoring snapshot. No identifiers or secrets.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MetricsResponse {
+    pub admin: ChannelMetrics,
+    pub agent: ChannelMetrics,
+    pub backup: DispatchMetrics,
+    pub fault_signals_total: u64,
+    pub capabilities_active: u32,
+    pub executions_in_flight: u32,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelMetrics {
+    pub dispatch: DispatchMetrics,
+    pub peer_rejections_total: u64,
+    pub capacity_rejections_total: u64,
+    pub frame_read_failures_total: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DispatchMetrics {
+    pub requests_total: u64,
+    pub finished_total: u64,
+    pub errors_total: u64,
+    pub cancelled_total: u64,
+    pub duration_micros_total: u64,
+    pub requests_in_flight: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

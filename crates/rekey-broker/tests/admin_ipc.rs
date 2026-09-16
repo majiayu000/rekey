@@ -648,3 +648,37 @@ async fn passive_status_polling_does_not_postpone_idle_lock() {
     assert!(locked, "background polling must allow idle locking");
     broker.shutdown().await;
 }
+
+#[tokio::test]
+async fn metrics_polling_does_not_postpone_idle_lock() {
+    let broker = common::start_broker_with(Duration::from_millis(80), Duration::from_secs(2)).await;
+    common::unlock(&broker).await;
+    let mut locked = false;
+    for _ in 0..20 {
+        let snapshot = common::call(
+            &broker.admin_sock(),
+            Channel::Admin,
+            admin_msg::METRICS,
+            b"{}",
+            &[],
+        )
+        .await;
+        assert!(snapshot.body.is_empty());
+        serde_json::from_value::<ipc::MetricsResponse>(snapshot.ok().clone()).unwrap();
+        let status = common::call(
+            &broker.admin_sock(),
+            Channel::Admin,
+            admin_msg::PASSIVE_STATUS,
+            b"{}",
+            &[],
+        )
+        .await;
+        if status.ok()["state"] == "locked" {
+            locked = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(locked, "metrics polling must allow idle locking");
+    broker.shutdown().await;
+}

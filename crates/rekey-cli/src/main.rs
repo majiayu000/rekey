@@ -113,6 +113,12 @@ enum Command {
         #[arg(long)]
         passive: bool,
     },
+    /// Read local monitoring counters without resetting the idle-lock timer.
+    Metrics {
+        /// Print Prometheus text exposition instead of JSON.
+        #[arg(long)]
+        prometheus: bool,
+    },
     /// Stop the running broker (step-up proof required while unlocked).
     Shutdown {
         #[command(flatten)]
@@ -516,6 +522,7 @@ fn main() {
         } => commands::unlock(&state_dir, recovery, password_stdin),
         Command::Lock => commands::lock(&state_dir),
         Command::Status { passive } => commands::status(&state_dir, passive),
+        Command::Metrics { prometheus } => commands::metrics(&state_dir, prometheus),
         Command::Shutdown { step_up } => {
             commands::shutdown(&state_dir, step_up.recovery, step_up.password_stdin)
         }

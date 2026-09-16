@@ -521,3 +521,90 @@ fn valid_audit_page_with_one_event() -> Vec<u8> {
     .to_string()
     .into_bytes()
 }
+
+fn run_metrics_response(
+    metadata: serde_json::Value,
+    body: &[u8],
+    prometheus: bool,
+) -> std::process::Output {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = dir.path().join("runtime");
+    std::fs::create_dir(&runtime).unwrap();
+    let socket = runtime.join("admin.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let body = body.to_vec();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut bytes = [0u8; FRAME_HEADER_LEN];
+        stream.read_exact(&mut bytes).unwrap();
+        let request = FrameHeader::decode(&bytes).unwrap();
+        assert_eq!(request.channel, Channel::Admin);
+        assert_eq!(request.message_type, rekey_domain::ipc::admin_msg::METRICS);
+        assert_eq!(request.body_len, 0);
+        let mut request_metadata = vec![0u8; request.metadata_len as usize];
+        stream.read_exact(&mut request_metadata).unwrap();
+        assert_eq!(request_metadata, b"{}");
+        let metadata = serde_json::to_vec(&metadata).unwrap();
+        let response = FrameHeader {
+            channel: Channel::Admin,
+            flags: 0,
+            message_type: resp_msg::OK,
+            request_id: request.request_id,
+            metadata_len: metadata.len() as u32,
+            body_len: body.len() as u32,
+        };
+        stream.write_all(&response.encode()).unwrap();
+        stream.write_all(&metadata).unwrap();
+        stream.write_all(&body).unwrap();
+    });
+    let mut command = Command::new(rekey_bin());
+    command.arg("--state-dir").arg(dir.path()).arg("metrics");
+    if prometheus {
+        command.arg("--prometheus");
+    }
+    let result = command.stdin(Stdio::null()).output().unwrap();
+    server.join().unwrap();
+    result
+}
+
+#[test]
+fn metrics_cli_renders_typed_snapshots_and_rejects_untrusted_shape() {
+    let mut snapshot = rekey_domain::ipc::MetricsResponse::default();
+    snapshot.agent.dispatch.requests_total = 42;
+    let value = serde_json::to_value(&snapshot).unwrap();
+    for prometheus in [false, true] {
+        let good = run_metrics_response(value.clone(), &[], prometheus);
+        assert!(
+            good.status.success(),
+            "{}",
+            String::from_utf8_lossy(&good.stderr)
+        );
+        let rendered = String::from_utf8(good.stdout).unwrap();
+        if prometheus {
+            assert!(rendered.contains("rekey_requests_total{channel=\"agent\"} 42\n"));
+        } else {
+            let parsed: rekey_domain::ipc::MetricsResponse =
+                serde_json::from_str(&rendered).unwrap();
+            assert_eq!(parsed.agent.dispatch.requests_total, 42);
+        }
+        let mut unknown = value.clone();
+        unknown["admin"]["secret"] = "UNTRUSTED-METRIC-CANARY".into();
+        let mut negative = value.clone();
+        negative["fault_signals_total"] = (-1).into();
+        let mut text = value.clone();
+        text["fault_signals_total"] = "UNTRUSTED-METRIC-CANARY".into();
+        for (metadata, body) in [
+            (unknown, &b""[..]),
+            (negative, &b""[..]),
+            (text, &b""[..]),
+            (value.clone(), &b"UNTRUSTED-METRIC-CANARY"[..]),
+        ] {
+            let bad = run_metrics_response(metadata, body, prometheus);
+            assert!(!bad.status.success());
+            assert!(bad.stdout.is_empty());
+            assert!(!String::from_utf8_lossy(&bad.stderr).contains("UNTRUSTED-METRIC-CANARY"));
+        }
+    }
+}
