@@ -127,7 +127,9 @@ async fn start_broker_configured(
     let admin_sock = state_dir.join("runtime").join("admin.sock");
     let mut ready = false;
     for _ in 0..200 {
-        if UnixStream::connect(&admin_sock).await.is_ok() {
+        if UnixStream::connect(&admin_sock).await.is_ok()
+            && UnixStream::connect(&agent_socket).await.is_ok()
+        {
             ready = true;
             break;
         }

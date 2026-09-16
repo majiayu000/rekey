@@ -817,7 +817,8 @@ async fn vrk_sql_work_exceeding_bounded_stop_disconnects_unknown_and_retains_cra
             r.get(0)
         })
         .unwrap();
-    db.execute_batch("CREATE TRIGGER slow_root_audit BEFORE INSERT ON audit_events WHEN NEW.event_type='vault.vrk_rotated' BEGIN SELECT sum(n) FROM (WITH RECURSIVE delay(n) AS (VALUES(0) UNION ALL SELECT n+1 FROM delay WHERE n<100000000) SELECT n FROM delay); END;").unwrap();
+    // Span the 20ms drain plus 5s finalize grace without exhausting the 45s cleanup budget.
+    db.execute_batch("CREATE TRIGGER slow_root_audit BEFORE INSERT ON audit_events WHEN NEW.event_type='vault.vrk_rotated' BEGIN SELECT sum(n) FROM (WITH RECURSIVE delay(n) AS (VALUES(0) UNION ALL SELECT n+1 FROM delay WHERE n<30000000) SELECT n FROM delay); END;").unwrap();
     let body = common::proof_and_secret_body(common::PASSWORD, &recovery.body);
     let mut stream = tokio::net::UnixStream::connect(broker.admin_sock())
         .await

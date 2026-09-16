@@ -96,4 +96,7 @@ jetsam 针对 phys_footprint ledger；本轮最大 RSS 达 70,025,216 bytes，�
 - 两平台 release CLI/真实 Broker/本地 TLS P6 通过：同一显式绑定 artifact 执行两操作，篡改已批准文件时 exit4、空输出及零新增上游请求，恢复原摘要后执行成功；Action update/disable/revoke 合同继续通过。未访问真实 GitHub。
 - 本地 release 复制清单与文档链接检查通过，不代表下载归档、签名或公证验收。生产及测试设计独立审查均无剩余阻断项，合并前仍须人工安全审查。
 
-日志与探针保存于主仓库 `.git/codex/threads/remaining-linux-plugin-20260917/`。Linux x86_64、原生 Ubuntu 与其他系统尚无本轮原生运行证据；完整 P-10 的总物理资源及启动全过程父死保障仍未完成。
+日志与探针保存于主仓库 `.git/codex/threads/remaining-linux-plugin-20260917/`。原生 Ubuntu x86_64 后续证据见下段；其他未测系统不在验收声明内。完整 P-10 的总物理资源及启动全过程父死保障仍未完成。
+
+
+2026-09-17补充：[security-gate 35135342482](https://github.com/majiayu000/rekey/actions/runs/35135342482) 在源码 `c21aee4` 的原生 Ubuntu 24.04.5/x86_64（bubblewrap 0.9.0-1ubuntu0.1）P0 与 Linux G2 任务通过，包含整库、x32/兼容ABI拒绝、真实release进程、显式登记插件P6与systemd验收。同次macOS任务因既有人工SQL收尾负载超时失败，不将该次运行记为全绿；修复与后续结果见剩余清单。
