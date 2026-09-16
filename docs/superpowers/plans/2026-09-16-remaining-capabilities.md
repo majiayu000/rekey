@@ -193,3 +193,12 @@ security-gate `35135342482`（源码 `c21aee4`）的 Ubuntu x86_64 P0 与 Linux 
 完整回归另捕获测试启动夹具的socket竞态：只等待Admin socket连接成功即可返回，但Agent socket在生产启动中随后才绑定。测试夹具现在在既有2秒窗口内等待两个socket均可连接，再开始请求；没有修改生产启动、IPC断言或延长超时。
 
 最终本地验证：macOS整库548项通过，Linux普通用户整库550项通过，各0失败/1项既有忽略（含helper子报告）；Linux在最后的双socket夹具变更后补跑Admin/Agent/插件29项通过。Mac check、all-targets Clippy、fmt、机械API/依赖合同与diff检查通过；Linux check通过。待新提交的原生CI完成后再更新运行证据。
+
+
+### 原生 CI 第三轮的单线程 KDF 预算发现
+
+`35137833461` 的源码 `8596704` 已通过停止/双socket相关测试，G2通过。Ubuntu后续在 `vrk_precommit_deadline_rolls_back_after_final_audit_sql_work` 再次失败：即使串行，生产强度KDF准备也可能超过夹具自定的3秒，因此未到达SQL阶段。此前“串行即可避免该失败”的假设不充分。
+
+该测试改为10秒命令预算，并同步将最终audit trigger从三千万次增至一亿次递归，给准备阶段留出余量后仍强制跨过截止时间。保留AuthorityBusy、elapsed超过预算、桌面包装撤销、全量受保护状态回滚、零成功审计与Locked状态断言；SQL内仍校验两个旧wrapper已经替换。未修改生产25秒Admin mutation期限、KDF强度或生产逻辑，也未跳过测试。
+
+该修正的本地定向测试31.37秒通过，最终macOS整库548项通过、0失败、1项既有忽略，check/Clippy/fmt通过。上一提交 `8596704` 的原生macOS P0及Linux G2任务均完整通过；新测试提交继续重跑原生CI。

@@ -813,19 +813,21 @@ async fn vrk_precommit_deadline_rolls_back_after_final_audit_sql_work() {
     handle.lock_for_restart("deadline-fixture").await.unwrap();
     let db = Connection::open(paths::vault_db(&vault.state_dir)).unwrap();
     let before = protected_state(&db);
-    // Keep the final audit INSERT busy longer than the whole command deadline.
+    // Allow production-strength KDF preparation on slower CI CPUs, then keep
+    // the final audit INSERT busy longer than the whole command deadline.
     // Reaching this SQL also asserts wrappers/header already changed in-tx.
-    db.execute_batch("CREATE TRIGGER delay_final_audit BEFORE INSERT ON audit_events WHEN NEW.event_type='vault.vrk_rotated' BEGIN SELECT CASE WHEN (SELECT count(*) FROM key_wrappers WHERE state='disabled') != 2 THEN RAISE(ABORT,'wrappers not yet replaced') END; SELECT sum(n) FROM (WITH RECURSIVE delay(n) AS (VALUES(0) UNION ALL SELECT n+1 FROM delay WHERE n<30000000) SELECT n FROM delay); END;").unwrap();
+    db.execute_batch("CREATE TRIGGER delay_final_audit BEFORE INSERT ON audit_events WHEN NEW.event_type='vault.vrk_rotated' BEGIN SELECT CASE WHEN (SELECT count(*) FROM key_wrappers WHERE state='disabled') != 2 THEN RAISE(ABORT,'wrappers not yet replaced') END; SELECT sum(n) FROM (WITH RECURSIVE delay(n) AS (VALUES(0) UNION ALL SELECT n+1 FROM delay WHERE n<100000000) SELECT n FROM delay); END;").unwrap();
+    let command_budget = Duration::from_secs(10);
     let start = Instant::now();
     let result = handle
         .rotate_vrk_before(
             common::password_input(),
             recovery(&vault),
-            Some(start + Duration::from_secs(3)),
+            Some(start + command_budget),
         )
         .await;
     assert!(matches!(result, Err(AuthorityError::AuthorityBusy)));
-    assert!(start.elapsed() > Duration::from_secs(3));
+    assert!(start.elapsed() > command_budget);
     assert!(
         !vault.state_dir.join("desktop-unlock.bin").exists(),
         "preparation and desktop revocation completed before SQL deadline"
