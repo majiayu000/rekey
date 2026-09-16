@@ -875,6 +875,7 @@ impl Worker {
             ),
         };
         let action = FixedHttpAction {
+            text_stream: definition.text_stream,
             id: action_id,
             name: definition.name,
             version,

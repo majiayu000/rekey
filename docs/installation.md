@@ -196,6 +196,79 @@ same-UID host process, host root, or kernel compromise. It does not upgrade
 G1 to G2 or implement Windows/plugin isolation. See the
 [feature truth matrix](product-foundation/feature-truth-matrix.md).
 
+## GitHub reference connector (macOS source build)
+
+The source implementation of GitHub CreateIssue uses the bundled
+`rekey-github-create-issue` sidecar on macOS. Build it with the Broker package
+and keep it beside `rekeyd` when copying binaries. The source archive and macOS
+app build include it; published alpha.2 archives do not gain this feature.
+A missing sidecar fails the CreateIssue call instead of running it unsandboxed.
+
+For a source build, install all three binaries together (the published alpha.2
+installation above describes its historical archive):
+
+```bash
+cargo build --release -p rekey-cli --bin rekey -p rekey-broker --bins
+install -m 0755 target/release/rekey target/release/rekeyd \
+  target/release/rekey-github-create-issue "$HOME/.local/bin/"
+```
+
+Current source uses state/backup format **11**. It rejects earlier formats,
+including 10, without migration. Initialize a new empty state directory; keep
+older binaries with their matching state and backups.
+
+Only public issue text enters the reference process. The Broker keeps all
+credentials, authorization, HTTP execution, response checks and revocation.
+The separate Seatbelt policy denies networking and process creation. CPU and
+wall-clock deadlines are enforced; memory is watched by sampling, which can
+overshoot between samples. This is a bounded reference integration, not a
+third-party plugin registry or a hard memory-isolation guarantee.
+
+## Independent text streaming (source build)
+
+An Admin can register an opaque-token Action with `text_stream: {"model":
+"ADMIN_CHOSEN_MODEL", "max_tokens": 1024}` and the fixed Anthropic Messages
+endpoint. See [the exact Action and stream contract](superpowers/specs/2026-09-16-anthropic-text-stream.md).
+The Agent supplies only bounded user/assistant text messages:
+
+```bash
+rekey --agent-socket "$AGENT_SOCKET" execute-text-stream "$ACTION_VERSION" \
+  --capability - --body-file messages.json
+```
+
+Supply the capability through stdin. Text appears incrementally; exit zero means
+completed. Failure or incomplete output exits nonzero, and already printed text
+cannot be recalled. Do not treat a displayed prefix as success or automatically
+retry a failed call. Existing `execute` remains fully buffered and rejects
+stream-only Actions; MCP does not expose these Actions. Local fixture tests do
+not establish live Anthropic account/model compatibility.
+
+## Local metrics file
+
+The source build supports one-shot textfile publication for a separately managed
+collector. Prepare an existing physical directory owned by the Admin job user,
+normally mode 0750 with the collector's read-only group. Keep it separate from
+the vault state directory. Symlink components and untrusted writable ancestors
+are rejected. Ensure ACLs grant no extra read/write/delete access to other identities,
+including permissions inherited by new files; the CLI validates POSIX mode/owner,
+not platform ACLs.
+
+```bash
+rekey --state-dir "$STATE" metrics --prometheus --textfile-dir "$METRICS_DIR"
+```
+
+Success atomically replaces only `rekey.prom`, at mode 0640 with the directory's
+group. It also works while the Broker is locked. A validated, locked producer
+removes old output when sampling or publication fails; validation failure and
+lock contention leave files untouched. Errors are reported through the CLI.
+A killed or unscheduled job can leave stale output: consumers must check file
+mtime and collector health, and must not interpret old data as current health.
+
+This command installs no scheduler, collector, listener or alerts. The existing
+`rekey metrics` JSON and `rekey metrics --prometheus` stdout modes remain available.
+See the [local metrics contract](superpowers/specs/2026-09-16-local-metrics.md)
+and [external collection specification](superpowers/specs/2026-09-16-external-capabilities.md).
+
 ## Cross-version install and rollback
 
 These steps apply whenever the new archive uses a different vault format,

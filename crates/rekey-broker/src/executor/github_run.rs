@@ -36,11 +36,19 @@ impl ActionExecutor {
                 }
             }
             crate::github_profile::GitHubAction::CreateIssue { .. } => {
-                match GitHubAppCredential::issue_body(request) {
+                #[cfg(target_os = "macos")]
+                let normalized =
+                    crate::github_issue_plugin::normalize(&request.body, effect_deadline).await;
+                #[cfg(not(target_os = "macos"))]
+                let normalized = GitHubAppCredential::issue_body(request)
+                    .map_err(|err| BrokerError::Denied(err.reason()));
+                match normalized {
                     Ok(body) => body,
                     Err(err) => {
-                        started.blocked_until(effect_deadline, err.reason()).await?;
-                        return Err(BrokerError::Denied(err.reason()));
+                        started
+                            .blocked_until(effect_deadline, "github-plugin-rejected")
+                            .await?;
+                        return Err(err);
                     }
                 }
             }
@@ -182,6 +190,7 @@ impl ActionExecutor {
             .await?;
         let body = std::mem::take(&mut *response.body);
         Ok(ExecuteOutcome {
+            stream_status: None,
             upstream_status: response.status,
             headers,
             body,

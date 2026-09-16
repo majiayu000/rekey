@@ -43,7 +43,7 @@ pub(super) fn blob32(v: Vec<u8>) -> Result<[u8; 32], AuthorityError> {
 }
 
 impl SqliteRecordStore {
-    /// Creates a brand-new database file with schema v10. Fails if the file
+    /// Creates a brand-new database file with schema v11. Fails if the file
     /// already exists.
     pub fn create(path: &Path) -> Result<Self, AuthorityError> {
         if path.exists() {
@@ -58,7 +58,7 @@ impl SqliteRecordStore {
         })
     }
 
-    /// Opens an existing v10 database, verifying pragmas, integrity, format
+    /// Opens an existing v11 database, verifying pragmas, integrity, format
     /// version, and schema digest. Never migrates and never creates.
     pub fn open(path: &Path) -> Result<Self, AuthorityError> {
         if !path.exists() {
@@ -338,8 +338,8 @@ impl SqliteRecordStore {
         )
         .map_err(storage)?;
         tx.execute(
-            "INSERT INTO actions (action_id, version, name, state, credential_id, origin, method, exact_path, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            "INSERT INTO actions (action_id, version, name, state, credential_id, origin, method, exact_path, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms, text_stream_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 record.action_id.as_bytes().as_slice(),
                 record.version as i64,
@@ -357,6 +357,7 @@ impl SqliteRecordStore {
                 record.allowed_response_headers_json,
                 record.timeout_ms,
                 record.created_at_ms,
+                record.text_stream_json,
             ],
         )
         .map_err(storage)?;
@@ -390,7 +391,7 @@ impl SqliteRecordStore {
     ) -> Result<ActionRecord, AuthorityError> {
         self.conn
             .query_row(
-                "SELECT action_id, version, name, state, credential_id, origin, method, exact_path, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms
+                "SELECT action_id, version, name, state, credential_id, origin, method, exact_path, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms, text_stream_json
                  FROM actions WHERE action_id = ?1 AND version = ?2",
                 params![action_id.as_bytes().as_slice(), version as i64],
                 action_from_row,
@@ -405,7 +406,7 @@ impl SqliteRecordStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT action_id, version, name, state, credential_id, origin, method, exact_path, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms
+                "SELECT action_id, version, name, state, credential_id, origin, method, exact_path, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms, text_stream_json
                  FROM actions WHERE state != 'retired' ORDER BY created_at_ms",
             )
             .map_err(storage)?;
@@ -426,7 +427,7 @@ impl SqliteRecordStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT action_id, version, name, state, credential_id, origin, method, exact_path, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms
+                "SELECT action_id, version, name, state, credential_id, origin, method, exact_path, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms, text_stream_json
                  FROM actions WHERE credential_id = ?1",
             )
             .map_err(storage)?;
@@ -746,6 +747,9 @@ fn action_from_row(r: &rusqlite::Row<'_>) -> RowResult<ActionRecord> {
     let created_at_ms: i64 = r.get(15)?;
     Ok((|| {
         Ok(ActionRecord {
+            text_stream_json: r
+                .get(16)
+                .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
             action_id: ActionId::from_bytes(blob16(action_id)?)
                 .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
             version: positive_version(version)?,

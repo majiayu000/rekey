@@ -55,7 +55,7 @@ jobs:
           [[ "$GITHUB_REF_NAME" == "v$version" ]]
           [[ "$(rustc -vV | awk '/^host:/ {print $2}')" == "${{ matrix.target }}" ]]
       - name: Build release binaries
-        run: cargo build --locked --release -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd
+        run: cargo build --locked --release -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd --bin rekey-github-create-issue
       - name: Package release archive
         id: package
         shell: bash
@@ -64,7 +64,7 @@ jobs:
           archive="rekey-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz"
           stage="dist/rekey-${GITHUB_REF_NAME}-${{ matrix.target }}"
           mkdir -p "$stage"
-          install -m 0755 target/release/rekey target/release/rekeyd "$stage/"
+          install -m 0755 target/release/rekey target/release/rekeyd target/release/rekey-github-create-issue "$stage/"
           install -m 0755 scripts/rekey-service-unit.py "$stage/"
           install -m 0644 LICENSE README.md "$stage/"
           install -m 0644 CHANGELOG.md SECURITY.md SUPPORT.md "$stage/"
@@ -83,6 +83,34 @@ jobs:
             docs/superpowers/specs/2026-09-04-agent-egress-launcher-p09.md \
             "$stage/docs/superpowers/specs/"
           install -m 0644 examples/github-create-issue.json "$stage/examples/"
+          # Keep the shipped documentation links usable inside the archive.
+          for doc in \
+            apps/macos/README.md \
+            docs/evidence/vault-kv-cloudflare-2026-09-10.json \
+            docs/releases/v2.0.0-alpha.3.md \
+            docs/superpowers/specs/2026-09-03-vault-dynamic-lease-source-p07b.md \
+            docs/superpowers/specs/2026-09-10-approval-origin-authentication.md \
+            docs/superpowers/specs/2026-09-10-external-backup-operations.md \
+            docs/superpowers/specs/2026-09-10-external-policy-signer.md \
+            docs/superpowers/specs/2026-09-10-github-actions-jwks.md \
+            docs/superpowers/specs/2026-09-10-keycloak-token-exchange-oau02.md \
+            docs/superpowers/specs/2026-09-10-local-approval-endpoint.md \
+            docs/superpowers/specs/2026-09-10-local-approval-inbox.md \
+            docs/superpowers/specs/2026-09-10-local-mcp-stdio.md \
+            docs/superpowers/specs/2026-09-10-operator-credential-repair.md \
+            docs/superpowers/specs/2026-09-10-remaining-p3-disposition.md \
+            docs/superpowers/specs/2026-09-16-anthropic-text-stream.md \
+            docs/superpowers/specs/2026-09-16-approval-review-ui.md \
+            docs/superpowers/specs/2026-09-16-audit-prune.md \
+            docs/superpowers/specs/2026-09-16-external-capabilities.md \
+            docs/superpowers/specs/2026-09-16-github-reference-plugin.md \
+            docs/superpowers/specs/2026-09-16-key04-dek-rotation.md \
+            docs/superpowers/specs/2026-09-16-key04-vrk-rotation.md \
+            docs/superpowers/specs/2026-09-16-local-metrics.md \
+            ; do
+            mkdir -p "$stage/$(dirname "$doc")"
+            install -m 0644 "$doc" "$stage/$doc"
+          done
           tar -czf "dist/$archive" -C dist "$(basename "$stage")"
           (cd dist && shasum -a 256 "$archive" > "$archive.sha256")
           echo "archive=$archive" >> "$GITHUB_OUTPUT"

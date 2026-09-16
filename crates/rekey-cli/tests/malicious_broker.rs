@@ -569,6 +569,15 @@ fn run_metrics_response(
     body: &[u8],
     prometheus: bool,
 ) -> std::process::Output {
+    run_metrics_response_to(metadata, body, prometheus, None)
+}
+
+fn run_metrics_response_to(
+    metadata: serde_json::Value,
+    body: &[u8],
+    prometheus: bool,
+    textfile_dir: Option<&std::path::Path>,
+) -> std::process::Output {
     let dir = tempfile::tempdir().unwrap();
     let runtime = dir.path().join("runtime");
     std::fs::create_dir(&runtime).unwrap();
@@ -605,6 +614,9 @@ fn run_metrics_response(
     command.arg("--state-dir").arg(dir.path()).arg("metrics");
     if prometheus {
         command.arg("--prometheus");
+    }
+    if let Some(directory) = textfile_dir {
+        command.arg("--textfile-dir").arg(directory);
     }
     let result = command.stdin(Stdio::null()).output().unwrap();
     server.join().unwrap();
@@ -649,6 +661,63 @@ fn metrics_cli_renders_typed_snapshots_and_rejects_untrusted_shape() {
             assert!(!String::from_utf8_lossy(&bad.stderr).contains("UNTRUSTED-METRIC-CANARY"));
         }
     }
+}
+
+#[test]
+fn metrics_textfile_cli_publishes_and_invalidates_untrusted_or_unavailable_data() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().canonicalize().unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o750)).unwrap();
+    let target = path.join("rekey.prom");
+    let value = serde_json::to_value(rekey_domain::ipc::MetricsResponse::default()).unwrap();
+    let good = run_metrics_response_to(value.clone(), &[], true, Some(&path));
+    assert!(
+        good.status.success(),
+        "{}",
+        String::from_utf8_lossy(&good.stderr)
+    );
+    assert!(good.stdout.is_empty());
+    assert!(
+        std::fs::read_to_string(&target)
+            .unwrap()
+            .contains("# TYPE rekey_capabilities_active gauge")
+    );
+    assert_eq!(
+        std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+        0o640
+    );
+    let mut unknown = value.clone();
+    unknown["admin"]["secret"] = "UNTRUSTED-METRIC-CANARY".into();
+    for (metadata, body) in [
+        (unknown, &b""[..]),
+        (value, &b"UNTRUSTED-METRIC-CANARY"[..]),
+    ] {
+        std::fs::write(&target, "old healthy data").unwrap();
+        let bad = run_metrics_response_to(metadata, body, true, Some(&path));
+        assert!(!bad.status.success());
+        assert!(bad.stdout.is_empty());
+        assert!(!String::from_utf8_lossy(&bad.stderr).contains("UNTRUSTED-METRIC-CANARY"));
+        assert!(!target.exists());
+        assert_eq!(std::fs::read_dir(&path).unwrap().count(), 0);
+    }
+    let absent_state = tempfile::tempdir().unwrap();
+    std::fs::write(&target, "old healthy data").unwrap();
+    let unavailable = Command::new(rekey_bin())
+        .arg("--state-dir")
+        .arg(absent_state.path())
+        .args(["metrics", "--prometheus", "--textfile-dir"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(!unavailable.status.success());
+    assert!(!target.exists());
+    let misuse = Command::new(rekey_bin())
+        .args(["metrics", "--textfile-dir"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(!misuse.status.success());
+    assert!(String::from_utf8_lossy(&misuse.stderr).contains("--prometheus"));
 }
 
 fn run_prune_response(metadata: serde_json::Value, body: &[u8]) -> std::process::Output {

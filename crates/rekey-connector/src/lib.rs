@@ -4,6 +4,8 @@
 //! remains the only execution owner; these types describe and select its
 //! compile-time built-in paths.
 
+pub mod github_issue;
+
 use rekey_domain::action::{ExactPath, FixedHttpAction, HttpsOrigin};
 use rekey_domain::capability::ActionVersionRef;
 use rekey_domain::credential::CredentialKind;
@@ -238,6 +240,8 @@ pub struct McpToolDescriptor {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum McpProjectionError {
+    #[error("text streaming actions are unavailable through MCP")]
+    UnsupportedStreaming,
     #[error("action definition is invalid")]
     InvalidAction,
     #[error("MCP projection requires an explicit object input schema")]
@@ -252,6 +256,9 @@ pub fn project_mcp_tool(
     action: &FixedHttpAction,
     input_schema: &Value,
 ) -> Result<McpToolDescriptor, McpProjectionError> {
+    if action.text_stream.is_some() {
+        return Err(McpProjectionError::UnsupportedStreaming);
+    }
     action
         .validate()
         .map_err(|_| McpProjectionError::InvalidAction)?;

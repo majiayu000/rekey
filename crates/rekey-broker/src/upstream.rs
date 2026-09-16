@@ -76,8 +76,24 @@ pub enum UpstreamError {
 pub type UpstreamFuture<'a> =
     Pin<Box<dyn Future<Output = Result<UpstreamResponse, UpstreamError>> + Send + 'a>>;
 
+pub type UpstreamChunkFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Option<Zeroizing<Vec<u8>>>, UpstreamError>> + Send + 'a>>;
+pub trait UpstreamBody: Send {
+    fn next_chunk(&mut self) -> UpstreamChunkFuture<'_>;
+}
+pub struct UpstreamStreamResponse {
+    pub status: u16,
+    pub headers: ResponseHeaders,
+    pub body: Box<dyn UpstreamBody>,
+}
+pub type UpstreamStreamFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<UpstreamStreamResponse, UpstreamError>> + Send + 'a>>;
+
 pub trait UpstreamTransport: Send + Sync {
     fn send(&self, request: UpstreamRequest) -> UpstreamFuture<'_>;
+    fn open_stream(&self, _request: UpstreamRequest) -> UpstreamStreamFuture<'_> {
+        Box::pin(async { Err(UpstreamError::Blocked("streaming-unsupported")) })
+    }
 }
 
 /// Validate the complete request, including credential bytes, before the
@@ -208,6 +224,21 @@ impl UpstreamTransport for ReqwestUpstreamTransport {
     fn send(&self, request: UpstreamRequest) -> UpstreamFuture<'_> {
         Box::pin(async move { send_via_reqwest(request).await })
     }
+    fn open_stream(&self, mut request: UpstreamRequest) -> UpstreamStreamFuture<'_> {
+        Box::pin(async move {
+            let deadline = tokio::time::Instant::now() + request.timeout;
+            let endpoint = resolve_before_deadline(
+                deadline,
+                screen_public_endpoint(&request.host, request.port),
+            )
+            .await?;
+            request.timeout = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if request.timeout.is_zero() {
+                return Err(UpstreamError::Timeout);
+            }
+            open_stream_screened(request, endpoint, None).await
+        })
+    }
 }
 
 /// DNS result that has already passed public-IP screening.
@@ -282,6 +313,25 @@ pub async fn send_screened(
     endpoint: ScreenedEndpoint,
     extra_root_der: Option<&[u8]>,
 ) -> Result<UpstreamResponse, UpstreamError> {
+    let limit = request.response_max_bytes as usize;
+    let mut response = open_stream_screened(request, endpoint, extra_root_der).await?;
+    let mut body = Zeroizing::new(Vec::with_capacity(limit));
+    while let Some(chunk) = response.body.next_chunk().await? {
+        body.extend_from_slice(&chunk);
+    }
+    Ok(UpstreamResponse {
+        status: response.status,
+        headers: response.headers,
+        body,
+    })
+}
+
+/// Same screened TLS request as buffered transport; exposes real arriving chunks.
+pub async fn open_stream_screened(
+    request: UpstreamRequest,
+    endpoint: ScreenedEndpoint,
+    extra_root_der: Option<&[u8]>,
+) -> Result<UpstreamStreamResponse, UpstreamError> {
     let mut builder = reqwest::Client::builder()
         .use_rustls_tls()
         .redirect(reqwest::redirect::Policy::none())
@@ -341,32 +391,40 @@ pub async fn send_screened(
         .collect::<Vec<_>>()
         .into();
 
-    let limit = request.response_max_bytes as usize;
-    // Product actions cap this at 4 MiB. Reserving the full bounded response
-    // avoids reallocations that could leave stale secret-bearing heap copies.
-    let mut body = Zeroizing::new(Vec::with_capacity(limit));
-    let body_capacity = body.capacity();
-    let mut stream = response;
-    while let Some(chunk) = stream.chunk().await.map_err(|err| {
-        if err.is_timeout() {
-            UpstreamError::Timeout
-        } else {
-            UpstreamError::Transport
-        }
-    })? {
-        if body.len() + chunk.len() > limit {
-            // Over-limit is a hard failure, never a truncated success.
-            return Err(UpstreamError::ResponseTooLarge);
-        }
-        body.extend_from_slice(&chunk);
-        debug_assert_eq!(body.capacity(), body_capacity);
-    }
-
-    Ok(UpstreamResponse {
+    Ok(UpstreamStreamResponse {
         status,
         headers,
-        body,
+        body: Box::new(ReqwestBody {
+            response,
+            remaining: request.response_max_bytes as usize,
+        }),
     })
+}
+
+struct ReqwestBody {
+    response: reqwest::Response,
+    remaining: usize,
+}
+impl UpstreamBody for ReqwestBody {
+    fn next_chunk(&mut self) -> UpstreamChunkFuture<'_> {
+        Box::pin(async move {
+            let Some(chunk) = self.response.chunk().await.map_err(|err| {
+                if err.is_timeout() {
+                    UpstreamError::Timeout
+                } else {
+                    UpstreamError::Transport
+                }
+            })?
+            else {
+                return Ok(None);
+            };
+            self.remaining = self
+                .remaining
+                .checked_sub(chunk.len())
+                .ok_or(UpstreamError::ResponseTooLarge)?;
+            Ok(Some(Zeroizing::new(chunk.to_vec())))
+        })
+    }
 }
 
 #[cfg(test)]

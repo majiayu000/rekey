@@ -1,11 +1,11 @@
 use sha2::{Digest, Sha256};
 
-/// Schema v10. This SQL text is the single source of truth; `schema_digest()`
+/// Schema v11. This SQL text is the single source of truth; `schema_digest()`
 /// hashes its normalized form to detect accidental drift, not tampering.
 pub const SCHEMA_SQL: &str = r#"
 CREATE TABLE vault_header (
     singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
-    format_version     INTEGER NOT NULL CHECK (format_version = 10),
+    format_version     INTEGER NOT NULL CHECK (format_version = 11),
     vault_id           BLOB NOT NULL CHECK (length(vault_id) = 16),
     crypto_suite       TEXT NOT NULL CHECK (crypto_suite = 'rkca-aes256gcm-argon2id-hkdfsha256-v1'),
     created_at_ms      INTEGER NOT NULL,
@@ -65,6 +65,7 @@ CREATE UNIQUE INDEX one_active_version_per_credential
 ON credential_versions(credential_id) WHERE state = 'active';
 
 CREATE TABLE actions (
+    text_stream_json              TEXT,
     action_id                     BLOB NOT NULL CHECK (length(action_id) = 16),
     version                       INTEGER NOT NULL CHECK (version >= 1),
     name                          TEXT NOT NULL,

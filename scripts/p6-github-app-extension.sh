@@ -12,7 +12,7 @@ WEBHOOK_SECRET="P6-WEBHOOK-SECRET-CANARY-0123456789"
 TOKEN_CANARY="P2-INSTALLATION-TOKEN-CANARY"
 ISSUE_BODY_CANARY="P6 issue body canary"
 
-cargo build --release -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd
+cargo build --release -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd --bin rekey-github-create-issue
 cargo build --release -p rekey-broker --example p2_github_app_fixture
 
 WORKDIR="$(mktemp -d /tmp/rkp6github.XXXXXX)"

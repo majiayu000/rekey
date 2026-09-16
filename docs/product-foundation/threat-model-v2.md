@@ -388,7 +388,7 @@ Action 和最小响应 schema 比通用透明代理更强。任何新增 canonic
 | P1 | 策略引擎 | cargo test -p rekey-policy | default-deny、forbid、schema、参数哈希和错误矩阵全通过 |
 | P-03 | 签名策略与审批 | `scripts/p3-approval-acceptance.sh` | trust 安装、连续版本、重启 reload、单人/双人 grant、重放/篡改/过期拒绝和 audit list/export 全通过 |
 | P1 | Linux 隔离 | cargo test -p rekey-e2e --test linux_g2 | Agent root 仍不能读 Broker/Vault 或直连 |
-| P1 | 流式响应 | cargo test -p rekey-broker --test streaming_sealing | 跨 chunk 反射可检测并中止 |
+| P1 | 完整缓冲的跨 chunk 秘密反射检查 | `scripts/p1-streaming-sealing.sh` | HTTP/TLS 分块中的秘密反射拒绝；失败只交付一个空 ERROR，不是 NET-07 Agent 可见实时流 |
 | OS-05 | macOS 实验 Seatbelt 启动器 | `cargo test -p rekey-broker --test sandbox_macos`; `cargo test -p rekey-broker sandbox:: --lib` | 固定 `macos-seatbelt-v1`；当前目录只读、private scratch 可写、精确 canonical Agent UDS；真实 Broker + fake upstream 授权调用成功；文件/网络/FD/子孙攻击 fixtures 拒绝；仅本次 OS build；不升级 G2。task_for_pid 控制组也拒绝，不能归功于本沙箱；父死不保证全后代终止 |
 | P-05 | Connector 契约 | `scripts/p5-connector-sdk.sh` | 静态 registry、effect/lifecycle、MCP/OAuth projection 和 reserved GitHub no-fallback 一致 |
 | P-07A | Vault KV v2 固定版本源 | `cargo test -p rekey-broker --test vault_source_contract`; `scripts/p7-vault-kv-source.sh` | 精确版本读取、源与结果 sealing、drain 准入、轮换、重启及备份恢复通过；不外推为通用 Vault |
@@ -441,7 +441,7 @@ Action 和最小响应 schema 比通用透明代理更强。任何新增 canonic
   与审计先完成。Agent 不能取得 token，也不能选 source/target；没有 refresh、后台续期
   或进程崩溃后的撤销保证。provider introspection inactive 不代表只做离线 JWT 验证的
   resource 会立即拒绝。真实 Keycloak + Broker 的本地 TLS fixture 不是公网筛选证明。
-  新 kind/AAD code 5 使用 schema 10；旧 state/backup 明确拒绝，不做迁移。
+  新 kind/AAD code 5 最初使用 schema 10；当前独立文本流源码使用 schema 11，含 v10 在内的旧 state/backup 明确拒绝，不做迁移。
 - P-07A 只允许管理员登记一个 public HTTPS Vault KV v2 origin、mount、path、精确
   非零版本、精确 string key 和 bootstrap token。Broker 在 durable started audit 与
   remote-effect admission 后执行一次无重试 GET，解析后只把值注入既有 fixed Action；
@@ -513,3 +513,18 @@ socket, including while locked. They have no credential labels or new listener,
 do not extend idle unlock and reset on process restart. The approval review UI
 shows signed bindings and exact-version metadata, but does not verify signatures
 or hold approval signing keys. These Admin surfaces do not change G1/G2 claims.
+
+
+## 本机参考插件与独立文本流（2026-09-16 源码）
+
+macOS GitHub CreateIssue 在固定打包的 Seatbelt 子进程中仅处理公开 title/body；Broker
+复核完整规范请求并保留凭据、权限、HTTP、撤销与审计责任。无网络、fork 或状态目录权限。
+CPU 限额、deadline、有界 IO 和采样 RSS 看门狗不等于完整硬内存上限；父进程 SIGKILL
+不保证子进程立即退出。artifact 快照摘要证明本次复制一致，发布来源仍依赖可信安装目录。
+该参考实现不关闭 SDK-04 通用注册加载或完整 P-10。
+
+独立 ExecuteTextStream 只服务固定 Anthropic 纯文本 Action，分开检查原始 SSE 与 JSON
+解码后的连续文本，并保持有限编码的跨块匹配上下文。已检查前缀可能在后段秘密反射、
+截断、超时或审计失败前可见且不可收回；只有最终 completed 才是成功，EOF/failed/incomplete
+均不能当作完整结果。共享准入、运行时收尾和绝对 deadline；旧 Execute 的完整缓冲合同保留。
+这不保证识别任意编码或隐蔽信道，也不代表第三方 provider 的实网验收。

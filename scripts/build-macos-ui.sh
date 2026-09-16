@@ -7,14 +7,14 @@ cd "$ROOT"
 UI_OUTPUT="${REKEY_UI_OUTPUT:-$ROOT/target/macos-ui}"
 CARGO_OUTPUT="${CARGO_TARGET_DIR:-$ROOT/target}"
 case "$CARGO_OUTPUT" in /*) ;; *) CARGO_OUTPUT="$ROOT/$CARGO_OUTPUT" ;; esac
-cargo build --locked --release -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd
+cargo build --locked --release -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd --bin rekey-github-create-issue
 APP="$UI_OUTPUT/Rekey.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/bin"
 xcrun swiftc -warnings-as-errors -swift-version 5 -O -target "$(uname -m)-apple-macosx14.0" \
   -framework SwiftUI -framework AppKit \
   apps/macos/Model.swift apps/macos/Forms.swift apps/macos/App.swift \
   -o "$APP/Contents/MacOS/Rekey"
-install -m 0755 "$CARGO_OUTPUT/release/rekey" "$CARGO_OUTPUT/release/rekeyd" "$APP/Contents/Resources/bin/"
+install -m 0755 "$CARGO_OUTPUT/release/rekey" "$CARGO_OUTPUT/release/rekeyd" "$CARGO_OUTPUT/release/rekey-github-create-issue" "$APP/Contents/Resources/bin/"
 ICONSET="$UI_OUTPUT/AppIcon.iconset"
 mkdir -p "$ICONSET"
 for size in 16 32 128 256 512; do

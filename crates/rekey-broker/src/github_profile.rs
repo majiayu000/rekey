@@ -84,14 +84,6 @@ pub(crate) enum GitHubAction {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct CreateIssueBody {
-    pub(crate) title: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) body: Option<String>,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 struct CreateIssueCommentBody {
     body: String,
 }
@@ -223,24 +215,15 @@ impl GitHubAppProfile {
                 issue_number,
             });
         }
-        let issue: CreateIssueBody =
-            serde_json::from_slice(&request.body).map_err(|_| GitHubError::ProfileMismatch)?;
-        if issue.title.is_empty()
-            || issue.title.len() > 256
-            || issue
-                .body
-                .as_ref()
-                .is_some_and(|body| body.len() > 32 * 1024)
-        {
-            return Err(GitHubError::ProfileMismatch);
-        }
+        rekey_connector::github_issue::normalize_issue_body(&request.body)
+            .map_err(|_| GitHubError::ProfileMismatch)?;
         Ok(GitHubAction::CreateIssue { repository_index })
     }
 
+    #[cfg(not(target_os = "macos"))]
     pub(crate) fn issue_body(request: &ExecuteRequest) -> Result<Vec<u8>, GitHubError> {
-        let body: CreateIssueBody =
-            serde_json::from_slice(&request.body).map_err(|_| GitHubError::ProfileMismatch)?;
-        serde_json::to_vec(&body).map_err(|_| GitHubError::ProfileMismatch)
+        rekey_connector::github_issue::normalize_issue_body(&request.body)
+            .map_err(|_| GitHubError::ProfileMismatch)
     }
 
     pub(crate) fn comment_body(request: &ExecuteRequest) -> Result<Vec<u8>, GitHubError> {

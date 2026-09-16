@@ -1,0 +1,16 @@
+(version 1)
+(deny default)
+; One fixed executable, no fork, no other executable, no network or UDS.
+(allow process-exec (literal (param "EXEC")))
+(allow file-read*
+  (literal "/")
+  (subpath "/System/Library")
+  (subpath "/usr/lib")
+  (literal (param "EXEC"))
+  (literal "/dev/null"))
+(allow file-write-data (literal "/dev/null"))
+(allow sysctl-read
+  (sysctl-name-prefix "hw.")
+  (sysctl-name "kern.osrelease")
+  (sysctl-name "kern.osversion")
+  (sysctl-name "kern.ostype"))

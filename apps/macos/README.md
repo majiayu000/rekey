@@ -9,7 +9,7 @@ scripts/build-macos-ui.sh
 open target/macos-ui/Rekey.app
 ```
 
-脚本将当前源码的 `rekey` / `rekeyd` 打包到 app 内，并在本机做 ad-hoc 签名。`REKEY_UI_OUTPUT` 可指定构建输出位置，`CARGO_TARGET_DIR` 沿用 Cargo 的构建缓存配置。不包含公证或公开发布。
+脚本将当前源码的 `rekey` / `rekeyd` / `rekey-github-create-issue` 打包到 app 内，并在本机做 ad-hoc 签名。`REKEY_UI_OUTPUT` 可指定构建输出位置，`CARGO_TARGET_DIR` 沿用 Cargo 的构建缓存配置。不包含公证或公开发布。
 
 应用图标源文件为 `Resources/AppIcon.png`（1024 × 1024）。构建脚本使用 macOS 自带的 `sips` 和 `iconutil` 生成标准尺寸的 `AppIcon.icns`，通过 `CFBundleIconFile` 配置 Finder 与 Dock 图标。当前采用用户选定的“双环 · 现代平面”：炭黑背景、米白与橙色双环。图标由内置 imagegen 基于双环参考图生成，提示词为“以参考图为基础，为 Rekey app 创作一个「现代平面设计」风格图标。保留双环相扣的识别结构，材质、配色与表现方式自由发挥。成熟、有个性，避免常见 AI 霓虹渐变。单张正方形图标，无文字。”
 
