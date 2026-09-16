@@ -60,7 +60,13 @@ fn probe() -> &'static Path {
 }
 
 async fn attack(input: &[u8]) -> Result<Vec<u8>, BrokerError> {
-    run(probe(), input, Instant::now() + Duration::from_secs(4)).await
+    run(
+        probe(),
+        None,
+        input,
+        Instant::now() + Duration::from_secs(4),
+    )
+    .await
 }
 
 fn unconfined(input: &[u8]) -> std::process::Output {
@@ -77,7 +83,7 @@ fn unconfined(input: &[u8]) -> std::process::Output {
 async fn real_packaged_sidecar_normalizes_public_body() {
     let body = br#"{ "body": "details", "title": "reference" }"#;
     assert_eq!(
-        normalize(body, Instant::now() + Duration::from_secs(4))
+        normalize(None, body, Instant::now() + Duration::from_secs(4))
             .await
             .unwrap(),
         br#"{"title":"reference","body":"details"}"#
@@ -140,11 +146,11 @@ async fn output_cpu_memory_and_absolute_deadline_fail_closed() {
     ));
     let start = Instant::now();
     assert!(matches!(
-        run(probe(), b"sleep", start + Duration::from_millis(100)).await,
+        run(probe(), None, b"sleep", start + Duration::from_millis(100)).await,
         Err(BrokerError::Denied("plugin-deadline"))
     ));
     assert!(start.elapsed() < Duration::from_secs(1));
-    let (_snapshot, executable) = snapshot(probe()).unwrap();
+    let (_snapshot, executable) = snapshot(probe(), None).unwrap();
     assert!(matches!(
         launch_command(&executable, Instant::now() - Duration::from_millis(1)),
         Err(BrokerError::Denied("plugin-deadline"))
@@ -156,6 +162,7 @@ async fn output_cpu_memory_and_absolute_deadline_fail_closed() {
     assert!(
         run(
             probe(),
+            None,
             &vec![b'x'; MAX_ISSUE_WIRE_BYTES + 1],
             Instant::now() + Duration::from_secs(1)
         )
@@ -174,6 +181,7 @@ async fn malicious_output_cannot_equal_approved_body_and_symlink_is_rejected() {
     assert!(matches!(
         normalize_with_artifact(
             probe(),
+            None,
             br#"{"title":"approved"}"#,
             Instant::now() + Duration::from_secs(4)
         )
@@ -183,7 +191,7 @@ async fn malicious_output_cannot_equal_approved_body_and_symlink_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let link = dir.path().join("artifact");
     std::os::unix::fs::symlink(probe(), &link).unwrap();
-    assert!(snapshot(&link).is_err());
+    assert!(snapshot(&link, None).is_err());
 }
 
 #[test]
@@ -228,6 +236,7 @@ fn inherited_high_fd_after_lowering_both_limits() {
         runtime
             .block_on(run(
                 artifact,
+                None,
                 b"fd 500",
                 Instant::now() + Duration::from_secs(4)
             ))
@@ -263,7 +272,7 @@ fn parent_exit_fixture() {
             .build()
             .unwrap();
         runtime.block_on(async {
-            let (_snapshot, executable) = snapshot(probe()).unwrap();
+            let (_snapshot, executable) = snapshot(probe(), None).unwrap();
             let mut command =
                 launch_command(&executable, Instant::now() + Duration::from_secs(20)).unwrap();
             command.stdout(Stdio::inherit()); // test observer's pipe, same sandbox launcher

@@ -199,3 +199,492 @@ async fn sidecar_public_request_reaches_broker_transport_and_revoke_precedes_suc
     );
     assert!(authorized < revoked && revoked < finished);
 }
+
+fn native_artifacts() -> &'static [std::path::PathBuf; 2] {
+    use std::sync::OnceLock;
+    static ARTIFACTS: OnceLock<(tempfile::TempDir, [std::path::PathBuf; 2])> = OnceLock::new();
+    &ARTIFACTS
+        .get_or_init(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let source = dir.path().join("registered.c");
+            // Two protocol fixtures accept distinct public requests. A packaged
+            // fallback would wrongly accept their crossed-input negative controls.
+            std::fs::write(
+                &source,
+                r#"
+#include <stdio.h>
+#include <string.h>
+#ifndef VARIANT
+#error missing variant
+#endif
+int main(void) {
+ char input[1024];size_t used=fread(input,1,sizeof(input),stdin);
+ const char *expected=VARIANT==1 ? "{\"title\":\"artifact-A\"}" : "{\"title\":\"artifact-B\"}";
+ if(ferror(stdin)||used!=strlen(expected)||memcmp(input,expected,used))return 17;
+ return fwrite(expected,1,used,stdout)==used?0:18;
+}
+"#,
+            )
+            .unwrap();
+            let paths = [
+                dir.path().join("registered-a"),
+                dir.path().join("registered-b"),
+            ];
+            for (index, path) in paths.iter().enumerate() {
+                let output = Command::new("/usr/bin/cc")
+                    .args(["-O0", "-Wall", "-Werror"])
+                    .arg(format!("-DVARIANT={}", index + 1))
+                    .arg(&source)
+                    .arg("-o")
+                    .arg(path)
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            assert_ne!(
+                std::fs::read(&paths[0]).unwrap(),
+                std::fs::read(&paths[1]).unwrap()
+            );
+            (dir, paths)
+        })
+        .1
+}
+
+fn registration(path: &std::path::Path) -> Value {
+    use sha2::{Digest, Sha256};
+    json!({"path":path,"sha256":data_encoding::HEXLOWER.encode(&Sha256::digest(std::fs::read(path).unwrap())),"protocol":"github-create-issue-v1"})
+}
+async fn github_credential(broker: &common::TestBroker) -> String {
+    let added = common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::CREDENTIAL_ADD,
+        br#"{"label":"registered-github","kind":"github-app-installation"}"#,
+        &common::proof_and_secret_body(common::PASSWORD, &profile()),
+    )
+    .await;
+    added.ok()["id"].as_str().unwrap().into()
+}
+fn plugin_definition(credential: &str, plugin: Value) -> Value {
+    let mut meta = common::action_meta(credential);
+    meta["origin"] = json!("https://api.github.com");
+    meta["exact_path"] = json!("/repos/owner/repo/issues");
+    meta["allowed_extra_headers"] = json!([]);
+    meta["github_issue_plugin"] = plugin;
+    meta
+}
+async fn register(broker: &common::TestBroker, definition: &Value) -> Value {
+    common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::ACTION_CREATE,
+        definition.to_string().as_bytes(),
+        &common::proof_body(common::PASSWORD),
+    )
+    .await
+    .ok()
+    .clone()
+}
+async fn invoke(
+    broker: &common::TestBroker,
+    token: &str,
+    action: &Value,
+    title: &str,
+) -> common::WireResponse {
+    let meta = common::execute_meta(
+        token,
+        action["id"].as_str().unwrap(),
+        action["version"].as_u64().unwrap(),
+    );
+    common::call(
+        &broker.agent_sock(),
+        Channel::Agent,
+        agent_msg::EXECUTE_FIXED_HTTP_ACTION,
+        meta.to_string().as_bytes(),
+        json!({"title":title}).to_string().as_bytes(),
+    )
+    .await
+}
+fn queue_success(broker: &common::TestBroker) {
+    broker.fake.push_response(Ok(response(201,json!({"token":"registered-installation-token","expires_at":"2099-01-01T00:00:00Z","permissions":{"metadata":"read","issues":"write"},"repositories":[{"id":7}],"repository_selection":"selected"}))));
+    broker.fake.push_response(Ok(response(201,json!({"id":44,"number":7,"repository_url":"https://api.github.com/repos/owner/repo","html_url":"https://github.com/owner/repo/issues/7"}))));
+    broker.fake.push_response(Ok(UpstreamResponse {
+        status: 204,
+        headers: Vec::new().into(),
+        body: Vec::new().into(),
+    }));
+}
+fn assert_effects(broker: &common::TestBroker, title: &str) {
+    let requests = broker.fake.take_requests();
+    assert_eq!(requests.len(), 3, "exchange, effect, revoke");
+    assert_eq!(requests[0].path, "/app/installations/42/access_tokens");
+    assert_eq!(
+        requests[1].body,
+        json!({"title":title}).to_string().as_bytes()
+    );
+    assert_eq!(requests[2].path, "/installation/token");
+    assert_eq!(requests[2].method, "DELETE");
+}
+fn count_event(broker: &common::TestBroker, event: &str) -> i64 {
+    rusqlite::Connection::open(rekey_vault::paths::vault_db(&broker.state_dir))
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM audit_events WHERE event_type = ?1",
+            [event],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn two_registered_native_artifacts_are_selected_without_packaged_fallback() {
+    let broker = common::start_broker().await;
+    common::unlock(&broker).await;
+    let credential = github_credential(&broker).await;
+    for (index, path) in native_artifacts().iter().enumerate() {
+        let binding = registration(path);
+        let action = register(&broker, &plugin_definition(&credential, binding.clone())).await;
+        assert_eq!(action["github_issue_plugin"], binding);
+        let token = common::create_session(&broker, action["id"].as_str().unwrap(), 1).await;
+        let title = if index == 0 {
+            "artifact-A"
+        } else {
+            "artifact-B"
+        };
+        queue_success(&broker);
+        let result = invoke(&broker, &token, &action, title).await;
+        assert_eq!(result.ok()["upstream_status"], 201);
+        assert_effects(&broker, title);
+        // The selected artifact's unique input policy must actually execute.
+        let crossed = if index == 0 {
+            "artifact-B"
+        } else {
+            "artifact-A"
+        };
+        assert_eq!(
+            invoke(&broker, &token, &action, crossed).await.err_code(),
+            "REQUEST_DENIED"
+        );
+        assert!(broker.fake.take_requests().is_empty());
+    }
+    assert_eq!(count_event(&broker, "execution.finished"), 2);
+    assert_eq!(count_event(&broker, "connector.github.token_revoked"), 2);
+    broker.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn wrong_digest_missing_symlink_and_replaced_artifacts_have_zero_remote_effects() {
+    let broker = common::start_broker().await;
+    common::unlock(&broker).await;
+    let credential = github_credential(&broker).await;
+    let artifacts = native_artifacts();
+    for mode in ["digest", "missing", "symlink", "replaced"] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("artifact");
+        let mut binding = registration(&artifacts[0]);
+        binding["path"] = json!(path);
+        match mode {
+            "missing" => {}
+            "symlink" => std::os::unix::fs::symlink(&artifacts[0], &path).unwrap(),
+            _ => {
+                std::fs::copy(&artifacts[0], &path).unwrap();
+            }
+        }
+        if mode == "digest" {
+            binding["sha256"] = json!("0".repeat(64));
+        }
+        // Declaration registration intentionally does not probe or run a file.
+        let action = register(&broker, &plugin_definition(&credential, binding)).await;
+        if mode == "replaced" {
+            std::fs::copy(&artifacts[1], &path).unwrap();
+        }
+        let token = common::create_session(&broker, action["id"].as_str().unwrap(), 1).await;
+        let response = invoke(&broker, &token, &action, "artifact-A").await;
+        assert_eq!(
+            response.message_type,
+            rekey_domain::ipc::resp_msg::ERROR,
+            "{mode}"
+        );
+        assert!(response.body.is_empty());
+        assert!(broker.fake.take_requests().is_empty(), "{mode}");
+    }
+    assert_eq!(count_event(&broker, "connector.github.authorized"), 0);
+    assert_eq!(count_event(&broker, "execution.blocked"), 4);
+    broker.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_updates_preserve_pinned_version_and_disable_revokes_sessions() {
+    let broker = common::start_broker().await;
+    common::unlock(&broker).await;
+    let credential = github_credential(&broker).await;
+    let artifacts = native_artifacts();
+    let pinned_dir = tempfile::tempdir().unwrap();
+    let pinned_path = pinned_dir.path().join("pinned-v1");
+    std::fs::copy(&artifacts[0], &pinned_path).unwrap();
+    let action = register(
+        &broker,
+        &plugin_definition(&credential, registration(&pinned_path)),
+    )
+    .await;
+    let id = action["id"].as_str().unwrap();
+    let old = common::create_session(&broker, id, 1).await;
+    let update = json!({"action_id":id,"definition":plugin_definition(&credential,registration(&artifacts[1]))});
+    let v2 = common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::ACTION_UPDATE,
+        update.to_string().as_bytes(),
+        &common::proof_body(common::PASSWORD),
+    )
+    .await
+    .ok()
+    .clone();
+    assert_eq!(v2["version"], 2);
+    queue_success(&broker);
+    assert_eq!(
+        invoke(&broker, &old, &action, "artifact-A").await.ok()["upstream_status"],
+        201
+    );
+    assert_effects(&broker, "artifact-A");
+    assert_eq!(
+        invoke(&broker, &old, &action, "artifact-B")
+            .await
+            .err_code(),
+        "REQUEST_DENIED"
+    );
+    assert!(broker.fake.take_requests().is_empty());
+    std::fs::copy(&artifacts[1], &pinned_path).unwrap();
+    assert_eq!(
+        invoke(&broker, &old, &action, "artifact-A")
+            .await
+            .err_code(),
+        "REQUEST_DENIED"
+    );
+    assert!(
+        broker.fake.take_requests().is_empty(),
+        "old pin cannot follow replaced bytes"
+    );
+    let retired = json!({"actions":[{"action_id":id,"version":1}],"ttl_ms":3600000,"max_uses":1});
+    let denied = common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::SESSION_CREATE,
+        retired.to_string().as_bytes(),
+        &common::proof_body(common::PASSWORD),
+    )
+    .await;
+    assert_eq!(denied.message_type, rekey_domain::ipc::resp_msg::ERROR);
+    let new = common::create_session(&broker, id, 2).await;
+    queue_success(&broker);
+    assert_eq!(
+        invoke(&broker, &new, &v2, "artifact-B").await.ok()["upstream_status"],
+        201
+    );
+    assert_effects(&broker, "artifact-B");
+    common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::ACTION_DISABLE,
+        json!({"action_id":id}).to_string().as_bytes(),
+        &common::proof_body(common::PASSWORD),
+    )
+    .await
+    .ok();
+    assert_eq!(
+        invoke(&broker, &new, &v2, "artifact-B").await.err_code(),
+        "INVALID_CAPABILITY"
+    );
+    assert_eq!(
+        invoke(&broker, &old, &action, "artifact-A")
+            .await
+            .err_code(),
+        "INVALID_CAPABILITY"
+    );
+    assert!(broker.fake.take_requests().is_empty());
+    broker.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_registration_requires_step_up_and_github_app_credential() {
+    let broker = common::start_broker().await;
+    common::unlock(&broker).await;
+    let credential = github_credential(&broker).await;
+    let definition = plugin_definition(&credential, registration(&native_artifacts()[0]));
+    let rejected = common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::ACTION_CREATE,
+        definition.to_string().as_bytes(),
+        &common::proof_body(b"wrong-proof"),
+    )
+    .await;
+    assert_eq!(rejected.err_code(), "INVALID_UNLOCK_CREDENTIAL");
+    let listed = common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::ACTION_LIST,
+        b"{}",
+        &[],
+    )
+    .await;
+    assert!(listed.ok()["actions"].as_array().unwrap().is_empty());
+    assert_eq!(count_event(&broker, "action.created"), 0);
+    let opaque = common::add_credential(&broker, "not-a-github-app", b"opaque-token").await;
+    let rejected = common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::ACTION_CREATE,
+        plugin_definition(&opaque, registration(&native_artifacts()[0]))
+            .to_string()
+            .as_bytes(),
+        &common::proof_body(common::PASSWORD),
+    )
+    .await;
+    assert_eq!(rejected.err_code(), "INVALID_INPUT");
+    assert_eq!(count_event(&broker, "action.created"), 0);
+    let created = register(&broker, &definition).await;
+    assert_eq!(
+        created["github_issue_plugin"],
+        definition["github_issue_plugin"]
+    );
+    broker.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_update_audit_failure_rolls_back_binding_and_version() {
+    let broker = common::start_broker().await;
+    common::unlock(&broker).await;
+    let credential = github_credential(&broker).await;
+    let binding = registration(&native_artifacts()[0]);
+    let created = register(&broker, &plugin_definition(&credential, binding.clone())).await;
+    let db = rusqlite::Connection::open(rekey_vault::paths::vault_db(&broker.state_dir)).unwrap();
+    db.execute_batch("CREATE TRIGGER fail_plugin_update BEFORE INSERT ON audit_events WHEN NEW.event_type = 'action.updated' BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
+    let update = json!({"action_id":created["id"],"definition":plugin_definition(&credential,registration(&native_artifacts()[1]))});
+    let rejected = common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::ACTION_UPDATE,
+        update.to_string().as_bytes(),
+        &common::proof_body(common::PASSWORD),
+    )
+    .await;
+    assert_eq!(rejected.err_code(), "AUDIT_COMMIT_FAILED");
+    let (count, version, state, stored): (i64, i64, String, String) = db
+        .query_row(
+            "SELECT count(*),version,state,github_issue_plugin_json FROM actions",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!((count, version, state.as_str()), (1, 1, "active"));
+    assert_eq!(serde_json::from_str::<Value>(&stored).unwrap(), binding);
+    assert_eq!(count_event(&broker, "action.updated"), 0);
+    assert!(broker.fake.take_requests().is_empty());
+    drop(db);
+    broker.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_binding_roundtrips_admin_list_restart_and_backup_restore() {
+    let broker = common::start_broker().await;
+    common::unlock(&broker).await;
+    let credential = github_credential(&broker).await;
+    let binding = registration(&native_artifacts()[0]);
+    let created = register(&broker, &plugin_definition(&credential, binding.clone())).await;
+    let list = common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::ACTION_LIST,
+        b"{}",
+        &[],
+    )
+    .await;
+    assert_eq!(list.ok()["actions"][0], created);
+    let backup = broker.dir.path().join("registered.rkbackup");
+    let receipt = common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::BACKUP,
+        json!({"output_path":backup}).to_string().as_bytes(),
+        &common::proof_body(common::PASSWORD),
+    )
+    .await;
+    assert_eq!(receipt.ok()["format_version"], 12);
+    let state = broker.state_dir.clone();
+    let dir = broker.shutdown_keep_dir().await;
+    let config = rekey_broker::runtime::BrokerConfig::new(state.clone());
+    let serve = tokio::spawn(async move { rekey_broker::runtime::serve(config).await });
+    let socket = state.join("runtime/admin.sock");
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if tokio::net::UnixStream::connect(&socket).await.is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    common::call(
+        &socket,
+        Channel::Admin,
+        admin_msg::UNLOCK_PASSWORD,
+        b"{}",
+        common::PASSWORD,
+    )
+    .await
+    .ok();
+    let list = common::call(&socket, Channel::Admin, admin_msg::ACTION_LIST, b"{}", &[]).await;
+    assert_eq!(list.ok()["actions"][0], created);
+    common::call(
+        &socket,
+        Channel::Admin,
+        admin_msg::SHUTDOWN,
+        b"{}",
+        &common::proof_body(common::PASSWORD),
+    )
+    .await
+    .ok();
+    tokio::time::timeout(Duration::from_secs(5), serve)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let restored = dir.path().join("restored");
+    rekey_vault::bootstrap::restore_vault(
+        &backup,
+        &restored,
+        rekey_vault::bootstrap::RestoreProof::Password(
+            rekey_vault::secret::SecretInput::from_slice(common::PASSWORD),
+        ),
+        receipt.ok()["sha256_hex"].as_str().unwrap(),
+    )
+    .unwrap();
+    let (authority, join) = rekey_vault::authority::spawn_authority(
+        rekey_vault::handle::AuthorityConfig::new(restored),
+    )
+    .unwrap();
+    authority
+        .unlock(rekey_vault::command::UnlockProof::Password(
+            rekey_vault::secret::SecretInput::from_slice(common::PASSWORD),
+        ))
+        .await
+        .unwrap();
+    let pinned = authority
+        .action_get(created["id"].as_str().unwrap().parse().unwrap(), 1)
+        .await
+        .unwrap();
+    assert_eq!(serde_json::to_value(pinned.action).unwrap(), created);
+    authority
+        .shutdown(Some(rekey_vault::command::UnlockProof::Password(
+            rekey_vault::secret::SecretInput::from_slice(common::PASSWORD),
+        )))
+        .await
+        .unwrap();
+    join.join().unwrap();
+}

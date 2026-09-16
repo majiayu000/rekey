@@ -24,3 +24,25 @@ runner 使用既有 effect_deadline，包含输入写入、输出读取、退出
 - `cargo test -p rekey-broker --lib github_profile`：原 4 项回归通过；格式、diff whitespace、macOS 构建脚本语法检查通过。整库回归由集成线程执行。
 
 限制仍保留：未做外部 GitHub 写入；第三方 artifact 管理/可信摘要登记/SDK-04 未实现；RSS 为采样阈值，完整 P-10 严格内存合同未闭合；父被 SIGKILL 后不保证立即停止空闲子进程；不覆盖恶意父线程并发制造非 CLOEXEC FD；本地同步 artifact IO 没有硬超时；人工安全审查仍是合并门槛。
+
+
+## 后续 Action 显式登记
+
+上述固定打包路径继续作为无显式声明时的内置实现。新增的 [SDK-04 单协议登记](2026-09-16-action-plugin-registration.md) 允许 Admin 将具体路径、可信 SHA-256 和协议绑定到不可变 Action 版本；显式绑定失败不回退。该增量不改变本文的 Seatbelt/CPU/RSS/父死边界。
+
+## 当前 macOS 硬内存候选的实际探针
+
+2026-09-16 在同一 macOS 26.5.1 / 25F80 / arm64（XNU 12377.121.6）使用普通用户原生小探针；每次单个子进程、最多触碰 96 MiB、父进程 5 秒超时 kill/reap。这里只记录候选验证，不修改生产资源合同。
+
+| 路径 | 64 MiB jetsam 声明 | 实际结果 |
+| --- | --- | --- |
+| 直接 posix_spawn 控制组 | 无 | 触碰 96 MiB，正常退出 |
+| 直接 posix_spawn 实验组 | SPI 返回 0 | 初始剩余限额约 63 MiB，约 64 MiB RSS 时 SIGKILL；不是父 watchdog 杀死 |
+| sandbox-exec → probe 控制组 | 无 | 触碰 96 MiB，正常退出 |
+| sandbox-exec → probe 实验组 | SPI 返回 0 | 子程序剩余限额为 0，实际 footprint 101761432 字节，触碰 96 MiB 后正常退出 |
+
+因此，不能直接给当前 sandbox-exec 启动增加 jetsam 属性就宣称硬内存限制：实验中的后续 exec 丢失了限制。Apple 的 [spawn SPI 声明](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/libsyscall/wrappers/spawn/spawn_private.h#L51-L53) 和 [内核接线](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/kern/kern_exec.c#L5294-L5329) 证明接口存在，不替代完整启动链的运行证据。
+
+同版本 `RLIMIT_AS` 有实际虚拟地址空间限制，不能笼统说 macOS 未实现：本探针以当前 VM 大小加 16 MiB 设置后，直接运行和自 exec 的 96 MiB mmap 都返回 ENOMEM；但 64 MiB AS 设置返回 EINVAL，原生程序初始虚拟映射约 415 GiB。该值不是 RSS，不能把较小 AS 预算直接用于现有插件。参见 [AS 设置入口](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/kern/kern_resource.c#L1647-L1654)、[映射限额](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/osfmk/vm/vm_map.c#L3903-L3930)、[exec 应用位置](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/kern/kern_exec.c#L2133-L2135)。尚未实测低于 exec 初始映射时的静默丢失分支。
+
+保留当前 CPU 限额、RSS 采样看门狗与 Seatbelt，不新增可信 launcher 或合作式父死监控来冒充内核保障。父 SIGKILL 后立即终止仍未闭合。完整本地源码、逐样本结果及编译记录在主仓库 `.git/codex/threads/remaining-sdk-20260916/resource-probes/`；只代表该 OS build，不代表其他版本支持。

@@ -213,9 +213,22 @@ install -m 0755 target/release/rekey target/release/rekeyd \
   target/release/rekey-github-create-issue "$HOME/.local/bin/"
 ```
 
-Current source uses state/backup format **11**. It rejects earlier formats,
-including 10, without migration. Initialize a new empty state directory; keep
+Current source uses state/backup format **12**. It rejects earlier formats,
+including 11, without migration. Initialize a new empty state directory; keep
 older binaries with their matching state and backups.
+
+An Admin may instead bind a local executable to one exact Action version with
+`github_issue_plugin` in the Action JSON. Registration stores the approved
+absolute path, expected SHA-256 and `github-create-issue-v1` protocol; it does
+not run or inspect the file. Each execution verifies its bytes before starting
+the isolated snapshot. Missing or changed files fail without falling back to
+the bundled sidecar. See [the registration contract](superpowers/specs/2026-09-16-action-plugin-registration.md).
+
+Updating the Action creates a new binding version. Existing sessions retain
+their old version; preserve separate artifact paths when both must run. Backups
+include the binding, not the executable. Restore requires supplying the same
+path and digest again. Explicit bindings are currently macOS-only and fail on
+unsupported platforms.
 
 Only public issue text enters the reference process. The Broker keeps all
 credentials, authorization, HTTP execution, response checks and revocation.

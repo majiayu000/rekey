@@ -37,11 +37,19 @@ impl ActionExecutor {
             }
             crate::github_profile::GitHubAction::CreateIssue { .. } => {
                 #[cfg(target_os = "macos")]
-                let normalized =
-                    crate::github_issue_plugin::normalize(&request.body, effect_deadline).await;
+                let normalized = crate::github_issue_plugin::normalize(
+                    action.github_issue_plugin.as_ref(),
+                    &request.body,
+                    effect_deadline,
+                )
+                .await;
                 #[cfg(not(target_os = "macos"))]
-                let normalized = GitHubAppCredential::issue_body(request)
-                    .map_err(|err| BrokerError::Denied(err.reason()));
+                let normalized = if action.github_issue_plugin.is_some() {
+                    Err(BrokerError::Denied("github-plugin-platform-unsupported"))
+                } else {
+                    GitHubAppCredential::issue_body(request)
+                        .map_err(|err| BrokerError::Denied(err.reason()))
+                };
                 match normalized {
                     Ok(body) => body,
                     Err(err) => {

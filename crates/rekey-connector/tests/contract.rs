@@ -17,6 +17,7 @@ use serde_json::json;
 
 fn action(origin: &str, path: &str) -> FixedHttpAction {
     FixedHttpAction {
+        github_issue_plugin: None,
         text_stream: None,
         id: ActionId::new_random(),
         name: ActionName::new("test action").unwrap(),
