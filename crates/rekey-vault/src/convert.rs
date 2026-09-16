@@ -53,6 +53,12 @@ pub fn headers_from_json(json: &str) -> Result<BTreeSet<HeaderName>, AuthorityEr
 
 pub fn action_to_record(a: &FixedHttpAction, now_ms: i64) -> Result<ActionRecord, AuthorityError> {
     Ok(ActionRecord {
+        text_stream_json: a
+            .text_stream
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
         action_id: a.id,
         version: a.version,
         name: a.name.as_str().to_owned(),
@@ -74,6 +80,12 @@ pub fn action_to_record(a: &FixedHttpAction, now_ms: i64) -> Result<ActionRecord
 
 pub fn record_to_action(r: &ActionRecord) -> Result<FixedHttpAction, AuthorityError> {
     let action = FixedHttpAction {
+        text_stream: r
+            .text_stream_json
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
         id: r.action_id,
         name: integrity(ActionName::new(&r.name))?,
         version: r.version,

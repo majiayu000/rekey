@@ -340,3 +340,38 @@ async fn upstream_http_errors_and_reflected_secrets_are_not_successes() {
     assert_eq!(broker.fake.take_requests().len(), 2);
     broker.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn manifest_refuses_text_stream_action_before_advertising_a_tool() {
+    let broker = common::start_broker().await;
+    let (manifest, _, _, _) = setup(&broker).await;
+    let path = broker.dir.path().join("action.json");
+    let mut action: rekey_domain::action::FixedHttpAction =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    action.origin = rekey_domain::action::HttpsOrigin::parse("https://api.anthropic.com").unwrap();
+    action.exact_path = rekey_domain::action::ExactPath::parse("/v1/messages").unwrap();
+    action.auth = rekey_domain::action::HeaderCredentialUse::new(
+        rekey_domain::action::HeaderName::new("x-api-key").unwrap(),
+        rekey_domain::action::HeaderPrefix::new("").unwrap(),
+    )
+    .unwrap();
+    action.request_policy.allowed_extra_headers.clear();
+    action.response_policy.allowed_headers.clear();
+    action.text_stream = Some(rekey_domain::action::AnthropicTextStream {
+        model: "fixed-model".into(),
+        max_tokens: 1024,
+    });
+    action.validate().unwrap();
+    private(&path, &serde_json::to_value(action).unwrap());
+    let output = Command::new(env!("CARGO_BIN_EXE_rekey-mcp"))
+        .arg("--manifest")
+        .arg(&manifest)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("invalid manifest action"));
+    assert_eq!(broker.fake.take_requests().len(), 0);
+    broker.shutdown().await;
+}

@@ -1,0 +1,13 @@
+//! Fixed reference sidecar: only public JSON enters and normalized JSON leaves.
+use rekey_connector::github_issue::{MAX_ISSUE_WIRE_BYTES, normalize_issue_body};
+use std::io::{self, Read, Write};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut input = Vec::new();
+    io::stdin()
+        .take((MAX_ISSUE_WIRE_BYTES + 1) as u64)
+        .read_to_end(&mut input)?;
+    let output = normalize_issue_body(&input)?;
+    io::stdout().write_all(&output)?;
+    Ok(())
+}

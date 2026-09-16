@@ -23,6 +23,7 @@ use zeroize::Zeroize;
 
 fn action_definition(credential_id: rekey_domain::ids::CredentialId) -> ActionDefinition {
     ActionDefinition {
+        text_stream: None,
         name: ActionName::new("github-create-issue").unwrap(),
         credential_id,
         origin: HttpsOrigin::parse("https://api.github.com").unwrap(),

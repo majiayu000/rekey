@@ -495,6 +495,17 @@ detects raw, base64, base64url, percent-encoded, header, and chunk-boundary
 reflections. It does not guarantee detection of arbitrary compression,
 encryption, hashes, derivations, or application-specific encodings.
 
+## Independent text streaming (source checkout)
+
+`execute-text-stream ACTION_ID@VERSION --capability - --body-file messages.json`
+uses a separately registered fixed Anthropic text Action. Capability input stays
+on stdin; the body is `{"messages":[{"role":"user","content":"hello"}]}`.
+Only a completed terminal yields exit zero. A failed or incomplete call can leave
+already checked text on stdout; a visible prefix is not success and must not
+trigger automatic retries. Existing `execute` remains buffered, and MCP rejects
+stream-only Actions. See [registration and invocation](installation.md#independent-text-streaming-source-build)
+and the [bounded stream contract](superpowers/specs/2026-09-16-anthropic-text-stream.md).
+
 ## Launch an Agent with deny-by-default IP egress (Linux)
 
 This Linux-only command requires bubblewrap. It does not upgrade default G1 or

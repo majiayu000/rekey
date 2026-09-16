@@ -102,12 +102,15 @@ pub mod agent_msg {
     pub const AGENT_STATUS: u16 = 2;
     pub const PREPARE_APPROVAL: u16 = 3;
     pub const WORKLOAD_SESSION_CREATE: u16 = 4;
+    pub const EXECUTE_TEXT_STREAM: u16 = 5;
 }
 
 /// Response message types shared by both channels.
 pub mod resp_msg {
     pub const OK: u16 = 100;
     pub const ERROR: u16 = 101;
+    pub const STREAM_CHUNK: u16 = 102;
+    pub const STREAM_TERMINAL: u16 = 103;
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -391,6 +394,8 @@ pub struct CredentialListResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ActionCreateMeta {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_stream: Option<crate::action::AnthropicTextStream>,
     pub name: String,
     pub credential_id: CredentialId,
     pub origin: String,
@@ -871,3 +876,27 @@ mod tests {
         );
     }
 }
+
+/// Final outcome for the independent text stream operation. Missing terminal is failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TextStreamStatus {
+    Completed,
+    Incomplete,
+    Failed,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TextStreamChunkMeta {
+    pub sequence: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TextStreamTerminalMeta {
+    pub sequence: u32,
+    pub status: TextStreamStatus,
+}
+
+pub const TEXT_STREAM_CHUNK_MAX_BYTES: usize = 16 * 1024;

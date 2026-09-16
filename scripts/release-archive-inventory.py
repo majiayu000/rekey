@@ -14,6 +14,7 @@ def required_paths(version: str) -> list[str]:
     return [
         "rekey",
         "rekeyd",
+        "rekey-github-create-issue",
         "rekey-service-unit.py",
         "LICENSE",
         "README.md",
@@ -75,7 +76,7 @@ def main() -> int:
         return 1
 
     missing = [rel for rel in required_paths(version) if not (root / rel).exists()]
-    for name in ("rekey", "rekeyd"):
+    for name in ("rekey", "rekeyd", "rekey-github-create-issue"):
         binary = root / name
         if binary.exists() and not binary.is_file():
             missing.append(f"{name} is not a file")

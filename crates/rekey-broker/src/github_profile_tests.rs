@@ -12,6 +12,7 @@ use super::*;
 
 fn action(method: FixedMethod, path: &str) -> FixedHttpAction {
     FixedHttpAction {
+        text_stream: None,
         id: ActionId::new_random(),
         name: ActionName::new("github test").unwrap(),
         version: 1,

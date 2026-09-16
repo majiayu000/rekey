@@ -118,6 +118,9 @@ enum Command {
         /// Print Prometheus text exposition instead of JSON.
         #[arg(long)]
         prometheus: bool,
+        /// Atomically publish rekey.prom in an existing controlled directory.
+        #[arg(long, requires = "prometheus")]
+        textfile_dir: Option<PathBuf>,
     },
     /// Stop the running broker (step-up proof required while unlocked).
     Shutdown {
@@ -166,6 +169,17 @@ enum Command {
         #[arg(long = "header")]
         headers: Vec<String>,
         /// Signed approval grant JSON file (repeatable, at most two).
+        #[arg(long = "approval")]
+        approvals: Vec<PathBuf>,
+    },
+    /// Stream a fixed Anthropic text Action; partial text is not success.
+    ExecuteTextStream {
+        /// ACTION_ID@VERSION
+        action: String,
+        #[arg(long, allow_hyphen_values = true)]
+        capability: String,
+        #[arg(long)]
+        body_file: PathBuf,
         #[arg(long = "approval")]
         approvals: Vec<PathBuf>,
     },
@@ -547,7 +561,10 @@ fn main() {
         } => commands::unlock(&state_dir, recovery, password_stdin),
         Command::Lock => commands::lock(&state_dir),
         Command::Status { passive } => commands::status(&state_dir, passive),
-        Command::Metrics { prometheus } => commands::metrics(&state_dir, prometheus),
+        Command::Metrics {
+            prometheus,
+            textfile_dir,
+        } => commands::metrics(&state_dir, prometheus, textfile_dir.as_deref()),
         Command::Shutdown { step_up } => {
             commands::shutdown(&state_dir, step_up.recovery, step_up.password_stdin)
         }
@@ -817,6 +834,18 @@ fn main() {
             body_file.as_deref(),
             content_type,
             &headers,
+            &approvals,
+        ),
+        Command::ExecuteTextStream {
+            action,
+            capability,
+            body_file,
+            approvals,
+        } => commands::execute_text_stream(
+            &agent_socket,
+            &action,
+            &capability,
+            &body_file,
             &approvals,
         ),
         Command::Backup { output, step_up } => commands::backup(

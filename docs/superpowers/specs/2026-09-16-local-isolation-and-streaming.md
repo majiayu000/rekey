@@ -1,6 +1,6 @@
 # 本机隔离、插件与流式响应的实施边界
 
-2026-09-16，状态：OS-05 已选择并本机实验实现；插件与流式章节仍为未实现提案。本文不把设计或内部测试计划当作能力完成。用户已选择本地功能优先，外部能力先规格；下列涉及安全合同变化的选择分别记录。
+2026-09-16，状态：OS-05 已选择并本机实验实现；GitHub 参考插件与独立 Anthropic 文本流已实现并通过专项验收，通用动态加载仍为提案。本文不把设计或内部测试计划当作能力完成。用户已选择本地功能优先，外部能力先规格；下列涉及安全合同变化的选择分别记录。
 
 ## OS-05 / OS-06：macOS Agent 隔离
 
@@ -46,7 +46,17 @@ SBPL 的路径控制不保护允许读取的代码目录中被可信宿主事先
 
 验收必须包含伪造效果、越权参数、超量输出、死循环、内存耗尽、fork、网络/文件/调试绕过、子进程崩溃和父进程关闭。正向测试只用一个真实具体 connector；纯 echo 或未接入执行链的模块不能证明动态 connector 可用。
 
-实施前仍须选定首个第三方 connector 的实际效果、可执行格式和目标平台。进程协议与效果范围冻结后，先交付 P-10 的隔离执行，再接 SDK-04 注册加载。若选择 WASM，则单独明确运行时、host calls、内存/fuel和供应链，不能同时实现两套沙箱。
+首个本仓库 GitHub 参考插件已确定为 macOS 原生可执行文件；未来第三方 connector 仍须明确实际效果、可执行格式和平台。进程协议与效果范围冻结后，先交付 P-10 的隔离执行，再接 SDK-04 注册加载。若选择 WASM，则单独明确运行时、host calls、内存/fuel和供应链，不能同时实现两套沙箱。
+
+### 首个可审阅候选：GitHub CreateIssue 参考插件
+
+当前仓库没有第三方插件 artifact，2026-09-16 继续实施时已给用户两个明确选项：先提取本仓库真实 GitHub CreateIssue 请求适配，或等待用户提供的第三方 Connector。用户随后选择先实现本仓库参考插件。以下为已接受并实现的首个效果范围，具体验收见 `2026-09-16-github-reference-plugin.md`；不把参考插件称作第三方适配。
+
+候选只处理现有 `github_profile.rs` 中 title/body 的公开解析、拒绝未知字段、大小限制和规范序列化。固定 repository/Action 由可信 Admin 注册，插件不接触 `GitHubAppProfile`、installation 身份、JWT、私钥或 token。输出至多一项固定 Action 的结构化请求；Broker 核对原始已授权参数与效果绑定，继续负责签名、兑换、HTTP、sealing、revoke 和最终审计。插件不能换 repo、方法、路径、认证头或扩大用户批准的内容。
+
+本地正向验收必须经过真实可执行子进程、Broker 的授权/执行路径和确定性 transport，并断言规范请求实际到达 transport、revoke 先于成功、审计闭合。伪造效果、artifact 摘要不符、异常退出、输出超限和 deadline 均须阻止业务效果或按已准入阶段完成审计/撤销。没有指定测试仓库和写入授权时，不向 GitHub 创建 issue。
+
+现有 `agent-run` 不能直接用作此 runner：它允许 fork、stdin 为 `/dev/null`、stdout/stderr 直接交给调用者，且只 wait 直属子进程；未实现插件所需的有界 pipe、资源预算和 deadline 终止。P-10 必须有单独可证明的执行合同；进程组或 `setrlimit` 不能单独充当完整资源隔离证据。SDK-04 的持久 artifact 登记与 Action 绑定随后接入，不新增市场、自动下载或多个协议。
 
 ## NET-07：流式响应必须有新的失败合同
 
@@ -54,8 +64,28 @@ SBPL 的路径控制不保护允许读取的代码目录中被可信宿主事先
 
 最小候选限定一个固定 provider/Action，并新增明确的流式协议：数据片段必须以唯一请求绑定，只有成功 terminal 表示完整成功；上游截断、超时、sealing、审计或撤销失败返回失败 terminal。Agent 已收到的非秘密前缀无法收回，不得视为完整成功或自动重试依据。现有非流式路径保持原合同。
 
-秘密反射检查应在任何对应字节发送前完成，至少保留最长受保护变体长度减一的尾部，跨 HTTP/TLS/协议分块检查；所有适用 source/token/leased value 的变体必须在响应准入前固定。此描述仅为候选算法，不能替代对编码、边界、取消和 partial-output 的测试与独立审查。
+秘密反射检查必须先于对应字节发送，所有适用 source/token/leased value 的变体在响应准入前固定。不能简单保留原始流的“最长 needle−1”尾部：现有 contains_secret 还会 percent-decode 后匹配，编码输入跨度可达 needle 的三倍，并有未完整 `%HH` 状态。SSE JSON escape 与多个 delta 拼接又改变 Agent 实际看到的字节；必须先定义最终文本投影，并在跨事件连续文本上检查。任何有界增量算法都须证明覆盖现有有限编码合同，不能声称检测任意编码或隐蔽信道。
 
 需要有界背压、客户端断连后的 runtime-owned drain、统一绝对 deadline，以及最终审计/租约撤销的责任。MCP/CLI 必须区分片段与成功完成，不把部分文本包装为普通成功响应。
 
-实施前需确定一个具体流式 Action、provider 帧格式，以及接受“失败可能已经发送非秘密前缀”的产品合同。验收使用跨分块 secret 变体、任意截断点、缓慢消费者、断连、deadline、审计故障和 revoke 失败；不能以模拟流速或分段输出已完整缓冲的结果冒充实时上游流式能力。
+本轮已确定 Anthropic 纯文本 Action 与独立失败合同，详见 `2026-09-16-anthropic-text-stream.md`。验收使用跨分块 secret 变体、任意截断点、缓慢消费者、断连、deadline、审计故障和 revoke 失败；不能以模拟流速或分段输出已完整缓冲的结果冒充实时上游流式能力。
+
+
+### 公开 API 的流式做法与具体候选
+
+2026-09-16 核对官方 API 合同，而非推断 ChatGPT 网页或 Claude Code 的内部实现：
+
+| API | 可见增量 | 完成与失败 |
+| --- | --- | --- |
+| OpenAI Responses | `response.output_text.delta` | `response.completed`、`response.incomplete`、`response.failed` 和流内 `error` 分开；局部文本 done 不是整体成功 |
+| Anthropic Messages | `content_block_delta/text_delta` | `message_stop` 结束消息，但须结合 `message_delta.stop_reason` 判断正常结束、长度截断等；HTTP 200 后仍可能出现流内 error |
+
+来源：[OpenAI streaming events](https://developers.openai.com/api/reference/resources/responses/streaming-events)、[Anthropic streaming](https://platform.claude.com/docs/en/build-with-claude/streaming)、[Anthropic stop reasons](https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons)。两者允许消费方先显示增量，后续失败不会收回已显示前缀。这不能替代 Rekey 的凭证反射检查。
+
+建议的首个 Action 是 Anthropic Messages 纯文本生成：Admin 固定模型与输出上限，固定 `POST https://api.anthropic.com/v1/messages`、版本头及 `stream:true`；Agent 仅提交有界文本 messages，不开放 tools、thinking、文件或任意参数。认证头由 Broker 注入。该固定 Action 已在独立接口实现；实网验收需要具体 Admin 配置和测试账号，不在当前本地验证范围。接口来源：[Messages create](https://platform.claude.com/docs/en/api/messages/create)。
+
+最小候选新增独立操作，不改旧 Execute：`CHUNK* → TERMINAL` 绑定请求 ID、序号单调。只发送解析并检查后的文本，不原样转发 SSE、provider 错误或 header。terminal 分 completed/incomplete/failed，EOF 或缺 terminal 始终不算成功。首版仅完整文本序列及 end_turn 可进入成功判定；截断保持 incomplete，拒答保持明确语义，未知输出类型明确失败。
+
+Broker completed 必须晚于 provider 完成、全部检查、finished audit 和适用的 revoke；provider 自己的结束事件不能提前代表本地成功。CLI 失败/不完整须非零退出，MCP 不得把前缀包装为普通成功结果；不自动重试已发生效果的调用。若未来支持工具参数增量，完整 JSON/schema/授权校验之外，还须等 Broker completed 后才执行工具，这属于 Rekey 拟议限制。
+
+用户已于本轮明确选择新增独立流式接口，接受后续失败时此前已检查前缀不可收回；原非流式操作仍完整检查后再返回。保持旧合同只能实现“真实 SSE 接收但完整缓冲后一次返回”，不改善首字延迟，不能将它或分段播放已缓冲正文记为 NET-07 完成。

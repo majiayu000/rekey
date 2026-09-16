@@ -377,9 +377,19 @@ impl ResponsePolicy {
     }
 }
 
+/// The sole supported streaming projection. Only trusted Action registration sets it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AnthropicTextStream {
+    pub model: String,
+    pub max_tokens: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FixedHttpAction {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_stream: Option<crate::action::AnthropicTextStream>,
     pub id: ActionId,
     pub name: ActionName,
     pub version: u64,
@@ -396,6 +406,24 @@ pub struct FixedHttpAction {
 
 impl FixedHttpAction {
     pub fn validate(&self) -> Result<(), DomainError> {
+        if let Some(stream) = &self.text_stream
+            && (self.origin.as_str() != "https://api.anthropic.com"
+                || self.method != FixedMethod::Post
+                || self.exact_path.as_str() != "/v1/messages"
+                || self.auth.header_name.as_str() != "x-api-key"
+                || !self.auth.prefix.as_str().is_empty()
+                || !self.request_policy.allowed_extra_headers.is_empty()
+                || !self.response_policy.allowed_headers.is_empty()
+                || stream.model.is_empty()
+                || stream.model.len() > 128
+                || !stream
+                    .model
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+                || !(1..=8192).contains(&stream.max_tokens))
+        {
+            return Err(invalid("invalid Anthropic text stream action"));
+        }
         if self.version == 0 {
             return Err(invalid("action version must be >= 1"));
         }

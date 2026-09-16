@@ -1,7 +1,33 @@
 use super::*;
 use std::fmt::Write as _;
 
-pub fn metrics(state_dir: &Path, prometheus: bool) -> Result<(), CliError> {
+mod textfile;
+
+pub fn metrics(
+    state_dir: &Path,
+    prometheus: bool,
+    textfile_dir: Option<&Path>,
+) -> Result<(), CliError> {
+    if let Some(directory) = textfile_dir {
+        return textfile::publish(directory, state_dir, || {
+            snapshot(state_dir).map(|value| render(&value))
+        });
+    }
+    let snapshot = snapshot(state_dir)?;
+    let output = if prometheus {
+        render(&snapshot).into_bytes()
+    } else {
+        let mut output = serde_json::to_vec_pretty(&snapshot)
+            .map_err(|_| CliError::local("OUTPUT_FAILED", "cannot serialize metrics snapshot"))?;
+        output.push(b'\n');
+        output
+    };
+    std::io::stdout()
+        .write_all(&output)
+        .map_err(|error| CliError::local("OUTPUT_FAILED", format!("cannot write metrics: {error}")))
+}
+
+fn snapshot(state_dir: &Path) -> Result<ipc::MetricsResponse, CliError> {
     let (metadata, body) = admin(state_dir)?.call(admin_msg::METRICS, b"{}", &[])?;
     if !body.is_empty() {
         return Err(CliError::local(
@@ -9,14 +35,8 @@ pub fn metrics(state_dir: &Path, prometheus: bool) -> Result<(), CliError> {
             "unexpected metrics response body",
         ));
     }
-    if !prometheus {
-        return print_json::<ipc::MetricsResponse>(&metadata);
-    }
-    let snapshot: ipc::MetricsResponse = serde_json::from_slice(&metadata)
-        .map_err(|_| CliError::local("INVALID_FRAME", "invalid metrics snapshot"))?;
-    std::io::stdout()
-        .write_all(render(&snapshot).as_bytes())
-        .map_err(|error| CliError::local("OUTPUT_FAILED", format!("cannot write metrics: {error}")))
+    serde_json::from_slice(&metadata)
+        .map_err(|_| CliError::local("INVALID_FRAME", "invalid metrics snapshot"))
 }
 
 fn render(snapshot: &ipc::MetricsResponse) -> String {

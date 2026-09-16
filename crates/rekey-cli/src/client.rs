@@ -71,8 +71,9 @@ impl CliError {
             | "CLOCK_UNAVAILABLE"
             | "FAULTED"
             | "LAUNCHER_UNAVAILABLE" => 5,
-            "UPSTREAM_FAILED" | "RESPONSE_TOO_LARGE" => 6,
+            "UPSTREAM_FAILED" | "RESPONSE_TOO_LARGE" | "STREAM_INCOMPLETE" => 6,
             "RESPONSE_SECURITY_VIOLATION"
+            | "STREAM_FAILED"
             | "AUDIT_COMMIT_FAILED_AFTER_EXECUTION"
             | "UPSTREAM_INDETERMINATE" => 8,
             _ => 7,
@@ -323,14 +324,12 @@ impl Client {
         })
     }
 
-    /// Sends one frame and reads one response. `body` may carry secrets and
-    /// is zeroized by the caller's ownership.
-    pub fn call(
+    fn send_request(
         &mut self,
         message_type: u16,
         metadata: &[u8],
         body: &[u8],
-    ) -> Result<(Vec<u8>, Zeroizing<Vec<u8>>), CliError> {
+    ) -> Result<RequestId, CliError> {
         let metadata_len = u32::try_from(metadata.len())
             .map_err(|_| CliError::local("INVALID_FRAME", "request metadata is too large"))?;
         if metadata_len > METADATA_MAX_BYTES {
@@ -367,6 +366,103 @@ impl Client {
         }
         self.stream.flush().map_err(io_err)?;
 
+        Ok(request_id)
+    }
+
+    /// Writes checked UTF-8 chunks immediately; only completed terminal succeeds.
+    pub fn text_stream(
+        &mut self,
+        metadata: &[u8],
+        body: &[u8],
+        mut output: impl Write,
+    ) -> Result<(), CliError> {
+        use rekey_domain::ipc::{
+            self, TextStreamChunkMeta, TextStreamStatus, TextStreamTerminalMeta,
+        };
+        let request_id = self.send_request(ipc::agent_msg::EXECUTE_TEXT_STREAM, metadata, body)?;
+        let deadline = Instant::now()
+            .checked_add(self.response_timeout)
+            .ok_or_else(|| CliError::local("IPC_UNAVAILABLE", "invalid response timeout"))?;
+        let invalid = || CliError::local("INVALID_FRAME", "invalid text stream response");
+        let mut sequence = 0u32;
+        let mut total = 0usize;
+        loop {
+            let mut header = [0u8; FRAME_HEADER_LEN];
+            read_exact_until(&self.stream, &mut header, deadline)?;
+            let frame = FrameHeader::decode(&header).map_err(|_| invalid())?;
+            if frame.channel != Channel::Agent
+                || frame.request_id != request_id
+                || frame.body_len as usize > ipc::TEXT_STREAM_CHUNK_MAX_BYTES
+            {
+                return Err(invalid());
+            }
+            let mut metadata = vec![0; frame.metadata_len as usize];
+            read_exact_until(&self.stream, &mut metadata, deadline)?;
+            let mut body = vec![0; frame.body_len as usize];
+            read_exact_until(&self.stream, &mut body, deadline)?;
+            match frame.message_type {
+                ipc::resp_msg::STREAM_CHUNK => {
+                    let chunk: TextStreamChunkMeta =
+                        serde_json::from_slice(&metadata).map_err(|_| invalid())?;
+                    total = total.checked_add(body.len()).ok_or_else(invalid)?;
+                    if chunk.sequence != sequence
+                        || body.is_empty()
+                        || total > RESPONSE_BODY_MAX_BYTES as usize
+                        || std::str::from_utf8(&body).is_err()
+                    {
+                        return Err(invalid());
+                    }
+                    output
+                        .write_all(&body)
+                        .and_then(|_| output.flush())
+                        .map_err(|_| {
+                            CliError::local("OUTPUT_FAILED", "cannot write stream output")
+                        })?;
+                    sequence = sequence.checked_add(1).ok_or_else(invalid)?;
+                }
+                ipc::resp_msg::STREAM_TERMINAL => {
+                    let terminal: TextStreamTerminalMeta =
+                        serde_json::from_slice(&metadata).map_err(|_| invalid())?;
+                    if terminal.sequence != sequence || !body.is_empty() {
+                        return Err(invalid());
+                    }
+                    return match terminal.status {
+                        TextStreamStatus::Completed => Ok(()),
+                        TextStreamStatus::Incomplete => Err(CliError::local(
+                            "STREAM_INCOMPLETE",
+                            "text stream incomplete; previously received text is partial",
+                        )),
+                        TextStreamStatus::Failed => Err(CliError::local(
+                            "STREAM_FAILED",
+                            "text stream failed; previously received text is partial",
+                        )),
+                    };
+                }
+                ipc::resp_msg::ERROR if sequence == 0 && body.is_empty() => {
+                    let error: ErrorEnvelope =
+                        serde_json::from_slice(&metadata).map_err(|_| invalid())?;
+                    if error.request_id != request_id {
+                        return Err(invalid());
+                    }
+                    return Err(CliError {
+                        code: error.code,
+                        message: error.message,
+                    });
+                }
+                _ => return Err(invalid()),
+            }
+        }
+    }
+
+    /// Sends one frame and reads one response. `body` may carry secrets and
+    /// is zeroized by the caller's ownership.
+    pub fn call(
+        &mut self,
+        message_type: u16,
+        metadata: &[u8],
+        body: &[u8],
+    ) -> Result<(Vec<u8>, Zeroizing<Vec<u8>>), CliError> {
+        let request_id = self.send_request(message_type, metadata, body)?;
         let response_deadline = Instant::now()
             .checked_add(self.response_timeout)
             .ok_or_else(|| CliError::local("IPC_UNAVAILABLE", "invalid response timeout"))?;
@@ -554,5 +650,108 @@ mod tests {
         assert_eq!(error.code, "IPC_UNAVAILABLE");
         assert!(started.elapsed() < Duration::from_millis(100));
         server.join().unwrap();
+    }
+
+    #[test]
+    fn text_stream_requires_matching_sequenced_completed_terminal() {
+        use rekey_domain::ipc::{TextStreamStatus, resp_msg};
+        for (case, expected) in [
+            ("completed", None),
+            ("incomplete", Some("STREAM_INCOMPLETE")),
+            ("failed", Some("STREAM_FAILED")),
+            ("missing", Some("IPC_UNAVAILABLE")),
+            ("sequence", Some("INVALID_FRAME")),
+            ("wrong-id", Some("INVALID_FRAME")),
+            ("terminal-body", Some("INVALID_FRAME")),
+            ("invalid-utf8", Some("INVALID_FRAME")),
+        ] {
+            let (_dir, socket, listener) = protected_listener();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut raw = [0; FRAME_HEADER_LEN];
+                stream.read_exact(&mut raw).unwrap();
+                let request = FrameHeader::decode(&raw).unwrap();
+                assert_eq!(
+                    request.message_type,
+                    rekey_domain::ipc::agent_msg::EXECUTE_TEXT_STREAM
+                );
+                let mut payload = vec![0; (request.metadata_len + request.body_len) as usize];
+                stream.read_exact(&mut payload).unwrap();
+                let mut write = |kind, sequence, status: Option<TextStreamStatus>, body: &[u8]| {
+                    let metadata = match status {
+                        Some(status) => {
+                            serde_json::to_vec(&rekey_domain::ipc::TextStreamTerminalMeta {
+                                sequence,
+                                status,
+                            })
+                            .unwrap()
+                        }
+                        None => {
+                            serde_json::to_vec(&rekey_domain::ipc::TextStreamChunkMeta { sequence })
+                                .unwrap()
+                        }
+                    };
+                    let header = FrameHeader {
+                        channel: Channel::Agent,
+                        flags: 0,
+                        message_type: kind,
+                        request_id: if case == "wrong-id" {
+                            RequestId::new_random()
+                        } else {
+                            request.request_id
+                        },
+                        metadata_len: metadata.len() as u32,
+                        body_len: body.len() as u32,
+                    };
+                    let _ = stream.write_all(&header.encode());
+                    let _ = stream.write_all(&metadata);
+                    let _ = stream.write_all(body);
+                };
+                write(
+                    resp_msg::STREAM_CHUNK,
+                    0,
+                    None,
+                    if case == "invalid-utf8" {
+                        &[0xff]
+                    } else {
+                        b"checked-prefix"
+                    },
+                );
+                if case != "missing" {
+                    let status = match case {
+                        "incomplete" => TextStreamStatus::Incomplete,
+                        "failed" => TextStreamStatus::Failed,
+                        _ => TextStreamStatus::Completed,
+                    };
+                    write(
+                        resp_msg::STREAM_TERMINAL,
+                        if case == "sequence" { 2 } else { 1 },
+                        Some(status),
+                        if case == "terminal-body" { b"bad" } else { b"" },
+                    );
+                }
+            });
+            let mut client = Client::connect(&socket, Channel::Agent).unwrap();
+            let mut output = Vec::new();
+            let result = client.text_stream(b"{}", b"{}", &mut output);
+            assert_eq!(
+                result.as_ref().err().map(|e| e.code.as_str()),
+                expected,
+                "case {case}"
+            );
+            if let Err(error) = result {
+                assert_ne!(error.exit_code(), 0);
+            }
+            assert_eq!(
+                output,
+                if matches!(case, "wrong-id" | "invalid-utf8") {
+                    b"".as_slice()
+                } else {
+                    b"checked-prefix".as_slice()
+                },
+                "case {case}"
+            );
+            server.join().unwrap();
+        }
     }
 }

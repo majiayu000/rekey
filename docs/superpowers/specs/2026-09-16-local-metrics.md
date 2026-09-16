@@ -13,7 +13,7 @@ required for this read. It works while locked and never contacts the Authority
 worker, refreshes idle activity, decrypts a credential, or writes an audit row.
 The Agent channel cannot obtain it. Malformed metadata/body is rejected using
 the existing strict frame boundary. No HTTP listener, remote collector,
-dependency, configuration option, or background scraping loop is added.
+dependency, Broker configuration option, or background scraping loop is added.
 
 ## Measurement semantics
 
@@ -77,3 +77,58 @@ The integration owner passed workspace tests and Clippy. A disposable real
 without self-counting, the expected status-request counter delta and fixed
 Prometheus types. Local evidence is recorded under
 `.git/codex/threads/rekey-remaining-20260916/metrics-smoke.log`.
+
+## Local atomic textfile publication
+
+`rekey metrics --prometheus --textfile-dir DIR` performs one local sample and
+publishes only the fixed `rekey.prom` in an already existing directory. The flag
+requires `--prometheus`; success writes no stdout. This is the local producer
+slice of external-capabilities P-08, not an installed collector or scheduler.
+
+The directory is owned by the current Admin user, with no group write or other
+access (normally 0750, optionally setgid). Symlink path components are rejected;
+use the physical path on systems with symlinked temporary directories. Ancestors
+must belong to root or the current user and must not be group/other writable,
+except trusted sticky directories such as `/tmp`. These checks enforce POSIX mode/ownership only. The operator must ensure that
+no extra ACL grants other identities read/write/delete rights on the directory
+or inherited files; this CLI does not audit platform ACLs. With that prerequisite,
+other UIDs cannot rename the publication directory. Same-UID attackers remain
+outside the G1 isolation claim. Directory
+identity checks reject overlap with the state directory, including ancestors,
+descendants and alternate case spellings. Operations are relative to the opened
+directory descriptor. A nonblocking exclusive directory lock allows one producer
+per directory; contention fails without invalidating the active producer's data.
+Existing output must be an owned regular file with one link; symlinks, hardlinks
+and special files are rejected without following, changing or deleting them.
+
+The producer exclusively creates a random `.rekey-<random>.tmp` at 0600, obtains the existing
+typed METRICS response with the CLI's bounded response deadline (30 seconds),
+writes and syncs the complete fixed-schema exposition, assigns the directory's
+group, sets 0640, closes the file and atomically renames it to `rekey.prom`.
+The temporary name does not end in `.prom`. No new dependency, socket, network
+listener, daemon, Broker configuration surface or arbitrary metric label is added.
+Only the existing Admin IPC read is used; vault files and socket permissions
+are unchanged. The collector receives group read access only to this directory.
+
+After directory/target validation and lock acquisition, any sampling or publish
+failure removes the old valid `rekey.prom`; removal errors are explicit failures.
+Owned temporary files are cleaned up and cleanup errors reported. Crash-residue
+temporary files are never reused or removed automatically and do not block later
+sampling; administrators may remove them after inspection. Directory or target validation failures do not
+mutate untrusted paths. Lock contention leaves the active writer responsible for
+freshness. SIGKILL, machine failure or absence of invocation cannot invalidate an
+old file; remote consumers must enforce file mtime freshness and scrape health as
+specified in external-capabilities P-08. The 30-second IPC response deadline is
+not a scheduler-level wall-clock timeout for local filesystem operations.
+
+Focused verification covers complete publication and replacement, exact modes
+and group, strict malicious-response rejection and old-file invalidation, IPC
+unavailability, invalid paths/links, state overlap, cleanup failure and concurrent
+invocations. Collector setup, freshness alerts and remote delivery remain external
+specification work.
+
+Local producer evidence (2026-09-16): six unit and two hostile-Broker process tests
+passed. A real locked `rekeyd` fixture published and replaced the file twice with
+mode 0640 and the directory group; after Broker shutdown, the CLI failed and
+removed the old file without leftover temporary files. Evidence lives under
+`.git/codex/threads/remaining-next-20260916/metrics-smoke.json`.

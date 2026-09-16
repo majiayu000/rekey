@@ -888,3 +888,28 @@ pub fn desktop_restore_access(
         .and_then(|_| out.write_all(&secret))
         .map_err(|e| CliError::local("IO", e.to_string()))
 }
+
+pub fn execute_text_stream(
+    agent_socket: &Path,
+    action: &str,
+    capability: &str,
+    body_file: &Path,
+    approvals: &[PathBuf],
+) -> Result<(), CliError> {
+    let (action_id, version) = parse_action_ref(action)?;
+    let capability_token = policy_approval::capability_value(capability)?;
+    let body = policy_approval::request_body(Some(body_file))?;
+    let approval_grants = policy_approval::read_approval_files(approvals)?;
+    let metadata = serde_json::json!({
+        "capability_token":capability_token,"action_id":action_id,"action_version":version,
+        "content_type":"application/json","extra_headers":[],"approval_grants":approval_grants
+    });
+    Client::connect_with_response_timeout(agent_socket, Channel::Agent, ACTION_RESPONSE_TIMEOUT)?
+        .text_stream(
+        metadata.to_string().as_bytes(),
+        &body,
+        std::io::stdout().lock(),
+    )?;
+    eprintln!("text stream completed");
+    Ok(())
+}

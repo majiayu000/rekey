@@ -308,19 +308,19 @@ fixture应逐点SIGKILL：源端acquire成功前后、journal提交前后、revo
 
 ## P-08 远程采集：单机 textfile collector 提案
 
-本机 `rekey metrics --prometheus` 已实现，见 [本机指标合同](2026-09-16-local-metrics.md)；以下远程交付仍未实施，不关闭原 P-08 的远程采集、OTel 或 tracing 缺口。
+本机 `rekey metrics --prometheus` 已实现，见 [本机指标合同](2026-09-16-local-metrics.md)；继续实施增加了 `--textfile-dir DIR` 的一次性本地发布切片，详见该本机合同；以下 collector 部署、调度、远程交付与新鲜度告警仍未实施，不关闭原 P-08 的远程采集、OTel 或 tracing 缺口。
 首轮只选 Prometheus Node Exporter textfile collector：可信本地 Admin 身份定期运行现有 CLI，把成功输出交给同机独立 collector；Prometheus 从该 collector 抓取。绑定单机实例，不设计跨机服务聚合平台。
 Rekey 不增加网络 listener；collector 使用独立低权限账号，只能读取指标目录，不能访问 `admin.sock`、保险库目录或运行 Admin 命令。不得把 socket 挂载或转交给不可信网络服务。
 官方合同为 `--collector.textfile.directory` 指定目录，读取 `*.prom`，不支持样本时间戳；官方示例用临时文件加 rename 原子替换，见 [Node Exporter textfile collector](https://github.com/prometheus/node_exporter#textfile-collector)。
-拟议采集作业只启动一个实例，设置有限运行超时；在同一受控目录创建独占临时文件，文件名不以 `.prom` 结尾。只有 CLI 正常退出且完整写入、关闭后才原子替换固定 `rekey.prom`；stderr 不拼入指标文件。
+本地 CLI 使用目录锁限制同目录单实例，并有 IPC 响应期限；外部采集作业还须设置覆盖整个进程的有限运行超时。在同一受控目录创建独占临时文件，文件名不以 `.prom` 结尾。只有 CLI 正常退出且完整写入、关闭后才原子替换固定 `rekey.prom`；stderr 不拼入指标文件。
 目录由可信作业身份拥有，权限 0750；最终文件 0640，仅专用 collector 组可读、不可写，其他用户无权访问。临时文件先以 0600 创建，再设置受控读权限后发布；不使用可被其他用户替换的目录或符号链接目标。
 只沿用现有固定 metric 名及固定枚举 labels，不追加 credential、Action、principal、request、资源路径、token 或用户输入。collector 自带 file label 使用固定无业务含义路径；Prometheus target 标签只由操作方固定配置，不来自 Agent metadata。
 Broker counters 在重启时归零，远程存储不会使它们成为持久累计账本；图表按 counter reset 语义计算，采样间丢失的增量不补造。现有采样不是跨 session 锁的原子快照。
 沿用当前实际可观察范围：dispatch/rejection/fault signal/耗时与 active capability 等；fault signal 不等于确认 Faulted 次数，backup 成功响应不等于 retained count。Authority worker queue、备份保留数量及 latency quantile 仍未提供，不能从现有输出伪造。
-失败/超时不发布部分输出、不 touch 旧文件；作业应移除旧 `rekey.prom`，移除失败必须显式报错。作业崩溃或停调度留下的旧文件，不能因为被反复 scrape 就当作新数据。
+成功验证目录与目标并取得锁后，CLI 的采样/发布失败不发布部分输出、不刷新旧文件，且移除旧 `rekey.prom`；移除失败显式报错。无效目录/目标、锁竞争不修改文件；作业被杀或整体超时的残留由新鲜度门禁处理。作业崩溃或停调度留下的旧文件，不能因为被反复 scrape 就当作新数据。
 collector 提供 `node_textfile_mtime_seconds` 与 `node_textfile_scrape_error`，见 [官方 collector 实现](https://github.com/prometheus/node_exporter/blob/master/collector/textfile.go)。实施时固定并核对实际版本。
 远程消费必须同时检查 exporter 可达、无 textfile 错误、目标文件存在且 mtime 未超过操作方选定的新鲜度上限；缺失、超龄或时钟异常显示“未知/采集失败”并告警，禁止填零或继续显示健康。抓取时间不是 CLI 成功采样时间。
 collector 的监听地址、TLS/认证、网络 ACL 与 Prometheus 抓取身份由操作方另行确定；不能因 Rekey 没有 listener 就宣称外部 endpoint 已安全，也不在本提案自动部署默认公开服务。
 验收须用合成数据验证原子替换、半写失败、作业停止/超时、权限拒绝、文件缺失、时钟偏差、Broker 重启计数复位和 scrape 错误；现场证明网络身份隔离及过期数据不会继续作为当前健康证据。
 待选输入：单机 OS 与 collector 固定版本、Admin 作业身份和调度器、指标目录/专用读组、采样间隔/超时/新鲜度上限、时钟同步、collector endpoint/TLS/认证/ACL、Prometheus 实例/存储期限、告警接收人。
-OTLP/OTel SDK 与 tracing 留作独立后续规格；本轮不安装 SDK、不同时接第二个采集平台、不生成部署或 collector 代码。
+OTLP/OTel SDK 与 tracing 留作独立后续规格；本轮不安装 SDK、不同时接第二个采集平台、不生成或部署外部 collector。

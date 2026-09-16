@@ -572,7 +572,7 @@ PRAGMA busy_timeout = 5000;
 ~~~sql
 CREATE TABLE vault_header (
     singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
-    format_version     INTEGER NOT NULL CHECK (format_version = 10),
+    format_version     INTEGER NOT NULL CHECK (format_version = 11),
     vault_id           BLOB NOT NULL CHECK (length(vault_id) = 16),
     crypto_suite       TEXT NOT NULL CHECK (crypto_suite = 'rkca-aes256gcm-argon2id-hkdfsha256-v1'),
     created_at_ms      INTEGER NOT NULL,
@@ -632,6 +632,7 @@ CREATE UNIQUE INDEX one_active_version_per_credential
 ON credential_versions(credential_id) WHERE state = 'active';
 
 CREATE TABLE actions (
+    text_stream_json              TEXT,
     action_id                     BLOB NOT NULL CHECK (length(action_id) = 16),
     version                       INTEGER NOT NULL CHECK (version >= 1),
     name                          TEXT NOT NULL,
@@ -1157,7 +1158,7 @@ Agent 输入 fake 的契约测试仍使用 injected `UpstreamTransport`。第 2 
 - 验证 SQLite quick_check、schema_digest、format_version、至少一个 wrapper 行、VRK 解包、header 内 encrypted integrity record，以及 **每一条** `credential_versions` payload。不能只检查数据库结构或只解密第一条 Credential。
 - 在写 staging 前先持久化 incomplete marker；Broker 见到 marker 必须拒绝启动。输入以固定大小 buffer 流式复制到 staging 并同时计算 SHA-256，对 staging 完成上述验证与 `restore.completed` 提交，fsync 文件，rename 到 `vault.sqlite3`，再 fsync 父目录。
 - 只有安装文件已持久化后才能删除 marker 并再次 fsync 父目录；这是 restore 成功点。成功点之前的失败必须删除 staging、installed DB 及 SQLite sidecar，并持久化清理；无法证明清理完成时必须保留 marker，确保不留下可启动的半恢复 vault。后续 restore 只能在取得 offline lock 后清理该 marker 所标记的已中断内部 artifact，不得删除未知文件。
-- 当前开发实现只恢复 format version 10；不支持 v1/v2/v3/v4/v5/v6/v7/v8/v9 或未来未知版本。当前 archive `v2.0.0-alpha.2` 仍只接受 v9。
+- 当前开发实现只恢复 format version 11；不支持 v1/v2/v3/v4/v5/v6/v7/v8/v9/v10 或未来未知版本。当前 archive `v2.0.0-alpha.2` 仍只接受 v9。
 
 ## 17. Error Taxonomy
 
@@ -1900,9 +1901,11 @@ audit/failure-semantics 人工审查尚未进行。因此当前仓库不能声�
 
 实现过程中如果发现 spec 与可验证事实冲突，必须先修改本 spec 和相关基线，再修改代码；不得用临时兼容层或 warning fallback 绕过合同。
 
-Current source OAU-02 adds Keycloak kind/AAD code 5 and schema 10. Schema 9 state
-and backups are rejected without migration; historical release evidence remains
-unchanged. See `2026-09-10-keycloak-token-exchange-oau02.md`.
+OAU-02 introduced Keycloak kind/AAD code 5 and schema 10. NET-07 now adds
+nullable Action text_stream_json and schema 11. Earlier state and backups, including
+schema 10, are rejected without migration. Historical release evidence remains
+unchanged. See `2026-09-10-keycloak-token-exchange-oau02.md` and
+`2026-09-16-anthropic-text-stream.md`.
 
 
 ## Native desktop remembered unlock (2026-09-15)
@@ -1937,3 +1940,8 @@ Remember 操作入队后等待明确结果，不丢弃仍在写入的 worker 回
 - [锁定状态 VRK 轮换](2026-09-16-key04-vrk-rotation.md)：双因素局部解锁并原子替换全部加密依赖；保持 Locked，审批来源公钥改变，桌面授权撤销具有明确的非原子副作用。
 
 上述本机增量已在源码实现；验收边界以各专用规格为准。外部服务与企业部署仅交付[具体规格提案](2026-09-16-external-capabilities.md)，不构成外部接入已完成的声明。
+
+### 独立文本流与 GitHub 参考插件
+
+- [独立文本流](2026-09-16-anthropic-text-stream.md)：ExecuteTextStream 仅面向显式登记的 Anthropic 文本 Action；已检查前缀可见且不可收回，仅最终 completed 表示成功，EOF、failed、incomplete 均不等于成功。原 Execute 的完整缓冲与失败合同不变，MCP 不投影流式 Action。
+- [GitHub 参考插件](2026-09-16-github-reference-plugin.md)：macOS 固定打包的 CreateIssue sidecar 仅转换公开输入，凭据、授权、远程效果及撤销仍由 Broker 执行；不代表通用动态加载或完整硬资源隔离。

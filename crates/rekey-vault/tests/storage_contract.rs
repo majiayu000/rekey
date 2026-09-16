@@ -77,6 +77,7 @@ fn credential(label: &str) -> CredentialRecord {
 
 fn action(action_id: ActionId, credential_id: CredentialId, version: u64) -> ActionRecord {
     ActionRecord {
+        text_stream_json: None,
         action_id,
         version,
         name: "catalog-action".to_owned(),
@@ -663,4 +664,39 @@ fn reopen_after_clean_close_succeeds() {
     drop(store);
     let store = SqliteRecordStore::open(&paths::vault_db(&vault.state_dir)).unwrap();
     store.quick_check().unwrap();
+}
+
+#[test]
+fn schema_ten_without_stream_column_is_rejected_by_format_gate() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v10.sqlite3");
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let schema = rekey_vault::store::schema::SCHEMA_SQL
+        .replace("format_version = 11", "format_version = 10")
+        .replace("    text_stream_json              TEXT,\n", "");
+    assert!(!schema.contains("text_stream_json"));
+    db.execute_batch(&schema).unwrap();
+    db.execute(
+        "INSERT INTO vault_header VALUES (1,10,zeroblob(16),?1,0,zeroblob(32),zeroblob(12),X'01')",
+        [CRYPTO_SUITE_V1],
+    )
+    .unwrap();
+    drop(db);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(matches!(
+        SqliteRecordStore::open(&path),
+        Err(AuthorityError::UnsupportedFormatVersion)
+    ));
+    let db = rusqlite::Connection::open(&path).unwrap();
+    assert_eq!(
+        db.query_row("SELECT format_version FROM vault_header", [], |r| r
+            .get::<_, u32>(0))
+            .unwrap(),
+        10
+    );
+    assert!(
+        db.prepare("SELECT text_stream_json FROM actions").is_err(),
+        "no migration or backfill"
+    );
 }
