@@ -23,6 +23,7 @@ use zeroize::Zeroize;
 
 fn action_definition(credential_id: rekey_domain::ids::CredentialId) -> ActionDefinition {
     ActionDefinition {
+        github_issue_plugin: None,
         text_stream: None,
         name: ActionName::new("github-create-issue").unwrap(),
         credential_id,
@@ -1200,4 +1201,40 @@ async fn unclean_worker_exit_revokes_before_next_resume() {
         handle.shutdown(None).await.unwrap();
         join.join().unwrap();
     }
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tokio::test]
+async fn explicit_github_plugin_registration_fails_closed_on_unsupported_platform() {
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+    let credential = handle
+        .credential_add(
+            CredentialLabel::new("github-plugin-source").unwrap(),
+            CredentialKind::GitHubAppInstallation,
+            SecretInput::from_slice(b"fixture-profile"),
+            common::password_proof(),
+        )
+        .await
+        .unwrap();
+    let mut definition = action_definition(credential.id);
+    definition.github_issue_plugin = Some(rekey_domain::action::GitHubIssuePlugin {
+        path: "/tmp/native-plugin".into(),
+        sha256: "0".repeat(64),
+        protocol: "github-create-issue-v1".into(),
+    });
+    let error = handle
+        .action_upsert(None, definition, common::password_proof())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error,AuthorityError::Domain(rekey_domain::DomainError::InvalidActionDefinition(ref message)) if message=="GitHub issue plugins require macOS")
+    );
+    assert!(handle.action_list().await.unwrap().is_empty());
+    handle
+        .shutdown(Some(common::password_proof()))
+        .await
+        .unwrap();
+    join.join().unwrap();
 }

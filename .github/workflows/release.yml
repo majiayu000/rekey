@@ -100,6 +100,7 @@ jobs:
             docs/superpowers/specs/2026-09-10-operator-credential-repair.md \
             docs/superpowers/specs/2026-09-10-remaining-p3-disposition.md \
             docs/superpowers/specs/2026-09-16-anthropic-text-stream.md \
+            docs/superpowers/specs/2026-09-16-action-plugin-registration.md \
             docs/superpowers/specs/2026-09-16-approval-review-ui.md \
             docs/superpowers/specs/2026-09-16-audit-prune.md \
             docs/superpowers/specs/2026-09-16-external-capabilities.md \

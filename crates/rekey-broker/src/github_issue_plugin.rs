@@ -1,4 +1,4 @@
-//! Fixed macOS reference sidecar, not a general plugin registration system.
+//! Native macOS GitHub CreateIssue protocol with an optional Admin-pinned artifact.
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::mem::MaybeUninit;
@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
+use data_encoding::HEXLOWER;
 use rekey_connector::github_issue::{MAX_ISSUE_WIRE_BYTES, normalize_issue_body};
+use rekey_domain::action::GitHubIssuePlugin;
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
@@ -39,17 +41,33 @@ fn packaged_artifact() -> Result<PathBuf, BrokerError> {
 
 /// Only the public body crosses the process boundary. The result cannot alter
 /// any approved parameter: the trusted Broker checks the complete canonical body.
-pub(crate) async fn normalize(input: &[u8], deadline: Instant) -> Result<Vec<u8>, BrokerError> {
-    normalize_with_artifact(&packaged_artifact()?, input, deadline).await
+pub(crate) async fn normalize(
+    registration: Option<&GitHubIssuePlugin>,
+    input: &[u8],
+    deadline: Instant,
+) -> Result<Vec<u8>, BrokerError> {
+    match registration {
+        Some(plugin) => {
+            normalize_with_artifact(
+                Path::new(&plugin.path),
+                Some(&plugin.sha256),
+                input,
+                deadline,
+            )
+            .await
+        }
+        None => normalize_with_artifact(&packaged_artifact()?, None, input, deadline).await,
+    }
 }
 
 async fn normalize_with_artifact(
     artifact: &Path,
+    expected_sha256: Option<&str>,
     input: &[u8],
     deadline: Instant,
 ) -> Result<Vec<u8>, BrokerError> {
     let expected = normalize_issue_body(input).map_err(|_| denied("plugin-invalid-input"))?;
-    let output = run(artifact, input, deadline).await?;
+    let output = run(artifact, expected_sha256, input, deadline).await?;
     if output != expected {
         return Err(denied("plugin-output-mismatch"));
     }
@@ -57,8 +75,12 @@ async fn normalize_with_artifact(
 }
 
 /// Copy an opened artifact to a private immutable-for-the-child execution file.
-/// This pins this execution's bytes, not the provenance of an installed package.
-fn snapshot(artifact: &Path) -> Result<(tempfile::TempDir, PathBuf), BrokerError> {
+/// Explicit registrations first require these bytes to match the Admin digest.
+/// The packaged default pins only this execution, not package provenance.
+fn snapshot(
+    artifact: &Path,
+    expected_sha256: Option<&str>,
+) -> Result<(tempfile::TempDir, PathBuf), BrokerError> {
     let mut source = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
@@ -76,6 +98,12 @@ fn snapshot(artifact: &Path) -> Result<(tempfile::TempDir, PathBuf), BrokerError
     if bytes.len() as u64 > MAX_ARTIFACT {
         return Err(denied("plugin-artifact-too-large"));
     }
+    let digest = Sha256::digest(&bytes);
+    if let Some(expected) = expected_sha256
+        && HEXLOWER.encode(&digest) != expected
+    {
+        return Err(denied("plugin-artifact-digest-mismatch"));
+    }
     let directory = tempfile::Builder::new()
         .prefix("rekey-issue-plugin-")
         .tempdir_in("/private/tmp")
@@ -91,20 +119,25 @@ fn snapshot(artifact: &Path) -> Result<(tempfile::TempDir, PathBuf), BrokerError
         .map_err(BrokerError::Io)?;
     copy.write_all(&bytes).map_err(BrokerError::Io)?;
     drop(copy);
-    if Sha256::digest(fs::read(&path).map_err(BrokerError::Io)?) != Sha256::digest(&bytes) {
+    if Sha256::digest(fs::read(&path).map_err(BrokerError::Io)?) != digest {
         return Err(denied("plugin-artifact-mismatch"));
     }
     Ok((directory, path))
 }
 
-async fn run(artifact: &Path, input: &[u8], deadline: Instant) -> Result<Vec<u8>, BrokerError> {
+async fn run(
+    artifact: &Path,
+    expected_sha256: Option<&str>,
+    input: &[u8],
+    deadline: Instant,
+) -> Result<Vec<u8>, BrokerError> {
     if input.len() > MAX_ISSUE_WIRE_BYTES {
         return Err(denied("plugin-input-too-large"));
     }
     if Instant::now() >= deadline {
         return Err(denied("plugin-deadline"));
     }
-    let (_snapshot, executable) = snapshot(artifact)?;
+    let (_snapshot, executable) = snapshot(artifact, expected_sha256)?;
     let mut command = launch_command(&executable, deadline)?;
     let mut child = command.spawn().map_err(BrokerError::Io)?;
     let pid = child.id().ok_or_else(|| denied("plugin-spawn"))? as i32;

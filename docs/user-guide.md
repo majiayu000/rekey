@@ -559,6 +559,36 @@ encrypted mutation succeeds. The corresponding Action must use origin
 `POST /repos/OWNER/REPOSITORY/issues` with a closed JSON `title`/`body` input.
 Provider responses are reduced to the documented non-secret fields.
 
+### Register a local CreateIssue plugin (macOS source checkout)
+
+The GitHub App CreateIssue Action can contain this optional field:
+
+```json
+"github_issue_plugin": {
+  "path": "/absolute/path/to/connector",
+  "sha256": "ADMIN_APPROVED_64_LOWERCASE_HEX_DIGEST",
+  "protocol": "github-create-issue-v1"
+}
+```
+
+Obtain the expected digest from the trusted build before approving the Action;
+replace the placeholder with that digest. Use the existing commands:
+
+```bash
+rekey action create --file action.json
+rekey action update ACTION_ID --file action-v2.json
+rekey action list
+```
+
+Create/update require step-up. Registration stores a declaration, while every
+execution verifies the actual file and runs its private snapshot. A wrong hash,
+missing file or unsupported platform fails without falling back to the bundled
+implementation. The binding belongs to `Action@VERSION`; an old capability never
+switches to a newer artifact automatically. Disable the Action to revoke its
+sessions. See [the exact scope and failure contract](superpowers/specs/2026-09-16-action-plugin-registration.md).
+
+### Rotate the GitHub App profile
+
 Rotate the whole typed profile from a regular file:
 
 ```bash

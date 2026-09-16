@@ -26,6 +26,7 @@ pub enum UnlockProof {
 /// Validated definition for creating or updating a fixed HTTP action.
 #[derive(Debug, Clone)]
 pub struct ActionDefinition {
+    pub github_issue_plugin: Option<rekey_domain::action::GitHubIssuePlugin>,
     pub text_stream: Option<rekey_domain::action::AnthropicTextStream>,
     pub name: rekey_domain::action::ActionName,
     pub credential_id: CredentialId,
