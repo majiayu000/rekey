@@ -150,6 +150,52 @@ sudo cp /usr/share/apparmor/extra-profiles/bwrap-userns-restrict \
 sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
 ```
 
+## macOS Agent isolation (experimental)
+
+`rekey agent-run` selects the fixed `macos-seatbelt-v1` profile on macOS.
+It requires `/usr/bin/sandbox-exec`; this is a deprecated Apple interface,
+so support is limited to tested system builds (currently 26.5.1 / 25F80 arm64).
+No installation of a CA, VM, global service, or network proxy is needed.
+
+Start `rekeyd serve --state-dir "$STATE" --agent-runtime-dir "$AGENT_RUNTIME"`
+with the same disjoint endpoint layout used on Linux. Run from a directory
+containing only the Agent's code, disjoint from both the state and Agent
+runtime directories. HOME, shared temporary parents, and paths overlapping
+`/System/Volumes` are rejected as code directories. Overlap checks compare
+directory identities to reject APFS and case aliases. The code directory is
+readable, not writable.
+The child starts in a fresh temporary directory, also used for HOME/TMPDIR.
+
+```bash
+# STATE, AGENT_RUNTIME, AGENT_CODE and AGENT_BIN are operator-selected paths.
+AGENT_SOCKET="$(realpath "$AGENT_RUNTIME/agent.sock")"
+cd "$AGENT_CODE"
+rekey --state-dir "$STATE" --agent-socket "$AGENT_SOCKET" agent-run -- "$AGENT_BIN"
+```
+
+Use the canonical socket path inside the Agent too: aliases such as `/var`
+versus `/private/var` are not separate network permissions. When the Agent
+needs a capability, add `--capability-stdin` before `--` and pipe the capability
+into stdin; it is placed only in the child's `REKEY_CAPABILITY` environment.
+The child's stdin is `/dev/null`. Parent environment variables are dropped.
+Only designated system/Homebrew runtime reads and the exact executable are
+added beyond the code directory. Arbitrary interpreters/toolchains are not
+all guaranteed compatible; do not widen the policy silently on failure.
+
+No direct IP egress, other local sockets, or Mach service grants are provided.
+Missing launcher, invalid profile and spawn errors never retry unsandboxed.
+The launcher waits for the direct child and forwards its exit code (signal
+termination maps to 5). Descendants remain sandboxed after launcher death;
+there is no guarantee of killing all descendants. Killing the launcher can
+leave its `rekey-agent-*` scratch directory behind. Parent-provided output
+files/pipes/TTYs are explicitly delegated; network-socket output is rejected.
+
+The code directory must not contain credential copies or hard links to
+protected files. This profile does not defend against a malicious external
+same-UID host process, host root, or kernel compromise. It does not upgrade
+G1 to G2 or implement Windows/plugin isolation. See the
+[feature truth matrix](product-foundation/feature-truth-matrix.md).
+
 ## Cross-version install and rollback
 
 These steps apply whenever the new archive uses a different vault format,

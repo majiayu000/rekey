@@ -35,6 +35,7 @@ pub struct TestBroker {
     pub state_dir: PathBuf,
     pub fake: Arc<FakeUpstreamTransport>,
     pub serve_task: tokio::task::JoinHandle<Result<(), rekey_broker::error::BrokerError>>,
+    agent_socket: PathBuf,
     policy_signer_id: PolicySignerId,
     policy_signer: Arc<Ed25519KeyPair>,
     policy_version: AtomicU64,
@@ -55,7 +56,7 @@ pub async fn start_broker_with_kdf(
 ) -> TestBroker {
     let fake = Arc::new(FakeUpstreamTransport::new());
     let transport = Arc::clone(&fake) as Arc<dyn rekey_broker::upstream::UpstreamTransport>;
-    start_broker_configured(idle_lock, drain_timeout, kdf, fake, transport).await
+    start_broker_configured(idle_lock, drain_timeout, kdf, fake, transport, false).await
 }
 
 pub async fn start_broker_with_transport(
@@ -64,7 +65,29 @@ pub async fn start_broker_with_transport(
     fake: Arc<FakeUpstreamTransport>,
     transport: Arc<dyn rekey_broker::upstream::UpstreamTransport>,
 ) -> TestBroker {
-    start_broker_configured(idle_lock, drain_timeout, TEST_PARAMS, fake, transport).await
+    start_broker_configured(
+        idle_lock,
+        drain_timeout,
+        TEST_PARAMS,
+        fake,
+        transport,
+        false,
+    )
+    .await
+}
+
+pub async fn start_broker_disjoint() -> TestBroker {
+    let fake = Arc::new(FakeUpstreamTransport::new());
+    let transport = Arc::clone(&fake) as Arc<dyn rekey_broker::upstream::UpstreamTransport>;
+    start_broker_configured(
+        Duration::from_secs(300),
+        Duration::from_secs(2),
+        TEST_PARAMS,
+        fake,
+        transport,
+        true,
+    )
+    .await
 }
 
 async fn start_broker_configured(
@@ -73,6 +96,7 @@ async fn start_broker_configured(
     kdf: Argon2Params,
     fake: Arc<FakeUpstreamTransport>,
     transport: Arc<dyn rekey_broker::upstream::UpstreamTransport>,
+    disjoint: bool,
 ) -> TestBroker {
     let dir = tempfile::tempdir().expect("tempdir");
     let state_dir = dir.path().join("state");
@@ -80,6 +104,16 @@ async fn start_broker_configured(
     rekey_vault::bootstrap::confirm_vault_init(&state_dir).expect("confirm");
 
     let mut config = BrokerConfig::new(state_dir.clone());
+    let agent_socket = if disjoint {
+        let runtime = dir.path().join("agent-runtime");
+        std::fs::create_dir(&runtime).expect("Agent runtime directory");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
+        config.agent_runtime_dir = Some(runtime.clone());
+        runtime.join("agent.sock")
+    } else {
+        state_dir.join("runtime/agent.sock")
+    };
     config.idle_lock = idle_lock;
     config.transport = Some(transport);
     config.unlock_backoff_base = Duration::from_millis(20);
@@ -106,6 +140,7 @@ async fn start_broker_configured(
         state_dir,
         fake,
         serve_task,
+        agent_socket,
         policy_signer_id: PolicySignerId::new_random(),
         policy_signer,
         policy_version: AtomicU64::new(1),
@@ -118,7 +153,7 @@ impl TestBroker {
     }
 
     pub fn agent_sock(&self) -> PathBuf {
-        self.state_dir.join("runtime").join("agent.sock")
+        self.agent_socket.clone()
     }
 
     pub async fn shutdown(self) {

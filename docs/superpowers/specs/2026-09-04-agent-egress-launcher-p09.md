@@ -10,6 +10,10 @@
 > Depends on: Credential Authority v2 Foundation §12.1 (disjoint Agent
 > endpoint), existing `rekeyd serve --agent-runtime-dir`
 
+> 2026-09-16 macOS addendum: the historical macOS unsupported clauses below
+> are superseded by `2026-09-16-local-isolation-and-streaming.md` OS-05.
+> Linux behavior and its original evidence remain unchanged.
+
 ## Objective
 
 P-09 makes deny-by-default Agent egress a product command, not only a Docker

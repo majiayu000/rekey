@@ -315,8 +315,13 @@ topology; it does not upgrade the default G1 product claim:
 
 Linux `rekey agent-run` (`linux-netns-v1`) is a separate deny-by-default IP
 egress launcher. It requires bubblewrap, a disjoint `--agent-socket`, and does
-not make macOS or general G2:
+not establish general G2:
 `scripts/p9-linux-agent-run.sh`
+
+macOS `agent-run` uses the experimental fixed `macos-seatbelt-v1` profile.
+It exposes a read-only code directory, private writable scratch, and only the
+canonical Agent socket. See [installation](docs/installation.md#macos-agent-isolation-experimental)
+for invocation and limits. It is not a general G2 claim.
 
 GitHub create-issue dogfood (opt-in, GitHub App profile file; vault password
 stays on stdin only; exits nonzero unless GitHub returns 201):

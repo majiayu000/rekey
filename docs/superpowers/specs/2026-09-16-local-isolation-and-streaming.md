@@ -1,25 +1,38 @@
 # 本机隔离、插件与流式响应的实施边界
 
-2026-09-16，状态：技术规格提案，未实现。本文不把设计或内部测试计划当作能力完成。用户已选择本地功能优先，外部能力先规格；下列涉及安全合同变化的选择分别记录。
+2026-09-16，状态：OS-05 已选择并本机实验实现；插件与流式章节仍为未实现提案。本文不把设计或内部测试计划当作能力完成。用户已选择本地功能优先，外部能力先规格；下列涉及安全合同变化的选择分别记录。
 
 ## OS-05 / OS-06：macOS Agent 隔离
 
 本轮只读检查环境为 macOS 26.5.1 / 25F80，存在 `/usr/bin/sandbox-exec`，但本机 man page 标注 DEPRECATED，SDK sandbox.h API 标注 No longer supported。Apple DTS 明确 SBPL 不是向第三方开放支持合同的接口，不能将其包装为官方受支持的产品保证。[Apple DTS](https://developer.apple.com/forums/thread/661939)
 
-候选最小实验实现必须显式命名 experimental，限定已验收 OS build，默认仍返回 UNSUPPORTED_PLATFORM；任何规则安装或 spawn 失败均不得降级为直接运行宿主命令。不接受任意 SBPL 或任意例外配置。
+用户已于 2026-09-16 选择先实现 macOS Seatbelt。闭合 profile 名称为 `macos-seatbelt-v1`，属于实验支持；只按实际通过攻击测试的 OS build/架构报告能力，不声称 Apple 为 SBPL 提供稳定合同。macOS 的 `agent-run` 在计划验证后自动选择固定 `/usr/bin/sandbox-exec`，缺失、规则安装失败、spawn 失败均直接失败，没有裸宿主执行 fallback。Linux 的 `linux-netns-v1` 保持原合同。
 
-固定 deny-default 规则只开放运行时必需读取、独立临时工作目录和一个 canonical、disjoint Agent UDS。禁止 state/Admin、其他 UDS、公网和 loopback TCP/UDP/DNS、进程调试、task port、跨进程内存及能代发网络请求的系统服务；清理父环境与非必要继承 FD，子孙进程继承限制。
+### 已选择的最小实施合同
 
-以上是尚待证明的验收要求，不是现有 SBPL 已能满足的事实。不能为了启动某个解释器而无界开放文件、网络或 Mach 权限。
+- 复用现有 state/Agent socket canonical/disjoint/owner/peer UID 校验。当前启动目录作为只读代码目录，必须与 state 和 Agent socket 所在目录不重叠；不允许把 `/`、用户 HOME 或临时父目录作为宽泛代码目录。目录重叠按文件系统目录身份（设备号/inode）核对祖先，覆盖大小写与 APFS firmlink 别名；代码目录也不得覆盖或位于 `/System/Volumes`，避免系统卷入口递归暴露 Data volume。命令二进制可位于代码目录外，但仅授予其精确路径读取。
+- 固定 deny-default SBPL，通过 `-D` 参数传入路径，不拼接路径为 SBPL。仅开放固定系统运行时只读路径、只读代码目录、命令文件、0700 随机临时目录，以及精确 canonical Agent UDS 的 outbound。固定运行时根不得覆盖 state 或 Agent endpoint。
+- 子进程 cwd/HOME/TMPDIR 为独立临时目录；PATH=/usr/bin:/bin、LANG=C，可选 REKEY_CAPABILITY；清除其他父环境。临时目录是唯一普通可写目录。Agent socket 目录不可写。
+- 不开放 IP、DNS、其他 UDS、Mach 服务、Apple Events、跨沙箱 signal/process-info/task ports、调试或保护范围内的凭证文件；fork/exec 的子孙继承策略。没有自定义 SBPL、额外权限开关或 VM 依赖。
+- 原生 `posix_spawn` 使用 CLOEXEC_DEFAULT；只显式继承 stdout/stderr，stdin 为 `/dev/null`。stdout/stderr 必须为普通文件、pipe、TTY 或精确 `/dev/null` 设备，socket 拒绝。所有准备/spawn API 错误直接返回。capability 不进入 spawn argv。
+- 实际进程树是 CLI → rekeyd → sandbox-exec → Agent，CLI 与 rekeyd 各自 wait/reap 直属子进程并转交退出码。信号退出映射为 5。macOS 没有本实现可依赖的 PDEATHSIG：不承诺父进程被 SIGKILL 后杀光后代；必须证明父进程退出后后代仍受策略限制。临时目录正常结束时清理；异常杀死 launcher 可能留下该目录。此项不等价于 Linux `--die-with-parent`，也不是插件的资源限额/强制终止合同。
 
-受支持产品路线有两个不同范围：
+### 验收
 
-- 签名的 App Sandbox helper 配固定打包工具，评估专用 App Group 容器中的 Agent UDS；state/Admin 始终在外。必须实测无 network entitlement 时的数据面组合及子进程继承，不能从 entitlement 名称推导结果。[Apple 子进程说明](https://developer.apple.com/documentation/security/discovering-and-diagnosing-app-sandbox-violations)、[Apple App Group UDS 讨论](https://developer.apple.com/forums/thread/818192)
-- 无网卡 Linux VM，使用受限的数据面桥接，复用现有 Linux launcher 的边界；需要 guest 镜像、生命周期和桥接规格，改变执行环境，不是替换原生 spawn 分支。[Apple Virtualization](https://developer.apple.com/documentation/virtualization)
+正向必须启动真实二进制、连接 Agent UDS、完成已授权 fixed Action。负向覆盖 state/Admin/其他 UDS、路径别名、目录外写入、IP TCP/UDP/DNS、Mach/跨进程访问、继承 FD、环境、fork/exec 和父进程退出。对可测试攻击先跑未隔离控制组；SIP/TCC 已拒绝的项目不能计为 Seatbelt 独立防护证据。记录 OS build、架构、profile hash 与结果。
 
-验收仅攻击临时 fixtures。指定 Agent UDS 和固定 Action 应成功；state/Admin、路径别名、其他 UDS、IP/DNS、ptrace/task-port、继承 FD、子孙 exec、父进程退出分别有拒绝测试。未隔离控制组必须能执行同样操作，以免把 SIP/TCC 或目标本身不可调试误计为隔离效果。记录 OS build、架构、profile hash、签名和每项结果。
+SBPL 的路径控制不保护允许读取的代码目录中被可信宿主事先放入的凭证副本或硬链接；启动目录应只含待运行代码。宿主同 UID 外部攻击者、root、内核漏洞与恶意管理员不在本合同内。默认 G1 与 Linux G2 既有声明不变。OS-06 仍待其他平台实现和逐平台验收，Windows 未实现。
 
-尚待产品选择：保留不支持、当前版本显式实验，或 VM 路线。OS-06 只汇总已实际验收的平台和拓扑，不泛化未来系统、任意 Agent、宿主 root 或同用户外部攻击者的防护。
+### 本机验收记录（2026-09-16）
+
+- 环境：macOS 26.5.1，build 25F80，arm64；本地 debug rekeyd 为 linker ad-hoc 签名，非公证发布产物。
+- 固定 `macos.sb` SHA-256：`7861822ebb3af53011285566825fd922f882822f7826a52577a39c22c9ba2176`。
+- `cargo test -p rekey-broker --test sandbox_macos -- --test-threads=1 --nocapture`：7 项通过；包含 APFS/case 别名、保护目录内 Admin socket 伪装为 Agent endpoint 的拒绝。
+- 真实 Broker 的 capability / policy / fixed Action 链路通过；上游是确定性测试 transport，未声称接入外部 provider。
+- 工作区回归 `cargo test --workspace --offline`：497 通过、0 失败、1 个既有忽略项；最终 state/endpoint 别名拒绝补丁另经上述 7 项 macOS 测试复验。`cargo check --workspace --all-targets`、Clippy（warnings denied）、格式及机械合同检查通过。
+- CLI 烟测：stdin capability 与环境清理、退出码转交、CLI 父进程退出后后代继续受限，3 项通过。
+- `task_for_pid` 未隔离控制组同样失败，因此不计入 Seatbelt 独立防护证据；未独立证明 ptrace 防护。网络成功控制组覆盖本机 IPv4/IPv6 TCP/UDP 与 UDP send，未声称完成公网 TCP 成功控制组。
+- 本记录只证明这一系统 build；其他 macOS build、Linux 本轮运行与 Windows 均无新验证。合并前仍需人工安全审查。
 
 ## SDK-04 / P-10：先冻结插件执行合同
 
