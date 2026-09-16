@@ -30,6 +30,7 @@ int main(int argc,char **argv) {
  else if(fread(input,1,sizeof(input)-1,stdin)==0)return 90;
  if(!strcmp(input,"ok")) {puts("OK");return 0;}
  if(!strcmp(input,"env")) {extern char **environ;for(char **entry=environ;*entry;entry++)puts(*entry);return 0;}
+ if(!strncmp(input,"fd ",3)) {int fd=atoi(input+3);printf("fd=%d open=%d\n",fd,fcntl(fd,F_GETFD)>=0);return 0;}
  if(!strcmp(input,"fds")) {int count=0;for(int fd=3;fd<1024;fd++)if(fcntl(fd,F_GETFD)>=0)count++;printf("fds=%d\n",count);return 0;}
  if(!strncmp(input,"read ",5)) {errno=0;int fd=open(input+5,O_RDONLY);result("read",fd<0?-1:0);if(fd>=0)close(fd);return 0;}
  if(!strncmp(input,"write ",6)) {errno=0;int fd=open(input+6,O_WRONLY|O_CREAT,0600);result("write",fd<0?-1:0);if(fd>=0)close(fd);return 0;}

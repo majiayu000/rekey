@@ -264,14 +264,55 @@ async fn cpu_hard_limit_kills_started_payload_ignoring_soft_signal() {
 #[test]
 fn inherited_high_fd_and_filter_fd_do_not_survive_lowered_hard_limit() {
     const MARKER: &str = "REKEY_TEST_LINUX_LOW_FDS";
+    const AMBIENT: &str = "REKEY_TEST_LINUX_AMBIENT_FDS";
     if std::env::var_os(MARKER).is_none() {
-        let status=StdCommand::new(std::env::current_exe().unwrap())
-            .args(["--exact","github_issue_plugin::linux_tests::inherited_high_fd_and_filter_fd_do_not_survive_lowered_hard_limit","--nocapture"])
-            .env(MARKER,"1").status().unwrap();
-        assert!(status.success());
+        use std::os::unix::process::CommandExt;
+        for inject_ambient in [false, true] {
+            let files = [tempfile::tempfile().unwrap(), tempfile::tempfile().unwrap()];
+            let fds = files.each_ref().map(|file| file.as_raw_fd());
+            let mut command = StdCommand::new(std::env::current_exe().unwrap());
+            command.args(["--exact", "github_issue_plugin::linux_tests::inherited_high_fd_and_filter_fd_do_not_survive_lowered_hard_limit", "--nocapture"])
+                .env(MARKER, "1").env_remove(AMBIENT);
+            if inject_ambient {
+                command.env(AMBIENT, format!("{},{}", fds[0], fds[1]));
+                // SAFETY: only the disposable child inherits these two test-owned
+                // files; the parent process and its other descriptors are untouched.
+                unsafe {
+                    command.pre_exec(move || {
+                        for fd in fds {
+                            if libc::fcntl(fd, libc::F_SETFD, 0) < 0 {
+                                return Err(std::io::Error::last_os_error());
+                            }
+                        }
+                        Ok(())
+                    });
+                }
+            }
+            assert!(
+                command.status().unwrap().success(),
+                "injected ambient={inject_ambient}"
+            );
+        }
         return;
     }
     probe();
+    // Keep every inherited CI descriptor live: it must also be removed by the
+    // production runner. The fixture owns FD 500, rather than assuming it is the
+    // only inheritable descriptor in the test host.
+    assert_eq!(control("fd 500"), "fd=500 open=0\n");
+    if let Ok(fds) = std::env::var(AMBIENT) {
+        for fd in fds.split(',') {
+            assert_eq!(control(&format!("fd {fd}")), format!("fd={fd} open=1\n"));
+        }
+    }
+    let baseline = control("fds");
+    let inherited: usize = baseline
+        .strip_prefix("fds=")
+        .unwrap()
+        .strip_suffix('\n')
+        .unwrap()
+        .parse()
+        .unwrap();
     let file = tempfile::tempfile().unwrap();
     // SAFETY: only this disposable test subprocess changes its descriptor limit.
     unsafe {
@@ -287,12 +328,18 @@ fn inherited_high_fd_and_filter_fd_do_not_survive_lowered_hard_limit() {
             0
         );
     }
-    assert_eq!(control("fds"), "fds=1\n");
+    assert_eq!(control("fd 500"), "fd=500 open=1\n");
+    assert_eq!(control("fds"), format!("fds={}\n", inherited + 1));
+    println!(
+        "plain inherited={inherited}; with FD500={}; sandbox must have zero",
+        inherited + 1
+    );
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
     assert_eq!(runtime.block_on(sandbox("fds")), "fds=0\n");
+    assert_eq!(runtime.block_on(sandbox("fd 500")), "fd=500 open=0\n");
 }
 
 fn descendants(pid: u32) -> Vec<u32> {
