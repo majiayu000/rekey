@@ -109,6 +109,18 @@ struct CLI: Sendable {
         do { return try JSONDecoder().decode(type, from: output) }
         catch { throw UIError(message: "服务返回了无法识别的数据，请确认客户端与服务版本一致。") }
     }
+
+    func approvalDetails(_ id: String) throws -> ApprovalDetails {
+        let data = try run(["approval", "get", id])
+        let envelope: ApprovalEnvelope
+        do { envelope = try JSONDecoder().decode(ApprovalEnvelope.self, from: data) }
+        catch { throw UIError(message: "审批信封数据无法识别，请确认客户端与服务版本一致。") }
+        guard envelope.challenge.approval_request_id == id else {
+            throw UIError(message: "返回的审批请求与所选条目不一致，请刷新收件箱。")
+        }
+        let origin = try decode(ApprovalOrigin.self, ["approval", "origin"])
+        return ApprovalDetails(envelope: envelope, origin: origin, data: data)
+    }
 }
 
 private final class OutputCapture: @unchecked Sendable {
@@ -205,6 +217,43 @@ struct PendingApproval: Decodable, Identifiable {
     var id: String { approval_request_id }
 }
 struct PendingList: Decodable { let challenges: [PendingApproval] }
+struct ApprovalChallenge: Decodable {
+    struct Resource: Decodable { let type: String; let id: String }
+    let record_type: String
+    let approval_request_id: String
+    let tenant_id: String
+    let principal_id: String
+    let session_id: String
+    let action_id: String
+    let action_version: UInt64
+    let resource: Resource
+    let schema_id: String
+    let parameter_sha256: String
+    let policy_version: UInt64
+    let policy_sha256: String
+    let policy_rule_id: String
+    let mode: String
+    let quorum: UInt8
+    let approver_ids: [String]
+    let max_uses: UInt32
+    let created_at_ms: Int64
+    let max_expires_at_ms: Int64
+}
+struct ApprovalEnvelope: Decodable {
+    let record_type: String
+    let challenge: ApprovalChallenge
+    let signature: String
+}
+struct ApprovalOrigin: Decodable { let algorithm: String; let public_key: String }
+struct ApprovalDetails: Identifiable {
+    let envelope: ApprovalEnvelope
+    let origin: ApprovalOrigin
+    let data: Data
+    var id: String { envelope.challenge.approval_request_id }
+    func matchingAction(in actions: [FixedAction]) -> FixedAction? {
+        actions.first { $0.id == envelope.challenge.action_id && $0.version > 0 && UInt64($0.version) == envelope.challenge.action_version }
+    }
+}
 struct AuditEvent: Decodable, Identifiable {
     let sequence: Int
     let event_type: String
@@ -265,6 +314,7 @@ final class AppModel: ObservableObject {
     @Published var actions: [FixedAction] = []
     @Published var policy: PolicyStatus?
     @Published var approvals: [PendingApproval] = []
+    @Published var approvalDetails: ApprovalDetails?
     @Published var audit: AuditPage?
     @Published var desktopToken: String?
     @Published var copiedCredential: String?
@@ -341,7 +391,7 @@ final class AppModel: ObservableObject {
     }
     func clearCache() {
         desktopToken = nil; visibleSecret = nil; copiedCredential = nil
-        credentials = []; actions = []; approvals = []; policy = nil; audit = nil; selectedCredential = nil
+        credentials = []; actions = []; approvals = []; approvalDetails = nil; policy = nil; audit = nil; selectedCredential = nil
     }
     func changeDirectory(_ path: String) {
         guard !busy else { return }
@@ -517,6 +567,18 @@ final class AppModel: ObservableObject {
             result = ResultMessage(title: "审批信封已导出", text: destination.path)
         } catch { self.error = error.localizedDescription }
         busy = false
+    }
+    func reviewApproval(_ item: PendingApproval) async {
+        guard !busy, unlocked else { return }
+        busy = true; error = nil; approvalDetails = nil
+        defer { busy = false }
+        let client = cli
+        do {
+            let details = try await Task.detached { try client.approvalDetails(item.id) }.value
+            guard unlocked, stateDirectory == client.stateDirectory else { return }
+            approvalDetails = details
+        }
+        catch { self.error = error.localizedDescription }
     }
 }
 

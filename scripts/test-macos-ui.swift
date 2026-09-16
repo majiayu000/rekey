@@ -76,6 +76,9 @@ struct UIContract {
         _ = try client.run(["session", "revoke", session["session_id"] as! String, "--password-stdin"], input: password + "\n")
         _ = try client.decode(PolicyStatus.self, ["policy", "status"])
         _ = try client.decode(PendingList.self, ["approval", "pending"])
+        let realOrigin = try client.decode(ApprovalOrigin.self, ["approval", "origin"])
+        try require(realOrigin.algorithm == "ed25519" && realOrigin.public_key.count == 64, "real origin public key decoded")
+        try denied({ _ = try client.approvalDetails(UUID().uuidString.lowercased()) }, "unknown approval is rejected by real broker")
         let backup = root.appendingPathComponent("backup.sqlite")
         let receiptData = try client.run(["backup", "--output", backup.path, "--password-stdin"], input: password + "\n")
         let receipt = try JSONSerialization.jsonObject(with: receiptData) as! [String: Any]
@@ -108,11 +111,77 @@ struct UIContract {
         try require(json["body"] as? String == password + "\n", "proof reaches stdin exactly")
         try require(json["ambient"] is NSNull, "ambient environment removed")
         try denied({ _ = try boundary.decode(ServiceStatus.self, ["status"]) }, "malformed response fails clearly")
+
+        // Exercise the exact production read bridge without signing or executing an action.
+        let approvalID = UUID().uuidString.lowercased()
+        let challenge: [String: Any] = [
+            "record_type": "rekey.approval.challenge.v1", "approval_request_id": approvalID,
+            "tenant_id": UUID().uuidString.lowercased(), "principal_id": UUID().uuidString.lowercased(),
+            "session_id": UUID().uuidString.lowercased(), "action_id": action.id, "action_version": action.version,
+            "resource": ["type": "fixed-http-action", "id": action.id], "schema_id": "ui/request",
+            "parameter_sha256": String(repeating: "a", count: 64), "policy_version": 3,
+            "policy_sha256": String(repeating: "b", count: 64), "policy_rule_id": UUID().uuidString.lowercased(),
+            "mode": "one-time", "quorum": 1, "approver_ids": [UUID().uuidString.lowercased()],
+            "max_uses": 1, "created_at_ms": 1000, "max_expires_at_ms": 61000,
+        ]
+        let envelope: [String: Any] = ["record_type": "rekey.approval.challenge.envelope.v1", "challenge": challenge, "signature": String(repeating: "A", count: 86)]
+        let envelopeData = try JSONSerialization.data(withJSONObject: envelope, options: [.prettyPrinted, .sortedKeys])
+        let getFile = root.appendingPathComponent("get.json")
+        let originFile = root.appendingPathComponent("origin.json")
+        try envelopeData.write(to: getFile)
+        let originData = try JSONSerialization.data(withJSONObject: ["algorithm": "ed25519", "public_key": String(repeating: "c", count: 64)])
+        try originData.write(to: originFile)
+        let approvalBinary = root.appendingPathComponent("approval-fixture")
+        let approvalScript = """
+        #!/usr/bin/python3
+        import json,pathlib,sys
+        root=pathlib.Path(__file__).parent
+        args=sys.argv[3:]
+        assert args[:1] == ['approval'] and sys.stdin.read() == ''
+        with (root/'approval-calls.jsonl').open('a') as out: out.write(json.dumps(args)+'\\n')
+        if args[1] == 'get':
+            assert len(args) == 3
+        else:
+            assert args == ['approval','origin']
+        path=root/(args[1]+'.json')
+        if not path.exists():
+            print('synthetic approval read failure',file=sys.stderr)
+            sys.exit(4)
+        sys.stdout.buffer.write(path.read_bytes())
+        """
+        try approvalScript.write(to: approvalBinary, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: approvalBinary.path)
+        let approvalClient = CLI(binary: approvalBinary, stateDirectory: state)
+        let details = try approvalClient.approvalDetails(approvalID)
+        try require(details.data == envelopeData && details.id == approvalID, "detail retains exact envelope bytes")
+        try require(details.envelope.challenge.schema_id == "ui/request" && details.envelope.challenge.policy_version == 3, "challenge binding fields decoded")
+        try require(details.origin.public_key == String(repeating: "c", count: 64), "separate origin key decoded")
+        try require(details.matchingAction(in: [action])?.reference == action.reference, "exact action version selected")
+        let newerAction = FixedAction(id: action.id, name: action.name, version: action.version + 1, enabled: action.enabled, credential_id: action.credential_id, origin: action.origin, method: action.method, exact_path: action.exact_path)
+        try require(details.matchingAction(in: [newerAction]) == nil, "no fallback to newer action definition")
+        let calls = try String(contentsOf: root.appendingPathComponent("approval-calls.jsonl"), encoding: .utf8).split(separator: "\n")
+        let firstCall = try JSONSerialization.jsonObject(with: Data(calls[0].utf8)) as! [String]
+        let secondCall = try JSONSerialization.jsonObject(with: Data(calls[1].utf8)) as! [String]
+        try require(firstCall == ["approval", "get", approvalID] && secondCall == ["approval", "origin"], "read-only approval CLI arguments")
+        try denied({ _ = try approvalClient.approvalDetails(UUID().uuidString.lowercased()) }, "different request ID rejected")
+        try Data("{}".utf8).write(to: getFile)
+        try denied({ _ = try approvalClient.approvalDetails(approvalID) }, "missing challenge fields rejected")
+        try envelopeData.write(to: getFile)
+        try Data("{}".utf8).write(to: originFile)
+        try denied({ _ = try approvalClient.approvalDetails(approvalID) }, "missing origin fields rejected")
+        try FileManager.default.removeItem(at: originFile)
+        try denied({ _ = try approvalClient.approvalDetails(approvalID) }, "origin read failure rejected")
+        try originData.write(to: originFile)
+        try FileManager.default.removeItem(at: getFile)
+        try denied({ _ = try approvalClient.approvalDetails(approvalID) }, "get read failure rejected")
         let model = AppModel()
         model.desktopToken = "stale-token"
         model.visibleSecret = "synthetic-value"
         model.rejectDesktopSession(UIError(message: "INVALID_UNLOCK_CREDENTIAL"))
         try require(model.desktopToken == nil && model.visibleSecret == nil, "rejected desktop session is discarded")
-        print("PASS: real vault lifecycle, metadata, actions, session lifecycle, policy/approval reads, backup/restore/export, wrong-proof and locked denial, audit canaries, private new-only result files, literal argv and stdin-only proof, filtered child environment, malformed-response rejection")
+        model.approvalDetails = details
+        model.clearCache()
+        try require(model.approvalDetails == nil, "approval detail cleared with workspace/lock/disconnect caches")
+        print("PASS: real vault lifecycle, metadata, actions, session lifecycle, policy/approval reads, backup/restore/export, wrong-proof and locked denial, audit canaries, private new-only result files, literal argv and stdin-only proof, filtered child environment, malformed-response rejection; approval detail bridge, exact snapshot and action version, origin reads, missing/mismatched responses and command failures, detail cache clearing")
     }
 }

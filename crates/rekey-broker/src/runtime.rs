@@ -84,6 +84,7 @@ impl BrokerConfig {
 }
 
 pub struct BrokerCtx {
+    pub(crate) metrics: crate::metrics::Metrics,
     pub authority: AuthorityHandle,
     pub sessions: Arc<SessionRegistry>,
     pub(crate) executions: ExecutionSupervisorHandle,
@@ -110,6 +111,7 @@ impl BrokerCtx {
     }
 
     pub(crate) fn request_fault(&self) {
+        self.metrics.fault_signals.fetch_add(1, Ordering::Relaxed);
         let _ = self.stop_tx.send(shutdown::StopCommand::Fault);
     }
 
@@ -660,6 +662,7 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
     let mut execution_task = tokio::spawn(execution_supervisor.run(shutdown_rx.clone()));
     let (stop_tx, mut stop_rx) = mpsc::unbounded_channel();
     let ctx = Arc::new(BrokerCtx {
+        metrics: crate::metrics::Metrics::default(),
         workload_transport: transport,
         online_jwks_slots: Arc::new(tokio::sync::Semaphore::new(MAX_ONLINE_JWKS_FETCHES)),
         authority: authority.clone(),

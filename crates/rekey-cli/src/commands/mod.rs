@@ -13,6 +13,8 @@ use zeroize::Zeroizing;
 
 use crate::client::{CliError, Client};
 
+mod metrics;
+pub use metrics::metrics;
 mod password_lifecycle;
 pub use password_lifecycle::{password_change, recovery_rotate};
 mod github_admin;

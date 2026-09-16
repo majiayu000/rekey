@@ -17,6 +17,7 @@ mod github_app;
 mod github_profile;
 pub mod ipc;
 pub mod lifecycle;
+mod metrics;
 pub mod runtime;
 pub mod sandbox;
 pub mod session;

@@ -50,6 +50,7 @@ pub async fn handle_agent_conn(
         } {
             Ok(frame) => frame,
             Err(crate::ipc::frame::FrameIoError::InboundSectionTooLarge(request_id)) => {
+                ctx.metrics.agent.frame_failed();
                 if let Err(error) = write_error(
                     &mut stream,
                     Channel::Agent,
@@ -64,13 +65,19 @@ pub async fn handle_agent_conn(
                 }
                 return;
             }
-            Err(_) => return,
+            Err(crate::ipc::frame::FrameIoError::Closed) => return,
+            Err(_) => {
+                ctx.metrics.agent.frame_failed();
+                return;
+            }
         };
         let request_id = frame.header.request_id;
+        let metric = ctx.metrics.agent.dispatch.start();
         let response = tokio::select! {
             _ = shutdown.changed() => return,
             response = dispatch(&frame, &ctx) => response,
         };
+        metric.finish(response.is_err());
         let write_response = async {
             match response {
                 Ok((metadata, body)) => {

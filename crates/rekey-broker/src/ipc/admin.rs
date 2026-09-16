@@ -132,10 +132,17 @@ pub async fn handle_admin_conn(
         } {
             Ok(frame) => frame,
             Err(FrameIoError::Closed) => return,
-            Err(_) => return,
+            Err(_) => {
+                ctx.metrics.admin.frame_failed();
+                return;
+            }
         };
         let request_id = frame.header.request_id;
         let is_shutdown = frame.header.message_type == admin_msg::SHUTDOWN;
+        let metric = (frame.header.message_type != admin_msg::METRICS)
+            .then(|| ctx.metrics.admin.dispatch.start());
+        let backup_metric =
+            (frame.header.message_type == admin_msg::BACKUP).then(|| ctx.metrics.backup.start());
         let response = if is_shutdown {
             dispatch(&frame, &ctx).await
         } else {
@@ -144,6 +151,12 @@ pub async fn handle_admin_conn(
                 response = dispatch(&frame, &ctx) => response,
             }
         };
+        if let Some(metric) = metric {
+            metric.finish(response.is_err());
+        }
+        if let Some(metric) = backup_metric {
+            metric.finish(response.is_err());
+        }
         let write_response = async {
             match response {
                 Ok((metadata, body)) => {
@@ -185,6 +198,14 @@ async fn dispatch(
     ctx: &BrokerCtx,
 ) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
     match frame.header.message_type {
+        admin_msg::METRICS => {
+            empty_request(frame)?;
+            let snapshot = ctx.metrics.snapshot(
+                ctx.sessions.active_count(crate::now_ts()?),
+                ctx.sessions.in_flight_total(),
+            );
+            Ok((json(&snapshot)?, Vec::new()))
+        }
         admin_msg::DESKTOP_REMEMBER => {
             let deadline = admin_mutation_deadline();
             empty_meta(frame)?;
