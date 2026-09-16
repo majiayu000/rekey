@@ -559,15 +559,15 @@ encrypted mutation succeeds. The corresponding Action must use origin
 `POST /repos/OWNER/REPOSITORY/issues` with a closed JSON `title`/`body` input.
 Provider responses are reduced to the documented non-secret fields.
 
-### Register a local CreateIssue plugin (macOS source checkout)
+### Register a local GitHub issue plugin (macOS source checkout)
 
-The GitHub App CreateIssue Action can contain this optional field:
+GitHub App CreateIssue and CreateIssueComment Actions can contain this optional field:
 
 ```json
 "github_issue_plugin": {
   "path": "/absolute/path/to/connector",
   "sha256": "ADMIN_APPROVED_64_LOWERCASE_HEX_DIGEST",
-  "protocol": "github-create-issue-v1"
+  "protocol": "github-issues-v1"
 }
 ```
 
@@ -579,6 +579,11 @@ rekey action create --file action.json
 rekey action update ACTION_ID --file action-v2.json
 rekey action list
 ```
+
+One executable can serve both operations, but each Action fixes a single route.
+The plugin receives a closed operation/body envelope from the Broker and must
+return its canonical form unchanged. Agents still send the normal issue or
+comment body; they cannot select an operation through the plugin protocol.
 
 Create/update require step-up. Registration stores a declaration, while every
 execution verifies the actual file and runs its private snapshot. A wrong hash,

@@ -441,7 +441,7 @@ Action 和最小响应 schema 比通用透明代理更强。任何新增 canonic
   与审计先完成。Agent 不能取得 token，也不能选 source/target；没有 refresh、后台续期
   或进程崩溃后的撤销保证。provider introspection inactive 不代表只做离线 JWT 验证的
   resource 会立即拒绝。真实 Keycloak + Broker 的本地 TLS fixture 不是公网筛选证明。
-  新 kind/AAD code 5 最初使用 schema 10；独立文本流曾使用 schema 11，当前 Action 插件登记使用 schema 12，含 v11 在内的旧 state/backup 明确拒绝，不做迁移。
+  新 kind/AAD code 5 最初使用 schema 10；独立文本流曾使用 schema 11，当前两操作 Action 插件登记使用 schema 13，含 v12 在内的旧 state/backup 明确拒绝，不做迁移。
 - P-07A 只允许管理员登记一个 public HTTPS Vault KV v2 origin、mount、path、精确
   非零版本、精确 string key 和 bootstrap token。Broker 在 durable started audit 与
   remote-effect admission 后执行一次无重试 GET，解析后只把值注入既有 fixed Action；
@@ -530,4 +530,12 @@ CPU 限额、deadline、有界 IO 和采样 RSS 看门狗不等于完整硬内�
 这不保证识别任意编码或隐蔽信道，也不代表第三方 provider 的实网验收。
 
 
-SDK-04 下一源码切片按 `2026-09-16-action-plugin-registration.md` 将 Admin 批准的 artifact 摘要绑定到精确 Action 版本；不把登记成功等同于文件可运行。执行时校验已打开文件的字节，显式绑定不支持的平台直接失败。仍不防御恶意同 UID 宿主，RSS 采样不是硬物理内存上限；源码格式 12 拒绝旧状态及备份。
+SDK-04 当前源码按 `2026-09-16-action-plugin-registration.md` 将 Admin 批准的 artifact 摘要绑定到精确 Action 版本；不把登记成功等同于文件可运行。执行时校验已打开文件的字节，显式绑定不支持的平台直接失败。仍不防御恶意同 UID 宿主，RSS 采样不是硬物理内存上限；源码格式 13 拒绝旧状态及备份。
+
+### 2026-09-17 two-operation plugin boundary
+
+`github-issues-v1` selects create_issue/create_issue_comment from the trusted Action. The plugin cannot select routes or effects; the Broker compares the entire canonical operation/body envelope before credential exchange. Schema 13 rejects prior formats. Linux launcher tests must distinguish an actually launched sandbox from namespace setup failure and must not treat the Agent launcher as a plugin sandbox.
+
+当前 macOS 探针进一步表明：最终 SETEXEC 设置 jetsam 后，允许 self-exec 的恶意 artifact 仍可再次 exec 并清空限额；固定可信、禁止全部 exec 的 sidecar 结果不能升级任意登记插件的保障。详细结果见 GitHub 参考插件规格。
+
+2026-09-17 Linux 验收已重现继承 FD 绕过路径隔离：FD 211 可以承载已打开的 state 文件（首轮在此失败，未执行后续 socket 分支）。修复合同为 Linux post-fork/pre-exec 对所有 3+ FD 标记 CLOSE_RANGE_CLOEXEC，调用失败即拒绝，不将挂载遮罩当作 FD 撤权。该修复需要 Linux 5.11+；原失败测试已通过，并验证文件/socket FD211、先保留 FD500 再降低 NOFILE 至128 的场景；最终 LinuxKit 容器内 root 与 UID/GID65534 各5项通过。

@@ -131,7 +131,8 @@ runtime-directory layout documented in the repository file
 `scripts/p1-linux-g2.sh` (not shipped in the release archive). Do not make
 the state directory or Admin socket group-writable.
 
-Linux `rekey agent-run` additionally needs `bubblewrap` and that same disjoint
+Linux `rekey agent-run` additionally needs Linux 5.11 or newer with
+`close_range(CLOSE_RANGE_CLOEXEC)` permitted, `bubblewrap`, and that same disjoint
 Agent socket. Ubuntu black-box evidence is limited to the harnessed child
 failing public TCP/UDP probes while still using `agent.sock`. It is not macOS
 G2, not Adversarially Verified isolation, and not a substitute for the Docker
@@ -198,11 +199,11 @@ G1 to G2 or implement Windows/plugin isolation. See the
 
 ## GitHub reference connector (macOS source build)
 
-The source implementation of GitHub CreateIssue uses the bundled
+The source implementation of GitHub CreateIssue and CreateIssueComment uses the bundled
 `rekey-github-create-issue` sidecar on macOS. Build it with the Broker package
 and keep it beside `rekeyd` when copying binaries. The source archive and macOS
 app build include it; published alpha.2 archives do not gain this feature.
-A missing sidecar fails the CreateIssue call instead of running it unsandboxed.
+A missing sidecar fails either mutation call instead of running it unsandboxed.
 
 For a source build, install all three binaries together (the published alpha.2
 installation above describes its historical archive):
@@ -213,13 +214,13 @@ install -m 0755 target/release/rekey target/release/rekeyd \
   target/release/rekey-github-create-issue "$HOME/.local/bin/"
 ```
 
-Current source uses state/backup format **12**. It rejects earlier formats,
-including 11, without migration. Initialize a new empty state directory; keep
+Current source uses state/backup format **13**. It rejects earlier formats,
+including 12, without migration. Initialize a new empty state directory; keep
 older binaries with their matching state and backups.
 
 An Admin may instead bind a local executable to one exact Action version with
 `github_issue_plugin` in the Action JSON. Registration stores the approved
-absolute path, expected SHA-256 and `github-create-issue-v1` protocol; it does
+absolute path, expected SHA-256 and `github-issues-v1` protocol; it does
 not run or inspect the file. Each execution verifies its bytes before starting
 the isolated snapshot. Missing or changed files fail without falling back to
 the bundled sidecar. See [the registration contract](superpowers/specs/2026-09-16-action-plugin-registration.md).
@@ -230,7 +231,7 @@ include the binding, not the executable. Restore requires supplying the same
 path and digest again. Explicit bindings are currently macOS-only and fail on
 unsupported platforms.
 
-Only public issue text enters the reference process. The Broker keeps all
+Only the selected operation and public issue/comment text enter the reference process. The Broker keeps all
 credentials, authorization, HTTP execution, response checks and revocation.
 The separate Seatbelt policy denies networking and process creation. CPU and
 wall-clock deadlines are enforced; memory is watched by sampling, which can

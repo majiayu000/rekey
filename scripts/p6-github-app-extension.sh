@@ -147,7 +147,7 @@ if sys.platform == "darwin":
     issue["github_issue_plugin"] = {
         "path": str(artifact),
         "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
-        "protocol": "github-create-issue-v1",
+        "protocol": "github-issues-v1",
     }
 pathlib.Path(issue_path).write_text(json.dumps(issue))
 PY
@@ -175,13 +175,23 @@ python3 - "$WORKDIR/issue-action.json" "$WORKDIR/comment-action.json" <<'PYCOMME
 import json, pathlib, sys
 value=json.loads(pathlib.Path(sys.argv[1]).read_text())
 value.update(name="p6-comment", exact_path="/repos/p6-owner/beta/issues/7/comments")
-value.pop("github_issue_plugin", None)
 pathlib.Path(sys.argv[2]).write_text(json.dumps(value))
 PYCOMMENT
 COMMENT_JSON="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" action create \
   --file "$WORKDIR/comment-action.json" --password-stdin)"
 COMMENT_ID="$(printf '%s\n' "$COMMENT_JSON" | json_field id)"
 COMMENT_REF="$COMMENT_ID@1"
+printf '%s\n' "$COMMENT_JSON" >"$WORKDIR/created-comment.json"
+"$REKEY" --state-dir "$STATE" action list >"$WORKDIR/action-list.json"
+python3 - "$WORKDIR/created-issue.json" "$WORKDIR/created-comment.json" \
+  "$WORKDIR/action-list.json" <<'PYCOMMENTBINDING'
+import json, pathlib, sys
+issue, comment, catalog = [json.loads(pathlib.Path(p).read_text()) for p in sys.argv[1:]]
+if sys.platform == "darwin":
+    assert comment["github_issue_plugin"] == issue["github_issue_plugin"]
+    listed = next(a for a in catalog["actions"] if a["id"] == comment["id"])
+    assert listed["github_issue_plugin"] == issue["github_issue_plugin"]
+PYCOMMENTBINDING
 
 SESSION_JSON="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" session create \
   --action "$LIST_REF" --action "$ISSUE_REF" --action "$COMMENT_REF" --ttl 10m --max-uses 20 --password-stdin)"

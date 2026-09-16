@@ -83,10 +83,30 @@ fn unconfined(input: &[u8]) -> std::process::Output {
 async fn real_packaged_sidecar_normalizes_public_body() {
     let body = br#"{ "body": "details", "title": "reference" }"#;
     assert_eq!(
-        normalize(None, body, Instant::now() + Duration::from_secs(4))
-            .await
-            .unwrap(),
+        normalize(
+            None,
+            IssueOperation::CreateIssue,
+            body,
+            Instant::now() + Duration::from_secs(4)
+        )
+        .await
+        .unwrap(),
         br#"{"title":"reference","body":"details"}"#
+    );
+}
+
+#[tokio::test]
+async fn real_packaged_sidecar_normalizes_comment_body() {
+    assert_eq!(
+        normalize(
+            None,
+            IssueOperation::CreateIssueComment,
+            br#"{ "body": "comment" }"#,
+            Instant::now() + Duration::from_secs(4)
+        )
+        .await
+        .unwrap(),
+        br#"{"body":"comment"}"#
     );
 }
 
@@ -176,12 +196,15 @@ async fn malicious_output_cannot_equal_approved_body_and_symlink_is_rejected() {
     let output = attack(b"fake-effect").await.unwrap();
     assert_ne!(
         output,
-        normalize_issue_body(br#"{"title":"approved"}"#).unwrap()
+        IssueOperation::CreateIssue
+            .normalize_body(br#"{"title":"approved"}"#)
+            .unwrap()
     );
     assert!(matches!(
         normalize_with_artifact(
             probe(),
             None,
+            IssueOperation::CreateIssue,
             br#"{"title":"approved"}"#,
             Instant::now() + Duration::from_secs(4)
         )

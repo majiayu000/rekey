@@ -377,7 +377,7 @@ impl ResponsePolicy {
     }
 }
 
-/// Admin-pinned native implementation of the single GitHub CreateIssue protocol.
+/// Admin-pinned native implementation of the closed GitHub issue operations protocol.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GitHubIssuePlugin {
@@ -398,7 +398,7 @@ impl GitHubIssuePlugin {
                 .sha256
                 .bytes()
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-            || self.protocol != "github-create-issue-v1"
+            || self.protocol != "github-issues-v1"
         {
             return Err(invalid("invalid GitHub issue plugin declaration"));
         }
@@ -440,16 +440,26 @@ impl FixedHttpAction {
         if let Some(plugin) = &self.github_issue_plugin {
             plugin.validate()?;
             let parts: Vec<_> = self.exact_path.as_str().split('/').collect();
-            let create_issue = matches!(parts.as_slice(), ["", "repos", owner, repo, "issues"] if !owner.is_empty() && !repo.is_empty());
+            let issue_mutation = match parts.as_slice() {
+                ["", "repos", owner, repo, "issues"] => !owner.is_empty() && !repo.is_empty(),
+                ["", "repos", owner, repo, "issues", number, "comments"] => {
+                    !owner.is_empty()
+                        && !repo.is_empty()
+                        && number
+                            .parse::<u64>()
+                            .is_ok_and(|value| value > 0 && value.to_string() == *number)
+                }
+                _ => false,
+            };
             if self.text_stream.is_some()
                 || self.origin.as_str() != "https://api.github.com"
                 || self.method != FixedMethod::Post
-                || !create_issue
+                || !issue_mutation
                 || self.auth.header_name.as_str() != "authorization"
                 || self.auth.prefix.as_str() != "Bearer "
             {
                 return Err(invalid(
-                    "GitHub issue plugins require the fixed CreateIssue action",
+                    "GitHub issue plugins require the fixed CreateIssue or CreateIssueComment action",
                 ));
             }
         }
@@ -623,7 +633,7 @@ mod tests {
         let valid = GitHubIssuePlugin {
             path: "/tmp/registered-plugin".into(),
             sha256: "a".repeat(64),
-            protocol: "github-create-issue-v1".into(),
+            protocol: "github-issues-v1".into(),
         };
         valid.validate().unwrap();
         for path in ["relative", "/tmp/../plugin", "/tmp/\0plugin"] {
@@ -640,7 +650,7 @@ mod tests {
             assert!(invalid.validate().is_err());
         }
         let mut invalid = valid.clone();
-        invalid.protocol = "other-protocol".into();
+        invalid.protocol = "github-create-issue-v1".into();
         assert!(invalid.validate().is_err());
         let mut value = serde_json::to_value(valid).unwrap();
         value["env"] = serde_json::json!({});
@@ -648,12 +658,12 @@ mod tests {
     }
 
     #[test]
-    fn github_plugin_only_binds_the_fixed_create_issue_shape() {
+    fn github_plugin_only_binds_the_two_fixed_issue_shapes() {
         let mut action = FixedHttpAction {
             github_issue_plugin: Some(GitHubIssuePlugin {
                 path: "/tmp/plugin".into(),
                 sha256: "0".repeat(64),
-                protocol: "github-create-issue-v1".into(),
+                protocol: "github-issues-v1".into(),
             }),
             text_stream: None,
             id: ActionId::new_random(),
@@ -681,8 +691,19 @@ mod tests {
         };
         action.validate().unwrap();
         for path in [
-            "/installation/repositories",
             "/repos/owner/repo/issues/1/comments",
+            "/repos/owner/repo/issues/18446744073709551615/comments",
+        ] {
+            action.exact_path = ExactPath::parse(path).unwrap();
+            action.validate().unwrap();
+        }
+        for path in [
+            "/installation/repositories",
+            "/repos/owner/repo/issues/0/comments",
+            "/repos/owner/repo/issues/01/comments",
+            "/repos/owner/repo/issues/+1/comments",
+            "/repos/owner/repo/issues/18446744073709551616/comments",
+            "/repos/owner/repo/issues/1/comments/extra",
             "/repos//repo/issues",
             "/repos/owner/repo/issues/extra",
         ] {

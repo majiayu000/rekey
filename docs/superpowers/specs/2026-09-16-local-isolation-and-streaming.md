@@ -89,3 +89,17 @@ SBPL 的路径控制不保护允许读取的代码目录中被可信宿主事先
 Broker completed 必须晚于 provider 完成、全部检查、finished audit 和适用的 revoke；provider 自己的结束事件不能提前代表本地成功。CLI 失败/不完整须非零退出，MCP 不得把前缀包装为普通成功结果；不自动重试已发生效果的调用。若未来支持工具参数增量，完整 JSON/schema/授权校验之外，还须等 Broker completed 后才执行工具，这属于 Rekey 拟议限制。
 
 用户已于本轮明确选择新增独立流式接口，接受后续失败时此前已检查前缀不可收回；原非流式操作仍完整检查后再返回。保持旧合同只能实现“真实 SSE 接收但完整缓冲后一次返回”，不改善首字延迟，不能将它或分段播放已缓冲正文记为 NET-07 完成。
+
+## 2026-09-17 Linux Agent 验收增量
+
+本轮复用现有 linux-netns-v1，不增加 Linux 插件后端。确定性验收使用实际 rekeyd 启动器、真实本地 Broker/Agent UDS 与合成 transport，覆盖授权请求成功、state/Admin 隐藏、TCP/UDP 拒绝、环境与继承 FD。负向用例必须有未隔离成功控制，先证明 sandbox 可真正启动；bwrap/userns 环境失败应令验收失败，不能充当攻击阻断。
+
+本机可用 Docker Desktop 的 LinuxKit/aarch64；只使用独立测试容器及合成数据，不修改已有服务。若容器需放宽其自身 seccomp/capabilities 才能启动嵌套 namespace，应记入验证拓扑，并与 native Ubuntu CI 区分。该 Agent profile 允许只读宿主树及 fork/exec，不能复用来宣称不可信插件已隔离；macOS 的更窄代码目录授权不自动套用到 Linux。
+
+### Linux 继承文件描述符修复合同
+
+本轮真实攻击验收发现：父进程将已打开的 state 文件以非 CLOEXEC 的 FD 211 传入启动器时，现有 bwrap 子进程仍可使用该 FD，绕过路径覆盖。首轮 5 项中 4 项通过，该项在文件分支失败（probe 返回 0 而非 19，尚未到 socket 分支）；不能把只读挂载和隐藏路径当成已打开 FD 的撤权。
+
+最小修复是在 Linux launcher 的 post-fork/pre-exec 阶段对全部 FD 3..UINT_MAX 调用 close_range(CLOSE_RANGE_CLOEXEC)，只标记、不提前关闭 Rust 的 exec 错误管道；成功 exec 时统一关闭。标准输入仍为空，标准输出/错误仍为调用者选择的流。闭包不得分配或加锁；系统调用失败直接拒绝启动，无逐 FD 兼容回退。该功能要求提供 CLOSE_RANGE_CLOEXEC 的 Linux 内核（5.11+）；旧内核或 seccomp 拒绝时明确失败。原攻击断言保持不变，并增加高 FD 在降低 rlimit 后仍清除的验证。
+
+最终整合源码在 LinuxKit 6.12.76/aarch64、Debian bookworm 容器中验证：`cargo check --workspace --all-targets`、Clippy warnings denied 通过；5 项 sandbox_linux 测试在 root 和 UID/GID65534 身份分别通过，原 FD211 文件断言未削弱，另覆盖 socket 与 FD500/NOFILE128。容器需 `seccomp=unconfined`、`systempaths=unconfined`，无额外 capability、privileged 或宿主挂载。没有验证原生 Ubuntu、host proc/PID 逃逸、Docker socket 隐藏或父死；不扩大既有 G2 声明。官方 close_range/CLOEXEC 语义见 [Linux man-pages](https://man7.org/linux/man-pages/man2/close_range.2.html)。

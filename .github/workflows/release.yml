@@ -135,6 +135,7 @@ jobs:
             docs/superpowers/specs/2026-09-16-github-reference-plugin.md \
             docs/superpowers/specs/2026-09-16-key04-dek-rotation.md \
             docs/superpowers/specs/2026-09-16-key04-vrk-rotation.md \
+            docs/superpowers/specs/2026-09-16-local-isolation-and-streaming.md \
             docs/superpowers/specs/2026-09-16-local-metrics.md \
             ; do
             mkdir -p "$stage/$(dirname "$doc")"

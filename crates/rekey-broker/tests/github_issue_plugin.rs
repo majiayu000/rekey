@@ -52,6 +52,34 @@ fn response(status: u16, body: Value) -> UpstreamResponse {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn sidecar_public_request_reaches_broker_transport_and_revoke_precedes_success() {
+    for comment in [false, true] {
+        successful_operation(comment, false).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn same_registered_native_artifact_executes_both_operations() {
+    for comment in [false, true] {
+        successful_operation(comment, true).await;
+    }
+}
+
+async fn successful_operation(comment: bool, registered: bool) {
+    let path = if comment {
+        "/repos/owner/repo/issues/7/comments"
+    } else {
+        "/repos/owner/repo/issues"
+    };
+    let input = if comment {
+        br#"{ "body" : "public details" }"#.as_slice()
+    } else {
+        br#"{ "body" : "public details", "title" : "reference plugin" }"#
+    };
+    let expected_body = if comment {
+        br#"{"body":"public details"}"#.as_slice()
+    } else {
+        br#"{"title":"reference plugin","body":"public details"}"#
+    };
     // Cargo builds broker binaries for this integration target.
     assert!(std::path::Path::new(env!("CARGO_BIN_EXE_rekey-github-create-issue")).is_file());
     let broker = common::start_broker().await;
@@ -67,8 +95,13 @@ async fn sidecar_public_request_reaches_broker_transport_and_revoke_precedes_suc
     let credential = added.ok()["id"].as_str().unwrap();
     let mut meta = common::action_meta(credential);
     meta["origin"] = json!("https://api.github.com");
-    meta["exact_path"] = json!("/repos/owner/repo/issues");
+    meta["exact_path"] = json!(path);
     meta["allowed_extra_headers"] = json!([]);
+    if registered {
+        meta["github_issue_plugin"] = registration(std::path::Path::new(env!(
+            "CARGO_BIN_EXE_rekey-github-create-issue"
+        )));
+    }
     let created = common::call(
         &broker.admin_sock(),
         Channel::Admin,
@@ -89,10 +122,10 @@ async fn sidecar_public_request_reaches_broker_transport_and_revoke_precedes_suc
     )));
     broker.fake.push_response(Ok(response(
         201,
-        json!({
+        if comment { json!({"id":44,"issue_url":"https://api.github.com/repos/owner/repo/issues/7","html_url":"https://github.com/owner/repo/issues/7#issuecomment-44"}) } else { json!({
             "id":44,"number":7,"repository_url":"https://api.github.com/repos/owner/repo",
             "html_url":"https://github.com/owner/repo/issues/7"
-        }),
+        }) },
     )));
     let revoke = broker.fake.push_response_gated(Ok(UpstreamResponse {
         status: 204,
@@ -109,7 +142,7 @@ async fn sidecar_public_request_reaches_broker_transport_and_revoke_precedes_suc
             Channel::Agent,
             agent_msg::EXECUTE_FIXED_HTTP_ACTION,
             call_metadata.as_bytes(),
-            br#"{ "body" : "public details", "title" : "reference plugin" }"#,
+            input,
         )
         .await
     });
@@ -135,12 +168,10 @@ async fn sidecar_public_request_reaches_broker_transport_and_revoke_precedes_suc
         serde_json::from_slice::<Value>(&requests[0].body).unwrap(),
         json!({"repository_ids":[7],"permissions":{"metadata":"read","issues":"write"}})
     );
-    assert_eq!(requests[1].path, "/repos/owner/repo/issues");
+    assert_eq!(requests[1].path, path);
+    assert_eq!(requests[1].host, "api.github.com");
     assert_eq!(requests[1].method, "POST");
-    assert_eq!(
-        requests[1].body,
-        br#"{"title":"reference plugin","body":"public details"}"#
-    );
+    assert_eq!(requests[1].body, expected_body);
     assert_eq!(
         requests[1].auth_value,
         b"Bearer installation-token-fixture-canary"
@@ -151,14 +182,25 @@ async fn sidecar_public_request_reaches_broker_transport_and_revoke_precedes_suc
     let reply = call.await.unwrap();
     assert_eq!(reply.metadata["upstream_status"], 201, "{}", reply.metadata);
     assert_eq!(
-        serde_json::from_slice::<Value>(&reply.body).unwrap()["number"],
-        7
+        serde_json::from_slice::<Value>(&reply.body).unwrap()["id"],
+        44
     );
+    if !comment {
+        assert_eq!(
+            serde_json::from_slice::<Value>(&reply.body).unwrap()["number"],
+            7
+        );
+    }
+
+    assert_eq!(count_event(&broker, "execution.finished"), 1);
+    assert_eq!(count_event(&broker, "connector.github.token_revoked"), 1);
 
     // Unknown and altered-effect fields fail before exchange; no extra upstream.
     for body in [
         br#"{"title":"reference","url":"https://evil"}"#.as_slice(),
         br#"{"title":""}"#,
+        br#"{"body":"b","operation":"create_issue"}"#,
+        br#"{"body":"b","body":"changed"}"#,
     ] {
         let reply = common::call(
             &socket,
@@ -219,7 +261,7 @@ fn native_artifacts() -> &'static [std::path::PathBuf; 2] {
 #endif
 int main(void) {
  char input[1024];size_t used=fread(input,1,sizeof(input),stdin);
- const char *expected=VARIANT==1 ? "{\"title\":\"artifact-A\"}" : "{\"title\":\"artifact-B\"}";
+ const char *expected=VARIANT==1 ? "{\"operation\":\"create_issue\",\"body\":{\"title\":\"artifact-A\"}}" : "{\"operation\":\"create_issue\",\"body\":{\"title\":\"artifact-B\"}}";
  if(ferror(stdin)||used!=strlen(expected)||memcmp(input,expected,used))return 17;
  return fwrite(expected,1,used,stdout)==used?0:18;
 }
@@ -256,7 +298,7 @@ int main(void) {
 
 fn registration(path: &std::path::Path) -> Value {
     use sha2::{Digest, Sha256};
-    json!({"path":path,"sha256":data_encoding::HEXLOWER.encode(&Sha256::digest(std::fs::read(path).unwrap())),"protocol":"github-create-issue-v1"})
+    json!({"path":path,"sha256":data_encoding::HEXLOWER.encode(&Sha256::digest(std::fs::read(path).unwrap())),"protocol":"github-issues-v1"})
 }
 async fn github_credential(broker: &common::TestBroker) -> String {
     let added = common::call(
@@ -614,7 +656,7 @@ async fn plugin_binding_roundtrips_admin_list_restart_and_backup_restore() {
         &common::proof_body(common::PASSWORD),
     )
     .await;
-    assert_eq!(receipt.ok()["format_version"], 12);
+    assert_eq!(receipt.ok()["format_version"], 13);
     let state = broker.state_dir.clone();
     let dir = broker.shutdown_keep_dir().await;
     let config = rekey_broker::runtime::BrokerConfig::new(state.clone());
@@ -688,3 +730,6 @@ async fn plugin_binding_roundtrips_admin_list_restart_and_backup_restore() {
         .unwrap();
     join.join().unwrap();
 }
+
+#[path = "github_issue_plugin/attacks.rs"]
+mod attacks;

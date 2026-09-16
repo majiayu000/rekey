@@ -65,7 +65,7 @@ async fn backup_roundtrip_and_restore() {
         .backup(backup_path.clone(), common::password_proof())
         .await
         .unwrap();
-    assert_eq!(receipt.format_version, 12);
+    assert_eq!(receipt.format_version, 13);
     assert_eq!(receipt.vault_id, vault.outcome.vault_id);
     assert_eq!(receipt.sha256_hex.len(), 64);
     assert_eq!(
@@ -786,3 +786,6 @@ async fn restore_recovers_only_marked_internal_artifacts_before_retry() {
         .unwrap();
     join.join().unwrap();
 }
+
+#[path = "backup_restore/format_gate.rs"]
+mod format_gate;
