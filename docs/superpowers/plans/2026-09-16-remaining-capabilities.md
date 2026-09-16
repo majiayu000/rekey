@@ -49,14 +49,14 @@
 | NET-07 | Agent 可见流式响应 | 用户已接受独立流式接口及部分响应失败合同；固定 Anthropic 纯文本 Action 已实现并通过真实 TLS/UDS 专项验收，旧非流式合同保留 |
 | OS-05 | macOS 隔离启动器 | 用户已选择 Seatbelt；`macos-seatbelt-v1` 本机实验实现与定向攻击/真实 Broker 授权测试完成，发布前仍需人工安全审查 |
 | OS-06 | 跨平台强隔离 | macOS 本机与 LinuxKit 容器已有专项证据；Linux 新增确定性攻击测试并修复继承 FD 泄露。原生 Ubuntu、其他平台及完整强隔离仍待逐平台验收 |
-| SDK-04 | 动态插件加载 | GitHub CreateIssue/CreateIssueComment 两操作的 Action 路径/可信摘要/协议登记及实际隔离加载已实现；通用多凭证效果插件与其他平台插件后端仍未完成 |
+| SDK-04 | 动态插件加载 | GitHub CreateIssue/CreateIssueComment 两操作的 Action 路径/可信摘要/协议登记及 macOS/Linux GNU 隔离加载已实现；LinuxKit arm64 已验收，x86_64/原生 Ubuntu 与通用多凭证效果插件仍未完成 |
 | UX-04 | 可视化策略审批流程 | 复用 APR-09/POL-09，不单独计实现 |
 | VEX-01 | 私网 Vault | 待输入：固定目标和部署信任；待规格定义 SSRF/DNS 边界 |
 | VEX-02 | Vault 登录方式 | 待输入：AppRole/Kubernetes/OIDC 中选定一种 |
 | VEX-03 | Vault 续期/Namespace/引擎 | 待输入：一个具体新增效果；复用租约生命周期 |
 | VEX-04 | KV 最新版与写入 | 已有具体外部规格：精确版本与写入不确定性，真实挂载/权限仍待输入 |
 | P-08 | 可观测性 | 本机快照及原子 textfile 发布已实现并经本地验收；OTel/远程采集/告警仍未完成 |
-| P-10 | Connector 隔离 | 用户已选 macOS Seatbelt + 本仓库 GitHub CreateIssue 参考插件，真实子进程执行链已实现并通过攻击及 Broker 专项验收；Action 登记已完成，完整资源硬限制与父死保障仍未完成 |
+| P-10 | Connector 隔离 | macOS Seatbelt 与 Linux GNU 最小 rootfs/seccomp 参考插件已通过攻击及 Broker 专项；Linux 有 AS64MiB 硬限额及 READY 后父死证据，macOS 保持 RSS 采样。总物理资源上限与完整启动阶段父死保障仍未完成 |
 
 隔离与流式的具体提案见 [实施边界](../specs/2026-09-16-local-isolation-and-streaming.md)。macOS 已选择并实现实验 Seatbelt；用户也已接受独立流式接口及 GitHub CreateIssue 参考插件，两条具体执行链均已实现并通过专项验收。
 
@@ -159,3 +159,17 @@
 交付分支仍为 `codex/remaining-integration-20260916`，按已有授权提交并推送；未合并、未部署。原 main 的既有修改保持原样。当前格式13，旧库及备份明确拒绝，不做迁移。
 
 后续尚未关闭：通用多凭证效果插件及Linux/其他平台插件后端；任意原生插件硬内存及父死保障；其余系统的现场隔离验收；P-08远程采集/告警及外部/企业25个条目的实际目标接入。后两类按用户此前选择仅交付规格，不创建外部资源。合并前人工安全审查仍必需，自动化与线程审阅不能替代。
+
+
+## 2026-09-17 Linux 插件后端进行中
+
+本轮沿用 `c9945ed`，先冻结 GitHub 参考插件规格中的 Linux 合同，再并行研究/实现。最小范围是 Linux GNU x86_64/aarch64 显式登记与原生固定两操作；macOS 继续 Seatbelt。研究探针已证明 AS64MiB 跨 self-exec 保留、CPU hard2秒、READY 后父死清理；最终默认拒绝 allowlist 仍需通过真实执行验收。P6新增登记 artifact 被修改时零远程请求负控，再恢复原摘要执行两操作。外部/企业不创建资源，仍按此前约定保留规格。
+
+
+## Linux 插件后端本轮交付
+
+- 完成 Linux GNU 显式登记后端：只读最小 rootfs、固定 GNU 四个运行库、强制五类 namespace、默认拒绝 seccomp、CPU1/2秒、AS64MiB、NOFILE128，以及全范围 FD 清理。保持协议 github-issues-v1 与格式13；macOS 继续 Seatbelt，Linux 未登记的内置操作保持进程内解析。
+- LinuxKit arm64 整合验收 root/UID65534 各通过 runner11项（含 helper）及真实 Broker9项；Linux Agent5项回归通过。两平台 all-targets check/Clippy、P6 release CLI/Broker/本地TLS均通过，含篡改登记artifact零上游请求负控。macOS整库548项通过、0失败、1项既有忽略。fmt、API/CLI依赖及本地打包清单/文档链接检查通过。
+- 实现与测试设计独立审查发现并修正 namespace 可降级参数及测试控制组/清理证据问题，最终无阻断项。证据：主仓库 `.git/codex/threads/remaining-linux-plugin-20260917/`。
+
+当前尚未关闭：通用多凭证效果插件；任意原生插件的总物理资源上限及完整启动窗口父死保障；x86_64/原生 Ubuntu 等实际平台验收；P-08远程采集/告警及外部/企业25条的实际接入。后两类继续按用户选择仅交付规格，不创建外部资源。AS64MiB不是硬RSS总量；READY后子树停止运行不等于所有后代同步reap。源码交付不等于发布、部署或人工安全审查完成。

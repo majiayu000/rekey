@@ -1955,3 +1955,8 @@ Remember 操作入队后等待明确结果，不丢弃仍在写入的 worker 回
 ## 2026-09-17 local continuation contract
 
 The Action-bound GitHub reference plugin is extended to the two fixed issue operations under [the registration contract](2026-09-16-action-plugin-registration.md). The sole wire protocol becomes github-issues-v1 with a closed operation/body envelope, and durable format 13 rejects earlier state/backup formats. No arbitrary plugin HTTP, credentials or multi-step effect API is introduced. Linux Agent launcher verification will exercise existing isolation using deterministic local fixtures and successful unsandboxed controls; this does not introduce a Linux plugin backend.
+
+
+## Linux explicitly registered GitHub plugins
+
+The subsequent Linux backend follows [the reference plugin contract](2026-09-16-github-reference-plugin.md), limited to GNU x86_64/aarch64 and explicitly bound artifacts. Format13 and both fixed operations remain unchanged. A minimal read-only rootfs and default-deny seccomp are separate from the Agent launcher; AS64MiB is per-process virtual memory, with no total physical-memory or all-startup-phase parent-death claim.

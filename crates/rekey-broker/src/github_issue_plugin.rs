@@ -1,29 +1,33 @@
-//! Native macOS GitHub issue operations protocol with an optional Admin-pinned artifact.
+//! Native sandboxed GitHub issue operations protocol with an optional Admin-pinned artifact.
 use std::fs::{self, OpenOptions};
-use std::io::{self, Read, Write};
-use std::mem::MaybeUninit;
+use std::io::{Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use data_encoding::HEXLOWER;
 use rekey_connector::github_issue::{IssueOperation, MAX_ISSUE_WIRE_BYTES};
 use rekey_domain::action::GitHubIssuePlugin;
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::Command;
 
 use crate::error::BrokerError;
 
-const PROFILE: &str = include_str!("github_issue_plugin.sb");
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+use macos::launch_command;
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+use linux::launch_command;
 const MAX_ARTIFACT: u64 = 32 * 1024 * 1024;
-const MAX_RSS: u64 = 64 * 1024 * 1024;
 
 fn denied(reason: &'static str) -> BrokerError {
     BrokerError::Denied(reason)
 }
 
+#[cfg(target_os = "macos")]
 fn packaged_artifact() -> Result<PathBuf, BrokerError> {
     let exe = std::env::current_exe().map_err(BrokerError::Io)?;
     let mut directory = exe.parent().ok_or_else(|| denied("plugin-artifact-path"))?;
@@ -58,9 +62,14 @@ pub(crate) async fn normalize(
             )
             .await
         }
+        #[cfg(target_os = "macos")]
         None => {
             normalize_with_artifact(&packaged_artifact()?, None, operation, input, deadline).await
         }
+        #[cfg(target_os = "linux")]
+        None => operation
+            .normalize_body(input)
+            .map_err(|_| denied("github-profile-mismatch")),
     }
 }
 
@@ -111,9 +120,13 @@ fn snapshot(
     {
         return Err(denied("plugin-artifact-digest-mismatch"));
     }
+    #[cfg(target_os = "macos")]
+    let temp_root = "/private/tmp";
+    #[cfg(target_os = "linux")]
+    let temp_root = "/tmp";
     let directory = tempfile::Builder::new()
         .prefix("rekey-issue-plugin-")
-        .tempdir_in("/private/tmp")
+        .tempdir_in(temp_root)
         .map_err(BrokerError::Io)?;
     fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
         .map_err(BrokerError::Io)?;
@@ -147,7 +160,11 @@ async fn run(
     let (_snapshot, executable) = snapshot(artifact, expected_sha256)?;
     let mut command = launch_command(&executable, deadline)?;
     let mut child = command.spawn().map_err(BrokerError::Io)?;
-    let pid = child.id().ok_or_else(|| denied("plugin-spawn"))? as i32;
+    #[cfg(target_os = "macos")]
+    let memory_monitor =
+        macos::monitor_memory(child.id().ok_or_else(|| denied("plugin-spawn"))? as i32);
+    #[cfg(target_os = "linux")]
+    let memory_monitor = std::future::pending::<BrokerError>();
     let mut stdin = child.stdin.take().ok_or_else(|| denied("plugin-stdin"))?;
     let stdout = child.stdout.take().ok_or_else(|| denied("plugin-stdout"))?;
     let exchange = async {
@@ -186,11 +203,11 @@ async fn run(
         tokio::select! {
             result = &mut completed => result,
             _ = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => Err(denied("plugin-deadline")),
-            result = monitor_memory(pid) => Err(result),
+            result = memory_monitor => Err(result),
         }
     };
     if result.is_err() {
-        // start_kill followed by wait reaps even when the error was EOF/limit.
+        // Reap the launcher; Linux PID namespace teardown kills its payload too.
         // A process which already exited requires no signal, but is still reaped.
         child.start_kill().map_err(BrokerError::Io)?;
         child.wait().await.map_err(BrokerError::Io)?;
@@ -198,121 +215,10 @@ async fn run(
     result
 }
 
-fn launch_command(executable: &Path, deadline: Instant) -> Result<Command, BrokerError> {
-    let mut parameter = std::ffi::OsString::from("EXEC=");
-    parameter.push(executable);
-    let mut command = Command::new("/usr/bin/sandbox-exec");
-    command
-        .args(["-p", PROFILE, "-D"])
-        .arg(parameter)
-        .arg("--")
-        .arg(executable)
-        .env_clear()
-        .current_dir("/")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
-    // Snapshot every existing FD, including descriptors above a lowered limit.
-    // Trusted Broker threads do not concurrently create non-CLOEXEC descriptors;
-    // Rust/Tokio's subsequent spawn pipes and sockets are created CLOEXEC.
-    let inherited_fds = inherited_descriptors()?;
-    if Instant::now() >= deadline {
-        return Err(denied("plugin-deadline"));
-    }
-    // SAFETY: no allocation, locks, or Rust runtime calls in the post-fork closure.
-    unsafe {
-        command.pre_exec(move || {
-            for (resource, limit) in [
-                (
-                    libc::RLIMIT_CPU,
-                    libc::rlimit {
-                        rlim_cur: 1,
-                        rlim_max: 2,
-                    },
-                ),
-                (
-                    libc::RLIMIT_CORE,
-                    libc::rlimit {
-                        rlim_cur: 0,
-                        rlim_max: 0,
-                    },
-                ),
-            ] {
-                if libc::setrlimit(resource, &limit) != 0 {
-                    return Err(io::Error::last_os_error());
-                }
-            }
-            for fd in inherited_fds.iter().copied() {
-                if libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) < 0
-                    && *libc::__error() != libc::EBADF
-                {
-                    return Err(io::Error::last_os_error());
-                }
-            }
-            Ok(())
-        });
-    }
-    Ok(command)
-}
-
-// Capture high descriptors which survived a previous lowering of soft/hard
-// limits. Broker code does not concurrently raise limits or inject high FDs.
-fn inherited_descriptors() -> Result<Vec<i32>, BrokerError> {
-    const SLOTS: usize = 65_536;
-    let mut descriptors = vec![
-        libc::proc_fdinfo {
-            proc_fd: 0,
-            proc_fdtype: 0
-        };
-        SLOTS
-    ];
-    let size = std::mem::size_of_val(descriptors.as_slice());
-    // SAFETY: initialized, correctly aligned output array, bounded C byte count.
-    let written = unsafe {
-        libc::proc_pidinfo(
-            libc::getpid(),
-            libc::PROC_PIDLISTFDS,
-            0,
-            descriptors.as_mut_ptr().cast(),
-            size as i32,
-        )
-    };
-    if written <= 0
-        || written as usize >= size
-        || !(written as usize).is_multiple_of(std::mem::size_of::<libc::proc_fdinfo>())
-    {
-        return Err(denied("plugin-fd-snapshot"));
-    }
-    descriptors.truncate(written as usize / std::mem::size_of::<libc::proc_fdinfo>());
-    Ok(descriptors
-        .into_iter()
-        .map(|entry| entry.proc_fd)
-        .filter(|fd| *fd >= 3)
-        .collect())
-}
-
-async fn monitor_memory(pid: i32) -> BrokerError {
-    loop {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-        let mut usage = MaybeUninit::<libc::rusage_info_v0>::uninit();
-        // SAFETY: flavor 0 writes exactly rusage_info_v0 to live output storage.
-        let result = unsafe { libc::proc_pid_rusage(pid, 0, usage.as_mut_ptr().cast()) };
-        if result != 0 {
-            let error = io::Error::last_os_error();
-            // The wait future owns exit status. A vanished PID has no live RSS.
-            if error.raw_os_error() == Some(libc::ESRCH) {
-                continue;
-            }
-            return denied("plugin-resource-query");
-        }
-        // SAFETY: proc_pid_rusage succeeded.
-        if unsafe { usage.assume_init() }.ri_resident_size > MAX_RSS {
-            return denied("plugin-memory-budget");
-        }
-    }
-}
-
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 #[path = "github_issue_plugin_tests.rs"]
 mod tests;
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "github_issue_plugin/linux_tests.rs"]
+mod linux_tests;

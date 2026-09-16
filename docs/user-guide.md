@@ -559,9 +559,12 @@ encrypted mutation succeeds. The corresponding Action must use origin
 `POST /repos/OWNER/REPOSITORY/issues` with a closed JSON `title`/`body` input.
 Provider responses are reduced to the documented non-secret fields.
 
-### Register a local GitHub issue plugin (macOS source checkout)
+### Register a local GitHub issue plugin (source checkout)
 
-GitHub App CreateIssue and CreateIssueComment Actions can contain this optional field:
+On macOS and Linux GNU x86_64/aarch64, GitHub App CreateIssue and
+CreateIssueComment Actions can contain this optional field. Linux requires
+system bubblewrap, permitted namespaces and the fixed GNU runtime files
+described in [installation](installation.md#github-reference-connector-macos-and-linux-source-builds):
 
 ```json
 "github_issue_plugin": {

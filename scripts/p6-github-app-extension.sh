@@ -139,7 +139,7 @@ issue = base | {
     "name":"p6-create-issue", "method":"POST", "exact_path":"/repos/p6-owner/beta/issues",
     "request_max_bytes":33792,
 }
-if sys.platform == "darwin":
+if sys.platform in ("darwin", "linux"):
     # Only this local fixture derives trust from its freshly built test artifact.
     artifact = pathlib.Path(issue_path).parent.resolve() / "registered-create-issue"
     shutil.copyfile(built_artifact, artifact)
@@ -165,7 +165,7 @@ python3 - "$WORKDIR/issue-action.json" "$WORKDIR/created-issue.json" \
   "$WORKDIR/action-list.json" <<'PYBINDING'
 import json, pathlib, sys
 expected, created, catalog = [json.loads(pathlib.Path(p).read_text()) for p in sys.argv[1:]]
-if sys.platform == "darwin":
+if sys.platform in ("darwin", "linux"):
     assert created["github_issue_plugin"] == expected["github_issue_plugin"]
     listed = next(a for a in catalog["actions"] if a["id"] == created["id"])
     assert listed["github_issue_plugin"] == expected["github_issue_plugin"]
@@ -187,7 +187,7 @@ python3 - "$WORKDIR/created-issue.json" "$WORKDIR/created-comment.json" \
   "$WORKDIR/action-list.json" <<'PYCOMMENTBINDING'
 import json, pathlib, sys
 issue, comment, catalog = [json.loads(pathlib.Path(p).read_text()) for p in sys.argv[1:]]
-if sys.platform == "darwin":
+if sys.platform in ("darwin", "linux"):
     assert comment["github_issue_plugin"] == issue["github_issue_plugin"]
     listed = next(a for a in catalog["actions"] if a["id"] == comment["id"])
     assert listed["github_issue_plugin"] == issue["github_issue_plugin"]
@@ -247,6 +247,32 @@ PY
 
 printf '%s' '{"title":"P6 issue","body":"P6 issue body canary"}' >"$ISSUE_BODY"
 printf '%s\n' p6-issue >"$MODE"
+# Prove explicit registration is used, before any credential exchange: changing
+# the approved artifact must block this otherwise authorized request.
+python3 - "$WORKDIR/issue-action.json" <<'PYTAMPER'
+import json, pathlib, sys
+artifact = pathlib.Path(json.loads(pathlib.Path(sys.argv[1]).read_text())["github_issue_plugin"]["path"])
+artifact.chmod(0o700)
+with artifact.open("ab") as stream:
+    stream.write(b"\0")
+artifact.chmod(0o500)
+PYTAMPER
+TRACE_BEFORE_PLUGIN_CHECK="$(wc -l <"$TRACE")"
+PLUGIN_DENIED_RC=0
+"$REKEY" --state-dir "$STATE" execute "$ISSUE_REF" --capability "$CAPABILITY" \
+  --body-file "$ISSUE_BODY" --content-type application/json \
+  >"$WORKDIR/plugin-denied.out" 2>"$WORKDIR/plugin-denied.err" || PLUGIN_DENIED_RC=$?
+[[ "$PLUGIN_DENIED_RC" == "4" && ! -s "$WORKDIR/plugin-denied.out" ]]
+[[ "$(wc -l <"$TRACE")" == "$TRACE_BEFORE_PLUGIN_CHECK" ]]
+python3 - "$WORKDIR/issue-action.json" "$ROOT/target/release/rekey-github-create-issue" <<'PYRESTOREPLUGIN'
+import hashlib, json, pathlib, shutil, sys
+binding = json.loads(pathlib.Path(sys.argv[1]).read_text())["github_issue_plugin"]
+artifact = pathlib.Path(binding["path"])
+artifact.chmod(0o700)
+shutil.copyfile(sys.argv[2], artifact)
+artifact.chmod(0o500)
+assert hashlib.sha256(artifact.read_bytes()).hexdigest() == binding["sha256"]
+PYRESTOREPLUGIN
 "$REKEY" --state-dir "$STATE" execute "$ISSUE_REF" --capability "$CAPABILITY" \
   --body-file "$ISSUE_BODY" --content-type application/json >"$WORKDIR/issue.out"
 grep -q 'https://github.com/p6-owner/beta/issues/7' "$WORKDIR/issue.out"
@@ -335,7 +361,7 @@ printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" credential rotate-gith
 python3 - "$WORKDIR/issue-action.json" "$WORKDIR/issue-v2.json" <<'PYUPDATE'
 import json, pathlib, shutil, sys
 value = json.loads(pathlib.Path(sys.argv[1]).read_text())
-if sys.platform == "darwin":
+if sys.platform in ("darwin", "linux"):
     old = pathlib.Path(value["github_issue_plugin"]["path"])
     new = old.with_name("registered-create-issue-v2")
     shutil.copyfile(old, new)
@@ -353,7 +379,7 @@ expected, updated, catalog = [json.loads(pathlib.Path(p).read_text()) for p in s
 assert updated["version"] == 2
 listed = next(a for a in catalog["actions"] if a["id"] == updated["id"])
 assert listed["version"] == 2
-if sys.platform == "darwin":
+if sys.platform in ("darwin", "linux"):
     assert updated["github_issue_plugin"] == expected["github_issue_plugin"]
     assert listed["github_issue_plugin"] == expected["github_issue_plugin"]
 PYUPDATED

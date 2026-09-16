@@ -1,5 +1,12 @@
 //! Real Broker/Authority/Agent IPC and native reference sidecar; no GitHub IO.
-#![cfg(target_os = "macos")]
+#![cfg(any(
+    target_os = "macos",
+    all(
+        target_os = "linux",
+        target_env = "gnu",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    )
+))]
 mod common;
 
 use std::io::Write;
@@ -18,8 +25,12 @@ fn profile() -> Vec<u8> {
         .output()
         .unwrap();
     assert!(generated.status.success());
-    let mut convert = Command::new("/usr/bin/openssl")
-        .args(["rsa", "-outform", "DER"])
+    let mut converter = Command::new("/usr/bin/openssl");
+    converter.arg("rsa");
+    #[cfg(target_os = "linux")]
+    converter.arg("-traditional");
+    let mut convert = converter
+        .args(["-outform", "DER"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

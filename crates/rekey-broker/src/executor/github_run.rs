@@ -37,7 +37,14 @@ impl ActionExecutor {
                     }
                     crate::github_profile::GitHubAction::ListRepositories => unreachable!(),
                 };
-                #[cfg(target_os = "macos")]
+                #[cfg(any(
+                    target_os = "macos",
+                    all(
+                        target_os = "linux",
+                        target_env = "gnu",
+                        any(target_arch = "x86_64", target_arch = "aarch64")
+                    )
+                ))]
                 let normalized = crate::github_issue_plugin::normalize(
                     action.github_issue_plugin.as_ref(),
                     operation,
@@ -45,7 +52,14 @@ impl ActionExecutor {
                     effect_deadline,
                 )
                 .await;
-                #[cfg(not(target_os = "macos"))]
+                #[cfg(not(any(
+                    target_os = "macos",
+                    all(
+                        target_os = "linux",
+                        target_env = "gnu",
+                        any(target_arch = "x86_64", target_arch = "aarch64")
+                    )
+                )))]
                 let normalized = if action.github_issue_plugin.is_some() {
                     Err(BrokerError::Denied("github-plugin-platform-unsupported"))
                 } else {

@@ -103,3 +103,8 @@ Broker completed 必须晚于 provider 完成、全部检查、finished audit �
 最小修复是在 Linux launcher 的 post-fork/pre-exec 阶段对全部 FD 3..UINT_MAX 调用 close_range(CLOSE_RANGE_CLOEXEC)，只标记、不提前关闭 Rust 的 exec 错误管道；成功 exec 时统一关闭。标准输入仍为空，标准输出/错误仍为调用者选择的流。闭包不得分配或加锁；系统调用失败直接拒绝启动，无逐 FD 兼容回退。该功能要求提供 CLOSE_RANGE_CLOEXEC 的 Linux 内核（5.11+）；旧内核或 seccomp 拒绝时明确失败。原攻击断言保持不变，并增加高 FD 在降低 rlimit 后仍清除的验证。
 
 最终整合源码在 LinuxKit 6.12.76/aarch64、Debian bookworm 容器中验证：`cargo check --workspace --all-targets`、Clippy warnings denied 通过；5 项 sandbox_linux 测试在 root 和 UID/GID65534 身份分别通过，原 FD211 文件断言未削弱，另覆盖 socket 与 FD500/NOFILE128。容器需 `seccomp=unconfined`、`systempaths=unconfined`，无额外 capability、privileged 或宿主挂载。没有验证原生 Ubuntu、host proc/PID 逃逸、Docker socket 隐藏或父死；不扩大既有 G2 声明。官方 close_range/CLOEXEC 语义见 [Linux man-pages](https://man7.org/linux/man-pages/man2/close_range.2.html)。
+
+
+## Linux 显式插件增量
+
+后续切片按 [参考插件规格](2026-09-16-github-reference-plugin.md) 实施独立最小 rootfs/seccomp 后端，仅支持 GNU x86_64/aarch64 显式登记，不复用 Agent launcher。AS 与父死范围按该规格验收，不关闭完整 P-10。

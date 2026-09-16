@@ -1,6 +1,8 @@
 use super::*;
 use std::process::Command as StdCommand;
+use std::process::Stdio;
 use std::sync::OnceLock;
+use std::time::Duration;
 
 // Malicious native artifact deliberately has no cooperation with the runner.
 const SOURCE: &str = r#"

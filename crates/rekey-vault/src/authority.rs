@@ -331,10 +331,17 @@ impl Worker {
             )
             .into());
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(
+            target_os = "macos",
+            all(
+                target_os = "linux",
+                target_env = "gnu",
+                any(target_arch = "x86_64", target_arch = "aarch64")
+            )
+        )))]
         if definition.github_issue_plugin.is_some() {
             return Err(rekey_domain::DomainError::InvalidActionDefinition(
-                "GitHub issue plugins require macOS".into(),
+                "GitHub issue plugins require macOS or Linux GNU x86_64/aarch64".into(),
             )
             .into());
         }

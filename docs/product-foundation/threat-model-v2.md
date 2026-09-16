@@ -539,3 +539,8 @@ SDK-04 当前源码按 `2026-09-16-action-plugin-registration.md` 将 Admin 批�
 当前 macOS 探针进一步表明：最终 SETEXEC 设置 jetsam 后，允许 self-exec 的恶意 artifact 仍可再次 exec 并清空限额；固定可信、禁止全部 exec 的 sidecar 结果不能升级任意登记插件的保障。详细结果见 GitHub 参考插件规格。
 
 2026-09-17 Linux 验收已重现继承 FD 绕过路径隔离：FD 211 可以承载已打开的 state 文件（首轮在此失败，未执行后续 socket 分支）。修复合同为 Linux post-fork/pre-exec 对所有 3+ FD 标记 CLOSE_RANGE_CLOEXEC，调用失败即拒绝，不将挂载遮罩当作 FD 撤权。该修复需要 Linux 5.11+；原失败测试已通过，并验证文件/socket FD211、先保留 FD500 再降低 NOFILE 至128 的场景；最终 LinuxKit 容器内 root 与 UID/GID65534 各5项通过。
+
+
+## Linux 显式插件后端边界（2026-09-17 源码合同）
+
+按参考插件规格新增 GNU x86_64/aarch64 固定最小 rootfs 与 seccomp allowlist。AS64MiB 是每进程虚拟映射硬限额，不是总物理内存。重新 exec 保留过滤器和 AS，但不禁止所有 exec。父死清理仅验收 READY 后路径，bwrap 初始化窗口仍存在；不扩大 G1/G2 声明。

@@ -1203,7 +1203,14 @@ async fn unclean_worker_exit_revokes_before_next_resume() {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(
+    target_os = "macos",
+    all(
+        target_os = "linux",
+        target_env = "gnu",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    )
+)))]
 #[tokio::test]
 async fn explicit_github_plugin_registration_fails_closed_on_unsupported_platform() {
     let vault = common::init_test_vault();
@@ -1234,7 +1241,7 @@ async fn explicit_github_plugin_registration_fails_closed_on_unsupported_platfor
             .await
             .unwrap_err();
         assert!(
-            matches!(error,AuthorityError::Domain(rekey_domain::DomainError::InvalidActionDefinition(ref message)) if message=="GitHub issue plugins require macOS")
+            matches!(error,AuthorityError::Domain(rekey_domain::DomainError::InvalidActionDefinition(ref message)) if message=="GitHub issue plugins require macOS or Linux GNU x86_64/aarch64")
         );
     }
     assert!(handle.action_list().await.unwrap().is_empty());

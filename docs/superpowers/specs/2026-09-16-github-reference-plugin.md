@@ -8,7 +8,7 @@ macOS 独立 deny-default Seatbelt profile 只允许系统 dylib 读取与精确
 
 runner 使用既有 effect_deadline，包含输入写入、输出读取、退出等待；本地 artifact 快照读写为同步文件 IO，不宣称其硬限时，但在快照/FD 准备后、spawn 前再次检查 deadline，过期不得启动。错误时 kill/wait 单个进程（fork 已禁止），tokio future 丢弃时 kill-on-drop。每 10ms 使用 proc_pid_rusage 检查 64 MiB RSS，查询失败直接拒绝并杀死。此为采样内存看门狗，允许采样间超冲，**不是硬内存上限**；完整 P-10 的严格资源合同仍未完成。父 Broker 正常取消杀死子进程；父被 SIGKILL 时不保证子进程立即退出，但仍受 Seatbelt 与 CPU 限额约束。不得宣传 macOS PDEATHSIG 或硬内存资源隔离。
 
-非 macOS 保持原有内置解析，不声明插件支持。测试使用真实 sidecar、真实 Broker 与确定性 transport；不访问 GitHub。公开请求匹配、revoke 在 success 前、审计闭合及恶意输出/超量/超时/文件/网络/fork/环境/FD/父退出均须验证。此实现需人工安全审查。
+Linux GNU x86_64/aarch64 的显式登记采用下述独立 Linux 合同；Linux 未登记操作保持进程内解析。其余平台拒绝显式登记。测试使用真实 sidecar、真实 Broker 与确定性 transport；不访问 GitHub。公开请求匹配、revoke 在 success 前、审计闭合及恶意输出/超量/超时/文件/网络/fork/环境/FD/父退出均须验证。此实现需人工安全审查。
 
 ## 首个单操作切片的历史验证记录
 
@@ -67,3 +67,33 @@ runner 使用既有 effect_deadline，包含输入写入、输出读取、退出
 jetsam 针对 phys_footprint ledger；本轮最大 RSS 达 70,025,216 bytes，不能将 64 MiB footprint 配置写成严格 64 MiB RSS 上限。父 PID 的 kqueue NOTE_EXIT 只是退出通知；同进程 watcher 受 SIGSTOP 或饿死影响，独立监护进程也不是父死同步内核级联。当前保留已有采样、CPU 与存活父进程 deadline 合同，不新增监护层来冒充完整 P-10。
 
 依据：[XNU SETEXEC](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/kern/kern_exec.c#L4363-L4370)、[exec 的 jetsam 参数处理](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/kern/kern_exec.c#L4943-L4976)、[footprint ledger](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/osfmk/kern/task.c#L7199-L7205)、[kevent/NOTE_EXIT](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/kevent.2.html)、[Apple 自定义 Seatbelt 支持边界](https://developer.apple.com/forums/thread/661939)。探针 C 源码、编译和逐样本日志保存于主仓库 `.git/codex/threads/remaining-effects-20260917/resource-research/`；这些实验只证明当前 OS build 的观测。
+
+
+## 2026-09-17 Linux 显式登记后端合同（源码已实现）
+
+本切片沿用 `github-issues-v1` 和格式 13，只新增 Linux GNU x86_64/aarch64 上显式登记 artifact 的执行后端。macOS 现有路径不变；Linux 无登记的内置操作保持进程内解析。支持单线程原生 GNU ABI 参考程序，不接受任意解释器运行时，不新增平台配置或通用 runner 抽象。
+
+- 固定 `/usr/bin/bwrap`，缺失或启动失败直接拒绝。宿主及系统可执行文件属于可信安装边界。启用 user/pid/net/ipc/uts namespaces、new-session、die-with-parent、cap-drop ALL；不复用可读宿主根的 Agent launcher。
+- 从空 rootfs 仅绑定 `/plugin` 与固定架构的 loader、libc、libm、libgcc_s 文件，不执行 `ldd`，不按 artifact 内容发现或增加宿主路径。对应 Debian/Ubuntu GNU 路径缺失时失败。最后 `--remount-ro /`；没有宿主目录、proc、state、UDS、可写 tmp 或运行时 socket。
+- 同一摘要核验和私有执行快照；Linux 临时快照根为 `/tmp`，权限沿用 0700/0500。丢弃全部继承环境，cwd `/`；bubblewrap 最终只注入固定 `PWD=/`，须按这个精确环境验收。macOS 仍为空环境。标准流仅为有界 pipe 与已打开 null；stdout/stdin 各 256 KiB。
+- 默认拒绝的原生架构 seccomp syscall allowlist，只允许 loader、单线程参考程序和 bwrap reaper 所需调用；错误为 EPERM，错误 ABI 直接终止，x86_64 拒绝 x32。拒绝进程/线程创建、网络 socket、ptrace/process_vm/pidfd、namespace/mount、memfd、io_uring、execveat。允许 `execve`，因为 bwrap 在最终 exec 前安装过滤器；只能访问只读最小 rootfs，过滤器与 AS 限额跨 exec 保留。不能称为“禁止全部重新执行”。
+- 父进程预先准备 BPF 文件；pre_exec 对所有 FD>=3 调用 close_range(CLOEXEC)，只让该过滤器 FD 通过启动，bwrap 消费后关闭。覆盖先打开高 FD 再降低 NOFILE 的情形；不传连续 preserve-fds 范围。pre_exec 不分配或加锁，失败直接终止启动。
+- 内核 CPU soft/hard 为 1/2 秒、CORE=0、AS soft/hard 为 64 MiB、NOFILE soft/hard 为 128。AS 是每进程虚拟地址空间硬上限，不是物理 RSS、整个 namespace 或内核对象总内存上限。Linux 不使用 macOS RSS 采样。
+- 存活 Broker 的绝对 deadline 和错误执行 kill/wait bwrap；future 取消使用 kill-on-drop，由 Tokio 回收直属子进程，通过 PID namespace 终止 payload。取消/父死测试要求已启动子树停止运行，允许暂存待收割 zombie，不宣称全部后代已同步 reap。`--die-with-parent` 的保证必须以已启动 READY 后的恶意 payload 实测为界；bubblewrap 0.8.0 初始化 fork 后重新设置 PDEATHSIG 之前存在窗口，不能声称启动全阶段原子父死终止。同步 artifact IO 仍无硬超时；SIGKILL 可能留下私有快照目录。
+
+验收必须运行最终生产 allowlist，而不是用研究 denylist 替代：同一真实 artifact 两操作、恶意输出零 exchange、文件/UDS/网络/进程及 namespace 拒绝、只读 root、FD500 后降低 limit 和过滤器 FD 无泄漏、自 exec 后限额仍在、CPU/AS、超量/挂起/deadline、取消及 READY 后父死。所有关键攻击有未隔离成功控制。LinuxKit arm64 容器证据不代表原生 Ubuntu 或 x86_64 实证。任何系统依赖不满足都失败，不将沙箱启动错误算攻击防御成功。人工安全审查仍为合并门槛。
+
+研究证据位于 `.git/codex/threads/remaining-linux-plugin-20260917/limits/`，固定四个运行库探针已证明 AS64MiB、自 exec、CPU hard2 秒及 READY 后父死级联；研究过滤器为 denylist，仅用于设计验证。[seccomp 语义](https://man7.org/linux/man-pages/man2/seccomp.2.html)、[bubblewrap 实现](https://github.com/containers/bubblewrap/blob/v0.8.0/bubblewrap.c)。
+
+
+### Linux 后端最终整合验收
+
+2026-09-17，LinuxKit 6.12.76/aarch64、Debian bookworm、bubblewrap 0.8.0，专用 Docker 容器 2 CPU/3 GiB，仅对该容器放开 seccomp/systempaths；无宿主挂载、额外 capability 或 privileged。
+
+- 最终生产 allowlist 的 runner 单元测试顶层 11 项（含一个 helper fixture，另有两次 helper 子报告）和真实 Broker 9 项，在 root 与 UID/GID65534 各通过一次。成功控制覆盖文件/root写入、网络/UDS、进程/线程、ptrace/process_vm/pidfd、memfd/io_uring/execveat；受限执行拒绝。另验证 FD500 后降低 NOFILE、最终过滤器 FD 不泄漏、精确 PWD 环境、AS/self-exec、CPU硬限额、输出边界、deadline、真实 run future 取消、READY 后父 SIGKILL。
+- 取消/父死测试观察已启动子树在 2 秒测试窗口内停止运行，允许待收割 zombie；这是本次验收窗口，不是任意宿主负载下的硬墙钟保证。Linux Agent 原有 5 项回归也通过。
+- macOS 整库串行 548 项通过、0 失败、1 项既有忽略（含子报告）；两平台 all-targets check/Clippy warnings denied、fmt、机械 API/依赖合同通过。macOS 完整回归期间只更新了 Linux 条件编译的两个测试文件，生产与 macOS 测试文件不变。
+- 两平台 release CLI/真实 Broker/本地 TLS P6 通过：同一显式绑定 artifact 执行两操作，篡改已批准文件时 exit4、空输出及零新增上游请求，恢复原摘要后执行成功；Action update/disable/revoke 合同继续通过。未访问真实 GitHub。
+- 本地 release 复制清单与文档链接检查通过，不代表下载归档、签名或公证验收。生产及测试设计独立审查均无剩余阻断项，合并前仍须人工安全审查。
+
+日志与探针保存于主仓库 `.git/codex/threads/remaining-linux-plugin-20260917/`。Linux x86_64、原生 Ubuntu 与其他系统尚无本轮原生运行证据；完整 P-10 的总物理资源及启动全过程父死保障仍未完成。

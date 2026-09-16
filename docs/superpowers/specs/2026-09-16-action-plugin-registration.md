@@ -10,7 +10,7 @@
 
 沿用 `action create/update/list/disable` 与 unlocked、step-up、deadline、原子持久化和 action.created/updated 审计。登记只持久化 Admin 批准的声明，不探测文件或运行代码；摘要由管理员独立取得。审计不写任意 artifact 路径或输出。
 
-macOS 上两种操作均通过参考 sidecar；未显式登记时使用包内 `rekey-github-create-issue`（现已处理两种 issue 操作）。显式登记有唯一优先路径，任何失败都不回退。非 macOS 显式登记及执行仍拒绝；未显式登记的内置实现保持原本进程内合同。
+macOS 上两种操作均通过参考 sidecar；未显式登记时使用包内 `rekey-github-create-issue`（现已处理两种 issue 操作）。显式登记有唯一优先路径，任何失败都不回退。Linux GNU x86_64/aarch64 显式登记使用参考插件规格中的独立 Linux 后端；其余平台拒绝显式登记。Linux 未显式登记的内置实现保持原本进程内合同。
 
 Action 更新产生新版本，旧 session 精确绑定旧路径/摘要；替换路径内容会令旧摘要失败，disable 撤销整个 Action 的会话。备份包含声明、不含 executable。SQLite 列不变；源码格式 12→13，明确拒绝旧库和备份，不迁移。
 
@@ -20,9 +20,9 @@ Broker 从已验证的 GitHubAction 决定 operation，构造封闭 JSON envelop
 
 CreateIssue 沿用非空 title（最多 256 字节）及可选 body（最多 32 KiB）；comment 要求非空 body（最多 32 KiB）。拒绝未知/重复字段、未知 operation 及操作与 body 类型不匹配。stdin/stdout 的完整 envelope 各最多 256 KiB。插件返回规范 envelope，Broker 逐字节比对包含 operation 在内的完整结果，只将已核对的规范 body 交给现有固定网络效果路径。插件不能改变操作或已授权内容。
 
-保留 no-follow/nonblocking 普通可执行 artifact（最多 32 MiB）、实际读取字节的 Admin SHA-256 核验和私有只读执行快照。登记失败不回退。沿用 Seatbelt、清空环境、FD 清理、CPU、RSS 采样、有界 IO、绝对 deadline、kill/reap。所有凭证、JWT/token、profile 权限、远程 IO、sealing、revoke 和审计留在 Broker；任何插件错误必须在 token exchange/远程效果之前终结为 blocked。
+保留 no-follow/nonblocking 普通可执行 artifact（最多 32 MiB）、实际读取字节的 Admin SHA-256 核验和私有只读执行快照。登记失败不回退。macOS 沿用 Seatbelt/RSS 采样；Linux 使用固定最小 rootfs、seccomp 和 AS 硬限额；两边均清空环境、清理 FD，并使用 CPU 限额、有界 IO、绝对 deadline、kill/reap。所有凭证、JWT/token、profile 权限、远程 IO、sealing、revoke 和审计留在 Broker；任何插件错误必须在 token exchange/远程效果之前终结为 blocked。
 
-该合同假设可信 Broker 宿主，不防恶意同 UID 父进程。RSS 采样不是硬物理内存限制，父死立即终止仍未实现。两种固定操作不等于通用多凭证效果插件平台。
+该合同假设可信 Broker 宿主，不防恶意同 UID 父进程。macOS RSS 采样不是硬物理内存限制；Linux AS 为每进程虚拟空间硬限额，父死清理仅有 READY 后证据，不覆盖完整初始化窗口。两种固定操作不等于通用多凭证效果插件平台。
 
 ## 验收
 
@@ -30,7 +30,7 @@ CreateIssue 沿用非空 title（最多 256 字节）及可选 body（最多 32 
 - domain 拒绝无效 comment number、list/错误 origin/auth/stream 以及旧协议；存储与备份拒绝 v12。
 - 同一原生 artifact 经真实 Admin IPC、Broker 和确定性 transport 分别执行两种 Action，断言精确 URL/body，revoke 和 finished audit 早于成功。
 - 两操作均验证恶意 artifact 改 operation/body 或加入 route 被拒绝；token exchange 和业务请求为零。保留已通过的摘要、缺失、symlink、崩溃、限额、版本绑定、disable、审计回滚、重启和备份测试。
-- release CLI/本地 TLS P6 覆盖两操作的显式绑定与成功执行；Linux 对显式登记拒绝，并保持内置两操作可用。
+- release CLI/本地 TLS P6 覆盖两操作的显式绑定与成功执行；Linux GNU 支持的显式登记也须覆盖同一 artifact 两操作，并保持内置两操作可用。
 
 以下是单操作切片的历史验收；两操作实现及本轮结果在剩余清单中独立记录。
 
@@ -49,3 +49,8 @@ macOS 26.5.1 / 25F80 / arm64：真实 Broker 登记执行 7 项通过，包含�
 ## 两操作切片最终验收
 
 macOS真实 Broker9项、纯connector3项、域模型29项、存储24项、备份15项和GitHub runner/profile26项专项通过。最终整库548项通过、0失败、1项既有忽略（含子进程报告）；all-targets check/Clippy/fmt通过。macOS P6证明同一登记artifact的两操作经真实CLI/Broker/TLS成功；Linux P6证明原有内置两操作继续成功，Linux专项证明显式登记两种Action均拒绝。状态/备份格式13，v12拒绝测试通过。仍未调用真实GitHub、未实现Linux插件或完整硬资源保障。
+
+
+## Linux 显式登记后续验收
+
+同日后续增量已实现 GNU x86_64/aarch64 后端，格式仍为13；LinuxKit arm64 的真实 Broker9项在 root/UID65534 各通过，覆盖两操作、篡改/缺失/替换文件、版本绑定、审计回滚、重启及备份。macOS/Linux P6均使用显式登记，并通过篡改 artifact 零上游请求负控与恢复后的成功执行。具体资源与平台证据以 [参考插件验收](2026-09-16-github-reference-plugin.md#linux-后端最终整合验收) 为准；前节的 Linux 拒绝记录是此后端之前的历史状态。
