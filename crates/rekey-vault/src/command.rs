@@ -154,6 +154,12 @@ pub enum AuthorityCommand {
         proof: UnlockProof,
         reply: Reply<()>,
     },
+    RotateVrk {
+        password: SecretInput,
+        recovery: SecretInput,
+        not_after: Option<Instant>,
+        reply: Reply<rekey_domain::ipc::VrkRotatedResponse>,
+    },
     RotateDek {
         proof: UnlockProof,
         not_after: Option<Instant>,

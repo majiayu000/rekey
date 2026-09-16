@@ -59,6 +59,41 @@ pub(super) async fn handle_recovery_rotate(
     ))
 }
 
+pub(super) async fn handle_vrk_rotate(
+    frame: &IncomingFrame,
+    ctx: &BrokerCtx,
+) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
+    let deadline = admin_mutation_deadline();
+    empty_meta(frame)?;
+    let (kind, password, recovery) = ipc::parse_proof_and_secret_body(&frame.body)?;
+    if kind != ProofKind::Password {
+        return Err(BrokerError::Frame(ipc::FrameError::InvalidField));
+    }
+    let _owner = ctx.lifecycle.coordinate_until(deadline).await?;
+    ctx.lifecycle.reject_if_busy()?;
+    if ctx.lifecycle.phase() != crate::lifecycle::BrokerPhase::Locked {
+        return Err(BrokerError::Domain(
+            rekey_domain::DomainError::InvalidActionDefinition(
+                "VRK rotation requires an explicit lock first".to_owned(),
+            ),
+        ));
+    }
+    if ctx.sessions.in_flight_total() != 0 || ctx.has_pending_terminals() {
+        return Err(BrokerError::Authority(
+            rekey_vault::AuthorityError::AuthorityBusy,
+        ));
+    }
+    let receipt = ctx
+        .authority
+        .rotate_vrk_before(
+            SecretInput::from_slice(password),
+            SecretInput::from_slice(recovery),
+            Some(deadline.into_std()),
+        )
+        .await?;
+    Ok((json(&receipt)?, Vec::new()))
+}
+
 pub(super) async fn handle_dek_rotate(
     frame: &IncomingFrame,
     ctx: &BrokerCtx,

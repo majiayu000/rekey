@@ -93,6 +93,7 @@ pub mod admin_msg {
     pub const METRICS: u16 = 37;
     pub const KEY_ROTATE_DEK: u16 = 38;
     pub const AUDIT_PRUNE: u16 = 39;
+    pub const KEY_ROTATE_VRK: u16 = 40;
 }
 
 /// Agent channel message types.
@@ -301,6 +302,29 @@ pub struct StatusResponse {
 #[serde(deny_unknown_fields)]
 pub struct DekRotatedResponse {
     pub rotated_versions: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VrkRotatedResponse {
+    pub vault_id: crate::ids::VaultId,
+    pub rotated_versions: u64,
+    pub resealed_credentials: u64,
+    pub approval_origin: ApprovalOriginResponse,
+    pub locked: bool,
+}
+
+impl VrkRotatedResponse {
+    pub fn validate(&self) -> Result<(), crate::DomainError> {
+        self.approval_origin.validate()?;
+        if !self.locked
+            || self.rotated_versions < self.resealed_credentials
+            || (self.resealed_credentials == 0 && self.rotated_versions != 0)
+        {
+            return Err(invalid_response());
+        }
+        Ok(())
+    }
 }
 
 /// Process-local, approximate monitoring snapshot. No identifiers or secrets.

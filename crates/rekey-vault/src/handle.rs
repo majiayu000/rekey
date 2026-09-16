@@ -178,6 +178,20 @@ impl AuthorityHandle {
         call!(self, |reply| AuthorityCommand::VerifyProof { proof, reply })
     }
 
+    pub async fn rotate_vrk_before(
+        &self,
+        password: SecretInput,
+        recovery: SecretInput,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<rekey_domain::ipc::VrkRotatedResponse, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::RotateVrk {
+            password,
+            recovery,
+            not_after,
+            reply
+        })
+    }
+
     pub async fn rotate_dek_before(
         &self,
         proof: UnlockProof,

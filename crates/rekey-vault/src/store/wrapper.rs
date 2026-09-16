@@ -10,7 +10,7 @@ pub(super) fn insert_wrapper(
     tx: &Transaction<'_>,
     wrapper: &KeyWrapperRecord,
 ) -> Result<(), AuthorityError> {
-    tx.execute(
+    let inserted = tx.execute(
         "INSERT INTO key_wrappers (wrapper_id, wrapper_kind, state, kdf_algorithm, kdf_params_json, salt, nonce, wrapped_vrk, created_at_ms, disabled_at_ms)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
@@ -27,6 +27,9 @@ pub(super) fn insert_wrapper(
         ],
     )
     .map_err(storage)?;
+    if inserted != 1 {
+        return Err(AuthorityError::StorageIntegrityFailed);
+    }
     Ok(())
 }
 

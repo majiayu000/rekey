@@ -184,3 +184,9 @@ APR-09 native approval binding details (2026-09-16, source only): the native cli
 | Feature | State | Release | Limits and evidence |
 | --- | --- | --- | --- |
 | AUD-06 completed execution-group pruning | Black-box Verified (bounded explicit deletion) | — | `rekey audit prune --before-ms` requires unlocked Admin step-up and deletes only complete, old execution groups without approval/management associations. Sequence-key deletion, in-loop deadlines, audited rollback, restart reconciliation and global snapshot invalidation have 10 targeted tests. A disposable real CLI/Broker smoke proved locked denial, two-row deletion, stale-snapshot failure and no-op. The export interruption test uses a synthetic Broker. No automatic retention, all-event cleanup, file shrinking, secure erase or backup deletion. See `docs/superpowers/specs/2026-09-16-audit-prune.md`. |
+
+## Locked root-key rotation (2026-09-16, source only)
+
+| Feature | State | Release | Limits and evidence |
+| --- | --- | --- | --- |
+| KEY-04 VRK and dependent-key rotation | Black-box Verified (bounded local rotation) | — | `rekey key rotate-vrk` requires Locked state and both current factors, generates a new VRK and DEKs, reseals credentials/header/all three policy records, and preserves business metadata and workload replay. One audited SQL transaction replaces all database state; remembered desktop authorization is revoked first and cannot be rolled back. Vault tests cover all kinds/history, both backup generations, proof/backoff, corrupt-state/SQL/audit/deadline rollback and SIGKILL before/after commit; real CLI and Broker tests cover secret input, origin change, old-session/challenge denial and bounded-stop unknown results. No slow-COMMIT, power-loss or directory-fsync fault injection; new CLI hidden TTY was not exercised. No provider-secret or historical-backup revocation. See `docs/superpowers/specs/2026-09-16-key04-vrk-rotation.md`. |

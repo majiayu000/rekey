@@ -768,3 +768,111 @@ fn audit_prune_cli_accepts_only_consistent_typed_receipts() {
     assert_eq!(body.status.code(), Some(2));
     assert!(body.stdout.is_empty());
 }
+
+fn run_vrk_response(metadata: serde_json::Value, body: &[u8]) -> std::process::Output {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = dir.path().join("runtime");
+    std::fs::create_dir(&runtime).unwrap();
+    let socket = runtime.join("admin.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let body = body.to_vec();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut bytes = [0u8; FRAME_HEADER_LEN];
+        stream.read_exact(&mut bytes).unwrap();
+        let request = FrameHeader::decode(&bytes).unwrap();
+        assert_eq!(request.channel, Channel::Admin);
+        assert_eq!(
+            request.message_type,
+            rekey_domain::ipc::admin_msg::KEY_ROTATE_VRK
+        );
+        let mut request_metadata = vec![0u8; request.metadata_len as usize];
+        stream.read_exact(&mut request_metadata).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&request_metadata).unwrap(),
+            serde_json::json!({})
+        );
+        let mut proof = vec![0u8; request.body_len as usize];
+        stream.read_exact(&mut proof).unwrap();
+        let (kind, proof, recovery) =
+            rekey_domain::ipc::parse_proof_and_secret_body(&proof).unwrap();
+        assert_eq!(kind, rekey_domain::ipc::ProofKind::Password);
+        assert!(recovery == b"VRK-RECOVERY-CLI-CANARY");
+        assert!(proof == b"VRK-PASSWORD-CLI-CANARY");
+        let metadata = serde_json::to_vec(&metadata).unwrap();
+        let response = FrameHeader {
+            channel: Channel::Admin,
+            flags: 0,
+            message_type: resp_msg::OK,
+            request_id: request.request_id,
+            metadata_len: metadata.len() as u32,
+            body_len: body.len() as u32,
+        };
+        stream.write_all(&response.encode()).unwrap();
+        stream.write_all(&metadata).unwrap();
+        stream.write_all(&body).unwrap();
+    });
+    let mut child = Command::new(rekey_bin())
+        .arg("--state-dir")
+        .arg(dir.path())
+        .args(["key", "rotate-vrk", "--stdin-secrets"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(b"VRK-PASSWORD-CLI-CANARY\nVRK-RECOVERY-CLI-CANARY\n")
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    server.join().unwrap();
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("VRK-PASSWORD-CLI-CANARY"));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("VRK-PASSWORD-CLI-CANARY"));
+    output
+}
+
+#[test]
+fn vrk_cli_rejects_malformed_receipts_and_uses_body_only_two_factors() {
+    let valid = serde_json::json!({"vault_id":"00112233-4455-4677-8899-aabbccddeeff","rotated_versions":2,"resealed_credentials":1,"approval_origin":{"algorithm":"ed25519","public_key":"11".repeat(32)},"locked":true});
+    let good = run_vrk_response(valid.clone(), &[]);
+    assert!(good.status.success());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&good.stdout).unwrap(),
+        valid
+    );
+    for (field, value) in [
+        ("vault_id", serde_json::json!("invalid")),
+        ("locked", serde_json::json!(false)),
+        ("rotated_versions", serde_json::json!(-1)),
+        ("rotated_versions", serde_json::json!(0)),
+        ("resealed_credentials", serde_json::json!(0)),
+        ("resealed_credentials", serde_json::json!(1.5)),
+        ("secret", serde_json::json!("UNTRUSTED-VRK-CANARY")),
+        (
+            "approval_origin",
+            serde_json::json!({"algorithm":"rsa","public_key":"11".repeat(32)}),
+        ),
+        (
+            "approval_origin",
+            serde_json::json!({"algorithm":"ed25519","public_key":"zz".repeat(32)}),
+        ),
+    ] {
+        let mut value_bad = valid.clone();
+        value_bad[field] = value;
+        let out = run_vrk_response(value_bad, &[]);
+        assert_eq!(out.status.code(), Some(2));
+        assert!(out.stdout.is_empty());
+        assert!(!String::from_utf8_lossy(&out.stderr).contains("UNTRUSTED-VRK-CANARY"));
+    }
+    let mut missing = valid.clone();
+    missing.as_object_mut().unwrap().remove("locked");
+    assert_eq!(run_vrk_response(missing, &[]).status.code(), Some(2));
+    let body = run_vrk_response(valid, b"UNTRUSTED-VRK-CANARY");
+    assert_eq!(body.status.code(), Some(2));
+    assert!(body.stdout.is_empty());
+}

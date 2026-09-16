@@ -77,6 +77,34 @@ no partial key rotation. This does not rotate provider credentials, revoke old
 backups, erase old SQLite pages, or repair a compromised VRK. See the
 [DEK rotation contract](superpowers/specs/2026-09-16-key04-dek-rotation.md).
 
+To replace the VRK as well, first lock explicitly:
+
+```bash
+rekey lock
+rekey key rotate-vrk
+```
+
+Enter the current password and current recovery key at the two hidden prompts.
+For deliberate automation, `--stdin-secrets` reads those factors as exactly two
+lines. Both are required. The operation creates a new VRK and fresh DEKs,
+reseals all dependent state, and leaves the broker locked. Credential values,
+versions, policy and workload replay records remain unchanged. The original
+password and recovery key still unlock the current vault independently.
+
+The receipt includes the new `approval_origin` public key. Re-pin it through
+your trusted approval channel before preparing and signing new challenges;
+old sessions and challenges were revoked by the explicit lock. Remembered
+unlock authorization is revoked before the database transaction, so a later
+failure may require manual unlock even when the old key generation remains.
+
+A lost connection or unclean shutdown means the result is unknown, not that
+rotation rolled back. Do not retry automatically: reconnect, inspect the
+rotation audit and unlock to read `rekey approval origin`. An over-budget stop
+exits with an error and preserves the crash marker. Backups remain tied to
+their own key generation; this operation neither revokes old backups nor
+replaces compromised password/recovery values. See the
+[VRK rotation contract](superpowers/specs/2026-09-16-key04-vrk-rotation.md).
+
 ## Query and export local audit metadata
 
 Audit queries use the owner-checked Admin socket and work while the broker is

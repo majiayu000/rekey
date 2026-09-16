@@ -47,9 +47,10 @@ fn admin_body_limit(message_type: u16) -> u32 {
         admin_msg::UNLOCK_PASSWORD | admin_msg::UNLOCK_RECOVERY => {
             ipc::ADMIN_SECRET_FIELD_MAX_BYTES
         }
-        admin_msg::CREDENTIAL_ADD | admin_msg::CREDENTIAL_ROTATE | admin_msg::PASSWORD_CHANGE => {
-            ipc::ADMIN_SECRET_BODY_MAX_BYTES
-        }
+        admin_msg::CREDENTIAL_ADD
+        | admin_msg::CREDENTIAL_ROTATE
+        | admin_msg::PASSWORD_CHANGE
+        | admin_msg::KEY_ROTATE_VRK => ipc::ADMIN_SECRET_BODY_MAX_BYTES,
         admin_msg::CREDENTIAL_ROTATE_GITHUB_APP
         | admin_msg::GITHUB_WEBHOOK_APPLY
         | admin_msg::CREDENTIAL_ROTATE_VAULT_KV
@@ -312,6 +313,7 @@ async fn dispatch(
             ctx.unlock(proof).await?;
             Ok((json(&serde_json::json!({"unlocked": true}))?, Vec::new()))
         }
+        admin_msg::KEY_ROTATE_VRK => password_lifecycle::handle_vrk_rotate(frame, ctx).await,
         admin_msg::KEY_ROTATE_DEK => password_lifecycle::handle_dek_rotate(frame, ctx).await,
         admin_msg::PASSWORD_CHANGE => password_lifecycle::handle_password_change(frame, ctx).await,
         admin_msg::RECOVERY_ROTATE => password_lifecycle::handle_recovery_rotate(frame, ctx).await,

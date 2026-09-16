@@ -116,6 +116,24 @@ impl Worker {
             ensure_mutation_current(not_after)?;
             credential_state::verify(vrk.bytes(), self.header.vault_id, &record)?;
         }
+        let versions = self.rotated_version_ciphertexts(vrk.bytes(), vrk.bytes(), not_after)?;
+        let audit = self.audit_event_or_fault(unlock_audit(
+            event_type::VAULT_DEK_ROTATED,
+            outcome::SUCCESS,
+            "dek-rotation",
+        ))?;
+        ensure_mutation_current(not_after)?;
+        self.store
+            .replace_version_ciphertexts(&versions, audit, not_after)?;
+        Ok(versions.len() as u64)
+    }
+
+    pub(super) fn rotated_version_ciphertexts(
+        &self,
+        old_vrk: &[u8; 32],
+        new_vrk: &[u8; 32],
+        not_after: Option<std::time::Instant>,
+    ) -> Result<Vec<(CredentialKind, CredentialVersionRecord)>, AuthorityError> {
         // Only ciphertext records accumulate here. Each iteration owns and
         // zeroizes its old DEK and plaintext before processing the next row.
         let mut versions = self.store.list_all_versions()?;
@@ -133,13 +151,8 @@ impl Worker {
                 constraints_hash: [0u8; 32],
             }
             .encode();
-            let dek_bytes = aead::open(
-                vrk.bytes(),
-                &dek_aad,
-                &version.dek_nonce,
-                &version.wrapped_dek,
-            )
-            .map_err(|_| AuthorityError::CryptoFailure)?;
+            let dek_bytes = aead::open(old_vrk, &dek_aad, &version.dek_nonce, &version.wrapped_dek)
+                .map_err(|_| AuthorityError::CryptoFailure)?;
             let old_dek = Zeroizing::new(
                 <[u8; 32]>::try_from(dek_bytes.as_slice())
                     .map_err(|_| AuthorityError::CryptoFailure)?,
@@ -162,21 +175,13 @@ impl Worker {
             .map_err(|_| AuthorityError::CryptoFailure)?;
             let new_dek = DataKey::generate()?;
             let payload = aead::seal(new_dek.bytes(), &payload_aad, &plaintext)?;
-            let wrapped = aead::seal(vrk.bytes(), &dek_aad, new_dek.bytes())?;
+            let wrapped = aead::seal(new_vrk, &dek_aad, new_dek.bytes())?;
             version.dek_nonce = wrapped.nonce;
             version.wrapped_dek = wrapped.ciphertext;
             version.payload_nonce = payload.nonce;
             version.encrypted_payload = payload.ciphertext;
         }
-        let audit = self.audit_event_or_fault(unlock_audit(
-            event_type::VAULT_DEK_ROTATED,
-            outcome::SUCCESS,
-            "dek-rotation",
-        ))?;
-        ensure_mutation_current(not_after)?;
-        self.store
-            .replace_version_ciphertexts(&versions, audit, not_after)?;
-        Ok(versions.len() as u64)
+        Ok(versions)
     }
 
     pub(super) fn credential_add(

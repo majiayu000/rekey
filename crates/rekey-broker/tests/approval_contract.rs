@@ -716,3 +716,167 @@ async fn admin_inbox_lists_get_and_drops_reserved_challenges() {
     );
     broker.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn vrk_rotation_requires_lock_and_changes_origin_without_reviving_approval_or_session() {
+    let broker = common::start_broker().await;
+    common::unlock(&broker).await;
+    let credential =
+        common::add_credential(&broker, "root-rotation", b"VRK-IPC-PRIVATE-CANARY").await;
+    let (action, version) = common::create_action(&broker, &credential).await;
+    let session = common::policy::create_session_grant(&broker, &action, version, 20).await;
+    let (approver_id, key, public_key) = approver();
+    common::policy::activate_approval_policy(
+        &broker,
+        &action,
+        version,
+        common::policy::ApprovalPolicy {
+            principal_id: &session.principal_id,
+            approvers: &[(approver_id, public_key)],
+            quorum: 1,
+            mode: ApprovalMode::OneTime,
+            max_uses: 1,
+            max_window_ms: None,
+        },
+    )
+    .await;
+    let old_origin = origin_public_key(&broker).await;
+    let pending = prepare_response(&broker, &session.capability_token, &action, version).await;
+    let envelope = serde_json::to_vec(pending.ok()).unwrap();
+    let challenge =
+        rekey_policy::parse_and_verify_approval_challenge_envelope(&envelope, &old_origin).unwrap();
+    let grant = signed_grant(&challenge, approver_id, &key, 1);
+    let recovery = common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::RECOVERY_ROTATE,
+        b"{}",
+        &common::proof_body(common::PASSWORD),
+    )
+    .await;
+    recovery.ok();
+    let body = common::proof_and_secret_body(common::PASSWORD, &recovery.body);
+    let running = common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::KEY_ROTATE_VRK,
+        b"{}",
+        &body,
+    )
+    .await;
+    assert_eq!(running.err_code(), "INVALID_INPUT");
+    let agent = common::call(
+        &broker.agent_sock(),
+        Channel::Agent,
+        admin_msg::KEY_ROTATE_VRK,
+        b"{}",
+        &[],
+    )
+    .await;
+    assert_eq!(agent.err_code(), "INVALID_FRAME");
+    common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::LOCK,
+        b"{}",
+        &[],
+    )
+    .await
+    .ok();
+    for (metadata, proof) in [
+        (
+            br#"{"password":"metadata-not-accepted"}"#.as_slice(),
+            body.clone(),
+        ),
+        (b"{}", Vec::new()),
+    ] {
+        assert_eq!(
+            common::call(
+                &broker.admin_sock(),
+                Channel::Admin,
+                admin_msg::KEY_ROTATE_VRK,
+                metadata,
+                &proof
+            )
+            .await
+            .err_code(),
+            "INVALID_FRAME"
+        );
+    }
+    let response = common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::KEY_ROTATE_VRK,
+        b"{}",
+        &body,
+    )
+    .await;
+    let receipt: ipc::VrkRotatedResponse = serde_json::from_value(response.ok().clone()).unwrap();
+    receipt.validate().unwrap();
+    assert!(response.body.is_empty());
+    assert_eq!(receipt.rotated_versions, 1);
+    assert_eq!(
+        common::call(
+            &broker.admin_sock(),
+            Channel::Admin,
+            admin_msg::STATUS,
+            b"{}",
+            &[]
+        )
+        .await
+        .ok()["state"],
+        "locked"
+    );
+    common::unlock(&broker).await;
+    let new_origin = origin_public_key(&broker).await;
+    assert_ne!(old_origin, new_origin);
+    assert_eq!(
+        receipt.approval_origin.public_key,
+        data_encoding::HEXLOWER.encode(&new_origin)
+    );
+    assert!(
+        rekey_policy::parse_and_verify_approval_challenge_envelope(&envelope, &new_origin).is_err()
+    );
+    assert!(pending_inbox(&broker).await.challenges.is_empty());
+    assert_eq!(
+        execute(
+            &broker,
+            &session.capability_token,
+            &action,
+            version,
+            vec![grant]
+        )
+        .await
+        .err_code(),
+        "INVALID_CAPABILITY"
+    );
+    // A fresh capability needs a policy rule for its fresh principal; installing
+    // that rule is normal approval setup, separate from VRK replacement.
+    let fresh = common::policy::create_session_grant(&broker, &action, version, 20).await;
+    common::policy::activate_approval_policy(
+        &broker,
+        &action,
+        version,
+        common::policy::ApprovalPolicy {
+            principal_id: &fresh.principal_id,
+            approvers: &[(approver_id, public_key)],
+            quorum: 1,
+            mode: ApprovalMode::OneTime,
+            max_uses: 1,
+            max_window_ms: None,
+        },
+    )
+    .await;
+    let fresh_challenge = prepare(&broker, &fresh.capability_token, &action, version).await;
+    broker.fake.push_response(upstream_ok());
+    execute(
+        &broker,
+        &fresh.capability_token,
+        &action,
+        version,
+        vec![signed_grant(&fresh_challenge, approver_id, &key, 1)],
+    )
+    .await
+    .ok();
+    broker.shutdown().await;
+}

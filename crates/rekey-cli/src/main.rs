@@ -388,6 +388,12 @@ enum ApprovalCommand {
 
 #[derive(Subcommand)]
 enum KeyCommand {
+    /// Rotate the vault root key while locked, requiring both current factors.
+    RotateVrk {
+        /// Read current password and recovery key as exactly two stdin lines.
+        #[arg(long)]
+        stdin_secrets: bool,
+    },
     /// Reseal all credential versions under fresh DEKs, preserving their values.
     RotateDek {
         #[command(flatten)]
@@ -764,6 +770,9 @@ fn main() {
             content_type,
             &headers,
         ),
+        Command::Key(KeyCommand::RotateVrk { stdin_secrets }) => {
+            commands::key_rotate_vrk(&state_dir, stdin_secrets)
+        }
         Command::Key(KeyCommand::RotateDek { step_up }) => {
             commands::key_rotate_dek(&state_dir, step_up.recovery, step_up.password_stdin)
         }

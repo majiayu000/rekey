@@ -236,6 +236,7 @@ pub mod event_type {
     pub const VAULT_UNLOCK_FAILED: &str = "vault.unlock_failed";
     pub const VAULT_LOCKED: &str = "vault.locked";
     pub const AUDIT_PRUNED: &str = "audit.pruned";
+    pub const VAULT_VRK_ROTATED: &str = "vault.vrk_rotated";
     pub const VAULT_DEK_ROTATED: &str = "vault.dek_rotated";
     pub const VAULT_PASSWORD_CHANGED: &str = "vault.password_changed";
     pub const VAULT_PASSWORD_CHANGE_FAILED: &str = "vault.password_change_failed";
