@@ -26,6 +26,21 @@ Credential add/rotate accepts `--stdin-secrets`, with proof on line 1 and the
 credential on line 2. Do not place secrets in argv, environment variables,
 JSON metadata, logs, or Action files.
 
+## Inspect local metrics (source checkout)
+
+```bash
+rekey metrics                 # numeric JSON snapshot
+rekey metrics --prometheus    # Prometheus text, written to stdout
+```
+
+These source-only commands use the existing Admin socket and work while locked.
+They do not unlock the vault or extend its idle deadline. Counters cover local
+dispatch, rejection, cancellation, latency and backup requests; capability
+gauges reuse the current session registry. Values reset when the broker starts
+and are approximate under concurrent work. Fault signals count fault requests,
+not confirmed state transitions. No HTTP listener or remote collector is added.
+See the [measurement contract](superpowers/specs/2026-09-16-local-metrics.md).
+
 ## Replace password or recovery key
 
 Both operations require an unlocked broker and rewrap the existing VRK; they
@@ -45,6 +60,22 @@ again and retain only the latest key.
 
 Rotation does not invalidate historical backups. Each backup remains tied to
 the password and recovery wrappers captured in that snapshot.
+
+## Rotate encryption keys (source checkout)
+
+```bash
+rekey key rotate-dek
+rekey key rotate-dek --recovery --password-stdin
+```
+
+While unlocked, this Admin operation requires fresh password or recovery proof
+and replaces every stored version's DEK, including retired and revoked versions.
+The returned `rotated_versions` count includes all versions. Credential values,
+IDs, versions, VRK, unlock factors and existing capability bindings stay the same.
+Replacement ciphertexts and the success audit commit together; a failure leaves
+no partial key rotation. This does not rotate provider credentials, revoke old
+backups, erase old SQLite pages, or repair a compromised VRK. See the
+[DEK rotation contract](superpowers/specs/2026-09-16-key04-dek-rotation.md).
 
 ## Query and export local audit metadata
 

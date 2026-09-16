@@ -91,3 +91,24 @@ pub fn recovery_rotate(state_dir: &Path, password_stdin: bool) -> Result<(), Cli
         .and_then(|_| stdout.write_all(b"\n"))
         .map_err(|error| CliError::local("OUTPUT_FAILED", format!("cannot write output: {error}")))
 }
+
+pub fn key_rotate_dek(
+    state_dir: &Path,
+    recovery: bool,
+    password_stdin: bool,
+) -> Result<(), CliError> {
+    let proof = super::read_step_up(recovery, password_stdin)?;
+    let body = proof_body(recovery, &proof);
+    let (metadata, response_body) = admin_with_response_timeout(
+        state_dir,
+        LIFECYCLE_RESPONSE_TIMEOUT,
+    )?
+    .call(admin_msg::KEY_ROTATE_DEK, b"{}", &body)?;
+    if !response_body.is_empty() {
+        return Err(CliError::local(
+            "INVALID_FRAME",
+            "DEK rotation returned an unexpected response body",
+        ));
+    }
+    print_json::<ipc::DekRotatedResponse>(&metadata)
+}

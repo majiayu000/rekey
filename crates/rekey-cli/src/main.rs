@@ -142,6 +142,9 @@ enum Command {
     /// Vault password lifecycle.
     #[command(subcommand)]
     Password(PasswordCommand),
+    /// Vault key maintenance (DEK rotation only; VRK and old backups are unchanged).
+    #[command(subcommand)]
+    Key(KeyCommand),
     /// Recovery-key lifecycle.
     #[command(subcommand)]
     Recovery(RecoveryCommand),
@@ -380,6 +383,15 @@ enum ApprovalCommand {
         content_type: Option<String>,
         #[arg(long = "header")]
         headers: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum KeyCommand {
+    /// Reseal all credential versions under fresh DEKs, preserving their values.
+    RotateDek {
+        #[command(flatten)]
+        step_up: StepUpArgs,
     },
 }
 
@@ -745,6 +757,9 @@ fn main() {
             content_type,
             &headers,
         ),
+        Command::Key(KeyCommand::RotateDek { step_up }) => {
+            commands::key_rotate_dek(&state_dir, step_up.recovery, step_up.password_stdin)
+        }
         Command::Password(PasswordCommand::Change {
             recovery,
             stdin_secrets,

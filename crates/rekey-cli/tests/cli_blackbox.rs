@@ -233,6 +233,52 @@ fn cli_end_to_end() {
         .unwrap()
         .to_owned();
 
+    // DEK rotation reads step-up only from stdin, returns counts only, and
+    // accepts both existing unlock factors without changing credential data.
+    let rotate_args = [
+        "--state-dir",
+        state,
+        "key",
+        "rotate-dek",
+        "--password-stdin",
+    ];
+    let denied = run(&rekey_bin(), &rotate_args, Some("wrong-dek-proof\n"));
+    assert_eq!(denied.status, 3);
+    assert!(!denied.stderr.contains("wrong-dek-proof"));
+    let rotated = run_with_process_boundary(
+        &rekey_bin(),
+        &rotate_args,
+        &format!("{PASSWORD}\n"),
+        &[PASSWORD, SECRET],
+    );
+    assert_eq!(rotated.status, 0, "{}", rotated.stderr);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&rotated.stdout).unwrap(),
+        serde_json::json!({"rotated_versions": 1})
+    );
+    let recovered = run_with_process_boundary(
+        &rekey_bin(),
+        &[
+            "--state-dir",
+            state,
+            "key",
+            "rotate-dek",
+            "--recovery",
+            "--password-stdin",
+        ],
+        &format!("{recovery_key}\n"),
+        &[&recovery_key, SECRET],
+    );
+    assert_eq!(recovered.status, 0, "{}", recovered.stderr);
+    for output in [&rotated, &recovered] {
+        for canary in [PASSWORD, SECRET, recovery_key.as_str()] {
+            assert!(!output.stdout.contains(canary));
+            assert!(!output.stderr.contains(canary));
+        }
+    }
+
+    assert_files_exclude(&state_dir, &[PASSWORD, SECRET, recovery_key.as_str()]);
+
     // list shows metadata, never the value.
     let output = run(
         &rekey_bin(),

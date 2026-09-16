@@ -91,6 +91,7 @@ pub mod admin_msg {
     pub const DESKTOP_REMEMBER: u16 = 35;
     pub const DESKTOP_RESUME: u16 = 36;
     pub const METRICS: u16 = 37;
+    pub const KEY_ROTATE_DEK: u16 = 38;
 }
 
 /// Agent channel message types.
@@ -293,6 +294,12 @@ pub struct StatusResponse {
     pub format_version: u32,
     pub runtime_version: String,
     pub sessions_active: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DekRotatedResponse {
+    pub rotated_versions: u64,
 }
 
 /// Process-local, approximate monitoring snapshot. No identifiers or secrets.
