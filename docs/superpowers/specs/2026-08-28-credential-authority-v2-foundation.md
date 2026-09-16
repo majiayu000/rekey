@@ -913,8 +913,15 @@ with closed profile `linux-netns-v1`. It uses system bubblewrap to unshare
 user/net/pid namespaces, overlay `/tmp` and the state directory, bind-mount
 the disjoint Agent socket back onto its canonical path, and exec one absolute
 command. It requires the disjoint Agent endpoint above and does not replace
-this Docker G2 harness, change default G1, or claim macOS isolation. See
+this Docker G2 harness or change default G1. See
 `docs/superpowers/specs/2026-09-04-agent-egress-launcher-p09.md`.
+
+OS-05 adds an experimental macOS `macos-seatbelt-v1` adapter to the same
+command. The fixed Seatbelt profile allows a read-only code directory, private
+scratch writes, and the exact canonical Agent UDS. It uses CLOEXEC_DEFAULT
+spawn and fails closed; no generic G2 or automatic descendant-termination
+claim follows. The selected contract and OS-specific evidence are in
+`docs/superpowers/specs/2026-09-16-local-isolation-and-streaming.md`.
 
 ### 12.2 Frame v1
 

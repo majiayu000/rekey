@@ -389,11 +389,11 @@ Action 和最小响应 schema 比通用透明代理更强。任何新增 canonic
 | P-03 | 签名策略与审批 | `scripts/p3-approval-acceptance.sh` | trust 安装、连续版本、重启 reload、单人/双人 grant、重放/篡改/过期拒绝和 audit list/export 全通过 |
 | P1 | Linux 隔离 | cargo test -p rekey-e2e --test linux_g2 | Agent root 仍不能读 Broker/Vault 或直连 |
 | P1 | 流式响应 | cargo test -p rekey-broker --test streaming_sealing | 跨 chunk 反射可检测并中止 |
-| P1+ | macOS 隔离 | cargo test -p rekey-e2e --test macos_sandbox | Agent 子进程无秘密、无全局 CA、无旁路 |
+| OS-05 | macOS 实验 Seatbelt 启动器 | `cargo test -p rekey-broker --test sandbox_macos`; `cargo test -p rekey-broker sandbox:: --lib` | 固定 `macos-seatbelt-v1`；当前目录只读、private scratch 可写、精确 canonical Agent UDS；真实 Broker + fake upstream 授权调用成功；文件/网络/FD/子孙攻击 fixtures 拒绝；仅本次 OS build；不升级 G2。task_for_pid 控制组也拒绝，不能归功于本沙箱；父死不保证全后代终止 |
 | P-05 | Connector 契约 | `scripts/p5-connector-sdk.sh` | 静态 registry、effect/lifecycle、MCP/OAuth projection 和 reserved GitHub no-fallback 一致 |
 | P-07A | Vault KV v2 固定版本源 | `cargo test -p rekey-broker --test vault_source_contract`; `scripts/p7-vault-kv-source.sh` | 精确版本读取、源与结果 sealing、drain 准入、轮换、重启及备份恢复通过；不外推为通用 Vault |
 | P-07B | Vault 一次性动态 lease 源 | `cargo test -p rekey-broker --test vault_dynamic_contract`; `scripts/p7-vault-dynamic-source.sh` | 单次获取、5–300 秒边界、固定 Action 注入、exact sync revoke-before-success、失败清理和 lock drain 通过；不承诺续租或 crash-time revoke |
-| P-09 | Linux agent-run netns launcher | `cargo test -p rekey-domain sandbox::`; `cargo test -p rekey-broker sandbox::`; `scripts/p9-linux-agent-run.sh` | 默认 G1 socket 拒绝；Linux 子进程无公网 TCP、看不见 state、不继承 `REKEY_PASSWORD`；disjoint `agent.sock`（含 `/tmp` 下 socket 在 tmpfs overlay 后 bind 回去）上的 authorized execute 成功；macOS `UNSUPPORTED_PLATFORM`；不升级通用 G2 |
+| P-09 | Linux agent-run netns launcher | `cargo test -p rekey-domain sandbox::`; `cargo test -p rekey-broker sandbox::`; `scripts/p9-linux-agent-run.sh` | 默认 G1 socket 拒绝；Linux 子进程无公网 TCP、看不见 state、不继承 `REKEY_PASSWORD`；disjoint `agent.sock`（含 `/tmp` 下 socket 在 tmpfs overlay 后 bind 回去）上的 authorized execute 成功；macOS 行为由 OS-05 覆盖；不升级通用 G2 |
 | H | 持续 Fuzz | `cargo fuzz run <ipc|action|policy|response_sealing|restore>` | 五个边界无 crash、hang、越界资源使用或解析分歧 |
 | P2 | 多租户 | cargo test -p rekey-control --test tenant_isolation | 跨租户读取、缓存和 token 全拒绝 |
 
@@ -464,7 +464,7 @@ Action 和最小响应 schema 比通用透明代理更强。任何新增 canonic
 ### 未来范围待决
 
 - 通用 G2 产品部署最终采用 native namespace、gVisor、Firecracker 或其他隔离边界。
-- macOS 强隔离是否采用 Seatbelt、Virtualization.framework 或独立虚拟机。
+- macOS 已选择实验 Seatbelt 启动器（OS-05）；未来通用强隔离是否采用 Virtualization.framework 或独立虚拟机仍未决定。
 - 跨主机 Gateway/Agent 是否要求双向 mTLS 或 DPoP。
 - 集群 Capability 的持久化、复制和撤销模型。
 - 企业审计采用事务性 outbox、WORM 或客户 SIEM 的具体合同。
