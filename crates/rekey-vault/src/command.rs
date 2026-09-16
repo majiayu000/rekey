@@ -4,7 +4,7 @@ use std::time::Instant;
 use rekey_domain::action::{
     ExactPath, FixedMethod, HeaderCredentialUse, HttpsOrigin, RequestPolicy, ResponsePolicy,
 };
-use rekey_domain::audit::{AuditPage, AuditQuery};
+use rekey_domain::audit::{AuditPage, AuditPruneReceipt, AuditPruneRequest, AuditQuery};
 use rekey_domain::credential::{CredentialKind, CredentialLabel, CredentialMetadata};
 use rekey_domain::ids::{ActionId, CredentialId, PolicySignerId, RequestId, SessionId, VaultId};
 use tokio::sync::oneshot;
@@ -245,6 +245,12 @@ pub enum AuthorityCommand {
         audit: AuditDraft,
         not_after: Option<Instant>,
         reply: Reply<()>,
+    },
+    AuditPrune {
+        request: AuditPruneRequest,
+        proof: UnlockProof,
+        not_after: Option<Instant>,
+        reply: Reply<AuditPruneReceipt>,
     },
     AuditQuery {
         query: AuditQuery,

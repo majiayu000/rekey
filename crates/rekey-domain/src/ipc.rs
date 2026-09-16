@@ -92,6 +92,7 @@ pub mod admin_msg {
     pub const DESKTOP_RESUME: u16 = 36;
     pub const METRICS: u16 = 37;
     pub const KEY_ROTATE_DEK: u16 = 38;
+    pub const AUDIT_PRUNE: u16 = 39;
 }
 
 /// Agent channel message types.

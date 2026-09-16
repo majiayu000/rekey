@@ -1918,3 +1918,15 @@ Remember 操作入队后等待明确结果，不丢弃仍在写入的 worker 回
 验证包括 `authority_contract` 的跨重启/过期/篡改/跨 vault/撤销/异常关闭测试、
 `scripts/test-human-vault.py` 的真实服务重启恢复、`scripts/test-macos-keychain.swift`
 的跨进程 Keychain 与到期测试。物理 Mac 重启未作为本次验证证据。
+
+## 2026-09-16 本机增量合同
+
+以下源码合同细化 Foundation；发布状态和验收成熟度仍以 Feature Truth Matrix 为准。
+
+- [本机指标](2026-09-16-local-metrics.md)：既有 Admin socket 的数值快照与 CLI Prometheus 文本，没有新 listener。
+- [审批详情审阅](2026-09-16-approval-review-ui.md)：只读信封与精确 Action 版本，签名仍由独立工具验证和签发。
+- [全版本 DEK 轮换](2026-09-16-key04-dek-rotation.md)：事务内重加密全部历史版本，VRK 和业务身份保持不变。
+- [显式执行审计清理](2026-09-16-audit-prune.md)：仅删除完整、无审批关联的过期执行组，永久清理标记使旧分页快照显式失效。
+- [锁定状态 VRK 轮换](2026-09-16-key04-vrk-rotation.md)：双因素局部解锁并原子替换全部加密依赖；保持 Locked，审批来源公钥改变，桌面授权撤销具有明确的非原子副作用。
+
+VRK 轮换在实现证据到达前仅为实施规格。外部服务与企业部署仅交付[具体规格提案](2026-09-16-external-capabilities.md)，不构成外部接入已完成的声明。

@@ -1,6 +1,6 @@
 # AUD-06 本机显式执行审计清理
 
-状态：待实现。用户已授权优先本地功能。本规格替代 P-02 中“不提供删除”的限制，仅限下述安全集合；不是自动保留策略、全部审计事件清理或合规存储。
+状态：已实现并通过本切片定向验收；主线程工作区全量验收待整合。用户已授权优先本地功能。本规格替代 P-02 中“不提供删除”的限制，仅限下述安全集合；不是自动保留策略、全部审计事件清理或合规存储。
 
 ## 命令与授权
 
@@ -32,3 +32,30 @@ JSONL 多页导出若中途快照失效，必须失败，不输出完整结束�
 故障测试覆盖删除后 SQL/审计失败及提交前超时，确认删除和标记同时回滚。旧分页与进行中的多页导出必须显式失效；无删除不使旧快照失效。IPC/CLI 测试覆盖锁定、错误 proof、Agent 拒绝与恶意回执。
 
 该操作不执行 VACUUM，不承诺数据库文件缩小、安全擦除、WORM 或旧备份同步删除。主分支仅在实现和上述验证到达后更新成熟度。
+
+## 线协议与精确选择
+
+Admin 消息 `AUDIT_PRUNE = 39`。metadata 为 `{before_ms: i64}`，proof 仅在
+既有 proof-only body 中。回执为 `{before_ms, deleted_rows, deleted_groups,
+prune_sequence}`；最后一项只有非空清理才是正 sequence，否则为 null。
+CLI 拒绝未知字段、额外 body、cutoff 不匹配、越界序号或不一致计数。
+非空清理标记必须大于删除行数，符合既有 AUTOINCREMENT 序号约束。
+
+可删组必须恰有一条 started 和一条 terminal，terminal sequence 晚于 started；
+terminal 限 finished/blocked/indeterminate。无 started 的 blocked 永远保留。
+组内其他事件只允许 `connector.github.authorized`、`connector.github.token_revoked`、
+`vault.lease.issued`、`vault.lease.revoked`。任意审批事件或任意事件的非空
+approval_request_id/approval_id/approver_id 均保留整组。管理/未知事件同组同样保留。
+逐行复用审计的存储完整性解析，解析损坏必须报错；不通过删除把损坏隐藏。
+
+快照过期判断使用全表最新清理标记，先于任何查询过滤。snapshot 等于标记时仍可用。
+Admin 连接关闭可能丢失已入 Worker 的操作结果，不会将后台仍可能提交的操作返回为
+明确的 Busy；不为断连建立新的取消协议。
+
+## 本切片验证证据
+
+- Vault 集成测试 6 项通过，覆盖三个 terminal、各类保留组、全局/过滤/重启快照失效、两次重启 reconcile、重复 no-op、后段 SQL/审计/提交失败回滚及一万执行组的截止时间内清理。使用原 schema；重复 started/terminal 由现有唯一索引拒绝，另验证可构造的 terminal 先于 started 异常保留。
+- Store 定向测试 1 项通过。测试专用 AFTER INSERT 触发器确认已删除目标行并写入 marker，再消耗时间使提交前 deadline 过期；验证删除和 marker 同时回滚，无生产探针。
+- 真实 Broker IPC 测试 1 项通过，覆盖成功清理、locked/Agent/错误或缺失 proof 拒绝、旧快照失效与 marker 等值快照可用。
+- CLI 进程协议测试 2 项通过。使用合成 Broker 验证正常/no-op 回执、恶意回执、proof body 与输出秘密 canary，以及多页导出收到过期错误后没有 complete trailer 或成功 receipt。协调者另用真实 CLI/Broker 和真实 schema 的一次性合成库验证了 locked 拒绝、step-up、2 行执行组删除、旧 snapshot 过期、no-op 及输出 canary（本机 artifact `audit-smoke.log`）；导出中途失效仍由 CLI 协议测试和真实后端快照测试分别证明。
+- 不在真实用户保险库运行清理；不扩展为自动保留或所有审计类别回收。

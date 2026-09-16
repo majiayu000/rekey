@@ -454,8 +454,8 @@ Action 和最小响应 schema 比通用透明代理更强。任何新增 canonic
 - Audit 使用本地 SQLite/WAL fail-closed；P-02 只通过 owner-checked Admin socket
   提供每次最多扫描 1,000 行、游标续查的稳定快照脱敏查询和 mode-0600 JSONL 导出，
   Agent socket 无此接口。
-  输出省略 Secret、body/header、capability、resource ID 和 parameter hash。尚未设计
-  删除、可配置 retention、enterprise outbox、WORM、legal hold 或 SIEM/远程交付。
+  输出省略 Secret、body/header、capability、resource ID 和 parameter hash。显式清理的源码规格见 `2026-09-16-audit-prune.md`：仅完整、无审批关联的过期执行组可删除，并使旧分页快照显式失效；实现证据以 Feature Truth Matrix 为准。
+  不提供可配置 retention、enterprise outbox、WORM、legal hold 或 SIEM/远程交付。
 - Secret Sealing 命中即中止并返回空 Agent error response，不做脱敏回退。
 - 本地恢复材料使用单一 recovery key。
 - recovery key 可用于解锁、显式 Admin step-up、验证 backup restore，或在 P-01 中为丢失的密码设置替代值；recovery 自身轮换仍必须使用当前密码。
@@ -492,3 +492,19 @@ archives. UI acceptance does not upgrade G1 or count as human security review.
 The native macOS app stores an independent random restore key in the local login Keychain, never the master password. The Authority stores an AES-256-GCM wrapped VRK in a 0600 file; authenticated context binds vault identity, format and the original seven-day validity window. Restart resumes a new memory session capped at the original deadline. Explicit/idle lock, wrapper rotation and faults revoke the local ticket; graceful shutdown preserves it. The Keychain and same-user G1 boundary apply; this is not a claim of protection against a compromised login session or copied key material. Backups contain the vault database, not this local desktop ticket.
 
 Runtime crash markers are cleared only after all broker and Authority tasks join successfully. A failed final directory sync revokes the remembered ticket before reporting failure. Remember operations await their definitive worker result; failed resumed-session issuance locks the Authority before returning.
+
+### Source-only key rotation and local observability (2026-09-16)
+
+DEK rotation replaces every stored version's encryption key and ciphertext in
+one audited transaction while retaining the VRK, metadata, values and capability
+bindings. Retired and revoked versions are included. It does not erase old WAL
+pages, revoke copied backups or replace credentials at their providers.
+The separately specified locked-state VRK operation also changes the approval
+origin key and revokes remembered desktop access before database replacement;
+its implementation status is tracked separately in the Feature Truth Matrix.
+
+Local metrics expose only fixed numeric counters and gauges through the Admin
+socket, including while locked. They have no credential labels or new listener,
+do not extend idle unlock and reset on process restart. The approval review UI
+shows signed bindings and exact-version metadata, but does not verify signatures
+or hold approval signing keys. These Admin surfaces do not change G1/G2 claims.

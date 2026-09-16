@@ -108,9 +108,32 @@ verifies the destination pathname still names that file, and prints a receipt
 only after completion. On failure, a partial new file may remain for inspection
 and is never resumed. Output omits credentials, recovery material, capability
 tokens, bodies, headers, resource IDs, and parameter hashes. Protect it as
-sensitive metadata. Rekey keeps local audit rows for the vault lifetime; there
-is no delete, pruning, configurable retention, SIEM, WORM, legal hold, or remote
-delivery in this capability.
+sensitive metadata. The released query/export capability has no pruning.
+The source checkout adds the explicit operation below; there is no automatic
+retention, SIEM, WORM, legal hold or remote delivery.
+
+### Prune completed execution audit groups (source checkout)
+
+```bash
+rekey audit prune --before-ms CUTOFF_UNIX_MS
+```
+
+Choose a non-negative cutoff no later than now. While unlocked, supply fresh
+password or recovery proof (`--recovery`; explicit `--password-stdin` is available).
+The command removes only entire completed execution groups with every event
+strictly before the cutoff. It preserves all approval-associated groups,
+unfinished or unpaired groups, management events, backups and cleanup markers.
+Corrupt stored records fail the operation instead of being removed.
+The JSON receipt reports `before_ms`, `deleted_rows`, `deleted_groups` and
+`prune_sequence`; a no-op reports zero counts and a null sequence.
+
+A successful deletion invalidates older pagination snapshots with
+`AUDIT_SNAPSHOT_EXPIRED`. Start a new query/export after that error; an interrupted
+export remains incomplete and receives no success receipt. Deletion and its
+marker commit together. A disconnected call has an unknown result and is not
+proof that nothing was deleted. This does not securely erase disk pages, shrink
+the database file or delete historical backups. See the
+[pruning contract](superpowers/specs/2026-09-16-audit-prune.md).
 
 ## Create a fixed HTTPS Action
 

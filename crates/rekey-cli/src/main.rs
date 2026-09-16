@@ -459,6 +459,13 @@ impl AuditFilterArgs {
 
 #[derive(Subcommand)]
 enum AuditCommand {
+    /// Delete complete unapproved execution groups strictly older than the cutoff.
+    Prune {
+        #[arg(long)]
+        before_ms: i64,
+        #[command(flatten)]
+        step_up: StepUpArgs,
+    },
     /// Print one bounded page of redacted audit events.
     List {
         #[command(flatten)]
@@ -767,6 +774,12 @@ fn main() {
         Command::Recovery(RecoveryCommand::Rotate { password_stdin }) => {
             commands::recovery_rotate(&state_dir, password_stdin)
         }
+        Command::Audit(AuditCommand::Prune { before_ms, step_up }) => commands::audit_prune(
+            &state_dir,
+            before_ms,
+            step_up.recovery,
+            step_up.password_stdin,
+        ),
         Command::Audit(AuditCommand::List {
             filters,
             snapshot_max_sequence,

@@ -20,7 +20,7 @@ pub use password_lifecycle::{key_rotate_dek, password_change, recovery_rotate};
 mod github_admin;
 pub use github_admin::{credential_apply_github_webhook, credential_rotate_github_app};
 mod audit;
-pub use audit::{audit_export, audit_list};
+pub use audit::{audit_export, audit_list, audit_prune};
 mod policy_approval;
 pub use policy_approval::{
     approval_get, approval_origin, approval_pending, approval_prepare, policy_activate,
