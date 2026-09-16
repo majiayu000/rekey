@@ -65,6 +65,7 @@ fn admin_body_limit(message_type: u16) -> u32 {
         | admin_msg::SHUTDOWN
         | admin_msg::POLICY_ACTIVATE
         | admin_msg::POLICY_TRUST_INSTALL
+        | admin_msg::AUDIT_PRUNE
         | admin_msg::KEY_ROTATE_DEK
         | admin_msg::RECOVERY_ROTATE => ipc::ADMIN_PROOF_BODY_MAX_BYTES,
         _ => 0,
@@ -314,6 +315,7 @@ async fn dispatch(
         admin_msg::KEY_ROTATE_DEK => password_lifecycle::handle_dek_rotate(frame, ctx).await,
         admin_msg::PASSWORD_CHANGE => password_lifecycle::handle_password_change(frame, ctx).await,
         admin_msg::RECOVERY_ROTATE => password_lifecycle::handle_recovery_rotate(frame, ctx).await,
+        admin_msg::AUDIT_PRUNE => audit_query::handle_audit_prune(frame, ctx).await,
         admin_msg::AUDIT_QUERY => audit_query::handle_audit_query(frame, ctx).await,
         admin_msg::CREDENTIAL_ADD => {
             let deadline = admin_mutation_deadline();

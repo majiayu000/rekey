@@ -60,6 +60,8 @@ pub enum AuthorityError {
     WorkloadIdentityInvalid,
     #[error("authority command queue is full")]
     AuthorityBusy,
+    #[error("audit snapshot expired; restart the query or export")]
+    AuditSnapshotExpired,
     #[error("audit commit failed")]
     AuditCommitFailed,
     #[error("audit commit failed after upstream execution")]
@@ -107,6 +109,7 @@ impl AuthorityError {
             Self::PolicyVersionExhausted => "POLICY_VERSION_EXHAUSTED",
             Self::WorkloadIdentityInvalid => "WORKLOAD_IDENTITY_INVALID",
             Self::AuthorityBusy => "AUTHORITY_BUSY",
+            Self::AuditSnapshotExpired => "AUDIT_SNAPSHOT_EXPIRED",
             Self::AuditCommitFailed => "AUDIT_COMMIT_FAILED",
             Self::AuditCommitFailedAfterExecution => "AUDIT_COMMIT_FAILED_AFTER_EXECUTION",
             Self::BackupFailed => "BACKUP_FAILED",

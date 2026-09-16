@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use rekey_domain::action::FixedHttpAction;
-use rekey_domain::audit::{AuditPage, AuditQuery};
+use rekey_domain::audit::{AuditPage, AuditPruneReceipt, AuditPruneRequest, AuditQuery};
 use rekey_domain::credential::{CredentialKind, CredentialLabel, CredentialMetadata};
 use rekey_domain::ids::{ActionId, CredentialId};
 use tokio::sync::{mpsc, oneshot};
@@ -406,6 +406,20 @@ impl AuthorityHandle {
         call!(self, |reply| AuthorityCommand::AppendAudit {
             draft,
             not_after: None,
+            reply
+        })
+    }
+
+    pub async fn audit_prune_before(
+        &self,
+        request: AuditPruneRequest,
+        proof: UnlockProof,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<AuditPruneReceipt, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::AuditPrune {
+            request,
+            proof,
+            not_after,
             reply
         })
     }

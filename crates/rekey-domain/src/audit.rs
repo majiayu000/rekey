@@ -13,6 +13,52 @@ pub const AUDIT_SCAN_MAX_ROWS: u32 = 1_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct AuditPruneRequest {
+    pub before_ms: i64,
+}
+
+impl AuditPruneRequest {
+    pub fn validate_at(&self, now_ms: i64) -> Result<(), DomainError> {
+        if self.before_ms < 0 || self.before_ms > now_ms {
+            return Err(invalid(
+                "prune cutoff must be non-negative and not in the future",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuditPruneReceipt {
+    pub before_ms: i64,
+    pub deleted_rows: u64,
+    pub deleted_groups: u64,
+    pub prune_sequence: Option<u64>,
+}
+
+impl AuditPruneReceipt {
+    pub fn validate_for(&self, request: &AuditPruneRequest) -> Result<(), DomainError> {
+        let empty =
+            self.deleted_rows == 0 && self.deleted_groups == 0 && self.prune_sequence.is_none();
+        let deleted = self.deleted_groups > 0
+            && self
+                .deleted_groups
+                .checked_mul(2)
+                .is_some_and(|minimum| self.deleted_rows >= minimum)
+            && self.deleted_rows <= i64::MAX as u64
+            && self.prune_sequence.is_some_and(|sequence| {
+                sequence > self.deleted_rows && sequence <= i64::MAX as u64
+            });
+        if self.before_ms < 0 || self.before_ms != request.before_ms || !(empty || deleted) {
+            return Err(invalid("invalid audit prune receipt"));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AuditQuery {
     pub request_id: Option<RequestId>,
     pub session_id: Option<SessionId>,

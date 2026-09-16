@@ -351,3 +351,142 @@ async fn metrics_count_frame_and_connection_capacity_rejections() {
     drop(connections);
     broker.shutdown_keep_dir().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn audit_prune_requires_admin_step_up_and_invalidates_old_ipc_snapshots() {
+    use rekey_domain::audit::{AuditPruneReceipt, AuditPruneRequest};
+    use rekey_vault::model::event_type;
+
+    let broker = h::start_broker().await;
+    let metadata = serde_json::to_vec(&AuditPruneRequest { before_ms: 100 }).unwrap();
+    let proof = h::proof_body(h::PASSWORD);
+    let locked = h::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::AUDIT_PRUNE,
+        &metadata,
+        &proof,
+    )
+    .await;
+    assert_eq!(locked.err_code(), "LOCKED");
+    let agent = h::call(
+        &broker.agent_sock(),
+        Channel::Agent,
+        admin_msg::AUDIT_PRUNE,
+        &metadata,
+        &[],
+    )
+    .await;
+    assert_eq!(agent.err_code(), "INVALID_FRAME");
+    h::unlock(&broker).await;
+    let wrong = h::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::AUDIT_PRUNE,
+        &metadata,
+        &h::proof_body(b"wrong-prune-proof"),
+    )
+    .await;
+    assert_eq!(wrong.err_code(), "INVALID_UNLOCK_CREDENTIAL");
+    let absent = h::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::AUDIT_PRUNE,
+        &metadata,
+        &[],
+    )
+    .await;
+    assert_eq!(absent.err_code(), "INVALID_FRAME");
+    let malformed = h::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::AUDIT_PRUNE,
+        br#"{"before_ms":100,"unknown":true}"#,
+        &proof,
+    )
+    .await;
+    assert_eq!(malformed.err_code(), "INVALID_FRAME");
+    let mut store = SqliteRecordStore::open(&paths::vault_db(&broker.state_dir)).unwrap();
+    let request = RequestId::new_random();
+    for (kind, time) in [
+        (event_type::EXECUTION_STARTED, 10),
+        (event_type::EXECUTION_FINISHED, 20),
+    ] {
+        store
+            .append_audit(&AuditEvent {
+                event_id: rekey_vault::crypto::random_array().unwrap(),
+                request_id: Some(request),
+                session_id: None,
+                action_id: None,
+                action_version: None,
+                credential_id: None,
+                credential_version: None,
+                authorization: None,
+                approval: None,
+                event_type: kind,
+                outcome: "success",
+                reason_code: "prune-test".into(),
+                upstream_status: None,
+                latency_ms: None,
+                created_at_ms: time,
+            })
+            .unwrap();
+    }
+    drop(store);
+    let mut query = AuditQuery {
+        request_id: None,
+        session_id: None,
+        action_id: None,
+        credential_id: None,
+        outcome: None,
+        since_ms: None,
+        until_ms: None,
+        snapshot_max_sequence: None,
+        before_sequence: None,
+        limit: 10,
+    };
+    let first = h::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::AUDIT_QUERY,
+        &serde_json::to_vec(&query).unwrap(),
+        &[],
+    )
+    .await;
+    let page: AuditPage = serde_json::from_slice(&first.body).unwrap();
+    query.snapshot_max_sequence = Some(page.snapshot_max_sequence);
+    let pruned = h::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::AUDIT_PRUNE,
+        &metadata,
+        &proof,
+    )
+    .await;
+    let receipt: AuditPruneReceipt = serde_json::from_value(pruned.ok().clone()).unwrap();
+    receipt
+        .validate_for(&AuditPruneRequest { before_ms: 100 })
+        .unwrap();
+    assert_eq!((receipt.deleted_groups, receipt.deleted_rows), (1, 2));
+    assert!(pruned.body.is_empty());
+    let expired = h::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::AUDIT_QUERY,
+        &serde_json::to_vec(&query).unwrap(),
+        &[],
+    )
+    .await;
+    assert_eq!(expired.err_code(), "AUDIT_SNAPSHOT_EXPIRED");
+    query.snapshot_max_sequence = receipt.prune_sequence;
+    let fresh = h::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::AUDIT_QUERY,
+        &serde_json::to_vec(&query).unwrap(),
+        &[],
+    )
+    .await;
+    fresh.ok();
+    broker.shutdown_keep_dir().await;
+}

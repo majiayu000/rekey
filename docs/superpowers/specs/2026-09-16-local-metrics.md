@@ -72,4 +72,8 @@ inventory/size/restore freshness and a broader tracing contract are not provided
 Local evidence (2026-09-16): `cargo check --workspace`; two metrics IPC
 integration tests; `cargo test -p rekey-broker -p rekey-cli metrics` covering
 cancel accounting, idle-lock behavior, fixed exposition and strict CLI parsing.
-Full workspace pre-commit verification remains the integration owner's gate.
+The integration owner passed workspace tests and Clippy. A disposable real
+`rekeyd`/`rekey` process smoke also proved locked JSON reads, consecutive reads
+without self-counting, the expected status-request counter delta and fixed
+Prometheus types. Local evidence is recorded under
+`.git/codex/threads/rekey-remaining-20260916/metrics-smoke.log`.

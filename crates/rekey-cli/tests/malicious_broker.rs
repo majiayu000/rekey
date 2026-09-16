@@ -388,6 +388,15 @@ fn valid_session_response() -> Vec<u8> {
 
 #[test]
 fn audit_export_continues_after_an_empty_scan_window() {
+    audit_export_fixture(false);
+}
+
+#[test]
+fn audit_prune_expiring_export_mid_page_leaves_partial_file_without_complete_trailer_or_receipt() {
+    audit_export_fixture(true);
+}
+
+fn audit_export_fixture(expire_second_page: bool) {
     let dir = tempfile::tempdir().expect("tempdir");
     let state_dir = dir.path().join("state");
     let runtime_dir = state_dir.join("runtime");
@@ -430,17 +439,34 @@ fn audit_export_continues_after_an_empty_scan_window() {
                 assert_eq!(query["before_sequence"], 2);
             }
 
+            let expired = expire_second_page && index == 1;
+            let metadata = if expired {
+                serde_json::to_vec(&rekey_domain::ipc::ErrorEnvelope {
+                    request_id: request.request_id,
+                    code: "AUDIT_SNAPSHOT_EXPIRED".into(),
+                    message: "audit snapshot expired; restart the query or export".into(),
+                    retryable: false,
+                })
+                .unwrap()
+            } else {
+                b"{}".to_vec()
+            };
+            let body = if expired { Vec::new() } else { page };
             let response = FrameHeader {
                 channel: Channel::Admin,
                 flags: 0,
-                message_type: resp_msg::OK,
+                message_type: if expired {
+                    resp_msg::ERROR
+                } else {
+                    resp_msg::OK
+                },
                 request_id: request.request_id,
-                metadata_len: 2,
-                body_len: page.len() as u32,
+                metadata_len: metadata.len() as u32,
+                body_len: body.len() as u32,
             };
             stream.write_all(&response.encode()).expect("write header");
-            stream.write_all(b"{}").expect("write metadata");
-            stream.write_all(&page).expect("write page");
+            stream.write_all(&metadata).expect("write metadata");
+            stream.write_all(&body).expect("write page");
             stream.flush().expect("flush response");
         }
     });
@@ -461,6 +487,22 @@ fn audit_export_continues_after_an_empty_scan_window() {
         .output()
         .expect("run rekey audit export");
     server.join().expect("fake broker thread");
+    if expire_second_page {
+        assert_eq!(output.status.code(), Some(7));
+        assert!(
+            output.stdout.is_empty(),
+            "must not emit a successful receipt"
+        );
+        assert!(String::from_utf8_lossy(&output.stderr).contains("AUDIT_SNAPSHOT_EXPIRED"));
+        let partial = std::fs::read_to_string(&output_path).unwrap();
+        assert!(partial.contains("rekey.audit.export.v2"));
+        assert!(!partial.contains("rekey.audit.export.complete.v2"));
+        assert_eq!(
+            std::fs::metadata(output_path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        return;
+    }
     assert_eq!(
         output.status.code(),
         Some(0),
@@ -607,4 +649,122 @@ fn metrics_cli_renders_typed_snapshots_and_rejects_untrusted_shape() {
             assert!(!String::from_utf8_lossy(&bad.stderr).contains("UNTRUSTED-METRIC-CANARY"));
         }
     }
+}
+
+fn run_prune_response(metadata: serde_json::Value, body: &[u8]) -> std::process::Output {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = dir.path().join("runtime");
+    std::fs::create_dir(&runtime).unwrap();
+    let socket = runtime.join("admin.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let body = body.to_vec();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut bytes = [0u8; FRAME_HEADER_LEN];
+        stream.read_exact(&mut bytes).unwrap();
+        let request = FrameHeader::decode(&bytes).unwrap();
+        assert_eq!(request.channel, Channel::Admin);
+        assert_eq!(
+            request.message_type,
+            rekey_domain::ipc::admin_msg::AUDIT_PRUNE
+        );
+        let mut request_metadata = vec![0u8; request.metadata_len as usize];
+        stream.read_exact(&mut request_metadata).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&request_metadata).unwrap(),
+            serde_json::json!({"before_ms": 100})
+        );
+        let mut proof = vec![0u8; request.body_len as usize];
+        stream.read_exact(&mut proof).unwrap();
+        let (_, proof) = rekey_domain::ipc::parse_proof_body(&proof).unwrap();
+        assert!(proof == b"PRUNE-CLI-PROOF-CANARY");
+        let metadata = serde_json::to_vec(&metadata).unwrap();
+        let response = FrameHeader {
+            channel: Channel::Admin,
+            flags: 0,
+            message_type: resp_msg::OK,
+            request_id: request.request_id,
+            metadata_len: metadata.len() as u32,
+            body_len: body.len() as u32,
+        };
+        stream.write_all(&response.encode()).unwrap();
+        stream.write_all(&metadata).unwrap();
+        stream.write_all(&body).unwrap();
+    });
+    let mut child = Command::new(rekey_bin())
+        .arg("--state-dir")
+        .arg(dir.path())
+        .args(["audit", "prune", "--before-ms", "100", "--password-stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(b"PRUNE-CLI-PROOF-CANARY\n")
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    server.join().unwrap();
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("PRUNE-CLI-PROOF-CANARY"));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("PRUNE-CLI-PROOF-CANARY"));
+    output
+}
+
+#[test]
+fn audit_prune_cli_accepts_only_consistent_typed_receipts() {
+    let valid =
+        serde_json::json!({"before_ms":100,"deleted_rows":2,"deleted_groups":1,"prune_sequence":5});
+    for value in [
+        valid.clone(),
+        serde_json::json!({"before_ms":100,"deleted_rows":0,"deleted_groups":0,"prune_sequence":null}),
+    ] {
+        let good = run_prune_response(value.clone(), &[]);
+        assert!(
+            good.status.success(),
+            "{}",
+            String::from_utf8_lossy(&good.stderr)
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&good.stdout).unwrap(),
+            value
+        );
+    }
+    let mut malicious = Vec::new();
+    for (field, value) in [
+        ("before_ms", serde_json::json!(101)),
+        ("before_ms", serde_json::json!(-1)),
+        ("deleted_rows", serde_json::json!(1)),
+        ("deleted_rows", serde_json::json!(1.5)),
+        ("deleted_groups", serde_json::json!(-1)),
+        ("deleted_groups", serde_json::json!(0)),
+        ("prune_sequence", serde_json::json!(null)),
+        ("prune_sequence", serde_json::json!(0)),
+        ("prune_sequence", serde_json::json!(1)),
+        ("prune_sequence", serde_json::json!(u64::MAX)),
+        (
+            "secret",
+            serde_json::json!("UNTRUSTED-PRUNE-RECEIPT-CANARY"),
+        ),
+    ] {
+        let mut forged = valid.clone();
+        forged[field] = value;
+        malicious.push(forged);
+    }
+    let mut missing = valid.clone();
+    missing.as_object_mut().unwrap().remove("deleted_rows");
+    malicious.push(missing);
+    for metadata in malicious {
+        let bad = run_prune_response(metadata, &[]);
+        assert_eq!(bad.status.code(), Some(2));
+        assert!(bad.stdout.is_empty());
+        assert!(!String::from_utf8_lossy(&bad.stderr).contains("UNTRUSTED-PRUNE-RECEIPT-CANARY"));
+    }
+    let body = run_prune_response(valid, b"UNTRUSTED-PRUNE-RECEIPT-CANARY");
+    assert_eq!(body.status.code(), Some(2));
+    assert!(body.stdout.is_empty());
 }

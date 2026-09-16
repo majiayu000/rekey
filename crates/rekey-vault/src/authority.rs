@@ -592,6 +592,20 @@ impl Worker {
                 self.touch_if_ok(&result);
                 drop(reply.send(result));
             }
+            AuthorityCommand::AuditPrune {
+                request,
+                proof,
+                not_after,
+                reply,
+            } => {
+                let result = if mutation_expired(not_after) {
+                    Err(AuthorityError::AuthorityBusy)
+                } else {
+                    self.audit_prune(request, proof, not_after)
+                };
+                self.touch_if_ok(&result);
+                let _ = reply.send(result);
+            }
             AuthorityCommand::AuditQuery { query, reply } => {
                 let result = if matches!(self.state, VaultState::Faulted) {
                     Err(AuthorityError::Faulted)

@@ -1,12 +1,34 @@
-use crate::command::AuditDraft;
+use rekey_domain::audit::{AuditPruneReceipt, AuditPruneRequest};
+
+use crate::command::{AuditDraft, UnlockProof};
 use crate::crypto::random_array;
 use crate::error::AuthorityError;
 use crate::model::{AuditEvent, event_type, outcome};
 use crate::now_ms;
 
-use super::{VaultState, Worker};
+use super::{VaultState, Worker, ensure_mutation_current, unlock_audit};
 
 impl Worker {
+    pub(super) fn audit_prune(
+        &mut self,
+        request: AuditPruneRequest,
+        proof: UnlockProof,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<AuditPruneReceipt, AuthorityError> {
+        self.require_unlocked()?;
+        self.verify_proof(&proof)?;
+        request.validate_at(now_ms()?)?;
+        ensure_mutation_current(not_after)?;
+        let marker = self.audit_event_or_fault(unlock_audit(
+            event_type::AUDIT_PRUNED,
+            outcome::SUCCESS,
+            "explicit-execution-prune",
+        ))?;
+        let result = self.store.audit_prune(&request, marker, not_after);
+        let result = self.fault_on_integrity(result);
+        self.fault_on_audit_failure(result)
+    }
+
     pub(super) fn fault(&mut self, reason: &'static str) {
         self.state = VaultState::Faulted;
         if let Err(error) = self.forget_desktop() {
