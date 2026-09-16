@@ -197,7 +197,7 @@ same-UID host process, host root, or kernel compromise. It does not upgrade
 G1 to G2 or implement Windows/plugin isolation. See the
 [feature truth matrix](product-foundation/feature-truth-matrix.md).
 
-## GitHub reference connector (macOS source build)
+## GitHub reference connector (macOS and Linux source builds)
 
 The source implementation of GitHub CreateIssue and CreateIssueComment uses the bundled
 `rekey-github-create-issue` sidecar on macOS. Build it with the Broker package
@@ -228,15 +228,27 @@ the bundled sidecar. See [the registration contract](superpowers/specs/2026-09-1
 Updating the Action creates a new binding version. Existing sessions retain
 their old version; preserve separate artifact paths when both must run. Backups
 include the binding, not the executable. Restore requires supplying the same
-path and digest again. Explicit bindings are currently macOS-only and fail on
-unsupported platforms.
+path and digest again. Explicit bindings support macOS and Linux GNU x86_64/aarch64;
+other platforms fail. Linux unregistered built-in operations remain in-process.
+
+On Linux, install system bubblewrap at `/usr/bin/bwrap` and allow unprivileged
+user, PID, network, IPC and UTS namespaces. Linux 5.11+ is required for descriptor
+cleanup. The fixed GNU runtime files are the architecture loader plus `libc.so.6`,
+`libm.so.6` and `libgcc_s.so.1` under the Debian/Ubuntu multiarch library paths.
+Only those files and the artifact are mounted into a read-only root. Missing
+dependencies or denied namespace setup fail the call; no unrestricted fallback
+exists. Ubuntu 24.04+ also requires an AppArmor profile allowing bwrap userns,
+as described in the Linux Agent setup above.
 
 Only the selected operation and public issue/comment text enter the reference process. The Broker keeps all
 credentials, authorization, HTTP execution, response checks and revocation.
-The separate Seatbelt policy denies networking and process creation. CPU and
-wall-clock deadlines are enforced; memory is watched by sampling, which can
-overshoot between samples. This is a bounded reference integration, not a
-third-party plugin registry or a hard memory-isolation guarantee.
+The macOS Seatbelt profile denies networking and process creation; memory is
+watched by sampling and can overshoot. Linux uses a separate namespace root and
+default-deny seccomp filter, with a 64 MiB per-process virtual-address limit
+that survives re-exec. This is not a total physical-memory limit. CPU and
+wall-clock deadlines apply on both platforms. Linux parent-death cleanup is
+verified after payload startup, not throughout the bwrap initialization window.
+This is a bounded reference integration, not a third-party plugin registry.
 
 ## Independent text streaming (source build)
 
