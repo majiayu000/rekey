@@ -27,7 +27,12 @@ int main(int argc,char **argv) {
  setbuf(stdout,NULL);
  char input[4096]={0};
  if(argc>1)snprintf(input,sizeof(input),"%s",argv[1]);
- else if(fread(input,1,sizeof(input)-1,stdin)==0)return 90;
+ else if(fread(input,1,sizeof(input)-1,stdin)==0){
+  /* Empty stdin is the before-READY fixture: stay alive after parent death
+     unless the sandbox first hop or namespace reaps this process. */
+  signal(SIGTERM,SIG_IGN);signal(SIGHUP,SIG_IGN);
+  struct timespec delay={.tv_sec=1};for(;;)nanosleep(&delay,NULL);
+ }
  if(!strcmp(input,"ok")) {puts("OK");return 0;}
  if(!strcmp(input,"env")) {extern char **environ;for(char **entry=environ;*entry;entry++)puts(*entry);return 0;}
  if(!strncmp(input,"fd ",3)) {int fd=atoi(input+3);printf("fd=%d open=%d\n",fd,fcntl(fd,F_GETFD)>=0);return 0;}

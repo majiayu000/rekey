@@ -445,8 +445,14 @@ fn parent_death_fixture() {
     let Some(mode) = std::env::var_os("REKEY_TEST_LINUX_PLUGIN_PARENT") else {
         return;
     };
-    if mode == "plain" {
-        let mut child = StdCommand::new(probe()).arg("orphan").spawn().unwrap();
+    if mode == "plain" || mode == "plain-startup" {
+        let mut command = StdCommand::new(probe());
+        if mode == "plain" {
+            command.arg("orphan");
+        } else {
+            command.stdin(Stdio::piped());
+        }
+        let mut child = command.spawn().unwrap();
         println!("LAUNCHER {}", child.id());
         std::io::stdout().flush().unwrap();
         child.wait().unwrap();
@@ -463,13 +469,15 @@ fn parent_death_fixture() {
             let mut child = command.spawn().unwrap();
             println!("LAUNCHER {}", child.id().unwrap());
             std::io::stdout().flush().unwrap();
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(b"orphan")
-                .await
-                .unwrap();
+            if mode != "sandbox-startup" {
+                child
+                    .stdin
+                    .take()
+                    .unwrap()
+                    .write_all(b"orphan")
+                    .await
+                    .unwrap();
+            }
             child.wait().await.unwrap();
         });
     }
@@ -548,6 +556,62 @@ async fn parent_sigkill_after_ready_kills_uncooperative_payload_with_live_contro
             assert!(survived, "unconfined payload must ignore parent death");
             assert!(observed.contains("clear_pdeathsig=0 errno=0"), "{observed}");
             assert!(observed.contains("setsid=0 errno=0"), "{observed}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn parent_sigkill_before_ready_kills_sandbox_with_live_control() {
+    use tokio::io::AsyncBufReadExt;
+    for mode in ["plain-startup", "sandbox-startup"] {
+        let mut parent = tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "github_issue_plugin::linux_tests::parent_death_fixture",
+                "--nocapture",
+            ])
+            .env("REKEY_TEST_LINUX_PLUGIN_PARENT", mode)
+            .stdout(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let parent_pid = parent.id().unwrap();
+        let mut lines = tokio::io::BufReader::new(parent.stdout.take().unwrap()).lines();
+        let launcher = tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(line) = lines.next_line().await.unwrap() {
+                if let Some(pid) = line.strip_prefix("LAUNCHER ") {
+                    return Some(pid.parse::<u32>().unwrap());
+                }
+            }
+            None
+        })
+        .await;
+        let launcher = match launcher {
+            Ok(Some(pid)) => pid,
+            failure => {
+                for pid in descendants(parent_pid).into_iter().rev() {
+                    unsafe {
+                        libc::kill(pid as i32, libc::SIGKILL);
+                    }
+                }
+                parent.start_kill().unwrap();
+                parent.wait().await.unwrap();
+                panic!("fixture did not print LAUNCHER: {failure:?}");
+            }
+        };
+        let mut pids = descendants(launcher);
+        pids.push(launcher);
+        parent.start_kill().unwrap();
+        parent.wait().await.unwrap();
+        if mode == "sandbox-startup" {
+            assert_gone(&pids).await;
+        } else {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            let survived = live(launcher);
+            // SAFETY: only the observed disposable control payload is killed.
+            assert_eq!(unsafe { libc::kill(launcher as i32, libc::SIGKILL) }, 0);
+            assert_gone(&pids).await;
+            assert!(survived, "unconfined payload must ignore parent death");
         }
     }
 }
