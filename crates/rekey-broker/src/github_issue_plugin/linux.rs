@@ -2,6 +2,7 @@
 use std::fs::File;
 use std::io::{self, Seek, SeekFrom, Write};
 use std::os::fd::AsRawFd;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Instant;
@@ -26,6 +27,7 @@ const RUNTIME_FILES: [&str; 4] = [
 ];
 
 pub(super) fn launch_command(executable: &Path, deadline: Instant) -> Result<Command, BrokerError> {
+    require_unprivileged_bwrap()?;
     let filter = filter_file()?;
     let mut command = Command::new("/usr/bin/bwrap");
     command.args([
@@ -59,6 +61,10 @@ pub(super) fn launch_command(executable: &Path, deadline: Instant) -> Result<Com
     if Instant::now() >= deadline {
         return Err(denied("plugin-deadline"));
     }
+    // Broker PID at spawn-prep time; the child checks getppid against this after
+    // installing PDEATHSIG so a dead parent cannot leave an unregistered first hop.
+    // SAFETY: getpid is an async-signal-safe query of this process.
+    let parent = unsafe { libc::getpid() };
     // The closure owns the file until spawn completes. Only its FD survives exec
     // into bwrap, which consumes and closes it before starting the plugin.
     // SAFETY: only async-signal-safe libc operations, no allocation or locks.
@@ -93,10 +99,49 @@ pub(super) fn launch_command(executable: &Path, deadline: Instant) -> Result<Com
             {
                 return Err(io::Error::last_os_error());
             }
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if libc::getppid() != parent {
+                return Err(io::Error::from_raw_os_error(libc::ESRCH));
+            }
             Ok(())
         });
     }
     Ok(command)
+}
+
+fn require_unprivileged_bwrap() -> Result<(), BrokerError> {
+    let metadata = std::fs::symlink_metadata("/usr/bin/bwrap").map_err(BrokerError::Io)?;
+    if !metadata.file_type().is_file() || metadata.permissions().mode() & 0o6000 != 0 {
+        return Err(denied("plugin-spawn"));
+    }
+    let mut probe = [0u8; 1];
+    // Parent-side check, not pre_exec: lgetxattr may not be async-signal-safe.
+    // SAFETY: path and attribute names are static C strings; the buffer is stack-local.
+    let result = unsafe {
+        libc::lgetxattr(
+            c"/usr/bin/bwrap".as_ptr(),
+            c"security.capability".as_ptr(),
+            probe.as_mut_ptr().cast(),
+            probe.len(),
+        )
+    };
+    if result > 0 {
+        return Err(denied("plugin-spawn"));
+    }
+    if result == 0 {
+        return Ok(());
+    }
+    let errno = io::Error::last_os_error().raw_os_error();
+    if errno == Some(libc::ENODATA)
+        || errno == Some(libc::ENOTSUP)
+        || errno == Some(libc::EOPNOTSUPP)
+    {
+        Ok(())
+    } else {
+        Err(denied("plugin-spawn"))
+    }
 }
 
 fn filter_file() -> Result<File, BrokerError> {
