@@ -27,7 +27,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>CFBundleExecutable</key><string>Rekey</string>
-<key>CFBundleIdentifier</key><string>io.github.majiayu000.rekey.ui</string>
+<key>CFBundleIdentifier</key><string>com.starlight.rekey</string>
 <key>CFBundleName</key><string>Rekey</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>CFBundlePackageType</key><string>APPL</string>
@@ -38,5 +38,22 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </dict></plist>
 PLIST
 plutil -lint "$APP/Contents/Info.plist"
-codesign --force --deep --sign - "$APP"
+identity="${REKEY_SIGNING_IDENTITY:-${APPLE_SIGNING_IDENTITY:--}}"
+entitlements="$ROOT/apps/macos/Resources/Rekey.entitlements"
+if [[ "${REKEY_REQUIRE_DEVELOPER_ID:-}" == "1" ]]; then
+  if [[ "$identity" == "-" || "$identity" != Developer\ ID\ Application:* ]]; then
+    echo "REKEY_REQUIRE_DEVELOPER_ID=1 needs APPLE_SIGNING_IDENTITY to be a Developer ID Application identity" >&2
+    exit 1
+  fi
+fi
+if [[ "$identity" == "-" ]]; then
+  timestamp_args=(--timestamp=none)
+else
+  timestamp_args=(--timestamp)
+fi
+codesign_args=(--force --sign "$identity" --options runtime --entitlements "$entitlements" "${timestamp_args[@]}")
+codesign "${codesign_args[@]}" "$APP/Contents/Resources/bin/rekey"
+codesign "${codesign_args[@]}" "$APP/Contents/Resources/bin/rekeyd"
+codesign "${codesign_args[@]}" --identifier com.starlight.rekey "$APP"
+codesign --verify --deep --strict "$APP"
 printf 'Built: %s\n' "$APP"

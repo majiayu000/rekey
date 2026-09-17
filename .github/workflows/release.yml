@@ -56,6 +56,34 @@ jobs:
           [[ "$(rustc -vV | awk '/^host:/ {print $2}')" == "${{ matrix.target }}" ]]
       - name: Build release binaries
         run: cargo build --locked --release -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd
+      - name: Sign macOS binaries
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing required Apple signing secret: $name"
+              exit 1
+            fi
+          done
+          cert="$RUNNER_TEMP/rekey-developer-id.p12"
+          keychain="$RUNNER_TEMP/rekey-signing.keychain-db"
+          password="$(openssl rand -base64 32)"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$cert"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$cert" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain"
+          security list-keychains -d user -s "$keychain" login.keychain-db
+          for bin in rekey rekeyd; do
+            codesign --force --sign "$APPLE_SIGNING_IDENTITY" --options runtime --timestamp "target/release/$bin"
+            codesign --verify --strict "target/release/$bin"
+          done
       - name: Package release archive
         id: package
         shell: bash
@@ -122,6 +150,116 @@ jobs:
             dist/${{ steps.package.outputs.archive }}.sbom.intoto.jsonl
           if-no-files-found: error
 
+  macos-ui:
+    needs: security-gate
+    runs-on: macos-14
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.95.0
+      - name: Require Apple signing secrets
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in \
+            APPLE_CERTIFICATE \
+            APPLE_CERTIFICATE_PASSWORD \
+            APPLE_SIGNING_IDENTITY \
+            APPLE_API_KEY \
+            APPLE_API_ISSUER \
+            APPLE_API_KEY_CONTENT
+          do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing required secret: $name"
+              missing=1
+            fi
+          done
+          exit "$missing"
+      - name: Import Developer ID certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          certificate_path="$RUNNER_TEMP/rekey-ui-developer-id.p12"
+          keychain_path="$RUNNER_TEMP/rekey-ui-signing.keychain-db"
+          keychain_password="$(openssl rand -base64 32)"
+          echo "::add-mask::$keychain_password"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$certificate_path"
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$certificate_path" -k "$keychain_path" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain_path"
+          security list-keychains -d user -s "$keychain_path" login.keychain-db
+          {
+            echo "APPLE_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY"
+            echo "REKEY_UI_SIGNING_KEYCHAIN=$keychain_path"
+            echo "REKEY_UI_CERTIFICATE_PATH=$certificate_path"
+          } >> "$GITHUB_ENV"
+      - name: Write App Store Connect API key
+        env:
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+        run: |
+          set -euo pipefail
+          api_key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY}.p8"
+          printf '%s' "$APPLE_API_KEY_CONTENT" | base64 --decode > "$api_key_path"
+          chmod 600 "$api_key_path"
+          echo "APPLE_API_KEY_PATH=$api_key_path" >> "$GITHUB_ENV"
+      - name: Build and sign Rekey.app
+        env:
+          REKEY_REQUIRE_DEVELOPER_ID: "1"
+        run: scripts/build-macos-ui.sh
+      - name: Notarize Rekey.app
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          app="target/macos-ui/Rekey.app"
+          zip="$RUNNER_TEMP/Rekey-notarize.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$app" "$zip"
+          xcrun notarytool submit "$zip" \
+            --key "$APPLE_API_KEY_PATH" \
+            --key-id "$APPLE_API_KEY" \
+            --issuer "$APPLE_API_ISSUER" \
+            --wait
+          xcrun stapler staple "$app"
+          xcrun stapler validate "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          spctl --assess --type execute --verbose=4 "$app"
+          mkdir -p dist
+          archive="rekey-${GITHUB_REF_NAME}-macos-app.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$app" "dist/$archive"
+          (cd dist && shasum -a 256 "$archive" > "$archive.sha256")
+      - name: Remove temporary signing material
+        if: always()
+        run: |
+          if [ -n "${REKEY_UI_SIGNING_KEYCHAIN:-}" ]; then
+            security delete-keychain "$REKEY_UI_SIGNING_KEYCHAIN" || true
+          fi
+          rm -f "${REKEY_UI_CERTIFICATE_PATH:-}" "${APPLE_API_KEY_PATH:-}"
+      - name: Upload immutable build output
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rekey-macos-app
+          path: |
+            dist/rekey-${{ github.ref_name }}-macos-app.zip
+            dist/rekey-${{ github.ref_name }}-macos-app.zip.sha256
+          if-no-files-found: error
+
   fresh-install:
     needs: build
     strategy:
@@ -163,7 +301,7 @@ jobs:
             scripts/p1-service-manager.sh
 
   publish:
-    needs: fresh-install
+    needs: [fresh-install, macos-ui]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
