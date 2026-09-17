@@ -235,6 +235,22 @@ async fn cpu_output_deadline_and_crash_fail_closed_after_confirmed_startup() {
 }
 
 #[tokio::test]
+async fn snapshot_copy_observes_deadline_before_spawn() {
+    stall_next_snapshot(400);
+    let started = Instant::now();
+    assert!(matches!(
+        run(probe(), None, b"ok", started + Duration::from_millis(80)).await,
+        Err(BrokerError::Denied("plugin-deadline"))
+    ));
+    assert!(
+        started.elapsed() < Duration::from_millis(250),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(sandbox("ok").await, "OK\n");
+}
+
+#[tokio::test]
 async fn cpu_hard_limit_kills_started_payload_ignoring_soft_signal() {
     use tokio::io::AsyncBufReadExt;
     let (_snapshot, executable) = snapshot(probe(), None).unwrap();

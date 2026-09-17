@@ -177,6 +177,23 @@ async fn output_cpu_memory_and_absolute_deadline_fail_closed() {
         launch_command(&executable, Instant::now() - Duration::from_millis(1)),
         Err(BrokerError::Denied("plugin-deadline"))
     ));
+    stall_next_snapshot(400);
+    let snapshot_start = Instant::now();
+    assert!(matches!(
+        run(
+            probe(),
+            None,
+            b"sleep",
+            snapshot_start + Duration::from_millis(80)
+        )
+        .await,
+        Err(BrokerError::Denied("plugin-deadline"))
+    ));
+    assert!(
+        snapshot_start.elapsed() < Duration::from_millis(250),
+        "{:?}",
+        snapshot_start.elapsed()
+    );
     assert!(matches!(
         attack(b"crash").await,
         Err(BrokerError::Denied("plugin-exit"))

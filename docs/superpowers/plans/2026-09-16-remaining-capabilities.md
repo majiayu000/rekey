@@ -56,7 +56,7 @@
 | VEX-03 | Vault 续期/Namespace/引擎 | 待输入：一个具体新增效果；复用租约生命周期 |
 | VEX-04 | KV 最新版与写入 | 已有具体外部规格：精确版本与写入不确定性，真实挂载/权限仍待输入 |
 | P-08 | 可观测性 | 本机快照及原子 textfile 发布已实现并经本地验收；OTel/远程采集/告警仍未完成 |
-| P-10 | Connector 隔离 | macOS Seatbelt 与 Linux GNU 最小 rootfs/seccomp 参考插件已通过攻击及 Broker 专项；Linux 有 AS64MiB 硬限额、READY 后父死及第一跳 `PR_SET_PDEATHSIG` 证据，macOS 保持 RSS 采样。bubblewrap 内部窗口与总物理 RSS 仍开放，完整 P-10 未关闭。证据：`.git/codex/threads/remaining-p10-20260917/` |
+| P-10 | Connector 隔离 | macOS Seatbelt 与 Linux GNU 最小 rootfs/seccomp 参考插件已通过攻击及 Broker 专项；Linux 有 AS64MiB 硬限额、READY 后父死、第一跳 `PR_SET_PDEATHSIG`，以及 artifact 快照受同一 effect deadline 约束。macOS 保持 RSS 采样。bubblewrap 内部窗口与总物理 RSS 仍开放，Broker SIGKILL 仍可能留下快照目录，完整 P-10 未关闭。证据：`.git/codex/threads/remaining-p10-20260917/` |
 
 隔离与流式的具体提案见 [实施边界](../specs/2026-09-16-local-isolation-and-streaming.md)。macOS 已选择并实现实验 Seatbelt；用户也已接受独立流式接口及 GitHub CreateIssue 参考插件，两条具体执行链均已实现并通过专项验收。
 
@@ -221,3 +221,7 @@ JSON 字段更名为 `native_plugin`，SQLite 列为 `native_plugin_json`，源�
 ## P-10 第一跳父死（2026-09-17）
 
 Linux 生产 runner 在 spawn 前拒绝非普通文件或带 setuid/setgid/`security.capability` 的 `/usr/bin/bwrap`，并在既有 pre_exec 限额/FD 处理后设置 `PR_SET_PDEATHSIG(SIGKILL)`、核对 `getppid`。LAUNCHER 已出现但尚未 READY 的父 SIGKILL 测试覆盖沙箱与未隔离控制。这不关闭 bubblewrap 内部 `raw_clone`/`do_init` 窗口或总物理 RSS，不引入 cgroup/`memory.max`，不是完整 P-10。证据：`.git/codex/threads/remaining-p10-20260917/`。
+
+## P-10 artifact 快照 deadline（2026-09-17）
+
+插件 `run()` 把打开/拷贝/摘要放到 `spawn_blocking`，与后续交换共用绝对 `timeout_at(deadline)`；超时或拷贝返回后过期则拒绝 spawn。阻塞拷贝不可中断；Broker SIGKILL 仍可能留下快照目录。macOS 整库 558 通过、0 失败、1 项既有忽略；Linux github_issue_plugin 13/13 在 root 与 uid 65534 通过。独立复核无阻断项。未推送。证据：`.git/codex/threads/remaining-p10-20260917/`。
