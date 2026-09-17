@@ -55,14 +55,14 @@ pub(super) fn validate(request: &ExecuteRequest) -> Result<(), &'static str> {
 
 pub(super) fn configure(
     action: &FixedHttpAction,
-    request: &ExecuteRequest,
+    body: &[u8],
     upstream: &mut UpstreamRequest,
 ) -> Result<(), BrokerError> {
     let config = action
         .text_stream
         .as_ref()
         .ok_or(BrokerError::Denied("stream-action-required"))?;
-    let messages: Messages = serde_json::from_slice(&request.body)
+    let messages: Messages = serde_json::from_slice(body)
         .map_err(|_| BrokerError::Denied("invalid-stream-parameters"))?;
     let messages: Vec<_> = messages
         .messages

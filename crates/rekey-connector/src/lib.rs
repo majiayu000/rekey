@@ -4,6 +4,7 @@
 //! remains the only execution owner; these types describe and select its
 //! compile-time built-in paths.
 
+pub mod anthropic_message;
 pub mod github_issue;
 
 use rekey_domain::action::{ExactPath, FixedHttpAction, HttpsOrigin};
@@ -166,6 +167,25 @@ pub struct ConnectorContract {
 
 pub fn registry() -> &'static [ConnectorContract] {
     CONTRACTS
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("invalid native plugin public request")]
+pub struct InvalidNativeEnvelope;
+
+/// Dispatches a closed sidecar envelope to the GitHub or Anthropic public contract.
+pub fn normalize_native_envelope(input: &[u8]) -> Result<Vec<u8>, InvalidNativeEnvelope> {
+    let value: serde_json::Value =
+        serde_json::from_slice(input).map_err(|_| InvalidNativeEnvelope)?;
+    match value.get("operation").and_then(Value::as_str) {
+        Some("create_issue" | "create_issue_comment") => {
+            github_issue::normalize_issue_envelope(input).map_err(|_| InvalidNativeEnvelope)
+        }
+        Some("create_message") => {
+            anthropic_message::normalize_message_envelope(input).map_err(|_| InvalidNativeEnvelope)
+        }
+        _ => Err(InvalidNativeEnvelope),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -488,5 +508,30 @@ pub mod testkit {
                 "connector registry must be unique and sorted"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod native_envelope_tests {
+    use super::normalize_native_envelope;
+
+    #[test]
+    fn native_envelope_dispatches_known_operations_and_rejects_unknown() {
+        assert_eq!(
+            normalize_native_envelope(
+                br#"{"operation":"create_issue","body":{"title":"t","body":"b"}}"#
+            )
+            .unwrap(),
+            br#"{"operation":"create_issue","body":{"title":"t","body":"b"}}"#
+        );
+        assert_eq!(
+            normalize_native_envelope(
+                br#"{"operation":"create_message","body":{"messages":[{"role":"user","content":"hello"}]}}"#
+            )
+            .unwrap(),
+            br#"{"operation":"create_message","body":{"messages":[{"role":"user","content":"hello"}]}}"#
+        );
+        assert!(normalize_native_envelope(br#"{"operation":"delete_repo","body":{}}"#).is_err());
+        assert!(normalize_native_envelope(br#"{"body":{"title":"t"}}"#).is_err());
     }
 }

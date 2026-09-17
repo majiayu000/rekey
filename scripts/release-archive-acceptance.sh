@@ -156,8 +156,8 @@ done
 [[ -S "$STATE/runtime/admin.sock" ]] || { echo "broker did not start"; exit 1; }
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" unlock --password-stdin >/dev/null
 status="$("$REKEY" --state-dir "$STATE" status)"
-printf '%s\n' "$status" | rg -q '"format_version": 13' || {
-  echo "expected format_version 13: $status" >&2
+printf '%s\n' "$status" | rg -q '"format_version": 14' || {
+  echo "expected format_version 14: $status" >&2
   exit 1
 }
 

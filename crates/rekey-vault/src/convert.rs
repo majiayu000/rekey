@@ -53,8 +53,8 @@ pub fn headers_from_json(json: &str) -> Result<BTreeSet<HeaderName>, AuthorityEr
 
 pub fn action_to_record(a: &FixedHttpAction, now_ms: i64) -> Result<ActionRecord, AuthorityError> {
     Ok(ActionRecord {
-        github_issue_plugin_json: a
-            .github_issue_plugin
+        native_plugin_json: a
+            .native_plugin
             .as_ref()
             .map(serde_json::to_string)
             .transpose()
@@ -86,8 +86,8 @@ pub fn action_to_record(a: &FixedHttpAction, now_ms: i64) -> Result<ActionRecord
 
 pub fn record_to_action(r: &ActionRecord) -> Result<FixedHttpAction, AuthorityError> {
     let action = FixedHttpAction {
-        github_issue_plugin: r
-            .github_issue_plugin_json
+        native_plugin: r
+            .native_plugin_json
             .as_deref()
             .map(serde_json::from_str)
             .transpose()

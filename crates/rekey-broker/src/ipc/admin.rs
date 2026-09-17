@@ -731,7 +731,7 @@ fn definition_from_meta(meta: ipc::ActionCreateMeta) -> Result<ActionDefinition,
         allowed_response_headers.insert(HeaderName::new(name).map_err(BrokerError::Domain)?);
     }
     Ok(ActionDefinition {
-        github_issue_plugin: meta.github_issue_plugin,
+        native_plugin: meta.native_plugin,
         text_stream: meta.text_stream,
         name: ActionName::new(&meta.name).map_err(BrokerError::Domain)?,
         credential_id: meta.credential_id,
@@ -764,7 +764,7 @@ fn ensure_action_catalog_fits(
         actions.retain(|action| action.id != existing);
     }
     let probe = FixedHttpAction {
-        github_issue_plugin: definition.github_issue_plugin.clone(),
+        native_plugin: definition.native_plugin.clone(),
         text_stream: definition.text_stream.clone(),
         id: ActionId::from_random_bytes([0xff; 16]),
         name: definition.name.clone(),
@@ -811,7 +811,7 @@ mod tests {
             .map(|index| HeaderName::new(&format!("x-header-{index:04}")).unwrap())
             .collect();
         let definition = ActionDefinition {
-            github_issue_plugin: None,
+            native_plugin: None,
             text_stream: None,
             name: ActionName::new("large-response").unwrap(),
             credential_id: CredentialId::from_random_bytes([1; 16]),
@@ -843,7 +843,7 @@ mod tests {
     #[test]
     fn aggregate_action_catalog_is_rejected_before_upsert() {
         let definition = ActionDefinition {
-            github_issue_plugin: None,
+            native_plugin: None,
             text_stream: None,
             name: ActionName::new("catalog-entry").unwrap(),
             credential_id: CredentialId::from_random_bytes([1; 16]),
@@ -866,7 +866,7 @@ mod tests {
             },
         };
         let existing = FixedHttpAction {
-            github_issue_plugin: None,
+            native_plugin: None,
             text_stream: None,
             id: ActionId::from_random_bytes([2; 16]),
             name: definition.name.clone(),
@@ -894,7 +894,7 @@ mod tests {
             .map(|index| HeaderName::new(&format!("x-update-{index:04}")).unwrap())
             .collect();
         let definition = ActionDefinition {
-            github_issue_plugin: None,
+            native_plugin: None,
             text_stream: None,
             name: ActionName::new("large-update").unwrap(),
             credential_id: CredentialId::from_random_bytes([1; 16]),
@@ -917,7 +917,7 @@ mod tests {
             },
         };
         let existing = FixedHttpAction {
-            github_issue_plugin: None,
+            native_plugin: None,
             text_stream: None,
             id: ActionId::from_random_bytes([2; 16]),
             name: definition.name.clone(),

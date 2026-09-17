@@ -144,7 +144,7 @@ if sys.platform in ("darwin", "linux"):
     artifact = pathlib.Path(issue_path).parent.resolve() / "registered-create-issue"
     shutil.copyfile(built_artifact, artifact)
     artifact.chmod(0o500)
-    issue["github_issue_plugin"] = {
+    issue["native_plugin"] = {
         "path": str(artifact),
         "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
         "protocol": "github-issues-v1",
@@ -166,9 +166,9 @@ python3 - "$WORKDIR/issue-action.json" "$WORKDIR/created-issue.json" \
 import json, pathlib, sys
 expected, created, catalog = [json.loads(pathlib.Path(p).read_text()) for p in sys.argv[1:]]
 if sys.platform in ("darwin", "linux"):
-    assert created["github_issue_plugin"] == expected["github_issue_plugin"]
+    assert created["native_plugin"] == expected["native_plugin"]
     listed = next(a for a in catalog["actions"] if a["id"] == created["id"])
-    assert listed["github_issue_plugin"] == expected["github_issue_plugin"]
+    assert listed["native_plugin"] == expected["native_plugin"]
 PYBINDING
 
 python3 - "$WORKDIR/issue-action.json" "$WORKDIR/comment-action.json" <<'PYCOMMENT'
@@ -188,9 +188,9 @@ python3 - "$WORKDIR/created-issue.json" "$WORKDIR/created-comment.json" \
 import json, pathlib, sys
 issue, comment, catalog = [json.loads(pathlib.Path(p).read_text()) for p in sys.argv[1:]]
 if sys.platform in ("darwin", "linux"):
-    assert comment["github_issue_plugin"] == issue["github_issue_plugin"]
+    assert comment["native_plugin"] == issue["native_plugin"]
     listed = next(a for a in catalog["actions"] if a["id"] == comment["id"])
-    assert listed["github_issue_plugin"] == issue["github_issue_plugin"]
+    assert listed["native_plugin"] == issue["native_plugin"]
 PYCOMMENTBINDING
 
 SESSION_JSON="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" session create \
@@ -251,7 +251,7 @@ printf '%s\n' p6-issue >"$MODE"
 # the approved artifact must block this otherwise authorized request.
 python3 - "$WORKDIR/issue-action.json" <<'PYTAMPER'
 import json, pathlib, sys
-artifact = pathlib.Path(json.loads(pathlib.Path(sys.argv[1]).read_text())["github_issue_plugin"]["path"])
+artifact = pathlib.Path(json.loads(pathlib.Path(sys.argv[1]).read_text())["native_plugin"]["path"])
 artifact.chmod(0o700)
 with artifact.open("ab") as stream:
     stream.write(b"\0")
@@ -266,7 +266,7 @@ PLUGIN_DENIED_RC=0
 [[ "$(wc -l <"$TRACE")" == "$TRACE_BEFORE_PLUGIN_CHECK" ]]
 python3 - "$WORKDIR/issue-action.json" "$ROOT/target/release/rekey-github-create-issue" <<'PYRESTOREPLUGIN'
 import hashlib, json, pathlib, shutil, sys
-binding = json.loads(pathlib.Path(sys.argv[1]).read_text())["github_issue_plugin"]
+binding = json.loads(pathlib.Path(sys.argv[1]).read_text())["native_plugin"]
 artifact = pathlib.Path(binding["path"])
 artifact.chmod(0o700)
 shutil.copyfile(sys.argv[2], artifact)
@@ -362,11 +362,11 @@ python3 - "$WORKDIR/issue-action.json" "$WORKDIR/issue-v2.json" <<'PYUPDATE'
 import json, pathlib, shutil, sys
 value = json.loads(pathlib.Path(sys.argv[1]).read_text())
 if sys.platform in ("darwin", "linux"):
-    old = pathlib.Path(value["github_issue_plugin"]["path"])
+    old = pathlib.Path(value["native_plugin"]["path"])
     new = old.with_name("registered-create-issue-v2")
     shutil.copyfile(old, new)
     new.chmod(0o500)
-    value["github_issue_plugin"]["path"] = str(new)
+    value["native_plugin"]["path"] = str(new)
 pathlib.Path(sys.argv[2]).write_text(json.dumps(value))
 PYUPDATE
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" action update "$ISSUE_ID" \
@@ -380,8 +380,8 @@ assert updated["version"] == 2
 listed = next(a for a in catalog["actions"] if a["id"] == updated["id"])
 assert listed["version"] == 2
 if sys.platform in ("darwin", "linux"):
-    assert updated["github_issue_plugin"] == expected["github_issue_plugin"]
-    assert listed["github_issue_plugin"] == expected["github_issue_plugin"]
+    assert updated["native_plugin"] == expected["native_plugin"]
+    assert listed["native_plugin"] == expected["native_plugin"]
 PYUPDATED
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" action disable "$ISSUE_ID" \
   --password-stdin >/dev/null

@@ -338,7 +338,7 @@ impl SqliteRecordStore {
         )
         .map_err(storage)?;
         tx.execute(
-            "INSERT INTO actions (action_id, version, name, state, credential_id, origin, method, exact_path, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms, text_stream_json, github_issue_plugin_json)
+            "INSERT INTO actions (action_id, version, name, state, credential_id, origin, method, exact_path, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms, text_stream_json, native_plugin_json)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 record.action_id.as_bytes().as_slice(),
@@ -358,7 +358,7 @@ impl SqliteRecordStore {
                 record.timeout_ms,
                 record.created_at_ms,
                 record.text_stream_json,
-                record.github_issue_plugin_json,
+                record.native_plugin_json,
             ],
         )
         .map_err(storage)?;
@@ -392,7 +392,7 @@ impl SqliteRecordStore {
     ) -> Result<ActionRecord, AuthorityError> {
         self.conn
             .query_row(
-                "SELECT action_id, version, name, state, credential_id, origin, method, exact_path, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms, text_stream_json, github_issue_plugin_json
+                "SELECT action_id, version, name, state, credential_id, origin, method, exact_path, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms, text_stream_json, native_plugin_json
                  FROM actions WHERE action_id = ?1 AND version = ?2",
                 params![action_id.as_bytes().as_slice(), version as i64],
                 action_from_row,
@@ -407,7 +407,7 @@ impl SqliteRecordStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT action_id, version, name, state, credential_id, origin, method, exact_path, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms, text_stream_json, github_issue_plugin_json
+                "SELECT action_id, version, name, state, credential_id, origin, method, exact_path, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms, text_stream_json, native_plugin_json
                  FROM actions WHERE state != 'retired' ORDER BY created_at_ms",
             )
             .map_err(storage)?;
@@ -428,7 +428,7 @@ impl SqliteRecordStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT action_id, version, name, state, credential_id, origin, method, exact_path, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms, text_stream_json, github_issue_plugin_json
+                "SELECT action_id, version, name, state, credential_id, origin, method, exact_path, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms, text_stream_json, native_plugin_json
                  FROM actions WHERE credential_id = ?1",
             )
             .map_err(storage)?;
@@ -748,7 +748,7 @@ fn action_from_row(r: &rusqlite::Row<'_>) -> RowResult<ActionRecord> {
     let created_at_ms: i64 = r.get(15)?;
     Ok((|| {
         Ok(ActionRecord {
-            github_issue_plugin_json: r
+            native_plugin_json: r
                 .get(17)
                 .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
             text_stream_json: r

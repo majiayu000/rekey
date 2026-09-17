@@ -12,7 +12,7 @@ use super::*;
 
 fn action(method: FixedMethod, path: &str) -> FixedHttpAction {
     FixedHttpAction {
-        github_issue_plugin: None,
+        native_plugin: None,
         text_stream: None,
         id: ActionId::new_random(),
         name: ActionName::new("github test").unwrap(),

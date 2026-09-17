@@ -1,5 +1,7 @@
 # SDK-04 GitHub 两操作 Action 插件登记
 
+后续封闭多凭证合同见 [native-action-plugin](2026-09-16-native-action-plugin.md)：JSON 字段更名为 `native_plugin`，协议增加 `anthropic-messages-v1`，SQLite 列为 `native_plugin_json`，源码格式 14。本文保留 GitHub 两操作登记的历史合同。
+
 用户已授权继续本地功能。最小实现扩展既有 Action 定义及其不可变版本，使同一 artifact 支持 GitHub CreateIssue / CreateIssueComment。没有新增插件注册服务、任意 HTTP 效果、安装器、市场或动态库加载。
 
 ## 登记与版本

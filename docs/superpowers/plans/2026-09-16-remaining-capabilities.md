@@ -48,8 +48,8 @@
 | KEY-04 | VRK/DEK 轮换 | DEK 与 Locked 状态双因素 VRK 轮换均已实现、通过独立审查及专项验收；不撤销历史备份或替换上游凭证 |
 | NET-07 | Agent 可见流式响应 | 用户已接受独立流式接口及部分响应失败合同；固定 Anthropic 纯文本 Action 已实现并通过真实 TLS/UDS 专项验收，旧非流式合同保留 |
 | OS-05 | macOS 隔离启动器 | 用户已选择 Seatbelt；`macos-seatbelt-v1` 本机实验实现与定向攻击/真实 Broker 授权测试完成，发布前仍需人工安全审查 |
-| OS-06 | 跨平台强隔离 | macOS 本机与 LinuxKit 容器已有专项证据；Linux 新增确定性攻击测试并修复继承 FD 泄露。原生 Ubuntu x86_64 P0/G2 已通过 CI 35135342482；其他平台及完整强隔离仍待逐平台验收 |
-| SDK-04 | 动态插件加载 | GitHub CreateIssue/CreateIssueComment 两操作的 Action 路径/可信摘要/协议登记及 macOS/Linux GNU 隔离加载已实现；LinuxKit arm64 与原生 Ubuntu x86_64 已验收；通用多凭证效果插件仍未完成 |
+| OS-06 | 跨平台强隔离 | macOS 本机与 LinuxKit 容器已有专项证据；Linux 新增确定性攻击测试并修复继承 FD 泄露。原生 Ubuntu x86_64 P0/G2 已通过当前 head 的 CI `35139996331`；其他平台及完整强隔离仍待逐平台验收 |
+| SDK-04 | 动态插件加载 | 封闭原生插件：同一 runner 上 `github-issues-v1`（GitHub App CreateIssue/Comment）与 `anthropic-messages-v1`（OpaqueToken 文本流）；JSON 字段 `native_plugin`，源码格式 14。不是市场/动态库/任意 HTTP；通用多凭证效果平台与完整 P-10 仍未关闭 |
 | UX-04 | 可视化策略审批流程 | 复用 APR-09/POL-09，不单独计实现 |
 | VEX-01 | 私网 Vault | 待输入：固定目标和部署信任；待规格定义 SSRF/DNS 边界 |
 | VEX-02 | Vault 登录方式 | 待输入：AppRole/Kubernetes/OIDC 中选定一种 |
@@ -172,7 +172,7 @@
 - LinuxKit arm64 整合验收 root/UID65534 各通过 runner11项（含 helper）及真实 Broker9项；Linux Agent5项回归通过。两平台 all-targets check/Clippy、P6 release CLI/Broker/本地TLS均通过，含篡改登记artifact零上游请求负控。macOS整库548项通过、0失败、1项既有忽略。fmt、API/CLI依赖及本地打包清单/文档链接检查通过。
 - 实现与测试设计独立审查发现并修正 namespace 可降级参数及测试控制组/清理证据问题，最终无阻断项。证据：主仓库 `.git/codex/threads/remaining-linux-plugin-20260917/`。
 
-当前尚未关闭：通用多凭证效果插件；任意原生插件的总物理资源上限及完整启动窗口父死保障；x86_64/原生 Ubuntu 等实际平台验收；P-08远程采集/告警及外部/企业25条的实际接入。后两类继续按用户选择仅交付规格，不创建外部资源。AS64MiB不是硬RSS总量；READY后子树停止运行不等于所有后代同步reap。源码交付不等于发布、部署或人工安全审查完成。
+当前尚未关闭：通用多凭证效果插件；任意原生插件的总物理资源上限及完整启动窗口父死保障；其他平台现场隔离验收；P-08远程采集/告警及外部/企业25条的实际接入。后两类继续按用户选择仅交付规格，不创建外部资源。AS64MiB不是硬RSS总量；READY后子树停止运行不等于所有后代同步reap。源码交付不等于发布、部署或人工安全审查完成。
 
 
 ### 原生 CI 首轮发现与修复
@@ -202,3 +202,18 @@ security-gate `35135342482`（源码 `c21aee4`）的 Ubuntu x86_64 P0 与 Linux 
 该测试改为10秒命令预算，并同步将最终audit trigger从三千万次增至一亿次递归，给准备阶段留出余量后仍强制跨过截止时间。保留AuthorityBusy、elapsed超过预算、桌面包装撤销、全量受保护状态回滚、零成功审计与Locked状态断言；SQL内仍校验两个旧wrapper已经替换。未修改生产25秒Admin mutation期限、KDF强度或生产逻辑，也未跳过测试。
 
 该修正的本地定向测试31.37秒通过，最终macOS整库548项通过、0失败、1项既有忽略，check/Clippy/fmt通过。上一提交 `8596704` 的原生macOS P0及Linux G2任务均完整通过；新测试提交继续重跑原生CI。
+
+
+### 原生 CI 第四轮全绿（2026-09-17）
+
+手动 security-gate `35139996331`（源码 `5e825c7aa249e11a581b9372f52052583e3b788b`，`workflow_dispatch`）已完成且结论为 success。三个任务均 success，无后续同分支失败运行：
+
+- Linux container G2 reference boundary：2026-09-16T19:20:52Z → 19:24:06Z
+- P0 (ubuntu-latest)：2026-09-16T19:20:51Z → 19:36:14Z
+- P0 (macos-latest)：2026-09-16T19:20:59Z → 19:36:19Z
+
+该 head 与 `origin/codex/remaining-integration-20260916` 一致；merge-base 仍为 `origin/main` `ceb5f58a0bc4f6967c68e175940f2c6d2ebc05a1`，main 未前移。当前无覆盖 PR，未合并、未发布。本地证据：`.git/codex/threads/remaining-linux-plugin-20260917/status-20260917/`。
+
+## 封闭原生插件（2026-09-17）
+
+JSON 字段更名为 `native_plugin`，SQLite 列为 `native_plugin_json`，源码格式 14 拒绝 v13。同一 GitHub runner 增加封闭 `anthropic-messages-v1`（OpaqueToken 文本流）；GitHub `github-issues-v1` 行为仅改字段名。本机整库 558 通过、0 失败、1 项既有忽略；真实 Broker GitHub 9 项与 Anthropic 2 项通过。不是市场，不关闭 P-10。未跑 P6 进程脚本、未创建真实账号、未推送。证据：`.git/codex/threads/remaining-native-plugin-20260917/`。
