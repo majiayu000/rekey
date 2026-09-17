@@ -35,7 +35,7 @@ macOS/Linux 隔离、限额、FD、deadline、快照与摘要核验复用现有 
 - domain/Authority：协议与凭证/Action 错配拒绝；旧字段名拒绝；v13 状态与备份拒绝。
 - 同一原生 artifact：GitHub 两操作既有真实 Broker 路径保持；另用 `anthropic-messages-v1` 绑定同一 artifact，经真实 Admin/Agent/确定性 TLS 流式夹具执行，首片仍须在上游结束前到达；恶意改 operation/messages 或加入 route 时零上游请求。
 - 未登记的 Anthropic 流式回归保持进程内路径。
-- release CLI/本地 TLS：GitHub P6 改用 `native_plugin` 字段；另覆盖 Anthropic 显式绑定成功与篡改 artifact 零上游。
+- GitHub P6 脚本字段改为 `native_plugin`。Anthropic 显式绑定成功与篡改零上游由真实 Broker `tests/native_plugin.rs` 覆盖；本切片未把 Anthropic 写入 P6 进程脚本。
 
 不创建真实 Anthropic/GitHub 账号，不合并、不发布。
 
