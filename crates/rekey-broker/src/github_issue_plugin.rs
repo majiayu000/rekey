@@ -53,6 +53,9 @@ pub(crate) async fn normalize(
 ) -> Result<Vec<u8>, BrokerError> {
     match registration {
         Some(plugin) => {
+            if plugin.protocol != rekey_domain::action::GITHUB_ISSUES_PROTOCOL {
+                return Err(denied("plugin-protocol-mismatch"));
+            }
             normalize_with_artifact(
                 Path::new(&plugin.path),
                 Some(&plugin.sha256),
