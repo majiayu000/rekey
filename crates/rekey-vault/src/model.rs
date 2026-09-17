@@ -4,7 +4,7 @@ use rekey_domain::ids::{
     PolicySignerId, PrincipalId, RequestId, SessionId, VaultId, WrapperId,
 };
 
-pub const FORMAT_VERSION: u32 = 13;
+pub const FORMAT_VERSION: u32 = 14;
 pub const VAULT_INTEGRITY_CIPHERTEXT_LEN: usize = 40;
 
 #[derive(Debug, Clone)]
@@ -138,7 +138,7 @@ impl ActionState {
 
 #[derive(Debug, Clone)]
 pub struct ActionRecord {
-    pub github_issue_plugin_json: Option<String>,
+    pub native_plugin_json: Option<String>,
     pub text_stream_json: Option<String>,
     pub action_id: ActionId,
     pub version: u64,

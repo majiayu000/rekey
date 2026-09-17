@@ -7,8 +7,8 @@ use std::collections::BTreeSet;
 
 use argon2::{Algorithm, Argon2, Params, Version};
 use rekey_domain::action::{
-    ActionName, ExactPath, FixedMethod, HeaderCredentialUse, HeaderName, HeaderPrefix, HttpsOrigin,
-    RequestPolicy, ResponsePolicy,
+    ActionName, AnthropicTextStream, ExactPath, FixedMethod, HeaderCredentialUse, HeaderName,
+    HeaderPrefix, HttpsOrigin, NativePlugin, RequestPolicy, ResponsePolicy,
 };
 use rekey_domain::credential::{CredentialKind, CredentialLabel, CredentialState};
 use rekey_vault::command::{ActionDefinition, AuditDraft, UnlockProof};
@@ -23,7 +23,7 @@ use zeroize::Zeroize;
 
 fn action_definition(credential_id: rekey_domain::ids::CredentialId) -> ActionDefinition {
     ActionDefinition {
-        github_issue_plugin: None,
+        native_plugin: None,
         text_stream: None,
         name: ActionName::new("github-create-issue").unwrap(),
         credential_id,
@@ -1226,7 +1226,7 @@ async fn explicit_github_plugin_registration_fails_closed_on_unsupported_platfor
         .await
         .unwrap();
     let mut definition = action_definition(credential.id);
-    definition.github_issue_plugin = Some(rekey_domain::action::GitHubIssuePlugin {
+    definition.native_plugin = Some(rekey_domain::action::NativePlugin {
         path: "/tmp/native-plugin".into(),
         sha256: "0".repeat(64),
         protocol: "github-issues-v1".into(),
@@ -1241,9 +1241,82 @@ async fn explicit_github_plugin_registration_fails_closed_on_unsupported_platfor
             .await
             .unwrap_err();
         assert!(
-            matches!(error,AuthorityError::Domain(rekey_domain::DomainError::InvalidActionDefinition(ref message)) if message=="GitHub issue plugins require macOS or Linux GNU x86_64/aarch64")
+            matches!(error,AuthorityError::Domain(rekey_domain::DomainError::InvalidActionDefinition(ref message)) if message=="native plugins require macOS or Linux GNU x86_64/aarch64")
         );
     }
+    assert!(handle.action_list().await.unwrap().is_empty());
+    handle
+        .shutdown(Some(common::password_proof()))
+        .await
+        .unwrap();
+    join.join().unwrap();
+}
+
+#[tokio::test]
+async fn native_plugin_rejects_wrong_credential_kind() {
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+    let opaque = handle
+        .credential_add(
+            CredentialLabel::new("opaque-plugin-source").unwrap(),
+            CredentialKind::OpaqueToken,
+            SecretInput::from_slice(b"opaque-token"),
+            common::password_proof(),
+        )
+        .await
+        .unwrap();
+    let github = handle
+        .credential_add(
+            CredentialLabel::new("github-plugin-kind-source").unwrap(),
+            CredentialKind::GitHubAppInstallation,
+            SecretInput::from_slice(b"fixture-profile"),
+            common::password_proof(),
+        )
+        .await
+        .unwrap();
+    let mut github_plugin = action_definition(opaque.id);
+    github_plugin.native_plugin = Some(NativePlugin {
+        path: "/tmp/native-plugin".into(),
+        sha256: "0".repeat(64),
+        protocol: "github-issues-v1".into(),
+    });
+    let error = handle
+        .action_upsert(None, github_plugin, common::password_proof())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, AuthorityError::Domain(rekey_domain::DomainError::InvalidActionDefinition(ref message)) if message == "GitHub issue plugins require a GitHub App credential")
+    );
+    let mut anthropic_plugin = action_definition(github.id);
+    anthropic_plugin.native_plugin = Some(NativePlugin {
+        path: "/tmp/native-plugin".into(),
+        sha256: "0".repeat(64),
+        protocol: "anthropic-messages-v1".into(),
+    });
+    anthropic_plugin.text_stream = Some(AnthropicTextStream {
+        model: "fixed-test-model".into(),
+        max_tokens: 128,
+    });
+    anthropic_plugin.origin = HttpsOrigin::parse("https://api.anthropic.com").unwrap();
+    anthropic_plugin.exact_path = ExactPath::parse("/v1/messages").unwrap();
+    anthropic_plugin.auth = HeaderCredentialUse::new(
+        HeaderName::new("x-api-key").unwrap(),
+        HeaderPrefix::new("").unwrap(),
+    )
+    .unwrap();
+    anthropic_plugin
+        .request_policy
+        .allowed_extra_headers
+        .clear();
+    anthropic_plugin.response_policy.allowed_headers.clear();
+    let error = handle
+        .action_upsert(None, anthropic_plugin, common::password_proof())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, AuthorityError::Domain(rekey_domain::DomainError::InvalidActionDefinition(ref message)) if message == "Anthropic message plugins require an opaque-token credential")
+    );
     assert!(handle.action_list().await.unwrap().is_empty());
     handle
         .shutdown(Some(common::password_proof()))

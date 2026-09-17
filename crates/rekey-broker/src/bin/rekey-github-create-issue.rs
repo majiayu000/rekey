@@ -1,5 +1,6 @@
 //! Fixed reference sidecar: only public JSON enters and normalized JSON leaves.
-use rekey_connector::github_issue::{MAX_ISSUE_WIRE_BYTES, normalize_issue_envelope};
+use rekey_connector::github_issue::MAX_ISSUE_WIRE_BYTES;
+use rekey_connector::normalize_native_envelope;
 use std::io::{self, Read, Write};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -7,7 +8,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     io::stdin()
         .take((MAX_ISSUE_WIRE_BYTES + 1) as u64)
         .read_to_end(&mut input)?;
-    let output = normalize_issue_envelope(&input)?;
+    let output = normalize_native_envelope(&input)?;
     io::stdout().write_all(&output)?;
     Ok(())
 }

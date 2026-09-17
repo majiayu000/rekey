@@ -323,13 +323,28 @@ impl Worker {
         if credential.state != CredentialState::Active {
             return Err(AuthorityError::CredentialRevoked);
         }
-        if definition.github_issue_plugin.is_some()
-            && credential.kind != CredentialKind::GitHubAppInstallation
-        {
-            return Err(rekey_domain::DomainError::InvalidActionDefinition(
-                "GitHub issue plugins require a GitHub App credential".into(),
-            )
-            .into());
+        if let Some(plugin) = definition.native_plugin.as_ref() {
+            let required = match plugin.protocol.as_str() {
+                "github-issues-v1" => CredentialKind::GitHubAppInstallation,
+                "anthropic-messages-v1" => CredentialKind::OpaqueToken,
+                _ => {
+                    return Err(rekey_domain::DomainError::InvalidActionDefinition(
+                        "invalid native plugin declaration".into(),
+                    )
+                    .into());
+                }
+            };
+            if credential.kind != required {
+                return Err(rekey_domain::DomainError::InvalidActionDefinition(
+                    if plugin.protocol == "github-issues-v1" {
+                        "GitHub issue plugins require a GitHub App credential"
+                    } else {
+                        "Anthropic message plugins require an opaque-token credential"
+                    }
+                    .into(),
+                )
+                .into());
+            }
         }
         #[cfg(not(any(
             target_os = "macos",
@@ -339,9 +354,9 @@ impl Worker {
                 any(target_arch = "x86_64", target_arch = "aarch64")
             )
         )))]
-        if definition.github_issue_plugin.is_some() {
+        if definition.native_plugin.is_some() {
             return Err(rekey_domain::DomainError::InvalidActionDefinition(
-                "GitHub issue plugins require macOS or Linux GNU x86_64/aarch64".into(),
+                "native plugins require macOS or Linux GNU x86_64/aarch64".into(),
             )
             .into());
         }
@@ -364,7 +379,7 @@ impl Worker {
             ),
         };
         let action = FixedHttpAction {
-            github_issue_plugin: definition.github_issue_plugin,
+            native_plugin: definition.native_plugin,
             text_stream: definition.text_stream,
             id: action_id,
             name: definition.name,

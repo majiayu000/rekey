@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use data_encoding::HEXLOWER;
 use rekey_connector::github_issue::{IssueOperation, MAX_ISSUE_WIRE_BYTES};
-use rekey_domain::action::GitHubIssuePlugin;
+use rekey_domain::action::NativePlugin;
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -46,7 +46,7 @@ fn packaged_artifact() -> Result<PathBuf, BrokerError> {
 /// Only the operation and public body cross the process boundary. The result cannot alter
 /// any approved parameter: the trusted Broker checks the complete canonical envelope.
 pub(crate) async fn normalize(
-    registration: Option<&GitHubIssuePlugin>,
+    registration: Option<&NativePlugin>,
     operation: IssueOperation,
     input: &[u8],
     deadline: Instant,
@@ -71,6 +71,29 @@ pub(crate) async fn normalize(
             .normalize_body(input)
             .map_err(|_| denied("github-profile-mismatch")),
     }
+}
+
+pub(crate) async fn normalize_anthropic(
+    registration: &NativePlugin,
+    input: &[u8],
+    deadline: Instant,
+) -> Result<Vec<u8>, BrokerError> {
+    if registration.protocol != rekey_domain::action::ANTHROPIC_MESSAGES_PROTOCOL {
+        return Err(denied("plugin-protocol-mismatch"));
+    }
+    let (expected, body) = rekey_connector::anthropic_message::prepare(input)
+        .map_err(|_| denied("plugin-invalid-input"))?;
+    let output = run(
+        Path::new(&registration.path),
+        Some(&registration.sha256),
+        &expected,
+        deadline,
+    )
+    .await?;
+    if output != expected {
+        return Err(denied("plugin-output-mismatch"));
+    }
+    Ok(body)
 }
 
 async fn normalize_with_artifact(

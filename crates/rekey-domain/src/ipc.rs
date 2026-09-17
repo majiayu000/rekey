@@ -395,7 +395,7 @@ pub struct CredentialListResponse {
 #[serde(deny_unknown_fields)]
 pub struct ActionCreateMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub github_issue_plugin: Option<crate::action::GitHubIssuePlugin>,
+    pub native_plugin: Option<crate::action::NativePlugin>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text_stream: Option<crate::action::AnthropicTextStream>,
     pub name: String,

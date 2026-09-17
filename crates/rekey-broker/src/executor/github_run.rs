@@ -46,7 +46,7 @@ impl ActionExecutor {
                     )
                 ))]
                 let normalized = crate::github_issue_plugin::normalize(
-                    action.github_issue_plugin.as_ref(),
+                    action.native_plugin.as_ref(),
                     operation,
                     &request.body,
                     effect_deadline,
@@ -60,7 +60,7 @@ impl ActionExecutor {
                         any(target_arch = "x86_64", target_arch = "aarch64")
                     )
                 )))]
-                let normalized = if action.github_issue_plugin.is_some() {
+                let normalized = if action.native_plugin.is_some() {
                     Err(BrokerError::Denied("github-plugin-platform-unsupported"))
                 } else {
                     operation

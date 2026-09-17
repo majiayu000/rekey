@@ -567,7 +567,7 @@ system bubblewrap, permitted namespaces and the fixed GNU runtime files
 described in [installation](installation.md#github-reference-connector-macos-and-linux-source-builds):
 
 ```json
-"github_issue_plugin": {
+"native_plugin": {
   "path": "/absolute/path/to/connector",
   "sha256": "ADMIN_APPROVED_64_LOWERCASE_HEX_DIGEST",
   "protocol": "github-issues-v1"
@@ -593,7 +593,11 @@ execution verifies the actual file and runs its private snapshot. A wrong hash,
 missing file or unsupported platform fails without falling back to the bundled
 implementation. The binding belongs to `Action@VERSION`; an old capability never
 switches to a newer artifact automatically. Disable the Action to revoke its
-sessions. See [the exact scope and failure contract](superpowers/specs/2026-09-16-action-plugin-registration.md).
+sessions. See [the closed native plugin contract](superpowers/specs/2026-09-16-native-action-plugin.md)
+and [the GitHub registration history](superpowers/specs/2026-09-16-action-plugin-registration.md).
+The same `native_plugin` field with `protocol` `anthropic-messages-v1` can bind
+that executable to the existing Anthropic text-stream Action. Unregistered
+Anthropic streaming stays in-process.
 
 ### Rotate the GitHub App profile
 

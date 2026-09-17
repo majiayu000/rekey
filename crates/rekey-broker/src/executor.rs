@@ -445,7 +445,20 @@ impl ActionExecutor {
         };
 
         if stream.is_some() {
-            text_stream::configure(action, request, &mut upstream_request)?;
+            let plugin_messages =
+                match anthropic_plugin_messages(action, &request.body, effect_deadline).await {
+                    Ok(body) => body,
+                    Err(err) => {
+                        started
+                            .blocked_until(effect_deadline, "native-plugin-rejected")
+                            .await?;
+                        return Err(err);
+                    }
+                };
+            let messages = plugin_messages
+                .as_deref()
+                .unwrap_or(request.body.as_slice());
+            text_stream::configure(action, messages, &mut upstream_request)?;
         }
         // Steps 10-11: fixed HTTPS send with bounded response. Credential
         // preparation consumes the same action deadline as DNS and HTTP.
@@ -664,6 +677,44 @@ async fn wait_for_cancel(mut cancel: tokio::sync::watch::Receiver<bool>) {
         if cancel.changed().await.is_err() {
             return;
         }
+    }
+}
+
+async fn anthropic_plugin_messages(
+    action: &FixedHttpAction,
+    body: &[u8],
+    deadline: Instant,
+) -> Result<Option<Vec<u8>>, BrokerError> {
+    let Some(plugin) = action.native_plugin.as_ref() else {
+        return Ok(None);
+    };
+    if plugin.protocol != rekey_domain::action::ANTHROPIC_MESSAGES_PROTOCOL {
+        return Ok(None);
+    }
+    #[cfg(any(
+        target_os = "macos",
+        all(
+            target_os = "linux",
+            target_env = "gnu",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    ))]
+    {
+        crate::github_issue_plugin::normalize_anthropic(plugin, body, deadline)
+            .await
+            .map(Some)
+    }
+    #[cfg(not(any(
+        target_os = "macos",
+        all(
+            target_os = "linux",
+            target_env = "gnu",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    )))]
+    {
+        let _ = (plugin, body, deadline);
+        Err(BrokerError::Denied("github-plugin-platform-unsupported"))
     }
 }
 

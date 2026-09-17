@@ -214,16 +214,18 @@ install -m 0755 target/release/rekey target/release/rekeyd \
   target/release/rekey-github-create-issue "$HOME/.local/bin/"
 ```
 
-Current source uses state/backup format **13**. It rejects earlier formats,
-including 12, without migration. Initialize a new empty state directory; keep
+Current source uses state/backup format **14**. It rejects earlier formats,
+including 13, without migration. Initialize a new empty state directory; keep
 older binaries with their matching state and backups.
 
 An Admin may instead bind a local executable to one exact Action version with
-`github_issue_plugin` in the Action JSON. Registration stores the approved
-absolute path, expected SHA-256 and `github-issues-v1` protocol; it does
-not run or inspect the file. Each execution verifies its bytes before starting
-the isolated snapshot. Missing or changed files fail without falling back to
-the bundled sidecar. See [the registration contract](superpowers/specs/2026-09-16-action-plugin-registration.md).
+`native_plugin` in the Action JSON. Registration stores the approved
+absolute path, expected SHA-256 and either `github-issues-v1` or
+`anthropic-messages-v1`; it does not run or inspect the file. Each execution
+verifies its bytes before starting the isolated snapshot. Missing or changed
+files fail without falling back to the bundled sidecar. See
+[the closed native plugin contract](superpowers/specs/2026-09-16-native-action-plugin.md)
+and [the GitHub registration history](superpowers/specs/2026-09-16-action-plugin-registration.md).
 
 Updating the Action creates a new binding version. Existing sessions retain
 their old version; preserve separate artifact paths when both must run. Backups

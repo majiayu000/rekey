@@ -109,7 +109,7 @@ async fn successful_operation(comment: bool, registered: bool) {
     meta["exact_path"] = json!(path);
     meta["allowed_extra_headers"] = json!([]);
     if registered {
-        meta["github_issue_plugin"] = registration(std::path::Path::new(env!(
+        meta["native_plugin"] = registration(std::path::Path::new(env!(
             "CARGO_BIN_EXE_rekey-github-create-issue"
         )));
     }
@@ -327,7 +327,7 @@ fn plugin_definition(credential: &str, plugin: Value) -> Value {
     meta["origin"] = json!("https://api.github.com");
     meta["exact_path"] = json!("/repos/owner/repo/issues");
     meta["allowed_extra_headers"] = json!([]);
-    meta["github_issue_plugin"] = plugin;
+    meta["native_plugin"] = plugin;
     meta
 }
 async fn register(broker: &common::TestBroker, definition: &Value) -> Value {
@@ -401,7 +401,7 @@ async fn two_registered_native_artifacts_are_selected_without_packaged_fallback(
     for (index, path) in native_artifacts().iter().enumerate() {
         let binding = registration(path);
         let action = register(&broker, &plugin_definition(&credential, binding.clone())).await;
-        assert_eq!(action["github_issue_plugin"], binding);
+        assert_eq!(action["native_plugin"], binding);
         let token = common::create_session(&broker, action["id"].as_str().unwrap(), 1).await;
         let title = if index == 0 {
             "artifact-A"
@@ -601,10 +601,7 @@ async fn plugin_registration_requires_step_up_and_github_app_credential() {
     assert_eq!(rejected.err_code(), "INVALID_INPUT");
     assert_eq!(count_event(&broker, "action.created"), 0);
     let created = register(&broker, &definition).await;
-    assert_eq!(
-        created["github_issue_plugin"],
-        definition["github_issue_plugin"]
-    );
+    assert_eq!(created["native_plugin"], definition["native_plugin"]);
     broker.shutdown().await;
 }
 
@@ -629,7 +626,7 @@ async fn plugin_update_audit_failure_rolls_back_binding_and_version() {
     assert_eq!(rejected.err_code(), "AUDIT_COMMIT_FAILED");
     let (count, version, state, stored): (i64, i64, String, String) = db
         .query_row(
-            "SELECT count(*),version,state,github_issue_plugin_json FROM actions",
+            "SELECT count(*),version,state,native_plugin_json FROM actions",
             [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
@@ -667,7 +664,7 @@ async fn plugin_binding_roundtrips_admin_list_restart_and_backup_restore() {
         &common::proof_body(common::PASSWORD),
     )
     .await;
-    assert_eq!(receipt.ok()["format_version"], 13);
+    assert_eq!(receipt.ok()["format_version"], 14);
     let state = broker.state_dir.clone();
     let dir = broker.shutdown_keep_dir().await;
     let config = rekey_broker::runtime::BrokerConfig::new(state.clone());

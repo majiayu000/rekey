@@ -572,7 +572,7 @@ PRAGMA busy_timeout = 5000;
 ~~~sql
 CREATE TABLE vault_header (
     singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
-    format_version     INTEGER NOT NULL CHECK (format_version = 13),
+    format_version     INTEGER NOT NULL CHECK (format_version = 14),
     vault_id           BLOB NOT NULL CHECK (length(vault_id) = 16),
     crypto_suite       TEXT NOT NULL CHECK (crypto_suite = 'rkca-aes256gcm-argon2id-hkdfsha256-v1'),
     created_at_ms      INTEGER NOT NULL,
@@ -632,7 +632,7 @@ CREATE UNIQUE INDEX one_active_version_per_credential
 ON credential_versions(credential_id) WHERE state = 'active';
 
 CREATE TABLE actions (
-    github_issue_plugin_json      TEXT,
+    native_plugin_json            TEXT,
     text_stream_json              TEXT,
     action_id                     BLOB NOT NULL CHECK (length(action_id) = 16),
     version                       INTEGER NOT NULL CHECK (version >= 1),
@@ -1904,10 +1904,11 @@ audit/failure-semantics 人工审查尚未进行。因此当前仓库不能声�
 
 OAU-02 introduced Keycloak kind/AAD code 5 and schema 10. NET-07 introduced
 nullable Action text_stream_json and schema 11. SDK-04 Action plugin registration
-used schema 12; the two-operation plugin now uses schema 13. Earlier state and backups, including schema 12, are rejected
-without migration. Historical release evidence remains
-unchanged. See `2026-09-10-keycloak-token-exchange-oau02.md` and
-`2026-09-16-anthropic-text-stream.md`.
+used schema 12; the two-operation plugin used schema 13; closed native plugins
+now use schema 14 (`native_plugin_json`). Earlier state and backups, including
+schema 13, are rejected without migration. Historical release evidence remains
+unchanged. See `2026-09-10-keycloak-token-exchange-oau02.md`,
+`2026-09-16-anthropic-text-stream.md`, and `2026-09-16-native-action-plugin.md`.
 
 
 ## Native desktop remembered unlock (2026-09-15)
@@ -1948,9 +1949,9 @@ Remember 操作入队后等待明确结果，不丢弃仍在写入的 worker 回
 - [独立文本流](2026-09-16-anthropic-text-stream.md)：ExecuteTextStream 仅面向显式登记的 Anthropic 文本 Action；已检查前缀可见且不可收回，仅最终 completed 表示成功，EOF、failed、incomplete 均不等于成功。原 Execute 的完整缓冲与失败合同不变，MCP 不投影流式 Action。
 - [GitHub 参考插件](2026-09-16-github-reference-plugin.md)：macOS 固定打包的 CreateIssue sidecar 仅转换公开输入，凭据、授权、远程效果及撤销仍由 Broker 执行；不代表通用动态加载或完整硬资源隔离。
 
-### Action 插件登记（源码格式 13）
+### Action 插件登记（源码格式 14）
 
-[两操作登记合同](2026-09-16-action-plugin-registration.md) 在不可变 Action 版本中持久化 GitHub issue artifact 路径、期望 SHA-256 与协议；CreateIssue/CreateIssueComment 的 operation 由 Broker 固定，执行前验证实际文件及完整规范输出，显式登记失败不回退。格式 13 拒绝包含 v12 在内的旧状态和备份，不迁移。
+[封闭原生插件合同](2026-09-16-native-action-plugin.md) 将 JSON 字段更名为 `native_plugin`，SQLite 列为 `native_plugin_json`，并在同一 runner 上增加 `anthropic-messages-v1`。[两操作登记历史](2026-09-16-action-plugin-registration.md) 仍描述 GitHub CreateIssue/CreateIssueComment。格式 14 拒绝包含 v13 在内的旧状态和备份，不迁移。这不是市场或完整 P-10。
 
 ## 2026-09-17 local continuation contract
 
