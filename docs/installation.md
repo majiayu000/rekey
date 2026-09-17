@@ -131,7 +131,8 @@ runtime-directory layout documented in the repository file
 `scripts/p1-linux-g2.sh` (not shipped in the release archive). Do not make
 the state directory or Admin socket group-writable.
 
-Linux `rekey agent-run` additionally needs `bubblewrap` and that same disjoint
+Linux `rekey agent-run` additionally needs Linux 5.11 or newer with
+`close_range(CLOSE_RANGE_CLOEXEC)` permitted, `bubblewrap`, and that same disjoint
 Agent socket. Ubuntu black-box evidence is limited to the harnessed child
 failing public TCP/UDP probes while still using `agent.sock`. It is not macOS
 G2, not Adversarially Verified isolation, and not a substitute for the Docker
@@ -149,6 +150,152 @@ sudo cp /usr/share/apparmor/extra-profiles/bwrap-userns-restrict \
   /etc/apparmor.d/bwrap-userns-restrict
 sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
 ```
+
+## macOS Agent isolation (experimental)
+
+`rekey agent-run` selects the fixed `macos-seatbelt-v1` profile on macOS.
+It requires `/usr/bin/sandbox-exec`; this is a deprecated Apple interface,
+so support is limited to tested system builds (currently 26.5.1 / 25F80 arm64).
+No installation of a CA, VM, global service, or network proxy is needed.
+
+Start `rekeyd serve --state-dir "$STATE" --agent-runtime-dir "$AGENT_RUNTIME"`
+with the same disjoint endpoint layout used on Linux. Run from a directory
+containing only the Agent's code, disjoint from both the state and Agent
+runtime directories. HOME, shared temporary parents, and paths overlapping
+`/System/Volumes` are rejected as code directories. Overlap checks compare
+directory identities to reject APFS and case aliases. The code directory is
+readable, not writable.
+The child starts in a fresh temporary directory, also used for HOME/TMPDIR.
+
+```bash
+# STATE, AGENT_RUNTIME, AGENT_CODE and AGENT_BIN are operator-selected paths.
+AGENT_SOCKET="$(realpath "$AGENT_RUNTIME/agent.sock")"
+cd "$AGENT_CODE"
+rekey --state-dir "$STATE" --agent-socket "$AGENT_SOCKET" agent-run -- "$AGENT_BIN"
+```
+
+Use the canonical socket path inside the Agent too: aliases such as `/var`
+versus `/private/var` are not separate network permissions. When the Agent
+needs a capability, add `--capability-stdin` before `--` and pipe the capability
+into stdin; it is placed only in the child's `REKEY_CAPABILITY` environment.
+The child's stdin is `/dev/null`. Parent environment variables are dropped.
+Only designated system/Homebrew runtime reads and the exact executable are
+added beyond the code directory. Arbitrary interpreters/toolchains are not
+all guaranteed compatible; do not widen the policy silently on failure.
+
+No direct IP egress, other local sockets, or Mach service grants are provided.
+Missing launcher, invalid profile and spawn errors never retry unsandboxed.
+The launcher waits for the direct child and forwards its exit code (signal
+termination maps to 5). Descendants remain sandboxed after launcher death;
+there is no guarantee of killing all descendants. Killing the launcher can
+leave its `rekey-agent-*` scratch directory behind. Parent-provided output
+files/pipes/TTYs are explicitly delegated; network-socket output is rejected.
+
+The code directory must not contain credential copies or hard links to
+protected files. This profile does not defend against a malicious external
+same-UID host process, host root, or kernel compromise. It does not upgrade
+G1 to G2 or implement Windows/plugin isolation. See the
+[feature truth matrix](product-foundation/feature-truth-matrix.md).
+
+## GitHub reference connector (macOS and Linux source builds)
+
+The source implementation of GitHub CreateIssue and CreateIssueComment uses the bundled
+`rekey-github-create-issue` sidecar on macOS. Build it with the Broker package
+and keep it beside `rekeyd` when copying binaries. The source archive and macOS
+app build include it; published alpha.2 archives do not gain this feature.
+A missing sidecar fails either mutation call instead of running it unsandboxed.
+
+For a source build, install all three binaries together (the published alpha.2
+installation above describes its historical archive):
+
+```bash
+cargo build --release -p rekey-cli --bin rekey -p rekey-broker --bins
+install -m 0755 target/release/rekey target/release/rekeyd \
+  target/release/rekey-github-create-issue "$HOME/.local/bin/"
+```
+
+Current source uses state/backup format **14**. It rejects earlier formats,
+including 13, without migration. Initialize a new empty state directory; keep
+older binaries with their matching state and backups.
+
+An Admin may instead bind a local executable to one exact Action version with
+`native_plugin` in the Action JSON. Registration stores the approved
+absolute path, expected SHA-256 and either `github-issues-v1` or
+`anthropic-messages-v1`; it does not run or inspect the file. Each execution
+verifies its bytes before starting the isolated snapshot. Missing or changed
+files fail without falling back to the bundled sidecar. See
+[the closed native plugin contract](superpowers/specs/2026-09-16-native-action-plugin.md)
+and [the GitHub registration history](superpowers/specs/2026-09-16-action-plugin-registration.md).
+
+Updating the Action creates a new binding version. Existing sessions retain
+their old version; preserve separate artifact paths when both must run. Backups
+include the binding, not the executable. Restore requires supplying the same
+path and digest again. Explicit bindings support macOS and Linux GNU x86_64/aarch64;
+other platforms fail. Linux unregistered built-in operations remain in-process.
+
+On Linux, install system bubblewrap at `/usr/bin/bwrap` and allow unprivileged
+user, PID, network, IPC and UTS namespaces. Linux 5.11+ is required for descriptor
+cleanup. The fixed GNU runtime files are the architecture loader plus `libc.so.6`,
+`libm.so.6` and `libgcc_s.so.1` under the Debian/Ubuntu multiarch library paths.
+Only those files and the artifact are mounted into a read-only root. Missing
+dependencies or denied namespace setup fail the call; no unrestricted fallback
+exists. Ubuntu 24.04+ also requires an AppArmor profile allowing bwrap userns,
+as described in the Linux Agent setup above.
+
+Only the selected operation and public issue/comment text enter the reference process. The Broker keeps all
+credentials, authorization, HTTP execution, response checks and revocation.
+The macOS Seatbelt profile denies networking and process creation; memory is
+watched by sampling and can overshoot. Linux uses a separate namespace root and
+default-deny seccomp filter, with a 64 MiB per-process virtual-address limit
+that survives re-exec. This is not a total physical-memory limit. CPU and
+wall-clock deadlines apply on both platforms. Linux parent-death cleanup is
+verified after payload startup, not throughout the bwrap initialization window.
+This is a bounded reference integration, not a third-party plugin registry.
+
+## Independent text streaming (source build)
+
+An Admin can register an opaque-token Action with `text_stream: {"model":
+"ADMIN_CHOSEN_MODEL", "max_tokens": 1024}` and the fixed Anthropic Messages
+endpoint. See [the exact Action and stream contract](superpowers/specs/2026-09-16-anthropic-text-stream.md).
+The Agent supplies only bounded user/assistant text messages:
+
+```bash
+rekey --agent-socket "$AGENT_SOCKET" execute-text-stream "$ACTION_VERSION" \
+  --capability - --body-file messages.json
+```
+
+Supply the capability through stdin. Text appears incrementally; exit zero means
+completed. Failure or incomplete output exits nonzero, and already printed text
+cannot be recalled. Do not treat a displayed prefix as success or automatically
+retry a failed call. Existing `execute` remains fully buffered and rejects
+stream-only Actions; MCP does not expose these Actions. Local fixture tests do
+not establish live Anthropic account/model compatibility.
+
+## Local metrics file
+
+The source build supports one-shot textfile publication for a separately managed
+collector. Prepare an existing physical directory owned by the Admin job user,
+normally mode 0750 with the collector's read-only group. Keep it separate from
+the vault state directory. Symlink components and untrusted writable ancestors
+are rejected. Ensure ACLs grant no extra read/write/delete access to other identities,
+including permissions inherited by new files; the CLI validates POSIX mode/owner,
+not platform ACLs.
+
+```bash
+rekey --state-dir "$STATE" metrics --prometheus --textfile-dir "$METRICS_DIR"
+```
+
+Success atomically replaces only `rekey.prom`, at mode 0640 with the directory's
+group. It also works while the Broker is locked. A validated, locked producer
+removes old output when sampling or publication fails; validation failure and
+lock contention leave files untouched. Errors are reported through the CLI.
+A killed or unscheduled job can leave stale output: consumers must check file
+mtime and collector health, and must not interpret old data as current health.
+
+This command installs no scheduler, collector, listener or alerts. The existing
+`rekey metrics` JSON and `rekey metrics --prometheus` stdout modes remain available.
+See the [local metrics contract](superpowers/specs/2026-09-16-local-metrics.md)
+and [external collection specification](superpowers/specs/2026-09-16-external-capabilities.md).
 
 ## Cross-version install and rollback
 

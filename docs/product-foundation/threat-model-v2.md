@@ -388,12 +388,12 @@ Action 和最小响应 schema 比通用透明代理更强。任何新增 canonic
 | P1 | 策略引擎 | cargo test -p rekey-policy | default-deny、forbid、schema、参数哈希和错误矩阵全通过 |
 | P-03 | 签名策略与审批 | `scripts/p3-approval-acceptance.sh` | trust 安装、连续版本、重启 reload、单人/双人 grant、重放/篡改/过期拒绝和 audit list/export 全通过 |
 | P1 | Linux 隔离 | cargo test -p rekey-e2e --test linux_g2 | Agent root 仍不能读 Broker/Vault 或直连 |
-| P1 | 流式响应 | cargo test -p rekey-broker --test streaming_sealing | 跨 chunk 反射可检测并中止 |
-| P1+ | macOS 隔离 | cargo test -p rekey-e2e --test macos_sandbox | Agent 子进程无秘密、无全局 CA、无旁路 |
+| P1 | 完整缓冲的跨 chunk 秘密反射检查 | `scripts/p1-streaming-sealing.sh` | HTTP/TLS 分块中的秘密反射拒绝；失败只交付一个空 ERROR，不是 NET-07 Agent 可见实时流 |
+| OS-05 | macOS 实验 Seatbelt 启动器 | `cargo test -p rekey-broker --test sandbox_macos`; `cargo test -p rekey-broker sandbox:: --lib` | 固定 `macos-seatbelt-v1`；当前目录只读、private scratch 可写、精确 canonical Agent UDS；真实 Broker + fake upstream 授权调用成功；文件/网络/FD/子孙攻击 fixtures 拒绝；仅本次 OS build；不升级 G2。task_for_pid 控制组也拒绝，不能归功于本沙箱；父死不保证全后代终止 |
 | P-05 | Connector 契约 | `scripts/p5-connector-sdk.sh` | 静态 registry、effect/lifecycle、MCP/OAuth projection 和 reserved GitHub no-fallback 一致 |
 | P-07A | Vault KV v2 固定版本源 | `cargo test -p rekey-broker --test vault_source_contract`; `scripts/p7-vault-kv-source.sh` | 精确版本读取、源与结果 sealing、drain 准入、轮换、重启及备份恢复通过；不外推为通用 Vault |
 | P-07B | Vault 一次性动态 lease 源 | `cargo test -p rekey-broker --test vault_dynamic_contract`; `scripts/p7-vault-dynamic-source.sh` | 单次获取、5–300 秒边界、固定 Action 注入、exact sync revoke-before-success、失败清理和 lock drain 通过；不承诺续租或 crash-time revoke |
-| P-09 | Linux agent-run netns launcher | `cargo test -p rekey-domain sandbox::`; `cargo test -p rekey-broker sandbox::`; `scripts/p9-linux-agent-run.sh` | 默认 G1 socket 拒绝；Linux 子进程无公网 TCP、看不见 state、不继承 `REKEY_PASSWORD`；disjoint `agent.sock`（含 `/tmp` 下 socket 在 tmpfs overlay 后 bind 回去）上的 authorized execute 成功；macOS `UNSUPPORTED_PLATFORM`；不升级通用 G2 |
+| P-09 | Linux agent-run netns launcher | `cargo test -p rekey-domain sandbox::`; `cargo test -p rekey-broker sandbox::`; `scripts/p9-linux-agent-run.sh` | 默认 G1 socket 拒绝；Linux 子进程无公网 TCP、看不见 state、不继承 `REKEY_PASSWORD`；disjoint `agent.sock`（含 `/tmp` 下 socket 在 tmpfs overlay 后 bind 回去）上的 authorized execute 成功；macOS 行为由 OS-05 覆盖；不升级通用 G2 |
 | H | 持续 Fuzz | `cargo fuzz run <ipc|action|policy|response_sealing|restore>` | 五个边界无 crash、hang、越界资源使用或解析分歧 |
 | P2 | 多租户 | cargo test -p rekey-control --test tenant_isolation | 跨租户读取、缓存和 token 全拒绝 |
 
@@ -441,7 +441,7 @@ Action 和最小响应 schema 比通用透明代理更强。任何新增 canonic
   与审计先完成。Agent 不能取得 token，也不能选 source/target；没有 refresh、后台续期
   或进程崩溃后的撤销保证。provider introspection inactive 不代表只做离线 JWT 验证的
   resource 会立即拒绝。真实 Keycloak + Broker 的本地 TLS fixture 不是公网筛选证明。
-  新 kind/AAD code 5 使用 schema 10；旧 state/backup 明确拒绝，不做迁移。
+  新 kind/AAD code 5 最初使用 schema 10；独立文本流曾使用 schema 11，两操作 Action 插件登记曾使用 schema 13，当前封闭原生插件使用 schema 14，含 v13 在内的旧 state/backup 明确拒绝，不做迁移。
 - P-07A 只允许管理员登记一个 public HTTPS Vault KV v2 origin、mount、path、精确
   非零版本、精确 string key 和 bootstrap token。Broker 在 durable started audit 与
   remote-effect admission 后执行一次无重试 GET，解析后只把值注入既有 fixed Action；
@@ -454,8 +454,8 @@ Action 和最小响应 schema 比通用透明代理更强。任何新增 canonic
 - Audit 使用本地 SQLite/WAL fail-closed；P-02 只通过 owner-checked Admin socket
   提供每次最多扫描 1,000 行、游标续查的稳定快照脱敏查询和 mode-0600 JSONL 导出，
   Agent socket 无此接口。
-  输出省略 Secret、body/header、capability、resource ID 和 parameter hash。尚未设计
-  删除、可配置 retention、enterprise outbox、WORM、legal hold 或 SIEM/远程交付。
+  输出省略 Secret、body/header、capability、resource ID 和 parameter hash。显式清理的源码规格见 `2026-09-16-audit-prune.md`：仅完整、无审批关联的过期执行组可删除，并使旧分页快照显式失效；实现证据以 Feature Truth Matrix 为准。
+  不提供可配置 retention、enterprise outbox、WORM、legal hold 或 SIEM/远程交付。
 - Secret Sealing 命中即中止并返回空 Agent error response，不做脱敏回退。
 - 本地恢复材料使用单一 recovery key。
 - recovery key 可用于解锁、显式 Admin step-up、验证 backup restore，或在 P-01 中为丢失的密码设置替代值；recovery 自身轮换仍必须使用当前密码。
@@ -464,7 +464,7 @@ Action 和最小响应 schema 比通用透明代理更强。任何新增 canonic
 ### 未来范围待决
 
 - 通用 G2 产品部署最终采用 native namespace、gVisor、Firecracker 或其他隔离边界。
-- macOS 强隔离是否采用 Seatbelt、Virtualization.framework 或独立虚拟机。
+- macOS 已选择实验 Seatbelt 启动器（OS-05）；未来通用强隔离是否采用 Virtualization.framework 或独立虚拟机仍未决定。
 - 跨主机 Gateway/Agent 是否要求双向 mTLS 或 DPoP。
 - 集群 Capability 的持久化、复制和撤销模型。
 - 企业审计采用事务性 outbox、WORM 或客户 SIEM 的具体合同。
@@ -492,3 +492,55 @@ archives. UI acceptance does not upgrade G1 or count as human security review.
 The native macOS app stores an independent random restore key in the local login Keychain, never the master password. The Authority stores an AES-256-GCM wrapped VRK in a 0600 file; authenticated context binds vault identity, format and the original seven-day validity window. Restart resumes a new memory session capped at the original deadline. Explicit/idle lock, wrapper rotation and faults revoke the local ticket; graceful shutdown preserves it. The Keychain and same-user G1 boundary apply; this is not a claim of protection against a compromised login session or copied key material. Backups contain the vault database, not this local desktop ticket.
 
 Runtime crash markers are cleared only after all broker and Authority tasks join successfully. A failed final directory sync revokes the remembered ticket before reporting failure. Remember operations await their definitive worker result; failed resumed-session issuance locks the Authority before returning.
+
+### Source-only key rotation and local observability (2026-09-16)
+
+DEK rotation replaces every stored version's encryption key and ciphertext in
+one audited transaction while retaining the VRK, metadata, values and capability
+bindings. Retired and revoked versions are included. It does not erase old WAL
+pages, revoke copied backups or replace credentials at their providers.
+The source-only locked-state VRK operation also changes the approval origin
+key and revokes remembered desktop access before database replacement. It
+requires both current factors, retains their values and preserves workload
+replay records. A later SQL failure can leave desktop authorization revoked
+while the database retains its complete old generation. Successful shutdown
+joins the worker; an over-budget stop instead exits nonzero, preserves the crash
+marker and leaves the caller with an unknown rotation result. Independent human
+security review and release status remain tracked by the Feature Truth Matrix.
+
+Local metrics expose only fixed numeric counters and gauges through the Admin
+socket, including while locked. They have no credential labels or new listener,
+do not extend idle unlock and reset on process restart. The approval review UI
+shows signed bindings and exact-version metadata, but does not verify signatures
+or hold approval signing keys. These Admin surfaces do not change G1/G2 claims.
+
+
+## 本机参考插件与独立文本流（2026-09-16 源码）
+
+macOS GitHub CreateIssue 在固定打包的 Seatbelt 子进程中仅处理公开 title/body；Broker
+复核完整规范请求并保留凭据、权限、HTTP、撤销与审计责任。无网络、fork 或状态目录权限。
+CPU 限额、deadline、有界 IO 和采样 RSS 看门狗不等于完整硬内存上限；父进程 SIGKILL
+不保证子进程立即退出。artifact 快照摘要证明本次复制一致，发布来源仍依赖可信安装目录。
+该参考实现不关闭 SDK-04 通用注册加载或完整 P-10。
+
+独立 ExecuteTextStream 只服务固定 Anthropic 纯文本 Action，分开检查原始 SSE 与 JSON
+解码后的连续文本，并保持有限编码的跨块匹配上下文。已检查前缀可能在后段秘密反射、
+截断、超时或审计失败前可见且不可收回；只有最终 completed 才是成功，EOF/failed/incomplete
+均不能当作完整结果。共享准入、运行时收尾和绝对 deadline；旧 Execute 的完整缓冲合同保留。
+这不保证识别任意编码或隐蔽信道，也不代表第三方 provider 的实网验收。
+
+
+SDK-04 当前源码按 `2026-09-16-native-action-plugin.md` 将 Admin 批准的 artifact 摘要绑定到精确 Action 版本（`native_plugin`，`github-issues-v1` 或 `anthropic-messages-v1`）；不把登记成功等同于文件可运行。执行时校验已打开文件的字节，显式绑定不支持的平台直接失败。仍不防御恶意同 UID 宿主，RSS 采样不是硬物理内存上限；源码格式 14 拒绝旧状态及备份。这不是市场或完整 P-10。
+
+### 2026-09-17 two-operation plugin boundary
+
+`github-issues-v1` selects create_issue/create_issue_comment from the trusted Action. The plugin cannot select routes or effects; the Broker compares the entire canonical operation/body envelope before credential exchange. Schema 14 rejects prior formats, including 13. Linux launcher tests must distinguish an actually launched sandbox from namespace setup failure and must not treat the Agent launcher as a plugin sandbox.
+
+当前 macOS 探针进一步表明：最终 SETEXEC 设置 jetsam 后，允许 self-exec 的恶意 artifact 仍可再次 exec 并清空限额；固定可信、禁止全部 exec 的 sidecar 结果不能升级任意登记插件的保障。详细结果见 GitHub 参考插件规格。
+
+2026-09-17 Linux 验收已重现继承 FD 绕过路径隔离：FD 211 可以承载已打开的 state 文件（首轮在此失败，未执行后续 socket 分支）。修复合同为 Linux post-fork/pre-exec 对所有 3+ FD 标记 CLOSE_RANGE_CLOEXEC，调用失败即拒绝，不将挂载遮罩当作 FD 撤权。该修复需要 Linux 5.11+；原失败测试已通过，并验证文件/socket FD211、先保留 FD500 再降低 NOFILE 至128 的场景；最终 LinuxKit 容器内 root 与 UID/GID65534 各5项通过。
+
+
+## Linux 显式插件后端边界（2026-09-17 源码合同）
+
+按参考插件规格新增 GNU x86_64/aarch64 固定最小 rootfs 与 seccomp allowlist。AS64MiB 是每进程虚拟映射硬限额，不是总物理内存。重新 exec 保留过滤器和 AS，但不禁止所有 exec。父死清理仅验收 READY 后路径，bwrap 初始化窗口仍存在；不扩大 G1/G2 声明。

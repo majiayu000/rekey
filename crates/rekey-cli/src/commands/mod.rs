@@ -13,12 +13,14 @@ use zeroize::Zeroizing;
 
 use crate::client::{CliError, Client};
 
+mod metrics;
+pub use metrics::metrics;
 mod password_lifecycle;
-pub use password_lifecycle::{password_change, recovery_rotate};
+pub use password_lifecycle::{key_rotate_dek, key_rotate_vrk, password_change, recovery_rotate};
 mod github_admin;
 pub use github_admin::{credential_apply_github_webhook, credential_rotate_github_app};
 mod audit;
-pub use audit::{audit_export, audit_list};
+pub use audit::{audit_export, audit_list, audit_prune};
 mod policy_approval;
 pub use policy_approval::{
     approval_get, approval_origin, approval_pending, approval_prepare, policy_activate,
@@ -885,4 +887,29 @@ pub fn desktop_restore_access(
     writeln!(out, "{}", expiry.expires_at_ms)
         .and_then(|_| out.write_all(&secret))
         .map_err(|e| CliError::local("IO", e.to_string()))
+}
+
+pub fn execute_text_stream(
+    agent_socket: &Path,
+    action: &str,
+    capability: &str,
+    body_file: &Path,
+    approvals: &[PathBuf],
+) -> Result<(), CliError> {
+    let (action_id, version) = parse_action_ref(action)?;
+    let capability_token = policy_approval::capability_value(capability)?;
+    let body = policy_approval::request_body(Some(body_file))?;
+    let approval_grants = policy_approval::read_approval_files(approvals)?;
+    let metadata = serde_json::json!({
+        "capability_token":capability_token,"action_id":action_id,"action_version":version,
+        "content_type":"application/json","extra_headers":[],"approval_grants":approval_grants
+    });
+    Client::connect_with_response_timeout(agent_socket, Channel::Agent, ACTION_RESPONSE_TIMEOUT)?
+        .text_stream(
+        metadata.to_string().as_bytes(),
+        &body,
+        std::io::stdout().lock(),
+    )?;
+    eprintln!("text stream completed");
+    Ok(())
 }

@@ -388,6 +388,15 @@ fn valid_session_response() -> Vec<u8> {
 
 #[test]
 fn audit_export_continues_after_an_empty_scan_window() {
+    audit_export_fixture(false);
+}
+
+#[test]
+fn audit_prune_expiring_export_mid_page_leaves_partial_file_without_complete_trailer_or_receipt() {
+    audit_export_fixture(true);
+}
+
+fn audit_export_fixture(expire_second_page: bool) {
     let dir = tempfile::tempdir().expect("tempdir");
     let state_dir = dir.path().join("state");
     let runtime_dir = state_dir.join("runtime");
@@ -430,17 +439,34 @@ fn audit_export_continues_after_an_empty_scan_window() {
                 assert_eq!(query["before_sequence"], 2);
             }
 
+            let expired = expire_second_page && index == 1;
+            let metadata = if expired {
+                serde_json::to_vec(&rekey_domain::ipc::ErrorEnvelope {
+                    request_id: request.request_id,
+                    code: "AUDIT_SNAPSHOT_EXPIRED".into(),
+                    message: "audit snapshot expired; restart the query or export".into(),
+                    retryable: false,
+                })
+                .unwrap()
+            } else {
+                b"{}".to_vec()
+            };
+            let body = if expired { Vec::new() } else { page };
             let response = FrameHeader {
                 channel: Channel::Admin,
                 flags: 0,
-                message_type: resp_msg::OK,
+                message_type: if expired {
+                    resp_msg::ERROR
+                } else {
+                    resp_msg::OK
+                },
                 request_id: request.request_id,
-                metadata_len: 2,
-                body_len: page.len() as u32,
+                metadata_len: metadata.len() as u32,
+                body_len: body.len() as u32,
             };
             stream.write_all(&response.encode()).expect("write header");
-            stream.write_all(b"{}").expect("write metadata");
-            stream.write_all(&page).expect("write page");
+            stream.write_all(&metadata).expect("write metadata");
+            stream.write_all(&body).expect("write page");
             stream.flush().expect("flush response");
         }
     });
@@ -461,6 +487,22 @@ fn audit_export_continues_after_an_empty_scan_window() {
         .output()
         .expect("run rekey audit export");
     server.join().expect("fake broker thread");
+    if expire_second_page {
+        assert_eq!(output.status.code(), Some(7));
+        assert!(
+            output.stdout.is_empty(),
+            "must not emit a successful receipt"
+        );
+        assert!(String::from_utf8_lossy(&output.stderr).contains("AUDIT_SNAPSHOT_EXPIRED"));
+        let partial = std::fs::read_to_string(&output_path).unwrap();
+        assert!(partial.contains("rekey.audit.export.v2"));
+        assert!(!partial.contains("rekey.audit.export.complete.v2"));
+        assert_eq!(
+            std::fs::metadata(output_path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        return;
+    }
     assert_eq!(
         output.status.code(),
         Some(0),
@@ -520,4 +562,386 @@ fn valid_audit_page_with_one_event() -> Vec<u8> {
     })
     .to_string()
     .into_bytes()
+}
+
+fn run_metrics_response(
+    metadata: serde_json::Value,
+    body: &[u8],
+    prometheus: bool,
+) -> std::process::Output {
+    run_metrics_response_to(metadata, body, prometheus, None)
+}
+
+fn run_metrics_response_to(
+    metadata: serde_json::Value,
+    body: &[u8],
+    prometheus: bool,
+    textfile_dir: Option<&std::path::Path>,
+) -> std::process::Output {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = dir.path().join("runtime");
+    std::fs::create_dir(&runtime).unwrap();
+    let socket = runtime.join("admin.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let body = body.to_vec();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut bytes = [0u8; FRAME_HEADER_LEN];
+        stream.read_exact(&mut bytes).unwrap();
+        let request = FrameHeader::decode(&bytes).unwrap();
+        assert_eq!(request.channel, Channel::Admin);
+        assert_eq!(request.message_type, rekey_domain::ipc::admin_msg::METRICS);
+        assert_eq!(request.body_len, 0);
+        let mut request_metadata = vec![0u8; request.metadata_len as usize];
+        stream.read_exact(&mut request_metadata).unwrap();
+        assert_eq!(request_metadata, b"{}");
+        let metadata = serde_json::to_vec(&metadata).unwrap();
+        let response = FrameHeader {
+            channel: Channel::Admin,
+            flags: 0,
+            message_type: resp_msg::OK,
+            request_id: request.request_id,
+            metadata_len: metadata.len() as u32,
+            body_len: body.len() as u32,
+        };
+        stream.write_all(&response.encode()).unwrap();
+        stream.write_all(&metadata).unwrap();
+        stream.write_all(&body).unwrap();
+    });
+    let mut command = Command::new(rekey_bin());
+    command.arg("--state-dir").arg(dir.path()).arg("metrics");
+    if prometheus {
+        command.arg("--prometheus");
+    }
+    if let Some(directory) = textfile_dir {
+        command.arg("--textfile-dir").arg(directory);
+    }
+    let result = command.stdin(Stdio::null()).output().unwrap();
+    server.join().unwrap();
+    result
+}
+
+#[test]
+fn metrics_cli_renders_typed_snapshots_and_rejects_untrusted_shape() {
+    let mut snapshot = rekey_domain::ipc::MetricsResponse::default();
+    snapshot.agent.dispatch.requests_total = 42;
+    let value = serde_json::to_value(&snapshot).unwrap();
+    for prometheus in [false, true] {
+        let good = run_metrics_response(value.clone(), &[], prometheus);
+        assert!(
+            good.status.success(),
+            "{}",
+            String::from_utf8_lossy(&good.stderr)
+        );
+        let rendered = String::from_utf8(good.stdout).unwrap();
+        if prometheus {
+            assert!(rendered.contains("rekey_requests_total{channel=\"agent\"} 42\n"));
+        } else {
+            let parsed: rekey_domain::ipc::MetricsResponse =
+                serde_json::from_str(&rendered).unwrap();
+            assert_eq!(parsed.agent.dispatch.requests_total, 42);
+        }
+        let mut unknown = value.clone();
+        unknown["admin"]["secret"] = "UNTRUSTED-METRIC-CANARY".into();
+        let mut negative = value.clone();
+        negative["fault_signals_total"] = (-1).into();
+        let mut text = value.clone();
+        text["fault_signals_total"] = "UNTRUSTED-METRIC-CANARY".into();
+        for (metadata, body) in [
+            (unknown, &b""[..]),
+            (negative, &b""[..]),
+            (text, &b""[..]),
+            (value.clone(), &b"UNTRUSTED-METRIC-CANARY"[..]),
+        ] {
+            let bad = run_metrics_response(metadata, body, prometheus);
+            assert!(!bad.status.success());
+            assert!(bad.stdout.is_empty());
+            assert!(!String::from_utf8_lossy(&bad.stderr).contains("UNTRUSTED-METRIC-CANARY"));
+        }
+    }
+}
+
+#[test]
+fn metrics_textfile_cli_publishes_and_invalidates_untrusted_or_unavailable_data() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().canonicalize().unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o750)).unwrap();
+    let target = path.join("rekey.prom");
+    let value = serde_json::to_value(rekey_domain::ipc::MetricsResponse::default()).unwrap();
+    let good = run_metrics_response_to(value.clone(), &[], true, Some(&path));
+    assert!(
+        good.status.success(),
+        "{}",
+        String::from_utf8_lossy(&good.stderr)
+    );
+    assert!(good.stdout.is_empty());
+    assert!(
+        std::fs::read_to_string(&target)
+            .unwrap()
+            .contains("# TYPE rekey_capabilities_active gauge")
+    );
+    assert_eq!(
+        std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+        0o640
+    );
+    let mut unknown = value.clone();
+    unknown["admin"]["secret"] = "UNTRUSTED-METRIC-CANARY".into();
+    for (metadata, body) in [
+        (unknown, &b""[..]),
+        (value, &b"UNTRUSTED-METRIC-CANARY"[..]),
+    ] {
+        std::fs::write(&target, "old healthy data").unwrap();
+        let bad = run_metrics_response_to(metadata, body, true, Some(&path));
+        assert!(!bad.status.success());
+        assert!(bad.stdout.is_empty());
+        assert!(!String::from_utf8_lossy(&bad.stderr).contains("UNTRUSTED-METRIC-CANARY"));
+        assert!(!target.exists());
+        assert_eq!(std::fs::read_dir(&path).unwrap().count(), 0);
+    }
+    let absent_state = tempfile::tempdir().unwrap();
+    std::fs::write(&target, "old healthy data").unwrap();
+    let unavailable = Command::new(rekey_bin())
+        .arg("--state-dir")
+        .arg(absent_state.path())
+        .args(["metrics", "--prometheus", "--textfile-dir"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(!unavailable.status.success());
+    assert!(!target.exists());
+    let misuse = Command::new(rekey_bin())
+        .args(["metrics", "--textfile-dir"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(!misuse.status.success());
+    assert!(String::from_utf8_lossy(&misuse.stderr).contains("--prometheus"));
+}
+
+fn run_prune_response(metadata: serde_json::Value, body: &[u8]) -> std::process::Output {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = dir.path().join("runtime");
+    std::fs::create_dir(&runtime).unwrap();
+    let socket = runtime.join("admin.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let body = body.to_vec();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut bytes = [0u8; FRAME_HEADER_LEN];
+        stream.read_exact(&mut bytes).unwrap();
+        let request = FrameHeader::decode(&bytes).unwrap();
+        assert_eq!(request.channel, Channel::Admin);
+        assert_eq!(
+            request.message_type,
+            rekey_domain::ipc::admin_msg::AUDIT_PRUNE
+        );
+        let mut request_metadata = vec![0u8; request.metadata_len as usize];
+        stream.read_exact(&mut request_metadata).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&request_metadata).unwrap(),
+            serde_json::json!({"before_ms": 100})
+        );
+        let mut proof = vec![0u8; request.body_len as usize];
+        stream.read_exact(&mut proof).unwrap();
+        let (_, proof) = rekey_domain::ipc::parse_proof_body(&proof).unwrap();
+        assert!(proof == b"PRUNE-CLI-PROOF-CANARY");
+        let metadata = serde_json::to_vec(&metadata).unwrap();
+        let response = FrameHeader {
+            channel: Channel::Admin,
+            flags: 0,
+            message_type: resp_msg::OK,
+            request_id: request.request_id,
+            metadata_len: metadata.len() as u32,
+            body_len: body.len() as u32,
+        };
+        stream.write_all(&response.encode()).unwrap();
+        stream.write_all(&metadata).unwrap();
+        stream.write_all(&body).unwrap();
+    });
+    let mut child = Command::new(rekey_bin())
+        .arg("--state-dir")
+        .arg(dir.path())
+        .args(["audit", "prune", "--before-ms", "100", "--password-stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(b"PRUNE-CLI-PROOF-CANARY\n")
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    server.join().unwrap();
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("PRUNE-CLI-PROOF-CANARY"));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("PRUNE-CLI-PROOF-CANARY"));
+    output
+}
+
+#[test]
+fn audit_prune_cli_accepts_only_consistent_typed_receipts() {
+    let valid =
+        serde_json::json!({"before_ms":100,"deleted_rows":2,"deleted_groups":1,"prune_sequence":5});
+    for value in [
+        valid.clone(),
+        serde_json::json!({"before_ms":100,"deleted_rows":0,"deleted_groups":0,"prune_sequence":null}),
+    ] {
+        let good = run_prune_response(value.clone(), &[]);
+        assert!(
+            good.status.success(),
+            "{}",
+            String::from_utf8_lossy(&good.stderr)
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&good.stdout).unwrap(),
+            value
+        );
+    }
+    let mut malicious = Vec::new();
+    for (field, value) in [
+        ("before_ms", serde_json::json!(101)),
+        ("before_ms", serde_json::json!(-1)),
+        ("deleted_rows", serde_json::json!(1)),
+        ("deleted_rows", serde_json::json!(1.5)),
+        ("deleted_groups", serde_json::json!(-1)),
+        ("deleted_groups", serde_json::json!(0)),
+        ("prune_sequence", serde_json::json!(null)),
+        ("prune_sequence", serde_json::json!(0)),
+        ("prune_sequence", serde_json::json!(1)),
+        ("prune_sequence", serde_json::json!(u64::MAX)),
+        (
+            "secret",
+            serde_json::json!("UNTRUSTED-PRUNE-RECEIPT-CANARY"),
+        ),
+    ] {
+        let mut forged = valid.clone();
+        forged[field] = value;
+        malicious.push(forged);
+    }
+    let mut missing = valid.clone();
+    missing.as_object_mut().unwrap().remove("deleted_rows");
+    malicious.push(missing);
+    for metadata in malicious {
+        let bad = run_prune_response(metadata, &[]);
+        assert_eq!(bad.status.code(), Some(2));
+        assert!(bad.stdout.is_empty());
+        assert!(!String::from_utf8_lossy(&bad.stderr).contains("UNTRUSTED-PRUNE-RECEIPT-CANARY"));
+    }
+    let body = run_prune_response(valid, b"UNTRUSTED-PRUNE-RECEIPT-CANARY");
+    assert_eq!(body.status.code(), Some(2));
+    assert!(body.stdout.is_empty());
+}
+
+fn run_vrk_response(metadata: serde_json::Value, body: &[u8]) -> std::process::Output {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = dir.path().join("runtime");
+    std::fs::create_dir(&runtime).unwrap();
+    let socket = runtime.join("admin.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let body = body.to_vec();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut bytes = [0u8; FRAME_HEADER_LEN];
+        stream.read_exact(&mut bytes).unwrap();
+        let request = FrameHeader::decode(&bytes).unwrap();
+        assert_eq!(request.channel, Channel::Admin);
+        assert_eq!(
+            request.message_type,
+            rekey_domain::ipc::admin_msg::KEY_ROTATE_VRK
+        );
+        let mut request_metadata = vec![0u8; request.metadata_len as usize];
+        stream.read_exact(&mut request_metadata).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&request_metadata).unwrap(),
+            serde_json::json!({})
+        );
+        let mut proof = vec![0u8; request.body_len as usize];
+        stream.read_exact(&mut proof).unwrap();
+        let (kind, proof, recovery) =
+            rekey_domain::ipc::parse_proof_and_secret_body(&proof).unwrap();
+        assert_eq!(kind, rekey_domain::ipc::ProofKind::Password);
+        assert!(recovery == b"VRK-RECOVERY-CLI-CANARY");
+        assert!(proof == b"VRK-PASSWORD-CLI-CANARY");
+        let metadata = serde_json::to_vec(&metadata).unwrap();
+        let response = FrameHeader {
+            channel: Channel::Admin,
+            flags: 0,
+            message_type: resp_msg::OK,
+            request_id: request.request_id,
+            metadata_len: metadata.len() as u32,
+            body_len: body.len() as u32,
+        };
+        stream.write_all(&response.encode()).unwrap();
+        stream.write_all(&metadata).unwrap();
+        stream.write_all(&body).unwrap();
+    });
+    let mut child = Command::new(rekey_bin())
+        .arg("--state-dir")
+        .arg(dir.path())
+        .args(["key", "rotate-vrk", "--stdin-secrets"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(b"VRK-PASSWORD-CLI-CANARY\nVRK-RECOVERY-CLI-CANARY\n")
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    server.join().unwrap();
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("VRK-PASSWORD-CLI-CANARY"));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("VRK-PASSWORD-CLI-CANARY"));
+    output
+}
+
+#[test]
+fn vrk_cli_rejects_malformed_receipts_and_uses_body_only_two_factors() {
+    let valid = serde_json::json!({"vault_id":"00112233-4455-4677-8899-aabbccddeeff","rotated_versions":2,"resealed_credentials":1,"approval_origin":{"algorithm":"ed25519","public_key":"11".repeat(32)},"locked":true});
+    let good = run_vrk_response(valid.clone(), &[]);
+    assert!(good.status.success());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&good.stdout).unwrap(),
+        valid
+    );
+    for (field, value) in [
+        ("vault_id", serde_json::json!("invalid")),
+        ("locked", serde_json::json!(false)),
+        ("rotated_versions", serde_json::json!(-1)),
+        ("rotated_versions", serde_json::json!(0)),
+        ("resealed_credentials", serde_json::json!(0)),
+        ("resealed_credentials", serde_json::json!(1.5)),
+        ("secret", serde_json::json!("UNTRUSTED-VRK-CANARY")),
+        (
+            "approval_origin",
+            serde_json::json!({"algorithm":"rsa","public_key":"11".repeat(32)}),
+        ),
+        (
+            "approval_origin",
+            serde_json::json!({"algorithm":"ed25519","public_key":"zz".repeat(32)}),
+        ),
+    ] {
+        let mut value_bad = valid.clone();
+        value_bad[field] = value;
+        let out = run_vrk_response(value_bad, &[]);
+        assert_eq!(out.status.code(), Some(2));
+        assert!(out.stdout.is_empty());
+        assert!(!String::from_utf8_lossy(&out.stderr).contains("UNTRUSTED-VRK-CANARY"));
+    }
+    let mut missing = valid.clone();
+    missing.as_object_mut().unwrap().remove("locked");
+    assert_eq!(run_vrk_response(missing, &[]).status.code(), Some(2));
+    let body = run_vrk_response(valid, b"UNTRUSTED-VRK-CANARY");
+    assert_eq!(body.status.code(), Some(2));
+    assert!(body.stdout.is_empty());
 }

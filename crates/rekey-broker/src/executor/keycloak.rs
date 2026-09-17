@@ -445,6 +445,7 @@ impl ActionExecutor {
             .await?;
         let mut response = response;
         Ok(ExecuteOutcome {
+            stream_status: None,
             upstream_status: response.status,
             headers,
             body: std::mem::take(&mut *response.body),

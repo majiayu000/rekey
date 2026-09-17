@@ -8,13 +8,19 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::{JoinError, JoinSet};
 
 use crate::error::BrokerError;
+use crate::executor::text_stream::{TextStreamEvent, TextStreamSender};
 use crate::executor::{ActionExecutor, ExecuteOutcome, ExecuteRequest};
+use rekey_domain::ipc::TextStreamStatus;
 
 const EXECUTION_QUEUE_CAPACITY: usize = 120;
 
 struct ExecutionJob {
     request: ExecuteRequest,
-    response: oneshot::Sender<Result<ExecuteOutcome, BrokerError>>,
+    response: ExecutionResponse,
+}
+enum ExecutionResponse {
+    Buffered(oneshot::Sender<Result<ExecuteOutcome, BrokerError>>),
+    Stream(TextStreamSender),
 }
 
 enum SupervisorEvent {
@@ -62,6 +68,20 @@ pub(crate) fn new(
 }
 
 impl ExecutionSupervisorHandle {
+    pub(crate) async fn submit_stream(
+        &self,
+        request: ExecuteRequest,
+    ) -> Result<mpsc::Receiver<TextStreamEvent>, BrokerError> {
+        let (response, result) = mpsc::channel(1);
+        self.tx
+            .send(ExecutionJob {
+                request,
+                response: ExecutionResponse::Stream(response),
+            })
+            .await
+            .map_err(|_| BrokerError::Authority(AuthorityError::Draining))?;
+        Ok(result)
+    }
     /// The caller owns only the response receiver. Once the job is accepted,
     /// dropping that receiver cannot cancel admission or an admitted effect.
     pub(crate) async fn submit(
@@ -70,7 +90,10 @@ impl ExecutionSupervisorHandle {
     ) -> Result<oneshot::Receiver<Result<ExecuteOutcome, BrokerError>>, BrokerError> {
         let (response, result) = oneshot::channel();
         self.tx
-            .send(ExecutionJob { request, response })
+            .send(ExecutionJob {
+                request,
+                response: ExecutionResponse::Buffered(response),
+            })
             .await
             .map_err(|_| BrokerError::Authority(AuthorityError::Draining))?;
         Ok(result)
@@ -102,11 +125,39 @@ impl ExecutionSupervisor {
                         let Some(job) = job else { break };
                         let executor = Arc::clone(&self.executor);
                         self.tasks.spawn(async move {
-                            let outcome = match executor.admit(job.request).await {
-                                Ok(admitted) => admitted.run().await,
-                                Err(err) => Err(err),
-                            };
-                            let _ = job.response.send(outcome);
+                            match job.response {
+                                ExecutionResponse::Buffered(response) => {
+                                    let outcome = match executor.admit(job.request).await {
+                                        Ok(admitted) => admitted.run().await,
+                                        Err(err) => Err(err),
+                                    };
+                                    let _ = response.send(outcome);
+                                }
+                                ExecutionResponse::Stream(response) => {
+                                    let outcome = match executor.admit(job.request).await {
+                                        Ok(admitted) => {
+                                            let _ = response
+                                                .send(TextStreamEvent::Admitted {
+                                                    deadline: admitted.deadline(),
+                                                })
+                                                .await;
+                                            admitted.run_stream(&response).await
+                                        }
+                                        Err(err) => Err(err),
+                                    };
+                                    let status = outcome
+                                        .ok()
+                                        .and_then(|o| o.stream_status)
+                                        .unwrap_or(TextStreamStatus::Failed);
+                                    // Bound terminal backpressure too. If it cannot be delivered,
+                                    // closing the stream remains an explicit client failure.
+                                    let _ = tokio::time::timeout(
+                                        std::time::Duration::from_secs(1),
+                                        response.send(TextStreamEvent::Terminal(status)),
+                                    )
+                                    .await;
+                                }
+                            }
                         });
                     }
                 }
@@ -151,7 +202,7 @@ mod tests {
                 body: Vec::new(),
                 approval_grants: Vec::new(),
             },
-            response,
+            response: ExecutionResponse::Buffered(response),
         }
     }
 

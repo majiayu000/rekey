@@ -113,6 +113,15 @@ enum Command {
         #[arg(long)]
         passive: bool,
     },
+    /// Read local monitoring counters without resetting the idle-lock timer.
+    Metrics {
+        /// Print Prometheus text exposition instead of JSON.
+        #[arg(long)]
+        prometheus: bool,
+        /// Atomically publish rekey.prom in an existing controlled directory.
+        #[arg(long, requires = "prometheus")]
+        textfile_dir: Option<PathBuf>,
+    },
     /// Stop the running broker (step-up proof required while unlocked).
     Shutdown {
         #[command(flatten)]
@@ -136,6 +145,9 @@ enum Command {
     /// Vault password lifecycle.
     #[command(subcommand)]
     Password(PasswordCommand),
+    /// Vault key maintenance (DEK rotation only; VRK and old backups are unchanged).
+    #[command(subcommand)]
+    Key(KeyCommand),
     /// Recovery-key lifecycle.
     #[command(subcommand)]
     Recovery(RecoveryCommand),
@@ -157,6 +169,17 @@ enum Command {
         #[arg(long = "header")]
         headers: Vec<String>,
         /// Signed approval grant JSON file (repeatable, at most two).
+        #[arg(long = "approval")]
+        approvals: Vec<PathBuf>,
+    },
+    /// Stream a fixed Anthropic text Action; partial text is not success.
+    ExecuteTextStream {
+        /// ACTION_ID@VERSION
+        action: String,
+        #[arg(long, allow_hyphen_values = true)]
+        capability: String,
+        #[arg(long)]
+        body_file: PathBuf,
         #[arg(long = "approval")]
         approvals: Vec<PathBuf>,
     },
@@ -378,6 +401,21 @@ enum ApprovalCommand {
 }
 
 #[derive(Subcommand)]
+enum KeyCommand {
+    /// Rotate the vault root key while locked, requiring both current factors.
+    RotateVrk {
+        /// Read current password and recovery key as exactly two stdin lines.
+        #[arg(long)]
+        stdin_secrets: bool,
+    },
+    /// Reseal all credential versions under fresh DEKs, preserving their values.
+    RotateDek {
+        #[command(flatten)]
+        step_up: StepUpArgs,
+    },
+}
+
+#[derive(Subcommand)]
 enum PasswordCommand {
     /// Replace the password; use --recovery when the old password is lost.
     Change {
@@ -441,6 +479,13 @@ impl AuditFilterArgs {
 
 #[derive(Subcommand)]
 enum AuditCommand {
+    /// Delete complete unapproved execution groups strictly older than the cutoff.
+    Prune {
+        #[arg(long)]
+        before_ms: i64,
+        #[command(flatten)]
+        step_up: StepUpArgs,
+    },
     /// Print one bounded page of redacted audit events.
     List {
         #[command(flatten)]
@@ -516,6 +561,10 @@ fn main() {
         } => commands::unlock(&state_dir, recovery, password_stdin),
         Command::Lock => commands::lock(&state_dir),
         Command::Status { passive } => commands::status(&state_dir, passive),
+        Command::Metrics {
+            prometheus,
+            textfile_dir,
+        } => commands::metrics(&state_dir, prometheus, textfile_dir.as_deref()),
         Command::Shutdown { step_up } => {
             commands::shutdown(&state_dir, step_up.recovery, step_up.password_stdin)
         }
@@ -738,6 +787,12 @@ fn main() {
             content_type,
             &headers,
         ),
+        Command::Key(KeyCommand::RotateVrk { stdin_secrets }) => {
+            commands::key_rotate_vrk(&state_dir, stdin_secrets)
+        }
+        Command::Key(KeyCommand::RotateDek { step_up }) => {
+            commands::key_rotate_dek(&state_dir, step_up.recovery, step_up.password_stdin)
+        }
         Command::Password(PasswordCommand::Change {
             recovery,
             stdin_secrets,
@@ -745,6 +800,12 @@ fn main() {
         Command::Recovery(RecoveryCommand::Rotate { password_stdin }) => {
             commands::recovery_rotate(&state_dir, password_stdin)
         }
+        Command::Audit(AuditCommand::Prune { before_ms, step_up }) => commands::audit_prune(
+            &state_dir,
+            before_ms,
+            step_up.recovery,
+            step_up.password_stdin,
+        ),
         Command::Audit(AuditCommand::List {
             filters,
             snapshot_max_sequence,
@@ -773,6 +834,18 @@ fn main() {
             body_file.as_deref(),
             content_type,
             &headers,
+            &approvals,
+        ),
+        Command::ExecuteTextStream {
+            action,
+            capability,
+            body_file,
+            approvals,
+        } => commands::execute_text_stream(
+            &agent_socket,
+            &action,
+            &capability,
+            &body_file,
             &approvals,
         ),
         Command::Backup { output, step_up } => commands::backup(

@@ -12,7 +12,7 @@ WEBHOOK_SECRET="P6-WEBHOOK-SECRET-CANARY-0123456789"
 TOKEN_CANARY="P2-INSTALLATION-TOKEN-CANARY"
 ISSUE_BODY_CANARY="P6 issue body canary"
 
-cargo build --release -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd
+cargo build --release -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd --bin rekey-github-create-issue
 cargo build --release -p rekey-broker --example p2_github_app_fixture
 
 WORKDIR="$(mktemp -d /tmp/rkp6github.XXXXXX)"
@@ -117,9 +117,10 @@ CREDENTIAL_JSON="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" cre
 CREDENTIAL_ID="$(printf '%s\n' "$CREDENTIAL_JSON" | json_field id)"
 [[ "$(printf '%s\n' "$CREDENTIAL_JSON" | json_field current_version)" == "1" ]]
 
-python3 - "$WORKDIR/list-action.json" "$WORKDIR/issue-action.json" "$CREDENTIAL_ID" <<'PY'
-import json, pathlib, sys
-list_path, issue_path, credential = sys.argv[1:]
+python3 - "$WORKDIR/list-action.json" "$WORKDIR/issue-action.json" "$CREDENTIAL_ID" \
+  "$ROOT/target/release/rekey-github-create-issue" <<'PY'
+import hashlib, json, pathlib, shutil, sys
+list_path, issue_path, credential, built_artifact = sys.argv[1:]
 base = {
     "credential_id": credential,
     "origin": "https://api.github.com",
@@ -134,10 +135,21 @@ pathlib.Path(list_path).write_text(json.dumps(base | {
     "name":"p6-list", "method":"GET", "exact_path":"/installation/repositories",
     "request_max_bytes":1,
 }))
-pathlib.Path(issue_path).write_text(json.dumps(base | {
+issue = base | {
     "name":"p6-create-issue", "method":"POST", "exact_path":"/repos/p6-owner/beta/issues",
     "request_max_bytes":33792,
-}))
+}
+if sys.platform in ("darwin", "linux"):
+    # Only this local fixture derives trust from its freshly built test artifact.
+    artifact = pathlib.Path(issue_path).parent.resolve() / "registered-create-issue"
+    shutil.copyfile(built_artifact, artifact)
+    artifact.chmod(0o500)
+    issue["native_plugin"] = {
+        "path": str(artifact),
+        "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+        "protocol": "github-issues-v1",
+    }
+pathlib.Path(issue_path).write_text(json.dumps(issue))
 PY
 LIST_JSON="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" action create \
   --file "$WORKDIR/list-action.json" --password-stdin)"
@@ -147,6 +159,17 @@ LIST_ID="$(printf '%s\n' "$LIST_JSON" | json_field id)"
 ISSUE_ID="$(printf '%s\n' "$ISSUE_JSON" | json_field id)"
 LIST_REF="$LIST_ID@1"
 ISSUE_REF="$ISSUE_ID@1"
+printf '%s\n' "$ISSUE_JSON" >"$WORKDIR/created-issue.json"
+"$REKEY" --state-dir "$STATE" action list >"$WORKDIR/action-list.json"
+python3 - "$WORKDIR/issue-action.json" "$WORKDIR/created-issue.json" \
+  "$WORKDIR/action-list.json" <<'PYBINDING'
+import json, pathlib, sys
+expected, created, catalog = [json.loads(pathlib.Path(p).read_text()) for p in sys.argv[1:]]
+if sys.platform in ("darwin", "linux"):
+    assert created["native_plugin"] == expected["native_plugin"]
+    listed = next(a for a in catalog["actions"] if a["id"] == created["id"])
+    assert listed["native_plugin"] == expected["native_plugin"]
+PYBINDING
 
 python3 - "$WORKDIR/issue-action.json" "$WORKDIR/comment-action.json" <<'PYCOMMENT'
 import json, pathlib, sys
@@ -158,6 +181,17 @@ COMMENT_JSON="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" action
   --file "$WORKDIR/comment-action.json" --password-stdin)"
 COMMENT_ID="$(printf '%s\n' "$COMMENT_JSON" | json_field id)"
 COMMENT_REF="$COMMENT_ID@1"
+printf '%s\n' "$COMMENT_JSON" >"$WORKDIR/created-comment.json"
+"$REKEY" --state-dir "$STATE" action list >"$WORKDIR/action-list.json"
+python3 - "$WORKDIR/created-issue.json" "$WORKDIR/created-comment.json" \
+  "$WORKDIR/action-list.json" <<'PYCOMMENTBINDING'
+import json, pathlib, sys
+issue, comment, catalog = [json.loads(pathlib.Path(p).read_text()) for p in sys.argv[1:]]
+if sys.platform in ("darwin", "linux"):
+    assert comment["native_plugin"] == issue["native_plugin"]
+    listed = next(a for a in catalog["actions"] if a["id"] == comment["id"])
+    assert listed["native_plugin"] == issue["native_plugin"]
+PYCOMMENTBINDING
 
 SESSION_JSON="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" session create \
   --action "$LIST_REF" --action "$ISSUE_REF" --action "$COMMENT_REF" --ttl 10m --max-uses 20 --password-stdin)"
@@ -213,6 +247,32 @@ PY
 
 printf '%s' '{"title":"P6 issue","body":"P6 issue body canary"}' >"$ISSUE_BODY"
 printf '%s\n' p6-issue >"$MODE"
+# Prove explicit registration is used, before any credential exchange: changing
+# the approved artifact must block this otherwise authorized request.
+python3 - "$WORKDIR/issue-action.json" <<'PYTAMPER'
+import json, pathlib, sys
+artifact = pathlib.Path(json.loads(pathlib.Path(sys.argv[1]).read_text())["native_plugin"]["path"])
+artifact.chmod(0o700)
+with artifact.open("ab") as stream:
+    stream.write(b"\0")
+artifact.chmod(0o500)
+PYTAMPER
+TRACE_BEFORE_PLUGIN_CHECK="$(wc -l <"$TRACE")"
+PLUGIN_DENIED_RC=0
+"$REKEY" --state-dir "$STATE" execute "$ISSUE_REF" --capability "$CAPABILITY" \
+  --body-file "$ISSUE_BODY" --content-type application/json \
+  >"$WORKDIR/plugin-denied.out" 2>"$WORKDIR/plugin-denied.err" || PLUGIN_DENIED_RC=$?
+[[ "$PLUGIN_DENIED_RC" == "4" && ! -s "$WORKDIR/plugin-denied.out" ]]
+[[ "$(wc -l <"$TRACE")" == "$TRACE_BEFORE_PLUGIN_CHECK" ]]
+python3 - "$WORKDIR/issue-action.json" "$ROOT/target/release/rekey-github-create-issue" <<'PYRESTOREPLUGIN'
+import hashlib, json, pathlib, shutil, sys
+binding = json.loads(pathlib.Path(sys.argv[1]).read_text())["native_plugin"]
+artifact = pathlib.Path(binding["path"])
+artifact.chmod(0o700)
+shutil.copyfile(sys.argv[2], artifact)
+artifact.chmod(0o500)
+assert hashlib.sha256(artifact.read_bytes()).hexdigest() == binding["sha256"]
+PYRESTOREPLUGIN
 "$REKEY" --state-dir "$STATE" execute "$ISSUE_REF" --capability "$CAPABILITY" \
   --body-file "$ISSUE_BODY" --content-type application/json >"$WORKDIR/issue.out"
 grep -q 'https://github.com/p6-owner/beta/issues/7' "$WORKDIR/issue.out"
@@ -296,6 +356,43 @@ INVALID_RC=0
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" credential rotate-github-app \
   "$CREDENTIAL_ID" --file "$INVALID_PROFILE" --password-stdin >/dev/null 2>"$WORKDIR/invalid.err" || INVALID_RC=$?
 [[ "$INVALID_RC" == "2" && "$(credential_version "$CREDENTIAL_ID")" == "5" ]]
+
+# Exercise the existing CLI update/disable path after the effect assertions.
+python3 - "$WORKDIR/issue-action.json" "$WORKDIR/issue-v2.json" <<'PYUPDATE'
+import json, pathlib, shutil, sys
+value = json.loads(pathlib.Path(sys.argv[1]).read_text())
+if sys.platform in ("darwin", "linux"):
+    old = pathlib.Path(value["native_plugin"]["path"])
+    new = old.with_name("registered-create-issue-v2")
+    shutil.copyfile(old, new)
+    new.chmod(0o500)
+    value["native_plugin"]["path"] = str(new)
+pathlib.Path(sys.argv[2]).write_text(json.dumps(value))
+PYUPDATE
+printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" action update "$ISSUE_ID" \
+  --file "$WORKDIR/issue-v2.json" --password-stdin >"$WORKDIR/updated-issue.json"
+"$REKEY" --state-dir "$STATE" action list >"$WORKDIR/updated-list.json"
+python3 - "$WORKDIR/issue-v2.json" "$WORKDIR/updated-issue.json" \
+  "$WORKDIR/updated-list.json" <<'PYUPDATED'
+import json, pathlib, sys
+expected, updated, catalog = [json.loads(pathlib.Path(p).read_text()) for p in sys.argv[1:]]
+assert updated["version"] == 2
+listed = next(a for a in catalog["actions"] if a["id"] == updated["id"])
+assert listed["version"] == 2
+if sys.platform in ("darwin", "linux"):
+    assert updated["native_plugin"] == expected["native_plugin"]
+    assert listed["native_plugin"] == expected["native_plugin"]
+PYUPDATED
+printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" action disable "$ISSUE_ID" \
+  --password-stdin >/dev/null
+TRACE_BEFORE_DISABLE_CHECK="$(wc -l <"$TRACE")"
+DISABLED_RC=0
+"$REKEY" --state-dir "$STATE" execute "$ISSUE_REF" --capability "$CAPABILITY" \
+  --body-file "$ISSUE_BODY" --content-type application/json \
+  >"$WORKDIR/disabled.out" 2>"$WORKDIR/disabled.err" || DISABLED_RC=$?
+[[ "$DISABLED_RC" -eq 4 ]]
+rg -q 'INVALID_CAPABILITY|ACTION_DISABLED' "$WORKDIR/disabled.err"
+[[ "$(wc -l <"$TRACE")" == "$TRACE_BEFORE_DISABLE_CHECK" ]]
 
 "$REKEY" --state-dir "$STATE" audit export --output "$WORKDIR/audit.jsonl" >/dev/null
 python3 - "$WORKDIR/audit.jsonl" "$COMMENT_ID" <<'PYAUDIT'

@@ -4,7 +4,7 @@ use std::time::Instant;
 use rekey_domain::action::{
     ExactPath, FixedMethod, HeaderCredentialUse, HttpsOrigin, RequestPolicy, ResponsePolicy,
 };
-use rekey_domain::audit::{AuditPage, AuditQuery};
+use rekey_domain::audit::{AuditPage, AuditPruneReceipt, AuditPruneRequest, AuditQuery};
 use rekey_domain::credential::{CredentialKind, CredentialLabel, CredentialMetadata};
 use rekey_domain::ids::{ActionId, CredentialId, PolicySignerId, RequestId, SessionId, VaultId};
 use tokio::sync::oneshot;
@@ -26,6 +26,8 @@ pub enum UnlockProof {
 /// Validated definition for creating or updating a fixed HTTP action.
 #[derive(Debug, Clone)]
 pub struct ActionDefinition {
+    pub native_plugin: Option<rekey_domain::action::NativePlugin>,
+    pub text_stream: Option<rekey_domain::action::AnthropicTextStream>,
     pub name: rekey_domain::action::ActionName,
     pub credential_id: CredentialId,
     pub origin: HttpsOrigin,
@@ -154,6 +156,17 @@ pub enum AuthorityCommand {
         proof: UnlockProof,
         reply: Reply<()>,
     },
+    RotateVrk {
+        password: SecretInput,
+        recovery: SecretInput,
+        not_after: Option<Instant>,
+        reply: Reply<rekey_domain::ipc::VrkRotatedResponse>,
+    },
+    RotateDek {
+        proof: UnlockProof,
+        not_after: Option<Instant>,
+        reply: Reply<u64>,
+    },
     PasswordChange {
         proof: UnlockProof,
         new_password: SecretInput,
@@ -240,6 +253,12 @@ pub enum AuthorityCommand {
         audit: AuditDraft,
         not_after: Option<Instant>,
         reply: Reply<()>,
+    },
+    AuditPrune {
+        request: AuditPruneRequest,
+        proof: UnlockProof,
+        not_after: Option<Instant>,
+        reply: Reply<AuditPruneReceipt>,
     },
     AuditQuery {
         query: AuditQuery,

@@ -1,7 +1,8 @@
-//! Closed `linux-netns-v1` launch plan. No filesystem or process IO.
+//! Closed platform launch plan. No filesystem or process IO.
 
 use crate::error::DomainError;
 
+pub const MACOS_SEATBELT_V1: &str = "macos-seatbelt-v1";
 pub const LINUX_NETNS_V1: &str = "linux-netns-v1";
 pub const CHILD_PATH: &str = "/usr/bin:/bin";
 pub const CHILD_HOME: &str = "/tmp";

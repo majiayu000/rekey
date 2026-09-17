@@ -47,9 +47,10 @@ fn admin_body_limit(message_type: u16) -> u32 {
         admin_msg::UNLOCK_PASSWORD | admin_msg::UNLOCK_RECOVERY => {
             ipc::ADMIN_SECRET_FIELD_MAX_BYTES
         }
-        admin_msg::CREDENTIAL_ADD | admin_msg::CREDENTIAL_ROTATE | admin_msg::PASSWORD_CHANGE => {
-            ipc::ADMIN_SECRET_BODY_MAX_BYTES
-        }
+        admin_msg::CREDENTIAL_ADD
+        | admin_msg::CREDENTIAL_ROTATE
+        | admin_msg::PASSWORD_CHANGE
+        | admin_msg::KEY_ROTATE_VRK => ipc::ADMIN_SECRET_BODY_MAX_BYTES,
         admin_msg::CREDENTIAL_ROTATE_GITHUB_APP
         | admin_msg::GITHUB_WEBHOOK_APPLY
         | admin_msg::CREDENTIAL_ROTATE_VAULT_KV
@@ -65,6 +66,8 @@ fn admin_body_limit(message_type: u16) -> u32 {
         | admin_msg::SHUTDOWN
         | admin_msg::POLICY_ACTIVATE
         | admin_msg::POLICY_TRUST_INSTALL
+        | admin_msg::AUDIT_PRUNE
+        | admin_msg::KEY_ROTATE_DEK
         | admin_msg::RECOVERY_ROTATE => ipc::ADMIN_PROOF_BODY_MAX_BYTES,
         _ => 0,
     }
@@ -132,10 +135,17 @@ pub async fn handle_admin_conn(
         } {
             Ok(frame) => frame,
             Err(FrameIoError::Closed) => return,
-            Err(_) => return,
+            Err(_) => {
+                ctx.metrics.admin.frame_failed();
+                return;
+            }
         };
         let request_id = frame.header.request_id;
         let is_shutdown = frame.header.message_type == admin_msg::SHUTDOWN;
+        let metric = (frame.header.message_type != admin_msg::METRICS)
+            .then(|| ctx.metrics.admin.dispatch.start());
+        let backup_metric =
+            (frame.header.message_type == admin_msg::BACKUP).then(|| ctx.metrics.backup.start());
         let response = if is_shutdown {
             dispatch(&frame, &ctx).await
         } else {
@@ -144,6 +154,12 @@ pub async fn handle_admin_conn(
                 response = dispatch(&frame, &ctx) => response,
             }
         };
+        if let Some(metric) = metric {
+            metric.finish(response.is_err());
+        }
+        if let Some(metric) = backup_metric {
+            metric.finish(response.is_err());
+        }
         let write_response = async {
             match response {
                 Ok((metadata, body)) => {
@@ -185,6 +201,14 @@ async fn dispatch(
     ctx: &BrokerCtx,
 ) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
     match frame.header.message_type {
+        admin_msg::METRICS => {
+            empty_request(frame)?;
+            let snapshot = ctx.metrics.snapshot(
+                ctx.sessions.active_count(crate::now_ts()?),
+                ctx.sessions.in_flight_total(),
+            );
+            Ok((json(&snapshot)?, Vec::new()))
+        }
         admin_msg::DESKTOP_REMEMBER => {
             let deadline = admin_mutation_deadline();
             empty_meta(frame)?;
@@ -289,8 +313,11 @@ async fn dispatch(
             ctx.unlock(proof).await?;
             Ok((json(&serde_json::json!({"unlocked": true}))?, Vec::new()))
         }
+        admin_msg::KEY_ROTATE_VRK => password_lifecycle::handle_vrk_rotate(frame, ctx).await,
+        admin_msg::KEY_ROTATE_DEK => password_lifecycle::handle_dek_rotate(frame, ctx).await,
         admin_msg::PASSWORD_CHANGE => password_lifecycle::handle_password_change(frame, ctx).await,
         admin_msg::RECOVERY_ROTATE => password_lifecycle::handle_recovery_rotate(frame, ctx).await,
+        admin_msg::AUDIT_PRUNE => audit_query::handle_audit_prune(frame, ctx).await,
         admin_msg::AUDIT_QUERY => audit_query::handle_audit_query(frame, ctx).await,
         admin_msg::CREDENTIAL_ADD => {
             let deadline = admin_mutation_deadline();
@@ -704,6 +731,8 @@ fn definition_from_meta(meta: ipc::ActionCreateMeta) -> Result<ActionDefinition,
         allowed_response_headers.insert(HeaderName::new(name).map_err(BrokerError::Domain)?);
     }
     Ok(ActionDefinition {
+        native_plugin: meta.native_plugin,
+        text_stream: meta.text_stream,
         name: ActionName::new(&meta.name).map_err(BrokerError::Domain)?,
         credential_id: meta.credential_id,
         origin: HttpsOrigin::parse(&meta.origin).map_err(BrokerError::Domain)?,
@@ -735,6 +764,8 @@ fn ensure_action_catalog_fits(
         actions.retain(|action| action.id != existing);
     }
     let probe = FixedHttpAction {
+        native_plugin: definition.native_plugin.clone(),
+        text_stream: definition.text_stream.clone(),
         id: ActionId::from_random_bytes([0xff; 16]),
         name: definition.name.clone(),
         version: u64::MAX,
@@ -780,6 +811,8 @@ mod tests {
             .map(|index| HeaderName::new(&format!("x-header-{index:04}")).unwrap())
             .collect();
         let definition = ActionDefinition {
+            native_plugin: None,
+            text_stream: None,
             name: ActionName::new("large-response").unwrap(),
             credential_id: CredentialId::from_random_bytes([1; 16]),
             origin: HttpsOrigin::parse("https://example.com").unwrap(),
@@ -810,6 +843,8 @@ mod tests {
     #[test]
     fn aggregate_action_catalog_is_rejected_before_upsert() {
         let definition = ActionDefinition {
+            native_plugin: None,
+            text_stream: None,
             name: ActionName::new("catalog-entry").unwrap(),
             credential_id: CredentialId::from_random_bytes([1; 16]),
             origin: HttpsOrigin::parse("https://example.com").unwrap(),
@@ -831,6 +866,8 @@ mod tests {
             },
         };
         let existing = FixedHttpAction {
+            native_plugin: None,
+            text_stream: None,
             id: ActionId::from_random_bytes([2; 16]),
             name: definition.name.clone(),
             version: 1,
@@ -857,6 +894,8 @@ mod tests {
             .map(|index| HeaderName::new(&format!("x-update-{index:04}")).unwrap())
             .collect();
         let definition = ActionDefinition {
+            native_plugin: None,
+            text_stream: None,
             name: ActionName::new("large-update").unwrap(),
             credential_id: CredentialId::from_random_bytes([1; 16]),
             origin: HttpsOrigin::parse("https://example.com").unwrap(),
@@ -878,6 +917,8 @@ mod tests {
             },
         };
         let existing = FixedHttpAction {
+            native_plugin: None,
+            text_stream: None,
             id: ActionId::from_random_bytes([2; 16]),
             name: definition.name.clone(),
             version: 1,

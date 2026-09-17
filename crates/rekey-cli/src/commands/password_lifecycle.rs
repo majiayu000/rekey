@@ -91,3 +91,56 @@ pub fn recovery_rotate(state_dir: &Path, password_stdin: bool) -> Result<(), Cli
         .and_then(|_| stdout.write_all(b"\n"))
         .map_err(|error| CliError::local("OUTPUT_FAILED", format!("cannot write output: {error}")))
 }
+
+pub fn key_rotate_dek(
+    state_dir: &Path,
+    recovery: bool,
+    password_stdin: bool,
+) -> Result<(), CliError> {
+    let proof = super::read_step_up(recovery, password_stdin)?;
+    let body = proof_body(recovery, &proof);
+    let (metadata, response_body) = admin_with_response_timeout(
+        state_dir,
+        LIFECYCLE_RESPONSE_TIMEOUT,
+    )?
+    .call(admin_msg::KEY_ROTATE_DEK, b"{}", &body)?;
+    if !response_body.is_empty() {
+        return Err(CliError::local(
+            "INVALID_FRAME",
+            "DEK rotation returned an unexpected response body",
+        ));
+    }
+    print_json::<ipc::DekRotatedResponse>(&metadata)
+}
+
+pub fn key_rotate_vrk(state_dir: &Path, stdin_secrets: bool) -> Result<(), CliError> {
+    let (password, recovery) = if stdin_secrets {
+        let mut lines = stdin_lines(2)?;
+        let recovery = lines.remove(1);
+        (lines.remove(0), recovery)
+    } else {
+        (
+            prompt_secret("Current vault password: ")?,
+            prompt_secret("Current recovery key: ")?,
+        )
+    };
+    let mut body = Zeroizing::new(Vec::new());
+    ipc::encode_proof_and_secret_body(ipc::ProofKind::Password, &password, &recovery, &mut body);
+    let (metadata, response_body) = admin_with_response_timeout(
+        state_dir,
+        LIFECYCLE_RESPONSE_TIMEOUT,
+    )?
+    .call(admin_msg::KEY_ROTATE_VRK, b"{}", &body)?;
+    let receipt: ipc::VrkRotatedResponse = serde_json::from_slice(&metadata)
+        .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid VRK receipt"))?;
+    receipt
+        .validate()
+        .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid VRK receipt"))?;
+    if !response_body.is_empty() {
+        return Err(CliError::local(
+            "INVALID_FRAME",
+            "VRK rotation returned an unexpected response body",
+        ));
+    }
+    print_json::<ipc::VrkRotatedResponse>(&metadata)
+}

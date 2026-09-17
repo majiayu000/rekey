@@ -90,6 +90,10 @@ pub mod admin_msg {
     pub const PASSIVE_STATUS: u16 = 34;
     pub const DESKTOP_REMEMBER: u16 = 35;
     pub const DESKTOP_RESUME: u16 = 36;
+    pub const METRICS: u16 = 37;
+    pub const KEY_ROTATE_DEK: u16 = 38;
+    pub const AUDIT_PRUNE: u16 = 39;
+    pub const KEY_ROTATE_VRK: u16 = 40;
 }
 
 /// Agent channel message types.
@@ -98,12 +102,15 @@ pub mod agent_msg {
     pub const AGENT_STATUS: u16 = 2;
     pub const PREPARE_APPROVAL: u16 = 3;
     pub const WORKLOAD_SESSION_CREATE: u16 = 4;
+    pub const EXECUTE_TEXT_STREAM: u16 = 5;
 }
 
 /// Response message types shared by both channels.
 pub mod resp_msg {
     pub const OK: u16 = 100;
     pub const ERROR: u16 = 101;
+    pub const STREAM_CHUNK: u16 = 102;
+    pub const STREAM_TERMINAL: u16 = 103;
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -296,6 +303,67 @@ pub struct StatusResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct DekRotatedResponse {
+    pub rotated_versions: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VrkRotatedResponse {
+    pub vault_id: crate::ids::VaultId,
+    pub rotated_versions: u64,
+    pub resealed_credentials: u64,
+    pub approval_origin: ApprovalOriginResponse,
+    pub locked: bool,
+}
+
+impl VrkRotatedResponse {
+    pub fn validate(&self) -> Result<(), crate::DomainError> {
+        self.approval_origin.validate()?;
+        if !self.locked
+            || self.rotated_versions < self.resealed_credentials
+            || (self.resealed_credentials == 0 && self.rotated_versions != 0)
+        {
+            return Err(invalid_response());
+        }
+        Ok(())
+    }
+}
+
+/// Process-local, approximate monitoring snapshot. No identifiers or secrets.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MetricsResponse {
+    pub admin: ChannelMetrics,
+    pub agent: ChannelMetrics,
+    pub backup: DispatchMetrics,
+    pub fault_signals_total: u64,
+    pub capabilities_active: u32,
+    pub executions_in_flight: u32,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelMetrics {
+    pub dispatch: DispatchMetrics,
+    pub peer_rejections_total: u64,
+    pub capacity_rejections_total: u64,
+    pub frame_read_failures_total: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DispatchMetrics {
+    pub requests_total: u64,
+    pub finished_total: u64,
+    pub errors_total: u64,
+    pub cancelled_total: u64,
+    pub duration_micros_total: u64,
+    pub requests_in_flight: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CredentialAddMeta {
     pub label: CredentialLabel,
     pub kind: crate::credential::CredentialKind,
@@ -326,6 +394,10 @@ pub struct CredentialListResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ActionCreateMeta {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_plugin: Option<crate::action::NativePlugin>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_stream: Option<crate::action::AnthropicTextStream>,
     pub name: String,
     pub credential_id: CredentialId,
     pub origin: String,
@@ -806,3 +878,27 @@ mod tests {
         );
     }
 }
+
+/// Final outcome for the independent text stream operation. Missing terminal is failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TextStreamStatus {
+    Completed,
+    Incomplete,
+    Failed,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TextStreamChunkMeta {
+    pub sequence: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TextStreamTerminalMeta {
+    pub sequence: u32,
+    pub status: TextStreamStatus,
+}
+
+pub const TEXT_STREAM_CHUNK_MAX_BYTES: usize = 16 * 1024;

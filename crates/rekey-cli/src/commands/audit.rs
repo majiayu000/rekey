@@ -5,12 +5,51 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rekey_domain::audit::{AUDIT_SCHEMA_V2, AuditPage, AuditQuery};
+use rekey_domain::audit::{
+    AUDIT_SCHEMA_V2, AuditPage, AuditPruneReceipt, AuditPruneRequest, AuditQuery,
+};
 use rekey_domain::ipc::admin_msg;
 use serde::Serialize;
 
-use super::admin;
+use super::{
+    LIFECYCLE_RESPONSE_TIMEOUT, admin, admin_with_response_timeout, proof_body, read_step_up,
+};
 use crate::client::CliError;
+
+pub fn audit_prune(
+    state_dir: &Path,
+    before_ms: i64,
+    recovery: bool,
+    password_stdin: bool,
+) -> Result<(), CliError> {
+    let request = AuditPruneRequest { before_ms };
+    let metadata = serde_json::to_vec(&request)
+        .map_err(|_| CliError::local("USAGE", "cannot encode audit prune request"))?;
+    let proof = read_step_up(recovery, password_stdin)?;
+    let body = proof_body(recovery, &proof);
+    let (metadata, response_body) = admin_with_response_timeout(
+        state_dir,
+        LIFECYCLE_RESPONSE_TIMEOUT,
+    )?
+    .call(admin_msg::AUDIT_PRUNE, &metadata, &body)?;
+    if !response_body.is_empty() {
+        return Err(CliError::local(
+            "INVALID_FRAME",
+            "unexpected audit prune response body",
+        ));
+    }
+    let receipt: AuditPruneReceipt = serde_json::from_slice(&metadata)
+        .map_err(|_| CliError::local("INVALID_FRAME", "invalid audit prune receipt"))?;
+    receipt
+        .validate_for(&request)
+        .map_err(|_| CliError::local("INVALID_FRAME", "invalid audit prune receipt"))?;
+    let mut output = serde_json::to_vec_pretty(&receipt)
+        .map_err(|_| CliError::local("INVALID_FRAME", "cannot encode audit prune receipt"))?;
+    output.push(b'\n');
+    io::stdout()
+        .write_all(&output)
+        .map_err(|error| CliError::local("OUTPUT_FAILED", format!("cannot write output: {error}")))
+}
 
 pub fn audit_list(state_dir: &Path, query: AuditQuery) -> Result<(), CliError> {
     query

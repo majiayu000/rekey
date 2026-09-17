@@ -38,6 +38,7 @@ use github_run::{github_post_effect_error, github_without_token_error};
 mod http;
 pub(crate) mod keycloak;
 mod sealing;
+pub(crate) mod text_stream;
 pub(crate) mod vault_dynamic;
 mod vault_dynamic_run;
 pub(crate) mod vault_source;
@@ -123,6 +124,7 @@ impl PolicyIdentity {
 }
 
 pub struct ExecuteOutcome {
+    pub stream_status: Option<rekey_domain::ipc::TextStreamStatus>,
     pub upstream_status: u16,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
@@ -272,7 +274,14 @@ impl ActionExecutor {
         action: &FixedHttpAction,
         effect_deadline: Instant,
         effect_kind: &AtomicU8,
+        stream: Option<&text_stream::TextStreamSender>,
     ) -> Result<ExecuteOutcome, BrokerError> {
+        if action.text_stream.is_some() != stream.is_some() {
+            started
+                .blocked_until(effect_deadline, "stream-operation-mismatch")
+                .await?;
+            return Err(BrokerError::Denied("stream-operation-mismatch"));
+        }
         // Steps 7-8: credential eligibility and preparation (single owner).
         let prepared = match tokio::time::timeout_at(
             tokio::time::Instant::from_std(effect_deadline),
@@ -294,6 +303,15 @@ impl ActionExecutor {
         };
         let credential_version = prepared.version();
         let credential_kind = prepared.kind();
+        if stream.is_some()
+            && credential_kind != rekey_domain::credential::CredentialKind::OpaqueToken
+        {
+            drop(prepared);
+            started
+                .blocked_until(effect_deadline, "stream-credential-kind")
+                .await?;
+            return Err(BrokerError::Denied("stream-credential-kind"));
+        }
         let connector = match resolve_builtin(credential_kind, action) {
             Ok(connector) => connector,
             Err(_) => {
@@ -426,6 +444,22 @@ impl ActionExecutor {
             unreachable!("credential execution variant was matched above")
         };
 
+        if stream.is_some() {
+            let plugin_messages =
+                match anthropic_plugin_messages(action, &request.body, effect_deadline).await {
+                    Ok(body) => body,
+                    Err(err) => {
+                        started
+                            .blocked_until(effect_deadline, "native-plugin-rejected")
+                            .await?;
+                        return Err(err);
+                    }
+                };
+            let messages = plugin_messages
+                .as_deref()
+                .unwrap_or(request.body.as_slice());
+            text_stream::configure(action, messages, &mut upstream_request)?;
+        }
         // Steps 10-11: fixed HTTPS send with bounded response. Credential
         // preparation consumes the same action deadline as DNS and HTTP.
         upstream_request.timeout = effect_deadline.saturating_duration_since(Instant::now());
@@ -445,6 +479,52 @@ impl ActionExecutor {
         started.mark_remote_effect_started();
         effect_kind.store(EFFECT_ORDINARY_HTTP, Ordering::SeqCst);
         let send_started = Instant::now();
+        if let Some(sender) = stream {
+            let run = async {
+                let response = self
+                    .transport
+                    .open_stream(upstream_request)
+                    .await
+                    .map_err(|_| BrokerError::Upstream("stream-transport"))?;
+                let status = text_stream::run(
+                    response,
+                    needles,
+                    action.response_policy.max_body_bytes as usize,
+                    sender,
+                )
+                .await?;
+                if status == rekey_domain::ipc::TextStreamStatus::Completed {
+                    started
+                        .finished_until(
+                            effect_deadline,
+                            credential_version,
+                            200,
+                            send_started.elapsed().as_millis() as i64,
+                        )
+                        .await?;
+                } else {
+                    started
+                        .indeterminate_until(effect_deadline, "incomplete-stream")
+                        .await?;
+                }
+                Ok(ExecuteOutcome {
+                    stream_status: Some(status),
+                    upstream_status: 200,
+                    headers: Vec::new(),
+                    body: Vec::new(),
+                })
+            };
+            let result =
+                tokio::time::timeout_at(tokio::time::Instant::from_std(effect_deadline), run)
+                    .await
+                    .unwrap_or(Err(BrokerError::Upstream("upstream-timeout")));
+            if result.is_err() && !started.is_completed() {
+                // Terminal tracker owns this audit even if the effect deadline
+                // expired or the socket disappeared.
+                started.submit_indeterminate("text-stream-failed");
+            }
+            return result;
+        }
         let response = self.transport.send(upstream_request).await;
         let latency_ms = send_started.elapsed().as_millis() as i64;
         let mut response = match response {
@@ -504,6 +584,7 @@ impl ActionExecutor {
 
         // Steps 15-16 (accounting + cleanup) happen in Drop of permit and secrets.
         Ok(ExecuteOutcome {
+            stream_status: None,
             upstream_status: response.status,
             headers,
             body,
@@ -529,7 +610,25 @@ struct GitHubPrepared {
 }
 
 impl AdmittedExecution {
-    pub async fn run(mut self) -> Result<ExecuteOutcome, BrokerError> {
+    pub(crate) fn deadline(&self) -> Instant {
+        self.effect_deadline
+    }
+
+    pub async fn run(self) -> Result<ExecuteOutcome, BrokerError> {
+        self.run_inner(None).await
+    }
+
+    pub(crate) async fn run_stream(
+        self,
+        sender: &text_stream::TextStreamSender,
+    ) -> Result<ExecuteOutcome, BrokerError> {
+        self.run_inner(Some(sender)).await
+    }
+
+    async fn run_inner(
+        mut self,
+        stream: Option<&text_stream::TextStreamSender>,
+    ) -> Result<ExecuteOutcome, BrokerError> {
         let cancel = self.executor.lifecycle.subscribe_cancel();
         if *cancel.borrow() {
             self.started.submit_blocked("abandoned");
@@ -546,6 +645,7 @@ impl AdmittedExecution {
                 &self.action,
                 self.effect_deadline,
                 &effect_kind,
+                stream,
             );
             tokio::pin!(run);
             tokio::select! {
@@ -577,6 +677,44 @@ async fn wait_for_cancel(mut cancel: tokio::sync::watch::Receiver<bool>) {
         if cancel.changed().await.is_err() {
             return;
         }
+    }
+}
+
+async fn anthropic_plugin_messages(
+    action: &FixedHttpAction,
+    body: &[u8],
+    deadline: Instant,
+) -> Result<Option<Vec<u8>>, BrokerError> {
+    let Some(plugin) = action.native_plugin.as_ref() else {
+        return Ok(None);
+    };
+    if plugin.protocol != rekey_domain::action::ANTHROPIC_MESSAGES_PROTOCOL {
+        return Ok(None);
+    }
+    #[cfg(any(
+        target_os = "macos",
+        all(
+            target_os = "linux",
+            target_env = "gnu",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    ))]
+    {
+        crate::github_issue_plugin::normalize_anthropic(plugin, body, deadline)
+            .await
+            .map(Some)
+    }
+    #[cfg(not(any(
+        target_os = "macos",
+        all(
+            target_os = "linux",
+            target_env = "gnu",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    )))]
+    {
+        let _ = (plugin, body, deadline);
+        Err(BrokerError::Denied("github-plugin-platform-unsupported"))
     }
 }
 

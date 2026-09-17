@@ -4,7 +4,7 @@ use rekey_domain::ids::{
     PolicySignerId, PrincipalId, RequestId, SessionId, VaultId, WrapperId,
 };
 
-pub const FORMAT_VERSION: u32 = 10;
+pub const FORMAT_VERSION: u32 = 14;
 pub const VAULT_INTEGRITY_CIPHERTEXT_LEN: usize = 40;
 
 #[derive(Debug, Clone)]
@@ -138,6 +138,8 @@ impl ActionState {
 
 #[derive(Debug, Clone)]
 pub struct ActionRecord {
+    pub native_plugin_json: Option<String>,
+    pub text_stream_json: Option<String>,
     pub action_id: ActionId,
     pub version: u64,
     pub name: String,
@@ -235,6 +237,9 @@ pub mod event_type {
     pub const VAULT_UNLOCKED: &str = "vault.unlocked";
     pub const VAULT_UNLOCK_FAILED: &str = "vault.unlock_failed";
     pub const VAULT_LOCKED: &str = "vault.locked";
+    pub const AUDIT_PRUNED: &str = "audit.pruned";
+    pub const VAULT_VRK_ROTATED: &str = "vault.vrk_rotated";
+    pub const VAULT_DEK_ROTATED: &str = "vault.dek_rotated";
     pub const VAULT_PASSWORD_CHANGED: &str = "vault.password_changed";
     pub const VAULT_PASSWORD_CHANGE_FAILED: &str = "vault.password_change_failed";
     pub const VAULT_RECOVERY_ROTATED: &str = "vault.recovery_rotated";

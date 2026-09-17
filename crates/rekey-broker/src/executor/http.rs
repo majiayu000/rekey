@@ -69,6 +69,9 @@ pub(super) fn validate_request(
     action: &FixedHttpAction,
     request: &ExecuteRequest,
 ) -> Result<(), &'static str> {
+    if action.text_stream.is_some() {
+        super::text_stream::validate(request)?;
+    }
     if request.body.len() > action.request_policy.max_body_bytes as usize {
         return Err("request-too-large");
     }

@@ -43,7 +43,7 @@ pub(super) fn blob32(v: Vec<u8>) -> Result<[u8; 32], AuthorityError> {
 }
 
 impl SqliteRecordStore {
-    /// Creates a brand-new database file with schema v10. Fails if the file
+    /// Creates a brand-new database file with schema v14. Fails if the file
     /// already exists.
     pub fn create(path: &Path) -> Result<Self, AuthorityError> {
         if path.exists() {
@@ -58,7 +58,7 @@ impl SqliteRecordStore {
         })
     }
 
-    /// Opens an existing v10 database, verifying pragmas, integrity, format
+    /// Opens an existing v13 database, verifying pragmas, integrity, format
     /// version, and schema digest. Never migrates and never creates.
     pub fn open(path: &Path) -> Result<Self, AuthorityError> {
         if !path.exists() {
@@ -338,8 +338,8 @@ impl SqliteRecordStore {
         )
         .map_err(storage)?;
         tx.execute(
-            "INSERT INTO actions (action_id, version, name, state, credential_id, origin, method, exact_path, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            "INSERT INTO actions (action_id, version, name, state, credential_id, origin, method, exact_path, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms, text_stream_json, native_plugin_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 record.action_id.as_bytes().as_slice(),
                 record.version as i64,
@@ -357,6 +357,8 @@ impl SqliteRecordStore {
                 record.allowed_response_headers_json,
                 record.timeout_ms,
                 record.created_at_ms,
+                record.text_stream_json,
+                record.native_plugin_json,
             ],
         )
         .map_err(storage)?;
@@ -390,7 +392,7 @@ impl SqliteRecordStore {
     ) -> Result<ActionRecord, AuthorityError> {
         self.conn
             .query_row(
-                "SELECT action_id, version, name, state, credential_id, origin, method, exact_path, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms
+                "SELECT action_id, version, name, state, credential_id, origin, method, exact_path, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms, text_stream_json, native_plugin_json
                  FROM actions WHERE action_id = ?1 AND version = ?2",
                 params![action_id.as_bytes().as_slice(), version as i64],
                 action_from_row,
@@ -405,7 +407,7 @@ impl SqliteRecordStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT action_id, version, name, state, credential_id, origin, method, exact_path, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms
+                "SELECT action_id, version, name, state, credential_id, origin, method, exact_path, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms, text_stream_json, native_plugin_json
                  FROM actions WHERE state != 'retired' ORDER BY created_at_ms",
             )
             .map_err(storage)?;
@@ -426,7 +428,7 @@ impl SqliteRecordStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT action_id, version, name, state, credential_id, origin, method, exact_path, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms
+                "SELECT action_id, version, name, state, credential_id, origin, method, exact_path, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms, text_stream_json, native_plugin_json
                  FROM actions WHERE credential_id = ?1",
             )
             .map_err(storage)?;
@@ -490,6 +492,43 @@ impl SqliteRecordStore {
             .map_err(storage)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(storage)
+    }
+
+    /// Replace only per-version ciphertexts, atomically with the success audit.
+    pub(crate) fn replace_version_ciphertexts(
+        &mut self,
+        versions: &[(CredentialKind, CredentialVersionRecord)],
+        audit: AuditEvent,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<(), AuthorityError> {
+        let tx = self.conn.transaction().map_err(storage)?;
+        for (_, version) in versions {
+            let changed = tx
+                .execute(
+                    "UPDATE credential_versions
+                 SET dek_nonce = ?3, wrapped_dek = ?4, payload_nonce = ?5, encrypted_payload = ?6
+                 WHERE credential_id = ?1 AND version = ?2",
+                    params![
+                        version.credential_id.as_bytes().as_slice(),
+                        version.version as i64,
+                        version.dek_nonce.as_slice(),
+                        version.wrapped_dek,
+                        version.payload_nonce.as_slice(),
+                        version.encrypted_payload
+                    ],
+                )
+                .map_err(storage)?;
+            if changed != 1 {
+                return Err(AuthorityError::StorageIntegrityFailed);
+            }
+        }
+        super::audit::insert(&tx, &audit)?;
+        // This must remain after every write (including the audit), immediately
+        // before commit. The transaction drops and rolls back on late work.
+        if not_after.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+            return Err(AuthorityError::AuthorityBusy);
+        }
+        commit_audited(tx)
     }
 
     /// Every credential version plus its kind, for restore payload proofs.
@@ -709,6 +748,12 @@ fn action_from_row(r: &rusqlite::Row<'_>) -> RowResult<ActionRecord> {
     let created_at_ms: i64 = r.get(15)?;
     Ok((|| {
         Ok(ActionRecord {
+            native_plugin_json: r
+                .get(17)
+                .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
+            text_stream_json: r
+                .get(16)
+                .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
             action_id: ActionId::from_bytes(blob16(action_id)?)
                 .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
             version: positive_version(version)?,
@@ -741,6 +786,102 @@ pub(super) fn positive_version(version: i64) -> Result<u64, AuthorityError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn dek_rotation_precommit_expiry_rolls_back_after_all_ciphertexts_and_audit_are_written()
+    {
+        use crate::bootstrap::{confirm_vault_init, init_vault};
+        use crate::command::UnlockProof;
+        use crate::crypto::kdf::Argon2Params;
+        use crate::handle::AuthorityConfig;
+        use crate::model::{event_type, outcome};
+        use crate::secret::SecretInput;
+        use rekey_domain::credential::CredentialLabel;
+
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        let proof = || UnlockProof::Password(SecretInput::from_slice(b"test-only-password"));
+        init_vault(
+            &state,
+            &SecretInput::from_slice(b"test-only-password"),
+            Argon2Params {
+                memory_kib: 8,
+                iterations: 1,
+                parallelism: 1,
+            },
+        )
+        .unwrap();
+        confirm_vault_init(&state).unwrap();
+        let (handle, join) =
+            crate::authority::spawn_authority(AuthorityConfig::new(state.clone())).unwrap();
+        handle.unlock(proof()).await.unwrap();
+        handle
+            .credential_add(
+                CredentialLabel::new("deadline").unwrap(),
+                CredentialKind::OpaqueToken,
+                SecretInput::from_slice(b"test-only-payload"),
+                proof(),
+            )
+            .await
+            .unwrap();
+        handle.shutdown(Some(proof())).await.unwrap();
+        join.join().unwrap();
+        let mut store = SqliteRecordStore::open(&crate::paths::vault_db(&state)).unwrap();
+        let mut versions = store.list_all_versions().unwrap();
+        let before = versions[0].1.clone();
+        versions[0].1.dek_nonce = [0; 12];
+        versions[0].1.wrapped_dek = vec![1, 2];
+        versions[0].1.payload_nonce = [0; 12];
+        versions[0].1.encrypted_payload = vec![3, 4];
+        // This test-only trigger proves every replacement happened before
+        // success-audit insertion, rather than merely observing an early rejection.
+        store
+            .conn
+            .execute_batch(
+                "CREATE TRIGGER assert_replaced_before_audit BEFORE INSERT ON audit_events
+             WHEN NEW.event_type = 'vault.dek_rotated'
+             BEGIN
+               SELECT CASE WHEN EXISTS(SELECT 1 FROM credential_versions
+                 WHERE dek_nonce = zeroblob(12) AND wrapped_dek = X'0102'
+                   AND payload_nonce = zeroblob(12) AND encrypted_payload = X'0304')
+                 THEN 1 ELSE RAISE(ABORT, 'replacement not reached') END;
+             END;",
+            )
+            .unwrap();
+        let audit = AuditEvent {
+            event_id: crate::crypto::random_array().unwrap(),
+            request_id: None,
+            session_id: None,
+            action_id: None,
+            action_version: None,
+            credential_id: None,
+            credential_version: None,
+            authorization: None,
+            approval: None,
+            event_type: event_type::VAULT_DEK_ROTATED,
+            outcome: outcome::SUCCESS,
+            reason_code: "dek-rotation".to_owned(),
+            upstream_status: None,
+            latency_ms: None,
+            created_at_ms: crate::now_ms().unwrap(),
+        };
+        // Directly target the commit boundary, deliberately bypassing the
+        // worker's separate expired-at-admission/cryptographic preparation gates.
+        let result =
+            store.replace_version_ciphertexts(&versions, audit, Some(std::time::Instant::now()));
+        assert!(matches!(result, Err(AuthorityError::AuthorityBusy)));
+        let after = &store.list_all_versions().unwrap()[0].1;
+        assert_eq!(after.dek_nonce, before.dek_nonce);
+        assert_eq!(after.wrapped_dek, before.wrapped_dek);
+        assert_eq!(after.payload_nonce, before.payload_nonce);
+        assert_eq!(after.encrypted_payload, before.encrypted_payload);
+        assert!(
+            !store
+                .audit_event_types()
+                .unwrap()
+                .contains(&event_type::VAULT_DEK_ROTATED.to_owned())
+        );
+    }
 
     #[test]
     fn deferred_commit_failure_is_an_audit_failure() {

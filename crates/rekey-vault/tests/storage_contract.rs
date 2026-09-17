@@ -77,6 +77,8 @@ fn credential(label: &str) -> CredentialRecord {
 
 fn action(action_id: ActionId, credential_id: CredentialId, version: u64) -> ActionRecord {
     ActionRecord {
+        native_plugin_json: None,
+        text_stream_json: None,
         action_id,
         version,
         name: "catalog-action".to_owned(),
@@ -663,4 +665,154 @@ fn reopen_after_clean_close_succeeds() {
     drop(store);
     let store = SqliteRecordStore::open(&paths::vault_db(&vault.state_dir)).unwrap();
     store.quick_check().unwrap();
+}
+
+#[test]
+fn schema_ten_without_stream_column_is_rejected_by_format_gate() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v10.sqlite3");
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let schema = rekey_vault::store::schema::SCHEMA_SQL
+        .replace("format_version = 14", "format_version = 10")
+        .replace("    native_plugin_json             TEXT,\n", "")
+        .replace("    text_stream_json              TEXT,\n", "");
+    assert!(!schema.contains("text_stream_json"));
+    db.execute_batch(&schema).unwrap();
+    db.execute(
+        "INSERT INTO vault_header VALUES (1,10,zeroblob(16),?1,0,zeroblob(32),zeroblob(12),X'01')",
+        [CRYPTO_SUITE_V1],
+    )
+    .unwrap();
+    drop(db);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(matches!(
+        SqliteRecordStore::open(&path),
+        Err(AuthorityError::UnsupportedFormatVersion)
+    ));
+    let db = rusqlite::Connection::open(&path).unwrap();
+    assert_eq!(
+        db.query_row("SELECT format_version FROM vault_header", [], |r| r
+            .get::<_, u32>(0))
+            .unwrap(),
+        10
+    );
+    assert!(
+        db.prepare("SELECT text_stream_json FROM actions").is_err(),
+        "no migration or backfill"
+    );
+}
+
+#[test]
+fn schema_eleven_without_plugin_column_is_rejected_before_loading_actions() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v11.sqlite3");
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let schema = rekey_vault::store::schema::SCHEMA_SQL
+        .replace("format_version = 14", "format_version = 11")
+        .replace("    native_plugin_json             TEXT,\n", "");
+    assert!(!schema.contains("native_plugin_json"));
+    db.execute_batch(&schema).unwrap();
+    db.execute(
+        "INSERT INTO vault_header VALUES (1,11,zeroblob(16),?1,0,zeroblob(32),zeroblob(12),X'01')",
+        [CRYPTO_SUITE_V1],
+    )
+    .unwrap();
+    drop(db);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(matches!(
+        SqliteRecordStore::open(&path),
+        Err(AuthorityError::UnsupportedFormatVersion)
+    ));
+    let db = rusqlite::Connection::open(&path).unwrap();
+    assert_eq!(
+        db.query_row("SELECT format_version FROM vault_header", [], |r| r
+            .get::<_, u32>(0))
+            .unwrap(),
+        11
+    );
+    assert!(
+        db.prepare("SELECT native_plugin_json FROM actions")
+            .is_err()
+    );
+}
+
+#[test]
+fn malformed_persisted_plugin_definition_fails_storage_integrity() {
+    let mut record = action(ActionId::new_random(), CredentialId::new_random(), 1);
+    record.native_plugin_json =
+        Some(r#"{"path":"/tmp/plugin","sha256":"wrong","protocol":"github-issues-v1"}"#.into());
+    assert!(matches!(
+        rekey_vault::convert::record_to_action(&record),
+        Err(AuthorityError::StorageIntegrityFailed)
+    ));
+}
+
+#[test]
+fn schema_twelve_single_operation_protocol_is_rejected_without_migration() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v12.sqlite3");
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let schema = rekey_vault::store::schema::SCHEMA_SQL
+        .replace("format_version = 14", "format_version = 12");
+    db.execute_batch(&schema).unwrap();
+    db.execute(
+        "INSERT INTO vault_header VALUES (1,12,zeroblob(16),?1,0,zeroblob(32),zeroblob(12),X'01')",
+        [CRYPTO_SUITE_V1],
+    )
+    .unwrap();
+    drop(db);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(matches!(
+        SqliteRecordStore::open(&path),
+        Err(AuthorityError::UnsupportedFormatVersion)
+    ));
+    let db = rusqlite::Connection::open(&path).unwrap();
+    assert_eq!(
+        db.query_row("SELECT format_version FROM vault_header", [], |r| r
+            .get::<_, u32>(0))
+            .unwrap(),
+        12
+    );
+}
+
+#[test]
+fn schema_thirteen_github_plugin_column_is_rejected_without_migration() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v13.sqlite3");
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let schema = rekey_vault::store::schema::SCHEMA_SQL
+        .replace("format_version = 14", "format_version = 13")
+        .replace("native_plugin_json", "github_issue_plugin_json");
+    assert!(schema.contains("github_issue_plugin_json"));
+    assert!(!schema.contains("native_plugin_json"));
+    db.execute_batch(&schema).unwrap();
+    db.execute(
+        "INSERT INTO vault_header VALUES (1,13,zeroblob(16),?1,0,zeroblob(32),zeroblob(12),X'01')",
+        [CRYPTO_SUITE_V1],
+    )
+    .unwrap();
+    drop(db);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(matches!(
+        SqliteRecordStore::open(&path),
+        Err(AuthorityError::UnsupportedFormatVersion)
+    ));
+    let db = rusqlite::Connection::open(&path).unwrap();
+    assert_eq!(
+        db.query_row("SELECT format_version FROM vault_header", [], |r| r
+            .get::<_, u32>(0))
+            .unwrap(),
+        13
+    );
+    db.prepare("SELECT github_issue_plugin_json FROM actions")
+        .unwrap();
+    assert!(
+        db.prepare("SELECT native_plugin_json FROM actions")
+            .is_err(),
+        "no migration or backfill"
+    );
 }

@@ -14,9 +14,19 @@ pub mod error;
 pub(crate) mod execution_supervisor;
 pub mod executor;
 mod github_app;
+#[cfg(any(
+    target_os = "macos",
+    all(
+        target_os = "linux",
+        target_env = "gnu",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    )
+))]
+mod github_issue_plugin;
 mod github_profile;
 pub mod ipc;
 pub mod lifecycle;
+mod metrics;
 pub mod runtime;
 pub mod sandbox;
 pub mod session;
