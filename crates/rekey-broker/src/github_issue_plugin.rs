@@ -5,6 +5,11 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+#[cfg(test)]
+use std::sync::Mutex;
+#[cfg(test)]
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use data_encoding::HEXLOWER;
 use rekey_connector::github_issue::{IssueOperation, MAX_ISSUE_WIRE_BYTES};
 use rekey_domain::action::NativePlugin;
@@ -25,6 +30,16 @@ const MAX_ARTIFACT: u64 = 32 * 1024 * 1024;
 
 fn denied(reason: &'static str) -> BrokerError {
     BrokerError::Denied(reason)
+}
+
+#[cfg(test)]
+static SNAPSHOT_LOCK: Mutex<()> = Mutex::new(());
+#[cfg(test)]
+static SNAPSHOT_STALL_MS: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(test)]
+pub(super) fn stall_next_snapshot(ms: u64) {
+    SNAPSHOT_STALL_MS.store(ms, Ordering::SeqCst);
 }
 
 #[cfg(target_os = "macos")]
@@ -123,6 +138,17 @@ fn snapshot(
     artifact: &Path,
     expected_sha256: Option<&str>,
 ) -> Result<(tempfile::TempDir, PathBuf), BrokerError> {
+    #[cfg(test)]
+    let _lock = SNAPSHOT_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    #[cfg(test)]
+    {
+        let stall = SNAPSHOT_STALL_MS.swap(0, Ordering::SeqCst);
+        if stall > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(stall));
+        }
+    }
     let mut source = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
@@ -171,6 +197,21 @@ fn snapshot(
     Ok((directory, path))
 }
 
+async fn snapshot_before_deadline(
+    artifact: &Path,
+    expected_sha256: Option<&str>,
+    deadline: Instant,
+) -> Result<(tempfile::TempDir, PathBuf), BrokerError> {
+    let artifact = artifact.to_path_buf();
+    let expected = expected_sha256.map(str::to_owned);
+    let work = tokio::task::spawn_blocking(move || snapshot(&artifact, expected.as_deref()));
+    match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), work).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) => Err(denied("plugin-spawn")),
+        Err(_) => Err(denied("plugin-deadline")),
+    }
+}
+
 async fn run(
     artifact: &Path,
     expected_sha256: Option<&str>,
@@ -183,7 +224,11 @@ async fn run(
     if Instant::now() >= deadline {
         return Err(denied("plugin-deadline"));
     }
-    let (_snapshot, executable) = snapshot(artifact, expected_sha256)?;
+    let (_snapshot, executable) =
+        snapshot_before_deadline(artifact, expected_sha256, deadline).await?;
+    if Instant::now() >= deadline {
+        return Err(denied("plugin-deadline"));
+    }
     let mut command = launch_command(&executable, deadline)?;
     let mut child = command.spawn().map_err(BrokerError::Io)?;
     #[cfg(target_os = "macos")]
