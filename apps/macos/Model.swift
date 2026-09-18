@@ -21,7 +21,7 @@ struct RememberedUnlock: Codable {
     }
     private static func query(_ directory: String) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
-         kSecAttrService as String: "io.github.majiayu000.rekey.remembered-unlock",
+         kSecAttrService as String: "com.starlight.rekey.remembered-unlock",
          kSecAttrAccount as String: URL(fileURLWithPath: directory).standardizedFileURL.resolvingSymlinksInPath().path,
          kSecAttrSynchronizable as String: false]
     }
