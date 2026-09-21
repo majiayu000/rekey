@@ -25,6 +25,8 @@ use macos::launch_command;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
+mod linux_tree;
+#[cfg(target_os = "linux")]
 use linux::launch_command;
 const MAX_ARTIFACT: u64 = 32 * 1024 * 1024;
 
@@ -231,6 +233,8 @@ async fn run(
     }
     let mut command = launch_command(&executable, deadline)?;
     let mut child = command.spawn().map_err(BrokerError::Io)?;
+    #[cfg(target_os = "linux")]
+    let mut plugin_tree = child.id().map(linux_tree::KillPluginTree::arm);
     #[cfg(target_os = "macos")]
     let memory_monitor =
         macos::monitor_memory(child.id().ok_or_else(|| denied("plugin-spawn"))? as i32);
@@ -277,6 +281,14 @@ async fn run(
             result = memory_monitor => Err(result),
         }
     };
+    #[cfg(target_os = "linux")]
+    if let Some(tree) = plugin_tree.as_mut() {
+        if result.is_ok() {
+            tree.disarm();
+        } else {
+            tree.finish();
+        }
+    }
     if result.is_err() {
         // SIGKILL the outer launcher. The armed reaper SIGKILLs descendants that
         // bubblewrap forked before its own parent-death signal could cover them.
