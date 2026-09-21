@@ -423,28 +423,6 @@ fn decimal(value: i32, buf: &mut [u8]) -> Option<usize> {
     Some(n)
 }
 
-fn pid_alive(pid: i32) -> bool {
-    let mut path = [0u8; 64];
-    if write_proc_path(&mut path, pid, b"/stat").is_none() {
-        return false;
-    }
-    let fd = unsafe { libc::open(path.as_ptr().cast(), libc::O_RDONLY) };
-    if fd < 0 {
-        return false;
-    }
-    let mut raw = [0u8; 256];
-    let n = unsafe { libc::read(fd, raw.as_mut_ptr().cast(), raw.len()) };
-    unsafe { libc::close(fd) };
-    if n <= 0 {
-        return false;
-    }
-    let bytes = &raw[..n as usize];
-    let Some(split) = bytes.windows(2).rposition(|pair| pair == b") ") else {
-        return true;
-    };
-    !bytes[split + 2..].starts_with(b"Z")
-}
-
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn arm_descendant_reaper(broker: i32) -> io::Result<()> {
     let broker_pidfd = libc::syscall(libc::SYS_pidfd_open, broker, 0);
@@ -532,7 +510,7 @@ unsafe fn arm_descendant_reaper(broker: i32) -> io::Result<()> {
         }
         let marker = c"rekey.plugin.reaper.v1".as_ptr().cast_mut();
         let env = c"REKEY_PLUGIN_REAPER=v1".as_ptr();
-        let mut argv = [
+        let argv = [
             exe.as_mut_ptr().cast::<libc::c_char>(),
             marker,
             broker_fd.as_mut_ptr().cast(),
@@ -541,7 +519,7 @@ unsafe fn arm_descendant_reaper(broker: i32) -> io::Result<()> {
             ready_fd.as_mut_ptr().cast(),
             std::ptr::null_mut(),
         ];
-        let mut envp = [env.cast_mut(), std::ptr::null_mut()];
+        let envp = [env.cast_mut(), std::ptr::null_mut()];
         libc::execve(
             exe.as_ptr().cast(),
             argv.as_ptr().cast(),
