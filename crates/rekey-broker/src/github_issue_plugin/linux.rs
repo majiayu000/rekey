@@ -116,10 +116,11 @@ pub(super) fn launch_command(executable: &Path, deadline: Instant) -> Result<Com
     Ok(command)
 }
 
-#[used(linker)]
-#[link_section = ".init_array.00001"]
+#[used]
+#[unsafe(link_section = ".init_array.00001")]
 static REAPER_HOOK: unsafe extern "C" fn() = plugin_reaper_hook;
 
+#[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn plugin_reaper_hook() {
     let value = libc::getenv(c"REKEY_PLUGIN_REAPER".as_ptr());
     if value.is_null() || libc::strcmp(value, c"v1".as_ptr()) != 0 {
@@ -444,6 +445,7 @@ fn pid_alive(pid: i32) -> bool {
     !bytes[split + 2..].starts_with(b"Z")
 }
 
+#[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn arm_descendant_reaper(broker: i32) -> io::Result<()> {
     let broker_pidfd = libc::syscall(libc::SYS_pidfd_open, broker, 0);
     if broker_pidfd < 0 {
@@ -540,7 +542,11 @@ unsafe fn arm_descendant_reaper(broker: i32) -> io::Result<()> {
             std::ptr::null_mut(),
         ];
         let mut envp = [env.cast_mut(), std::ptr::null_mut()];
-        libc::execve(exe.as_ptr().cast(), argv.as_mut_ptr(), envp.as_mut_ptr());
+        libc::execve(
+            exe.as_ptr().cast(),
+            argv.as_ptr().cast(),
+            envp.as_ptr().cast(),
+        );
         let failed = 2u8;
         let _ = libc::write(handshake[1], (&failed as *const u8).cast(), 1);
         libc::_exit(127);
@@ -578,6 +584,7 @@ unsafe fn arm_descendant_reaper(broker: i32) -> io::Result<()> {
     }
 }
 
+#[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn close_except(keep: &[i32]) {
     let mut fd = 0i32;
     while fd < 256 {
