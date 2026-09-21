@@ -10,6 +10,10 @@
 > Depends on: Credential Authority v2 Foundation §12.1 (disjoint Agent
 > endpoint), existing `rekeyd serve --agent-runtime-dir`
 
+> 2026-09-16 macOS addendum: the historical macOS unsupported clauses below
+> are superseded by `2026-09-16-local-isolation-and-streaming.md` OS-05.
+> Linux behavior and its original evidence remain unchanged.
+
 ## Objective
 
 P-09 makes deny-by-default Agent egress a product command, not only a Docker
@@ -304,3 +308,7 @@ Not claimed:
 None that block P0. P1 should decide whether a missing `bwrap` on a Linux
 distribution that already runs `rekeyd serve` is documented as a hard
 dependency or gains a native `clone` fallback.
+
+## 2026-09-17 继承 FD 修复
+
+Linux 启动器要求 Linux 5.11+ 并允许 close_range(CLOSE_RANGE_CLOEXEC)。exec bwrap 前将所有3+FD标记为close-on-exec，包含高于后续 NOFILE 上限的已打开 FD；调用失败拒绝启动，不兼容回退。stdin为空、stdout/stderr保留原合同。路径遮罩不能阻断已继承的已打开文件；本轮用真实攻击复现并修复此漏洞，详见 [本地隔离增量及验收](2026-09-16-local-isolation-and-streaming.md)。

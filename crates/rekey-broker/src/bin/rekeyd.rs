@@ -112,7 +112,7 @@ enum Command {
         #[arg(long)]
         sha256: String,
     },
-    /// Launch one Agent command in the closed Linux netns profile.
+    /// Launch one Agent command in the platform sandbox (Linux netns / macOS Seatbelt).
     AgentRun {
         #[arg(long)]
         state_dir: Option<PathBuf>,

@@ -1,4 +1,4 @@
-//! Closed `linux-netns-v1` Agent launcher. Credential IO stays in the Broker.
+//! Closed platform-specific Agent launcher. Credential IO stays in the Broker.
 
 use std::ffi::OsString;
 use std::fs;
@@ -9,14 +9,20 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+#[cfg(not(target_os = "macos"))]
+use rekey_domain::sandbox::LINUX_NETNS_V1;
 use rekey_domain::sandbox::{
-    CAPABILITY_ENV, CHILD_HOME, CHILD_LANG, CHILD_PATH, LINUX_NETNS_V1, validate_capability_token,
+    CAPABILITY_ENV, CHILD_HOME, CHILD_LANG, CHILD_PATH, validate_capability_token,
     validate_command_argv, validate_launch_plan,
 };
 use zeroize::Zeroizing;
 
 use crate::error::BrokerError;
 
+#[cfg(target_os = "macos")]
+mod macos;
+
+#[cfg(not(target_os = "macos"))]
 const DOCKER_SOCKETS: &[&str] = &["/var/run/docker.sock", "/run/docker.sock"];
 
 pub struct LaunchRequest {
@@ -28,14 +34,19 @@ pub struct LaunchRequest {
 
 pub struct PreparedLaunch {
     pub profile: &'static str,
-    pub bwrap: PathBuf,
+    pub program: PathBuf,
+    #[cfg(target_os = "macos")]
+    scratch: tempfile::TempDir,
     pub args: Vec<OsString>,
     pub env: Vec<(OsString, OsString)>,
 }
 
 pub fn run(request: LaunchRequest) -> Result<i32, BrokerError> {
     let prepared = prepare(request)?;
-    spawn(&prepared)
+    let result = spawn(&prepared);
+    #[cfg(target_os = "macos")]
+    prepared.scratch.close().map_err(BrokerError::Io)?;
+    result
 }
 
 pub fn prepare(request: LaunchRequest) -> Result<PreparedLaunch, BrokerError> {
@@ -73,18 +84,6 @@ pub fn prepare(request: LaunchRequest) -> Result<PreparedLaunch, BrokerError> {
 
     verify_agent_peer(&canonical_socket, state_meta.uid())?;
 
-    let uid = unsafe { libc::geteuid() };
-    let gid = unsafe { libc::getegid() };
-    let args = bwrap_args(
-        &canonical_state,
-        &canonical_socket,
-        &resolved_argv,
-        uid,
-        gid,
-        docker_hides(&canonical_socket),
-    );
-    forbid_capability_in_argv(&args, request.capability.as_deref().map(String::as_str))?;
-
     let mut env = vec![
         (OsString::from("PATH"), OsString::from(CHILD_PATH)),
         (OsString::from("HOME"), OsString::from(CHILD_HOME)),
@@ -97,16 +96,39 @@ pub fn prepare(request: LaunchRequest) -> Result<PreparedLaunch, BrokerError> {
         ));
     }
 
-    Ok(PreparedLaunch {
-        profile: LINUX_NETNS_V1,
-        bwrap: PathBuf::from("/usr/bin/bwrap"),
-        args,
-        env,
-    })
+    #[cfg(target_os = "macos")]
+    {
+        macos::prepare(&canonical_state, &canonical_socket, &resolved_argv, env)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let uid = unsafe { libc::geteuid() };
+        let gid = unsafe { libc::getegid() };
+        let args = bwrap_args(
+            &canonical_state,
+            &canonical_socket,
+            &resolved_argv,
+            uid,
+            gid,
+            docker_hides(&canonical_socket),
+        );
+        forbid_capability_in_argv(&args, request.capability.as_deref().map(String::as_str))?;
+
+        Ok(PreparedLaunch {
+            profile: LINUX_NETNS_V1,
+            program: PathBuf::from("/usr/bin/bwrap"),
+            args,
+            env,
+        })
+    }
 }
 
 fn spawn(prepared: &PreparedLaunch) -> Result<i32, BrokerError> {
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        macos::spawn(prepared).map_err(BrokerError::Io)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = prepared;
         Err(BrokerError::UnsupportedPlatform)
@@ -114,6 +136,7 @@ fn spawn(prepared: &PreparedLaunch) -> Result<i32, BrokerError> {
 
     #[cfg(target_os = "linux")]
     {
+        use std::os::unix::process::CommandExt;
         use std::process::{Command, Stdio};
 
         let bwrap = find_bwrap()?;
@@ -125,6 +148,24 @@ fn spawn(prepared: &PreparedLaunch) -> Result<i32, BrokerError> {
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
+        // Mark, rather than close, so Rust can still report an exec failure
+        // through its error pipe. Covers FDs above a subsequently lowered limit.
+        // SAFETY: the post-fork closure only makes a raw syscall and reads errno;
+        // it neither allocates nor locks. Unsupported/denied calls fail closed.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::syscall(
+                    libc::SYS_close_range,
+                    3_u32,
+                    u32::MAX,
+                    libc::CLOSE_RANGE_CLOEXEC,
+                ) != 0
+                {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
         let status = command.status().map_err(BrokerError::Io)?;
         Ok(status.code().unwrap_or(5))
     }
@@ -147,6 +188,7 @@ fn find_bwrap() -> Result<PathBuf, BrokerError> {
     Err(BrokerError::LauncherUnavailable)
 }
 
+#[cfg(not(target_os = "macos"))]
 fn bwrap_args(
     state_dir: &Path,
     agent_socket: &Path,
@@ -194,6 +236,7 @@ fn bwrap_args(
     args
 }
 
+#[cfg(not(target_os = "macos"))]
 fn docker_hides(agent_socket: &Path) -> Vec<PathBuf> {
     let mut hides = Vec::new();
     for candidate in DOCKER_SOCKETS {
@@ -213,6 +256,7 @@ fn docker_hides(agent_socket: &Path) -> Vec<PathBuf> {
     hides
 }
 
+#[cfg(not(target_os = "macos"))]
 fn forbid_capability_in_argv(
     args: &[OsString],
     capability: Option<&str>,
@@ -370,6 +414,7 @@ mod tests {
         })
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn prepared_argv_is_closed_and_hides_state() {
         let root = tempfile::tempdir().unwrap();
@@ -455,27 +500,5 @@ mod tests {
             Err(error) => error,
         };
         assert_eq!(error.code(), "INVALID_INPUT");
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    #[test]
-    fn non_linux_returns_unsupported_after_a_valid_plan() {
-        let root = tempfile::tempdir().unwrap();
-        let state = root.path().join("state");
-        let agent_dir = root.path().join("agent");
-        fs::create_dir(&state).unwrap();
-        fs::create_dir(&agent_dir).unwrap();
-        let socket = agent_dir.join("agent.sock");
-        let _server = hold_socket(&socket);
-        let error = match run(LaunchRequest {
-            state_dir: state,
-            agent_socket: socket,
-            argv: vec![OsString::from("/bin/echo")],
-            capability: None,
-        }) {
-            Ok(_) => panic!("non-Linux agent-run must not spawn"),
-            Err(error) => error,
-        };
-        assert_eq!(error.code(), "UNSUPPORTED_PLATFORM");
     }
 }

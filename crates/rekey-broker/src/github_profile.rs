@@ -82,20 +82,6 @@ pub(crate) enum GitHubAction {
     },
 }
 
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct CreateIssueBody {
-    pub(crate) title: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) body: Option<String>,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct CreateIssueCommentBody {
-    body: String,
-}
-
 impl GitHubAppProfile {
     pub(crate) fn validate_profile(input: &[u8]) -> Result<(), GitHubError> {
         Self::parse(input).map(|_| ())
@@ -213,40 +199,16 @@ impl GitHubAppProfile {
             return Err(GitHubError::ProfileMismatch);
         }
         if let Some(issue_number) = issue_number {
-            let comment: CreateIssueCommentBody =
-                serde_json::from_slice(&request.body).map_err(|_| GitHubError::ProfileMismatch)?;
-            if comment.body.is_empty() || comment.body.len() > 32 * 1024 {
-                return Err(GitHubError::ProfileMismatch);
-            }
+            rekey_connector::github_issue::normalize_comment_body(&request.body)
+                .map_err(|_| GitHubError::ProfileMismatch)?;
             return Ok(GitHubAction::CreateIssueComment {
                 repository_index,
                 issue_number,
             });
         }
-        let issue: CreateIssueBody =
-            serde_json::from_slice(&request.body).map_err(|_| GitHubError::ProfileMismatch)?;
-        if issue.title.is_empty()
-            || issue.title.len() > 256
-            || issue
-                .body
-                .as_ref()
-                .is_some_and(|body| body.len() > 32 * 1024)
-        {
-            return Err(GitHubError::ProfileMismatch);
-        }
+        rekey_connector::github_issue::normalize_issue_body(&request.body)
+            .map_err(|_| GitHubError::ProfileMismatch)?;
         Ok(GitHubAction::CreateIssue { repository_index })
-    }
-
-    pub(crate) fn issue_body(request: &ExecuteRequest) -> Result<Vec<u8>, GitHubError> {
-        let body: CreateIssueBody =
-            serde_json::from_slice(&request.body).map_err(|_| GitHubError::ProfileMismatch)?;
-        serde_json::to_vec(&body).map_err(|_| GitHubError::ProfileMismatch)
-    }
-
-    pub(crate) fn comment_body(request: &ExecuteRequest) -> Result<Vec<u8>, GitHubError> {
-        let body: CreateIssueCommentBody =
-            serde_json::from_slice(&request.body).map_err(|_| GitHubError::ProfileMismatch)?;
-        serde_json::to_vec(&body).map_err(|_| GitHubError::ProfileMismatch)
     }
 
     pub(crate) fn commitment(&self) -> String {

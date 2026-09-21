@@ -194,6 +194,7 @@ async fn fault_while_initially_locked_revokes_remembered_desktop() {
         let mut execution_task = tokio::spawn(supervisor.run(shutdown_rx));
         let (stop_tx, _stop_rx) = mpsc::unbounded_channel();
         let ctx = BrokerCtx {
+            metrics: crate::metrics::Metrics::default(),
             authority: authority.clone(),
             sessions,
             executions,

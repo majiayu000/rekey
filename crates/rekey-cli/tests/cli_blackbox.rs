@@ -233,6 +233,52 @@ fn cli_end_to_end() {
         .unwrap()
         .to_owned();
 
+    // DEK rotation reads step-up only from stdin, returns counts only, and
+    // accepts both existing unlock factors without changing credential data.
+    let rotate_args = [
+        "--state-dir",
+        state,
+        "key",
+        "rotate-dek",
+        "--password-stdin",
+    ];
+    let denied = run(&rekey_bin(), &rotate_args, Some("wrong-dek-proof\n"));
+    assert_eq!(denied.status, 3);
+    assert!(!denied.stderr.contains("wrong-dek-proof"));
+    let rotated = run_with_process_boundary(
+        &rekey_bin(),
+        &rotate_args,
+        &format!("{PASSWORD}\n"),
+        &[PASSWORD, SECRET],
+    );
+    assert_eq!(rotated.status, 0, "{}", rotated.stderr);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&rotated.stdout).unwrap(),
+        serde_json::json!({"rotated_versions": 1})
+    );
+    let recovered = run_with_process_boundary(
+        &rekey_bin(),
+        &[
+            "--state-dir",
+            state,
+            "key",
+            "rotate-dek",
+            "--recovery",
+            "--password-stdin",
+        ],
+        &format!("{recovery_key}\n"),
+        &[&recovery_key, SECRET],
+    );
+    assert_eq!(recovered.status, 0, "{}", recovered.stderr);
+    for output in [&rotated, &recovered] {
+        for canary in [PASSWORD, SECRET, recovery_key.as_str()] {
+            assert!(!output.stdout.contains(canary));
+            assert!(!output.stderr.contains(canary));
+        }
+    }
+
+    assert_files_exclude(&state_dir, &[PASSWORD, SECRET, recovery_key.as_str()]);
+
     // list shows metadata, never the value.
     let output = run(
         &rekey_bin(),
@@ -824,4 +870,95 @@ fn agent_run_rejects_the_default_colocated_socket() {
         output.stderr
     );
     assert!(!output.stdout.contains("blocked"));
+}
+
+#[test]
+fn cli_vrk_rotation_two_stdin_factors_keep_broker_locked_and_leave_no_plaintext() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    let state = state_dir.to_str().unwrap();
+    let initialized = run(
+        &rekeyd_bin(),
+        &["init", "--state-dir", state, "--password-stdin"],
+        Some(&format!("{PASSWORD}\n")),
+    );
+    assert_eq!(initialized.status, 0, "{}", initialized.stderr);
+    let recovery = initialized
+        .stdout
+        .lines()
+        .find(|l| l.starts_with("RKREC1-"))
+        .unwrap()
+        .to_owned();
+    let child = Command::new(rekeyd_bin())
+        .args(["serve", "--state-dir", state, "--idle-lock", "15m"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let guard = ServeGuard(Some(child));
+    for _ in 0..300 {
+        if state_dir.join("runtime/admin.sock").exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(state_dir.join("runtime/admin.sock").exists());
+    let mut outputs = Vec::new();
+    let rotated = run_with_process_boundary(
+        &rekey_bin(),
+        &["--state-dir", state, "key", "rotate-vrk", "--stdin-secrets"],
+        &format!("{PASSWORD}\n{recovery}\n"),
+        &[PASSWORD, &recovery],
+    );
+    assert_eq!(rotated.status, 0, "{}", rotated.stderr);
+    let receipt: rekey_domain::ipc::VrkRotatedResponse =
+        serde_json::from_str(&rotated.stdout).unwrap();
+    receipt.validate().unwrap();
+    assert_eq!(receipt.rotated_versions, 0);
+    outputs.push(rotated);
+    let status = run(&rekey_bin(), &["--state-dir", state, "status"], None);
+    assert_eq!(status.status, 0);
+    assert!(status.stdout.contains("locked"));
+    outputs.push(status);
+    for (flag, factor) in [
+        ("--password-stdin", PASSWORD),
+        ("--recovery", recovery.as_str()),
+    ] {
+        let mut args = vec!["--state-dir", state, "unlock", flag];
+        if flag == "--recovery" {
+            args.push("--password-stdin");
+        }
+        let unlock = run(&rekey_bin(), &args, Some(&format!("{factor}\n")));
+        assert_eq!(unlock.status, 0, "{}", unlock.stderr);
+        outputs.push(unlock);
+        let origin = run(
+            &rekey_bin(),
+            &["--state-dir", state, "approval", "origin"],
+            None,
+        );
+        assert_eq!(origin.status, 0, "{}", origin.stderr);
+        assert!(origin.stdout.contains(&receipt.approval_origin.public_key));
+        outputs.push(origin);
+        let lock = run(&rekey_bin(), &["--state-dir", state, "lock"], None);
+        assert_eq!(lock.status, 0);
+        outputs.push(lock);
+    }
+    let stopped = run(&rekey_bin(), &["--state-dir", state, "shutdown"], None);
+    assert_eq!(stopped.status, 0, "{}", stopped.stderr);
+    outputs.push(stopped);
+    let server = guard.finish();
+    assert!(server.status.success());
+    for output in outputs {
+        for canary in [PASSWORD, recovery.as_str()] {
+            assert!(!output.stdout.contains(canary));
+            assert!(!output.stderr.contains(canary));
+        }
+    }
+    for bytes in [&server.stdout, &server.stderr] {
+        for canary in [PASSWORD, recovery.as_str()] {
+            assert!(!bytes.windows(canary.len()).any(|w| w == canary.as_bytes()));
+        }
+    }
+    assert_files_exclude(&state_dir, &[PASSWORD, &recovery]);
 }

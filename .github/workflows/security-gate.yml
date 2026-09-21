@@ -58,7 +58,8 @@ jobs:
           cargo fmt --all --check
           cargo check --workspace --all-targets
           cargo clippy --workspace --all-targets -- -D warnings
-          cargo test --workspace --offline
+          # Deadline fixtures must reach their intended phase without competing KDF jobs.
+          cargo test --workspace --offline -- --test-threads=1
           REKEY_QUICKSTART_REAL=1 PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-agent-quickstart.py
 
       - name: Real ENOSPC fault injection

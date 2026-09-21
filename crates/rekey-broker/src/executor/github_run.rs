@@ -26,21 +26,54 @@ impl ActionExecutor {
         };
         let request_body = match github_action {
             crate::github_profile::GitHubAction::ListRepositories => Vec::new(),
-            crate::github_profile::GitHubAction::CreateIssueComment { .. } => {
-                match GitHubAppCredential::comment_body(request) {
-                    Ok(body) => body,
-                    Err(err) => {
-                        started.blocked_until(effect_deadline, err.reason()).await?;
-                        return Err(BrokerError::Denied(err.reason()));
+            crate::github_profile::GitHubAction::CreateIssue { .. }
+            | crate::github_profile::GitHubAction::CreateIssueComment { .. } => {
+                let operation = match github_action {
+                    crate::github_profile::GitHubAction::CreateIssue { .. } => {
+                        rekey_connector::github_issue::IssueOperation::CreateIssue
                     }
-                }
-            }
-            crate::github_profile::GitHubAction::CreateIssue { .. } => {
-                match GitHubAppCredential::issue_body(request) {
+                    crate::github_profile::GitHubAction::CreateIssueComment { .. } => {
+                        rekey_connector::github_issue::IssueOperation::CreateIssueComment
+                    }
+                    crate::github_profile::GitHubAction::ListRepositories => unreachable!(),
+                };
+                #[cfg(any(
+                    target_os = "macos",
+                    all(
+                        target_os = "linux",
+                        target_env = "gnu",
+                        any(target_arch = "x86_64", target_arch = "aarch64")
+                    )
+                ))]
+                let normalized = crate::github_issue_plugin::normalize(
+                    action.native_plugin.as_ref(),
+                    operation,
+                    &request.body,
+                    effect_deadline,
+                )
+                .await;
+                #[cfg(not(any(
+                    target_os = "macos",
+                    all(
+                        target_os = "linux",
+                        target_env = "gnu",
+                        any(target_arch = "x86_64", target_arch = "aarch64")
+                    )
+                )))]
+                let normalized = if action.native_plugin.is_some() {
+                    Err(BrokerError::Denied("github-plugin-platform-unsupported"))
+                } else {
+                    operation
+                        .normalize_body(&request.body)
+                        .map_err(|_| BrokerError::Denied("github-profile-mismatch"))
+                };
+                match normalized {
                     Ok(body) => body,
                     Err(err) => {
-                        started.blocked_until(effect_deadline, err.reason()).await?;
-                        return Err(BrokerError::Denied(err.reason()));
+                        started
+                            .blocked_until(effect_deadline, "github-plugin-rejected")
+                            .await?;
+                        return Err(err);
                     }
                 }
             }
@@ -182,6 +215,7 @@ impl ActionExecutor {
             .await?;
         let body = std::mem::take(&mut *response.body);
         Ok(ExecuteOutcome {
+            stream_status: None,
             upstream_status: response.status,
             headers,
             body,

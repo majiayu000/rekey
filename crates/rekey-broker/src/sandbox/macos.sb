@@ -1,0 +1,41 @@
+(version 1)
+(deny default)
+
+; Exec cannot shed the sandbox, including through a second sandbox-exec.
+(allow process-exec process-fork)
+(allow signal (target same-sandbox))
+(allow process-info* (target same-sandbox))
+
+; Fixed runtime reads. No user home, global temporary directory, Mach service,
+; sandbox extensions, Apple Events, preferences, or arbitrary /dev/fd access.
+(allow file-read*
+  ; dyld opens the root directory during cache initialization. This is an
+  ; exact directory grant, not recursive access to the filesystem.
+  (literal "/")
+  (subpath "/System/Library")
+  (subpath "/usr/lib")
+  (subpath "/usr/share")
+  (subpath "/bin")
+  (subpath "/usr/bin")
+  (subpath "/usr/libexec")
+  (subpath "/opt/homebrew/Cellar")
+  (subpath "/usr/local/Cellar")
+  (subpath (param "CODE"))
+  (literal (param "EXEC"))
+  (literal (param "AGENT"))
+  (literal "/dev/null")
+  (literal "/dev/urandom")
+  (literal "/dev/random"))
+(allow file-read* file-write* (subpath (param "SCRATCH")))
+(allow file-write-data (literal "/dev/null"))
+(allow sysctl-read
+  (sysctl-name-prefix "hw.")
+  (sysctl-name "kern.osrelease")
+  (sysctl-name "kern.osversion")
+  (sysctl-name "kern.ostype")
+  (sysctl-name "kern.osproductversion")
+  (sysctl-name "kern.argmax"))
+
+; AF_UNIX creation alone is not permission to bind or connect anywhere else.
+(allow system-socket (socket-domain AF_UNIX))
+(allow network-outbound (remote unix-socket (literal (param "AGENT"))))

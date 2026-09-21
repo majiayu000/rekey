@@ -37,7 +37,7 @@ tar -xzf "$ARCHIVE" -C "$WORKDIR"
 BIN_DIR="$WORKDIR/$(basename "$ARCHIVE" .tar.gz)"
 REKEY="$BIN_DIR/rekey"
 REKEYD="$BIN_DIR/rekeyd"
-[[ -x "$REKEY" && -x "$REKEYD" ]] || { echo "archive lacks executable rekey/rekeyd" >&2; exit 1; }
+[[ -x "$REKEY" && -x "$REKEYD" && -x "$BIN_DIR/rekey-github-create-issue" ]] || { echo "archive lacks executable rekey/rekeyd/reference connector" >&2; exit 1; }
 
 [[ "$($REKEY --version)" == "rekey $EXPECTED_VERSION" ]]
 [[ "$($REKEYD --version)" == "rekeyd $EXPECTED_VERSION" ]]

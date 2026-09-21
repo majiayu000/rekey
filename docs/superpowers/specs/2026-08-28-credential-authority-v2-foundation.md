@@ -572,7 +572,7 @@ PRAGMA busy_timeout = 5000;
 ~~~sql
 CREATE TABLE vault_header (
     singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
-    format_version     INTEGER NOT NULL CHECK (format_version = 10),
+    format_version     INTEGER NOT NULL CHECK (format_version = 14),
     vault_id           BLOB NOT NULL CHECK (length(vault_id) = 16),
     crypto_suite       TEXT NOT NULL CHECK (crypto_suite = 'rkca-aes256gcm-argon2id-hkdfsha256-v1'),
     created_at_ms      INTEGER NOT NULL,
@@ -632,6 +632,8 @@ CREATE UNIQUE INDEX one_active_version_per_credential
 ON credential_versions(credential_id) WHERE state = 'active';
 
 CREATE TABLE actions (
+    native_plugin_json            TEXT,
+    text_stream_json              TEXT,
     action_id                     BLOB NOT NULL CHECK (length(action_id) = 16),
     version                       INTEGER NOT NULL CHECK (version >= 1),
     name                          TEXT NOT NULL,
@@ -913,8 +915,15 @@ with closed profile `linux-netns-v1`. It uses system bubblewrap to unshare
 user/net/pid namespaces, overlay `/tmp` and the state directory, bind-mount
 the disjoint Agent socket back onto its canonical path, and exec one absolute
 command. It requires the disjoint Agent endpoint above and does not replace
-this Docker G2 harness, change default G1, or claim macOS isolation. See
+this Docker G2 harness or change default G1. See
 `docs/superpowers/specs/2026-09-04-agent-egress-launcher-p09.md`.
+
+OS-05 adds an experimental macOS `macos-seatbelt-v1` adapter to the same
+command. The fixed Seatbelt profile allows a read-only code directory, private
+scratch writes, and the exact canonical Agent UDS. It uses CLOEXEC_DEFAULT
+spawn and fails closed; no generic G2 or automatic descendant-termination
+claim follows. The selected contract and OS-specific evidence are in
+`docs/superpowers/specs/2026-09-16-local-isolation-and-streaming.md`.
 
 ### 12.2 Frame v1
 
@@ -1150,7 +1159,7 @@ Agent 输入 fake 的契约测试仍使用 injected `UpstreamTransport`。第 2 
 - 验证 SQLite quick_check、schema_digest、format_version、至少一个 wrapper 行、VRK 解包、header 内 encrypted integrity record，以及 **每一条** `credential_versions` payload。不能只检查数据库结构或只解密第一条 Credential。
 - 在写 staging 前先持久化 incomplete marker；Broker 见到 marker 必须拒绝启动。输入以固定大小 buffer 流式复制到 staging 并同时计算 SHA-256，对 staging 完成上述验证与 `restore.completed` 提交，fsync 文件，rename 到 `vault.sqlite3`，再 fsync 父目录。
 - 只有安装文件已持久化后才能删除 marker 并再次 fsync 父目录；这是 restore 成功点。成功点之前的失败必须删除 staging、installed DB 及 SQLite sidecar，并持久化清理；无法证明清理完成时必须保留 marker，确保不留下可启动的半恢复 vault。后续 restore 只能在取得 offline lock 后清理该 marker 所标记的已中断内部 artifact，不得删除未知文件。
-- 当前开发实现只恢复 format version 10；不支持 v1/v2/v3/v4/v5/v6/v7/v8/v9 或未来未知版本。当前 archive `v2.0.0-alpha.2` 仍只接受 v9。
+- 当前开发实现只恢复 format version 13；不支持 v1/v2/v3/v4/v5/v6/v7/v8/v9/v10/v11/v12 或未来未知版本。当前 archive `v2.0.0-alpha.2` 仍只接受 v9。
 
 ## 17. Error Taxonomy
 
@@ -1893,9 +1902,13 @@ audit/failure-semantics 人工审查尚未进行。因此当前仓库不能声�
 
 实现过程中如果发现 spec 与可验证事实冲突，必须先修改本 spec 和相关基线，再修改代码；不得用临时兼容层或 warning fallback 绕过合同。
 
-Current source OAU-02 adds Keycloak kind/AAD code 5 and schema 10. Schema 9 state
-and backups are rejected without migration; historical release evidence remains
-unchanged. See `2026-09-10-keycloak-token-exchange-oau02.md`.
+OAU-02 introduced Keycloak kind/AAD code 5 and schema 10. NET-07 introduced
+nullable Action text_stream_json and schema 11. SDK-04 Action plugin registration
+used schema 12; the two-operation plugin used schema 13; closed native plugins
+now use schema 14 (`native_plugin_json`). Earlier state and backups, including
+schema 13, are rejected without migration. Historical release evidence remains
+unchanged. See `2026-09-10-keycloak-token-exchange-oau02.md`,
+`2026-09-16-anthropic-text-stream.md`, and `2026-09-16-native-action-plugin.md`.
 
 
 ## Native desktop remembered unlock (2026-09-15)
@@ -1918,3 +1931,33 @@ Remember 操作入队后等待明确结果，不丢弃仍在写入的 worker 回
 验证包括 `authority_contract` 的跨重启/过期/篡改/跨 vault/撤销/异常关闭测试、
 `scripts/test-human-vault.py` 的真实服务重启恢复、`scripts/test-macos-keychain.swift`
 的跨进程 Keychain 与到期测试。物理 Mac 重启未作为本次验证证据。
+
+## 2026-09-16 本机增量合同
+
+以下源码合同细化 Foundation；发布状态和验收成熟度仍以 Feature Truth Matrix 为准。
+
+- [本机指标](2026-09-16-local-metrics.md)：既有 Admin socket 的数值快照与 CLI Prometheus 文本，没有新 listener。
+- [审批详情审阅](2026-09-16-approval-review-ui.md)：只读信封与精确 Action 版本，签名仍由独立工具验证和签发。
+- [全版本 DEK 轮换](2026-09-16-key04-dek-rotation.md)：事务内重加密全部历史版本，VRK 和业务身份保持不变。
+- [显式执行审计清理](2026-09-16-audit-prune.md)：仅删除完整、无审批关联的过期执行组，永久清理标记使旧分页快照显式失效。
+- [锁定状态 VRK 轮换](2026-09-16-key04-vrk-rotation.md)：双因素局部解锁并原子替换全部加密依赖；保持 Locked，审批来源公钥改变，桌面授权撤销具有明确的非原子副作用。
+
+上述本机增量已在源码实现；验收边界以各专用规格为准。外部服务与企业部署仅交付[具体规格提案](2026-09-16-external-capabilities.md)，不构成外部接入已完成的声明。
+
+### 独立文本流与 GitHub 参考插件
+
+- [独立文本流](2026-09-16-anthropic-text-stream.md)：ExecuteTextStream 仅面向显式登记的 Anthropic 文本 Action；已检查前缀可见且不可收回，仅最终 completed 表示成功，EOF、failed、incomplete 均不等于成功。原 Execute 的完整缓冲与失败合同不变，MCP 不投影流式 Action。
+- [GitHub 参考插件](2026-09-16-github-reference-plugin.md)：macOS 固定打包的 CreateIssue sidecar 仅转换公开输入，凭据、授权、远程效果及撤销仍由 Broker 执行；不代表通用动态加载或完整硬资源隔离。
+
+### Action 插件登记（源码格式 14）
+
+[封闭原生插件合同](2026-09-16-native-action-plugin.md) 将 JSON 字段更名为 `native_plugin`，SQLite 列为 `native_plugin_json`，并在同一 runner 上增加 `anthropic-messages-v1`。[两操作登记历史](2026-09-16-action-plugin-registration.md) 仍描述 GitHub CreateIssue/CreateIssueComment。格式 14 拒绝包含 v13 在内的旧状态和备份，不迁移。这不是市场或完整 P-10。
+
+## 2026-09-17 local continuation contract
+
+The Action-bound GitHub reference plugin is extended to the two fixed issue operations under [the registration contract](2026-09-16-action-plugin-registration.md). The sole wire protocol becomes github-issues-v1 with a closed operation/body envelope, and durable format 13 rejects earlier state/backup formats. No arbitrary plugin HTTP, credentials or multi-step effect API is introduced. Linux Agent launcher verification will exercise existing isolation using deterministic local fixtures and successful unsandboxed controls; this does not introduce a Linux plugin backend.
+
+
+## Linux explicitly registered GitHub plugins
+
+The subsequent Linux backend follows [the reference plugin contract](2026-09-16-github-reference-plugin.md), limited to GNU x86_64/aarch64 and explicitly bound artifacts. Format13 and both fixed operations remain unchanged. A minimal read-only rootfs and default-deny seccomp are separate from the Agent launcher; AS64MiB is per-process virtual memory, with no total physical-memory or all-startup-phase parent-death claim.

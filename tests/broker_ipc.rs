@@ -207,3 +207,286 @@ async fn oversized_audit_page_fails_before_a_success_frame() {
     assert_eq!(response.err_code(), "RESPONSE_TOO_LARGE");
     broker.shutdown_keep_dir().await;
 }
+
+async fn metrics_snapshot(broker: &h::TestBroker) -> rekey_domain::ipc::MetricsResponse {
+    let response = h::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::METRICS,
+        b"{}",
+        &[],
+    )
+    .await;
+    serde_json::from_value(response.ok().clone()).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn metrics_are_admin_only_passive_and_track_real_dispatch_results() {
+    let broker = h::start_broker().await;
+    let before = metrics_snapshot(&broker).await;
+    let again = metrics_snapshot(&broker).await;
+    assert_eq!(before.admin.dispatch.requests_total, 0);
+    assert_eq!(again.admin.dispatch.requests_total, 0);
+    assert_eq!(again.admin.dispatch.requests_in_flight, 0);
+    assert_eq!(again.capabilities_active, 0);
+
+    let denied = h::call(
+        &broker.agent_sock(),
+        Channel::Agent,
+        admin_msg::METRICS,
+        b"{}",
+        &[],
+    )
+    .await;
+    assert_eq!(denied.err_code(), "INVALID_FRAME");
+    let status = h::call(
+        &broker.agent_sock(),
+        Channel::Agent,
+        agent_msg::AGENT_STATUS,
+        b"{}",
+        &[],
+    )
+    .await;
+    assert_eq!(status.ok(), &serde_json::json!({"state": "locked"}));
+    let backup = h::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::BACKUP,
+        b"{}",
+        &[],
+    )
+    .await;
+    assert_eq!(backup.err_code(), "LOCKED");
+    let malformed = h::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::METRICS,
+        br#"{"extra":1}"#,
+        &[],
+    )
+    .await;
+    assert_eq!(malformed.err_code(), "INVALID_FRAME");
+    let after = metrics_snapshot(&broker).await;
+    assert_eq!(after.agent.dispatch.requests_total, 2);
+    assert_eq!(after.agent.dispatch.finished_total, 2);
+    assert_eq!(after.agent.dispatch.errors_total, 1);
+    assert_eq!(after.agent.dispatch.cancelled_total, 0);
+    assert_eq!(after.agent.dispatch.requests_in_flight, 0);
+    assert_eq!(after.admin.dispatch.requests_total, 1);
+    assert_eq!(after.backup.requests_total, 1);
+    assert_eq!(after.backup.errors_total, 1);
+
+    h::unlock(&broker).await;
+    let credential =
+        h::add_credential(&broker, "METRICS-PRIVATE-LABEL", b"METRICS-PRIVATE-SECRET").await;
+    let (action, version) = h::create_action(&broker, &credential).await;
+    let token = h::create_session(&broker, &action, version).await;
+    let active = metrics_snapshot(&broker).await;
+    assert_eq!(active.capabilities_active, 1);
+    assert_eq!(active.executions_in_flight, 0);
+    let encoded = serde_json::to_string(&active).unwrap();
+    for private in [
+        &credential,
+        &action,
+        &token,
+        "METRICS-PRIVATE-LABEL",
+        "METRICS-PRIVATE-SECRET",
+    ] {
+        assert!(!encoded.contains(private));
+    }
+    h::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::LOCK,
+        b"{}",
+        &[],
+    )
+    .await
+    .ok();
+    assert_eq!(metrics_snapshot(&broker).await.capabilities_active, 0);
+    broker.shutdown_keep_dir().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn metrics_count_frame_and_connection_capacity_rejections() {
+    let broker = h::start_broker().await;
+    let header = FrameHeader {
+        channel: Channel::Admin,
+        flags: 0,
+        message_type: admin_msg::METRICS,
+        request_id: RequestId::new_random(),
+        metadata_len: 2,
+        body_len: 1,
+    };
+    let mut frame = header.encode().to_vec();
+    frame.extend_from_slice(b"{}x");
+    assert!(connection_closes_without_reply(&broker.admin_sock(), &frame).await);
+    assert_eq!(
+        metrics_snapshot(&broker)
+            .await
+            .admin
+            .frame_read_failures_total,
+        1
+    );
+
+    // Keep every Agent request slot occupied; the Admin snapshot stays reachable.
+    let mut connections = Vec::new();
+    for _ in 0..rekey_broker::runtime::MAX_AGENT_REQUEST_CONNECTIONS {
+        let stream = UnixStream::connect(broker.agent_sock()).await.unwrap();
+        connections.push(stream);
+    }
+    // FIFO accept of the prior connections makes this request hit the bounded reply slot.
+    let rejected = h::call(
+        &broker.agent_sock(),
+        Channel::Agent,
+        agent_msg::AGENT_STATUS,
+        b"{}",
+        &[],
+    )
+    .await;
+    assert_eq!(rejected.err_code(), "AUTHORITY_BUSY");
+    let snapshot = metrics_snapshot(&broker).await;
+    assert_eq!(snapshot.agent.capacity_rejections_total, 1);
+    assert_eq!(snapshot.agent.dispatch.requests_total, 0);
+    drop(connections);
+    broker.shutdown_keep_dir().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn audit_prune_requires_admin_step_up_and_invalidates_old_ipc_snapshots() {
+    use rekey_domain::audit::{AuditPruneReceipt, AuditPruneRequest};
+    use rekey_vault::model::event_type;
+
+    let broker = h::start_broker().await;
+    let metadata = serde_json::to_vec(&AuditPruneRequest { before_ms: 100 }).unwrap();
+    let proof = h::proof_body(h::PASSWORD);
+    let locked = h::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::AUDIT_PRUNE,
+        &metadata,
+        &proof,
+    )
+    .await;
+    assert_eq!(locked.err_code(), "LOCKED");
+    let agent = h::call(
+        &broker.agent_sock(),
+        Channel::Agent,
+        admin_msg::AUDIT_PRUNE,
+        &metadata,
+        &[],
+    )
+    .await;
+    assert_eq!(agent.err_code(), "INVALID_FRAME");
+    h::unlock(&broker).await;
+    let wrong = h::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::AUDIT_PRUNE,
+        &metadata,
+        &h::proof_body(b"wrong-prune-proof"),
+    )
+    .await;
+    assert_eq!(wrong.err_code(), "INVALID_UNLOCK_CREDENTIAL");
+    let absent = h::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::AUDIT_PRUNE,
+        &metadata,
+        &[],
+    )
+    .await;
+    assert_eq!(absent.err_code(), "INVALID_FRAME");
+    let malformed = h::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::AUDIT_PRUNE,
+        br#"{"before_ms":100,"unknown":true}"#,
+        &proof,
+    )
+    .await;
+    assert_eq!(malformed.err_code(), "INVALID_FRAME");
+    let mut store = SqliteRecordStore::open(&paths::vault_db(&broker.state_dir)).unwrap();
+    let request = RequestId::new_random();
+    for (kind, time) in [
+        (event_type::EXECUTION_STARTED, 10),
+        (event_type::EXECUTION_FINISHED, 20),
+    ] {
+        store
+            .append_audit(&AuditEvent {
+                event_id: rekey_vault::crypto::random_array().unwrap(),
+                request_id: Some(request),
+                session_id: None,
+                action_id: None,
+                action_version: None,
+                credential_id: None,
+                credential_version: None,
+                authorization: None,
+                approval: None,
+                event_type: kind,
+                outcome: "success",
+                reason_code: "prune-test".into(),
+                upstream_status: None,
+                latency_ms: None,
+                created_at_ms: time,
+            })
+            .unwrap();
+    }
+    drop(store);
+    let mut query = AuditQuery {
+        request_id: None,
+        session_id: None,
+        action_id: None,
+        credential_id: None,
+        outcome: None,
+        since_ms: None,
+        until_ms: None,
+        snapshot_max_sequence: None,
+        before_sequence: None,
+        limit: 10,
+    };
+    let first = h::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::AUDIT_QUERY,
+        &serde_json::to_vec(&query).unwrap(),
+        &[],
+    )
+    .await;
+    let page: AuditPage = serde_json::from_slice(&first.body).unwrap();
+    query.snapshot_max_sequence = Some(page.snapshot_max_sequence);
+    let pruned = h::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::AUDIT_PRUNE,
+        &metadata,
+        &proof,
+    )
+    .await;
+    let receipt: AuditPruneReceipt = serde_json::from_value(pruned.ok().clone()).unwrap();
+    receipt
+        .validate_for(&AuditPruneRequest { before_ms: 100 })
+        .unwrap();
+    assert_eq!((receipt.deleted_groups, receipt.deleted_rows), (1, 2));
+    assert!(pruned.body.is_empty());
+    let expired = h::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::AUDIT_QUERY,
+        &serde_json::to_vec(&query).unwrap(),
+        &[],
+    )
+    .await;
+    assert_eq!(expired.err_code(), "AUDIT_SNAPSHOT_EXPIRED");
+    query.snapshot_max_sequence = receipt.prune_sequence;
+    let fresh = h::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::AUDIT_QUERY,
+        &serde_json::to_vec(&query).unwrap(),
+        &[],
+    )
+    .await;
+    fresh.ok();
+    broker.shutdown_keep_dir().await;
+}

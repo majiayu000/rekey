@@ -11,7 +11,13 @@ use super::recovery::{authorization_from_columns, optional_id};
 use super::sqlite::{SqliteRecordStore, blob16, storage};
 use crate::error::AuthorityError;
 
-struct RawAuditRow {
+pub(super) const AUDIT_COLUMNS: &str =
+    "sequence, event_id, request_id, session_id, action_id, action_version,
+    credential_id, credential_version, principal_id, policy_version, policy_digest, policy_rule_id,
+    resource_type, resource_id, parameter_hash, approval_request_id, approval_id, approver_id,
+    event_type, outcome, reason_code, upstream_status, latency_ms, created_at_ms";
+
+pub(super) struct RawAuditRow {
     sequence: i64,
     event_id: Vec<u8>,
     request_id: Option<Vec<u8>>,
@@ -41,6 +47,20 @@ struct RawAuditRow {
 impl SqliteRecordStore {
     pub fn audit_query(&self, query: &AuditQuery) -> Result<AuditPage, AuthorityError> {
         query.validate().map_err(AuthorityError::Domain)?;
+        // A filter must never hide the global invalidation marker.
+        let latest_prune: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT MAX(sequence) FROM audit_events WHERE event_type = 'audit.pruned'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(storage)?;
+        let latest_prune = latest_prune.map(positive_u64).transpose()?;
+        if matches!((query.snapshot_max_sequence, latest_prune), (Some(snapshot), Some(marker)) if snapshot < marker)
+        {
+            return Err(AuthorityError::AuditSnapshotExpired);
+        }
         let snapshot_max_sequence = match query.snapshot_max_sequence {
             Some(value) => value,
             None => {
@@ -60,16 +80,10 @@ impl SqliteRecordStore {
 
         let mut statement = self
             .conn
-            .prepare(
-                "SELECT sequence, event_id, request_id, session_id, action_id, action_version,
-                    credential_id, credential_version, principal_id, policy_version,
-                    policy_digest, policy_rule_id, resource_type, resource_id, parameter_hash,
-                    approval_request_id, approval_id, approver_id, event_type, outcome,
-                    reason_code, upstream_status, latency_ms, created_at_ms
-             FROM audit_events
-             WHERE sequence <= ?1
-             ORDER BY sequence DESC LIMIT ?2",
-            )
+            .prepare(&format!(
+                "SELECT {AUDIT_COLUMNS} FROM audit_events
+             WHERE sequence <= ?1 ORDER BY sequence DESC LIMIT ?2"
+            ))
             .map_err(storage)?;
         let raw = statement
             .query_map(
@@ -113,7 +127,7 @@ impl SqliteRecordStore {
     }
 }
 
-fn raw_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawAuditRow> {
+pub(super) fn raw_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawAuditRow> {
     Ok(RawAuditRow {
         sequence: row.get(0)?,
         event_id: row.get(1)?,
@@ -142,7 +156,7 @@ fn raw_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawAuditRow> {
     })
 }
 
-fn record_from_raw(raw: RawAuditRow) -> Result<AuditRecord, AuthorityError> {
+pub(super) fn record_from_raw(raw: RawAuditRow) -> Result<AuditRecord, AuthorityError> {
     let authorization = authorization_from_columns(
         raw.principal_id,
         raw.policy_version,

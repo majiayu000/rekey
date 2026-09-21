@@ -653,11 +653,17 @@ fn integrity_aad(vault_id: VaultId) -> [u8; crate::crypto::aad::AAD_LEN] {
     .encode()
 }
 
-fn seal_integrity(vault_id: VaultId, vrk: &RootKey) -> Result<aead::Sealed, AuthorityError> {
+pub(crate) fn seal_integrity(
+    vault_id: VaultId,
+    vrk: &RootKey,
+) -> Result<aead::Sealed, AuthorityError> {
     aead::seal(vrk.bytes(), &integrity_aad(vault_id), VAULT_INTEGRITY_MARK)
 }
 
-fn prove_integrity(header: &VaultHeaderRecord, vrk: &RootKey) -> Result<(), AuthorityError> {
+pub(crate) fn prove_integrity(
+    header: &VaultHeaderRecord,
+    vrk: &RootKey,
+) -> Result<(), AuthorityError> {
     let plain = aead::open(
         vrk.bytes(),
         &integrity_aad(header.vault_id),

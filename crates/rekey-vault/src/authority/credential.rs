@@ -2,8 +2,9 @@ use rekey_domain::credential::{
     CredentialKind, CredentialLabel, CredentialMetadata, CredentialState, VersionState,
 };
 use rekey_domain::ids::CredentialId;
+use zeroize::Zeroizing;
 
-use super::{VaultState, Worker, credential_audit, ensure_mutation_current};
+use super::{VaultState, Worker, credential_audit, ensure_mutation_current, unlock_audit};
 use crate::command::UnlockProof;
 use crate::convert::record_to_metadata;
 use crate::crypto::aad::{AadPurpose, AadV1};
@@ -12,7 +13,7 @@ use crate::crypto::credential_state;
 use crate::crypto::keys::DataKey;
 use crate::crypto::{AAD_VERSION_V1, CRYPTO_SUITE_V1};
 use crate::error::AuthorityError;
-use crate::model::{CredentialRecord, CredentialVersionRecord, event_type};
+use crate::model::{CredentialRecord, CredentialVersionRecord, event_type, outcome};
 use crate::now_ms;
 use crate::secret::{PreparedCredential, SecretInput};
 
@@ -83,6 +84,104 @@ impl Worker {
             created_at_ms,
             retired_at_ms: None,
         })
+    }
+
+    pub(super) fn rotate_dek(
+        &mut self,
+        proof: UnlockProof,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<u64, AuthorityError> {
+        let result = self.rotate_dek_inner(proof, not_after);
+        if matches!(
+            result,
+            Err(AuthorityError::CryptoFailure | AuthorityError::StorageIntegrityFailed)
+        ) && !matches!(self.state, VaultState::Faulted)
+        {
+            self.fault("credential-integrity-failed");
+        }
+        self.fault_on_audit_failure(result)
+    }
+
+    fn rotate_dek_inner(
+        &mut self,
+        proof: UnlockProof,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<u64, AuthorityError> {
+        self.require_unlocked()?;
+        self.verify_proof(&proof)?;
+        ensure_mutation_current(not_after)?;
+        self.store.validate_credential_version_invariants()?;
+        let vrk = self.require_unlocked()?;
+        for record in self.store.list_credentials()? {
+            ensure_mutation_current(not_after)?;
+            credential_state::verify(vrk.bytes(), self.header.vault_id, &record)?;
+        }
+        let versions = self.rotated_version_ciphertexts(vrk.bytes(), vrk.bytes(), not_after)?;
+        let audit = self.audit_event_or_fault(unlock_audit(
+            event_type::VAULT_DEK_ROTATED,
+            outcome::SUCCESS,
+            "dek-rotation",
+        ))?;
+        ensure_mutation_current(not_after)?;
+        self.store
+            .replace_version_ciphertexts(&versions, audit, not_after)?;
+        Ok(versions.len() as u64)
+    }
+
+    pub(super) fn rotated_version_ciphertexts(
+        &self,
+        old_vrk: &[u8; 32],
+        new_vrk: &[u8; 32],
+        not_after: Option<std::time::Instant>,
+    ) -> Result<Vec<(CredentialKind, CredentialVersionRecord)>, AuthorityError> {
+        // Only ciphertext records accumulate here. Each iteration owns and
+        // zeroizes its old DEK and plaintext before processing the next row.
+        let mut versions = self.store.list_all_versions()?;
+        for (kind, version) in &mut versions {
+            ensure_mutation_current(not_after)?;
+            if version.aad_version != AAD_VERSION_V1 || version.crypto_suite != CRYPTO_SUITE_V1 {
+                return Err(AuthorityError::UnsupportedFormatVersion);
+            }
+            let dek_aad = AadV1 {
+                purpose: AadPurpose::WrapDek,
+                vault_id: self.header.vault_id,
+                object_id: *version.credential_id.as_bytes(),
+                object_version: version.version,
+                credential_kind: 0,
+                constraints_hash: [0u8; 32],
+            }
+            .encode();
+            let dek_bytes = aead::open(old_vrk, &dek_aad, &version.dek_nonce, &version.wrapped_dek)
+                .map_err(|_| AuthorityError::CryptoFailure)?;
+            let old_dek = Zeroizing::new(
+                <[u8; 32]>::try_from(dek_bytes.as_slice())
+                    .map_err(|_| AuthorityError::CryptoFailure)?,
+            );
+            let payload_aad = AadV1 {
+                purpose: AadPurpose::CredentialPayload,
+                vault_id: self.header.vault_id,
+                object_id: *version.credential_id.as_bytes(),
+                object_version: version.version,
+                credential_kind: kind.aad_code(),
+                constraints_hash: [0u8; 32],
+            }
+            .encode();
+            let plaintext = aead::open(
+                &old_dek,
+                &payload_aad,
+                &version.payload_nonce,
+                &version.encrypted_payload,
+            )
+            .map_err(|_| AuthorityError::CryptoFailure)?;
+            let new_dek = DataKey::generate()?;
+            let payload = aead::seal(new_dek.bytes(), &payload_aad, &plaintext)?;
+            let wrapped = aead::seal(new_vrk, &dek_aad, new_dek.bytes())?;
+            version.dek_nonce = wrapped.nonce;
+            version.wrapped_dek = wrapped.ciphertext;
+            version.payload_nonce = payload.nonce;
+            version.encrypted_payload = payload.ciphertext;
+        }
+        Ok(versions)
     }
 
     pub(super) fn credential_add(

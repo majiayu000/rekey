@@ -26,6 +26,21 @@ Credential add/rotate accepts `--stdin-secrets`, with proof on line 1 and the
 credential on line 2. Do not place secrets in argv, environment variables,
 JSON metadata, logs, or Action files.
 
+## Inspect local metrics (source checkout)
+
+```bash
+rekey metrics                 # numeric JSON snapshot
+rekey metrics --prometheus    # Prometheus text, written to stdout
+```
+
+These source-only commands use the existing Admin socket and work while locked.
+They do not unlock the vault or extend its idle deadline. Counters cover local
+dispatch, rejection, cancellation, latency and backup requests; capability
+gauges reuse the current session registry. Values reset when the broker starts
+and are approximate under concurrent work. Fault signals count fault requests,
+not confirmed state transitions. No HTTP listener or remote collector is added.
+See the [measurement contract](superpowers/specs/2026-09-16-local-metrics.md).
+
 ## Replace password or recovery key
 
 Both operations require an unlocked broker and rewrap the existing VRK; they
@@ -45,6 +60,50 @@ again and retain only the latest key.
 
 Rotation does not invalidate historical backups. Each backup remains tied to
 the password and recovery wrappers captured in that snapshot.
+
+## Rotate encryption keys (source checkout)
+
+```bash
+rekey key rotate-dek
+rekey key rotate-dek --recovery --password-stdin
+```
+
+While unlocked, this Admin operation requires fresh password or recovery proof
+and replaces every stored version's DEK, including retired and revoked versions.
+The returned `rotated_versions` count includes all versions. Credential values,
+IDs, versions, VRK, unlock factors and existing capability bindings stay the same.
+Replacement ciphertexts and the success audit commit together; a failure leaves
+no partial key rotation. This does not rotate provider credentials, revoke old
+backups, erase old SQLite pages, or repair a compromised VRK. See the
+[DEK rotation contract](superpowers/specs/2026-09-16-key04-dek-rotation.md).
+
+To replace the VRK as well, first lock explicitly:
+
+```bash
+rekey lock
+rekey key rotate-vrk
+```
+
+Enter the current password and current recovery key at the two hidden prompts.
+For deliberate automation, `--stdin-secrets` reads those factors as exactly two
+lines. Both are required. The operation creates a new VRK and fresh DEKs,
+reseals all dependent state, and leaves the broker locked. Credential values,
+versions, policy and workload replay records remain unchanged. The original
+password and recovery key still unlock the current vault independently.
+
+The receipt includes the new `approval_origin` public key. Re-pin it through
+your trusted approval channel before preparing and signing new challenges;
+old sessions and challenges were revoked by the explicit lock. Remembered
+unlock authorization is revoked before the database transaction, so a later
+failure may require manual unlock even when the old key generation remains.
+
+A lost connection or unclean shutdown means the result is unknown, not that
+rotation rolled back. Do not retry automatically: reconnect, inspect the
+rotation audit and unlock to read `rekey approval origin`. An over-budget stop
+exits with an error and preserves the crash marker. Backups remain tied to
+their own key generation; this operation neither revokes old backups nor
+replaces compromised password/recovery values. See the
+[VRK rotation contract](superpowers/specs/2026-09-16-key04-vrk-rotation.md).
 
 ## Query and export local audit metadata
 
@@ -77,9 +136,32 @@ verifies the destination pathname still names that file, and prints a receipt
 only after completion. On failure, a partial new file may remain for inspection
 and is never resumed. Output omits credentials, recovery material, capability
 tokens, bodies, headers, resource IDs, and parameter hashes. Protect it as
-sensitive metadata. Rekey keeps local audit rows for the vault lifetime; there
-is no delete, pruning, configurable retention, SIEM, WORM, legal hold, or remote
-delivery in this capability.
+sensitive metadata. The released query/export capability has no pruning.
+The source checkout adds the explicit operation below; there is no automatic
+retention, SIEM, WORM, legal hold or remote delivery.
+
+### Prune completed execution audit groups (source checkout)
+
+```bash
+rekey audit prune --before-ms CUTOFF_UNIX_MS
+```
+
+Choose a non-negative cutoff no later than now. While unlocked, supply fresh
+password or recovery proof (`--recovery`; explicit `--password-stdin` is available).
+The command removes only entire completed execution groups with every event
+strictly before the cutoff. It preserves all approval-associated groups,
+unfinished or unpaired groups, management events, backups and cleanup markers.
+Corrupt stored records fail the operation instead of being removed.
+The JSON receipt reports `before_ms`, `deleted_rows`, `deleted_groups` and
+`prune_sequence`; a no-op reports zero counts and a null sequence.
+
+A successful deletion invalidates older pagination snapshots with
+`AUDIT_SNAPSHOT_EXPIRED`. Start a new query/export after that error; an interrupted
+export remains incomplete and receives no success receipt. Deletion and its
+marker commit together. A disconnected call has an unknown result and is not
+proof that nothing was deleted. This does not securely erase disk pages, shrink
+the database file or delete historical backups. See the
+[pruning contract](superpowers/specs/2026-09-16-audit-prune.md).
 
 ## Create a fixed HTTPS Action
 
@@ -413,6 +495,17 @@ detects raw, base64, base64url, percent-encoded, header, and chunk-boundary
 reflections. It does not guarantee detection of arbitrary compression,
 encryption, hashes, derivations, or application-specific encodings.
 
+## Independent text streaming (source checkout)
+
+`execute-text-stream ACTION_ID@VERSION --capability - --body-file messages.json`
+uses a separately registered fixed Anthropic text Action. Capability input stays
+on stdin; the body is `{"messages":[{"role":"user","content":"hello"}]}`.
+Only a completed terminal yields exit zero. A failed or incomplete call can leave
+already checked text on stdout; a visible prefix is not success and must not
+trigger automatic retries. Existing `execute` remains buffered, and MCP rejects
+stream-only Actions. See [registration and invocation](installation.md#independent-text-streaming-source-build)
+and the [bounded stream contract](superpowers/specs/2026-09-16-anthropic-text-stream.md).
+
 ## Launch an Agent with deny-by-default IP egress (Linux)
 
 This Linux-only command requires bubblewrap. It does not upgrade default G1 or
@@ -465,6 +558,48 @@ encrypted mutation succeeds. The corresponding Action must use origin
 `GET /installation/repositories` with no body or
 `POST /repos/OWNER/REPOSITORY/issues` with a closed JSON `title`/`body` input.
 Provider responses are reduced to the documented non-secret fields.
+
+### Register a local GitHub issue plugin (source checkout)
+
+On macOS and Linux GNU x86_64/aarch64, GitHub App CreateIssue and
+CreateIssueComment Actions can contain this optional field. Linux requires
+system bubblewrap, permitted namespaces and the fixed GNU runtime files
+described in [installation](installation.md#github-reference-connector-macos-and-linux-source-builds):
+
+```json
+"native_plugin": {
+  "path": "/absolute/path/to/connector",
+  "sha256": "ADMIN_APPROVED_64_LOWERCASE_HEX_DIGEST",
+  "protocol": "github-issues-v1"
+}
+```
+
+Obtain the expected digest from the trusted build before approving the Action;
+replace the placeholder with that digest. Use the existing commands:
+
+```bash
+rekey action create --file action.json
+rekey action update ACTION_ID --file action-v2.json
+rekey action list
+```
+
+One executable can serve both operations, but each Action fixes a single route.
+The plugin receives a closed operation/body envelope from the Broker and must
+return its canonical form unchanged. Agents still send the normal issue or
+comment body; they cannot select an operation through the plugin protocol.
+
+Create/update require step-up. Registration stores a declaration, while every
+execution verifies the actual file and runs its private snapshot. A wrong hash,
+missing file or unsupported platform fails without falling back to the bundled
+implementation. The binding belongs to `Action@VERSION`; an old capability never
+switches to a newer artifact automatically. Disable the Action to revoke its
+sessions. See [the closed native plugin contract](superpowers/specs/2026-09-16-native-action-plugin.md)
+and [the GitHub registration history](superpowers/specs/2026-09-16-action-plugin-registration.md).
+The same `native_plugin` field with `protocol` `anthropic-messages-v1` can bind
+that executable to the existing Anthropic text-stream Action. Unregistered
+Anthropic streaming stays in-process.
+
+### Rotate the GitHub App profile
 
 Rotate the whole typed profile from a regular file:
 

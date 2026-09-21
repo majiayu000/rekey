@@ -17,6 +17,8 @@ use serde_json::json;
 
 fn action(origin: &str, path: &str) -> FixedHttpAction {
     FixedHttpAction {
+        native_plugin: None,
+        text_stream: None,
         id: ActionId::new_random(),
         name: ActionName::new("test action").unwrap(),
         version: 1,
@@ -262,4 +264,24 @@ fn keycloak_contract_requires_exchange_inject_revoke_and_preserves_reserved_path
         )
         .is_err()
     );
+}
+
+#[test]
+fn mcp_projection_refuses_a_valid_text_stream_action() {
+    let mut action = action("https://api.anthropic.com", "/v1/messages");
+    action.method = FixedMethod::Post;
+    action.auth = HeaderCredentialUse::new(
+        HeaderName::new("x-api-key").unwrap(),
+        HeaderPrefix::new("").unwrap(),
+    )
+    .unwrap();
+    action.text_stream = Some(rekey_domain::action::AnthropicTextStream {
+        model: "fixed-model".into(),
+        max_tokens: 1024,
+    });
+    action.validate().unwrap();
+    assert!(matches!(
+        project_mcp_tool(&action, &json!({"type":"object"})),
+        Err(rekey_connector::McpProjectionError::UnsupportedStreaming)
+    ));
 }
