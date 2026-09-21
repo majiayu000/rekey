@@ -244,10 +244,23 @@ fn reap_until_launcher_gone(broker_pidfd: i32, launcher_pidfd: i32, launcher: i3
             unsafe { libc::kill(launcher, libc::SIGKILL) };
             kill_pids(&known[..len]);
         } else {
-            // Launcher already exited (normal finish or direct SIGKILL). Kill only
-            // the pids recorded while it was alive; do not signal the process
-            // group, because that id can be reused.
+            // Direct SIGKILL of the launcher (kill-on-drop or cancellation). The
+            // leader is still a zombie, so its process group id has not been
+            // reused. The sandboxed payload stays in that group when its own
+            // setsid is denied.
+            signal_group(launcher);
+            unsafe { libc::kill(-launcher, libc::SIGKILL) };
             kill_pids(&known[..len]);
+            for _ in 0..20 {
+                let mut again = [0i32; 96];
+                let mut again_len = 0usize;
+                collect_descendants(launcher, &mut again, &mut again_len);
+                if again_len == 0 {
+                    break;
+                }
+                kill_pids(&again[..again_len]);
+                unsafe { libc::poll(std::ptr::null_mut(), 0, 10) };
+            }
         }
         break;
     }
