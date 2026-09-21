@@ -24,7 +24,7 @@ CreateIssue 沿用非空 title（最多 256 字节）及可选 body（最多 32 
 
 保留 no-follow/nonblocking 普通可执行 artifact（最多 32 MiB）、实际读取字节的 Admin SHA-256 核验和私有只读执行快照。登记失败不回退。macOS 沿用 Seatbelt/RSS 采样；Linux 使用固定最小 rootfs、seccomp 和 AS 硬限额；两边均清空环境、清理 FD，并使用 CPU 限额、有界 IO、绝对 deadline、kill/reap。所有凭证、JWT/token、profile 权限、远程 IO、sealing、revoke 和审计留在 Broker；任何插件错误必须在 token exchange/远程效果之前终结为 blocked。
 
-该合同假设可信 Broker 宿主，不防恶意同 UID 父进程。macOS RSS 采样不是硬物理内存限制；Linux AS 为每进程虚拟空间硬限额，父死清理仅有 READY 后证据，不覆盖完整初始化窗口。两种固定操作不等于通用多凭证效果插件平台。
+该合同假设可信 Broker 宿主，不防恶意同 UID 父进程。macOS RSS 采样不是硬物理内存限制；Linux AS 为每进程虚拟空间硬限额。Linux 父死清理由 spawn 前武装的监护进程收割已记录子进程，覆盖 LAUNCHER 已出现但尚未 READY 的 Broker 死亡；它不是内核原子保证，也不能把直接 SIGKILL launcher 之后才出现的子进程说成必定消失。两种固定操作不等于通用多凭证效果插件平台。
 
 ## 验收
 

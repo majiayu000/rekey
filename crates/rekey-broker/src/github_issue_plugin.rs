@@ -278,7 +278,8 @@ async fn run(
         }
     };
     if result.is_err() {
-        // Reap the launcher; Linux PID namespace teardown kills its payload too.
+        // SIGKILL the outer launcher. The armed reaper SIGKILLs descendants that
+        // bubblewrap forked before its own parent-death signal could cover them.
         // A process which already exited requires no signal, but is still reaped.
         child.start_kill().map_err(BrokerError::Io)?;
         child.wait().await.map_err(BrokerError::Io)?;
