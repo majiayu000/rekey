@@ -9,7 +9,7 @@ over two permission-separated Unix sockets.
 > Status: `2.0.0-alpha.2` is the latest completed public Alpha download
 > (vault schema v9, Shape A). [Release run 34329532708](https://github.com/majiayu000/rekey/actions/runs/34329532708)
 > passed macOS/Linux fresh installs, publication, and both public-URL smoke jobs.
-> Development source uses vault format v10 and includes additional unpublished
+> Development source uses vault format v14 and includes additional unpublished
 > features; see [the next Alpha candidate](docs/releases/v2.0.0-alpha.3.md).
 > There is no in-place upgrade
 > from alpha.1. The default product is G1 and is not G2. Credentials never appear
@@ -206,7 +206,7 @@ reuses this projection and Agent IPC for explicitly configured Actions. Its
 operator manifest and capability file stay outside model tool arguments;
 Codex discovery and direct MCP invocation have separate acceptance evidence.
 
-This development source uses storage format 10. It rejects older state and
+This development source uses storage format 14. It rejects older state and
 backups without migration; published alpha.2 remains format 9. Keep historical
 backup compatibility claims tied to the binary that created/tested them.
 

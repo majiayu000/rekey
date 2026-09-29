@@ -46,7 +46,7 @@ this file; do not leave those rows as “nothing is released.”
 [Release run 34329532708](https://github.com/majiayu000/rekey/actions/runs/34329532708)
 succeeded: both platform builds, native fresh installs, publication and both
 public-URL smoke jobs passed. This was checked on 2026-09-14. Development
-format v10 and the source-only rows below remain outside that v9 archive.
+format v14 and the source-only rows below remain outside that v9 archive.
 
 Security grade for every P0 row: **G1 public Alpha**. The separate Linux
 container recipe has bounded G2 evidence; that does not upgrade the default P0
@@ -124,6 +124,16 @@ G2 harness).
 
 ## How to update this file
 
+Source regression fixes (2026-09-30; no release-membership change):
+`connector_audit_deadline` exercises six real Broker/Authority/Agent IPC paths
+with a stalled SQLite writer, proving non-retryable issued/revoked audit
+timeouts, successful cleanup and ordered indeterminate terminals. The CLI
+process contract verifies exit 8. The shared launcher regression rejects an
+exact capability in child argv before spawn; macOS kernel acceptance remains
+bounded to the tested host. A delayed-Authority unit regression proves that
+ordinary idle polling does not hold execution admission, while existing idle
+drain tests retain the stale-activity checks. These fixes do not broaden G1/G2.
+
 After any behavior change: run the row’s verification command in this session,
 then move state only as far as that command proves. Do not add a version to
 the `Release` column from an ordinary feature PR or a development machine.
@@ -143,7 +153,7 @@ WID-10 source interoperability passed in GitHub Actions run `34458227976`: real 
 | POL-08 external operator signer | Black-box Verified | `rekey-policy-sign` reviews a typed draft, binds its RFC8785 digest, reads an operator-owned PKCS8 Ed25519 file and writes new-only trust/bundle files. Existing verifier and real Broker accept the signed artifact and reject tampering; signing alone changes no Broker state. No key generation/custody or activation. `outputs/rekey-pol08-20260910/live.log`. |
 | UX-03 trusted terminal repair | Black-box Verified | `operator-credential-repair.py` displays registered metadata as escaped data, handles provide/decline, and delegates hidden proof/value input to the CLI. Active opaque-token rotation only; unsupported/missing/disabled/revoked cases fail explicitly. Cancel makes no change; provide rotates without execution; later explicit action returns 200 with the new version. No graphical credential card or automatic write retry. `outputs/rekey-ux03-20260910/live.log`. |
 | WID-09 fixed GitHub online JWKS | Field Validated (bounded GitHub issuer) | Explicit signed opt-in with empty static keys; fresh fixed HTTPS fetch per mint, transient keys without policy/replay digest changes. Local tests cover rotation, failures and policy replacement. Real GitHub run `34459644320` passed mint/read200, replay/wrong-audience/natural-expiry rejection and a fresh-token positive control. Temporary repo deleted, API404 confirmed. `outputs/rekey-wid09-20260910/online/`. No Discovery or Introspection; not released. |
-| OAU-02 fixed Keycloak exchange | Black-box Verified (real provider, local TLS transport) | Protected typed add/rotate, fixed audience/GET, exchange/use/direct issued-token revoke and request-linked audit. Real root Broker/CLI with Keycloak 26.7.3 passed resource200, revoke-before-expiry, same-subject reuse for that configuration, reflected-token denial/revoke and expired-subject rejection. JSON-escaped profile-secret reflection regression fixed; six focused contract tests and two local unit tests pass. `outputs/rekey-oau02-20260910/live/integrated/`. No generic OAuth, refresh, private-network permission or crash cleanup claim. Storage format10 rejects old state/backups without migration. |
+| OAU-02 fixed Keycloak exchange | Black-box Verified (real provider, local TLS transport) | Protected typed add/rotate, fixed audience/GET, exchange/use/direct issued-token revoke and request-linked audit. Real root Broker/CLI with Keycloak 26.7.3 passed resource200, revoke-before-expiry, same-subject reuse for that configuration, reflected-token denial/revoke and expired-subject rejection. JSON-escaped profile-secret reflection regression fixed; six focused contract tests and two local unit tests pass. `outputs/rekey-oau02-20260910/live/integrated/`. No generic OAuth, refresh, private-network permission or crash cleanup claim. This slice originally introduced storage format 10; current source uses format 14 and rejects older state/backups without migration. |
 
 These credential-related source changes require human review before merge.
 
