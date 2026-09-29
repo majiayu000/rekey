@@ -97,11 +97,9 @@ pub fn prepare(request: LaunchRequest) -> Result<PreparedLaunch, BrokerError> {
     }
 
     #[cfg(target_os = "macos")]
-    {
-        macos::prepare(&canonical_state, &canonical_socket, &resolved_argv, env)
-    }
+    let prepared = macos::prepare(&canonical_state, &canonical_socket, &resolved_argv, env)?;
     #[cfg(not(target_os = "macos"))]
-    {
+    let prepared = {
         let uid = unsafe { libc::geteuid() };
         let gid = unsafe { libc::getegid() };
         let args = bwrap_args(
@@ -112,15 +110,18 @@ pub fn prepare(request: LaunchRequest) -> Result<PreparedLaunch, BrokerError> {
             gid,
             docker_hides(&canonical_socket),
         );
-        forbid_capability_in_argv(&args, request.capability.as_deref().map(String::as_str))?;
-
-        Ok(PreparedLaunch {
+        PreparedLaunch {
             profile: LINUX_NETNS_V1,
             program: PathBuf::from("/usr/bin/bwrap"),
             args,
             env,
-        })
-    }
+        }
+    };
+    forbid_capability_in_argv(
+        &prepared.args,
+        request.capability.as_deref().map(String::as_str),
+    )?;
+    Ok(prepared)
 }
 
 fn spawn(prepared: &PreparedLaunch) -> Result<i32, BrokerError> {
@@ -256,11 +257,19 @@ fn docker_hides(agent_socket: &Path) -> Vec<PathBuf> {
     hides
 }
 
-#[cfg(not(target_os = "macos"))]
 fn forbid_capability_in_argv(
     args: &[OsString],
     capability: Option<&str>,
 ) -> Result<(), BrokerError> {
+    if let Some(token) = capability
+        && args.iter().any(|arg| arg == token)
+    {
+        return Err(BrokerError::from(
+            rekey_domain::DomainError::InvalidLaunchPlan(
+                "launcher argv must not contain the capability".into(),
+            ),
+        ));
+    }
     let flags = args.split(|arg| arg == "--").next().unwrap_or(args);
     for arg in flags {
         let Some(text) = arg.to_str() else {
@@ -270,13 +279,6 @@ fn forbid_capability_in_argv(
             return Err(BrokerError::from(
                 rekey_domain::DomainError::InvalidLaunchPlan(
                     "launcher argv must not contain capability or shared networking".into(),
-                ),
-            ));
-        }
-        if capability == Some(text) {
-            return Err(BrokerError::from(
-                rekey_domain::DomainError::InvalidLaunchPlan(
-                    "launcher argv must not contain the capability".into(),
                 ),
             ));
         }
@@ -412,6 +414,31 @@ mod tests {
         thread::spawn(move || {
             let _ = listener.accept();
         })
+    }
+
+    #[test]
+    fn child_capability_argument_is_rejected_before_spawn() {
+        let root = tempfile::tempdir().unwrap();
+        let state = root.path().join("state");
+        let agent_dir = root.path().join("agent");
+        fs::create_dir(&state).unwrap();
+        fs::create_dir(&agent_dir).unwrap();
+        let socket = agent_dir.join("agent.sock");
+        let server = hold_socket(&socket);
+        let token = "synthetic-child-capability";
+        let result = prepare(LaunchRequest {
+            state_dir: state,
+            agent_socket: socket,
+            argv: vec!["/bin/echo".into(), "--".into(), token.into()],
+            capability: Some(Zeroizing::new(token.to_owned())),
+        });
+        server.join().unwrap();
+        let error = match result {
+            Ok(_) => panic!("capability in child argv was accepted"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), "INVALID_INPUT");
+        assert!(!error.to_string().contains(token));
     }
 
     #[cfg(target_os = "linux")]

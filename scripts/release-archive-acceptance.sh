@@ -139,7 +139,7 @@ activate_snapshot() {
     --file "$WORKDIR/policy-bundle.json" --step-up-stdin >/dev/null
 }
 
-echo "== init, serve, unlock, format v12"
+echo "== init, serve, unlock, format v14"
 init_out="$(printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin)"
 printf '%s\n' "$init_out" | rg -q '^RKREC1-' || {
   echo "init did not print a recovery key" >&2

@@ -241,19 +241,23 @@ impl BrokerCtx {
             .await
     }
 
-    /// Idle must not become a second drain owner: skip if lock/shutdown holds
-    /// the coordinator, then re-read activity under the coordinator so a
-    /// completed admin operation cannot be followed by a drain from stale
-    /// status.
+    /// Poll activity without excluding execution admission. Only a possible
+    /// idle drain takes the coordinator and rechecks activity under it.
     pub async fn try_idle_lock(&self, idle_lock: Duration) -> Result<(), BrokerError> {
-        let Ok(_owner) = self.lifecycle.try_coordinate() else {
+        let status = self.authority.status().await;
+        // A queued poll may outlive a concurrent lock/shutdown. That owner
+        // handles Authority failures; polling must not fault its clean stop.
+        if !self.lifecycle.is_running() {
             return Ok(());
-        };
-        let status = self.authority.status().await?;
+        }
+        let status = status?;
         if status.state == "unlocked"
             && status.idle_for_ms >= idle_lock.as_millis() as u64
             && self.sessions.in_flight_total() == 0
         {
+            let Ok(_owner) = self.lifecycle.try_coordinate() else {
+                return Ok(());
+            };
             // A terminal audit refreshes activity before its execution permit
             // drops. Re-reading after observing zero in-flight prevents stale
             // pre-completion status from immediately locking the authority.

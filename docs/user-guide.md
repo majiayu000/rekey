@@ -707,7 +707,7 @@ issued token before returning success. There is no refresh or automatic retry;
 replace an expired or withdrawn subject token through the typed rotate command.
 See the spec for exact fields and resource-server revocation limits.
 
-This source uses storage format 10 and rejects older state/backups without
+This source uses storage format 14 and rejects older state/backups without
 migration. Published alpha.2 and its recorded backup acceptance use format 9.
 
 The development tree contains the IO-free `rekey-connector` library. The library

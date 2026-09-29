@@ -244,6 +244,9 @@ fixed action itself succeeded or was read-only.
   cancellation, and terminal preparation failures attempt revoke first.
 - Revoke failure or uncertainty is always indeterminate and never invites an
   automatic retry of the whole action.
+- Once a lease is captured, issued/revoked audit deadline or commit failure
+  returns `UPSTREAM_INDETERMINATE`, `retryable=false` (CLI exit 8), including
+  malformed issuance with a captured lease and successful revoke cleanup.
 - Each admitted execution still has exactly one `execution.started` and one
   terminal event.
 - Redacted `vault.lease.issued` and `vault.lease.revoked` evidence records only

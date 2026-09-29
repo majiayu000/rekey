@@ -138,7 +138,10 @@ The Admin must select an actual issue; this does not guarantee that a PR
 discussion receives no comment when an Admin supplies a PR number. No PR-review
 comment API.
 
-All write uncertainty is indeterminate and non-retryable. Reuse the existing
+All write uncertainty is indeterminate and non-retryable. A post-effect
+connector audit timeout or failure also returns `UPSTREAM_INDETERMINATE`
+with `retryable=false` (CLI exit 8), including a successful token revoke
+whose audit could not be acknowledged. Reuse the existing
 exchange, revocation, sealing, deadline and audit lifecycle. Local verification
 must cover exact scope/body, wrong issue/host/id, extra fields, malformed issue
 numbers, non-retry on 429, response projection and revoke-before-success.

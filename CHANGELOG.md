@@ -17,12 +17,20 @@ for release identifiers, but prerelease compatibility is not guaranteed.
 
 ### Changed
 
-- Development vault format is v10; older state and backups are rejected
+- Development vault format is v14; older state and backups are rejected
   without migration. Public alpha.2 remains v9.
 - GitHub exchange or post-effect uncertainty returns non-retryable
   `UPSTREAM_INDETERMINATE`; write failures must not trigger automatic retries.
 - Hardened private profile/handoff files, JWKS admission bounds, MCP input
   handling, and backup publication.
+
+### Fixed
+
+- Post-effect GitHub, Keycloak and Vault connector audit failures return
+  non-retryable `UPSTREAM_INDETERMINATE`, including successful cleanup (#56).
+- Linux and macOS launchers reject capabilities in child command arguments (#57).
+- Idle status polling leaves execution admission available and does not fault
+  a concurrent clean shutdown. Soak failures report public error codes.
 
 This is an unpublished candidate. Archive scope and remaining release gates:
 [alpha.3 candidate](docs/releases/v2.0.0-alpha.3.md).

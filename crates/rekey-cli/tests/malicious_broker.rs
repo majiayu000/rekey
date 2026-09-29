@@ -38,6 +38,65 @@ fn rekey_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_rekey"))
 }
 
+#[test]
+fn indeterminate_connector_audit_exits_without_inviting_retry() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = dir.path().join("runtime");
+    std::fs::create_dir(&runtime).unwrap();
+    std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let socket = runtime.join("agent.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut bytes = [0; FRAME_HEADER_LEN];
+        stream.read_exact(&mut bytes).unwrap();
+        let request = FrameHeader::decode(&bytes).unwrap();
+        let mut payload = vec![0; (request.metadata_len + request.body_len) as usize];
+        stream.read_exact(&mut payload).unwrap();
+        let metadata = serde_json::to_vec(&serde_json::json!({
+            "request_id": request.request_id, "code":"UPSTREAM_INDETERMINATE",
+            "message":"connector-audit-failed", "retryable":false
+        }))
+        .unwrap();
+        let reply = FrameHeader {
+            channel: Channel::Agent,
+            flags: 0,
+            message_type: resp_msg::ERROR,
+            request_id: request.request_id,
+            metadata_len: metadata.len() as u32,
+            body_len: 0,
+        };
+        stream.write_all(&reply.encode()).unwrap();
+        stream.write_all(&metadata).unwrap();
+    });
+    let mut child = Command::new(rekey_bin())
+        .arg("--state-dir")
+        .arg(dir.path())
+        .args([
+            "execute",
+            "00000000-0000-4000-8000-000000000001@1",
+            "--capability",
+            "-",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"synthetic-capability\n")
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    server.join().unwrap();
+    assert_eq!(output.status.code(), Some(8));
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("UPSTREAM_INDETERMINATE"));
+}
+
 fn run_attack(attack: Attack) -> std::process::Output {
     let dir = tempfile::tempdir().expect("tempdir");
     let state_dir = dir.path().join("state");

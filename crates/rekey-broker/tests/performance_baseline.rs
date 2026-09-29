@@ -92,6 +92,12 @@ async fn performance_and_soak_baseline() {
         session_uses += 1;
         if response.message_type != ipc::resp_msg::OK {
             unexpected_errors += 1;
+            eprintln!(
+                "soak failure elapsed_ms={} code={} retryable={}",
+                soak_started.elapsed().as_millis(),
+                response.err_code(),
+                response.metadata["retryable"],
+            );
         }
 
         let now = Instant::now();
