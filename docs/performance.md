@@ -38,6 +38,11 @@ request succeeds, and execution-started and terminal audit counts both match the
 known execution total after reopening SQLite. Every terminal must be
 `execution.finished`. The final-quarter RSS average may be no more than 64 MiB
 above the first-quarter average, and shutdown must drain the admitted execution.
+Failed soak requests log elapsed time, the public error code and retryability,
+without request metadata or secrets. Ordinary idle status polling must not
+occupy the execution admission coordinator; only a possible idle drain takes
+it and rechecks activity. A deterministic delayed-Authority regression covers
+this contention window independently of the soak timing.
 These are correctness and boundedness gates; the
 recorded latency and throughput values
 are not product guarantees. Values from GitHub-hosted runners are descriptive

@@ -848,6 +848,10 @@ not reset it.
 
 ### 11.3 Idle Lock
 
+- 普通空闲状态查询不占用执行准入 coordinator。仅观察到空闲到期且无
+  in-flight 执行时尝试取得 coordinator，并在锁内重读状态，避免陈旧状态
+  触发锁定；后台轮询本身不得让正常执行收到 `AUTHORITY_BUSY`。
+
 - 默认 idle timeout 7 days，可在 startup config 设置 1 minute–7 days。
 - 成功的 Admin command 或 Agent execution completion 更新 worker activity；execution completion 的更新时间不得停留在 credential preparation。Broker 读取该时钟并走与 explicit lock 相同的 Draining 路径。
 - 正在执行的 Action 不被 idle timer 中途清除 credential：进入 Draining 后不接受新请求，但已获得 permit 的请求继续到其既有 deadline，然后才 zeroize VRK。

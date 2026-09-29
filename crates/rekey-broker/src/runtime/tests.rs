@@ -1,6 +1,128 @@
 use super::*;
+use rekey_vault::bootstrap::{confirm_vault_init, init_vault};
+use rekey_vault::command::AuditDraft;
+use rekey_vault::crypto::kdf::Argon2Params;
+use rekey_vault::secret::SecretInput;
+use std::future::{Future, poll_fn};
 use std::sync::atomic::AtomicUsize;
+use std::task::Poll;
 use tokio::sync::Barrier;
+
+#[tokio::test]
+async fn idle_status_poll_does_not_occupy_execution_admission() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    init_vault(
+        &state,
+        &SecretInput::from_slice(b"fixture-proof"),
+        Argon2Params {
+            memory_kib: 8,
+            iterations: 1,
+            parallelism: 1,
+        },
+    )
+    .unwrap();
+    confirm_vault_init(&state).unwrap();
+    let (authority, join) =
+        rekey_vault::authority::spawn_authority(AuthorityConfig::new(state.clone())).unwrap();
+    authority
+        .unlock(UnlockProof::Password(SecretInput::from_slice(
+            b"fixture-proof",
+        )))
+        .await
+        .unwrap();
+    let sessions = Arc::new(SessionRegistry::new());
+    let transport: Arc<dyn UpstreamTransport> = Arc::new(ReqwestUpstreamTransport);
+    let lifecycle = Arc::new(Lifecycle::new());
+    lifecycle.enter_running().unwrap();
+    let (terminals, terminal_task) = spawn_terminal_worker(authority.clone());
+    let policy = Arc::new(RwLock::new(None));
+    let executor = Arc::new(ActionExecutor::new(
+        authority.clone(),
+        sessions.clone(),
+        transport.clone(),
+        lifecycle.clone(),
+        terminals.clone(),
+        policy.clone(),
+    ));
+    let (executions, supervisor) = crate::execution_supervisor::new(executor.clone());
+    drop(supervisor);
+    let (shutdown_tx, _) = watch::channel(false);
+    let (stop_tx, _) = mpsc::unbounded_channel();
+    let ctx = BrokerCtx {
+        metrics: crate::metrics::Metrics::default(),
+        authority: authority.clone(),
+        sessions,
+        executions,
+        executor,
+        workload_transport: transport,
+        online_jwks_slots: Arc::new(tokio::sync::Semaphore::new(2)),
+        lifecycle,
+        policy,
+        policy_trust: Arc::new(RwLock::new(None)),
+        terminals,
+        drain_timeout: Duration::from_secs(1),
+        shutdown_flag: AtomicBool::new(false),
+        shutdown_tx,
+        stop_tx,
+        allowed_agent_uids: vec![unsafe { libc::geteuid() }].into(),
+    };
+    // Queue a blocked audit ahead of Status to make the polling window deterministic.
+    let db = rusqlite::Connection::open(rekey_vault::paths::vault_db(&state)).unwrap();
+    db.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let mut audit = Box::pin(authority.append_audit(AuditDraft {
+        request_id: None,
+        session_id: None,
+        action_id: None,
+        action_version: None,
+        credential_id: None,
+        credential_version: None,
+        authorization: None,
+        approval: None,
+        event_type: "test.idle-poll",
+        outcome: "success",
+        reason_code: "fixture".into(),
+        upstream_status: None,
+        latency_ms: None,
+    }));
+    poll_fn(|cx| {
+        assert!(audit.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    let mut idle = Box::pin(ctx.try_idle_lock(Duration::from_secs(3600)));
+    poll_fn(|cx| {
+        assert!(idle.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    let admission_available = ctx.lifecycle.try_coordinate().is_ok();
+    drop(idle);
+    db.execute_batch("COMMIT").unwrap();
+    audit.await.unwrap();
+    authority
+        .shutdown(Some(UnlockProof::Password(SecretInput::from_slice(
+            b"fixture-proof",
+        ))))
+        .await
+        .unwrap();
+    // A poll already scheduled when shutdown owns the coordinator is harmless.
+    let stop_owner = ctx.lifecycle.coordinate().await;
+    ctx.lifecycle.enter_shutting_down();
+    let stopped_poll = ctx.try_idle_lock(Duration::from_secs(3600)).await;
+    drop(stop_owner);
+    drop(ctx);
+    terminal_task.await.unwrap();
+    join.join().unwrap();
+    assert!(
+        stopped_poll.is_ok(),
+        "idle polling must not fault a completed shutdown"
+    );
+    assert!(
+        admission_available,
+        "ordinary idle polling must not reject a running execution as busy"
+    );
+}
 
 #[test]
 fn runtime_directory_rejects_symlink_before_chmod() {
