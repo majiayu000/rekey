@@ -447,6 +447,7 @@ Action 和最小响应 schema 比通用透明代理更强。任何新增 canonic
   remote-effect admission 后执行一次无重试 GET，解析后只把值注入既有 fixed Action；
   Agent 不能选择 source 或取得 token/value。该边界不包含 private Vault 网络、latest、
   Vault auth、namespace、cloud KMS/secrets、1Password、HSM 或 keychain。
+  开发源码 EXT-07 的独立审批 signer 可使用一个固定 Vault Transit Ed25519 key/version：可信 policy 与 origin challenge 校验后，review digest 绑定公开 provider 身份；返回的签名须本地验证并通过既有 grant verifier。它不新增 Agent signing API，不把远端 token 或密钥交给 Broker/Agent，也不声明真实 ACL、不可导出或 HSM 已验收。
 - P-07B 只允许管理员登记一个 public HTTPS Vault origin、一个 `creds` mount/role、
   一个精确 string key 和 bootstrap token。每次执行最多获取一个 5–300 秒 lease，
   只在既有 fixed Action 中使用选中值，并在成功返回前 exact synchronous revoke。

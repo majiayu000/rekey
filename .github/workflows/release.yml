@@ -143,6 +143,7 @@ jobs:
             docs/superpowers/specs/2026-09-16-native-action-plugin.md \
             docs/superpowers/specs/2026-09-30-audit-delivery.md \
             docs/superpowers/specs/2026-09-30-vault-lease-renewal.md \
+            docs/superpowers/specs/2026-09-30-vault-transit-approval-signer.md \
             docs/superpowers/specs/2026-09-30-source-tool-packaging.md \
             ; do
             mkdir -p "$stage/$(dirname "$doc")"

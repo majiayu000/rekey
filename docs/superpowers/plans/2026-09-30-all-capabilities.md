@@ -14,7 +14,7 @@
 
 | ID | 功能 | 当前状态/责任 | 新验收证据 |
 | --- | --- | --- | --- |
-| APR-08 | 托管远程审批服务 | 待实现；真实环境验收暂后置 | 尚未新增验收证据 |
+| APR-08 | 托管远程审批服务 | 实现中：单组织 HTTPS 文件中继；现场后置 | 最小接口、身份、收据与本地链路方案已冻结；实现尚待验证 |
 | APR-09 | 通知与审批操作界面 | 已有有界实现；完整范围与测试逐项复核 | 尚未新增验收证据 |
 | APR-10 | 人员目录与组织关系 | 待实现；真实环境验收暂后置 | 尚未新增验收证据 |
 | AUD-06 | 审计保留与删除 | 已有有界实现；完整范围与测试逐项复核 | 尚未新增验收证据 |
@@ -23,7 +23,7 @@
 | BAK-07 | 复制与故障转移 | 待实现；真实环境验收暂后置 | 尚未新增验收证据 |
 | BAK-08 | RPO/RTO 与脑裂演练 | 待实现；真实环境验收暂后置 | 尚未新增验收证据 |
 | DYN-05 | 租约续期 | 源码及本地验收通过；现场验证后置 | parser/deadline 6、UDS 21；真实本地 Vault 1.20.3/Postgres 单次续期与角色删除；workspace 578 passed |
-| DYN-06 | 持久租约及重启清理 | 待实现；真实环境验收暂后置 | 尚未新增验收证据 |
+| DYN-06 | 持久租约及重启清理 | 实现中：Authority 加密 journal，然后接 Broker 恢复链路 | Stage A schema 15 / encrypted rows+set manifest 规格已冻结；尚待验证 |
 | ENT-01 | 集中控制面 | 待实现；真实环境验收暂后置 | 尚未新增验收证据 |
 | ENT-02 | 多租户隔离 | 待实现；真实环境验收暂后置 | 尚未新增验收证据 |
 | ENT-03 | SSO/SCIM/组织 | 待实现；真实环境验收暂后置 | 尚未新增验收证据 |
@@ -35,7 +35,7 @@
 | EXT-04 | 1Password | 待实现；真实环境验收暂后置 | 尚未新增验收证据 |
 | EXT-05 | PKCS#11/HSM | 待实现；真实环境验收暂后置 | 尚未新增验收证据 |
 | EXT-06 | OS Keychain 凭证源 | 待实现；真实环境验收暂后置 | 尚未新增验收证据 |
-| EXT-07 | 通用签名/Provider | 实现中：固定 Vault Transit 审批签名；其他 provider 单独验收 | 尚未新增验收证据 |
+| EXT-07 | 通用签名/Provider | 固定 Vault Transit 切片通过合同测试；现场及其他 provider 后置 | 11 项 Transit / 6 项软件签名；独立复审；workspace 589 passed |
 | KEY-04 | VRK/DEK 轮换 | 已有有界实现；完整范围与测试逐项复核 | 尚未新增验收证据 |
 | NET-07 | Agent 可见流式响应 | 已有有界实现；完整范围与测试逐项复核 | 尚未新增验收证据 |
 | OS-05 | macOS 隔离启动器 | 已有有界实现；完整范围与测试逐项复核 | 尚未新增验收证据 |
@@ -60,3 +60,5 @@ DYN-06 journal/恢复清理及外部 CredentialKind 修改由单一集成者分�
 真实账号/节点信息待用户后续提供。保留所有未实现条目，不把候选规格、有限实现或历史测试相加为完成百分比。
 
 首批本地证据保存在 `.git/codex/threads/all-capabilities-20260930/first-batch-acceptance.json` 与对应日志。workspace 报告合计 578 passed/0 failed/1 ignored（性能用例）；完整 workspace/all-targets/Clippy/fmt/机械边界及独立复查已完成。候选归档未签名、公证或发布。该首批结果不关闭其余待实现条目。
+
+第二批 Transit 合同测试已整合，完整 workspace 报告合计 589 passed/0 failed/1 ignored；all-targets、Clippy、fmt 和机械边界通过。首次全量运行的一项旧审计超时夹具提前结束，定向重跑及暂停并行耗时测试后的完整重跑均通过；未改用例超时或弱化断言，负载关联尚未证明。独立 Transit 复审无剩余 actionable finding。证据在 `transit-batch-acceptance.json`；真实 Vault 签名 ACL/撤权及远程 grant 现场链路保留待验收。

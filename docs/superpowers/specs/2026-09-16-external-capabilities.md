@@ -143,6 +143,8 @@ OS条目本身无统一TTL承诺；引用有效期和固定条目更换属于管
 
 ### EXT-07 外部签名服务：只选Vault Transit审批签名
 
+2026-09-30 开发实现已选择固定 Vault Transit 审批签名，见 [独立签名合同](2026-09-30-vault-transit-approval-signer.md)。其他签名用途/provider 及现场验收仍单独待办。
+
 建议替代“任意Provider Adapter”为一个独立signer后端：固定Vault origin、Transit mount/key/version，使用非derived Ed25519签署已审阅grant字节。不是Agent callable任意消息签名服务。
 官方Transit提供 `POST /transit/sign/:name`，input为base64、key_version可固定，Ed25519有其算法语义。参见 [Vault Transit sign](https://developer.hashicorp.com/vault/api-docs/secret/transit#sign-data)。
 输入为上述引用、受保护token、独立固定公钥和现有reviewed摘要；输出为核对版本并由本地公钥验证后的现有grant。使用完整规范签名字节，不把review哈希当成可互换签名输入。

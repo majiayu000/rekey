@@ -21,8 +21,13 @@ serde_json = { workspace = true }
 sha2 = "0.10"
 thiserror = { workspace = true }
 url = "2"
-zeroize = "1"
+zeroize = { version = "1", features = ["serde"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+tokio = { version = "1", default-features = false, features = ["rt", "net", "time"] }
 
 [dev-dependencies]
 uuid = { workspace = true }
 tempfile = { workspace = true }
+
+rcgen = "0.13"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }

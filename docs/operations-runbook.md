@@ -322,3 +322,27 @@ partial outbox, permanent failure journal or identity mismatch requires
 operator review; the helper does not skip the batch or reset its cursor.
 Restore or clone uses a new source UUID and new outbox. Real SIEM storage,
 permissions, deduplication and capacity must be validated at that receiver.
+
+## Vault Transit approval signing (development source)
+
+For the fixed [Transit approval signer](superpowers/specs/2026-09-30-vault-transit-approval-signer.md),
+the operator supplies one private profile containing the token, its absolute
+expiry, the public HTTPS origin/mount/key, explicit key version and pinned
+Ed25519 public key. The public key must match the approver in the independently
+verified policy. Keep this profile outside the Agent workspace, owned by the
+operator with mode 0600. Provider administrators must validate the key's
+non-derived configuration and signing-only token permissions at Vault.
+
+Use `--vault-transit-profile /secure/transit.json` in both the existing
+`rekey-approval-sign review` and `sign` commands in place of `--key-file`.
+Review binds the public target and key into the digest. Sign sends one request,
+verifies the returned signature locally, and creates the usual exclusive
+approval file; submission and live Broker authorization remain separate steps.
+Changing target, key version, public key or reviewed request requires a new
+review. Renewing the token for the same target does not change that digest.
+
+The production signer uses built-in WebPKI roots and rejects non-public DNS
+results. It has no private-address or custom-CA command option. An uncertain
+remote response returns exit 1 without automatically retrying or selecting a
+software key. Verify provider ACL and revocation at the real deployment before
+claiming remote key custody or hardware protection.

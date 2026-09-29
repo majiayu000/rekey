@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::fmt;
+use std::net::IpAddr;
 
 use serde::{Deserialize, Serialize};
 
@@ -526,6 +527,118 @@ impl FixedHttpAction {
             ));
         }
         Ok(())
+    }
+}
+
+fn second_segment_matches_prefix(segment: u16, network: u16, prefix_len: u8) -> bool {
+    let bits = prefix_len - 16;
+    let mask = u16::MAX << (16 - bits);
+    segment & mask == network
+}
+
+fn allocated_public_ipv6(segments: &[u16; 8]) -> bool {
+    let [first, second, ..] = *segments;
+    match first {
+        0x2001 => {
+            let public_ietf_exception = (second == 1
+                && segments[2..7] == [0, 0, 0, 0, 0]
+                && (1..=3).contains(&segments[7]))
+                || second == 3
+                || (second == 4 && segments[2] == 0x0112)
+                || (second & 0xfff0) == 0x0020
+                || (second & 0xfff0) == 0x0030;
+            let allocated = [
+                (0x0200, 23),
+                (0x0400, 23),
+                (0x0600, 23),
+                (0x0800, 22),
+                (0x0c00, 23),
+                (0x0e00, 23),
+                (0x1200, 23),
+                (0x1400, 22),
+                (0x1800, 23),
+                (0x1a00, 23),
+                (0x1c00, 22),
+                (0x2000, 19),
+                (0x4000, 23),
+                (0x4200, 23),
+                (0x4400, 23),
+                (0x4600, 23),
+                (0x4800, 23),
+                (0x4a00, 23),
+                (0x4c00, 23),
+                (0x5000, 20),
+                (0x8000, 19),
+                (0xa000, 20),
+                (0xb000, 20),
+            ]
+            .iter()
+            .any(|&(network, prefix)| second_segment_matches_prefix(second, network, prefix));
+            public_ietf_exception || (allocated && second != 0x0db8)
+        }
+        0x2003 => second_segment_matches_prefix(second, 0, 18),
+        0x2400..=0x241f => true,
+        0x2600..=0x260f => true,
+        0x2610 | 0x2620 => second_segment_matches_prefix(second, 0, 23),
+        0x2630..=0x263f => true,
+        0x2800..=0x280f => true,
+        0x2a00..=0x2a1f => true,
+        0x2c00..=0x2c0f => true,
+        _ => false,
+    }
+}
+
+/// Default-deny for anything that is not covered by the explicit public
+/// unicast contract. Translation addresses are accepted only when their
+/// embedded IPv4 destination independently passes the IPv4 contract.
+pub fn ip_is_public(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let [a, b, c, _] = v4.octets();
+            !(a == 0
+                || a == 10
+                || a == 127
+                || (a == 100 && (64..=127).contains(&b))
+                || (a == 169 && b == 254)
+                || (a == 172 && (16..=31).contains(&b))
+                || (a == 192 && b == 0 && c == 0)
+                || (a == 192 && b == 0 && c == 2)
+                || (a == 192 && b == 88 && c == 99)
+                || (a == 192 && b == 168)
+                || (a == 198 && (b == 18 || b == 19))
+                || (a == 198 && b == 51 && c == 100)
+                || (a == 203 && b == 0 && c == 113)
+                || a >= 224)
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return ip_is_public(IpAddr::V4(v4));
+            }
+            let s = v6.segments();
+            // RFC 6052 well-known NAT64 prefix. Screen the embedded IPv4 so
+            // a public NAT64 destination remains usable but private IPv4
+            // cannot be smuggled through IPv6.
+            if s[..6] == [0x0064, 0xff9b, 0, 0, 0, 0] {
+                let embedded = std::net::Ipv4Addr::new(
+                    (s[6] >> 8) as u8,
+                    s[6] as u8,
+                    (s[7] >> 8) as u8,
+                    s[7] as u8,
+                );
+                return ip_is_public(IpAddr::V4(embedded));
+            }
+            // 6to4 embeds an IPv4 address in bits 16..48.
+            if s[0] == 0x2002 {
+                let embedded = std::net::Ipv4Addr::new(
+                    (s[1] >> 8) as u8,
+                    s[1] as u8,
+                    (s[2] >> 8) as u8,
+                    s[2] as u8,
+                );
+                return ip_is_public(IpAddr::V4(embedded));
+            }
+            allocated_public_ipv6(&s)
+        }
     }
 }
 
