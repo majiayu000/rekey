@@ -62,6 +62,8 @@ Directly POST every captured issued token to the fixed realm `/revoke` endpoint,
 same client authentication, `token_type_hint=access_token`. Require HTTP 200 and
 empty body. No automatic retry of any network operation. Exchange, transport,
 resource, cleanup or post-effect audit uncertainty returns nonretryable failure;
+issued/revoked audit deadline or commit failure returns `UPSTREAM_INDETERMINATE`
+with `retryable=false` (CLI exit 8), even when token cleanup succeeds;
 no successful Agent result unless cleanup and audit have committed.
 
 All profile secret values, Basic authentication, issued token candidates and

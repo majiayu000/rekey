@@ -172,7 +172,7 @@ impl ActionExecutor {
                 "connector-audit-failed"
             };
             started.submit_indeterminate(reason);
-            return Err(err);
+            return Err(github_post_effect_error(reason));
         }
         if let Err(err) = revoke {
             started

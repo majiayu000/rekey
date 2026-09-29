@@ -364,6 +364,7 @@ impl ActionExecutor {
                     ),
                 )
                 .await
+                .map_err(|_| BrokerError::Indeterminate("connector-audit-failed"))
         } else {
             Ok(())
         };
@@ -405,6 +406,7 @@ impl ActionExecutor {
                     ),
                 )
                 .await
+                .map_err(|_| BrokerError::Indeterminate("connector-audit-failed"))
         {
             started.submit_indeterminate("connector-audit-failed");
             return Err(error);

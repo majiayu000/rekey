@@ -92,6 +92,7 @@ impl ActionExecutor {
                 ),
             )
             .await
+            .map_err(|_| BrokerError::Indeterminate("connector-audit-failed"))
         {
             let cleanup = self
                 .revoke_and_audit(started, &profile, &lease_ids, effect_deadline, &needles)
@@ -188,7 +189,8 @@ impl ActionExecutor {
                         failure.error.reason().to_owned(),
                     ),
                 )
-                .await;
+                .await
+                .map_err(|_| BrokerError::Indeterminate("connector-audit-failed"));
             if let Err(error) = self
                 .revoke_and_audit(
                     started,
@@ -253,7 +255,8 @@ impl ActionExecutor {
                     reason.to_owned(),
                 ),
             )
-            .await?;
+            .await
+            .map_err(|_| BrokerError::Indeterminate("connector-audit-failed"))?;
         revoke.map_err(|error| BrokerError::Indeterminate(error.reason()))
     }
 
