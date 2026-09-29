@@ -124,7 +124,9 @@ Forbidden:
 
 Optional `--capability-stdin`: one line, 1..=128 visible ASCII bytes
 (`0x21..=0x7e`), no space. Stored only in the child environment as
-`REKEY_CAPABILITY`. It must not appear in the bwrap argv vector.
+`REKEY_CAPABILITY`. It must not appear in the bwrap argv vector. Both platform
+launchers reject an exact capability value anywhere in their final argument
+vector, including the child command after `--`, before spawning (`INVALID_INPUT`).
 
 Child environment is exactly:
 
