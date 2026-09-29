@@ -8,7 +8,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 use super::*;
 
-const PROFILE_MARKER: &str = "vault-dynamic-source-v1";
+const PROFILE_MARKER: &str = "vault-dynamic-source-v2";
 const SOURCE_RESPONSE_MAX_BYTES: u32 = 64 * 1024;
 const RESOLVED_VALUE_MAX_BYTES: usize = 8 * 1024;
 const LEASE_ID_MAX_BYTES: usize = 1024;
@@ -28,6 +28,11 @@ pub(crate) enum VaultDynamicError {
     RevokeTransport,
     RevokeRejected,
     RevokeReflected,
+    RenewTransport,
+    RenewRejected,
+    RenewResponse,
+    RenewReflected,
+    Cancelled,
     Deadline,
 }
 
@@ -43,6 +48,11 @@ impl VaultDynamicError {
             Self::RevokeTransport => "vault-dynamic-revoke-transport",
             Self::RevokeRejected => "vault-dynamic-revoke-rejected",
             Self::RevokeReflected => "vault-dynamic-revoke-reflected-secret",
+            Self::RenewTransport => "vault-dynamic-renew-transport",
+            Self::RenewRejected => "vault-dynamic-renew-rejected",
+            Self::RenewResponse => "vault-dynamic-renew-response",
+            Self::RenewReflected => "vault-dynamic-renew-reflected-secret",
+            Self::Cancelled => "remote-effect-admission-closed",
             Self::Deadline => "upstream-timeout",
         }
     }
@@ -54,6 +64,7 @@ pub(crate) struct VaultDynamicProfile {
     role: String,
     key: String,
     token: Zeroizing<Vec<u8>>,
+    renew_increment_seconds: u64,
 }
 
 pub(super) struct VaultDynamicPrepared {
@@ -71,12 +82,14 @@ struct RawDynamicProfile<'a> {
     role: &'a str,
     key: &'a str,
     vault_token: &'a str,
+    renew_increment_seconds: u64,
 }
 
 pub(super) struct AcquiredLease {
     pub(super) acquired_at: Instant,
     pub(super) lease_id: Zeroizing<String>,
     pub(super) lease_duration: Duration,
+    pub(super) renewable: bool,
     pub(super) value: Zeroizing<Vec<u8>>,
 }
 
@@ -102,6 +115,7 @@ impl VaultDynamicProfile {
                 .vault_token
                 .bytes()
                 .all(|byte| matches!(byte, 0x21..=0x7e))
+            || !(MIN_LEASE_SECONDS..=MAX_LEASE_SECONDS).contains(&raw.renew_increment_seconds)
         {
             return Err(VaultDynamicError::InvalidCredential);
         }
@@ -112,6 +126,7 @@ impl VaultDynamicProfile {
             role: raw.role.to_owned(),
             key: raw.key.to_owned(),
             token: Zeroizing::new(raw.vault_token.as_bytes().to_vec()),
+            renew_increment_seconds: raw.renew_increment_seconds,
         })
     }
 
@@ -231,8 +246,89 @@ impl VaultDynamicProfile {
             acquired_at,
             lease_id,
             lease_duration: Duration::from_secs(parsed.lease_duration),
+            renewable: parsed.renewable,
             value: parsed.value,
         })
+    }
+
+    pub(super) async fn renew(
+        &self,
+        transport: &dyn UpstreamTransport,
+        lease_id: &str,
+        deadline: Instant,
+        action_deadline: Instant,
+        needles: &[Zeroizing<Vec<u8>>],
+    ) -> Result<Instant, VaultDynamicError> {
+        let requested_at = Instant::now();
+        let timeout = deadline
+            .checked_duration_since(requested_at)
+            .filter(|duration| !duration.is_zero())
+            .ok_or(VaultDynamicError::Deadline)?;
+        let mut body = Zeroizing::new(Vec::with_capacity(lease_id.len() + 48));
+        body.extend_from_slice(b"{\"lease_id\":\"");
+        append_json_string(lease_id, &mut body)?;
+        body.extend_from_slice(b"\",\"increment\":");
+        body.extend_from_slice(self.renew_increment_seconds.to_string().as_bytes());
+        body.push(b'}');
+        let request = UpstreamRequest {
+            host: self.origin.host().to_owned(),
+            port: self.origin.port(),
+            method: FixedMethod::Post,
+            path: "/v1/sys/leases/renew".to_owned(),
+            headers: vec![
+                ("content-type".to_owned(), "application/json".to_owned()),
+                ("accept".to_owned(), "application/json".to_owned()),
+            ],
+            auth_header: (
+                "x-vault-token".to_owned(),
+                Zeroizing::new(self.token.to_vec()),
+            ),
+            body,
+            timeout,
+            response_max_bytes: SOURCE_RESPONSE_MAX_BYTES,
+        };
+        if !outbound_headers_are_valid(&request) {
+            return Err(VaultDynamicError::InvalidCredential);
+        }
+        let response = tokio::time::timeout_at(
+            tokio::time::Instant::from_std(deadline),
+            transport.send(request),
+        )
+        .await
+        .map_err(|_| VaultDynamicError::Deadline)?
+        .map_err(|error| match error {
+            crate::upstream::UpstreamError::Timeout => VaultDynamicError::Deadline,
+            crate::upstream::UpstreamError::ResponseTooLarge => VaultDynamicError::ResponseTooLarge,
+            _ => VaultDynamicError::RenewTransport,
+        })?;
+        // The expected ID belongs in the protected response body. Token and
+        // dynamic-value reflections remain forbidden, including encoded forms.
+        if contains_secret(&response.body, needles)
+            || headers_contain_secret(&response.headers, needles)
+            || headers_contain_secret(
+                &response.headers,
+                &sealing_needles(lease_id.as_bytes(), lease_id.as_bytes()),
+            )
+        {
+            return Err(VaultDynamicError::RenewReflected);
+        }
+        if response.status != 200 {
+            return Err(VaultDynamicError::RenewRejected);
+        }
+        let mut deserializer = serde_json::Deserializer::from_slice(&response.body);
+        let parsed = RenewedSeed
+            .deserialize(&mut deserializer)
+            .map_err(|_| VaultDynamicError::RenewResponse)?;
+        if deserializer.end().is_err() || parsed.lease_id.as_str() != lease_id {
+            return Err(VaultDynamicError::RenewResponse);
+        }
+        lease_io_deadline(
+            action_deadline,
+            requested_at,
+            Duration::from_secs(parsed.lease_duration),
+        )
+        .filter(|deadline| *deadline > Instant::now())
+        .ok_or(VaultDynamicError::Deadline)
     }
 
     pub(super) async fn revoke_all(
@@ -340,6 +436,7 @@ impl AcquisitionFailure {
 struct ParsedIssued {
     lease_id: Zeroizing<String>,
     lease_duration: u64,
+    renewable: bool,
     value: Zeroizing<Vec<u8>>,
 }
 
@@ -394,13 +491,113 @@ impl<'de> Visitor<'de> for IssuedVisitor<'_> {
         if !(MIN_LEASE_SECONDS..=MAX_LEASE_SECONDS).contains(&lease_duration) {
             return Err(serde::de::Error::custom("invalid lease_duration"));
         }
-        renewable.ok_or_else(|| serde::de::Error::missing_field("renewable"))?;
+        let renewable = renewable.ok_or_else(|| serde::de::Error::missing_field("renewable"))?;
         let value = value.ok_or_else(|| serde::de::Error::missing_field("data"))?;
         Ok(ParsedIssued {
             lease_id,
             lease_duration,
+            renewable,
             value,
         })
+    }
+}
+
+pub(super) fn lease_io_deadline(
+    action_deadline: Instant,
+    requested_at: Instant,
+    ttl: Duration,
+) -> Option<Instant> {
+    action_deadline
+        .min(requested_at.checked_add(ttl)?)
+        .checked_sub(CLEANUP_BUDGET)
+}
+
+struct ParsedRenewed {
+    lease_id: Zeroizing<String>,
+    lease_duration: u64,
+}
+
+struct RenewedSeed;
+
+impl<'de> DeserializeSeed<'de> for RenewedSeed {
+    type Value = ParsedRenewed;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_map(RenewedVisitor)
+    }
+}
+
+struct RenewedVisitor;
+
+impl<'de> Visitor<'de> for RenewedVisitor {
+    type Value = ParsedRenewed;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("Vault renewal metadata without new credentials")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut lease_id = None;
+        let mut lease_duration = None;
+        let mut renewable = None;
+        let mut data = None;
+        let mut auth = None;
+        while let Some(field) = map.next_key::<&str>()? {
+            match field {
+                "lease_id" => set_once(&mut lease_id, map.next_value_seed(LeaseIdSeed)?)?,
+                "lease_duration" => set_once(&mut lease_duration, map.next_value::<u64>()?)?,
+                "renewable" => set_once(&mut renewable, map.next_value::<bool>()?)?,
+                "data" => set_once(&mut data, map.next_value_seed(EmptyRenewalDataSeed)?)?,
+                "auth" => set_once(&mut auth, map.next_value::<()>()?)?,
+                _ => {
+                    map.next_value::<IgnoredAny>()?;
+                }
+            }
+        }
+        let lease_id = lease_id.ok_or_else(|| serde::de::Error::missing_field("lease_id"))?;
+        let lease_duration =
+            lease_duration.ok_or_else(|| serde::de::Error::missing_field("lease_duration"))?;
+        renewable.ok_or_else(|| serde::de::Error::missing_field("renewable"))?;
+        if !(MIN_LEASE_SECONDS..=MAX_LEASE_SECONDS).contains(&lease_duration) {
+            return Err(serde::de::Error::custom("invalid renewal TTL"));
+        }
+        Ok(ParsedRenewed {
+            lease_id,
+            lease_duration,
+        })
+    }
+}
+
+struct EmptyRenewalDataSeed;
+
+impl<'de> DeserializeSeed<'de> for EmptyRenewalDataSeed {
+    type Value = ();
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
+        deserializer.deserialize_any(EmptyRenewalDataVisitor)
+    }
+}
+
+struct EmptyRenewalDataVisitor;
+
+impl<'de> Visitor<'de> for EmptyRenewalDataVisitor {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("null or an empty renewal data object")
+    }
+
+    fn visit_unit<E: serde::de::Error>(self) -> Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
+        if map.next_key::<IgnoredAny>()?.is_some() {
+            return Err(serde::de::Error::custom(
+                "renewal returned new credential data",
+            ));
+        }
+        Ok(())
     }
 }
 

@@ -662,19 +662,22 @@ supported.
 
 ## Vault one-shot dynamic lease source
 
-This fixture-bounded feature is in this Alpha archive. It acquires one bounded
+The published Alpha supports one-shot leases. The development source adds
+[one conditional renewal per execution](superpowers/specs/2026-09-30-vault-lease-renewal.md)
+with a breaking v2 profile. It acquires one bounded
 Vault dynamic lease, uses one selected string as the credential for an existing
 fixed HTTPS Action, and synchronously revokes the exact lease before returning
 success:
 
 ```json
 {
-  "credential_type": "vault-dynamic-source-v1",
+  "credential_type": "vault-dynamic-source-v2",
   "origin": "https://vault.example.com",
   "mount": "database",
   "role": "agent-api-token",
   "key": "token",
-  "vault_token": "hvs.REPLACE_ME"
+  "vault_token": "hvs.REPLACE_ME",
+  "renew_increment_seconds": 60
 }
 ```
 
@@ -684,12 +687,16 @@ rekey credential rotate-vault-dynamic CREDENTIAL_ID --file profile.json
 ```
 
 The Broker sends one non-retried `GET /v1/MOUNT/creds/ROLE`, accepts only a
-5–300 second lease with one exact selected visible-ASCII string, executes the
-fixed Action, then sends `POST /v1/sys/leases/revoke` with the exact lease ID
+5–300 second lease with one exact selected visible-ASCII string. If the lease
+is renewable and its initial deadline precedes the Action deadline, the Broker
+audits and sends one `POST /v1/sys/leases/renew` before business IO. It uses the
+actual returned TTL, capped by the original Action deadline, with 500ms reserved
+for cleanup. It executes the fixed Action, then sends
+`POST /v1/sys/leases/revoke` with the exact lease ID
 and `sync: true`. A revoke failure hides any Action response and returns a
 non-retryable indeterminate result.
 
-Rekey does not renew leases or persist an outstanding-lease registry. A hard
+Rekey does not persist an outstanding-lease registry. A hard
 process or host crash may leave the lease active until Vault expires it, so
 this feature does not claim crash-time cleanup, general Vault support, or
 private-network support.
@@ -714,6 +721,9 @@ The development tree contains the IO-free `rekey-connector` library. The library
 itself is not an MCP server. The source-only
 [MCP-03 stdio executable](superpowers/specs/2026-09-10-local-mcp-stdio.md)
 adds an operator-configured Agent IPC adapter; it is not packaged in this Alpha.
+The [unreleased candidate archive](installation.md#development-archive-helpers)
+now stages `rekey-mcp` alongside the Broker and the external signing and
+operator helpers. Published alpha.2 contents are unchanged.
 Its compile-time registry gives integrators stable versioned descriptors for
 the existing opaque-header, closed GitHub App, closed Vault KV v2 source, and
 one-shot Vault dynamic source paths. It also provides a pure
@@ -846,7 +856,8 @@ python3 scripts/dogfood-vault.py --source source-public.json \
   --expected-status 200 --receipt /tmp/rekey-vault-layer-b.json
 ```
 
-Use `vault-dynamic-source-v1` with `mount`, `role`, `key` and public `origin`
+Use `vault-dynamic-source-v2` with `mount`, `role`, `key`,
+`renew_increment_seconds` (5–300) and public `origin`
 for the dynamic path. A hidden prompt reads the token. The harness creates and
 removes a disposable local vault and test signer, uses production TLS/IP
 screening, and writes a new metadata-only receipt only after the expected HTTP

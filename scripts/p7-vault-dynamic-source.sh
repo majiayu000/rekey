@@ -119,8 +119,8 @@ python3 - "$PROFILE_ONE" "$PROFILE_TWO" "$INVALID_PROFILE" "$SOURCE_ONE" "$SOURC
 import json, pathlib, sys
 one, two, invalid, source_one, source_two = sys.argv[1:]
 def profile(token):
-    return {"credential_type":"vault-dynamic-source-v1","origin":"https://vault.test.local",
-            "mount":"database","role":"agent-api-token","key":"token","vault_token":token}
+    return {"credential_type":"vault-dynamic-source-v2","origin":"https://vault.test.local",
+            "mount":"database","role":"agent-api-token","key":"token","renew_increment_seconds":60,"vault_token":token}
 def write_private(path, payload):
     dest = pathlib.Path(path)
     dest.write_text(json.dumps(payload))

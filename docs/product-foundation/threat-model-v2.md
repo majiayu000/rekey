@@ -450,12 +450,12 @@ Action 和最小响应 schema 比通用透明代理更强。任何新增 canonic
 - P-07B 只允许管理员登记一个 public HTTPS Vault origin、一个 `creds` mount/role、
   一个精确 string key 和 bootstrap token。每次执行最多获取一个 5–300 秒 lease，
   只在既有 fixed Action 中使用选中值，并在成功返回前 exact synchronous revoke。
-  不做 renewal、durable lease registry、restart cleanup、private Vault 网络或 crash-time revoke 保证。
+  发布版不做 renewal；开发源码 DYN-05 以 v2 profile 加入一次条件续租，renewal_started 审计先于远端请求，实际 TTL 从续期请求开始计算并受原 Action 截止与 500ms 清理预留约束。续期未知或结果审计失败仍 exact revoke，向 Agent 返回非重试未知结果。仍无 durable lease registry、restart cleanup、private Vault 网络或 crash-time revoke 保证。
 - Audit 使用本地 SQLite/WAL fail-closed；P-02 只通过 owner-checked Admin socket
   提供每次最多扫描 1,000 行、游标续查的稳定快照脱敏查询和 mode-0600 JSONL 导出，
   Agent socket 无此接口。
   输出省略 Secret、body/header、capability、resource ID 和 parameter hash。显式清理的源码规格见 `2026-09-16-audit-prune.md`：仅完整、无审批关联的过期执行组可删除，并使旧分页快照显式失效；实现证据以 Feature Truth Matrix 为准。
-  不提供可配置 retention、enterprise outbox、WORM、legal hold 或 SIEM/远程交付。
+  开发源码 AUD-07 的独立工具只能读取完整脱敏导出，固定来源/vault/HTTPS 目标，并以持久批次和精确 durable ACK 推进 cursor。工具无解锁权；丢 ACK 至少一次重发、接收端负责去重，永久错误或缺口停止。生产 SIEM 持久存储与认证未现场验证；没有可配置 retention、enterprise outbox、WORM 或 legal hold。
 - Secret Sealing 命中即中止并返回空 Agent error response，不做脱敏回退。
 - 本地恢复材料使用单一 recovery key。
 - recovery key 可用于解锁、显式 Admin step-up、验证 backup restore，或在 P-01 中为丢失的密码设置替代值；recovery 自身轮换仍必须使用当前密码。

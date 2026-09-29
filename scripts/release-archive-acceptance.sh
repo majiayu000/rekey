@@ -23,10 +23,18 @@ command -v python3 >/dev/null || { echo "python3 is required" >&2; exit 1; }
 command -v openssl >/dev/null || { echo "openssl is required" >&2; exit 1; }
 command -v rg >/dev/null || { echo "ripgrep is required" >&2; exit 1; }
 
-if [[ ! -x "$REKEY" || ! -x "$REKEYD" ]]; then
-  echo "required archive binaries are missing from BIN_DIR: $BIN_DIR" >&2
-  exit 1
-fi
+for name in rekey rekeyd rekey-github-create-issue rekey-mcp rekey-policy-sign rekey-approval-sign \
+  rekey-service-unit.py agent-quickstart.py operator-credential-repair.py rekey-backup-sync.py \
+  rekey-audit-delivery.py; do
+  [[ -x "$BIN_DIR/$name" ]] || { echo "required archive executable is missing: $name" >&2; exit 1; }
+done
+for name in rekey-policy-sign rekey-approval-sign; do
+  "$BIN_DIR/$name" --help >/dev/null
+done
+for name in rekey-service-unit.py agent-quickstart.py operator-credential-repair.py \
+  rekey-backup-sync.py rekey-audit-delivery.py; do
+  python3 "$BIN_DIR/$name" --help >/dev/null
+done
 
 echo "release-archive-acceptance: BIN_DIR=$BIN_DIR"
 echo "release-archive-acceptance: rekey=$REKEY ($("$REKEY" --version))"
@@ -201,6 +209,35 @@ session_json="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" sessio
 token="$(printf '%s\n' "$session_json" | json_field capability_token)"
 principal_id="$(printf '%s\n' "$session_json" | json_field principal_id)"
 
+echo "== packaged MCP initialize and discovery"
+printf '%s\n' "$session_json" >"$WORKDIR/mcp-session.json"
+chmod 0600 "$WORKDIR/mcp-session.json"
+python3 - "$BIN_DIR/rekey-mcp" "$STATE/runtime/agent.sock" "$WORKDIR" <<'PY'
+import json, pathlib, subprocess, sys
+binary, socket, work = sys.argv[1:]
+root = pathlib.Path(work)
+manifest = root / 'mcp.json'
+manifest.write_text(json.dumps({'agent_socket': socket,
+    'session_file': str(root / 'mcp-session.json'), 'tools': []}))
+manifest.chmod(0o600)
+messages = [
+    {'jsonrpc': '2.0', 'id': 1, 'method': 'initialize',
+     'params': {'protocolVersion': '2025-06-18', 'capabilities': {},
+                'clientInfo': {'name': 'archive-acceptance', 'version': '1'}}},
+    {'jsonrpc': '2.0', 'method': 'notifications/initialized'},
+    {'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list'},
+]
+result = subprocess.run([binary, '--manifest', str(manifest)],
+    input=''.join(json.dumps(item) + '\n' for item in messages),
+    text=True, capture_output=True, timeout=10, check=True)
+replies = [json.loads(line) for line in result.stdout.splitlines()]
+assert len(replies) == 2
+assert replies[0]['id'] == 1 and replies[0]['result']['protocolVersion'] == '2025-06-18'
+assert replies[1]['id'] == 2 and replies[1]['result']['tools'] == []
+assert not result.stderr
+print('archive MCP initialize/discovery: PASS (empty exposure list; no upstream IO)')
+PY
+
 echo "== signed policy activate, unauthorized deny, authorized execute, unlock reload"
 write_permit_policy 1
 activate_snapshot install-trust
@@ -363,8 +400,9 @@ def kv(version, token):
             "mount":"secret","path":"agents/archive","key":"token","version":version,
             "vault_token":token}
 def dyn(token):
-    return {"credential_type":"vault-dynamic-source-v1","origin":"https://example.com",
-            "mount":"database","role":"agent-api-token","key":"token","vault_token":token}
+    return {"credential_type":"vault-dynamic-source-v2","origin":"https://example.com",
+            "mount":"database","role":"agent-api-token","key":"token","vault_token":token,
+            "renew_increment_seconds":60}
 def write_private(path, payload):
     dest = pathlib.Path(path)
     dest.write_text(json.dumps(payload))
@@ -405,8 +443,8 @@ fi
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" shutdown --password-stdin >/dev/null
 SERVE_PID=""
 
-if [[ "$(uname -s)" != Linux ]]; then
-  echo "== macOS agent-run is UNSUPPORTED_PLATFORM and does not spawn"
+if [[ "$(uname -s)" == Darwin ]]; then
+  echo "== macOS experimental Seatbelt launcher"
   mkdir -p "$AGENT_RUN"
   printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$WORKDIR/macos" --password-stdin >/dev/null
   "$REKEYD" serve --state-dir "$WORKDIR/macos" --idle-lock 15m --agent-runtime-dir "$AGENT_RUN" \
@@ -417,20 +455,12 @@ if [[ "$(uname -s)" != Linux ]]; then
     sleep 0.05
   done
   [[ -S "$AGENT_RUN/agent.sock" ]] || { echo "disjoint agent socket missing"; exit 1; }
-  expect_exit 2 "$REKEY" --state-dir "$WORKDIR/macos" --agent-socket "$AGENT_RUN/agent.sock" \
-    agent-run -- /bin/echo archive-agent-run-must-not-run
-  printf '%s\n' "$CAPTURE_OUT" | rg -q 'UNSUPPORTED_PLATFORM|unsupported on this platform' || {
-    echo "macOS agent-run did not report unsupported platform: $CAPTURE_OUT" >&2
-    exit 1
-  }
-  printf '%s\n' "$CAPTURE_OUT" | rg -F archive-agent-run-must-not-run && {
-    echo "macOS agent-run executed the child" >&2
-    exit 1
-  }
+  "$REKEY" --state-dir "$WORKDIR/macos" --agent-socket "$AGENT_RUN/agent.sock" \
+    agent-run -- /bin/echo archive-seatbelt-launch-ok | rg -q '^archive-seatbelt-launch-ok$'
   printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$WORKDIR/macos" shutdown --password-stdin >/dev/null
   SERVE_PID=""
 fi
 
 echo "release-archive-acceptance: PASS"
-echo "release-archive-acceptance: proved=password-change,recovery-rotate,audit-list-export,policy-activate,approval-grant,workload-mint,vault-kv-register,vault-dynamic-register"
+echo "release-archive-acceptance: proved=password-change,recovery-rotate,audit-list-export,policy-activate,approval-grant,workload-mint,vault-kv-register,vault-dynamic-register,packaged-helper-entries,mcp-initialize-discovery"
 echo "release-archive-acceptance: limitation=vault-execute-still-fixture-only,not-live-vault"

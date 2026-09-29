@@ -3,11 +3,12 @@ use serde::de::DeserializeSeed;
 use super::*;
 
 const PROFILE: &[u8] = br#"{
-  "credential_type":"vault-dynamic-source-v1",
+  "credential_type":"vault-dynamic-source-v2",
   "origin":"https://vault.example.com",
   "mount":"database",
   "role":"agent-api-token",
   "key":"token",
+  "renew_increment_seconds":60,
   "vault_token":"hvs.bootstrap"
 }"#;
 
@@ -26,17 +27,18 @@ fn profile_accepts_only_the_closed_shape() {
     assert_eq!(profile.role, "agent-api-token");
     assert_eq!(profile.key, "token");
     assert_eq!(profile.token(), b"hvs.bootstrap");
+    assert_eq!(profile.renew_increment_seconds, 60);
 
     for invalid in [
         br#"{}"#.as_slice(),
-        br#"{"credential_type":"vault-dynamic-source-v1","credential_type":"vault-dynamic-source-v1","origin":"https://vault.example.com","mount":"database","role":"role","key":"token","vault_token":"hvs.x"}"#,
-        br#"{"credential_type":"vault-dynamic-source-v1","origin":"https://vault.example.com","mount":"database","role":"role","key":"token","vault_token":"hvs.x","extra":true}"#,
-        br#"{"credential_type":"vault-dynamic-source-v1","origin":"http://vault.example.com","mount":"database","role":"role","key":"token","vault_token":"hvs.x"}"#,
-        br#"{"credential_type":"vault-dynamic-source-v1","origin":"https://vault.example.com/path","mount":"database","role":"role","key":"token","vault_token":"hvs.x"}"#,
-        br#"{"credential_type":"vault-dynamic-source-v1","origin":"https://vault.example.com","mount":"bad/path","role":"role","key":"token","vault_token":"hvs.x"}"#,
-        br#"{"credential_type":"vault-dynamic-source-v1","origin":"https://vault.example.com","mount":"database","role":"bad/path","key":"token","vault_token":"hvs.x"}"#,
-        br#"{"credential_type":"vault-dynamic-source-v1","origin":"https://vault.example.com","mount":"database","role":"role","key":"","vault_token":"hvs.x"}"#,
-        br#"{"credential_type":"vault-dynamic-source-v1","origin":"https://vault.example.com","mount":"database","role":"role","key":"token","vault_token":""}"#,
+        br#"{"credential_type":"vault-dynamic-source-v2","credential_type":"vault-dynamic-source-v2","origin":"https://vault.example.com","mount":"database","role":"role","key":"token","renew_increment_seconds":60,"vault_token":"hvs.x"}"#,
+        br#"{"credential_type":"vault-dynamic-source-v2","origin":"https://vault.example.com","mount":"database","role":"role","key":"token","renew_increment_seconds":60,"vault_token":"hvs.x","extra":true}"#,
+        br#"{"credential_type":"vault-dynamic-source-v2","origin":"http://vault.example.com","mount":"database","role":"role","key":"token","renew_increment_seconds":60,"vault_token":"hvs.x"}"#,
+        br#"{"credential_type":"vault-dynamic-source-v2","origin":"https://vault.example.com/path","mount":"database","role":"role","key":"token","renew_increment_seconds":60,"vault_token":"hvs.x"}"#,
+        br#"{"credential_type":"vault-dynamic-source-v2","origin":"https://vault.example.com","mount":"bad/path","role":"role","key":"token","renew_increment_seconds":60,"vault_token":"hvs.x"}"#,
+        br#"{"credential_type":"vault-dynamic-source-v2","origin":"https://vault.example.com","mount":"database","role":"bad/path","key":"token","renew_increment_seconds":60,"vault_token":"hvs.x"}"#,
+        br#"{"credential_type":"vault-dynamic-source-v2","origin":"https://vault.example.com","mount":"database","role":"role","key":"","renew_increment_seconds":60,"vault_token":"hvs.x"}"#,
+        br#"{"credential_type":"vault-dynamic-source-v2","origin":"https://vault.example.com","mount":"database","role":"role","key":"token","renew_increment_seconds":60,"vault_token":""}"#,
     ] {
         assert_eq!(
             VaultDynamicProfile::parse_profile(invalid).map(|_| ()),
@@ -60,6 +62,98 @@ fn profile_accepts_only_the_closed_shape() {
 }
 
 #[test]
+fn profile_requires_explicit_bounded_increment_and_v2_marker() {
+    let valid: serde_json::Value = serde_json::from_slice(PROFILE).unwrap();
+    for increment in [5, 300] {
+        let mut value = valid.clone();
+        value["renew_increment_seconds"] = increment.into();
+        assert!(VaultDynamicProfile::parse_profile(&serde_json::to_vec(&value).unwrap()).is_ok());
+    }
+    for increment in [
+        serde_json::json!(4),
+        serde_json::json!(301),
+        serde_json::json!(-1),
+        serde_json::json!(5.5),
+        serde_json::json!("60"),
+        serde_json::Value::Null,
+    ] {
+        let mut value = valid.clone();
+        value["renew_increment_seconds"] = increment;
+        assert!(VaultDynamicProfile::parse_profile(&serde_json::to_vec(&value).unwrap()).is_err());
+    }
+    let mut missing = valid.clone();
+    missing
+        .as_object_mut()
+        .unwrap()
+        .remove("renew_increment_seconds");
+    assert!(VaultDynamicProfile::parse_profile(&serde_json::to_vec(&missing).unwrap()).is_err());
+    let mut old = valid;
+    old["credential_type"] = "vault-dynamic-source-v1".into();
+    assert!(VaultDynamicProfile::parse_profile(&serde_json::to_vec(&old).unwrap()).is_err());
+    let duplicate = String::from_utf8(PROFILE.to_vec()).unwrap().replace(
+        "\"renew_increment_seconds\":60",
+        "\"renew_increment_seconds\":60,\"renew_increment_seconds\":60",
+    );
+    assert!(VaultDynamicProfile::parse_profile(duplicate.as_bytes()).is_err());
+}
+
+fn parse_renewed(body: &[u8]) -> Result<ParsedRenewed, serde_json::Error> {
+    let mut deserializer = serde_json::Deserializer::from_slice(body);
+    let parsed = RenewedSeed.deserialize(&mut deserializer)?;
+    deserializer.end()?;
+    Ok(parsed)
+}
+
+#[test]
+fn renewal_accepts_metadata_only_and_checks_duplicates_types_and_ttl() {
+    let parsed = parse_renewed(br#"{"lease_id":"id","lease_duration":5,"renewable":false,"data":null,"auth":null,"request_id":"ignored"}"#).unwrap();
+    assert_eq!(parsed.lease_id.as_str(), "id");
+    assert_eq!(parsed.lease_duration, 5);
+    assert!(
+        parse_renewed(br#"{"lease_id":"id","lease_duration":300,"renewable":true,"data":{}}"#)
+            .is_ok()
+    );
+    for invalid in [
+        br#"{"lease_id":"id","lease_duration":4,"renewable":true}"#.as_slice(),
+        br#"{"lease_id":"id","lease_duration":301,"renewable":true}"#,
+        br#"{"lease_id":"id","lease_duration":5,"renewable":"true"}"#,
+        br#"{"lease_id":"id","lease_duration":5,"renewable":true,"renewable":true}"#,
+        br#"{"lease_id":"id","lease_duration":5,"lease_duration":5,"renewable":true}"#,
+        br#"{"lease_id":"id","lease_id":"id","lease_duration":5,"renewable":true}"#,
+        br#"{"lease_id":"id","lease_duration":5,"renewable":true,"data":null,"data":null}"#,
+        br#"{"lease_id":"id","lease_duration":5,"renewable":true,"data":{"password":"new-value"}}"#,
+        br#"{"lease_id":"id","lease_duration":5,"renewable":true,"auth":{"client_token":"new-token"}}"#,
+        br#"{"lease_id":"id","lease_duration":5,"renewable":true,"auth":null,"auth":null}"#,
+        br#"{"lease_id":"id","lease_duration":5}"#,
+        br#"{"lease_id":"id","lease_duration":5.5,"renewable":true}"#,
+        br#"{"lease_id":"id","lease_duration":5,"renewable":true} trailing"#,
+    ] { assert!(parse_renewed(invalid).is_err()); }
+}
+
+#[test]
+fn renewal_deadline_uses_request_start_actual_ttl_and_original_action_cap() {
+    let start = Instant::now();
+    let action = start + Duration::from_secs(20);
+    let renew_start = start + Duration::from_secs(2);
+    // Actual 5s wins over a requested 60s; old expiry is never added.
+    assert_eq!(
+        lease_io_deadline(action, renew_start, Duration::from_secs(5)).unwrap(),
+        start + Duration::from_millis(6_500)
+    );
+    // A large successful renewal cannot extend the absolute Action deadline.
+    assert_eq!(
+        lease_io_deadline(action, renew_start, Duration::from_secs(60)).unwrap(),
+        action - CLEANUP_BUDGET
+    );
+    // Response/audit time consumes the window; it cannot move this deadline.
+    let received = renew_start + Duration::from_secs(3);
+    let remaining = lease_io_deadline(action, renew_start, Duration::from_secs(5))
+        .unwrap()
+        .duration_since(received);
+    assert_eq!(remaining, Duration::from_millis(1_500));
+}
+
+#[test]
 fn issued_response_extracts_one_bounded_selected_value() {
     let parsed = parse_issued(
         br#"{"lease_id":"database/creds/role/abc","lease_duration":60,"renewable":true,"data":{"username":"ignored","token":"dynamic-secret"},"request_id":"ignored"}"#,
@@ -67,6 +161,7 @@ fn issued_response_extracts_one_bounded_selected_value() {
     .unwrap();
     assert_eq!(parsed.lease_id.as_str(), "database/creds/role/abc");
     assert_eq!(parsed.lease_duration, 60);
+    assert!(parsed.renewable);
     assert_eq!(&*parsed.value, b"dynamic-secret");
 
     for duration in [5, 300] {

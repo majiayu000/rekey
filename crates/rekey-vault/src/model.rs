@@ -260,6 +260,8 @@ pub mod event_type {
     pub const GITHUB_CONNECTOR_AUTHORIZED: &str = "connector.github.authorized";
     pub const GITHUB_TOKEN_REVOKED: &str = "connector.github.token_revoked";
     pub const VAULT_LEASE_ISSUED: &str = "vault.lease.issued";
+    pub const VAULT_LEASE_RENEWAL_STARTED: &str = "vault.lease.renewal_started";
+    pub const VAULT_LEASE_RENEWED: &str = "vault.lease.renewed";
     pub const VAULT_LEASE_REVOKED: &str = "vault.lease.revoked";
     pub const EXECUTION_STARTED: &str = "execution.started";
     pub const EXECUTION_FINISHED: &str = "execution.finished";

@@ -61,6 +61,22 @@ Save the recovery key immediately in a separate secure location. It is shown
 once. Losing both the password and recovery key permanently loses access to
 the vault.
 
+## Development archive helpers
+
+The unreleased [alpha.3 candidate](releases/v2.0.0-alpha.3.md) stages six
+binaries together: `rekey`, `rekeyd`, `rekey-github-create-issue`, `rekey-mcp`,
+`rekey-policy-sign`, and `rekey-approval-sign`. Keep them in the same directory
+when installing a candidate archive. It also includes the executable Python 3
+helpers `rekey-service-unit.py`, `agent-quickstart.py`,
+`operator-credential-repair.py`, `rekey-backup-sync.py`, and
+`rekey-audit-delivery.py`. They accept the installed `rekey` path explicitly;
+use each helper's `--help` and the linked operation specification before use.
+
+These are future archive entries. This section does not change the contents
+or format of the published alpha.2 download. Candidate archive acceptance
+checks each entry and starts its packaged MCP process for initialization and
+tool discovery. It does not replace provider, credential or policy setup.
+
 ## launchd user service
 
 The release archive includes `rekey-service-unit.py`. Initialize the vault

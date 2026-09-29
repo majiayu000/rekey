@@ -89,8 +89,8 @@ async fn audit_timeout(kind: &str, issued: bool, malformed: bool) {
         ),
         "vault-dynamic-source" => (
             json!({
-                "credential_type":"vault-dynamic-source-v1", "origin":"https://vault.example.com",
-                "mount":"database", "role":"agent-api-token", "key":"token", "vault_token":"synthetic-vault-token"
+                "credential_type":"vault-dynamic-source-v2", "origin":"https://vault.example.com",
+                "mount":"database", "role":"agent-api-token", "key":"token", "renew_increment_seconds":60, "vault_token":"synthetic-vault-token"
             }),
             response(
                 200,

@@ -264,9 +264,9 @@ operator recovery; no background renewal or crash-time cleanup is promised.
 Resource servers using only offline JWT verification may continue accepting a
 revoked JWT until expiry; immediate rejection requires their own online check.
 
-Current source storage format is 10; old state/backups are rejected without
+Current source storage format is 14; old state/backups are rejected without
 migration. The format-9 backup drill receipts remain historical evidence for
-the recorded binaries and are not format-10 restore evidence.
+the recorded binaries and are not format-14 restore evidence.
 
 ## Local Agent tools and operator repair
 
@@ -289,3 +289,36 @@ Actions sharing that credential. The result alone does not repeat the request;
 the operator or Agent must explicitly choose another execution after inspecting
 any possible earlier write effect. Revoked and provider-specific credentials
 remain outside this ordinary-token repair flow.
+
+## Audit delivery (development source)
+
+The [bounded audit delivery helper](superpowers/specs/2026-09-30-audit-delivery.md)
+ships in the unreleased candidate archive. First obtain a trusted BackupReceipt
+for the intended vault, choose a new UUID for this source instance, and create
+an outbox under an existing private directory. Use the same explicit source
+and vault IDs for every command:
+
+```bash
+python3 rekey-audit-delivery.py --outbox /secure/audit-outbox \
+  --source-instance-id SOURCE_UUID --vault-id VAULT_UUID \
+  init --vault-receipt /secure/receipt.json --endpoint https://SIEM_HOST/audit
+rekey audit export --output /secure/audit.jsonl
+python3 rekey-audit-delivery.py --outbox /secure/audit-outbox \
+  --source-instance-id SOURCE_UUID --vault-id VAULT_UUID \
+  enqueue --export /secure/audit.jsonl
+python3 rekey-audit-delivery.py --outbox /secure/audit-outbox \
+  --source-instance-id SOURCE_UUID --vault-id VAULT_UUID send
+```
+
+The last command reads the delivery token through hidden terminal input.
+Explicit `--token-stdin` is available for a protected input pipe; neither token
+nor unlock proof belongs in arguments, environment variables or outbox files.
+The receiver must persist the batch and return the exact durable ACK described
+in the specification. HTTP 200 alone does not advance the cursor. After a
+lost response, resend the pending batch; its ID and digest remain unchanged.
+
+Retain unacknowledged local audit events before pruning. A sequence gap,
+partial outbox, permanent failure journal or identity mismatch requires
+operator review; the helper does not skip the batch or reset its cursor.
+Restore or clone uses a new source UUID and new outbox. Real SIEM storage,
+permissions, deduplication and capacity must be validated at that receiver.

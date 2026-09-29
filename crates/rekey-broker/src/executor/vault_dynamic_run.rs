@@ -1,6 +1,6 @@
 use super::vault_dynamic::{
     AcquisitionFailure, CLEANUP_BUDGET, VaultDynamicError, VaultDynamicPrepared,
-    VaultDynamicProfile,
+    VaultDynamicProfile, lease_io_deadline,
 };
 use super::*;
 
@@ -68,16 +68,17 @@ impl ActionExecutor {
         };
 
         let mut needles = prepared.needles;
-        needles.extend(sealing_needles(
-            acquired.lease_id.as_bytes(),
-            acquired.lease_id.as_bytes(),
-        ));
         let mut auth_value = Zeroizing::new(Vec::with_capacity(
             action.auth.prefix.as_str().len() + acquired.value.len(),
         ));
         auth_value.extend_from_slice(action.auth.prefix.as_str().as_bytes());
         auth_value.extend_from_slice(&acquired.value);
         needles.extend(sealing_needles(&acquired.value, &auth_value));
+        let renewal_needles_len = needles.len();
+        needles.extend(sealing_needles(
+            acquired.lease_id.as_bytes(),
+            acquired.lease_id.as_bytes(),
+        ));
 
         let lease_ids = vec![acquired.lease_id];
         if let Err(error) = self
@@ -102,19 +103,37 @@ impl ActionExecutor {
             return Err(error);
         }
 
-        let lease_deadline = acquired
-            .acquired_at
-            .checked_add(acquired.lease_duration)
-            .unwrap_or(effect_deadline);
-        let final_deadline = effect_deadline.min(lease_deadline);
-        let result = if let Some(io_deadline) = final_deadline.checked_sub(CLEANUP_BUDGET) {
-            self.send_dynamic_action(request, action, auth_value, io_deadline, &needles)
+        let initial_io_deadline = lease_io_deadline(
+            effect_deadline,
+            acquired.acquired_at,
+            acquired.lease_duration,
+        );
+        let io_deadline = match initial_io_deadline {
+            Some(deadline) if acquired.renewable && deadline < business_deadline => {
+                self.renew_dynamic_lease(
+                    started,
+                    &profile,
+                    &lease_ids[0],
+                    deadline,
+                    effect_deadline,
+                    &needles[..renewal_needles_len],
+                )
                 .await
-        } else {
-            DynamicActionResult::definite_error(
-                BrokerError::Upstream(VaultDynamicError::Deadline.reason()),
+            }
+            Some(deadline) => Ok(deadline),
+            None => Err(BrokerError::Indeterminate(
                 VaultDynamicError::Deadline.reason(),
-            )
+            )),
+        };
+        let result = match io_deadline {
+            Ok(deadline) => {
+                self.send_dynamic_action(request, action, auth_value, deadline, &needles)
+                    .await
+            }
+            Err(error) => {
+                let reason = cleanup_error_reason(&error);
+                DynamicActionResult::indeterminate_error(error, reason)
+            }
         };
 
         if let Err(error) = self
@@ -163,6 +182,68 @@ impl ActionExecutor {
                 Err(error)
             }
         }
+    }
+
+    async fn renew_dynamic_lease(
+        &self,
+        started: &mut StartedAuditGuard,
+        profile: &VaultDynamicProfile,
+        lease_id: &str,
+        initial_io_deadline: Instant,
+        effect_deadline: Instant,
+        needles: &[Zeroizing<Vec<u8>>],
+    ) -> Result<Instant, BrokerError> {
+        if initial_io_deadline <= Instant::now() {
+            return Err(BrokerError::Indeterminate(
+                VaultDynamicError::Deadline.reason(),
+            ));
+        }
+        if !self.lifecycle.try_begin_remote_effect() {
+            return Err(BrokerError::Indeterminate(
+                VaultDynamicError::Cancelled.reason(),
+            ));
+        }
+        self.terminals
+            .commit_until(
+                initial_io_deadline,
+                connector_event(
+                    started.context(),
+                    rekey_vault::model::event_type::VAULT_LEASE_RENEWAL_STARTED,
+                    rekey_vault::model::outcome::SUCCESS,
+                    "success".to_owned(),
+                ),
+            )
+            .await
+            .map_err(|_| BrokerError::Indeterminate("connector-audit-failed"))?;
+
+        let renew = if !self.lifecycle.try_begin_remote_effect() {
+            Err(VaultDynamicError::Cancelled)
+        } else {
+            tokio::select! {
+                biased;
+                _ = wait_for_cancel(self.lifecycle.subscribe_cancel()) => Err(VaultDynamicError::Cancelled),
+                result = profile.renew(self.transport.as_ref(), lease_id, initial_io_deadline, effect_deadline, needles) => result,
+            }
+        };
+        let (outcome, reason) = match &renew {
+            Ok(_) => (rekey_vault::model::outcome::SUCCESS, "success"),
+            Err(error) => (rekey_vault::model::outcome::FAILURE, error.reason()),
+        };
+        self.terminals
+            .commit_until(
+                effect_deadline
+                    .checked_sub(CLEANUP_BUDGET)
+                    .unwrap_or(effect_deadline),
+                connector_event(
+                    started.context(),
+                    rekey_vault::model::event_type::VAULT_LEASE_RENEWED,
+                    outcome,
+                    reason.to_owned(),
+                ),
+            )
+            .await
+            .map_err(|_| BrokerError::Indeterminate("connector-audit-failed"))?;
+        renew.map_err(|error| BrokerError::Indeterminate(error.reason()))
     }
 
     async fn finish_failed_acquisition(
@@ -268,6 +349,12 @@ impl ActionExecutor {
         io_deadline: Instant,
         needles: &[Zeroizing<Vec<u8>>],
     ) -> DynamicActionResult {
+        if !self.lifecycle.try_begin_remote_effect() {
+            return DynamicActionResult::definite_error(
+                BrokerError::Authority(AuthorityError::Draining),
+                VaultDynamicError::Cancelled.reason(),
+            );
+        }
         let timeout = io_deadline.saturating_duration_since(Instant::now());
         if timeout.is_zero() {
             return DynamicActionResult::definite_error(
@@ -284,11 +371,19 @@ impl ActionExecutor {
             );
         }
         let send_started = Instant::now();
-        let response = tokio::time::timeout_at(
-            tokio::time::Instant::from_std(io_deadline),
-            self.transport.send(upstream),
-        )
-        .await;
+        let response = tokio::select! {
+            biased;
+            _ = wait_for_cancel(self.lifecycle.subscribe_cancel()) => {
+                return DynamicActionResult::indeterminate_error(
+                    BrokerError::Indeterminate("cancelled-after-remote-effect"),
+                    "cancelled-after-remote-effect",
+                );
+            }
+            response = tokio::time::timeout_at(
+                tokio::time::Instant::from_std(io_deadline),
+                self.transport.send(upstream),
+            ) => response,
+        };
         let latency_ms = send_started.elapsed().as_millis() as i64;
         let response = match response {
             Err(_) => {

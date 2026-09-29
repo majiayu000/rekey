@@ -194,6 +194,8 @@ Vault `renew-self` 只对可续期且存在租约的token有效，返回实际�
 
 ### AUD-07 一个SIEM接收端
 
+2026-09-30 开发源码已落实独立工具的本地合同，见 [审计投递规格](2026-09-30-audit-delivery.md)。下文的客户接收端现场验证仍待输入，不以 fixture 关闭。
+
 建议独立导出进程读取已有本地审计快照/JSONL并投递一个客户HTTPS接收端，不让Broker调用SIEM或持有其token。
 输入为固定接收端、传输身份、稳定来源实例ID、不可变批次及序号范围；输出必须是接收端确认的批次摘要/持久接收凭据，再推进本地cursor。HTTP 200但无约定确认不能视为入库。
 采用至少一次投递，批次/事件去重键包括来源实例、vault、审计序号；恢复/克隆创建新来源实例ID，防止回退后的相同序号覆盖不同事件。
@@ -253,7 +255,7 @@ fixture覆盖同名不同subject、旧目录事件复活、停用时未决grant�
 
 ## DYN-05～06：Vault动态租约的执行内续期与恢复清理
 
-以下仍为未实施提案，依赖 [P-07B现有单次动态源](2026-09-03-vault-dynamic-lease-source-p07b.md)。租约ID、动态值、Vault token都不返回Agent；续期/清理不能扩大原Action或身份权限。
+DYN-05 的 2026-09-30 开发实现见 [执行内单次续期](2026-09-30-vault-lease-renewal.md)；DYN-06 仍为未实施提案。两项依赖 [P-07B现有单次动态源](2026-09-03-vault-dynamic-lease-source-p07b.md)。租约ID、动态值、Vault token都不返回Agent；续期/清理不能扩大原Action或身份权限。
 
 ### DYN-05 单次执行、单租约、至多一次续期
 

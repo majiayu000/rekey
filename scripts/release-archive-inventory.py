@@ -8,14 +8,17 @@ import sys
 from pathlib import Path
 
 MARKDOWN_LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
+EXECUTABLES = (
+    "rekey", "rekeyd", "rekey-github-create-issue", "rekey-mcp",
+    "rekey-policy-sign", "rekey-approval-sign", "rekey-service-unit.py",
+    "agent-quickstart.py", "operator-credential-repair.py", "rekey-backup-sync.py",
+    "rekey-audit-delivery.py",
+)
 
 
 def required_paths(version: str) -> list[str]:
     return [
-        "rekey",
-        "rekeyd",
-        "rekey-github-create-issue",
-        "rekey-service-unit.py",
+        *EXECUTABLES,
         "LICENSE",
         "README.md",
         "CHANGELOG.md",
@@ -76,7 +79,7 @@ def main() -> int:
         return 1
 
     missing = [rel for rel in required_paths(version) if not (root / rel).exists()]
-    for name in ("rekey", "rekeyd", "rekey-github-create-issue"):
+    for name in EXECUTABLES:
         binary = root / name
         if binary.exists() and not binary.is_file():
             missing.append(f"{name} is not a file")

@@ -85,7 +85,7 @@ pub fn credential_add_vault_dynamic(
         file,
         recovery,
         password_stdin,
-        "vault-dynamic-source-v1",
+        "vault-dynamic-source-v2",
         "vault-dynamic-source",
         "Vault dynamic profile",
     )
@@ -149,7 +149,7 @@ pub fn credential_rotate_vault_dynamic(
         file,
         recovery,
         password_stdin,
-        "vault-dynamic-source-v1",
+        "vault-dynamic-source-v2",
         admin_msg::CREDENTIAL_ROTATE_VAULT_DYNAMIC,
         "Vault dynamic profile",
     )
@@ -227,9 +227,9 @@ mod tests {
         let file = dir.path().join("profile.json");
         write_private(&file, br#"{"credential_type":"vault-kv-v2-source-v1"}"#);
         assert!(vault_profile_file(&file, "vault-kv-v2-source-v1", "Vault KV profile").is_ok());
-        write_private(&file, br#"{"credential_type":"vault-dynamic-source-v1"}"#);
+        write_private(&file, br#"{"credential_type":"vault-dynamic-source-v2"}"#);
         assert!(
-            vault_profile_file(&file, "vault-dynamic-source-v1", "Vault dynamic profile").is_ok()
+            vault_profile_file(&file, "vault-dynamic-source-v2", "Vault dynamic profile").is_ok()
         );
         write_private(&file, br#"{"credential_type":"vault-kv-v2-source-v1"}"#);
 

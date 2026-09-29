@@ -51,7 +51,7 @@ def dogfood(args):
     if "vault_token" in source:
         raise QUICKSTART.InputError("source file must omit vault_token; enter it at the hidden prompt")
     kind = source["credential_type"]
-    if kind not in ("vault-kv-v2-source-v1", "vault-dynamic-source-v1"):
+    if kind not in ("vault-kv-v2-source-v1", "vault-dynamic-source-v2"):
         raise QUICKSTART.InputError("source must select one of the two closed Vault profiles")
     definition = json.loads(args.action.read_text())
     schema = json.loads(args.schema.read_text())
@@ -82,7 +82,7 @@ def dogfood(args):
                 run(base + ["unlock", "--password-stdin"], password + "\n")
                 source["vault_token"] = token
                 QUICKSTART.write_new(work / "source.json", source)
-                verb = "add-vault-dynamic" if kind == "vault-dynamic-source-v1" else "add-vault-kv"
+                verb = "add-vault-dynamic" if kind == "vault-dynamic-source-v2" else "add-vault-kv"
                 credential = json.loads(run(base + ["credential", verb, "layer-b", "--file", str(work / "source.json"),
                                                     "--password-stdin"], password + "\n"))
                 (work / "source.json").unlink()
@@ -114,7 +114,7 @@ def dogfood(args):
                 events = page["events"]
                 if page["next_before_sequence"] is not None:
                     raise QUICKSTART.InputError("audit page incomplete; no success receipt written")
-                required = verify_events(events, kind == "vault-dynamic-source-v1")
+                required = verify_events(events, kind == "vault-dynamic-source-v2")
                 receipt = {
                     "tested_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                     "layer": "B", "source_kind": kind, "source_origin": source["origin"],

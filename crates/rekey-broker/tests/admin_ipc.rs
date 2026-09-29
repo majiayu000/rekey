@@ -21,11 +21,12 @@ const VAULT_PROFILE: &[u8] = br#"{
   "vault_token":"hvs.source-canary"
 }"#;
 const VAULT_DYNAMIC_PROFILE: &[u8] = br#"{
-  "credential_type":"vault-dynamic-source-v1",
+  "credential_type":"vault-dynamic-source-v2",
   "origin":"https://vault.example.com",
   "mount":"database",
   "role":"agent-api-token",
   "key":"token",
+  "renew_increment_seconds":60,
   "vault_token":"hvs.dynamic-canary"
 }"#;
 
