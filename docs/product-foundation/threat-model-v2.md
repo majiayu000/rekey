@@ -441,7 +441,7 @@ Action 和最小响应 schema 比通用透明代理更强。任何新增 canonic
   与审计先完成。Agent 不能取得 token，也不能选 source/target；没有 refresh、后台续期
   或进程崩溃后的撤销保证。provider introspection inactive 不代表只做离线 JWT 验证的
   resource 会立即拒绝。真实 Keycloak + Broker 的本地 TLS fixture 不是公网筛选证明。
-  新 kind/AAD code 5 最初使用 schema 10；独立文本流曾使用 schema 11，两操作 Action 插件登记曾使用 schema 13，当前封闭原生插件使用 schema 14，含 v13 在内的旧 state/backup 明确拒绝，不做迁移。
+  新 kind/AAD code 5 最初使用 schema 10；独立文本流曾使用 schema 11，两操作 Action 插件登记曾使用 schema 13，封闭原生插件引入 schema 14；租约 journal 引入 schema 15，GCP source 引入 schema 16，AWS source 引入 schema 17，Azure source 引入 schema 18，当前 1Password Connect source 使用 schema 19，含 v18 在内的旧 state/backup 明确拒绝，不做迁移。
 - P-07A 只允许管理员登记一个 public HTTPS Vault KV v2 origin、mount、path、精确
   非零版本、精确 string key 和 bootstrap token。Broker 在 durable started audit 与
   remote-effect admission 后执行一次无重试 GET，解析后只把值注入既有 fixed Action；
@@ -451,12 +451,14 @@ Action 和最小响应 schema 比通用透明代理更强。任何新增 canonic
 - P-07B 只允许管理员登记一个 public HTTPS Vault origin、一个 `creds` mount/role、
   一个精确 string key 和 bootstrap token。每次执行最多获取一个 5–300 秒 lease，
   只在既有 fixed Action 中使用选中值，并在成功返回前 exact synchronous revoke。
-  发布版不做 renewal；开发源码 DYN-05 以 v2 profile 加入一次条件续租，renewal_started 审计先于远端请求，实际 TTL 从续期请求开始计算并受原 Action 截止与 500ms 清理预留约束。续期未知或结果审计失败仍 exact revoke，向 Agent 返回非重试未知结果。仍无 durable lease registry、restart cleanup、private Vault 网络或 crash-time revoke 保证。
+  发布版不做 renewal；开发源码 DYN-05 以 v2 profile 加入一次条件续租，renewal_started 审计先于远端请求，实际 TTL 从续期请求开始计算并受原 Action 截止与 500ms 清理预留约束。续期未知或结果审计失败仍 exact revoke，向 Agent 返回非重试未知结果。开发源码 DYN-06 已接 schema 15 加密 journal 和显式 unlock 有界 exact-ID 清理，两项故障路径修复已通过新增回归与独立静态复核，整合运行仍受网络沙箱门禁限制；不保证未知 acquire 窗口、旧备份之后租约、private Vault 网络或 crash-time revoke。
 - Audit 使用本地 SQLite/WAL fail-closed；P-02 只通过 owner-checked Admin socket
   提供每次最多扫描 1,000 行、游标续查的稳定快照脱敏查询和 mode-0600 JSONL 导出，
   Agent socket 无此接口。
   输出省略 Secret、body/header、capability、resource ID 和 parameter hash。显式清理的源码规格见 `2026-09-16-audit-prune.md`：仅完整、无审批关联的过期执行组可删除，并使旧分页快照显式失效；实现证据以 Feature Truth Matrix 为准。
-  开发源码 AUD-07 的独立工具只能读取完整脱敏导出，固定来源/vault/HTTPS 目标，并以持久批次和精确 durable ACK 推进 cursor。工具无解锁权；丢 ACK 至少一次重发、接收端负责去重，永久错误或缺口停止。生产 SIEM 持久存储与认证未现场验证；没有可配置 retention、enterprise outbox、WORM 或 legal hold。
+  开发源码 AUD-07 的独立工具只能读取完整脱敏导出，固定来源/vault/HTTPS 目标，并以持久批次和精确 durable ACK 推进 cursor。工具无解锁权；丢 ACK 至少一次重发、接收端负责去重，永久错误或缺口停止。生产 SIEM 持久存储与认证未现场验证。
+  独立 AUD-08 固定 S3 工具保存发送前意图与具体version绑定，核 SHA256/长度/SSE-S3，再读实际retention/hold并保存回执；未知响应只在同key/同bytes条件下恢复。管理Hold使用不同purpose的私profile，真实IAM角色分离、governance绕过能力、compliance与WORM都需现场验证。工具不删除或修改retention，无Vault解锁权，也不证明外部回执不可伪造或宿主回滚不可行。
+  独立 APR-08 HTTPS 文件中继每请求固定IdP introspection与显式subject运输权限，来源信封仍验签、人工signer仍核完整请求、Broker仍核grant精确绑定与生命周期。relay持TLS和IdP运输身份，不持审批/origin私钥、Transit token或capability；原body/headers由操作方另选安全通道。中继可保存过时或结构合法的伪grant，不能据receipt认定授权或执行。客户人员登录/停用、双设备隔离、公网部署及人员目录未现场验证。
 - Secret Sealing 命中即中止并返回空 Agent error response，不做脱敏回退。
 - 本地恢复材料使用单一 recovery key。
 - recovery key 可用于解锁、显式 Admin step-up、验证 backup restore，或在 P-01 中为丢失的密码设置替代值；recovery 自身轮换仍必须使用当前密码。
@@ -531,11 +533,11 @@ CPU 限额、deadline、有界 IO 和采样 RSS 看门狗不等于完整硬内�
 这不保证识别任意编码或隐蔽信道，也不代表第三方 provider 的实网验收。
 
 
-SDK-04 当前源码按 `2026-09-16-native-action-plugin.md` 将 Admin 批准的 artifact 摘要绑定到精确 Action 版本（`native_plugin`，`github-issues-v1` 或 `anthropic-messages-v1`）；不把登记成功等同于文件可运行。执行时校验已打开文件的字节，显式绑定不支持的平台直接失败。仍不防御恶意同 UID 宿主，RSS 采样不是硬物理内存上限；源码格式 14 拒绝旧状态及备份。这不是市场或完整 P-10。
+SDK-04 当前源码按 `2026-09-16-native-action-plugin.md` 将 Admin 批准的 artifact 摘要绑定到精确 Action 版本（`native_plugin`，`github-issues-v1` 或 `anthropic-messages-v1`）；不把登记成功等同于文件可运行。执行时校验已打开文件的字节，显式绑定不支持的平台直接失败。仍不防御恶意同 UID 宿主，RSS 采样不是硬物理内存上限；当前源码格式 15 拒绝旧状态及备份。这不是市场或完整 P-10。
 
 ### 2026-09-17 two-operation plugin boundary
 
-`github-issues-v1` selects create_issue/create_issue_comment from the trusted Action. The plugin cannot select routes or effects; the Broker compares the entire canonical operation/body envelope before credential exchange. Schema 14 rejects prior formats, including 13. Linux launcher tests must distinguish an actually launched sandbox from namespace setup failure and must not treat the Agent launcher as a plugin sandbox.
+`github-issues-v1` selects create_issue/create_issue_comment from the trusted Action. The plugin cannot select routes or effects; the Broker compares the entire canonical operation/body envelope before credential exchange. The plugin increment introduced schema 14; the journal was introduced in format 15; GCP introduced format 16; current format 19 adds AWS and rejects prior formats, including 16. Linux launcher tests must distinguish an actually launched sandbox from namespace setup failure and must not treat the Agent launcher as a plugin sandbox.
 
 当前 macOS 探针进一步表明：最终 SETEXEC 设置 jetsam 后，允许 self-exec 的恶意 artifact 仍可再次 exec 并清空限额；固定可信、禁止全部 exec 的 sidecar 结果不能升级任意登记插件的保障。详细结果见 GitHub 参考插件规格。
 
@@ -545,3 +547,67 @@ SDK-04 当前源码按 `2026-09-16-native-action-plugin.md` 将 Admin 批准的 
 ## Linux 显式插件后端边界（2026-09-17 源码合同）
 
 按参考插件规格新增 GNU x86_64/aarch64 固定最小 rootfs 与 seccomp allowlist。AS64MiB 是每进程虚拟映射硬限额，不是总物理内存。重新 exec 保留过滤器和 AS，但不禁止所有 exec。父死清理仅验收 READY 后路径，bwrap 初始化窗口仍存在；不扩大 G1/G2 声明。
+
+
+DYN-06 development boundary (2026-09-30): Authority commits acquisition intent,
+encrypted exact lease ID, renew/cleanup phases, set manifest and matching audit
+in one transaction per mutation. No dynamic value or provider response enters
+the journal. All unlock/resume/restore paths verify row/set/history bindings;
+the set seal links the latest lease audit so selective replay of old valid rows
+with newer lease audits fails. Whole-database rollback including its audit still
+requires external fencing/freshness evidence. An acquisition crash before its
+exact ID is committed leaves a durable unknown source gate; recovery never
+reconstructs IDs, replays business or substitutes current credentials. Successful
+unlock alone does not prove every external account is gone: unconfirmed/deferred
+and unknown remain visible. The broker's first explicit unlock recovery is
+bounded to eight records/eight seconds and historical cleanup-only profiles;
+repeat unlock while Running performs no live-lease cleanup. Spec and evidence
+are tracked in `2026-09-30-vault-lease-journal.md` and the all-capabilities plan.
+
+Recovery admission consumes typed availability from the same Authority batch
+snapshot at both ends. Locked/Faulted counts remain diagnostic, never recovery
+proof. An absolute provider deadline also encloses delayed transport preparation;
+timeout cancels its future and retains unconfirmed source isolation. Four actual
+Actor/SQLite regressions passed without a listener; full runtime validation is
+blocked by the current sandbox and is not replaced by compilation.
+
+2026-09-30 EXT-04 implementation contract: fixed public Connect item/field source with local import-use deadline and exact current item version, kind9/format19/rotate44 under local verification. It is not historical reads, item-scoped provider permissions, private-network support or proof of cloud synchronization freshness. Source/audit failures deny business; response sealing includes known HTTP edge-OWS forms while retaining raw outbound bytes. The isolated implementation is integrated for review; full workspace and real Connect field acceptance have not passed.
+
+
+2026-10-01 VEX-04 planned latest read accepts source-version drift only through
+an administrator's fixed encrypted profile. It cannot provide prior approval of
+a specific external secret version; exact must serve that requirement. Returned
+actual version/value must freeze for one execution, with audit before target
+effect and unchanged response sealing. Implementation verification is pending.
+
+2026-10-01 VEX04 integrated: explicit latest single-read/frozen actual-version audit and first-poll absolute deadline guard passed 17 root pure/Actor cases; independent P2 closure confirmed five exact source SHA. Strict TLS/UDS remain compiled/listed only, full workspace unpassed; no latest-state or field acceptance claim.
+
+2026-10-01 VEX01 selected minimal implementation contract: explicit per-profile RFC1918/ULA exact address and fixed CA binding, current Authority credential version, source-only routing, historical cleanup. No global private permission or trusted Admin mis-import prevention; code and strict private TLS/runtime acceptance not yet completed. See 2026-10-01-vault-private-source.md.
+
+2026-10-01 H2 local snapshot cut/restore receipt completed: final18 source SHA independently reviewed including checked canonicalUTF8 path; ROOT36 feature cases/51 unique with IPC regressions and4 actual offline CLI/SQLite cases passed. Explicit input digest and pre-restore audit/policy cut are artifact evidence, not latest-state, fencing, HA or RPO/RTO proof. Invalid-name filesystem case/current full workspace remain unpassed.
+
+2026-10-01 EXT06 selected minimal source contract before code: format20/kind10/rotate49 reserved for exact file-Keychain reference and execution-only Authority native preparation after actual started audit. One official SDK UI-Fail constant binding, native no-UI/query/status behavior still field deferred; no syscall cancellation guarantee. Code not implemented yet. See 2026-10-01-macos-keychain-source.md.
+
+2026-10-01 VEX02 selected: one explicit execution-scoped AppRole login using existing KV kind/format20, finite observed service-token TTL, one read and bounded revoke-self. Login may consume SecretID/create remote identity; unknown login and failed cleanup are not retry-safe or success. Cleanup ownership is separate from ordinary HTTP effect. Partial transport bodies/unknown TTL and crash cleanup are not claimed. Implementation/local tests pending; see `2026-10-01-vault-approle-source.md`.
+
+2026-10-01 current format20 local integration: VEX01 final7 SHA and43 focused tests passed; both confirmed private-source P1 findings independently CLOSED. EXT06 final29 SHA independently reviewed,67 unique worker tests and ROOT18 native-focused/40 Domain/230 full Vault/8 admin IPC/7 connector cases passed. Two stale format test fixtures fixed and independently reviewed; old formats remain rejected without migration. Current all-targets check/Clippy/fmt/mechanical/CLI dependency checks passed. Actual Keychain item API calls0; native item/strictTLS/UDS/TTY/full workspace/customer acceptance remains unpassed. Historical earlier format receipts/packages remain immutable.
+
+2026-10-01 AUD06 explicit age convenience is locally implemented: --older-than-days selects the existing cutoff after per-call hiddenTTY/explicitstdin step-up; checked24h arithmetic and epoch refusal, no changed Authority/Store deletion set or new protocol/schema. Two new CLI cases RED→GREEN; actual CLI27 passed/6UnixListener.bind EPERM failed, existing6 real Actor/SQLite prune passed,3 real CLI local age-refusal paths passed. Independent spec-wording P2 CLOSED and source2SHA bound. Unattended automatic retention policy, archive ACK dependency guarantees, physical secure erase and current CLI→UDS remain unaccepted.
+
+2026-10-01 SDK AppRole supplement selected before code: existing Vault KV descriptor declares static/AppRole capability union (exchange/lease/resolve/inject/revoke), ProviderDefined and cleanup-before-success for acquired temporary tokens. Static token path has no acquired-token obligation; other source contracts unchanged. No new kind/connector/schema/lifetime surface; root owns existing SDK source/contract test separately. Registry actual10; stale count9 fixture requires repair. Root local acceptance pending.
+
+2026-10-01 AppRole local implementation accepted at currentformat20: one login/read/revoke, acquired-token cleanup ownership separated from ordinary business effect, typed fatal audit errors preserved. Independent nine-file source/evidence review found no confirmed P0/P1/P2. Root executor188 and SDK19 passed; broader targeted regression266 passed/one Unix socket bind EPERM failed. No full-workspace, provider ACL/TTL/revoke, strictTLS/UDS/TTY/native Keychain, HA or release acceptance is claimed. Evidence: `approle-integrated-final-acceptance.json`; earlier selection/pending records above are historical.
+
+2026-10-01 remaining P10 implementation selected before code: mandatory delegated Linux cgroup-v2 payload, fixed memory.max/swap.max/oom.group, original-deadline guardian arming and cgroup.kill/drain before success. No weaker fallback or new protocol/config/dependency. Kernel charged-memory is not strict RSS or birth-time accounting; Darwin full guarantees and actual Linux kernel gates remain OPEN. See `2026-10-01-linux-plugin-cgroup.md`.
+
+## Selected PKCS#11 approval signer (2026-10-01)
+
+The fixed independent Ed25519 operator signer contract is recorded in `../superpowers/specs/2026-10-01-pkcs11-approval-signer.md`. Implementation, local contract tests, actual token support and physical HSM acceptance are separate gates. Profile identity is reviewed before PIN/device access; native modules retain operator G1 trust. No Broker/Agent private-key operation is added.
+
+## Authorized automatic audit retention (2026-10-01)
+
+The user explicitly authorized a step-up-set/revoked, sealed retention policy. Only the unlocked trusted Worker may automatically prune existing eligible complete execution groups; no stored proof, automatic unlock or Agent deletion operation. The spec `../superpowers/specs/2026-10-01-unlocked-audit-retention.md` freezes format21/Admin50-51 before implementation. Local and field acceptance remain pending; physical erasure, old backup removal and strict real-world maximum retention are not promised.
+
+2026-10-01 selected PKCS#11 signer local closure: exact fixed Ed25519 profile, normal cryptoki0.12.0 registry dependency, 17 focused local contracts, workspace all-targets/Clippy/fmt pass. Independent review closed both original P1 deadline-cleanup and final-cancellation findings, with no confirmed new P1/P2 in the mechanical supplement. Current device, nonexportability, driver behavior and operator controlling TTY acceptance remain unexecuted; local process/injected cases do not close physical HSM claims. Evidence: `../../../evidence/hsm-selected-local-final.json`.
+
+2026-10-01 authorized automatic retention local closure: format21 sealed policy and Admin50/51 are implemented. Every set/revoke needs step-up; unlocked background maintenance holds the lifecycle owner and preserves the original idle lock. Unknown completion synchronously closes admission and revokes sessions before releasing ownership. Desktop resume verifies the retention seal, and SET uses the original Admin deadline. Independent review closed all original 2P1+1P2 findings; root Broker6/Vault4/Desktop2 targeted sets and CLI5 entry checks passed (sets overlap). Full workspace remains unpassed; physical erasure, backup deletion and maximum real-world retention are not claimed. Evidence: `../../../evidence/retention-exact3-root-local-final.json`.

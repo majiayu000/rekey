@@ -19,13 +19,17 @@ single-port proxy, or TCP passthrough exists anymore.
 
 ## Architecture
 
-Cargo workspace, 6 crates + root integration-test host:
+Cargo workspace, 7 crates + root integration-test host:
 
 - `rekey-domain` — pure models, invariants, typed errors, IPC wire codec (no IO)
 - `rekey-connector` — versioned compile-time connector contracts, built-in
   registry, testkit, and pure MCP/OAuth projections (no IO or secrets)
 - `rekey-policy` — canonical typed policy snapshots, schema validation, and a
-  deterministic default-deny evaluator (no credential IO)
+  deterministic default-deny evaluator (library has no credential IO; separate
+  operator signer binaries perform protected-file and fixed signing IO)
+- `rekey-approval-relay` — independent single-organization HTTPS approval-file
+  transport with fixed IdP introspection and its own SQLite transport receipts;
+  no credential authority, signing decision, or Broker public listener
 - `rekey-vault` — envelope crypto (Argon2id/HKDF → VRK → per-version DEK → payload,
   84-byte binary AAD), SQLite store (WAL + synchronous=FULL, STRICT tables),
   offline bootstrap (init/restore), AuthorityWorker (single owner of the DB

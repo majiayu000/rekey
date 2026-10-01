@@ -185,6 +185,9 @@ Vault `renew-self` 只对可续期且存在租约的token有效，返回实际�
 
 ### VEX-04 仅“最新版本读取”；写入延期
 
+2026-10-01 用户要求继续完成本地代码与测试，本项选定显式latest最小切片；
+具体实现合同见 [VEX-04](2026-10-01-vault-kv-latest.md)，现场与写入仍后置。
+
 候选新source语义显式选择latest，保留现有exact-version source不变。Vault KV v2省略version会返回最新版本。参见 [Vault KV v2 read](https://developer.hashicorp.com/vault/api-docs/secret/kv/kv-v2#read-secret-version)。
 输入固定origin/mount/path/key及管理员接受版本漂移的授权；一次读取后冻结返回的metadata.version和值，整个执行不再次解析latest。
 输出值只进PreparedCredential，审计记录实际版本。缺版本、删除/销毁值、字段错配或空值拒绝；读失败不退旧版本。请求授权仍绑定原业务参数，不把参数摘要误称为源secret版本绑定。
@@ -211,6 +214,8 @@ exporter只持SIEM写入身份，无vault解锁权。拟议传输记录含批次
 
 ### AUD-08 一个S3 Object Lock归档候选
 
+2026-09-30 实施合同见 [固定 S3 审计归档](2026-09-30-s3-audit-archive.md)；代码及本地验收尚在进行，不因此声称真实 WORM 通过。
+
 建议将已封口审计批次及摘要写入客户指定S3 versioned bucket的唯一object key；先以隔离测试桶演练，再由合规责任方选择保留模式/期限。本文不提出法律符合性结论。
 AWS Object Lock对对象版本实施retention或legal hold；governance允许特权绕过，compliance不允许普通权限缩短保留，legal hold需有权主体明确解除。参见 [S3 Object Lock](https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock.html)。
 输入为bucket/region、对象前缀、身份、保留模式和retain-until时间、可选hold指令；输出为具体version ID、内容摘要、实际retention/hold读取回执。
@@ -224,6 +229,8 @@ AWS Object Lock对对象版本实施retention或legal hold；governance允许特
 ## 远程 APR-08、APR-09、APR-10
 
 ### APR-08 只运输审批材料的远程中继
+
+本轮固定实施合同为 [单组织 HTTPS 文件中继](2026-09-30-remote-approval-relay.md)，本地 HTTPS→Signer→Broker 验收已通过；真实客户 IdP/人员设备和公网运维仍待现场证明，APR-09/10不因此完成。
 
 建议单组织、单操作者控制的HTTPS文件中继，Broker不新增公网监听；可信本地操作方上传，独立审批者下载并本地review/sign，再把grant交回。现有本机搬运签名仍可继续用。
 中继输入为来源签名challenge信封及请求ID、期限、目标审批人；原始body/headers可能敏感，首轮通过操作方另选安全通道传递，不进入通知或中继索引。

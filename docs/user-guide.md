@@ -137,16 +137,20 @@ only after completion. On failure, a partial new file may remain for inspection
 and is never resumed. Output omits credentials, recovery material, capability
 tokens, bodies, headers, resource IDs, and parameter hashes. Protect it as
 sensitive metadata. The released query/export capability has no pruning.
-The source checkout adds the explicit operation below; there is no automatic
-retention, SIEM, WORM, legal hold or remote delivery.
+The source checkout adds the explicit operation below and separate delivery
+and S3 archival tools described in the [operations runbook](operations-runbook.md).
+Local audit has no automatic retention policy; customer SIEM persistence and
+WORM/Legal Hold permissions still require independent field acceptance.
 
 ### Prune completed execution audit groups (source checkout)
 
 ```bash
 rekey audit prune --before-ms CUTOFF_UNIX_MS
+# Current unreleased source: select by age instead of an absolute cutoff.
+rekey audit prune --older-than-days 30
 ```
 
-Choose a non-negative cutoff no later than now. While unlocked, supply fresh
+Choose exactly one cutoff option. Days are positive integers of 24 hours; age overflow or a cutoff before Unix epoch is rejected. Choose a non-negative absolute cutoff no later than now. While unlocked, supply fresh
 password or recovery proof (`--recovery`; explicit `--password-stdin` is available).
 The command removes only entire completed execution groups with every event
 strictly before the cutoff. It preserves all approval-associated groups,
@@ -273,9 +277,14 @@ once, then activate the signed bundle:
 printf '%s\n' "$STEP_UP_PROOF" | \
   rekey policy trust install --file trust.json --step-up-stdin
 printf '%s\n' "$STEP_UP_PROOF" | \
-  rekey policy activate --file bundle.json --step-up-stdin
+  rekey policy activate --file bundle.json --expected-vault-id "$VAULT_ID" \
+    --expected-trust-sha256 "$TRUST_SHA256" --step-up-stdin
 rekey policy status
 ```
+
+Read `vault_id` and `trust_sha256` from `rekey policy status` after trust
+installation; substitute those public values for the two activation arguments.
+The Authority checks both again after step-up and before committing.
 
 There is one immutable trust root per vault. Policy version 1 must be first;
 later bundles must be exactly consecutive. A malformed, unsigned, expired,
@@ -363,8 +372,9 @@ regular non-symlink UTF-8 JSON file no larger than 4 KiB. A grant is bound to
 the exact challenge/session/principal/Action/resource/canonical parameters,
 determining rule, policy version/digest, expiry, and signed use count. Approval
 requests and usage are memory-only and vanish on session revocation, lock, or
-restart. Rekey has no hosted remote approval service, hosted notifications,
-dashboard, human directory, or private-key custody.
+restart. Source builds include an independently deployed HTTPS approval-file
+relay. It records transport snapshots; Broker validates the grant at execute.
+Hosted operations, human directory and dashboard remain outside this scope.
 
 Operators can also pull a pending challenge from Admin without catching Agent
 stdout: `rekey approval pending` lists unused in-memory summaries, and
@@ -623,6 +633,19 @@ installation is accepted. Exchange, create-issue, revoke, transport failures,
 and mutative effects are never retried; repository listing may retry once only
 for a bounded canonical `Retry-After` response.
 
+## macOS file-Keychain source (current unreleased source)
+
+Use `rekey credential add-macos-keychain LABEL --file PRIVATE_PROFILE` and
+`rekey credential rotate-macos-keychain ID --file PRIVATE_PROFILE` with fresh
+Admin step-up. The closed `macos-keychain-source-v1` profile contains an explicit
+absolute `keychain_path`, exact `service` and `account`, and a future
+`reference_expires_at_ms`. The reference is stored encrypted; execution looks up
+one generic-password item inside the Authority Worker and uses the value only
+for the registered fixed HTTP header Action. Native lookup refuses interactive
+unlock/access prompts. This source is separate from remembered desktop unlock.
+Local contract tests passed; real Keychain item acceptance remains pending.
+See [the source contract](superpowers/specs/2026-10-01-macos-keychain-source.md).
+
 ## Vault KV v2 fixed-version source
 
 This fixture-bounded feature is in this Alpha archive. It resolves one exact
@@ -655,10 +678,34 @@ the configured nonzero version. Deleted, destroyed, malformed, reflected, or
 wrong-version results stop before the final Action request.
 
 The Agent cannot select the Vault location or read either the Vault token or
-resolved value. Private Vault networks, private CA configuration, latest/alias
-resolution, Vault authentication flows, namespaces, cloud secret/KMS
-providers, 1Password, HSM, keychain, and generic source templates are not
-supported.
+resolved value. The published Alpha snapshot supports the fixed-version public
+source described above. Current development source additionally supports
+[one KV latest read](superpowers/specs/2026-10-01-vault-kv-latest.md),
+[an explicitly bound private Vault endpoint](superpowers/specs/2026-10-01-vault-private-source.md),
+and the AppRole profile below; these additions still require provider acceptance.
+Namespaces and generic source templates remain unsupported.
+
+## Vault AppRole source (current development source)
+
+The existing `add-vault-kv` and `rotate-vault-kv` commands also accept the closed
+`vault-approle-kv-v2-source-v1` profile. Put the required `origin`, `auth_mount`,
+`role_id`, `secret_id`, `secret_id_expires_at_ms`, `mount`, `path`, `key`, and
+`version` in an owner-readable profile file. `version` is a positive exact
+integer or `"latest"`; the SecretID expiry is an absolute Unix millisecond
+value in the future. Supply actual bootstrap credentials only through this
+protected file, then remove it after the encrypted Admin mutation succeeds.
+An optional `source_endpoint` uses the private endpoint contract linked above.
+
+Each execution commits its login audit, sends one AppRole login, uses the
+returned service token for one KV read and the fixed business Action, then
+revokes that token before releasing a successful response. The observed token
+TTL must cover the original Action deadline and cleanup reserve. Login response
+loss, ambiguous cleanup, or an admitted business request without its response
+returns a nonretryable indeterminate result. Rekey does not retry login or
+renew the token. A crash can leave a token until its actual provider expiry;
+an unknown login has no observed TTL. Validate the role ACL, SecretID uses,
+natural expiry and revoke behavior against your Vault deployment before use.
+See [the AppRole contract](superpowers/specs/2026-10-01-vault-approle-source.md).
 
 ## Vault one-shot dynamic lease source
 
@@ -714,7 +761,7 @@ issued token before returning success. There is no refresh or automatic retry;
 replace an expired or withdrawn subject token through the typed rotate command.
 See the spec for exact fields and resource-server revocation limits.
 
-This source uses storage format 14 and rejects older state/backups without
+This source uses storage format 16 and rejects older state/backups without
 migration. Published alpha.2 and its recorded backup acceptance use format 9.
 
 The development tree contains the IO-free `rekey-connector` library. The library
@@ -794,7 +841,8 @@ version, accepts only the indicated request schema, and expires with the
 
 ```bash
 target/debug/rekey --state-dir /tmp/rekey-agent-demo policy trust install --file trust.json
-target/debug/rekey --state-dir /tmp/rekey-agent-demo policy activate --file bundle.json
+target/debug/rekey --state-dir /tmp/rekey-agent-demo policy activate --file bundle.json --expected-vault-id "$VAULT_ID" \
+  --expected-trust-sha256 "$TRUST_SHA256"
 ```
 
 For a disposable local demo only, the repository's external **test signer**
@@ -883,3 +931,20 @@ An exit 8 means a remote effect may have occurred; do not blindly retry.
 If a domain resolves only into `198.18.0.0/15`, Clash/TUN Fake-IP is being
 rejected by design. Configure real DNS for that exact host; never weaken
 private-IP screening or set a proxy environment variable as a workaround.
+
+
+### Node administrator OIDC login
+
+An administrator-configured node may require a short-lived OIDC identity for
+its management operations. Follow the [profile and login procedure](operations-runbook.md#oidc-node-administrator-login):
+unlock locally, Begin, open the returned HTTPS URL on the node's machine, then
+Finish to a new private session file. Add `--admin-session-file FILE` to operator
+CLI calls; step-up proof remains required for mutations. The token is never
+shown in stdout. Cancel stops an unfinished flow; Logout revokes local management
+identities and their capabilities.
+
+The macOS Settings screen exposes profile selection, Begin/open/Finish/Cancel,
+existing session-file selection and Logout. Selecting a new file clears the old
+displayed principal; switching workspace, locking or disconnecting clears login
+state. Browser focus changes preserve the pending login. Actual GUI/IdP/Broker
+execution is still an acceptance gate; local source tests alone do not prove SSO.

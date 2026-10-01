@@ -108,3 +108,5 @@ Broker completed 必须晚于 provider 完成、全部检查、finished audit �
 ## Linux 显式插件增量
 
 后续切片按 [参考插件规格](2026-09-16-github-reference-plugin.md) 实施独立最小 rootfs/seccomp 后端，仅支持 GNU x86_64/aarch64 显式登记，不复用 Agent launcher。AS 与父死范围按该规格验收，不关闭完整 P-10。
+
+2026-10-01 Linux P-10 已选择 delegated cgroup-v2 增量，见 `2026-10-01-linux-plugin-cgroup.md`：注册原生插件强制逐执行内核计费与整树终止，缺设施拒绝，不扩大协议/effect范围；实际内核、出生起charge和Darwin严格物理/启动保障仍未通过。

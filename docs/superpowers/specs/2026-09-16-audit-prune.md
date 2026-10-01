@@ -59,3 +59,9 @@ Admin 连接关闭可能丢失已入 Worker 的操作结果，不会将后台仍
 - 真实 Broker IPC 测试 1 项通过，覆盖成功清理、locked/Agent/错误或缺失 proof 拒绝、旧快照失效与 marker 等值快照可用。
 - CLI 进程协议测试 2 项通过。使用合成 Broker 验证正常/no-op 回执、恶意回执、proof body 与输出秘密 canary，以及多页导出收到过期错误后没有 complete trailer 或成功 receipt。协调者另用真实 CLI/Broker 和真实 schema 的一次性合成库验证了 locked 拒绝、step-up、2 行执行组删除、旧 snapshot 过期、no-op 及输出 canary（本机 artifact `audit-smoke.log`）；导出中途失效仍由 CLI 协议测试和真实后端快照测试分别证明。
 - 不在真实用户保险库运行清理；不扩展为自动保留或所有审计类别回收。
+
+## 2026-10-01 explicit age selection
+
+Selected minimum: existing `audit prune` accepts exactly one of `--before-ms CUTOFF` or `--older-than-days AGE` (positive integer, each day24h). No default age, new IPC/schema/worker policy or background scheduler. Reject zero, negative/overflow age and epoch-underflow rather than clamp. Check age arithmetic before acquiring proof; after the existing per-call hiddenTTY/explicitstdin proof, sample wall clock once and calculate checked cutoff. Authority still validates the cutoff against its own clock and applies the existing monotonic mutation deadline. Preserve existing explicit-cutoff, typed errors, same AuditPruneReceipt and all eligible-group/approval/unknown/journal/snapshot-expiry behavior. No response-loss retry or claim of no deletion after output/transport failure.
+
+This is explicit age-based cleanup, usable when an operator periodically invokes it with fresh proof. It does not implement unattended retention policy, persistent unlock proof, archive-ACK dependency analysis, full audit-category cleanup or physical secure erase. Only two existing CLI production files plus their existing tests change. Fixture tests cover parser exclusivity/age arithmetic/request shape; existing real Actor/SQLite prune tests retain transactional evidence. Actual CLI→UDS remains unpassed on this host.

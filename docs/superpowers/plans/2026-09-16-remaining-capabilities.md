@@ -49,14 +49,14 @@
 | NET-07 | Agent 可见流式响应 | 用户已接受独立流式接口及部分响应失败合同；固定 Anthropic 纯文本 Action 已实现并通过真实 TLS/UDS 专项验收，旧非流式合同保留 |
 | OS-05 | macOS 隔离启动器 | 用户已选择 Seatbelt；`macos-seatbelt-v1` 本机实验实现与定向攻击/真实 Broker 授权测试完成，发布前仍需人工安全审查 |
 | OS-06 | 跨平台强隔离 | macOS 本机与 LinuxKit 容器已有专项证据；Linux 新增确定性攻击测试并修复继承 FD 泄露。原生 Ubuntu x86_64 P0/G2 已通过当前 head 的 CI `35139996331`；其他平台及完整强隔离仍待逐平台验收 |
-| SDK-04 | 动态插件加载 | 封闭原生插件：同一 runner 上 `github-issues-v1`（GitHub App CreateIssue/Comment）与 `anthropic-messages-v1`（OpaqueToken 文本流）；JSON 字段 `native_plugin`，源码格式 14。不是市场/动态库/任意 HTTP；通用多凭证效果平台与完整 P-10 仍未关闭 |
+| SDK-04 | 动态插件加载 | 封闭原生插件：同一 runner 上 `github-issues-v1`（GitHub App CreateIssue/Comment）与 `anthropic-messages-v1`（OpaqueToken 文本流）；JSON 字段 `native_plugin`；插件引入格式 14，当前 journal 格式 15。不是市场/动态库/任意 HTTP；通用多凭证效果平台与完整 P-10 仍未关闭 |
 | UX-04 | 可视化策略审批流程 | 复用 APR-09/POL-09，不单独计实现 |
 | VEX-01 | 私网 Vault | 待输入：固定目标和部署信任；待规格定义 SSRF/DNS 边界 |
 | VEX-02 | Vault 登录方式 | 待输入：AppRole/Kubernetes/OIDC 中选定一种 |
 | VEX-03 | Vault 续期/Namespace/引擎 | 待输入：一个具体新增效果；复用租约生命周期 |
 | VEX-04 | KV 最新版与写入 | 已有具体外部规格：精确版本与写入不确定性，真实挂载/权限仍待输入 |
 | P-08 | 可观测性 | 本机快照及原子 textfile 发布已实现并经本地验收；OTel/远程采集/告警仍未完成 |
-| P-10 | Connector 隔离 | macOS Seatbelt 与 Linux GNU 最小 rootfs/seccomp 参考插件已通过攻击及 Broker 专项；Linux 有 AS64MiB 硬限额、READY 后父死、第一跳 `PR_SET_PDEATHSIG`，以及 artifact 快照受同一 effect deadline 约束。macOS 保持 RSS 采样。bubblewrap 内部窗口与总物理 RSS 仍开放，Broker SIGKILL 仍可能留下快照目录，完整 P-10 未关闭。证据：`.git/codex/threads/remaining-p10-20260917/` |
+| P-10 | Connector 隔离 | macOS Seatbelt 与 Linux GNU 最小 rootfs/seccomp 参考插件已通过攻击及 Broker 专项；Linux 有每进程 AS64MiB 虚拟地址硬限额、pre_exec descendant reaper 的 READY 前后父死测试，以及 artifact 快照受同一 effect deadline 约束；当前不使用外层 `PR_SET_PDEATHSIG`。macOS 保持 RSS 采样。bubblewrap 内部窗口与总物理 RSS 仍开放，Broker SIGKILL 仍可能留下快照目录，完整 P-10 未关闭。证据：`.git/codex/threads/remaining-p10-20260917/` |
 
 隔离与流式的具体提案见 [实施边界](../specs/2026-09-16-local-isolation-and-streaming.md)。macOS 已选择并实现实验 Seatbelt；用户也已接受独立流式接口及 GitHub CreateIssue 参考插件，两条具体执行链均已实现并通过专项验收。
 

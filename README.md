@@ -9,7 +9,7 @@ over two permission-separated Unix sockets.
 > Status: `2.0.0-alpha.2` is the latest completed public Alpha download
 > (vault schema v9, Shape A). [Release run 34329532708](https://github.com/majiayu000/rekey/actions/runs/34329532708)
 > passed macOS/Linux fresh installs, publication, and both public-URL smoke jobs.
-> Development source uses vault format v14 and includes additional unpublished
+> Development source uses vault format v19 and includes additional unpublished
 > features; see [the next Alpha candidate](docs/releases/v2.0.0-alpha.3.md).
 > There is no in-place upgrade
 > from alpha.1. The default product is G1 and is not G2. Credentials never appear
@@ -82,8 +82,10 @@ rekey session create --action <ACTION_ID>@1 --ttl 1h --max-uses 100
 # have an external Ed25519 signer create trust.json and a signed bundle.json:
 printf '%s\n' "$STEP_UP_PROOF" | \
   rekey policy trust install --file trust.json --step-up-stdin
+# Set VAULT_ID and TRUST_SHA256 to the public values from rekey policy status.
 printf '%s\n' "$STEP_UP_PROOF" | \
-  rekey policy activate --file bundle.json --step-up-stdin
+  rekey policy activate --file bundle.json --expected-vault-id "$VAULT_ID" \
+    --expected-trust-sha256 "$TRUST_SHA256" --step-up-stdin
 # hand the printed capability token to the agent, then:
 rekey execute <ACTION_ID>@1 --capability - --body-file req.json
 ```
@@ -107,8 +109,12 @@ List results use a stable sequence snapshot and bounded pages. Export creates a
 new mode-0600 JSONL file and never overwrites or follows a symlink. Audit output
 omits secrets, bodies, headers, capability tokens, resource IDs, and parameter
 hashes. It is sensitive operational metadata, not an encrypted backup. Local
-retention is append-only for the vault lifetime; SIEM, WORM, legal hold, remote
-delivery, configurable retention, and audit deletion are not implemented.
+retention in the released alpha.2 binary is append-only. Development source
+adds explicit completed-execution pruning, a step-up-configured retention
+policy that runs only while unlocked, independent durable-ACK audit delivery,
+and fixed S3 Object Lock archival/Legal Hold transport. See the
+[operations runbook](docs/operations-runbook.md); local protocol tests do not
+prove customer SIEM persistence or AWS WORM permissions.
 
 For explicit automation, proof-only commands use `--password-stdin`;
 `rekey password change --stdin-secrets`, `rekey credential add`, and
@@ -159,8 +165,10 @@ printf '%s\n' "$CAPABILITY_FROM_SECURE_STORAGE" | \
 
 The grant is bound to the challenge, session, principal, exact Action/resource,
 canonical parameters, determining rule, policy version/digest, validity window,
-and use limit. Rekey provides no hosted remote approval service, notification UI,
-human directory, private-key custody, or approval survival across lock/restart.
+and use limit. An independent source-only `rekey-approval-relay` transports
+approval files through authenticated HTTPS with operator-managed deployment.
+Human directory, operated hosted service and approval survival across Broker
+lock/restart remain outside the implemented scope.
 Source trees additionally include `rekey-approval-sign` for a local operator's
 single-person one-time review of an origin-signed challenge envelope; pin
 `rekey approval origin` and pass `--origin-key`. Operators can list unused
@@ -206,7 +214,7 @@ reuses this projection and Agent IPC for explicitly configured Actions. Its
 operator manifest and capability file stay outside model tool arguments;
 Codex discovery and direct MCP invocation have separate acceptance evidence.
 
-This development source uses storage format 14. It rejects older state and
+This development source uses storage format 16. It rejects older state and
 backups without migration; published alpha.2 remains format 9. Keep historical
 backup compatibility claims tied to the binary that created/tested them.
 
