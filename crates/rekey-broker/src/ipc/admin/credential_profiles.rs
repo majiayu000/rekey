@@ -15,7 +15,10 @@ pub(super) async fn validate_add(
     proof: &[u8],
     secret: &[u8],
 ) -> Result<(), BrokerError> {
-    if kind == CredentialKind::OpaqueToken {
+    if matches!(
+        kind,
+        CredentialKind::OpaqueToken | CredentialKind::MacosKeychainSource
+    ) {
         return Ok(());
     }
     authority_until(
@@ -24,7 +27,7 @@ pub(super) async fn validate_add(
     )
     .await?;
     let error = match kind {
-        CredentialKind::OpaqueToken => return Ok(()),
+        CredentialKind::OpaqueToken | CredentialKind::MacosKeychainSource => return Ok(()),
         CredentialKind::KeycloakTokenExchange => {
             crate::executor::keycloak::KeycloakProfile::validate_profile(secret)
                 .err()
@@ -33,6 +36,26 @@ pub(super) async fn validate_add(
         CredentialKind::GitHubAppInstallation => GitHubAppCredential::validate_profile(secret)
             .err()
             .map(|_| "invalid GitHub App credential profile"),
+        CredentialKind::GcpSecretManagerSource => {
+            crate::executor::gcp_source::GcpSourceProfile::validate_profile(secret)
+                .err()
+                .map(|_| "invalid GCP Secret Manager credential profile")
+        }
+        CredentialKind::AzureKeyVaultSource => {
+            crate::executor::azure_source::AzureSourceProfile::validate_profile(secret)
+                .err()
+                .map(|_| "invalid Azure Key Vault credential profile")
+        }
+        CredentialKind::OnePasswordConnectSource => {
+            crate::executor::onepassword_source::OnePasswordSourceProfile::validate_profile(secret)
+                .err()
+                .map(|_| "invalid 1Password Connect credential profile")
+        }
+        CredentialKind::AwsSecretsManagerSource => {
+            crate::executor::aws_source::AwsSourceProfile::validate_profile(secret)
+                .err()
+                .map(|_| "invalid AWS Secrets Manager credential profile")
+        }
         CredentialKind::VaultKvV2Source => {
             crate::executor::vault_source::VaultKvProfile::validate_profile(secret)
                 .err()

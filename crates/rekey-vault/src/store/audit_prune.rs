@@ -117,6 +117,72 @@ fn ensure_current(not_after: Option<Instant>) -> Result<(), AuthorityError> {
     Ok(())
 }
 
+pub(super) fn insert_initial_retention(
+    tx: &rusqlite::Transaction<'_>,
+    record: &crate::model::AuditRetentionRecord,
+) -> Result<(), AuthorityError> {
+    let changed = tx.execute("INSERT INTO audit_retention (singleton,days,updated_at_ms,seal_nonce,seal_ciphertext) VALUES (1,?1,?2,?3,?4)", rusqlite::params![record.days.map(|d| d as i64), record.updated_at_ms, record.seal_nonce.as_slice(), record.seal_ciphertext.as_slice()]).map_err(storage)?;
+    if changed != 1 {
+        return Err(AuthorityError::StorageIntegrityFailed);
+    }
+    Ok(())
+}
+impl SqliteRecordStore {
+    pub fn load_audit_retention(
+        &self,
+    ) -> Result<crate::model::AuditRetentionRecord, AuthorityError> {
+        let count: i64 = self
+            .conn
+            .query_row("SELECT count(*) FROM audit_retention", [], |r| r.get(0))
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        if count != 1 {
+            return Err(AuthorityError::StorageIntegrityFailed);
+        }
+        let (days, updated_at_ms, nonce, ciphertext): (Option<i64>, i64, Vec<u8>, Vec<u8>) = self.conn.query_row("SELECT days,updated_at_ms,seal_nonce,seal_ciphertext FROM audit_retention WHERE singleton=1", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        let record = crate::model::AuditRetentionRecord {
+            days: days
+                .map(u64::try_from)
+                .transpose()
+                .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
+            updated_at_ms,
+            seal_nonce: super::sqlite::blob12(nonce)?,
+            seal_ciphertext: super::sqlite::blob16(ciphertext)?,
+        };
+        rekey_domain::audit::AuditRetentionStatus {
+            days: record.days,
+            updated_at_ms,
+        }
+        .validate()
+        .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        Ok(record)
+    }
+    pub fn verified_audit_retention(
+        &self,
+        key: &[u8; 32],
+        vault_id: rekey_domain::ids::VaultId,
+    ) -> Result<crate::model::AuditRetentionRecord, AuthorityError> {
+        let record = self.load_audit_retention()?;
+        crate::crypto::policy_state::verify_retention(key, vault_id, &record)?;
+        Ok(record)
+    }
+    pub(crate) fn set_audit_retention(
+        &mut self,
+        record: &crate::model::AuditRetentionRecord,
+        audit: AuditEvent,
+        not_after: Option<Instant>,
+    ) -> Result<(), AuthorityError> {
+        ensure_current(not_after)?;
+        let tx = self.conn.transaction().map_err(storage)?;
+        let changed = tx.execute("UPDATE audit_retention SET days=?1,updated_at_ms=?2,seal_nonce=?3,seal_ciphertext=?4 WHERE singleton=1", rusqlite::params![record.days.map(|d| d as i64),record.updated_at_ms,record.seal_nonce.as_slice(),record.seal_ciphertext.as_slice()]).map_err(storage)?;
+        if changed != 1 {
+            return Err(AuthorityError::StorageIntegrityFailed);
+        }
+        super::audit::insert(&tx, &audit)?;
+        ensure_current(not_after)?;
+        commit_audited(tx)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

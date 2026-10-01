@@ -135,6 +135,7 @@ enum VerificationKey {
 
 #[derive(Debug)]
 struct CompiledIdentity {
+    human_oidc: bool,
     principal_id: PrincipalId,
     issuer: String,
     subject: String,
@@ -191,6 +192,20 @@ impl Drop for SensitiveJson {
 }
 
 impl WorkloadCatalog {
+    pub(crate) fn has_oidc_human_binding(
+        &self,
+        issuer: &str,
+        subject: &str,
+        principal: PrincipalId,
+    ) -> bool {
+        self.identities.iter().any(|identity| {
+            identity.human_oidc
+                && identity.principal_id == principal
+                && identity.issuer == issuer
+                && identity.subject == subject
+        })
+    }
+
     pub(crate) fn compile(
         identities: &[WorkloadIdentity],
         rules: &[PolicyRule],
@@ -254,6 +269,7 @@ impl WorkloadCatalog {
                 key_selectors.push((kid.to_owned(), algorithm));
             }
             catalog.identities.push(CompiledIdentity {
+                human_oidc: matches!(identity.profile, WorkloadProfile::Oidc { .. }),
                 principal_id: identity.principal_id,
                 issuer: identity.issuer.clone(),
                 subject,
@@ -726,5 +742,47 @@ fn zeroize_json_strings(value: &mut Value) {
         Value::Array(values) => values.iter_mut().for_each(zeroize_json_strings),
         Value::Object(fields) => fields.values_mut().for_each(zeroize_json_strings),
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod oidc_binding_tests {
+    use super::*;
+    #[test]
+    fn exact_oidc_human_binding_does_not_infer_service_ownership() {
+        let principal = PrincipalId::new_random();
+        let mut catalog = WorkloadCatalog::default();
+        catalog.identities.push(CompiledIdentity {
+            human_oidc: true,
+            principal_id: principal,
+            issuer: "https://issuer.example".into(),
+            subject: "stable-admin".into(),
+            audiences: vec!["client".into()],
+            max_token_age_ms: 60_000,
+            key_selectors: Vec::new(),
+            online_key_source: None,
+        });
+        assert!(catalog.has_oidc_human_binding(
+            "https://issuer.example",
+            "stable-admin",
+            principal
+        ));
+        assert!(!catalog.has_oidc_human_binding(
+            "https://other.example",
+            "stable-admin",
+            principal
+        ));
+        assert!(!catalog.has_oidc_human_binding("https://issuer.example", "other", principal));
+        assert!(!catalog.has_oidc_human_binding(
+            "https://issuer.example",
+            "stable-admin",
+            PrincipalId::new_random()
+        ));
+        catalog.identities[0].human_oidc = false;
+        assert!(!catalog.has_oidc_human_binding(
+            "https://issuer.example",
+            "stable-admin",
+            principal
+        ));
     }
 }

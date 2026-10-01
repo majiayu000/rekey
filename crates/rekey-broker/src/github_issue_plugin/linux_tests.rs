@@ -1,5 +1,6 @@
 use super::*;
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::unix::process::CommandExt;
 use std::process::{Command as StdCommand, Stdio};
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -8,6 +9,13 @@ fn probe() -> &'static Path {
     static PROBE: OnceLock<(tempfile::TempDir, PathBuf)> = OnceLock::new();
     &PROBE
         .get_or_init(|| {
+            // Initialize while this dedicated test host is its root's sole
+            // process, before invoking the trusted C compiler/control fixture.
+            let payload = linux_cgroup::prepare(
+                linux_cgroup::deadline_ns(Instant::now() + Duration::from_secs(4)).unwrap(),
+            )
+            .unwrap();
+            linux_cgroup::remove(payload.root.as_raw_fd(), &payload.name).unwrap();
             let directory = tempfile::tempdir().unwrap();
             let source = directory.path().join("probe.c");
             let artifact = directory.path().join("probe");
@@ -115,15 +123,18 @@ async fn native_files_network_and_readonly_root_with_successful_controls() {
     assert_eq!(sandbox("external_exec").await, "exec=-1 errno=2\n");
     assert_eq!(sandbox("env").await, "PWD=/\n");
     let (_snapshot, executable) = snapshot(probe(), None).unwrap();
-    let mut command = launch_command(&executable, Instant::now() + Duration::from_secs(4)).unwrap();
+    let (mut command, mut containment) =
+        launch_command(&executable, Instant::now() + Duration::from_secs(4)).unwrap();
     command.env("REKEY_PLUGIN_HOST_SENTINEL", "must-not-pass");
     let mut child = command.spawn().unwrap();
+    drop(command);
     child.stdin.take().unwrap().write_all(b"env").await.unwrap();
     let output = tokio::time::timeout(Duration::from_secs(4), child.wait_with_output())
         .await
         .unwrap()
         .unwrap();
     assert!(output.status.success());
+    containment.finish(containment.end).await.unwrap();
     assert_eq!(output.stdout, b"PWD=/\n");
     assert_eq!(
         sandbox("fds").await,
@@ -254,9 +265,11 @@ async fn snapshot_copy_observes_deadline_before_spawn() {
 async fn cpu_hard_limit_kills_started_payload_ignoring_soft_signal() {
     use tokio::io::AsyncBufReadExt;
     let (_snapshot, executable) = snapshot(probe(), None).unwrap();
-    let mut command = launch_command(&executable, Instant::now() + Duration::from_secs(6)).unwrap();
+    let (mut command, mut containment) =
+        launch_command(&executable, Instant::now() + Duration::from_secs(6)).unwrap();
     let started = Instant::now();
     let mut child = command.spawn().unwrap();
+    drop(command);
     let mut input = child.stdin.take().unwrap();
     input.write_all(b"cpu").await.unwrap();
     drop(input);
@@ -270,6 +283,7 @@ async fn cpu_hard_limit_kills_started_payload_ignoring_soft_signal() {
         .await
         .unwrap()
         .unwrap();
+    containment.finish(containment.end).await.unwrap();
     assert_eq!(status.code(), Some(128 + libc::SIGKILL));
     assert!(
         started.elapsed() >= Duration::from_millis(1500),
@@ -304,10 +318,12 @@ fn inherited_high_fd_and_filter_fd_do_not_survive_lowered_hard_limit() {
                     });
                 }
             }
+            let fixture_domain = FixtureDomain::attach(&mut command);
             assert!(
                 command.status().unwrap().success(),
                 "injected ambient={inject_ambient}"
             );
+            fixture_domain.finish();
         }
         return;
     }
@@ -405,10 +421,12 @@ async fn assert_gone(pids: &[u32]) {
 fn production_run_cancellation_cleans_entire_started_namespace() {
     const MARKER: &str = "REKEY_TEST_LINUX_RUN_CANCEL";
     if std::env::var_os(MARKER).is_none() {
-        let status = StdCommand::new(std::env::current_exe().unwrap())
-            .args(["--exact", "github_issue_plugin::linux_tests::production_run_cancellation_cleans_entire_started_namespace", "--nocapture"])
-            .env(MARKER, "1").status().unwrap();
+        let mut command = StdCommand::new(std::env::current_exe().unwrap());
+        command.args(["--exact", "github_issue_plugin::linux_tests::production_run_cancellation_cleans_entire_started_namespace", "--nocapture"]).env(MARKER, "1");
+        let fixture_domain = FixtureDomain::attach(&mut command);
+        let status = command.status().unwrap();
         assert!(status.success());
+        fixture_domain.finish();
         return;
     }
     let artifact = probe().to_owned();
@@ -479,10 +497,11 @@ fn parent_death_fixture() {
             .unwrap();
         runtime.block_on(async {
             let (_snapshot, executable) = snapshot(probe(), None).unwrap();
-            let mut command =
+            let (mut command, mut containment) =
                 launch_command(&executable, Instant::now() + Duration::from_secs(5)).unwrap();
             command.stdout(Stdio::inherit());
             let mut child = command.spawn().unwrap();
+            drop(command);
             println!("LAUNCHER {}", child.id().unwrap());
             std::io::stdout().flush().unwrap();
             if mode != "sandbox-startup" {
@@ -495,6 +514,7 @@ fn parent_death_fixture() {
                     .unwrap();
             }
             child.wait().await.unwrap();
+            containment.finish(containment.end).await.unwrap();
         });
     }
 }
@@ -503,7 +523,8 @@ fn parent_death_fixture() {
 async fn parent_sigkill_after_ready_kills_uncooperative_payload_with_live_control() {
     use tokio::io::AsyncBufReadExt;
     for mode in ["plain", "sandbox"] {
-        let mut parent = tokio::process::Command::new(std::env::current_exe().unwrap())
+        let mut parent_command = tokio::process::Command::new(std::env::current_exe().unwrap());
+        parent_command
             .args([
                 "--exact",
                 "github_issue_plugin::linux_tests::parent_death_fixture",
@@ -511,9 +532,10 @@ async fn parent_sigkill_after_ready_kills_uncooperative_payload_with_live_contro
             ])
             .env("REKEY_TEST_LINUX_PLUGIN_PARENT", mode)
             .stdout(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap();
+            .kill_on_drop(true);
+        let fixture_domain = FixtureDomain::attach(parent_command.as_std_mut());
+        let mut parent = parent_command.spawn().unwrap();
+        drop(parent_command);
         let parent_pid = parent.id().unwrap();
         let mut lines = tokio::io::BufReader::new(parent.stdout.take().unwrap()).lines();
         let readiness = tokio::time::timeout(Duration::from_secs(5), async {
@@ -573,6 +595,7 @@ async fn parent_sigkill_after_ready_kills_uncooperative_payload_with_live_contro
             assert!(observed.contains("clear_pdeathsig=0 errno=0"), "{observed}");
             assert!(observed.contains("setsid=0 errno=0"), "{observed}");
         }
+        fixture_domain.finish();
     }
 }
 
@@ -580,7 +603,8 @@ async fn parent_sigkill_after_ready_kills_uncooperative_payload_with_live_contro
 async fn parent_sigkill_before_ready_kills_sandbox_with_live_control() {
     use tokio::io::AsyncBufReadExt;
     for mode in ["plain-startup", "sandbox-startup"] {
-        let mut parent = tokio::process::Command::new(std::env::current_exe().unwrap())
+        let mut parent_command = tokio::process::Command::new(std::env::current_exe().unwrap());
+        parent_command
             .args([
                 "--exact",
                 "github_issue_plugin::linux_tests::parent_death_fixture",
@@ -588,9 +612,10 @@ async fn parent_sigkill_before_ready_kills_sandbox_with_live_control() {
             ])
             .env("REKEY_TEST_LINUX_PLUGIN_PARENT", mode)
             .stdout(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap();
+            .kill_on_drop(true);
+        let fixture_domain = FixtureDomain::attach(parent_command.as_std_mut());
+        let mut parent = parent_command.spawn().unwrap();
+        drop(parent_command);
         let parent_pid = parent.id().unwrap();
         let mut lines = tokio::io::BufReader::new(parent.stdout.take().unwrap()).lines();
         let launcher = tokio::time::timeout(Duration::from_secs(5), async {
@@ -629,6 +654,7 @@ async fn parent_sigkill_before_ready_kills_sandbox_with_live_control() {
             assert_gone(&pids).await;
             assert!(survived, "unconfined payload must ignore parent death");
         }
+        fixture_domain.finish();
     }
 }
 
@@ -648,4 +674,126 @@ async fn x32_and_compat_abi_are_killed() {
             Err(BrokerError::Denied("plugin-exit"))
         ));
     }
+}
+
+// Fixed test-only topology: every cold execed test host gets an empty child
+// delegation under this already pinned test root. Production ownership checks
+// remain unchanged. Kernel suites require real delegation and --test-threads=1.
+struct FixtureDomain {
+    root: std::sync::Arc<std::fs::File>,
+    directory: std::fs::File,
+    name: std::ffi::CString,
+    kill: std::fs::File,
+    events: std::fs::File,
+}
+impl FixtureDomain {
+    fn attach(command: &mut StdCommand) -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let payload = linux_cgroup::prepare(
+            linux_cgroup::deadline_ns(Instant::now() + Duration::from_secs(4)).unwrap(),
+        )
+        .unwrap();
+        let root = payload.root.clone();
+        linux_cgroup::remove(root.as_raw_fd(), &payload.name).unwrap();
+        let name = std::ffi::CString::new(format!(
+            "rekey-test-domain-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ))
+        .unwrap();
+        assert_eq!(
+            unsafe { libc::mkdirat(root.as_raw_fd(), name.as_ptr(), 0o700) },
+            0
+        );
+        let directory = Self::open(root.as_raw_fd(), &name, libc::O_RDONLY | libc::O_DIRECTORY);
+        let membership = Self::open(directory.as_raw_fd(), c"cgroup.procs", libc::O_WRONLY);
+        let kill = Self::open(directory.as_raw_fd(), c"cgroup.kill", libc::O_WRONLY);
+        let events = Self::open(directory.as_raw_fd(), c"cgroup.events", libc::O_RDONLY);
+        unsafe {
+            command.pre_exec(move || linux_cgroup::write_fd(membership.as_raw_fd(), b"0"));
+        }
+        Self {
+            root,
+            directory,
+            name,
+            kill,
+            events,
+        }
+    }
+    fn open(root: i32, name: &std::ffi::CStr, flags: i32) -> std::fs::File {
+        let fd = unsafe {
+            libc::openat(
+                root,
+                name.as_ptr(),
+                flags | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            )
+        };
+        assert!(
+            fd >= 3,
+            "test manager descriptor: {}",
+            std::io::Error::last_os_error()
+        );
+        unsafe { std::fs::File::from_raw_fd(fd) }
+    }
+    fn finish(&self) {
+        linux_cgroup::kill_and_drain(
+            self.kill.as_raw_fd(),
+            self.events.as_raw_fd(),
+            linux_cgroup::clock_ns().unwrap() + 2_000_000_000,
+        )
+        .unwrap();
+        // Only empty, fixed test-owned child domains are removed after drain.
+        for entry in fs::read_dir(format!("/proc/self/fd/{}", self.directory.as_raw_fd())).unwrap()
+        {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_dir() {
+                let name = std::ffi::CString::new(entry.file_name().as_encoded_bytes()).unwrap();
+                linux_cgroup::remove(self.directory.as_raw_fd(), &name).unwrap();
+            }
+        }
+        linux_cgroup::remove(self.root.as_raw_fd(), &self.name).unwrap();
+    }
+}
+impl Drop for FixtureDomain {
+    fn drop(&mut self) {
+        unsafe {
+            libc::lseek(self.kill.as_raw_fd(), 0, libc::SEEK_SET);
+            libc::write(self.kill.as_raw_fd(), b"1".as_ptr().cast(), 1);
+        }
+    }
+}
+
+#[tokio::test]
+async fn success_kills_drains_and_removes_the_pinned_payload() {
+    let (_snapshot, executable) = snapshot(probe(), None).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(4);
+    let (mut command, mut containment) = launch_command(&executable, deadline).unwrap();
+    let path = PathBuf::from(format!(
+        "/proc/self/fd/{}",
+        containment.payload.root.as_raw_fd()
+    ))
+    .join(containment.payload.name.to_str().unwrap());
+    for (file, value) in [
+        ("memory.max", "67108864"),
+        ("memory.swap.max", "0"),
+        ("memory.oom.group", "1"),
+    ] {
+        assert_eq!(fs::read_to_string(path.join(file)).unwrap().trim(), value);
+    }
+    let mut child = command.spawn().unwrap();
+    drop(command);
+    child.stdin.take().unwrap().write_all(b"ok").await.unwrap();
+    let output = tokio::time::timeout_at(
+        tokio::time::Instant::from_std(deadline),
+        child.wait_with_output(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"OK\n");
+    containment.finish(containment.end).await.unwrap();
+    assert!(
+        fs::symlink_metadata(path).is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+    );
 }

@@ -38,7 +38,8 @@ mod password_lifecycle;
 mod vault_kv;
 
 fn admin_body_limit(message_type: u16) -> u32 {
-    match message_type {
+    let base = match message_type {
+        admin_msg::OIDC_LOGOUT => 43,
         admin_msg::DESKTOP_LOGIN
         | admin_msg::DESKTOP_REVEAL
         | admin_msg::DESKTOP_REMEMBER
@@ -55,6 +56,11 @@ fn admin_body_limit(message_type: u16) -> u32 {
         | admin_msg::GITHUB_WEBHOOK_APPLY
         | admin_msg::CREDENTIAL_ROTATE_VAULT_KV
         | admin_msg::CREDENTIAL_ROTATE_KEYCLOAK
+        | admin_msg::CREDENTIAL_ROTATE_GCP_SECRET_MANAGER
+        | admin_msg::CREDENTIAL_ROTATE_AWS_SECRETS_MANAGER
+        | admin_msg::CREDENTIAL_ROTATE_AZURE_KEY_VAULT
+        | admin_msg::CREDENTIAL_ROTATE_MACOS_KEYCHAIN
+        | admin_msg::CREDENTIAL_ROTATE_ONEPASSWORD_CONNECT
         | admin_msg::CREDENTIAL_ROTATE_VAULT_DYNAMIC => ipc::ADMIN_SECRET_BODY_MAX_BYTES,
         admin_msg::CREDENTIAL_REVOKE
         | admin_msg::ACTION_CREATE
@@ -67,9 +73,15 @@ fn admin_body_limit(message_type: u16) -> u32 {
         | admin_msg::POLICY_ACTIVATE
         | admin_msg::POLICY_TRUST_INSTALL
         | admin_msg::AUDIT_PRUNE
+        | admin_msg::AUDIT_RETENTION_SET
         | admin_msg::KEY_ROTATE_DEK
         | admin_msg::RECOVERY_ROTATE => ipc::ADMIN_PROOF_BODY_MAX_BYTES,
         _ => 0,
+    };
+    if ipc::managed_admin_operation(message_type).unwrap_or(false) {
+        base + ipc::ADMIN_MANAGEMENT_OVERHEAD
+    } else {
+        base
     }
 }
 
@@ -200,7 +212,74 @@ async fn dispatch(
     frame: &IncomingFrame,
     ctx: &BrokerCtx,
 ) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
+    let deadline = admin_mutation_deadline();
+    let managed = ipc::managed_admin_operation(frame.header.message_type)?;
+    if !managed {
+        return dispatch_operation(frame, ctx, None, deadline).await;
+    }
+    match &ctx.oidc_admin {
+        Some(manager) => {
+            let (token, original) = ipc::parse_management_body(&frame.body)?;
+            let admission = manager.admit(token, ctx, deadline).await?;
+            let original = IncomingFrame {
+                header: frame.header,
+                metadata: frame.metadata.clone(),
+                body: Zeroizing::new(original.to_vec()),
+            };
+            dispatch_operation(&original, ctx, Some(&admission), deadline).await
+        }
+        None => {
+            if frame.body.starts_with(b"RKAU") {
+                return Err(BrokerError::Frame(ipc::FrameError::InvalidField));
+            }
+            dispatch_operation(frame, ctx, None, deadline).await
+        }
+    }
+}
+
+async fn dispatch_operation(
+    frame: &IncomingFrame,
+    ctx: &BrokerCtx,
+    admission: Option<&crate::oidc_admin::Admission>,
+    request_deadline: tokio::time::Instant,
+) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
     match frame.header.message_type {
+        admin_msg::OIDC_LOGIN_BEGIN => {
+            empty_request(frame)?;
+            let _owner = ctx.lifecycle.coordinate_until(request_deadline).await?;
+            ctx.lifecycle.reject_if_not_running()?;
+            let manager = ctx
+                .oidc_admin
+                .as_ref()
+                .ok_or(BrokerError::Denied("OIDC profile is not enabled"))?;
+            Ok((json(&manager.begin()?)?, Vec::new()))
+        }
+        admin_msg::OIDC_LOGIN_FINISH | admin_msg::OIDC_LOGIN_CANCEL => {
+            let flow: ipc::OidcFlowMeta = meta(frame)?;
+            if !frame.body.is_empty() {
+                return Err(BrokerError::Frame(ipc::FrameError::InvalidField));
+            }
+            let manager = ctx
+                .oidc_admin
+                .as_ref()
+                .ok_or(BrokerError::Denied("OIDC profile is not enabled"))?;
+            if frame.header.message_type == admin_msg::OIDC_LOGIN_CANCEL {
+                manager.cancel(&flow.flow_id)?;
+                Ok((json(&serde_json::json!({"cancelled":true}))?, Vec::new()))
+            } else {
+                ctx.lifecycle.reject_if_not_running()?;
+                let (response, token) = manager.finish(&flow.flow_id, ctx).await?;
+                Ok((json(&response)?, token.to_vec()))
+            }
+        }
+        admin_msg::OIDC_LOGOUT => {
+            empty_meta(frame)?;
+            let manager = ctx
+                .oidc_admin
+                .as_ref()
+                .ok_or(BrokerError::Denied("OIDC profile is not enabled"))?;
+            Ok((json(&manager.logout(&frame.body, ctx).await?)?, Vec::new()))
+        }
         admin_msg::METRICS => {
             empty_request(frame)?;
             let snapshot = ctx.metrics.snapshot(
@@ -210,7 +289,7 @@ async fn dispatch(
             Ok((json(&snapshot)?, Vec::new()))
         }
         admin_msg::DESKTOP_REMEMBER => {
-            let deadline = admin_mutation_deadline();
+            let deadline = request_deadline;
             empty_meta(frame)?;
             let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
             let _owner = ctx.lifecycle.coordinate_until(deadline).await?;
@@ -227,26 +306,32 @@ async fn dispatch(
         admin_msg::DESKTOP_RESUME => {
             empty_meta(frame)?;
             let (_, key) = ipc::parse_proof_body(&frame.body)?;
-            let (token, expires) = ctx.resume_desktop(SecretInput::from_slice(key)).await?;
+            let (token, expires, lease_recovery) =
+                ctx.resume_desktop(SecretInput::from_slice(key)).await?;
             Ok((
-                json(&serde_json::json!({"expires_at_ms": expires}))?,
+                json(
+                    &serde_json::json!({"expires_at_ms": expires,"lease_recovery":lease_recovery}),
+                )?,
                 token.to_vec(),
             ))
         }
         admin_msg::DESKTOP_LOGIN => {
             empty_meta(frame)?;
             let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
-            let token = ctx
+            let (token, lease_recovery) = ctx
                 .unlock_with_desktop(proof_from(kind, proof), true)
-                .await?
-                .ok_or(BrokerError::Authority(AuthorityError::AuthenticationFailed))?;
+                .await?;
+            let token =
+                token.ok_or(BrokerError::Authority(AuthorityError::AuthenticationFailed))?;
             Ok((
-                json(&serde_json::json!({"expires_in_seconds": 7 * 24 * 60 * 60}))?,
+                json(
+                    &serde_json::json!({"expires_in_seconds": 7 * 24 * 60 * 60,"lease_recovery":lease_recovery}),
+                )?,
                 token.to_vec(),
             ))
         }
         admin_msg::DESKTOP_ADD => {
-            let deadline = admin_mutation_deadline();
+            let deadline = request_deadline;
             let add: ipc::CredentialAddMeta = meta(frame)?;
             if add.kind != CredentialKind::OpaqueToken {
                 return Err(BrokerError::Frame(ipc::FrameError::InvalidField));
@@ -269,7 +354,7 @@ async fn dispatch(
             Ok((json(&result)?, Vec::new()))
         }
         admin_msg::DESKTOP_REVEAL => {
-            let deadline = admin_mutation_deadline();
+            let deadline = request_deadline;
             let reference: ipc::CredentialRefMeta = meta(frame)?;
             let (_, token) = ipc::parse_proof_body(&frame.body)?;
             let _owner = ctx.lifecycle.coordinate_until(deadline).await?;
@@ -298,29 +383,46 @@ async fn dispatch(
                 format_version: status.format_version,
                 runtime_version: env!("CARGO_PKG_VERSION").to_owned(),
                 sessions_active: ctx.sessions.active_count(crate::now_ts()?),
+                lease_journal: ctx.executor.lease_journal_status().await?,
             };
             Ok((json(&response)?, Vec::new()))
         }
         admin_msg::UNLOCK_PASSWORD => {
             empty_meta(frame)?;
             let proof = UnlockProof::Password(SecretInput::from_slice(&frame.body));
-            ctx.unlock(proof).await?;
-            Ok((json(&serde_json::json!({"unlocked": true}))?, Vec::new()))
+            let lease_recovery = ctx.unlock(proof).await?;
+            Ok((
+                json(&ipc::UnlockResponse {
+                    unlocked: true,
+                    lease_recovery,
+                })?,
+                Vec::new(),
+            ))
         }
         admin_msg::UNLOCK_RECOVERY => {
             empty_meta(frame)?;
             let proof = UnlockProof::Recovery(SecretInput::from_slice(&frame.body));
-            ctx.unlock(proof).await?;
-            Ok((json(&serde_json::json!({"unlocked": true}))?, Vec::new()))
+            let lease_recovery = ctx.unlock(proof).await?;
+            Ok((
+                json(&ipc::UnlockResponse {
+                    unlocked: true,
+                    lease_recovery,
+                })?,
+                Vec::new(),
+            ))
         }
         admin_msg::KEY_ROTATE_VRK => password_lifecycle::handle_vrk_rotate(frame, ctx).await,
         admin_msg::KEY_ROTATE_DEK => password_lifecycle::handle_dek_rotate(frame, ctx).await,
         admin_msg::PASSWORD_CHANGE => password_lifecycle::handle_password_change(frame, ctx).await,
         admin_msg::RECOVERY_ROTATE => password_lifecycle::handle_recovery_rotate(frame, ctx).await,
         admin_msg::AUDIT_PRUNE => audit_query::handle_audit_prune(frame, ctx).await,
+        admin_msg::AUDIT_RETENTION_SET => {
+            audit_query::handle_retention_set(frame, ctx, request_deadline).await
+        }
+        admin_msg::AUDIT_RETENTION_STATUS => audit_query::handle_retention_status(frame, ctx).await,
         admin_msg::AUDIT_QUERY => audit_query::handle_audit_query(frame, ctx).await,
         admin_msg::CREDENTIAL_ADD => {
-            let deadline = admin_mutation_deadline();
+            let deadline = request_deadline;
             ctx.lifecycle.reject_if_not_running()?;
             let add_meta: ipc::CredentialAddMeta = meta(frame)?;
             let (kind, proof, secret) = ipc::parse_proof_and_secret_body(&frame.body)?;
@@ -353,7 +455,7 @@ async fn dispatch(
             ))
         }
         admin_msg::CREDENTIAL_ROTATE => {
-            let deadline = admin_mutation_deadline();
+            let deadline = request_deadline;
             ctx.lifecycle.reject_if_not_running()?;
             let ref_meta: ipc::CredentialRefMeta = meta(frame)?;
             let (kind, proof, secret) = ipc::parse_proof_and_secret_body(&frame.body)?;
@@ -375,11 +477,26 @@ async fn dispatch(
         admin_msg::GITHUB_WEBHOOK_APPLY => github::handle_webhook(frame, ctx).await,
         admin_msg::CREDENTIAL_ROTATE_KEYCLOAK => vault_kv::handle_rotate_keycloak(frame, ctx).await,
         admin_msg::CREDENTIAL_ROTATE_VAULT_KV => vault_kv::handle_rotate(frame, ctx).await,
+        admin_msg::CREDENTIAL_ROTATE_GCP_SECRET_MANAGER => {
+            vault_kv::handle_rotate_gcp(frame, ctx).await
+        }
+        admin_msg::CREDENTIAL_ROTATE_AZURE_KEY_VAULT => {
+            vault_kv::handle_rotate_azure(frame, ctx).await
+        }
+        admin_msg::CREDENTIAL_ROTATE_MACOS_KEYCHAIN => {
+            vault_kv::handle_rotate_keychain(frame, ctx).await
+        }
+        admin_msg::CREDENTIAL_ROTATE_ONEPASSWORD_CONNECT => {
+            vault_kv::handle_rotate_onepassword(frame, ctx).await
+        }
+        admin_msg::CREDENTIAL_ROTATE_AWS_SECRETS_MANAGER => {
+            vault_kv::handle_rotate_aws(frame, ctx).await
+        }
         admin_msg::CREDENTIAL_ROTATE_VAULT_DYNAMIC => {
             vault_kv::handle_rotate_dynamic(frame, ctx).await
         }
         admin_msg::CREDENTIAL_REVOKE => {
-            let deadline = admin_mutation_deadline();
+            let deadline = request_deadline;
             ctx.lifecycle.reject_if_not_running()?;
             let ref_meta: ipc::CredentialRefMeta = meta(frame)?;
             let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
@@ -404,7 +521,7 @@ async fn dispatch(
             Ok((json(&metadata)?, Vec::new()))
         }
         admin_msg::ACTION_CREATE | admin_msg::ACTION_UPDATE => {
-            let deadline = admin_mutation_deadline();
+            let deadline = request_deadline;
             let (existing, definition_meta) =
                 if frame.header.message_type == admin_msg::ACTION_UPDATE {
                     let update: ipc::ActionUpdateMeta = meta(frame)?;
@@ -431,7 +548,7 @@ async fn dispatch(
             Ok((json(&action)?, Vec::new()))
         }
         admin_msg::ACTION_DISABLE => {
-            let deadline = admin_mutation_deadline();
+            let deadline = request_deadline;
             let ref_meta: ipc::ActionRefMeta = meta(frame)?;
             let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
             let _owner = ctx.lifecycle.coordinate_until(deadline).await?;
@@ -455,7 +572,7 @@ async fn dispatch(
             Ok((json(&ipc::ActionListResponse { actions })?, Vec::new()))
         }
         admin_msg::SESSION_CREATE => {
-            let deadline = admin_mutation_deadline();
+            let deadline = request_deadline;
             ctx.lifecycle.reject_if_not_running()?;
             let create: ipc::SessionCreateMeta = meta(frame)?;
             let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
@@ -481,7 +598,10 @@ async fn dispatch(
                 action_timeouts.push((*r, pinned.action.timeout_ms));
             }
             let session_id = crate::random_id(SessionId::from_random_bytes)?;
-            let principal_id = crate::random_id(PrincipalId::from_random_bytes)?;
+            let principal_id = match admission {
+                Some(identity) => identity.principal,
+                None => crate::random_id(PrincipalId::from_random_bytes)?,
+            };
             let vault_id = authority_until(deadline, ctx.authority.status())
                 .await?
                 .vault_id;
@@ -491,12 +611,19 @@ async fn dispatch(
                 principal_id,
                 session_id,
             };
+            let issued_at = crate::now_ts()?;
             let grant = SessionGrant::new(
                 session_id,
                 principal,
                 create.actions,
-                crate::now_ts()?,
-                create.ttl_ms,
+                issued_at,
+                admission.map_or(create.ttl_ms, |identity| {
+                    create.ttl_ms.min(
+                        identity
+                            .expires_at_ms
+                            .saturating_sub(issued_at.as_unix_ms()),
+                    )
+                }),
                 create.max_uses,
             )
             .map_err(BrokerError::Domain)?;
@@ -536,6 +663,24 @@ async fn dispatch(
                 }
                 return Err(expired);
             }
+            if let (Some(manager), Some(identity)) = (&ctx.oidc_admin, admission) {
+                match manager.publish(identity, ctx, || {
+                    ctx.sessions
+                        .bound_management_deadline(session_id, identity.deadline.into_std())
+                }) {
+                    Ok(true) => (),
+                    Ok(false) => {
+                        ctx.sessions.revoke(session_id);
+                        return Err(BrokerError::Denied(
+                            "management capability publication closed",
+                        ));
+                    }
+                    Err(error) => {
+                        ctx.sessions.revoke(session_id);
+                        return Err(error);
+                    }
+                }
+            }
             let response = ipc::SessionCreatedResponse {
                 session_id,
                 principal_id,
@@ -546,14 +691,15 @@ async fn dispatch(
             Ok((json(&response)?, Vec::new()))
         }
         admin_msg::POLICY_ACTIVATE => {
-            let deadline = admin_mutation_deadline();
+            let deadline = request_deadline;
             let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
-            ctx.activate_policy_until(&frame.metadata, proof_from(kind, proof), deadline)
+            let metadata: ipc::PolicyActivateMeta = meta(frame)?;
+            ctx.activate_policy_until(metadata, proof_from(kind, proof), deadline)
                 .await?;
             Ok((json(&ctx.policy_status().await?)?, Vec::new()))
         }
         admin_msg::POLICY_TRUST_INSTALL => {
-            let deadline = admin_mutation_deadline();
+            let deadline = request_deadline;
             let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
             let trust = rekey_policy::parse_policy_trust(&frame.metadata)?;
             ctx.install_policy_trust_until(trust, proof_from(kind, proof), deadline)
@@ -614,7 +760,7 @@ async fn dispatch(
             Ok((json(&envelope)?, Vec::new()))
         }
         admin_msg::SESSION_REVOKE => {
-            let deadline = admin_mutation_deadline();
+            let deadline = request_deadline;
             ctx.lifecycle.reject_if_not_running()?;
             let revoke: ipc::SessionRevokeMeta = meta(frame)?;
             let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
@@ -657,6 +803,7 @@ async fn dispatch(
                 created_at_ms: info.created_at_ms,
                 sha256_hex: info.sha256_hex,
                 output_path: info.output_path.display().to_string(),
+                snapshot_cut: info.snapshot_cut,
             };
             Ok((json(&receipt)?, Vec::new()))
         }
@@ -804,6 +951,152 @@ fn ensure_credential_catalog_fits(
 mod tests {
     use super::*;
     use rekey_domain::ids::CredentialId;
+
+    #[tokio::test]
+    async fn review_begin_waits_for_existing_owner_and_cannot_insert_after_lock() {
+        use std::future::{Future, poll_fn};
+        use std::task::Poll;
+        let (_directory, mut ctx, join, terminal) = crate::runtime::tests::oidc_test_ctx().await;
+        let manager = crate::oidc_admin::tests::socketless_begin_fixture(
+            ctx.authority.status().await.unwrap().vault_id,
+        );
+        Arc::get_mut(&mut ctx).unwrap().oidc_admin = Some(manager.clone());
+        let owner = ctx.lifecycle.coordinate().await;
+        let frame = IncomingFrame {
+            header: ipc::FrameHeader {
+                channel: Channel::Admin,
+                flags: 0,
+                message_type: admin_msg::OIDC_LOGIN_BEGIN,
+                request_id: rekey_domain::ids::RequestId::new_random(),
+                metadata_len: 2,
+                body_len: 0,
+            },
+            metadata: b"{}".to_vec(),
+            body: Zeroizing::new(Vec::new()),
+        };
+        let mut pending = Box::pin(dispatch(&frame, &ctx));
+        poll_fn(|cx| {
+            assert!(
+                pending.as_mut().poll(cx).is_pending(),
+                "Begin must wait on the existing lifecycle owner"
+            );
+            Poll::Ready(())
+        })
+        .await;
+        ctx.lifecycle.enter_draining();
+        manager.clear();
+        ctx.authority
+            .lock("oidc-review-interleaving")
+            .await
+            .unwrap();
+        ctx.lifecycle.enter_locked();
+        drop(owner);
+        assert_eq!(pending.await.err().unwrap().code(), "LOCKED");
+        ctx.authority.shutdown(None).await.unwrap();
+        drop(ctx);
+        terminal.await.unwrap();
+        join.join().unwrap();
+    }
+
+    #[test]
+    fn oidc_envelope_limits_and_os_exceptions_are_closed() {
+        for id in 1..=51 {
+            let protected = ipc::managed_admin_operation(id).unwrap();
+            if protected {
+                assert!(admin_body_limit(id) >= 50);
+            } else if id == admin_msg::OIDC_LOGOUT {
+                assert_eq!(admin_body_limit(id), 43);
+            }
+        }
+        assert_eq!(
+            admin_body_limit(admin_msg::CREDENTIAL_ADD),
+            ipc::ADMIN_SECRET_BODY_MAX_BYTES + 50
+        );
+        assert_eq!(
+            admin_body_limit(admin_msg::UNLOCK_PASSWORD),
+            ipc::ADMIN_SECRET_FIELD_MAX_BYTES
+        );
+    }
+
+    #[tokio::test]
+    async fn oidc_unconfigured_g1_rejects_envelope_unknown_and_preserves_plain_reads() {
+        let (_dir, ctx, join, terminal) = crate::runtime::tests::oidc_test_ctx().await;
+        let request = |id, body: Vec<u8>| IncomingFrame {
+            header: ipc::FrameHeader {
+                channel: Channel::Admin,
+                flags: 0,
+                message_type: id,
+                request_id: rekey_domain::ids::RequestId::new_random(),
+                metadata_len: 2,
+                body_len: body.len() as u32,
+            },
+            metadata: b"{}".to_vec(),
+            body: Zeroizing::new(body),
+        };
+        dispatch(&request(admin_msg::METRICS, Vec::new()), &ctx)
+            .await
+            .unwrap();
+        let protected = ipc::encode_management_body(&[b'A'; 43], &[]).unwrap();
+        assert_eq!(
+            dispatch(&request(admin_msg::METRICS, protected), &ctx)
+                .await
+                .err()
+                .unwrap()
+                .code(),
+            "INVALID_FRAME"
+        );
+        assert_eq!(
+            dispatch(&request(49, Vec::new()), &ctx)
+                .await
+                .err()
+                .unwrap()
+                .code(),
+            "INVALID_FRAME"
+        );
+        ctx.authority.lock("oidc-test-cleanup").await.unwrap();
+        ctx.authority.shutdown(None).await.unwrap();
+        drop(ctx);
+        terminal.await.unwrap();
+        join.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn oidc_configured_all_managed_operations_require_body_token() {
+        let (directory, mut ctx, join, terminal) = crate::runtime::tests::oidc_test_ctx().await;
+        let path = crate::oidc_admin::tests::protected_profile_file(
+            directory.path(),
+            ctx.authority.status().await.unwrap().vault_id,
+        );
+        Arc::get_mut(&mut ctx).unwrap().oidc_admin =
+            Some(crate::oidc_admin::Manager::load(&path).unwrap());
+        for id in 1..=51 {
+            if !ipc::managed_admin_operation(id).unwrap() {
+                continue;
+            }
+            let frame = IncomingFrame {
+                header: ipc::FrameHeader {
+                    channel: Channel::Admin,
+                    flags: 0,
+                    message_type: id,
+                    request_id: rekey_domain::ids::RequestId::new_random(),
+                    metadata_len: 2,
+                    body_len: 0,
+                },
+                metadata: b"{}".to_vec(),
+                body: Zeroizing::new(Vec::new()),
+            };
+            assert_eq!(
+                dispatch(&frame, &ctx).await.err().unwrap().code(),
+                "INVALID_FRAME",
+                "message {id}"
+            );
+        }
+        ctx.authority.lock("oidc-test-cleanup").await.unwrap();
+        ctx.authority.shutdown(None).await.unwrap();
+        drop(ctx);
+        terminal.await.unwrap();
+        join.join().unwrap();
+    }
 
     #[test]
     fn oversized_action_response_is_rejected_before_upsert() {
@@ -961,5 +1254,223 @@ mod tests {
             ),
             Err(BrokerError::Frame(ipc::FrameError::SectionTooLarge))
         ));
+    }
+    fn exact3_set_frame(days: u64) -> IncomingFrame {
+        let metadata =
+            serde_json::to_vec(&rekey_domain::audit::AuditRetentionSet { days: Some(days) })
+                .unwrap();
+        let mut body = Vec::new();
+        ipc::encode_proof_body(ProofKind::Password, b"fixture-proof", &mut body);
+        IncomingFrame {
+            header: ipc::FrameHeader {
+                channel: Channel::Admin,
+                flags: 0,
+                message_type: admin_msg::AUDIT_RETENTION_SET,
+                request_id: rekey_domain::ids::RequestId::new_random(),
+                metadata_len: metadata.len() as u32,
+                body_len: body.len() as u32,
+            },
+            metadata,
+            body: Zeroizing::new(body),
+        }
+    }
+
+    #[tokio::test]
+    async fn exact3_unknown_retention_reply_closes_queued_set_business_and_remote_before_stop_consumer()
+     {
+        use std::future::{Future, poll_fn};
+        use std::task::Poll;
+        let (dir, mut ctx, join, terminal) = crate::runtime::tests::oidc_test_ctx().await;
+        let mut stop = crate::runtime::tests::exact3_pause_stop_consumer(&mut ctx);
+        ctx.authority
+            .audit_retention_set_before(
+                rekey_domain::audit::AuditRetentionSet { days: Some(1) },
+                UnlockProof::Password(SecretInput::from_slice(b"fixture-proof")),
+                None,
+            )
+            .await
+            .unwrap();
+        let initial = ctx.authority.audit_retention_status().await.unwrap();
+        let db =
+            rusqlite::Connection::open(rekey_vault::paths::vault_db(&dir.path().join("state")))
+                .unwrap();
+        let before: i64 = db
+            .query_row(
+                "SELECT count(*) FROM audit_events WHERE event_type='audit.retention_changed'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        db.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let mut blocked = Box::pin(ctx.authority.append_audit(AuditDraft {
+            request_id: None,
+            session_id: None,
+            action_id: None,
+            action_version: None,
+            credential_id: None,
+            credential_version: None,
+            authorization: None,
+            approval: None,
+            event_type: "fixture.blocked",
+            outcome: "success",
+            reason_code: "exact3".into(),
+            upstream_status: None,
+            latency_ms: None,
+        }));
+        poll_fn(|cx| {
+            assert!(blocked.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        let mut maintenance = Box::pin(crate::runtime::tests::exact3_maintenance(&ctx));
+        poll_fn(|cx| {
+            assert!(maintenance.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        let frame = exact3_set_frame(2);
+        let mut set = Box::pin(dispatch_operation(
+            &frame,
+            &ctx,
+            None,
+            admin_mutation_deadline(),
+        ));
+        poll_fn(|cx| {
+            assert!(set.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        let mut business = Box::pin(async {
+            let _owner = ctx.lifecycle.coordinate().await;
+            ctx.executor
+                .admit(crate::executor::ExecuteRequest {
+                    request_id: rekey_domain::ids::RequestId::new_random(),
+                    capability_token: "unused-after-drain".into(),
+                    action: rekey_domain::capability::ActionVersionRef {
+                        action_id: rekey_domain::ids::ActionId::new_random(),
+                        version: 1,
+                    },
+                    content_type: None,
+                    extra_headers: Vec::new(),
+                    body: Vec::new(),
+                    approval_grants: Vec::new(),
+                })
+                .await
+                .err()
+                .unwrap()
+                .code()
+        });
+        poll_fn(|cx| {
+            assert!(business.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        assert_eq!(maintenance.await.unwrap_err().code(), "FAULTED");
+        let phase = ctx.lifecycle.phase();
+        let remote_open = ctx.lifecycle.try_begin_remote_effect();
+        db.execute_batch("COMMIT").unwrap();
+        blocked.await.unwrap();
+        let set_error = set.await.err().map(|e| e.code());
+        let business_error = business.await;
+        let owner = ctx.lifecycle.coordinate().await;
+        let can_reopen = ctx.lifecycle.enter_running().is_ok();
+        drop(owner);
+        let after = ctx.authority.audit_retention_status().await.unwrap();
+        let after_markers: i64 = db
+            .query_row(
+                "SELECT count(*) FROM audit_events WHERE event_type='audit.retention_changed'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let signalled = stop();
+        let calls_before = ctx
+            .metrics
+            .fault_signals
+            .load(std::sync::atomic::Ordering::Relaxed);
+        crate::runtime::tests::exact3_maintenance(&ctx)
+            .await
+            .unwrap();
+        let no_retry = ctx
+            .metrics
+            .fault_signals
+            .load(std::sync::atomic::Ordering::Relaxed)
+            == calls_before;
+        ctx.authority
+            .shutdown(Some(UnlockProof::Password(SecretInput::from_slice(
+                b"fixture-proof",
+            ))))
+            .await
+            .unwrap();
+        drop(ctx);
+        terminal.await.unwrap();
+        join.join().unwrap();
+        assert_eq!(phase, crate::lifecycle::BrokerPhase::Draining);
+        assert!(!remote_open && !can_reopen && signalled && no_retry);
+        assert_eq!(set_error, Some("DRAINING"));
+        assert_eq!(business_error, "DRAINING");
+        assert_eq!(after, initial);
+        assert_eq!(after_markers, before);
+    }
+
+    #[tokio::test]
+    async fn exact3_retention_set_preserves_expired_and_near_expiry_dispatch_deadlines() {
+        use std::future::{Future, poll_fn};
+        use std::task::Poll;
+        let mut outcomes = Vec::new();
+        for near_expiry in [false, true] {
+            let (dir, ctx, join, terminal) = crate::runtime::tests::oidc_test_ctx().await;
+            let initial = ctx.authority.audit_retention_status().await.unwrap();
+            let frame = exact3_set_frame(2);
+            let result = if near_expiry {
+                let owner = ctx.lifecycle.coordinate().await;
+                let original = tokio::time::Instant::now() + Duration::from_millis(100);
+                let mut set = Box::pin(dispatch_operation(&frame, &ctx, None, original));
+                poll_fn(|cx| {
+                    assert!(set.as_mut().poll(cx).is_pending());
+                    Poll::Ready(())
+                })
+                .await;
+                tokio::time::sleep(Duration::from_millis(120)).await;
+                drop(owner);
+                set.await
+            } else {
+                dispatch_operation(
+                    &frame,
+                    &ctx,
+                    None,
+                    tokio::time::Instant::now() - Duration::from_millis(1),
+                )
+                .await
+            };
+            let after = ctx.authority.audit_retention_status().await.unwrap();
+            let db =
+                rusqlite::Connection::open(rekey_vault::paths::vault_db(&dir.path().join("state")))
+                    .unwrap();
+            let changed: i64 = db
+                .query_row(
+                    "SELECT count(*) FROM audit_events WHERE event_type='audit.retention_changed'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            outcomes.push((result.err().map(|e| e.code()), initial == after, changed));
+            ctx.authority
+                .shutdown(Some(UnlockProof::Password(SecretInput::from_slice(
+                    b"fixture-proof",
+                ))))
+                .await
+                .unwrap();
+            drop(ctx);
+            terminal.await.unwrap();
+            join.join().unwrap();
+        }
+        assert_eq!(
+            outcomes,
+            vec![
+                (Some("AUTHORITY_BUSY"), true, 0),
+                (Some("AUTHORITY_BUSY"), true, 0)
+            ]
+        );
     }
 }

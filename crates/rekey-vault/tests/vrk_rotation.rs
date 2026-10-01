@@ -221,6 +221,9 @@ async fn install_policy(handle: &AuthorityHandle, bundle: bool, expires_at_ms: i
         handle
             .policy_bundle_activate_before(
                 PolicyBundleInput {
+                    expected_vault_id: handle.admin_status().await.unwrap().vault_id,
+                    expected_trust_sha256: rekey_policy::policy_trust_sha256(signer_id, &[7; 32])
+                        .unwrap(),
                     signer_id,
                     version: 1,
                     expires_at_ms,
@@ -251,6 +254,10 @@ async fn vrk_rotation_all_kinds_all_states_policy_replay_and_two_backup_generati
         CredentialKind::VaultKvV2Source,
         CredentialKind::VaultDynamicSource,
         CredentialKind::KeycloakTokenExchange,
+        CredentialKind::GcpSecretManagerSource,
+        CredentialKind::AwsSecretsManagerSource,
+        CredentialKind::AzureKeyVaultSource,
+        CredentialKind::OnePasswordConnectSource,
     ] {
         let id = two_versions(&handle, kind, kind.as_str()).await;
         if kind == CredentialKind::GitHubAppInstallation {
@@ -297,8 +304,8 @@ async fn vrk_rotation_all_kinds_all_states_policy_replay_and_two_backup_generati
         .unwrap();
     receipt.validate().unwrap();
     assert_eq!(receipt.vault_id, vault.outcome.vault_id);
-    assert_eq!(receipt.rotated_versions, 10);
-    assert_eq!(receipt.resealed_credentials, 5);
+    assert_eq!(receipt.rotated_versions, 18);
+    assert_eq!(receipt.resealed_credentials, 9);
     assert_eq!(handle.status().await.unwrap().state, "locked");
     assert!(!desktop.exists());
     assert!(

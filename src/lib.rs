@@ -374,11 +374,34 @@ pub mod harness {
             "policy envelope",
         )
         .insert("signature".to_owned(), serde_json::Value::String(signature));
+        let status_response = call(
+            &broker.admin_sock(),
+            Channel::Admin,
+            admin_msg::POLICY_STATUS,
+            b"{}",
+            &[],
+        )
+        .await;
+        let status = status_response.ok();
+        let metadata = rekey_domain::ipc::PolicyActivateMeta {
+            expected_vault_id: must(
+                serde_json::from_value(status["vault_id"].clone()),
+                "vault identity",
+            ),
+            expected_trust_sha256: status["trust_sha256"]
+                .as_str()
+                .expect("trust digest")
+                .to_owned(),
+            bundle_json: must(
+                serde_json::from_slice(&must(serde_jcs::to_vec(&bundle), "canonical bundle")),
+                "raw bundle",
+            ),
+        };
         call(
             &broker.admin_sock(),
             Channel::Admin,
             admin_msg::POLICY_ACTIVATE,
-            &must(serde_jcs::to_vec(&bundle), "canonical bundle"),
+            &must(serde_json::to_vec(&metadata), "activation metadata"),
             &proof_body(PASSWORD),
         )
         .await

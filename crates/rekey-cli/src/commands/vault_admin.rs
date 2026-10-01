@@ -16,6 +16,195 @@ struct VaultProfileMarker<'a> {
     credential_type: &'a str,
 }
 
+pub fn credential_add_macos_keychain(
+    state_dir: &Path,
+    label: &str,
+    file: &Path,
+    recovery: bool,
+    password_stdin: bool,
+) -> Result<(), CliError> {
+    add_vault_profile(
+        state_dir,
+        label,
+        file,
+        recovery,
+        password_stdin,
+        "macos-keychain-source-v1",
+        "macos-keychain-source",
+        "macOS Keychain reference",
+    )
+}
+pub fn credential_rotate_macos_keychain(
+    state_dir: &Path,
+    credential_id: &str,
+    file: &Path,
+    recovery: bool,
+    password_stdin: bool,
+) -> Result<(), CliError> {
+    rotate_vault_profile(
+        state_dir,
+        credential_id,
+        file,
+        recovery,
+        password_stdin,
+        "macos-keychain-source-v1",
+        admin_msg::CREDENTIAL_ROTATE_MACOS_KEYCHAIN,
+        "macOS Keychain reference",
+    )
+}
+
+pub fn credential_add_gcp_secret_manager(
+    state_dir: &Path,
+    label: &str,
+    file: &Path,
+    recovery: bool,
+    password_stdin: bool,
+) -> Result<(), CliError> {
+    add_vault_profile(
+        state_dir,
+        label,
+        file,
+        recovery,
+        password_stdin,
+        "gcp-secret-manager-source-v1",
+        "gcp-secret-manager-source",
+        "GCP Secret Manager profile",
+    )
+}
+
+pub fn credential_rotate_gcp_secret_manager(
+    state_dir: &Path,
+    credential_id: &str,
+    file: &Path,
+    recovery: bool,
+    password_stdin: bool,
+) -> Result<(), CliError> {
+    rotate_vault_profile(
+        state_dir,
+        credential_id,
+        file,
+        recovery,
+        password_stdin,
+        "gcp-secret-manager-source-v1",
+        admin_msg::CREDENTIAL_ROTATE_GCP_SECRET_MANAGER,
+        "GCP Secret Manager profile",
+    )
+}
+
+pub fn credential_add_azure_key_vault(
+    state_dir: &Path,
+    label: &str,
+    file: &Path,
+    recovery: bool,
+    password_stdin: bool,
+) -> Result<(), CliError> {
+    add_vault_profile(
+        state_dir,
+        label,
+        file,
+        recovery,
+        password_stdin,
+        "azure-key-vault-source-v1",
+        "azure-key-vault-source",
+        "Azure Key Vault profile",
+    )
+}
+
+pub fn credential_rotate_azure_key_vault(
+    state_dir: &Path,
+    credential_id: &str,
+    file: &Path,
+    recovery: bool,
+    password_stdin: bool,
+) -> Result<(), CliError> {
+    rotate_vault_profile(
+        state_dir,
+        credential_id,
+        file,
+        recovery,
+        password_stdin,
+        "azure-key-vault-source-v1",
+        admin_msg::CREDENTIAL_ROTATE_AZURE_KEY_VAULT,
+        "Azure Key Vault profile",
+    )
+}
+
+pub fn credential_add_onepassword_connect(
+    state_dir: &Path,
+    label: &str,
+    file: &Path,
+    recovery: bool,
+    password_stdin: bool,
+) -> Result<(), CliError> {
+    add_vault_profile(
+        state_dir,
+        label,
+        file,
+        recovery,
+        password_stdin,
+        "onepassword-connect-source-v1",
+        "onepassword-connect-source",
+        "1Password Connect profile",
+    )
+}
+
+pub fn credential_rotate_onepassword_connect(
+    state_dir: &Path,
+    credential_id: &str,
+    file: &Path,
+    recovery: bool,
+    password_stdin: bool,
+) -> Result<(), CliError> {
+    rotate_vault_profile(
+        state_dir,
+        credential_id,
+        file,
+        recovery,
+        password_stdin,
+        "onepassword-connect-source-v1",
+        admin_msg::CREDENTIAL_ROTATE_ONEPASSWORD_CONNECT,
+        "1Password Connect profile",
+    )
+}
+
+pub fn credential_add_aws_secrets_manager(
+    state_dir: &Path,
+    label: &str,
+    file: &Path,
+    recovery: bool,
+    password_stdin: bool,
+) -> Result<(), CliError> {
+    add_vault_profile(
+        state_dir,
+        label,
+        file,
+        recovery,
+        password_stdin,
+        "aws-secrets-manager-source-v1",
+        "aws-secrets-manager-source",
+        "AWS Secrets Manager profile",
+    )
+}
+
+pub fn credential_rotate_aws_secrets_manager(
+    state_dir: &Path,
+    credential_id: &str,
+    file: &Path,
+    recovery: bool,
+    password_stdin: bool,
+) -> Result<(), CliError> {
+    rotate_vault_profile(
+        state_dir,
+        credential_id,
+        file,
+        recovery,
+        password_stdin,
+        "aws-secrets-manager-source-v1",
+        admin_msg::CREDENTIAL_ROTATE_AWS_SECRETS_MANAGER,
+        "AWS Secrets Manager profile",
+    )
+}
+
 pub fn credential_add_keycloak(
     state_dir: &Path,
     label: &str,
@@ -196,7 +385,10 @@ fn vault_profile_file(
     }
     let marker: VaultProfileMarker<'_> = serde_json::from_slice(&profile)
         .map_err(|_| CliError::local("USAGE", format!("invalid {profile_label} JSON")))?;
-    if marker.credential_type != expected_marker {
+    if marker.credential_type != expected_marker
+        && !(expected_marker == "vault-kv-v2-source-v1"
+            && marker.credential_type == "vault-approle-kv-v2-source-v1")
+    {
         return Err(CliError::local(
             "USAGE",
             format!("{profile_label} has the wrong credential_type"),
@@ -225,8 +417,57 @@ mod tests {
     fn vault_profile_file_requires_the_closed_marker_and_bound() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("profile.json");
+        write_private(
+            &file,
+            br#"{"credential_type":"gcp-secret-manager-source-v1"}"#,
+        );
+        assert!(
+            vault_profile_file(
+                &file,
+                "gcp-secret-manager-source-v1",
+                "GCP Secret Manager profile"
+            )
+            .is_ok()
+        );
+        write_private(
+            &file,
+            br#"{"credential_type":"aws-secrets-manager-source-v1"}"#,
+        );
+        assert!(
+            vault_profile_file(
+                &file,
+                "aws-secrets-manager-source-v1",
+                "AWS Secrets Manager profile"
+            )
+            .is_ok()
+        );
+        write_private(&file, br#"{"credential_type":"azure-key-vault-source-v1"}"#);
+        assert!(
+            vault_profile_file(
+                &file,
+                "azure-key-vault-source-v1",
+                "Azure Key Vault profile"
+            )
+            .is_ok()
+        );
         write_private(&file, br#"{"credential_type":"vault-kv-v2-source-v1"}"#);
         assert!(vault_profile_file(&file, "vault-kv-v2-source-v1", "Vault KV profile").is_ok());
+        write_private(
+            &file,
+            br#"{"credential_type":"vault-approle-kv-v2-source-v1"}"#,
+        );
+        assert!(vault_profile_file(&file, "vault-kv-v2-source-v1", "Vault KV profile").is_ok());
+        for marker in [
+            "vault-dynamic-source-v2",
+            "keycloak-token-exchange-v1",
+            "gcp-secret-manager-source-v1",
+            "aws-secrets-manager-source-v1",
+            "azure-key-vault-source-v1",
+            "onepassword-connect-source-v1",
+            "macos-keychain-source-v1",
+        ] {
+            assert!(vault_profile_file(&file, marker, "Other profile").is_err());
+        }
         write_private(&file, br#"{"credential_type":"vault-dynamic-source-v2"}"#);
         assert!(
             vault_profile_file(&file, "vault-dynamic-source-v2", "Vault dynamic profile").is_ok()
@@ -277,5 +518,22 @@ mod tests {
                 .code,
             "INVALID_FRAME"
         );
+    }
+    #[test]
+    fn keychain_reference_file_and_proof_stay_in_the_frame_body() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("keychain.json");
+        write_private(&file,br#"{"credential_type":"macos-keychain-source-v1","keychain_path":"/fixture.keychain","service":"exact","account":"exact","reference_expires_at_ms":2000}"#);
+        let profile = vault_profile_file(
+            &file,
+            "macos-keychain-source-v1",
+            "macOS Keychain reference",
+        )
+        .unwrap();
+        let body = proof_and_profile(false, b"synthetic-proof", &profile);
+        let (kind, proof, reference) = ipc::parse_proof_and_secret_body(&body).unwrap();
+        assert_eq!(kind, ipc::ProofKind::Password);
+        assert_eq!(proof, b"synthetic-proof");
+        assert_eq!(reference, profile.as_slice());
     }
 }

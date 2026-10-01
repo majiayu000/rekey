@@ -31,3 +31,5 @@ pub fn random_array<const N: usize>() -> Result<[u8; N], AuthorityError> {
     fill_random(&mut buf)?;
     Ok(buf)
 }
+
+pub mod lease_journal;

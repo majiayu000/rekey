@@ -47,14 +47,14 @@ fn action(origin: &str, path: &str) -> FixedHttpAction {
 #[test]
 fn registry_is_versioned_ordered_and_lifecycle_complete() {
     rekey_connector::testkit::assert_registry(registry());
-    assert_eq!(registry().len(), 5);
+    assert_eq!(registry().len(), 10);
     assert!(registry().iter().all(|contract| {
         contract.source == ConnectorSource::BuiltInBinary
             && contract.isolation == ConnectorIsolation::BrokerProcess
     }));
-    assert_eq!(registry()[0].effects, &[CredentialEffect::Inject]);
+    assert_eq!(registry()[2].effects, &[CredentialEffect::Inject]);
     assert_eq!(
-        registry()[1].effects,
+        registry()[4].effects,
         &[
             CredentialEffect::Sign,
             CredentialEffect::Exchange,
@@ -78,7 +78,13 @@ fn registry_is_versioned_ordered_and_lifecycle_complete() {
     );
     assert_eq!(
         BuiltInConnector::VaultKvV2SourceV1.contract().effects,
-        &[CredentialEffect::Resolve, CredentialEffect::Inject]
+        &[
+            CredentialEffect::Exchange,
+            CredentialEffect::Lease,
+            CredentialEffect::Resolve,
+            CredentialEffect::Inject,
+            CredentialEffect::Revoke
+        ]
     );
 }
 
@@ -284,4 +290,149 @@ fn mcp_projection_refuses_a_valid_text_stream_action() {
         project_mcp_tool(&action, &json!({"type":"object"})),
         Err(rekey_connector::McpProjectionError::UnsupportedStreaming)
     ));
+}
+
+#[test]
+fn gcp_source_contract_is_resolve_inject_only_and_refuses_reserved_github() {
+    let contract = BuiltInConnector::GcpSecretManagerSourceV1.contract();
+    assert_eq!(
+        contract.credential_kind,
+        CredentialKind::GcpSecretManagerSource
+    );
+    assert_eq!(
+        contract.effects,
+        &[CredentialEffect::Resolve, CredentialEffect::Inject]
+    );
+    assert!(!contract.revoke_before_success);
+    assert_eq!(
+        resolve_builtin(
+            CredentialKind::GcpSecretManagerSource,
+            &action("https://api.example.com", "/v1/run")
+        ),
+        Ok(BuiltInConnector::GcpSecretManagerSourceV1)
+    );
+    assert_eq!(
+        resolve_builtin(
+            CredentialKind::GcpSecretManagerSource,
+            &action("https://api.github.com", "/installation/repositories")
+        ),
+        Err(ConnectorSelectionError::SelectionRejected)
+    );
+}
+#[test]
+fn aws_source_contract_is_resolve_inject_only_and_refuses_reserved_github() {
+    let contract = BuiltInConnector::AwsSecretsManagerSourceV1.contract();
+    assert_eq!(
+        contract.credential_kind,
+        CredentialKind::AwsSecretsManagerSource
+    );
+    assert_eq!(
+        contract.effects,
+        &[CredentialEffect::Resolve, CredentialEffect::Inject]
+    );
+    assert!(!contract.revoke_before_success);
+    assert_eq!(
+        resolve_builtin(
+            CredentialKind::AwsSecretsManagerSource,
+            &action("https://api.example.com", "/v1/run")
+        ),
+        Ok(BuiltInConnector::AwsSecretsManagerSourceV1)
+    );
+    assert_eq!(
+        resolve_builtin(
+            CredentialKind::AwsSecretsManagerSource,
+            &action("https://api.github.com", "/installation/repositories")
+        ),
+        Err(ConnectorSelectionError::SelectionRejected)
+    );
+}
+
+#[test]
+fn azure_source_contract_is_resolve_inject_only_and_refuses_reserved_github() {
+    let contract = BuiltInConnector::AzureKeyVaultSourceV1.contract();
+    assert_eq!(
+        contract.credential_kind,
+        CredentialKind::AzureKeyVaultSource
+    );
+    assert_eq!(
+        contract.effects,
+        &[CredentialEffect::Resolve, CredentialEffect::Inject]
+    );
+    assert!(!contract.revoke_before_success);
+    assert_eq!(
+        resolve_builtin(
+            CredentialKind::AzureKeyVaultSource,
+            &action("https://api.example.com", "/v1/run")
+        ),
+        Ok(BuiltInConnector::AzureKeyVaultSourceV1)
+    );
+    assert_eq!(
+        resolve_builtin(
+            CredentialKind::AzureKeyVaultSource,
+            &action("https://api.github.com", "/installation/repositories")
+        ),
+        Err(ConnectorSelectionError::SelectionRejected)
+    );
+}
+
+#[test]
+fn onepassword_source_contract_is_resolve_inject_only_and_refuses_reserved_github() {
+    let contract = BuiltInConnector::OnePasswordConnectSourceV1.contract();
+    assert_eq!(
+        contract.credential_kind,
+        CredentialKind::OnePasswordConnectSource
+    );
+    assert_eq!(
+        contract.effects,
+        &[CredentialEffect::Resolve, CredentialEffect::Inject]
+    );
+    assert!(!contract.revoke_before_success);
+    assert_eq!(
+        resolve_builtin(
+            CredentialKind::OnePasswordConnectSource,
+            &action("https://api.example.com", "/v1/run")
+        ),
+        Ok(BuiltInConnector::OnePasswordConnectSourceV1)
+    );
+    assert_eq!(
+        resolve_builtin(
+            CredentialKind::OnePasswordConnectSource,
+            &action("https://api.github.com", "/installation/repositories")
+        ),
+        Err(ConnectorSelectionError::SelectionRejected)
+    );
+}
+
+#[test]
+fn vault_kv_contract_covers_approle_without_expanding_other_sources() {
+    let contract = BuiltInConnector::VaultKvV2SourceV1.contract();
+    assert_eq!(
+        contract.effects,
+        &[
+            CredentialEffect::Exchange,
+            CredentialEffect::Lease,
+            CredentialEffect::Resolve,
+            CredentialEffect::Inject,
+            CredentialEffect::Revoke,
+        ]
+    );
+    assert_eq!(
+        contract.exchange_protocol,
+        Some(rekey_connector::ExchangeProtocol::ProviderDefined)
+    );
+    assert!(contract.revoke_before_success);
+    rekey_connector::testkit::assert_contract(contract);
+    for connector in [
+        BuiltInConnector::AwsSecretsManagerSourceV1,
+        BuiltInConnector::AzureKeyVaultSourceV1,
+        BuiltInConnector::GcpSecretManagerSourceV1,
+        BuiltInConnector::OnePasswordConnectSourceV1,
+    ] {
+        assert_eq!(
+            connector.contract().effects,
+            &[CredentialEffect::Resolve, CredentialEffect::Inject]
+        );
+        assert!(!connector.contract().revoke_before_success);
+        assert_eq!(connector.contract().exchange_protocol, None);
+    }
 }

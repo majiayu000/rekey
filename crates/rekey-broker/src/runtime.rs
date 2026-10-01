@@ -54,6 +54,7 @@ pub fn default_drain_timeout() -> Duration {
 
 pub struct BrokerConfig {
     pub state_dir: PathBuf,
+    pub oidc_admin_profile: Option<PathBuf>,
     /// P1 seam: an isolated Agent endpoint may live outside the private state tree.
     pub agent_runtime_dir: Option<PathBuf>,
     /// OS-verified peer UIDs accepted on the Agent endpoint.
@@ -72,6 +73,7 @@ impl BrokerConfig {
     pub fn new(state_dir: PathBuf) -> Self {
         Self {
             state_dir,
+            oidc_admin_profile: None,
             agent_runtime_dir: None,
             allowed_agent_uids: vec![unsafe { libc::geteuid() }],
             agent_socket_gid: None,
@@ -86,6 +88,7 @@ impl BrokerConfig {
 pub struct BrokerCtx {
     pub(crate) metrics: crate::metrics::Metrics,
     pub authority: AuthorityHandle,
+    pub(crate) oidc_admin: Option<Arc<crate::oidc_admin::Manager>>,
     pub sessions: Arc<SessionRegistry>,
     pub(crate) executions: ExecutionSupervisorHandle,
     pub(crate) executor: Arc<ActionExecutor>,
@@ -115,6 +118,10 @@ impl BrokerCtx {
     }
 
     pub(crate) fn request_fault(&self) {
+        if let Some(manager) = &self.oidc_admin {
+            manager.clear();
+            self.sessions.close_and_revoke_all();
+        }
         self.metrics.fault_signals.fetch_add(1, Ordering::Relaxed);
         let _ = self.stop_tx.send(shutdown::StopCommand::Fault);
     }
@@ -140,30 +147,45 @@ impl BrokerCtx {
         self.allowed_agent_uids.contains(&uid)
     }
 
-    pub async fn unlock(&self, proof: UnlockProof) -> Result<(), BrokerError> {
-        self.unlock_with_desktop(proof, false).await.map(|_| ())
+    pub async fn unlock(
+        &self,
+        proof: UnlockProof,
+    ) -> Result<rekey_domain::ipc::LeaseRecoverySummary, BrokerError> {
+        self.unlock_with_desktop(proof, false)
+            .await
+            .map(|(_, summary)| summary)
     }
 
     pub(crate) async fn unlock_with_desktop(
         &self,
         proof: UnlockProof,
         desktop: bool,
-    ) -> Result<Option<zeroize::Zeroizing<Vec<u8>>>, BrokerError> {
+    ) -> Result<
+        (
+            Option<zeroize::Zeroizing<Vec<u8>>>,
+            rekey_domain::ipc::LeaseRecoverySummary,
+        ),
+        BrokerError,
+    > {
         let _owner = self
             .lifecycle
             .try_coordinate()
             .map_err(|_| BrokerError::Authority(AuthorityError::AuthorityBusy))?;
         self.lifecycle.reject_if_busy()?;
+        let recover = self.lifecycle.phase() == BrokerPhase::Locked;
         self.authority.unlock(proof).await?;
-        self.activate_unlocked().await?;
+        let summary = self.activate_unlocked(recover).await?;
         if desktop {
-            Ok(Some(self.authority.desktop_issue().await?))
+            Ok((Some(self.authority.desktop_issue().await?), summary))
         } else {
-            Ok(None)
+            Ok((None, summary))
         }
     }
 
-    async fn activate_unlocked(&self) -> Result<(), BrokerError> {
+    async fn activate_unlocked(
+        &self,
+        recover: bool,
+    ) -> Result<rekey_domain::ipc::LeaseRecoverySummary, BrokerError> {
         if let Err(error) = self.reload_policy_after_unlock().await {
             self.sessions.close_and_revoke_all();
             let lock_result = self.authority.lock("policy-reload-failed").await;
@@ -175,6 +197,20 @@ impl BrokerCtx {
             }
             return Err(error);
         }
+        let summary = match self.executor.recover_vault_leases(recover).await {
+            Ok(summary) => summary,
+            Err(error) => {
+                self.sessions.close_and_revoke_all();
+                let locked = self.authority.lock("lease-recovery-failed").await;
+                *self.policy.write().await = None;
+                *self.policy_trust.write().await = None;
+                self.lifecycle.enter_locked();
+                if locked.is_err() {
+                    self.request_fault();
+                }
+                return Err(error);
+            }
+        };
         if let Err(transition_error) = self.lifecycle.enter_running() {
             self.sessions.close_and_revoke_all();
             let lock_result = self.authority.lock("stop-during-unlock").await;
@@ -189,18 +225,26 @@ impl BrokerCtx {
         }
         self.sessions.open_for_admission();
         tracing::info!(event = "authority.state", state = "running");
-        Ok(())
+        Ok(summary)
     }
 
     pub(crate) async fn resume_desktop(
         &self,
         token: rekey_vault::secret::SecretInput,
-    ) -> Result<(zeroize::Zeroizing<Vec<u8>>, i64), BrokerError> {
+    ) -> Result<
+        (
+            zeroize::Zeroizing<Vec<u8>>,
+            i64,
+            rekey_domain::ipc::LeaseRecoverySummary,
+        ),
+        BrokerError,
+    > {
         let _owner = self
             .lifecycle
             .try_coordinate()
             .map_err(|_| BrokerError::Authority(AuthorityError::AuthorityBusy))?;
         self.lifecycle.reject_if_busy()?;
+        let recover = self.lifecycle.phase() == BrokerPhase::Locked;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(25);
         // The worker rolls back a late resume before replying. Do not abandon
         // its result while it may temporarily own an unlocked root key.
@@ -228,8 +272,8 @@ impl BrokerCtx {
                 return Err(error.into());
             }
         };
-        self.activate_unlocked().await?;
-        Ok((session, expires))
+        let summary = self.activate_unlocked(recover).await?;
+        Ok((session, expires, summary))
     }
 
     /// Revoke sessions, wait in-flight executes, then zeroize the VRK.
@@ -276,12 +320,71 @@ impl BrokerCtx {
         Ok(())
     }
 
+    async fn audit_retention_tick(
+        &self,
+        next_tick: &mut tokio::time::Instant,
+    ) -> Result<(), BrokerError> {
+        if tokio::time::Instant::now() < *next_tick {
+            return Ok(());
+        }
+        let result = self.try_audit_retention().await;
+        if result.is_ok()
+            || matches!(
+                result,
+                Err(BrokerError::Authority(AuthorityError::AuthorityBusy))
+            )
+        {
+            *next_tick = tokio::time::Instant::now() + Duration::from_secs(60);
+        }
+        result
+    }
+
+    /// The lifecycle owner is retained until the maintenance outcome is known.
+    async fn try_audit_retention(&self) -> Result<(), BrokerError> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        let Ok(_owner) = self.lifecycle.try_coordinate() else {
+            return Ok(());
+        };
+        if !self.lifecycle.is_running() || self.lifecycle.reject_if_busy().is_err() {
+            return Ok(());
+        }
+        let result = match tokio::time::timeout_at(
+            deadline,
+            self.authority
+                .audit_retention_maintenance(deadline.into_std()),
+        )
+        .await
+        {
+            Ok(Ok(Some(receipt))) => receipt
+                .validate_for(&rekey_domain::audit::AuditPruneRequest {
+                    before_ms: receipt.before_ms,
+                })
+                .map_err(BrokerError::Domain),
+            Ok(Ok(None)) => Ok(()),
+            Ok(Err(error)) => Err(BrokerError::Authority(error)),
+            Err(_) => Err(BrokerError::Authority(AuthorityError::Faulted)),
+        };
+        if result.as_ref().is_err_and(|error| {
+            !matches!(error, BrokerError::Authority(AuthorityError::AuthorityBusy))
+        }) {
+            // Close every admission while this owner still excludes queued work.
+            self.lifecycle.enter_draining();
+            self.lifecycle.mark_stop_pending();
+            self.sessions.close_and_revoke_all();
+            self.request_fault();
+        }
+        result
+    }
+
     async fn run_drain_lock(
         &self,
         reason: &'static str,
         natural_deadline: tokio::time::Instant,
         stop_deadline: tokio::time::Instant,
     ) -> Result<(), BrokerError> {
+        if let Some(manager) = &self.oidc_admin {
+            manager.clear();
+        }
         match self.lifecycle.phase() {
             BrokerPhase::ShuttingDown => {
                 return Err(BrokerError::Authority(AuthorityError::Draining));
@@ -603,6 +706,11 @@ async fn select_stop(
 /// Runs the broker until an admin Shutdown arrives. Foreground only.
 pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
     verify_state_dir_permissions(&config.state_dir)?;
+    let oidc_admin = config
+        .oidc_admin_profile
+        .as_deref()
+        .map(crate::oidc_admin::Manager::load)
+        .transpose()?;
     validate_agent_endpoint(&config)?;
     let _lock = acquire_serve_lock(&config.state_dir)?;
     // Register fallible process resources before spawning any runtime owner;
@@ -617,6 +725,17 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
     authority_config.unlock_backoff_base = config.unlock_backoff_base;
     let (authority, authority_join) = rekey_vault::authority::spawn_authority(authority_config)?;
 
+    if let Some(manager) = &oidc_admin {
+        let actual = authority.status().await?;
+        if actual.vault_id != manager.vault_id() {
+            authority.shutdown(None).await?;
+            tokio::task::spawn_blocking(move || authority_join.join())
+                .await
+                .map_err(|_| BrokerError::Authority(AuthorityError::Faulted))?
+                .map_err(|_| BrokerError::Authority(AuthorityError::Faulted))?;
+            return Err(BrokerError::Denied("OIDC profile vault mismatch"));
+        }
+    }
     let runtime_dir = paths::runtime_dir(&config.state_dir);
     prepare_runtime_dir(&runtime_dir, 0o700, None)?;
     let agent_runtime_dir = config
@@ -674,6 +793,7 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
         workload_transport: transport,
         online_jwks_slots: Arc::new(tokio::sync::Semaphore::new(MAX_ONLINE_JWKS_FETCHES)),
         authority: authority.clone(),
+        oidc_admin,
         sessions,
         executions,
         executor,
@@ -688,6 +808,26 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
         allowed_agent_uids: config.allowed_agent_uids.into(),
     });
 
+    let mut oidc_poll_task = ctx.oidc_admin.clone().map(|manager| {
+        let weak = Arc::downgrade(&ctx);
+        let mut shutdown = shutdown_rx.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(30));
+            loop {
+                tokio::select! {
+                    _=shutdown.changed()=>break,
+                    _=tick.tick()=>{
+                        let Some(ctx)=weak.upgrade() else {break};
+                        if ctx.lifecycle.is_running() {
+                            tokio::select! { _=shutdown.changed()=>break, _=manager.poll(&ctx)=>() }
+                        }
+                    }
+                }
+            }
+            manager.clear();
+        })
+    });
+
     // Reserve Admin capacity. An untrusted Agent can exhaust only its own
     // channel and must never make lock or shutdown unreachable.
     let admin_slots = Arc::new(tokio::sync::Semaphore::new(MAX_ADMIN_REQUEST_CONNECTIONS));
@@ -700,27 +840,31 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
         .max(Duration::from_millis(10));
     let mut idle_shutdown = shutdown_rx.clone();
     let idle_task = tokio::spawn(async move {
+        let mut next_retention_tick = tokio::time::Instant::now();
         loop {
             tokio::select! {
                 _ = tokio::time::sleep(idle_interval) => {
-                    if idle_ctx.lifecycle.phase() != BrokerPhase::Running {
-                        continue;
+                    if idle_ctx.lifecycle.phase() == BrokerPhase::Running {
+                        match idle_ctx.try_idle_lock(idle_lock).await {
+                            Ok(()) => {}
+                            Err(BrokerError::Authority(AuthorityError::AuthorityBusy)) => {
+                                tracing::warn!(event = "runtime.idle_lock_deferred", code = "AUTHORITY_BUSY");
+                            }
+                            Err(error) => {
+                                tracing::error!(event = "runtime.idle_lock_fault", code = error.code());
+                                idle_ctx.request_fault();
+                                return Err(error);
+                            }
+                        }
                     }
-                    match idle_ctx.try_idle_lock(idle_lock).await {
+                    match idle_ctx.audit_retention_tick(&mut next_retention_tick).await {
                         Ok(()) => {}
                         Err(BrokerError::Authority(AuthorityError::AuthorityBusy)) => {
-                            tracing::warn!(
-                                event = "runtime.idle_lock_deferred",
-                                code = "AUTHORITY_BUSY"
-                            );
+                            tracing::warn!(event = "runtime.audit_retention_deferred", code = "AUTHORITY_BUSY");
                         }
-                        Err(err) => {
-                            tracing::error!(
-                                event = "runtime.idle_lock_fault",
-                                code = err.code()
-                            );
-                            idle_ctx.request_fault();
-                            return Err(err);
+                        Err(error) => {
+                            tracing::error!(event = "runtime.audit_retention_fault", code = error.code());
+                            return Err(error);
                         }
                     }
                 }
@@ -841,6 +985,18 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
             tracing::error!(event = "runtime.connection_join_timeout", code = "FAULTED");
         }
     }
+    if let Some(task) = &mut oidc_poll_task {
+        match tokio::time::timeout_at(stop_deadline, &mut *task).await {
+            Ok(Ok(())) => (),
+            Ok(Err(_)) => {
+                runtime_error.get_or_insert(BrokerError::Authority(AuthorityError::Faulted));
+            }
+            Err(_) => {
+                task.abort();
+                runtime_error.get_or_insert(BrokerError::Authority(AuthorityError::Faulted));
+            }
+        }
+    }
     drop(ctx);
     let mut terminal_task = terminal_task;
     match tokio::time::timeout_at(stop_deadline, &mut terminal_task).await {
@@ -878,4 +1034,4 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

@@ -18,9 +18,16 @@ fn trust_input() -> PolicyTrustInput {
     }
 }
 
-fn bundle_input(signer_id: PolicySignerId, version: u64, marker: u8) -> PolicyBundleInput {
+fn bundle_input(
+    vault_id: VaultId,
+    signer_id: PolicySignerId,
+    version: u64,
+    marker: u8,
+) -> PolicyBundleInput {
     let bundle_json = vec![marker; 32];
     PolicyBundleInput {
+        expected_vault_id: vault_id,
+        expected_trust_sha256: rekey_policy::policy_trust_sha256(signer_id, &[7; 32]).unwrap(),
         signer_id,
         version,
         expires_at_ms: 4_102_444_800_000,
@@ -58,7 +65,7 @@ async fn persist_policy(vault: &common::TestVault) -> PolicySignerId {
         .unwrap();
     handle
         .policy_bundle_activate_before(
-            bundle_input(trust.signer_id, 1, 1),
+            bundle_input(vault.outcome.vault_id, trust.signer_id, 1, 1),
             common::password_proof(),
             None,
         )
@@ -70,6 +77,187 @@ async fn persist_policy(vault: &common::TestVault) -> PolicySignerId {
         .unwrap();
     join.join().unwrap();
     trust.signer_id
+}
+
+#[tokio::test]
+async fn policy_target_is_checked_before_transaction_and_exact_retry() {
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+    let trust = trust_input();
+    handle
+        .policy_trust_install_before(trust.clone(), common::password_proof(), None)
+        .await
+        .unwrap();
+    let first = bundle_input(vault.outcome.vault_id, trust.signer_id, 1, 1);
+    for committed in [false, true] {
+        if committed {
+            handle
+                .policy_bundle_activate_before(first.clone(), common::password_proof(), None)
+                .await
+                .unwrap();
+        }
+        for wrong_root in [false, true] {
+            let mut wrong = first.clone();
+            if wrong_root {
+                wrong.expected_trust_sha256[0] ^= 1;
+            } else {
+                wrong.expected_vault_id = VaultId::new_random();
+            }
+            let connection = rusqlite::Connection::open(paths::vault_db(&vault.state_dir)).unwrap();
+            connection.execute_batch("BEGIN IMMEDIATE").unwrap();
+            let error = handle
+                .policy_bundle_activate_before(wrong, common::password_proof(), None)
+                .await
+                .unwrap_err();
+            assert!(matches!(error, AuthorityError::PolicyVersionConflict));
+            connection.execute_batch("ROLLBACK").unwrap();
+            let count: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM audit_events WHERE event_type='policy.activated'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, i64::from(committed));
+            let version: Option<u64> = connection
+                .query_row("SELECT highest_version FROM policy_state", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(version, committed.then_some(1));
+        }
+    }
+    handle
+        .shutdown(Some(common::password_proof()))
+        .await
+        .unwrap();
+    join.join().unwrap();
+}
+
+#[tokio::test]
+async fn activation_time_exact_audit_and_trust_target_survive_backup_restore() {
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+    let trust = trust_input();
+    handle
+        .policy_trust_install_before(trust.clone(), common::password_proof(), None)
+        .await
+        .unwrap();
+    let first = bundle_input(vault.outcome.vault_id, trust.signer_id, 1, 1);
+    let activated = handle
+        .policy_bundle_activate_before(first.clone(), common::password_proof(), None)
+        .await
+        .unwrap()
+        .bundle
+        .unwrap();
+    let retry = handle
+        .policy_bundle_activate_before(first.clone(), common::password_proof(), None)
+        .await
+        .unwrap()
+        .bundle
+        .unwrap();
+    assert_eq!(retry.activated_at_ms, activated.activated_at_ms);
+    let bad_proof = rekey_vault::command::UnlockProof::Password(
+        rekey_vault::secret::SecretInput::from_slice(b"wrong-test-proof"),
+    );
+    let error = handle
+        .policy_bundle_activate_before(first.clone(), bad_proof, None)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, AuthorityError::InvalidUnlockCredential));
+    let backup_path = vault.dir.path().join("policy.rkbackup");
+    let receipt = handle
+        .backup(backup_path.clone(), common::password_proof())
+        .await
+        .unwrap();
+    let archived = rusqlite::Connection::open(&backup_path).unwrap();
+    let archived_sequence: u64 = archived
+        .query_row("SELECT MAX(sequence) FROM audit_events", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    let (archived_version, archived_digest): (u64, Vec<u8>) = archived
+        .query_row(
+            "SELECT version,bundle_digest FROM policy_bundle WHERE singleton=1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(receipt.snapshot_cut.audit_sequence, archived_sequence);
+    assert_eq!(archived_version, 1);
+    assert_eq!(archived_digest, first.bundle_digest);
+    drop(archived);
+    handle
+        .policy_bundle_activate_before(
+            bundle_input(vault.outcome.vault_id, trust.signer_id, 2, 2),
+            common::password_proof(),
+            None,
+        )
+        .await
+        .unwrap();
+    let live = handle.policy_material().await.unwrap().bundle.unwrap();
+    assert_eq!(live.version, 2);
+
+    handle
+        .shutdown(Some(common::password_proof()))
+        .await
+        .unwrap();
+    join.join().unwrap();
+    let restored = vault.dir.path().join("restored-policy");
+    let id = rekey_vault::bootstrap::restore_vault(
+        &backup_path,
+        &restored,
+        rekey_vault::bootstrap::RestoreProof::Password(common::password_input()),
+        &receipt.sha256_hex,
+    )
+    .unwrap();
+    assert_eq!(id.vault_id, first.expected_vault_id);
+    assert_eq!(id.snapshot_cut, receipt.snapshot_cut);
+    assert_eq!(id.input_sha256_hex, receipt.sha256_hex);
+    let policy_cut = receipt.snapshot_cut.policy.as_ref().unwrap();
+    assert_eq!(policy_cut.version, 1);
+    assert_eq!(
+        policy_cut.bundle_sha256,
+        data_encoding::HEXLOWER.encode(&first.bundle_digest)
+    );
+    let (handle, join) = common::spawn(&restored);
+    handle.unlock(common::password_proof()).await.unwrap();
+    let material = handle.policy_material().await.unwrap();
+    let restored_trust = material.trust.unwrap();
+    assert_eq!(
+        rekey_policy::policy_trust_sha256(restored_trust.signer_id, &restored_trust.public_key)
+            .unwrap(),
+        first.expected_trust_sha256
+    );
+    assert_eq!(
+        material.bundle.unwrap().activated_at_ms,
+        activated.activated_at_ms
+    );
+    handle
+        .policy_bundle_activate_before(first.clone(), common::password_proof(), None)
+        .await
+        .unwrap();
+    let connection = rusqlite::Connection::open(paths::vault_db(&restored)).unwrap();
+    let (count, reason): (i64, String) = connection
+        .query_row(
+            "SELECT COUNT(*),reason_code FROM audit_events WHERE event_type='policy.activated'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
+    assert_eq!(
+        reason,
+        format!(
+            "policy-activated:1:{}",
+            data_encoding::HEXLOWER.encode(&first.bundle_digest)
+        )
+    );
+    handle
+        .shutdown(Some(common::password_proof()))
+        .await
+        .unwrap();
+    join.join().unwrap();
 }
 
 #[tokio::test]
@@ -95,7 +283,7 @@ async fn trust_is_immutable_and_policy_versions_are_consecutive_across_restart()
 
     let gap = handle
         .policy_bundle_activate_before(
-            bundle_input(trust.signer_id, 2, 2),
+            bundle_input(vault.outcome.vault_id, trust.signer_id, 2, 2),
             common::password_proof(),
             None,
         )
@@ -106,7 +294,7 @@ async fn trust_is_immutable_and_policy_versions_are_consecutive_across_restart()
         .policy_bundle_activate_before(
             PolicyBundleInput {
                 expires_at_ms: 1,
-                ..bundle_input(trust.signer_id, 1, 1)
+                ..bundle_input(vault.outcome.vault_id, trust.signer_id, 1, 1)
             },
             common::password_proof(),
             None,
@@ -114,7 +302,7 @@ async fn trust_is_immutable_and_policy_versions_are_consecutive_across_restart()
         .await
         .unwrap_err();
     assert!(matches!(expired, AuthorityError::PolicyVersionConflict));
-    let first = bundle_input(trust.signer_id, 1, 1);
+    let first = bundle_input(vault.outcome.vault_id, trust.signer_id, 1, 1);
     handle
         .policy_bundle_activate_before(first.clone(), common::password_proof(), None)
         .await
@@ -125,7 +313,7 @@ async fn trust_is_immutable_and_policy_versions_are_consecutive_across_restart()
         .unwrap();
     let same_version_different = handle
         .policy_bundle_activate_before(
-            bundle_input(trust.signer_id, 1, 9),
+            bundle_input(vault.outcome.vault_id, trust.signer_id, 1, 9),
             common::password_proof(),
             None,
         )
@@ -137,7 +325,7 @@ async fn trust_is_immutable_and_policy_versions_are_consecutive_across_restart()
     ));
     handle
         .policy_bundle_activate_before(
-            bundle_input(trust.signer_id, 2, 2),
+            bundle_input(vault.outcome.vault_id, trust.signer_id, 2, 2),
             common::password_proof(),
             None,
         )
@@ -171,7 +359,7 @@ async fn policy_roll_forward_clears_replays_but_exact_retry_does_not() {
         .policy_trust_install_before(trust.clone(), common::password_proof(), None)
         .await
         .unwrap();
-    let first = bundle_input(trust.signer_id, 1, 1);
+    let first = bundle_input(vault.outcome.vault_id, trust.signer_id, 1, 1);
     handle
         .policy_bundle_activate_before(first.clone(), common::password_proof(), None)
         .await
@@ -196,7 +384,7 @@ async fn policy_roll_forward_clears_replays_but_exact_retry_does_not() {
 
     handle
         .policy_bundle_activate_before(
-            bundle_input(trust.signer_id, 2, 2),
+            bundle_input(vault.outcome.vault_id, trust.signer_id, 2, 2),
             common::password_proof(),
             None,
         )
@@ -230,7 +418,7 @@ async fn policy_activation_audit_failure_rolls_back_and_faults() {
         .unwrap();
     handle
         .policy_bundle_activate_before(
-            bundle_input(trust.signer_id, 1, 1),
+            bundle_input(vault.outcome.vault_id, trust.signer_id, 1, 1),
             common::password_proof(),
             None,
         )
@@ -252,7 +440,7 @@ async fn policy_activation_audit_failure_rolls_back_and_faults() {
     drop(connection);
     let error = handle
         .policy_bundle_activate_before(
-            bundle_input(trust.signer_id, 2, 2),
+            bundle_input(vault.outcome.vault_id, trust.signer_id, 2, 2),
             common::password_proof(),
             None,
         )

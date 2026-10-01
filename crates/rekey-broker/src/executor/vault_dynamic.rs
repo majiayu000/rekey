@@ -1,3 +1,6 @@
+use crate::upstream::{
+    SourceEndpoint, optional_source_endpoint, send_source, source_hostname_valid,
+};
 use std::fmt;
 use std::time::{Duration, Instant};
 
@@ -60,6 +63,7 @@ impl VaultDynamicError {
 
 pub(crate) struct VaultDynamicProfile {
     origin: HttpsOrigin,
+    source_endpoint: Option<SourceEndpoint>,
     mount: String,
     role: String,
     key: String,
@@ -76,6 +80,8 @@ pub(super) struct VaultDynamicPrepared {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawDynamicProfile<'a> {
+    #[serde(default, deserialize_with = "optional_source_endpoint")]
+    source_endpoint: Option<SourceEndpoint>,
     credential_type: &'a str,
     origin: &'a str,
     mount: &'a str,
@@ -87,10 +93,18 @@ struct RawDynamicProfile<'a> {
 
 pub(super) struct AcquiredLease {
     pub(super) acquired_at: Instant,
+    pub(super) acquired_at_ms: i64,
     pub(super) lease_id: Zeroizing<String>,
     pub(super) lease_duration: Duration,
     pub(super) renewable: bool,
     pub(super) value: Zeroizing<Vec<u8>>,
+}
+
+pub(super) struct RenewedLease {
+    pub(super) requested_at_ms: i64,
+    pub(super) lease_duration: u64,
+    pub(super) renewable: bool,
+    pub(super) io_deadline: Instant,
 }
 
 pub(super) struct AcquisitionFailure {
@@ -119,9 +133,14 @@ impl VaultDynamicProfile {
         {
             return Err(VaultDynamicError::InvalidCredential);
         }
+        let origin =
+            HttpsOrigin::parse(raw.origin).map_err(|_| VaultDynamicError::InvalidCredential)?;
+        if raw.source_endpoint.is_some() && !source_hostname_valid(origin.host()) {
+            return Err(VaultDynamicError::InvalidCredential);
+        }
         Ok(Self {
-            origin: HttpsOrigin::parse(raw.origin)
-                .map_err(|_| VaultDynamicError::InvalidCredential)?,
+            origin,
+            source_endpoint: raw.source_endpoint,
             mount: raw.mount.to_owned(),
             role: raw.role.to_owned(),
             key: raw.key.to_owned(),
@@ -132,6 +151,14 @@ impl VaultDynamicProfile {
 
     pub(crate) fn validate_profile(secret: &[u8]) -> Result<(), VaultDynamicError> {
         Self::parse_profile(secret).map(|_| ())
+    }
+
+    pub(super) fn source_ref(&self) -> rekey_vault::model::LeaseSourceRef {
+        rekey_vault::model::LeaseSourceRef {
+            origin: self.origin.clone(),
+            mount: self.mount.clone(),
+            role: self.role.clone(),
+        }
     }
 
     pub(super) fn token(&self) -> &[u8] {
@@ -162,13 +189,21 @@ impl VaultDynamicProfile {
         needles: &[Zeroizing<Vec<u8>>],
     ) -> Result<AcquiredLease, AcquisitionFailure> {
         let acquired_at = Instant::now();
+        let acquired_at_ms = crate::now_ts()
+            .map_err(|_| AcquisitionFailure::definite(VaultDynamicError::Deadline))?
+            .as_unix_ms();
         let request = self.request(timeout);
         if !outbound_headers_are_valid(&request) {
             return Err(AcquisitionFailure::definite(
                 VaultDynamicError::InvalidCredential,
             ));
         }
-        let response = tokio::time::timeout(timeout, transport.send(request)).await;
+        let deadline = acquired_at + timeout;
+        let response = tokio::time::timeout_at(
+            deadline.into(),
+            send_source(transport, request, self.source_endpoint.as_ref(), deadline),
+        )
+        .await;
         let response = match response {
             Err(_) => return Err(AcquisitionFailure::uncertain(VaultDynamicError::Deadline)),
             Ok(Err(crate::upstream::UpstreamError::ResponseTooLarge)) => {
@@ -238,12 +273,24 @@ impl VaultDynamicProfile {
                 true,
             ));
         }
+        // A valid decoded selected value still belongs to this bootstrap boundary.
+        // Preserve the captured lease candidates for the existing bounded cleanup.
+        if contains_secret(&parsed.value, needles)
+            || contains_secret(parsed.lease_id.as_bytes(), needles)
+        {
+            return Err(AcquisitionFailure::with_ids(
+                VaultDynamicError::SourceReflected,
+                probe.lease_ids,
+                true,
+            ));
+        }
         let mut lease_ids = probe.lease_ids;
         let lease_id = lease_ids
             .pop()
             .ok_or_else(|| AcquisitionFailure::uncertain(VaultDynamicError::SourceResponse))?;
         Ok(AcquiredLease {
             acquired_at,
+            acquired_at_ms,
             lease_id,
             lease_duration: Duration::from_secs(parsed.lease_duration),
             renewable: parsed.renewable,
@@ -258,8 +305,11 @@ impl VaultDynamicProfile {
         deadline: Instant,
         action_deadline: Instant,
         needles: &[Zeroizing<Vec<u8>>],
-    ) -> Result<Instant, VaultDynamicError> {
+    ) -> Result<RenewedLease, VaultDynamicError> {
         let requested_at = Instant::now();
+        let requested_at_ms = crate::now_ts()
+            .map_err(|_| VaultDynamicError::Deadline)?
+            .as_unix_ms();
         let timeout = deadline
             .checked_duration_since(requested_at)
             .filter(|duration| !duration.is_zero())
@@ -292,7 +342,7 @@ impl VaultDynamicProfile {
         }
         let response = tokio::time::timeout_at(
             tokio::time::Instant::from_std(deadline),
-            transport.send(request),
+            send_source(transport, request, self.source_endpoint.as_ref(), deadline),
         )
         .await
         .map_err(|_| VaultDynamicError::Deadline)?
@@ -322,13 +372,19 @@ impl VaultDynamicProfile {
         if deserializer.end().is_err() || parsed.lease_id.as_str() != lease_id {
             return Err(VaultDynamicError::RenewResponse);
         }
-        lease_io_deadline(
+        let io_deadline = lease_io_deadline(
             action_deadline,
             requested_at,
             Duration::from_secs(parsed.lease_duration),
         )
         .filter(|deadline| *deadline > Instant::now())
-        .ok_or(VaultDynamicError::Deadline)
+        .ok_or(VaultDynamicError::Deadline)?;
+        Ok(RenewedLease {
+            requested_at_ms,
+            lease_duration: parsed.lease_duration,
+            renewable: parsed.renewable,
+            io_deadline,
+        })
     }
 
     pub(super) async fn revoke_all(
@@ -340,13 +396,19 @@ impl VaultDynamicProfile {
     ) -> Result<(), VaultDynamicError> {
         let mut first_error = None;
         for (index, lease_id) in lease_ids.iter().enumerate() {
+            let requested_at = Instant::now();
             let remaining = deadline
-                .checked_duration_since(Instant::now())
+                .checked_duration_since(requested_at)
                 .filter(|duration| !duration.is_zero())
                 .ok_or(VaultDynamicError::Deadline)?;
             let attempts_left = (lease_ids.len() - index) as u32;
             if let Err(error) = self
-                .revoke_one(transport, lease_id, remaining / attempts_left, needles)
+                .revoke_one(
+                    transport,
+                    lease_id,
+                    requested_at + remaining / attempts_left,
+                    needles,
+                )
                 .await
                 && first_error.is_none()
             {
@@ -360,9 +422,13 @@ impl VaultDynamicProfile {
         &self,
         transport: &dyn UpstreamTransport,
         lease_id: &str,
-        timeout: Duration,
+        deadline: Instant,
         needles: &[Zeroizing<Vec<u8>>],
     ) -> Result<(), VaultDynamicError> {
+        let timeout = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|duration| !duration.is_zero())
+            .ok_or(VaultDynamicError::Deadline)?;
         let mut body = Zeroizing::new(Vec::with_capacity(lease_id.len() + 32));
         body.extend_from_slice(b"{\"lease_id\":\"");
         append_json_string(lease_id, &mut body)?;
@@ -387,10 +453,16 @@ impl VaultDynamicProfile {
         if !outbound_headers_are_valid(&request) {
             return Err(VaultDynamicError::InvalidCredential);
         }
-        let response = tokio::time::timeout(timeout, transport.send(request))
-            .await
-            .map_err(|_| VaultDynamicError::Deadline)?
-            .map_err(|_| VaultDynamicError::RevokeTransport)?;
+        let response = tokio::time::timeout_at(
+            deadline.into(),
+            send_source(transport, request, self.source_endpoint.as_ref(), deadline),
+        )
+        .await
+        .map_err(|_| VaultDynamicError::Deadline)?
+        .map_err(|error| match error {
+            crate::upstream::UpstreamError::Timeout => VaultDynamicError::Deadline,
+            _ => VaultDynamicError::RevokeTransport,
+        })?;
         if contains_secret(&response.body, needles)
             || headers_contain_secret(&response.headers, needles)
         {
@@ -401,6 +473,25 @@ impl VaultDynamicProfile {
         }
         Ok(())
     }
+}
+
+pub(crate) async fn revoke_prepared(
+    prepared: rekey_vault::secret::PreparedLeaseCleanup,
+    transport: &dyn UpstreamTransport,
+    deadline: Instant,
+    extra_needles: &[Zeroizing<Vec<u8>>],
+) -> Result<(), VaultDynamicError> {
+    let (profile, id) = prepared.consume(|bytes, id| -> Result<_, VaultDynamicError> {
+        let profile = VaultDynamicProfile::parse_profile(bytes)?;
+        let id = std::str::from_utf8(id).map_err(|_| VaultDynamicError::InvalidCredential)?;
+        Ok((profile, Zeroizing::new(id.to_owned())))
+    })?;
+    let mut needles = sealing_needles(profile.token(), profile.token());
+    needles.extend(sealing_needles(id.as_bytes(), id.as_bytes()));
+    needles.extend(extra_needles.iter().cloned());
+    profile
+        .revoke_all(transport, &[id], deadline, &needles)
+        .await
 }
 
 impl AcquisitionFailure {
@@ -515,6 +606,7 @@ pub(super) fn lease_io_deadline(
 struct ParsedRenewed {
     lease_id: Zeroizing<String>,
     lease_duration: u64,
+    renewable: bool,
 }
 
 struct RenewedSeed;
@@ -557,13 +649,14 @@ impl<'de> Visitor<'de> for RenewedVisitor {
         let lease_id = lease_id.ok_or_else(|| serde::de::Error::missing_field("lease_id"))?;
         let lease_duration =
             lease_duration.ok_or_else(|| serde::de::Error::missing_field("lease_duration"))?;
-        renewable.ok_or_else(|| serde::de::Error::missing_field("renewable"))?;
+        let renewable = renewable.ok_or_else(|| serde::de::Error::missing_field("renewable"))?;
         if !(MIN_LEASE_SECONDS..=MAX_LEASE_SECONDS).contains(&lease_duration) {
             return Err(serde::de::Error::custom("invalid renewal TTL"));
         }
         Ok(ParsedRenewed {
             lease_id,
             lease_duration,
+            renewable,
         })
     }
 }
@@ -934,3 +1027,55 @@ fn safe_segment(value: &str) -> bool {
 #[cfg(test)]
 #[path = "vault_dynamic_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod private_review_deadline_tests {
+    use super::*;
+    use crate::upstream::{SourceEndpoint, SourceTrace, UpstreamFuture, UpstreamResponse};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct PhaseCounter(AtomicUsize);
+    impl UpstreamTransport for PhaseCounter {
+        fn send(&self, _: UpstreamRequest) -> UpstreamFuture<'_> {
+            panic!("bound source must not enter ordinary transport")
+        }
+        fn send_vault_source<'a>(
+            &'a self,
+            _: UpstreamRequest,
+            _: &'a SourceEndpoint,
+            _: Instant,
+            _: SourceTrace,
+        ) -> UpstreamFuture<'a> {
+            Box::pin(async move {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(UpstreamResponse {
+                    status: 204,
+                    headers: vec![].into(),
+                    body: Zeroizing::new(vec![]),
+                })
+            })
+        }
+    }
+    #[tokio::test]
+    async fn private_review_revoke_future_late_first_poll_enters_zero_source_phases() {
+        let cert = rcgen::generate_simple_self_signed(vec!["vault.example.com".into()])
+            .unwrap()
+            .cert;
+        let profile=VaultDynamicProfile::parse_profile(&serde_json::to_vec(&serde_json::json!({"credential_type":"vault-dynamic-source-v2","origin":"https://vault.example.com","mount":"database","role":"agent-token","key":"token","renew_increment_seconds":60,"vault_token":"fixture-source-token","source_endpoint":{"allowed_ips":["10.1.2.3"],"ca_der_base64":[data_encoding::BASE64.encode(cert.der())]}})).unwrap()).unwrap();
+        let transport = PhaseCounter(AtomicUsize::new(0));
+        let deadline = Instant::now() + Duration::from_millis(25);
+        let future = profile.revoke_one(
+            &transport,
+            "database/creds/agent-token/known-id",
+            deadline,
+            &[],
+        );
+        tokio::time::sleep_until((deadline + Duration::from_millis(5)).into()).await;
+        let result = future.await;
+        assert_eq!(
+            transport.0.load(Ordering::SeqCst),
+            0,
+            "expired original deadline entered a new source phase"
+        );
+        assert_eq!(result, Err(VaultDynamicError::Deadline));
+    }
+}

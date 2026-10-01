@@ -558,3 +558,297 @@ async fn prune_many_groups_finishes_within_its_deadline_without_repeated_full_ta
         .unwrap();
     join.join().unwrap();
 }
+
+#[tokio::test]
+async fn retention_actor_set_disable_locked_noop_restart_and_restore() {
+    use rekey_domain::audit::AuditRetentionSet;
+    use std::time::Duration;
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    let deadline = || Instant::now() + Duration::from_secs(2);
+    assert!(
+        handle
+            .audit_retention_maintenance(deadline())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(matches!(
+        handle.audit_retention_status().await,
+        Err(AuthorityError::Locked)
+    ));
+    handle.unlock(common::password_proof()).await.unwrap();
+    assert_eq!(handle.audit_retention_status().await.unwrap().days, None);
+    assert!(
+        handle
+            .audit_retention_maintenance(deadline())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let db = Connection::open(paths::vault_db(&vault.state_dir)).unwrap();
+    let id = RequestId::new_random();
+    let mut store = SqliteRecordStore::open(&paths::vault_db(&vault.state_dir)).unwrap();
+    append(
+        &mut store,
+        id,
+        &[
+            (event_type::EXECUTION_STARTED, 10),
+            (event_type::EXECUTION_FINISHED, 20),
+        ],
+    );
+    let before = sequences(&db);
+    assert!(matches!(
+        handle
+            .audit_retention_set_before(
+                AuditRetentionSet { days: Some(1) },
+                UnlockProof::Password(SecretInput::from_slice(b"wrong")),
+                Some(deadline())
+            )
+            .await,
+        Err(AuthorityError::InvalidUnlockCredential)
+    ));
+    assert_eq!(sequences(&db), before);
+    let receipt = handle
+        .audit_retention_set_before(
+            AuditRetentionSet { days: Some(1) },
+            common::password_proof(),
+            Some(deadline()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(count(&db, id), 2, "SET must never prune");
+    let pruned = handle
+        .audit_retention_maintenance(deadline())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!((pruned.deleted_groups, pruned.deleted_rows), (1, 2));
+    assert_eq!(markers(&db), 1);
+    let activity = handle.status().await.unwrap().idle_for_ms;
+    tokio::time::sleep(Duration::from_millis(15)).await;
+    assert_eq!(handle.audit_retention_status().await.unwrap(), receipt);
+    let noop = handle
+        .audit_retention_maintenance(deadline())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(noop.deleted_rows, 0);
+    assert_eq!(markers(&db), 1);
+    assert!(
+        handle.status().await.unwrap().idle_for_ms >= activity + 10,
+        "status/tick must not refresh activity"
+    );
+    assert!(matches!(
+        handle
+            .audit_retention_maintenance(Instant::now() - Duration::from_secs(1))
+            .await,
+        Err(AuthorityError::AuthorityBusy)
+    ));
+    let backup = vault.dir.path().join("retention.backup");
+    let info = handle
+        .backup(backup.clone(), common::password_proof())
+        .await
+        .unwrap();
+    handle
+        .shutdown(Some(common::password_proof()))
+        .await
+        .unwrap();
+    join.join().unwrap();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+    assert_eq!(handle.audit_retention_status().await.unwrap(), receipt);
+    handle.lock("test").await.unwrap();
+    assert!(
+        handle
+            .audit_retention_maintenance(deadline())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    handle.unlock(common::password_proof()).await.unwrap();
+    handle
+        .audit_retention_set_before(
+            AuditRetentionSet { days: None },
+            common::password_proof(),
+            Some(deadline()),
+        )
+        .await
+        .unwrap();
+    assert!(
+        handle
+            .audit_retention_maintenance(deadline())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    handle
+        .shutdown(Some(common::password_proof()))
+        .await
+        .unwrap();
+    join.join().unwrap();
+    let restored = vault.dir.path().join("restored");
+    rekey_vault::bootstrap::restore_vault(
+        &backup,
+        &restored,
+        rekey_vault::bootstrap::RestoreProof::Password(common::password_input()),
+        &info.sha256_hex,
+    )
+    .unwrap();
+    let (handle, join) = common::spawn(&restored);
+    handle.unlock(common::password_proof()).await.unwrap();
+    assert_eq!(handle.audit_retention_status().await.unwrap(), receipt);
+    handle
+        .shutdown(Some(common::password_proof()))
+        .await
+        .unwrap();
+    join.join().unwrap();
+}
+
+#[tokio::test]
+async fn retention_actor_atomic_set_and_prune_failure_faults_without_deletion() {
+    use rekey_domain::audit::AuditRetentionSet;
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+    let db = Connection::open(paths::vault_db(&vault.state_dir)).unwrap();
+    let initial = handle.audit_retention_status().await.unwrap();
+    db.execute_batch("CREATE TRIGGER reject_retention BEFORE INSERT ON audit_events WHEN NEW.event_type='audit.retention_changed' BEGIN SELECT RAISE(ABORT,'injected'); END").unwrap();
+    assert!(matches!(
+        handle
+            .audit_retention_set_before(
+                AuditRetentionSet { days: Some(1) },
+                common::password_proof(),
+                None
+            )
+            .await,
+        Err(AuthorityError::AuditCommitFailed)
+    ));
+    assert!(matches!(
+        handle.audit_retention_status().await,
+        Err(AuthorityError::Faulted)
+    ));
+    let store = SqliteRecordStore::open(&paths::vault_db(&vault.state_dir));
+    assert!(
+        matches!(store, Err(AuthorityError::UnsupportedVaultLayout)),
+        "extra schema trigger is structurally rejected"
+    );
+    let days: Option<i64> = db
+        .query_row("SELECT days FROM audit_retention", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(days, initial.days.map(|v| v as i64));
+    handle.shutdown(None).await.unwrap();
+    join.join().unwrap();
+
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+    handle
+        .audit_retention_set_before(
+            AuditRetentionSet { days: Some(1) },
+            common::password_proof(),
+            None,
+        )
+        .await
+        .unwrap();
+    let id = RequestId::new_random();
+    let mut store = SqliteRecordStore::open(&paths::vault_db(&vault.state_dir)).unwrap();
+    append(
+        &mut store,
+        id,
+        &[
+            (event_type::EXECUTION_STARTED, 10),
+            (event_type::EXECUTION_FINISHED, 20),
+        ],
+    );
+    let db = Connection::open(paths::vault_db(&vault.state_dir)).unwrap();
+    db.execute_batch("CREATE TRIGGER reject_prune BEFORE INSERT ON audit_events WHEN NEW.event_type='audit.pruned' BEGIN SELECT RAISE(ABORT,'injected'); END").unwrap();
+    assert!(matches!(
+        handle
+            .audit_retention_maintenance(Instant::now() + std::time::Duration::from_secs(1))
+            .await,
+        Err(AuthorityError::AuditCommitFailed)
+    ));
+    assert_eq!(count(&db, id), 2);
+    assert_eq!(markers(&db), 0);
+    assert!(matches!(
+        handle
+            .audit_retention_maintenance(Instant::now() + std::time::Duration::from_secs(1))
+            .await,
+        Err(AuthorityError::Faulted)
+    ));
+    handle.shutdown(None).await.unwrap();
+    join.join().unwrap();
+}
+
+#[tokio::test]
+async fn retention_actor_corrupt_seal_faults_on_unlock_and_status() {
+    for tamper_after_unlock in [false, true] {
+        let vault = common::init_test_vault();
+        let (handle, join) = common::spawn(&vault.state_dir);
+        if tamper_after_unlock {
+            handle.unlock(common::password_proof()).await.unwrap();
+        }
+        let db = Connection::open(paths::vault_db(&vault.state_dir)).unwrap();
+        db.execute(
+            "UPDATE audit_retention SET seal_ciphertext=zeroblob(16)",
+            [],
+        )
+        .unwrap();
+        let result = if tamper_after_unlock {
+            handle.audit_retention_status().await.map(|_| ())
+        } else {
+            handle.unlock(common::password_proof()).await
+        };
+        assert!(matches!(
+            result,
+            Err(AuthorityError::StorageIntegrityFailed)
+        ));
+        assert_eq!(handle.status().await.unwrap().state, "faulted");
+        handle.shutdown(None).await.unwrap();
+        join.join().unwrap();
+    }
+}
+
+#[tokio::test]
+async fn retention_actor_vrk_rotation_reseals_unchanged_policy() {
+    use rekey_domain::audit::AuditRetentionSet;
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+    let receipt = handle
+        .audit_retention_set_before(
+            AuditRetentionSet { days: Some(2) },
+            common::password_proof(),
+            None,
+        )
+        .await
+        .unwrap();
+    let store = SqliteRecordStore::open(&paths::vault_db(&vault.state_dir)).unwrap();
+    let before = store.load_audit_retention().unwrap();
+    drop(store);
+    handle.lock("rotation-test").await.unwrap();
+    handle
+        .rotate_vrk_before(
+            common::password_input(),
+            SecretInput::from_slice(vault.outcome.recovery_key_display.as_bytes()),
+            None,
+        )
+        .await
+        .unwrap();
+    let store = SqliteRecordStore::open(&paths::vault_db(&vault.state_dir)).unwrap();
+    let after = store.load_audit_retention().unwrap();
+    assert_eq!(
+        (before.days, before.updated_at_ms),
+        (after.days, after.updated_at_ms)
+    );
+    assert_ne!(before.seal_nonce, after.seal_nonce);
+    assert_ne!(before.seal_ciphertext, after.seal_ciphertext);
+    handle.unlock(common::password_proof()).await.unwrap();
+    assert_eq!(handle.audit_retention_status().await.unwrap(), receipt);
+    handle
+        .shutdown(Some(common::password_proof()))
+        .await
+        .unwrap();
+    join.join().unwrap();
+}

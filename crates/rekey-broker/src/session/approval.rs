@@ -62,7 +62,7 @@ fn reject(code: &'static str) -> ApprovalRejection {
     ApprovalRejection(code)
 }
 
-fn challenge_is_pending(
+pub(super) fn challenge_is_pending(
     stored: &mut StoredChallenge,
     now: Timestamp,
     monotonic_now: Instant,

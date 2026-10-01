@@ -202,14 +202,33 @@ pub(crate) async fn activate_snapshot(broker: &TestBroker, snapshot: serde_json:
         .expect("policy envelope object")
         .insert("signature".to_owned(), serde_json::Value::String(signature));
     let bundle = serde_jcs::to_vec(&bundle).expect("canonical bundle");
+    let metadata = activation_metadata(broker, &bundle).await;
     call(
         &broker.admin_sock(),
         Channel::Admin,
         admin_msg::POLICY_ACTIVATE,
-        &bundle,
+        &metadata,
         &proof_body(PASSWORD),
     )
     .await
     .ok();
     bundle
+}
+
+pub async fn activation_metadata(broker: &TestBroker, bundle: &[u8]) -> Vec<u8> {
+    let status_response = call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::POLICY_STATUS,
+        b"{}",
+        &[],
+    )
+    .await;
+    let status = status_response.ok();
+    serde_json::to_vec(&rekey_domain::ipc::PolicyActivateMeta {
+        expected_vault_id: serde_json::from_value(status["vault_id"].clone()).unwrap(),
+        expected_trust_sha256: status["trust_sha256"].as_str().unwrap().to_owned(),
+        bundle_json: serde_json::from_slice(bundle).unwrap(),
+    })
+    .unwrap()
 }

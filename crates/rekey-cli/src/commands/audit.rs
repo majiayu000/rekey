@@ -18,14 +18,27 @@ use crate::client::CliError;
 
 pub fn audit_prune(
     state_dir: &Path,
-    before_ms: i64,
+    before_ms: Option<i64>,
+    older_than_days: Option<u64>,
     recovery: bool,
     password_stdin: bool,
 ) -> Result<(), CliError> {
+    if before_ms.is_some() == older_than_days.is_some() {
+        return Err(CliError::local(
+            "USAGE",
+            "select exactly one audit prune cutoff",
+        ));
+    }
+    let age_ms = older_than_days.map(retention_age_ms).transpose()?;
+    let proof = read_step_up(recovery, password_stdin)?;
+    let before_ms = match (before_ms, age_ms) {
+        (Some(before_ms), None) => before_ms,
+        (None, Some(age_ms)) => retention_cutoff_ms(age_ms, now_ms()?)?,
+        _ => unreachable!("validated selector"),
+    };
     let request = AuditPruneRequest { before_ms };
     let metadata = serde_json::to_vec(&request)
         .map_err(|_| CliError::local("USAGE", "cannot encode audit prune request"))?;
-    let proof = read_step_up(recovery, password_stdin)?;
     let body = proof_body(recovery, &proof);
     let (metadata, response_body) = admin_with_response_timeout(
         state_dir,
@@ -49,6 +62,21 @@ pub fn audit_prune(
     io::stdout()
         .write_all(&output)
         .map_err(|error| CliError::local("OUTPUT_FAILED", format!("cannot write output: {error}")))
+}
+
+fn retention_age_ms(days: u64) -> Result<i64, CliError> {
+    i64::try_from(days)
+        .ok()
+        .filter(|days| *days > 0)
+        .and_then(|days| days.checked_mul(86_400_000))
+        .ok_or_else(|| CliError::local("USAGE", "audit retention age is out of range"))
+}
+
+fn retention_cutoff_ms(age_ms: i64, now_ms: i64) -> Result<i64, CliError> {
+    now_ms
+        .checked_sub(age_ms)
+        .filter(|cutoff| *cutoff >= 0)
+        .ok_or_else(|| CliError::local("USAGE", "audit retention age precedes Unix epoch"))
 }
 
 pub fn audit_list(state_dir: &Path, query: AuditQuery) -> Result<(), CliError> {
@@ -254,11 +282,94 @@ struct ExportTrailer {
     row_count: u64,
 }
 
+pub fn audit_retention_set(
+    state_dir: &Path,
+    days: Option<u64>,
+    recovery: bool,
+    password_stdin: bool,
+) -> Result<(), CliError> {
+    if let Some(days) = days {
+        retention_age_ms(days)?;
+    }
+    let proof = read_step_up(recovery, password_stdin)?;
+    let request = rekey_domain::audit::AuditRetentionSet { days };
+    let metadata = serde_json::to_vec(&request)
+        .map_err(|_| CliError::local("USAGE", "cannot encode retention request"))?;
+    let body = proof_body(recovery, &proof);
+    let (metadata, body) = admin_with_response_timeout(state_dir, LIFECYCLE_RESPONSE_TIMEOUT)?
+        .call(admin_msg::AUDIT_RETENTION_SET, &metadata, &body)?;
+    let receipt = retention_receipt(&metadata, &body)?;
+    if receipt.days != days {
+        return Err(CliError::local(
+            "INVALID_FRAME",
+            "retention receipt does not match request",
+        ));
+    }
+    print_retention(&receipt)
+}
+pub fn audit_retention_status(state_dir: &Path) -> Result<(), CliError> {
+    let (metadata, body) = admin(state_dir)?.call(admin_msg::AUDIT_RETENTION_STATUS, b"{}", &[])?;
+    print_retention(&retention_receipt(&metadata, &body)?)
+}
+fn retention_receipt(
+    metadata: &[u8],
+    body: &[u8],
+) -> Result<rekey_domain::audit::AuditRetentionStatus, CliError> {
+    if !body.is_empty() {
+        return Err(CliError::local(
+            "INVALID_FRAME",
+            "unexpected retention body",
+        ));
+    }
+    let receipt: rekey_domain::audit::AuditRetentionStatus = serde_json::from_slice(metadata)
+        .map_err(|_| CliError::local("INVALID_FRAME", "invalid retention receipt"))?;
+    receipt
+        .validate()
+        .map_err(|_| CliError::local("INVALID_FRAME", "invalid retention receipt"))?;
+    Ok(receipt)
+}
+fn print_retention(receipt: &rekey_domain::audit::AuditRetentionStatus) -> Result<(), CliError> {
+    let mut output = serde_json::to_vec_pretty(receipt)
+        .map_err(|_| CliError::local("INVALID_FRAME", "cannot encode retention receipt"))?;
+    output.push(b'\n');
+    io::stdout()
+        .write_all(&output)
+        .map_err(|error| CliError::local("OUTPUT_FAILED", format!("cannot write output: {error}")))
+}
+
 #[cfg(test)]
 mod tests {
     use serde::ser::Error as _;
 
     use super::*;
+
+    #[test]
+    fn audit_retention_age_checks_overflow_and_epoch_without_clamping() {
+        assert_eq!(retention_age_ms(30).unwrap(), 2_592_000_000);
+        for days in [0, u64::MAX, (i64::MAX / 86_400_000) as u64 + 1] {
+            assert_eq!(retention_age_ms(days).unwrap_err().code, "USAGE");
+        }
+        let maximum_days = (i64::MAX / 86_400_000) as u64;
+        assert_eq!(
+            retention_age_ms(maximum_days).unwrap(),
+            maximum_days as i64 * 86_400_000
+        );
+        let day = retention_age_ms(1).unwrap();
+        assert_eq!(retention_cutoff_ms(day, day).unwrap(), 0);
+        assert_eq!(retention_cutoff_ms(day, day + 1).unwrap(), 1);
+        assert_eq!(retention_cutoff_ms(day, day - 1).unwrap_err().code, "USAGE");
+        assert_eq!(
+            retention_cutoff_ms(day, i64::MIN).unwrap_err().code,
+            "USAGE"
+        );
+        let request = AuditPruneRequest {
+            before_ms: retention_cutoff_ms(day, day + 1).unwrap(),
+        };
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            serde_json::json!({"before_ms":1})
+        );
+    }
 
     struct FailingRecord;
 
@@ -308,5 +419,32 @@ mod tests {
         let error = verify_export_path(&file, &resolved).unwrap_err();
         assert!(error.to_string().contains("no longer names"));
         assert_eq!(fs::read(&resolved).unwrap(), b"replacement\n");
+    }
+}
+
+#[cfg(test)]
+mod retention_receipt_tests {
+    use super::*;
+    #[test]
+    fn retention_receipt_rejects_missing_fields_ranges_unknown_fields_and_body() {
+        for input in [
+            b"{}".as_slice(),
+            b"{\"updated_at_ms\":1}",
+            b"{\"days\":null}",
+            b"{\"days\":0,\"updated_at_ms\":1}",
+            b"{\"days\":1,\"updated_at_ms\":-1}",
+            b"{\"days\":1,\"updated_at_ms\":1,\"extra\":true}",
+        ] {
+            assert_eq!(
+                retention_receipt(input, &[]).unwrap_err().code,
+                "INVALID_FRAME"
+            );
+        }
+        let valid = b"{\"days\":null,\"updated_at_ms\":1}";
+        assert_eq!(retention_receipt(valid, &[]).unwrap().days, None);
+        assert_eq!(
+            retention_receipt(valid, b"x").unwrap_err().code,
+            "INVALID_FRAME"
+        );
     }
 }

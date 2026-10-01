@@ -930,3 +930,95 @@ async fn vrk_sql_work_exceeding_bounded_stop_disconnects_unknown_and_retains_cra
         .unwrap();
     join.join().unwrap();
 }
+
+#[tokio::test]
+async fn retention_admin_requires_explicit_days_proof_and_rejects_agent_opcodes() {
+    let broker = common::start_broker().await;
+    let admin = broker.admin_sock();
+    let response = common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::AUDIT_RETENTION_STATUS,
+        b"{}",
+        &[],
+    )
+    .await;
+    assert_eq!(response.err_code(), "LOCKED");
+    common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::UNLOCK_PASSWORD,
+        b"{}",
+        common::PASSWORD,
+    )
+    .await
+    .ok();
+    for metadata in [
+        b"{}".as_slice(),
+        b"{\"days\":0}",
+        b"{\"days\":1,\"extra\":true}",
+    ] {
+        let response = common::call(
+            &admin,
+            Channel::Admin,
+            admin_msg::AUDIT_RETENTION_SET,
+            metadata,
+            &common::proof_body(common::PASSWORD),
+        )
+        .await;
+        assert_ne!(response.err_code(), "");
+    }
+    let response = common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::AUDIT_RETENTION_SET,
+        b"{\"days\":1}",
+        &common::proof_body(b"wrong"),
+    )
+    .await;
+    assert_eq!(response.err_code(), "INVALID_UNLOCK_CREDENTIAL");
+    assert_eq!(
+        common::call(
+            &admin,
+            Channel::Admin,
+            admin_msg::AUDIT_RETENTION_SET,
+            b"{\"days\":1}",
+            &common::proof_body(common::PASSWORD)
+        )
+        .await
+        .ok()["days"],
+        1
+    );
+    assert_eq!(
+        common::call(
+            &admin,
+            Channel::Admin,
+            admin_msg::AUDIT_RETENTION_STATUS,
+            b"{}",
+            &[]
+        )
+        .await
+        .ok()["days"],
+        1
+    );
+    assert!(
+        common::call(
+            &admin,
+            Channel::Admin,
+            admin_msg::AUDIT_RETENTION_SET,
+            b"{\"days\":null}",
+            &common::proof_body(common::PASSWORD)
+        )
+        .await
+        .ok()["days"]
+            .is_null()
+    );
+    for opcode in [
+        admin_msg::AUDIT_RETENTION_SET,
+        admin_msg::AUDIT_RETENTION_STATUS,
+    ] {
+        let response = common::call(&broker.agent_sock(), Channel::Agent, opcode, b"{}", &[]).await;
+        assert_ne!(response.err_code(), "");
+    }
+    broker.shutdown().await;
+}

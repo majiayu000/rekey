@@ -226,3 +226,327 @@ fn lease_probe_is_bounded_and_decodes_json_string_escapes() {
     assert_eq!(unterminated.occurrences, 0);
     assert!(unterminated.lease_ids.is_empty());
 }
+
+#[test]
+fn edge_ows_is_closed_at_bootstrap_and_selected_value_intake() {
+    for value in [" edge-vault-value ", "\tedge-vault-value\t", " \t "] {
+        let mut raw: serde_json::Value = serde_json::from_slice(PROFILE).unwrap();
+        raw["vault_token"] = value.into();
+        assert!(VaultDynamicProfile::parse_profile(&serde_json::to_vec(&raw).unwrap()).is_err());
+        let issued = serde_json::to_vec(&serde_json::json!({"lease_id":"id","lease_duration":60,"renewable":true,"data":{"token":value}})).unwrap();
+        assert!(parse_issued(&issued).is_err());
+    }
+}
+
+use crate::upstream::UpstreamResponse;
+struct PathBoundActorTransport {
+    fake: Arc<crate::testing::FakeUpstreamTransport>,
+}
+impl UpstreamTransport for PathBoundActorTransport {
+    fn send(&self, request: UpstreamRequest) -> crate::upstream::UpstreamFuture<'_> {
+        if request.path == "/v1/sys/leases/revoke" {
+            self.fake.push_response(Ok(UpstreamResponse {
+                status: 204,
+                headers: vec![].into(),
+                body: Zeroizing::new(vec![]),
+            }));
+        } else if request.path == "/business" {
+            self.fake.push_response(Ok(UpstreamResponse {
+                status: 200,
+                headers: vec![].into(),
+                body: Zeroizing::new(b"clean business body".to_vec()),
+            }));
+        }
+        self.fake.send(request)
+    }
+}
+struct ActorFixture {
+    _dir: tempfile::TempDir,
+    state: std::path::PathBuf,
+    authority: AuthorityHandle,
+    worker: std::thread::JoinHandle<()>,
+    terminal_worker: tokio::task::JoinHandle<()>,
+    executor: ActionExecutor,
+    fake: Arc<crate::testing::FakeUpstreamTransport>,
+    action: FixedHttpAction,
+}
+impl ActorFixture {
+    async fn new(key: &str) -> Self {
+        use rekey_domain::credential::{CredentialKind, CredentialLabel};
+        use rekey_vault::secret::SecretInput;
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        rekey_vault::bootstrap::init_vault(
+            &state,
+            &SecretInput::from_slice(b"actor-proof"),
+            rekey_vault::crypto::kdf::Argon2Params {
+                memory_kib: 8,
+                iterations: 1,
+                parallelism: 1,
+            },
+        )
+        .unwrap();
+        rekey_vault::bootstrap::confirm_vault_init(&state).unwrap();
+        let (authority, worker) = rekey_vault::authority::spawn_authority(
+            rekey_vault::handle::AuthorityConfig::new(state.clone()),
+        )
+        .unwrap();
+        authority.unlock(Self::proof()).await.unwrap();
+        let credential = authority
+            .credential_add(
+                CredentialLabel::new("vault_dynamic-actor").unwrap(),
+                CredentialKind::VaultDynamicSource,
+                SecretInput::from_slice(&{
+                    let mut raw: serde_json::Value = serde_json::from_slice(PROFILE).unwrap();
+                    raw["key"] = key.into();
+                    serde_json::to_vec(&raw).unwrap()
+                }),
+                Self::proof(),
+            )
+            .await
+            .unwrap();
+        let action: FixedHttpAction = serde_json::from_value(serde_json::json!({"id":rekey_domain::ids::ActionId::new_random(),"name":"actor-action","version":1,"enabled":true,"credential_id":credential.id,"origin":"https://api.example.com","method":"POST","exact_path":"/business","auth":{"header_name":"authorization","prefix":if key == "token" { "Bearer " } else { "Basic " }},"timeout_ms":30_000,"request_policy":{"max_body_bytes":1024,"allowed_extra_headers":[]},"response_policy":{"max_body_bytes":1024,"allowed_headers":["content-type"]}})).unwrap();
+        action.validate().unwrap();
+        let (terminals, terminal_worker) = crate::audit::spawn_terminal_worker(authority.clone());
+        let lifecycle = Arc::new(Lifecycle::new());
+        lifecycle.enter_running().unwrap();
+        let fake = Arc::new(crate::testing::FakeUpstreamTransport::new());
+        let executor = ActionExecutor::new(
+            authority.clone(),
+            Arc::new(SessionRegistry::new()),
+            Arc::new(PathBoundActorTransport { fake: fake.clone() }),
+            lifecycle,
+            terminals,
+            Arc::new(RwLock::new(None)),
+        );
+        Self {
+            _dir: dir,
+            state,
+            authority,
+            worker,
+            terminal_worker,
+            executor,
+            fake,
+            action,
+        }
+    }
+    fn proof() -> rekey_vault::command::UnlockProof {
+        rekey_vault::command::UnlockProof::Password(rekey_vault::secret::SecretInput::from_slice(
+            b"actor-proof",
+        ))
+    }
+    async fn run(&self) -> Result<ExecuteOutcome, BrokerError> {
+        let ctx = ExecutionAuditContext {
+            request_id: RequestId::new_random(),
+            session_id: rekey_domain::ids::SessionId::new_random(),
+            action: ActionVersionRef {
+                action_id: self.action.id,
+                version: 1,
+            },
+            credential_id: self.action.credential_id,
+            authorization: None,
+        };
+        let request = ExecuteRequest {
+            request_id: ctx.request_id,
+            capability_token: "unused-admitted-test".into(),
+            action: ctx.action,
+            content_type: Some("application/json".into()),
+            extra_headers: vec![],
+            body: b"{}".to_vec(),
+            approval_grants: vec![],
+        };
+        let end = Instant::now() + Duration::from_millis(self.action.timeout_ms.into());
+        let mut started = self
+            .executor
+            .terminals
+            .commit_started(ctx, vec![], Some(end), None)
+            .await?;
+        self.executor
+            .run_started(
+                &mut started,
+                &request,
+                &self.action,
+                end,
+                &AtomicU8::new(EFFECT_NOT_STARTED),
+                None,
+            )
+            .await
+    }
+    async fn finish(self) {
+        self.executor
+            .terminals
+            .wait_idle(Duration::from_secs(2))
+            .await
+            .ok();
+        let Self {
+            _dir,
+            authority,
+            worker,
+            terminal_worker,
+            executor,
+            ..
+        } = self;
+        drop(executor);
+        authority.shutdown(Some(Self::proof())).await.unwrap();
+        drop(authority);
+        worker.join().unwrap();
+        terminal_worker.await.unwrap();
+        drop(_dir);
+    }
+    fn db(&self) -> rusqlite::Connection {
+        rusqlite::Connection::open(self.state.join("vault.sqlite3")).unwrap()
+    }
+}
+
+#[tokio::test]
+async fn actor_decoded_selected_bootstrap_never_crosses_into_business() {
+    let f = ActorFixture::new("token").await;
+    let raw: serde_json::Value = serde_json::from_slice(PROFILE).unwrap();
+    let token = raw["vault_token"].as_str().unwrap();
+    let escaped = token
+        .bytes()
+        .map(|b| format!("\\u{:04x}", b))
+        .collect::<String>();
+    let mut source = UpstreamResponse {status:200,headers:vec![].into(),body:Zeroizing::new(serde_json::to_vec(&serde_json::json!({"lease_id":"database/creds/role/accepted-lease","lease_duration":60,"renewable":false,"data":{"token":token}})).unwrap())};
+    source.body = Zeroizing::new(
+        String::from_utf8(source.body.to_vec())
+            .unwrap()
+            .replace(token, &escaped)
+            .into_bytes(),
+    );
+    assert!(!contains_secret(
+        &source.body,
+        &sealing_needles(PROFILE, token.as_bytes())
+    ));
+    assert!(parse_issued(&source.body).is_ok());
+    f.fake.push_response(Ok(source));
+    let outcome = f.run().await;
+    let requests = f.fake.take_requests();
+    assert!(
+        matches!(outcome, Err(BrokerError::ResponseSecurityViolation)),
+        "decoded bootstrap accepted: success={}, source/business requests={}",
+        outcome.is_ok(),
+        requests.len()
+    );
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1].path, "/v1/sys/leases/revoke");
+    assert_eq!(
+        requests[1].body,
+        br#"{"lease_id":"database/creds/role/accepted-lease","sync":true}"#
+    );
+    assert_eq!(
+        f.db()
+            .query_row(
+                "SELECT count(*) FROM audit_events WHERE event_type='vault.lease.issued'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        0
+    );
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn actor_decoded_lease_identifier_bootstrap_is_compensated_before_public_audit() {
+    let f = ActorFixture::new("token").await;
+    let token = "hvs.bootstrap";
+    let lease_id = format!("database/creds/role/{token}");
+    let escaped = token
+        .bytes()
+        .map(|b| format!("\\u{:04x}", b))
+        .collect::<String>();
+    let body = serde_json::to_string(&serde_json::json!({"lease_id":lease_id,"lease_duration":60,"renewable":false,"data":{"token":"clean-dynamic-secret"}})).unwrap().replace(token, &escaped).into_bytes();
+    assert!(parse_issued(&body).is_ok());
+    assert!(!contains_secret(
+        &body,
+        &sealing_needles(PROFILE, token.as_bytes())
+    ));
+    f.fake.push_response(Ok(UpstreamResponse {
+        status: 200,
+        headers: vec![].into(),
+        body: Zeroizing::new(body),
+    }));
+    let outcome = f.run().await;
+    let requests = f.fake.take_requests();
+    let public_reflections: i64 = f
+        .db()
+        .query_row(
+            "SELECT count(*) FROM audit_events WHERE reason_code LIKE '%hvs.bootstrap%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        matches!(outcome, Err(BrokerError::ResponseSecurityViolation)),
+        "decoded lease bootstrap accepted: success={}, requests={}, public reflected audits={public_reflections}",
+        outcome.is_ok(),
+        requests.len()
+    );
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1].path, "/v1/sys/leases/revoke");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&requests[1].body).unwrap(),
+        serde_json::json!({"lease_id":lease_id,"sync":true})
+    );
+    assert_eq!(public_reflections, 0);
+    assert_eq!(
+        f.db()
+            .query_row(
+                "SELECT count(*) FROM vault_lease_journal WHERE phase='acquire_intent'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn actor_decoded_selected_username_password_never_enter_basic_auth_and_clean_value_stays_exact()
+ {
+    for key in ["username", "password"] {
+        for form in sealing_needles(b"hvs.bootstrap", b"hvs.bootstrap") {
+            let f = ActorFixture::new(key).await;
+            let value = format!("prefix:{}:suffix", std::str::from_utf8(&form).unwrap());
+            let escaped = value
+                .bytes()
+                .map(|b| format!("\\u{:04x}", b))
+                .collect::<String>();
+            let body = serde_json::to_string(&serde_json::json!({"lease_id":"database/creds/role/accepted-lease","lease_duration":60,"renewable":false,"data":{key:value}})).unwrap().replace(&value, &escaped).into_bytes();
+            let mut de = serde_json::Deserializer::from_slice(&body);
+            assert!((IssuedSeed { key }).deserialize(&mut de).is_ok());
+            assert!(!contains_secret(
+                &body,
+                &sealing_needles(PROFILE, b"hvs.bootstrap")
+            ));
+            f.fake.push_response(Ok(UpstreamResponse {
+                status: 200,
+                headers: vec![].into(),
+                body: Zeroizing::new(body),
+            }));
+            assert!(matches!(
+                f.run().await,
+                Err(BrokerError::ResponseSecurityViolation)
+            ));
+            let requests = f.fake.take_requests();
+            assert_eq!(requests.len(), 2);
+            assert_eq!(requests[1].path, "/v1/sys/leases/revoke");
+            f.finish().await;
+        }
+        let f = ActorFixture::new(key).await;
+        let body = serde_json::to_vec(&serde_json::json!({"lease_id":"database/creds/role/clean-lease","lease_duration":60,"renewable":false,"data":{key:"clean-selected-value"}})).unwrap();
+        f.fake.push_response(Ok(UpstreamResponse {
+            status: 200,
+            headers: vec![].into(),
+            body: Zeroizing::new(body),
+        }));
+        assert_eq!(f.run().await.unwrap().body, b"clean business body");
+        let requests = f.fake.take_requests();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(requests[1].auth_value, b"Basic clean-selected-value");
+        assert_eq!(requests[2].path, "/v1/sys/leases/revoke");
+        f.finish().await;
+    }
+}

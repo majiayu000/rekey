@@ -12,3 +12,5 @@ mod workload;
 mod wrapper;
 
 pub use sqlite::SqliteRecordStore;
+
+mod lease_journal;

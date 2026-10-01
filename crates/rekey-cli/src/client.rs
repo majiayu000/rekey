@@ -16,6 +16,53 @@ use rekey_domain::ipc::{
 };
 use zeroize::Zeroizing;
 
+static ADMIN_SESSION_FILE: std::sync::OnceLock<Option<std::path::PathBuf>> =
+    std::sync::OnceLock::new();
+pub fn configure_admin_session_file(path: Option<std::path::PathBuf>) {
+    let _ = ADMIN_SESSION_FILE.set(path);
+}
+
+pub(crate) fn private_session_file(path: &Path) -> Result<Zeroizing<Vec<u8>>, CliError> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let invalid = || {
+        CliError::local(
+            "USAGE",
+            "management session file must be an owner-protected regular file",
+        )
+    };
+    let uid = unsafe { libc::geteuid() };
+    let parent = path.parent().ok_or_else(invalid)?;
+    let pm = std::fs::symlink_metadata(parent).map_err(|_| invalid())?;
+    if !pm.is_dir() || pm.uid() != uid || pm.mode() & 0o777 != 0o700 {
+        return Err(invalid());
+    }
+    for ancestor in path.ancestors() {
+        if std::fs::symlink_metadata(ancestor)
+            .map_err(|_| invalid())?
+            .file_type()
+            .is_symlink()
+        {
+            return Err(invalid());
+        }
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|_| invalid())?;
+    let meta = file.metadata().map_err(|_| invalid())?;
+    if !meta.is_file() || meta.uid() != uid || meta.mode() & 0o777 != 0o600 {
+        return Err(invalid());
+    }
+    let mut token = Zeroizing::new(Vec::new());
+    file.take(44)
+        .read_to_end(&mut token)
+        .map_err(|_| invalid())?;
+    rekey_domain::ipc::validate_management_token(&token).map_err(|_| invalid())?;
+    Ok(token)
+}
+
 pub const IO_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug)]
@@ -330,6 +377,26 @@ impl Client {
         metadata: &[u8],
         body: &[u8],
     ) -> Result<RequestId, CliError> {
+        let wrapped = if self.channel == Channel::Admin
+            && rekey_domain::ipc::managed_admin_operation(message_type)
+                .map_err(|_| CliError::local("INVALID_FRAME", "unknown admin operation"))?
+        {
+            ADMIN_SESSION_FILE
+                .get()
+                .and_then(|path| path.as_deref())
+                .map(|path| {
+                    let token = private_session_file(path)?;
+                    rekey_domain::ipc::encode_management_body(&token, body)
+                        .map(Zeroizing::new)
+                        .map_err(|_| {
+                            CliError::local("INVALID_FRAME", "invalid management envelope")
+                        })
+                })
+                .transpose()?
+        } else {
+            None
+        };
+        let body = wrapped.as_deref().map_or(body, |value| value.as_slice());
         let metadata_len = u32::try_from(metadata.len())
             .map_err(|_| CliError::local("INVALID_FRAME", "request metadata is too large"))?;
         if metadata_len > METADATA_MAX_BYTES {
@@ -341,7 +408,9 @@ impl Client {
         let body_len = u32::try_from(body.len())
             .map_err(|_| CliError::local("INVALID_FRAME", "request body is too large"))?;
         let request_body_max = match self.channel {
-            Channel::Admin => ADMIN_SECRET_BODY_MAX_BYTES,
+            Channel::Admin => {
+                ADMIN_SECRET_BODY_MAX_BYTES + rekey_domain::ipc::ADMIN_MANAGEMENT_OVERHEAD
+            }
             Channel::Agent => AGENT_BODY_MAX_BYTES,
         };
         if body_len > request_body_max {

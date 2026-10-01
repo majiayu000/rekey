@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/rekey-approval-relay",
     "crates/rekey-connector",
     "crates/rekey-domain",
     "crates/rekey-policy",
@@ -23,7 +24,7 @@ rekey-policy = { path = "crates/rekey-policy" }
 rekey-vault = { path = "crates/rekey-vault" }
 rekey-broker = { path = "crates/rekey-broker" }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["raw_value"] }
 thiserror = "1"
 uuid = "1"
 tokio = { version = "1", default-features = false }

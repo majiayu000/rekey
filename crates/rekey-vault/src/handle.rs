@@ -4,7 +4,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use rekey_domain::action::FixedHttpAction;
-use rekey_domain::audit::{AuditPage, AuditPruneReceipt, AuditPruneRequest, AuditQuery};
+use rekey_domain::audit::{
+    AuditPage, AuditPruneReceipt, AuditPruneRequest, AuditQuery, AuditRetentionSet,
+    AuditRetentionStatus,
+};
 use rekey_domain::credential::{CredentialKind, CredentialLabel, CredentialMetadata};
 use rekey_domain::ids::{ActionId, CredentialId};
 use tokio::sync::{mpsc, oneshot};
@@ -83,6 +86,107 @@ macro_rules! call {
 }
 
 impl AuthorityHandle {
+    pub async fn lease_acquire_begin(
+        &self,
+        context: crate::model::LeaseExecutionContext,
+        source: crate::model::LeaseSourceRef,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<crate::model::LeaseReceipt, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::LeaseAcquireBegin {
+            context,
+            source,
+            not_after,
+            reply
+        })
+    }
+    pub async fn lease_record_issued(
+        &self,
+        registration_id: rekey_domain::ids::LeaseRegistrationId,
+        lease_id: SecretInput,
+        request_started_at_ms: i64,
+        actual_ttl_seconds: u64,
+        renewable: bool,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<crate::model::LeaseReceipt, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::LeaseIssued {
+            registration_id,
+            lease_id,
+            request_started_at_ms,
+            actual_ttl_seconds,
+            renewable,
+            not_after,
+            reply
+        })
+    }
+    pub async fn lease_abort_definite(
+        &self,
+        registration_id: rekey_domain::ids::LeaseRegistrationId,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<crate::model::LeaseReceipt, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::LeaseAcquireAbortDefinite {
+            registration_id,
+            not_after,
+            reply
+        })
+    }
+    pub async fn lease_renew_begin(
+        &self,
+        registration_id: rekey_domain::ids::LeaseRegistrationId,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<crate::model::LeaseReceipt, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::LeaseRenewBegin {
+            registration_id,
+            not_after,
+            reply
+        })
+    }
+    pub async fn lease_record_renewal(
+        &self,
+        registration_id: rekey_domain::ids::LeaseRegistrationId,
+        request_started_at_ms: i64,
+        actual_ttl_seconds: Option<u64>,
+        renewable: bool,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<crate::model::LeaseReceipt, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::LeaseRenewResult {
+            registration_id,
+            request_started_at_ms,
+            actual_ttl_seconds,
+            renewable,
+            not_after,
+            reply
+        })
+    }
+    pub async fn lease_prepare_cleanup(
+        &self,
+        registration_id: rekey_domain::ids::LeaseRegistrationId,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<crate::secret::PreparedLeaseCleanup, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::LeaseCleanupPrepare {
+            registration_id,
+            not_after,
+            reply
+        })
+    }
+    pub async fn lease_finish_cleanup(
+        &self,
+        registration_id: rekey_domain::ids::LeaseRegistrationId,
+        confirmed: bool,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<crate::model::LeaseReceipt, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::LeaseCleanupFinish {
+            registration_id,
+            confirmed,
+            not_after,
+            reply
+        })
+    }
+    pub async fn lease_recovery_batch(
+        &self,
+    ) -> Result<crate::model::LeaseRecoveryBatch, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::LeaseRecoveryBatch { reply })
+    }
+
     pub async fn status(&self) -> Result<StatusInfo, AuthorityError> {
         call!(self, |reply| AuthorityCommand::Status {
             refresh_activity: false,
@@ -406,6 +510,25 @@ impl AuthorityHandle {
         })
     }
 
+    /// Broker-only preparation after the execution-start audit commit; no IPC operation exposes it.
+    pub async fn prepare_execution_credential(
+        &self,
+        credential_id: CredentialId,
+        request_id: rekey_domain::ids::RequestId,
+        action_id: ActionId,
+        action_version: u64,
+        deadline: std::time::Instant,
+    ) -> Result<PreparedCredential, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::PrepareExecutionCredential {
+            credential_id,
+            request_id,
+            action_id,
+            action_version,
+            deadline,
+            reply
+        })
+    }
+
     pub async fn prepare_credential(
         &self,
         credential_id: CredentialId,
@@ -433,6 +556,35 @@ impl AuthorityHandle {
         call!(self, |reply| AuthorityCommand::AuditPrune {
             request,
             proof,
+            not_after,
+            reply
+        })
+    }
+
+    pub async fn audit_retention_set_before(
+        &self,
+        request: AuditRetentionSet,
+        proof: UnlockProof,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<AuditRetentionStatus, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::AuditRetentionSet {
+            request,
+            proof,
+            not_after,
+            reply
+        })
+    }
+    pub async fn audit_retention_status(&self) -> Result<AuditRetentionStatus, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::AuditRetentionStatus {
+            reply
+        })
+    }
+    /// Trusted Broker maintenance only; no IPC opcode exposes this command.
+    pub async fn audit_retention_maintenance(
+        &self,
+        not_after: std::time::Instant,
+    ) -> Result<Option<AuditPruneReceipt>, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::AuditRetentionMaintenance {
             not_after,
             reply
         })

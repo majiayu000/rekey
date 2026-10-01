@@ -339,8 +339,12 @@ async fn serve_mock(
                 expected_exchange(&mode);
             let result = if mode.starts_with("p7b-")
                 && req.method == "GET"
-                && req.path == "/v1/database/creds/agent-api-token"
-            {
+                && req.path
+                    == if mode == "p7b-malformed" {
+                        "/v1/database/creds/malformed-role"
+                    } else {
+                        "/v1/database/creds/agent-api-token"
+                    } {
                 let second = mode == "p7b-v2";
                 let source_token = if second {
                     P7B_SOURCE_TOKEN_TWO

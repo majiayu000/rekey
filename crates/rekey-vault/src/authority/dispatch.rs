@@ -13,6 +13,112 @@ impl Worker {
     /// Returns true when the worker should stop.
     pub(super) fn handle(&mut self, cmd: AuthorityCommand) -> bool {
         match cmd {
+            AuthorityCommand::LeaseAcquireBegin {
+                context,
+                source,
+                not_after,
+                reply,
+            } => {
+                let result = self.lease_begin(context, source, not_after);
+                self.touch_if_ok(&result);
+                let _ = reply.send(result);
+            }
+            AuthorityCommand::LeaseIssued {
+                registration_id,
+                lease_id,
+                request_started_at_ms,
+                actual_ttl_seconds,
+                renewable,
+                not_after,
+                reply,
+            } => {
+                let result = self.lease_update(
+                    registration_id,
+                    super::lease_journal::LeaseChange::Issued {
+                        lease_id,
+                        request_started_at_ms,
+                        actual_ttl_seconds,
+                        renewable,
+                    },
+                    not_after,
+                );
+                self.touch_if_ok(&result);
+                let _ = reply.send(result);
+            }
+            AuthorityCommand::LeaseAcquireAbortDefinite {
+                registration_id,
+                not_after,
+                reply,
+            } => {
+                let result = self.lease_update(
+                    registration_id,
+                    super::lease_journal::LeaseChange::AbortDefinite,
+                    not_after,
+                );
+                self.touch_if_ok(&result);
+                let _ = reply.send(result);
+            }
+            AuthorityCommand::LeaseRenewBegin {
+                registration_id,
+                not_after,
+                reply,
+            } => {
+                let result = self.lease_update(
+                    registration_id,
+                    super::lease_journal::LeaseChange::RenewBegin,
+                    not_after,
+                );
+                self.touch_if_ok(&result);
+                let _ = reply.send(result);
+            }
+            AuthorityCommand::LeaseRenewResult {
+                registration_id,
+                request_started_at_ms,
+                actual_ttl_seconds,
+                renewable,
+                not_after,
+                reply,
+            } => {
+                let result = self.lease_update(
+                    registration_id,
+                    super::lease_journal::LeaseChange::RenewResult {
+                        request_started_at_ms,
+                        actual_ttl_seconds,
+                        renewable,
+                    },
+                    not_after,
+                );
+                self.touch_if_ok(&result);
+                let _ = reply.send(result);
+            }
+            AuthorityCommand::LeaseCleanupPrepare {
+                registration_id,
+                not_after,
+                reply,
+            } => {
+                let result = self.lease_cleanup_prepare(registration_id, not_after);
+                self.touch_if_ok(&result);
+                let _ = reply.send(result);
+            }
+            AuthorityCommand::LeaseCleanupFinish {
+                registration_id,
+                confirmed,
+                not_after,
+                reply,
+            } => {
+                let result = self.lease_update(
+                    registration_id,
+                    super::lease_journal::LeaseChange::CleanupFinish { confirmed },
+                    not_after,
+                );
+                self.touch_if_ok(&result);
+                let _ = reply.send(result);
+            }
+            AuthorityCommand::LeaseRecoveryBatch { reply } => {
+                let result = self.lease_batch();
+                let _ = reply.send(result);
+            }
+
             AuthorityCommand::DesktopRemember {
                 proof,
                 not_after,
@@ -369,6 +475,24 @@ impl Worker {
                 });
                 let _ = reply.send(result);
             }
+            AuthorityCommand::PrepareExecutionCredential {
+                credential_id,
+                request_id,
+                action_id,
+                action_version,
+                deadline,
+                reply,
+            } => {
+                let result = self.prepare_execution_credential(
+                    credential_id,
+                    request_id,
+                    action_id,
+                    action_version,
+                    deadline,
+                );
+                self.touch_if_ok(&result);
+                let _ = reply.send(result);
+            }
             AuthorityCommand::PrepareCredential {
                 credential_id,
                 reply,
@@ -454,6 +578,32 @@ impl Worker {
                 })();
                 self.touch_if_ok(&result);
                 drop(reply.send(result));
+            }
+            AuthorityCommand::AuditRetentionSet {
+                request,
+                proof,
+                not_after,
+                reply,
+            } => {
+                let result = if mutation_expired(not_after) {
+                    Err(AuthorityError::AuthorityBusy)
+                } else {
+                    self.audit_retention_set(request, proof, not_after)
+                };
+                self.touch_if_ok(&result);
+                let _ = reply.send(result);
+            }
+            AuthorityCommand::AuditRetentionStatus { reply } => {
+                let result = self.audit_retention_status();
+                let _ = reply.send(result);
+            }
+            AuthorityCommand::AuditRetentionMaintenance { not_after, reply } => {
+                let result = if mutation_expired(Some(not_after)) {
+                    Err(AuthorityError::AuthorityBusy)
+                } else {
+                    self.audit_retention_maintenance(not_after)
+                };
+                let _ = reply.send(result);
             }
             AuthorityCommand::AuditPrune {
                 request,

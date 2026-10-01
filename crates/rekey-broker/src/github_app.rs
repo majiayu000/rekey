@@ -68,6 +68,7 @@ impl GitHubAppCredential {
         transport: &dyn UpstreamTransport,
         action: GitHubAction,
         timeout: Duration,
+        bootstrap_needles: &[Zeroizing<Vec<u8>>],
     ) -> Result<InstallationToken, ExchangeFailure> {
         let jwt = self.sign_jwt()?;
         let repository_ids = match action {
@@ -110,6 +111,22 @@ impl GitHubAppCredential {
         .map_err(|_| ExchangeFailure::uncertain_without_token(GitHubError::ExchangeTransport))?;
         let body = response.body;
         let mut probe = probe_tokens(&body);
+        let mut reflected = false;
+        // A bootstrap candidate is never owned as a minted installation token.
+        // Retain independent issued candidates for their existing cleanup path.
+        probe.tokens.retain(|token| {
+            let matches_bootstrap =
+                crate::executor::contains_secret(token.as_bytes(), bootstrap_needles);
+            reflected |= matches_bootstrap;
+            !matches_bootstrap
+        });
+        if reflected {
+            return Err(ExchangeFailure::with_tokens(
+                GitHubError::ExchangeRejected,
+                probe.tokens,
+                jwt,
+            ));
+        }
         if response.status != 201 {
             return Err(ExchangeFailure::with_tokens(
                 GitHubError::ExchangeRejected,
@@ -395,6 +412,7 @@ impl GitHubAppCredential {
         request_body: Vec<u8>,
         total_deadline: Instant,
         response_max_bytes: u32,
+        bootstrap_needles: &[Zeroizing<Vec<u8>>],
     ) -> GitHubEffect {
         let Some(business_deadline) = total_deadline.checked_sub(CLEANUP_BUDGET) else {
             return GitHubEffect::without_token(GitHubError::Deadline, false);
@@ -403,7 +421,9 @@ impl GitHubAppCredential {
             Ok(value) => value,
             Err(error) => return GitHubEffect::without_token(error, false),
         };
-        let (resource, tokens, jwt) = match self.exchange(transport, action, exchange_timeout).await
+        let (resource, tokens, jwt) = match self
+            .exchange(transport, action, exchange_timeout, bootstrap_needles)
+            .await
         {
             Ok(token) => (
                 match remaining(business_deadline) {

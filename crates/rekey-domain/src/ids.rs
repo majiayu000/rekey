@@ -187,3 +187,8 @@ mod tests {
         assert_eq!(id.as_bytes()[8] >> 6, 2);
     }
 }
+
+typed_id!(
+    /// Server-generated identity of a persistent Vault lease registration.
+    LeaseRegistrationId
+);

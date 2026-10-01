@@ -80,3 +80,30 @@ impl fmt::Debug for PreparedCredential {
         f.write_str("PreparedCredential([REDACTED])")
     }
 }
+
+/// Historical profile/ID can only be consumed by the internal exact-revoke path.
+/// Never supplies a PreparedCredential usable for acquire or business execution.
+pub struct PreparedLeaseCleanup {
+    profile: Zeroizing<Vec<u8>>,
+    lease_id: Zeroizing<Vec<u8>>,
+    receipt: crate::model::LeaseReceipt,
+}
+impl PreparedLeaseCleanup {
+    pub(crate) fn new(
+        profile: Zeroizing<Vec<u8>>,
+        lease_id: Zeroizing<Vec<u8>>,
+        receipt: crate::model::LeaseReceipt,
+    ) -> Self {
+        Self {
+            profile,
+            lease_id,
+            receipt,
+        }
+    }
+    pub fn receipt(&self) -> &crate::model::LeaseReceipt {
+        &self.receipt
+    }
+    pub fn consume<R>(self, f: impl FnOnce(&[u8], &[u8]) -> R) -> R {
+        f(&self.profile, &self.lease_id)
+    }
+}

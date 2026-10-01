@@ -20,7 +20,9 @@ pub use password_lifecycle::{key_rotate_dek, key_rotate_vrk, password_change, re
 mod github_admin;
 pub use github_admin::{credential_apply_github_webhook, credential_rotate_github_app};
 mod audit;
-pub use audit::{audit_export, audit_list, audit_prune};
+pub use audit::{
+    audit_export, audit_list, audit_prune, audit_retention_set, audit_retention_status,
+};
 mod policy_approval;
 pub use policy_approval::{
     approval_get, approval_origin, approval_pending, approval_prepare, policy_activate,
@@ -28,8 +30,13 @@ pub use policy_approval::{
 };
 mod vault_admin;
 pub use vault_admin::{
-    credential_add_keycloak, credential_add_vault_dynamic, credential_add_vault_kv,
-    credential_rotate_keycloak, credential_rotate_vault_dynamic, credential_rotate_vault_kv,
+    credential_add_aws_secrets_manager, credential_add_azure_key_vault,
+    credential_add_gcp_secret_manager, credential_add_keycloak, credential_add_macos_keychain,
+    credential_add_onepassword_connect, credential_add_vault_dynamic, credential_add_vault_kv,
+    credential_rotate_aws_secrets_manager, credential_rotate_azure_key_vault,
+    credential_rotate_gcp_secret_manager, credential_rotate_keycloak,
+    credential_rotate_macos_keychain, credential_rotate_onepassword_connect,
+    credential_rotate_vault_dynamic, credential_rotate_vault_kv,
 };
 
 const ACTION_RESPONSE_TIMEOUT: Duration = Duration::from_secs(130);
@@ -41,12 +48,6 @@ const LIFECYCLE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(130);
 struct GitHubProfileMarker<'a> {
     #[serde(borrow)]
     credential_type: &'a str,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct UnlockResponse {
-    unlocked: bool,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -390,7 +391,7 @@ pub fn unlock(state_dir: &Path, recovery: bool, password_stdin: bool) -> Result<
         admin_msg::UNLOCK_PASSWORD
     };
     let (meta, _) = admin(state_dir)?.call(message, b"{}", &secret)?;
-    print_json::<UnlockResponse>(&meta)?;
+    print_json::<ipc::UnlockResponse>(&meta)?;
     Ok(())
 }
 
@@ -912,4 +913,98 @@ pub fn execute_text_stream(
     )?;
     eprintln!("text stream completed");
     Ok(())
+}
+
+pub fn oidc_begin(state_dir: &Path) -> Result<(), CliError> {
+    let (metadata, body) = admin(state_dir)?.call(admin_msg::OIDC_LOGIN_BEGIN, b"{}", &[])?;
+    if !body.is_empty() {
+        return Err(CliError::local(
+            "INVALID_FRAME",
+            "unexpected OIDC response body",
+        ));
+    }
+    print_json::<ipc::OidcBeginResponse>(&metadata)
+}
+pub fn oidc_cancel(state_dir: &Path, flow_id: &str) -> Result<(), CliError> {
+    let metadata = serde_json::to_vec(&ipc::OidcFlowMeta {
+        flow_id: flow_id.to_owned(),
+    })
+    .map_err(|_| CliError::local("USAGE", "invalid flow"))?;
+    let (metadata, body) = admin(state_dir)?.call(admin_msg::OIDC_LOGIN_CANCEL, &metadata, &[])?;
+    if !body.is_empty() {
+        return Err(CliError::local(
+            "INVALID_FRAME",
+            "unexpected OIDC response body",
+        ));
+    }
+    #[derive(Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct Cancelled {
+        cancelled: bool,
+    }
+    print_json::<Cancelled>(&metadata)
+}
+pub fn oidc_finish(state_dir: &Path, flow_id: &str, path: &Path) -> Result<(), CliError> {
+    let metadata = serde_json::to_vec(&ipc::OidcFlowMeta {
+        flow_id: flow_id.to_owned(),
+    })
+    .map_err(|_| CliError::local("USAGE", "invalid flow"))?;
+    let (metadata, token) = admin_with_response_timeout(state_dir, Duration::from_secs(125))?
+        .call(admin_msg::OIDC_LOGIN_FINISH, &metadata, &[])?;
+    let response: ipc::OidcSessionResponse = serde_json::from_slice(&metadata)
+        .map_err(|_| CliError::local("INVALID_FRAME", "invalid OIDC session response"))?;
+    ipc::validate_management_token(&token)
+        .map_err(|_| CliError::local("INVALID_FRAME", "invalid management token"))?;
+    write_management_session(path, &token)?;
+    print_json::<ipc::OidcSessionResponse>(
+        &serde_json::to_vec(&response)
+            .map_err(|_| CliError::local("INVALID_FRAME", "invalid OIDC response"))?,
+    )
+}
+pub fn oidc_logout(state_dir: &Path, path: &Path) -> Result<(), CliError> {
+    let token = crate::client::private_session_file(path)?;
+    let (metadata, body) = admin(state_dir)?.call(admin_msg::OIDC_LOGOUT, b"{}", &token)?;
+    if !body.is_empty() {
+        return Err(CliError::local(
+            "INVALID_FRAME",
+            "unexpected OIDC response body",
+        ));
+    }
+    print_json::<ipc::OidcLogoutResponse>(&metadata)
+}
+fn write_management_session(path: &Path, token: &[u8]) -> Result<(), CliError> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let invalid = || {
+        CliError::local(
+            "OUTPUT_FAILED",
+            "cannot create protected management session file",
+        )
+    };
+    let parent = path.parent().ok_or_else(invalid)?;
+    let pm = std::fs::symlink_metadata(parent).map_err(|_| invalid())?;
+    if !pm.is_dir() || pm.uid() != unsafe { libc::geteuid() } || pm.mode() & 0o777 != 0o700 {
+        return Err(invalid());
+    }
+    for ancestor in parent.ancestors() {
+        if std::fs::symlink_metadata(ancestor)
+            .map_err(|_| invalid())?
+            .file_type()
+            .is_symlink()
+        {
+            return Err(invalid());
+        }
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|_| invalid())?;
+    file.write_all(token)
+        .and_then(|_| file.sync_all())
+        .map_err(|_| invalid())?;
+    std::fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|_| invalid())
 }

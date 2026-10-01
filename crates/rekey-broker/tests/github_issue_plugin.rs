@@ -664,7 +664,7 @@ async fn plugin_binding_roundtrips_admin_list_restart_and_backup_restore() {
         &common::proof_body(common::PASSWORD),
     )
     .await;
-    assert_eq!(receipt.ok()["format_version"], 14);
+    assert_eq!(receipt.ok()["format_version"], 17);
     let state = broker.state_dir.clone();
     let dir = broker.shutdown_keep_dir().await;
     let config = rekey_broker::runtime::BrokerConfig::new(state.clone());

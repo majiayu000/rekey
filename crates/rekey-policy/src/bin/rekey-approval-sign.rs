@@ -30,11 +30,13 @@ use std::{
 };
 use zeroize::Zeroizing;
 
+#[path = "approval_sign/pkcs11.rs"]
+mod pkcs11;
 #[path = "approval_sign/vault_transit.rs"]
 mod vault_transit;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
-const USAGE: &str = "rekey-approval-sign review REQUEST.json --policy POLICY.json --trust TRUST.json --action ACTION.json --approver-id UUID --origin-key HEX\nrekey-approval-sign sign REQUEST.json --policy POLICY.json --trust TRUST.json --action ACTION.json --approver-id UUID --origin-key HEX --reviewed-sha256 HEX (--key-file KEY.der | --vault-transit-profile PRIVATE.json) --output NEW_GRANT.json\nTransit review also requires --vault-transit-profile PRIVATE.json";
+const USAGE: &str = "rekey-approval-sign review REQUEST.json --policy POLICY.json --trust TRUST.json --action ACTION.json --approver-id UUID --origin-key HEX\nrekey-approval-sign sign REQUEST.json --policy POLICY.json --trust TRUST.json --action ACTION.json --approver-id UUID --origin-key HEX --reviewed-sha256 HEX (--key-file KEY.der | --vault-transit-profile PRIVATE.json | --pkcs11-profile PRIVATE.json) --output NEW_GRANT.json\nHardware review requires --pkcs11-profile PRIVATE.json; Transit review requires --vault-transit-profile PRIVATE.json";
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Request {
@@ -122,6 +124,7 @@ fn run_args(args: Vec<String>, output_text: &mut dyn Write) -> Result<()> {
                 | "--reviewed-sha256"
                 | "--key-file"
                 | "--vault-transit-profile"
+                | "--pkcs11-profile"
                 | "--output"
         ) || options.insert(pair[0].as_str(), pair[1].as_str()).is_some()
         {
@@ -129,11 +132,16 @@ fn run_args(args: Vec<String>, output_text: &mut dyn Write) -> Result<()> {
         }
     }
     let transit = options.contains_key("--vault-transit-profile");
-    if options.contains_key("--key-file") && transit
+    let hardware = options.contains_key("--pkcs11-profile");
+    let signing_sources = ["--key-file", "--vault-transit-profile", "--pkcs11-profile"]
+        .iter()
+        .filter(|name| options.contains_key(**name))
+        .count();
+    if signing_sources > 1
         || options.len()
             != if sign {
                 8
-            } else if transit {
+            } else if transit || hardware {
                 6
             } else {
                 5
@@ -142,7 +150,7 @@ fn run_args(args: Vec<String>, output_text: &mut dyn Write) -> Result<()> {
             && ["--key-file", "--output", "--reviewed-sha256"]
                 .iter()
                 .any(|name| options.contains_key(name))
-        || sign && !transit && !options.contains_key("--key-file")
+        || sign && signing_sources != 1
     {
         return Err(USAGE.into());
     }
@@ -240,9 +248,24 @@ fn run_args(args: Vec<String>, output_text: &mut dyn Write) -> Result<()> {
             now()?.as_unix_ms(),
         )?;
     }
+    let hardware_profile = if hardware {
+        let profile = pkcs11::Profile::load(get("--pkcs11-profile")?)?;
+        profile.check(
+            snapshot
+                .approver_key(approver)
+                .ok_or("unknown policy approver")?
+                .as_slice(),
+        )?;
+        Some(profile)
+    } else {
+        None
+    };
     let mut review = json!({"record_type":"rekey.approval.review.v1", "source_assumption":"Operator pinned origin public key from rekey approval origin; envelope authenticates Broker challenge bytes, not Action/policy/trust files or the human's intent", "action":action, "request":request, "approver_id":approver, "policy_signer_id":policy.signer_id(), "policy_sha256":HEXLOWER.encode(&snapshot.digest()), "grant_lifetime_max_ms":60000});
     if let Some(profile) = &profile {
         review["vault_transit"] = profile.public_review();
+    }
+    if let Some(profile) = &hardware_profile {
+        review["pkcs11"] = profile.public_review();
     }
     let digest = HEXLOWER.encode(&Sha256::digest(serde_jcs::to_vec(&review)?));
     if !sign {
@@ -259,7 +282,7 @@ fn run_args(args: Vec<String>, output_text: &mut dyn Write) -> Result<()> {
     let approver_key = snapshot
         .approver_key(approver)
         .ok_or("unknown policy approver")?;
-    let signer = if profile.is_none() {
+    let signer = if profile.is_none() && hardware_profile.is_none() {
         let signer = key(get("--key-file")?)?;
         if approver_key.as_slice() != signer.public_key().as_ref() {
             return Err("key does not match policy approver".into());
@@ -284,7 +307,9 @@ fn run_args(args: Vec<String>, output_text: &mut dyn Write) -> Result<()> {
     let mut grant = json!({"format_version":1,"approval_id":ApprovalId::from_random_bytes(random),"approval_request_id":c.approval_request_id,"approver_id":approver,"tenant_id":c.tenant_id,"principal_id":c.principal_id,"session_id":c.session_id,"action_id":c.action_id,"action_version":c.action_version,"resource":c.resource,"schema_id":c.schema_id,"parameter_sha256":c.parameter_sha256,"policy_version":c.policy_version,"policy_sha256":c.policy_sha256,"policy_rule_id":c.policy_rule_id,"mode":c.mode,"not_before_ms":issued,"expires_at_ms":expires,"max_uses":1});
     let mut message = b"RKAPPROVAL\0\x01".to_vec();
     message.extend_from_slice(&serde_jcs::to_vec(&grant)?);
-    let signature = if let Some(profile) = &profile {
+    let signature = if let Some(profile) = &hardware_profile {
+        profile.sign(&message, approver_key.as_slice(), expires)?
+    } else if let Some(profile) = &profile {
         profile.check(approver_key.as_slice(), now()?.as_unix_ms())?;
         profile.sign(&message, approver_key.as_slice(), expires)?
     } else {
@@ -344,10 +369,11 @@ fn run_args(args: Vec<String>, output_text: &mut dyn Write) -> Result<()> {
     Ok(())
 }
 fn main() {
-    if let Err(error) = run_args(
-        std::env::args().skip(1).collect(),
-        &mut std::io::stdout().lock(),
-    ) {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if pkcs11::internal_child(&args) {
+        return;
+    }
+    if let Err(error) = run_args(args, &mut std::io::stdout().lock()) {
         eprintln!("rekey-approval-sign: {error}");
         std::process::exit(1);
     }

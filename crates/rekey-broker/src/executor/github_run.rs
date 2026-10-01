@@ -109,6 +109,7 @@ impl ActionExecutor {
                 request_body,
                 effect_deadline,
                 action.response_policy.max_body_bytes,
+                &prepared.needles,
             )
             .await;
         let latency_ms = send_started.elapsed().as_millis() as i64;

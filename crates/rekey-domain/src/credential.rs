@@ -56,6 +56,12 @@ pub enum CredentialKind {
     VaultKvV2Source,
     VaultDynamicSource,
     KeycloakTokenExchange,
+    GcpSecretManagerSource,
+    AwsSecretsManagerSource,
+    AzureKeyVaultSource,
+    #[serde(rename = "onepassword-connect-source")]
+    OnePasswordConnectSource,
+    MacosKeychainSource,
 }
 
 impl CredentialKind {
@@ -66,6 +72,11 @@ impl CredentialKind {
             Self::VaultKvV2Source => "vault-kv-v2-source",
             Self::VaultDynamicSource => "vault-dynamic-source",
             Self::KeycloakTokenExchange => "keycloak-token-exchange",
+            Self::GcpSecretManagerSource => "gcp-secret-manager-source",
+            Self::AwsSecretsManagerSource => "aws-secrets-manager-source",
+            Self::AzureKeyVaultSource => "azure-key-vault-source",
+            Self::OnePasswordConnectSource => "onepassword-connect-source",
+            Self::MacosKeychainSource => "macos-keychain-source",
         }
     }
 
@@ -76,6 +87,11 @@ impl CredentialKind {
             "vault-kv-v2-source" => Ok(Self::VaultKvV2Source),
             "vault-dynamic-source" => Ok(Self::VaultDynamicSource),
             "keycloak-token-exchange" => Ok(Self::KeycloakTokenExchange),
+            "gcp-secret-manager-source" => Ok(Self::GcpSecretManagerSource),
+            "aws-secrets-manager-source" => Ok(Self::AwsSecretsManagerSource),
+            "azure-key-vault-source" => Ok(Self::AzureKeyVaultSource),
+            "onepassword-connect-source" => Ok(Self::OnePasswordConnectSource),
+            "macos-keychain-source" => Ok(Self::MacosKeychainSource),
             _ => Err(DomainError::InvalidId),
         }
     }
@@ -88,6 +104,11 @@ impl CredentialKind {
             Self::VaultKvV2Source => 3,
             Self::VaultDynamicSource => 4,
             Self::KeycloakTokenExchange => 5,
+            Self::GcpSecretManagerSource => 6,
+            Self::AwsSecretsManagerSource => 7,
+            Self::AzureKeyVaultSource => 8,
+            Self::OnePasswordConnectSource => 9,
+            Self::MacosKeychainSource => 10,
         }
     }
 }
@@ -204,5 +225,94 @@ mod tests {
             serde_json::from_str::<CredentialKind>(&encoded).unwrap(),
             CredentialKind::VaultDynamicSource
         );
+    }
+    #[test]
+    fn gcp_kind_has_the_frozen_wire_and_aad_code() {
+        let kind = CredentialKind::GcpSecretManagerSource;
+        assert_eq!(kind.aad_code(), 6);
+        assert_eq!(CredentialKind::parse(kind.as_str()).unwrap(), kind);
+        assert_eq!(
+            serde_json::to_string(&kind).unwrap(),
+            r#""gcp-secret-manager-source""#
+        );
+        assert_eq!(
+            serde_json::from_str::<CredentialKind>(r#""gcp-secret-manager-source""#).unwrap(),
+            kind
+        );
+        assert_eq!(
+            crate::ipc::admin_msg::CREDENTIAL_ROTATE_GCP_SECRET_MANAGER,
+            41
+        );
+    }
+    #[test]
+    fn aws_kind_has_the_frozen_wire_and_aad_code() {
+        let kind = CredentialKind::AwsSecretsManagerSource;
+        assert_eq!(kind.aad_code(), 7);
+        assert_eq!(CredentialKind::parse(kind.as_str()).unwrap(), kind);
+        assert_eq!(
+            serde_json::to_string(&kind).unwrap(),
+            r#""aws-secrets-manager-source""#
+        );
+        assert_eq!(
+            serde_json::from_str::<CredentialKind>(r#""aws-secrets-manager-source""#).unwrap(),
+            kind
+        );
+        assert_eq!(
+            crate::ipc::admin_msg::CREDENTIAL_ROTATE_AWS_SECRETS_MANAGER,
+            42
+        );
+    }
+    #[test]
+    fn azure_kind_has_the_frozen_wire_and_aad_code() {
+        let kind = CredentialKind::AzureKeyVaultSource;
+        assert_eq!(kind.aad_code(), 8);
+        assert_eq!(CredentialKind::parse(kind.as_str()).unwrap(), kind);
+        assert_eq!(
+            serde_json::to_string(&kind).unwrap(),
+            r#""azure-key-vault-source""#
+        );
+        assert_eq!(
+            serde_json::from_str::<CredentialKind>(r#""azure-key-vault-source""#).unwrap(),
+            kind
+        );
+        assert_eq!(crate::ipc::admin_msg::CREDENTIAL_ROTATE_AZURE_KEY_VAULT, 43);
+    }
+}
+
+#[cfg(test)]
+mod onepassword_source_contract {
+    use super::*;
+    #[test]
+    fn onepassword_kind_wire_aad_and_rotate_are_stable() {
+        let kind = CredentialKind::OnePasswordConnectSource;
+        assert_eq!(kind.as_str(), "onepassword-connect-source");
+        assert_eq!(CredentialKind::parse(kind.as_str()).unwrap(), kind);
+        assert_eq!(
+            serde_json::to_string(&kind).unwrap(),
+            "\"onepassword-connect-source\""
+        );
+        assert_eq!(kind.aad_code(), 9);
+        assert_eq!(
+            crate::ipc::admin_msg::CREDENTIAL_ROTATE_ONEPASSWORD_CONNECT,
+            44
+        );
+    }
+}
+
+#[cfg(test)]
+mod keychain_source_contract {
+    use super::*;
+    #[test]
+    fn keychain_kind_wire_aad_and_protected_rotate_are_frozen() {
+        let kind = CredentialKind::MacosKeychainSource;
+        assert_eq!(kind.as_str(), "macos-keychain-source");
+        assert_eq!(CredentialKind::parse(kind.as_str()).unwrap(), kind);
+        assert_eq!(
+            serde_json::to_string(&kind).unwrap(),
+            "\"macos-keychain-source\""
+        );
+        assert_eq!(kind.aad_code(), 10);
+        assert_eq!(crate::ipc::admin_msg::CREDENTIAL_ROTATE_MACOS_KEYCHAIN, 49);
+        assert!(crate::ipc::managed_admin_operation(49).unwrap());
     }
 }

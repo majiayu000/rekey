@@ -273,7 +273,7 @@ async fn policy_activation_revokes_only_workload_sessions() {
         &broker.admin_sock(),
         Channel::Admin,
         admin_msg::POLICY_ACTIVATE,
-        &bundle,
+        &common::policy::activation_metadata(&broker, &bundle).await,
         &common::proof_body(common::PASSWORD),
     )
     .await

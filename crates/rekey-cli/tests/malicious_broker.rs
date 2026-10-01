@@ -229,7 +229,7 @@ fn run_attack(attack: Attack) -> std::process::Output {
                 Channel::Admin,
                 request.request_id,
                 resp_msg::OK,
-                br#"{"trust_installed":true,"bundle_persisted":true,"status":"active","signer_id":null,"version":null,"expires_at_ms":null,"policy_sha256":null,"bundle_sha256":null}"#.to_vec(),
+                br#"{"vault_id":"00112233-4455-4677-8899-aabbccddeeff","tenant_id":"00112233-4455-4677-8899-aabbccddeeff","trust_sha256":"1111111111111111111111111111111111111111111111111111111111111111","activated_at_ms":1,"trust_installed":true,"bundle_persisted":true,"status":"active","signer_id":null,"version":null,"expires_at_ms":null,"policy_sha256":null,"bundle_sha256":null}"#.to_vec(),
                 0,
                 Vec::new(),
             ),
@@ -1003,4 +1003,55 @@ fn vrk_cli_rejects_malformed_receipts_and_uses_body_only_two_factors() {
     let body = run_vrk_response(valid, b"UNTRUSTED-VRK-CANARY");
     assert_eq!(body.status.code(), Some(2));
     assert!(body.stdout.is_empty());
+}
+
+#[test]
+fn retention_status_rejects_forged_receipts() {
+    for metadata in [
+        "{}",
+        "{\"days\":0,\"updated_at_ms\":1}",
+        "{\"days\":null,\"updated_at_ms\":-1}",
+        "{\"days\":1,\"updated_at_ms\":1,\"extra\":true}",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = dir.path().join("runtime");
+        std::fs::create_dir(&runtime).unwrap();
+        std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let socket = runtime.join("admin.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut header = [0; FRAME_HEADER_LEN];
+            stream.read_exact(&mut header).unwrap();
+            let request = FrameHeader::decode(&header).unwrap();
+            assert_eq!(
+                request.message_type,
+                rekey_domain::ipc::admin_msg::AUDIT_RETENTION_STATUS
+            );
+            assert_eq!(request.body_len, 0);
+            let mut payload = vec![0; request.metadata_len as usize];
+            stream.read_exact(&mut payload).unwrap();
+            let response = FrameHeader {
+                channel: Channel::Admin,
+                flags: 0,
+                message_type: resp_msg::OK,
+                request_id: request.request_id,
+                metadata_len: metadata.len() as u32,
+                body_len: 0,
+            };
+            stream.write_all(&response.encode()).unwrap();
+            stream.write_all(metadata.as_bytes()).unwrap();
+        });
+        let output = Command::new(rekey_bin())
+            .arg("--state-dir")
+            .arg(dir.path())
+            .args(["audit", "retention", "status"])
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        server.join().unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty());
+    }
 }

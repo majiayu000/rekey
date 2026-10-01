@@ -17,13 +17,13 @@ impl SqliteRecordStore {
                     'vault_header', 'key_wrappers', 'credentials',
                     'credential_versions', 'actions', 'policy_state',
                     'policy_trust', 'policy_bundle', 'workload_token_uses',
-                    'audit_events'
+                    'audit_events', 'vault_lease_journal', 'vault_lease_journal_state', 'audit_retention'
                  )",
                 [],
                 |row| row.get(0),
             )
             .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
-        if table_count != 10 {
+        if table_count != 13 {
             return Err(AuthorityError::UnsupportedVaultLayout);
         }
         Ok(())
@@ -55,7 +55,7 @@ impl SqliteRecordStore {
         Ok(())
     }
 
-    pub(super) fn foreign_key_check(&self) -> Result<(), AuthorityError> {
+    pub(crate) fn foreign_key_check(&self) -> Result<(), AuthorityError> {
         let violation: Option<(String, i64, String, i64)> = self
             .conn
             .query_row("PRAGMA foreign_key_check", [], |row| {

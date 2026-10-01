@@ -4,9 +4,13 @@ use std::time::Instant;
 use rekey_domain::action::{
     ExactPath, FixedMethod, HeaderCredentialUse, HttpsOrigin, RequestPolicy, ResponsePolicy,
 };
-use rekey_domain::audit::{AuditPage, AuditPruneReceipt, AuditPruneRequest, AuditQuery};
+use rekey_domain::audit::{
+    AuditPage, AuditPruneReceipt, AuditPruneRequest, AuditQuery, AuditRetentionSet,
+    AuditRetentionStatus,
+};
 use rekey_domain::credential::{CredentialKind, CredentialLabel, CredentialMetadata};
 use rekey_domain::ids::{ActionId, CredentialId, PolicySignerId, RequestId, SessionId, VaultId};
+use rekey_domain::ipc::BackupSnapshotCut;
 use tokio::sync::oneshot;
 use zeroize::Zeroizing;
 
@@ -75,6 +79,16 @@ pub struct BackupInfo {
     pub created_at_ms: i64,
     pub sha256_hex: String,
     pub output_path: PathBuf,
+    pub snapshot_cut: BackupSnapshotCut,
+}
+
+#[derive(Debug, Clone)]
+pub struct RestoreInfo {
+    pub vault_id: VaultId,
+    pub format_version: u32,
+    pub input_sha256_hex: String,
+    pub output_path: String,
+    pub snapshot_cut: BackupSnapshotCut,
 }
 
 /// A pinned, immutable action version plus its lifecycle state.
@@ -92,6 +106,8 @@ pub struct PolicyTrustInput {
 
 #[derive(Debug, Clone)]
 pub struct PolicyBundleInput {
+    pub expected_vault_id: VaultId,
+    pub expected_trust_sha256: [u8; 32],
     pub signer_id: PolicySignerId,
     pub version: u64,
     pub expires_at_ms: i64,
@@ -108,6 +124,53 @@ pub struct PolicyMaterial {
 }
 
 pub enum AuthorityCommand {
+    LeaseAcquireBegin {
+        context: crate::model::LeaseExecutionContext,
+        source: crate::model::LeaseSourceRef,
+        not_after: Option<Instant>,
+        reply: Reply<crate::model::LeaseReceipt>,
+    },
+    LeaseIssued {
+        registration_id: rekey_domain::ids::LeaseRegistrationId,
+        lease_id: SecretInput,
+        request_started_at_ms: i64,
+        actual_ttl_seconds: u64,
+        renewable: bool,
+        not_after: Option<Instant>,
+        reply: Reply<crate::model::LeaseReceipt>,
+    },
+    LeaseAcquireAbortDefinite {
+        registration_id: rekey_domain::ids::LeaseRegistrationId,
+        not_after: Option<Instant>,
+        reply: Reply<crate::model::LeaseReceipt>,
+    },
+    LeaseRenewBegin {
+        registration_id: rekey_domain::ids::LeaseRegistrationId,
+        not_after: Option<Instant>,
+        reply: Reply<crate::model::LeaseReceipt>,
+    },
+    LeaseRenewResult {
+        registration_id: rekey_domain::ids::LeaseRegistrationId,
+        request_started_at_ms: i64,
+        actual_ttl_seconds: Option<u64>,
+        renewable: bool,
+        not_after: Option<Instant>,
+        reply: Reply<crate::model::LeaseReceipt>,
+    },
+    LeaseCleanupPrepare {
+        registration_id: rekey_domain::ids::LeaseRegistrationId,
+        not_after: Option<Instant>,
+        reply: Reply<crate::secret::PreparedLeaseCleanup>,
+    },
+    LeaseCleanupFinish {
+        registration_id: rekey_domain::ids::LeaseRegistrationId,
+        confirmed: bool,
+        not_after: Option<Instant>,
+        reply: Reply<crate::model::LeaseReceipt>,
+    },
+    LeaseRecoveryBatch {
+        reply: Reply<crate::model::LeaseRecoveryBatch>,
+    },
     DesktopRemember {
         proof: UnlockProof,
         not_after: Option<std::time::Instant>,
@@ -232,6 +295,14 @@ pub enum AuthorityCommand {
         credential_id: CredentialId,
         reply: Reply<Vec<ActionId>>,
     },
+    PrepareExecutionCredential {
+        credential_id: CredentialId,
+        request_id: RequestId,
+        action_id: ActionId,
+        action_version: u64,
+        deadline: Instant,
+        reply: Reply<PreparedCredential>,
+    },
     PrepareCredential {
         credential_id: CredentialId,
         reply: Reply<PreparedCredential>,
@@ -253,6 +324,19 @@ pub enum AuthorityCommand {
         audit: AuditDraft,
         not_after: Option<Instant>,
         reply: Reply<()>,
+    },
+    AuditRetentionSet {
+        request: AuditRetentionSet,
+        proof: UnlockProof,
+        not_after: Option<Instant>,
+        reply: Reply<AuditRetentionStatus>,
+    },
+    AuditRetentionStatus {
+        reply: Reply<AuditRetentionStatus>,
+    },
+    AuditRetentionMaintenance {
+        not_after: Instant,
+        reply: Reply<Option<AuditPruneReceipt>>,
     },
     AuditPrune {
         request: AuditPruneRequest,

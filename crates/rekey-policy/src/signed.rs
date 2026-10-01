@@ -154,6 +154,21 @@ impl VerifiedApprovalGrant {
     }
 }
 
+/// Digest of the canonical installed four-field trust document, from verified fields.
+pub fn policy_trust_sha256(
+    signer_id: PolicySignerId,
+    public_key: &[u8; 32],
+) -> Result<[u8; 32], PolicyError> {
+    let trust = PolicyTrustFile {
+        format_version: POLICY_FORMAT_VERSION,
+        signer_id,
+        algorithm: SignatureAlgorithm::Ed25519,
+        public_key: data_encoding::HEXLOWER.encode(public_key),
+    };
+    let canonical = serde_jcs::to_vec(&trust).map_err(|_| PolicyError::Malformed)?;
+    Ok(Sha256::digest(canonical).into())
+}
+
 pub fn parse_policy_trust(bytes: &[u8]) -> Result<ValidatedPolicyTrust, PolicyError> {
     if bytes.len() > TRUST_MAX_BYTES {
         return Err(PolicyError::TooLarge);
@@ -347,6 +362,57 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
+
+    #[test]
+    fn raw_activation_metadata_keeps_nested_duplicate_rejection() {
+        let (trust, _, _, _) = fixture();
+        let raw = format!(
+            r#"{{"expected_vault_id":"00112233-4455-4677-8899-aabbccddeeff","expected_trust_sha256":"{}","bundle_json":{{"format_version":1,"signer_id":"{}","snapshot":{{"version":1,"version":2}},"signature":"invalid"}}}}"#,
+            "a".repeat(64),
+            trust.signer_id()
+        );
+        let metadata: rekey_domain::ipc::PolicyActivateMeta = serde_json::from_str(&raw).unwrap();
+        assert!(matches!(
+            parse_and_verify_policy_bundle(
+                metadata.bundle_json.get().as_bytes(),
+                &trust,
+                Timestamp::from_unix_ms(1)
+            ),
+            Err(PolicyError::Malformed)
+        ));
+    }
+
+    #[test]
+    fn trust_digest_is_canonical_and_matches_restored_fields() {
+        let signer = key_pair();
+        let signer_id = PolicySignerId::new_random();
+        let key: [u8; 32] = signer.public_key().as_ref().try_into().unwrap();
+        let raw = format!(
+            "{{\"public_key\":\"{}\", \"algorithm\":\"ed25519\",\"signer_id\":\"{}\",\"format_version\":1}}",
+            HEXLOWER.encode(&key),
+            signer_id
+        );
+        let fresh = parse_policy_trust(raw.as_bytes()).unwrap();
+        let restored = ValidatedPolicyTrust::from_parts(signer_id, key);
+        assert!(restored.canonical_bytes().is_empty());
+        let digest = policy_trust_sha256(fresh.signer_id(), fresh.public_key()).unwrap();
+        assert_eq!(
+            digest,
+            <[u8; 32]>::from(Sha256::digest(fresh.canonical_bytes()))
+        );
+        assert_eq!(
+            digest,
+            policy_trust_sha256(restored.signer_id(), restored.public_key()).unwrap()
+        );
+        assert_ne!(
+            digest,
+            policy_trust_sha256(PolicySignerId::new_random(), &key).unwrap()
+        );
+        let mut changed = key;
+        changed[0] ^= 1;
+        assert_ne!(digest, policy_trust_sha256(signer_id, &changed).unwrap());
+        assert!(policy_trust_sha256(signer_id, &[7; 32]).is_ok());
+    }
 
     fn key_pair() -> Ed25519KeyPair {
         let document = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
