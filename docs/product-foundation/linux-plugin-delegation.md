@@ -34,3 +34,18 @@ Only this Broker initially occupies its delegated domain. Do not add auxiliary E
 Run the actual kernel acceptance cases from [the containment contract](../superpowers/specs/2026-10-01-linux-plugin-cgroup.md): real artifact success, memory/OOM evidence, kill/drain on success and failure, interrupted guardian/startup, parent death and repeated cancellation. Record the real outcomes and leaf population; missing facilities remain failures or unexecuted gates.
 
 Source guidance: [systemd delegation](https://systemd.io/CGROUP_DELEGATION/) explains exclusive subtree ownership, User ownership and controller requests; [kernel cgroup-v2 documentation](https://docs.kernel.org/admin-guide/cgroup-v2.html) defines the enforcement interfaces. This file supplies a reviewable example only and does not deploy, create users or alter host delegation.
+
+## CI delegation
+
+The Linux security gate gives each plugin test executable a separate transient
+systemd service under the runner UID/GID with `Delegate=memory`. Cargo itself
+stays outside that delegated root. The P6 example uses the same Cargo runner
+entry explicitly, since the shell starts that example directly. Cancellation
+terminates and reaps the privileged client process group before stopping the
+named service; target failure status is preserved. The AppArmor rule and all
+production cgroup guards remain required.
+
+Generated-shell checks cover routing, arguments, stdin, exit status and two
+late-start cancellation windows with synthetic systemd clients. Those checks do
+not establish actual root-UID, delegated-controller, OOM or kernel acceptance;
+the required hosted Linux gate must still execute.

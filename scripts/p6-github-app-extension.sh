@@ -102,7 +102,11 @@ PY
 
 printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin >/dev/null
 printf '%s\n' p6-list >"$MODE"
-"$FIXTURE" "$STATE" "$READY" "$MODE" "$TRACE" "$KEY_ONE_PUBLIC" "$KEY_TWO_PUBLIC" \
+fixture_command=("$FIXTURE")
+if [[ "$(uname -s)" == "Linux" && "${GITHUB_ACTIONS:-}" == "true" ]]; then
+  fixture_command=("${CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER:?Linux CI requires the delegated plugin runner}" "$FIXTURE")
+fi
+"${fixture_command[@]}" "$STATE" "$READY" "$MODE" "$TRACE" "$KEY_ONE_PUBLIC" "$KEY_TWO_PUBLIC" \
   >"$WORKDIR/broker.out" 2>"$WORKDIR/broker.err" &
 BROKER_PID=$!
 for _ in $(seq 1 400); do

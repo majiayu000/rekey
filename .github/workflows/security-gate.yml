@@ -49,6 +49,58 @@ jobs:
           /usr/bin/bwrap --die-with-parent --unshare-user --uid "$(id -u)" --gid "$(id -g)" \
             --unshare-net --unshare-pid --ro-bind / / --proc /proc --dev /dev \
             --tmpfs /tmp --chdir /tmp -- /bin/true
+      - name: Delegate Linux plugin acceptance
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          uname -a
+          systemd-run --version
+          /usr/bin/bwrap --version
+          findmnt --target /sys/fs/cgroup --types cgroup2
+          runner="$RUNNER_TEMP/rekey-plugin-test-runner"
+          cat > "$runner" <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          case "$(basename "$1")" in
+            rekey_broker-*|github_issue_plugin-*|native_plugin-*|p2_github_app_fixture) ;;
+            *) exec "$@" ;;
+          esac
+          unit="rekey-plugin-test-$(id -u)-$$-$RANDOM.service"
+          client=""
+          client_done=0
+          cleanup() {
+            local rc=$?
+            trap - EXIT INT TERM
+            if [[ "$client_done" == 0 ]]; then
+              client="${client:-${!:-}}"
+            fi
+            if [[ -n "$client" ]]; then
+              sudo -n /bin/kill -KILL -- "-$client" 2>/dev/null || true
+              kill -KILL "$client" 2>/dev/null || true
+              wait "$client" 2>/dev/null || true
+            fi
+            sudo -n systemctl stop "$unit" >/dev/null 2>&1 || true
+            exit "$rc"
+          }
+          trap cleanup EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          setsid sudo -n systemd-run --unit="$unit" --wait --pipe --collect \
+            --service-type=exec --uid="$(id -u)" --gid="$(id -g)" \
+            --working-directory="$PWD" --expand-environment=no \
+            --property=Delegate=memory --property=KillMode=control-group \
+            --property=TimeoutStopSec=130s \
+            --setenv="PATH=$PATH" --setenv="LD_LIBRARY_PATH=${LD_LIBRARY_PATH-}" \
+            -- "$@" <&0 &
+          client=$!
+          if wait "$client"; then rc=0; else rc=$?; fi
+          client_done=1
+          client=""
+          exit "$rc"
+          SH
+          chmod 0700 "$runner"
+          echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER=$runner" >> "$GITHUB_ENV"
       - name: Install macOS acceptance dependencies
         if: runner.os == 'macOS'
         run: scripts/ci-install-release-smoke-deps.sh
