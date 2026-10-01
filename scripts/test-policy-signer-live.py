@@ -32,6 +32,9 @@ def main():
             return result.stdout
 
         def cli(*arguments, **kwargs):
+            if arguments[:2] == ("policy", "activate"):
+                target = json.loads(cli("policy", "status"))
+                arguments = (*arguments, "--expected-vault-id", target["vault_id"], "--expected-trust-sha256", target["trust_sha256"])
             return run("rekey", "--state-dir", state, *arguments, **kwargs)
 
         cli("init", "--password-stdin", stdin=proof)

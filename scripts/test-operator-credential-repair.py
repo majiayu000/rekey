@@ -68,7 +68,7 @@ def terminal(command, responses, expected_exit=0):
 
 
 def metadata_boundaries():
-    args = argparse.Namespace(rekey=Path("rekey"), state_dir=Path("state"), action="action@1")
+    args = argparse.Namespace(rekey=Path("rekey"), state_dir=Path("state"), action="action@1", admin_session_file=None)
     action = {"id": "action", "version": 1, "enabled": True, "credential_id": "credential",
               "name": "name\x1b[2J\nprovide\u202e", "origin": "https://example.test",
               "method": "POST", "exact_path": "/fixed"}
@@ -102,6 +102,36 @@ def metadata_boundaries():
     print("PASS: terminal metadata escaped; missing/disabled/GitHub/Vault/revoked registrations reject before rotation")
 
 
+def management_path_boundary():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        record = root / "argv.jsonl"
+        binary = root / "fixture-cli"
+        binary.write_text("#!/usr/bin/env python3\nimport json,sys\n"
+                          f"with open({str(record)!r}, 'a') as f:f.write(json.dumps(sys.argv[1:])+'\\n')\n"
+                          "if sys.argv[-2:]==['action','list']:r={'actions':[{'id':'action','version':1,'enabled':True,'credential_id':'credential','name':'fixture','origin':'https://example.test','method':'POST','exact_path':'/fixed'}]}\n"
+                          "elif sys.argv[-2:]==['credential','list']:r={'credentials':[{'id':'credential','kind':'opaque-token','state':'active'}]}\n"
+                          "else:r={'current_version':2}\nprint(json.dumps(r))\n")
+        binary.chmod(0o700)
+        session = root / "unreadable $session% path"
+        session.symlink_to(root / "missing-token")
+        args = argparse.Namespace(rekey=binary, state_dir=root / "state", action="action@1",
+                                  admin_session_file=session)
+        with tempfile.TemporaryFile() as consent, tempfile.TemporaryFile(mode="w+", encoding="utf-8") as output:
+            consent.write(b"provide\n")
+            consent.seek(0)
+            result = APP.repair(args, consent, output)
+            output.seek(0)
+            displayed = output.read()
+        assert result["result"] == "provided" and result["credential_version"] == 2
+        prefix = ["--state-dir", str(args.state_dir.resolve()), "--admin-session-file", str(session)]
+        calls = [json.loads(line) for line in record.read_text().splitlines()]
+        assert calls == [prefix + ["action", "list"], prefix + ["credential", "list"],
+                         prefix + ["credential", "rotate", "credential"]]
+        assert str(session) not in displayed and not session.exists()
+    print("PASS: repair passes literal management path to each CLI operation without opening it")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bin-dir", type=Path, required=True)
@@ -121,6 +151,9 @@ def main():
             return result.stdout
 
         def cli(*args, secret=None):
+            if args[:2] == ("policy", "activate"):
+                target = cli("policy", "status")
+                args = (*args, "--expected-vault-id", target["vault_id"], "--expected-trust-sha256", target["trust_sha256"])
             return json.loads(run(base + list(args), secret))
 
         run(base + ["init", "--password-stdin"], password + "\n")

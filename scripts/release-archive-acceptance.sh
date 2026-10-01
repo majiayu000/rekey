@@ -25,14 +25,14 @@ command -v rg >/dev/null || { echo "ripgrep is required" >&2; exit 1; }
 
 for name in rekey rekeyd rekey-github-create-issue rekey-mcp rekey-policy-sign rekey-approval-sign \
   rekey-service-unit.py agent-quickstart.py operator-credential-repair.py rekey-backup-sync.py \
-  rekey-audit-delivery.py; do
+  rekey-audit-delivery.py rekey-audit-archive.py rekey-approval-relay; do
   [[ -x "$BIN_DIR/$name" ]] || { echo "required archive executable is missing: $name" >&2; exit 1; }
 done
-for name in rekey-policy-sign rekey-approval-sign; do
+for name in rekey-policy-sign rekey-approval-sign rekey-approval-relay; do
   "$BIN_DIR/$name" --help >/dev/null
 done
 for name in rekey-service-unit.py agent-quickstart.py operator-credential-repair.py \
-  rekey-backup-sync.py rekey-audit-delivery.py; do
+  rekey-backup-sync.py rekey-audit-delivery.py rekey-audit-archive.py; do
   python3 "$BIN_DIR/$name" --help >/dev/null
 done
 
@@ -143,11 +143,12 @@ activate_snapshot() {
     printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy trust install \
       --file "$WORKDIR/policy-trust.json" --step-up-stdin >/dev/null
   fi
-  printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate \
+  read -r POLICY_TARGET_VAULT POLICY_TARGET_TRUST < <("$REKEY" --state-dir "$STATE" policy status | python3 -c 'import json,sys; s=json.load(sys.stdin); print(s["vault_id"], s["trust_sha256"])')
+  printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate --expected-vault-id "$POLICY_TARGET_VAULT" --expected-trust-sha256 "$POLICY_TARGET_TRUST" \
     --file "$WORKDIR/policy-bundle.json" --step-up-stdin >/dev/null
 }
 
-echo "== init, serve, unlock, format v14"
+echo "== init, serve, unlock, format v19"
 init_out="$(printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin)"
 printf '%s\n' "$init_out" | rg -q '^RKREC1-' || {
   echo "init did not print a recovery key" >&2
@@ -164,8 +165,8 @@ done
 [[ -S "$STATE/runtime/admin.sock" ]] || { echo "broker did not start"; exit 1; }
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" unlock --password-stdin >/dev/null
 status="$("$REKEY" --state-dir "$STATE" status)"
-printf '%s\n' "$status" | rg -q '"format_version": 14' || {
-  echo "expected format_version 14: $status" >&2
+printf '%s\n' "$status" | rg -q '"format_version": 19' || {
+  echo "expected format_version 19: $status" >&2
   exit 1
 }
 

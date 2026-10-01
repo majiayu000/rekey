@@ -13,6 +13,7 @@ EXECUTABLES = (
     "rekey-policy-sign", "rekey-approval-sign", "rekey-service-unit.py",
     "agent-quickstart.py", "operator-credential-repair.py", "rekey-backup-sync.py",
     "rekey-audit-delivery.py",
+    "rekey-approval-relay", "rekey-audit-archive.py", "rekey-controlplane.py",
 )
 
 
@@ -37,6 +38,26 @@ def required_paths(version: str) -> list[str]:
         "docs/superpowers/specs/2026-09-03-workload-identity-p04.md",
         "docs/superpowers/specs/2026-09-04-agent-egress-launcher-p09.md",
         "examples/github-create-issue.json",
+        "docs/superpowers/specs/2026-09-30-gcp-secret-source.md",
+        "docs/superpowers/specs/2026-09-30-aws-secret-source.md",
+        "docs/superpowers/specs/2026-09-30-azure-secret-source.md",
+        "docs/superpowers/specs/2026-09-30-http-header-ows-sealing.md",
+        "docs/superpowers/specs/2026-09-30-onepassword-secret-source.md",
+        "docs/superpowers/specs/2026-09-30-controlplane.md",
+        "docs/superpowers/specs/2026-09-30-identity-directory.md",
+        "docs/superpowers/specs/2026-09-30-oidc-admin.md",
+        "docs/superpowers/specs/2026-10-01-standby-backup-durability.md",
+        "docs/superpowers/specs/2026-10-01-snapshot-restore-cut.md",
+        "docs/superpowers/specs/2026-10-01-vault-kv-latest.md",
+        "docs/superpowers/specs/2026-10-01-vault-private-source.md",
+        "docs/superpowers/specs/2026-10-01-macos-keychain-source.md",
+        "docs/superpowers/specs/2026-10-01-vault-approle-source.md",
+        "docs/superpowers/specs/2026-09-30-decoded-source-bootstrap-sealing.md",
+        "docs/superpowers/specs/2026-09-30-metrics-deployment.md",
+        "docs/superpowers/specs/2026-09-30-native-policy-approval-flow.md",
+        "deploy/prometheus/rekey.rules.yml",
+        "deploy/prometheus/rekey.rules.test.yml",
+        "deploy/prometheus/rekey.scrape.example.yml",
     ]
 
 

@@ -306,8 +306,9 @@ docker cp "$BUILD_DIR/policy-trust.json" "$BROKER:/tmp/policy-trust.json"
 printf '%s\n' "$PASSWORD" | docker exec -i "$BROKER" \
   rekey --state-dir /state policy trust install --file /tmp/policy-trust.json \
   --step-up-stdin >/dev/null
+read -r POLICY_TARGET_VAULT POLICY_TARGET_TRUST < <(docker exec "$BROKER" rekey --state-dir /state policy status | python3 -c 'import json,sys; s=json.load(sys.stdin); print(s["vault_id"], s["trust_sha256"])')
 printf '%s\n' "$PASSWORD" | docker exec -i "$BROKER" \
-  rekey --state-dir /state policy activate --file /tmp/policy.json --step-up-stdin >/dev/null
+  rekey --state-dir /state policy activate --expected-vault-id "$POLICY_TARGET_VAULT" --expected-trust-sha256 "$POLICY_TARGET_TRUST" --file /tmp/policy.json --step-up-stdin >/dev/null
 
 docker run -d --name "$AGENT" \
   --user 0:0 \

@@ -40,6 +40,9 @@ def command(args, stdin=None):
     return r.stdout
 
 def cli(args, stdin=None):
+    if args[:2] == ["policy", "activate"]:
+        target = json.loads(cli(["policy", "status"]))
+        args = args + ["--expected-vault-id", target["vault_id"], "--expected-trust-sha256", target["trust_sha256"]]
     return command([ROOT / 'target/debug/rekey', '--state-dir', S, *args], stdin)
 
 def cj(args, stdin=None):

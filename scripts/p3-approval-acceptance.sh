@@ -144,7 +144,8 @@ activate_policy() {
     --trust "$WORKDIR/policy-trust.json"
   printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy trust install \
     --file "$WORKDIR/policy-trust.json" --step-up-stdin >/dev/null
-  printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate \
+  read -r POLICY_TARGET_VAULT POLICY_TARGET_TRUST < <("$REKEY" --state-dir "$STATE" policy status | python3 -c 'import json,sys; s=json.load(sys.stdin); print(s["vault_id"], s["trust_sha256"])')
+  printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate --expected-vault-id "$POLICY_TARGET_VAULT" --expected-trust-sha256 "$POLICY_TARGET_TRUST" \
     --file "$WORKDIR/policy-bundle.json" --step-up-stdin >/dev/null
 }
 

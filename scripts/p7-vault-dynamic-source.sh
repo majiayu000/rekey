@@ -30,6 +30,8 @@ MODE="$WORKDIR/mode"
 TRACE="$WORKDIR/trace"
 PROFILE_ONE="$WORKDIR/profile-one.json"
 PROFILE_TWO="$WORKDIR/profile-two.json"
+MALFORMED_PROFILE="$WORKDIR/profile-malformed.json"
+MALFORMED_ACTION="$WORKDIR/action-malformed.json"
 INVALID_PROFILE="$WORKDIR/profile-invalid.json"
 ACTION_FILE="$WORKDIR/action.json"
 REQUEST_BODY="$WORKDIR/request.json"
@@ -78,9 +80,9 @@ start_fixture() {
 activate_policy() {
   local principal=$1
   local version=$2
-  python3 - "$WORKDIR/policy-snapshot.json" "$ACTION_ID" "$principal" "$version" <<'PY'
+  python3 - "$WORKDIR/policy-snapshot.json" "$ACTION_ID" "$principal" "$version" "$MALFORMED_ACTION_ID" <<'PY'
 import json, pathlib, sys, time, uuid
-path, action, principal, version = sys.argv[1:]
+path, action, principal, version, malformed_action = sys.argv[1:]
 binding={"action_id":action,"version":1,"resource":{"type":"p7b-vault-action","id":action},
          "parameter_schema_id":"p7b-vault/v1","parameter_schema":{"type":"object","additionalProperties":False,
          "required":["operation"],"properties":{"operation":{"const":"bounded"}}}}
@@ -88,7 +90,8 @@ rule={"id":str(uuid.uuid4()),"effect":"permit","principal_id":principal,"action_
       "version":1,"resource":binding["resource"],"parameters":{"kind":"any_validated"}}
 pathlib.Path(path).write_text(json.dumps({"format_version":3,"version":int(version),
   "expires_at_ms":int(time.time()*1000)+600000,"approvers":[],"workload_identities":[],
-  "bindings":[binding],"rules":[rule]}))
+  "bindings":[binding,dict(binding,action_id=malformed_action,resource={"type":"p7b-vault-action","id":malformed_action})],
+  "rules":[rule,dict(rule,id=str(uuid.uuid4()),action_id=malformed_action,resource={"type":"p7b-vault-action","id":malformed_action})]}))
 PY
   python3 "$ROOT/scripts/sign-test-policy.py" policy --key-dir "$WORKDIR/policy-key" \
     --snapshot "$WORKDIR/policy-snapshot.json" --bundle "$WORKDIR/policy.json" \
@@ -97,7 +100,8 @@ PY
     printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy trust install \
       --file "$WORKDIR/policy-trust.json" --step-up-stdin >/dev/null
   fi
-  printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate \
+  read -r POLICY_TARGET_VAULT POLICY_TARGET_TRUST < <("$REKEY" --state-dir "$STATE" policy status | python3 -c 'import json,sys; s=json.load(sys.stdin); print(s["vault_id"], s["trust_sha256"])')
+  printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate --expected-vault-id "$POLICY_TARGET_VAULT" --expected-trust-sha256 "$POLICY_TARGET_TRUST" \
     --file "$WORKDIR/policy.json" --step-up-stdin >/dev/null
 }
 
@@ -105,19 +109,19 @@ new_session() {
   local uses=$1
   local session
   session="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" session create \
-    --action "$ACTION_REF" --ttl 10m --max-uses "$uses" --password-stdin)"
+    --action "$ACTION_REF" --action "$MALFORMED_ACTION_REF" --ttl 10m --max-uses "$uses" --password-stdin)"
   PRINCIPAL_ID="$(printf '%s\n' "$session" | json_field principal_id)"
   CAPABILITY="$(printf '%s\n' "$session" | json_field capability_token)"
 }
 
 execute_action() {
-  "$REKEY" --state-dir "$STATE" execute "$ACTION_REF" --capability "$CAPABILITY" \
+  "$REKEY" --state-dir "$STATE" execute "${1:-$ACTION_REF}" --capability "$CAPABILITY" \
     --body-file "$REQUEST_BODY" --content-type application/json
 }
 
-python3 - "$PROFILE_ONE" "$PROFILE_TWO" "$INVALID_PROFILE" "$SOURCE_ONE" "$SOURCE_TWO" <<'PY'
+python3 - "$PROFILE_ONE" "$PROFILE_TWO" "$INVALID_PROFILE" "$SOURCE_ONE" "$SOURCE_TWO" "$MALFORMED_PROFILE" <<'PY'
 import json, pathlib, sys
-one, two, invalid, source_one, source_two = sys.argv[1:]
+one, two, invalid, source_one, source_two, malformed = sys.argv[1:]
 def profile(token):
     return {"credential_type":"vault-dynamic-source-v2","origin":"https://vault.test.local",
             "mount":"database","role":"agent-api-token","key":"token","renew_increment_seconds":60,"vault_token":token}
@@ -127,6 +131,8 @@ def write_private(path, payload):
     dest.chmod(0o600)
 write_private(one, profile(source_one))
 write_private(two, profile(source_two))
+malformed_profile=profile(source_one); malformed_profile["role"]="malformed-role"
+write_private(malformed, malformed_profile)
 bad=profile(source_two); bad["origin"]="http://vault.test.local"
 write_private(invalid, bad)
 PY
@@ -155,6 +161,20 @@ ACTION_JSON="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" action 
   --file "$ACTION_FILE" --password-stdin)"
 ACTION_ID="$(printf '%s\n' "$ACTION_JSON" | json_field id)"
 ACTION_REF="$ACTION_ID@1"
+MALFORMED_CREDENTIAL_JSON="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" credential \
+  add-vault-dynamic p7b-malformed --file "$MALFORMED_PROFILE" --password-stdin)"
+MALFORMED_CREDENTIAL_ID="$(printf '%s\n' "$MALFORMED_CREDENTIAL_JSON" | json_field id)"
+python3 - "$ACTION_FILE" "$MALFORMED_ACTION" "$MALFORMED_CREDENTIAL_ID" <<'PY'
+import json, pathlib, sys
+source, output, credential=sys.argv[1:]
+action=json.loads(pathlib.Path(source).read_text())
+action.update(name="p7b-malformed-action",credential_id=credential)
+pathlib.Path(output).write_text(json.dumps(action))
+PY
+MALFORMED_ACTION_JSON="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" action create \
+  --file "$MALFORMED_ACTION" --password-stdin)"
+MALFORMED_ACTION_ID="$(printf '%s\n' "$MALFORMED_ACTION_JSON" | json_field id)"
+MALFORMED_ACTION_REF="$MALFORMED_ACTION_ID@1"
 new_session 12
 activate_policy "$PRINCIPAL_ID" 1
 
@@ -166,8 +186,16 @@ grep -q '"result":"p7b-ok"' "$WORKDIR/v1.out"
 
 printf '%s\n' p7b-malformed >"$MODE"
 MALFORMED_RC=0
-execute_action >/dev/null 2>"$WORKDIR/malformed.err" || MALFORMED_RC=$?
+execute_action "$MALFORMED_ACTION_REF" >/dev/null 2>"$WORKDIR/malformed.err" || MALFORMED_RC=$?
 [[ "$MALFORMED_RC" == "8" ]]
+[[ "$(grep -c '^p7b.action.ok$' "$TRACE")" == "1" ]]
+[[ "$(grep -c '^p7b.revoke.ok$' "$TRACE")" == "2" ]]
+# Candidate cleanup cannot authenticate a unique ID or release this source.
+BLOCKED_RC=0
+execute_action "$MALFORMED_ACTION_REF" >/dev/null 2>"$WORKDIR/unknown-isolated.err" || BLOCKED_RC=$?
+[[ "$BLOCKED_RC" != "0" ]]
+grep -q 'AUTHORITY_BUSY' "$WORKDIR/unknown-isolated.err"
+[[ "$(grep -c '^p7b.issue.ok$' "$TRACE")" == "2" ]]
 [[ "$(grep -c '^p7b.action.ok$' "$TRACE")" == "1" ]]
 [[ "$(grep -c '^p7b.revoke.ok$' "$TRACE")" == "2" ]]
 
@@ -178,11 +206,26 @@ execute_action >"$WORKDIR/revoke.out" 2>"$WORKDIR/revoke.err" || REVOKE_RC=$?
 [[ "$(grep -c '^p7b.action.ok$' "$TRACE")" == "2" ]]
 [[ "$(grep -c '^p7b.revoke.error$' "$TRACE")" == "1" ]]
 
+# A known failed cleanup needs the next explicit lock/unlock transition.
+printf '%s\n' p7b-v1 >"$MODE"
+"$REKEY" --state-dir "$STATE" lock >/dev/null
+RECOVERY_JSON="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" unlock --password-stdin)"
+printf '%s\n' "$RECOVERY_JSON" | python3 -c '
+import json,sys
+summary=json.load(sys.stdin)["lease_recovery"]
+assert summary["performed"] and summary["journal"]["pending"] == summary["journal"]["unknown"] == 1
+assert len(summary["leases"]) == 1 and summary["leases"][0]["outcome"] == "complete"
+'
+[[ "$(grep -c '^p7b.issue.ok$' "$TRACE")" == "3" ]]
+[[ "$(grep -c '^p7b.action.ok$' "$TRACE")" == "2" ]]
+[[ "$(grep -c '^p7b.revoke.ok$' "$TRACE")" == "3" ]]
+new_session 12
+activate_policy "$PRINCIPAL_ID" 2
 printf '%s\n' p7b-reflect-action >"$MODE"
 REFLECT_RC=0
 execute_action >/dev/null 2>"$WORKDIR/reflect.err" || REFLECT_RC=$?
 [[ "$REFLECT_RC" == "8" ]]
-[[ "$(grep -c '^p7b.revoke.ok$' "$TRACE")" == "3" ]]
+[[ "$(grep -c '^p7b.revoke.ok$' "$TRACE")" == "4" ]]
 
 INVALID_RC=0
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" credential rotate-vault-dynamic \
@@ -195,7 +238,7 @@ ROTATED_JSON="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" creden
 printf '%s\n' p7b-v2 >"$MODE"
 execute_action >"$WORKDIR/v2.out"
 grep -q '"result":"p7b-ok"' "$WORKDIR/v2.out"
-[[ "$(grep -c '^p7b.revoke.ok$' "$TRACE")" == "4" ]]
+[[ "$(grep -c '^p7b.revoke.ok$' "$TRACE")" == "5" ]]
 
 "$REKEY" --state-dir "$STATE" audit export --output "$WORKDIR/audit.jsonl" >/dev/null
 python3 - "$WORKDIR/audit.jsonl" <<'PY'
@@ -206,22 +249,38 @@ rows=sorted(
     key=lambda row: row["sequence"],
 )
 events=[row["event_type"] for row in rows if "event_type" in row]
-assert events.count("execution.started") == 5
+assert events.count("execution.started") == 6
 assert events.count("execution.finished") == 2
 assert events.count("execution.indeterminate") == 3
-assert events.count("vault.lease.issued") == 5
-assert events.count("vault.lease.revoked") == 5
+assert events.count("execution.blocked") == 1
+assert events.count("vault.lease.acquire_intent") == 5
+assert events.count("vault.lease.issued") == 4
+assert events.count("vault.lease.cleanup_started") == 5
+assert events.count("vault.lease.revoked") == 4
+assert events.count("vault.lease.revoke_unconfirmed") == 1
 for request_id in {row["request_id"] for row in rows if row.get("event_type") == "execution.started"}:
     chain=[row["event_type"] for row in rows if row.get("request_id") == request_id]
     terminal=next(event for event in chain if event in {
         "execution.finished","execution.blocked","execution.indeterminate"})
-    assert chain.index("execution.started") < chain.index("vault.lease.issued")
-    assert chain.index("vault.lease.issued") < chain.index("vault.lease.revoked")
-    assert chain.index("vault.lease.revoked") < chain.index(terminal)
-issued_reasons={row["reason_code"] for row in rows if row.get("event_type") == "vault.lease.issued"}
-revoked_reasons={row["reason_code"] for row in rows if row.get("event_type") == "vault.lease.revoked"}
-assert issued_reasons == {"success", "vault-dynamic-source-response"}
-assert revoked_reasons == {"success", "vault-dynamic-revoke-rejected"}
+    before_terminal=chain[:chain.index(terminal)]
+    if "vault.lease.acquire_intent" not in before_terminal:
+        assert terminal == "execution.blocked" and before_terminal == ["execution.started"]
+        continue
+    assert before_terminal.index("execution.started") < before_terminal.index("vault.lease.acquire_intent")
+    if "vault.lease.issued" not in before_terminal:
+        assert terminal == "execution.indeterminate"
+        assert before_terminal == ["execution.started","vault.lease.acquire_intent"]
+        continue
+    assert before_terminal.index("vault.lease.acquire_intent") < before_terminal.index("vault.lease.issued")
+    assert before_terminal.index("vault.lease.issued") < before_terminal.index("vault.lease.cleanup_started")
+    cleanup=next(event for event in before_terminal if event in {"vault.lease.revoked","vault.lease.revoke_unconfirmed"})
+    assert before_terminal.index("vault.lease.cleanup_started") < before_terminal.index(cleanup)
+    if cleanup == "vault.lease.revoke_unconfirmed":
+        assert terminal == "execution.indeterminate"
+lease_rows=[row for row in rows if row.get("event_type", "").startswith("vault.lease.")]
+assert {row["reason_code"] for row in lease_rows} == {"lease-journal"}
+assert all(row["outcome"] == "unconfirmed" for row in lease_rows if row["event_type"] == "vault.lease.revoke_unconfirmed")
+assert all(row["outcome"] == "success" for row in lease_rows if row["event_type"] == "vault.lease.revoked")
 PY
 
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" shutdown --password-stdin >/dev/null
@@ -231,7 +290,7 @@ BROKER_PID=""
 READY="$WORKDIR/restarted-ready"
 start_fixture "$READY" "$TRACE"
 new_session 2
-activate_policy "$PRINCIPAL_ID" 2
+activate_policy "$PRINCIPAL_ID" 3
 execute_action >"$WORKDIR/restarted.out"
 grep -q '"result":"p7b-ok"' "$WORKDIR/restarted.out"
 
@@ -258,12 +317,12 @@ assert credential["kind"] == "vault-dynamic-source"
 assert credential["current_version"] == 2
 ' "$CREDENTIAL_ID"
 new_session 2
-activate_policy "$PRINCIPAL_ID" 3
+activate_policy "$PRINCIPAL_ID" 4
 execute_action >"$WORKDIR/restored.out"
 grep -q '"result":"p7b-ok"' "$WORKDIR/restored.out"
 [[ "$(grep -c '^p7b.revoke.ok$' "$RESTORED_TRACE")" == "1" ]]
 
-rm "$PROFILE_ONE" "$PROFILE_TWO" "$INVALID_PROFILE" "$ACTION_FILE" "$REQUEST_BODY" \
+rm "$PROFILE_ONE" "$PROFILE_TWO" "$MALFORMED_PROFILE" "$INVALID_PROFILE" "$ACTION_FILE" "$MALFORMED_ACTION" "$REQUEST_BODY" \
   "$WORKDIR/policy-snapshot.json" "$WORKDIR/policy.json" "$WORKDIR/policy-trust.json"
 for canary in "$SOURCE_ONE" "$SOURCE_TWO" "$RESOLVED_ONE" "$RESOLVED_TWO" \
   "$LEASE_ONE" "$LEASE_TWO" "$CAPABILITY"; do
