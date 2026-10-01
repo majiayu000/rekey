@@ -242,6 +242,7 @@ struct ApprovalDetailView: View {
                         row("创建时间", "\(displayDate(challenge.created_at_ms)) · \(challenge.created_at_ms) ms")
                         row("有效期至", "\(displayDate(challenge.max_expires_at_ms)) · \(challenge.max_expires_at_ms) ms")
                     }
+                    NativeApprovalForm(details: details).environmentObject(model)
                     SectionCard(title: "来源与签名核验", icon: "signature") {
                         Text("本窗口未验证信封签名。下方公钥来自当前本机 Authority；请与独立固定的公钥比较，并使用 rekey-approval-sign 验证信封。审批私钥始终留在独立签名工具中。").font(.system(size: 12)).foregroundStyle(.secondary)
                         row("来源公钥（\(details.origin.algorithm)）", details.origin.public_key)
@@ -297,5 +298,148 @@ struct ResultView: View {
                 Button("完成") { model.result = nil; dismiss() }.buttonStyle(PrimaryButton()).disabled(result.sensitive && !saved)
             }
         }.padding(30).frame(width: 570).background(canvas).interactiveDismissDisabled(result.sensitive)
+    }
+}
+
+
+struct PolicyDraftForm: View {
+    @EnvironmentObject var model: AppModel
+    @Environment(\.dismiss) var dismiss
+    @State private var draft: NativeFileSnapshot?
+    @State private var message: String?
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("审阅未签名草稿").font(.system(size: 24, weight: .semibold))
+            Text("此文本尚未验证或签名。这里只中转原始文件，不编辑规则或保管私钥。")
+            Button("选择草稿（最多 64 KiB）") {
+                guard let file = chooseFile() else { return }
+                draft = nil; message = nil
+                do { draft = try NativeFileSnapshot.read(file, limit: 65536) }
+                catch { message = error.localizedDescription }
+            }
+            if let draft {
+                ScrollView { Text(draft.text).font(.system(size: 12, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
+                Button("原样导出到新私有文件") {
+                    guard let destination = chooseSave("DRAFT.json") else { return }
+                    do { try writePrivateNew(draft.data, to: destination); message = "原始快照已导出。" }
+                    catch { message = error.localizedDescription }
+                }
+            }
+            Text("下一步：在独立工具运行 rekey-policy-sign review DRAFT.json，完整核对后按其 reviewed digest 签名。再回到策略页，分别安装信任根、激活签名策略；这两步仍需 Admin step-up。")
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+            if let message { Text(message).font(.system(size: 12)).textSelection(.enabled) }
+            HStack { Spacer(); Button("关闭") { draft = nil; message = nil; model.showPolicyDraft = false; dismiss() }.keyboardShortcut(.cancelAction) }
+        }.padding(28).frame(width: 720, height: 620).background(canvas)
+        .onChange(of: model.nativeFlowRevision) { _, _ in draft = nil; message = nil }
+        .onDisappear { draft = nil; message = nil }
+    }
+}
+
+struct NativeApprovalForm: View {
+    @EnvironmentObject var model: AppModel
+    let details: ApprovalDetails
+    @State private var requestBody: NativeFileSnapshot?
+    @State private var grantOne: NativeFileSnapshot?
+    @State private var grantTwo: NativeFileSnapshot?
+    @State private var capability = ""
+    @State private var confirmed = false
+    @State private var submitting = false
+    @State private var attempted = false
+    @State private var result: NativeExecuteResult?
+    @State private var message: String?
+    @State private var intent = UUID()
+    private var action: FixedAction? { details.matchingAction(in: model.actions) }
+    private var bodyLimit: Int { min(1024 * 1024, max(0, action?.request_max_bytes ?? 1024 * 1024)) }
+    var body: some View {
+        SectionCard(title: "原始正文与独立签名交接", icon: "doc.badge.arrow.up") {
+            Text("此流程固定 application/json，无额外请求头。导出文件不是审批或授权；来源公钥必须经独立可信渠道固定。")
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+            Button("选择原始 JSON 正文") {
+                guard let file = chooseFile() else { return }
+                requestBody = nil; result = nil; message = nil; confirmed = false
+                do { requestBody = try NativeFileSnapshot.read(file, limit: bodyLimit, json: true) }
+                catch { message = error.localizedDescription }
+            }.disabled(submitting)
+            if let requestBody {
+                Text("原始正文快照 · \(requestBody.data.count) bytes").font(.system(size: 11))
+                Text(requestBody.text).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
+                Button("导出私有 REQUEST.json") {
+                    guard let destination = chooseSave("REQUEST.json") else { return }
+                    do { try writePrivateNew(approvalHandoff(details, body: requestBody), to: destination); message = "请求交接文件已导出；尚未授权。" }
+                    catch { message = error.localizedDescription }
+                }.disabled(submitting)
+            }
+            Text("下一步：使用独立 rekey-approval-sign review/sign，另外核对 Action、policy、trust 和固定来源公钥，生成签名 grant。本窗口不调用签名工具。")
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+            Divider()
+            Text("使用签名 grant 显式执行一次").font(.system(size: 14, weight: .semibold))
+            Text("固定操作：\(details.envelope.challenge.action_id)@\(details.envelope.challenge.action_version)")
+                .font(.system(size: 12, design: .monospaced))
+            if let action {
+                Text("本机相同版本的目标（不是信封中的授权证明）：\(action.method) \(action.origin)\(action.exact_path)").font(.system(size: 12))
+            } else { Text("缺少相同版本的本机操作定义；请刷新核对后再执行，不能使用最新版本替代。").foregroundStyle(.secondary) }
+            HStack {
+                Button("选择 grant 1（最多 4 KiB）") { loadGrant(second: false) }
+                Button("选择可选 grant 2（最多 4 KiB）") { loadGrant(second: true) }
+                if grantTwo != nil { Button("移除 grant 2") { grantTwo = nil; confirmed = false } }
+            }.disabled(submitting)
+            if let grantOne { DisclosureGroup("grant 1 原始快照 · \(grantOne.data.count) bytes") { Text(grantOne.text).font(.system(size: 11, design: .monospaced)).textSelection(.enabled) } }
+            if let grantTwo { DisclosureGroup("grant 2 原始快照 · \(grantTwo.data.count) bytes") { Text(grantTwo.text).font(.system(size: 11, design: .monospaced)).textSelection(.enabled) } }
+            SecureField("当前会话 capability（仅匿名 stdin）", text: $capability).disabled(submitting || attempted)
+            Toggle("我已核对原始正文、精确版本和独立签名 grant，确认提交一次", isOn: $confirmed).disabled(submitting || attempted)
+            Button(submitting ? "等待执行结果…" : "提交一次执行") { execute() }
+                .disabled(!model.unlocked || model.busy || action == nil || requestBody == nil || grantOne == nil || capability.isEmpty || !confirmed || submitting || attempted)
+            if let result {
+                Text("HTTP \(result.metadata.upstream_status) · CLI 已返回，请核对状态与正文").font(.system(size: 13, weight: .semibold))
+                Text(result.metadataText).font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
+                if let text = String(data: result.body, encoding: .utf8) { Text(text).font(.system(size: 12, design: .monospaced)).textSelection(.enabled) }
+                else { Text("二进制响应 · \(result.body.count) bytes") }
+                Button("将响应原始字节另存为新私有文件") {
+                    guard let destination = chooseSave("rekey-response.bin") else { return }
+                    do { try writePrivateNew(result.body, to: destination); message = "响应字节已保存。" }
+                    catch { message = error.localizedDescription }
+                }
+            }
+            if let message { Text(message).font(.system(size: 12)).textSelection(.enabled) }
+            Text("Broker 是唯一授权校验方。关闭、失焦或中断不会撤回已提交的远端效果；结果未确认时检查审计，勿自动重试。私有快照清理不表示安全擦除。")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+        }
+        .onChange(of: model.nativeFlowRevision) { _, _ in clear() }
+        .onDisappear { clear() }
+    }
+    private func loadGrant(second: Bool) {
+        guard let file = chooseFile() else { return }
+        if second { grantTwo = nil } else { grantOne = nil }
+        result = nil; message = nil; confirmed = false
+        do {
+            let snapshot = try NativeFileSnapshot.read(file, limit: 4096)
+            if second { grantTwo = snapshot } else { grantOne = snapshot }
+        } catch { message = error.localizedDescription }
+    }
+    private func clear() {
+        intent = UUID(); capability = ""; requestBody = nil; grantOne = nil; grantTwo = nil
+        result = nil; message = nil; confirmed = false
+    }
+    private func execute() {
+        guard model.unlocked, !model.busy, !submitting, !attempted, confirmed, let requestBody, let grantOne, let action,
+              requestBody.data.count <= action.request_max_bytes else { return }
+        let grants = [grantOne] + (grantTwo.map { [$0] } ?? [])
+        let token = capability
+        capability = ""; confirmed = false; attempted = true; submitting = true; result = nil; message = nil
+        let currentIntent = intent, revision = model.nativeFlowRevision, workspace = model.stateDirectory
+        let client = model.cli
+        model.busy = true
+        Task {
+            defer { model.busy = false; submitting = false }
+            do {
+                let response = try await Task.detached { try client.executeApproval(details, body: requestBody, grants: grants, capability: token) }.value
+                guard intent == currentIntent, NSApp.isActive, model.acceptsNativeCompletion(revision, workspace: workspace) else { return }
+                result = response
+            } catch {
+                guard intent == currentIntent, NSApp.isActive, model.acceptsNativeCompletion(revision, workspace: workspace) else { return }
+                clear()
+                message = error.localizedDescription
+            }
+        }
     }
 }
