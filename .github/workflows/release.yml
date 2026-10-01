@@ -55,7 +55,7 @@ jobs:
           [[ "$GITHUB_REF_NAME" == "v$version" ]]
           [[ "$(rustc -vV | awk '/^host:/ {print $2}')" == "${{ matrix.target }}" ]]
       - name: Build release binaries
-        run: cargo build --locked --release -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd --bin rekey-github-create-issue --bin rekey-mcp -p rekey-policy --bin rekey-policy-sign --bin rekey-approval-sign
+        run: cargo build --locked --release -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd --bin rekey-github-create-issue --bin rekey-mcp -p rekey-policy --bin rekey-policy-sign --bin rekey-approval-sign -p rekey-approval-relay --bin rekey-approval-relay
       - name: Sign macOS binaries
         if: runner.os == 'macOS'
         env:
@@ -80,7 +80,7 @@ jobs:
           security import "$cert" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain"
           security list-keychains -d user -s "$keychain" login.keychain-db
-          for bin in rekey rekeyd rekey-github-create-issue rekey-mcp rekey-policy-sign rekey-approval-sign; do
+          for bin in rekey rekeyd rekey-github-create-issue rekey-mcp rekey-policy-sign rekey-approval-sign rekey-approval-relay; do
             codesign --force --sign "$APPLE_SIGNING_IDENTITY" --options runtime --timestamp "target/release/$bin"
             codesign --verify --strict "target/release/$bin"
           done
@@ -93,10 +93,12 @@ jobs:
           stage="dist/rekey-${GITHUB_REF_NAME}-${{ matrix.target }}"
           mkdir -p "$stage"
           install -m 0755 target/release/rekey target/release/rekeyd target/release/rekey-github-create-issue \
-            target/release/rekey-mcp target/release/rekey-policy-sign target/release/rekey-approval-sign "$stage/"
+            target/release/rekey-mcp target/release/rekey-policy-sign target/release/rekey-approval-sign \
+            target/release/rekey-approval-relay "$stage/"
           install -m 0755 scripts/rekey-service-unit.py scripts/agent-quickstart.py \
             scripts/operator-credential-repair.py scripts/rekey-backup-sync.py \
-            scripts/rekey-audit-delivery.py "$stage/"
+            scripts/rekey-audit-delivery.py scripts/rekey-audit-archive.py \
+            scripts/rekey-controlplane.py "$stage/"
           install -m 0644 LICENSE README.md "$stage/"
           install -m 0644 CHANGELOG.md SECURITY.md SUPPORT.md "$stage/"
           mkdir -p "$stage/docs/product-foundation" "$stage/docs/releases" \
@@ -145,6 +147,30 @@ jobs:
             docs/superpowers/specs/2026-09-30-vault-lease-renewal.md \
             docs/superpowers/specs/2026-09-30-vault-transit-approval-signer.md \
             docs/superpowers/specs/2026-09-30-source-tool-packaging.md \
+            docs/superpowers/specs/2026-09-30-remote-approval-relay.md \
+            docs/superpowers/specs/2026-09-30-remote-approval-inbox.md \
+            docs/superpowers/specs/2026-09-30-s3-audit-archive.md \
+            docs/superpowers/specs/2026-09-30-vault-lease-journal.md \
+            docs/superpowers/specs/2026-09-30-gcp-secret-source.md \
+            docs/superpowers/specs/2026-09-30-aws-secret-source.md \
+            docs/superpowers/specs/2026-09-30-azure-secret-source.md \
+            docs/superpowers/specs/2026-09-30-http-header-ows-sealing.md \
+            docs/superpowers/specs/2026-09-30-onepassword-secret-source.md \
+            docs/superpowers/specs/2026-09-30-controlplane.md \
+            docs/superpowers/specs/2026-09-30-identity-directory.md \
+            docs/superpowers/specs/2026-09-30-oidc-admin.md \
+            docs/superpowers/specs/2026-10-01-standby-backup-durability.md \
+            docs/superpowers/specs/2026-10-01-snapshot-restore-cut.md \
+            docs/superpowers/specs/2026-10-01-vault-kv-latest.md \
+            docs/superpowers/specs/2026-10-01-vault-private-source.md \
+            docs/superpowers/specs/2026-10-01-macos-keychain-source.md \
+            docs/superpowers/specs/2026-10-01-vault-approle-source.md \
+            docs/superpowers/specs/2026-09-30-decoded-source-bootstrap-sealing.md \
+            docs/superpowers/specs/2026-09-30-metrics-deployment.md \
+            docs/superpowers/specs/2026-09-30-native-policy-approval-flow.md \
+            deploy/prometheus/rekey.rules.yml \
+            deploy/prometheus/rekey.rules.test.yml \
+            deploy/prometheus/rekey.scrape.example.yml \
             ; do
             mkdir -p "$stage/$(dirname "$doc")"
             install -m 0644 "$doc" "$stage/$doc"

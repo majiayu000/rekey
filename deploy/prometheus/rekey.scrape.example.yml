@@ -1,0 +1,15 @@
+# Merge into the operator's Prometheus configuration for an existing collector.
+# This example does not install/start a listener. Select TLS/auth/ACL before deployment.
+# Collector prerequisite: --collector.textfile.directory=/var/lib/rekey-metrics
+# Dedicated read group rekey-metrics; no access to state or admin.sock.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+rule_files:
+  - rekey.rules.yml
+scrape_configs:
+  - job_name: rekey-node
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    static_configs:
+      - targets: ['127.0.0.1:9100']

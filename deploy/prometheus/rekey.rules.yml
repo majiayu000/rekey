@@ -1,0 +1,38 @@
+# Fixed single-host contract: /var/lib/rekey-metrics/rekey.prom, job rekey-node.
+# Unknown inputs remove records. Do not zero-fill these rules downstream.
+groups:
+  - name: rekey-local-metrics
+    interval: 15s
+    rules:
+      - record: rekey:metrics_file_mtime_seconds
+        expr: max by (job, instance) (node_textfile_mtime_seconds{job="rekey-node",file="/var/lib/rekey-metrics/rekey.prom"})
+      - record: rekey:metrics_file_age_seconds
+        expr: time() - rekey:metrics_file_mtime_seconds
+      - record: rekey:metrics_fresh
+        expr: |
+          (up{job="rekey-node"} == 1)
+          and on (job, instance) (node_textfile_scrape_error{job="rekey-node"} == 0)
+          and on (job, instance) (rekey:metrics_file_age_seconds >= 0)
+          and on (job, instance) (rekey:metrics_file_age_seconds <= 60)
+          and on (job, instance) (node_timex_sync_status{job="rekey-node"} == 1)
+          and on (job, instance) (abs(node_time_seconds{job="rekey-node"} - timestamp(node_time_seconds{job="rekey-node"})) <= 5)
+      - record: rekey:requests_per_second
+        expr: rate(rekey_requests_total{job="rekey-node"}[5m]) and on (job, instance) rekey:metrics_fresh
+      - record: rekey:errors_per_second
+        expr: rate(rekey_errors_total{job="rekey-node"}[5m]) and on (job, instance) rekey:metrics_fresh
+      - alert: RekeyMetricsUnavailable
+        expr: up{job="rekey-node"} unless on (job, instance) rekey:metrics_fresh
+        labels:
+          severity: warning
+          component: rekey
+        annotations:
+          summary: Rekey metrics are unavailable or unverified
+          description: Require a reachable collector, a valid file no older than 60 seconds, and synchronized clocks.
+      - alert: RekeyMetricsTargetMissing
+        expr: absent(up{job="rekey-node"})
+        labels:
+          severity: warning
+          component: rekey
+        annotations:
+          summary: Rekey collector target is missing
+          description: The fixed single-host rekey-node target has no scrape-health series.

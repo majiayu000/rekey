@@ -62,6 +62,27 @@ jobs:
           cargo test --workspace --offline -- --test-threads=1
           REKEY_QUICKSTART_REAL=1 PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-agent-quickstart.py
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-audit-delivery.py
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-audit-archive.py
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-controlplane.py
+          cargo build --locked -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd --example p1_policy_fixture --example p7_vault_journal_fixture -p rekey-policy --bin rekey-approval-sign -p rekey-approval-relay --bin rekey-approval-relay
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-approval-signer-live.py --bin-dir target/debug --relay-bin target/debug/rekey-approval-relay
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/p7-vault-journal-recovery.py --binaries target/debug --artifacts "$RUNNER_TEMP/rekey-journal-fixture"
+
+      - name: Fixed metrics deployment contracts
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          metrics_tools="$RUNNER_TEMP/rekey-metrics-tools"
+          mkdir -p "$metrics_tools"
+          asset=prometheus-3.15.0.linux-amd64.tar.gz
+          release=https://github.com/prometheus/prometheus/releases/download/v3.15.0
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 "$release/$asset" -o "$metrics_tools/$asset"
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 "$release/sha256sums.txt" -o "$metrics_tools/sha256sums.txt"
+          awk -v asset="$asset" '$2 == asset { print; found++ } END { if (found != 1) exit 1 }' "$metrics_tools/sha256sums.txt" > "$metrics_tools/selected.sha256"
+          (cd "$metrics_tools" && sha256sum --check --strict selected.sha256)
+          tar -xzf "$metrics_tools/$asset" -C "$metrics_tools" --strip-components=1
+          PROMTOOL="$metrics_tools/promtool" PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-metrics-deployment.py
 
       - name: Real ENOSPC fault injection
         if: runner.os == 'Linux'
