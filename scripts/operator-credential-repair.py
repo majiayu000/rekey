@@ -23,6 +23,8 @@ def cli_json(base, arguments, tty_in, tty):
 
 def repair(args, tty_in, tty):
     base = [str(args.rekey.resolve()), "--state-dir", str(args.state_dir.resolve())]
+    if args.admin_session_file is not None:
+        base += ["--admin-session-file", str(args.admin_session_file)]
     actions = cli_json(base, ["action", "list"], tty_in, tty)["actions"]
     action = next((entry for entry in actions
                    if f'{entry["id"]}@{entry["version"]}' == args.action), None)
@@ -64,6 +66,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rekey", type=Path, required=True)
     parser.add_argument("--state-dir", type=Path, required=True)
+    parser.add_argument("--admin-session-file", type=Path, help="operator management session file")
     parser.add_argument("--action", required=True, help="registered ACTION_ID@VERSION")
     args = parser.parse_args()
     try:

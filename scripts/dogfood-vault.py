@@ -98,7 +98,11 @@ def dogfood(args):
                      "--snapshot", str(work / "draft.json"), "--trust", str(work / "trust.json"), "--bundle", str(work / "bundle.json")])
                 for operation, file in [(["policy", "trust", "install"], "trust.json"),
                                         (["policy", "activate"], "bundle.json")]:
-                    run(base + operation + ["--file", str(work / file), "--step-up-stdin"], password + "\n")
+                    target_flags = []
+                    if operation == ["policy", "activate"]:
+                        target = json.loads(run(base + ["policy", "status"]))
+                        target_flags = ["--expected-vault-id", target["vault_id"], "--expected-trust-sha256", target["trust_sha256"]]
+                    run(base + operation + target_flags + ["--file", str(work / file), "--step-up-stdin"], password + "\n")
                 command = base + ["execute", ref, "--capability", "-"]
                 if args.body_file:
                     command += ["--body-file", str(args.body_file), "--content-type", "application/json"]

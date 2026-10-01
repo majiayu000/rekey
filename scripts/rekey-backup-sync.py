@@ -67,8 +67,10 @@ def export(args):
     pending = args.outbox / ('.pending-' + uuid.uuid4().hex)
     pending.mkdir(mode=0o700)
     # stdin/stderr remain attached to the operator's terminal. No proof storage.
-    output = run([args.rekey, '--state-dir', str(args.state_dir), 'backup',
-                  '--output', str(pending / 'snapshot.rkbackup')],
+    command = [args.rekey, '--state-dir', str(args.state_dir)]
+    if args.admin_session_file is not None:
+        command += ['--admin-session-file', str(args.admin_session_file)]
+    output = run(command + ['backup', '--output', str(pending / 'snapshot.rkbackup')],
                  stdout=subprocess.PIPE).stdout
     receipt = json.loads(output)
     if receipt['sha256_hex'] != digest(pending / 'snapshot.rkbackup'):
@@ -89,35 +91,95 @@ def export(args):
 
 
 # Source is fixed; all variable values are positional arguments, shell quoted.
-REMOTE = '''import hashlib,json,os,stat,sys
+REMOTE = '''import fcntl,hashlib,json,os,stat,sys
 from pathlib import Path
 mode,base,name,expected,stage=sys.argv[1:]
-root=Path(base); target=root/name
-def require_private_dir(path, label):
- info=path.lstat()
- if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-  raise ValueError(label+' must be a non-symlink directory')
- if info.st_uid!=os.getuid() or info.st_mode&0o077:
-  raise ValueError(label+' must be a current-user-owned 0700 directory')
-def verify(p):
- r=json.loads((p/'receipt.json').read_text())
- h=hashlib.sha256()
- with (p/'snapshot.rkbackup').open('rb') as f:
-  for b in iter(lambda:f.read(1024*1024),b''):h.update(b)
- if r!=json.loads(expected) or h.hexdigest()!=r['sha256_hex']:
-  raise ValueError('remote receipt or digest mismatch')
+root=Path(base)
+for component in (name,stage):
+ if component in ('','.','..') or '/' in component:
+  raise ValueError('remote object name must be a directory entry')
+def directory_identity(info):
+ if not stat.S_ISDIR(info.st_mode) or info.st_uid!=os.getuid() or stat.S_IMODE(info.st_mode)!=0o700:
+  raise ValueError('remote directory must be current-user-owned 0700')
+ return (info.st_dev,info.st_ino,info.st_mode,info.st_uid)
+def file_identity(info):
+ if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid() or info.st_mode&0o077 or info.st_nlink!=1:
+  raise ValueError('remote file must be private current-user-owned regular single-link')
+ return (info.st_dev,info.st_ino,info.st_mode,info.st_uid,info.st_nlink,
+         info.st_size,info.st_mtime_ns,info.st_ctime_ns)
+def check_root():
+ if directory_identity(os.fstat(root_fd))!=root_identity or directory_identity(root.lstat())!=root_identity:
+  raise ValueError('remote root identity changed')
+def target_exists():
+ try:os.stat(name,dir_fd=root_fd,follow_symlinks=False)
+ except FileNotFoundError:return False
+ return True
+def durable_object(entry,publish):
+ directory_fd=os.open(entry,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=root_fd)
+ files=[]
+ try:
+  identity=directory_identity(os.fstat(directory_fd))
+  for leaf in ('snapshot.rkbackup','receipt.json'):
+   fd=os.open(leaf,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=directory_fd)
+   files.append((leaf,fd,None))
+   files[-1]=(leaf,fd,file_identity(os.fstat(fd)))
+  def check_object():
+   check_root()
+   if directory_identity(os.fstat(directory_fd))!=identity or directory_identity(os.stat(entry,dir_fd=root_fd,follow_symlinks=False))!=identity:
+    raise ValueError('remote object directory identity changed')
+   if set(os.listdir(directory_fd))!={'snapshot.rkbackup','receipt.json'}:
+    raise ValueError('remote object must contain only artifact and receipt')
+   for leaf,fd,before in files:
+    if file_identity(os.fstat(fd))!=before or file_identity(os.stat(leaf,dir_fd=directory_fd,follow_symlinks=False))!=before:
+     raise ValueError('remote file identity changed')
+  check_object()
+  receipt_bytes=bytearray()
+  while len(receipt_bytes)<=65536:
+   block=os.read(files[1][1],65537-len(receipt_bytes))
+   if not block:break
+   receipt_bytes.extend(block)
+  if len(receipt_bytes)>65536:raise ValueError('remote receipt exceeds 64KiB')
+  receipt=json.loads(receipt_bytes)
+  digest=hashlib.sha256()
+  for block in iter(lambda:os.read(files[0][1],1024*1024),b''):digest.update(block)
+  check_object()
+  if receipt!=json.loads(expected) or digest.hexdigest()!=receipt['sha256_hex']:
+   raise ValueError('remote receipt or digest mismatch')
+  for _,fd,_ in files:
+   os.fsync(fd)
+   check_object()
+  os.fsync(directory_fd)
+  check_object()
+  if publish:
+   # All normal receivers hold the same root flock across this check and rename.
+   if target_exists():raise FileExistsError('completed backup already exists')
+   os.rename(entry,name,src_dir_fd=root_fd,dst_dir_fd=root_fd)
+   entry=name
+   check_object()
+  os.fsync(root_fd)
+  check_object()
+  print('VERIFIED',flush=True)
+ finally:
+  for _,fd,_ in files:os.close(fd)
+  os.close(directory_fd)
 os.umask(0o077)
 if mode=='prepare':
- if root.exists():require_private_dir(root,'remote-dir')
- else:root.mkdir(parents=True,mode=0o700);require_private_dir(root,'remote-dir')
- if target.exists():verify(target);print('VERIFIED')
- else:(root/stage).mkdir(mode=0o700);print('UPLOAD')
-else:
- require_private_dir(root,'remote-dir')
- verify(root/stage)
- if target.exists():raise FileExistsError('completed backup already exists')
- (root/stage).rename(target)
- print('VERIFIED')
+ try:root.mkdir(parents=True,mode=0o700)
+ except FileExistsError:pass
+root_fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+try:
+ root_identity=directory_identity(os.fstat(root_fd))
+ check_root()
+ # Lock the directory inode, not a replaceable lock file. No new lock service.
+ fcntl.flock(root_fd,fcntl.LOCK_EX)
+ check_root()
+ if target_exists():durable_object(name,False)
+ elif mode=='prepare':
+  os.mkdir(stage,mode=0o700,dir_fd=root_fd)
+  check_root()
+  print('UPLOAD',flush=True)
+ else:durable_object(stage,True)
+finally:os.close(root_fd)
 '''
 
 
@@ -164,6 +226,7 @@ def main():
     create = sub.add_parser('export')
     create.add_argument('--state-dir', type=Path, required=True)
     create.add_argument('--rekey', required=True)
+    create.add_argument('--admin-session-file', type=Path, help='operator management session file')
     transfer = sub.add_parser('sync')
     transfer.add_argument('--host', required=True)
     transfer.add_argument('--remote-dir', required=True)
