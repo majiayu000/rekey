@@ -944,7 +944,11 @@ fn cli_vrk_rotation_two_stdin_factors_keep_broker_locked_and_leave_no_plaintext(
         assert_eq!(lock.status, 0);
         outputs.push(lock);
     }
-    let stopped = run(&rekey_bin(), &["--state-dir", state, "shutdown"], None);
+    let stopped = run(
+        &rekey_bin(),
+        &["--state-dir", state, "shutdown", "--password-stdin"],
+        Some(&format!("{PASSWORD}\n")),
+    );
     assert_eq!(stopped.status, 0, "{}", stopped.stderr);
     outputs.push(stopped);
     let server = guard.finish();
@@ -961,4 +965,111 @@ fn cli_vrk_rotation_two_stdin_factors_keep_broker_locked_and_leave_no_plaintext(
         }
     }
     assert_files_exclude(&state_dir, &[PASSWORD, &recovery]);
+}
+
+#[test]
+fn desktop_reveal_and_locked_shutdown_require_each_step_up() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    let state = state_dir.to_str().unwrap();
+    let init = run(
+        &rekeyd_bin(),
+        &["init", "--state-dir", state, "--password-stdin"],
+        Some(&format!("{PASSWORD}\n")),
+    );
+    assert_eq!(init.status, 0, "{}", init.stderr);
+    let recovery = init
+        .stdout
+        .lines()
+        .find(|line| line.starts_with("RKREC1-"))
+        .unwrap();
+    let server = Command::new(rekeyd_bin())
+        .args(["serve", "--state-dir", state])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let guard = ServeGuard(Some(server));
+    for _ in 0..300 {
+        if state_dir.join("runtime/admin.sock").exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let login = run(
+        &rekey_bin(),
+        &["--state-dir", state, "desktop-login"],
+        Some(&format!("{PASSWORD}\n")),
+    );
+    assert_eq!(login.status, 0, "{}", login.stderr);
+    let token = login.stdout;
+    let added = run(
+        &rekey_bin(),
+        &["--state-dir", state, "desktop-add", "step-up-canary"],
+        Some(&format!("{token}\n{SECRET}\n")),
+    );
+    assert_eq!(added.status, 0, "{}", added.stderr);
+    let metadata: serde_json::Value = serde_json::from_str(&added.stdout).unwrap();
+    let id = metadata["id"].as_str().unwrap();
+    for (factor, recovery_factor) in [(PASSWORD, false), (recovery, true)] {
+        let mut args = vec![
+            "--state-dir",
+            state,
+            "desktop-reveal",
+            id,
+            "--password-stdin",
+        ];
+        if recovery_factor {
+            args.push("--recovery");
+        }
+        let revealed = run(&rekey_bin(), &args, Some(&format!("{factor}\n")));
+        assert_eq!(revealed.status, 0, "{}", revealed.stderr);
+        assert_eq!(revealed.stdout, SECRET);
+        assert!(!revealed.stderr.contains(SECRET));
+        let denied = run(
+            &rekey_bin(),
+            &[
+                "--state-dir",
+                state,
+                "desktop-reveal",
+                id,
+                "--password-stdin",
+            ],
+            Some(&format!("{token}\n")),
+        );
+        assert_ne!(denied.status, 0);
+        assert!(denied.stdout.is_empty());
+        assert!(!denied.stderr.contains(SECRET));
+        assert!(!denied.stderr.contains(&token));
+    }
+    assert_eq!(
+        run(&rekey_bin(), &["--state-dir", state, "lock"], None).status,
+        0
+    );
+    for input in ["\n", "incorrect-proof\n"] {
+        let denied = run(
+            &rekey_bin(),
+            &["--state-dir", state, "shutdown", "--password-stdin"],
+            Some(input),
+        );
+        assert_ne!(denied.status, 0);
+        assert!(denied.stdout.is_empty());
+        let status = run(&rekey_bin(), &["--state-dir", state, "status"], None);
+        assert_eq!(status.status, 0);
+        assert!(status.stdout.contains("locked"));
+    }
+    let stopped = run(
+        &rekey_bin(),
+        &[
+            "--state-dir",
+            state,
+            "shutdown",
+            "--password-stdin",
+            "--recovery",
+        ],
+        Some(&format!("{recovery}\n")),
+    );
+    assert_eq!(stopped.status, 0, "{}", stopped.stderr);
+    assert!(guard.finish().status.success());
 }

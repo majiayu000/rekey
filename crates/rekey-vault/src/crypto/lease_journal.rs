@@ -217,19 +217,16 @@ fn decode(bytes: &[u8]) -> Result<LeasePayload, AuthorityError> {
     encode(&payload)?;
     Ok(payload)
 }
-fn dek(
-    root: &[u8; 32],
-    vault: VaultId,
-    r: &LeaseJournalRecord,
-) -> Result<Zeroizing<[u8; 32]>, AuthorityError> {
+fn dek(root: &[u8; 32], vault: VaultId, r: &LeaseJournalRecord) -> Result<DataKey, AuthorityError> {
     let bytes = aead::open(root, &aad(vault, r, true)?, &r.dek_nonce, &r.wrapped_dek)
         .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
-    Ok(Zeroizing::new(
-        bytes
-            .as_slice()
-            .try_into()
-            .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
-    ))
+    let mut array = bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+    let key = DataKey::from_bytes(&mut array);
+    drop(bytes);
+    Ok(key)
 }
 pub(crate) fn open(
     root: &[u8; 32],
@@ -238,7 +235,7 @@ pub(crate) fn open(
 ) -> Result<LeasePayload, AuthorityError> {
     let key = dek(root, vault, r)?;
     let bytes = aead::open(
-        &key,
+        key.bytes(),
         &aad(vault, r, false)?,
         &r.payload_nonce,
         &r.encrypted_payload,
@@ -282,7 +279,7 @@ pub(crate) fn update(
         return bad();
     }
     let key = dek(root, vault, old)?;
-    let encrypted = aead::seal(&key, &aad(vault, new, false)?, &encode(payload)?)?;
+    let encrypted = aead::seal(key.bytes(), &aad(vault, new, false)?, &encode(payload)?)?;
     new.payload_nonce = encrypted.nonce;
     new.encrypted_payload = encrypted.ciphertext;
     Ok(())

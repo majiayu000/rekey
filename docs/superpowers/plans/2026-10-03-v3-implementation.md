@@ -21,12 +21,12 @@
 | 原型统一入口与结果报告 | 已实现，审查通过 | `scripts/v3/run.py`；独立审查问题已修复，4 项报告/清理回归测试通过；只用合成数据 |
 | M0 lab feature / 默认构建 / 发布和CI分离 | 默认构建验收通过，lab 全量待跑 | 默认/lab all-targets 编译通过，worker 定向 default 148 / lab 51 测试通过；84 文件补丁独立复核通过；根默认全量串行通过，lab 全量待跑 |
 | M0 README / spec 状态 / 格式冻结规则 | 已实现，未发布 | README 只列现有入口；35 企业 spec 标 Lab，两份研究稿改 v4；永久不迁移，GA 主版本内冻结格式；编译器源输入物理行 40,371 / 60,754（非有效代码量） |
-| M1 SHUTDOWN 全状态 step-up | 待实施 | T2；信号关停与管理员请求分别验证 |
+| M1 SHUTDOWN 全状态 step-up | 本批默认验收通过 | 29 项不重复定向 Rust 测试及 synthetic human-vault smoke 通过；Locked 验证不解锁，证明验证前超时不触发停机；独立审查通过 |
 | M1 presence proof 与钥匙串 UI | 等待 V1 环境验证 | 每次获取受 OS userPresence 保护；不在 daemon 强制 Touch ID |
-| M1 desktop-reveal step-up / 明文清零 | 待实施 | T2；原 desktop token 不能独自查看明文 |
+| M1 desktop-reveal step-up / 明文清零 | 本批默认验收通过 | password/recovery 逐次证明、Zeroizing 响应所有权；UI 94 项边界断言通过，失焦关闭待验证表单；旧 desktop token 不再授权明文 |
 | M1 生产客户端签名校验 / 等级显示 | 本批验收通过 | 签名 CLI 对错误 ID 同团队/ad-hoc 服务均在发送前拒绝，服务收到零字节；status/UI 展示本地验证结果；同团队 release daemon 的 status/unlock/shutdown 正向通过；仍不代表完整 L1 |
 | M1 rollback generation / MAC / 外部计数 | 待实施 | T6；旧库拒绝自动解锁与执行；备份恢复确认 |
-| M1 memory hardening / core limit | 部分实现 | daemon 启动设 core limit，Linux 另设 dumpable=0；macOS 独立子进程检查通过；Linux 运行和 mlock 未完成 |
+| M1 memory hardening / core limit | 本批验收通过 | Linux arm64 容器实测 core=0/dumpable=0、独立 key 页生命周期、mlock 失败告警继续；macOS 回归与独立审查通过。仅覆盖拥有型 VRK/DEK 缓冲，非所有栈/AEAD 临时副本 |
 | M1 pkg / LaunchAgent / SMAppService | 待实施 | 签名、公证、安装和重启验收 |
 | M1 独立安全审查 | 待完成 | 原型代码审查不等同于产品安全验收 |
 | M2 P-256 个人策略签名 / App 模板选择 | 待实施 | Touch ID/SE 属于实现；Ed25519 团队模式保留 |
@@ -66,3 +66,11 @@ CLI/daemon 的最终签名哈希，Locked/Unlocked 均返回 `verified_signature
 release 临时 vault 的 Swift UIContract 及 80 项 native flow 边界检查通过；未运行真实 GUI 点击。
 
 默认 workspace 全量检查采用 CI 的串行测试设置通过：589 passed / 2 ignored（包含嵌套验收脚本的输出）。默认严格 Clippy、default/lab all-targets 编译、格式和 CLI 依赖合同通过。并发运行时的两个 deadline fixture 失败保留为环境敏感性记录，未增加超时或删除断言。
+
+M1 管理补丁已冻结并整合，SHA-256 `5213d261bbd01430973a2148f5fabb3a4e0bea3b4f062ab30ec54189d24270b3`。独立复核确认 worker 与 integration 的 20 个文件哈希一致。新版 release CLI 的真实临时 vault UIContract 通过，包括单次证明查看和 Locked SHUTDOWN；Linux mlock 两项及 daemon process hardening 子进程测试通过。
+
+Lab 全量检查首次因传入 `RUST_TEST_THREADS=1` 影响嵌套 libtest 的 readiness 行而等待，已停止本轮测试进程；按 CI 实际使用的 `-- --test-threads=1` 运行该测试通过。未改产品或测试来绕过断言，合流后全量以 CI 命令重新运行。
+
+M1 集成默认 workspace 检查：597 passed / 2 ignored；默认 all-targets check、严格 Clippy、Swift App 严格编译、94 个 native flow 断言通过。Lab 全量使用 CI 参数方式串行运行中。Linux 镜像为 `rust:1.95-slim-bookworm` arm64、去除全部 capabilities、memlock 上限 64 MiB；测试中的零额度只在独立子进程设置。
+
+新版签名 release CLI / rekeyd 正向链已通过：Locked/Unlocked status、unlock、lock、错误证明不停止服务、正确证明停掉 Locked daemon。证据 `outputs/rekey-v3-20261003/production-peer-positive-m1.json` 含最终签名哈希；仍不将签名校验单独称为完整 L1。

@@ -192,7 +192,7 @@ pub enum AuthorityCommand {
         reply: Reply<CredentialMetadata>,
     },
     DesktopReveal {
-        token: SecretInput,
+        proof: UnlockProof,
         credential_id: CredentialId,
         not_after: Option<std::time::Instant>,
         reply: Reply<Zeroizing<Vec<u8>>>,
@@ -213,6 +213,10 @@ pub enum AuthorityCommand {
     CheckIdle,
     Shutdown {
         proof: Option<UnlockProof>,
+        reply: Reply<()>,
+    },
+    VerifyShutdownProof {
+        proof: UnlockProof,
         reply: Reply<()>,
     },
     VerifyProof {

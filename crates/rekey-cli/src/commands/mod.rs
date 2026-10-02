@@ -437,25 +437,11 @@ pub fn status(state_dir: &Path, passive: bool) -> Result<(), CliError> {
 
 pub fn shutdown(state_dir: &Path, recovery: bool, password_stdin: bool) -> Result<(), CliError> {
     let mut client = admin_with_response_timeout(state_dir, DRAIN_RESPONSE_TIMEOUT)?;
-    // Locked brokers shut down without proof; unlocked brokers require it.
-    match client.call(admin_msg::SHUTDOWN, b"{}", &[]) {
-        Ok((meta, _)) => {
-            print_json::<ShutdownResponse>(&meta)?;
-            Ok(())
-        }
-        Err(err) if err.code == "AUTHENTICATION_FAILED" => {
-            let proof = read_step_up(recovery, password_stdin)?;
-            let body = proof_body(recovery, &proof);
-            let (meta, _) = admin_with_response_timeout(state_dir, DRAIN_RESPONSE_TIMEOUT)?.call(
-                admin_msg::SHUTDOWN,
-                b"{}",
-                &body,
-            )?;
-            print_json::<ShutdownResponse>(&meta)?;
-            Ok(())
-        }
-        Err(err) => Err(err),
-    }
+    let proof = read_step_up(recovery, password_stdin)?;
+    let body = proof_body(recovery, &proof);
+    let (meta, _) = client.call(admin_msg::SHUTDOWN, b"{}", &body)?;
+    print_json::<ShutdownResponse>(&meta)?;
+    Ok(())
 }
 
 pub fn credential_add(
@@ -873,12 +859,17 @@ pub fn desktop_add(state_dir: &Path, label: &str) -> Result<(), CliError> {
     print_json::<CredentialMetadata>(&meta)
 }
 
-pub fn desktop_reveal(state_dir: &Path, credential_id: &str) -> Result<(), CliError> {
-    let token = read_step_up(false, true)?;
-    let mut body = Zeroizing::new(Vec::with_capacity(5 + token.len()));
-    ipc::encode_proof_body(ProofKind::Password, &token, &mut body);
+pub fn desktop_reveal(
+    state_dir: &Path,
+    credential_id: &str,
+    recovery: bool,
+    password_stdin: bool,
+) -> Result<(), CliError> {
+    let mut client = admin(state_dir)?;
+    let proof = read_step_up(recovery, password_stdin)?;
+    let body = proof_body(recovery, &proof);
     let metadata = serde_json::json!({"credential_id":credential_id});
-    let (_, value) = admin(state_dir)?.call(
+    let (_, value) = client.call(
         admin_msg::DESKTOP_REVEAL,
         metadata.to_string().as_bytes(),
         &body,

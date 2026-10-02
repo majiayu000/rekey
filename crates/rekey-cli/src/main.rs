@@ -126,8 +126,12 @@ enum Command {
     DesktopResume,
     /// Save an API key; desktop token and value are read as two stdin lines.
     DesktopAdd { label: String },
-    /// Reveal a current credential to the human admin; token is read from stdin.
-    DesktopReveal { credential_id: String },
+    /// Reveal a current credential with a fresh password or recovery proof.
+    DesktopReveal {
+        credential_id: String,
+        #[command(flatten)]
+        step_up: StepUpArgs,
+    },
     /// Unlock the running broker.
     Unlock {
         /// Use the recovery key to unlock; does not reset the password.
@@ -701,9 +705,15 @@ fn main() {
         Command::DesktopResume => commands::desktop_restore_access(&state_dir, true, false),
         Command::DesktopLogin { recovery } => commands::desktop_login(&state_dir, recovery),
         Command::DesktopAdd { label } => commands::desktop_add(&state_dir, &label),
-        Command::DesktopReveal { credential_id } => {
-            commands::desktop_reveal(&state_dir, &credential_id)
-        }
+        Command::DesktopReveal {
+            credential_id,
+            step_up,
+        } => commands::desktop_reveal(
+            &state_dir,
+            &credential_id,
+            step_up.recovery,
+            step_up.password_stdin,
+        ),
         Command::Init { password_stdin } => {
             commands::delegate_rekeyd(&state_dir, "init", &[], password_stdin)
         }

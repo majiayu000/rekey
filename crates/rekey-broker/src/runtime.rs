@@ -137,7 +137,7 @@ impl BrokerCtx {
 
     pub(crate) async fn request_admin_shutdown(
         &self,
-        proof: Option<UnlockProof>,
+        proof: UnlockProof,
     ) -> Result<(), BrokerError> {
         let (reply, result) = oneshot::channel();
         self.stop_tx
@@ -683,7 +683,7 @@ fn validate_agent_endpoint(config: &BrokerConfig) -> Result<(), BrokerError> {
 
 enum SelectedStop {
     Admin {
-        proof: Option<UnlockProof>,
+        proof: UnlockProof,
         reply: oneshot::Sender<Result<(), BrokerError>>,
     },
     Signal(&'static str),
@@ -709,7 +709,11 @@ async fn select_stop(
         _ = sigint.recv() => SelectedStop::Signal("sigint"),
         result = &mut *execution_task => SelectedStop::Execution(result),
     };
-    lifecycle.mark_stop_pending();
+    // Admin authentication must precede any stop admission change. A pending
+    // coordinator owner may outlive the Admin deadline without stopping service.
+    if !matches!(&selected, SelectedStop::Admin { .. }) {
+        lifecycle.mark_stop_pending();
+    }
     selected
 }
 

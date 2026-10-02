@@ -693,11 +693,56 @@ async fn desktop_values_use_body_and_agent_channel_cannot_reveal() {
         Channel::Admin,
         admin_msg::DESKTOP_REVEAL,
         reference.as_bytes(),
-        &common::proof_body(&token),
+        &common::proof_body(common::PASSWORD),
     )
     .await;
     assert_eq!(revealed.body, b"desktop-value-canary");
     assert_eq!(revealed.ok(), &serde_json::json!({}));
+    let recovery = common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::RECOVERY_ROTATE,
+        b"{}",
+        &common::proof_body(common::PASSWORD),
+    )
+    .await
+    .body;
+    let mut recovery_proof = Vec::new();
+    ipc::encode_proof_body(ProofKind::Recovery, &recovery, &mut recovery_proof);
+    let recovered = common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::DESKTOP_REVEAL,
+        reference.as_bytes(),
+        &recovery_proof,
+    )
+    .await;
+    assert_eq!(recovered.ok(), &serde_json::json!({}));
+    assert_eq!(recovered.body, b"desktop-value-canary");
+    for (body, expected) in [
+        (common::proof_body(&token), "INVALID_UNLOCK_CREDENTIAL"),
+        (
+            common::proof_body(b"wrong-proof"),
+            "INVALID_UNLOCK_CREDENTIAL",
+        ),
+        (common::proof_body(&recovery), "INVALID_UNLOCK_CREDENTIAL"),
+        (Vec::new(), "INVALID_FRAME"),
+    ] {
+        let denied = common::call(
+            &admin,
+            Channel::Admin,
+            admin_msg::DESKTOP_REVEAL,
+            reference.as_bytes(),
+            &body,
+        )
+        .await;
+        assert_eq!(denied.err_code(), expected);
+        assert!(
+            denied.body.is_empty(),
+            "rejection must not return plaintext"
+        );
+    }
+
     let denied = common::call(
         &broker.agent_sock(),
         Channel::Agent,
@@ -715,7 +760,7 @@ async fn desktop_values_use_body_and_agent_channel_cannot_reveal() {
         Channel::Admin,
         admin_msg::DESKTOP_REVEAL,
         reference.as_bytes(),
-        &common::proof_body(&token),
+        &common::proof_body(common::PASSWORD),
     )
     .await;
     assert_eq!(locked.err_code(), "LOCKED");
@@ -888,7 +933,7 @@ async fn dek_rotation_is_admin_step_up_only_and_preserves_existing_capabilities(
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn vrk_sql_work_exceeding_bounded_stop_disconnects_unknown_and_retains_crash_marker() {
+async fn admin_shutdown_cannot_interrupt_a_vrk_rotation_before_authentication() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let broker =
         common::start_broker_with(Duration::from_secs(300), Duration::from_millis(20)).await;
@@ -955,7 +1000,7 @@ async fn vrk_sql_work_exceeding_bounded_stop_disconnects_unknown_and_retains_cra
         assert!(std::time::Instant::now() < deadline);
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    let shutdown = common::call(
+    let proofless = common::call(
         &broker.admin_sock(),
         Channel::Admin,
         admin_msg::SHUTDOWN,
@@ -963,37 +1008,37 @@ async fn vrk_sql_work_exceeding_bounded_stop_disconnects_unknown_and_retains_cra
         &[],
     )
     .await;
-    assert_eq!(shutdown.err_code(), "FAULTED");
-    let mut response = Vec::new();
-    tokio::time::timeout(Duration::from_secs(3), stream.read_to_end(&mut response))
-        .await
-        .unwrap()
-        .unwrap();
+    assert_eq!(proofless.err_code(), "AUTHENTICATION_FAILED");
+    let shutdown = common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::SHUTDOWN,
+        b"{}",
+        &common::proof_body(b"wrong-proof"),
+    )
+    .await;
+    assert_eq!(shutdown.err_code(), "AUTHORITY_BUSY");
     assert!(
-        response.is_empty(),
-        "rotation must not claim a definitive denial while SQL is running"
+        !broker.serve_task.is_finished(),
+        "unauthenticated timeout must not stop the runtime"
     );
-    let stopped = tokio::time::timeout(Duration::from_secs(3), broker.serve_task)
+    // The earlier rotation retains its owner and may finish or reject at its own deadline.
+    let mut header = [0; rekey_domain::ipc::FRAME_HEADER_LEN];
+    tokio::time::timeout(Duration::from_secs(45), stream.read_exact(&mut header))
         .await
         .unwrap()
         .unwrap();
-    assert!(stopped.is_err());
-    assert!(broker.state_dir.join(".desktop-runtime-active").exists());
-    // This holds precommit SQL work across stop, not an fsync/COMMIT stall.
-    // Wait for the detached worker to release its transaction before reopening.
-    let deadline = std::time::Instant::now() + Duration::from_secs(45);
-    loop {
-        match db.execute_batch("BEGIN IMMEDIATE;") {
-            Ok(()) => {
-                db.execute_batch("ROLLBACK;").unwrap();
-                break;
-            }
-            Err(rusqlite::Error::SqliteFailure(e, _))
-                if e.code == rusqlite::ErrorCode::DatabaseBusy => {}
-            Err(e) => panic!("unexpected lock probe {e}"),
-        }
-        assert!(std::time::Instant::now() < deadline);
-        tokio::time::sleep(Duration::from_millis(50)).await;
+    let response = FrameHeader::decode(&header).unwrap();
+    let mut metadata = vec![0; response.metadata_len as usize];
+    stream.read_exact(&mut metadata).await.unwrap();
+    let mut body = vec![0; response.body_len as usize];
+    stream.read_exact(&mut body).await.unwrap();
+    assert!(body.is_empty());
+    let metadata: serde_json::Value = serde_json::from_slice(&metadata).unwrap();
+    if response.message_type == ipc::resp_msg::ERROR {
+        assert_eq!(metadata["code"], "AUTHORITY_BUSY");
+    } else {
+        assert_eq!(response.message_type, ipc::resp_msg::OK);
     }
     let successes: i64 = db
         .query_row(
@@ -1002,7 +1047,6 @@ async fn vrk_sql_work_exceeding_bounded_stop_disconnects_unknown_and_retains_cra
             |r| r.get(0),
         )
         .unwrap();
-    assert!(successes == 0 || successes == 1);
     let new_header: Vec<u8> = db
         .query_row("SELECT integrity_ciphertext FROM vault_header", [], |r| {
             r.get(0)
@@ -1011,25 +1055,29 @@ async fn vrk_sql_work_exceeding_bounded_stop_disconnects_unknown_and_retains_cra
     assert_eq!(old_header == new_header, successes == 0);
     db.execute_batch("DROP TRIGGER slow_root_audit;").unwrap();
     drop(db);
-    let (handle, join) = rekey_vault::authority::spawn_authority(
-        rekey_vault::handle::AuthorityConfig::new(broker.state_dir.clone()),
+    let status = common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::STATUS,
+        b"{}",
+        &[],
     )
-    .unwrap();
-    assert_eq!(handle.status().await.unwrap().state, "locked");
-    handle
-        .unlock(rekey_vault::command::UnlockProof::Password(
-            rekey_vault::secret::SecretInput::from_slice(common::PASSWORD),
-        ))
+    .await;
+    assert_eq!(status.ok()["state"], "locked");
+    let stopped = common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::SHUTDOWN,
+        b"{}",
+        &common::proof_body(common::PASSWORD),
+    )
+    .await;
+    assert_eq!(stopped.ok()["shutdown"], true);
+    tokio::time::timeout(Duration::from_secs(5), broker.serve_task)
         .await
+        .unwrap()
+        .unwrap()
         .unwrap();
-    assert_eq!(handle.credential_list().await.unwrap().len(), 1);
-    handle
-        .shutdown(Some(rekey_vault::command::UnlockProof::Password(
-            rekey_vault::secret::SecretInput::from_slice(common::PASSWORD),
-        )))
-        .await
-        .unwrap();
-    join.join().unwrap();
 }
 
 #[tokio::test]
@@ -1122,4 +1170,69 @@ async fn retention_admin_requires_explicit_days_proof_and_rejects_agent_opcodes(
         assert_ne!(response.err_code(), "");
     }
     broker.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn admin_shutdown_requires_current_proof_in_locked_and_unlocked_states() {
+    for locked in [false, true] {
+        for recovery_factor in [false, true] {
+            let broker = common::start_broker().await;
+            let admin = broker.admin_sock();
+            common::unlock(&broker).await;
+            let recovery = common::call(
+                &admin,
+                Channel::Admin,
+                admin_msg::RECOVERY_ROTATE,
+                b"{}",
+                &common::proof_body(common::PASSWORD),
+            )
+            .await
+            .body;
+            if locked {
+                common::call(&admin, Channel::Admin, admin_msg::LOCK, b"{}", &[])
+                    .await
+                    .ok();
+            }
+            let mut wrong_recovery = Vec::new();
+            ipc::encode_proof_body(
+                ProofKind::Recovery,
+                b"invalid-recovery",
+                &mut wrong_recovery,
+            );
+            for (body, code) in [
+                (Vec::new(), "AUTHENTICATION_FAILED"),
+                (
+                    common::proof_body(b"incorrect"),
+                    "INVALID_UNLOCK_CREDENTIAL",
+                ),
+                (wrong_recovery, "INVALID_UNLOCK_CREDENTIAL"),
+            ] {
+                let reply =
+                    common::call(&admin, Channel::Admin, admin_msg::SHUTDOWN, b"{}", &body).await;
+                assert_eq!(reply.err_code(), code);
+                assert!(!broker.serve_task.is_finished());
+                let status =
+                    common::call(&admin, Channel::Admin, admin_msg::STATUS, b"{}", &[]).await;
+                assert_eq!(
+                    status.ok()["state"],
+                    if locked { "locked" } else { "unlocked" }
+                );
+            }
+            let mut body = Vec::new();
+            let (kind, proof) = if recovery_factor {
+                (ProofKind::Recovery, recovery.as_slice())
+            } else {
+                (ProofKind::Password, common::PASSWORD)
+            };
+            ipc::encode_proof_body(kind, proof, &mut body);
+            let reply =
+                common::call(&admin, Channel::Admin, admin_msg::SHUTDOWN, b"{}", &body).await;
+            assert_eq!(reply.ok()["shutdown"], true);
+            tokio::time::timeout(Duration::from_secs(5), broker.serve_task)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        }
+    }
 }

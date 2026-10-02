@@ -29,6 +29,8 @@ use crate::ipc::frame::{FrameIoError, IncomingFrame, read_frame, write_error, wr
 use crate::runtime::BrokerCtx;
 use crate::session::CreateSessionError;
 
+type AdminResponse = (Vec<u8>, Zeroizing<Vec<u8>>);
+
 const ADMIN_MUTATION_TIMEOUT: Duration = Duration::from_secs(25);
 
 mod audit_query;
@@ -185,7 +187,6 @@ pub async fn handle_admin_conn(
         let write_response = async {
             match response {
                 Ok((metadata, body)) => {
-                    let body = Zeroizing::new(body);
                     write_ok(&mut stream, Channel::Admin, request_id, &metadata, &body).await
                 }
                 Err(err) => {
@@ -219,10 +220,7 @@ pub async fn handle_admin_conn(
 }
 
 #[cfg(feature = "lab")]
-async fn dispatch(
-    frame: &IncomingFrame,
-    ctx: &BrokerCtx,
-) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
+async fn dispatch(frame: &IncomingFrame, ctx: &BrokerCtx) -> Result<AdminResponse, BrokerError> {
     let deadline = admin_mutation_deadline();
     let managed = ipc::managed_admin_operation(frame.header.message_type)?;
     if !managed {
@@ -249,10 +247,7 @@ async fn dispatch(
 }
 
 #[cfg(not(feature = "lab"))]
-async fn dispatch(
-    frame: &IncomingFrame,
-    ctx: &BrokerCtx,
-) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
+async fn dispatch(frame: &IncomingFrame, ctx: &BrokerCtx) -> Result<AdminResponse, BrokerError> {
     if frame.body.starts_with(b"RKAU") {
         return Err(BrokerError::Frame(ipc::FrameError::InvalidField));
     }
@@ -264,7 +259,7 @@ async fn dispatch_operation(
     ctx: &BrokerCtx,
     #[cfg(feature = "lab")] admission: Option<&crate::oidc_admin::Admission>,
     request_deadline: tokio::time::Instant,
-) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
+) -> Result<AdminResponse, BrokerError> {
     match frame.header.message_type {
         #[cfg(feature = "lab")]
         admin_msg::OIDC_LOGIN_BEGIN => {
@@ -275,7 +270,7 @@ async fn dispatch_operation(
                 .oidc_admin
                 .as_ref()
                 .ok_or(BrokerError::Denied("OIDC profile is not enabled"))?;
-            Ok((json(&manager.begin()?)?, Vec::new()))
+            Ok((json(&manager.begin()?)?, Zeroizing::new(Vec::new())))
         }
         #[cfg(feature = "lab")]
         admin_msg::OIDC_LOGIN_FINISH | admin_msg::OIDC_LOGIN_CANCEL => {
@@ -289,11 +284,14 @@ async fn dispatch_operation(
                 .ok_or(BrokerError::Denied("OIDC profile is not enabled"))?;
             if frame.header.message_type == admin_msg::OIDC_LOGIN_CANCEL {
                 manager.cancel(&flow.flow_id)?;
-                Ok((json(&serde_json::json!({"cancelled":true}))?, Vec::new()))
+                Ok((
+                    json(&serde_json::json!({"cancelled":true}))?,
+                    Zeroizing::new(Vec::new()),
+                ))
             } else {
                 ctx.lifecycle.reject_if_not_running()?;
                 let (response, token) = manager.finish(&flow.flow_id, ctx).await?;
-                Ok((json(&response)?, token.to_vec()))
+                Ok((json(&response)?, token))
             }
         }
         #[cfg(feature = "lab")]
@@ -303,7 +301,10 @@ async fn dispatch_operation(
                 .oidc_admin
                 .as_ref()
                 .ok_or(BrokerError::Denied("OIDC profile is not enabled"))?;
-            Ok((json(&manager.logout(&frame.body, ctx).await?)?, Vec::new()))
+            Ok((
+                json(&manager.logout(&frame.body, ctx).await?)?,
+                Zeroizing::new(Vec::new()),
+            ))
         }
         #[cfg(feature = "lab")]
         admin_msg::METRICS => {
@@ -312,7 +313,7 @@ async fn dispatch_operation(
                 ctx.sessions.active_count(crate::now_ts()?),
                 ctx.sessions.in_flight_total(),
             );
-            Ok((json(&snapshot)?, Vec::new()))
+            Ok((json(&snapshot)?, Zeroizing::new(Vec::new())))
         }
         admin_msg::DESKTOP_REMEMBER => {
             let deadline = request_deadline;
@@ -324,10 +325,7 @@ async fn dispatch_operation(
                 .authority
                 .desktop_remember(proof_from(kind, proof), Some(deadline.into_std()))
                 .await?;
-            Ok((
-                json(&serde_json::json!({"expires_at_ms": expires}))?,
-                key.to_vec(),
-            ))
+            Ok((json(&serde_json::json!({"expires_at_ms": expires}))?, key))
         }
         admin_msg::DESKTOP_RESUME => {
             empty_meta(frame)?;
@@ -338,7 +336,7 @@ async fn dispatch_operation(
                 json(
                     &serde_json::json!({"expires_at_ms": expires,"lease_recovery":lease_recovery}),
                 )?,
-                token.to_vec(),
+                token,
             ))
         }
         admin_msg::DESKTOP_LOGIN => {
@@ -353,7 +351,7 @@ async fn dispatch_operation(
                 json(
                     &serde_json::json!({"expires_in_seconds": 7 * 24 * 60 * 60,"lease_recovery":lease_recovery}),
                 )?,
-                token.to_vec(),
+                token,
             ))
         }
         admin_msg::DESKTOP_ADD => {
@@ -377,24 +375,24 @@ async fn dispatch_operation(
                 ),
             )
             .await?;
-            Ok((json(&result)?, Vec::new()))
+            Ok((json(&result)?, Zeroizing::new(Vec::new())))
         }
         admin_msg::DESKTOP_REVEAL => {
             let deadline = request_deadline;
             let reference: ipc::CredentialRefMeta = meta(frame)?;
-            let (_, token) = ipc::parse_proof_body(&frame.body)?;
+            let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
             let _owner = ctx.lifecycle.coordinate_until(deadline).await?;
             ctx.lifecycle.reject_if_not_running()?;
             let value = authority_until(
                 deadline,
                 ctx.authority.desktop_reveal(
-                    SecretInput::from_slice(token),
+                    proof_from(kind, proof),
                     reference.credential_id,
                     Some(deadline.into_std()),
                 ),
             )
             .await?;
-            Ok((b"{}".to_vec(), value.to_vec()))
+            Ok((b"{}".to_vec(), value))
         }
         admin_msg::STATUS | admin_msg::PASSIVE_STATUS => {
             empty_request(frame)?;
@@ -412,7 +410,7 @@ async fn dispatch_operation(
                 sessions_active: ctx.sessions.active_count(crate::now_ts()?),
                 lease_journal: ctx.executor.lease_journal_status().await?,
             };
-            Ok((json(&response)?, Vec::new()))
+            Ok((json(&response)?, Zeroizing::new(Vec::new())))
         }
         admin_msg::UNLOCK_PASSWORD => {
             empty_meta(frame)?;
@@ -423,7 +421,7 @@ async fn dispatch_operation(
                     unlocked: true,
                     lease_recovery,
                 })?,
-                Vec::new(),
+                Zeroizing::new(Vec::new()),
             ))
         }
         admin_msg::UNLOCK_RECOVERY => {
@@ -435,7 +433,7 @@ async fn dispatch_operation(
                     unlocked: true,
                     lease_recovery,
                 })?,
-                Vec::new(),
+                Zeroizing::new(Vec::new()),
             ))
         }
         admin_msg::KEY_ROTATE_VRK => password_lifecycle::handle_vrk_rotate(frame, ctx).await,
@@ -470,7 +468,7 @@ async fn dispatch_operation(
                 ),
             )
             .await?;
-            Ok((json(&metadata)?, Vec::new()))
+            Ok((json(&metadata)?, Zeroizing::new(Vec::new())))
         }
         admin_msg::CREDENTIAL_LIST => {
             empty_request(frame)?;
@@ -478,7 +476,7 @@ async fn dispatch_operation(
             let credentials = ctx.authority.credential_list().await?;
             Ok((
                 json(&ipc::CredentialListResponse { credentials })?,
-                Vec::new(),
+                Zeroizing::new(Vec::new()),
             ))
         }
         admin_msg::CREDENTIAL_ROTATE => {
@@ -498,7 +496,7 @@ async fn dispatch_operation(
                 ),
             )
             .await?;
-            Ok((json(&metadata)?, Vec::new()))
+            Ok((json(&metadata)?, Zeroizing::new(Vec::new())))
         }
         admin_msg::CREDENTIAL_ROTATE_GITHUB_APP => github::handle_rotate(frame, ctx).await,
         admin_msg::GITHUB_WEBHOOK_APPLY => github::handle_webhook(frame, ctx).await,
@@ -553,7 +551,7 @@ async fn dispatch_operation(
             )
             .await?;
             ctx.sessions.revoke_by_actions(&action_ids);
-            Ok((json(&metadata)?, Vec::new()))
+            Ok((json(&metadata)?, Zeroizing::new(Vec::new())))
         }
         admin_msg::ACTION_CREATE | admin_msg::ACTION_UPDATE => {
             let deadline = request_deadline;
@@ -580,7 +578,7 @@ async fn dispatch_operation(
                 ),
             )
             .await?;
-            Ok((json(&action)?, Vec::new()))
+            Ok((json(&action)?, Zeroizing::new(Vec::new())))
         }
         admin_msg::ACTION_DISABLE => {
             let deadline = request_deadline;
@@ -598,13 +596,19 @@ async fn dispatch_operation(
             )
             .await?;
             ctx.sessions.revoke_by_actions(&[ref_meta.action_id]);
-            Ok((json(&serde_json::json!({"disabled": true}))?, Vec::new()))
+            Ok((
+                json(&serde_json::json!({"disabled": true}))?,
+                Zeroizing::new(Vec::new()),
+            ))
         }
         admin_msg::ACTION_LIST => {
             empty_request(frame)?;
             let _owner = ctx.lifecycle.coordinate().await;
             let actions = ctx.authority.action_list().await?;
-            Ok((json(&ipc::ActionListResponse { actions })?, Vec::new()))
+            Ok((
+                json(&ipc::ActionListResponse { actions })?,
+                Zeroizing::new(Vec::new()),
+            ))
         }
         admin_msg::SESSION_CREATE => {
             let deadline = request_deadline;
@@ -739,7 +743,7 @@ async fn dispatch_operation(
                 expires_at_ms,
                 max_uses,
             };
-            Ok((json(&response)?, Vec::new()))
+            Ok((json(&response)?, Zeroizing::new(Vec::new())))
         }
         admin_msg::POLICY_ACTIVATE => {
             let deadline = request_deadline;
@@ -747,7 +751,10 @@ async fn dispatch_operation(
             let metadata: ipc::PolicyActivateMeta = meta(frame)?;
             ctx.activate_policy_until(metadata, proof_from(kind, proof), deadline)
                 .await?;
-            Ok((json(&ctx.policy_status().await?)?, Vec::new()))
+            Ok((
+                json(&ctx.policy_status().await?)?,
+                Zeroizing::new(Vec::new()),
+            ))
         }
         admin_msg::POLICY_TRUST_INSTALL => {
             let deadline = request_deadline;
@@ -755,13 +762,16 @@ async fn dispatch_operation(
             let trust = rekey_policy::parse_policy_trust(&frame.metadata)?;
             ctx.install_policy_trust_until(trust, proof_from(kind, proof), deadline)
                 .await?;
-            Ok((json(&ctx.policy_status().await?)?, Vec::new()))
+            Ok((
+                json(&ctx.policy_status().await?)?,
+                Zeroizing::new(Vec::new()),
+            ))
         }
         admin_msg::POLICY_STATUS => {
             empty_request(frame)?;
             let _owner = ctx.lifecycle.coordinate().await;
             let response = ctx.policy_status().await?;
-            Ok((json(&response)?, Vec::new()))
+            Ok((json(&response)?, Zeroizing::new(Vec::new())))
         }
         admin_msg::APPROVAL_ORIGIN => {
             empty_request(frame)?;
@@ -773,7 +783,7 @@ async fn dispatch_operation(
                 algorithm: "ed25519".to_owned(),
                 public_key: data_encoding::HEXLOWER.encode(&public_key),
             };
-            Ok((json(&response)?, Vec::new()))
+            Ok((json(&response)?, Zeroizing::new(Vec::new())))
         }
         admin_msg::APPROVAL_PENDING => {
             empty_request(frame)?;
@@ -791,7 +801,7 @@ async fn dispatch_operation(
                     .map(ipc::ApprovalPendingItem::from_challenge)
                     .collect(),
             };
-            Ok((json(&response)?, Vec::new()))
+            Ok((json(&response)?, Zeroizing::new(Vec::new())))
         }
         admin_msg::APPROVAL_GET => {
             if !frame.body.is_empty() {
@@ -808,7 +818,7 @@ async fn dispatch_operation(
                 .approval_challenge(get.approval_request_id, crate::now_ts()?)
                 .map_err(|error| BrokerError::Denied(error.code()))?;
             let envelope = ctx.executor.sign_challenge_envelope(challenge).await?;
-            Ok((json(&envelope)?, Vec::new()))
+            Ok((json(&envelope)?, Zeroizing::new(Vec::new())))
         }
         admin_msg::SESSION_REVOKE => {
             let deadline = request_deadline;
@@ -836,7 +846,10 @@ async fn dispatch_operation(
                 return Err(err.into());
             }
             reject_if_deadline_elapsed(deadline)?;
-            Ok((json(&serde_json::json!({"revoked": existed}))?, Vec::new()))
+            Ok((
+                json(&serde_json::json!({"revoked": existed}))?,
+                Zeroizing::new(Vec::new()),
+            ))
         }
         admin_msg::BACKUP => {
             ctx.lifecycle.reject_if_not_running()?;
@@ -856,23 +869,28 @@ async fn dispatch_operation(
                 output_path: info.output_path.display().to_string(),
                 snapshot_cut: info.snapshot_cut,
             };
-            Ok((json(&receipt)?, Vec::new()))
+            Ok((json(&receipt)?, Zeroizing::new(Vec::new())))
         }
         admin_msg::LOCK => {
             empty_request(frame)?;
             ctx.drain_lock("admin").await?;
-            Ok((json(&serde_json::json!({"locked": true}))?, Vec::new()))
+            Ok((
+                json(&serde_json::json!({"locked": true}))?,
+                Zeroizing::new(Vec::new()),
+            ))
         }
         admin_msg::SHUTDOWN => {
             empty_meta(frame)?;
-            let proof = if frame.body.is_empty() {
-                None
-            } else {
-                let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
-                Some(proof_from(kind, proof))
-            };
+            if frame.body.is_empty() {
+                return Err(BrokerError::Authority(AuthorityError::AuthenticationFailed));
+            }
+            let (kind, bytes) = ipc::parse_proof_body(&frame.body)?;
+            let proof = proof_from(kind, bytes);
             ctx.request_admin_shutdown(proof).await?;
-            Ok((json(&serde_json::json!({"shutdown": true}))?, Vec::new()))
+            Ok((
+                json(&serde_json::json!({"shutdown": true}))?,
+                Zeroizing::new(Vec::new()),
+            ))
         }
         _ => Err(BrokerError::Frame(
             rekey_domain::ipc::FrameError::InvalidField,
@@ -1006,6 +1024,41 @@ fn ensure_credential_catalog_fits(
 mod tests {
     use super::*;
     use rekey_domain::ids::CredentialId;
+
+    #[tokio::test]
+    async fn proofless_shutdown_rejects_before_waiting_on_any_coordinator() {
+        let (_dir, ctx, join, terminal) = crate::runtime::tests::oidc_test_ctx().await;
+        let owner = ctx.lifecycle.coordinate().await;
+        ctx.lifecycle.enter_draining();
+        let request = IncomingFrame {
+            header: ipc::FrameHeader {
+                channel: Channel::Admin,
+                flags: 0,
+                message_type: admin_msg::SHUTDOWN,
+                request_id: rekey_domain::ids::RequestId::new_random(),
+                metadata_len: 2,
+                body_len: 0,
+            },
+            metadata: b"{}".to_vec(),
+            body: Zeroizing::new(Vec::new()),
+        };
+        let response = tokio::time::timeout(Duration::from_millis(100), dispatch(&request, &ctx))
+            .await
+            .unwrap();
+        assert_eq!(response.unwrap_err().code(), "AUTHENTICATION_FAILED");
+        assert!(!ctx.shutdown_requested());
+        assert_eq!(
+            ctx.lifecycle.phase(),
+            crate::lifecycle::BrokerPhase::Draining
+        );
+        assert!(!ctx.lifecycle.try_begin_remote_effect());
+        drop(owner);
+        ctx.authority.lock("test-cleanup").await.unwrap();
+        ctx.authority.shutdown(None).await.unwrap();
+        drop(ctx);
+        terminal.await.unwrap();
+        join.join().unwrap();
+    }
 
     #[tokio::test]
     #[cfg(feature = "lab")]

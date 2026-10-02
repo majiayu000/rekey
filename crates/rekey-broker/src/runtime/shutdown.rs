@@ -14,14 +14,14 @@ const FINALIZE_GRACE: Duration = Duration::from_secs(5);
 
 pub(super) enum StopCommand {
     Admin {
-        proof: Option<UnlockProof>,
+        proof: UnlockProof,
         reply: tokio::sync::oneshot::Sender<Result<(), BrokerError>>,
     },
     Fault,
 }
 
 pub(super) enum StopCause {
-    Admin(Option<UnlockProof>),
+    Admin(UnlockProof),
     Signal,
     Fault,
 }
@@ -41,10 +41,6 @@ fn remember(first: &mut Option<BrokerError>, error: BrokerError) {
     if first.is_none() {
         *first = Some(error);
     }
-}
-
-fn admin_requires_proof(status_state: Option<&str>) -> bool {
-    !matches!(status_state, Some("locked" | "faulted"))
 }
 
 async fn wait_in_flight_until(ctx: &BrokerCtx, deadline: tokio::time::Instant) {
@@ -71,6 +67,11 @@ impl BrokerCtx {
         let owner = match tokio::time::timeout_at(stop_deadline, self.lifecycle.coordinate()).await
         {
             Ok(owner) => owner,
+            Err(_) if matches!(&cause, StopCause::Admin(_)) => {
+                return StopDisposition::Rejected(BrokerError::Authority(
+                    AuthorityError::AuthorityBusy,
+                ));
+            }
             Err(_) => {
                 self.publish_shutdown();
                 if completed_execution.is_none() {
@@ -104,36 +105,36 @@ impl BrokerCtx {
             }
         };
 
-        let terminal_failure_already_faulted = terminal_audit_failed
-            && status
-                .as_ref()
-                .is_some_and(|status| status.state == "faulted");
-        if let StopCause::Admin(proof) = cause
-            && admin_requires_proof(status.as_ref().map(|status| status.state))
-            && !terminal_failure_already_faulted
-        {
-            let Some(proof) = proof else {
-                self.lifecycle.resume_remote_effect_admission_if_running();
-                drop(owner);
-                return StopDisposition::Rejected(BrokerError::Authority(
-                    AuthorityError::AuthenticationFailed,
-                ));
-            };
-            match tokio::time::timeout_at(stop_deadline, self.authority.verify_proof(proof)).await {
+        if let StopCause::Admin(proof) = cause {
+            match tokio::time::timeout_at(
+                stop_deadline,
+                self.authority.verify_shutdown_proof(proof),
+            )
+            .await
+            {
                 Ok(Ok(())) => {}
                 Ok(Err(err)) => {
-                    self.lifecycle.resume_remote_effect_admission_if_running();
+                    // Authentication failure never authorizes stopping. A worker
+                    // fault is routed separately through the internal fault path.
+                    if matches!(
+                        err,
+                        AuthorityError::Faulted
+                            | AuthorityError::AuditCommitFailed
+                            | AuthorityError::StorageIntegrityFailed
+                    ) {
+                        self.request_fault();
+                    }
                     drop(owner);
                     return StopDisposition::Rejected(BrokerError::Authority(err));
                 }
                 Err(_) => {
-                    self.lifecycle.resume_remote_effect_admission_if_running();
                     drop(owner);
                     return StopDisposition::Rejected(BrokerError::Authority(
-                        AuthorityError::Faulted,
+                        AuthorityError::AuthorityBusy,
                     ));
                 }
             }
+            self.lifecycle.mark_stop_pending();
         }
 
         if self.lifecycle.phase() == BrokerPhase::Running {
@@ -250,13 +251,88 @@ impl BrokerCtx {
 
 #[cfg(test)]
 mod tests {
-    use super::admin_requires_proof;
+    use super::*;
+    use rekey_vault::secret::SecretInput;
 
-    #[test]
-    fn only_a_positively_safe_authority_state_allows_proofless_admin_stop() {
-        assert!(!admin_requires_proof(Some("locked")));
-        assert!(!admin_requires_proof(Some("faulted")));
-        assert!(admin_requires_proof(Some("unlocked")));
-        assert!(admin_requires_proof(None));
+    #[tokio::test]
+    async fn rejected_admin_stop_never_publishes_aborts_or_reopens_another_drain() {
+        for blocked in [false, true] {
+            for draining in [false, true] {
+                let (_dir, ctx, join, terminal) = crate::runtime::tests::oidc_test_ctx().await;
+                if draining {
+                    ctx.lifecycle.enter_draining();
+                }
+                let owner = if blocked {
+                    Some(ctx.lifecycle.coordinate().await)
+                } else {
+                    None
+                };
+                let mut execution = tokio::spawn(std::future::pending::<Result<(), BrokerError>>());
+                let outcome = ctx
+                    .central_stop(
+                        StopCause::Admin(UnlockProof::Password(SecretInput::from_slice(b"wrong"))),
+                        tokio::time::Instant::now() + Duration::from_millis(40),
+                        &mut execution,
+                        None,
+                    )
+                    .await;
+                let StopDisposition::Rejected(error) = outcome else {
+                    panic!("Admin must be rejected")
+                };
+                assert_eq!(
+                    error.code(),
+                    if blocked {
+                        "AUTHORITY_BUSY"
+                    } else {
+                        "INVALID_UNLOCK_CREDENTIAL"
+                    }
+                );
+                assert!(!ctx.shutdown_requested());
+                assert!(!execution.is_finished());
+                assert_eq!(
+                    ctx.lifecycle.phase(),
+                    if draining {
+                        BrokerPhase::Draining
+                    } else {
+                        BrokerPhase::Running
+                    }
+                );
+                assert_eq!(ctx.lifecycle.try_begin_remote_effect(), !draining);
+                drop(owner);
+                ctx.authority.lock("test-cleanup").await.unwrap();
+                ctx.authority.shutdown(None).await.unwrap();
+                execution.abort();
+                let _ = execution.await;
+                drop(ctx);
+                terminal.await.unwrap();
+                join.join().unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn signal_and_fault_coordinator_timeouts_still_stop() {
+        for cause in [StopCause::Signal, StopCause::Fault] {
+            let (_dir, ctx, join, terminal) = crate::runtime::tests::oidc_test_ctx().await;
+            let owner = ctx.lifecycle.coordinate().await;
+            let mut execution = tokio::spawn(std::future::pending::<Result<(), BrokerError>>());
+            let outcome = ctx
+                .central_stop(
+                    cause,
+                    tokio::time::Instant::now() + Duration::from_millis(20),
+                    &mut execution,
+                    None,
+                )
+                .await;
+            assert!(matches!(outcome, StopDisposition::Stopped(Some(_))));
+            assert!(ctx.shutdown_requested());
+            assert!(execution.await.unwrap_err().is_cancelled());
+            drop(owner);
+            ctx.authority.lock("test-cleanup").await.unwrap();
+            ctx.authority.shutdown(None).await.unwrap();
+            drop(ctx);
+            terminal.await.unwrap();
+            join.join().unwrap();
+        }
     }
 }

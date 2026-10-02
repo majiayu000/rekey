@@ -791,7 +791,9 @@ async fn direct_terminal_commit_failure_reaches_tracker_and_fails_shutdown() {
         &common::proof_body(common::PASSWORD),
     )
     .await;
-    assert_eq!(shutdown.err_code(), "AUDIT_COMMIT_FAILED");
+    // A faulted worker cannot authenticate Admin stop. The separate internal
+    // fault route must still stop with the sticky terminal audit error.
+    assert_eq!(shutdown.err_code(), "FAULTED");
     tokio::time::timeout(Duration::from_secs(5), broker.serve_task)
         .await
         .expect("broker stops after failed shutdown response")

@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use crate::command::{AuthorityCommand, StatusInfo};
+use crate::command::{AuthorityCommand, StatusInfo, UnlockProof};
 use crate::error::AuthorityError;
 use crate::model::{event_type, outcome};
 use crate::now_ms;
@@ -171,20 +171,24 @@ impl Worker {
                 let _ = reply.send(result);
             }
             AuthorityCommand::DesktopReveal {
-                token,
+                proof,
                 credential_id,
                 not_after,
                 reply,
             } => {
+                let reason = match &proof {
+                    UnlockProof::Password(_) => "step-up-password",
+                    UnlockProof::Recovery(_) => "step-up-recovery",
+                };
                 let result = ensure_mutation_current(not_after)
-                    .and_then(|_| self.verify_desktop(&token))
+                    .and_then(|_| self.verify_proof(&proof))
                     .and_then(|_| {
                         let record = self.load_verified_credential(credential_id)?;
                         let audit = credential_audit(
                             "credential.reveal_started",
                             credential_id,
                             record.current_version,
-                            "desktop-session",
+                            reason,
                         );
                         self.append_audit(audit)?;
                         ensure_mutation_current(not_after)?;
@@ -195,7 +199,7 @@ impl Worker {
                             "credential.revealed",
                             credential_id,
                             record.current_version,
-                            "desktop-session",
+                            reason,
                         ))?;
                         Ok(value)
                     });
@@ -286,6 +290,11 @@ impl Worker {
                 }
                 let _ = reply.send(result);
                 return ok;
+            }
+            AuthorityCommand::VerifyShutdownProof { proof, reply } => {
+                let result = self.verify_shutdown_proof(&proof);
+                let result = self.fault_on_integrity(result);
+                let _ = reply.send(result);
             }
             AuthorityCommand::VerifyProof { proof, reply } => {
                 let result = self

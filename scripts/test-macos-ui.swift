@@ -88,9 +88,13 @@ struct UIContract {
         let restore = CLI(binary: binary, stateDirectory: root.appendingPathComponent("restored").path)
         _ = try restore.run(["restore", "--input", backup.path, "--sha256", receipt["sha256_hex"] as! String, "--password-stdin"], input: password + "\n")
         _ = try client.run(["audit", "export", "--output", root.appendingPathComponent("audit.jsonl").path])
+        let currentValue = try client.revealCredential(usable.id, proof: password, recovery: false)
+        try require(currentValue == Data(second.utf8), "current value requires per-call proof through real CLI")
         _ = try client.run(["lock"])
         try denied({ _ = try client.run(["credential", "add", "blocked", "--stdin-secrets"], input: password + "\n" + secret + "\n") }, "locked mutation denied")
         _ = try client.decode(AuditPage.self, ["audit", "list"])
+        try denied({ _ = try client.run(["shutdown"]) }, "locked shutdown without proof denied")
+        _ = try client.run(["shutdown", "--password-stdin"], input: password + "\n")
 
         let privateFile = root.appendingPathComponent("private-result.txt")
         try writePrivateNew(Data("synthetic receipt".utf8), to: privateFile)
@@ -436,6 +440,50 @@ struct UIContract {
         try require(!model.finishApprovalReview(.success(details), revision:currentReview, workspace:reviewWorkspace, active:false) && model.approvalDetails == nil, "inactive read success cannot show details")
         try require(!model.finishApprovalReview(.failure(UIError(message:"INACTIVE-FAILURE")), revision:currentReview, workspace:reviewWorkspace, active:false) && model.error == "CURRENT-CONTEXT", "inactive read failure cannot show obsolete error")
         try require(model.finishApprovalReview(.failure(UIError(message:"CURRENT-FAILURE")), revision:currentReview, workspace:reviewWorkspace, active:true) && model.error == "CURRENT-FAILURE", "current read failure preserves actual cause")
+
+        let revealID = UUID().uuidString.lowercased()
+        model.selectedCredential = revealID
+        model.desktopToken = "SYNTHETIC-DESKTOP-TOKEN"
+        model.requestRevealCredential(revealID, copy: false)
+        guard let revealOperation = model.operation, let reveal = revealOperation.reveal else { throw UIError(message: "missing reveal proof operation") }
+        try require(revealOperation.proof && revealOperation.arguments == ["desktop-reveal", revealID], "reveal always queues per-call proof")
+        try require(model.visibleSecret == nil && !model.busy, "request alone neither reveals nor starts CLI")
+        model.operation = nil
+        try require(model.finishCredentialReveal(.success(Data("REVEAL-CANARY".utf8)), request: reveal, active: true) && model.visibleSecret == "REVEAL-CANARY" && model.result == nil, "current reveal stays out of generic result sheet")
+        model.requestRevealCredential(revealID, copy: true)
+        try require(model.operation?.proof == true && model.operation?.reveal?.copy == true && model.visibleSecret == nil, "copy requires new proof after successful reveal")
+        model.clearNativeFlow()
+        try require(model.operation == nil, "focus loss dismisses invalidated reveal proof form")
+        model.requestRevealCredential(revealID, copy: false)
+        try require(model.operation?.reveal?.revision == model.nativeFlowRevision, "fresh reveal after focus change captures current revision")
+        try require(!model.finishCredentialReveal(.success(Data("INACTIVE-CANARY".utf8)), request: reveal, active: false), "inactive reveal cannot publish")
+        model.selectedCredential = UUID().uuidString.lowercased()
+        model.selectedCredential = revealID
+        try require(!model.finishCredentialReveal(.success(Data("STALE-CANARY".utf8)), request: reveal, active: true) && model.visibleSecret == nil, "switching away and back invalidates old reveal")
+        model.requestRevealCredential(revealID, copy: false)
+        let currentReveal = model.operation!.reveal!
+        model.stateDirectory = root.appendingPathComponent("reveal-other-state").path
+        try require(!model.finishCredentialReveal(.failure(UIError(message:"STALE-ERROR")), request: currentReveal, active: true), "old workspace reveal error is discarded")
+        model.requestRevealCredential(revealID, copy: false)
+        let lockedReveal = model.operation!.reveal!
+        model.status = ServiceStatus(state:"locked",format_version:15,runtime_version:"fixture",sessions_active:0, peer_security: "L1-dev", lab_enabled: false)
+        try require(!model.finishCredentialReveal(.success(Data("LOCKED-CANARY".utf8)), request: lockedReveal, active: true), "locked reveal cannot publish")
+        model.requestShutdown()
+        try require(model.operation?.arguments == ["shutdown"] && model.operation?.proof == true, "locked shutdown requests proof")
+        model.status = ServiceStatus(state:"unlocked",format_version:15,runtime_version:"fixture",sessions_active:0, peer_security: "L1-dev", lab_enabled: false)
+        model.requestShutdown()
+        try require(model.operation?.arguments == ["shutdown"] && model.operation?.proof == true, "unlocked shutdown requests proof")
+
+        let revealFixture = root.appendingPathComponent("reveal-cli")
+        try Data("#!/usr/bin/python3\nimport json,sys\nprint(json.dumps({'args':sys.argv[1:],'body':sys.stdin.read()}))\n".utf8).write(to: revealFixture)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: revealFixture.path)
+        let revealClient = CLI(binary: revealFixture, stateDirectory: root.path)
+        for recovery in [false, true] {
+            let response = try revealClient.revealCredential(revealID, proof: "PROOF-CANARY", recovery: recovery)
+            let captured = try JSONSerialization.jsonObject(with: response) as! [String: Any]
+            let expected = ["--state-dir", root.path, "desktop-reveal", revealID, "--password-stdin"] + (recovery ? ["--recovery"] : [])
+            try require(captured["args"] as? [String] == expected && captured["body"] as? String == "PROOF-CANARY\n", "reveal proof uses exact stdin and factor flag")
+        }
         print("PASS: \(assertions) native file/process/lifecycle assertions; exact snapshots, private new-only output, anonymous stdin, one-shot argv, non2xx/binary boundaries, typed failures, no retry, cleanup and stale-result rejection. No Broker authorization or GUI click claim.")
     }
 

@@ -171,17 +171,6 @@ impl Lifecycle {
             .store(REMOTE_EFFECT_STOP_PENDING, Ordering::SeqCst);
     }
 
-    /// Only a rejected stop may resume the current Running epoch. Its caller
-    /// holds the lifecycle coordinator, so no drain transition can race this.
-    pub(crate) fn resume_remote_effect_admission_if_running(&self) {
-        let restored = if self.phase() == BrokerPhase::Running {
-            REMOTE_EFFECT_OPEN
-        } else {
-            REMOTE_EFFECT_CLOSED
-        };
-        self.remote_effect_gate.store(restored, Ordering::SeqCst);
-    }
-
     pub fn signal_cancel(&self) {
         let _ = self.cancel_tx.send(true);
     }
@@ -196,29 +185,6 @@ impl Default for Lifecycle {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn rejected_stop_reopens_remote_effects_only_while_running() {
-        let lifecycle = Lifecycle::new();
-        lifecycle.enter_running().unwrap();
-        lifecycle.close_remote_effect_admission();
-        lifecycle.resume_remote_effect_admission_if_running();
-        assert!(lifecycle.try_begin_remote_effect());
-
-        lifecycle.mark_stop_pending();
-        lifecycle.close_remote_effect_admission();
-        assert_eq!(lifecycle.enter_running().unwrap_err().code(), "DRAINING");
-        assert!(!lifecycle.try_begin_remote_effect());
-        lifecycle.resume_remote_effect_admission_if_running();
-        assert!(lifecycle.try_begin_remote_effect());
-
-        lifecycle.enter_locked();
-        lifecycle.mark_stop_pending();
-        lifecycle.resume_remote_effect_admission_if_running();
-        assert!(!lifecycle.try_begin_remote_effect());
-        lifecycle.enter_running().unwrap();
-        assert!(lifecycle.try_begin_remote_effect());
-    }
 
     #[tokio::test]
     async fn bounded_coordinator_wait_does_not_acquire_later() {

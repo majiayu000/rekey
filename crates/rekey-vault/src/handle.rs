@@ -243,12 +243,12 @@ impl AuthorityHandle {
     }
     pub async fn desktop_reveal(
         &self,
-        token: SecretInput,
+        proof: UnlockProof,
         credential_id: CredentialId,
         not_after: Option<std::time::Instant>,
     ) -> Result<Zeroizing<Vec<u8>>, AuthorityError> {
         call!(self, |reply| AuthorityCommand::DesktopReveal {
-            token,
+            proof,
             credential_id,
             not_after,
             reply
@@ -276,6 +276,14 @@ impl AuthorityHandle {
 
     pub async fn shutdown(&self, proof: Option<UnlockProof>) -> Result<(), AuthorityError> {
         call!(self, |reply| AuthorityCommand::Shutdown { proof, reply })
+    }
+
+    /// Authenticate an Admin stop in Locked or Unlocked state without unlocking.
+    pub async fn verify_shutdown_proof(&self, proof: UnlockProof) -> Result<(), AuthorityError> {
+        call!(self, |reply| AuthorityCommand::VerifyShutdownProof {
+            proof,
+            reply
+        })
     }
 
     pub async fn verify_proof(&self, proof: UnlockProof) -> Result<(), AuthorityError> {

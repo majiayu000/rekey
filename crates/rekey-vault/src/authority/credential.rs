@@ -2,7 +2,6 @@ use rekey_domain::credential::{
     CredentialKind, CredentialLabel, CredentialMetadata, CredentialState, VersionState,
 };
 use rekey_domain::ids::CredentialId;
-use zeroize::Zeroizing;
 
 use super::{VaultState, Worker, credential_audit, ensure_mutation_current, unlock_audit};
 use crate::command::UnlockProof;
@@ -159,10 +158,10 @@ impl Worker {
             .encode();
             let dek_bytes = aead::open(old_vrk, &dek_aad, &version.dek_nonce, &version.wrapped_dek)
                 .map_err(|_| AuthorityError::CryptoFailure)?;
-            let old_dek = Zeroizing::new(
-                <[u8; 32]>::try_from(dek_bytes.as_slice())
-                    .map_err(|_| AuthorityError::CryptoFailure)?,
-            );
+            let mut old_dek_bytes = <[u8; 32]>::try_from(dek_bytes.as_slice())
+                .map_err(|_| AuthorityError::CryptoFailure)?;
+            let old_dek = DataKey::from_bytes(&mut old_dek_bytes);
+            drop(dek_bytes);
             let payload_aad = AadV1 {
                 purpose: AadPurpose::CredentialPayload,
                 vault_id: self.header.vault_id,
@@ -173,7 +172,7 @@ impl Worker {
             }
             .encode();
             let plaintext = aead::open(
-                &old_dek,
+                old_dek.bytes(),
                 &payload_aad,
                 &version.payload_nonce,
                 &version.encrypted_payload,
@@ -449,6 +448,7 @@ impl Worker {
             .try_into()
             .map_err(|_| AuthorityError::CryptoFailure)?;
         let dek = DataKey::from_bytes(&mut dek_arr);
+        drop(dek_bytes);
         let payload_aad = AadV1 {
             purpose: AadPurpose::CredentialPayload,
             vault_id: self.header.vault_id,

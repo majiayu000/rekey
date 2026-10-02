@@ -214,7 +214,7 @@ is required before merge.
 
 Pre-v3 behavior: human desktop current-secret reveal and API-key add use a password-authenticated 7-day Admin session (source only). Locked/stale/forged sessions and the Agent channel are denied; plaintext is returned only in Admin response bodies after durable audit commits. Verified by `scripts/test-human-vault.py` and `admin_ipc::desktop_values_use_body_and_agent_channel_cannot_reveal`. Native interaction automation for this extension remains pending.
 
-The accepted v3 target removes session-only reveal: each reveal/copy and every Admin shutdown requires per-call step-up. Implementation and fresh acceptance are tracked in `docs/superpowers/plans/2026-10-03-v3-implementation.md`; the prior checks above do not establish this target.
+The v3 M1 implementation removes session-only reveal: each reveal/copy and every Admin shutdown requires password/recovery step-up. Locked shutdown verifies the active wrapper without unlocking; a rejected proof or coordinator wait timeout cannot authorize stop. Rust Admin response bodies retain Zeroizing ownership through send/drop. Focused contracts, disposable-vault UI/CLI checks, default workspace tests and independent source review passed; presence proof and notarized-package acceptance remain pending. See `docs/superpowers/plans/2026-10-03-v3-implementation.md`.
 
 Remembered native desktop unlock can survive application and broker restart for the original seven-day window using a local Keychain restore key and an authenticated wrapped root key. Manual lock revokes it. Coverage: `authority_contract::remembered_desktop_*`, `scripts/test-human-vault.py`, and the local `scripts/test-macos-keychain.swift` process-restart/expiry contract.
 

@@ -120,6 +120,12 @@ struct CLI: Sendable {
         catch { throw UIError(message: "服务返回了无法识别的数据，请确认客户端与服务版本一致。") }
     }
 
+    func revealCredential(_ id: String, proof: String, recovery: Bool) throws -> Data {
+        var arguments = ["desktop-reveal", id, "--password-stdin"]
+        if recovery { arguments.append("--recovery") }
+        return try run(arguments, input: proof + "\n", redacting: [proof])
+    }
+
     func approvalDetails(_ id: String) throws -> ApprovalDetails {
         let data = try run(["approval", "get", id])
         let envelope: ApprovalEnvelope
@@ -305,6 +311,13 @@ enum Page: String, CaseIterable, Identifiable {
     }
 }
 
+struct CredentialReveal {
+    let id: String
+    let copy: Bool
+    let workspace: String
+    let revision: UUID
+}
+
 struct Operation: Identifiable {
     let id = UUID()
     let title: String
@@ -318,6 +331,7 @@ struct Operation: Identifiable {
     var recoveryAllowed = true
     var targetDirectory: String?
     var temporaryFile: URL?
+    var reveal: CredentialReveal?
 }
 struct ResultMessage: Identifiable {
     let id = UUID()
@@ -361,7 +375,10 @@ final class AppModel: ObservableObject {
     @Published var visibleSecret: String?
     private var desktopExpiry = Date.distantPast
     private var resumeAttempted = false
-    @Published var selectedCredential: String? { didSet { visibleSecret = nil; copiedCredential = nil } }
+    @Published var selectedCredential: String? { didSet {
+        visibleSecret = nil; copiedCredential = nil
+        if oldValue != selectedCredential { nativeFlowRevision = UUID() }
+    } }
     @Published var busy = false
     @Published var error: String?
     @Published var connectionError: String?
@@ -462,6 +479,7 @@ final class AppModel: ObservableObject {
     }
     func clearNativeFlow() {
         nativeFlowRevision = UUID(); showPolicyDraft = false; approvalDetails = nil
+        if operation?.reveal != nil { operation = nil }
     }
     func acceptsNativeCompletion(_ revision: UUID, workspace: String) -> Bool {
         revision == nativeFlowRevision && workspace == stateDirectory && unlocked
@@ -474,7 +492,7 @@ final class AppModel: ObservableObject {
     }
     var desktopReady: Bool { desktopToken != nil && Date() < desktopExpiry && unlocked }
     func requestDesktopLogin() {
-        operation = Operation(title: "解锁管理会话", detail: "验证一次后，7 天内可连续保存、查看和复制密钥，重启也能自动解锁。手动锁定会取消此授权。", arguments: ["unlock"])
+        operation = Operation(title: "解锁管理会话", detail: "验证后，7 天内可连续保存密钥。每次查看或复制密钥仍需单独验证。手动锁定会取消管理授权。", arguments: ["unlock"])
     }
     func addAPIKey(label: String, secret: String) async -> Bool {
         guard desktopReady, let token = desktopToken else { desktopToken = nil; error = "管理会话已过期，请关闭窗口并重新解锁。"; return false }
@@ -486,27 +504,45 @@ final class AppModel: ObservableObject {
             busy = false; await refresh(); return true
         } catch { rejectDesktopSession(error); self.error = error.localizedDescription; busy = false; return false }
     }
-    func revealCredential(_ id: String, copy: Bool) async {
-        guard desktopReady, let token = desktopToken else { requestDesktopLogin(); return }
-        guard !busy else { return }
+    func requestRevealCredential(_ id: String, copy: Bool) {
+        guard !busy, unlocked, selectedCredential == id else { return }
+        visibleSecret = nil; copiedCredential = nil
+        let detail = copy ? "请验证本次复制。密钥会写入系统剪贴板，并在 30 秒后清除本应用的那次写入。" : "请验证本次查看。切换条目、锁定或离开窗口后会隐藏密钥。"
+        operation = Operation(title: copy ? "复制密钥" : "显示密钥", detail: detail, arguments: ["desktop-reveal", id], reveal: CredentialReveal(id: id, copy: copy, workspace: stateDirectory, revision: nativeFlowRevision))
+    }
+    func requestShutdown() {
+        guard !busy, status != nil else { return }
+        operation = Operation(title: "停止服务", detail: "请输入当前密码或恢复密钥。正在执行的操作会按服务的退出规则收尾。", arguments: ["shutdown"])
+    }
+    private func acceptsCredentialReveal(_ request: CredentialReveal) -> Bool {
+        acceptsNativeCompletion(request.revision, workspace: request.workspace) && selectedCredential == request.id
+    }
+    private func performReveal(_ request: CredentialReveal, proof: String, recovery: Bool) async {
+        guard !busy, acceptsCredentialReveal(request), NSApp.isActive else { return }
         busy = true; error = nil
         defer { busy = false }
         let client = cli
+        let outcome = await Task.detached { Result { try client.revealCredential(request.id, proof: proof, recovery: recovery) } }.value
+        _ = finishCredentialReveal(outcome, request: request, active: NSApp.isActive)
+    }
+    @discardableResult
+    func finishCredentialReveal(_ outcome: Result<Data, Error>, request: CredentialReveal, active: Bool) -> Bool {
+        guard acceptsCredentialReveal(request), active else { return false }
         do {
-            let data = try await Task.detached { try client.run(["desktop-reveal", id], input: token + "\n") }.value
-            guard unlocked, selectedCredential == id, NSApp.isActive else { return }
+            let data = try outcome.get()
             guard let text = String(data: data, encoding: .utf8) else { throw UIError(message: "此凭证不是可显示的 UTF-8 文本。") }
-            if copy {
+            if request.copy {
                 let board = NSPasteboard.general
                 board.clearContents()
                 guard board.setString(text, forType: .string) else { throw UIError(message: "写入剪贴板失败。") }
-                copiedCredential = id
+                copiedCredential = request.id
                 let revision = board.changeCount
                 DispatchQueue.main.asyncAfter(deadline: .now() + 30) {
                     if board.changeCount == revision { board.clearContents() }
                 }
             } else { visibleSecret = text }
-        } catch { rejectDesktopSession(error); visibleSecret = nil; self.error = error.localizedDescription }
+        } catch { visibleSecret = nil; self.error = error.localizedDescription }
+        return true
     }
     func rejectDesktopSession(_ error: Error) {
         let message = error.localizedDescription
@@ -597,6 +633,10 @@ final class AppModel: ObservableObject {
         }
     }
     func perform(_ op: Operation, proof: String = "", secret: String = "", recovery: Bool = false) async {
+        if let request = op.reveal {
+            await performReveal(request, proof: proof, recovery: recovery)
+            return
+        }
         guard !busy else { return }
         busy = true; error = nil
         let client = CLI(binary: cli.binary, stateDirectory: op.targetDirectory ?? stateDirectory, adminSessionFile: oidcSessionFile)

@@ -221,7 +221,9 @@ pub(crate) fn unwrap_vrk(
         .as_slice()
         .try_into()
         .map_err(|_| AuthorityError::InvalidUnlockCredential)?;
-    Ok(RootKey::from_bytes(&mut bytes))
+    let key = RootKey::from_bytes(&mut bytes);
+    drop(plain);
+    Ok(key)
 }
 
 pub(crate) fn kek_for_wrapper(
@@ -737,6 +739,7 @@ fn prove_all_payloads(
             .try_into()
             .map_err(|_| AuthorityError::CryptoFailure)?;
         let dek = DataKey::from_bytes(&mut dek_arr);
+        drop(dek_bytes);
         let payload_aad = AadV1 {
             purpose: AadPurpose::CredentialPayload,
             vault_id,

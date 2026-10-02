@@ -179,7 +179,7 @@ impl Worker {
                 break;
             }
         }
-        // Dropping the state zeroizes the VRK through SecretBox.
+        // Dropping the state zeroizes the VRK through its key owner.
         self.desktop_session = None;
         self.state = VaultState::Locked;
     }
@@ -237,6 +237,57 @@ impl Worker {
         } else {
             Err(AuthorityError::InvalidUnlockCredential)
         }
+    }
+
+    /// Admin shutdown may authenticate a locked vault without unlocking it.
+    /// The temporary root key is dropped here; no policy/session is loaded.
+    fn verify_shutdown_proof(&mut self, proof: &UnlockProof) -> Result<(), AuthorityError> {
+        match self.state {
+            VaultState::Faulted => return Err(AuthorityError::Faulted),
+            VaultState::Unlocked { .. } => return self.verify_proof(proof),
+            VaultState::Locked => {}
+        }
+        if Instant::now() < self.next_unlock_at {
+            return Err(AuthorityError::UnlockRateLimited);
+        }
+        let (kind, secret) = match proof {
+            UnlockProof::Password(secret) => (WrapperKind::Password, secret),
+            UnlockProof::Recovery(secret) => (WrapperKind::Recovery, secret),
+        };
+        // Preserve storage failures instead of treating them as an absent proof.
+        let wrapper = self.store.active_wrapper(kind)?;
+        let attempt = kek_for_wrapper(&wrapper, secret)
+            .map_err(|_| AuthorityError::InvalidUnlockCredential)
+            .and_then(|kek| unwrap_vrk(self.header.vault_id, &wrapper, &kek));
+        match attempt {
+            Ok(_candidate) => {
+                self.failed_unlocks = 0;
+                self.next_unlock_at = Instant::now();
+                Ok(())
+            }
+            Err(error) => {
+                self.record_unlock_failure()?;
+                Err(error)
+            }
+        }
+    }
+
+    fn record_unlock_failure(&mut self) -> Result<(), AuthorityError> {
+        self.failed_unlocks = self.failed_unlocks.saturating_add(1);
+        if self.failed_unlocks >= FREE_UNLOCK_FAILURES {
+            let shift = (self.failed_unlocks - FREE_UNLOCK_FAILURES).min(16);
+            let delay = self
+                .config
+                .unlock_backoff_base
+                .saturating_mul(1u32 << shift)
+                .min(UNLOCK_BACKOFF_CAP);
+            self.next_unlock_at = Instant::now() + delay;
+        }
+        self.append_audit(unlock_audit(
+            event_type::VAULT_UNLOCK_FAILED,
+            outcome::DENIED,
+            "invalid-credential",
+        ))
     }
 
     fn verify_desktop(&self, token: &crate::secret::SecretInput) -> Result<(), AuthorityError> {
@@ -302,21 +353,7 @@ impl Worker {
                 ))
             }
             Err(_) => {
-                self.failed_unlocks = self.failed_unlocks.saturating_add(1);
-                if self.failed_unlocks >= FREE_UNLOCK_FAILURES {
-                    let shift = (self.failed_unlocks - FREE_UNLOCK_FAILURES).min(16);
-                    let delay = self
-                        .config
-                        .unlock_backoff_base
-                        .saturating_mul(1u32 << shift)
-                        .min(UNLOCK_BACKOFF_CAP);
-                    self.next_unlock_at = Instant::now() + delay;
-                }
-                let _ = self.append_audit(unlock_audit(
-                    event_type::VAULT_UNLOCK_FAILED,
-                    outcome::DENIED,
-                    "invalid-credential",
-                ));
+                let _ = self.record_unlock_failure();
                 // Uniform error: never reveal whether the wrapper exists or
                 // which decryption stage failed.
                 Err(AuthorityError::InvalidUnlockCredential)

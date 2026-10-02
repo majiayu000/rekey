@@ -73,7 +73,7 @@ struct RootView: View {
         .onChange(of: type) { _, _ in model.selectedCredential = filtered.first?.id }
         .onChange(of: model.page) { _, _ in Task { await model.refresh() } }
         .onChange(of: phase) { _, value in if value == .active { Task { await model.refresh() } } else { model.visibleSecret = nil; model.clearNativeFlow() } }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in model.clearNativeFlow() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in model.visibleSecret = nil; model.clearNativeFlow() }
         .sheet(isPresented: $model.showPolicyDraft) { PolicyDraftForm().environmentObject(model) }
         .sheet(item: $model.operation) { OperationForm(operation: $0).environmentObject(model) }
         .sheet(isPresented: $model.showAddCredential) { AddCredentialForm().environmentObject(model) }
@@ -248,9 +248,9 @@ struct RootView: View {
             HStack {
                 Button(model.visibleSecret == nil ? "显示密钥" : "隐藏密钥") {
                     if model.visibleSecret != nil { model.visibleSecret = nil }
-                    else { Task { await model.revealCredential(item.id, copy: false) } }
+                    else { model.requestRevealCredential(item.id, copy: false) }
                 }
-                Button(model.copiedCredential == item.id ? "已复制" : "复制密钥") { Task { await model.revealCredential(item.id, copy: true) } }
+                Button(model.copiedCredential == item.id ? "已复制" : "复制密钥") { model.requestRevealCredential(item.id, copy: true) }
             }.disabled(!item.active || model.busy)
             Text("复制后 30 秒清理本次剪贴板内容；剪贴板历史工具可能保留副本。").font(.system(size: 11)).foregroundStyle(.secondary)
             Divider().padding(.vertical, 4)
@@ -417,10 +417,7 @@ struct RootView: View {
                     Text(model.stateDirectory).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
                     Button("切换数据目录") { if let url = chooseFile(directory: true) { model.changeDirectory(url.path) } }.disabled(model.busy || model.oidcBusy)
                     if let status = model.status { info("服务版本", status.runtime_version); info("数据格式", "v\(status.format_version)") }
-                    HStack { Button("启动服务") { model.startService() }.disabled(model.status != nil); Button("停止服务") {
-                        let op = Operation(title: "停止服务", detail: "正在执行的操作会按服务的退出规则收尾。", arguments: ["shutdown"], proof: model.unlocked)
-                        if model.unlocked { model.operation = op } else { Task { await model.perform(op) } }
-                    }.disabled(model.status == nil) }.disabled(model.busy)
+                    HStack { Button("启动服务") { model.startService() }.disabled(model.status != nil); Button("停止服务") { model.requestShutdown() }.disabled(model.status == nil) }.disabled(model.busy)
                     Text("关闭窗口不会停止服务；服务会继续按空闲锁定规则运行。").font(.system(size: 12)).foregroundStyle(.secondary)
                 }
                 SectionCard(title: "解锁与恢复", icon: "lock.rotation") {

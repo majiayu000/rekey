@@ -170,6 +170,7 @@ impl Worker {
                     .map_err(|_| AuthorityError::InvalidUnlockCredential)?,
             );
             let vrk = RootKey::from_bytes(&mut bytes);
+            drop(raw);
             self.state = VaultState::Unlocked { vrk };
             self.desktop_session = None;
             self.desktop_resume_expiry = Some(expires);
