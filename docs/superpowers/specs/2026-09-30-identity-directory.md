@@ -1,5 +1,8 @@
 # ENT-03 / APR-10 fixed SCIM consumer and signed roll-forward revocation
 
+> Status: Lab (v3 scope; enterprise reserve)
+> Existing contracts and evidence are retained; this capability is excluded from the default v3 build and release package.
+
 Frozen 2026-09-30 before implementation. This slice is not full OIDC administrator
 login, a SCIM provisioning server, automatic policy signing/unlock, or verified
 customer offboarding. Existing fixed introspection remains the relay identity

@@ -1,5 +1,8 @@
 # APR-08 单组织 HTTPS 审批文件中继
 
+> Status: Lab (v3 scope; enterprise reserve)
+> Existing contracts and evidence are retained; this capability is excluded from the default v3 build and release package.
+
 配置/私有store的format1描述属于本APR-08原始切片。后续
 [目录消费合同](2026-09-30-identity-directory.md)冻结format2和新增directory必填块，
 不迁移非空v1状态；其实现与验收进展以canonical tracker为准。原运输/验签边界保持本合同。

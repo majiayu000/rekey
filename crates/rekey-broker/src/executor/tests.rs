@@ -338,18 +338,26 @@ fn github_comment_uncertainty_never_invites_retry() {
 // Real Authority actor and recovery orchestration, with no TCP or UDS listener.
 mod lease_recovery {
     use super::*;
-    use crate::upstream::{UpstreamFuture, UpstreamResponse};
+    #[cfg(feature = "lab")]
+    use crate::upstream::UpstreamFuture;
+    use crate::upstream::UpstreamResponse;
+    #[cfg(feature = "lab")]
     use rekey_domain::action::{
         ActionName, ExactPath, FixedMethod, HeaderCredentialUse, HeaderName, HeaderPrefix,
         HttpsOrigin, RequestPolicy, ResponsePolicy,
     };
     use rekey_domain::credential::{CredentialKind, CredentialLabel};
-    use rekey_vault::command::{ActionDefinition, AuditDraft, UnlockProof};
+    use rekey_vault::command::UnlockProof;
+    #[cfg(feature = "lab")]
+    use rekey_vault::command::{ActionDefinition, AuditDraft};
     use rekey_vault::handle::AuthorityConfig;
+    #[cfg(feature = "lab")]
     use rekey_vault::model::{LeaseExecutionContext, LeaseReceipt, LeaseSourceRef};
     use rekey_vault::secret::SecretInput;
     const PASSWORD: &[u8] = b"recovery-local-fixture";
+    #[cfg(feature = "lab")]
     const LEASE: &[u8] = b"database/creds/role/exact-recovery-fixture";
+    #[cfg(feature = "lab")]
     const PROFILE: &[u8] = br#"{"credential_type":"vault-dynamic-source-v2","origin":"https://vault.example.com","mount":"database","role":"role","key":"token","renew_increment_seconds":60,"vault_token":"synthetic-recovery-token"}"#;
     fn proof() -> UnlockProof {
         UnlockProof::Password(SecretInput::from_slice(PASSWORD))
@@ -395,6 +403,7 @@ mod lease_recovery {
                 worker,
             }
         }
+        #[cfg(feature = "lab")]
         async fn pending(&self) -> LeaseReceipt {
             let authority = &self.executor.authority;
             authority.unlock(proof()).await.unwrap();
@@ -499,17 +508,21 @@ mod lease_recovery {
             self.worker.await.unwrap();
         }
     }
+    #[cfg(feature = "lab")]
     struct DelayedBuilder {
         requests: AtomicUsize,
         completed: Arc<AtomicUsize>,
         dropped: Arc<AtomicUsize>,
     }
+    #[cfg(feature = "lab")]
     struct DropEvidence(Arc<AtomicUsize>);
+    #[cfg(feature = "lab")]
     impl Drop for DropEvidence {
         fn drop(&mut self) {
             self.0.fetch_add(1, Ordering::SeqCst);
         }
     }
+    #[cfg(feature = "lab")]
     impl UpstreamTransport for DelayedBuilder {
         fn send(&self, request: UpstreamRequest) -> UpstreamFuture<'_> {
             assert_eq!(request.method, FixedMethod::Post);
@@ -541,6 +554,7 @@ mod lease_recovery {
         }
     }
     #[tokio::test]
+    #[cfg(feature = "lab")]
     async fn absolute_recovery_deadline_cancels_delayed_exact_revoke_and_keeps_source_closed() {
         let transport = Arc::new(DelayedBuilder {
             requests: AtomicUsize::new(0),
@@ -576,6 +590,7 @@ mod lease_recovery {
         fixture.stop().await;
     }
     #[tokio::test]
+    #[cfg(feature = "lab")]
     async fn unavailable_authority_snapshot_refuses_recovery_without_opening_admission() {
         let transport = Arc::new(DelayedBuilder {
             requests: AtomicUsize::new(0),
@@ -616,10 +631,12 @@ mod lease_recovery {
         assert!(!fixture.executor.lifecycle.try_begin_remote_effect());
         fixture.stop().await;
     }
+    #[cfg(feature = "lab")]
     struct LateAuditFault {
         database: Mutex<Option<std::path::PathBuf>>,
         writer: Mutex<Option<std::thread::JoinHandle<()>>>,
     }
+    #[cfg(feature = "lab")]
     impl UpstreamTransport for LateAuditFault {
         fn send(&self, request: UpstreamRequest) -> UpstreamFuture<'_> {
             assert_eq!(request.path, "/v1/sys/leases/revoke");
@@ -647,6 +664,7 @@ mod lease_recovery {
         }
     }
     #[tokio::test]
+    #[cfg(feature = "lab")]
     async fn final_recovery_snapshot_rejects_late_audit_fault_after_entry_timeout() {
         let transport = Arc::new(LateAuditFault {
             database: Mutex::new(None),
@@ -856,6 +874,7 @@ mod lease_recovery {
 }
 
 #[tokio::test]
+#[cfg(feature = "lab")]
 async fn keychain_fixed_header_fake_transport_injects_and_seals_all_reflected_forms() {
     let action: FixedHttpAction = serde_json::from_value(serde_json::json!({
         "id":ActionId::new_random(),"name":"keychain-fixture","version":1,"enabled":true,

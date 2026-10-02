@@ -47,14 +47,17 @@ fn action(origin: &str, path: &str) -> FixedHttpAction {
 #[test]
 fn registry_is_versioned_ordered_and_lifecycle_complete() {
     rekey_connector::testkit::assert_registry(registry());
-    assert_eq!(registry().len(), 10);
+    assert_eq!(registry().len(), if cfg!(feature = "lab") { 10 } else { 2 });
     assert!(registry().iter().all(|contract| {
         contract.source == ConnectorSource::BuiltInBinary
             && contract.isolation == ConnectorIsolation::BrokerProcess
     }));
-    assert_eq!(registry()[2].effects, &[CredentialEffect::Inject]);
     assert_eq!(
-        registry()[4].effects,
+        BuiltInConnector::FixedHttpHeaderV1.contract().effects,
+        &[CredentialEffect::Inject]
+    );
+    assert_eq!(
+        BuiltInConnector::GitHubAppInstallationV1.contract().effects,
         &[
             CredentialEffect::Sign,
             CredentialEffect::Exchange,
@@ -62,30 +65,33 @@ fn registry_is_versioned_ordered_and_lifecycle_complete() {
             CredentialEffect::Revoke,
         ]
     );
-    assert_eq!(
-        BuiltInConnector::VaultDynamicSourceV1.contract().effects,
-        &[
-            CredentialEffect::Resolve,
-            CredentialEffect::Lease,
-            CredentialEffect::Inject,
-            CredentialEffect::Revoke,
-        ]
-    );
-    assert!(
-        BuiltInConnector::VaultDynamicSourceV1
-            .contract()
-            .revoke_before_success
-    );
-    assert_eq!(
-        BuiltInConnector::VaultKvV2SourceV1.contract().effects,
-        &[
-            CredentialEffect::Exchange,
-            CredentialEffect::Lease,
-            CredentialEffect::Resolve,
-            CredentialEffect::Inject,
-            CredentialEffect::Revoke
-        ]
-    );
+    #[cfg(feature = "lab")]
+    {
+        assert_eq!(
+            BuiltInConnector::VaultDynamicSourceV1.contract().effects,
+            &[
+                CredentialEffect::Resolve,
+                CredentialEffect::Lease,
+                CredentialEffect::Inject,
+                CredentialEffect::Revoke,
+            ]
+        );
+        assert!(
+            BuiltInConnector::VaultDynamicSourceV1
+                .contract()
+                .revoke_before_success
+        );
+        assert_eq!(
+            BuiltInConnector::VaultKvV2SourceV1.contract().effects,
+            &[
+                CredentialEffect::Exchange,
+                CredentialEffect::Lease,
+                CredentialEffect::Resolve,
+                CredentialEffect::Inject,
+                CredentialEffect::Revoke
+            ]
+        );
+    }
 }
 
 #[test]
@@ -142,6 +148,7 @@ fn selection_preserves_the_reserved_github_no_fallback_boundary() {
         resolve_builtin(CredentialKind::GitHubAppInstallation, &ordinary),
         Ok(BuiltInConnector::GitHubAppInstallationV1)
     );
+    #[cfg(feature = "lab")]
     assert_eq!(
         resolve_builtin(CredentialKind::VaultKvV2Source, &ordinary),
         Ok(BuiltInConnector::VaultKvV2SourceV1)
@@ -150,6 +157,7 @@ fn selection_preserves_the_reserved_github_no_fallback_boundary() {
         resolve_builtin(CredentialKind::VaultKvV2Source, &github),
         Err(ConnectorSelectionError::SelectionRejected)
     );
+    #[cfg(feature = "lab")]
     assert_eq!(
         resolve_builtin(CredentialKind::VaultDynamicSource, &ordinary),
         Ok(BuiltInConnector::VaultDynamicSourceV1)
@@ -241,6 +249,7 @@ fn oauth_projection_contains_only_fixed_public_metadata() {
 }
 
 #[test]
+#[cfg(feature = "lab")]
 fn keycloak_contract_requires_exchange_inject_revoke_and_preserves_reserved_paths() {
     let c = BuiltInConnector::KeycloakTokenExchangeV1.contract();
     assert_eq!(
@@ -293,6 +302,7 @@ fn mcp_projection_refuses_a_valid_text_stream_action() {
 }
 
 #[test]
+#[cfg(feature = "lab")]
 fn gcp_source_contract_is_resolve_inject_only_and_refuses_reserved_github() {
     let contract = BuiltInConnector::GcpSecretManagerSourceV1.contract();
     assert_eq!(
@@ -320,6 +330,7 @@ fn gcp_source_contract_is_resolve_inject_only_and_refuses_reserved_github() {
     );
 }
 #[test]
+#[cfg(feature = "lab")]
 fn aws_source_contract_is_resolve_inject_only_and_refuses_reserved_github() {
     let contract = BuiltInConnector::AwsSecretsManagerSourceV1.contract();
     assert_eq!(
@@ -348,6 +359,7 @@ fn aws_source_contract_is_resolve_inject_only_and_refuses_reserved_github() {
 }
 
 #[test]
+#[cfg(feature = "lab")]
 fn azure_source_contract_is_resolve_inject_only_and_refuses_reserved_github() {
     let contract = BuiltInConnector::AzureKeyVaultSourceV1.contract();
     assert_eq!(
@@ -376,6 +388,7 @@ fn azure_source_contract_is_resolve_inject_only_and_refuses_reserved_github() {
 }
 
 #[test]
+#[cfg(feature = "lab")]
 fn onepassword_source_contract_is_resolve_inject_only_and_refuses_reserved_github() {
     let contract = BuiltInConnector::OnePasswordConnectSourceV1.contract();
     assert_eq!(
@@ -404,6 +417,7 @@ fn onepassword_source_contract_is_resolve_inject_only_and_refuses_reserved_githu
 }
 
 #[test]
+#[cfg(feature = "lab")]
 fn vault_kv_contract_covers_approle_without_expanding_other_sources() {
     let contract = BuiltInConnector::VaultKvV2SourceV1.contract();
     assert_eq!(
@@ -435,4 +449,34 @@ fn vault_kv_contract_covers_approle_without_expanding_other_sources() {
         assert!(!connector.contract().revoke_before_success);
         assert_eq!(connector.contract().exchange_protocol, None);
     }
+}
+
+#[cfg(not(feature = "lab"))]
+#[test]
+fn default_registry_cannot_select_enterprise_sources_or_plugins() {
+    let mut ordinary = action("https://api.example.com", "/v1/run");
+    for kind in [
+        CredentialKind::VaultKvV2Source,
+        CredentialKind::VaultDynamicSource,
+        CredentialKind::KeycloakTokenExchange,
+        CredentialKind::GcpSecretManagerSource,
+        CredentialKind::AwsSecretsManagerSource,
+        CredentialKind::AzureKeyVaultSource,
+        CredentialKind::OnePasswordConnectSource,
+        CredentialKind::MacosKeychainSource,
+    ] {
+        assert_eq!(
+            resolve_builtin(kind, &ordinary),
+            Err(ConnectorSelectionError::SelectionRejected)
+        );
+    }
+    ordinary.native_plugin = Some(rekey_domain::action::NativePlugin {
+        path: "/tmp/lab-plugin".into(),
+        sha256: "a".repeat(64),
+        protocol: rekey_domain::action::GITHUB_ISSUES_PROTOCOL.into(),
+    });
+    assert_eq!(
+        resolve_builtin(CredentialKind::OpaqueToken, &ordinary),
+        Err(ConnectorSelectionError::SelectionRejected)
+    );
 }

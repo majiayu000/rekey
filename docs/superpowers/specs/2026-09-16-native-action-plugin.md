@@ -1,5 +1,8 @@
 # SDK-04 封闭多凭证原生插件
 
+> Status: Lab (v3 scope; enterprise reserve)
+> Existing contracts and evidence are retained; this capability is excluded from the default v3 build and release package.
+
 用户已授权继续本地功能。本切片把现有 GitHub 两操作插件登记推广为 Action 绑定的封闭原生插件：同一隔离 runner 与同一 artifact 形状，按协议选择凭证种类和公开请求合同。不是市场、动态库、任意 HTTP 效果或通用 Adapter 平台。
 
 完整物理资源上限与启动全阶段父死仍按 [参考插件规格](2026-09-16-github-reference-plugin.md) 的既有边界记录，本切片不关闭 P-10。

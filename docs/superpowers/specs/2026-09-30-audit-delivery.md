@@ -1,5 +1,8 @@
 # AUD-07 独立审计投递
 
+> Status: Lab (v3 scope; enterprise reserve)
+> Existing contracts and evidence are retained; this capability is excluded from the default v3 build and release package.
+
 状态：本地实现合同。真实 SIEM 的持久存储、去重与容量验收仍需现场输入。
 
 `scripts/rekey-audit-delivery.py` 是无解锁能力的独立 Python 工具。操作方先从可信渠道取得既有 `BackupReceipt`，以 `init --vault-receipt FILE --endpoint HTTPS_URL` 登记 `--source-instance-id` 与 `--vault-id`。Receipt 的 vault_id 必须一致，工具不验证备份内容，也不从审计文件猜测身份。Receipt 不是签名证据，操作方负责来源真实性。每次命令显式重复两个身份；本机 0700 outbox 永久固定身份、receipt SHA-256 和精确 HTTPS 目标。restore/clone 必须登记新的 source_instance_id 和新的 outbox；工具无法自动识别由操作方冒用旧身份的克隆。

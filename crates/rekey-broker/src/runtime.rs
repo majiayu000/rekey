@@ -35,6 +35,7 @@ use crate::upstream::{ReqwestUpstreamTransport, UpstreamTransport};
 mod admin;
 mod connections;
 mod shutdown;
+#[cfg(feature = "lab")]
 mod workload;
 
 pub const MAX_AGENT_CONNECTIONS: usize = 120;
@@ -54,6 +55,7 @@ pub fn default_drain_timeout() -> Duration {
 
 pub struct BrokerConfig {
     pub state_dir: PathBuf,
+    #[cfg(feature = "lab")]
     pub oidc_admin_profile: Option<PathBuf>,
     /// P1 seam: an isolated Agent endpoint may live outside the private state tree.
     pub agent_runtime_dir: Option<PathBuf>,
@@ -73,6 +75,7 @@ impl BrokerConfig {
     pub fn new(state_dir: PathBuf) -> Self {
         Self {
             state_dir,
+            #[cfg(feature = "lab")]
             oidc_admin_profile: None,
             agent_runtime_dir: None,
             allowed_agent_uids: vec![unsafe { libc::geteuid() }],
@@ -86,13 +89,17 @@ impl BrokerConfig {
 }
 
 pub struct BrokerCtx {
+    #[cfg(feature = "lab")]
     pub(crate) metrics: crate::metrics::Metrics,
     pub authority: AuthorityHandle,
+    #[cfg(feature = "lab")]
     pub(crate) oidc_admin: Option<Arc<crate::oidc_admin::Manager>>,
     pub sessions: Arc<SessionRegistry>,
     pub(crate) executions: ExecutionSupervisorHandle,
     pub(crate) executor: Arc<ActionExecutor>,
+    #[cfg(feature = "lab")]
     workload_transport: Arc<dyn UpstreamTransport>,
+    #[cfg(feature = "lab")]
     online_jwks_slots: Arc<tokio::sync::Semaphore>,
     pub lifecycle: Arc<Lifecycle>,
     policy: Arc<RwLock<Option<Arc<ActivePolicy>>>>,
@@ -118,10 +125,12 @@ impl BrokerCtx {
     }
 
     pub(crate) fn request_fault(&self) {
+        #[cfg(feature = "lab")]
         if let Some(manager) = &self.oidc_admin {
             manager.clear();
             self.sessions.close_and_revoke_all();
         }
+        #[cfg(feature = "lab")]
         self.metrics.fault_signals.fetch_add(1, Ordering::Relaxed);
         let _ = self.stop_tx.send(shutdown::StopCommand::Fault);
     }
@@ -382,6 +391,7 @@ impl BrokerCtx {
         natural_deadline: tokio::time::Instant,
         stop_deadline: tokio::time::Instant,
     ) -> Result<(), BrokerError> {
+        #[cfg(feature = "lab")]
         if let Some(manager) = &self.oidc_admin {
             manager.clear();
         }
@@ -706,6 +716,7 @@ async fn select_stop(
 /// Runs the broker until an admin Shutdown arrives. Foreground only.
 pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
     verify_state_dir_permissions(&config.state_dir)?;
+    #[cfg(feature = "lab")]
     let oidc_admin = config
         .oidc_admin_profile
         .as_deref()
@@ -725,6 +736,7 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
     authority_config.unlock_backoff_base = config.unlock_backoff_base;
     let (authority, authority_join) = rekey_vault::authority::spawn_authority(authority_config)?;
 
+    #[cfg(feature = "lab")]
     if let Some(manager) = &oidc_admin {
         let actual = authority.status().await?;
         if actual.vault_id != manager.vault_id() {
@@ -789,10 +801,14 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
     let mut execution_task = tokio::spawn(execution_supervisor.run(shutdown_rx.clone()));
     let (stop_tx, mut stop_rx) = mpsc::unbounded_channel();
     let ctx = Arc::new(BrokerCtx {
+        #[cfg(feature = "lab")]
         metrics: crate::metrics::Metrics::default(),
+        #[cfg(feature = "lab")]
         workload_transport: transport,
+        #[cfg(feature = "lab")]
         online_jwks_slots: Arc::new(tokio::sync::Semaphore::new(MAX_ONLINE_JWKS_FETCHES)),
         authority: authority.clone(),
+        #[cfg(feature = "lab")]
         oidc_admin,
         sessions,
         executions,
@@ -808,6 +824,7 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
         allowed_agent_uids: config.allowed_agent_uids.into(),
     });
 
+    #[cfg(feature = "lab")]
     let mut oidc_poll_task = ctx.oidc_admin.clone().map(|manager| {
         let weak = Arc::downgrade(&ctx);
         let mut shutdown = shutdown_rx.clone();
@@ -985,6 +1002,7 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
             tracing::error!(event = "runtime.connection_join_timeout", code = "FAULTED");
         }
     }
+    #[cfg(feature = "lab")]
     if let Some(task) = &mut oidc_poll_task {
         match tokio::time::timeout_at(stop_deadline, &mut *task).await {
             Ok(Ok(())) => (),

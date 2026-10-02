@@ -311,7 +311,7 @@ async fn actor_decoded_selected_bootstrap_never_crosses_into_business() {
             .replace(token, &escaped)
             .into_bytes(),
     );
-    assert!(!contains_secret(
+    assert!(contains_secret(
         &source.body,
         &sealing_needles(PROFILE, token.as_bytes())
     ));
@@ -368,7 +368,7 @@ async fn actor_decoded_selected_known_bootstrap_forms_are_sealed_and_clean_value
                 .replace(&value, &escaped)
                 .into_bytes(),
         );
-        assert!(!contains_secret(
+        assert!(contains_secret(
             &source.body,
             &sealing_needles(PROFILE, b"hvs.source-canary")
         ));

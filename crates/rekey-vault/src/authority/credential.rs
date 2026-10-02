@@ -215,6 +215,7 @@ impl Worker {
                 rekey_domain::DomainError::InvalidCapability,
             ));
         }
+        #[cfg(feature = "lab")]
         if kind == CredentialKind::MacosKeychainSource {
             super::keychain_source::Reference::import(secret.expose(), now_ms()?)?;
         }
@@ -314,6 +315,7 @@ impl Worker {
                 ),
             ));
         }
+        #[cfg(feature = "lab")]
         if expected_kind == CredentialKind::MacosKeychainSource {
             super::keychain_source::Reference::import(secret.expose(), now_ms()?)?;
         }
@@ -411,7 +413,9 @@ impl Worker {
         )>,
     ) -> Result<PreparedCredential, AuthorityError> {
         let credential = self.load_verified_credential(credential_id)?;
-        if credential.kind == CredentialKind::MacosKeychainSource && execution.is_none() {
+        if credential.kind == CredentialKind::MacosKeychainSource
+            && (!cfg!(feature = "lab") || execution.is_none())
+        {
             return Err(AuthorityError::CredentialSourceUnavailable);
         }
         let vrk = self.require_unlocked()?;
@@ -461,6 +465,7 @@ impl Worker {
             &version.encrypted_payload,
         )
         .map_err(|_| AuthorityError::CryptoFailure)?;
+        #[cfg(feature = "lab")]
         let payload = if credential.kind == CredentialKind::MacosKeychainSource {
             let (request_id, action_id, action_version, deadline) =
                 execution.ok_or(AuthorityError::CredentialSourceUnavailable)?;

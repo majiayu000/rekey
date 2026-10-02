@@ -1,5 +1,8 @@
 # GitHub Issue 参考子进程接入
 
+> Status: Lab (v3 scope; enterprise reserve)
+> Existing contracts and evidence are retained; this capability is excluded from the default v3 build and release package.
+
 当前合同包含 CreateIssue 与 CreateIssueComment。macOS 使用本仓库打包的 `rekey-github-create-issue` sidecar，或 Admin 绑定的具体 artifact。Broker 从已验证 Action 选择操作，子进程只收到封闭 operation/body envelope；输出与同一纯合同的完整规范 envelope 逐字节比较。未知字段、操作或内容修改均不能进入远程准入。JWT、installation、私钥、token、capability、header、URL 均不进入子进程。两操作 wire 合同见 [Action 登记规格](2026-09-16-action-plugin-registration.md)。
 
 打包 sidecar 位于宿主可执行文件同目录（Cargo deps/examples 宿主寻找上级目录）。显式登记则从不可变 Action 读取路径及可信摘要，失败不回退。打开 artifact 后验证实际读取字节，再复制为私有 0700 临时目录内的只读可执行快照，并核对复制字节 SHA-256。未显式登记的默认打包路径依赖可信安装目录；该执行快照摘要不等于发布来源证明。没有市场、环境路径覆盖或自动下载。

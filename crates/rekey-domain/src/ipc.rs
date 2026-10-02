@@ -382,6 +382,7 @@ pub struct StatusResponse {
     pub state: String,
     pub format_version: u32,
     pub runtime_version: String,
+    pub lab_enabled: bool,
     pub sessions_active: u32,
     pub lease_journal: LeaseJournalStatus,
 }

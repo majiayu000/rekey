@@ -27,8 +27,9 @@ mod backup;
 mod credential;
 mod desktop;
 mod dispatch;
+#[cfg(feature = "lab")]
 mod keychain_source;
-#[cfg(test)]
+#[cfg(all(test, feature = "lab"))]
 mod keychain_source_tests;
 pub(crate) mod lease_journal;
 /// Clear the crash marker only after every runtime task has joined cleanly,
@@ -87,14 +88,14 @@ pub fn spawn_authority(
 ) -> Result<(AuthorityHandle, std::thread::JoinHandle<()>), AuthorityError> {
     spawn_authority_inner(
         config,
-        #[cfg(test)]
+        #[cfg(all(test, feature = "lab"))]
         None,
     )
 }
 
 fn spawn_authority_inner(
     config: AuthorityConfig,
-    #[cfg(test)] keychain_fixture: Option<KeychainFixture>,
+    #[cfg(all(test, feature = "lab"))] keychain_fixture: Option<KeychainFixture>,
 ) -> Result<(AuthorityHandle, std::thread::JoinHandle<()>), AuthorityError> {
     config.validate()?;
     verify_state_dir_permissions(&config.state_dir)?;
@@ -130,7 +131,7 @@ fn spawn_authority_inner(
     desktop::begin_runtime(&config.state_dir)?;
     let (tx, rx) = mpsc::channel(config.queue_capacity);
     let worker = Worker {
-        #[cfg(test)]
+        #[cfg(all(test, feature = "lab"))]
         keychain_fixture,
         store,
         header,
@@ -150,14 +151,14 @@ fn spawn_authority_inner(
     Ok((AuthorityHandle { tx }, join))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "lab"))]
 type KeychainFixture = Box<
     dyn FnMut(&keychain_source::Reference) -> Result<zeroize::Zeroizing<Vec<u8>>, AuthorityError>
         + Send,
 >;
 
 struct Worker {
-    #[cfg(test)]
+    #[cfg(all(test, feature = "lab"))]
     keychain_fixture: Option<KeychainFixture>,
     desktop_resume_expiry: Option<i64>,
     desktop_session: Option<(zeroize::Zeroizing<Vec<u8>>, Instant)>,

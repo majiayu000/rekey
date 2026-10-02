@@ -50,13 +50,17 @@ async fn idle_status_poll_does_not_occupy_execution_admission() {
     let (shutdown_tx, _) = watch::channel(false);
     let (stop_tx, _) = mpsc::unbounded_channel();
     let ctx = BrokerCtx {
+        #[cfg(feature = "lab")]
         oidc_admin: None,
+        #[cfg(feature = "lab")]
         metrics: crate::metrics::Metrics::default(),
         authority: authority.clone(),
         sessions,
         executions,
         executor,
+        #[cfg(feature = "lab")]
         workload_transport: transport,
+        #[cfg(feature = "lab")]
         online_jwks_slots: Arc::new(tokio::sync::Semaphore::new(2)),
         lifecycle,
         policy,
@@ -317,13 +321,17 @@ async fn fault_while_initially_locked_revokes_remembered_desktop() {
         let mut execution_task = tokio::spawn(supervisor.run(shutdown_rx));
         let (stop_tx, _stop_rx) = mpsc::unbounded_channel();
         let ctx = BrokerCtx {
+            #[cfg(feature = "lab")]
             oidc_admin: None,
+            #[cfg(feature = "lab")]
             metrics: crate::metrics::Metrics::default(),
             authority: authority.clone(),
             sessions,
             executions,
             executor,
+            #[cfg(feature = "lab")]
             workload_transport: transport,
+            #[cfg(feature = "lab")]
             online_jwks_slots: Arc::new(tokio::sync::Semaphore::new(2)),
             lifecycle,
             policy,
@@ -434,13 +442,17 @@ pub(crate) async fn oidc_test_ctx() -> (
     let (shutdown_tx, _) = watch::channel(false);
     let (stop_tx, _) = mpsc::unbounded_channel();
     let ctx = Arc::new(BrokerCtx {
+        #[cfg(feature = "lab")]
         oidc_admin: None,
+        #[cfg(feature = "lab")]
         metrics: crate::metrics::Metrics::default(),
         authority,
         sessions,
         executions,
         executor,
+        #[cfg(feature = "lab")]
         workload_transport: transport,
+        #[cfg(feature = "lab")]
         online_jwks_slots: Arc::new(tokio::sync::Semaphore::new(2)),
         lifecycle,
         policy,
@@ -501,6 +513,7 @@ async fn retention_tick_cadence_busy_lock_shutdown_and_disable_are_coordinated()
     ctx.lifecycle.enter_shutting_down();
     due = tokio::time::Instant::now();
     ctx.audit_retention_tick(&mut due).await.unwrap();
+    #[cfg(feature = "lab")]
     assert_eq!(ctx.metrics.fault_signals.load(Ordering::Relaxed), 0);
     ctx.authority
         .shutdown(Some(UnlockProof::Password(SecretInput::from_slice(
@@ -567,6 +580,7 @@ async fn retention_tick_unknown_reply_timeout_stops_and_keeps_owner_until_outcom
         Err(BrokerError::Authority(AuthorityError::Faulted))
     ));
     assert!(started.elapsed() >= Duration::from_millis(900));
+    #[cfg(feature = "lab")]
     assert_eq!(ctx.metrics.fault_signals.load(Ordering::Relaxed), 1);
     assert!(ctx.lifecycle.try_coordinate().is_ok());
     db.execute_batch("COMMIT").unwrap();
@@ -617,6 +631,7 @@ async fn retention_closed_reply_channel_is_faulted_without_retry() {
         ctx.try_audit_retention().await,
         Err(BrokerError::Authority(AuthorityError::Faulted))
     ));
+    #[cfg(feature = "lab")]
     assert_eq!(ctx.metrics.fault_signals.load(Ordering::Relaxed), 1);
     drop(ctx);
     terminal.await.unwrap();

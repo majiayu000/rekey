@@ -16,7 +16,9 @@ pub const EXACT_PATH_MAX_BYTES: usize = 2048;
 /// Header names an admin can never select as a credential slot and an agent
 /// can never supply. Hop-by-hop and framing headers are owned by the broker.
 const FORBIDDEN_HEADERS: &[&str] = &[
+    "accept-encoding",
     "connection",
+    "content-encoding",
     "content-length",
     "cookie",
     "host",
@@ -721,6 +723,8 @@ mod tests {
             .is_ok()
         );
         for forbidden in [
+            "accept-encoding",
+            "content-encoding",
             "cookie",
             "host",
             "content-length",
@@ -734,6 +738,22 @@ mod tests {
                 )
                 .is_err(),
                 "{forbidden} must be rejected as auth slot"
+            );
+        }
+    }
+
+    #[test]
+    fn compression_headers_cannot_be_agent_selected() {
+        for name in ["accept-encoding", "content-encoding"] {
+            let policy = RequestPolicy {
+                max_body_bytes: 1024,
+                allowed_extra_headers: BTreeSet::from([HeaderName::new(name).unwrap()]),
+            };
+            assert!(
+                policy
+                    .validate(&HeaderName::new("authorization").unwrap())
+                    .is_err(),
+                "{name} must not be selectable"
             );
         }
     }

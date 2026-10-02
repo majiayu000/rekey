@@ -271,8 +271,12 @@ challenge，不是托管通知或 GUI。
 - 限制响应体大小；超限明确报错，不能截断后返回 200。
 - 禁止把完整响应写入审计。
 
-当前 Secret Sealing 检测 raw、base64、base64url、percent-encoded 和跨 chunk
-反射。它不保证识别任意压缩、加密、哈希派生、拆分或业务自定义编码，因此类型化
+当前 Secret Sealing 检测 raw、base64、base64url、percent-encoded、大小写 hex、
+JSON 转义解码后的字节和跨 chunk 反射。嵌入 base64 的三种对齐检测只对至少
+16 字节的秘密启用；短秘密保留完整编码检测，不保证任意嵌入形式。流式文本保留
+`6 * max_needle_len + 5` 字节，以覆盖 JSON Unicode 转义后的最长检测跨度。
+Action 禁止声明 `accept-encoding` 和 `content-encoding`。它不保证识别任意压缩、
+加密、哈希派生、拆分或业务自定义编码，因此类型化
 Action 和最小响应 schema 比通用透明代理更强。任何新增 canonicalization 规则都必须
 配套攻击测试。
 
@@ -482,7 +486,7 @@ The macOS SwiftUI client is part of the trusted G1 Admin surface. It invokes
 its bundled CLI through fixed Process argument arrays and anonymous stdin
 pipes, without a shell or HTTP listener. It does not read the Vault database.
 Passwords and newly entered values exist in UI/child memory; Swift String
-copies do not provide a verifiable zeroization guarantee. A password-authenticated desktop session permits human API-key add/reveal for 7 days without repeated password entry; other sensitive mutations retain per-call step-up. Agent capabilities cannot authorize reveal. Plaintext reveal travels only in the Admin response body after audit commits. Explicit clipboard copies may be captured by clipboard history applications. Capability/recovery
+copies do not provide a verifiable zeroization guarantee. The pre-v3 password-authenticated desktop session permits human API-key add/reveal for 7 days without repeated password entry. The accepted v3 target limits that session to adding keys and requires per-call step-up for reveal/copy and every Admin shutdown, including Locked state. Verification status is recorded in the v3 implementation checklist; previous session tests do not prove this target. Agent capabilities cannot authorize reveal. Plaintext reveal travels only in the Admin response body after audit commits. Explicit clipboard copies may be captured by clipboard history applications. Capability/recovery
 results appear once in a result sheet and can be explicitly saved to a new
 0600 file. UserDefaults stores only the non-secret state directory. Closing
 the app does not stop the Broker; idle locking remains the Broker's job.

@@ -139,6 +139,7 @@ impl BrokerCtx {
         if self.lifecycle.phase() == BrokerPhase::Running {
             self.lifecycle.enter_draining();
         }
+        #[cfg(feature = "lab")]
         if let Some(manager) = &self.oidc_admin {
             manager.clear();
         }

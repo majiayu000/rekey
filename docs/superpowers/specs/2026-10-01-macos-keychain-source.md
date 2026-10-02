@@ -1,5 +1,8 @@
 # EXT-06: one macOS file-Keychain generic-password source
 
+> Status: Lab (v3 scope; enterprise reserve)
+> Existing contracts and evidence are retained; this capability is excluded from the default v3 build and release package.
+
 Frozen 2026-10-01 before code. Minimal accepted slice: one encrypted exact
 reference and native lookup inside the sole Authority Worker. Two new source
 modules maximum (reference/native adapter and its focused private test seam),

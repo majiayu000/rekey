@@ -272,6 +272,7 @@ mod retention_tests {
         let store = crate::store::SqliteRecordStore::open(&crate::paths::vault_db(&state)).unwrap();
         let header = store.load_header().unwrap();
         let mut worker = Worker {
+            #[cfg(feature = "lab")]
             keychain_fixture: None,
             desktop_resume_expiry: None,
             desktop_session: None,

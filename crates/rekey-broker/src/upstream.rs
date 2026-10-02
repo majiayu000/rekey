@@ -195,6 +195,7 @@ impl<'de> Deserialize<'de> for SourceEndpoint {
     }
 }
 
+#[cfg(feature = "lab")]
 pub(crate) fn optional_source_endpoint<'de, D: Deserializer<'de>>(
     d: D,
 ) -> Result<Option<SourceEndpoint>, D::Error> {
@@ -208,6 +209,7 @@ pub fn source_ip_is_private(ip: IpAddr) -> bool {
     }
 }
 
+#[cfg(feature = "lab")]
 pub(crate) fn source_hostname_valid(host: &str) -> bool {
     host.parse::<IpAddr>().is_err()
         && host.len() <= 253
@@ -261,6 +263,7 @@ impl Default for SourceAttempt {
 pub type SourceTrace = Arc<Mutex<SourceAttempt>>;
 
 /// Only encrypted Vault source profiles may invoke this entry.
+#[cfg(feature = "lab")]
 pub(crate) fn send_source<'a>(
     transport: &'a dyn UpstreamTransport,
     request: UpstreamRequest,

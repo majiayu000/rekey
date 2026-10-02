@@ -1,5 +1,8 @@
 # VEX-02: one execution-scoped Vault AppRole login
 
+> Status: Lab (v3 scope; enterprise reserve)
+> Existing contracts and evidence are retained; this capability is excluded from the default v3 build and release package.
+
 Status: local implementation and focused acceptance complete; independent source review collected. Full workspace and provider acceptance remain unpassed. This is the VEX-02 slice in `2026-09-16-external-capabilities.md`, after VEX-01 and EXT-06. Provider acceptance remains deferred by the user.
 
 ## Minimal scope

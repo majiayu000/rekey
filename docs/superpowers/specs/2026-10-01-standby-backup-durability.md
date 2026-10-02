@@ -1,5 +1,8 @@
 # BAK-07/ENT-04 H1 completed standby artifact durability
 
+> Status: Lab (v3 scope; enterprise reserve)
+> Existing contracts and evidence are retained; this capability is excluded from the default v3 build and release package.
+
 Frozen before code, 2026-10-01. Accepted manual primary/standby DR, not automatic
 HA. This independent smallest first slice strengthens existing backup-sync
 receiver publication; snapshot-cut/restore evidence and genuine infrastructure

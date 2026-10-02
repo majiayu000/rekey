@@ -35,6 +35,7 @@ mod audit_query;
 mod credential_profiles;
 mod github;
 mod password_lifecycle;
+#[cfg(feature = "lab")]
 mod vault_kv;
 
 fn admin_body_limit(message_type: u16, managed: bool) -> u32 {
@@ -137,25 +138,32 @@ pub async fn handle_admin_conn(
         if *shutdown.borrow() {
             return;
         }
+        #[cfg(feature = "lab")]
+        let managed = ctx.oidc_admin.is_some();
+        #[cfg(not(feature = "lab"))]
+        let managed = false;
         let frame = match tokio::select! {
             _ = shutdown.changed() => return,
             frame = read_frame(
                 &mut stream,
                 Channel::Admin,
-                |message_type| admin_body_limit(message_type, ctx.oidc_admin.is_some()),
+                |message_type| admin_body_limit(message_type, managed),
             ) => frame,
         } {
             Ok(frame) => frame,
             Err(FrameIoError::Closed) => return,
             Err(_) => {
+                #[cfg(feature = "lab")]
                 ctx.metrics.admin.frame_failed();
                 return;
             }
         };
         let request_id = frame.header.request_id;
         let is_shutdown = frame.header.message_type == admin_msg::SHUTDOWN;
+        #[cfg(feature = "lab")]
         let metric = (frame.header.message_type != admin_msg::METRICS)
             .then(|| ctx.metrics.admin.dispatch.start());
+        #[cfg(feature = "lab")]
         let backup_metric =
             (frame.header.message_type == admin_msg::BACKUP).then(|| ctx.metrics.backup.start());
         let response = if is_shutdown {
@@ -166,9 +174,11 @@ pub async fn handle_admin_conn(
                 response = dispatch(&frame, &ctx) => response,
             }
         };
+        #[cfg(feature = "lab")]
         if let Some(metric) = metric {
             metric.finish(response.is_err());
         }
+        #[cfg(feature = "lab")]
         if let Some(metric) = backup_metric {
             metric.finish(response.is_err());
         }
@@ -208,6 +218,7 @@ pub async fn handle_admin_conn(
     }
 }
 
+#[cfg(feature = "lab")]
 async fn dispatch(
     frame: &IncomingFrame,
     ctx: &BrokerCtx,
@@ -237,13 +248,25 @@ async fn dispatch(
     }
 }
 
+#[cfg(not(feature = "lab"))]
+async fn dispatch(
+    frame: &IncomingFrame,
+    ctx: &BrokerCtx,
+) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
+    if frame.body.starts_with(b"RKAU") {
+        return Err(BrokerError::Frame(ipc::FrameError::InvalidField));
+    }
+    dispatch_operation(frame, ctx, admin_mutation_deadline()).await
+}
+
 async fn dispatch_operation(
     frame: &IncomingFrame,
     ctx: &BrokerCtx,
-    admission: Option<&crate::oidc_admin::Admission>,
+    #[cfg(feature = "lab")] admission: Option<&crate::oidc_admin::Admission>,
     request_deadline: tokio::time::Instant,
 ) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
     match frame.header.message_type {
+        #[cfg(feature = "lab")]
         admin_msg::OIDC_LOGIN_BEGIN => {
             empty_request(frame)?;
             let _owner = ctx.lifecycle.coordinate_until(request_deadline).await?;
@@ -254,6 +277,7 @@ async fn dispatch_operation(
                 .ok_or(BrokerError::Denied("OIDC profile is not enabled"))?;
             Ok((json(&manager.begin()?)?, Vec::new()))
         }
+        #[cfg(feature = "lab")]
         admin_msg::OIDC_LOGIN_FINISH | admin_msg::OIDC_LOGIN_CANCEL => {
             let flow: ipc::OidcFlowMeta = meta(frame)?;
             if !frame.body.is_empty() {
@@ -272,6 +296,7 @@ async fn dispatch_operation(
                 Ok((json(&response)?, token.to_vec()))
             }
         }
+        #[cfg(feature = "lab")]
         admin_msg::OIDC_LOGOUT => {
             empty_meta(frame)?;
             let manager = ctx
@@ -280,6 +305,7 @@ async fn dispatch_operation(
                 .ok_or(BrokerError::Denied("OIDC profile is not enabled"))?;
             Ok((json(&manager.logout(&frame.body, ctx).await?)?, Vec::new()))
         }
+        #[cfg(feature = "lab")]
         admin_msg::METRICS => {
             empty_request(frame)?;
             let snapshot = ctx.metrics.snapshot(
@@ -382,6 +408,7 @@ async fn dispatch_operation(
                 state: status.state.to_owned(),
                 format_version: status.format_version,
                 runtime_version: env!("CARGO_PKG_VERSION").to_owned(),
+                lab_enabled: cfg!(feature = "lab"),
                 sessions_active: ctx.sessions.active_count(crate::now_ts()?),
                 lease_journal: ctx.executor.lease_journal_status().await?,
             };
@@ -475,23 +502,31 @@ async fn dispatch_operation(
         }
         admin_msg::CREDENTIAL_ROTATE_GITHUB_APP => github::handle_rotate(frame, ctx).await,
         admin_msg::GITHUB_WEBHOOK_APPLY => github::handle_webhook(frame, ctx).await,
+        #[cfg(feature = "lab")]
         admin_msg::CREDENTIAL_ROTATE_KEYCLOAK => vault_kv::handle_rotate_keycloak(frame, ctx).await,
+        #[cfg(feature = "lab")]
         admin_msg::CREDENTIAL_ROTATE_VAULT_KV => vault_kv::handle_rotate(frame, ctx).await,
+        #[cfg(feature = "lab")]
         admin_msg::CREDENTIAL_ROTATE_GCP_SECRET_MANAGER => {
             vault_kv::handle_rotate_gcp(frame, ctx).await
         }
+        #[cfg(feature = "lab")]
         admin_msg::CREDENTIAL_ROTATE_AZURE_KEY_VAULT => {
             vault_kv::handle_rotate_azure(frame, ctx).await
         }
+        #[cfg(feature = "lab")]
         admin_msg::CREDENTIAL_ROTATE_MACOS_KEYCHAIN => {
             vault_kv::handle_rotate_keychain(frame, ctx).await
         }
+        #[cfg(feature = "lab")]
         admin_msg::CREDENTIAL_ROTATE_ONEPASSWORD_CONNECT => {
             vault_kv::handle_rotate_onepassword(frame, ctx).await
         }
+        #[cfg(feature = "lab")]
         admin_msg::CREDENTIAL_ROTATE_AWS_SECRETS_MANAGER => {
             vault_kv::handle_rotate_aws(frame, ctx).await
         }
+        #[cfg(feature = "lab")]
         admin_msg::CREDENTIAL_ROTATE_VAULT_DYNAMIC => {
             vault_kv::handle_rotate_dynamic(frame, ctx).await
         }
@@ -598,6 +633,7 @@ async fn dispatch_operation(
                 action_timeouts.push((*r, pinned.action.timeout_ms));
             }
             let session_id = crate::random_id(SessionId::from_random_bytes)?;
+            #[cfg(feature = "lab")]
             let principal_id = match (admission, create.principal_id) {
                 (Some(identity), requested) => {
                     if requested.is_some_and(|principal| principal != identity.principal) {
@@ -607,6 +643,11 @@ async fn dispatch_operation(
                 }
                 (None, Some(principal)) => principal,
                 (None, None) => crate::random_id(PrincipalId::from_random_bytes)?,
+            };
+            #[cfg(not(feature = "lab"))]
+            let principal_id = match create.principal_id {
+                Some(principal) => principal,
+                None => crate::random_id(PrincipalId::from_random_bytes)?,
             };
             let vault_id = authority_until(deadline, ctx.authority.status())
                 .await?
@@ -623,6 +664,7 @@ async fn dispatch_operation(
                 principal,
                 create.actions,
                 issued_at,
+                #[cfg(feature = "lab")]
                 admission.map_or(create.ttl_ms, |identity| {
                     create.ttl_ms.min(
                         identity
@@ -630,6 +672,8 @@ async fn dispatch_operation(
                             .saturating_sub(issued_at.as_unix_ms()),
                     )
                 }),
+                #[cfg(not(feature = "lab"))]
+                create.ttl_ms,
                 create.max_uses,
             )
             .map_err(BrokerError::Domain)?;
@@ -669,6 +713,7 @@ async fn dispatch_operation(
                 }
                 return Err(expired);
             }
+            #[cfg(feature = "lab")]
             if let (Some(manager), Some(identity)) = (&ctx.oidc_admin, admission) {
                 match manager.publish(identity, ctx, || {
                     ctx.sessions
@@ -875,6 +920,10 @@ fn session_audit(event_type: &'static str, session_id: SessionId) -> AuditDraft 
 }
 
 fn definition_from_meta(meta: ipc::ActionCreateMeta) -> Result<ActionDefinition, BrokerError> {
+    #[cfg(not(feature = "lab"))]
+    if meta.native_plugin.is_some() {
+        return Err(BrokerError::Denied("native plugins require lab"));
+    }
     let mut allowed_extra_headers = std::collections::BTreeSet::new();
     for name in &meta.allowed_extra_headers {
         allowed_extra_headers.insert(HeaderName::new(name).map_err(BrokerError::Domain)?);
@@ -959,6 +1008,7 @@ mod tests {
     use rekey_domain::ids::CredentialId;
 
     #[tokio::test]
+    #[cfg(feature = "lab")]
     async fn review_begin_waits_for_existing_owner_and_cannot_insert_after_lock() {
         use std::future::{Future, poll_fn};
         use std::task::Poll;
@@ -1041,12 +1091,12 @@ mod tests {
             metadata: b"{}".to_vec(),
             body: Zeroizing::new(body),
         };
-        dispatch(&request(admin_msg::METRICS, Vec::new()), &ctx)
+        dispatch(&request(admin_msg::STATUS, Vec::new()), &ctx)
             .await
             .unwrap();
         let protected = ipc::encode_management_body(&[b'A'; 43], &[]).unwrap();
         assert_eq!(
-            dispatch(&request(admin_msg::METRICS, protected), &ctx)
+            dispatch(&request(admin_msg::STATUS, protected), &ctx)
                 .await
                 .err()
                 .unwrap()
@@ -1069,6 +1119,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "lab")]
     async fn oidc_configured_all_managed_operations_require_body_token() {
         let (directory, mut ctx, join, terminal) = crate::runtime::tests::oidc_test_ctx().await;
         let path = crate::oidc_admin::tests::protected_profile_file(
@@ -1340,6 +1391,7 @@ mod tests {
         let mut set = Box::pin(dispatch_operation(
             &frame,
             &ctx,
+            #[cfg(feature = "lab")]
             None,
             admin_mutation_deadline(),
         ));
@@ -1392,6 +1444,7 @@ mod tests {
             )
             .unwrap();
         let signalled = stop();
+        #[cfg(feature = "lab")]
         let calls_before = ctx
             .metrics
             .fault_signals
@@ -1399,6 +1452,7 @@ mod tests {
         crate::runtime::tests::exact3_maintenance(&ctx)
             .await
             .unwrap();
+        #[cfg(feature = "lab")]
         let no_retry = ctx
             .metrics
             .fault_signals
@@ -1414,7 +1468,9 @@ mod tests {
         terminal.await.unwrap();
         join.join().unwrap();
         assert_eq!(phase, crate::lifecycle::BrokerPhase::Draining);
-        assert!(!remote_open && !can_reopen && signalled && no_retry);
+        assert!(!remote_open && !can_reopen && signalled);
+        #[cfg(feature = "lab")]
+        assert!(no_retry);
         assert_eq!(set_error, Some("DRAINING"));
         assert_eq!(business_error, "DRAINING");
         assert_eq!(after, initial);
@@ -1433,7 +1489,13 @@ mod tests {
             let result = if near_expiry {
                 let owner = ctx.lifecycle.coordinate().await;
                 let original = tokio::time::Instant::now() + Duration::from_millis(100);
-                let mut set = Box::pin(dispatch_operation(&frame, &ctx, None, original));
+                let mut set = Box::pin(dispatch_operation(
+                    &frame,
+                    &ctx,
+                    #[cfg(feature = "lab")]
+                    None,
+                    original,
+                ));
                 poll_fn(|cx| {
                     assert!(set.as_mut().poll(cx).is_pending());
                     Poll::Ready(())
@@ -1446,6 +1508,7 @@ mod tests {
                 dispatch_operation(
                     &frame,
                     &ctx,
+                    #[cfg(feature = "lab")]
                     None,
                     tokio::time::Instant::now() - Duration::from_millis(1),
                 )

@@ -18,8 +18,8 @@ command -v openssl >/dev/null || { echo "openssl is required"; exit 1; }
 command -v python3 >/dev/null || { echo "python3 is required"; exit 1; }
 command -v rg >/dev/null || { echo "ripgrep is required"; exit 1; }
 
-cargo build --release -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd
-cargo build --release -p rekey-broker --example p1_policy_fixture
+cargo build --features lab --release -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd
+cargo build --features lab --release -p rekey-broker --example p1_policy_fixture
 
 WORKDIR="$(mktemp -d /tmp/rkp4.XXXXXX)"
 STATE="$WORKDIR/state"

@@ -83,6 +83,7 @@ enum Command {
     /// Run the broker in the foreground (starts locked).
     Serve {
         #[arg(long)]
+        #[cfg(feature = "lab")]
         oidc_admin_profile: Option<PathBuf>,
         #[arg(long)]
         state_dir: Option<PathBuf>,
@@ -285,7 +286,7 @@ fn cmd_serve(
     agent_runtime_dir: Option<PathBuf>,
     mut agent_uids: Vec<u32>,
     agent_gid: Option<u32>,
-    oidc_admin_profile: Option<PathBuf>,
+    #[cfg(feature = "lab")] oidc_admin_profile: Option<PathBuf>,
 ) -> Result<(), RekeydError> {
     let state_dir = resolve_state_dir(state_dir)?;
     let idle = parse_duration(idle_lock)?;
@@ -311,6 +312,7 @@ fn cmd_serve(
         .build()
         .map_err(|err| usage(format!("cannot start runtime: {err}")))?;
     let config = BrokerConfig {
+        #[cfg(feature = "lab")]
         oidc_admin_profile,
         state_dir,
         agent_runtime_dir,
@@ -366,8 +368,30 @@ fn cmd_agent_run(
     }
 }
 
+fn restrict_process() -> std::io::Result<()> {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        let limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        if unsafe { libc::setrlimit(libc::RLIMIT_CORE, &limit) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    #[cfg(target_os = "linux")]
+    if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 fn main() {
     init_logging();
+    if let Err(error) = restrict_process() {
+        eprintln!("rekeyd: cannot apply process memory protection: {error}");
+        std::process::exit(1);
+    }
     let cli = Cli::parse();
     let result = match cli.command {
         Command::Init {
@@ -375,6 +399,7 @@ fn main() {
             password_stdin,
         } => cmd_init(state_dir, password_stdin),
         Command::Serve {
+            #[cfg(feature = "lab")]
             oidc_admin_profile,
             state_dir,
             idle_lock,
@@ -387,6 +412,7 @@ fn main() {
             agent_runtime_dir,
             agent_uids,
             agent_gid,
+            #[cfg(feature = "lab")]
             oidc_admin_profile,
         ),
         Command::Restore {
@@ -417,6 +443,37 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn process_restrictions_apply_in_isolated_child() {
+        const CHILD: &str = "REKEY_PROCESS_RESTRICTIONS_TEST_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            restrict_process().unwrap();
+            let mut limit = libc::rlimit {
+                rlim_cur: 1,
+                rlim_max: 1,
+            };
+            assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_CORE, &mut limit) }, 0);
+            assert_eq!((limit.rlim_cur, limit.rlim_max), (0, 0));
+            #[cfg(target_os = "linux")]
+            assert_eq!(unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) }, 0);
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::process_restrictions_apply_in_isolated_child",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     #[test]
     fn duration_parser_rejects_overflow() {

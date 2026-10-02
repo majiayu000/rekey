@@ -1,5 +1,8 @@
 # WID-09: fixed GitHub Actions online JWKS
 
+> Status: Lab (v3 scope; enterprise reserve)
+> Existing contracts and evidence are retained; this capability is excluded from the default v3 build and release package.
+
 A signed workload identity may opt into `"online_key_source":"github-actions-jwks"`
 with `"keys":[]`. The issuer must be exactly
 `https://token.actions.githubusercontent.com`. Omitting the optional field keeps

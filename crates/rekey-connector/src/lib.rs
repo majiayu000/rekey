@@ -172,14 +172,22 @@ const CONTRACTS: &[ConnectorContract] = &[
 pub enum BuiltInConnector {
     FixedHttpHeaderV1,
     GitHubAppInstallationV1,
+    #[cfg(feature = "lab")]
     VaultKvV2SourceV1,
+    #[cfg(feature = "lab")]
     VaultDynamicSourceV1,
+    #[cfg(feature = "lab")]
     KeycloakTokenExchangeV1,
+    #[cfg(feature = "lab")]
     GcpSecretManagerSourceV1,
+    #[cfg(feature = "lab")]
     AwsSecretsManagerSourceV1,
+    #[cfg(feature = "lab")]
     AzureKeyVaultSourceV1,
     #[serde(rename = "onepassword-connect-source-v1")]
+    #[cfg(feature = "lab")]
     OnePasswordConnectSourceV1,
+    #[cfg(feature = "lab")]
     MacosKeychainSourceV1,
 }
 
@@ -188,13 +196,21 @@ impl BuiltInConnector {
         match self {
             Self::FixedHttpHeaderV1 => &CONTRACTS[2],
             Self::GitHubAppInstallationV1 => &CONTRACTS[4],
+            #[cfg(feature = "lab")]
             Self::VaultKvV2SourceV1 => &CONTRACTS[9],
+            #[cfg(feature = "lab")]
             Self::VaultDynamicSourceV1 => &CONTRACTS[8],
+            #[cfg(feature = "lab")]
             Self::KeycloakTokenExchangeV1 => &CONTRACTS[5],
+            #[cfg(feature = "lab")]
             Self::GcpSecretManagerSourceV1 => &CONTRACTS[3],
+            #[cfg(feature = "lab")]
             Self::AwsSecretsManagerSourceV1 => &CONTRACTS[0],
+            #[cfg(feature = "lab")]
             Self::AzureKeyVaultSourceV1 => &CONTRACTS[1],
+            #[cfg(feature = "lab")]
             Self::OnePasswordConnectSourceV1 => &CONTRACTS[7],
+            #[cfg(feature = "lab")]
             Self::MacosKeychainSourceV1 => &CONTRACTS[6],
         }
     }
@@ -247,7 +263,15 @@ pub struct ConnectorContract {
 }
 
 pub fn registry() -> &'static [ConnectorContract] {
-    CONTRACTS
+    #[cfg(feature = "lab")]
+    {
+        CONTRACTS
+    }
+    #[cfg(not(feature = "lab"))]
+    {
+        const DEFAULT_CONTRACTS: &[ConnectorContract] = &[CONTRACTS[2], CONTRACTS[4]];
+        DEFAULT_CONTRACTS
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -309,44 +333,66 @@ pub fn resolve_builtin(
     credential_kind: CredentialKind,
     action: &FixedHttpAction,
 ) -> Result<BuiltInConnector, ConnectorSelectionError> {
+    #[cfg(not(feature = "lab"))]
+    if action.native_plugin.is_some() {
+        return Err(ConnectorSelectionError::SelectionRejected);
+    }
     match credential_kind {
         CredentialKind::OpaqueToken if !github_action_is_reserved(action) => {
             Ok(BuiltInConnector::FixedHttpHeaderV1)
         }
         CredentialKind::OpaqueToken => Err(ConnectorSelectionError::SelectionRejected),
         CredentialKind::GitHubAppInstallation => Ok(BuiltInConnector::GitHubAppInstallationV1),
+        #[cfg(feature = "lab")]
         CredentialKind::KeycloakTokenExchange if !github_action_is_reserved(action) => {
             Ok(BuiltInConnector::KeycloakTokenExchangeV1)
         }
+        #[cfg(feature = "lab")]
         CredentialKind::KeycloakTokenExchange => Err(ConnectorSelectionError::SelectionRejected),
+        #[cfg(feature = "lab")]
         CredentialKind::VaultKvV2Source if !github_action_is_reserved(action) => {
             Ok(BuiltInConnector::VaultKvV2SourceV1)
         }
+        #[cfg(feature = "lab")]
         CredentialKind::VaultKvV2Source => Err(ConnectorSelectionError::SelectionRejected),
+        #[cfg(feature = "lab")]
         CredentialKind::VaultDynamicSource if !github_action_is_reserved(action) => {
             Ok(BuiltInConnector::VaultDynamicSourceV1)
         }
+        #[cfg(feature = "lab")]
         CredentialKind::VaultDynamicSource => Err(ConnectorSelectionError::SelectionRejected),
+        #[cfg(feature = "lab")]
         CredentialKind::GcpSecretManagerSource if !github_action_is_reserved(action) => {
             Ok(BuiltInConnector::GcpSecretManagerSourceV1)
         }
+        #[cfg(feature = "lab")]
         CredentialKind::GcpSecretManagerSource => Err(ConnectorSelectionError::SelectionRejected),
+        #[cfg(feature = "lab")]
         CredentialKind::AzureKeyVaultSource if !github_action_is_reserved(action) => {
             Ok(BuiltInConnector::AzureKeyVaultSourceV1)
         }
+        #[cfg(feature = "lab")]
         CredentialKind::AzureKeyVaultSource => Err(ConnectorSelectionError::SelectionRejected),
+        #[cfg(feature = "lab")]
         CredentialKind::OnePasswordConnectSource if !github_action_is_reserved(action) => {
             Ok(BuiltInConnector::OnePasswordConnectSourceV1)
         }
+        #[cfg(feature = "lab")]
         CredentialKind::OnePasswordConnectSource => Err(ConnectorSelectionError::SelectionRejected),
+        #[cfg(feature = "lab")]
         CredentialKind::MacosKeychainSource if !github_action_is_reserved(action) => {
             Ok(BuiltInConnector::MacosKeychainSourceV1)
         }
+        #[cfg(feature = "lab")]
         CredentialKind::MacosKeychainSource => Err(ConnectorSelectionError::SelectionRejected),
+        #[cfg(feature = "lab")]
         CredentialKind::AwsSecretsManagerSource if !github_action_is_reserved(action) => {
             Ok(BuiltInConnector::AwsSecretsManagerSourceV1)
         }
+        #[cfg(feature = "lab")]
         CredentialKind::AwsSecretsManagerSource => Err(ConnectorSelectionError::SelectionRejected),
+        #[cfg(not(feature = "lab"))]
+        _ => Err(ConnectorSelectionError::SelectionRejected),
     }
 }
 
@@ -637,10 +683,11 @@ mod native_envelope_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "lab"))]
 mod keychain_contract_tests {
     use super::*;
     #[test]
+    #[cfg(feature = "lab")]
     fn keychain_registry_contract_and_reserved_actions_are_closed() {
         testkit::assert_registry(registry());
         let contract = BuiltInConnector::MacosKeychainSourceV1.contract();

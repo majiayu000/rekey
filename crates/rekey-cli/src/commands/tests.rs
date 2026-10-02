@@ -81,6 +81,7 @@ fn backup_rejects_non_utf8_output_before_reading_proof() {
 }
 
 #[test]
+#[cfg(feature = "lab")]
 fn oidc_session_file_is_exclusive_private_nofollow_and_exact() {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     let dir = tempfile::tempdir().unwrap();

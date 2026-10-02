@@ -1,5 +1,20 @@
 # Feature Truth Matrix
 
+## v3 development scope (2026-10-03, unpublished)
+
+The [v3 implementation tracker](../superpowers/plans/2026-10-03-v3-implementation.md)
+records local changes separately from device acceptance and release inclusion.
+The existing historical release evidence below remains version-specific.
+
+| Capability | State | Release | Boundary |
+|---|---|---|---|
+| Provider template validation and rendering | Contract Tested | — | Pure domain foundation: 12 tests and independent review cover fixed origin/header boundaries, immutable administrator bindings, closed parameters/query keys and four built-in templates. No runtime installation, policy signing or execution integration yet. |
+| Additional response sealing encodings | Contract Tested | — | Focused raw/hex/JSON/base64-alignment and actual streaming-window regression tests; independent review findings corrected. Embedded base64 alignment support requires secrets of at least 16 bytes. Full integrated suite tracked separately. |
+| macOS daemon peer identity gate | Contract Tested | — | Signed CLI rejects same-team/wrong-ID and ad-hoc peers before sending any bytes; a real same-team signed release daemon passes status/unlock/shutdown. Ad-hoc/source builds report L1-dev. A point-in-time signature check does not establish the complete same-user attacker contract. |
+| macOS V1–V3 feasibility probes | Contract Tested | — | Synthetic disposable probes and four runner-verdict regressions. First device run: V1 and V2 inconclusive; V3 positive/negative observations passed. No product L1 claim. |
+
+## Existing product evidence
+
 This is the only table that may call a P0 capability “usable”. Other docs
 must link here instead of restating status.
 
@@ -197,7 +212,9 @@ is required before merge.
 | --- | --- | --- | --- |
 | Chinese SwiftUI Admin client | Black-box Verified | — | Local macOS build and observed native credential list/detail/search, protected forms, Action/policy/approval/audit navigation. `scripts/test-macos-ui.swift` exercises the same CLI bridge against a disposable real vault: init, wrong-proof and locked denial, credential lifecycle, Actions, capability lifecycle, policy/approval reads, backup/restore/audit export, stdin-only proof, filtered environment, new-only 0600 results and malformed responses. UI submit paths are not all individually covered by native automation. No independent human audit, notarization, release packaging, remote service or signing-key custody. See `docs/superpowers/specs/2026-09-14-native-admin-ui.md`. |
 
-Human desktop current-secret reveal and API-key add use a password-authenticated 7-day Admin session (source only). Locked/stale/forged sessions and the Agent channel are denied; plaintext is returned only in Admin response bodies after durable audit commits. Verified by `scripts/test-human-vault.py` and `admin_ipc::desktop_values_use_body_and_agent_channel_cannot_reveal`. Native interaction automation for this extension remains pending.
+Pre-v3 behavior: human desktop current-secret reveal and API-key add use a password-authenticated 7-day Admin session (source only). Locked/stale/forged sessions and the Agent channel are denied; plaintext is returned only in Admin response bodies after durable audit commits. Verified by `scripts/test-human-vault.py` and `admin_ipc::desktop_values_use_body_and_agent_channel_cannot_reveal`. Native interaction automation for this extension remains pending.
+
+The accepted v3 target removes session-only reveal: each reveal/copy and every Admin shutdown requires per-call step-up. Implementation and fresh acceptance are tracked in `docs/superpowers/plans/2026-10-03-v3-implementation.md`; the prior checks above do not establish this target.
 
 Remembered native desktop unlock can survive application and broker restart for the original seven-day window using a local Keychain restore key and an authenticated wrapped root key. Manual lock revokes it. Coverage: `authority_contract::remembered_desktop_*`, `scripts/test-human-vault.py`, and the local `scripts/test-macos-keychain.swift` process-restart/expiry contract.
 

@@ -244,6 +244,7 @@ mod tests {
         let header = store.load_header().unwrap();
         let token = SecretInput::from_slice(b"synthetic-session");
         let mut worker = Worker {
+            #[cfg(feature = "lab")]
             keychain_fixture: None,
             store,
             header,
@@ -294,6 +295,7 @@ mod tests {
                 crate::store::SqliteRecordStore::open(&crate::paths::vault_db(&state)).unwrap();
             let header = store.load_header().unwrap();
             let mut worker = Worker {
+                #[cfg(feature = "lab")]
                 keychain_fixture: None,
                 store,
                 header,

@@ -1,5 +1,8 @@
 # EXT-04 Fixed 1Password Connect item field source
 
+> Status: Lab (v3 scope; enterprise reserve)
+> Existing contracts and evidence are retained; this capability is excluded from the default v3 build and release package.
+
 Implementation contract frozen after the completed Azure/GCP and Opaque/AWS
 sealing gates, 2026-09-30: CredentialKind::OnePasswordConnectSource, wire name
 onepassword-connect-source, stable AAD code9, state/backup format19,

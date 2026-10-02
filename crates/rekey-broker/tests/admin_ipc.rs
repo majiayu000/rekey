@@ -52,6 +52,62 @@ async fn explicit_principal_issuance_requires_step_up_and_is_admin_only() {
     assert_eq!(rejected.err_code(), "INVALID_FRAME");
     broker.shutdown().await;
 }
+#[cfg(not(feature = "lab"))]
+#[tokio::test(flavor = "multi_thread")]
+async fn default_broker_rejects_lab_wire_entrypoints_and_source_registration() {
+    let broker = common::start_broker().await;
+    common::unlock(&broker).await;
+    for operation in [
+        admin_msg::METRICS,
+        admin_msg::OIDC_LOGIN_BEGIN,
+        admin_msg::CREDENTIAL_ROTATE_VAULT_KV,
+    ] {
+        let reply = common::call(&broker.admin_sock(), Channel::Admin, operation, b"{}", &[]).await;
+        assert_eq!(reply.err_code(), "INVALID_FRAME");
+    }
+    let reply = common::call(
+        &broker.agent_sock(),
+        Channel::Agent,
+        agent_msg::WORKLOAD_SESSION_CREATE,
+        b"{}",
+        b"synthetic.jwt",
+    )
+    .await;
+    assert_eq!(reply.err_code(), "INVALID_FRAME");
+    for kind in [
+        "vault-kv-v2-source",
+        "vault-dynamic-source",
+        "keycloak-token-exchange",
+        "gcp-secret-manager-source",
+        "aws-secrets-manager-source",
+        "azure-key-vault-source",
+        "onepassword-connect-source",
+        "macos-keychain-source",
+    ] {
+        let metadata = serde_json::json!({"label":"lab-source", "kind":kind}).to_string();
+        let reply = common::call(
+            &broker.admin_sock(),
+            Channel::Admin,
+            admin_msg::CREDENTIAL_ADD,
+            metadata.as_bytes(),
+            &common::proof_and_secret_body(common::PASSWORD, b"synthetic-profile"),
+        )
+        .await;
+        assert_eq!(reply.err_code(), "INVALID_INPUT", "{kind}");
+    }
+    let reply = common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::CREDENTIAL_LIST,
+        b"{}",
+        &[],
+    )
+    .await;
+    assert!(reply.ok()["credentials"].as_array().unwrap().is_empty());
+    broker.shutdown().await;
+}
+
+#[cfg(feature = "lab")]
 const VAULT_PROFILE: &[u8] = br#"{
   "credential_type":"vault-kv-v2-source-v1",
   "origin":"https://vault.example.com",
@@ -61,6 +117,7 @@ const VAULT_PROFILE: &[u8] = br#"{
   "version":7,
   "vault_token":"hvs.source-canary"
 }"#;
+#[cfg(feature = "lab")]
 const VAULT_DYNAMIC_PROFILE: &[u8] = br#"{
   "credential_type":"vault-dynamic-source-v2",
   "origin":"https://vault.example.com",
@@ -132,6 +189,7 @@ async fn admin_lifecycle_and_step_up() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[cfg(feature = "lab")]
 async fn vault_profile_admin_checks_proof_before_profile_and_preserves_kind() {
     let broker = common::start_broker().await;
     common::unlock(&broker).await;
@@ -203,6 +261,7 @@ async fn vault_profile_admin_checks_proof_before_profile_and_preserves_kind() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[cfg(feature = "lab")]
 async fn vault_dynamic_admin_checks_proof_before_profile_and_preserves_kind() {
     let broker = common::start_broker().await;
     common::unlock(&broker).await;
@@ -692,6 +751,7 @@ async fn passive_status_polling_does_not_postpone_idle_lock() {
 }
 
 #[tokio::test]
+#[cfg(feature = "lab")]
 async fn metrics_polling_does_not_postpone_idle_lock() {
     let broker = common::start_broker_with(Duration::from_millis(80), Duration::from_secs(2)).await;
     common::unlock(&broker).await;

@@ -13,7 +13,9 @@ use zeroize::Zeroizing;
 
 use crate::client::{CliError, Client};
 
+#[cfg(feature = "lab")]
 mod metrics;
+#[cfg(feature = "lab")]
 pub use metrics::metrics;
 mod password_lifecycle;
 pub use password_lifecycle::{key_rotate_dek, key_rotate_vrk, password_change, recovery_rotate};
@@ -28,7 +30,9 @@ pub use policy_approval::{
     approval_get, approval_origin, approval_pending, approval_prepare, policy_activate,
     policy_status, policy_trust_install,
 };
+#[cfg(feature = "lab")]
 mod vault_admin;
+#[cfg(feature = "lab")]
 pub use vault_admin::{
     credential_add_aws_secrets_manager, credential_add_azure_key_vault,
     credential_add_gcp_secret_manager, credential_add_keycloak, credential_add_macos_keychain,
@@ -105,7 +109,11 @@ fn admin_with_response_timeout(
 fn print_json<T: DeserializeOwned + Serialize>(metadata: &[u8]) -> Result<(), CliError> {
     let value = serde_json::from_slice::<T>(metadata)
         .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid response"))?;
-    let mut output = serde_json::to_vec_pretty(&value)
+    write_json(&value)
+}
+
+fn write_json(value: &impl Serialize) -> Result<(), CliError> {
+    let mut output = serde_json::to_vec_pretty(value)
         .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid response"))?;
     output.push(b'\n');
     std::io::stdout()
@@ -411,9 +419,20 @@ pub fn status(state_dir: &Path, passive: bool) -> Result<(), CliError> {
     } else {
         admin_msg::STATUS
     };
-    let (meta, _) = admin(state_dir)?.call(message, b"{}", &[])?;
-    print_json::<ipc::StatusResponse>(&meta)?;
-    Ok(())
+    let mut client = admin(state_dir)?;
+    let (meta, _) = client.call(message, b"{}", &[])?;
+    #[derive(Serialize)]
+    struct LocalStatus {
+        #[serde(flatten)]
+        daemon: ipc::StatusResponse,
+        peer_security: crate::client::PeerSecurity,
+    }
+    let daemon = serde_json::from_slice(&meta)
+        .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid response"))?;
+    write_json(&LocalStatus {
+        daemon,
+        peer_security: client.peer_security(),
+    })
 }
 
 pub fn shutdown(state_dir: &Path, recovery: bool, password_stdin: bool) -> Result<(), CliError> {
@@ -690,6 +709,7 @@ pub fn session_create(
     Ok(())
 }
 
+#[cfg(feature = "lab")]
 pub fn workload_session_create(
     agent_socket: &Path,
     actions: &[String],
@@ -932,6 +952,7 @@ pub fn execute_text_stream(
     Ok(())
 }
 
+#[cfg(feature = "lab")]
 pub fn oidc_begin(state_dir: &Path) -> Result<(), CliError> {
     let (metadata, body) = admin(state_dir)?.call(admin_msg::OIDC_LOGIN_BEGIN, b"{}", &[])?;
     if !body.is_empty() {
@@ -942,6 +963,7 @@ pub fn oidc_begin(state_dir: &Path) -> Result<(), CliError> {
     }
     print_json::<ipc::OidcBeginResponse>(&metadata)
 }
+#[cfg(feature = "lab")]
 pub fn oidc_cancel(state_dir: &Path, flow_id: &str) -> Result<(), CliError> {
     let metadata = serde_json::to_vec(&ipc::OidcFlowMeta {
         flow_id: flow_id.to_owned(),
@@ -961,6 +983,7 @@ pub fn oidc_cancel(state_dir: &Path, flow_id: &str) -> Result<(), CliError> {
     }
     print_json::<Cancelled>(&metadata)
 }
+#[cfg(feature = "lab")]
 pub fn oidc_finish(state_dir: &Path, flow_id: &str, path: &Path) -> Result<(), CliError> {
     let metadata = serde_json::to_vec(&ipc::OidcFlowMeta {
         flow_id: flow_id.to_owned(),
@@ -978,6 +1001,7 @@ pub fn oidc_finish(state_dir: &Path, flow_id: &str, path: &Path) -> Result<(), C
             .map_err(|_| CliError::local("INVALID_FRAME", "invalid OIDC response"))?,
     )
 }
+#[cfg(feature = "lab")]
 pub fn oidc_logout(state_dir: &Path, path: &Path) -> Result<(), CliError> {
     let token = crate::client::private_session_file(path)?;
     let (metadata, body) = admin(state_dir)?.call(admin_msg::OIDC_LOGOUT, b"{}", &token)?;
@@ -989,6 +1013,7 @@ pub fn oidc_logout(state_dir: &Path, path: &Path) -> Result<(), CliError> {
     }
     print_json::<ipc::OidcLogoutResponse>(&metadata)
 }
+#[cfg(feature = "lab")]
 fn write_management_session(path: &Path, token: &[u8]) -> Result<(), CliError> {
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
     let invalid = || {

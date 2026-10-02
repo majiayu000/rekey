@@ -1,5 +1,8 @@
 # External backup operations (BAK-06)
 
+> Status: Lab (v3 scope; enterprise reserve)
+> Existing contracts and evidence are retained; this capability is excluded from the default v3 build and release package.
+
 Status: external transfer operations implemented and installed. Local, remote
 and actual launchd-invoked transfer/restore drills passed. Destination authorized: `apple:/Users/apple/Documents/rekey-backups`.
 User delegated deployment choices. Use the default `~/.rekey` state (currently

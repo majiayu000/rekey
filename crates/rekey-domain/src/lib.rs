@@ -12,6 +12,7 @@ pub mod error;
 pub mod ids;
 pub mod ipc;
 pub mod sandbox;
+pub mod template;
 pub mod time;
 
 pub use error::DomainError;

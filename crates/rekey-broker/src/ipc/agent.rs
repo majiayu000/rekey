@@ -41,7 +41,7 @@ pub async fn handle_agent_conn(
                     agent_msg::EXECUTE_FIXED_HTTP_ACTION | agent_msg::PREPARE_APPROVAL | agent_msg::EXECUTE_TEXT_STREAM
                 ) {
                     ipc::AGENT_BODY_MAX_BYTES
-                } else if message_type == agent_msg::WORKLOAD_SESSION_CREATE {
+                } else if cfg!(feature = "lab") && message_type == agent_msg::WORKLOAD_SESSION_CREATE {
                     ipc::WORKLOAD_TOKEN_MAX_BYTES
                 } else {
                     0
@@ -50,6 +50,7 @@ pub async fn handle_agent_conn(
         } {
             Ok(frame) => frame,
             Err(crate::ipc::frame::FrameIoError::InboundSectionTooLarge(request_id)) => {
+                #[cfg(feature = "lab")]
                 ctx.metrics.agent.frame_failed();
                 if let Err(error) = write_error(
                     &mut stream,
@@ -67,17 +68,20 @@ pub async fn handle_agent_conn(
             }
             Err(crate::ipc::frame::FrameIoError::Closed) => return,
             Err(_) => {
+                #[cfg(feature = "lab")]
                 ctx.metrics.agent.frame_failed();
                 return;
             }
         };
         let request_id = frame.header.request_id;
+        #[cfg(feature = "lab")]
         let metric = ctx.metrics.agent.dispatch.start();
         if frame.header.message_type == agent_msg::EXECUTE_TEXT_STREAM {
             let result = tokio::select! {
                 _ = shutdown.changed() => return,
                 result = dispatch_stream(&frame, &ctx, &mut stream) => result,
             };
+            #[cfg(feature = "lab")]
             metric.finish(!matches!(result, Ok(ipc::TextStreamStatus::Completed)));
             if let Err(error) = result {
                 // Never append a legacy ERROR after CHUNKs. A closed stream
@@ -91,6 +95,7 @@ pub async fn handle_agent_conn(
             _ = shutdown.changed() => return,
             response = dispatch(&frame, &ctx) => response,
         };
+        #[cfg(feature = "lab")]
         metric.finish(response.is_err());
         let write_response = async {
             match response {
@@ -184,6 +189,7 @@ async fn dispatch(
                 .map_err(|_| BrokerError::Frame(rekey_domain::ipc::FrameError::InvalidField))?;
             Ok((metadata, Vec::new()))
         }
+        #[cfg(feature = "lab")]
         agent_msg::WORKLOAD_SESSION_CREATE => {
             let create: ipc::SessionCreateMeta = serde_json::from_slice(&frame.metadata)
                 .map_err(|_| BrokerError::Frame(rekey_domain::ipc::FrameError::InvalidField))?;

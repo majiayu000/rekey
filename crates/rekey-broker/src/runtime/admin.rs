@@ -308,13 +308,17 @@ mod tests {
         let (shutdown_tx, _) = watch::channel(false);
         let (stop_tx, _) = mpsc::unbounded_channel();
         let ctx = BrokerCtx {
+            #[cfg(feature = "lab")]
             oidc_admin: None,
+            #[cfg(feature = "lab")]
             metrics: crate::metrics::Metrics::default(),
             authority: authority.clone(),
             sessions,
             executions,
             executor,
+            #[cfg(feature = "lab")]
             workload_transport: transport,
+            #[cfg(feature = "lab")]
             online_jwks_slots: Arc::new(tokio::sync::Semaphore::new(2)),
             lifecycle,
             policy,
@@ -500,13 +504,17 @@ mod tests {
             let (shutdown_tx, _) = watch::channel(false);
             let (stop_tx, _) = mpsc::unbounded_channel();
             let ctx = BrokerCtx {
+                #[cfg(feature = "lab")]
                 oidc_admin: None,
+                #[cfg(feature = "lab")]
                 metrics: crate::metrics::Metrics::default(),
                 authority: authority.clone(),
                 sessions,
                 executions,
                 executor,
+                #[cfg(feature = "lab")]
                 workload_transport: transport,
+                #[cfg(feature = "lab")]
                 online_jwks_slots: Arc::new(tokio::sync::Semaphore::new(2)),
                 lifecycle,
                 policy,
@@ -1054,6 +1062,7 @@ mod tests {
             f.ctx.lifecycle.phase(),
             crate::lifecycle::BrokerPhase::Running
         );
+        #[cfg(feature = "lab")]
         assert_eq!(f.ctx.metrics.fault_signals.load(Ordering::Relaxed), 1);
         f.finish().await;
     }

@@ -1,5 +1,8 @@
 # Docker primary/standby recovery reference
 
+> Status: Lab (v3 scope; enterprise reserve)
+> Existing contracts and evidence are retained; this capability is excluded from the default v3 build and release package.
+
 Selected for issue #60 after the user authorized a disposable Docker environment.
 This is a fixed manual drill, scoped to one trusted external Docker daemon and
 two unprivileged Linux containers. It does not establish physical-host HA,

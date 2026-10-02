@@ -16,12 +16,19 @@ use rekey_domain::ipc::{
 };
 use zeroize::Zeroizing;
 
+#[cfg(target_os = "macos")]
+#[path = "client/macos_peer.rs"]
+mod macos_peer;
+
+#[cfg(feature = "lab")]
 static ADMIN_SESSION_FILE: std::sync::OnceLock<Option<std::path::PathBuf>> =
     std::sync::OnceLock::new();
+#[cfg(feature = "lab")]
 pub fn configure_admin_session_file(path: Option<std::path::PathBuf>) {
     let _ = ADMIN_SESSION_FILE.set(path);
 }
 
+#[cfg(feature = "lab")]
 pub(crate) fn private_session_file(path: &Path) -> Result<Zeroizing<Vec<u8>>, CliError> {
     use std::io::Read;
     use std::os::unix::fs::OpenOptionsExt;
@@ -128,10 +135,20 @@ impl CliError {
     }
 }
 
+/// Local connection evidence, not a claim that every L1 requirement is met.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum PeerSecurity {
+    #[serde(rename = "verified_signature")]
+    VerifiedSignature,
+    #[serde(rename = "L1-dev")]
+    L1Dev,
+}
+
 pub struct Client {
     stream: UnixStream,
     channel: Channel,
     response_timeout: Duration,
+    peer_security: PeerSecurity,
 }
 
 fn io_err(err: std::io::Error) -> CliError {
@@ -360,6 +377,10 @@ impl Client {
         let socket_metadata = verify_socket_contract(socket, channel)?;
         let stream = UnixStream::connect(socket).map_err(io_err)?;
         verify_connected_peer(&stream, socket, &socket_metadata, channel)?;
+        #[cfg(target_os = "macos")]
+        let peer_security = macos_peer::verify(&stream)?;
+        #[cfg(not(target_os = "macos"))]
+        let peer_security = PeerSecurity::L1Dev;
         stream
             .set_read_timeout(Some(response_timeout))
             .map_err(io_err)?;
@@ -368,7 +389,12 @@ impl Client {
             stream,
             channel,
             response_timeout,
+            peer_security,
         })
+    }
+
+    pub fn peer_security(&self) -> PeerSecurity {
+        self.peer_security
     }
 
     fn send_request(
@@ -377,6 +403,7 @@ impl Client {
         metadata: &[u8],
         body: &[u8],
     ) -> Result<RequestId, CliError> {
+        #[cfg(feature = "lab")]
         let wrapped = if self.channel == Channel::Admin
             && rekey_domain::ipc::managed_admin_operation(message_type)
                 .map_err(|_| CliError::local("INVALID_FRAME", "unknown admin operation"))?
@@ -396,6 +423,7 @@ impl Client {
         } else {
             None
         };
+        #[cfg(feature = "lab")]
         let body = wrapped.as_deref().map_or(body, |value| value.as_slice());
         let metadata_len = u32::try_from(metadata.len())
             .map_err(|_| CliError::local("INVALID_FRAME", "request metadata is too large"))?;

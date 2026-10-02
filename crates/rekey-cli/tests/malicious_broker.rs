@@ -30,7 +30,9 @@ enum Attack {
     AuditNonEmptyMetadata,
     AuditUnknownPageField,
     AuditMalformedRecord,
+    #[cfg_attr(not(feature = "lab"), allow(dead_code))]
     WorkloadResponseBody,
+    #[cfg_attr(not(feature = "lab"), allow(dead_code))]
     WorkloadUnknownResponseField,
 }
 
@@ -419,7 +421,9 @@ fn cli_rejects_forged_broker_responses() {
         Attack::AuditNonEmptyMetadata,
         Attack::AuditUnknownPageField,
         Attack::AuditMalformedRecord,
+        #[cfg(feature = "lab")]
         Attack::WorkloadResponseBody,
+        #[cfg(feature = "lab")]
         Attack::WorkloadUnknownResponseField,
     ] {
         let output = run_attack(attack);
@@ -711,6 +715,7 @@ fn valid_audit_page_with_one_event() -> Vec<u8> {
     .into_bytes()
 }
 
+#[cfg(feature = "lab")]
 fn run_metrics_response(
     metadata: serde_json::Value,
     body: &[u8],
@@ -719,6 +724,7 @@ fn run_metrics_response(
     run_metrics_response_to(metadata, body, prometheus, None)
 }
 
+#[cfg(feature = "lab")]
 fn run_metrics_response_to(
     metadata: serde_json::Value,
     body: &[u8],
@@ -771,6 +777,7 @@ fn run_metrics_response_to(
 }
 
 #[test]
+#[cfg(feature = "lab")]
 fn metrics_cli_renders_typed_snapshots_and_rejects_untrusted_shape() {
     let mut snapshot = rekey_domain::ipc::MetricsResponse::default();
     snapshot.agent.dispatch.requests_total = 42;
@@ -811,6 +818,7 @@ fn metrics_cli_renders_typed_snapshots_and_rejects_untrusted_shape() {
 }
 
 #[test]
+#[cfg(feature = "lab")]
 fn metrics_textfile_cli_publishes_and_invalidates_untrusted_or_unavailable_data() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().canonicalize().unwrap();

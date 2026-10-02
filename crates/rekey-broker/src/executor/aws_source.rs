@@ -1640,7 +1640,7 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        assert!(!contains_secret(
+        assert!(contains_secret(
             &source.body,
             &parsed.bootstrap_needles(b"fixture-profile")
         ));
@@ -1700,7 +1700,7 @@ mod tests {
                     .replace(&container, &escaped)
                     .into_bytes(),
             );
-            assert!(!contains_secret(
+            assert!(contains_secret(
                 &source.body,
                 &sealing_needles(b"fixture-source-bearer", b"fixture-source-bearer")
             ));

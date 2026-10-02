@@ -283,6 +283,7 @@ impl SessionRegistry {
     }
 
     /// Clamp an unpublished human capability to the owning management lease.
+    #[cfg(feature = "lab")]
     pub(crate) fn bound_management_deadline(&self, session: SessionId, deadline: Instant) -> bool {
         let mut inner = self.lock_inner();
         let Some(entry) = inner
@@ -309,6 +310,7 @@ impl SessionRegistry {
     }
 
     /// Revoke only the explicit principal; count live capabilities and pending challenges.
+    #[cfg(feature = "lab")]
     pub(crate) fn revoke_principal(
         &self,
         principal: rekey_domain::ids::PrincipalId,
@@ -459,6 +461,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "lab")]
     fn oidc_principal_revocation_counts_live_pending_and_preserves_other_principals() {
         use rekey_domain::authorization::{ApprovalMode, ResourceRef, SchemaId};
         use rekey_domain::ids::{ApprovalRequestId, ApproverId, PolicyRuleId};
@@ -513,6 +516,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "lab")]
     fn oidc_management_monotonic_deadline_bounds_human_capability() {
         let registry = open_registry();
         let (mut grant, action) = grant(10);

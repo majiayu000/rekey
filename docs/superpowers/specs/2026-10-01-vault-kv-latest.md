@@ -1,5 +1,8 @@
 # VEX-04: explicitly selected latest Vault KV v2 read
 
+> Status: Lab (v3 scope; enterprise reserve)
+> Existing contracts and evidence are retained; this capability is excluded from the default v3 build and release package.
+
 Frozen 2026-10-01 before code. Accepted local implementation scope is the latest
 read slice in external-capabilities.md:186-195. No write/CAS, Namespace, engine,
 private endpoint, login or token-renewal extension is part of this slice.

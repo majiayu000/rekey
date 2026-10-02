@@ -76,15 +76,21 @@ struct AddCredentialForm: View {
             DisclosureGroup("其他凭证类型") { Picker("类型", selection: $kind) {
                 Text("API Key / 访问令牌").tag("add")
                 Text("GitHub App").tag("add-github-app")
+                if model.status?.lab_enabled == true {
                 Text("Vault KV v2").tag("add-vault-kv")
                 Text("Vault 动态租约").tag("add-vault-dynamic")
                 Text("Keycloak Token Exchange").tag("add-keycloak")
+                }
             }
             }
             if kind == "add" { SecureField("粘贴 API Key，无需 Bearer 前缀", text: $secret).textFieldStyle(.roundedBorder) }
             else {
                 HStack { Text(profile?.lastPathComponent ?? "选择私有 JSON 配置文件").font(.system(size: 12)); Spacer(); Button("选择文件") { profile = chooseFile() } }
                 Text("配置文件须归当前用户所有，且不可被其他用户读取。内容与权限由服务验证。").font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+            if kind == "add" && !secret.isEmpty && secret.utf8.count < 16 {
+                Text("密钥短于 16 字节，嵌入编码的反射遮蔽覆盖有限。建议使用服务商生成的完整 Key。")
+                    .font(.system(size: 11)).foregroundStyle(.orange)
             }
             if kind != "add" { SecureField("当前保险库密码", text: $proof).textFieldStyle(.roundedBorder) }
             if let error = model.error { Text(error).font(.system(size: 12)).foregroundStyle(.red) }

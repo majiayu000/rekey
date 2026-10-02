@@ -1,4 +1,5 @@
 use std::sync::Arc;
+#[cfg(feature = "lab")]
 use std::sync::atomic::Ordering;
 
 use rekey_domain::ipc::{self, Channel, FRAME_HEADER_LEN, FrameHeader};
@@ -35,13 +36,16 @@ pub(super) async fn accept_loop(
                         return Err(BrokerError::Io(err));
                     }
                 };
+                #[cfg(feature = "lab")]
                 let metrics = if admin { &ctx.metrics.admin } else { &ctx.metrics.agent };
                 if !peer_allowed(&stream, &ctx, admin) {
+                    #[cfg(feature = "lab")]
                     metrics.peer_rejections.fetch_add(1, Ordering::Relaxed);
                     tracing::debug!(event = "runtime.peer_rejected");
                     continue;
                 }
                 let Ok(permit) = Arc::clone(&slots).try_acquire_owned() else {
+                    #[cfg(feature = "lab")]
                     metrics.capacity_rejections.fetch_add(1, Ordering::Relaxed);
                     capacity_replies.spawn(reject_over_capacity(
                         stream,

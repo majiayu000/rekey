@@ -16,3 +16,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 uuid = { workspace = true }
+
+[features]
+default = []
+lab = []

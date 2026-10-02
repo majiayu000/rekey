@@ -30,3 +30,27 @@ tempfile = { workspace = true }
 aws-lc-rs = "1.18"
 data-encoding = "2"
 serde_jcs = "0.2"
+
+[features]
+default = []
+lab = []
+
+[[test]]
+name = "workload_blackbox"
+required-features = ["lab"]
+
+[[test]]
+name = "aws_source_blackbox"
+required-features = ["lab"]
+
+[[test]]
+name = "azure_source_blackbox"
+required-features = ["lab"]
+
+[[test]]
+name = "gcp_source_blackbox"
+required-features = ["lab"]
+
+[[test]]
+name = "onepassword_source_blackbox"
+required-features = ["lab"]

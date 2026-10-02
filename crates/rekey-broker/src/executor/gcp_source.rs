@@ -1263,7 +1263,7 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        assert!(!contains_secret(
+        assert!(contains_secret(
             &source.body,
             &parsed.bootstrap_needles(b"fixture-profile")
         ));
@@ -1323,8 +1323,10 @@ mod tests {
                     .replace(&container, &escaped)
                     .into_bytes(),
             );
-            assert!(!contains_secret(
-                &source.body,
+            // GCP adds a base64 container around each reflected form. Some are
+            // detected in raw JSON, others only after provider decoding.
+            assert!(contains_secret(
+                value.as_bytes(),
                 &sealing_needles(b"fixture-source-bearer", b"Bearer fixture-source-bearer")
             ));
             f.fake.push_response(Ok(source));

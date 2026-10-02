@@ -45,8 +45,8 @@ RESOLVED_TWO="P7OSS-RESOLVED-VALUE-TWO-CANARY"
 SOURCE_CANARY="P7OSS-VAULT-SOURCE-TOKEN-CANARY"
 PG_PASSWORD="p7oss-postgres-bootstrap"
 
-cargo build --release -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd
-cargo build --release -p rekey-broker --example p7_vault_oss_fixture
+cargo build --features lab --release -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd
+cargo build --features lab --release -p rekey-broker --example p7_vault_oss_fixture
 
 WORKDIR="$(mktemp -d /tmp/rkp7oss.XXXXXX)"
 STATE="$WORKDIR/state"

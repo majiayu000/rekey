@@ -225,7 +225,7 @@ struct UIContract {
         let identity = try JSONDecoder().decode(OIDCLoginIdentity.self, from: Data("{\"principal_id\":\"public-principal\",\"expires_at_ms\":300000,\"mapping_sha256\":\"public-mapping\"}".utf8))
         try require(identity.principal_id == "public-principal" && identity.expires_at_ms == 300000, "public identity response decoded")
         let model = AppModel(stateDirectory: state)
-        model.status = ServiceStatus(state: "unlocked", format_version: 19, runtime_version: "fixture", sessions_active: 0)
+        model.status = ServiceStatus(state: "unlocked", format_version: 19, runtime_version: "fixture", sessions_active: 0, peer_security: "L1-dev", lab_enabled: false)
         model.oidcSessionFile = session.path; model.oidcProfileFile = root.appendingPathComponent("profile.json").path
         let revision = model.oidcFlowRevision
         try require(model.acceptsOIDCCompletion(revision, workspace: state), "current login completion eligible")
@@ -243,7 +243,7 @@ struct UIContract {
         model.oidcSessionFile = session.path
         model.clearCache()
         try require(model.oidcSessionFile == nil, "disconnect clears token pointer")
-        model.status = ServiceStatus(state: "locked", format_version: 19, runtime_version: "fixture", sessions_active: 0)
+        model.status = ServiceStatus(state: "locked", format_version: 19, runtime_version: "fixture", sessions_active: 0, peer_security: "L1-dev", lab_enabled: false)
         try require(!model.acceptsOIDCCompletion(model.oidcFlowRevision, workspace: model.stateDirectory), "locked completion rejected")
         print("OIDC caller boundary: \(assertions) assertions passed; no Keychain or listeners used")
     }
@@ -412,7 +412,7 @@ struct UIContract {
             try require(!error.localizedDescription.contains("BODY-SECRET"), "invalid response body omitted")
         }
         let model = AppModel(stateDirectory:root.appendingPathComponent("state").path)
-        model.status = ServiceStatus(state:"unlocked",format_version:15,runtime_version:"fixture",sessions_active:0)
+        model.status = ServiceStatus(state:"unlocked",format_version:15,runtime_version:"fixture",sessions_active:0, peer_security: "L1-dev", lab_enabled: false)
         let revision = model.nativeFlowRevision
         try require(model.acceptsNativeCompletion(revision,workspace:model.stateDirectory), "current completion admitted")
         model.approvalDetails = details; model.showPolicyDraft = true
@@ -422,11 +422,11 @@ struct UIContract {
         model.stateDirectory = root.appendingPathComponent("other-state").path
         try require(!model.acceptsNativeCompletion(switched,workspace:model.stateDirectory), "workspace change invalidates completion")
         let lockedRevision = model.nativeFlowRevision
-        model.status = ServiceStatus(state:"locked",format_version:15,runtime_version:"fixture",sessions_active:0)
+        model.status = ServiceStatus(state:"locked",format_version:15,runtime_version:"fixture",sessions_active:0, peer_security: "L1-dev", lab_enabled: false)
         try require(!model.acceptsNativeCompletion(lockedRevision,workspace:model.stateDirectory), "locked completion rejected")
         model.clearCache()
         try require(model.approvalDetails == nil && !model.showPolicyDraft, "disconnect/cache clearing drops native forms")
-        model.status = ServiceStatus(state:"unlocked",format_version:15,runtime_version:"fixture",sessions_active:0)
+        model.status = ServiceStatus(state:"unlocked",format_version:15,runtime_version:"fixture",sessions_active:0, peer_security: "L1-dev", lab_enabled: false)
         let reviewRevision = model.nativeFlowRevision, reviewWorkspace = model.stateDirectory
         try require(model.finishApprovalReview(.success(details), revision:reviewRevision, workspace:reviewWorkspace, active:true), "current active read callback publishes actual details")
         model.clearNativeFlow(); model.error = "CURRENT-CONTEXT"

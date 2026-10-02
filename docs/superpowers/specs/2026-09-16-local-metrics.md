@@ -1,5 +1,8 @@
 # P-08 local monitoring slice
 
+> Status: Lab (v3 scope; enterprise reserve)
+> Existing contracts and evidence are retained; this capability is excluded from the default v3 build and release package.
+
 Status: implemented and locally verified, 2026-09-16. This slice extends the v2 foundation without
 changing its Admin/Agent or credential boundary.
 

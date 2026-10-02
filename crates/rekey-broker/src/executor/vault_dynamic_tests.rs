@@ -414,7 +414,7 @@ async fn actor_decoded_selected_bootstrap_never_crosses_into_business() {
             .replace(token, &escaped)
             .into_bytes(),
     );
-    assert!(!contains_secret(
+    assert!(contains_secret(
         &source.body,
         &sealing_needles(PROFILE, token.as_bytes())
     ));
@@ -458,7 +458,7 @@ async fn actor_decoded_lease_identifier_bootstrap_is_compensated_before_public_a
         .collect::<String>();
     let body = serde_json::to_string(&serde_json::json!({"lease_id":lease_id,"lease_duration":60,"renewable":false,"data":{"token":"clean-dynamic-secret"}})).unwrap().replace(token, &escaped).into_bytes();
     assert!(parse_issued(&body).is_ok());
-    assert!(!contains_secret(
+    assert!(contains_secret(
         &body,
         &sealing_needles(PROFILE, token.as_bytes())
     ));
@@ -517,7 +517,7 @@ async fn actor_decoded_selected_username_password_never_enter_basic_auth_and_cle
             let body = serde_json::to_string(&serde_json::json!({"lease_id":"database/creds/role/accepted-lease","lease_duration":60,"renewable":false,"data":{key:value}})).unwrap().replace(&value, &escaped).into_bytes();
             let mut de = serde_json::Deserializer::from_slice(&body);
             assert!((IssuedSeed { key }).deserialize(&mut de).is_ok());
-            assert!(!contains_secret(
+            assert!(contains_secret(
                 &body,
                 &sealing_needles(PROFILE, b"hvs.bootstrap")
             ));

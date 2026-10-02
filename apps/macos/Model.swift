@@ -160,6 +160,11 @@ struct ServiceStatus: Decodable {
     let format_version: Int
     let runtime_version: String
     let sessions_active: Int
+    let peer_security: String
+    let lab_enabled: Bool
+    var identityLabel: String {
+        peer_security == "verified_signature" ? "服务签名已校验" : "L1-dev · 服务签名未校验"
+    }
     var unlocked: Bool { state == "unlocked" }
     var label: String {
         switch state {

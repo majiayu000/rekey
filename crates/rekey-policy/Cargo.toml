@@ -9,7 +9,7 @@ description = "Typed default-deny authorization policy evaluator for Rekey"
 publish = false
 
 [dependencies]
-cryptoki = "=0.12.1"
+cryptoki = { version = "=0.12.1", optional = true }
 rekey-domain = { workspace = true }
 aws-lc-rs = { version = "1.18", features = ["ring-io"] }
 curve25519-dalek = { version = "4.1", default-features = false }
@@ -23,8 +23,8 @@ sha2 = "0.10"
 thiserror = { workspace = true }
 url = "2"
 zeroize = { version = "1", features = ["serde"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
-tokio = { version = "1", default-features = false, features = ["rt", "net", "time"] }
+reqwest = { version = "0.12", optional = true, default-features = false, features = ["rustls-tls"] }
+tokio = { version = "1", optional = true, default-features = false, features = ["rt", "net", "time"] }
 
 [dev-dependencies]
 uuid = { workspace = true }
@@ -32,3 +32,11 @@ tempfile = { workspace = true }
 
 rcgen = "0.13"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+
+[features]
+default = []
+lab = ["dep:cryptoki", "dep:reqwest", "dep:tokio"]
+
+[[test]]
+name = "workload_identity"
+required-features = ["lab"]

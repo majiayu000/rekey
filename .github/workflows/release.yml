@@ -55,7 +55,7 @@ jobs:
           [[ "$GITHUB_REF_NAME" == "v$version" ]]
           [[ "$(rustc -vV | awk '/^host:/ {print $2}')" == "${{ matrix.target }}" ]]
       - name: Build release binaries
-        run: cargo build --locked --release -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd --bin rekey-github-create-issue --bin rekey-mcp -p rekey-policy --bin rekey-policy-sign --bin rekey-approval-sign -p rekey-approval-relay --bin rekey-approval-relay
+        run: cargo build --locked --release -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd --bin rekey-mcp -p rekey-policy --bin rekey-policy-sign --bin rekey-approval-sign
       - name: Sign macOS binaries
         if: runner.os == 'macOS'
         env:
@@ -80,8 +80,8 @@ jobs:
           security import "$cert" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain"
           security list-keychains -d user -s "$keychain" login.keychain-db
-          for bin in rekey rekeyd rekey-github-create-issue rekey-mcp rekey-policy-sign rekey-approval-sign rekey-approval-relay; do
-            codesign --force --sign "$APPLE_SIGNING_IDENTITY" --options runtime --timestamp "target/release/$bin"
+          for bin in rekey rekeyd rekey-mcp rekey-policy-sign rekey-approval-sign; do
+            codesign --force --sign "$APPLE_SIGNING_IDENTITY" --identifier "com.rekey.$bin" --options runtime --timestamp "target/release/$bin"
             codesign --verify --strict "target/release/$bin"
           done
       - name: Package release archive
@@ -92,13 +92,10 @@ jobs:
           archive="rekey-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz"
           stage="dist/rekey-${GITHUB_REF_NAME}-${{ matrix.target }}"
           mkdir -p "$stage"
-          install -m 0755 target/release/rekey target/release/rekeyd target/release/rekey-github-create-issue \
-            target/release/rekey-mcp target/release/rekey-policy-sign target/release/rekey-approval-sign \
-            target/release/rekey-approval-relay "$stage/"
+          install -m 0755 target/release/rekey target/release/rekeyd \
+            target/release/rekey-mcp target/release/rekey-policy-sign target/release/rekey-approval-sign "$stage/"
           install -m 0755 scripts/rekey-service-unit.py scripts/agent-quickstart.py \
-            scripts/operator-credential-repair.py scripts/rekey-backup-sync.py \
-            scripts/rekey-audit-delivery.py scripts/rekey-audit-archive.py \
-            scripts/rekey-controlplane.py "$stage/"
+            scripts/operator-credential-repair.py "$stage/"
           install -m 0644 LICENSE README.md "$stage/"
           install -m 0644 CHANGELOG.md SECURITY.md SUPPORT.md "$stage/"
           mkdir -p "$stage/docs/product-foundation" "$stage/docs/releases" \
@@ -168,6 +165,12 @@ jobs:
             docs/superpowers/specs/2026-09-30-decoded-source-bootstrap-sealing.md \
             docs/superpowers/specs/2026-09-30-metrics-deployment.md \
             docs/superpowers/specs/2026-09-30-native-policy-approval-flow.md \
+            docs/superpowers/specs/2026-10-02-docker-dr-reference.md \
+            docs/superpowers/specs/2026-10-01-pkcs11-approval-signer.md \
+            docs/superpowers/specs/2026-10-01-unlocked-audit-retention.md \
+            docs/superpowers/specs/2026-10-02-rekey-v3-personal-first.md \
+            docs/superpowers/plans/2026-10-03-v3-implementation.md \
+            docs/evidence/local-capabilities-2026-10-02.json \
             deploy/prometheus/rekey.rules.yml \
             deploy/prometheus/rekey.rules.test.yml \
             deploy/prometheus/rekey.scrape.example.yml \

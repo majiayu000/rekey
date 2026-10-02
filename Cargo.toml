@@ -54,3 +54,7 @@ serde_jcs = "0.2"
 
 [dev-dependencies]
 zeroize = "1"
+
+[features]
+default = []
+lab = ["rekey-broker/lab", "rekey-vault/lab"]

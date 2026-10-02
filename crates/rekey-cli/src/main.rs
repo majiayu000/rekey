@@ -48,9 +48,11 @@ struct Cli {
     command: Command,
     /// Explicit private OIDC management session file.
     #[arg(long, global = true)]
+    #[cfg(feature = "lab")]
     admin_session_file: Option<PathBuf>,
 }
 
+#[cfg(feature = "lab")]
 #[derive(Subcommand)]
 enum OidcLoginCommand {
     Begin,
@@ -74,6 +76,7 @@ enum OidcLoginCommand {
 enum Command {
     /// Fixed-node OIDC administrator login lifecycle.
     #[command(subcommand)]
+    #[cfg(feature = "lab")]
     OidcLogin(OidcLoginCommand),
     /// Initialize a new vault (delegates to rekeyd).
     Init {
@@ -83,6 +86,7 @@ enum Command {
     /// Run the broker in the foreground (delegates to rekeyd).
     Serve {
         #[arg(long)]
+        #[cfg(feature = "lab")]
         oidc_admin_profile: Option<PathBuf>,
         #[arg(long, default_value = "7d")]
         idle_lock: String,
@@ -141,6 +145,7 @@ enum Command {
         passive: bool,
     },
     /// Read local monitoring counters without resetting the idle-lock timer.
+    #[cfg(feature = "lab")]
     Metrics {
         /// Print Prometheus text exposition instead of JSON.
         #[arg(long)]
@@ -241,6 +246,7 @@ enum CredentialCommand {
         step_up: StepUpArgs,
     },
     /// Add a closed Vault KV v2 fixed-version source profile.
+    #[cfg(feature = "lab")]
     AddVaultKv {
         label: String,
         #[arg(long)]
@@ -249,6 +255,7 @@ enum CredentialCommand {
         step_up: StepUpArgs,
     },
     /// Add a closed Keycloak standard token exchange profile.
+    #[cfg(feature = "lab")]
     AddKeycloak {
         label: String,
         #[arg(long)]
@@ -257,6 +264,7 @@ enum CredentialCommand {
         step_up: StepUpArgs,
     },
     /// Add a closed one-shot Vault dynamic lease source profile.
+    #[cfg(feature = "lab")]
     AddVaultDynamic {
         label: String,
         #[arg(long)]
@@ -265,6 +273,7 @@ enum CredentialCommand {
         step_up: StepUpArgs,
     },
     /// Add a fixed GCP Secret Manager numeric version source profile.
+    #[cfg(feature = "lab")]
     AddGcpSecretManager {
         label: String,
         #[arg(long)]
@@ -273,6 +282,7 @@ enum CredentialCommand {
         step_up: StepUpArgs,
     },
     /// Rotate a fixed GCP Secret Manager source profile.
+    #[cfg(feature = "lab")]
     RotateGcpSecretManager {
         credential_id: String,
         #[arg(long)]
@@ -281,6 +291,7 @@ enum CredentialCommand {
         step_up: StepUpArgs,
     },
     /// Add a fixed Azure Key Vault pinned version source profile.
+    #[cfg(feature = "lab")]
     AddAzureKeyVault {
         label: String,
         #[arg(long)]
@@ -289,6 +300,7 @@ enum CredentialCommand {
         step_up: StepUpArgs,
     },
     /// Rotate a fixed Azure Key Vault source profile.
+    #[cfg(feature = "lab")]
     RotateAzureKeyVault {
         credential_id: String,
         #[arg(long)]
@@ -297,6 +309,7 @@ enum CredentialCommand {
         step_up: StepUpArgs,
     },
     /// Add one exact encrypted macOS file-Keychain reference.
+    #[cfg(feature = "lab")]
     AddMacosKeychain {
         label: String,
         #[arg(long)]
@@ -305,6 +318,7 @@ enum CredentialCommand {
         step_up: StepUpArgs,
     },
     /// Rotate one exact macOS file-Keychain reference.
+    #[cfg(feature = "lab")]
     RotateMacosKeychain {
         credential_id: String,
         #[arg(long)]
@@ -314,6 +328,7 @@ enum CredentialCommand {
     },
     /// Add a fixed 1Password Connect item field source profile.
     #[command(name = "add-onepassword-connect")]
+    #[cfg(feature = "lab")]
     AddOnePasswordConnect {
         label: String,
         #[arg(long)]
@@ -323,6 +338,7 @@ enum CredentialCommand {
     },
     /// Rotate a fixed 1Password Connect source profile.
     #[command(name = "rotate-onepassword-connect")]
+    #[cfg(feature = "lab")]
     RotateOnePasswordConnect {
         credential_id: String,
         #[arg(long)]
@@ -331,6 +347,7 @@ enum CredentialCommand {
         step_up: StepUpArgs,
     },
     /// Add a fixed AWS Secrets Manager pinned version source profile.
+    #[cfg(feature = "lab")]
     AddAwsSecretsManager {
         label: String,
         #[arg(long)]
@@ -339,6 +356,7 @@ enum CredentialCommand {
         step_up: StepUpArgs,
     },
     /// Rotate a fixed AWS Secrets Manager source profile.
+    #[cfg(feature = "lab")]
     RotateAwsSecretsManager {
         credential_id: String,
         #[arg(long)]
@@ -365,6 +383,7 @@ enum CredentialCommand {
         step_up: StepUpArgs,
     },
     /// Rotate a Vault KV v2 fixed-version source profile.
+    #[cfg(feature = "lab")]
     RotateVaultKv {
         credential_id: String,
         #[arg(long)]
@@ -373,6 +392,7 @@ enum CredentialCommand {
         step_up: StepUpArgs,
     },
     /// Rotate a closed Keycloak standard token exchange profile.
+    #[cfg(feature = "lab")]
     RotateKeycloak {
         credential_id: String,
         #[arg(long)]
@@ -381,6 +401,7 @@ enum CredentialCommand {
         step_up: StepUpArgs,
     },
     /// Rotate a one-shot Vault dynamic lease source profile.
+    #[cfg(feature = "lab")]
     RotateVaultDynamic {
         credential_id: String,
         #[arg(long)]
@@ -449,9 +470,11 @@ enum SessionCommand {
         max_uses: u32,
         /// Read a workload JWT from stdin and mint through the Agent socket.
         #[arg(long, conflicts_with_all = ["recovery", "password_stdin"])]
+        #[cfg(feature = "lab")]
         workload_token_stdin: bool,
         /// Reissue for an explicitly authorized principal after policy replacement.
-        #[arg(long, conflicts_with = "workload_token_stdin")]
+        #[arg(long)]
+        #[cfg_attr(feature = "lab", arg(conflicts_with = "workload_token_stdin"))]
         principal: Option<String>,
         #[command(flatten)]
         step_up: StepUpArgs,
@@ -647,6 +670,7 @@ enum AuditRetentionCommand {
 
 fn main() {
     let cli = Cli::parse();
+    #[cfg(feature = "lab")]
     client::configure_admin_session_file(cli.admin_session_file);
     let state_dir = match commands::resolve_state_dir(cli.state_dir) {
         Ok(dir) => dir,
@@ -659,6 +683,7 @@ fn main() {
         .agent_socket
         .unwrap_or_else(|| state_dir.join("runtime").join("agent.sock"));
     let result = match cli.command {
+        #[cfg(feature = "lab")]
         Command::OidcLogin(command) => match command {
             OidcLoginCommand::Begin => commands::oidc_begin(&state_dir),
             OidcLoginCommand::Finish {
@@ -684,9 +709,12 @@ fn main() {
         }
         Command::Serve {
             idle_lock,
+            #[cfg(feature = "lab")]
             oidc_admin_profile,
         } => {
+            #[allow(unused_mut)]
             let mut args = vec!["--idle-lock".into(), idle_lock.into()];
+            #[cfg(feature = "lab")]
             if let Some(profile) = oidc_admin_profile {
                 args.push("--oidc-admin-profile".into());
                 args.push(profile.into_os_string());
@@ -717,6 +745,7 @@ fn main() {
         } => commands::unlock(&state_dir, recovery, password_stdin),
         Command::Lock => commands::lock(&state_dir),
         Command::Status { passive } => commands::status(&state_dir, passive),
+        #[cfg(feature = "lab")]
         Command::Metrics {
             prometheus,
             textfile_dir,
@@ -741,6 +770,7 @@ fn main() {
                 step_up.recovery,
                 step_up.password_stdin,
             ),
+            #[cfg(feature = "lab")]
             CredentialCommand::AddVaultKv {
                 label,
                 file,
@@ -752,6 +782,7 @@ fn main() {
                 step_up.recovery,
                 step_up.password_stdin,
             ),
+            #[cfg(feature = "lab")]
             CredentialCommand::AddVaultDynamic {
                 label,
                 file,
@@ -763,6 +794,7 @@ fn main() {
                 step_up.recovery,
                 step_up.password_stdin,
             ),
+            #[cfg(feature = "lab")]
             CredentialCommand::AddKeycloak {
                 label,
                 file,
@@ -774,6 +806,7 @@ fn main() {
                 step_up.recovery,
                 step_up.password_stdin,
             ),
+            #[cfg(feature = "lab")]
             CredentialCommand::RotateKeycloak {
                 credential_id,
                 file,
@@ -785,6 +818,7 @@ fn main() {
                 step_up.recovery,
                 step_up.password_stdin,
             ),
+            #[cfg(feature = "lab")]
             CredentialCommand::AddGcpSecretManager {
                 label,
                 file,
@@ -796,6 +830,7 @@ fn main() {
                 step_up.recovery,
                 step_up.password_stdin,
             ),
+            #[cfg(feature = "lab")]
             CredentialCommand::RotateGcpSecretManager {
                 credential_id,
                 file,
@@ -807,6 +842,7 @@ fn main() {
                 step_up.recovery,
                 step_up.password_stdin,
             ),
+            #[cfg(feature = "lab")]
             CredentialCommand::AddAzureKeyVault {
                 label,
                 file,
@@ -818,6 +854,7 @@ fn main() {
                 step_up.recovery,
                 step_up.password_stdin,
             ),
+            #[cfg(feature = "lab")]
             CredentialCommand::RotateAzureKeyVault {
                 credential_id,
                 file,
@@ -829,6 +866,7 @@ fn main() {
                 step_up.recovery,
                 step_up.password_stdin,
             ),
+            #[cfg(feature = "lab")]
             CredentialCommand::AddMacosKeychain {
                 label,
                 file,
@@ -840,6 +878,7 @@ fn main() {
                 step_up.recovery,
                 step_up.password_stdin,
             ),
+            #[cfg(feature = "lab")]
             CredentialCommand::RotateMacosKeychain {
                 credential_id,
                 file,
@@ -851,6 +890,7 @@ fn main() {
                 step_up.recovery,
                 step_up.password_stdin,
             ),
+            #[cfg(feature = "lab")]
             CredentialCommand::AddOnePasswordConnect {
                 label,
                 file,
@@ -862,6 +902,7 @@ fn main() {
                 step_up.recovery,
                 step_up.password_stdin,
             ),
+            #[cfg(feature = "lab")]
             CredentialCommand::RotateOnePasswordConnect {
                 credential_id,
                 file,
@@ -873,6 +914,7 @@ fn main() {
                 step_up.recovery,
                 step_up.password_stdin,
             ),
+            #[cfg(feature = "lab")]
             CredentialCommand::AddAwsSecretsManager {
                 label,
                 file,
@@ -884,6 +926,7 @@ fn main() {
                 step_up.recovery,
                 step_up.password_stdin,
             ),
+            #[cfg(feature = "lab")]
             CredentialCommand::RotateAwsSecretsManager {
                 credential_id,
                 file,
@@ -912,6 +955,7 @@ fn main() {
                 step_up.recovery,
                 step_up.password_stdin,
             ),
+            #[cfg(feature = "lab")]
             CredentialCommand::RotateVaultKv {
                 credential_id,
                 file,
@@ -923,6 +967,7 @@ fn main() {
                 step_up.recovery,
                 step_up.password_stdin,
             ),
+            #[cfg(feature = "lab")]
             CredentialCommand::RotateVaultDynamic {
                 credential_id,
                 file,
@@ -991,24 +1036,25 @@ fn main() {
                 actions,
                 ttl,
                 max_uses,
+                #[cfg(feature = "lab")]
                 workload_token_stdin,
                 principal,
                 step_up,
-            } => {
-                if workload_token_stdin {
+            } => match () {
+                #[cfg(feature = "lab")]
+                _ if workload_token_stdin => {
                     commands::workload_session_create(&agent_socket, &actions, &ttl, max_uses)
-                } else {
-                    commands::session_create(
-                        &state_dir,
-                        &actions,
-                        &ttl,
-                        max_uses,
-                        principal.as_deref(),
-                        step_up.recovery,
-                        step_up.password_stdin,
-                    )
                 }
-            }
+                _ => commands::session_create(
+                    &state_dir,
+                    &actions,
+                    &ttl,
+                    max_uses,
+                    principal.as_deref(),
+                    step_up.recovery,
+                    step_up.password_stdin,
+                ),
+            },
             SessionCommand::Revoke {
                 session_id,
                 step_up,
@@ -1159,6 +1205,7 @@ mod policy_target_args_tests {
     use super::*;
 
     #[test]
+    #[cfg(feature = "lab")]
     fn oidc_login_explicit_files_and_global_admin_session_flag_parse() {
         assert!(Cli::try_parse_from(["rekey", "oidc-login", "begin"]).is_ok());
         assert!(
@@ -1195,6 +1242,22 @@ mod policy_target_args_tests {
             ])
             .is_ok()
         );
+    }
+
+    #[cfg(not(feature = "lab"))]
+    #[test]
+    fn default_cli_rejects_lab_entrypoints() {
+        for args in [
+            vec!["rekey", "metrics"],
+            vec!["rekey", "oidc-login", "begin"],
+            vec!["rekey", "credential", "add-vault-kv", "test"],
+            vec!["rekey", "serve", "--oidc-admin-profile", "test.json"],
+            vec!["rekey", "--admin-session-file", "test.json", "status"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err());
+        }
+        assert!(Cli::try_parse_from(["rekey", "status"]).is_ok());
+        assert!(Cli::try_parse_from(["rekey", "credential", "list"]).is_ok());
     }
 
     #[test]

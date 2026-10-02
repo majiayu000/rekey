@@ -1,5 +1,8 @@
 # EXT-01 Fixed AWS Secrets Manager version source
 
+> Status: Lab (v3 scope; enterprise reserve)
+> Existing contracts and evidence are retained; this capability is excluded from the default v3 build and release package.
+
 Frozen minimal implementation contract, 2026-09-30. This implements the accepted
 [EXT-01 read-only source](2026-09-16-external-capabilities.md#ext-01-aws固定版本-secrets-manager-只读源)
 after the GCP header/decoder integration and independent review gate. Four new

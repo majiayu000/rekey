@@ -21,6 +21,7 @@ pub const APPROVAL_GRANT_MAX_BYTES: usize = 4 * 1024;
 
 mod json;
 use json::parse_unique_json;
+#[cfg(feature = "lab")]
 pub mod oidc_admin;
 mod signed;
 pub use signed::*;

@@ -18,8 +18,8 @@ SOURCE_TWO="P7-VAULT-SOURCE-TOKEN-TWO-CANARY"
 RESOLVED_ONE="P7-RESOLVED-VALUE-ONE-CANARY"
 RESOLVED_TWO="P7-RESOLVED-VALUE-TWO-CANARY"
 
-cargo build --release -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd
-cargo build --release -p rekey-broker --example p2_github_app_fixture
+cargo build --features lab --release -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd
+cargo build --features lab --release -p rekey-broker --example p2_github_app_fixture
 
 WORKDIR="$(mktemp -d /tmp/rkp7vault.XXXXXX)"
 STATE="$WORKDIR/state"

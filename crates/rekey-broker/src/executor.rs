@@ -31,20 +31,28 @@ use crate::session::{ExecutionPermit, SessionRegistry};
 use crate::upstream::{UpstreamRequest, UpstreamTransport, outbound_headers_are_valid};
 
 mod approval;
+#[cfg(feature = "lab")]
 pub(crate) mod aws_source;
+#[cfg(feature = "lab")]
 pub(crate) mod azure_source;
 mod deadline;
+#[cfg(feature = "lab")]
 pub(crate) mod gcp_source;
 mod github_run;
+#[cfg(feature = "lab")]
 pub(crate) mod onepassword_source;
 #[cfg(test)]
 use github_run::{github_post_effect_error, github_without_token_error};
 mod http;
+#[cfg(feature = "lab")]
 pub(crate) mod keycloak;
 mod sealing;
 pub(crate) mod text_stream;
+#[cfg(feature = "lab")]
 pub(crate) mod vault_dynamic;
+#[cfg(feature = "lab")]
 mod vault_dynamic_run;
+#[cfg(feature = "lab")]
 pub(crate) mod vault_source;
 use http::{
     build_upstream, filter_response_headers, reason_static, response_metadata_fits,
@@ -54,7 +62,9 @@ pub(crate) use sealing::contains_secret;
 #[cfg(test)]
 use sealing::percent_encode;
 use sealing::{fixed_header_sealing_needles, headers_contain_secret, sealing_needles};
+#[cfg(feature = "lab")]
 use vault_dynamic::{VaultDynamicError, VaultDynamicPrepared, VaultDynamicProfile};
+#[cfg(feature = "lab")]
 use vault_source::{VaultKvError, VaultKvProfile, VaultPrepared};
 
 /// Exercises the production response-sealing implementation from the external
@@ -160,6 +170,7 @@ pub struct ActionExecutor {
 const EFFECT_NOT_STARTED: u8 = 0;
 const EFFECT_ORDINARY_HTTP: u8 = 1;
 const EFFECT_REVOCABLE_CONNECTOR: u8 = 2;
+#[cfg(feature = "lab")]
 const EFFECT_READ_ONLY_HTTP: u8 = 3;
 
 impl ActionExecutor {
@@ -354,21 +365,27 @@ impl ActionExecutor {
             Err(_) => {
                 drop(prepared);
                 let reason = match credential_kind {
+                    #[cfg(feature = "lab")]
                     rekey_domain::credential::CredentialKind::GcpSecretManagerSource => {
                         gcp_source::GcpSourceError::InvalidCredential.reason()
                     }
+                    #[cfg(feature = "lab")]
                     rekey_domain::credential::CredentialKind::AzureKeyVaultSource => {
                         azure_source::AzureSourceError::InvalidCredential.reason()
                     }
+                    #[cfg(feature = "lab")]
                     rekey_domain::credential::CredentialKind::OnePasswordConnectSource => {
                         onepassword_source::OnePasswordSourceError::InvalidCredential.reason()
                     }
+                    #[cfg(feature = "lab")]
                     rekey_domain::credential::CredentialKind::AwsSecretsManagerSource => {
                         aws_source::AwsSourceError::InvalidCredential.reason()
                     }
+                    #[cfg(feature = "lab")]
                     rekey_domain::credential::CredentialKind::VaultKvV2Source => {
                         VaultKvError::InvalidCredential.reason()
                     }
+                    #[cfg(feature = "lab")]
                     rekey_domain::credential::CredentialKind::VaultDynamicSource => {
                         VaultDynamicError::InvalidCredential.reason()
                     }
@@ -379,10 +396,14 @@ impl ActionExecutor {
             }
         };
 
+        #[cfg(not(feature = "lab"))]
+        let _ = cleanup_owned;
         // Step 9: execute the selected compile-time connector. Registry
         // selection performs no IO and never receives credential bytes.
         let prepared = prepared.consume(|secret| match connector {
-            BuiltInConnector::FixedHttpHeaderV1 | BuiltInConnector::MacosKeychainSourceV1 => {
+            BuiltInConnector::FixedHttpHeaderV1 => prepare_fixed_header(action, request, secret),
+            #[cfg(feature = "lab")]
+            BuiltInConnector::MacosKeychainSourceV1 => {
                 prepare_fixed_header(action, request, secret)
             }
             BuiltInConnector::GitHubAppInstallationV1 => {
@@ -396,6 +417,7 @@ impl ActionExecutor {
                     profile,
                 })
             }
+            #[cfg(feature = "lab")]
             BuiltInConnector::KeycloakTokenExchangeV1 => {
                 let profile = keycloak::KeycloakProfile::parse_profile(secret);
                 PreparedExecution::Keycloak(keycloak::KeycloakPrepared {
@@ -403,6 +425,7 @@ impl ActionExecutor {
                     profile,
                 })
             }
+            #[cfg(feature = "lab")]
             BuiltInConnector::GcpSecretManagerSourceV1 => {
                 let profile = gcp_source::GcpSourceProfile::parse_profile(secret);
                 PreparedExecution::Gcp(gcp_source::GcpPrepared {
@@ -414,6 +437,7 @@ impl ActionExecutor {
                     profile,
                 })
             }
+            #[cfg(feature = "lab")]
             BuiltInConnector::AzureKeyVaultSourceV1 => {
                 let profile = azure_source::AzureSourceProfile::parse_profile(secret);
                 PreparedExecution::Azure(azure_source::AzurePrepared {
@@ -425,6 +449,7 @@ impl ActionExecutor {
                     profile,
                 })
             }
+            #[cfg(feature = "lab")]
             BuiltInConnector::OnePasswordConnectSourceV1 => {
                 let profile = onepassword_source::OnePasswordSourceProfile::parse_profile(secret);
                 PreparedExecution::OnePassword(onepassword_source::OnePasswordPrepared {
@@ -436,6 +461,7 @@ impl ActionExecutor {
                     profile,
                 })
             }
+            #[cfg(feature = "lab")]
             BuiltInConnector::AwsSecretsManagerSourceV1 => {
                 let profile = aws_source::AwsSourceProfile::parse_profile(secret);
                 PreparedExecution::Aws(aws_source::AwsPrepared {
@@ -447,6 +473,7 @@ impl ActionExecutor {
                     profile,
                 })
             }
+            #[cfg(feature = "lab")]
             BuiltInConnector::VaultKvV2SourceV1 => {
                 let profile = VaultKvProfile::parse_profile(secret);
                 PreparedExecution::Vault(VaultPrepared {
@@ -458,6 +485,7 @@ impl ActionExecutor {
                     profile,
                 })
             }
+            #[cfg(feature = "lab")]
             BuiltInConnector::VaultDynamicSourceV1 => {
                 let profile = VaultDynamicProfile::parse_profile(secret);
                 PreparedExecution::VaultDynamic(VaultDynamicPrepared {
@@ -471,6 +499,7 @@ impl ActionExecutor {
             }
         });
 
+        #[cfg(feature = "lab")]
         if let PreparedExecution::Keycloak(prepared) = prepared {
             return self
                 .run_keycloak(
@@ -495,6 +524,7 @@ impl ActionExecutor {
                 )
                 .await;
         }
+        #[cfg(feature = "lab")]
         if let PreparedExecution::VaultDynamic(prepared) = prepared {
             return self
                 .run_vault_dynamic(
@@ -507,6 +537,7 @@ impl ActionExecutor {
                 )
                 .await;
         }
+        #[cfg(feature = "lab")]
         if matches!(&prepared, PreparedExecution::Vault(vault) if vault.profile.as_ref().is_ok_and(|profile| profile.is_approle()))
         {
             let PreparedExecution::Vault(prepared) = prepared else {
@@ -524,6 +555,7 @@ impl ActionExecutor {
                 )
                 .await;
         }
+        #[cfg(feature = "lab")]
         let prepared = match prepared {
             PreparedExecution::Gcp(prepared) => {
                 self.resolve_gcp_source(
@@ -591,6 +623,7 @@ impl ActionExecutor {
         };
 
         if stream.is_some() {
+            #[cfg(feature = "lab")]
             let plugin_messages =
                 match anthropic_plugin_messages(action, &request.body, effect_deadline).await {
                     Ok(body) => body,
@@ -601,9 +634,12 @@ impl ActionExecutor {
                         return Err(err);
                     }
                 };
+            #[cfg(feature = "lab")]
             let messages = plugin_messages
                 .as_deref()
                 .unwrap_or(request.body.as_slice());
+            #[cfg(not(feature = "lab"))]
+            let messages = request.body.as_slice();
             text_stream::configure(action, messages, &mut upstream_request)?;
         }
         // Steps 10-11: fixed HTTPS send with bounded response. Credential
@@ -762,12 +798,19 @@ enum PreparedExecution {
         needles: Vec<Zeroizing<Vec<u8>>>,
     },
     GitHub(GitHubPrepared),
+    #[cfg(feature = "lab")]
     Vault(VaultPrepared),
+    #[cfg(feature = "lab")]
     Gcp(gcp_source::GcpPrepared),
+    #[cfg(feature = "lab")]
     Aws(aws_source::AwsPrepared),
+    #[cfg(feature = "lab")]
     Azure(azure_source::AzurePrepared),
+    #[cfg(feature = "lab")]
     OnePassword(onepassword_source::OnePasswordPrepared),
+    #[cfg(feature = "lab")]
     VaultDynamic(VaultDynamicPrepared),
+    #[cfg(feature = "lab")]
     Keycloak(keycloak::KeycloakPrepared),
 }
 
@@ -851,6 +894,7 @@ async fn wait_for_cancel(mut cancel: tokio::sync::watch::Receiver<bool>) {
     }
 }
 
+#[cfg(feature = "lab")]
 async fn anthropic_plugin_messages(
     action: &FixedHttpAction,
     body: &[u8],
@@ -950,3 +994,43 @@ fn prepare_block_reason(err: &AuthorityError) -> &'static str {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(not(feature = "lab"))]
+impl ActionExecutor {
+    pub(crate) async fn lease_journal_status(
+        &self,
+    ) -> Result<rekey_domain::ipc::LeaseJournalStatus, BrokerError> {
+        let counts = self.authority.lease_recovery_batch().await?.counts;
+        Ok(rekey_domain::ipc::LeaseJournalStatus {
+            verified: counts.verified,
+            pending: counts.pending,
+            unknown: counts.unknown,
+            complete: counts.complete,
+        })
+    }
+    pub(crate) async fn recover_vault_leases(
+        &self,
+        _perform: bool,
+    ) -> Result<rekey_domain::ipc::LeaseRecoverySummary, BrokerError> {
+        let batch = deadline::await_authority(
+            Instant::now() + Duration::from_secs(8),
+            self.authority.lease_recovery_batch(),
+        )
+        .await?;
+        if let Some(error) = batch.unavailable {
+            return Err(error.into());
+        }
+        let counts = batch.counts;
+        Ok(rekey_domain::ipc::LeaseRecoverySummary {
+            performed: false,
+            journal: rekey_domain::ipc::LeaseJournalStatus {
+                verified: counts.verified,
+                pending: counts.pending,
+                unknown: counts.unknown,
+                complete: counts.complete,
+            },
+            deferred: counts.pending,
+            leases: Vec::new(),
+        })
+    }
+}

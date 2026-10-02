@@ -1,5 +1,8 @@
 # APR-09 单入口远程审批 pull inbox
 
+> Status: Lab (v3 scope; enterprise reserve)
+> Existing contracts and evidence are retained; this capability is excluded from the default v3 build and release package.
+
 状态：冻结实现合同，2026-09-30。依赖 [APR-08 文件中继](2026-09-30-remote-approval-relay.md)，只在同一 HTTPS 服务增加一个经认证的 `GET /v1/inbox` 入口。它是受保护 curl 终端操作入口，不是网页完整 review UI。无 email/chat/push、替换审批人、人员目录、签名按钮、服务端签名、自动批准或 Broker 公网入口。
 
 ## 固定 API 与身份

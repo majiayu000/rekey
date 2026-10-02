@@ -20,8 +20,8 @@ RESOLVED_TWO="P7B-DYNAMIC-VALUE-TWO-CANARY"
 LEASE_ONE="database/creds/agent-api-token/p7b-one-canary"
 LEASE_TWO="database/creds/agent-api-token/p7b-two-canary"
 
-cargo build --release -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd
-cargo build --release -p rekey-broker --example p2_github_app_fixture
+cargo build --features lab --release -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd
+cargo build --features lab --release -p rekey-broker --example p2_github_app_fixture
 
 WORKDIR="$(mktemp -d /tmp/rkp7bdynamic.XXXXXX)"
 STATE="$WORKDIR/state"

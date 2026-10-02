@@ -104,6 +104,9 @@ struct RootView: View {
                     else { unlock() }
                 }.font(.system(size: 11, weight: .medium)).disabled(model.busy || (!model.unlocked && model.status?.state != "locked"))
             }
+            if let status = model.status {
+                Text(status.identityLabel).font(.system(size: 10)).foregroundStyle(.secondary).padding(.top, 7)
+            }
         }.padding(.horizontal, 20).padding(.top, 24).padding(.bottom, 20).frame(width: 210).background(sage.opacity(0.45))
     }
     private func nav(_ page: Page) -> some View {
@@ -424,7 +427,8 @@ struct RootView: View {
                     Button("修改密码") { model.operation = Operation(title: "修改密码", detail: "旧密码将不再解锁当前保险库。历史备份不受这次修改影响。", arguments: ["password", "change"], newSecret: true, confirmSecret: true) }
                     Button("轮换恢复密钥") { model.operation = Operation(title: "轮换恢复密钥", detail: "必须使用当前密码。新恢复密钥只显示一次，请安全保存。", arguments: ["recovery", "rotate"], sensitiveResult: true, recoveryAllowed: false) }
                 }.disabled(!model.unlocked || model.busy)
-                SectionCard(title: "机构登录", icon: "person.badge.key") {
+                if model.status?.lab_enabled == true {
+                  SectionCard(title: "机构登录", icon: "person.badge.key") {
                     Text("先解锁本机，再完成机构登录。登录不会替代管理操作的本机密码确认。").font(.system(size: 13)).foregroundStyle(.secondary)
                     if let profile = model.oidcProfileFile { info("服务配置", profile) }
                     HStack {
@@ -455,6 +459,7 @@ struct RootView: View {
                         }
                     }
                 }
+                  }
                 Text("Rekey 本地管理 · macOS 源码预览\n凭证、策略与审计由本机服务持有。").font(.system(size: 12)).foregroundStyle(.secondary)
             }.padding(.horizontal, 28).padding(.bottom, 28)
         }

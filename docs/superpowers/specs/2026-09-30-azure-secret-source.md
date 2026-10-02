@@ -1,5 +1,8 @@
 # EXT-03 Fixed Azure Key Vault Secret version source
 
+> Status: Lab (v3 scope; enterprise reserve)
+> Existing contracts and evidence are retained; this capability is excluded from the default v3 build and release package.
+
 Implementation contract, 2026-09-30. AWS final actual-source integration,
 focused tests and independent review gates closed before assigning Azure
 credential kind/AAD tag8, schema/format18 and typed rotate opcode43. Format17
