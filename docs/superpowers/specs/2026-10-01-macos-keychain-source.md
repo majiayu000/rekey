@@ -57,6 +57,22 @@ security output. API requiring UI fails rather than hiding protected matches.
 All statuses deny; actual identity/locked/denied/duplicate behavior needs field
 validation. Non-macOS native source execution fails unavailable.
 
+2026-10-02 native CI follow-up: the file-Keychain backend also requires the
+process-level `SecKeychainSetUserInteractionAllowed(false)` before opening or
+querying the specified file. A failure to disable interaction returns the same
+safe CREDENTIAL_UNAVAILABLE before access. The Broker is noninteractive: leave
+interaction disabled, rather than using a guard that re-enables prompts on drop.
+The native UI's remembered-unlock calls run in a separate process. Keep the
+query's UI-fail attribute as well; it alone did not prevent a blocked Worker on
+the macOS 26.6.2 hosted runner. Locked-source acceptance must receive the exact
+CREDENTIAL_UNAVAILABLE denial and then successfully read audit state; timeout,
+unresponsive Worker and forced Broker shutdown are failures. Test cleanup must
+still remove its own Keychain if graceful Broker shutdown fails.
+The API boundary follows Apple's [file-based versus data-protection Keychain
+description](https://developer.apple.com/documentation/technotes/tn3137-on-mac-keychains)
+and public `SecKeychain.h` interaction control; the cached sys binding already
+exposes that function, so no dependency or handwritten ABI is added.
+
 Check supplied original execution deadline before/after native call and audits,
 and reference expiry before/after. Late result never starts business or resets
 capability/Action time. Synchronous Worker owns native call; timeout of awaiting

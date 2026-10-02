@@ -172,6 +172,7 @@ mod native {
     use core_foundation::string::{CFString, CFStringRef};
     use security_framework::os::macos::keychain::SecKeychain;
     use security_framework_sys::item::*;
+    use security_framework_sys::keychain::SecKeychainSetUserInteractionAllowed;
     use security_framework_sys::keychain_item::SecItemCopyMatching;
 
     // Official SecItem.h declaration, exported by Security.tbd. Cached sys omits it.
@@ -245,6 +246,11 @@ mod native {
     }
 
     pub(super) fn lookup(reference: &Reference) -> Result<Zeroizing<Vec<u8>>, AuthorityError> {
+        // File-Keychain access also needs the process-level no-UI setting. This
+        // Broker is noninteractive; never re-enable prompts after the lookup.
+        if unsafe { SecKeychainSetUserInteractionAllowed(0) } != 0 {
+            return Err(unavailable());
+        }
         let keychain =
             SecKeychain::open(Path::new(&reference.keychain_path)).map_err(|_| unavailable())?;
         let query = query(reference, keychain.into_CFType());

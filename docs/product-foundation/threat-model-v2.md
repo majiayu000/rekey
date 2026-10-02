@@ -628,3 +628,10 @@ immutable container ID absent admits promotion. Network loss and stopped state
 alone do not suffice. Trusted administrators can recreate containers; host/kernel
 compromise and shared physical failure domains remain outside this guarantee.
 See [the measured reference contract](../superpowers/specs/2026-10-02-docker-dr-reference.md).
+
+2026-10-02 file-Keychain no-interaction correction: the noninteractive Broker
+must disable process-level Keychain interaction before opening/querying the
+explicit file, in addition to the query UI-fail attribute. It does not re-enable
+interaction. Failure to establish that boundary denies through the existing
+CREDENTIAL_UNAVAILABLE contract; no prompt, retry or ambient Keychain fallback
+is introduced. The GUI's remembered-unlock process is separate.

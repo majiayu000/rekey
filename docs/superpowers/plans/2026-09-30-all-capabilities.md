@@ -195,3 +195,7 @@ PKCS#11 本地真实模块门已从 injected 扩展到 SoftHSM2.6：固定库has
 `f81482c` 的 Ubuntu、Linux G2 必需整门和 performance、五项 fuzz 已通过；macOS 在末尾原生步骤暴露真实 CLI 回归：resume 的 typed `lease_recovery` 被旧单字段解析器拒绝。按 remember/resume 分别严格解析，保留 `INVALID_FRAME` 及先验 metadata 再输出秘密正文的合同；新增进程级七路正负场景，malicious_broker 全10项通过。重新构建的 release App 完整执行与 CI 相同的原生 UI、human-vault 恢复、跨进程 Keychain 和真实凭证源四段均通过；全部一次性条目/进程/秘密状态清理成功。最终精确提交结果继续以 PR checks 为准。
 
 Desktop 修复后再次完整 `cargo test --workspace --locked -- --test-threads=1`：83 个顶层目标，1033 通过、0 失败、1 忽略，退出0；all-targets check、Clippy warnings denied、fmt、diff、两项机械 API 扫描及 CLI normal 依赖边界通过。新测试只有一项（包含7种回复），不将重复执行累计进总数。收据 `workspace-desktop-fix-summary.json`，完整日志哈希已写入随 PR 的公开非敏感记录。
+
+`cc15631` 的 Ubuntu、G2、performance 与五项 fuzz 全通过；macOS 26.6.2 的 workspace、发布、原生 UI、desktop resume 和 remembered-unlock 通过，但锁定 Keychain 凭证源后 Worker 不响应、审计读取及退出超时，整门仍失败。原生入口现先调用公开 SDK 的 `SecKeychainSetUserInteractionAllowed(false)` 并保持 Broker 无交互；保持原查询严格匹配和错误合同。现场脚本要求明确 `CREDENTIAL_UNAVAILABLE`、无额外请求、后续审计可读与正常退出，非零退出或超时不能冒充通过；退出失败也清理自有 Keychain。本机26.5.1原生完整四段复测通过，不能替代26.6.2的后续CI结果。
+
+Keychain 无交互修复后全量再次通过：83 个目标、1033 通过、0 失败、1 忽略；14 个 Keychain 定向用例、完整原生四段、all-targets check/Clippy/fmt/机械边界均通过。证据 `workspace-keychain-noui-summary.json`、`native-keychain-noui.log`；最终 hosted 结果以本修复精确提交的 PR checks 为准。

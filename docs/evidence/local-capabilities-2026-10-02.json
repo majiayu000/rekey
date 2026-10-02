@@ -9,9 +9,9 @@
     "targets": 83,
     "command": "cargo test --workspace --locked -- --test-threads=1",
     "exit_code": 0,
-    "log_sha256": "52c185a5f7e4b7093faf6e548172ef5b1f8807c0e665162173c755400ac31170",
+    "log_sha256": "22b60a4e17ec7b2f44c0e6a2f88eba51059e974405f6b46f6c8ca9a19b49bc70",
     "cargo_lock_sha256": "4350a6b0375579dd7497f5f56749d0268d436c56545bd4e93418b46b6925cc15",
-    "note": "Repeated after the desktop-resume strict metadata fix; Linux-only OOM executes in required Ubuntu CI."
+    "note": "Repeated after the process-level file-Keychain no-interaction fix; Linux-only OOM executes in required Ubuntu CI."
   },
   "python_contracts": {
     "audit_delivery": 28,
@@ -101,16 +101,18 @@
   "keychain_source": {
     "pass": true,
     "command": "python3 scripts/test-keychain-live.py --bin-dir target/debug",
-    "script_sha256": "f80bdb719ce0a9e05757fc1b0029132edc84281daa5d2b4dfa3de39003f226fa",
-    "log_sha256": "3df3e313317a5ebd52bfb1502dbc7b1cb99cda2b2baa6e344845076fcebbc6b9",
+    "script_sha256": "1ab050692f26830206be1ba62b4bbd6536738e2d804d19d3bae2995097fe52f2",
+    "log_sha256": "be611b1194cf3cae60b9149c1c582946b4db273a42f1b6318d9ea3325f96b6ef",
     "cases": [
       "actual private file-Keychain item and ACL",
       "Broker to local TLS action",
       "reflected value denied",
-      "locked Keychain denied without prompt or extra upstream effect",
-      "audit secret scan",
-      "Keychain and fixture cleanup"
-    ]
+      "exact CREDENTIAL_UNAVAILABLE for locked source, without prompt or extra effect",
+      "responsive audit after denial and secret scan",
+      "graceful Broker shutdown required; owned Keychain removed even on shutdown failure"
+    ],
+    "host_macos": "26.5.1",
+    "note": "Repeated after explicitly disabling file-Keychain process interaction; exact typed locked denial, responsive audit and graceful shutdown required. Hosted follow-up results are attached to PR #59."
   },
   "keychain_desktop": {
     "pass": true,
@@ -213,6 +215,15 @@
     "ubuntu": "passed entire required job, including aggregate OOM, dependency audit, metrics and release scripts",
     "linux_g2": "passed entire required job, including Docker recovery",
     "macos": "failed at final native step: legitimate desktop-resume metadata rejected by CLI; fixed and repeated locally",
+    "fuzz": "all five targets passed",
+    "performance": "passed"
+  },
+  "ci_before_keychain_no_ui_fix": {
+    "commit": "cc1563109564d370601f7645fd04f64ef5005e66",
+    "run": "https://github.com/majiayu000/rekey/actions/runs/36997493342",
+    "ubuntu": "passed entire required job",
+    "linux_g2": "passed entire required job, including Docker recovery",
+    "macos": "26.6.2: workspace, release gates, native UI, desktop resume and remembered unlock passed; locked Keychain source left Worker unresponsive, audit and shutdown timed out",
     "fuzz": "all five targets passed",
     "performance": "passed"
   }

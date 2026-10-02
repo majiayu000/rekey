@@ -360,3 +360,9 @@ included in macOS CI. Customer item ACLs and service identities remain separate.
 expiry and typed lease-recovery response before releasing its body. Strict malformed
 reply regressions and the complete native release/Keychain CI block passed locally.
 Ubuntu and G2 required jobs passed on f81482c; final-head results remain in PR #59.
+
+2026-10-02 hosted Keychain follow-up: cc15631 passed native UI, desktop resume
+and remembered-unlock acceptance, but the macOS 26.6.2 locked source left its
+Worker unresponsive. The selected correction disables process-level file-Keychain
+interaction before native access and requires an exact denial plus responsive
+audit state. The earlier local 26.5.1 pass does not close this hosted gate.

@@ -124,23 +124,33 @@ def main():
             write('body.json', {'mode': 'raw'})
             cli(*execute, data=session['capability_token'] + '\n', code=8)
             assert (root / 'hits').read_text().strip() == '2'
+            print('PASS: actual Keychain source and reflected-value denial', flush=True)
             run([helper, 'lock', keychain])
             # This must return without any native prompt or additional upstream effect.
             denied = subprocess.run([str(binaries / 'rekey'), '--state-dir', str(state), *execute],
                 input=session['capability_token'] + '\n', text=True, capture_output=True, timeout=15)
-            assert denied.returncode != 0 and (root / 'hits').read_text().strip() == '2'
+            assert denied.returncode == 4 and 'error [CREDENTIAL_UNAVAILABLE]:' in denied.stderr, (
+                f'locked Keychain did not return its typed denial (exit {denied.returncode})')
+            assert (root / 'hits').read_text().strip() == '2'
             audit = cli('audit', 'list', '--limit', '100')
             assert secret not in audit and proof not in audit and session['capability_token'] not in audit
             events = json.loads(audit)['events']
             assert any(e['event_type'] == 'credential.source.finished' and e['outcome'] == 'failure' for e in events)
             print('PASS: actual file-Keychain source -> Broker/TLS; reflected secret sealed; locked keychain denied without UI/effect; audit canaries absent')
         finally:
-            if broker is not None:
-                broker.terminate()
-                broker.wait(timeout=15)
-            if keychain.exists():
-                run([helper, 'delete', keychain])
-                assert not keychain.exists()
+            try:
+                if broker is not None:
+                    broker.terminate()
+                    try:
+                        broker.wait(timeout=15)
+                    except subprocess.TimeoutExpired as error:
+                        broker.kill()
+                        broker.wait(timeout=15)
+                        raise RuntimeError('Broker did not shut down gracefully') from error
+            finally:
+                if keychain.exists():
+                    run([helper, 'delete', keychain])
+                    assert not keychain.exists()
     print('PASS: disposable Keychain, broker and private artifacts removed')
 
 
