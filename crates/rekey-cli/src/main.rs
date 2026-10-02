@@ -114,6 +114,9 @@ enum Command {
     OidcLogin(OidcLoginCommand),
     /// Initialize a new vault (delegates to rekeyd).
     Init {
+        /// Immutable policy signing mode for this vault.
+        #[arg(long, value_parser = ["personal", "team"])]
+        mode: String,
         #[arg(long)]
         password_stdin: bool,
     },
@@ -581,8 +584,15 @@ enum PolicyCommand {
 #[derive(Subcommand)]
 enum PolicyTrustCommand {
     Install {
-        #[arg(long)]
-        file: PathBuf,
+        #[arg(
+            long,
+            conflicts_with = "stdin_request",
+            required_unless_present = "stdin_request"
+        )]
+        file: Option<PathBuf>,
+        /// Read proof then the compact trust document through one stdin pipe.
+        #[arg(long, conflicts_with = "file", requires = "step_up_stdin")]
+        stdin_request: bool,
         #[command(flatten)]
         step_up: PolicyStepUpArgs,
     },
@@ -778,9 +788,15 @@ fn main() {
             step_up.recovery,
             step_up.password_stdin,
         ),
-        Command::Init { password_stdin } => {
-            commands::delegate_rekeyd(&state_dir, "init", &[], password_stdin)
-        }
+        Command::Init {
+            mode,
+            password_stdin,
+        } => commands::delegate_rekeyd(
+            &state_dir,
+            "init",
+            &["--mode".into(), mode.into()],
+            password_stdin,
+        ),
         Command::Serve {
             idle_lock,
             #[cfg(feature = "lab")]
@@ -1167,14 +1183,17 @@ fn main() {
             ),
         },
         Command::Policy(cmd) => match cmd {
-            PolicyCommand::Trust(PolicyTrustCommand::Install { file, step_up }) => {
-                commands::policy_trust_install(
-                    &state_dir,
-                    &file,
-                    step_up.recovery,
-                    step_up.step_up_stdin,
-                )
-            }
+            PolicyCommand::Trust(PolicyTrustCommand::Install {
+                file,
+                stdin_request,
+                step_up,
+            }) => commands::policy_trust_install(
+                &state_dir,
+                file.as_deref(),
+                stdin_request,
+                step_up.recovery,
+                step_up.step_up_stdin,
+            ),
             PolicyCommand::Activate {
                 file,
                 expected_vault_id,
@@ -1285,6 +1304,15 @@ fn main() {
 #[cfg(test)]
 mod policy_target_args_tests {
     use super::*;
+
+    #[test]
+    fn init_requires_an_explicit_supported_policy_mode() {
+        assert!(Cli::try_parse_from(["rekey", "init", "--password-stdin"]).is_err());
+        assert!(Cli::try_parse_from(["rekey", "init", "--mode", "automatic"]).is_err());
+        for mode in ["personal", "team"] {
+            assert!(Cli::try_parse_from(["rekey", "init", "--mode", mode]).is_ok());
+        }
+    }
 
     #[test]
     #[cfg(feature = "lab")]

@@ -199,7 +199,7 @@ expect_failure() {
   }
 }
 
-printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin >/dev/null
+printf '%s\n' "$PASSWORD" | "$REKEYD" init --mode team --state-dir "$STATE" --password-stdin >/dev/null
 "$FIXTURE" "$STATE" "$READY" "$HITS" >"$WORKDIR/broker.out" 2>"$WORKDIR/broker.err" &
 BROKER_PID=$!
 for _ in $(seq 1 300); do

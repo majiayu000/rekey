@@ -83,6 +83,7 @@ fn init_at(state_dir: &Path) {
             iterations: 1,
             parallelism: 1,
         },
+        rekey_domain::authorization::PolicyMode::Team,
     )
     .expect("initialize test vault");
     confirm_vault_init(state_dir).expect("confirm test vault");

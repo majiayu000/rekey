@@ -8,6 +8,7 @@ use aws_lc_rs::signature::{ED25519, UnparsedPublicKey};
 use data_encoding::BASE64URL_NOPAD;
 use jsonschema::{Draft, Validator};
 use rekey_domain::action::{ExactPath, FixedMethod, HttpsOrigin};
+use rekey_domain::authorization::PolicyTrustAlgorithm;
 use rekey_domain::ids::PolicySignerId;
 use rekey_domain::template::{self, ProviderTemplate};
 use serde::Deserialize;
@@ -120,7 +121,9 @@ pub fn parse_and_verify_template_package(
     if envelope.format_version != 1 {
         return Err(TemplatePackageError::UnsupportedFormat);
     }
-    if envelope.signer_id != trust.signer_id() {
+    if envelope.signer_id != trust.signer_id()
+        || trust.key().algorithm() != PolicyTrustAlgorithm::Ed25519
+    {
         return Err(TemplatePackageError::InvalidSignature);
     }
     let signature = BASE64URL_NOPAD

@@ -20,6 +20,7 @@ async fn idle_status_poll_does_not_occupy_execution_admission() {
             iterations: 1,
             parallelism: 1,
         },
+        rekey_domain::authorization::PolicyMode::Team,
     )
     .unwrap();
     confirm_vault_init(&state).unwrap();
@@ -288,6 +289,7 @@ async fn fault_while_initially_locked_revokes_remembered_desktop() {
                 iterations: 1,
                 parallelism: 1,
             },
+            rekey_domain::authorization::PolicyMode::Team,
         )
         .unwrap();
         confirm_vault_init(&state).unwrap();
@@ -411,6 +413,7 @@ pub(crate) async fn oidc_test_ctx() -> (
             iterations: 1,
             parallelism: 1,
         },
+        rekey_domain::authorization::PolicyMode::Team,
     )
     .unwrap();
     confirm_vault_init(&state).unwrap();

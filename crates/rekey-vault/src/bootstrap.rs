@@ -254,6 +254,7 @@ pub fn init_vault(
     state_dir: &Path,
     password: &SecretInput,
     params: Argon2Params,
+    mode: rekey_domain::authorization::PolicyMode,
 ) -> Result<InitOutcome, AuthorityError> {
     params.validate()?;
     if password.is_empty() {
@@ -276,7 +277,7 @@ pub fn init_vault(
     }
     verify_state_dir_permissions(state_dir)?;
 
-    match init_vault_inner(state_dir, password, params) {
+    match init_vault_inner(state_dir, password, params, mode) {
         Ok(outcome) => Ok(outcome),
         Err(err) => {
             discard_vault_files(state_dir)?;
@@ -289,6 +290,7 @@ fn init_vault_inner(
     state_dir: &Path,
     password: &SecretInput,
     params: Argon2Params,
+    mode: rekey_domain::authorization::PolicyMode,
 ) -> Result<InitOutcome, AuthorityError> {
     let _lock = BootstrapLock::acquire(state_dir)?;
     if init_marker_is_regular(state_dir)? {
@@ -351,6 +353,7 @@ fn init_vault_inner(
     };
 
     let mut policy_state_record = PolicyStateRecord {
+        mode,
         trust_installed: false,
         bundle_activated: false,
         signer_id: None,
@@ -828,6 +831,7 @@ mod tests {
                 iterations: 1,
                 parallelism: 1,
             },
+            rekey_domain::authorization::PolicyMode::Team,
         )
         .expect("init");
         for _ in 0..8 {

@@ -239,6 +239,7 @@ mod tests {
                 iterations: 1,
                 parallelism: 1,
             },
+            rekey_domain::authorization::PolicyMode::Team,
         )
         .unwrap();
         let store = crate::store::SqliteRecordStore::open(&crate::paths::vault_db(&state)).unwrap();
@@ -289,6 +290,7 @@ mod tests {
                     iterations: 1,
                     parallelism: 1,
                 },
+                rekey_domain::authorization::PolicyMode::Team,
             )
             .unwrap();
             crate::bootstrap::confirm_vault_init(&state).unwrap();

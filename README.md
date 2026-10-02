@@ -6,7 +6,7 @@ Rekey 把 API Key 留在本机，Agent 通过你授权的固定 Action 调用服
 v3 的 macOS `.pkg` 和 Homebrew 安装尚未发布。
 
 ```bash
-rekey init    # 初始化；恢复密钥只显示一次，请妥善保存
+rekey init --mode team    # 外部签名器模式；恢复密钥只显示一次，请妥善保存
 rekey serve   # 启动本机服务，保持此终端运行
 rekey status  # 在另一个终端检查状态
 ```

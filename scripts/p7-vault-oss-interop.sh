@@ -505,7 +505,7 @@ write_private(bad, dyn(revoked))
 PY
 printf '%s' '{"operation":"bounded"}' >"$REQUEST_BODY"
 
-printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin >/dev/null
+printf '%s\n' "$PASSWORD" | "$REKEYD" init --mode team --state-dir "$STATE" --password-stdin >/dev/null
 start_fixture "$READY" "$RESOLVED_ONE" kv
 
 CREDENTIAL_JSON="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" credential \

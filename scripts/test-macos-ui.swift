@@ -25,7 +25,7 @@ struct UIContract {
             do { try operation() } catch { return }
             throw UIError(message: "FAILED: " + label)
         }
-        let initialized = try client.run(["init", "--password-stdin"], input: password + "\n")
+        let initialized = try client.run(["init", "--mode", "team", "--password-stdin"], input: password + "\n")
         try require(String(decoding: initialized, as: UTF8.self).contains("RECOVERY KEY"), "initialization result retained")
         let broker = Process()
         broker.executableURL = binary.deletingLastPathComponent().appendingPathComponent("rekeyd")
@@ -458,6 +458,22 @@ struct UIContract {
         try require(model.busy, "rejected stdin template preserves the active operation")
         model.busy = false
         model.status = ServiceStatus(state:"unlocked",format_version:15,runtime_version:"fixture",sessions_active:0, peer_security: "L1-dev", lab_enabled: false)
+        let personalVaultID = UUID()
+        let personalStatus: [String: Any] = ["vault_id": personalVaultID.uuidString.lowercased(), "mode": "personal", "trust_installed": false, "bundle_persisted": false, "status": "unavailable"]
+        model.policy = try JSONDecoder().decode(PolicyStatus.self, from: JSONSerialization.data(withJSONObject: personalStatus))
+        model.beginPersonalPolicySetup()
+        try require(model.operation?.personalTrustVaultID == personalVaultID, "personal setup captures the verified vault identity")
+        try require(model.operation?.targetDirectory == model.stateDirectory, "personal setup pins the selected workspace")
+        try require(model.operation?.arguments == ["policy", "trust", "install", "--stdin-request"] && model.operation?.proofFlag == "--step-up-stdin", "personal setup uses the anonymous trust and per-call proof path")
+        model.busy = true; model.error = nil
+        await model.perform(model.operation!, proof: "synthetic-proof")
+        try require(model.error?.contains("未提交") == true && model.busy, "busy personal setup is rejected before any keychain operation")
+        model.busy = false; model.operation = nil
+        var teamStatus = personalStatus; teamStatus["mode"] = "team"
+        model.policy = try JSONDecoder().decode(PolicyStatus.self, from: JSONSerialization.data(withJSONObject: teamStatus))
+        model.beginPersonalPolicySetup()
+        try require(model.operation == nil && model.error != nil, "team mode cannot open personal key setup")
+        model.policy = nil; model.error = nil
         let revision = model.nativeFlowRevision
         try require(model.acceptsNativeCompletion(revision,workspace:model.stateDirectory), "current completion admitted")
         model.approvalDetails = details; model.showPolicyDraft = true

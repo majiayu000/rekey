@@ -1,11 +1,11 @@
 use sha2::{Digest, Sha256};
 
-/// Schema v22. This SQL text is the single source of truth; `schema_digest()`
+/// Schema v23. This SQL text is the single source of truth; `schema_digest()`
 /// hashes its normalized form to detect accidental drift, not tampering.
 pub const SCHEMA_SQL: &str = r#"
 CREATE TABLE vault_header (
     singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
-    format_version     INTEGER NOT NULL CHECK (format_version = 22),
+    format_version     INTEGER NOT NULL CHECK (format_version = 23),
     vault_id           BLOB NOT NULL CHECK (length(vault_id) = 16),
     crypto_suite       TEXT NOT NULL CHECK (crypto_suite = 'rkca-aes256gcm-argon2id-hkdfsha256-v1'),
     created_at_ms      INTEGER NOT NULL,
@@ -101,6 +101,7 @@ CREATE TABLE audit_retention (
 
 CREATE TABLE policy_state (
     singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
+    mode               TEXT NOT NULL CHECK (mode IN ('personal', 'team')),
     trust_installed    INTEGER NOT NULL CHECK (trust_installed IN (0, 1)),
     bundle_activated   INTEGER NOT NULL CHECK (bundle_activated IN (0, 1)),
     signer_id          BLOB CHECK (signer_id IS NULL OR length(signer_id) = 16),
@@ -125,8 +126,9 @@ CREATE TABLE policy_state (
 CREATE TABLE policy_trust (
     singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
     signer_id          BLOB NOT NULL UNIQUE CHECK (length(signer_id) = 16),
-    algorithm          TEXT NOT NULL CHECK (algorithm = 'ed25519'),
-    public_key         BLOB NOT NULL CHECK (length(public_key) = 32),
+    algorithm          TEXT NOT NULL CHECK (algorithm IN ('ed25519', 'secure-enclave-p256')),
+    public_key         BLOB NOT NULL CHECK ((algorithm = 'ed25519' AND length(public_key) = 32)
+        OR (algorithm = 'secure-enclave-p256' AND length(public_key) = 65)),
     installed_at_ms    INTEGER NOT NULL,
     seal_nonce         BLOB NOT NULL CHECK (length(seal_nonce) = 12),
     seal_ciphertext    BLOB NOT NULL CHECK (length(seal_ciphertext) = 16)

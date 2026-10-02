@@ -67,6 +67,7 @@ impl Fixture {
             &state,
             &SecretInput::from_slice(common::PASSWORD),
             common::TEST_PARAMS,
+            rekey_domain::authorization::PolicyMode::Team,
         )
         .unwrap();
         confirm_vault_init(&state).unwrap();

@@ -85,7 +85,7 @@ class Scenario:
         return process
 
     def setup(self, gate="none"):
-        result = self.cli("init", "--password-stdin", proof=True)
+        result = self.cli("init", "--mode", "team", "--password-stdin", proof=True)
         self.recovery = result.stdout.strip().splitlines()[-1]  # Never persisted or printed.
         self.start("provider")
         self.broker = self.start("broker", gate)

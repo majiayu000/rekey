@@ -60,7 +60,7 @@ activate_policy_file() {
   token="$(printf '%s\n' "$session_json" | json_field capability_token)"
 }
 
-printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin >/dev/null
+printf '%s\n' "$PASSWORD" | "$REKEYD" init --mode team --state-dir "$STATE" --password-stdin >/dev/null
 "$FIXTURE" "$STATE" "$READY" "$HITS" >"$WORKDIR/broker.out" 2>"$WORKDIR/broker.err" &
 BROKER_PID=$!
 for _ in $(seq 1 200); do
@@ -161,7 +161,7 @@ db = sqlite3.connect(sys.argv[1])
 row = db.execute("SELECT lower(hex(parameter_hash)) FROM audit_events WHERE event_type='execution.finished' ORDER BY created_at_ms DESC LIMIT 1").fetchone()
 if not row or not row[0]: raise SystemExit("missing durable parameter hash")
 header = db.execute("SELECT format_version FROM vault_header").fetchone()
-if not header or header[0] != 22: raise SystemExit("durable format is not 22")
+if not header or header[0] != 23: raise SystemExit("durable format is not 23")
 print(row[0])
 PY
 )"

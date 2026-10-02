@@ -42,6 +42,7 @@ async fn init_is_not_servable_until_recovery_confirmation_is_durable() {
         &state_dir,
         &SecretInput::from_slice(common::PASSWORD),
         common::TEST_PARAMS,
+        rekey_domain::authorization::PolicyMode::Team,
     )
     .unwrap();
 
@@ -90,6 +91,7 @@ fn second_init_rejected() {
         &vault.state_dir,
         &SecretInput::from_slice(common::PASSWORD),
         common::TEST_PARAMS,
+        rekey_domain::authorization::PolicyMode::Team,
     ));
     assert!(matches!(err, AuthorityError::StateDirectoryNotEmpty));
 }
@@ -107,6 +109,7 @@ fn legacy_vault_rejected() {
         &state_dir,
         &SecretInput::from_slice(common::PASSWORD),
         common::TEST_PARAMS,
+        rekey_domain::authorization::PolicyMode::Team,
     ));
     assert!(matches!(err, AuthorityError::StateDirectoryNotEmpty));
     // Existing data must be untouched.
@@ -164,6 +167,7 @@ fn empty_password_rejected() {
         &state_dir,
         &SecretInput::new(vec![]),
         common::TEST_PARAMS,
+        rekey_domain::authorization::PolicyMode::Team,
     ));
     assert!(matches!(err, AuthorityError::InvalidUnlockCredential));
     // Failed init must not leave a usable-looking directory behind.

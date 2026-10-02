@@ -70,7 +70,7 @@ json_first_field() {
   python3 -c 'import json,sys; value,_=json.JSONDecoder().raw_decode(sys.stdin.read().lstrip()); print(value['"$1"'])'
 }
 
-printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin >/dev/null
+printf '%s\n' "$PASSWORD" | "$REKEYD" init --mode team --state-dir "$STATE" --password-stdin >/dev/null
 "$REKEYD" serve --state-dir "$STATE" --idle-lock 15m >/dev/null 2>&1 &
 SERVE_PID=$!
 for _ in $(seq 1 100); do

@@ -311,7 +311,11 @@ async fn team_package_uses_installed_trust_without_policy_activation_and_rejects
         .policy_trust_install_before(
             PolicyTrustInput {
                 signer_id,
-                public_key: signer.public_key().as_ref().try_into().unwrap(),
+                key: rekey_policy::PolicyVerificationKey::from_bytes(
+                    rekey_domain::authorization::PolicyTrustAlgorithm::Ed25519,
+                    signer.public_key().as_ref(),
+                )
+                .unwrap(),
             },
             common::password_proof(),
             None,

@@ -79,7 +79,7 @@ def main():
             run(['xcrun', 'swiftc', '-framework', 'Security', source, '-o', helper])
             fixture = binaries / 'examples/p1_policy_fixture'
             run([helper, 'create', keychain, fixture], secrets.token_urlsafe(32) + '\n' + secret + '\n')
-            cli('init', '--password-stdin', data=proof + '\n')
+            cli('init', '--mode', 'team', '--password-stdin', data=proof + '\n')
             with (root / 'broker.log').open('w') as log:
                 broker = subprocess.Popen([str(fixture), str(state), str(root / 'ready'), str(root / 'hits')],
                                           stdout=log, stderr=log)

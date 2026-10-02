@@ -284,6 +284,7 @@ impl ActorFixture {
                 iterations: 1,
                 parallelism: 1,
             },
+            rekey_domain::authorization::PolicyMode::Team,
         )
         .unwrap();
         rekey_vault::bootstrap::confirm_vault_init(&state).unwrap();

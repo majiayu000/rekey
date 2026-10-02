@@ -253,6 +253,7 @@ async fn measure_authority_queue_and_audit() -> Value {
         &state_dir,
         &SecretInput::from_slice(common::PASSWORD),
         Argon2Params::RFC9106_LOW_MEMORY,
+        rekey_domain::authorization::PolicyMode::Team,
     )
     .unwrap();
     confirm_vault_init(&state_dir).unwrap();

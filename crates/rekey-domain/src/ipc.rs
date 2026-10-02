@@ -667,6 +667,9 @@ pub struct PolicyActivateMeta {
 pub struct PolicyStatusResponse {
     pub vault_id: VaultId,
     pub tenant_id: TenantId,
+    /// Present only when the policy state has been authenticated while unlocked.
+    pub mode: Option<crate::authorization::PolicyMode>,
+    pub algorithm: Option<crate::authorization::PolicyTrustAlgorithm>,
     pub trust_sha256: Option<String>,
     pub activated_at_ms: Option<i64>,
     pub trust_installed: bool,
@@ -681,7 +684,20 @@ pub struct PolicyStatusResponse {
 
 impl PolicyStatusResponse {
     pub fn validate(&self) -> Result<(), crate::DomainError> {
+        use crate::authorization::{PolicyMode, PolicyTrustAlgorithm};
         if self.tenant_id.as_bytes() != self.vault_id.as_bytes()
+            || (self.mode.is_none() && (self.algorithm.is_some() || self.trust_sha256.is_some()))
+            || (self.mode.is_some() && self.trust_installed != self.algorithm.is_some())
+            || matches!(
+                (self.mode, self.algorithm),
+                (
+                    Some(PolicyMode::Personal),
+                    Some(PolicyTrustAlgorithm::Ed25519)
+                ) | (
+                    Some(PolicyMode::Team),
+                    Some(PolicyTrustAlgorithm::SecureEnclaveP256)
+                )
+            )
             || self
                 .trust_sha256
                 .as_deref()
@@ -690,7 +706,9 @@ impl PolicyStatusResponse {
         {
             return Err(invalid_response());
         }
-        let details_present = self.trust_sha256.is_some()
+        let details_present = self.mode.is_some()
+            && self.algorithm.is_some()
+            && self.trust_sha256.is_some()
             && self.activated_at_ms.is_some_and(|value| value >= 0)
             && self.signer_id.is_some()
             && self.version.is_some()
@@ -1235,6 +1253,8 @@ mod tests {
         let mut status = PolicyStatusResponse {
             vault_id,
             tenant_id: TenantId::from_bytes(*vault_id.as_bytes()).unwrap(),
+            mode: Some(crate::authorization::PolicyMode::Team),
+            algorithm: Some(crate::authorization::PolicyTrustAlgorithm::Ed25519),
             trust_installed: true,
             bundle_persisted: false,
             status: "unavailable".into(),
@@ -1263,6 +1283,12 @@ mod tests {
         status.trust_sha256 = Some("A".repeat(64));
         assert!(status.validate().is_err());
         status.trust_sha256 = Some("a".repeat(64));
+        status.mode = None;
+        assert!(status.validate().is_err());
+        status.mode = Some(crate::authorization::PolicyMode::Personal);
+        assert!(status.validate().is_err());
+        status.algorithm = Some(crate::authorization::PolicyTrustAlgorithm::SecureEnclaveP256);
+        status.validate().unwrap();
         status.tenant_id = TenantId::from_random_bytes([0x55; 16]);
         assert_ne!(status.tenant_id.as_bytes(), status.vault_id.as_bytes());
         assert!(status.validate().is_err());

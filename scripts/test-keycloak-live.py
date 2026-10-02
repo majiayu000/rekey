@@ -253,7 +253,7 @@ def main():
             transcript.extend([result.stdout, result.stderr])
             return json.loads(result.stdout)
 
-        command([binaries / "rekeyd", "init", "--state-dir", state, "--password-stdin"], proof + "\n")
+        command([binaries / "rekeyd", "init", "--mode", "team", "--state-dir", state, "--password-stdin"], proof + "\n")
         log_file = work / "broker.log"
         with log_file.open("w") as log:
             broker = subprocess.Popen(list(map(str, [binaries / "examples/oau02_keycloak_fixture", state, ca_der, tls_port])), stdout=log, stderr=log)

@@ -381,6 +381,7 @@ mod lease_recovery {
                     iterations: 1,
                     parallelism: 1,
                 },
+                rekey_domain::authorization::PolicyMode::Team,
             )
             .unwrap();
             rekey_vault::bootstrap::confirm_vault_init(&state).unwrap();
@@ -992,6 +993,7 @@ async fn template_targets_preserve_locked_credential_and_fixed_profile_boundarie
             iterations: 1,
             parallelism: 1,
         },
+        rekey_domain::authorization::PolicyMode::Team,
     )
     .unwrap();
     rekey_vault::bootstrap::confirm_vault_init(&state).unwrap();

@@ -23,7 +23,7 @@ with tempfile.TemporaryDirectory(prefix='rk-human-') as root:
             assert result.returncode != 0, args
             assert not result.stdout, 'failure returned stdout'
         return result.stdout
-    call(['init', '--password-stdin'], password + '\n')
+    call(['init', '--mode', 'team', '--password-stdin'], password + '\n')
     broker = subprocess.Popen([str(binary.parent / 'rekeyd'), 'serve', '--state-dir', str(state)],
                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                               stderr=subprocess.DEVNULL)

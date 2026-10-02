@@ -106,7 +106,7 @@ capture_cmd() {
 }
 
 echo "== overlap default G1 socket is rejected"
-printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin >/dev/null
+printf '%s\n' "$PASSWORD" | "$REKEYD" init --mode team --state-dir "$STATE" --password-stdin >/dev/null
 capture_cmd "$REKEY" --state-dir "$STATE" agent-run -- "$PYTHON" -c 'print(1)'
 [[ "$CAPTURE_RC" -eq 2 ]] || {
   echo "expected overlapping agent-run exit 2, got $CAPTURE_RC: $CAPTURE_OUT"

@@ -42,12 +42,32 @@ fn read_regular_nosymlink(
 
 pub fn policy_trust_install(
     state_dir: &Path,
-    file: &Path,
+    file: Option<&Path>,
+    stdin_request: bool,
     recovery: bool,
     password_stdin: bool,
 ) -> Result<(), CliError> {
-    let (trust, _) = read_regular_nosymlink(file, 4 * 1024, "policy trust file")?;
-    let proof = read_step_up(recovery, password_stdin)?;
+    let (trust, proof) = match (file, stdin_request) {
+        (Some(file), false) => {
+            let (trust, _) = read_regular_nosymlink(file, 4 * 1024, "policy trust file")?;
+            (trust, read_step_up(recovery, password_stdin)?)
+        }
+        (None, true) if password_stdin => {
+            let mut lines = stdin_lines(2)?.into_iter();
+            let proof = lines.next().expect("exact line count validated");
+            let trust = lines.next().expect("exact line count validated");
+            if trust.len() > 4 * 1024 {
+                return Err(CliError::local("USAGE", "policy trust exceeds 4 KiB"));
+            }
+            (trust, proof)
+        }
+        _ => {
+            return Err(CliError::local(
+                "USAGE",
+                "choose a trust file or --stdin-request --step-up-stdin",
+            ));
+        }
+    };
     let body = proof_body(recovery, &proof);
     let (meta, _) = admin(state_dir)?.call(admin_msg::POLICY_TRUST_INSTALL, &trust, &body)?;
     print_policy_status(&meta)

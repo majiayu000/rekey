@@ -46,7 +46,7 @@ fn immutable_state(db: &Connection) -> Vec<Vec<Vec<Value>>> {
         "SELECT singleton,format_version,vault_id,crypto_suite,created_at_ms,schema_digest FROM vault_header",
         "SELECT credential_id,label,kind,state,current_version,created_at_ms,updated_at_ms,revoked_at_ms FROM credentials ORDER BY credential_id",
         "SELECT credential_id,version,state,aad_version,crypto_suite,created_at_ms,retired_at_ms FROM credential_versions ORDER BY credential_id,version",
-        "SELECT singleton,trust_installed,bundle_activated,signer_id,highest_version,policy_digest,bundle_digest,updated_at_ms FROM policy_state",
+        "SELECT singleton,mode,trust_installed,bundle_activated,signer_id,highest_version,policy_digest,bundle_digest,updated_at_ms FROM policy_state",
         "SELECT singleton,signer_id,algorithm,public_key,installed_at_ms FROM policy_trust",
         "SELECT singleton,signer_id,version,expires_at_ms,policy_digest,bundle_digest,bundle_json,activated_at_ms FROM policy_bundle",
         "SELECT * FROM workload_token_uses ORDER BY replay_digest",
@@ -209,7 +209,7 @@ async fn install_policy(handle: &AuthorityHandle, bundle: bool, expires_at_ms: i
         .policy_trust_install_before(
             PolicyTrustInput {
                 signer_id,
-                public_key: [7; 32],
+                key: common::policy_key(7),
             },
             common::password_proof(),
             None,
@@ -222,8 +222,11 @@ async fn install_policy(handle: &AuthorityHandle, bundle: bool, expires_at_ms: i
             .policy_bundle_activate_before(
                 PolicyBundleInput {
                     expected_vault_id: handle.admin_status().await.unwrap().vault_id,
-                    expected_trust_sha256: rekey_policy::policy_trust_sha256(signer_id, &[7; 32])
-                        .unwrap(),
+                    expected_trust_sha256: rekey_policy::policy_trust_sha256(
+                        signer_id,
+                        &common::policy_key(7),
+                    )
+                    .unwrap(),
                     signer_id,
                     version: 1,
                     expires_at_ms,
@@ -692,9 +695,13 @@ fn vrk_process_fixture() {
     let mode = std::env::var("REKEY_TEST_VRK_PROCESS_MODE").unwrap();
     let root = std::path::PathBuf::from(root);
     let state = root.join("state");
-    let outcome =
-        rekey_vault::bootstrap::init_vault(&state, &common::password_input(), common::TEST_PARAMS)
-            .unwrap();
+    let outcome = rekey_vault::bootstrap::init_vault(
+        &state,
+        &common::password_input(),
+        common::TEST_PARAMS,
+        rekey_domain::authorization::PolicyMode::Team,
+    )
+    .unwrap();
     rekey_vault::bootstrap::confirm_vault_init(&state).unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

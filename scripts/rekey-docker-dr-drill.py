@@ -132,7 +132,7 @@ def run(args, report, label):
     report.update(primary_id=primary, standby_id=standby)
     proof = secrets.token_urlsafe(32).encode() + b'\n'
     stage('initialize')
-    docker('exec', '-i', primary, 'rekeyd', 'init', '--state-dir', STATE, '--password-stdin', data=proof)
+    docker('exec', '-i', primary, 'rekeyd', 'init', '--mode', 'team', '--state-dir', STATE, '--password-stdin', data=proof)
     start_broker(primary)
     value(primary, 'unlock', '--password-stdin', data=proof)
     retained, retained_start, retained_ack = measure_write(primary, proof, 'dr-retained')

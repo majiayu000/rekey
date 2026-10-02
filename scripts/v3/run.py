@@ -164,7 +164,7 @@ def memory(root, args, binaries):
         state = root / ('state-' + mode)
         password = secrets.token_urlsafe(32)
         # Initialization prints a recovery key. Discard its output, never persist it.
-        invoke([daemon, 'init', '--state-dir', state, '--password-stdin'], data=password + '\n')
+        invoke([daemon, 'init', '--mode', 'team', '--state-dir', state, '--password-stdin'], data=password + '\n')
         with child([daemon, 'serve', '--state-dir', state]) as process:
             deadline = time.monotonic() + 20
             while not (state / 'runtime/admin.sock').exists():

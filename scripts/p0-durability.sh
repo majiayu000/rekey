@@ -51,7 +51,7 @@ max_rss() {
 echo "== post-publish audit failure leaves an authorized artifact without receipt"
 AUDIT_STATE="$WORKDIR/audit-state"
 AUDIT_OUTPUT="$WORKDIR/unaudited.rkbackup"
-printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$AUDIT_STATE" --password-stdin >/dev/null
+printf '%s\n' "$PASSWORD" | "$REKEYD" init --mode team --state-dir "$AUDIT_STATE" --password-stdin >/dev/null
 "$REKEYD" serve --state-dir "$AUDIT_STATE" --idle-lock 15m >/dev/null 2>"$WORKDIR/audit-serve.jsonl" &
 AUDIT_PID=$!
 PIDS="$PIDS $AUDIT_PID"
@@ -80,7 +80,7 @@ PIDS="${PIDS/ $AUDIT_PID/}"
 echo "== prepare large valid backup fixture"
 STATE="$WORKDIR/state"
 BACKUP="$WORKDIR/large.rkbackup"
-printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin >/dev/null
+printf '%s\n' "$PASSWORD" | "$REKEYD" init --mode team --state-dir "$STATE" --password-stdin >/dev/null
 sqlite3 "$STATE/vault.sqlite3" "CREATE TABLE durability_padding(payload BLOB); INSERT INTO durability_padding VALUES(zeroblob($PADDING_BYTES)); DROP TABLE durability_padding; PRAGMA wal_checkpoint(TRUNCATE);" >/dev/null
 
 echo "== backup SIGKILL before release audit exposes no external file"

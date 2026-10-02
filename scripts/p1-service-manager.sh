@@ -291,7 +291,7 @@ PY
     --file "$WORKDIR/policy-bundle.json" --step-up-stdin >/dev/null
 }
 
-printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin >/dev/null
+printf '%s\n' "$PASSWORD" | "$REKEYD" init --mode team --state-dir "$STATE" --password-stdin >/dev/null
 if [[ "$PLATFORM" == Darwin ]]; then
   python3 "$GENERATOR" launchd --rekeyd "$MANAGED_DAEMON" --state-dir "$STATE" --label "$LABEL" >"$PLIST"
   plutil -lint "$PLIST" >/dev/null

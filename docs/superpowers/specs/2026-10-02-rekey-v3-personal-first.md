@@ -426,6 +426,16 @@ v3 只把"由谁批准"抽象出来。策略规则增加 `approver` 字段：
   外部审批人的 Ed25519 算法与这项策略信任根扩展分开；团队模板包继续只接受 Ed25519。
 - `secure-enclave-p256` 指受支持的 App 创建路径；公钥与签名本身不能证明硬件来源。
   备份包含已签策略、公钥和模式，不含 SE 私钥；换设备后仍能验证旧策略，重新个人签名需要新建 vault。
+- 个人草稿由 daemon 从已认证、仍启用的模板 Action 版本生成，输入为 principal、所选版本与到期时间。
+  每份草稿是完整策略替换：差异展示包含所有删除、变更及新增，不能隐式保留未选择的授权。
+  daemon 返回精确签名字节；App 审阅后只签该内存快照，不自行实现 JCS，不按文件路径重读。
+  local-presence 尚未接线时，生成器遇到 require-approval 必须拒绝，不能降低为 allow。
+  只读 admin opcode `54` 接收显式 `principal_id / actions / expires_at_ms`；空 actions 表示撤销全部授权。
+  响应 metadata 包含已验证的 vault/trust、公钥、前后版本、policy digest、完整字段差异及所选 Action 定义，
+  body 为精确签名字节。metadata 与签名策略各守 64 KiB 上限；超限拒绝，不截断审阅内容。
+  CLI 仅将 metadata 与 UTF-8 签名字节封装为 JSON 供 App 读取；不参与签名或规范化。
+  激活时再次检查引用的 Action 版本仍启用；策略版本已变化时要求重新生成与审阅，不自动重签。
+  JCS 规范化若改变版本、到期时间或 Action 版本的整数值，草稿生成失败，不静默舍入。
 
 ### 7.2 Provider 模板格式
 

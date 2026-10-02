@@ -15,6 +15,8 @@ struct OperationForm: View {
     @State private var sessionID = ""
     @State private var hash = ""
     @State private var destination: URL?
+    @State private var policyMode = "personal"
+    private var isInit: Bool { operation.arguments.first == "init" }
     private var isRestore: Bool { operation.arguments.first == "restore" }
     private var revokeSession: Bool { operation.arguments == ["session", "revoke"] }
     private var valid: Bool {
@@ -27,6 +29,13 @@ struct OperationForm: View {
         VStack(alignment: .leading, spacing: 20) {
             Label(operation.title, systemImage: "lock.shield").font(.system(size: 23, weight: .semibold))
             Text(operation.detail).font(.system(size: 13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if isInit {
+                Picker("策略签名模式", selection: $policyMode) {
+                    Text("个人 · 此设备签名").tag("personal")
+                    Text("团队 · 外部签名器").tag("team")
+                }
+                Text("创建后模式不可更改；切换模式需要新建保险库。").font(.system(size: 11)).foregroundStyle(.secondary)
+            }
             if revokeSession { TextField("会话 ID", text: $sessionID).textFieldStyle(.roundedBorder) }
             if isRestore {
                 TextField("备份回执 SHA-256", text: $hash).textFieldStyle(.roundedBorder)
@@ -44,6 +53,7 @@ struct OperationForm: View {
                 Spacer()
                 Button("确认\(operation.title)") {
                     var op = operation
+                    if isInit { op = Operation(title: op.title, detail: op.detail, arguments: op.arguments + ["--mode", policyMode], confirmSecret: true, sensitiveResult: true, recoveryAllowed: false) }
                     if revokeSession { op = Operation(title: op.title, detail: op.detail, arguments: op.arguments + [sessionID]) }
                     if isRestore {
                         op = Operation(title: op.title, detail: op.detail, arguments: op.arguments + ["--sha256", hash])

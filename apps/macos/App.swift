@@ -314,13 +314,18 @@ struct RootView: View {
                 }
                 SectionCard(title: "当前策略", icon: "checkmark.shield") {
                     if let policy = model.policy {
+                        info("签名模式", policy.mode == .personal ? "个人" : policy.mode == .team ? "团队" : "解锁后验证")
                         info("状态", policy.status == "active" ? "已生效" : policy.status == "expired" ? "已过期" : policy.bundle_persisted ? "已保存，解锁后加载" : "尚未激活")
                         info("信任根", policy.trust_installed ? "已安装" : "未安装")
                         if let version = policy.version { info("生效版本", "v\(version)") }
                         if let expires = policy.expires_at_ms { info("有效期至", displayDate(expires)) }
                     }
                     HStack {
-                        Button("安装信任根") { importPolicy(trust: true) }
+                        if model.policy?.mode == .personal {
+                            Button("创建本机签名密钥") { model.beginPersonalPolicySetup() }.disabled(model.policy?.trust_installed != false)
+                        } else {
+                            Button("安装信任根") { importPolicy(trust: true) }
+                        }
                         Button("激活签名策略") { importPolicy(trust: false) }
                     }.disabled(!model.unlocked || model.busy)
                     Text("导入由外部签名工具生成的文件。创建授权本身不会绕过默认拒绝策略。").font(.system(size: 12)).foregroundStyle(.secondary)

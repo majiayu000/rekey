@@ -77,7 +77,7 @@ write_private(invalid, bad)
 PY
 
 printf '%s' '{"operation":"bounded"}' >"$REQUEST_BODY"
-printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin >/dev/null
+printf '%s\n' "$PASSWORD" | "$REKEYD" init --mode team --state-dir "$STATE" --password-stdin >/dev/null
 printf '%s\n' p7-v1 >"$MODE"
 "$FIXTURE" "$STATE" "$READY" "$MODE" "$TRACE" "$PROFILE_ONE" "$PROFILE_ONE" \
   >"$WORKDIR/broker.out" 2>"$WORKDIR/broker.err" &

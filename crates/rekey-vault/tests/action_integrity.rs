@@ -492,7 +492,7 @@ async fn format_twenty_one_is_rejected_before_new_action_layout_is_read() {
         .unwrap();
     finish(handle, join).await;
     let db = Connection::open(&backup).unwrap();
-    db.execute_batch("PRAGMA writable_schema=ON; UPDATE sqlite_schema SET sql=replace(sql,'format_version = 22','format_version = 21') WHERE name='vault_header'; PRAGMA writable_schema=OFF;").unwrap();
+    db.execute_batch(&format!("PRAGMA writable_schema=ON; UPDATE sqlite_schema SET sql=replace(sql,'format_version = {}','format_version = 21') WHERE name='vault_header'; PRAGMA writable_schema=OFF;", rekey_vault::model::FORMAT_VERSION)).unwrap();
     drop(db);
     let db = Connection::open(&backup).unwrap();
     db.execute("UPDATE vault_header SET format_version=21", [])

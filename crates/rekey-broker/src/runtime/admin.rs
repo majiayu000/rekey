@@ -23,12 +23,17 @@ impl BrokerCtx {
         let trust_sha256 = material
             .as_ref()
             .and_then(|value| value.trust.as_ref())
-            .map(|trust| rekey_policy::policy_trust_sha256(trust.signer_id, &trust.public_key))
+            .map(|trust| rekey_policy::policy_trust_sha256(trust.signer_id, &trust.key))
             .transpose()?
             .map(|digest| data_encoding::HEXLOWER.encode(&digest));
         let mut response = PolicyStatusResponse {
             vault_id: authority.vault_id,
             tenant_id,
+            mode: material.as_ref().map(|value| value.state.mode),
+            algorithm: material
+                .as_ref()
+                .and_then(|value| value.trust.as_ref())
+                .map(|trust| trust.key.algorithm()),
             trust_sha256,
             activated_at_ms: None,
             trust_installed: authority.policy_trust_installed,
@@ -70,7 +75,7 @@ impl BrokerCtx {
         let material = self.authority.policy_material().await?;
         let trust = material
             .trust
-            .map(|record| ValidatedPolicyTrust::from_parts(record.signer_id, record.public_key));
+            .map(|record| ValidatedPolicyTrust::from_parts(record.signer_id, record.key));
         let active = match (trust.as_ref(), material.bundle) {
             (_, None) => None,
             (Some(trust), Some(record)) => {
@@ -133,7 +138,7 @@ impl BrokerCtx {
             self.authority.policy_trust_install_before(
                 rekey_vault::command::PolicyTrustInput {
                     signer_id: trust.signer_id(),
-                    public_key: *trust.public_key(),
+                    key: trust.key().clone(),
                 },
                 proof,
                 Some(deadline.into_std()),
@@ -284,6 +289,7 @@ mod tests {
                 iterations: 1,
                 parallelism: 1,
             },
+            rekey_domain::authorization::PolicyMode::Team,
         )
         .unwrap();
         confirm_vault_init(&state).unwrap();
@@ -336,8 +342,17 @@ mod tests {
         assert_eq!(locked.tenant_id.as_bytes(), initialized.vault_id.as_bytes());
         assert!(locked.trust_sha256.is_none());
         assert!(locked.activated_at_ms.is_none());
+        assert!(locked.mode.is_none());
+        assert!(locked.algorithm.is_none());
         authority.unlock(proof()).await.unwrap();
-        assert!(ctx.policy_status().await.unwrap().trust_sha256.is_none());
+        let initialized_status = ctx.policy_status().await.unwrap();
+        initialized_status.validate().unwrap();
+        assert!(initialized_status.trust_sha256.is_none());
+        assert_eq!(
+            initialized_status.mode,
+            Some(rekey_domain::authorization::PolicyMode::Team)
+        );
+        assert!(initialized_status.algorithm.is_none());
         let document = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
         let signer = Ed25519KeyPair::from_pkcs8(document.as_ref()).unwrap();
         let signer_id = rekey_domain::ids::PolicySignerId::new_random();
@@ -353,6 +368,10 @@ mod tests {
         assert_eq!(before.status, "unavailable");
         assert!(before.trust_sha256.is_some());
         assert!(before.activated_at_ms.is_none());
+        assert_eq!(
+            before.algorithm,
+            Some(rekey_domain::authorization::PolicyTrustAlgorithm::Ed25519)
+        );
         let expires = crate::now_ts().unwrap().as_unix_ms() + 60_000;
         let bundle = |version| {
             let mut unsigned = serde_json::json!({"format_version":1,"signer_id":signer_id,"snapshot":{
@@ -422,6 +441,8 @@ mod tests {
         assert_eq!(locked.vault_id, initialized.vault_id);
         assert!(locked.trust_sha256.is_none());
         assert!(locked.activated_at_ms.is_none());
+        assert!(locked.mode.is_none());
+        assert!(locked.algorithm.is_none());
         authority.unlock(proof()).await.unwrap();
         ctx.reload_policy_after_unlock().await.unwrap();
         assert_eq!(ctx.policy_status().await.unwrap().status, "expired");
@@ -479,6 +500,7 @@ mod tests {
                     iterations: 1,
                     parallelism: 1,
                 },
+                rekey_domain::authorization::PolicyMode::Team,
             )
             .unwrap();
             confirm_vault_init(&state).unwrap();
@@ -533,7 +555,11 @@ mod tests {
             let signer = Ed25519KeyPair::from_pkcs8(document.as_ref()).unwrap();
             let trust = rekey_policy::ValidatedPolicyTrust::from_parts(
                 rekey_domain::ids::PolicySignerId::new_random(),
-                signer.public_key().as_ref().try_into().unwrap(),
+                rekey_policy::PolicyVerificationKey::from_bytes(
+                    rekey_domain::authorization::PolicyTrustAlgorithm::Ed25519,
+                    signer.public_key().as_ref(),
+                )
+                .unwrap(),
             );
             ctx.install_policy_trust_until(trust.clone(), proof(), deadline())
                 .await
@@ -581,11 +607,8 @@ mod tests {
             rekey_domain::ipc::PolicyActivateMeta {
                 expected_vault_id: self.vault_id,
                 expected_trust_sha256: data_encoding::HEXLOWER.encode(
-                    &rekey_policy::policy_trust_sha256(
-                        self.trust.signer_id(),
-                        self.trust.public_key(),
-                    )
-                    .unwrap(),
+                    &rekey_policy::policy_trust_sha256(self.trust.signer_id(), self.trust.key())
+                        .unwrap(),
                 ),
                 bundle_json: serde_json::from_slice(bytes).unwrap(),
             }

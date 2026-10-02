@@ -101,7 +101,7 @@ pub struct PinnedAction {
 #[derive(Debug, Clone)]
 pub struct PolicyTrustInput {
     pub signer_id: PolicySignerId,
-    pub public_key: [u8; 32],
+    pub key: rekey_policy::PolicyVerificationKey,
 }
 
 #[derive(Debug, Clone)]

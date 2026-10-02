@@ -210,7 +210,7 @@ CANARY="$(python3 -c 'import secrets; print("rk_g2_" + secrets.token_urlsafe(24)
 printf '%s\n' "$PASSWORD" | docker run --rm -i \
   --user 10001:10001 \
   --volume "$STATE_VOLUME:/state" \
-  "$IMAGE" rekeyd init --state-dir /state --password-stdin >/dev/null
+  "$IMAGE" rekeyd init --mode team --state-dir /state --password-stdin >/dev/null
 
 docker run -d --name "$BROKER" \
   --user 10001:10001 \

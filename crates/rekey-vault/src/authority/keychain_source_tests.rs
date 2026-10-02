@@ -40,6 +40,7 @@ impl Fixture {
                 iterations: 1,
                 parallelism: 1,
             },
+            rekey_domain::authorization::PolicyMode::Team,
         )
         .unwrap();
         confirm_vault_init(&state).unwrap();

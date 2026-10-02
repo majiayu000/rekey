@@ -72,7 +72,12 @@ pub mod harness {
         let dir = must(tempfile::tempdir(), "create tempdir");
         let state_dir = dir.path().join("state");
         must(
-            init_vault(&state_dir, &SecretInput::from_slice(PASSWORD), TEST_PARAMS),
+            init_vault(
+                &state_dir,
+                &SecretInput::from_slice(PASSWORD),
+                TEST_PARAMS,
+                rekey_domain::authorization::PolicyMode::Team,
+            ),
             "initialize test vault",
         );
         must(

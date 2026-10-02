@@ -9,6 +9,20 @@ fn invalid(message: &str) -> DomainError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PolicyMode {
+    Personal,
+    Team,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PolicyTrustAlgorithm {
+    Ed25519,
+    SecureEnclaveP256,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Principal {
     pub tenant_id: TenantId,
     pub principal_id: PrincipalId,
@@ -189,6 +203,38 @@ pub enum Decision {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn policy_mode_and_trust_algorithm_have_closed_wire_names() {
+        for (value, name) in [
+            (PolicyMode::Personal, "personal"),
+            (PolicyMode::Team, "team"),
+        ] {
+            let encoded = format!("\"{name}\"");
+            assert_eq!(serde_json::to_string(&value).unwrap(), encoded);
+            assert_eq!(serde_json::from_str::<PolicyMode>(&encoded).unwrap(), value);
+        }
+        for (value, name) in [
+            (PolicyTrustAlgorithm::Ed25519, "ed25519"),
+            (
+                PolicyTrustAlgorithm::SecureEnclaveP256,
+                "secure-enclave-p256",
+            ),
+        ] {
+            let encoded = format!("\"{name}\"");
+            assert_eq!(serde_json::to_string(&value).unwrap(), encoded);
+            assert_eq!(
+                serde_json::from_str::<PolicyTrustAlgorithm>(&encoded).unwrap(),
+                value
+            );
+        }
+        for invalid in ["\"Personal\"", "\"auto\"", "null"] {
+            assert!(serde_json::from_str::<PolicyMode>(invalid).is_err());
+        }
+        for invalid in ["\"p256\"", "\"SecureEnclaveP256\"", "\"rsa\"", "null"] {
+            assert!(serde_json::from_str::<PolicyTrustAlgorithm>(invalid).is_err());
+        }
+    }
 
     #[test]
     fn policy_versions_fit_the_durable_signed_range() {

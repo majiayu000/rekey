@@ -207,7 +207,7 @@ JWT_PRODUCER_SELFTEST_OUTPUT="$(
   exit 1
 }
 
-printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin >/dev/null
+printf '%s\n' "$PASSWORD" | "$REKEYD" init --mode team --state-dir "$STATE" --password-stdin >/dev/null
 openssl genrsa -traditional -out "$PRIVATE_KEY" 2048 >/dev/null 2>&1
 openssl rsa -in "$PRIVATE_KEY" -RSAPublicKey_out -outform DER -out "$PUBLIC_KEY_DER" \
   >/dev/null 2>&1

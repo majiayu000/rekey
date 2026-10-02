@@ -250,7 +250,11 @@ struct FixedAction: Decodable, Identifiable {
 }
 struct ActionList: Decodable { let actions: [FixedAction] }
 struct PolicyStatus: Decodable {
+    enum Mode: String, Decodable { case personal, team }
+    enum Algorithm: String, Decodable { case ed25519, secureEnclaveP256 = "secure-enclave-p256" }
     let vault_id: String
+    let mode: Mode?
+    let algorithm: Algorithm?
     let trust_sha256: String?
     let bundle_persisted: Bool
     let trust_installed: Bool
@@ -391,6 +395,7 @@ struct Operation: Identifiable {
     var targetDirectory: String?
     var temporaryFile: URL?
     var templateRequest: Data?
+    var personalTrustVaultID: UUID?
     var reveal: CredentialReveal?
     var unregisterBackgroundService = false
 }
@@ -554,6 +559,15 @@ final class AppModel: ObservableObject {
         let startup = managesBackgroundService ? "同时启用本用户登录启动并启动服务。" : "随后启动服务。"
         operation = Operation(title: "创建保险库", detail: "设置并确认密码后，应用会创建保险库，" + startup + "请保存随后显示的恢复密钥。", arguments: ["init"], confirmSecret: true, sensitiveResult: true, recoveryAllowed: false)
     }
+    func beginPersonalPolicySetup() {
+        guard unlocked, let policy, policy.mode == .personal, !policy.trust_installed,
+              let vaultID = UUID(uuidString: policy.vault_id) else {
+            error = "请先解锁尚未安装信任根的个人保险库。"; return
+        }
+        var request = Operation(title: "创建个人策略信任根", detail: "在此设备的 Secure Enclave 中创建策略签名密钥。以后签名需要系统在场认证；此私钥不会随备份转移到其他设备。", arguments: ["policy", "trust", "install", "--stdin-request"], proofFlag: "--step-up-stdin", targetDirectory: stateDirectory)
+        request.personalTrustVaultID = vaultID
+        operation = request
+    }
     var managesBackgroundService: Bool {
         BackgroundService.isInstalledApplication && BackgroundService.usesDefaultState(stateDirectory) && oidcProfileFile == nil
     }
@@ -712,7 +726,7 @@ final class AppModel: ObservableObject {
             return
         }
         guard !busy else {
-            if op.temporaryFile != nil || op.templateRequest != nil {
+            if op.temporaryFile != nil || op.templateRequest != nil || op.personalTrustVaultID != nil {
                 var message = "当前操作尚未完成，本次请求未提交，请稍后重试。"
                 if let file = op.temporaryFile {
                     do { try FileManager.default.removeItem(at: file) }
@@ -739,17 +753,29 @@ final class AppModel: ObservableObject {
             }
             input += json + "\n"
         }
-        let command = args, body = input
+        let command = args
+        var body = input
         var operationError: String?
         do {
-            let data = try await Task.detached { try client.run(command, input: body) }.value
+            if let vaultID = op.personalTrustVaultID {
+                let current = try await Task.detached { try client.decode(PolicyStatus.self, ["policy", "status"]) }.value
+                guard current.mode == .personal, !current.trust_installed,
+                      UUID(uuidString: current.vault_id) == vaultID else {
+                    throw UIError(message: "保险库或信任根状态已改变，请重新检查后操作。")
+                }
+                let publicKey = try await Task.detached { try PolicySigning.createOrLoadPublicKey(vaultID: vaultID) }.value
+                let trust: [String: Any] = ["format_version": 1, "signer_id": vaultID.uuidString.lowercased(), "algorithm": "secure-enclave-p256", "public_key": publicKey.map { String(format: "%02x", $0) }.joined()]
+                body += String(decoding: try JSONSerialization.data(withJSONObject: trust, options: [.sortedKeys]), as: UTF8.self) + "\n"
+            }
+            let requestInput = body
+            let data = try await Task.detached { try client.run(command, input: requestInput) }.value
             guard let output = String(data: data, encoding: .utf8) else { throw UIError(message: "命令返回了无法解码的内容，操作结果需重新确认。") }
             if desktopLogin {
                 guard output.count == 64 && output.allSatisfy(\.isHexDigit) else { throw UIError(message: "管理会话响应无效。") }
                 desktopToken = output; desktopExpiry = Date().addingTimeInterval(7 * 24 * 60 * 60)
                 if oidcProfileFile == nil || oidcSessionFile != nil {
                     let rememberArgs = recovery ? ["desktop-remember", "--recovery"] : ["desktop-remember"]
-                    let rememberedData = try await Task.detached { try client.run(rememberArgs, input: body) }.value
+                    let rememberedData = try await Task.detached { try client.run(rememberArgs, input: requestInput) }.value
                     let remembered = try RememberedUnlock.receipt(rememberedData)
                     try remembered.save(stateDirectory)
                 }
@@ -770,7 +796,7 @@ final class AppModel: ObservableObject {
         busy = false
         await refresh()
         if let operationError { self.error = operationError }
-        else if op.arguments == ["init"] { startService() }
+        else if op.arguments.first == "init" { startService() }
     }
     func startRememberedService() {
         // An installed app never registers or starts its managed job while refreshing.

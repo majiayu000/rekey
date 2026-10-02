@@ -177,7 +177,7 @@ execute_with() {
     --capability - --body-file "$WORKDIR/request.json" --content-type application/json "$@"
 }
 
-printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin >/dev/null
+printf '%s\n' "$PASSWORD" | "$REKEYD" init --mode team --state-dir "$STATE" --password-stdin >/dev/null
 python3 "$SIGNER" approval-identity --key-dir "$WORKDIR/approver-1-key" >"$WORKDIR/approver-1.json"
 python3 "$SIGNER" approval-identity --key-dir "$WORKDIR/approver-2-key" >"$WORKDIR/approver-2.json"
 printf '%s\n' '{"message":"approved"}' >"$WORKDIR/request.json"

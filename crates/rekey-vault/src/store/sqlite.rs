@@ -660,6 +660,7 @@ impl SqliteRecordStore {
             .run_to_completion(64, std::time::Duration::from_millis(5), None)
             .map_err(|_| AuthorityError::BackupFailed)?;
         drop(backup);
+        super::policy::verified_policy_material(&dst, key, vault_id)?;
         for record in all_actions(&dst)? {
             crate::convert::verified_record_to_action(&record, key, vault_id)?;
         }
@@ -1009,6 +1010,7 @@ mod tests {
                 iterations: 1,
                 parallelism: 1,
             },
+            rekey_domain::authorization::PolicyMode::Team,
         )
         .unwrap();
         confirm_vault_init(&state).unwrap();

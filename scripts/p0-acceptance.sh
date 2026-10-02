@@ -54,13 +54,13 @@ json_field() {
 }
 
 echo "== init"
-printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" init --password-stdin >/dev/null
+printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" init --mode team --password-stdin >/dev/null
 
 echo "== delegated exit codes (usage=2, storage/state=5)"
 set +e
 "$REKEY" --state-dir "$STATE" serve --idle-lock 1s >/dev/null 2>&1
 usage_rc=$?
-printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" init --password-stdin >/dev/null 2>&1
+printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" init --mode team --password-stdin >/dev/null 2>&1
 state_rc=$?
 set -e
 [[ "$usage_rc" -eq 2 ]] || { echo "expected invalid idle exit 2, got $usage_rc"; exit 1; }

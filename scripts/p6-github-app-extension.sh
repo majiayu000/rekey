@@ -100,7 +100,7 @@ bad["repositories"].append({"id": 818181, "owner": "other", "name": "duplicate"}
 write_private(invalid, json.dumps(bad))
 PY
 
-printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin >/dev/null
+printf '%s\n' "$PASSWORD" | "$REKEYD" init --mode team --state-dir "$STATE" --password-stdin >/dev/null
 printf '%s\n' p6-list >"$MODE"
 fixture_command=("$FIXTURE")
 if [[ "$(uname -s)" == "Linux" && "${GITHUB_ACTIONS:-}" == "true" ]]; then

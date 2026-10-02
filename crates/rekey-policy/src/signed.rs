@@ -1,7 +1,9 @@
-use aws_lc_rs::signature::{ED25519, UnparsedPublicKey};
-use data_encoding::BASE64URL_NOPAD;
+use aws_lc_rs::signature::{ECDSA_P256_SHA256_ASN1, ED25519, UnparsedPublicKey};
+use data_encoding::{BASE64URL_NOPAD, HEXLOWER};
 use rekey_domain::Timestamp;
-use rekey_domain::authorization::{ApprovalMode, PolicyVersion, ResourceRef, SchemaId};
+use rekey_domain::authorization::{
+    ApprovalMode, PolicyTrustAlgorithm, PolicyVersion, ResourceRef, SchemaId,
+};
 use rekey_domain::ids::{
     ActionId, ApprovalId, ApprovalRequestId, ApproverId, PolicyRuleId, PolicySignerId, PrincipalId,
     SessionId, TenantId,
@@ -14,9 +16,8 @@ use sha2::{Digest, Sha256};
 use crate::json::parse_unique_json;
 use crate::{
     APPROVAL_GRANT_MAX_BYTES, PolicyError, PolicySnapshot, SNAPSHOT_FORMAT_VERSION,
-    SNAPSHOT_MAX_BYTES, SignatureAlgorithm, TRUST_MAX_BYTES, ValidatedSnapshot,
-    decode_lower_hex_32, parse_and_validate_snapshot, parse_and_validate_snapshot_for_load,
-    validate_ed25519_public_key,
+    SNAPSHOT_MAX_BYTES, TRUST_MAX_BYTES, ValidatedSnapshot, decode_lower_hex_32,
+    parse_and_validate_snapshot, parse_and_validate_snapshot_for_load, validate_ed25519_public_key,
 };
 
 const POLICY_FORMAT_VERSION: u32 = 1;
@@ -28,22 +29,63 @@ pub const APPROVAL_CHALLENGE_SIGN_PREFIX: &[u8] = b"RKCHALLENGE\0\x01";
 struct PolicyTrustFile {
     format_version: u32,
     signer_id: PolicySignerId,
-    algorithm: SignatureAlgorithm,
+    algorithm: PolicyTrustAlgorithm,
     public_key: String,
+}
+
+/// Validated public verification material. The P-256 algorithm label does not
+/// attest that a key was created in Secure Enclave; software fixtures use it too.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PolicyVerificationKey {
+    algorithm: PolicyTrustAlgorithm,
+    bytes: Vec<u8>,
+}
+
+impl PolicyVerificationKey {
+    pub fn from_bytes(algorithm: PolicyTrustAlgorithm, bytes: &[u8]) -> Result<Self, PolicyError> {
+        match algorithm {
+            PolicyTrustAlgorithm::Ed25519 => {
+                if bytes.len() != 32 {
+                    return Err(PolicyError::Invalid);
+                }
+                validate_ed25519_public_key(&HEXLOWER.encode(bytes))?;
+            }
+            PolicyTrustAlgorithm::SecureEnclaveP256 => {
+                if bytes.len() != 65 || bytes[0] != 4 {
+                    return Err(PolicyError::Invalid);
+                }
+                UnparsedPublicKey::new(&ECDSA_P256_SHA256_ASN1, bytes)
+                    .parse()
+                    .map_err(|_| PolicyError::Invalid)?;
+            }
+        }
+        Ok(Self {
+            algorithm,
+            bytes: bytes.to_vec(),
+        })
+    }
+
+    pub fn algorithm(&self) -> PolicyTrustAlgorithm {
+        self.algorithm
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct ValidatedPolicyTrust {
     signer_id: PolicySignerId,
-    public_key: [u8; 32],
+    key: PolicyVerificationKey,
     canonical: Vec<u8>,
 }
 
 impl ValidatedPolicyTrust {
-    pub fn from_parts(signer_id: PolicySignerId, public_key: [u8; 32]) -> Self {
+    pub fn from_parts(signer_id: PolicySignerId, key: PolicyVerificationKey) -> Self {
         Self {
             signer_id,
-            public_key,
+            key,
             canonical: Vec::new(),
         }
     }
@@ -52,8 +94,12 @@ impl ValidatedPolicyTrust {
         self.signer_id
     }
 
-    pub fn public_key(&self) -> &[u8; 32] {
-        &self.public_key
+    pub fn key(&self) -> &PolicyVerificationKey {
+        &self.key
+    }
+
+    pub fn public_key(&self) -> &[u8] {
+        self.key.as_bytes()
     }
 
     pub fn canonical_bytes(&self) -> &[u8] {
@@ -157,13 +203,13 @@ impl VerifiedApprovalGrant {
 /// Digest of the canonical installed four-field trust document, from verified fields.
 pub fn policy_trust_sha256(
     signer_id: PolicySignerId,
-    public_key: &[u8; 32],
+    key: &PolicyVerificationKey,
 ) -> Result<[u8; 32], PolicyError> {
     let trust = PolicyTrustFile {
         format_version: POLICY_FORMAT_VERSION,
         signer_id,
-        algorithm: SignatureAlgorithm::Ed25519,
-        public_key: data_encoding::HEXLOWER.encode(public_key),
+        algorithm: key.algorithm(),
+        public_key: HEXLOWER.encode(key.as_bytes()),
     };
     let canonical = serde_jcs::to_vec(&trust).map_err(|_| PolicyError::Malformed)?;
     Ok(Sha256::digest(canonical).into())
@@ -179,11 +225,17 @@ pub fn parse_policy_trust(bytes: &[u8]) -> Result<ValidatedPolicyTrust, PolicyEr
     if trust.format_version != POLICY_FORMAT_VERSION {
         return Err(PolicyError::UnsupportedFormat);
     }
-    let public_key = validate_ed25519_public_key(&trust.public_key)?;
+    let public_key = HEXLOWER
+        .decode(trust.public_key.as_bytes())
+        .map_err(|_| PolicyError::Invalid)?;
+    if HEXLOWER.encode(&public_key) != trust.public_key {
+        return Err(PolicyError::Invalid);
+    }
+    let key = PolicyVerificationKey::from_bytes(trust.algorithm, &public_key)?;
     let canonical = serde_jcs::to_vec(&value).map_err(|_| PolicyError::Malformed)?;
     Ok(ValidatedPolicyTrust {
         signer_id: trust.signer_id,
-        public_key,
+        key,
         canonical,
     })
 }
@@ -225,12 +277,8 @@ fn parse_and_verify_policy_bundle_inner(
     if snapshot_shape.format_version != SNAPSHOT_FORMAT_VERSION {
         return Err(PolicyError::UnsupportedFormat);
     }
-    verify_signed_value(
-        &value,
-        &envelope.signature,
-        b"RKPOLICY\0\x01",
-        &trust.public_key,
-    )?;
+    let message = signed_value_payload(&value, b"RKPOLICY\0\x01")?;
+    verify_policy_signature(&message, &envelope.signature, trust.key())?;
     let snapshot_bytes =
         serde_jcs::to_vec(&envelope.snapshot).map_err(|_| PolicyError::Malformed)?;
     let snapshot = match now {
@@ -289,6 +337,11 @@ fn verify_signed_value(
     prefix: &[u8],
     public_key: &[u8; 32],
 ) -> Result<(), PolicyError> {
+    let message = signed_value_payload(value, prefix)?;
+    verify_detached(&message, signature, public_key)
+}
+
+fn signed_value_payload(value: &Value, prefix: &[u8]) -> Result<Vec<u8>, PolicyError> {
     let mut unsigned = value.clone();
     unsigned
         .as_object_mut()
@@ -299,7 +352,34 @@ fn verify_signed_value(
     let mut message = Vec::with_capacity(prefix.len() + canonical.len());
     message.extend_from_slice(prefix);
     message.extend_from_slice(&canonical);
-    verify_detached(&message, signature, public_key)
+    Ok(message)
+}
+
+fn verify_policy_signature(
+    message: &[u8],
+    signature: &str,
+    key: &PolicyVerificationKey,
+) -> Result<(), PolicyError> {
+    let signature_bytes = BASE64URL_NOPAD
+        .decode(signature.as_bytes())
+        .map_err(|_| PolicyError::InvalidSignature)?;
+    if BASE64URL_NOPAD.encode(&signature_bytes) != signature {
+        return Err(PolicyError::InvalidSignature);
+    }
+    match key.algorithm() {
+        PolicyTrustAlgorithm::Ed25519 => {
+            if signature_bytes.len() != 64 {
+                return Err(PolicyError::InvalidSignature);
+            }
+            UnparsedPublicKey::new(&ED25519, key.as_bytes()).verify(message, &signature_bytes)
+        }
+        PolicyTrustAlgorithm::SecureEnclaveP256 => {
+            // SecKey's MessageX962SHA256 output is DER, not fixed-width r || s.
+            UnparsedPublicKey::new(&ECDSA_P256_SHA256_ASN1, key.as_bytes())
+                .verify(message, &signature_bytes)
+        }
+    }
+    .map_err(|_| PolicyError::InvalidSignature)
 }
 
 pub fn approval_challenge_sign_payload(
@@ -386,32 +466,38 @@ mod tests {
     fn trust_digest_is_canonical_and_matches_restored_fields() {
         let signer = key_pair();
         let signer_id = PolicySignerId::new_random();
-        let key: [u8; 32] = signer.public_key().as_ref().try_into().unwrap();
+        let key = PolicyVerificationKey::from_bytes(
+            PolicyTrustAlgorithm::Ed25519,
+            signer.public_key().as_ref(),
+        )
+        .unwrap();
         let raw = format!(
             "{{\"public_key\":\"{}\", \"algorithm\":\"ed25519\",\"signer_id\":\"{}\",\"format_version\":1}}",
-            HEXLOWER.encode(&key),
+            HEXLOWER.encode(key.as_bytes()),
             signer_id
         );
         let fresh = parse_policy_trust(raw.as_bytes()).unwrap();
-        let restored = ValidatedPolicyTrust::from_parts(signer_id, key);
+        let restored = ValidatedPolicyTrust::from_parts(signer_id, key.clone());
         assert!(restored.canonical_bytes().is_empty());
-        let digest = policy_trust_sha256(fresh.signer_id(), fresh.public_key()).unwrap();
+        let digest = policy_trust_sha256(fresh.signer_id(), fresh.key()).unwrap();
         assert_eq!(
             digest,
             <[u8; 32]>::from(Sha256::digest(fresh.canonical_bytes()))
         );
         assert_eq!(
             digest,
-            policy_trust_sha256(restored.signer_id(), restored.public_key()).unwrap()
+            policy_trust_sha256(restored.signer_id(), restored.key()).unwrap()
         );
         assert_ne!(
             digest,
             policy_trust_sha256(PolicySignerId::new_random(), &key).unwrap()
         );
-        let mut changed = key;
-        changed[0] ^= 1;
+        let changed = PolicyVerificationKey::from_bytes(
+            PolicyTrustAlgorithm::Ed25519,
+            key_pair().public_key().as_ref(),
+        )
+        .unwrap();
         assert_ne!(digest, policy_trust_sha256(signer_id, &changed).unwrap());
-        assert!(policy_trust_sha256(signer_id, &[7; 32]).is_ok());
     }
 
     fn key_pair() -> Ed25519KeyPair {

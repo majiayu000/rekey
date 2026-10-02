@@ -25,8 +25,13 @@ pub struct TestVault {
 pub fn init_test_vault() -> TestVault {
     let dir = tempfile::tempdir().expect("tempdir");
     let state_dir = dir.path().join("state");
-    let outcome = init_vault(&state_dir, &SecretInput::from_slice(PASSWORD), TEST_PARAMS)
-        .expect("init vault");
+    let outcome = init_vault(
+        &state_dir,
+        &SecretInput::from_slice(PASSWORD),
+        TEST_PARAMS,
+        rekey_domain::authorization::PolicyMode::Team,
+    )
+    .expect("init vault");
     confirm_vault_init(&state_dir).expect("confirm init");
     TestVault {
         dir,
@@ -61,4 +66,15 @@ pub fn expect_err<T>(
         Ok(_) => panic!("expected an error, got Ok"),
         Err(err) => err,
     }
+}
+
+/// Deterministic synthetic Ed25519 public verification material for team fixtures.
+pub fn policy_key(seed: u8) -> rekey_policy::PolicyVerificationKey {
+    use aws_lc_rs::signature::{Ed25519KeyPair, KeyPair};
+    let pair = Ed25519KeyPair::from_seed_unchecked(&[seed; 32]).unwrap();
+    rekey_policy::PolicyVerificationKey::from_bytes(
+        rekey_domain::authorization::PolicyTrustAlgorithm::Ed25519,
+        pair.public_key().as_ref(),
+    )
+    .unwrap()
 }

@@ -51,7 +51,7 @@ broker = None
 log = None
 evidence = None
 try:
-    command([ROOT / 'target/debug/rekeyd', 'init', '--state-dir', S, '--password-stdin'], PASSWORD + '\n')
+    command([ROOT / 'target/debug/rekeyd', 'init', '--mode', 'team', '--state-dir', S, '--password-stdin'], PASSWORD + '\n')
     log = open(D / 'broker.log', 'wb')
     broker = subprocess.Popen([str(ROOT / 'target/debug/examples/p1_policy_fixture'), str(S), str(D / 'port'), str(D / 'hits')], stdout=log, stderr=log)
     deadline = time.monotonic() + 10

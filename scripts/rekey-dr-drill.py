@@ -16,7 +16,7 @@ import uuid
 SPEC = importlib.util.spec_from_file_location('dr_files', Path(__file__).with_name('rekey-controlplane.py'))
 FILES = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(FILES)
-FORMAT_VERSION = 22
+FORMAT_VERSION = 23
 
 
 def stream_digest(path, private=True, pin=False):

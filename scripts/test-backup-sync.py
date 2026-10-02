@@ -428,10 +428,10 @@ class DrArtifactTests(unittest.TestCase):
         self.restored = self.root / 'actual-state'
         self.restored.mkdir(mode=0o700)
         self.cut = {'audit_sequence': 27, 'policy': {'version': 3, 'bundle_sha256': 'a' * 64}}
-        self.backup = dict(vault_id='12345678-1234-4234-9234-123456789abc', format_version=22,
+        self.backup = dict(vault_id='12345678-1234-4234-9234-123456789abc', format_version=23,
                            created_at_ms=100, sha256_hex=hashlib.sha256(self.artifact.read_bytes()).hexdigest(),
                            output_path=str(self.artifact), snapshot_cut=self.cut)
-        self.restore = dict(vault_id=self.backup['vault_id'], format_version=22,
+        self.restore = dict(vault_id=self.backup['vault_id'], format_version=23,
                             input_sha256_hex=self.backup['sha256_hex'], output_path=str(self.restored),
                             snapshot_cut=self.cut)
         self.bp, self.rp, self.output = self.root / 'backup.json', self.root / 'restore.json', self.root / 'report'

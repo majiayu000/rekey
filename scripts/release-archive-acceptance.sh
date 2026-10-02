@@ -151,7 +151,7 @@ activate_snapshot() {
 }
 
 echo "== init, serve, unlock, format v22"
-init_out="$(printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin)"
+init_out="$(printf '%s\n' "$PASSWORD" | "$REKEYD" init --mode team --state-dir "$STATE" --password-stdin)"
 printf '%s\n' "$init_out" | rg -q '^RKREC1-' || {
   echo "init did not print a recovery key" >&2
   exit 1
@@ -167,8 +167,8 @@ done
 [[ -S "$STATE/runtime/admin.sock" ]] || { echo "broker did not start"; exit 1; }
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" unlock --password-stdin >/dev/null
 status="$("$REKEY" --state-dir "$STATE" status)"
-printf '%s\n' "$status" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin)["format_version"] == 22 else 1)' || {
-  echo "expected format_version 22: $status" >&2
+printf '%s\n' "$status" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin)["format_version"] == 23 else 1)' || {
+  echo "expected format_version 23: $status" >&2
   exit 1
 }
 
@@ -332,7 +332,7 @@ SERVE_PID=""
 if [[ "$(uname -s)" == Darwin ]]; then
   echo "== macOS experimental Seatbelt launcher"
   mkdir -p "$AGENT_RUN"
-  printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$WORKDIR/macos" --password-stdin >/dev/null
+  printf '%s\n' "$PASSWORD" | "$REKEYD" init --mode team --state-dir "$WORKDIR/macos" --password-stdin >/dev/null
   "$REKEYD" serve --state-dir "$WORKDIR/macos" --idle-lock 15m --agent-runtime-dir "$AGENT_RUN" \
     >"$WORKDIR/macos.out" 2>"$WORKDIR/macos.err" &
   SERVE_PID=$!

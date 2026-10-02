@@ -52,7 +52,7 @@ wait_for_socket() {
   exit 1
 }
 
-printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" init --password-stdin >/dev/null
+printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" init --mode team --password-stdin >/dev/null
 "$REKEYD" serve --state-dir "$STATE" --idle-lock 15m >"$WORKDIR/serve-1.out" 2>"$WORKDIR/serve-1.jsonl" &
 BROKER_PID=$!
 wait_for_socket

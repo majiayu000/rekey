@@ -1,14 +1,15 @@
 use aws_lc_rs::rand::SystemRandom;
-use aws_lc_rs::signature::{Ed25519KeyPair, KeyPair};
+use aws_lc_rs::signature::{ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair, Ed25519KeyPair, KeyPair};
 use data_encoding::{BASE64URL_NOPAD, HEXLOWER};
 use rekey_domain::action::{ExactPath, FixedMethod, HttpsOrigin};
+use rekey_domain::authorization::PolicyTrustAlgorithm;
 use rekey_domain::ids::PolicySignerId;
 use rekey_policy::templates::{
     BuiltinTemplate, GITHUB_CREATE_ISSUE_SCHEMA, TEMPLATE_PACKAGE_MAX_BYTES, TEMPLATE_SIGN_PREFIX,
     TemplatePackageError, ValidatedTemplatePackage, builtin_template,
     parse_and_verify_template_package,
 };
-use rekey_policy::{ValidatedPolicyTrust, parse_policy_trust};
+use rekey_policy::{PolicyVerificationKey, ValidatedPolicyTrust, parse_policy_trust};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -161,11 +162,40 @@ fn signature_authenticates_template_schemas_and_signer_with_distinct_domain() {
         );
     }
     let (_, other_trust, _) = fixture();
-    let wrong_key = ValidatedPolicyTrust::from_parts(trust.signer_id(), *other_trust.public_key());
+    let wrong_key = ValidatedPolicyTrust::from_parts(trust.signer_id(), other_trust.key().clone());
     assert_eq!(
         error(parse_and_verify_template_package(
             &encode_signed(&unsigned, &key),
             &wrong_key
+        )),
+        TemplatePackageError::InvalidSignature
+    );
+}
+
+#[test]
+fn personal_p256_policy_key_cannot_authenticate_a_team_template_package() {
+    let (_, trust, mut unsigned) = fixture();
+    let document =
+        EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &SystemRandom::new())
+            .unwrap();
+    let key = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, document.as_ref()).unwrap();
+    let personal_trust = ValidatedPolicyTrust::from_parts(
+        trust.signer_id(),
+        PolicyVerificationKey::from_bytes(
+            PolicyTrustAlgorithm::SecureEnclaveP256,
+            key.public_key().as_ref(),
+        )
+        .unwrap(),
+    );
+    let mut message = TEMPLATE_SIGN_PREFIX.to_vec();
+    message.extend_from_slice(&serde_jcs::to_vec(&unsigned).unwrap());
+    unsigned["signature"] = BASE64URL_NOPAD
+        .encode(key.sign(&SystemRandom::new(), &message).unwrap().as_ref())
+        .into();
+    assert_eq!(
+        error(parse_and_verify_template_package(
+            &serde_json::to_vec(&unsigned).unwrap(),
+            &personal_trust,
         )),
         TemplatePackageError::InvalidSignature
     );

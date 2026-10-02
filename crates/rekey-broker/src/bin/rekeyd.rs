@@ -11,6 +11,7 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 use rekey_broker::error::BrokerError;
 use rekey_broker::runtime::{BrokerConfig, serve};
+use rekey_domain::authorization::PolicyMode;
 use rekey_domain::ipc::{ADMIN_SECRET_BODY_MAX_BYTES, RestoreReceipt};
 use rekey_vault::AuthorityError;
 use rekey_vault::bootstrap::{RestoreProof, init_vault, restore_vault};
@@ -74,6 +75,9 @@ struct Cli {
 enum Command {
     /// Initialize a new v2 vault in an empty state directory.
     Init {
+        /// Immutable policy signing mode for this vault.
+        #[arg(long, value_parser = ["personal", "team"])]
+        mode: String,
         #[arg(long)]
         state_dir: Option<PathBuf>,
         /// Read the password from stdin (first line) instead of the TTY.
@@ -205,7 +209,20 @@ fn prompt_secret(prompt: &str) -> Result<SecretInput, RekeydError> {
     Ok(SecretInput::from_slice(value.as_bytes()))
 }
 
-fn cmd_init(state_dir: Option<PathBuf>, password_stdin: bool) -> Result<(), RekeydError> {
+fn cmd_init(
+    state_dir: Option<PathBuf>,
+    password_stdin: bool,
+    mode: &str,
+) -> Result<(), RekeydError> {
+    let mode = match mode {
+        "personal" => PolicyMode::Personal,
+        "team" => PolicyMode::Team,
+        _ => {
+            return Err(RekeydError::Usage(
+                "choose personal or team policy mode".into(),
+            ));
+        }
+    };
     let state_dir = resolve_state_dir(state_dir)?;
     let password = if password_stdin {
         read_stdin_secret_line()?
@@ -217,7 +234,12 @@ fn cmd_init(state_dir: Option<PathBuf>, password_stdin: bool) -> Result<(), Reke
         }
         first
     };
-    let outcome = init_vault(&state_dir, &password, Argon2Params::RFC9106_LOW_MEMORY)?;
+    let outcome = init_vault(
+        &state_dir,
+        &password,
+        Argon2Params::RFC9106_LOW_MEMORY,
+        mode,
+    )?;
     println!("vault initialized: {}", outcome.vault_id);
     println!("state directory: {}", state_dir.display());
     println!();
@@ -397,7 +419,8 @@ fn main() {
         Command::Init {
             state_dir,
             password_stdin,
-        } => cmd_init(state_dir, password_stdin),
+            mode,
+        } => cmd_init(state_dir, password_stdin, &mode),
         Command::Serve {
             #[cfg(feature = "lab")]
             oidc_admin_profile,

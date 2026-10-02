@@ -153,7 +153,14 @@ fn cli_end_to_end() {
     // init via rekeyd with --password-stdin; recovery key goes to stdout.
     let output = run(
         &rekeyd_bin(),
-        &["init", "--state-dir", state, "--password-stdin"],
+        &[
+            "init",
+            "--mode",
+            "team",
+            "--state-dir",
+            state,
+            "--password-stdin",
+        ],
         Some(&format!("{PASSWORD}\n")),
     );
     assert_eq!(output.status, 0, "init failed: {}", output.stderr);
@@ -169,7 +176,14 @@ fn cli_end_to_end() {
     // Second init must refuse.
     let output = run(
         &rekeyd_bin(),
-        &["init", "--state-dir", state, "--password-stdin"],
+        &[
+            "init",
+            "--mode",
+            "team",
+            "--state-dir",
+            state,
+            "--password-stdin",
+        ],
         Some(&format!("{PASSWORD}\n")),
     );
     assert_ne!(output.status, 0);
@@ -879,7 +893,14 @@ fn cli_vrk_rotation_two_stdin_factors_keep_broker_locked_and_leave_no_plaintext(
     let state = state_dir.to_str().unwrap();
     let initialized = run(
         &rekeyd_bin(),
-        &["init", "--state-dir", state, "--password-stdin"],
+        &[
+            "init",
+            "--mode",
+            "team",
+            "--state-dir",
+            state,
+            "--password-stdin",
+        ],
         Some(&format!("{PASSWORD}\n")),
     );
     assert_eq!(initialized.status, 0, "{}", initialized.stderr);
@@ -973,8 +994,15 @@ fn desktop_reveal_and_locked_shutdown_require_each_step_up() {
     let state_dir = dir.path().join("state");
     let state = state_dir.to_str().unwrap();
     let init = run(
-        &rekeyd_bin(),
-        &["init", "--state-dir", state, "--password-stdin"],
+        &rekey_bin(),
+        &[
+            "--state-dir",
+            state,
+            "init",
+            "--mode",
+            "personal",
+            "--password-stdin",
+        ],
         Some(&format!("{PASSWORD}\n")),
     );
     assert_eq!(init.status, 0, "{}", init.stderr);
@@ -1003,6 +1031,20 @@ fn desktop_reveal_and_locked_shutdown_require_each_step_up() {
         Some(&format!("{PASSWORD}\n")),
     );
     assert_eq!(login.status, 0, "{}", login.stderr);
+    let personal_status = run(
+        &rekey_bin(),
+        &["--state-dir", state, "policy", "status"],
+        None,
+    );
+    assert_eq!(personal_status.status, 0, "{}", personal_status.stderr);
+    let personal: rekey_domain::ipc::PolicyStatusResponse =
+        serde_json::from_str(&personal_status.stdout).unwrap();
+    personal.validate().unwrap();
+    assert_eq!(
+        personal.mode,
+        Some(rekey_domain::authorization::PolicyMode::Personal)
+    );
+    assert!(personal.algorithm.is_none());
     let token = login.stdout;
     let added = run(
         &rekey_bin(),
@@ -1082,7 +1124,14 @@ fn template_cli_installs_bound_actions_atomically_without_exposing_proof() {
     let proof = format!("{PASSWORD}\n");
     let initialized = run(
         &rekeyd_bin(),
-        &["init", "--state-dir", state, "--password-stdin"],
+        &[
+            "init",
+            "--mode",
+            "team",
+            "--state-dir",
+            state,
+            "--password-stdin",
+        ],
         Some(&proof),
     );
     assert_eq!(initialized.status, 0, "{}", initialized.stderr);
@@ -1119,6 +1168,36 @@ fn template_cli_installs_bound_actions_atomically_without_exposing_proof() {
     let catalog: serde_json::Value = serde_json::from_str(&catalog.stdout).unwrap();
     assert_eq!(catalog["template"]["template"], "github-pat@1");
     assert!(catalog["signer_id"].is_null());
+    // A synthetic public Ed25519 key exercises the same anonymous trust input
+    // used by the app; the daemon's origin key is never used to sign policy here.
+    let origin = call(&["approval", "origin"], None);
+    assert_eq!(origin.status, 0, "{}", origin.stderr);
+    let origin: serde_json::Value = serde_json::from_str(&origin.stdout).unwrap();
+    let trust = serde_json::json!({"format_version": 1,
+        "signer_id": rekey_domain::ids::PolicySignerId::new_random(),
+        "algorithm": "ed25519", "public_key": origin["public_key"]});
+    let installed_trust = call(
+        &[
+            "policy",
+            "trust",
+            "install",
+            "--stdin-request",
+            "--step-up-stdin",
+        ],
+        Some(&format!("{proof}{trust}\n")),
+    );
+    assert_eq!(installed_trust.status, 0, "{}", installed_trust.stderr);
+    let trust_status: rekey_domain::ipc::PolicyStatusResponse =
+        serde_json::from_str(&installed_trust.stdout).unwrap();
+    trust_status.validate().unwrap();
+    assert_eq!(
+        trust_status.mode,
+        Some(rekey_domain::authorization::PolicyMode::Team)
+    );
+    assert_eq!(
+        trust_status.algorithm,
+        Some(rekey_domain::authorization::PolicyTrustAlgorithm::Ed25519)
+    );
     let added = call(
         &["credential", "add", "template key", "--stdin-secrets"],
         Some(&format!("{PASSWORD}\n{SECRET}\n")),

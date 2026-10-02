@@ -156,7 +156,7 @@ def main():
                 args = (*args, "--expected-vault-id", target["vault_id"], "--expected-trust-sha256", target["trust_sha256"])
             return json.loads(run(base + list(args), secret))
 
-        run(base + ["init", "--password-stdin"], password + "\n")
+        run(base + ["init", "--mode", "team", "--password-stdin"], password + "\n")
         with (work / "broker.log").open("w") as log:
             broker = subprocess.Popen([str(binaries / "examples/p1_policy_fixture"), "serve",
                                        "--state-dir", str(state)], stdout=log, stderr=log)

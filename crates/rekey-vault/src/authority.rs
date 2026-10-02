@@ -408,12 +408,12 @@ impl Worker {
         }
         if matches!(source, TemplateSource::SignedPackage {}) {
             let material = self.policy_material();
-            let trust = self
-                .fault_on_integrity(material)?
-                .trust
-                .ok_or(AuthorityError::PolicyUnavailable)?;
-            let trust =
-                rekey_policy::ValidatedPolicyTrust::from_parts(trust.signer_id, trust.public_key);
+            let material = self.fault_on_integrity(material)?;
+            if material.state.mode != rekey_domain::authorization::PolicyMode::Team {
+                return Err(template_input("signed template packages require team mode"));
+            }
+            let trust = material.trust.ok_or(AuthorityError::PolicyUnavailable)?;
+            let trust = rekey_policy::ValidatedPolicyTrust::from_parts(trust.signer_id, trust.key);
             return templates::parse_and_verify_template_package(bytes, &trust)
                 .map_err(template_package_error);
         }

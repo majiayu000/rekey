@@ -227,7 +227,14 @@ fn real_rekeyd_and_rekey_accept_all_profiles_and_reject_replay_and_tampering() {
     let state_dir = dir.path().join("state");
     let state = state_dir.to_str().unwrap();
     let init = Command::new(rekeyd_bin())
-        .args(["init", "--state-dir", state, "--password-stdin"])
+        .args([
+            "init",
+            "--mode",
+            "team",
+            "--state-dir",
+            state,
+            "--password-stdin",
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())

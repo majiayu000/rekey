@@ -37,7 +37,7 @@ def main():
                 arguments = (*arguments, "--expected-vault-id", target["vault_id"], "--expected-trust-sha256", target["trust_sha256"])
             return run("rekey", "--state-dir", state, *arguments, **kwargs)
 
-        cli("init", "--password-stdin", stdin=proof)
+        cli("init", "--mode", "team", "--password-stdin", stdin=proof)
         with (root / "broker.log").open("w") as log:
             broker = subprocess.Popen(
                 [str(binaries / "rekeyd"), "serve", "--state-dir", str(state)],

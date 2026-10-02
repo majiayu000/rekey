@@ -4,7 +4,7 @@ use rekey_domain::ids::{
     PolicySignerId, PrincipalId, RequestId, SessionId, VaultId, WrapperId,
 };
 
-pub const FORMAT_VERSION: u32 = 22;
+pub const FORMAT_VERSION: u32 = 23;
 pub const VAULT_INTEGRITY_CIPHERTEXT_LEN: usize = 40;
 
 #[derive(Debug, Clone)]
@@ -170,6 +170,7 @@ pub struct AuditRetentionRecord {
 
 #[derive(Debug, Clone)]
 pub struct PolicyStateRecord {
+    pub mode: rekey_domain::authorization::PolicyMode,
     pub trust_installed: bool,
     pub bundle_activated: bool,
     pub signer_id: Option<PolicySignerId>,
@@ -184,7 +185,7 @@ pub struct PolicyStateRecord {
 #[derive(Debug, Clone)]
 pub struct PolicyTrustRecord {
     pub signer_id: PolicySignerId,
-    pub public_key: [u8; 32],
+    pub key: rekey_policy::PolicyVerificationKey,
     pub installed_at_ms: i64,
     pub seal_nonce: [u8; 12],
     pub seal_ciphertext: [u8; 16],

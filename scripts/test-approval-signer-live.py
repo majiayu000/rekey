@@ -234,7 +234,7 @@ def main():
             path.chmod(0o600)
             return path
 
-        cli('init', '--password-stdin', stdin=proof)
+        cli('init', '--mode', 'team', '--password-stdin', stdin=proof)
         ready, hits = root / 'port', root / 'hits'
         with (root / 'broker.log').open('w') as log:
             relay = None

@@ -20,7 +20,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/bin" "$APP/Contents/Libr
 install -m 0644 apps/macos/Resources/com.rekey.rekeyd.plist "$APP/Contents/Library/LaunchAgents/"
 xcrun swiftc -warnings-as-errors -swift-version 5 -O -target "$(uname -m)-apple-macosx14.0" \
   -framework SwiftUI -framework AppKit -framework ServiceManagement \
-  apps/macos/BackgroundService.swift apps/macos/Model.swift apps/macos/Forms.swift apps/macos/App.swift \
+  apps/macos/BackgroundService.swift apps/macos/PolicySigning.swift apps/macos/Model.swift apps/macos/Forms.swift apps/macos/App.swift \
   -o "$APP/Contents/MacOS/Rekey"
 # A reused build-output directory must not retain the lab-only plugin.
 rm -f "$APP/Contents/Resources/bin/rekey-github-create-issue"
