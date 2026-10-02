@@ -118,7 +118,9 @@ class DeliveryTests(unittest.TestCase):
         def malformed(*args):
             calls.append(1)
             return 200, b'[' * 20000 + b'0' + b']' * 20000
-        with self.assertRaisesRegex(D.DeliveryError, 'invalid-json'):
+        # Python versions differ in JSON nesting limits. A parser that accepts
+        # this array must still reject it as an ACK, durably and without retry.
+        with self.assertRaisesRegex(D.DeliveryError, 'invalid-(json|durable-ack)$'):
             D.send(box, TOKEN, malformed)
         self.assertTrue((self.path / 'failure-1.json').exists())
         with self.assertRaisesRegex(D.DeliveryError, 'permanent-failure-review-required'):

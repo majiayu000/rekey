@@ -15,7 +15,7 @@
 | ID | 功能 | 当前状态/责任 | 新验收证据 |
 | --- | --- | --- | --- |
 | APR-08 | 托管远程审批服务 | 源码及本地验收通过：单组织 HTTPS 文件中继；整合全量及现场后置 | 11 项实际 TLS 合同、HTTPS→独立 signer→真实 Broker；独立复核通过 |
-| APR-09 | 通知与审批操作界面 | 原生文件审批流程及远程 pull inbox 已实现；完整 GUI 点击链待验收 | 15 项 TLS 合同、inbox→HTTPS→signer→Broker；本轮完整 Rust 通过，原生交互另行记录 |
+| APR-09 | 通知与审批操作界面 | 原生文件审批流程及远程 pull inbox 已实现，本地原生点击链通过 | 真实 HTTPS relay/inbox→signer→Broker；原生App文件流程实际HTTP200，非规则编辑器或托管网页UI |
 | APR-10 | 人员目录与组织关系 | SCIM消费/持久停用/事务门禁及明确Admin自证明已实现；节点撤权链整合中 | ROOT20单测+1离线注册通过、独立复审关闭；21TLS只编译；节点回执仍pending |
 | AUD-06 | 审计保留与删除 | 授权持久 sealed 后台策略已整合 format21；独立 2P1+1P2 全部关闭 | 29 文件逐 SHA 整合；未知结果同步关闭准入、desktop 恢复验 seal、SET 继承原 deadline；ROOT Broker6/Vault4/Desktop2 与 CLI5 通过（有重叠，不累计）；严格 IPC 未通过 |
 | AUD-07 | 远程投递与 SIEM | 源码及本地真实 CLI/TLS 验收通过；客户 SIEM 待现场 | 本轮 28/28；修复 format21 备份回执 snapshot_cut 精确校验，ACK 游标仍从零开始 |
@@ -33,7 +33,7 @@
 | EXT-02 | GCP Secrets 或 KMS | 固定数值 SecretVersion 与完整响应头封口已整合；定向通过，独立最终复核已通过 | kind 6/schema 16/opcode 41；整合 GCP 15 + HeaderMap 2 + 既有回归 12 通过；TLS/UDS 因 EPERM 尚未验收 |
 | EXT-03 | Azure Secrets 或 KMS | 最终 25 文件已整合、独立实际 SHA 复审通过；Azure/GCP 两类 OWS 修复已实际 RED→GREEN | kind8/schema18/opcode43；234 项去重定向通过（70 root、164 同源码线程），完整 workspace 15 个 IdP 启动失败，监听 EPERM 另已实证 |
 | EXT-04 | 1Password | 固定 item/field 源已整合、两项 P2 已修复并独立复审关闭 | kind9/schema19/opcode44；374项去重定向通过（289 root、85同SHA线程），严格TLS/UDS及现场验收未通过 |
-| EXT-05 | PKCS#11/HSM | 固定Ed25519独立signer已整合，独立2P1及机械补审闭环；本地检查通过 | ROOT17focused/实际binary help+4内部拒绝通过；原deadline非阻塞reap及最终取消复查经独立FINAL关闭；实际token与控制TTY未验收 |
+| EXT-05 | PKCS#11/HSM | PKCS#11 实现、真实 SoftHSM/控制 TTY/Broker 链通过；实体硬件待验收 | SoftHSM2.6 容器生成 Ed25519 key；生产 signer 校验不可导出等属性；错误PIN无grant，正确PIN隐藏、签名验证、实际Broker一次成功及重放拒绝；容器清理完成 |
 | EXT-06 | OS Keychain 凭证源 | 已整合format20；本地验收通过，独立29SHA及2夹具补审无确认P0/P1/P2 | 线程67unique/68executions；ROOT Native18/Domain40/Vault全包230/admin8/connector7通过；真实条目API0 |
 | EXT-07 | 通用签名/Provider | 固定 Vault Transit 切片通过合同测试；现场及其他 provider 后置 | 11 项 Transit / 6 项软件签名；独立复审；workspace 589 passed |
 | KEY-04 | VRK/DEK 轮换 | 既定 VRK/DEK 代码已具备；journal 轮换接入；隐藏 TTY/故障验收待补 | Stage A 定向 151/151 含 DEK/VRK；源合同见 key04-dek/vrk-rotation；旧备份不追溯撤销 |
@@ -41,7 +41,7 @@
 | OS-05 | macOS 隔离启动器 | macOS 实验 Seatbelt 已具备；当前构建验收待补 | sandbox/macos.rs、tests/sandbox_macos.rs；同 UID 宿主与父 SIGKILL 后全后代终止不在保证内 |
 | OS-06 | 跨平台强隔离 | 既有 Mac/Linux 有界后端；逐平台当前验收待补 | sandbox_linux.rs 的网络/FD/真实 Broker 合同；Windows 明确不在既定本轮范围 |
 | SDK-04 | 动态插件加载 | 两种固定协议原生插件已具备；最终 Linux 版本需重验 | native_plugin / github_issue_plugin tests；github-issues-v1 与 anthropic-messages-v1，不是插件市场 |
-| UX-04 | 可视化策略审批流程 | 最小原生文件流程已整合；三个复审问题已修复、独立最终复核已通过；点击链待验收 | 80 个本地断言和 Mac14 完整 App/UIContract 严格编译通过；实际 Broker 与 GUI 点击尚未通过 |
+| UX-04 | 可视化策略审批流程 | 最小原生文件流程已实现，真实原生点击链通过 | 独立 QA App：完整草稿显示/0600原样导出、逐次step-up信任与激活、指定主体授权、正文交接、独立signer、grant导入、一次HTTP200；审计与重放拒绝通过 |
 | VEX-01 | 私网 Vault | 已实现，本地ROOT43回归通过，原两P1独立复审CLOSED | 最终7SHA匹配；typed audit error/原绝对deadline修复；严格私网TLS/现场后置 |
 | VEX-02 | Vault 登录方式 | 单次AppRole登录/读取/撤销已整合，独立9SHA审查无确认问题；本地定向通过 | ROOT executor188/SDK19通过；线程69unique；运行时15通过/1 socket bind EPERM，完整workspace/现场未通过 |
 | VEX-03 | Vault token续期候选 | 仅现场证明单次TTL不足才选token一次续期；Namespace/额外引擎明确未选 | 不是首轮默认实现；保持已有DYN-05租约续期；现场需求尚未提供 |
@@ -179,3 +179,10 @@ Linux CI 委派的最小接线已实现：现有workflow内临时Cargo runner只
 Docker 演练运行 3 的 `report.json` 为 PASS 且 cleanup_complete=true：Docker 29.5.3，镜像 sha256:7466ba795a1acc0c8aaed8c14bfbeed8b51e4fe573127f87b7919acce07ce8cb。RTO 从断网操作开始至备机首次真实成功业务响应，包含拒绝、fence、传输、恢复、解锁与重发；RPO 是本次凭证写入样本的丢失量及单调时钟提交间隔界限，不是全系统复制 SLA。可信管理员仍可重新建立容器，Docker daemon/宿主不是独立故障域。旧 artifact-only `--require-field` 的非零合同保持不变。
 
 日志与收据：`outputs/rekey-implementation-20260930/evidence/20261002-pr-closeout/`。PR 必需 Ubuntu/macOS/G2 检查尚待本轮修复推送后的结果；历史独立审查不替代本轮改动审查。真实硬件 HSM、客户云权限、IdP/SCIM 双节点撤权、SIEM/WORM、物理故障域及全部 GUI 点击不能由上述结果关闭。
+
+
+同日现场补验：真实 Docker Keycloak 26.7.3 的交换、已签发撤销、反射拒绝与过期拒绝通过，清理全部成功。真实 HTTPS 审批 relay、独立 signer/真实 Broker 和 5 个 SIGKILL/journal 恢复场景通过。原生点击发现 Action 返回结构字段不匹配，Model 改为严格读取 `request_policy.max_body_bytes`，实际 CLI/Actor 合同复测通过，80 个文件流程断言和16个OIDC边界断言通过；独立 QA App 完成完整策略到审批执行链，一次 upstream effect、CLI 重放退出4，合成状态与测试偏好已清理。真实 macOS login Keychain 记忆解锁条目跨进程及到期删除通过（不等于 EXT-06 凭证源验收）。
+
+PKCS#11 本地真实模块门已从 injected 扩展到 SoftHSM2.6：固定库hash/version/slot/serial/public key及生产私钥属性校验，真正控制TTY隐藏PIN、错误PIN无输出grant、正确PIN签名、真实Broker拒绝改体/错会话/重放，仅一次业务响应。该软件token保存在一次性容器，已移除；不宣称物理硬件防导出或厂商驱动已验收。收据 `pkcs11-acceptance.json` 与 `gui-acceptance.json` 位于本轮 evidence 目录。
+
+`cc15af0` CI：G2（含Docker DR）及performance通过；Ubuntu在信号测试对glibc附加SA_RESTORER位的旧假设处失败，macOS完整Rust通过后在Python深度JSON夹具的解析分类假设处失败。前者先以libc安装表示建立基线，仍比较精确恢复标志；后者允许解析深度拒绝或ACK形状拒绝，保留永久失败、仅一次发送及游标不推进。两者都是夹具修复，不放宽生产准入。

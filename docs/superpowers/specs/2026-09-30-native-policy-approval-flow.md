@@ -48,6 +48,9 @@ Keychain, export files or automatically created receipts.
 Read files by descriptor: regular, nofollow/nonblocking and bounded. Draft limit is 64KiB and each grant limit is 4KiB, matching the existing
 CLI protected grant reader; body must meet the existing Agent/body and selected
 Action limits. Preserve exact UTF-8 bytes including newline/whitespace. Before
+reading a body, decode the registered Action's `request_policy.max_body_bytes`;
+`request_max_bytes` belongs only to the creation input, not returned Action metadata.
+Missing returned limits fail decoding rather than silently using a default. Before
 submitting, create a private 0700 temporary directory and new synced 0600
 body/grant snapshots from the displayed bytes; CLI reads these snapshots so a
 changed operator file cannot silently alter what was previewed. Do not persist

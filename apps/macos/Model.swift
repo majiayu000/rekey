@@ -197,6 +197,7 @@ struct Credential: Decodable, Identifiable {
 }
 struct CredentialList: Decodable { let credentials: [Credential] }
 struct FixedAction: Decodable, Identifiable {
+    struct RequestPolicy: Decodable { let max_body_bytes: Int }
     let id: String
     let name: String
     let version: Int
@@ -205,7 +206,8 @@ struct FixedAction: Decodable, Identifiable {
     let origin: String
     let method: String
     let exact_path: String
-    let request_max_bytes: Int
+    let request_policy: RequestPolicy
+    var request_max_bytes: Int { request_policy.max_body_bytes }
     var reference: String { "\(id)@\(version)" }
 }
 struct ActionList: Decodable { let actions: [FixedAction] }

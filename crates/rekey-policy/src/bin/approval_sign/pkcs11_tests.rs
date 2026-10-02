@@ -613,6 +613,21 @@ fn pure_profile_rejects_noncanonical_path_and_signing_sources_are_exclusive() {
 #[test]
 fn actual_handled_sigterm_restores_synthetic_tty_and_original_handlers() {
     let _serial = SERIAL.lock().unwrap();
+    // Observe libc's installed representation as the baseline. On Linux x86_64,
+    // even reinstalling SIG_DFL adds glibc's SA_RESTORER trampoline flag:
+    // glibc/sysdeps/unix/sysv/linux/x86_64/libc_sigaction.c, SET_SA_RESTORER.
+    // Keep exact flag equality below instead of masking restoration mistakes.
+    for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT] {
+        let mut original = unsafe { std::mem::zeroed() };
+        assert_eq!(
+            unsafe { libc::sigaction(signal, std::ptr::null(), &mut original) },
+            0
+        );
+        assert_eq!(
+            unsafe { libc::sigaction(signal, &original, std::ptr::null_mut()) },
+            0
+        );
+    }
     let (mut master, mut slave) = (-1, -1);
     assert_eq!(
         unsafe {

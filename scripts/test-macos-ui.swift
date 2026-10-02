@@ -72,6 +72,7 @@ struct UIContract {
         let action = try JSONDecoder().decode(FixedAction.self, from: client.run(["action", "create", "--file", actionFile.path, "--password-stdin"], input: password + "\n"))
         let actionList = try client.decode(ActionList.self, ["action", "list"])
         try require(actionList.actions.first?.credential_id == usable.id, "associated actions decode")
+        try require(action.request_max_bytes == 65536 && actionList.actions.first?.request_max_bytes == 65536, "registered action request policy limit decoded")
         let sessionData = try client.run(["session", "create", "--action", action.reference, "--ttl", "15m", "--max-uses", "2", "--password-stdin"], input: password + "\n")
         let session = try JSONSerialization.jsonObject(with: sessionData) as! [String: Any]
         try require(session["capability_token"] is String, "session receipt")
@@ -159,7 +160,7 @@ struct UIContract {
         try require(details.envelope.challenge.schema_id == "ui/request" && details.envelope.challenge.policy_version == 3, "challenge binding fields decoded")
         try require(details.origin.public_key == String(repeating: "c", count: 64), "separate origin key decoded")
         try require(details.matchingAction(in: [action])?.reference == action.reference, "exact action version selected")
-        let newerAction = FixedAction(id: action.id, name: action.name, version: action.version + 1, enabled: action.enabled, credential_id: action.credential_id, origin: action.origin, method: action.method, exact_path: action.exact_path, request_max_bytes: action.request_max_bytes)
+        let newerAction = FixedAction(id: action.id, name: action.name, version: action.version + 1, enabled: action.enabled, credential_id: action.credential_id, origin: action.origin, method: action.method, exact_path: action.exact_path, request_policy: action.request_policy)
         try require(details.matchingAction(in: [newerAction]) == nil, "no fallback to newer action definition")
         let calls = try String(contentsOf: root.appendingPathComponent("approval-calls.jsonl"), encoding: .utf8).split(separator: "\n")
         let firstCall = try JSONSerialization.jsonObject(with: Data(calls[0].utf8)) as! [String]

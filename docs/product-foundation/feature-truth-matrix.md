@@ -339,3 +339,11 @@ The user explicitly authorized a step-up-set/revoked, sealed retention policy. O
 The previous permission/startup failures are historical, not current results.
 Docker manual DR passed with measured recovery and owned-resource cleanup;
 required PR CI and physical/customer environments remain separate gates.
+
+2026-10-02 native/PKCS11 acceptance: the isolated native App completed the frozen
+file policy/approval flow through a real Broker and test TLS response (HTTP200,
+one effect, replay denied). Registered Action limits now decode from the actual
+nested wire metadata. SoftHSM2.6 exercised the production PKCS11 signer and real
+controlling TTY, including wrong PIN rejection and verified grant execution.
+These results close the local software-token and bounded native-click gates;
+physical HSM and customer IdP/SCIM/cloud/SIEM/WORM remain unaccepted.
