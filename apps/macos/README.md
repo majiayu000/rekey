@@ -17,11 +17,12 @@ open target/macos-ui/Rekey.app
 
 ## 当前入口
 
-- 凭证：真实列表、搜索、类型过滤、关联操作；添加/轮换/撤销。固定令牌由安全输入框录入，其他类型选择已有的私有 JSON profile。
+- 凭证：真实列表、搜索、类型过滤、关联操作；十种已实现类型均可添加/轮换/撤销，含 AWS、GCP、Azure、1Password Connect、macOS Keychain。固定令牌由安全输入框录入，其他类型选择已有的私有 JSON profile。
 - 固定操作：表单创建，定义文件导入/更新/禁用。表单采用 30 秒、64 KiB 请求、256 KiB 响应的当前默认；更细的限制通过定义文件配置。
-- 授权与策略：按操作创建短期 capability、按会话 ID 撤销；安装信任根、导入签名策略并查看状态。没有全量活动会话列表。
+- 授权与策略：多规则草稿表单、完整文本编辑与导入、私有文件导出；支持允许/拒绝/审批、精确参数摘要、审批人数及一次性/限时多次授权。草稿须独立签名后逐次 step-up 安装信任根和激活；界面显示生效版本。按操作创建短期 capability、按会话 ID 撤销；没有全量活动会话列表。
 - 审批：真实 pending 收件箱、只读详情与来源签名信封导出。详情展示主体、会话、操作版本、资源、参数/策略摘要、审批人、次数和时限，以及当前本机来源公钥；相同版本的操作定义单独标明为本机元数据。信封不含原始正文或请求头，UI 未验证签名；完整请求核对与签名继续使用独立工具和独立固定的来源公钥。
 - 审计：结果筛选、稳定快照分页和 JSONL 导出，锁定时仍可读取。
+- 提醒：窗口活跃且已解锁时，随现有 15 秒刷新显示待审批数量，点击进入收件箱；不是后台系统推送，不自动审批。
 - 备份恢复：新文件加密备份与回执、SHA-256 验证的空目录离线恢复。
 - 设置：密码修改、恢复密钥轮换、数据目录、服务启动/停止。
 
@@ -52,5 +53,7 @@ xcrun swiftc -warnings-as-errors -swift-version 5 -O \
 人类密钥管理验收：`python3 scripts/test-human-vault.py target/macos-ui/Rekey.app/Contents/Resources/bin/rekey`。Agent 通道不提供读取，管理会话在锁定后失效。
 
 钥匙串跨进程验证：`xcrun swiftc -swift-version 5 -framework SwiftUI -framework AppKit -framework Security apps/macos/Model.swift scripts/test-macos-keychain.swift -o /tmp/rekey-keychain-contract && /tmp/rekey-keychain-contract`，仅使用随机测试条目，完成后删除。
+
+恢复授权的 Keychain service 按应用 bundle identifier 隔离；无 bundle 的测试使用独立测试命名空间。测试版必须设置独立 identifier，不能复用正式应用 `com.starlight.rekey`。新条目显示“7 天自动解锁授权”；该机制尚不包含 Touch ID 或 Secure Enclave 保护。命名空间测试只运行 Foundation 查询，不访问用户钥匙串。
 
 机构登录源码入口：设置中选择受保护的 OIDC 节点配置后启动服务；先本机解锁，再开始机构登录、在浏览器完成认证，并接收结果到新的私有会话文件。也可显式选择已有会话文件，取消未完成登录或退出本机机构会话。应用只传文件路径，不读取管理 token；密码逐次确认仍保留。16 项新调用断言、80 项原有原生流程断言及完整 macOS14 App 编译通过，真实 IdP／Broker／GUI 点击仍未验收。

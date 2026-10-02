@@ -38,6 +38,14 @@ struct RootView: View {
                 Divider()
                 VStack(alignment: .leading, spacing: 0) {
                     header
+                    if model.unlocked && model.page != .approvals && !model.approvals.isEmpty {
+                        HStack {
+                            Label("有 \(model.approvals.count) 条待审批请求", systemImage: "tray.full")
+                            Spacer()
+                            Button("查看审批") { model.page = .approvals }
+                        }.font(.system(size: 12)).padding(12).background(sage)
+                            .padding(.horizontal, 28).padding(.bottom, 12)
+                    }
                     if let error = model.error {
                         HStack(alignment: .top) {
                             Image(systemName: "exclamationmark.circle")
@@ -275,7 +283,10 @@ struct RootView: View {
         if item.kind == "opaque-token" {
             model.operation = Operation(title: "轮换凭证", detail: "替换“\(item.label)”的凭证值。", arguments: ["credential", "rotate", item.id], newSecret: true)
         } else if let file = chooseFile() {
-            let commands = ["github-app-installation": "rotate-github-app", "vault-kv-v2-source": "rotate-vault-kv", "vault-dynamic-source": "rotate-vault-dynamic", "keycloak-token-exchange": "rotate-keycloak"]
+            let commands = ["github-app-installation": "rotate-github-app", "vault-kv-v2-source": "rotate-vault-kv", "vault-dynamic-source": "rotate-vault-dynamic", "keycloak-token-exchange": "rotate-keycloak",
+                            "gcp-secret-manager-source": "rotate-gcp-secret-manager", "aws-secrets-manager-source": "rotate-aws-secrets-manager",
+                            "azure-key-vault-source": "rotate-azure-key-vault", "onepassword-connect-source": "rotate-onepassword-connect",
+                            "macos-keychain-source": "rotate-macos-keychain"]
             guard let command = commands[item.kind] else { model.error = "当前客户端不支持此凭证类型。"; return }
             model.operation = Operation(title: "轮换凭证", detail: "用所选私有配置文件替换“\(item.label)”的配置。", arguments: ["credential", command, item.id, "--file", file.path])
         }
@@ -303,9 +314,9 @@ struct RootView: View {
     private var policyPage: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 25) {
-                SectionCard(title: "未签名草稿中转", icon: "doc.text") {
-                    Text("选择外部编写的原始草稿，完整审阅并导出；随后使用独立签名工具，再导入签名策略。")
-                    Button("审阅未签名草稿") { model.showPolicyDraft = true }.disabled(model.busy)
+                SectionCard(title: "策略草稿", icon: "doc.text") {
+                    Text("填写权限和审批规则，或导入现有草稿编辑。审阅完整文本、独立签名后，再导入激活。")
+                    Button("编辑策略草稿") { model.showPolicyDraft = true }.disabled(model.busy)
                 }
                 SectionCard(title: "当前策略", icon: "checkmark.shield") {
                     if let policy = model.policy {

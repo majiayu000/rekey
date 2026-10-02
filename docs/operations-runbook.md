@@ -1,5 +1,52 @@
 # Operations runbook
 
+## Docker replication and container failover
+
+The source tool `scripts/rekey-docker-ha.py` supervises two dedicated containers
+on one trusted Docker host. It creates a new vault, regularly copies new encrypted
+backups to a spare, and automatically fences a failed primary before recovering
+its final committed state into the spare. Docker, its administrator, the host and
+the operator controller remain trusted. This is container recovery, not protection
+against losing the host or both disks. See the [controller contract](superpowers/specs/2026-10-02-docker-ha-controller.md).
+
+Build an image containing the current production CLI/daemon with the existing
+`scripts/Dockerfile.dr` (the drill fixture is unused by this controller). Choose
+an image tag and a new private directory explicitly:
+
+```sh
+docker build -f scripts/Dockerfile.dr -t rekey-ha:local .
+python3 scripts/rekey-docker-ha.py --directory /absolute/new-ha create \
+  --image rekey-ha:local --password-stdin
+python3 scripts/rekey-docker-ha.py --directory /absolute/new-ha run \
+  --interval-seconds 30 --password-stdin
+```
+
+Each command reads one proof line from stdin. Supply it through a private input
+channel, never a literal shell argument or environment variable. Securely retain
+the initialization recovery output. `run` keeps this proof only for its foreground
+operator session, to authenticate each existing backup/unlock call. Stopping the
+controller leaves the nodes/data intact. Locking the primary stops supervision;
+it is not automatically unlocked again by the active loop.
+
+`status` displays the atomic `cluster.json`: use `primary.id` only when `phase`
+is `ready`, and call the usual CLI through `docker exec -i ID rekey --state-dir
+/vault/state ...`. A new primary requires new capabilities. Never replay an
+uncertain business operation merely because routing changed. The status includes
+the most recent durable replica receipt and recovery duration through the new
+Broker's unlock (excluding preparation of the next spare and status publication).
+
+Automatic recovery uses the fenced primary's complete quiescent directory,
+including SQLite WAL. It deliberately stops if that final state is unavailable;
+an older periodic snapshot can omit revocations and replay records. An interrupted
+`fencing` phase also stops automatic operation. Preserve the volumes and inspect
+the state before an explicit offline recovery; do not edit the phase to bypass
+this gate. Encrypted replicas and their receipts remain in the standby volume.
+
+`destroy` is an explicit permanent removal of this tool's labelled containers,
+volumes and network. Export any required backups first. It does not run when
+supervision fails or is interrupted. `scripts/test-docker-ha.py --image IMAGE`
+uses disposable synthetic vaults and cleans up only its own cluster resources.
+
 Every command below assumes the exact state directory and service identity have
 been confirmed first. Never delete, overwrite, or change ownership recursively
 until a verified backup exists and the target path has been written down.

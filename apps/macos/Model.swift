@@ -12,6 +12,10 @@ struct UIError: LocalizedError {
 struct RememberedUnlock: Codable {
     let key: String
     let expiresAt: Date
+    // QA bundles and standalone contract tests must never query the app's entries.
+    static var keychainService: String {
+        (Bundle.main.bundleIdentifier ?? "com.starlight.rekey.unbundled-tests") + ".remembered-unlock"
+    }
 
     static func receipt(_ data: Data) throws -> RememberedUnlock {
         guard let text = String(data: data, encoding: .utf8) else { throw UIError(message: "恢复授权响应无效。") }
@@ -22,7 +26,7 @@ struct RememberedUnlock: Codable {
     }
     private static func query(_ directory: String) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
-         kSecAttrService as String: "com.starlight.rekey.remembered-unlock",
+         kSecAttrService as String: keychainService,
          kSecAttrAccount as String: URL(fileURLWithPath: directory).standardizedFileURL.resolvingSymlinksInPath().path,
          kSecAttrSynchronizable as String: false]
     }
@@ -33,6 +37,7 @@ struct RememberedUnlock: Codable {
     func save(_ directory: String) throws {
         try Self.forget(directory)
         var attributes = Self.query(directory)
+        attributes[kSecAttrLabel as String] = (Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Rekey Test") + " · 7 天自动解锁授权"
         attributes[kSecValueData as String] = try JSONEncoder().encode(self)
         attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         let code = SecItemAdd(attributes as CFDictionary, nil)
@@ -184,6 +189,11 @@ struct Credential: Decodable, Identifiable {
         case "vault-kv-v2-source": return "Vault KV v2"
         case "vault-dynamic-source": return "动态租约"
         case "keycloak-token-exchange": return "Keycloak"
+        case "gcp-secret-manager-source": return "GCP Secret Manager"
+        case "aws-secrets-manager-source": return "AWS Secrets Manager"
+        case "azure-key-vault-source": return "Azure Key Vault"
+        case "onepassword-connect-source": return "1Password Connect"
+        case "macos-keychain-source": return "macOS Keychain"
         default: return kind
         }
     }
@@ -561,8 +571,11 @@ final class AppModel: ObservableObject {
             status = nil; clearCache(); resumeAttempted = false; connectionError = error.localizedDescription
             return
         }
-        if passive && !resumedAccess { return }
         do {
+            if unlocked {
+                approvals = try await Task.detached { try client.decode(PendingList.self, ["approval", "pending"]) }.value.challenges
+            }
+            if passive && !resumedAccess { return }
             if unlocked {
                 let lists = try await Task.detached {
                     (try client.decode(CredentialList.self, ["credential", "list"]),
@@ -574,8 +587,6 @@ final class AppModel: ObservableObject {
             switch page {
             case .policy:
                 policy = try await Task.detached { try client.decode(PolicyStatus.self, ["policy", "status"]) }.value
-            case .approvals where unlocked:
-                approvals = try await Task.detached { try client.decode(PendingList.self, ["approval", "pending"]) }.value.challenges
             case .audit:
                 var args = ["audit", "list", "--limit", "50"]
                 if !auditOutcome.isEmpty { args += ["--outcome", auditOutcome] }
@@ -747,6 +758,91 @@ func writePrivateNew(_ data: Data, to url: URL) throws {
         try handle.write(contentsOf: data); try handle.synchronize(); try handle.close()
     } catch {
         throw UIError(message: "文件写入未完成，目标可能留下不完整文件：" + error.localizedDescription)
+    }
+}
+
+struct PolicyDraftApprover: Identifiable {
+    var id = UUID()
+    var approverID = UUID().uuidString.lowercased()
+    var publicKey = ""
+}
+
+struct PolicyDraftRule: Identifiable {
+    var id = UUID()
+    var action = ""
+    var principal = ""
+    var resourceType = ""
+    var resourceID = ""
+    var schemaID = ""
+    var schema = "{\"type\": \"object\"}"
+    var effect = "require-approval"
+    var exactHash = ""
+    var approvers = ""
+    var quorum = 1
+    var mode = "one-time"
+    var maxUses = 1
+    var windowSeconds = 300
+}
+
+struct PolicyDraftEditor {
+    var version: UInt64 = 1
+    var expiry = Date().addingTimeInterval(86400)
+    var approvers: [PolicyDraftApprover] = []
+    var rules: [PolicyDraftRule] = []
+
+    func generate(actions: [FixedAction]) throws -> String {
+        func json(_ value: Any) throws -> String {
+            String(decoding: try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .fragmentsAllowed]), as: UTF8.self)
+        }
+        var bindings: [String: String] = [:]
+        var renderedRules: [String] = []
+        for rule in rules {
+            guard let action = actions.first(where: { $0.reference == rule.action }) else {
+                throw UIError(message: "请选择每条规则对应的固定操作及版本。")
+            }
+            let resource: [String: String] = ["type": rule.resourceType, "id": rule.resourceID]
+            // Preserve raw schema JSON: the Rust signer remains the only policy
+            // validator and must still see duplicate keys or malformed syntax.
+            let binding = "{\"action_id\":\(try json(action.id)),\"version\":\(action.version),\"resource\":\(try json(resource)),\"parameter_schema_id\":\(try json(rule.schemaID)),\"parameter_schema\":\(rule.schema)}"
+            if let previous = bindings[rule.action], previous != binding {
+                throw UIError(message: "同一操作版本的资源与参数结构必须一致，请核对规则。")
+            }
+            bindings[rule.action] = binding
+            var value: [String: Any] = ["id": rule.id.uuidString.lowercased(), "effect": rule.effect,
+                "principal_id": rule.principal, "action_id": action.id, "version": action.version,
+                "resource": resource, "parameters": rule.exactHash.isEmpty
+                    ? ["kind": "any_validated"] : ["kind": "exact_hash", "sha256": rule.exactHash]]
+            if rule.effect == "require-approval" {
+                var requirement: [String: Any] = ["approver_ids": rule.approvers.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) },
+                    "quorum": rule.quorum, "mode": rule.mode, "max_uses": rule.mode == "one-time" ? 1 : rule.maxUses]
+                if rule.mode == "time-window" { requirement["max_window_ms"] = Int64(rule.windowSeconds) * 1000 }
+                value["approval"] = requirement
+            }
+            renderedRules.append(try json(value))
+        }
+        let expiryMS = expiry.timeIntervalSince1970 * 1000
+        guard expiryMS.isFinite, expiryMS >= 0, expiryMS < Double(Int64.max) else { throw UIError(message: "有效期无效。") }
+        let publicApprovers = approvers.map { ["approver_id": $0.approverID, "algorithm": "ed25519", "public_key": $0.publicKey] }
+        let text = """
+        {
+          "format_version": 3,
+          "version": \(version),
+          "expires_at_ms": \(Int64(expiryMS)),
+          "approvers": \(try json(publicApprovers)),
+          "workload_identities": [],
+          "bindings": [\(bindings.keys.sorted().compactMap { bindings[$0] }.joined(separator: ",\n"))],
+          "rules": [\(renderedRules.joined(separator: ",\n"))]
+        }
+
+        """
+        _ = try Self.snapshot(text)
+        return text
+    }
+
+    static func snapshot(_ text: String) throws -> NativeFileSnapshot {
+        let data = Data(text.utf8)
+        guard !data.isEmpty, data.count <= 65536 else { throw UIError(message: "草稿不能为空，且最多为 64 KiB。") }
+        return NativeFileSnapshot(data: data, text: text)
     }
 }
 

@@ -1,6 +1,8 @@
 # Rekey 全部剩余功能实现与验收清单
 
-2026-09-30。用户已要求逐项实现全部设计功能并完整测试，允许原生 threads。新授权覆盖 9 月 16 日“外部只做规格”的旧实施范围。2026-10-02 用户授权 Docker 测试环境及本轮外部验收；先执行可用的本地真实服务与容器演练，真实云账号和硬件仍需实际环境。
+2026-09-30 起逐项实现全部设计功能。2026-10-02 最新方向：先补齐功能代码和本地验证，云账号、实体硬件及客户部署验收后置，不再要求用户准备这些环境。本地 Docker 可用于开发验证。以下历史记录保留；最新方向优先于此前的现场验收安排。
+
+当前从已合入的 `origin/main`（`4cdb531`）继续实施。完成清单分开记录“实现与本地测试”和“外部部署验收”；后者不阻塞功能开发，也不据本地通过宣称生产验收完成。原生策略规则编辑、主备复制/切换与隔离剩余代码和故障路径是当前补齐重点。
 
 ## 实施与完成合同
 
@@ -15,19 +17,19 @@
 | ID | 功能 | 当前状态/责任 | 新验收证据 |
 | --- | --- | --- | --- |
 | APR-08 | 托管远程审批服务 | 单组织 HTTPS 文件中继、整合全量和本地实际服务通过；客户部署待验收 | 本轮完整 Rust 与 HTTPS→独立 signer→真实 Broker 通过；不是通用托管平台 |
-| APR-09 | 通知与审批操作界面 | 原生文件审批流程及远程 pull inbox 已实现，本地原生点击链通过 | 真实 HTTPS relay/inbox→signer→Broker；原生App文件流程实际HTTP200，非规则编辑器或托管网页UI |
+| APR-09 | 通知与审批操作界面 | 原生审批链、远程 pull inbox 及应用内待审提醒已实现 | 已解锁且窗口活跃时随现有刷新显示数量；真实 relay→signer→Broker 既有证据保留；不向邮件/聊天发送通知 |
 | APR-10 | 人员目录与组织关系 | SCIM消费/持久停用/事务门禁及明确Admin自证明已实现；客户节点撤权链待验收 | 本轮完整 Rust 含 relay/目录 TLS 合同通过，controlplane86通过；真实 IdP/双节点回执待验收 |
 | AUD-06 | 审计保留与删除 | 授权持久 sealed 后台策略已整合 format21；本轮完整 IPC/Actor 验收通过 | 未知结果同步关闭准入、desktop 恢复验 seal、SET 继承原 deadline；本轮完整 Rust 1033/0/1，旧严格 IPC 环境失败已复测关闭 |
 | AUD-07 | 远程投递与 SIEM | 源码及本地真实 CLI/TLS 验收通过；客户 SIEM 待现场 | 本轮 28/28；修复 format21 备份回执 snapshot_cut 精确校验，ACK 游标仍从零开始 |
 | AUD-08 | WORM / Legal Hold | 源码合同测试及独立复核通过；实际 WORM/权限现场后置 | 23 项测试：TLS、官方 SigV4 向量、ACK 丢失/重启、版本早期持久 pin、Hold、fsync/容量/超时 |
-| BAK-07 | 复制与故障转移 | 快照复制和 Docker 主备手动恢复通过；持续复制/自动切换未实现 | 独立容器卷、外部 daemon fencing、快照哈希及切点、恢复策略、新授权真实请求全部通过 |
+| BAK-07 | 复制与故障转移 | 已实现 Docker 持续快照复制与自动容器切换，本地真实双次切换通过 | 新 controller；加密快照与回执同步/摘要/持久化；最终状态只在旧主 fencing 后搬迁，保留上次复制后的撤权；磁盘缺失不自动回退旧快照 |
 | BAK-08 | RPO/RTO 与脑裂演练 | Docker 脑裂拒绝、独立 fencing、完整提升与计时流程已实现并通过 | 断网旧主仍活跃时拒绝提升，删除旧容器后禁止重启；本次 RTO 1361.31ms，故意丢失 1 次写入；提交间隔界限 1420.23–1760.71ms，非 SLA |
 | DYN-05 | 租约续期 | 源码及本地验收通过；现场验证后置 | parser/deadline 6、UDS 21；真实本地 Vault 1.20.3/Postgres 单次续期与角色删除；workspace 578 passed |
 | DYN-06 | 持久租约及重启清理 | A+B 修复已整合；本轮完整 Rust 与真实崩溃恢复通过 | 实际 Broker/SQLite/TLS 的 5 个 journal 恢复场景通过，含 SIGKILL、未知获取及清理恢复；客户 Vault 部署另验 |
 | ENT-01 | 集中控制面 | 控制面目标绑定和固定文件工具本地验收通过；现场待验收 | 本轮完整 controlplane 86/86，之前严格 PTY 失败已复测通过 |
 | ENT-02 | 多租户隔离 | 实际 vault/root 提交绑定及固定双节点注册/回执已实现；现场隔离待验证 | 本地 Authority 测试可证明目标校验；真实节点、VM/UID/磁盘/网络/备份隔离待现场验证 |
 | ENT-03 | SSO/SCIM/组织 | 节点PKCE/管理会话/逐次目录门禁与本地撤权已实现；本轮本地合同通过 | 完整 Rust 的 TLS/loopback/UDS 与原生 OIDC16 通过；Keycloak workload 交换现场通过，不能代替管理 SSO/SCIM 双节点验收 |
-| ENT-04 | HA/容灾/多节点 | Docker 有界主备容灾演练通过；跨物理机 HA 待现场 | 真实 Broker/CLI/UDS + 测试 TLS；独立外部 daemon 控制；主备卷隔离、旧令牌拒绝和清理通过 |
+| ENT-04 | HA/容灾/多节点 | 同一 Docker 宿主的有界自动切换已实现；跨物理机验收后置 | 真 Broker/CLI、外部 daemon fencing、隔离卷、两次自动提升、新旧 capability 验证；不承诺整机灾难下的自动 HA |
 | ENT-05 | 企业现场验证 | 已开始执行可用真实本地服务验收；客户环境未整体通过 | 完整 Rust 1033 通过/0 失败/1 忽略；controlplane86、audit delivery28、archive23；外部服务逐门记录 |
 | EXT-01 | AWS Secrets 或 KMS | 固定 ARN/VersionId 源已实现，本轮本地 TLS/UDS/blackbox 通过；真实账号待验收 | kind7/schema17/opcode42；完整 Rust 已消除旧监听 EPERM，含 token/响应头封口；客户 IAM/KMS 权限未实测 |
 | EXT-02 | GCP Secrets 或 KMS | 固定数值 SecretVersion 源已实现，本轮本地 TLS/UDS/blackbox 通过；真实账号待验收 | kind6/schema16/opcode41；完整响应头封口和本轮完整 Rust 通过；客户 IAM 权限未实测 |
@@ -41,7 +43,7 @@
 | OS-05 | macOS 隔离启动器 | 实验 Seatbelt 的本轮实际运行通过；较弱保证保持 | sandbox_macos 合同及归档实际入口通过；同 UID 宿主与父 SIGKILL 后全后代终止不在保证内 |
 | OS-06 | 跨平台强隔离 | Mac/Linux 有界后端实际合同通过，不能提升为统一强隔离保证 | 本轮 Mac workspace 和 Ubuntu sandbox_linux 网络/FD/真实 Broker 通过；Windows 不在既定范围 |
 | SDK-04 | 动态插件加载 | 两种固定协议原生插件已具备；本轮 Mac/Linux 实际合同通过 | Ubuntu 实际注册 artifact、Broker/native_plugin 与 GitHub plugin 合同通过；不是插件市场 |
-| UX-04 | 可视化策略审批流程 | 最小原生文件流程已实现，真实原生点击链通过 | 独立 QA App：完整草稿显示/0600原样导出、逐次step-up信任与激活、指定主体授权、正文交接、独立signer、grant导入、一次HTTP200；审计与重放拒绝通过 |
+| UX-04 | 可视化策略审批流程 | 原生规则编辑、完整文本编辑和既有审批执行链已实现 | 20 项真实策略 signer authoring 检查、80 项文件/进程边界回归；支持多规则、审批人数、一次性/限时授权；完整私钥签名仍由独立工具负责 |
 | VEX-01 | 私网 Vault | 已实现，本轮完整 TLS/UDS 合同通过；客户私网部署待验收 | typed audit error/原绝对deadline及本地严格私网 TLS 通过，完整 Rust 与 KV release 脚本通过 |
 | VEX-02 | Vault 登录方式 | 单次AppRole登录/读取/撤销已整合，本轮完整本地合同通过 | 旧 socket bind EPERM 已复测关闭；完整 Rust、KV/dynamic release 脚本通过，客户 AppRole ACL 待验收 |
 | VEX-03 | Vault token续期候选 | 仅现场证明单次TTL不足才选token一次续期；Namespace/额外引擎明确未选 | 不是首轮默认实现；保持已有DYN-05租约续期；现场需求尚未提供 |
@@ -199,3 +201,15 @@ Desktop 修复后再次完整 `cargo test --workspace --locked -- --test-threads
 `cc15631` 的 Ubuntu、G2、performance 与五项 fuzz 全通过；macOS 26.6.2 的 workspace、发布、原生 UI、desktop resume 和 remembered-unlock 通过，但锁定 Keychain 凭证源后 Worker 不响应、审计读取及退出超时，整门仍失败。原生入口现先调用公开 SDK 的 `SecKeychainSetUserInteractionAllowed(false)` 并保持 Broker 无交互；保持原查询严格匹配和错误合同。现场脚本要求明确 `CREDENTIAL_UNAVAILABLE`、无额外请求、后续审计可读与正常退出，非零退出或超时不能冒充通过；退出失败也清理自有 Keychain。本机26.5.1原生完整四段复测通过，不能替代26.6.2的后续CI结果。
 
 Keychain 无交互修复后全量再次通过：83 个目标、1033 通过、0 失败、1 忽略；14 个 Keychain 定向用例、完整原生四段、all-targets check/Clippy/fmt/机械边界均通过。证据 `workspace-keychain-noui-summary.json`、`native-keychain-noui.log`；最终 hosted 结果以本修复精确提交的 PR checks 为准。
+
+## 2026-10-02 实现优先续作
+
+本轮从已合入的 main 继续，新增原生策略编辑、五类来源的 GUI 添加/轮换入口、应用内待审批提醒和 Docker 持续复制/自动容器切换。外部现场验收已后置，不要求用户提供云账号、IdP 或硬件信息。规则编辑复用现有签名/激活链；Docker 控制程序只使用现有备份、解锁和管理接口。
+
+未扩展为任意云平台、多机房共识、托管网页签名、Windows 隔离或未选定的 Vault 引擎。Linux 全启动故障矩阵属于仍待补充的本地/CI 验证，macOS 的物理内存和同 UID 宿主强隔离不在当前已实现边界内，不能标为已保证。所有历史失败保留；本轮全量回归结果另记。
+
+本轮完整 workspace 复测：83 个顶层目标，1033 通过、0 失败、1 忽略。第一次全量曾有 `github_revoked_audit_deadline_is_not_retryable` 未到达预期上游阶段；原因未确认，保留失败日志，未改生产或测试断言；该用例单独复测与完整重跑均通过。check/all-targets/Clippy/fmt/机械 API 与 CLI 依赖边界通过。真实 Docker 复制与两次自动切换、最后一次副本之后的撤销/写入保留、旧 capability 拒绝、控制程序互斥、状态查询与自有资源清理通过。
+
+原生界面严格 Swift 编译、真实 CLI 生命周期、83 项文件/进程/流程断言、16 项 OIDC 边界断言及20项实际 Rust signer 策略编辑断言通过。新 GUI 点击验收因 QA App 请求登录钥匙串而停止，未取得成功证据；未输入系统密码或批准请求。当前已将恢复授权 service 按 bundle identifier 隔离，测试覆盖正式/QA/无 bundle 三种实际 Foundation 身份，不调用 Keychain API；解锁表单说明七天恢复授权用途。保留原七天产品约定，未新增 Touch ID / Secure Enclave，也未迁移或删除用户授权。CI 新增这些原生边界与 Docker 控制程序测试。
+
+发布目录清单检查发现此前新增文档引用的4个文件漏包，补入 workflow 后重新检查通过；使用当前 debug 二进制验证目录和链接，不宣称发行版签名/公证或完整 archive 现场验收。当前批次日志与 SHA-256 收据保存在 `outputs/rekey-implementation-20260930/evidence/features-20261002-225401/checks/`。源码实现和本地结果不替代新提交的 CI、审查与云/实体硬件验收。

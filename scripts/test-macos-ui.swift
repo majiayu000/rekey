@@ -6,6 +6,12 @@ import Darwin
 struct UIContract {
     @MainActor
     static func main() throws {
+        if CommandLine.arguments == [CommandLine.arguments[0], "--keychain-service"] {
+            print(RememberedUnlock.keychainService); return
+        }
+        if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == "--policy-editor" {
+            try policyEditor(signer: URL(fileURLWithPath: CommandLine.arguments[2])); return
+        }
         if CommandLine.arguments == [CommandLine.arguments[0], "--flow-boundary-only"] { try flowBoundary(); return }
         if CommandLine.arguments == [CommandLine.arguments[0], "--oidc-boundary-only"] { try oidcBoundary(); return }
         guard CommandLine.arguments.count == 2 else { fatalError("usage: test-macos-ui CLI_BINARY | --flow-boundary-only") }
@@ -188,6 +194,72 @@ struct UIContract {
         print("PASS: real vault lifecycle, metadata, actions, session lifecycle, policy/approval reads, backup/restore/export, wrong-proof and locked denial, audit canaries, private new-only result files, literal argv and stdin-only proof, filtered child environment, malformed-response rejection; approval detail bridge, exact snapshot and action version, origin reads, missing/mismatched responses and command failures, detail cache clearing")
     }
 
+    static func policyEditor(signer: URL) throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("rkui-editor-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        defer { do { try FileManager.default.removeItem(at: root) } catch { fputs("editor test cleanup failed\n", stderr) } }
+        var assertions = 0
+        func require(_ value: @autoclosure () -> Bool, _ label: String) throws {
+            guard value() else { throw UIError(message: "FAILED: " + label) }; assertions += 1
+        }
+        func denied(_ body: () throws -> Void) throws {
+            do { try body() } catch { assertions += 1; return }
+            throw UIError(message: "expected authoring rejection")
+        }
+        let action = FixedAction(id: UUID().uuidString.lowercased(), name: "test", version: 7, enabled: true,
+            credential_id: UUID().uuidString.lowercased(), origin: "https://example.com", method: "POST", exact_path: "/test",
+            request_policy: .init(max_body_bytes: 4096))
+        var rule = PolicyDraftRule()
+        rule.action = action.reference; rule.principal = UUID().uuidString.lowercased()
+        rule.resourceType = "document"; rule.resourceID = "中文\"\\"; rule.schemaID = "editor/v1"
+        var editor = PolicyDraftEditor()
+        // RFC 8032 test-vector public key, not private signing material.
+        editor.approvers = [PolicyDraftApprover(publicKey: "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a")]
+        rule.approvers = editor.approvers[0].approverID
+        func review(_ text: String, accepted: Bool) throws {
+            let path = root.appendingPathComponent(UUID().uuidString + ".json")
+            try writePrivateNew(PolicyDraftEditor.snapshot(text).data, to: path)
+            let child = Process(); child.executableURL = signer; child.arguments = ["review", path.path]
+            child.standardInput = FileHandle.nullDevice; child.standardOutput = FileHandle.nullDevice; child.standardError = FileHandle.nullDevice
+            try child.run(); child.waitUntilExit()
+            try require((child.terminationStatus == 0) == accepted, "actual signer acceptance")
+        }
+        for effect in ["permit", "forbid", "require-approval"] {
+            rule.effect = effect; editor.rules = [rule]
+            let text = try editor.generate(actions: [action])
+            try review(text, accepted: true)
+            let value = try JSONSerialization.jsonObject(with: Data(text.utf8)) as! [String: Any]
+            let binding = (value["bindings"] as! [[String: Any]])[0]
+            try require((binding["version"] as! Int) == 7, "exact registered version")
+            try require((binding["resource"] as! [String: String])["id"] == rule.resourceID, "string escaping")
+        }
+        rule.mode = "time-window"; rule.maxUses = 23; rule.windowSeconds = 120
+        rule.exactHash = String(repeating: "a", count: 64); editor.rules = [rule]
+        try review(editor.generate(actions: [action]), accepted: true)
+        var forbidden = rule; forbidden.id = UUID(); forbidden.effect = "forbid"
+        editor.rules.append(forbidden)
+        let multi = try editor.generate(actions: [action])
+        let parsed = try JSONSerialization.jsonObject(with: Data(multi.utf8)) as! [String: Any]
+        try require((parsed["bindings"] as! [Any]).count == 1 && (parsed["rules"] as! [Any]).count == 2, "shared binding, distinct rules")
+        try review(multi, accepted: true)
+        editor.rules[1].resourceID = "different"
+        try denied { _ = try editor.generate(actions: [action]) }
+        editor.rules = [rule]; editor.rules[0].action = "unregistered"
+        try denied { _ = try editor.generate(actions: [action]) }
+        editor.rules = [rule]; editor.rules[0].schema = "{\"type\":\"object\",\"type\":\"string\"}"
+        let duplicate = try editor.generate(actions: [action])
+        try require(duplicate.contains(editor.rules[0].schema), "raw duplicate keys preserved for authoritative validator")
+        try review(duplicate, accepted: false)
+        let raw = "  {\"workload_identities\":[{\"future\":true}],\"x\":1,\"x\":2}  \n"
+        let rawSnapshot = try PolicyDraftEditor.snapshot(raw)
+        let maximumSnapshot = try PolicyDraftEditor.snapshot(String(repeating: "a", count: 65536))
+        try require(rawSnapshot.data == Data(raw.utf8), "text editor exact bytes including fields and duplicate keys")
+        try require(maximumSnapshot.data.count == 65536, "exact size limit")
+        try denied { _ = try PolicyDraftEditor.snapshot(String(repeating: "é", count: 32769)) }
+        try denied { _ = try PolicyDraftEditor.snapshot("") }
+        print("PASS: policy editor \(assertions) assertions, actual Rust signer and exact-byte authoring")
+    }
+
     @MainActor
     static func oidcBoundary() throws {
         let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("rkui-oidc-" + UUID().uuidString)
@@ -261,6 +333,23 @@ struct UIContract {
         func rejected(_ name: String, _ operation: () throws -> Void) throws -> Error {
             do { try operation() } catch { assertions += 1; return error }
             throw UIError(message: "FAILED: " + name)
+        }
+        // Exercise actual Foundation bundle identity without making any Keychain call.
+        try require(RememberedUnlock.keychainService == "com.starlight.rekey.unbundled-tests.remembered-unlock", "standalone tests cannot query production unlock grants")
+        for identifier in ["com.starlight.rekey", "local.rekey.featureqa"] {
+            let bundle = root.appendingPathComponent(identifier + ".app/Contents")
+            let executable = bundle.appendingPathComponent("MacOS/Identity")
+            try FileManager.default.createDirectory(at: executable.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try FileManager.default.copyItem(at: URL(fileURLWithPath: CommandLine.arguments[0]), to: executable)
+            let plist = ["CFBundleIdentifier": identifier, "CFBundleExecutable": "Identity", "CFBundlePackageType": "APPL"]
+            try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0).write(to: bundle.appendingPathComponent("Info.plist"))
+            let process = Process(), pipe = Pipe()
+            process.executableURL = executable; process.arguments = ["--keychain-service"]
+            process.standardOutput = pipe; process.standardError = FileHandle.nullDevice
+            try process.run()
+            let value = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            try require(process.terminationStatus == 0 && String(decoding: value, as: UTF8.self) == identifier + ".remembered-unlock\n", "bundle-specific unlock namespace: " + identifier)
         }
         let bodyURL = root.appendingPathComponent("body-source.json")
         let originalBody = Data("{\"value\":\"NATIVE-BODY-CANARY\"}\n".utf8)
