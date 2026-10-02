@@ -9,7 +9,7 @@ description = "Typed default-deny authorization policy evaluator for Rekey"
 publish = false
 
 [dependencies]
-cryptoki = "=0.12.0"
+cryptoki = "=0.12.1"
 rekey-domain = { workspace = true }
 aws-lc-rs = { version = "1.18", features = ["ring-io"] }
 curve25519-dalek = { version = "4.1", default-features = false }

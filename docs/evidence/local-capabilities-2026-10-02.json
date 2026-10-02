@@ -2,7 +2,6 @@
   "date": "2026-10-02",
   "scope": "Disposable local macOS/Linux services and Docker references, synthetic credentials only; no production deployment or physical HA attestation",
   "base_commit": "acfa8fea6a0a620a80963008ce3fc5dc3d580cff",
-  "local_acceptance_code_commit": "20cad7b5d8b01de57b522a1613702d5eef3bc046",
   "workspace": {
     "passed": 1032,
     "failed": 0,
@@ -10,8 +9,9 @@
     "targets": 83,
     "command": "cargo test --workspace --locked -- --test-threads=1",
     "exit_code": 0,
-    "log_sha256": "84b5914e53ca631ead99e52102d7a6d4cd303a69c1295b9297a9d26256ad51fd",
-    "note": "Repeated on the final follow-up tree before the aggregate-memory-gate commit; the Linux-only OOM case is executed by required Ubuntu CI."
+    "log_sha256": "aa563b29d22786ef1ba61940ee049f6fa22a75f766bee661eb410c7162ad27fc",
+    "cargo_lock_sha256": "4350a6b0375579dd7497f5f56749d0268d436c56545bd4e93418b46b6925cc15",
+    "note": "Repeated after the cryptoki 0.12.1 patch; the Linux-only OOM case executes in required Ubuntu CI."
   },
   "python_contracts": {
     "audit_delivery": 28,
@@ -78,7 +78,7 @@
   },
   "pkcs11": {
     "scope": "SoftHSM 2.6 software PKCS11 module in isolated Docker; no physical HSM",
-    "image": "sha256:1f89c650b0879a4e8954ce7b79fa8d1fe33f0b8b8daa780a85a03acadaca3db7",
+    "image": "sha256:f0da7e342af068a0e92a25c00a7969c6c4a3c4caba0645f9da181f986be60229",
     "library_sha256": "33386d22567279a9a2d07ea075dd91c82373f55dad2bfe072f9608acd208df61",
     "harness_sha256": "7466aaf2cee8b4160dc121ca3e8ae61eef84754cd2f82297443c0de793542c86",
     "cases": [
@@ -94,7 +94,9 @@
       "one-upstream-effect"
     ],
     "cleanup_complete": true,
-    "pass": true
+    "pass": true,
+    "cryptoki_version": "0.12.1",
+    "closes_advisory": "RUSTSEC-2026-0286"
   },
   "keychain_source": {
     "pass": true,
@@ -161,13 +163,33 @@
   ],
   "provenance": "Generated from retained local logs/receipts. This record is not an independent security review; current required CI results are attached to PR #59.",
   "aggregate_memory_gate": {
-    "kernel_execution": "pending required Ubuntu CI",
+    "kernel_execution": "passed",
     "linux_workspace_check": "passed",
     "linux_broker_clippy": "passed",
     "bounded_unlimited_probe": "ALLOCATED 100663296",
     "sources": {
       "crates/rekey-broker/src/github_issue_plugin/linux_tests.rs": "f85a876e6e55c5da03d89008ab839892b58df785d1fd6b79834c3f98a47afc33",
       "crates/rekey-broker/src/github_issue_plugin/linux_probe.c": "ff0c74cdb15e575a4441ccb7176e614cca416a0cd4e3ae907d5bc4abe9b042fc"
-    }
-  }
+    },
+    "source_commit": "246465740158e515cf8f8f79d15907c576411fa7",
+    "ci_job": "https://github.com/majiayu000/rekey/actions/runs/36990759475/job/110786166483",
+    "observed_at": "2026-10-02T09:41:52Z",
+    "overall_job": "cancelled after this test to replace the vulnerable dependency and rate-vector fixture; not a whole-job pass"
+  },
+  "dependency_patch": {
+    "cryptoki": "0.12.1",
+    "advisory": "RUSTSEC-2026-0286",
+    "cargo_audit": "passed",
+    "lock_changes": "only cryptoki version/checksum in root and fuzz locks",
+    "audit_log_sha256": "3c252ef664dfa83296fb9b9f7da08919d8c1249e56bfe66bc851305ac0178df1"
+  },
+  "metrics_deployment": {
+    "pass": true,
+    "tests": 14,
+    "rule_vectors": 22,
+    "tools": "actual promtool 3.15.0 and systemd-analyze in disposable nonroot Linux container",
+    "comparison": "official last-mantissa-bit fuzzy_compare; production rules unchanged",
+    "log_sha256": "fb494daf628cd05ddaf9dff15c194f073266098a5a4c58e34a0b2bf5438b77d6"
+  },
+  "initial_local_acceptance_code_commit": "20cad7b5d8b01de57b522a1613702d5eef3bc046"
 }

@@ -10,7 +10,7 @@ The public identity participates in the existing reviewed digest and must match 
 
 ## Fixed hardware operation
 
-Use the normal, exact `cryptoki = 0.12.0` registry dependency and its cryptoki-sys 0.5.0 SDK. No handwritten PKCS#11 ABI or vendored SDK. The selected pure operation is `Mechanism::Eddsa(EddsaParams::new(EddsaSignatureScheme::Ed25519))`, without prehash or context. Sign exactly the existing RKAPPROVAL domain prefix and JCS grant bytes. One sign attempt; never retry an ambiguous hardware operation or fall back to software.
+Use the normal, exact `cryptoki = 0.12.1` registry dependency and its cryptoki-sys 0.5.0 SDK. This patch closes [RUSTSEC-2026-0286](https://rustsec.org/advisories/RUSTSEC-2026-0286), an out-of-bounds read in allowed-mechanism attribute decoding; do not suppress the advisory. No handwritten PKCS#11 ABI or vendored SDK. The selected pure operation is `Mechanism::Eddsa(EddsaParams::new(EddsaSignatureScheme::Ed25519))`, without prehash or context. Sign exactly the existing RKAPPROVAL domain prefix and JCS grant bytes. One sign attempt; never retry an ambiguous hardware operation or fall back to software.
 
 Match the exact slot, serial and library version. Enumerate at most two matching private signing objects by class, Edwards key type and exact ID; require exactly one. Require token/private/sign/sensitive/always-sensitive/never-extractable properties and non-extractable key, exact supported Ed25519 curve parameters; reject always-authenticate and protected-authentication-path profiles in this slice. Never request a private-key value. Validate the returned signature length and verify it with the policy public key locally. Recheck grant and policy expiration before writing the existing create-new protected output.
 

@@ -46,8 +46,8 @@
 | VEX-02 | Vault 登录方式 | 单次AppRole登录/读取/撤销已整合，本轮完整本地合同通过 | 旧 socket bind EPERM 已复测关闭；完整 Rust、KV/dynamic release 脚本通过，客户 AppRole ACL 待验收 |
 | VEX-03 | Vault token续期候选 | 仅现场证明单次TTL不足才选token一次续期；Namespace/额外引擎明确未选 | 不是首轮默认实现；保持已有DYN-05租约续期；现场需求尚未提供 |
 | VEX-04 | KV 显式最新版读取 | 显式latest单读冻结和真实版本审计已实现，本轮 UDS/TLS 合同通过 | 本轮完整 Rust 与 KV release 脚本通过；客户现场后置，写入未选入本切片 |
-| P-08 | 可观测性 | Linux 调度输出/新鲜度规则已实现并接入 Ubuntu 必需门；客户部署待验收 | 生成器/publisher 本地通过；22 个规则向量使用真实 promtool，生成 unit 使用 systemd-analyze；缺工具明确失败，精确提交结果以 PR checks 为准 |
-| P-10 | Connector 隔离 | Linux委派 cgroup-v2/guardian 已运行，真实整组OOM验收已补入 Ubuntu 必需门；完整启动故障矩阵仍OPEN | Ubuntu 实际 artifact/seccomp/AS/READY 前后父进程死亡/取消清理通过；新增OOM的精确提交结果以 PR checks 为准，mac物理内存与全启动故障注入未关闭 |
+| P-08 | 可观测性 | Linux 调度输出/新鲜度规则已实现，真实工具的14项验收通过；客户部署待验收 | 22 个规则向量使用真实 promtool3.15，unit 使用真实 systemd-analyze；rate 的末位舍入使用官方 fuzzy_compare，保留全部向量/标签/告警，Ubuntu 必需门持续执行 |
+| P-10 | Connector 隔离 | Linux委派 cgroup-v2/guardian 与真实整组OOM验收通过；完整启动故障矩阵仍OPEN | Ubuntu 实际 artifact/seccomp/AS/READY 前后父进程死亡/取消清理，以及2464657整组OOM均通过；旧作业后续主动取消以修依赖，不能算整门通过，mac物理内存与全启动故障注入未关闭 |
 
 ## 交付缺口
 
@@ -189,3 +189,5 @@ PKCS#11 本地真实模块门已从 injected 扩展到 SoftHSM2.6：固定库has
 
 
 同日 EXT06 真实门关闭：`scripts/test-keychain-live.py --bin-dir target/debug` 在本机通过，创建一次性文件 Keychain 并仅信任测试 helper/fixture，真实条目读取、上游反射封口、锁定拒绝及无额外业务效果、审计 canary 与删除清理均通过。fixture 的 TLS ready 文件早于 Admin socket，首次新脚本失败已保留，随后等待两个实际入口就绪并复测通过；没有弱化生产 Keychain 查询。旧“API0”条目为历史状态。七项 release 脚本 P3、Vault KV、Vault dynamic、GitHub App、GitHub extension、workload identity 与 Darwin launchd 均已本轮通过。最新本地证据在 `20261002-pr-closeout/`。
+
+`20cad7b` 的 macOS 完整 workspace/辅助验收通过，随后真实依赖审计发现 cryptoki0.12.0 命中 RUSTSEC-2026-0286。当前精确升级到0.12.1，两份lock仅该包版本/hash变化，不忽略advisory；本地cargo audit通过，重新构建的真实SoftHSM/TTY/Broker签名链也通过。Ubuntu完整workspace通过后，真实promtool暴露rate()结果与1只差一个尾数位；使用官方末位浮点容差，全部14项部署测试及22个规则向量通过，生产PromQL不变。历史失败日志保留。

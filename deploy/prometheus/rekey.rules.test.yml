@@ -1,6 +1,9 @@
 # Executed by the official promtool engine; no imitation evaluator.
 rule_files: [rekey.rules.yml]
 evaluation_interval: 15s
+# rate() may round 1 to its adjacent float; use promtool's last-mantissa-bit
+# tolerance while retaining every series, label and alert expectation.
+fuzzy_compare: true
 tests:
   - name: "fresh publication and genuine zero errors"
     interval: 15s
