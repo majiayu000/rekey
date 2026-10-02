@@ -162,6 +162,8 @@ async fn dispatch(
                 },
                 content_type: meta.content_type,
                 extra_headers: meta.extra_headers,
+                params: meta.params,
+                query: meta.query,
                 body: frame.body.to_vec(),
                 approval_grants: Vec::new(),
             };
@@ -220,6 +222,8 @@ fn execute_request(frame: &IncomingFrame) -> Result<ExecuteRequest, BrokerError>
         },
         content_type: meta.content_type,
         extra_headers: meta.extra_headers,
+        params: meta.params,
+        query: meta.query,
         body: frame.body.to_vec(),
         approval_grants: meta.approval_grants,
     })

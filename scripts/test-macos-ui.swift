@@ -5,8 +5,8 @@ import Darwin
 @main
 struct UIContract {
     @MainActor
-    static func main() throws {
-        if CommandLine.arguments == [CommandLine.arguments[0], "--flow-boundary-only"] { try flowBoundary(); return }
+    static func main() async throws {
+        if CommandLine.arguments == [CommandLine.arguments[0], "--flow-boundary-only"] { try await flowBoundary(); return }
         if CommandLine.arguments == [CommandLine.arguments[0], "--oidc-boundary-only"] { try oidcBoundary(); return }
         guard CommandLine.arguments.count == 2 else { fatalError("usage: test-macos-ui CLI_BINARY | --flow-boundary-only") }
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("rkui-\(UUID().uuidString.prefix(8))")
@@ -38,12 +38,12 @@ struct UIContract {
         let deadline = Date().addingTimeInterval(10)
         while !FileManager.default.fileExists(atPath: state + "/runtime/admin.sock") {
             guard Date() < deadline && broker.isRunning else { throw UIError(message: "fixture startup failed") }
-            Thread.sleep(forTimeInterval: 0.05)
+            try await Task.sleep(nanoseconds: 50_000_000)
         }
         let locked = try client.decode(ServiceStatus.self, ["status"])
         try require(!locked.unlocked, "locked startup")
         try denied({ _ = try client.run(["unlock", "--password-stdin"], input: "incorrect\n") }, "wrong password denied")
-        Thread.sleep(forTimeInterval: 1.1)
+        try await Task.sleep(nanoseconds: 1_100_000_000)
         _ = try client.run(["unlock", "--password-stdin"], input: password + "\n")
         let unlocked = try client.decode(ServiceStatus.self, ["status"])
         try require(unlocked.unlocked, "unlocked state decoded")
@@ -73,6 +73,19 @@ struct UIContract {
         let actionList = try client.decode(ActionList.self, ["action", "list"])
         try require(actionList.actions.first?.credential_id == usable.id, "associated actions decode")
         try require(action.request_max_bytes == 65536 && actionList.actions.first?.request_max_bytes == 65536, "registered action request policy limit decoded")
+        let catalogSource = try JSONSerialization.data(withJSONObject: ["source": ["kind": "github-pat"]])
+        let github = try client.templateCatalog(source: catalogSource)
+        try require(github.template.bindings["owner"]?.max == 39 && github.template.bindings["repo"]?.max == 100, "authenticated binding declarations decode for forms")
+        try require(github.template.capabilities.first { $0.id == "merge-pr" }?.suggestedRule == "require-approval", "high-risk template recommendation is preserved")
+        let templateDefinition: [String: Any] = ["source": ["kind": "openai"], "credential_id": usable.id, "bindings": [[:]] as [[String: String]], "capabilities": ["models", "responses"], "name_prefix": "UI template", "timeout_ms": 30000, "request_max_bytes": 1048576, "allowed_extra_headers": [] as [String], "response_max_bytes": 4194304, "allowed_response_headers": ["content-type"]]
+        let templateRequest = String(decoding: try JSONSerialization.data(withJSONObject: templateDefinition), as: UTF8.self)
+        let templateResult = try client.run(["template", "install", "--stdin-request", "--password-stdin"], input: password + "\n" + templateRequest + "\n")
+        let templateRows = (try JSONSerialization.jsonObject(with: templateResult) as! [String: Any])["actions"] as! [[String: Any]]
+        try require(templateRows.count == 2, "UI-shaped template request installs selected capabilities")
+        for row in templateRows {
+            let installed = try JSONDecoder().decode(FixedAction.self, from: JSONSerialization.data(withJSONObject: row["action"]!))
+            try require(installed.target.summary.contains("路径规则") && installed.credential_id == usable.id, "installed template action decodes with its bound credential")
+        }
         let sessionData = try client.run(["session", "create", "--action", action.reference, "--ttl", "15m", "--max-uses", "2", "--password-stdin"], input: password + "\n")
         let session = try JSONSerialization.jsonObject(with: sessionData) as! [String: Any]
         try require(session["capability_token"] is String, "session receipt")
@@ -164,7 +177,7 @@ struct UIContract {
         try require(details.envelope.challenge.schema_id == "ui/request" && details.envelope.challenge.policy_version == 3, "challenge binding fields decoded")
         try require(details.origin.public_key == String(repeating: "c", count: 64), "separate origin key decoded")
         try require(details.matchingAction(in: [action])?.reference == action.reference, "exact action version selected")
-        let newerAction = FixedAction(id: action.id, name: action.name, version: action.version + 1, enabled: action.enabled, credential_id: action.credential_id, origin: action.origin, method: action.method, exact_path: action.exact_path, request_policy: action.request_policy)
+        let newerAction = FixedAction(id: action.id, name: action.name, version: action.version + 1, enabled: action.enabled, credential_id: action.credential_id, origin: action.origin, method: action.method, target: action.target, request_policy: action.request_policy)
         try require(details.matchingAction(in: [newerAction]) == nil, "no fallback to newer action definition")
         let calls = try String(contentsOf: root.appendingPathComponent("approval-calls.jsonl"), encoding: .utf8).split(separator: "\n")
         let firstCall = try JSONSerialization.jsonObject(with: Data(calls[0].utf8)) as! [String]
@@ -253,7 +266,7 @@ struct UIContract {
     }
 
     @MainActor
-    static func flowBoundary() throws {
+    static func flowBoundary() async throws {
         let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("rkui-flow-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         defer { do { try FileManager.default.removeItem(at: root) } catch { fputs("flow fixture cleanup failed: \(error.localizedDescription)\n", stderr) } }
@@ -265,6 +278,18 @@ struct UIContract {
         func rejected(_ name: String, _ operation: () throws -> Void) throws -> Error {
             do { try operation() } catch { assertions += 1; return error }
             throw UIError(message: "FAILED: " + name)
+        }
+        let targetDecoder = JSONDecoder()
+        let templateTarget = try targetDecoder.decode(FixedAction.Target.self, from: Data(#"{"kind":"template","target":{"path":"/repos/owner/repo/issues/{number}","params":{"number":"int:1..9999"},"query":{"state":"enum:open,closed"}}}"#.utf8))
+        try require(templateTarget.summary.contains("{number}") && templateTarget.summary.contains("路径规则") && templateTarget.summary.contains("state"), "template definition is labelled as a rule, not an executed URL")
+        _ = try rejected("unknown target variant cannot masquerade as fixed") {
+            _ = try targetDecoder.decode(FixedAction.Target.self, from: Data(#"{"kind":"unknown","path":"/safe"}"#.utf8))
+        }
+        _ = try rejected("old untagged target is not silently loaded") {
+            _ = try targetDecoder.decode(FixedAction.Target.self, from: Data(#"{"exact_path":"/safe"}"#.utf8))
+        }
+        _ = try rejected("template cannot fall back to a supplied fixed path") {
+            _ = try targetDecoder.decode(FixedAction.Target.self, from: Data(#"{"kind":"template","path":"/safe"}"#.utf8))
         }
         let bodyURL = root.appendingPathComponent("body-source.json")
         let originalBody = Data("{\"value\":\"NATIVE-BODY-CANARY\"}\n".utf8)
@@ -416,6 +441,22 @@ struct UIContract {
             try require(!error.localizedDescription.contains("BODY-SECRET"), "invalid response body omitted")
         }
         let model = AppModel(stateDirectory:root.appendingPathComponent("state").path)
+        let pendingDefinition = root.appendingPathComponent("pending-template.json")
+        try writePrivateNew(Data("{}".utf8), to: pendingDefinition)
+        var pendingOperation = Operation(title: "模板", detail: "", arguments: ["template", "install"])
+        pendingOperation.temporaryFile = pendingDefinition
+        model.busy = true
+        await model.perform(pendingOperation, proof: "synthetic-proof")
+        try require(!FileManager.default.fileExists(atPath: pendingDefinition.path), "busy operation removes owned definition without submitting")
+        try require(model.error?.contains("未提交") == true, "busy operation reports that no request was submitted")
+        try require(model.busy, "rejected second operation does not clear the active operation")
+        pendingOperation.temporaryFile = nil
+        pendingOperation.templateRequest = Data("{}".utf8)
+        model.error = nil
+        await model.perform(pendingOperation, proof: "synthetic-proof")
+        try require(model.error?.contains("未提交") == true, "busy stdin template reports that no request was submitted")
+        try require(model.busy, "rejected stdin template preserves the active operation")
+        model.busy = false
         model.status = ServiceStatus(state:"unlocked",format_version:15,runtime_version:"fixture",sessions_active:0, peer_security: "L1-dev", lab_enabled: false)
         let revision = model.nativeFlowRevision
         try require(model.acceptsNativeCompletion(revision,workspace:model.stateDirectory), "current completion admitted")

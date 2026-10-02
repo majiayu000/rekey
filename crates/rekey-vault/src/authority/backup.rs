@@ -41,7 +41,14 @@ impl Worker {
                 return Err(AuthorityError::BackupFailed);
             }
         };
-        let snapshot_cut = match self.store.backup_to(&snapshot_path, &snapshot) {
+        let backup_result = self.store.backup_to(
+            &snapshot_path,
+            &snapshot,
+            self.require_unlocked()?.bytes(),
+            self.header.vault_id,
+        );
+        let backup_result = self.fault_on_integrity(backup_result);
+        let snapshot_cut = match backup_result {
             Ok(cut) => cut,
             Err(err) => {
                 self.cleanup_reserved_snapshot(&snapshot_path)?;

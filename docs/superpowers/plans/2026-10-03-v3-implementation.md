@@ -27,11 +27,13 @@
 | M1 生产客户端签名校验 / 等级显示 | 本批验收通过 | 签名 CLI 对错误 ID 同团队/ad-hoc 服务均在发送前拒绝，服务收到零字节；status/UI 展示本地验证结果；同团队 release daemon 的 status/unlock/shutdown 正向通过；仍不代表完整 L1 |
 | M1 rollback generation / MAC / 外部计数 | 待实施 | T6；旧库拒绝自动解锁与执行；备份恢复确认 |
 | M1 memory hardening / core limit | 本批验收通过 | Linux arm64 容器实测 core=0/dumpable=0、独立 key 页生命周期、mlock 失败告警继续；macOS 回归与独立审查通过。仅覆盖拥有型 VRK/DEK 缓冲，非所有栈/AEAD 临时副本 |
-| M1 pkg / LaunchAgent / SMAppService | 待实施 | 签名、公证、安装和重启验收 |
+| M1 pkg / LaunchAgent / SMAppService | 源码与 CI 接线已实现，设备验收待做 | pkg 9 项合成结构检查和独立审查通过；静态 LaunchAgent 与 App 显式注册、无-k 启动、逐次 proof 停用入口已编译；103 UI 边界断言通过。缺 Installer 证书，未安装或实际注册；现有 release job 已接签名 pkg、公证与哈希，未运行真实 CI |
 | M1 独立安全审查 | 待完成 | 原型代码审查不等同于产品安全验收 |
-| M2 P-256 个人策略签名 / App 模板选择 | 待实施 | Touch ID/SE 属于实现；Ed25519 团队模式保留 |
-| M2 模板规范与路径/query渲染 | 纯合同本批验收通过 | 18 个领域测试与 10 个包验签/schema 测试通过，独立审查无待修问题；单 Action 物化、团队 Ed25519、来源摘要与离线 schema 已实现；存储、授权和执行链尚未接线 |
-| M2 anthropic/openai/github/generic 模板 | 领域基础已实现 | 四个内置声明与风险默认值测试通过；App 配置入口未实现 |
+| M2 P-256 个人策略签名 / 固定模式 | 并行实施中 | 已冻结显式 personal/team、P-256 DER 与完整 seal 合同；软件验签及存储分工，App SE/draft 仍待接线 |
+| M2 模板规范与路径/query渲染 | 纯合同本批验收通过 | 18 个领域测试与 10 个包验签/schema 测试通过，独立审查无待修问题；单 Action 物化、团队 Ed25519、来源摘要与离线 schema 已实现；存储、授权和执行链已接线，见下列运行时证据 |
+| M2 ActionTarget / 内容认证 / 格式 | 本批软件验收通过 | format22；完整原始 Action 行 AEAD、全状态重封/轮换、实际备份副本和恢复验证；44 项定向测试及独立审查通过。数值列篡改错误映射 P2 已关闭；无迁移 |
+| M2 原子安装 / 规范执行 / 客户端 | 本批软件验收通过 | 52/53、原子批安装、render→审批哈希→HTTP 已接线；全量默认 647 / lab 1,111 项通过，各 2 项忽略；stdin 尾修 CLI 黑盒、lab CLI 62/1 ignored、Swift 实际 CLI 与 103 流程断言通过；独立审查关闭 |
+| M2 anthropic/openai/github/generic 模板 | 本批软件验收通过 | 四个内置声明、风险默认值、App 能力/多绑定选择已接；真实 CLI GitHub 一次安装 16 Action、Swift OpenAI 安装 2 Action 通过；策略激活仍需独立完成 |
 | M2 Approver / local-presence / 面板 | 待实施 | T10；challenge 与 principal/参数/策略绑定、一次性消费 |
 | M3 Profile / 会话生命周期 / rekey run | 待实施 | T9；进程异常退出与 CLI SIGKILL 后 5 秒撤销 |
 | M3 gateway / 认证 / SSE / model与预算 | 待实施 | T1/T8；仅 loopback；不可转发入站真实 Key |
@@ -76,3 +78,15 @@ M1 集成默认 workspace 检查：597 passed / 2 ignored；默认 all-targets c
 新版签名 release CLI / rekeyd 正向链已通过：Locked/Unlocked status、unlock、lock、错误证明不停止服务、正确证明停掉 Locked daemon。证据 `outputs/rekey-v3-20261003/production-peer-positive-m1.json` 含最终签名哈希；仍不将签名校验单独称为完整 L1。
 
 M2 首批单 Action 物化与团队模板验签纯合同完成：root 默认 workspace 613 passed / 2 ignored，all-targets check 和严格 Clippy 通过，独立审查确认五文件哈希一致。日志 `outputs/rekey-v3-20261003/m2-test-default-serial.log`。后续接 ActionTarget、完整行内容认证、存储、授权与 HTTP；安装运行时尚未实现。
+
+M2 存储已合流：单一 ActionTarget、format22 和完整 Action 行 seal（含退役/禁用、VRK 轮换、实际备份快照与恢复）。最终补丁 SHA-256 `8a4d4eac678003441a73713a15beabd447cf492fe71a101eb23049eeac0c08dd`，42 文件。独立审查发现并修复数值字段篡改被当成普通存储错误的问题，44 项定向检查通过。统一执行链完成前模板执行保持明确拒绝；领域/存储测试不代表运行时已可用。
+
+下一批安装与执行使用 `m2-runtime-preflight.json` 的两个独立工作区；root 拥有冻结 IPC、CLI、Swift 与集成检查。安装将一次证明、全部新 Action、逐条审计放进同一事务。模板来源闭合反序列化新增负测发现 Serde unit variant 忽略额外字段，已改为零字段 struct variant；JSON 形状不变，9 项 IPC 测试通过。CLI/UI 独立审查的忙碌早退临时文件清理问题已补修，正在运行对应回归。
+
+M2 安装执行批已完成本地合流：默认 workspace 647 passed / 2 ignored，lab 1,111 passed / 2 ignored（串行参数方式）。默认严格 Clippy、lab all-targets check、机械禁用符号及 CLI 依赖边界通过。完整日志 `m2-runtime-test-{default,lab}-final.log`；各源码审查记录位于同一输出目录的 `review/`。
+
+全量测试启动后又关闭模板 UI 的同 UID 请求文件 TOCTOU：App 保留请求内存快照，catalog 一行、install proof+JSON 两行经匿名 stdin 传入，CLI 一次有界读取。尾修另外通过真实 CLI 黑盒、完整 lab CLI 62 passed / 1 ignored、Swift 实际临时 vault 链、103 native flow 断言及全 App 严格编译。busy 请求明确提示未提交；安装超时保留不确定结果并禁止自动重试。未进行真实 GUI 点击或 signed pkg 安装。
+
+失败记录保留：backup 完整性失败会新增 runtime.faulted，测试已验证该事件唯一、停止授权、无 backup success/release，未弱化产品；一次 lab CLI 检查混用默认 daemon 产物失败，同 feature 重建后全部通过。后续 feature 组合检查顺序执行，避免同 target 的二进制互相覆盖。
+
+个人签名下一批使用 `m2-personal-preflight.json` 和隔离工作区，先实现 typed Ed25519/P256 信任根、显式不可变 mode 和认证存储。真实 SE/Touch ID、policy draft/diff、local-presence 与 M3 仍非完成项。

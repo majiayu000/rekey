@@ -50,7 +50,7 @@ fn immutable_state(db: &Connection) -> Vec<Vec<Vec<Value>>> {
         "SELECT singleton,signer_id,algorithm,public_key,installed_at_ms FROM policy_trust",
         "SELECT singleton,signer_id,version,expires_at_ms,policy_digest,bundle_digest,bundle_json,activated_at_ms FROM policy_bundle",
         "SELECT * FROM workload_token_uses ORDER BY replay_digest",
-        "SELECT * FROM actions ORDER BY action_id,version",
+        "SELECT action_id,version,name,state,credential_id,origin,method,target_json,auth_header,auth_prefix,request_max_bytes,allowed_extra_headers_json,response_max_bytes,allowed_response_headers_json,timeout_ms,created_at_ms,text_stream_json,native_plugin_json FROM actions ORDER BY action_id,version",
     ].map(|sql| rows(db, sql)).to_vec()
 }
 

@@ -4,7 +4,7 @@ use rekey_domain::ids::{
     PolicySignerId, PrincipalId, RequestId, SessionId, VaultId, WrapperId,
 };
 
-pub const FORMAT_VERSION: u32 = 21;
+pub const FORMAT_VERSION: u32 = 22;
 pub const VAULT_INTEGRITY_CIPHERTEXT_LEN: usize = 40;
 
 #[derive(Debug, Clone)]
@@ -147,7 +147,7 @@ pub struct ActionRecord {
     pub credential_id: CredentialId,
     pub origin: String,
     pub method: String,
-    pub exact_path: String,
+    pub target_json: String,
     pub auth_header: String,
     pub auth_prefix: String,
     pub request_max_bytes: u32,
@@ -156,6 +156,8 @@ pub struct ActionRecord {
     pub allowed_response_headers_json: String,
     pub timeout_ms: u32,
     pub created_at_ms: i64,
+    pub seal_nonce: [u8; 12],
+    pub seal_ciphertext: [u8; 16],
 }
 
 #[derive(Debug, Clone)]

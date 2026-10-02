@@ -568,6 +568,9 @@ fn restore_inner(
     prove_integrity(&header, &vrk)?;
     prove_all_credential_states(&store, header.vault_id, &vrk)?;
     prove_all_payloads(&store, header.vault_id, &vrk)?;
+    for record in store.list_all_actions()? {
+        crate::convert::verified_record_to_action(&record, vrk.bytes(), header.vault_id)?;
+    }
     store.verified_policy_material(vrk.bytes(), header.vault_id)?;
     store.verified_audit_retention(vrk.bytes(), header.vault_id)?;
     crate::authority::lease_journal::verify_store(&store, vrk.bytes(), header.vault_id)?;

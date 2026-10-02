@@ -47,7 +47,8 @@ fn admin_body_limit(message_type: u16, managed: bool) -> u32 {
         | admin_msg::DESKTOP_REVEAL
         | admin_msg::DESKTOP_REMEMBER
         | admin_msg::DESKTOP_RESUME => ipc::ADMIN_PROOF_BODY_MAX_BYTES,
-        admin_msg::DESKTOP_ADD => ipc::ADMIN_SECRET_BODY_MAX_BYTES,
+        admin_msg::DESKTOP_ADD | admin_msg::TEMPLATE_INSTALL => ipc::ADMIN_SECRET_BODY_MAX_BYTES,
+        admin_msg::TEMPLATE_CATALOG => ipc::ADMIN_SECRET_FIELD_MAX_BYTES,
         admin_msg::UNLOCK_PASSWORD | admin_msg::UNLOCK_RECOVERY => {
             ipc::ADMIN_SECRET_FIELD_MAX_BYTES
         }
@@ -131,6 +132,32 @@ fn json<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, BrokerError> {
     Ok(metadata)
 }
 
+async fn write_admin_error(
+    stream: &mut UnixStream,
+    message_type: u16,
+    request_id: rekey_domain::ids::RequestId,
+    error: &BrokerError,
+) -> Result<(), FrameIoError> {
+    // A timeout can race with the single commit. Repeating an install creates
+    // new Action IDs, so even pre-commit Busy failures conservatively deny retry.
+    let unconfirmed_install = message_type == admin_msg::TEMPLATE_INSTALL
+        && matches!(error, BrokerError::Authority(AuthorityError::AuthorityBusy));
+    let message = if unconfirmed_install {
+        "template installation outcome is unconfirmed; inspect Actions and audit; do not retry automatically".to_owned()
+    } else {
+        error.to_string()
+    };
+    write_error(
+        stream,
+        Channel::Admin,
+        request_id,
+        error.code(),
+        &message,
+        !unconfirmed_install && error.retryable(),
+    )
+    .await
+}
+
 pub async fn handle_admin_conn(
     mut stream: UnixStream,
     ctx: Arc<BrokerCtx>,
@@ -190,15 +217,8 @@ pub async fn handle_admin_conn(
                     write_ok(&mut stream, Channel::Admin, request_id, &metadata, &body).await
                 }
                 Err(err) => {
-                    write_error(
-                        &mut stream,
-                        Channel::Admin,
-                        request_id,
-                        err.code(),
-                        &err.to_string(),
-                        err.retryable(),
-                    )
-                    .await
+                    write_admin_error(&mut stream, frame.header.message_type, request_id, &err)
+                        .await
                 }
             }
         };
@@ -552,6 +572,41 @@ async fn dispatch_operation(
             .await?;
             ctx.sessions.revoke_by_actions(&action_ids);
             Ok((json(&metadata)?, Zeroizing::new(Vec::new())))
+        }
+        admin_msg::TEMPLATE_CATALOG => {
+            let metadata: ipc::TemplateCatalogMeta = meta(frame)?;
+            let deadline = request_deadline;
+            let _owner = ctx.lifecycle.coordinate_until(deadline).await?;
+            ctx.lifecycle.reject_if_busy()?;
+            let response = authority_until(
+                deadline,
+                ctx.authority.template_catalog_before(
+                    metadata.source,
+                    frame.body.to_vec(),
+                    Some(deadline.into_std()),
+                ),
+            )
+            .await?;
+            Ok((json(&response)?, Zeroizing::new(Vec::new())))
+        }
+        admin_msg::TEMPLATE_INSTALL => {
+            let metadata: ipc::TemplateInstallMeta = meta(frame)?;
+            let (kind, proof, package) = ipc::parse_proof_and_secret_body(&frame.body)?;
+            let deadline = request_deadline;
+            let _owner = ctx.lifecycle.coordinate_until(deadline).await?;
+            ctx.lifecycle.reject_if_not_running()?;
+            let response = authority_until(
+                deadline,
+                ctx.authority.template_install_before(
+                    metadata,
+                    package.to_vec(),
+                    proof_from(kind, proof),
+                    frame.header.request_id,
+                    Some(deadline.into_std()),
+                ),
+            )
+            .await?;
+            Ok((json(&response)?, Zeroizing::new(Vec::new())))
         }
         admin_msg::ACTION_CREATE | admin_msg::ACTION_UPDATE => {
             let deadline = request_deadline;
@@ -957,7 +1012,9 @@ fn definition_from_meta(meta: ipc::ActionCreateMeta) -> Result<ActionDefinition,
         credential_id: meta.credential_id,
         origin: HttpsOrigin::parse(&meta.origin).map_err(BrokerError::Domain)?,
         method: FixedMethod::parse(&meta.method).map_err(BrokerError::Domain)?,
-        exact_path: ExactPath::parse(&meta.exact_path).map_err(BrokerError::Domain)?,
+        target: rekey_domain::action::ActionTarget::Fixed {
+            path: ExactPath::parse(&meta.exact_path).map_err(BrokerError::Domain)?,
+        },
         auth: HeaderCredentialUse::new(
             HeaderName::new(&meta.auth_header).map_err(BrokerError::Domain)?,
             HeaderPrefix::new(&meta.auth_prefix).map_err(BrokerError::Domain)?,
@@ -993,7 +1050,7 @@ fn ensure_action_catalog_fits(
         credential_id: definition.credential_id,
         origin: definition.origin.clone(),
         method: definition.method,
-        exact_path: definition.exact_path.clone(),
+        target: definition.target.clone(),
         auth: definition.auth.clone(),
         timeout_ms: definition.timeout_ms,
         request_policy: definition.request_policy.clone(),
@@ -1024,6 +1081,37 @@ fn ensure_credential_catalog_fits(
 mod tests {
     use super::*;
     use rekey_domain::ids::CredentialId;
+
+    #[tokio::test]
+    async fn template_install_busy_wire_denies_retry_without_changing_other_operations() {
+        for (message_type, retryable) in [
+            (admin_msg::TEMPLATE_INSTALL, false),
+            (admin_msg::TEMPLATE_CATALOG, true),
+            (admin_msg::ACTION_CREATE, true),
+        ] {
+            let (mut writer, mut reader) = UnixStream::pair().unwrap();
+            let request_id = rekey_domain::ids::RequestId::new_random();
+            let error = BrokerError::Authority(AuthorityError::AuthorityBusy);
+            let (sent, received) = tokio::join!(
+                write_admin_error(&mut writer, message_type, request_id, &error),
+                read_frame(&mut reader, Channel::Admin, |_| 0),
+            );
+            sent.unwrap();
+            let received = received.unwrap();
+            assert_eq!(received.header.message_type, ipc::resp_msg::ERROR);
+            let envelope: ipc::ErrorEnvelope = serde_json::from_slice(&received.metadata).unwrap();
+            assert_eq!(envelope.code, "AUTHORITY_BUSY");
+            assert_eq!(envelope.request_id, request_id);
+            assert_eq!(envelope.retryable, retryable);
+            if message_type == admin_msg::TEMPLATE_INSTALL {
+                assert!(envelope.message.contains("unconfirmed"));
+                assert!(envelope.message.contains("Actions and audit"));
+                assert!(envelope.message.contains("do not retry automatically"));
+            } else {
+                assert_eq!(envelope.message, error.to_string());
+            }
+        }
+    }
 
     #[tokio::test]
     async fn proofless_shutdown_rejects_before_waiting_on_any_coordinator() {
@@ -1109,7 +1197,7 @@ mod tests {
 
     #[test]
     fn oidc_envelope_limits_and_os_exceptions_are_closed() {
-        for id in 1..=51 {
+        for id in 1..=53 {
             let protected = ipc::managed_admin_operation(id).unwrap();
             if protected {
                 assert!(admin_body_limit(id, true) >= 50);
@@ -1125,6 +1213,13 @@ mod tests {
             admin_body_limit(admin_msg::UNLOCK_PASSWORD, true),
             ipc::ADMIN_SECRET_FIELD_MAX_BYTES
         );
+        assert_eq!(admin_body_limit(admin_msg::TEMPLATE_CATALOG, false), 65_536);
+        assert_eq!(admin_body_limit(admin_msg::TEMPLATE_CATALOG, true), 65_586);
+        assert_eq!(
+            admin_body_limit(admin_msg::TEMPLATE_INSTALL, false),
+            131_081
+        );
+        assert_eq!(admin_body_limit(admin_msg::TEMPLATE_INSTALL, true), 131_131);
         assert_eq!(admin_body_limit(admin_msg::AUDIT_QUERY, false), 0);
         assert_eq!(admin_body_limit(admin_msg::METRICS, false), 0);
     }
@@ -1181,7 +1276,7 @@ mod tests {
         );
         Arc::get_mut(&mut ctx).unwrap().oidc_admin =
             Some(crate::oidc_admin::Manager::load(&path).unwrap());
-        for id in 1..=51 {
+        for id in 1..=53 {
             if !ipc::managed_admin_operation(id).unwrap() {
                 continue;
             }
@@ -1222,7 +1317,9 @@ mod tests {
             credential_id: CredentialId::from_random_bytes([1; 16]),
             origin: HttpsOrigin::parse("https://example.com").unwrap(),
             method: FixedMethod::Post,
-            exact_path: ExactPath::parse("/v1/action").unwrap(),
+            target: rekey_domain::action::ActionTarget::Fixed {
+                path: ExactPath::parse("/v1/action").unwrap(),
+            },
             auth: HeaderCredentialUse::new(
                 HeaderName::new("x-api-key").unwrap(),
                 HeaderPrefix::new("Bearer ").unwrap(),
@@ -1254,7 +1351,9 @@ mod tests {
             credential_id: CredentialId::from_random_bytes([1; 16]),
             origin: HttpsOrigin::parse("https://example.com").unwrap(),
             method: FixedMethod::Get,
-            exact_path: ExactPath::parse("/v1/action").unwrap(),
+            target: rekey_domain::action::ActionTarget::Fixed {
+                path: ExactPath::parse("/v1/action").unwrap(),
+            },
             auth: HeaderCredentialUse::new(
                 HeaderName::new("x-api-key").unwrap(),
                 HeaderPrefix::new("Bearer ").unwrap(),
@@ -1280,7 +1379,7 @@ mod tests {
             credential_id: definition.credential_id,
             origin: definition.origin.clone(),
             method: definition.method,
-            exact_path: definition.exact_path.clone(),
+            target: definition.target.clone(),
             auth: definition.auth.clone(),
             timeout_ms: definition.timeout_ms,
             request_policy: definition.request_policy.clone(),
@@ -1305,7 +1404,9 @@ mod tests {
             credential_id: CredentialId::from_random_bytes([1; 16]),
             origin: HttpsOrigin::parse("https://example.com").unwrap(),
             method: FixedMethod::Post,
-            exact_path: ExactPath::parse("/v1/action").unwrap(),
+            target: rekey_domain::action::ActionTarget::Fixed {
+                path: ExactPath::parse("/v1/action").unwrap(),
+            },
             auth: HeaderCredentialUse::new(
                 HeaderName::new("x-api-key").unwrap(),
                 HeaderPrefix::new("Bearer ").unwrap(),
@@ -1331,7 +1432,7 @@ mod tests {
             credential_id: definition.credential_id,
             origin: definition.origin.clone(),
             method: definition.method,
-            exact_path: definition.exact_path.clone(),
+            target: definition.target.clone(),
             auth: definition.auth.clone(),
             timeout_ms: definition.timeout_ms,
             request_policy: definition.request_policy.clone(),
@@ -1465,6 +1566,8 @@ mod tests {
                     },
                     content_type: None,
                     extra_headers: Vec::new(),
+                    params: Default::default(),
+                    query: Default::default(),
                     body: Vec::new(),
                     approval_grants: Vec::new(),
                 })

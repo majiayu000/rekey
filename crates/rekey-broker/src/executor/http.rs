@@ -1,7 +1,8 @@
 use std::time::Duration;
 
-use rekey_domain::action::FixedHttpAction;
+use rekey_domain::action::{ActionTarget, FixedHttpAction};
 use rekey_domain::ipc::{ExecuteResponseMeta, METADATA_MAX_BYTES};
+use rekey_domain::template::RenderedTarget;
 use zeroize::Zeroizing;
 
 use super::ExecuteRequest;
@@ -100,9 +101,37 @@ pub(super) fn validate_request(
     Ok(())
 }
 
+#[cfg(any(feature = "lab", test))]
 pub(super) fn build_upstream(
     action: &FixedHttpAction,
     request: &ExecuteRequest,
+    auth_value: Zeroizing<Vec<u8>>,
+) -> Result<UpstreamRequest, &'static str> {
+    let path = action
+        .target
+        .fixed_path()
+        .ok_or("template-target-unavailable")?;
+    Ok(upstream_request(
+        action,
+        request,
+        path.as_str().to_owned(),
+        auth_value,
+    ))
+}
+
+pub(super) fn build_rendered_upstream(
+    action: &FixedHttpAction,
+    request: &ExecuteRequest,
+    target: &RenderedTarget,
+    auth_value: Zeroizing<Vec<u8>>,
+) -> UpstreamRequest {
+    upstream_request(action, request, target.request_target(), auth_value)
+}
+
+fn upstream_request(
+    action: &FixedHttpAction,
+    request: &ExecuteRequest,
+    path: String,
     auth_value: Zeroizing<Vec<u8>>,
 ) -> UpstreamRequest {
     let mut headers = Vec::with_capacity(request.extra_headers.len() + 1);
@@ -112,11 +141,18 @@ pub(super) fn build_upstream(
     for (name, value) in &request.extra_headers {
         headers.push((name.to_ascii_lowercase(), value.clone()));
     }
+    if let ActionTarget::Template { fixed_headers, .. } = &action.target {
+        headers.extend(
+            fixed_headers
+                .iter()
+                .map(|(name, value)| (name.as_str().to_owned(), value.clone())),
+        );
+    }
     UpstreamRequest {
         host: action.origin.host().to_owned(),
         port: action.origin.port(),
         method: action.method,
-        path: action.exact_path.as_str().to_owned(),
+        path,
         headers,
         auth_header: (action.auth.header_name.as_str().to_owned(), auth_value),
         body: Zeroizing::new(request.body.clone()),

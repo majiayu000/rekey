@@ -1,6 +1,5 @@
 use super::*;
 use data_encoding::BASE64;
-use rekey_domain::ids::ActionId;
 use serde_json::Value;
 use std::os::unix::fs::PermissionsExt;
 use std::{
@@ -701,24 +700,25 @@ impl Fixture {
             Timestamp::from_unix_ms(created),
         )
         .unwrap();
-        let body = r#"{"message":"approved"}"#;
-        let (_, parameters) = verified
-            .snapshot()
-            .canonicalize(
-                ActionVersionRef {
-                    action_id: action_id.parse::<ActionId>().unwrap(),
-                    version: 1,
-                },
-                Some("application/json"),
-                &[],
-                body.as_bytes(),
-            )
-            .unwrap();
-        let action = json!({"id":action_id,"name":"approval-test","version":1,"enabled":true,"credential_id":id(),"origin":"https://example.com","method":"POST","exact_path":"/approved","auth":{"header_name":"authorization","prefix":"Bearer "},"timeout_ms":5000,"request_policy":{"max_body_bytes":4096,"allowed_extra_headers":[]},"response_policy":{"max_body_bytes":4096,"allowed_headers":[]}});
+        let action = json!({"id":action_id,"name":"approval-test","version":1,"enabled":true,"credential_id":id(),"origin":"https://example.com","method":"POST","target":{"kind":"fixed","path":"/approved"},"auth":{"header_name":"authorization","prefix":"Bearer "},"timeout_ms":5000,"request_policy":{"max_body_bytes":4096,"allowed_extra_headers":[]},"response_policy":{"max_body_bytes":4096,"allowed_headers":[]}});
         let parsed: rekey_domain::action::FixedHttpAction =
             serde_json::from_value(action.clone()).unwrap();
         parsed.validate().unwrap();
         write_json(&dir.path().join("action.json"), &action);
+        let body = r#"{"message":"approved"}"#;
+        let (_, parameters, _) = verified
+            .snapshot()
+            .canonicalize(
+                &parsed,
+                rekey_policy::ActionRequest {
+                    params: &Default::default(),
+                    query: &Default::default(),
+                    content_type: Some("application/json"),
+                    headers: &[],
+                    body: body.as_bytes(),
+                },
+            )
+            .unwrap();
         let inner = json!({"record_type":"rekey.approval.challenge.v1","approval_request_id":id(),"tenant_id":id(),"principal_id":principal,"session_id":id(),"action_id":action_id,"action_version":1,"resource":resource,"schema_id":"test/v1","parameter_sha256":HEXLOWER.encode(&parameters.canonical_hash),"policy_version":1,"policy_sha256":HEXLOWER.encode(&verified.policy_digest()),"policy_rule_id":rule,"mode":"one-time","quorum":1,"approver_ids":[approver],"max_uses":1,"created_at_ms":created,"max_expires_at_ms":created+120_000});
         let request = json!({"challenge":signed_envelope(&inner, &origin),"content_type":"application/json","headers":[],"body":body});
         write_json(&dir.path().join("request.json"), &request);

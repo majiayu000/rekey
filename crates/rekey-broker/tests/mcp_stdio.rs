@@ -349,7 +349,9 @@ async fn manifest_refuses_text_stream_action_before_advertising_a_tool() {
     let mut action: rekey_domain::action::FixedHttpAction =
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     action.origin = rekey_domain::action::HttpsOrigin::parse("https://api.anthropic.com").unwrap();
-    action.exact_path = rekey_domain::action::ExactPath::parse("/v1/messages").unwrap();
+    action.target = rekey_domain::action::ActionTarget::Fixed {
+        path: rekey_domain::action::ExactPath::parse("/v1/messages").unwrap(),
+    };
     action.auth = rekey_domain::action::HeaderCredentialUse::new(
         rekey_domain::action::HeaderName::new("x-api-key").unwrap(),
         rekey_domain::action::HeaderPrefix::new("").unwrap(),

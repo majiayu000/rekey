@@ -52,7 +52,7 @@ class DeliveryTests(unittest.TestCase):
         self.source, self.vault = str(uuid.uuid4()), str(uuid.uuid4())
         self.path = self.root / 'outbox'
         self.receipt = self.root / 'receipt.json'
-        private_file(self.receipt, D.encode(dict(vault_id=self.vault, format_version=21,
+        private_file(self.receipt, D.encode(dict(vault_id=self.vault, format_version=22,
                      created_at_ms=1, sha256_hex='a' * 64, output_path='synthetic.backup',
                      snapshot_cut=dict(audit_sequence=27, policy=None))))
         self.args = ['--outbox', str(self.path), '--source-instance-id', self.source, '--vault-id', self.vault]

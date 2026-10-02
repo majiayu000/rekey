@@ -9,11 +9,12 @@ use std::time::{Duration, Instant};
 
 use rekey_connector::{BuiltInConnector, resolve_builtin};
 use rekey_domain::DomainError;
-use rekey_domain::action::FixedHttpAction;
+use rekey_domain::action::{ActionTarget, FixedHttpAction};
 use rekey_domain::authorization::Decision;
 use rekey_domain::capability::ActionVersionRef;
 use rekey_domain::ids::PolicySignerId;
 use rekey_domain::ids::RequestId;
+use rekey_domain::template::{RenderedTarget, TemplateValues};
 use rekey_vault::AuthorityError;
 use rekey_vault::handle::AuthorityHandle;
 use tokio::sync::RwLock;
@@ -54,8 +55,10 @@ pub(crate) mod vault_dynamic;
 mod vault_dynamic_run;
 #[cfg(feature = "lab")]
 pub(crate) mod vault_source;
+#[cfg(any(feature = "lab", test))]
+use http::build_upstream;
 use http::{
-    build_upstream, filter_response_headers, reason_static, response_metadata_fits,
+    filter_response_headers, reason_static, response_metadata_fits,
     upstream_failure_is_indeterminate, validate_request,
 };
 pub(crate) use sealing::contains_secret;
@@ -117,6 +120,8 @@ pub struct ExecuteRequest {
     pub action: ActionVersionRef,
     pub content_type: Option<String>,
     pub extra_headers: Vec<(String, String)>,
+    pub params: TemplateValues,
+    pub query: TemplateValues,
     pub body: Vec<u8>,
     pub approval_grants: Vec<String>,
 }
@@ -153,6 +158,7 @@ pub struct AdmittedExecution {
     executor: Arc<ActionExecutor>,
     request: ExecuteRequest,
     action: FixedHttpAction,
+    target: RenderedTarget,
     effect_deadline: Instant,
     started: StartedAuditGuard,
     _permit: ExecutionPermit,
@@ -267,6 +273,7 @@ impl ActionExecutor {
             request,
             effect_deadline,
             action: evaluated.action,
+            target: evaluated.target,
             started,
             _permit: permit,
         })
@@ -295,10 +302,21 @@ impl ActionExecutor {
         effect_kind: &AtomicU8,
         stream: Option<&text_stream::TextStreamSender>,
     ) -> Result<ExecuteOutcome, BrokerError> {
+        let target = match &action.target {
+            ActionTarget::Fixed { path } => RenderedTarget {
+                path: path.clone(),
+                params: Default::default(),
+                query: Default::default(),
+            },
+            ActionTarget::Template { target, .. } => {
+                target.render(&request.params, &request.query)?
+            }
+        };
         self.run_started_owned(
             started,
             request,
             action,
+            &target,
             effect_deadline,
             effect_kind,
             &AtomicBool::new(false),
@@ -313,6 +331,7 @@ impl ActionExecutor {
         started: &mut StartedAuditGuard,
         request: &ExecuteRequest,
         action: &FixedHttpAction,
+        target: &RenderedTarget,
         effect_deadline: Instant,
         effect_kind: &AtomicU8,
         cleanup_owned: &AtomicBool,
@@ -360,7 +379,19 @@ impl ActionExecutor {
                 .await?;
             return Err(BrokerError::Denied("stream-credential-kind"));
         }
-        let connector = match resolve_builtin(credential_kind, action) {
+        let selection = if matches!(action.target, ActionTarget::Template { .. }) {
+            if credential_kind != rekey_domain::credential::CredentialKind::OpaqueToken {
+                drop(prepared);
+                started
+                    .blocked_until(effect_deadline, "template-credential-kind")
+                    .await?;
+                return Err(BrokerError::Denied("template-credential-kind"));
+            }
+            Ok(BuiltInConnector::FixedHttpHeaderV1)
+        } else {
+            resolve_builtin(credential_kind, action)
+        };
+        let connector = match selection {
             Ok(connector) => connector,
             Err(_) => {
                 drop(prepared);
@@ -401,103 +432,114 @@ impl ActionExecutor {
         // Step 9: execute the selected compile-time connector. Registry
         // selection performs no IO and never receives credential bytes.
         let prepared = prepared.consume(|secret| match connector {
-            BuiltInConnector::FixedHttpHeaderV1 => prepare_fixed_header(action, request, secret),
+            BuiltInConnector::FixedHttpHeaderV1 => {
+                prepare_fixed_header(action, request, target, secret)
+            }
             #[cfg(feature = "lab")]
             BuiltInConnector::MacosKeychainSourceV1 => {
-                prepare_fixed_header(action, request, secret)
+                prepare_fixed_header(action, request, target, secret)
             }
             BuiltInConnector::GitHubAppInstallationV1 => {
                 let profile = GitHubAppCredential::parse_profile(secret);
-                PreparedExecution::GitHub(GitHubPrepared {
+                Ok(PreparedExecution::GitHub(GitHubPrepared {
                     credential_version,
                     needles: profile
                         .as_ref()
                         .map(|profile| sealing_needles(secret, profile.private_key_bytes()))
                         .unwrap_or_default(),
                     profile,
-                })
+                }))
             }
             #[cfg(feature = "lab")]
             BuiltInConnector::KeycloakTokenExchangeV1 => {
                 let profile = keycloak::KeycloakProfile::parse_profile(secret);
-                PreparedExecution::Keycloak(keycloak::KeycloakPrepared {
+                Ok(PreparedExecution::Keycloak(keycloak::KeycloakPrepared {
                     credential_version,
                     profile,
-                })
+                }))
             }
             #[cfg(feature = "lab")]
             BuiltInConnector::GcpSecretManagerSourceV1 => {
                 let profile = gcp_source::GcpSourceProfile::parse_profile(secret);
-                PreparedExecution::Gcp(gcp_source::GcpPrepared {
+                Ok(PreparedExecution::Gcp(gcp_source::GcpPrepared {
                     credential_version,
                     needles: profile
                         .as_ref()
                         .map(|profile| profile.bootstrap_needles(secret))
                         .unwrap_or_default(),
                     profile,
-                })
+                }))
             }
             #[cfg(feature = "lab")]
             BuiltInConnector::AzureKeyVaultSourceV1 => {
                 let profile = azure_source::AzureSourceProfile::parse_profile(secret);
-                PreparedExecution::Azure(azure_source::AzurePrepared {
+                Ok(PreparedExecution::Azure(azure_source::AzurePrepared {
                     credential_version,
                     needles: profile
                         .as_ref()
                         .map(|profile| profile.bootstrap_needles(secret))
                         .unwrap_or_default(),
                     profile,
-                })
+                }))
             }
             #[cfg(feature = "lab")]
             BuiltInConnector::OnePasswordConnectSourceV1 => {
                 let profile = onepassword_source::OnePasswordSourceProfile::parse_profile(secret);
-                PreparedExecution::OnePassword(onepassword_source::OnePasswordPrepared {
-                    credential_version,
-                    needles: profile
-                        .as_ref()
-                        .map(|profile| profile.bootstrap_needles(secret))
-                        .unwrap_or_default(),
-                    profile,
-                })
+                Ok(PreparedExecution::OnePassword(
+                    onepassword_source::OnePasswordPrepared {
+                        credential_version,
+                        needles: profile
+                            .as_ref()
+                            .map(|profile| profile.bootstrap_needles(secret))
+                            .unwrap_or_default(),
+                        profile,
+                    },
+                ))
             }
             #[cfg(feature = "lab")]
             BuiltInConnector::AwsSecretsManagerSourceV1 => {
                 let profile = aws_source::AwsSourceProfile::parse_profile(secret);
-                PreparedExecution::Aws(aws_source::AwsPrepared {
+                Ok(PreparedExecution::Aws(aws_source::AwsPrepared {
                     credential_version,
                     needles: profile
                         .as_ref()
                         .map(|profile| profile.bootstrap_needles(secret))
                         .unwrap_or_default(),
                     profile,
-                })
+                }))
             }
             #[cfg(feature = "lab")]
             BuiltInConnector::VaultKvV2SourceV1 => {
                 let profile = VaultKvProfile::parse_profile(secret);
-                PreparedExecution::Vault(VaultPrepared {
+                Ok(PreparedExecution::Vault(VaultPrepared {
                     credential_version,
                     needles: profile
                         .as_ref()
                         .map(|profile| profile.bootstrap_needles(secret))
                         .unwrap_or_default(),
                     profile,
-                })
+                }))
             }
             #[cfg(feature = "lab")]
             BuiltInConnector::VaultDynamicSourceV1 => {
                 let profile = VaultDynamicProfile::parse_profile(secret);
-                PreparedExecution::VaultDynamic(VaultDynamicPrepared {
+                Ok(PreparedExecution::VaultDynamic(VaultDynamicPrepared {
                     credential_version,
                     needles: profile
                         .as_ref()
                         .map(|profile| sealing_needles(secret, profile.token()))
                         .unwrap_or_default(),
                     profile,
-                })
+                }))
             }
         });
+        let prepared = match prepared {
+            Ok(prepared) => prepared,
+            Err(reason) => {
+                started.blocked_until(effect_deadline, reason).await?;
+                return Err(BrokerError::Denied(reason));
+            }
+        };
 
         #[cfg(feature = "lab")]
         if let PreparedExecution::Keycloak(prepared) = prepared {
@@ -777,8 +819,9 @@ impl ActionExecutor {
 fn prepare_fixed_header(
     action: &FixedHttpAction,
     request: &ExecuteRequest,
+    target: &RenderedTarget,
     secret: &[u8],
-) -> PreparedExecution {
+) -> Result<PreparedExecution, &'static str> {
     let mut auth_value = Zeroizing::new(Vec::with_capacity(
         action.auth.prefix.as_str().len() + secret.len(),
     ));
@@ -786,10 +829,10 @@ fn prepare_fixed_header(
     auth_value.extend_from_slice(secret);
     let needles =
         fixed_header_sealing_needles(secret, &auth_value, action.auth.prefix.as_str().as_bytes());
-    PreparedExecution::Opaque {
-        upstream: build_upstream(action, request, auth_value),
+    Ok(PreparedExecution::Opaque {
+        upstream: http::build_rendered_upstream(action, request, target, auth_value),
         needles,
-    }
+    })
 }
 
 enum PreparedExecution {
@@ -855,6 +898,7 @@ impl AdmittedExecution {
                 &mut self.started,
                 &self.request,
                 &self.action,
+                &self.target,
                 self.effect_deadline,
                 &effect_kind,
                 &cleanup_owned,

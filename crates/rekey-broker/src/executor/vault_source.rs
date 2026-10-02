@@ -554,7 +554,7 @@ impl ActionExecutor {
             action.auth.prefix.as_str().as_bytes(),
         ));
         Ok(PreparedExecution::Opaque {
-            upstream: build_upstream(action, request, auth_value),
+            upstream: build_upstream(action, request, auth_value).map_err(BrokerError::Denied)?,
             needles,
         })
     }
@@ -1061,7 +1061,7 @@ impl ActionExecutor {
             self.approle_audit(started,version,business_deadline,rekey_vault::model::event_type::VAULT_SOURCE_RESOLVED,"success",profile.audit_reason(Some(resolved.actual_version))).await?;
             let mut auth=Zeroizing::new(action.auth.prefix.as_str().as_bytes().to_vec()); auth.extend_from_slice(&resolved.value);
             needles.extend(fixed_header_sealing_needles(&resolved.value,&auth,action.auth.prefix.as_str().as_bytes()));
-            let mut upstream=build_upstream(action,request,auth);
+            let mut upstream=build_upstream(action,request,auth).map_err(BrokerError::Denied)?;
             upstream.timeout=business_deadline.saturating_duration_since(Instant::now());
             if upstream.timeout.is_zero() { return Err(BrokerError::Indeterminate("upstream-timeout")); }
             if !outbound_headers_are_valid(&upstream) { return Err(BrokerError::Denied("invalid-upstream-header")); }

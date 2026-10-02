@@ -427,6 +427,30 @@ impl Worker {
                 self.touch_if_ok(&result);
                 let _ = reply.send(result);
             }
+            AuthorityCommand::TemplateCatalog {
+                source,
+                package,
+                not_after,
+                reply,
+            } => {
+                let result = ensure_mutation_current(not_after)
+                    .and_then(|_| self.template_catalog(source, &package, not_after));
+                let _ = reply.send(result);
+            }
+            AuthorityCommand::TemplateInstall {
+                input,
+                package,
+                proof,
+                request_id,
+                not_after,
+                reply,
+            } => {
+                let result = ensure_mutation_current(not_after).and_then(|_| {
+                    self.template_install(*input, &package, proof, request_id, not_after)
+                });
+                self.touch_if_ok(&result);
+                let _ = reply.send(result);
+            }
             AuthorityCommand::ActionUpsert {
                 existing,
                 definition,
@@ -472,11 +496,11 @@ impl Worker {
                 credential_id,
                 reply,
             } => {
-                let records = self.store.list_actions_for_credential(credential_id);
-                let result = self.fault_on_integrity(records).map(|records| {
+                let result = self.verified_actions().map(|records| {
                     let mut action_ids = records
                         .into_iter()
-                        .map(|record| record.action_id)
+                        .filter(|(record, _)| record.credential_id == credential_id)
+                        .map(|(record, _)| record.action_id)
                         .collect::<Vec<_>>();
                     action_ids.sort_unstable();
                     action_ids.dedup();

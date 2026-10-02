@@ -17,6 +17,9 @@ use crate::client::{CliError, Client};
 mod metrics;
 #[cfg(feature = "lab")]
 pub use metrics::metrics;
+mod templates;
+pub use templates::{template_catalog, template_install};
+
 mod password_lifecycle;
 pub use password_lifecycle::{key_rotate_dek, key_rotate_vrk, password_change, recovery_rotate};
 mod github_admin;
@@ -763,21 +766,21 @@ pub fn execute(
     agent_socket: &Path,
     action: &str,
     capability: &str,
-    body_file: Option<&Path>,
-    content_type: Option<String>,
-    headers: &[String],
+    request: &crate::RequestArgs,
     approvals: &[PathBuf],
 ) -> Result<(), CliError> {
     let (action_id, version) = parse_action_ref(action)?;
     let capability_token = policy_approval::capability_value(capability)?;
-    let body = policy_approval::request_body(body_file)?;
-    let extra_headers = policy_approval::request_headers(headers)?;
+    let body = policy_approval::request_body(request.body_file.as_deref())?;
+    let extra_headers = policy_approval::request_headers(&request.headers)?;
     let approval_grants = policy_approval::read_approval_files(approvals)?;
     let metadata = serde_json::json!({
         "capability_token": capability_token,
         "action_id": action_id.to_string(),
         "action_version": version,
-        "content_type": content_type,
+        "content_type": request.content_type,
+        "params": policy_approval::request_values(&request.params)?,
+        "query": policy_approval::request_values(&request.query)?,
         "extra_headers": extra_headers,
         "approval_grants": approval_grants,
     });

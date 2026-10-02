@@ -417,6 +417,16 @@ v3 只把"由谁批准"抽象出来。策略规则增加 `approver` 字段：
 
 **签名的作用**：策略签名证明"这份策略由信任根持有者批准"。在 v4 中，这个持有者就是组织的策略签名服务，见 §12。
 
+**M2 编码与存储合同**
+- `init --mode personal|team` 显式固定模式；初始 policy state 即认证该值，后续没有修改入口。
+  personal 只允许 `secure-enclave-p256`，team 只允许 `ed25519`；模式、完整公钥与算法都进入持久化 seal。
+  未安装信任根时仍保留已选模式；锁定状态不把未验证数据库值作为可信模式返回。
+- P-256 公钥为 65 字节未压缩点 `04 || X || Y` 的小写 hex；签名为 ASN.1 DER ECDSA 的 canonical base64url-no-pad。
+  策略签名输入保持 `RKPOLICY\0\x01 || JCS(unsigned envelope)`，两端对完整输入使用 ECDSA/SHA-256，不额外预哈希。
+  外部审批人的 Ed25519 算法与这项策略信任根扩展分开；团队模板包继续只接受 Ed25519。
+- `secure-enclave-p256` 指受支持的 App 创建路径；公钥与签名本身不能证明硬件来源。
+  备份包含已签策略、公钥和模式，不含 SE 私钥；换设备后仍能验证旧策略，重新个人签名需要新建 vault。
+
 ### 7.2 Provider 模板格式
 
 模板是带签名的声明文件。Rekey 内置一组；团队模式可以导入自定义模板，导入时需要签名。
@@ -488,6 +498,17 @@ v3 只把"由谁批准"抽象出来。策略规则增加 `approver` 字段：
   固定 Action 创建命令仍可接受 exact_path，并只构造 Fixed；Template 只能由认证包的安装入口产生。
 - prepare-approval 和 execute 共用一次 render/canonicalize 路径。规范哈希含标准化 params、排序 query 与
   渲染后的 path；HTTP 只消费该规范结果。固定头不能被每次调用的头覆盖。
+- 管理 IPC 52 为 TEMPLATE_CATALOG，53 为 TEMPLATE_INSTALL。source 是闭合的 anthropic、openai、
+  github-pat、generic-bearer（带 typed origin 与固定 method/path 数组）或 signed-package；包字节只走 body。
+  目录返回认证后的声明、摘要及 signer；安装再次认证，不把目录结果作为授权票据。
+  安装 metadata 包含已有 credential_id、多组 bindings、所选 capabilities、name_prefix 和现有 Action 请求/响应限制；
+  body 复用 proof+package 编码。一次证明后生成所有新 Action，与逐条 action.created 审计在同一事务提交。
+  每条响应包含 binding_index 和完整 Action，能力/action 索引取 Action 的来源字段，不存第二份安装状态。
+  提交前检查响应与完整 ACTION_LIST 均能装入 64 KiB metadata；过期且尚未开始 commit 时整批回滚。
+  已开始 commit 后响应超时可能意味着整批已提交，客户端不能自动重试安装。
+  App 将用户确认的 compact JSON 保存在内存，通过匿名 stdin 与逐次证明一次交给 CLI；
+  不创建确认后再按路径读取的模板请求文件。CLI 的显式文件输入仍供手工使用。
+  执行和 prepare-approval metadata 的 params/query 是字符串映射，省略表示空；fixed target 不接受非空映射。
 
 ### 7.3 首批内置模板（M2 交付）
 

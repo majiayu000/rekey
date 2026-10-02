@@ -24,6 +24,40 @@ pub(super) fn storage(err: rusqlite::Error) -> AuthorityError {
     AuthorityError::storage(err)
 }
 
+fn insert_action_row(tx: &Transaction<'_>, record: &ActionRecord) -> Result<(), AuthorityError> {
+    let inserted = tx.execute(
+            "INSERT INTO actions (action_id, version, name, state, credential_id, origin, method, target_json, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms, text_stream_json, native_plugin_json, seal_nonce, seal_ciphertext)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+            params![
+                record.action_id.as_bytes().as_slice(),
+                record.version as i64,
+                record.name,
+                record.state.as_str(),
+                record.credential_id.as_bytes().as_slice(),
+                record.origin,
+                record.method,
+                record.target_json,
+                record.auth_header,
+                record.auth_prefix,
+                record.request_max_bytes,
+                record.allowed_extra_headers_json,
+                record.response_max_bytes,
+                record.allowed_response_headers_json,
+                record.timeout_ms,
+                record.created_at_ms,
+                record.text_stream_json,
+                record.native_plugin_json,
+                record.seal_nonce.as_slice(),
+                record.seal_ciphertext.as_slice(),
+            ],
+        )
+        .map_err(storage)?;
+    if inserted != 1 {
+        return Err(AuthorityError::StorageIntegrityFailed);
+    }
+    Ok(())
+}
+
 pub(super) fn commit_audited(tx: Transaction<'_>) -> Result<(), AuthorityError> {
     tx.commit().map_err(|_| AuthorityError::AuditCommitFailed)
 }
@@ -337,60 +371,62 @@ impl SqliteRecordStore {
     pub fn insert_action(
         &mut self,
         record: &ActionRecord,
+        retired: &[ActionRecord],
         audit: AuditEvent,
     ) -> Result<(), AuthorityError> {
         let tx = self.conn.transaction().map_err(storage)?;
-        tx.execute(
-            "UPDATE actions SET state = 'retired' WHERE action_id = ?1 AND state != 'retired'",
-            params![record.action_id.as_bytes().as_slice()],
-        )
-        .map_err(storage)?;
-        tx.execute(
-            "INSERT INTO actions (action_id, version, name, state, credential_id, origin, method, exact_path, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms, text_stream_json, native_plugin_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
-            params![
-                record.action_id.as_bytes().as_slice(),
-                record.version as i64,
-                record.name,
-                record.state.as_str(),
-                record.credential_id.as_bytes().as_slice(),
-                record.origin,
-                record.method,
-                record.exact_path,
-                record.auth_header,
-                record.auth_prefix,
-                record.request_max_bytes,
-                record.allowed_extra_headers_json,
-                record.response_max_bytes,
-                record.allowed_response_headers_json,
-                record.timeout_ms,
-                record.created_at_ms,
-                record.text_stream_json,
-                record.native_plugin_json,
-            ],
-        )
-        .map_err(storage)?;
+        for previous in retired {
+            let changed = tx.execute(
+                "UPDATE actions SET state='retired',seal_nonce=?3,seal_ciphertext=?4 WHERE action_id=?1 AND version=?2 AND state!='retired'",
+                params![previous.action_id.as_bytes().as_slice(), previous.version as i64,
+                    previous.seal_nonce.as_slice(), previous.seal_ciphertext.as_slice()],
+            ).map_err(storage)?;
+            if changed != 1 {
+                return Err(AuthorityError::StorageIntegrityFailed);
+            }
+        }
+        insert_action_row(&tx, record)?;
         super::audit::insert(&tx, &audit)?;
+        commit_audited(tx)
+    }
+
+    pub fn insert_actions_before(
+        &mut self,
+        records: &[(ActionRecord, AuditEvent)],
+        not_after: Option<std::time::Instant>,
+    ) -> Result<(), AuthorityError> {
+        crate::authority::ensure_mutation_current(not_after)?;
+        let tx = self.conn.transaction().map_err(storage)?;
+        for (record, audit) in records {
+            crate::authority::ensure_mutation_current(not_after)?;
+            insert_action_row(&tx, record)?;
+            super::audit::insert(&tx, audit)?;
+        }
+        crate::authority::ensure_mutation_current(not_after)?;
         commit_audited(tx)
     }
 
     pub fn disable_action(
         &mut self,
-        action_id: ActionId,
+        record: &ActionRecord,
         audit: AuditEvent,
     ) -> Result<(), AuthorityError> {
         let tx = self.conn.transaction().map_err(storage)?;
-        let updated = tx
-            .execute(
-                "UPDATE actions SET state = 'disabled' WHERE action_id = ?1 AND state = 'active'",
-                params![action_id.as_bytes().as_slice()],
-            )
-            .map_err(storage)?;
-        if updated == 0 {
-            return Err(AuthorityError::ActionNotFound);
+        let updated = tx.execute(
+            "UPDATE actions SET state='disabled',seal_nonce=?3,seal_ciphertext=?4 WHERE action_id=?1 AND version=?2 AND state='active'",
+            params![record.action_id.as_bytes().as_slice(), record.version as i64,
+                record.seal_nonce.as_slice(), record.seal_ciphertext.as_slice()],
+        ).map_err(storage)?;
+        if updated != 1 {
+            return Err(AuthorityError::StorageIntegrityFailed);
         }
         super::audit::insert(&tx, &audit)?;
         commit_audited(tx)
+    }
+
+    /// Every lifecycle state, including versions pinned by existing sessions.
+    pub fn list_all_actions(&self) -> Result<Vec<ActionRecord>, AuthorityError> {
+        all_actions(&self.conn)
     }
 
     pub fn get_action(
@@ -400,7 +436,7 @@ impl SqliteRecordStore {
     ) -> Result<ActionRecord, AuthorityError> {
         self.conn
             .query_row(
-                "SELECT action_id, version, name, state, credential_id, origin, method, exact_path, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms, text_stream_json, native_plugin_json
+                "SELECT action_id, version, name, state, credential_id, origin, method, target_json, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms, text_stream_json, native_plugin_json, seal_nonce, seal_ciphertext
                  FROM actions WHERE action_id = ?1 AND version = ?2",
                 params![action_id.as_bytes().as_slice(), version as i64],
                 action_from_row,
@@ -415,7 +451,7 @@ impl SqliteRecordStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT action_id, version, name, state, credential_id, origin, method, exact_path, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms, text_stream_json, native_plugin_json
+                "SELECT action_id, version, name, state, credential_id, origin, method, target_json, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms, text_stream_json, native_plugin_json, seal_nonce, seal_ciphertext
                  FROM actions WHERE state != 'retired' ORDER BY created_at_ms",
             )
             .map_err(storage)?;
@@ -436,7 +472,7 @@ impl SqliteRecordStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT action_id, version, name, state, credential_id, origin, method, exact_path, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms, text_stream_json, native_plugin_json
+                "SELECT action_id, version, name, state, credential_id, origin, method, target_json, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms, text_stream_json, native_plugin_json, seal_nonce, seal_ciphertext
                  FROM actions WHERE credential_id = ?1",
             )
             .map_err(storage)?;
@@ -602,6 +638,8 @@ impl SqliteRecordStore {
         &self,
         dest: &Path,
         created_file: &std::fs::File,
+        key: &[u8; 32],
+        vault_id: VaultId,
     ) -> Result<BackupSnapshotCut, AuthorityError> {
         let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW;
         let name = dest.file_name().ok_or(AuthorityError::BackupFailed)?;
@@ -622,12 +660,28 @@ impl SqliteRecordStore {
             .run_to_completion(64, std::time::Duration::from_millis(5), None)
             .map_err(|_| AuthorityError::BackupFailed)?;
         drop(backup);
+        for record in all_actions(&dst)? {
+            crate::convert::verified_record_to_action(&record, key, vault_id)?;
+        }
         snapshot_cut(&dst)
     }
 
     pub(crate) fn snapshot_cut(&self) -> Result<BackupSnapshotCut, AuthorityError> {
         snapshot_cut(&self.conn)
     }
+}
+
+fn all_actions(conn: &Connection) -> Result<Vec<ActionRecord>, AuthorityError> {
+    let mut statement = conn.prepare(
+        "SELECT action_id,version,name,state,credential_id,origin,method,target_json,auth_header,auth_prefix,request_max_bytes,allowed_extra_headers_json,response_max_bytes,allowed_response_headers_json,timeout_ms,created_at_ms,text_stream_json,native_plugin_json,seal_nonce,seal_ciphertext FROM actions ORDER BY created_at_ms,action_id,version",
+    ).map_err(storage)?;
+    statement
+        .query_map([], action_from_row)
+        .map_err(storage)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(storage)?
+        .into_iter()
+        .collect()
 }
 
 fn snapshot_cut(conn: &Connection) -> Result<BackupSnapshotCut, AuthorityError> {
@@ -774,23 +828,55 @@ fn version_from_row(r: &rusqlite::Row<'_>) -> RowResult<CredentialVersionRecord>
 }
 
 fn action_from_row(r: &rusqlite::Row<'_>) -> RowResult<ActionRecord> {
-    let action_id: Vec<u8> = r.get(0)?;
-    let version: i64 = r.get(1)?;
-    let name: String = r.get(2)?;
-    let state: String = r.get(3)?;
-    let credential_id: Vec<u8> = r.get(4)?;
-    let origin: String = r.get(5)?;
-    let method: String = r.get(6)?;
-    let exact_path: String = r.get(7)?;
-    let auth_header: String = r.get(8)?;
-    let auth_prefix: String = r.get(9)?;
-    let request_max_bytes: u32 = r.get(10)?;
-    let allowed_extra_headers_json: String = r.get(11)?;
-    let response_max_bytes: u32 = r.get(12)?;
-    let allowed_response_headers_json: String = r.get(13)?;
-    let timeout_ms: u32 = r.get(14)?;
-    let created_at_ms: i64 = r.get(15)?;
     Ok((|| {
+        let action_id: Vec<u8> = r
+            .get(0)
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        let version: i64 = r
+            .get(1)
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        let name: String = r
+            .get(2)
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        let state: String = r
+            .get(3)
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        let credential_id: Vec<u8> = r
+            .get(4)
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        let origin: String = r
+            .get(5)
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        let method: String = r
+            .get(6)
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        let target_json: String = r
+            .get(7)
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        let auth_header: String = r
+            .get(8)
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        let auth_prefix: String = r
+            .get(9)
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        let request_max_bytes: u32 = r
+            .get(10)
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        let allowed_extra_headers_json: String = r
+            .get(11)
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        let response_max_bytes: u32 = r
+            .get(12)
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        let allowed_response_headers_json: String = r
+            .get(13)
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        let timeout_ms: u32 = r
+            .get(14)
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        let created_at_ms: i64 = r
+            .get(15)
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
         Ok(ActionRecord {
             native_plugin_json: r
                 .get(17)
@@ -798,6 +884,14 @@ fn action_from_row(r: &rusqlite::Row<'_>) -> RowResult<ActionRecord> {
             text_stream_json: r
                 .get(16)
                 .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
+            seal_nonce: blob12(
+                r.get(18)
+                    .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
+            )?,
+            seal_ciphertext: blob16(
+                r.get(19)
+                    .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
+            )?,
             action_id: ActionId::from_bytes(blob16(action_id)?)
                 .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
             version: positive_version(version)?,
@@ -807,7 +901,7 @@ fn action_from_row(r: &rusqlite::Row<'_>) -> RowResult<ActionRecord> {
                 .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
             origin,
             method,
-            exact_path,
+            target_json,
             auth_header,
             auth_prefix,
             request_max_bytes,

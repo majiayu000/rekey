@@ -426,7 +426,9 @@ mod lease_recovery {
                         credential_id: credential.id,
                         origin: HttpsOrigin::parse("https://api.example.com").unwrap(),
                         method: FixedMethod::Post,
-                        exact_path: ExactPath::parse("/business").unwrap(),
+                        target: rekey_domain::action::ActionTarget::Fixed {
+                            path: ExactPath::parse("/business").unwrap(),
+                        },
                         auth: HeaderCredentialUse::new(
                             HeaderName::new("authorization").unwrap(),
                             HeaderPrefix::new("Bearer ").unwrap(),
@@ -747,7 +749,7 @@ mod lease_recovery {
             let action: FixedHttpAction = serde_json::from_value(serde_json::json!({
                 "id":ActionId::new_random(),"name":"opaque-ows","version":1,"enabled":true,
                 "credential_id":credential.id,"origin":"https://api.example.com","method":"POST",
-                "exact_path":"/business","auth":{"header_name":"authorization","prefix":"Bearer "},
+                "target":{"kind":"fixed","path":"/business"},"auth":{"header_name":"authorization","prefix":"Bearer "},
                 "timeout_ms":30000,"request_policy":{"max_body_bytes":1024,"allowed_extra_headers":[]},
                 "response_policy":{"max_body_bytes":1024,"allowed_headers":[]}
             })).unwrap();
@@ -811,6 +813,8 @@ mod lease_recovery {
                         action: ctx.action,
                         content_type: None,
                         extra_headers: vec![],
+                        params: Default::default(),
+                        query: Default::default(),
                         body: vec![],
                         approval_grants: vec![],
                     };
@@ -879,7 +883,7 @@ async fn keychain_fixed_header_fake_transport_injects_and_seals_all_reflected_fo
     let action: FixedHttpAction = serde_json::from_value(serde_json::json!({
         "id":ActionId::new_random(),"name":"keychain-fixture","version":1,"enabled":true,
         "credential_id":CredentialId::new_random(),"origin":"https://api.example.com","method":"POST",
-        "exact_path":"/business","auth":{"header_name":"authorization","prefix":"Bearer "},
+        "target":{"kind":"fixed","path":"/business"},"auth":{"header_name":"authorization","prefix":"Bearer "},
         "timeout_ms":30000,"request_policy":{"max_body_bytes":1024,"allowed_extra_headers":[]},
         "response_policy":{"max_body_bytes":1024,"allowed_headers":[]}
     })).unwrap();
@@ -900,6 +904,8 @@ async fn keychain_fixed_header_fake_transport_injects_and_seals_all_reflected_fo
         },
         content_type: None,
         extra_headers: vec![],
+        params: Default::default(),
+        query: Default::default(),
         body: vec![],
         approval_grants: vec![],
     };
@@ -909,9 +915,17 @@ async fn keychain_fixed_header_fake_transport_injects_and_seals_all_reflected_fo
         b"synthetic%2dnative-value".to_vec(),
     ))) {
         for location in ["body", "header-value", "header-name"] {
-            let PreparedExecution::Opaque { upstream, needles } =
-                prepare_fixed_header(&action, &request, value)
-            else {
+            let PreparedExecution::Opaque { upstream, needles } = prepare_fixed_header(
+                &action,
+                &request,
+                &RenderedTarget {
+                    path: action.target.fixed_path().unwrap().clone(),
+                    params: Default::default(),
+                    query: Default::default(),
+                },
+                value,
+            )
+            .unwrap() else {
                 unreachable!()
             };
             assert_eq!(upstream.host, "api.example.com");
@@ -948,9 +962,98 @@ async fn keychain_fixed_header_fake_transport_injects_and_seals_all_reflected_fo
             );
         }
     }
-    let PreparedExecution::Opaque { needles, .. } = prepare_fixed_header(&action, &request, value)
-    else {
+    let PreparedExecution::Opaque { needles, .. } = prepare_fixed_header(
+        &action,
+        &request,
+        &RenderedTarget {
+            path: action.target.fixed_path().unwrap().clone(),
+            params: Default::default(),
+            query: Default::default(),
+        },
+        value,
+    )
+    .unwrap() else {
         unreachable!()
     };
     assert!(!contains_secret(b"independent clean response", &needles));
+}
+
+#[tokio::test]
+async fn template_targets_preserve_locked_credential_and_fixed_profile_boundaries() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    let password =
+        rekey_vault::secret::SecretInput::from_slice(b"synthetic-template-gate-password");
+    rekey_vault::bootstrap::init_vault(
+        &state,
+        &password,
+        rekey_vault::crypto::kdf::Argon2Params {
+            memory_kib: 8,
+            iterations: 1,
+            parallelism: 1,
+        },
+    )
+    .unwrap();
+    rekey_vault::bootstrap::confirm_vault_init(&state).unwrap();
+    let (authority, join) =
+        rekey_vault::authority::spawn_authority(rekey_vault::handle::AuthorityConfig::new(state))
+            .unwrap();
+    // The authority stays locked and has no credential. Reaching preparation
+    // must still fail with Locked, with no upstream request.
+    let fake = Arc::new(crate::testing::FakeUpstreamTransport::new());
+    let (tracker, worker) = spawn_terminal_worker_with(|_| async { Ok(()) });
+    let executor = ActionExecutor::new(
+        authority.clone(),
+        Arc::new(SessionRegistry::new()),
+        fake.clone(),
+        Arc::new(Lifecycle::new()),
+        tracker.clone(),
+        Arc::new(RwLock::new(None)),
+    );
+    let action: FixedHttpAction=serde_json::from_value(serde_json::json!({
+        "id":ActionId::new_random(),"name":"template-gate","version":1,"enabled":true,"credential_id":CredentialId::new_random(),
+        "origin":"https://api.example.com","method":"GET",
+        "target":{"kind":"template","target":{"path":"/fixed","params":{},"query":{}},"fixed_headers":{},"body_schema":null,
+            "source":{"template":"team@1","capability":"read","action_index":0,"digest":vec![1;32],"signer_id":null},"default_policy":{"rule":"allow"}},
+        "auth":{"header_name":"authorization","prefix":"Bearer "},"timeout_ms":1000,
+        "request_policy":{"max_body_bytes":1024,"allowed_extra_headers":[]},"response_policy":{"max_body_bytes":1024,"allowed_headers":[]}
+    })).unwrap();
+    let request = ExecuteRequest {
+        request_id: RequestId::new_random(),
+        capability_token: "synthetic".into(),
+        action: ActionVersionRef {
+            action_id: action.id,
+            version: 1,
+        },
+        content_type: None,
+        extra_headers: vec![],
+        params: Default::default(),
+        query: Default::default(),
+        body: vec![],
+        approval_grants: vec![],
+    };
+    assert_eq!(validate_request(&action, &request), Ok(()));
+    assert!(build_upstream(&action, &request, Zeroizing::new(vec![])).is_err());
+    let mut guard = StartedAuditGuard::new_for_test(&tracker, execution_context());
+    assert!(matches!(
+        executor
+            .run_started(
+                &mut guard,
+                &request,
+                &action,
+                Instant::now() + Duration::from_secs(1),
+                &AtomicU8::new(0),
+                None
+            )
+            .await,
+        Err(BrokerError::Authority(AuthorityError::Locked))
+    ));
+    assert!(fake.take_requests().is_empty());
+    assert_eq!(authority.status().await.unwrap().state, "locked");
+    drop(guard);
+    drop(executor);
+    drop(tracker);
+    worker.await.unwrap();
+    authority.shutdown(None).await.unwrap();
+    join.join().unwrap();
 }

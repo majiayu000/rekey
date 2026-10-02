@@ -7,7 +7,7 @@ mod commands;
 
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use rekey_domain::audit::{AUDIT_PAGE_DEFAULT_LIMIT, AUDIT_PAGE_MAX_LIMIT, AuditQuery};
 use rekey_domain::ids::{ActionId, CredentialId, RequestId, SessionId};
 
@@ -19,6 +19,40 @@ struct StepUpArgs {
     /// Read the step-up proof from stdin instead of the TTY.
     #[arg(long)]
     password_stdin: bool,
+}
+
+#[derive(Args)]
+struct RequestArgs {
+    #[arg(long)]
+    body_file: Option<PathBuf>,
+    #[arg(long)]
+    content_type: Option<String>,
+    /// Extra header NAME:VALUE, restricted by the registered Action.
+    #[arg(long = "header")]
+    headers: Vec<String>,
+    /// Registered path parameter NAME=VALUE (repeatable).
+    #[arg(long = "param")]
+    params: Vec<String>,
+    /// Registered query parameter NAME=VALUE (repeatable).
+    #[arg(long = "query")]
+    query: Vec<String>,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum BuiltinTemplateName {
+    Anthropic,
+    Openai,
+    GithubPat,
+}
+
+impl From<BuiltinTemplateName> for rekey_domain::ipc::TemplateSource {
+    fn from(value: BuiltinTemplateName) -> Self {
+        match value {
+            BuiltinTemplateName::Anthropic => Self::Anthropic {},
+            BuiltinTemplateName::Openai => Self::OpenAi {},
+            BuiltinTemplateName::GithubPat => Self::GitHubPat {},
+        }
+    }
 }
 
 #[derive(Args)]
@@ -169,6 +203,9 @@ enum Command {
     /// Fixed action administration.
     #[command(subcommand)]
     Action(ActionCommand),
+    /// Inspect and install authenticated provider templates.
+    #[command(subcommand)]
+    Template(TemplateCommand),
     /// Capability session administration.
     #[command(subcommand)]
     Session(SessionCommand),
@@ -197,13 +234,8 @@ enum Command {
         /// Capability token, or '-' to read it from stdin (recommended).
         #[arg(long, allow_hyphen_values = true)]
         capability: String,
-        #[arg(long)]
-        body_file: Option<PathBuf>,
-        #[arg(long)]
-        content_type: Option<String>,
-        /// Extra header NAME:VALUE (repeatable; must be on the action's allowlist).
-        #[arg(long = "header")]
-        headers: Vec<String>,
+        #[command(flatten)]
+        request: RequestArgs,
         /// Signed approval grant JSON file (repeatable, at most two).
         #[arg(long = "approval")]
         approvals: Vec<PathBuf>,
@@ -462,6 +494,42 @@ enum ActionCommand {
 }
 
 #[derive(Subcommand)]
+enum TemplateCommand {
+    /// Inspect a built-in declaration or authenticate a signed package.
+    #[command(group(clap::ArgGroup::new("source").required(true).args(["builtin", "file", "stdin_request"])))]
+    Catalog {
+        #[arg(long)]
+        builtin: Option<BuiltinTemplateName>,
+        /// JSON catalog request for generic targets or a signed package.
+        #[arg(long)]
+        file: Option<PathBuf>,
+        /// Read one compact JSON request line from stdin.
+        #[arg(long)]
+        stdin_request: bool,
+        #[arg(long, conflicts_with = "builtin")]
+        package: Option<PathBuf>,
+    },
+    /// Install all selected capabilities atomically; retry creates new actions.
+    Install {
+        /// JSON request containing credential, bindings, capabilities and limits.
+        #[arg(
+            long,
+            conflicts_with = "stdin_request",
+            required_unless_present = "stdin_request"
+        )]
+        file: Option<PathBuf>,
+        /// Read proof then compact JSON as two lines from one stdin snapshot.
+        #[arg(long, conflicts_with = "file", requires = "password_stdin")]
+        stdin_request: bool,
+        /// Signed template package; omitted for built-in sources.
+        #[arg(long)]
+        package: Option<PathBuf>,
+        #[command(flatten)]
+        step_up: StepUpArgs,
+    },
+}
+
+#[derive(Subcommand)]
 enum SessionCommand {
     /// Issue a capability session for one or more pinned actions.
     Create {
@@ -534,12 +602,8 @@ enum ApprovalCommand {
         /// Capability token, or '-' to read it from stdin (recommended).
         #[arg(long, allow_hyphen_values = true)]
         capability: String,
-        #[arg(long)]
-        body_file: Option<PathBuf>,
-        #[arg(long)]
-        content_type: Option<String>,
-        #[arg(long = "header")]
-        headers: Vec<String>,
+        #[command(flatten)]
+        request: RequestArgs,
     },
 }
 
@@ -1041,6 +1105,33 @@ fn main() {
                 step_up.password_stdin,
             ),
         },
+        Command::Template(command) => match command {
+            TemplateCommand::Catalog {
+                builtin,
+                file,
+                stdin_request,
+                package,
+            } => commands::template_catalog(
+                &state_dir,
+                builtin.map(Into::into),
+                file.as_deref(),
+                stdin_request,
+                package.as_deref(),
+            ),
+            TemplateCommand::Install {
+                file,
+                stdin_request,
+                package,
+                step_up,
+            } => commands::template_install(
+                &state_dir,
+                file.as_deref(),
+                stdin_request,
+                package.as_deref(),
+                step_up.recovery,
+                step_up.password_stdin,
+            ),
+        },
         Command::Session(cmd) => match cmd {
             SessionCommand::Create {
                 actions,
@@ -1107,17 +1198,8 @@ fn main() {
         Command::Approval(ApprovalCommand::Prepare {
             action,
             capability,
-            body_file,
-            content_type,
-            headers,
-        }) => commands::approval_prepare(
-            &agent_socket,
-            &action,
-            &capability,
-            body_file.as_deref(),
-            content_type,
-            &headers,
-        ),
+            request,
+        }) => commands::approval_prepare(&agent_socket, &action, &capability, &request),
         Command::Key(KeyCommand::RotateVrk { stdin_secrets }) => {
             commands::key_rotate_vrk(&state_dir, stdin_secrets)
         }
@@ -1172,19 +1254,9 @@ fn main() {
         Command::Execute {
             action,
             capability,
-            body_file,
-            content_type,
-            headers,
+            request,
             approvals,
-        } => commands::execute(
-            &agent_socket,
-            &action,
-            &capability,
-            body_file.as_deref(),
-            content_type,
-            &headers,
-            &approvals,
-        ),
+        } => commands::execute(&agent_socket, &action, &capability, &request, &approvals),
         Command::ExecuteTextStream {
             action,
             capability,

@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::action::{FixedHttpAction, HttpsOrigin};
+use crate::action::{ExactPath, FixedHttpAction, FixedMethod, HttpsOrigin};
 use crate::authorization::{ApprovalMode, PolicyVersion, ResourceRef, SchemaId};
 use crate::capability::ActionVersionRef;
 use crate::credential::{CredentialLabel, CredentialMetadata};
@@ -16,6 +16,7 @@ use crate::ids::{
     ActionId, ApprovalRequestId, ApproverId, CredentialId, PolicyRuleId, PolicySignerId,
     PrincipalId, RequestId, SessionId, TenantId, VaultId,
 };
+use crate::template::{ProviderTemplate, TemplateValues};
 
 pub const FRAME_MAGIC: [u8; 4] = *b"RKIP";
 pub const FRAME_VERSION: u16 = 1;
@@ -106,6 +107,8 @@ pub mod admin_msg {
     pub const CREDENTIAL_ROTATE_MACOS_KEYCHAIN: u16 = 49;
     pub const AUDIT_RETENTION_SET: u16 = 50;
     pub const AUDIT_RETENTION_STATUS: u16 = 51;
+    pub const TEMPLATE_CATALOG: u16 = 52;
+    pub const TEMPLATE_INSTALL: u16 = 53;
 }
 
 /// Agent channel message types.
@@ -206,7 +209,7 @@ impl FrameHeader {
 
 /// Closed operation classification shared by managed Broker dispatch and CLI.
 pub fn managed_admin_operation(message_type: u16) -> Result<bool, FrameError> {
-    if !(1..=51).contains(&message_type) {
+    if !(1..=53).contains(&message_type) {
         return Err(FrameError::InvalidField);
     }
     Ok(!matches!(
@@ -556,6 +559,72 @@ pub struct ActionListResponse {
     pub actions: Vec<FixedHttpAction>,
 }
 
+/// Closed sources; signed package bytes travel only in the frame body.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum TemplateSource {
+    Anthropic {},
+    #[serde(rename = "openai")]
+    OpenAi {},
+    #[serde(rename = "github-pat")]
+    GitHubPat {},
+    GenericBearer {
+        origin: HttpsOrigin,
+        actions: Vec<TemplateFixedAction>,
+    },
+    SignedPackage {},
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TemplateFixedAction {
+    pub method: FixedMethod,
+    pub path: ExactPath,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TemplateCatalogMeta {
+    pub source: TemplateSource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TemplateCatalogResponse {
+    pub template: ProviderTemplate,
+    pub digest: [u8; 32],
+    pub signer_id: Option<PolicySignerId>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TemplateInstallMeta {
+    pub source: TemplateSource,
+    pub credential_id: CredentialId,
+    pub bindings: Vec<TemplateValues>,
+    pub capabilities: Vec<String>,
+    pub name_prefix: String,
+    pub timeout_ms: u32,
+    pub request_max_bytes: u32,
+    pub allowed_extra_headers: Vec<String>,
+    pub response_max_bytes: u32,
+    pub allowed_response_headers: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TemplateInstalledAction {
+    pub binding_index: usize,
+    /// Capability and action index are part of this Action's authenticated source.
+    pub action: FixedHttpAction,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TemplateInstallResponse {
+    pub actions: Vec<TemplateInstalledAction>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionCreateMeta {
@@ -718,6 +787,10 @@ pub struct ExecuteMeta {
     /// Plain headers, only those on the action's request-policy allowlist.
     pub extra_headers: Vec<(String, String)>,
     #[serde(default)]
+    pub params: TemplateValues,
+    #[serde(default)]
+    pub query: TemplateValues,
+    #[serde(default)]
     pub approval_grants: Vec<String>,
 }
 
@@ -729,6 +802,10 @@ pub struct PrepareApprovalMeta {
     pub action_version: u64,
     pub content_type: Option<String>,
     pub extra_headers: Vec<(String, String)>,
+    #[serde(default)]
+    pub params: TemplateValues,
+    #[serde(default)]
+    pub query: TemplateValues,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1039,13 +1116,13 @@ mod tests {
             assert!(parse_management_body(&bad).is_err());
         }
         assert!(parse_management_body(&body[..49]).is_err());
-        for id in 1..=51 {
+        for id in 1..=53 {
             assert_eq!(
                 managed_admin_operation(id).unwrap(),
                 !matches!(id, 1 | 2 | 3 | 15 | 16 | 31 | 34 | 36 | 45..=48)
             );
         }
-        assert!(managed_admin_operation(52).is_err());
+        assert!(managed_admin_operation(54).is_err());
     }
 
     #[test]
@@ -1053,6 +1130,30 @@ mod tests {
         let h = header();
         let enc = h.encode();
         assert_eq!(FrameHeader::decode(&enc).unwrap(), h);
+    }
+
+    #[test]
+    fn template_sources_cannot_override_builtin_provenance() {
+        for kind in ["anthropic", "openai", "github-pat", "signed-package"] {
+            let source = serde_json::json!({"kind": kind});
+            assert!(serde_json::from_value::<TemplateSource>(source.clone()).is_ok());
+            let mut overridden = source;
+            overridden["template"] = serde_json::json!({"origin": "https://example.com"});
+            assert!(serde_json::from_value::<TemplateSource>(overridden).is_err());
+        }
+        assert!(
+            serde_json::from_value::<TemplateSource>(serde_json::json!({
+                "kind": "generic-bearer", "origin": "http://example.com",
+                "actions": [{"method": "GET", "path": "/v1/items"}]
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<TemplateSource>(serde_json::json!({
+                "kind": "custom", "template": {}
+            }))
+            .is_err()
+        );
     }
 
     #[test]

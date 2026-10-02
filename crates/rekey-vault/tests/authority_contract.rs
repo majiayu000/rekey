@@ -29,7 +29,9 @@ fn action_definition(credential_id: rekey_domain::ids::CredentialId) -> ActionDe
         credential_id,
         origin: HttpsOrigin::parse("https://api.github.com").unwrap(),
         method: FixedMethod::Post,
-        exact_path: ExactPath::parse("/repos/acme/rekey/issues").unwrap(),
+        target: rekey_domain::action::ActionTarget::Fixed {
+            path: ExactPath::parse("/repos/acme/rekey/issues").unwrap(),
+        },
         auth: HeaderCredentialUse::new(
             HeaderName::new("authorization").unwrap(),
             HeaderPrefix::new("Bearer ").unwrap(),
@@ -1247,7 +1249,9 @@ async fn explicit_github_plugin_registration_fails_closed_on_unsupported_platfor
         "/repos/acme/rekey/issues",
         "/repos/acme/rekey/issues/1/comments",
     ] {
-        definition.exact_path = ExactPath::parse(path).unwrap();
+        definition.target = rekey_domain::action::ActionTarget::Fixed {
+            path: ExactPath::parse(path).unwrap(),
+        };
         let error = handle
             .action_upsert(None, definition.clone(), common::password_proof())
             .await
@@ -1311,7 +1315,9 @@ async fn native_plugin_rejects_wrong_credential_kind() {
         max_tokens: 128,
     });
     anthropic_plugin.origin = HttpsOrigin::parse("https://api.anthropic.com").unwrap();
-    anthropic_plugin.exact_path = ExactPath::parse("/v1/messages").unwrap();
+    anthropic_plugin.target = rekey_domain::action::ActionTarget::Fixed {
+        path: ExactPath::parse("/v1/messages").unwrap(),
+    };
     anthropic_plugin.auth = HeaderCredentialUse::new(
         HeaderName::new("x-api-key").unwrap(),
         HeaderPrefix::new("").unwrap(),

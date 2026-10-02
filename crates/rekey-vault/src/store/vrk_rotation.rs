@@ -9,7 +9,8 @@ use super::sqlite::{commit_audited, storage};
 use crate::command::PolicyMaterial;
 use crate::error::AuthorityError;
 use crate::model::{
-    AuditEvent, CredentialRecord, CredentialVersionRecord, KeyWrapperRecord, VaultHeaderRecord,
+    ActionRecord, AuditEvent, CredentialRecord, CredentialVersionRecord, KeyWrapperRecord,
+    VaultHeaderRecord,
 };
 
 fn one(changed: usize) -> Result<(), AuthorityError> {
@@ -34,6 +35,7 @@ impl SqliteRecordStore {
         header: &VaultHeaderRecord,
         versions: &[(CredentialKind, CredentialVersionRecord)],
         credentials: &[CredentialRecord],
+        actions: &[ActionRecord],
         policy: &PolicyMaterial,
         retention: &crate::model::AuditRetentionRecord,
         wrappers: &[KeyWrapperRecord],
@@ -52,6 +54,12 @@ impl SqliteRecordStore {
             current(not_after)?;
             one(tx.execute("UPDATE credentials SET state_nonce=?2, state_ciphertext=?3 WHERE credential_id=?1",
                 params![c.credential_id.as_bytes().as_slice(), c.state_nonce.as_slice(), c.state_ciphertext.as_slice()]).map_err(storage)?)?;
+        }
+        for action in actions {
+            current(not_after)?;
+            one(tx.execute("UPDATE actions SET seal_nonce=?3,seal_ciphertext=?4 WHERE action_id=?1 AND version=?2",
+                params![action.action_id.as_bytes().as_slice(),action.version as i64,
+                    action.seal_nonce.as_slice(),action.seal_ciphertext.as_slice()]).map_err(storage)?)?;
         }
         one(tx
             .execute(

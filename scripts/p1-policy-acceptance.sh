@@ -161,7 +161,7 @@ db = sqlite3.connect(sys.argv[1])
 row = db.execute("SELECT lower(hex(parameter_hash)) FROM audit_events WHERE event_type='execution.finished' ORDER BY created_at_ms DESC LIMIT 1").fetchone()
 if not row or not row[0]: raise SystemExit("missing durable parameter hash")
 header = db.execute("SELECT format_version FROM vault_header").fetchone()
-if not header or header[0] != 21: raise SystemExit("durable format is not 21")
+if not header or header[0] != 22: raise SystemExit("durable format is not 22")
 print(row[0])
 PY
 )"

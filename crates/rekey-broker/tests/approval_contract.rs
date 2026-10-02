@@ -93,6 +93,8 @@ async fn prepare_response(
         action_version: version,
         content_type: Some("application/json".to_owned()),
         extra_headers: Vec::new(),
+        params: Default::default(),
+        query: Default::default(),
     })
     .unwrap();
     common::call(

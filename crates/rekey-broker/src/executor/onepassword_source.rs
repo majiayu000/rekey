@@ -473,7 +473,7 @@ impl ActionExecutor {
             action.auth.prefix.as_str().as_bytes(),
         ));
 
-        let upstream = build_upstream(action, request, auth);
+        let upstream = build_upstream(action, request, auth).map_err(BrokerError::Denied)?;
         if !outbound_headers_are_valid(&upstream) {
             started
                 .blocked_until(effect_deadline, "invalid-upstream-header")
@@ -906,7 +906,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            let action: FixedHttpAction = serde_json::from_value(serde_json::json!({"id":rekey_domain::ids::ActionId::new_random(),"name":"actor-action","version":1,"enabled":true,"credential_id":credential.id,"origin":"https://api.example.com","method":"POST","exact_path":"/business","auth":{"header_name":"authorization","prefix":"Bearer "},"timeout_ms":timeout_ms,"request_policy":{"max_body_bytes":1024,"allowed_extra_headers":[]},"response_policy":{"max_body_bytes":1024,"allowed_headers":["content-type"]}})).unwrap();
+            let action: FixedHttpAction = serde_json::from_value(serde_json::json!({"id":rekey_domain::ids::ActionId::new_random(),"name":"actor-action","version":1,"enabled":true,"credential_id":credential.id,"origin":"https://api.example.com","method":"POST","target":{"kind":"fixed","path":"/business"},"auth":{"header_name":"authorization","prefix":"Bearer "},"timeout_ms":timeout_ms,"request_policy":{"max_body_bytes":1024,"allowed_extra_headers":[]},"response_policy":{"max_body_bytes":1024,"allowed_headers":["content-type"]}})).unwrap();
             action.validate().unwrap();
             let (terminals, terminal_worker) =
                 crate::audit::spawn_terminal_worker(authority.clone());
@@ -955,6 +955,8 @@ mod tests {
                 action: ctx.action,
                 content_type: Some("application/json".into()),
                 extra_headers: vec![],
+                params: Default::default(),
+                query: Default::default(),
                 body: b"{}".to_vec(),
                 approval_grants: vec![],
             };

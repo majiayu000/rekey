@@ -2,22 +2,33 @@
 //! VRK, and every credential mutation. Runs on a dedicated blocking thread;
 //! everything else talks to it through the bounded queue in `handle`.
 
+use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
-use rekey_domain::action::FixedHttpAction;
+use rekey_domain::action::{
+    ActionName, ActionTarget, FixedHttpAction, HeaderCredentialUse, HeaderName, RequestPolicy,
+    ResponsePolicy, TemplateActionSource,
+};
 use rekey_domain::credential::{CredentialKind, CredentialState};
 use rekey_domain::ids::{ActionId, CredentialId};
+use rekey_domain::ipc::{
+    self, TemplateCatalogResponse, TemplateInstallMeta, TemplateInstallResponse,
+    TemplateInstalledAction, TemplateSource,
+};
+use rekey_policy::templates::{
+    self, BuiltinTemplate, TemplatePackageError, ValidatedTemplatePackage,
+};
 use subtle::ConstantTimeEq;
 use tokio::sync::mpsc;
 
 use crate::bootstrap::{kek_for_wrapper, unwrap_vrk, verify_state_dir_permissions};
 use crate::command::{ActionDefinition, AuditDraft, AuthorityCommand, PinnedAction, UnlockProof};
-use crate::convert::{action_to_record, record_to_action};
+use crate::convert::{action_to_record, verified_record_to_action};
 use crate::crypto::keys::RootKey;
-use crate::crypto::random_array;
+use crate::crypto::{action_state, random_array};
 use crate::error::AuthorityError;
 use crate::handle::{AuthorityConfig, AuthorityHandle};
-use crate::model::{AuditEvent, WrapperKind, event_type, outcome};
+use crate::model::{ActionRecord, ActionState, AuditEvent, WrapperKind, event_type, outcome};
 use crate::now_ms;
 use crate::paths;
 use crate::store::SqliteRecordStore;
@@ -387,6 +398,215 @@ impl Worker {
         ))
     }
 
+    fn authenticated_template(
+        &mut self,
+        source: TemplateSource,
+        bytes: &[u8],
+    ) -> Result<ValidatedTemplatePackage, AuthorityError> {
+        if bytes.len() > templates::TEMPLATE_PACKAGE_MAX_BYTES {
+            return Err(template_input("template package is too large"));
+        }
+        if matches!(source, TemplateSource::SignedPackage {}) {
+            let material = self.policy_material();
+            let trust = self
+                .fault_on_integrity(material)?
+                .trust
+                .ok_or(AuthorityError::PolicyUnavailable)?;
+            let trust =
+                rekey_policy::ValidatedPolicyTrust::from_parts(trust.signer_id, trust.public_key);
+            return templates::parse_and_verify_template_package(bytes, &trust)
+                .map_err(template_package_error);
+        }
+        if !bytes.is_empty() {
+            return Err(template_input(
+                "built-in template package body must be empty",
+            ));
+        }
+        let builtin = match source {
+            TemplateSource::Anthropic {} => BuiltinTemplate::Anthropic,
+            TemplateSource::OpenAi {} => BuiltinTemplate::OpenAi,
+            TemplateSource::GitHubPat {} => BuiltinTemplate::GitHubPat,
+            TemplateSource::GenericBearer { origin, actions } => BuiltinTemplate::GenericBearer {
+                origin,
+                actions: actions
+                    .into_iter()
+                    .map(|action| (action.method, action.path))
+                    .collect(),
+            },
+            TemplateSource::SignedPackage {} => unreachable!(),
+        };
+        templates::builtin_template(builtin).map_err(template_package_error)
+    }
+
+    fn template_catalog(
+        &mut self,
+        source: TemplateSource,
+        bytes: &[u8],
+        not_after: Option<Instant>,
+    ) -> Result<TemplateCatalogResponse, AuthorityError> {
+        let package = self.authenticated_template(source, bytes)?;
+        let response = TemplateCatalogResponse {
+            template: package.template().clone(),
+            digest: package.digest(),
+            signer_id: package.signer_id(),
+        };
+        template_metadata_fits(&response)?;
+        ensure_mutation_current(not_after)?;
+        Ok(response)
+    }
+
+    fn template_install(
+        &mut self,
+        input: TemplateInstallMeta,
+        bytes: &[u8],
+        proof: UnlockProof,
+        request_id: rekey_domain::ids::RequestId,
+        not_after: Option<Instant>,
+    ) -> Result<TemplateInstallResponse, AuthorityError> {
+        self.require_unlocked()?;
+        self.verify_proof(&proof)?;
+        ensure_mutation_current(not_after)?;
+        template_metadata_fits(&input)?;
+        let package = self.authenticated_template(input.source, bytes)?;
+        let credential = self.load_verified_credential(input.credential_id)?;
+        if credential.state != CredentialState::Active {
+            return Err(AuthorityError::CredentialRevoked);
+        }
+        if credential.kind != CredentialKind::OpaqueToken {
+            return Err(template_input(
+                "provider templates require opaque-token credentials",
+            ));
+        }
+        if input.bindings.is_empty()
+            || input.capabilities.is_empty()
+            || input.capabilities.iter().collect::<BTreeSet<_>>().len() != input.capabilities.len()
+        {
+            return Err(template_input(
+                "template bindings and unique capabilities are required",
+            ));
+        }
+        let capabilities = input
+            .capabilities
+            .iter()
+            .map(|id| {
+                package
+                    .template()
+                    .definition()
+                    .capabilities
+                    .iter()
+                    .find(|capability| &capability.id == id)
+                    .ok_or_else(|| template_input("unknown template capability"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let prefix = ActionName::new(&input.name_prefix)?;
+        let request_policy = RequestPolicy {
+            max_body_bytes: input.request_max_bytes,
+            allowed_extra_headers: input
+                .allowed_extra_headers
+                .iter()
+                .map(|name| HeaderName::new(name))
+                .collect::<Result<_, _>>()?,
+        };
+        let response_policy = ResponsePolicy {
+            max_body_bytes: input.response_max_bytes,
+            allowed_headers: input
+                .allowed_response_headers
+                .iter()
+                .map(|name| HeaderName::new(name))
+                .collect::<Result<_, _>>()?,
+        };
+        let mut catalog = ipc::ActionListResponse {
+            actions: self.action_list()?,
+        };
+        let mut response = TemplateInstallResponse {
+            actions: Vec::new(),
+        };
+        let mut records = Vec::new();
+        for (binding_index, values) in input.bindings.iter().enumerate() {
+            let bound = package.template().bind(values)?;
+            for capability in &capabilities {
+                for action_index in 0..capability.actions.len() {
+                    ensure_mutation_current(not_after)?;
+                    let materialized = bound.materialize(&capability.id, action_index)?;
+                    let definition = materialized.definition();
+                    let body_schema = definition
+                        .body_schema
+                        .as_deref()
+                        .map(|reference| {
+                            package
+                                .schema(reference)
+                                .map(|schema| schema.definition().clone())
+                        })
+                        .transpose()
+                        .map_err(template_package_error)?;
+                    let action_id = ActionId::from_random_bytes(random_array()?);
+                    let (action, record) = self.prepare_action(
+                        ActionDefinition {
+                            native_plugin: None,
+                            text_stream: None,
+                            name: ActionName::new(&format!(
+                                "{}/{}/{}/{}",
+                                prefix.as_str(),
+                                binding_index,
+                                capability.id,
+                                action_index
+                            ))?,
+                            credential_id: input.credential_id,
+                            origin: definition.origin.clone(),
+                            method: definition.method,
+                            target: ActionTarget::Template {
+                                target: definition.target.clone(),
+                                fixed_headers: definition.fixed_headers.clone(),
+                                body_schema,
+                                default_policy: definition.default_policy.clone(),
+                                source: Box::new(TemplateActionSource {
+                                    template: definition.template.clone(),
+                                    capability: definition.capability.clone(),
+                                    action_index: definition.action_index,
+                                    digest: package.digest(),
+                                    signer_id: package.signer_id(),
+                                }),
+                            },
+                            auth: HeaderCredentialUse::new(
+                                definition.credential.inject.header.clone(),
+                                definition.credential.inject.prefix.clone(),
+                            )?,
+                            timeout_ms: input.timeout_ms,
+                            request_policy: request_policy.clone(),
+                            response_policy: response_policy.clone(),
+                        },
+                        action_id,
+                        1,
+                    )?;
+                    catalog.actions.push(action.clone());
+                    response.actions.push(TemplateInstalledAction {
+                        binding_index,
+                        action,
+                    });
+                    // Bound expansion as it happens, before it can allocate an unbounded batch.
+                    template_metadata_fits(&catalog)?;
+                    template_metadata_fits(&response)?;
+                    let mut draft = credential_audit(
+                        event_type::ACTION_CREATED,
+                        input.credential_id,
+                        0,
+                        "template-install",
+                    );
+                    draft.credential_version = None;
+                    draft.request_id = Some(request_id);
+                    draft.action_id = Some(action_id);
+                    draft.action_version = Some(1);
+                    records.push((record, self.audit_event_or_fault(draft)?));
+                }
+            }
+        }
+        ensure_mutation_current(not_after)?;
+        let result = self.store.insert_actions_before(&records, not_after);
+        let result = self.fault_on_integrity(result);
+        self.fault_on_audit_failure(result)?;
+        Ok(response)
+    }
+
     fn action_upsert(
         &mut self,
         existing: Option<ActionId>,
@@ -399,6 +619,14 @@ impl Worker {
         let credential = self.load_verified_credential(definition.credential_id)?;
         if credential.state != CredentialState::Active {
             return Err(AuthorityError::CredentialRevoked);
+        }
+        if matches!(definition.target, ActionTarget::Template { .. })
+            && credential.kind != CredentialKind::OpaqueToken
+        {
+            return Err(rekey_domain::DomainError::InvalidActionDefinition(
+                "provider templates require opaque-token credentials".into(),
+            )
+            .into());
         }
         if let Some(plugin) = definition.native_plugin.as_ref() {
             let required = match plugin.protocol.as_str() {
@@ -437,17 +665,38 @@ impl Worker {
             )
             .into());
         }
+        let mut retired = Vec::new();
         let (action_id, version, event) = match existing {
             Some(id) => {
-                let records = self.store.list_actions();
-                let current = self
-                    .fault_on_integrity(records)?
+                let previous: Vec<_> = self
+                    .verified_actions()?
+                    .into_iter()
+                    .filter(|(record, _)| record.action_id == id)
+                    .map(|(record, _)| record)
+                    .collect();
+                let current = previous
                     .iter()
-                    .filter(|r| r.action_id == id)
-                    .map(|r| r.version)
+                    .map(|record| record.version)
                     .max()
                     .ok_or(AuthorityError::ActionNotFound)?;
-                (id, current + 1, event_type::ACTION_UPDATED)
+                let version = current
+                    .checked_add(1)
+                    .filter(|v| *v <= i64::MAX as u64)
+                    .ok_or(AuthorityError::StorageIntegrityFailed)?;
+                for mut record in previous {
+                    if record.state != ActionState::Retired {
+                        record.state = ActionState::Retired;
+                        let seal = action_state::seal(
+                            self.require_unlocked()?.bytes(),
+                            self.header.vault_id,
+                            &record,
+                        )?;
+                        record.seal_nonce = seal.nonce;
+                        record.seal_ciphertext = seal.ciphertext;
+                        retired.push(record);
+                    }
+                }
+                (id, version, event_type::ACTION_UPDATED)
             }
             None => (
                 ActionId::from_random_bytes(random_array()?),
@@ -455,6 +704,26 @@ impl Worker {
                 event_type::ACTION_CREATED,
             ),
         };
+        let credential_id = definition.credential_id;
+        let (action, record) = self.prepare_action(definition, action_id, version)?;
+        let mut draft = credential_audit(event, credential_id, 0, "upsert");
+        draft.credential_version = None;
+        draft.action_id = Some(action_id);
+        draft.action_version = Some(version);
+        let audit = self.audit_event_or_fault(draft)?;
+        ensure_mutation_current(not_after)?;
+        let result = self.store.insert_action(&record, &retired, audit);
+        let result = self.fault_on_integrity(result);
+        self.fault_on_audit_failure(result)?;
+        Ok(action)
+    }
+
+    fn prepare_action(
+        &self,
+        definition: ActionDefinition,
+        action_id: ActionId,
+        version: u64,
+    ) -> Result<(FixedHttpAction, ActionRecord), AuthorityError> {
         let action = FixedHttpAction {
             native_plugin: definition.native_plugin,
             text_stream: definition.text_stream,
@@ -465,23 +734,22 @@ impl Worker {
             credential_id: definition.credential_id,
             origin: definition.origin,
             method: definition.method,
-            exact_path: definition.exact_path,
+            target: definition.target,
             auth: definition.auth,
             timeout_ms: definition.timeout_ms,
             request_policy: definition.request_policy,
             response_policy: definition.response_policy,
         };
         action.validate()?;
-        let record = action_to_record(&action, now_ms()?)?;
-        let mut draft = credential_audit(event, definition.credential_id, 0, "upsert");
-        draft.credential_version = None;
-        draft.action_id = Some(action_id);
-        draft.action_version = Some(version);
-        let audit = self.audit_event_or_fault(draft)?;
-        ensure_mutation_current(not_after)?;
-        let result = self.store.insert_action(&record, audit);
-        self.fault_on_audit_failure(result)?;
-        Ok(action)
+        let mut record = action_to_record(&action, now_ms()?)?;
+        let seal = action_state::seal(
+            self.require_unlocked()?.bytes(),
+            self.header.vault_id,
+            &record,
+        )?;
+        record.seal_nonce = seal.nonce;
+        record.seal_ciphertext = seal.ciphertext;
+        Ok((action, record))
     }
 
     fn action_disable(
@@ -492,19 +760,54 @@ impl Worker {
     ) -> Result<(), AuthorityError> {
         self.require_unlocked()?;
         self.verify_proof(&proof)?;
+        let mut record = self
+            .verified_actions()?
+            .into_iter()
+            .find(|(record, _)| {
+                record.action_id == action_id && record.state == ActionState::Active
+            })
+            .map(|(record, _)| record)
+            .ok_or(AuthorityError::ActionNotFound)?;
+        record.state = ActionState::Disabled;
+        let seal = action_state::seal(
+            self.require_unlocked()?.bytes(),
+            self.header.vault_id,
+            &record,
+        )?;
+        record.seal_nonce = seal.nonce;
+        record.seal_ciphertext = seal.ciphertext;
         let mut draft = unlock_audit(event_type::ACTION_DISABLED, outcome::SUCCESS, "disable");
         draft.action_id = Some(action_id);
         let audit = self.audit_event_or_fault(draft)?;
         ensure_mutation_current(not_after)?;
-        let result = self.store.disable_action(action_id, audit);
+        let result = self.store.disable_action(&record, audit);
+        let result = self.fault_on_integrity(result);
         self.fault_on_audit_failure(result)
     }
 
-    fn action_list(&mut self) -> Result<Vec<FixedHttpAction>, AuthorityError> {
+    fn verified_actions(&mut self) -> Result<Vec<(ActionRecord, FixedHttpAction)>, AuthorityError> {
         self.require_unlocked()?;
-        let records = self.store.list_actions();
-        let result = records.and_then(|records| records.iter().map(record_to_action).collect());
+        let result = (|| {
+            let key = self.require_unlocked()?.bytes();
+            self.store
+                .list_all_actions()?
+                .into_iter()
+                .map(|record| {
+                    let action = verified_record_to_action(&record, key, self.header.vault_id)?;
+                    Ok((record, action))
+                })
+                .collect()
+        })();
         self.fault_on_integrity(result)
+    }
+
+    fn action_list(&mut self) -> Result<Vec<FixedHttpAction>, AuthorityError> {
+        Ok(self
+            .verified_actions()?
+            .into_iter()
+            .filter(|(record, _)| record.state != ActionState::Retired)
+            .map(|(_, action)| action)
+            .collect())
     }
 
     fn action_get(
@@ -512,10 +815,15 @@ impl Worker {
         action_id: ActionId,
         version: u64,
     ) -> Result<PinnedAction, AuthorityError> {
+        self.require_unlocked()?;
         let result = (|| {
             let record = self.store.get_action(action_id, version)?;
             Ok(PinnedAction {
-                action: record_to_action(&record)?,
+                action: verified_record_to_action(
+                    &record,
+                    self.require_unlocked()?.bytes(),
+                    self.header.vault_id,
+                )?,
                 state: record.state,
             })
         })();
@@ -523,11 +831,33 @@ impl Worker {
     }
 }
 
+fn template_input(message: &'static str) -> AuthorityError {
+    rekey_domain::DomainError::InvalidActionDefinition(message.into()).into()
+}
+
+fn template_package_error(error: TemplatePackageError) -> AuthorityError {
+    match error {
+        TemplatePackageError::InvalidSignature => AuthorityError::AuthenticationFailed,
+        _ => template_input("invalid template package"),
+    }
+}
+
+fn template_metadata_fits(value: &impl serde::Serialize) -> Result<(), AuthorityError> {
+    let bytes =
+        serde_json::to_vec(value).map_err(|_| template_input("invalid template metadata"))?;
+    if bytes.len() > ipc::METADATA_MAX_BYTES as usize {
+        return Err(template_input(
+            "template action catalog exceeds metadata limit",
+        ));
+    }
+    Ok(())
+}
+
 fn mutation_expired(not_after: Option<Instant>) -> bool {
     not_after.is_some_and(|deadline| Instant::now() >= deadline)
 }
 
-fn ensure_mutation_current(not_after: Option<Instant>) -> Result<(), AuthorityError> {
+pub(crate) fn ensure_mutation_current(not_after: Option<Instant>) -> Result<(), AuthorityError> {
     if mutation_expired(not_after) {
         return Err(AuthorityError::AuthorityBusy);
     }

@@ -30,7 +30,7 @@ fn safe_value(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
-fn slug(value: &str, max: usize) -> bool {
+pub(crate) fn slug(value: &str, max: usize) -> bool {
     safe_value(value) && value.len() <= max && value.as_bytes()[0].is_ascii_alphanumeric()
 }
 
@@ -301,7 +301,7 @@ fn placeholder(segment: &str) -> Option<&str> {
     segment.strip_prefix('{')?.strip_suffix('}')
 }
 
-fn validate_template_id(id: &str) -> Result<(), DomainError> {
+pub(crate) fn validate_template_id(id: &str) -> Result<(), DomainError> {
     let (name, version) = id
         .split_once('@')
         .ok_or_else(|| invalid("template must have a version"))?;
@@ -311,7 +311,7 @@ fn validate_template_id(id: &str) -> Result<(), DomainError> {
     Ok(())
 }
 
-fn validate_headers(
+pub(crate) fn validate_headers(
     credential: &TemplateCredential,
     headers: &BTreeMap<HeaderName, String>,
 ) -> Result<(), DomainError> {

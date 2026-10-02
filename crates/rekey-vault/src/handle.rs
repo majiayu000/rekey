@@ -444,6 +444,38 @@ impl AuthorityHandle {
         })
     }
 
+    pub async fn template_catalog_before(
+        &self,
+        source: rekey_domain::ipc::TemplateSource,
+        package: Vec<u8>,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<rekey_domain::ipc::TemplateCatalogResponse, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::TemplateCatalog {
+            source,
+            package,
+            not_after,
+            reply
+        })
+    }
+
+    pub async fn template_install_before(
+        &self,
+        input: rekey_domain::ipc::TemplateInstallMeta,
+        package: Vec<u8>,
+        proof: UnlockProof,
+        request_id: rekey_domain::ids::RequestId,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<rekey_domain::ipc::TemplateInstallResponse, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::TemplateInstall {
+            input: Box::new(input),
+            package,
+            proof,
+            request_id,
+            not_after,
+            reply
+        })
+    }
+
     pub async fn action_upsert(
         &self,
         existing: Option<ActionId>,

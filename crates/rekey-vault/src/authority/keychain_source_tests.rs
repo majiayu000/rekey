@@ -77,7 +77,9 @@ impl Fixture {
                     credential_id: credential.id,
                     origin: HttpsOrigin::parse("https://example.com").unwrap(),
                     method: FixedMethod::Post,
-                    exact_path: ExactPath::parse("/fixed").unwrap(),
+                    target: rekey_domain::action::ActionTarget::Fixed {
+                        path: ExactPath::parse("/fixed").unwrap(),
+                    },
                     auth: HeaderCredentialUse::new(
                         HeaderName::new("authorization").unwrap(),
                         HeaderPrefix::new("Bearer ").unwrap(),

@@ -12,7 +12,7 @@ use super::{
 use crate::bootstrap::{kek_for_wrapper, prove_integrity, seal_integrity, unwrap_vrk, wrap_vrk};
 use crate::crypto::kdf::{Argon2Params, KDF_ALGORITHM_ARGON2ID, KDF_ALGORITHM_HKDF_SHA256};
 use crate::crypto::keys::RootKey;
-use crate::crypto::{credential_state, policy_state, random_array};
+use crate::crypto::{action_state, credential_state, policy_state, random_array};
 use crate::error::AuthorityError;
 use crate::model::{KeyWrapperRecord, WrapperKind, WrapperState, event_type, outcome};
 use crate::secret::SecretInput;
@@ -98,6 +98,15 @@ impl Worker {
             ensure_mutation_current(not_after)?;
             credential_state::verify(old_root.bytes(), self.header.vault_id, record)?;
         }
+        let mut actions = self.store.list_all_actions()?;
+        for record in &actions {
+            ensure_mutation_current(not_after)?;
+            crate::convert::verified_record_to_action(
+                record,
+                old_root.bytes(),
+                self.header.vault_id,
+            )?;
+        }
         let mut policy = self
             .store
             .verified_policy_material(old_root.bytes(), self.header.vault_id)?;
@@ -118,6 +127,12 @@ impl Worker {
             let seal = credential_state::seal(new_root.bytes(), self.header.vault_id, record)?;
             record.state_nonce = seal.nonce;
             record.state_ciphertext = seal.ciphertext;
+        }
+        for record in &mut actions {
+            ensure_mutation_current(not_after)?;
+            let seal = action_state::seal(new_root.bytes(), self.header.vault_id, record)?;
+            record.seal_nonce = seal.nonce;
+            record.seal_ciphertext = seal.ciphertext;
         }
         let seal = policy_state::seal_state(new_root.bytes(), self.header.vault_id, &policy.state)?;
         policy.state.seal_nonce = seal.nonce;
@@ -201,6 +216,7 @@ impl Worker {
             &header,
             &versions,
             &credentials,
+            &actions,
             &policy,
             &retention,
             &wrappers,

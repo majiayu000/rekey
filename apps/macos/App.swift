@@ -65,7 +65,7 @@ struct RootView: View {
         .background(canvas).foregroundStyle(ink).tint(green)
         .task { await model.refresh(); if model.status == nil && model.needsSetup { model.beginSetup() } else { model.startRememberedService() } }
         .onReceive(Timer.publish(every: 15, on: .main, in: .common).autoconnect()) { _ in
-            if phase == .active && !model.busy && model.operation == nil && model.result == nil && !model.showAddCredential && !model.showSession && !showActionForm {
+            if phase == .active && !model.busy && model.operation == nil && model.result == nil && !model.showAddCredential && !model.showSession && !showActionForm && !model.showTemplate {
                 Task { await model.refresh(passive: true) }
             }
         }
@@ -78,6 +78,7 @@ struct RootView: View {
         .sheet(item: $model.operation) { OperationForm(operation: $0).environmentObject(model) }
         .sheet(isPresented: $model.showAddCredential) { AddCredentialForm().environmentObject(model) }
         .sheet(isPresented: $showActionForm) { ActionForm().environmentObject(model) }
+        .sheet(isPresented: $model.showTemplate) { TemplateForm().environmentObject(model) }
         .sheet(isPresented: $model.showSession) { SessionForm().environmentObject(model) }
         .sheet(item: $model.result, onDismiss: { model.result = nil }) { ResultView(result: $0).environmentObject(model) }
         .sheet(item: $model.approvalDetails) { ApprovalDetailView(details: $0).environmentObject(model) }
@@ -134,7 +135,8 @@ struct RootView: View {
                 if model.page == .credentials {
                     Button { if model.desktopReady { model.showAddCredential = true } else { model.requestDesktopLogin() } } label: { Label("添加 API Key", systemImage: "plus") }.buttonStyle(PrimaryButton()).disabled(!model.unlocked || model.busy)
                 } else if model.page == .actions {
-                    Button { showActionForm = true } label: { Label("创建操作", systemImage: "plus") }.buttonStyle(PrimaryButton()).disabled(!model.unlocked || model.busy)
+                    Button("固定操作") { showActionForm = true }.disabled(!model.unlocked || model.busy)
+                    Button { model.showTemplate = true } label: { Label("从模板安装", systemImage: "plus") }.buttonStyle(PrimaryButton()).disabled(!model.unlocked || model.busy)
                 }
             }
         }.padding(28)
@@ -168,7 +170,7 @@ struct RootView: View {
             Text("首次使用只需设置密码，应用会自动创建保险库并启动服务。已有保险库可通过左侧工作区选择目录。").font(.system(size: 14)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Text(model.stateDirectory).font(.system(size: 12, design: .monospaced)).foregroundStyle(.secondary).textSelection(.enabled)
             HStack(spacing: 12) {
-                Button(model.needsSetup ? "设置密码并开始" : "启动服务") { model.startService() }.buttonStyle(PrimaryButton())
+                Button(model.needsSetup ? "设置密码并开始" : model.serviceStartTitle) { model.startService() }.buttonStyle(PrimaryButton())
 
             }.disabled(model.busy)
             if let error = model.connectionError {
@@ -260,7 +262,7 @@ struct RootView: View {
                     let linked = model.actions.filter { $0.credential_id == item.id }
                     if linked.isEmpty { Text("尚未配置关联操作").font(.system(size: 12)).foregroundStyle(.secondary) }
                     ForEach(linked) { action in
-                        VStack(alignment: .leading, spacing: 8) { Text(action.name).font(.system(size: 13, weight: .medium)); Text("\(action.method) \(action.exact_path)").font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary).textSelection(.enabled) }.frame(maxWidth: .infinity, alignment: .leading).padding(14).background(.white.opacity(0.4), in: RoundedRectangle(cornerRadius: 6)).overlay(RoundedRectangle(cornerRadius: 6).stroke(.gray.opacity(0.18)))
+                        VStack(alignment: .leading, spacing: 8) { Text(action.name).font(.system(size: 13, weight: .medium)); Text("\(action.method) \(action.target.summary)").font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary).textSelection(.enabled) }.frame(maxWidth: .infinity, alignment: .leading).padding(14).background(.white.opacity(0.4), in: RoundedRectangle(cornerRadius: 6)).overlay(RoundedRectangle(cornerRadius: 6).stroke(.gray.opacity(0.18)))
                     }
                 }
             }
@@ -286,12 +288,12 @@ struct RootView: View {
     private var actionsPage: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                HStack { Text("操作固定了目标、方法和路径，Agent 无法任意改写。").font(.system(size: 12)).foregroundStyle(.secondary); Spacer(); Button("导入定义") { importAction() }.disabled(!model.unlocked || model.busy) }
+                HStack { Text("操作固定了目标和方法，路径参数受已声明的规则限制。").font(.system(size: 12)).foregroundStyle(.secondary); Spacer(); Button("导入定义") { importAction() }.disabled(!model.unlocked || model.busy) }
                 if model.actions.isEmpty { EmptyState(icon: "play.rectangle", title: "还没有固定操作", detail: "创建一个操作，选择凭证并设置请求目标。") }
                 ForEach(model.actions) { action in
                     VStack(alignment: .leading, spacing: 12) {
                         HStack { Text(action.name).font(.system(size: 17, weight: .medium)); Text("v\(action.version)").foregroundStyle(.secondary); Spacer(); StatusPill(active: action.enabled, text: action.enabled ? "已启用" : "已禁用") }
-                        Text("\(action.method) \(action.origin)\(action.exact_path)").font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
+                        Text("\(action.method) \(action.origin)\(action.target.summary)").font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
                         HStack { Text(model.credentials.first { $0.id == action.credential_id }?.label ?? action.credential_id).font(.system(size: 12)).foregroundStyle(.secondary); Spacer(); Button("更新定义") { importAction(action.id) }; Button("禁用", role: .destructive) { model.operation = Operation(title: "禁用操作", detail: "禁止后续执行“\(action.name)”。", arguments: ["action", "disable", action.id]) }.disabled(!action.enabled) }.disabled(model.busy)
                     }.padding(20).background(.white.opacity(0.55), in: RoundedRectangle(cornerRadius: 8)).overlay(RoundedRectangle(cornerRadius: 8).stroke(.gray.opacity(0.16)))
                 }
@@ -417,8 +419,15 @@ struct RootView: View {
                     Text(model.stateDirectory).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
                     Button("切换数据目录") { if let url = chooseFile(directory: true) { model.changeDirectory(url.path) } }.disabled(model.busy || model.oidcBusy)
                     if let status = model.status { info("服务版本", status.runtime_version); info("数据格式", "v\(status.format_version)") }
-                    HStack { Button("启动服务") { model.startService() }.disabled(model.status != nil); Button("停止服务") { model.requestShutdown() }.disabled(model.status == nil) }.disabled(model.busy)
+                    HStack { Button(model.serviceStartTitle) { model.startService() }.disabled(model.status != nil); Button("停止服务") { model.requestShutdown() }.disabled(model.status == nil) }.disabled(model.busy)
                     Text("关闭窗口不会停止服务；服务会继续按空闲锁定规则运行。").font(.system(size: 12)).foregroundStyle(.secondary)
+                    if let registration = model.backgroundServiceDescription {
+                        Text(registration).font(.system(size: 12)).foregroundStyle(.secondary)
+                        if model.backgroundServiceNeedsApproval {
+                            Button("打开系统登录项设置") { BackgroundService.openSettings() }
+                        }
+                        Button("停止并停用登录启动") { model.requestDisableBackgroundService() }.disabled(model.status == nil || model.busy)
+                    }
                 }
                 SectionCard(title: "解锁与恢复", icon: "lock.rotation") {
                     Button("修改密码") { model.operation = Operation(title: "修改密码", detail: "旧密码将不再解锁当前保险库。历史备份不受这次修改影响。", arguments: ["password", "change"], newSecret: true, confirmSecret: true) }

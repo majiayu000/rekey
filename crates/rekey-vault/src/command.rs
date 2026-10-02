@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use rekey_domain::action::{
-    ExactPath, FixedMethod, HeaderCredentialUse, HttpsOrigin, RequestPolicy, ResponsePolicy,
+    ActionTarget, FixedMethod, HeaderCredentialUse, HttpsOrigin, RequestPolicy, ResponsePolicy,
 };
 use rekey_domain::audit::{
     AuditPage, AuditPruneReceipt, AuditPruneRequest, AuditQuery, AuditRetentionSet,
@@ -36,7 +36,7 @@ pub struct ActionDefinition {
     pub credential_id: CredentialId,
     pub origin: HttpsOrigin,
     pub method: FixedMethod,
-    pub exact_path: ExactPath,
+    pub target: ActionTarget,
     pub auth: HeaderCredentialUse,
     pub timeout_ms: u32,
     pub request_policy: RequestPolicy,
@@ -275,6 +275,20 @@ pub enum AuthorityCommand {
         proof: UnlockProof,
         not_after: Option<Instant>,
         reply: Reply<CredentialMetadata>,
+    },
+    TemplateCatalog {
+        source: rekey_domain::ipc::TemplateSource,
+        package: Vec<u8>,
+        not_after: Option<Instant>,
+        reply: Reply<rekey_domain::ipc::TemplateCatalogResponse>,
+    },
+    TemplateInstall {
+        input: Box<rekey_domain::ipc::TemplateInstallMeta>,
+        package: Vec<u8>,
+        proof: UnlockProof,
+        request_id: RequestId,
+        not_after: Option<Instant>,
+        reply: Reply<rekey_domain::ipc::TemplateInstallResponse>,
     },
     ActionUpsert {
         existing: Option<ActionId>,

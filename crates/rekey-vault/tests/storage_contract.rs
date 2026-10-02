@@ -86,7 +86,7 @@ fn action(action_id: ActionId, credential_id: CredentialId, version: u64) -> Act
         credential_id,
         origin: "https://example.com".to_owned(),
         method: "POST".to_owned(),
-        exact_path: "/v1/action".to_owned(),
+        target_json: r#"{"kind":"fixed","path":"/v1/action"}"#.to_owned(),
         auth_header: "authorization".to_owned(),
         auth_prefix: "Bearer ".to_owned(),
         request_max_bytes: 1_024,
@@ -95,6 +95,8 @@ fn action(action_id: ActionId, credential_id: CredentialId, version: u64) -> Act
         allowed_response_headers_json: "[]".to_owned(),
         timeout_ms: 1_000,
         created_at_ms: version as i64,
+        seal_nonce: [0; 12],
+        seal_ciphertext: [0; 16],
     }
 }
 
@@ -556,15 +558,20 @@ fn action_update_retires_a_disabled_version() {
     store
         .insert_action(
             &action(action_id, credential.credential_id, 1),
+            &[],
             audit(event_type::ACTION_CREATED),
         )
         .unwrap();
+    let mut previous = action(action_id, credential.credential_id, 1);
+    previous.state = ActionState::Disabled;
     store
-        .disable_action(action_id, audit(event_type::ACTION_DISABLED))
+        .disable_action(&previous, audit(event_type::ACTION_DISABLED))
         .unwrap();
+    previous.state = ActionState::Retired;
     store
         .insert_action(
             &action(action_id, credential.credential_id, 2),
+            &[previous],
             audit(event_type::ACTION_UPDATED),
         )
         .unwrap();

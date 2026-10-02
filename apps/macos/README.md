@@ -9,16 +9,43 @@ scripts/build-macos-ui.sh
 open target/macos-ui/Rekey.app
 ```
 
-脚本将当前源码的 `rekey` / `rekeyd` / `rekey-github-create-issue` 打包到 app 内，并在本机做 ad-hoc 签名。`REKEY_UI_OUTPUT` 可指定构建输出位置，`CARGO_TARGET_DIR` 沿用 Cargo 的构建缓存配置。不包含公证或公开发布。
+脚本将当前源码的 `rekey`、`rekeyd`、`rekey-mcp`、`rekey-policy-sign`、`rekey-approval-sign` 打包到 App 内，默认做 ad-hoc 签名。正式构建显式设置 `REKEY_SIGNING_IDENTITY`（或 `APPLE_SIGNING_IDENTITY`）和 `REKEY_REQUIRE_DEVELOPER_ID=1`。`REKEY_UI_OUTPUT` 可指定构建输出位置，`CARGO_TARGET_DIR` 沿用 Cargo 的构建缓存配置。不执行公证或公开发布。
+
+版本来自 Cargo metadata 中 `rekey-cli` 继承的 workspace version。完整 SemVer 保存在 Info.plist 的 `RekeyVersion`；`CFBundleShortVersionString` 和 `CFBundleVersion` 使用数字主、次、补丁版本，例如 `2.0.0-alpha.2` 对应 `2.0.0`。不实现 alpha/rc 排序映射。
+
+## 组装 macOS pkg
+
+先提供已签名的 App，再运行：
+
+```bash
+scripts/build-macos-pkg.sh --app target/macos-ui/Rekey.app \
+  --installer-identity 'Developer ID Installer: Example (TEAMID1234)'
+```
+
+默认输出 `target/macos-pkg/Rekey-<完整SemVer>.pkg`，可用 `--output-dir` 指定输出目录；已有同名产物会报错。脚本校验 App 与五个内嵌程序的 Developer ID Application 签名、hardened runtime、与 Installer 身份一致的 Team ID 和固定标识符（daemon 为 `com.rekey.rekeyd`）。Installer 必须使用单独的 Developer ID Installer 身份，Application 身份不能代替；失败不会自动降级。
+
+包固定安装到 `/Applications/Rekey.app`，并包含 `/usr/local/bin/rekey`、`rekeyd`、`rekey-mcp` 三个指向 App 内程序的符号链接。组件不重定位；显式安装同数字版本的另一个 prerelease 会替换 App，不因 `CFBundleVersion` 相同而跳过，也不提供降级保护。preinstall 只检查链接冲突与被重定向的安装目录；第三方文件或不同目标的链接会使安装失败，不执行 App、launchctl 或任何服务注册。
+
+仅检查本地合成 payload 结构时可显式使用：
+
+```bash
+scripts/build-macos-pkg.sh --app /path/to/synthetic/Rekey.app --unsigned
+```
+
+该选项跳过代码签名校验和 Installer 签名，产物名含 `-unsigned.pkg`；**未签名、未公证，不得安装或分发**。它不能与签名身份同时使用，也不能作为正式构建的回退路径。打包脚本本身不提交公证。现有 release workflow 已接入最终 pkg 公证、staple 与签名检查，使用新增的 `APPLE_INSTALLER_CERTIFICATE`、`APPLE_INSTALLER_CERTIFICATE_PASSWORD`、`APPLE_INSTALLER_SIGNING_IDENTITY` secrets；只支持 Developer ID Installer，不能拿 Application 证书替代。本地尚未运行该 CI 链，也未完成真实新用户安装验收。
+
+App 在签名前会装入静态 `Contents/Library/LaunchAgents/com.rekey.rekeyd.plist`，以 `BundleProgram` 指向内嵌 `rekeyd serve`，使用默认用户 `~/.rekey`，不指定 UserName、动态 state-dir 或 KeepAlive。安装到固定位置后，App 提供显式启用登录启动与启动服务的 SMAppService 入口。已注册的服务使用不带 `-k` 的 `launchctl kickstart` 启动，不先注销或杀掉已有实例。刷新和读取记住的凭据不注册服务；系统要求批准时，用户自行打开登录项设置。仅打包 plist 不会启动或注册服务。源码构建的开发 App 仍使用 Process 启动。**真实签名设备的注册、批准、重登录、升级与卸载验收尚未完成**；编译和结构测试不替代这些结果。
 
 应用图标源文件为 `Resources/AppIcon.png`（1024 × 1024）。构建脚本使用 macOS 自带的 `sips` 和 `iconutil` 生成标准尺寸的 `AppIcon.icns`，通过 `CFBundleIconFile` 配置 Finder 与 Dock 图标。当前采用用户选定的“双环 · 现代平面”：炭黑背景、米白与橙色双环。图标由内置 imagegen 基于双环参考图生成，提示词为“以参考图为基础，为 Rekey app 创作一个「现代平面设计」风格图标。保留双环相扣的识别结构，材质、配色与表现方式自由发挥。成熟、有个性，避免常见 AI 霓虹渐变。单张正方形图标，无文字。”
 
-首次打开时默认使用 `~/.rekey`。首次启动自动显示密码设置流程；输入并确认密码后自动创建保险库并启动服务，恢复密钥只在完成窗口显示一次。已有保险库请启动服务，再解锁。也可以通过“个人工作区”或设置切换目录。格式不兼容或目录非空时沿用 CLI 的明确拒绝，不迁移、不覆盖。
+首次打开时默认使用 `~/.rekey`。首次启动显示密码设置流程；确认界面说明创建保险库后会启用登录启动并启动服务（固定位置的安装版）。恢复密钥只在完成窗口显示一次。已有保险库请启动服务，再解锁。也可以通过“个人工作区”或设置切换目录；安装版后台服务仅管理默认目录，自定义目录或机构配置需先由 CLI 启动服务，App 再连接。格式不兼容或目录非空时沿用 CLI 的明确拒绝，不迁移、不覆盖。
 
 ## 当前入口
 
 - 凭证：真实列表、搜索、类型过滤、关联操作；添加/轮换/撤销。固定令牌由安全输入框录入，其他类型选择已有的私有 JSON profile。
 - 固定操作：表单创建，定义文件导入/更新/禁用。表单采用 30 秒、64 KiB 请求、256 KiB 响应的当前默认；更细的限制通过定义文件配置。
+- Provider 模板：Anthropic、OpenAI、GitHub PAT 和自定义 Bearer。界面从 daemon 读取认证后的能力声明，支持勾选能力和多组固定绑定；一次管理证明后原子安装。安装不自动激活策略或发放 Agent 会话。团队签名包可通过 `rekey template catalog/install --file … --package …` 使用。
+- 模板调用：`rekey execute` 与 `rekey approval prepare` 接受重复的 `--param NAME=VALUE`、`--query NAME=VALUE`。请求只使用安装时声明的参数类型和查询键，规范路径、查询与正文绑定审批；固定操作拒绝非空参数。个人 P-256 签名与本地 presence 审批仍在后续批次。
 - 授权与策略：按操作创建短期 capability、按会话 ID 撤销；安装信任根、导入签名策略并查看状态。没有全量活动会话列表。
 - 审批：真实 pending 收件箱、只读详情与来源签名信封导出。详情展示主体、会话、操作版本、资源、参数/策略摘要、审批人、次数和时限，以及当前本机来源公钥；相同版本的操作定义单独标明为本机元数据。信封不含原始正文或请求头，UI 未验证签名；完整请求核对与签名继续使用独立工具和独立固定的来源公钥。
 - 审计：结果筛选、稳定快照分页和 JSONL 导出，锁定时仍可读取。
@@ -35,15 +62,15 @@ target/release/rekey-approval-sign --help
 
 签名文件的准备和 Agent shell/MCP 接入继续见根目录 `docs/user-guide.md`。这一版没有自动配置 Agent、GUI 签名、任意执行控制台或常驻通知。
 
-关闭 UI 不会终止 Broker；默认由 Broker 在空闲 7 天后锁定。可主动点击“锁定”或设置里的“停止服务”。不缓存密码；手动解锁后，随机恢复密钥保存在 macOS 钥匙串，保险库只保存绑定 vault ID 与到期时间的加密根密钥材料。7 天内重启应用或服务可自动恢复解锁，自动恢复不延长原到期时间。手动锁定、空闲锁定或更改密码/恢复密钥会撤销授权；正常停止服务保留授权。管理会话允许连续添加 API Key 和显式查看/复制当前有效凭证。复制后 30 秒只清理本应用仍占有的剪贴板内容，无法清理第三方历史记录；短期 capability 和恢复结果只在当前结果窗口中存在，用户可显式保存为新建的 0600 文件。
+关闭 UI 不会终止 Broker；默认由 Broker 在空闲 7 天后锁定。可主动点击“锁定”或设置里的“停止服务”；停止服务保留登录启动设置，且需要逐次证明。“停止并停用登录启动”在同一次证明的 SHUTDOWN 成功后才调用注销接口；服务不可达时不会未经验证强行注销，可由用户在系统登录项中管理。不缓存密码；手动解锁后，随机恢复密钥保存在 macOS 钥匙串，保险库只保存绑定 vault ID 与到期时间的加密根密钥材料。7 天内重启应用或服务可自动恢复解锁，自动恢复不延长原到期时间。手动锁定、空闲锁定或更改密码/恢复密钥会撤销授权；正常停止服务保留授权。管理会话允许连续添加 API Key；每次查看或复制仍需当前密码或恢复密钥的新证明，既有管理 token 不能授权明文。复制后 30 秒只清理本应用仍占有的剪贴板内容，无法清理第三方历史记录；短期 capability 和恢复结果只在当前结果窗口中存在，用户可显式保存为新建的 0600 文件。
 
 ## 验证
 
 ```bash
 cargo check --workspace
 xcrun swiftc -warnings-as-errors -swift-version 5 -O \
-  -framework SwiftUI -framework AppKit \
-  apps/macos/Model.swift scripts/test-macos-ui.swift -o /tmp/rekey-ui-contract
+  -framework SwiftUI -framework AppKit -framework ServiceManagement \
+  apps/macos/BackgroundService.swift apps/macos/Model.swift scripts/test-macos-ui.swift -o /tmp/rekey-ui-contract
 /tmp/rekey-ui-contract target/macos-ui/Rekey.app/Contents/Resources/bin/rekey
 ```
 
@@ -51,6 +78,6 @@ xcrun swiftc -warnings-as-errors -swift-version 5 -O \
 
 人类密钥管理验收：`python3 scripts/test-human-vault.py target/macos-ui/Rekey.app/Contents/Resources/bin/rekey`。Agent 通道不提供读取，管理会话在锁定后失效。
 
-钥匙串跨进程验证：`xcrun swiftc -swift-version 5 -framework SwiftUI -framework AppKit -framework Security apps/macos/Model.swift scripts/test-macos-keychain.swift -o /tmp/rekey-keychain-contract && /tmp/rekey-keychain-contract`，仅使用随机测试条目，完成后删除。
+钥匙串跨进程验证：`xcrun swiftc -swift-version 5 -framework SwiftUI -framework AppKit -framework Security -framework ServiceManagement apps/macos/BackgroundService.swift apps/macos/Model.swift scripts/test-macos-keychain.swift -o /tmp/rekey-keychain-contract && /tmp/rekey-keychain-contract`，仅使用随机测试条目，完成后删除。
 
 机构登录源码入口：设置中选择受保护的 OIDC 节点配置后启动服务；先本机解锁，再开始机构登录、在浏览器完成认证，并接收结果到新的私有会话文件。也可显式选择已有会话文件，取消未完成登录或退出本机机构会话。应用只传文件路径，不读取管理 token；密码逐次确认仍保留。16 项新调用断言、80 项原有原生流程断言及完整 macOS14 App 编译通过，真实 IdP／Broker／GUI 点击仍未验收。

@@ -7,14 +7,20 @@ cd "$ROOT"
 UI_OUTPUT="${REKEY_UI_OUTPUT:-$ROOT/target/macos-ui}"
 CARGO_OUTPUT="${CARGO_TARGET_DIR:-$ROOT/target}"
 case "$CARGO_OUTPUT" in /*) ;; *) CARGO_OUTPUT="$ROOT/$CARGO_OUTPUT" ;; esac
+VERSION="$(cargo metadata --locked --offline --no-deps --format-version 1 | python3 -c '
+import json, sys
+metadata = json.load(sys.stdin)
+print(next(p["version"] for p in metadata["packages"] if p["name"] == "rekey-cli" and p["id"] in metadata["workspace_members"]))
+')"
 cargo build --locked --release -p rekey-cli --bin rekey \
   -p rekey-broker --bin rekeyd --bin rekey-mcp \
   -p rekey-policy --bin rekey-policy-sign --bin rekey-approval-sign
 APP="$UI_OUTPUT/Rekey.app"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/bin"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/bin" "$APP/Contents/Library/LaunchAgents"
+install -m 0644 apps/macos/Resources/com.rekey.rekeyd.plist "$APP/Contents/Library/LaunchAgents/"
 xcrun swiftc -warnings-as-errors -swift-version 5 -O -target "$(uname -m)-apple-macosx14.0" \
-  -framework SwiftUI -framework AppKit \
-  apps/macos/Model.swift apps/macos/Forms.swift apps/macos/App.swift \
+  -framework SwiftUI -framework AppKit -framework ServiceManagement \
+  apps/macos/BackgroundService.swift apps/macos/Model.swift apps/macos/Forms.swift apps/macos/App.swift \
   -o "$APP/Contents/MacOS/Rekey"
 # A reused build-output directory must not retain the lab-only plugin.
 rm -f "$APP/Contents/Resources/bin/rekey-github-create-issue"
@@ -37,13 +43,24 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <key>CFBundleName</key><string>Rekey</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.1.0</string>
-<key>CFBundleVersion</key><string>1</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 PLIST
+python3 - "$APP/Contents/Info.plist" "$VERSION" <<'PY'
+import plistlib, re, sys
+path, version = sys.argv[1:]
+numeric = re.match(r"^[0-9]+\.[0-9]+\.[0-9]+(?=[-+]|$)", version)
+if not numeric:
+    raise SystemExit("Cargo version must start with major.minor.patch")
+with open(path, "rb") as file:
+    info = plistlib.load(file)
+info.update(CFBundleShortVersionString=numeric[0], CFBundleVersion=numeric[0], RekeyVersion=version)
+with open(path, "wb") as file:
+    plistlib.dump(info, file)
+PY
 plutil -lint "$APP/Contents/Info.plist"
+plutil -lint "$APP/Contents/Library/LaunchAgents/com.rekey.rekeyd.plist"
 identity="${REKEY_SIGNING_IDENTITY:-${APPLE_SIGNING_IDENTITY:--}}"
 entitlements="$ROOT/apps/macos/Resources/Rekey.entitlements"
 if [[ "${REKEY_REQUIRE_DEVELOPER_ID:-}" == "1" ]]; then

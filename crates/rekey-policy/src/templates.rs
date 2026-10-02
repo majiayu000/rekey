@@ -214,19 +214,7 @@ fn validate_source(
             if !resource_name(&reference) {
                 return Err(TemplatePackageError::InvalidSchema);
             }
-            reject_external_references(&definition)?;
-            let validator = jsonschema::options()
-                .with_draft(Draft::Draft202012)
-                .offline()
-                .build(&definition)
-                .map_err(|_| TemplatePackageError::InvalidSchema)?;
-            Ok((
-                reference,
-                ValidatedTemplateSchema {
-                    definition,
-                    validator,
-                },
-            ))
+            Ok((reference, compile_template_schema(definition)?))
         })
         .collect::<Result<_, _>>()?;
     Ok(ValidatedTemplatePackage {
@@ -235,6 +223,23 @@ fn validate_source(
         signer_id,
         canonical,
         digest,
+    })
+}
+
+/// Compile an already resolved local schema without filesystem or network IO.
+/// Used for the authenticated schema stored in a template Action.
+pub fn compile_template_schema(
+    definition: Value,
+) -> Result<ValidatedTemplateSchema, TemplatePackageError> {
+    reject_external_references(&definition)?;
+    let validator = jsonschema::options()
+        .with_draft(Draft::Draft202012)
+        .offline()
+        .build(&definition)
+        .map_err(|_| TemplatePackageError::InvalidSchema)?;
+    Ok(ValidatedTemplateSchema {
+        definition,
+        validator,
     })
 }
 

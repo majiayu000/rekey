@@ -3,7 +3,7 @@ use aws_lc_rs::{
     signature::{Ed25519KeyPair, KeyPair},
 };
 use data_encoding::{BASE64URL_NOPAD, HEXLOWER};
-use rekey_domain::{Timestamp, capability::ActionVersionRef, ids::ActionId};
+use rekey_domain::Timestamp;
 use rekey_policy::{
     parse_and_verify_approval_grant, parse_and_verify_policy_bundle, parse_policy_trust,
 };
@@ -89,24 +89,25 @@ impl Fixture {
             Timestamp::from_unix_ms(created),
         )
         .unwrap();
-        let body = r#"{"message":"approved"}"#;
-        let (_, parameters) = verified
-            .snapshot()
-            .canonicalize(
-                ActionVersionRef {
-                    action_id: action_id.parse::<ActionId>().unwrap(),
-                    version: 1,
-                },
-                Some("application/json"),
-                &[],
-                body.as_bytes(),
-            )
-            .unwrap();
-        let action = json!({"id":action_id,"name":"approval-test","version":1,"enabled":true,"credential_id":id(),"origin":"https://example.com","method":"POST","exact_path":"/approved","auth":{"header_name":"authorization","prefix":"Bearer "},"timeout_ms":5000,"request_policy":{"max_body_bytes":4096,"allowed_extra_headers":[]},"response_policy":{"max_body_bytes":4096,"allowed_headers":[]}});
+        let action = json!({"id":action_id,"name":"approval-test","version":1,"enabled":true,"credential_id":id(),"origin":"https://example.com","method":"POST","target":{"kind":"fixed","path":"/approved"},"auth":{"header_name":"authorization","prefix":"Bearer "},"timeout_ms":5000,"request_policy":{"max_body_bytes":4096,"allowed_extra_headers":[]},"response_policy":{"max_body_bytes":4096,"allowed_headers":[]}});
         let parsed: rekey_domain::action::FixedHttpAction =
             serde_json::from_value(action.clone()).unwrap();
         parsed.validate().unwrap();
         write_json(&dir.path().join("action.json"), &action);
+        let body = r#"{"message":"approved"}"#;
+        let (_, parameters, _) = verified
+            .snapshot()
+            .canonicalize(
+                &parsed,
+                rekey_policy::ActionRequest {
+                    params: &Default::default(),
+                    query: &Default::default(),
+                    content_type: Some("application/json"),
+                    headers: &[],
+                    body: body.as_bytes(),
+                },
+            )
+            .unwrap();
         let inner = json!({"record_type":"rekey.approval.challenge.v1","approval_request_id":id(),"tenant_id":id(),"principal_id":principal,"session_id":id(),"action_id":action_id,"action_version":1,"resource":resource,"schema_id":"test/v1","parameter_sha256":HEXLOWER.encode(&parameters.canonical_hash),"policy_version":1,"policy_sha256":HEXLOWER.encode(&verified.policy_digest()),"policy_rule_id":rule,"mode":"one-time","quorum":1,"approver_ids":[approver],"max_uses":1,"created_at_ms":created,"max_expires_at_ms":created+120_000});
         let request = json!({"challenge":signed_envelope(&inner, &origin),"content_type":"application/json","headers":[],"body":body});
         write_json(&dir.path().join("request.json"), &request);
@@ -247,14 +248,14 @@ fn reviewed_digest_and_changed_body_are_rejected() {
 }
 
 #[test]
-fn changed_trusted_action_requires_new_review() {
+fn changed_trusted_target_requires_a_new_challenge() {
     let f = Fixture::new();
     let digest = f.review();
     let mut action: Value =
         serde_json::from_slice(&fs::read(f.path("action.json")).unwrap()).unwrap();
-    action["exact_path"] = "/different-target".into();
+    action["target"]["path"] = "/different-target".into();
     write_json(&f.path("action.json"), &action);
-    assert_ne!(f.review(), digest);
+    assert!(!f.invoke("review", None, "unused").status.success());
     f.reject_sign(&digest);
 }
 
@@ -308,4 +309,70 @@ fn unsigned_or_wrong_origin_challenge_is_rejected() {
             .success()
     );
     assert!(!f.path("rejected.json").exists());
+}
+
+#[test]
+fn template_signer_reviews_the_rendered_target_and_rejects_changed_values() {
+    let mut f = Fixture::new();
+    let mut action: Value =
+        serde_json::from_slice(&fs::read(f.path("action.json")).unwrap()).unwrap();
+    action["target"] = json!({"kind":"template","target":{"path":"/issues/{number}","params":{"number":"int:1..100"},"query":{"state":"enum:open,closed","page":"int:1..100"}},"fixed_headers":{"x-template":"one"},"body_schema":{"type":"object","required":["message"],"properties":{"message":{"const":"approved"}},"additionalProperties":false},"source":{"template":"team@1","capability":"issues","action_index":0,"digest":vec![7;32],"signer_id":null},"default_policy":{"rule":"allow"}});
+    write_json(&f.path("action.json"), &action);
+    let parsed: rekey_domain::action::FixedHttpAction = serde_json::from_value(action).unwrap();
+    f.request["params"] = json!({"number":"007"});
+    f.request["query"] = json!({"state":"open","page":"02"});
+    let trust = parse_policy_trust(&fs::read(f.path("trust.json")).unwrap()).unwrap();
+    let bundle = parse_and_verify_policy_bundle(
+        &fs::read(f.path("policy.json")).unwrap(),
+        &trust,
+        Timestamp::from_unix_ms(now_ms()),
+    )
+    .unwrap();
+    let (_, parameters, _) = bundle
+        .snapshot()
+        .canonicalize(
+            &parsed,
+            rekey_policy::ActionRequest {
+                params: &serde_json::from_value(f.request["params"].clone()).unwrap(),
+                query: &serde_json::from_value(f.request["query"].clone()).unwrap(),
+                content_type: Some("application/json"),
+                headers: &[],
+                body: f.request["body"].as_str().unwrap().as_bytes(),
+            },
+        )
+        .unwrap();
+    f.request["challenge"]["challenge"]["parameter_sha256"] =
+        HEXLOWER.encode(&parameters.canonical_hash).into();
+    f.resign_inner();
+    let reviewed = f.invoke("review", None, "unused");
+    assert!(reviewed.status.success());
+    let review: Value = serde_json::from_slice(&reviewed.stdout).unwrap();
+    assert_eq!(
+        review["review"]["request_target"],
+        "/issues/7?page=2&state=open"
+    );
+    assert_eq!(review["review"]["target"]["params"]["number"], "7");
+    let digest = review["reviewed_sha256"].as_str().unwrap();
+    assert!(
+        f.invoke("sign", Some(digest), "template-grant.json")
+            .status
+            .success()
+    );
+    let original = f.request.clone();
+    for (field, name, value) in [
+        ("params", "number", "8"),
+        ("query", "state", "closed"),
+        ("query", "page", "3"),
+    ] {
+        f.request = original.clone();
+        f.request[field][name] = value.into();
+        f.persist_request();
+        assert!(!f.invoke("review", None, "unused").status.success());
+        f.reject_sign(digest);
+    }
+    f.request = original;
+    f.request["body"] = r#"{"message":"approved","message":"changed"}"#.into();
+    f.persist_request();
+    assert!(!f.invoke("review", None, "unused").status.success());
+    f.reject_sign(digest);
 }

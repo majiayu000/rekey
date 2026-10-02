@@ -1073,3 +1073,151 @@ fn desktop_reveal_and_locked_shutdown_require_each_step_up() {
     assert_eq!(stopped.status, 0, "{}", stopped.stderr);
     assert!(guard.finish().status.success());
 }
+
+#[test]
+fn template_cli_installs_bound_actions_atomically_without_exposing_proof() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    let state = state_dir.to_str().unwrap();
+    let proof = format!("{PASSWORD}\n");
+    let initialized = run(
+        &rekeyd_bin(),
+        &["init", "--state-dir", state, "--password-stdin"],
+        Some(&proof),
+    );
+    assert_eq!(initialized.status, 0, "{}", initialized.stderr);
+    let server = Command::new(rekeyd_bin())
+        .args(["serve", "--state-dir", state])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let guard = ServeGuard(Some(server));
+    for _ in 0..300 {
+        if state_dir.join("runtime/admin.sock").exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let call = |args: &[&str], input: Option<&str>| {
+        let mut all = vec!["--state-dir", state];
+        all.extend_from_slice(args);
+        let result = run(&rekey_bin(), &all, input);
+        for canary in [PASSWORD, SECRET] {
+            assert!(!result.stdout.contains(canary));
+            assert!(!result.stderr.contains(canary));
+        }
+        result
+    };
+    assert_eq!(
+        call(&["unlock", "--password-stdin"], Some(&proof)).status,
+        0
+    );
+    let catalog = call(&["template", "catalog", "--builtin", "github-pat"], None);
+    assert_eq!(catalog.status, 0, "{}", catalog.stderr);
+    let catalog: serde_json::Value = serde_json::from_str(&catalog.stdout).unwrap();
+    assert_eq!(catalog["template"]["template"], "github-pat@1");
+    assert!(catalog["signer_id"].is_null());
+    let added = call(
+        &["credential", "add", "template key", "--stdin-secrets"],
+        Some(&format!("{PASSWORD}\n{SECRET}\n")),
+    );
+    assert_eq!(added.status, 0, "{}", added.stderr);
+    let credential: serde_json::Value = serde_json::from_str(&added.stdout).unwrap();
+    let request_file = dir.path().join("install.json");
+    let mut request = serde_json::json!({
+        "source": {"kind": "github-pat"}, "credential_id": credential["id"],
+        "bindings": [{"owner": "example", "repo": "one"}, {"owner": "example", "repo": "two"}],
+        "capabilities": ["read-repo", "create-issue"], "name_prefix": "CLI template",
+        "timeout_ms": 30000, "request_max_bytes": 65536, "allowed_extra_headers": [],
+        "response_max_bytes": 262144, "allowed_response_headers": ["content-type"]
+    });
+    std::fs::write(&request_file, serde_json::to_vec(&request).unwrap()).unwrap();
+    let args = [
+        "template",
+        "install",
+        "--file",
+        request_file.to_str().unwrap(),
+        "--password-stdin",
+    ];
+    let denied = call(&args, Some("incorrect proof\n"));
+    assert_eq!(denied.status, 3);
+    let empty = call(&["action", "list"], None);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&empty.stdout).unwrap()["actions"],
+        serde_json::json!([])
+    );
+    let snapshot = format!("{proof}{request}\n");
+    let stdin_args = ["template", "install", "--stdin-request", "--password-stdin"];
+    // Once captured for stdin, a changed request file cannot replace the scope.
+    std::fs::write(&request_file, b"{}").unwrap();
+    let installed = call(&stdin_args, Some(&snapshot));
+    assert_eq!(installed.status, 0, "{}", installed.stderr);
+    let result: serde_json::Value = serde_json::from_str(&installed.stdout).unwrap();
+    let actions = result["actions"].as_array().unwrap();
+    assert_eq!(actions.len(), 16);
+    assert_ne!(
+        call(&["template", "install", "--stdin-request"], None).status,
+        0
+    );
+    assert_ne!(
+        call(
+            &[
+                "template",
+                "install",
+                "--stdin-request",
+                "--file",
+                request_file.to_str().unwrap(),
+                "--password-stdin"
+            ],
+            Some(&snapshot)
+        )
+        .status,
+        0
+    );
+    assert_ne!(call(&stdin_args, Some(&proof)).status, 0);
+    assert_ne!(
+        call(
+            &stdin_args,
+            Some(&format!("{proof}{}\n", "x".repeat(65_537)))
+        )
+        .status,
+        0
+    );
+    let mut ids = std::collections::BTreeSet::new();
+    for item in actions {
+        let action = &item["action"];
+        assert!(ids.insert(action["id"].as_str().unwrap()));
+        assert_eq!(action["version"], 1);
+        assert_eq!(action["target"]["kind"], "template");
+        assert_eq!(action["target"]["source"]["template"], "github-pat@1");
+        let repository = if item["binding_index"] == 0 {
+            "one"
+        } else {
+            "two"
+        };
+        assert!(
+            action["target"]["target"]["path"]
+                .as_str()
+                .unwrap()
+                .starts_with(&format!("/repos/example/{repository}"))
+        );
+    }
+    request["bindings"][1]["repo"] = serde_json::json!("bad/path");
+    std::fs::write(&request_file, serde_json::to_vec(&request).unwrap()).unwrap();
+    assert_ne!(call(&args, Some(&proof)).status, 0);
+    let unchanged = call(&["action", "list"], None);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&unchanged.stdout).unwrap()["actions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        16
+    );
+    assert_eq!(
+        call(&["shutdown", "--password-stdin"], Some(&proof)).status,
+        0
+    );
+    assert!(guard.finish().status.success());
+}

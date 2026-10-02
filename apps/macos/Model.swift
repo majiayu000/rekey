@@ -216,7 +216,34 @@ struct FixedAction: Decodable, Identifiable {
     let credential_id: String
     let origin: String
     let method: String
-    let exact_path: String
+    enum Target: Decodable {
+        struct TemplatePath: Decodable {
+            let path: String
+            let params: [String: String]
+            let query: [String: String]
+        }
+        case fixed(String)
+        case template(TemplatePath)
+        private enum CodingKeys: String, CodingKey { case kind, path, target }
+        init(from decoder: Decoder) throws {
+            let fields = try decoder.container(keyedBy: CodingKeys.self)
+            switch try fields.decode(String.self, forKey: .kind) {
+            case "fixed": self = .fixed(try fields.decode(String.self, forKey: .path))
+            case "template": self = .template(try fields.decode(TemplatePath.self, forKey: .target))
+            default:
+                throw DecodingError.dataCorruptedError(forKey: .kind, in: fields, debugDescription: "Unknown Action target kind")
+            }
+        }
+        var summary: String {
+            switch self {
+            case .fixed(let path): return path
+            case .template(let target):
+                let query = target.query.isEmpty ? "" : "；可选查询：" + target.query.keys.sorted().joined(separator: ", ")
+                return target.path + "（路径规则" + query + "）"
+            }
+        }
+    }
+    let target: Target
     let request_policy: RequestPolicy
     var request_max_bytes: Int { request_policy.max_body_bytes }
     var reference: String { "\(id)@\(version)" }
@@ -318,6 +345,38 @@ struct CredentialReveal {
     let revision: UUID
 }
 
+struct ProviderTemplateCatalog: Decodable, Sendable {
+    struct Declaration: Decodable, Sendable {
+        struct BindingRule: Decodable, Sendable {
+            let max: Int?
+        }
+        struct Capability: Decodable, Identifiable, Sendable {
+            struct Action: Decodable, Sendable {
+                let method: String
+                let path: String
+            }
+            let id: String
+            let risk: String
+            let default_rule: String?
+            let actions: [Action]
+            var suggestedRule: String { default_rule ?? (risk == "high" ? "require-approval" : "allow") }
+        }
+        let template: String
+        let display: String
+        let origin: String
+        let bindings: [String: BindingRule]
+        let capabilities: [Capability]
+    }
+    let template: Declaration
+}
+
+extension CLI {
+    func templateCatalog(source: Data) throws -> ProviderTemplateCatalog {
+        guard let request = String(data: source, encoding: .utf8) else { throw UIError(message: "模板请求编码无效。") }
+        return try JSONDecoder().decode(ProviderTemplateCatalog.self, from: run(["template", "catalog", "--stdin-request"], input: request + "\n"))
+    }
+}
+
 struct Operation: Identifiable {
     let id = UUID()
     let title: String
@@ -331,7 +390,9 @@ struct Operation: Identifiable {
     var recoveryAllowed = true
     var targetDirectory: String?
     var temporaryFile: URL?
+    var templateRequest: Data?
     var reveal: CredentialReveal?
+    var unregisterBackgroundService = false
 }
 struct ResultMessage: Identifiable {
     let id = UUID()
@@ -368,6 +429,7 @@ final class AppModel: ObservableObject {
     @Published var approvals: [PendingApproval] = []
     @Published var approvalDetails: ApprovalDetails?
     @Published var showPolicyDraft = false
+    @Published var showTemplate = false
     @Published private(set) var nativeFlowRevision = UUID()
     @Published var audit: AuditPage?
     @Published var desktopToken: String?
@@ -479,6 +541,7 @@ final class AppModel: ObservableObject {
     }
     func clearNativeFlow() {
         nativeFlowRevision = UUID(); showPolicyDraft = false; approvalDetails = nil
+        showTemplate = false
         if operation?.reveal != nil { operation = nil }
     }
     func acceptsNativeCompletion(_ revision: UUID, workspace: String) -> Bool {
@@ -488,8 +551,15 @@ final class AppModel: ObservableObject {
         !FileManager.default.fileExists(atPath: stateDirectory + "/vault.sqlite3")
     }
     func beginSetup() {
-        operation = Operation(title: "创建保险库", detail: "设置并确认密码后，应用会自动创建保险库并启动服务。请保存随后显示的恢复密钥。", arguments: ["init"], confirmSecret: true, sensitiveResult: true, recoveryAllowed: false)
+        let startup = managesBackgroundService ? "同时启用本用户登录启动并启动服务。" : "随后启动服务。"
+        operation = Operation(title: "创建保险库", detail: "设置并确认密码后，应用会创建保险库，" + startup + "请保存随后显示的恢复密钥。", arguments: ["init"], confirmSecret: true, sensitiveResult: true, recoveryAllowed: false)
     }
+    var managesBackgroundService: Bool {
+        BackgroundService.isInstalledApplication && BackgroundService.usesDefaultState(stateDirectory) && oidcProfileFile == nil
+    }
+    var serviceStartTitle: String { managesBackgroundService ? "启用登录启动并启动服务" : "启动服务" }
+    var backgroundServiceDescription: String? { managesBackgroundService ? BackgroundService.statusDescription : nil }
+    var backgroundServiceNeedsApproval: Bool { managesBackgroundService && BackgroundService.requiresApproval }
     var desktopReady: Bool { desktopToken != nil && Date() < desktopExpiry && unlocked }
     func requestDesktopLogin() {
         operation = Operation(title: "解锁管理会话", detail: "验证后，7 天内可连续保存密钥。每次查看或复制密钥仍需单独验证。手动锁定会取消管理授权。", arguments: ["unlock"])
@@ -512,7 +582,11 @@ final class AppModel: ObservableObject {
     }
     func requestShutdown() {
         guard !busy, status != nil else { return }
-        operation = Operation(title: "停止服务", detail: "请输入当前密码或恢复密钥。正在执行的操作会按服务的退出规则收尾。", arguments: ["shutdown"])
+        operation = Operation(title: "停止服务", detail: "请输入当前密码或恢复密钥。正在执行的操作会按服务的退出规则收尾。登录启动设置保持不变。", arguments: ["shutdown"], targetDirectory: stateDirectory)
+    }
+    func requestDisableBackgroundService() {
+        guard !busy, status != nil, managesBackgroundService else { return }
+        operation = Operation(title: "停止并停用登录启动", detail: "验证后先让服务收尾停止，再取消本用户的登录启动。保险库文件会保留。", arguments: ["shutdown"], targetDirectory: stateDirectory, unregisterBackgroundService: true)
     }
     private func acceptsCredentialReveal(_ request: CredentialReveal) -> Bool {
         acceptsNativeCompletion(request.revision, workspace: request.workspace) && selectedCredential == request.id
@@ -637,7 +711,17 @@ final class AppModel: ObservableObject {
             await performReveal(request, proof: proof, recovery: recovery)
             return
         }
-        guard !busy else { return }
+        guard !busy else {
+            if op.temporaryFile != nil || op.templateRequest != nil {
+                var message = "当前操作尚未完成，本次请求未提交，请稍后重试。"
+                if let file = op.temporaryFile {
+                    do { try FileManager.default.removeItem(at: file) }
+                    catch { message += "\n无法删除临时操作定义：\(file.path)" }
+                }
+                error = message
+            }
+            return
+        }
         busy = true; error = nil
         let client = CLI(binary: cli.binary, stateDirectory: op.targetDirectory ?? stateDirectory, adminSessionFile: oidcSessionFile)
         let desktopLogin = op.arguments == ["unlock"]
@@ -648,6 +732,12 @@ final class AppModel: ObservableObject {
             input = proof + "\n"
             if op.newSecret { input += secret + "\n" }
             if recovery && op.recoveryAllowed { args.append("--recovery") }
+        }
+        if let request = op.templateRequest {
+            guard let json = String(data: request, encoding: .utf8) else {
+                busy = false; error = "模板请求编码无效。"; return
+            }
+            input += json + "\n"
         }
         let command = args, body = input
         var operationError: String?
@@ -664,7 +754,14 @@ final class AppModel: ObservableObject {
                     try remembered.save(stateDirectory)
                 }
                 resumeAttempted = true
-            } else { result = ResultMessage(title: op.title + "完成", text: output, sensitive: op.sensitiveResult) }
+            } else {
+                if op.unregisterBackgroundService {
+                    // Reached only after this operation's fresh-proof SHUTDOWN succeeded.
+                    do { try await BackgroundService.unregisterAfterAuthorizedShutdown() }
+                    catch { throw UIError(message: "服务已停止，但未能停用登录启动：" + error.localizedDescription) }
+                }
+                result = ResultMessage(title: op.title + "完成", text: output, sensitive: op.sensitiveResult)
+            }
         } catch { operationError = error.localizedDescription }
         if let file = op.temporaryFile {
             do { try FileManager.default.removeItem(at: file) }
@@ -676,12 +773,29 @@ final class AppModel: ObservableObject {
         else if op.arguments == ["init"] { startService() }
     }
     func startRememberedService() {
-        guard status == nil && !needsSetup else { return }
+        // An installed app never registers or starts its managed job while refreshing.
+        guard !BackgroundService.isInstalledApplication, status == nil && !needsSetup else { return }
         do { if try RememberedUnlock.load(stateDirectory) != nil { startService() } }
         catch { self.error = error.localizedDescription }
     }
     func startService() {
         guard !busy else { return }
+        if BackgroundService.isInstalledApplication {
+            guard managesBackgroundService else {
+                error = "登录启动仅支持默认保险库目录。自定义目录或机构配置请先通过 CLI 启动服务，再在应用中连接。"; return
+            }
+            guard !needsSetup else { beginSetup(); return }
+            busy = true; error = nil
+            Task {
+                do {
+                    try await BackgroundService.start()
+                    busy = false
+                    await refresh()
+                    if backgroundServiceNeedsApproval { error = BackgroundService.statusDescription }
+                } catch { busy = false; self.error = error.localizedDescription }
+            }
+            return
+        }
         guard !needsSetup else { beginSetup(); return }
         guard launchedService?.isRunning != true || launchedServiceDirectory != stateDirectory else {
             error = "由此窗口启动的服务仍在运行，请刷新状态。"; return

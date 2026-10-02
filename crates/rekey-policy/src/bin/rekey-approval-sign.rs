@@ -50,6 +50,10 @@ struct Request {
     content_type: Option<String>,
     headers: Vec<(String, String)>,
     body: String,
+    #[serde(default)]
+    params: rekey_domain::template::TemplateValues,
+    #[serde(default)]
+    query: rekey_domain::template::TemplateValues,
 }
 fn now() -> Result<Timestamp> {
     Ok(Timestamp::from_unix_ms(i64::try_from(
@@ -199,11 +203,15 @@ fn run_args(args: Vec<String>, output_text: &mut dyn Write) -> Result<()> {
         action_id: action.id,
         version: action.version,
     };
-    let (resource, parameters) = snapshot.canonicalize(
-        action_ref,
-        request.content_type.as_deref(),
-        &request.headers,
-        request.body.as_bytes(),
+    let (resource, parameters, target) = snapshot.canonicalize(
+        &action,
+        rekey_policy::ActionRequest {
+            params: &request.params,
+            query: &request.query,
+            content_type: request.content_type.as_deref(),
+            headers: &request.headers,
+            body: request.body.as_bytes(),
+        },
     )?;
     if resource != c.resource
         || parameters.schema_id != c.schema_id
@@ -274,7 +282,7 @@ fn run_args(args: Vec<String>, output_text: &mut dyn Write) -> Result<()> {
         None
     };
     #[allow(unused_mut)]
-    let mut review = json!({"record_type":"rekey.approval.review.v1", "source_assumption":"Operator pinned origin public key from rekey approval origin; envelope authenticates Broker challenge bytes, not Action/policy/trust files or the human's intent", "action":action, "request":request, "approver_id":approver, "policy_signer_id":policy.signer_id(), "policy_sha256":HEXLOWER.encode(&snapshot.digest()), "grant_lifetime_max_ms":60000});
+    let mut review = json!({"record_type":"rekey.approval.review.v1", "source_assumption":"Operator pinned origin public key from rekey approval origin; envelope authenticates Broker challenge bytes, not Action/policy/trust files or the human's intent", "action":action, "target":target, "request_target":target.request_target(), "request":request, "approver_id":approver, "policy_signer_id":policy.signer_id(), "policy_sha256":HEXLOWER.encode(&snapshot.digest()), "grant_lifetime_max_ms":60000});
     #[cfg(feature = "lab")]
     if let Some(profile) = &profile {
         review["vault_transit"] = profile.public_review();

@@ -4,12 +4,14 @@ use curve25519_dalek::edwards::CompressedEdwardsY;
 use data_encoding::HEXLOWER;
 use jsonschema::{Draft, Validator};
 use rekey_domain::Timestamp;
+use rekey_domain::action::{ActionTarget, FixedHttpAction, HeaderName};
 use rekey_domain::authorization::{
     ApprovalMode, ApprovalRequirement, AuthorizationRequest, CanonicalParameters, Decision,
     DenyReason, PolicyVersion, ResourceRef, SchemaId,
 };
 use rekey_domain::capability::ActionVersionRef;
 use rekey_domain::ids::{ActionId, ApproverId, PolicyRuleId, PrincipalId};
+use rekey_domain::template::{RenderedTarget, TemplateValues};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -127,6 +129,15 @@ pub struct ValidatedSnapshot {
     workload_catalog: WorkloadCatalog,
 }
 
+/// The untrusted, per-call values used by both the Broker and approval signer.
+pub struct ActionRequest<'a> {
+    pub params: &'a TemplateValues,
+    pub query: &'a TemplateValues,
+    pub content_type: Option<&'a str>,
+    pub headers: &'a [(String, String)],
+    pub body: &'a [u8],
+}
+
 impl ValidatedSnapshot {
     pub fn version(&self) -> PolicyVersion {
         self.version
@@ -206,38 +217,111 @@ impl ValidatedSnapshot {
             })
     }
 
+    /// Render exactly once and bind the resulting path, normalized parameters,
+    /// sorted query, effective headers and validated JSON body into approval JCS.
+    /// The caller carries the returned target unchanged to its HTTP transport.
     pub fn canonicalize(
         &self,
-        action: ActionVersionRef,
-        content_type: Option<&str>,
-        headers: &[(String, String)],
-        body: &[u8],
-    ) -> Result<(ResourceRef, CanonicalParameters), PolicyError> {
+        action: &FixedHttpAction,
+        request: ActionRequest<'_>,
+    ) -> Result<(ResourceRef, CanonicalParameters, RenderedTarget), PolicyError> {
+        let action_ref = ActionVersionRef {
+            action_id: action.id,
+            version: action.version,
+        };
         let binding = self
             .bindings
             .iter()
-            .find(|binding| binding.definition.action() == action)
+            .find(|binding| binding.definition.action() == action_ref)
             .ok_or(PolicyError::InvalidParameters)?;
-        let normalized_content_type = normalize_content_type(content_type, body)?;
-        let value = if body.is_empty() {
+        let (target, fixed_headers, body_schema) = match &action.target {
+            ActionTarget::Fixed { path } => {
+                if !request.params.is_empty() || !request.query.is_empty() {
+                    return Err(PolicyError::InvalidParameters);
+                }
+                (
+                    RenderedTarget {
+                        path: path.clone(),
+                        params: BTreeMap::new(),
+                        query: BTreeMap::new(),
+                    },
+                    None,
+                    None,
+                )
+            }
+            ActionTarget::Template {
+                target,
+                fixed_headers,
+                body_schema,
+                ..
+            } => (
+                target
+                    .render(request.params, request.query)
+                    .map_err(|_| PolicyError::InvalidParameters)?,
+                Some(fixed_headers),
+                body_schema.as_ref(),
+            ),
+        };
+        if request.body.len() > action.request_policy.max_body_bytes as usize {
+            return Err(PolicyError::InvalidParameters);
+        }
+        let fixed_content_type = fixed_headers.and_then(|headers| {
+            headers
+                .iter()
+                .find(|(name, _)| name.as_str() == "content-type")
+                .map(|(_, value)| value.as_str())
+        });
+        if fixed_content_type.is_some() && request.content_type.is_some() {
+            return Err(PolicyError::InvalidParameters);
+        }
+        let content_type = fixed_content_type.or(request.content_type);
+        if content_type.is_some_and(|value| value.is_empty() || !header_value_is_safe(value)) {
+            return Err(PolicyError::InvalidParameters);
+        }
+        let normalized_content_type = normalize_content_type(content_type, request.body)?;
+        let value = if request.body.is_empty() {
             Value::Null
         } else {
-            parse_unique_json(body)?
+            parse_unique_json(request.body)?
         };
         if !binding.validator.is_valid(&value) {
             return Err(PolicyError::InvalidParameters);
         }
-        let mut normalized_headers = Vec::with_capacity(headers.len());
-        let mut seen = BTreeSet::new();
-        for (name, value) in headers {
-            let lower = name.to_ascii_lowercase();
-            if !seen.insert(lower.clone()) {
+        if let Some(schema) = body_schema {
+            let validator = templates::compile_template_schema(schema.clone())
+                .map_err(|_| PolicyError::InvalidParameters)?;
+            if !validator.is_valid(&value) {
                 return Err(PolicyError::InvalidParameters);
             }
-            normalized_headers.push((lower, value.clone()));
+        }
+        let mut normalized_headers = Vec::new();
+        let mut seen = BTreeSet::new();
+        if let Some(headers) = fixed_headers {
+            for (name, value) in headers {
+                seen.insert(name.as_str().to_owned());
+                if name.as_str() != "content-type" {
+                    normalized_headers.push((name.as_str().to_owned(), value.clone()));
+                }
+            }
+        }
+        for (raw_name, value) in request.headers {
+            let name = HeaderName::new(raw_name).map_err(|_| PolicyError::InvalidParameters)?;
+            if raw_name != name.as_str()
+                || name.is_forbidden()
+                || name == action.auth.header_name
+                || name.as_str() == "authorization"
+                || name.as_str() == "content-type"
+                || !action.request_policy.allowed_extra_headers.contains(&name)
+                || !header_value_is_safe(value)
+                || !seen.insert(name.as_str().to_owned())
+            {
+                return Err(PolicyError::InvalidParameters);
+            }
+            normalized_headers.push((name.as_str().to_owned(), value.clone()));
         }
         normalized_headers.sort();
         let envelope = serde_json::json!({
+            "target": target,
             "body": value,
             "content_type": normalized_content_type,
             "headers": normalized_headers,
@@ -256,6 +340,7 @@ impl ValidatedSnapshot {
                 schema_id: definition.parameter_schema_id.clone(),
                 canonical_hash: hash,
             },
+            target,
         ))
     }
 }
@@ -550,6 +635,13 @@ pub fn validate_ed25519_public_key(value: &str) -> Result<[u8; 32], PolicyError>
     Ok(public_key)
 }
 
+fn header_value_is_safe(value: &str) -> bool {
+    value.len() <= 8 * 1024
+        && value
+            .bytes()
+            .all(|byte| matches!(byte, b'\t' | 0x20..=0x7e))
+}
+
 fn normalize_content_type(
     content_type: Option<&str>,
     body: &[u8],
@@ -639,6 +731,29 @@ mod tests {
     use super::*;
     use rekey_domain::ids::{ActionId, PrincipalId};
 
+    fn fixed_action(action: ActionVersionRef) -> FixedHttpAction {
+        serde_json::from_value(serde_json::json!({
+            "id": action.action_id, "name": "policy-test", "version": action.version,
+            "enabled": true, "credential_id": rekey_domain::ids::CredentialId::new_random(),
+            "origin": "https://example.com", "method": "POST", "target": {"kind":"fixed","path":"/test"},
+            "auth": {"header_name":"authorization","prefix":"Bearer "}, "timeout_ms":5000,
+            "request_policy":{"max_body_bytes":4096,"allowed_extra_headers":[]},
+            "response_policy":{"max_body_bytes":4096,"allowed_headers":[]}
+        })).unwrap()
+    }
+
+    fn json_request(body: &[u8]) -> ActionRequest<'_> {
+        static EMPTY: std::sync::LazyLock<TemplateValues> =
+            std::sync::LazyLock::new(TemplateValues::new);
+        ActionRequest {
+            params: &EMPTY,
+            query: &EMPTY,
+            content_type: Some("application/json"),
+            headers: &[],
+            body,
+        }
+    }
+
     fn ids() -> (ActionVersionRef, PrincipalId, PolicyRuleId) {
         (
             ActionVersionRef {
@@ -688,8 +803,8 @@ mod tests {
             Timestamp::from_unix_ms(1),
         )
         .unwrap();
-        let (resource, parameters) = snapshot
-            .canonicalize(action, Some("application/json"), &[], br#"{"input":1}"#)
+        let (resource, parameters, _) = snapshot
+            .canonicalize(&fixed_action(action), json_request(br#"{"input":1}"#))
             .unwrap();
         let request = AuthorizationRequest {
             principal: rekey_domain::authorization::Principal {
@@ -718,16 +833,14 @@ mod tests {
         assert!(
             snapshot
                 .canonicalize(
-                    action,
-                    Some("application/json"),
-                    &[],
-                    br#"{"input":1,"input":2}"#
+                    &fixed_action(action),
+                    json_request(br#"{"input":1,"input":2}"#)
                 )
                 .is_err()
         );
         assert!(
             snapshot
-                .canonicalize(action, Some("application/json"), &[], br#"{"other":1}"#)
+                .canonicalize(&fixed_action(action), json_request(br#"{"other":1}"#))
                 .is_err()
         );
 
@@ -788,8 +901,8 @@ mod tests {
             Timestamp::from_unix_ms(1),
         )
         .unwrap();
-        let (resource, parameters) = snapshot
-            .canonicalize(action, Some("application/json"), &[], br#"{"input":1}"#)
+        let (resource, parameters, _) = snapshot
+            .canonicalize(&fixed_action(action), json_request(br#"{"input":1}"#))
             .unwrap();
         let mut request = AuthorizationRequest {
             principal: rekey_domain::authorization::Principal {

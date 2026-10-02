@@ -26,7 +26,9 @@ fn action(origin: &str, path: &str) -> FixedHttpAction {
         credential_id: CredentialId::new_random(),
         origin: HttpsOrigin::parse(origin).unwrap(),
         method: FixedMethod::Get,
-        exact_path: ExactPath::parse(path).unwrap(),
+        target: rekey_domain::action::ActionTarget::Fixed {
+            path: ExactPath::parse(path).unwrap(),
+        },
         auth: HeaderCredentialUse::new(
             HeaderName::new("authorization").unwrap(),
             HeaderPrefix::new("Bearer ").unwrap(),
@@ -479,4 +481,23 @@ fn default_registry_cannot_select_enterprise_sources_or_plugins() {
         resolve_builtin(CredentialKind::OpaqueToken, &ordinary),
         Err(ConnectorSelectionError::SelectionRejected)
     );
+}
+
+#[test]
+fn current_connector_profiles_reject_template_targets() {
+    let mut action = action("https://api.github.com", "/installation/repositories");
+    action.target=serde_json::from_value(json!({
+        "kind":"template","target":{"path":"/installation/repositories","params":{},"query":{}},
+        "fixed_headers":{},"body_schema":null,
+        "source":{"template":"team@1","capability":"read","action_index":0,"digest":vec![1;32],"signer_id":null},
+        "default_policy":{"rule":"allow"}
+    })).unwrap();
+    assert!(!github_action_is_reserved(&action));
+    for kind in [
+        CredentialKind::OpaqueToken,
+        CredentialKind::GitHubAppInstallation,
+        CredentialKind::KeycloakTokenExchange,
+    ] {
+        assert!(resolve_builtin(kind, &action).is_err());
+    }
 }

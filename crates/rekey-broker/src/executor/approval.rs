@@ -20,6 +20,7 @@ use super::{ActionExecutor, ExecuteRequest, deadline, validate_request};
 
 pub(super) struct EvaluatedAuthorization {
     pub action: rekey_domain::action::FixedHttpAction,
+    pub target: rekey_domain::template::RenderedTarget,
     pub ctx: ExecutionAuditContext,
     pub decision: Decision,
     pub approval_context: Option<ApprovalContext>,
@@ -67,11 +68,15 @@ impl ActionExecutor {
             self.audit_denial(effect_deadline, &ctx, reason).await?;
             return Err(BrokerError::Denied(reason));
         }
-        let (resource, parameters) = match snapshot.snapshot().canonicalize(
-            request.action,
-            request.content_type.as_deref(),
-            &request.extra_headers,
-            &request.body,
+        let (resource, parameters, target) = match snapshot.snapshot().canonicalize(
+            &action,
+            rekey_policy::ActionRequest {
+                params: &request.params,
+                query: &request.query,
+                content_type: request.content_type.as_deref(),
+                headers: &request.extra_headers,
+                body: &request.body,
+            },
         ) {
             Ok(value) => value,
             Err(_) => {
@@ -161,6 +166,7 @@ impl ActionExecutor {
         };
         Ok(EvaluatedAuthorization {
             action,
+            target,
             ctx,
             approval_context,
             decision,

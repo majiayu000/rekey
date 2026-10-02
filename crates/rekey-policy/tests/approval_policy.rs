@@ -84,8 +84,26 @@ fn validated(value: &Value) -> ValidatedSnapshot {
 }
 
 fn request(fixture: &Fixture, snapshot: &ValidatedSnapshot) -> AuthorizationRequest {
-    let (resource, parameters) = snapshot
-        .canonicalize(fixture.action, Some("application/json"), &[], b"{}")
+    let action = serde_json::from_value(json!({
+        "id": fixture.action.action_id, "name":"policy-test", "version":fixture.action.version,
+        "enabled":true,"credential_id":ActionId::new_random(),"origin":"https://example.com",
+        "method":"POST","target":{"kind":"fixed","path":"/test"},
+        "auth":{"header_name":"authorization","prefix":"Bearer "},"timeout_ms":5000,
+        "request_policy":{"max_body_bytes":4096,"allowed_extra_headers":[]},
+        "response_policy":{"max_body_bytes":4096,"allowed_headers":[]}
+    }))
+    .unwrap();
+    let (resource, parameters, _) = snapshot
+        .canonicalize(
+            &action,
+            rekey_policy::ActionRequest {
+                params: &Default::default(),
+                query: &Default::default(),
+                content_type: Some("application/json"),
+                headers: &[],
+                body: b"{}",
+            },
+        )
         .unwrap();
     AuthorizationRequest {
         principal: Principal {

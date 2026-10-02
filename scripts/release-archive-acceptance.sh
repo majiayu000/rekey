@@ -150,7 +150,7 @@ activate_snapshot() {
     --password-stdin | json_field 'capability_token')"
 }
 
-echo "== init, serve, unlock, format v21"
+echo "== init, serve, unlock, format v22"
 init_out="$(printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin)"
 printf '%s\n' "$init_out" | rg -q '^RKREC1-' || {
   echo "init did not print a recovery key" >&2
@@ -167,8 +167,8 @@ done
 [[ -S "$STATE/runtime/admin.sock" ]] || { echo "broker did not start"; exit 1; }
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" unlock --password-stdin >/dev/null
 status="$("$REKEY" --state-dir "$STATE" status)"
-printf '%s\n' "$status" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin)["format_version"] == 21 else 1)' || {
-  echo "expected format_version 21: $status" >&2
+printf '%s\n' "$status" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin)["format_version"] == 22 else 1)' || {
+  echo "expected format_version 22: $status" >&2
   exit 1
 }
 

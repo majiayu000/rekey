@@ -193,7 +193,7 @@ impl ActorFixture {
             )
             .await
             .unwrap();
-        let action: FixedHttpAction = serde_json::from_value(serde_json::json!({"id":rekey_domain::ids::ActionId::new_random(),"name":"actor-action","version":1,"enabled":true,"credential_id":credential.id,"origin":"https://api.example.com","method":"POST","exact_path":"/business","auth":{"header_name":"authorization","prefix":"Bearer "},"timeout_ms":30_000,"request_policy":{"max_body_bytes":1024,"allowed_extra_headers":[]},"response_policy":{"max_body_bytes":1024,"allowed_headers":["content-type"]}})).unwrap();
+        let action: FixedHttpAction = serde_json::from_value(serde_json::json!({"id":rekey_domain::ids::ActionId::new_random(),"name":"actor-action","version":1,"enabled":true,"credential_id":credential.id,"origin":"https://api.example.com","method":"POST","target":{"kind":"fixed","path":"/business"},"auth":{"header_name":"authorization","prefix":"Bearer "},"timeout_ms":30_000,"request_policy":{"max_body_bytes":1024,"allowed_extra_headers":[]},"response_policy":{"max_body_bytes":1024,"allowed_headers":["content-type"]}})).unwrap();
         action.validate().unwrap();
         let (terminals, terminal_worker) = crate::audit::spawn_terminal_worker(authority.clone());
         let lifecycle = Arc::new(Lifecycle::new());
@@ -243,6 +243,8 @@ impl ActorFixture {
             action: ctx.action,
             content_type: Some("application/json".into()),
             extra_headers: vec![],
+            params: Default::default(),
+            query: Default::default(),
             body: b"{}".to_vec(),
             approval_grants: vec![],
         };
@@ -2058,11 +2060,17 @@ async fn actor_approle_cancel_business_keeps_ordinary_effect_and_cleanup_ownersh
         let effect = AtomicU8::new(EFFECT_NOT_STARTED);
         let cleanup_owned = AtomicBool::new(false);
         let lifecycle = f.executor.lifecycle.clone();
+        let target = RenderedTarget {
+            path: f.action.target.fixed_path().unwrap().clone(),
+            params: Default::default(),
+            query: Default::default(),
+        };
         let (result, ()) = tokio::join!(
             f.executor.run_started_owned(
                 &mut started,
                 &request,
                 &f.action,
+                &target,
                 end,
                 &effect,
                 &cleanup_owned,
@@ -2215,6 +2223,11 @@ async fn approle_admitted(f: &ActorFixture) -> AdmittedExecution {
         executor,
         request,
         action: f.action.clone(),
+        target: RenderedTarget {
+            path: f.action.target.fixed_path().unwrap().clone(),
+            params: Default::default(),
+            query: Default::default(),
+        },
         effect_deadline: end,
         started,
         _permit: permit,

@@ -1,11 +1,11 @@
 use sha2::{Digest, Sha256};
 
-/// Schema v20. This SQL text is the single source of truth; `schema_digest()`
+/// Schema v22. This SQL text is the single source of truth; `schema_digest()`
 /// hashes its normalized form to detect accidental drift, not tampering.
 pub const SCHEMA_SQL: &str = r#"
 CREATE TABLE vault_header (
     singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
-    format_version     INTEGER NOT NULL CHECK (format_version = 21),
+    format_version     INTEGER NOT NULL CHECK (format_version = 22),
     vault_id           BLOB NOT NULL CHECK (length(vault_id) = 16),
     crypto_suite       TEXT NOT NULL CHECK (crypto_suite = 'rkca-aes256gcm-argon2id-hkdfsha256-v1'),
     created_at_ms      INTEGER NOT NULL,
@@ -74,7 +74,7 @@ CREATE TABLE actions (
     credential_id                 BLOB NOT NULL REFERENCES credentials(credential_id),
     origin                        TEXT NOT NULL,
     method                        TEXT NOT NULL,
-    exact_path                    TEXT NOT NULL,
+    target_json                   TEXT NOT NULL,
     auth_header                   TEXT NOT NULL,
     auth_prefix                   TEXT NOT NULL,
     request_max_bytes             INTEGER NOT NULL,
@@ -83,6 +83,8 @@ CREATE TABLE actions (
     allowed_response_headers_json TEXT NOT NULL,
     timeout_ms                    INTEGER NOT NULL,
     created_at_ms                 INTEGER NOT NULL,
+    seal_nonce                    BLOB NOT NULL CHECK (length(seal_nonce) = 12),
+    seal_ciphertext               BLOB NOT NULL CHECK (length(seal_ciphertext) = 16),
     PRIMARY KEY (action_id, version)
 ) STRICT;
 

@@ -302,7 +302,10 @@ pub enum ConnectorSelectionError {
 /// The public portion of the existing closed GitHub App action profile.
 /// Request-body, header, and deadline constraints remain Broker-owned.
 pub fn github_action_is_reserved(action: &FixedHttpAction) -> bool {
-    let path = action.exact_path.as_str();
+    let Some(path) = action.target.fixed_path() else {
+        return false;
+    };
+    let path = path.as_str();
     let closed_path = (action.method == rekey_domain::action::FixedMethod::Get
         && path == "/installation/repositories")
         || (action.method == rekey_domain::action::FixedMethod::Post
@@ -333,6 +336,9 @@ pub fn resolve_builtin(
     credential_kind: CredentialKind,
     action: &FixedHttpAction,
 ) -> Result<BuiltInConnector, ConnectorSelectionError> {
+    if action.target.fixed_path().is_none() {
+        return Err(ConnectorSelectionError::SelectionRejected);
+    }
     #[cfg(not(feature = "lab"))]
     if action.native_plugin.is_some() {
         return Err(ConnectorSelectionError::SelectionRejected);
@@ -699,7 +705,7 @@ mod keychain_contract_tests {
         let mut action: FixedHttpAction=serde_json::from_value(serde_json::json!({
             "id":"11111111-1111-4111-8111-111111111111","name":"fixture","version":1,"enabled":true,
             "credential_id":"22222222-2222-4222-8222-222222222222","origin":"https://api.example.com","method":"POST",
-            "exact_path":"/business","auth":{"header_name":"authorization","prefix":"Bearer "},"timeout_ms":30000,
+            "target":{"kind":"fixed","path":"/business"},"auth":{"header_name":"authorization","prefix":"Bearer "},"timeout_ms":30000,
             "request_policy":{"max_body_bytes":1024,"allowed_extra_headers":[]},"response_policy":{"max_body_bytes":1024,"allowed_headers":[]}
         })).unwrap();
         assert_eq!(
@@ -707,7 +713,9 @@ mod keychain_contract_tests {
             BuiltInConnector::MacosKeychainSourceV1
         );
         action.origin = HttpsOrigin::parse("https://api.github.com").unwrap();
-        action.exact_path = ExactPath::parse("/repos/acme/rekey/issues").unwrap();
+        action.target = rekey_domain::action::ActionTarget::Fixed {
+            path: ExactPath::parse("/repos/acme/rekey/issues").unwrap(),
+        };
         assert!(resolve_builtin(CredentialKind::MacosKeychainSource, &action).is_err());
     }
 }

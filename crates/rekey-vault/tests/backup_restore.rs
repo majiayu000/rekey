@@ -862,6 +862,16 @@ async fn invalid_snapshot_cut_fails_before_backup_release_and_restore_install() 
     let before: u64 = source
         .query_row("SELECT COUNT(*) FROM audit_events", [], |row| row.get(0))
         .unwrap();
+    let released_before: u64 = source
+        .query_row(
+            "SELECT COUNT(*) FROM audit_events WHERE event_type IN (?1, ?2)",
+            [
+                event_type::BACKUP_RELEASE_AUTHORIZED,
+                event_type::BACKUP_CREATED,
+            ],
+            |row| row.get(0),
+        )
+        .unwrap();
     source
         .execute("UPDATE audit_events SET sequence=-sequence", [])
         .unwrap();
@@ -877,7 +887,38 @@ async fn invalid_snapshot_cut_fails_before_backup_release_and_restore_install() 
     let after: u64 = source
         .query_row("SELECT COUNT(*) FROM audit_events", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(after, before);
+    assert_eq!(after, before + 1);
+    let fault: (String, String, String) = source
+        .query_row(
+            "SELECT event_type, outcome, reason_code FROM audit_events WHERE sequence > 0",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        fault,
+        (
+            event_type::RUNTIME_FAULTED.to_owned(),
+            outcome::FAILURE.to_owned(),
+            "persisted-state-integrity-failed".to_owned(),
+        )
+    );
+    let released_after: u64 = source
+        .query_row(
+            "SELECT COUNT(*) FROM audit_events WHERE event_type IN (?1, ?2)",
+            [
+                event_type::BACKUP_RELEASE_AUTHORIZED,
+                event_type::BACKUP_CREATED,
+            ],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(released_after, released_before);
+    assert_eq!(handle.status().await.unwrap().state, "faulted");
+    assert!(matches!(
+        handle.action_list().await,
+        Err(AuthorityError::Faulted)
+    ));
     drop(source);
     handle
         .shutdown(Some(common::password_proof()))

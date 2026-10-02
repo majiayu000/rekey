@@ -170,6 +170,142 @@ struct ActionForm: View {
     }
 }
 
+struct TemplateForm: View {
+    @EnvironmentObject var model: AppModel
+    @Environment(\.dismiss) var dismiss
+    @State private var provider = "github-pat"
+    @State private var origin = ""
+    @State private var targets = "GET /v1/models"
+    @State private var credential = ""
+    @State private var name = ""
+    @State private var selected: Set<String> = []
+    @State private var bindings: [[String: String]] = [[:]]
+    @State private var catalog: ProviderTemplateCatalog?
+    @State private var catalogSource: Data?
+    @State private var catalogWorkspace = ""
+    @State private var catalogRevision = UUID()
+    @State private var loadRevision = UUID()
+    @State private var loading = false
+    @State private var proof = ""
+    @State private var recovery = false
+    @State private var failure: String?
+    private var sourceRevision: String { provider + "\n" + origin + "\n" + targets }
+    private var complete: Bool {
+        guard let catalog else { return false }
+        return !name.isEmpty && !credential.isEmpty && !selected.isEmpty && singleLine(proof)
+            && bindings.allSatisfy { group in catalog.template.bindings.keys.allSatisfy { !(group[$0] ?? "").isEmpty } }
+            && model.acceptsNativeCompletion(catalogRevision, workspace: catalogWorkspace)
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("从模板安装操作").font(.system(size: 24, weight: .semibold))
+            Text("选定能力与固定范围。安装后仍需配置授权策略和 Agent 会话。").font(.system(size: 12)).foregroundStyle(.secondary)
+            Picker("服务", selection: $provider) {
+                Text("GitHub 个人令牌").tag("github-pat")
+                Text("Anthropic").tag("anthropic")
+                Text("OpenAI").tag("openai")
+                Text("自定义 Bearer").tag("generic-bearer")
+            }
+            if provider == "generic-bearer" {
+                TextField("HTTPS Origin", text: $origin).textFieldStyle(.roundedBorder)
+                Text("每行一个固定目标，例如 GET /v1/models，最多 20 个。").font(.system(size: 11)).foregroundStyle(.secondary)
+                TextEditor(text: $targets).font(.system(size: 12, design: .monospaced)).frame(height: 64)
+                Button("读取能力") { Task { await loadCatalog() } }.disabled(loading || model.busy)
+            }
+            if loading { ProgressView().controlSize(.small) }
+            if let catalog {
+                Text(catalog.template.origin).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
+                TextField("操作名称前缀", text: $name).textFieldStyle(.roundedBorder)
+                Picker("使用凭证", selection: $credential) {
+                    Text("选择 API Key / 访问令牌").tag("")
+                    ForEach(model.credentials.filter { $0.active && $0.kind == "opaque-token" }) { Text($0.label).tag($0.id) }
+                }
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(catalog.template.capabilities) { capability in
+                            Toggle(isOn: Binding(get: { selected.contains(capability.id) }, set: { if $0 { selected.insert(capability.id) } else { selected.remove(capability.id) } })) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(capability.id).font(.system(size: 13, weight: .semibold))
+                                    Text(capability.suggestedRule == "require-approval" ? "模板建议：每次审批" : "模板建议：授权范围内允许").font(.system(size: 11)).foregroundStyle(.secondary)
+                                    ForEach(Array(capability.actions.enumerated()), id: \.offset) { _, action in
+                                        Text(action.method + " " + action.path).font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
+                                    }
+                                }
+                            }
+                        }
+                        if !catalog.template.bindings.isEmpty {
+                            Divider()
+                            ForEach(bindings.indices, id: \.self) { index in
+                                HStack(alignment: .top) {
+                                    VStack(alignment: .leading) {
+                                        Text("固定范围 \(index + 1)").font(.system(size: 12, weight: .semibold))
+                                        ForEach(catalog.template.bindings.keys.sorted(), id: \.self) { key in
+                                            TextField(key, text: Binding(get: { bindings[index][key] ?? "" }, set: { bindings[index][key] = $0 })).textFieldStyle(.roundedBorder)
+                                        }
+                                    }
+                                    if bindings.count > 1 { Button("移除") { bindings.remove(at: index) } }
+                                }
+                            }
+                            Button("添加一组范围") { bindings.append([:]) }
+                        }
+                    }.padding(.vertical, 4)
+                }.frame(maxHeight: 280)
+                Toggle("使用恢复密钥", isOn: $recovery).font(.system(size: 12))
+                SecureField(recovery ? "恢复密钥" : "当前保险库密码", text: $proof).textFieldStyle(.roundedBorder)
+            }
+            if let failure { Text(failure).font(.system(size: 12)).foregroundStyle(.red) }
+            HStack {
+                Button("取消") { proof = ""; dismiss() }.keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("安装所选能力") { submit() }.buttonStyle(PrimaryButton()).disabled(!complete || loading || model.busy)
+            }
+        }.padding(26).frame(width: 600).background(canvas)
+            .task(id: sourceRevision) {
+                loadRevision = UUID(); catalog = nil; catalogSource = nil; selected = []; bindings = [[:]]; proof = ""; loading = false
+                if provider != "generic-bearer" { await loadCatalog() }
+            }
+            .onDisappear { proof = ""; loadRevision = UUID() }
+    }
+    private func sourceRequest() throws -> Data {
+        var source: [String: Any] = ["kind": provider]
+        if provider == "generic-bearer" {
+            source["origin"] = origin
+            source["actions"] = try targets.split(whereSeparator: \.isNewline).map { line -> [String: String] in
+                let parts = line.split(maxSplits: 1, whereSeparator: \.isWhitespace)
+                guard parts.count == 2 else { throw UIError(message: "每个目标应为 METHOD /path。") }
+                return ["method": String(parts[0]), "path": String(parts[1]).trimmingCharacters(in: .whitespaces)]
+            }
+        }
+        return try JSONSerialization.data(withJSONObject: ["source": source], options: [.sortedKeys])
+    }
+    private func loadCatalog() async {
+        let requestID = UUID(), revision = model.nativeFlowRevision, workspace = model.stateDirectory, client = model.cli
+        loadRevision = requestID; loading = true; catalog = nil; catalogSource = nil; failure = nil
+        defer { if loadRevision == requestID { loading = false } }
+        do {
+            let source = try sourceRequest()
+            let result = try await Task.detached { try client.templateCatalog(source: source) }.value
+            guard !Task.isCancelled && loadRevision == requestID && model.acceptsNativeCompletion(revision, workspace: workspace) else { return }
+            catalog = result; catalogSource = source; catalogWorkspace = workspace; catalogRevision = revision
+            name = result.template.display; selected = []; bindings = [[:]]
+        } catch { if loadRevision == requestID { failure = error.localizedDescription } }
+    }
+    private func submit() {
+        guard complete, let source = catalogSource else { return }
+        do {
+            guard var request = try JSONSerialization.jsonObject(with: source) as? [String: Any] else { throw UIError(message: "模板来源无效。") }
+            request["credential_id"] = credential; request["bindings"] = bindings; request["capabilities"] = selected.sorted(); request["name_prefix"] = name
+            request["timeout_ms"] = 30000; request["request_max_bytes"] = 1024 * 1024; request["allowed_extra_headers"] = [] as [String]
+            request["response_max_bytes"] = 4 * 1024 * 1024; request["allowed_response_headers"] = ["content-type"]
+            var operation = Operation(title: "安装模板", detail: "", arguments: ["template", "install", "--stdin-request"], targetDirectory: catalogWorkspace)
+            operation.templateRequest = try JSONSerialization.data(withJSONObject: request, options: [.sortedKeys])
+            let currentProof = proof, useRecovery = recovery
+            proof = ""; dismiss()
+            Task { await model.perform(operation, proof: currentProof, recovery: useRecovery) }
+        } catch { failure = error.localizedDescription }
+    }
+}
+
 struct SessionForm: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.dismiss) var dismiss
@@ -235,7 +371,7 @@ struct ApprovalDetailView: View {
                         row("参数 schema", challenge.schema_id)
                         row("参数 SHA-256", challenge.parameter_sha256)
                         if let action = details.matchingAction(in: model.actions) {
-                            row("本机当前操作定义（未包含在签名信封内）", "\(action.name)\n\(action.method) \(action.origin)\(action.exact_path)")
+                            row("本机当前操作定义（未包含在签名信封内）", "\(action.name)\n\(action.method) \(action.origin)\(action.target.summary)")
                         } else {
                             Text("本机列表中没有相同 ID 与版本的操作定义，无法在此显示 HTTP 目标。").font(.system(size: 12)).foregroundStyle(.secondary)
                         }
@@ -385,7 +521,7 @@ struct NativeApprovalForm: View {
             Text("固定操作：\(details.envelope.challenge.action_id)@\(details.envelope.challenge.action_version)")
                 .font(.system(size: 12, design: .monospaced))
             if let action {
-                Text("本机相同版本的目标（不是信封中的授权证明）：\(action.method) \(action.origin)\(action.exact_path)").font(.system(size: 12))
+                Text("本机相同版本的目标（不是信封中的授权证明）：\(action.method) \(action.origin)\(action.target.summary)").font(.system(size: 12))
             } else { Text("缺少相同版本的本机操作定义；请刷新核对后再执行，不能使用最新版本替代。").foregroundStyle(.secondary) }
             HStack {
                 Button("选择 grant 1（最多 4 KiB）") { loadGrant(second: false) }

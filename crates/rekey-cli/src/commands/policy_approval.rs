@@ -181,20 +181,20 @@ pub fn approval_prepare(
     agent_socket: &Path,
     action: &str,
     capability: &str,
-    body_file: Option<&Path>,
-    content_type: Option<String>,
-    headers: &[String],
+    request: &crate::RequestArgs,
 ) -> Result<(), CliError> {
     let (action_id, version) = parse_action_ref(action)?;
     let capability_token = capability_value(capability)?;
-    let body = request_body(body_file)?;
-    let extra_headers = request_headers(headers)?;
+    let body = request_body(request.body_file.as_deref())?;
+    let extra_headers = request_headers(&request.headers)?;
     let metadata = serde_json::to_vec(&ipc::PrepareApprovalMeta {
         capability_token,
         action_id,
         action_version: version,
-        content_type,
+        content_type: request.content_type.clone(),
         extra_headers,
+        params: request_values(&request.params)?,
+        query: request_values(&request.query)?,
     })
     .map_err(|_| CliError::local("USAGE", "cannot encode approval request"))?;
     let (meta, _) = Client::connect_with_response_timeout(
@@ -227,6 +227,24 @@ pub(super) fn request_body(body_file: Option<&Path>) -> Result<Zeroizing<Vec<u8>
         }
         None => Ok(Zeroizing::new(Vec::new())),
     }
+}
+
+pub(super) fn request_values(
+    values: &[String],
+) -> Result<rekey_domain::template::TemplateValues, CliError> {
+    let mut result = rekey_domain::template::TemplateValues::new();
+    for value in values {
+        let (name, value) = value
+            .split_once('=')
+            .ok_or_else(|| CliError::local("USAGE", "parameters require NAME=VALUE"))?;
+        if name.is_empty() || result.insert(name.to_owned(), value.to_owned()).is_some() {
+            return Err(CliError::local(
+                "USAGE",
+                "parameter names must be nonempty and unique",
+            ));
+        }
+    }
+    Ok(result)
 }
 
 pub(super) fn request_headers(headers: &[String]) -> Result<Vec<(String, String)>, CliError> {
