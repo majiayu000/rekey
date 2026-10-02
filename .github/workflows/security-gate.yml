@@ -18,7 +18,10 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    # The expanded workspace takes ~23 minutes on hosted macOS before the
+    # dependency audit, release-process gates and native UI/Keychain acceptance.
+    # Preserve every gate and its operation deadline, with room for cold builds.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772

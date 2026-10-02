@@ -1,0 +1,173 @@
+{
+  "date": "2026-10-02",
+  "scope": "Disposable local macOS/Linux services and Docker references, synthetic credentials only; no production deployment or physical HA attestation",
+  "base_commit": "acfa8fea6a0a620a80963008ce3fc5dc3d580cff",
+  "local_acceptance_code_commit": "20cad7b5d8b01de57b522a1613702d5eef3bc046",
+  "workspace": {
+    "passed": 1032,
+    "failed": 0,
+    "ignored": 1,
+    "targets": 83,
+    "command": "cargo test --workspace --locked -- --test-threads=1",
+    "exit_code": 0,
+    "log_sha256": "84b5914e53ca631ead99e52102d7a6d4cd303a69c1295b9297a9d26256ad51fd",
+    "note": "Repeated on the final follow-up tree before the aggregate-memory-gate commit; the Linux-only OOM case is executed by required Ubuntu CI."
+  },
+  "python_contracts": {
+    "audit_delivery": 28,
+    "audit_archive": 23,
+    "controlplane": 86,
+    "all_passed": true
+  },
+  "docker_dr": {
+    "scope": "Docker reference; real Broker/CLI/UDS plus injected local TLS; synthetic credentials",
+    "stage": "complete",
+    "script_sha256": "84b8e70b14c0661238f8c45d92201928ede4fe54edaaad5da3232171080c15c4",
+    "image_id": "sha256:7466ba795a1acc0c8aaed8c14bfbeed8b51e4fe573127f87b7919acce07ce8cb",
+    "engine": "29.5.3",
+    "primary_id": "195f1b7fe75466d450a5aaa6b101d5dd3332f92b931c9ff97e3ac6e949f933b1",
+    "standby_id": "8ad33dff3e2355535bd9d9e71df810188e2f13f08e569876895f28b56d17a6e3",
+    "partition_promotion_refused": true,
+    "old_primary_restart_refused": true,
+    "fencing_validated": true,
+    "promotion_validated": true,
+    "old_capability_rejected": true,
+    "snapshot_cut": {
+      "audit_sequence": 9,
+      "policy": {
+        "version": 1,
+        "bundle_sha256": "236fb5f2ed4bd55e2c4b48df0ed8c712046da1bd5712cc44b29b95a1d83fef6a"
+      }
+    },
+    "lost_credential_writes": 1,
+    "lost_audit_sequence": 12,
+    "rto_ms": 1361.310125,
+    "rpo_observed_ack_gap_ms": 1592.508167,
+    "rpo_commit_gap_bounds_ms": [
+      1420.227833,
+      1760.707334
+    ],
+    "cleanup_complete": true,
+    "pass": true
+  },
+  "native_gui": {
+    "scope": "isolated native macOS QA app + actual Broker + test-only TLS transport + synthetic credentials",
+    "gui_steps": [
+      "draft-read",
+      "exact-private-draft-export",
+      "step-up-trust-install",
+      "step-up-policy-activate",
+      "explicit-principal-session-create",
+      "private-session-export",
+      "pending-detail",
+      "original-body-preview",
+      "private-request-export",
+      "independent-signer-review-and-sign",
+      "grant-import",
+      "single-confirmed-native-execute-http200",
+      "capability-cleared-and-submit-disabled"
+    ],
+    "upstream_effects": 1,
+    "cli_replay_exit": 4,
+    "private_export_modes": "0600",
+    "draft_sha256": "0730168608d6fe7139d5f4b561d9da1be87c52ae5a718f65ff9acdb1af2265e5",
+    "app_sha256": "fa37889505ca99189c82ddd9ebe6e382c1255cc83696107d0b7cc3f8d0edf1c8",
+    "pass": true,
+    "synthetic_state_removed": true,
+    "qa_preferences_removed": true
+  },
+  "pkcs11": {
+    "scope": "SoftHSM 2.6 software PKCS11 module in isolated Docker; no physical HSM",
+    "image": "sha256:1f89c650b0879a4e8954ce7b79fa8d1fe33f0b8b8daa780a85a03acadaca3db7",
+    "library_sha256": "33386d22567279a9a2d07ea075dd91c82373f55dad2bfe072f9608acd208df61",
+    "harness_sha256": "7466aaf2cee8b4160dc121ca3e8ae61eef84754cd2f82297443c0de793542c86",
+    "cases": [
+      "token-generated-ed25519",
+      "strict-private-key-attributes-checked-by-production-signer",
+      "module-hash-version-slot-serial-public-key-pinned",
+      "real-controlling-tty-hidden-pin",
+      "wrong-pin-no-grant",
+      "valid-pin-verified-signature",
+      "broker-accepts-grant",
+      "wrong-session-and-body-denied",
+      "replay-denied",
+      "one-upstream-effect"
+    ],
+    "cleanup_complete": true,
+    "pass": true
+  },
+  "keychain_source": {
+    "pass": true,
+    "command": "python3 scripts/test-keychain-live.py --bin-dir target/debug",
+    "script_sha256": "f80bdb719ce0a9e05757fc1b0029132edc84281daa5d2b4dfa3de39003f226fa",
+    "log_sha256": "3df3e313317a5ebd52bfb1502dbc7b1cb99cda2b2baa6e344845076fcebbc6b9",
+    "cases": [
+      "actual private file-Keychain item and ACL",
+      "Broker to local TLS action",
+      "reflected value denied",
+      "locked Keychain denied without prompt or extra upstream effect",
+      "audit secret scan",
+      "Keychain and fixture cleanup"
+    ]
+  },
+  "keychain_desktop": {
+    "pass": true,
+    "cases": [
+      "cross-process remembered unlock",
+      "expired entry deleted"
+    ],
+    "log_sha256": "d34387b76fc35c8c8873c5256b0798b4db1f661babecda68e3bcf51f9e47520f"
+  },
+  "keycloak": {
+    "scope": "real Keycloak Standard V2 + real BrokerRuntime/UDS + injected local TLS transport; not public production-screening acceptance",
+    "image": "quay.io/keycloak/keycloak:26.7.3",
+    "image_id": "sha256:ff4257d0d64efbe99ed1ddfaf07765cc3c36dc7518bf8324d41961327f441c54",
+    "pass": true,
+    "secret_scan_passed": true,
+    "cleanup": {
+      "owned_container_removed": true,
+      "owned_container_absent": true,
+      "temporary_secret_directory_removed": true,
+      "broker_stopped": true
+    }
+  },
+  "release_scripts_passed": [
+    "p3-approval-acceptance.sh",
+    "p7-vault-kv-source.sh",
+    "p7-vault-dynamic-source.sh",
+    "p2-github-app.sh",
+    "p6-github-app-extension.sh",
+    "p4-workload-identity-acceptance.sh",
+    "p1-service-manager.sh (Darwin launchd)"
+  ],
+  "prior_ci_evidence": {
+    "commit": "cc15af0dca2583775e78571ce9ef7244c488df51",
+    "run": "https://github.com/majiayu000/rekey/actions/runs/36984913304",
+    "g2": "passed, including Docker DR",
+    "linux_kernel_subset": "passed native artifact, seccomp, address-space, parent death before/after READY and cancellation cleanup; aggregate OOM is a separate new test",
+    "ubuntu": "failed later at libc signal-handler representation in PKCS11 fixture; corrected in 2e3b20c",
+    "macos": "Rust passed, then failed at Python depth-error classification fixture; corrected in 2e3b20c"
+  },
+  "remaining_external_acceptance": [
+    "physical HSM and vendor driver",
+    "customer cloud and 1Password permissions",
+    "managed IdP/SCIM revocation across two deployed nodes",
+    "customer SIEM/WORM and Legal Hold",
+    "separate physical fault domains and production RPO/RTO"
+  ],
+  "not_implemented_in_reference": [
+    "continuous replication",
+    "automatic failover/routing"
+  ],
+  "provenance": "Generated from retained local logs/receipts. This record is not an independent security review; current required CI results are attached to PR #59.",
+  "aggregate_memory_gate": {
+    "kernel_execution": "pending required Ubuntu CI",
+    "linux_workspace_check": "passed",
+    "linux_broker_clippy": "passed",
+    "bounded_unlimited_probe": "ALLOCATED 100663296",
+    "sources": {
+      "crates/rekey-broker/src/github_issue_plugin/linux_tests.rs": "f85a876e6e55c5da03d89008ab839892b58df785d1fd6b79834c3f98a47afc33",
+      "crates/rekey-broker/src/github_issue_plugin/linux_probe.c": "ff0c74cdb15e575a4441ccb7176e614cca416a0cd4e3ae907d5bc4abe9b042fc"
+    }
+  }
+}

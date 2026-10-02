@@ -27,3 +27,12 @@ Pure host tests cover exact mount/cgroup identity parsing, ambiguity/escape, mis
 Actual kernel acceptance requires a dedicated nonroot GNU Linux VM with cgroup-v2 memory delegation/cgroup.kill and bwrap/userns. Record kernel/systemd/bwrap/arch and positive real artifact/Broker protocols. Test aggregate charge using safe bounded multiple trusted startup allocations with an unlimited successful control, OOM/group events/populated drain; payload seccomp fork remains denied. Inject parent/launcher death at fork, guardian exec/ACK, membership, bwrap initialization/raw_clone and READY phases, observe leaf emptiness/reaping/zero late effects. Missing delegation, read-only/wrong owner, bad limit readback, guardian failure, repeated cancellation, elapsed deadline and cleanup error must reject without exchange. User deferred real environments; these gates remain open until actually run.
 
 References: https://docs.kernel.org/admin-guide/cgroup-v2.html and https://systemd.io/CGROUP_DELEGATION/ . No host delegation is installed or changed by implementing source.
+
+The aggregate-memory acceptance uses only the trusted C test probe, before any
+payload seccomp boundary: three processes each touch 32 MiB while retaining the
+64 MiB per-process address-space ceiling. An unlimited sibling test leaf must
+complete all 96 MiB with no OOM; a leaf prepared by the production code must
+record `oom`, `oom_kill` and `oom_group_kill`, kill the whole group and reach
+`populated=0` before removal. This bounded fixture proves aggregate charged-memory
+enforcement independently of the existing AS-limit and fork-denial tests. It
+does not enable payload fork or relax a production limit.

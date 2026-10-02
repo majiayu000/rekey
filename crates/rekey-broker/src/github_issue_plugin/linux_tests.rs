@@ -196,6 +196,101 @@ async fn address_space_and_seccomp_survive_self_exec() {
 }
 
 #[tokio::test]
+async fn aggregate_charged_memory_oom_kills_the_entire_group_with_unlimited_control() {
+    use std::os::unix::process::ExitStatusExt;
+    for limited in [false, true] {
+        let mut command = tokio::process::Command::new(probe());
+        command
+            .arg("aggregate-memory")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let domain = if limited {
+            // Use the exact production preparation, including all three limits.
+            // Only this trusted startup fixture can fork before payload seccomp.
+            let payload = linux_cgroup::prepare(
+                linux_cgroup::deadline_ns(Instant::now() + Duration::from_secs(4)).unwrap(),
+            )
+            .unwrap();
+            let directory = FixtureDomain::open(
+                payload.root.as_raw_fd(),
+                &payload.name,
+                libc::O_RDONLY | libc::O_DIRECTORY,
+            );
+            let membership = payload.membership;
+            unsafe {
+                command
+                    .as_std_mut()
+                    .pre_exec(move || linux_cgroup::write_fd(membership.as_raw_fd(), b"0"));
+            }
+            FixtureDomain {
+                root: payload.root,
+                directory,
+                name: payload.name,
+                kill: payload.kill,
+                events: payload.events,
+            }
+        } else {
+            FixtureDomain::attach(command.as_std_mut())
+        };
+        let directory = PathBuf::from(format!("/proc/self/fd/{}", domain.directory.as_raw_fd()));
+        assert_eq!(
+            fs::read_to_string(directory.join("memory.max"))
+                .unwrap()
+                .trim(),
+            if limited { "67108864" } else { "max" }
+        );
+        let child = command.spawn().unwrap();
+        drop(command);
+        let output = tokio::time::timeout(Duration::from_secs(8), child.wait_with_output())
+            .await
+            .expect("bounded aggregate-memory fixture")
+            .unwrap();
+        // Observe natural group exit before an explicit cleanup kill could hide
+        // survivors, and before sampling final OOM counters. The Drop guard still
+        // kills on every failure path.
+        let end = Instant::now() + Duration::from_secs(2);
+        while !linux_cgroup::empty(domain.events.as_raw_fd()).unwrap() {
+            assert!(Instant::now() < end, "fixture left populated payload");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let events = fs::read_to_string(directory.join("memory.events")).unwrap();
+        let count = |name: &str| -> u64 {
+            events
+                .lines()
+                .find_map(|line| line.split_once(' ').filter(|(key, _)| *key == name))
+                .unwrap_or_else(|| panic!("missing kernel memory event {name}: {events}"))
+                .1
+                .parse()
+                .unwrap()
+        };
+        if limited {
+            assert_eq!(output.status.signal(), Some(libc::SIGKILL), "{output:?}");
+            assert!(output.stdout.is_empty(), "allocation must not complete");
+            assert!(count("oom") > 0, "{events}");
+            assert!(
+                count("oom_kill") >= 2,
+                "must kill multiple processes: {events}"
+            );
+            assert!(count("oom_group_kill") > 0, "{events}");
+        } else {
+            assert!(output.status.success(), "{output:?}");
+            assert_eq!(output.stdout, b"ALLOCATED 100663296\n");
+            assert_eq!(count("oom"), 0, "{events}");
+            assert_eq!(count("oom_kill"), 0, "{events}");
+            assert_eq!(count("oom_group_kill"), 0, "{events}");
+            let peak: u64 = fs::read_to_string(directory.join("memory.peak"))
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            assert!(peak >= 96 * 1024 * 1024, "actual aggregate charge: {peak}");
+        }
+        domain.finish();
+    }
+}
+
+#[tokio::test]
 async fn cpu_output_deadline_and_crash_fail_closed_after_confirmed_startup() {
     assert_eq!(sandbox("ok").await, "OK\n");
     for (input, expected) in [
