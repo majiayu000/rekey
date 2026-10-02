@@ -25,6 +25,7 @@ use json::parse_unique_json;
 pub mod oidc_admin;
 mod signed;
 pub use signed::*;
+pub mod templates;
 mod workload;
 pub use workload::*;
 

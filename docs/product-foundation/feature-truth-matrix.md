@@ -8,10 +8,12 @@ The existing historical release evidence below remains version-specific.
 
 | Capability | State | Release | Boundary |
 |---|---|---|---|
-| Provider template validation and rendering | Contract Tested | — | Pure domain foundation: 12 tests and independent review cover fixed origin/header boundaries, immutable administrator bindings, closed parameters/query keys and four built-in templates. No runtime installation, policy signing or execution integration yet. |
+| Provider template validation and rendering | Contract Tested | — | 18 domain and 10 authenticated-package tests plus independent review cover materialized bindings, closed target rules, team Ed25519 packages, schema-bound source digests and offline schema validation. Integrated default workspace 613 passed / 2 ignored. No runtime installation, personal policy signing or execution integration yet. |
 | Additional response sealing encodings | Contract Tested | — | Focused raw/hex/JSON/base64-alignment and actual streaming-window regression tests; independent review findings corrected. Embedded base64 alignment support requires secrets of at least 16 bytes. Full integrated suite tracked separately. |
 | macOS daemon peer identity gate | Contract Tested | — | Signed CLI rejects same-team/wrong-ID and ad-hoc peers before sending any bytes; a real same-team signed release daemon passes status/unlock/shutdown. Ad-hoc/source builds report L1-dev. A point-in-time signature check does not establish the complete same-user attacker contract. |
 | macOS V1–V3 feasibility probes | Contract Tested | — | Synthetic disposable probes and four runner-verdict regressions. First device run: V1 and V2 inconclusive; V3 positive/negative observations passed. No product L1 claim. |
+| Per-call shutdown and desktop reveal proof | Contract Tested | — | Password/recovery proof is required even for Locked shutdown; a prior desktop session no longer authorizes plaintext reveal. Default workspace 597 and lab 1,061 test results passed, each with 2 ignored; real synthetic CLI/UIContract and signed-daemon checks passed. No interactive GUI acceptance claim. |
+| Owned key memory and core-dump hardening | Contract Tested | — | Linux arm64 runtime verifies independent mlocked VRK/DEK pages and fail-warning behavior at zero memlock allowance; process hardening verifies core=0/dumpable=0. This does not cover every temporary cryptographic copy or establish macOS V2 attribution. |
 
 ## Existing product evidence
 

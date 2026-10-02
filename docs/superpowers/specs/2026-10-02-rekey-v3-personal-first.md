@@ -464,6 +464,31 @@ v3 只把"由谁批准"抽象出来。策略规则增加 `approver` 字段：
 - **风险默认值**：`low` 和 `medium` 默认 `allow`（用户可以修改），`high` 默认 `require-approval`，approver 为 `local-presence`。
 - **不支持通配符**：整个格式中不存在"任意 path"的写法。
 
+#### M2 接线合同（GA 前固定）
+
+- 安装将每组管理员 bindings 与所选 capability 的每个 action 展开成独立版本的 Action。
+  物化结果只保留参数占位符；管理员 bindings 已成为固定路径段，调用者不能再次传入或覆盖。
+  origin、method、注入方式与固定头各有一个权威值；持久化的 target 是 fixed path 或封闭的模板 target，
+  不用假路径占位，也不同时维护两份可分歧的目标。反序列化时仍验证 target 的封闭语法。
+- 内置声明和内嵌 schema 随发布物一起认证，来源是发布物的代码签名；这不宣称存在额外的 manifest 签名。
+  团队自定义模板使用 vault 已安装的 Ed25519 策略信任根验证以下包，验签前不能绑定或安装：
+  `{format_version:1, signer_id, template:<声明>, schemas:{<引用>:<JSON Schema>}, signature}`。
+  签名输入是 `RKTEMPLATE\0\x01` 加除 signature 外整个对象的 JCS 字节；signature 使用无 padding 的 base64url。
+  该域与策略、challenge、grant 分离，signer_id 必须匹配信任根。包上限沿用 64 KiB；重复 JSON 键拒绝。
+- body_schema 只引用包中受签名约束的 schema 或内置 schema；不读取调用者文件路径、不下载 URL。
+  缺失引用、不可用 schema、远程 schema 引用都拒绝。首个内置资源为 GitHub create-issue schema。
+  Action 的来源摘要绑定声明及 schema 内容；包验签、物化和实际执行各自的完成状态单独记录。
+- Action 持久化记录必须有内容认证：沿用 VRK 保护的空明文 AEAD seal，使用独立 AAD purpose，
+  覆盖完整执行定义、目标规则、来源摘要、schema、版本与状态。创建、退役、禁用在同一审计事务中更新 seal；
+  读取或执行前验证，VRK 轮换时重新封存，备份和恢复保留并校验。来源摘要本身不是防篡改认证。
+  这项改动进入 GA 前格式草案；旧库一律拒绝，不做迁移。
+- 存储形状固定为 `ActionTarget::Fixed { path }` 或 `ActionTarget::Template { target, fixed_headers, body_schema, source, default_policy }`。
+  `target` 复用已验证的封闭路径规则；schema 是解析后的本地 JSON Schema 文档；source 记录模板/能力/action 索引、
+  来源摘要及可选团队 signer。origin/method/auth 仍只有 Action 自身一份；不复制整个模板或物化对象。
+  固定 Action 创建命令仍可接受 exact_path，并只构造 Fixed；Template 只能由认证包的安装入口产生。
+- prepare-approval 和 execute 共用一次 render/canonicalize 路径。规范哈希含标准化 params、排序 query 与
+  渲染后的 path；HTTP 只消费该规范结果。固定头不能被每次调用的头覆盖。
+
 ### 7.3 首批内置模板（M2 交付）
 
 | 模板 | 覆盖范围 |
@@ -609,7 +634,7 @@ App 新增"活动"页，按 Profile 和模板能力汇总：
   - **格式变化只允许出现在主版本**（v3 → v4）。同一主版本内的次版本和补丁版本不得改格式；需要改格式的功能推迟到下一个主版本。
   - 发布说明首行标明"需要重新初始化：是/否"。
   - App 检测到旧格式时，显示只读提示和重建引导。不读取旧库内容，也不提供迁移。
-- 当前 v21 格式在 v3.0 GA 时冻结为 v3 格式。
+- 当前基础格式为 v21；完成上述必要存储改动后的最终草案在 v3.0 GA 时冻结为 v3 格式。GA 前每次改变实际格式同样拒绝旧库，不做迁移。
 
 **节奏**：每个里程碑结束必须有可下载的版本。feature-truth-matrix 的 `Release` 列作为门槛：上一项没有进入发布包，不开始下一个里程碑。
 

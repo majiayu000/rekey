@@ -161,13 +161,14 @@ pub enum DefaultRule {
     RequireApproval,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind", rename_all = "kebab-case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum TemplateApprover {
     LocalPresence,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DefaultPolicy {
     pub rule: DefaultRule,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -243,29 +244,11 @@ impl TryFrom<TemplateDefinition> for ProviderTemplate {
     type Error = DomainError;
 
     fn try_from(value: TemplateDefinition) -> Result<Self, Self::Error> {
-        let (name, version) = value
-            .template
-            .split_once('@')
-            .ok_or_else(|| invalid("template must have a version"))?;
-        if !slug(name, 100) || decimal(version)? < 1 || value.capabilities.is_empty() {
+        validate_template_id(&value.template)?;
+        if value.capabilities.is_empty() {
             return Err(invalid("invalid template name, version, or capabilities"));
         }
-        if value.credential.kind != CredentialKind::OpaqueToken {
-            return Err(invalid(
-                "provider templates require opaque-token credentials",
-            ));
-        }
-        let injection = &value.credential.inject;
-        HeaderCredentialUse::new(injection.header.clone(), injection.prefix.clone())?;
-        for (header, content) in &value.fixed_headers {
-            if header.is_forbidden()
-                || *header == injection.header
-                || header.as_str() == "authorization"
-                || !content.bytes().all(|b| (0x20..=0x7e).contains(&b))
-            {
-                return Err(invalid("invalid fixed template header"));
-            }
-        }
+        validate_headers(&value.credential, &value.fixed_headers)?;
         for (name, binding) in &value.bindings {
             if !slug(name, 100)
                 || binding
@@ -287,12 +270,6 @@ impl TryFrom<TemplateDefinition> for ProviderTemplate {
             }
             for action in &capability.actions {
                 action_count += 1;
-                for (name, rule) in action.params.iter().chain(&action.query) {
-                    if !slug(name, 100) {
-                        return Err(invalid("invalid parameter or query name"));
-                    }
-                    rule.validate()?;
-                }
                 if action
                     .params
                     .keys()
@@ -300,32 +277,9 @@ impl TryFrom<TemplateDefinition> for ProviderTemplate {
                 {
                     return Err(invalid("agent parameters cannot shadow admin bindings"));
                 }
-                let mut used = BTreeSet::new();
-                let mut skeleton = Vec::new();
-                for segment in action.path.split('/') {
-                    if let Some(name) = placeholder(segment) {
-                        if !action.params.contains_key(name) && !value.bindings.contains_key(name) {
-                            return Err(invalid("undeclared path placeholder"));
-                        }
-                        used.insert(name);
-                        skeleton.push("x");
-                    } else {
-                        if !segment.is_ascii() || segment.contains(['{', '}', '*', '%']) {
-                            return Err(invalid(
-                                "path contains a wildcard, escape, or invalid placeholder",
-                            ));
-                        }
-                        skeleton.push(segment);
-                    }
-                }
-                if action
-                    .params
-                    .keys()
-                    .any(|name| !used.contains(name.as_str()))
-                {
-                    return Err(invalid("path parameter is not used in the path"));
-                }
-                ExactPath::parse(&skeleton.join("/"))?;
+                validate_target(&action.path, &action.params, &action.query, |name| {
+                    value.bindings.contains_key(name)
+                })?;
             }
         }
         if value.template == "generic-bearer@1"
@@ -345,6 +299,76 @@ impl TryFrom<TemplateDefinition> for ProviderTemplate {
 
 fn placeholder(segment: &str) -> Option<&str> {
     segment.strip_prefix('{')?.strip_suffix('}')
+}
+
+fn validate_template_id(id: &str) -> Result<(), DomainError> {
+    let (name, version) = id
+        .split_once('@')
+        .ok_or_else(|| invalid("template must have a version"))?;
+    if !slug(name, 100) || decimal(version)? < 1 {
+        return Err(invalid("invalid template name, version, or capabilities"));
+    }
+    Ok(())
+}
+
+fn validate_headers(
+    credential: &TemplateCredential,
+    headers: &BTreeMap<HeaderName, String>,
+) -> Result<(), DomainError> {
+    if credential.kind != CredentialKind::OpaqueToken {
+        return Err(invalid(
+            "provider templates require opaque-token credentials",
+        ));
+    }
+    let injection = &credential.inject;
+    HeaderCredentialUse::new(injection.header.clone(), injection.prefix.clone())?;
+    for (header, content) in headers {
+        if header.is_forbidden()
+            || *header == injection.header
+            || header.as_str() == "authorization"
+            || !content.bytes().all(|b| (0x20..=0x7e).contains(&b))
+        {
+            return Err(invalid("invalid fixed template header"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_target(
+    path: &str,
+    params: &BTreeMap<String, ValueRule>,
+    query: &BTreeMap<String, ValueRule>,
+    is_binding: impl Fn(&str) -> bool,
+) -> Result<(), DomainError> {
+    for (name, rule) in params.iter().chain(query) {
+        if !slug(name, 100) {
+            return Err(invalid("invalid parameter or query name"));
+        }
+        rule.validate()?;
+    }
+    let mut used = BTreeSet::new();
+    let mut skeleton = Vec::new();
+    for segment in path.split('/') {
+        if let Some(name) = placeholder(segment) {
+            if !params.contains_key(name) && !is_binding(name) {
+                return Err(invalid("undeclared path placeholder"));
+            }
+            used.insert(name);
+            skeleton.push("x");
+        } else {
+            if !segment.is_ascii() || segment.contains(['{', '}', '*', '%']) {
+                return Err(invalid(
+                    "path contains a wildcard, escape, or invalid placeholder",
+                ));
+            }
+            skeleton.push(segment);
+        }
+    }
+    if params.keys().any(|name| !used.contains(name.as_str())) {
+        return Err(invalid("path parameter is not used in the path"));
+    }
+    ExactPath::parse(&skeleton.join("/"))?;
+    Ok(())
 }
 
 impl ProviderTemplate {
@@ -384,6 +408,190 @@ pub struct BoundTemplate {
     bindings: TemplateValues,
 }
 
+/// One persisted path pattern after administrator bindings have become literals.
+/// Only the declared per-call parameters and query keys remain variable.
+#[derive(Debug, Clone, Serialize)]
+pub struct TemplateTarget {
+    path: String,
+    params: BTreeMap<String, ValueRule>,
+    query: BTreeMap<String, ValueRule>,
+}
+
+impl<'de> Deserialize<'de> for TemplateTarget {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Target {
+            path: String,
+            params: BTreeMap<String, ValueRule>,
+            query: BTreeMap<String, ValueRule>,
+        }
+        let target = Target::deserialize(deserializer)?;
+        Self::new(target.path, target.params, target.query).map_err(serde::de::Error::custom)
+    }
+}
+
+impl TemplateTarget {
+    fn new(
+        path: String,
+        params: BTreeMap<String, ValueRule>,
+        query: BTreeMap<String, ValueRule>,
+    ) -> Result<Self, DomainError> {
+        validate_target(&path, &params, &query, |_| false)?;
+        Ok(Self {
+            path,
+            params,
+            query,
+        })
+    }
+
+    pub fn path_pattern(&self) -> &str {
+        &self.path
+    }
+
+    pub fn params(&self) -> &BTreeMap<String, ValueRule> {
+        &self.params
+    }
+
+    pub fn query(&self) -> &BTreeMap<String, ValueRule> {
+        &self.query
+    }
+
+    /// Every path parameter is required. Query keys are optional. No bindings,
+    /// headers, origin or method can be supplied through this rendering API.
+    pub fn render(
+        &self,
+        params: &TemplateValues,
+        query: &TemplateValues,
+    ) -> Result<RenderedTarget, DomainError> {
+        if params.len() != self.params.len() {
+            return Err(invalid("missing or undeclared path parameter"));
+        }
+        let normalize = |values: &TemplateValues, rules: &BTreeMap<String, ValueRule>| {
+            values
+                .iter()
+                .map(|(name, value)| {
+                    let rule = rules
+                        .get(name)
+                        .ok_or_else(|| invalid("undeclared parameter or query key"))?;
+                    Ok((name.clone(), rule.normalize(value)?))
+                })
+                .collect::<Result<TemplateValues, DomainError>>()
+        };
+        let params = normalize(params, &self.params)?;
+        let query = normalize(query, &self.query)?;
+        let path = self
+            .path
+            .split('/')
+            .map(|segment| {
+                placeholder(segment).map_or(segment, |name| {
+                    params
+                        .get(name)
+                        .expect("validated target has complete parameters")
+                })
+            })
+            .collect::<Vec<_>>()
+            .join("/");
+        // Retain the existing final-path bound after expanding validated values.
+        let path = ExactPath::parse(&path)?;
+        Ok(RenderedTarget {
+            path,
+            params,
+            query,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RenderedTarget {
+    pub path: ExactPath,
+    pub params: TemplateValues,
+    pub query: TemplateValues,
+}
+
+impl RenderedTarget {
+    pub fn request_target(&self) -> String {
+        request_target(&self.path, &self.query)
+    }
+}
+
+/// Data for a single Action adapter. This is neither a signature nor a source
+/// digest: the installing layer must authenticate the template/schema package.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MaterializedActionDefinition {
+    pub template: String,
+    pub capability: String,
+    pub action_index: usize,
+    pub origin: HttpsOrigin,
+    pub method: FixedMethod,
+    pub target: TemplateTarget,
+    pub fixed_headers: BTreeMap<HeaderName, String>,
+    pub credential: TemplateCredential,
+    pub default_policy: DefaultPolicy,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body_schema: Option<String>,
+}
+
+/// Validated single-action materialization, independent of the original template.
+#[derive(Debug, Clone, Serialize)]
+#[serde(transparent)]
+pub struct MaterializedAction(MaterializedActionDefinition);
+
+impl<'de> Deserialize<'de> for MaterializedAction {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::try_from(MaterializedActionDefinition::deserialize(deserializer)?)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+impl TryFrom<MaterializedActionDefinition> for MaterializedAction {
+    type Error = DomainError;
+
+    fn try_from(value: MaterializedActionDefinition) -> Result<Self, Self::Error> {
+        validate_template_id(&value.template)?;
+        if !slug(&value.capability, 100) {
+            return Err(invalid("invalid template capability"));
+        }
+        validate_headers(&value.credential, &value.fixed_headers)?;
+        let approver = (value.default_policy.rule == DefaultRule::RequireApproval)
+            .then_some(TemplateApprover::LocalPresence);
+        if value.default_policy.approver != approver {
+            return Err(invalid("invalid template default policy"));
+        }
+        Ok(Self(value))
+    }
+}
+
+impl MaterializedAction {
+    pub fn definition(&self) -> &MaterializedActionDefinition {
+        &self.0
+    }
+
+    pub fn render(
+        &self,
+        params: &TemplateValues,
+        query: &TemplateValues,
+    ) -> Result<RenderedRequest, DomainError> {
+        let definition = &self.0;
+        let target = definition.target.render(params, query)?;
+        Ok(RenderedRequest {
+            template: definition.template.clone(),
+            capability: definition.capability.clone(),
+            action_index: definition.action_index,
+            origin: definition.origin.clone(),
+            method: definition.method,
+            path: target.path,
+            fixed_headers: definition.fixed_headers.clone(),
+            credential: definition.credential.clone(),
+            params: target.params,
+            query: target.query,
+            default_policy: definition.default_policy.clone(),
+            body_schema: definition.body_schema.clone(),
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct RenderedRequest {
     pub template: String,
@@ -404,32 +612,34 @@ impl RenderedRequest {
     /// Values and keys are already validated unreserved ASCII. Sorting is the
     /// same BTreeMap order serialized into the approval request object.
     pub fn request_target(&self) -> String {
-        if self.query.is_empty() {
-            self.path.as_str().to_owned()
-        } else {
-            format!(
-                "{}?{}",
-                self.path.as_str(),
-                self.query
-                    .iter()
-                    .map(|(key, value)| format!("{key}={value}"))
-                    .collect::<Vec<_>>()
-                    .join("&")
-            )
-        }
+        request_target(&self.path, &self.query)
+    }
+}
+
+fn request_target(path: &ExactPath, query: &TemplateValues) -> String {
+    if query.is_empty() {
+        path.as_str().to_owned()
+    } else {
+        format!(
+            "{}?{}",
+            path.as_str(),
+            query
+                .iter()
+                .map(|(key, value)| format!("{key}={value}"))
+                .collect::<Vec<_>>()
+                .join("&")
+        )
     }
 }
 
 impl BoundTemplate {
-    /// Every declared path param is required. Query keys are optional; missing
-    /// keys stay absent, while unknown keys and invalid supplied values fail.
-    pub fn render(
+    /// Select exactly one action and permanently substitute administrator bindings.
+    /// No unrelated capabilities or unbound template are retained in the result.
+    pub fn materialize(
         &self,
         capability_id: &str,
         action_index: usize,
-        params: &TemplateValues,
-        query: &TemplateValues,
-    ) -> Result<RenderedRequest, DomainError> {
+    ) -> Result<MaterializedAction, DomainError> {
         let definition = &self.template.0;
         let capability = definition
             .capabilities
@@ -440,52 +650,41 @@ impl BoundTemplate {
             .actions
             .get(action_index)
             .ok_or_else(|| invalid("unknown template action"))?;
-        if params.len() != action.params.len() {
-            return Err(invalid("missing or undeclared path parameter"));
-        }
-        let normalize = |values: &TemplateValues, rules: &BTreeMap<String, ValueRule>| {
-            values
-                .iter()
-                .map(|(name, value)| {
-                    let rule = rules
-                        .get(name)
-                        .ok_or_else(|| invalid("undeclared parameter or query key"))?;
-                    Ok((name.clone(), rule.normalize(value)?))
-                })
-                .collect::<Result<TemplateValues, DomainError>>()
-        };
-        let params = normalize(params, &action.params)?;
-        let query = normalize(query, &action.query)?;
         let path = action
             .path
             .split('/')
             .map(|segment| {
                 placeholder(segment).map_or(segment, |name| {
-                    self.bindings
-                        .get(name)
-                        .or_else(|| params.get(name))
-                        .expect("validated template has complete bindings and parameters")
+                    self.bindings.get(name).map_or(segment, String::as_str)
                 })
             })
             .collect::<Vec<_>>()
             .join("/");
-        // The declaration checked its skeleton once; this enforces the existing
-        // final-path length bound after substituting individually validated values.
-        let path = ExactPath::parse(&path)?;
-        Ok(RenderedRequest {
+        let target = TemplateTarget::new(path, action.params.clone(), action.query.clone())?;
+        Ok(MaterializedAction(MaterializedActionDefinition {
             template: definition.template.clone(),
             capability: capability.id.clone(),
             action_index,
             origin: definition.origin.clone(),
             method: action.method,
-            path,
+            target,
             fixed_headers: definition.fixed_headers.clone(),
             credential: definition.credential.clone(),
-            params,
-            query,
             default_policy: capability.default_policy(),
             body_schema: action.body_schema.clone(),
-        })
+        }))
+    }
+
+    /// Render through the same validated target used by persisted materializations.
+    pub fn render(
+        &self,
+        capability_id: &str,
+        action_index: usize,
+        params: &TemplateValues,
+        query: &TemplateValues,
+    ) -> Result<RenderedRequest, DomainError> {
+        self.materialize(capability_id, action_index)?
+            .render(params, query)
     }
 }
 

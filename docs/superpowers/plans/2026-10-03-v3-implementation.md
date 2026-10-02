@@ -30,7 +30,7 @@
 | M1 pkg / LaunchAgent / SMAppService | 待实施 | 签名、公证、安装和重启验收 |
 | M1 独立安全审查 | 待完成 | 原型代码审查不等同于产品安全验收 |
 | M2 P-256 个人策略签名 / App 模板选择 | 待实施 | Touch ID/SE 属于实现；Ed25519 团队模式保留 |
-| M2 模板规范与路径/query渲染 | 领域基础已实现 | 12 个边界测试和独立审查通过；管理员 bindings 不可覆写、封闭参数/query；尚未接入签名、存储、授权和执行链 |
+| M2 模板规范与路径/query渲染 | 纯合同本批验收通过 | 18 个领域测试与 10 个包验签/schema 测试通过，独立审查无待修问题；单 Action 物化、团队 Ed25519、来源摘要与离线 schema 已实现；存储、授权和执行链尚未接线 |
 | M2 anthropic/openai/github/generic 模板 | 领域基础已实现 | 四个内置声明与风险默认值测试通过；App 配置入口未实现 |
 | M2 Approver / local-presence / 面板 | 待实施 | T10；challenge 与 principal/参数/策略绑定、一次性消费 |
 | M3 Profile / 会话生命周期 / rekey run | 待实施 | T9；进程异常退出与 CLI SIGKILL 后 5 秒撤销 |
@@ -75,4 +75,4 @@ M1 集成默认 workspace 检查：597 passed / 2 ignored；默认 all-targets c
 
 新版签名 release CLI / rekeyd 正向链已通过：Locked/Unlocked status、unlock、lock、错误证明不停止服务、正确证明停掉 Locked daemon。证据 `outputs/rekey-v3-20261003/production-peer-positive-m1.json` 含最终签名哈希；仍不将签名校验单独称为完整 L1。
 
-M2 首批正在完成单 Action 物化与团队模板验签的纯合同；后续才接存储、授权与 HTTP。安装运行时尚未实现，不能用领域测试代替端到端证据。
+M2 首批单 Action 物化与团队模板验签纯合同完成：root 默认 workspace 613 passed / 2 ignored，all-targets check 和严格 Clippy 通过，独立审查确认五文件哈希一致。日志 `outputs/rekey-v3-20261003/m2-test-default-serial.log`。后续接 ActionTarget、完整行内容认证、存储、授权与 HTTP；安装运行时尚未实现。

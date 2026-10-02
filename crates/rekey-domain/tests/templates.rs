@@ -1,6 +1,7 @@
 use rekey_domain::action::{ExactPath, FixedMethod, HttpsOrigin};
 use rekey_domain::template::{
-    self, DefaultRule, ProviderTemplate, TemplateApprover, TemplateValues, ValueRule,
+    self, DefaultRule, MaterializedAction, ProviderTemplate, TemplateApprover, TemplateTarget,
+    TemplateValues, ValueRule,
 };
 use serde_json::{Value, json};
 
@@ -539,4 +540,326 @@ fn generic_bearer_allows_only_one_to_twenty_fixed_actions() {
         raw["capabilities"][0]["actions"][0]["query"] = json!({"page":"int:1..2"});
         assert!(serde_json::from_value::<ProviderTemplate>(raw).is_err());
     }
+}
+
+#[test]
+fn materialized_actions_keep_binding_groups_independent_without_the_template() {
+    let actions: Vec<_> = [("alice", "one"), ("bob", "two")]
+        .into_iter()
+        .map(|(owner, repo)| {
+            let bound = template::github_pat()
+                .unwrap()
+                .bind(&values(&[("owner", owner), ("repo", repo)]))
+                .unwrap();
+            let action = bound.materialize("read-repo", 2).unwrap();
+            let saved = serde_json::to_value(action).unwrap();
+            assert_eq!(
+                saved["target"]["path"],
+                format!("/repos/{owner}/{repo}/pulls/{{number}}")
+            );
+            assert_eq!(
+                saved["target"]["params"],
+                json!({"number":"int:1..2147483647"})
+            );
+            for unrelated in ["bindings", "capabilities", "display", "path", "exact_path"] {
+                assert!(saved.get(unrelated).is_none());
+            }
+            serde_json::from_value::<MaterializedAction>(saved).unwrap()
+        })
+        .collect();
+    for (action, expected) in actions
+        .iter()
+        .zip(["/repos/alice/one/pulls/42", "/repos/bob/two/pulls/42"])
+    {
+        assert_eq!(
+            action
+                .render(&values(&[("number", "00042")]), &values(&[]))
+                .unwrap()
+                .request_target(),
+            expected
+        );
+        for supplied in [
+            values(&[("number", "42"), ("owner", "evil")]),
+            values(&[("number", "42"), ("repo", "evil")]),
+            values(&[("owner", "evil")]),
+        ] {
+            assert!(action.render(&supplied, &values(&[])).is_err());
+        }
+        assert!(
+            action
+                .render(&values(&[("number", "42")]), &values(&[("owner", "evil")]))
+                .is_err()
+        );
+    }
+    assert!(github().materialize("missing", 0).is_err());
+    assert!(github().materialize("read-repo", usize::MAX).is_err());
+}
+
+#[test]
+fn materialized_roundtrip_keeps_authoritative_metadata_and_normalization() {
+    let bound = github();
+    let create = bound.materialize("create-issue", 0).unwrap();
+    let saved = serde_json::to_value(&create).unwrap();
+    assert_eq!(
+        saved,
+        json!({
+            "template":"github-pat@1", "capability":"create-issue", "action_index":0,
+            "origin":"https://api.github.com", "method":"POST",
+            "target":{"path":"/repos/rekey/agent-tools/issues", "params":{}, "query":{}},
+            "fixed_headers":{"accept":"application/vnd.github+json", "x-github-api-version":"2022-11-28"},
+            "credential":{"kind":"opaque-token", "inject":{"header":"authorization", "prefix":"Bearer "}},
+            "default_policy":{"rule":"allow"}, "body_schema":"schemas/github-create-issue.json"
+        })
+    );
+    let loaded: MaterializedAction = serde_json::from_value(saved.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&loaded).unwrap(), saved);
+    assert_eq!(
+        loaded.definition().body_schema.as_deref(),
+        Some("schemas/github-create-issue.json")
+    );
+    assert_eq!(
+        loaded.render(&values(&[]), &values(&[])).unwrap().method,
+        FixedMethod::Post
+    );
+    let merge = bound.materialize("merge-pr", 0).unwrap();
+    assert_eq!(
+        merge.definition().default_policy.rule,
+        DefaultRule::RequireApproval
+    );
+    assert_eq!(
+        merge.definition().default_policy.approver,
+        Some(TemplateApprover::LocalPresence)
+    );
+
+    let query_action = bound.materialize("read-repo", 1).unwrap();
+    let target: TemplateTarget =
+        serde_json::from_value(serde_json::to_value(&query_action.definition().target).unwrap())
+            .unwrap();
+    assert!(target.params().is_empty());
+    assert_eq!(target.query().len(), 3);
+    assert_eq!(target.path_pattern(), "/repos/rekey/agent-tools/issues");
+    let query = values(&[("state", "open"), ("page", "002"), ("per_page", "010")]);
+    let rendered = target.render(&values(&[]), &query).unwrap();
+    assert_eq!(
+        rendered.query,
+        values(&[("page", "2"), ("per_page", "10"), ("state", "open")])
+    );
+    assert_eq!(
+        rendered.request_target(),
+        "/repos/rekey/agent-tools/issues?page=2&per_page=10&state=open"
+    );
+    assert_eq!(
+        query_action
+            .render(&values(&[]), &query)
+            .unwrap()
+            .request_target(),
+        rendered.request_target()
+    );
+}
+
+#[test]
+fn materialized_target_deserialization_rejects_open_or_malformed_grammar() {
+    let target =
+        serde_json::to_value(github().materialize("read-repo", 2).unwrap()).unwrap()["target"]
+            .clone();
+    for path in [
+        "relative/{number}",
+        "/{unknown}",
+        "/{owner}/{number}",
+        "/a/{number}.json",
+        "/a/prefix{number}",
+        "/a/*/{number}",
+        "/a/%2f/{number}",
+        "/a/../{number}",
+        "/a/./{number}",
+        "/a/{number}?x=1",
+        "/a/{number}#fragment",
+        "/α/{number}",
+        "/a/\\/{number}",
+        "/a/\n/{number}",
+        "/a/fixed",
+    ] {
+        let mut bad = target.clone();
+        bad["path"] = json!(path);
+        assert!(
+            serde_json::from_value::<TemplateTarget>(bad).is_err(),
+            "accepted {path:?}"
+        );
+    }
+    for rule in [
+        "regex:.*",
+        "int:2..1",
+        "int:+1..2",
+        "enum:a,a",
+        "enum:../a,b",
+        "enum:a%2fb,c",
+    ] {
+        for field in ["params", "query"] {
+            let mut bad = target.clone();
+            bad[field]["number"] = json!(rule);
+            assert!(
+                serde_json::from_value::<TemplateTarget>(bad).is_err(),
+                "accepted {field} {rule}"
+            );
+        }
+    }
+    for (pointer, value) in [
+        ("/params", json!({})),
+        ("/params", json!({"number":"slug", "unused":"slug"})),
+        ("/query", json!({"page&other":"slug"})),
+    ] {
+        let mut bad = target.clone();
+        *bad.pointer_mut(pointer).unwrap() = value;
+        assert!(serde_json::from_value::<TemplateTarget>(bad).is_err());
+    }
+    let mut bad = target;
+    bad["bindings"] = json!({"owner":"evil"});
+    assert!(serde_json::from_value::<TemplateTarget>(bad).is_err());
+}
+
+#[test]
+fn materialized_deserialization_rejects_bad_headers_and_inconsistent_metadata() {
+    let saved = serde_json::to_value(github().materialize("merge-pr", 0).unwrap()).unwrap();
+    for header in [
+        "host",
+        "authorization",
+        "content-length",
+        "connection",
+        "accept-encoding",
+    ] {
+        let mut bad = saved.clone();
+        bad["fixed_headers"][header] = json!("x");
+        assert!(
+            serde_json::from_value::<MaterializedAction>(bad).is_err(),
+            "accepted {header}"
+        );
+    }
+    for (pointer, value) in [
+        ("/template", json!("unversioned")),
+        ("/capability", json!("../arbitrary")),
+        ("/origin", json!("https://api.github.com/path")),
+        ("/method", json!("CONNECT")),
+        ("/fixed_headers/accept", json!("value\r\nInjected: x")),
+        ("/credential/inject/header", json!("cookie")),
+        ("/credential/kind", json!("github-app-installation")),
+        ("/default_policy", json!({"rule":"require-approval"})),
+        (
+            "/default_policy",
+            json!({"rule":"allow", "approver":{"kind":"local-presence"}}),
+        ),
+        (
+            "/default_policy",
+            json!({"rule":"require-approval", "approver":{"kind":"remote"}}),
+        ),
+        ("/default_policy", json!({"rule":"allow", "unknown":true})),
+    ] {
+        let mut bad = saved.clone();
+        *bad.pointer_mut(pointer).unwrap() = value;
+        assert!(
+            serde_json::from_value::<MaterializedAction>(bad).is_err(),
+            "accepted {pointer}"
+        );
+    }
+    let mut bad = saved;
+    bad["exact_path"] = json!("/shadow");
+    assert!(serde_json::from_value::<MaterializedAction>(bad).is_err());
+
+    let mut raw = serde_json::to_value(
+        template::anthropic()
+            .unwrap()
+            .bind(&values(&[]))
+            .unwrap()
+            .materialize("messages", 0)
+            .unwrap(),
+    )
+    .unwrap();
+    raw["fixed_headers"]["x-api-key"] = json!("cannot override injection");
+    assert!(serde_json::from_value::<MaterializedAction>(raw).is_err());
+}
+
+#[test]
+fn loaded_materialized_actions_keep_per_call_inputs_closed() {
+    let action: MaterializedAction = serde_json::from_value(
+        serde_json::to_value(github().materialize("read-repo", 6).unwrap()).unwrap(),
+    )
+    .unwrap();
+    for input in [
+        ".",
+        "..",
+        "../escape",
+        "a/b",
+        "a\\b",
+        "%2F",
+        "%252f",
+        "a?x",
+        "a#x",
+        "a&x=y",
+        "",
+        "α",
+    ] {
+        assert!(
+            action
+                .render(&values(&[("path", input)]), &values(&[]))
+                .is_err()
+        );
+    }
+    assert!(action.render(&values(&[]), &values(&[])).is_err());
+    assert!(
+        action
+            .render(&values(&[("unknown", "README.md")]), &values(&[]))
+            .is_err()
+    );
+    assert_eq!(
+        action
+            .render(&values(&[("path", "README.md")]), &values(&[]))
+            .unwrap()
+            .request_target(),
+        "/repos/rekey/agent-tools/contents/README.md"
+    );
+    let query_action: MaterializedAction = serde_json::from_value(
+        serde_json::to_value(github().materialize("read-repo", 1).unwrap()).unwrap(),
+    )
+    .unwrap();
+    for (key, input) in [
+        ("page", "0"),
+        ("per_page", "101"),
+        ("state", "OPEN"),
+        ("state", "open&admin=1"),
+        ("accept", "override"),
+        ("unknown", "x"),
+    ] {
+        assert!(
+            query_action
+                .render(&values(&[]), &values(&[(key, input)]))
+                .is_err()
+        );
+    }
+    let fixed = template::openai()
+        .unwrap()
+        .bind(&values(&[]))
+        .unwrap()
+        .materialize("models", 0)
+        .unwrap();
+    assert!(
+        fixed
+            .render(&values(&[("path", "elsewhere")]), &values(&[]))
+            .is_err()
+    );
+    assert!(
+        fixed
+            .render(&values(&[]), &values(&[("page", "1")]))
+            .is_err()
+    );
+}
+
+#[test]
+fn materializing_checks_final_binding_expansion_length() {
+    let mut raw = declaration();
+    raw["capabilities"][0]["actions"][0]["path"] =
+        json!(format!("/{}", vec!["{repo}"; 21].join("/")));
+    let template: ProviderTemplate = serde_json::from_value(raw).unwrap();
+    let bound = template
+        .bind(&values(&[("owner", "a"), ("repo", &"r".repeat(100))]))
+        .unwrap();
+    assert!(bound.materialize("read-repo", 0).is_err());
 }

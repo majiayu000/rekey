@@ -7,6 +7,8 @@
 范围：资产、攻击者、信任边界、部署等级、安全保证、限制与验证
 相关文档：[功能事实矩阵](./feature-truth-matrix.md) · [P0 实施规格](../superpowers/specs/2026-08-28-credential-authority-v2-foundation.md)
 
+v3 本地开发增量以[实施清单](../superpowers/plans/2026-10-03-v3-implementation.md)为准：管理查看明文与停机使用逐次证明，签名客户端先校验服务身份，Linux 加固拥有型密钥内存。V1/V2 仍有未完成的设备验收；这些变化尚未建立完整 L1，也没有改变下述已发布版本的历史边界。
+
 ## 1. 核心结论
 
 可以让 Agent 在使用 API、MCP、SSH 或其他受保护资源时完全拿不到真实密钥，但这个保证必须建立在明确的系统边界上。
