@@ -450,6 +450,9 @@ enum SessionCommand {
         /// Read a workload JWT from stdin and mint through the Agent socket.
         #[arg(long, conflicts_with_all = ["recovery", "password_stdin"])]
         workload_token_stdin: bool,
+        /// Reissue for an explicitly authorized principal after policy replacement.
+        #[arg(long, conflicts_with = "workload_token_stdin")]
+        principal: Option<String>,
         #[command(flatten)]
         step_up: StepUpArgs,
     },
@@ -989,6 +992,7 @@ fn main() {
                 ttl,
                 max_uses,
                 workload_token_stdin,
+                principal,
                 step_up,
             } => {
                 if workload_token_stdin {
@@ -999,6 +1003,7 @@ fn main() {
                         &actions,
                         &ttl,
                         max_uses,
+                        principal.as_deref(),
                         step_up.recovery,
                         step_up.password_stdin,
                     )

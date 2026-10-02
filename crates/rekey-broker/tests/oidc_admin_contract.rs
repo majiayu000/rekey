@@ -59,7 +59,8 @@ struct Fixture {
 impl Fixture {
     async fn start() -> Self {
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::TempDir::new_in(std::fs::canonicalize(std::env::temp_dir()).unwrap())
+            .unwrap();
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let state = dir.path().join("state");
         let outcome = init_vault(
@@ -217,13 +218,15 @@ impl Fixture {
         config.oidc_admin_profile = Some(profile);
         config.drain_timeout = Duration::from_secs(1);
         let socket = state.join("runtime/admin.sock");
-        let broker = tokio::spawn(serve(config));
+        let mut broker = tokio::spawn(serve(config));
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 if UnixStream::connect(&socket).await.is_ok() {
                     break;
                 }
-                assert!(!broker.is_finished(), "strict Broker startup failed");
+                if broker.is_finished() {
+                    panic!("strict Broker startup failed: {:?}", (&mut broker).await);
+                }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
@@ -394,6 +397,20 @@ async fn strict_oidc_rs256_pkce_directory_managed_ipc_stepup_mint_logout_and_off
         )
         .await;
     let create = json!({"actions":[{"action_id":action.ok()["id"],"version":action.ok()["version"]}],"ttl_ms":3_600_000,"max_uses":10});
+    let mut mismatch = create.clone();
+    mismatch["principal_id"] = json!(PrincipalId::new_random());
+    assert_eq!(
+        fixture
+            .managed(
+                admin_msg::SESSION_CREATE,
+                &serde_json::to_vec(&mismatch).unwrap(),
+                &common::proof_body(common::PASSWORD),
+                &token
+            )
+            .await
+            .err_code(),
+        "REQUEST_DENIED"
+    );
     let session = fixture
         .managed(
             admin_msg::SESSION_CREATE,

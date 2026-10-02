@@ -82,10 +82,19 @@ instant/audit. Capture whether an existing policy was present before Authority
 mutation; use the same distinction on timeout reconciliation when the exact
 target is actually active. Wrong target, step-up/verification failure or failed
 Authority transaction must not revoke healthy sessions. Preserve typed error and
-fault behavior. No new personnel session inference (ordinary Admin principals
-remain random), no new IPC/session table or cancellation of already-started
+fault behavior. No personnel identity inference or cancellation of already-started
 upstream effects. Conservative revocation affects other roles too; new sessions
-must be re-created under current policy. This is the required node prerequisite,
+must be re-created under current policy. Local Admin `session create --principal
+UUID` explicitly selects the principal already authorized by that policy, with
+the same per-call step-up proof and pinned action checks. Omitting it creates a
+new random principal for initial policy authoring. The Admin wire metadata adds
+optional `principal_id`; Agent workload metadata stays unchanged and rejects it.
+Managed OIDC Admin calls can only select their authenticated principal; a different
+requested principal is denied. No session, use budget, approval or revoked token
+is revived. The native Session form exposes the same optional principal UUID;
+an empty field retains initial-policy authoring behavior. Local step-up Admin is
+trusted to assign this identity; it is not proof of a person's identity. Managed
+OIDC remains bound to the authenticated subject. This is the required node prerequisite,
 not evidence that SCIM changes have been signed and applied to both nodes.
 
 ## Ownership and verification

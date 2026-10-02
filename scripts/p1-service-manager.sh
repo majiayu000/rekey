@@ -420,6 +420,9 @@ SESSION_JSON="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" sessio
 PRINCIPAL="$(printf '%s\n' "$SESSION_JSON" | json_field principal_id)"
 TOKEN="$(printf '%s\n' "$SESSION_JSON" | json_field capability_token)"
 activate_policy 2 "$PRINCIPAL"
+TOKEN="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" session create \
+  --action "$ACTION_REF" --principal "$PRINCIPAL" --ttl 10m --max-uses 2 \
+  --password-stdin | json_field capability_token)"
 sqlite3 "$STATE/vault.sqlite3" <<'SQL'
 CREATE TRIGGER fail_execution_terminal BEFORE INSERT ON audit_events
 WHEN NEW.event_type IN ('execution.finished','execution.blocked','execution.indeterminate')

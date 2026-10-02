@@ -26,6 +26,27 @@ Missing receipt/SHA-256 means restore is not authorized: locate the original
 receipt or create a new backup. A wrong proof, bad digest, corrupt backup, or
 nonempty destination must fail without producing a servable vault.
 
+## Disposable Docker primary/standby drill (source checkout)
+
+Use a local Docker daemon and a new output directory. No existing vault or cloud
+account is used; all credentials and keys are generated for this run.
+
+```bash
+docker build -f scripts/Dockerfile.dr -t rekey-dr-reference .
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-docker-dr-drill.py
+python3 scripts/rekey-docker-dr-drill.py --image rekey-dr-reference --output /tmp/rekey-dr-new
+```
+
+The host controller refuses promotion while the partitioned primary exists,
+fences its immutable ID through the external daemon, restores the encrypted
+snapshot into a separate volume, rejects old authorization and issues a new
+capability for a successful standby request. The private `report.json` records
+image/source identity, measured recovery, one deliberately unreplicated write,
+and verified resource cleanup. Any missing evidence exits nonzero. A daemon or
+host failure, continuous replication, automatic routing and production RPO/RTO
+are outside this [reference contract](superpowers/specs/2026-10-02-docker-dr-reference.md).
+Only resources labeled for this invocation are removed.
+
 ## Installed personal backup transfer
 
 On this workstation, use `~/.rekey` as the future default source state and

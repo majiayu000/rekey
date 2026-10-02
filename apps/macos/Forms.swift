@@ -170,6 +170,7 @@ struct SessionForm: View {
     @State private var selected: Set<String> = []
     @State private var ttl = "15m"
     @State private var uses = "20"
+    @State private var principal = ""
     @State private var proof = ""
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -183,16 +184,18 @@ struct SessionForm: View {
                 }.frame(maxWidth: .infinity, alignment: .leading)
             }.frame(maxHeight: 190)
             HStack { Text("有效期"); TextField("例如 15m", text: $ttl); Text("使用次数"); TextField("20", text: $uses) }.textFieldStyle(.roundedBorder)
+            TextField("已有策略的主体 UUID（留空创建新主体）", text: $principal).textFieldStyle(.roundedBorder)
             SecureField("当前保险库密码", text: $proof).textFieldStyle(.roundedBorder)
             HStack {
                 Button("取消") { proof = ""; dismiss() }.keyboardShortcut(.cancelAction)
                 Spacer()
                 Button("创建授权") {
                     var args = ["session", "create", "--ttl", ttl, "--max-uses", uses]
+                    if !principal.isEmpty { args += ["--principal", principal] }
                     for ref in selected.sorted() { args += ["--action", ref] }
                     let p = proof; proof = ""; dismiss()
                     Task { await model.perform(Operation(title: "创建授权", detail: "", arguments: args, sensitiveResult: true), proof: p) }
-                }.buttonStyle(PrimaryButton()).disabled(selected.isEmpty || ttl.isEmpty || (Int(uses) ?? 0) <= 0 || !singleLine(proof) || model.busy)
+                }.buttonStyle(PrimaryButton()).disabled(selected.isEmpty || ttl.isEmpty || (Int(uses) ?? 0) <= 0 || (!principal.isEmpty && UUID(uuidString: principal) == nil) || !singleLine(proof) || model.busy)
             }
         }.padding(30).frame(width: 490).background(canvas).onDisappear { proof = "" }
     }

@@ -128,7 +128,14 @@ G2 harness).
 | Fixed Vault Transit approval signing (EXT-07 slice) | Contract Tested | — | Explicit protected profile on the independent `rekey-approval-sign` binds one public HTTPS origin, Transit mount/key, Ed25519 public key and explicit key version into the existing reviewed digest. Eleven binary-private contracts include real TLS, exact RKAPPROVAL bytes, production grant verification, wrong version/key/expiry, bounded response/deadline and secret canaries; six existing software-signing tests also passed. Production uses shared public-IP screening and built-in WebPKI roots, no proxy/redirect/retry or private/CA override. Real Vault ACL, non-derived/exportable settings, revocation and production Broker consumption remain unvalidated. See [Transit signing contract](../superpowers/specs/2026-09-30-vault-transit-approval-signer.md). |
 | Other external CredentialSource / operation providers | Specified | — | Other Vault operations, cloud KMS, PKCS#11/HSM, OS keychain, private-network source access, generic sign endpoints and dynamic provider adapters remain unimplemented; fixed GCP/AWS/Azure and 1Password Connect secret-source local implementation and its current verification limits are recorded separately below |
 | Enterprise multi-tenant control plane | Contract Tested (local target slice) | — | Actual vault/root activation binding and verified target status/activation audit implemented; fixed two-node file helper in progress. 58 focused Rust tests passed in an isolated worker. No shared tenant service, SSO/SCIM, HA or real node isolation acceptance. |
-| HA/DR | Specified | — | Not implemented; current durable authority is one local SQLite vault and no RPO/RTO or split-brain drill exists |
+| HA/DR | Black-box Verified (Docker manual reference) | — | Two distinct container volumes, external Docker-daemon fencing by immutable container deletion, partition promotion refusal, verified restore cut, old-token rejection and fresh-session execution passed locally. One synthetic lost credential write was verified; observed RTO 1.36s and commit-gap RPO bounds 1.42–1.76s apply only to this run. No physical-host HA, automatic failover, continuous replication, independent power domains or production SLA. See [Docker DR contract](../superpowers/specs/2026-10-02-docker-dr-reference.md). |
+
+2026-10-02 integration corrections selected before implementation: audit delivery
+accepts the current BackupReceipt including `snapshot_cut`, pins all receipt bytes,
+and still advances only from durable ACKs. Policy replacement continues to revoke
+all old capabilities; local step-up-protected Admin session issuance gains explicit
+principal selection for reissue under the current policy. OIDC identity binding
+and the workload Agent metadata remain unchanged. Fresh verification is pending.
 
 ## How to update this file
 
@@ -326,3 +333,9 @@ The user explicitly authorized a step-up-set/revoked, sealed retention policy. O
 2026-10-01 selected PKCS#11 signer local closure: exact fixed Ed25519 profile, normal cryptoki0.12.0 registry dependency, 17 focused local contracts, workspace all-targets/Clippy/fmt pass. Independent review closed both original P1 deadline-cleanup and final-cancellation findings, with no confirmed new P1/P2 in the mechanical supplement. Current device, nonexportability, driver behavior and operator controlling TTY acceptance remain unexecuted; local process/injected cases do not close physical HSM claims. Evidence: `../../../evidence/hsm-selected-local-final.json`.
 
 2026-10-01 authorized automatic retention local closure: format21 sealed policy and Admin50/51 are implemented. Every set/revoke needs step-up; unlocked background maintenance holds the lifecycle owner and preserves the original idle lock. Unknown completion synchronously closes admission and revokes sessions before releasing ownership. Desktop resume verifies the retention seal, and SET uses the original Admin deadline. Independent review closed all original 2P1+1P2 findings; root Broker6/Vault4/Desktop2 targeted sets and CLI5 entry checks passed (sets overlap). Full workspace remains unpassed; physical erasure, backup deletion and maximum real-world retention are not claimed. Evidence: `../../../evidence/retention-exact3-root-local-final.json`.
+
+2026-10-02 current local acceptance: full workspace 1032 passed, 0 failed,
+1 performance test ignored; audit delivery28, archive23 and controlplane86 passed.
+The previous permission/startup failures are historical, not current results.
+Docker manual DR passed with measured recovery and owned-resource cleanup;
+required PR CI and physical/customer environments remain separate gates.

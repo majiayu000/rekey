@@ -37,7 +37,7 @@ mod github;
 mod password_lifecycle;
 mod vault_kv;
 
-fn admin_body_limit(message_type: u16) -> u32 {
+fn admin_body_limit(message_type: u16, managed: bool) -> u32 {
     let base = match message_type {
         admin_msg::OIDC_LOGOUT => 43,
         admin_msg::DESKTOP_LOGIN
@@ -78,7 +78,7 @@ fn admin_body_limit(message_type: u16) -> u32 {
         | admin_msg::RECOVERY_ROTATE => ipc::ADMIN_PROOF_BODY_MAX_BYTES,
         _ => 0,
     };
-    if ipc::managed_admin_operation(message_type).unwrap_or(false) {
+    if managed && ipc::managed_admin_operation(message_type).unwrap_or(false) {
         base + ipc::ADMIN_MANAGEMENT_OVERHEAD
     } else {
         base
@@ -142,7 +142,7 @@ pub async fn handle_admin_conn(
             frame = read_frame(
                 &mut stream,
                 Channel::Admin,
-                admin_body_limit,
+                |message_type| admin_body_limit(message_type, ctx.oidc_admin.is_some()),
             ) => frame,
         } {
             Ok(frame) => frame,
@@ -574,7 +574,7 @@ async fn dispatch_operation(
         admin_msg::SESSION_CREATE => {
             let deadline = request_deadline;
             ctx.lifecycle.reject_if_not_running()?;
-            let create: ipc::SessionCreateMeta = meta(frame)?;
+            let create: ipc::AdminSessionCreateMeta = meta(frame)?;
             let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
             let _owner = ctx.lifecycle.coordinate_until(deadline).await?;
             ctx.lifecycle.reject_if_not_running()?;
@@ -598,9 +598,15 @@ async fn dispatch_operation(
                 action_timeouts.push((*r, pinned.action.timeout_ms));
             }
             let session_id = crate::random_id(SessionId::from_random_bytes)?;
-            let principal_id = match admission {
-                Some(identity) => identity.principal,
-                None => crate::random_id(PrincipalId::from_random_bytes)?,
+            let principal_id = match (admission, create.principal_id) {
+                (Some(identity), requested) => {
+                    if requested.is_some_and(|principal| principal != identity.principal) {
+                        return Err(BrokerError::Denied("management principal mismatch"));
+                    }
+                    identity.principal
+                }
+                (None, Some(principal)) => principal,
+                (None, None) => crate::random_id(PrincipalId::from_random_bytes)?,
             };
             let vault_id = authority_until(deadline, ctx.authority.status())
                 .await?
@@ -1003,19 +1009,21 @@ mod tests {
         for id in 1..=51 {
             let protected = ipc::managed_admin_operation(id).unwrap();
             if protected {
-                assert!(admin_body_limit(id) >= 50);
+                assert!(admin_body_limit(id, true) >= 50);
             } else if id == admin_msg::OIDC_LOGOUT {
-                assert_eq!(admin_body_limit(id), 43);
+                assert_eq!(admin_body_limit(id, true), 43);
             }
         }
         assert_eq!(
-            admin_body_limit(admin_msg::CREDENTIAL_ADD),
+            admin_body_limit(admin_msg::CREDENTIAL_ADD, true),
             ipc::ADMIN_SECRET_BODY_MAX_BYTES + 50
         );
         assert_eq!(
-            admin_body_limit(admin_msg::UNLOCK_PASSWORD),
+            admin_body_limit(admin_msg::UNLOCK_PASSWORD, true),
             ipc::ADMIN_SECRET_FIELD_MAX_BYTES
         );
+        assert_eq!(admin_body_limit(admin_msg::AUDIT_QUERY, false), 0);
+        assert_eq!(admin_body_limit(admin_msg::METRICS, false), 0);
     }
 
     #[tokio::test]

@@ -52,8 +52,9 @@ class DeliveryTests(unittest.TestCase):
         self.source, self.vault = str(uuid.uuid4()), str(uuid.uuid4())
         self.path = self.root / 'outbox'
         self.receipt = self.root / 'receipt.json'
-        private_file(self.receipt, D.encode(dict(vault_id=self.vault, format_version=2,
-                     created_at_ms=1, sha256_hex='a' * 64, output_path='synthetic.backup')))
+        private_file(self.receipt, D.encode(dict(vault_id=self.vault, format_version=21,
+                     created_at_ms=1, sha256_hex='a' * 64, output_path='synthetic.backup',
+                     snapshot_cut=dict(audit_sequence=27, policy=None))))
         self.args = ['--outbox', str(self.path), '--source-instance-id', self.source, '--vault-id', self.vault]
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(D.main(self.args + ['init', '--vault-receipt', str(self.receipt),
@@ -342,6 +343,22 @@ class DeliveryTests(unittest.TestCase):
         with contextlib.redirect_stderr(stderr):
             self.assertEqual(D.main(self.args + ['init', '--vault-receipt', str(self.receipt), '--endpoint', 'https://example.com/audit']), 1)
         self.assertEqual(self.box().identity['vault_id'], self.vault)
+
+    def test_receipt_cut_is_pinned_without_advancing_delivery_cursor(self):
+        box = self.box()
+        self.assertEqual(box.identity['vault_receipt_sha256'], hashlib.sha256(self.receipt.read_bytes()).hexdigest())
+        self.assertEqual(box.journal()[0], 0)
+        receipt = D.decode(self.receipt.read_bytes())
+        del receipt['snapshot_cut']
+        old_receipt = self.root / 'old-receipt.json'
+        private_file(old_receipt, D.encode(receipt))
+        outbox = self.root / 'old-outbox'
+        args = ['--outbox', str(outbox), '--source-instance-id', self.source, '--vault-id', self.vault,
+                'init', '--vault-receipt', str(old_receipt), '--endpoint', 'https://example.com/audit']
+        with contextlib.redirect_stderr(io.StringIO()) as error:
+            self.assertEqual(D.main(args), 1)
+        self.assertIn('invalid-vault-receipt', error.getvalue())
+        self.assertFalse(outbox.exists())
 
     def test_hidden_tty_echo_failure_refuses_fallback(self):
         box, batch = self.queued()

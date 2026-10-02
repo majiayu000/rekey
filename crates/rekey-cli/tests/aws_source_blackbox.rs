@@ -1,6 +1,6 @@
 //! Typed source commands remain a pure IPC client and use protected files/stdin.
 use std::io::Write;
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::{FileTypeExt, PermissionsExt, symlink};
 use std::path::Path;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -245,8 +245,17 @@ fn real_cli_typed_add_rotate_step_up_and_no_credential_process_or_output_leak() 
     assert!(!generic.status.success());
     fn exclude(path: &Path) {
         for entry in std::fs::read_dir(path).unwrap() {
-            let p = entry.unwrap().path();
-            if p.is_dir() {
+            let entry = entry.unwrap();
+            let kind = entry.file_type().unwrap();
+            let p = entry.path();
+            if kind.is_socket() {
+                continue; // Runtime IPC sockets do not contain persisted bytes.
+            }
+            assert!(
+                kind.is_dir() || kind.is_file(),
+                "unexpected vault entry type"
+            );
+            if kind.is_dir() {
                 exclude(&p)
             } else {
                 let bytes = std::fs::read(p).unwrap();

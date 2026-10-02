@@ -563,6 +563,16 @@ pub struct SessionCreateMeta {
     pub max_uses: u32,
 }
 
+/// Admin-only issuance; workload identity always comes from its verified token.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdminSessionCreateMeta {
+    pub actions: Vec<ActionVersionRef>,
+    pub ttl_ms: i64,
+    pub max_uses: u32,
+    pub principal_id: Option<PrincipalId>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionCreatedResponse {

@@ -611,3 +611,18 @@ The user explicitly authorized a step-up-set/revoked, sealed retention policy. O
 2026-10-01 selected PKCS#11 signer local closure: exact fixed Ed25519 profile, normal cryptoki0.12.0 registry dependency, 17 focused local contracts, workspace all-targets/Clippy/fmt pass. Independent review closed both original P1 deadline-cleanup and final-cancellation findings, with no confirmed new P1/P2 in the mechanical supplement. Current device, nonexportability, driver behavior and operator controlling TTY acceptance remain unexecuted; local process/injected cases do not close physical HSM claims. Evidence: `../../../evidence/hsm-selected-local-final.json`.
 
 2026-10-01 authorized automatic retention local closure: format21 sealed policy and Admin50/51 are implemented. Every set/revoke needs step-up; unlocked background maintenance holds the lifecycle owner and preserves the original idle lock. Unknown completion synchronously closes admission and revokes sessions before releasing ownership. Desktop resume verifies the retention seal, and SET uses the original Admin deadline. Independent review closed all original 2P1+1P2 findings; root Broker6/Vault4/Desktop2 targeted sets and CLI5 entry checks passed (sets overlap). Full workspace remains unpassed; physical erasure, backup deletion and maximum real-world retention are not claimed. Evidence: `../../../evidence/retention-exact3-root-local-final.json`.
+
+## 2026-10-02 local Admin issuance and Docker recovery
+
+Local per-call step-up Admin may explicitly issue a new capability for a signed
+policy principal (`session create --principal UUID`). This is trusted identity
+assignment, not personnel authentication. Managed OIDC Admin remains restricted
+to its authenticated principal; workload metadata cannot select a principal.
+Policy replacement still revokes all prior capabilities and pending approvals.
+
+The disposable Docker DR reference trusts one external host daemon. Neither node
+receives its control socket; only a successful daemon enumeration proving the old
+immutable container ID absent admits promotion. Network loss and stopped state
+alone do not suffice. Trusted administrators can recreate containers; host/kernel
+compromise and shared physical failure domains remain outside this guarantee.
+See [the measured reference contract](../superpowers/specs/2026-10-02-docker-dr-reference.md).

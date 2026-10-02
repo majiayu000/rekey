@@ -214,6 +214,12 @@ Create a capability session and record its `principal_id` and token:
 rekey session create --action ACTION_ID@1 --ttl 1h --max-uses 10
 ```
 
+Replacing an active signed policy revokes all existing capabilities. After
+activating the replacement, issue a new capability for the principal named in
+that policy with `rekey session create --action ACTION_ID@1 --principal PRINCIPAL_ID`.
+This still requires an Admin step-up proof. OIDC-managed issuance remains bound
+to the authenticated administrator; workload issuance cannot select a principal.
+
 Create a policy snapshot, replacing all UUIDs and the Action version with
 returned values. `expires_at_ms` must be a future Unix epoch in milliseconds.
 

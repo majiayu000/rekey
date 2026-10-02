@@ -54,7 +54,7 @@ fn fake_grant(id: &str, expiry: i64) -> Vec<u8> {
     "not_before_ms":now()-500,"expires_at_ms":expiry,"signature":"deliberately-invalid-signature"})).unwrap()
 }
 const IDP: &str = r#"
-import http.server,ssl,json,pathlib,sys,time,urllib.parse,base64
+import http.server,socketserver,ssl,json,pathlib,sys,time,urllib.parse,base64
 root=pathlib.Path(sys.argv[1])
 class H(http.server.BaseHTTPRequestHandler):
  def log_message(self,*a): pass
@@ -96,7 +96,11 @@ class H(http.server.BaseHTTPRequestHandler):
   self.send_header('Content-Length',str(len(body)));self.end_headers()
   try: self.wfile.write(body)
   except (BrokenPipeError,ConnectionResetError,ssl.SSLError): pass
-server=http.server.ThreadingHTTPServer(('127.0.0.1',0),H)
+class LocalServer(http.server.ThreadingHTTPServer):
+ def server_bind(self):
+  socketserver.TCPServer.server_bind(self)
+  self.server_name='localhost';self.server_port=self.server_address[1]
+server=LocalServer(('127.0.0.1',0),H)
 context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);context.load_cert_chain(root/'tls.pem',root/'key.pem')
 server.socket=context.wrap_socket(server.socket,server_side=True)
 (root/'idp-ready').write_text(str(server.server_port));server.serve_forever()
@@ -152,7 +156,13 @@ impl Fixture {
             );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        let issuer = format!("https://localhost:{}", fs::read_to_string(ready).unwrap());
+        let port = fs::read_to_string(ready).unwrap_or_else(|error| {
+            panic!(
+                "IdP readiness failed: {error}; {}",
+                fs::read_to_string(root.path().join("idp.log")).unwrap()
+            )
+        });
+        let issuer = format!("https://localhost:{port}");
         write(
             &root.path().join("control.json"),
             json!({"issuer":issuer}).to_string(),

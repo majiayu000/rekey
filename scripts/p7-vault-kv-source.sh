@@ -208,6 +208,10 @@ python3 "$ROOT/scripts/sign-test-policy.py" policy --key-dir "$WORKDIR/policy-ke
 read -r POLICY_TARGET_VAULT POLICY_TARGET_TRUST < <("$REKEY" --state-dir "$STATE" policy status | python3 -c 'import json,sys; s=json.load(sys.stdin); print(s["vault_id"], s["trust_sha256"])')
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate --expected-vault-id "$POLICY_TARGET_VAULT" --expected-trust-sha256 "$POLICY_TARGET_TRUST" \
   --file "$WORKDIR/policy.json" --step-up-stdin >/dev/null
+# Policy replacement revokes every old capability; issue a fresh one.
+RESTARTED_CAPABILITY="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" session create \
+  --action "$ACTION_REF" --principal "$RESTARTED_PRINCIPAL" --ttl 10m --max-uses 2 \
+  --password-stdin | json_field 'capability_token')"
 "$REKEY" --state-dir "$STATE" execute "$ACTION_REF" --capability "$RESTARTED_CAPABILITY" \
   --body-file "$REQUEST_BODY" --content-type application/json >"$WORKDIR/restarted.out"
 grep -q '"result":"p7-ok"' "$WORKDIR/restarted.out"
@@ -261,6 +265,10 @@ python3 "$ROOT/scripts/sign-test-policy.py" policy --key-dir "$WORKDIR/policy-ke
 read -r POLICY_TARGET_VAULT POLICY_TARGET_TRUST < <("$REKEY" --state-dir "$STATE" policy status | python3 -c 'import json,sys; s=json.load(sys.stdin); print(s["vault_id"], s["trust_sha256"])')
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate --expected-vault-id "$POLICY_TARGET_VAULT" --expected-trust-sha256 "$POLICY_TARGET_TRUST" \
   --file "$WORKDIR/policy.json" --step-up-stdin >/dev/null
+# Policy replacement revokes every old capability; issue a fresh one.
+RESTORED_CAPABILITY="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" session create \
+  --action "$ACTION_REF" --principal "$RESTORED_PRINCIPAL" --ttl 10m --max-uses 2 \
+  --password-stdin | json_field 'capability_token')"
 "$REKEY" --state-dir "$STATE" execute "$ACTION_REF" --capability "$RESTORED_CAPABILITY" \
   --body-file "$REQUEST_BODY" --content-type application/json >"$WORKDIR/restored.out"
 grep -q '"result":"p7-ok"' "$WORKDIR/restored.out"

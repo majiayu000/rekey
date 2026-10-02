@@ -103,10 +103,14 @@ PY
   read -r POLICY_TARGET_VAULT POLICY_TARGET_TRUST < <("$REKEY" --state-dir "$STATE" policy status | python3 -c 'import json,sys; s=json.load(sys.stdin); print(s["vault_id"], s["trust_sha256"])')
   printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate --expected-vault-id "$POLICY_TARGET_VAULT" --expected-trust-sha256 "$POLICY_TARGET_TRUST" \
     --file "$WORKDIR/policy.json" --step-up-stdin >/dev/null
+  CAPABILITY="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" session create \
+    --action "$ACTION_REF" --action "$MALFORMED_ACTION_REF" --principal "$PRINCIPAL_ID" \
+    --ttl 10m --max-uses "$SESSION_USES" --password-stdin | json_field capability_token)"
 }
 
 new_session() {
   local uses=$1
+  SESSION_USES=$uses
   local session
   session="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" session create \
     --action "$ACTION_REF" --action "$MALFORMED_ACTION_REF" --ttl 10m --max-uses "$uses" --password-stdin)"

@@ -601,6 +601,9 @@ SESSION_JSON="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" sessio
 PRINCIPAL_ID="$(printf '%s\n' "$SESSION_JSON" | json_field principal_id)"
 CAPABILITY="$(printf '%s\n' "$SESSION_JSON" | json_field capability_token)"
 activate_policy "$PRINCIPAL_ID" 2
+CAPABILITY="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" session create \
+  --action "$ACTION_REF" --principal "$PRINCIPAL_ID" --ttl 10m --max-uses 10 \
+  --password-stdin | json_field capability_token)"
 
 printf '%s\n' "$CAPABILITY" | "$REKEY" --state-dir "$STATE" execute "$ACTION_REF" --capability - \
   --body-file "$REQUEST_BODY" --content-type application/json >"$WORKDIR/dyn-ok.out"

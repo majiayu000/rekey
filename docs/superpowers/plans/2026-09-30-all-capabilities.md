@@ -1,12 +1,12 @@
 # Rekey 全部剩余功能实现与验收清单
 
-2026-09-30。用户已要求逐项实现全部设计功能并完整测试，允许原生 threads。新授权覆盖 9 月 16 日“外部只做规格”的旧实施范围。随后用户要求先推进其他工作，真实外部环境配置和现场验收暂后置，代码实现与本地测试继续。
+2026-09-30。用户已要求逐项实现全部设计功能并完整测试，允许原生 threads。新授权覆盖 9 月 16 日“外部只做规格”的旧实施范围。2026-10-02 用户授权 Docker 测试环境及本轮外部验收；先执行可用的本地真实服务与容器演练，真实云账号和硬件仍需实际环境。
 
 ## 实施与完成合同
 
 基线为 origin/main `acfa8fea6a0a620a80963008ce3fc5dc3d580cff`，实现工作树位于主仓库 `.git/codex/worktrees/all-capabilities-20260930`。原 `ci/macos-developer-id` 工作区及其未提交内容保留。 宿主随后将主仓库 `.git` 改为只读，当前实施副本转到 `outputs/rekey-implementation-20260930/integration`，独立 Git 历史仍从上述两项本地提交衔接；源码哈希清单与证据位于同级目录。每项先冻结已有规格中的最小切片，再实现实际调用链、错误及秘密边界，不添加兼容迁移或通用适配平台。
 
-功能完成需要实际入口、持久状态/执行链、正负测试和相关端到端验收；外部权限、WORM、HSM、VM隔离、容灾和RPO/RTO需现场证据，fixture通过不能关闭这些声明。用户未授权发布、部署或使用真实凭证，本轮不据此执行。独立人工安全审查与自动化审阅分别记录。
+功能完成需要实际入口、持久状态/执行链、正负测试和相关端到端验收；外部权限、WORM、HSM、VM隔离、容灾和RPO/RTO需现场证据，fixture通过不能关闭这些声明。本轮已授权上传分支、创建 PR 与一次性 Docker 测试环境；不据此发布版本或使用生产凭证。独立人工安全审查与自动化审阅分别记录。
 
 测试责任由协调员承担整合后的 workspace 全套、all-targets check、Clippy、fmt、机械 API/CLI 依赖边界；线程运行各自定向检查，日志在主仓库 `.git/codex/threads/all-capabilities-20260930/`。首批为 DYN-05、AUD-07 与已有功能的发布包补齐，之后按共享类型/schema依赖推进下一项。新增功能没有通过验证前不提高 Feature Truth Matrix 的成熟度。
 
@@ -15,20 +15,20 @@
 | ID | 功能 | 当前状态/责任 | 新验收证据 |
 | --- | --- | --- | --- |
 | APR-08 | 托管远程审批服务 | 源码及本地验收通过：单组织 HTTPS 文件中继；整合全量及现场后置 | 11 项实际 TLS 合同、HTTPS→独立 signer→真实 Broker；独立复核通过 |
-| APR-09 | 通知与审批操作界面 | 本地 Admin UI 已有；新增远程 pull inbox 完成，独立复核通过；完整原生 UI 尚有缺口 | 15 项 TLS 合同、inbox→HTTPS→signer→Broker 正负链通过；未声称网页完整 review UI |
+| APR-09 | 通知与审批操作界面 | 原生文件审批流程及远程 pull inbox 已实现；完整 GUI 点击链待验收 | 15 项 TLS 合同、inbox→HTTPS→signer→Broker；本轮完整 Rust 通过，原生交互另行记录 |
 | APR-10 | 人员目录与组织关系 | SCIM消费/持久停用/事务门禁及明确Admin自证明已实现；节点撤权链整合中 | ROOT20单测+1离线注册通过、独立复审关闭；21TLS只编译；节点回执仍pending |
 | AUD-06 | 审计保留与删除 | 授权持久 sealed 后台策略已整合 format21；独立 2P1+1P2 全部关闭 | 29 文件逐 SHA 整合；未知结果同步关闭准入、desktop 恢复验 seal、SET 继承原 deadline；ROOT Broker6/Vault4/Desktop2 与 CLI5 通过（有重叠，不累计）；严格 IPC 未通过 |
-| AUD-07 | 远程投递与 SIEM | 源码及本地验收通过；真实 SIEM 后置 | 27 项测试；CLI→TLS、ACK 丢失/重启、永久失败、独立修复复核 |
+| AUD-07 | 远程投递与 SIEM | 源码及本地真实 CLI/TLS 验收通过；客户 SIEM 待现场 | 本轮 28/28；修复 format21 备份回执 snapshot_cut 精确校验，ACK 游标仍从零开始 |
 | AUD-08 | WORM / Legal Hold | 源码合同测试及独立复核通过；实际 WORM/权限现场后置 | 23 项测试：TLS、官方 SigV4 向量、ACK 丢失/重启、版本早期持久 pin、Hold、fsync/容量/超时 |
-| BAK-07 | 复制与故障转移 | H1持久接收与H2实际快照切点/恢复回执完成，独立修复复审关闭；真实promotion待验收 | H1 ROOT13；H2 ROOT36功能+51含IPC去重Rust、4真实离线CLI正负；不承诺fencing或恶意同UID排除 |
-| BAK-08 | RPO/RTO 与脑裂演练 | 备份/恢复回执核对入口已整合，独立3P1闭环；完整脑裂演练未实现 | ROOT DR9/完整backup23通过；仅artifact_match，RPO/RTO/实际fencing及promotion未测 |
+| BAK-07 | 复制与故障转移 | 快照复制和 Docker 主备手动恢复通过；持续复制/自动切换未实现 | 独立容器卷、外部 daemon fencing、快照哈希及切点、恢复策略、新授权真实请求全部通过 |
+| BAK-08 | RPO/RTO 与脑裂演练 | Docker 脑裂拒绝、独立 fencing、完整提升与计时流程已实现并通过 | 断网旧主仍活跃时拒绝提升，删除旧容器后禁止重启；本次 RTO 1361.31ms，故意丢失 1 次写入；提交间隔界限 1420.23–1760.71ms，非 SLA |
 | DYN-05 | 租约续期 | 源码及本地验收通过；现场验证后置 | parser/deadline 6、UDS 21；真实本地 Vault 1.20.3/Postgres 单次续期与角色删除；workspace 578 passed |
 | DYN-06 | 持久租约及重启清理 | A+B 及两项 P2 修复已整合、独立静态复核通过；全量因网络沙箱受阻 | Vault 151；Broker 27 + 真实进程 5（含 3 个 SIGKILL gates）权限变更前通过；新增真实 Actor/SQLite 回归 4/4；当前 all-targets/Clippy/fmt/机械边界通过 |
-| ENT-01 | 集中控制面 | Rust 目标绑定/状态/精确审计及固定文件工具已实现；严格运行未通过 | 58项线程定向通过；24脚本和原生调用已接线；严格运行/现场验收未通过 |
+| ENT-01 | 集中控制面 | 控制面目标绑定和固定文件工具本地验收通过；现场待验收 | 本轮完整 controlplane 86/86，之前严格 PTY 失败已复测通过 |
 | ENT-02 | 多租户隔离 | 实际 vault/root 提交绑定及固定双节点注册/回执已实现；现场隔离待验证 | 本地 Authority 测试可证明目标校验；真实节点、VM/UID/磁盘/网络/备份隔离待现场验证 |
 | ENT-03 | SSO/SCIM/组织 | 节点PKCE/管理会话/逐次目录门禁与本地撤权已实现，独立复审关闭 | C2 ROOT84去重定向（最新OIDC25）、SCIM/C1/C3/caller独立证据；完整TLS/loopback/UDS/真实IdP与双节点仍未验收 |
-| ENT-04 | HA/容灾/多节点 | H1/H2本地切片完成，回执路径P2及旧IPC夹具问题已修复、独立复审关闭 | H1 ROOT13/caller ROOT14；H2 ROOT36功能/51含IPC去重+4离线CLI；真实fencing/promotion/HA/RPO/RTO未验收 |
-| ENT-05 | 企业现场验证 | 固定本地门槛入口已整合，独立3P1闭环；现场验收暂后置 | ROOT新16项通过；完整控制面86项运行85通过/1strictPTY失败；Vault未执行整体非零，不宣称企业通过 |
+| ENT-04 | HA/容灾/多节点 | Docker 有界主备容灾演练通过；跨物理机 HA 待现场 | 真实 Broker/CLI/UDS + 测试 TLS；独立外部 daemon 控制；主备卷隔离、旧令牌拒绝和清理通过 |
+| ENT-05 | 企业现场验证 | 已开始执行可用真实本地服务验收；客户环境未整体通过 | 完整 Rust 1032 通过/0 失败/1 忽略；controlplane86、audit delivery28、archive23；外部服务逐门记录 |
 | EXT-01 | AWS Secrets 或 KMS | 固定 ARN/VersionId 源、token 规范化及独立响应头测试已整合和复审关闭 | kind 7/schema 17/opcode 42；整合 293 项定向通过（AWS 20、domain/connector/vault 246、其他 27），响应头独立覆盖已 fresh 复测；全量监听 EPERM |
 | EXT-02 | GCP Secrets 或 KMS | 固定数值 SecretVersion 与完整响应头封口已整合；定向通过，独立最终复核已通过 | kind 6/schema 16/opcode 41；整合 GCP 15 + HeaderMap 2 + 既有回归 12 通过；TLS/UDS 因 EPERM 尚未验收 |
 | EXT-03 | Azure Secrets 或 KMS | 最终 25 文件已整合、独立实际 SHA 复审通过；Azure/GCP 两类 OWS 修复已实际 RED→GREEN | kind8/schema18/opcode43；234 项去重定向通过（70 root、164 同源码线程），完整 workspace 15 个 IdP 启动失败，监听 EPERM 另已实证 |
@@ -169,3 +169,13 @@ directreturntestcaller。VEX04从独立401file copy/INDEXbebf72..实现显式lat
 2026-10-02 继续收口：通过 GitHub 连接器实时核实 main=acfa8fe；保护规则要求 PR、squash 和 Ubuntu/macOS/G2 三门。Git CLI DNS 仍失败。连接器首次 create_tree 被工具审批拒绝（需要审批，而会话策略never）；未上传对象、未建PR、未改远端。隔离副本已配置 origin 和经实时核实的 origin/main，本地原8commit可转移bundle已验证。新发现 archive smoke 格式19陈旧断言，修至JSON精确21，6正负输入通过。原生Model重新warnings-as-errors编译通过，flow80/OIDC16断言通过，无Keychain/API/GUI现场声明。
 
 Linux CI 委派的最小接线已实现：现有workflow内临时Cargo runner只为插件相关test/executable创建独立同UID/GID service（Delegate=memory），P6在LinuxCI强制使用同入口。独立取消P2及格式守卫P3经 actual FINAL 静态复审关闭：特权client组kill/reap后stop指定unit，启动到PID赋值窗口有覆盖；测试退出码不变。实际生成shell对synthetic sudo/setsid的5路由/argv/stdin/退出检查通过；延迟启动及赋值前窗口各old失败→修复通过。真实root UID/systemd/cgroup/kernel尚未执行，完整workspace仍沿用755PASS/276FAIL/1ignored失败结论，无skip或绿色声明。证据：20261002-github-write-blocker.json、20261002-ci-plugin-runner-final2-mock.log、20261002-release-format-exact.json。
+
+## 2026-10-02 当前收口证据（取代旧环境失败结论）
+
+工作副本仍是 `outputs/rekey-implementation-20260930/integration`。Git 上传已成功，草稿 PR 为 https://github.com/majiayu000/rekey/pull/59；本轮行为修复跟踪 https://github.com/majiayu000/rekey/issues/60。旧工具审批拒绝是历史状态，不再是当前上传阻塞。
+
+完整 `cargo test --workspace --locked --no-fail-fast -- --test-threads=1`：83 个目标，1032 通过、0 失败、1 忽略（性能专用用例），退出 0。结果按每个顶层目标的最终摘要计数，不重复计入子进程测试。旧 755/276/1 保留为历史失败证据。修复包括显式 Admin 主体重发、管理 socket 正文限额、macOS canonical temp/socket 扫描、目录撤权后的旧夹具、Vault journal 的事务型审计断言、旧格式/目标绑定夹具和 fuzz lock。策略替换仍撤销所有旧令牌；OIDC 不得代发其他主体，workload 接口仍拒绝指定主体。辅助验收脚本同步改为激活后重新 step-up 签发。
+
+Docker 演练运行 3 的 `report.json` 为 PASS 且 cleanup_complete=true：Docker 29.5.3，镜像 sha256:7466ba795a1acc0c8aaed8c14bfbeed8b51e4fe573127f87b7919acce07ce8cb。RTO 从断网操作开始至备机首次真实成功业务响应，包含拒绝、fence、传输、恢复、解锁与重发；RPO 是本次凭证写入样本的丢失量及单调时钟提交间隔界限，不是全系统复制 SLA。可信管理员仍可重新建立容器，Docker daemon/宿主不是独立故障域。旧 artifact-only `--require-field` 的非零合同保持不变。
+
+日志与收据：`outputs/rekey-implementation-20260930/evidence/20261002-pr-closeout/`。PR 必需 Ubuntu/macOS/G2 检查尚待本轮修复推送后的结果；历史独立审查不替代本轮改动审查。真实硬件 HSM、客户云权限、IdP/SCIM 双节点撤权、SIEM/WORM、物理故障域及全部 GUI 点击不能由上述结果关闭。

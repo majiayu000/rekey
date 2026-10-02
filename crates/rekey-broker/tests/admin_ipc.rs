@@ -11,6 +11,47 @@ use rekey_domain::ipc::{self, Channel, FrameHeader, ProofKind, admin_msg, agent_
 
 const NEW_PASSWORD: &[u8] = b"replacement horse battery staple";
 const FINAL_PASSWORD: &[u8] = b"recovered horse battery staple";
+
+#[tokio::test(flavor = "multi_thread")]
+async fn explicit_principal_issuance_requires_step_up_and_is_admin_only() {
+    let broker = common::start_broker().await;
+    common::unlock(&broker).await;
+    let credential = common::add_credential(&broker, "reissue", b"synthetic-token").await;
+    let (action, version) = common::create_action(&broker, &credential).await;
+    let principal = rekey_domain::ids::PrincipalId::new_random().to_string();
+    common::activate_test_policy(&broker, &action, version, &principal).await;
+    let metadata = serde_json::json!({"actions":[{"action_id":action,"version":version}],
+        "ttl_ms":60000,"max_uses":2,"principal_id":principal})
+    .to_string();
+    let rejected = common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::SESSION_CREATE,
+        metadata.as_bytes(),
+        &common::proof_body(b"wrong-proof"),
+    )
+    .await;
+    assert_eq!(rejected.err_code(), "INVALID_UNLOCK_CREDENTIAL");
+    let created = common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::SESSION_CREATE,
+        metadata.as_bytes(),
+        &common::proof_body(common::PASSWORD),
+    )
+    .await;
+    assert_eq!(created.ok()["principal_id"], principal);
+    let rejected = common::call(
+        &broker.agent_sock(),
+        Channel::Agent,
+        agent_msg::WORKLOAD_SESSION_CREATE,
+        metadata.as_bytes(),
+        b"synthetic.invalid.token",
+    )
+    .await;
+    assert_eq!(rejected.err_code(), "INVALID_FRAME");
+    broker.shutdown().await;
+}
 const VAULT_PROFILE: &[u8] = br#"{
   "credential_type":"vault-kv-v2-source-v1",
   "origin":"https://vault.example.com",

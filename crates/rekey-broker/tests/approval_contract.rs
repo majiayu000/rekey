@@ -850,21 +850,28 @@ async fn vrk_rotation_requires_lock_and_changes_origin_without_reviving_approval
         .err_code(),
         "INVALID_CAPABILITY"
     );
-    // A fresh capability needs a policy rule for its fresh principal; installing
-    // that rule is normal approval setup, separate from VRK replacement.
-    let fresh = common::policy::create_session_grant(&broker, &action, version, 20).await;
+    // Install the new rule first: replacing policy revokes all existing grants.
+    let principal = rekey_domain::ids::PrincipalId::new_random().to_string();
     common::policy::activate_approval_policy(
         &broker,
         &action,
         version,
         common::policy::ApprovalPolicy {
-            principal_id: &fresh.principal_id,
+            principal_id: &principal,
             approvers: &[(approver_id, public_key)],
             quorum: 1,
             mode: ApprovalMode::OneTime,
             max_uses: 1,
             max_window_ms: None,
         },
+    )
+    .await;
+    let fresh = common::policy::create_session_for_principal(
+        &broker,
+        &action,
+        version,
+        20,
+        Some(&principal),
     )
     .await;
     let fresh_challenge = prepare(&broker, &fresh.capability_token, &action, version).await;

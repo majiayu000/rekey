@@ -4,6 +4,8 @@
 
 `scripts/rekey-audit-delivery.py` 是无解锁能力的独立 Python 工具。操作方先从可信渠道取得既有 `BackupReceipt`，以 `init --vault-receipt FILE --endpoint HTTPS_URL` 登记 `--source-instance-id` 与 `--vault-id`。Receipt 的 vault_id 必须一致，工具不验证备份内容，也不从审计文件猜测身份。Receipt 不是签名证据，操作方负责来源真实性。每次命令显式重复两个身份；本机 0700 outbox 永久固定身份、receipt SHA-256 和精确 HTTPS 目标。restore/clone 必须登记新的 source_instance_id 和新的 outbox；工具无法自动识别由操作方冒用旧身份的克隆。
 
+Receipt 字段集合跟随当前 CLI，包含 `snapshot_cut`；缺少该字段的旧回执不兼容。投递只使用回执绑定来源身份并保存完整原始字节的 SHA-256，不解释 snapshot cut，不用它初始化或推进 ACK cursor，也不将它当作恢复或最新状态证明。
+
 `enqueue --export FILE` 读取既有 CLI `audit export --output FILE` 完整 JSONL，不调用 unlock、不读取数据库。输入及队列文件必须为本用户 0600 普通文件；拒绝符号链接、路径替换及并发操作。Header 必须是 v2 schema、所有过滤字段为 null，最终 complete trailer 的 row_count 必须匹配。事件为严格倒序且无重复，新区间从永久 cursor+1 连续到 snapshot_max_sequence。新区间缺口、部分文件、错 trailer、过滤导出和回退明确失败。已有 ACK 的旧记录可出现在完整快照中，旧区间允许正常 prune 留下的缺口；接收端仍须按 source_instance_id/vault_id/sequence 去重。首次 cursor 为 0，已经 prune 的初次导出不能偷偷建立最新 cursor。
 
 仅允许一个未确认批次。原始完整 JSONL、SHA-256、随机 batch_id、来源身份、新区间 first_sequence/last_sequence、snapshot_max_sequence、row_count、created_at_ms 永久保存为不可变 `batch-FIRST.json`。已有 pending 时停止入队；不再生成 batch、不跳序。已确认文件永久保留，工具不自动清理。单个快照上限 16 MiB、outbox 总量上限 256 MiB、未确认批次年龄上限 24 小时；入队时为该批次的精确 ACK journal 和最长整数确认时间预留空间。先到上限停止，不删除最旧事件。源端 prune 保留责任属于操作方，工具不会阻止 prune，也不改变本地业务审计门禁。

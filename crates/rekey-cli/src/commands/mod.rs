@@ -5,7 +5,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use rekey_domain::ids::{ActionId, CredentialId, SessionId};
+use rekey_domain::ids::{ActionId, CredentialId, PrincipalId, SessionId};
 use rekey_domain::ipc::{self, Channel, ProofKind, admin_msg, agent_msg};
 use rekey_domain::{action::FixedHttpAction, credential::CredentialMetadata};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -655,6 +655,7 @@ pub fn session_create(
     actions: &[String],
     ttl: &str,
     max_uses: u32,
+    principal: Option<&str>,
     recovery: bool,
     password_stdin: bool,
 ) -> Result<(), CliError> {
@@ -667,11 +668,16 @@ pub fn session_create(
         }));
     }
     let ttl_ms = parse_ttl_ms(ttl)?;
+    let principal_id = principal
+        .map(str::parse::<PrincipalId>)
+        .transpose()
+        .map_err(|_| CliError::local("USAGE", "invalid principal id"))?;
     let proof = read_step_up(recovery, password_stdin)?;
     let metadata = serde_json::json!({
         "actions": refs,
         "ttl_ms": ttl_ms,
         "max_uses": max_uses,
+        "principal_id": principal_id,
     });
     let body = proof_body(recovery, &proof);
     let (meta, _) = admin(state_dir)?.call(

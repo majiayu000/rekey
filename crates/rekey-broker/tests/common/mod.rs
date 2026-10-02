@@ -332,9 +332,11 @@ pub async fn create_action(broker: &TestBroker, credential_id: &str) -> (String,
 }
 
 pub async fn create_session(broker: &TestBroker, action_id: &str, version: u64) -> String {
-    let session = policy::create_session_grant(broker, action_id, version, 100).await;
-    activate_test_policy(broker, action_id, version, &session.principal_id).await;
-    session.capability_token
+    let principal = rekey_domain::ids::PrincipalId::new_random().to_string();
+    activate_test_policy(broker, action_id, version, &principal).await;
+    policy::create_session_for_principal(broker, action_id, version, 100, Some(&principal))
+        .await
+        .capability_token
 }
 
 pub fn execute_meta(token: &str, action_id: &str, version: u64) -> serde_json::Value {

@@ -20,10 +20,21 @@ pub async fn create_session_grant(
     version: u64,
     max_uses: u32,
 ) -> TestSession {
+    create_session_for_principal(broker, action_id, version, max_uses, None).await
+}
+
+pub async fn create_session_for_principal(
+    broker: &TestBroker,
+    action_id: &str,
+    version: u64,
+    max_uses: u32,
+    principal_id: Option<&str>,
+) -> TestSession {
     let meta = serde_json::json!({
         "actions": [{"action_id": action_id, "version": version}],
         "ttl_ms": 3_600_000,
         "max_uses": max_uses,
+        "principal_id": principal_id,
     });
     let response = call(
         &broker.admin_sock(),

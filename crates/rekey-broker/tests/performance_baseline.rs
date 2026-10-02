@@ -462,10 +462,13 @@ async fn create_large_action(broker: &common::TestBroker, credential_id: &str) -
 }
 
 async fn create_session(broker: &common::TestBroker, action_id: &str, version: u64) -> String {
+    let principal = PrincipalId::new_random().to_string();
+    common::activate_test_policy(broker, action_id, version, &principal).await;
     let meta = json!({
         "actions": [{"action_id": action_id, "version": version}],
         "ttl_ms": 3_600_000,
         "max_uses": SESSION_USES,
+        "principal_id": principal,
     });
     let response = common::call(
         &broker.admin_sock(),
@@ -476,15 +479,7 @@ async fn create_session(broker: &common::TestBroker, action_id: &str, version: u
     )
     .await;
     let ok = response.ok();
-    let token = ok["capability_token"].as_str().unwrap().to_owned();
-    common::activate_test_policy(
-        broker,
-        action_id,
-        version,
-        ok["principal_id"].as_str().unwrap(),
-    )
-    .await;
-    token
+    ok["capability_token"].as_str().unwrap().to_owned()
 }
 
 async fn execute(
