@@ -109,6 +109,7 @@ pub mod admin_msg {
     pub const AUDIT_RETENTION_STATUS: u16 = 51;
     pub const TEMPLATE_CATALOG: u16 = 52;
     pub const TEMPLATE_INSTALL: u16 = 53;
+    pub const PERSONAL_POLICY_DRAFT: u16 = 54;
 }
 
 /// Agent channel message types.
@@ -209,7 +210,7 @@ impl FrameHeader {
 
 /// Closed operation classification shared by managed Broker dispatch and CLI.
 pub fn managed_admin_operation(message_type: u16) -> Result<bool, FrameError> {
-    if !(1..=53).contains(&message_type) {
+    if !(1..=54).contains(&message_type) {
         return Err(FrameError::InvalidField);
     }
     Ok(!matches!(
@@ -660,6 +661,60 @@ pub struct PolicyActivateMeta {
     pub expected_vault_id: VaultId,
     pub expected_trust_sha256: String,
     pub bundle_json: Box<serde_json::value::RawValue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PersonalPolicyDraftMeta {
+    pub principal_id: PrincipalId,
+    pub actions: Vec<ActionVersionRef>,
+    pub expires_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PersonalPolicyFieldChange {
+    pub field: String,
+    pub before: serde_json::Value,
+    pub after: serde_json::Value,
+}
+
+/// The associated frame body contains the exact RKPOLICY-prefixed sign bytes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PersonalPolicyDraftResponse {
+    pub vault_id: VaultId,
+    pub trust_sha256: String,
+    pub public_key: String,
+    pub base_version: Option<u64>,
+    pub next_version: u64,
+    pub policy_sha256: String,
+    pub changes: Vec<PersonalPolicyFieldChange>,
+    pub actions: Vec<FixedHttpAction>,
+}
+
+impl PersonalPolicyDraftResponse {
+    /// Wire-shape validation only; the broker authenticates stored material.
+    pub fn validate(&self) -> Result<(), crate::DomainError> {
+        if !is_lower_hex(&self.trust_sha256, 64)
+            || !is_lower_hex(&self.policy_sha256, 64)
+            || !is_lower_hex(&self.public_key, 130)
+            || !self.public_key.starts_with("04")
+            || self
+                .base_version
+                .is_some_and(|v| PolicyVersion::new(v).is_err())
+            || self.base_version.unwrap_or(0).checked_add(1) != Some(self.next_version)
+            || PolicyVersion::new(self.next_version).is_err()
+            || self.actions.iter().any(|action| !action.enabled)
+            || self
+                .actions
+                .windows(2)
+                .any(|pair| (pair[0].id, pair[0].version) >= (pair[1].id, pair[1].version))
+        {
+            return Err(invalid_response());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1134,13 +1189,13 @@ mod tests {
             assert!(parse_management_body(&bad).is_err());
         }
         assert!(parse_management_body(&body[..49]).is_err());
-        for id in 1..=53 {
+        for id in 1..=54 {
             assert_eq!(
                 managed_admin_operation(id).unwrap(),
                 !matches!(id, 1 | 2 | 3 | 15 | 16 | 31 | 34 | 36 | 45..=48)
             );
         }
-        assert!(managed_admin_operation(54).is_err());
+        assert!(managed_admin_operation(55).is_err());
     }
 
     #[test]

@@ -31,7 +31,7 @@ pub use audit::{
 mod policy_approval;
 pub use policy_approval::{
     approval_get, approval_origin, approval_pending, approval_prepare, policy_activate,
-    policy_status, policy_trust_install,
+    policy_draft, policy_status, policy_trust_install,
 };
 #[cfg(feature = "lab")]
 mod vault_admin;

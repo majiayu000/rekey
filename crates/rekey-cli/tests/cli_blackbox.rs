@@ -1300,3 +1300,187 @@ fn template_cli_installs_bound_actions_atomically_without_exposing_proof() {
     );
     assert!(guard.finish().status.success());
 }
+
+#[test]
+fn personal_policy_draft_sign_and_activate_over_anonymous_stdin() {
+    use aws_lc_rs::rand::SystemRandom;
+    use aws_lc_rs::signature::{ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair, KeyPair};
+    use data_encoding::{BASE64URL_NOPAD, HEXLOWER};
+    use serde_json::{Value, json};
+
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("personal");
+    let state = state_dir.to_str().unwrap();
+    let proof = format!("{PASSWORD}\n");
+    let initialized = run(
+        &rekey_bin(),
+        &[
+            "--state-dir",
+            state,
+            "init",
+            "--mode",
+            "personal",
+            "--password-stdin",
+        ],
+        Some(&proof),
+    );
+    assert_eq!(initialized.status, 0, "{}", initialized.stderr);
+    let server = Command::new(rekeyd_bin())
+        .args(["serve", "--state-dir", state])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let guard = ServeGuard(Some(server));
+    for _ in 0..300 {
+        if state_dir.join("runtime/admin.sock").exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let call = |args: &[&str], input: Option<&str>| {
+        let mut all = vec!["--state-dir", state];
+        all.extend_from_slice(args);
+        let result = run(&rekey_bin(), &all, input);
+        for canary in [PASSWORD, SECRET] {
+            assert!(!result.stdout.contains(canary));
+            assert!(!result.stderr.contains(canary));
+        }
+        result
+    };
+    let success = |output: Output| -> Value {
+        assert_eq!(output.status, 0, "{}", output.stderr);
+        serde_json::from_str(&output.stdout).unwrap()
+    };
+    assert_eq!(
+        call(&["unlock", "--password-stdin"], Some(&proof)).status,
+        0
+    );
+    // Real signature/verification, but a software test key: not evidence of SE provenance.
+    let key = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &SystemRandom::new())
+        .unwrap();
+    let key = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, key.as_ref()).unwrap();
+    let trust = json!({"format_version":1,"signer_id":rekey_domain::ids::PolicySignerId::new_random(),
+        "algorithm":"secure-enclave-p256","public_key":HEXLOWER.encode(key.public_key().as_ref())});
+    let status = success(call(
+        &[
+            "policy",
+            "trust",
+            "install",
+            "--stdin-request",
+            "--step-up-stdin",
+        ],
+        Some(&format!("{proof}{trust}\n")),
+    ));
+    let vault = status["vault_id"].as_str().unwrap();
+    let trust_digest = status["trust_sha256"].as_str().unwrap();
+    let credential = success(call(
+        &["credential", "add", "personal fixture", "--stdin-secrets"],
+        Some(&format!("{proof}{SECRET}\n")),
+    ));
+    let install = json!({"source":{"kind":"openai"},"credential_id":credential["id"],"bindings":[{}],
+        "capabilities":["models"],"name_prefix":"Personal model list","timeout_ms":30000,
+        "request_max_bytes":65536,"allowed_extra_headers":[],"response_max_bytes":262144,"allowed_response_headers":["content-type"]});
+    let installed = success(call(
+        &["template", "install", "--stdin-request", "--password-stdin"],
+        Some(&format!("{proof}{install}\n")),
+    ));
+    let action = &installed["actions"][0]["action"];
+    let action_ref = format!(
+        "{}@{}",
+        action["id"].as_str().unwrap(),
+        action["version"].as_u64().unwrap()
+    );
+    let principal = rekey_domain::ids::PrincipalId::new_random().to_string();
+    let expires = (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
+        + 600_000) as i64;
+    let expires = expires.to_string();
+    let draft = |selected: bool| {
+        let mut args = vec![
+            "policy",
+            "draft",
+            "--principal",
+            &principal,
+            "--expires-at-ms",
+            &expires,
+        ];
+        if selected {
+            args.extend(["--action", &action_ref]);
+        }
+        success(call(&args, None))
+    };
+    let sign = |draft: &Value| {
+        let bytes = draft["sign_bytes"].as_str().unwrap().as_bytes();
+        assert!(bytes.starts_with(b"RKPOLICY\0\x01"));
+        let mut unsigned: Value = serde_json::from_slice(&bytes[10..]).unwrap();
+        assert_eq!(&bytes[10..], serde_jcs::to_vec(&unsigned).unwrap());
+        let changes = draft["metadata"]["changes"].as_array().unwrap();
+        for change in changes {
+            assert_eq!(
+                change["after"],
+                unsigned["snapshot"][change["field"].as_str().unwrap()]
+            );
+        }
+        let signature = key.sign(&SystemRandom::new(), bytes).unwrap();
+        unsigned["signature"] = BASE64URL_NOPAD.encode(signature.as_ref()).into();
+        unsigned.to_string()
+    };
+    let activate = |bundle: &str| {
+        call(
+            &[
+                "policy",
+                "activate",
+                "--stdin-request",
+                "--expected-vault-id",
+                vault,
+                "--expected-trust-sha256",
+                trust_digest,
+                "--step-up-stdin",
+            ],
+            Some(&format!("{proof}{bundle}\n")),
+        )
+    };
+    let first = draft(true);
+    assert_eq!(first["metadata"]["base_version"], Value::Null);
+    assert_eq!(first["metadata"]["next_version"], 1);
+    assert_eq!(first["metadata"]["actions"].as_array().unwrap().len(), 1);
+    let first_bundle = sign(&first);
+    assert_eq!(success(activate(&first_bundle))["version"], 1);
+    // Exact same signed bytes are idempotent; no ECDSA resign/retry required.
+    assert_eq!(success(activate(&first_bundle))["version"], 1);
+    let stale = sign(&draft(false));
+    let second = sign(&draft(true));
+    assert_eq!(success(activate(&second))["version"], 2);
+    let rejected = activate(&stale);
+    assert_ne!(rejected.status, 0);
+    assert!(rejected.stderr.contains("POLICY_VERSION_CONFLICT"));
+    let retired_draft = sign(&draft(true));
+    success(call(
+        &[
+            "action",
+            "disable",
+            action["id"].as_str().unwrap(),
+            "--password-stdin",
+        ],
+        Some(&proof),
+    ));
+    assert_ne!(activate(&retired_draft).status, 0);
+    assert_eq!(success(call(&["policy", "status"], None))["version"], 2);
+    let empty = draft(false);
+    assert!(empty["metadata"]["actions"].as_array().unwrap().is_empty());
+    let revoke_bundle = sign(&empty);
+    let revoke: Value = serde_json::from_str(&revoke_bundle).unwrap();
+    assert_eq!(revoke["snapshot"]["rules"], json!([]));
+    assert_eq!(success(activate(&revoke_bundle))["version"], 3);
+    let audit = call(&["audit", "list"], None);
+    assert_eq!(audit.status, 0);
+    assert_eq!(
+        call(&["shutdown", "--password-stdin"], Some(&proof)).status,
+        0
+    );
+    drop(guard);
+}

@@ -6,6 +6,7 @@ import Darwin
 struct UIContract {
     @MainActor
     static func main() async throws {
+        if CommandLine.arguments == [CommandLine.arguments[0], "--personal-policy-boundary-only"] { try await personalPolicyBoundary(); return }
         if CommandLine.arguments == [CommandLine.arguments[0], "--flow-boundary-only"] { try await flowBoundary(); return }
         if CommandLine.arguments == [CommandLine.arguments[0], "--oidc-boundary-only"] { try oidcBoundary(); return }
         guard CommandLine.arguments.count == 2 else { fatalError("usage: test-macos-ui CLI_BINARY | --flow-boundary-only") }
@@ -90,7 +91,8 @@ struct UIContract {
         let session = try JSONSerialization.jsonObject(with: sessionData) as! [String: Any]
         try require(session["capability_token"] is String, "session receipt")
         _ = try client.run(["session", "revoke", session["session_id"] as! String, "--password-stdin"], input: password + "\n")
-        _ = try client.decode(PolicyStatus.self, ["policy", "status"])
+        let teamPolicy = try client.decode(PolicyStatus.self, ["policy", "status"])
+        try require(teamPolicy.mode == .team, "team external signing mode retained")
         _ = try client.decode(PendingList.self, ["approval", "pending"])
         let realOrigin = try client.decode(ApprovalOrigin.self, ["approval", "origin"])
         try require(realOrigin.algorithm == "ed25519" && realOrigin.public_key.count == 64, "real origin public key decoded")
@@ -263,6 +265,162 @@ struct UIContract {
         model.status = ServiceStatus(state: "locked", format_version: 19, runtime_version: "fixture", sessions_active: 0, peer_security: "L1-dev", lab_enabled: false)
         try require(!model.acceptsOIDCCompletion(model.oidcFlowRevision, workspace: model.stateDirectory), "locked completion rejected")
         print("OIDC caller boundary: \(assertions) assertions passed; no Keychain or listeners used")
+    }
+
+    @MainActor
+    static func personalPolicyBoundary() async throws {
+        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("rkui-personal-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        defer { do { try FileManager.default.removeItem(at: root) } catch { fputs("personal fixture cleanup failed\n", stderr) } }
+        var assertions = 0
+        func require(_ condition: @autoclosure () throws -> Bool, _ name: String) throws {
+            guard try condition() else { throw UIError(message: "FAILED: " + name) }; assertions += 1
+        }
+        func rejected(_ name: String, _ operation: () throws -> Void) throws {
+            do { try operation() } catch { assertions += 1; return }
+            throw UIError(message: "FAILED: " + name)
+        }
+        let vault = UUID(), principal = UUID(), revision = UUID()
+        let expiry: Int64 = 4_102_444_800_000
+        let hash = String(repeating: "a", count: 64), key = "04" + String(repeating: "11", count: 64)
+        let unsigned = "{\"format_version\":1,\"signer_id\":\"\(vault.uuidString.lowercased())\",\"snapshot\":{\"version\":3,\"expires_at_ms\":\(expiry),\"exact\":9007199254740993,\"unicode\":\"完整预览/路径\",\"rules\":[],\"bindings\":[]}}"
+        let message = "RKPOLICY\0\u{01}" + unsigned
+        let complete = String(repeating: "complete-schema ", count: 600)
+        let response: [String: Any] = ["metadata": ["vault_id": vault.uuidString.lowercased(), "trust_sha256": hash,
+            "public_key": key, "base_version": 2, "next_version": 3, "policy_sha256": hash,
+            "changes": [["field": "rules", "before": [["permission": "removed"]], "after": []]],
+            "actions": [["target": ["body_schema": ["description": complete]]]]], "sign_bytes": message]
+        let responseData = try JSONSerialization.data(withJSONObject: response)
+        func makeDraft(_ data: Data = responseData, workspace: String = root.path, revision: UUID = revision) throws -> PersonalPolicyDraft {
+            try PersonalPolicyDraft(response: data, principal: principal, expiresAtMs: expiry, workspace: workspace, revision: revision)
+        }
+        let draft = try makeDraft()
+        try require(draft.signBytes == Data(message.utf8), "prefix and exact daemon UTF8 bytes retained")
+        try require(draft.actionsText.contains(complete) && draft.changesText.contains("removed") && draft.changesText.contains("after"), "full schema and deleted authorization preview retained")
+        let signature = "SYNTHETIC_DER_PLACEHOLDER"
+        let bundle = try draft.signedBundle(signature: signature)
+        try require(bundle == String(unsigned.dropLast()) + ",\"signature\":\"\(signature)\"}", "only signature inserted; snapshot number/Unicode bytes untouched")
+        try require(try (JSONSerialization.jsonObject(with: Data(bundle.utf8)) as? [String: Any])?["signature"] as? String == signature, "result is one JSON object")
+        for invalid in ["", "x\ny", "padded=", String(repeating: "a", count: 97)] {
+            try rejected("invalid signature never forms request") { _ = try draft.signedBundle(signature: invalid) }
+        }
+        for invalid in [unsigned, "RKPOLICY\0\u{01}[]", "RKPOLICY\0\u{01}\n" + unsigned, "RKPOLICY\0\u{01}" + String(unsigned.dropLast()) + ",\"signature\":\"old\"}", "RKPOLICY\0\u{01}" + String(repeating: " ", count: 65536) + unsigned] {
+            var bad = response; bad["sign_bytes"] = invalid
+            try rejected("malformed or already signed envelope rejected") { _ = try makeDraft(JSONSerialization.data(withJSONObject: bad)) }
+        }
+        var current: [String: Any] = ["vault_id": vault.uuidString.lowercased(), "mode": "personal", "algorithm": "secure-enclave-p256",
+            "trust_sha256": hash, "bundle_persisted": true, "trust_installed": true, "status": "expired", "version": 2,
+            "signer_id": vault.uuidString.lowercased()]
+        func status(_ value: [String: Any]) throws -> PolicyStatus { try JSONDecoder().decode(PolicyStatus.self, from: JSONSerialization.data(withJSONObject: value)) }
+        try draft.validate(current: status(current)); assertions += 1
+        for (field, value) in [("mode", "team" as Any), ("algorithm", "ed25519"), ("vault_id", UUID().uuidString),
+                               ("trust_sha256", String(repeating: "b", count: 64)), ("version", 3), ("version", NSNull()),
+                               ("trust_installed", false)] {
+            var stale = current; stale[field] = value
+            try rejected("changed \(field) rejects before signing") { try draft.validate(current: status(stale)) }
+        }
+        try rejected("expired draft denied") { try draft.validate(current: status(current), now: Date(timeIntervalSince1970: Double(expiry) / 1000)) }
+        var firstResponse = response
+        var firstMetadata = response["metadata"] as! [String: Any]
+        firstMetadata["base_version"] = NSNull(); firstMetadata["next_version"] = 1; firstResponse["metadata"] = firstMetadata
+        firstResponse["sign_bytes"] = message.replacingOccurrences(of: "\"version\":3", with: "\"version\":1")
+        var firstStatus = current
+        firstStatus["version"] = NSNull(); firstStatus["signer_id"] = NSNull()
+        firstStatus["bundle_persisted"] = false; firstStatus["status"] = "unavailable"
+        try makeDraft(JSONSerialization.data(withJSONObject: firstResponse)).validate(current: status(firstStatus)); assertions += 1
+        let fixture = root.appendingPathComponent("cli"), calls = root.appendingPathComponent("calls"), statusFile = root.appendingPathComponent("status.json")
+        try responseData.write(to: root.appendingPathComponent("draft.json"))
+        try JSONSerialization.data(withJSONObject: current).write(to: statusFile)
+        try Data("""
+        #!/usr/bin/python3
+        import json,pathlib,sys
+        here=pathlib.Path(__file__).parent
+        args=sys.argv[1:]; body=sys.stdin.read()
+        with (here/'calls').open('a') as f: f.write(json.dumps({'args':args,'body':body})+'\\n')
+        if args[2:4]==['policy','status']: print((here/'status.json').read_text())
+        elif args[2:4]==['policy','draft']: print((here/'draft.json').read_text())
+        else: print(json.dumps({'args':args,'body':body}))
+        """.utf8).write(to: fixture)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: fixture.path)
+        let client = CLI(binary: fixture, stateDirectory: root.path)
+        let fromCLI = try client.personalPolicyDraft(principal: principal, expiresAtMs: expiry, actions: ["b@2", "a@1"], revision: revision)
+        try require(fromCLI.signBytes == draft.signBytes, "CLI decoded response preserves sign bytes")
+        let first = try JSONSerialization.jsonObject(with: Data(String(contentsOf: calls, encoding: .utf8).split(separator: "\n")[0].utf8)) as! [String: Any]
+        try require(first["args"] as? [String] == ["--state-dir", root.path, "policy", "draft", "--principal", principal.uuidString.lowercased(), "--expires-at-ms", String(expiry), "--action", "a@1", "--action", "b@2"] && first["body"] as? String == "", "draft literal argv has explicit principal/expiry/actions and no proof")
+        for recovery in [false, true] {
+            let output = try client.activatePersonalPolicy(draft, signature: signature, proof: "SYNTHETIC-PROOF", recovery: recovery)
+            let capture = try JSONSerialization.jsonObject(with: output) as! [String: Any]
+            let args = ["--state-dir", root.path, "policy", "activate", "--stdin-request", "--expected-vault-id", vault.uuidString.lowercased(), "--expected-trust-sha256", hash, "--step-up-stdin"] + (recovery ? ["--recovery"] : [])
+            try require(capture["args"] as? [String] == args && capture["body"] as? String == "SYNTHETIC-PROOF\n" + bundle + "\n", "activation exact two stdin lines; proof/signature absent argv")
+        }
+        for proof in ["", "first\nsecond", "first\rsecond"] {
+            try rejected("invalid proof has no child call") { _ = try client.activatePersonalPolicy(draft, signature: signature, proof: proof, recovery: false) }
+        }
+        try require(try String(contentsOf: calls, encoding: .utf8).split(separator: "\n").count == 3, "locally invalid requests never launched")
+        let model = AppModel(stateDirectory: root.path)
+        model.status = ServiceStatus(state:"unlocked",format_version:15,runtime_version:"fixture",sessions_active:0, peer_security:"L1-dev",lab_enabled:false)
+        let live = try makeDraft(revision: model.nativeFlowRevision)
+        model.busy = true
+        do {
+            try await model.activatePersonalPolicy(live, proof: "SYNTHETIC-PROOF", recovery: false, client: client, sign: { _, _, _ in throw UIError(message:"UNREACHABLE-SIGNER") })
+            throw UIError(message: "busy admitted")
+        } catch { try require(model.busy && error.localizedDescription.contains("未提交激活"), "busy reentry refused before CLI/SE and keeps busy") }
+        model.busy = false
+        do {
+            try await model.activatePersonalPolicy(live, proof: "SYNTHETIC-PROOF", recovery: false, client: client, sign: { _, bytes, publicKey in
+                guard bytes == draft.signBytes, publicKey == draft.publicKey else { throw UIError(message:"WRONG-SIGNING-BYTES") }
+                throw UIError(message:"SYNTHETIC-USER-CANCEL")
+            })
+            throw UIError(message: "cancel admitted")
+        } catch { try require(error.localizedDescription == "SYNTHETIC-USER-CANCEL" && !model.busy && !model.personalPolicySigning, "injected cancellation resets state and cannot activate") }
+        try require(try String(contentsOf: calls, encoding: .utf8).split(separator: "\n").count == 4, "cancelled signer made status read only; no activation")
+        final class Pause: @unchecked Sendable {
+            let entered = DispatchSemaphore(value: 0)
+            let release = DispatchSemaphore(value: 0)
+        }
+        for workspaceChange in [true, false] {
+            model.stateDirectory = root.path
+            let pending = try makeDraft(revision: model.nativeFlowRevision)
+            let callsBefore = try String(contentsOf: calls, encoding: .utf8).split(separator: "\n").count
+            let pause = Pause()
+            defer { pause.release.signal() }
+            let waiting = Task {
+                try await model.activatePersonalPolicy(pending, proof: "SYNTHETIC-PROOF", recovery: false, client: client, sign: { _, _, _ in
+                    pause.entered.signal(); pause.release.wait()
+                    // Controlled transport fixture, never a hardware success claim.
+                    return "SYNTHETIC_SIGNATURE_AFTER_REVIEW_CLOSED"
+                })
+            }
+            let entered: Bool = await withCheckedContinuation { continuation in
+                DispatchQueue.global().async { continuation.resume(returning: pause.entered.wait(timeout: .now() + 10) == .success) }
+            }
+            try require(entered && model.personalPolicySigning, "explicit signing interval entered without any hardware API")
+            model.showPolicyDraft = true
+            model.nativeFlowBecameInactive()
+            try require(model.showPolicyDraft && model.acceptsNativeCompletion(pending.revision, workspace: pending.workspace), "system authentication focus change does not invalidate review")
+            if workspaceChange { model.stateDirectory = root.appendingPathComponent("other").path }
+            else { model.clearNativeFlow() } // The PersonalPolicyDraftForm.onDisappear hook.
+            try require(!model.acceptsNativeCompletion(pending.revision, workspace: pending.workspace) && !model.showPolicyDraft, "workspace switch or review disappearance invalidates revision")
+            pause.release.signal()
+            do { try await waiting.value; throw UIError(message:"stale signature admitted") }
+            catch { try require(error.localizedDescription.contains("结果已丢弃，未激活") && !model.busy && !model.personalPolicySigning, "late synthetic signature is discarded and busy resets") }
+            try require(try String(contentsOf: calls, encoding: .utf8).split(separator: "\n").count == callsBefore + 1, "closed review permits only initial status read, never activation")
+        }
+        model.stateDirectory = root.path
+        let fresh = model.nativeFlowRevision
+        model.status = ServiceStatus(state:"locked",format_version:15,runtime_version:"fixture",sessions_active:0,peer_security:"L1-dev",lab_enabled:false)
+        try require(!model.acceptsNativeCompletion(fresh, workspace: root.path), "locked completion refused")
+        model.nativeFlowBecameInactive()
+        try require(model.nativeFlowRevision != fresh, "normal inactivity clears review")
+        current["mode"] = "team"
+        try JSONSerialization.data(withJSONObject: current).write(to: statusFile)
+        model.status = ServiceStatus(state:"unlocked",format_version:15,runtime_version:"fixture",sessions_active:0,peer_security:"L1-dev",lab_enabled:false)
+        let teamDraft = try makeDraft(revision: model.nativeFlowRevision)
+        do {
+            try await model.activatePersonalPolicy(teamDraft, proof:"SYNTHETIC-PROOF", recovery:false, client:client, sign: { _, _, _ in throw UIError(message:"UNREACHABLE-SIGNER") })
+            throw UIError(message:"team admitted")
+        } catch { try require(error.localizedDescription.contains("模式"), "changed Team status fails before signer") }
+        print("PASS: \(assertions) personal draft byte/preview/CLI/state assertions. Controlled synthetic signer results only test transport cancellation. No SE, Keychain, GUI or cryptographic verification claim.")
     }
 
     @MainActor

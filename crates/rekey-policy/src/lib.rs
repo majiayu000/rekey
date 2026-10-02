@@ -25,6 +25,7 @@ mod json;
 use json::parse_unique_json;
 #[cfg(feature = "lab")]
 pub mod oidc_admin;
+pub mod personal;
 mod signed;
 pub use signed::*;
 pub mod templates;
@@ -160,6 +161,12 @@ impl ValidatedSnapshot {
             .iter()
             .find(|binding| binding.definition.action() == action)
             .map(|binding| &binding.definition)
+    }
+
+    pub fn action_refs(&self) -> impl Iterator<Item = ActionVersionRef> + '_ {
+        self.bindings
+            .iter()
+            .map(|binding| binding.definition.action())
     }
 
     /// Only exact signed OIDC human registrations participate in the node login gate.

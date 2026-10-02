@@ -75,15 +75,36 @@ pub fn policy_trust_install(
 
 pub fn policy_activate(
     state_dir: &Path,
-    file: &Path,
+    file: Option<&Path>,
+    stdin_request: bool,
     expected_vault_id: &str,
     expected_trust_sha256: &str,
     recovery: bool,
     password_stdin: bool,
 ) -> Result<(), CliError> {
-    let (bundle, _) = read_regular_nosymlink(file, 64 * 1024, "policy bundle")?;
-    let metadata = policy_activate_metadata(expected_vault_id, expected_trust_sha256, &bundle)?;
-    let proof = read_step_up(recovery, password_stdin)?;
+    let (metadata, proof) = match (file, stdin_request) {
+        (Some(file), false) => {
+            let (bundle, _) = read_regular_nosymlink(file, 64 * 1024, "policy bundle")?;
+            // Keep the file path's error order: reject public input before asking for proof.
+            let metadata =
+                policy_activate_metadata(expected_vault_id, expected_trust_sha256, &bundle)?;
+            (metadata, read_step_up(recovery, password_stdin)?)
+        }
+        (None, true) if password_stdin => {
+            let mut lines = stdin_lines(2)?.into_iter();
+            let proof = lines.next().expect("exact line count validated");
+            let bundle = lines.next().expect("exact line count validated");
+            let metadata =
+                policy_activate_metadata(expected_vault_id, expected_trust_sha256, &bundle)?;
+            (metadata, proof)
+        }
+        _ => {
+            return Err(CliError::local(
+                "USAGE",
+                "choose a bundle file or --stdin-request --step-up-stdin",
+            ));
+        }
+    };
     let body = proof_body(recovery, &proof);
     let (meta, _) = admin(state_dir)?.call(admin_msg::POLICY_ACTIVATE, &metadata, &body)?;
     print_policy_status(&meta)
@@ -122,6 +143,54 @@ fn policy_activate_metadata(
         ));
     }
     Ok(metadata)
+}
+
+pub fn policy_draft(
+    state_dir: &Path,
+    principal: &str,
+    expires_at_ms: i64,
+    actions: &[String],
+) -> Result<(), CliError> {
+    let principal_id = principal
+        .parse()
+        .map_err(|_| CliError::local("USAGE", "invalid principal id"))?;
+    let actions = actions
+        .iter()
+        .map(|value| {
+            let (action_id, version) = parse_action_ref(value)?;
+            Ok(rekey_domain::capability::ActionVersionRef { action_id, version })
+        })
+        .collect::<Result<Vec<_>, CliError>>()?;
+    let request = serde_json::to_vec(&ipc::PersonalPolicyDraftMeta {
+        principal_id,
+        actions,
+        expires_at_ms,
+    })
+    .map_err(|_| CliError::local("USAGE", "cannot encode personal policy draft request"))?;
+    let (metadata, body) =
+        admin(state_dir)?.call(admin_msg::PERSONAL_POLICY_DRAFT, &request, &[])?;
+    let metadata: ipc::PersonalPolicyDraftResponse = serde_json::from_slice(&metadata)
+        .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid draft metadata"))?;
+    metadata
+        .validate()
+        .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid draft metadata"))?;
+    let sign_bytes = personal_draft_sign_bytes(&body)?;
+    let response =
+        serde_json::to_vec(&serde_json::json!({"metadata": metadata, "sign_bytes": sign_bytes}))
+            .map_err(|_| CliError::local("INVALID_FRAME", "cannot encode personal policy draft"))?;
+    print_json::<serde_json::Value>(&response)
+}
+
+fn personal_draft_sign_bytes(body: &[u8]) -> Result<&str, CliError> {
+    const PREFIX: &[u8] = b"RKPOLICY\0\x01";
+    if body.len() > 64 * 1024 || body.len() <= PREFIX.len() || !body.starts_with(PREFIX) {
+        return Err(CliError::local(
+            "INVALID_FRAME",
+            "broker returned invalid signing bytes",
+        ));
+    }
+    std::str::from_utf8(body)
+        .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid signing bytes"))
 }
 
 pub fn policy_status(state_dir: &Path) -> Result<(), CliError> {
@@ -288,6 +357,42 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    #[test]
+    fn personal_draft_body_preserves_utf8_bytes_and_rejects_wrong_domain_or_bound() {
+        let exact = b"RKPOLICY\0\x01{\"value\":\"\\u4e2d\"}";
+        assert_eq!(personal_draft_sign_bytes(exact).unwrap().as_bytes(), exact);
+        for invalid in [
+            Vec::new(),
+            b"RKPOLICY\0\x01".to_vec(),
+            b"OTHER{ }".to_vec(),
+            [b"RKPOLICY\0\x01".as_slice(), &[0xff]].concat(),
+            [b"RKPOLICY\0\x01".as_slice(), &vec![b'a'; 65527]].concat(),
+        ] {
+            assert_eq!(
+                personal_draft_sign_bytes(&invalid).unwrap_err().code,
+                "INVALID_FRAME"
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_policy_file_fails_before_reading_stdin_proof() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("invalid.json");
+        std::fs::write(&file, b"{").unwrap();
+        let error = policy_activate(
+            dir.path(),
+            Some(&file),
+            false,
+            "00112233-4455-4677-8899-aabbccddeeff",
+            &"a".repeat(64),
+            false,
+            true,
+        )
+        .unwrap_err();
+        assert_eq!(error.message, "invalid policy bundle JSON");
+    }
 
     #[test]
     fn policy_activation_preserves_duplicate_keys_and_bounds_encoded_metadata() {

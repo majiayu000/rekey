@@ -568,14 +568,31 @@ enum PolicyCommand {
     Trust(PolicyTrustCommand),
     /// Validate, verify, persist, and activate a signed policy bundle.
     Activate {
-        #[arg(long)]
-        file: PathBuf,
+        #[arg(
+            long,
+            conflicts_with = "stdin_request",
+            required_unless_present = "stdin_request"
+        )]
+        file: Option<PathBuf>,
+        /// Read proof then the compact signed bundle through one stdin pipe.
+        #[arg(long, conflicts_with = "file", requires = "step_up_stdin")]
+        stdin_request: bool,
         #[arg(long)]
         expected_vault_id: String,
         #[arg(long)]
         expected_trust_sha256: String,
         #[command(flatten)]
         step_up: PolicyStepUpArgs,
+    },
+    /// Generate a complete personal policy replacement for explicit action versions.
+    Draft {
+        #[arg(long)]
+        principal: String,
+        #[arg(long)]
+        expires_at_ms: i64,
+        /// ACTION_ID@VERSION; omit all actions to revoke every previous grant.
+        #[arg(long = "action")]
+        actions: Vec<String>,
     },
     /// Show the active policy version and digest.
     Status,
@@ -1196,17 +1213,24 @@ fn main() {
             ),
             PolicyCommand::Activate {
                 file,
+                stdin_request,
                 expected_vault_id,
                 expected_trust_sha256,
                 step_up,
             } => commands::policy_activate(
                 &state_dir,
-                &file,
+                file.as_deref(),
+                stdin_request,
                 &expected_vault_id,
                 &expected_trust_sha256,
                 step_up.recovery,
                 step_up.step_up_stdin,
             ),
+            PolicyCommand::Draft {
+                principal,
+                expires_at_ms,
+                actions,
+            } => commands::policy_draft(&state_dir, &principal, expires_at_ms, &actions),
             PolicyCommand::Status => commands::policy_status(&state_dir),
         },
         Command::Approval(ApprovalCommand::Origin) => commands::approval_origin(&state_dir),
@@ -1417,6 +1441,41 @@ mod policy_target_args_tests {
         ] {
             assert!(Cli::try_parse_from(args).is_err());
         }
+    }
+
+    #[test]
+    fn personal_draft_and_anonymous_activation_have_explicit_boundaries() {
+        let draft = [
+            "rekey",
+            "policy",
+            "draft",
+            "--principal",
+            "00112233-4455-4677-8899-aabbccddeeff",
+            "--expires-at-ms",
+            "1000",
+        ];
+        assert!(Cli::try_parse_from(draft).is_ok());
+        assert!(Cli::try_parse_from(["rekey", "policy", "draft"]).is_err());
+        let activate = [
+            "rekey",
+            "policy",
+            "activate",
+            "--stdin-request",
+            "--expected-vault-id",
+            "00112233-4455-4677-8899-aabbccddeeff",
+            "--expected-trust-sha256",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ];
+        assert!(Cli::try_parse_from(activate).is_err());
+        assert!(Cli::try_parse_from(activate.into_iter().chain(["--step-up-stdin"])).is_ok());
+        assert!(
+            Cli::try_parse_from(activate.into_iter().chain([
+                "--step-up-stdin",
+                "--file",
+                "bundle.json"
+            ]))
+            .is_err()
+        );
     }
 
     #[test]

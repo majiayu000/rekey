@@ -22,14 +22,15 @@
 | M0 lab feature / 默认构建 / 发布和CI分离 | 本批验收通过 | 默认/lab all-targets 编译通过；84 文件补丁独立复核通过；M1 合流默认 597 / lab 1,061 项测试通过，各 2 项忽略 |
 | M0 README / spec 状态 / 格式冻结规则 | 已实现，未发布 | README 只列现有入口；35 企业 spec 标 Lab，两份研究稿改 v4；永久不迁移，GA 主版本内冻结格式；编译器源输入物理行 40,371 / 60,754（非有效代码量） |
 | M1 SHUTDOWN 全状态 step-up | 本批默认验收通过 | 29 项不重复定向 Rust 测试及 synthetic human-vault smoke 通过；Locked 验证不解锁，证明验证前超时不触发停机；独立审查通过 |
-| M1 presence proof 与钥匙串 UI | 等待 V1 环境验证 | 每次获取受 OS userPresence 保护；不在 daemon 强制 Touch ID |
+| M1 presence proof 与钥匙串 UI | 软件实现与独立审查中，设备验收待做 | proof3、进程内哈希、固定双时钟期限与显式 UI 正在独立工作区验证；V1 未通过前不提高保护等级 |
 | M1 desktop-reveal step-up / 明文清零 | 本批默认验收通过 | password/recovery 逐次证明、Zeroizing 响应所有权；UI 94 项边界断言通过，失焦关闭待验证表单；旧 desktop token 不再授权明文 |
 | M1 生产客户端签名校验 / 等级显示 | 本批验收通过 | 签名 CLI 对错误 ID 同团队/ad-hoc 服务均在发送前拒绝，服务收到零字节；status/UI 展示本地验证结果；同团队 release daemon 的 status/unlock/shutdown 正向通过；仍不代表完整 L1 |
 | M1 rollback generation / MAC / 外部计数 | 待实施 | T6；旧库拒绝自动解锁与执行；备份恢复确认 |
 | M1 memory hardening / core limit | 本批验收通过 | Linux arm64 容器实测 core=0/dumpable=0、独立 key 页生命周期、mlock 失败告警继续；macOS 回归与独立审查通过。仅覆盖拥有型 VRK/DEK 缓冲，非所有栈/AEAD 临时副本 |
 | M1 pkg / LaunchAgent / SMAppService | 源码与 CI 接线已实现，设备验收待做 | pkg 9 项合成结构检查和独立审查通过；静态 LaunchAgent 与 App 显式注册、无-k 启动、逐次 proof 停用入口已编译；103 UI 边界断言通过。缺 Installer 证书，未安装或实际注册；现有 release job 已接签名 pkg、公证与哈希，未运行真实 CI |
 | M1 独立安全审查 | 待完成 | 原型代码审查不等同于产品安全验收 |
-| M2 P-256 信任根 / 固定模式 / App 初始化 | 本批软件验收通过 | format23；显式 personal/team、P-256 DER 验签、完整 mode/algorithm/key seal 与备份/轮换通过；App 本机密钥初始化已接线，真实 SE 保护未验证。draft/sign/activate 下一批接线中 |
+| M2 P-256 信任根 / 固定模式 / App 初始化 | 本批软件验收通过 | format23；显式 personal/team、P-256 DER 验签、完整 mode/algorithm/key seal 与备份/轮换通过；App 本机密钥初始化已接线，真实 SE 保护未验证。draft/sign/activate 见下项 |
+| M2 个人策略 draft / diff / App 签名激活 | 本批软件验收通过 | 默认 683 / lab 1,147 项通过，各 2 ignored；纯草案 8/8、真实 CLI P-256 黑盒、Swift 47 项签名取消/字节保真断言通过；四份独立审查关闭。未调用真实 SE/Touch ID |
 | M2 模板规范与路径/query渲染 | 纯合同本批验收通过 | 18 个领域测试与 10 个包验签/schema 测试通过，独立审查无待修问题；单 Action 物化、团队 Ed25519、来源摘要与离线 schema 已实现；存储、授权和执行链已接线，见下列运行时证据 |
 | M2 ActionTarget / 内容认证 / 格式 | 本批软件验收通过 | format22；完整原始 Action 行 AEAD、全状态重封/轮换、实际备份副本和恢复验证；44 项定向测试及独立审查通过。数值列篡改错误映射 P2 已关闭；无迁移 |
 | M2 原子安装 / 规范执行 / 客户端 | 本批软件验收通过 | 52/53、原子批安装、render→审批哈希→HTTP 已接线；全量默认 647 / lab 1,111 项通过，各 2 项忽略；stdin 尾修 CLI 黑盒、lab CLI 62/1 ignored、Swift 实际 CLI 与 103 流程断言通过；独立审查关闭 |
@@ -96,3 +97,7 @@ M2 安装执行批已完成本地合流：默认 workspace 647 passed / 2 ignore
 App 已有显式模式选择、按 vault ID 创建/加载本机 SE 签名公钥和匿名 stdin 安装信任根；Swift strict-concurrency 构建、真实 CLI 合成 vault 流程与 108 项流程断言通过。CLI 真实黑盒 6/6、Python backup 23、audit 28、human-vault smoke 通过；默认严格 Clippy、默认/lab all-targets check、格式及 CLI 依赖边界通过。审查报告 `review/m2-policy-key-review.md`、`m2-policy-store-review.md`、`m2-app-policy-key-review.md`、`m2-personal-glue-review.md` 均无待修问题。没有运行本机 Keychain/SE 认证；签名 helper 尚未接入草稿激活 UI，不能据此宣称个人模式全流程或 L1 已验收。
 
 下一批纯草稿生成器已冻结（补丁 `b9444ba858c87f5bf14059c439fec287c8555cd0da4949a4d3fb5309da111ace`）：8/8 测试与独立审查通过，拒绝 JCS 数值舍入，完整替换差异不保留未选授权；待合流 daemon opcode54、CLI 与 App 精确字节签名流程。local-presence、回滚检测、Profile/网关/MCP 和 T11 仍未完成。
+
+个人草案批已完成本地软件验证：默认 workspace 683 passed / 2 ignored，lab 1,147 passed / 2 ignored，日志 `m2-draft-test-{default,lab}.log`。只读 opcode54 从认证后的模式、信任根、策略和 Action 生成完整替换草案，拒绝 JCS 不精确整数并预留实际激活报文的签名空间；禁用操作后不能再激活旧草案。CLI 输出准确签名字节，激活经匿名 stdin 传入 proof 与 bundle。真实临时 vault 的 P-256 签名、首次/幂等激活、过时版本、禁用操作和空授权替换黑盒通过。
+
+App 展示全部差异和目标定义，签名前后核对 vault/trust/version/workspace，按原始字节请求 SE 签名。独立审查发现窗口关闭后的迟到签名仍可能提交，现由视图退出作废上下文；完整 App 严格编译与最终 47 项合成个人策略断言通过。CLI 的文件元数据校验顺序和空签名体两个 P2 已关闭；纯生成器、runtime、CLI、App 四份最终审查均无待修问题。没有真实 Keychain/SE 调用或 GUI 点击，亦未公开发布。

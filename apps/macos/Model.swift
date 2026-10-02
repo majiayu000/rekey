@@ -259,9 +259,118 @@ struct PolicyStatus: Decodable {
     let bundle_persisted: Bool
     let trust_installed: Bool
     let status: String
-    let version: Int?
+    let version: UInt64?
     let signer_id: String?
     let expires_at_ms: Int64?
+}
+
+// A review owns the daemon's exact signing bytes. JSON below is only decoded
+// for display/identity checks; it is never recanonicalized by the App.
+struct PersonalPolicyDraft: Sendable {
+    struct Metadata: Decodable, Sendable {
+        let vault_id: UUID
+        let trust_sha256: String
+        let public_key: String
+        let base_version: UInt64?
+        let next_version: UInt64
+        let policy_sha256: String
+    }
+    private struct Response: Decodable { let metadata: Metadata; let sign_bytes: String }
+    private struct Envelope: Decodable {
+        struct Snapshot: Decodable { let version: UInt64; let expires_at_ms: Int64 }
+        let snapshot: Snapshot
+        let signer_id: String
+    }
+    private static let prefix = Data("RKPOLICY\0\u{01}".utf8)
+    let metadata: Metadata
+    let signBytes: Data
+    let publicKey: Data
+    let changesText: String
+    let actionsText: String
+    let principal: UUID
+    let expiresAtMs: Int64
+    let workspace: String
+    let revision: UUID
+
+    init(response data: Data, principal: UUID, expiresAtMs: Int64, workspace: String, revision: UUID) throws {
+        let response = try JSONDecoder().decode(Response.self, from: data)
+        let bytes = Data(response.sign_bytes.utf8)
+        guard bytes.count <= 65536, bytes.starts(with: Self.prefix),
+              bytes.last == UInt8(ascii: "}"),
+              !bytes.contains(10), !bytes.contains(13),
+              let object = try JSONSerialization.jsonObject(with: Data(bytes.dropFirst(Self.prefix.count))) as? [String: Any],
+              Set(object.keys) == ["format_version", "signer_id", "snapshot"],
+              object["format_version"] as? Int == 1,
+              let outer = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let metadata = outer["metadata"] as? [String: Any],
+              let changes = metadata["changes"] as? [[String: Any]],
+              let actions = metadata["actions"] as? [[String: Any]],
+              Self.isLowerHex(response.metadata.trust_sha256, count: 64),
+              Self.isLowerHex(response.metadata.policy_sha256, count: 64),
+              Self.isLowerHex(response.metadata.public_key, count: 130),
+              response.metadata.public_key.hasPrefix("04") else {
+            throw UIError(message: "个人策略草稿响应无效，请重新生成。")
+        }
+        let envelope = try JSONDecoder().decode(Envelope.self, from: Data(bytes.dropFirst(Self.prefix.count)))
+        guard envelope.snapshot.version == response.metadata.next_version,
+              envelope.snapshot.expires_at_ms == expiresAtMs else {
+            throw UIError(message: "策略草稿的版本或有效期不一致。")
+        }
+        self.metadata = response.metadata; signBytes = bytes
+        let hex = Array(response.metadata.public_key.utf8)
+        publicKey = Data(stride(from: 0, to: hex.count, by: 2).map {
+            UInt8(String(decoding: hex[$0..<$0 + 2], as: UTF8.self), radix: 16)!
+        })
+        changesText = String(decoding: try JSONSerialization.data(withJSONObject: changes, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]), as: UTF8.self)
+        actionsText = String(decoding: try JSONSerialization.data(withJSONObject: actions, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]), as: UTF8.self)
+        self.principal = principal; self.expiresAtMs = expiresAtMs
+        self.workspace = workspace; self.revision = revision
+    }
+
+    func validate(current: PolicyStatus, now: Date = Date()) throws {
+        guard current.mode == .personal, current.algorithm == .secureEnclaveP256,
+              current.trust_installed, UUID(uuidString: current.vault_id) == metadata.vault_id,
+              current.trust_sha256 == metadata.trust_sha256, current.version == metadata.base_version,
+              Double(expiresAtMs) > now.timeIntervalSince1970 * 1000 else {
+            throw UIError(message: "保险库、模式、信任根、策略版本或有效期已改变，请重新生成并审阅草稿。")
+        }
+    }
+
+    func signedBundle(signature: String) throws -> String {
+        guard !signature.isEmpty, signature.utf8.count <= 96,
+              signature.utf8.allSatisfy({ (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) || $0 == 45 || $0 == 95 }) else {
+            throw UIError(message: "策略签名编码无效，未提交激活。")
+        }
+        var bundle = Data(signBytes.dropFirst(Self.prefix.count).dropLast())
+        bundle.append(Data(",\"signature\":\"\(signature)\"}".utf8))
+        guard bundle.count <= 65536, let text = String(data: bundle, encoding: .utf8) else {
+            throw UIError(message: "策略签名信封超过上限或编码无效。")
+        }
+        return text
+    }
+
+    private static func isLowerHex(_ text: String, count: Int) -> Bool {
+        text.utf8.count == count && text.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+    }
+}
+
+extension CLI {
+    func personalPolicyDraft(principal: UUID, expiresAtMs: Int64, actions: [String], revision: UUID) throws -> PersonalPolicyDraft {
+        var args = ["policy", "draft", "--principal", principal.uuidString.lowercased(), "--expires-at-ms", String(expiresAtMs)]
+        for action in actions.sorted() { args += ["--action", action] }
+        return try PersonalPolicyDraft(response: run(args), principal: principal, expiresAtMs: expiresAtMs, workspace: stateDirectory, revision: revision)
+    }
+
+    func activatePersonalPolicy(_ draft: PersonalPolicyDraft, signature: String, proof: String, recovery: Bool) throws -> Data {
+        guard !proof.isEmpty, !proof.contains("\n"), !proof.contains("\r"), stateDirectory == draft.workspace else {
+            throw UIError(message: "当前验证信息或工作区无效，未提交激活。")
+        }
+        var args = ["policy", "activate", "--stdin-request", "--expected-vault-id", draft.metadata.vault_id.uuidString.lowercased(),
+                    "--expected-trust-sha256", draft.metadata.trust_sha256, "--step-up-stdin"]
+        if recovery { args.append("--recovery") }
+        let bundle = try draft.signedBundle(signature: signature)
+        return try run(args, input: proof + "\n" + bundle + "\n", redacting: [proof, signature, bundle])
+    }
 }
 struct PendingApproval: Decodable, Identifiable {
     let approval_request_id: String
@@ -436,6 +545,7 @@ final class AppModel: ObservableObject {
     @Published var showPolicyDraft = false
     @Published var showTemplate = false
     @Published private(set) var nativeFlowRevision = UUID()
+    @Published private(set) var personalPolicySigning = false
     @Published var audit: AuditPage?
     @Published var desktopToken: String?
     @Published var copiedCredential: String?
@@ -549,8 +659,54 @@ final class AppModel: ObservableObject {
         showTemplate = false
         if operation?.reveal != nil { operation = nil }
     }
+    func nativeFlowBecameInactive() {
+        visibleSecret = nil
+        // A system authentication dialog may deactivate the App. Only the
+        // explicit signing interval survives that event; lock/path changes do not.
+        if !personalPolicySigning { clearNativeFlow() }
+    }
     func acceptsNativeCompletion(_ revision: UUID, workspace: String) -> Bool {
         revision == nativeFlowRevision && workspace == stateDirectory && unlocked
+    }
+    func personalPolicyDraft(principal: UUID, expiresAtMs: Int64, actions: [String]) async throws -> PersonalPolicyDraft {
+        guard !busy, unlocked, policy?.mode == .personal else { throw UIError(message: "请先解锁个人保险库并等待当前操作完成。") }
+        busy = true
+        defer { busy = false }
+        let client = cli, revision = nativeFlowRevision
+        let draft = try await Task.detached { try client.personalPolicyDraft(principal: principal, expiresAtMs: expiresAtMs, actions: actions, revision: revision) }.value
+        guard acceptsNativeCompletion(revision, workspace: client.stateDirectory), !Task.isCancelled else {
+            throw UIError(message: "草稿读取期间上下文已改变，请重新生成。")
+        }
+        return draft
+    }
+    func activatePersonalPolicy(_ draft: PersonalPolicyDraft, proof: String, recovery: Bool,
+                                client injectedClient: CLI? = nil,
+                                sign: @escaping @Sendable (UUID, Data, Data) throws -> String = { try PolicySigning.sign(vaultID: $0, message: $1, expectedPublicKey: $2) }) async throws {
+        guard !busy, acceptsNativeCompletion(draft.revision, workspace: draft.workspace),
+              !proof.isEmpty, !proof.contains("\n"), !proof.contains("\r") else {
+            throw UIError(message: "草稿上下文或验证信息已失效，未提交激活。")
+        }
+        busy = true
+        defer { personalPolicySigning = false; busy = false }
+        let client = injectedClient ?? cli
+        guard client.stateDirectory == draft.workspace else { throw UIError(message: "草稿工作区已改变。") }
+        let current = try await Task.detached { try client.decode(PolicyStatus.self, ["policy", "status"]) }.value
+        try draft.validate(current: current)
+        guard acceptsNativeCompletion(draft.revision, workspace: draft.workspace), !Task.isCancelled else {
+            throw UIError(message: "草稿上下文已失效，未请求签名。")
+        }
+        personalPolicySigning = true
+        let signature = try await Task.detached { try sign(draft.metadata.vault_id, draft.signBytes, draft.publicKey) }.value
+        personalPolicySigning = false
+        guard acceptsNativeCompletion(draft.revision, workspace: draft.workspace), !Task.isCancelled else {
+            throw UIError(message: "签名等待期间上下文已改变，结果已丢弃，未激活。")
+        }
+        let latest = try await Task.detached { try client.decode(PolicyStatus.self, ["policy", "status"]) }.value
+        try draft.validate(current: latest)
+        guard acceptsNativeCompletion(draft.revision, workspace: draft.workspace), !Task.isCancelled else {
+            throw UIError(message: "签名完成后上下文已改变，未激活。")
+        }
+        _ = try await Task.detached { try client.activatePersonalPolicy(draft, signature: signature, proof: proof, recovery: recovery) }.value
     }
     var needsSetup: Bool {
         !FileManager.default.fileExists(atPath: stateDirectory + "/vault.sqlite3")

@@ -1,9 +1,19 @@
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use rekey_domain::ipc::PolicyStatusResponse;
-use rekey_policy::{ValidatedPolicyTrust, parse_and_verify_policy_bundle_for_load};
+use rekey_domain::authorization::{PolicyMode, PolicyTrustAlgorithm};
+use rekey_domain::capability::ActionVersionRef;
+use rekey_domain::ipc::{
+    PersonalPolicyDraftMeta, PersonalPolicyDraftResponse, PersonalPolicyFieldChange,
+    PolicyStatusResponse,
+};
+use rekey_policy::{
+    ValidatedPolicyBundle, ValidatedPolicyTrust, parse_and_verify_policy_bundle_for_load,
+};
 use rekey_vault::AuthorityError;
 use rekey_vault::command::UnlockProof;
+use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
 
 use super::BrokerCtx;
 use crate::active_policy::ActivePolicy;
@@ -11,7 +21,147 @@ use crate::error::BrokerError;
 
 const POLICY_RECONCILE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+fn ensure_activation_metadata_fits(
+    vault_id: rekey_domain::ids::VaultId,
+    trust_sha256: &str,
+    sign_bytes_len: usize,
+) -> Result<(), BrokerError> {
+    let empty = rekey_domain::ipc::PolicyActivateMeta {
+        expected_vault_id: vault_id,
+        expected_trust_sha256: trust_sha256.to_owned(),
+        bundle_json: serde_json::value::RawValue::from_string("{}".to_owned())
+            .map_err(|_| rekey_policy::PolicyError::Malformed)?,
+    };
+    let outer_len = serde_json::to_vec(&empty)
+        .map_err(|_| rekey_policy::PolicyError::Malformed)?
+        .len()
+        - 2;
+    let unsigned_len = sign_bytes_len
+        .checked_sub(b"RKPOLICY\0\x01".len())
+        .ok_or(rekey_policy::PolicyError::Invalid)?;
+    // The exact outer metadata plus the largest P-256 DER signature (72B,
+    // 96 unpadded base64url characters) must fit before asking the user to sign.
+    let maximum_len = outer_len + unsigned_len + b",\"signature\":\"\"".len() + 96;
+    if maximum_len > rekey_domain::ipc::METADATA_MAX_BYTES as usize {
+        return Err(rekey_policy::PolicyError::TooLarge.into());
+    }
+    Ok(())
+}
+
+fn verified_stored_bundle(
+    record: &rekey_vault::model::PolicyBundleRecord,
+    trust: &ValidatedPolicyTrust,
+) -> Result<ValidatedPolicyBundle, AuthorityError> {
+    match parse_and_verify_policy_bundle_for_load(&record.bundle_json, trust) {
+        Ok(verified)
+            if verified.signer_id() == record.signer_id
+                && verified.snapshot().version().get() == record.version
+                && verified.snapshot().expires_at_ms() == record.expires_at_ms
+                && verified.policy_digest() == record.policy_digest
+                && verified.bundle_digest() == record.bundle_digest =>
+        {
+            Ok(verified)
+        }
+        _ => Err(AuthorityError::StorageIntegrityFailed),
+    }
+}
+
 impl BrokerCtx {
+    pub async fn personal_policy_draft_until(
+        &self,
+        request: PersonalPolicyDraftMeta,
+        deadline: tokio::time::Instant,
+    ) -> Result<(PersonalPolicyDraftResponse, Zeroizing<Vec<u8>>), BrokerError> {
+        let _owner = self.lifecycle.coordinate_until(deadline).await?;
+        self.lifecycle.reject_if_not_running()?;
+        tokio::time::timeout_at(deadline, async {
+            let material = self.authority.policy_material().await?;
+            if material.state.mode != PolicyMode::Personal {
+                return Err(BrokerError::Authority(AuthorityError::PolicyTrustConflict));
+            }
+            let record = material.trust.ok_or(AuthorityError::PolicyUnavailable)?;
+            let trust = ValidatedPolicyTrust::from_parts(record.signer_id, record.key);
+            let previous = match material.bundle {
+                Some(record) => match verified_stored_bundle(&record, &trust) {
+                    Ok(verified) => Some(verified),
+                    Err(error) => {
+                        drop(self.authority.fault_integrity().await);
+                        return Err(error.into());
+                    }
+                },
+                None => None,
+            };
+            let wanted: BTreeSet<_> = request.actions.iter().copied().collect();
+            if wanted.len() != request.actions.len() {
+                return Err(rekey_policy::PolicyError::Invalid.into());
+            }
+            let available = self.authority.action_list().await?;
+            let mut selected: Vec<_> = available
+                .into_iter()
+                .filter(|action| {
+                    wanted.contains(&ActionVersionRef {
+                        action_id: action.id,
+                        version: action.version,
+                    })
+                })
+                .collect();
+            if selected.len() != wanted.len() || selected.iter().any(|action| !action.enabled) {
+                return Err(rekey_policy::PolicyError::Invalid.into());
+            }
+            selected.sort_by_key(|action| (action.id, action.version));
+            let draft = rekey_policy::personal::generate_personal_draft(
+                &trust,
+                previous.as_ref(),
+                &selected,
+                request.principal_id,
+                request.expires_at_ms,
+                crate::now_ts()?,
+            )?;
+            let base_version = previous
+                .as_ref()
+                .map(|bundle| bundle.snapshot().version().get());
+            let response = PersonalPolicyDraftResponse {
+                vault_id: self.authority.admin_status().await?.vault_id,
+                trust_sha256: data_encoding::HEXLOWER.encode(&rekey_policy::policy_trust_sha256(
+                    trust.signer_id(),
+                    trust.key(),
+                )?),
+                public_key: data_encoding::HEXLOWER.encode(trust.public_key()),
+                base_version,
+                next_version: base_version
+                    .unwrap_or(0)
+                    .checked_add(1)
+                    .ok_or(rekey_policy::PolicyError::Invalid)?,
+                policy_sha256: data_encoding::HEXLOWER
+                    .encode(&Sha256::digest(draft.canonical_snapshot())),
+                changes: draft
+                    .diff()
+                    .iter()
+                    .map(|change| PersonalPolicyFieldChange {
+                        field: change.field.to_owned(),
+                        before: change.before.clone(),
+                        after: change.after.clone(),
+                    })
+                    .collect(),
+                actions: selected,
+            };
+            if draft.sign_bytes().len() > rekey_policy::SNAPSHOT_MAX_BYTES {
+                return Err(rekey_policy::PolicyError::TooLarge.into());
+            }
+            ensure_activation_metadata_fits(
+                response.vault_id,
+                &response.trust_sha256,
+                draft.sign_bytes().len(),
+            )?;
+            if tokio::time::Instant::now() >= deadline {
+                return Err(AuthorityError::AuthorityBusy.into());
+            }
+            Ok((response, Zeroizing::new(draft.sign_bytes().to_vec())))
+        })
+        .await
+        .map_err(|_| BrokerError::Authority(AuthorityError::AuthorityBusy))?
+    }
+
     pub async fn policy_status(&self) -> Result<PolicyStatusResponse, BrokerError> {
         let authority = self.authority.admin_status().await?;
         let tenant_id = rekey_domain::ids::TenantId::from_bytes(*authority.vault_id.as_bytes())?;
@@ -79,24 +229,13 @@ impl BrokerCtx {
         let active = match (trust.as_ref(), material.bundle) {
             (_, None) => None,
             (Some(trust), Some(record)) => {
-                let verified =
-                    match parse_and_verify_policy_bundle_for_load(&record.bundle_json, trust) {
-                        Ok(verified)
-                            if verified.signer_id() == record.signer_id
-                                && verified.snapshot().version().get() == record.version
-                                && verified.snapshot().expires_at_ms() == record.expires_at_ms
-                                && verified.policy_digest() == record.policy_digest
-                                && verified.bundle_digest() == record.bundle_digest =>
-                        {
-                            verified
-                        }
-                        _ => {
-                            drop(self.authority.fault_integrity().await);
-                            return Err(BrokerError::Authority(
-                                AuthorityError::StorageIntegrityFailed,
-                            ));
-                        }
-                    };
+                let verified = match verified_stored_bundle(&record, trust) {
+                    Ok(verified) => verified,
+                    Err(error) => {
+                        drop(self.authority.fault_integrity().await);
+                        return Err(BrokerError::Authority(error));
+                    }
+                };
                 Some(Arc::new(ActivePolicy::load_bundle(
                     verified,
                     crate::now_ts()?,
@@ -191,6 +330,25 @@ impl BrokerCtx {
             &trust,
             crate::now_ts()?,
         )?;
+        if trust.key().algorithm() == PolicyTrustAlgorithm::SecureEnclaveP256 {
+            // The immutable mode/key contract makes P-256 personal-only. Check
+            // the authenticated current Action view even for exact retries;
+            // action_list excludes retired versions and includes disabled ones.
+            let actions = tokio::time::timeout_at(deadline, self.authority.action_list())
+                .await
+                .map_err(|_| BrokerError::Authority(AuthorityError::AuthorityBusy))??;
+            if verified.snapshot().action_refs().any(|wanted| {
+                !actions.iter().any(|action| {
+                    action.enabled
+                        && action.id == wanted.action_id
+                        && action.version == wanted.version
+                })
+            }) {
+                return Err(BrokerError::Authority(
+                    AuthorityError::PolicyVersionConflict,
+                ));
+            }
+        }
         let input = rekey_vault::command::PolicyBundleInput {
             expected_vault_id: metadata.expected_vault_id,
             expected_trust_sha256,
@@ -275,6 +433,79 @@ mod tests {
     use rekey_vault::bootstrap::{confirm_vault_init, init_vault};
     use rekey_vault::crypto::kdf::Argon2Params;
     use rekey_vault::secret::SecretInput;
+
+    #[test]
+    fn personal_draft_activation_size_includes_exact_outer_metadata() {
+        let vault_id = rekey_domain::ids::VaultId::new_random();
+        let trust = "a".repeat(64);
+        // A synthetic object isolates wire size from policy schema validation.
+        let mut unsigned = serde_json::json!({"payload":""});
+        let encode = |unsigned: &serde_json::Value| {
+            let mut signed = unsigned.clone();
+            signed["signature"] = "A".repeat(96).into();
+            serde_json::to_vec(&rekey_domain::ipc::PolicyActivateMeta {
+                expected_vault_id: vault_id,
+                expected_trust_sha256: trust.clone(),
+                bundle_json: serde_json::value::RawValue::from_string(
+                    serde_json::to_string(&signed).unwrap(),
+                )
+                .unwrap(),
+            })
+            .unwrap()
+        };
+        let padding = rekey_domain::ipc::METADATA_MAX_BYTES as usize - encode(&unsigned).len();
+        for extra in [0, 1] {
+            unsigned["payload"] = "x".repeat(padding + extra).into();
+            assert_eq!(
+                encode(&unsigned).len(),
+                rekey_domain::ipc::METADATA_MAX_BYTES as usize + extra
+            );
+            let sign_len = b"RKPOLICY\0\x01".len() + serde_jcs::to_vec(&unsigned).unwrap().len();
+            let result = super::ensure_activation_metadata_fits(vault_id, &trust, sign_len);
+            assert_eq!(result.is_ok(), extra == 0);
+            if let Err(error) = result {
+                assert!(matches!(
+                    error,
+                    BrokerError::Policy(rekey_policy::PolicyError::TooLarge)
+                ));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn personal_draft_coordinator_timeout_does_not_mutate_or_lock() {
+        let fixture = PolicyFixture::new().await;
+        let db = rusqlite::Connection::open(rekey_vault::paths::vault_db(&fixture.state)).unwrap();
+        let count = || {
+            db.query_row("SELECT count(*) FROM audit_events", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap()
+        };
+        let before = count();
+        let owner = fixture.ctx.lifecycle.coordinate().await;
+        let error = fixture
+            .ctx
+            .personal_policy_draft_until(
+                rekey_domain::ipc::PersonalPolicyDraftMeta {
+                    principal_id: rekey_domain::ids::PrincipalId::new_random(),
+                    actions: vec![],
+                    expires_at_ms: fixture.expires,
+                },
+                tokio::time::Instant::now() + Duration::from_millis(20),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            BrokerError::Authority(AuthorityError::AuthorityBusy)
+        ));
+        assert!(fixture.ctx.lifecycle.is_running());
+        assert_eq!(count(), before);
+        drop(owner);
+        drop(db);
+        fixture.finish().await;
+    }
 
     #[tokio::test]
     async fn policy_status_uses_actual_material_and_preserves_expiry_latch() {

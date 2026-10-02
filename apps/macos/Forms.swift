@@ -459,6 +459,123 @@ struct ResultView: View {
 
 struct PolicyDraftForm: View {
     @EnvironmentObject var model: AppModel
+    var body: some View {
+        if model.policy?.mode == .personal { PersonalPolicyDraftForm() }
+        else if model.policy?.mode == .team { TeamPolicyDraftForm() }
+        else { Text("请解锁后重新检查策略模式。").padding(28) }
+    }
+}
+
+struct PersonalPolicyDraftForm: View {
+    @EnvironmentObject var model: AppModel
+    @Environment(\.dismiss) var dismiss
+    @State private var principal = ""
+    @State private var expiry = Date().addingTimeInterval(86400)
+    @State private var selected: Set<String> = []
+    @State private var draft: PersonalPolicyDraft?
+    @State private var proof = ""
+    @State private var recovery = false
+    @State private var confirmed = false
+    @State private var attempted = false
+    @State private var message: String?
+    private var available: [FixedAction] {
+        model.actions.filter { action in
+            guard action.enabled else { return false }
+            if case .template = action.target { return true }
+            return false
+        }
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("个人策略 · 完整替换").font(.system(size: 24, weight: .semibold))
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    if let draft {
+                        Text("主体：\(draft.principal.uuidString.lowercased())").textSelection(.enabled)
+                        Text("有效期至：\(displayDate(draft.expiresAtMs))")
+                        Text("保险库：\(draft.metadata.vault_id.uuidString.lowercased())\n版本：\(draft.metadata.base_version.map(String.init) ?? "无") → \(draft.metadata.next_version)\n策略摘要：\(draft.metadata.policy_sha256)")
+                            .font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
+                        Text("全部变化（before / after，包含删除）").font(.headline)
+                        Text(draft.changesText).font(.system(size: 12, design: .monospaced)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                        Text("所选操作完整定义（目标与 schema）").font(.headline)
+                        Text(draft.actionsText).font(.system(size: 12, design: .monospaced)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                        Text("未选中的旧规则、审批者和工作负载授权都会删除。空选择会撤销全部策略授权。")
+                        Toggle("我已完整核对前后变化和操作定义，确认替换当前策略", isOn: $confirmed)
+                            .disabled(model.busy || attempted)
+                        Toggle("使用恢复密钥验证本次激活", isOn: $recovery).disabled(model.busy || attempted)
+                        SecureField(recovery ? "恢复密钥（仅通过 stdin）" : "保险库密码（仅通过 stdin）", text: $proof)
+                            .disabled(model.busy || attempted)
+                        Button(model.personalPolicySigning ? "等待系统认证…" : "签署并激活一次") { activate(draft) }
+                            .disabled(model.busy || !model.unlocked || !confirmed || proof.isEmpty || attempted)
+                        Button("放弃此草稿，重新选择") { clear() }.disabled(model.busy)
+                    } else {
+                        TextField("主体 UUID（显式指定）", text: $principal)
+                        Button("生成新的主体 ID") { principal = UUID().uuidString.lowercased() }
+                        DatePicker("有效期至", selection: $expiry, displayedComponents: [.date, .hourAndMinute])
+                        Text("选择启用的模板操作。服务会拒绝尚未支持的高风险审批操作。")
+                        ForEach(available) { action in
+                            Toggle(isOn: Binding(get: { selected.contains(action.reference) }, set: { value in
+                                if value { selected.insert(action.reference) } else { selected.remove(action.reference) }
+                            })) {
+                                Text("\(action.name) · \(action.reference)\n\(action.method) \(action.origin)\(action.target.summary)")
+                                    .font(.system(size: 12)).textSelection(.enabled)
+                            }
+                        }
+                        if selected.isEmpty { Text("当前未选择操作：新策略将撤销全部旧授权。").foregroundStyle(.orange) }
+                        Button("生成完整替换草稿") { generate() }
+                            .disabled(UUID(uuidString: principal) == nil || expiry <= Date() || model.busy || !model.unlocked)
+                    }
+                    if let message { Text(message).textSelection(.enabled) }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Text("不自动重签或重试。激活结果未确认时，请检查当前策略与审计，再决定下一步。")
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+            HStack {
+                if model.busy { ProgressView().controlSize(.small) }
+                Spacer()
+                Button("关闭") { clear(); model.showPolicyDraft = false; dismiss(); Task { await model.refresh() } }
+                    .keyboardShortcut(.cancelAction).disabled(model.busy)
+            }
+        }.padding(28).frame(width: 780, height: 720).background(canvas).interactiveDismissDisabled(model.busy)
+        .onChange(of: model.nativeFlowRevision) { _, _ in clear() }
+        .onDisappear { clear(); model.clearNativeFlow() }
+    }
+    private func clear() { draft = nil; proof = ""; confirmed = false; attempted = false; message = nil }
+    private func generate() {
+        guard let id = UUID(uuidString: principal), !model.busy else { return }
+        let expiresAtMs = Int64(expiry.timeIntervalSince1970 * 1000)
+        let actions = selected.sorted(), revision = model.nativeFlowRevision, workspace = model.stateDirectory
+        clear()
+        Task {
+            do {
+                let result = try await model.personalPolicyDraft(principal: id, expiresAtMs: expiresAtMs, actions: actions)
+                guard model.acceptsNativeCompletion(revision, workspace: workspace) else { return }
+                draft = result
+            } catch {
+                guard model.acceptsNativeCompletion(revision, workspace: workspace) else { return }
+                message = error.localizedDescription
+            }
+        }
+    }
+    private func activate(_ draft: PersonalPolicyDraft) {
+        guard confirmed, !attempted, !model.busy else { return }
+        let currentProof = proof, useRecovery = recovery
+        proof = ""; confirmed = false; attempted = true; message = nil
+        Task {
+            do {
+                try await model.activatePersonalPolicy(draft, proof: currentProof, recovery: useRecovery)
+                guard model.acceptsNativeCompletion(draft.revision, workspace: draft.workspace) else { return }
+                message = "策略已激活。关闭窗口后刷新当前状态。"
+            } catch {
+                guard model.acceptsNativeCompletion(draft.revision, workspace: draft.workspace) else { return }
+                message = error.localizedDescription
+            }
+        }
+    }
+}
+
+struct TeamPolicyDraftForm: View {
+    @EnvironmentObject var model: AppModel
     @Environment(\.dismiss) var dismiss
     @State private var draft: NativeFileSnapshot?
     @State private var message: String?

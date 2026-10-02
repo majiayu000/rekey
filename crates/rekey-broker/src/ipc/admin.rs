@@ -800,6 +800,18 @@ async fn dispatch_operation(
             };
             Ok((json(&response)?, Zeroizing::new(Vec::new())))
         }
+        admin_msg::PERSONAL_POLICY_DRAFT => {
+            if !frame.body.is_empty() {
+                return Err(BrokerError::Frame(ipc::FrameError::InvalidField));
+            }
+            let request: ipc::PersonalPolicyDraftMeta = meta(frame)?;
+            let (response, body) = ctx
+                .personal_policy_draft_until(request, request_deadline)
+                .await?;
+            let metadata = json(&response)?;
+            reject_if_deadline_elapsed(request_deadline)?;
+            Ok((metadata, body))
+        }
         admin_msg::POLICY_ACTIVATE => {
             let deadline = request_deadline;
             let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
@@ -1197,7 +1209,7 @@ mod tests {
 
     #[test]
     fn oidc_envelope_limits_and_os_exceptions_are_closed() {
-        for id in 1..=53 {
+        for id in 1..=54 {
             let protected = ipc::managed_admin_operation(id).unwrap();
             if protected {
                 assert!(admin_body_limit(id, true) >= 50);
@@ -1276,7 +1288,7 @@ mod tests {
         );
         Arc::get_mut(&mut ctx).unwrap().oidc_admin =
             Some(crate::oidc_admin::Manager::load(&path).unwrap());
-        for id in 1..=53 {
+        for id in 1..=54 {
             if !ipc::managed_admin_operation(id).unwrap() {
                 continue;
             }

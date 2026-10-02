@@ -65,15 +65,15 @@ struct RootView: View {
         .background(canvas).foregroundStyle(ink).tint(green)
         .task { await model.refresh(); if model.status == nil && model.needsSetup { model.beginSetup() } else { model.startRememberedService() } }
         .onReceive(Timer.publish(every: 15, on: .main, in: .common).autoconnect()) { _ in
-            if phase == .active && !model.busy && model.operation == nil && model.result == nil && !model.showAddCredential && !model.showSession && !showActionForm && !model.showTemplate {
+            if phase == .active && !model.busy && model.operation == nil && model.result == nil && !model.showAddCredential && !model.showSession && !showActionForm && !model.showTemplate && !model.showPolicyDraft {
                 Task { await model.refresh(passive: true) }
             }
         }
         .onChange(of: search) { _, _ in model.selectedCredential = filtered.first?.id }
         .onChange(of: type) { _, _ in model.selectedCredential = filtered.first?.id }
         .onChange(of: model.page) { _, _ in Task { await model.refresh() } }
-        .onChange(of: phase) { _, value in if value == .active { Task { await model.refresh() } } else { model.visibleSecret = nil; model.clearNativeFlow() } }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in model.visibleSecret = nil; model.clearNativeFlow() }
+        .onChange(of: phase) { _, value in if value == .active { Task { await model.refresh() } } else { model.nativeFlowBecameInactive() } }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in model.nativeFlowBecameInactive() }
         .sheet(isPresented: $model.showPolicyDraft) { PolicyDraftForm().environmentObject(model) }
         .sheet(item: $model.operation) { OperationForm(operation: $0).environmentObject(model) }
         .sheet(isPresented: $model.showAddCredential) { AddCredentialForm().environmentObject(model) }
@@ -308,9 +308,17 @@ struct RootView: View {
     private var policyPage: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 25) {
-                SectionCard(title: "未签名草稿中转", icon: "doc.text") {
-                    Text("选择外部编写的原始草稿，完整审阅并导出；随后使用独立签名工具，再导入签名策略。")
-                    Button("审阅未签名草稿") { model.showPolicyDraft = true }.disabled(model.busy)
+                if model.policy?.mode == .personal {
+                    SectionCard(title: "个人策略", icon: "doc.text") {
+                        Text("选择主体、有效期与模板操作，由服务生成完整替换草稿。审阅全部变化后，以本机 Secure Enclave 密钥签署并激活。高风险审批操作目前不可用。")
+                        Button("生成并审阅个人策略") { model.showPolicyDraft = true }
+                            .disabled(model.busy || !model.unlocked || model.policy?.trust_installed != true)
+                    }
+                } else if model.policy?.mode == .team {
+                    SectionCard(title: "未签名草稿中转", icon: "doc.text") {
+                        Text("选择外部编写的原始草稿，完整审阅并导出；随后使用独立签名工具，再导入签名策略。")
+                        Button("审阅未签名草稿") { model.showPolicyDraft = true }.disabled(model.busy)
+                    }
                 }
                 SectionCard(title: "当前策略", icon: "checkmark.shield") {
                     if let policy = model.policy {
@@ -323,12 +331,13 @@ struct RootView: View {
                     HStack {
                         if model.policy?.mode == .personal {
                             Button("创建本机签名密钥") { model.beginPersonalPolicySetup() }.disabled(model.policy?.trust_installed != false)
-                        } else {
+                        } else if model.policy?.mode == .team {
                             Button("安装信任根") { importPolicy(trust: true) }
+                            Button("激活签名策略") { importPolicy(trust: false) }
                         }
-                        Button("激活签名策略") { importPolicy(trust: false) }
                     }.disabled(!model.unlocked || model.busy)
-                    Text("导入由外部签名工具生成的文件。创建授权本身不会绕过默认拒绝策略。").font(.system(size: 12)).foregroundStyle(.secondary)
+                    Text(model.policy?.mode == .personal ? "个人策略签名需要系统在场认证，激活还需本次密码或恢复密钥验证。" : "导入由外部签名工具生成的文件。创建授权本身不会绕过默认拒绝策略。")
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
                 }
                 SectionCard(title: "Agent 授权", icon: "person.badge.key") {
                     Text("按固定操作授予短期权限，限制有效期与使用次数。授权令牌只在创建完成时显示。").font(.system(size: 13)).foregroundStyle(.secondary)
