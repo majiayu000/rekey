@@ -54,7 +54,9 @@ struct RootView: View {
                             Button { model.error = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain)
                         }.foregroundStyle(Color.red).padding(14).background(Color.red.opacity(0.05)).padding(.horizontal, 28).padding(.bottom, 16)
                     }
-                    if model.page == .settings || model.page == .backup {
+                    if model.status != nil && model.desktopLocked && model.page != .settings {
+                        desktopLocked
+                    } else if model.page == .settings || model.page == .backup {
                         pageContent
                     } else if model.status == nil {
                         welcome
@@ -64,14 +66,15 @@ struct RootView: View {
                         pageContent
                     }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                if model.page == .credentials, model.unlocked, let credential = model.selected, filtered.contains(where: { $0.id == credential.id }) {
+                if model.page == .credentials, model.unlocked, !model.desktopLocked, let credential = model.selected, filtered.contains(where: { $0.id == credential.id }) {
                     Divider()
                     credentialDetail(credential).frame(width: 306)
                 }
             }
         }
         .background(canvas).foregroundStyle(ink).tint(green)
-        .task { await model.refresh(); if model.status == nil && model.needsSetup { model.beginSetup() } else { model.startRememberedService() } }
+        .task { model.startSecurityMonitoring(); await model.refresh(); if model.status == nil && model.needsSetup { model.beginSetup() } else { model.startExistingService() } }
+        .onDisappear { model.lockDesktop(reason: "管理窗口已关闭，请重新验证身份。") }
         .onReceive(Timer.publish(every: 15, on: .main, in: .common).autoconnect()) { _ in
             if phase == .active && !model.busy && model.operation == nil && model.result == nil && !model.showAddCredential && !model.showSession && !showActionForm {
                 Task { await model.refresh(passive: true) }
@@ -80,7 +83,8 @@ struct RootView: View {
         .onChange(of: search) { _, _ in model.selectedCredential = filtered.first?.id }
         .onChange(of: type) { _, _ in model.selectedCredential = filtered.first?.id }
         .onChange(of: model.page) { _, _ in Task { await model.refresh() } }
-        .onChange(of: phase) { _, value in if value == .active { Task { await model.refresh() } } else { model.visibleSecret = nil; model.clearNativeFlow() } }
+        .onChange(of: model.desktopLocked) { _, locked in if locked { showActionForm = false } }
+        .onChange(of: phase) { _, value in if value == .active { model.checkDesktopIdle(); Task { await model.refresh() } } else { model.visibleSecret = nil; model.clearNativeFlow() } }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in model.clearNativeFlow() }
         .sheet(isPresented: $model.showPolicyDraft) { PolicyDraftForm().environmentObject(model) }
         .sheet(item: $model.operation) { OperationForm(operation: $0).environmentObject(model) }
@@ -104,10 +108,10 @@ struct RootView: View {
             Divider().padding(.vertical, 15)
             HStack(spacing: 6) {
                 Circle().fill(model.status == nil ? Color.gray : green).frame(width: 7, height: 7)
-                Text(model.status?.label ?? "未连接").font(.system(size: 11))
+                Text(model.desktopLocked && model.unlocked ? "界面已锁定" : model.status?.label ?? "未连接").font(.system(size: 11))
                 Spacer()
                 if model.busy { ProgressView().controlSize(.small) }
-                Button(model.unlocked ? "锁定" : "解锁") {
+                Button(model.unlocked ? "锁定全部" : "解锁") {
                     if model.unlocked { Task { await model.lock() } }
                     else { unlock() }
                 }.font(.system(size: 11, weight: .medium)).disabled(model.busy || (!model.unlocked && model.status?.state != "locked"))
@@ -182,6 +186,25 @@ struct RootView: View {
             Spacer()
         }.padding(42).frame(maxWidth: 620, maxHeight: .infinity, alignment: .topLeading)
     }
+    private var desktopLocked: some View {
+        VStack(spacing: 18) {
+            Image(systemName: "lock").font(.system(size: 42, weight: .light)).foregroundStyle(green)
+            Text(model.status?.state == "locked" ? "保险库已锁定" : "管理界面已锁定").font(.system(size: 23, weight: .medium))
+            Text(model.desktopLockReason).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            if model.status?.unlocked == true { Text("已授权的 Agent 继续工作。").font(.caption).foregroundStyle(.secondary) }
+            if model.pendingDesktopLocks > 0 {
+                Button("重试完成锁定") { model.retryDesktopLock() }.buttonStyle(PrimaryButton())
+            } else {
+                if model.securitySettings.passwordInterval != .everyUnlock {
+                    Button("使用 Mac 身份验证解锁") { Task { await model.unlockWithMac() } }.buttonStyle(PrimaryButton())
+                }
+                Button("使用保险库密码") { model.requestDesktopLogin() }.buttonStyle(SecondaryButton())
+            }
+            if model.status?.unlocked == true {
+                Button("锁定全部，包括 Agent") { Task { await model.lock() } }
+            }
+        }.disabled(model.busy).frame(maxWidth: .infinity, maxHeight: .infinity).padding(36)
+    }
     private var locked: some View {
         VStack(spacing: 18) {
             Image(systemName: "lock").font(.system(size: 42, weight: .light)).foregroundStyle(green)
@@ -190,7 +213,7 @@ struct RootView: View {
             Button("解锁保险库") { unlock() }.buttonStyle(PrimaryButton()).disabled(model.busy || model.status?.state != "locked")
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
     }
-    private func unlock() { model.operation = Operation(title: "解锁保险库", detail: "输入密码或选择恢复密钥。", arguments: ["unlock"]) }
+    private func unlock() { model.requestDesktopLogin() }
 
     private var filtered: [Credential] {
         model.credentials.filter { (search.isEmpty || $0.label.localizedCaseInsensitiveContains(search)) && (type == "全部类型" || $0.typeName == type) }
@@ -431,6 +454,7 @@ struct RootView: View {
                     }.disabled(model.status == nil) }.disabled(model.busy)
                     Text("关闭窗口不会停止服务；服务会继续按空闲锁定规则运行。").font(.system(size: 12)).foregroundStyle(.secondary)
                 }
+                DesktopSecurityForm().environmentObject(model)
                 SectionCard(title: "解锁与恢复", icon: "lock.rotation") {
                     Button("修改密码") { model.operation = Operation(title: "修改密码", detail: "旧密码将不再解锁当前保险库。历史备份不受这次修改影响。", arguments: ["password", "change"], newSecret: true, confirmSecret: true) }
                     Button("轮换恢复密钥") { model.operation = Operation(title: "轮换恢复密钥", detail: "必须使用当前密码。新恢复密钥只显示一次，请安全保存。", arguments: ["recovery", "rotate"], sensitiveResult: true, recoveryAllowed: false) }

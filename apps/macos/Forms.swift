@@ -40,7 +40,7 @@ struct OperationForm: View {
             if operation.confirmSecret { SecureField("再次输入新密码", text: $confirmation).textFieldStyle(.roundedBorder) }
             Text("输入仅用于本次操作，不会保存。").font(.system(size: 11)).foregroundStyle(.secondary)
             if operation.arguments == ["unlock"] {
-                Text("解锁后会将 7 天自动解锁授权保存在本机钥匙串，主密码不会保存。macOS 可能要求确认；主动锁定会撤销授权。")
+                Text(model.securitySettings.passwordInterval == .everyUnlock ? "本次只建立管理会话，不保存本机恢复授权。" : "本机会将解锁授权保存在钥匙串，有效期为 \(model.securitySettings.passwordInterval.label)。再次进入需通过 Mac 身份验证；主密码不会保存。")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
             }
             HStack {
@@ -528,5 +528,33 @@ struct NativeApprovalForm: View {
                 message = error.localizedDescription
             }
         }
+    }
+}
+
+struct DesktopSecurityForm: View {
+    @EnvironmentObject var model: AppModel
+    @State private var draft = DesktopSecuritySettings()
+    var body: some View {
+        SectionCard(title: "自动锁定与身份验证", icon: "lock.shield") {
+            Picker("电脑空闲多久后锁定", selection: $draft.idle) {
+                ForEach(DesktopIdleInterval.allCases) { Text($0.label).tag($0) }
+            }
+            Toggle("跟随电脑锁屏、休眠和用户切换锁定", isOn: $draft.lockWithDevice)
+            Picker("多久必须重新输入保险库密码", selection: $draft.passwordInterval) {
+                ForEach(DesktopPasswordInterval.allCases) { Text($0.label).tag($0) }
+            }
+            Text("自动锁定只关闭密钥管理会话，已授权的 Agent 继续工作。后台请求不算电脑活动。记住的授权不会因解锁而延期。")
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+            HStack {
+                Button("保存安全设置") { Task { await model.saveSecuritySettings(draft) } }
+                    .buttonStyle(PrimaryButton()).disabled(!model.desktopReady || model.busy || draft == model.securitySettings)
+                if !model.desktopReady {
+                    Button("先解锁管理界面") { model.requestDesktopLogin() }.disabled(model.busy || model.pendingDesktopLocks > 0)
+                } else { Button("现在锁定管理界面") { model.lockDesktop() } }
+            }
+            Text("保存设置会撤销旧的本机授权，并要求重新输入一次保险库密码。")
+                .font(.caption).foregroundStyle(.secondary)
+        }.onAppear { draft = model.securitySettings }
+         .onChange(of: model.securitySettings) { _, value in draft = value }
     }
 }

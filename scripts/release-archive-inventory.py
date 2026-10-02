@@ -57,6 +57,7 @@ def required_paths(version: str) -> list[str]:
         "docs/superpowers/specs/2026-09-30-metrics-deployment.md",
         "docs/superpowers/specs/2026-09-30-native-policy-approval-flow.md",
         "docs/superpowers/specs/2026-10-02-native-policy-editor.md",
+        "docs/superpowers/specs/2026-10-02-native-auto-lock.md",
         "docs/superpowers/specs/2026-10-02-docker-ha-controller.md",
         "deploy/prometheus/rekey.rules.yml",
         "deploy/prometheus/rekey.rules.test.yml",

@@ -213,3 +213,13 @@ Keychain 无交互修复后全量再次通过：83 个目标、1033 通过、0 �
 原生界面严格 Swift 编译、真实 CLI 生命周期、83 项文件/进程/流程断言、16 项 OIDC 边界断言及20项实际 Rust signer 策略编辑断言通过。新 GUI 点击验收因 QA App 请求登录钥匙串而停止，未取得成功证据；未输入系统密码或批准请求。当前已将恢复授权 service 按 bundle identifier 隔离，测试覆盖正式/QA/无 bundle 三种实际 Foundation 身份，不调用 Keychain API；解锁表单说明七天恢复授权用途。保留原七天产品约定，未新增 Touch ID / Secure Enclave，也未迁移或删除用户授权。CI 新增这些原生边界与 Docker 控制程序测试。
 
 发布目录清单检查发现此前新增文档引用的4个文件漏包，补入 workflow 后重新检查通过；使用当前 debug 二进制验证目录和链接，不宣称发行版签名/公证或完整 archive 现场验收。当前批次日志与 SHA-256 收据保存在 `outputs/rekey-implementation-20260930/evidence/features-20261002-225401/checks/`。源码实现和本地结果不替代新提交的 CI、审查与云/实体硬件验收。
+
+## 2026-10-03 原生设备联动与空闲锁定
+
+按用户确认，自动锁定仅撤销密钥管理会话，已授权的 Agent 继续工作；另保留手动“锁定全部”。默认电脑输入空闲 5 分钟、锁屏/休眠/用户切换时锁住管理界面，空闲间隔可配置。记住期限独立选择每次、1/7/30 天；重新打开先锁住界面，明确选择 Mac 身份验证并通过后才读取恢复授权。启动、激活和轮询不读钥匙串，不延长授权到期时间。设置变更先撤销旧授权，再要求手动输入保险库密码。
+
+管理锁定新增严格 Admin IPC 和 stdin-only CLI；真实 Authority 测试覆盖期限边界、防篡改、过期管理令牌、旧令牌不可撤销新会话及审计失败关闭。真实 Broker/UDS 测试证明锁住管理会话后原 Agent capability 仍能执行，Agent 通道不能调用管理锁定。原生模型测试注入独立系统信号/身份验证及测试剪贴板，覆盖锁定中的迟到解锁和复制、取消验证、撤销失败及重试、设置变更、用户后来复制的内容不被清理。新合同接入 macOS CI，并将规范纳入发布目录。
+
+本轮不调用用户真实钥匙串、系统身份验证、锁屏或休眠，不要求云账号或外部验收信息；真实 Touch ID/Mac 密码弹窗和设备事件点击链仍未现场验收。LocalAuthentication 是当前可信应用中的恢复入口，不是 Secure Enclave 不可导出密钥实现。上一提交 a0c3a68 的 Ubuntu、macOS 和 Linux G2 已全部通过，新提交须重新检查。
+
+本轮最终完整 workspace：83 个顶层目标，1037 通过、0 失败、1 忽略，退出 0；没有将子进程或重复定向测试累计计数。all-targets check、Clippy warnings denied、fmt、机械 API 与 CLI normal 依赖边界通过。macOS14 目标严格编译、30 项自动锁定断言、原有真实 CLI 生命周期、83 项文件/流程、16 项 OIDC、20 项实际 signer 断言及扩展 human-vault CLI 合同通过。发布目录/相对链接检查通过，使用 debug 二进制，不是签名/公证证明。日志及 SHA-256 收据保存在 `outputs/rekey-implementation-20260930/evidence/native-lock-20261003-003150/`。

@@ -231,6 +231,10 @@ jobs:
           /tmp/rekey-ui-contract --flow-boundary-only
           /tmp/rekey-ui-contract --oidc-boundary-only
           /tmp/rekey-ui-contract --policy-editor "$PWD/target/debug/rekey-policy-sign"
+          xcrun swiftc -warnings-as-errors -swift-version 5 -O \
+            -framework SwiftUI -framework AppKit \
+            apps/macos/Model.swift scripts/test-desktop-lock.swift -o /tmp/rekey-desktop-lock-contract
+          /tmp/rekey-desktop-lock-contract
           python3 scripts/test-human-vault.py target/macos-ui/Rekey.app/Contents/Resources/bin/rekey
           xcrun swiftc -warnings-as-errors -swift-version 5 -O \
             -framework SwiftUI -framework AppKit \

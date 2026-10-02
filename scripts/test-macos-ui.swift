@@ -297,6 +297,7 @@ struct UIContract {
         let identity = try JSONDecoder().decode(OIDCLoginIdentity.self, from: Data("{\"principal_id\":\"public-principal\",\"expires_at_ms\":300000,\"mapping_sha256\":\"public-mapping\"}".utf8))
         try require(identity.principal_id == "public-principal" && identity.expires_at_ms == 300000, "public identity response decoded")
         let model = AppModel(stateDirectory: state)
+        model.acceptDesktopSession("synthetic-session", expiry: Date().addingTimeInterval(3600))
         model.status = ServiceStatus(state: "unlocked", format_version: 19, runtime_version: "fixture", sessions_active: 0)
         model.oidcSessionFile = session.path; model.oidcProfileFile = root.appendingPathComponent("profile.json").path
         let revision = model.oidcFlowRevision
@@ -501,6 +502,7 @@ struct UIContract {
             try require(!error.localizedDescription.contains("BODY-SECRET"), "invalid response body omitted")
         }
         let model = AppModel(stateDirectory:root.appendingPathComponent("state").path)
+        model.acceptDesktopSession("synthetic-session", expiry: Date().addingTimeInterval(3600))
         model.status = ServiceStatus(state:"unlocked",format_version:15,runtime_version:"fixture",sessions_active:0)
         let revision = model.nativeFlowRevision
         try require(model.acceptsNativeCompletion(revision,workspace:model.stateDirectory), "current completion admitted")
@@ -515,6 +517,7 @@ struct UIContract {
         try require(!model.acceptsNativeCompletion(lockedRevision,workspace:model.stateDirectory), "locked completion rejected")
         model.clearCache()
         try require(model.approvalDetails == nil && !model.showPolicyDraft, "disconnect/cache clearing drops native forms")
+        model.acceptDesktopSession("synthetic-session", expiry: Date().addingTimeInterval(3600))
         model.status = ServiceStatus(state:"unlocked",format_version:15,runtime_version:"fixture",sessions_active:0)
         let reviewRevision = model.nativeFlowRevision, reviewWorkspace = model.stateDirectory
         try require(model.finishApprovalReview(.success(details), revision:reviewRevision, workspace:reviewWorkspace, active:true), "current active read callback publishes actual details")

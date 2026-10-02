@@ -838,6 +838,16 @@ pub fn desktop_login(state_dir: &Path, recovery: bool) -> Result<(), CliError> {
         .map_err(|e| CliError::local("IO", e.to_string()))
 }
 
+pub fn desktop_lock(state_dir: &Path, forget_remembered: bool) -> Result<(), CliError> {
+    let token = read_step_up(false, true)?;
+    let mut body = Zeroizing::new(Vec::with_capacity(5 + token.len()));
+    ipc::encode_proof_body(ProofKind::Password, &token, &mut body);
+    let metadata = serde_json::to_vec(&ipc::DesktopLockMeta { forget_remembered })
+        .map_err(|e| CliError::local("INVALID_FRAME", e.to_string()))?;
+    let (metadata, _) = admin(state_dir)?.call(admin_msg::DESKTOP_LOCK, &metadata, &body)?;
+    print_json::<serde_json::Value>(&metadata)
+}
+
 pub fn desktop_add(state_dir: &Path, label: &str) -> Result<(), CliError> {
     let mut lines = stdin_lines(2)?;
     let secret = lines.remove(1);
@@ -871,9 +881,17 @@ pub fn desktop_reveal(state_dir: &Path, credential_id: &str) -> Result<(), CliEr
 // Expiry is public; the secret remains in the IPC body and explicit stdout pipe.
 pub fn desktop_restore_access(
     state_dir: &Path,
-    resume: bool,
+    ttl: Option<&str>,
     recovery: bool,
 ) -> Result<(), CliError> {
+    let resume = ttl.is_none();
+    let metadata = match ttl {
+        Some(ttl) => serde_json::to_vec(&ipc::DesktopRememberMeta {
+            lifetime_ms: parse_ttl_ms(ttl)?,
+        })
+        .map_err(|e| CliError::local("INVALID_FRAME", e.to_string()))?,
+        None => b"{}".to_vec(),
+    };
     let proof = read_step_up(recovery, true)?;
     let mut body = Zeroizing::new(Vec::with_capacity(5 + proof.len()));
     ipc::encode_proof_body(proof_kind(recovery), &proof, &mut body);
@@ -882,7 +900,7 @@ pub fn desktop_restore_access(
     } else {
         admin_msg::DESKTOP_REMEMBER
     };
-    let (meta, secret) = admin(state_dir)?.call(message, b"{}", &body)?;
+    let (meta, secret) = admin(state_dir)?.call(message, &metadata, &body)?;
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Expiry {

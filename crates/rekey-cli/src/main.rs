@@ -113,10 +113,17 @@ enum Command {
         #[arg(long)]
         recovery: bool,
     },
-    /// Remember this desktop for seven days; proof on stdin, key on stdout.
+    /// Remember this desktop for a bounded interval; proof on stdin, key on stdout.
     DesktopRemember {
         #[arg(long)]
         recovery: bool,
+        #[arg(long, default_value = "168h")]
+        ttl: String,
+    },
+    /// Revoke the current desktop session; token on stdin, Agent sessions stay active.
+    DesktopLock {
+        #[arg(long)]
+        forget_remembered: bool,
     },
     /// Resume a remembered desktop; key on stdin, session on stdout.
     DesktopResume,
@@ -670,10 +677,13 @@ fn main() {
                 commands::oidc_logout(&state_dir, &session_file)
             }
         },
-        Command::DesktopRemember { recovery } => {
-            commands::desktop_restore_access(&state_dir, false, recovery)
+        Command::DesktopRemember { recovery, ttl } => {
+            commands::desktop_restore_access(&state_dir, Some(&ttl), recovery)
         }
-        Command::DesktopResume => commands::desktop_restore_access(&state_dir, true, false),
+        Command::DesktopResume => commands::desktop_restore_access(&state_dir, None, false),
+        Command::DesktopLock { forget_remembered } => {
+            commands::desktop_lock(&state_dir, forget_remembered)
+        }
         Command::DesktopLogin { recovery } => commands::desktop_login(&state_dir, recovery),
         Command::DesktopAdd { label } => commands::desktop_add(&state_dir, &label),
         Command::DesktopReveal { credential_id } => {

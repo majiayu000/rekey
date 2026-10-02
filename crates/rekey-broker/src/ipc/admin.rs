@@ -43,6 +43,7 @@ fn admin_body_limit(message_type: u16, managed: bool) -> u32 {
         admin_msg::DESKTOP_LOGIN
         | admin_msg::DESKTOP_REVEAL
         | admin_msg::DESKTOP_REMEMBER
+        | admin_msg::DESKTOP_LOCK
         | admin_msg::DESKTOP_RESUME => ipc::ADMIN_PROOF_BODY_MAX_BYTES,
         admin_msg::DESKTOP_ADD => ipc::ADMIN_SECRET_BODY_MAX_BYTES,
         admin_msg::UNLOCK_PASSWORD | admin_msg::UNLOCK_RECOVERY => {
@@ -290,18 +291,30 @@ async fn dispatch_operation(
         }
         admin_msg::DESKTOP_REMEMBER => {
             let deadline = request_deadline;
-            empty_meta(frame)?;
+            let request: ipc::DesktopRememberMeta = meta(frame)?;
             let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
             let _owner = ctx.lifecycle.coordinate_until(deadline).await?;
             ctx.lifecycle.reject_if_not_running()?;
             let (key, expires) = ctx
                 .authority
-                .desktop_remember(proof_from(kind, proof), Some(deadline.into_std()))
+                .desktop_remember(
+                    request.lifetime_ms,
+                    proof_from(kind, proof),
+                    Some(deadline.into_std()),
+                )
                 .await?;
             Ok((
                 json(&serde_json::json!({"expires_at_ms": expires}))?,
                 key.to_vec(),
             ))
+        }
+        admin_msg::DESKTOP_LOCK => {
+            let request: ipc::DesktopLockMeta = meta(frame)?;
+            let (_, token) = ipc::parse_proof_body(&frame.body)?;
+            ctx.authority
+                .desktop_lock(SecretInput::from_slice(token), request.forget_remembered)
+                .await?;
+            Ok((json(&serde_json::json!({"locked":true}))?, Vec::new()))
         }
         admin_msg::DESKTOP_RESUME => {
             empty_meta(frame)?;
