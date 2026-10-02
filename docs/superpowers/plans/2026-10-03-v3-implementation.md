@@ -19,7 +19,7 @@
 | V2 签名 hardened rekeyd 内存访问 | 原型已写，待归因核查 | `scripts/v3/memory_probe.c`；真实临时已解锁 daemon 拒绝 task_for_pid；ad-hoc 对照也拒绝 |
 | V3 peer audit token 与动态签名身份 | 原型实测通过 | `scripts/v3/peer_probe.swift`；正确 Team/ID 成功，错误 ID 和 ad-hoc 均零字节；不宣称解决所有内核时序竞态 |
 | 原型统一入口与结果报告 | 已实现，审查通过 | `scripts/v3/run.py`；独立审查问题已修复，4 项报告/清理回归测试通过；只用合成数据 |
-| M0 lab feature / 默认构建 / 发布和CI分离 | 默认构建验收通过，lab 全量待跑 | 默认/lab all-targets 编译通过，worker 定向 default 148 / lab 51 测试通过；84 文件补丁独立复核通过；根默认全量串行通过，lab 全量待跑 |
+| M0 lab feature / 默认构建 / 发布和CI分离 | 本批验收通过 | 默认/lab all-targets 编译通过；84 文件补丁独立复核通过；M1 合流默认 597 / lab 1,061 项测试通过，各 2 项忽略 |
 | M0 README / spec 状态 / 格式冻结规则 | 已实现，未发布 | README 只列现有入口；35 企业 spec 标 Lab，两份研究稿改 v4；永久不迁移，GA 主版本内冻结格式；编译器源输入物理行 40,371 / 60,754（非有效代码量） |
 | M1 SHUTDOWN 全状态 step-up | 本批默认验收通过 | 29 项不重复定向 Rust 测试及 synthetic human-vault smoke 通过；Locked 验证不解锁，证明验证前超时不触发停机；独立审查通过 |
 | M1 presence proof 与钥匙串 UI | 等待 V1 环境验证 | 每次获取受 OS userPresence 保护；不在 daemon 强制 Touch ID |
@@ -56,7 +56,7 @@ SHA-256 `57f077ce514ecaeaa57d1750c4909aaf1b97fc0e556fc8be68badba74378e1a9`。
 统计口径为 rustc `.d` 源输入去重后的物理行，包含 inline cfg/test 文本；33.55%
 是该口径的差异，不能宣传为实际机器码或有效生产代码缩减。
 
-下一批先做不依赖 V1 的 password/recovery 管理修复：Locked SHUTDOWN 校验不解锁、
+不依赖 V1 的 password/recovery 管理修复已完成：Locked SHUTDOWN 校验不解锁、
 验证失败不能触发停机、逐次 reveal step-up、Rust 响应体清零所有权。
 只读计划位于 `outputs/rekey-v3-20261003/m1-admin-plan.md`。presence 与 L1 承诺继续受 V1/V2 验收约束。
 
@@ -71,6 +71,8 @@ M1 管理补丁已冻结并整合，SHA-256 `5213d261bbd01430973a2148f5fabb3a4e0
 
 Lab 全量检查首次因传入 `RUST_TEST_THREADS=1` 影响嵌套 libtest 的 readiness 行而等待，已停止本轮测试进程；按 CI 实际使用的 `-- --test-threads=1` 运行该测试通过。未改产品或测试来绕过断言，合流后全量以 CI 命令重新运行。
 
-M1 集成默认 workspace 检查：597 passed / 2 ignored；默认 all-targets check、严格 Clippy、Swift App 严格编译、94 个 native flow 断言通过。Lab 全量使用 CI 参数方式串行运行中。Linux 镜像为 `rust:1.95-slim-bookworm` arm64、去除全部 capabilities、memlock 上限 64 MiB；测试中的零额度只在独立子进程设置。
+M1 集成默认 workspace 检查：597 passed / 2 ignored；默认 all-targets check、严格 Clippy、Swift App 严格编译、94 个 native flow 断言通过。Lab 全量使用 CI 参数方式串行通过：1,061 passed / 2 ignored，日志 `outputs/rekey-v3-20261003/m1-test-lab-final.log`。OIDC 测试清理调用已改为逐次 proof，定向复测 1/1 通过；未改变产品拒绝合同。Linux 镜像为 `rust:1.95-slim-bookworm` arm64、去除全部 capabilities、memlock 上限 64 MiB；测试中的零额度只在独立子进程设置。
 
 新版签名 release CLI / rekeyd 正向链已通过：Locked/Unlocked status、unlock、lock、错误证明不停止服务、正确证明停掉 Locked daemon。证据 `outputs/rekey-v3-20261003/production-peer-positive-m1.json` 含最终签名哈希；仍不将签名校验单独称为完整 L1。
+
+M2 首批正在完成单 Action 物化与团队模板验签的纯合同；后续才接存储、授权与 HTTP。安装运行时尚未实现，不能用领域测试代替端到端证据。

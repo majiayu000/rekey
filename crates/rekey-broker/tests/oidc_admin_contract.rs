@@ -335,7 +335,7 @@ impl Fixture {
             Channel::Admin,
             admin_msg::SHUTDOWN,
             b"{}",
-            b"",
+            &common::proof_body(common::PASSWORD),
         )
         .await
         .ok();
