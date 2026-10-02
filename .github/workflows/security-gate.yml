@@ -119,7 +119,7 @@ jobs:
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-audit-delivery.py
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-audit-archive.py
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-controlplane.py
-          cargo build --locked -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd --example p1_policy_fixture --example p7_vault_journal_fixture -p rekey-policy --bin rekey-approval-sign -p rekey-approval-relay --bin rekey-approval-relay
+          cargo build --locked -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd --example p1_policy_fixture --example p7_vault_journal_fixture -p rekey-policy --bin rekey-policy-sign --bin rekey-approval-sign -p rekey-approval-relay --bin rekey-approval-relay
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-approval-signer-live.py --bin-dir target/debug --relay-bin target/debug/rekey-approval-relay
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/p7-vault-journal-recovery.py --binaries target/debug --artifacts "$RUNNER_TEMP/rekey-journal-fixture"
 
@@ -228,6 +228,13 @@ jobs:
             -framework SwiftUI -framework AppKit \
             apps/macos/Model.swift scripts/test-macos-ui.swift -o /tmp/rekey-ui-contract
           /tmp/rekey-ui-contract target/macos-ui/Rekey.app/Contents/Resources/bin/rekey
+          /tmp/rekey-ui-contract --flow-boundary-only
+          /tmp/rekey-ui-contract --oidc-boundary-only
+          /tmp/rekey-ui-contract --policy-editor "$PWD/target/debug/rekey-policy-sign"
+          xcrun swiftc -warnings-as-errors -swift-version 5 -O \
+            -framework SwiftUI -framework AppKit \
+            apps/macos/Model.swift scripts/test-desktop-lock.swift -o /tmp/rekey-desktop-lock-contract
+          /tmp/rekey-desktop-lock-contract
           python3 scripts/test-human-vault.py target/macos-ui/Rekey.app/Contents/Resources/bin/rekey
           xcrun swiftc -warnings-as-errors -swift-version 5 -O \
             -framework SwiftUI -framework AppKit \
@@ -251,6 +258,7 @@ jobs:
           trap 'docker image rm "$image" >/dev/null 2>&1 || true' EXIT
           docker build --file scripts/Dockerfile.dr --tag "$image" .
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-docker-dr-drill.py
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-docker-ha.py --image "$image"
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/rekey-docker-dr-drill.py \
             --image "$image" --output "$RUNNER_TEMP/rekey-docker-dr"
       - name: Upload Docker recovery evidence

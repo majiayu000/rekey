@@ -969,7 +969,7 @@ async fn remembered_desktop_survives_restart_but_not_manual_lock() {
         .await
         .unwrap();
     let (key, expires) = handle
-        .desktop_remember(common::password_proof(), None)
+        .desktop_remember(604_800_000, common::password_proof(), None)
         .await
         .unwrap();
     assert_eq!(key.len(), 64);
@@ -1034,7 +1034,7 @@ async fn remembered_desktop_rejects_tampering_expiry_and_cross_vault_use() {
     let (handle, join) = common::spawn(&vault.state_dir);
     handle.unlock(common::password_proof()).await.unwrap();
     let (key, _) = handle
-        .desktop_remember(common::password_proof(), None)
+        .desktop_remember(604_800_000, common::password_proof(), None)
         .await
         .unwrap();
     let path = vault.state_dir.join("desktop-unlock.bin");
@@ -1084,7 +1084,7 @@ async fn wrapper_changes_revoke_remembered_access_only_after_valid_proof() {
     let (handle, join) = common::spawn(&vault.state_dir);
     handle.unlock(common::password_proof()).await.unwrap();
     let (key, _) = handle
-        .desktop_remember(common::password_proof(), None)
+        .desktop_remember(604_800_000, common::password_proof(), None)
         .await
         .unwrap();
     let path = vault.state_dir.join("desktop-unlock.bin");
@@ -1116,6 +1116,7 @@ async fn wrapper_changes_revoke_remembered_access_only_after_valid_proof() {
     );
     let (key, _) = handle
         .desktop_remember(
+            604_800_000,
             UnlockProof::Password(SecretInput::from_slice(b"new-password-for-test")),
             None,
         )
@@ -1143,7 +1144,7 @@ async fn slow_resume_audit_rolls_back_before_reporting_timeout() {
     let (handle, join) = common::spawn(&vault.state_dir);
     handle.unlock(common::password_proof()).await.unwrap();
     let (key, _) = handle
-        .desktop_remember(common::password_proof(), None)
+        .desktop_remember(604_800_000, common::password_proof(), None)
         .await
         .unwrap();
     handle.lock_for_restart("restart").await.unwrap();
@@ -1179,7 +1180,7 @@ async fn unclean_worker_exit_revokes_before_next_resume() {
         let (handle, join) = common::spawn(&vault.state_dir);
         handle.unlock(common::password_proof()).await.unwrap();
         let (key, _) = handle
-            .desktop_remember(common::password_proof(), None)
+            .desktop_remember(604_800_000, common::password_proof(), None)
             .await
             .unwrap();
         if worker_shutdown {
@@ -1785,7 +1786,7 @@ mod lease_journal_tests {
         let c = fixture(&handle, "journal-desktop").await;
         begin(&handle, &c).await;
         let (token, _) = handle
-            .desktop_remember(common::password_proof(), None)
+            .desktop_remember(604_800_000, common::password_proof(), None)
             .await
             .unwrap();
         handle.lock_for_restart("journal-desktop").await.unwrap();
@@ -2393,4 +2394,197 @@ fn keychain_format_twenty_rejects_old_nineteen_state_without_migration() {
             .unwrap(),
         19
     );
+}
+
+#[tokio::test]
+async fn desktop_privacy_lock_revokes_session_without_locking_vault_or_extending_grant() {
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+    let token = handle.desktop_issue().await.unwrap();
+    let saved = handle
+        .desktop_add(
+            SecretInput::from_slice(&token),
+            CredentialLabel::new("desktop-lock-test").unwrap(),
+            SecretInput::from_slice(b"desktop-canary"),
+            None,
+        )
+        .await
+        .unwrap();
+    let (key, expiry) = handle
+        .desktop_remember(86_400_000, common::password_proof(), None)
+        .await
+        .unwrap();
+    assert!(
+        handle
+            .desktop_lock(SecretInput::from_slice(b"forged"), false)
+            .await
+            .is_err()
+    );
+    assert!(
+        handle
+            .desktop_reveal(SecretInput::from_slice(&token), saved.id, None)
+            .await
+            .is_ok()
+    );
+    handle
+        .desktop_lock(SecretInput::from_slice(&token), false)
+        .await
+        .unwrap();
+    assert_eq!(handle.status().await.unwrap().state, "unlocked");
+    assert!(
+        handle
+            .desktop_reveal(SecretInput::from_slice(&token), saved.id, None)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        handle
+            .desktop_resume(SecretInput::from_slice(&key), None)
+            .await
+            .unwrap(),
+        expiry
+    );
+    let fresh = handle.desktop_issue().await.unwrap();
+    assert!(
+        handle
+            .desktop_lock(SecretInput::from_slice(&token), true)
+            .await
+            .is_err()
+    );
+    assert!(
+        handle
+            .desktop_reveal(SecretInput::from_slice(&fresh), saved.id, None)
+            .await
+            .is_ok()
+    );
+    handle
+        .desktop_lock(SecretInput::from_slice(&fresh), true)
+        .await
+        .unwrap();
+    assert!(!vault.state_dir.join("desktop-unlock.bin").exists());
+    assert!(
+        handle
+            .desktop_resume(SecretInput::from_slice(&key), None)
+            .await
+            .is_err()
+    );
+    assert_eq!(handle.status().await.unwrap().state, "unlocked");
+    handle
+        .shutdown(Some(common::password_proof()))
+        .await
+        .unwrap();
+    join.join().unwrap();
+}
+
+#[tokio::test]
+async fn desktop_selected_lifetime_is_authenticated_bounded_and_expires_active_session() {
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+    let token = handle.desktop_issue().await.unwrap();
+    let saved = handle
+        .desktop_add(
+            SecretInput::from_slice(&token),
+            CredentialLabel::new("desktop-expiry-test").unwrap(),
+            SecretInput::from_slice(b"expiry-canary"),
+            None,
+        )
+        .await
+        .unwrap();
+    let (long_key, _) = handle
+        .desktop_remember(2_592_000_000, common::password_proof(), None)
+        .await
+        .unwrap();
+    let path = vault.state_dir.join("desktop-unlock.bin");
+    let original = std::fs::read(&path).unwrap();
+    for invalid in [-1, 0, 999, 2_592_000_001, i64::MAX] {
+        assert!(
+            handle
+                .desktop_remember(invalid, common::password_proof(), None)
+                .await
+                .is_err()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+    assert!(
+        handle
+            .desktop_remember(
+                86_400_000,
+                rekey_vault::command::UnlockProof::Password(SecretInput::from_slice(b"wrong")),
+                None
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    // Altering the expiry to another accepted interval still fails AEAD binding.
+    let mut tampered = original.clone();
+    let issued = i64::from_be_bytes(tampered[8..16].try_into().unwrap());
+    tampered[16..24].copy_from_slice(&(issued + 86_400_000).to_be_bytes());
+    std::fs::write(&path, tampered).unwrap();
+    assert!(
+        handle
+            .desktop_resume(SecretInput::from_slice(&long_key), None)
+            .await
+            .is_err()
+    );
+    std::fs::write(&path, original).unwrap();
+    let (key, _) = handle
+        .desktop_remember(1_000, common::password_proof(), None)
+        .await
+        .unwrap();
+    assert!(
+        handle
+            .desktop_reveal(SecretInput::from_slice(&token), saved.id, None)
+            .await
+            .is_ok()
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+    assert!(
+        handle
+            .desktop_resume(SecretInput::from_slice(&key), None)
+            .await
+            .is_err()
+    );
+    assert!(
+        handle
+            .desktop_reveal(SecretInput::from_slice(&token), saved.id, None)
+            .await
+            .is_err()
+    );
+    handle
+        .desktop_lock(SecretInput::from_slice(&token), false)
+        .await
+        .unwrap();
+    handle
+        .shutdown(Some(common::password_proof()))
+        .await
+        .unwrap();
+    join.join().unwrap();
+}
+
+#[tokio::test]
+async fn desktop_lock_audit_failure_faults_without_retaining_a_grant() {
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+    let token = handle.desktop_issue().await.unwrap();
+    handle
+        .desktop_remember(86_400_000, common::password_proof(), None)
+        .await
+        .unwrap();
+    let database = rusqlite::Connection::open(vault.state_dir.join("vault.sqlite3")).unwrap();
+    database.execute_batch("CREATE TRIGGER fail_desktop_lock BEFORE INSERT ON audit_events WHEN NEW.event_type='desktop.locked' BEGIN SELECT RAISE(ABORT,'synthetic-audit-failure'); END;").unwrap();
+    drop(database);
+    assert!(
+        handle
+            .desktop_lock(SecretInput::from_slice(&token), false)
+            .await
+            .is_err()
+    );
+    assert_eq!(handle.status().await.unwrap().state, "faulted");
+    assert!(!vault.state_dir.join("desktop-unlock.bin").exists());
+    handle.shutdown(None).await.unwrap();
+    join.join().unwrap();
 }

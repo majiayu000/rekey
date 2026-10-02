@@ -120,11 +120,12 @@ impl Worker {
             }
 
             AuthorityCommand::DesktopRemember {
+                lifetime_ms,
                 proof,
                 not_after,
                 reply,
             } => {
-                let result = self.remember_desktop(proof, not_after);
+                let result = self.remember_desktop(lifetime_ms, proof, not_after);
                 self.touch_if_ok(&result);
                 let _ = reply.send(result);
             }
@@ -134,6 +135,14 @@ impl Worker {
                 reply,
             } => {
                 let result = self.resume_desktop(token, not_after);
+                let _ = reply.send(result);
+            }
+            AuthorityCommand::DesktopLock {
+                token,
+                forget_remembered,
+                reply,
+            } => {
+                let result = self.lock_desktop(token, forget_remembered);
                 let _ = reply.send(result);
             }
             AuthorityCommand::DesktopIssue { reply } => {

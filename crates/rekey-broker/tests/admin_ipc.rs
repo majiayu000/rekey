@@ -691,6 +691,99 @@ async fn passive_status_polling_does_not_postpone_idle_lock() {
     broker.shutdown().await;
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn desktop_lock_is_strict_admin_only_and_preserves_agent_execution() {
+    let broker = common::start_broker().await;
+    common::unlock(&broker).await;
+    let admin = broker.admin_sock();
+    let credential = common::add_credential(&broker, "desktop-lock", b"privacy-lock-canary").await;
+    let (action, version) = common::create_action(&broker, &credential).await;
+    let capability = common::create_session(&broker, &action, version).await;
+    let login = common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::DESKTOP_LOGIN,
+        b"{}",
+        &common::proof_body(common::PASSWORD),
+    )
+    .await;
+    login.ok();
+    let proof = common::proof_body(&login.body);
+    for metadata in [
+        br#"{}"#.as_slice(),
+        br#"{"forget_remembered":false,"unknown":true}"#,
+    ] {
+        let rejected = common::call(
+            &admin,
+            Channel::Admin,
+            admin_msg::DESKTOP_LOCK,
+            metadata,
+            &proof,
+        )
+        .await;
+        assert_eq!(rejected.err_code(), "INVALID_FRAME");
+    }
+    let metadata = br#"{"forget_remembered":false}"#;
+    let rejected = common::call(
+        &broker.agent_sock(),
+        Channel::Agent,
+        admin_msg::DESKTOP_LOCK,
+        metadata,
+        &proof,
+    )
+    .await;
+    assert_eq!(rejected.err_code(), "INVALID_FRAME");
+    let reference = serde_json::json!({"credential_id":credential}).to_string();
+    let revealed = common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::DESKTOP_REVEAL,
+        reference.as_bytes(),
+        &proof,
+    )
+    .await;
+    assert_eq!(revealed.body, b"privacy-lock-canary");
+    let locked = common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::DESKTOP_LOCK,
+        metadata,
+        &proof,
+    )
+    .await;
+    assert_eq!(locked.ok(), &serde_json::json!({"locked":true}));
+    assert!(locked.body.is_empty());
+    let denied = common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::DESKTOP_REVEAL,
+        reference.as_bytes(),
+        &proof,
+    )
+    .await;
+    assert_eq!(denied.err_code(), "INVALID_UNLOCK_CREDENTIAL");
+    assert!(denied.body.is_empty());
+    broker.fake.push_response(Ok(UpstreamResponse {
+        status: 200,
+        headers: Vec::new().into(),
+        body: b"{}".to_vec().into(),
+    }));
+    let executed = common::call(
+        &broker.agent_sock(),
+        Channel::Agent,
+        agent_msg::EXECUTE_FIXED_HTTP_ACTION,
+        common::execute_meta(&capability, &action, version)
+            .to_string()
+            .as_bytes(),
+        b"{}",
+    )
+    .await;
+    assert_eq!(executed.ok()["upstream_status"], 200);
+    assert_eq!(broker.fake.requests.lock().unwrap().len(), 1);
+    assert!(broker.fake.requests.lock().unwrap()[0].auth_value == b"Bearer privacy-lock-canary");
+    broker.shutdown().await;
+}
+
 #[tokio::test]
 async fn metrics_polling_does_not_postpone_idle_lock() {
     let broker = common::start_broker_with(Duration::from_millis(80), Duration::from_secs(2)).await;

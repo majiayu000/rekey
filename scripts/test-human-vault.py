@@ -41,6 +41,24 @@ with tempfile.TemporaryDirectory(prefix='rk-human-') as root:
             assert call(['desktop-reveal', item['id']], token+'\n') == canary.encode()
         assert call(['desktop-reveal', existing['id']], token+'\n') == canary.encode()
         call(['desktop-reveal', existing['id']], 'forged-token\n', ok=False)
+        expiry, remember_key = call(['desktop-remember', '--ttl', '24h'], password+'\n').decode().split('\n')
+        ticket = (state/'desktop-unlock.bin').read_bytes()
+        assert int.from_bytes(ticket[16:24], 'big') - int.from_bytes(ticket[8:16], 'big') == 86_400_000
+        for invalid in ['0s', '721h']:
+            call(['desktop-remember', '--ttl', invalid], password+'\n', ok=False)
+            assert (state/'desktop-unlock.bin').read_bytes() == ticket
+        call(['desktop-lock'], 'forged-token\n', ok=False)
+        assert call(['desktop-reveal', existing['id']], token+'\n') == canary.encode()
+        assert json.loads(call(['desktop-lock'], token+'\n')) == {'locked': True}
+        assert json.loads(call(['status', '--passive']))['state'] == 'unlocked'
+        call(['desktop-reveal', existing['id']], token+'\n', ok=False)
+        restored_expiry, token = call(['desktop-resume'], remember_key+'\n').decode().split('\n')
+        assert restored_expiry == expiry
+        assert call(['desktop-reveal', existing['id']], token+'\n') == canary.encode()
+        call(['desktop-lock', '--forget-remembered'], token+'\n')
+        assert not (state/'desktop-unlock.bin').exists()
+        call(['desktop-resume'], remember_key+'\n', ok=False)
+        token = call(['desktop-login'], password+'\n').decode()
         audit = call(['audit', 'list'])
         assert canary.encode() not in audit and token.encode() not in audit
         call(['lock'])
@@ -73,7 +91,7 @@ with tempfile.TemporaryDirectory(prefix='rk-human-') as root:
         db.close()
         call(['desktop-reveal', existing['id']], fresh+'\n', ok=False)
         assert json.loads(call(['status']))['state'] == 'faulted'
-        print('PASS: existing/new keys, repeated saves, body-only reveal, forged/locked/stale denial, audit canaries, restart resume, manual revocation, audit failure closes without plaintext')
+        print('PASS: existing/new keys, repeated saves, body-only reveal, forged/locked/stale denial, configured expiry and bounds, desktop-only lock and opt-out, audit canaries, restart resume, manual revocation, audit failure closes without plaintext')
     finally:
         broker.terminate()
         broker.wait(timeout=10)

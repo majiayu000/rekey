@@ -19,7 +19,14 @@ rekey status
 `rekey serve` delegates to `rekeyd serve`; agents and Admin clients never open
 the SQLite database. `rekey lock` revokes sessions and clears the active
 policy. The default idle lock is 7 days. `rekey shutdown` requires a
-step-up proof while unlocked. The macOS UI can remember a manual unlock for seven days using the local Keychain; restarting does not extend that deadline, and explicit locking revokes the remembered access.
+step-up proof while unlocked. The macOS UI separates computer inactivity, device
+lock events and remembered access. By default, five minutes without computer input,
+screen lock, sleep or user switching lock the desktop session while existing Agent
+capabilities continue. “Lock everything” also locks the Broker and revokes Agent
+sessions. Security settings offer a password recheck on every unlock (no stored
+grant), or after 1/7/30 days (default 7). The app opens locked and only reads the
+local Keychain after explicit Mac authentication; recovery never extends the
+original deadline. See the [native locking contract](superpowers/specs/2026-10-02-native-auto-lock.md).
 
 For deliberate automation, password-only commands accept `--password-stdin`.
 Credential add/rotate accepts `--stdin-secrets`, with proof on line 1 and the

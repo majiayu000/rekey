@@ -25,14 +25,14 @@ command -v rg >/dev/null || { echo "ripgrep is required" >&2; exit 1; }
 
 for name in rekey rekeyd rekey-github-create-issue rekey-mcp rekey-policy-sign rekey-approval-sign \
   rekey-service-unit.py agent-quickstart.py operator-credential-repair.py rekey-backup-sync.py \
-  rekey-audit-delivery.py rekey-audit-archive.py rekey-approval-relay; do
+  rekey-audit-delivery.py rekey-audit-archive.py rekey-approval-relay rekey-docker-ha.py; do
   [[ -x "$BIN_DIR/$name" ]] || { echo "required archive executable is missing: $name" >&2; exit 1; }
 done
 for name in rekey-policy-sign rekey-approval-sign rekey-approval-relay; do
   "$BIN_DIR/$name" --help >/dev/null
 done
 for name in rekey-service-unit.py agent-quickstart.py operator-credential-repair.py \
-  rekey-backup-sync.py rekey-audit-delivery.py rekey-audit-archive.py; do
+  rekey-backup-sync.py rekey-audit-delivery.py rekey-audit-archive.py rekey-docker-ha.py; do
   python3 "$BIN_DIR/$name" --help >/dev/null
 done
 

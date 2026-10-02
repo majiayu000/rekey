@@ -98,7 +98,7 @@ jobs:
           install -m 0755 scripts/rekey-service-unit.py scripts/agent-quickstart.py \
             scripts/operator-credential-repair.py scripts/rekey-backup-sync.py \
             scripts/rekey-audit-delivery.py scripts/rekey-audit-archive.py \
-            scripts/rekey-controlplane.py "$stage/"
+            scripts/rekey-controlplane.py scripts/rekey-docker-ha.py "$stage/"
           install -m 0644 LICENSE README.md "$stage/"
           install -m 0644 CHANGELOG.md SECURITY.md SUPPORT.md "$stage/"
           mkdir -p "$stage/docs/product-foundation" "$stage/docs/releases" \
@@ -120,6 +120,7 @@ jobs:
           for doc in \
             apps/macos/README.md \
             docs/evidence/vault-kv-cloudflare-2026-09-10.json \
+            docs/evidence/local-capabilities-2026-10-02.json \
             docs/releases/v2.0.0-alpha.3.md \
             docs/superpowers/specs/2026-09-03-vault-dynamic-lease-source-p07b.md \
             docs/superpowers/specs/2026-09-10-approval-origin-authentication.md \
@@ -132,6 +133,7 @@ jobs:
             docs/superpowers/specs/2026-09-10-local-mcp-stdio.md \
             docs/superpowers/specs/2026-09-10-operator-credential-repair.md \
             docs/superpowers/specs/2026-09-10-remaining-p3-disposition.md \
+            docs/superpowers/specs/2026-09-14-native-admin-ui.md \
             docs/superpowers/specs/2026-09-16-anthropic-text-stream.md \
             docs/superpowers/specs/2026-09-16-action-plugin-registration.md \
             docs/superpowers/specs/2026-09-16-approval-review-ui.md \
@@ -168,6 +170,12 @@ jobs:
             docs/superpowers/specs/2026-09-30-decoded-source-bootstrap-sealing.md \
             docs/superpowers/specs/2026-09-30-metrics-deployment.md \
             docs/superpowers/specs/2026-09-30-native-policy-approval-flow.md \
+            docs/superpowers/specs/2026-10-02-native-policy-editor.md \
+            docs/superpowers/specs/2026-10-02-native-auto-lock.md \
+            docs/superpowers/specs/2026-10-02-docker-ha-controller.md \
+            docs/superpowers/specs/2026-10-02-docker-dr-reference.md \
+            docs/superpowers/specs/2026-10-01-pkcs11-approval-signer.md \
+            docs/superpowers/specs/2026-10-01-unlocked-audit-retention.md \
             deploy/prometheus/rekey.rules.yml \
             deploy/prometheus/rekey.rules.test.yml \
             deploy/prometheus/rekey.scrape.example.yml \

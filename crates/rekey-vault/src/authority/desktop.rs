@@ -52,6 +52,7 @@ pub fn finish_runtime(state: &std::path::Path) -> Result<(), AuthorityError> {
 }
 const MAGIC: &[u8; 8] = b"RKDSK001";
 const LIFETIME_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+const MAX_LIFETIME_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 
 impl Worker {
     pub(super) fn forget_desktop(&self) -> Result<(), AuthorityError> {
@@ -66,14 +67,22 @@ impl Worker {
 
     pub(super) fn remember_desktop(
         &mut self,
+        lifetime_ms: i64,
         proof: UnlockProof,
         not_after: Option<Instant>,
     ) -> Result<(Zeroizing<Vec<u8>>, i64), AuthorityError> {
         ensure_mutation_current(not_after)?;
+        if !(1_000..=MAX_LIFETIME_MS).contains(&lifetime_ms) {
+            return Err(AuthorityError::Domain(
+                rekey_domain::DomainError::InvalidActionDefinition(
+                    "desktop remembered lifetime must be 1 second to 30 days".into(),
+                ),
+            ));
+        }
         self.verify_proof(&proof)?;
         let issued = crate::now_ms()?;
         let expires = issued
-            .checked_add(LIFETIME_MS)
+            .checked_add(lifetime_ms)
             .ok_or(AuthorityError::ClockUnavailable)?;
         let key = Zeroizing::new(random_array::<32>()?);
         let mut header = Vec::with_capacity(24);
@@ -101,8 +110,9 @@ impl Worker {
         self.append_audit(unlock_audit(
             "desktop.remembered",
             outcome::SUCCESS,
-            "seven-days",
+            "configured-expiry",
         ))?;
+        self.desktop_resume_expiry = Some(expires);
         Ok((
             Zeroizing::new(data_encoding::HEXLOWER.encode(&*key).into_bytes()),
             expires,
@@ -157,7 +167,12 @@ impl Worker {
             let issued = i64::from_be_bytes(record[8..16].try_into().unwrap());
             let expires = i64::from_be_bytes(record[16..24].try_into().unwrap());
             let now = crate::now_ms()?;
-            if expires.checked_sub(issued) != Some(LIFETIME_MS) || now < issued || now >= expires {
+            if !expires
+                .checked_sub(issued)
+                .is_some_and(|duration| (1_000..=MAX_LIFETIME_MS).contains(&duration))
+                || now < issued
+                || now >= expires
+            {
                 return Err(AuthorityError::InvalidUnlockCredential);
             }
             let mut aad = record[..24].to_vec();
@@ -219,6 +234,36 @@ impl Worker {
             None => LIFETIME_MS,
         };
         Ok(Duration::from_millis(millis as u64))
+    }
+
+    pub(super) fn lock_desktop(
+        &mut self,
+        token: SecretInput,
+        forget_remembered: bool,
+    ) -> Result<(), AuthorityError> {
+        use subtle::ConstantTimeEq;
+        // An expired matching session may still be revoked; an unrelated token
+        // must not revoke a newer desktop session.
+        let matches = self
+            .desktop_session
+            .as_ref()
+            .is_some_and(|(expected, _)| bool::from(expected.as_slice().ct_eq(token.expose())));
+        if !matches {
+            return Err(AuthorityError::InvalidUnlockCredential);
+        }
+        if forget_remembered {
+            self.forget_desktop()?;
+        }
+        self.desktop_session = None;
+        self.append_audit(unlock_audit(
+            "desktop.locked",
+            outcome::SUCCESS,
+            if forget_remembered {
+                "grant-revoked"
+            } else {
+                "session-revoked"
+            },
+        ))
     }
 }
 
@@ -313,6 +358,7 @@ mod tests {
                 .unwrap();
             let (ticket, _) = worker
                 .remember_desktop(
+                    604_800_000,
                     UnlockProof::Password(SecretInput::from_slice(b"synthetic-resume")),
                     None,
                 )

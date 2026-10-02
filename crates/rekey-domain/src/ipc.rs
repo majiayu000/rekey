@@ -106,6 +106,7 @@ pub mod admin_msg {
     pub const CREDENTIAL_ROTATE_MACOS_KEYCHAIN: u16 = 49;
     pub const AUDIT_RETENTION_SET: u16 = 50;
     pub const AUDIT_RETENTION_STATUS: u16 = 51;
+    pub const DESKTOP_LOCK: u16 = 52;
 }
 
 /// Agent channel message types.
@@ -206,12 +207,12 @@ impl FrameHeader {
 
 /// Closed operation classification shared by managed Broker dispatch and CLI.
 pub fn managed_admin_operation(message_type: u16) -> Result<bool, FrameError> {
-    if !(1..=51).contains(&message_type) {
+    if !(1..=52).contains(&message_type) {
         return Err(FrameError::InvalidField);
     }
     Ok(!matches!(
         message_type,
-        1 | 2 | 3 | 15 | 16 | 31 | 34 | 36 | 45..=48
+        1 | 2 | 3 | 15 | 16 | 31 | 34 | 36 | 45..=48 | 52
     ))
 }
 
@@ -244,6 +245,18 @@ pub fn parse_management_body(body: &[u8]) -> Result<(&[u8], &[u8]), FrameError> 
     let token = body.get(7..50).ok_or(FrameError::Truncated)?;
     validate_management_token(token)?;
     Ok((token, &body[50..]))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DesktopRememberMeta {
+    pub lifetime_ms: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DesktopLockMeta {
+    pub forget_remembered: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1038,13 +1051,13 @@ mod tests {
             assert!(parse_management_body(&bad).is_err());
         }
         assert!(parse_management_body(&body[..49]).is_err());
-        for id in 1..=51 {
+        for id in 1..=52 {
             assert_eq!(
                 managed_admin_operation(id).unwrap(),
-                !matches!(id, 1 | 2 | 3 | 15 | 16 | 31 | 34 | 36 | 45..=48)
+                !matches!(id, 1 | 2 | 3 | 15 | 16 | 31 | 34 | 36 | 45..=48 | 52)
             );
         }
-        assert!(managed_admin_operation(52).is_err());
+        assert!(managed_admin_operation(53).is_err());
     }
 
     #[test]

@@ -39,6 +39,10 @@ struct OperationForm: View {
             if operation.newSecret { SecureField(operation.arguments.first == "password" ? "新密码" : "新凭证值", text: $secret).textFieldStyle(.roundedBorder) }
             if operation.confirmSecret { SecureField("再次输入新密码", text: $confirmation).textFieldStyle(.roundedBorder) }
             Text("输入仅用于本次操作，不会保存。").font(.system(size: 11)).foregroundStyle(.secondary)
+            if operation.arguments == ["unlock"] {
+                Text(model.securitySettings.passwordInterval == .everyUnlock ? "本次只建立管理会话，不保存本机恢复授权。" : "本机会将解锁授权保存在钥匙串，有效期为 \(model.securitySettings.passwordInterval.label)。再次进入需通过 Mac 身份验证；主密码不会保存。")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            }
             HStack {
                 Button("取消") { clear(); dismiss() }.keyboardShortcut(.cancelAction)
                 Spacer()
@@ -79,6 +83,11 @@ struct AddCredentialForm: View {
                 Text("Vault KV v2").tag("add-vault-kv")
                 Text("Vault 动态租约").tag("add-vault-dynamic")
                 Text("Keycloak Token Exchange").tag("add-keycloak")
+                Text("GCP Secret Manager").tag("add-gcp-secret-manager")
+                Text("AWS Secrets Manager").tag("add-aws-secrets-manager")
+                Text("Azure Key Vault").tag("add-azure-key-vault")
+                Text("1Password Connect").tag("add-onepassword-connect")
+                Text("macOS Keychain").tag("add-macos-keychain")
             }
             }
             if kind == "add" { SecureField("粘贴 API Key，无需 Bearer 前缀", text: $secret).textFieldStyle(.roundedBorder) }
@@ -308,34 +317,109 @@ struct ResultView: View {
 struct PolicyDraftForm: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.dismiss) var dismiss
-    @State private var draft: NativeFileSnapshot?
+    @State private var editor = PolicyDraftEditor()
+    @State private var text = ""
+    @State private var mode = "form"
     @State private var message: String?
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("审阅未签名草稿").font(.system(size: 24, weight: .semibold))
-            Text("此文本尚未验证或签名。这里只中转原始文件，不编辑规则或保管私钥。")
-            Button("选择草稿（最多 64 KiB）") {
-                guard let file = chooseFile() else { return }
-                draft = nil; message = nil
-                do { draft = try NativeFileSnapshot.read(file, limit: 65536) }
-                catch { message = error.localizedDescription }
-            }
-            if let draft {
-                ScrollView { Text(draft.text).font(.system(size: 12, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
-                Button("原样导出到新私有文件") {
-                    guard let destination = chooseSave("DRAFT.json") else { return }
-                    do { try writePrivateNew(draft.data, to: destination); message = "原始快照已导出。" }
+            Text("编辑策略草稿").font(.system(size: 24, weight: .semibold))
+            Text("草稿尚未验证或签名。保存后仍需独立签名，再导入激活。")
+            Picker("编辑方式", selection: $mode) {
+                Text("填写规则").tag("form")
+                Text("完整文本").tag("text")
+            }.pickerStyle(.segmented)
+            if mode == "form" {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        TextField("策略版本", value: $editor.version, format: .number)
+                        DatePicker("有效期至", selection: $editor.expiry)
+                        Text("审批人公钥").font(.headline)
+                        ForEach($editor.approvers) { $approver in
+                            VStack(alignment: .leading) {
+                                HStack {
+                                    TextField("审批人 UUID", text: $approver.approverID)
+                                    Spacer()
+                                    Button("删除") { editor.approvers.removeAll { $0.id == approver.id } }
+                                }
+                                TextField("Ed25519 公钥（64 位小写十六进制）", text: $approver.publicKey)
+                            }
+                        }
+                        Button("添加审批人") { editor.approvers.append(PolicyDraftApprover()) }
+                        Text("权限规则").font(.headline)
+                        ForEach($editor.rules) { $rule in
+                            VStack(alignment: .leading, spacing: 10) {
+                                HStack {
+                                    Picker("权限", selection: $rule.effect) {
+                                        Text("需要审批").tag("require-approval")
+                                        Text("允许").tag("permit")
+                                        Text("拒绝").tag("forbid")
+                                    }
+                                    Button("删除规则") { editor.rules.removeAll { $0.id == rule.id } }
+                                }
+                                Picker("固定操作及版本", selection: $rule.action) {
+                                    Text("请选择").tag("")
+                                    ForEach(model.actions) { action in Text("\(action.name) · \(action.reference)").tag(action.reference) }
+                                }
+                                TextField("主体 UUID", text: $rule.principal)
+                                HStack {
+                                    TextField("资源类型", text: $rule.resourceType)
+                                    TextField("资源 ID", text: $rule.resourceID)
+                                }
+                                TextField("参数结构 ID", text: $rule.schemaID)
+                                Text("参数结构（JSON Schema）").font(.caption)
+                                TextEditor(text: $rule.schema).font(.system(size: 12, design: .monospaced)).frame(height: 70)
+                                TextField("精确参数 SHA-256（留空表示所有符合结构的参数）", text: $rule.exactHash)
+                                if rule.effect == "require-approval" {
+                                    TextField("允许的审批人 UUID，以逗号分隔", text: $rule.approvers)
+                                    Stepper("需要 \(rule.quorum) 人签名", value: $rule.quorum, in: 1...2)
+                                    Picker("授权范围", selection: $rule.mode) {
+                                        Text("仅一次").tag("one-time")
+                                        Text("时间窗口").tag("time-window")
+                                    }
+                                    if rule.mode == "time-window" {
+                                        Stepper("最多 \(rule.maxUses) 次", value: $rule.maxUses, in: 1...10000)
+                                        Stepper("窗口 \(rule.windowSeconds) 秒", value: $rule.windowSeconds, in: 1...28800)
+                                    }
+                                }
+                            }.padding(12).background(Color.secondary.opacity(0.06)).clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+                        Button("添加规则") { editor.rules.append(PolicyDraftRule()) }
+                        Text("生成会替换完整文本中的内容。导入现有策略请使用完整文本，保留其中的全部字段。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Button("生成并审阅完整文本") {
+                            do { text = try editor.generate(actions: model.actions); mode = "text"; message = nil }
+                            catch { message = error.localizedDescription }
+                        }
+                    }.textFieldStyle(.roundedBorder)
+                }
+            } else {
+                Button("导入草稿（最多 64 KiB）") {
+                    guard let file = chooseFile() else { return }
+                    text = ""; message = nil
+                    do { text = try NativeFileSnapshot.read(file, limit: 65536).text }
                     catch { message = error.localizedDescription }
+                }
+                TextEditor(text: $text).font(.system(size: 12, design: .monospaced))
+                HStack {
+                    Text("\(text.utf8.count) / 65536 字节").font(.caption)
+                    Spacer()
+                    Button("导出当前文本到新私有文件") {
+                        guard let destination = chooseSave("DRAFT.json") else { return }
+                        do { try writePrivateNew(PolicyDraftEditor.snapshot(text).data, to: destination); message = "当前文本已导出，尚未签名或激活。" }
+                        catch { message = error.localizedDescription }
+                    }.disabled(text.isEmpty || text.utf8.count > 65536)
                 }
             }
             Text("下一步：在独立工具运行 rekey-policy-sign review DRAFT.json，完整核对后按其 reviewed digest 签名。再回到策略页，分别安装信任根、激活签名策略；这两步仍需 Admin step-up。")
                 .font(.system(size: 12)).foregroundStyle(.secondary)
             if let message { Text(message).font(.system(size: 12)).textSelection(.enabled) }
-            HStack { Spacer(); Button("关闭") { draft = nil; message = nil; model.showPolicyDraft = false; dismiss() }.keyboardShortcut(.cancelAction) }
-        }.padding(28).frame(width: 720, height: 620).background(canvas)
-        .onChange(of: model.nativeFlowRevision) { _, _ in draft = nil; message = nil }
-        .onDisappear { draft = nil; message = nil }
+            HStack { Spacer(); Button("关闭") { clear(); model.showPolicyDraft = false; dismiss() }.keyboardShortcut(.cancelAction) }
+        }.padding(28).frame(width: 780, height: 760).background(canvas)
+        .onChange(of: model.nativeFlowRevision) { _, _ in clear() }
+        .onDisappear { clear() }
     }
+    private func clear() { editor = PolicyDraftEditor(); text = ""; mode = "form"; message = nil }
 }
 
 struct NativeApprovalForm: View {
@@ -444,5 +528,33 @@ struct NativeApprovalForm: View {
                 message = error.localizedDescription
             }
         }
+    }
+}
+
+struct DesktopSecurityForm: View {
+    @EnvironmentObject var model: AppModel
+    @State private var draft = DesktopSecuritySettings()
+    var body: some View {
+        SectionCard(title: "自动锁定与身份验证", icon: "lock.shield") {
+            Picker("电脑空闲多久后锁定", selection: $draft.idle) {
+                ForEach(DesktopIdleInterval.allCases) { Text($0.label).tag($0) }
+            }
+            Toggle("跟随电脑锁屏、休眠和用户切换锁定", isOn: $draft.lockWithDevice)
+            Picker("多久必须重新输入保险库密码", selection: $draft.passwordInterval) {
+                ForEach(DesktopPasswordInterval.allCases) { Text($0.label).tag($0) }
+            }
+            Text("自动锁定只关闭密钥管理会话，已授权的 Agent 继续工作。后台请求不算电脑活动。记住的授权不会因解锁而延期。")
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+            HStack {
+                Button("保存安全设置") { Task { await model.saveSecuritySettings(draft) } }
+                    .buttonStyle(PrimaryButton()).disabled(!model.desktopReady || model.busy || draft == model.securitySettings)
+                if !model.desktopReady {
+                    Button("先解锁管理界面") { model.requestDesktopLogin() }.disabled(model.busy || model.pendingDesktopLocks > 0)
+                } else { Button("现在锁定管理界面") { model.lockDesktop() } }
+            }
+            Text("保存设置会撤销旧的本机授权，并要求重新输入一次保险库密码。")
+                .font(.caption).foregroundStyle(.secondary)
+        }.onAppear { draft = model.securitySettings }
+         .onChange(of: model.securitySettings) { _, value in draft = value }
     }
 }

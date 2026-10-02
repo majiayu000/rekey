@@ -172,6 +172,7 @@ pub enum AuthorityCommand {
         reply: Reply<crate::model::LeaseRecoveryBatch>,
     },
     DesktopRemember {
+        lifetime_ms: i64,
         proof: UnlockProof,
         not_after: Option<std::time::Instant>,
         reply: Reply<(Zeroizing<Vec<u8>>, i64)>,
@@ -183,6 +184,11 @@ pub enum AuthorityCommand {
     },
     DesktopIssue {
         reply: Reply<Zeroizing<Vec<u8>>>,
+    },
+    DesktopLock {
+        token: SecretInput,
+        forget_remembered: bool,
+        reply: Reply<()>,
     },
     DesktopAdd {
         token: SecretInput,

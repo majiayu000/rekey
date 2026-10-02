@@ -203,10 +203,12 @@ impl AuthorityHandle {
 
     pub async fn desktop_remember(
         &self,
+        lifetime_ms: i64,
         proof: UnlockProof,
         not_after: Option<std::time::Instant>,
     ) -> Result<(Zeroizing<Vec<u8>>, i64), AuthorityError> {
         call!(self, |reply| AuthorityCommand::DesktopRemember {
+            lifetime_ms,
             proof,
             not_after,
             reply
@@ -225,6 +227,17 @@ impl AuthorityHandle {
     }
     pub async fn desktop_issue(&self) -> Result<Zeroizing<Vec<u8>>, AuthorityError> {
         call!(self, |reply| AuthorityCommand::DesktopIssue { reply })
+    }
+    pub async fn desktop_lock(
+        &self,
+        token: SecretInput,
+        forget_remembered: bool,
+    ) -> Result<(), AuthorityError> {
+        call!(self, |reply| AuthorityCommand::DesktopLock {
+            token,
+            forget_remembered,
+            reply
+        })
     }
     pub async fn desktop_add(
         &self,
