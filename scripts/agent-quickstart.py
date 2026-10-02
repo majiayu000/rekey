@@ -88,6 +88,8 @@ def prepare(args):
     if not sys.stdin.isatty():
         raise InputError("prepare requires the operator's trusted interactive terminal")
     base = [str(args.rekey.resolve()), "--state-dir", str(args.state_dir.resolve())]
+    if args.admin_session_file is not None:
+        base += ["--admin-session-file", str(args.admin_session_file)]
     status = cli_json(base + ["status"])
     if status["state"] != "unlocked":
         raise InputError("unlock the broker with rekey unlock before prepare")
@@ -211,6 +213,7 @@ def main():
     setup = commands.add_parser("prepare", help="operator terminal: prepare one Action and unsigned policy")
     setup.add_argument("--rekey", type=Path, required=True)
     setup.add_argument("--state-dir", type=Path, required=True)
+    setup.add_argument("--admin-session-file", type=Path, help="operator management session file")
     setup.add_argument("--output", type=Path, required=True)
     source = setup.add_mutually_exclusive_group(required=True)
     source.add_argument("--repo")

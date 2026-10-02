@@ -37,10 +37,10 @@ impl SequenceTransport {
 }
 
 impl UpstreamTransport for SequenceTransport {
-    fn send(&self, request: UpstreamRequest) -> crate::upstream::UpstreamFuture<'_> {
+    fn send(&self, mut request: UpstreamRequest) -> crate::upstream::UpstreamFuture<'_> {
         self.requests.lock().unwrap().push(ObservedRequest {
             method: request.method,
-            path: request.path,
+            path: std::mem::take(&mut request.path),
             body: request.body.to_vec(),
         });
         let response = self.responses.lock().unwrap().pop_front();
@@ -86,6 +86,7 @@ async fn max_timeout_deadline_is_not_reset_at_effect_entry() {
             Vec::new(),
             admission_started + Duration::from_secs(120),
             RESPONSE_LIMIT,
+            &[],
         )
         .await;
     assert!(matches!(
@@ -416,4 +417,165 @@ async fn issue_comment_binds_response_discards_echo_and_never_retries() {
         Err(GitHubError::ResourceRejected)
     );
     assert_eq!(transport.requests.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn escaped_issued_tokens_are_rejected_without_accepting_or_revoking_candidates() {
+    let profile = signed_test_profile();
+    let value = "synthetic-jwt-bootstrap-ASCII";
+    let escaped = value
+        .bytes()
+        .map(|b| format!("\\u{:04x}", b))
+        .collect::<String>();
+    let body = serde_json::to_string(&serde_json::json!({"token":value,"expires_at":"later","permissions":{"metadata":"read"},"repositories":[{"id":1}],"repository_selection":"selected"})).unwrap().replace(value, &escaped).into_bytes();
+    let decoded: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(decoded["token"], value);
+    assert!(serde_json::from_slice::<ExchangeResponse<'_>>(&body).is_err());
+    assert!(probe_tokens(&body).tokens.is_empty());
+    let transport = SequenceTransport::new(vec![UpstreamResponse {
+        status: 201,
+        headers: vec![].into(),
+        body: Zeroizing::new(body),
+    }]);
+    let failure = match profile
+        .exchange(
+            &transport,
+            GitHubAction::ListRepositories,
+            Duration::from_secs(10),
+            &[],
+        )
+        .await
+    {
+        Err(f) => f,
+        Ok(_) => panic!("escaped token admitted"),
+    };
+    assert_eq!(failure.reason, GitHubError::ExchangeRejected);
+    assert!(failure.tokens.is_empty());
+    assert_eq!(transport.requests.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn actual_github_bootstrap_private_key_encoding_is_not_an_issued_token() {
+    let profile = signed_test_profile();
+    let token = data_encoding::BASE64.encode(profile.private_key_bytes());
+    let transport = SequenceTransport::new(vec![
+        json_upstream(
+            201,
+            serde_json::json!({"token":token,"expires_at":"later","permissions":{"metadata":"read"},"repositories":[{"id":1}],"repository_selection":"selected"}),
+            vec![],
+        ),
+        json_upstream(
+            200,
+            serde_json::json!({"total_count":1,"repositories":[{"id":1,"full_name":"owner/repo","private":true}]}),
+            vec![],
+        ),
+        UpstreamResponse {
+            status: 204,
+            headers: vec![].into(),
+            body: Zeroizing::new(vec![]),
+        },
+    ]);
+    let effect = profile
+        .execute_effect(
+            &transport,
+            GitHubAction::ListRepositories,
+            vec![],
+            Instant::now() + Duration::from_secs(10),
+            RESPONSE_LIMIT,
+            &[Zeroizing::new(token.as_bytes().to_vec())],
+        )
+        .await;
+    let business_succeeded = matches!(
+        &effect,
+        GitHubEffect::WithToken {
+            resource: Ok(_),
+            revoke: Ok(_),
+            ..
+        }
+    );
+    let requests = transport.requests.lock().unwrap();
+    assert!(
+        !business_succeeded,
+        "private-key bootstrap encoding accepted: success={business_succeeded}, issuer/business/revoke requests={}",
+        requests.len()
+    );
+    assert!(matches!(
+        effect,
+        GitHubEffect::WithoutToken {
+            error: GitHubError::ExchangeRejected,
+            remote_effect_possible: true
+        }
+    ));
+    assert_eq!(requests.len(), 1);
+}
+
+fn signed_test_profile() -> GitHubAppCredential {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let key = Command::new("/usr/bin/openssl")
+        .args(["genrsa", "2048"])
+        .stderr(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(key.status.success());
+    let key_bytes = Zeroizing::new(key.stdout);
+    let mut converter = Command::new("/usr/bin/openssl");
+    converter.arg("rsa");
+    #[cfg(target_os = "linux")]
+    converter.arg("-traditional");
+    let mut child = converter
+        .args(["-outform", "DER"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(&key_bytes).unwrap();
+    let der = child.wait_with_output().unwrap();
+    assert!(der.status.success());
+    let mut profile = GitHubAppCredential::test_profile();
+    profile.private_key_pkcs1_der = Zeroizing::new(der.stdout);
+    assert!(profile.sign_jwt().is_ok());
+    profile
+}
+
+#[tokio::test]
+async fn reflected_bootstrap_candidates_keep_only_independent_issued_token_cleanup() {
+    let profile = signed_test_profile();
+    let bootstrap = data_encoding::BASE64.encode(profile.private_key_bytes());
+    let needles = vec![Zeroizing::new(bootstrap.as_bytes().to_vec())];
+    let body = format!("{{\"token\":{},\"token\":\"independent-issued-token\",\"permissions\":{{\"metadata\":\"read\"}},\"repositories\":[{{\"id\":1}}],\"repository_selection\":\"selected\",\"expires_at\":\"later\"}}", serde_json::to_string(&bootstrap).unwrap()).into_bytes();
+    let fake = crate::testing::FakeUpstreamTransport::new();
+    fake.push_response(Ok(UpstreamResponse {
+        status: 201,
+        headers: vec![].into(),
+        body: Zeroizing::new(body),
+    }));
+    fake.push_response(Ok(UpstreamResponse {
+        status: 204,
+        headers: vec![].into(),
+        body: Zeroizing::new(vec![]),
+    }));
+    let effect = profile
+        .execute_effect(
+            &fake,
+            GitHubAction::ListRepositories,
+            vec![],
+            Instant::now() + Duration::from_secs(10),
+            RESPONSE_LIMIT,
+            &needles,
+        )
+        .await;
+    assert!(matches!(
+        effect,
+        GitHubEffect::WithToken {
+            resource: Err(GitHubError::ExchangeRejected),
+            revoke: Ok(()),
+            ..
+        }
+    ));
+    let requests = fake.take_requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1].path, "/installation/token");
+    assert_eq!(requests[1].auth_value, b"Bearer independent-issued-token");
 }

@@ -21,6 +21,7 @@ pub const APPROVAL_GRANT_MAX_BYTES: usize = 4 * 1024;
 
 mod json;
 use json::parse_unique_json;
+pub mod oidc_admin;
 mod signed;
 pub use signed::*;
 mod workload;
@@ -146,6 +147,17 @@ impl ValidatedSnapshot {
             .iter()
             .find(|binding| binding.definition.action() == action)
             .map(|binding| &binding.definition)
+    }
+
+    /// Only exact signed OIDC human registrations participate in the node login gate.
+    pub fn has_oidc_human_binding(
+        &self,
+        issuer: &str,
+        subject: &str,
+        principal: PrincipalId,
+    ) -> bool {
+        self.workload_catalog
+            .has_oidc_human_binding(issuer, subject, principal)
     }
 
     pub fn verify_workload_token(

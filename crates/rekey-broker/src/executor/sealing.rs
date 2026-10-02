@@ -1,6 +1,8 @@
 use data_encoding::{BASE64, BASE64_NOPAD, BASE64URL, BASE64URL_NOPAD};
 use zeroize::Zeroizing;
 
+use crate::upstream::ResponseHeaders;
+
 /// Direct encodings of the secret (and the full auth header value) that a
 /// reflecting upstream could echo: raw, base64 standard/url with and without
 /// padding, and full percent-encoding. Percent escape comparison normalizes
@@ -19,6 +21,39 @@ pub(super) fn sealing_needles(secret: &[u8], auth_value: &[u8]) -> Vec<Zeroizing
         needles.push(Zeroizing::new(percent_encode(source, false).into_bytes()));
         needles.push(Zeroizing::new(percent_encode(source, true).into_bytes()));
         needles.push(Zeroizing::new(percent_encode_all(source)));
+    }
+    needles
+}
+
+/// Fixed HTTP representations only; the transmitted value remains untouched.
+pub(super) fn fixed_header_sealing_needles(
+    secret: &[u8],
+    actual_auth: &[u8],
+    registered_prefix: &[u8],
+) -> Vec<Zeroizing<Vec<u8>>> {
+    fn edge_ows(mut bytes: &[u8]) -> &[u8] {
+        while bytes
+            .first()
+            .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
+        {
+            bytes = &bytes[1..];
+        }
+        while bytes
+            .last()
+            .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
+        {
+            bytes = &bytes[..bytes.len() - 1];
+        }
+        bytes
+    }
+
+    let mut needles = sealing_needles(secret, actual_auth);
+    let value = edge_ows(secret);
+    if !value.is_empty() && (value != secret || edge_ows(actual_auth) != actual_auth) {
+        let mut normalized_auth = Zeroizing::new(registered_prefix.to_vec());
+        normalized_auth.extend_from_slice(value);
+        needles.extend(sealing_needles(value, edge_ows(&normalized_auth)));
+        needles.extend(sealing_needles(value, edge_ows(actual_auth)));
     }
     needles
 }
@@ -55,7 +90,7 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> bool {
         .any(|window| window == needle)
 }
 
-pub(super) fn contains_secret(haystack: &[u8], needles: &[Zeroizing<Vec<u8>>]) -> bool {
+pub(crate) fn contains_secret(haystack: &[u8], needles: &[Zeroizing<Vec<u8>>]) -> bool {
     if needles.iter().any(|needle| find_subslice(haystack, needle)) {
         return true;
     }
@@ -113,10 +148,10 @@ fn normalize_percent_hex(bytes: &[u8]) -> Zeroizing<Vec<u8>> {
 }
 
 pub(super) fn headers_contain_secret(
-    headers: &[(String, String)],
+    headers: &ResponseHeaders,
     needles: &[Zeroizing<Vec<u8>>],
 ) -> bool {
-    headers.iter().any(|(name, value)| {
-        contains_secret(name.as_bytes(), needles) || contains_secret(value.as_bytes(), needles)
-    })
+    headers
+        .name_value_bytes()
+        .any(|(name, value)| contains_secret(name, needles) || contains_secret(value, needles))
 }

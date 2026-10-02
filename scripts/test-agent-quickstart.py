@@ -111,6 +111,35 @@ def run_terminal(command, responses, expected_exit=0):
 
 
 class HandoffTests(unittest.TestCase):
+    def test_prepare_management_path_reaches_cli_without_becoming_handoff(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            binary = work / "fixture-cli"
+            record = work / "argv.jsonl"
+            binary.write_text("#!/usr/bin/env python3\nimport json,sys\n"
+                              f"with open({str(record)!r}, 'a') as f:f.write(json.dumps(sys.argv[1:])+'\\n')\n"
+                              "print(json.dumps({'state':'unlocked'} if sys.argv[-1]=='status' and sys.argv[-2]!='policy' else {'bundle_persisted':False,'trust_installed':False}))\n")
+            binary.chmod(0o700)
+            session = work / "unreadable $session% path"
+            session.symlink_to(work / "missing-token")
+            args = argparse.Namespace(rekey=binary, state_dir=work / "state",
+                                      admin_session_file=session, output=work / "handoff",
+                                      repo=REPO, credential=None, github_app_profile=None,
+                                      action=None, schema=None)
+            with patch.object(APP.sys.stdin, "isatty", return_value=True):
+                with self.assertRaises(APP.InputError):
+                    APP.prepare(args)
+            calls = [json.loads(line) for line in record.read_text().splitlines()]
+            expected = ["--state-dir", str(args.state_dir.resolve()), "--admin-session-file", str(session)]
+            self.assertEqual(calls, [expected + ["status"], expected + ["policy", "status"]])
+            self.assertFalse(args.output.exists())
+            self.assertFalse(session.exists())
+            rejected = subprocess.run([sys.executable, str(ROOT / "scripts/agent-quickstart.py"),
+                                       "execute", "--handoff", str(args.output),
+                                       "--admin-session-file", str(session)], capture_output=True)
+            self.assertEqual(rejected.returncode, 2)
+            self.assertIn(b"unrecognized arguments", rejected.stderr)
+
     def test_vault_dynamic_receipt_requires_revoke_before_finished(self):
         names = ["execution.started", "vault.lease.issued", "vault.lease.revoked", "execution.finished"]
         events = [{"sequence": i, "event_type": name, "outcome": "success"} for i, name in enumerate(names)]
@@ -172,6 +201,7 @@ class HandoffTests(unittest.TestCase):
             args = argparse.Namespace(
                 rekey=work / "rekey",
                 state_dir=work / "state",
+                admin_session_file=None,
                 output=output,
                 repo=REPO,
                 credential=None,
@@ -213,8 +243,13 @@ class HandoffTests(unittest.TestCase):
 @unittest.skipUnless(os.environ.get("REKEY_QUICKSTART_REAL") == "1", "set REKEY_QUICKSTART_REAL=1 after building workspace")
 class RealBrokerTests(unittest.TestCase):
     def test_prepare_signed_policy_and_revoke(self):
-        rekey = ROOT / "target/debug/rekey"
-        rekeyd = ROOT / "target/debug/rekeyd"
+        metadata = subprocess.run(
+            ["cargo", "metadata", "--format-version", "1", "--no-deps"],
+            cwd=ROOT, check=True, capture_output=True, text=True,
+        )
+        target_dir = Path(json.loads(metadata.stdout)["target_directory"])
+        rekey = target_dir / "debug/rekey"
+        rekeyd = target_dir / "debug/rekeyd"
         password = "quickstart acceptance password"
         with tempfile.TemporaryDirectory(prefix="rkqs.", dir="/tmp") as directory:
             work = Path(directory)
@@ -279,7 +314,11 @@ class RealBrokerTests(unittest.TestCase):
                                     "--trust", str(work / "trust.json"), "--bundle", str(work / "bundle.json")], check=True)
                     for operation, filename in [(["policy", "trust", "install"], "trust.json"),
                                                 (["policy", "activate"], "bundle.json")]:
-                        run(base + operation + ["--file", str(work / filename), "--step-up-stdin"], password + "\n")
+                        target_flags = []
+                        if operation == ["policy", "activate"]:
+                            target = run(base + ["policy", "status"])
+                            target_flags = ["--expected-vault-id", target["vault_id"], "--expected-trust-sha256", target["trust_sha256"]]
+                        run(base + operation + target_flags + ["--file", str(work / filename), "--step-up-stdin"], password + "\n")
                     self.assertEqual(run(base + ["policy", "status"])["version"], 1)
                     rejected_handoff = work / "rejected-handoff"
                     refused = run_terminal(

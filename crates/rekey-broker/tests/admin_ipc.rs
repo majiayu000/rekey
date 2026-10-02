@@ -11,6 +11,47 @@ use rekey_domain::ipc::{self, Channel, FrameHeader, ProofKind, admin_msg, agent_
 
 const NEW_PASSWORD: &[u8] = b"replacement horse battery staple";
 const FINAL_PASSWORD: &[u8] = b"recovered horse battery staple";
+
+#[tokio::test(flavor = "multi_thread")]
+async fn explicit_principal_issuance_requires_step_up_and_is_admin_only() {
+    let broker = common::start_broker().await;
+    common::unlock(&broker).await;
+    let credential = common::add_credential(&broker, "reissue", b"synthetic-token").await;
+    let (action, version) = common::create_action(&broker, &credential).await;
+    let principal = rekey_domain::ids::PrincipalId::new_random().to_string();
+    common::activate_test_policy(&broker, &action, version, &principal).await;
+    let metadata = serde_json::json!({"actions":[{"action_id":action,"version":version}],
+        "ttl_ms":60000,"max_uses":2,"principal_id":principal})
+    .to_string();
+    let rejected = common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::SESSION_CREATE,
+        metadata.as_bytes(),
+        &common::proof_body(b"wrong-proof"),
+    )
+    .await;
+    assert_eq!(rejected.err_code(), "INVALID_UNLOCK_CREDENTIAL");
+    let created = common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::SESSION_CREATE,
+        metadata.as_bytes(),
+        &common::proof_body(common::PASSWORD),
+    )
+    .await;
+    assert_eq!(created.ok()["principal_id"], principal);
+    let rejected = common::call(
+        &broker.agent_sock(),
+        Channel::Agent,
+        agent_msg::WORKLOAD_SESSION_CREATE,
+        metadata.as_bytes(),
+        b"synthetic.invalid.token",
+    )
+    .await;
+    assert_eq!(rejected.err_code(), "INVALID_FRAME");
+    broker.shutdown().await;
+}
 const VAULT_PROFILE: &[u8] = br#"{
   "credential_type":"vault-kv-v2-source-v1",
   "origin":"https://vault.example.com",
@@ -21,11 +62,12 @@ const VAULT_PROFILE: &[u8] = br#"{
   "vault_token":"hvs.source-canary"
 }"#;
 const VAULT_DYNAMIC_PROFILE: &[u8] = br#"{
-  "credential_type":"vault-dynamic-source-v1",
+  "credential_type":"vault-dynamic-source-v2",
   "origin":"https://vault.example.com",
   "mount":"database",
   "role":"agent-api-token",
   "key":"token",
+  "renew_increment_seconds":60,
   "vault_token":"hvs.dynamic-canary"
 }"#;
 
@@ -928,4 +970,96 @@ async fn vrk_sql_work_exceeding_bounded_stop_disconnects_unknown_and_retains_cra
         .await
         .unwrap();
     join.join().unwrap();
+}
+
+#[tokio::test]
+async fn retention_admin_requires_explicit_days_proof_and_rejects_agent_opcodes() {
+    let broker = common::start_broker().await;
+    let admin = broker.admin_sock();
+    let response = common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::AUDIT_RETENTION_STATUS,
+        b"{}",
+        &[],
+    )
+    .await;
+    assert_eq!(response.err_code(), "LOCKED");
+    common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::UNLOCK_PASSWORD,
+        b"{}",
+        common::PASSWORD,
+    )
+    .await
+    .ok();
+    for metadata in [
+        b"{}".as_slice(),
+        b"{\"days\":0}",
+        b"{\"days\":1,\"extra\":true}",
+    ] {
+        let response = common::call(
+            &admin,
+            Channel::Admin,
+            admin_msg::AUDIT_RETENTION_SET,
+            metadata,
+            &common::proof_body(common::PASSWORD),
+        )
+        .await;
+        assert_ne!(response.err_code(), "");
+    }
+    let response = common::call(
+        &admin,
+        Channel::Admin,
+        admin_msg::AUDIT_RETENTION_SET,
+        b"{\"days\":1}",
+        &common::proof_body(b"wrong"),
+    )
+    .await;
+    assert_eq!(response.err_code(), "INVALID_UNLOCK_CREDENTIAL");
+    assert_eq!(
+        common::call(
+            &admin,
+            Channel::Admin,
+            admin_msg::AUDIT_RETENTION_SET,
+            b"{\"days\":1}",
+            &common::proof_body(common::PASSWORD)
+        )
+        .await
+        .ok()["days"],
+        1
+    );
+    assert_eq!(
+        common::call(
+            &admin,
+            Channel::Admin,
+            admin_msg::AUDIT_RETENTION_STATUS,
+            b"{}",
+            &[]
+        )
+        .await
+        .ok()["days"],
+        1
+    );
+    assert!(
+        common::call(
+            &admin,
+            Channel::Admin,
+            admin_msg::AUDIT_RETENTION_SET,
+            b"{\"days\":null}",
+            &common::proof_body(common::PASSWORD)
+        )
+        .await
+        .ok()["days"]
+            .is_null()
+    );
+    for opcode in [
+        admin_msg::AUDIT_RETENTION_SET,
+        admin_msg::AUDIT_RETENTION_STATUS,
+    ] {
+        let response = common::call(&broker.agent_sock(), Channel::Agent, opcode, b"{}", &[]).await;
+        assert_ne!(response.err_code(), "");
+    }
+    broker.shutdown().await;
 }

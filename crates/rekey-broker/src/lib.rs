@@ -74,3 +74,5 @@ mod tests {
         ));
     }
 }
+
+pub(crate) mod oidc_admin;

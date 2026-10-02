@@ -101,9 +101,18 @@ impl Worker {
         let mut policy = self
             .store
             .verified_policy_material(old_root.bytes(), self.header.vault_id)?;
+        let mut retention = self
+            .store
+            .verified_audit_retention(old_root.bytes(), self.header.vault_id)?;
         let new_root = RootKey::generate()?;
+        let seal =
+            policy_state::seal_retention(new_root.bytes(), self.header.vault_id, &retention)?;
+        retention.seal_nonce = seal.nonce;
+        retention.seal_ciphertext = seal.ciphertext;
         let versions =
             self.rotated_version_ciphertexts(old_root.bytes(), new_root.bytes(), not_after)?;
+        let (journal, journal_state) =
+            self.rotated_journal(old_root.bytes(), new_root.bytes(), not_after)?;
         for record in &mut credentials {
             ensure_mutation_current(not_after)?;
             let seal = credential_state::seal(new_root.bytes(), self.header.vault_id, record)?;
@@ -193,7 +202,10 @@ impl Worker {
             &versions,
             &credentials,
             &policy,
+            &retention,
             &wrappers,
+            &journal,
+            &journal_state,
             audit,
             not_after,
         )?;

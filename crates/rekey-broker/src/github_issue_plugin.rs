@@ -1,6 +1,8 @@
 //! Native sandboxed GitHub issue operations protocol with an optional Admin-pinned artifact.
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -23,8 +25,13 @@ mod macos;
 #[cfg(target_os = "macos")]
 use macos::launch_command;
 #[cfg(target_os = "linux")]
+#[path = "github_issue_plugin/linux.rs"]
 mod linux;
+#[cfg(any(target_os = "linux", test))]
+#[path = "github_issue_plugin/linux_cgroup.rs"]
+mod linux_cgroup;
 #[cfg(target_os = "linux")]
+#[path = "github_issue_plugin/linux_tree.rs"]
 mod linux_tree;
 #[cfg(target_os = "linux")]
 use linux::launch_command;
@@ -231,15 +238,23 @@ async fn run(
     if Instant::now() >= deadline {
         return Err(denied("plugin-deadline"));
     }
+    #[cfg(target_os = "macos")]
     let mut command = launch_command(&executable, deadline)?;
+    #[cfg(target_os = "linux")]
+    let (mut command, mut plugin_tree) = launch_command(&executable, deadline)?;
+    #[cfg(target_os = "macos")]
     let mut child = command.spawn().map_err(BrokerError::Io)?;
     #[cfg(target_os = "linux")]
-    let mut plugin_tree = child.id().map(linux_tree::KillPluginTree::arm);
+    let mut child = command.spawn().map_err(linux::launch_error)?;
+    // Release the parent's ACK writer and guardian lifetime reader immediately.
+    drop(command);
+    #[cfg(target_os = "linux")]
+    plugin_tree.check_guardian().map_err(linux::launch_error)?;
     #[cfg(target_os = "macos")]
     let memory_monitor =
         macos::monitor_memory(child.id().ok_or_else(|| denied("plugin-spawn"))? as i32);
     #[cfg(target_os = "linux")]
-    let memory_monitor = std::future::pending::<BrokerError>();
+    let memory_monitor = plugin_tree.guardian_lost();
     let mut stdin = child.stdin.take().ok_or_else(|| denied("plugin-stdin"))?;
     let stdout = child.stdout.take().ok_or_else(|| denied("plugin-stdout"))?;
     let exchange = async {
@@ -282,18 +297,26 @@ async fn run(
         }
     };
     #[cfg(target_os = "linux")]
-    if let Some(tree) = plugin_tree.as_mut() {
-        if result.is_ok() {
-            tree.disarm();
-        } else {
-            tree.finish();
+    let result = match result {
+        Ok(output) => plugin_tree.finish(plugin_tree.end).await.map(|()| output),
+        Err(error) => {
+            // Preserve the operation error; Drop/guardian owns cleanup if its
+            // original execution budget is already exhausted.
+            let _ = linux_cgroup::write_fd(plugin_tree.payload.kill.as_raw_fd(), b"1");
+            Err(error)
         }
-    }
+    };
     if result.is_err() {
-        // SIGKILL the outer launcher. The armed reaper SIGKILLs descendants that
-        // bubblewrap forked before its own parent-death signal could cover them.
-        // A process which already exited requires no signal, but is still reaped.
+        // Kill/reap the direct child; Linux descendants belong to the pinned
+        // payload and are terminated by the guard and execed guardian.
         child.start_kill().map_err(BrokerError::Io)?;
+        #[cfg(target_os = "linux")]
+        {
+            // Do not turn an expired execution into an indefinite cleanup wait.
+            let _ = tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), child.wait())
+                .await;
+        }
+        #[cfg(target_os = "macos")]
         child.wait().await.map_err(BrokerError::Io)?;
     }
     result

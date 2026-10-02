@@ -137,16 +137,20 @@ only after completion. On failure, a partial new file may remain for inspection
 and is never resumed. Output omits credentials, recovery material, capability
 tokens, bodies, headers, resource IDs, and parameter hashes. Protect it as
 sensitive metadata. The released query/export capability has no pruning.
-The source checkout adds the explicit operation below; there is no automatic
-retention, SIEM, WORM, legal hold or remote delivery.
+The source checkout adds the explicit operation below and separate delivery
+and S3 archival tools described in the [operations runbook](operations-runbook.md).
+Local audit has no automatic retention policy; customer SIEM persistence and
+WORM/Legal Hold permissions still require independent field acceptance.
 
 ### Prune completed execution audit groups (source checkout)
 
 ```bash
 rekey audit prune --before-ms CUTOFF_UNIX_MS
+# Current unreleased source: select by age instead of an absolute cutoff.
+rekey audit prune --older-than-days 30
 ```
 
-Choose a non-negative cutoff no later than now. While unlocked, supply fresh
+Choose exactly one cutoff option. Days are positive integers of 24 hours; age overflow or a cutoff before Unix epoch is rejected. Choose a non-negative absolute cutoff no later than now. While unlocked, supply fresh
 password or recovery proof (`--recovery`; explicit `--password-stdin` is available).
 The command removes only entire completed execution groups with every event
 strictly before the cutoff. It preserves all approval-associated groups,
@@ -209,6 +213,12 @@ Create a capability session and record its `principal_id` and token:
 ```bash
 rekey session create --action ACTION_ID@1 --ttl 1h --max-uses 10
 ```
+
+Replacing an active signed policy revokes all existing capabilities. After
+activating the replacement, issue a new capability for the principal named in
+that policy with `rekey session create --action ACTION_ID@1 --principal PRINCIPAL_ID`.
+This still requires an Admin step-up proof. OIDC-managed issuance remains bound
+to the authenticated administrator; workload issuance cannot select a principal.
 
 Create a policy snapshot, replacing all UUIDs and the Action version with
 returned values. `expires_at_ms` must be a future Unix epoch in milliseconds.
@@ -273,9 +283,14 @@ once, then activate the signed bundle:
 printf '%s\n' "$STEP_UP_PROOF" | \
   rekey policy trust install --file trust.json --step-up-stdin
 printf '%s\n' "$STEP_UP_PROOF" | \
-  rekey policy activate --file bundle.json --step-up-stdin
+  rekey policy activate --file bundle.json --expected-vault-id "$VAULT_ID" \
+    --expected-trust-sha256 "$TRUST_SHA256" --step-up-stdin
 rekey policy status
 ```
+
+Read `vault_id` and `trust_sha256` from `rekey policy status` after trust
+installation; substitute those public values for the two activation arguments.
+The Authority checks both again after step-up and before committing.
 
 There is one immutable trust root per vault. Policy version 1 must be first;
 later bundles must be exactly consecutive. A malformed, unsigned, expired,
@@ -363,8 +378,9 @@ regular non-symlink UTF-8 JSON file no larger than 4 KiB. A grant is bound to
 the exact challenge/session/principal/Action/resource/canonical parameters,
 determining rule, policy version/digest, expiry, and signed use count. Approval
 requests and usage are memory-only and vanish on session revocation, lock, or
-restart. Rekey has no hosted remote approval service, hosted notifications,
-dashboard, human directory, or private-key custody.
+restart. Source builds include an independently deployed HTTPS approval-file
+relay. It records transport snapshots; Broker validates the grant at execute.
+Hosted operations, human directory and dashboard remain outside this scope.
 
 Operators can also pull a pending challenge from Admin without catching Agent
 stdout: `rekey approval pending` lists unused in-memory summaries, and
@@ -623,6 +639,23 @@ installation is accepted. Exchange, create-issue, revoke, transport failures,
 and mutative effects are never retried; repository listing may retry once only
 for a bounded canonical `Retry-After` response.
 
+## macOS file-Keychain source (current unreleased source)
+
+Use `rekey credential add-macos-keychain LABEL --file PRIVATE_PROFILE` and
+`rekey credential rotate-macos-keychain ID --file PRIVATE_PROFILE` with fresh
+Admin step-up. The closed `macos-keychain-source-v1` profile contains an explicit
+absolute `keychain_path`, exact `service` and `account`, and a future
+`reference_expires_at_ms`. The reference is stored encrypted; execution looks up
+one generic-password item inside the Authority Worker and uses the value only
+for the registered fixed HTTP header Action. Native lookup refuses interactive
+unlock/access prompts. This source is separate from remembered desktop unlock.
+Local contracts and a disposable native file-Keychain item test passed: actual
+Broker execution, reflected-value sealing, and locked-Keychain refusal without
+a prompt. Run `python3 scripts/test-keychain-live.py --bin-dir target/debug` after
+building the binaries and `p1_policy_fixture` example. Existing customer items,
+their ACLs and deployed service identities still need their own acceptance.
+See [the source contract](superpowers/specs/2026-10-01-macos-keychain-source.md).
+
 ## Vault KV v2 fixed-version source
 
 This fixture-bounded feature is in this Alpha archive. It resolves one exact
@@ -655,26 +688,53 @@ the configured nonzero version. Deleted, destroyed, malformed, reflected, or
 wrong-version results stop before the final Action request.
 
 The Agent cannot select the Vault location or read either the Vault token or
-resolved value. Private Vault networks, private CA configuration, latest/alias
-resolution, Vault authentication flows, namespaces, cloud secret/KMS
-providers, 1Password, HSM, keychain, and generic source templates are not
-supported.
+resolved value. The published Alpha snapshot supports the fixed-version public
+source described above. Current development source additionally supports
+[one KV latest read](superpowers/specs/2026-10-01-vault-kv-latest.md),
+[an explicitly bound private Vault endpoint](superpowers/specs/2026-10-01-vault-private-source.md),
+and the AppRole profile below; these additions still require provider acceptance.
+Namespaces and generic source templates remain unsupported.
+
+## Vault AppRole source (current development source)
+
+The existing `add-vault-kv` and `rotate-vault-kv` commands also accept the closed
+`vault-approle-kv-v2-source-v1` profile. Put the required `origin`, `auth_mount`,
+`role_id`, `secret_id`, `secret_id_expires_at_ms`, `mount`, `path`, `key`, and
+`version` in an owner-readable profile file. `version` is a positive exact
+integer or `"latest"`; the SecretID expiry is an absolute Unix millisecond
+value in the future. Supply actual bootstrap credentials only through this
+protected file, then remove it after the encrypted Admin mutation succeeds.
+An optional `source_endpoint` uses the private endpoint contract linked above.
+
+Each execution commits its login audit, sends one AppRole login, uses the
+returned service token for one KV read and the fixed business Action, then
+revokes that token before releasing a successful response. The observed token
+TTL must cover the original Action deadline and cleanup reserve. Login response
+loss, ambiguous cleanup, or an admitted business request without its response
+returns a nonretryable indeterminate result. Rekey does not retry login or
+renew the token. A crash can leave a token until its actual provider expiry;
+an unknown login has no observed TTL. Validate the role ACL, SecretID uses,
+natural expiry and revoke behavior against your Vault deployment before use.
+See [the AppRole contract](superpowers/specs/2026-10-01-vault-approle-source.md).
 
 ## Vault one-shot dynamic lease source
 
-This fixture-bounded feature is in this Alpha archive. It acquires one bounded
+The published Alpha supports one-shot leases. The development source adds
+[one conditional renewal per execution](superpowers/specs/2026-09-30-vault-lease-renewal.md)
+with a breaking v2 profile. It acquires one bounded
 Vault dynamic lease, uses one selected string as the credential for an existing
 fixed HTTPS Action, and synchronously revokes the exact lease before returning
 success:
 
 ```json
 {
-  "credential_type": "vault-dynamic-source-v1",
+  "credential_type": "vault-dynamic-source-v2",
   "origin": "https://vault.example.com",
   "mount": "database",
   "role": "agent-api-token",
   "key": "token",
-  "vault_token": "hvs.REPLACE_ME"
+  "vault_token": "hvs.REPLACE_ME",
+  "renew_increment_seconds": 60
 }
 ```
 
@@ -684,12 +744,16 @@ rekey credential rotate-vault-dynamic CREDENTIAL_ID --file profile.json
 ```
 
 The Broker sends one non-retried `GET /v1/MOUNT/creds/ROLE`, accepts only a
-5–300 second lease with one exact selected visible-ASCII string, executes the
-fixed Action, then sends `POST /v1/sys/leases/revoke` with the exact lease ID
+5–300 second lease with one exact selected visible-ASCII string. If the lease
+is renewable and its initial deadline precedes the Action deadline, the Broker
+audits and sends one `POST /v1/sys/leases/renew` before business IO. It uses the
+actual returned TTL, capped by the original Action deadline, with 500ms reserved
+for cleanup. It executes the fixed Action, then sends
+`POST /v1/sys/leases/revoke` with the exact lease ID
 and `sync: true`. A revoke failure hides any Action response and returns a
 non-retryable indeterminate result.
 
-Rekey does not renew leases or persist an outstanding-lease registry. A hard
+Rekey does not persist an outstanding-lease registry. A hard
 process or host crash may leave the lease active until Vault expires it, so
 this feature does not claim crash-time cleanup, general Vault support, or
 private-network support.
@@ -707,13 +771,16 @@ issued token before returning success. There is no refresh or automatic retry;
 replace an expired or withdrawn subject token through the typed rotate command.
 See the spec for exact fields and resource-server revocation limits.
 
-This source uses storage format 14 and rejects older state/backups without
+This source uses storage format 16 and rejects older state/backups without
 migration. Published alpha.2 and its recorded backup acceptance use format 9.
 
 The development tree contains the IO-free `rekey-connector` library. The library
 itself is not an MCP server. The source-only
 [MCP-03 stdio executable](superpowers/specs/2026-09-10-local-mcp-stdio.md)
 adds an operator-configured Agent IPC adapter; it is not packaged in this Alpha.
+The [unreleased candidate archive](installation.md#development-archive-helpers)
+now stages `rekey-mcp` alongside the Broker and the external signing and
+operator helpers. Published alpha.2 contents are unchanged.
 Its compile-time registry gives integrators stable versioned descriptors for
 the existing opaque-header, closed GitHub App, closed Vault KV v2 source, and
 one-shot Vault dynamic source paths. It also provides a pure
@@ -784,7 +851,8 @@ version, accepts only the indicated request schema, and expires with the
 
 ```bash
 target/debug/rekey --state-dir /tmp/rekey-agent-demo policy trust install --file trust.json
-target/debug/rekey --state-dir /tmp/rekey-agent-demo policy activate --file bundle.json
+target/debug/rekey --state-dir /tmp/rekey-agent-demo policy activate --file bundle.json --expected-vault-id "$VAULT_ID" \
+  --expected-trust-sha256 "$TRUST_SHA256"
 ```
 
 For a disposable local demo only, the repository's external **test signer**
@@ -846,7 +914,8 @@ python3 scripts/dogfood-vault.py --source source-public.json \
   --expected-status 200 --receipt /tmp/rekey-vault-layer-b.json
 ```
 
-Use `vault-dynamic-source-v1` with `mount`, `role`, `key` and public `origin`
+Use `vault-dynamic-source-v2` with `mount`, `role`, `key`,
+`renew_increment_seconds` (5–300) and public `origin`
 for the dynamic path. A hidden prompt reads the token. The harness creates and
 removes a disposable local vault and test signer, uses production TLS/IP
 screening, and writes a new metadata-only receipt only after the expected HTTP
@@ -872,3 +941,20 @@ An exit 8 means a remote effect may have occurred; do not blindly retry.
 If a domain resolves only into `198.18.0.0/15`, Clash/TUN Fake-IP is being
 rejected by design. Configure real DNS for that exact host; never weaken
 private-IP screening or set a proxy environment variable as a workaround.
+
+
+### Node administrator OIDC login
+
+An administrator-configured node may require a short-lived OIDC identity for
+its management operations. Follow the [profile and login procedure](operations-runbook.md#oidc-node-administrator-login):
+unlock locally, Begin, open the returned HTTPS URL on the node's machine, then
+Finish to a new private session file. Add `--admin-session-file FILE` to operator
+CLI calls; step-up proof remains required for mutations. The token is never
+shown in stdout. Cancel stops an unfinished flow; Logout revokes local management
+identities and their capabilities.
+
+The macOS Settings screen exposes profile selection, Begin/open/Finish/Cancel,
+existing session-file selection and Logout. Selecting a new file clears the old
+displayed principal; switching workspace, locking or disconnecting clears login
+state. Browser focus changes preserve the pending login. Actual GUI/IdP/Broker
+execution is still an acceptance gate; local source tests alone do not prove SSO.

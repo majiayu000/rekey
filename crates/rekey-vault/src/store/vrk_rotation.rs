@@ -35,7 +35,10 @@ impl SqliteRecordStore {
         versions: &[(CredentialKind, CredentialVersionRecord)],
         credentials: &[CredentialRecord],
         policy: &PolicyMaterial,
+        retention: &crate::model::AuditRetentionRecord,
         wrappers: &[KeyWrapperRecord],
+        journal: &[crate::model::LeaseJournalRecord],
+        journal_state: &crate::model::LeaseJournalState,
         audit: AuditEvent,
         not_after: Option<Instant>,
     ) -> Result<(), AuthorityError> {
@@ -59,6 +62,15 @@ impl SqliteRecordStore {
                 ],
             )
             .map_err(storage)?)?;
+        one(tx
+            .execute(
+                "UPDATE audit_retention SET seal_nonce=?1,seal_ciphertext=?2 WHERE singleton=1",
+                params![
+                    retention.seal_nonce.as_slice(),
+                    retention.seal_ciphertext.as_slice()
+                ],
+            )
+            .map_err(storage)?)?;
         if let Some(trust) = &policy.trust {
             one(tx.execute("UPDATE policy_trust SET seal_nonce=?1, seal_ciphertext=?2 WHERE singleton=1 AND signer_id=?3",
                 params![trust.seal_nonce.as_slice(), trust.seal_ciphertext.as_slice(), trust.signer_id.as_bytes().as_slice()]).map_err(storage)?)?;
@@ -76,6 +88,7 @@ impl SqliteRecordStore {
             // The shared helper also rejects an ignored (zero-row) INSERT.
             super::wrapper::insert_wrapper(&tx, wrapper)?;
         }
+        super::lease_journal::replace_ciphertexts(&tx, journal, journal_state)?;
         super::audit::insert(&tx, &audit)?;
         current(not_after)?;
         commit_audited(tx)

@@ -178,6 +178,15 @@ impl Worker {
                 self.fault("desktop-resume-integrity-failed");
                 return Err(error);
             }
+            self.retention_record()?;
+            if let Err(error) = super::lease_journal::verify_store(
+                &self.store,
+                self.require_unlocked()?.bytes(),
+                self.header.vault_id,
+            ) {
+                self.fault("desktop-resume-journal-integrity-failed");
+                return Err(error);
+            }
             self.append_audit(unlock_audit(
                 "desktop.resumed",
                 outcome::SUCCESS,
@@ -235,6 +244,7 @@ mod tests {
         let header = store.load_header().unwrap();
         let token = SecretInput::from_slice(b"synthetic-session");
         let mut worker = Worker {
+            keychain_fixture: None,
             store,
             header,
             state: VaultState::Unlocked {
@@ -248,6 +258,7 @@ mod tests {
             failed_unlocks: 0,
             next_unlock_at: Instant::now(),
             last_activity: Instant::now(),
+            retention_last_clock_ms: None,
             config: crate::handle::AuthorityConfig::new(state),
         };
         worker.verify_desktop(&token).unwrap();
@@ -256,5 +267,80 @@ mod tests {
             worker.verify_desktop(&token),
             Err(AuthorityError::InvalidUnlockCredential)
         ));
+    }
+    #[test]
+    fn exact3_desktop_resume_authenticates_retention_before_success() {
+        let mut outcomes = Vec::new();
+        for tamper in [
+            None,
+            Some("UPDATE audit_retention SET seal_nonce=zeroblob(12)"),
+            Some("UPDATE audit_retention SET seal_ciphertext=zeroblob(16)"),
+            Some("DELETE FROM audit_retention"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let state = dir.path().join("state");
+            crate::bootstrap::init_vault(
+                &state,
+                &SecretInput::from_slice(b"synthetic-resume"),
+                crate::crypto::kdf::Argon2Params {
+                    memory_kib: 8,
+                    iterations: 1,
+                    parallelism: 1,
+                },
+            )
+            .unwrap();
+            crate::bootstrap::confirm_vault_init(&state).unwrap();
+            let store =
+                crate::store::SqliteRecordStore::open(&crate::paths::vault_db(&state)).unwrap();
+            let header = store.load_header().unwrap();
+            let mut worker = Worker {
+                keychain_fixture: None,
+                store,
+                header,
+                state: VaultState::Locked,
+                desktop_session: None,
+                desktop_resume_expiry: None,
+                failed_unlocks: 0,
+                next_unlock_at: Instant::now(),
+                last_activity: Instant::now(),
+                retention_last_clock_ms: None,
+                config: crate::handle::AuthorityConfig::new(state.clone()),
+            };
+            worker
+                .unlock(UnlockProof::Password(SecretInput::from_slice(
+                    b"synthetic-resume",
+                )))
+                .unwrap();
+            let (ticket, _) = worker
+                .remember_desktop(
+                    UnlockProof::Password(SecretInput::from_slice(b"synthetic-resume")),
+                    None,
+                )
+                .unwrap();
+            worker.set_locked("synthetic-resume", true).unwrap();
+            let db = rusqlite::Connection::open(crate::paths::vault_db(&state)).unwrap();
+            if let Some(sql) = tamper {
+                db.execute_batch(sql).unwrap();
+            }
+            let result = worker.resume_desktop(SecretInput::from_slice(&ticket), None);
+            let successes: i64 = db
+                .query_row(
+                    "SELECT count(*) FROM audit_events WHERE event_type='desktop.resumed'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            outcomes.push(if tamper.is_some() {
+                matches!(result, Err(AuthorityError::StorageIntegrityFailed))
+                    && matches!(worker.state, VaultState::Faulted)
+                    && matches!(worker.require_unlocked(), Err(AuthorityError::Faulted))
+                    && successes == 0
+            } else {
+                result.is_ok()
+                    && matches!(worker.state, VaultState::Unlocked { .. })
+                    && successes == 1
+            });
+        }
+        assert_eq!(outcomes, vec![true, true, true, true]);
     }
 }

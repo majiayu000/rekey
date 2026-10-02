@@ -65,9 +65,22 @@ async fn backup_roundtrip_and_restore() {
         .backup(backup_path.clone(), common::password_proof())
         .await
         .unwrap();
-    assert_eq!(receipt.format_version, 14);
+    assert_eq!(receipt.format_version, rekey_vault::model::FORMAT_VERSION);
     assert_eq!(receipt.vault_id, vault.outcome.vault_id);
     assert_eq!(receipt.sha256_hex.len(), 64);
+    let archived = rusqlite::Connection::open(&backup_path).unwrap();
+    let archived_sequence: u64 = archived
+        .query_row("SELECT MAX(sequence) FROM audit_events", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(receipt.snapshot_cut.audit_sequence, archived_sequence);
+    assert_eq!(receipt.snapshot_cut.policy, None);
+    let release_count: u64 = archived
+        .query_row("SELECT COUNT(*) FROM audit_events WHERE event_type IN ('backup.release_authorized','backup.created')", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(release_count, 0);
+    drop(archived);
     assert_eq!(
         fs::metadata(&backup_path).unwrap().permissions().mode() & 0o777,
         0o600
@@ -93,6 +106,24 @@ async fn backup_roundtrip_and_restore() {
         1
     );
 
+    handle
+        .credential_add(
+            CredentialLabel::new("after-cut").unwrap(),
+            CredentialKind::OpaqueToken,
+            SecretInput::from_slice(b"later-synthetic-value"),
+            common::password_proof(),
+        )
+        .await
+        .unwrap();
+    let later = handle
+        .backup(
+            vault.dir.path().join("later.rkbackup"),
+            common::password_proof(),
+        )
+        .await
+        .unwrap();
+    assert!(later.snapshot_cut.audit_sequence > receipt.snapshot_cut.audit_sequence);
+
     // Ciphertext-only: the backup bytes never contain the plaintext secret.
     let bytes = fs::read(&backup_path).unwrap();
     assert!(
@@ -117,7 +148,36 @@ async fn backup_roundtrip_and_restore() {
         &receipt.sha256_hex,
     )
     .unwrap();
-    assert_eq!(vault_id, vault.outcome.vault_id);
+    assert_eq!(vault_id.vault_id, vault.outcome.vault_id);
+    assert_eq!(vault_id.format_version, receipt.format_version);
+    assert_eq!(vault_id.input_sha256_hex, receipt.sha256_hex);
+    assert_eq!(
+        vault_id.output_path,
+        target
+            .canonicalize()
+            .unwrap()
+            .into_os_string()
+            .into_string()
+            .unwrap()
+    );
+    assert_eq!(vault_id.snapshot_cut, receipt.snapshot_cut);
+    let installed = rusqlite::Connection::open(rekey_vault::paths::vault_db(&target)).unwrap();
+    let restored_sequence: u64 = installed
+        .query_row(
+            "SELECT sequence FROM audit_events WHERE event_type='restore.completed'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(restored_sequence, archived_sequence + 1);
+    drop(installed);
+
+    // The selected older artifact has none of the later source mutations.
+    let installed_store =
+        rekey_vault::store::SqliteRecordStore::open(&rekey_vault::paths::vault_db(&target))
+            .unwrap();
+    assert_eq!(installed_store.list_credentials().unwrap().len(), 1);
+    drop(installed_store);
 
     // Restored vault serves the same credential.
     let (handle, join) = common::spawn(&target);
@@ -775,7 +835,7 @@ async fn restore_recovers_only_marked_internal_artifacts_before_retry() {
         &receipt.sha256_hex,
     )
     .unwrap();
-    assert_eq!(restored_id, vault.outcome.vault_id);
+    assert_eq!(restored_id.vault_id, vault.outcome.vault_id);
     assert!(!rekey_vault::paths::restore_incomplete(&target).exists());
     assert!(!target.join(".incoming-vault.sqlite3").exists());
 
@@ -785,6 +845,253 @@ async fn restore_recovers_only_marked_internal_artifacts_before_retry() {
         .await
         .unwrap();
     join.join().unwrap();
+}
+
+#[tokio::test]
+async fn invalid_snapshot_cut_fails_before_backup_release_and_restore_install() {
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+    let archive = vault.dir.path().join("cut-source.rkbackup");
+    handle
+        .backup(archive.clone(), common::password_proof())
+        .await
+        .unwrap();
+    let source =
+        rusqlite::Connection::open(rekey_vault::paths::vault_db(&vault.state_dir)).unwrap();
+    let before: u64 = source
+        .query_row("SELECT COUNT(*) FROM audit_events", [], |row| row.get(0))
+        .unwrap();
+    source
+        .execute("UPDATE audit_events SET sequence=-sequence", [])
+        .unwrap();
+    let failed_output = vault.dir.path().join("invalid-cut.rkbackup");
+    assert!(matches!(
+        handle
+            .backup(failed_output.clone(), common::password_proof())
+            .await,
+        Err(AuthorityError::StorageIntegrityFailed)
+    ));
+    assert!(!failed_output.exists());
+    assert!(!rekey_vault::paths::backup_snapshot(&vault.state_dir).exists());
+    let after: u64 = source
+        .query_row("SELECT COUNT(*) FROM audit_events", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(after, before);
+    drop(source);
+    handle
+        .shutdown(Some(common::password_proof()))
+        .await
+        .unwrap();
+    join.join().unwrap();
+
+    let corrupt = rusqlite::Connection::open(&archive).unwrap();
+    corrupt
+        .execute("UPDATE audit_events SET sequence=-sequence", [])
+        .unwrap();
+    drop(corrupt);
+    let target = vault.dir.path().join("invalid-cut-restore");
+    assert!(matches!(
+        restore_vault(
+            &archive,
+            &target,
+            RestoreProof::Password(common::password_input()),
+            &file_sha256(&archive),
+        ),
+        Err(AuthorityError::StorageIntegrityFailed)
+    ));
+    assert!(!rekey_vault::paths::vault_db(&target).exists());
+    assert!(!target.join(".incoming-vault.sqlite3").exists());
+    assert!(!rekey_vault::paths::restore_incomplete(&target).exists());
+}
+
+#[tokio::test]
+async fn restore_receipt_binds_actual_cross_vault_input_and_local_lock() {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::PermissionsExt;
+
+    let a = common::init_test_vault();
+    let b = common::init_test_vault();
+    let mut backups = Vec::new();
+    for vault in [&a, &b] {
+        let (handle, join) = common::spawn(&vault.state_dir);
+        handle.unlock(common::password_proof()).await.unwrap();
+        let path = vault.dir.path().join("identity.rkbackup");
+        let receipt = handle
+            .backup(path.clone(), common::password_proof())
+            .await
+            .unwrap();
+        handle
+            .shutdown(Some(common::password_proof()))
+            .await
+            .unwrap();
+        join.join().unwrap();
+        backups.push((path, receipt));
+    }
+    let wrong_target = b.dir.path().join("wrong-artifact");
+    assert!(matches!(
+        restore_vault(
+            &backups[1].0,
+            &wrong_target,
+            RestoreProof::Password(common::password_input()),
+            &backups[0].1.sha256_hex,
+        ),
+        Err(AuthorityError::RestoreFailed)
+    ));
+    assert!(!rekey_vault::paths::vault_db(&wrong_target).exists());
+    assert!(!rekey_vault::paths::restore_incomplete(&wrong_target).exists());
+
+    let target = b.dir.path().join("local-lock");
+    fs::create_dir(&target).unwrap();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o700)).unwrap();
+    let lock = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(rekey_vault::paths::broker_lock(&target))
+        .unwrap();
+    assert_eq!(
+        unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+        0
+    );
+    assert!(matches!(
+        restore_vault(
+            &backups[1].0,
+            &target,
+            RestoreProof::Password(common::password_input()),
+            &backups[1].1.sha256_hex,
+        ),
+        Err(AuthorityError::StorageUnavailable(_))
+    ));
+    assert!(!rekey_vault::paths::vault_db(&target).exists());
+    assert!(!rekey_vault::paths::restore_incomplete(&target).exists());
+    drop(lock);
+
+    let restored = restore_vault(
+        &backups[1].0,
+        &target,
+        RestoreProof::Password(common::password_input()),
+        &backups[1].1.sha256_hex.to_uppercase(),
+    )
+    .unwrap();
+    assert_eq!(restored.vault_id, b.outcome.vault_id);
+    assert_ne!(restored.vault_id, a.outcome.vault_id);
+    assert_eq!(restored.input_sha256_hex, backups[1].1.sha256_hex);
+    assert_eq!(restored.snapshot_cut, backups[1].1.snapshot_cut);
+    assert_eq!(
+        restored.output_path,
+        target
+            .canonicalize()
+            .unwrap()
+            .into_os_string()
+            .into_string()
+            .unwrap()
+    );
+    let another = restore_vault(
+        &backups[1].0,
+        &b.dir.path().join("another-copy"),
+        RestoreProof::Password(common::password_input()),
+        &backups[1].1.sha256_hex,
+    )
+    .unwrap();
+    assert_eq!(another.snapshot_cut, restored.snapshot_cut);
+    assert_eq!(another.vault_id, restored.vault_id);
+}
+
+#[tokio::test]
+async fn restore_receipt_preserves_exact_canonical_unicode_output_path() {
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+    let archive = vault.dir.path().join("unicode-target.rkbackup");
+    let backup = handle
+        .backup(archive.clone(), common::password_proof())
+        .await
+        .unwrap();
+    handle
+        .shutdown(Some(common::password_proof()))
+        .await
+        .unwrap();
+    join.join().unwrap();
+
+    let target = vault.dir.path().join("恢复 空间-🗝️");
+    let restored = restore_vault(
+        &archive,
+        &target,
+        RestoreProof::Password(common::password_input()),
+        &backup.sha256_hex,
+    )
+    .unwrap();
+    let canonical = target
+        .canonicalize()
+        .unwrap()
+        .into_os_string()
+        .into_string()
+        .unwrap();
+    assert_eq!(restored.output_path, canonical);
+    assert!(rekey_vault::paths::vault_db(&target).is_file());
+    let receipt = rekey_domain::ipc::RestoreReceipt {
+        vault_id: restored.vault_id.to_string(),
+        format_version: restored.format_version,
+        input_sha256_hex: restored.input_sha256_hex,
+        output_path: restored.output_path,
+        snapshot_cut: restored.snapshot_cut,
+    };
+    let serialized = serde_json::to_string(&receipt).unwrap();
+    let decoded: rekey_domain::ipc::RestoreReceipt = serde_json::from_str(&serialized).unwrap();
+    assert_eq!(decoded.output_path, canonical);
+    assert_eq!(
+        Path::new(&decoded.output_path),
+        target.canonicalize().unwrap()
+    );
+    assert_eq!(decoded.vault_id, vault.outcome.vault_id.to_string());
+    assert_eq!(decoded.input_sha256_hex, backup.sha256_hex);
+    assert_eq!(decoded.snapshot_cut, backup.snapshot_cut);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn restore_refuses_actual_non_utf8_target_before_installing() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+    use std::os::unix::fs::PermissionsExt;
+
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+    let archive = vault.dir.path().join("invalid-target.rkbackup");
+    let backup = handle
+        .backup(archive.clone(), common::password_proof())
+        .await
+        .unwrap();
+    handle
+        .shutdown(Some(common::password_proof()))
+        .await
+        .unwrap();
+    join.join().unwrap();
+    let target = vault
+        .dir
+        .path()
+        .join(OsString::from_vec(b"invalid-\xff".to_vec()));
+    fs::create_dir(&target).expect("this Linux fixture requires real non-UTF8 filenames");
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(target.canonicalize().unwrap().to_str().is_none());
+    for proof in [
+        common::password_input(),
+        SecretInput::from_slice(b"wrong-proof"),
+    ] {
+        assert!(matches!(
+            restore_vault(
+                &archive,
+                &target,
+                RestoreProof::Password(proof),
+                &backup.sha256_hex
+            ),
+            Err(AuthorityError::RestoreFailed)
+        ));
+        assert!(!rekey_vault::paths::vault_db(&target).exists());
+        assert!(!target.join(".incoming-vault.sqlite3").exists());
+        assert!(!rekey_vault::paths::restore_incomplete(&target).exists());
+    }
 }
 
 #[path = "backup_restore/format_gate.rs"]

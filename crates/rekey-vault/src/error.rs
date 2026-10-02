@@ -42,6 +42,8 @@ pub enum AuthorityError {
     InsecureStatePermissions,
     #[error("credential not found")]
     CredentialNotFound,
+    #[error("credential source is unavailable")]
+    CredentialSourceUnavailable,
     #[error("credential label already exists")]
     CredentialConflict,
     #[error("credential revoked")]
@@ -100,6 +102,7 @@ impl AuthorityError {
             Self::UnsupportedFormatVersion => "UNSUPPORTED_FORMAT_VERSION",
             Self::InsecureStatePermissions => "INSECURE_STATE_PERMISSIONS",
             Self::CredentialNotFound => "CREDENTIAL_UNAVAILABLE",
+            Self::CredentialSourceUnavailable => "CREDENTIAL_UNAVAILABLE",
             Self::CredentialConflict => "CREDENTIAL_CONFLICT",
             Self::CredentialRevoked => "CREDENTIAL_UNAVAILABLE",
             Self::ActionNotFound => "ACTION_NOT_FOUND",

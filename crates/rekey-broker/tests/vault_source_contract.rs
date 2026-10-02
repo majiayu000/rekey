@@ -6,14 +6,14 @@ use rekey_broker::upstream::{UpstreamError, UpstreamResponse};
 use rekey_domain::ipc::{Channel, admin_msg, agent_msg};
 use zeroize::Zeroizing;
 
-fn profile(version: u64, source_token: &str) -> Vec<u8> {
+fn profile(version: impl Into<serde_json::Value>, source_token: &str) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({
         "credential_type":"vault-kv-v2-source-v1",
         "origin":"https://vault.example.com",
         "mount":"secret",
         "path":"agents/github",
         "key":"token",
-        "version":version,
+        "version":version.into(),
         "vault_token":source_token
     }))
     .unwrap()
@@ -333,4 +333,112 @@ async fn drain_between_source_read_and_action_closes_final_effect_admission() {
     lock.await.unwrap().ok();
     assert_eq!(broker.fake.take_requests().len(), 1);
     broker.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn latest_reads_once_per_execution_and_rotation_keeps_authority_and_source_versions_distinct()
+{
+    let broker = common::start_broker().await;
+    common::unlock(&broker).await;
+    let credential_id = add_source(&broker, &profile("latest", "hvs.source-one")).await;
+    let (action_id, action_version) = common::create_action(&broker, &credential_id).await;
+    let capability = common::create_session(&broker, &action_id, action_version).await;
+    for (actual, token, value) in [
+        (17, "hvs.source-one", "resolved-one"),
+        (18, "hvs.source-two", "resolved-two"),
+    ] {
+        if actual == 18 {
+            let rotated = common::call(
+                &broker.admin_sock(),
+                Channel::Admin,
+                admin_msg::CREDENTIAL_ROTATE_VAULT_KV,
+                serde_json::json!({"credential_id":credential_id})
+                    .to_string()
+                    .as_bytes(),
+                &common::proof_and_secret_body(common::PASSWORD, &profile("latest", token)),
+            )
+            .await;
+            assert_eq!(rotated.ok()["current_version"], 2);
+        }
+        broker.fake.push_response(Ok(response(200,serde_json::json!({"data":{"data":{"token":value},"metadata":{"version":actual,"deletion_time":"","destroyed":false}}}))));
+        broker
+            .fake
+            .push_response(Ok(response(200, serde_json::json!({"result":"clean"}))));
+        let result = execute(&broker, &capability, &action_id, action_version).await;
+        result.ok();
+        assert_eq!(result.body, br#"{"result":"clean"}"#);
+        let sent = broker.fake.take_requests();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[0].path, "/v1/secret/data/agents/github");
+        assert_eq!(sent[0].method, "GET");
+        assert_eq!(sent[0].auth_value, token.as_bytes());
+        assert_eq!(sent[1].auth_value, format!("Bearer {value}").as_bytes());
+    }
+    let db = rusqlite::Connection::open(rekey_vault::paths::vault_db(&broker.state_dir)).unwrap();
+    let evidence:Vec<(u64,String)> = db.prepare("SELECT credential_version,reason_code FROM audit_events WHERE event_type='vault.source.resolved' ORDER BY sequence").unwrap()
+        .query_map([],|r|Ok((r.get(0)?,r.get(1)?))).unwrap().map(Result::unwrap).collect();
+    assert_eq!(evidence.len(), 2);
+    for ((authority, reason), (expected, actual)) in evidence.iter().zip([(1, 17), (2, 18)]) {
+        assert_eq!(*authority, expected);
+        assert!(reason.ends_with(&format!("selector=latest;actual={actual}")));
+        assert!(!reason.contains("hvs.source"));
+        assert!(!reason.contains("resolved-"));
+    }
+    drop(db);
+    broker.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn latest_read_started_and_resolved_audit_failures_stop_before_target_effect() {
+    for (event, source_reads) in [
+        ("vault.source.read_started", 0),
+        ("vault.source.resolved", 1),
+    ] {
+        let broker = common::start_broker().await;
+        common::unlock(&broker).await;
+        let credential_id = add_source(&broker, &profile("latest", "hvs.source-canary")).await;
+        let (action_id, action_version) = common::create_action(&broker, &credential_id).await;
+        let capability = common::create_session(&broker, &action_id, action_version).await;
+        let db =
+            rusqlite::Connection::open(rekey_vault::paths::vault_db(&broker.state_dir)).unwrap();
+        db.execute_batch(&format!("CREATE TRIGGER injected BEFORE INSERT ON audit_events WHEN NEW.event_type='{event}' BEGIN SELECT RAISE(ABORT,'injected'); END;")).unwrap();
+        broker.fake.push_response(Ok(response(200,serde_json::json!({"data":{"data":{"token":"selected-value"},"metadata":{"version":17,"deletion_time":"","destroyed":false}}}))));
+        let result = execute(&broker, &capability, &action_id, action_version).await;
+        assert_eq!(result.err_code(), "AUDIT_COMMIT_FAILED");
+        assert_eq!(result.metadata["retryable"], false);
+        assert!(result.body.is_empty());
+        assert_eq!(broker.fake.take_requests().len(), source_reads);
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM audit_events WHERE event_type='vault.source.resolved'",
+                [],
+                |r| r.get::<_, usize>(0)
+            )
+            .unwrap(),
+            0
+        );
+        drop(db);
+        broker.shutdown().await;
+    }
+}
+
+#[test]
+fn private_source_registered_ips_do_not_authorize_public_business_transport() {
+    use rekey_broker::upstream::{SourceEndpoint, select_public_endpoint, select_source_endpoint};
+    let cert = rcgen::generate_simple_self_signed(vec!["vault.example.com".into()])
+        .unwrap()
+        .cert;
+    let binding:SourceEndpoint=serde_json::from_value(serde_json::json!({"allowed_ips":["10.1.2.3"],"ca_der_base64":[data_encoding::BASE64.encode(cert.der())]})).unwrap();
+    let addr = "10.1.2.3:8200".parse().unwrap();
+    assert!(select_source_endpoint("vault.example.com", 8200, &[addr], &binding).is_ok());
+    assert!(select_public_endpoint("vault.example.com", &[addr]).is_err());
+    assert!(
+        select_source_endpoint(
+            "vault.example.com",
+            8200,
+            &[addr, "10.1.2.4:8200".parse().unwrap()],
+            &binding
+        )
+        .is_err()
+    );
 }

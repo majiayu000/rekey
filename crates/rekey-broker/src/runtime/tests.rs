@@ -50,6 +50,7 @@ async fn idle_status_poll_does_not_occupy_execution_admission() {
     let (shutdown_tx, _) = watch::channel(false);
     let (stop_tx, _) = mpsc::unbounded_channel();
     let ctx = BrokerCtx {
+        oidc_admin: None,
         metrics: crate::metrics::Metrics::default(),
         authority: authority.clone(),
         sessions,
@@ -316,6 +317,7 @@ async fn fault_while_initially_locked_revokes_remembered_desktop() {
         let mut execution_task = tokio::spawn(supervisor.run(shutdown_rx));
         let (stop_tx, _stop_rx) = mpsc::unbounded_channel();
         let ctx = BrokerCtx {
+            oidc_admin: None,
             metrics: crate::metrics::Metrics::default(),
             authority: authority.clone(),
             sessions,
@@ -383,4 +385,249 @@ async fn fault_while_initially_locked_revokes_remembered_desktop() {
         authority.shutdown(None).await.unwrap();
         join.join().unwrap();
     }
+}
+
+pub(crate) async fn oidc_test_ctx() -> (
+    tempfile::TempDir,
+    Arc<BrokerCtx>,
+    std::thread::JoinHandle<()>,
+    tokio::task::JoinHandle<()>,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    init_vault(
+        &state,
+        &SecretInput::from_slice(b"fixture-proof"),
+        Argon2Params {
+            memory_kib: 8,
+            iterations: 1,
+            parallelism: 1,
+        },
+    )
+    .unwrap();
+    confirm_vault_init(&state).unwrap();
+    let (authority, join) =
+        rekey_vault::authority::spawn_authority(AuthorityConfig::new(state)).unwrap();
+    authority
+        .unlock(UnlockProof::Password(SecretInput::from_slice(
+            b"fixture-proof",
+        )))
+        .await
+        .unwrap();
+    let sessions = Arc::new(SessionRegistry::new());
+    sessions.open_for_admission();
+    let transport: Arc<dyn UpstreamTransport> = Arc::new(ReqwestUpstreamTransport);
+    let lifecycle = Arc::new(Lifecycle::new());
+    lifecycle.enter_running().unwrap();
+    let (terminals, terminal_task) = spawn_terminal_worker(authority.clone());
+    let policy = Arc::new(RwLock::new(None));
+    let executor = Arc::new(ActionExecutor::new(
+        authority.clone(),
+        sessions.clone(),
+        transport.clone(),
+        lifecycle.clone(),
+        terminals.clone(),
+        policy.clone(),
+    ));
+    let (executions, supervisor) = crate::execution_supervisor::new(executor.clone());
+    drop(supervisor);
+    let (shutdown_tx, _) = watch::channel(false);
+    let (stop_tx, _) = mpsc::unbounded_channel();
+    let ctx = Arc::new(BrokerCtx {
+        oidc_admin: None,
+        metrics: crate::metrics::Metrics::default(),
+        authority,
+        sessions,
+        executions,
+        executor,
+        workload_transport: transport,
+        online_jwks_slots: Arc::new(tokio::sync::Semaphore::new(2)),
+        lifecycle,
+        policy,
+        policy_trust: Arc::new(RwLock::new(None)),
+        terminals,
+        drain_timeout: Duration::from_secs(1),
+        shutdown_flag: AtomicBool::new(false),
+        shutdown_tx,
+        stop_tx,
+        allowed_agent_uids: vec![unsafe { libc::geteuid() }].into(),
+    });
+    (dir, ctx, join, terminal_task)
+}
+
+#[tokio::test]
+async fn retention_tick_cadence_busy_lock_shutdown_and_disable_are_coordinated() {
+    use rekey_domain::audit::AuditRetentionSet;
+    let (_dir, ctx, join, terminal_task) = oidc_test_ctx().await;
+    let mut due = tokio::time::Instant::now();
+    let owner = ctx.lifecycle.coordinate().await;
+    tokio::time::timeout(
+        Duration::from_millis(100),
+        ctx.audit_retention_tick(&mut due),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(due >= tokio::time::Instant::now() + Duration::from_secs(59));
+    drop(owner);
+    ctx.authority
+        .audit_retention_set_before(
+            AuditRetentionSet { days: Some(1) },
+            UnlockProof::Password(SecretInput::from_slice(b"fixture-proof")),
+            None,
+        )
+        .await
+        .unwrap();
+    ctx.lifecycle.enter_locked();
+    due = tokio::time::Instant::now();
+    ctx.audit_retention_tick(&mut due).await.unwrap();
+    ctx.lifecycle.enter_running().unwrap();
+    ctx.authority
+        .audit_retention_set_before(
+            AuditRetentionSet { days: None },
+            UnlockProof::Password(SecretInput::from_slice(b"fixture-proof")),
+            None,
+        )
+        .await
+        .unwrap();
+    due = tokio::time::Instant::now();
+    ctx.audit_retention_tick(&mut due).await.unwrap();
+    let after = due;
+    ctx.audit_retention_tick(&mut due).await.unwrap();
+    assert_eq!(due, after, "a second early tick does not advance or burst");
+    ctx.lifecycle.mark_stop_pending();
+    due = tokio::time::Instant::now();
+    ctx.audit_retention_tick(&mut due).await.unwrap();
+    ctx.lifecycle.enter_shutting_down();
+    due = tokio::time::Instant::now();
+    ctx.audit_retention_tick(&mut due).await.unwrap();
+    assert_eq!(ctx.metrics.fault_signals.load(Ordering::Relaxed), 0);
+    ctx.authority
+        .shutdown(Some(UnlockProof::Password(SecretInput::from_slice(
+            b"fixture-proof",
+        ))))
+        .await
+        .unwrap();
+    drop(ctx);
+    terminal_task.await.unwrap();
+    join.join().unwrap();
+}
+
+#[tokio::test]
+async fn retention_tick_unknown_reply_timeout_stops_and_keeps_owner_until_outcome() {
+    let (dir, ctx, join, terminal_task) = oidc_test_ctx().await;
+    ctx.authority
+        .audit_retention_set_before(
+            rekey_domain::audit::AuditRetentionSet { days: Some(1) },
+            UnlockProof::Password(SecretInput::from_slice(b"fixture-proof")),
+            None,
+        )
+        .await
+        .unwrap();
+    let db = rusqlite::Connection::open(rekey_vault::paths::vault_db(&dir.path().join("state")))
+        .unwrap();
+    let request = rekey_domain::ids::RequestId::new_random();
+    for kind in ["execution.started", "execution.finished"] {
+        db.execute("INSERT INTO audit_events(event_id,request_id,event_type,outcome,reason_code,created_at_ms) VALUES (?1,?2,?3,'success','retention-timeout',10)", rusqlite::params![rekey_domain::ids::RequestId::new_random().as_bytes().as_slice(),request.as_bytes().as_slice(),kind]).unwrap();
+    }
+    db.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let mut queued = Box::pin(ctx.authority.append_audit(AuditDraft {
+        request_id: None,
+        session_id: None,
+        action_id: None,
+        action_version: None,
+        credential_id: None,
+        credential_version: None,
+        authorization: None,
+        approval: None,
+        event_type: "fixture.blocked",
+        outcome: "success",
+        reason_code: "test".into(),
+        upstream_status: None,
+        latency_ms: None,
+    }));
+    poll_fn(|cx| {
+        assert!(queued.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    let started = tokio::time::Instant::now();
+    let mut maintenance = Box::pin(ctx.try_audit_retention());
+    poll_fn(|cx| {
+        assert!(maintenance.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    assert!(
+        ctx.lifecycle.try_coordinate().is_err(),
+        "owner cannot release while the writer outcome is pending"
+    );
+    assert!(matches!(
+        maintenance.await,
+        Err(BrokerError::Authority(AuthorityError::Faulted))
+    ));
+    assert!(started.elapsed() >= Duration::from_millis(900));
+    assert_eq!(ctx.metrics.fault_signals.load(Ordering::Relaxed), 1);
+    assert!(ctx.lifecycle.try_coordinate().is_ok());
+    db.execute_batch("COMMIT").unwrap();
+    queued.await.unwrap();
+    ctx.authority.audit_retention_status().await.unwrap();
+    let rows: i64 = db
+        .query_row(
+            "SELECT count(*) FROM audit_events WHERE request_id=?1",
+            [request.as_bytes().as_slice()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let markers: i64 = db
+        .query_row(
+            "SELECT count(*) FROM audit_events WHERE event_type='audit.pruned'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        (rows, markers),
+        (2, 0),
+        "late dequeue must not prune an enabled old group after the original deadline"
+    );
+    // The queued original deadline is expired: it cannot mutate after the broker timeout.
+    ctx.authority
+        .shutdown(Some(UnlockProof::Password(SecretInput::from_slice(
+            b"fixture-proof",
+        ))))
+        .await
+        .unwrap();
+    drop(ctx);
+    terminal_task.await.unwrap();
+    join.join().unwrap();
+}
+
+#[tokio::test]
+async fn retention_closed_reply_channel_is_faulted_without_retry() {
+    let (_dir, ctx, join, terminal) = oidc_test_ctx().await;
+    ctx.authority
+        .shutdown(Some(UnlockProof::Password(SecretInput::from_slice(
+            b"fixture-proof",
+        ))))
+        .await
+        .unwrap();
+    join.join().unwrap();
+    assert!(matches!(
+        ctx.try_audit_retention().await,
+        Err(BrokerError::Authority(AuthorityError::Faulted))
+    ));
+    assert_eq!(ctx.metrics.fault_signals.load(Ordering::Relaxed), 1);
+    drop(ctx);
+    terminal.await.unwrap();
+}
+
+pub(crate) async fn exact3_maintenance(ctx: &BrokerCtx) -> Result<(), BrokerError> {
+    ctx.try_audit_retention().await
+}
+
+pub(crate) fn exact3_pause_stop_consumer(ctx: &mut Arc<BrokerCtx>) -> Box<dyn FnMut() -> bool> {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    Arc::get_mut(ctx).unwrap().stop_tx = tx;
+    Box::new(move || rx.try_recv().is_ok())
 }

@@ -79,3 +79,34 @@ fn backup_rejects_non_utf8_output_before_reading_proof() {
     assert_eq!(error.code, "USAGE");
     assert!(error.message.contains("valid UTF-8"));
 }
+
+#[test]
+fn oidc_session_file_is_exclusive_private_nofollow_and_exact() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let directory = std::fs::canonicalize(dir.path()).unwrap();
+    let path = directory.join("session");
+    let token = [b'A'; 43];
+    write_management_session(&path, &token).unwrap();
+    assert_eq!(std::fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
+    assert_eq!(
+        crate::client::private_session_file(&path)
+            .unwrap()
+            .as_slice(),
+        token
+    );
+    assert!(write_management_session(&path, &[b'B'; 43]).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), token);
+    let alias = directory.join("alias");
+    std::os::unix::fs::symlink(&path, &alias).unwrap();
+    assert!(write_management_session(&alias, &token).is_err());
+    assert!(crate::client::private_session_file(&alias).is_err());
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(crate::client::private_session_file(&path).is_err());
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    std::fs::write(&path, [b'A'; 44]).unwrap();
+    assert!(crate::client::private_session_file(&path).is_err());
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o770)).unwrap();
+    assert!(write_management_session(&dir.path().join("other"), &token).is_err());
+}

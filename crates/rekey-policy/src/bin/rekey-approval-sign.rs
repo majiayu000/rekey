@@ -30,8 +30,13 @@ use std::{
 };
 use zeroize::Zeroizing;
 
+#[path = "approval_sign/pkcs11.rs"]
+mod pkcs11;
+#[path = "approval_sign/vault_transit.rs"]
+mod vault_transit;
+
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
-const USAGE: &str = "rekey-approval-sign review REQUEST.json --policy POLICY.json --trust TRUST.json --action ACTION.json --approver-id UUID --origin-key HEX\nrekey-approval-sign sign REQUEST.json --policy POLICY.json --trust TRUST.json --action ACTION.json --approver-id UUID --origin-key HEX --reviewed-sha256 HEX --key-file KEY.der --output NEW_GRANT.json";
+const USAGE: &str = "rekey-approval-sign review REQUEST.json --policy POLICY.json --trust TRUST.json --action ACTION.json --approver-id UUID --origin-key HEX\nrekey-approval-sign sign REQUEST.json --policy POLICY.json --trust TRUST.json --action ACTION.json --approver-id UUID --origin-key HEX --reviewed-sha256 HEX (--key-file KEY.der | --vault-transit-profile PRIVATE.json | --pkcs11-profile PRIVATE.json) --output NEW_GRANT.json\nHardware review requires --pkcs11-profile PRIVATE.json; Transit review requires --vault-transit-profile PRIVATE.json";
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Request {
@@ -95,10 +100,9 @@ fn terminal_json(value: &serde_json::Value) -> Result<String> {
     }
     Ok(safe)
 }
-fn run() -> Result<()> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+fn run_args(args: Vec<String>, output_text: &mut dyn Write) -> Result<()> {
     if args == ["--help"] {
-        println!("{USAGE}");
+        writeln!(output_text, "{USAGE}")?;
         return Ok(());
     }
     if args.len() < 2
@@ -119,13 +123,35 @@ fn run() -> Result<()> {
                 | "--origin-key"
                 | "--reviewed-sha256"
                 | "--key-file"
+                | "--vault-transit-profile"
+                | "--pkcs11-profile"
                 | "--output"
         ) || options.insert(pair[0].as_str(), pair[1].as_str()).is_some()
         {
             return Err(USAGE.into());
         }
     }
-    if options.len() != if sign { 8 } else { 5 } {
+    let transit = options.contains_key("--vault-transit-profile");
+    let hardware = options.contains_key("--pkcs11-profile");
+    let signing_sources = ["--key-file", "--vault-transit-profile", "--pkcs11-profile"]
+        .iter()
+        .filter(|name| options.contains_key(**name))
+        .count();
+    if signing_sources > 1
+        || options.len()
+            != if sign {
+                8
+            } else if transit || hardware {
+                6
+            } else {
+                5
+            }
+        || !sign
+            && ["--key-file", "--output", "--reviewed-sha256"]
+                .iter()
+                .any(|name| options.contains_key(name))
+        || sign && signing_sources != 1
+    {
         return Err(USAGE.into());
     }
     let get = |name| options.get(name).copied().ok_or(USAGE);
@@ -206,22 +232,65 @@ fn run() -> Result<()> {
     {
         return Err("policy and challenge mismatch".into());
     }
-    let review = json!({"record_type":"rekey.approval.review.v1", "source_assumption":"Operator pinned origin public key from rekey approval origin; envelope authenticates Broker challenge bytes, not Action/policy/trust files or the human's intent", "action":action, "request":request, "approver_id":approver, "policy_signer_id":policy.signer_id(), "policy_sha256":HEXLOWER.encode(&snapshot.digest()), "grant_lifetime_max_ms":60000});
+    let profile = if transit {
+        Some(vault_transit::Profile::load(get(
+            "--vault-transit-profile",
+        )?)?)
+    } else {
+        None
+    };
+    if let Some(profile) = &profile {
+        profile.check(
+            snapshot
+                .approver_key(approver)
+                .ok_or("unknown policy approver")?
+                .as_slice(),
+            now()?.as_unix_ms(),
+        )?;
+    }
+    let hardware_profile = if hardware {
+        let profile = pkcs11::Profile::load(get("--pkcs11-profile")?)?;
+        profile.check(
+            snapshot
+                .approver_key(approver)
+                .ok_or("unknown policy approver")?
+                .as_slice(),
+        )?;
+        Some(profile)
+    } else {
+        None
+    };
+    let mut review = json!({"record_type":"rekey.approval.review.v1", "source_assumption":"Operator pinned origin public key from rekey approval origin; envelope authenticates Broker challenge bytes, not Action/policy/trust files or the human's intent", "action":action, "request":request, "approver_id":approver, "policy_signer_id":policy.signer_id(), "policy_sha256":HEXLOWER.encode(&snapshot.digest()), "grant_lifetime_max_ms":60000});
+    if let Some(profile) = &profile {
+        review["vault_transit"] = profile.public_review();
+    }
+    if let Some(profile) = &hardware_profile {
+        review["pkcs11"] = profile.public_review();
+    }
     let digest = HEXLOWER.encode(&Sha256::digest(serde_jcs::to_vec(&review)?));
     if !sign {
-        println!(
+        writeln!(
+            output_text,
             "{}",
             terminal_json(&json!({"review":review,"reviewed_sha256":digest}))?
-        );
+        )?;
         return Ok(());
     }
     if get("--reviewed-sha256")? != digest {
         return Err("reviewed digest mismatch; review again".into());
     }
-    let signer = key(get("--key-file")?)?;
-    if snapshot.approver_key(approver).map(|k| k.as_slice()) != Some(signer.public_key().as_ref()) {
-        return Err("key does not match policy approver".into());
-    }
+    let approver_key = snapshot
+        .approver_key(approver)
+        .ok_or("unknown policy approver")?;
+    let signer = if profile.is_none() && hardware_profile.is_none() {
+        let signer = key(get("--key-file")?)?;
+        if approver_key.as_slice() != signer.public_key().as_ref() {
+            return Err("key does not match policy approver".into());
+        }
+        Some(signer)
+    } else {
+        None
+    };
     let issued = now()?.as_unix_ms();
     let expires = issued
         .checked_add(60000)
@@ -238,34 +307,78 @@ fn run() -> Result<()> {
     let mut grant = json!({"format_version":1,"approval_id":ApprovalId::from_random_bytes(random),"approval_request_id":c.approval_request_id,"approver_id":approver,"tenant_id":c.tenant_id,"principal_id":c.principal_id,"session_id":c.session_id,"action_id":c.action_id,"action_version":c.action_version,"resource":c.resource,"schema_id":c.schema_id,"parameter_sha256":c.parameter_sha256,"policy_version":c.policy_version,"policy_sha256":c.policy_sha256,"policy_rule_id":c.policy_rule_id,"mode":c.mode,"not_before_ms":issued,"expires_at_ms":expires,"max_uses":1});
     let mut message = b"RKAPPROVAL\0\x01".to_vec();
     message.extend_from_slice(&serde_jcs::to_vec(&grant)?);
-    grant["signature"] = BASE64URL_NOPAD
-        .encode(signer.sign(&message).as_ref())
-        .into();
+    let signature = if let Some(profile) = &hardware_profile {
+        profile.sign(&message, approver_key.as_slice(), expires)?
+    } else if let Some(profile) = &profile {
+        profile.check(approver_key.as_slice(), now()?.as_unix_ms())?;
+        profile.sign(&message, approver_key.as_slice(), expires)?
+    } else {
+        signer
+            .as_ref()
+            .ok_or("missing explicit signing key")?
+            .sign(&message)
+            .as_ref()
+            .to_vec()
+    };
+    let finished = now()?.as_unix_ms();
+    if finished < issued
+        || finished >= expires
+        || finished >= snapshot.expires_at_ms()
+        || finished >= c.max_expires_at_ms
+    {
+        return Err("approval expired while signing".into());
+    }
+    if let Some(profile) = &profile {
+        profile.check(approver_key.as_slice(), finished)?;
+    }
+    grant["signature"] = BASE64URL_NOPAD.encode(&signature).into();
     let bytes = serde_jcs::to_vec(&grant)?;
     parse_and_verify_approval_grant(&bytes, snapshot)?;
-    let output = Path::new(get("--output")?);
+    let requested = Path::new(get("--output")?);
+    let parent = requested
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
+        .canonicalize()?;
+    let output = parent.join(requested.file_name().ok_or("output has no file name")?);
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
-        .open(output)?;
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&output)?;
+    let meta = file.metadata()?;
+    if !meta.is_file()
+        || meta.uid() != unsafe { libc::geteuid() }
+        || meta.mode() & 0o777 != 0o600
+        || meta.nlink() != 1
+    {
+        return Err("unsafe output permissions".into());
+    }
     file.write_all(&bytes)?;
     file.sync_all()?;
-    File::open(
-        output
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new(".")),
-    )?
-    .sync_all()?;
-    println!(
+    let named = std::fs::symlink_metadata(&output)?;
+    if (named.dev(), named.ino()) != (meta.dev(), meta.ino()) {
+        return Err("output path replaced".into());
+    }
+    File::open(&parent)?.sync_all()?;
+    writeln!(
+        output_text,
         "Signed reviewed approval {digest}; submit the grant through the existing Broker execute command."
-    );
+    )?;
     Ok(())
 }
 fn main() {
-    if let Err(error) = run() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if pkcs11::internal_child(&args) {
+        return;
+    }
+    if let Err(error) = run_args(args, &mut std::io::stdout().lock()) {
         eprintln!("rekey-approval-sign: {error}");
         std::process::exit(1);
     }
 }
+
+#[cfg(test)]
+#[path = "approval_sign/vault_transit_tests.rs"]
+mod vault_transit_tests;

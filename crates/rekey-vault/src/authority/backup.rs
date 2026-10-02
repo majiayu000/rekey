@@ -41,10 +41,13 @@ impl Worker {
                 return Err(AuthorityError::BackupFailed);
             }
         };
-        if let Err(err) = self.store.backup_to(&snapshot_path, &snapshot) {
-            self.cleanup_reserved_snapshot(&snapshot_path)?;
-            return Err(err);
-        }
+        let snapshot_cut = match self.store.backup_to(&snapshot_path, &snapshot) {
+            Ok(cut) => cut,
+            Err(err) => {
+                self.cleanup_reserved_snapshot(&snapshot_path)?;
+                return Err(err);
+            }
+        };
         if snapshot.sync_all().is_err() {
             self.cleanup_reserved_snapshot(&snapshot_path)?;
             return Err(AuthorityError::BackupFailed);
@@ -98,6 +101,7 @@ impl Worker {
             created_at_ms,
             sha256_hex,
             output_path: output,
+            snapshot_cut,
         };
         self.append_audit(unlock_audit(
             event_type::BACKUP_CREATED,

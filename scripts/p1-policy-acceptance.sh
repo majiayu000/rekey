@@ -5,9 +5,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-REKEY="$ROOT/target/release/rekey"
-REKEYD="$ROOT/target/release/rekeyd"
-FIXTURE="$ROOT/target/release/examples/p1_policy_fixture"
+TARGET_DIR="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+REKEY="$TARGET_DIR/release/rekey"
+REKEYD="$TARGET_DIR/release/rekeyd"
+FIXTURE="$TARGET_DIR/release/examples/p1_policy_fixture"
 PASSWORD="p1 acceptance horse battery staple"
 SECRET="P1-LOCAL-TLS-CREDENTIAL-CANARY"
 
@@ -50,8 +51,13 @@ activate_policy_file() {
     --trust "$WORKDIR/policy-trust.json"
   printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy trust install \
     --file "$WORKDIR/policy-trust.json" --step-up-stdin >/dev/null
-  printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate \
+  read -r POLICY_TARGET_VAULT POLICY_TARGET_TRUST < <("$REKEY" --state-dir "$STATE" policy status | python3 -c 'import json,sys; s=json.load(sys.stdin); print(s["vault_id"], s["trust_sha256"])')
+  printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate --expected-vault-id "$POLICY_TARGET_VAULT" --expected-trust-sha256 "$POLICY_TARGET_TRUST" \
     --file "$WORKDIR/policy-bundle.json" --step-up-stdin >/dev/null
+  # Policy replacement revokes all old capabilities; issue a new one for the
+  # principal explicitly authorized by the current signed snapshot.
+  session_json="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" session create --principal "$principal_id" --action "$action_ref" --ttl 10m --max-uses 20 --password-stdin)"
+  token="$(printf '%s\n' "$session_json" | json_field capability_token)"
 }
 
 printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin >/dev/null
@@ -155,7 +161,7 @@ db = sqlite3.connect(sys.argv[1])
 row = db.execute("SELECT lower(hex(parameter_hash)) FROM audit_events WHERE event_type='execution.finished' ORDER BY created_at_ms DESC LIMIT 1").fetchone()
 if not row or not row[0]: raise SystemExit("missing durable parameter hash")
 header = db.execute("SELECT format_version FROM vault_header").fetchone()
-if not header or header[0] != 14: raise SystemExit("durable format is not 14")
+if not header or header[0] != 21: raise SystemExit("durable format is not 21")
 print(row[0])
 PY
 )"

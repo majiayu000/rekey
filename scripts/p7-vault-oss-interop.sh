@@ -330,7 +330,7 @@ pathlib.Path(sys.argv[1]).write_text(json.dumps({
         "INSERT INTO rekey_issued (n, p) VALUES ('{{name}}', '{{password}}');",
         "CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}';",
     ],
-    "default_ttl": 60,
+    "default_ttl": 5,
     "max_ttl": 60,
 }))
 PY
@@ -388,7 +388,8 @@ PY
     printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy trust install \
       --file "$WORKDIR/policy-trust.json" --step-up-stdin >/dev/null
   fi
-  printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate \
+  read -r POLICY_TARGET_VAULT POLICY_TARGET_TRUST < <("$REKEY" --state-dir "$STATE" policy status | python3 -c 'import json,sys; s=json.load(sys.stdin); print(s["vault_id"], s["trust_sha256"])')
+  printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate --expected-vault-id "$POLICY_TARGET_VAULT" --expected-trust-sha256 "$POLICY_TARGET_TRUST" \
     --file "$WORKDIR/policy.json" --step-up-stdin >/dev/null
 }
 
@@ -444,9 +445,24 @@ vault_cli policy write p7oss-dyn - >/dev/null <<'EOF'
 path "database/creds/agent-api-token" {
   capabilities = ["read"]
 }
+path "sys/leases/renew" {
+  capabilities = ["update"]
+}
+path "sys/leases/revoke" {
+  capabilities = ["update"]
+}
 EOF
 issue_then_revoke_token p7oss-kv "$WORKDIR/revoked-kv-token"
 issue_then_revoke_token p7oss-dyn "$WORKDIR/revoked-dyn-token"
+vault_cli token create -no-default-policy -policy=p7oss-dyn -ttl=5m -format=json >"$WORKDIR/active-dyn-token.json"
+chmod 0600 "$WORKDIR/active-dyn-token.json"
+python3 - "$WORKDIR/active-dyn-token.json" "$WORKDIR/active-dyn-token" <<'PY'
+import json, pathlib, sys
+source, destination = map(pathlib.Path, sys.argv[1:])
+destination.write_text(json.loads(source.read_text())["auth"]["client_token"] + "\n")
+destination.chmod(0o600)
+source.unlink()
+PY
 REVOKED_KV="$(tr -d '\n' <"$WORKDIR/revoked-kv-token")"
 REVOKED_DYN="$(tr -d '\n' <"$WORKDIR/revoked-dyn-token")"
 
@@ -472,14 +488,14 @@ write_private(bad_ver, kv(99))
 write_private(bad_token, kv(7, vault_token=revoked))
 PY
 python3 - "$PROFILE_DYN" "$PROFILE_DYN_BAD" \
-  "$WORKDIR/.vault-token" "$WORKDIR/revoked-dyn-token" <<'PY'
+  "$WORKDIR/active-dyn-token" "$WORKDIR/revoked-dyn-token" <<'PY'
 import json, pathlib, sys
 one, bad, token_path, revoked_path = sys.argv[1:]
 token = pathlib.Path(token_path).read_text().strip()
 revoked = pathlib.Path(revoked_path).read_text().strip()
 def dyn(vault_token):
-    return {"credential_type":"vault-dynamic-source-v1","origin":"https://vault.test.local",
-            "mount":"database","role":"agent-api-token","key":"password","vault_token":vault_token}
+    return {"credential_type":"vault-dynamic-source-v2","origin":"https://vault.test.local",
+            "mount":"database","role":"agent-api-token","key":"password","renew_increment_seconds":60,"vault_token":vault_token}
 def write_private(path, payload):
     dest = pathlib.Path(path)
     dest.write_text(json.dumps(payload))
@@ -585,14 +601,19 @@ SESSION_JSON="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" sessio
 PRINCIPAL_ID="$(printf '%s\n' "$SESSION_JSON" | json_field principal_id)"
 CAPABILITY="$(printf '%s\n' "$SESSION_JSON" | json_field capability_token)"
 activate_policy "$PRINCIPAL_ID" 2
+CAPABILITY="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" session create \
+  --action "$ACTION_REF" --principal "$PRINCIPAL_ID" --ttl 10m --max-uses 10 \
+  --password-stdin | json_field capability_token)"
 
 printf '%s\n' "$CAPABILITY" | "$REKEY" --state-dir "$STATE" execute "$ACTION_REF" --capability - \
   --body-file "$REQUEST_BODY" --content-type application/json >"$WORKDIR/dyn-ok.out"
 grep -q '"result":"p7oss-ok"' "$WORKDIR/dyn-ok.out"
 [[ "$(execute_meta_status "$WORKDIR/dyn-ok.out")" == "200" ]]
 assert_selected_password
+[[ "$(grep -c '^p7oss.vault.renew.ok ttl=' "$TRACE")" == "1" ]]
 [[ "$(grep -c '^p7oss.vault.revoke.ok$' "$TRACE")" == "1" ]]
 leases_empty
+[[ "$(issued_row "SELECT count(*) FROM pg_roles WHERE rolname IN (SELECT n FROM rekey_issued)")" == "0" ]]
 
 printf '%s\n' "wrong-expected-bearer" >"$EXPECTED"
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" credential rotate-vault-dynamic \
@@ -608,8 +629,10 @@ grep -q '"result":"p7oss-ok"' "$WORKDIR/dyn-fail.out" && {
 }
 [[ "$(grep -c '^p7oss.action.deny$' "$TRACE")" == "1" ]]
 assert_selected_password
+[[ "$(grep -c '^p7oss.vault.renew.ok ttl=' "$TRACE")" == "2" ]]
 [[ "$(grep -c '^p7oss.vault.revoke.ok$' "$TRACE")" == "2" ]]
 leases_empty
+[[ "$(issued_row "SELECT count(*) FROM pg_roles WHERE rolname IN (SELECT n FROM rekey_issued)")" == "0" ]]
 
 BAD_DYN_RC=0
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" credential rotate-vault-dynamic \
@@ -625,11 +648,12 @@ leases_empty
 issued_row "SELECT p FROM rekey_issued" >"$WORKDIR/issued-passwords"
 chmod 0600 "$WORKDIR/issued-passwords"
 python3 - "$WORKDIR/audit.jsonl" "$WORKDIR/.vault-token" "$WORKDIR/revoked-kv-token" \
-  "$WORKDIR/revoked-dyn-token" "$WORKDIR/issued-passwords" <<'PY'
+  "$WORKDIR/revoked-dyn-token" "$WORKDIR/issued-passwords" "$WORKDIR/active-dyn-token" <<'PY'
 import json, pathlib, sys
 path = pathlib.Path(sys.argv[1])
 needles = [pathlib.Path(p).read_text().strip() for p in sys.argv[2:5]]
 needles.extend(line.strip() for line in pathlib.Path(sys.argv[5]).read_text().splitlines() if line.strip())
+needles.append(pathlib.Path(sys.argv[6]).read_text().strip())
 needles.extend([
     "P7OSS-RESOLVED-VALUE-ONE-CANARY",
     "P7OSS-RESOLVED-VALUE-TWO-CANARY",
@@ -643,6 +667,11 @@ events=[row["event_type"] for row in rows if "event_type" in row]
 assert "execution.started" in events
 assert "execution.finished" in events
 assert "execution.blocked" in events
+for event in ["vault.lease.renewal_started", "vault.lease.renewed"]:
+    assert events.count(event) == 2
+for row in rows:
+    if row.get("event_type") == "vault.lease.renewed":
+        assert row["outcome"] == "success"
 PY
 
 while IFS= read -r needle; do
@@ -651,7 +680,7 @@ while IFS= read -r needle; do
     "$WORKDIR/dyn-fail.err" "$WORKDIR/dyn-bad.err" "$WORKDIR/dyn.out" "$WORKDIR/dyn.err"
 done <"$WORKDIR/issued-passwords"
 for needle in "$ROOT_TOKEN" "$RESOLVED_ONE" "$RESOLVED_TWO" "$SOURCE_CANARY" \
-  "$REVOKED_KV" "$REVOKED_DYN"; do
+  "$REVOKED_KV" "$REVOKED_DYN" "$(tr -d '\n' <"$WORKDIR/active-dyn-token")"; do
   assert_absent "$needle" "$WORKDIR/dyn-ok.out" "$WORKDIR/dyn-fail.out" \
     "$WORKDIR/dyn-fail.err" "$WORKDIR/dyn-bad.err" "$WORKDIR/dyn.out" "$WORKDIR/dyn.err"
 done
@@ -661,4 +690,5 @@ wait "$BROKER_PID"
 BROKER_PID=""
 echo "p7-vault-oss-interop: PASS"
 echo "p7-vault-oss-interop: vault=${VAULT_VERSION} engine=database+postgres"
+echo "p7-vault-oss-interop: renewal=one-per-execution initial-ttl=5 increment=60 actual-ttl=6..60 exact-revoke=database-role-removed"
 echo "p7-vault-oss-interop: limitation=local-ca-fixture,not-field-validated,not-private-network"

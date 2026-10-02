@@ -46,10 +46,35 @@ struct Cli {
     agent_socket: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
+    /// Explicit private OIDC management session file.
+    #[arg(long, global = true)]
+    admin_session_file: Option<PathBuf>,
+}
+
+#[derive(Subcommand)]
+enum OidcLoginCommand {
+    Begin,
+    Finish {
+        #[arg(long)]
+        flow_id: String,
+        #[arg(long)]
+        session_file: PathBuf,
+    },
+    Cancel {
+        #[arg(long)]
+        flow_id: String,
+    },
+    Logout {
+        #[arg(long)]
+        session_file: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
 enum Command {
+    /// Fixed-node OIDC administrator login lifecycle.
+    #[command(subcommand)]
+    OidcLogin(OidcLoginCommand),
     /// Initialize a new vault (delegates to rekeyd).
     Init {
         #[arg(long)]
@@ -57,6 +82,8 @@ enum Command {
     },
     /// Run the broker in the foreground (delegates to rekeyd).
     Serve {
+        #[arg(long)]
+        oidc_admin_profile: Option<PathBuf>,
         #[arg(long, default_value = "7d")]
         idle_lock: String,
     },
@@ -237,6 +264,88 @@ enum CredentialCommand {
         #[command(flatten)]
         step_up: StepUpArgs,
     },
+    /// Add a fixed GCP Secret Manager numeric version source profile.
+    AddGcpSecretManager {
+        label: String,
+        #[arg(long)]
+        file: PathBuf,
+        #[command(flatten)]
+        step_up: StepUpArgs,
+    },
+    /// Rotate a fixed GCP Secret Manager source profile.
+    RotateGcpSecretManager {
+        credential_id: String,
+        #[arg(long)]
+        file: PathBuf,
+        #[command(flatten)]
+        step_up: StepUpArgs,
+    },
+    /// Add a fixed Azure Key Vault pinned version source profile.
+    AddAzureKeyVault {
+        label: String,
+        #[arg(long)]
+        file: PathBuf,
+        #[command(flatten)]
+        step_up: StepUpArgs,
+    },
+    /// Rotate a fixed Azure Key Vault source profile.
+    RotateAzureKeyVault {
+        credential_id: String,
+        #[arg(long)]
+        file: PathBuf,
+        #[command(flatten)]
+        step_up: StepUpArgs,
+    },
+    /// Add one exact encrypted macOS file-Keychain reference.
+    AddMacosKeychain {
+        label: String,
+        #[arg(long)]
+        file: PathBuf,
+        #[command(flatten)]
+        step_up: StepUpArgs,
+    },
+    /// Rotate one exact macOS file-Keychain reference.
+    RotateMacosKeychain {
+        credential_id: String,
+        #[arg(long)]
+        file: PathBuf,
+        #[command(flatten)]
+        step_up: StepUpArgs,
+    },
+    /// Add a fixed 1Password Connect item field source profile.
+    #[command(name = "add-onepassword-connect")]
+    AddOnePasswordConnect {
+        label: String,
+        #[arg(long)]
+        file: PathBuf,
+        #[command(flatten)]
+        step_up: StepUpArgs,
+    },
+    /// Rotate a fixed 1Password Connect source profile.
+    #[command(name = "rotate-onepassword-connect")]
+    RotateOnePasswordConnect {
+        credential_id: String,
+        #[arg(long)]
+        file: PathBuf,
+        #[command(flatten)]
+        step_up: StepUpArgs,
+    },
+    /// Add a fixed AWS Secrets Manager pinned version source profile.
+    AddAwsSecretsManager {
+        label: String,
+        #[arg(long)]
+        file: PathBuf,
+        #[command(flatten)]
+        step_up: StepUpArgs,
+    },
+    /// Rotate a fixed AWS Secrets Manager source profile.
+    RotateAwsSecretsManager {
+        credential_id: String,
+        #[arg(long)]
+        file: PathBuf,
+        #[command(flatten)]
+        step_up: StepUpArgs,
+    },
     List,
     Rotate {
         credential_id: String,
@@ -341,6 +450,9 @@ enum SessionCommand {
         /// Read a workload JWT from stdin and mint through the Agent socket.
         #[arg(long, conflicts_with_all = ["recovery", "password_stdin"])]
         workload_token_stdin: bool,
+        /// Reissue for an explicitly authorized principal after policy replacement.
+        #[arg(long, conflicts_with = "workload_token_stdin")]
+        principal: Option<String>,
         #[command(flatten)]
         step_up: StepUpArgs,
     },
@@ -360,6 +472,10 @@ enum PolicyCommand {
     Activate {
         #[arg(long)]
         file: PathBuf,
+        #[arg(long)]
+        expected_vault_id: String,
+        #[arg(long)]
+        expected_trust_sha256: String,
         #[command(flatten)]
         step_up: PolicyStepUpArgs,
     },
@@ -479,10 +595,20 @@ impl AuditFilterArgs {
 
 #[derive(Subcommand)]
 enum AuditCommand {
+    /// Configure or inspect automatic pruning while the vault is unlocked.
+    #[command(subcommand)]
+    Retention(AuditRetentionCommand),
     /// Delete complete unapproved execution groups strictly older than the cutoff.
     Prune {
-        #[arg(long)]
-        before_ms: i64,
+        #[arg(
+            long,
+            required_unless_present = "older_than_days",
+            conflicts_with = "older_than_days"
+        )]
+        before_ms: Option<i64>,
+        /// Select complete groups older than this many 24-hour days; requires step-up on every call.
+        #[arg(long, required_unless_present = "before_ms", conflicts_with = "before_ms", value_parser = clap::value_parser!(u64).range(1..))]
+        older_than_days: Option<u64>,
         #[command(flatten)]
         step_up: StepUpArgs,
     },
@@ -506,8 +632,22 @@ enum AuditCommand {
     },
 }
 
+#[derive(Subcommand)]
+enum AuditRetentionCommand {
+    Set {
+        #[arg(long, required_unless_present = "disable", conflicts_with = "disable", value_parser = clap::value_parser!(u64).range(1..))]
+        days: Option<u64>,
+        #[arg(long, required_unless_present = "days", conflicts_with = "days")]
+        disable: bool,
+        #[command(flatten)]
+        step_up: StepUpArgs,
+    },
+    Status,
+}
+
 fn main() {
     let cli = Cli::parse();
+    client::configure_admin_session_file(cli.admin_session_file);
     let state_dir = match commands::resolve_state_dir(cli.state_dir) {
         Ok(dir) => dir,
         Err(err) => {
@@ -519,6 +659,17 @@ fn main() {
         .agent_socket
         .unwrap_or_else(|| state_dir.join("runtime").join("agent.sock"));
     let result = match cli.command {
+        Command::OidcLogin(command) => match command {
+            OidcLoginCommand::Begin => commands::oidc_begin(&state_dir),
+            OidcLoginCommand::Finish {
+                flow_id,
+                session_file,
+            } => commands::oidc_finish(&state_dir, &flow_id, &session_file),
+            OidcLoginCommand::Cancel { flow_id } => commands::oidc_cancel(&state_dir, &flow_id),
+            OidcLoginCommand::Logout { session_file } => {
+                commands::oidc_logout(&state_dir, &session_file)
+            }
+        },
         Command::DesktopRemember { recovery } => {
             commands::desktop_restore_access(&state_dir, false, recovery)
         }
@@ -531,12 +682,17 @@ fn main() {
         Command::Init { password_stdin } => {
             commands::delegate_rekeyd(&state_dir, "init", &[], password_stdin)
         }
-        Command::Serve { idle_lock } => commands::delegate_rekeyd(
-            &state_dir,
-            "serve",
-            &["--idle-lock".into(), idle_lock.into()],
-            false,
-        ),
+        Command::Serve {
+            idle_lock,
+            oidc_admin_profile,
+        } => {
+            let mut args = vec!["--idle-lock".into(), idle_lock.into()];
+            if let Some(profile) = oidc_admin_profile {
+                args.push("--oidc-admin-profile".into());
+                args.push(profile.into_os_string());
+            }
+            commands::delegate_rekeyd(&state_dir, "serve", &args, false)
+        }
         Command::Restore {
             input,
             recovery,
@@ -623,6 +779,116 @@ fn main() {
                 file,
                 step_up,
             } => commands::credential_rotate_keycloak(
+                &state_dir,
+                &credential_id,
+                &file,
+                step_up.recovery,
+                step_up.password_stdin,
+            ),
+            CredentialCommand::AddGcpSecretManager {
+                label,
+                file,
+                step_up,
+            } => commands::credential_add_gcp_secret_manager(
+                &state_dir,
+                &label,
+                &file,
+                step_up.recovery,
+                step_up.password_stdin,
+            ),
+            CredentialCommand::RotateGcpSecretManager {
+                credential_id,
+                file,
+                step_up,
+            } => commands::credential_rotate_gcp_secret_manager(
+                &state_dir,
+                &credential_id,
+                &file,
+                step_up.recovery,
+                step_up.password_stdin,
+            ),
+            CredentialCommand::AddAzureKeyVault {
+                label,
+                file,
+                step_up,
+            } => commands::credential_add_azure_key_vault(
+                &state_dir,
+                &label,
+                &file,
+                step_up.recovery,
+                step_up.password_stdin,
+            ),
+            CredentialCommand::RotateAzureKeyVault {
+                credential_id,
+                file,
+                step_up,
+            } => commands::credential_rotate_azure_key_vault(
+                &state_dir,
+                &credential_id,
+                &file,
+                step_up.recovery,
+                step_up.password_stdin,
+            ),
+            CredentialCommand::AddMacosKeychain {
+                label,
+                file,
+                step_up,
+            } => commands::credential_add_macos_keychain(
+                &state_dir,
+                &label,
+                &file,
+                step_up.recovery,
+                step_up.password_stdin,
+            ),
+            CredentialCommand::RotateMacosKeychain {
+                credential_id,
+                file,
+                step_up,
+            } => commands::credential_rotate_macos_keychain(
+                &state_dir,
+                &credential_id,
+                &file,
+                step_up.recovery,
+                step_up.password_stdin,
+            ),
+            CredentialCommand::AddOnePasswordConnect {
+                label,
+                file,
+                step_up,
+            } => commands::credential_add_onepassword_connect(
+                &state_dir,
+                &label,
+                &file,
+                step_up.recovery,
+                step_up.password_stdin,
+            ),
+            CredentialCommand::RotateOnePasswordConnect {
+                credential_id,
+                file,
+                step_up,
+            } => commands::credential_rotate_onepassword_connect(
+                &state_dir,
+                &credential_id,
+                &file,
+                step_up.recovery,
+                step_up.password_stdin,
+            ),
+            CredentialCommand::AddAwsSecretsManager {
+                label,
+                file,
+                step_up,
+            } => commands::credential_add_aws_secrets_manager(
+                &state_dir,
+                &label,
+                &file,
+                step_up.recovery,
+                step_up.password_stdin,
+            ),
+            CredentialCommand::RotateAwsSecretsManager {
+                credential_id,
+                file,
+                step_up,
+            } => commands::credential_rotate_aws_secrets_manager(
                 &state_dir,
                 &credential_id,
                 &file,
@@ -726,6 +992,7 @@ fn main() {
                 ttl,
                 max_uses,
                 workload_token_stdin,
+                principal,
                 step_up,
             } => {
                 if workload_token_stdin {
@@ -736,6 +1003,7 @@ fn main() {
                         &actions,
                         &ttl,
                         max_uses,
+                        principal.as_deref(),
                         step_up.recovery,
                         step_up.password_stdin,
                     )
@@ -760,9 +1028,16 @@ fn main() {
                     step_up.step_up_stdin,
                 )
             }
-            PolicyCommand::Activate { file, step_up } => commands::policy_activate(
+            PolicyCommand::Activate {
+                file,
+                expected_vault_id,
+                expected_trust_sha256,
+                step_up,
+            } => commands::policy_activate(
                 &state_dir,
                 &file,
+                &expected_vault_id,
+                &expected_trust_sha256,
                 step_up.recovery,
                 step_up.step_up_stdin,
             ),
@@ -800,9 +1075,27 @@ fn main() {
         Command::Recovery(RecoveryCommand::Rotate { password_stdin }) => {
             commands::recovery_rotate(&state_dir, password_stdin)
         }
-        Command::Audit(AuditCommand::Prune { before_ms, step_up }) => commands::audit_prune(
+        Command::Audit(AuditCommand::Retention(AuditRetentionCommand::Set {
+            days,
+            disable: _,
+            step_up,
+        })) => commands::audit_retention_set(
+            &state_dir,
+            days,
+            step_up.recovery,
+            step_up.password_stdin,
+        ),
+        Command::Audit(AuditCommand::Retention(AuditRetentionCommand::Status)) => {
+            commands::audit_retention_status(&state_dir)
+        }
+        Command::Audit(AuditCommand::Prune {
+            before_ms,
+            older_than_days,
+            step_up,
+        }) => commands::audit_prune(
             &state_dir,
             before_ms,
+            older_than_days,
             step_up.recovery,
             step_up.password_stdin,
         ),
@@ -858,5 +1151,176 @@ fn main() {
     if let Err(err) = result {
         eprintln!("error [{}]: {}", err.code, err.message);
         std::process::exit(err.exit_code());
+    }
+}
+
+#[cfg(test)]
+mod policy_target_args_tests {
+    use super::*;
+
+    #[test]
+    fn oidc_login_explicit_files_and_global_admin_session_flag_parse() {
+        assert!(Cli::try_parse_from(["rekey", "oidc-login", "begin"]).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "rekey",
+                "oidc-login",
+                "finish",
+                "--flow-id",
+                "public-flow",
+                "--session-file",
+                "/private/path/session"
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from(["rekey", "oidc-login", "finish", "--flow-id", "public-flow"])
+                .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "rekey",
+                "--admin-session-file",
+                "/private/path/session",
+                "metrics"
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "rekey",
+                "serve",
+                "--oidc-admin-profile",
+                "/private/path/profile"
+            ])
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn audit_prune_age_requires_exactly_one_positive_selector() {
+        assert!(
+            Cli::try_parse_from([
+                "rekey",
+                "audit",
+                "prune",
+                "--older-than-days",
+                "30",
+                "--password-stdin"
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "rekey",
+                "audit",
+                "prune",
+                "--before-ms",
+                "100",
+                "--password-stdin"
+            ])
+            .is_ok()
+        );
+        for args in [
+            vec!["rekey", "audit", "prune"],
+            vec![
+                "rekey",
+                "audit",
+                "prune",
+                "--before-ms",
+                "100",
+                "--older-than-days",
+                "30",
+            ],
+            vec!["rekey", "audit", "prune", "--older-than-days", "0"],
+            vec!["rekey", "audit", "prune", "--older-than-days", "-1"],
+            vec![
+                "rekey",
+                "audit",
+                "prune",
+                "--older-than-days",
+                "18446744073709551616",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err());
+        }
+    }
+
+    #[test]
+    fn policy_activate_requires_both_public_target_flags() {
+        let base = [
+            "rekey",
+            "policy",
+            "activate",
+            "--file",
+            "bundle.json",
+            "--step-up-stdin",
+        ];
+        assert!(Cli::try_parse_from(base).is_err());
+        let mut args = base.to_vec();
+        args.extend([
+            "--expected-vault-id",
+            "00112233-4455-4677-8899-aabbccddeeff",
+        ]);
+        assert!(Cli::try_parse_from(&args).is_err());
+        args.extend([
+            "--expected-trust-sha256",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ]);
+        assert!(Cli::try_parse_from(&args).is_ok());
+        assert!(
+            Cli::try_parse_from(base.into_iter().chain([
+                "--expected-trust-sha256",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ]))
+            .is_err()
+        );
+    }
+}
+
+#[cfg(test)]
+mod retention_cli_tests {
+    use super::*;
+    #[test]
+    fn retention_set_requires_exactly_one_explicit_selector() {
+        for args in [
+            vec!["rekey", "audit", "retention", "set"],
+            vec!["rekey", "audit", "retention", "set", "--days", "0"],
+            vec![
+                "rekey",
+                "audit",
+                "retention",
+                "set",
+                "--days",
+                "1",
+                "--disable",
+            ],
+            vec!["rekey", "audit", "retention", "set", "--interval", "5"],
+            vec!["rekey", "audit", "retention", "apply"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err());
+        }
+        for args in [
+            vec![
+                "rekey",
+                "audit",
+                "retention",
+                "set",
+                "--days",
+                "1",
+                "--password-stdin",
+            ],
+            vec![
+                "rekey",
+                "audit",
+                "retention",
+                "set",
+                "--disable",
+                "--password-stdin",
+            ],
+            vec!["rekey", "audit", "retention", "status"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_ok());
+        }
     }
 }

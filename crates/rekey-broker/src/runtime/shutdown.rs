@@ -139,6 +139,9 @@ impl BrokerCtx {
         if self.lifecycle.phase() == BrokerPhase::Running {
             self.lifecycle.enter_draining();
         }
+        if let Some(manager) = &self.oidc_admin {
+            manager.clear();
+        }
         self.sessions.close_and_revoke_all();
         self.publish_shutdown();
 

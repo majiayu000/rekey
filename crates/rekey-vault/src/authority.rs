@@ -27,6 +27,10 @@ mod backup;
 mod credential;
 mod desktop;
 mod dispatch;
+mod keychain_source;
+#[cfg(test)]
+mod keychain_source_tests;
+pub(crate) mod lease_journal;
 /// Clear the crash marker only after every runtime task has joined cleanly,
 /// while the caller still holds the exclusive runtime lock.
 pub use desktop::finish_runtime;
@@ -81,6 +85,17 @@ impl VaultState {
 pub fn spawn_authority(
     config: AuthorityConfig,
 ) -> Result<(AuthorityHandle, std::thread::JoinHandle<()>), AuthorityError> {
+    spawn_authority_inner(
+        config,
+        #[cfg(test)]
+        None,
+    )
+}
+
+fn spawn_authority_inner(
+    config: AuthorityConfig,
+    #[cfg(test)] keychain_fixture: Option<KeychainFixture>,
+) -> Result<(AuthorityHandle, std::thread::JoinHandle<()>), AuthorityError> {
     config.validate()?;
     verify_state_dir_permissions(&config.state_dir)?;
     for marker in [
@@ -115,6 +130,8 @@ pub fn spawn_authority(
     desktop::begin_runtime(&config.state_dir)?;
     let (tx, rx) = mpsc::channel(config.queue_capacity);
     let worker = Worker {
+        #[cfg(test)]
+        keychain_fixture,
         store,
         header,
         state: VaultState::Locked,
@@ -123,6 +140,7 @@ pub fn spawn_authority(
         failed_unlocks: 0,
         next_unlock_at: Instant::now(),
         last_activity: Instant::now(),
+        retention_last_clock_ms: None,
         config,
     };
     let join = std::thread::Builder::new()
@@ -132,7 +150,15 @@ pub fn spawn_authority(
     Ok((AuthorityHandle { tx }, join))
 }
 
+#[cfg(test)]
+type KeychainFixture = Box<
+    dyn FnMut(&keychain_source::Reference) -> Result<zeroize::Zeroizing<Vec<u8>>, AuthorityError>
+        + Send,
+>;
+
 struct Worker {
+    #[cfg(test)]
+    keychain_fixture: Option<KeychainFixture>,
     desktop_resume_expiry: Option<i64>,
     desktop_session: Option<(zeroize::Zeroizing<Vec<u8>>, Instant)>,
     store: SqliteRecordStore,
@@ -141,6 +167,7 @@ struct Worker {
     failed_unlocks: u32,
     next_unlock_at: Instant,
     last_activity: Instant,
+    retention_last_clock_ms: Option<i64>,
     config: AuthorityConfig,
 }
 
@@ -253,6 +280,18 @@ impl Worker {
                 self.last_activity = Instant::now();
                 if let Err(error) = self.policy_material() {
                     self.fault("persisted-policy-integrity-failed");
+                    return Err(error);
+                }
+                if let Err(error) = self.retention_record() {
+                    self.fault("audit-retention-integrity-failed");
+                    return Err(error);
+                }
+                if let Err(error) = lease_journal::verify_store(
+                    &self.store,
+                    self.require_unlocked()?.bytes(),
+                    self.header.vault_id,
+                ) {
+                    self.fault("lease-journal-integrity-failed");
                     return Err(error);
                 }
                 self.append_audit(unlock_audit(

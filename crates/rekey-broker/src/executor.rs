@@ -4,7 +4,7 @@
 //! accounting, cleanup.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 use rekey_connector::{BuiltInConnector, resolve_builtin};
@@ -31,8 +31,12 @@ use crate::session::{ExecutionPermit, SessionRegistry};
 use crate::upstream::{UpstreamRequest, UpstreamTransport, outbound_headers_are_valid};
 
 mod approval;
+pub(crate) mod aws_source;
+pub(crate) mod azure_source;
 mod deadline;
+pub(crate) mod gcp_source;
 mod github_run;
+pub(crate) mod onepassword_source;
 #[cfg(test)]
 use github_run::{github_post_effect_error, github_without_token_error};
 mod http;
@@ -46,9 +50,10 @@ use http::{
     build_upstream, filter_response_headers, reason_static, response_metadata_fits,
     upstream_failure_is_indeterminate, validate_request,
 };
+pub(crate) use sealing::contains_secret;
 #[cfg(test)]
 use sealing::percent_encode;
-use sealing::{contains_secret, headers_contain_secret, sealing_needles};
+use sealing::{fixed_header_sealing_needles, headers_contain_secret, sealing_needles};
 use vault_dynamic::{VaultDynamicError, VaultDynamicPrepared, VaultDynamicProfile};
 use vault_source::{VaultKvError, VaultKvProfile, VaultPrepared};
 
@@ -65,10 +70,11 @@ pub fn fuzz_response_sealing(
     let needles = sealing_needles(secret, auth_value);
     if as_header {
         headers_contain_secret(
-            &[(
+            &vec![(
                 "x-fuzz".to_owned(),
                 String::from_utf8_lossy(response).into(),
-            )],
+            )]
+            .into(),
             &needles,
         )
     } else {
@@ -86,10 +92,11 @@ pub fn fuzz_response_header_name_sealing(
 ) -> bool {
     let needles = sealing_needles(secret, auth_value);
     headers_contain_secret(
-        &[(
+        &vec![(
             String::from_utf8_lossy(response_name).into(),
             "unrelated-header-value".to_owned(),
-        )],
+        )]
+        .into(),
         &needles,
     )
 }
@@ -267,6 +274,7 @@ impl ActionExecutor {
         .map_err(|_| BrokerError::Upstream("upstream-timeout"))
     }
 
+    #[cfg(test)]
     async fn run_started(
         &self,
         started: &mut StartedAuditGuard,
@@ -274,6 +282,29 @@ impl ActionExecutor {
         action: &FixedHttpAction,
         effect_deadline: Instant,
         effect_kind: &AtomicU8,
+        stream: Option<&text_stream::TextStreamSender>,
+    ) -> Result<ExecuteOutcome, BrokerError> {
+        self.run_started_owned(
+            started,
+            request,
+            action,
+            effect_deadline,
+            effect_kind,
+            &AtomicBool::new(false),
+            stream,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_started_owned(
+        &self,
+        started: &mut StartedAuditGuard,
+        request: &ExecuteRequest,
+        action: &FixedHttpAction,
+        effect_deadline: Instant,
+        effect_kind: &AtomicU8,
+        cleanup_owned: &AtomicBool,
         stream: Option<&text_stream::TextStreamSender>,
     ) -> Result<ExecuteOutcome, BrokerError> {
         if action.text_stream.is_some() != stream.is_some() {
@@ -285,7 +316,13 @@ impl ActionExecutor {
         // Steps 7-8: credential eligibility and preparation (single owner).
         let prepared = match tokio::time::timeout_at(
             tokio::time::Instant::from_std(effect_deadline),
-            self.authority.prepare_credential(action.credential_id),
+            self.authority.prepare_execution_credential(
+                action.credential_id,
+                request.request_id,
+                action.id,
+                action.version,
+                effect_deadline,
+            ),
         )
         .await
         {
@@ -317,6 +354,18 @@ impl ActionExecutor {
             Err(_) => {
                 drop(prepared);
                 let reason = match credential_kind {
+                    rekey_domain::credential::CredentialKind::GcpSecretManagerSource => {
+                        gcp_source::GcpSourceError::InvalidCredential.reason()
+                    }
+                    rekey_domain::credential::CredentialKind::AzureKeyVaultSource => {
+                        azure_source::AzureSourceError::InvalidCredential.reason()
+                    }
+                    rekey_domain::credential::CredentialKind::OnePasswordConnectSource => {
+                        onepassword_source::OnePasswordSourceError::InvalidCredential.reason()
+                    }
+                    rekey_domain::credential::CredentialKind::AwsSecretsManagerSource => {
+                        aws_source::AwsSourceError::InvalidCredential.reason()
+                    }
                     rekey_domain::credential::CredentialKind::VaultKvV2Source => {
                         VaultKvError::InvalidCredential.reason()
                     }
@@ -333,17 +382,8 @@ impl ActionExecutor {
         // Step 9: execute the selected compile-time connector. Registry
         // selection performs no IO and never receives credential bytes.
         let prepared = prepared.consume(|secret| match connector {
-            BuiltInConnector::FixedHttpHeaderV1 => {
-                let mut auth_value = Zeroizing::new(Vec::with_capacity(
-                    action.auth.prefix.as_str().len() + secret.len(),
-                ));
-                auth_value.extend_from_slice(action.auth.prefix.as_str().as_bytes());
-                auth_value.extend_from_slice(secret);
-                let needles = sealing_needles(secret, &auth_value);
-                PreparedExecution::Opaque {
-                    upstream: build_upstream(action, request, auth_value),
-                    needles,
-                }
+            BuiltInConnector::FixedHttpHeaderV1 | BuiltInConnector::MacosKeychainSourceV1 => {
+                prepare_fixed_header(action, request, secret)
             }
             BuiltInConnector::GitHubAppInstallationV1 => {
                 let profile = GitHubAppCredential::parse_profile(secret);
@@ -363,12 +403,57 @@ impl ActionExecutor {
                     profile,
                 })
             }
+            BuiltInConnector::GcpSecretManagerSourceV1 => {
+                let profile = gcp_source::GcpSourceProfile::parse_profile(secret);
+                PreparedExecution::Gcp(gcp_source::GcpPrepared {
+                    credential_version,
+                    needles: profile
+                        .as_ref()
+                        .map(|profile| profile.bootstrap_needles(secret))
+                        .unwrap_or_default(),
+                    profile,
+                })
+            }
+            BuiltInConnector::AzureKeyVaultSourceV1 => {
+                let profile = azure_source::AzureSourceProfile::parse_profile(secret);
+                PreparedExecution::Azure(azure_source::AzurePrepared {
+                    credential_version,
+                    needles: profile
+                        .as_ref()
+                        .map(|profile| profile.bootstrap_needles(secret))
+                        .unwrap_or_default(),
+                    profile,
+                })
+            }
+            BuiltInConnector::OnePasswordConnectSourceV1 => {
+                let profile = onepassword_source::OnePasswordSourceProfile::parse_profile(secret);
+                PreparedExecution::OnePassword(onepassword_source::OnePasswordPrepared {
+                    credential_version,
+                    needles: profile
+                        .as_ref()
+                        .map(|profile| profile.bootstrap_needles(secret))
+                        .unwrap_or_default(),
+                    profile,
+                })
+            }
+            BuiltInConnector::AwsSecretsManagerSourceV1 => {
+                let profile = aws_source::AwsSourceProfile::parse_profile(secret);
+                PreparedExecution::Aws(aws_source::AwsPrepared {
+                    credential_version,
+                    needles: profile
+                        .as_ref()
+                        .map(|profile| profile.bootstrap_needles(secret))
+                        .unwrap_or_default(),
+                    profile,
+                })
+            }
             BuiltInConnector::VaultKvV2SourceV1 => {
                 let profile = VaultKvProfile::parse_profile(secret);
                 PreparedExecution::Vault(VaultPrepared {
+                    credential_version,
                     needles: profile
                         .as_ref()
-                        .map(|profile| sealing_needles(secret, profile.token()))
+                        .map(|profile| profile.bootstrap_needles(secret))
                         .unwrap_or_default(),
                     profile,
                 })
@@ -422,7 +507,68 @@ impl ActionExecutor {
                 )
                 .await;
         }
+        if matches!(&prepared, PreparedExecution::Vault(vault) if vault.profile.as_ref().is_ok_and(|profile| profile.is_approle()))
+        {
+            let PreparedExecution::Vault(prepared) = prepared else {
+                unreachable!()
+            };
+            return self
+                .run_vault_approle(
+                    started,
+                    request,
+                    action,
+                    prepared,
+                    effect_deadline,
+                    effect_kind,
+                    cleanup_owned,
+                )
+                .await;
+        }
         let prepared = match prepared {
+            PreparedExecution::Gcp(prepared) => {
+                self.resolve_gcp_source(
+                    started,
+                    request,
+                    action,
+                    prepared,
+                    effect_deadline,
+                    effect_kind,
+                )
+                .await?
+            }
+            PreparedExecution::Azure(prepared) => {
+                self.resolve_azure_source(
+                    started,
+                    request,
+                    action,
+                    prepared,
+                    effect_deadline,
+                    effect_kind,
+                )
+                .await?
+            }
+            PreparedExecution::OnePassword(prepared) => {
+                self.resolve_onepassword_source(
+                    started,
+                    request,
+                    action,
+                    prepared,
+                    effect_deadline,
+                    effect_kind,
+                )
+                .await?
+            }
+            PreparedExecution::Aws(prepared) => {
+                self.resolve_aws_source(
+                    started,
+                    request,
+                    action,
+                    prepared,
+                    effect_deadline,
+                    effect_kind,
+                )
+                .await?
+            }
             PreparedExecution::Vault(prepared) => {
                 self.resolve_vault_source(
                     started,
@@ -592,6 +738,24 @@ impl ActionExecutor {
     }
 }
 
+fn prepare_fixed_header(
+    action: &FixedHttpAction,
+    request: &ExecuteRequest,
+    secret: &[u8],
+) -> PreparedExecution {
+    let mut auth_value = Zeroizing::new(Vec::with_capacity(
+        action.auth.prefix.as_str().len() + secret.len(),
+    ));
+    auth_value.extend_from_slice(action.auth.prefix.as_str().as_bytes());
+    auth_value.extend_from_slice(secret);
+    let needles =
+        fixed_header_sealing_needles(secret, &auth_value, action.auth.prefix.as_str().as_bytes());
+    PreparedExecution::Opaque {
+        upstream: build_upstream(action, request, auth_value),
+        needles,
+    }
+}
+
 enum PreparedExecution {
     Opaque {
         upstream: UpstreamRequest,
@@ -599,6 +763,10 @@ enum PreparedExecution {
     },
     GitHub(GitHubPrepared),
     Vault(VaultPrepared),
+    Gcp(gcp_source::GcpPrepared),
+    Aws(aws_source::AwsPrepared),
+    Azure(azure_source::AzurePrepared),
+    OnePassword(onepassword_source::OnePasswordPrepared),
     VaultDynamic(VaultDynamicPrepared),
     Keycloak(keycloak::KeycloakPrepared),
 }
@@ -637,20 +805,23 @@ impl AdmittedExecution {
 
         let executor = Arc::clone(&self.executor);
         let effect_kind = AtomicU8::new(EFFECT_NOT_STARTED);
+        let cleanup_owned = AtomicBool::new(false);
         let mut cancelled_after_ordinary_effect = false;
         {
-            let run = executor.run_started(
+            let run = executor.run_started_owned(
                 &mut self.started,
                 &self.request,
                 &self.action,
                 self.effect_deadline,
                 &effect_kind,
+                &cleanup_owned,
                 stream,
             );
             tokio::pin!(run);
             tokio::select! {
                 biased;
                 _ = wait_for_cancel(cancel) => {
+                    if cleanup_owned.load(Ordering::SeqCst) { return run.await; }
                     match effect_kind.load(Ordering::SeqCst) {
                         EFFECT_REVOCABLE_CONNECTOR => return run.await,
                         EFFECT_ORDINARY_HTTP => cancelled_after_ordinary_effect = true,

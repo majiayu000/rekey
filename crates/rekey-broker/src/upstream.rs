@@ -1,9 +1,11 @@
 //! Upstream HTTPS transport. Fixed origin only, redirects disabled, proxy
 //! environment ignored, DNS results screened before connecting.
 
+use serde::{Deserialize, Deserializer};
 use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rekey_domain::action::FixedMethod;
@@ -27,6 +29,15 @@ pub struct UpstreamRequest {
     pub response_max_bytes: u32,
 }
 
+impl Drop for UpstreamRequest {
+    fn drop(&mut self) {
+        for (name, value) in &mut self.headers {
+            name.zeroize();
+            value.zeroize();
+        }
+    }
+}
+
 pub struct UpstreamResponse {
     pub status: u16,
     pub headers: ResponseHeaders,
@@ -35,11 +46,49 @@ pub struct UpstreamResponse {
 
 /// Rekey-owned copies of upstream headers remain wipe-on-drop until response
 /// sealing has proved that an allowlisted value is safe to materialize.
-pub struct ResponseHeaders(Vec<(String, String)>);
+pub struct ResponseHeaders {
+    visible: Vec<(String, String)>,
+    unsupported: Vec<(String, Zeroizing<Vec<u8>>)>,
+}
 
 impl From<Vec<(String, String)>> for ResponseHeaders {
     fn from(headers: Vec<(String, String)>) -> Self {
-        Self(headers)
+        Self {
+            visible: headers,
+            unsupported: Vec::new(),
+        }
+    }
+}
+
+impl ResponseHeaders {
+    pub(crate) fn from_header_map(headers: &reqwest::header::HeaderMap) -> Self {
+        let mut visible = Vec::with_capacity(headers.len());
+        let mut unsupported = Vec::new();
+        for (name, value) in headers {
+            match std::str::from_utf8(value.as_bytes()) {
+                Ok(value) => visible.push((name.as_str().to_owned(), value.to_owned())),
+                Err(_) => unsupported.push((
+                    name.as_str().to_owned(),
+                    Zeroizing::new(value.as_bytes().to_vec()),
+                )),
+            }
+        }
+        Self {
+            visible,
+            unsupported,
+        }
+    }
+
+    /// Full name/value bytes for sealing, before the String wire projection.
+    pub(crate) fn name_value_bytes(&self) -> impl Iterator<Item = (&[u8], &[u8])> {
+        self.visible
+            .iter()
+            .map(|(name, value)| (name.as_bytes(), value.as_bytes()))
+            .chain(
+                self.unsupported
+                    .iter()
+                    .map(|(name, value)| (name.as_bytes(), value.as_slice())),
+            )
     }
 }
 
@@ -47,16 +96,20 @@ impl std::ops::Deref for ResponseHeaders {
     type Target = [(String, String)];
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.visible
     }
 }
 
 impl Drop for ResponseHeaders {
     fn drop(&mut self) {
-        for (name, value) in &mut self.0 {
+        for (name, value) in &mut self.visible {
             name.zeroize();
             value.zeroize();
         }
+        for (name, _) in &mut self.unsupported {
+            name.zeroize();
+        }
+        // Unsupported values are Zeroizing buffers and wipe on field drop.
     }
 }
 
@@ -89,8 +142,173 @@ pub struct UpstreamStreamResponse {
 pub type UpstreamStreamFuture<'a> =
     Pin<Box<dyn Future<Output = Result<UpstreamStreamResponse, UpstreamError>> + Send + 'a>>;
 
+/// Closed, encrypted-profile binding for this Vault source only.
+#[derive(Clone)]
+pub struct SourceEndpoint {
+    allowed_ips: Vec<IpAddr>,
+    ca_der: Vec<Vec<u8>>,
+}
+
+impl<'de> Deserialize<'de> for SourceEndpoint {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Raw {
+            allowed_ips: Vec<String>,
+            ca_der_base64: Vec<String>,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        let invalid = || serde::de::Error::custom("invalid source endpoint");
+        if raw.allowed_ips.is_empty() || raw.ca_der_base64.is_empty() {
+            return Err(invalid());
+        }
+        let mut allowed_ips = Vec::new();
+        for literal in raw.allowed_ips {
+            let ip: IpAddr = literal.parse().map_err(|_| invalid())?;
+            if !source_ip_is_private(ip) || allowed_ips.contains(&ip) {
+                return Err(invalid());
+            }
+            allowed_ips.push(ip);
+        }
+        let mut ca_der = Vec::new();
+        for encoded in raw.ca_der_base64 {
+            let der = data_encoding::BASE64
+                .decode(encoded.as_bytes())
+                .map_err(|_| invalid())?;
+            let cert = reqwest::Certificate::from_der(&der).map_err(|_| invalid())?;
+            // Building the fixed-root client also validates the certificate's TLS trust syntax.
+            reqwest::Client::builder()
+                .use_rustls_tls()
+                .tls_built_in_root_certs(false)
+                .add_root_certificate(cert)
+                .build()
+                .map_err(|_| invalid())?;
+            if ca_der.contains(&der) {
+                return Err(invalid());
+            }
+            ca_der.push(der);
+        }
+        Ok(Self {
+            allowed_ips,
+            ca_der,
+        })
+    }
+}
+
+pub(crate) fn optional_source_endpoint<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<Option<SourceEndpoint>, D::Error> {
+    SourceEndpoint::deserialize(d).map(Some)
+}
+
+pub fn source_ip_is_private(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => ip.is_private(),
+        IpAddr::V6(ip) => ip.segments()[0] & 0xfe00 == 0xfc00,
+    }
+}
+
+pub(crate) fn source_hostname_valid(host: &str) -> bool {
+    host.parse::<IpAddr>().is_err()
+        && host.len() <= 253
+        && host.split('.').all(|part| {
+            !part.is_empty()
+                && part.len() <= 63
+                && !part.starts_with('-')
+                && !part.ends_with('-')
+                && part
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+}
+
+pub fn select_source_endpoint(
+    host: &str,
+    port: u16,
+    addrs: &[SocketAddr],
+    binding: &SourceEndpoint,
+) -> Result<ScreenedEndpoint, UpstreamError> {
+    if addrs.is_empty() {
+        return Err(UpstreamError::Transport);
+    }
+    if addrs
+        .iter()
+        .any(|addr| addr.port() != port || !binding.allowed_ips.contains(&addr.ip()))
+    {
+        return Err(UpstreamError::Blocked("source-address"));
+    }
+    Ok(ScreenedEndpoint {
+        host: host.to_owned(),
+        addr: addrs[0],
+    })
+}
+
+#[derive(Clone, Debug)]
+pub struct SourceAttempt {
+    pub selected_ip: Option<IpAddr>,
+    pub phase: &'static str,
+    pub outcome: &'static str,
+}
+impl Default for SourceAttempt {
+    fn default() -> Self {
+        Self {
+            selected_ip: None,
+            phase: "resolve",
+            outcome: "unknown",
+        }
+    }
+}
+pub type SourceTrace = Arc<Mutex<SourceAttempt>>;
+
+/// Only encrypted Vault source profiles may invoke this entry.
+pub(crate) fn send_source<'a>(
+    transport: &'a dyn UpstreamTransport,
+    request: UpstreamRequest,
+    binding: Option<&'a SourceEndpoint>,
+    deadline: std::time::Instant,
+) -> UpstreamFuture<'a> {
+    Box::pin(async move {
+        if std::time::Instant::now() >= deadline {
+            return Err(UpstreamError::Timeout);
+        }
+        let result = match binding {
+            Some(binding) => {
+                transport
+                    .send_vault_source(
+                        request,
+                        binding,
+                        deadline,
+                        Arc::new(Mutex::new(SourceAttempt::default())),
+                    )
+                    .await
+            }
+            None => transport.send(request).await,
+        };
+        if std::time::Instant::now() >= deadline {
+            return Err(UpstreamError::Timeout);
+        }
+        result
+    })
+}
+
 pub trait UpstreamTransport: Send + Sync {
     fn send(&self, request: UpstreamRequest) -> UpstreamFuture<'_>;
+    fn send_vault_source<'a>(
+        &'a self,
+        _request: UpstreamRequest,
+        _binding: &'a SourceEndpoint,
+        _deadline: std::time::Instant,
+        trace: SourceTrace,
+    ) -> UpstreamFuture<'a> {
+        Box::pin(async move {
+            *trace.lock().unwrap() = SourceAttempt {
+                selected_ip: None,
+                phase: "unsupported",
+                outcome: "denied",
+            };
+            Err(UpstreamError::Blocked("source-transport-unsupported"))
+        })
+    }
     fn open_stream(&self, _request: UpstreamRequest) -> UpstreamStreamFuture<'_> {
         Box::pin(async { Err(UpstreamError::Blocked("streaming-unsupported")) })
     }
@@ -106,121 +324,73 @@ pub fn outbound_headers_are_valid(request: &UpstreamRequest) -> bool {
         && reqwest::header::HeaderValue::from_bytes(&request.auth_header.1).is_ok()
 }
 
-fn second_segment_matches_prefix(segment: u16, network: u16, prefix_len: u8) -> bool {
-    let bits = prefix_len - 16;
-    let mask = u16::MAX << (16 - bits);
-    segment & mask == network
-}
-
-fn allocated_public_ipv6(segments: &[u16; 8]) -> bool {
-    let [first, second, ..] = *segments;
-    match first {
-        0x2001 => {
-            let public_ietf_exception = (second == 1
-                && segments[2..7] == [0, 0, 0, 0, 0]
-                && (1..=3).contains(&segments[7]))
-                || second == 3
-                || (second == 4 && segments[2] == 0x0112)
-                || (second & 0xfff0) == 0x0020
-                || (second & 0xfff0) == 0x0030;
-            let allocated = [
-                (0x0200, 23),
-                (0x0400, 23),
-                (0x0600, 23),
-                (0x0800, 22),
-                (0x0c00, 23),
-                (0x0e00, 23),
-                (0x1200, 23),
-                (0x1400, 22),
-                (0x1800, 23),
-                (0x1a00, 23),
-                (0x1c00, 22),
-                (0x2000, 19),
-                (0x4000, 23),
-                (0x4200, 23),
-                (0x4400, 23),
-                (0x4600, 23),
-                (0x4800, 23),
-                (0x4a00, 23),
-                (0x4c00, 23),
-                (0x5000, 20),
-                (0x8000, 19),
-                (0xa000, 20),
-                (0xb000, 20),
-            ]
-            .iter()
-            .any(|&(network, prefix)| second_segment_matches_prefix(second, network, prefix));
-            public_ietf_exception || (allocated && second != 0x0db8)
-        }
-        0x2003 => second_segment_matches_prefix(second, 0, 18),
-        0x2400..=0x241f => true,
-        0x2600..=0x260f => true,
-        0x2610 | 0x2620 => second_segment_matches_prefix(second, 0, 23),
-        0x2630..=0x263f => true,
-        0x2800..=0x280f => true,
-        0x2a00..=0x2a1f => true,
-        0x2c00..=0x2c0f => true,
-        _ => false,
-    }
-}
-
-/// Default-deny for anything that is not covered by the explicit public
-/// unicast contract. Translation addresses are accepted only when their
-/// embedded IPv4 destination independently passes the IPv4 contract.
-pub fn ip_is_public(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            let [a, b, c, _] = v4.octets();
-            !(a == 0
-                || a == 10
-                || a == 127
-                || (a == 100 && (64..=127).contains(&b))
-                || (a == 169 && b == 254)
-                || (a == 172 && (16..=31).contains(&b))
-                || (a == 192 && b == 0 && c == 0)
-                || (a == 192 && b == 0 && c == 2)
-                || (a == 192 && b == 88 && c == 99)
-                || (a == 192 && b == 168)
-                || (a == 198 && (b == 18 || b == 19))
-                || (a == 198 && b == 51 && c == 100)
-                || (a == 203 && b == 0 && c == 113)
-                || a >= 224)
-        }
-        IpAddr::V6(v6) => {
-            if let Some(v4) = v6.to_ipv4_mapped() {
-                return ip_is_public(IpAddr::V4(v4));
-            }
-            let s = v6.segments();
-            // RFC 6052 well-known NAT64 prefix. Screen the embedded IPv4 so
-            // a public NAT64 destination remains usable but private IPv4
-            // cannot be smuggled through IPv6.
-            if s[..6] == [0x0064, 0xff9b, 0, 0, 0, 0] {
-                let embedded = std::net::Ipv4Addr::new(
-                    (s[6] >> 8) as u8,
-                    s[6] as u8,
-                    (s[7] >> 8) as u8,
-                    s[7] as u8,
-                );
-                return ip_is_public(IpAddr::V4(embedded));
-            }
-            // 6to4 embeds an IPv4 address in bits 16..48.
-            if s[0] == 0x2002 {
-                let embedded = std::net::Ipv4Addr::new(
-                    (s[1] >> 8) as u8,
-                    s[1] as u8,
-                    (s[2] >> 8) as u8,
-                    s[2] as u8,
-                );
-                return ip_is_public(IpAddr::V4(embedded));
-            }
-            allocated_public_ipv6(&s)
-        }
-    }
-}
+pub use rekey_domain::action::ip_is_public;
 
 pub struct ReqwestUpstreamTransport;
 
 impl UpstreamTransport for ReqwestUpstreamTransport {
+    fn send_vault_source<'a>(
+        &'a self,
+        mut request: UpstreamRequest,
+        binding: &'a SourceEndpoint,
+        deadline: std::time::Instant,
+        trace: SourceTrace,
+    ) -> UpstreamFuture<'a> {
+        Box::pin(async move {
+            let result = async {
+                if std::time::Instant::now() >= deadline {
+                    return Err(UpstreamError::Timeout);
+                }
+                let addrs = tokio::time::timeout_at(
+                    deadline.into(),
+                    tokio::net::lookup_host((request.host.as_str(), request.port)),
+                )
+                .await
+                .map_err(|_| UpstreamError::Timeout)?
+                .map_err(|_| UpstreamError::Transport)?
+                .collect::<Vec<_>>();
+                if std::time::Instant::now() >= deadline {
+                    return Err(UpstreamError::Timeout);
+                }
+                let endpoint =
+                    select_source_endpoint(&request.host, request.port, &addrs, binding)?;
+                *trace.lock().unwrap() = SourceAttempt {
+                    selected_ip: Some(endpoint.addr.ip()),
+                    phase: "connect",
+                    outcome: "unknown",
+                };
+                request.timeout = deadline.saturating_duration_since(std::time::Instant::now());
+                let response = tokio::time::timeout_at(deadline.into(), async {
+                    let mut stream =
+                        open_stream_fixed_roots(request, endpoint, Some(&binding.ca_der), true)
+                            .await?;
+                    trace.lock().unwrap().phase = "response";
+                    let mut body = Zeroizing::new(Vec::new());
+                    while let Some(chunk) = stream.body.next_chunk().await? {
+                        body.extend_from_slice(&chunk);
+                    }
+                    Ok(UpstreamResponse {
+                        status: stream.status,
+                        headers: stream.headers,
+                        body,
+                    })
+                })
+                .await
+                .map_err(|_| UpstreamError::Timeout)?;
+                if std::time::Instant::now() >= deadline {
+                    return Err(UpstreamError::Timeout);
+                }
+                response
+            }
+            .await;
+            trace.lock().unwrap().outcome = match &result {
+                Ok(_) => "success",
+                Err(UpstreamError::Blocked(_)) => "denied",
+                Err(_) => "unknown",
+            };
+            result
+        })
+    }
     fn send(&self, request: UpstreamRequest) -> UpstreamFuture<'_> {
         Box::pin(async move { send_via_reqwest(request).await })
     }
@@ -332,6 +502,16 @@ pub async fn open_stream_screened(
     endpoint: ScreenedEndpoint,
     extra_root_der: Option<&[u8]>,
 ) -> Result<UpstreamStreamResponse, UpstreamError> {
+    let roots = extra_root_der.map(|der| vec![der.to_vec()]);
+    open_stream_fixed_roots(request, endpoint, roots.as_deref(), false).await
+}
+
+async fn open_stream_fixed_roots(
+    request: UpstreamRequest,
+    endpoint: ScreenedEndpoint,
+    fixed_roots: Option<&[Vec<u8>]>,
+    private_only: bool,
+) -> Result<UpstreamStreamResponse, UpstreamError> {
     let mut builder = reqwest::Client::builder()
         .use_rustls_tls()
         .redirect(reqwest::redirect::Policy::none())
@@ -339,9 +519,17 @@ pub async fn open_stream_screened(
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(request.timeout)
         .resolve(&endpoint.host, endpoint.addr);
-    if let Some(der) = extra_root_der {
-        let cert = reqwest::Certificate::from_der(der).map_err(|_| UpstreamError::Transport)?;
-        builder = builder.add_root_certificate(cert).http1_only();
+    if let Some(roots) = fixed_roots {
+        builder = builder.http1_only();
+        if private_only {
+            builder = builder
+                .tls_built_in_root_certs(false)
+                .retry(reqwest::retry::never());
+        }
+        for der in roots {
+            let cert = reqwest::Certificate::from_der(der).map_err(|_| UpstreamError::Transport)?;
+            builder = builder.add_root_certificate(cert);
+        }
     }
     let client = builder.build().map_err(|_| UpstreamError::Transport)?;
 
@@ -355,7 +543,12 @@ pub async fn open_stream_screened(
 
     let mut req = client.request(method, url);
     for (name, value) in &request.headers {
-        req = req.header(name, value);
+        let mut header = reqwest::header::HeaderValue::from_bytes(value.as_bytes())
+            .map_err(|_| UpstreamError::Transport)?;
+        if name == "x-amz-security-token" {
+            header.set_sensitive(true);
+        }
+        req = req.header(name, header);
     }
     let (auth_name, auth_value) = &request.auth_header;
     let mut header_value = reqwest::header::HeaderValue::from_bytes(auth_value)
@@ -380,16 +573,7 @@ pub async fn open_stream_screened(
     if (300..400).contains(&status) {
         return Err(UpstreamError::Blocked("redirect"));
     }
-    let headers: ResponseHeaders = response
-        .headers()
-        .iter()
-        .filter_map(|(k, v)| {
-            v.to_str()
-                .ok()
-                .map(|value| (k.as_str().to_owned(), value.to_owned()))
-        })
-        .collect::<Vec<_>>()
-        .into();
+    let headers = ResponseHeaders::from_header_map(response.headers());
 
     Ok(UpstreamStreamResponse {
         status,
@@ -431,6 +615,7 @@ impl UpstreamBody for ReqwestBody {
 mod tests {
     use super::*;
     use rekey_domain::action::FixedMethod;
+    use std::net::IpAddr;
 
     fn loopback_request(host: &str) -> UpstreamRequest {
         UpstreamRequest {
@@ -449,6 +634,224 @@ mod tests {
         }
     }
 
+    fn private_binding() -> SourceEndpoint {
+        let cert = rcgen::generate_simple_self_signed(vec!["vault.example.com".into()])
+            .unwrap()
+            .cert;
+        serde_json::from_value(serde_json::json!({"allowed_ips":["10.1.2.3","fd12::1"],"ca_der_base64":[data_encoding::BASE64.encode(cert.der())]})).unwrap()
+    }
+
+    #[test]
+    fn private_dns_requires_every_exact_ip_and_port_without_fallback() {
+        let binding = private_binding();
+        let good = [
+            "10.1.2.3:8200".parse().unwrap(),
+            "[fd12::1]:8200".parse().unwrap(),
+        ];
+        let selected = select_source_endpoint("vault.example.com", 8200, &good, &binding).unwrap();
+        assert_eq!(selected.addr, good[0]);
+        assert_eq!(selected.host, "vault.example.com");
+        for bad in [
+            "10.1.2.4:8200",
+            "10.1.2.3:443",
+            "93.184.216.34:8200",
+            "127.0.0.1:8200",
+            "[::ffff:10.1.2.3]:8200",
+            "[64:ff9b::a01:203]:8200",
+            "[2002:a01:203::1]:8200",
+        ] {
+            assert!(
+                select_source_endpoint(
+                    "vault.example.com",
+                    8200,
+                    &[good[0], bad.parse().unwrap()],
+                    &binding
+                )
+                .is_err(),
+                "{bad}"
+            );
+        }
+        assert!(select_source_endpoint("vault.example.com", 8200, &[], &binding).is_err());
+        assert!(select_public_endpoint("vault.example.com", &good).is_err());
+    }
+
+    #[tokio::test]
+    async fn private_deadline_late_first_poll_never_resolves_or_selects_an_ip() {
+        let binding = private_binding();
+        let trace = Arc::new(Mutex::new(SourceAttempt::default()));
+        let transport = ReqwestUpstreamTransport;
+        let end = std::time::Instant::now() + Duration::from_millis(5);
+        let future = transport.send_vault_source(
+            loopback_request("vault.example.com"),
+            &binding,
+            end,
+            trace.clone(),
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(matches!(future.await, Err(UpstreamError::Timeout)));
+        assert_eq!(trace.lock().unwrap().selected_ip, None);
+        assert_eq!(trace.lock().unwrap().outcome, "unknown");
+    }
+
+    // Compiled/listed only on the current host, which rejects listeners. The
+    // loopback pin is confined to this fixture, never the bound-source entry.
+    #[tokio::test]
+    async fn strict_tls_source_fixed_ca_hostname_redirect_and_public_target_boundary_fixture() {
+        if std::env::var_os("REKEY_SOURCE_TLS_FIXTURE_CHILD").is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "upstream::tests::strict_tls_source_fixed_ca_hostname_redirect_and_public_target_boundary_fixture", "--nocapture"])
+                .env("REKEY_SOURCE_TLS_FIXTURE_CHILD", "1")
+                .env("HTTPS_PROXY", "http://127.0.0.1:1")
+                .env("ALL_PROXY", "http://127.0.0.1:1")
+                .env("NO_PROXY", "")
+                .output().unwrap();
+            assert!(
+                output.status.success(),
+                "strict TLS child failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for (wrong_ca, wrong_hostname, redirect) in [
+            (false, false, false),
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+        ] {
+            let generated =
+                rcgen::generate_simple_self_signed(vec!["vault.example.com".into()]).unwrap();
+            let der = generated.cert.der().to_vec();
+            let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+                rustls::crypto::ring::default_provider(),
+            ))
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![CertificateDer::from(der.clone())],
+                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(generated.key_pair.serialize_der())),
+            )
+            .unwrap();
+            let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+                .await
+                .unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (socket, _) = listener.accept().await.unwrap();
+                if let Ok(mut stream) = tokio_rustls::TlsAcceptor::from(Arc::new(config))
+                    .accept(socket)
+                    .await
+                {
+                    let mut buf = [0; 4096];
+                    let _ = stream.read(&mut buf).await;
+                    let bytes = if redirect {
+                        b"HTTP/1.1 302 Found\r\nLocation: https://10.1.2.3/other\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".as_slice()
+                    } else {
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+                            .as_slice()
+                    };
+                    let _ = stream.write_all(bytes).await;
+                }
+            });
+            let roots = if wrong_ca {
+                vec![
+                    rcgen::generate_simple_self_signed(vec!["vault.example.com".into()])
+                        .unwrap()
+                        .cert
+                        .der()
+                        .to_vec(),
+                ]
+            } else {
+                vec![der]
+            };
+            let host = if wrong_hostname {
+                "other.example.com"
+            } else {
+                "vault.example.com"
+            };
+            let mut request = loopback_request(host);
+            request.port = addr.port();
+            let result = open_stream_fixed_roots(
+                request,
+                ScreenedEndpoint {
+                    host: host.into(),
+                    addr,
+                },
+                Some(&roots),
+                true,
+            )
+            .await;
+            assert_eq!(result.is_ok(), !wrong_ca && !wrong_hostname && !redirect);
+            if redirect {
+                assert!(matches!(result, Err(UpstreamError::Blocked("redirect"))));
+            }
+            server.await.unwrap();
+            assert!(select_public_endpoint(host, &[addr]).is_err());
+        }
+    }
+
+    #[test]
+    fn response_header_map_preserves_utf8_and_unsupported_bytes_once() {
+        let utf8 = "Bearer header-中文-fixture".as_bytes();
+        let unsupported = [b"\xffprefix-".as_slice(), utf8, b"-suffix\xfe"].concat();
+        let mut map = reqwest::header::HeaderMap::new();
+        let utf8_value = reqwest::header::HeaderValue::from_bytes(utf8).unwrap();
+        assert!(
+            utf8_value.to_str().is_err(),
+            "exercise the former ASCII-only boundary"
+        );
+        map.append("x-utf8", utf8_value);
+        map.append(
+            "x-unsupported",
+            reqwest::header::HeaderValue::from_bytes(&unsupported).unwrap(),
+        );
+        map.append(
+            "content-type",
+            reqwest::header::HeaderValue::from_static("application/json"),
+        );
+        let headers = ResponseHeaders::from_header_map(&map);
+        assert_eq!(headers.visible.len(), 2);
+        assert_eq!(headers.unsupported.len(), 1);
+        assert_eq!(headers.name_value_bytes().count(), map.len());
+        assert!(
+            headers
+                .name_value_bytes()
+                .any(|(name, value)| name == b"x-utf8" && value == utf8)
+        );
+        assert!(
+            headers
+                .name_value_bytes()
+                .any(|(name, value)| name == b"x-unsupported" && value == unsupported)
+        );
+        assert!(
+            headers
+                .iter()
+                .any(|(name, value)| name == "x-utf8" && value.as_bytes() == utf8)
+        );
+        assert!(!headers.iter().any(|(name, _)| name == "x-unsupported"));
+    }
+    #[test]
+    fn clean_nonutf8_response_headers_are_retained_for_sealing_and_omitted_from_string_projection()
+    {
+        let mut map = reqwest::header::HeaderMap::new();
+        map.append(
+            "content-type",
+            reqwest::header::HeaderValue::from_bytes(b"\xffclean\xfe").unwrap(),
+        );
+        let headers = ResponseHeaders::from_header_map(&map);
+        assert!(headers.is_empty());
+        let all: Vec<_> = headers.name_value_bytes().collect();
+        assert_eq!(
+            all,
+            vec![(b"content-type".as_slice(), b"\xffclean\xfe".as_slice())]
+        );
+        let existing =
+            ResponseHeaders::from(vec![("content-type".into(), "application/json".into())]);
+        assert_eq!(existing.name_value_bytes().count(), 1);
+        assert_eq!(existing.len(), 1);
+    }
     #[test]
     fn private_and_special_addresses_rejected() {
         for bad in [

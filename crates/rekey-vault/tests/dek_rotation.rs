@@ -198,6 +198,10 @@ async fn dek_rotation_preserves_all_kinds_versions_state_and_both_backup_generat
         CredentialKind::VaultKvV2Source,
         CredentialKind::VaultDynamicSource,
         CredentialKind::KeycloakTokenExchange,
+        CredentialKind::GcpSecretManagerSource,
+        CredentialKind::AwsSecretsManagerSource,
+        CredentialKind::AzureKeyVaultSource,
+        CredentialKind::OnePasswordConnectSource,
     ];
     for kind in kinds {
         let id = two_versions(&handle, kind, kind.as_str()).await;
@@ -211,7 +215,7 @@ async fn dek_rotation_preserves_all_kinds_versions_state_and_both_backup_generat
     let db = Connection::open(paths::vault_db(&vault.state_dir)).unwrap();
     let immutable = immutable_state(&db);
     let before = ciphertexts(&db);
-    assert_eq!(before.len(), 10);
+    assert_eq!(before.len(), 18);
     let states = rows(
         &db,
         "SELECT state, count(*) FROM credential_versions GROUP BY state ORDER BY state",
@@ -232,7 +236,7 @@ async fn dek_rotation_preserves_all_kinds_versions_state_and_both_backup_generat
             .rotate_dek_before(common::password_proof(), None)
             .await
             .unwrap(),
-        10
+        18
     );
     let first = ciphertexts(&db);
     assert_resealed(&vault.state_dir, &before, &first);
@@ -248,7 +252,7 @@ async fn dek_rotation_preserves_all_kinds_versions_state_and_both_backup_generat
     let recovery = UnlockProof::Recovery(SecretInput::from_slice(
         vault.outcome.recovery_key_display.as_bytes(),
     ));
-    assert_eq!(handle.rotate_dek_before(recovery, None).await.unwrap(), 10);
+    assert_eq!(handle.rotate_dek_before(recovery, None).await.unwrap(), 18);
     assert_resealed(&vault.state_dir, &first, &ciphertexts(&db));
     assert_eq!(immutable_state(&db), immutable);
     verify_every_payload(&vault.state_dir);

@@ -1,0 +1,757 @@
+# Executed by the official promtool engine; no imitation evaluator.
+rule_files: [rekey.rules.yml]
+evaluation_interval: 15s
+# rate() may round 1 to its adjacent float; use promtool's last-mantissa-bit
+# tolerance while retaining every series, label and alert expectation.
+fuzzy_compare: true
+tests:
+  - name: "fresh publication and genuine zero errors"
+    interval: 15s
+    input_series:
+      - series: "up{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_textfile_scrape_error{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+0x23"
+      - series: "node_textfile_mtime_seconds{job=\"rekey-node\",instance=\"fixture\",file=\"/var/lib/rekey-metrics/rekey.prom\"}"
+        values: "270+0x23"
+      - series: "node_timex_sync_status{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_time_seconds{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+15x23"
+      - series: "rekey_requests_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+15x23"
+      - series: "rekey_errors_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+0x23"
+    promql_expr_test:
+      - expr: "rekey:metrics_fresh"
+        eval_time: 5m
+        exp_samples: [{"labels":"rekey:metrics_fresh{job=\"rekey-node\",instance=\"fixture\"}","value":1}]
+      - expr: "rekey:requests_per_second"
+        eval_time: 5m
+        exp_samples: [{"labels":"rekey:requests_per_second{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}","value":1}]
+      - expr: "rekey:errors_per_second"
+        eval_time: 5m
+        exp_samples: [{"labels":"rekey:errors_per_second{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}","value":0}]
+      - expr: "rekey:metrics_file_mtime_seconds"
+        eval_time: 5m
+        exp_samples: [{"labels":"rekey:metrics_file_mtime_seconds{job=\"rekey-node\",instance=\"fixture\"}","value":270}]
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: RekeyMetricsUnavailable
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: RekeyMetricsTargetMissing
+        exp_alerts: []
+  - name: "publication exactly 60 seconds old remains fresh"
+    interval: 15s
+    input_series:
+      - series: "up{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_textfile_scrape_error{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+0x23"
+      - series: "node_textfile_mtime_seconds{job=\"rekey-node\",instance=\"fixture\",file=\"/var/lib/rekey-metrics/rekey.prom\"}"
+        values: "240+0x23"
+      - series: "node_timex_sync_status{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_time_seconds{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+15x23"
+      - series: "rekey_requests_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+15x23"
+      - series: "rekey_errors_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+0x23"
+    promql_expr_test:
+      - expr: "rekey:metrics_fresh"
+        eval_time: 5m
+        exp_samples: [{"labels":"rekey:metrics_fresh{job=\"rekey-node\",instance=\"fixture\"}","value":1}]
+      - expr: "rekey:requests_per_second"
+        eval_time: 5m
+        exp_samples: [{"labels":"rekey:requests_per_second{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}","value":1}]
+      - expr: "rekey:errors_per_second"
+        eval_time: 5m
+        exp_samples: [{"labels":"rekey:errors_per_second{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}","value":0}]
+      - expr: "rekey:metrics_file_mtime_seconds"
+        eval_time: 5m
+        exp_samples: [{"labels":"rekey:metrics_file_mtime_seconds{job=\"rekey-node\",instance=\"fixture\"}","value":240}]
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: RekeyMetricsUnavailable
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: RekeyMetricsTargetMissing
+        exp_alerts: []
+  - name: "61 seconds old is unknown despite repeated healthy scrapes"
+    interval: 15s
+    input_series:
+      - series: "up{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_textfile_scrape_error{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+0x23"
+      - series: "node_textfile_mtime_seconds{job=\"rekey-node\",instance=\"fixture\",file=\"/var/lib/rekey-metrics/rekey.prom\"}"
+        values: "239+0x23"
+      - series: "node_timex_sync_status{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_time_seconds{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+15x23"
+      - series: "rekey_requests_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+15x23"
+      - series: "rekey_errors_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+0x23"
+    promql_expr_test:
+      - expr: "rekey:metrics_fresh"
+        eval_time: 5m
+        exp_samples: []
+      - expr: "rekey:requests_per_second"
+        eval_time: 5m
+        exp_samples: []
+      - expr: "rekey:errors_per_second"
+        eval_time: 5m
+        exp_samples: []
+      - expr: "rekey:metrics_file_mtime_seconds"
+        eval_time: 5m
+        exp_samples: [{"labels":"rekey:metrics_file_mtime_seconds{job=\"rekey-node\",instance=\"fixture\"}","value":239}]
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: RekeyMetricsUnavailable
+        exp_alerts: [{"exp_labels":{"job":"rekey-node","severity":"warning","component":"rekey","instance":"fixture"},"exp_annotations":{"summary":"Rekey metrics are unavailable or unverified","description":"Require a reachable collector, a valid file no older than 60 seconds, and synchronized clocks."}}]
+      - eval_time: 5m
+        alertname: RekeyMetricsTargetMissing
+        exp_alerts: []
+  - name: "stopped publisher leaves old file while scrapes continue"
+    interval: 15s
+    input_series:
+      - series: "up{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_textfile_scrape_error{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+0x23"
+      - series: "node_textfile_mtime_seconds{job=\"rekey-node\",instance=\"fixture\",file=\"/var/lib/rekey-metrics/rekey.prom\"}"
+        values: "270+0x23"
+      - series: "node_timex_sync_status{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_time_seconds{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+15x23"
+      - series: "rekey_requests_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+15x23"
+      - series: "rekey_errors_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+0x23"
+    promql_expr_test:
+      - expr: "rekey:metrics_fresh"
+        eval_time: 5m45s
+        exp_samples: []
+      - expr: "rekey:requests_per_second"
+        eval_time: 5m45s
+        exp_samples: []
+      - expr: "rekey:errors_per_second"
+        eval_time: 5m45s
+        exp_samples: []
+      - expr: "rekey:metrics_file_mtime_seconds"
+        eval_time: 5m45s
+        exp_samples: [{"labels":"rekey:metrics_file_mtime_seconds{job=\"rekey-node\",instance=\"fixture\"}","value":270}]
+    alert_rule_test:
+      - eval_time: 5m45s
+        alertname: RekeyMetricsUnavailable
+        exp_alerts: [{"exp_labels":{"job":"rekey-node","severity":"warning","component":"rekey","instance":"fixture"},"exp_annotations":{"summary":"Rekey metrics are unavailable or unverified","description":"Require a reachable collector, a valid file no older than 60 seconds, and synchronized clocks."}}]
+      - eval_time: 5m45s
+        alertname: RekeyMetricsTargetMissing
+        exp_alerts: []
+  - name: "future file mtime is unknown"
+    interval: 15s
+    input_series:
+      - series: "up{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_textfile_scrape_error{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+0x23"
+      - series: "node_textfile_mtime_seconds{job=\"rekey-node\",instance=\"fixture\",file=\"/var/lib/rekey-metrics/rekey.prom\"}"
+        values: "301+0x23"
+      - series: "node_timex_sync_status{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_time_seconds{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+15x23"
+      - series: "rekey_requests_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+15x23"
+      - series: "rekey_errors_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+0x23"
+    promql_expr_test:
+      - expr: "rekey:metrics_fresh"
+        eval_time: 5m
+        exp_samples: []
+      - expr: "rekey:requests_per_second"
+        eval_time: 5m
+        exp_samples: []
+      - expr: "rekey:errors_per_second"
+        eval_time: 5m
+        exp_samples: []
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: RekeyMetricsUnavailable
+        exp_alerts: [{"exp_labels":{"job":"rekey-node","severity":"warning","component":"rekey","instance":"fixture"},"exp_annotations":{"summary":"Rekey metrics are unavailable or unverified","description":"Require a reachable collector, a valid file no older than 60 seconds, and synchronized clocks."}}]
+      - eval_time: 5m
+        alertname: RekeyMetricsTargetMissing
+        exp_alerts: []
+  - name: "file absent"
+    interval: 15s
+    input_series:
+      - series: "up{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_textfile_scrape_error{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+0x23"
+      - series: "node_timex_sync_status{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_time_seconds{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+15x23"
+      - series: "rekey_requests_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+15x23"
+      - series: "rekey_errors_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+0x23"
+    promql_expr_test:
+      - expr: "rekey:metrics_fresh"
+        eval_time: 5m
+        exp_samples: []
+      - expr: "rekey:requests_per_second"
+        eval_time: 5m
+        exp_samples: []
+      - expr: "rekey:errors_per_second"
+        eval_time: 5m
+        exp_samples: []
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: RekeyMetricsUnavailable
+        exp_alerts: [{"exp_labels":{"job":"rekey-node","severity":"warning","component":"rekey","instance":"fixture"},"exp_annotations":{"summary":"Rekey metrics are unavailable or unverified","description":"Require a reachable collector, a valid file no older than 60 seconds, and synchronized clocks."}}]
+      - eval_time: 5m
+        alertname: RekeyMetricsTargetMissing
+        exp_alerts: []
+  - name: "file series becomes stale"
+    interval: 15s
+    input_series:
+      - series: "up{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_textfile_scrape_error{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+0x23"
+      - series: "node_textfile_mtime_seconds{job=\"rekey-node\",instance=\"fixture\",file=\"/var/lib/rekey-metrics/rekey.prom\"}"
+        values: "270+0x19 stale"
+      - series: "node_timex_sync_status{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_time_seconds{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+15x23"
+      - series: "rekey_requests_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+15x23"
+      - series: "rekey_errors_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+0x23"
+    promql_expr_test:
+      - expr: "rekey:metrics_fresh"
+        eval_time: 5m
+        exp_samples: []
+      - expr: "rekey:requests_per_second"
+        eval_time: 5m
+        exp_samples: []
+      - expr: "rekey:errors_per_second"
+        eval_time: 5m
+        exp_samples: []
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: RekeyMetricsUnavailable
+        exp_alerts: [{"exp_labels":{"job":"rekey-node","severity":"warning","component":"rekey","instance":"fixture"},"exp_annotations":{"summary":"Rekey metrics are unavailable or unverified","description":"Require a reachable collector, a valid file no older than 60 seconds, and synchronized clocks."}}]
+      - eval_time: 5m
+        alertname: RekeyMetricsTargetMissing
+        exp_alerts: []
+  - name: "collector down"
+    interval: 15s
+    input_series:
+      - series: "up{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+0x23"
+      - series: "node_textfile_scrape_error{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+0x23"
+      - series: "node_textfile_mtime_seconds{job=\"rekey-node\",instance=\"fixture\",file=\"/var/lib/rekey-metrics/rekey.prom\"}"
+        values: "270+0x23"
+      - series: "node_timex_sync_status{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_time_seconds{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+15x23"
+      - series: "rekey_requests_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+15x23"
+      - series: "rekey_errors_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+0x23"
+    promql_expr_test:
+      - expr: "rekey:metrics_fresh"
+        eval_time: 5m
+        exp_samples: []
+      - expr: "rekey:requests_per_second"
+        eval_time: 5m
+        exp_samples: []
+      - expr: "rekey:errors_per_second"
+        eval_time: 5m
+        exp_samples: []
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: RekeyMetricsUnavailable
+        exp_alerts: [{"exp_labels":{"job":"rekey-node","severity":"warning","component":"rekey","instance":"fixture"},"exp_annotations":{"summary":"Rekey metrics are unavailable or unverified","description":"Require a reachable collector, a valid file no older than 60 seconds, and synchronized clocks."}}]
+      - eval_time: 5m
+        alertname: RekeyMetricsTargetMissing
+        exp_alerts: []
+  - name: "target missing"
+    interval: 15s
+    input_series:
+      - series: "node_textfile_scrape_error{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+0x23"
+      - series: "node_textfile_mtime_seconds{job=\"rekey-node\",instance=\"fixture\",file=\"/var/lib/rekey-metrics/rekey.prom\"}"
+        values: "270+0x23"
+      - series: "node_timex_sync_status{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_time_seconds{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+15x23"
+      - series: "rekey_requests_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+15x23"
+      - series: "rekey_errors_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+0x23"
+    promql_expr_test:
+      - expr: "rekey:metrics_fresh"
+        eval_time: 5m
+        exp_samples: []
+      - expr: "rekey:requests_per_second"
+        eval_time: 5m
+        exp_samples: []
+      - expr: "rekey:errors_per_second"
+        eval_time: 5m
+        exp_samples: []
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: RekeyMetricsUnavailable
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: RekeyMetricsTargetMissing
+        exp_alerts: [{"exp_labels":{"job":"rekey-node","severity":"warning","component":"rekey"},"exp_annotations":{"summary":"Rekey collector target is missing","description":"The fixed single-host rekey-node target has no scrape-health series."}}]
+  - name: "textfile parse or permission error"
+    interval: 15s
+    input_series:
+      - series: "up{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_textfile_scrape_error{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_textfile_mtime_seconds{job=\"rekey-node\",instance=\"fixture\",file=\"/var/lib/rekey-metrics/rekey.prom\"}"
+        values: "270+0x23"
+      - series: "node_timex_sync_status{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_time_seconds{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+15x23"
+      - series: "rekey_requests_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+15x23"
+      - series: "rekey_errors_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+0x23"
+    promql_expr_test:
+      - expr: "rekey:metrics_fresh"
+        eval_time: 5m
+        exp_samples: []
+      - expr: "rekey:requests_per_second"
+        eval_time: 5m
+        exp_samples: []
+      - expr: "rekey:errors_per_second"
+        eval_time: 5m
+        exp_samples: []
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: RekeyMetricsUnavailable
+        exp_alerts: [{"exp_labels":{"job":"rekey-node","severity":"warning","component":"rekey","instance":"fixture"},"exp_annotations":{"summary":"Rekey metrics are unavailable or unverified","description":"Require a reachable collector, a valid file no older than 60 seconds, and synchronized clocks."}}]
+      - eval_time: 5m
+        alertname: RekeyMetricsTargetMissing
+        exp_alerts: []
+  - name: "missing textfile health metric"
+    interval: 15s
+    input_series:
+      - series: "up{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_textfile_mtime_seconds{job=\"rekey-node\",instance=\"fixture\",file=\"/var/lib/rekey-metrics/rekey.prom\"}"
+        values: "270+0x23"
+      - series: "node_timex_sync_status{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_time_seconds{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+15x23"
+      - series: "rekey_requests_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+15x23"
+      - series: "rekey_errors_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+0x23"
+    promql_expr_test:
+      - expr: "rekey:metrics_fresh"
+        eval_time: 5m
+        exp_samples: []
+      - expr: "rekey:requests_per_second"
+        eval_time: 5m
+        exp_samples: []
+      - expr: "rekey:errors_per_second"
+        eval_time: 5m
+        exp_samples: []
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: RekeyMetricsUnavailable
+        exp_alerts: [{"exp_labels":{"job":"rekey-node","severity":"warning","component":"rekey","instance":"fixture"},"exp_annotations":{"summary":"Rekey metrics are unavailable or unverified","description":"Require a reachable collector, a valid file no older than 60 seconds, and synchronized clocks."}}]
+      - eval_time: 5m
+        alertname: RekeyMetricsTargetMissing
+        exp_alerts: []
+  - name: "clock is unsynchronized"
+    interval: 15s
+    input_series:
+      - series: "up{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_textfile_scrape_error{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+0x23"
+      - series: "node_textfile_mtime_seconds{job=\"rekey-node\",instance=\"fixture\",file=\"/var/lib/rekey-metrics/rekey.prom\"}"
+        values: "270+0x23"
+      - series: "node_timex_sync_status{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+0x23"
+      - series: "node_time_seconds{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+15x23"
+      - series: "rekey_requests_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+15x23"
+      - series: "rekey_errors_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+0x23"
+    promql_expr_test:
+      - expr: "rekey:metrics_fresh"
+        eval_time: 5m
+        exp_samples: []
+      - expr: "rekey:requests_per_second"
+        eval_time: 5m
+        exp_samples: []
+      - expr: "rekey:errors_per_second"
+        eval_time: 5m
+        exp_samples: []
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: RekeyMetricsUnavailable
+        exp_alerts: [{"exp_labels":{"job":"rekey-node","severity":"warning","component":"rekey","instance":"fixture"},"exp_annotations":{"summary":"Rekey metrics are unavailable or unverified","description":"Require a reachable collector, a valid file no older than 60 seconds, and synchronized clocks."}}]
+      - eval_time: 5m
+        alertname: RekeyMetricsTargetMissing
+        exp_alerts: []
+  - name: "clock synchronization metric missing"
+    interval: 15s
+    input_series:
+      - series: "up{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_textfile_scrape_error{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+0x23"
+      - series: "node_textfile_mtime_seconds{job=\"rekey-node\",instance=\"fixture\",file=\"/var/lib/rekey-metrics/rekey.prom\"}"
+        values: "270+0x23"
+      - series: "node_time_seconds{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+15x23"
+      - series: "rekey_requests_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+15x23"
+      - series: "rekey_errors_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+0x23"
+    promql_expr_test:
+      - expr: "rekey:metrics_fresh"
+        eval_time: 5m
+        exp_samples: []
+      - expr: "rekey:requests_per_second"
+        eval_time: 5m
+        exp_samples: []
+      - expr: "rekey:errors_per_second"
+        eval_time: 5m
+        exp_samples: []
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: RekeyMetricsUnavailable
+        exp_alerts: [{"exp_labels":{"job":"rekey-node","severity":"warning","component":"rekey","instance":"fixture"},"exp_annotations":{"summary":"Rekey metrics are unavailable or unverified","description":"Require a reachable collector, a valid file no older than 60 seconds, and synchronized clocks."}}]
+      - eval_time: 5m
+        alertname: RekeyMetricsTargetMissing
+        exp_alerts: []
+  - name: "clock metric missing"
+    interval: 15s
+    input_series:
+      - series: "up{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_textfile_scrape_error{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+0x23"
+      - series: "node_textfile_mtime_seconds{job=\"rekey-node\",instance=\"fixture\",file=\"/var/lib/rekey-metrics/rekey.prom\"}"
+        values: "270+0x23"
+      - series: "node_timex_sync_status{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "rekey_requests_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+15x23"
+      - series: "rekey_errors_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+0x23"
+    promql_expr_test:
+      - expr: "rekey:metrics_fresh"
+        eval_time: 5m
+        exp_samples: []
+      - expr: "rekey:requests_per_second"
+        eval_time: 5m
+        exp_samples: []
+      - expr: "rekey:errors_per_second"
+        eval_time: 5m
+        exp_samples: []
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: RekeyMetricsUnavailable
+        exp_alerts: [{"exp_labels":{"job":"rekey-node","severity":"warning","component":"rekey","instance":"fixture"},"exp_annotations":{"summary":"Rekey metrics are unavailable or unverified","description":"Require a reachable collector, a valid file no older than 60 seconds, and synchronized clocks."}}]
+      - eval_time: 5m
+        alertname: RekeyMetricsTargetMissing
+        exp_alerts: []
+  - name: "clock series becomes stale"
+    interval: 15s
+    input_series:
+      - series: "up{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_textfile_scrape_error{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+0x23"
+      - series: "node_textfile_mtime_seconds{job=\"rekey-node\",instance=\"fixture\",file=\"/var/lib/rekey-metrics/rekey.prom\"}"
+        values: "270+0x23"
+      - series: "node_timex_sync_status{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_time_seconds{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+15x19 stale"
+      - series: "rekey_requests_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+15x23"
+      - series: "rekey_errors_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+0x23"
+    promql_expr_test:
+      - expr: "rekey:metrics_fresh"
+        eval_time: 5m
+        exp_samples: []
+      - expr: "rekey:requests_per_second"
+        eval_time: 5m
+        exp_samples: []
+      - expr: "rekey:errors_per_second"
+        eval_time: 5m
+        exp_samples: []
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: RekeyMetricsUnavailable
+        exp_alerts: [{"exp_labels":{"job":"rekey-node","severity":"warning","component":"rekey","instance":"fixture"},"exp_annotations":{"summary":"Rekey metrics are unavailable or unverified","description":"Require a reachable collector, a valid file no older than 60 seconds, and synchronized clocks."}}]
+      - eval_time: 5m
+        alertname: RekeyMetricsTargetMissing
+        exp_alerts: []
+  - name: "positive clock skew exceeds five seconds"
+    interval: 15s
+    input_series:
+      - series: "up{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_textfile_scrape_error{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+0x23"
+      - series: "node_textfile_mtime_seconds{job=\"rekey-node\",instance=\"fixture\",file=\"/var/lib/rekey-metrics/rekey.prom\"}"
+        values: "270+0x23"
+      - series: "node_timex_sync_status{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_time_seconds{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "6+15x23"
+      - series: "rekey_requests_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+15x23"
+      - series: "rekey_errors_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+0x23"
+    promql_expr_test:
+      - expr: "rekey:metrics_fresh"
+        eval_time: 5m
+        exp_samples: []
+      - expr: "rekey:requests_per_second"
+        eval_time: 5m
+        exp_samples: []
+      - expr: "rekey:errors_per_second"
+        eval_time: 5m
+        exp_samples: []
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: RekeyMetricsUnavailable
+        exp_alerts: [{"exp_labels":{"job":"rekey-node","severity":"warning","component":"rekey","instance":"fixture"},"exp_annotations":{"summary":"Rekey metrics are unavailable or unverified","description":"Require a reachable collector, a valid file no older than 60 seconds, and synchronized clocks."}}]
+      - eval_time: 5m
+        alertname: RekeyMetricsTargetMissing
+        exp_alerts: []
+  - name: "negative clock skew exceeds five seconds"
+    interval: 15s
+    input_series:
+      - series: "up{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_textfile_scrape_error{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+0x23"
+      - series: "node_textfile_mtime_seconds{job=\"rekey-node\",instance=\"fixture\",file=\"/var/lib/rekey-metrics/rekey.prom\"}"
+        values: "270+0x23"
+      - series: "node_timex_sync_status{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_time_seconds{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "-6+15x23"
+      - series: "rekey_requests_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+15x23"
+      - series: "rekey_errors_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+0x23"
+    promql_expr_test:
+      - expr: "rekey:metrics_fresh"
+        eval_time: 5m
+        exp_samples: []
+      - expr: "rekey:requests_per_second"
+        eval_time: 5m
+        exp_samples: []
+      - expr: "rekey:errors_per_second"
+        eval_time: 5m
+        exp_samples: []
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: RekeyMetricsUnavailable
+        exp_alerts: [{"exp_labels":{"job":"rekey-node","severity":"warning","component":"rekey","instance":"fixture"},"exp_annotations":{"summary":"Rekey metrics are unavailable or unverified","description":"Require a reachable collector, a valid file no older than 60 seconds, and synchronized clocks."}}]
+      - eval_time: 5m
+        alertname: RekeyMetricsTargetMissing
+        exp_alerts: []
+  - name: "five second clock skew boundary remains fresh"
+    interval: 15s
+    input_series:
+      - series: "up{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_textfile_scrape_error{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+0x23"
+      - series: "node_textfile_mtime_seconds{job=\"rekey-node\",instance=\"fixture\",file=\"/var/lib/rekey-metrics/rekey.prom\"}"
+        values: "270+0x23"
+      - series: "node_timex_sync_status{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_time_seconds{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "5+15x23"
+      - series: "rekey_requests_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+15x23"
+      - series: "rekey_errors_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+0x23"
+    promql_expr_test:
+      - expr: "rekey:metrics_fresh"
+        eval_time: 5m
+        exp_samples: [{"labels":"rekey:metrics_fresh{job=\"rekey-node\",instance=\"fixture\"}","value":1}]
+      - expr: "rekey:requests_per_second"
+        eval_time: 5m
+        exp_samples: [{"labels":"rekey:requests_per_second{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}","value":1}]
+      - expr: "rekey:errors_per_second"
+        eval_time: 5m
+        exp_samples: [{"labels":"rekey:errors_per_second{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}","value":0}]
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: RekeyMetricsUnavailable
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: RekeyMetricsTargetMissing
+        exp_alerts: []
+  - name: "fresh true zero request counter remains zero"
+    interval: 15s
+    input_series:
+      - series: "up{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_textfile_scrape_error{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+0x23"
+      - series: "node_textfile_mtime_seconds{job=\"rekey-node\",instance=\"fixture\",file=\"/var/lib/rekey-metrics/rekey.prom\"}"
+        values: "270+0x23"
+      - series: "node_timex_sync_status{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_time_seconds{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+15x23"
+      - series: "rekey_requests_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+0x23"
+      - series: "rekey_errors_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+0x23"
+    promql_expr_test:
+      - expr: "rekey:metrics_fresh"
+        eval_time: 5m
+        exp_samples: [{"labels":"rekey:metrics_fresh{job=\"rekey-node\",instance=\"fixture\"}","value":1}]
+      - expr: "rekey:requests_per_second"
+        eval_time: 5m
+        exp_samples: [{"labels":"rekey:requests_per_second{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}","value":0}]
+      - expr: "rekey:errors_per_second"
+        eval_time: 5m
+        exp_samples: [{"labels":"rekey:errors_per_second{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}","value":0}]
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: RekeyMetricsUnavailable
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: RekeyMetricsTargetMissing
+        exp_alerts: []
+  - name: "counter reset does not invent negative rate or events"
+    interval: 15s
+    input_series:
+      - series: "up{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_textfile_scrape_error{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+0x23"
+      - series: "node_textfile_mtime_seconds{job=\"rekey-node\",instance=\"fixture\",file=\"/var/lib/rekey-metrics/rekey.prom\"}"
+        values: "270+0x23"
+      - series: "node_timex_sync_status{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_time_seconds{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+15x23"
+      - series: "rekey_requests_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "100+0x9 0+0x13"
+      - series: "rekey_errors_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+0x23"
+    promql_expr_test:
+      - expr: "rekey:metrics_fresh"
+        eval_time: 5m
+        exp_samples: [{"labels":"rekey:metrics_fresh{job=\"rekey-node\",instance=\"fixture\"}","value":1}]
+      - expr: "rekey:requests_per_second"
+        eval_time: 5m
+        exp_samples: [{"labels":"rekey:requests_per_second{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}","value":0}]
+      - expr: "rekey:errors_per_second"
+        eval_time: 5m
+        exp_samples: [{"labels":"rekey:errors_per_second{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}","value":0}]
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: RekeyMetricsUnavailable
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: RekeyMetricsTargetMissing
+        exp_alerts: []
+  - name: "different file cannot satisfy the fixed file gate"
+    interval: 15s
+    input_series:
+      - series: "up{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_textfile_scrape_error{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+0x23"
+      - series: "node_textfile_mtime_seconds{job=\"rekey-node\",instance=\"fixture\",file=\"/var/lib/other/other.prom\"}"
+        values: "270+0x23"
+      - series: "node_timex_sync_status{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_time_seconds{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+15x23"
+      - series: "rekey_requests_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+15x23"
+      - series: "rekey_errors_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+0x23"
+    promql_expr_test:
+      - expr: "rekey:metrics_fresh"
+        eval_time: 5m
+        exp_samples: []
+      - expr: "rekey:requests_per_second"
+        eval_time: 5m
+        exp_samples: []
+      - expr: "rekey:errors_per_second"
+        eval_time: 5m
+        exp_samples: []
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: RekeyMetricsUnavailable
+        exp_alerts: [{"exp_labels":{"job":"rekey-node","severity":"warning","component":"rekey","instance":"fixture"},"exp_annotations":{"summary":"Rekey metrics are unavailable or unverified","description":"Require a reachable collector, a valid file no older than 60 seconds, and synchronized clocks."}}]
+      - eval_time: 5m
+        alertname: RekeyMetricsTargetMissing
+        exp_alerts: []
+  - name: "foreign job cannot satisfy the gate"
+    interval: 15s
+    input_series:
+      - series: "up{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_textfile_scrape_error{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+0x23"
+      - series: "node_textfile_mtime_seconds{job=\"foreign\",instance=\"fixture\",file=\"/var/lib/rekey-metrics/rekey.prom\"}"
+        values: "270+0x23"
+      - series: "node_timex_sync_status{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "1+0x23"
+      - series: "node_time_seconds{job=\"rekey-node\",instance=\"fixture\"}"
+        values: "0+15x23"
+      - series: "rekey_requests_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+15x23"
+      - series: "rekey_errors_total{job=\"rekey-node\",instance=\"fixture\",channel=\"admin\"}"
+        values: "0+0x23"
+    promql_expr_test:
+      - expr: "rekey:metrics_fresh"
+        eval_time: 5m
+        exp_samples: []
+      - expr: "rekey:requests_per_second"
+        eval_time: 5m
+        exp_samples: []
+      - expr: "rekey:errors_per_second"
+        eval_time: 5m
+        exp_samples: []
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: RekeyMetricsUnavailable
+        exp_alerts: [{"exp_labels":{"job":"rekey-node","severity":"warning","component":"rekey","instance":"fixture"},"exp_annotations":{"summary":"Rekey metrics are unavailable or unverified","description":"Require a reachable collector, a valid file no older than 60 seconds, and synchronized clocks."}}]
+      - eval_time: 5m
+        alertname: RekeyMetricsTargetMissing
+        exp_alerts: []

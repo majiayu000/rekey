@@ -13,9 +13,11 @@ use rekey_broker::upstream::{
     ScreenedEndpoint, UpstreamError, UpstreamFuture, UpstreamRequest, UpstreamTransport,
     select_public_endpoint, send_screened,
 };
+use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
+use zeroize::Zeroizing;
 
 const VAULT_HOST: &str = "vault.test.local";
 const ACTION_HOST: &str = "api.test.local";
@@ -26,6 +28,19 @@ struct SplitTlsTransport {
     action: SocketAddr,
     action_ca: Arc<Vec<u8>>,
     trace_path: Arc<PathBuf>,
+}
+
+#[derive(Deserialize)]
+struct RenewalRequest<'a> {
+    lease_id: &'a str,
+    increment: u64,
+}
+
+#[derive(Deserialize)]
+struct RenewalReceipt<'a> {
+    lease_id: &'a str,
+    lease_duration: u64,
+    renewable: bool,
 }
 
 fn inject_after_screen(host: &str, inject: SocketAddr) -> Result<ScreenedEndpoint, UpstreamError> {
@@ -50,10 +65,37 @@ impl UpstreamTransport for SplitTlsTransport {
             return Box::pin(async { Err(UpstreamError::Blocked("private-address")) });
         };
         let revoke_ok = request.host == VAULT_HOST && request.path == "/v1/sys/leases/revoke";
+        let renewal = if request.host == VAULT_HOST && request.path == "/v1/sys/leases/renew" {
+            serde_json::from_slice::<RenewalRequest<'_>>(&request.body)
+                .ok()
+                .map(|body| (Zeroizing::new(body.lease_id.to_owned()), body.increment))
+        } else {
+            None
+        };
         let trace_path = Arc::clone(&self.trace_path);
         Box::pin(async move {
             let endpoint = inject_after_screen(&request.host, addr)?;
             let response = send_screened(request, endpoint, Some(&ca)).await?;
+            if let Some((lease_id, increment)) = renewal {
+                let receipt = serde_json::from_slice::<RenewalReceipt<'_>>(&response.body)
+                    .map_err(|_| UpstreamError::Transport)?;
+                if response.status != 200
+                    || receipt.lease_id != lease_id.as_str()
+                    || increment != 60
+                    || !receipt.renewable
+                    || !(6..=60).contains(&receipt.lease_duration)
+                {
+                    return Err(UpstreamError::Transport);
+                }
+                append_trace(
+                    trace_path.as_path(),
+                    &format!(
+                        "p7oss.vault.renew.ok ttl={} renewable=true",
+                        receipt.lease_duration
+                    ),
+                )
+                .map_err(|_| UpstreamError::Transport)?;
+            }
             if revoke_ok && response.status == 204 {
                 let _ = append_trace(trace_path.as_path(), "p7oss.vault.revoke.ok");
             }

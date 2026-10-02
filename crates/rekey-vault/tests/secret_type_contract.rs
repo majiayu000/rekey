@@ -31,6 +31,10 @@ assert_not_impl_any!(
     rekey_vault::secret::PreparedCredential: Clone, Copy, std::fmt::Display, serde::Serialize
 );
 
+assert_not_impl_any!(
+    rekey_vault::secret::PreparedLeaseCleanup: Clone, Copy, std::fmt::Display, std::fmt::Debug, serde::Serialize
+);
+
 #[test]
 fn debug_output_is_redacted_without_length() {
     let input = SecretInput::new(b"super-secret-value".to_vec());

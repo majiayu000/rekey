@@ -102,6 +102,17 @@ impl BrokerCtx {
         }
         .map_err(|_| invalid())?;
 
+        let human_admission = match &self.oidc_admin {
+            Some(manager) if manager.human_binding(active.snapshot(), verified.principal_id) => {
+                Some(
+                    manager
+                        .human_admission(verified.principal_id, self, deadline)
+                        .await?,
+                )
+            }
+            _ => None,
+        };
+
         let distinct_actions = create.actions.iter().copied().collect::<BTreeSet<_>>();
         if create.actions.is_empty()
             || create.ttl_ms <= 0
@@ -138,7 +149,12 @@ impl BrokerCtx {
         let expires_at_ms = requested_expiry
             .as_unix_ms()
             .min(verified.expires_at_ms)
-            .min(active.snapshot().expires_at_ms());
+            .min(active.snapshot().expires_at_ms())
+            .min(
+                human_admission
+                    .as_ref()
+                    .map_or(i64::MAX, |identity| identity.expires_at_ms),
+            );
         let effective_ttl_ms = expires_at_ms
             .checked_sub(now.as_unix_ms())
             .filter(|ttl| *ttl > 0)
@@ -201,6 +217,24 @@ impl BrokerCtx {
         // Once replay and audit are durable, response loss intentionally leaves
         // this bounded session live until its normal revocation or expiry.
         reject_if_elapsed(deadline)?;
+        if let (Some(manager), Some(identity)) = (&self.oidc_admin, &human_admission) {
+            match manager.publish(identity, self, || {
+                self.sessions
+                    .bound_management_deadline(session_id, identity.deadline.into_std())
+            }) {
+                Ok(true) => (),
+                Ok(false) => {
+                    self.sessions.revoke(session_id);
+                    return Err(BrokerError::Denied(
+                        "management capability publication closed",
+                    ));
+                }
+                Err(error) => {
+                    self.sessions.revoke(session_id);
+                    return Err(error);
+                }
+            }
+        }
         Ok(SessionCreatedResponse {
             session_id,
             principal_id: verified.principal_id,

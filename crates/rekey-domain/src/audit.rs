@@ -13,6 +13,59 @@ pub const AUDIT_SCAN_MAX_ROWS: u32 = 1_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct AuditRetentionSet {
+    #[serde(deserialize_with = "required_days")]
+    pub days: Option<u64>,
+}
+fn required_days<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<u64>, D::Error> {
+    Option::<u64>::deserialize(deserializer)
+}
+impl AuditRetentionSet {
+    pub fn validate_at(&self, now_ms: i64) -> Result<(), DomainError> {
+        self.cutoff_at(now_ms).map(|_| ())
+    }
+    pub fn cutoff_at(&self, now_ms: i64) -> Result<Option<i64>, DomainError> {
+        let Some(days) = self.days else {
+            return Ok(None);
+        };
+        let age = days
+            .checked_mul(86_400_000)
+            .filter(|age| days > 0 && *age <= i64::MAX as u64)
+            .ok_or_else(|| invalid("retention days exceed the supported range"))?;
+        now_ms
+            .checked_sub(age as i64)
+            .filter(|cutoff| *cutoff >= 0)
+            .map(Some)
+            .ok_or_else(|| invalid("retention age exceeds the current epoch"))
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuditRetentionStatus {
+    #[serde(deserialize_with = "required_days")]
+    pub days: Option<u64>,
+    pub updated_at_ms: i64,
+}
+impl AuditRetentionStatus {
+    pub fn validate(&self) -> Result<(), DomainError> {
+        if self.updated_at_ms < 0
+            || self.days.is_some_and(|days| {
+                days == 0
+                    || days
+                        .checked_mul(86_400_000)
+                        .is_none_or(|age| age > i64::MAX as u64)
+            })
+        {
+            return Err(invalid("invalid audit retention status"));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AuditPruneRequest {
     pub before_ms: i64,
 }
@@ -426,5 +479,65 @@ mod tests {
         page.events[0].approval_id = Some(ApprovalId::new_random());
         page.events[0].approver_id = Some(ApproverId::new_random());
         assert!(page.validate_for(&query()).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod retention_contract_tests {
+    use super::*;
+    #[test]
+    fn retention_requires_explicit_days_and_rejects_bad_fields() {
+        for input in [
+            r#"{}"#,
+            r#"{"days":0}"#,
+            r#"{"days":-1}"#,
+            r#"{"days":1,"extra":true}"#,
+        ] {
+            let parsed = serde_json::from_str::<AuditRetentionSet>(input);
+            assert!(
+                parsed.is_err() || parsed.unwrap().validate_at(172800000).is_err(),
+                "{input}"
+            );
+        }
+        assert_eq!(
+            serde_json::from_str::<AuditRetentionSet>(r#"{"days":null}"#)
+                .unwrap()
+                .days,
+            None
+        );
+        assert_eq!(
+            serde_json::from_str::<AuditRetentionSet>(r#"{"days":1}"#)
+                .unwrap()
+                .cutoff_at(172800000)
+                .unwrap(),
+            Some(86400000)
+        );
+    }
+    #[test]
+    fn retention_age_and_receipt_bounds_are_checked_without_clamping() {
+        for days in [0, u64::MAX] {
+            assert!(
+                AuditRetentionSet { days: Some(days) }
+                    .validate_at(i64::MAX)
+                    .is_err()
+            );
+        }
+        assert!(AuditRetentionSet { days: Some(1) }.cutoff_at(1).is_err());
+        assert!(
+            AuditRetentionStatus {
+                days: Some(0),
+                updated_at_ms: 1
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            AuditRetentionStatus {
+                days: None,
+                updated_at_ms: -1
+            }
+            .validate()
+            .is_err()
+        );
     }
 }

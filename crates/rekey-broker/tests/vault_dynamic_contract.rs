@@ -2,20 +2,39 @@
 
 mod common;
 
-use rekey_broker::upstream::{UpstreamError, UpstreamResponse};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use rekey_broker::testing::FakeUpstreamTransport;
+use rekey_broker::upstream::{
+    UpstreamError, UpstreamFuture, UpstreamRequest, UpstreamResponse, UpstreamTransport,
+};
 use rekey_domain::ipc::{Channel, admin_msg, agent_msg};
 use zeroize::Zeroizing;
 
 const LEASE_ID: &str = "database/creds/agent-api-token/lease-one";
 const DYNAMIC_VALUE: &str = "dynamic-secret-one";
 
+struct ObservedTransport {
+    fake: Arc<FakeUpstreamTransport>,
+    timeouts: Arc<Mutex<Vec<Duration>>>,
+}
+
+impl UpstreamTransport for ObservedTransport {
+    fn send(&self, request: UpstreamRequest) -> UpstreamFuture<'_> {
+        self.timeouts.lock().unwrap().push(request.timeout);
+        self.fake.send(request)
+    }
+}
+
 fn profile(token: &str) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({
-        "credential_type":"vault-dynamic-source-v1",
+        "credential_type":"vault-dynamic-source-v2",
         "origin":"https://vault.example.com",
         "mount":"database",
         "role":"agent-api-token",
         "key":"token",
+        "renew_increment_seconds":60,
         "vault_token":token
     }))
     .unwrap()
@@ -46,18 +65,45 @@ fn issued() -> UpstreamResponse {
 
 async fn setup() -> (common::TestBroker, String, String, u64, String) {
     let broker = common::start_broker().await;
+    register(broker, 30_000).await
+}
+
+async fn register(
+    broker: common::TestBroker,
+    timeout_ms: u32,
+) -> (common::TestBroker, String, String, u64, String) {
+    register_profile(broker, timeout_ms, &profile("hvs.bootstrap")).await
+}
+
+async fn register_profile(
+    broker: common::TestBroker,
+    timeout_ms: u32,
+    payload: &[u8],
+) -> (common::TestBroker, String, String, u64, String) {
     common::unlock(&broker).await;
-    let metadata = serde_json::json!({"label":"dynamic","kind":"vault-dynamic-source"});
+    let source: serde_json::Value = serde_json::from_slice(payload).unwrap();
+    let metadata = serde_json::json!({"label":format!("dynamic-{}",source["role"].as_str().unwrap()),"kind":"vault-dynamic-source"});
     let added = common::call(
         &broker.admin_sock(),
         Channel::Admin,
         admin_msg::CREDENTIAL_ADD,
         metadata.to_string().as_bytes(),
-        &common::proof_and_secret_body(common::PASSWORD, &profile("hvs.bootstrap")),
+        &common::proof_and_secret_body(common::PASSWORD, payload),
     )
     .await;
     let credential_id = added.ok()["id"].as_str().unwrap().to_owned();
-    let (action_id, action_version) = common::create_action(&broker, &credential_id).await;
+    let mut action = common::action_meta(&credential_id);
+    action["timeout_ms"] = timeout_ms.into();
+    let created = common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::ACTION_CREATE,
+        action.to_string().as_bytes(),
+        &common::proof_body(common::PASSWORD),
+    )
+    .await;
+    let action_id = created.ok()["id"].as_str().unwrap().to_owned();
+    let action_version = 1;
     let capability = common::create_session(&broker, &action_id, action_version).await;
     (broker, credential_id, action_id, action_version, capability)
 }
@@ -176,7 +222,9 @@ async fn issuance_uncertainty_and_final_reflection_fail_closed() {
     assert_eq!(uncertain.err_code(), "UPSTREAM_INDETERMINATE");
     assert_eq!(uncertain.metadata["retryable"], false);
     assert_eq!(broker.fake.take_requests().len(), 1);
+    broker.shutdown().await;
 
+    let (broker, _, action_id, action_version, capability) = setup().await;
     broker.fake.push_response(Ok(issued()));
     broker
         .fake
@@ -199,18 +247,20 @@ async fn source_preflight_is_definite_but_post_send_uncertainty_is_not_retryable
     assert_eq!(blocked.metadata["retryable"], true);
     assert_eq!(broker.fake.take_requests().len(), 1);
 
+    broker.shutdown().await;
     for uncertain in [
         UpstreamError::Blocked("redirect"),
         UpstreamError::ResponseTooLarge,
         UpstreamError::Timeout,
     ] {
+        let (broker, _, action_id, action_version, capability) = setup().await;
         broker.fake.push_response(Err(uncertain));
         let failed = execute(&broker, &capability, &action_id, action_version).await;
         assert_eq!(failed.err_code(), "UPSTREAM_INDETERMINATE");
         assert_eq!(failed.metadata["retryable"], false);
         assert_eq!(broker.fake.take_requests().len(), 1);
+        broker.shutdown().await;
     }
-    broker.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -236,9 +286,6 @@ async fn every_bounded_candidate_is_revoked_after_an_ambiguous_response() {
 async fn lock_waits_for_an_admitted_dynamic_lease_to_revoke() {
     let (broker, _, action_id, action_version, capability) = setup().await;
     let release = broker.fake.push_response_gated(Ok(issued()));
-    broker
-        .fake
-        .push_response(Ok(response(200, br#"{"ok":true}"#)));
     broker.fake.push_response(Ok(response(204, b"")));
 
     let agent = broker.agent_sock();
@@ -273,9 +320,9 @@ async fn lock_waits_for_an_admitted_dynamic_lease_to_revoke() {
     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     assert!(!lock.is_finished(), "lock returned before lease cleanup");
     release.notify_one();
-    execution.await.unwrap().ok();
+    assert_eq!(execution.await.unwrap().err_code(), "DRAINING");
     lock.await.unwrap().ok();
-    assert_eq!(broker.fake.take_requests().len(), 3);
+    assert_eq!(broker.fake.take_requests().len(), 2);
     broker.shutdown().await;
 }
 
@@ -371,7 +418,9 @@ async fn source_final_and_revoke_reflections_never_reach_the_agent() {
     let source_failed = execute(&broker, &capability, &action_id, action_version).await;
     assert_eq!(source_failed.err_code(), "RESPONSE_SECURITY_VIOLATION");
     assert_eq!(broker.fake.take_requests().len(), 2);
+    broker.shutdown().await;
 
+    let (broker, _, action_id, action_version, capability) = setup().await;
     broker.fake.push_response(Ok(issued()));
     broker.fake.push_response(Ok(response(
         200,
@@ -427,4 +476,689 @@ async fn action_timeout_below_two_seconds_stops_before_lease_acquisition() {
     assert_eq!(failed.err_code(), "REQUEST_DENIED");
     assert!(broker.fake.take_requests().is_empty());
     broker.shutdown().await;
+}
+
+fn short_issued(renewable: bool) -> UpstreamResponse {
+    response(
+        200,
+        &serde_json::to_vec(&serde_json::json!({
+            "lease_id": LEASE_ID, "lease_duration":5, "renewable":renewable,
+            "data":{"token": DYNAMIC_VALUE}
+        }))
+        .unwrap(),
+    )
+}
+
+fn renewed(ttl: u64) -> UpstreamResponse {
+    response(
+        200,
+        &serde_json::to_vec(&serde_json::json!({
+            "lease_id": LEASE_ID, "lease_duration":ttl, "renewable":true,
+            "data":null, "auth":null, "request_id":"ignored"
+        }))
+        .unwrap(),
+    )
+}
+
+fn audit_events(broker: &common::TestBroker) -> Vec<String> {
+    let db = rusqlite::Connection::open(broker.state_dir.join("vault.sqlite3")).unwrap();
+    let mut query = db.prepare("SELECT event_type FROM audit_events WHERE event_type LIKE 'execution.%' OR event_type LIKE 'vault.lease.%' ORDER BY sequence").unwrap();
+    query
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+async fn wait_requests(broker: &common::TestBroker, count: usize) {
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while broker.fake.requests.lock().unwrap().len() < count {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+fn spawn_execute(
+    broker: &common::TestBroker,
+    capability: &str,
+    action_id: &str,
+) -> tokio::task::JoinHandle<common::WireResponse> {
+    let socket = broker.agent_sock();
+    let metadata = common::execute_meta(capability, action_id, 1).to_string();
+    tokio::spawn(async move {
+        common::call(
+            &socket,
+            Channel::Agent,
+            agent_msg::EXECUTE_FIXED_HTTP_ACTION,
+            metadata.as_bytes(),
+            b"{}",
+        )
+        .await
+    })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn renews_once_before_business_and_audits_before_io_without_leaking_canaries() {
+    let (broker, _, id, version, cap) = register(common::start_broker().await, 8_000).await;
+    broker.fake.push_response(Ok(short_issued(true)));
+    let release = broker.fake.push_response_gated(Ok(renewed(60)));
+    broker
+        .fake
+        .push_response(Ok(response(200, br#"{"ok":true}"#)));
+    broker.fake.push_response(Ok(response(204, b"")));
+    let execution = spawn_execute(&broker, &cap, &id);
+    wait_requests(&broker, 2).await;
+    assert_eq!(
+        audit_events(&broker),
+        [
+            "execution.started",
+            "vault.lease.acquire_intent",
+            "vault.lease.issued",
+            "vault.lease.renewal_started"
+        ]
+    );
+    release.notify_one();
+    let result = execution.await.unwrap();
+    result.ok();
+    assert_eq!(result.body, br#"{"ok":true}"#);
+    let requests = broker.fake.take_requests();
+    assert_eq!(requests.len(), 4);
+    assert_eq!(requests[1].method, "POST");
+    assert_eq!(requests[1].host, "vault.example.com");
+    assert_eq!(requests[1].path, "/v1/sys/leases/renew");
+    assert_eq!(requests[1].auth_name, "x-vault-token");
+    assert_eq!(requests[1].auth_value, b"hvs.bootstrap");
+    assert_eq!(
+        requests[1].body,
+        format!(r#"{{"lease_id":"{LEASE_ID}","increment":60}}"#).as_bytes()
+    );
+    assert_eq!(requests[2].path, "/v1/things");
+    assert_eq!(requests[3].path, "/v1/sys/leases/revoke");
+    assert_eq!(
+        requests[3].body,
+        format!(r#"{{"lease_id":"{LEASE_ID}","sync":true}}"#).as_bytes()
+    );
+    assert_eq!(
+        audit_events(&broker),
+        [
+            "execution.started",
+            "vault.lease.acquire_intent",
+            "vault.lease.issued",
+            "vault.lease.renewal_started",
+            "vault.lease.renewed",
+            "vault.lease.cleanup_started",
+            "vault.lease.revoked",
+            "execution.finished"
+        ]
+    );
+    let db = rusqlite::Connection::open(broker.state_dir.join("vault.sqlite3")).unwrap();
+    let mut query = db
+        .prepare("SELECT event_type || outcome || reason_code FROM audit_events ORDER BY sequence")
+        .unwrap();
+    let audit: Vec<String> = query
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    let public = format!(
+        "{}{}{}",
+        serde_json::to_string(&result.metadata).unwrap(),
+        String::from_utf8_lossy(&result.body),
+        audit.join("")
+    );
+    for canary in [
+        LEASE_ID,
+        DYNAMIC_VALUE,
+        "hvs.bootstrap",
+        "vault.example.com",
+    ] {
+        assert!(!public.contains(canary));
+    }
+    assert_eq!(version, 1);
+    broker.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn no_renewal_when_not_renewable_or_initial_ttl_covers_action() {
+    for (renewable, ttl) in [(false, 5), (true, 60)] {
+        let (broker, _, id, version, cap) = register(common::start_broker().await, 8_000).await;
+        broker.fake.push_response(Ok(if ttl == 5 {
+            short_issued(renewable)
+        } else {
+            issued()
+        }));
+        broker
+            .fake
+            .push_response(Ok(response(200, br#"{"ok":true}"#)));
+        broker.fake.push_response(Ok(response(204, b"")));
+        execute(&broker, &cap, &id, version).await.ok();
+        let requests = broker.fake.take_requests();
+        assert_eq!(requests.len(), 3);
+        assert!(requests.iter().all(|r| r.path != "/v1/sys/leases/renew"));
+        assert!(
+            !audit_events(&broker)
+                .iter()
+                .any(|event| event.contains("renew"))
+        );
+        broker.shutdown().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn renewal_mismatch_duplicate_new_data_and_short_ttl_revoke_only_known_id() {
+    let (broker, _, id, version, cap) = register(common::start_broker().await, 8_000).await;
+    for body in [
+        r#"{"lease_id":"wrong-id","lease_duration":60,"renewable":true}"#.to_owned(),
+        format!(
+            r#"{{"lease_id":"{LEASE_ID}","lease_id":"{LEASE_ID}","lease_duration":60,"renewable":true}}"#
+        ),
+        format!(
+            r#"{{"lease_id":"{LEASE_ID}","lease_duration":60,"lease_duration":60,"renewable":true}}"#
+        ),
+        format!(
+            r#"{{"lease_id":"{LEASE_ID}","lease_duration":60,"renewable":true,"renewable":false}}"#
+        ),
+        format!(
+            r#"{{"lease_id":"{LEASE_ID}","lease_duration":60,"renewable":true,"data":{{"token":"new-secret"}}}}"#
+        ),
+        format!(r#"{{"lease_id":"{LEASE_ID}","lease_duration":4,"renewable":true}}"#),
+    ] {
+        broker.fake.push_response(Ok(short_issued(true)));
+        broker
+            .fake
+            .push_response(Ok(response(200, body.as_bytes())));
+        broker.fake.push_response(Ok(response(204, b"")));
+        let failed = execute(&broker, &cap, &id, version).await;
+        assert_eq!(failed.err_code(), "UPSTREAM_INDETERMINATE");
+        assert_eq!(failed.metadata["retryable"], false);
+        assert!(failed.body.is_empty());
+        let requests = broker.fake.take_requests();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(requests[2].path, "/v1/sys/leases/revoke");
+        assert_eq!(
+            requests[2].body,
+            format!(r#"{{"lease_id":"{LEASE_ID}","sync":true}}"#).as_bytes()
+        );
+    }
+    broker.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn renew_rejection_transport_and_reflection_are_nonretryable_and_skip_business() {
+    let (broker, _, id, version, cap) = register(common::start_broker().await, 8_000).await;
+    let mut header_reflection = renewed(60);
+    header_reflection.headers = vec![("x-debug".to_owned(), LEASE_ID.to_owned())].into();
+    for result in [
+        Err(UpstreamError::Timeout), Err(UpstreamError::Transport),
+        Ok(response(403, br#"{"errors":["denied"]}"#)),
+        Ok(response(200, format!(r#"{{"lease_id":"{LEASE_ID}","lease_duration":60,"renewable":true,"debug":"hvs.bootstrap"}}"#).as_bytes())),
+        Ok(response(200, format!(r#"{{"lease_id":"{LEASE_ID}","lease_duration":60,"renewable":true,"debug":"ZHluYW1pYy1zZWNyZXQtb25l"}}"#).as_bytes())),
+        Ok(header_reflection),
+    ] {
+        broker.fake.push_response(Ok(short_issued(true)));
+        broker.fake.push_response(result);
+        broker.fake.push_response(Ok(response(204, b"")));
+        let failed = execute(&broker, &cap, &id, version).await;
+        assert_eq!(failed.err_code(), "UPSTREAM_INDETERMINATE");
+        assert_eq!(failed.metadata["retryable"], false);
+        assert!(failed.body.is_empty());
+        let public = serde_json::to_string(&failed.metadata).unwrap();
+        assert!(!public.contains(DYNAMIC_VALUE));
+        assert!(!public.contains("hvs.bootstrap"));
+        assert_eq!(broker.fake.take_requests().len(), 3);
+    }
+    broker.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn renewal_started_or_result_audit_failure_cleans_up_and_faults_closed() {
+    for event in ["vault.lease.renewal_started", "vault.lease.renewed"] {
+        let (broker, _, id, version, cap) = register(common::start_broker().await, 8_000).await;
+        let db = rusqlite::Connection::open(broker.state_dir.join("vault.sqlite3")).unwrap();
+        db.execute_batch(&format!("CREATE TRIGGER fail_renew_audit BEFORE INSERT ON audit_events WHEN NEW.event_type = '{event}' BEGIN SELECT RAISE(ABORT, 'injected'); END;")).unwrap();
+        drop(db);
+        broker.fake.push_response(Ok(short_issued(true)));
+        if event.ends_with("renewed") {
+            broker.fake.push_response(Ok(renewed(60)));
+        }
+        broker.fake.push_response(Ok(response(204, b"")));
+        let failed = execute(&broker, &cap, &id, version).await;
+        assert_eq!(failed.err_code(), "UPSTREAM_INDETERMINATE");
+        assert_eq!(failed.metadata["retryable"], false);
+        assert!(failed.body.is_empty());
+        let requests = broker.fake.take_requests();
+        assert_eq!(
+            requests.len(),
+            if event.ends_with("renewed") { 3 } else { 2 }
+        );
+        assert_eq!(requests.last().unwrap().path, "/v1/sys/leases/revoke");
+        broker.shutdown().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn lock_during_renewal_or_business_cancels_io_and_waits_for_exact_cleanup() {
+    for during_renewal in [true, false] {
+        let broker = common::start_broker_with(
+            std::time::Duration::from_secs(300),
+            std::time::Duration::from_millis(25),
+        )
+        .await;
+        let (broker, _, id, _, cap) = register(broker, 8_000).await;
+        broker.fake.push_response(Ok(short_issued(true)));
+        if during_renewal {
+            broker.fake.push_response_gated(Ok(renewed(60)));
+        } else {
+            broker.fake.push_response(Ok(renewed(60)));
+            broker
+                .fake
+                .push_response_gated(Ok(response(200, br#"{"must":"stay-private"}"#)));
+        }
+        let cleanup = broker.fake.push_response_gated(Ok(response(204, b"")));
+        let execution = spawn_execute(&broker, &cap, &id);
+        wait_requests(&broker, if during_renewal { 2 } else { 3 }).await;
+        let admin = broker.admin_sock();
+        let lock = tokio::spawn(async move {
+            common::call(&admin, Channel::Admin, admin_msg::LOCK, b"{}", &[]).await
+        });
+        wait_requests(&broker, if during_renewal { 3 } else { 4 }).await;
+        assert!(!lock.is_finished());
+        cleanup.notify_one();
+        let failed = execution.await.unwrap();
+        assert_eq!(failed.err_code(), "UPSTREAM_INDETERMINATE");
+        assert_eq!(failed.metadata["retryable"], false);
+        assert!(failed.body.is_empty());
+        lock.await.unwrap().ok();
+        let requests = broker.fake.take_requests();
+        assert_eq!(requests.last().unwrap().path, "/v1/sys/leases/revoke");
+        if during_renewal {
+            assert!(requests.iter().all(|r| r.path != "/v1/things"));
+        }
+        broker.shutdown().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn renewal_deadline_timeout_still_has_cleanup_budget() {
+    let (broker, _, id, version, cap) = register(common::start_broker().await, 6_000).await;
+    broker.fake.push_response(Ok(short_issued(true)));
+    broker.fake.push_response_gated(Ok(renewed(60)));
+    broker.fake.push_response(Ok(response(204, b"")));
+    let failed = execute(&broker, &cap, &id, version).await;
+    assert_eq!(failed.err_code(), "UPSTREAM_INDETERMINATE");
+    assert_eq!(failed.metadata["retryable"], false);
+    let requests = broker.fake.take_requests();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[2].path, "/v1/sys/leases/revoke");
+    assert_eq!(
+        audit_events(&broker).last().unwrap(),
+        "execution.indeterminate"
+    );
+    broker.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn actual_renewal_ttl_and_original_action_deadline_bound_business_io() {
+    for (actual_ttl, action_ms, maximum_business_ms) in [(5, 8_000, 4_400), (60, 6_000, 5_400)] {
+        let fake = Arc::new(FakeUpstreamTransport::new());
+        let timeouts = Arc::new(Mutex::new(Vec::new()));
+        let transport = Arc::new(ObservedTransport {
+            fake: Arc::clone(&fake),
+            timeouts: Arc::clone(&timeouts),
+        });
+        let broker = common::start_broker_with_transport(
+            Duration::from_secs(300),
+            Duration::from_secs(2),
+            fake,
+            transport,
+        )
+        .await;
+        let (broker, _, id, version, cap) = register(broker, action_ms).await;
+        broker.fake.push_response(Ok(short_issued(true)));
+        broker
+            .fake
+            .push_response_delayed(Ok(renewed(actual_ttl)), Duration::from_millis(150));
+        broker
+            .fake
+            .push_response(Ok(response(200, br#"{"ok":true}"#)));
+        broker.fake.push_response(Ok(response(204, b"")));
+        execute(&broker, &cap, &id, version).await.ok();
+        let observed = timeouts.lock().unwrap().clone();
+        assert_eq!(observed.len(), 4);
+        assert!(
+            observed[2] <= Duration::from_millis(maximum_business_ms),
+            "business timeout exceeded actual-TTL or Action cap: {:?}",
+            observed[2]
+        );
+        assert!(observed[2] > Duration::from_secs(1));
+        broker.shutdown().await;
+    }
+}
+
+async fn journal_status(broker: &common::TestBroker) -> serde_json::Value {
+    common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::STATUS,
+        b"{}",
+        &[],
+    )
+    .await
+    .ok()["lease_journal"]
+        .clone()
+}
+async fn lock(broker: &common::TestBroker) {
+    common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::LOCK,
+        b"{}",
+        &[],
+    )
+    .await
+    .ok();
+}
+async fn unlock_summary(broker: &common::TestBroker) -> serde_json::Value {
+    common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::UNLOCK_PASSWORD,
+        b"{}",
+        common::PASSWORD,
+    )
+    .await
+    .ok()["lease_recovery"]
+        .clone()
+}
+async fn leave_known_pending(broker: &common::TestBroker, cap: &str, id: &str, version: u64) {
+    broker.fake.push_response(Ok(issued()));
+    broker
+        .fake
+        .push_response(Ok(response(200, br#"{"held":"private"}"#)));
+    broker.fake.push_response(Ok(response(403, b"")));
+    let failed = execute(broker, cap, id, version).await;
+    assert_eq!(failed.err_code(), "UPSTREAM_INDETERMINATE");
+    assert!(failed.body.is_empty());
+    assert_eq!(broker.fake.take_requests().len(), 3);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unknown_source_survives_lock_and_token_rotation_without_provider_io() {
+    let (broker, credential, id, version, cap) = setup().await;
+    broker.fake.push_response(Err(UpstreamError::Transport));
+    assert_eq!(
+        execute(&broker, &cap, &id, version).await.err_code(),
+        "UPSTREAM_INDETERMINATE"
+    );
+    assert_eq!(broker.fake.take_requests().len(), 1);
+    common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::CREDENTIAL_ROTATE_VAULT_DYNAMIC,
+        serde_json::json!({"credential_id":credential})
+            .to_string()
+            .as_bytes(),
+        &common::proof_and_secret_body(common::PASSWORD, &profile("hvs.new-current")),
+    )
+    .await
+    .ok();
+    lock(&broker).await;
+    let locked = journal_status(&broker).await;
+    assert_eq!(locked["verified"], false);
+    assert_eq!(locked["unknown"], 1);
+    assert!(broker.fake.take_requests().is_empty());
+    let recovered = unlock_summary(&broker).await;
+    assert_eq!(recovered["performed"], true);
+    assert_eq!(recovered["journal"]["unknown"], 1);
+    assert_eq!(recovered["journal"]["complete"], 0);
+    assert!(recovered["leases"].as_array().unwrap().is_empty());
+    assert!(broker.fake.take_requests().is_empty());
+    let newcap = common::create_session(&broker, &id, version).await;
+    assert_eq!(
+        execute(&broker, &newcap, &id, version).await.err_code(),
+        "AUTHORITY_BUSY"
+    );
+    assert!(broker.fake.take_requests().is_empty());
+    broker.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn malformed_candidate_emergency_revoke_does_not_complete_unknown_intent() {
+    let (broker, _, id, version, cap) = setup().await;
+    broker.fake.push_response(Ok(response(
+        200,
+        br#"{"lease_id":"database/creds/role/one","data":{}}"#,
+    )));
+    broker.fake.push_response(Ok(response(204, b"")));
+    assert_eq!(
+        execute(&broker, &cap, &id, version).await.err_code(),
+        "UPSTREAM_INDETERMINATE"
+    );
+    let requests = broker.fake.take_requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[1].body,
+        br#"{"lease_id":"database/creds/role/one","sync":true}"#
+    );
+    let status = journal_status(&broker).await;
+    assert_eq!(status["unknown"], 1);
+    assert_eq!(status["complete"], 0);
+    assert_eq!(
+        execute(&broker, &cap, &id, version).await.err_code(),
+        "AUTHORITY_BUSY"
+    );
+    assert!(broker.fake.take_requests().is_empty());
+    broker.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn recovery_uses_exact_retired_revoked_version_and_confirmed_complete_only() {
+    let (broker, credential, id, version, cap) = setup().await;
+    leave_known_pending(&broker, &cap, &id, version).await;
+    common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::CREDENTIAL_ROTATE_VAULT_DYNAMIC,
+        serde_json::json!({"credential_id":credential})
+            .to_string()
+            .as_bytes(),
+        &common::proof_and_secret_body(common::PASSWORD, &profile("hvs.new-current")),
+    )
+    .await
+    .ok();
+    common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::CREDENTIAL_REVOKE,
+        serde_json::json!({"credential_id":credential})
+            .to_string()
+            .as_bytes(),
+        &common::proof_body(common::PASSWORD),
+    )
+    .await
+    .ok();
+    lock(&broker).await;
+    assert_eq!(journal_status(&broker).await["verified"], false);
+    assert!(broker.fake.take_requests().is_empty());
+    broker.fake.push_response(Ok(response(204, b"")));
+    let recovered = unlock_summary(&broker).await;
+    assert_eq!(recovered["journal"]["pending"], 0);
+    assert_eq!(recovered["journal"]["complete"], 1);
+    assert_eq!(recovered["leases"][0]["credential_version"], 1);
+    assert_eq!(recovered["leases"][0]["outcome"], "complete");
+    let requests = broker.fake.take_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].path, "/v1/sys/leases/revoke");
+    assert_eq!(requests[0].auth_value, b"hvs.bootstrap");
+    assert_eq!(
+        requests[0].body,
+        format!(r#"{{"lease_id":"{LEASE_ID}","sync":true}}"#).as_bytes()
+    );
+    // Retired/revoked profile is available only to registered exact cleanup.
+    assert_ne!(
+        execute(&broker, &cap, &id, version).await.message_type,
+        rekey_domain::ipc::resp_msg::OK
+    );
+    assert!(broker.fake.take_requests().is_empty());
+    broker.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn running_unlock_never_cleans_an_active_execution() {
+    let (broker, _, id, _, cap) = setup().await;
+    broker.fake.push_response(Ok(issued()));
+    let release = broker
+        .fake
+        .push_response_gated(Ok(response(200, br#"{"ok":true}"#)));
+    broker.fake.push_response(Ok(response(204, b"")));
+    let execution = spawn_execute(&broker, &cap, &id);
+    wait_requests(&broker, 2).await;
+    let summary = unlock_summary(&broker).await;
+    assert_eq!(summary["performed"], false);
+    assert_eq!(summary["journal"]["pending"], 1);
+    assert!(summary["leases"].as_array().unwrap().is_empty());
+    assert_eq!(broker.fake.requests.lock().unwrap().len(), 2);
+    release.notify_one();
+    execution.await.unwrap().ok();
+    assert_eq!(broker.fake.take_requests().len(), 3);
+    assert_eq!(journal_status(&broker).await["complete"], 1);
+    broker.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unconfirmed_recovery_rejects_404_timeout_and_reflections_without_reopening_source() {
+    for rejected in [
+        Ok(response(404, b"")),
+        Err(UpstreamError::Timeout),
+        Ok(response(204, LEASE_ID.as_bytes())),
+        Ok(UpstreamResponse {
+            status: 204,
+            headers: vec![("x-debug".into(), "hvs.bootstrap".into())].into(),
+            body: Zeroizing::new(vec![]),
+        }),
+    ] {
+        let (broker, _, id, version, cap) = setup().await;
+        leave_known_pending(&broker, &cap, &id, version).await;
+        lock(&broker).await;
+        broker.fake.push_response(rejected);
+        let recovered = unlock_summary(&broker).await;
+        assert_eq!(recovered["leases"][0]["outcome"], "unconfirmed");
+        assert_eq!(recovered["journal"]["pending"], 1);
+        assert_eq!(recovered["journal"]["complete"], 0);
+        assert_eq!(broker.fake.take_requests().len(), 1);
+        let public = serde_json::to_string(&recovered).unwrap();
+        for canary in [LEASE_ID, DYNAMIC_VALUE, "hvs.bootstrap"] {
+            assert!(!public.contains(canary));
+        }
+        let newcap = common::create_session(&broker, &id, version).await;
+        assert_eq!(
+            execute(&broker, &newcap, &id, version).await.err_code(),
+            "AUTHORITY_BUSY"
+        );
+        assert!(broker.fake.take_requests().is_empty());
+        broker.fake.push_response(Ok(response(204, b"")));
+        lock(&broker).await;
+        assert_eq!(unlock_summary(&broker).await["journal"]["pending"], 0);
+        assert_eq!(broker.fake.take_requests().len(), 1);
+        broker.shutdown().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn recovery_batch_is_bounded_to_eight_known_ids_and_next_transition_resumes() {
+    let mut broker = common::start_broker().await;
+    let mut ids = std::collections::BTreeSet::new();
+    for index in 0..9 {
+        let mut source: serde_json::Value =
+            serde_json::from_slice(&profile("hvs.bootstrap")).unwrap();
+        source["role"] = format!("role-{index}").into();
+        let (next, _, id, version, cap) =
+            register_profile(broker, 30000, &serde_json::to_vec(&source).unwrap()).await;
+        broker = next;
+        let lease = format!("database/creds/role-{index}/lease-{index}");
+        ids.insert(lease.clone());
+        broker.fake.push_response(Ok(response(
+            200,
+            &serde_json::to_vec(&serde_json::json!({
+                "lease_id":lease,"lease_duration":60,"renewable":true,"data":{"token":DYNAMIC_VALUE}
+            }))
+            .unwrap(),
+        )));
+        broker.fake.push_response(Ok(response(200, b"{}")));
+        broker.fake.push_response(Ok(response(403, b"")));
+        assert_eq!(
+            execute(&broker, &cap, &id, version).await.err_code(),
+            "UPSTREAM_INDETERMINATE"
+        );
+        assert_eq!(broker.fake.take_requests().len(), 3);
+    }
+    lock(&broker).await;
+    for _ in 0..8 {
+        broker.fake.push_response(Ok(response(204, b"")));
+    }
+    let recovered = unlock_summary(&broker).await;
+    assert_eq!(recovered["leases"].as_array().unwrap().len(), 8);
+    assert_eq!(recovered["deferred"], 1);
+    assert_eq!(recovered["journal"]["pending"], 1);
+    assert_eq!(recovered["journal"]["complete"], 8);
+    for req in broker.fake.take_requests() {
+        assert_eq!(req.path, "/v1/sys/leases/revoke");
+        let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+        assert_eq!(body["sync"], true);
+        assert!(ids.remove(body["lease_id"].as_str().unwrap()));
+    }
+    assert_eq!(ids.len(), 1);
+    assert_eq!(unlock_summary(&broker).await["performed"], false);
+    assert!(broker.fake.take_requests().is_empty());
+    lock(&broker).await;
+    broker.fake.push_response(Ok(response(204, b"")));
+    assert_eq!(unlock_summary(&broker).await["journal"]["pending"], 0);
+    let requests = broker.fake.take_requests();
+    assert_eq!(requests.len(), 1);
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert!(ids.remove(body["lease_id"].as_str().unwrap()));
+    assert!(ids.is_empty());
+    broker.shutdown().await;
+}
+
+#[tokio::test]
+async fn private_source_default_transport_is_unsupported_without_ordinary_send() {
+    use rekey_broker::upstream::{SourceAttempt, SourceEndpoint};
+    let fake = FakeUpstreamTransport::new();
+    let cert = rcgen::generate_simple_self_signed(vec!["vault.example.com".into()])
+        .unwrap()
+        .cert;
+    let binding:SourceEndpoint=serde_json::from_value(serde_json::json!({"allowed_ips":["10.1.2.3"],"ca_der_base64":[data_encoding::BASE64.encode(cert.der())]})).unwrap();
+    let request = UpstreamRequest {
+        host: "vault.example.com".into(),
+        port: 8200,
+        method: rekey_domain::action::FixedMethod::Get,
+        path: "/v1/database/creds/agent".into(),
+        headers: vec![],
+        auth_header: (
+            "x-vault-token".into(),
+            Zeroizing::new(b"fixture-token".to_vec()),
+        ),
+        body: Zeroizing::new(vec![]),
+        timeout: Duration::from_secs(1),
+        response_max_bytes: 1024,
+    };
+    let trace = Arc::new(Mutex::new(SourceAttempt::default()));
+    let result = fake
+        .send_vault_source(
+            request,
+            &binding,
+            std::time::Instant::now() + Duration::from_secs(1),
+            trace.clone(),
+        )
+        .await;
+    assert!(matches!(
+        result,
+        Err(UpstreamError::Blocked("source-transport-unsupported"))
+    ));
+    assert!(fake.take_requests().is_empty());
+    assert_eq!(trace.lock().unwrap().selected_ip, None);
+    assert_eq!(trace.lock().unwrap().phase, "unsupported");
 }

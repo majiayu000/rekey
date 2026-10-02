@@ -56,14 +56,52 @@ pub fn policy_trust_install(
 pub fn policy_activate(
     state_dir: &Path,
     file: &Path,
+    expected_vault_id: &str,
+    expected_trust_sha256: &str,
     recovery: bool,
     password_stdin: bool,
 ) -> Result<(), CliError> {
     let (bundle, _) = read_regular_nosymlink(file, 64 * 1024, "policy bundle")?;
+    let metadata = policy_activate_metadata(expected_vault_id, expected_trust_sha256, &bundle)?;
     let proof = read_step_up(recovery, password_stdin)?;
     let body = proof_body(recovery, &proof);
-    let (meta, _) = admin(state_dir)?.call(admin_msg::POLICY_ACTIVATE, &bundle, &body)?;
+    let (meta, _) = admin(state_dir)?.call(admin_msg::POLICY_ACTIVATE, &metadata, &body)?;
     print_policy_status(&meta)
+}
+
+fn policy_activate_metadata(
+    expected_vault_id: &str,
+    expected_trust_sha256: &str,
+    bundle: &[u8],
+) -> Result<Vec<u8>, CliError> {
+    let expected_vault_id = expected_vault_id
+        .parse()
+        .map_err(|_| CliError::local("USAGE", "invalid expected vault id"))?;
+    if expected_trust_sha256.len() != 64
+        || !expected_trust_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(CliError::local(
+            "USAGE",
+            "expected trust digest must be 64 lowercase hex characters",
+        ));
+    }
+    let bundle_json = serde_json::from_slice::<Box<serde_json::value::RawValue>>(bundle)
+        .map_err(|_| CliError::local("USAGE", "invalid policy bundle JSON"))?;
+    let metadata = serde_json::to_vec(&ipc::PolicyActivateMeta {
+        expected_vault_id,
+        expected_trust_sha256: expected_trust_sha256.to_owned(),
+        bundle_json,
+    })
+    .map_err(|_| CliError::local("USAGE", "cannot encode policy activation"))?;
+    if metadata.len() > ipc::METADATA_MAX_BYTES as usize {
+        return Err(CliError::local(
+            "USAGE",
+            "policy activation metadata exceeds 64 KiB",
+        ));
+    }
+    Ok(metadata)
 }
 
 pub fn policy_status(state_dir: &Path) -> Result<(), CliError> {
@@ -212,6 +250,27 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    #[test]
+    fn policy_activation_preserves_duplicate_keys_and_bounds_encoded_metadata() {
+        let vault = "00112233-4455-4677-8899-aabbccddeeff";
+        let digest = "a".repeat(64);
+        let raw = br#"{"snapshot":{"version":1,"version":2}}"#;
+        let encoded = policy_activate_metadata(vault, &digest, raw).unwrap();
+        let metadata: ipc::PolicyActivateMeta = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(metadata.bundle_json.get().as_bytes(), raw);
+        assert!(policy_activate_metadata("bad-id", &digest, b"{}").is_err());
+        assert!(policy_activate_metadata(vault, &"A".repeat(64), b"{}").is_err());
+        assert!(policy_activate_metadata(vault, "ab", b"{}").is_err());
+        assert!(policy_activate_metadata(vault, &digest, b"{").is_err());
+        // Bundle alone fits, but its activation envelope exceeds the frame bound.
+        let bundle = format!(
+            r#"{{"padding":"{}"}}"#,
+            "x".repeat(ipc::METADATA_MAX_BYTES as usize - 20)
+        );
+        assert!(bundle.len() < ipc::METADATA_MAX_BYTES as usize);
+        assert!(policy_activate_metadata(vault, &digest, bundle.as_bytes()).is_err());
+    }
 
     #[test]
     fn policy_artifact_reader_rejects_fifo_without_blocking() {

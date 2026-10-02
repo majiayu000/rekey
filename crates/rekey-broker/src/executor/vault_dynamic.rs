@@ -1,3 +1,6 @@
+use crate::upstream::{
+    SourceEndpoint, optional_source_endpoint, send_source, source_hostname_valid,
+};
 use std::fmt;
 use std::time::{Duration, Instant};
 
@@ -8,7 +11,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 use super::*;
 
-const PROFILE_MARKER: &str = "vault-dynamic-source-v1";
+const PROFILE_MARKER: &str = "vault-dynamic-source-v2";
 const SOURCE_RESPONSE_MAX_BYTES: u32 = 64 * 1024;
 const RESOLVED_VALUE_MAX_BYTES: usize = 8 * 1024;
 const LEASE_ID_MAX_BYTES: usize = 1024;
@@ -28,6 +31,11 @@ pub(crate) enum VaultDynamicError {
     RevokeTransport,
     RevokeRejected,
     RevokeReflected,
+    RenewTransport,
+    RenewRejected,
+    RenewResponse,
+    RenewReflected,
+    Cancelled,
     Deadline,
 }
 
@@ -43,6 +51,11 @@ impl VaultDynamicError {
             Self::RevokeTransport => "vault-dynamic-revoke-transport",
             Self::RevokeRejected => "vault-dynamic-revoke-rejected",
             Self::RevokeReflected => "vault-dynamic-revoke-reflected-secret",
+            Self::RenewTransport => "vault-dynamic-renew-transport",
+            Self::RenewRejected => "vault-dynamic-renew-rejected",
+            Self::RenewResponse => "vault-dynamic-renew-response",
+            Self::RenewReflected => "vault-dynamic-renew-reflected-secret",
+            Self::Cancelled => "remote-effect-admission-closed",
             Self::Deadline => "upstream-timeout",
         }
     }
@@ -50,10 +63,12 @@ impl VaultDynamicError {
 
 pub(crate) struct VaultDynamicProfile {
     origin: HttpsOrigin,
+    source_endpoint: Option<SourceEndpoint>,
     mount: String,
     role: String,
     key: String,
     token: Zeroizing<Vec<u8>>,
+    renew_increment_seconds: u64,
 }
 
 pub(super) struct VaultDynamicPrepared {
@@ -65,19 +80,31 @@ pub(super) struct VaultDynamicPrepared {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawDynamicProfile<'a> {
+    #[serde(default, deserialize_with = "optional_source_endpoint")]
+    source_endpoint: Option<SourceEndpoint>,
     credential_type: &'a str,
     origin: &'a str,
     mount: &'a str,
     role: &'a str,
     key: &'a str,
     vault_token: &'a str,
+    renew_increment_seconds: u64,
 }
 
 pub(super) struct AcquiredLease {
     pub(super) acquired_at: Instant,
+    pub(super) acquired_at_ms: i64,
     pub(super) lease_id: Zeroizing<String>,
     pub(super) lease_duration: Duration,
+    pub(super) renewable: bool,
     pub(super) value: Zeroizing<Vec<u8>>,
+}
+
+pub(super) struct RenewedLease {
+    pub(super) requested_at_ms: i64,
+    pub(super) lease_duration: u64,
+    pub(super) renewable: bool,
+    pub(super) io_deadline: Instant,
 }
 
 pub(super) struct AcquisitionFailure {
@@ -102,21 +129,36 @@ impl VaultDynamicProfile {
                 .vault_token
                 .bytes()
                 .all(|byte| matches!(byte, 0x21..=0x7e))
+            || !(MIN_LEASE_SECONDS..=MAX_LEASE_SECONDS).contains(&raw.renew_increment_seconds)
         {
             return Err(VaultDynamicError::InvalidCredential);
         }
+        let origin =
+            HttpsOrigin::parse(raw.origin).map_err(|_| VaultDynamicError::InvalidCredential)?;
+        if raw.source_endpoint.is_some() && !source_hostname_valid(origin.host()) {
+            return Err(VaultDynamicError::InvalidCredential);
+        }
         Ok(Self {
-            origin: HttpsOrigin::parse(raw.origin)
-                .map_err(|_| VaultDynamicError::InvalidCredential)?,
+            origin,
+            source_endpoint: raw.source_endpoint,
             mount: raw.mount.to_owned(),
             role: raw.role.to_owned(),
             key: raw.key.to_owned(),
             token: Zeroizing::new(raw.vault_token.as_bytes().to_vec()),
+            renew_increment_seconds: raw.renew_increment_seconds,
         })
     }
 
     pub(crate) fn validate_profile(secret: &[u8]) -> Result<(), VaultDynamicError> {
         Self::parse_profile(secret).map(|_| ())
+    }
+
+    pub(super) fn source_ref(&self) -> rekey_vault::model::LeaseSourceRef {
+        rekey_vault::model::LeaseSourceRef {
+            origin: self.origin.clone(),
+            mount: self.mount.clone(),
+            role: self.role.clone(),
+        }
     }
 
     pub(super) fn token(&self) -> &[u8] {
@@ -147,13 +189,21 @@ impl VaultDynamicProfile {
         needles: &[Zeroizing<Vec<u8>>],
     ) -> Result<AcquiredLease, AcquisitionFailure> {
         let acquired_at = Instant::now();
+        let acquired_at_ms = crate::now_ts()
+            .map_err(|_| AcquisitionFailure::definite(VaultDynamicError::Deadline))?
+            .as_unix_ms();
         let request = self.request(timeout);
         if !outbound_headers_are_valid(&request) {
             return Err(AcquisitionFailure::definite(
                 VaultDynamicError::InvalidCredential,
             ));
         }
-        let response = tokio::time::timeout(timeout, transport.send(request)).await;
+        let deadline = acquired_at + timeout;
+        let response = tokio::time::timeout_at(
+            deadline.into(),
+            send_source(transport, request, self.source_endpoint.as_ref(), deadline),
+        )
+        .await;
         let response = match response {
             Err(_) => return Err(AcquisitionFailure::uncertain(VaultDynamicError::Deadline)),
             Ok(Err(crate::upstream::UpstreamError::ResponseTooLarge)) => {
@@ -223,15 +273,117 @@ impl VaultDynamicProfile {
                 true,
             ));
         }
+        // A valid decoded selected value still belongs to this bootstrap boundary.
+        // Preserve the captured lease candidates for the existing bounded cleanup.
+        if contains_secret(&parsed.value, needles)
+            || contains_secret(parsed.lease_id.as_bytes(), needles)
+        {
+            return Err(AcquisitionFailure::with_ids(
+                VaultDynamicError::SourceReflected,
+                probe.lease_ids,
+                true,
+            ));
+        }
         let mut lease_ids = probe.lease_ids;
         let lease_id = lease_ids
             .pop()
             .ok_or_else(|| AcquisitionFailure::uncertain(VaultDynamicError::SourceResponse))?;
         Ok(AcquiredLease {
             acquired_at,
+            acquired_at_ms,
             lease_id,
             lease_duration: Duration::from_secs(parsed.lease_duration),
+            renewable: parsed.renewable,
             value: parsed.value,
+        })
+    }
+
+    pub(super) async fn renew(
+        &self,
+        transport: &dyn UpstreamTransport,
+        lease_id: &str,
+        deadline: Instant,
+        action_deadline: Instant,
+        needles: &[Zeroizing<Vec<u8>>],
+    ) -> Result<RenewedLease, VaultDynamicError> {
+        let requested_at = Instant::now();
+        let requested_at_ms = crate::now_ts()
+            .map_err(|_| VaultDynamicError::Deadline)?
+            .as_unix_ms();
+        let timeout = deadline
+            .checked_duration_since(requested_at)
+            .filter(|duration| !duration.is_zero())
+            .ok_or(VaultDynamicError::Deadline)?;
+        let mut body = Zeroizing::new(Vec::with_capacity(lease_id.len() + 48));
+        body.extend_from_slice(b"{\"lease_id\":\"");
+        append_json_string(lease_id, &mut body)?;
+        body.extend_from_slice(b"\",\"increment\":");
+        body.extend_from_slice(self.renew_increment_seconds.to_string().as_bytes());
+        body.push(b'}');
+        let request = UpstreamRequest {
+            host: self.origin.host().to_owned(),
+            port: self.origin.port(),
+            method: FixedMethod::Post,
+            path: "/v1/sys/leases/renew".to_owned(),
+            headers: vec![
+                ("content-type".to_owned(), "application/json".to_owned()),
+                ("accept".to_owned(), "application/json".to_owned()),
+            ],
+            auth_header: (
+                "x-vault-token".to_owned(),
+                Zeroizing::new(self.token.to_vec()),
+            ),
+            body,
+            timeout,
+            response_max_bytes: SOURCE_RESPONSE_MAX_BYTES,
+        };
+        if !outbound_headers_are_valid(&request) {
+            return Err(VaultDynamicError::InvalidCredential);
+        }
+        let response = tokio::time::timeout_at(
+            tokio::time::Instant::from_std(deadline),
+            send_source(transport, request, self.source_endpoint.as_ref(), deadline),
+        )
+        .await
+        .map_err(|_| VaultDynamicError::Deadline)?
+        .map_err(|error| match error {
+            crate::upstream::UpstreamError::Timeout => VaultDynamicError::Deadline,
+            crate::upstream::UpstreamError::ResponseTooLarge => VaultDynamicError::ResponseTooLarge,
+            _ => VaultDynamicError::RenewTransport,
+        })?;
+        // The expected ID belongs in the protected response body. Token and
+        // dynamic-value reflections remain forbidden, including encoded forms.
+        if contains_secret(&response.body, needles)
+            || headers_contain_secret(&response.headers, needles)
+            || headers_contain_secret(
+                &response.headers,
+                &sealing_needles(lease_id.as_bytes(), lease_id.as_bytes()),
+            )
+        {
+            return Err(VaultDynamicError::RenewReflected);
+        }
+        if response.status != 200 {
+            return Err(VaultDynamicError::RenewRejected);
+        }
+        let mut deserializer = serde_json::Deserializer::from_slice(&response.body);
+        let parsed = RenewedSeed
+            .deserialize(&mut deserializer)
+            .map_err(|_| VaultDynamicError::RenewResponse)?;
+        if deserializer.end().is_err() || parsed.lease_id.as_str() != lease_id {
+            return Err(VaultDynamicError::RenewResponse);
+        }
+        let io_deadline = lease_io_deadline(
+            action_deadline,
+            requested_at,
+            Duration::from_secs(parsed.lease_duration),
+        )
+        .filter(|deadline| *deadline > Instant::now())
+        .ok_or(VaultDynamicError::Deadline)?;
+        Ok(RenewedLease {
+            requested_at_ms,
+            lease_duration: parsed.lease_duration,
+            renewable: parsed.renewable,
+            io_deadline,
         })
     }
 
@@ -244,13 +396,19 @@ impl VaultDynamicProfile {
     ) -> Result<(), VaultDynamicError> {
         let mut first_error = None;
         for (index, lease_id) in lease_ids.iter().enumerate() {
+            let requested_at = Instant::now();
             let remaining = deadline
-                .checked_duration_since(Instant::now())
+                .checked_duration_since(requested_at)
                 .filter(|duration| !duration.is_zero())
                 .ok_or(VaultDynamicError::Deadline)?;
             let attempts_left = (lease_ids.len() - index) as u32;
             if let Err(error) = self
-                .revoke_one(transport, lease_id, remaining / attempts_left, needles)
+                .revoke_one(
+                    transport,
+                    lease_id,
+                    requested_at + remaining / attempts_left,
+                    needles,
+                )
                 .await
                 && first_error.is_none()
             {
@@ -264,9 +422,13 @@ impl VaultDynamicProfile {
         &self,
         transport: &dyn UpstreamTransport,
         lease_id: &str,
-        timeout: Duration,
+        deadline: Instant,
         needles: &[Zeroizing<Vec<u8>>],
     ) -> Result<(), VaultDynamicError> {
+        let timeout = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|duration| !duration.is_zero())
+            .ok_or(VaultDynamicError::Deadline)?;
         let mut body = Zeroizing::new(Vec::with_capacity(lease_id.len() + 32));
         body.extend_from_slice(b"{\"lease_id\":\"");
         append_json_string(lease_id, &mut body)?;
@@ -291,10 +453,16 @@ impl VaultDynamicProfile {
         if !outbound_headers_are_valid(&request) {
             return Err(VaultDynamicError::InvalidCredential);
         }
-        let response = tokio::time::timeout(timeout, transport.send(request))
-            .await
-            .map_err(|_| VaultDynamicError::Deadline)?
-            .map_err(|_| VaultDynamicError::RevokeTransport)?;
+        let response = tokio::time::timeout_at(
+            deadline.into(),
+            send_source(transport, request, self.source_endpoint.as_ref(), deadline),
+        )
+        .await
+        .map_err(|_| VaultDynamicError::Deadline)?
+        .map_err(|error| match error {
+            crate::upstream::UpstreamError::Timeout => VaultDynamicError::Deadline,
+            _ => VaultDynamicError::RevokeTransport,
+        })?;
         if contains_secret(&response.body, needles)
             || headers_contain_secret(&response.headers, needles)
         {
@@ -305,6 +473,25 @@ impl VaultDynamicProfile {
         }
         Ok(())
     }
+}
+
+pub(crate) async fn revoke_prepared(
+    prepared: rekey_vault::secret::PreparedLeaseCleanup,
+    transport: &dyn UpstreamTransport,
+    deadline: Instant,
+    extra_needles: &[Zeroizing<Vec<u8>>],
+) -> Result<(), VaultDynamicError> {
+    let (profile, id) = prepared.consume(|bytes, id| -> Result<_, VaultDynamicError> {
+        let profile = VaultDynamicProfile::parse_profile(bytes)?;
+        let id = std::str::from_utf8(id).map_err(|_| VaultDynamicError::InvalidCredential)?;
+        Ok((profile, Zeroizing::new(id.to_owned())))
+    })?;
+    let mut needles = sealing_needles(profile.token(), profile.token());
+    needles.extend(sealing_needles(id.as_bytes(), id.as_bytes()));
+    needles.extend(extra_needles.iter().cloned());
+    profile
+        .revoke_all(transport, &[id], deadline, &needles)
+        .await
 }
 
 impl AcquisitionFailure {
@@ -340,6 +527,7 @@ impl AcquisitionFailure {
 struct ParsedIssued {
     lease_id: Zeroizing<String>,
     lease_duration: u64,
+    renewable: bool,
     value: Zeroizing<Vec<u8>>,
 }
 
@@ -394,13 +582,115 @@ impl<'de> Visitor<'de> for IssuedVisitor<'_> {
         if !(MIN_LEASE_SECONDS..=MAX_LEASE_SECONDS).contains(&lease_duration) {
             return Err(serde::de::Error::custom("invalid lease_duration"));
         }
-        renewable.ok_or_else(|| serde::de::Error::missing_field("renewable"))?;
+        let renewable = renewable.ok_or_else(|| serde::de::Error::missing_field("renewable"))?;
         let value = value.ok_or_else(|| serde::de::Error::missing_field("data"))?;
         Ok(ParsedIssued {
             lease_id,
             lease_duration,
+            renewable,
             value,
         })
+    }
+}
+
+pub(super) fn lease_io_deadline(
+    action_deadline: Instant,
+    requested_at: Instant,
+    ttl: Duration,
+) -> Option<Instant> {
+    action_deadline
+        .min(requested_at.checked_add(ttl)?)
+        .checked_sub(CLEANUP_BUDGET)
+}
+
+struct ParsedRenewed {
+    lease_id: Zeroizing<String>,
+    lease_duration: u64,
+    renewable: bool,
+}
+
+struct RenewedSeed;
+
+impl<'de> DeserializeSeed<'de> for RenewedSeed {
+    type Value = ParsedRenewed;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_map(RenewedVisitor)
+    }
+}
+
+struct RenewedVisitor;
+
+impl<'de> Visitor<'de> for RenewedVisitor {
+    type Value = ParsedRenewed;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("Vault renewal metadata without new credentials")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut lease_id = None;
+        let mut lease_duration = None;
+        let mut renewable = None;
+        let mut data = None;
+        let mut auth = None;
+        while let Some(field) = map.next_key::<&str>()? {
+            match field {
+                "lease_id" => set_once(&mut lease_id, map.next_value_seed(LeaseIdSeed)?)?,
+                "lease_duration" => set_once(&mut lease_duration, map.next_value::<u64>()?)?,
+                "renewable" => set_once(&mut renewable, map.next_value::<bool>()?)?,
+                "data" => set_once(&mut data, map.next_value_seed(EmptyRenewalDataSeed)?)?,
+                "auth" => set_once(&mut auth, map.next_value::<()>()?)?,
+                _ => {
+                    map.next_value::<IgnoredAny>()?;
+                }
+            }
+        }
+        let lease_id = lease_id.ok_or_else(|| serde::de::Error::missing_field("lease_id"))?;
+        let lease_duration =
+            lease_duration.ok_or_else(|| serde::de::Error::missing_field("lease_duration"))?;
+        let renewable = renewable.ok_or_else(|| serde::de::Error::missing_field("renewable"))?;
+        if !(MIN_LEASE_SECONDS..=MAX_LEASE_SECONDS).contains(&lease_duration) {
+            return Err(serde::de::Error::custom("invalid renewal TTL"));
+        }
+        Ok(ParsedRenewed {
+            lease_id,
+            lease_duration,
+            renewable,
+        })
+    }
+}
+
+struct EmptyRenewalDataSeed;
+
+impl<'de> DeserializeSeed<'de> for EmptyRenewalDataSeed {
+    type Value = ();
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
+        deserializer.deserialize_any(EmptyRenewalDataVisitor)
+    }
+}
+
+struct EmptyRenewalDataVisitor;
+
+impl<'de> Visitor<'de> for EmptyRenewalDataVisitor {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("null or an empty renewal data object")
+    }
+
+    fn visit_unit<E: serde::de::Error>(self) -> Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
+        if map.next_key::<IgnoredAny>()?.is_some() {
+            return Err(serde::de::Error::custom(
+                "renewal returned new credential data",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -737,3 +1027,55 @@ fn safe_segment(value: &str) -> bool {
 #[cfg(test)]
 #[path = "vault_dynamic_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod private_review_deadline_tests {
+    use super::*;
+    use crate::upstream::{SourceEndpoint, SourceTrace, UpstreamFuture, UpstreamResponse};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct PhaseCounter(AtomicUsize);
+    impl UpstreamTransport for PhaseCounter {
+        fn send(&self, _: UpstreamRequest) -> UpstreamFuture<'_> {
+            panic!("bound source must not enter ordinary transport")
+        }
+        fn send_vault_source<'a>(
+            &'a self,
+            _: UpstreamRequest,
+            _: &'a SourceEndpoint,
+            _: Instant,
+            _: SourceTrace,
+        ) -> UpstreamFuture<'a> {
+            Box::pin(async move {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(UpstreamResponse {
+                    status: 204,
+                    headers: vec![].into(),
+                    body: Zeroizing::new(vec![]),
+                })
+            })
+        }
+    }
+    #[tokio::test]
+    async fn private_review_revoke_future_late_first_poll_enters_zero_source_phases() {
+        let cert = rcgen::generate_simple_self_signed(vec!["vault.example.com".into()])
+            .unwrap()
+            .cert;
+        let profile=VaultDynamicProfile::parse_profile(&serde_json::to_vec(&serde_json::json!({"credential_type":"vault-dynamic-source-v2","origin":"https://vault.example.com","mount":"database","role":"agent-token","key":"token","renew_increment_seconds":60,"vault_token":"fixture-source-token","source_endpoint":{"allowed_ips":["10.1.2.3"],"ca_der_base64":[data_encoding::BASE64.encode(cert.der())]}})).unwrap()).unwrap();
+        let transport = PhaseCounter(AtomicUsize::new(0));
+        let deadline = Instant::now() + Duration::from_millis(25);
+        let future = profile.revoke_one(
+            &transport,
+            "database/creds/agent-token/known-id",
+            deadline,
+            &[],
+        );
+        tokio::time::sleep_until((deadline + Duration::from_millis(5)).into()).await;
+        let result = future.await;
+        assert_eq!(
+            transport.0.load(Ordering::SeqCst),
+            0,
+            "expired original deadline entered a new source phase"
+        );
+        assert_eq!(result, Err(VaultDynamicError::Deadline));
+    }
+}

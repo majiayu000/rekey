@@ -23,6 +23,34 @@
 #include <time.h>
 static void result(const char *name,long value) {int error=errno;printf("%s=%ld errno=%d\n",name,value,error);}
 static void *thread(void *arg){return arg;}
+/* Trusted kernel fixture only. All allocations happen after leaf membership;
+   payload fork remains forbidden by the separate seccomp tests. */
+static void touch32(void) {
+ size_t size=32UL*1024*1024;
+ void *memory=mmap(NULL,size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+ if(memory==MAP_FAILED)_exit(95);
+ for(size_t i=0;i<size;i+=4096)((volatile char*)memory)[i]=1;
+}
+static int aggregate_memory(void) {
+ struct rlimit limit={64UL*1024*1024,64UL*1024*1024};
+ int ready[2],release[2];pid_t children[2];
+ if(setrlimit(RLIMIT_AS,&limit)||pipe(ready)||pipe(release))return 95;
+ for(int i=0;i<2;i++) {
+  children[i]=fork();if(children[i]<0)return 95;
+  if(!children[i]) {
+   close(ready[0]);close(release[1]);touch32();
+   if(write(ready[1],"1",1)!=1)_exit(95);
+   close(ready[1]);char byte;
+   if(read(release[0],&byte,1)!=0)_exit(95);
+   _exit(0);
+  }
+ }
+ close(ready[1]);close(release[0]);
+ for(int i=0;i<2;i++){char byte;if(read(ready[0],&byte,1)!=1||byte!='1')return 95;}
+ touch32();puts("ALLOCATED 100663296");close(release[1]);close(ready[0]);
+ for(int i=0;i<2;i++){int status;if(waitpid(children[i],&status,0)!=children[i]||status!=0)return 95;}
+ return 0;
+}
 int main(int argc,char **argv) {
  setbuf(stdout,NULL);
  char input[4096]={0};
@@ -34,6 +62,7 @@ int main(int argc,char **argv) {
   struct timespec delay={.tv_sec=1};for(;;)nanosleep(&delay,NULL);
  }
  if(!strcmp(input,"ok")) {puts("OK");return 0;}
+ if(!strcmp(input,"aggregate-memory"))return aggregate_memory();
  if(!strcmp(input,"env")) {extern char **environ;for(char **entry=environ;*entry;entry++)puts(*entry);return 0;}
  if(!strncmp(input,"fd ",3)) {int fd=atoi(input+3);printf("fd=%d open=%d\n",fd,fcntl(fd,F_GETFD)>=0);return 0;}
  if(!strcmp(input,"fds")) {int count=0;for(int fd=3;fd<1024;fd++)if(fcntl(fd,F_GETFD)>=0)count++;printf("fds=%d\n",count);return 0;}

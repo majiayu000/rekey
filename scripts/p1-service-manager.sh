@@ -286,7 +286,8 @@ PY
     --trust "$WORKDIR/policy-trust.json"
   printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy trust install \
     --file "$WORKDIR/policy-trust.json" --step-up-stdin >/dev/null
-  printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate \
+  read -r POLICY_TARGET_VAULT POLICY_TARGET_TRUST < <("$REKEY" --state-dir "$STATE" policy status | python3 -c 'import json,sys; s=json.load(sys.stdin); print(s["vault_id"], s["trust_sha256"])')
+  printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate --expected-vault-id "$POLICY_TARGET_VAULT" --expected-trust-sha256 "$POLICY_TARGET_TRUST" \
     --file "$WORKDIR/policy-bundle.json" --step-up-stdin >/dev/null
 }
 
@@ -419,6 +420,9 @@ SESSION_JSON="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" sessio
 PRINCIPAL="$(printf '%s\n' "$SESSION_JSON" | json_field principal_id)"
 TOKEN="$(printf '%s\n' "$SESSION_JSON" | json_field capability_token)"
 activate_policy 2 "$PRINCIPAL"
+TOKEN="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" session create \
+  --action "$ACTION_REF" --principal "$PRINCIPAL" --ttl 10m --max-uses 2 \
+  --password-stdin | json_field capability_token)"
 sqlite3 "$STATE/vault.sqlite3" <<'SQL'
 CREATE TRIGGER fail_execution_terminal BEFORE INSERT ON audit_events
 WHEN NEW.event_type IN ('execution.finished','execution.blocked','execution.indeterminate')

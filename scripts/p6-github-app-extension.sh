@@ -102,7 +102,11 @@ PY
 
 printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin >/dev/null
 printf '%s\n' p6-list >"$MODE"
-"$FIXTURE" "$STATE" "$READY" "$MODE" "$TRACE" "$KEY_ONE_PUBLIC" "$KEY_TWO_PUBLIC" \
+fixture_command=("$FIXTURE")
+if [[ "$(uname -s)" == "Linux" && "${GITHUB_ACTIONS:-}" == "true" ]]; then
+  fixture_command=("${CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER:?Linux CI requires the delegated plugin runner}" "$FIXTURE")
+fi
+"${fixture_command[@]}" "$STATE" "$READY" "$MODE" "$TRACE" "$KEY_ONE_PUBLIC" "$KEY_TWO_PUBLIC" \
   >"$WORKDIR/broker.out" 2>"$WORKDIR/broker.err" &
 BROKER_PID=$!
 for _ in $(seq 1 400); do
@@ -223,7 +227,8 @@ python3 "$ROOT/scripts/sign-test-policy.py" policy --key-dir "$WORKDIR/policy-ke
   --trust "$WORKDIR/policy-trust.json"
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy trust install \
   --file "$WORKDIR/policy-trust.json" --step-up-stdin >/dev/null
-printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate \
+read -r POLICY_TARGET_VAULT POLICY_TARGET_TRUST < <("$REKEY" --state-dir "$STATE" policy status | python3 -c 'import json,sys; s=json.load(sys.stdin); print(s["vault_id"], s["trust_sha256"])')
+printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" policy activate --expected-vault-id "$POLICY_TARGET_VAULT" --expected-trust-sha256 "$POLICY_TARGET_TRUST" \
   --file "$WORKDIR/policy.json" --step-up-stdin >/dev/null
 
 "$REKEY" --state-dir "$STATE" execute "$LIST_REF" --capability "$CAPABILITY" \

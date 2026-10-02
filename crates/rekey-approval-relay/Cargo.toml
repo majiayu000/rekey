@@ -1,0 +1,32 @@
+[package]
+name = "rekey-approval-relay"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rekey-domain.workspace = true
+rekey-policy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util"] }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+tokio-rustls = "0.26"
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+rusqlite = { version = "0.34", features = ["bundled"] }
+sha2 = "0.10"
+url = "2"
+libc = "0.2"
+zeroize = "1"
+
+[dev-dependencies]
+tempfile.workspace = true
+rcgen = "0.13"
+aws-lc-rs = "1.18"
+data-encoding = "2"

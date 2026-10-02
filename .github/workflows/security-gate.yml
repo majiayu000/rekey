@@ -18,7 +18,10 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    # The expanded workspace takes ~23 minutes on hosted macOS before the
+    # dependency audit, release-process gates and native UI/Keychain acceptance.
+    # Preserve every gate and its operation deadline, with room for cold builds.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
@@ -49,6 +52,58 @@ jobs:
           /usr/bin/bwrap --die-with-parent --unshare-user --uid "$(id -u)" --gid "$(id -g)" \
             --unshare-net --unshare-pid --ro-bind / / --proc /proc --dev /dev \
             --tmpfs /tmp --chdir /tmp -- /bin/true
+      - name: Delegate Linux plugin acceptance
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          uname -a
+          systemd-run --version
+          /usr/bin/bwrap --version
+          findmnt --target /sys/fs/cgroup --types cgroup2
+          runner="$RUNNER_TEMP/rekey-plugin-test-runner"
+          cat > "$runner" <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          case "$(basename "$1")" in
+            rekey_broker-*|github_issue_plugin-*|native_plugin-*|p2_github_app_fixture) ;;
+            *) exec "$@" ;;
+          esac
+          unit="rekey-plugin-test-$(id -u)-$$-$RANDOM.service"
+          client=""
+          client_done=0
+          cleanup() {
+            local rc=$?
+            trap - EXIT INT TERM
+            if [[ "$client_done" == 0 ]]; then
+              client="${client:-${!:-}}"
+            fi
+            if [[ -n "$client" ]]; then
+              sudo -n /bin/kill -KILL -- "-$client" 2>/dev/null || true
+              kill -KILL "$client" 2>/dev/null || true
+              wait "$client" 2>/dev/null || true
+            fi
+            sudo -n systemctl stop "$unit" >/dev/null 2>&1 || true
+            exit "$rc"
+          }
+          trap cleanup EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          setsid sudo -n systemd-run --unit="$unit" --wait --pipe --collect \
+            --service-type=exec --uid="$(id -u)" --gid="$(id -g)" \
+            --working-directory="$PWD" --expand-environment=no \
+            --property=Delegate=memory --property=KillMode=control-group \
+            --property=TimeoutStopSec=130s \
+            --setenv="PATH=$PATH" --setenv="LD_LIBRARY_PATH=${LD_LIBRARY_PATH-}" \
+            -- "$@" <&0 &
+          client=$!
+          if wait "$client"; then rc=0; else rc=$?; fi
+          client_done=1
+          client=""
+          exit "$rc"
+          SH
+          chmod 0700 "$runner"
+          echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER=$runner" >> "$GITHUB_ENV"
       - name: Install macOS acceptance dependencies
         if: runner.os == 'macOS'
         run: scripts/ci-install-release-smoke-deps.sh
@@ -61,6 +116,28 @@ jobs:
           # Deadline fixtures must reach their intended phase without competing KDF jobs.
           cargo test --workspace --offline -- --test-threads=1
           REKEY_QUICKSTART_REAL=1 PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-agent-quickstart.py
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-audit-delivery.py
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-audit-archive.py
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-controlplane.py
+          cargo build --locked -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd --example p1_policy_fixture --example p7_vault_journal_fixture -p rekey-policy --bin rekey-approval-sign -p rekey-approval-relay --bin rekey-approval-relay
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-approval-signer-live.py --bin-dir target/debug --relay-bin target/debug/rekey-approval-relay
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/p7-vault-journal-recovery.py --binaries target/debug --artifacts "$RUNNER_TEMP/rekey-journal-fixture"
+
+      - name: Fixed metrics deployment contracts
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          metrics_tools="$RUNNER_TEMP/rekey-metrics-tools"
+          mkdir -p "$metrics_tools"
+          asset=prometheus-3.15.0.linux-amd64.tar.gz
+          release=https://github.com/prometheus/prometheus/releases/download/v3.15.0
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 "$release/$asset" -o "$metrics_tools/$asset"
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 "$release/sha256sums.txt" -o "$metrics_tools/sha256sums.txt"
+          awk -v asset="$asset" '$2 == asset { print; found++ } END { if (found != 1) exit 1 }' "$metrics_tools/sha256sums.txt" > "$metrics_tools/selected.sha256"
+          (cd "$metrics_tools" && sha256sum --check --strict selected.sha256)
+          tar -xzf "$metrics_tools/$asset" -C "$metrics_tools" --strip-components=1
+          PROMTOOL="$metrics_tools/promtool" PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-metrics-deployment.py
 
       - name: Real ENOSPC fault injection
         if: runner.os == 'Linux'
@@ -156,6 +233,7 @@ jobs:
             -framework SwiftUI -framework AppKit \
             apps/macos/Model.swift scripts/test-macos-keychain.swift -o /tmp/rekey-keychain-contract
           /tmp/rekey-keychain-contract
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-keychain-live.py --bin-dir target/debug
 
   g2-linux:
     name: Linux container G2 reference boundary
@@ -165,3 +243,20 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Namespace and peer-identity attack acceptance
         run: scripts/p1-linux-g2.sh
+      - name: Docker fencing and recovery reference
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="rekey-dr-reference:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          trap 'docker image rm "$image" >/dev/null 2>&1 || true' EXIT
+          docker build --file scripts/Dockerfile.dr --tag "$image" .
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-docker-dr-drill.py
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/rekey-docker-dr-drill.py \
+            --image "$image" --output "$RUNNER_TEMP/rekey-docker-dr"
+      - name: Upload Docker recovery evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: docker-dr-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/rekey-docker-dr/report.json
+          if-no-files-found: error

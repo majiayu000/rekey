@@ -25,6 +25,14 @@ const GITHUB_APP_EFFECTS: &[CredentialEffect] = &[
 ];
 const VAULT_KV_SOURCE_EFFECTS: &[CredentialEffect] =
     &[CredentialEffect::Resolve, CredentialEffect::Inject];
+// Union of static KV and the explicit execution-scoped AppRole profile.
+const VAULT_APPROLE_SOURCE_EFFECTS: &[CredentialEffect] = &[
+    CredentialEffect::Exchange,
+    CredentialEffect::Lease,
+    CredentialEffect::Resolve,
+    CredentialEffect::Inject,
+    CredentialEffect::Revoke,
+];
 const VAULT_DYNAMIC_SOURCE_EFFECTS: &[CredentialEffect] = &[
     CredentialEffect::Resolve,
     CredentialEffect::Lease,
@@ -35,10 +43,46 @@ const VAULT_DYNAMIC_SOURCE_EFFECTS: &[CredentialEffect] = &[
 const CONTRACTS: &[ConnectorContract] = &[
     ConnectorContract {
         format_version: CONNECTOR_CONTRACT_FORMAT_VERSION,
+        id: "aws-secrets-manager-source",
+        version: 1,
+        credential_kind: CredentialKind::AwsSecretsManagerSource,
+        effects: VAULT_KV_SOURCE_EFFECTS,
+        exchange_protocol: None,
+        source: ConnectorSource::BuiltInBinary,
+        isolation: ConnectorIsolation::BrokerProcess,
+        remote_effect: true,
+        revoke_before_success: false,
+    },
+    ConnectorContract {
+        format_version: CONNECTOR_CONTRACT_FORMAT_VERSION,
+        id: "azure-key-vault-source",
+        version: 1,
+        credential_kind: CredentialKind::AzureKeyVaultSource,
+        effects: VAULT_KV_SOURCE_EFFECTS,
+        exchange_protocol: None,
+        source: ConnectorSource::BuiltInBinary,
+        isolation: ConnectorIsolation::BrokerProcess,
+        remote_effect: true,
+        revoke_before_success: false,
+    },
+    ConnectorContract {
+        format_version: CONNECTOR_CONTRACT_FORMAT_VERSION,
         id: "fixed-http-header",
         version: 1,
         credential_kind: CredentialKind::OpaqueToken,
         effects: FIXED_HTTP_EFFECTS,
+        exchange_protocol: None,
+        source: ConnectorSource::BuiltInBinary,
+        isolation: ConnectorIsolation::BrokerProcess,
+        remote_effect: true,
+        revoke_before_success: false,
+    },
+    ConnectorContract {
+        format_version: CONNECTOR_CONTRACT_FORMAT_VERSION,
+        id: "gcp-secret-manager-source",
+        version: 1,
+        credential_kind: CredentialKind::GcpSecretManagerSource,
+        effects: VAULT_KV_SOURCE_EFFECTS,
         exchange_protocol: None,
         source: ConnectorSource::BuiltInBinary,
         isolation: ConnectorIsolation::BrokerProcess,
@@ -75,6 +119,30 @@ const CONTRACTS: &[ConnectorContract] = &[
     },
     ConnectorContract {
         format_version: CONNECTOR_CONTRACT_FORMAT_VERSION,
+        id: "macos-keychain-source",
+        version: 1,
+        credential_kind: CredentialKind::MacosKeychainSource,
+        effects: VAULT_KV_SOURCE_EFFECTS,
+        exchange_protocol: None,
+        source: ConnectorSource::BuiltInBinary,
+        isolation: ConnectorIsolation::BrokerProcess,
+        remote_effect: true,
+        revoke_before_success: false,
+    },
+    ConnectorContract {
+        format_version: CONNECTOR_CONTRACT_FORMAT_VERSION,
+        id: "onepassword-connect-source",
+        version: 1,
+        credential_kind: CredentialKind::OnePasswordConnectSource,
+        effects: VAULT_KV_SOURCE_EFFECTS,
+        exchange_protocol: None,
+        source: ConnectorSource::BuiltInBinary,
+        isolation: ConnectorIsolation::BrokerProcess,
+        remote_effect: true,
+        revoke_before_success: false,
+    },
+    ConnectorContract {
+        format_version: CONNECTOR_CONTRACT_FORMAT_VERSION,
         id: "vault-dynamic-source",
         version: 1,
         credential_kind: CredentialKind::VaultDynamicSource,
@@ -90,12 +158,12 @@ const CONTRACTS: &[ConnectorContract] = &[
         id: "vault-kv-v2-source",
         version: 1,
         credential_kind: CredentialKind::VaultKvV2Source,
-        effects: VAULT_KV_SOURCE_EFFECTS,
-        exchange_protocol: None,
+        effects: VAULT_APPROLE_SOURCE_EFFECTS,
+        exchange_protocol: Some(ExchangeProtocol::ProviderDefined),
         source: ConnectorSource::BuiltInBinary,
         isolation: ConnectorIsolation::BrokerProcess,
         remote_effect: true,
-        revoke_before_success: false,
+        revoke_before_success: true,
     },
 ];
 
@@ -107,16 +175,27 @@ pub enum BuiltInConnector {
     VaultKvV2SourceV1,
     VaultDynamicSourceV1,
     KeycloakTokenExchangeV1,
+    GcpSecretManagerSourceV1,
+    AwsSecretsManagerSourceV1,
+    AzureKeyVaultSourceV1,
+    #[serde(rename = "onepassword-connect-source-v1")]
+    OnePasswordConnectSourceV1,
+    MacosKeychainSourceV1,
 }
 
 impl BuiltInConnector {
     pub fn contract(self) -> &'static ConnectorContract {
         match self {
-            Self::FixedHttpHeaderV1 => &CONTRACTS[0],
-            Self::GitHubAppInstallationV1 => &CONTRACTS[1],
-            Self::VaultKvV2SourceV1 => &CONTRACTS[4],
-            Self::VaultDynamicSourceV1 => &CONTRACTS[3],
-            Self::KeycloakTokenExchangeV1 => &CONTRACTS[2],
+            Self::FixedHttpHeaderV1 => &CONTRACTS[2],
+            Self::GitHubAppInstallationV1 => &CONTRACTS[4],
+            Self::VaultKvV2SourceV1 => &CONTRACTS[9],
+            Self::VaultDynamicSourceV1 => &CONTRACTS[8],
+            Self::KeycloakTokenExchangeV1 => &CONTRACTS[5],
+            Self::GcpSecretManagerSourceV1 => &CONTRACTS[3],
+            Self::AwsSecretsManagerSourceV1 => &CONTRACTS[0],
+            Self::AzureKeyVaultSourceV1 => &CONTRACTS[1],
+            Self::OnePasswordConnectSourceV1 => &CONTRACTS[7],
+            Self::MacosKeychainSourceV1 => &CONTRACTS[6],
         }
     }
 }
@@ -157,11 +236,13 @@ pub struct ConnectorContract {
     pub id: &'static str,
     pub version: u16,
     pub credential_kind: CredentialKind,
+    /// Supported effects across the connector's closed profiles; a profile may use a subset.
     pub effects: &'static [CredentialEffect],
     pub exchange_protocol: Option<ExchangeProtocol>,
     pub source: ConnectorSource,
     pub isolation: ConnectorIsolation,
     pub remote_effect: bool,
+    /// Acquired temporary credentials must be revoked before success; no acquisition means no obligation.
     pub revoke_before_success: bool,
 }
 
@@ -246,6 +327,26 @@ pub fn resolve_builtin(
             Ok(BuiltInConnector::VaultDynamicSourceV1)
         }
         CredentialKind::VaultDynamicSource => Err(ConnectorSelectionError::SelectionRejected),
+        CredentialKind::GcpSecretManagerSource if !github_action_is_reserved(action) => {
+            Ok(BuiltInConnector::GcpSecretManagerSourceV1)
+        }
+        CredentialKind::GcpSecretManagerSource => Err(ConnectorSelectionError::SelectionRejected),
+        CredentialKind::AzureKeyVaultSource if !github_action_is_reserved(action) => {
+            Ok(BuiltInConnector::AzureKeyVaultSourceV1)
+        }
+        CredentialKind::AzureKeyVaultSource => Err(ConnectorSelectionError::SelectionRejected),
+        CredentialKind::OnePasswordConnectSource if !github_action_is_reserved(action) => {
+            Ok(BuiltInConnector::OnePasswordConnectSourceV1)
+        }
+        CredentialKind::OnePasswordConnectSource => Err(ConnectorSelectionError::SelectionRejected),
+        CredentialKind::MacosKeychainSource if !github_action_is_reserved(action) => {
+            Ok(BuiltInConnector::MacosKeychainSourceV1)
+        }
+        CredentialKind::MacosKeychainSource => Err(ConnectorSelectionError::SelectionRejected),
+        CredentialKind::AwsSecretsManagerSource if !github_action_is_reserved(action) => {
+            Ok(BuiltInConnector::AwsSecretsManagerSourceV1)
+        }
+        CredentialKind::AwsSecretsManagerSource => Err(ConnectorSelectionError::SelectionRejected),
     }
 }
 
@@ -533,5 +634,33 @@ mod native_envelope_tests {
         );
         assert!(normalize_native_envelope(br#"{"operation":"delete_repo","body":{}}"#).is_err());
         assert!(normalize_native_envelope(br#"{"body":{"title":"t"}}"#).is_err());
+    }
+}
+
+#[cfg(test)]
+mod keychain_contract_tests {
+    use super::*;
+    #[test]
+    fn keychain_registry_contract_and_reserved_actions_are_closed() {
+        testkit::assert_registry(registry());
+        let contract = BuiltInConnector::MacosKeychainSourceV1.contract();
+        assert_eq!(contract.id, "macos-keychain-source");
+        assert_eq!(
+            contract.effects,
+            &[CredentialEffect::Resolve, CredentialEffect::Inject]
+        );
+        let mut action: FixedHttpAction=serde_json::from_value(serde_json::json!({
+            "id":"11111111-1111-4111-8111-111111111111","name":"fixture","version":1,"enabled":true,
+            "credential_id":"22222222-2222-4222-8222-222222222222","origin":"https://api.example.com","method":"POST",
+            "exact_path":"/business","auth":{"header_name":"authorization","prefix":"Bearer "},"timeout_ms":30000,
+            "request_policy":{"max_body_bytes":1024,"allowed_extra_headers":[]},"response_policy":{"max_body_bytes":1024,"allowed_headers":[]}
+        })).unwrap();
+        assert_eq!(
+            resolve_builtin(CredentialKind::MacosKeychainSource, &action).unwrap(),
+            BuiltInConnector::MacosKeychainSourceV1
+        );
+        action.origin = HttpsOrigin::parse("https://api.github.com").unwrap();
+        action.exact_path = ExactPath::parse("/repos/acme/rekey/issues").unwrap();
+        assert!(resolve_builtin(CredentialKind::MacosKeychainSource, &action).is_err());
     }
 }

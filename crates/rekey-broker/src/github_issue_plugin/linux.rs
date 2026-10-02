@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use tokio::process::Command;
 
-use super::{BrokerError, denied};
+use super::{BrokerError, denied, linux_cgroup as cgroup, linux_tree::KillPluginTree};
 
 #[cfg(target_arch = "x86_64")]
 const RUNTIME_FILES: [&str; 4] = [
@@ -26,9 +26,24 @@ const RUNTIME_FILES: [&str; 4] = [
     "/lib/aarch64-linux-gnu/libgcc_s.so.1",
 ];
 
-pub(super) fn launch_command(executable: &Path, deadline: Instant) -> Result<Command, BrokerError> {
+pub(super) fn launch_command(
+    executable: &Path,
+    deadline: Instant,
+) -> Result<(Command, KillPluginTree), BrokerError> {
+    let end = cgroup::deadline_ns(deadline).map_err(launch_error)?;
     require_unprivileged_bwrap()?;
     let filter = filter_file()?;
+    let (tree, ready, lifetime) = KillPluginTree::prepare(end).map_err(launch_error)?;
+    let fds = GuardianFds {
+        ack: tree.ack.as_raw_fd(),
+        ready: ready.as_raw_fd(),
+        lifetime: lifetime.as_raw_fd(),
+        kill: tree.payload.kill.as_raw_fd(),
+        events: tree.payload.events.as_raw_fd(),
+        root: tree.payload.root.as_raw_fd(),
+        membership: tree.payload.membership.as_raw_fd(),
+    };
+    let name = tree.payload.name.clone();
     let mut command = Command::new("/usr/bin/bwrap");
     command.args([
         "--unshare-user",
@@ -60,11 +75,8 @@ pub(super) fn launch_command(executable: &Path, deadline: Instant) -> Result<Com
     if Instant::now() >= deadline {
         return Err(denied("plugin-deadline"));
     }
-    // Broker PID captured before spawn. The reaper is armed before exec; bwrap is
-    // left alive so that reaper can still see its children and SIGKILL the tree.
-    // PDEATHSIG and --die-with-parent kill only the outer process, which is the
-    // bubblewrap startup race (containers/bubblewrap#633).
-    // SAFETY: getpid is an async-signal-safe query of this process.
+    // All allocation, cgroup initialization and FD binding precede pre_exec.
+    // SAFETY: getpid is an async-signal-safe query.
     let parent = unsafe { libc::getpid() };
     let _ = REAPER_HOOK;
     // The closure owns the file until spawn completes. Only its FD survives exec
@@ -75,9 +87,19 @@ pub(super) fn launch_command(executable: &Path, deadline: Instant) -> Result<Com
             if libc::getppid() != parent {
                 return Err(io::Error::from_raw_os_error(libc::ESRCH));
             }
-            // Own process group so a later group kill cannot include the broker.
-            let _ = libc::setpgid(0, 0);
-            arm_descendant_reaper(parent)?;
+            let _keep_files_alive = (&ready, &lifetime);
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 || libc::getppid() != parent
+            {
+                return Err(io::Error::from_raw_os_error(libc::ESRCH));
+            }
+            let guardian = arm_descendant_reaper(parent, fds, &name, end)?;
+            guardian_alive(guardian, end)?;
+            // Membership is established before bwrap can fork even its init.
+            cgroup::write_fd(fds.membership, b"0")?;
+            guardian_alive(guardian, end)?;
+            if libc::prctl(libc::PR_SET_PDEATHSIG, 0) != 0 {
+                return Err(io::Error::last_os_error());
+            }
             if libc::getppid() != parent {
                 return Err(io::Error::from_raw_os_error(libc::ESRCH));
             }
@@ -110,365 +132,209 @@ pub(super) fn launch_command(executable: &Path, deadline: Instant) -> Result<Com
             {
                 return Err(io::Error::last_os_error());
             }
+            guardian_alive(guardian, end)?;
+            libc::close(guardian);
             Ok(())
         });
     }
-    Ok(command)
+    Ok((command, tree))
 }
 
 #[used]
 #[unsafe(link_section = ".init_array.00001")]
 static REAPER_HOOK: unsafe extern "C" fn() = plugin_reaper_hook;
 
+pub(super) fn launch_error(error: io::Error) -> BrokerError {
+    if error.raw_os_error() == Some(libc::ETIMEDOUT) {
+        denied("plugin-deadline")
+    } else {
+        BrokerError::Io(error)
+    }
+}
+
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn plugin_reaper_hook() {
     let value = libc::getenv(c"REKEY_PLUGIN_REAPER".as_ptr());
-    if value.is_null() || libc::strcmp(value, c"v1".as_ptr()) != 0 {
+    if value.is_null() || libc::strcmp(value, c"v2".as_ptr()) != 0 {
         return;
     }
-    let mut raw = [0u8; 512];
+    let mut raw = [0u8; 1024];
     let fd = libc::open(c"/proc/self/cmdline".as_ptr(), libc::O_RDONLY);
     if fd < 0 {
         libc::_exit(127);
     }
     let n = libc::read(fd, raw.as_mut_ptr().cast(), raw.len());
     libc::close(fd);
-    if n <= 0 {
+    if n <= 0 || n == raw.len() as isize {
         libc::_exit(127);
     }
-    let bytes = &raw[..n as usize];
-    let mut args = [std::ptr::null::<u8>(); 6];
+    let mut args = [std::ptr::null::<u8>(); 11];
     let mut count = 0usize;
     let mut start = 0usize;
-    for (index, byte) in bytes.iter().enumerate() {
+    for (index, byte) in raw[..n as usize].iter().enumerate() {
         if *byte == 0 {
-            if count < args.len() {
-                args[count] = bytes[start..].as_ptr();
-                count += 1;
+            if count >= args.len() {
+                libc::_exit(127);
             }
+            args[count] = raw[start..].as_ptr();
+            count += 1;
             start = index + 1;
         }
     }
-    if count < 6 || !arg_eq(args[1], b"rekey.plugin.reaper.v1\0") {
+    if count != args.len() || !arg_eq(args[1], b"rekey.plugin.reaper.v2\0") {
         libc::_exit(127);
     }
-    let Some(broker_pidfd) = parse_i32(args[2]) else {
-        libc::_exit(127);
-    };
-    let Some(launcher_pidfd) = parse_i32(args[3]) else {
-        libc::_exit(127);
-    };
-    let Some(launcher) = parse_i32(args[4]) else {
-        libc::_exit(127);
-    };
-    let Some(ready_fd) = parse_i32(args[5]) else {
-        libc::_exit(127);
-    };
-    let armed = 1u8;
-    if libc::write(ready_fd, (&armed as *const u8).cast(), 1) != 1 {
+    let mut numbers = [0i64; 8];
+    for (value, arg) in numbers.iter_mut().zip(&args[2..10]) {
+        let Some(number) = parse_number(*arg) else {
+            libc::_exit(127);
+        };
+        *value = number;
+    }
+    if numbers[..7].iter().any(|v| *v > i64::from(i32::MAX)) {
         libc::_exit(127);
     }
-    libc::close(ready_fd);
-    reap_until_launcher_gone(broker_pidfd, launcher_pidfd, launcher);
-    libc::_exit(0);
-}
-
-fn arg_eq(arg: *const u8, expected: &[u8]) -> bool {
-    if arg.is_null() {
-        return false;
+    let [broker, launcher, ready, lifetime, kill, events, root, end] = numbers;
+    let name = std::ffi::CStr::from_ptr(args[10].cast());
+    if !name.to_bytes().starts_with(b"rekey-payload-") || name.to_bytes().contains(&b'/') {
+        libc::_exit(127);
     }
-    for (index, byte) in expected.iter().enumerate() {
-        if unsafe { *arg.add(index) } != *byte {
-            return false;
-        }
+    if cgroup::empty(events as i32).is_err() || cgroup::budget(end).is_err() {
+        guardian_cleanup(kill as i32, events as i32, root as i32, name);
+        libc::_exit(127);
     }
-    true
-}
-
-fn parse_i32(arg: *const u8) -> Option<i32> {
-    if arg.is_null() {
-        return None;
+    if send_armed(ready as i32).is_err() {
+        guardian_cleanup(kill as i32, events as i32, root as i32, name);
+        libc::_exit(127);
     }
-    let mut value: i32 = 0;
-    let mut index = 0usize;
-    loop {
-        let byte = unsafe { *arg.add(index) };
-        if byte == 0 {
-            return if index == 0 { None } else { Some(value) };
-        }
-        if !byte.is_ascii_digit() {
-            return None;
-        }
-        value = value.checked_mul(10)?.checked_add(i32::from(byte - b'0'))?;
-        index += 1;
-        if index > 10 {
-            return None;
-        }
-    }
-}
-
-fn reap_until_launcher_gone(broker_pidfd: i32, launcher_pidfd: i32, launcher: i32) {
-    let mut known = [0i32; 96];
-    let mut len = 0usize;
+    // Keep ACK writer alive for the complete lifetime, not just one armed byte.
     let mut fds = [
         libc::pollfd {
-            fd: broker_pidfd,
+            fd: broker as i32,
             events: libc::POLLIN,
             revents: 0,
         },
         libc::pollfd {
-            fd: launcher_pidfd,
+            fd: launcher as i32,
+            events: libc::POLLIN,
+            revents: 0,
+        },
+        libc::pollfd {
+            fd: lifetime as i32,
             events: libc::POLLIN,
             revents: 0,
         },
     ];
-    loop {
-        collect_descendants(launcher, &mut known, &mut len);
-        let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, 20) };
+    while let Ok(budget) = cgroup::budget(end) {
+        let ready = libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, budget);
+        if ready < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+            continue;
+        }
         if ready < 0 {
-            let err = unsafe { *libc::__errno_location() };
-            if err == libc::EINTR {
-                continue;
-            }
             break;
         }
-        if ready == 0 {
-            continue;
-        }
-        let broker_gone = fds[0].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0;
-        if broker_gone {
-            // The launcher is still running, so its children remain listed.
-            collect_descendants(launcher, &mut known, &mut len);
-            signal_group(launcher);
-            kill_pids(&known[..len]);
-            unsafe { libc::kill(launcher, libc::SIGKILL) };
-            kill_pids(&known[..len]);
-        } else {
-            // Direct SIGKILL of the launcher (kill-on-drop or cancellation). The
-            // leader is still a zombie, so its process group id has not been
-            // reused. The sandboxed payload stays in that group when its own
-            // setsid is denied.
-            signal_group(launcher);
-            unsafe { libc::kill(-launcher, libc::SIGKILL) };
-            kill_pids(&known[..len]);
-            for _ in 0..20 {
-                let mut again = [0i32; 96];
-                let mut again_len = 0usize;
-                collect_descendants(launcher, &mut again, &mut again_len);
-                if again_len == 0 {
-                    break;
-                }
-                kill_pids(&again[..again_len]);
-                unsafe { libc::poll(std::ptr::null_mut(), 0, 10) };
-            }
-        }
-        break;
-    }
-}
-
-fn kill_pids(pids: &[i32]) {
-    for pid in pids.iter().copied() {
-        if pid > 1 {
-            unsafe { libc::kill(pid, libc::SIGKILL) };
-        }
-    }
-}
-
-fn signal_group(launcher: i32) {
-    let group = unsafe { libc::getpgid(launcher) };
-    let own = unsafe { libc::getpgrp() };
-    if group > 1 && group != own {
-        unsafe { libc::kill(-group, libc::SIGKILL) };
-    }
-}
-
-fn collect_descendants(root: i32, known: &mut [i32; 96], len: &mut usize) {
-    let mut stack = [0i32; 96];
-    let mut depth = 1usize;
-    stack[0] = root;
-    let self_pid = unsafe { libc::getpid() };
-    while depth > 0 {
-        depth -= 1;
-        let pid = stack[depth];
-        let mut children = [0i32; 32];
-        let count = read_children(pid, &mut children);
-        for child in children[..count].iter().copied() {
-            if child <= 1 || child == self_pid || known[..*len].contains(&child) {
-                continue;
-            }
-            if *len == known.len() || depth == stack.len() {
-                unsafe { libc::kill(child, libc::SIGKILL) };
-                continue;
-            }
-            known[*len] = child;
-            *len += 1;
-            stack[depth] = child;
-            depth += 1;
-        }
-    }
-}
-
-fn read_children(pid: i32, out: &mut [i32; 32]) -> usize {
-    let mut dir_path = [0u8; 64];
-    if write_proc_path(&mut dir_path, pid, b"/task").is_none() {
-        return 0;
-    }
-    let dir = unsafe { libc::opendir(dir_path.as_ptr().cast()) };
-    if dir.is_null() {
-        return 0;
-    }
-    let mut count = 0usize;
-    loop {
-        let entry = unsafe { libc::readdir(dir) };
-        if entry.is_null() {
+        if fds[0].revents != 0 || fds[2].revents != 0 {
             break;
         }
-        let name = unsafe { (*entry).d_name.as_ptr() };
-        if name.is_null() {
-            continue;
-        }
-        let Some(tid) = parse_i32(name.cast()) else {
-            continue;
-        };
-        let mut child_path = [0u8; 80];
-        if write_proc_task_children(&mut child_path, pid, tid).is_none() {
-            continue;
-        }
-        let fd = unsafe { libc::open(child_path.as_ptr().cast(), libc::O_RDONLY) };
-        if fd < 0 {
-            continue;
-        }
-        let mut raw = [0u8; 256];
-        let n = unsafe { libc::read(fd, raw.as_mut_ptr().cast(), raw.len()) };
-        unsafe { libc::close(fd) };
-        if n <= 0 {
-            continue;
-        }
-        let mut number: i32 = 0;
-        let mut in_number = false;
-        for byte in &raw[..n as usize] {
-            if byte.is_ascii_digit() {
-                in_number = true;
-                number = number
-                    .saturating_mul(10)
-                    .saturating_add(i32::from(byte - b'0'));
-            } else if in_number {
-                if count < out.len() {
-                    out[count] = number;
-                    count += 1;
-                } else {
-                    unsafe { libc::kill(number, libc::SIGKILL) };
-                }
-                number = 0;
-                in_number = false;
+        if fds[1].revents != 0 {
+            // Kill immediately when the launcher exits, but retain ACK and the
+            // empty leaf until the live Broker verifies drain and closes its
+            // lifetime pipe. Normal launcher exit is not guardian failure.
+            if cgroup::write_fd(kill as i32, b"1").is_err() {
+                break;
             }
-        }
-        if in_number {
-            if count < out.len() {
-                out[count] = number;
-                count += 1;
-            } else {
-                unsafe { libc::kill(number, libc::SIGKILL) };
-            }
+            fds[1].fd = -1;
         }
     }
-    unsafe { libc::closedir(dir) };
-    count
+    guardian_cleanup(kill as i32, events as i32, root as i32, name);
+    libc::_exit(0);
 }
 
-fn write_proc_path(buf: &mut [u8], pid: i32, suffix: &[u8]) -> Option<()> {
-    write_prefix(buf, b"/proc/", pid, suffix)
+fn guardian_cleanup(kill: i32, events: i32, root: i32, name: &std::ffi::CStr) {
+    // Cleanup remains bounded even after the execution deadline. A nonempty
+    // leaf is left in the kernel; this path never publishes plugin success.
+    if let Ok(now) = cgroup::clock_ns()
+        && cgroup::kill_and_drain(kill, events, now.saturating_add(2_000_000_000)).is_ok()
+    {
+        let _ = cgroup::remove(root, name);
+    }
 }
-
-fn write_proc_task_children(buf: &mut [u8], pid: i32, tid: i32) -> Option<()> {
-    let mut prefix = [0u8; 48];
-    write_prefix(&mut prefix, b"/proc/", pid, b"/task/")?;
-    let prefix_len = prefix.iter().position(|byte| *byte == 0)?;
-    let mut tid_buf = [0u8; 16];
-    let tid_n = decimal(tid, &mut tid_buf)?;
-    let suffix = b"/children";
-    if prefix_len + tid_n + suffix.len() + 1 > buf.len() {
+fn arg_eq(arg: *const u8, expected: &[u8]) -> bool {
+    !arg.is_null()
+        && expected
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| unsafe { *arg.add(index) == *byte })
+}
+fn parse_number(arg: *const u8) -> Option<i64> {
+    if arg.is_null() {
         return None;
     }
-    buf[..prefix_len].copy_from_slice(&prefix[..prefix_len]);
-    buf[prefix_len..prefix_len + tid_n].copy_from_slice(&tid_buf[..tid_n]);
-    let end = prefix_len + tid_n;
-    buf[end..end + suffix.len()].copy_from_slice(suffix);
-    buf[end + suffix.len()] = 0;
-    Some(())
+    let mut value = 0i64;
+    for index in 0..20 {
+        let byte = unsafe { *arg.add(index) };
+        if byte == 0 {
+            return (index > 0).then_some(value);
+        }
+        if !byte.is_ascii_digit() {
+            return None;
+        }
+        value = value.checked_mul(10)?.checked_add(i64::from(byte - b'0'))?;
+    }
+    None
 }
-
-fn write_prefix(buf: &mut [u8], head: &[u8], pid: i32, suffix: &[u8]) -> Option<()> {
-    let mut pid_buf = [0u8; 16];
-    let pid_n = decimal(pid, &mut pid_buf)?;
-    if head.len() + pid_n + suffix.len() + 1 > buf.len() {
+fn decimal(value: i64, buf: &mut [u8; 24]) -> Option<()> {
+    if value < 0 {
         return None;
     }
-    buf[..head.len()].copy_from_slice(head);
-    buf[head.len()..head.len() + pid_n].copy_from_slice(&pid_buf[..pid_n]);
-    let end = head.len() + pid_n;
-    buf[end..end + suffix.len()].copy_from_slice(suffix);
-    buf[end + suffix.len()] = 0;
-    Some(())
-}
-
-fn decimal(value: i32, buf: &mut [u8]) -> Option<usize> {
-    if value < 0 || buf.len() < 2 {
-        return None;
-    }
-    let mut digits = [0u8; 16];
-    let mut n = 0usize;
+    let mut digits = [0u8; 24];
+    let mut n = 0;
     let mut rest = value;
     loop {
         digits[n] = b'0' + (rest % 10) as u8;
         n += 1;
         rest /= 10;
-        if rest == 0 || n == digits.len() {
+        if rest == 0 {
             break;
         }
-    }
-    if n > buf.len() {
-        return None;
     }
     for (index, digit) in digits[..n].iter().rev().enumerate() {
         buf[index] = *digit;
     }
-    Some(n)
+    Some(())
+}
+
+#[derive(Clone, Copy)]
+struct GuardianFds {
+    ack: i32,
+    ready: i32,
+    lifetime: i32,
+    kill: i32,
+    events: i32,
+    root: i32,
+    membership: i32,
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn arm_descendant_reaper(broker: i32) -> io::Result<()> {
-    let broker_pidfd = libc::syscall(libc::SYS_pidfd_open, broker, 0);
+unsafe fn arm_descendant_reaper(
+    broker: i32,
+    fds: GuardianFds,
+    name: &std::ffi::CStr,
+    end: i64,
+) -> io::Result<i32> {
+    let broker_pidfd = libc::syscall(libc::SYS_pidfd_open, broker, 0) as i32;
     if broker_pidfd < 0 {
         return Err(io::Error::last_os_error());
     }
-    let launcher_pidfd = libc::syscall(libc::SYS_pidfd_open, libc::getpid(), 0);
+    let launcher_pidfd = libc::syscall(libc::SYS_pidfd_open, libc::getpid(), 0) as i32;
     if launcher_pidfd < 0 {
-        libc::close(broker_pidfd as i32);
+        libc::close(broker_pidfd);
         return Err(io::Error::last_os_error());
     }
-    if libc::fcntl(broker_pidfd as i32, libc::F_SETFD, 0) < 0
-        || libc::fcntl(launcher_pidfd as i32, libc::F_SETFD, 0) < 0
-    {
-        libc::close(broker_pidfd as i32);
-        libc::close(launcher_pidfd as i32);
-        return Err(io::Error::last_os_error());
-    }
-    let mut handshake = [0; 2];
-    // The reaper writes one armed byte after exec. CLOEXEC would close the
-    // pipe during exec and look like success before the hook runs.
-    if libc::pipe2(handshake.as_mut_ptr(), 0) != 0 {
-        libc::close(broker_pidfd as i32);
-        libc::close(launcher_pidfd as i32);
-        return Err(io::Error::last_os_error());
-    }
-    let launcher_pid = libc::getpid();
     let middle = libc::fork();
     if middle < 0 {
-        libc::close(handshake[0]);
-        libc::close(handshake[1]);
-        libc::close(broker_pidfd as i32);
-        libc::close(launcher_pidfd as i32);
+        libc::close(broker_pidfd);
+        libc::close(launcher_pidfd);
         return Err(io::Error::last_os_error());
     }
     if middle == 0 {
@@ -476,26 +342,37 @@ unsafe fn arm_descendant_reaper(broker: i32) -> io::Result<()> {
         if grand != 0 {
             libc::_exit(if grand < 0 { 127 } else { 0 });
         }
-        libc::close(handshake[0]);
         if libc::setsid() < 0 {
-            let _ = libc::write(handshake[1], (&1u8 as *const u8).cast(), 1);
             libc::_exit(127);
         }
-        let _ = libc::prctl(libc::PR_SET_PDEATHSIG, 0);
-        close_except(&[handshake[1], broker_pidfd as i32, launcher_pidfd as i32]);
+        let keep = [
+            broker_pidfd,
+            launcher_pidfd,
+            fds.ready,
+            fds.lifetime,
+            fds.kill,
+            fds.events,
+            fds.root,
+        ];
+        if close_except(&keep).is_err() {
+            libc::_exit(127);
+        }
+        for fd in keep {
+            if libc::fcntl(fd, libc::F_SETFD, 0) < 0 {
+                libc::_exit(127);
+            }
+        }
         let devnull = libc::open(c"/dev/null".as_ptr(), libc::O_RDWR);
-        if devnull >= 0 {
-            for target in 0..3 {
-                if target != handshake[1]
-                    && target != broker_pidfd as i32
-                    && target != launcher_pidfd as i32
-                {
-                    libc::dup2(devnull, target);
-                }
+        if devnull < 0 {
+            libc::_exit(127);
+        }
+        for target in 0..3 {
+            if !keep.contains(&target) && libc::dup2(devnull, target) < 0 {
+                libc::_exit(127);
             }
-            if devnull > 2 {
-                libc::close(devnull);
-            }
+        }
+        if devnull > 2 {
+            libc::close(devnull);
         }
         let mut exe = [0u8; 4096];
         let n = libc::readlink(
@@ -504,87 +381,204 @@ unsafe fn arm_descendant_reaper(broker: i32) -> io::Result<()> {
             exe.len() - 1,
         );
         if n < 0 {
-            let _ = libc::write(handshake[1], (&1u8 as *const u8).cast(), 1);
             libc::_exit(127);
         }
         exe[n as usize] = 0;
-        let mut broker_fd = [0u8; 16];
-        let mut launcher_fd = [0u8; 16];
-        let mut launcher_text = [0u8; 16];
-        let mut ready_fd = [0u8; 16];
-        if decimal(broker_pidfd as i32, &mut broker_fd).is_none()
-            || decimal(launcher_pidfd as i32, &mut launcher_fd).is_none()
-            || decimal(launcher_pid, &mut launcher_text).is_none()
-            || decimal(handshake[1], &mut ready_fd).is_none()
-        {
-            let failed = 2u8;
-            let _ = libc::write(handshake[1], (&failed as *const u8).cast(), 1);
-            libc::_exit(127);
+        let mut values = [[0u8; 24]; 8];
+        for (buffer, number) in values.iter_mut().zip([
+            i64::from(broker_pidfd),
+            i64::from(launcher_pidfd),
+            i64::from(fds.ready),
+            i64::from(fds.lifetime),
+            i64::from(fds.kill),
+            i64::from(fds.events),
+            i64::from(fds.root),
+            end,
+        ]) {
+            if decimal(number, buffer).is_none() {
+                libc::_exit(127);
+            }
         }
-        let marker = c"rekey.plugin.reaper.v1".as_ptr().cast_mut();
-        let env = c"REKEY_PLUGIN_REAPER=v1".as_ptr();
         let argv = [
-            exe.as_mut_ptr().cast::<libc::c_char>(),
-            marker,
-            broker_fd.as_mut_ptr().cast(),
-            launcher_fd.as_mut_ptr().cast(),
-            launcher_text.as_mut_ptr().cast(),
-            ready_fd.as_mut_ptr().cast(),
-            std::ptr::null_mut(),
-        ];
-        let envp = [env.cast_mut(), std::ptr::null_mut()];
-        libc::execve(
             exe.as_ptr().cast(),
-            argv.as_ptr().cast(),
-            envp.as_ptr().cast(),
-        );
-        let failed = 2u8;
-        let _ = libc::write(handshake[1], (&failed as *const u8).cast(), 1);
+            c"rekey.plugin.reaper.v2".as_ptr(),
+            values[0].as_ptr().cast(),
+            values[1].as_ptr().cast(),
+            values[2].as_ptr().cast(),
+            values[3].as_ptr().cast(),
+            values[4].as_ptr().cast(),
+            values[5].as_ptr().cast(),
+            values[6].as_ptr().cast(),
+            values[7].as_ptr().cast(),
+            name.as_ptr(),
+            std::ptr::null(),
+        ];
+        let envp = [c"REKEY_PLUGIN_REAPER=v2".as_ptr(), std::ptr::null()];
+        libc::execve(exe.as_ptr().cast(), argv.as_ptr(), envp.as_ptr());
         libc::_exit(127);
     }
-    libc::close(handshake[1]);
-    libc::close(broker_pidfd as i32);
-    libc::close(launcher_pidfd as i32);
+    libc::close(broker_pidfd);
+    libc::close(launcher_pidfd);
+    libc::close(fds.ready);
+    libc::close(fds.lifetime);
     let mut status = 0;
     loop {
-        let waited = libc::waitpid(middle, &mut status, 0);
-        if waited < 0 {
-            if io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
-                continue;
+        let budget = match cgroup::budget(end) {
+            Ok(budget) => budget,
+            Err(error) => {
+                libc::kill(middle, libc::SIGKILL);
+                let _ = libc::waitpid(middle, &mut status, libc::WNOHANG);
+                return Err(error);
             }
-            libc::close(handshake[0]);
+        };
+        let waited = libc::waitpid(middle, &mut status, libc::WNOHANG);
+        if waited == middle {
+            break;
+        }
+        if waited < 0 && io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
             return Err(io::Error::last_os_error());
         }
-        break;
+        libc::poll(std::ptr::null_mut(), 0, budget.min(1));
     }
     if !libc::WIFEXITED(status) || libc::WEXITSTATUS(status) != 0 {
-        libc::close(handshake[0]);
-        return Err(io::Error::other("plugin descendant reaper failed to fork"));
+        return Err(io::Error::from_raw_os_error(libc::ECHILD));
     }
-    let mut result = [0u8; 1];
+    let mut fd = libc::pollfd {
+        fd: fds.ack,
+        events: libc::POLLIN,
+        revents: 0,
+    };
     loop {
-        let n = libc::read(handshake[0], result.as_mut_ptr().cast(), 1);
-        if n < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
-            continue;
+        let budget = cgroup::budget(end)?;
+        let ready = libc::poll(&mut fd, 1, budget);
+        if ready < 0 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            return Err(error);
         }
-        libc::close(handshake[0]);
-        if n == 1 && result[0] == 1 {
-            return Ok(());
+        if ready == 0 {
+            return Err(cgroup::timeout());
         }
-        return Err(io::Error::other("plugin descendant reaper failed to exec"));
+        let guardian = match receive_armed(fds.ack, fd.revents) {
+            Ok(guardian) => guardian,
+            Err(error) if error.raw_os_error() == Some(libc::EINTR) => continue,
+            Err(error) => return Err(error),
+        };
+        if let Err(error) = guardian_alive(guardian, end) {
+            libc::close(guardian);
+            return Err(error);
+        }
+        return Ok(guardian);
     }
 }
-
+// The parent's pre-spawn copy of the ACK writer prevents reliable startup EOF.
+// Pass the execed guardian's own pidfd atomically with ACK, so launcher gates
+// cannot accept a byte from an already dead guardian even during spawn.
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn close_except(keep: &[i32]) {
-    let mut fd = 0i32;
-    while fd < 256 {
+unsafe fn send_armed(socket: i32) -> io::Result<()> {
+    let pidfd = libc::syscall(libc::SYS_pidfd_open, libc::getpid(), 0) as i32;
+    if pidfd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut byte = 1u8;
+    let mut data = libc::iovec {
+        iov_base: (&mut byte as *mut u8).cast(),
+        iov_len: 1,
+    };
+    let mut control = [0usize; 8];
+    let mut message: libc::msghdr = std::mem::zeroed();
+    message.msg_iov = &mut data;
+    message.msg_iovlen = 1;
+    message.msg_control = control.as_mut_ptr().cast();
+    message.msg_controllen = libc::CMSG_SPACE(std::mem::size_of::<i32>() as u32) as usize;
+    let header = libc::CMSG_FIRSTHDR(&message);
+    (*header).cmsg_level = libc::SOL_SOCKET;
+    (*header).cmsg_type = libc::SCM_RIGHTS;
+    (*header).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<i32>() as u32) as usize;
+    std::ptr::write_unaligned(libc::CMSG_DATA(header).cast::<i32>(), pidfd);
+    let n = libc::sendmsg(socket, &message, libc::MSG_NOSIGNAL);
+    let error = io::Error::last_os_error();
+    libc::close(pidfd);
+    if n == 1 { Ok(()) } else { Err(error) }
+}
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn receive_armed(socket: i32, revents: i16) -> io::Result<i32> {
+    let mut byte = 0;
+    let mut data = libc::iovec {
+        iov_base: (&mut byte as *mut u8).cast(),
+        iov_len: 1,
+    };
+    let mut control = [0usize; 8];
+    let mut message: libc::msghdr = std::mem::zeroed();
+    message.msg_iov = &mut data;
+    message.msg_iovlen = 1;
+    message.msg_control = control.as_mut_ptr().cast();
+    message.msg_controllen = std::mem::size_of_val(&control);
+    let n = libc::recvmsg(socket, &mut message, libc::MSG_CMSG_CLOEXEC);
+    if n < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let header = libc::CMSG_FIRSTHDR(&message);
+    if header.is_null()
+        || (*header).cmsg_level != libc::SOL_SOCKET
+        || (*header).cmsg_type != libc::SCM_RIGHTS
+        || (*header).cmsg_len != libc::CMSG_LEN(std::mem::size_of::<i32>() as u32) as usize
+    {
+        return Err(io::Error::from_raw_os_error(libc::EPROTO));
+    }
+    let pidfd = std::ptr::read_unaligned(libc::CMSG_DATA(header).cast::<i32>());
+    if let Err(error) = cgroup::validate_ack(
+        n,
+        byte,
+        revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
+            || message.msg_flags & (libc::MSG_TRUNC | libc::MSG_CTRUNC) != 0,
+    ) {
+        libc::close(pidfd);
+        return Err(error);
+    }
+    Ok(pidfd)
+}
+
+fn guardian_alive(ack: i32, end: i64) -> io::Result<()> {
+    cgroup::budget(end)?;
+    let mut fd = libc::pollfd {
+        fd: ack,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    loop {
+        let ready = unsafe { libc::poll(&mut fd, 1, 0) };
+        if ready < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+            cgroup::budget(end)?;
+            continue;
+        }
+        if ready == 0 {
+            return Ok(());
+        }
+        return Err(io::Error::from_raw_os_error(libc::EPIPE));
+    }
+}
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn close_except(keep: &[i32]) -> io::Result<()> {
+    for fd in 0..256 {
         if !keep.contains(&fd) {
             libc::close(fd);
         }
-        fd += 1;
     }
-    let _ = libc::syscall(libc::SYS_close_range, 256u32, u32::MAX, 0u32);
+    // FDs above 255 can include pre-opened cgroup handles. Mark CLOEXEC then
+    // explicitly retain only the listed manager handles through guardian exec.
+    if libc::syscall(
+        libc::SYS_close_range,
+        256u32,
+        u32::MAX,
+        libc::CLOSE_RANGE_CLOEXEC,
+    ) != 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 fn require_unprivileged_bwrap() -> Result<(), BrokerError> {

@@ -22,7 +22,8 @@ payloads specified below and return signed JSON artifacts.
 
 ```text
 rekey policy trust install --file TRUST.json --step-up-stdin
-rekey policy activate --file BUNDLE.json --step-up-stdin
+rekey policy activate --file BUNDLE.json --expected-vault-id VAULT_ID \
+  --expected-trust-sha256 TRUST_SHA256 --step-up-stdin
 rekey policy status
 rekey approval prepare ACTION_ID@VERSION --capability - [--body-file FILE]
                        [--content-type TYPE] [--header NAME:VALUE]
@@ -52,6 +53,11 @@ supplying a different signer ID or public key is replacement and is rejected.
 The trust file is parsed once as a closed object with recursive duplicate-key
 and unknown-field rejection before any record is committed. Its signer ID,
 algorithm, and public key must all be canonical.
+
+Current target metadata is governed by `2026-09-30-controlplane.md`: the
+closed activation object carries expected vault/root and a verbatim raw signed
+bundle; CLI requires both public target flags. The Authority rechecks after
+step-up, before exact retry and transaction.
 
 `policy activate` now accepts only a signed policy bundle. An unsigned snapshot,
 unknown signer, malformed signature, expired snapshot, or invalid policy

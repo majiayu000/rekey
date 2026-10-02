@@ -15,6 +15,10 @@ pub enum AadPurpose {
     PolicyState,
     PolicyTrust,
     PolicyBundle,
+    LeaseJournalWrapDek,
+    LeaseJournalPayload,
+    LeaseJournalState,
+    AuditRetention,
 }
 
 impl AadPurpose {
@@ -28,6 +32,10 @@ impl AadPurpose {
             Self::PolicyState => 6,
             Self::PolicyTrust => 7,
             Self::PolicyBundle => 8,
+            Self::LeaseJournalWrapDek => 9,
+            Self::LeaseJournalPayload => 10,
+            Self::LeaseJournalState => 11,
+            Self::AuditRetention => 12,
         }
     }
 }
@@ -153,5 +161,59 @@ mod tests {
         for v in variants {
             assert_ne!(v.encode(), base.encode());
         }
+    }
+    #[test]
+    fn azure_kind_uses_tag_eight_without_changing_the_84_byte_layout() {
+        let azure = AadV1 {
+            purpose: AadPurpose::CredentialPayload,
+            vault_id: vault_id(),
+            object_id: [0x22; 16],
+            object_version: 1,
+            credential_kind: rekey_domain::credential::CredentialKind::AzureKeyVaultSource
+                .aad_code(),
+            constraints_hash: [0; 32],
+        };
+        let encoded = azure.encode();
+        assert_eq!(encoded.len(), 84);
+        assert_eq!(&encoded[48..50], &8u16.to_be_bytes());
+        let mut wrong = azure;
+        wrong.credential_kind = 7;
+        assert_ne!(encoded, wrong.encode());
+    }
+    #[test]
+    fn onepassword_kind_uses_tag_nine_without_changing_the_84_byte_layout() {
+        let onepassword = AadV1 {
+            purpose: AadPurpose::CredentialPayload,
+            vault_id: vault_id(),
+            object_id: [0x22; 16],
+            object_version: 1,
+            credential_kind: rekey_domain::credential::CredentialKind::OnePasswordConnectSource
+                .aad_code(),
+            constraints_hash: [0; 32],
+        };
+        let encoded = onepassword.encode();
+        assert_eq!(encoded.len(), 84);
+        assert_eq!(&encoded[48..50], &9u16.to_be_bytes());
+        let mut wrong = onepassword;
+        wrong.credential_kind = 8;
+        assert_ne!(encoded, wrong.encode());
+    }
+    #[test]
+    fn keychain_kind_uses_tag_ten_and_retains_84_byte_aad() {
+        let source = AadV1 {
+            purpose: AadPurpose::CredentialPayload,
+            vault_id: vault_id(),
+            object_id: [0x22; 16],
+            object_version: 1,
+            credential_kind: rekey_domain::credential::CredentialKind::MacosKeychainSource
+                .aad_code(),
+            constraints_hash: [0; 32],
+        };
+        let bytes = source.encode();
+        assert_eq!(bytes.len(), 84);
+        assert_eq!(&bytes[48..50], &10u16.to_be_bytes());
+        let mut other = source;
+        other.credential_kind = 9;
+        assert_ne!(bytes, other.encode());
     }
 }

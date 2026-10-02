@@ -89,8 +89,8 @@ async fn audit_timeout(kind: &str, issued: bool, malformed: bool) {
         ),
         "vault-dynamic-source" => (
             json!({
-                "credential_type":"vault-dynamic-source-v1", "origin":"https://vault.example.com",
-                "mount":"database", "role":"agent-api-token", "key":"token", "vault_token":"synthetic-vault-token"
+                "credential_type":"vault-dynamic-source-v2", "origin":"https://vault.example.com",
+                "mount":"database", "role":"agent-api-token", "key":"token", "renew_increment_seconds":60, "vault_token":"synthetic-vault-token"
             }),
             response(
                 200,
@@ -226,6 +226,28 @@ async fn audit_timeout(kind: &str, issued: bool, malformed: bool) {
         .unwrap()
         .map(Result::unwrap)
         .collect();
+    if kind == "vault-dynamic-source" {
+        // Journal mutation and its audit are one deadline-bound transaction.
+        // A timed-out write must not invent a late durable issued/revoked ACK.
+        let expected = if issued {
+            vec!["execution.indeterminate"]
+        } else {
+            vec![issued_event, "execution.indeterminate"]
+        };
+        assert_eq!(events, expected);
+        let phase: String = db
+            .query_row("SELECT phase FROM vault_lease_journal", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            phase,
+            if issued {
+                "acquire_intent"
+            } else {
+                "cleanup_started"
+            }
+        );
+        return;
+    }
     assert_eq!(
         events,
         [issued_event, revoked_event, "execution.indeterminate"]

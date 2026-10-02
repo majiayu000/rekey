@@ -350,6 +350,9 @@ fn real_rekeyd_and_rekey_accept_all_profiles_and_reject_replay_and_tampering() {
         Some(format!("{PASSWORD}\n").as_bytes()),
     );
     assert_eq!(installed.status, 0, "{}", installed.stderr);
+    let status = run(&[&base[..], &["policy", "status"]].concat(), None);
+    assert_eq!(status.status, 0, "{}", status.stderr);
+    let target: Value = serde_json::from_str(&status.stdout).unwrap();
     let policy_path = dir.path().join("policy.json");
     write_json(
         &policy_path,
@@ -363,6 +366,10 @@ fn real_rekeyd_and_rekey_accept_all_profiles_and_reject_replay_and_tampering() {
                 "activate",
                 "--file",
                 policy_path.to_str().unwrap(),
+                "--expected-vault-id",
+                target["vault_id"].as_str().unwrap(),
+                "--expected-trust-sha256",
+                target["trust_sha256"].as_str().unwrap(),
                 "--step-up-stdin",
             ],
         ]
@@ -476,6 +483,10 @@ fn real_rekeyd_and_rekey_accept_all_profiles_and_reject_replay_and_tampering() {
                 "activate",
                 "--file",
                 policy_path.to_str().unwrap(),
+                "--expected-vault-id",
+                target["vault_id"].as_str().unwrap(),
+                "--expected-trust-sha256",
+                target["trust_sha256"].as_str().unwrap(),
                 "--step-up-stdin",
             ],
         ]

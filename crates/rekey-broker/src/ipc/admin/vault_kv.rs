@@ -50,6 +50,87 @@ pub(super) async fn handle_rotate_keycloak(
     .await
 }
 
+pub(super) async fn handle_rotate_gcp(
+    frame: &IncomingFrame,
+    ctx: &BrokerCtx,
+) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
+    handle_rotate_kind(
+        frame,
+        ctx,
+        CredentialKind::GcpSecretManagerSource,
+        crate::executor::gcp_source::GcpSourceProfile::validate_profile,
+        "invalid GCP Secret Manager credential profile",
+    )
+    .await
+}
+
+pub(super) async fn handle_rotate_azure(
+    frame: &IncomingFrame,
+    ctx: &BrokerCtx,
+) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
+    handle_rotate_kind(
+        frame,
+        ctx,
+        CredentialKind::AzureKeyVaultSource,
+        crate::executor::azure_source::AzureSourceProfile::validate_profile,
+        "invalid Azure Key Vault credential profile",
+    )
+    .await
+}
+
+pub(super) async fn handle_rotate_onepassword(
+    frame: &IncomingFrame,
+    ctx: &BrokerCtx,
+) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
+    handle_rotate_kind(
+        frame,
+        ctx,
+        CredentialKind::OnePasswordConnectSource,
+        crate::executor::onepassword_source::OnePasswordSourceProfile::validate_profile,
+        "invalid 1Password Connect credential profile",
+    )
+    .await
+}
+
+pub(super) async fn handle_rotate_keychain(
+    frame: &IncomingFrame,
+    ctx: &BrokerCtx,
+) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
+    let deadline = admin_mutation_deadline();
+    ctx.lifecycle.reject_if_not_running()?;
+    let reference: ipc::CredentialRefMeta = meta(frame)?;
+    let (kind, proof, secret) = ipc::parse_proof_and_secret_body(&frame.body)?;
+    let _owner = ctx.lifecycle.coordinate_until(deadline).await?;
+    ctx.lifecycle.reject_if_not_running()?;
+    let metadata = authority_until(
+        deadline,
+        ctx.authority.credential_rotate_typed_before(
+            reference.credential_id,
+            CredentialKind::MacosKeychainSource,
+            None,
+            SecretInput::from_slice(secret),
+            proof_from(kind, proof),
+            Some(deadline.into_std()),
+        ),
+    )
+    .await?;
+    Ok((json(&metadata)?, Vec::new()))
+}
+
+pub(super) async fn handle_rotate_aws(
+    frame: &IncomingFrame,
+    ctx: &BrokerCtx,
+) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
+    handle_rotate_kind(
+        frame,
+        ctx,
+        CredentialKind::AwsSecretsManagerSource,
+        crate::executor::aws_source::AwsSourceProfile::validate_profile,
+        "invalid AWS Secrets Manager credential profile",
+    )
+    .await
+}
+
 async fn handle_rotate_kind<E>(
     frame: &IncomingFrame,
     ctx: &BrokerCtx,

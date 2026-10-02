@@ -246,6 +246,9 @@ def main():
         base = [binaries / "rekey", "--state-dir", state]
 
         def cli(arguments, data=None):
+            if arguments[:2] == ["policy", "activate"]:
+                target = cli(["policy", "status"])
+                arguments = arguments + ["--expected-vault-id", target["vault_id"], "--expected-trust-sha256", target["trust_sha256"]]
             result = command(base + arguments, data)
             transcript.extend([result.stdout, result.stderr])
             return json.loads(result.stdout)

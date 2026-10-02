@@ -240,7 +240,7 @@ async fn workload_mint_rejects_unauthorized_and_disabled_actions() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn policy_activation_revokes_only_workload_sessions() {
+async fn policy_replacement_revokes_admin_and_workload_sessions_and_allows_fresh_issuance() {
     let broker = common::start_broker().await;
     common::unlock(&broker).await;
     let credential_id = common::add_credential(&broker, "rotation", b"value").await;
@@ -273,7 +273,7 @@ async fn policy_activation_revokes_only_workload_sessions() {
         &broker.admin_sock(),
         Channel::Admin,
         admin_msg::POLICY_ACTIVATE,
-        &bundle,
+        &common::policy::activation_metadata(&broker, &bundle).await,
         &common::proof_body(common::PASSWORD),
     )
     .await
@@ -309,11 +309,31 @@ async fn policy_activation_revokes_only_workload_sessions() {
     )
     .await;
     assert_eq!(workload_execute.err_code(), "INVALID_CAPABILITY");
-    common::call(
+    let old_admin = common::call(
         &broker.agent_sock(),
         Channel::Agent,
         agent_msg::EXECUTE_FIXED_HTTP_ACTION,
         common::execute_meta(&admin.capability_token, &action_id, version)
+            .to_string()
+            .as_bytes(),
+        b"{}",
+    )
+    .await;
+    assert_eq!(old_admin.err_code(), "INVALID_CAPABILITY");
+    let fresh = common::policy::create_session_for_principal(
+        &broker,
+        &action_id,
+        version,
+        5,
+        Some(&admin.principal_id),
+    )
+    .await;
+    assert_eq!(fresh.principal_id, admin.principal_id);
+    common::call(
+        &broker.agent_sock(),
+        Channel::Agent,
+        agent_msg::EXECUTE_FIXED_HTTP_ACTION,
+        common::execute_meta(&fresh.capability_token, &action_id, version)
             .to_string()
             .as_bytes(),
         b"{}",

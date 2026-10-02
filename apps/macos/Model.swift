@@ -2,6 +2,7 @@ import Foundation
 import SwiftUI
 import AppKit
 import Security
+import Darwin
 
 struct UIError: LocalizedError {
     let message: String
@@ -55,14 +56,21 @@ struct RememberedUnlock: Codable {
 struct CLI: Sendable {
     let binary: URL
     let stateDirectory: String
+    var adminSessionFile: String? = nil
 
-    func run(_ arguments: [String], input: String = "") throws -> Data {
+    func commandArguments(_ arguments: [String]) -> [String] {
+        var result = ["--state-dir", stateDirectory]
+        if let file = adminSessionFile { result += ["--admin-session-file", file] }
+        return result + arguments
+    }
+
+    func run(_ arguments: [String], input: String = "", redacting: [String] = []) throws -> Data {
         guard FileManager.default.isExecutableFile(atPath: binary.path) else {
             throw UIError(message: "找不到随应用安装的 rekey，请重新构建应用。")
         }
         let process = Process()
         process.executableURL = binary
-        process.arguments = ["--state-dir", stateDirectory] + arguments
+        process.arguments = commandArguments(arguments)
         // Do not forward the host's API keys or other ambient credentials.
         process.environment = ["HOME": NSHomeDirectory(), "PATH": "/usr/bin:/bin", "LANG": "en_US.UTF-8"]
         let stdin = Pipe(), stdout = Pipe(), stderr = Pipe()
@@ -98,7 +106,9 @@ struct CLI: Sendable {
             throw UIError(message: "命令中断或超时。操作结果未确认，请刷新后检查，勿自动重试。")
         }
         guard process.terminationStatus == 0 else {
-            let detail = String(data: errors.data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "CLI 未返回错误说明"
+            var detail = String(data: errors.data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "CLI 未返回错误说明"
+            let protectedValues = redacting.flatMap { [$0, $0.trimmingCharacters(in: .whitespacesAndNewlines)] }.sorted { $0.count > $1.count }
+            for value in protectedValues where !value.isEmpty { detail = detail.replacingOccurrences(of: value, with: "[已隐藏]") }
             throw UIError(message: "操作未完成（\(process.terminationStatus)）\n\(detail)")
         }
         return output.data
@@ -187,6 +197,7 @@ struct Credential: Decodable, Identifiable {
 }
 struct CredentialList: Decodable { let credentials: [Credential] }
 struct FixedAction: Decodable, Identifiable {
+    struct RequestPolicy: Decodable { let max_body_bytes: Int }
     let id: String
     let name: String
     let version: Int
@@ -195,10 +206,14 @@ struct FixedAction: Decodable, Identifiable {
     let origin: String
     let method: String
     let exact_path: String
+    let request_policy: RequestPolicy
+    var request_max_bytes: Int { request_policy.max_body_bytes }
     var reference: String { "\(id)@\(version)" }
 }
 struct ActionList: Decodable { let actions: [FixedAction] }
 struct PolicyStatus: Decodable {
+    let vault_id: String
+    let trust_sha256: String?
     let bundle_persisted: Bool
     let trust_installed: Bool
     let status: String
@@ -306,6 +321,24 @@ struct ResultMessage: Identifiable {
     var sensitive: Bool = false
 }
 
+struct OIDCLoginBegin: Decodable, Sendable {
+    let flow_id: String
+    let authorization_url: String
+    let expires_at_ms: Int64
+
+    var browserURL: URL? {
+        guard let url = URL(string: authorization_url), url.scheme == "https",
+              url.host != nil, url.user == nil, url.password == nil else { return nil }
+        return url
+    }
+}
+
+struct OIDCLoginIdentity: Decodable, Sendable {
+    let principal_id: String
+    let expires_at_ms: Int64
+    let mapping_sha256: String
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     @Published var page: Page = .credentials
@@ -315,6 +348,8 @@ final class AppModel: ObservableObject {
     @Published var policy: PolicyStatus?
     @Published var approvals: [PendingApproval] = []
     @Published var approvalDetails: ApprovalDetails?
+    @Published var showPolicyDraft = false
+    @Published private(set) var nativeFlowRevision = UUID()
     @Published var audit: AuditPage?
     @Published var desktopToken: String?
     @Published var copiedCredential: String?
@@ -327,19 +362,104 @@ final class AppModel: ObservableObject {
     @Published var connectionError: String?
     @Published var operation: Operation?
     @Published var result: ResultMessage?
+    @Published var oidcProfileFile: String?
+    @Published var oidcSessionFile: String? { didSet { if oldValue != oidcSessionFile { oidcIdentity = nil } } }
+    @Published private(set) var oidcFlow: OIDCLoginBegin?
+    @Published private(set) var oidcFlowRevision = UUID()
+    @Published private(set) var oidcBusy = false
+    @Published var oidcIdentity: OIDCLoginIdentity?
     @Published var showAddCredential = false
     @Published var showSession = false
     @Published var auditOutcome = ""
-    @Published var stateDirectory: String
+    @Published var stateDirectory: String { didSet {
+        if oldValue != stateDirectory {
+            clearNativeFlow(); clearOIDCLogin(); oidcProfileFile = nil; oidcSessionFile = nil; oidcIdentity = nil
+        }
+    } }
     private var launchedService: Process?
     private var launchedServiceDirectory: String?
     var cli: CLI {
-        CLI(binary: Bundle.main.resourceURL!.appendingPathComponent("bin/rekey"), stateDirectory: stateDirectory)
+        CLI(binary: Bundle.main.resourceURL!.appendingPathComponent("bin/rekey"), stateDirectory: stateDirectory, adminSessionFile: oidcSessionFile)
     }
     var unlocked: Bool { status?.unlocked == true }
+    var serviceIsRunning: Bool { status != nil || (launchedServiceDirectory == stateDirectory && launchedService?.isRunning == true) }
     var selected: Credential? { credentials.first { $0.id == selectedCredential } }
-    init() {
-        stateDirectory = UserDefaults.standard.string(forKey: "stateDirectory") ?? NSHomeDirectory() + "/.rekey"
+    init(stateDirectory: String? = nil) {
+        self.stateDirectory = stateDirectory ?? (UserDefaults.standard.string(forKey: "stateDirectory") ?? NSHomeDirectory() + "/.rekey")
+    }
+    func beginOIDCLogin() async {
+        guard !busy, !oidcBusy, unlocked else { return }
+        let client = cli, revision = oidcFlowRevision, workspace = stateDirectory
+        oidcBusy = true; error = nil
+        defer { if revision == oidcFlowRevision && workspace == stateDirectory { oidcBusy = false } }
+        do {
+            let flow = try await Task.detached { try client.decode(OIDCLoginBegin.self, ["oidc-login", "begin"]) }.value
+            guard acceptsOIDCCompletion(revision, workspace: workspace) else { return }
+            guard flow.browserURL != nil else { throw UIError(message: "登录授权地址无效。") }
+            oidcFlow = flow
+        } catch {
+            if revision == oidcFlowRevision && workspace == stateDirectory { self.error = error.localizedDescription }
+        }
+    }
+    func finishOIDCLogin(to file: URL) async {
+        guard !busy, !oidcBusy, unlocked, let flow = oidcFlow else { return }
+        let client = cli, revision = oidcFlowRevision, workspace = stateDirectory
+        oidcBusy = true; error = nil
+        defer { if revision == oidcFlowRevision && workspace == stateDirectory { oidcBusy = false } }
+        do {
+            let identity = try await Task.detached {
+                try client.decode(OIDCLoginIdentity.self, ["oidc-login", "finish", "--flow-id", flow.flow_id, "--session-file", file.path])
+            }.value
+            guard acceptsOIDCCompletion(revision, workspace: workspace), oidcFlow?.flow_id == flow.flow_id else {
+                do { _ = try await Task.detached { try client.run(["oidc-login", "logout", "--session-file", file.path]) }.value }
+                catch { self.error = "旧工作区登录结果未采用，且无法确认其会话退出。\n" + error.localizedDescription }
+                return
+            }
+            oidcSessionFile = file.path; oidcIdentity = identity; oidcFlow = nil
+            oidcBusy = false
+            await refresh()
+            return
+        } catch {
+            if revision == oidcFlowRevision && workspace == stateDirectory { self.error = error.localizedDescription }
+        }
+    }
+    func cancelOIDCLogin() async {
+        guard let flow = oidcFlow else { return }
+        let client = cli, workspace = stateDirectory
+        clearOIDCLogin()
+        let revision = oidcFlowRevision
+        oidcBusy = true
+        defer { if revision == oidcFlowRevision && workspace == stateDirectory { oidcBusy = false } }
+        do { _ = try await Task.detached { try client.run(["oidc-login", "cancel", "--flow-id", flow.flow_id]) }.value }
+        catch { if revision == oidcFlowRevision && workspace == stateDirectory { self.error = error.localizedDescription } }
+    }
+    func logoutOIDC() async {
+        guard !busy, !oidcBusy, let file = oidcSessionFile else { return }
+        let client = cli, workspace = stateDirectory
+        clearOIDCLogin()
+        let revision = oidcFlowRevision
+        oidcBusy = true; error = nil
+        defer { if revision == oidcFlowRevision && workspace == stateDirectory { oidcBusy = false } }
+        do {
+            let data = try await Task.detached { try client.run(["oidc-login", "logout", "--session-file", file]) }.value
+            guard revision == oidcFlowRevision && workspace == stateDirectory else { return }
+            oidcSessionFile = nil; oidcIdentity = nil
+            result = ResultMessage(title: "机构会话已退出", text: String(decoding: data, as: UTF8.self))
+        } catch {
+            if revision == oidcFlowRevision && workspace == stateDirectory { self.error = error.localizedDescription }
+        }
+    }
+    func clearOIDCLogin() {
+        oidcFlowRevision = UUID(); oidcFlow = nil; oidcBusy = false
+    }
+    func acceptsOIDCCompletion(_ revision: UUID, workspace: String) -> Bool {
+        revision == oidcFlowRevision && workspace == stateDirectory && unlocked
+    }
+    func clearNativeFlow() {
+        nativeFlowRevision = UUID(); showPolicyDraft = false; approvalDetails = nil
+    }
+    func acceptsNativeCompletion(_ revision: UUID, workspace: String) -> Bool {
+        revision == nativeFlowRevision && workspace == stateDirectory && unlocked
     }
     var needsSetup: Bool {
         !FileManager.default.fileExists(atPath: stateDirectory + "/vault.sqlite3")
@@ -390,11 +510,13 @@ final class AppModel: ObservableObject {
         }
     }
     func clearCache() {
+        clearNativeFlow(); clearOIDCLogin()
+        oidcSessionFile = nil; oidcIdentity = nil
         desktopToken = nil; visibleSecret = nil; copiedCredential = nil
         credentials = []; actions = []; approvals = []; approvalDetails = nil; policy = nil; audit = nil; selectedCredential = nil
     }
     func changeDirectory(_ path: String) {
-        guard !busy else { return }
+        guard !busy, !oidcBusy else { return }
         resumeAttempted = false
         stateDirectory = path
         UserDefaults.standard.set(path, forKey: "stateDirectory")
@@ -472,7 +594,7 @@ final class AppModel: ObservableObject {
     func perform(_ op: Operation, proof: String = "", secret: String = "", recovery: Bool = false) async {
         guard !busy else { return }
         busy = true; error = nil
-        let client = CLI(binary: cli.binary, stateDirectory: op.targetDirectory ?? stateDirectory)
+        let client = CLI(binary: cli.binary, stateDirectory: op.targetDirectory ?? stateDirectory, adminSessionFile: oidcSessionFile)
         let desktopLogin = op.arguments == ["unlock"]
         var args = desktopLogin ? ["desktop-login"] : op.arguments
         var input = ""
@@ -490,10 +612,12 @@ final class AppModel: ObservableObject {
             if desktopLogin {
                 guard output.count == 64 && output.allSatisfy(\.isHexDigit) else { throw UIError(message: "管理会话响应无效。") }
                 desktopToken = output; desktopExpiry = Date().addingTimeInterval(7 * 24 * 60 * 60)
-                let rememberArgs = recovery ? ["desktop-remember", "--recovery"] : ["desktop-remember"]
-                let rememberedData = try await Task.detached { try client.run(rememberArgs, input: body) }.value
-                let remembered = try RememberedUnlock.receipt(rememberedData)
-                try remembered.save(stateDirectory)
+                if oidcProfileFile == nil || oidcSessionFile != nil {
+                    let rememberArgs = recovery ? ["desktop-remember", "--recovery"] : ["desktop-remember"]
+                    let rememberedData = try await Task.detached { try client.run(rememberArgs, input: body) }.value
+                    let remembered = try RememberedUnlock.receipt(rememberedData)
+                    try remembered.save(stateDirectory)
+                }
                 resumeAttempted = true
             } else { result = ResultMessage(title: op.title + "完成", text: output, sensitive: op.sensitiveResult) }
         } catch { operationError = error.localizedDescription }
@@ -519,7 +643,9 @@ final class AppModel: ObservableObject {
         }
         let child = Process()
         child.executableURL = cli.binary
-        child.arguments = ["--state-dir", stateDirectory, "serve"]
+        var arguments = ["--state-dir", stateDirectory, "serve"]
+        if let profile = oidcProfileFile { arguments += ["--oidc-admin-profile", profile] }
+        child.arguments = arguments
         child.environment = ["HOME": NSHomeDirectory(), "PATH": "/usr/bin:/bin", "LANG": "en_US.UTF-8"]
         child.standardInput = FileHandle.nullDevice
         child.standardOutput = FileHandle.nullDevice
@@ -549,6 +675,7 @@ final class AppModel: ObservableObject {
         } catch { self.error = "无法启动服务：\(error.localizedDescription)" }
     }
     func lock() async {
+        clearNativeFlow()
         resumeAttempted = true
         var keychainError: String?
         do { try RememberedUnlock.forget(stateDirectory) } catch { keychainError = error.localizedDescription }
@@ -572,13 +699,22 @@ final class AppModel: ObservableObject {
         guard !busy, unlocked else { return }
         busy = true; error = nil; approvalDetails = nil
         defer { busy = false }
-        let client = cli
+        let client = cli, revision = nativeFlowRevision
         do {
             let details = try await Task.detached { try client.approvalDetails(item.id) }.value
-            guard unlocked, stateDirectory == client.stateDirectory else { return }
-            approvalDetails = details
+            finishApprovalReview(.success(details), revision: revision, workspace: client.stateDirectory, active: NSApp.isActive)
+        } catch {
+            finishApprovalReview(.failure(error), revision: revision, workspace: client.stateDirectory, active: NSApp.isActive)
         }
-        catch { self.error = error.localizedDescription }
+    }
+    @discardableResult
+    func finishApprovalReview(_ outcome: Result<ApprovalDetails, Error>, revision: UUID, workspace: String, active: Bool) -> Bool {
+        guard active, acceptsNativeCompletion(revision, workspace: workspace) else { return false }
+        switch outcome {
+        case .success(let details): approvalDetails = details
+        case .failure(let failure): approvalDetails = nil; error = failure.localizedDescription
+        }
+        return true
     }
 }
 
@@ -604,11 +740,113 @@ private final class ServiceDiagnostic: @unchecked Sendable {
 }
 func writePrivateNew(_ data: Data, to url: URL) throws {
     let fd = open(url.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
-    guard fd >= 0 else { throw UIError(message: "无法新建文件，请选择尚不存在的文件名。") }
+    guard fd >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
     let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-    do { try handle.write(contentsOf: data); try handle.synchronize(); try handle.close() }
-    catch { throw UIError(message: "文件写入未完成，目标路径可能留下不完整文件：\(url.path)") }
+    do {
+        guard fchmod(fd, 0o600) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        try handle.write(contentsOf: data); try handle.synchronize(); try handle.close()
+    } catch {
+        throw UIError(message: "文件写入未完成，目标可能留下不完整文件：" + error.localizedDescription)
+    }
 }
+
+struct NativeFileSnapshot: Sendable {
+    let data: Data
+    let text: String
+    static func read(_ url: URL, limit: Int, json: Bool = false) throws -> NativeFileSnapshot {
+        let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        guard fd >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        defer { try? handle.close() }
+        var statbuf = stat()
+        guard fstat(fd, &statbuf) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        guard (statbuf.st_mode & S_IFMT) == S_IFREG else { throw UIError(message: "请选择普通文件。") }
+        guard limit >= 0, statbuf.st_size >= 0, statbuf.st_size <= limit else { throw UIError(message: "文件超过本操作的大小上限。") }
+        var bytes = Data()
+        while let chunk = try handle.read(upToCount: min(16384, limit + 1 - bytes.count)), !chunk.isEmpty {
+            bytes.append(chunk)
+            guard bytes.count <= limit else { throw UIError(message: "文件超过本操作的大小上限。") }
+        }
+        guard let text = String(data: bytes, encoding: .utf8) else { throw UIError(message: "文件不是有效的 UTF-8 文本。") }
+        if json {
+            do { _ = try JSONSerialization.jsonObject(with: bytes, options: [.fragmentsAllowed]) }
+            catch { throw UIError(message: "原始正文不是有效的 UTF-8 JSON。") }
+        }
+        return NativeFileSnapshot(data: bytes, text: text)
+    }
+}
+
+struct NativeExecuteResult: Sendable {
+    struct Metadata: Decodable, Sendable {
+        let upstream_status: UInt16
+        let headers: [[String]]
+        let body_len: UInt32
+    }
+    let metadata: Metadata
+    let metadataText: String
+    let body: Data
+    static func parse(_ output: Data) throws -> NativeExecuteResult {
+        // print_json emits one fixed pretty object: only its root closer has column zero.
+        guard output.count <= 2 * 1024 * 1024, output.starts(with: Data("{\n".utf8)),
+              let rootEnd = output.range(of: Data("\n}\n".utf8)) else {
+            throw UIError(message: "执行响应边界无效；结果未确认，请检查审计，勿自动重试。")
+        }
+        let line = Data(output[..<rootEnd.upperBound])
+        let meta: Metadata
+        do { meta = try JSONDecoder().decode(Metadata.self, from: line) }
+        catch { throw UIError(message: "执行响应元数据无效；结果未确认，请检查审计，勿自动重试。") }
+        let payload = output[rootEnd.upperBound...]
+        let length = Int(meta.body_len)
+        guard meta.upstream_status >= 100, meta.upstream_status <= 599,
+              meta.headers.allSatisfy({ $0.count == 2 }),
+              (length == 0 && payload.isEmpty) || (length > 0 && payload.count == length + 1 && payload.last == 10) else {
+            throw UIError(message: "执行响应长度或元数据无效；结果未确认，请检查审计，勿自动重试。")
+        }
+        return NativeExecuteResult(metadata: meta, metadataText: String(decoding: line, as: UTF8.self), body: Data(payload.prefix(length)))
+    }
+}
+
+func approvalHandoff(_ details: ApprovalDetails, body: NativeFileSnapshot) throws -> Data {
+    // Envelope structure was decoded at the existing read boundary; no UI signature verification.
+    let envelope = try JSONSerialization.jsonObject(with: details.data)
+    return try JSONSerialization.data(withJSONObject: ["challenge": envelope, "content_type": "application/json", "headers": [], "body": body.text], options: [.prettyPrinted, .sortedKeys])
+}
+
+extension CLI {
+    func executeApproval(_ details: ApprovalDetails, body: NativeFileSnapshot, grants: [NativeFileSnapshot], capability: String) throws -> NativeExecuteResult {
+        guard (1...2).contains(grants.count), !capability.isEmpty, !capability.contains("\n"), !capability.contains("\r") else {
+            throw UIError(message: "请选择一或两个签名 grant，并输入单行 capability。")
+        }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("rekey-execute-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        let redacting = [capability, body.text] + grants.map(\.text)
+        let outcome: Result<NativeExecuteResult, Error>
+        do {
+            let bodyFile = directory.appendingPathComponent("body.json")
+            try writePrivateNew(body.data, to: bodyFile)
+            let challenge = details.envelope.challenge
+            var args = ["execute", "\(challenge.action_id)@\(challenge.action_version)", "--capability", "-", "--body-file", bodyFile.path, "--content-type", "application/json"]
+            for (index, grant) in grants.enumerated() {
+                let path = directory.appendingPathComponent("grant-\(index).json")
+                try writePrivateNew(grant.data, to: path)
+                args += ["--approval", path.path]
+            }
+            let dirfd = open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+            guard dirfd >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+            let synced = fsync(dirfd); let syncError = errno; close(dirfd)
+            guard synced == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(syncError)) }
+            outcome = .success(try NativeExecuteResult.parse(run(args, input: capability + "\n", redacting: redacting)))
+        } catch { outcome = .failure(error) }
+        do { try FileManager.default.removeItem(at: directory) }
+        catch {
+            let prior: String
+            switch outcome { case .success: prior = "执行已返回；"; case .failure(let failure): prior = failure.localizedDescription + "\n" }
+            throw UIError(message: prior + "私有快照清理失败（不表示安全擦除）：" + error.localizedDescription)
+        }
+        return try outcome.get()
+    }
+}
+
 func displayDate(_ milliseconds: Int64) -> String {
     Date(timeIntervalSince1970: Double(milliseconds) / 1000).formatted(date: .abbreviated, time: .shortened)
 }

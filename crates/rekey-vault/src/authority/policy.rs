@@ -77,7 +77,11 @@ impl Worker {
         self.verify_proof(&proof)?;
         let current = self.policy_material()?;
         let trust = current.trust.ok_or(AuthorityError::PolicyUnavailable)?;
-        if trust.signer_id != input.signer_id
+        let trust_digest = rekey_policy::policy_trust_sha256(trust.signer_id, &trust.public_key)
+            .map_err(|_| AuthorityError::PolicyVersionConflict)?;
+        if self.header.vault_id != input.expected_vault_id
+            || trust_digest != input.expected_trust_sha256
+            || trust.signer_id != input.signer_id
             || input.version == 0
             || input.version >= i64::MAX as u64
             || input.expires_at_ms < 0
@@ -133,7 +137,11 @@ impl Worker {
         let event = self.audit_event_or_fault(unlock_audit(
             event_type::POLICY_ACTIVATED,
             outcome::SUCCESS,
-            "policy-activated",
+            &format!(
+                "policy-activated:{}:{}",
+                input.version,
+                data_encoding::HEXLOWER.encode(&input.bundle_digest)
+            ),
         ))?;
         ensure_mutation_current(not_after)?;
         if bundle.expires_at_ms <= now_ms()? {

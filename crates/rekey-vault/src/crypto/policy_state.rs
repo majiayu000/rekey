@@ -237,3 +237,57 @@ fn verify(
     }
     Ok(())
 }
+
+pub fn canonical_retention(
+    vault_id: VaultId,
+    record: &crate::model::AuditRetentionRecord,
+) -> Result<Vec<u8>, AuthorityError> {
+    rekey_domain::audit::AuditRetentionStatus {
+        days: record.days,
+        updated_at_ms: record.updated_at_ms,
+    }
+    .validate()
+    .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+    let mut bytes = Vec::with_capacity(39);
+    bytes.extend_from_slice(b"RKAR");
+    bytes.extend_from_slice(&1u16.to_be_bytes());
+    bytes.extend_from_slice(vault_id.as_bytes());
+    bytes.push(u8::from(record.days.is_some()));
+    bytes.extend_from_slice(&record.days.unwrap_or(0).to_be_bytes());
+    bytes.extend_from_slice(&record.updated_at_ms.to_be_bytes());
+    Ok(bytes)
+}
+pub fn seal_retention(
+    key: &[u8; 32],
+    vault_id: VaultId,
+    record: &crate::model::AuditRetentionRecord,
+) -> Result<LifecycleSeal, AuthorityError> {
+    seal(
+        key,
+        aad(
+            AadPurpose::AuditRetention,
+            vault_id,
+            [0; 16],
+            1,
+            &canonical_retention(vault_id, record)?,
+        ),
+    )
+}
+pub fn verify_retention(
+    key: &[u8; 32],
+    vault_id: VaultId,
+    record: &crate::model::AuditRetentionRecord,
+) -> Result<(), AuthorityError> {
+    verify(
+        key,
+        aad(
+            AadPurpose::AuditRetention,
+            vault_id,
+            [0; 16],
+            1,
+            &canonical_retention(vault_id, record)?,
+        ),
+        record.seal_nonce,
+        record.seal_ciphertext,
+    )
+}

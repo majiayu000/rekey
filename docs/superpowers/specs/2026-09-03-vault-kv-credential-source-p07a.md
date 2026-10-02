@@ -237,3 +237,11 @@ feature branch was deleted. Post-main security `33717430247`, fuzz
 `33717430231`, and performance `33717430241` all passed on the merge SHA. This
 capability is not part of `v2.0.0-alpha.1` and does not imply general Vault,
 general G2, or enterprise-ready support.
+
+
+2026-10-01 explicit extension: this specification's numeric exact branch remains
+unchanged. The accepted [VEX-04 latest slice](2026-10-01-vault-kv-latest.md) adds
+only an administrator's literal `version: "latest"` selection, with actual-version
+audit and a single frozen result. Earlier exclusions of latest apply to numeric
+exact profiles; they do not prohibit this separately specified opt-in branch.
+No implementation or fixture pass is asserted by this amendment.

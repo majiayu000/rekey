@@ -72,7 +72,9 @@ struct RootView: View {
         .onChange(of: search) { _, _ in model.selectedCredential = filtered.first?.id }
         .onChange(of: type) { _, _ in model.selectedCredential = filtered.first?.id }
         .onChange(of: model.page) { _, _ in Task { await model.refresh() } }
-        .onChange(of: phase) { _, value in if value == .active { Task { await model.refresh() } } else { model.visibleSecret = nil } }
+        .onChange(of: phase) { _, value in if value == .active { Task { await model.refresh() } } else { model.visibleSecret = nil; model.clearNativeFlow() } }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in model.clearNativeFlow() }
+        .sheet(isPresented: $model.showPolicyDraft) { PolicyDraftForm().environmentObject(model) }
         .sheet(item: $model.operation) { OperationForm(operation: $0).environmentObject(model) }
         .sheet(isPresented: $model.showAddCredential) { AddCredentialForm().environmentObject(model) }
         .sheet(isPresented: $showActionForm) { ActionForm().environmentObject(model) }
@@ -301,6 +303,10 @@ struct RootView: View {
     private var policyPage: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 25) {
+                SectionCard(title: "未签名草稿中转", icon: "doc.text") {
+                    Text("选择外部编写的原始草稿，完整审阅并导出；随后使用独立签名工具，再导入签名策略。")
+                    Button("审阅未签名草稿") { model.showPolicyDraft = true }.disabled(model.busy)
+                }
                 SectionCard(title: "当前策略", icon: "checkmark.shield") {
                     if let policy = model.policy {
                         info("状态", policy.status == "active" ? "已生效" : policy.status == "expired" ? "已过期" : policy.bundle_persisted ? "已保存，解锁后加载" : "尚未激活")
@@ -327,7 +333,16 @@ struct RootView: View {
     }
     private func importPolicy(trust: Bool) {
         guard let file = chooseFile() else { return }
-        model.operation = Operation(title: trust ? "安装信任根" : "激活策略", detail: "使用 \(file.lastPathComponent)。信任根每个保险库只能安装一次。", arguments: trust ? ["policy", "trust", "install", "--file", file.path] : ["policy", "activate", "--file", file.path], proofFlag: "--step-up-stdin")
+        var arguments = ["policy", "trust", "install", "--file", file.path]
+        if !trust {
+            guard let target = model.policy, let root = target.trust_sha256 else {
+                model.error = "请先解锁保险库并安装信任根，再刷新策略状态。"
+                return
+            }
+            arguments = ["policy", "activate", "--file", file.path,
+                         "--expected-vault-id", target.vault_id, "--expected-trust-sha256", root]
+        }
+        model.operation = Operation(title: trust ? "安装信任根" : "激活策略", detail: "使用 \(file.lastPathComponent)。信任根每个保险库只能安装一次。", arguments: arguments, proofFlag: "--step-up-stdin")
     }
     private var approvalsPage: some View {
         ScrollView {
@@ -397,7 +412,7 @@ struct RootView: View {
             VStack(alignment: .leading, spacing: 22) {
                 SectionCard(title: "本机工作区", icon: "folder") {
                     Text(model.stateDirectory).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
-                    Button("切换数据目录") { if let url = chooseFile(directory: true) { model.changeDirectory(url.path) } }.disabled(model.busy)
+                    Button("切换数据目录") { if let url = chooseFile(directory: true) { model.changeDirectory(url.path) } }.disabled(model.busy || model.oidcBusy)
                     if let status = model.status { info("服务版本", status.runtime_version); info("数据格式", "v\(status.format_version)") }
                     HStack { Button("启动服务") { model.startService() }.disabled(model.status != nil); Button("停止服务") {
                         let op = Operation(title: "停止服务", detail: "正在执行的操作会按服务的退出规则收尾。", arguments: ["shutdown"], proof: model.unlocked)
@@ -409,6 +424,37 @@ struct RootView: View {
                     Button("修改密码") { model.operation = Operation(title: "修改密码", detail: "旧密码将不再解锁当前保险库。历史备份不受这次修改影响。", arguments: ["password", "change"], newSecret: true, confirmSecret: true) }
                     Button("轮换恢复密钥") { model.operation = Operation(title: "轮换恢复密钥", detail: "必须使用当前密码。新恢复密钥只显示一次，请安全保存。", arguments: ["recovery", "rotate"], sensitiveResult: true, recoveryAllowed: false) }
                 }.disabled(!model.unlocked || model.busy)
+                SectionCard(title: "机构登录", icon: "person.badge.key") {
+                    Text("先解锁本机，再完成机构登录。登录不会替代管理操作的本机密码确认。").font(.system(size: 13)).foregroundStyle(.secondary)
+                    if let profile = model.oidcProfileFile { info("服务配置", profile) }
+                    HStack {
+                        Button("选择机构配置") { if let file = chooseFile() { model.oidcProfileFile = file.path } }.disabled(model.serviceIsRunning || model.busy || model.oidcBusy)
+                        Button("选择已有会话文件") { if let file = chooseFile() { model.oidcSessionFile = file.path } }.disabled((model.busy || model.oidcBusy))
+                    }
+                    if let session = model.oidcSessionFile { info("会话文件", session) }
+                    if let identity = model.oidcIdentity {
+                        info("管理主体", identity.principal_id)
+                        info("会话到期", Date(timeIntervalSince1970: Double(identity.expires_at_ms) / 1000).formatted())
+                    }
+                    HStack {
+                        Button("开始机构登录") { Task { await model.beginOIDCLogin() } }.disabled(!model.unlocked || (model.busy || model.oidcBusy) || model.oidcFlow != nil)
+                        Button("退出机构会话") { Task { await model.logoutOIDC() } }.disabled((model.busy || model.oidcBusy) || model.oidcSessionFile == nil)
+                    }
+                    if let flow = model.oidcFlow {
+                        Text("在浏览器完成登录后，选择新会话文件以接收结果。文件需存入已存在的受保护目录。").font(.system(size: 13)).foregroundStyle(.secondary)
+                        HStack {
+                            Button("在浏览器打开") { if let url = flow.browserURL { NSWorkspace.shared.open(url) } }.disabled((model.busy || model.oidcBusy))
+                            Button("接收登录结果") {
+                                let panel = NSSavePanel()
+                                panel.nameFieldStringValue = "oidc-session-\(UUID().uuidString).token"
+                                panel.directoryURL = URL(fileURLWithPath: model.stateDirectory).appendingPathComponent("runtime")
+                                panel.canCreateDirectories = false
+                                if panel.runModal() == .OK, let file = panel.url { Task { await model.finishOIDCLogin(to: file) } }
+                            }.disabled((model.busy || model.oidcBusy))
+                            Button("取消登录") { Task { await model.cancelOIDCLogin() } }
+                        }
+                    }
+                }
                 Text("Rekey 本地管理 · macOS 源码预览\n凭证、策略与审计由本机服务持有。").font(.system(size: 12)).foregroundStyle(.secondary)
             }.padding(.horizontal, 28).padding(.bottom, 28)
         }

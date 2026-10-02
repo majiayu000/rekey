@@ -282,6 +282,20 @@ impl SessionRegistry {
         compact_entries(&mut inner.entries);
     }
 
+    /// Clamp an unpublished human capability to the owning management lease.
+    pub(crate) fn bound_management_deadline(&self, session: SessionId, deadline: Instant) -> bool {
+        let mut inner = self.lock_inner();
+        let Some(entry) = inner
+            .entries
+            .iter_mut()
+            .find(|entry| entry.grant.id == session && !entry.revoked)
+        else {
+            return false;
+        };
+        entry.monotonic_deadline = entry.monotonic_deadline.min(deadline);
+        true
+    }
+
     pub fn revoke(&self, session_id: SessionId) -> bool {
         let mut inner = self.lock_inner();
         match inner.entries.iter_mut().find(|e| e.grant.id == session_id) {
@@ -292,6 +306,36 @@ impl SessionRegistry {
             }
             None => false,
         }
+    }
+
+    /// Revoke only the explicit principal; count live capabilities and pending challenges.
+    pub(crate) fn revoke_principal(
+        &self,
+        principal: rekey_domain::ids::PrincipalId,
+    ) -> (usize, usize) {
+        let mut inner = self.lock_inner();
+        let now = crate::now_ts().unwrap_or(Timestamp::from_unix_ms(i64::MAX));
+        let mono = Instant::now();
+        let mut capabilities = 0;
+        let mut pending = 0;
+        for entry in &mut inner.entries {
+            if entry.grant.principal.principal_id == principal && !entry.revoked {
+                if !entry.exhausted
+                    && entry.monotonic_deadline > mono
+                    && entry.grant.expires_at > now
+                {
+                    capabilities += 1;
+                }
+                pending += entry
+                    .approval_challenges
+                    .iter_mut()
+                    .map(|stored| usize::from(approval::challenge_is_pending(stored, now, mono)))
+                    .sum::<usize>();
+                entry.revoked = true;
+            }
+        }
+        compact_entries(&mut inner.entries);
+        (capabilities, pending)
     }
 
     pub fn revoke_all(&self) {
@@ -412,6 +456,75 @@ mod tests {
             .copied()
             .map(|action| (action, 1_000))
             .collect()
+    }
+
+    #[test]
+    fn oidc_principal_revocation_counts_live_pending_and_preserves_other_principals() {
+        use rekey_domain::authorization::{ApprovalMode, ResourceRef, SchemaId};
+        use rekey_domain::ids::{ApprovalRequestId, ApproverId, PolicyRuleId};
+        let registry = open_registry();
+        let (mut first, action) = grant(10);
+        let now = crate::now_ts().unwrap();
+        first.issued_at = now;
+        first.expires_at = now.saturating_add_ms(60_000);
+        let principal = first.principal.principal_id;
+        let token = registry.create(first.clone()).unwrap();
+        registry.begin(&token, action, now).unwrap();
+        for offset in [10_000, -1] {
+            let challenge = rekey_domain::ipc::ApprovalChallenge {
+                record_type: "rekey.approval.challenge.v1".into(),
+                approval_request_id: ApprovalRequestId::new_random(),
+                tenant_id: first.principal.tenant_id,
+                principal_id: principal,
+                session_id: first.id,
+                action_id: action.action_id,
+                action_version: 1,
+                resource: ResourceRef::new("test.resource".into(), "one".into()).unwrap(),
+                schema_id: SchemaId::new("test/v1".into()).unwrap(),
+                parameter_sha256: "a".repeat(64),
+                policy_version: 1,
+                policy_sha256: "b".repeat(64),
+                policy_rule_id: PolicyRuleId::new_random(),
+                mode: ApprovalMode::OneTime,
+                quorum: 1,
+                approver_ids: vec![ApproverId::new_random()],
+                max_uses: 1,
+                created_at_ms: now.as_unix_ms() - 1000,
+                max_expires_at_ms: now.as_unix_ms() + offset,
+            };
+            registry
+                .store_approval_challenge(
+                    challenge,
+                    Instant::now(),
+                    Instant::now() + Duration::from_secs(60),
+                    now,
+                )
+                .unwrap();
+        }
+        let (mut other, other_action) = grant(10);
+        other.issued_at = now;
+        other.expires_at = now.saturating_add_ms(60_000);
+        let other_token = registry.create(other).unwrap();
+        assert_eq!(registry.revoke_principal(principal), (1, 1));
+        assert_eq!(registry.revoke_principal(principal), (0, 0));
+        assert!(registry.begin(&token, action, now).is_err());
+        assert!(registry.begin(&other_token, other_action, now).is_ok());
+        registry.finish(first.id);
+    }
+
+    #[test]
+    fn oidc_management_monotonic_deadline_bounds_human_capability() {
+        let registry = open_registry();
+        let (mut grant, action) = grant(10);
+        let now = crate::now_ts().unwrap();
+        grant.issued_at = now;
+        grant.expires_at = now.saturating_add_ms(60_000);
+        let id = grant.id;
+        let token = registry.create(grant).unwrap();
+        assert!(registry.bound_management_deadline(id, Instant::now() - Duration::from_millis(1)));
+        assert!(registry.begin(&token, action, now).is_err());
+        registry.revoke(id);
+        assert!(!registry.bound_management_deadline(id, Instant::now() + Duration::from_secs(60)));
     }
 
     #[test]

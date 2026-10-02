@@ -219,7 +219,7 @@ fn opening_rejects_malformed_vault_integrity_ciphertext() {
 
 #[test]
 fn opening_rejects_prior_versions_without_migration() {
-    for version in [6, 7] {
+    for version in 1..rekey_vault::model::FORMAT_VERSION {
         let vault = common::init_test_vault();
         let db = paths::vault_db(&vault.state_dir);
         let connection = rusqlite::Connection::open(&db).unwrap();
@@ -674,7 +674,10 @@ fn schema_ten_without_stream_column_is_rejected_by_format_gate() {
     let path = dir.path().join("v10.sqlite3");
     let db = rusqlite::Connection::open(&path).unwrap();
     let schema = rekey_vault::store::schema::SCHEMA_SQL
-        .replace("format_version = 14", "format_version = 10")
+        .replace(
+            &format!("format_version = {}", rekey_vault::model::FORMAT_VERSION),
+            "format_version = 10",
+        )
         .replace("    native_plugin_json             TEXT,\n", "")
         .replace("    text_stream_json              TEXT,\n", "");
     assert!(!schema.contains("text_stream_json"));
@@ -710,7 +713,10 @@ fn schema_eleven_without_plugin_column_is_rejected_before_loading_actions() {
     let path = dir.path().join("v11.sqlite3");
     let db = rusqlite::Connection::open(&path).unwrap();
     let schema = rekey_vault::store::schema::SCHEMA_SQL
-        .replace("format_version = 14", "format_version = 11")
+        .replace(
+            &format!("format_version = {}", rekey_vault::model::FORMAT_VERSION),
+            "format_version = 11",
+        )
         .replace("    native_plugin_json             TEXT,\n", "");
     assert!(!schema.contains("native_plugin_json"));
     db.execute_batch(&schema).unwrap();
@@ -755,8 +761,10 @@ fn schema_twelve_single_operation_protocol_is_rejected_without_migration() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("v12.sqlite3");
     let db = rusqlite::Connection::open(&path).unwrap();
-    let schema = rekey_vault::store::schema::SCHEMA_SQL
-        .replace("format_version = 14", "format_version = 12");
+    let schema = rekey_vault::store::schema::SCHEMA_SQL.replace(
+        &format!("format_version = {}", rekey_vault::model::FORMAT_VERSION),
+        "format_version = 12",
+    );
     db.execute_batch(&schema).unwrap();
     db.execute(
         "INSERT INTO vault_header VALUES (1,12,zeroblob(16),?1,0,zeroblob(32),zeroblob(12),X'01')",
@@ -785,7 +793,10 @@ fn schema_thirteen_github_plugin_column_is_rejected_without_migration() {
     let path = dir.path().join("v13.sqlite3");
     let db = rusqlite::Connection::open(&path).unwrap();
     let schema = rekey_vault::store::schema::SCHEMA_SQL
-        .replace("format_version = 14", "format_version = 13")
+        .replace(
+            &format!("format_version = {}", rekey_vault::model::FORMAT_VERSION),
+            "format_version = 13",
+        )
         .replace("native_plugin_json", "github_issue_plugin_json");
     assert!(schema.contains("github_issue_plugin_json"));
     assert!(!schema.contains("native_plugin_json"));
@@ -815,4 +826,147 @@ fn schema_thirteen_github_plugin_column_is_rejected_without_migration() {
             .is_err(),
         "no migration or backfill"
     );
+}
+
+#[test]
+fn schema_fifteen_is_rejected_without_migration() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v15.sqlite3");
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let schema = rekey_vault::store::schema::SCHEMA_SQL.replace(
+        &format!("format_version = {}", rekey_vault::model::FORMAT_VERSION),
+        "format_version = 15",
+    );
+    db.execute_batch(&schema).unwrap();
+    db.execute(
+        "INSERT INTO vault_header VALUES (1,15,zeroblob(16),?1,0,zeroblob(32),zeroblob(12),X'01')",
+        [CRYPTO_SUITE_V1],
+    )
+    .unwrap();
+    drop(db);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(matches!(
+        SqliteRecordStore::open(&path),
+        Err(AuthorityError::UnsupportedFormatVersion)
+    ));
+    let db = rusqlite::Connection::open(&path).unwrap();
+    assert_eq!(
+        db.query_row("SELECT format_version FROM vault_header", [], |r| r
+            .get::<_, u32>(0))
+            .unwrap(),
+        15
+    );
+}
+#[test]
+fn schema_sixteen_is_rejected_without_migration() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v16.sqlite3");
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let schema = rekey_vault::store::schema::SCHEMA_SQL.replace(
+        &format!("format_version = {}", rekey_vault::model::FORMAT_VERSION),
+        "format_version = 16",
+    );
+    db.execute_batch(&schema).unwrap();
+    db.execute(
+        "INSERT INTO vault_header VALUES (1,16,zeroblob(16),?1,0,zeroblob(32),zeroblob(12),X'01')",
+        [CRYPTO_SUITE_V1],
+    )
+    .unwrap();
+    drop(db);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(matches!(
+        SqliteRecordStore::open(&path),
+        Err(AuthorityError::UnsupportedFormatVersion)
+    ));
+    let db = rusqlite::Connection::open(&path).unwrap();
+    assert_eq!(
+        db.query_row("SELECT format_version FROM vault_header", [], |r| r
+            .get::<_, u32>(0))
+            .unwrap(),
+        16
+    );
+}
+
+#[test]
+fn schema_seventeen_is_rejected_without_migration() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v17.sqlite3");
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let schema = rekey_vault::store::schema::SCHEMA_SQL.replace(
+        &format!("format_version = {}", rekey_vault::model::FORMAT_VERSION),
+        "format_version = 17",
+    );
+    db.execute_batch(&schema).unwrap();
+    db.execute(
+        "INSERT INTO vault_header VALUES (1,17,zeroblob(16),?1,0,zeroblob(32),zeroblob(12),X'01')",
+        [CRYPTO_SUITE_V1],
+    )
+    .unwrap();
+    drop(db);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(matches!(
+        SqliteRecordStore::open(&path),
+        Err(AuthorityError::UnsupportedFormatVersion)
+    ));
+    let db = rusqlite::Connection::open(&path).unwrap();
+    assert_eq!(
+        db.query_row("SELECT format_version FROM vault_header", [], |r| r
+            .get::<_, u32>(0))
+            .unwrap(),
+        17
+    );
+}
+
+#[test]
+fn schema_eighteen_is_rejected_without_migration() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v18.sqlite3");
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let schema = rekey_vault::store::schema::SCHEMA_SQL.replace(
+        &format!("format_version = {}", rekey_vault::model::FORMAT_VERSION),
+        "format_version = 18",
+    );
+    db.execute_batch(&schema).unwrap();
+    db.execute(
+        "INSERT INTO vault_header VALUES (1,18,zeroblob(16),?1,0,zeroblob(32),zeroblob(12),X'01')",
+        [CRYPTO_SUITE_V1],
+    )
+    .unwrap();
+    drop(db);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(matches!(
+        SqliteRecordStore::open(&path),
+        Err(AuthorityError::UnsupportedFormatVersion)
+    ));
+    let db = rusqlite::Connection::open(&path).unwrap();
+    assert_eq!(
+        db.query_row("SELECT format_version FROM vault_header", [], |r| r
+            .get::<_, u32>(0))
+            .unwrap(),
+        18
+    );
+}
+
+#[test]
+fn retention_storage_requires_exact_singleton_and_supported_days() {
+    for sql in [
+        "DELETE FROM audit_retention",
+        "PRAGMA ignore_check_constraints=ON; UPDATE audit_retention SET days=0",
+        "UPDATE audit_retention SET days=9223372036854775807",
+    ] {
+        let vault = common::init_test_vault();
+        let db = rusqlite::Connection::open(paths::vault_db(&vault.state_dir)).unwrap();
+        db.execute_batch(sql).unwrap();
+        assert!(
+            matches!(
+                SqliteRecordStore::open(&paths::vault_db(&vault.state_dir)),
+                Err(AuthorityError::StorageIntegrityFailed)
+            ),
+            "{sql}"
+        );
+    }
 }

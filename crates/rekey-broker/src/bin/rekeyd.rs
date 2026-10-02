@@ -11,7 +11,7 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 use rekey_broker::error::BrokerError;
 use rekey_broker::runtime::{BrokerConfig, serve};
-use rekey_domain::ipc::ADMIN_SECRET_BODY_MAX_BYTES;
+use rekey_domain::ipc::{ADMIN_SECRET_BODY_MAX_BYTES, RestoreReceipt};
 use rekey_vault::AuthorityError;
 use rekey_vault::bootstrap::{RestoreProof, init_vault, restore_vault};
 use rekey_vault::crypto::kdf::Argon2Params;
@@ -82,6 +82,8 @@ enum Command {
     },
     /// Run the broker in the foreground (starts locked).
     Serve {
+        #[arg(long)]
+        oidc_admin_profile: Option<PathBuf>,
         #[arg(long)]
         state_dir: Option<PathBuf>,
         /// Idle auto-lock, e.g. 15m, 1h, 7d. Range 1m..=7d.
@@ -264,8 +266,16 @@ fn cmd_restore(
     } else {
         RestoreProof::Password(secret)
     };
-    let vault_id = restore_vault(&input, &state_dir, proof, &sha256)?;
-    println!("restored vault {} into {}", vault_id, state_dir.display());
+    let info = restore_vault(&input, &state_dir, proof, &sha256)?;
+    let receipt = RestoreReceipt {
+        vault_id: info.vault_id.to_string(),
+        format_version: info.format_version,
+        input_sha256_hex: info.input_sha256_hex,
+        output_path: info.output_path,
+        snapshot_cut: info.snapshot_cut,
+    };
+    let json = serde_json::to_string(&receipt).map_err(|_| AuthorityError::RestoreFailed)?;
+    println!("{json}");
     Ok(())
 }
 
@@ -275,6 +285,7 @@ fn cmd_serve(
     agent_runtime_dir: Option<PathBuf>,
     mut agent_uids: Vec<u32>,
     agent_gid: Option<u32>,
+    oidc_admin_profile: Option<PathBuf>,
 ) -> Result<(), RekeydError> {
     let state_dir = resolve_state_dir(state_dir)?;
     let idle = parse_duration(idle_lock)?;
@@ -300,6 +311,7 @@ fn cmd_serve(
         .build()
         .map_err(|err| usage(format!("cannot start runtime: {err}")))?;
     let config = BrokerConfig {
+        oidc_admin_profile,
         state_dir,
         agent_runtime_dir,
         allowed_agent_uids: agent_uids,
@@ -363,6 +375,7 @@ fn main() {
             password_stdin,
         } => cmd_init(state_dir, password_stdin),
         Command::Serve {
+            oidc_admin_profile,
             state_dir,
             idle_lock,
             agent_runtime_dir,
@@ -374,6 +387,7 @@ fn main() {
             agent_runtime_dir,
             agent_uids,
             agent_gid,
+            oidc_admin_profile,
         ),
         Command::Restore {
             input,

@@ -143,6 +143,8 @@ OS条目本身无统一TTL承诺；引用有效期和固定条目更换属于管
 
 ### EXT-07 外部签名服务：只选Vault Transit审批签名
 
+2026-09-30 开发实现已选择固定 Vault Transit 审批签名，见 [独立签名合同](2026-09-30-vault-transit-approval-signer.md)。其他签名用途/provider 及现场验收仍单独待办。
+
 建议替代“任意Provider Adapter”为一个独立signer后端：固定Vault origin、Transit mount/key/version，使用非derived Ed25519签署已审阅grant字节。不是Agent callable任意消息签名服务。
 官方Transit提供 `POST /transit/sign/:name`，input为base64、key_version可固定，Ed25519有其算法语义。参见 [Vault Transit sign](https://developer.hashicorp.com/vault/api-docs/secret/transit#sign-data)。
 输入为上述引用、受保护token、独立固定公钥和现有reviewed摘要；输出为核对版本并由本地公钥验证后的现有grant。使用完整规范签名字节，不把review哈希当成可互换签名输入。
@@ -183,6 +185,9 @@ Vault `renew-self` 只对可续期且存在租约的token有效，返回实际�
 
 ### VEX-04 仅“最新版本读取”；写入延期
 
+2026-10-01 用户要求继续完成本地代码与测试，本项选定显式latest最小切片；
+具体实现合同见 [VEX-04](2026-10-01-vault-kv-latest.md)，现场与写入仍后置。
+
 候选新source语义显式选择latest，保留现有exact-version source不变。Vault KV v2省略version会返回最新版本。参见 [Vault KV v2 read](https://developer.hashicorp.com/vault/api-docs/secret/kv/kv-v2#read-secret-version)。
 输入固定origin/mount/path/key及管理员接受版本漂移的授权；一次读取后冻结返回的metadata.version和值，整个执行不再次解析latest。
 输出值只进PreparedCredential，审计记录实际版本。缺版本、删除/销毁值、字段错配或空值拒绝；读失败不退旧版本。请求授权仍绑定原业务参数，不把参数摘要误称为源secret版本绑定。
@@ -193,6 +198,8 @@ Vault `renew-self` 只对可续期且存在租约的token有效，返回实际�
 ## AUD-07～08：远程投递与外部不可改写存储
 
 ### AUD-07 一个SIEM接收端
+
+2026-09-30 开发源码已落实独立工具的本地合同，见 [审计投递规格](2026-09-30-audit-delivery.md)。下文的客户接收端现场验证仍待输入，不以 fixture 关闭。
 
 建议独立导出进程读取已有本地审计快照/JSONL并投递一个客户HTTPS接收端，不让Broker调用SIEM或持有其token。
 输入为固定接收端、传输身份、稳定来源实例ID、不可变批次及序号范围；输出必须是接收端确认的批次摘要/持久接收凭据，再推进本地cursor。HTTP 200但无约定确认不能视为入库。
@@ -207,6 +214,8 @@ exporter只持SIEM写入身份，无vault解锁权。拟议传输记录含批次
 
 ### AUD-08 一个S3 Object Lock归档候选
 
+2026-09-30 实施合同见 [固定 S3 审计归档](2026-09-30-s3-audit-archive.md)；代码及本地验收尚在进行，不因此声称真实 WORM 通过。
+
 建议将已封口审计批次及摘要写入客户指定S3 versioned bucket的唯一object key；先以隔离测试桶演练，再由合规责任方选择保留模式/期限。本文不提出法律符合性结论。
 AWS Object Lock对对象版本实施retention或legal hold；governance允许特权绕过，compliance不允许普通权限缩短保留，legal hold需有权主体明确解除。参见 [S3 Object Lock](https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock.html)。
 输入为bucket/region、对象前缀、身份、保留模式和retain-until时间、可选hold指令；输出为具体version ID、内容摘要、实际retention/hold读取回执。
@@ -220,6 +229,8 @@ AWS Object Lock对对象版本实施retention或legal hold；governance允许特
 ## 远程 APR-08、APR-09、APR-10
 
 ### APR-08 只运输审批材料的远程中继
+
+本轮固定实施合同为 [单组织 HTTPS 文件中继](2026-09-30-remote-approval-relay.md)，本地 HTTPS→Signer→Broker 验收已通过；真实客户 IdP/人员设备和公网运维仍待现场证明，APR-09/10不因此完成。
 
 建议单组织、单操作者控制的HTTPS文件中继，Broker不新增公网监听；可信本地操作方上传，独立审批者下载并本地review/sign，再把grant交回。现有本机搬运签名仍可继续用。
 中继输入为来源签名challenge信封及请求ID、期限、目标审批人；原始body/headers可能敏感，首轮通过操作方另选安全通道传递，不进入通知或中继索引。
@@ -253,7 +264,7 @@ fixture覆盖同名不同subject、旧目录事件复活、停用时未决grant�
 
 ## DYN-05～06：Vault动态租约的执行内续期与恢复清理
 
-以下仍为未实施提案，依赖 [P-07B现有单次动态源](2026-09-03-vault-dynamic-lease-source-p07b.md)。租约ID、动态值、Vault token都不返回Agent；续期/清理不能扩大原Action或身份权限。
+DYN-05 的 2026-09-30 开发实现见 [执行内单次续期](2026-09-30-vault-lease-renewal.md)；DYN-06 仍为未实施提案。两项依赖 [P-07B现有单次动态源](2026-09-03-vault-dynamic-lease-source-p07b.md)。租约ID、动态值、Vault token都不返回Agent；续期/清理不能扩大原Action或身份权限。
 
 ### DYN-05 单次执行、单租约、至多一次续期
 

@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use rekey_domain::credential::{CredentialKind, CredentialState, VersionState};
 use rekey_domain::ids::{ActionId, CredentialId, VaultId, WrapperId};
+use rekey_domain::ipc::{BackupPolicyCut, BackupSnapshotCut};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 
 use super::connection::{open_existing, open_new, secure_sqlite_bundle};
@@ -43,7 +44,7 @@ pub(super) fn blob32(v: Vec<u8>) -> Result<[u8; 32], AuthorityError> {
 }
 
 impl SqliteRecordStore {
-    /// Creates a brand-new database file with schema v14. Fails if the file
+    /// Creates a brand-new database file with schema v15. Fails if the file
     /// already exists.
     pub fn create(path: &Path) -> Result<Self, AuthorityError> {
         if path.exists() {
@@ -58,7 +59,7 @@ impl SqliteRecordStore {
         })
     }
 
-    /// Opens an existing v13 database, verifying pragmas, integrity, format
+    /// Opens an existing v15 database, verifying pragmas, integrity, format
     /// version, and schema digest. Never migrates and never creates.
     pub fn open(path: &Path) -> Result<Self, AuthorityError> {
         if !path.exists() {
@@ -76,6 +77,9 @@ impl SqliteRecordStore {
         store.foreign_key_check()?;
         store.validate_credential_version_invariants()?;
         store.validate_workload_replay_invariants()?;
+        store.load_lease_state()?;
+        store.load_audit_retention()?;
+        store.list_lease_records()?;
         let policy_state = store.load_policy_state()?;
         if policy_state.trust_installed != store.load_policy_trust()?.is_some()
             || policy_state.bundle_activated != store.load_policy_bundle()?.is_some()
@@ -98,6 +102,8 @@ impl SqliteRecordStore {
         header: &VaultHeaderRecord,
         wrappers: &[KeyWrapperRecord],
         policy_state: &crate::model::PolicyStateRecord,
+        retention: &crate::model::AuditRetentionRecord,
+        lease_state: &crate::model::LeaseJournalState,
         audit: AuditEvent,
     ) -> Result<(), AuthorityError> {
         let tx = self.conn.transaction().map_err(storage)?;
@@ -119,6 +125,8 @@ impl SqliteRecordStore {
             super::wrapper::insert_wrapper(&tx, w)?;
         }
         super::policy::insert_initial_state(&tx, policy_state)?;
+        super::audit_prune::insert_initial_retention(&tx, retention)?;
+        super::lease_journal::initial_state(&tx, lease_state)?;
         super::audit::insert(&tx, &audit)?;
         commit_audited(tx)
     }
@@ -498,6 +506,8 @@ impl SqliteRecordStore {
     pub(crate) fn replace_version_ciphertexts(
         &mut self,
         versions: &[(CredentialKind, CredentialVersionRecord)],
+        journal: &[crate::model::LeaseJournalRecord],
+        journal_state: &crate::model::LeaseJournalState,
         audit: AuditEvent,
         not_after: Option<std::time::Instant>,
     ) -> Result<(), AuthorityError> {
@@ -523,6 +533,7 @@ impl SqliteRecordStore {
             }
         }
         super::audit::insert(&tx, &audit)?;
+        super::lease_journal::replace_ciphertexts(&tx, journal, journal_state)?;
         // This must remain after every write (including the audit), immediately
         // before commit. The transaction drops and rolls back on late work.
         if not_after.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
@@ -591,7 +602,7 @@ impl SqliteRecordStore {
         &self,
         dest: &Path,
         created_file: &std::fs::File,
-    ) -> Result<(), AuthorityError> {
+    ) -> Result<BackupSnapshotCut, AuthorityError> {
         let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW;
         let name = dest.file_name().ok_or(AuthorityError::BackupFailed)?;
         let resolved = crate::durable::parent_dir(dest)
@@ -610,8 +621,41 @@ impl SqliteRecordStore {
         backup
             .run_to_completion(64, std::time::Duration::from_millis(5), None)
             .map_err(|_| AuthorityError::BackupFailed)?;
-        Ok(())
+        drop(backup);
+        snapshot_cut(&dst)
     }
+
+    pub(crate) fn snapshot_cut(&self) -> Result<BackupSnapshotCut, AuthorityError> {
+        snapshot_cut(&self.conn)
+    }
+}
+
+fn snapshot_cut(conn: &Connection) -> Result<BackupSnapshotCut, AuthorityError> {
+    let sequence: Option<i64> = conn
+        .query_row("SELECT MAX(sequence) FROM audit_events", [], |row| {
+            row.get(0)
+        })
+        .map_err(storage)?;
+    let audit_sequence = sequence.map(positive_version).transpose()?.unwrap_or(0);
+    let policy = conn
+        .query_row(
+            "SELECT version, bundle_digest FROM policy_bundle WHERE singleton = 1",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?)),
+        )
+        .optional()
+        .map_err(storage)?
+        .map(|(version, digest)| -> Result<_, AuthorityError> {
+            Ok(BackupPolicyCut {
+                version: positive_version(version)?,
+                bundle_sha256: data_encoding::HEXLOWER.encode(&blob32(digest)?),
+            })
+        })
+        .transpose()?;
+    Ok(BackupSnapshotCut {
+        audit_sequence,
+        policy,
+    })
 }
 
 fn insert_version(tx: &Transaction<'_>, v: &CredentialVersionRecord) -> Result<(), AuthorityError> {
@@ -787,6 +831,68 @@ pub(super) fn positive_version(version: i64) -> Result<u64, AuthorityError> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn snapshot_cut_empty_and_invalid_columns_are_distinct() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteRecordStore::create(&dir.path().join("cut.sqlite3")).unwrap();
+        let empty = store.snapshot_cut().unwrap();
+        assert_eq!(empty.audit_sequence, 0);
+        assert_eq!(empty.policy, None);
+        store.conn.execute_batch("INSERT INTO audit_events(sequence,event_id,event_type,outcome,reason_code,created_at_ms) VALUES(-1,zeroblob(16),'cut.test','success','test',0);").unwrap();
+        assert!(matches!(
+            store.snapshot_cut(),
+            Err(AuthorityError::StorageIntegrityFailed)
+        ));
+        store
+            .conn
+            .execute("UPDATE audit_events SET sequence=0", [])
+            .unwrap();
+        assert!(matches!(
+            store.snapshot_cut(),
+            Err(AuthorityError::StorageIntegrityFailed)
+        ));
+        store.conn.execute_batch("DELETE FROM audit_events;
+            INSERT INTO audit_events(sequence,event_id,event_type,outcome,reason_code,created_at_ms) VALUES(9223372036854775807,zeroblob(16),'cut.test','success','test',0);").unwrap();
+        assert_eq!(
+            store.snapshot_cut().unwrap().audit_sequence,
+            i64::MAX as u64
+        );
+        store.conn.execute_batch("PRAGMA ignore_check_constraints=ON;
+            INSERT INTO policy_bundle VALUES(1,zeroblob(16),-1,1,zeroblob(32),zeroblob(32),zeroblob(0),0,zeroblob(12),zeroblob(16));").unwrap();
+        assert!(matches!(
+            store.snapshot_cut(),
+            Err(AuthorityError::StorageIntegrityFailed)
+        ));
+        store
+            .conn
+            .execute(
+                "UPDATE policy_bundle SET version=1,bundle_digest=zeroblob(31)",
+                [],
+            )
+            .unwrap();
+        assert!(matches!(
+            store.snapshot_cut(),
+            Err(AuthorityError::StorageIntegrityFailed)
+        ));
+        store
+            .conn
+            .execute("UPDATE policy_bundle SET bundle_digest=zeroblob(32)", [])
+            .unwrap();
+        assert_eq!(
+            store.snapshot_cut().unwrap().policy.unwrap().bundle_sha256,
+            "00".repeat(32)
+        );
+        // Actual SQLite corrupt storage classes must not become absent policy/zero audit.
+        store.conn.execute_batch("PRAGMA writable_schema=ON;
+            UPDATE sqlite_master SET sql=replace(sql, 'version            INTEGER', 'version            ANY') WHERE name='policy_bundle';
+            PRAGMA writable_schema=RESET;
+            UPDATE policy_bundle SET version='overflow-18446744073709551616';").unwrap();
+        assert!(matches!(
+            store.snapshot_cut(),
+            Err(AuthorityError::StorageUnavailable(_))
+        ));
+    }
+
     #[tokio::test]
     async fn dek_rotation_precommit_expiry_rolls_back_after_all_ciphertexts_and_audit_are_written()
     {
@@ -867,8 +973,13 @@ mod tests {
         };
         // Directly target the commit boundary, deliberately bypassing the
         // worker's separate expired-at-admission/cryptographic preparation gates.
-        let result =
-            store.replace_version_ciphertexts(&versions, audit, Some(std::time::Instant::now()));
+        let result = store.replace_version_ciphertexts(
+            &versions,
+            &[],
+            &store.load_lease_state().unwrap(),
+            audit,
+            Some(std::time::Instant::now()),
+        );
         assert!(matches!(result, Err(AuthorityError::AuthorityBusy)));
         let after = &store.list_all_versions().unwrap()[0].1;
         assert_eq!(after.dek_nonce, before.dek_nonce);

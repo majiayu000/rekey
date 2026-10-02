@@ -1,0 +1,11 @@
+FROM rust:1.95-slim-bookworm AS build
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY src src
+COPY crates crates
+RUN cargo build --locked --release -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd --example p1_policy_fixture
+
+FROM debian:bookworm-slim
+COPY --from=build /src/target/release/rekey /usr/local/bin/rekey
+COPY --from=build /src/target/release/rekeyd /usr/local/bin/rekeyd
+COPY --from=build /src/target/release/examples/p1_policy_fixture /usr/local/bin/rekey-dr-fixture

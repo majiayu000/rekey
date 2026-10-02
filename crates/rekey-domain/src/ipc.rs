@@ -14,7 +14,7 @@ use crate::capability::ActionVersionRef;
 use crate::credential::{CredentialLabel, CredentialMetadata};
 use crate::ids::{
     ActionId, ApprovalRequestId, ApproverId, CredentialId, PolicyRuleId, PolicySignerId,
-    PrincipalId, RequestId, SessionId,
+    PrincipalId, RequestId, SessionId, TenantId, VaultId,
 };
 
 pub const FRAME_MAGIC: [u8; 4] = *b"RKIP";
@@ -24,6 +24,7 @@ pub const METADATA_MAX_BYTES: u32 = 64 * 1024;
 pub const ADMIN_SECRET_FIELD_MAX_BYTES: u32 = 64 * 1024;
 pub const ADMIN_PROOF_BODY_MAX_BYTES: u32 = ADMIN_SECRET_FIELD_MAX_BYTES + 5;
 pub const ADMIN_SECRET_BODY_MAX_BYTES: u32 = 2 * ADMIN_SECRET_FIELD_MAX_BYTES + 9;
+pub const ADMIN_MANAGEMENT_OVERHEAD: u32 = 50;
 pub const AGENT_BODY_MAX_BYTES: u32 = 1024 * 1024;
 pub const WORKLOAD_TOKEN_MAX_BYTES: u32 = 16 * 1024;
 pub const RESPONSE_BODY_MAX_BYTES: u32 = 4 * 1024 * 1024;
@@ -94,6 +95,17 @@ pub mod admin_msg {
     pub const KEY_ROTATE_DEK: u16 = 38;
     pub const AUDIT_PRUNE: u16 = 39;
     pub const KEY_ROTATE_VRK: u16 = 40;
+    pub const CREDENTIAL_ROTATE_GCP_SECRET_MANAGER: u16 = 41;
+    pub const CREDENTIAL_ROTATE_AWS_SECRETS_MANAGER: u16 = 42;
+    pub const CREDENTIAL_ROTATE_AZURE_KEY_VAULT: u16 = 43;
+    pub const CREDENTIAL_ROTATE_ONEPASSWORD_CONNECT: u16 = 44;
+    pub const OIDC_LOGIN_BEGIN: u16 = 45;
+    pub const OIDC_LOGIN_FINISH: u16 = 46;
+    pub const OIDC_LOGIN_CANCEL: u16 = 47;
+    pub const OIDC_LOGOUT: u16 = 48;
+    pub const CREDENTIAL_ROTATE_MACOS_KEYCHAIN: u16 = 49;
+    pub const AUDIT_RETENTION_SET: u16 = 50;
+    pub const AUDIT_RETENTION_STATUS: u16 = 51;
 }
 
 /// Agent channel message types.
@@ -190,6 +202,78 @@ impl FrameHeader {
             body_len,
         })
     }
+}
+
+/// Closed operation classification shared by managed Broker dispatch and CLI.
+pub fn managed_admin_operation(message_type: u16) -> Result<bool, FrameError> {
+    if !(1..=51).contains(&message_type) {
+        return Err(FrameError::InvalidField);
+    }
+    Ok(!matches!(
+        message_type,
+        1 | 2 | 3 | 15 | 16 | 31 | 34 | 36 | 45..=48
+    ))
+}
+
+/// Exact canonical 32-byte base64url token, including zero pad bits.
+pub fn validate_management_token(token: &[u8]) -> Result<(), FrameError> {
+    if token.len() != 43
+        || !token
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || *b == b'-' || *b == b'_')
+        || !b"AEIMQUYcgkosw048".contains(&token[42])
+    {
+        return Err(FrameError::InvalidField);
+    }
+    Ok(())
+}
+
+pub fn encode_management_body(token: &[u8], body: &[u8]) -> Result<Vec<u8>, FrameError> {
+    validate_management_token(token)?;
+    let mut out = Vec::with_capacity(body.len() + 50);
+    out.extend_from_slice(b"RKAU\x01\x00\x2b");
+    out.extend_from_slice(token);
+    out.extend_from_slice(body);
+    Ok(out)
+}
+
+pub fn parse_management_body(body: &[u8]) -> Result<(&[u8], &[u8]), FrameError> {
+    if body.get(..7) != Some(b"RKAU\x01\x00\x2b") {
+        return Err(FrameError::InvalidField);
+    }
+    let token = body.get(7..50).ok_or(FrameError::Truncated)?;
+    validate_management_token(token)?;
+    Ok((token, &body[50..]))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OidcFlowMeta {
+    pub flow_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OidcBeginResponse {
+    pub flow_id: String,
+    pub authorization_url: String,
+    pub expires_at_ms: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OidcSessionResponse {
+    pub principal_id: PrincipalId,
+    pub expires_at_ms: i64,
+    pub mapping_sha256: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OidcLogoutResponse {
+    pub management_sessions: usize,
+    pub capabilities: usize,
+    pub pending_approvals: usize,
 }
 
 /// Step-up proof kinds carried in secret frame bodies.
@@ -299,6 +383,46 @@ pub struct StatusResponse {
     pub format_version: u32,
     pub runtime_version: String,
     pub sessions_active: u32,
+    pub lease_journal: LeaseJournalStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LeaseJournalStatus {
+    pub verified: bool,
+    pub pending: u64,
+    pub unknown: u64,
+    pub complete: u64,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LeaseRecoveryOutcome {
+    Complete,
+    Unconfirmed,
+    Deferred,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LeaseRecoveryEntry {
+    pub registration_id: crate::ids::LeaseRegistrationId,
+    pub credential_id: CredentialId,
+    pub credential_version: u64,
+    pub outcome: LeaseRecoveryOutcome,
+    pub updated_at_ms: i64,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LeaseRecoverySummary {
+    pub performed: bool,
+    pub journal: LeaseJournalStatus,
+    pub deferred: u64,
+    pub leases: Vec<LeaseRecoveryEntry>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UnlockResponse {
+    pub unlocked: bool,
+    pub lease_recovery: LeaseRecoverySummary,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -439,6 +563,16 @@ pub struct SessionCreateMeta {
     pub max_uses: u32,
 }
 
+/// Admin-only issuance; workload identity always comes from its verified token.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdminSessionCreateMeta {
+    pub actions: Vec<ActionVersionRef>,
+    pub ttl_ms: i64,
+    pub max_uses: u32,
+    pub principal_id: Option<PrincipalId>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionCreatedResponse {
@@ -452,7 +586,19 @@ pub struct SessionCreatedResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct PolicyActivateMeta {
+    pub expected_vault_id: VaultId,
+    pub expected_trust_sha256: String,
+    pub bundle_json: Box<serde_json::value::RawValue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PolicyStatusResponse {
+    pub vault_id: VaultId,
+    pub tenant_id: TenantId,
+    pub trust_sha256: Option<String>,
+    pub activated_at_ms: Option<i64>,
     pub trust_installed: bool,
     pub bundle_persisted: bool,
     pub status: String,
@@ -465,17 +611,26 @@ pub struct PolicyStatusResponse {
 
 impl PolicyStatusResponse {
     pub fn validate(&self) -> Result<(), crate::DomainError> {
-        if self.bundle_persisted && !self.trust_installed {
+        if self.tenant_id.as_bytes() != self.vault_id.as_bytes()
+            || self
+                .trust_sha256
+                .as_deref()
+                .is_some_and(|value| !self.trust_installed || !is_lower_hex(value, 64))
+            || (self.bundle_persisted && !self.trust_installed)
+        {
             return Err(invalid_response());
         }
-        let details_present = self.signer_id.is_some()
+        let details_present = self.trust_sha256.is_some()
+            && self.activated_at_ms.is_some_and(|value| value >= 0)
+            && self.signer_id.is_some()
             && self.version.is_some()
             && self.expires_at_ms.is_some()
             && self.policy_sha256.is_some()
             && self.bundle_sha256.is_some();
         match self.status.as_str() {
             "unavailable"
-                if self.signer_id.is_none()
+                if self.activated_at_ms.is_none()
+                    && self.signer_id.is_none()
                     && self.version.is_none()
                     && self.expires_at_ms.is_none()
                     && self.policy_sha256.is_none()
@@ -514,6 +669,22 @@ pub struct BackupMeta {
     pub output_path: String,
 }
 
+/// Public coordinates of the persisted state in a selected encrypted snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackupSnapshotCut {
+    pub audit_sequence: u64,
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub policy: Option<BackupPolicyCut>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackupPolicyCut {
+    pub version: u64,
+    pub bundle_sha256: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BackupReceipt {
@@ -522,6 +693,17 @@ pub struct BackupReceipt {
     pub created_at_ms: i64,
     pub sha256_hex: String,
     pub output_path: String,
+    pub snapshot_cut: BackupSnapshotCut,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RestoreReceipt {
+    pub vault_id: String,
+    pub format_version: u32,
+    pub input_sha256_hex: String,
+    pub output_path: String,
+    pub snapshot_cut: BackupSnapshotCut,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -764,6 +946,72 @@ pub fn origin_display(origin: &HttpsOrigin) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn backup_and_restore_receipts_have_required_cut_and_fixed_json_shape() {
+        let cut = BackupSnapshotCut {
+            audit_sequence: 41,
+            policy: Some(BackupPolicyCut {
+                version: 2,
+                bundle_sha256: "a1".repeat(32),
+            }),
+        };
+        let backup = BackupReceipt {
+            vault_id: "actual-vault".to_owned(),
+            format_version: 20,
+            created_at_ms: 1,
+            sha256_hex: "b2".repeat(32),
+            output_path: "/archive/selected.rkbackup".to_owned(),
+            snapshot_cut: cut.clone(),
+        };
+        let restore = RestoreReceipt {
+            vault_id: backup.vault_id.clone(),
+            format_version: backup.format_version,
+            input_sha256_hex: backup.sha256_hex.clone(),
+            output_path: "/state/restored".to_owned(),
+            snapshot_cut: cut,
+        };
+        let value = serde_json::to_value(&restore).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "vault_id": "actual-vault", "format_version": 20,
+                "input_sha256_hex": "b2".repeat(32), "output_path": "/state/restored",
+                "snapshot_cut": {"audit_sequence": 41, "policy": {"version": 2, "bundle_sha256": "a1".repeat(32)}}
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<RestoreReceipt>(value.clone())
+                .unwrap()
+                .snapshot_cut,
+            restore.snapshot_cut
+        );
+        let mut unexpected = value;
+        unexpected["latest"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<RestoreReceipt>(unexpected).is_err());
+        let mut old = serde_json::to_value(&backup).unwrap();
+        old.as_object_mut().unwrap().remove("snapshot_cut");
+        assert!(serde_json::from_value::<BackupReceipt>(old).is_err());
+        let none = BackupSnapshotCut {
+            audit_sequence: 0,
+            policy: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&none).unwrap(),
+            serde_json::json!({"audit_sequence": 0, "policy": null})
+        );
+        assert!(
+            serde_json::from_value::<BackupSnapshotCut>(serde_json::json!({"audit_sequence": 0}))
+                .is_err()
+        );
+        assert!(
+            serde_json::from_value::<BackupSnapshotCut>(
+                serde_json::json!({"audit_sequence": -1, "policy": null})
+            )
+            .is_err()
+        );
+        assert!(serde_json::from_value::<BackupSnapshotCut>(serde_json::json!({"audit_sequence": 1, "policy": {"version": 2, "bundle_sha256": "a1".repeat(32), "latest": true}})).is_err());
+    }
+
     fn header() -> FrameHeader {
         FrameHeader {
             channel: Channel::Admin,
@@ -773,6 +1021,30 @@ mod tests {
             metadata_len: 10,
             body_len: 0,
         }
+    }
+
+    #[test]
+    fn management_body_preserves_typed_proof_and_rejects_noncanonical_tokens() {
+        let token = [b'A'; 43];
+        let mut proof = Vec::new();
+        encode_proof_body(ProofKind::Password, b"proof", &mut proof);
+        let body = encode_management_body(&token, &proof).unwrap();
+        let (actual, original) = parse_management_body(&body).unwrap();
+        assert_eq!(actual, token);
+        assert_eq!(parse_proof_body(original).unwrap().1, b"proof");
+        for index in [0, 4, 5, 6, 49] {
+            let mut bad = body.clone();
+            bad[index] = b'B';
+            assert!(parse_management_body(&bad).is_err());
+        }
+        assert!(parse_management_body(&body[..49]).is_err());
+        for id in 1..=51 {
+            assert_eq!(
+                managed_admin_operation(id).unwrap(),
+                !matches!(id, 1 | 2 | 3 | 15 | 16 | 31 | 34 | 36 | 45..=48)
+            );
+        }
+        assert!(managed_admin_operation(52).is_err());
     }
 
     #[test]
@@ -823,6 +1095,75 @@ mod tests {
             FrameHeader::decode(&oversized_meta),
             Err(FrameError::SectionTooLarge)
         );
+    }
+
+    #[test]
+    fn policy_activation_outer_contract_is_closed_and_nested_json_is_verbatim() {
+        let vault = "00112233-4455-4677-8899-aabbccddeeff";
+        let digest = "a".repeat(64);
+        let raw = format!(
+            r#"{{"expected_vault_id":"{vault}","expected_trust_sha256":"{digest}","bundle_json":{{"snapshot":{{"version":1,"version":2}}}}}}"#
+        );
+        let metadata: PolicyActivateMeta = serde_json::from_str(&raw).unwrap();
+        assert_eq!(
+            metadata.bundle_json.get(),
+            r#"{"snapshot":{"version":1,"version":2}}"#
+        );
+        assert!(
+            serde_json::to_string(&metadata)
+                .unwrap()
+                .contains(r#""bundle_json":{"snapshot":{"version":1,"version":2}}"#)
+        );
+        for invalid in [
+            raw.replace(
+                r#""expected_vault_id":""#,
+                &format!(r#""expected_vault_id":"{vault}","expected_vault_id":""#),
+            ),
+            raw.replace(r#""bundle_json":"#, r#""unknown":1,"bundle_json":"#),
+            raw.replace(&format!(r#""expected_trust_sha256":"{digest}","#), ""),
+            r#"{"format_version":1,"snapshot":{}}"#.to_owned(),
+        ] {
+            assert!(serde_json::from_str::<PolicyActivateMeta>(&invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn policy_status_requires_actual_identity_and_complete_persisted_details() {
+        let vault_id = VaultId::new_random();
+        let mut status = PolicyStatusResponse {
+            vault_id,
+            tenant_id: TenantId::from_bytes(*vault_id.as_bytes()).unwrap(),
+            trust_installed: true,
+            bundle_persisted: false,
+            status: "unavailable".into(),
+            trust_sha256: Some("a".repeat(64)),
+            activated_at_ms: None,
+            signer_id: None,
+            version: None,
+            expires_at_ms: None,
+            policy_sha256: None,
+            bundle_sha256: None,
+        };
+        status.validate().unwrap();
+        status.trust_installed = false;
+        assert!(status.validate().is_err());
+        status.trust_installed = true;
+        status.status = "active".into();
+        status.bundle_persisted = true;
+        status.signer_id = Some(PolicySignerId::new_random());
+        status.version = Some(1);
+        status.expires_at_ms = Some(10);
+        status.policy_sha256 = Some("b".repeat(64));
+        status.bundle_sha256 = Some("c".repeat(64));
+        assert!(status.validate().is_err());
+        status.activated_at_ms = Some(1);
+        status.validate().unwrap();
+        status.trust_sha256 = Some("A".repeat(64));
+        assert!(status.validate().is_err());
+        status.trust_sha256 = Some("a".repeat(64));
+        status.tenant_id = TenantId::from_random_bytes([0x55; 16]);
+        assert_ne!(status.tenant_id.as_bytes(), status.vault_id.as_bytes());
+        assert!(status.validate().is_err());
     }
 
     #[test]

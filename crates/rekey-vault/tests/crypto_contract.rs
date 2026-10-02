@@ -105,3 +105,72 @@ fn cross_vault_swap_rejected() {
     .encode();
     assert!(aead::open(&key, &aad_other_vault, &sealed.nonce, &sealed.ciphertext).is_err());
 }
+
+#[test]
+fn azure_source_payload_authentication_binds_tag_eight_and_version() {
+    let key = [0x38; 32];
+    let azure = AadV1 {
+        purpose: AadPurpose::CredentialPayload,
+        vault_id: vault_id(),
+        object_id: [0xab; 16],
+        object_version: 1,
+        credential_kind: rekey_domain::credential::CredentialKind::AzureKeyVaultSource.aad_code(),
+        constraints_hash: [0; 32],
+    };
+    let aad = azure.encode();
+    assert_eq!(&aad[48..50], &8u16.to_be_bytes());
+    let sealed = aead::seal(&key, &aad, b"synthetic-azure-bootstrap").unwrap();
+    assert_eq!(
+        aead::open(&key, &aad, &sealed.nonce, &sealed.ciphertext)
+            .unwrap()
+            .as_slice(),
+        b"synthetic-azure-bootstrap"
+    );
+    for wrong in [
+        AadV1 {
+            credential_kind: 7,
+            ..azure
+        },
+        AadV1 {
+            object_version: 2,
+            ..azure
+        },
+    ] {
+        assert!(aead::open(&key, &wrong.encode(), &sealed.nonce, &sealed.ciphertext).is_err());
+    }
+}
+
+#[test]
+fn onepassword_source_payload_authentication_binds_tag_nine_and_version() {
+    let key = [0x38; 32];
+    let onepassword = AadV1 {
+        purpose: AadPurpose::CredentialPayload,
+        vault_id: vault_id(),
+        object_id: [0xab; 16],
+        object_version: 1,
+        credential_kind: rekey_domain::credential::CredentialKind::OnePasswordConnectSource
+            .aad_code(),
+        constraints_hash: [0; 32],
+    };
+    let aad = onepassword.encode();
+    assert_eq!(&aad[48..50], &9u16.to_be_bytes());
+    let sealed = aead::seal(&key, &aad, b"synthetic-onepassword-bootstrap").unwrap();
+    assert_eq!(
+        aead::open(&key, &aad, &sealed.nonce, &sealed.ciphertext)
+            .unwrap()
+            .as_slice(),
+        b"synthetic-onepassword-bootstrap"
+    );
+    for wrong in [
+        AadV1 {
+            credential_kind: 8,
+            ..onepassword
+        },
+        AadV1 {
+            object_version: 2,
+            ..onepassword
+        },
+    ] {
+        assert!(aead::open(&key, &wrong.encode(), &sealed.nonce, &sealed.ciphertext).is_err());
+    }
+}

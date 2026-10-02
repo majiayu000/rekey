@@ -11,6 +11,7 @@ use std::time::Duration;
 use rekey_domain::ids::{VaultId, WrapperId};
 use zeroize::Zeroizing;
 
+use crate::command::RestoreInfo;
 use crate::crypto::aad::{AadPurpose, AadV1};
 use crate::crypto::credential_state;
 use crate::crypto::kdf::{
@@ -362,11 +363,22 @@ fn init_vault_inner(
     policy_state_record.seal_nonce = policy_seal.nonce;
     policy_state_record.seal_ciphertext = policy_seal.ciphertext;
 
+    let mut retention = crate::model::AuditRetentionRecord {
+        days: None,
+        updated_at_ms: now,
+        seal_nonce: [0; 12],
+        seal_ciphertext: [0; 16],
+    };
+    let retention_seal = policy_state::seal_retention(vrk.bytes(), vault_id, &retention)?;
+    retention.seal_nonce = retention_seal.nonce;
+    retention.seal_ciphertext = retention_seal.ciphertext;
     let mut store = SqliteRecordStore::create(&paths::vault_db(state_dir))?;
     store.initialize(
         &header,
         &wrappers,
         &policy_state_record,
+        &retention,
+        &crate::crypto::lease_journal::seal_state(vrk.bytes(), vault_id, &[], 0, None)?,
         AuditEvent {
             event_id: random_array()?,
             request_id: None,
@@ -476,7 +488,7 @@ pub fn restore_vault(
     target_state_dir: &Path,
     proof: RestoreProof,
     expected_sha256_hex: &str,
-) -> Result<VaultId, AuthorityError> {
+) -> Result<RestoreInfo, AuthorityError> {
     if target_state_dir.exists() {
         if !restore_marker_is_regular(target_state_dir)? && !dir_is_restore_empty(target_state_dir)?
         {
@@ -509,15 +521,27 @@ pub fn restore_vault(
     result
 }
 
+fn checked_restore_output_path(canonical_target: PathBuf) -> Result<String, AuthorityError> {
+    canonical_target
+        .into_os_string()
+        .into_string()
+        .map_err(|_| AuthorityError::RestoreFailed)
+}
+
 fn restore_inner(
     backup_file: &Path,
     target_state_dir: &Path,
     proof: RestoreProof,
     expected_sha256_hex: &str,
-) -> Result<VaultId, AuthorityError> {
+) -> Result<RestoreInfo, AuthorityError> {
     if !is_sha256_hex(expected_sha256_hex) {
         return Err(AuthorityError::RestoreFailed);
     }
+    let output_path = checked_restore_output_path(
+        target_state_dir
+            .canonicalize()
+            .map_err(|_| AuthorityError::RestoreFailed)?,
+    )?;
     let staging = target_state_dir.join(".incoming-vault.sqlite3");
     let digest = crate::durable::copy_and_sha256(backup_file, &staging)
         .map_err(|_| AuthorityError::RestoreFailed)?;
@@ -543,6 +567,9 @@ fn restore_inner(
     prove_all_credential_states(&store, header.vault_id, &vrk)?;
     prove_all_payloads(&store, header.vault_id, &vrk)?;
     store.verified_policy_material(vrk.bytes(), header.vault_id)?;
+    store.verified_audit_retention(vrk.bytes(), header.vault_id)?;
+    crate::authority::lease_journal::verify_store(&store, vrk.bytes(), header.vault_id)?;
+    let snapshot_cut = store.snapshot_cut()?;
 
     store.append_audit(&AuditEvent {
         event_id: random_array()?,
@@ -571,7 +598,13 @@ fn restore_inner(
     }
     crate::durable::fsync(target_state_dir).map_err(|_| AuthorityError::RestoreFailed)?;
     remove_restore_marker(target_state_dir).map_err(|_| AuthorityError::RestoreFailed)?;
-    Ok(header.vault_id)
+    Ok(RestoreInfo {
+        vault_id: header.vault_id,
+        format_version: header.format_version,
+        input_sha256_hex: digest,
+        output_path,
+        snapshot_cut,
+    })
 }
 
 fn install_staging(staging: &Path, target_state_dir: &Path) -> Result<(), AuthorityError> {
@@ -740,6 +773,19 @@ fn prove_all_credential_states(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restore_output_path_rejects_invalid_native_utf8() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let invalid = PathBuf::from(OsString::from_vec(b"/state/invalid-\xff".to_vec()));
+        assert!(invalid.to_str().is_none());
+        assert!(matches!(
+            checked_restore_output_path(invalid),
+            Err(AuthorityError::RestoreFailed)
+        ));
+    }
 
     #[test]
     fn state_directory_security_requires_the_broker_owner() {

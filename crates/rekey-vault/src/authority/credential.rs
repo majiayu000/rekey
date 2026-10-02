@@ -117,14 +117,20 @@ impl Worker {
             credential_state::verify(vrk.bytes(), self.header.vault_id, &record)?;
         }
         let versions = self.rotated_version_ciphertexts(vrk.bytes(), vrk.bytes(), not_after)?;
+        let (journal, journal_state) = self.rotated_journal(vrk.bytes(), vrk.bytes(), not_after)?;
         let audit = self.audit_event_or_fault(unlock_audit(
             event_type::VAULT_DEK_ROTATED,
             outcome::SUCCESS,
             "dek-rotation",
         ))?;
         ensure_mutation_current(not_after)?;
-        self.store
-            .replace_version_ciphertexts(&versions, audit, not_after)?;
+        self.store.replace_version_ciphertexts(
+            &versions,
+            &journal,
+            &journal_state,
+            audit,
+            not_after,
+        )?;
         Ok(versions.len() as u64)
     }
 
@@ -208,6 +214,9 @@ impl Worker {
             return Err(AuthorityError::Domain(
                 rekey_domain::DomainError::InvalidCapability,
             ));
+        }
+        if kind == CredentialKind::MacosKeychainSource {
+            super::keychain_source::Reference::import(secret.expose(), now_ms()?)?;
         }
         let credential_id = CredentialId::from_random_bytes(crate::crypto::random_array()?);
         let now = now_ms()?;
@@ -305,6 +314,9 @@ impl Worker {
                 ),
             ));
         }
+        if expected_kind == CredentialKind::MacosKeychainSource {
+            super::keychain_source::Reference::import(secret.expose(), now_ms()?)?;
+        }
         let next = updated.current_version + 1;
         let now = now_ms()?;
         let version = self.encrypt_new_version(credential_id, next, expected_kind, &secret, now)?;
@@ -356,7 +368,7 @@ impl Worker {
         &mut self,
         credential_id: CredentialId,
     ) -> Result<PreparedCredential, AuthorityError> {
-        let result = self.prepare_credential_inner(credential_id);
+        let result = self.prepare_credential_inner(credential_id, None);
         if matches!(
             result,
             Err(AuthorityError::CryptoFailure | AuthorityError::StorageIntegrityFailed)
@@ -367,11 +379,41 @@ impl Worker {
         result
     }
 
+    pub(super) fn prepare_execution_credential(
+        &mut self,
+        credential_id: CredentialId,
+        request_id: rekey_domain::ids::RequestId,
+        action_id: rekey_domain::ids::ActionId,
+        action_version: u64,
+        deadline: std::time::Instant,
+    ) -> Result<PreparedCredential, AuthorityError> {
+        let result = self.prepare_credential_inner(
+            credential_id,
+            Some((request_id, action_id, action_version, deadline)),
+        );
+        if matches!(
+            result,
+            Err(AuthorityError::CryptoFailure | AuthorityError::StorageIntegrityFailed)
+        ) {
+            self.fault("credential-integrity-failed");
+        }
+        result
+    }
+
     fn prepare_credential_inner(
         &mut self,
         credential_id: CredentialId,
+        execution: Option<(
+            rekey_domain::ids::RequestId,
+            rekey_domain::ids::ActionId,
+            u64,
+            std::time::Instant,
+        )>,
     ) -> Result<PreparedCredential, AuthorityError> {
         let credential = self.load_verified_credential(credential_id)?;
+        if credential.kind == CredentialKind::MacosKeychainSource && execution.is_none() {
+            return Err(AuthorityError::CredentialSourceUnavailable);
+        }
         let vrk = self.require_unlocked()?;
         if credential.state != CredentialState::Active {
             return Err(AuthorityError::CredentialRevoked);
@@ -419,6 +461,18 @@ impl Worker {
             &version.encrypted_payload,
         )
         .map_err(|_| AuthorityError::CryptoFailure)?;
+        let payload = if credential.kind == CredentialKind::MacosKeychainSource {
+            let (request_id, action_id, action_version, deadline) =
+                execution.ok_or(AuthorityError::CredentialSourceUnavailable)?;
+            self.resolve_keychain(
+                payload,
+                credential_id,
+                version.version,
+                (request_id, action_id, action_version, deadline),
+            )?
+        } else {
+            payload
+        };
         Ok(PreparedCredential::new(
             payload,
             credential_id,
