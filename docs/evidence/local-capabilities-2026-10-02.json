@@ -3,15 +3,15 @@
   "scope": "Disposable local macOS/Linux services and Docker references, synthetic credentials only; no production deployment or physical HA attestation",
   "base_commit": "acfa8fea6a0a620a80963008ce3fc5dc3d580cff",
   "workspace": {
-    "passed": 1032,
+    "passed": 1033,
     "failed": 0,
     "ignored": 1,
     "targets": 83,
     "command": "cargo test --workspace --locked -- --test-threads=1",
     "exit_code": 0,
-    "log_sha256": "aa563b29d22786ef1ba61940ee049f6fa22a75f766bee661eb410c7162ad27fc",
+    "log_sha256": "52c185a5f7e4b7093faf6e548172ef5b1f8807c0e665162173c755400ac31170",
     "cargo_lock_sha256": "4350a6b0375579dd7497f5f56749d0268d436c56545bd4e93418b46b6925cc15",
-    "note": "Repeated after the cryptoki 0.12.1 patch; the Linux-only OOM case executes in required Ubuntu CI."
+    "note": "Repeated after the desktop-resume strict metadata fix; Linux-only OOM executes in required Ubuntu CI."
   },
   "python_contracts": {
     "audit_delivery": 28,
@@ -191,5 +191,29 @@
     "comparison": "official last-mantissa-bit fuzzy_compare; production rules unchanged",
     "log_sha256": "fb494daf628cd05ddaf9dff15c194f073266098a5a4c58e34a0b2bf5438b77d6"
   },
-  "initial_local_acceptance_code_commit": "20cad7b5d8b01de57b522a1613702d5eef3bc046"
+  "initial_local_acceptance_code_commit": "20cad7b5d8b01de57b522a1613702d5eef3bc046",
+  "desktop_resume_contract": {
+    "pass": true,
+    "scope": "Real bundled release CLI/Broker plus native UI contract and actual Keychain APIs; synthetic fixtures only",
+    "regression": "Resume requires typed lease_recovery; remember accepts only expiry. Invalid outer/nested metadata releases no body and preserves INVALID_FRAME.",
+    "malicious_broker_tests": 10,
+    "metadata_cases": 7,
+    "native_ci_block_exit": 0,
+    "native_ci_block_log_sha256": "8c8f7046ba13ffd087ceebbbad7b2e2e8ca99ea5780084f0c792cca8f6b27bc4",
+    "cases": [
+      "native real-vault UI contract",
+      "human vault restart/resume and denial paths",
+      "cross-process Keychain and expiry",
+      "actual Keychain-source Broker/TLS, reflection and locked denial, cleanup"
+    ]
+  },
+  "ci_before_desktop_fix": {
+    "commit": "f81482c5b0533af4015f5905704098c6707ecec4",
+    "run": "https://github.com/majiayu000/rekey/actions/runs/36992275606",
+    "ubuntu": "passed entire required job, including aggregate OOM, dependency audit, metrics and release scripts",
+    "linux_g2": "passed entire required job, including Docker recovery",
+    "macos": "failed at final native step: legitimate desktop-resume metadata rejected by CLI; fixed and repeated locally",
+    "fuzz": "all five targets passed",
+    "performance": "passed"
+  }
 }

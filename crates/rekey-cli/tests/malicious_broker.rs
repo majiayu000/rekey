@@ -446,6 +446,94 @@ fn valid_session_response() -> Vec<u8> {
 }
 
 #[test]
+fn desktop_restore_validates_operation_metadata_before_releasing_the_body() {
+    let expiry = 1_800_000_000_000_i64;
+    let recovery = serde_json::json!({
+        "performed":true,
+        "journal":{"verified":true,"pending":0,"unknown":0,"complete":0},
+        "deferred":0,"leases":[]
+    });
+    let remember = serde_json::json!({"expires_at_ms":expiry});
+    let resume = serde_json::json!({"expires_at_ms":expiry,"lease_recovery":recovery});
+    let mut extra = resume.clone();
+    extra["unexpected"] = true.into();
+    let mut nested_extra = resume.clone();
+    nested_extra["lease_recovery"]["unexpected"] = true.into();
+    let mut wrong_type = resume.clone();
+    wrong_type["lease_recovery"]["journal"]["verified"] = "true".into();
+    for (operation, metadata, accepted) in [
+        ("desktop-remember", remember.clone(), true),
+        ("desktop-resume", resume.clone(), true),
+        ("desktop-resume", remember, false),
+        ("desktop-remember", resume, false),
+        ("desktop-resume", extra, false),
+        ("desktop-resume", nested_extra, false),
+        ("desktop-resume", wrong_type, false),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = dir.path().join("runtime");
+        std::fs::create_dir(&runtime).unwrap();
+        std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let socket = runtime.join("admin.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut raw = [0; FRAME_HEADER_LEN];
+            stream.read_exact(&mut raw).unwrap();
+            let request = FrameHeader::decode(&raw).unwrap();
+            let mut payload = vec![0; (request.metadata_len + request.body_len) as usize];
+            stream.read_exact(&mut payload).unwrap();
+            let metadata = serde_json::to_vec(&metadata).unwrap();
+            let reply = FrameHeader {
+                channel: Channel::Admin,
+                flags: 0,
+                message_type: resp_msg::OK,
+                request_id: request.request_id,
+                metadata_len: metadata.len() as u32,
+                body_len: 64,
+            };
+            stream.write_all(&reply.encode()).unwrap();
+            stream.write_all(&metadata).unwrap();
+            // Synthetic body only; it must never be printed on an invalid reply.
+            stream.write_all(&[b'a'; 64]).unwrap();
+        });
+        let mut child = Command::new(rekey_bin())
+            .arg("--state-dir")
+            .arg(dir.path())
+            .arg(operation)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"synthetic-desktop-proof\n")
+            .unwrap();
+        let result = child.wait_with_output().unwrap();
+        server.join().unwrap();
+        if accepted {
+            assert!(
+                result.status.success(),
+                "{operation}: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            assert_eq!(
+                result.stdout,
+                format!("{expiry}\n{}", "a".repeat(64)).as_bytes()
+            );
+        } else {
+            assert_eq!(result.status.code(), Some(2), "{operation}");
+            assert!(result.stdout.is_empty(), "invalid metadata released a body");
+            assert!(String::from_utf8_lossy(&result.stderr).contains("INVALID_FRAME"));
+        }
+    }
+}
+
+#[test]
 fn audit_export_continues_after_an_empty_scan_window() {
     audit_export_fixture(false);
 }

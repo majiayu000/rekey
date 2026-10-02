@@ -336,7 +336,7 @@ The user explicitly authorized a step-up-set/revoked, sealed retention policy. O
 
 2026-10-01 authorized automatic retention local closure: format21 sealed policy and Admin50/51 are implemented. Every set/revoke needs step-up; unlocked background maintenance holds the lifecycle owner and preserves the original idle lock. Unknown completion synchronously closes admission and revokes sessions before releasing ownership. Desktop resume verifies the retention seal, and SET uses the original Admin deadline. Independent review closed all original 2P1+1P2 findings; root Broker6/Vault4/Desktop2 targeted sets and CLI5 entry checks passed (sets overlap). Full workspace remains unpassed; physical erasure, backup deletion and maximum real-world retention are not claimed. Evidence: `../../../evidence/retention-exact3-root-local-final.json`.
 
-2026-10-02 current local acceptance: full workspace 1032 passed, 0 failed,
+2026-10-02 current local acceptance: full workspace 1033 passed, 0 failed,
 1 performance test ignored; audit delivery28, archive23 and controlplane86 passed.
 The previous permission/startup failures are historical, not current results.
 Docker manual DR passed with measured recovery and owned-resource cleanup;
@@ -355,3 +355,8 @@ an explicit trusted test executable passed actual Broker/TLS use, reflected-valu
 sealing, locked-Keychain refusal with no dialog or additional upstream effect,
 and full Keychain/process/artifact cleanup. `scripts/test-keychain-live.py` is
 included in macOS CI. Customer item ACLs and service identities remain separate.
+
+2026-10-02 desktop resume follow-up: the CLI now validates the operation-specific
+expiry and typed lease-recovery response before releasing its body. Strict malformed
+reply regressions and the complete native release/Keychain CI block passed locally.
+Ubuntu and G2 required jobs passed on f81482c; final-head results remain in PR #59.

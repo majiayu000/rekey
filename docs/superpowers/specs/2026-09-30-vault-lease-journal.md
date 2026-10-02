@@ -24,4 +24,6 @@ DEK轮换在原credential全量ciphertexts事务内同时更新所有journal与m
 
 Stage B 的真实DTO为 status.lease_journal（verified/pending/unknown/complete）与 unlock/desktop metadata.lease_recovery（performed、journal、deferred、最多8条registration/准确credential/version/complete或unconfirmed或deferred/updated时间）。无ID intent只给unknown总数、不猜其ID。Running重复unlock返回performed=false、当前验证计数和空条目，不清live lease。恢复保持Locked的普通admission关闭；coordinator内先reload policy，再最多8条exact cleanup，全部clamp同一8秒绝对deadline与每条1秒上限，其中provider窗口最多500ms，剩余给journal。未知/deferred保留来源隔离；关键storage/audit/integrity错误不吞、不进入Running。旧Broker所有独立vault.lease.* append被journal mutation替换；malformed最多4候选仅作当前已持秘密的有界紧急exact revoke，不假造issued或成功receipt，intent继续unknown。
 
+Desktop CLI 必须按操作解析这两个不同的闭合回复：remember 仅有 expires_at_ms；resume 同时要求 expires_at_ms 与 typed lease_recovery（包括闭合嵌套字段）。不能把恢复摘要当作未知字段拒绝，也不能通过忽略任意字段或把摘要变为可选来兼容。原生桥接 stdout 仍为 expiry、换行、秘密正文；任何缺失、未知或错误类型 metadata 必须在输出秘密之前以 INVALID_FRAME 失败。
+
 恢复首批和最终批次必须来自已解锁且已验证的同一次 Authority 快照。内部 LeaseRecoveryBatch 以 unavailable: Option<AuthorityError> 区分 Locked/Faulted，状态读只投影未验证计数，恢复消费对应 typed error；不得以超时后的未验证计数进入 Running。该内部原因不增加 IPC 字段、Command 或第二次 status 探测。恢复的 exact revoke 由外层 timeout_at(provider_deadline) 约束，截止时仅记 unconfirmed，不用相对计时延长provider/全批预算。

@@ -17,7 +17,7 @@
 | APR-08 | 托管远程审批服务 | 单组织 HTTPS 文件中继、整合全量和本地实际服务通过；客户部署待验收 | 本轮完整 Rust 与 HTTPS→独立 signer→真实 Broker 通过；不是通用托管平台 |
 | APR-09 | 通知与审批操作界面 | 原生文件审批流程及远程 pull inbox 已实现，本地原生点击链通过 | 真实 HTTPS relay/inbox→signer→Broker；原生App文件流程实际HTTP200，非规则编辑器或托管网页UI |
 | APR-10 | 人员目录与组织关系 | SCIM消费/持久停用/事务门禁及明确Admin自证明已实现；客户节点撤权链待验收 | 本轮完整 Rust 含 relay/目录 TLS 合同通过，controlplane86通过；真实 IdP/双节点回执待验收 |
-| AUD-06 | 审计保留与删除 | 授权持久 sealed 后台策略已整合 format21；本轮完整 IPC/Actor 验收通过 | 未知结果同步关闭准入、desktop 恢复验 seal、SET 继承原 deadline；本轮完整 Rust 1032/0/1，旧严格 IPC 环境失败已复测关闭 |
+| AUD-06 | 审计保留与删除 | 授权持久 sealed 后台策略已整合 format21；本轮完整 IPC/Actor 验收通过 | 未知结果同步关闭准入、desktop 恢复验 seal、SET 继承原 deadline；本轮完整 Rust 1033/0/1，旧严格 IPC 环境失败已复测关闭 |
 | AUD-07 | 远程投递与 SIEM | 源码及本地真实 CLI/TLS 验收通过；客户 SIEM 待现场 | 本轮 28/28；修复 format21 备份回执 snapshot_cut 精确校验，ACK 游标仍从零开始 |
 | AUD-08 | WORM / Legal Hold | 源码合同测试及独立复核通过；实际 WORM/权限现场后置 | 23 项测试：TLS、官方 SigV4 向量、ACK 丢失/重启、版本早期持久 pin、Hold、fsync/容量/超时 |
 | BAK-07 | 复制与故障转移 | 快照复制和 Docker 主备手动恢复通过；持续复制/自动切换未实现 | 独立容器卷、外部 daemon fencing、快照哈希及切点、恢复策略、新授权真实请求全部通过 |
@@ -28,7 +28,7 @@
 | ENT-02 | 多租户隔离 | 实际 vault/root 提交绑定及固定双节点注册/回执已实现；现场隔离待验证 | 本地 Authority 测试可证明目标校验；真实节点、VM/UID/磁盘/网络/备份隔离待现场验证 |
 | ENT-03 | SSO/SCIM/组织 | 节点PKCE/管理会话/逐次目录门禁与本地撤权已实现；本轮本地合同通过 | 完整 Rust 的 TLS/loopback/UDS 与原生 OIDC16 通过；Keycloak workload 交换现场通过，不能代替管理 SSO/SCIM 双节点验收 |
 | ENT-04 | HA/容灾/多节点 | Docker 有界主备容灾演练通过；跨物理机 HA 待现场 | 真实 Broker/CLI/UDS + 测试 TLS；独立外部 daemon 控制；主备卷隔离、旧令牌拒绝和清理通过 |
-| ENT-05 | 企业现场验证 | 已开始执行可用真实本地服务验收；客户环境未整体通过 | 完整 Rust 1032 通过/0 失败/1 忽略；controlplane86、audit delivery28、archive23；外部服务逐门记录 |
+| ENT-05 | 企业现场验证 | 已开始执行可用真实本地服务验收；客户环境未整体通过 | 完整 Rust 1033 通过/0 失败/1 忽略；controlplane86、audit delivery28、archive23；外部服务逐门记录 |
 | EXT-01 | AWS Secrets 或 KMS | 固定 ARN/VersionId 源已实现，本轮本地 TLS/UDS/blackbox 通过；真实账号待验收 | kind7/schema17/opcode42；完整 Rust 已消除旧监听 EPERM，含 token/响应头封口；客户 IAM/KMS 权限未实测 |
 | EXT-02 | GCP Secrets 或 KMS | 固定数值 SecretVersion 源已实现，本轮本地 TLS/UDS/blackbox 通过；真实账号待验收 | kind6/schema16/opcode41；完整响应头封口和本轮完整 Rust 通过；客户 IAM 权限未实测 |
 | EXT-03 | Azure Secrets 或 KMS | 固定 Azure 源及 OWS 修复已整合，本轮本地 TLS/UDS/blackbox 通过 | kind8/schema18/opcode43；旧 IdP 启动/监听失败已复测关闭；客户租户/权限待验收 |
@@ -47,7 +47,7 @@
 | VEX-03 | Vault token续期候选 | 仅现场证明单次TTL不足才选token一次续期；Namespace/额外引擎明确未选 | 不是首轮默认实现；保持已有DYN-05租约续期；现场需求尚未提供 |
 | VEX-04 | KV 显式最新版读取 | 显式latest单读冻结和真实版本审计已实现，本轮 UDS/TLS 合同通过 | 本轮完整 Rust 与 KV release 脚本通过；客户现场后置，写入未选入本切片 |
 | P-08 | 可观测性 | Linux 调度输出/新鲜度规则已实现，真实工具的14项验收通过；客户部署待验收 | 22 个规则向量使用真实 promtool3.15，unit 使用真实 systemd-analyze；rate 的末位舍入使用官方 fuzzy_compare，保留全部向量/标签/告警，Ubuntu 必需门持续执行 |
-| P-10 | Connector 隔离 | Linux委派 cgroup-v2/guardian 与真实整组OOM验收通过；完整启动故障矩阵仍OPEN | Ubuntu 实际 artifact/seccomp/AS/READY 前后父进程死亡/取消清理，以及2464657整组OOM均通过；旧作业后续主动取消以修依赖，不能算整门通过，mac物理内存与全启动故障注入未关闭 |
+| P-10 | Connector 隔离 | Linux委派 cgroup-v2/guardian 与真实整组OOM验收通过；完整启动故障矩阵仍OPEN | Ubuntu 实际 artifact/seccomp/AS/READY 前后父进程死亡/取消清理，以及整组OOM均通过；f81482c 的 Ubuntu/G2 必需整门通过，mac物理内存与全启动故障注入未关闭 |
 
 ## 交付缺口
 
@@ -191,3 +191,7 @@ PKCS#11 本地真实模块门已从 injected 扩展到 SoftHSM2.6：固定库has
 同日 EXT06 真实门关闭：`scripts/test-keychain-live.py --bin-dir target/debug` 在本机通过，创建一次性文件 Keychain 并仅信任测试 helper/fixture，真实条目读取、上游反射封口、锁定拒绝及无额外业务效果、审计 canary 与删除清理均通过。fixture 的 TLS ready 文件早于 Admin socket，首次新脚本失败已保留，随后等待两个实际入口就绪并复测通过；没有弱化生产 Keychain 查询。旧“API0”条目为历史状态。七项 release 脚本 P3、Vault KV、Vault dynamic、GitHub App、GitHub extension、workload identity 与 Darwin launchd 均已本轮通过。最新本地证据在 `20261002-pr-closeout/`。
 
 `20cad7b` 的 macOS 完整 workspace/辅助验收通过，随后真实依赖审计发现 cryptoki0.12.0 命中 RUSTSEC-2026-0286。当前精确升级到0.12.1，两份lock仅该包版本/hash变化，不忽略advisory；本地cargo audit通过，重新构建的真实SoftHSM/TTY/Broker签名链也通过。Ubuntu完整workspace通过后，真实promtool暴露rate()结果与1只差一个尾数位；使用官方末位浮点容差，全部14项部署测试及22个规则向量通过，生产PromQL不变。历史失败日志保留。
+
+`f81482c` 的 Ubuntu、Linux G2 必需整门和 performance、五项 fuzz 已通过；macOS 在末尾原生步骤暴露真实 CLI 回归：resume 的 typed `lease_recovery` 被旧单字段解析器拒绝。按 remember/resume 分别严格解析，保留 `INVALID_FRAME` 及先验 metadata 再输出秘密正文的合同；新增进程级七路正负场景，malicious_broker 全10项通过。重新构建的 release App 完整执行与 CI 相同的原生 UI、human-vault 恢复、跨进程 Keychain 和真实凭证源四段均通过；全部一次性条目/进程/秘密状态清理成功。最终精确提交结果继续以 PR checks 为准。
+
+Desktop 修复后再次完整 `cargo test --workspace --locked -- --test-threads=1`：83 个顶层目标，1033 通过、0 失败、1 忽略，退出0；all-targets check、Clippy warnings denied、fmt、diff、两项机械 API 扫描及 CLI normal 依赖边界通过。新测试只有一项（包含7种回复），不将重复执行累计进总数。收据 `workspace-desktop-fix-summary.json`，完整日志哈希已写入随 PR 的公开非敏感记录。

@@ -888,10 +888,21 @@ pub fn desktop_restore_access(
     struct Expiry {
         expires_at_ms: i64,
     }
-    let expiry: Expiry = serde_json::from_slice(&meta)
-        .map_err(|_| CliError::local("INVALID_FRAME", "invalid desktop expiry"))?;
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct ResumedExpiry {
+        expires_at_ms: i64,
+        #[serde(rename = "lease_recovery")]
+        _lease_recovery: ipc::LeaseRecoverySummary,
+    }
+    let expires_at_ms = if resume {
+        serde_json::from_slice::<ResumedExpiry>(&meta).map(|reply| reply.expires_at_ms)
+    } else {
+        serde_json::from_slice::<Expiry>(&meta).map(|reply| reply.expires_at_ms)
+    }
+    .map_err(|_| CliError::local("INVALID_FRAME", "invalid desktop expiry"))?;
     let mut out = std::io::stdout().lock();
-    writeln!(out, "{}", expiry.expires_at_ms)
+    writeln!(out, "{expires_at_ms}")
         .and_then(|_| out.write_all(&secret))
         .map_err(|e| CliError::local("IO", e.to_string()))
 }
