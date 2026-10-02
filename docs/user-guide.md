@@ -649,7 +649,11 @@ absolute `keychain_path`, exact `service` and `account`, and a future
 one generic-password item inside the Authority Worker and uses the value only
 for the registered fixed HTTP header Action. Native lookup refuses interactive
 unlock/access prompts. This source is separate from remembered desktop unlock.
-Local contract tests passed; real Keychain item acceptance remains pending.
+Local contracts and a disposable native file-Keychain item test passed: actual
+Broker execution, reflected-value sealing, and locked-Keychain refusal without
+a prompt. Run `python3 scripts/test-keychain-live.py --bin-dir target/debug` after
+building the binaries and `p1_policy_fixture` example. Existing customer items,
+their ACLs and deployed service identities still need their own acceptance.
 See [the source contract](superpowers/specs/2026-10-01-macos-keychain-source.md).
 
 ## Vault KV v2 fixed-version source

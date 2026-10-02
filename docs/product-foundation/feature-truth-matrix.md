@@ -347,3 +347,9 @@ nested wire metadata. SoftHSM2.6 exercised the production PKCS11 signer and real
 controlling TTY, including wrong PIN rejection and verified grant execution.
 These results close the local software-token and bounded native-click gates;
 physical HSM and customer IdP/SCIM/cloud/SIEM/WORM remain unaccepted.
+
+2026-10-02 EXT06 native source acceptance: a disposable file-Keychain item with
+an explicit trusted test executable passed actual Broker/TLS use, reflected-value
+sealing, locked-Keychain refusal with no dialog or additional upstream effect,
+and full Keychain/process/artifact cleanup. `scripts/test-keychain-live.py` is
+included in macOS CI. Customer item ACLs and service identities remain separate.

@@ -230,6 +230,7 @@ jobs:
             -framework SwiftUI -framework AppKit \
             apps/macos/Model.swift scripts/test-macos-keychain.swift -o /tmp/rekey-keychain-contract
           /tmp/rekey-keychain-contract
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-keychain-live.py --bin-dir target/debug
 
   g2-linux:
     name: Linux container G2 reference boundary

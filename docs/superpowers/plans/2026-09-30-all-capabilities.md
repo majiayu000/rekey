@@ -34,7 +34,7 @@
 | EXT-03 | Azure Secrets 或 KMS | 最终 25 文件已整合、独立实际 SHA 复审通过；Azure/GCP 两类 OWS 修复已实际 RED→GREEN | kind8/schema18/opcode43；234 项去重定向通过（70 root、164 同源码线程），完整 workspace 15 个 IdP 启动失败，监听 EPERM 另已实证 |
 | EXT-04 | 1Password | 固定 item/field 源已整合、两项 P2 已修复并独立复审关闭 | kind9/schema19/opcode44；374项去重定向通过（289 root、85同SHA线程），严格TLS/UDS及现场验收未通过 |
 | EXT-05 | PKCS#11/HSM | PKCS#11 实现、真实 SoftHSM/控制 TTY/Broker 链通过；实体硬件待验收 | SoftHSM2.6 容器生成 Ed25519 key；生产 signer 校验不可导出等属性；错误PIN无grant，正确PIN隐藏、签名验证、实际Broker一次成功及重放拒绝；容器清理完成 |
-| EXT-06 | OS Keychain 凭证源 | 已整合format20；本地验收通过，独立29SHA及2夹具补审无确认P0/P1/P2 | 线程67unique/68executions；ROOT Native18/Domain40/Vault全包230/admin8/connector7通过；真实条目API0 |
+| EXT-06 | OS Keychain 凭证源 | format21 源码和真实临时文件 Keychain 验收通过；客户条目ACL另验 | 新原生门：限定fixture可访问的实际条目→真实Broker/TLS；反射值拒绝、锁定无UI且无业务请求、审计无canary；临时Keychain清理通过并接入macOS CI |
 | EXT-07 | 通用签名/Provider | 固定 Vault Transit 切片通过合同测试；现场及其他 provider 后置 | 11 项 Transit / 6 项软件签名；独立复审；workspace 589 passed |
 | KEY-04 | VRK/DEK 轮换 | 既定 VRK/DEK 代码已具备；journal 轮换接入；隐藏 TTY/故障验收待补 | Stage A 定向 151/151 含 DEK/VRK；源合同见 key04-dek/vrk-rotation；旧备份不追溯撤销 |
 | NET-07 | Agent 可见流式响应 | 固定 Anthropic 纯文本流已具备；现场后置 | executor/text_stream.rs、tests/text_stream.rs；MCP 明确拒绝流，不承诺通用 SSE/tools |
@@ -186,3 +186,6 @@ Docker 演练运行 3 的 `report.json` 为 PASS 且 cleanup_complete=true：Doc
 PKCS#11 本地真实模块门已从 injected 扩展到 SoftHSM2.6：固定库hash/version/slot/serial/public key及生产私钥属性校验，真正控制TTY隐藏PIN、错误PIN无输出grant、正确PIN签名、真实Broker拒绝改体/错会话/重放，仅一次业务响应。该软件token保存在一次性容器，已移除；不宣称物理硬件防导出或厂商驱动已验收。收据 `pkcs11-acceptance.json` 与 `gui-acceptance.json` 位于本轮 evidence 目录。
 
 `cc15af0` CI：G2（含Docker DR）及performance通过；Ubuntu在信号测试对glibc附加SA_RESTORER位的旧假设处失败，macOS完整Rust通过后在Python深度JSON夹具的解析分类假设处失败。前者先以libc安装表示建立基线，仍比较精确恢复标志；后者允许解析深度拒绝或ACK形状拒绝，保留永久失败、仅一次发送及游标不推进。两者都是夹具修复，不放宽生产准入。
+
+
+同日 EXT06 真实门关闭：`scripts/test-keychain-live.py --bin-dir target/debug` 在本机通过，创建一次性文件 Keychain 并仅信任测试 helper/fixture，真实条目读取、上游反射封口、锁定拒绝及无额外业务效果、审计 canary 与删除清理均通过。fixture 的 TLS ready 文件早于 Admin socket，首次新脚本失败已保留，随后等待两个实际入口就绪并复测通过；没有弱化生产 Keychain 查询。旧“API0”条目为历史状态。七项 release 脚本 P3、Vault KV、Vault dynamic、GitHub App、GitHub extension、workload identity 与 Darwin launchd 均已本轮通过。最新本地证据在 `20261002-pr-closeout/`。
