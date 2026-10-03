@@ -5,6 +5,8 @@
 不是历史v2档案或未来企业方案。证据与未验项见[功能事实矩阵](feature-truth-matrix.md)。
 当前vault25 / policy6仍未最终冻结，不构成GA互读承诺。
 
+Presence 不得签发新的七天授权、修改密码或轮换恢复密钥；签发与改密码只接受密码/恢复密钥，恢复轮换保持仅密码。已解锁 step-up、unlock 与 Locked shutdown 共用失败退避，Presence 成功不重置猜测次数。App 仅在首次成功读取后的固定十秒窗口复用 LAContext，不缓存 K。
+
 ## 资产、主体与信任边界
 
 保护对象是provider Key、VRK/DEK、解锁证明、策略签名私钥、审批与预算授权，以及可验证
@@ -121,3 +123,5 @@ macOS sandbox-exec是受限实验入口；仅按实际已测build/arch说明。
 全生命周期、T12与公开下载全部是独立门槛。当前合成/CLI/MCP/Broker/UI证据不替代它们。
 企业source/relay/OIDC/插件/指标/DR均属lab；没有SLA、通用多租户或云端权限承诺。
 历史v2发布事实保留在原release notes，不改变本候选Pending状态。
+
+2026-10-04 [统一候选设备证据](../evidence/v3-release-acceptance-2026-10-04.json)已覆盖受保护代数的 ad-hoc 读/写/删拒绝、双并发 CAS、旧库认证后疑似回滚及实际 hardened daemon 的 LLDB 拒绝。SE 建钥/重载、私钥不可导出和无交互签名拒绝已验证；交互签名/取消、已安装服务与完整产品攻击矩阵仍是独立门槛，不提升保护等级。

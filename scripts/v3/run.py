@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import secrets
 import selectors
 import shutil
@@ -37,11 +38,11 @@ def probe(command):
     return value
 
 
-def sign(binary, args, *, identifier, entitlements=None, adhoc=False):
+def sign(binary, args, *, identifier, entitlements=None, adhoc=False, hardened=True):
     command = ['codesign', '--force', '--sign', '-' if adhoc else args.identity,
                '--identifier', identifier, '--timestamp=none']
     if not adhoc:
-        command += ['--options', 'runtime']
+        command += ['--options', 'runtime' if hardened else '0']
     if entitlements:
         command += ['--entitlements', entitlements]
     invoke(command + [binary])
@@ -152,15 +153,34 @@ def keychain(root, args, binaries):
     return result
 
 
+def debugger_probe(debugger, pid):
+    result = invoke([debugger, '--batch', '--no-lldbinit',
+                     '-o', 'settings set stop-disassembly-display never',
+                     '-o', f'process attach --pid {pid}', '-o', 'process detach'],
+                    timeout=30, check=False)
+    # Do not retain debugger frame/source output. Only attach/detach evidence is needed.
+    detached = re.search(rf'Process {pid} detached\b', result.stdout) is not None
+    if result.returncode == 0 and detached:
+        return {'outcome': 'attached_and_detached', 'exit_code': 0}
+    error = result.stderr.strip()
+    denied = 'attach failed' in error.lower() and any(
+        text in error.lower() for text in ('not allowed', 'operation not permitted', 'denied'))
+    return {'outcome': 'denied' if denied else 'inconclusive',
+            'exit_code': result.returncode, 'error': error}
+
+
 def memory(root, args, binaries):
     result = {'status': 'inconclusive', 'cases': {}}
     helper = binaries['memory']
+    debugger = Path(invoke(['xcrun', '--find', 'lldb']).stdout.strip())
+    invoke(['codesign', '--verify', '--strict', '-R', '=anchor apple', debugger])
+    result['debugger'] = signature_details(debugger)
     # A self-target confirms that the probe can obtain a task port at all.
     result['self_control'] = probe(['/bin/sh', '-c', 'exec "$1" --pid $$', 'probe', helper])
-    for mode in ('adhoc', 'hardened'):
+    for mode in ('unhardened', 'hardened'):
         daemon = root / ('rekeyd-' + mode)
         shutil.copy2(args.bin_dir / 'rekeyd', daemon)
-        signature = sign(daemon, args, identifier='com.rekey.rekeyd', adhoc=mode == 'adhoc')
+        signature = sign(daemon, args, identifier='com.rekey.rekeyd', hardened=mode == 'hardened')
         state = root / ('state-' + mode)
         password = secrets.token_urlsafe(32)
         # Initialization prints a recovery key. Discard its output, never persist it.
@@ -174,14 +194,15 @@ def memory(root, args, binaries):
             invoke([args.bin_dir / 'rekey', '--state-dir', state, 'unlock', '--password-stdin'],
                    data=password + '\n')
             result['cases'][mode] = {'signature': signature,
-                                     'probe': probe([helper, '--pid', process.pid])}
+                                     'probe': probe([helper, '--pid', process.pid]),
+                                     'debugger': debugger_probe(debugger, process.pid)}
         password = None
-    hardened = result['cases']['hardened']['probe']
-    control = result['cases']['adhoc']['probe']
-    if hardened['exit_code'] == 0:
-        result.update(status='failed', reason='Task port acquired for signed hardened rekeyd.')
-    elif hardened['exit_code'] == 1 and control['exit_code'] == 0 and result['self_control']['exit_code'] == 0:
-        result.update(status='passed', reason='Hardened target denied; ad-hoc target and self controls acquired.')
+    hardened = result['cases']['hardened']['debugger']
+    control = result['cases']['unhardened']['debugger']
+    if hardened['outcome'] == 'attached_and_detached' or result['cases']['hardened']['probe']['exit_code'] == 0:
+        result.update(status='failed', reason='Debugger or task-port probe acquired signed hardened rekeyd.')
+    elif hardened['outcome'] == 'denied' and control['outcome'] == 'attached_and_detached':
+        result.update(status='passed', reason='Apple lldb attached without hardened runtime and was denied with it; signing identity unchanged.')
     else:
         result['reason'] = 'Denial alone does not establish hardened-runtime protection; inspect control results.'
     return result

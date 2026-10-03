@@ -39,10 +39,12 @@ pub(super) fn protocol(
     }
     let builtin = match source.template.as_str() {
         "anthropic@1" => BuiltinTemplate::Anthropic,
+        "glm@1" => BuiltinTemplate::Glm,
         "openai@1" => BuiltinTemplate::OpenAi,
         other => {
             if scope.llm_limits.is_some()
                 || other.starts_with("anthropic@")
+                || other.starts_with("glm@")
                 || other.starts_with("openai@")
             {
                 return Err(BrokerError::Denied("profile-llm-source-unsupported"));
@@ -80,7 +82,7 @@ pub(super) fn protocol(
     }
     use ProfileLlmProtocol::*;
     let protocol = match (source.template.as_str(), source.capability.as_str()) {
-        ("anthropic@1", "messages") => AnthropicMessages,
+        ("anthropic@1" | "glm@1", "messages") => AnthropicMessages,
         ("anthropic@1", "count-tokens") => CountTokens,
         ("openai@1", "chat-completions") => OpenAiChat,
         ("openai@1", "responses") => OpenAiResponses,

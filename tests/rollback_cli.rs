@@ -60,7 +60,11 @@ fn error(output: Output, code: &str) {
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
     let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.starts_with(&format!("error [{code}]: ")), "{stderr}");
+    let error_line = stderr.lines().find(|line| line.starts_with("error ["));
+    assert!(
+        error_line.is_some_and(|line| line.starts_with(&format!("error [{code}]: "))),
+        "{stderr}"
+    );
 }
 fn database_bytes(state: &Path) -> Vec<Option<Vec<u8>>> {
     ["vault.sqlite3", "vault.sqlite3-wal"]

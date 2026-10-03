@@ -181,6 +181,10 @@ impl Worker {
         not_after: Option<Instant>,
     ) -> Result<(Zeroizing<Vec<u8>>, i64), AuthorityError> {
         ensure_mutation_current(not_after)?;
+        if matches!(proof, UnlockProof::Presence(_)) {
+            self.require_unlocked()?;
+            return Err(AuthorityError::InvalidUnlockCredential);
+        }
         self.verify_proof(&proof)?;
         // Once the caller has proved authority, replacement is one-way: failures
         // must not silently leave the old bearer authorized.
@@ -455,7 +459,7 @@ mod tests {
         (dir, worker, initialized)
     }
 
-    fn assert_revoked(worker: &Worker, key: &[u8]) {
+    fn assert_revoked(worker: &mut Worker, key: &[u8]) {
         assert!(worker.presence_grant.is_none());
         assert!(!worker.config.state_dir.join(FILE).exists());
         assert!(worker.verify_proof(&presence(key)).is_err());
@@ -501,10 +505,42 @@ mod tests {
 
     #[test]
     fn presence_reissue_replaces_hash_and_failed_resume_preserves_existing_root_only() {
-        let (_dir, mut worker, _) = fixture();
+        let (_dir, mut worker, initialized) = fixture();
         let (old, _) = worker.remember_desktop(password(), None).unwrap();
         worker.verify_proof(&presence(&old)).unwrap();
-        let (new, expires) = worker.remember_desktop(presence(&old), None).unwrap();
+        let ticket = fs::read(worker.config.state_dir.join(FILE)).unwrap();
+        let deadline = worker
+            .presence_grant
+            .as_ref()
+            .unwrap()
+            .grant()
+            .monotonic_deadline;
+        assert!(matches!(
+            worker.remember_desktop(presence(&old), None),
+            Err(AuthorityError::InvalidUnlockCredential)
+        ));
+        assert_eq!(
+            fs::read(worker.config.state_dir.join(FILE)).unwrap(),
+            ticket
+        );
+        assert_eq!(
+            worker
+                .presence_grant
+                .as_ref()
+                .unwrap()
+                .grant()
+                .monotonic_deadline,
+            deadline
+        );
+        worker.verify_proof(&presence(&old)).unwrap();
+        let (new, expires) = worker
+            .remember_desktop(
+                UnlockProof::Recovery(SecretInput::from_slice(
+                    initialized.recovery_key_display.as_bytes(),
+                )),
+                None,
+            )
+            .unwrap();
         assert!(worker.verify_proof(&presence(&old)).is_err());
         worker.verify_proof(&presence(&new)).unwrap();
         let original_root = Zeroizing::new(*worker.require_unlocked().unwrap().bytes());
@@ -563,6 +599,96 @@ mod tests {
     }
 
     #[test]
+    fn presence_success_cannot_reset_password_guess_backoff() {
+        let (_dir, mut worker, _) = fixture();
+        let (key, _) = worker.remember_desktop(password(), None).unwrap();
+        worker.config.unlock_backoff_base = Duration::from_secs(30);
+        for _ in 0..2 {
+            assert!(matches!(
+                worker.verify_proof(&UnlockProof::Password(SecretInput::from_slice(
+                    b"wrong-password"
+                ))),
+                Err(AuthorityError::InvalidUnlockCredential)
+            ));
+            worker.verify_proof(&presence(&key)).unwrap();
+        }
+        assert_eq!(worker.failed_unlocks, 2);
+        assert!(matches!(
+            worker.verify_proof(&UnlockProof::Password(SecretInput::from_slice(
+                b"wrong-password"
+            ))),
+            Err(AuthorityError::InvalidUnlockCredential)
+        ));
+        assert!(matches!(
+            worker.verify_proof(&presence(&key)),
+            Err(AuthorityError::UnlockRateLimited)
+        ));
+        worker.next_unlock_at = Instant::now();
+        worker.verify_proof(&presence(&key)).unwrap();
+        assert_eq!(worker.failed_unlocks, 3);
+        worker.verify_proof(&password()).unwrap();
+        assert_eq!(worker.failed_unlocks, 0);
+    }
+
+    #[test]
+    fn presence_cannot_replace_permanent_unlock_factors() {
+        let (_dir, mut worker, _) = fixture();
+        let (key, _) = worker.remember_desktop(password(), None).unwrap();
+        let ticket = fs::read(worker.config.state_dir.join(FILE)).unwrap();
+        let password_wrapper = worker
+            .store
+            .active_wrapper(crate::model::WrapperKind::Password)
+            .unwrap();
+        let recovery_wrapper = worker
+            .store
+            .active_wrapper(crate::model::WrapperKind::Recovery)
+            .unwrap();
+        assert!(matches!(
+            worker.password_change(
+                presence(&key),
+                SecretInput::from_slice(b"attacker-password"),
+                None
+            ),
+            Err(AuthorityError::InvalidUnlockCredential)
+        ));
+        assert!(matches!(
+            worker.recovery_rotate(presence(&key), None),
+            Err(AuthorityError::InvalidUnlockCredential)
+        ));
+        assert_eq!(
+            worker
+                .store
+                .active_wrapper(crate::model::WrapperKind::Password)
+                .unwrap()
+                .wrapper_id,
+            password_wrapper.wrapper_id
+        );
+        assert_eq!(
+            worker
+                .store
+                .active_wrapper(crate::model::WrapperKind::Recovery)
+                .unwrap()
+                .wrapper_id,
+            recovery_wrapper.wrapper_id
+        );
+        assert_eq!(
+            fs::read(worker.config.state_dir.join(FILE)).unwrap(),
+            ticket
+        );
+        worker.verify_proof(&presence(&key)).unwrap();
+        worker.verify_proof(&password()).unwrap();
+        worker.set_locked("factor-boundary-test", true).unwrap();
+        assert!(matches!(
+            worker.remember_desktop(presence(&key), None),
+            Err(AuthorityError::Locked)
+        ));
+        assert!(matches!(
+            worker.recovery_rotate(presence(&key), None),
+            Err(AuthorityError::Locked)
+        ));
+    }
+
+    #[test]
     fn presence_all_revocation_paths_clear_hash_and_persisted_wrap() {
         for operation in ["lock", "idle", "fault", "password", "recovery", "vrk"] {
             let (_dir, mut worker, initialized) = fixture();
@@ -576,13 +702,13 @@ mod tests {
                 "fault" => worker.fault("presence-test"),
                 "password" => worker
                     .password_change(
-                        presence(&key),
+                        password(),
                         SecretInput::from_slice(b"synthetic-new-password"),
                         None,
                     )
                     .unwrap(),
                 "recovery" => {
-                    worker.recovery_rotate(presence(&key), None).unwrap();
+                    worker.recovery_rotate(password(), None).unwrap();
                 }
                 "vrk" => {
                     worker.set_locked("restart-test", true).unwrap();
@@ -597,7 +723,7 @@ mod tests {
                 }
                 _ => unreachable!(),
             }
-            assert_revoked(&worker, &key);
+            assert_revoked(&mut worker, &key);
             if operation == "fault" {
                 assert!(matches!(
                     worker.verify_shutdown_proof(&presence(&key)),
@@ -615,7 +741,7 @@ mod tests {
         fs::remove_file(&path).unwrap();
         fs::create_dir(&path).unwrap();
         assert!(matches!(
-            worker.remember_desktop(presence(&key), None),
+            worker.remember_desktop(password(), None),
             Err(AuthorityError::StorageUnavailable(_))
         ));
         assert!(worker.presence_grant.is_none());
@@ -632,7 +758,7 @@ mod tests {
         fs::set_permissions(&state, fs::Permissions::from_mode(0o500)).unwrap();
         let readable = fs::read(&path);
         let deletion = fs::remove_file(&path);
-        let result = worker.remember_desktop(presence(&key), None);
+        let result = worker.remember_desktop(password(), None);
         // Restore the temporary directory before assertions or TempDir cleanup.
         fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
         assert_eq!(readable.unwrap(), original);
@@ -746,7 +872,7 @@ mod tests {
                 .unwrap();
             db.execute_batch("CREATE TRIGGER fail_presence_audit BEFORE INSERT ON audit_events BEGIN SELECT RAISE(ABORT, 'synthetic'); END;").unwrap();
             let result = if operation == "remember" {
-                worker.remember_desktop(presence(&key), None).map(|_| ())
+                worker.remember_desktop(password(), None).map(|_| ())
             } else {
                 worker
                     .resume_desktop(SecretInput::from_slice(&key), None)
@@ -754,7 +880,7 @@ mod tests {
             };
             assert!(matches!(result, Err(AuthorityError::AuditCommitFailed)));
             assert!(matches!(worker.state, VaultState::Faulted));
-            assert_revoked(&worker, &key);
+            assert_revoked(&mut worker, &key);
         }
     }
 
@@ -779,9 +905,7 @@ mod tests {
             });
             let deadline = Some(Instant::now() + Duration::from_millis(500));
             let result = if operation == "remember" {
-                worker
-                    .remember_desktop(presence(&key), deadline)
-                    .map(|_| ())
+                worker.remember_desktop(password(), deadline).map(|_| ())
             } else {
                 worker
                     .resume_desktop(SecretInput::from_slice(&key), deadline)
@@ -803,7 +927,7 @@ mod tests {
                 assert_eq!(worker.require_unlocked().unwrap().bytes(), &*original_root);
             }
             if operation == "remember" {
-                assert_revoked(&worker, &key);
+                assert_revoked(&mut worker, &key);
             }
             let db = rusqlite::Connection::open(path).unwrap();
             let event = if operation == "remember" {
@@ -1103,6 +1227,6 @@ mod tests {
             Err(AuthorityError::AuditCommitFailed)
         ));
         assert!(matches!(worker.state, VaultState::Faulted));
-        assert_revoked(&worker, &ticket);
+        assert_revoked(&mut worker, &ticket);
     }
 }

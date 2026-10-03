@@ -22,7 +22,7 @@ python3 scripts/v3/run.py \
 | 原型 | 验证 | 结果边界 |
 |---|---|---|
 | `keychain_probe.swift` | 受 `.userPresence` 保护的 owner 读取、同 uid ad-hoc 进程非交互读取 | owner 被系统终止、profile 不匹配或正向对照未完成都不是机制通过 |
-| `memory_probe.c` | `task_for_pid` 自身正向对照、ad-hoc 与 hardened `rekeyd` 对照 | 只申请 task port，不读取或转储内存；两个 daemon 都被拒绝时无法归因到 hardened runtime |
+| `memory_probe.c` 与 Apple `lldb` | 相同 Developer ID 签名的 `rekeyd`，仅改变 hardened runtime；lldb 附加后立即分离 | 只有普通版本可附加、hardened 版本被拒绝时 V2 才通过；直接 task-port 探针仅作辅助，两个版本都拒绝 lldb 仍为 inconclusive。不执行内存导出 |
 | `peer_probe.swift` | `LOCAL_PEERTOKEN` → Security.framework 校验 Team/ID；错误 ID 和 ad-hoc 零字节 | 只证明观测时身份及发送前拒绝；不证明 socket FD 独占或消除所有进程时序竞态 |
 
 结果写入 `report.json`，每项分别为 `passed`、`failed` 或 `inconclusive`。退出码为：全部通过 `0`，至少一项明确失败 `1`，其余未确定 `2`。签名摘要针对最终签名产物。输出目录必须不存在，避免覆盖先前证据。

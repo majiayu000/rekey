@@ -147,7 +147,8 @@ class PackageTests(unittest.TestCase):
         for bundle, identity in ((self.app / DAEMON, "com.rekey.rekeyd"), (self.app, "com.starlight.rekey")):
             run(["codesign", "--force", "--sign", "-", "--options", "runtime", "--timestamp=none", "--identifier", identity, bundle])
         run(["codesign", "--verify", "--deep", "--strict", self.app])
-        self.package("--installer-identity", "Developer ID Installer: Synthetic (TESTTEAM01)", expected=1)
+        result = self.package("--installer-identity", "Developer ID Installer: Synthetic (TESTTEAM01)", expected=1)
+        self.assertIn(b"code failed to satisfy specified code requirement", result.stderr)
 
     def test_existing_output_is_not_replaced(self):
         self.package("--unsigned")

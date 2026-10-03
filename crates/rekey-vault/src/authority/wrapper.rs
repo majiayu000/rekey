@@ -28,7 +28,7 @@ impl Worker {
         let reason = match &proof {
             UnlockProof::Password(_) => "password-step-up",
             UnlockProof::Recovery(_) => "recovery-step-up",
-            UnlockProof::Presence(_) => "step-up-presence",
+            UnlockProof::Presence(_) => return Err(AuthorityError::InvalidUnlockCredential),
         };
         if let Err(error) = self.verify_proof(&proof) {
             if matches!(error, AuthorityError::InvalidUnlockCredential) {
@@ -106,11 +106,14 @@ impl Worker {
     ) -> Result<Zeroizing<String>, AuthorityError> {
         let reason = match &proof {
             UnlockProof::Password(_) => "password-step-up",
-            UnlockProof::Presence(_) => "step-up-presence",
+            UnlockProof::Presence(_) => {
+                self.require_unlocked()?;
+                return Err(AuthorityError::InvalidUnlockCredential);
+            }
             UnlockProof::Recovery(_) => {
                 return Err(AuthorityError::Domain(
                     rekey_domain::DomainError::InvalidActionDefinition(
-                        "recovery rotation requires password or presence proof".to_owned(),
+                        "recovery rotation requires password proof".to_owned(),
                     ),
                 ));
             }

@@ -202,10 +202,11 @@ A2 针对的是"拿到明文或扩大权限"。A2 能做的事被限定为两类
 
 - **I1**：Agent 接口（agent.sock、网关、MCP）没有任何返回凭据明文的操作。
 - **I2**：凭据只在 Authority 内部解密，且必须在授权和 `execution.started` 审计提交之后；每个请求只解密一次，用后清零。
-- **I3**：以下操作每次都需要 step-up 证明（§6.2 的 A2 级）：查看明文、修改授权范围、激活策略、签发 7 天授权、备份导出与恢复、修改密码、VRK 轮换、`SHUTDOWN`。
-  - 证明形式是密码、恢复密钥或 presence key 三者之一。
+- **I3**：以下操作每次都需要 step-up 证明（§6.2 的 A2 级）：查看明文、修改授权范围、激活策略、签发 7 天授权、备份导出与恢复、修改密码、恢复密钥轮换、VRK 轮换、`SHUTDOWN`。
+  - 通常接受密码、恢复密钥或 presence key。签发 7 天授权与修改密码只接受密码或恢复密钥；恢复密钥轮换沿用仅接受当前密码的合同。这三项操作不得使用 presence，避免把临时授权续期或变成永久解锁因子。
+  - 已解锁时的 step-up 验证与 unlock、锁定状态的 shutdown 共用现有失败计数和指数退避；切换操作不能绕过限速。只有成功的密码或恢复密钥证明清零计数，presence 成功不清零，避免用临时 K 维持密码猜测。
   - 唯一例外是 `LOCK`，任何人都可以锁定。
-- **I4**：客户端发送密码或 presence key 之前，必须确认对端是签名的 rekeyd。L1-dev 下无法确认，界面必须提示。
+- **I4**：客户端发送密码或 presence key 之前，必须确认对端是签名的 rekeyd。L1-dev 下无法确认，CLI 在交互式秘密输入前、App 在证明输入或认证控件旁提示；自动化 CLI 在发送证明前向 stderr 提示，不改变 stdout 的数据格式。
 - **I5**：秘密不进入 argv、env、日志、审计或 JSON 元数据。capability 进入 `rekey run` 子进程的 env 是例外，见 §8.2。
 - **I6**：出站请求只能去往 Action 或模板声明的 origin；解析结果必须是公网 IP，连接钉在该 IP 上，禁止重定向。
 - **I7**：未知状态、审计写入失败、策略错误一律拒绝（fail closed）。
@@ -271,11 +272,12 @@ A2 针对的是"拿到明文或扩大权限"。A2 能做的事被限定为两类
 
 **有效期与撤销**
 - 有效期仍为签发后固定 7 天，不续期。
+- 重新签发必须重新提交密码或恢复密钥；现有 K 不能用于签发替代 K。拒绝此类请求不撤销或延长原票据。
 - 撤销条件不变：手动锁定、空闲锁定、修改密码、恢复密钥轮换、故障。
 
 **连续操作**
-- App 使用 `LAContext.touchIDAuthenticationAllowableReuseDuration = 10s`，避免连续几个操作重复按指纹。
-- 复用时长不超过 10 秒。
+- App 为同一保险库复用成功读取时的 `LAContext`，避免连续几个操作重复按指纹；不缓存 K。
+- 使用单调时钟固定限制复用窗口为首次成功读取后 10 秒，后续读取不续期。失败、保险库切换、保存新 K、锁定或清理管理会话时作废；过期后创建新 context，不接受最近设备解锁作为新窗口的预认证。
 
 **桌面令牌的权限收缩**
 - 删除"持有 desktop token 即可查看明文"的能力。
@@ -337,7 +339,7 @@ A2 针对的是"拿到明文或扩大权限"。A2 能做的事被限定为两类
 |---|---|---|
 | A0 | `LOCK`、status、元数据列表、审计查询 | 同 uid（Linux），或已通过服务端校验的客户端 |
 | A1 | 添加凭据（只写不读）；在已激活的 Profile 内签发会话 | 管理会话 |
-| A2 | 查看/复制明文、增删改 Action/模板/Profile、激活策略、安装信任根、签发 7 天授权、备份导出/恢复、改密码、VRK 轮换、`SHUTDOWN` | 每次都需要 step-up 证明：`password`、`recovery` 或 `presence`（§5.2） |
+| A2 | 查看/复制明文、增删改 Action/模板/Profile、激活策略、安装信任根、签发 7 天授权、备份导出/恢复、改密码、恢复密钥轮换、VRK 轮换、`SHUTDOWN` | 每次都需要 step-up 证明；`presence` 不适用于签发 7 天授权、改密码和恢复密钥轮换（I3、§5.2），解密因子要求仍按下文执行 |
 
 Profile 会话签发的“管理会话”专指 daemon 当前已认证的 Unlocked 生命周期：与 §3.2 已允许的 A2 能力一致，只能按已激活签名 Profile 的固定范围签发，不要求新 CLI 从 App 取得或落盘管理 token。该窄入口不允许添加凭据或执行 A2；添加凭据仍需原有独立内存管理 token。Locked/过期/不存在的 Profile 返回错误，不触发后台认证。
 
@@ -557,6 +559,7 @@ v3 只把"由谁批准"抽象出来。策略规则增加 `approver` 字段：
 | 模板 | 覆盖范围 |
 |---|---|
 | `anthropic@1` | `/v1/messages`（含流式、tools、thinking）、`/v1/messages/count_tokens`、`/v1/models` |
+| `glm@1` | 固定 `https://open.bigmodel.cn/api/anthropic/v1/messages`，使用 Anthropic Messages 协议（含流式、tools、thinking）；仅声明 messages，不假定支持 count-tokens 或 models |
 | `openai@1` | `/v1/chat/completions`、`/v1/responses`、`/v1/embeddings`、`/v1/models` |
 | `github-pat@1` | 上面的示例，再加 comments、labels、contents 的只读接口 |
 | `generic-bearer@1` | 用户自填 origin，加 1–20 条固定的 method+path，不带参数；作为兜底 |
@@ -638,6 +641,8 @@ macOS 仅允许精确 agent.sock 和可信59端口的 `127.0.0.1` TCP；其他 I
 **I5 的例外说明**：capability 会进入子进程环境变量。它是短期、有范围、可吊销的令牌，不是凭据本身；泄露后的影响以 Profile 的授权范围和预算为上限。
 
 Profile 用尽调用额度后，拒绝新执行和发现，但不把“额度耗尽”当作控制连接撤销：必须让已经准入的最后一次响应完整交付。条目保留到 owner/control 关闭、显式撤销或 TTL 到期；普通手工会话继续使用原有清理语义。
+
+`glm@1` 作为固定部署的 Anthropic Messages 实例使用现有 `anthropic` gateway provider。SDK 路径 `/v1/messages`（可选 `beta=true`）只映射到该模板认证的 `/api/anthropic/v1/messages`；不允许请求携带 origin 或任意前缀。仍校验模板摘要、固定域名、路径、凭据注入、模型白名单和预算。App 接入页可明确选择 Anthropic 或 GLM，选择变化丢弃未提交表单与能力选择。GLM 的协议兼容依据 [智谱官方文档](https://docs.bigmodel.cn/cn/guide/develop/claude/introduction)，真实服务响应仍需另行验收。
 
 SDK endpoint 只从已认证 admin 连接的 opcode59 成功 body 取得。`ProfileSessionCreatedResponse` 必填 `gateway`：非 LLM 为 null；LLM 监听可用时为 `{port, instances:[{instance, provider}]}`，provider 为闭合 `anthropic` / `openai`。LLM 监听不可用时也返回 null，SDK run 以现有启动不可用错误拒绝启动，不自动重试；MCP 本身不依赖 HTTP endpoint。端口必须当前已绑定且非零，实例映射须恰好覆盖该 Profile 的 LLM 实例；响应与完整 Profile、策略摘要在同一协调点绑定。CLI 固定构造 loopback URL，Anthropic 使用 `/p/<instance>`，OpenAI 使用 `/p/<instance>/v1`；不接受任意 origin，也不读取端口文件后发送 capability。同 provider 多实例无法映射到一个 SDK 环境变量时，run 明确拒绝启动并提示拆分 Profile，不猜选第一个。Agent IPC 内部 capability 保持原值，仅 HTTP SDK 环境的 API key 添加一次 `rkc_` 前缀。
 

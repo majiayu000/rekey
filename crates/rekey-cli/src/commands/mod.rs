@@ -130,6 +130,7 @@ fn write_json(value: &impl Serialize) -> Result<(), CliError> {
 }
 
 fn prompt_secret(prompt: &str) -> Result<Zeroizing<Vec<u8>>, CliError> {
+    crate::client::warn_before_secret_prompt()?;
     let value = Zeroizing::new(
         rpassword::prompt_password(prompt)
             .map_err(|err| CliError::local("USAGE", format!("cannot read from tty: {err}")))?,

@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 import importlib.util
 import json
+import shutil
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -68,6 +69,44 @@ class ProbeVerdicts(unittest.TestCase):
                 patch.object(runner, 'probe', side_effect=[{'exit_code': 0}, {'exit_code': 2}, {'exit_code': 2}]):
             result = runner.peer(self.root, self.args, {'peer': self.fixture})
         self.assertEqual(result['status'], 'inconclusive')
+
+    def test_debugger_attach_requires_successful_detach(self):
+        with patch.object(runner, 'invoke', return_value=SimpleNamespace(returncode=0, stdout='Process 42 detached\n', stderr='')):
+            self.assertEqual(runner.debugger_probe('lldb', 42)['outcome'], 'attached_and_detached')
+        with patch.object(runner, 'invoke', return_value=SimpleNamespace(returncode=0, stdout='', stderr='')):
+            self.assertEqual(runner.debugger_probe('lldb', 42)['outcome'], 'inconclusive')
+        with patch.object(runner, 'invoke', return_value=SimpleNamespace(returncode=1, stdout='', stderr='error: attach failed: Not allowed to attach to process.')):
+            self.assertEqual(runner.debugger_probe('lldb', 42)['outcome'], 'denied')
+
+    def test_memory_both_debugger_denials_are_inconclusive(self):
+        self.check_memory_verdict('denied', 'denied', 'inconclusive')
+
+    def test_memory_requires_debugger_control_and_rejects_hardened_attach(self):
+        self.check_memory_verdict('attached_and_detached', 'denied', 'passed')
+        self.check_memory_verdict('attached_and_detached', 'attached_and_detached', 'failed')
+
+    def check_memory_verdict(self, control, hardened, expected):
+        binary_dir = self.root / 'bin'
+        binary_dir.mkdir(exist_ok=True)
+        (binary_dir / 'rekeyd').write_bytes(b'fixture')
+        self.args.bin_dir = binary_dir
+        debugger = self.root / 'lldb'
+        debugger.write_bytes(b'fixture debugger')
+
+        @contextmanager
+        def process(command):
+            state = Path(command[-1]); (state / 'runtime').mkdir(parents=True)
+            (state / 'runtime/admin.sock').touch()
+            yield SimpleNamespace(pid=42, poll=lambda: None)
+
+        with patch.object(runner, 'invoke', return_value=SimpleNamespace(stdout=str(debugger))), \
+                patch.object(runner, 'child', process), \
+                patch.object(runner, 'probe', side_effect=[{'exit_code': 0}, {'exit_code': 1}, {'exit_code': 1}]), \
+                patch.object(runner, 'debugger_probe', side_effect=[{'outcome': control}, {'outcome': hardened}]):
+            result = runner.memory(self.root, self.args, {'memory': self.fixture})
+        self.assertEqual(result['status'], expected)
+        for mode in ('unhardened', 'hardened'):
+            shutil.rmtree(self.root / ('state-' + mode))
 
 
 if __name__ == '__main__':

@@ -1,5 +1,10 @@
 # rekey — Project Rules
 
+## Computer Use
+
+- 打开文件、目录、网页或应用时，只要能通过终端或命令（例如 macOS 的 `open`）完成，就使用命令工具，不使用 Computer Use，也不通过 Computer Use 打开终端。
+- 只有命令、API 或专用工具无法完成、确实需要原生界面交互的步骤，才使用 Computer Use。
+
 ## What is this
 
 Rekey v3 personal-first Credential Authority (`3.0.0-alpha.1`, unpublished candidate). Agents call fixed or template,
@@ -49,6 +54,7 @@ Cargo workspace, 7 crates + root integration-test host:
   and plaintext reveal; A1 desktop tokens cannot replace it. Presence is
   accepted only while unlocked with an active process-local verifier. Offline
   restore and VRK rewrapping still require their original decryption factors.
+  Presence cannot issue seven-day grants, change passwords, or rotate recovery keys.
 - Secrets travel only in frame bodies / hidden TTY / explicit stdin flags —
   never argv, env, JSON metadata, logs, or audit rows. Profile `run` supplies
   its short-lived capability to the child environment as an explicit exception;

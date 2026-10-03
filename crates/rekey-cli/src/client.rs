@@ -72,6 +72,25 @@ pub(crate) fn private_session_file(path: &Path) -> Result<Zeroizing<Vec<u8>>, Cl
 
 pub const IO_TIMEOUT: Duration = Duration::from_secs(30);
 
+fn warn_l1_dev() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if !WARNED.swap(true, Ordering::Relaxed) {
+        eprintln!(
+            "警告：L1-dev · 服务签名未校验。密码、恢复密钥或系统认证授权将发送给未验证签名的本地服务；请仅在可信开发环境使用。"
+        );
+    }
+}
+
+pub(crate) fn warn_before_secret_prompt() -> Result<(), CliError> {
+    #[cfg(target_os = "macos")]
+    if macos_peer::own_team()?.is_some() {
+        return Ok(());
+    }
+    warn_l1_dev();
+    Ok(())
+}
+
 #[derive(Debug)]
 pub struct CliError {
     pub code: String,
@@ -415,6 +434,9 @@ impl Client {
         let peer_security = macos_peer::verify(&stream)?;
         #[cfg(not(target_os = "macos"))]
         let peer_security = PeerSecurity::L1Dev;
+        if channel == Channel::Admin && peer_security == PeerSecurity::L1Dev {
+            warn_l1_dev();
+        }
         stream
             .set_read_timeout(Some(response_timeout))
             .map_err(io_err)?;

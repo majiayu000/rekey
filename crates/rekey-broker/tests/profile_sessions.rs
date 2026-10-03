@@ -532,7 +532,13 @@ async fn profile_deny_other_mints_only_for_supported_os_isolation() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn signed_custom_template_mints_and_executes_authenticated_target() {
-    for name in ["team-custom@1", "github-pat@1", "anthropic@1", "openai@1"] {
+    for name in [
+        "team-custom@1",
+        "github-pat@1",
+        "anthropic@1",
+        "glm@1",
+        "openai@1",
+    ] {
         let f = Fixture::custom(name).await;
         let (control, response) = f.mint(&[]).await;
         let created = session(&response);

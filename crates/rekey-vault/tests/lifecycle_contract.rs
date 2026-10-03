@@ -73,6 +73,66 @@ async fn unlock_backoff_rate_limits() {
 }
 
 #[tokio::test]
+async fn unlocked_step_up_failures_share_backoff_across_operations_and_lock() {
+    let vault = common::init_test_vault();
+    let mut config = common::test_config(&vault.state_dir);
+    config.unlock_backoff_base = Duration::from_secs(1);
+    let (handle, join) = rekey_vault::authority::spawn_authority(config).unwrap();
+    handle.unlock(common::password_proof()).await.unwrap();
+    assert!(matches!(
+        handle.desktop_remember(wrong_password(), None).await,
+        Err(AuthorityError::InvalidUnlockCredential)
+    ));
+    assert!(matches!(
+        handle
+            .password_change_before(
+                wrong_password(),
+                SecretInput::from_slice(b"replacement"),
+                None
+            )
+            .await,
+        Err(AuthorityError::InvalidUnlockCredential)
+    ));
+    assert!(matches!(
+        handle.verify_shutdown_proof(wrong_password()).await,
+        Err(AuthorityError::InvalidUnlockCredential)
+    ));
+    assert!(matches!(
+        handle
+            .recovery_rotate_before(common::password_proof(), None)
+            .await,
+        Err(AuthorityError::UnlockRateLimited)
+    ));
+    assert!(matches!(
+        handle.verify_shutdown_proof(common::password_proof()).await,
+        Err(AuthorityError::UnlockRateLimited)
+    ));
+    assert_eq!(handle.status().await.unwrap().state, "unlocked");
+    handle.lock("shared-backoff-test").await.unwrap();
+    assert!(matches!(
+        handle.unlock(common::password_proof()).await,
+        Err(AuthorityError::UnlockRateLimited)
+    ));
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    handle.unlock(common::password_proof()).await.unwrap();
+    for _ in 0..2 {
+        assert!(matches!(
+            handle.verify_shutdown_proof(wrong_password()).await,
+            Err(AuthorityError::InvalidUnlockCredential)
+        ));
+    }
+    handle
+        .verify_shutdown_proof(common::password_proof())
+        .await
+        .unwrap();
+    handle
+        .shutdown(Some(common::password_proof()))
+        .await
+        .unwrap();
+    join.join().unwrap();
+}
+
+#[tokio::test]
 async fn idle_timeout_locks() {
     let vault = common::init_test_vault();
     let mut config = common::test_config(&vault.state_dir);

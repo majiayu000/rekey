@@ -15,22 +15,22 @@
 
 | 项目 | 状态 | 实施 / 验收证据 |
 |---|---|---|
-| V1 数据保护钥匙串、访问组、userPresence | 原型已写，环境验收受阻 | `scripts/v3/keychain_probe.swift`；当前无授权 profile，带 entitlement 的 owner 被系统终止，不能认定机制通过或失败 |
-| V2 签名 hardened rekeyd 内存访问 | 原型已写，待归因核查 | `scripts/v3/memory_probe.c`；真实临时已解锁 daemon 拒绝 task_for_pid；ad-hoc 对照也拒绝 |
+| V1 数据保护钥匙串、访问组、userPresence | 本机授权 profile 对照通过 | Developer ID profile 下创建和交互读取成功；owner 静默读取拒绝，ad-hoc 显式组缺 entitlement、默认组找不到条目；清理成功。证据：`docs/evidence/v3-review-v1-presence-2026-10-03.json`；不代表已安装 App 或完整 L1 |
+| V2 签名 hardened rekeyd 内存访问 | 本机 lldb 对照通过 | 相同 Developer ID 签名、仅 runtime flags 不同的临时已解锁 daemon：Apple lldb 对普通版本附加并分离，对 hardened 版本拒绝。直接 task_for_pid 两边仍拒绝，仅作辅助。证据：`docs/evidence/v3-review-v2-lldb-2026-10-03.json`；不代表完整 L1 |
 | V3 peer audit token 与动态签名身份 | 原型实测通过 | `scripts/v3/peer_probe.swift`；正确 Team/ID 成功，错误 ID 和 ad-hoc 均零字节；不宣称解决所有内核时序竞态 |
-| 原型统一入口与结果报告 | 已实现，审查通过 | `scripts/v3/run.py`；独立审查问题已修复，4 项报告/清理回归测试通过；只用合成数据 |
+| 原型统一入口与结果报告 | 已实现，审查通过 | `scripts/v3/run.py`；7 项报告/清理/LLDB 判定回归测试通过；只用合成数据 |
 | M0 lab feature / 默认构建 / 发布和CI分离 | 本批验收通过 | 默认/lab all-targets 编译通过；84 文件补丁独立复核通过；M1 合流默认 597 / lab 1,061 项测试通过，各 2 项忽略 |
 | M0 README / spec 状态 / 格式冻结规则 | 已实现，未发布 | README 只列现有入口；35 企业 spec 标 Lab，两份研究稿改 v4；永久不迁移，GA 主版本内冻结格式；编译器源输入物理行 40,371 / 60,754（非有效代码量） |
 | M1 SHUTDOWN 全状态 step-up | 本批默认验收通过 | 29 项不重复定向 Rust 测试及 synthetic human-vault smoke 通过；Locked 验证不解锁，证明验证前超时不触发停机；独立审查通过 |
-| M1 presence proof 与钥匙串 UI | 软件已合流；设备验收待做 | proof3、受保护 K、固定双时钟期限、显式 A2 和取消边界已实现；默认 698/2 ignored、真实 CLI 与 Swift 82/53/108/16 断言通过。独立审查关闭；V1 未通过前不提高保护等级 |
+| M1 presence proof 与钥匙串 UI | 统一候选已合入修复；已安装流程待验 | proof3、受保护 K、固定双时钟期限、显式 A2 和取消边界已实现；此前默认 698/2 ignored、真实 CLI 与 Swift 82/53/108/16 断言通过。独立修复分支的 V1 及真实认证 context 固定十秒复用通过；已安装 App 完整操作仍待验收，不提高完整 L1 承诺 |
 | M1 desktop-reveal step-up / 明文清零 | 本批默认验收通过 | password/recovery 逐次证明、Zeroizing 响应所有权；UI 94 项边界断言通过，失焦关闭待验证表单；旧 desktop token 不再授权明文 |
 | M1 生产客户端签名校验 / 等级显示 | 本批验收通过 | 签名 CLI 对错误 ID 同团队/ad-hoc 服务均在发送前拒绝，服务收到零字节；status/UI 展示本地验证结果；同团队 release daemon 的 status/unlock/shutdown 正向通过；仍不代表完整 L1 |
-| M1 rollback generation / MAC / 外部计数 | 软件回归完成；设备验收待做 | C1/B1、B2/C2事务与root wire/UI共54文件已合流；四项并发/错误路径审查问题关闭，含实际旧源RED→修复GREEN。Vault默认/lab各122定向、root严格检查及真实CLI回滚/恢复通过；UI UUID互通修复后真实Swift→CLI通过。真实受保护锚和签名T6/I8验收仍待做 |
+| M1 rollback generation / MAC / 外部计数 | 软件回归完成；设备验收待做 | C1/B1、B2/C2事务与root wire/UI共54文件已合流；四项并发/错误路径审查问题关闭，含实际旧源RED→修复GREEN。Vault默认/lab各122定向、root严格检查及真实CLI回滚/恢复通过；UI UUID互通修复后真实Swift→CLI通过。本轮签名候选已实测 DPK 读/写/删权限、并发 CAS 和旧数据库认证后疑似回滚；设备证据见 `docs/evidence/v3-release-acceptance-2026-10-04.json`，完整矩阵仍待验 |
 | M1 memory hardening / core limit | 本批验收通过 | Linux arm64 容器实测 core=0/dumpable=0、独立 key 页生命周期、mlock 失败告警继续；macOS 回归与独立审查通过。仅覆盖拥有型 VRK/DEK 缓冲，非所有栈/AEAD 临时副本 |
-| M1 pkg / LaunchAgent / SMAppService | 源码与 CI 接线已实现，设备验收待做 | pkg 9 项合成结构检查和独立审查通过；静态 LaunchAgent 与 App 显式注册、无-k 启动、逐次 proof 停用入口已编译；103 UI 边界断言通过。缺 Installer 证书，未安装或实际注册；现有 release job 已接签名 pkg、公证与哈希，未运行真实 CI |
+| M1 pkg / LaunchAgent / SMAppService | 源码与 CI 接线已实现，设备验收待做 | pkg 9 项合成结构检查和独立审查通过；静态 LaunchAgent 与 App 显式注册、无-k 启动、逐次 proof 停用入口已编译；103 UI 边界断言通过。Installer 证书与独立 daemon profile 已生成；本轮统一 App/pkg 已签名、公证、装订并通过 Gatekeeper。此前候选 pkg 已在当前账户安装并核对收据/链接/哈希；GLM 升级版 pkg 也已安装并核对签名/Gatekeeper/哈希，实际登录项生命周期和真实 CI 仍未验 |
 | M1 独立安全审查 | 待完成 | 原型代码审查不等同于产品安全验收 |
-| M2 P-256 信任根 / 固定模式 / App 初始化 | 本批软件验收通过 | format23；显式 personal/team、P-256 DER 验签、完整 mode/algorithm/key seal 与备份/轮换通过；App 本机密钥初始化已接线，真实 SE 保护未验证。draft/sign/activate 见下项 |
-| M2 个人策略 draft / diff / App 签名激活 | 本批软件验收通过 | 默认 683 / lab 1,147 项通过，各 2 ignored；纯草案 8/8、真实 CLI P-256 黑盒、Swift 47 项签名取消/字节保真断言通过；四份独立审查关闭。未调用真实 SE/Touch ID |
+| M2 P-256 信任根 / 固定模式 / App 初始化 | 本批软件验收通过 | format23；显式 personal/team、P-256 DER 验签、完整 mode/algorithm/key seal 与备份/轮换通过；App 本机密钥初始化已接线，已实测生产 PolicySigning 的 SE 建钥/读回、私钥导出拒绝和无交互签名拒绝；当前账户已使用生产 PolicySigning.swift 的签名 helper 完成 SE 签署与真实 daemon 激活；硬件取消与已安装 App 流程未验。draft/sign/activate 见下项 |
+| M2 个人策略 draft / diff / App 签名激活 | 本批软件验收通过 | 默认 683 / lab 1,147 项通过，各 2 ignored；纯草案 8/8、真实 CLI P-256 黑盒、Swift 47 项签名取消/字节保真断言通过；四份独立审查关闭。当前账户签名 helper 已完成生产 SE 签署→真实 CLI 激活；完整 App 审阅/取消流程未验 |
 | M2 模板规范与路径/query渲染 | 纯合同本批验收通过 | 18 个领域测试与 10 个包验签/schema 测试通过，独立审查无待修问题；单 Action 物化、团队 Ed25519、来源摘要与离线 schema 已实现；存储、授权和执行链已接线，见下列运行时证据 |
 | M2 ActionTarget / 内容认证 / 格式 | 本批软件验收通过 | format22；完整原始 Action 行 AEAD、全状态重封/轮换、实际备份副本和恢复验证；44 项定向测试及独立审查通过。数值列篡改错误映射 P2 已关闭；无迁移 |
 | M2 原子安装 / 规范执行 / 客户端 | 本批软件验收通过 | 52/53、原子批安装、render→审批哈希→HTTP 已接线；全量默认 647 / lab 1,111 项通过，各 2 项忽略；stdin 尾修 CLI 黑盒、lab CLI 62/1 ignored、Swift 实际 CLI 与 103 流程断言通过；独立审查关闭 |
@@ -161,3 +161,40 @@ M4首次引导六源码与打包URLscheme已合流，20最终检查通过；C2 U
 本次回滚合流已完成：B2/C2 final26、root wire/fixture24、UI4共54文件，root补丁 `e405968e5a8be5d62890aa375508b5b0bd36db66f9849d74751927bc29124189`。并发init误清理、普通mutation疑似回滚后未及时撤销、错误confirm提前改动Unlocked数据库、超时核验后late unlock重开四项已独立复核关闭，报告 `review/m1-rollback-review.md`。root隔离合流默认/lab all-targets与lab strict通过，generation3/header12/实际CLI2及超时停止状态1定向通过；主集成all-targets通过，不替代最终workspace全量。
 
 剩余本地工作已由 `v3-closure-plan/closure-plan.md` 逐项对照源码：恢复消费者13文件已独立审查、实际P0与大文件RSS通过，P2/P7尾部流水仍在收尾；Linux用户服务与真实pkg哈希cask在独立分发线；个人模板默认规则的明确覆盖尚待实现。root界面五文件已增加保守保护级别、精确旧格式错误重建指引和短密钥提示，Swift App/harness严格编译、保护18/回滚50/onboarding43断言通过。所有数字均为相应冻结批次，最终合流与硬件验收未提前计为通过。
+
+## 2026-10-03 审查修复（独立分支）
+
+基于 `e281673`，在 `codex/v3-review-fixes-20261003` 修复；尚未合入正在实施 M3 的集成工作区，其未提交改动保留。
+
+- I3 明确禁止 presence 签发七天授权、修改密码和轮换恢复密钥。前两项接受密码或恢复密钥，恢复密钥轮换保持仅接受密码。拒绝 presence 请求保留原票据及永久因子；CLI、App 与原先允许这些操作的旧测试均已同步。
+- 已解锁 step-up、unlock 和 Locked shutdown 使用同一失败计数与指数退避；切换操作或 lock 不重置限速。presence 成功不能清零密码猜测失败计数。
+- App 仅复用同一保险库的 LAContext，首次成功读取后固定十秒，到期、失败、切换保险库、替换 K、锁定或清理管理会话时作废；不缓存 K。合成时钟和 context 身份测试通过；真机 fixture 编译未改动的生产 `PresenceKey.swift`，禁用交互的读取在 8.01 秒成功、11.00 秒拒绝，重新认证后成功，显式作废后再次拒绝。该证据覆盖真实 context/钥匙串读取，不替代已安装 App 操作流程。
+- L1-dev CLI 在交互式秘密输入前及自动化证明发送前提示，同一进程只提示一次；App 证明/认证表单显示服务签名未验证警告。stdout JSON 合同保持。
+- V2 采用同一 Developer ID 身份的普通/hardened daemon 与 Apple LLDB 对照，普通版本可附加并分离，hardened 版本拒绝。证据为 `docs/evidence/v3-review-v2-lldb-2026-10-03.json`。用户登录后已生成 V1 探针和正式 App 的独立 Developer ID profile；V1 正向/静默/ad-hoc 对照及精确清理通过，证据为 `docs/evidence/v3-review-v1-presence-2026-10-03.json`。系统在场认证成功，不区分指纹与允许的系统密码回退。
+- 正式 `com.starlight.rekey` App 已使用匹配 profile 完成本地构建；App 和五个内置工具均通过 Team/ID、runtime、时间戳及严格签名检查，内置 CLI 版本命令成功。修复打包脚本 `--extract-certificates` 输出前缀的参数写法后，完整脚本退出 0。初次时间戳错误重试成功，原因未归因；未安装、未注册服务或发布。
+- 基于 `50d79f3` 的独立修复版 App 已获 Apple 公证 `Accepted`（提交 `f91a2a5c-9cd9-4577-a4c8-da9dc326b206`，日志无 issues）。票据装订/验证、严格签名及 Gatekeeper 通过；最终 ZIP 解压后同样通过，Gatekeeper 返回 `Notarized Developer ID`。证据为 `docs/evidence/v3-review-notarization-2026-10-03.json`。首次下载公证日志遇到 TLS 连接错误，原命令重试成功；未绕过证书校验。该证据不覆盖 Installer pkg、已安装 App 流程或服务注册。
+
+设备/签名补充批重跑默认 workspace：753 passed、0 failed、2 ignored；11 项 profile 配置测试、workspace check、格式、shell 语法与 CLI 依赖边界通过。新打包产物的 CLI/daemon 在独立合成状态下完成 init、status、unlock、lock、Locked shutdown，签名 CLI 未出现 L1-dev 警告，daemon 正常退出；不使用现有用户 vault 或安装服务。本批未重复 lab 全套。
+
+本轮默认 `cargo test --workspace`：753 passed、0 failed、2 ignored；default/lab all-targets check、默认 strict Clippy、fmt、机械禁用符号和 CLI 纯 IPC 依赖边界通过。完整 App strict-concurrency 编译、88 presence /65 local 合成断言和 7 项探针判定回归通过。实际签名 CLI 的错误 ID/ad-hoc 服务控制测试另行通过 1/1，服务均收到零字节；真实隐藏 TTY 验证开发警告在输入前出现且仅一次，签名 CLI 无开发警告，缺服务仍保留 exit 7。本轮未跑 lab 全套；既有 lab 全套结果仍是上一批的历史证据。
+
+失败记录保留：新失败审计合同使保留策略旧断言多出一条 `vault.unlock_failed`，已改为验证该事件及策略/执行记录不变；旧 presence recovery 测试已改成拒绝并使用密码正向轮换。一次未修改的 `restart_revokes_all_sessions` 在连接处返回 ECONNREFUSED，定向复测和最终全套均通过，原因未归因，不宣称修复此启动问题。
+
+M0 复核：`rekey-approval-relay` 没有 lib target，bin 与 integration-test target 均声明 `required-features = ["lab"]`，因此默认构建已经排除，无需再次拆分。
+
+## 2026-10-03 统一发布候选验收
+
+以集成提交 `e1460b0` 建立 `codex/v3-release-acceptance-20261003` 独立工作区，合入 `01ac4c4`、`50d79f3` 和 `05c2cb7` 的安全修复与设备证据，保留回滚、Profile、网关和首次接入功能。V1/V2 已有独立探针通过记录；旧表中的 profile/归因阻塞是首轮历史结果。统一候选的完整测试、双 profile App/daemon、Installer pkg、公证和安装仍以本轮实际结果为准，不沿用旧 ZIP 的产物验收。
+
+
+2026-10-04：统一候选默认全仓重跑 **1,013 passed / 0 failed / 6 ignored**；Lab 全仓最终重跑仍在进行。两配置 strict Clippy、App/harness 严格编译、十项 Swift 边界模式与机械合同通过。回滚 CLI 测试已允许 stderr 中先出现必要的开发警告，仍检查真实错误码。首次默认/Lab 过期夹具失败、错误断言和独立复验保留，未修改时间边界来掩盖失败。
+
+统一 App 与独立 daemon 使用各自 Developer ID profile；新 Installer 身份签发获用户批准。真实打包发现 `codesign --test-requirement` 缺少文字规则的 `=` 前缀，已最小修复，并加强原 ad-hoc 拒绝夹具，确认进入规则校验而非语法失败。恢复密钥轮换的 App 说明同步为仅接受当前密码。最终 App 公证 `ca513952-e535-4211-9056-701925fc2bd3`、pkg 公证 `232f09e7-a288-4abe-91a5-f47c4696cef5` 均 Accepted；票据装订/校验、严格签名和两类 Gatekeeper 检查通过。产物 hash 和命令结果见 `docs/evidence/v3-release-acceptance-2026-10-04.json`。
+
+真实候选 CLI/daemon 在合成临时库上创建并推进受保护代数。ad-hoc 读/写/删均拒绝；双并发条件更新只有一次成功。旧数据库代数 2 与真实保护上限 3 比较后，在密码认证时进入 `rollback-suspected` 且会话为零；实际 hardened daemon 拒绝 Apple LLDB。真实生产 PolicySigning 在 SE 中建钥/重载成功，不能导出私钥或静默签名。探针范围、失败的 harness 观察及测试项精确清理均记录；这些证据不代替已安装 App 的交互签名、审批或完整 T1–T12。
+
+当前外部依赖：安装须管理员认证；真实 provider 需要本机 App 输入测试 Key，并确认模型与调用预算。此机 provider DNS 返回 `198.18.*` fake-IP，保持 Broker 的公网限制，网络修正等待用户选择。T12 仍须全新 macOS 账户；SMAppService 生命周期、独立人工安全审查、GA 格式冻结与公开发布仍 Pending。
+
+2026-10-04 当前账户进展：此前候选 pkg 已实际安装，收据、三条 CLI 链接、二进制哈希和 Gatekeeper 校验通过。现有默认保险库只读确认格式 v10，保留原数据；另建空白 `.rekey-v3-acceptance-20261004` 目录。用户推迟新账户 T12，真实 GLM 模型指定为 `glm-5.3-flash`，总调用预算上限 500 USD。固定 GLM 模板与 App 选择已实现，15 项网关测试通过；新版 App 公证 Accepted，新版 pkg 因 connectTimeout 正在重试。Clash 的 fake-IP 根因已实证；尚未获得网络修改确认，未修改配置。原验收目录已出现格式 v25 的锁定保险库，保持不动。用户要求改用代码后，另建 `.rekey-v3-cli-acceptance-20261004` 个人库；随机证明与恢复材料仅保存在源码外权限 600 的私有验收目录。生产 PolicySigning.swift 的已签名 helper 已完成 SE 建钥/签署，真实 daemon 安装信任根、激活 GLM Profile 和 `rekey run` 启动/退出撤销均通过；GLM Key 经 stdin 加密保存，尚无真实上游调用。默认最新全仓 1014/0/6、lab 1482/0/6 均通过；两配置 strict Clippy、fmt、all-targets 编译、机械合同和 10 项 pkg 回归通过。新版 pkg 另保留 S3 deadlineExceeded 与 Apple API -1005 断连，改用 Apple 官方 REST API 经既有本机代理上传；不据此宣称安装版 SMAppService 或 T12 完成。
+
+2026-10-04 当前账户补证：新版 GLM pkg 经 Apple 官方 Notary REST API、既有本机代理成功上传，公证 `b03a36c9-0a49-4417-9b61-a3fba49d20bf` Accepted，issues=null；装订/验证、App/pkg Gatekeeper、安装后哈希与三条链接通过。普通 HTTPS 在原 Clash 配置下对真实 GLM 调用返回 200（输入 16、输出 61 token），而相同请求经实际 `rekey run` 返回 502/UPSTREAM_FAILED；OS DNS 仍为 198.18.7.242，生产 `select_public_endpoint` 拒绝该非公网地址。用户要求先解释，保持 Clash 配置不动；此前 DNS 修改提议不是必要前提或既有网络故障的结论。此对照不算 Rekey 的真实 provider 或 T11 验收。

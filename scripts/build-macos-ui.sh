@@ -110,7 +110,7 @@ app_entitlements="$entitlements"
 daemon_entitlements="$entitlements"
 if [[ -n "$profile" ]]; then
   team="$(codesign -d --verbose=4 "$APP/Contents/Resources/bin/rekey" 2>&1 | awk -F= '$1 == "TeamIdentifier" {print $2}')"
-  codesign -d --extract-certificates "$UI_OUTPUT/signing-certificate-" "$APP/Contents/Resources/bin/rekey"
+  codesign -d --extract-certificates="$UI_OUTPUT/signing-certificate-" "$APP/Contents/Resources/bin/rekey"
   install -m 0644 "$profile" "$APP/Contents/embedded.provisionprofile"
   install -m 0644 "$daemon_profile" "$DAEMON/Contents/embedded.provisionprofile"
   security cms -D -i "$APP/Contents/embedded.provisionprofile" -o "$UI_OUTPUT/app-profile.plist"

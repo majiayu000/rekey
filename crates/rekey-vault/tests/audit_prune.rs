@@ -610,7 +610,22 @@ async fn retention_actor_set_disable_locked_noop_restart_and_restore() {
             .await,
         Err(AuthorityError::InvalidUnlockCredential)
     ));
-    assert_eq!(sequences(&db), before);
+    let after = sequences(&db);
+    assert_eq!(&after[..before.len()], before.as_slice());
+    assert_eq!(after.len(), before.len() + 1);
+    let failure: (String, String) = db
+        .query_row(
+            "SELECT event_type, outcome FROM audit_events WHERE sequence = ?1",
+            [after.last().unwrap()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        failure,
+        (event_type::VAULT_UNLOCK_FAILED.into(), "denied".into())
+    );
+    assert_eq!(handle.audit_retention_status().await.unwrap().days, None);
+    assert_eq!(count(&db, id), 2);
     let receipt = handle
         .audit_retention_set_before(
             AuditRetentionSet { days: Some(1) },

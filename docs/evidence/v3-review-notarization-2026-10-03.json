@@ -1,0 +1,106 @@
+{
+  "schema": 1,
+  "scope": "Developer ID application ZIP notarization for the isolated v3 review-fix artifact; no Installer package or installed App acceptance",
+  "source_commit": "50d79f3a3fe659ebe58aa89877de0741a4ceeb1c",
+  "team_id": "C5UWZ934C2",
+  "apple_notary_log": {
+    "logFormatVersion": 1,
+    "jobId": "f91a2a5c-9cd9-4577-a4c8-da9dc326b206",
+    "status": "Accepted",
+    "statusSummary": "Ready for distribution",
+    "statusCode": 0,
+    "archiveFilename": "Rekey-notarize.zip",
+    "uploadDate": "2026-10-03T13:50:16.803Z",
+    "sha256": "af84ecfaeda408621463de39d7416e85f6c4b5209ce548af5ebf915fa73ae4f2",
+    "ticketContents": [
+      {
+        "path": "Rekey-notarize.zip/Rekey.app",
+        "digestAlgorithm": "SHA-256",
+        "cdhash": "d78d3e799d2dd0712b20013933d77b012ccc4b82",
+        "arch": "arm64"
+      },
+      {
+        "path": "Rekey-notarize.zip/Rekey.app/Contents/MacOS/Rekey",
+        "digestAlgorithm": "SHA-256",
+        "cdhash": "d78d3e799d2dd0712b20013933d77b012ccc4b82",
+        "arch": "arm64"
+      },
+      {
+        "path": "Rekey-notarize.zip/Rekey.app/Contents/Resources/bin/rekey-approval-sign",
+        "digestAlgorithm": "SHA-256",
+        "cdhash": "7adb09a932553b169f5c252bdf58d3df1a7a16ee",
+        "arch": "arm64"
+      },
+      {
+        "path": "Rekey-notarize.zip/Rekey.app/Contents/Resources/bin/rekey-mcp",
+        "digestAlgorithm": "SHA-256",
+        "cdhash": "329d5b9d049c9e6cdfc022d7505707747ebd2eb3",
+        "arch": "arm64"
+      },
+      {
+        "path": "Rekey-notarize.zip/Rekey.app/Contents/Resources/bin/rekeyd",
+        "digestAlgorithm": "SHA-256",
+        "cdhash": "5e054cd8b1da7bf703536163ad09897e0863c03b",
+        "arch": "arm64"
+      },
+      {
+        "path": "Rekey-notarize.zip/Rekey.app/Contents/Resources/bin/rekey-policy-sign",
+        "digestAlgorithm": "SHA-256",
+        "cdhash": "f5560d8df5960f2c9d748566af7c864c7fc56fd5",
+        "arch": "arm64"
+      },
+      {
+        "path": "Rekey-notarize.zip/Rekey.app/Contents/Resources/bin/rekey",
+        "digestAlgorithm": "SHA-256",
+        "cdhash": "acd3a71e7e80b34682598dfcbf2c0070f334b2aa",
+        "arch": "arm64"
+      }
+    ],
+    "issues": null
+  },
+  "app_validation": {
+    "staple": {
+      "exit_code": 0
+    },
+    "stapler_validate": {
+      "exit_code": 0
+    },
+    "codesign_deep_strict": {
+      "exit_code": 0
+    },
+    "gatekeeper": {
+      "exit_code": 0
+    }
+  },
+  "gatekeeper_result": "accepted; source=Notarized Developer ID",
+  "distributable_zip": {
+    "filename": "Rekey-notarized.zip",
+    "bytes": 19149860,
+    "sha256": "cb1ae75d6444823c959f347a2281e3ef4597c7d41dd819e434b380cef1afa6f4",
+    "extracted_app_validation": {
+      "stapler_validate": {
+        "exit_code": 0
+      },
+      "codesign_deep_strict": {
+        "exit_code": 0
+      },
+      "gatekeeper": {
+        "exit_code": 0
+      }
+    }
+  },
+  "notary_log_download": {
+    "first_attempt": {
+      "exit_code": 1,
+      "reason": "NSURLErrorDomain -1200 TLS connection failed; no validation bypass"
+    },
+    "retry": {
+      "exit_code": 0,
+      "finished_at": "2026-10-03T13:59:26.359161+00:00"
+    }
+  },
+  "installed": false,
+  "service_registered": false,
+  "public_release_published": false,
+  "installer_package_notarized": false
+}

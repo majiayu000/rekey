@@ -218,6 +218,10 @@ fn cli_end_to_end() {
         Some("wrong-password\n"),
     );
     assert_eq!(output.status, 3, "stderr: {}", output.stderr);
+    assert!(
+        output.stderr.contains("L1-dev"),
+        "unverified Admin must warn before accepting a proof"
+    );
 
     // correct unlock.
     let output = run(
@@ -1604,26 +1608,50 @@ fn presence_cli_proof_rotation_and_restart_remain_explicit_and_private() {
     );
     assert_eq!(revealed.status, 0, "{}", revealed.stderr);
     assert_eq!(revealed.stdout, SECRET);
-    let second = key(call(
+    let denied = call(
         &["desktop-remember", "--presence"],
         Some(&format!("{first}\n")),
-    ));
+    );
+    assert_eq!(denied.status, 3, "{}", denied.stderr);
+    assert_eq!(
+        ok(call(&reveal, Some(&format!("{first}\n")))).stdout,
+        SECRET
+    );
+    let second = key(call(&["desktop-remember"], Some(&password)));
     assert_ne!(first, second);
     assert_ne!(call(&reveal, Some(&format!("{first}\n"))).status, 0);
     assert_eq!(
         ok(call(&reveal, Some(&format!("{second}\n")))).stdout,
         SECRET
     );
-    ok(call(
+    let denied = call(
         &["password", "change", "--presence", "--stdin-secrets"],
         Some(&format!("{second}\n{NEW_PASSWORD}\n")),
+    );
+    assert_eq!(denied.status, 3, "{}", denied.stderr);
+    assert_eq!(
+        ok(call(&reveal, Some(&format!("{second}\n")))).stdout,
+        SECRET
+    );
+    ok(call(
+        &["password", "change", "--stdin-secrets"],
+        Some(&format!("{password}{NEW_PASSWORD}\n")),
     ));
     assert_ne!(call(&reveal, Some(&format!("{second}\n"))).status, 0);
     let current_password = format!("{NEW_PASSWORD}\n");
     let third = key(call(&["desktop-remember"], Some(&current_password)));
-    let recovery = ok(call(
+    let denied = call(
         &["recovery", "rotate", "--presence", "--password-stdin"],
         Some(&format!("{third}\n")),
+    );
+    assert_eq!(denied.status, 3, "{}", denied.stderr);
+    assert_eq!(
+        ok(call(&reveal, Some(&format!("{third}\n")))).stdout,
+        SECRET
+    );
+    let recovery = ok(call(
+        &["recovery", "rotate", "--password-stdin"],
+        Some(&current_password),
     ));
     assert!(recovery.stdout.contains("RECOVERY KEY"));
     assert_ne!(call(&reveal, Some(&format!("{third}\n"))).status, 0);

@@ -76,7 +76,7 @@ if [[ "$UNSIGNED" == 0 ]]; then
   codesign --verify --deep --strict "$APP"
   verify_code() {
     local path="$1" identifier="$2" details runtime_flag
-    codesign --verify --strict --test-requirement "anchor apple generic and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = \"$TEAM\" and identifier \"$identifier\"" "$path"
+    codesign --verify --strict --test-requirement "=anchor apple generic and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = \"$TEAM\" and identifier \"$identifier\"" "$path"
     details="$(codesign --display --verbose=4 "$path" 2>&1)"
     runtime_flag='flags=0x[[:xdigit:]]+\([^)]*runtime[^)]*\)'
     [[ "$details" =~ $runtime_flag ]] || fail "hardened runtime is required for $identifier"
@@ -88,7 +88,7 @@ if [[ "$UNSIGNED" == 0 ]]; then
     local bundle="$1" identifier="$2" prefix="$STAGE/$2"
     [[ -f "$bundle/Contents/embedded.provisionprofile" ]] || fail "missing profile: $identifier"
     security cms -D -i "$bundle/Contents/embedded.provisionprofile" -o "$prefix.profile.plist"
-    codesign -d --extract-certificates "$prefix.cert-" "$bundle"
+    codesign -d --extract-certificates="$prefix.cert-" "$bundle"
     python3 "$ROOT/scripts/prepare-macos-profile.py" "$prefix.profile.plist" "$TEAM" \
       "$prefix.cert-0" "$identifier" "$prefix.expected.plist"
     codesign -d --entitlements :- "$bundle" > "$prefix.actual.plist"

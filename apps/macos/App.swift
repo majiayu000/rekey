@@ -536,7 +536,7 @@ struct RootView: View {
                 }
                 SectionCard(title: "解锁与恢复", icon: "lock.rotation") {
                     Button("修改密码") { model.operation = Operation(title: "修改密码", detail: "旧密码将不再解锁当前保险库。历史备份不受这次修改影响。", arguments: ["password", "change"], newSecret: true, confirmSecret: true) }
-                    Button("轮换恢复密钥") { model.operation = Operation(title: "轮换恢复密钥", detail: "使用当前密码或系统认证验证。新恢复密钥只显示一次，请安全保存。", arguments: ["recovery", "rotate"], sensitiveResult: true, recoveryAllowed: false) }
+                    Button("轮换恢复密钥") { model.operation = Operation(title: "轮换恢复密钥", detail: "仅使用当前密码验证。新恢复密钥只显示一次，请安全保存。", arguments: ["recovery", "rotate"], sensitiveResult: true, recoveryAllowed: false) }
                 }.disabled(!model.unlocked || model.busy)
                 if model.status?.lab_enabled == true {
                   SectionCard(title: "机构登录", icon: "person.badge.key") {

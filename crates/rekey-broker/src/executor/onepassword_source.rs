@@ -1108,23 +1108,24 @@ mod tests {
     }
     #[tokio::test]
     async fn actor_source_expiry_and_action_deadline_do_not_restart_at_response() {
-        let f = ActorFixture::new(250, 30_000).await;
+        // Allow durable preparation to finish before the deliberately delayed source expires.
+        let f = ActorFixture::new(2_000, 30_000).await;
         f.fake.push_response_delayed(
             Ok(ActorFixture::resolved(b"123456789")),
-            Duration::from_millis(400),
+            Duration::from_millis(3_000),
         );
         assert!(f.run().await.is_err());
         assert_eq!(f.fake.take_requests().len(), 1);
         f.finish().await;
-        let f = ActorFixture::new(60_000, 50).await;
+        let f = ActorFixture::new(60_000, 2_000).await;
         f.fake.push_response_delayed(
             Ok(ActorFixture::resolved(b"123456789")),
-            Duration::from_millis(100),
+            Duration::from_millis(3_000),
         );
         assert!(f.run().await.is_err());
         assert_eq!(f.fake.take_requests().len(), 1);
         f.finish().await;
-        let f = ActorFixture::new(250, 30_000).await;
+        let f = ActorFixture::new(2_000, 30_000).await;
         f.fake
             .push_response(Ok(ActorFixture::resolved(b"123456789")));
         f.fake.push_response_delayed(
@@ -1133,7 +1134,7 @@ mod tests {
                 headers: vec![].into(),
                 body: Zeroizing::new(b"clean".to_vec()),
             }),
-            Duration::from_millis(400),
+            Duration::from_millis(3_000),
         );
         assert_eq!(f.run().await.unwrap().body, b"clean");
         assert_eq!(f.fake.take_requests().len(), 2);

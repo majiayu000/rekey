@@ -1,6 +1,7 @@
 import Foundation
 import Darwin
 import CryptoKit
+import LocalAuthentication
 
 // Compile with apps/macos/Model.swift; exercises the same subprocess boundary as the app.
 @main
@@ -495,7 +496,7 @@ struct UIContract {
             do { try operation() } catch { assertions += 1; return }
             throw UIError(message: "FAILED: " + label)
         }
-        // Synthetic transport canaries only. These functions never invoke SecItem or LAContext.
+        // Synthetic transport canaries; context checks below never read Keychain or request authentication.
         let key = String(repeating: "a1", count: 32), a1 = String(repeating: "b2", count: 32)
         let vault = UUID(), credential = UUID().uuidString.lowercased()
         try require(try PresenceKey.issuedKey(Data(("4102444800000\n" + key).utf8)) == key, "new key receipt parses exactly")
@@ -507,11 +508,37 @@ struct UIContract {
         }
         let receipt = try DesktopReceipt.parse(Data(("4102444800000\n" + a1).utf8))
         try require(receipt.token == a1 && receipt.token != key, "resume receipt is a distinct A1 token")
-        for args in [["unlock"], ["desktop-login"], ["desktop-add", "label"], ["init"], ["restore"], ["key", "rotate-vrk"]] {
+        let contexts = PresenceReadContext()
+        let start = ContinuousClock.now
+        var first: LAContext?
+        _ = try contexts.read(vaultID: vault, now: { start }) { first = $0; return key }
+        _ = try contexts.read(vaultID: vault, now: { start.advanced(by: .seconds(9)) }) {
+            try require($0 === first, "authentication context reused within ten seconds"); return key
+        }
+        var expired: LAContext?
+        _ = try contexts.read(vaultID: vault, now: { start.advanced(by: .seconds(10)) }) {
+            try require($0 !== first, "reuse does not slide the ten-second deadline"); expired = $0; return key
+        }
+        try rejected("failed read discards its authentication context") {
+            _ = try contexts.read(vaultID: vault, now: { start.advanced(by: .seconds(11)) }) { _ in throw UIError(message: "synthetic cancellation") }
+        }
+        var retry: LAContext?
+        _ = try contexts.read(vaultID: vault, now: { start.advanced(by: .seconds(12)) }) {
+            try require($0 !== expired, "failed context not reused"); retry = $0; return key
+        }
+        _ = try contexts.read(vaultID: UUID(), now: { start.advanced(by: .seconds(13)) }) {
+            try require($0 !== retry, "vault switch discards authentication"); first = $0; return key
+        }
+        contexts.invalidate()
+        _ = try contexts.read(vaultID: vault, now: { start.advanced(by: .seconds(14)) }) {
+            try require($0 !== first, "explicit invalidation discards authentication"); return key
+        }
+        contexts.invalidate()
+        for args in [["unlock"], ["desktop-login"], ["desktop-add", "label"], ["desktop-remember"], ["password", "change"], ["recovery", "rotate"], ["init"], ["restore"], ["key", "rotate-vrk"]] {
             try require(!Operation(title:"",detail:"",arguments:args).presenceAllowed, "unsupported operation has no presence option")
         }
         for args in [["credential","rotate"], ["action","create"], ["template","install"], ["session","create"],
-                     ["policy","trust","install"], ["policy","activate"], ["password","change"], ["recovery","rotate"],
+                     ["policy","trust","install"], ["policy","activate"],
                      ["audit","retention","set"], ["backup"], ["shutdown"], ["desktop-reveal",credential]] {
             try require(Operation(title:"",detail:"",arguments:args).presenceAllowed, "supported A2 exposes presence")
         }
@@ -548,8 +575,7 @@ struct UIContract {
         try require(try calls().count == 1 && calls().last?["args"] as? [String] == ["desktop-login"], "password login without explicit opt-in never remembers or reads a key")
         for op in [Operation(title:"",detail:"",arguments:["credential","revoke",credential]),
                    Operation(title:"",detail:"",arguments:["credential","rotate",credential],newSecret:true),
-                   Operation(title:"",detail:"",arguments:["policy","activate","--file","synthetic-policy.json"],proofFlag:"--step-up-stdin"),
-                   Operation(title:"",detail:"",arguments:["recovery","rotate"],recoveryAllowed:false)] {
+                   Operation(title:"",detail:"",arguments:["policy","activate","--file","synthetic-policy.json"],proofFlag:"--step-up-stdin")] {
             let count = try calls().count
             await model.perform(op,proof:"IGNORED-PASSWORD",secret:op.newSecret ? "SYNTHETIC-NEW-SECRET" : "",recovery:true,
                                 presence:true,presenceRevision:model.nativeFlowRevision,client:client,readPresence:{ id in
@@ -561,6 +587,12 @@ struct UIContract {
             try require(args == op.arguments + [op.newSecret ? "--stdin-secrets" : op.proofFlag, "--presence"], "presence keeps operation-specific explicit stdin flag and excludes recovery")
             try require(last["body"] as? String == key + "\n" + (op.newSecret ? "SYNTHETIC-NEW-SECRET\n" : ""), "actual K is first stdin line; never cached A1 or password")
             try require(!args.joined().contains(key) && model.desktopToken == a1 && !(model.result?.text.contains(key) ?? false), "K absent argv/result and A1 session remains separate")
+        }
+        for args in [["password", "change"], ["recovery", "rotate"], ["desktop-remember"]] {
+            let count = try calls().count
+            await model.perform(Operation(title:"", detail:"", arguments:args), presence:true, presenceRevision:model.nativeFlowRevision,
+                                client:client, readPresence:{ _ in throw UIError(message:"UNREACHABLE-READER") })
+            try require(try calls().count == count && model.error != nil, "permanent-factor and issuance operations reject presence before reading a key")
         }
         _ = try client.revealCredential(credential,proof:key,recovery:false,presence:true)
         try require(try calls().last?["args"] as? [String] == ["desktop-reveal",credential,"--password-stdin","--presence"] && calls().last?["body"] as? String == key + "\n", "reveal sends actual K with explicit proof kind")
@@ -1095,6 +1127,12 @@ struct UIContract {
         reopened.clearNativeFlow(); try Data().write(to: root.appendingPathComponent("release-read"))
         do { _ = try await reading.value; throw UIError(message: "closed read accepted") }
         catch { try require(error.localizedDescription.contains("结果已丢弃") && !reopened.busy, "closing during existing-action read discards late result") }
+        _ = try await model.installOnboardingAnthropic(credentialID: saved.id, capabilities: ["messages"], proof: "SYNTHETIC-PROOF", presence: false, provider: "glm", client: client)
+        let glmRows = try String(contentsOf: calls, encoding: .utf8).split(separator: "\n").map { try JSONSerialization.jsonObject(with: Data($0.utf8)) as! [String: Any] }
+        let glmLines = (glmRows.last!["body"] as! String).split(separator: "\n")
+        let glmRequest = try JSONSerialization.jsonObject(with: Data(glmLines[1].utf8)) as! [String: Any]
+        try require((glmRequest["source"] as? [String: String])?["kind"] == "glm" && glmRequest["name_prefix"] as? String == "GLM", "selected GLM source reaches installation, not the Anthropic official endpoint")
+        try require(glmRequest["capabilities"] as? [String] == ["messages"] && glmRequest["origin"] == nil, "GLM selection grants only messages and carries no caller endpoint override")
         print("PASS: \(assertions) onboarding route/A1/A2/profile/cancellation assertions. Synthetic subprocess only; no App open, registration, Keychain or Secure Enclave invocation.")
     }
 

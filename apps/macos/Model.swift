@@ -969,7 +969,7 @@ struct Operation: Identifiable {
                 "credential add-vault-kv", "credential rotate-vault-kv", "credential add-vault-dynamic", "credential rotate-vault-dynamic",
                 "credential add-keycloak", "credential rotate-keycloak", "action create", "action update", "action disable",
                 "template install", "session create", "session revoke", "policy activate",
-                "password change", "recovery rotate", "key rotate-dek", "audit prune"].contains(command)
+                "key rotate-dek", "audit prune"].contains(command)
     }
 }
 struct ResultMessage: Identifiable {
@@ -1051,6 +1051,7 @@ final class AppModel: ObservableObject {
         if oldValue != stateDirectory {
             onboardingRoute = nil; onboardingProfile = nil; onboardingCommand = nil
             clearActivity()
+            PresenceKey.invalidateAuthentication()
             notifiedApprovalIDs.removeAll(); clearNativeFlow(); clearOIDCLogin(); oidcProfileFile = nil; oidcSessionFile = nil; oidcIdentity = nil
         }
     } }
@@ -1354,12 +1355,13 @@ final class AppModel: ObservableObject {
         do { _ = try await saveAPIKey(label: label, secret: secret); await refresh(); return true }
         catch { rejectDesktopSession(error); self.error = error.localizedDescription; return false }
     }
-    func loadOnboardingActions(credentialID: String, client injectedClient: CLI? = nil) async throws -> [FixedAction] {
+    func loadOnboardingActions(credentialID: String, provider: String = "anthropic", client injectedClient: CLI? = nil) async throws -> [FixedAction] {
         guard !busy, unlocked else { throw UIError(message: "请先解锁并等待当前操作完成。") }
         busy = true; defer { busy = false }
         let client = injectedClient ?? cli, revision = nativeFlowRevision
+        let request = try JSONSerialization.data(withJSONObject: ["source": ["kind": provider]], options: [.sortedKeys])
         let (catalog, available) = try await Task.detached {
-            (try client.templateCatalog(source: Data(#"{"source":{"kind":"anthropic"}}"#.utf8)),
+            (try client.templateCatalog(source: request),
              try client.decode(ActionList.self, ["action", "list"]).actions)
         }.value
         guard acceptsNativeCompletion(revision, workspace: client.stateDirectory), !Task.isCancelled else { throw UIError(message: "读取期间上下文已改变，结果已丢弃。") }
@@ -1369,6 +1371,7 @@ final class AppModel: ObservableObject {
         }
     }
     func installOnboardingAnthropic(credentialID: String, capabilities: [String], proof: String, presence: Bool,
+                                    provider: String = "anthropic",
                                     client injectedClient: CLI? = nil,
                                     readPresence: @escaping @Sendable (UUID) throws -> String = { try PresenceKey.read(vaultID: $0) }) async throws -> [FixedAction] {
         guard !busy, unlocked, policy?.mode == .personal else { throw UIError(message: "请先解锁个人保险库。团队模式请使用现有外部签名流程。") }
@@ -1379,8 +1382,8 @@ final class AppModel: ObservableObject {
         else { operationProof = proof }
         guard !operationProof.isEmpty, !operationProof.contains("\n"), !operationProof.contains("\r"),
               acceptsNativeCompletion(revision, workspace: client.stateDirectory), !Task.isCancelled else { throw UIError(message: "验证信息或接入上下文已失效，未安装。") }
-        let request: [String: Any] = ["source": ["kind": "anthropic"], "credential_id": credentialID, "bindings": [[:]], "capabilities": capabilities,
-            "name_prefix": "Anthropic", "timeout_ms": 30_000, "request_max_bytes": 1024 * 1024, "allowed_extra_headers": ["anthropic-beta"],
+        let request: [String: Any] = ["source": ["kind": provider], "credential_id": credentialID, "bindings": [[:]], "capabilities": capabilities,
+            "name_prefix": provider == "glm" ? "GLM" : "Anthropic", "timeout_ms": 30_000, "request_max_bytes": 1024 * 1024, "allowed_extra_headers": ["anthropic-beta"],
             "response_max_bytes": 4 * 1024 * 1024, "allowed_response_headers": ["content-type"]]
         let body = operationProof + "\n" + String(decoding: try JSONSerialization.data(withJSONObject: request, options: [.sortedKeys]), as: UTF8.self) + "\n"
         let args = ["template", "install", "--stdin-request", "--password-stdin"] + (presence ? ["--presence"] : [])
@@ -1443,11 +1446,13 @@ final class AppModel: ObservableObject {
     func rejectDesktopSession(_ error: Error) {
         let message = error.localizedDescription
         if message.contains("INVALID_UNLOCK_CREDENTIAL") || message.contains("LOCKED") || message.contains("FAULTED") {
+            PresenceKey.invalidateAuthentication()
             desktopToken = nil; desktopExpiry = .distantPast; visibleSecret = nil; copiedCredential = nil
         }
     }
     func clearCache() {
         clearActivity()
+        PresenceKey.invalidateAuthentication()
         clearNativeFlow(); clearOIDCLogin()
         oidcSessionFile = nil; oidcIdentity = nil
         desktopToken = nil; visibleSecret = nil; copiedCredential = nil

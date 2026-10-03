@@ -139,7 +139,16 @@ fn string_value(value: CFRef) -> Result<String, CliError> {
 
 // None is an explicitly unsigned or valid ad-hoc development build. A broken
 // certificate signature, missing TeamID, or API failure never enables dev mode.
-fn own_team() -> Result<Option<String>, CliError> {
+pub(super) fn own_team() -> Result<Option<&'static str>, CliError> {
+    // The prompt and connection share one self lookup; each peer is checked anew.
+    static TEAM: std::sync::OnceLock<Result<Option<String>, CliError>> = std::sync::OnceLock::new();
+    match TEAM.get_or_init(read_own_team) {
+        Ok(team) => Ok(team.as_deref()),
+        Err(error) => Err(CliError::local(&error.code, &error.message)),
+    }
+}
+
+fn read_own_team() -> Result<Option<String>, CliError> {
     let mut code = ptr::null();
     check(unsafe { SecCodeCopySelf(0, &mut code) }, "SecCodeCopySelf")?;
     let code = OwnedCF::new(code, "SecCodeCopySelf")?;

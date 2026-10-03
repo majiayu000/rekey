@@ -661,6 +661,7 @@ pub struct ActionListResponse {
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum TemplateSource {
     Anthropic {},
+    Glm {},
     #[serde(rename = "openai")]
     OpenAi {},
     #[serde(rename = "github-pat")]
@@ -1746,7 +1747,7 @@ mod tests {
 
     #[test]
     fn template_sources_cannot_override_builtin_provenance() {
-        for kind in ["anthropic", "openai", "github-pat", "signed-package"] {
+        for kind in ["anthropic", "glm", "openai", "github-pat", "signed-package"] {
             let source = serde_json::json!({"kind": kind});
             assert!(serde_json::from_value::<TemplateSource>(source.clone()).is_ok());
             let mut overridden = source;

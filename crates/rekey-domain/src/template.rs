@@ -706,6 +706,18 @@ pub fn anthropic() -> Result<ProviderTemplate, DomainError> {
     )
 }
 
+pub fn glm() -> Result<ProviderTemplate, DomainError> {
+    builtin(
+        r#"{
+      "template":"glm@1","display":"GLM",
+      "credential":{"kind":"opaque-token","inject":{"header":"x-api-key","prefix":""}},
+      "origin":"https://open.bigmodel.cn","fixed_headers":{"anthropic-version":"2023-06-01"},
+      "capabilities":[
+        {"id":"messages","risk":"medium","actions":[{"method":"POST","path":"/api/anthropic/v1/messages","query":{"beta":"enum:true"}}]}
+      ]}"#,
+    )
+}
+
 pub fn openai() -> Result<ProviderTemplate, DomainError> {
     builtin(
         r#"{

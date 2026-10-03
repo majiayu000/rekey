@@ -421,6 +421,7 @@ fn all_schema_reference_keywords_are_offline_even_when_nested_or_unused() {
 fn builtins_have_closed_provenance_and_github_schema_is_real_content() {
     for builtin in [
         BuiltinTemplate::Anthropic,
+        BuiltinTemplate::Glm,
         BuiltinTemplate::OpenAi,
         BuiltinTemplate::GitHubPat,
         BuiltinTemplate::GenericBearer {

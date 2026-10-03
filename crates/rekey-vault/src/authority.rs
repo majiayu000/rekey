@@ -290,7 +290,25 @@ impl Worker {
         crate::crypto::approval_origin::sign_approval_origin(vrk, self.header.vault_id, &message)
     }
 
-    fn verify_proof(&self, proof: &UnlockProof) -> Result<(), AuthorityError> {
+    fn verify_proof(&mut self, proof: &UnlockProof) -> Result<(), AuthorityError> {
+        self.require_unlocked()?;
+        if Instant::now() < self.next_unlock_at {
+            return Err(AuthorityError::UnlockRateLimited);
+        }
+        let attempt = self.verify_proof_inner(proof);
+        match &attempt {
+            Ok(()) if !matches!(proof, UnlockProof::Presence(_)) => {
+                self.failed_unlocks = 0;
+                self.next_unlock_at = Instant::now();
+            }
+            Ok(()) => {}
+            Err(AuthorityError::InvalidUnlockCredential) => self.record_unlock_failure()?,
+            Err(_) => {}
+        }
+        attempt
+    }
+
+    fn verify_proof_inner(&self, proof: &UnlockProof) -> Result<(), AuthorityError> {
         let current_vrk = self.require_unlocked()?;
         let (kind, secret) = match proof {
             UnlockProof::Password(secret) => (WrapperKind::Password, secret),
@@ -601,6 +619,7 @@ impl Worker {
         }
         let builtin = match source {
             TemplateSource::Anthropic {} => BuiltinTemplate::Anthropic,
+            TemplateSource::Glm {} => BuiltinTemplate::Glm,
             TemplateSource::OpenAi {} => BuiltinTemplate::OpenAi,
             TemplateSource::GitHubPat {} => BuiltinTemplate::GitHubPat,
             TemplateSource::GenericBearer { origin, actions } => BuiltinTemplate::GenericBearer {

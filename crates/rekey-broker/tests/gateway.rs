@@ -70,7 +70,10 @@ impl UpstreamTransport for Transport {
             self.raw_paths.lock().unwrap().push(request.path.clone());
             assert_eq!(
                 request.auth_header.1.as_slice(),
-                if request.host == "api.anthropic.com" {
+                if matches!(
+                    request.host.as_str(),
+                    "api.anthropic.com" | "open.bigmodel.cn"
+                ) {
                     SECRET.to_vec()
                 } else {
                     [b"Bearer ".as_slice(), SECRET].concat()
@@ -196,7 +199,10 @@ impl Fixture {
         format!(
             "http://127.0.0.1:{}/p/work{}",
             s.gateway.as_ref().unwrap().port,
-            target.path_pattern()
+            target
+                .path_pattern()
+                .strip_prefix("/api/anthropic")
+                .unwrap_or(target.path_pattern())
         )
     }
     fn post(&self, s: &ProfileSessionCreatedResponse, body: &[u8]) -> reqwest::RequestBuilder {
@@ -253,6 +259,13 @@ async fn buffered_three_protocols_use_actual_profile_and_one_effective_body() {
                 .as_slice(),
             "max_tokens",
         ),
+        (
+            "glm",
+            "messages",
+            br#"{"type":"message","stop_reason":"end_turn","usage":{"output_tokens":7}}"#
+                .as_slice(),
+            "max_tokens",
+        ),
     ] {
         let f = Fixture::new(provider, capability, 1, 100, false).await;
         let (owner, s) = f.mint().await;
@@ -273,6 +286,12 @@ async fn buffered_three_protocols_use_actual_profile_and_one_effective_body() {
         assert_eq!(f.totals(), (1, 7, 0));
         let sent = f.broker.fake.take_requests();
         assert_eq!(sent.len(), 1);
+        if provider == "glm" {
+            assert_eq!(sent[0].host, "open.bigmodel.cn");
+            assert_eq!(sent[0].path, "/api/anthropic/v1/messages");
+            assert_eq!(sent[0].auth_name, "x-api-key");
+            assert_eq!(sent[0].auth_value, SECRET);
+        }
         let body: Value = serde_json::from_slice(&sent[0].body).unwrap();
         assert_eq!(body[bound], 20);
         assert_eq!(body["tools"][0]["name"], "tool");
@@ -323,12 +342,57 @@ fn raw(provider: &str) -> String {
     }
 }
 #[tokio::test(flavor = "multi_thread")]
+async fn glm_gateway_rejects_undeclared_paths_and_models_before_upstream() {
+    let f = Fixture::new("glm", "messages", 10, 100, false).await;
+    let (owner, s) = f.mint().await;
+    assert_eq!(
+        s.gateway.as_ref().unwrap().instances[0].provider,
+        rekey_domain::ipc::ProfileGatewayProvider::Anthropic
+    );
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    for path in [
+        "/api/anthropic/v1/messages",
+        "/v1/models",
+        "/v1/messages/count_tokens",
+        "/v1/messages?beta=false",
+    ] {
+        let response = client
+            .post(format!(
+                "http://127.0.0.1:{}/p/work{path}",
+                s.gateway.as_ref().unwrap().port
+            ))
+            .bearer_auth(format!("rkc_{}", s.session.capability_token))
+            .header("content-type", "application/json")
+            .body(BODY.to_vec())
+            .send()
+            .await
+            .unwrap();
+        assert!(!response.status().is_success(), "{path}");
+    }
+    let mut wrong_model: Value = serde_json::from_slice(BODY).unwrap();
+    wrong_model["model"] = json!("unapproved");
+    assert_eq!(
+        f.post(&s, &serde_json::to_vec(&wrong_model).unwrap())
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+    assert!(f.broker.fake.take_requests().is_empty());
+    assert_eq!(f.totals(), (0, 0, 0));
+    drop(owner);
+    f.broker.shutdown().await;
+}
+#[tokio::test(flavor = "multi_thread")]
 async fn raw_three_protocols_preserve_exact_bytes_and_settle_before_http_eof() {
     for (provider, capability, query) in [
         ("openai", "chat-completions", ""),
         ("openai", "responses", ""),
         ("anthropic", "messages", ""),
         ("anthropic", "messages", "?beta=true"),
+        ("glm", "messages", ""),
+        ("glm", "messages", "?beta=true"),
     ] {
         let f = Fixture::new(provider, capability, 2, 100, false).await;
         let (owner, s) = f.mint().await;
@@ -669,7 +733,7 @@ async fn lock_retraction_expiry_and_owner_eof_close_authority_for_new_http() {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as i64
-            + 500
+            + 5_000
     );
     common::policy::activate_snapshot(&f.broker, f.snapshot.clone()).await;
     // This checks listener expiry, so observe its public binding directly.
@@ -679,6 +743,8 @@ async fn lock_retraction_expiry_and_owner_eof_close_authority_for_new_http() {
         .trim()
         .parse::<u16>()
         .unwrap();
+    // Preparation/signing must fit before expiry even under the full workspace load.
+    tokio::time::sleep(Duration::from_secs(4)).await;
     wait_no_listener(&f, port).await;
     assert!(f.broker.fake.take_requests().is_empty());
     f.broker.shutdown().await;

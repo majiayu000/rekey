@@ -4,6 +4,15 @@ import AppKit
 func singleLine(_ value: String) -> Bool {
     !value.isEmpty && !value.contains("\n") && !value.contains("\r") && !value.contains("\0")
 }
+struct PeerSecurityWarning: View {
+    @EnvironmentObject var model: AppModel
+    var body: some View {
+        if model.status?.peer_security != "verified_signature" {
+            Label("L1-dev · 服务签名未校验。密码、恢复密钥或系统认证授权将发送给未验证签名的本地服务，请仅在可信开发环境使用。", systemImage: "exclamationmark.triangle")
+                .font(.system(size: 12)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
 struct OperationForm: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.dismiss) var dismiss
@@ -70,6 +79,7 @@ struct OperationForm: View {
             }
             if isRollback && operation.rollbackRevision != model.nativeFlowRevision { Text("上下文已改变，请关闭并重新审阅当前快照。").foregroundStyle(.red) }
             if let recoveryError { Text(recoveryError).foregroundStyle(.red).textSelection(.enabled) }
+            if !isInit && !isRestore { PeerSecurityWarning() }
             if operation.presenceAllowed && model.unlocked {
                 Toggle("使用系统认证批准本次操作", isOn: $presence).disabled(model.busy)
                     .onChange(of: presence) { _, _ in proof = ""; recovery = false }
@@ -170,6 +180,7 @@ struct AddCredentialForm: View {
                 }
             }
             }
+            PeerSecurityWarning()
             if kind == "add" { SecureField("粘贴 API Key，无需 Bearer 前缀", text: $secret).textFieldStyle(.roundedBorder) }
             else {
                 HStack { Text(profile?.lastPathComponent ?? "选择私有 JSON 配置文件").font(.system(size: 12)); Spacer(); Button("选择文件") { profile = chooseFile() } }
@@ -238,6 +249,7 @@ struct ActionForm: View {
             }
             Text("前缀只填写 Bearer 等认证方案，不要填写凭证值。").font(.system(size: 11)).foregroundStyle(.secondary)
             Toggle("使用系统认证批准本次操作", isOn: $presence).disabled(model.busy)
+            PeerSecurityWarning()
             if !presence { SecureField("当前保险库密码", text: $proof).textFieldStyle(.roundedBorder) }
             if let failure { Text(failure).font(.system(size: 12)).foregroundStyle(.red) }
             HStack {
@@ -297,6 +309,7 @@ struct TemplateForm: View {
             Picker("服务", selection: $provider) {
                 Text("GitHub 个人令牌").tag("github-pat")
                 Text("Anthropic").tag("anthropic")
+                Text("GLM（Anthropic 协议）").tag("glm")
                 Text("OpenAI").tag("openai")
                 Text("自定义 Bearer").tag("generic-bearer")
             }
@@ -346,6 +359,7 @@ struct TemplateForm: View {
                     }.padding(.vertical, 4)
                 }.frame(maxHeight: 280)
                 Toggle("使用系统认证批准本次操作", isOn: $presence).disabled(model.busy)
+                PeerSecurityWarning()
                 if !presence {
                     Toggle("使用恢复密钥", isOn: $recovery).font(.system(size: 12))
                     SecureField(recovery ? "恢复密钥" : "当前保险库密码", text: $proof).textFieldStyle(.roundedBorder)
@@ -427,6 +441,7 @@ struct SessionForm: View {
             HStack { Text("有效期"); TextField("例如 15m", text: $ttl); Text("使用次数"); TextField("20", text: $uses) }.textFieldStyle(.roundedBorder)
             TextField("已有策略的主体 UUID（留空创建新主体）", text: $principal).textFieldStyle(.roundedBorder)
             Toggle("使用系统认证批准本次操作", isOn: $presence).disabled(model.busy)
+            PeerSecurityWarning()
             if !presence { SecureField("当前保险库密码", text: $proof).textFieldStyle(.roundedBorder) }
             HStack {
                 Button("取消") { proof = ""; dismiss() }.keyboardShortcut(.cancelAction)
@@ -470,6 +485,7 @@ struct LocalApprovalView: View {
                             Text("正文包含目标、参数、查询、请求体、请求头、策略与会话的完整快照。").font(.system(size: 11)).foregroundStyle(.secondary)
                         } else { Spacer(); Text("此请求已结束，完整正文已释放。"); Spacer() }
                         if let failure { Text(failure).font(.system(size: 12)).foregroundStyle(.red).textSelection(.enabled) }
+                        PeerSecurityWarning()
                         HStack {
                             Button("关闭") { model.clearNativeFlow(); dismiss() }.keyboardShortcut(.cancelAction)
                             Button("查询最新状态") { failure = nil; Task { await model.reviewLocalApproval(details.id) } }.disabled(model.busy)
@@ -785,6 +801,7 @@ struct PersonalPolicyDraftForm: View {
                         Toggle("我已完整核对前后变化和操作定义，确认替换当前策略", isOn: $confirmed)
                             .disabled(model.busy || attempted)
                         Toggle("使用系统认证批准本次激活", isOn: $presence).disabled(model.busy || attempted)
+                        PeerSecurityWarning()
                         if !presence {
                             Toggle("使用恢复密钥验证本次激活", isOn: $recovery).disabled(model.busy || attempted)
                             SecureField(recovery ? "恢复密钥" : "保险库密码", text: $proof).disabled(model.busy || attempted)
@@ -1068,7 +1085,7 @@ struct OnboardingView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 HStack {
-                    Text(route == .setup ? "开始使用 Rekey" : "接入 Anthropic").font(.system(size: 25, weight: .semibold))
+                    Text(route == .setup ? "开始使用 Rekey" : "接入 LLM 服务").font(.system(size: 25, weight: .semibold))
                     Spacer()
                     Button("关闭设置页面") { model.clearNativeFlow(); model.onboardingRoute = nil; Task { await model.refresh() } }.disabled(model.busy)
                 }
@@ -1112,6 +1129,7 @@ struct OnboardingView: View {
 
 private struct AnthropicOnboardingView: View {
     @EnvironmentObject var model: AppModel
+    @State private var provider = "anthropic"
     @State private var label = "Anthropic"
     @State private var secret = ""
     @State private var credentialID = ""
@@ -1136,11 +1154,15 @@ private struct AnthropicOnboardingView: View {
                 Text("请先完成个人保险库设置并解锁。团队模式保留外部签名，不使用此个人授权流程。")
                 Button("打开设置步骤") { model.openOnboarding(URL(string: OnboardingRoute.setup.rawValue)!) }.disabled(model.busy)
             } else {
+                Picker("服务", selection: $provider) {
+                    Text("Anthropic").tag("anthropic")
+                    Text("GLM（智谱）").tag("glm")
+                }.disabled(model.busy || !installed.isEmpty)
                 if installed.isEmpty {
                     Text("1 · 保存凭据（只写入，不读取）").font(.headline)
                     if credentialID.isEmpty {
                         TextField("凭据名称", text: $label)
-                        SecureField("Anthropic API Key，无需 Bearer 前缀", text: $secret)
+                        SecureField("API Key，无需 Bearer 前缀", text: $secret)
                         if !secret.isEmpty && secret.utf8.count < 16 {
                             Text("密钥短于 16 字节，嵌入编码的反射遮蔽覆盖有限。建议使用服务商生成的完整 Key。")
                                 .font(.system(size: 11)).foregroundStyle(.orange)
@@ -1158,7 +1180,7 @@ private struct AnthropicOnboardingView: View {
                     }
                     if !credentialID.isEmpty {
                         DisclosureGroup("使用已安装能力继续") {
-                            Text("重新读取此凭据的真实 Anthropic 操作，明确选择精确版本。沿用已安装的请求头与限制，不会重新安装或修改操作。")
+                            Text("重新读取此凭据在所选服务的真实操作，明确选择精确版本。沿用已安装的请求头与限制，不会重新安装或修改操作。")
                             Button("读取已安装能力") { Task { await loadExisting() } }.disabled(model.busy)
                             ForEach(existing) { action in
                                 Toggle(isOn: Binding(get: { existingSelection.contains(action.reference) }, set: { if $0 { existingSelection.insert(action.reference) } else { existingSelection.remove(action.reference) } })) {
@@ -1216,48 +1238,59 @@ private struct AnthropicOnboardingView: View {
             if let message { Text(message).foregroundStyle(.red).textSelection(.enabled) }
         }
         .task { if ready { await loadCatalog() } }
+        .onChange(of: provider) { _, value in
+            secret = ""; proof = ""; credentialID = ""; savedLabel = nil; catalog = nil; capabilities = []; beta = false; existing = []; existingSelection = []; message = nil
+            label = value == "glm" ? "GLM" : "Anthropic"
+            modelID = value == "glm" ? "glm-5.3-flash" : ""
+            Task { await loadCatalog() }
+        }
         .onChange(of: model.nativeFlowRevision) { _, _ in secret = ""; proof = ""; catalog = nil; capabilities = []; beta = false; message = nil; existing = []; existingSelection = [] }
         .onChange(of: credentialID) { _, _ in existing = []; existingSelection = [] }
         .onDisappear { secret = ""; proof = "" }
     }
     private func loadExisting() async {
         let revision = model.nativeFlowRevision, workspace = model.stateDirectory, id = credentialID
+        let selectedProvider = provider
         message = nil; existing = []; existingSelection = []
         do {
-            let actions = try await model.loadOnboardingActions(credentialID: id)
-            guard credentialID == id, model.acceptsNativeCompletion(revision, workspace: workspace) else { return }
+            let actions = try await model.loadOnboardingActions(credentialID: id, provider: selectedProvider)
+            guard provider == selectedProvider, credentialID == id, model.acceptsNativeCompletion(revision, workspace: workspace) else { return }
             existing = actions
-            if actions.isEmpty { message = "该凭据没有可继续使用的已启用 Anthropic 操作。" }
+            if actions.isEmpty { message = "该凭据没有可继续使用的所选服务操作。" }
         } catch { if model.acceptsNativeCompletion(revision, workspace: workspace) { message = error.localizedDescription } }
     }
     private func loadCatalog() async {
-        guard ready, !model.busy, !loading else { return }
-        loading = true; defer { loading = false }
+        guard ready, !model.busy else { return }
+        let selectedProvider = provider
+        loading = true; defer { if provider == selectedProvider { loading = false } }
         let client = model.cli, revision = model.nativeFlowRevision, workspace = model.stateDirectory
         do {
-            let result = try await Task.detached { try client.templateCatalog(source: Data(#"{"source":{"kind":"anthropic"}}"#.utf8)) }.value
-            guard model.acceptsNativeCompletion(revision, workspace: workspace) else { return }
+            let request = try JSONSerialization.data(withJSONObject: ["source": ["kind": selectedProvider]], options: [.sortedKeys])
+            let result = try await Task.detached { try client.templateCatalog(source: request) }.value
+            guard provider == selectedProvider, model.acceptsNativeCompletion(revision, workspace: workspace) else { return }
             catalog = result
-        } catch { if model.acceptsNativeCompletion(revision, workspace: workspace) { message = error.localizedDescription } }
+        } catch { if provider == selectedProvider, model.acceptsNativeCompletion(revision, workspace: workspace) { message = error.localizedDescription } }
     }
     private func save() {
         let value = secret, name = label, revision = model.nativeFlowRevision, workspace = model.stateDirectory
+        let selectedProvider = provider
         secret = ""; message = nil
         Task {
             do {
                 let receipt = try await model.saveAPIKey(label: name, secret: value)
-                guard model.acceptsNativeCompletion(revision, workspace: workspace) else { return }
+                guard provider == selectedProvider, model.acceptsNativeCompletion(revision, workspace: workspace) else { return }
                 credentialID = receipt.id; savedLabel = receipt.label
             } catch { if model.acceptsNativeCompletion(revision, workspace: workspace) { message = error.localizedDescription } }
         }
     }
     private func install() {
         let value = proof, usePresence = presence, id = credentialID, selected = capabilities.sorted(), revision = model.nativeFlowRevision, workspace = model.stateDirectory
+        let selectedProvider = provider
         proof = ""; message = nil
         Task {
             do {
-                let actions = try await model.installOnboardingAnthropic(credentialID: id, capabilities: selected, proof: value, presence: usePresence)
-                guard model.acceptsNativeCompletion(revision, workspace: workspace) else { return }
+                let actions = try await model.installOnboardingAnthropic(credentialID: id, capabilities: selected, proof: value, presence: usePresence, provider: selectedProvider)
+                guard provider == selectedProvider, model.acceptsNativeCompletion(revision, workspace: workspace) else { return }
                 installed = actions
             } catch { if model.acceptsNativeCompletion(revision, workspace: workspace) { message = error.localizedDescription } }
         }

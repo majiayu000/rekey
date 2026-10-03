@@ -2,10 +2,53 @@ import Foundation
 import LocalAuthentication
 import Security
 
+// Retain only the authentication context, never the key returned by the read.
+final class PresenceReadContext: @unchecked Sendable {
+    private let lock = NSLock()
+    private var entry: (vaultID: UUID, context: LAContext, expires: ContinuousClock.Instant?)?
+
+    func read(vaultID: UUID, now: () -> ContinuousClock.Instant = { .now },
+              operation: (LAContext) throws -> String) throws -> String {
+        let context = lock.withLock {
+            if let current = entry, current.vaultID != vaultID || current.expires.map({ now() >= $0 }) == true {
+                current.context.invalidate(); entry = nil
+            }
+            if let current = entry { return current.context }
+            let context = LAContext()
+            context.localizedReason = "批准本次 Rekey 操作"
+            context.touchIDAuthenticationAllowableReuseDuration = 0
+            entry = (vaultID, context, nil)
+            return context
+        }
+        do {
+            let key = try operation(context)
+            lock.withLock {
+                if entry?.context === context, entry?.expires == nil {
+                    entry?.expires = now().advanced(by: .seconds(10))
+                }
+            }
+            return key
+        } catch {
+            lock.withLock {
+                context.invalidate()
+                if entry?.context === context { entry = nil }
+            }
+            throw error
+        }
+    }
+
+    func invalidate() {
+        lock.withLock { entry?.context.invalidate(); entry = nil }
+    }
+}
+
 // Explicit user operations only. This K is separate from the cached A1 desktop
 // session and the Secure Enclave policy-signing private key. No key is cached here.
 enum PresenceKey {
     private static let service = "com.rekey.presence-key.v1"
+    private static let reads = PresenceReadContext()
+
+    static func invalidateAuthentication() { reads.invalidate() }
 
     static func issuedKey(_ data: Data) throws -> String {
         guard let text = String(data: data, encoding: .utf8) else { throw invalidReceipt() }
@@ -22,8 +65,10 @@ enum PresenceKey {
     }
 
     static func read(vaultID: UUID) throws -> String {
-        let context = authenticationContext("批准本次 Rekey 操作")
-        defer { context.invalidate() }
+        try reads.read(vaultID: vaultID) { try read(vaultID: vaultID, context: $0) }
+    }
+
+    private static func read(vaultID: UUID, context: LAContext) throws -> String {
         var query = try identity(vaultID: vaultID)
         query[kSecUseAuthenticationContext as String] = context
         query[kSecMatchLimit as String] = kSecMatchLimitAll
@@ -47,6 +92,7 @@ enum PresenceKey {
     }
 
     static func save(_ key: String, vaultID: UUID) throws {
+        reads.invalidate()
         let bytes = Data(try validated(key).utf8)
         let context = authenticationContext("保存 Rekey 系统认证授权")
         defer { context.invalidate() }
@@ -79,7 +125,7 @@ enum PresenceKey {
     private static func authenticationContext(_ reason: String) -> LAContext {
         let context = LAContext()
         context.localizedReason = reason
-        context.touchIDAuthenticationAllowableReuseDuration = 10
+        context.touchIDAuthenticationAllowableReuseDuration = 0
         return context
     }
 

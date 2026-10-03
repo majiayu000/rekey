@@ -181,6 +181,11 @@ async fn missing_wrong_a1_old_presence_and_locked_or_faulted_never_authorize() {
         assert!(matches!(error, AuthorityError::InvalidUnlockCredential));
         assert!(!error.to_string().contains("wrong-K"));
         assert_eq!(handle.status().await.unwrap().state, "unlocked");
+        // Test each rejected factor independently of the shared backoff contract.
+        handle
+            .verify_shutdown_proof(common::password_proof())
+            .await
+            .unwrap();
     }
     assert_eq!(count(&db, event_type::APPROVAL_APPROVED), 0);
     assert!(matches!(

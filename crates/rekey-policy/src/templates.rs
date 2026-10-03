@@ -159,6 +159,7 @@ pub fn parse_and_verify_template_package(
 /// installation authorization; the release does not endorse user-chosen origins.
 pub enum BuiltinTemplate {
     Anthropic,
+    Glm,
     OpenAi,
     GitHubPat,
     GenericBearer {
@@ -172,6 +173,7 @@ pub fn builtin_template(
 ) -> Result<ValidatedTemplatePackage, TemplatePackageError> {
     let template = match builtin {
         BuiltinTemplate::Anthropic => template::anthropic(),
+        BuiltinTemplate::Glm => template::glm(),
         BuiltinTemplate::OpenAi => template::openai(),
         BuiltinTemplate::GitHubPat => template::github_pat(),
         BuiltinTemplate::GenericBearer { origin, actions } => {

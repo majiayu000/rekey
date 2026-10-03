@@ -112,7 +112,7 @@ async fn clean_restart_needs_explicit_resume_and_preserves_original_expiry() {
 }
 
 #[tokio::test]
-async fn recovery_rotation_accepts_presence_and_rejects_recovery_self_rotation() {
+async fn recovery_rotation_requires_password_and_rejects_presence_and_recovery_self_rotation() {
     let vault = common::init_test_vault();
     let (handle, join) = common::spawn(&vault.state_dir);
     handle.unlock(common::password_proof()).await.unwrap();
@@ -132,8 +132,18 @@ async fn recovery_rotation_accepts_presence_and_rejects_recovery_self_rotation()
         Err(AuthorityError::Domain(_))
     ));
     handle.verify_proof(presence(&key)).await.unwrap();
+    let ticket = std::fs::read(vault.state_dir.join("desktop-unlock.bin")).unwrap();
+    assert!(matches!(
+        handle.recovery_rotate_before(presence(&key), None).await,
+        Err(AuthorityError::InvalidUnlockCredential)
+    ));
+    assert_eq!(
+        std::fs::read(vault.state_dir.join("desktop-unlock.bin")).unwrap(),
+        ticket
+    );
+    handle.verify_proof(presence(&key)).await.unwrap();
     let new_recovery = handle
-        .recovery_rotate_before(presence(&key), None)
+        .recovery_rotate_before(common::password_proof(), None)
         .await
         .unwrap();
     assert!(matches!(
@@ -163,7 +173,7 @@ async fn recovery_rotation_accepts_presence_and_rejects_recovery_self_rotation()
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(reason, "step-up-presence");
+    assert_eq!(reason, "password-step-up");
     drop(db);
     handle
         .shutdown(Some(common::password_proof()))
