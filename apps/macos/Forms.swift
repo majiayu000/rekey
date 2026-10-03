@@ -390,6 +390,59 @@ struct SessionForm: View {
     }
 }
 
+struct LocalApprovalView: View {
+    @EnvironmentObject var model: AppModel
+    @Environment(\.dismiss) var dismiss
+    @State private var failure: String?
+    @FocusState private var rejectFocused: Bool
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if let details = model.localApprovalDetails {
+                Text(details.review?.action_name ?? "本机审批").font(.system(size: 22, weight: .semibold))
+                TimelineView(.periodic(from: .now, by: 1)) { timeline in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(details.state.label).foregroundStyle(.secondary)
+                        if let review = details.review {
+                            Text("\(review.method) \(review.origin)").font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
+                            Text("资源：\(review.challenge.resource.type) / \(review.challenge.resource.id)").textSelection(.enabled)
+                            Text("有效期至 \(displayDate(review.challenge.max_expires_at_ms))").font(.system(size: 12)).foregroundStyle(.secondary)
+                        }
+                        Text("请完整审阅下方请求。批准只授权这次请求，不会替 Agent 执行。").font(.system(size: 12)).foregroundStyle(.secondary)
+                        if !details.raw.isEmpty {
+                            ScrollView([.vertical, .horizontal]) {
+                                Text(details.text).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .topLeading).padding(12)
+                            }.frame(maxWidth: .infinity, maxHeight: .infinity).background(Color.black.opacity(0.03))
+                            Text("正文包含目标、参数、查询、请求体、请求头、策略与会话的完整快照。").font(.system(size: 11)).foregroundStyle(.secondary)
+                        } else { Spacer(); Text("此请求已结束，完整正文已释放。"); Spacer() }
+                        if let failure { Text(failure).font(.system(size: 12)).foregroundStyle(.red).textSelection(.enabled) }
+                        HStack {
+                            Button("关闭") { model.clearNativeFlow(); dismiss() }.keyboardShortcut(.cancelAction)
+                            Button("查询最新状态") { failure = nil; Task { await model.reviewLocalApproval(details.id) } }.disabled(model.busy)
+                            Spacer()
+                            Button("拒绝") { decide(details, approve: false) }.keyboardShortcut(.defaultAction).focused($rejectFocused)
+                                .disabled(!details.canDecide(at: timeline.date) || !model.unlocked || model.busy || model.localApprovalNeedsRefresh)
+                            Button("系统认证并批准") { decide(details, approve: true) }
+                                .disabled(!details.canDecide(at: timeline.date) || !model.unlocked || model.busy || model.localApprovalNeedsRefresh)
+                        }
+                    }
+                }
+            }
+        }.padding(28).frame(width: 820, height: 720).background(canvas)
+            .onAppear { rejectFocused = true }
+            .onDisappear { model.clearNativeFlow() }
+    }
+    private func decide(_ details: LocalApprovalDetails, approve: Bool) {
+        failure = nil
+        Task {
+            do { try await model.decideLocalApproval(details, approve: approve) }
+            catch {
+                if model.acceptsNativeCompletion(details.revision, workspace: details.workspace) { failure = error.localizedDescription }
+            }
+        }
+    }
+}
+
 struct ApprovalDetailView: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.dismiss) var dismiss
@@ -568,7 +621,7 @@ struct PersonalPolicyDraftForm: View {
                         TextField("主体 UUID（显式指定）", text: $principal)
                         Button("生成新的主体 ID") { principal = UUID().uuidString.lowercased() }
                         DatePicker("有效期至", selection: $expiry, displayedComponents: [.date, .hourAndMinute])
-                        Text("选择启用的模板操作。服务会拒绝尚未支持的高风险审批操作。")
+                        Text("选择启用的模板操作。高风险操作会在每次执行前请求本机审批。")
                         ForEach(available) { action in
                             Toggle(isOn: Binding(get: { selected.contains(action.reference) }, set: { value in
                                 if value { selected.insert(action.reference) } else { selected.remove(action.reference) }

@@ -1,11 +1,13 @@
 import Foundation
 import Darwin
+import CryptoKit
 
 // Compile with apps/macos/Model.swift; exercises the same subprocess boundary as the app.
 @main
 struct UIContract {
     @MainActor
     static func main() async throws {
+        if CommandLine.arguments == [CommandLine.arguments[0], "--local-approval-boundary-only"] { try await localApprovalBoundary(); return }
         if CommandLine.arguments == [CommandLine.arguments[0], "--presence-boundary-only"] { try await presenceBoundary(); return }
         if CommandLine.arguments == [CommandLine.arguments[0], "--personal-policy-boundary-only"] { try await personalPolicyBoundary(); return }
         if CommandLine.arguments == [CommandLine.arguments[0], "--flow-boundary-only"] { try await flowBoundary(); return }
@@ -266,6 +268,187 @@ struct UIContract {
         model.status = ServiceStatus(state: "locked", format_version: 19, runtime_version: "fixture", sessions_active: 0, peer_security: "L1-dev", lab_enabled: false)
         try require(!model.acceptsOIDCCompletion(model.oidcFlowRevision, workspace: model.stateDirectory), "locked completion rejected")
         print("OIDC caller boundary: \(assertions) assertions passed; no Keychain or listeners used")
+    }
+
+    @MainActor
+    static func localApprovalBoundary() async throws {
+        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("rkui-local-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        defer { do { try FileManager.default.removeItem(at: root) } catch { fputs("local fixture cleanup failed\n", stderr) } }
+        var assertions = 0
+        func require(_ condition: @autoclosure () throws -> Bool, _ label: String) throws {
+            guard try condition() else { throw UIError(message: "FAILED: " + label) }; assertions += 1
+        }
+        func rejected(_ label: String, _ body: () throws -> Void) throws {
+            do { try body() } catch { assertions += 1; return }; throw UIError(message: "FAILED: " + label)
+        }
+        let id = UUID().uuidString.lowercased(), vault = UUID(), key = String(repeating: "a1", count: 32)
+        let expiry: Int64 = 4_102_444_800_000
+        let challenge: [String: Any] = ["record_type":"rekey.approval.challenge.v2","approval_request_id":id,
+            "tenant_id":UUID().uuidString,"principal_id":UUID().uuidString,"session_id":UUID().uuidString,
+            "action_id":UUID().uuidString,"action_version":1,"resource":["type":"fixture","id":"SYNTHETIC RESOURCE"],
+            "schema_id":"fixture/v1","parameter_sha256":String(repeating:"01",count:32),"policy_version":1,
+            "policy_sha256":String(repeating:"02",count:32),"policy_rule_id":UUID().uuidString,"mode":"one-time",
+            "approver":["kind":"local-presence"],"max_uses":1,"created_at_ms":1,"max_expires_at_ms":expiry]
+        let challengeText = String(decoding: try JSONSerialization.data(withJSONObject: challenge, options:[.sortedKeys]), as:UTF8.self)
+        let raw = "{\"record_type\":\"rekey.approval.review.v1\",\"challenge\":" + challengeText + ",\"action_name\":\"Trusted action\",\"origin\":\"https://example.com\",\"method\":\"POST\",\"canonical_request\":{\"body\":{\"n\":9007199254740993,\"text\":\"untrusted text\"},\"target\":{\"path\":\"/test\",\"params\":{},\"query\":{}},\"headers\":[]}}"
+        func response(_ text: String? = raw, state: String = "pending", requested: String? = nil) throws -> Data {
+            let bytes = Data((text ?? "").utf8)
+            let digest = SHA256.hash(data: Data("RKREVIEW\0\u{1}".utf8) + bytes).map { String(format:"%02x",$0) }.joined()
+            return try JSONSerialization.data(withJSONObject:["metadata":["record_type":"rekey.approval.local-review.v1",
+                "approval_request_id":requested ?? id,"review_sha256":digest,"state":state,"body_len":bytes.count],
+                "review_json":text as Any? ?? NSNull()])
+        }
+        let model = AppModel(stateDirectory: root.path)
+        func unlocked() -> ServiceStatus { ServiceStatus(state:"unlocked",format_version:24,runtime_version:"fixture",sessions_active:0,peer_security:"L1-dev",lab_enabled:false) }
+        model.status = unlocked()
+        func details() throws -> LocalApprovalDetails { try LocalApprovalDetails.parse(response(),id:id,workspace:root.path,revision:model.nativeFlowRevision) }
+        let snapshot = try details()
+        try require(snapshot.raw == Data(raw.utf8) && snapshot.text.contains("9007199254740993"), "raw review never roundtrips or rounds its number")
+        try require(snapshot.canDecide() && !snapshot.canDecide(at:Date(timeIntervalSince1970:Double(expiry)/1000)), "pending decision expires at exact boundary")
+        for state in ["approved","consumed","cancelled","expired"] {
+            let value = try LocalApprovalDetails.parse(response(state:state),id:id,workspace:root.path,revision:model.nativeFlowRevision)
+            try require(!value.canDecide(), "nonpending state cannot decide")
+        }
+        for state in ["consumed","cancelled","expired"] {
+            let value = try LocalApprovalDetails.parse(response(nil,state:state),id:id,workspace:root.path,revision:model.nativeFlowRevision)
+            try require(value.raw.isEmpty && !value.canDecide(), "terminal body release accepted without decision")
+        }
+        for state in ["pending","approved"] { try rejected("active state needs complete body") { _ = try LocalApprovalDetails.parse(response(nil,state:state),id:id,workspace:root.path,revision:model.nativeFlowRevision) } }
+        for field in ["body_len","review_sha256","approval_request_id","record_type"] {
+            var changed = try JSONSerialization.jsonObject(with:response()) as! [String:Any]
+            var meta = changed["metadata"] as! [String:Any]
+            meta[field] = field == "body_len" ? 0 : "wrong"
+            changed["metadata"] = meta
+            try rejected("mismatched metadata rejected") { _ = try LocalApprovalDetails.parse(JSONSerialization.data(withJSONObject:changed),id:id,workspace:root.path,revision:model.nativeFlowRevision) }
+        }
+        try rejected("changed content cannot reuse hash") {
+            var changed = try JSONSerialization.jsonObject(with:response()) as! [String:Any]
+            changed["review_json"] = raw.replacingOccurrences(of:"untrusted text",with:"untrusted evil")
+            _ = try LocalApprovalDetails.parse(JSONSerialization.data(withJSONObject:changed),id:id,workspace:root.path,revision:model.nativeFlowRevision)
+        }
+        let large = raw.replacingOccurrences(of:"untrusted text",with:String(repeating:"x",count:2*1024*1024+100))
+        let largeResponse = try response(large)
+        try require(try LocalApprovalDetails.parse(largeResponse,id:id,workspace:root.path,revision:model.nativeFlowRevision).raw.count > 2*1024*1024, "full review over legacy capture limit remains intact")
+        try rejected("decoded review above 4MiB rejected") { _ = try LocalApprovalDetails.parse(response(String(repeating:"x",count:LocalApprovalDetails.bodyLimit+1)),id:id,workspace:root.path,revision:model.nativeFlowRevision) }
+        let fixture = root.appendingPathComponent("cli.py"), callsFile = root.appendingPathComponent("calls.jsonl"), reviewFile = root.appendingPathComponent("review.json")
+        try response().write(to: reviewFile)
+        try JSONSerialization.data(withJSONObject:["vault_id":vault.uuidString,"mode":"personal","trust_installed":true,"bundle_persisted":true,"status":"active","version":1,"trust_sha256":String(repeating:"01",count:32)]).write(to:root.appendingPathComponent("policy.json"))
+        let script = """
+        #!/usr/bin/python3
+        import json,pathlib,sys
+        here=pathlib.Path(__file__).parent
+        args=sys.argv[3:]; body=sys.stdin.read()
+        with (here/'calls.jsonl').open('a') as f: f.write(json.dumps({'args':args,'body':body})+'\\n')
+        if args==['policy','status']: print((here/'policy.json').read_text())
+        elif args[:2]==['approval','review']: print((here/'review.json').read_text())
+        elif args[:2] in [['approval','approve'],['approval','reject']]:
+            if (here/'fail').exists(): print('synthetic outcome unknown',file=sys.stderr);sys.exit(2)
+            print(json.dumps({'approval_request_id':args[2],'state':'approved' if args[1]=='approve' else 'cancelled','expires_at_ms':4102444800000}))
+        else: print((here/'review.json').read_text())
+        """
+        try Data(script.utf8).write(to:fixture); try FileManager.default.setAttributes([.posixPermissions:0o700],ofItemAtPath:fixture.path)
+        let client = CLI(binary:fixture,stateDirectory:root.path)
+        func calls() throws -> [[String:Any]] {
+            guard FileManager.default.fileExists(atPath:callsFile.path) else { return [] }
+            return try String(contentsOf:callsFile,encoding:.utf8).split(separator:"\n").map { try JSONSerialization.jsonObject(with:Data($0.utf8)) as! [String:Any] }
+        }
+        func decisions() throws -> [[String:Any]] { try calls().filter { let a=$0["args"] as! [String]; return a.count>1 && ["approve","reject"].contains(a[1]) } }
+        try largeResponse.write(to:reviewFile)
+        try require(try client.localApprovalReview(id,revision:model.nativeFlowRevision).raw == Data(large.utf8), "actual subprocess review stdout uses enlarged bounded budget")
+        try rejected("ordinary command stdout keeps 2MiB limit") { _ = try client.run(["fixture","ordinary"]) }
+        try response().write(to:reviewFile)
+        await model.reviewLocalApproval(id,client:client,active:true)
+        try require(model.localApprovalDetails?.raw == snapshot.raw, "explicit read publishes checked raw snapshot")
+        for approve in [false,true] {
+            model.localApprovalDetails = try details()
+            try await model.decideLocalApproval(model.localApprovalDetails!,approve:approve,client:client,active:{true},readPresence:{ _ in key })
+            let row = try decisions().last!, args=row["args"] as! [String]
+            try require(args == ["approval",approve ? "approve":"reject",id,"--review-sha256",snapshot.metadata.review_sha256,"--presence","--password-stdin"], "decision exact CLI contract")
+            try require(row["body"] as? String == key+"\n" && !args.joined().contains(key), "actual K only enters anonymous stdin")
+            try require(model.localApprovalDetails?.state == (approve ? .approved:.cancelled) && !model.busy, "response state prevents repeated decision")
+        }
+        model.localApprovalDetails = try details()
+        let beforeCancel = try decisions().count
+        do { try await model.decideLocalApproval(model.localApprovalDetails!,approve:true,client:client,active:{true},readPresence:{ _ in throw UIError(message:"SYNTHETIC CANCEL") }); throw UIError(message:"cancel admitted") }
+        catch { try require(error.localizedDescription == "SYNTHETIC CANCEL", "system cancellation remains cancellation") }
+        try require(try decisions().count == beforeCancel && !model.busy, "cancel never submits")
+        final class Pause: @unchecked Sendable { let entered=DispatchSemaphore(value:0); let release=DispatchSemaphore(value:0) }
+        for change in 0..<5 {
+            model.stateDirectory=root.path; model.status=unlocked(); model.localApprovalDetails=try details()
+            let d=model.localApprovalDetails!, pause=Pause(), count=try decisions().count
+            var active = true
+            let task=Task { try await model.decideLocalApproval(d,approve:true,client:client,active:{active},readPresence:{ _ in pause.entered.signal();pause.release.wait();return key }) }
+            let entered=await withCheckedContinuation { continuation in DispatchQueue.global().async { continuation.resume(returning:pause.entered.wait(timeout:.now()+10) == .success) } }
+            try require(entered && model.presenceAuthenticating,"controlled reader reached without hardware")
+            model.nativeFlowBecameInactive()
+            try require(model.nativeFlowRevision==d.revision,"system authentication focus exception retained")
+            switch change { case 0:model.clearNativeFlow(); case 1:model.stateDirectory=root.appendingPathComponent("other").path; case 2:model.status=nil; case 3: model.localApprovalDetails=nil; default: active=false }
+            pause.release.signal()
+            var denied = false
+            do { try await task.value } catch { denied = true }
+            try require(denied, "late key result rejected")
+            try require(try decisions().count==count && !model.busy,"closed/workspace/lock/selection change drops late K")
+        }
+        model.stateDirectory=root.path;model.status=unlocked();model.localApprovalDetails=try details()
+        try Data().write(to:root.appendingPathComponent("fail"))
+        do { try await model.decideLocalApproval(model.localApprovalDetails!,approve:true,client:client,active:{true},readPresence:{ _ in key }); throw UIError(message:"uncertain success") }
+        catch { try require(model.localApprovalNeedsRefresh && error.localizedDescription.contains("不要自动重试"),"unknown result requires manual state query") }
+        let count=try decisions().count
+        var retryDenied = false
+        do { try await model.decideLocalApproval(model.localApprovalDetails!,approve:true,client:client,active:{true},readPresence:{ _ in key }) } catch { retryDenied = true }
+        try require(retryDenied, "uncertain retry denied before authentication")
+        try require(try decisions().count==count,"uncertain decision not repeated")
+        try FileManager.default.removeItem(at:root.appendingPathComponent("fail"))
+        await model.reviewLocalApproval(id,client:client,active:true)
+        try require(!model.localApprovalNeedsRefresh,"explicit state query clears uncertainty gate")
+        for nextResponse in [try response(state:"approved"), try response(state:"expired"), try response(raw.replacingOccurrences(of:"untrusted text",with:"changed request"))] {
+            model.localApprovalDetails = try details()
+            try nextResponse.write(to:reviewFile)
+            let before = try decisions().count
+            var denied = false
+            do { try await model.decideLocalApproval(model.localApprovalDetails!,approve:true,client:client,active:{true},readPresence:{ _ in key }) } catch { denied = true }
+            try require(denied && decisions().count == before, "latest state/hash change after authentication never submits")
+        }
+        try response().write(to:reviewFile)
+        model.localApprovalDetails = try details(); model.busy = true
+        var busyDenied = false
+        do { try await model.decideLocalApproval(model.localApprovalDetails!,approve:true,client:client,active:{true},readPresence:{ _ in throw UIError(message:"reader must not run") }) }
+        catch { busyDenied = error.localizedDescription.contains("上下文已失效") }
+        try require(busyDenied, "busy reentry rejected before authentication")
+        model.busy = false
+        let pending = try JSONDecoder().decode(PendingApproval.self,from:JSONSerialization.data(withJSONObject:["approval_request_id":id,"action_id":UUID().uuidString,"action_version":1,"session_id":UUID().uuidString,"max_expires_at_ms":expiry,"parameter_sha256":"canary","approver":["kind":"local-presence"]]))
+        final class Counter: @unchecked Sendable {
+            private let lock=NSLock();private var n=0
+            func add() { lock.lock();n+=1;lock.unlock() };var value:Int { lock.lock();defer{lock.unlock()};return n }
+        }
+        let permission=Counter(), sent=Counter(), notificationCalls=try calls().count
+        try await model.receiveApprovals([pending],send:{ _ in sent.add() })
+        try require(sent.value==0 && !model.approvalNotificationsEnabled,"default polling cannot request permission or send")
+        await model.setApprovalNotifications(true,request:{ permission.add();return true })
+        try await model.receiveApprovals([pending],send:{ _ in sent.add() })
+        try await model.receiveApprovals([pending],send:{ _ in sent.add() })
+        try require(permission.value==1 && sent.value==1 && model.notifiedApprovalIDs.count==1,"explicit permission and bounded dedup only notify once")
+        await model.setApprovalNotifications(false,request:{ permission.add();return true })
+        try await model.receiveApprovals([],send:{ _ in sent.add() })
+        try require(permission.value==1 && model.notifiedApprovalIDs.isEmpty && calls().count==notificationCalls,"disable/notification polling perform zero CLI proof reads or auth")
+        var oversizedDenied = false
+        do { try await model.receiveApprovals(Array(repeating:pending,count:129),send:{ _ in sent.add() }) } catch { oversizedDenied = true }
+        try require(oversizedDenied, "oversized inbox rejected")
+        await model.setApprovalNotifications(true,request:{ false })
+        try require(!model.approvalNotificationsEnabled, "denied notification permission stays disabled")
+        await model.setApprovalNotifications(true,request:{ true })
+        let batch = try (0..<128).map { _ -> PendingApproval in
+            let value:[String:Any] = ["approval_request_id":UUID().uuidString,"action_id":pending.action_id,"action_version":1,"session_id":pending.session_id,"max_expires_at_ms":expiry,"parameter_sha256":"canary","approver":["kind":"local-presence"]]
+            return try JSONDecoder().decode(PendingApproval.self,from:JSONSerialization.data(withJSONObject:value))
+        }
+        try await model.receiveApprovals(batch,send:{ _ in sent.add() })
+        try require(model.notifiedApprovalIDs.count == 128, "notification dedup is bounded by the exact server inbox cap")
+        await model.setApprovalNotifications(false,request:{ throw UIError(message:"must not request") })
+        let form = try String(contentsOfFile:"apps/macos/Forms.swift",encoding:.utf8)
+        try require(form.contains("Button(\"拒绝\") { decide(details, approve: false) }.keyboardShortcut(.defaultAction).focused($rejectFocused)"),"local default Return/focus is reject")
+        try require(form.contains("Text(details.text)") && form.contains(".onDisappear { model.clearNativeFlow() }"),"full raw display and view-close invalidation wired")
+        print("PASS: \(assertions) local approval raw-byte/transport/lifecycle/notification assertions. Synthetic only; no Keychain, Secure Enclave or notification center access.")
     }
 
     @MainActor

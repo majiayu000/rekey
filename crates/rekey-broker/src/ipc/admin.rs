@@ -66,7 +66,9 @@ fn admin_body_limit(message_type: u16, managed: bool) -> u32 {
         | admin_msg::CREDENTIAL_ROTATE_MACOS_KEYCHAIN
         | admin_msg::CREDENTIAL_ROTATE_ONEPASSWORD_CONNECT
         | admin_msg::CREDENTIAL_ROTATE_VAULT_DYNAMIC => ipc::ADMIN_SECRET_BODY_MAX_BYTES,
-        admin_msg::CREDENTIAL_REVOKE
+        admin_msg::APPROVAL_LOCAL_APPROVE
+        | admin_msg::APPROVAL_LOCAL_REJECT
+        | admin_msg::CREDENTIAL_REVOKE
         | admin_msg::ACTION_CREATE
         | admin_msg::ACTION_UPDATE
         | admin_msg::ACTION_DISABLE
@@ -853,6 +855,21 @@ async fn dispatch_operation(
             };
             Ok((json(&response)?, Zeroizing::new(Vec::new())))
         }
+        admin_msg::APPROVAL_LOCAL_REVIEW => {
+            if !frame.body.is_empty() {
+                return Err(BrokerError::Frame(ipc::FrameError::InvalidField));
+            }
+            let get: ipc::ApprovalGetMeta = meta(frame)?;
+            let _owner = ctx.lifecycle.coordinate_until(request_deadline).await?;
+            ctx.lifecycle.reject_if_not_running()?;
+            let (metadata, body) = ctx
+                .sessions
+                .local_review(get.approval_request_id, crate::now_ts()?)?;
+            Ok((json(&metadata)?, body))
+        }
+        admin_msg::APPROVAL_LOCAL_APPROVE | admin_msg::APPROVAL_LOCAL_REJECT => {
+            local_approval_decision(frame, ctx, request_deadline).await
+        }
         admin_msg::APPROVAL_PENDING => {
             empty_request(frame)?;
             ctx.lifecycle.reject_if_not_running()?;
@@ -987,6 +1004,137 @@ fn reject_if_deadline_elapsed(deadline: tokio::time::Instant) -> Result<(), Brok
     Ok(())
 }
 
+async fn local_approval_decision(
+    frame: &IncomingFrame,
+    ctx: &BrokerCtx,
+    deadline: tokio::time::Instant,
+) -> Result<AdminResponse, BrokerError> {
+    let decision: ipc::LocalApprovalDecisionMeta = meta(frame)?;
+    let proof = SecretInput::from_slice(ipc::parse_local_approval_proof_body(&frame.body)?);
+    let _owner = ctx.lifecycle.coordinate_until(deadline).await?;
+    ctx.lifecycle.reject_if_not_running()?;
+    let local = ctx
+        .sessions
+        .local_approval(decision.approval_request_id, crate::now_ts()?)?;
+    if local.review_sha256 != decision.expected_review_sha256 {
+        return Err(BrokerError::Denied("approval-review-mismatch"));
+    }
+    let approve = frame.header.message_type == admin_msg::APPROVAL_LOCAL_APPROVE;
+    if local.state != ipc::LocalApprovalState::Pending
+        && (approve || local.state != ipc::LocalApprovalState::Approved)
+    {
+        authority_until(
+            deadline,
+            ctx.authority.verify_proof(UnlockProof::Presence(proof)),
+        )
+        .await?;
+        reject_if_deadline_elapsed(deadline)?;
+        let current = ctx
+            .sessions
+            .local_approval(decision.approval_request_id, crate::now_ts()?)?;
+        return Ok((json(&current.response())?, Zeroizing::new(Vec::new())));
+    }
+    ctx.check_local_approval_policy(&local.challenge).await?;
+    let action = authority_until(
+        deadline,
+        ctx.authority
+            .action_get(local.challenge.action_id, local.challenge.action_version),
+    )
+    .await?;
+    if action.state == ActionState::Disabled || !action.action.enabled {
+        return Err(rekey_domain::DomainError::ActionDisabled.into());
+    }
+    let approval_id = if approve {
+        Some(crate::random_id(
+            rekey_domain::ids::ApprovalId::from_random_bytes,
+        )?)
+    } else {
+        None
+    };
+    let challenge = &local.challenge;
+    let digest = |value: &str| -> Result<[u8; 32], BrokerError> {
+        data_encoding::HEXLOWER
+            .decode(value.as_bytes())
+            .ok()
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or(BrokerError::Denied("approval-state-conflict"))
+    };
+    let draft = AuditDraft {
+        request_id: None,
+        session_id: Some(challenge.session_id),
+        action_id: Some(challenge.action_id),
+        action_version: Some(challenge.action_version),
+        credential_id: None,
+        credential_version: None,
+        authorization: Some(Box::new(rekey_vault::model::AuthorizationEvidence {
+            principal_id: challenge.principal_id,
+            policy_version: challenge.policy_version,
+            policy_digest: digest(&challenge.policy_sha256)?,
+            policy_rule_id: Some(challenge.policy_rule_id),
+            resource_type: challenge.resource.resource_type.clone(),
+            resource_id: challenge.resource.id.clone(),
+            parameter_hash: digest(&challenge.parameter_sha256)?,
+        })),
+        approval: Some(rekey_vault::model::ApprovalEvidence {
+            approval_request_id: challenge.approval_request_id,
+            approval_id,
+            approver_id: None,
+        }),
+        event_type: if approve {
+            event_type::APPROVAL_APPROVED
+        } else {
+            event_type::APPROVAL_REJECTED
+        },
+        outcome: outcome::SUCCESS,
+        reason_code: "local-presence".into(),
+        upstream_status: None,
+        latency_ms: None,
+    };
+    let not_after = deadline.into_std().min(local.deadline);
+    let result = authority_until(
+        deadline,
+        ctx.authority.authorize_local_approval(
+            proof,
+            draft,
+            not_after,
+            challenge.max_expires_at_ms,
+        ),
+    )
+    .await;
+    if matches!(
+        result,
+        Err(BrokerError::Authority(AuthorityError::AuthorityBusy))
+    ) {
+        ctx.sessions
+            .cancel_local_unconfirmed(challenge.approval_request_id);
+        return Err(BrokerError::ApprovalOutcomeUnconfirmed);
+    }
+    result?;
+    let publication = (|| {
+        let now = crate::now_ts()?;
+        if std::time::Instant::now() >= not_after
+            || now.as_unix_ms() < challenge.created_at_ms
+            || now.as_unix_ms() >= challenge.max_expires_at_ms
+        {
+            return Err(BrokerError::ApprovalOutcomeUnconfirmed);
+        }
+        ctx.sessions.decide_local(
+            challenge.approval_request_id,
+            &local.review_sha256,
+            approval_id,
+            now,
+        )
+    })();
+    match publication {
+        Ok(response) => Ok((json(&response)?, Zeroizing::new(Vec::new()))),
+        Err(_) => {
+            ctx.sessions
+                .cancel_local_unconfirmed(challenge.approval_request_id);
+            Err(BrokerError::ApprovalOutcomeUnconfirmed)
+        }
+    }
+}
+
 fn session_audit(event_type: &'static str, session_id: SessionId) -> AuditDraft {
     AuditDraft {
         request_id: None,
@@ -1094,6 +1242,206 @@ fn ensure_credential_catalog_fits(
 mod tests {
     use super::*;
     use rekey_domain::ids::CredentialId;
+
+    #[tokio::test]
+    async fn queued_local_decision_timeout_cancels_nonretryably_and_late_commit_cannot_publish() {
+        use aws_lc_rs::signature::{Ed25519KeyPair, KeyPair};
+        use rekey_domain::authorization::{ApprovalMode, ApproverSpec, ResourceRef, SchemaId};
+        use rekey_domain::ids::{ApprovalRequestId, PolicyRuleId, PolicySignerId};
+        let (dir, ctx, join, terminal) = crate::runtime::tests::oidc_test_ctx().await;
+        let proof = || UnlockProof::Password(SecretInput::from_slice(b"fixture-proof"));
+        let credential = ctx
+            .authority
+            .credential_add(
+                rekey_domain::credential::CredentialLabel::new("local-deadline").unwrap(),
+                CredentialKind::OpaqueToken,
+                SecretInput::from_slice(b"synthetic"),
+                proof(),
+            )
+            .await
+            .unwrap();
+        let definition = definition_from_meta(serde_json::from_value(serde_json::json!({
+            "name":"local-deadline", "credential_id":credential.id, "origin":"https://api.example.com", "method":"POST", "exact_path":"/test", "auth_header":"authorization", "auth_prefix":"Bearer ", "timeout_ms":1000, "request_max_bytes":1024, "allowed_extra_headers":[], "response_max_bytes":1024, "allowed_response_headers":[]
+        })).unwrap()).unwrap();
+        let action = ctx
+            .authority
+            .action_upsert(None, definition, proof())
+            .await
+            .unwrap();
+        let document =
+            Ed25519KeyPair::generate_pkcs8(&aws_lc_rs::rand::SystemRandom::new()).unwrap();
+        let signer = Ed25519KeyPair::from_pkcs8(document.as_ref()).unwrap();
+        let signer_id = PolicySignerId::new_random();
+        let trust = rekey_policy::ValidatedPolicyTrust::from_parts(
+            signer_id,
+            rekey_policy::PolicyVerificationKey::from_bytes(
+                rekey_domain::authorization::PolicyTrustAlgorithm::Ed25519,
+                signer.public_key().as_ref(),
+            )
+            .unwrap(),
+        );
+        ctx.install_policy_trust_until(trust.clone(), proof(), admin_mutation_deadline())
+            .await
+            .unwrap();
+        let now = crate::now_ts().unwrap();
+        let mut bundle = serde_json::json!({"format_version":1,"signer_id":signer_id,"snapshot":{"format_version":4,"version":1,"expires_at_ms":now.as_unix_ms()+60000,"approvers":[],"workload_identities":[],"bindings":[],"rules":[]}});
+        let mut message = b"RKPOLICY\0\x01".to_vec();
+        message.extend_from_slice(&serde_jcs::to_vec(&bundle).unwrap());
+        bundle["signature"] = data_encoding::BASE64URL_NOPAD
+            .encode(signer.sign(&message).as_ref())
+            .into();
+        let status = ctx.authority.status().await.unwrap();
+        ctx.activate_policy_until(
+            ipc::PolicyActivateMeta {
+                expected_vault_id: status.vault_id,
+                expected_trust_sha256: data_encoding::HEXLOWER
+                    .encode(&rekey_policy::policy_trust_sha256(signer_id, trust.key()).unwrap()),
+                bundle_json: serde_json::from_value(bundle).unwrap(),
+            },
+            proof(),
+            admin_mutation_deadline(),
+        )
+        .await
+        .unwrap();
+        let session_id = SessionId::new_random();
+        let action_ref = rekey_domain::capability::ActionVersionRef {
+            action_id: action.id,
+            version: action.version,
+        };
+        let grant = SessionGrant::new(
+            session_id,
+            Principal {
+                tenant_id: TenantId::from_bytes(*status.vault_id.as_bytes()).unwrap(),
+                principal_id: PrincipalId::new_random(),
+                session_id,
+            },
+            vec![action_ref],
+            now,
+            60000,
+            1,
+        )
+        .unwrap();
+        let token = ctx.sessions.create(grant.clone()).unwrap();
+        let mut permit = ctx.sessions.acquire(&token, action_ref, now).unwrap();
+        let policy = ctx
+            .authority
+            .policy_material()
+            .await
+            .unwrap()
+            .bundle
+            .unwrap();
+        let id = ApprovalRequestId::new_random();
+        let challenge = ipc::ApprovalChallenge {
+            record_type: "rekey.approval.challenge.v2".into(),
+            approval_request_id: id,
+            tenant_id: grant.principal.tenant_id,
+            principal_id: grant.principal.principal_id,
+            session_id,
+            action_id: action.id,
+            action_version: action.version,
+            resource: ResourceRef::new("test-action".into(), action.id.to_string()).unwrap(),
+            schema_id: SchemaId::new("test/v1".into()).unwrap(),
+            parameter_sha256: "00".repeat(32),
+            policy_version: 1,
+            policy_sha256: data_encoding::HEXLOWER.encode(&policy.policy_digest),
+            policy_rule_id: PolicyRuleId::new_random(),
+            mode: ApprovalMode::OneTime,
+            approver: ApproverSpec::LocalPresence {},
+            max_uses: 1,
+            created_at_ms: now.as_unix_ms(),
+            max_expires_at_ms: now.as_unix_ms() + 60000,
+        };
+        let hash = "11".repeat(32);
+        ctx.sessions
+            .publish_local_pending(
+                &mut permit,
+                challenge,
+                b"{}".to_vec(),
+                hash.clone(),
+                std::time::Instant::now(),
+                std::time::Instant::now() + Duration::from_secs(60),
+            )
+            .unwrap();
+        drop(permit);
+        let (key, _) = ctx.authority.desktop_remember(proof(), None).await.unwrap();
+        let metadata = serde_json::to_vec(&ipc::LocalApprovalDecisionMeta {
+            approval_request_id: id,
+            expected_review_sha256: hash,
+        })
+        .unwrap();
+        let mut body = Vec::new();
+        ipc::encode_proof_body(ProofKind::Presence, &key, &mut body);
+        let frame = IncomingFrame {
+            header: ipc::FrameHeader {
+                channel: Channel::Admin,
+                flags: 0,
+                message_type: admin_msg::APPROVAL_LOCAL_APPROVE,
+                request_id: rekey_domain::ids::RequestId::new_random(),
+                metadata_len: metadata.len() as u32,
+                body_len: body.len() as u32,
+            },
+            metadata,
+            body: Zeroizing::new(body),
+        };
+        let db =
+            rusqlite::Connection::open(rekey_vault::paths::vault_db(&dir.path().join("state")))
+                .unwrap();
+        db.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let error = local_approval_decision(
+            &frame,
+            &ctx,
+            tokio::time::Instant::now() + Duration::from_millis(100),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code(), "APPROVAL_OUTCOME_UNCONFIRMED");
+        assert!(!error.retryable());
+        let (mut writer, mut reader) = UnixStream::pair().unwrap();
+        let request_id = rekey_domain::ids::RequestId::new_random();
+        let (sent, received) = tokio::join!(
+            write_admin_error(
+                &mut writer,
+                admin_msg::APPROVAL_LOCAL_APPROVE,
+                request_id,
+                &error
+            ),
+            read_frame(&mut reader, Channel::Admin, |_| 0)
+        );
+        sent.unwrap();
+        let envelope: ipc::ErrorEnvelope =
+            serde_json::from_slice(&received.unwrap().metadata).unwrap();
+        assert_eq!(envelope.code, "APPROVAL_OUTCOME_UNCONFIRMED");
+        assert!(!envelope.retryable);
+        assert!(envelope.approval.is_none());
+        assert_eq!(
+            ctx.sessions
+                .local_approval(id, crate::now_ts().unwrap())
+                .unwrap()
+                .state,
+            ipc::LocalApprovalState::Cancelled
+        );
+        db.execute_batch("ROLLBACK").unwrap();
+        // The queued Worker command finishes after the caller timed out. Its own
+        // commit deadline prevents a late audit/grant, and a query acts as a barrier.
+        assert_eq!(ctx.authority.status().await.unwrap().state, "unlocked");
+        let response = local_approval_decision(&frame, &ctx, admin_mutation_deadline())
+            .await
+            .unwrap();
+        let state: ipc::LocalApprovalStateResponse = serde_json::from_slice(&response.0).unwrap();
+        assert_eq!(state.state, ipc::LocalApprovalState::Cancelled);
+        let count: i64 = db
+            .query_row(
+                "SELECT count(*) FROM audit_events WHERE event_type='approval.approved'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
+        ctx.authority.shutdown(Some(proof())).await.unwrap();
+        drop(ctx);
+        terminal.await.unwrap();
+        join.join().unwrap();
+    }
 
     #[tokio::test]
     async fn template_install_busy_wire_denies_retry_without_changing_other_operations() {
@@ -1583,6 +1931,7 @@ mod tests {
                     query: Default::default(),
                     body: Vec::new(),
                     approval_grants: Vec::new(),
+                    local_approval_request_id: None,
                 })
                 .await
                 .err()

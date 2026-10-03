@@ -596,6 +596,7 @@ fn audit_export_fixture(expire_second_page: bool) {
                     code: "AUDIT_SNAPSHOT_EXPIRED".into(),
                     message: "audit snapshot expired; restart the query or export".into(),
                     retryable: false,
+                    approval: None,
                 })
                 .unwrap()
             } else {

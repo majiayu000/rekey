@@ -3,6 +3,8 @@ import SwiftUI
 import AppKit
 import Security
 import Darwin
+import CryptoKit
+import UserNotifications
 
 struct UIError: LocalizedError {
     let message: String
@@ -64,7 +66,7 @@ struct CLI: Sendable {
             if process.isRunning { process.terminate() }
             throw UIError(message: "无法传递输入。操作结果未确认，请刷新后检查，勿自动重试。")
         }
-        let output = OutputCapture()
+        let output = OutputCapture(limit: arguments.prefix(2) == ["approval", "review"] ? LocalApprovalDetails.stdoutLimit : 2 * 1024 * 1024)
         output.read(stdout.fileHandleForReading, process: process)
         process.waitUntilExit()
         group.wait()
@@ -113,10 +115,12 @@ private final class OutputCapture: @unchecked Sendable {
     // Written by one reader and inspected only after joining that reader.
     var data = Data()
     var failed = false
+    private let limit: Int
+    init(limit: Int = 2 * 1024 * 1024) { self.limit = limit }
     func read(_ file: FileHandle, process: Process) {
         do {
             while let chunk = try file.read(upToCount: 16384), !chunk.isEmpty {
-                if data.count + chunk.count > 2 * 1024 * 1024 {
+                if data.count + chunk.count > limit {
                     failed = true
                     if process.isRunning { process.terminate() }
                     break
@@ -410,6 +414,94 @@ struct ApprovalDetails: Identifiable {
         actions.first { $0.id == envelope.challenge.action_id && $0.version > 0 && UInt64($0.version) == envelope.challenge.action_version }
     }
 }
+// The daemon owns normalization. Decode only display metadata; retain request JSON bytes.
+enum LocalApprovalState: String, Decodable, Sendable {
+    case pending, approved, consumed, cancelled, expired
+    var terminal: Bool { self == .consumed || self == .cancelled || self == .expired }
+    var label: String {
+        switch self { case .pending: return "等待决定"; case .approved: return "已批准，等待 Agent"; case .consumed: return "已使用"; case .cancelled: return "已拒绝或取消"; case .expired: return "已过期" }
+    }
+}
+struct LocalApprovalStateResponse: Decodable {
+    let approval_request_id: String
+    let state: LocalApprovalState
+    let expires_at_ms: Int64
+}
+struct LocalApprovalDetails: Identifiable {
+    static let bodyLimit = 4 * 1024 * 1024
+    static let stdoutLimit = 8 * 1024 * 1024 + 65536
+    struct Metadata: Decodable {
+        let record_type: String
+        let approval_request_id: String
+        let review_sha256: String
+        let state: LocalApprovalState
+        let body_len: Int
+    }
+    struct Review: Decodable {
+        let record_type: String
+        let challenge: ApprovalChallenge
+        let action_name: String
+        let origin: String
+        let method: String
+    }
+    private struct Response: Decodable { let metadata: Metadata; let review_json: String? }
+    let metadata: Metadata
+    let review: Review?
+    let raw: Data
+    let workspace: String
+    let revision: UUID
+    var state: LocalApprovalState
+    var id: String { metadata.approval_request_id }
+    var text: String { String(decoding: raw, as: UTF8.self) }
+    func canDecide(at now: Date = Date()) -> Bool {
+        state == .pending && review.map { now.timeIntervalSince1970 * 1000 < Double($0.challenge.max_expires_at_ms) } == true
+    }
+    static func parse(_ data: Data, id: String, workspace: String, revision: UUID) throws -> Self {
+        guard data.count <= stdoutLimit else { throw UIError(message: "审批响应超过上限。") }
+        let value = try JSONDecoder().decode(Response.self, from: data)
+        let meta = value.metadata
+        guard UUID(uuidString: id) != nil, meta.approval_request_id == id,
+              meta.record_type == "rekey.approval.local-review.v1", (0...bodyLimit).contains(meta.body_len),
+              meta.review_sha256.utf8.count == 64,
+              meta.review_sha256.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+            throw UIError(message: "审批响应与所选请求不一致。")
+        }
+        let raw = value.review_json.map { Data($0.utf8) } ?? Data()
+        guard raw.count == meta.body_len else { throw UIError(message: "审批正文不完整。") }
+        let review: Review?
+        if raw.isEmpty {
+            guard meta.state.terminal, value.review_json == nil else { throw UIError(message: "待处理的审批缺少完整正文。") }
+            review = nil
+        } else {
+            let digest = SHA256.hash(data: Data("RKREVIEW\0\u{1}".utf8) + raw).map { String(format: "%02x", $0) }.joined()
+            guard digest == meta.review_sha256 else { throw UIError(message: "审批正文校验失败，请重新读取。") }
+            let decoded = try JSONDecoder().decode(Review.self, from: raw)
+            guard decoded.record_type == "rekey.approval.review.v1", decoded.challenge.record_type == "rekey.approval.challenge.v2",
+                  decoded.challenge.approval_request_id == id, case .localPresence = decoded.challenge.approver else {
+                throw UIError(message: "此正文不是所选本机审批请求。")
+            }
+            review = decoded
+        }
+        return Self(metadata: meta, review: review, raw: raw, workspace: workspace, revision: revision, state: meta.state)
+    }
+}
+extension CLI {
+    func localApprovalReview(_ id: String, revision: UUID) throws -> LocalApprovalDetails {
+        try LocalApprovalDetails.parse(run(["approval", "review", id]), id: id, workspace: stateDirectory, revision: revision)
+    }
+    func decideLocalApproval(_ details: LocalApprovalDetails, approve: Bool, proof: String) throws -> LocalApprovalStateResponse {
+        let key = try PresenceKey.validated(proof)
+        let data = try run(["approval", approve ? "approve" : "reject", details.id, "--review-sha256", details.metadata.review_sha256,
+                            "--presence", "--password-stdin"], input: key + "\n", redacting: [key])
+        let response = try JSONDecoder().decode(LocalApprovalStateResponse.self, from: data)
+        guard response.approval_request_id == details.id,
+              response.expires_at_ms == details.review?.challenge.max_expires_at_ms else {
+            throw UIError(message: "审批决定响应不匹配，结果未确认。请查询状态，不要自动重试。")
+        }
+        return response
+    }
+}
+
 struct AuditEvent: Decodable, Identifiable {
     let sequence: Int
     let event_type: String
@@ -544,6 +636,13 @@ final class AppModel: ObservableObject {
     @Published var policy: PolicyStatus?
     @Published var approvals: [PendingApproval] = []
     @Published var approvalDetails: ApprovalDetails?
+    @Published var localApprovalDetails: LocalApprovalDetails?
+    @Published private(set) var localApprovalNeedsRefresh = false
+    @Published private(set) var approvalNotificationsEnabled = false
+    @Published private(set) var approvalNotificationBusy = false
+    @Published private(set) var approvalNotificationMessage: String?
+    private(set) var notifiedApprovalIDs = Set<String>()
+    private var notificationRevision = UUID()
     @Published var showPolicyDraft = false
     @Published var showTemplate = false
     @Published private(set) var nativeFlowRevision = UUID()
@@ -574,7 +673,7 @@ final class AppModel: ObservableObject {
     @Published var auditOutcome = ""
     @Published var stateDirectory: String { didSet {
         if oldValue != stateDirectory {
-            clearNativeFlow(); clearOIDCLogin(); oidcProfileFile = nil; oidcSessionFile = nil; oidcIdentity = nil
+            notifiedApprovalIDs.removeAll(); clearNativeFlow(); clearOIDCLogin(); oidcProfileFile = nil; oidcSessionFile = nil; oidcIdentity = nil
         }
     } }
     private var launchedService: Process?
@@ -657,7 +756,7 @@ final class AppModel: ObservableObject {
         revision == oidcFlowRevision && workspace == stateDirectory && unlocked
     }
     func clearNativeFlow() {
-        nativeFlowRevision = UUID(); showPolicyDraft = false; approvalDetails = nil
+        nativeFlowRevision = UUID(); showPolicyDraft = false; approvalDetails = nil; localApprovalDetails = nil; localApprovalNeedsRefresh = false
         showTemplate = false
         if operation?.reveal != nil || presenceAuthenticating { operation = nil }
     }
@@ -863,6 +962,7 @@ final class AppModel: ObservableObject {
         clearNativeFlow(); clearOIDCLogin()
         oidcSessionFile = nil; oidcIdentity = nil
         desktopToken = nil; visibleSecret = nil; copiedCredential = nil
+        notifiedApprovalIDs.removeAll()
         credentials = []; actions = []; approvals = []; approvalDetails = nil; policy = nil; audit = nil; selectedCredential = nil
     }
     func changeDirectory(_ path: String) {
@@ -887,7 +987,15 @@ final class AppModel: ObservableObject {
             status = nil; clearCache(); connectionError = error.localizedDescription
             return
         }
-        if passive { return }
+        if passive {
+            if unlocked && approvalNotificationsEnabled {
+                do {
+                    let items = try await Task.detached { try client.decode(PendingList.self, ["approval", "pending"]) }.value.challenges
+                    if client.stateDirectory == stateDirectory && unlocked { try await receiveApprovals(items) }
+                } catch { approvalNotificationMessage = "无法刷新审批提醒，请手动查看收件箱。" }
+            }
+            return
+        }
         do {
             if unlocked {
                 let lists = try await Task.detached {
@@ -901,7 +1009,8 @@ final class AppModel: ObservableObject {
             case .policy:
                 policy = try await Task.detached { try client.decode(PolicyStatus.self, ["policy", "status"]) }.value
             case .approvals where unlocked:
-                approvals = try await Task.detached { try client.decode(PendingList.self, ["approval", "pending"]) }.value.challenges
+                let items = try await Task.detached { try client.decode(PendingList.self, ["approval", "pending"]) }.value.challenges
+                if client.stateDirectory == stateDirectory && unlocked { try await receiveApprovals(items) }
             case .audit:
                 var args = ["audit", "list", "--limit", "50"]
                 if !auditOutcome.isEmpty { args += ["--outcome", auditOutcome] }
@@ -1101,6 +1210,7 @@ final class AppModel: ObservableObject {
         busy = false
     }
     func reviewApproval(_ item: PendingApproval) async {
+        if case .localPresence = item.approver { await reviewLocalApproval(item.id); return }
         guard !busy, unlocked else { return }
         busy = true; error = nil; approvalDetails = nil
         defer { busy = false }
@@ -1110,6 +1220,100 @@ final class AppModel: ObservableObject {
             finishApprovalReview(.success(details), revision: revision, workspace: client.stateDirectory, active: NSApp.isActive)
         } catch {
             finishApprovalReview(.failure(error), revision: revision, workspace: client.stateDirectory, active: NSApp.isActive)
+        }
+    }
+    func reviewLocalApproval(_ id: String, client injectedClient: CLI? = nil, active: Bool? = nil) async {
+        guard !busy, unlocked else { return }
+        busy = true; error = nil
+        defer { busy = false }
+        let client = injectedClient ?? cli, revision = nativeFlowRevision
+        do {
+            let details = try await Task.detached { try client.localApprovalReview(id, revision: revision) }.value
+            guard (active ?? NSApp.isActive), acceptsNativeCompletion(revision, workspace: client.stateDirectory), !Task.isCancelled else { return }
+            localApprovalDetails = details; localApprovalNeedsRefresh = false
+        } catch {
+            if acceptsNativeCompletion(revision, workspace: client.stateDirectory) { self.error = error.localizedDescription }
+        }
+    }
+    func decideLocalApproval(_ details: LocalApprovalDetails, approve: Bool, client injectedClient: CLI? = nil,
+                             active: @MainActor () -> Bool = { NSApp?.isActive == true },
+                             readPresence: @escaping @Sendable (UUID) throws -> String = { try PresenceKey.read(vaultID: $0) }) async throws {
+        guard !busy, localApprovalCurrent(details), !localApprovalNeedsRefresh else { throw UIError(message: "审批上下文已失效，请重新查看请求。") }
+        busy = true
+        defer { busy = false }
+        let client = injectedClient ?? cli
+        var submitted = false
+        do {
+            let (key, _) = try await readPresenceProof(client: client, revision: details.revision, read: readPresence)
+            guard localApprovalCurrent(details), active(), !Task.isCancelled else { throw UIError(message: "认证期间审批或窗口状态已改变，未提交决定。") }
+            let latest = try await Task.detached { try client.localApprovalReview(details.id, revision: details.revision) }.value
+            guard localApprovalCurrent(details), active(), latest.canDecide(), latest.raw == details.raw,
+                  latest.metadata.review_sha256 == details.metadata.review_sha256, !Task.isCancelled else {
+                throw UIError(message: "审批已过期或状态改变，请重新查看；未提交决定。")
+            }
+            submitted = true
+            let response = try await Task.detached { try client.decideLocalApproval(details, approve: approve, proof: key) }.value
+            guard acceptsNativeCompletion(details.revision, workspace: details.workspace), localApprovalDetails?.id == details.id else { return }
+            submitted = false
+            localApprovalDetails?.state = response.state
+            approvals.removeAll { $0.id == details.id }
+            if injectedClient == nil {
+                let items = try await Task.detached { try client.decode(PendingList.self, ["approval", "pending"]) }.value.challenges
+                if acceptsNativeCompletion(details.revision, workspace: details.workspace) { try await receiveApprovals(items) }
+            }
+        } catch {
+            if submitted && acceptsNativeCompletion(details.revision, workspace: details.workspace) {
+                localApprovalNeedsRefresh = true
+                throw UIError(message: "审批结果未确认，请查询状态，不要自动重试。\n" + error.localizedDescription)
+            }
+            throw error
+        }
+    }
+    private func localApprovalCurrent(_ details: LocalApprovalDetails) -> Bool {
+        acceptsNativeCompletion(details.revision, workspace: details.workspace) && details.canDecide() &&
+        localApprovalDetails?.id == details.id && localApprovalDetails?.metadata.review_sha256 == details.metadata.review_sha256 &&
+        localApprovalDetails?.state == .pending
+    }
+    func setApprovalNotifications(_ enabled: Bool,
+                                  request: @escaping @Sendable () async throws -> Bool = {
+                                      try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert])
+                                  }) async {
+        notificationRevision = UUID()
+        let revision = notificationRevision
+        if !enabled { approvalNotificationsEnabled = false; approvalNotificationMessage = nil; return }
+        guard !approvalNotificationBusy else { return }
+        approvalNotificationBusy = true
+        defer { approvalNotificationBusy = false }
+        do {
+            let granted = try await request()
+            guard revision == notificationRevision else { return }
+            approvalNotificationsEnabled = granted
+            approvalNotificationMessage = granted ? "已启用静态提醒；通知不会批准请求。" : "未获得通知权限，可继续手动查看收件箱。"
+        } catch {
+            if revision == notificationRevision { approvalNotificationsEnabled = false; approvalNotificationMessage = "通知权限请求失败，请稍后手动开启。" }
+        }
+    }
+    func receiveApprovals(_ items: [PendingApproval],
+                          send: @escaping @Sendable (String) async throws -> Void = { id in
+                              let center = UNUserNotificationCenter.current()
+                              guard await center.notificationSettings().authorizationStatus == .authorized else { throw UIError(message: "通知权限不可用。") }
+                              let content = UNMutableNotificationContent()
+                              content.title = "Rekey 有待审批请求"
+                              content.body = "请打开 Rekey 收件箱，查看完整请求后作出决定。"
+                              try await center.add(UNNotificationRequest(identifier: "rekey.approval." + id, content: content, trigger: nil))
+                          }) async throws {
+        guard items.count <= 128, Set(items.map(\.id)).count == items.count else { throw UIError(message: "审批列表超过上限或包含重复请求。") }
+        approvals = items
+        let pending = Set(items.filter { if case .localPresence = $0.approver { return true }; return false }.map(\.id))
+        notifiedApprovalIDs.formIntersection(pending)
+        guard approvalNotificationsEnabled else { return }
+        let workspace = stateDirectory, revision = notificationRevision
+        for id in pending.sorted() where !notifiedApprovalIDs.contains(id) {
+            guard approvalNotificationsEnabled, workspace == stateDirectory, revision == notificationRevision else { return }
+            // Mark before awaiting delivery: concurrent refreshes cannot duplicate it.
+            notifiedApprovalIDs.insert(id)
+            do { try await send(id) }
+            catch { approvalNotificationsEnabled = false; approvalNotificationMessage = "审批提醒发送失败，请手动查看收件箱。"; return }
         }
     }
     @discardableResult

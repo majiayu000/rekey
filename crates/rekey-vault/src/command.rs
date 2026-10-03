@@ -224,6 +224,13 @@ pub enum AuthorityCommand {
         proof: UnlockProof,
         reply: Reply<()>,
     },
+    AuthorizeLocalApproval {
+        proof: SecretInput,
+        draft: AuditDraft,
+        not_after: Instant,
+        wall_not_after_ms: i64,
+        reply: Reply<()>,
+    },
     RotateVrk {
         password: SecretInput,
         recovery: SecretInput,

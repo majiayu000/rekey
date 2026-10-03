@@ -248,6 +248,7 @@ impl ActorFixture {
             query: Default::default(),
             body: b"{}".to_vec(),
             approval_grants: vec![],
+            local_approval_request_id: None,
         };
         let started = self
             .executor

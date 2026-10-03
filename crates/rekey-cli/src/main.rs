@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use rekey_domain::audit::{AUDIT_PAGE_DEFAULT_LIMIT, AUDIT_PAGE_MAX_LIMIT, AuditQuery};
-use rekey_domain::ids::{ActionId, CredentialId, RequestId, SessionId};
+use rekey_domain::ids::{ActionId, ApprovalRequestId, CredentialId, RequestId, SessionId};
 
 #[derive(Args)]
 struct StepUpArgs {
@@ -260,6 +260,9 @@ enum Command {
         /// Signed approval grant JSON file (repeatable, at most two).
         #[arg(long = "approval")]
         approvals: Vec<PathBuf>,
+        /// Approved local challenge for this exact request.
+        #[arg(long, conflicts_with = "approvals")]
+        challenge: Option<ApprovalRequestId>,
     },
     /// Stream a fixed Anthropic text Action; partial text is not success.
     ExecuteTextStream {
@@ -271,6 +274,9 @@ enum Command {
         body_file: PathBuf,
         #[arg(long = "approval")]
         approvals: Vec<PathBuf>,
+        /// Approved local challenge for this exact request.
+        #[arg(long, conflicts_with = "approvals")]
+        challenge: Option<ApprovalRequestId>,
     },
     /// Write an encrypted backup (broker must be unlocked).
     Backup {
@@ -637,6 +643,18 @@ enum PolicyTrustCommand {
     },
 }
 
+#[derive(Args)]
+struct LocalApprovalDecisionArgs {
+    approval_request_id: ApprovalRequestId,
+    #[arg(long)]
+    review_sha256: String,
+    /// Use only the current presence key, explicitly read from stdin.
+    #[arg(long, required = true)]
+    presence: bool,
+    #[arg(long, required = true)]
+    password_stdin: bool,
+}
+
 #[derive(Subcommand)]
 enum ApprovalCommand {
     /// Pin this vault's approval-origin public key.
@@ -645,6 +663,26 @@ enum ApprovalCommand {
     Pending,
     /// Print the origin-signed envelope for a pending approval request.
     Get { approval_request_id: String },
+    /// Read the complete immutable local approval review.
+    Review {
+        approval_request_id: ApprovalRequestId,
+    },
+    /// Approve a local review with an explicit presence proof.
+    Approve(LocalApprovalDecisionArgs),
+    /// Reject a local review with an explicit presence proof.
+    Reject(LocalApprovalDecisionArgs),
+    /// Wait up to 120 seconds for this session's local challenge.
+    Await {
+        approval_request_id: ApprovalRequestId,
+        #[arg(long, allow_hyphen_values = true)]
+        capability: String,
+    },
+    /// Cancel this session's local challenge without consuming a capability use.
+    Cancel {
+        approval_request_id: ApprovalRequestId,
+        #[arg(long, allow_hyphen_values = true)]
+        capability: String,
+    },
     Prepare {
         /// ACTION_ID@VERSION
         action: String,
@@ -1283,6 +1321,36 @@ fn main() {
         Command::Approval(ApprovalCommand::Get {
             approval_request_id,
         }) => commands::approval_get(&state_dir, &approval_request_id),
+        Command::Approval(ApprovalCommand::Review {
+            approval_request_id,
+        }) => commands::approval_review(&state_dir, approval_request_id),
+        Command::Approval(ApprovalCommand::Approve(args)) => commands::approval_decide(
+            &state_dir,
+            args.approval_request_id,
+            &args.review_sha256,
+            true,
+        ),
+        Command::Approval(ApprovalCommand::Reject(args)) => commands::approval_decide(
+            &state_dir,
+            args.approval_request_id,
+            &args.review_sha256,
+            false,
+        ),
+        Command::Approval(ApprovalCommand::Await {
+            approval_request_id,
+            capability,
+        }) => {
+            commands::approval_wait_or_cancel(&agent_socket, approval_request_id, &capability, true)
+        }
+        Command::Approval(ApprovalCommand::Cancel {
+            approval_request_id,
+            capability,
+        }) => commands::approval_wait_or_cancel(
+            &agent_socket,
+            approval_request_id,
+            &capability,
+            false,
+        ),
         Command::Approval(ApprovalCommand::Prepare {
             action,
             capability,
@@ -1354,18 +1422,28 @@ fn main() {
             capability,
             request,
             approvals,
-        } => commands::execute(&agent_socket, &action, &capability, &request, &approvals),
+            challenge,
+        } => commands::execute(
+            &agent_socket,
+            &action,
+            &capability,
+            &request,
+            &approvals,
+            challenge,
+        ),
         Command::ExecuteTextStream {
             action,
             capability,
             body_file,
             approvals,
+            challenge,
         } => commands::execute_text_stream(
             &agent_socket,
             &action,
             &capability,
             &body_file,
             &approvals,
+            challenge,
         ),
         Command::Backup { output, step_up } => commands::backup(
             &state_dir,
@@ -1375,7 +1453,7 @@ fn main() {
         ),
     };
     if let Err(err) = result {
-        eprintln!("error [{}]: {}", err.code, err.message);
+        err.print_stderr();
         std::process::exit(err.exit_code());
     }
 }

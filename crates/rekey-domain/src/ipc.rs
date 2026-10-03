@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::action::{ExactPath, FixedHttpAction, FixedMethod, HttpsOrigin};
+use crate::action::{ActionName, ExactPath, FixedHttpAction, FixedMethod, HttpsOrigin};
 use crate::authorization::{ApprovalMode, ApproverSpec, PolicyVersion, ResourceRef, SchemaId};
 use crate::capability::ActionVersionRef;
 use crate::credential::{CredentialLabel, CredentialMetadata};
@@ -110,6 +110,9 @@ pub mod admin_msg {
     pub const TEMPLATE_CATALOG: u16 = 52;
     pub const TEMPLATE_INSTALL: u16 = 53;
     pub const PERSONAL_POLICY_DRAFT: u16 = 54;
+    pub const APPROVAL_LOCAL_REVIEW: u16 = 55;
+    pub const APPROVAL_LOCAL_APPROVE: u16 = 56;
+    pub const APPROVAL_LOCAL_REJECT: u16 = 57;
 }
 
 /// Agent channel message types.
@@ -119,6 +122,8 @@ pub mod agent_msg {
     pub const PREPARE_APPROVAL: u16 = 3;
     pub const WORKLOAD_SESSION_CREATE: u16 = 4;
     pub const EXECUTE_TEXT_STREAM: u16 = 5;
+    pub const AWAIT_APPROVAL: u16 = 6;
+    pub const CANCEL_APPROVAL: u16 = 7;
 }
 
 /// Response message types shared by both channels.
@@ -210,7 +215,7 @@ impl FrameHeader {
 
 /// Closed operation classification shared by managed Broker dispatch and CLI.
 pub fn managed_admin_operation(message_type: u16) -> Result<bool, FrameError> {
-    if !(1..=54).contains(&message_type) {
+    if !(1..=57).contains(&message_type) {
         return Err(FrameError::InvalidField);
     }
     Ok(!matches!(
@@ -351,6 +356,16 @@ pub fn parse_proof_body(body: &[u8]) -> Result<(ProofKind, &[u8]), FrameError> {
     Ok((kind, proof))
 }
 
+/// Local decisions accept only an explicit, nonempty Presence proof envelope.
+/// Secret syntax and current-key verification remain in the Authority.
+pub fn parse_local_approval_proof_body(body: &[u8]) -> Result<&[u8], FrameError> {
+    let (kind, proof) = parse_proof_body(body)?;
+    if kind != ProofKind::Presence || proof.is_empty() {
+        return Err(FrameError::InvalidField);
+    }
+    Ok(proof)
+}
+
 /// Zero-copy parse; the caller owns zeroization of the backing buffer.
 pub fn parse_proof_and_secret_body(body: &[u8]) -> Result<(ProofKind, &[u8], &[u8]), FrameError> {
     let kind = ProofKind::from_code(*body.first().ok_or(FrameError::Truncated)?)?;
@@ -374,13 +389,66 @@ pub fn parse_proof_and_secret_body(body: &[u8]) -> Result<(ProofKind, &[u8], &[u
 
 // ---- metadata DTOs (JSON, never secret) ----
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct ApprovalRequired {
+    pub challenge_id: ApprovalRequestId,
+    pub expires_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct ErrorEnvelope {
     pub request_id: RequestId,
     pub code: String,
     pub message: String,
     pub retryable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval: Option<ApprovalRequired>,
+}
+
+impl ErrorEnvelope {
+    pub fn approval_required(request_id: RequestId, approval: ApprovalRequired) -> Self {
+        Self {
+            request_id,
+            code: "APPROVAL_REQUIRED".to_owned(),
+            message: "local approval required".to_owned(),
+            retryable: false,
+            approval: Some(approval),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ErrorEnvelope {
+    fn deserialize<T: serde::Deserializer<'de>>(deserializer: T) -> Result<Self, T::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            request_id: RequestId,
+            code: String,
+            message: String,
+            retryable: bool,
+            #[serde(default)]
+            approval: Option<ApprovalRequired>,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        let valid = if wire.code == "APPROVAL_REQUIRED" {
+            wire.message == "local approval required"
+                && !wire.retryable
+                && wire.approval.as_ref().is_some_and(|a| a.expires_at_ms > 0)
+        } else {
+            wire.approval.is_none()
+        };
+        if !valid {
+            return Err(serde::de::Error::custom("invalid approval error envelope"));
+        }
+        Ok(Self {
+            request_id: wire.request_id,
+            code: wire.code,
+            message: wire.message,
+            retryable: wire.retryable,
+            approval: wire.approval,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -868,6 +936,8 @@ pub struct ExecuteMeta {
     pub query: TemplateValues,
     #[serde(default)]
     pub approval_grants: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_approval_request_id: Option<ApprovalRequestId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -986,6 +1056,77 @@ impl ApprovalOriginResponse {
 #[serde(deny_unknown_fields)]
 pub struct ApprovalGetMeta {
     pub approval_request_id: ApprovalRequestId,
+}
+
+/// Separate hash domain for the complete daemon-generated review body.
+pub const LOCAL_APPROVAL_REVIEW_HASH_PREFIX: &[u8] = b"RKREVIEW\0\x01";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LocalApprovalState {
+    Pending,
+    Approved,
+    Consumed,
+    Cancelled,
+    Expired,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalApprovalRequestMeta {
+    pub capability_token: String,
+    pub approval_request_id: ApprovalRequestId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalApprovalDecisionMeta {
+    pub approval_request_id: ApprovalRequestId,
+    pub expected_review_sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalApprovalStateResponse {
+    pub approval_request_id: ApprovalRequestId,
+    pub state: LocalApprovalState,
+    pub expires_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalApprovalReviewResponse {
+    pub record_type: String,
+    pub approval_request_id: ApprovalRequestId,
+    pub review_sha256: String,
+    pub state: LocalApprovalState,
+    pub body_len: u32,
+}
+
+/// Review JSON is a frame body, not metadata. The canonical request comes from
+/// the policy canonicalizer; RawValue preserves that exact serialized value.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalApprovalReview {
+    pub record_type: String,
+    pub challenge: ApprovalChallenge,
+    pub action_name: ActionName,
+    pub origin: HttpsOrigin,
+    pub method: FixedMethod,
+    pub canonical_request: Box<serde_json::value::RawValue>,
+}
+
+impl std::fmt::Debug for LocalApprovalReview {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LocalApprovalReview")
+            .field("record_type", &self.record_type)
+            .field("challenge", &self.challenge)
+            .field("action_name", &self.action_name)
+            .field("origin", &self.origin)
+            .field("method", &self.method)
+            .field("canonical_request", &"[REDACTED]")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1108,6 +1249,123 @@ pub fn origin_display(origin: &HttpsOrigin) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_approval_metadata_is_closed_and_errors_keep_the_challenge() {
+        let id = ApprovalRequestId::new_random();
+        for state in ["pending", "approved", "consumed", "cancelled", "expired"] {
+            let value =
+                serde_json::json!({"approval_request_id":id,"state":state,"expires_at_ms":123});
+            let decoded: LocalApprovalStateResponse =
+                serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(decoded).unwrap(), value);
+        }
+        for (wire, invalid_field) in [
+            (
+                serde_json::json!({"capability_token":"synthetic-capability","approval_request_id":id}),
+                "proof",
+            ),
+            (
+                serde_json::json!({"approval_request_id":id,"expected_review_sha256":"01".repeat(32)}),
+                "reason",
+            ),
+        ] {
+            let mut changed = wire;
+            changed[invalid_field] = serde_json::json!("caller-injected");
+            if invalid_field == "proof" {
+                assert!(serde_json::from_value::<LocalApprovalRequestMeta>(changed).is_err());
+            } else {
+                assert!(serde_json::from_value::<LocalApprovalDecisionMeta>(changed).is_err());
+            }
+        }
+        let envelope = ErrorEnvelope::approval_required(
+            RequestId::new_random(),
+            ApprovalRequired {
+                challenge_id: id,
+                expires_at_ms: 123,
+            },
+        );
+        let valid = serde_json::to_value(&envelope).unwrap();
+        let decoded: ErrorEnvelope = serde_json::from_value(valid.clone()).unwrap();
+        assert_eq!(decoded.approval.unwrap().challenge_id, id);
+        for (field, value) in [
+            ("code", serde_json::json!("REQUEST_DENIED")),
+            ("message", serde_json::json!("caller title")),
+            ("retryable", serde_json::json!(true)),
+            ("approval", serde_json::Value::Null),
+        ] {
+            let mut changed = valid.clone();
+            changed[field] = value;
+            assert!(serde_json::from_value::<ErrorEnvelope>(changed).is_err());
+        }
+        let mut plain = valid;
+        plain["code"] = serde_json::json!("LOCKED");
+        plain.as_object_mut().unwrap().remove("approval");
+        let plain: ErrorEnvelope = serde_json::from_value(plain).unwrap();
+        assert!(plain.approval.is_none());
+        assert!(
+            serde_json::to_value(plain)
+                .unwrap()
+                .get("approval")
+                .is_none()
+        );
+        assert!(serde_json::from_str::<LocalApprovalState>("\"unknown\"").is_err());
+        assert_eq!(
+            [
+                admin_msg::APPROVAL_LOCAL_REVIEW,
+                admin_msg::APPROVAL_LOCAL_APPROVE,
+                admin_msg::APPROVAL_LOCAL_REJECT
+            ],
+            [55, 56, 57]
+        );
+        assert_eq!(
+            [agent_msg::AWAIT_APPROVAL, agent_msg::CANCEL_APPROVAL],
+            [6, 7]
+        );
+    }
+
+    #[test]
+    fn local_decisions_require_only_presence_and_review_debug_hides_request() {
+        let proof = b"synthetic-presence-input";
+        for kind in [
+            ProofKind::Password,
+            ProofKind::Recovery,
+            ProofKind::Presence,
+        ] {
+            let mut body = Vec::new();
+            encode_proof_body(kind, proof, &mut body);
+            if kind == ProofKind::Presence {
+                assert_eq!(parse_local_approval_proof_body(&body).unwrap(), proof);
+                body.push(0);
+                assert!(parse_local_approval_proof_body(&body).is_err());
+            } else {
+                assert!(parse_local_approval_proof_body(&body).is_err());
+            }
+        }
+        for body in [
+            vec![],
+            vec![3, 0, 0, 0, 0],
+            vec![3, 0, 0, 0, 2, 1],
+            vec![4, 0, 0, 0, 1, 1],
+        ] {
+            assert!(parse_local_approval_proof_body(&body).is_err());
+        }
+        let canonical = r#"{"body":{"input":"REVIEW-CANARY"},"headers":[]}"#;
+        let review = LocalApprovalReview {
+            record_type: "rekey.approval.review.v1".into(),
+            challenge: approval_challenge(ApproverSpec::LocalPresence {}),
+            action_name: ActionName::new("trusted action").unwrap(),
+            origin: HttpsOrigin::parse("https://example.com").unwrap(),
+            method: FixedMethod::Post,
+            canonical_request: serde_json::value::RawValue::from_string(canonical.into()).unwrap(),
+        };
+        let encoded = serde_json::to_string(&review).unwrap();
+        assert!(encoded.contains(canonical));
+        assert!(!format!("{review:?}").contains("REVIEW-CANARY"));
+        let decoded: LocalApprovalReview = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.canonical_request.get(), canonical);
+        assert_eq!(LOCAL_APPROVAL_REVIEW_HASH_PREFIX, b"RKREVIEW\0\x01");
+    }
 
     fn approval_challenge(approver: ApproverSpec) -> ApprovalChallenge {
         let id = "11111111-1111-4111-8111-111111111111";
@@ -1271,13 +1529,13 @@ mod tests {
             assert!(parse_management_body(&bad).is_err());
         }
         assert!(parse_management_body(&body[..49]).is_err());
-        for id in 1..=54 {
+        for id in 1..=57 {
             assert_eq!(
                 managed_admin_operation(id).unwrap(),
                 !matches!(id, 1 | 2 | 3 | 15 | 16 | 31 | 34 | 36 | 45..=48)
             );
         }
-        assert!(managed_admin_operation(55).is_err());
+        assert!(managed_admin_operation(58).is_err());
     }
 
     #[test]

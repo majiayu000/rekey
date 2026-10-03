@@ -578,6 +578,21 @@ async fn direct_permit_refuses_approval_challenge_and_unexpected_grants() {
             .err_code(),
         "REQUEST_DENIED"
     );
+    let mut local_meta = common::execute_meta(&token, &action, version);
+    local_meta["local_approval_request_id"] =
+        serde_json::to_value(ApprovalRequestId::new_random()).unwrap();
+    assert_eq!(
+        common::call(
+            &broker.agent_sock(),
+            Channel::Agent,
+            agent_msg::EXECUTE_FIXED_HTTP_ACTION,
+            &serde_json::to_vec(&local_meta).unwrap(),
+            b"{}"
+        )
+        .await
+        .err_code(),
+        "REQUEST_DENIED"
+    );
     assert!(broker.fake.requests.lock().unwrap().is_empty());
     broker.shutdown().await;
 }
@@ -891,7 +906,7 @@ async fn vrk_rotation_requires_lock_and_changes_origin_without_reviving_approval
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn local_presence_never_prepares_or_consumes_credentials() {
+async fn local_presence_prepares_but_never_consumes_credentials_before_approval() {
     let broker = common::start_broker().await;
     common::unlock(&broker).await;
     let credential = common::add_credential(&broker, "local-unavailable", b"secret").await;
@@ -914,18 +929,17 @@ async fn local_presence_never_prepares_or_consumes_credentials() {
         }),
     )
     .await;
-    for response in [
-        prepare_response(&broker, &session.capability_token, &action, version).await,
-        execute(&broker, &session.capability_token, &action, version, vec![]).await,
-    ] {
-        assert_eq!(response.err_code(), "REQUEST_DENIED");
-        assert_eq!(
-            response.metadata["message"],
-            "request denied: approval-local-unavailable"
-        );
-    }
+    prepare_response(&broker, &session.capability_token, &action, version)
+        .await
+        .ok();
+    assert_eq!(
+        execute(&broker, &session.capability_token, &action, version, vec![])
+            .await
+            .err_code(),
+        "APPROVAL_REQUIRED"
+    );
     assert!(broker.fake.requests.lock().unwrap().is_empty());
-    assert!(pending_inbox(&broker).await.challenges.is_empty());
+    assert_eq!(pending_inbox(&broker).await.challenges.len(), 1);
     let response = common::call(
         &broker.admin_sock(),
         Channel::Admin,

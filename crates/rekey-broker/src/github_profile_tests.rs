@@ -55,6 +55,7 @@ fn request(action: &FixedHttpAction, body: serde_json::Value) -> ExecuteRequest 
         query: Default::default(),
         body: serde_json::to_vec(&body).unwrap(),
         approval_grants: Vec::new(),
+        local_approval_request_id: None,
     }
 }
 

@@ -27,7 +27,7 @@ rekey status  # 在另一个终端检查状态
 当前默认构建保留本机加密 vault、密码与恢复生命周期、固定 HTTP Action、
 capability session、策略引擎、Ed25519 审批、审计、备份恢复、GitHub App connector、
 本机 MCP stdio 和 `agent-run` 隔离入口。v3 模板安装、个人 P-256 策略草案与 App 签名激活已接通；
-本地审批和更简单的 Agent 接入仍在实现中，签名设备上的 Secure Enclave 验收尚未完成。
+本机一次性审批已接通，Profile 和网关接入仍在实现中；签名设备上的 Secure Enclave 验收尚未完成。
 
 完成初始化后，按 [首次 Agent shell 接入](docs/user-guide.md#first-agent-shell-integration-source-checkout)
 添加凭据、注册固定 Action、激活签名策略，再创建短期 capability。

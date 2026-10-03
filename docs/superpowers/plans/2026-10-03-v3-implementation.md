@@ -35,10 +35,10 @@
 | M2 ActionTarget / 内容认证 / 格式 | 本批软件验收通过 | format22；完整原始 Action 行 AEAD、全状态重封/轮换、实际备份副本和恢复验证；44 项定向测试及独立审查通过。数值列篡改错误映射 P2 已关闭；无迁移 |
 | M2 原子安装 / 规范执行 / 客户端 | 本批软件验收通过 | 52/53、原子批安装、render→审批哈希→HTTP 已接线；全量默认 647 / lab 1,111 项通过，各 2 项忽略；stdin 尾修 CLI 黑盒、lab CLI 62/1 ignored、Swift 实际 CLI 与 103 流程断言通过；独立审查关闭 |
 | M2 anthropic/openai/github/generic 模板 | 本批软件验收通过 | 四个内置声明、风险默认值、App 能力/多绑定选择已接；真实 CLI GitHub 一次安装 16 Action、Swift OpenAI 安装 2 Action 通过；策略激活仍需独立完成 |
-| M2 Approver / local-presence / 面板 | 格式已合流，完整本机流程实施中 | snapshot4/challenge2/vault24、公钥成员校验、外部审批和界面分流独立审查通过；默认706/2 ignored与真实P3外部审批通过，lab回归中。本机仍拒绝执行，T10 尚未验收 |
-| M3 Profile / 会话生命周期 / rekey run | 待实施 | T9；进程异常退出与 CLI SIGKILL 后 5 秒撤销 |
+| M2 Approver / local-presence / 面板 | 本批软件验收通过；签名设备T10待做 | 完整原始审批正文、逐次 Presence、owner wait/cancel、一次消费及个人高风险草案已接通；独立审查、默认750/lab1,216（各2 ignored）、双配置strict Clippy与Swift328项断言通过。真实CLI/MCP单次批准执行通过，无硬件验收替代 |
+| M3 Profile / 会话生命周期 / rekey run | 纯模型独立实现待合流；运行时待实施 | Profile format5模型default139/lab193定向通过，待独立复核与外部fixtures同步；T9须真实CLI验证。macOS注册前peer身份的FD移交限制已写入SPEC |
 | M3 gateway / 认证 / SSE / model与预算 | 待实施 | T1/T8；仅 loopback；不可转发入站真实 Key |
-| M3 MCP v2 / await_approval / GET | 待实施 | T1/T10；文本内容与二进制正确处理 |
+| M3 MCP v2 / await_approval / GET | 协议与本机审批已合流；Profile发现待实施 | 协商两个已实现版本、GET、文本/二进制和owner await/cancel已实现，真实MCP明确重试后恰一次执行；仍使用显式manifest，尚未由Profile自动发现 |
 | M3 rekey connect / diff / 备份 | 待实施 | 确认后才写第三方 Agent 配置 |
 | M3 活动页 / 审计统计 | 待实施 | 按 Profile/模板显示调用、拒绝、审批、token |
 | M3 遮蔽增强 / 编码与压缩限制 | 本批验收通过 | JSON/hex/base64 对齐、禁止压缩头；独立审查的窗口/短秘密问题已关闭；流式跨片回归通过；11 项 decoded source 合流回归通过；真实 TLS streaming 8/8，通过 marker fast path 避免逐字节重复扫描 |
@@ -110,4 +110,14 @@ App 删除旧无保护钥匙串读取与后台自动恢复，保留独立 A1 添
 
 本批默认 workspace 698 passed /2 ignored、默认严格 Clippy/all-targets、格式、机械符号和纯 IPC CLI 依赖检查通过。lab 两轮在未修改的 relay 测试首次 PUT 分别收到 503（预期201），原失败日志 `m1-presence-test-lab.log`、`m1-presence-test-lab-final.log` 保留。独立诊断确认目录 Unknown 可触发安全拒绝，但具体偶发原因尚未确定；不以复跑通过宣称修复。排除 relay 后的完整 lab workspace 已通过 1,120 项、2 ignored，日志 `m1-presence-test-lab-core.log`。relay 按原 workspace 特性图独立验收 22/22 通过（`m1-presence-relay-workspace-final.log`），加先前同源 relay 单元 20/20，分组覆盖合计 1,162 passed /2 ignored；这不抹去原全套两次失败。
 
-M2 Approver 格式已合流：四份冻结补丁和共享 harness 一行 format4 尾修；合流前 93/93 源码哈希一致。Domain/Policy 17 文件、Broker/relay 11 文件、根脚本/格式 glue 38 文件和 Swift 4 文件均独立审查关闭。组合 default/lab all-targets、真实 Swift→CLI 临时 vault 和 Swift 112 flow /82 presence /53 personal /16 OIDC 断言通过。完整 default 首轮发现 root integration harness 仍签 snapshot3，已仅更新正向 fixture 为4，生产版本拒绝保持，broker_ipc 5/5 复测通过；最终默认全套706 passed /2 ignored及真实P3外部审批（单人/双人、重放/篡改/过期与审计）通过；lab全套正在运行。P3脚本顶部同时改为读取Cargo实际target_directory，避免多worktree验收读错二进制，4行尾修独立审查通过。LocalPresence 运行时依赖合同已固定，upstream Domain/Policy/Vault 另树实施中，不能将枚举/面板计为本机批准完成。
+M2 Approver 格式已合流：四份冻结补丁和共享 harness 一行 format4 尾修；合流前 93/93 源码哈希一致。Domain/Policy 17 文件、Broker/relay 11 文件、根脚本/格式 glue 38 文件和 Swift 4 文件均独立审查关闭。组合 default/lab all-targets、真实 Swift→CLI 临时 vault 和 Swift 112 flow /82 presence /53 personal /16 OIDC 断言通过。完整 default 首轮发现 root integration harness 仍签 snapshot3，已仅更新正向 fixture 为4，生产版本拒绝保持，broker_ipc 5/5 复测通过；最终默认全套706 passed /2 ignored及真实P3外部审批（单人/双人、重放/篡改/过期与审计）通过；lab全套1,172 passed /2 ignored与集成strict Clippy也通过。P3脚本顶部同时改为读取Cargo实际target_directory，避免多worktree验收读错二进制，4行尾修独立审查通过。LocalPresence 运行时依赖合同已固定，upstream Domain/Policy/Vault 另树实施中，不能将枚举/面板计为本机批准完成。
+
+Approver 本批完整回归已结束：`m2-approver-test-default-final.log` 706 passed /2 ignored，`m2-approver-test-lab-final.log` 1,172 passed /2 ignored，集成默认 strict Clippy 通过；最终 root流水退出0。先前 presence批 relay两次偶发503仍保留为未归因历史失败，不用本次通过冒充已修复。新local审查另外复现既有JCS数值碰撞：大整数、小数及非零underflow可在规范化丢精度；原body仍发上游。证据 `review/m2-jcs-number-precheck.md` 与 `m2-jcs-number-probe/`，下一local upstream批在唯一canonicalize边界修复，未修完前不得宣称完整T10。
+
+本机审批 upstream 已独立审查关闭并合流：12文件 patch `d398e64c4d69f05cd037992209582c692d89be8b4d1588022b11d9b4a28670da`，review `acc0978656813a16d22b917bd9444ba1cd40966e081b903fd9dacad4ddd5e725`。default/lab全目标check、D/P/V双配置strict Clippy及定向检查通过；root integration workspace check通过。JCS原始数值与规范结果的精确十进制检查已进入唯一canonicalize边界，拒绝舍入和非零下溢；先前精度finding关闭，但T10完整本机链仍等Broker/CLI/App。三路隔离写tree正在实现，root仅独立接MCP两文件与合流测试；APPROVAL_REQUIRED结构、owner wait/cancel、一次消费和Presence决定合同保持冻结。
+
+本机审批运行时批已完成软件联合验收：49/49审查源码哈希与integration一致；默认workspace 750 passed /2 ignored，lab workspace 1,216 passed /2 ignored，日志 `m2-local-integration-test-{default,lab}.log`；default/lab all-targets check及strict Clippy、fmt、禁用符号和CLI依赖边界通过。Broker的审批期限尾修、真实CLI单次生命周期、MCP显式重试以及个人P-256高风险规则均在最终合流代码上重跑。CLI/MCP均使用真实Broker/Authority和模拟上游，不能称为真实provider或签名设备测试。
+
+App完整严格编译及328个合成断言通过（65 local、82 presence、53 personal、112 flow、16 OIDC），日志在 `m2-local-swift/`；最终lab二进制的Swift→CLI临时vault完整流程也通过，`real-cli-check.json`记录exit0。原始正文哈希、默认拒绝、取消认证不提交、失焦/退出作废、通知不触发认证均已接线；真实Keychain/SE/通知权限仍未使用。个人RequireApproval模板现在生成LocalPresence一次性规则，不降级Permit。MCP两版本协商、GET和内容类型处理、owner await/cancel已落地，Profile自动发现尚未实现。
+
+M3下一批按 `m3-foundation-preflight.json` 三路隔离实施：签名Profile纯模型、单一认证用量账本、OS进程监视。当前signed policy仍是format4/vault24；SPEC中format5/vault25为下一批合同。macOS实测证实注册前写入/FD移交可改变OS报告peer，不能追溯最初connector；注册后监视必须固定，真实run的五秒撤销仍待后续端到端。Cursor先做MCP，官方BYOK后端不能访问用户loopback，未冒充本机provider支持。

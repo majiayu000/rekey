@@ -124,6 +124,7 @@ pub struct ExecuteRequest {
     pub query: TemplateValues,
     pub body: Vec<u8>,
     pub approval_grants: Vec<String>,
+    pub local_approval_request_id: Option<rekey_domain::ids::ApprovalRequestId>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -216,7 +217,7 @@ impl ActionExecutor {
         self.refuse_unless_running()?;
         // Step 3: capability authentication reserves one use and one
         // concurrency slot; the permit releases the slot on every path.
-        let permit =
+        let mut permit =
             self.sessions
                 .acquire(&request.capability_token, request.action, crate::now_ts()?)?;
         let effect_deadline = admission_started + Duration::from_millis(permit.timeout_ms as u64);
@@ -224,6 +225,57 @@ impl ActionExecutor {
         let evaluated = self
             .evaluate_request(&request, permit.principal, effect_deadline)
             .await?;
+        if request.local_approval_request_id.is_some() && !request.approval_grants.is_empty() {
+            return Err(BrokerError::Denied("approval-kinds-conflict"));
+        }
+        let is_local = matches!(
+            evaluated.approval_context.as_ref().map(|c| &c.approver),
+            Some(rekey_domain::authorization::ApproverSpec::LocalPresence {})
+        );
+        if request.local_approval_request_id.is_some() && !is_local {
+            return Err(BrokerError::Denied("approval-local-not-required"));
+        }
+        if is_local {
+            if !request.approval_grants.is_empty() {
+                return Err(BrokerError::Denied("approval-kinds-conflict"));
+            }
+            let local = self
+                .ensure_local_approval(
+                    &evaluated,
+                    &mut permit,
+                    request.local_approval_request_id,
+                    false,
+                    effect_deadline,
+                )
+                .await?;
+            if request.local_approval_request_id.is_none()
+                || local.state == rekey_domain::ipc::LocalApprovalState::Pending
+            {
+                return Err(BrokerError::ApprovalRequired(
+                    rekey_domain::ipc::ApprovalRequired {
+                        challenge_id: local.challenge.approval_request_id,
+                        expires_at_ms: local.challenge.max_expires_at_ms,
+                    },
+                ));
+            }
+            let started = self
+                .commit_local_started(
+                    &evaluated,
+                    &permit,
+                    local.challenge.approval_request_id,
+                    effect_deadline,
+                )
+                .await?;
+            return Ok(AdmittedExecution {
+                executor: Arc::clone(self),
+                request,
+                action: evaluated.action,
+                target: evaluated.target,
+                effect_deadline,
+                started,
+                _permit: permit,
+            });
+        }
         let (accepted, approval_deadline) = match &evaluated.decision {
             Decision::Allow { .. } if request.approval_grants.is_empty() => (Vec::new(), None),
             Decision::Allow { .. } => {
@@ -1008,21 +1060,31 @@ async fn commit_started_while_running(
         Err(_) => return Err(BrokerError::Authority(AuthorityError::Draining)),
     };
     lifecycle.reject_if_not_running()?;
-    let current_policy = policy.read().await;
-    if current_policy.as_deref().map(PolicyIdentity::of) != expected_policy {
-        drop(current_policy);
-        terminals
-            .commit(execution_blocked(&ctx, "policy-changed"))
-            .await
-            .map_err(BrokerError::Authority)?;
-        return Err(BrokerError::Denied("policy-changed"));
-    }
-    drop(current_policy);
+    check_started_policy(policy, expected_policy, terminals, &ctx).await?;
     let (not_after, wall_not_after_ms) = approval_deadline.unzip();
     terminals
         .commit_started(ctx, preceding, not_after, wall_not_after_ms)
         .await
         .map_err(BrokerError::Authority)
+}
+
+async fn check_started_policy(
+    policy: &RwLock<Option<Arc<ActivePolicy>>>,
+    expected_policy: Option<PolicyIdentity>,
+    terminals: &TerminalAuditTracker,
+    ctx: &ExecutionAuditContext,
+) -> Result<(), BrokerError> {
+    let current_policy = policy.read().await;
+    if current_policy.as_deref().map(PolicyIdentity::of) != expected_policy {
+        drop(current_policy);
+        terminals
+            .commit(execution_blocked(ctx, "policy-changed"))
+            .await
+            .map_err(BrokerError::Authority)?;
+        return Err(BrokerError::Denied("policy-changed"));
+    }
+    drop(current_policy);
+    Ok(())
 }
 
 fn prepare_block_reason(err: &AuthorityError) -> &'static str {

@@ -298,7 +298,7 @@ fn generated_policy_reuses_authenticated_target_and_body_schema_for_requests() {
 }
 
 #[test]
-fn duplicate_disabled_fixed_high_risk_and_invalid_schema_actions_are_rejected() {
+fn duplicate_disabled_fixed_and_invalid_schema_actions_are_rejected() {
     let (_, trust) = signer();
     let principal = PrincipalId::new_random();
     let selected = action("read-repo");
@@ -319,8 +319,7 @@ fn duplicate_disabled_fixed_high_risk_and_invalid_schema_actions_are_rejected() 
     fixed.target = ActionTarget::Fixed {
         path: ExactPath::parse("/fixed").unwrap(),
     };
-    let high = action("merge-pr");
-    for rejected in [disabled, fixed, high] {
+    for rejected in [disabled, fixed] {
         assert!(matches!(
             generate_personal_draft(&trust, None, &[rejected], principal, 10_000, NOW),
             Err(PolicyError::Invalid)
@@ -358,6 +357,42 @@ fn duplicate_disabled_fixed_high_risk_and_invalid_schema_actions_are_rejected() 
         )
         .is_ok()
     );
+}
+
+#[test]
+fn high_risk_template_generates_signed_single_use_local_approval_not_permit() {
+    let (key, trust) = signer();
+    let principal = PrincipalId::new_random();
+    let high = action("merge-pr");
+    let ordinary = action("create-issue");
+    let draft = generate_personal_draft(
+        &trust,
+        None,
+        &[high.clone(), ordinary.clone()],
+        principal,
+        10_000,
+        NOW,
+    )
+    .unwrap();
+    sign_draft(&draft, &key, &trust);
+    let snapshot: Value = serde_json::from_slice(draft.canonical_snapshot()).unwrap();
+    let rule = |id: ActionId| {
+        snapshot["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|rule| rule["action_id"] == id.to_string())
+            .unwrap()
+    };
+    assert_eq!(rule(high.id)["effect"], "require-approval");
+    assert_eq!(rule(high.id)["approver"], json!({"kind":"local-presence"}));
+    assert_eq!(
+        rule(high.id)["approval"],
+        json!({"mode":"one-time","max_uses":1})
+    );
+    assert_eq!(rule(ordinary.id)["effect"], "permit");
+    assert!(rule(ordinary.id)["approver"].is_null());
+    assert!(snapshot["approvers"].as_array().unwrap().is_empty());
 }
 
 #[test]

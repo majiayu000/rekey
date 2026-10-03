@@ -560,7 +560,10 @@ fn measure_session_capacity() -> Value {
         Ok(_) => panic!("fifth concurrent execution was admitted"),
         Err(error) => error,
     };
-    assert_eq!(rejected, rekey_domain::DomainError::InvalidCapability);
+    assert!(matches!(
+        rejected,
+        rekey_broker::error::BrokerError::Domain(rekey_domain::DomainError::InvalidCapability)
+    ));
     drop(held);
     assert_eq!(registry.in_flight_total(), 0);
     let retry = registry.acquire(&token, action, now).unwrap();

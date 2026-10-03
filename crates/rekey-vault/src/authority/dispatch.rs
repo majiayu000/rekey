@@ -306,6 +306,18 @@ impl Worker {
                 self.touch_if_ok(&result);
                 let _ = reply.send(result);
             }
+            AuthorityCommand::AuthorizeLocalApproval {
+                proof,
+                draft,
+                not_after,
+                wall_not_after_ms,
+                reply,
+            } => {
+                let result =
+                    self.authorize_local_approval(proof, draft, not_after, wall_not_after_ms);
+                self.touch_if_ok(&result);
+                drop(reply.send(result));
+            }
             AuthorityCommand::RotateVrk {
                 password,
                 recovery,

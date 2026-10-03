@@ -117,6 +117,8 @@ impl<'de> Deserialize<'de> for PolicyVersion {
 pub struct CanonicalParameters {
     pub schema_id: SchemaId,
     pub canonical_hash: [u8; 32],
+    /// Exact JCS request bytes used for the hash; never included in Debug.
+    pub canonical_json: Vec<u8>,
 }
 
 impl std::fmt::Debug for CanonicalParameters {

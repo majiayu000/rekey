@@ -47,10 +47,10 @@ App 在签名前会装入静态 `Contents/Library/LaunchAgents/com.rekey.rekeyd.
 - 凭证：真实列表、搜索、类型过滤、关联操作；添加/轮换/撤销。固定令牌由安全输入框录入，其他类型选择已有的私有 JSON profile。
 - 固定操作：表单创建，定义文件导入/更新/禁用。表单采用 30 秒、64 KiB 请求、256 KiB 响应的当前默认；更细的限制通过定义文件配置。
 - Provider 模板：Anthropic、OpenAI、GitHub PAT 和自定义 Bearer。界面从 daemon 读取认证后的能力声明，支持勾选能力和多组固定绑定；一次管理证明后原子安装。安装不自动激活策略或发放 Agent 会话。团队签名包可通过 `rekey template catalog/install --file … --package …` 使用。
-- 模板调用：`rekey execute` 与 `rekey approval prepare` 接受重复的 `--param NAME=VALUE`、`--query NAME=VALUE`。请求只使用安装时声明的参数类型和查询键，规范路径、查询与正文绑定审批；固定操作拒绝非空参数。本地 presence 审批仍在后续批次。
+- 模板调用：`rekey execute` 与 `rekey approval prepare` 接受重复的 `--param NAME=VALUE`、`--query NAME=VALUE`。请求只使用安装时声明的参数类型和查询键，规范路径、查询与正文绑定审批；固定操作拒绝非空参数。本地 presence 审批通过专门面板审阅完整 daemon 请求。
 - 个人策略：安装按 vault ID 绑定的本机 P-256 信任公钥，选择已安装模板的能力、主体和到期时间，查看完整替换差异与目标定义后，由 App 调用 Secure Enclave 签署 daemon 返回的原始字节，再经匿名 stdin 提交签名包与逐次管理证明。空选项清除全部授权；高风险能力在本地审批完成前明确拒绝。切换工作区、关闭表单或草案失效后，迟到的签名不会激活；不自动重签或重试。真实 SE/Touch ID 尚未做设备验收。
 - 团队策略：安装外部 Ed25519 信任根、导入签名策略并查看状态。按操作创建短期 capability、按会话 ID 撤销；没有全量活动会话列表。
-- 审批：真实 pending 收件箱、只读详情与来源签名信封导出。详情展示主体、会话、操作版本、资源、参数/策略摘要、审批人、次数和时限，以及当前本机来源公钥；相同版本的操作定义单独标明为本机元数据。信封不含原始正文或请求头，UI 未验证签名；完整请求核对与签名继续使用独立工具和独立固定的来源公钥。
+- 外部 Ed25519 审批：真实 pending 收件箱、只读详情与来源签名信封导出。详情展示主体、会话、操作版本、资源、参数/策略摘要、审批人、次数和时限，以及当前本机来源公钥；相同版本的操作定义单独标明为本机元数据。信封不含原始正文或请求头，UI 未验证签名；完整请求核对与签名继续使用独立工具和独立固定的来源公钥。
 - 审计：结果筛选、稳定快照分页和 JSONL 导出，锁定时仍可读取。
 - 备份恢复：新文件加密备份与回执、SHA-256 验证的空目录离线恢复。
 - 设置：密码修改、恢复密钥轮换、数据目录、服务启动/停止。
@@ -63,7 +63,7 @@ target/release/rekey-policy-sign --help
 target/release/rekey-approval-sign --help
 ```
 
-签名文件的准备和 Agent shell/MCP 接入继续见根目录 `docs/user-guide.md`。这一版没有自动配置 Agent、任意执行控制台或常驻通知。
+签名文件的准备和 Agent shell/MCP 接入继续见根目录 `docs/user-guide.md`。这一版没有自动配置 Agent或任意执行控制台；审批通知仅在用户明确开启后、App运行期间提示。
 
 关闭 UI 不会终止 Broker；默认由 Broker 在空闲 7 天后锁定。可主动点击“锁定”或设置里的“停止服务”；停止服务保留登录启动设置，且需要逐次证明。“停止并停用登录启动”在同一次证明的 SHUTDOWN 成功后才调用注销接口；服务不可达时不会未经验证强行注销，可由用户在系统登录项中管理。不缓存密码或系统认证 K；密码/恢复密钥解锁时，可明确勾选默认关闭的“启用系统认证（7天）”。新 K 保存在要求 userPresence 的数据保护钥匙串中，保险库保存绑定 vault ID 与固定到期时间的加密根密钥材料。刷新和启动不会读取 K；重启后必须点击系统认证解锁。每次支持的 A2 操作显式读取 K，操作结束不保留；恢复与验证不会延长原期限。手动锁定、空闲锁定或更改密码/恢复密钥会撤销授权；正常停止服务保留授权。管理会话允许连续添加 API Key；每次查看或复制仍需密码、恢复密钥或系统认证的新证明，既有管理 token 不能授权明文。复制后 30 秒只清理本应用仍占有的剪贴板内容，无法清理第三方历史记录；短期 capability 和恢复结果只在当前结果窗口中存在，用户可显式保存为新建的 0600 文件。
 
@@ -84,3 +84,5 @@ xcrun swiftc -warnings-as-errors -swift-version 5 -O \
 系统认证合成检查：`/tmp/rekey-ui-contract --presence-boundary-only`，只注入临时 CLI 和可控读取结果，不访问钥匙串。真实签名设备的访问组、未签名进程读取拒绝与 userPresence 验收使用 `scripts/v3/keychain_probe.swift` 和 `scripts/v3/run.py`；旧的无交互自动恢复测试已被新合同替换。
 
 机构登录源码入口：设置中选择受保护的 OIDC 节点配置后启动服务；先本机解锁，再开始机构登录、在浏览器完成认证，并接收结果到新的私有会话文件。也可显式选择已有会话文件，取消未完成登录或退出本机机构会话。应用只传文件路径，不读取管理 token；密码逐次确认仍保留。16 项新调用断言、80 项原有原生流程断言及完整 macOS14 App 编译通过，真实 IdP／Broker／GUI 点击仍未验收。
+
+本机审批使用 `approval review/approve/reject`：面板验证完整原始 UTF-8 正文的 RKREVIEW 哈希，默认焦点与 Return 都是拒绝。明确决定时才逐次读取 presence key，后台通知和收件箱轮询不触发认证，取消认证不发送决定。通知使用固定文案并在本次 App 会话中去重。`/tmp/rekey-ui-contract --local-approval-boundary-only` 运行65项合成检查；它不访问真实 Keychain、Secure Enclave 或通知权限，不能替代签名设备验收。

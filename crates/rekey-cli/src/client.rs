@@ -76,6 +76,9 @@ pub const IO_TIMEOUT: Duration = Duration::from_secs(30);
 pub struct CliError {
     pub code: String,
     pub message: String,
+    pub approval: Option<rekey_domain::ipc::ApprovalRequired>,
+    pub request_id: Option<RequestId>,
+    pub retryable: bool,
 }
 
 impl CliError {
@@ -83,6 +86,36 @@ impl CliError {
         Self {
             code: code.to_owned(),
             message: message.into(),
+            approval: None,
+            request_id: None,
+            retryable: false,
+        }
+    }
+
+    fn remote(envelope: ErrorEnvelope) -> Self {
+        Self {
+            code: envelope.code,
+            message: envelope.message,
+            approval: envelope.approval,
+            request_id: Some(envelope.request_id),
+            retryable: envelope.retryable,
+        }
+    }
+
+    pub fn print_stderr(&self) {
+        if let Some(approval) = &self.approval {
+            eprintln!(
+                "{}",
+                serde_json::json!({
+                    "request_id": self.request_id,
+                    "code": self.code,
+                    "message": self.message,
+                    "retryable": self.retryable,
+                    "approval": approval,
+                })
+            );
+        } else {
+            eprintln!("error [{}]: {}", self.code, self.message);
         }
     }
 
@@ -98,7 +131,8 @@ impl CliError {
             | "UNLOCK_RATE_LIMITED"
             | "AUTHENTICATION_FAILED"
             | "LOCKED" => 3,
-            "ACTION_DENIED"
+            "APPROVAL_REQUIRED"
+            | "ACTION_DENIED"
             | "ACTION_DISABLED"
             | "ACTION_NOT_FOUND"
             | "INVALID_CAPABILITY"
@@ -541,10 +575,7 @@ impl Client {
                     if error.request_id != request_id {
                         return Err(invalid());
                     }
-                    return Err(CliError {
-                        code: error.code,
-                        message: error.message,
-                    });
+                    return Err(CliError::remote(error));
                 }
                 _ => return Err(invalid()),
             }
@@ -601,10 +632,7 @@ impl Client {
                         "error response does not match request",
                     ));
                 }
-                Err(CliError {
-                    code: envelope.code,
-                    message: envelope.message,
-                })
+                Err(CliError::remote(envelope))
             }
             _ => Err(CliError::local("INVALID_FRAME", "unexpected response type")),
         }

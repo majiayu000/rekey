@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use crate::error::BrokerError;
 use data_encoding::BASE64URL_NOPAD;
 use rekey_domain::authorization::Principal;
 use rekey_domain::capability::{
@@ -16,10 +17,11 @@ use rekey_domain::ids::{ActionId, SessionId};
 use rekey_domain::{DomainError, Timestamp};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
+use tokio::sync::Notify;
 use zeroize::Zeroizing;
 
 mod approval;
-pub(crate) use approval::ApprovalContext;
+pub(crate) use approval::{ApprovalContext, LocalApproval};
 
 #[derive(Debug)]
 pub enum CreateSessionError {
@@ -53,6 +55,7 @@ pub struct SessionTicket {
 /// RAII permit for one execution. Drop always releases the concurrency slot,
 /// including cancellation and panic unwinds.
 pub struct ExecutionPermit {
+    use_refunded: bool,
     registry: Arc<SessionRegistry>,
     pub session_id: SessionId,
     pub principal: Principal,
@@ -76,7 +79,9 @@ fn compact_entries(entries: &mut Vec<Entry>) {
     let now = Instant::now();
     entries.retain(|entry| {
         entry.in_flight > 0
-            || (!entry.revoked && !entry.exhausted && now < entry.monotonic_deadline)
+            || (!entry.revoked
+                && now < entry.monotonic_deadline
+                && (!entry.exhausted || entry.approval_challenges.iter().any(approval::is_local)))
     });
 }
 
@@ -92,6 +97,7 @@ impl Default for Inner {
 #[derive(Default)]
 pub struct SessionRegistry {
     inner: Mutex<Inner>,
+    pub(crate) approval_changed: Notify,
 }
 
 fn entropy_token() -> Result<(Zeroizing<[u8; CAPABILITY_TOKEN_BYTES]>, String), DomainError> {
@@ -183,6 +189,7 @@ impl SessionRegistry {
             return Err(CreateSessionError::Closed);
         }
         compact_entries(&mut inner.entries);
+        self.approval_changed.notify_waiters();
         inner.entries.push(entry);
         Ok(encoded)
     }
@@ -195,14 +202,14 @@ impl SessionRegistry {
         token: &str,
         wanted: ActionVersionRef,
         now: Timestamp,
-    ) -> Result<SessionTicket, DomainError> {
+    ) -> Result<SessionTicket, BrokerError> {
         let raw = Zeroizing::new(
             BASE64URL_NOPAD
                 .decode(token.as_bytes())
                 .map_err(|_| DomainError::InvalidCapability)?,
         );
         if raw.len() != CAPABILITY_TOKEN_BYTES {
-            return Err(DomainError::InvalidCapability);
+            return Err(DomainError::InvalidCapability.into());
         }
         let wanted_hash = hash_token(&raw);
 
@@ -219,14 +226,14 @@ impl SessionRegistry {
             .map(|i| &mut inner.entries[i])
             .ok_or(DomainError::InvalidCapability)?;
         if entry.revoked {
-            return Err(DomainError::InvalidCapability);
+            return Err(DomainError::InvalidCapability.into());
         }
         if entry.grant.expired_at(now) || Instant::now() >= entry.monotonic_deadline {
             entry.revoked = true;
-            return Err(DomainError::CapabilityExpired);
+            return Err(DomainError::CapabilityExpired.into());
         }
         if !entry.grant.allows(wanted) {
-            return Err(DomainError::ActionNotAllowed);
+            return Err(DomainError::ActionNotAllowed.into());
         }
         let timeout_ms = entry
             .action_timeouts
@@ -234,11 +241,14 @@ impl SessionRegistry {
             .find_map(|(action, timeout_ms)| (*action == wanted).then_some(*timeout_ms))
             .ok_or(DomainError::InvalidCapability)?;
         if entry.uses_left == 0 {
+            if entry.in_flight > 0 {
+                return Err(rekey_vault::AuthorityError::AuthorityBusy.into());
+            }
             entry.exhausted = true;
-            return Err(DomainError::CapabilityExhausted);
+            return Err(DomainError::CapabilityExhausted.into());
         }
         if entry.in_flight >= SESSION_MAX_CONCURRENT_EXECUTIONS {
-            return Err(DomainError::InvalidCapability);
+            return Err(DomainError::InvalidCapability.into());
         }
         entry.uses_left -= 1;
         entry.in_flight += 1;
@@ -261,9 +271,10 @@ impl SessionRegistry {
         token: &str,
         wanted: ActionVersionRef,
         now: Timestamp,
-    ) -> Result<ExecutionPermit, DomainError> {
+    ) -> Result<ExecutionPermit, BrokerError> {
         let ticket = self.begin(token, wanted, now)?;
         Ok(ExecutionPermit {
+            use_refunded: false,
             registry: Arc::clone(self),
             session_id: ticket.session_id,
             principal: ticket.principal,
@@ -280,6 +291,7 @@ impl SessionRegistry {
             entry.in_flight = entry.in_flight.saturating_sub(1);
         }
         compact_entries(&mut inner.entries);
+        self.approval_changed.notify_waiters();
     }
 
     /// Clamp an unpublished human capability to the owning management lease.
@@ -303,6 +315,7 @@ impl SessionRegistry {
             Some(entry) => {
                 entry.revoked = true;
                 compact_entries(&mut inner.entries);
+                self.approval_changed.notify_waiters();
                 true
             }
             None => false,
@@ -337,6 +350,7 @@ impl SessionRegistry {
             }
         }
         compact_entries(&mut inner.entries);
+        self.approval_changed.notify_waiters();
         (capabilities, pending)
     }
 
@@ -346,6 +360,7 @@ impl SessionRegistry {
             entry.revoked = true;
         }
         compact_entries(&mut inner.entries);
+        self.approval_changed.notify_waiters();
     }
 
     pub fn revoke_workload(&self) {
@@ -356,6 +371,7 @@ impl SessionRegistry {
             }
         }
         compact_entries(&mut inner.entries);
+        self.approval_changed.notify_waiters();
     }
 
     /// Close admission and revoke every session under the same lock so a
@@ -368,6 +384,7 @@ impl SessionRegistry {
             entry.revoked = true;
         }
         compact_entries(&mut inner.entries);
+        self.approval_changed.notify_waiters();
     }
 
     pub fn open_for_admission(&self) {
@@ -388,6 +405,7 @@ impl SessionRegistry {
             }
         }
         compact_entries(&mut inner.entries);
+        self.approval_changed.notify_waiters();
     }
 
     pub fn active_count(&self, now: Timestamp) -> u32 {
@@ -548,7 +566,8 @@ mod tests {
         // max_uses = 2: third use denied.
         assert!(matches!(
             registry.begin(&token, r, now(1)),
-            Err(DomainError::CapabilityExhausted) | Err(DomainError::InvalidCapability)
+            Err(BrokerError::Domain(DomainError::CapabilityExhausted))
+                | Err(BrokerError::Domain(DomainError::InvalidCapability))
         ));
     }
 
@@ -565,7 +584,7 @@ mod tests {
         };
         assert!(matches!(
             registry.begin(&token, other, now(1)),
-            Err(DomainError::ActionNotAllowed)
+            Err(BrokerError::Domain(DomainError::ActionNotAllowed))
         ));
         // Wrong version of the allowed action is also denied.
         let wrong_version = ActionVersionRef {
@@ -574,12 +593,12 @@ mod tests {
         };
         assert!(matches!(
             registry.begin(&token, wrong_version, now(1)),
-            Err(DomainError::ActionNotAllowed)
+            Err(BrokerError::Domain(DomainError::ActionNotAllowed))
         ));
 
         assert!(matches!(
             registry.begin(&token, r, now(10_000)),
-            Err(DomainError::CapabilityExpired)
+            Err(BrokerError::Domain(DomainError::CapabilityExpired))
         ));
 
         let (g2, r2) = grant(10);
@@ -614,7 +633,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(5));
         assert!(matches!(
             registry.begin(&token, r, now(0)),
-            Err(DomainError::CapabilityExpired)
+            Err(BrokerError::Domain(DomainError::CapabilityExpired))
         ));
     }
 

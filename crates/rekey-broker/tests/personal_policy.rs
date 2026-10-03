@@ -312,7 +312,6 @@ async fn locked_team_untrusted_and_invalid_selection_are_rejected_without_mutati
             version: 0,
             ..first
         }],
-        actions.iter().map(action_ref).collect(),
     ] {
         assert_eq!(
             f.draft(refs, now() + 60_000).await.err_code(),
@@ -323,6 +322,75 @@ async fn locked_team_untrusted_and_invalid_selection_are_rejected_without_mutati
         assert_eq!(f.draft(vec![], expiry).await.err_code(), "POLICY_INVALID");
     }
     assert_eq!(f.counts(), before);
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn signed_personal_high_risk_draft_requires_local_presence_before_execution() {
+    let f = Fixture::new(PolicyMode::Personal, true).await;
+    let action = f
+        .seed(&["merge-pr"], 1, "personal-high-risk")
+        .await
+        .remove(0);
+    let draft = f.draft(vec![action_ref(&action)], now() + 60_000).await;
+    let signed = f.signed(&draft);
+    assert_eq!(signed["snapshot"]["rules"][0]["effect"], "require-approval");
+    assert_eq!(
+        signed["snapshot"]["rules"][0]["approver"],
+        json!({"kind":"local-presence"})
+    );
+    f.activate(&draft, &signed).await.ok();
+    let session = f.call(admin_msg::SESSION_CREATE, json!({"actions":[action_ref(&action)],"principal_id":f.principal,"ttl_ms":60_000,"max_uses":1}), &common::proof_body(common::PASSWORD)).await;
+    let mut request = json!({"capability_token":session.ok()["capability_token"],"action_id":action.id,"action_version":action.version,"content_type":"application/json","extra_headers":[],"params":{"number":"1"},"query":{},"approval_grants":[]});
+    let agent_socket = f.state.join("runtime/agent.sock");
+    let pending = common::call(
+        &agent_socket,
+        Channel::Agent,
+        ipc::agent_msg::EXECUTE_FIXED_HTTP_ACTION,
+        request.to_string().as_bytes(),
+        b"{}",
+    )
+    .await;
+    assert_eq!(pending.err_code(), "APPROVAL_REQUIRED");
+    let challenge = pending.metadata["approval"]["challenge_id"].clone();
+    let review = f
+        .call(
+            admin_msg::APPROVAL_LOCAL_REVIEW,
+            json!({"approval_request_id":challenge}),
+            &[],
+        )
+        .await;
+    review.ok();
+    let remembered = f
+        .call(
+            admin_msg::DESKTOP_REMEMBER,
+            json!({}),
+            &common::proof_body(common::PASSWORD),
+        )
+        .await;
+    remembered.ok();
+    let mut presence = Vec::new();
+    ipc::encode_proof_body(ipc::ProofKind::Presence, &remembered.body, &mut presence);
+    f.call(admin_msg::APPROVAL_LOCAL_APPROVE, json!({"approval_request_id":challenge,"expected_review_sha256":review.metadata["review_sha256"]}), &presence).await.ok();
+    request["local_approval_request_id"] = challenge;
+    common::call(
+        &agent_socket,
+        Channel::Agent,
+        ipc::agent_msg::EXECUTE_FIXED_HTTP_ACTION,
+        request.to_string().as_bytes(),
+        b"{}",
+    )
+    .await
+    .ok();
+    let replay = common::call(
+        &agent_socket,
+        Channel::Agent,
+        ipc::agent_msg::EXECUTE_FIXED_HTTP_ACTION,
+        request.to_string().as_bytes(),
+        b"{}",
+    )
+    .await;
+    assert_eq!(replay.err_code(), "CAPABILITY_EXHAUSTED");
     f.finish().await;
 }
 

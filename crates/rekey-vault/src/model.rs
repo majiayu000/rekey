@@ -268,6 +268,7 @@ pub mod event_type {
     pub const POLICY_TRUST_INSTALLED: &str = "policy.trust_installed";
     pub const APPROVAL_REQUESTED: &str = "approval.requested";
     pub const APPROVAL_ACCEPTED: &str = "approval.accepted";
+    pub const APPROVAL_APPROVED: &str = "approval.approved";
     pub const APPROVAL_REJECTED: &str = "approval.rejected";
     pub const GITHUB_CONNECTOR_AUTHORIZED: &str = "connector.github.authorized";
     pub const GITHUB_TOKEN_REVOKED: &str = "connector.github.token_revoked";

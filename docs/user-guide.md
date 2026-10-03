@@ -499,6 +499,40 @@ not an authentication defense. Rekey also cannot detect replay of a complete,
 previously valid vault snapshot. G1 therefore has no monotonic rollback
 protection. Restore only a backup and receipt you intentionally selected.
 
+## Local Presence approval (v3 source checkout)
+
+A rule with `approver: {"kind":"local-presence"}` requires an explicit local
+decision for the exact request. Personal drafts retain this requirement for
+high-risk template actions. `execute` and `execute-text-stream` return exit 4
+with a JSON `APPROVAL_REQUIRED` error containing the challenge ID and expiry;
+this response never executes the upstream action.
+
+The macOS approval inbox retrieves the complete daemon-authored review with
+`rekey approval review CHALLENGE_ID`. It verifies the hash of the original
+review bytes and defaults to **Reject**. Approve or reject requires a fresh
+Presence proof; cancelling authentication submits no decision. Notifications
+are optional for the current App session and never request authentication.
+Signed-device Keychain and Touch ID acceptance is still pending.
+
+The Agent can use `rekey approval await CHALLENGE_ID --capability -` or
+`rekey approval cancel CHALLENGE_ID --capability -`, supplying its capability
+through stdin. Only the owning session can wait or cancel. Waiting consumes
+no capability use and does not execute anything. After `approved`, explicitly
+repeat the original execution with `--challenge CHALLENGE_ID`; the daemon
+rechecks the complete request and consumes approval once. Local challenges
+cannot be combined with external `--approval` files.
+
+A lost decision response is not permission to resubmit automatically. Query
+the current state first. `APPROVAL_OUTCOME_UNCONFIRMED` is non-retryable; a new
+attempt needs a newly reviewed challenge. Lock, policy changes, expiry and
+session revocation invalidate pending authorization.
+
+MCP exposes the same owner-only `await_approval` and `cancel_approval` tools.
+Action inputs are `{params, query, body, approval_challenge?}`. The challenge
+field belongs to the wrapper, not the upstream body. GET omits `body`; text
+and JSON responses are text, while other MIME types use base64 resources.
+Profile-based tool discovery and `rekey run` remain under development.
+
 ## Execute without exposing the token in argv
 
 Create a request body such as `request.json`, then pipe the capability token:

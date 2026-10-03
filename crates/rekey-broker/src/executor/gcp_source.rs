@@ -645,6 +645,7 @@ mod tests {
                 query: Default::default(),
                 body: b"{}".to_vec(),
                 approval_grants: vec![],
+                local_approval_request_id: None,
             };
             let end = Instant::now() + Duration::from_millis(self.action.timeout_ms.into());
             let mut started = self

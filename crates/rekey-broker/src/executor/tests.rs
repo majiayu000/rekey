@@ -818,6 +818,7 @@ mod lease_recovery {
                         query: Default::default(),
                         body: vec![],
                         approval_grants: vec![],
+                        local_approval_request_id: None,
                     };
                     let end = Instant::now() + Duration::from_secs(30);
                     let mut started = f
@@ -909,6 +910,7 @@ async fn keychain_fixed_header_fake_transport_injects_and_seals_all_reflected_fo
         query: Default::default(),
         body: vec![],
         approval_grants: vec![],
+        local_approval_request_id: None,
     };
     let value = b"synthetic-native-value";
     let forms = fixed_header_sealing_needles(value, b"Bearer synthetic-native-value", b"Bearer ");
@@ -1033,6 +1035,7 @@ async fn template_targets_preserve_locked_credential_and_fixed_profile_boundarie
         query: Default::default(),
         body: vec![],
         approval_grants: vec![],
+        local_approval_request_id: None,
     };
     assert_eq!(validate_request(&action, &request), Ok(()));
     assert!(build_upstream(&action, &request, Zeroizing::new(vec![])).is_err());

@@ -12,15 +12,17 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rekey_connector::{McpToolDescriptor, adapt_mcp_invocation, project_mcp_tool};
-use rekey_domain::action::{FixedHttpAction, FixedMethod};
+use rekey_domain::action::{ActionTarget, FixedHttpAction, FixedMethod};
 use rekey_domain::capability::ActionVersionRef;
-use rekey_domain::ipc::{Channel, ExecuteResponseMeta, agent_msg};
+use rekey_domain::ids::ApprovalRequestId;
+use rekey_domain::ipc::{Channel, ExecuteResponseMeta, LocalApprovalStateResponse, agent_msg};
+use rekey_domain::template::{TemplateValues, ValueRule};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
 const LIMIT: usize = 1024 * 1024;
-const VERSION: &str = "2025-06-18";
+const VERSION: &str = "2025-11-25";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -43,6 +45,57 @@ struct Tool {
     descriptor: McpToolDescriptor,
     action: ActionVersionRef,
     headers: Vec<(String, String)>,
+    no_body: bool,
+    fixed_content_type: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Arguments {
+    #[serde(default)]
+    params: TemplateValues,
+    #[serde(default)]
+    query: TemplateValues,
+    body: Option<Value>,
+    approval_challenge: Option<ApprovalRequestId>,
+}
+
+fn value_schema(rules: &BTreeMap<String, ValueRule>, required: bool) -> Value {
+    let properties: serde_json::Map<String, Value> = rules.iter().map(|(key, rule)| {
+        let schema = match rule {
+            ValueRule::Slug => json!({"type":"string","maxLength":100,"pattern":"^[A-Za-z0-9][A-Za-z0-9._-]*$"}),
+            ValueRule::Int { min, max } => json!({"type":"string","pattern":"^-?[0-9]+$","description":format!("Decimal integer from {min} through {max}")}),
+            ValueRule::Enum(values) => json!({"type":"string","enum":values}),
+        };
+        (key.clone(), schema)
+    }).collect();
+    json!({"type":"object","additionalProperties":false,"properties":properties,"required":if required {rules.keys().cloned().collect::<Vec<_>>()} else {Vec::new()}})
+}
+
+fn invocation_schema(action: &FixedHttpAction, body_schema: Value) -> Value {
+    let empty = BTreeMap::new();
+    let (params, query) = match &action.target {
+        ActionTarget::Fixed { .. } => (&empty, &empty),
+        ActionTarget::Template { target, .. } => (target.params(), target.query()),
+    };
+    let mut properties = json!({
+        "params":value_schema(params, true),
+        "query":value_schema(query, false),
+        "approval_challenge":{"type":"string","format":"uuid","description":"After approval, explicitly repeat the original request with its challenge ID. Never retry a completed or indeterminate write."}
+    });
+    let mut required = Vec::new();
+    if !params.is_empty() {
+        required.push("params");
+    }
+    if action.method != FixedMethod::Get {
+        properties["body"] = body_schema;
+        required.push("body");
+    }
+    json!({"type":"object","additionalProperties":false,"properties":properties,"required":required})
+}
+
+fn approval_tool(name: &str) -> Value {
+    json!({"name":name,"description":if name == "await_approval" {"Wait up to 120 seconds for your local approval. This never approves or executes an action."} else {"Cancel your local approval request. This never executes an action."},"inputSchema":{"type":"object","additionalProperties":false,"properties":{"challenge_id":{"type":"string","format":"uuid"}},"required":["challenge_id"]}})
 }
 
 struct Server {
@@ -101,14 +154,9 @@ impl Server {
             if !action.enabled {
                 return Err("disabled action in manifest");
             }
-            // adapt_mcp_invocation always sends application/json bodies. Closed
-            // no-body GET profiles (GitHub list-repos, Keycloak target GET) reject
-            // that shape, so refuse to advertise tools that can never succeed.
-            if action.method == FixedMethod::Get {
-                return Err("no-body GET actions are incompatible with MCP JSON invocation");
-            }
-            let descriptor = project_mcp_tool(&action, &entry.input_schema)
+            let mut descriptor = project_mcp_tool(&action, &entry.input_schema)
                 .map_err(|_| "invalid manifest action")?;
+            descriptor.input_schema = invocation_schema(&action, descriptor.input_schema);
             let tool = Tool {
                 descriptor,
                 action: ActionVersionRef {
@@ -116,6 +164,8 @@ impl Server {
                     version: action.version,
                 },
                 headers: entry.headers,
+                no_body: action.method == FixedMethod::Get,
+                fixed_content_type: matches!(&action.target, ActionTarget::Template { fixed_headers, .. } if fixed_headers.keys().any(|name| name.as_str() == "content-type")),
             };
             if tools.insert(tool.descriptor.name.clone(), tool).is_some() {
                 return Err("duplicate manifest action");
@@ -161,7 +211,12 @@ impl Server {
                     return Some(error(id, -32602, "Invalid initialization parameters"));
                 }
                 self.initialized = true;
-                json!({"protocolVersion":VERSION,"capabilities":{"tools":{}},"serverInfo":{"name":"rekey-mcp","version":env!("CARGO_PKG_VERSION")},"instructions":"Only operator-authorized fixed actions are available. Never retry writes automatically; ask the operator about errors, expiry or approvals."})
+                let version = if params["protocolVersion"] == "2025-06-18" {
+                    "2025-06-18"
+                } else {
+                    VERSION
+                };
+                json!({"protocolVersion":version,"capabilities":{"tools":{}},"serverInfo":{"name":"rekey-mcp","version":env!("CARGO_PKG_VERSION")},"instructions":"Only operator-authorized fixed actions are available. Await approval, then explicitly repeat the same request with approval_challenge. Never retry completed or indeterminate writes."})
             }
             "ping" => json!({}),
             _ if !self.ready => return Some(error(id, -32600, "Complete initialization first")),
@@ -169,7 +224,89 @@ impl Server {
                 if params.get("cursor").is_some() {
                     return Some(error(id, -32602, "Cursor is not supported"));
                 }
-                json!({"tools":self.tools.values().map(|tool| &tool.descriptor).collect::<Vec<_>>()})
+                let mut tools = self
+                    .tools
+                    .values()
+                    .map(|tool| {
+                        serde_json::to_value(&tool.descriptor).expect("serializable descriptor")
+                    })
+                    .collect::<Vec<_>>();
+                tools.extend([
+                    approval_tool("await_approval"),
+                    approval_tool("cancel_approval"),
+                ]);
+                json!({"tools":tools})
+            }
+            "tools/call"
+                if matches!(
+                    params["name"].as_str(),
+                    Some("await_approval" | "cancel_approval")
+                ) =>
+            {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct ApprovalArguments {
+                    challenge_id: ApprovalRequestId,
+                }
+                let Ok(arguments) =
+                    serde_json::from_value::<ApprovalArguments>(params["arguments"].clone())
+                else {
+                    return Some(error(id, -32602, "A challenge_id is required"));
+                };
+                let await_decision = params["name"] == "await_approval";
+                #[derive(Serialize)]
+                struct ApprovalRequest<'a> {
+                    capability_token: &'a str,
+                    approval_request_id: ApprovalRequestId,
+                }
+                let mut meta = Zeroizing::new(Vec::new());
+                if serde_json::to_writer(
+                    &mut *meta,
+                    &ApprovalRequest {
+                        capability_token: &self.token,
+                        approval_request_id: arguments.challenge_id,
+                    },
+                )
+                .is_err()
+                {
+                    return Some(error(id, -32603, "Cannot encode broker request"));
+                }
+                let result = client::Client::connect_with_response_timeout(
+                    &self.socket,
+                    Channel::Agent,
+                    if await_decision {
+                        Duration::from_secs(130)
+                    } else {
+                        client::IO_TIMEOUT
+                    },
+                )
+                .and_then(|mut client| {
+                    client.call(
+                        if await_decision {
+                            agent_msg::AWAIT_APPROVAL
+                        } else {
+                            agent_msg::CANCEL_APPROVAL
+                        },
+                        &meta,
+                        &[],
+                    )
+                });
+                match result {
+                    Ok((metadata, body)) if body.is_empty() => {
+                        match serde_json::from_slice::<LocalApprovalStateResponse>(&metadata) {
+                            Ok(state)
+                                if state.approval_request_id == arguments.challenge_id
+                                    && state.expires_at_ms > 0 =>
+                            {
+                                let result = json!({"challenge_id":state.approval_request_id,"state":state.state,"expires_at_ms":state.expires_at_ms});
+                                json!({"content":[{"type":"text","text":result.to_string()}],"structuredContent":result,"isError":false})
+                            }
+                            _ => tool_error("INVALID_FRAME"),
+                        }
+                    }
+                    Ok(_) => tool_error("INVALID_FRAME"),
+                    Err(error) => broker_error(&error),
+                }
             }
             "tools/call" => {
                 let Some(tool) = params["name"]
@@ -178,29 +315,53 @@ impl Server {
                 else {
                     return Some(error(id, -32602, "Unknown tool"));
                 };
-                let arguments = params
+                let raw_arguments = params
                     .get("arguments")
                     .cloned()
                     .unwrap_or_else(|| json!({}));
-                let Ok(invocation) = adapt_mcp_invocation(tool.action, &arguments) else {
-                    return Some(error(id, -32602, "Tool arguments must be an object"));
+                let Ok(arguments) = serde_json::from_value::<Arguments>(raw_arguments.clone())
+                else {
+                    return Some(error(id, -32602, "Invalid Rekey tool arguments"));
+                };
+                let (content_type, body) = if tool.no_body {
+                    if raw_arguments.get("body").is_some() {
+                        return Some(error(id, -32602, "GET actions do not accept a body"));
+                    }
+                    (None, Vec::new())
+                } else {
+                    let Some(body) = arguments.body else {
+                        return Some(error(id, -32602, "A body object is required"));
+                    };
+                    let Ok(invocation) = adapt_mcp_invocation(tool.action, &body) else {
+                        return Some(error(id, -32602, "The body must be an object"));
+                    };
+                    (
+                        (!tool.fixed_content_type).then_some(invocation.content_type),
+                        invocation.body,
+                    )
                 };
                 #[derive(Serialize)]
                 struct Execute<'a> {
                     capability_token: &'a str,
                     action_id: rekey_domain::ids::ActionId,
                     action_version: u64,
-                    content_type: &'a str,
+                    content_type: Option<&'a str>,
                     extra_headers: &'a [(String, String)],
+                    params: &'a TemplateValues,
+                    query: &'a TemplateValues,
                     approval_grants: [String; 0],
+                    local_approval_request_id: Option<ApprovalRequestId>,
                 }
                 let metadata = Execute {
                     capability_token: &self.token,
-                    action_id: invocation.action.action_id,
-                    action_version: invocation.action.version,
-                    content_type: invocation.content_type,
+                    action_id: tool.action.action_id,
+                    action_version: tool.action.version,
+                    content_type,
                     extra_headers: &tool.headers,
+                    params: &arguments.params,
+                    query: &arguments.query,
                     approval_grants: [],
+                    local_approval_request_id: arguments.approval_challenge,
                 };
                 let mut meta = Zeroizing::new(Vec::new());
                 if serde_json::to_writer(&mut *meta, &metadata).is_err() {
@@ -212,23 +373,18 @@ impl Server {
                     Duration::from_secs(130),
                 )
                 .and_then(|mut client| {
-                    client.call(
-                        agent_msg::EXECUTE_FIXED_HTTP_ACTION,
-                        &meta,
-                        &invocation.body,
-                    )
+                    client.call(agent_msg::EXECUTE_FIXED_HTTP_ACTION, &meta, &body)
                 });
                 match execution {
                     Ok((metadata, body)) => {
                         match serde_json::from_slice::<ExecuteResponseMeta>(&metadata) {
                             Ok(metadata) if metadata.body_len as usize == body.len() => {
-                                let text = json!({"upstream_status":metadata.upstream_status,"headers":metadata.headers,"body_base64":data_encoding::BASE64.encode(&body)}).to_string();
-                                json!({"content":[{"type":"text","text":text}],"isError":!(200..300).contains(&metadata.upstream_status)})
+                                execution_result(metadata, &body)
                             }
                             _ => tool_error("INVALID_FRAME"),
                         }
                     }
-                    Err(err) => tool_error(&err.code),
+                    Err(err) => broker_error(&err),
                 }
             }
             _ => return Some(error(id, -32601, "Method not found")),
@@ -243,6 +399,39 @@ fn error(id: Value, code: i64, message: &str) -> Value {
 
 fn tool_error(code: &str) -> Value {
     json!({"isError":true,"content":[{"type":"text","text":format!("Rekey failed ({code}). Ask the operator to inspect access and audit records. Completion may be indeterminate; do not retry writes automatically.")}]})
+}
+
+fn broker_error(error: &client::CliError) -> Value {
+    if let Some(approval) = &error.approval {
+        let result = json!({"code":error.code,"approval":approval,"retryable":false});
+        json!({"isError":true,"structuredContent":result,"content":[{"type":"text","text":result.to_string()}]})
+    } else {
+        tool_error(&error.code)
+    }
+}
+
+fn execution_result(metadata: ExecuteResponseMeta, body: &[u8]) -> Value {
+    let mime = metadata
+        .headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+        .map(|(_, value)| value.as_str())
+        .unwrap_or("application/octet-stream");
+    let media_type = mime
+        .split(';')
+        .next()
+        .unwrap_or(mime)
+        .trim()
+        .to_ascii_lowercase();
+    let content = if media_type.starts_with("text/") || media_type == "application/json" {
+        let Ok(text) = std::str::from_utf8(body) else {
+            return tool_error("INVALID_FRAME");
+        };
+        json!({"type":"text","text":text})
+    } else {
+        json!({"type":"resource","resource":{"uri":"rekey:///response","mimeType":mime,"blob":data_encoding::BASE64.encode(body)}})
+    };
+    json!({"content":[content],"structuredContent":{"upstream_status":metadata.upstream_status,"headers":metadata.headers,"mime_type":mime},"isError":!(200..300).contains(&metadata.upstream_status)})
 }
 
 fn run() -> Result<(), &'static str> {
@@ -285,5 +474,205 @@ fn main() {
     if let Err(message) = run() {
         eprintln!("rekey-mcp: {message}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rekey_domain::ipc::{FRAME_HEADER_LEN, FrameHeader, resp_msg};
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::UnixListener;
+
+    fn response(mime: &str) -> ExecuteResponseMeta {
+        serde_json::from_value(
+            json!({"upstream_status":403,"headers":[["Content-Type",mime]],"body_len":2}),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn response_preserves_mime_status_and_strict_text_or_binary() {
+        let text = execution_result(response("application/json; charset=utf-8"), b"{}");
+        assert_eq!(text["content"][0]["text"], "{}");
+        assert_eq!(text["structuredContent"]["upstream_status"], 403);
+        assert_eq!(text["isError"], true);
+        let invalid = execution_result(response("text/plain"), &[255, 254]);
+        assert!(
+            invalid["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("INVALID_FRAME")
+        );
+        let binary = execution_result(response("application/octet-stream"), &[255, 254]);
+        assert_eq!(binary["content"][0]["type"], "resource");
+        assert_eq!(
+            binary["content"][0]["resource"]["mimeType"],
+            "application/octet-stream"
+        );
+        assert_eq!(binary["content"][0]["resource"]["blob"], "//4=");
+    }
+
+    #[test]
+    fn arguments_keep_approval_and_target_outside_the_body() {
+        let challenge = ApprovalRequestId::new_random();
+        let arguments: Arguments = serde_json::from_value(json!({"body":{"approval_challenge":"body text"},"params":{"owner":"example"},"query":{"page":"2"},"approval_challenge":challenge})).unwrap();
+        assert_eq!(arguments.approval_challenge, Some(challenge));
+        assert_eq!(arguments.body.unwrap()["approval_challenge"], "body text");
+        assert_eq!(arguments.params["owner"], "example");
+        assert_eq!(arguments.query["page"], "2");
+        for invalid in [
+            json!({"body":{},"capability":"override"}),
+            json!({"body":{},"approval_challenge":"bad"}),
+            json!({"body":{},"query":{"page":2}}),
+        ] {
+            assert!(serde_json::from_value::<Arguments>(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn approval_required_retains_typed_fields_without_echoing_broker_text() {
+        let challenge = ApprovalRequestId::new_random();
+        let mut error = client::CliError::local("APPROVAL_REQUIRED", "never echo this");
+        error.approval = Some(rekey_domain::ipc::ApprovalRequired {
+            challenge_id: challenge,
+            expires_at_ms: 1234,
+        });
+        let result = broker_error(&error);
+        assert_eq!(
+            result["structuredContent"]["approval"]["challenge_id"],
+            challenge.to_string()
+        );
+        assert_eq!(result["structuredContent"]["retryable"], false);
+        assert!(!result.to_string().contains("never echo this"));
+        let text: Value =
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(text, result["structuredContent"]);
+    }
+
+    #[test]
+    fn protocol_negotiation_only_claims_implemented_versions() {
+        for (requested, expected) in [
+            ("2025-06-18", "2025-06-18"),
+            ("2025-11-25", "2025-11-25"),
+            ("2099-01-01", "2025-11-25"),
+        ] {
+            let mut server = Server {
+                socket: PathBuf::new(),
+                token: Zeroizing::new(String::new()),
+                tools: BTreeMap::new(),
+                initialized: false,
+                ready: false,
+            };
+            let response = server.handle(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":requested,"capabilities":{},"clientInfo":{"name":"test","version":"1"}}})).unwrap();
+            assert_eq!(response["result"]["protocolVersion"], expected);
+        }
+    }
+
+    #[test]
+    fn approval_controls_use_only_agent_owner_api_and_validate_response() {
+        for (name, state, wrong_id, response_body, expiry, valid) in [
+            ("await_approval", "approved", false, false, 1234, true),
+            ("await_approval", "pending", false, false, 1234, true),
+            ("cancel_approval", "cancelled", false, false, 1234, true),
+            ("await_approval", "approved", true, false, 1234, false),
+            ("await_approval", "approved", false, true, 1234, false),
+            ("await_approval", "approved", false, false, 0, false),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+            let socket = directory.path().join("agent.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let challenge = ApprovalRequestId::new_random();
+            let receiver = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut header = [0; FRAME_HEADER_LEN];
+                stream.read_exact(&mut header).unwrap();
+                let request = FrameHeader::decode(&header).unwrap();
+                assert_eq!(request.channel, Channel::Agent);
+                assert_eq!(request.body_len, 0);
+                assert_eq!(
+                    request.message_type,
+                    if name == "await_approval" {
+                        agent_msg::AWAIT_APPROVAL
+                    } else {
+                        agent_msg::CANCEL_APPROVAL
+                    }
+                );
+                let mut metadata = vec![0; request.metadata_len as usize];
+                stream.read_exact(&mut metadata).unwrap();
+                let metadata: Value = serde_json::from_slice(&metadata).unwrap();
+                assert_eq!(
+                    metadata,
+                    json!({"capability_token":"synthetic-capability","approval_request_id":challenge})
+                );
+                let reply_id = if wrong_id {
+                    ApprovalRequestId::new_random()
+                } else {
+                    challenge
+                };
+                let metadata =
+                    json!({"approval_request_id":reply_id,"state":state,"expires_at_ms":expiry})
+                        .to_string();
+                let header = FrameHeader {
+                    channel: Channel::Agent,
+                    flags: 0,
+                    message_type: resp_msg::OK,
+                    request_id: request.request_id,
+                    metadata_len: metadata.len() as u32,
+                    body_len: u32::from(response_body),
+                };
+                stream.write_all(&header.encode()).unwrap();
+                stream.write_all(metadata.as_bytes()).unwrap();
+                if response_body {
+                    stream.write_all(&[0]).unwrap();
+                }
+            });
+            let mut server = Server {
+                socket,
+                token: Zeroizing::new("synthetic-capability".to_owned()),
+                tools: BTreeMap::new(),
+                initialized: true,
+                ready: true,
+            };
+            let reply = server.handle(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":{"challenge_id":challenge}}})).unwrap();
+            receiver.join().unwrap();
+            assert_eq!(reply["result"]["isError"], !valid);
+            if valid {
+                assert_eq!(reply["result"]["structuredContent"]["state"], state);
+            } else {
+                assert!(
+                    reply["result"]["content"][0]["text"]
+                        .as_str()
+                        .unwrap()
+                        .contains("INVALID_FRAME")
+                );
+            }
+            assert!(!reply.to_string().contains("synthetic-capability"));
+        }
+    }
+
+    #[test]
+    fn approval_controls_reject_proofs_and_other_arguments_before_connect() {
+        let mut server = Server {
+            socket: PathBuf::from("/no-socket"),
+            token: Zeroizing::new(String::new()),
+            tools: BTreeMap::new(),
+            initialized: true,
+            ready: true,
+        };
+        for arguments in [
+            json!({"challenge_id":"not-a-uuid"}),
+            json!({"challenge_id":ApprovalRequestId::new_random(),"proof":"forbidden"}),
+            json!({}),
+        ] {
+            let reply = server.handle(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"await_approval","arguments":arguments}})).unwrap();
+            assert_eq!(reply["error"]["code"], -32602);
+        }
     }
 }

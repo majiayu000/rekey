@@ -67,6 +67,25 @@ fn verified_stored_bundle(
 }
 
 impl BrokerCtx {
+    pub(crate) async fn check_local_approval_policy(
+        &self,
+        challenge: &rekey_domain::ipc::ApprovalChallenge,
+    ) -> Result<(), BrokerError> {
+        let now = crate::now_ts()?;
+        let policy = self.policy.read().await;
+        let current = policy
+            .as_ref()
+            .filter(|p| !p.is_expired(now))
+            .ok_or(BrokerError::Denied("policy-changed"))?;
+        if current.snapshot().version().get() != challenge.policy_version
+            || data_encoding::HEXLOWER.encode(&current.snapshot().digest())
+                != challenge.policy_sha256
+        {
+            return Err(BrokerError::Denied("policy-changed"));
+        }
+        Ok(())
+    }
+
     pub async fn personal_policy_draft_until(
         &self,
         request: PersonalPolicyDraftMeta,
@@ -901,7 +920,9 @@ mod tests {
                 self.ctx
                     .sessions
                     .begin(token, action, crate::now_ts().unwrap()),
-                Err(rekey_domain::DomainError::InvalidCapability)
+                Err(BrokerError::Domain(
+                    rekey_domain::DomainError::InvalidCapability
+                ))
             ));
         }
 

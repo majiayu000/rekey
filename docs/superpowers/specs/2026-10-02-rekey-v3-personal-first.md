@@ -335,6 +335,8 @@ A2 针对的是"拿到明文或扩大权限"。A2 能做的事被限定为两类
 | A1 | 添加凭据（只写不读）；在已激活的 Profile 内签发会话 | 管理会话 |
 | A2 | 查看/复制明文、增删改 Action/模板/Profile、激活策略、安装信任根、签发 7 天授权、备份导出/恢复、改密码、VRK 轮换、`SHUTDOWN` | 每次都需要 step-up 证明：`password`、`recovery` 或 `presence`（§5.2） |
 
+Profile 会话签发的“管理会话”专指 daemon 当前已认证的 Unlocked 生命周期：与 §3.2 已允许的 A2 能力一致，只能按已激活签名 Profile 的固定范围签发，不要求新 CLI 从 App 取得或落盘管理 token。该窄入口不允许添加凭据或执行 A2；添加凭据仍需原有独立内存管理 token。Locked/过期/不存在的 Profile 返回错误，不触发后台认证。
+
 **修复 S2**：`SHUTDOWN` 在任何状态下都属于 A2。
 
 step-up 授权与解密材料分开：`presence` 只在当前已解锁且本次运行已建立有效 verifier 时可用。
@@ -531,6 +533,7 @@ v3 只把"由谁批准"抽象出来。策略规则增加 `approver` 字段：
   `target` 复用已验证的封闭路径规则；schema 是解析后的本地 JSON Schema 文档；source 记录模板/能力/action 索引、
   来源摘要及可选团队 signer。origin/method/auth 仍只有 Action 自身一份；不复制整个模板或物化对象。
   固定 Action 创建命令仍可接受 exact_path，并只构造 Fixed；Template 只能由认证包的安装入口产生。
+- 请求 body 中每个原始 JSON number 在解析和 JCS 编码后必须保持精确十进制数值；例如 1.0、1e0 可规范为1，但超出精度的大整数、被舍入的小数与非零下溢不得静默接受。数值保真在唯一 canonicalize 边界、计算参数哈希之前检查；数字字符串不受影响。失败沿 InvalidParameters 拒绝，防止实际发送的原始 body 与审批哈希/审阅内容分离。
 - prepare-approval 和 execute 共用一次 render/canonicalize 路径。规范哈希含标准化 params、排序 query 与
   渲染后的 path；HTTP 只消费该规范结果。固定头不能被每次调用的头覆盖。
 - 管理 IPC 52 为 TEMPLATE_CATALOG，53 为 TEMPLATE_INSTALL。source 是闭合的 anthropic、openai、
@@ -564,19 +567,35 @@ GitHub App、Vault、Keycloak 等现有 connector 保留为"高级"类型，不�
 
 ```json
 {
-  "profile": "claude-code",
+  "name": "claude-code",
   "principal_id": "<稳定 UUID>",
-  "grants": ["anthropic@1:messages", "github-pat@1:read-repo", "github-pat@1:create-issue"],
-  "session": {"ttl": "12h", "max_uses": 5000},
-  "budget": {"anthropic@1": {"max_requests_per_day": 2000, "max_output_tokens_per_day": 2000000}},
-  "isolation": "none | seatbelt | netns",
-  "egress": "allow | deny-other"
+  "grants": [{
+    "instance": "anthropic",
+    "capabilities": [{"capability": "messages", "actions": [{"action_id": "<Action UUID>", "version": 1}]}]
+  }],
+  "session": {"ttl_ms": 43200000, "max_uses": 5000},
+  "confirm_each_run": false,
+  "llm_limits": [{
+    "instance": "anthropic", "models": ["<允许的模型 ID>"],
+    "max_output_tokens_per_request": 4096,
+    "max_requests_per_day": 2000, "max_output_tokens_per_day": 2000000
+  }],
+  "isolation": "none",
+  "egress": "allow"
 }
 ```
 
 - 创建或修改 Profile 属于 A2 操作。策略由 §7.1 的流程自动生成并签名。
 - 策略绑定稳定的 `principal_id`（main 已支持 `--principal`），续签会话不需要重新签策略。
 - 演进到 v4 时，`principal_id` 由工作负载身份映射得到，而不是本地生成，见 §12。
+
+#### M3 实现合同（GA 前固定）
+
+Profile 进入唯一签名 `PolicySnapshot` 的必填 `profiles`，快照格式升为5；与用量存储统一将开发中 vault 格式升为25，旧格式拒绝，不迁移。每个 Profile 内嵌稳定实例 slug → capability → 精确 ActionVersionRef 的映射，不另建实例目录或 Profile 数据库。激活时用认证后的 Action 行核对能力及共同的 credential/template/source digest。
+
+会话上限使用 `ttl_ms`、`max_uses`，并签入 `confirm_each_run`。LLM 实例必须同时签入非空模型白名单、单次最大输出、每日请求数和每日输出 token 上限；同 principal/实例的多个 Profile 必须保持映射与预算一致。修改这些字段继续使用完整草案、差异、签名和激活流程。
+
+用量初版保留单一请求账本和一个认证集合根，不维护第二份汇总计数；代价是全集合校验成本随历史增长。请求与 `execution.started` 同事务记账，终态只结算一次。崩溃遗留的未结算请求在恢复准入前按已记录上限保守结算。内容认证与整库防回滚分开验收，后者仍依赖 §5.4 的外部锚。
 
 ### 8.2 `rekey run`
 
@@ -596,6 +615,8 @@ rekey run claude-code -- claude
    - Seatbelt 配置需要新增出站规则，允许连接 `127.0.0.1:<port>` 和 agent.sock。
    - `egress: deny-other` 才达到 L2，界面要提示这会影响 npm、git 等工具。
 
+进程监视在发布 capability 前固定一次 OS 报告的 peer 身份，之后不得重选 owner。Linux 使用 `SO_PEERPIDFD`，旧内核缺此接口时明确拒绝；macOS 注册 `NOTE_EXIT` 后用原 audit token 的公开 Security 动态查询复核代际与存活。macOS 的 peer 身份可能随注册前的 FD 移交/写入变化，不能宣称还原最初 connector；正常 `run` 在签发完成前不启动 child，并保持控制 FD 的 CLOEXEC。注册后的 owner 死亡和控制连接 EOF 均独立触发撤销，T9 仍由真实 CLI 端到端验证。
+
 **I5 的例外说明**：capability 会进入子进程环境变量。它是短期、有范围、可吊销的令牌，不是凭据本身；泄露后的影响以 Profile 的授权范围和预算为上限。
 
 ### 8.3 `rekey connect`
@@ -604,7 +625,7 @@ rekey run claude-code -- claude
 rekey connect claude-code   # 同样支持 codex | cursor
 ```
 
-- 写入目标 Agent 的 MCP 配置（`rekey-mcp`）和网关环境变量。
+- 写入目标 Agent 的 MCP 配置（`rekey-mcp`）；Claude Code/Codex 同时配置公开网关 endpoint 和运行时 key 变量引用，capability 值不落盘。Cursor 本批仅支持 MCP：其官方 BYOK 经服务端构造请求，不能将用户本机 loopback 网关冒充可用的远端地址。
 - **写入前展示 diff，经用户确认后才写，并备份原文件。** 此规则覆盖 2026-10-01 中"不自动修改第三方 Agent 配置"的限制。
 - `--print` 只打印，不写入。
 
@@ -613,7 +634,9 @@ rekey connect claude-code   # 同样支持 codex | cursor
 - 通过 initialize 协商支持 MCP `2025-06-18`、`2025-11-25` 及后续版本。
 - 每个已授权的模板能力暴露为一个 tool，输入 schema 由 params、query、body_schema 合成。
 - 返回内容：`text/*` 和 `application/json` 直接返回文本，其他类型返回 base64 并附 MIME 类型。支持 GET。
-- 另外提供 `await_approval` tool（§6.3）。
+- 另外提供 `await_approval` 和 `cancel_approval` tool（§6.3），只通过 Agent socket 查询或取消调用者自己的 challenge，不执行管理批准，不自动重发原动作。
+- MCP 动作参数固定为 `{params, query, body, approval_challenge?}`：控制字段只进 IPC metadata，`body` 单独编码；GET 不接受 body 并发送零字节。批准后由 Agent 显式带同一 `approval_challenge` 重新提交原请求；完整上下文仍由 daemon 复核。
+- `APPROVAL_REQUIRED` 的 challenge ID 和期限同时放入文本 JSON 与 `structuredContent`；await/cancel 返回同一 daemon 状态与期限。未实现的协议版本只协商到最高已实现版本，不声称支持未来协议。
 - 没有会话时返回 `NEEDS_SESSION`，提示用户运行 `rekey run`。
 
 ### 8.5 本机网关
@@ -641,6 +664,9 @@ rekey connect claude-code   # 同样支持 codex | cursor
   - `model` 必须在 Profile 白名单内；
   - `max_tokens` 不超过上限；
   - 预算按响应的 `usage` 累计，超出后拒绝新请求。
+  - 日预算按稳定 principal、模板实例和 UTC 日期持久聚合，续签 capability 与 daemon 重启不能重置。
+  - 生成请求的 `usage` 缺失、格式错误或流中断时，按本次请求已校验的最大输出 token 数结算，并记为 indeterminate；不能按零消耗处理。有效累计 usage 只结算一次，不将流中的多次累计值相加。
+  - 达到已结算预算后拒绝新请求；已在途请求可能造成有界超额，这不是硬费用封顶。模型与预算在共同执行准入检查，不能改走 agent.sock/MCP 绕过。
 
 **流式与遮蔽**
 - SSE 原样转发，复用 NET-07 的增量遮蔽器。新增 JSON Unicode 解码后，窗口扩大到 `6 * max_needle_len + 5`，保留跨分片六字节转义及未完成转义的上下文。

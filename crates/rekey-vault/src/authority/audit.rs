@@ -9,6 +9,59 @@ use crate::now_ms;
 use super::{VaultState, Worker, ensure_mutation_current, unlock_audit};
 
 impl Worker {
+    pub(super) fn authorize_local_approval(
+        &mut self,
+        proof: crate::secret::SecretInput,
+        draft: AuditDraft,
+        not_after: std::time::Instant,
+        wall_not_after_ms: i64,
+    ) -> Result<(), AuthorityError> {
+        self.require_unlocked()?;
+        let proof = UnlockProof::Presence(proof);
+        let verified = self.verify_proof(&proof);
+        drop(proof);
+        verified?;
+        // This trusted command has one narrow audit shape. IPC never supplies
+        // audit fields, and this is not a general proof-authorized append API.
+        let valid_decision = match (draft.event_type, draft.approval.as_ref()) {
+            (event_type::APPROVAL_APPROVED, Some(evidence)) => {
+                evidence.approval_id.is_some() && evidence.approver_id.is_none()
+            }
+            (event_type::APPROVAL_REJECTED, Some(evidence)) => {
+                evidence.approval_id.is_none() && evidence.approver_id.is_none()
+            }
+            _ => false,
+        };
+        if !valid_decision
+            || draft.outcome != outcome::SUCCESS
+            || draft.reason_code != "local-presence"
+            || draft.session_id.is_none()
+            || draft.action_id.is_none()
+            || draft.action_version.is_none_or(|version| version == 0)
+            || draft.authorization.as_ref().is_none_or(|evidence| {
+                evidence.policy_version == 0 || evidence.policy_rule_id.is_none()
+            })
+            || draft.credential_id.is_some()
+            || draft.credential_version.is_some()
+            || draft.upstream_status.is_some()
+            || draft.latency_ms.is_some()
+        {
+            return Err(rekey_domain::DomainError::InvalidActionDefinition(
+                "invalid local approval audit".to_owned(),
+            )
+            .into());
+        }
+        ensure_mutation_current(Some(not_after))?;
+        if now_ms()? >= wall_not_after_ms {
+            return Err(AuthorityError::AuthorityBusy);
+        }
+        let event = self.audit_event_or_fault(draft)?;
+        let result = self
+            .store
+            .append_local_approval_audit(&event, not_after, wall_not_after_ms);
+        self.fault_on_audit_failure(result)
+    }
+
     pub(super) fn audit_prune(
         &mut self,
         request: AuditPruneRequest,

@@ -286,6 +286,24 @@ impl AuthorityHandle {
         })
     }
 
+    /// Verifies only the current Presence key and atomically audits one local
+    /// approval decision. Dropping the receiver does not revoke queued work.
+    pub async fn authorize_local_approval(
+        &self,
+        proof: SecretInput,
+        draft: AuditDraft,
+        not_after: std::time::Instant,
+        wall_not_after_ms: i64,
+    ) -> Result<(), AuthorityError> {
+        call!(self, |reply| AuthorityCommand::AuthorizeLocalApproval {
+            proof,
+            draft,
+            not_after,
+            wall_not_after_ms,
+            reply
+        })
+    }
+
     pub async fn verify_proof(&self, proof: UnlockProof) -> Result<(), AuthorityError> {
         call!(self, |reply| AuthorityCommand::VerifyProof { proof, reply })
     }

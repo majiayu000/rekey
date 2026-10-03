@@ -17,6 +17,10 @@ pub enum BrokerError {
     Policy(#[from] PolicyError),
     #[error("invalid frame")]
     Frame(#[from] FrameError),
+    #[error("local approval required")]
+    ApprovalRequired(rekey_domain::ipc::ApprovalRequired),
+    #[error("local approval outcome is unconfirmed; query its state; do not retry automatically")]
+    ApprovalOutcomeUnconfirmed,
     #[error("request denied: {0}")]
     Denied(&'static str),
     #[error("upstream request failed")]
@@ -49,6 +53,8 @@ impl BrokerError {
             Self::Policy(_) => "POLICY_INVALID",
             Self::Frame(_) => "INVALID_FRAME",
             Self::Denied(_) => "REQUEST_DENIED",
+            Self::ApprovalRequired(_) => "APPROVAL_REQUIRED",
+            Self::ApprovalOutcomeUnconfirmed => "APPROVAL_OUTCOME_UNCONFIRMED",
             Self::Upstream(_) => "UPSTREAM_FAILED",
             Self::Indeterminate(_) => "UPSTREAM_INDETERMINATE",
             Self::ResponseSecurityViolation => "RESPONSE_SECURITY_VIOLATION",

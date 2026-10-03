@@ -500,6 +500,26 @@ impl SqliteRecordStore {
         commit_audited(tx)
     }
 
+    /// Local decisions must still be current after SQL work, immediately before
+    /// COMMIT. Deadline failures roll back normally; audit failures stay fatal.
+    pub(crate) fn append_local_approval_audit(
+        &mut self,
+        event: &AuditEvent,
+        not_after: std::time::Instant,
+        wall_not_after_ms: i64,
+    ) -> Result<(), AuthorityError> {
+        let tx = self
+            .conn
+            .transaction()
+            .map_err(|_| AuthorityError::AuditCommitFailed)?;
+        super::audit::insert(&tx, event).map_err(|_| AuthorityError::AuditCommitFailed)?;
+        crate::authority::ensure_mutation_current(Some(not_after))?;
+        if crate::now_ms()? >= wall_not_after_ms {
+            return Err(AuthorityError::AuthorityBusy);
+        }
+        commit_audited(tx)
+    }
+
     /// Commits a related sequence of audit events in one transaction.
     pub fn append_audits(&mut self, events: &[AuditEvent]) -> Result<(), AuthorityError> {
         let tx = self

@@ -12,6 +12,7 @@ use crate::error::BrokerError;
 use crate::upstream::{UpstreamRequest, UpstreamStreamResponse};
 
 pub(crate) enum TextStreamEvent {
+    AdmissionError(BrokerError),
     Admitted { deadline: Instant },
     Chunk(Vec<u8>),
     Terminal(TextStreamStatus),

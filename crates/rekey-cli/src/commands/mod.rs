@@ -30,8 +30,9 @@ pub use audit::{
 };
 mod policy_approval;
 pub use policy_approval::{
-    approval_get, approval_origin, approval_pending, approval_prepare, policy_activate,
-    policy_draft, policy_status, policy_trust_install,
+    approval_decide, approval_get, approval_origin, approval_pending, approval_prepare,
+    approval_review, approval_wait_or_cancel, policy_activate, policy_draft, policy_status,
+    policy_trust_install,
 };
 #[cfg(feature = "lab")]
 mod vault_admin;
@@ -774,7 +775,14 @@ pub fn execute(
     capability: &str,
     request: &crate::RequestArgs,
     approvals: &[PathBuf],
+    challenge: Option<rekey_domain::ids::ApprovalRequestId>,
 ) -> Result<(), CliError> {
+    if challenge.is_some() && !approvals.is_empty() {
+        return Err(CliError::local(
+            "USAGE",
+            "--challenge conflicts with --approval",
+        ));
+    }
     let (action_id, version) = parse_action_ref(action)?;
     let capability_token = policy_approval::capability_value(capability)?;
     let body = policy_approval::request_body(request.body_file.as_deref())?;
@@ -789,6 +797,7 @@ pub fn execute(
         "query": policy_approval::request_values(&request.query)?,
         "extra_headers": extra_headers,
         "approval_grants": approval_grants,
+        "local_approval_request_id": challenge,
     });
     let (meta, response_body) = Client::connect_with_response_timeout(
         agent_socket,
@@ -933,14 +942,22 @@ pub fn execute_text_stream(
     capability: &str,
     body_file: &Path,
     approvals: &[PathBuf],
+    challenge: Option<rekey_domain::ids::ApprovalRequestId>,
 ) -> Result<(), CliError> {
+    if challenge.is_some() && !approvals.is_empty() {
+        return Err(CliError::local(
+            "USAGE",
+            "--challenge conflicts with --approval",
+        ));
+    }
     let (action_id, version) = parse_action_ref(action)?;
     let capability_token = policy_approval::capability_value(capability)?;
     let body = policy_approval::request_body(Some(body_file))?;
     let approval_grants = policy_approval::read_approval_files(approvals)?;
     let metadata = serde_json::json!({
         "capability_token":capability_token,"action_id":action_id,"action_version":version,
-        "content_type":"application/json","extra_headers":[],"approval_grants":approval_grants
+        "content_type":"application/json","extra_headers":[],"approval_grants":approval_grants,
+        "local_approval_request_id": challenge
     });
     Client::connect_with_response_timeout(agent_socket, Channel::Agent, ACTION_RESPONSE_TIMEOUT)?
         .text_stream(

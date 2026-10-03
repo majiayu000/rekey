@@ -66,7 +66,7 @@ struct RootView: View {
         .task { await model.refresh(); if model.status == nil && model.needsSetup { model.beginSetup() } }
         .onDisappear { model.clearNativeFlow() }
         .onReceive(Timer.publish(every: 15, on: .main, in: .common).autoconnect()) { _ in
-            if phase == .active && !model.busy && model.operation == nil && model.result == nil && !model.showAddCredential && !model.showSession && !showActionForm && !model.showTemplate && !model.showPolicyDraft {
+            if (phase == .active || model.approvalNotificationsEnabled) && !model.busy && model.operation == nil && model.result == nil && !model.showAddCredential && !model.showSession && !showActionForm && !model.showTemplate && !model.showPolicyDraft {
                 Task { await model.refresh(passive: true) }
             }
         }
@@ -83,6 +83,7 @@ struct RootView: View {
         .sheet(isPresented: $model.showSession) { SessionForm().environmentObject(model) }
         .sheet(item: $model.result, onDismiss: { model.result = nil }) { ResultView(result: $0).environmentObject(model) }
         .sheet(item: $model.approvalDetails) { ApprovalDetailView(details: $0).environmentObject(model) }
+        .sheet(item: $model.localApprovalDetails) { _ in LocalApprovalView().environmentObject(model) }
     }
 
     private var sidebar: some View {
@@ -371,6 +372,13 @@ struct RootView: View {
     private var approvalsPage: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 15) {
+                HStack {
+                    Button(model.approvalNotificationsEnabled ? "关闭审批提醒" : "启用审批提醒") {
+                        Task { await model.setApprovalNotifications(!model.approvalNotificationsEnabled) }
+                    }.disabled(model.approvalNotificationBusy)
+                    Text("仅发送静态提醒，不会自动批准。").font(.system(size: 12)).foregroundStyle(.secondary)
+                }
+                if let message = model.approvalNotificationMessage { Text(message).font(.system(size: 12)).foregroundStyle(.secondary) }
                 if model.approvals.isEmpty { EmptyState(icon: "tray", title: "没有待审批请求", detail: "Agent 提交的有效审批请求会出现在这里。") }
                 ForEach(model.approvals) { item in
                     SectionCard(title: model.actions.first { $0.id == item.action_id }?.name ?? "固定操作", icon: "doc.text.magnifyingglass") {
@@ -380,11 +388,11 @@ struct RootView: View {
                         Text("参数摘要 \(item.parameter_sha256)").font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
                         HStack {
                             Button("查看审批详情") { Task { await model.reviewApproval(item) } }
-                            Button("导出签名信封") { Task { await model.exportApproval(item) } }
+                            if case .ed25519 = item.approver { Button("导出签名信封") { Task { await model.exportApproval(item) } } }
                         }.disabled(model.busy)
                     }
                 }
-                Text("导出后，使用独立审批签名工具审阅具体请求并签发 grant；本窗口不保管审批私钥。").font(.system(size: 12)).foregroundStyle(.secondary)
+                Text("本机审批需在完整审阅后进行系统认证；外部签名请求继续使用独立审批工具。").font(.system(size: 12)).foregroundStyle(.secondary)
             }.padding(.horizontal, 28).padding(.bottom, 28)
         }
     }

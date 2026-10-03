@@ -3,17 +3,20 @@ use std::collections::BTreeSet;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use rekey_domain::action::HeaderName;
+use rekey_domain::authorization::ApproverSpec;
 use rekey_domain::ids::ApprovalRequestId;
 use rekey_domain::ipc::{self, Channel, admin_msg, agent_msg};
+use serde::Serialize;
 use zeroize::Zeroizing;
 
 use crate::client::{CliError, Client};
 
 use super::{
     ACTION_RESPONSE_TIMEOUT, admin, parse_action_ref, print_json, proof_body, read_bounded,
-    read_step_up, stdin_lines,
+    read_step_up, stdin_lines, write_json,
 };
 
 type FileIdentity = (u64, u64);
@@ -236,6 +239,167 @@ pub fn approval_get(state_dir: &Path, approval_request_id: &str) -> Result<(), C
     print_json::<ipc::SignedApprovalChallenge>(&meta)
 }
 
+// Await is the only local approval operation that holds the response for
+// 120 seconds. Keep the existing ten-second framing margin, not a new retry.
+const LOCAL_APPROVAL_AWAIT_TIMEOUT: Duration = Duration::from_secs(130);
+
+#[derive(Serialize)]
+struct LocalReviewOutput<'a> {
+    metadata: ipc::LocalApprovalReviewResponse,
+    review_json: Option<&'a str>,
+}
+
+fn lower_hex_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn local_review_response<'a>(
+    id: ApprovalRequestId,
+    metadata: &[u8],
+    body: &'a [u8],
+) -> Result<LocalReviewOutput<'a>, CliError> {
+    let invalid = || {
+        CliError::local(
+            "INVALID_FRAME",
+            "broker returned invalid local approval review",
+        )
+    };
+    let metadata: ipc::LocalApprovalReviewResponse =
+        serde_json::from_slice(metadata).map_err(|_| invalid())?;
+    if metadata.approval_request_id != id
+        || metadata.record_type != "rekey.approval.local-review.v1"
+        || !lower_hex_digest(&metadata.review_sha256)
+        || metadata.body_len as usize != body.len()
+        || body.len() > ipc::RESPONSE_BODY_MAX_BYTES as usize
+    {
+        return Err(invalid());
+    }
+    let review_json = if body.is_empty() {
+        if matches!(
+            metadata.state,
+            ipc::LocalApprovalState::Pending | ipc::LocalApprovalState::Approved
+        ) {
+            return Err(invalid());
+        }
+        None
+    } else {
+        let original = std::str::from_utf8(body).map_err(|_| invalid())?;
+        let review: ipc::LocalApprovalReview =
+            serde_json::from_str(original).map_err(|_| invalid())?;
+        review.challenge.validate().map_err(|_| invalid())?;
+        if review.record_type != "rekey.approval.review.v1"
+            || review.challenge.approval_request_id != id
+            || !matches!(review.challenge.approver, ApproverSpec::LocalPresence {})
+        {
+            return Err(invalid());
+        }
+        // The App verifies the review digest. The IPC-only CLI preserves the
+        // daemon's complete UTF-8 bytes; no Value/JCS roundtrip changes numbers.
+        Some(original)
+    };
+    Ok(LocalReviewOutput {
+        metadata,
+        review_json,
+    })
+}
+
+pub fn approval_review(state_dir: &Path, id: ApprovalRequestId) -> Result<(), CliError> {
+    let metadata = serde_json::to_vec(&ipc::ApprovalGetMeta {
+        approval_request_id: id,
+    })
+    .map_err(|_| CliError::local("USAGE", "cannot encode approval review request"))?;
+    let (metadata, body) =
+        admin(state_dir)?.call(admin_msg::APPROVAL_LOCAL_REVIEW, &metadata, &[])?;
+    write_json(&local_review_response(id, &metadata, &body)?)
+}
+
+fn local_state_response(
+    id: ApprovalRequestId,
+    metadata: &[u8],
+    body: &[u8],
+) -> Result<ipc::LocalApprovalStateResponse, CliError> {
+    let invalid = || {
+        CliError::local(
+            "INVALID_FRAME",
+            "broker returned invalid local approval state",
+        )
+    };
+    let state: ipc::LocalApprovalStateResponse =
+        serde_json::from_slice(metadata).map_err(|_| invalid())?;
+    if state.approval_request_id != id || state.expires_at_ms <= 0 || !body.is_empty() {
+        return Err(invalid());
+    }
+    Ok(state)
+}
+
+pub fn approval_decide(
+    state_dir: &Path,
+    id: ApprovalRequestId,
+    review_sha256: &str,
+    approve: bool,
+) -> Result<(), CliError> {
+    // Public input must fail before connecting or reading the presence proof.
+    if !lower_hex_digest(review_sha256) {
+        return Err(CliError::local(
+            "USAGE",
+            "review digest must be 64 lowercase hex characters",
+        ));
+    }
+    let metadata = serde_json::to_vec(&ipc::LocalApprovalDecisionMeta {
+        approval_request_id: id,
+        expected_review_sha256: review_sha256.to_owned(),
+    })
+    .map_err(|_| CliError::local("USAGE", "cannot encode local approval decision"))?;
+    let mut client = admin(state_dir)?;
+    let proof = read_step_up(ProofKind::Presence, true)?;
+    let body = proof_body(ProofKind::Presence, &proof);
+    let operation = if approve {
+        admin_msg::APPROVAL_LOCAL_APPROVE
+    } else {
+        admin_msg::APPROVAL_LOCAL_REJECT
+    };
+    // A lost response can follow a committed decision. Never resend here.
+    let (metadata, body) = client.call(operation, &metadata, &body)?;
+    write_json(&local_state_response(id, &metadata, &body)?)
+}
+
+fn local_response_timeout(wait: bool) -> Duration {
+    if wait {
+        LOCAL_APPROVAL_AWAIT_TIMEOUT
+    } else {
+        crate::client::IO_TIMEOUT
+    }
+}
+
+pub fn approval_wait_or_cancel(
+    agent_socket: &Path,
+    id: ApprovalRequestId,
+    capability: &str,
+    wait: bool,
+) -> Result<(), CliError> {
+    let capability_token = capability_value(capability)?;
+    let metadata = serde_json::to_vec(&ipc::LocalApprovalRequestMeta {
+        capability_token,
+        approval_request_id: id,
+    })
+    .map_err(|_| CliError::local("USAGE", "cannot encode local approval request"))?;
+    let operation = if wait {
+        agent_msg::AWAIT_APPROVAL
+    } else {
+        agent_msg::CANCEL_APPROVAL
+    };
+    let (metadata, body) = Client::connect_with_response_timeout(
+        agent_socket,
+        Channel::Agent,
+        local_response_timeout(wait),
+    )?
+    .call(operation, &metadata, &[])?;
+    write_json(&local_state_response(id, &metadata, &body)?)
+}
+
 fn print_policy_status(metadata: &[u8]) -> Result<(), CliError> {
     let status = serde_json::from_slice::<ipc::PolicyStatusResponse>(metadata)
         .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid response"))?;
@@ -358,6 +522,13 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    #[test]
+    fn only_local_await_extends_the_response_deadline() {
+        assert_eq!(local_response_timeout(true), Duration::from_secs(130));
+        assert_eq!(local_response_timeout(false), crate::client::IO_TIMEOUT);
+        assert_eq!(crate::client::IO_TIMEOUT, Duration::from_secs(30));
+    }
 
     #[test]
     fn personal_draft_body_preserves_utf8_bytes_and_rejects_wrong_domain_or_bound() {

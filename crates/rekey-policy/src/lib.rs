@@ -297,7 +297,9 @@ impl ValidatedSnapshot {
         let value = if request.body.is_empty() {
             Value::Null
         } else {
-            parse_unique_json(request.body)?
+            let value = parse_unique_json(request.body)?;
+            ensure_json_number_fidelity(request.body)?;
+            value
         };
         if !binding.validator.is_valid(&value) {
             return Err(PolicyError::InvalidParameters);
@@ -354,6 +356,7 @@ impl ValidatedSnapshot {
             CanonicalParameters {
                 schema_id: definition.parameter_schema_id.clone(),
                 canonical_hash: hash,
+                canonical_json: canonical,
             },
             target,
         ))
@@ -726,6 +729,88 @@ fn normalize_content_type(
     }
 }
 
+// The JSON syntax and duplicate-key checks have already succeeded. Inspect
+// only number tokens outside strings: the upstream still receives these raw
+// bytes, so even precision lost during the first parse must fail closed.
+fn ensure_json_number_fidelity(body: &[u8]) -> Result<(), PolicyError> {
+    let mut at = 0;
+    while at < body.len() {
+        match body[at] {
+            b'"' => {
+                at += 1;
+                while at < body.len() {
+                    match body[at] {
+                        b'\\' => at += 2,
+                        b'"' => {
+                            at += 1;
+                            break;
+                        }
+                        _ => at += 1,
+                    }
+                }
+            }
+            b'-' | b'0'..=b'9' => {
+                let start = at;
+                while at < body.len()
+                    && matches!(body[at], b'0'..=b'9' | b'-' | b'+' | b'.' | b'e' | b'E')
+                {
+                    at += 1;
+                }
+                let original = &body[start..at];
+                let number: serde_json::Number =
+                    serde_json::from_slice(original).map_err(|_| PolicyError::InvalidParameters)?;
+                let canonical =
+                    serde_jcs::to_vec(&number).map_err(|_| PolicyError::InvalidParameters)?;
+                let left = decimal_parts(original).ok_or(PolicyError::InvalidParameters)?;
+                let right = decimal_parts(&canonical).ok_or(PolicyError::InvalidParameters)?;
+                if left != right {
+                    return Err(PolicyError::InvalidParameters);
+                }
+            }
+            _ => at += 1,
+        }
+    }
+    Ok(())
+}
+
+// Compare exact decimal values without converting the comparison to f64.
+// Both inputs are valid JSON number tokens. Zero ignores sign and exponent;
+// nonzero exponents use checked arithmetic, with no powers or big integers.
+fn decimal_parts(number: &[u8]) -> Option<(bool, Vec<u8>, i64)> {
+    let negative = number.first() == Some(&b'-');
+    let unsigned = if negative { &number[1..] } else { number };
+    let exponent_at = unsigned
+        .iter()
+        .position(|b| matches!(b, b'e' | b'E'))
+        .unwrap_or(unsigned.len());
+    let mantissa = &unsigned[..exponent_at];
+    let digits: Vec<u8> = mantissa
+        .iter()
+        .copied()
+        .filter(u8::is_ascii_digit)
+        .collect();
+    let Some(first) = digits.iter().position(|b| *b != b'0') else {
+        return Some((false, Vec::new(), 0));
+    };
+    let end = digits.iter().rposition(|b| *b != b'0')? + 1;
+    let fractional = mantissa
+        .iter()
+        .position(|b| *b == b'.')
+        .map_or(0, |dot| mantissa.len() - dot - 1);
+    let exponent = if exponent_at == unsigned.len() {
+        0
+    } else {
+        std::str::from_utf8(&unsigned[exponent_at + 1..])
+            .ok()?
+            .parse::<i64>()
+            .ok()?
+    };
+    let exponent = exponent
+        .checked_sub(i64::try_from(fractional).ok()?)?
+        .checked_add(i64::try_from(digits.len() - end).ok()?)?;
+    Some((negative, digits[first..end].to_vec(), exponent))
+}
+
 fn parameter_hash(
     action: ActionVersionRef,
     schema_id: &SchemaId,
@@ -887,6 +972,137 @@ mod tests {
             evaluate(&snapshot, &request, Timestamp::from_unix_ms(2), false),
             Decision::Allow { determining_rule, .. } if determining_rule == rule
         ));
+    }
+
+    #[test]
+    fn canonical_json_is_the_exact_hash_source_and_debug_hides_it() {
+        let (action, principal_id, rule) = ids();
+        let snapshot = parse_and_validate_snapshot(
+            &snapshot_json(action, principal_id, rule),
+            Timestamp::from_unix_ms(1),
+        )
+        .unwrap();
+        let (resource, parameters, target) = snapshot
+            .canonicalize(
+                &fixed_action(action),
+                json_request(br#"{ "input" : 12345 }"#),
+            )
+            .unwrap();
+        let expected = serde_jcs::to_vec(&serde_json::json!({
+            "target":target,"body":{"input":12345},"content_type":"application/json","headers":[],
+        }))
+        .unwrap();
+        assert_eq!(parameters.canonical_json, expected);
+        assert_eq!(
+            parameters.canonical_hash,
+            parameter_hash(action, &parameters.schema_id, &resource, &expected).unwrap()
+        );
+        assert!(!format!("{parameters:?}").contains("12345"));
+        let (_, same, _) = snapshot
+            .canonicalize(&fixed_action(action), json_request(br#"{"input":12345}"#))
+            .unwrap();
+        assert_eq!(parameters, same);
+        // RawValue embeds the already-canonical value without a second renderer.
+        let raw =
+            serde_json::value::RawValue::from_string(String::from_utf8(expected.clone()).unwrap())
+                .unwrap();
+        #[derive(serde::Serialize)]
+        struct Embedded {
+            canonical_request: Box<serde_json::value::RawValue>,
+        }
+        let embedded = serde_jcs::to_vec(&Embedded {
+            canonical_request: raw,
+        })
+        .unwrap();
+        assert!(
+            embedded
+                .windows(expected.len())
+                .any(|bytes| bytes == expected)
+        );
+    }
+
+    #[test]
+    fn original_json_numbers_must_survive_parse_and_jcs_exactly() {
+        let (action, principal_id, rule) = ids();
+        let mut source: Value =
+            serde_json::from_slice(&snapshot_json(action, principal_id, rule)).unwrap();
+        source["bindings"][0]["parameter_schema"] = serde_json::json!({"type":"object"});
+        let snapshot = parse_and_validate_snapshot(
+            &serde_json::to_vec(&source).unwrap(),
+            Timestamp::from_unix_ms(1),
+        )
+        .unwrap();
+        let fixed = fixed_action(action);
+        for number in [
+            "9007199254740993",
+            "-9007199254740993",
+            "18446744073709551615",
+            "-9223372036854775808",
+            "1.0000000000000001",
+            "1.234567890123456789",
+            "1e-999",
+            "1e-324",
+            "1e-9223372036854775809",
+            "4e-324",
+        ] {
+            let body = format!("{{\"nested\":[{{\"number\":{number}}}]}}");
+            assert!(
+                matches!(
+                    snapshot.canonicalize(&fixed, json_request(body.as_bytes())),
+                    Err(PolicyError::InvalidParameters)
+                ),
+                "accepted changed number {number}"
+            );
+        }
+        for number in [
+            "9007199254740992",
+            "-9007199254740992",
+            "1",
+            "1.0",
+            "1e0",
+            "1E+000",
+            "0.1",
+            "0.1000",
+            "10e-2",
+            "1e20",
+            "1e+21",
+            "5e-324",
+            "-0.0",
+            "0e-999",
+        ] {
+            let body = format!("{{\"nested\":[{{\"number\":{number}}}]}}");
+            assert!(
+                snapshot
+                    .canonicalize(&fixed, json_request(body.as_bytes()))
+                    .is_ok(),
+                "rejected preserved number {number}"
+            );
+        }
+        let canonical = |number: &str| {
+            let body = format!("{{\"number\":{number}}}");
+            snapshot
+                .canonicalize(&fixed, json_request(body.as_bytes()))
+                .unwrap()
+                .1
+        };
+        assert_eq!(canonical("1"), canonical("1.0"));
+        assert_eq!(canonical("1"), canonical("1e0"));
+        assert_eq!(canonical("0.1"), canonical("10e-2"));
+        assert_eq!(canonical("0"), canonical("-0.0"));
+        // Escaped quotes, escaped backslashes and unicode escapes are strings,
+        // including strings used as keys; none are numeric authorization data.
+        let strings=br#"{"9007199254740993":"1.0000000000000001","nested":["\"1e-999\"","\\9007199254740993","\u0031e-999"],"real":0.1}"#;
+        assert!(snapshot.canonicalize(&fixed, json_request(strings)).is_ok());
+        let mut attacked: Value = serde_json::from_slice(strings).unwrap();
+        attacked["real"] = serde_json::json!(9007199254740993_u64);
+        assert!(
+            snapshot
+                .canonicalize(
+                    &fixed,
+                    json_request(&serde_json::to_vec(&attacked).unwrap())
+                )
+                .is_err()
+        );
     }
 
     #[test]

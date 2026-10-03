@@ -26,7 +26,7 @@ enum ExecutionResponse {
 enum SupervisorEvent {
     Shutdown,
     Child(Option<Result<(), JoinError>>),
-    Job(Option<ExecutionJob>),
+    Job(Option<Box<ExecutionJob>>),
 }
 
 async fn next_event(
@@ -38,7 +38,7 @@ async fn next_event(
         biased;
         _ = shutdown.changed() => SupervisorEvent::Shutdown,
         result = tasks.join_next(), if !tasks.is_empty() => SupervisorEvent::Child(result),
-        job = rx.recv() => SupervisorEvent::Job(job),
+        job = rx.recv() => SupervisorEvent::Job(job.map(Box::new)),
     }
 }
 
@@ -143,7 +143,14 @@ impl ExecutionSupervisor {
                                                 .await;
                                             admitted.run_stream(&response).await
                                         }
-                                        Err(err) => Err(err),
+                                        Err(err) => {
+                                            let _ = tokio::time::timeout(
+                                                std::time::Duration::from_secs(1),
+                                                response.send(TextStreamEvent::AdmissionError(err)),
+                                            )
+                                            .await;
+                                            return;
+                                        }
                                     };
                                     let status = outcome
                                         .ok()
@@ -203,6 +210,7 @@ mod tests {
                 query: Default::default(),
                 body: Vec::new(),
                 approval_grants: Vec::new(),
+                local_approval_request_id: None,
             },
             response: ExecutionResponse::Buffered(response),
         }

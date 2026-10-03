@@ -3,7 +3,10 @@
 
 use rekey_domain::Timestamp;
 use rekey_domain::action::{ActionTarget, FixedHttpAction};
-use rekey_domain::authorization::{PolicyTrustAlgorithm, PolicyVersion, ResourceRef, SchemaId};
+use rekey_domain::authorization::{
+    ApprovalMode, ApprovalRequirement, ApproverSpec, PolicyTrustAlgorithm, PolicyVersion,
+    ResourceRef, SchemaId,
+};
 use rekey_domain::ids::{PolicyRuleId, PrincipalId};
 use rekey_domain::template::DefaultRule;
 use serde::Serialize;
@@ -88,10 +91,17 @@ pub fn generate_personal_draft(
         else {
             return Err(PolicyError::Invalid);
         };
-        let effect = match default_policy.rule {
-            DefaultRule::Allow => RuleEffect::Permit,
-            // local-presence approval is not implemented by this generator.
-            DefaultRule::RequireApproval => return Err(PolicyError::Invalid),
+        let (effect, approver, approval) = match default_policy.rule {
+            DefaultRule::Allow => (RuleEffect::Permit, None, None),
+            DefaultRule::RequireApproval => (
+                RuleEffect::RequireApproval,
+                Some(ApproverSpec::LocalPresence {}),
+                Some(ApprovalRequirement {
+                    mode: ApprovalMode::OneTime,
+                    max_uses: 1,
+                    max_window_ms: None,
+                }),
+            ),
         };
         let resource = ResourceRef::new("action".to_owned(), action.id.to_string())
             .map_err(|_| PolicyError::Invalid)?;
@@ -118,8 +128,8 @@ pub fn generate_personal_draft(
             version: action.version,
             resource,
             parameters: ParameterScope::AnyValidated {},
-            approver: None,
-            approval: None,
+            approver,
+            approval,
         });
     }
     let snapshot = PolicySnapshot {

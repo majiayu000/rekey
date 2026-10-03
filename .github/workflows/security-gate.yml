@@ -143,6 +143,7 @@ jobs:
           /tmp/rekey-ui-contract target/macos-ui/Rekey.app/Contents/Resources/bin/rekey
           python3 scripts/test-human-vault.py target/macos-ui/Rekey.app/Contents/Resources/bin/rekey
           /tmp/rekey-ui-contract --presence-boundary-only
+          /tmp/rekey-ui-contract --local-approval-boundary-only
           /tmp/rekey-ui-contract --personal-policy-boundary-only
           /tmp/rekey-ui-contract --flow-boundary-only
           /tmp/rekey-ui-contract --oidc-boundary-only
