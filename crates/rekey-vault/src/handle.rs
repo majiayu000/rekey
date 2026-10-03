@@ -332,11 +332,11 @@ impl AuthorityHandle {
 
     pub async fn recovery_rotate_before(
         &self,
-        password: SecretInput,
+        proof: UnlockProof,
         not_after: Option<std::time::Instant>,
     ) -> Result<Zeroizing<String>, AuthorityError> {
         call!(self, |reply| AuthorityCommand::RecoveryRotate {
-            password,
+            proof,
             not_after,
             reply
         })

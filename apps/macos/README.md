@@ -9,7 +9,9 @@ scripts/build-macos-ui.sh
 open target/macos-ui/Rekey.app
 ```
 
-脚本将当前源码的 `rekey`、`rekeyd`、`rekey-mcp`、`rekey-policy-sign`、`rekey-approval-sign` 打包到 App 内，默认做 ad-hoc 签名。正式构建显式设置 `REKEY_SIGNING_IDENTITY`（或 `APPLE_SIGNING_IDENTITY`）和 `REKEY_REQUIRE_DEVELOPER_ID=1`。`REKEY_UI_OUTPUT` 可指定构建输出位置，`CARGO_TARGET_DIR` 沿用 Cargo 的构建缓存配置。不执行公证或公开发布。
+脚本将当前源码的 `rekey`、`rekeyd`、`rekey-mcp`、`rekey-policy-sign`、`rekey-approval-sign` 打包到 App 内，默认做 ad-hoc 签名。正式构建显式设置 `REKEY_SIGNING_IDENTITY`（或 `APPLE_SIGNING_IDENTITY`）、`REKEY_REQUIRE_DEVELOPER_ID=1` 和 `REKEY_PROVISIONING_PROFILE=/path/to/Rekey.provisionprofile`。`REKEY_UI_OUTPUT` 可指定构建输出位置，`CARGO_TARGET_DIR` 沿用 Cargo 的构建缓存配置。不执行公证或公开发布。
+
+正式 App 的 profile 必须授权当前签名 Team、`com.starlight.rekey` 和 `<TeamID>.com.rekey` 访问组。构建脚本从已签名的内嵌 daemon 读取 Team ID，嵌入 profile 并只为 App 添加所需 entitlement；独立 CLI 不加入访问组。release 的 macos-ui job 需要 base64 编码的 `APPLE_PROVISIONING_PROFILE` secret。缺失或不匹配会停止正式 App 构建；源码 ad-hoc 构建仍可管理密码，但不能使用受保护的系统认证授权。profile 的最终授权由 macOS 验证，构建检查不代表 V1 通过。依据 [Apple TN3125](https://developer.apple.com/documentation/technotes/tn3125-inside-code-signing-provisioning-profiles)。
 
 版本来自 Cargo metadata 中 `rekey-cli` 继承的 workspace version。完整 SemVer 保存在 Info.plist 的 `RekeyVersion`；`CFBundleShortVersionString` 和 `CFBundleVersion` 使用数字主、次、补丁版本，例如 `2.0.0-alpha.2` 对应 `2.0.0`。不实现 alpha/rc 排序映射。
 
@@ -63,7 +65,7 @@ target/release/rekey-approval-sign --help
 
 签名文件的准备和 Agent shell/MCP 接入继续见根目录 `docs/user-guide.md`。这一版没有自动配置 Agent、任意执行控制台或常驻通知。
 
-关闭 UI 不会终止 Broker；默认由 Broker 在空闲 7 天后锁定。可主动点击“锁定”或设置里的“停止服务”；停止服务保留登录启动设置，且需要逐次证明。“停止并停用登录启动”在同一次证明的 SHUTDOWN 成功后才调用注销接口；服务不可达时不会未经验证强行注销，可由用户在系统登录项中管理。不缓存密码；手动解锁后，随机恢复密钥保存在 macOS 钥匙串，保险库只保存绑定 vault ID 与到期时间的加密根密钥材料。7 天内重启应用或服务可自动恢复解锁，自动恢复不延长原到期时间。手动锁定、空闲锁定或更改密码/恢复密钥会撤销授权；正常停止服务保留授权。管理会话允许连续添加 API Key；每次查看或复制仍需当前密码或恢复密钥的新证明，既有管理 token 不能授权明文。复制后 30 秒只清理本应用仍占有的剪贴板内容，无法清理第三方历史记录；短期 capability 和恢复结果只在当前结果窗口中存在，用户可显式保存为新建的 0600 文件。
+关闭 UI 不会终止 Broker；默认由 Broker 在空闲 7 天后锁定。可主动点击“锁定”或设置里的“停止服务”；停止服务保留登录启动设置，且需要逐次证明。“停止并停用登录启动”在同一次证明的 SHUTDOWN 成功后才调用注销接口；服务不可达时不会未经验证强行注销，可由用户在系统登录项中管理。不缓存密码或系统认证 K；密码/恢复密钥解锁时，可明确勾选默认关闭的“启用系统认证（7天）”。新 K 保存在要求 userPresence 的数据保护钥匙串中，保险库保存绑定 vault ID 与固定到期时间的加密根密钥材料。刷新和启动不会读取 K；重启后必须点击系统认证解锁。每次支持的 A2 操作显式读取 K，操作结束不保留；恢复与验证不会延长原期限。手动锁定、空闲锁定或更改密码/恢复密钥会撤销授权；正常停止服务保留授权。管理会话允许连续添加 API Key；每次查看或复制仍需密码、恢复密钥或系统认证的新证明，既有管理 token 不能授权明文。复制后 30 秒只清理本应用仍占有的剪贴板内容，无法清理第三方历史记录；短期 capability 和恢复结果只在当前结果窗口中存在，用户可显式保存为新建的 0600 文件。
 
 ## 验证
 
@@ -71,7 +73,7 @@ target/release/rekey-approval-sign --help
 cargo check --workspace
 xcrun swiftc -warnings-as-errors -swift-version 5 -O \
   -framework SwiftUI -framework AppKit -framework ServiceManagement \
-  apps/macos/BackgroundService.swift apps/macos/PolicySigning.swift apps/macos/Model.swift scripts/test-macos-ui.swift -o /tmp/rekey-ui-contract
+  apps/macos/BackgroundService.swift apps/macos/PolicySigning.swift apps/macos/PresenceKey.swift apps/macos/Model.swift scripts/test-macos-ui.swift -o /tmp/rekey-ui-contract
 /tmp/rekey-ui-contract target/macos-ui/Rekey.app/Contents/Resources/bin/rekey
 ```
 
@@ -79,6 +81,6 @@ xcrun swiftc -warnings-as-errors -swift-version 5 -O \
 
 人类密钥管理验收：`python3 scripts/test-human-vault.py target/macos-ui/Rekey.app/Contents/Resources/bin/rekey`。Agent 通道不提供读取，管理会话在锁定后失效。
 
-钥匙串跨进程验证：`xcrun swiftc -swift-version 5 -framework SwiftUI -framework AppKit -framework Security -framework ServiceManagement apps/macos/BackgroundService.swift apps/macos/PolicySigning.swift apps/macos/Model.swift scripts/test-macos-keychain.swift -o /tmp/rekey-keychain-contract && /tmp/rekey-keychain-contract`，仅使用随机测试条目，完成后删除。
+系统认证合成检查：`/tmp/rekey-ui-contract --presence-boundary-only`，只注入临时 CLI 和可控读取结果，不访问钥匙串。真实签名设备的访问组、未签名进程读取拒绝与 userPresence 验收使用 `scripts/v3/keychain_probe.swift` 和 `scripts/v3/run.py`；旧的无交互自动恢复测试已被新合同替换。
 
 机构登录源码入口：设置中选择受保护的 OIDC 节点配置后启动服务；先本机解锁，再开始机构登录、在浏览器完成认证，并接收结果到新的私有会话文件。也可显式选择已有会话文件，取消未完成登录或退出本机机构会话。应用只传文件路径，不读取管理 token；密码逐次确认仍保留。16 项新调用断言、80 项原有原生流程断言及完整 macOS14 App 编译通过，真实 IdP／Broker／GUI 点击仍未验收。

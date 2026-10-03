@@ -6,6 +6,7 @@ import Darwin
 struct UIContract {
     @MainActor
     static func main() async throws {
+        if CommandLine.arguments == [CommandLine.arguments[0], "--presence-boundary-only"] { try await presenceBoundary(); return }
         if CommandLine.arguments == [CommandLine.arguments[0], "--personal-policy-boundary-only"] { try await personalPolicyBoundary(); return }
         if CommandLine.arguments == [CommandLine.arguments[0], "--flow-boundary-only"] { try await flowBoundary(); return }
         if CommandLine.arguments == [CommandLine.arguments[0], "--oidc-boundary-only"] { try oidcBoundary(); return }
@@ -268,6 +269,145 @@ struct UIContract {
     }
 
     @MainActor
+    static func presenceBoundary() async throws {
+        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("rkui-presence-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        defer { do { try FileManager.default.removeItem(at: root) } catch { fputs("presence fixture cleanup failed\n", stderr) } }
+        var assertions = 0
+        func require(_ value: @autoclosure () throws -> Bool, _ label: String) throws {
+            guard try value() else { throw UIError(message: "FAILED: " + label) }; assertions += 1
+        }
+        func rejected(_ label: String, _ operation: () throws -> Void) throws {
+            do { try operation() } catch { assertions += 1; return }
+            throw UIError(message: "FAILED: " + label)
+        }
+        // Synthetic transport canaries only. These functions never invoke SecItem or LAContext.
+        let key = String(repeating: "a1", count: 32), a1 = String(repeating: "b2", count: 32)
+        let vault = UUID(), credential = UUID().uuidString.lowercased()
+        try require(try PresenceKey.issuedKey(Data(("4102444800000\n" + key).utf8)) == key, "new key receipt parses exactly")
+        for bad in [key.uppercased(), key + "\n", "", String(key.dropLast()), key + "a"] {
+            try rejected("noncanonical key rejected") { _ = try PresenceKey.validated(bad) }
+        }
+        for bad in [key, "0\n" + key, "4102444800000\n" + key + "\n"] {
+            try rejected("malformed issuance receipt rejected") { _ = try PresenceKey.issuedKey(Data(bad.utf8)) }
+        }
+        let receipt = try DesktopReceipt.parse(Data(("4102444800000\n" + a1).utf8))
+        try require(receipt.token == a1 && receipt.token != key, "resume receipt is a distinct A1 token")
+        for args in [["unlock"], ["desktop-login"], ["desktop-add", "label"], ["init"], ["restore"], ["key", "rotate-vrk"]] {
+            try require(!Operation(title:"",detail:"",arguments:args).presenceAllowed, "unsupported operation has no presence option")
+        }
+        for args in [["credential","rotate"], ["action","create"], ["template","install"], ["session","create"],
+                     ["policy","trust","install"], ["policy","activate"], ["password","change"], ["recovery","rotate"],
+                     ["audit","retention","set"], ["backup"], ["shutdown"], ["desktop-reveal",credential]] {
+            try require(Operation(title:"",detail:"",arguments:args).presenceAllowed, "supported A2 exposes presence")
+        }
+        let statusFile = root.appendingPathComponent("policy.json"), callsFile = root.appendingPathComponent("calls")
+        let current: [String: Any] = ["vault_id":vault.uuidString.lowercased(),"mode":"personal","trust_installed":false,"bundle_persisted":false,"status":"unavailable"]
+        func setPolicy(_ value: [String: Any]) throws { try JSONSerialization.data(withJSONObject:value).write(to:statusFile) }
+        try setPolicy(current)
+        let fixture = root.appendingPathComponent("cli")
+        try Data("""
+        #!/usr/bin/python3
+        import json,pathlib,sys
+        here=pathlib.Path(__file__).parent
+        args=sys.argv[3:]; body=sys.stdin.read()
+        with (here/'calls').open('a') as out: out.write(json.dumps({'args':args,'body':body})+'\\n')
+        if args==['policy','status']: print((here/'policy.json').read_text())
+        elif args[:1]==['status']: print(json.dumps({'state':'locked','format_version':19,'runtime_version':'fixture','sessions_active':0,'peer_security':'L1-dev','lab_enabled':False}))
+        elif args==['desktop-resume']: sys.stdout.write('4102444800000\\n'+'b2'*32)
+        elif args==['desktop-login']: sys.stdout.write('b2'*32)
+        elif args[:1]==['desktop-reveal']: sys.stdout.write('SYNTHETIC-REVEALED-VALUE')
+        else: print('{}')
+        """.utf8).write(to:fixture)
+        try FileManager.default.setAttributes([.posixPermissions:0o700],ofItemAtPath:fixture.path)
+        let client = CLI(binary:fixture,stateDirectory:root.path)
+        func calls() throws -> [[String: Any]] {
+            guard FileManager.default.fileExists(atPath:callsFile.path) else { return [] }
+            return try String(contentsOf:callsFile,encoding:.utf8).split(separator:"\n").map { try JSONSerialization.jsonObject(with:Data($0.utf8)) as! [String:Any] }
+        }
+        func unlocked() -> ServiceStatus { ServiceStatus(state:"unlocked",format_version:19,runtime_version:"fixture",sessions_active:0,peer_security:"L1-dev",lab_enabled:false) }
+        func locked() -> ServiceStatus { ServiceStatus(state:"locked",format_version:19,runtime_version:"fixture",sessions_active:0,peer_security:"L1-dev",lab_enabled:false) }
+        let model = AppModel(stateDirectory:root.path)
+        model.status = unlocked()
+        await model.perform(Operation(title:"",detail:"",arguments:["unlock"]),proof:"SYNTHETIC-PASSWORD",client:client)
+        try require(model.desktopToken == a1 && model.desktopReady, "password login keeps A1 management session without issuing K")
+        try require(try calls().count == 1 && calls().last?["args"] as? [String] == ["desktop-login"], "password login without explicit opt-in never remembers or reads a key")
+        for op in [Operation(title:"",detail:"",arguments:["credential","revoke",credential]),
+                   Operation(title:"",detail:"",arguments:["credential","rotate",credential],newSecret:true),
+                   Operation(title:"",detail:"",arguments:["policy","activate","--file","synthetic-policy.json"],proofFlag:"--step-up-stdin"),
+                   Operation(title:"",detail:"",arguments:["recovery","rotate"],recoveryAllowed:false)] {
+            let count = try calls().count
+            await model.perform(op,proof:"IGNORED-PASSWORD",secret:op.newSecret ? "SYNTHETIC-NEW-SECRET" : "",recovery:true,
+                                presence:true,presenceRevision:model.nativeFlowRevision,client:client,readPresence:{ id in
+                guard id == vault else { throw UIError(message:"WRONG-VAULT") }; return key
+            })
+            let rows = try calls(), last = rows.last!
+            let args = last["args"] as! [String]
+            try require(rows.count == count + 3 && model.error == nil && !model.busy, "explicit presence does two vault checks and one mutation")
+            try require(args == op.arguments + [op.newSecret ? "--stdin-secrets" : op.proofFlag, "--presence"], "presence keeps operation-specific explicit stdin flag and excludes recovery")
+            try require(last["body"] as? String == key + "\n" + (op.newSecret ? "SYNTHETIC-NEW-SECRET\n" : ""), "actual K is first stdin line; never cached A1 or password")
+            try require(!args.joined().contains(key) && model.desktopToken == a1 && !(model.result?.text.contains(key) ?? false), "K absent argv/result and A1 session remains separate")
+        }
+        _ = try client.revealCredential(credential,proof:key,recovery:false,presence:true)
+        try require(try calls().last?["args"] as? [String] == ["desktop-reveal",credential,"--password-stdin","--presence"] && calls().last?["body"] as? String == key + "\n", "reveal sends actual K with explicit proof kind")
+        let op = Operation(title:"",detail:"",arguments:["credential","revoke",credential])
+        var count = try calls().count
+        await model.perform(op,presence:true,presenceRevision:model.nativeFlowRevision,client:client,readPresence:{ _ in throw UIError(message:"SYNTHETIC-CANCEL") })
+        try require(try calls().count == count + 1 && model.error == "SYNTHETIC-CANCEL" && !model.busy && !model.presenceAuthenticating, "cancelled read cannot submit mutation")
+        count = try calls().count
+        await model.perform(Operation(title:"",detail:"",arguments:["key","rotate-vrk"]),presence:true,presenceRevision:model.nativeFlowRevision,client:client,readPresence:{ _ in throw UIError(message:"UNREACHABLE-READER") })
+        try require(try calls().count == count && model.error?.contains("不支持") == true, "unsupported proof refuses before reader or CLI")
+        model.busy = true
+        await model.perform(op,presence:true,presenceRevision:model.nativeFlowRevision,client:client,readPresence:{ _ in throw UIError(message:"UNREACHABLE-READER") })
+        try require(try calls().count == count && model.busy, "busy reentry cannot read a key or clear existing busy")
+        model.busy = false
+        final class Pause: @unchecked Sendable {
+            let entered = DispatchSemaphore(value:0), release = DispatchSemaphore(value:0)
+        }
+        for change in ["view", "workspace", "lock", "task", "vault", "mode", "focus"] {
+            try setPolicy(current); model.stateDirectory = root.path; model.status = unlocked()
+            let revision = model.nativeFlowRevision, before = try calls().count, pause = Pause()
+            defer { pause.release.signal() }
+            let waiting = Task { await model.perform(op,presence:true,presenceRevision:revision,client:client,readPresence:{ _ in
+                pause.entered.signal(); pause.release.wait(); return key
+            }) }
+            let entered = await withCheckedContinuation { continuation in
+                DispatchQueue.global().async { continuation.resume(returning:pause.entered.wait(timeout:.now()+10) == .success) }
+            }
+            try require(entered && model.presenceAuthenticating, "controlled reader entered without Keychain APIs")
+            model.nativeFlowBecameInactive()
+            try require(model.nativeFlowRevision == revision, "ordinary system dialog focus change retains explicit authentication interval")
+            switch change {
+            case "view": model.clearNativeFlow()
+            case "workspace": model.stateDirectory = root.appendingPathComponent("other").path
+            case "lock": model.status = locked()
+            case "task": waiting.cancel()
+            case "vault": var changed = current; changed["vault_id"] = UUID().uuidString.lowercased(); try setPolicy(changed)
+            case "mode": var changed = current; changed["mode"] = "team"; try setPolicy(changed)
+            default: break
+            }
+            pause.release.signal(); await waiting.value
+            let after = try calls()
+            let expected = change == "focus" ? 3 : (["vault","mode"].contains(change) ? 2 : 1)
+            try require(after.count == before + expected && !model.busy && !model.presenceAuthenticating, "late reader discarded on \(change), with no extra calls")
+            try require(change == "focus" || after.suffix(expected).allSatisfy { $0["args"] as? [String] == ["policy","status"] }, "cancelled or stale context never submits an operation")
+        }
+        try setPolicy(current); model.stateDirectory = root.path; model.status = locked()
+        count = try calls().count
+        await model.unlockWithPresence(revision:model.nativeFlowRevision,client:client,read:{ _ in key })
+        try require(try calls().count == count + 3 && calls().last?["args"] as? [String] == ["desktop-resume"] && calls().last?["body"] as? String == key + "\n", "explicit system unlock transports K only to desktop-resume")
+        model.status = unlocked()
+        try require(model.desktopToken == a1 && model.desktopReady && model.desktopToken != key, "resume keeps returned A1 session, never caches presence K")
+        count = try calls().count
+        await model.refresh(passive:true,client:client)
+        try require(try calls().count == count + 1 && calls().last?["args"] as? [String] == ["status","--passive"] && model.desktopToken == nil, "passive locked refresh never resumes or reads a key and clears A1")
+        let revision = model.nativeFlowRevision
+        model.nativeFlowBecameInactive()
+        try require(model.nativeFlowRevision != revision, "ordinary inactivity outside authentication still invalidates flow")
+        print("PASS: \(assertions) synthetic presence transport/lifecycle assertions. No Keychain, system authentication, real vault, service or hardware protection was exercised.")
+    }
+
+    @MainActor
     static func personalPolicyBoundary() async throws {
         let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("rkui-personal-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
@@ -420,6 +560,33 @@ struct UIContract {
             try await model.activatePersonalPolicy(teamDraft, proof:"SYNTHETIC-PROOF", recovery:false, client:client, sign: { _, _, _ in throw UIError(message:"UNREACHABLE-SIGNER") })
             throw UIError(message:"team admitted")
         } catch { try require(error.localizedDescription.contains("模式"), "changed Team status fails before signer") }
+        current["mode"] = "personal"
+        try JSONSerialization.data(withJSONObject: current).write(to: statusFile)
+        let presenceKey = String(repeating: "a1", count: 32)
+        let presenceDraft = try makeDraft(revision: model.nativeFlowRevision)
+        let presenceOutput = try client.activatePersonalPolicy(presenceDraft, signature: signature, proof: presenceKey, recovery: true, presence: true)
+        let presenceCapture = try JSONSerialization.jsonObject(with: presenceOutput) as! [String: Any]
+        let presenceArgs = presenceCapture["args"] as! [String]
+        try require(presenceArgs.suffix(2) == ["--step-up-stdin", "--presence"] && !presenceArgs.contains("--recovery") && !presenceArgs.joined().contains(presenceKey), "personal activation presence is explicit and proof never enters argv")
+        try require(presenceCapture["body"] as? String == presenceKey + "\n" + bundle + "\n", "personal activation sends real K followed by the exact signed bundle")
+        var beforePresence = try String(contentsOf: calls, encoding: .utf8).split(separator: "\n").count
+        do {
+            try await model.activatePersonalPolicy(presenceDraft, proof: "", recovery: false, presence: true, client: client,
+                readPresence: { _ in throw UIError(message: "SYNTHETIC-PRESENCE-CANCEL") },
+                sign: { _, _, _ in throw UIError(message: "UNREACHABLE-SIGNER") })
+            throw UIError(message: "presence cancel admitted")
+        } catch { try require(error.localizedDescription == "SYNTHETIC-PRESENCE-CANCEL" && !model.busy, "presence cancellation cannot reach policy signer or activation") }
+        try require(try String(contentsOf: calls, encoding: .utf8).split(separator: "\n").count == beforePresence + 1, "cancelled presence permits only initial status read")
+        beforePresence = try String(contentsOf: calls, encoding: .utf8).split(separator: "\n").count
+        do {
+            try await model.activatePersonalPolicy(presenceDraft, proof: "", recovery: false, presence: true, client: client,
+                readPresence: { _ in presenceKey }, sign: { _, bytes, publicKey in
+                    guard bytes == draft.signBytes, publicKey == draft.publicKey else { throw UIError(message: "WRONG-SIGNING-BYTES") }
+                    throw UIError(message: "SYNTHETIC-POLICY-SIGN-CANCEL")
+                })
+            throw UIError(message: "policy signer cancel admitted")
+        } catch { try require(error.localizedDescription == "SYNTHETIC-POLICY-SIGN-CANCEL" && !model.busy, "A2 presence cannot replace the separate exact-byte policy signature") }
+        try require(try String(contentsOf: calls, encoding: .utf8).split(separator: "\n").count == beforePresence + 2, "policy signer cancellation after presence still cannot activate")
         print("PASS: \(assertions) personal draft byte/preview/CLI/state assertions. Controlled synthetic signer results only test transport cancellation. No SE, Keychain, GUI or cryptographic verification claim.")
     }
 

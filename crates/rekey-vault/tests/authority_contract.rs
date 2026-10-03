@@ -757,17 +757,20 @@ async fn recovery_rotation_is_retryable_when_the_first_response_is_lost() {
         .unwrap();
 
     let error = handle
-        .recovery_rotate_before(SecretInput::from_slice(b"wrong"), None)
+        .recovery_rotate_before(
+            rekey_vault::command::UnlockProof::Password(SecretInput::from_slice(b"wrong")),
+            None,
+        )
         .await
         .unwrap_err();
     assert!(matches!(error, AuthorityError::InvalidUnlockCredential));
 
     let first_recovery = handle
-        .recovery_rotate_before(common::password_input(), None)
+        .recovery_rotate_before(common::password_proof(), None)
         .await
         .unwrap();
     let current_recovery = handle
-        .recovery_rotate_before(common::password_input(), None)
+        .recovery_rotate_before(common::password_proof(), None)
         .await
         .unwrap();
 
@@ -1136,7 +1139,12 @@ async fn wrapper_changes_revoke_remembered_access_only_after_valid_proof() {
         .await
         .unwrap();
     handle
-        .recovery_rotate_before(SecretInput::from_slice(b"new-password-for-test"), None)
+        .recovery_rotate_before(
+            rekey_vault::command::UnlockProof::Password(SecretInput::from_slice(
+                b"new-password-for-test",
+            )),
+            None,
+        )
         .await
         .unwrap();
     assert!(!path.exists());

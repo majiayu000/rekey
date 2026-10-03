@@ -1,9 +1,10 @@
+use rekey_domain::ipc::ProofKind;
 use std::path::Path;
 
 use rekey_domain::ipc::{self, admin_msg};
 use zeroize::Zeroizing;
 
-use super::{admin, print_json, proof_kind, read_regular_file_bounded, read_step_up, stdin_lines};
+use super::{admin, print_json, read_regular_file_bounded, read_step_up, stdin_lines};
 use crate::client::CliError;
 
 fn package_bytes(path: Option<&Path>) -> Result<Zeroizing<Vec<u8>>, CliError> {
@@ -56,7 +57,7 @@ pub fn template_install(
     file: Option<&Path>,
     stdin_request: bool,
     package: Option<&Path>,
-    recovery: bool,
+    kind: ProofKind,
     password_stdin: bool,
 ) -> Result<(), CliError> {
     let (metadata, stdin_proof) = match (file, stdin_request) {
@@ -86,10 +87,10 @@ pub fn template_install(
     let package = package_bytes(package)?;
     let proof = match stdin_proof {
         Some(proof) => proof,
-        None => read_step_up(recovery, password_stdin)?,
+        None => read_step_up(kind, password_stdin)?,
     };
     let mut body = Zeroizing::new(Vec::new());
-    ipc::encode_proof_and_secret_body(proof_kind(recovery), &proof, &package, &mut body);
+    ipc::encode_proof_and_secret_body(kind, &proof, &package, &mut body);
     let (metadata, _) = admin(state_dir)?.call(admin_msg::TEMPLATE_INSTALL, &metadata, &body)?;
     print_json::<ipc::TemplateInstallResponse>(&metadata)
 }

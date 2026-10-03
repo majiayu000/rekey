@@ -144,6 +144,7 @@ impl Worker {
     }
 
     pub(super) fn fault(&mut self, reason: &'static str) {
+        self.presence_grant = None;
         self.state = VaultState::Faulted;
         if let Err(error) = self.forget_desktop() {
             tracing::error!(event = "desktop.revocation_failed", code = error.code());
@@ -276,6 +277,7 @@ mod retention_tests {
             #[cfg(feature = "lab")]
             keychain_fixture: None,
             desktop_resume_expiry: None,
+            presence_grant: None,
             desktop_session: None,
             store,
             header,

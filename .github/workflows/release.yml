@@ -225,6 +225,7 @@ jobs:
     env:
       REKEY_UI_SIGNING_KEYCHAIN: ${{ runner.temp }}/rekey-ui-signing.keychain-db
       REKEY_UI_CERTIFICATE_PATH: ${{ runner.temp }}/rekey-ui-developer-id.p12
+      REKEY_PROVISIONING_PROFILE: ${{ runner.temp }}/rekey-app.provisionprofile
       REKEY_INSTALLER_CERTIFICATE_PATH: ${{ runner.temp }}/rekey-installer-developer-id.p12
       APPLE_API_KEY_PATH: ${{ runner.temp }}/rekey-notary-api-key.p8
     steps:
@@ -240,6 +241,7 @@ jobs:
           APPLE_INSTALLER_CERTIFICATE: ${{ secrets.APPLE_INSTALLER_CERTIFICATE }}
           APPLE_INSTALLER_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_PASSWORD }}
           APPLE_INSTALLER_SIGNING_IDENTITY: ${{ secrets.APPLE_INSTALLER_SIGNING_IDENTITY }}
+          APPLE_PROVISIONING_PROFILE: ${{ secrets.APPLE_PROVISIONING_PROFILE }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
@@ -253,6 +255,7 @@ jobs:
             APPLE_INSTALLER_CERTIFICATE \
             APPLE_INSTALLER_CERTIFICATE_PASSWORD \
             APPLE_INSTALLER_SIGNING_IDENTITY \
+            APPLE_PROVISIONING_PROFILE \
             APPLE_API_KEY \
             APPLE_API_ISSUER \
             APPLE_API_KEY_CONTENT
@@ -290,6 +293,13 @@ jobs:
           set -euo pipefail
           umask 077
           printf '%s' "$APPLE_API_KEY_CONTENT" | base64 --decode > "$APPLE_API_KEY_PATH"
+      - name: Write Developer ID App provisioning profile
+        env:
+          APPLE_PROVISIONING_PROFILE: ${{ secrets.APPLE_PROVISIONING_PROFILE }}
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '%s' "$APPLE_PROVISIONING_PROFILE" | base64 --decode > "$REKEY_PROVISIONING_PROFILE"
       - name: Build and sign Rekey.app
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -347,7 +357,7 @@ jobs:
           if [ -e "$REKEY_UI_SIGNING_KEYCHAIN" ]; then
             security delete-keychain "$REKEY_UI_SIGNING_KEYCHAIN" || status=1
           fi
-          rm -f "$REKEY_UI_CERTIFICATE_PATH" "$REKEY_INSTALLER_CERTIFICATE_PATH" \
+          rm -f "$REKEY_UI_CERTIFICATE_PATH" "$REKEY_INSTALLER_CERTIFICATE_PATH" "$REKEY_PROVISIONING_PROFILE" \
             "$APPLE_API_KEY_PATH" "$RUNNER_TEMP/Rekey-notarize.zip" || status=1
           exit "$status"
       - name: Upload immutable build output

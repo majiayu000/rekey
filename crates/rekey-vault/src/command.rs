@@ -25,6 +25,7 @@ pub type Reply<T> = oneshot::Sender<Result<T, AuthorityError>>;
 pub enum UnlockProof {
     Password(SecretInput),
     Recovery(SecretInput),
+    Presence(SecretInput),
 }
 
 /// Validated definition for creating or updating a fixed HTTP action.
@@ -241,7 +242,7 @@ pub enum AuthorityCommand {
         reply: Reply<()>,
     },
     RecoveryRotate {
-        password: SecretInput,
+        proof: UnlockProof,
         not_after: Option<Instant>,
         reply: Reply<Zeroizing<String>>,
     },

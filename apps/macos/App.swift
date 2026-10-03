@@ -63,7 +63,8 @@ struct RootView: View {
             }
         }
         .background(canvas).foregroundStyle(ink).tint(green)
-        .task { await model.refresh(); if model.status == nil && model.needsSetup { model.beginSetup() } else { model.startRememberedService() } }
+        .task { await model.refresh(); if model.status == nil && model.needsSetup { model.beginSetup() } }
+        .onDisappear { model.clearNativeFlow() }
         .onReceive(Timer.publish(every: 15, on: .main, in: .common).autoconnect()) { _ in
             if phase == .active && !model.busy && model.operation == nil && model.result == nil && !model.showAddCredential && !model.showSession && !showActionForm && !model.showTemplate && !model.showPolicyDraft {
                 Task { await model.refresh(passive: true) }
@@ -185,6 +186,10 @@ struct RootView: View {
             Text(model.status?.state == "locked" ? "保险库已锁定" : "服务暂不可用").font(.system(size: 23, weight: .medium))
             Text(model.status?.state == "locked" ? "解锁后查看凭证并管理授权。审计日志仍可查询。" : "当前服务状态：\(model.status?.state ?? "未知")。请停止服务并检查运行状态。").foregroundStyle(.secondary)
             Button("解锁保险库") { unlock() }.buttonStyle(PrimaryButton()).disabled(model.busy || model.status?.state != "locked")
+            Button("用系统认证解锁") {
+                let revision = model.nativeFlowRevision
+                Task { await model.unlockWithPresence(revision: revision) }
+            }.disabled(model.busy || model.status?.state != "locked")
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
     }
     private func unlock() { model.operation = Operation(title: "解锁保险库", detail: "输入密码或选择恢复密钥。", arguments: ["unlock"]) }
@@ -445,7 +450,7 @@ struct RootView: View {
                 }
                 SectionCard(title: "解锁与恢复", icon: "lock.rotation") {
                     Button("修改密码") { model.operation = Operation(title: "修改密码", detail: "旧密码将不再解锁当前保险库。历史备份不受这次修改影响。", arguments: ["password", "change"], newSecret: true, confirmSecret: true) }
-                    Button("轮换恢复密钥") { model.operation = Operation(title: "轮换恢复密钥", detail: "必须使用当前密码。新恢复密钥只显示一次，请安全保存。", arguments: ["recovery", "rotate"], sensitiveResult: true, recoveryAllowed: false) }
+                    Button("轮换恢复密钥") { model.operation = Operation(title: "轮换恢复密钥", detail: "使用当前密码或系统认证验证。新恢复密钥只显示一次，请安全保存。", arguments: ["recovery", "rotate"], sensitiveResult: true, recoveryAllowed: false) }
                 }.disabled(!model.unlocked || model.busy)
                 if model.status?.lab_enabled == true {
                   SectionCard(title: "机构登录", icon: "person.badge.key") {

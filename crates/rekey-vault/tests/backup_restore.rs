@@ -246,7 +246,10 @@ async fn backups_keep_the_wrapper_generation_captured_at_snapshot_time() {
         .await
         .unwrap();
     let new_recovery = handle
-        .recovery_rotate_before(SecretInput::from_slice(NEW_PASSWORD), None)
+        .recovery_rotate_before(
+            rekey_vault::command::UnlockProof::Password(SecretInput::from_slice(NEW_PASSWORD)),
+            None,
+        )
         .await
         .unwrap();
     let new_password_proof = || UnlockProof::Password(SecretInput::from_slice(NEW_PASSWORD));

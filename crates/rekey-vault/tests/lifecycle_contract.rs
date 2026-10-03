@@ -406,7 +406,7 @@ async fn admin_shutdown_proof_shares_unlock_backoff_and_rejects_retired_factors(
     assert_eq!(handle.status().await.unwrap().state, "locked");
     handle.unlock(common::password_proof()).await.unwrap();
     let new_recovery = handle
-        .recovery_rotate_before(common::password_input(), None)
+        .recovery_rotate_before(common::password_proof(), None)
         .await
         .unwrap();
     handle

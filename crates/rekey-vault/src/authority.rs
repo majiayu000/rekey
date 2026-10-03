@@ -149,6 +149,7 @@ fn spawn_authority_inner(
         state: VaultState::Locked,
         desktop_session: None,
         desktop_resume_expiry: None,
+        presence_grant: None,
         failed_unlocks: 0,
         next_unlock_at: Instant::now(),
         last_activity: Instant::now(),
@@ -172,6 +173,7 @@ struct Worker {
     #[cfg(all(test, feature = "lab"))]
     keychain_fixture: Option<KeychainFixture>,
     desktop_resume_expiry: Option<i64>,
+    presence_grant: Option<desktop::PresenceState>,
     desktop_session: Option<(zeroize::Zeroizing<Vec<u8>>, Instant)>,
     store: SqliteRecordStore,
     header: crate::model::VaultHeaderRecord,
@@ -191,6 +193,7 @@ impl Worker {
             }
         }
         // Dropping the state zeroizes the VRK through its key owner.
+        self.presence_grant = None;
         self.desktop_session = None;
         self.state = VaultState::Locked;
     }
@@ -236,6 +239,7 @@ impl Worker {
         let (kind, secret) = match proof {
             UnlockProof::Password(secret) => (WrapperKind::Password, secret),
             UnlockProof::Recovery(secret) => (WrapperKind::Recovery, secret),
+            UnlockProof::Presence(secret) => return self.verify_presence(secret),
         };
         let candidate = (|| {
             let wrapper = self.store.active_wrapper(kind)?;
@@ -264,6 +268,7 @@ impl Worker {
         let (kind, secret) = match proof {
             UnlockProof::Password(secret) => (WrapperKind::Password, secret),
             UnlockProof::Recovery(secret) => (WrapperKind::Recovery, secret),
+            UnlockProof::Presence(_) => return Err(AuthorityError::InvalidUnlockCredential),
         };
         // Preserve storage failures instead of treating them as an absent proof.
         let wrapper = self.store.active_wrapper(kind)?;
@@ -326,6 +331,7 @@ impl Worker {
         let (kind, secret) = match &proof {
             UnlockProof::Password(secret) => (WrapperKind::Password, secret),
             UnlockProof::Recovery(secret) => (WrapperKind::Recovery, secret),
+            UnlockProof::Presence(_) => return Err(AuthorityError::InvalidUnlockCredential),
         };
         let attempt = (|| {
             let wrapper = self.store.active_wrapper(kind)?;
@@ -335,6 +341,7 @@ impl Worker {
         })();
         match attempt {
             Ok(vrk) => {
+                self.suspend_presence();
                 self.desktop_resume_expiry = None;
                 self.failed_unlocks = 0;
                 self.next_unlock_at = Instant::now();
@@ -384,6 +391,7 @@ impl Worker {
         if matches!(self.state, VaultState::Faulted) {
             return Err(AuthorityError::Faulted);
         }
+        self.suspend_presence();
         if !preserve_desktop && let Err(error) = self.forget_desktop() {
             self.fault("desktop-revocation-failed");
             return Err(error);

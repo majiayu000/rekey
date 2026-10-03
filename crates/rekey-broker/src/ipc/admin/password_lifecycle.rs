@@ -42,18 +42,11 @@ pub(super) async fn handle_recovery_rotate(
     ctx.lifecycle.reject_if_not_running()?;
     empty_meta(frame)?;
     let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
-    if kind != ProofKind::Password {
-        return Err(BrokerError::Domain(
-            rekey_domain::DomainError::InvalidActionDefinition(
-                "recovery rotation requires password proof".to_owned(),
-            ),
-        ));
-    }
     let _owner = ctx.lifecycle.coordinate_until(deadline).await?;
     ctx.lifecycle.reject_if_not_running()?;
     let recovery = ctx
         .authority
-        .recovery_rotate_before(SecretInput::from_slice(proof), Some(deadline.into_std()))
+        .recovery_rotate_before(proof_from(kind, proof), Some(deadline.into_std()))
         .await
         .map_err(BrokerError::Authority)?;
     Ok((

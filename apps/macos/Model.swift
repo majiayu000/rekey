@@ -9,46 +9,15 @@ struct UIError: LocalizedError {
     var errorDescription: String? { message }
 }
 
-struct RememberedUnlock: Codable {
-    let key: String
+// desktop-resume returns an A1 session token, never the presence key K.
+struct DesktopReceipt {
+    let token: String
     let expiresAt: Date
-
-    static func receipt(_ data: Data) throws -> RememberedUnlock {
-        guard let text = String(data: data, encoding: .utf8) else { throw UIError(message: "恢复授权响应无效。") }
+    static func parse(_ data: Data) throws -> DesktopReceipt {
+        guard let text = String(data: data, encoding: .utf8) else { throw UIError(message: "管理会话响应无效。") }
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
-        guard lines.count == 2, let milliseconds = Double(lines[0]), milliseconds.isFinite,
-              lines[1].count == 64, lines[1].allSatisfy(\.isHexDigit) else { throw UIError(message: "恢复授权响应无效。") }
-        return RememberedUnlock(key: String(lines[1]), expiresAt: Date(timeIntervalSince1970: milliseconds / 1000))
-    }
-    private static func query(_ directory: String) -> [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword,
-         kSecAttrService as String: "com.starlight.rekey.remembered-unlock",
-         kSecAttrAccount as String: URL(fileURLWithPath: directory).standardizedFileURL.resolvingSymlinksInPath().path,
-         kSecAttrSynchronizable as String: false]
-    }
-    static func forget(_ directory: String) throws {
-        let code = SecItemDelete(query(directory) as CFDictionary)
-        guard code == errSecSuccess || code == errSecItemNotFound else { throw UIError(message: "无法清除钥匙串中的解锁授权（\(code)）。") }
-    }
-    func save(_ directory: String) throws {
-        try Self.forget(directory)
-        var attributes = Self.query(directory)
-        attributes[kSecValueData as String] = try JSONEncoder().encode(self)
-        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        let code = SecItemAdd(attributes as CFDictionary, nil)
-        guard code == errSecSuccess else { throw UIError(message: "已解锁，但无法保存 7 天恢复授权到钥匙串（\(code)）。") }
-    }
-    static func load(_ directory: String) throws -> RememberedUnlock? {
-        var attributes = query(directory)
-        attributes[kSecReturnData as String] = true
-        attributes[kSecMatchLimit as String] = kSecMatchLimitOne
-        var item: CFTypeRef?
-        let code = SecItemCopyMatching(attributes as CFDictionary, &item)
-        if code == errSecItemNotFound { return nil }
-        guard code == errSecSuccess, let data = item as? Data else { throw UIError(message: "无法读取钥匙串中的解锁授权（\(code)）。") }
-        let record = try JSONDecoder().decode(RememberedUnlock.self, from: data)
-        guard record.expiresAt > Date() else { try forget(directory); return nil }
-        return record
+        guard lines.count == 2, let expiry = Int64(lines[0]), expiry > 0 else { throw UIError(message: "管理会话响应无效。") }
+        return DesktopReceipt(token: try PresenceKey.validated(String(lines[1])), expiresAt: Date(timeIntervalSince1970: Double(expiry) / 1000))
     }
 }
 
@@ -120,9 +89,10 @@ struct CLI: Sendable {
         catch { throw UIError(message: "服务返回了无法识别的数据，请确认客户端与服务版本一致。") }
     }
 
-    func revealCredential(_ id: String, proof: String, recovery: Bool) throws -> Data {
+    func revealCredential(_ id: String, proof: String, recovery: Bool, presence: Bool = false) throws -> Data {
         var arguments = ["desktop-reveal", id, "--password-stdin"]
-        if recovery { arguments.append("--recovery") }
+        if presence { arguments.append("--presence") }
+        else if recovery { arguments.append("--recovery") }
         return try run(arguments, input: proof + "\n", redacting: [proof])
     }
 
@@ -361,13 +331,14 @@ extension CLI {
         return try PersonalPolicyDraft(response: run(args), principal: principal, expiresAtMs: expiresAtMs, workspace: stateDirectory, revision: revision)
     }
 
-    func activatePersonalPolicy(_ draft: PersonalPolicyDraft, signature: String, proof: String, recovery: Bool) throws -> Data {
+    func activatePersonalPolicy(_ draft: PersonalPolicyDraft, signature: String, proof: String, recovery: Bool, presence: Bool = false) throws -> Data {
         guard !proof.isEmpty, !proof.contains("\n"), !proof.contains("\r"), stateDirectory == draft.workspace else {
             throw UIError(message: "当前验证信息或工作区无效，未提交激活。")
         }
         var args = ["policy", "activate", "--stdin-request", "--expected-vault-id", draft.metadata.vault_id.uuidString.lowercased(),
                     "--expected-trust-sha256", draft.metadata.trust_sha256, "--step-up-stdin"]
-        if recovery { args.append("--recovery") }
+        if presence { args.append("--presence") }
+        else if recovery { args.append("--recovery") }
         let bundle = try draft.signedBundle(signature: signature)
         return try run(args, input: proof + "\n" + bundle + "\n", redacting: [proof, signature, bundle])
     }
@@ -507,6 +478,18 @@ struct Operation: Identifiable {
     var personalTrustVaultID: UUID?
     var reveal: CredentialReveal?
     var unregisterBackgroundService = false
+    var presenceAllowed: Bool {
+        guard proof else { return false }
+        let command = arguments.prefix(2).joined(separator: " ")
+        if ["backup", "shutdown"].contains(arguments.first ?? "") { return true }
+        if arguments.first == "desktop-reveal" { return true }
+        if ["policy trust install", "audit retention set"].contains(arguments.prefix(3).joined(separator: " ")) { return true }
+        return ["credential add", "credential rotate", "credential revoke", "credential add-github-app", "credential rotate-github-app",
+                "credential add-vault-kv", "credential rotate-vault-kv", "credential add-vault-dynamic", "credential rotate-vault-dynamic",
+                "credential add-keycloak", "credential rotate-keycloak", "action create", "action update", "action disable",
+                "template install", "session create", "session revoke", "policy activate",
+                "password change", "recovery rotate", "key rotate-dek", "audit prune"].contains(command)
+    }
 }
 struct ResultMessage: Identifiable {
     let id = UUID()
@@ -546,12 +529,12 @@ final class AppModel: ObservableObject {
     @Published var showTemplate = false
     @Published private(set) var nativeFlowRevision = UUID()
     @Published private(set) var personalPolicySigning = false
+    @Published private(set) var presenceAuthenticating = false
     @Published var audit: AuditPage?
     @Published var desktopToken: String?
     @Published var copiedCredential: String?
     @Published var visibleSecret: String?
     private var desktopExpiry = Date.distantPast
-    private var resumeAttempted = false
     @Published var selectedCredential: String? { didSet {
         visibleSecret = nil; copiedCredential = nil
         if oldValue != selectedCredential { nativeFlowRevision = UUID() }
@@ -657,16 +640,63 @@ final class AppModel: ObservableObject {
     func clearNativeFlow() {
         nativeFlowRevision = UUID(); showPolicyDraft = false; approvalDetails = nil
         showTemplate = false
-        if operation?.reveal != nil { operation = nil }
+        if operation?.reveal != nil || presenceAuthenticating { operation = nil }
     }
     func nativeFlowBecameInactive() {
         visibleSecret = nil
         // A system authentication dialog may deactivate the App. Only the
         // explicit signing interval survives that event; lock/path changes do not.
-        if !personalPolicySigning { clearNativeFlow() }
+        if !personalPolicySigning && !presenceAuthenticating { clearNativeFlow() }
     }
     func acceptsNativeCompletion(_ revision: UUID, workspace: String) -> Bool {
         revision == nativeFlowRevision && workspace == stateDirectory && unlocked
+    }
+    func acceptsPresenceCompletion(_ revision: UUID, workspace: String, allowLocked: Bool = false) -> Bool {
+        revision == nativeFlowRevision && workspace == stateDirectory &&
+            (unlocked || (allowLocked && status?.state == "locked"))
+    }
+    func readPresenceProof(client: CLI, revision: UUID, allowLocked: Bool = false,
+                           read: @escaping @Sendable (UUID) throws -> String = { try PresenceKey.read(vaultID: $0) }) async throws -> (String, PolicyStatus) {
+        guard acceptsPresenceCompletion(revision, workspace: client.stateDirectory, allowLocked: allowLocked), !Task.isCancelled else {
+            throw UIError(message: "系统认证上下文已失效，未提交操作。")
+        }
+        let current = try await Task.detached { try client.decode(PolicyStatus.self, ["policy", "status"]) }.value
+        guard let vaultID = UUID(uuidString: current.vault_id), allowLocked || current.mode != nil,
+              acceptsPresenceCompletion(revision, workspace: client.stateDirectory, allowLocked: allowLocked), !Task.isCancelled else {
+            throw UIError(message: "保险库状态已改变，未请求系统认证。")
+        }
+        presenceAuthenticating = true
+        defer { presenceAuthenticating = false }
+        let key = try await Task.detached { try PresenceKey.validated(read(vaultID)) }.value
+        presenceAuthenticating = false
+        guard acceptsPresenceCompletion(revision, workspace: client.stateDirectory, allowLocked: allowLocked), !Task.isCancelled else {
+            throw UIError(message: "系统认证等待期间上下文已改变，结果已丢弃。")
+        }
+        let latest = try await Task.detached { try client.decode(PolicyStatus.self, ["policy", "status"]) }.value
+        guard UUID(uuidString: latest.vault_id) == vaultID, latest.mode == current.mode,
+              acceptsPresenceCompletion(revision, workspace: client.stateDirectory, allowLocked: allowLocked), !Task.isCancelled else {
+            throw UIError(message: "保险库状态已改变，系统认证结果未采用。")
+        }
+        return (key, latest)
+    }
+    func unlockWithPresence(revision: UUID, client injectedClient: CLI? = nil,
+                            read: @escaping @Sendable (UUID) throws -> String = { try PresenceKey.read(vaultID: $0) }) async {
+        guard !busy else { return }
+        busy = true; error = nil
+        let client = injectedClient ?? cli
+        do {
+            let (key, _) = try await readPresenceProof(client: client, revision: revision, allowLocked: true, read: read)
+            let data = try await Task.detached { try client.run(["desktop-resume"], input: key + "\n", redacting: [key]) }.value
+            guard acceptsPresenceCompletion(revision, workspace: client.stateDirectory, allowLocked: true), !Task.isCancelled else {
+                busy = false; return
+            }
+            let receipt = try DesktopReceipt.parse(data)
+            desktopToken = receipt.token; desktopExpiry = receipt.expiresAt
+        } catch {
+            if revision == nativeFlowRevision && client.stateDirectory == stateDirectory { self.error = error.localizedDescription }
+        }
+        busy = false
+        if injectedClient == nil { await refresh() }
     }
     func personalPolicyDraft(principal: UUID, expiresAtMs: Int64, actions: [String]) async throws -> PersonalPolicyDraft {
         guard !busy, unlocked, policy?.mode == .personal else { throw UIError(message: "请先解锁个人保险库并等待当前操作完成。") }
@@ -679,18 +709,26 @@ final class AppModel: ObservableObject {
         }
         return draft
     }
-    func activatePersonalPolicy(_ draft: PersonalPolicyDraft, proof: String, recovery: Bool,
+    func activatePersonalPolicy(_ draft: PersonalPolicyDraft, proof: String, recovery: Bool, presence: Bool = false,
                                 client injectedClient: CLI? = nil,
+                                readPresence: @escaping @Sendable (UUID) throws -> String = { try PresenceKey.read(vaultID: $0) },
                                 sign: @escaping @Sendable (UUID, Data, Data) throws -> String = { try PolicySigning.sign(vaultID: $0, message: $1, expectedPublicKey: $2) }) async throws {
         guard !busy, acceptsNativeCompletion(draft.revision, workspace: draft.workspace),
-              !proof.isEmpty, !proof.contains("\n"), !proof.contains("\r") else {
+              presence || (!proof.isEmpty && !proof.contains("\n") && !proof.contains("\r")) else {
             throw UIError(message: "草稿上下文或验证信息已失效，未提交激活。")
         }
         busy = true
         defer { personalPolicySigning = false; busy = false }
         let client = injectedClient ?? cli
         guard client.stateDirectory == draft.workspace else { throw UIError(message: "草稿工作区已改变。") }
-        let current = try await Task.detached { try client.decode(PolicyStatus.self, ["policy", "status"]) }.value
+        let current: PolicyStatus
+        let operationProof: String
+        if presence {
+            (operationProof, current) = try await readPresenceProof(client: client, revision: draft.revision, read: readPresence)
+        } else {
+            current = try await Task.detached { try client.decode(PolicyStatus.self, ["policy", "status"]) }.value
+            operationProof = proof
+        }
         try draft.validate(current: current)
         guard acceptsNativeCompletion(draft.revision, workspace: draft.workspace), !Task.isCancelled else {
             throw UIError(message: "草稿上下文已失效，未请求签名。")
@@ -706,7 +744,7 @@ final class AppModel: ObservableObject {
         guard acceptsNativeCompletion(draft.revision, workspace: draft.workspace), !Task.isCancelled else {
             throw UIError(message: "签名完成后上下文已改变，未激活。")
         }
-        _ = try await Task.detached { try client.activatePersonalPolicy(draft, signature: signature, proof: proof, recovery: recovery) }.value
+        _ = try await Task.detached { try client.activatePersonalPolicy(draft, signature: signature, proof: operationProof, recovery: recovery, presence: presence) }.value
     }
     var needsSetup: Bool {
         !FileManager.default.fileExists(atPath: stateDirectory + "/vault.sqlite3")
@@ -761,12 +799,20 @@ final class AppModel: ObservableObject {
     private func acceptsCredentialReveal(_ request: CredentialReveal) -> Bool {
         acceptsNativeCompletion(request.revision, workspace: request.workspace) && selectedCredential == request.id
     }
-    private func performReveal(_ request: CredentialReveal, proof: String, recovery: Bool) async {
+    private func performReveal(_ request: CredentialReveal, proof: String, recovery: Bool, presence: Bool = false,
+                               readPresence: @escaping @Sendable (UUID) throws -> String = { try PresenceKey.read(vaultID: $0) }) async {
         guard !busy, acceptsCredentialReveal(request), NSApp.isActive else { return }
         busy = true; error = nil
         defer { busy = false }
         let client = cli
-        let outcome = await Task.detached { Result { try client.revealCredential(request.id, proof: proof, recovery: recovery) } }.value
+        let outcome: Result<Data, Error>
+        do {
+            let operationProof: String
+            if presence { (operationProof, _) = try await readPresenceProof(client: client, revision: request.revision, read: readPresence) }
+            else { operationProof = proof }
+            guard acceptsCredentialReveal(request), !Task.isCancelled else { return }
+            outcome = await Task.detached { Result { try client.revealCredential(request.id, proof: operationProof, recovery: recovery, presence: presence) } }.value
+        } catch { outcome = .failure(error) }
         _ = finishCredentialReveal(outcome, request: request, active: NSApp.isActive)
     }
     @discardableResult
@@ -802,51 +848,27 @@ final class AppModel: ObservableObject {
     }
     func changeDirectory(_ path: String) {
         guard !busy, !oidcBusy else { return }
-        resumeAttempted = false
         stateDirectory = path
         UserDefaults.standard.set(path, forKey: "stateDirectory")
         status = nil; clearCache(); result = nil; error = nil
         Task { await refresh() }
     }
-    func refresh(nextAuditPage: Bool = false, passive: Bool = false) async {
+    func refresh(nextAuditPage: Bool = false, passive: Bool = false, client injectedClient: CLI? = nil) async {
         guard !busy else { return }
         busy = true
         defer { busy = false }
-        let client = cli
-        var resumedAccess = false
+        let client = injectedClient ?? cli
         do {
             let current = try await Task.detached { try client.decode(ServiceStatus.self, passive ? ["status", "--passive"] : ["status"]) }.value
-            if status?.unlocked == true && !current.unlocked { resumeAttempted = false }
             status = current; connectionError = nil
             if Date() >= desktopExpiry { desktopToken = nil; visibleSecret = nil; copiedCredential = nil }
             if !current.unlocked { clearCache() }
-            if !desktopReady && !resumeAttempted {
-                resumeAttempted = true
-                do {
-                    if let remembered = try RememberedUnlock.load(stateDirectory) {
-                        let data = try await Task.detached { try client.run(["desktop-resume"], input: remembered.key + "\n") }.value
-                        let resumed = try RememberedUnlock.receipt(data)
-                        desktopToken = resumed.key; desktopExpiry = resumed.expiresAt
-                        resumedAccess = true
-                        self.error = nil
-                        status = try await Task.detached { try client.decode(ServiceStatus.self, ["status", "--passive"]) }.value
-                    }
-                } catch {
-                    desktopToken = nil; desktopExpiry = .distantPast
-                    let retryable = error.localizedDescription.contains("AUTHORITY_BUSY") || error.localizedDescription.contains("DRAINING") || error.localizedDescription.contains("IPC_UNAVAILABLE")
-                    if retryable { resumeAttempted = false }
-                    self.error = (retryable ? "服务暂时忙碌，稍后会自动重试。\n" : "自动解锁失败，请重新输入保险库密码。\n") + error.localizedDescription
-                    if error.localizedDescription.contains("INVALID_UNLOCK_CREDENTIAL") {
-                        do { try RememberedUnlock.forget(stateDirectory) }
-                        catch { self.error = error.localizedDescription }
-                    }
-                }
-            }
+
         } catch {
-            status = nil; clearCache(); resumeAttempted = false; connectionError = error.localizedDescription
+            status = nil; clearCache(); connectionError = error.localizedDescription
             return
         }
-        if passive && !resumedAccess { return }
+        if passive { return }
         do {
             if unlocked {
                 let lists = try await Task.detached {
@@ -876,13 +898,16 @@ final class AppModel: ObservableObject {
             self.error = error.localizedDescription
         }
     }
-    func perform(_ op: Operation, proof: String = "", secret: String = "", recovery: Bool = false) async {
+    func perform(_ op: Operation, proof: String = "", secret: String = "", recovery: Bool = false,
+                 presence: Bool = false, rememberPresence: Bool = false, presenceRevision: UUID? = nil,
+                 client injectedClient: CLI? = nil,
+                 readPresence: @escaping @Sendable (UUID) throws -> String = { try PresenceKey.read(vaultID: $0) }) async {
         if let request = op.reveal {
-            await performReveal(request, proof: proof, recovery: recovery)
+            await performReveal(request, proof: proof, recovery: recovery, presence: presence, readPresence: readPresence)
             return
         }
         guard !busy else {
-            if op.temporaryFile != nil || op.templateRequest != nil || op.personalTrustVaultID != nil {
+            if presence || op.temporaryFile != nil || op.templateRequest != nil || op.personalTrustVaultID != nil {
                 var message = "当前操作尚未完成，本次请求未提交，请稍后重试。"
                 if let file = op.temporaryFile {
                     do { try FileManager.default.removeItem(at: file) }
@@ -893,26 +918,39 @@ final class AppModel: ObservableObject {
             return
         }
         busy = true; error = nil
-        let client = CLI(binary: cli.binary, stateDirectory: op.targetDirectory ?? stateDirectory, adminSessionFile: oidcSessionFile)
+        let client = injectedClient ?? CLI(binary: cli.binary, stateDirectory: op.targetDirectory ?? stateDirectory, adminSessionFile: oidcSessionFile)
         let desktopLogin = op.arguments == ["unlock"]
-        var args = desktopLogin ? ["desktop-login"] : op.arguments
-        var input = ""
-        if op.proof {
-            if !desktopLogin { args.append(op.newSecret ? "--stdin-secrets" : op.proofFlag) }
-            input = proof + "\n"
-            if op.newSecret { input += secret + "\n" }
-            if recovery && op.recoveryAllowed { args.append("--recovery") }
-        }
-        if let request = op.templateRequest {
-            guard let json = String(data: request, encoding: .utf8) else {
-                busy = false; error = "模板请求编码无效。"; return
-            }
-            input += json + "\n"
-        }
-        let command = args
-        var body = input
+        let revision = presenceRevision ?? nativeFlowRevision
+        let guarded = presence || rememberPresence
         var operationError: String?
         do {
+            guard !presence || op.presenceAllowed,
+                  !rememberPresence || desktopLogin,
+                  !guarded || (presenceRevision == nativeFlowRevision && client.stateDirectory == stateDirectory) else {
+                throw UIError(message: "此操作不支持系统认证，或操作上下文已失效，未提交。")
+            }
+            let operationProof: String
+            if presence { (operationProof, _) = try await readPresenceProof(client: client, revision: revision, read: readPresence) }
+            else { operationProof = proof }
+            var args = desktopLogin ? ["desktop-login"] : op.arguments
+            var body = ""
+            if op.proof {
+                if !desktopLogin { args.append(op.newSecret ? "--stdin-secrets" : op.proofFlag) }
+                body = operationProof + "\n"
+                if op.newSecret { body += secret + "\n" }
+                if presence { args.append("--presence") }
+                else if recovery && op.recoveryAllowed { args.append("--recovery") }
+            }
+            if let request = op.templateRequest {
+                guard let json = String(data: request, encoding: .utf8) else { throw UIError(message: "模板请求编码无效。") }
+                body += json + "\n"
+            }
+            var issuingVault: UUID?
+            if rememberPresence {
+                let current = try await Task.detached { try client.decode(PolicyStatus.self, ["policy", "status"]) }.value
+                guard let vaultID = UUID(uuidString: current.vault_id) else { throw UIError(message: "保险库身份无效。") }
+                issuingVault = vaultID
+            }
             if let vaultID = op.personalTrustVaultID {
                 let current = try await Task.detached { try client.decode(PolicyStatus.self, ["policy", "status"]) }.value
                 guard current.mode == .personal, !current.trust_installed,
@@ -923,22 +961,37 @@ final class AppModel: ObservableObject {
                 let trust: [String: Any] = ["format_version": 1, "signer_id": vaultID.uuidString.lowercased(), "algorithm": "secure-enclave-p256", "public_key": publicKey.map { String(format: "%02x", $0) }.joined()]
                 body += String(decoding: try JSONSerialization.data(withJSONObject: trust, options: [.sortedKeys]), as: UTF8.self) + "\n"
             }
-            let requestInput = body
-            let data = try await Task.detached { try client.run(command, input: requestInput) }.value
+            guard !guarded || (acceptsPresenceCompletion(revision, workspace: client.stateDirectory, allowLocked: desktopLogin) && !Task.isCancelled) else {
+                throw UIError(message: "系统认证操作上下文已改变，未提交。")
+            }
+            let command = args, requestInput = body
+            let data = try await Task.detached { try client.run(command, input: requestInput, redacting: [operationProof, secret]) }.value
+            guard !guarded || acceptsPresenceCompletion(revision, workspace: client.stateDirectory, allowLocked: desktopLogin) else {
+                throw UIError(message: "操作上下文已改变，结果未展示；请检查审计，不要自动重试。")
+            }
             guard let output = String(data: data, encoding: .utf8) else { throw UIError(message: "命令返回了无法解码的内容，操作结果需重新确认。") }
             if desktopLogin {
-                guard output.count == 64 && output.allSatisfy(\.isHexDigit) else { throw UIError(message: "管理会话响应无效。") }
-                desktopToken = output; desktopExpiry = Date().addingTimeInterval(7 * 24 * 60 * 60)
-                if oidcProfileFile == nil || oidcSessionFile != nil {
+                desktopToken = try PresenceKey.validated(output)
+                desktopExpiry = Date().addingTimeInterval(7 * 24 * 60 * 60)
+                if let vaultID = issuingVault {
+                    let current = try await Task.detached { try client.decode(PolicyStatus.self, ["policy", "status"]) }.value
+                    guard UUID(uuidString: current.vault_id) == vaultID, current.mode != nil,
+                          acceptsPresenceCompletion(revision, workspace: client.stateDirectory, allowLocked: true), !Task.isCancelled else {
+                        throw UIError(message: "保险库或操作上下文已改变，未签发系统认证授权。")
+                    }
                     let rememberArgs = recovery ? ["desktop-remember", "--recovery"] : ["desktop-remember"]
-                    let rememberedData = try await Task.detached { try client.run(rememberArgs, input: requestInput) }.value
-                    let remembered = try RememberedUnlock.receipt(rememberedData)
-                    try remembered.save(stateDirectory)
+                    let receipt = try await Task.detached { try client.run(rememberArgs, input: requestInput, redacting: [operationProof]) }.value
+                    let key = try PresenceKey.issuedKey(receipt)
+                    guard acceptsPresenceCompletion(revision, workspace: client.stateDirectory, allowLocked: true), !Task.isCancelled else {
+                        throw UIError(message: "操作上下文已改变，新授权未保存，请重新用密码解锁。")
+                    }
+                    presenceAuthenticating = true
+                    do { try await Task.detached { try PresenceKey.save(key, vaultID: vaultID) }.value }
+                    catch { presenceAuthenticating = false; throw error }
+                    presenceAuthenticating = false
                 }
-                resumeAttempted = true
             } else {
                 if op.unregisterBackgroundService {
-                    // Reached only after this operation's fresh-proof SHUTDOWN succeeded.
                     do { try await BackgroundService.unregisterAfterAuthorizedShutdown() }
                     catch { throw UIError(message: "服务已停止，但未能停用登录启动：" + error.localizedDescription) }
                 }
@@ -949,16 +1002,12 @@ final class AppModel: ObservableObject {
             do { try FileManager.default.removeItem(at: file) }
             catch { operationError = (operationError.map { $0 + "\n" } ?? "") + "无法删除临时操作定义：\(file.path)" }
         }
+        if let operationError {
+            if !guarded || (revision == nativeFlowRevision && client.stateDirectory == stateDirectory) { self.error = operationError }
+        }
         busy = false
-        await refresh()
-        if let operationError { self.error = operationError }
-        else if op.arguments.first == "init" { startService() }
-    }
-    func startRememberedService() {
-        // An installed app never registers or starts its managed job while refreshing.
-        guard !BackgroundService.isInstalledApplication, status == nil && !needsSetup else { return }
-        do { if try RememberedUnlock.load(stateDirectory) != nil { startService() } }
-        catch { self.error = error.localizedDescription }
+        if injectedClient == nil { await refresh() }
+        if operationError == nil && op.arguments.first == "init" { startService() }
     }
     func startService() {
         guard !busy else { return }
@@ -1017,12 +1066,8 @@ final class AppModel: ObservableObject {
     }
     func lock() async {
         clearNativeFlow()
-        resumeAttempted = true
-        var keychainError: String?
-        do { try RememberedUnlock.forget(stateDirectory) } catch { keychainError = error.localizedDescription }
         await perform(Operation(title: "锁定", detail: "", arguments: ["lock"], proof: false))
         result = nil
-        if let keychainError { error = keychainError }
     }
     func exportApproval(_ item: PendingApproval) async {
         guard let destination = chooseSave("approval-\(item.id).json") else { return }

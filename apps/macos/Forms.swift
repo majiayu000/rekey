@@ -12,6 +12,9 @@ struct OperationForm: View {
     @State private var secret = ""
     @State private var confirmation = ""
     @State private var recovery = false
+    @State private var presence = false
+    @State private var rememberPresence = false
+    @State private var protectedFlow = false
     @State private var sessionID = ""
     @State private var hash = ""
     @State private var destination: URL?
@@ -20,7 +23,7 @@ struct OperationForm: View {
     private var isRestore: Bool { operation.arguments.first == "restore" }
     private var revokeSession: Bool { operation.arguments == ["session", "revoke"] }
     private var valid: Bool {
-        singleLine(proof) && (!operation.newSecret || singleLine(secret)) &&
+        (presence || singleLine(proof)) && (!operation.newSecret || singleLine(secret)) &&
         (!operation.confirmSecret || confirmation == (operation.newSecret ? secret : proof)) &&
         (!revokeSession || UUID(uuidString: sessionID) != nil) &&
         (!isRestore || (hash.count == 64 && hash.allSatisfy(\.isHexDigit) && destination != nil))
@@ -41,10 +44,23 @@ struct OperationForm: View {
                 TextField("备份回执 SHA-256", text: $hash).textFieldStyle(.roundedBorder)
                 HStack { Text(destination?.path ?? "请选择空目录").font(.system(size: 11)).lineLimit(2); Spacer(); Button("选择恢复目录") { destination = chooseFile(directory: true) } }
             }
-            if operation.recoveryAllowed {
+            if operation.presenceAllowed && model.unlocked {
+                Toggle("使用系统认证批准本次操作", isOn: $presence).disabled(model.busy)
+                    .onChange(of: presence) { _, _ in proof = ""; recovery = false }
+            }
+            if operation.recoveryAllowed && !presence {
                 Toggle("使用恢复密钥", isOn: $recovery).font(.system(size: 12))
             }
-            SecureField(recovery ? "恢复密钥" : operation.arguments.first == "init" ? "设置保险库密码" : "当前保险库密码", text: $proof).textFieldStyle(.roundedBorder)
+            if !presence { SecureField(recovery ? "恢复密钥" : operation.arguments.first == "init" ? "设置保险库密码" : "当前保险库密码", text: $proof).textFieldStyle(.roundedBorder) }
+            if operation.arguments == ["unlock"] {
+                Toggle("启用系统认证（授权有效期 7 天）", isOn: $rememberPresence).disabled(model.busy)
+                Text("仅在本次解锁成功后保存受系统认证保护的新授权；不会导入旧授权。").font(.system(size: 11)).foregroundStyle(.secondary)
+                Button("用系统认证解锁") {
+                    let revision = model.nativeFlowRevision
+                    protectedFlow = true; clear()
+                    Task { await model.unlockWithPresence(revision: revision); dismiss() }
+                }.disabled(model.busy)
+            }
             if operation.newSecret { SecureField(operation.arguments.first == "password" ? "新密码" : "新凭证值", text: $secret).textFieldStyle(.roundedBorder) }
             if operation.confirmSecret { SecureField("再次输入新密码", text: $confirmation).textFieldStyle(.roundedBorder) }
             Text("输入仅用于本次操作，不会保存。").font(.system(size: 11)).foregroundStyle(.secondary)
@@ -59,12 +75,19 @@ struct OperationForm: View {
                         op = Operation(title: op.title, detail: op.detail, arguments: op.arguments + ["--sha256", hash])
                         op.targetDirectory = destination!.path
                     }
-                    let p = proof, s = secret, useRecovery = recovery
-                    clear(); dismiss()
-                    Task { await model.perform(op, proof: p, secret: s, recovery: useRecovery) }
+                    let p = proof, s = secret, useRecovery = recovery, usePresence = presence, remember = rememberPresence
+                    let revision = model.nativeFlowRevision
+                    protectedFlow = usePresence || remember
+                    clear(); if !protectedFlow { dismiss() }
+                    Task {
+                        await model.perform(op, proof: p, secret: s, recovery: useRecovery, presence: usePresence, rememberPresence: remember, presenceRevision: revision)
+                        if usePresence || remember { dismiss() }
+                    }
                 }.buttonStyle(PrimaryButton()).disabled(!valid || model.busy)
             }
-        }.padding(30).frame(width: 460).background(canvas).onDisappear { clear() }
+        }.padding(30).frame(width: 460).background(canvas)
+            .onChange(of: model.nativeFlowRevision) { _, _ in clear() }
+            .onDisappear { clear(); if protectedFlow { model.clearNativeFlow() } }
     }
     private func clear() { proof = ""; secret = ""; confirmation = "" }
 }
@@ -76,8 +99,9 @@ struct AddCredentialForm: View {
     @State private var kind = "add"
     @State private var secret = ""
     @State private var proof = ""
+    @State private var presence = false
     @State private var profile: URL?
-    private var valid: Bool { !label.trimmingCharacters(in: .whitespaces).isEmpty && (kind == "add" ? singleLine(secret) : singleLine(proof) && profile != nil) }
+    private var valid: Bool { !label.trimmingCharacters(in: .whitespaces).isEmpty && (kind == "add" ? singleLine(secret) : (presence || singleLine(proof)) && profile != nil) }
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             Text("添加 API Key").font(.system(size: 24, weight: .semibold))
@@ -102,7 +126,10 @@ struct AddCredentialForm: View {
                 Text("密钥短于 16 字节，嵌入编码的反射遮蔽覆盖有限。建议使用服务商生成的完整 Key。")
                     .font(.system(size: 11)).foregroundStyle(.orange)
             }
-            if kind != "add" { SecureField("当前保险库密码", text: $proof).textFieldStyle(.roundedBorder) }
+            if kind != "add" {
+                Toggle("使用系统认证批准本次操作", isOn: $presence).disabled(model.busy)
+                if !presence { SecureField("当前保险库密码", text: $proof).textFieldStyle(.roundedBorder) }
+            }
             if let error = model.error { Text(error).font(.system(size: 12)).foregroundStyle(.red) }
             if kind == "add" && !model.desktopReady { Text("管理会话已过期，请关闭此窗口并重新解锁管理会话。").foregroundStyle(.secondary) }
             HStack {
@@ -116,12 +143,12 @@ struct AddCredentialForm: View {
                     var args = ["credential", kind, label]
                     if let profile, kind != "add" { args += ["--file", profile.path] }
                     let op = Operation(title: "添加凭证", detail: "", arguments: args, newSecret: kind == "add")
-                    let p = proof, s = secret
-                    clear(); dismiss()
-                    Task { await model.perform(op, proof: p, secret: s) }
+                    let p = proof, s = secret, usePresence = presence, revision = model.nativeFlowRevision
+                    clear(); if !usePresence { dismiss() }
+                    Task { await model.perform(op, proof: p, secret: s, presence: usePresence, presenceRevision: revision); if usePresence { dismiss() } }
                 }.buttonStyle(PrimaryButton()).disabled(!valid || model.busy || (kind == "add" && !model.desktopReady))
             }
-        }.padding(30).frame(width: 480).background(canvas).onDisappear { clear() }
+        }.padding(30).frame(width: 480).background(canvas).onDisappear { clear(); if presence { model.clearNativeFlow() } }
     }
     private func clear() { proof = ""; secret = "" }
 }
@@ -137,6 +164,7 @@ struct ActionForm: View {
     @State private var header = "authorization"
     @State private var prefix = "Bearer "
     @State private var proof = ""
+    @State private var presence = false
     @State private var failure: String?
     var body: some View {
         VStack(alignment: .leading, spacing: 17) {
@@ -156,14 +184,15 @@ struct ActionForm: View {
                 }
             }
             Text("前缀只填写 Bearer 等认证方案，不要填写凭证值。").font(.system(size: 11)).foregroundStyle(.secondary)
-            SecureField("当前保险库密码", text: $proof).textFieldStyle(.roundedBorder)
+            Toggle("使用系统认证批准本次操作", isOn: $presence).disabled(model.busy)
+            if !presence { SecureField("当前保险库密码", text: $proof).textFieldStyle(.roundedBorder) }
             if let failure { Text(failure).font(.system(size: 12)).foregroundStyle(.red) }
             HStack {
                 Button("取消") { proof = ""; dismiss() }.keyboardShortcut(.cancelAction)
                 Spacer()
-                Button("创建操作") { submit() }.buttonStyle(PrimaryButton()).disabled(name.isEmpty || credential.isEmpty || origin.isEmpty || path.isEmpty || !singleLine(proof) || model.busy)
+                Button("创建操作") { submit() }.buttonStyle(PrimaryButton()).disabled(name.isEmpty || credential.isEmpty || origin.isEmpty || path.isEmpty || (!presence && !singleLine(proof)) || model.busy)
             }
-        }.padding(30).frame(width: 520).background(canvas).onDisappear { proof = "" }
+        }.padding(30).frame(width: 520).background(canvas).onDisappear { proof = ""; if presence { model.clearNativeFlow() } }
     }
     private func submit() {
         // Only non-secret action metadata is written to this new private file.
@@ -174,8 +203,9 @@ struct ActionForm: View {
             try writePrivateNew(data, to: file)
             var op = Operation(title: "创建操作", detail: "", arguments: ["action", "create", "--file", file.path])
             op.temporaryFile = file
-            let p = proof; proof = ""; dismiss()
-            Task { await model.perform(op, proof: p) }
+            let p = proof, usePresence = presence, revision = model.nativeFlowRevision
+            proof = ""; if !usePresence { dismiss() }
+            Task { await model.perform(op, proof: p, presence: usePresence, presenceRevision: revision); if usePresence { dismiss() } }
         } catch { failure = error.localizedDescription }
     }
 }
@@ -198,11 +228,12 @@ struct TemplateForm: View {
     @State private var loading = false
     @State private var proof = ""
     @State private var recovery = false
+    @State private var presence = false
     @State private var failure: String?
     private var sourceRevision: String { provider + "\n" + origin + "\n" + targets }
     private var complete: Bool {
         guard let catalog else { return false }
-        return !name.isEmpty && !credential.isEmpty && !selected.isEmpty && singleLine(proof)
+        return !name.isEmpty && !credential.isEmpty && !selected.isEmpty && (presence || singleLine(proof))
             && bindings.allSatisfy { group in catalog.template.bindings.keys.allSatisfy { !(group[$0] ?? "").isEmpty } }
             && model.acceptsNativeCompletion(catalogRevision, workspace: catalogWorkspace)
     }
@@ -260,8 +291,11 @@ struct TemplateForm: View {
                         }
                     }.padding(.vertical, 4)
                 }.frame(maxHeight: 280)
-                Toggle("使用恢复密钥", isOn: $recovery).font(.system(size: 12))
-                SecureField(recovery ? "恢复密钥" : "当前保险库密码", text: $proof).textFieldStyle(.roundedBorder)
+                Toggle("使用系统认证批准本次操作", isOn: $presence).disabled(model.busy)
+                if !presence {
+                    Toggle("使用恢复密钥", isOn: $recovery).font(.system(size: 12))
+                    SecureField(recovery ? "恢复密钥" : "当前保险库密码", text: $proof).textFieldStyle(.roundedBorder)
+                }
             }
             if let failure { Text(failure).font(.system(size: 12)).foregroundStyle(.red) }
             HStack {
@@ -274,7 +308,7 @@ struct TemplateForm: View {
                 loadRevision = UUID(); catalog = nil; catalogSource = nil; selected = []; bindings = [[:]]; proof = ""; loading = false
                 if provider != "generic-bearer" { await loadCatalog() }
             }
-            .onDisappear { proof = ""; loadRevision = UUID() }
+            .onDisappear { proof = ""; loadRevision = UUID(); if presence { model.clearNativeFlow() } }
     }
     private func sourceRequest() throws -> Data {
         var source: [String: Any] = ["kind": provider]
@@ -309,9 +343,9 @@ struct TemplateForm: View {
             request["response_max_bytes"] = 4 * 1024 * 1024; request["allowed_response_headers"] = ["content-type"]
             var operation = Operation(title: "安装模板", detail: "", arguments: ["template", "install", "--stdin-request"], targetDirectory: catalogWorkspace)
             operation.templateRequest = try JSONSerialization.data(withJSONObject: request, options: [.sortedKeys])
-            let currentProof = proof, useRecovery = recovery
-            proof = ""; dismiss()
-            Task { await model.perform(operation, proof: currentProof, recovery: useRecovery) }
+            let currentProof = proof, useRecovery = recovery, usePresence = presence, revision = model.nativeFlowRevision
+            proof = ""; if !usePresence { dismiss() }
+            Task { await model.perform(operation, proof: currentProof, recovery: useRecovery, presence: usePresence, presenceRevision: revision); if usePresence { dismiss() } }
         } catch { failure = error.localizedDescription }
     }
 }
@@ -324,6 +358,7 @@ struct SessionForm: View {
     @State private var uses = "20"
     @State private var principal = ""
     @State private var proof = ""
+    @State private var presence = false
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("创建 Agent 授权").font(.system(size: 24, weight: .semibold))
@@ -337,7 +372,8 @@ struct SessionForm: View {
             }.frame(maxHeight: 190)
             HStack { Text("有效期"); TextField("例如 15m", text: $ttl); Text("使用次数"); TextField("20", text: $uses) }.textFieldStyle(.roundedBorder)
             TextField("已有策略的主体 UUID（留空创建新主体）", text: $principal).textFieldStyle(.roundedBorder)
-            SecureField("当前保险库密码", text: $proof).textFieldStyle(.roundedBorder)
+            Toggle("使用系统认证批准本次操作", isOn: $presence).disabled(model.busy)
+            if !presence { SecureField("当前保险库密码", text: $proof).textFieldStyle(.roundedBorder) }
             HStack {
                 Button("取消") { proof = ""; dismiss() }.keyboardShortcut(.cancelAction)
                 Spacer()
@@ -345,11 +381,12 @@ struct SessionForm: View {
                     var args = ["session", "create", "--ttl", ttl, "--max-uses", uses]
                     if !principal.isEmpty { args += ["--principal", principal] }
                     for ref in selected.sorted() { args += ["--action", ref] }
-                    let p = proof; proof = ""; dismiss()
-                    Task { await model.perform(Operation(title: "创建授权", detail: "", arguments: args, sensitiveResult: true), proof: p) }
-                }.buttonStyle(PrimaryButton()).disabled(selected.isEmpty || ttl.isEmpty || (Int(uses) ?? 0) <= 0 || (!principal.isEmpty && UUID(uuidString: principal) == nil) || !singleLine(proof) || model.busy)
+                    let p = proof, usePresence = presence, revision = model.nativeFlowRevision
+                    proof = ""; if !usePresence { dismiss() }
+                    Task { await model.perform(Operation(title: "创建授权", detail: "", arguments: args, sensitiveResult: true), proof: p, presence: usePresence, presenceRevision: revision); if usePresence { dismiss() } }
+                }.buttonStyle(PrimaryButton()).disabled(selected.isEmpty || ttl.isEmpty || (Int(uses) ?? 0) <= 0 || (!principal.isEmpty && UUID(uuidString: principal) == nil) || (!presence && !singleLine(proof)) || model.busy)
             }
-        }.padding(30).frame(width: 490).background(canvas).onDisappear { proof = "" }
+        }.padding(30).frame(width: 490).background(canvas).onDisappear { proof = ""; if presence { model.clearNativeFlow() } }
     }
 }
 
@@ -475,6 +512,7 @@ struct PersonalPolicyDraftForm: View {
     @State private var draft: PersonalPolicyDraft?
     @State private var proof = ""
     @State private var recovery = false
+    @State private var presence = false
     @State private var confirmed = false
     @State private var attempted = false
     @State private var message: String?
@@ -502,11 +540,15 @@ struct PersonalPolicyDraftForm: View {
                         Text("未选中的旧规则、审批者和工作负载授权都会删除。空选择会撤销全部策略授权。")
                         Toggle("我已完整核对前后变化和操作定义，确认替换当前策略", isOn: $confirmed)
                             .disabled(model.busy || attempted)
-                        Toggle("使用恢复密钥验证本次激活", isOn: $recovery).disabled(model.busy || attempted)
-                        SecureField(recovery ? "恢复密钥（仅通过 stdin）" : "保险库密码（仅通过 stdin）", text: $proof)
-                            .disabled(model.busy || attempted)
+                        Toggle("使用系统认证批准本次激活", isOn: $presence).disabled(model.busy || attempted)
+                        if !presence {
+                            Toggle("使用恢复密钥验证本次激活", isOn: $recovery).disabled(model.busy || attempted)
+                            SecureField(recovery ? "恢复密钥" : "保险库密码", text: $proof).disabled(model.busy || attempted)
+                        }
+                        Text("策略仍由独立的 Secure Enclave 策略密钥签署；系统认证授权只用于本次激活验证。")
+                            .font(.system(size: 12)).foregroundStyle(.secondary)
                         Button(model.personalPolicySigning ? "等待系统认证…" : "签署并激活一次") { activate(draft) }
-                            .disabled(model.busy || !model.unlocked || !confirmed || proof.isEmpty || attempted)
+                            .disabled(model.busy || !model.unlocked || !confirmed || (!presence && proof.isEmpty) || attempted)
                         Button("放弃此草稿，重新选择") { clear() }.disabled(model.busy)
                     } else {
                         TextField("主体 UUID（显式指定）", text: $principal)
@@ -559,11 +601,11 @@ struct PersonalPolicyDraftForm: View {
     }
     private func activate(_ draft: PersonalPolicyDraft) {
         guard confirmed, !attempted, !model.busy else { return }
-        let currentProof = proof, useRecovery = recovery
+        let currentProof = proof, useRecovery = recovery, usePresence = presence
         proof = ""; confirmed = false; attempted = true; message = nil
         Task {
             do {
-                try await model.activatePersonalPolicy(draft, proof: currentProof, recovery: useRecovery)
+                try await model.activatePersonalPolicy(draft, proof: currentProof, recovery: useRecovery, presence: usePresence)
                 guard model.acceptsNativeCompletion(draft.revision, workspace: draft.workspace) else { return }
                 message = "策略已激活。关闭窗口后刷新当前状态。"
             } catch {

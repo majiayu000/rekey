@@ -2,7 +2,7 @@
 
 ## What is this
 
-Rekey v2: a local Credential Authority for AI agents. Agents call fixed,
+Rekey v3 personal-first development on the breaking v2 Credential Authority foundation. Agents call fixed,
 admin-registered actions through a capability token and never see real
 credentials. Breaking rewrite — no v1 vault, MITM, system CA, dashboard,
 single-port proxy, or TCP passthrough exists anymore.
@@ -45,7 +45,9 @@ Cargo workspace, 7 crates + root integration-test host:
 - Agent API has no get/read/export secret operation — only ExecuteFixedHttpAction
   with a short-lived capability token; decrypted payloads exist once as a
   consume-once `PreparedCredential`
-- Admin mutations require a step-up unlock proof on every call
+- Admin mutations require a step-up unlock proof on every call; presence is
+  accepted only while unlocked with an active process-local verifier. Offline
+  restore and VRK rewrapping still require their original decryption factors.
 - Secrets travel only in frame bodies / hidden TTY / explicit stdin flags —
   never argv, env, JSON metadata, logs, or audit rows
 - Audit commit failure fails closed (worker faults); execution.started commits
@@ -59,7 +61,9 @@ Cargo workspace, 7 crates + root integration-test host:
 
 ## Spec & Baselines
 
-- Implementation spec: `docs/superpowers/specs/2026-08-28-credential-authority-v2-foundation.md`
+- Active v3 specification: `docs/superpowers/specs/2026-10-02-rekey-v3-personal-first.md`
+- Implemented versus pending v3 scope: `docs/superpowers/plans/2026-10-03-v3-implementation.md`
+- Foundation specification: `docs/superpowers/specs/2026-08-28-credential-authority-v2-foundation.md`
 - Public technical baselines:
   - `docs/product-foundation/feature-truth-matrix.md`
   - `docs/product-foundation/threat-model-v2.md`

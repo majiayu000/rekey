@@ -1,3 +1,4 @@
+use rekey_domain::ipc::ProofKind;
 use std::collections::BTreeSet;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::OpenOptionsExt;
@@ -44,13 +45,13 @@ pub fn policy_trust_install(
     state_dir: &Path,
     file: Option<&Path>,
     stdin_request: bool,
-    recovery: bool,
+    kind: ProofKind,
     password_stdin: bool,
 ) -> Result<(), CliError> {
     let (trust, proof) = match (file, stdin_request) {
         (Some(file), false) => {
             let (trust, _) = read_regular_nosymlink(file, 4 * 1024, "policy trust file")?;
-            (trust, read_step_up(recovery, password_stdin)?)
+            (trust, read_step_up(kind, password_stdin)?)
         }
         (None, true) if password_stdin => {
             let mut lines = stdin_lines(2)?.into_iter();
@@ -68,7 +69,7 @@ pub fn policy_trust_install(
             ));
         }
     };
-    let body = proof_body(recovery, &proof);
+    let body = proof_body(kind, &proof);
     let (meta, _) = admin(state_dir)?.call(admin_msg::POLICY_TRUST_INSTALL, &trust, &body)?;
     print_policy_status(&meta)
 }
@@ -79,7 +80,7 @@ pub fn policy_activate(
     stdin_request: bool,
     expected_vault_id: &str,
     expected_trust_sha256: &str,
-    recovery: bool,
+    kind: ProofKind,
     password_stdin: bool,
 ) -> Result<(), CliError> {
     let (metadata, proof) = match (file, stdin_request) {
@@ -88,7 +89,7 @@ pub fn policy_activate(
             // Keep the file path's error order: reject public input before asking for proof.
             let metadata =
                 policy_activate_metadata(expected_vault_id, expected_trust_sha256, &bundle)?;
-            (metadata, read_step_up(recovery, password_stdin)?)
+            (metadata, read_step_up(kind, password_stdin)?)
         }
         (None, true) if password_stdin => {
             let mut lines = stdin_lines(2)?.into_iter();
@@ -105,7 +106,7 @@ pub fn policy_activate(
             ));
         }
     };
-    let body = proof_body(recovery, &proof);
+    let body = proof_body(kind, &proof);
     let (meta, _) = admin(state_dir)?.call(admin_msg::POLICY_ACTIVATE, &metadata, &body)?;
     print_policy_status(&meta)
 }
@@ -387,7 +388,7 @@ mod tests {
             false,
             "00112233-4455-4677-8899-aabbccddeeff",
             &"a".repeat(64),
-            false,
+            ProofKind::Password,
             true,
         )
         .unwrap_err();

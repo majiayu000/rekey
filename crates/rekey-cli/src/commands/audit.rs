@@ -1,3 +1,4 @@
+use rekey_domain::ipc::ProofKind;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::os::fd::AsRawFd;
@@ -20,7 +21,7 @@ pub fn audit_prune(
     state_dir: &Path,
     before_ms: Option<i64>,
     older_than_days: Option<u64>,
-    recovery: bool,
+    kind: ProofKind,
     password_stdin: bool,
 ) -> Result<(), CliError> {
     if before_ms.is_some() == older_than_days.is_some() {
@@ -30,7 +31,7 @@ pub fn audit_prune(
         ));
     }
     let age_ms = older_than_days.map(retention_age_ms).transpose()?;
-    let proof = read_step_up(recovery, password_stdin)?;
+    let proof = read_step_up(kind, password_stdin)?;
     let before_ms = match (before_ms, age_ms) {
         (Some(before_ms), None) => before_ms,
         (None, Some(age_ms)) => retention_cutoff_ms(age_ms, now_ms()?)?,
@@ -39,7 +40,7 @@ pub fn audit_prune(
     let request = AuditPruneRequest { before_ms };
     let metadata = serde_json::to_vec(&request)
         .map_err(|_| CliError::local("USAGE", "cannot encode audit prune request"))?;
-    let body = proof_body(recovery, &proof);
+    let body = proof_body(kind, &proof);
     let (metadata, response_body) = admin_with_response_timeout(
         state_dir,
         LIFECYCLE_RESPONSE_TIMEOUT,
@@ -285,17 +286,17 @@ struct ExportTrailer {
 pub fn audit_retention_set(
     state_dir: &Path,
     days: Option<u64>,
-    recovery: bool,
+    kind: ProofKind,
     password_stdin: bool,
 ) -> Result<(), CliError> {
     if let Some(days) = days {
         retention_age_ms(days)?;
     }
-    let proof = read_step_up(recovery, password_stdin)?;
+    let proof = read_step_up(kind, password_stdin)?;
     let request = rekey_domain::audit::AuditRetentionSet { days };
     let metadata = serde_json::to_vec(&request)
         .map_err(|_| CliError::local("USAGE", "cannot encode retention request"))?;
-    let body = proof_body(recovery, &proof);
+    let body = proof_body(kind, &proof);
     let (metadata, body) = admin_with_response_timeout(state_dir, LIFECYCLE_RESPONSE_TIMEOUT)?
         .call(admin_msg::AUDIT_RETENTION_SET, &metadata, &body)?;
     let receipt = retention_receipt(&metadata, &body)?;

@@ -285,6 +285,7 @@ pub struct OidcLogoutResponse {
 pub enum ProofKind {
     Password,
     Recovery,
+    Presence,
 }
 
 impl ProofKind {
@@ -292,6 +293,7 @@ impl ProofKind {
         match self {
             Self::Password => 1,
             Self::Recovery => 2,
+            Self::Presence => 3,
         }
     }
 
@@ -299,6 +301,7 @@ impl ProofKind {
         match code {
             1 => Ok(Self::Password),
             2 => Ok(Self::Recovery),
+            3 => Ok(Self::Presence),
             _ => Err(FrameError::InvalidField),
         }
     }
@@ -1376,6 +1379,30 @@ mod tests {
         assert_eq!(kind, ProofKind::Recovery);
         assert_eq!(proof, b"rk");
         assert!(parse_proof_body(&only[..3]).is_err());
+    }
+
+    #[test]
+    fn presence_proof_has_explicit_code_and_roundtrips_both_bodies() {
+        let proof = b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let mut body = Vec::new();
+        encode_proof_body(ProofKind::Presence, proof, &mut body);
+        assert_eq!(body[0], 3);
+        assert_eq!(
+            parse_proof_body(&body).unwrap(),
+            (ProofKind::Presence, proof.as_slice())
+        );
+        body.clear();
+        encode_proof_and_secret_body(ProofKind::Presence, proof, b"new-value", &mut body);
+        assert_eq!(
+            parse_proof_and_secret_body(&body).unwrap(),
+            (
+                ProofKind::Presence,
+                proof.as_slice(),
+                b"new-value".as_slice()
+            )
+        );
+        body[0] = 4;
+        assert!(parse_proof_and_secret_body(&body).is_err());
     }
 
     #[test]

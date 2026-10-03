@@ -19,6 +19,19 @@ struct StepUpArgs {
     /// Read the step-up proof from stdin instead of the TTY.
     #[arg(long)]
     password_stdin: bool,
+    /// Use a presence key from the explicit stdin proof channel.
+    #[arg(long, conflicts_with = "recovery", requires = "password_stdin")]
+    presence: bool,
+}
+
+fn selected_proof(recovery: bool, presence: bool) -> rekey_domain::ipc::ProofKind {
+    if presence {
+        rekey_domain::ipc::ProofKind::Presence
+    } else if recovery {
+        rekey_domain::ipc::ProofKind::Recovery
+    } else {
+        rekey_domain::ipc::ProofKind::Password
+    }
 }
 
 #[derive(Args)]
@@ -63,6 +76,9 @@ struct PolicyStepUpArgs {
     /// Read the step-up proof from stdin instead of the TTY.
     #[arg(long)]
     step_up_stdin: bool,
+    /// Use a presence key from the explicit stdin proof channel.
+    #[arg(long, conflicts_with = "recovery", requires = "step_up_stdin")]
+    presence: bool,
 }
 
 #[derive(Parser)]
@@ -158,12 +174,14 @@ enum Command {
     DesktopRemember {
         #[arg(long)]
         recovery: bool,
+        #[arg(long, conflicts_with = "recovery")]
+        presence: bool,
     },
     /// Resume a remembered desktop; key on stdin, session on stdout.
     DesktopResume,
     /// Save an API key; desktop token and value are read as two stdin lines.
     DesktopAdd { label: String },
-    /// Reveal a current credential with a fresh password or recovery proof.
+    /// Reveal a current credential with a fresh step-up proof.
     DesktopReveal {
         credential_id: String,
         #[command(flatten)]
@@ -195,7 +213,7 @@ enum Command {
         #[arg(long, requires = "prometheus")]
         textfile_dir: Option<PathBuf>,
     },
-    /// Stop the running broker (step-up proof required while unlocked).
+    /// Stop the running broker (fresh step-up proof required).
     Shutdown {
         #[command(flatten)]
         step_up: StepUpArgs,
@@ -271,6 +289,8 @@ enum CredentialCommand {
         /// Use the recovery key for step-up proof; does not reset the password.
         #[arg(long)]
         recovery: bool,
+        #[arg(long, conflicts_with = "recovery", requires = "stdin_secrets")]
+        presence: bool,
         /// Read step-up proof (line 1) and credential value (line 2) from stdin.
         #[arg(long)]
         stdin_secrets: bool,
@@ -409,6 +429,8 @@ enum CredentialCommand {
         /// Use the recovery key for step-up proof; does not reset the password.
         #[arg(long)]
         recovery: bool,
+        #[arg(long, conflicts_with = "recovery", requires = "stdin_secrets")]
+        presence: bool,
         /// Read step-up proof (line 1) and credential value (line 2) from stdin.
         #[arg(long)]
         stdin_secrets: bool,
@@ -655,6 +677,8 @@ enum PasswordCommand {
     Change {
         #[arg(long)]
         recovery: bool,
+        #[arg(long, conflicts_with = "recovery", requires = "stdin_secrets")]
+        presence: bool,
         /// Read step-up proof (line 1) and new password (line 2) from stdin.
         #[arg(long)]
         stdin_secrets: bool,
@@ -668,6 +692,8 @@ enum RecoveryCommand {
         /// Read the required password proof from stdin.
         #[arg(long)]
         password_stdin: bool,
+        #[arg(long, requires = "password_stdin")]
+        presence: bool,
     },
 }
 
@@ -790,10 +816,12 @@ fn main() {
                 commands::oidc_logout(&state_dir, &session_file)
             }
         },
-        Command::DesktopRemember { recovery } => {
-            commands::desktop_restore_access(&state_dir, false, recovery)
+        Command::DesktopRemember { recovery, presence } => {
+            commands::desktop_restore_access(&state_dir, false, selected_proof(recovery, presence))
         }
-        Command::DesktopResume => commands::desktop_restore_access(&state_dir, true, false),
+        Command::DesktopResume => {
+            commands::desktop_restore_access(&state_dir, true, selected_proof(false, false))
+        }
         Command::DesktopLogin { recovery } => commands::desktop_login(&state_dir, recovery),
         Command::DesktopAdd { label } => commands::desktop_add(&state_dir, &label),
         Command::DesktopReveal {
@@ -802,7 +830,7 @@ fn main() {
         } => commands::desktop_reveal(
             &state_dir,
             &credential_id,
-            step_up.recovery,
+            selected_proof(step_up.recovery, step_up.presence),
             step_up.password_stdin,
         ),
         Command::Init {
@@ -857,15 +885,23 @@ fn main() {
             prometheus,
             textfile_dir,
         } => commands::metrics(&state_dir, prometheus, textfile_dir.as_deref()),
-        Command::Shutdown { step_up } => {
-            commands::shutdown(&state_dir, step_up.recovery, step_up.password_stdin)
-        }
+        Command::Shutdown { step_up } => commands::shutdown(
+            &state_dir,
+            selected_proof(step_up.recovery, step_up.presence),
+            step_up.password_stdin,
+        ),
         Command::Credential(cmd) => match cmd {
             CredentialCommand::Add {
                 label,
                 recovery,
+                presence,
                 stdin_secrets,
-            } => commands::credential_add(&state_dir, &label, recovery, stdin_secrets),
+            } => commands::credential_add(
+                &state_dir,
+                &label,
+                selected_proof(recovery, presence),
+                stdin_secrets,
+            ),
             CredentialCommand::AddGithubApp {
                 label,
                 file,
@@ -874,7 +910,7 @@ fn main() {
                 &state_dir,
                 &label,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
             #[cfg(feature = "lab")]
@@ -886,7 +922,7 @@ fn main() {
                 &state_dir,
                 &label,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
             #[cfg(feature = "lab")]
@@ -898,7 +934,7 @@ fn main() {
                 &state_dir,
                 &label,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
             #[cfg(feature = "lab")]
@@ -910,7 +946,7 @@ fn main() {
                 &state_dir,
                 &label,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
             #[cfg(feature = "lab")]
@@ -922,7 +958,7 @@ fn main() {
                 &state_dir,
                 &credential_id,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
             #[cfg(feature = "lab")]
@@ -934,7 +970,7 @@ fn main() {
                 &state_dir,
                 &label,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
             #[cfg(feature = "lab")]
@@ -946,7 +982,7 @@ fn main() {
                 &state_dir,
                 &credential_id,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
             #[cfg(feature = "lab")]
@@ -958,7 +994,7 @@ fn main() {
                 &state_dir,
                 &label,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
             #[cfg(feature = "lab")]
@@ -970,7 +1006,7 @@ fn main() {
                 &state_dir,
                 &credential_id,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
             #[cfg(feature = "lab")]
@@ -982,7 +1018,7 @@ fn main() {
                 &state_dir,
                 &label,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
             #[cfg(feature = "lab")]
@@ -994,7 +1030,7 @@ fn main() {
                 &state_dir,
                 &credential_id,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
             #[cfg(feature = "lab")]
@@ -1006,7 +1042,7 @@ fn main() {
                 &state_dir,
                 &label,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
             #[cfg(feature = "lab")]
@@ -1018,7 +1054,7 @@ fn main() {
                 &state_dir,
                 &credential_id,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
             #[cfg(feature = "lab")]
@@ -1030,7 +1066,7 @@ fn main() {
                 &state_dir,
                 &label,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
             #[cfg(feature = "lab")]
@@ -1042,15 +1078,21 @@ fn main() {
                 &state_dir,
                 &credential_id,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
             CredentialCommand::List => commands::credential_list(&state_dir),
             CredentialCommand::Rotate {
                 credential_id,
                 recovery,
+                presence,
                 stdin_secrets,
-            } => commands::credential_rotate(&state_dir, &credential_id, recovery, stdin_secrets),
+            } => commands::credential_rotate(
+                &state_dir,
+                &credential_id,
+                selected_proof(recovery, presence),
+                stdin_secrets,
+            ),
             CredentialCommand::RotateGithubApp {
                 credential_id,
                 file,
@@ -1059,7 +1101,7 @@ fn main() {
                 &state_dir,
                 &credential_id,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
             #[cfg(feature = "lab")]
@@ -1071,7 +1113,7 @@ fn main() {
                 &state_dir,
                 &credential_id,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
             #[cfg(feature = "lab")]
@@ -1083,7 +1125,7 @@ fn main() {
                 &state_dir,
                 &credential_id,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
             CredentialCommand::ApplyGithubWebhook {
@@ -1102,7 +1144,7 @@ fn main() {
                 &delivery,
                 &signature,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
             CredentialCommand::Revoke {
@@ -1111,14 +1153,17 @@ fn main() {
             } => commands::credential_revoke(
                 &state_dir,
                 &credential_id,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
         },
         Command::Action(cmd) => match cmd {
-            ActionCommand::Create { file, step_up } => {
-                commands::action_create(&state_dir, &file, step_up.recovery, step_up.password_stdin)
-            }
+            ActionCommand::Create { file, step_up } => commands::action_create(
+                &state_dir,
+                &file,
+                selected_proof(step_up.recovery, step_up.presence),
+                step_up.password_stdin,
+            ),
             ActionCommand::Update {
                 action_id,
                 file,
@@ -1127,14 +1172,14 @@ fn main() {
                 &state_dir,
                 &action_id,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
             ActionCommand::List => commands::action_list(&state_dir),
             ActionCommand::Disable { action_id, step_up } => commands::action_disable(
                 &state_dir,
                 &action_id,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
         },
@@ -1161,7 +1206,7 @@ fn main() {
                 file.as_deref(),
                 stdin_request,
                 package.as_deref(),
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
         },
@@ -1185,7 +1230,7 @@ fn main() {
                     &ttl,
                     max_uses,
                     principal.as_deref(),
-                    step_up.recovery,
+                    selected_proof(step_up.recovery, step_up.presence),
                     step_up.password_stdin,
                 ),
             },
@@ -1195,7 +1240,7 @@ fn main() {
             } => commands::session_revoke(
                 &state_dir,
                 &session_id,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
         },
@@ -1208,7 +1253,7 @@ fn main() {
                 &state_dir,
                 file.as_deref(),
                 stdin_request,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.step_up_stdin,
             ),
             PolicyCommand::Activate {
@@ -1223,7 +1268,7 @@ fn main() {
                 stdin_request,
                 &expected_vault_id,
                 &expected_trust_sha256,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.step_up_stdin,
             ),
             PolicyCommand::Draft {
@@ -1246,15 +1291,25 @@ fn main() {
         Command::Key(KeyCommand::RotateVrk { stdin_secrets }) => {
             commands::key_rotate_vrk(&state_dir, stdin_secrets)
         }
-        Command::Key(KeyCommand::RotateDek { step_up }) => {
-            commands::key_rotate_dek(&state_dir, step_up.recovery, step_up.password_stdin)
-        }
+        Command::Key(KeyCommand::RotateDek { step_up }) => commands::key_rotate_dek(
+            &state_dir,
+            selected_proof(step_up.recovery, step_up.presence),
+            step_up.password_stdin,
+        ),
         Command::Password(PasswordCommand::Change {
             recovery,
+            presence,
             stdin_secrets,
-        }) => commands::password_change(&state_dir, recovery, stdin_secrets),
-        Command::Recovery(RecoveryCommand::Rotate { password_stdin }) => {
-            commands::recovery_rotate(&state_dir, password_stdin)
+        }) => commands::password_change(
+            &state_dir,
+            selected_proof(recovery, presence),
+            stdin_secrets,
+        ),
+        Command::Recovery(RecoveryCommand::Rotate {
+            password_stdin,
+            presence,
+        }) => {
+            commands::recovery_rotate(&state_dir, selected_proof(false, presence), password_stdin)
         }
         Command::Audit(AuditCommand::Retention(AuditRetentionCommand::Set {
             days,
@@ -1263,7 +1318,7 @@ fn main() {
         })) => commands::audit_retention_set(
             &state_dir,
             days,
-            step_up.recovery,
+            selected_proof(step_up.recovery, step_up.presence),
             step_up.password_stdin,
         ),
         Command::Audit(AuditCommand::Retention(AuditRetentionCommand::Status)) => {
@@ -1277,7 +1332,7 @@ fn main() {
             &state_dir,
             before_ms,
             older_than_days,
-            step_up.recovery,
+            selected_proof(step_up.recovery, step_up.presence),
             step_up.password_stdin,
         ),
         Command::Audit(AuditCommand::List {
@@ -1315,7 +1370,7 @@ fn main() {
         Command::Backup { output, step_up } => commands::backup(
             &state_dir,
             &output,
-            step_up.recovery,
+            selected_proof(step_up.recovery, step_up.presence),
             step_up.password_stdin,
         ),
     };
@@ -1441,6 +1496,66 @@ mod policy_target_args_tests {
         ] {
             assert!(Cli::try_parse_from(args).is_err());
         }
+    }
+
+    #[test]
+    fn presence_requires_explicit_stdin_and_cannot_replace_unlock_material() {
+        let base = [
+            "rekey",
+            "desktop-reveal",
+            "00112233-4455-4677-8899-aabbccddeeff",
+            "--presence",
+        ];
+        assert!(Cli::try_parse_from(base).is_err());
+        assert!(Cli::try_parse_from(base.into_iter().chain(["--password-stdin"])).is_ok());
+        assert!(
+            Cli::try_parse_from(base.into_iter().chain(["--password-stdin", "--recovery"]))
+                .is_err()
+        );
+        for args in [
+            vec!["rekey", "unlock", "--presence", "--password-stdin"],
+            vec![
+                "rekey",
+                "init",
+                "--mode",
+                "personal",
+                "--presence",
+                "--password-stdin",
+            ],
+            vec!["rekey", "recovery", "rotate", "--presence"],
+            vec![
+                "rekey",
+                "recovery",
+                "rotate",
+                "--presence",
+                "--password-stdin",
+                "--recovery",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err());
+        }
+        assert!(
+            Cli::try_parse_from([
+                "rekey",
+                "credential",
+                "add",
+                "fixture",
+                "--presence",
+                "--stdin-secrets"
+            ])
+            .is_ok()
+        );
+        assert!(Cli::try_parse_from(["rekey", "desktop-remember", "--presence"]).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "rekey",
+                "recovery",
+                "rotate",
+                "--presence",
+                "--password-stdin"
+            ])
+            .is_ok()
+        );
     }
 
     #[test]

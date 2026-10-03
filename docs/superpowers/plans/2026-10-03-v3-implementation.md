@@ -22,7 +22,7 @@
 | M0 lab feature / 默认构建 / 发布和CI分离 | 本批验收通过 | 默认/lab all-targets 编译通过；84 文件补丁独立复核通过；M1 合流默认 597 / lab 1,061 项测试通过，各 2 项忽略 |
 | M0 README / spec 状态 / 格式冻结规则 | 已实现，未发布 | README 只列现有入口；35 企业 spec 标 Lab，两份研究稿改 v4；永久不迁移，GA 主版本内冻结格式；编译器源输入物理行 40,371 / 60,754（非有效代码量） |
 | M1 SHUTDOWN 全状态 step-up | 本批默认验收通过 | 29 项不重复定向 Rust 测试及 synthetic human-vault smoke 通过；Locked 验证不解锁，证明验证前超时不触发停机；独立审查通过 |
-| M1 presence proof 与钥匙串 UI | 软件实现与独立审查中，设备验收待做 | proof3、进程内哈希、固定双时钟期限与显式 UI 正在独立工作区验证；V1 未通过前不提高保护等级 |
+| M1 presence proof 与钥匙串 UI | 软件已合流；设备验收待做 | proof3、受保护 K、固定双时钟期限、显式 A2 和取消边界已实现；默认 698/2 ignored、真实 CLI 与 Swift 82/53/108/16 断言通过。独立审查关闭；V1 未通过前不提高保护等级 |
 | M1 desktop-reveal step-up / 明文清零 | 本批默认验收通过 | password/recovery 逐次证明、Zeroizing 响应所有权；UI 94 项边界断言通过，失焦关闭待验证表单；旧 desktop token 不再授权明文 |
 | M1 生产客户端签名校验 / 等级显示 | 本批验收通过 | 签名 CLI 对错误 ID 同团队/ad-hoc 服务均在发送前拒绝，服务收到零字节；status/UI 展示本地验证结果；同团队 release daemon 的 status/unlock/shutdown 正向通过；仍不代表完整 L1 |
 | M1 rollback generation / MAC / 外部计数 | 待实施 | T6；旧库拒绝自动解锁与执行；备份恢复确认 |
@@ -101,3 +101,11 @@ App 已有显式模式选择、按 vault ID 创建/加载本机 SE 签名公钥�
 个人草案批已完成本地软件验证：默认 workspace 683 passed / 2 ignored，lab 1,147 passed / 2 ignored，日志 `m2-draft-test-{default,lab}.log`。只读 opcode54 从认证后的模式、信任根、策略和 Action 生成完整替换草案，拒绝 JCS 不精确整数并预留实际激活报文的签名空间；禁用操作后不能再激活旧草案。CLI 输出准确签名字节，激活经匿名 stdin 传入 proof 与 bundle。真实临时 vault 的 P-256 签名、首次/幂等激活、过时版本、禁用操作和空授权替换黑盒通过。
 
 App 展示全部差异和目标定义，签名前后核对 vault/trust/version/workspace，按原始字节请求 SE 签名。独立审查发现窗口关闭后的迟到签名仍可能提交，现由视图退出作废上下文；完整 App 严格编译与最终 47 项合成个人策略断言通过。CLI 的文件元数据校验顺序和空签名体两个 P2 已关闭；纯生成器、runtime、CLI、App 四份最终审查均无待修问题。没有真实 Keychain/SE 调用或 GUI 点击，亦未公开发布。
+
+Presence 批已合入集成工作区：daemon 只在当前 Unlocked 且进程内有效授权下接受 proof3，记录 K 哈希而非 K；重复或失败 resume 保留同票据原有 monotonic 上限，删除旧票据失败时 fault 并返回原 storage 错误。两项独立审查 P2 已关闭，完整补丁 `66009d0cd1636ea901977fee9687fc91f58f508b1703ad62ab8a8f2744fa078f`。CLI 的 --presence 必须走既有显式 stdin，离线解密和 VRK 重包不接受其替代必要因子；真实合成 vault 全生命周期在最终 backend 上通过。
+
+App 删除旧无保护钥匙串读取与后台自动恢复，保留独立 A1 添加会话；系统认证七天授权默认关闭，每次明确操作才读取 DPK 条目，并作工作区/视图/取消复核。五文件补丁 `6b523bacbfa04dd9d8b5ee0e21103de325ee6147c98cd42016b1be920447c722` 经独立审查、严格 Swift 编译、82 presence /53 personal /108 flow /16 OIDC 合成断言及真实临时 CLI 流程通过。未运行真实 Keychain/SE/GUI。
+
+打包脚本现支持并在正式 App 构建中要求 provisioning profile；核对 Team、App ID、访问组、期限、发行属性和叶证书 DER，仅 App 声明访问组权限，standalone 工具不声明。release/CI 接线已改，11 项合成配置测试及独立审查通过。旧无交互钥匙串跨进程测试移除，DPK 的真实签名设备权限仍交 V1 验收，不能由合成测试替代。
+
+本批默认 workspace 698 passed /2 ignored、默认严格 Clippy/all-targets、格式、机械符号和纯 IPC CLI 依赖检查通过。lab 两轮在未修改的 relay 测试首次 PUT 分别收到 503（预期201），原失败日志 `m1-presence-test-lab.log`、`m1-presence-test-lab-final.log` 保留。独立诊断确认目录 Unknown 可触发安全拒绝，但具体偶发原因尚未确定；不以复跑通过宣称修复。排除 relay 后的完整 lab workspace 已通过 1,120 项、2 ignored，日志 `m1-presence-test-lab-core.log`。relay 按原 workspace 特性图独立验收 22/22 通过（`m1-presence-relay-workspace-final.log`），加先前同源 relay 单元 20/20，分组覆盖合计 1,162 passed /2 ignored；这不抹去原全套两次失败。

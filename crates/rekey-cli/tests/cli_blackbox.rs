@@ -1484,3 +1484,158 @@ fn personal_policy_draft_sign_and_activate_over_anonymous_stdin() {
     );
     drop(guard);
 }
+
+#[test]
+fn presence_cli_proof_rotation_and_restart_remain_explicit_and_private() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("presence");
+    let state = state_dir.to_str().unwrap();
+    let password = format!("{PASSWORD}\n");
+    assert_eq!(
+        run(
+            &rekey_bin(),
+            &[
+                "--state-dir",
+                state,
+                "init",
+                "--mode",
+                "team",
+                "--password-stdin"
+            ],
+            Some(&password)
+        )
+        .status,
+        0
+    );
+    let start = || {
+        let child = Command::new(rekeyd_bin())
+            .args(["serve", "--state-dir", state])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let guard = ServeGuard(Some(child));
+        for _ in 0..300 {
+            let status = run(&rekey_bin(), &["--state-dir", state, "status"], None);
+            if status.status == 0 {
+                return guard;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!("synthetic presence daemon did not start");
+    };
+    let guard = start();
+    let call = |args: &[&str], input: Option<&str>| {
+        let mut all = vec!["--state-dir", state];
+        all.extend_from_slice(args);
+        run(&rekey_bin(), &all, input)
+    };
+    let ok = |output: Output| {
+        assert_eq!(output.status, 0, "{}", output.stderr);
+        output
+    };
+    let key = |receipt: Output| {
+        let output = ok(receipt);
+        let (expiry, key) = output.stdout.split_once('\n').unwrap();
+        assert!(expiry.parse::<i64>().unwrap() > 0);
+        assert_eq!(key.len(), 64);
+        assert!(
+            key.bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        );
+        key.to_owned()
+    };
+    ok(call(&["unlock", "--password-stdin"], Some(&password)));
+    let credential = ok(call(
+        &["credential", "add", "presence fixture", "--stdin-secrets"],
+        Some(&format!("{password}{SECRET}\n")),
+    ));
+    let credential: serde_json::Value = serde_json::from_str(&credential.stdout).unwrap();
+    let id = credential["id"].as_str().unwrap();
+    let first = key(call(&["desktop-remember"], Some(&password)));
+    let reveal = ["desktop-reveal", id, "--presence", "--password-stdin"];
+    assert_ne!(
+        call(&reveal, Some(&format!("{}\n", "0".repeat(64)))).status,
+        0
+    );
+    let mut boundary = vec!["--state-dir", state];
+    boundary.extend(reveal);
+    let revealed = run_with_process_boundary(
+        &rekey_bin(),
+        &boundary,
+        &format!("{first}\n"),
+        &[&first, PASSWORD, SECRET],
+    );
+    assert_eq!(revealed.status, 0, "{}", revealed.stderr);
+    assert_eq!(revealed.stdout, SECRET);
+    let second = key(call(
+        &["desktop-remember", "--presence"],
+        Some(&format!("{first}\n")),
+    ));
+    assert_ne!(first, second);
+    assert_ne!(call(&reveal, Some(&format!("{first}\n"))).status, 0);
+    assert_eq!(
+        ok(call(&reveal, Some(&format!("{second}\n")))).stdout,
+        SECRET
+    );
+    ok(call(
+        &["password", "change", "--presence", "--stdin-secrets"],
+        Some(&format!("{second}\n{NEW_PASSWORD}\n")),
+    ));
+    assert_ne!(call(&reveal, Some(&format!("{second}\n"))).status, 0);
+    let current_password = format!("{NEW_PASSWORD}\n");
+    let third = key(call(&["desktop-remember"], Some(&current_password)));
+    let recovery = ok(call(
+        &["recovery", "rotate", "--presence", "--password-stdin"],
+        Some(&format!("{third}\n")),
+    ));
+    assert!(recovery.stdout.contains("RECOVERY KEY"));
+    assert_ne!(call(&reveal, Some(&format!("{third}\n"))).status, 0);
+    let fourth = key(call(&["desktop-remember"], Some(&current_password)));
+    ok(call(
+        &["shutdown", "--presence", "--password-stdin"],
+        Some(&format!("{fourth}\n")),
+    ));
+    assert!(guard.finish().status.success());
+    let guard = start();
+    // No process-local verifier survives restart. Explicit resume establishes it.
+    assert_ne!(call(&reveal, Some(&format!("{fourth}\n"))).status, 0);
+    ok(call(&["desktop-resume"], Some(&format!("{fourth}\n"))));
+    assert_eq!(
+        ok(call(&reveal, Some(&format!("{fourth}\n")))).stdout,
+        SECRET
+    );
+    ok(call(&["lock"], None));
+    assert_ne!(
+        call(
+            &["shutdown", "--presence", "--password-stdin"],
+            Some(&format!("{fourth}\n"))
+        )
+        .status,
+        0
+    );
+    ok(call(
+        &["unlock", "--password-stdin"],
+        Some(&current_password),
+    ));
+    assert_ne!(call(&reveal, Some(&format!("{fourth}\n"))).status, 0);
+    let audit = ok(call(&["audit", "list"], None));
+    for canary in [
+        &first,
+        &second,
+        &third,
+        &fourth,
+        PASSWORD,
+        NEW_PASSWORD,
+        SECRET,
+    ] {
+        assert!(!audit.stdout.contains(canary));
+        assert!(!audit.stderr.contains(canary));
+    }
+    ok(call(
+        &["shutdown", "--password-stdin"],
+        Some(&current_password),
+    ));
+    assert!(guard.finish().status.success());
+}

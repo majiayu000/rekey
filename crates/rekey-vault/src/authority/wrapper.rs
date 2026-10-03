@@ -28,6 +28,7 @@ impl Worker {
         let reason = match &proof {
             UnlockProof::Password(_) => "password-step-up",
             UnlockProof::Recovery(_) => "recovery-step-up",
+            UnlockProof::Presence(_) => "step-up-presence",
         };
         if let Err(error) = self.verify_proof(&proof) {
             if matches!(error, AuthorityError::InvalidUnlockCredential) {
@@ -82,11 +83,21 @@ impl Worker {
 
     pub(super) fn recovery_rotate(
         &mut self,
-        password: SecretInput,
+        proof: UnlockProof,
         not_after: Option<std::time::Instant>,
     ) -> Result<Zeroizing<String>, AuthorityError> {
+        let reason = match &proof {
+            UnlockProof::Password(_) => "password-step-up",
+            UnlockProof::Presence(_) => "step-up-presence",
+            UnlockProof::Recovery(_) => {
+                return Err(AuthorityError::Domain(
+                    rekey_domain::DomainError::InvalidActionDefinition(
+                        "recovery rotation requires password or presence proof".to_owned(),
+                    ),
+                ));
+            }
+        };
         self.require_unlocked()?;
-        let proof = UnlockProof::Password(password);
         if let Err(error) = self.verify_proof(&proof) {
             if matches!(error, AuthorityError::InvalidUnlockCredential) {
                 self.append_audit(unlock_audit(
@@ -121,7 +132,7 @@ impl Worker {
         let audit = self.audit_event_or_fault(unlock_audit(
             event_type::VAULT_RECOVERY_ROTATED,
             outcome::SUCCESS,
-            "password-step-up",
+            reason,
         ))?;
         ensure_mutation_current(not_after)?;
         self.forget_desktop()?;

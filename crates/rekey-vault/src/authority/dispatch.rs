@@ -179,6 +179,7 @@ impl Worker {
                 let reason = match &proof {
                     UnlockProof::Password(_) => "step-up-password",
                     UnlockProof::Recovery(_) => "step-up-recovery",
+                    UnlockProof::Presence(_) => "step-up-presence",
                 };
                 let result = ensure_mutation_current(not_after)
                     .and_then(|_| self.verify_proof(&proof))
@@ -285,6 +286,7 @@ impl Worker {
                 };
                 let ok = result.is_ok();
                 if ok {
+                    self.presence_grant = None;
                     self.desktop_session = None;
                     self.state = VaultState::Locked;
                 }
@@ -341,14 +343,14 @@ impl Worker {
                 let _ = reply.send(result);
             }
             AuthorityCommand::RecoveryRotate {
-                password,
+                proof,
                 not_after,
                 reply,
             } => {
                 let result = if mutation_expired(not_after) {
                     Err(AuthorityError::AuthorityBusy)
                 } else {
-                    self.recovery_rotate(password, not_after)
+                    self.recovery_rotate(proof, not_after)
                 };
                 self.touch_if_ok(&result);
                 let _ = reply.send(result);

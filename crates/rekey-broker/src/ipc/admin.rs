@@ -93,6 +93,7 @@ fn proof_from(kind: ProofKind, bytes: &[u8]) -> UnlockProof {
     match kind {
         ProofKind::Password => UnlockProof::Password(SecretInput::from_slice(bytes)),
         ProofKind::Recovery => UnlockProof::Recovery(SecretInput::from_slice(bytes)),
+        ProofKind::Presence => UnlockProof::Presence(SecretInput::from_slice(bytes)),
     }
 }
 

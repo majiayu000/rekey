@@ -7,6 +7,18 @@ cd "$ROOT"
 UI_OUTPUT="${REKEY_UI_OUTPUT:-$ROOT/target/macos-ui}"
 CARGO_OUTPUT="${CARGO_TARGET_DIR:-$ROOT/target}"
 case "$CARGO_OUTPUT" in /*) ;; *) CARGO_OUTPUT="$ROOT/$CARGO_OUTPUT" ;; esac
+identity="${REKEY_SIGNING_IDENTITY:-${APPLE_SIGNING_IDENTITY:--}}"
+profile="${REKEY_PROVISIONING_PROFILE:-}"
+if [[ "${REKEY_REQUIRE_DEVELOPER_ID:-}" == "1" ]]; then
+  if [[ "$identity" != Developer\ ID\ Application:* || -z "$profile" ]]; then
+    echo 'Developer ID App builds require an Application identity and REKEY_PROVISIONING_PROFILE.' >&2
+    exit 1
+  fi
+fi
+if [[ -n "$profile" && ( "$identity" == "-" || ! -f "$profile" ) ]]; then
+  echo 'A provisioning profile requires a signed build and an existing profile file.' >&2
+  exit 1
+fi
 VERSION="$(cargo metadata --locked --offline --no-deps --format-version 1 | python3 -c '
 import json, sys
 metadata = json.load(sys.stdin)
@@ -20,7 +32,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/bin" "$APP/Contents/Libr
 install -m 0644 apps/macos/Resources/com.rekey.rekeyd.plist "$APP/Contents/Library/LaunchAgents/"
 xcrun swiftc -warnings-as-errors -swift-version 5 -O -target "$(uname -m)-apple-macosx14.0" \
   -framework SwiftUI -framework AppKit -framework ServiceManagement \
-  apps/macos/BackgroundService.swift apps/macos/PolicySigning.swift apps/macos/Model.swift apps/macos/Forms.swift apps/macos/App.swift \
+  apps/macos/BackgroundService.swift apps/macos/PolicySigning.swift apps/macos/PresenceKey.swift apps/macos/Model.swift apps/macos/Forms.swift apps/macos/App.swift \
   -o "$APP/Contents/MacOS/Rekey"
 # A reused build-output directory must not retain the lab-only plugin.
 rm -f "$APP/Contents/Resources/bin/rekey-github-create-issue"
@@ -61,14 +73,7 @@ with open(path, "wb") as file:
 PY
 plutil -lint "$APP/Contents/Info.plist"
 plutil -lint "$APP/Contents/Library/LaunchAgents/com.rekey.rekeyd.plist"
-identity="${REKEY_SIGNING_IDENTITY:-${APPLE_SIGNING_IDENTITY:--}}"
 entitlements="$ROOT/apps/macos/Resources/Rekey.entitlements"
-if [[ "${REKEY_REQUIRE_DEVELOPER_ID:-}" == "1" ]]; then
-  if [[ "$identity" == "-" || "$identity" != Developer\ ID\ Application:* ]]; then
-    echo "REKEY_REQUIRE_DEVELOPER_ID=1 needs APPLE_SIGNING_IDENTITY to be a Developer ID Application identity" >&2
-    exit 1
-  fi
-fi
 if [[ "$identity" == "-" ]]; then
   timestamp_args=(--timestamp=none)
 else
@@ -78,6 +83,20 @@ codesign_args=(--force --sign "$identity" --options runtime --entitlements "$ent
 for binary in rekey rekeyd rekey-mcp rekey-policy-sign rekey-approval-sign; do
   codesign "${codesign_args[@]}" --identifier "com.rekey.$binary" "$APP/Contents/Resources/bin/$binary"
 done
-codesign "${codesign_args[@]}" --identifier com.starlight.rekey "$APP"
+# Standalone tools do not claim restricted App entitlements. Only the App
+# embeds a profile and joins the protected access group.
+app_entitlements="$entitlements"
+rm -f "$APP/Contents/embedded.provisionprofile"
+if [[ -n "$profile" ]]; then
+  install -m 0644 "$profile" "$APP/Contents/embedded.provisionprofile"
+  security cms -D -i "$APP/Contents/embedded.provisionprofile" -o "$UI_OUTPUT/profile.plist"
+  team="$(codesign -d --verbose=4 "$APP/Contents/Resources/bin/rekeyd" 2>&1 | awk -F= '$1 == "TeamIdentifier" {print $2}')"
+  app_entitlements="$UI_OUTPUT/Rekey.profile.entitlements"
+  codesign -d --extract-certificates "$UI_OUTPUT/signing-certificate-" "$APP/Contents/Resources/bin/rekeyd"
+  python3 scripts/prepare-macos-profile.py "$UI_OUTPUT/profile.plist" "$team" \
+    "$UI_OUTPUT/signing-certificate-0" "$app_entitlements"
+fi
+codesign --force --sign "$identity" --options runtime --entitlements "$app_entitlements" \
+  "${timestamp_args[@]}" --identifier com.starlight.rekey "$APP"
 codesign --verify --deep --strict "$APP"
 printf 'Built: %s\n' "$APP"
