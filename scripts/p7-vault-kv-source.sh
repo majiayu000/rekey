@@ -9,9 +9,10 @@ command -v rg >/dev/null || {
 }
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-REKEY="$ROOT/target/release/rekey"
-REKEYD="$ROOT/target/release/rekeyd"
-FIXTURE="$ROOT/target/release/examples/p2_github_app_fixture"
+TARGET_DIR="$(cargo metadata --manifest-path "$ROOT/Cargo.toml" --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+REKEY="$TARGET_DIR/release/rekey"
+REKEYD="$TARGET_DIR/release/rekeyd"
+FIXTURE="$TARGET_DIR/release/examples/p2_github_app_fixture"
 PASSWORD="p7 vault source acceptance password"
 SOURCE_ONE="P7-VAULT-SOURCE-TOKEN-ONE-CANARY"
 SOURCE_TWO="P7-VAULT-SOURCE-TOKEN-TWO-CANARY"
@@ -121,8 +122,8 @@ binding={"action_id":action,"version":1,"resource":{"type":"p7-vault-action","id
          "required":["operation"],"properties":{"operation":{"const":"bounded"}}}}
 rule={"id":str(uuid.uuid4()),"effect":"permit","principal_id":principal,"action_id":action,
       "version":1,"resource":binding["resource"],"parameters":{"kind":"any_validated"}}
-pathlib.Path(path).write_text(json.dumps({"format_version":4,"version":1,
-  "expires_at_ms":int(time.time()*1000)+600000,"approvers":[],"workload_identities":[],
+pathlib.Path(path).write_text(json.dumps({"format_version":6,"version":1,
+  "expires_at_ms":int(time.time()*1000)+600000,"approvers":[],"profiles": [], "workload_identities":[],
   "bindings":[binding],"rules":[rule]}))
 PY
 python3 "$ROOT/scripts/sign-test-policy.py" policy --key-dir "$WORKDIR/policy-key" \
@@ -226,8 +227,11 @@ wait "$BROKER_PID"
 BROKER_PID=""
 
 RESTORED_STATE="$WORKDIR/restored-state"
+# Explicitly confirm the inspected context for this disposable test target.
+RESTORE_CONTEXT="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$RESTORED_STATE" restore \
+  --input "$BACKUP" --sha256 "$BACKUP_SHA256" --inspect --password-stdin)"
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$RESTORED_STATE" restore \
-  --input "$BACKUP" --sha256 "$BACKUP_SHA256" --password-stdin >/dev/null
+  --input "$BACKUP" --sha256 "$BACKUP_SHA256" --expected-context "$RESTORE_CONTEXT" --password-stdin >/dev/null
 STATE="$RESTORED_STATE"
 READY="$WORKDIR/restored-ready"
 RESTORED_TRACE="$WORKDIR/restored-trace"

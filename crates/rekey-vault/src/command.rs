@@ -18,6 +18,15 @@ use crate::error::AuthorityError;
 use crate::model::{ActionState, ApprovalEvidence, AuthorizationEvidence};
 use crate::secret::{PreparedCredential, SecretInput};
 
+/// Trusted executor input derived from a signed Profile and a validated request.
+#[derive(Debug, Clone)]
+pub struct ProfileUsageStart {
+    pub instance_slug: String,
+    pub max_requests_per_day: u64,
+    pub max_output_tokens_per_day: u64,
+    pub generation_max_output: Option<u64>,
+}
+
 pub type Reply<T> = oneshot::Sender<Result<T, AuthorityError>>;
 
 /// Human proof presented at unlock time and again for every sensitive
@@ -55,6 +64,8 @@ pub struct AuditDraft {
     pub credential_version: Option<u64>,
     pub authorization: Option<Box<AuthorizationEvidence>>,
     pub approval: Option<ApprovalEvidence>,
+    pub usage: Option<rekey_domain::audit::UsageEvidence>,
+    pub request_context: Option<rekey_domain::audit::ProfileRequestAuditContext>,
     pub event_type: &'static str,
     pub outcome: &'static str,
     pub reason_code: String,
@@ -65,6 +76,7 @@ pub struct AuditDraft {
 #[derive(Debug, Clone)]
 pub struct StatusInfo {
     pub state: &'static str,
+    pub rollback: Option<rekey_domain::ipc::RollbackContext>,
     pub vault_id: VaultId,
     pub format_version: u32,
     /// Time since last successful mutation or credential prepare. Zero when locked.
@@ -75,6 +87,7 @@ pub struct StatusInfo {
 
 #[derive(Debug, Clone)]
 pub struct BackupInfo {
+    pub generation: u64,
     pub vault_id: VaultId,
     pub format_version: u32,
     pub created_at_ms: i64,
@@ -85,6 +98,7 @@ pub struct BackupInfo {
 
 #[derive(Debug, Clone)]
 pub struct RestoreInfo {
+    pub generation: u64,
     pub vault_id: VaultId,
     pub format_version: u32,
     pub input_sha256_hex: String,
@@ -201,6 +215,12 @@ pub enum AuthorityCommand {
     Status {
         refresh_activity: bool,
         reply: Reply<StatusInfo>,
+    },
+    ConfirmRollback {
+        expected: rekey_domain::ipc::RollbackContext,
+        proof: crate::bootstrap::RestoreProof,
+        not_after: std::time::Instant,
+        reply: Reply<()>,
     },
     Unlock {
         proof: UnlockProof,
@@ -332,6 +352,26 @@ pub enum AuthorityCommand {
     PrepareCredential {
         credential_id: CredentialId,
         reply: Reply<PreparedCredential>,
+    },
+    BeginProfileExecution {
+        usage: ProfileUsageStart,
+        preceding: Vec<AuditDraft>,
+        started: AuditDraft,
+        not_after: Instant,
+        wall_not_after_ms: Option<i64>,
+        reply: Reply<crate::model::UsageAdmission>,
+    },
+    SettleProfileExecution {
+        request_id: RequestId,
+        measured_output_tokens: Option<u64>,
+        terminal: AuditDraft,
+        reply: Reply<()>,
+    },
+    ProfileUsage {
+        principal_id: rekey_domain::ids::PrincipalId,
+        instance_slug: String,
+        utc_day: i64,
+        reply: Reply<crate::model::UsageTotals>,
     },
     AppendAudit {
         draft: AuditDraft,

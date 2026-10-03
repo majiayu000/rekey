@@ -85,7 +85,7 @@ pub fn audit_list(state_dir: &Path, query: AuditQuery) -> Result<(), CliError> {
         .validate()
         .map_err(|error| CliError::local("USAGE", error.to_string()))?;
     let page = fetch_page(state_dir, &query)?;
-    let mut output = serde_json::to_vec_pretty(&page)
+    let mut output = serde_json::to_vec(&page)
         .map_err(|_| CliError::local("INVALID_FRAME", "cannot encode audit page"))?;
     output.push(b'\n');
     io::stdout()

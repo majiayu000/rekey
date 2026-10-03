@@ -108,11 +108,11 @@ import json, pathlib, sys, time, uuid
 path, action_id, action_version, principal_id, version = sys.argv[1:]
 resource = {"type": "fixed-http-action", "id": action_id}
 pathlib.Path(path).write_text(json.dumps({
-    "format_version": 4,
+    "format_version": 6,
     "version": int(version),
     "expires_at_ms": int(time.time() * 1000) + 600000,
     "approvers": [],
-    "workload_identities": [],
+    "profiles": [], "workload_identities": [],
     "bindings": [{
         "action_id": action_id,
         "version": int(action_version),
@@ -167,8 +167,8 @@ done
 [[ -S "$STATE/runtime/admin.sock" ]] || { echo "broker did not start"; exit 1; }
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" unlock --password-stdin >/dev/null
 status="$("$REKEY" --state-dir "$STATE" status)"
-printf '%s\n' "$status" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin)["format_version"] == 24 else 1)' || {
-  echo "expected format_version 24: $status" >&2
+printf '%s\n' "$status" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin)["format_version"] == 25 else 1)' || {
+  echo "expected format_version 25: $status" >&2
   exit 1
 }
 
@@ -267,11 +267,11 @@ path, action_id, action_version, principal_id, approver_path = sys.argv[1:]
 approver = json.loads(pathlib.Path(approver_path).read_text())
 resource = {"type": "fixed-http-action", "id": action_id}
 pathlib.Path(path).write_text(json.dumps({
-    "format_version": 4,
+    "format_version": 6,
     "version": 2,
     "expires_at_ms": int(time.time() * 1000) + 600000,
     "approvers": [approver],
-    "workload_identities": [],
+    "profiles": [], "workload_identities": [],
     "bindings": [{
         "action_id": action_id,
         "version": int(action_version),

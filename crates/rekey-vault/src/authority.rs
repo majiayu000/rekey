@@ -27,11 +27,14 @@ use crate::convert::{action_to_record, verified_record_to_action};
 use crate::crypto::keys::RootKey;
 use crate::crypto::{action_state, random_array};
 use crate::error::AuthorityError;
+use crate::generation_anchor::{AnchorObservation, GenerationAnchors};
 use crate::handle::{AuthorityConfig, AuthorityHandle};
 use crate::model::{ActionRecord, ActionState, AuditEvent, WrapperKind, event_type, outcome};
 use crate::now_ms;
 use crate::paths;
 use crate::store::SqliteRecordStore;
+use crate::store::generation::{GenerationAttempt, rollback_context};
+use rekey_domain::ipc::RollbackContext;
 
 mod audit;
 mod backup;
@@ -65,6 +68,8 @@ fn reconcile_abandoned_executions(store: &mut SqliteRecordStore) -> Result<(), A
             credential_version: None,
             authorization: row.authorization,
             approval: None,
+            request_context: row.request_context,
+            usage: None,
             event_type: event_type::EXECUTION_INDETERMINATE,
             outcome: outcome::UNKNOWN,
             reason_code: "abandoned-on-restart".to_owned(),
@@ -80,6 +85,7 @@ enum VaultState {
     Locked,
     Unlocked { vrk: RootKey },
     Faulted,
+    RollbackSuspected(RollbackContext),
 }
 
 impl VaultState {
@@ -88,6 +94,7 @@ impl VaultState {
             Self::Locked => "locked",
             Self::Unlocked { .. } => "unlocked",
             Self::Faulted => "faulted",
+            Self::RollbackSuspected(_) => "rollback-suspected",
         }
     }
 }
@@ -138,12 +145,14 @@ fn spawn_authority_inner(
     }
     let mut store = SqliteRecordStore::open(&db)?;
     let header = store.load_header()?;
+    let anchors = GenerationAnchors::open(&config.state_dir, header.vault_id)?;
     reconcile_abandoned_executions(&mut store)?;
     desktop::begin_runtime(&config.state_dir)?;
     let (tx, rx) = mpsc::channel(config.queue_capacity);
     let worker = Worker {
         #[cfg(all(test, feature = "lab"))]
         keychain_fixture,
+        anchors,
         store,
         header,
         state: VaultState::Locked,
@@ -175,6 +184,7 @@ struct Worker {
     desktop_resume_expiry: Option<i64>,
     presence_grant: Option<desktop::PresenceState>,
     desktop_session: Option<(zeroize::Zeroizing<Vec<u8>>, Instant)>,
+    anchors: GenerationAnchors,
     store: SqliteRecordStore,
     header: crate::model::VaultHeaderRecord,
     state: VaultState,
@@ -216,11 +226,57 @@ impl Worker {
         result
     }
 
+    fn check_generation(
+        &mut self,
+        header: &crate::model::VaultHeaderRecord,
+    ) -> Result<AnchorObservation, AuthorityError> {
+        let observed = match self.anchors.read() {
+            Ok(observed) => observed,
+            Err(error) => {
+                self.fault("generation-anchor-unavailable");
+                return Err(error);
+            }
+        };
+        if !crate::store::generation::current(header, observed)
+            || matches!(self.state, VaultState::RollbackSuspected(_))
+        {
+            self.state = VaultState::RollbackSuspected(rollback_context(header, observed));
+            self.desktop_session = None;
+            self.desktop_resume_expiry = None;
+            if let Err(error) = self.forget_desktop() {
+                self.fault("desktop-revocation-failed");
+                return Err(error);
+            }
+            return Err(AuthorityError::RollbackSuspected);
+        }
+        Ok(observed)
+    }
+
+    fn mutation_observation(&mut self) -> Result<AnchorObservation, AuthorityError> {
+        self.check_generation(&self.header.clone())
+    }
+
+    fn complete_generation<T>(
+        &mut self,
+        result: Result<T, AuthorityError>,
+        completed: (u64, [u8; 32], bool),
+    ) -> Result<T, AuthorityError> {
+        let (generation, mac, reserved) = completed;
+        if result.is_ok() {
+            self.header.generation = generation;
+            self.header.generation_mac = mac;
+        } else if reserved && !matches!(self.state, VaultState::Faulted) {
+            self.fault("generation-reserved-commit-failed");
+        }
+        self.fault_on_integrity(result)
+    }
+
     fn require_unlocked(&self) -> Result<&RootKey, AuthorityError> {
         match &self.state {
             VaultState::Unlocked { vrk } => Ok(vrk),
             VaultState::Locked => Err(AuthorityError::Locked),
             VaultState::Faulted => Err(AuthorityError::Faulted),
+            VaultState::RollbackSuspected(_) => Err(AuthorityError::RollbackSuspected),
         }
     }
 
@@ -260,7 +316,7 @@ impl Worker {
         match self.state {
             VaultState::Faulted => return Err(AuthorityError::Faulted),
             VaultState::Unlocked { .. } => return self.verify_proof(proof),
-            VaultState::Locked => {}
+            VaultState::Locked | VaultState::RollbackSuspected(_) => {}
         }
         if Instant::now() < self.next_unlock_at {
             return Err(AuthorityError::UnlockRateLimited);
@@ -288,7 +344,7 @@ impl Worker {
         }
     }
 
-    fn record_unlock_failure(&mut self) -> Result<(), AuthorityError> {
+    fn advance_unlock_backoff(&mut self) {
         self.failed_unlocks = self.failed_unlocks.saturating_add(1);
         if self.failed_unlocks >= FREE_UNLOCK_FAILURES {
             let shift = (self.failed_unlocks - FREE_UNLOCK_FAILURES).min(16);
@@ -299,6 +355,10 @@ impl Worker {
                 .min(UNLOCK_BACKOFF_CAP);
             self.next_unlock_at = Instant::now() + delay;
         }
+    }
+
+    fn record_unlock_failure(&mut self) -> Result<(), AuthorityError> {
+        self.advance_unlock_backoff();
         self.append_audit(unlock_audit(
             event_type::VAULT_UNLOCK_FAILED,
             outcome::DENIED,
@@ -321,7 +381,79 @@ impl Worker {
         }
     }
 
+    fn confirm_rollback(
+        &mut self,
+        expected: RollbackContext,
+        proof: crate::bootstrap::RestoreProof,
+        not_after: Instant,
+    ) -> Result<(), AuthorityError> {
+        let result = self.confirm_rollback_inner(expected, proof, not_after);
+        let result = self.fault_on_integrity(result);
+        self.fault_on_audit_failure(result)
+    }
+
+    fn confirm_rollback_inner(
+        &mut self,
+        expected: RollbackContext,
+        proof: crate::bootstrap::RestoreProof,
+        not_after: Instant,
+    ) -> Result<(), AuthorityError> {
+        ensure_mutation_current(Some(not_after))?;
+        match &self.state {
+            VaultState::RollbackSuspected(context) if context == &expected => {}
+            VaultState::Faulted => return Err(AuthorityError::Faulted),
+            _ => return Err(AuthorityError::RollbackSuspected),
+        }
+        if Instant::now() < self.next_unlock_at {
+            return Err(AuthorityError::UnlockRateLimited);
+        }
+        let header = self.store.load_header()?;
+        let root = match crate::bootstrap::authenticate_restore(&self.store, &header, &proof) {
+            Ok((root, _)) => root,
+            Err(AuthorityError::InvalidUnlockCredential) => {
+                self.advance_unlock_backoff();
+                return Err(AuthorityError::InvalidUnlockCredential);
+            }
+            Err(error) => return Err(error),
+        };
+        let observed = self.anchors.read()?;
+        if rollback_context(&header, observed) != expected {
+            return Err(AuthorityError::RollbackSuspected);
+        }
+        let next = header
+            .generation
+            .max(expected.high_water.unwrap_or(0))
+            .checked_add(1)
+            .ok_or(AuthorityError::StorageIntegrityFailed)?;
+        let audit = self.audit_event_or_fault(unlock_audit(
+            event_type::RESTORE_COMPLETED,
+            outcome::SUCCESS,
+            "rollback-confirmed",
+        ))?;
+        let mut generation = GenerationAttempt::new(
+            &self.anchors,
+            &header,
+            observed,
+            root.bytes(),
+            next,
+            Some(not_after),
+            None,
+        )?;
+        let result = self.store.confirm_generation(audit, &mut generation);
+        let completed = generation.finish();
+        self.complete_generation(result, completed)?;
+        let mut header = header;
+        header.generation = completed.0;
+        header.generation_mac = completed.1;
+        self.header = header;
+        self.state = VaultState::Locked;
+        self.failed_unlocks = 0;
+        self.next_unlock_at = Instant::now();
+        Ok(())
+    }
+
     fn unlock(&mut self, proof: UnlockProof) -> Result<(), AuthorityError> {
+        let recover_usage = matches!(self.state, VaultState::Locked);
         if matches!(self.state, VaultState::Faulted) {
             return Err(AuthorityError::Faulted);
         }
@@ -341,6 +473,60 @@ impl Worker {
         })();
         match attempt {
             Ok(vrk) => {
+                let header = self.store.load_header().and_then(|header| {
+                    crate::bootstrap::prove_integrity(&header, vrk.bytes())?;
+                    Ok(header)
+                });
+                // Once a wrapper has authenticated the candidate root, every
+                // header-load/authentication failure revokes prior authority.
+                let header = match header {
+                    Ok(header) => header,
+                    Err(error) => {
+                        self.fault("vault-header-integrity-failed");
+                        return Err(error);
+                    }
+                };
+                if let Err(error) = self
+                    .store
+                    .verified_policy_material(vrk.bytes(), header.vault_id)
+                {
+                    self.fault("persisted-policy-integrity-failed");
+                    return Err(error);
+                }
+                if let Err(error) = self
+                    .store
+                    .verified_audit_retention(vrk.bytes(), header.vault_id)
+                {
+                    self.fault("audit-retention-integrity-failed");
+                    return Err(error);
+                }
+                if let Err(error) =
+                    lease_journal::verify_store(&self.store, vrk.bytes(), header.vault_id)
+                {
+                    self.fault("lease-journal-integrity-failed");
+                    return Err(error);
+                }
+                self.check_generation(&header)?;
+                let usage = if recover_usage {
+                    self.store
+                        .recover_profile_usage(vrk.bytes(), header.vault_id)
+                } else {
+                    self.store
+                        .verified_usage(vrk.bytes(), header.vault_id)
+                        .map(|_| ())
+                };
+                if let Err(error) = usage {
+                    self.fault("profile-usage-recovery-failed");
+                    return Err(error);
+                }
+                self.append_audit(unlock_audit(
+                    event_type::VAULT_UNLOCKED,
+                    outcome::SUCCESS,
+                    "unlock",
+                ))?;
+                // Publish only after the existing required material and success
+                // audit have completed using the still-local candidate key.
+                self.header = header;
                 self.suspend_presence();
                 self.desktop_resume_expiry = None;
                 self.failed_unlocks = 0;
@@ -348,27 +534,7 @@ impl Worker {
                 self.desktop_session = None;
                 self.state = VaultState::Unlocked { vrk };
                 self.last_activity = Instant::now();
-                if let Err(error) = self.policy_material() {
-                    self.fault("persisted-policy-integrity-failed");
-                    return Err(error);
-                }
-                if let Err(error) = self.retention_record() {
-                    self.fault("audit-retention-integrity-failed");
-                    return Err(error);
-                }
-                if let Err(error) = lease_journal::verify_store(
-                    &self.store,
-                    self.require_unlocked()?.bytes(),
-                    self.header.vault_id,
-                ) {
-                    self.fault("lease-journal-integrity-failed");
-                    return Err(error);
-                }
-                self.append_audit(unlock_audit(
-                    event_type::VAULT_UNLOCKED,
-                    outcome::SUCCESS,
-                    "unlock",
-                ))
+                Ok(())
             }
             Err(_) => {
                 let _ = self.record_unlock_failure();
@@ -390,6 +556,9 @@ impl Worker {
     ) -> Result<(), AuthorityError> {
         if matches!(self.state, VaultState::Faulted) {
             return Err(AuthorityError::Faulted);
+        }
+        if matches!(self.state, VaultState::RollbackSuspected(_)) {
+            return Ok(());
         }
         self.suspend_presence();
         if !preserve_desktop && let Err(error) = self.forget_desktop() {
@@ -609,7 +778,26 @@ impl Worker {
             }
         }
         ensure_mutation_current(not_after)?;
-        let result = self.store.insert_actions_before(&records, not_after);
+        if records.is_empty() {
+            return Ok(response);
+        }
+        let observed = self.mutation_observation()?;
+        let mut generation = crate::store::generation::GenerationAttempt::new(
+            &self.anchors,
+            &self.header,
+            observed,
+            self.require_unlocked()?.bytes(),
+            self.header
+                .generation
+                .checked_add(1)
+                .ok_or(AuthorityError::StorageIntegrityFailed)?,
+            not_after,
+            None,
+        )?;
+        let result = self
+            .store
+            .insert_actions_before(&records, not_after, &mut generation);
+        let result = self.complete_generation(result, generation.finish());
         let result = self.fault_on_integrity(result);
         self.fault_on_audit_failure(result)?;
         Ok(response)
@@ -720,7 +908,23 @@ impl Worker {
         draft.action_version = Some(version);
         let audit = self.audit_event_or_fault(draft)?;
         ensure_mutation_current(not_after)?;
-        let result = self.store.insert_action(&record, &retired, audit);
+        let observed = self.mutation_observation()?;
+        let mut generation = crate::store::generation::GenerationAttempt::new(
+            &self.anchors,
+            &self.header,
+            observed,
+            self.require_unlocked()?.bytes(),
+            self.header
+                .generation
+                .checked_add(1)
+                .ok_or(AuthorityError::StorageIntegrityFailed)?,
+            not_after,
+            None,
+        )?;
+        let result = self
+            .store
+            .insert_action(&record, &retired, audit, &mut generation);
+        let result = self.complete_generation(result, generation.finish());
         let result = self.fault_on_integrity(result);
         self.fault_on_audit_failure(result)?;
         Ok(action)
@@ -788,7 +992,21 @@ impl Worker {
         draft.action_id = Some(action_id);
         let audit = self.audit_event_or_fault(draft)?;
         ensure_mutation_current(not_after)?;
-        let result = self.store.disable_action(&record, audit);
+        let observed = self.mutation_observation()?;
+        let mut generation = crate::store::generation::GenerationAttempt::new(
+            &self.anchors,
+            &self.header,
+            observed,
+            self.require_unlocked()?.bytes(),
+            self.header
+                .generation
+                .checked_add(1)
+                .ok_or(AuthorityError::StorageIntegrityFailed)?,
+            not_after,
+            None,
+        )?;
+        let result = self.store.disable_action(&record, audit, &mut generation);
+        let result = self.complete_generation(result, generation.finish());
         let result = self.fault_on_integrity(result);
         self.fault_on_audit_failure(result)
     }
@@ -882,6 +1100,8 @@ fn unlock_audit(event_type: &'static str, outcome: &'static str, reason: &str) -
         credential_version: None,
         authorization: None,
         approval: None,
+        request_context: None,
+        usage: None,
         event_type,
         outcome,
         reason_code: reason.to_owned(),
@@ -905,6 +1125,8 @@ fn credential_audit(
         credential_version: Some(version),
         authorization: None,
         approval: None,
+        request_context: None,
+        usage: None,
         event_type,
         outcome: outcome::SUCCESS,
         reason_code: reason.to_owned(),
@@ -912,3 +1134,5 @@ fn credential_audit(
         latency_ms: None,
     }
 }
+
+mod usage;

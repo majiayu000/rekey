@@ -275,11 +275,11 @@ rule = {
     "parameters": {"kind": "any_validated"},
 }
 pathlib.Path(path).write_text(json.dumps({
-    "format_version": 4,
+    "format_version": 6,
     "version": 1,
     "expires_at_ms": int(time.time() * 1000) + 600000,
     "approvers": [],
-    "workload_identities": [],
+    "profiles": [], "workload_identities": [],
     "bindings": [binding],
     "rules": [rule],
 }))

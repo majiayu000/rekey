@@ -13,6 +13,7 @@ use crate::audit::spawn_terminal_worker_with;
 
 fn execution_context() -> ExecutionAuditContext {
     ExecutionAuditContext {
+        request_context: None,
         request_id: RequestId::new_random(),
         session_id: SessionId::new_random(),
         action: ActionVersionRef {
@@ -467,6 +468,8 @@ mod lease_recovery {
                     credential_version: Some(1),
                     authorization: None,
                     approval: None,
+                    request_context: None,
+                    usage: None,
                     event_type: rekey_vault::model::event_type::EXECUTION_STARTED,
                     outcome: rekey_vault::model::outcome::SUCCESS,
                     reason_code: "allowed".into(),
@@ -799,6 +802,7 @@ mod lease_recovery {
                     }
                     fake.push_response(Ok(reflected));
                     let ctx = ExecutionAuditContext {
+                        request_context: None,
                         request_id: RequestId::new_random(),
                         session_id: SessionId::new_random(),
                         action: ActionVersionRef {

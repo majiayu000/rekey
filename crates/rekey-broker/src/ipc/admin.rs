@@ -37,6 +37,7 @@ mod audit_query;
 mod credential_profiles;
 mod github;
 mod password_lifecycle;
+mod profile;
 #[cfg(feature = "lab")]
 mod vault_kv;
 
@@ -73,6 +74,7 @@ fn admin_body_limit(message_type: u16, managed: bool) -> u32 {
         | admin_msg::ACTION_UPDATE
         | admin_msg::ACTION_DISABLE
         | admin_msg::SESSION_CREATE
+        | admin_msg::PROFILE_SESSION_CREATE
         | admin_msg::SESSION_REVOKE
         | admin_msg::BACKUP
         | admin_msg::SHUTDOWN
@@ -81,7 +83,8 @@ fn admin_body_limit(message_type: u16, managed: bool) -> u32 {
         | admin_msg::AUDIT_PRUNE
         | admin_msg::AUDIT_RETENTION_SET
         | admin_msg::KEY_ROTATE_DEK
-        | admin_msg::RECOVERY_ROTATE => ipc::ADMIN_PROOF_BODY_MAX_BYTES,
+        | admin_msg::RECOVERY_ROTATE
+        | admin_msg::ROLLBACK_CONFIRM => ipc::ADMIN_PROOF_BODY_MAX_BYTES,
         _ => 0,
     };
     if managed && ipc::managed_admin_operation(message_type).unwrap_or(false) {
@@ -144,7 +147,11 @@ async fn write_admin_error(
     // A timeout can race with the single commit. Repeating an install creates
     // new Action IDs, so even pre-commit Busy failures conservatively deny retry.
     let unconfirmed_install = message_type == admin_msg::TEMPLATE_INSTALL
-        && matches!(error, BrokerError::Authority(AuthorityError::AuthorityBusy));
+        && matches!(
+            error,
+            BrokerError::Authority(AuthorityError::AuthorityBusy)
+                | BrokerError::Admission(AuthorityError::AuthorityBusy)
+        );
     let message = if unconfirmed_install {
         "template installation outcome is unconfirmed; inspect Actions and audit; do not retry automatically".to_owned()
     } else {
@@ -190,6 +197,10 @@ pub async fn handle_admin_conn(
                 return;
             }
         };
+        if frame.header.message_type == admin_msg::PROFILE_SESSION_CREATE {
+            profile::handle_control(stream, frame, ctx, shutdown).await;
+            return;
+        }
         let request_id = frame.header.request_id;
         let is_shutdown = frame.header.message_type == admin_msg::SHUTDOWN;
         #[cfg(feature = "lab")]
@@ -214,6 +225,13 @@ pub async fn handle_admin_conn(
         if let Some(metric) = backup_metric {
             metric.finish(response.is_err());
         }
+        // Admission refusals did not queue Authority work: respond immediately.
+        // Worker errors still reconcile under the coordinator, regardless of code.
+        let fault_after_response = if matches!(&response, Err(BrokerError::Authority(_))) {
+            ctx.settle_failed_admin().await
+        } else {
+            false
+        };
         let write_response = async {
             match response {
                 Ok((metadata, body)) => {
@@ -225,7 +243,7 @@ pub async fn handle_admin_conn(
                 }
             }
         };
-        let io_result = if is_shutdown {
+        let io_result = if is_shutdown || fault_after_response {
             write_response.await
         } else {
             tokio::select! {
@@ -233,6 +251,9 @@ pub async fn handle_admin_conn(
                 result = write_response => result,
             }
         };
+        if fault_after_response {
+            ctx.request_fault();
+        }
         if io_result.is_err() {
             return;
         }
@@ -243,38 +264,57 @@ pub async fn handle_admin_conn(
 }
 
 #[cfg(feature = "lab")]
-async fn dispatch(frame: &IncomingFrame, ctx: &BrokerCtx) -> Result<AdminResponse, BrokerError> {
-    let deadline = admin_mutation_deadline();
+async fn prepare_admin_frame(
+    frame: &IncomingFrame,
+    ctx: &BrokerCtx,
+    deadline: tokio::time::Instant,
+) -> Result<(IncomingFrame, Option<crate::oidc_admin::Admission>), BrokerError> {
     let managed = ipc::managed_admin_operation(frame.header.message_type)?;
-    if !managed {
-        return dispatch_operation(frame, ctx, None, deadline).await;
-    }
-    match &ctx.oidc_admin {
-        Some(manager) => {
+    if managed {
+        if let Some(manager) = &ctx.oidc_admin {
             let (token, original) = ipc::parse_management_body(&frame.body)?;
             let admission = manager.admit(token, ctx, deadline).await?;
-            let original = IncomingFrame {
-                header: frame.header,
-                metadata: frame.metadata.clone(),
-                body: Zeroizing::new(original.to_vec()),
-            };
-            dispatch_operation(&original, ctx, Some(&admission), deadline).await
+            return Ok((
+                IncomingFrame {
+                    header: frame.header,
+                    metadata: frame.metadata.clone(),
+                    body: Zeroizing::new(original.to_vec()),
+                },
+                Some(admission),
+            ));
         }
-        None => {
-            if frame.body.starts_with(b"RKAU") {
-                return Err(BrokerError::Frame(ipc::FrameError::InvalidField));
-            }
-            dispatch_operation(frame, ctx, None, deadline).await
+        if frame.body.starts_with(b"RKAU") {
+            return Err(ipc::FrameError::InvalidField.into());
         }
     }
+    Ok((
+        IncomingFrame {
+            header: frame.header,
+            metadata: frame.metadata.clone(),
+            body: Zeroizing::new(frame.body.to_vec()),
+        },
+        None,
+    ))
 }
 
-#[cfg(not(feature = "lab"))]
 async fn dispatch(frame: &IncomingFrame, ctx: &BrokerCtx) -> Result<AdminResponse, BrokerError> {
+    let deadline = admin_mutation_deadline();
+    #[cfg(feature = "lab")]
+    let (frame, admission) = prepare_admin_frame(frame, ctx, deadline).await?;
+    #[cfg(feature = "lab")]
+    let frame = &frame;
+    #[cfg(not(feature = "lab"))]
     if frame.body.starts_with(b"RKAU") {
-        return Err(BrokerError::Frame(ipc::FrameError::InvalidField));
+        return Err(ipc::FrameError::InvalidField.into());
     }
-    dispatch_operation(frame, ctx, admin_mutation_deadline()).await
+    dispatch_operation(
+        frame,
+        ctx,
+        #[cfg(feature = "lab")]
+        admission.as_ref(),
+        deadline,
+    )
+    .await
 }
 
 async fn dispatch_operation(
@@ -432,8 +472,30 @@ async fn dispatch_operation(
                 lab_enabled: cfg!(feature = "lab"),
                 sessions_active: ctx.sessions.active_count(crate::now_ts()?),
                 lease_journal: ctx.executor.lease_journal_status().await?,
+                rollback: status.rollback,
             };
             Ok((json(&response)?, Zeroizing::new(Vec::new())))
+        }
+        admin_msg::ROLLBACK_CONFIRM => {
+            let metadata: ipc::RollbackConfirmMeta = meta(frame)?;
+            let (kind, bytes) = ipc::parse_proof_body(&frame.body)?;
+            let proof = match kind {
+                ProofKind::Password => {
+                    rekey_vault::bootstrap::RestoreProof::Password(SecretInput::from_slice(bytes))
+                }
+                ProofKind::Recovery => rekey_vault::bootstrap::RestoreProof::RecoveryKey(
+                    SecretInput::from_slice(bytes),
+                ),
+                ProofKind::Presence => {
+                    return Err(BrokerError::Frame(ipc::FrameError::InvalidField));
+                }
+            };
+            ctx.confirm_rollback(metadata.expected, proof, request_deadline)
+                .await?;
+            Ok((
+                json(&serde_json::json!({"locked": true}))?,
+                Zeroizing::new(Vec::new()),
+            ))
         }
         admin_msg::UNLOCK_PASSWORD => {
             empty_meta(frame)?;
@@ -667,6 +729,26 @@ async fn dispatch_operation(
                 json(&ipc::ActionListResponse { actions })?,
                 Zeroizing::new(Vec::new()),
             ))
+        }
+        admin_msg::PROFILE_LIST => {
+            empty_request(frame)?;
+            let response = ctx.profile_list_until(request_deadline).await?;
+            Ok((b"{}".to_vec(), Zeroizing::new(json(&response)?)))
+        }
+        admin_msg::PROFILE_GET => {
+            if !frame.body.is_empty() {
+                return Err(ipc::FrameError::InvalidField.into());
+            }
+            let request: ipc::ProfileNameMeta = meta(frame)?;
+            let response = ctx
+                .profile_get_until(
+                    &request.profile,
+                    #[cfg(feature = "lab")]
+                    admission,
+                    request_deadline,
+                )
+                .await?;
+            Ok((b"{}".to_vec(), Zeroizing::new(json(&response)?)))
         }
         admin_msg::SESSION_CREATE => {
             let deadline = request_deadline;
@@ -948,6 +1030,7 @@ async fn dispatch_operation(
                 .await?;
             let receipt = ipc::BackupReceipt {
                 vault_id: info.vault_id.to_string(),
+                generation: info.generation,
                 format_version: info.format_version,
                 created_at_ms: info.created_at_ms,
                 sha256_hex: info.sha256_hex,
@@ -967,7 +1050,7 @@ async fn dispatch_operation(
         admin_msg::SHUTDOWN => {
             empty_meta(frame)?;
             if frame.body.is_empty() {
-                return Err(BrokerError::Authority(AuthorityError::AuthenticationFailed));
+                return Err(BrokerError::Admission(AuthorityError::AuthenticationFailed));
             }
             let (kind, bytes) = ipc::parse_proof_body(&frame.body)?;
             let proof = proof_from(kind, bytes);
@@ -1080,6 +1163,8 @@ async fn local_approval_decision(
             approval_id,
             approver_id: None,
         }),
+        request_context: local.request_context.clone(),
+        usage: None,
         event_type: if approve {
             event_type::APPROVAL_APPROVED
         } else {
@@ -1145,6 +1230,8 @@ fn session_audit(event_type: &'static str, session_id: SessionId) -> AuditDraft 
         credential_version: None,
         authorization: None,
         approval: None,
+        request_context: None,
+        usage: None,
         event_type,
         outcome: outcome::SUCCESS,
         reason_code: "admin".to_owned(),
@@ -1284,7 +1371,7 @@ mod tests {
             .await
             .unwrap();
         let now = crate::now_ts().unwrap();
-        let mut bundle = serde_json::json!({"format_version":1,"signer_id":signer_id,"snapshot":{"format_version":4,"version":1,"expires_at_ms":now.as_unix_ms()+60000,"approvers":[],"workload_identities":[],"bindings":[],"rules":[]}});
+        let mut bundle = serde_json::json!({"format_version":1,"signer_id":signer_id,"snapshot":{"format_version":6,"version":1,"expires_at_ms":now.as_unix_ms()+60000,"approvers":[],"profiles": [], "workload_identities":[],"bindings":[],"rules":[]}});
         let mut message = b"RKPOLICY\0\x01".to_vec();
         message.extend_from_slice(&serde_jcs::to_vec(&bundle).unwrap());
         bundle["signature"] = data_encoding::BASE64URL_NOPAD
@@ -1360,6 +1447,7 @@ mod tests {
                 hash.clone(),
                 std::time::Instant::now(),
                 std::time::Instant::now() + Duration::from_secs(60),
+                None,
             )
             .unwrap();
         drop(permit);
@@ -1445,31 +1533,36 @@ mod tests {
 
     #[tokio::test]
     async fn template_install_busy_wire_denies_retry_without_changing_other_operations() {
-        for (message_type, retryable) in [
-            (admin_msg::TEMPLATE_INSTALL, false),
-            (admin_msg::TEMPLATE_CATALOG, true),
-            (admin_msg::ACTION_CREATE, true),
+        for error in [
+            BrokerError::Authority(AuthorityError::AuthorityBusy),
+            BrokerError::Admission(AuthorityError::AuthorityBusy),
         ] {
-            let (mut writer, mut reader) = UnixStream::pair().unwrap();
-            let request_id = rekey_domain::ids::RequestId::new_random();
-            let error = BrokerError::Authority(AuthorityError::AuthorityBusy);
-            let (sent, received) = tokio::join!(
-                write_admin_error(&mut writer, message_type, request_id, &error),
-                read_frame(&mut reader, Channel::Admin, |_| 0),
-            );
-            sent.unwrap();
-            let received = received.unwrap();
-            assert_eq!(received.header.message_type, ipc::resp_msg::ERROR);
-            let envelope: ipc::ErrorEnvelope = serde_json::from_slice(&received.metadata).unwrap();
-            assert_eq!(envelope.code, "AUTHORITY_BUSY");
-            assert_eq!(envelope.request_id, request_id);
-            assert_eq!(envelope.retryable, retryable);
-            if message_type == admin_msg::TEMPLATE_INSTALL {
-                assert!(envelope.message.contains("unconfirmed"));
-                assert!(envelope.message.contains("Actions and audit"));
-                assert!(envelope.message.contains("do not retry automatically"));
-            } else {
-                assert_eq!(envelope.message, error.to_string());
+            for (message_type, retryable) in [
+                (admin_msg::TEMPLATE_INSTALL, false),
+                (admin_msg::TEMPLATE_CATALOG, true),
+                (admin_msg::ACTION_CREATE, true),
+            ] {
+                let (mut writer, mut reader) = UnixStream::pair().unwrap();
+                let request_id = rekey_domain::ids::RequestId::new_random();
+                let (sent, received) = tokio::join!(
+                    write_admin_error(&mut writer, message_type, request_id, &error),
+                    read_frame(&mut reader, Channel::Admin, |_| 0),
+                );
+                sent.unwrap();
+                let received = received.unwrap();
+                assert_eq!(received.header.message_type, ipc::resp_msg::ERROR);
+                let envelope: ipc::ErrorEnvelope =
+                    serde_json::from_slice(&received.metadata).unwrap();
+                assert_eq!(envelope.code, "AUTHORITY_BUSY");
+                assert_eq!(envelope.request_id, request_id);
+                assert_eq!(envelope.retryable, retryable);
+                if message_type == admin_msg::TEMPLATE_INSTALL {
+                    assert!(envelope.message.contains("unconfirmed"));
+                    assert!(envelope.message.contains("Actions and audit"));
+                    assert!(envelope.message.contains("do not retry automatically"));
+                } else {
+                    assert_eq!(envelope.message, error.to_string());
+                }
             }
         }
     }
@@ -1558,7 +1651,7 @@ mod tests {
 
     #[test]
     fn oidc_envelope_limits_and_os_exceptions_are_closed() {
-        for id in 1..=54 {
+        for id in 1..=60 {
             let protected = ipc::managed_admin_operation(id).unwrap();
             if protected {
                 assert!(admin_body_limit(id, true) >= 50);
@@ -1637,7 +1730,7 @@ mod tests {
         );
         Arc::get_mut(&mut ctx).unwrap().oidc_admin =
             Some(crate::oidc_admin::Manager::load(&path).unwrap());
-        for id in 1..=54 {
+        for id in 1..=60 {
             if !ipc::managed_admin_operation(id).unwrap() {
                 continue;
             }
@@ -1885,6 +1978,8 @@ mod tests {
             credential_version: None,
             authorization: None,
             approval: None,
+            request_context: None,
+            usage: None,
             event_type: "fixture.blocked",
             outcome: "success",
             reason_code: "exact3".into(),

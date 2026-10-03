@@ -168,6 +168,8 @@ impl Worker {
             credential_version: Some(c.credential_version),
             authorization: None,
             approval: None,
+            request_context: None,
+            usage: None,
             event_type,
             outcome: if success { "success" } else { "unconfirmed" },
             reason_code: "lease-journal".to_owned(),
@@ -446,6 +448,7 @@ impl Worker {
             if let Some(unavailable) = match self.state {
                 VaultState::Locked => Some(AuthorityError::Locked),
                 VaultState::Faulted => Some(AuthorityError::Faulted),
+                VaultState::RollbackSuspected(_) => Some(AuthorityError::RollbackSuspected),
                 VaultState::Unlocked { .. } => None,
             } {
                 return Ok(LeaseRecoveryBatch {

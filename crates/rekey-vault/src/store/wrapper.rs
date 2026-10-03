@@ -1,7 +1,8 @@
+use super::generation::{GenerationAttempt, commit_generation};
 use rusqlite::{Transaction, params};
 
 use super::SqliteRecordStore;
-use super::sqlite::{commit_audited, storage};
+use super::sqlite::storage;
 use crate::crypto::{KEY_LEN, NONCE_LEN, SALT_LEN};
 use crate::error::AuthorityError;
 use crate::model::{AuditEvent, KeyWrapperRecord, WrapperKind};
@@ -40,6 +41,7 @@ impl SqliteRecordStore {
         replacement: &KeyWrapperRecord,
         disabled_at_ms: i64,
         audit: AuditEvent,
+        generation: &mut GenerationAttempt<'_>,
     ) -> Result<(), AuthorityError> {
         let tx = self.conn.transaction().map_err(storage)?;
         let replaced = tx
@@ -63,6 +65,6 @@ impl SqliteRecordStore {
         }
         insert_wrapper(&tx, replacement)?;
         super::audit::insert(&tx, &audit)?;
-        commit_audited(tx)
+        commit_generation(tx, generation)
     }
 }

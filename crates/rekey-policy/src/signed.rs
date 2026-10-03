@@ -15,9 +15,9 @@ use sha2::{Digest, Sha256};
 
 use crate::json::parse_unique_json;
 use crate::{
-    APPROVAL_GRANT_MAX_BYTES, PolicyError, PolicySnapshot, SNAPSHOT_FORMAT_VERSION,
-    SNAPSHOT_MAX_BYTES, TRUST_MAX_BYTES, ValidatedSnapshot, decode_lower_hex_32,
-    parse_and_validate_snapshot, parse_and_validate_snapshot_for_load, validate_ed25519_public_key,
+    APPROVAL_GRANT_MAX_BYTES, PolicyError, SNAPSHOT_MAX_BYTES, TRUST_MAX_BYTES, ValidatedSnapshot,
+    decode_lower_hex_32, parse_and_validate_snapshot, parse_and_validate_snapshot_for_load,
+    validate_ed25519_public_key,
 };
 
 const POLICY_FORMAT_VERSION: u32 = 1;
@@ -272,11 +272,7 @@ fn parse_and_verify_policy_bundle_inner(
     if envelope.signer_id != trust.signer_id {
         return Err(PolicyError::InvalidSignature);
     }
-    let snapshot_shape: PolicySnapshot =
-        serde_json::from_value(envelope.snapshot.clone()).map_err(|_| PolicyError::Malformed)?;
-    if snapshot_shape.format_version != SNAPSHOT_FORMAT_VERSION {
-        return Err(PolicyError::UnsupportedFormat);
-    }
+    crate::snapshot_shape(&envelope.snapshot)?;
     let message = signed_value_payload(&value, b"RKPOLICY\0\x01")?;
     verify_policy_signature(&message, &envelope.signature, trust.key())?;
     let snapshot_bytes =
@@ -540,7 +536,7 @@ mod tests {
             "format_version": 1,
             "signer_id": signer_id,
             "snapshot": {
-                "format_version": 4,
+                "format_version": 6, "profiles": [],
                 "version": 1,
                 "expires_at_ms": 10_000,
                 "approvers": [{

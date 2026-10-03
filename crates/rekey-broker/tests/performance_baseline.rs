@@ -768,6 +768,8 @@ fn audit_draft() -> AuditDraft {
         credential_version: None,
         authorization: None,
         approval: None,
+        request_context: None,
+        usage: None,
         event_type: event_type::POLICY_ACTIVATED,
         outcome: outcome::SUCCESS,
         reason_code: "performance-baseline".to_owned(),

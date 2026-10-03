@@ -17,13 +17,27 @@ impl SqliteRecordStore {
                     'vault_header', 'key_wrappers', 'credentials',
                     'credential_versions', 'actions', 'policy_state',
                     'policy_trust', 'policy_bundle', 'workload_token_uses',
-                    'audit_events', 'vault_lease_journal', 'vault_lease_journal_state', 'audit_retention'
+                    'audit_events', 'vault_lease_journal', 'vault_lease_journal_state', 'audit_retention', 'profile_usage', 'profile_usage_state'
                  )",
                 [],
                 |row| row.get(0),
             )
             .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
-        if table_count != 13 {
+        if table_count != 15 {
+            return Err(AuthorityError::UnsupportedVaultLayout);
+        }
+        // Reject the earlier unreleased v25 layout before reading its absent
+        // generation columns. This is a format gate, never a schema migration.
+        let header_columns: u8 = self
+            .conn
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('vault_header')
+             WHERE name IN ('generation', 'generation_mac')",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        if header_columns != 2 {
             return Err(AuthorityError::UnsupportedVaultLayout);
         }
         Ok(())
@@ -125,6 +139,11 @@ impl SqliteRecordStore {
                     SELECT 1 FROM vault_header
                     WHERE typeof(vault_id) IS NOT 'blob'
                        OR length(vault_id) IS NOT 16
+                       OR typeof(generation) IS NOT 'blob'
+                       OR length(generation) IS NOT 8
+                       OR generation IS zeroblob(8)
+                       OR typeof(generation_mac) IS NOT 'blob'
+                       OR length(generation_mac) IS NOT 32
                        OR typeof(created_at_ms) IS NOT 'integer'
                        OR typeof(schema_digest) IS NOT 'blob'
                        OR length(schema_digest) IS NOT 32

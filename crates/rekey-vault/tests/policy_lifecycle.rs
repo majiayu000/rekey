@@ -48,6 +48,8 @@ fn workload_audit() -> AuditDraft {
         credential_version: None,
         authorization: None,
         approval: None,
+        request_context: None,
+        usage: None,
         event_type: event_type::SESSION_CREATED,
         outcome: outcome::SUCCESS,
         reason_code: "workload-attested".to_owned(),
@@ -210,6 +212,13 @@ async fn activation_time_exact_audit_and_trust_target_survive_backup_restore() {
         &restored,
         rekey_vault::bootstrap::RestoreProof::Password(common::password_input()),
         &receipt.sha256_hex,
+        rekey_vault::bootstrap::inspect_restore(
+            &backup_path,
+            &restored,
+            rekey_vault::bootstrap::RestoreProof::Password(common::password_input()),
+            &receipt.sha256_hex,
+        )
+        .unwrap(),
     )
     .unwrap();
     assert_eq!(id.vault_id, first.expected_vault_id);

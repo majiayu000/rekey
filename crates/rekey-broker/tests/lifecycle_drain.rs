@@ -579,14 +579,18 @@ async fn session_create_during_drain_is_rejected() {
         "ttl_ms": 3_600_000,
         "max_uses": 100,
     });
-    let created = common::call(
-        &admin,
-        Channel::Admin,
-        admin_msg::SESSION_CREATE,
-        create_meta.to_string().as_bytes(),
-        &common::proof_body(common::PASSWORD),
+    let created = tokio::time::timeout(
+        Duration::from_secs(1),
+        common::call(
+            &admin,
+            Channel::Admin,
+            admin_msg::SESSION_CREATE,
+            create_meta.to_string().as_bytes(),
+            &common::proof_body(common::PASSWORD),
+        ),
     )
-    .await;
+    .await
+    .expect("lifecycle rejection waited for the active drain");
     assert_eq!(created.err_code(), "DRAINING");
 
     release.add_permits(2);

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Native manager acceptance using release CLI + BrokerRuntime fixture, dual UDS,
-# SQLite, and local CA/TLS. Linux is accepted only with systemd as PID 1.
+# SQLite, and local CA/TLS. Linux requires an accessible systemd user manager.
 set -euo pipefail
 umask 077
 
@@ -26,10 +26,6 @@ PASSWORD="p1 service manager horse battery staple"
 SECRET="P1-SERVICE-MANAGER-CANARY"
 PLATFORM="$(uname -s)"
 
-if [[ "$PLATFORM" == Linux && "$(ps -p 1 -o comm= | tr -d ' ')" != systemd ]]; then
-  echo "systemd acceptance requires systemd as PID 1" >&2
-  exit 77
-fi
 if [[ "$PLATFORM" != Darwin && "$PLATFORM" != Linux ]]; then
   echo "unsupported service manager platform: $PLATFORM" >&2
   exit 77
@@ -52,15 +48,11 @@ raise SystemExit(result.returncode)
 PY
 }
 
-run_root_bounded() {
-  local seconds="$1"
-  shift
-  if [[ "$(id -u)" -eq 0 ]]; then
-    run_bounded "$seconds" "$@"
-  else
-    run_bounded "$seconds" sudo -n "$@"
-  fi
-}
+# Probe before building or creating state; a missing user bus is not a pass.
+if [[ "$PLATFORM" == Linux ]] && ! run_bounded 5 systemctl --user show-environment >/dev/null 2>&1; then
+  echo "systemd user acceptance requires a logged-in non-root user manager/bus" >&2
+  exit 77
+fi
 
 pid_running() {
   local pid="$1" state
@@ -111,7 +103,8 @@ LABEL="com.openai.rekey.p1.$(id -u).$$"
 UNIT="rekey-p1-$(id -u)-$$.service"
 PLIST="$WORKDIR/$LABEL.plist"
 UNIT_FILE="$WORKDIR/$UNIT"
-SYSTEM_UNIT_PATH="/etc/systemd/system/$UNIT"
+USER_UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+USER_UNIT_PATH="$USER_UNIT_DIR/$UNIT"
 MANAGER_ACTIVE=0
 UNIT_INSTALLED=0
 MANAGER_PID=""
@@ -127,7 +120,7 @@ manager_pid() {
     run_bounded 5 launchctl print "gui/$(id -u)/$LABEL" |
       awk '$1 == "pid" && $2 == "=" {print $3; exit}'
   else
-    run_root_bounded 5 systemctl show "$UNIT" --property MainPID --value
+    run_bounded 5 systemctl --user show "$UNIT" --property MainPID --value
   fi
 }
 
@@ -145,14 +138,14 @@ cleanup() {
     if [[ "$PLATFORM" == Darwin ]]; then
       run_bounded 5 launchctl bootout "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || true
     else
-      run_root_bounded 5 systemctl stop "$UNIT" >/dev/null 2>&1 || true
+      run_bounded 5 systemctl --user stop "$UNIT" >/dev/null 2>&1 || true
     fi
     terminate_pid "$MANAGER_PID" || true
   fi
   if [[ "$UNIT_INSTALLED" -eq 1 ]]; then
-    run_root_bounded 5 rm -f "$SYSTEM_UNIT_PATH" || true
-    run_root_bounded 10 systemctl daemon-reload >/dev/null 2>&1 || true
-    run_root_bounded 5 systemctl reset-failed "$UNIT" >/dev/null 2>&1 || true
+    rm -f "$USER_UNIT_PATH" || true
+    run_bounded 10 systemctl --user daemon-reload >/dev/null 2>&1 || true
+    run_bounded 5 systemctl --user reset-failed "$UNIT" >/dev/null 2>&1 || true
   fi
   rm -rf "$WORKDIR"
 }
@@ -181,6 +174,9 @@ python3 "$GENERATOR" systemd --rekeyd "$MANAGED_DAEMON" --state-dir "$GOLDEN_STA
   --run-as-user "$(id -un)" >"$WORKDIR/golden.service"
 grep -Fq 'TimeoutStopSec=130s' "$WORKDIR/golden.service"
 grep -Fq "systemd\$\$state" "$WORKDIR/golden.service"
+python3 "$GENERATOR" systemd-user --rekeyd "$MANAGED_DAEMON" --state-dir "$GOLDEN_STATE" >"$WORKDIR/golden-user.service"
+grep -Fxq 'WantedBy=default.target' "$WORKDIR/golden-user.service"
+if grep -Eq '^(User=|WantedBy=multi-user.target)' "$WORKDIR/golden-user.service"; then exit 1; fi
 
 json_field() {
   python3 -c 'import json,sys; print(json.load(sys.stdin)[sys.argv[1]])' "$1"
@@ -205,8 +201,8 @@ start_manager() {
     [[ ! -f "$STATE/rekeyd.stderr.log" ]] || ROUND_OFFSET="$(wc -c <"$STATE/rekeyd.stderr.log" | tr -d ' ')"
     run_bounded 10 launchctl bootstrap "gui/$(id -u)" "$PLIST"
   else
-    run_root_bounded 10 systemctl start "$UNIT"
-    INVOCATION_ID="$(run_root_bounded 5 systemctl show "$UNIT" --property InvocationID --value)"
+    run_bounded 10 systemctl --user start "$UNIT"
+    INVOCATION_ID="$(run_bounded 5 systemctl --user show "$UNIT" --property InvocationID --value)"
     [[ -n "$INVOCATION_ID" ]]
   fi
   MANAGER_ACTIVE=1
@@ -227,7 +223,7 @@ if len(data) < offset:
 pathlib.Path(sys.argv[2]).write_bytes(data[offset:])
 PY
   else
-    run_root_bounded 10 journalctl _SYSTEMD_INVOCATION_ID="$INVOCATION_ID" --no-pager >"$output"
+    run_bounded 10 journalctl --user _SYSTEMD_INVOCATION_ID="$INVOCATION_ID" --no-pager >"$output"
   fi
 }
 
@@ -236,7 +232,7 @@ stop_manager() {
   if [[ "$PLATFORM" == Darwin ]]; then
     run_bounded 15 launchctl bootout "gui/$(id -u)/$LABEL"
   else
-    run_root_bounded 15 systemctl stop "$UNIT"
+    run_bounded 15 systemctl --user stop "$UNIT"
   fi
   wait_pid_bounded "$MANAGER_PID" 15
   [[ $((SECONDS - started)) -le 15 ]]
@@ -277,8 +273,8 @@ binding = {"action_id":action, "version":int(version), "resource":resource,
 rule = {"id":str(uuid.uuid4()), "effect":"permit", "principal_id":principal,
  "action_id":action, "version":int(version), "resource":resource,
  "parameters":{"kind":"any_validated"}}
-pathlib.Path(path).write_text(json.dumps({"format_version":4,"version":int(policy_version),
- "expires_at_ms":int(time.time()*1000)+600000,"approvers":[],"workload_identities":[],
+pathlib.Path(path).write_text(json.dumps({"format_version":6,"version":int(policy_version),
+ "expires_at_ms":int(time.time()*1000)+600000,"approvers":[],"profiles": [], "workload_identities":[],
  "bindings":[binding],"rules":[rule]}))
 PY
   python3 "$ROOT/scripts/sign-test-policy.py" policy --key-dir "$WORKDIR/policy-key" \
@@ -297,13 +293,13 @@ if [[ "$PLATFORM" == Darwin ]]; then
   plutil -lint "$PLIST" >/dev/null
   if rg -n 'EnvironmentVariables|REKEY_PASSWORD|--password|--unlock' "$PLIST"; then exit 1; fi
 else
-  python3 "$GENERATOR" systemd --rekeyd "$MANAGED_DAEMON" --state-dir "$STATE" \
-    --run-as-user "$(id -un)" >"$UNIT_FILE"
-  systemd-analyze verify "$UNIT_FILE"
+  python3 "$GENERATOR" systemd-user --rekeyd "$MANAGED_DAEMON" --state-dir "$STATE" >"$UNIT_FILE"
+  systemd-analyze --user verify "$UNIT_FILE"
   if rg -n 'Environment=|REKEY_PASSWORD|--password|--unlock' "$UNIT_FILE"; then exit 1; fi
-  run_root_bounded 5 install -m 0644 "$UNIT_FILE" "$SYSTEM_UNIT_PATH"
+  mkdir -p "$USER_UNIT_DIR"
+  install -m 0644 "$UNIT_FILE" "$USER_UNIT_PATH"
   UNIT_INSTALLED=1
-  run_root_bounded 10 systemctl daemon-reload
+  run_bounded 10 systemctl --user daemon-reload
 fi
 
 start_manager
@@ -339,7 +335,7 @@ if [[ "$ARTIFACT_DAEMON_MODE" -eq 1 ]]; then
   if [[ "$PLATFORM" == Darwin ]]; then
     run_bounded 10 launchctl bootout "gui/$(id -u)/$LABEL" >/dev/null 2>&1
   else
-    run_root_bounded 10 systemctl stop "$UNIT" >/dev/null 2>&1
+    run_bounded 10 systemctl --user stop "$UNIT" >/dev/null 2>&1
   fi
   CURRENT_PID="$(manager_pid 2>/dev/null || true)"
   if [[ "$CURRENT_PID" =~ ^[1-9][0-9]*$ ]] && pid_running "$CURRENT_PID"; then
@@ -457,7 +453,7 @@ wait_pid_bounded "$ADMIN_PID" 15
 if [[ "$PLATFORM" == Darwin ]]; then
   run_bounded 10 launchctl bootout "gui/$(id -u)/$LABEL" >/dev/null 2>&1
 else
-  run_root_bounded 10 systemctl stop "$UNIT" >/dev/null 2>&1
+  run_bounded 10 systemctl --user stop "$UNIT" >/dev/null 2>&1
 fi
 CURRENT_PID="$(manager_pid 2>/dev/null || true)"
 if [[ "$CURRENT_PID" =~ ^[1-9][0-9]*$ ]] && pid_running "$CURRENT_PID"; then

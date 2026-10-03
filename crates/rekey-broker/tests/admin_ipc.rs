@@ -1000,14 +1000,18 @@ async fn admin_shutdown_cannot_interrupt_a_vrk_rotation_before_authentication() 
         assert!(std::time::Instant::now() < deadline);
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    let proofless = common::call(
-        &broker.admin_sock(),
-        Channel::Admin,
-        admin_msg::SHUTDOWN,
-        b"{}",
-        &[],
+    let proofless = tokio::time::timeout(
+        Duration::from_secs(1),
+        common::call(
+            &broker.admin_sock(),
+            Channel::Admin,
+            admin_msg::SHUTDOWN,
+            b"{}",
+            &[],
+        ),
     )
-    .await;
+    .await
+    .expect("missing proof waited for the active rotation");
     assert_eq!(proofless.err_code(), "AUTHENTICATION_FAILED");
     let shutdown = common::call(
         &broker.admin_sock(),

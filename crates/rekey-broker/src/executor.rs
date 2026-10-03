@@ -47,6 +47,8 @@ use github_run::{github_post_effect_error, github_without_token_error};
 mod http;
 #[cfg(feature = "lab")]
 pub(crate) mod keycloak;
+mod llm;
+mod llm_stream;
 mod sealing;
 pub(crate) mod text_stream;
 #[cfg(feature = "lab")]
@@ -160,6 +162,7 @@ pub struct AdmittedExecution {
     request: ExecuteRequest,
     action: FixedHttpAction,
     target: RenderedTarget,
+    llm: Option<llm::LlmExecution>,
     effect_deadline: Instant,
     started: StartedAuditGuard,
     _permit: ExecutionPermit,
@@ -213,6 +216,29 @@ impl ActionExecutor {
         self: &Arc<Self>,
         request: ExecuteRequest,
     ) -> Result<AdmittedExecution, BrokerError> {
+        self.admit_for_response(request, Some(false)).await
+    }
+
+    pub(crate) async fn admit_stream(
+        self: &Arc<Self>,
+        request: ExecuteRequest,
+    ) -> Result<AdmittedExecution, BrokerError> {
+        self.admit_for_response(request, Some(true)).await
+    }
+
+    /// HTTP delegates body shape selection to the same canonicalization as IPC.
+    pub(crate) async fn admit_http(
+        self: &Arc<Self>,
+        request: ExecuteRequest,
+    ) -> Result<AdmittedExecution, BrokerError> {
+        self.admit_for_response(request, None).await
+    }
+
+    async fn admit_for_response(
+        self: &Arc<Self>,
+        mut request: ExecuteRequest,
+        stream: Option<bool>,
+    ) -> Result<AdmittedExecution, BrokerError> {
         let admission_started = Instant::now();
         self.refuse_unless_running()?;
         // Step 3: capability authentication reserves one use and one
@@ -222,9 +248,23 @@ impl ActionExecutor {
                 .acquire(&request.capability_token, request.action, crate::now_ts()?)?;
         let effect_deadline = admission_started + Duration::from_millis(permit.timeout_ms as u64);
         self.refuse_unless_running()?;
-        let evaluated = self
-            .evaluate_request(&request, permit.principal, effect_deadline)
+        let mut evaluated = self
+            .evaluate_request(&request, &permit, effect_deadline)
             .await?;
+        let expected_stream = evaluated.action.text_stream.is_some()
+            || evaluated.llm.as_ref().is_some_and(|llm| llm.streaming);
+        if stream.is_none() && evaluated.llm.is_none() {
+            return Err(BrokerError::Denied("gateway-profile-required"));
+        }
+        if stream.is_some_and(|stream| stream != expected_stream) {
+            self.audit_denial(effect_deadline, &evaluated.ctx, "stream-operation-mismatch")
+                .await?;
+            return Err(BrokerError::Denied("stream-operation-mismatch"));
+        }
+        if let Some(mut body) = evaluated.effective_body.take() {
+            zeroize::Zeroize::zeroize(&mut request.body);
+            request.body = std::mem::take(&mut *body);
+        }
         if request.local_approval_request_id.is_some() && !request.approval_grants.is_empty() {
             return Err(BrokerError::Denied("approval-kinds-conflict"));
         }
@@ -271,12 +311,13 @@ impl ActionExecutor {
                 request,
                 action: evaluated.action,
                 target: evaluated.target,
+                llm: evaluated.llm,
                 effect_deadline,
                 started,
                 _permit: permit,
             });
         }
-        let (accepted, approval_deadline) = match &evaluated.decision {
+        let (accepted, mut approval_deadline) = match &evaluated.decision {
             Decision::Allow { .. } if request.approval_grants.is_empty() => (Vec::new(), None),
             Decision::Allow { .. } => {
                 deadline::await_authority(
@@ -300,6 +341,16 @@ impl ActionExecutor {
             Decision::Deny { .. } => return Err(BrokerError::Denied("policy-evaluation-failed")),
         };
 
+        if permit.profile_scope().is_some() {
+            let policy_cap = evaluated.snapshot.monotonic_deadline().into_std();
+            let wall_cap = evaluated.snapshot.snapshot().expires_at_ms();
+            approval_deadline = Some(
+                approval_deadline.map_or((policy_cap, wall_cap), |(mono, wall)| {
+                    (mono.min(policy_cap), wall.min(wall_cap))
+                }),
+            );
+        }
+
         // Step 6: this final point linearizes with drain. Earlier Running
         // checks are advisory; no drain may transition between this re-check
         // and transfer of durable started/terminal ownership.
@@ -308,7 +359,7 @@ impl ActionExecutor {
             .unwrap_or(effect_deadline);
         let started = tokio::time::timeout_at(
             tokio::time::Instant::from_std(admission_deadline),
-            commit_started_while_running(
+            commit_started_with_usage(
                 &self.lifecycle,
                 &self.terminals,
                 &self.policy,
@@ -316,6 +367,8 @@ impl ActionExecutor {
                 evaluated.ctx,
                 accepted,
                 approval_deadline,
+                evaluated.llm.as_ref().map(|llm| llm.usage.clone()),
+                Some(admission_deadline),
             ),
         )
         .await
@@ -326,6 +379,7 @@ impl ActionExecutor {
             effect_deadline,
             action: evaluated.action,
             target: evaluated.target,
+            llm: evaluated.llm,
             started,
             _permit: permit,
         })
@@ -373,6 +427,7 @@ impl ActionExecutor {
             effect_kind,
             &AtomicBool::new(false),
             stream,
+            None,
         )
         .await
     }
@@ -388,8 +443,11 @@ impl ActionExecutor {
         effect_kind: &AtomicU8,
         cleanup_owned: &AtomicBool,
         stream: Option<&text_stream::TextStreamSender>,
+        llm: Option<&llm::LlmExecution>,
     ) -> Result<ExecuteOutcome, BrokerError> {
-        if action.text_stream.is_some() != stream.is_some() {
+        if (action.text_stream.is_some() || llm.is_some_and(|llm| llm.streaming))
+            != stream.is_some()
+        {
             started
                 .blocked_until(effect_deadline, "stream-operation-mismatch")
                 .await?;
@@ -716,7 +774,7 @@ impl ActionExecutor {
             unreachable!("credential execution variant was matched above")
         };
 
-        if stream.is_some() {
+        if stream.is_some() && action.text_stream.is_some() {
             #[cfg(feature = "lab")]
             let plugin_messages =
                 match anthropic_plugin_messages(action, &request.body, effect_deadline).await {
@@ -735,6 +793,11 @@ impl ActionExecutor {
             #[cfg(not(feature = "lab"))]
             let messages = request.body.as_slice();
             text_stream::configure(action, messages, &mut upstream_request)?;
+        }
+        if llm.is_some_and(|llm| llm.streaming) {
+            upstream_request
+                .headers
+                .push(("accept-encoding".to_owned(), "identity".to_owned()));
         }
         // Steps 10-11: fixed HTTPS send with bounded response. Credential
         // preparation consumes the same action deadline as DNS and HTTP.
@@ -762,6 +825,32 @@ impl ActionExecutor {
                     .open_stream(upstream_request)
                     .await
                     .map_err(|_| BrokerError::Upstream("stream-transport"))?;
+                if let Some(llm) = llm.filter(|llm| llm.streaming) {
+                    let mut complete = llm_stream::run(
+                        response,
+                        needles,
+                        action.response_policy.max_body_bytes as usize,
+                        sender,
+                        llm.protocol,
+                    )
+                    .await?;
+                    started.record_profile_output(complete.output_tokens());
+                    started
+                        .finished_until(
+                            effect_deadline,
+                            credential_version,
+                            200,
+                            send_started.elapsed().as_millis() as i64,
+                        )
+                        .await?;
+                    complete.release(sender).await?;
+                    return Ok(ExecuteOutcome {
+                        stream_status: Some(complete.status()),
+                        upstream_status: 200,
+                        headers: Vec::new(),
+                        body: Vec::new(),
+                    });
+                }
                 let status = text_stream::run(
                     response,
                     needles,
@@ -846,6 +935,15 @@ impl ActionExecutor {
             return Err(BrokerError::Domain(DomainError::ResponseTooLarge));
         }
 
+        if let Some(llm) = llm {
+            let measured = if (200..300).contains(&response.status) {
+                rekey_policy::profile_llm_output_tokens(llm.protocol, &response.body)
+            } else {
+                None
+            };
+            started.record_profile_output(measured);
+        }
+
         // Step 14: ExecutionFinished must commit; upstream success without
         // evidence is not success.
         started
@@ -916,6 +1014,10 @@ struct GitHubPrepared {
 }
 
 impl AdmittedExecution {
+    pub(crate) fn raw_stream(&self) -> bool {
+        self.llm.as_ref().is_some_and(|llm| llm.streaming)
+    }
+
     pub(crate) fn deadline(&self) -> Instant {
         self.effect_deadline
     }
@@ -955,6 +1057,7 @@ impl AdmittedExecution {
                 &effect_kind,
                 &cleanup_owned,
                 stream,
+                self.llm.as_ref(),
             );
             tokio::pin!(run);
             tokio::select! {
@@ -1043,6 +1146,7 @@ async fn try_begin_remote_effect(
     Err(BrokerError::Authority(AuthorityError::Draining))
 }
 
+#[cfg(test)]
 async fn commit_started_while_running(
     lifecycle: &Lifecycle,
     terminals: &TerminalAuditTracker,
@@ -1051,6 +1155,32 @@ async fn commit_started_while_running(
     ctx: ExecutionAuditContext,
     preceding: Vec<rekey_vault::command::AuditDraft>,
     approval_deadline: Option<(Instant, i64)>,
+) -> Result<StartedAuditGuard, BrokerError> {
+    commit_started_with_usage(
+        lifecycle,
+        terminals,
+        policy,
+        expected_policy,
+        ctx,
+        preceding,
+        approval_deadline,
+        None,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn commit_started_with_usage(
+    lifecycle: &Lifecycle,
+    terminals: &TerminalAuditTracker,
+    policy: &RwLock<Option<Arc<ActivePolicy>>>,
+    expected_policy: Option<PolicyIdentity>,
+    ctx: ExecutionAuditContext,
+    preceding: Vec<rekey_vault::command::AuditDraft>,
+    approval_deadline: Option<(Instant, i64)>,
+    usage: Option<rekey_vault::command::ProfileUsageStart>,
+    request_deadline: Option<Instant>,
 ) -> Result<StartedAuditGuard, BrokerError> {
     let _coordinator = match lifecycle.try_coordinate() {
         Ok(owner) => owner,
@@ -1061,11 +1191,60 @@ async fn commit_started_while_running(
     };
     lifecycle.reject_if_not_running()?;
     check_started_policy(policy, expected_policy, terminals, &ctx).await?;
-    let (not_after, wall_not_after_ms) = approval_deadline.unzip();
-    terminals
-        .commit_started(ctx, preceding, not_after, wall_not_after_ms)
-        .await
-        .map_err(BrokerError::Authority)
+    let (approval_not_after, mut wall_not_after_ms) = approval_deadline.unzip();
+    let mut not_after = match (request_deadline, approval_not_after) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
+    if usage.is_some() {
+        let active = policy.read().await;
+        let active = active
+            .as_ref()
+            .ok_or(BrokerError::Denied("policy-changed"))?;
+        if active.is_expired(crate::now_ts()?) {
+            return Err(BrokerError::Denied("policy-expired"));
+        }
+        let cap = active.monotonic_deadline().into_std();
+        not_after = Some(not_after.map_or(cap, |deadline| deadline.min(cap)));
+        let expires = active.snapshot().expires_at_ms();
+        wall_not_after_ms = Some(wall_not_after_ms.map_or(expires, |wall| wall.min(expires)));
+    }
+    commit_evaluated_started(
+        terminals,
+        ctx,
+        preceding,
+        not_after,
+        wall_not_after_ms,
+        usage,
+    )
+    .await
+}
+
+async fn commit_evaluated_started(
+    terminals: &TerminalAuditTracker,
+    ctx: ExecutionAuditContext,
+    preceding: Vec<rekey_vault::command::AuditDraft>,
+    not_after: Option<Instant>,
+    wall_not_after_ms: Option<i64>,
+    usage: Option<rekey_vault::command::ProfileUsageStart>,
+) -> Result<StartedAuditGuard, BrokerError> {
+    if let Some(usage) = usage {
+        terminals
+            .commit_profile_started(
+                ctx,
+                preceding,
+                usage,
+                not_after.ok_or(BrokerError::Denied("profile-deadline-missing"))?,
+                wall_not_after_ms,
+            )
+            .await?
+            .ok_or(BrokerError::Denied("profile-budget-exceeded"))
+    } else {
+        terminals
+            .commit_started(ctx, preceding, not_after, wall_not_after_ms)
+            .await
+            .map_err(BrokerError::Authority)
+    }
 }
 
 async fn check_started_policy(

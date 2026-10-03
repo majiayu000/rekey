@@ -250,12 +250,25 @@ impl Worker {
                 };
                 let _ = reply.send(Ok(StatusInfo {
                     state: self.state.name(),
+                    rollback: match &self.state {
+                        VaultState::RollbackSuspected(context) => Some(context.clone()),
+                        _ => None,
+                    },
                     vault_id: self.header.vault_id,
                     format_version: self.header.format_version,
                     idle_for_ms,
                     policy_trust_installed,
                     policy_bundle_persisted,
                 }));
+            }
+            AuthorityCommand::ConfirmRollback {
+                expected,
+                proof,
+                not_after,
+                reply,
+            } => {
+                let result = self.confirm_rollback(expected, proof, not_after);
+                let _ = reply.send(result);
             }
             AuthorityCommand::Unlock { proof, reply } => {
                 let result = self.unlock(proof);
@@ -547,6 +560,44 @@ impl Worker {
                 let result = self.prepare_credential(credential_id);
                 self.touch_if_ok(&result);
                 let _ = reply.send(result);
+            }
+            AuthorityCommand::BeginProfileExecution {
+                usage,
+                preceding,
+                started,
+                not_after,
+                wall_not_after_ms,
+                reply,
+            } => {
+                let result = self.begin_profile_execution(
+                    usage,
+                    preceding,
+                    started,
+                    not_after,
+                    wall_not_after_ms,
+                );
+                self.touch_if_ok(&result);
+                drop(reply.send(result));
+            }
+            AuthorityCommand::SettleProfileExecution {
+                request_id,
+                measured_output_tokens,
+                terminal,
+                reply,
+            } => {
+                let result =
+                    self.settle_profile_execution(request_id, measured_output_tokens, terminal);
+                self.touch_if_ok(&result);
+                drop(reply.send(result));
+            }
+            AuthorityCommand::ProfileUsage {
+                principal_id,
+                instance_slug,
+                utc_day,
+                reply,
+            } => {
+                let result = self.profile_usage(principal_id, &instance_slug, utc_day);
+                drop(reply.send(result));
             }
             AuthorityCommand::AppendAudit {
                 draft,

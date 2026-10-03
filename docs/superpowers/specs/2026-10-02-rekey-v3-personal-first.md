@@ -1,6 +1,6 @@
 # Rekey v3：个人优先的 Agent 密钥执行产品
 
-**状态**：方向已确认，**尚未冻结**。§13 列出的三个 M1 技术验证项完成并记录结果后冻结。2026-10-03 用户已授权并行实现；先交付 V1–V3 独立安全原型。验证结论尚未确定时，不将 L1/A2 安全承诺视为已成立；本文暂不替代现有产品基线。
+**状态**：方向已确认，**尚未冻结**。§13 列出的三个 M1 技术验证项完成并记录结果后冻结。2026-10-03 用户已授权整份 SPEC 按依赖并行实现；独立原型与后续软件已在隔离集成分支推进。代码与软件检查以实施清单及产品基线为准；V1/V2 结论尚未确定时，不将签名设备上的 L1/A2 安全承诺视为已成立。
 
 **修订记录**
 - 2026-10-02 初稿。
@@ -194,9 +194,9 @@ A2 针对的是"拿到明文或扩大权限"。A2 能做的事被限定为两类
 | L0 Stored | 只保存，不交给 Agent 使用 | "Key 已加密保存" |
 | L1-dev | 未签名的源码构建，或 Linux 用户级安装 | 只对 A1 成立："Agent 接口拿不到 Key" |
 | L1 | 签名、启用 hardened runtime 的 rekeyd 和 Rekey.app；满足 §6 的服务端校验 | 对 A1、A2 成立："Agent 进程拿不到 Key 明文；越权需要审批" |
-| L2 | L1 加上 `rekey run --isolate`（Seatbelt / netns），并配置 `deny-other-egress` | 在 L1 基础上，Agent 无法绕过 Rekey 访问网络和受保护文件 |
+| L2 | L1 加上按签名 Profile 的 `isolation: seatbelt|netns` 启动 `rekey run`，并配置 `egress: deny-other` | 在 L1 基础上，Agent 无法绕过 Rekey 访问网络和受保护文件 |
 
-现有 G1 对应 L1-dev，现有 G2（Linux reference）对应 L2。
+现有 G1 对应 L1-dev，现有 G2（Linux reference）对应有界拓扑中的隔离保证。V1/V2 与受保护锚设备验收完成前，当前开发构建即使已校验服务签名，也只显示已确认的 L1-dev 下限；Locked 且无会话时显示 L0，未知/故障状态不宣称等级。L2 必须依据实际启动与隔离验收，不能由 Profile 中的隔离声明自动推断。
 
 ### 3.4 不变量（每条都对应 §10 的攻击测试）
 
@@ -292,17 +292,21 @@ A2 针对的是"拿到明文或扩大权限"。A2 能做的事被限定为两类
 ### 5.4 回滚检测（I8）
 
 **计数与校验**
-- Vault header 增加 `generation: u64`。凭据、策略、包装层的每次变更提交都加 1。
-- 用 VRK 派生的 MAC 绑定 generation。
-- `max_seen_generation` 同时记录在钥匙串（Team ID 访问组；只存计数，不存秘密）和 `state/generation` 文件中。
+- Vault header 增加 `generation: u64` 和 `generation_mac`。新 vault 从 1 开始；以固定 8-byte 大端 BLOB 保存，拒绝 0、畸形值和溢出。此次仍在未发布格式25内定稿，不迁移旧 schema。
+- 由 VRK 经 HKDF-SHA256 派生专用 key，以 HMAC-SHA256 绑定域、vault ID、格式版本与代数；先验证 MAC 和既有内容封印，再信任代数或更新外部锚。MAC 不替代凭据、Action、策略和账本封印。
+- 凭据增/转/撤、Action/模板批量增改禁用、信任根/策略与审计保留设置的实际变更、密码/恢复包装层、DEK/VRK 轮换，每个成功业务事务恰好加 1；无变化的幂等返回、失败、普通查询/审计和 Agent 执行不加。批量事务只加一次，VRK 轮换用新 VRK 认证新代数。
+- 业务、审计和条件代数更新在同一个 SQLite 事务内。外部 `max_seen_generation` 是已保留的 high-water，记录于受保护钥匙串及 `state/generation`；它可能因中断领先 DB，绝不能降低。
+- 最终 DB COMMIT 前，先持久推进受保护锚，再原子替换/fsync 文件锚；两者成功才提交。锚推进后遇到提交失败、期限届满或不确定结果，保留真实错误并 fault，不回退锚或继续准入。重启时较高锚阻止自动解锁。此顺序允许安全侧误报，不声称跨介质原子提交或硬件单调计数器。
+- 生产受保护锚还必须保证同一 vault 跨 state-dir 的并发写者不能分叉或降低 high-water；只靠同用户可删除的 flock 文件不满足 L1。平台实现及签名权限需独立验收，未验证前不得把文件检查称为 L1 防回滚。
 
-**回滚处理**
-- 解锁时如果 `db.generation < max_seen_generation`，进入 `ROLLBACK_SUSPECTED` 状态：
-  - 拒绝自动解锁，拒绝执行 Action；
-  - 用户用 step-up 证明确认"我在恢复旧备份"之后才重置。
-- 备份恢复走同一条确认路径。
+**回滚处理与备份恢复**
+- 解包候选 VRK 后，认证 `db.generation < max_seen_generation` 时进入不持有 VRK 的 `ROLLBACK_SUSPECTED`：清除临时授权、拒绝自动解锁及 Action；重启或 lock 不清除该条件。
+- 单独的恢复确认绑定 vault ID、所显示的源代数及 high-water，验证源备份的密码/恢复因子和完整内容封印；普通 unlock、presence key 或 desktop token 不作为恢复确认。错误/取消证明不写 DB 或锚。
+- 确认将所选快照重新定代为 `max(db.generation, high-water)+1`，按同一提交顺序认证并记录恢复审计，之后保持 Locked。这里的“重置”只指解除疑似状态，绝不降低历史计数。
+- 离线 restore 复用该确认语义，先完整验证 staging，再重新定代、持久安装；锚已推进后的失败清理不删除/降低锚，残留 incomplete marker 阻止启动。备份记录真实 snapshot generation，导出本身不增加代数。
+- 缺失锚与权限拒绝/服务不可用必须区分；已有 vault 不静默重建。新机器确认会明确显示“历史不可用”，从源代数/剩余有效锚的最大值加 1 建立新基线，不能声称恢复了丢失历史。
 
-**防护边界**：这是 L1 级别的防护。同用户进程可以改文件，但无法改钥匙串里那份计数。
+**防护边界**：L1 依赖受保护计数项的读取、更新、删除/重建权限和并发语义验收；L1-dev 文件可被同用户回滚，只提供较弱检测。该机制检测带旧 header 的整库回滚，generation MAC 不单独检测保留新 header 后替换旧的合法行，也不防 root 或钥匙串整体回滚。恢复验证旧备份的有效因子，不宣称令已泄露的旧因子失效。
 
 ### 5.5 内存加固（修复 S6）
 
@@ -368,8 +372,8 @@ v3 只把"由谁批准"抽象出来。策略规则增加 `approver` 字段：
 
 - `PolicyRule.approver` 是唯一审批人来源；同规则的 `approval` 只保留 `mode`、`max_uses` 和可选 `max_window_ms`。`require-approval` 必须同时提供两者，permit/forbid 均不得携带。旧 `approver_ids`/`quorum` 不再作为规则字段。
 - `local-presence` 只接受 `kind`，只支持 one-time、max_uses=1、无时间窗。`ed25519.keys` 为 1–32 个不重复的规范小写十六进制 Ed25519 公钥，必须各自唯一对应已验签 snapshot 的审批人注册表；threshold 保留 1–2 且不大于 key 数。内部 ID 从该注册表派生，不增加第二套可编辑映射。remote 默认不能解码；lab 中可解码但无实现时验证与执行均拒绝。
-- challenge/pending 使用同一 `approver`，完整字段参与来源签名和上下文比较；Ed25519 keys 排序输出。snapshot format 升为 4，challenge/envelope/pending record 升为 v2，challenge 签名域为 `RKCHALLENGE\0\x02`。旧格式全部拒绝，不迁移。外层 policy envelope 和 `RKPOLICY\0\x01`、外部 grant format1/`RKAPPROVAL\0\x01` 保持，因为其结构和已签上下文未改变；外部 grant 只能走 Ed25519 分支。
-- 该持久策略变化同时将 vault format23 升为 24，旧库和备份在 bootstrap 拒绝，不等到 unlock 才报告策略完整性错误。lab relay 配置升为 3，审批目标增加 publicKey，以公钥匹配新 challenge；不因此实现 remote approver。
+- challenge/pending 使用同一 `approver`，完整字段参与来源签名和上下文比较；Ed25519 keys 排序输出。当前集成目标为 snapshot format6（本机审批阶段曾升为4），challenge/envelope/pending record 为 v2，challenge 签名域为 `RKCHALLENGE\0\x02`。旧格式全部拒绝，不迁移。外层 policy envelope 和 `RKPOLICY\0\x01`、外部 grant format1/`RKAPPROVAL\0\x01` 保持，因为其结构和已签上下文未改变；外部 grant 只能走 Ed25519 分支。
+- 本机审批阶段将 vault format23 升为24；回滚 generation/MAC 后当前目标为25。旧库和备份在 bootstrap 拒绝，不等到 unlock 才报告策略完整性错误。lab relay 配置升为 3，审批目标增加 publicKey，以公钥匹配新 challenge；不因此实现 remote approver。
 - 个人模板的高风险能力只有在本地批准、一次消费、重试和取消的完整链路验收后才开放；中间批次明确拒绝，不能降为 permit。外部签名 CLI 保留其现有单人 one-time、最长 60 秒边界。
 
 #### M2 本机审批运行时合同
@@ -388,7 +392,7 @@ v3 只把"由谁批准"抽象出来。策略规则增加 `approver` 字段：
   1. 调用返回 `APPROVAL_REQUIRED{challenge_id, expires_at}`。
   2. MCP tool 可以调用 `await_approval(challenge_id)`，最多长轮询 120 秒。
   3. 批准后，Agent 带 `challenge_id` 重新执行，消耗掉这次本地授权。
-- **网关（LLM 调用）**：不支持审批，命中 `require-approval` 一律返回 403。LLM 模板默认不包含此类规则。
+- **网关（LLM 调用）**：命中 `require-approval` 返回含 challenge 的审批错误，按 §8.5 显式重提并消费已批准请求；不后台等待批准后自动代发。LLM 模板仍默认 allow。
 
 **防自批**
 - `local-presence` 授权只能通过 A2 级管理操作签发，Agent 接口无法签发。
@@ -453,11 +457,11 @@ v3 只把"由谁批准"抽象出来。策略规则增加 `approver` 字段：
   外部审批人的 Ed25519 算法与这项策略信任根扩展分开；团队模板包继续只接受 Ed25519。
 - `secure-enclave-p256` 指受支持的 App 创建路径；公钥与签名本身不能证明硬件来源。
   备份包含已签策略、公钥和模式，不含 SE 私钥；换设备后仍能验证旧策略，重新个人签名需要新建 vault。
-- 个人草稿由 daemon 从已认证、仍启用的模板 Action 版本生成，输入为 principal、所选版本与到期时间。
+- 个人草稿由 daemon 从已认证、仍启用的模板 Action 版本生成，输入为完整 Profile 数组、已验证策略摘要与到期时间。
   每份草稿是完整策略替换：差异展示包含所有删除、变更及新增，不能隐式保留未选择的授权。
   daemon 返回精确签名字节；App 审阅后只签该内存快照，不自行实现 JCS，不按文件路径重读。
-  local-presence 尚未接线时，生成器遇到 require-approval 必须拒绝，不能降低为 allow。
-  只读 admin opcode `54` 接收显式 `principal_id / actions / expires_at_ms`；空 actions 表示撤销全部授权。
+  require-approval 使用已接线的 local-presence 一次审批，不能隐式降低为 allow。
+  只读 admin opcode `54` 接收 `profiles / expected_policy_sha256 / expires_at_ms`；空 profiles 表示撤销全部授权。
   响应 metadata 包含已验证的 vault/trust、公钥、前后版本、policy digest、完整字段差异及所选 Action 定义，
   body 为精确签名字节。metadata 与签名策略各守 64 KiB 上限；超限拒绝，不截断审阅内容。
   CLI 仅将 metadata 与 UTF-8 签名字节封装为 JSON 供 App 读取；不参与签名或规范化。
@@ -571,7 +575,7 @@ GitHub App、Vault、Keycloak 等现有 connector 保留为"高级"类型，不�
   "principal_id": "<稳定 UUID>",
   "grants": [{
     "instance": "anthropic",
-    "capabilities": [{"capability": "messages", "actions": [{"action_id": "<Action UUID>", "version": 1}]}]
+    "capabilities": [{"capability": "messages", "rule": "template-default", "actions": [{"action_id": "<Action UUID>", "version": 1}]}]
   }],
   "session": {"ttl_ms": 43200000, "max_uses": 5000},
   "confirm_each_run": false,
@@ -591,7 +595,13 @@ GitHub App、Vault、Keycloak 等现有 connector 保留为"高级"类型，不�
 
 #### M3 实现合同（GA 前固定）
 
-Profile 进入唯一签名 `PolicySnapshot` 的必填 `profiles`，快照格式升为5；与用量存储统一将开发中 vault 格式升为25，旧格式拒绝，不迁移。每个 Profile 内嵌稳定实例 slug → capability → 精确 ActionVersionRef 的映射，不另建实例目录或 Profile 数据库。激活时用认证后的 Action 行核对能力及共同的 credential/template/source digest。
+Profile 进入唯一签名 `PolicySnapshot` 的必填 `profiles`；个人规则选择补齐后的快照格式为6。用量与回滚存储的开发中 vault 格式为25，旧格式拒绝，不迁移。每个 Profile 内嵌稳定实例 slug → capability → 精确 ActionVersionRef 的映射，不另建实例目录或 Profile 数据库。激活时用认证后的 Action 行核对能力及共同的 credential/template/source digest。
+
+个人草案 opcode54 以完整 `profiles`、到期时间和 `expected_policy_sha256` 为输入，替换旧 principal/actions 输入；空 Profile 数组撤销全部授权。daemon 在既有协调锁内核对认证持久策略摘要，失配返回 `POLICY_VERSION_CONFLICT`，过期策略仍可作为续期编辑基线。只读 opcode60 返回完整 Profile 列表与该摘要/到期时间，只有从未存在策略才返回空列表和 null；Locked/完整性错误不伪装为空。CLI 通过 `profile list` 读取，`policy draft --profiles-stdin` 提交；App 编辑完整数组，复用现有差异审阅、精确字节签名及激活。
+
+每个 `ProfileCapabilityGrant` 必须显式包含 `rule: template-default | allow | require-approval`，不为缺字段提供旧格式回退。它是个人草案的基线选择：template-default 从认证后的 Action 默认值取值；allow 生成 Permit；require-approval 生成本机一次审批。App 在现有能力选择处展示风险、默认规则与明确选择，仍走完整草案、全量差异、逐字节签名及激活。生成器按 principal + 精确 ActionVersionRef 处理选择；同一主体在多个 Profile 中对同一操作的冲突基线拒绝，不同主体互不影响。
+
+该选择不成为第二个授权器，也不改变完整替换合同：生成个人新策略时，不自动合并或保留 previous 的额外规则，全部删除/变化继续进入差异供明确签名。团队已有 Forbid、参数限制和外部 Ed25519 审批规则保持合法；所有执行继续由现有 evaluator 按 Forbid、RequireApproval、Permit 的优先级决定，Profile 中的 allow 不是绕过这些规则的许可。
 
 会话上限使用 `ttl_ms`、`max_uses`，并签入 `confirm_each_run`。LLM 实例必须同时签入非空模型白名单、单次最大输出、每日请求数和每日输出 token 上限；同 principal/实例的多个 Profile 必须保持映射与预算一致。修改这些字段继续使用完整草案、差异、签名和激活流程。
 
@@ -600,7 +610,7 @@ Profile 进入唯一签名 `PolicySnapshot` 的必填 `profiles`，快照格式�
 ### 8.2 `rekey run`
 
 ```bash
-rekey run claude-code -- claude
+rekey run claude-code --client claude-code -- claude
 ```
 
 1. CLI 请求按 Profile 签发会话。这是 A1 操作，需要 vault 已解锁，**不弹窗**。如果 Profile 设置了 `confirm_each_run: true`，则升级为 A2。
@@ -615,9 +625,26 @@ rekey run claude-code -- claude
    - Seatbelt 配置需要新增出站规则，允许连接 `127.0.0.1:<port>` 和 agent.sock。
    - `egress: deny-other` 才达到 L2，界面要提示这会影响 npm、git 等工具。
 
+隔离入口继续由 CLI 持有 owner/control，复用 sibling `rekeyd` 的平台 launcher，从首个不可信指令前安装沙箱。已实现的平台组合才可启动；`none+allow`、macOS `seatbelt+deny-other`、Linux `netns+deny-other` 分别验收，跨平台或未实现组合明确拒绝，不重试为裸进程。L2 只描述本次实际隔离的子树，Admin59 签发本身不是沙箱证明。
+
+正常控制失效时，CLI 向隔离 helper 发 SIGTERM，并有界等待直接 Agent 被终止/回收以及私有临时目录清理；超时可终止 helper，但必须报告清理未确认，不显示已停止 Agent。helper 的正常退出码143仅在该清理路径和 signal handler 恢复均成功后作为内部确认；被信号杀死不算确认。此合同不承诺终止所有后代；CLI/helper 被 SIGKILL 的边界仍以 T9 capability 撤销和存活后代的既有沙箱约束验收，不冒充清理成功。
+
+隔离子树的工作目录为本次显式项目目录，允许该项目内读写；HOME/TMPDIR 使用私有临时目录。项目不得与 state/端点目录重叠，不放行项目外用户配置、Keychain 或其他服务 socket；项目内原有秘密属于用户授予的项目材料。继承标准输入/输出/错误的文件、pipe、TTY/null，拒绝 socket stdio，关闭其余 FD，并新建 terminal session 防止控制原宿主终端。平台 launcher 保留固定必要环境及本次 SDK 路由，清除代理、SSH socket、动态加载和其他账号环境；不为客户端兼容而放开整个 HOME。
+
+macOS 仅允许精确 agent.sock 和可信59端口的 `127.0.0.1` TCP；其他 IP/UDP/UDS/Mach 默认拒绝。Linux 的独立网络 namespace 不能直接访问宿主 loopback，也不隔离工作目录中宿主可创建的 pathname Unix socket。工作目录读写 bind 无法单独满足 deny-other；该保证未补齐前，新 Profile netns 启动明确不可用，既有 agent-run 仍按其已验证的较窄合同使用。未来 Linux SDK 还要求同一 Gateway 的固定 UDS 与 namespace 内精确端口桥，复用同一执行链，不允许任意目的地转发。端点目录须与 state 分离，沿用既有 agent-runtime-dir 部署；默认拓扑未分离时拒绝隔离，不借此扩大 state 读取权限。Seatbelt 仅按实际验证的 macOS build/arch 报告，工具缺失或规则/依赖不足保留真实失败。
+
 进程监视在发布 capability 前固定一次 OS 报告的 peer 身份，之后不得重选 owner。Linux 使用 `SO_PEERPIDFD`，旧内核缺此接口时明确拒绝；macOS 注册 `NOTE_EXIT` 后用原 audit token 的公开 Security 动态查询复核代际与存活。macOS 的 peer 身份可能随注册前的 FD 移交/写入变化，不能宣称还原最初 connector；正常 `run` 在签发完成前不启动 child，并保持控制 FD 的 CLOEXEC。注册后的 owner 死亡和控制连接 EOF 均独立触发撤销，T9 仍由真实 CLI 端到端验证。
 
 **I5 的例外说明**：capability 会进入子进程环境变量。它是短期、有范围、可吊销的令牌，不是凭据本身；泄露后的影响以 Profile 的授权范围和预算为上限。
+
+Profile 用尽调用额度后，拒绝新执行和发现，但不把“额度耗尽”当作控制连接撤销：必须让已经准入的最后一次响应完整交付。条目保留到 owner/control 关闭、显式撤销或 TTL 到期；普通手工会话继续使用原有清理语义。
+
+SDK endpoint 只从已认证 admin 连接的 opcode59 成功 body 取得。`ProfileSessionCreatedResponse` 必填 `gateway`：非 LLM 为 null；LLM 监听可用时为 `{port, instances:[{instance, provider}]}`，provider 为闭合 `anthropic` / `openai`。LLM 监听不可用时也返回 null，SDK run 以现有启动不可用错误拒绝启动，不自动重试；MCP 本身不依赖 HTTP endpoint。端口必须当前已绑定且非零，实例映射须恰好覆盖该 Profile 的 LLM 实例；响应与完整 Profile、策略摘要在同一协调点绑定。CLI 固定构造 loopback URL，Anthropic 使用 `/p/<instance>`，OpenAI 使用 `/p/<instance>/v1`；不接受任意 origin，也不读取端口文件后发送 capability。同 provider 多实例无法映射到一个 SDK 环境变量时，run 明确拒绝启动并提示拆分 Profile，不猜选第一个。Agent IPC 内部 capability 保持原值，仅 HTTP SDK 环境的 API key 添加一次 `rkc_` 前缀。
+
+客户端适配必须显式选择 `run <profile> --client claude-code|codex -- <command> [args]`，不从 executable basename 猜测；缺省仍是上述通用 SDK 环境。适配不扩大签名 Profile 权限，不写客户端配置或令牌文件：
+- Claude Code 模式要求一个 Anthropic endpoint，使用 `ANTHROPIC_AUTH_TOKEN=rkc_<capability>`，移除本次环境中的 `ANTHROPIC_API_KEY`、custom headers 和已声明的 Bedrock/Vertex/Foundry 路由选择，避免 API key 首次确认与双鉴权。不得自动启用 `CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST` 来绕过客户端受管理模型约束；已有客户端设置/组织策略的优先级仍存在，当前软件检查不等于所有客户端配置下的零交互验收。
+- Codex 模式要求一个 OpenAI endpoint，使用本次 session UUID 派生的公开临时 provider 名。通过启动 argv 的固定 `-c` 设置 name、可信 base_url、env_key=OPENAI_API_KEY、requires_openai_auth=false、wire_api=responses、supports_websockets=false；capability 只在 env。使用本次 provider 名避免 Codex 配置深合并残留旧同名 provider 的 header 或 auth 字段，不新增注册表或持久配置。
+- Codex 固定覆盖置于用户参数尾、首个字面 `--` 之前，保持后续 prompt 原样；明确拒绝适配模式中与本机网关冲突的 `--oss`、`--local-provider`、`--remote` 选择。仅从首个字面 `--` 前移除独立的 `--no-daemon` 参数，再在程序后的根参数位置放置一个 `--no-daemon`，使能力令牌留在本次子进程，避免复用已有共享 daemon；`--` 后的 prompt 原样保留。不自动绕过外部受管理策略，客户端拒绝配置时保留其退出状态。
 
 ### 8.3 `rekey connect`
 
@@ -625,7 +652,7 @@ rekey run claude-code -- claude
 rekey connect claude-code   # 同样支持 codex | cursor
 ```
 
-- 写入目标 Agent 的 MCP 配置（`rekey-mcp`）；Claude Code/Codex 同时配置公开网关 endpoint 和运行时 key 变量引用，capability 值不落盘。Cursor 本批仅支持 MCP：其官方 BYOK 经服务端构造请求，不能将用户本机 loopback 网关冒充可用的远端地址。
+- 写入目标 Agent 的 MCP 配置（`rekey-mcp`），并给出对应 `run --client` 启动指引。SDK 动态 endpoint 与运行时 key 引用由 §8.2 的显式启动适配绑定，不向配置文件写入会过期的端口，也不假设 `${ENV}` 会展开；capability 值不落盘。Codex 当前忽略项目层的 provider 配置，故不把该文件冒充 SDK 路由已生效。Cursor 本批仅支持 MCP：其官方 BYOK 经服务端构造请求，不能将用户本机 loopback 网关冒充可用的远端地址。
 - **写入前展示 diff，经用户确认后才写，并备份原文件。** 此规则覆盖 2026-10-01 中"不自动修改第三方 Agent 配置"的限制。
 - `--print` 只打印，不写入。
 
@@ -635,15 +662,17 @@ rekey connect claude-code   # 同样支持 codex | cursor
 - 每个已授权的模板能力暴露为一个 tool，输入 schema 由 params、query、body_schema 合成。
 - 返回内容：`text/*` 和 `application/json` 直接返回文本，其他类型返回 base64 并附 MIME 类型。支持 GET。
 - 另外提供 `await_approval` 和 `cancel_approval` tool（§6.3），只通过 Agent socket 查询或取消调用者自己的 challenge，不执行管理批准，不自动重发原动作。
-- MCP 动作参数固定为 `{params, query, body, approval_challenge?}`：控制字段只进 IPC metadata，`body` 单独编码；GET 不接受 body 并发送零字节。批准后由 Agent 显式带同一 `approval_challenge` 重新提交原请求；完整上下文仍由 daemon 复核。
+- MCP 动作参数为 `{params, query, body, approval_challenge?}`；同一能力包含多个 Action 时，额外要求闭合的 `operation`（已认证 source.action_index 的十进制字符串），选择对应的精确版本与输入 schema，单 Action 不接受该字段。控制字段只进 IPC metadata，`body` 单独编码；GET 不接受 body 并发送零字节。批准后由 Agent 显式带同一 `approval_challenge` 重新提交原请求；完整上下文仍由 daemon 复核。
 - `APPROVAL_REQUIRED` 的 challenge ID 和期限同时放入文本 JSON 与 `structuredContent`；await/cancel 返回同一 daemon 状态与期限。未实现的协议版本只协商到最高已实现版本，不声称支持未来协议。
 - 没有会话时返回 `NEEDS_SESSION`，提示用户运行 `rekey run`。
+- 无参数 MCP 从 `REKEY_CAPABILITY` / `REKEY_AGENT_SOCKET` 接入；Agent opcode8 只读发现当前签名 Profile 的公开 Action 投影，不消费调用次数。每次 list/动作调用刷新发现，后续执行仍独立准入；审批等待/取消保留自己的 owner 校验。多 Action 能力用最小 source index 对应 Action ref 作为现有 `rekey.<id>.v<version>` 工具名，title 显示实例/能力。不再读取 manifest/session token 文件。
 
 ### 8.5 本机网关
 
 **启用与监听**
 - 默认关闭。Profile 第一次引用 LLM 模板时，在 A2 确认中一并开启。
-- 只监听 `127.0.0.1`，端口记录在 `state/gateway.port`。
+- 唯一启用来源是当前已验证、有效的签名策略引用受支持 LLM Profile，不增加持久 enable 配置。只监听 `127.0.0.1:0`，实际端口以原子替换、0600 写入 `state/gateway.port`，该文件仅作公开发现缓存，不作为令牌发送目的地的可信来源。
+- 激活或解锁重载完成既有策略事务后协调监听；bind 失败保留“策略已提交”的事实，endpoint 不可用，LLM run 拒绝启动，不自动重新签名。锁定、策略撤回/到期、故障和停止关闭 listener 并清理端口缓存；已准入请求继续由原 Supervisor 收口。
 
 **路由**
 - 格式为 `/p/<template-instance>/<模板声明的 path>`。
@@ -651,18 +680,22 @@ rekey connect claude-code   # 同样支持 codex | cursor
 
 **入站认证**
 - 接受 `x-api-key` 或 `authorization: Bearer`，值必须是 `rkc_` capability；否则返回 401，**也不转发**客户端带来的真实 key。
-- `Host` 必须是 `127.0.0.1:<port>` 或 `localhost:<port>`。
+- `Host` 必须恰一个，值为 `127.0.0.1:<实际port>` 或 `localhost:<实际port>`。重复/同时出现的两种认证头、非 ASCII 或非 `rkc_` 令牌拒绝，不猜测选择一个。
 - 带 `Origin` 头的请求一律拒绝。
 
 **请求处理**
 - 剥除所有客户端认证头，重写 `Host`，注入凭据。
-- 只转发模板声明的头，例如 `anthropic-version`、`anthropic-beta`。
+- 只转发已认证 Action 声明的额外头。固定头由 executor 注入；客户端同值可剥除后继续，异值拒绝。当前内置 Anthropic 只有固定 `anthropic-version`；`anthropic-beta` 仅在既有安装合同明确允许并登记为 Action extra header 时可转发，不在网关私增许可。
+- HTTP 适配器复用同一次执行准入、规范正文、审批、预算和遮蔽，不另解析或改写 model/max/stream。严格路由到签名实例的精确 method/path；拒绝编码近似路径、query、绝对 URI、CONNECT/Upgrade、压缩请求及歧义长度，头部、连接、正文和读取时间有界。
+- 可选 `x-rekey-approval-challenge` 仅接受一个 UUID，用于用户批准后的显式重提，交原审批复核并在上游前剥除。SDK 首次收到 `APPROVAL_REQUIRED`，网关不自动等待或重试。首字节前沿现有安全错误返回：认证401、路由404、格式400、策略/预算/审批403、锁定或服务故障503、上游502。
+- 流式响应在首个经过检查的 chunk 到达后才发200/SSE头，保持原事件字节；Supervisor 持有执行与唯一结算。终态失败、超时或丢失终态在已发头后中止正文，不伪造完成帧或向 SSE 插入普通 JSON 错误。客户端断开不移交或重复结算权限。
 
 **LLM 放宽**（覆盖 NET-07 的纯文本限制）
 - 请求体整体透传，tools 和 thinking 一并放行。
 - 强制三项限制：
   - `model` 必须在 Profile 白名单内；
-  - `max_tokens` 不超过上限；
+  - 生成输出上限按实际接口字段校验：Messages `max_tokens`、Responses `max_output_tokens`、Chat `max_completion_tokens` 或 `max_tokens`（二者互斥），必须是正整数且不超过 Profile 上限。缺省时，共同规范化入口只补这一字段；Chat 默认补 `max_completion_tokens`。其余 body 原始内容保留，上游发送、策略哈希和审批展示使用同一有效 body；较小的显式值不会扩大。
+  - Chat 只接受缺省 `n` 或整数 `n=1`；Responses 只接受缺省或 `background:false`。这样每请求上限能界定生成输出，拒绝未覆盖的多 choice 或后台执行。
   - 预算按响应的 `usage` 累计，超出后拒绝新请求。
   - 日预算按稳定 principal、模板实例和 UTC 日期持久聚合，续签 capability 与 daemon 重启不能重置。
   - 生成请求的 `usage` 缺失、格式错误或流中断时，按本次请求已校验的最大输出 token 数结算，并记为 indeterminate；不能按零消耗处理。有效累计 usage 只结算一次，不将流中的多次累计值相加。
@@ -679,6 +712,8 @@ rekey connect claude-code   # 同样支持 codex | cursor
 
 ---
 
+实际 Claude Code 的 Anthropic beta SDK 使用 `?beta=true`。内置 `anthropic@1` 的 messages 与 count-tokens 在现可选 query 模型中声明 `beta: enum:true`；普通请求仍可省略，models 不扩大。HTTP adapter 只接受空 query 或该精确字面键值，并仅映射到声明它的 Action；重复、转义、其他键/值继续拒绝。beta 值进入既有 renderer、规范请求/审批哈希及真实上游目标，不静默删除，也不无条件给普通请求添加。`anthropic-beta` 头仍遵守管理员注册的 allowed_extra_headers；不自动把客户端随版本变化的实验特性扩大为内置信任。
+
 ## 9. 审计、可见性与发布
 
 ### 9.1 用量视图
@@ -689,7 +724,13 @@ App 新增"活动"页，按 Profile 和模板能力汇总：
 - 审批次数；
 - LLM token 用量。
 
-数据来自现有审计表，不新增存储内容。
+数据来自现有审计表，不新增统计存储；允许补齐现有审计记录的请求元数据。可选 `request_context` 只含已认证的 `profile_name`、签发时 `policy_sha256`、`instance_slug`、`capability` 和经过共同入口校验的 `model`，不保存请求正文、参数、提示词或令牌。历史 Profile 按策略摘要与名称识别，不从当前配置猜测归属；普通事件没有此上下文。
+
+该上下文贯穿拒绝、审批、执行和既有两条崩溃恢复链。现审计表的 JSON 元数据列在未发布的格式25内定稿为 `metadata_json`，包含闭合的 `request_context` 与 `usage`，旧 schema 摘要直接拒绝，不迁移。用量账本认证与一次结算合同不变。成功执行保留 started/finished，拒绝和异常保留 blocked/indeterminate，不为统计补造成功事件。
+
+活动页默认统计今日 UTC、截至刷新时的稳定审计快照：只将 started 计为执行准入，blocked 计为执行拒绝，唯一 approval.requested 计为触发审批；批准等待本身不是拒绝。输出 token 只从一次结算的终态累计，实测值与按上限计入的值分开。准入与拒绝不是互斥指标；跨午夜的完成记录按终态时间展示，预算仍按请求准入的 UTC 日记账。
+
+沿现有 audit list 的4MiB body和稳定分页读取，按完整记录字节预算给出正确 cursor，不截字段或跳记录。只有翻页完成后才展示该快照内完整的已保留记录汇总；未加载完、快照过期或历史被清理都明确显示，不能冒充全部请求总数。
 
 ### 9.2 遮蔽增强（修复 S5）
 
@@ -705,6 +746,7 @@ App 新增"活动"页，按 Profile 和模板能力汇总：
 **发布物**
 - 签名并公证的 `Rekey.pkg`：
   - 包含 `/Applications/Rekey.app`；
+  - 内嵌独立 `com.rekey.rekeyd` daemon bundle 与其 Developer ID provisioning profile，使 daemon 可使用受保护计数项的 keychain access group；App 保留自己的 profile。该结构只承载签名与授权，不引入 XPC 通信；
   - CLI 链接到 `/usr/local/bin`；
   - 通过 SMAppService 注册 LaunchAgent。
 - Homebrew cask。
@@ -716,11 +758,21 @@ App 新增"活动"页，按 Profile 和模板能力汇总：
   - **格式变化只允许出现在主版本**（v3 → v4）。同一主版本内的次版本和补丁版本不得改格式；需要改格式的功能推迟到下一个主版本。
   - 发布说明首行标明"需要重新初始化：是/否"。
   - App 检测到旧格式时，显示只读提示和重建引导。不读取旧库内容，也不提供迁移。
-- 当前基础格式为 v21；完成上述必要存储改动后的最终草案在 v3.0 GA 时冻结为 v3 格式。GA 前每次改变实际格式同样拒绝旧库，不做迁移。
+- 历史基础格式为 v21；当前未发布候选使用 vault format25 和 policy snapshot6，最终格式在 v3.0 GA 时冻结。GA 前每次改变实际格式同样拒绝旧库，不做迁移。
 
-**节奏**：每个里程碑结束必须有可下载的版本。feature-truth-matrix 的 `Release` 列作为门槛：上一项没有进入发布包，不开始下一个里程碑。
+**节奏**：用户于 2026-10-03 明确授权整份 SPEC 按依赖连续实现，因此本轮允许多个里程碑在未发布集成分支推进。源码、软件测试、签名设备验收和公开发布分别记录；feature-truth-matrix 的 `Release` 列仅在真实发布包下载验收后填写，不能用本地构建代替。正式发布仍需独立授权。
 
 ---
+
+### 9.4 三命令入口（macOS 安装版）
+
+- `rekey setup` 与 `rekey add anthropic` 只打开 `/Applications/Rekey.app` 的固定 `rekey://setup` / `rekey://add/anthropic` 页面。URL 不接受 query、fragment、证明、路径或任意 provider；CLI exit 0 只表示系统已接受打开请求，完成以 App 显示为准。
+- 此入口使用默认 state-dir；非默认 state-dir 或不适用的 socket/session 参数明确拒绝，不忽略。运行中的 App 同样接收固定路由。路由只选页面，不自动执行初始化、保存、注册服务、签名或激活。
+- Setup 复用个人/团队选择、初始化、离线保存恢复密钥确认、显式启用服务及已认证状态检查。个人模式再显式建立既有 SE trust；团队模式保留外部签署。重复打开不重建已有 vault 或 trust，不缓存跨步骤密码。
+- Anthropic 接入展示“保存凭据”和“授予权限”两个阶段：A1 保存获得真实 credential ID，逐次 A2 安装用户选择的模板 capabilities，再用现有完整 Profile 草稿、差异审阅和 SE 精确字节签名。此次安装显式展示并授权 `anthropic-beta` header，不改变模板全局默认。
+- 模型白名单为用户明确确认的精确 ID；第三条命令携带同一 `--model`。会话、单次/每日预算和策略到期可见且需确认；Claude 初始单次建议 32768 以覆盖本次实测 32000 请求，不静默扩大已有授权。默认不启用 L2。
+- 已有 Profile 完整保留；重名需明确编辑或另名，旧 principal 不改变。基线漂移重新加载并审阅，不自动合并/重签。保存、安装和激活为现有分步事务；取消或失败保留已完成阶段，不后台重试或自动删除。
+- 切工作区、锁定、关闭页面、版本变化使在途结果失效；系统认证完成后仍核对 vault/trust/version。用户不需要编写 JSON；完整 Action 和签名差异仍可展开审查。
 
 ## 10. 验证矩阵（在签名产物上运行）
 
@@ -737,7 +789,7 @@ App 新增"活动"页，按 Profile 和模板能力汇总：
 | T9 | 8.2 | 子进程退出、CLI 被 SIGKILL 后，会话在 5 秒内被吊销 |
 | T10 | 6.3/6.4 | Agent 无法通过任何 Agent 接口签发或消耗他人的本地审批授权；审批面板内容只来自 daemon 的规范请求 |
 | T11 | I9 | `rekey run` 下连续 500 次授权范围内的调用，不产生任何 UI 交互 |
-| T12 | 体验 | 在全新 macOS 账户上：安装 pkg → `rekey setup` → `rekey add anthropic` → `rekey run claude-code -- claude`，总计不超过 5 分钟，3 条命令，0 个 JSON |
+| T12 | 体验 | 在全新 macOS 账户上：安装 pkg → `rekey setup` → `rekey add anthropic` → `rekey run claude-code --client claude-code -- claude --model <已确认的模型>`，总计不超过 5 分钟，3 条命令，0 个 JSON |
 
 现有的 P0 合同测试、fuzz 和性能门槛全部保留。
 

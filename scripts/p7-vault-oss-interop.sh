@@ -377,8 +377,8 @@ binding={"action_id":action,"version":1,"resource":{"type":"p7oss-vault-action",
          "required":["operation"],"properties":{"operation":{"const":"bounded"}}}}
 rule={"id":str(uuid.uuid4()),"effect":"permit","principal_id":principal,"action_id":action,
       "version":1,"resource":binding["resource"],"parameters":{"kind":"any_validated"}}
-pathlib.Path(path).write_text(json.dumps({"format_version":4,"version":int(version),
-  "expires_at_ms":int(time.time()*1000)+600000,"approvers":[],"workload_identities":[],
+pathlib.Path(path).write_text(json.dumps({"format_version":6,"version":int(version),
+  "expires_at_ms":int(time.time()*1000)+600000,"approvers":[],"profiles": [], "workload_identities":[],
   "bindings":[binding],"rules":[rule]}))
 PY
   python3 "$ROOT/scripts/sign-test-policy.py" policy --key-dir "$WORKDIR/policy-key" \

@@ -5,17 +5,18 @@
 mod client;
 
 use std::collections::BTreeMap;
-use std::fs::OpenOptions;
 use std::io::{BufRead, Read, Write};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
-use rekey_connector::{McpToolDescriptor, adapt_mcp_invocation, project_mcp_tool};
-use rekey_domain::action::{ActionTarget, FixedHttpAction, FixedMethod};
+use rekey_connector::{McpToolDescriptor, adapt_mcp_invocation};
+use rekey_domain::action::FixedMethod;
 use rekey_domain::capability::ActionVersionRef;
 use rekey_domain::ids::ApprovalRequestId;
-use rekey_domain::ipc::{Channel, ExecuteResponseMeta, LocalApprovalStateResponse, agent_msg};
+use rekey_domain::ipc::{
+    Channel, ExecuteResponseMeta, LocalApprovalStateResponse, ProfileActionDefinition,
+    ProfileInventoryMeta, ProfileInventoryResponse, agent_msg,
+};
 use rekey_domain::template::{TemplateValues, ValueRule};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -24,34 +25,15 @@ use zeroize::Zeroizing;
 const LIMIT: usize = 1024 * 1024;
 const VERSION: &str = "2025-11-25";
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Manifest {
-    agent_socket: PathBuf,
-    session_file: PathBuf,
-    tools: Vec<ToolFile>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ToolFile {
-    action_file: PathBuf,
-    input_schema: Value,
-    #[serde(default)]
-    headers: Vec<(String, String)>,
-}
-
 struct Tool {
     descriptor: McpToolDescriptor,
-    action: ActionVersionRef,
-    headers: Vec<(String, String)>,
-    no_body: bool,
-    fixed_content_type: bool,
+    operations: BTreeMap<String, ProfileActionDefinition>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Arguments {
+    operation: Option<String>,
     #[serde(default)]
     params: TemplateValues,
     #[serde(default)]
@@ -72,26 +54,90 @@ fn value_schema(rules: &BTreeMap<String, ValueRule>, required: bool) -> Value {
     json!({"type":"object","additionalProperties":false,"properties":properties,"required":if required {rules.keys().cloned().collect::<Vec<_>>()} else {Vec::new()}})
 }
 
-fn invocation_schema(action: &FixedHttpAction, body_schema: Value) -> Value {
-    let empty = BTreeMap::new();
-    let (params, query) = match &action.target {
-        ActionTarget::Fixed { .. } => (&empty, &empty),
-        ActionTarget::Template { target, .. } => (target.params(), target.query()),
-    };
+fn invocation_schema(action: &ProfileActionDefinition, operation: Option<&str>) -> Value {
+    let params = action.target.params();
+    let query = action.target.query();
     let mut properties = json!({
-        "params":value_schema(params, true),
-        "query":value_schema(query, false),
+        "params":value_schema(params, true), "query":value_schema(query, false),
         "approval_challenge":{"type":"string","format":"uuid","description":"After approval, explicitly repeat the original request with its challenge ID. Never retry a completed or indeterminate write."}
     });
     let mut required = Vec::new();
+    if let Some(operation) = operation {
+        properties["operation"] = json!({"type":"string","const":operation});
+        required.push("operation");
+    }
     if !params.is_empty() {
         required.push("params");
     }
     if action.method != FixedMethod::Get {
-        properties["body"] = body_schema;
+        properties["body"] = match &action.body_schema {
+            Some(schema) => json!({"allOf":[{"type":"object"},schema]}),
+            None => json!({"type":"object"}),
+        };
         required.push("body");
     }
-    json!({"type":"object","additionalProperties":false,"properties":properties,"required":required})
+    json!({"type":"object","additionalProperties":false,"properties":properties,"required":required,
+        "description":format!("{} {}{}", action.method.as_str(), action.origin.as_str(), action.target.path_pattern())})
+}
+
+fn inventory_tools(
+    inventory: ProfileInventoryResponse,
+) -> Result<BTreeMap<String, Tool>, client::CliError> {
+    let invalid = || client::CliError::local("INVALID_FRAME", "invalid Profile inventory");
+    let mut definitions = BTreeMap::new();
+    for action in inventory.actions {
+        if definitions
+            .insert((action.action_id, action.version), action)
+            .is_some()
+        {
+            return Err(invalid());
+        }
+    }
+    let mut tools = BTreeMap::new();
+    for grant in inventory.profile.grants {
+        for capability in grant.capabilities {
+            let mut operations = BTreeMap::new();
+            for reference in capability.actions {
+                let action = definitions
+                    .remove(&(reference.action_id, reference.version))
+                    .ok_or_else(invalid)?;
+                if operations
+                    .insert(action.action_index.to_string(), action)
+                    .is_some()
+                {
+                    return Err(invalid());
+                }
+            }
+            let anchor = operations
+                .values()
+                .min_by_key(|action| action.action_index)
+                .ok_or_else(invalid)?;
+            let name = format!("rekey.{}.v{}", anchor.action_id, anchor.version);
+            let input_schema = if operations.len() == 1 {
+                invocation_schema(anchor, None)
+            } else {
+                json!({"type":"object","oneOf":operations.iter().map(|(operation, action)|invocation_schema(action, Some(operation))).collect::<Vec<_>>()})
+            };
+            let descriptor = McpToolDescriptor { name: name.clone(), title: format!("{} / {}", grant.instance, capability.capability),
+                description: "Execute a Profile-authorized template capability. Current policy and approval still apply.".into(), input_schema };
+            if tools
+                .insert(
+                    name,
+                    Tool {
+                        descriptor,
+                        operations,
+                    },
+                )
+                .is_some()
+            {
+                return Err(invalid());
+            }
+        }
+    }
+    if !definitions.is_empty() || tools.is_empty() {
+        return Err(invalid());
+    }
+    Ok(tools)
 }
 
 fn approval_tool(name: &str) -> Value {
@@ -106,78 +152,64 @@ struct Server {
     ready: bool,
 }
 
-fn private_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, &'static str> {
-    if !path.is_absolute() {
-        return Err("handoff paths must be absolute");
-    }
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)
-        .map_err(|_| "cannot open private handoff file")?;
-    let metadata = file.metadata().map_err(|_| "cannot inspect handoff file")?;
-    if !metadata.is_file()
-        || metadata.uid() != unsafe { libc::geteuid() }
-        || metadata.mode() & 0o077 != 0
-        || metadata.len() > LIMIT as u64
-    {
-        return Err("handoff must be bounded caller-owned private regular file");
-    }
-    let mut bytes = Zeroizing::new(Vec::new());
-    file.take((LIMIT + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|_| "cannot read handoff file")?;
-    if bytes.len() > LIMIT {
-        return Err("handoff file too large");
-    }
-    serde_json::from_slice(&bytes).map_err(|_| "invalid handoff JSON")
-}
-
 impl Server {
-    fn load(path: &Path) -> Result<Self, &'static str> {
-        let manifest: Manifest = private_json(path)?;
-        if !manifest.agent_socket.is_absolute() {
-            return Err("agent socket must be absolute");
-        }
-        #[derive(Deserialize)]
-        struct Session {
-            capability_token: String,
-        }
-        let session: Session = private_json(&manifest.session_file)?;
-        let token = Zeroizing::new(session.capability_token);
-        if token.is_empty() {
-            return Err("empty capability");
-        }
-        let mut tools = BTreeMap::new();
-        for entry in manifest.tools {
-            let action: FixedHttpAction = private_json(&entry.action_file)?;
-            if !action.enabled {
-                return Err("disabled action in manifest");
-            }
-            let mut descriptor = project_mcp_tool(&action, &entry.input_schema)
-                .map_err(|_| "invalid manifest action")?;
-            descriptor.input_schema = invocation_schema(&action, descriptor.input_schema);
-            let tool = Tool {
-                descriptor,
-                action: ActionVersionRef {
-                    action_id: action.id,
-                    version: action.version,
-                },
-                headers: entry.headers,
-                no_body: action.method == FixedMethod::Get,
-                fixed_content_type: matches!(&action.target, ActionTarget::Template { fixed_headers, .. } if fixed_headers.keys().any(|name| name.as_str() == "content-type")),
-            };
-            if tools.insert(tool.descriptor.name.clone(), tool).is_some() {
-                return Err("duplicate manifest action");
-            }
-        }
-        Ok(Self {
-            socket: manifest.agent_socket,
-            token,
-            tools,
+    fn from_environment() -> Self {
+        Self {
+            socket: std::env::var_os("REKEY_AGENT_SOCKET")
+                .map(PathBuf::from)
+                .unwrap_or_default(),
+            token: Zeroizing::new(std::env::var("REKEY_CAPABILITY").unwrap_or_default()),
+            tools: BTreeMap::new(),
             initialized: false,
             ready: false,
-        })
+        }
+    }
+
+    fn require_session(&self) -> Result<(), client::CliError> {
+        if self.token.is_empty() || self.socket.as_os_str().is_empty() {
+            return Err(client::CliError::local(
+                "NEEDS_SESSION",
+                "Run rekey run to provide a Profile session",
+            ));
+        }
+        if !self.socket.is_absolute() {
+            return Err(client::CliError::local(
+                "IPC_UNAVAILABLE",
+                "agent socket must be absolute",
+            ));
+        }
+        Ok(())
+    }
+
+    fn refresh_tools(&mut self) -> Result<(), client::CliError> {
+        // The previous list is never a source of authority, including failures.
+        self.tools.clear();
+        self.require_session()?;
+        let metadata = Zeroizing::new(
+            serde_json::to_vec(&ProfileInventoryMeta {
+                capability_token: self.token.to_string(),
+            })
+            .map_err(|_| {
+                client::CliError::local("INVALID_FRAME", "cannot encode inventory request")
+            })?,
+        );
+        let (metadata, body) = client::Client::connect(&self.socket, Channel::Agent)?.call(
+            agent_msg::PROFILE_INVENTORY,
+            &metadata,
+            &[],
+        )?;
+        let public: Value = serde_json::from_slice(&metadata)
+            .map_err(|_| client::CliError::local("INVALID_FRAME", "invalid inventory metadata"))?;
+        if public.as_object().is_none_or(|value| !value.is_empty()) {
+            return Err(client::CliError::local(
+                "INVALID_FRAME",
+                "invalid inventory metadata",
+            ));
+        }
+        let inventory = serde_json::from_slice(&body)
+            .map_err(|_| client::CliError::local("INVALID_FRAME", "invalid inventory body"))?;
+        self.tools = inventory_tools(inventory)?;
+        Ok(())
     }
 
     fn handle(&mut self, request: Value) -> Option<Value> {
@@ -224,6 +256,11 @@ impl Server {
                 if params.get("cursor").is_some() {
                     return Some(error(id, -32602, "Cursor is not supported"));
                 }
+                if let Err(failure) = self.refresh_tools() {
+                    return Some(
+                        json!({"jsonrpc":"2.0","id":id,"error":{"code":-32000,"message":"Rekey inventory unavailable","data":public_error(&failure)}}),
+                    );
+                }
                 let mut tools = self
                     .tools
                     .values()
@@ -253,6 +290,9 @@ impl Server {
                 else {
                     return Some(error(id, -32602, "A challenge_id is required"));
                 };
+                if let Err(failure) = self.require_session() {
+                    return Some(json!({"jsonrpc":"2.0","id":id,"result":broker_error(&failure)}));
+                }
                 let await_decision = params["name"] == "await_approval";
                 #[derive(Serialize)]
                 struct ApprovalRequest<'a> {
@@ -309,6 +349,9 @@ impl Server {
                 }
             }
             "tools/call" => {
+                if let Err(failure) = self.refresh_tools() {
+                    return Some(json!({"jsonrpc":"2.0","id":id,"result":broker_error(&failure)}));
+                }
                 let Some(tool) = params["name"]
                     .as_str()
                     .and_then(|name| self.tools.get(name))
@@ -323,7 +366,33 @@ impl Server {
                 else {
                     return Some(error(id, -32602, "Invalid Rekey tool arguments"));
                 };
-                let (content_type, body) = if tool.no_body {
+                let action = if tool.operations.len() == 1 {
+                    if raw_arguments.get("operation").is_some() {
+                        return Some(error(
+                            id,
+                            -32602,
+                            "This capability does not accept an operation",
+                        ));
+                    }
+                    tool.operations
+                        .values()
+                        .next()
+                        .expect("nonempty projected tool")
+                } else {
+                    let Some(action) = arguments
+                        .operation
+                        .as_ref()
+                        .and_then(|operation| tool.operations.get(operation))
+                    else {
+                        return Some(error(id, -32602, "Select a declared operation"));
+                    };
+                    action
+                };
+                let action_ref = ActionVersionRef {
+                    action_id: action.action_id,
+                    version: action.version,
+                };
+                let (content_type, body) = if action.method == FixedMethod::Get {
                     if raw_arguments.get("body").is_some() {
                         return Some(error(id, -32602, "GET actions do not accept a body"));
                     }
@@ -332,11 +401,11 @@ impl Server {
                     let Some(body) = arguments.body else {
                         return Some(error(id, -32602, "A body object is required"));
                     };
-                    let Ok(invocation) = adapt_mcp_invocation(tool.action, &body) else {
+                    let Ok(invocation) = adapt_mcp_invocation(action_ref, &body) else {
                         return Some(error(id, -32602, "The body must be an object"));
                     };
                     (
-                        (!tool.fixed_content_type).then_some(invocation.content_type),
+                        (!action.fixed_content_type).then_some(invocation.content_type),
                         invocation.body,
                     )
                 };
@@ -354,10 +423,10 @@ impl Server {
                 }
                 let metadata = Execute {
                     capability_token: &self.token,
-                    action_id: tool.action.action_id,
-                    action_version: tool.action.version,
+                    action_id: action_ref.action_id,
+                    action_version: action_ref.version,
                     content_type,
-                    extra_headers: &tool.headers,
+                    extra_headers: &[],
                     params: &arguments.params,
                     query: &arguments.query,
                     approval_grants: [],
@@ -401,13 +470,20 @@ fn tool_error(code: &str) -> Value {
     json!({"isError":true,"content":[{"type":"text","text":format!("Rekey failed ({code}). Ask the operator to inspect access and audit records. Completion may be indeterminate; do not retry writes automatically.")}]})
 }
 
-fn broker_error(error: &client::CliError) -> Value {
+fn public_error(error: &client::CliError) -> Value {
+    let mut result = json!({"code":error.code,"retryable":error.retryable});
     if let Some(approval) = &error.approval {
-        let result = json!({"code":error.code,"approval":approval,"retryable":false});
-        json!({"isError":true,"structuredContent":result,"content":[{"type":"text","text":result.to_string()}]})
-    } else {
-        tool_error(&error.code)
+        result["approval"] = json!(approval);
     }
+    if error.code == "NEEDS_SESSION" {
+        result["message"] = json!("Run rekey run to provide a Profile session");
+    }
+    result
+}
+
+fn broker_error(error: &client::CliError) -> Value {
+    let result = public_error(error);
+    json!({"isError":true,"structuredContent":result,"content":[{"type":"text","text":result.to_string()}]})
 }
 
 fn execution_result(metadata: ExecuteResponseMeta, body: &[u8]) -> Value {
@@ -436,10 +512,10 @@ fn execution_result(metadata: ExecuteResponseMeta, body: &[u8]) -> Value {
 
 fn run() -> Result<(), &'static str> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
-    if args.len() != 2 || args[0] != "--manifest" {
-        return Err("usage: rekey-mcp --manifest /absolute/path/mcp.json");
+    if !args.is_empty() {
+        return Err("usage: rekey-mcp (inside rekey run)");
     }
-    let mut server = Server::load(Path::new(&args[1]))?;
+    let mut server = Server::from_environment();
     let mut input = std::io::stdin().lock();
     let mut output = std::io::stdout().lock();
     loop {
@@ -483,6 +559,19 @@ mod tests {
     use rekey_domain::ipc::{FRAME_HEADER_LEN, FrameHeader, resp_msg};
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixListener;
+
+    fn request_header(stream: &mut std::os::unix::net::UnixStream) -> FrameHeader {
+        let mut header = [0; FRAME_HEADER_LEN];
+        // The real client verifies the peer after connect, before writing.
+        // Start the fixture's short frame budget only once that work is done.
+        stream.set_read_timeout(Some(client::IO_TIMEOUT)).unwrap();
+        stream.read_exact(&mut header[..1]).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        stream.read_exact(&mut header[1..]).unwrap();
+        FrameHeader::decode(&header).unwrap()
+    }
 
     fn response(mime: &str) -> ExecuteResponseMeta {
         serde_json::from_value(
@@ -588,12 +677,7 @@ mod tests {
             let challenge = ApprovalRequestId::new_random();
             let receiver = std::thread::spawn(move || {
                 let (mut stream, _) = listener.accept().unwrap();
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(2)))
-                    .unwrap();
-                let mut header = [0; FRAME_HEADER_LEN];
-                stream.read_exact(&mut header).unwrap();
-                let request = FrameHeader::decode(&header).unwrap();
+                let request = request_header(&mut stream);
                 assert_eq!(request.channel, Channel::Agent);
                 assert_eq!(request.body_len, 0);
                 assert_eq!(
@@ -653,6 +737,85 @@ mod tests {
                         .contains("INVALID_FRAME")
                 );
             }
+            assert!(!reply.to_string().contains("synthetic-capability"));
+        }
+    }
+
+    #[test]
+    fn public_fixed_content_type_projection_controls_only_execute_metadata() {
+        for fixed_content_type in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+            let socket = directory.path().join("agent.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let action = rekey_domain::ids::ActionId::new_random();
+            let principal = rekey_domain::ids::PrincipalId::new_random();
+            let name = format!("rekey.{action}.v1");
+            let inventory = json!({
+                "profile":{"name":"test","principal_id":principal,"grants":[{"instance":"fixture","capabilities":[{"rule":"template-default","capability":"write","actions":[{"action_id":action,"version":1}]}]}],"session":{"ttl_ms":60000,"max_uses":1},"confirm_each_run":false,"isolation":"none","egress":"allow","llm_limits":[]},
+                "policy_sha256":"00".repeat(32),"expires_at_ms":4_102_444_800_000_i64,
+                "actions":[{"action_id":action,"version":1,"action_index":0,"name":"fixture","origin":"https://api.example.com","method":"POST","target":{"path":"/write","params":{},"query":{}},"body_schema":{"type":"object"},"fixed_content_type":fixed_content_type}]
+            });
+            let receiver = std::thread::spawn(move || {
+                for operation in [
+                    agent_msg::PROFILE_INVENTORY,
+                    agent_msg::EXECUTE_FIXED_HTTP_ACTION,
+                ] {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let request = request_header(&mut stream);
+                    assert_eq!(request.message_type, operation);
+                    let mut metadata = vec![0; request.metadata_len as usize];
+                    let mut body = vec![0; request.body_len as usize];
+                    stream.read_exact(&mut metadata).unwrap();
+                    stream.read_exact(&mut body).unwrap();
+                    let metadata: Value = serde_json::from_slice(&metadata).unwrap();
+                    assert_eq!(metadata["capability_token"], "synthetic-capability");
+                    let (metadata, body) = if operation == agent_msg::PROFILE_INVENTORY {
+                        assert!(body.is_empty());
+                        (json!({}), serde_json::to_vec(&inventory).unwrap())
+                    } else {
+                        assert_eq!(metadata["action_id"], action.to_string());
+                        assert_eq!(
+                            metadata["content_type"],
+                            if fixed_content_type {
+                                Value::Null
+                            } else {
+                                json!("application/json")
+                            }
+                        );
+                        assert_eq!(metadata["extra_headers"], json!([]));
+                        assert_eq!(body, br#"{"title":"hello"}"#);
+                        (
+                            json!({"upstream_status":200,"headers":[["content-type","application/json"]],"body_len":2}),
+                            b"{}".to_vec(),
+                        )
+                    };
+                    let metadata = serde_json::to_vec(&metadata).unwrap();
+                    let header = FrameHeader {
+                        channel: Channel::Agent,
+                        flags: 0,
+                        message_type: resp_msg::OK,
+                        request_id: request.request_id,
+                        metadata_len: metadata.len() as u32,
+                        body_len: body.len() as u32,
+                    };
+                    stream.write_all(&header.encode()).unwrap();
+                    stream.write_all(&metadata).unwrap();
+                    stream.write_all(&body).unwrap();
+                }
+            });
+            let mut server = Server {
+                socket,
+                token: Zeroizing::new("synthetic-capability".into()),
+                tools: BTreeMap::new(),
+                initialized: true,
+                ready: true,
+            };
+            let reply = server.handle(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":{"body":{"title":"hello"}}}})).unwrap();
+            receiver.join().unwrap();
+            assert_eq!(reply["result"]["isError"], false);
             assert!(!reply.to_string().contains("synthetic-capability"));
         }
     }

@@ -6,6 +6,8 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum AuthorityError {
+    #[error("vault rollback requires explicit recovery confirmation")]
+    RollbackSuspected,
     #[error("vault is not initialized")]
     NotInitialized,
     #[error("vault is already initialized")]
@@ -84,6 +86,7 @@ impl AuthorityError {
     /// Stable machine-readable code for IPC error envelopes.
     pub fn code(&self) -> &'static str {
         match self {
+            Self::RollbackSuspected => "ROLLBACK_SUSPECTED",
             Self::NotInitialized => "NOT_INITIALIZED",
             Self::AlreadyInitialized => "ALREADY_INITIALIZED",
             Self::StateDirectoryNotEmpty => "STATE_DIRECTORY_NOT_EMPTY",
@@ -117,6 +120,7 @@ impl AuthorityError {
             Self::AuditCommitFailedAfterExecution => "AUDIT_COMMIT_FAILED_AFTER_EXECUTION",
             Self::BackupFailed => "BACKUP_FAILED",
             Self::RestoreFailed => "RESTORE_FAILED",
+            Self::Domain(rekey_domain::DomainError::ResponseTooLarge) => "RESPONSE_TOO_LARGE",
             Self::Domain(_) => "INVALID_INPUT",
         }
     }

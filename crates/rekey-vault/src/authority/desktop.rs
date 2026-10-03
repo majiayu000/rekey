@@ -249,6 +249,7 @@ impl Worker {
         if matches!(self.state, VaultState::Faulted) {
             return Err(AuthorityError::Locked);
         }
+        let recover_usage = matches!(self.state, VaultState::Locked);
         self.suspend_presence();
         let result = (|| {
             ensure_mutation_current(not_after)?;
@@ -302,23 +303,47 @@ impl Worker {
             let vrk = RootKey::from_bytes(&mut bytes);
             drop(raw);
             // Authenticate with the candidate without publishing it into worker state.
+            let header = self.store.load_header().and_then(|header| {
+                crate::bootstrap::prove_integrity(&header, vrk.bytes())?;
+                Ok(header)
+            });
+            let header = match header {
+                Ok(header) => header,
+                Err(error) => {
+                    self.fault("vault-header-integrity-failed");
+                    return Err(error);
+                }
+            };
             if let Err(error) = self
                 .store
-                .verified_policy_material(vrk.bytes(), self.header.vault_id)
+                .verified_policy_material(vrk.bytes(), header.vault_id)
             {
                 self.fault("desktop-resume-integrity-failed");
                 return Err(error);
             }
             let retention = self
                 .store
-                .verified_audit_retention(vrk.bytes(), self.header.vault_id);
+                .verified_audit_retention(vrk.bytes(), header.vault_id);
             self.fault_on_integrity(retention)?;
             if let Err(error) =
-                super::lease_journal::verify_store(&self.store, vrk.bytes(), self.header.vault_id)
+                super::lease_journal::verify_store(&self.store, vrk.bytes(), header.vault_id)
             {
                 self.fault("desktop-resume-journal-integrity-failed");
                 return Err(error);
             }
+            self.check_generation(&header)?;
+            let usage = if recover_usage {
+                self.store
+                    .recover_profile_usage(vrk.bytes(), header.vault_id)
+            } else {
+                // Reauthentication while Running is not crash recovery: an
+                // admitted request may still own its eventual measured usage.
+                self.store
+                    .verified_usage(vrk.bytes(), header.vault_id)
+                    .map(|_| ())
+            };
+            let usage = self.fault_on_integrity(usage);
+            self.fault_on_audit_failure(usage)?;
             // A verified ticket may constrain future retries before it authorizes A2.
             // Preserve that cap even if the audit/deadline below prevents publication.
             self.presence_grant = Some(PresenceState::DeadlineOnly(grant));
@@ -341,10 +366,11 @@ impl Worker {
                 .take()
                 .ok_or(AuthorityError::InvalidUnlockCredential)?
                 .into_grant();
-            Ok((expires, vrk, grant))
+            Ok((expires, header, vrk, grant))
         })();
         match result {
-            Ok((expires, vrk, grant)) => {
+            Ok((expires, header, vrk, grant)) => {
+                self.header = header;
                 self.state = VaultState::Unlocked { vrk };
                 self.desktop_session = None;
                 self.desktop_resume_expiry = Some(expires);
@@ -411,6 +437,8 @@ mod tests {
         let mut worker = Worker {
             #[cfg(feature = "lab")]
             keychain_fixture: None,
+            anchors: crate::generation_anchor::GenerationAnchors::open(&state, header.vault_id)
+                .unwrap(),
             store,
             header,
             state: VaultState::Locked,
@@ -835,6 +863,8 @@ mod tests {
         let mut worker = Worker {
             #[cfg(feature = "lab")]
             keychain_fixture: None,
+            anchors: crate::generation_anchor::GenerationAnchors::open(&state, header.vault_id)
+                .unwrap(),
             store,
             header,
             state: VaultState::Unlocked {
@@ -888,6 +918,8 @@ mod tests {
             let mut worker = Worker {
                 #[cfg(feature = "lab")]
                 keychain_fixture: None,
+                anchors: crate::generation_anchor::GenerationAnchors::open(&state, header.vault_id)
+                    .unwrap(),
                 store,
                 header,
                 state: VaultState::Locked,
@@ -936,5 +968,141 @@ mod tests {
             });
         }
         assert_eq!(outcomes, vec![true, true, true, true]);
+    }
+
+    fn advance_authenticated_header(worker: &Worker, db: &rusqlite::Connection) {
+        let wrapper = worker
+            .store
+            .active_wrapper(crate::model::WrapperKind::Password)
+            .unwrap();
+        let kek = crate::bootstrap::kek_for_wrapper(&wrapper, &SecretInput::from_slice(PASSWORD))
+            .unwrap();
+        let key = crate::bootstrap::unwrap_vrk(worker.header.vault_id, &wrapper, &kek).unwrap();
+        let mac = crate::crypto::generation::seal(
+            key.bytes(),
+            worker.header.vault_id,
+            worker.header.format_version,
+            2,
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE vault_header SET generation=?1,generation_mac=?2",
+            rusqlite::params![2u64.to_be_bytes().as_slice(), mac.as_slice()],
+        )
+        .unwrap();
+        worker
+            .anchors
+            .reserve(worker.anchors.read().unwrap(), 2, &mut false)
+            .unwrap();
+    }
+
+    #[test]
+    fn candidate_header_is_not_published_before_required_material_and_success_audit() {
+        for desktop in [false, true] {
+            for unlocked in [false, true] {
+                for table in [
+                    "policy_state",
+                    "audit_retention",
+                    "vault_lease_journal_state",
+                    "profile_usage_state",
+                    "audit",
+                ] {
+                    let (_dir, mut worker, _) = fixture();
+                    let (ticket, _) = worker.remember_desktop(password(), None).unwrap();
+                    if !unlocked {
+                        worker.set_locked("candidate-test", true).unwrap();
+                    }
+                    let db = rusqlite::Connection::open(crate::paths::vault_db(
+                        &worker.config.state_dir,
+                    ))
+                    .unwrap();
+                    advance_authenticated_header(&worker, &db);
+                    if table == "audit" {
+                        db.execute_batch("CREATE TRIGGER reject_unlock BEFORE INSERT ON audit_events WHEN NEW.event_type IN ('vault.unlocked','desktop.resumed') BEGIN SELECT RAISE(ABORT,'synthetic audit failure'); END;").unwrap();
+                    } else {
+                        db.execute(
+                            &format!("UPDATE {table} SET seal_ciphertext=zeroblob(16)"),
+                            [],
+                        )
+                        .unwrap();
+                    }
+                    let error = if desktop {
+                        worker
+                            .resume_desktop(SecretInput::from_slice(&ticket), None)
+                            .map(|_| ())
+                    } else {
+                        worker.unlock(password())
+                    }
+                    .unwrap_err();
+                    if table == "audit" {
+                        assert!(
+                            matches!(error, AuthorityError::AuditCommitFailed),
+                            "{desktop}/{unlocked}/{table}: {error}"
+                        );
+                    } else {
+                        assert!(
+                            matches!(error, AuthorityError::StorageIntegrityFailed),
+                            "{desktop}/{unlocked}/{table}: {error}"
+                        );
+                    }
+                    assert!(
+                        matches!(worker.state, VaultState::Faulted),
+                        "{desktop}/{unlocked}/{table}"
+                    );
+                    assert_eq!(
+                        worker.header.generation, 1,
+                        "candidate header was published before {desktop}/{unlocked}/{table}"
+                    );
+                    assert!(worker.presence_grant.is_none());
+                    let successful: i64 = db.query_row("SELECT count(*) FROM audit_events WHERE event_type IN ('vault.unlocked','desktop.resumed')", [], |r| r.get(0)).unwrap();
+                    assert_eq!(successful, 1, "only fixture's initial unlock may succeed");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn successful_candidate_publishes_verified_header_and_root_together() {
+        for desktop in [false, true] {
+            let (_dir, mut worker, _) = fixture();
+            let (ticket, _) = worker.remember_desktop(password(), None).unwrap();
+            worker.set_locked("candidate-test", true).unwrap();
+            let db = rusqlite::Connection::open(crate::paths::vault_db(&worker.config.state_dir))
+                .unwrap();
+            advance_authenticated_header(&worker, &db);
+            assert_eq!(worker.header.generation, 1);
+            if desktop {
+                worker
+                    .resume_desktop(SecretInput::from_slice(&ticket), None)
+                    .unwrap();
+                worker.verify_proof(&presence(&ticket)).unwrap();
+            } else {
+                worker.unlock(password()).unwrap();
+                assert!(worker.verify_proof(&presence(&ticket)).is_err());
+            }
+            assert_eq!(worker.header.generation, 2);
+            crate::bootstrap::prove_integrity(
+                &worker.header,
+                worker.require_unlocked().unwrap().bytes(),
+            )
+            .unwrap();
+            let successful: i64 = db.query_row("SELECT count(*) FROM audit_events WHERE event_type IN ('vault.unlocked','desktop.resumed')", [], |r| r.get(0)).unwrap();
+            assert_eq!(successful, 2);
+        }
+    }
+
+    #[test]
+    fn header_failure_preserves_failed_resume_audit_error_priority() {
+        let (_dir, mut worker, _) = fixture();
+        let (ticket, _) = worker.remember_desktop(password(), None).unwrap();
+        let db =
+            rusqlite::Connection::open(crate::paths::vault_db(&worker.config.state_dir)).unwrap();
+        db.execute_batch("DELETE FROM vault_header; CREATE TRIGGER reject_failure BEFORE INSERT ON audit_events WHEN NEW.event_type='desktop.resume_failed' BEGIN SELECT RAISE(ABORT,'synthetic audit failure'); END;").unwrap();
+        assert!(matches!(
+            worker.resume_desktop(SecretInput::from_slice(&ticket), None),
+            Err(AuthorityError::AuditCommitFailed)
+        ));
+        assert!(matches!(worker.state, VaultState::Faulted));
+        assert_revoked(&worker, &ticket);
     }
 }

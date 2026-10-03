@@ -1,3 +1,5 @@
+> 适用范围更新（2026-10-03）：本文保留 v2 foundation 的历史合同与当时证据，不改写旧发布事实。当前 v3 行为以 [v3 personal-first SPEC](2026-10-02-rekey-v3-personal-first.md) 为准；其中保护等级、Presence/管理会话权限、逐次明文查看与 shutdown 证明、Approver/Profile/网关、格式与回滚恢复的冲突段落均已由 v3 替代。旧的“desktop token 可读取”、自动恢复或旧格式说明不得用于当前实现；永久不迁移。
+
 > 2026-09-15 用户修订：已认证的本机 Admin UI 可以通过短期管理会话添加和读取当前凭证；Agent API 仍禁止读取。该例外覆盖本文 Admin 不可读取/添加必需逐次密码的旧约定，详见 `2026-09-14-native-admin-ui.md` 的个人密钥管理节。
 
 # Rekey Credential Authority v2 Foundation 实施规格

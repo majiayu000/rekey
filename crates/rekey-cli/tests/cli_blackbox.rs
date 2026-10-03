@@ -781,11 +781,42 @@ fn cli_end_to_end() {
             backup_path.to_str().unwrap(),
             "--sha256",
             hash,
+            "--inspect",
+            "--password-stdin",
+        ],
+        Some(&format!("{PASSWORD}\n")),
+    );
+    assert_eq!(output.status, 0, "inspect failed: {}", output.stderr);
+    let context: serde_json::Value = serde_json::from_str(&output.stdout).unwrap();
+    assert_eq!(context["source_generation"], receipt["generation"]);
+    let expected_generation = context["source_generation"]
+        .as_u64()
+        .unwrap()
+        .max(context["high_water"].as_u64().unwrap_or(0))
+        .checked_add(1)
+        .unwrap();
+    let output = run(
+        &rekey_bin(),
+        &[
+            "--state-dir",
+            restored_s,
+            "restore",
+            "--input",
+            backup_path.to_str().unwrap(),
+            "--sha256",
+            hash,
+            "--expected-context",
+            &output.stdout,
             "--password-stdin",
         ],
         Some(&format!("{PASSWORD}\n")),
     );
     assert_eq!(output.status, 0, "restore failed: {}", output.stderr);
+    let restored_receipt: serde_json::Value = serde_json::from_str(&output.stdout).unwrap();
+    assert_eq!(
+        restored_receipt["generation"].as_u64(),
+        Some(expected_generation)
+    );
 
     let child = Command::new(rekeyd_bin())
         .args(["serve", "--state-dir", restored_s, "--idle-lock", "15m"])
@@ -1387,31 +1418,35 @@ fn personal_policy_draft_sign_and_activate_over_anonymous_stdin() {
         Some(&format!("{proof}{install}\n")),
     ));
     let action = &installed["actions"][0]["action"];
-    let action_ref = format!(
-        "{}@{}",
-        action["id"].as_str().unwrap(),
-        action["version"].as_u64().unwrap()
-    );
     let principal = rekey_domain::ids::PrincipalId::new_random().to_string();
     let expires = (std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_millis()
-        + 600_000) as i64;
-    let expires = expires.to_string();
+        + 600_000)
+        .to_string();
+    let selected_profile = json!({"name":"fixture","principal_id":principal,
+        "grants":[{"instance":"openai","capabilities":[{"capability":"models","rule":"template-default","actions":[{"action_id":action["id"],"version":action["version"]}]}]}],
+        "session":{"ttl_ms":60000,"max_uses":100},"confirm_each_run":false,"isolation":"none","egress":"allow",
+        "llm_limits":[{"instance":"openai","models":["synthetic-model"],"max_output_tokens_per_request":100,"max_requests_per_day":100,"max_output_tokens_per_day":1000}]});
     let draft = |selected: bool| {
+        let current = success(call(&["profile", "list"], None));
         let mut args = vec![
             "policy",
             "draft",
-            "--principal",
-            &principal,
+            "--profiles-stdin",
             "--expires-at-ms",
             &expires,
         ];
-        if selected {
-            args.extend(["--action", &action_ref]);
+        if let Some(digest) = current["policy_sha256"].as_str() {
+            args.extend(["--expected-policy-sha256", digest]);
         }
-        success(call(&args, None))
+        let profiles = if selected {
+            json!([selected_profile.clone()])
+        } else {
+            json!([])
+        };
+        success(call(&args, Some(&profiles.to_string())))
     };
     let sign = |draft: &Value| {
         let bytes = draft["sign_bytes"].as_str().unwrap().as_bytes();

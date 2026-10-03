@@ -110,12 +110,18 @@ class H(http.server.BaseHTTPRequestHandler):
   try: self.wfile.write(body)
   except (BrokenPipeError,ConnectionResetError,ssl.SSLError): pass
 class LocalServer(http.server.ThreadingHTTPServer):
+ def get_request(self):
+  with (root/'tls-starts').open('a') as f: f.write('accept\n')
+  return super().get_request()
+ def finish_request(self,request,client_address):
+  # The accept loop must not wait for TLS; independent SCIM polls run concurrently.
+  with context.wrap_socket(request,server_side=True) as tls:
+   super().finish_request(tls,client_address)
  def server_bind(self):
   socketserver.TCPServer.server_bind(self)
   self.server_name='localhost';self.server_port=self.server_address[1]
 server=LocalServer(('127.0.0.1',0),H)
 context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);context.load_cert_chain(root/'tls.pem',root/'key.pem')
-server.socket=context.wrap_socket(server.socket,server_side=True)
 (root/'idp-ready').write_text(str(server.server_port));server.serve_forever()
 "#;
 struct Fixture {
@@ -334,6 +340,36 @@ impl Fixture {
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            for name in [
+                "relay.log",
+                "idp.log",
+                "scim-hits",
+                "idp-hits",
+                "tls-starts",
+            ] {
+                eprintln!(
+                    "fixture {name}: {}",
+                    fs::read_to_string(self.path(name)).unwrap_or_default()
+                );
+            }
+            if let Ok(db) = rusqlite::Connection::open_with_flags(
+                self.path("state/relay.sqlite"),
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            ) && let Ok(mut query) = db.prepare(
+                "SELECT subject,kind,result FROM transport_events ORDER BY rowid DESC LIMIT 8",
+            ) && let Ok(rows) = query.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            }) {
+                for row in rows.flatten() {
+                    eprintln!("fixture transport event: {row:?}");
+                }
+            }
+        }
         self.stop();
         self.idp.kill().ok();
         self.idp.wait().ok();
@@ -341,6 +377,43 @@ impl Drop for Fixture {
 }
 const UP: &str = "UPLOADER-TOKEN-CANARY";
 const AP: &str = "APPROVER-TOKEN-CANARY";
+
+#[tokio::test]
+async fn incomplete_idp_tls_handshake_does_not_block_relay_restart() {
+    let mut f = Fixture::new().await;
+    let starts = || {
+        fs::read_to_string(f.path("tls-starts"))
+            .unwrap()
+            .lines()
+            .count()
+    };
+    let previous = starts();
+    let url = reqwest::Url::parse(f.config["idpIssuer"].as_str().unwrap()).unwrap();
+    // Keep a TCP connection open without a TLS ClientHello. Wait for the
+    // fixture accept boundary, rather than guessing with a fixed sleep.
+    let stalled = tokio::net::TcpStream::connect(("127.0.0.1", url.port().unwrap()))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while starts() == previous {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    f.stop();
+    f.start().await;
+    // Release it before introspection: a 503 now identifies the startup
+    // directory poll that was blocked, rather than an unavailable IdP.
+    drop(stalled);
+    assert_eq!(
+        f.put("challenge", &challenge(REQUEST, now() + 60000), UP)
+            .await
+            .status(),
+        201
+    );
+    f.no_canary();
+}
 
 #[tokio::test]
 async fn immutable_bytes_receipts_retry_acl_and_restart() {

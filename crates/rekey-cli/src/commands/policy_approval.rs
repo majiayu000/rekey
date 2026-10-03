@@ -1,5 +1,6 @@
 use rekey_domain::ipc::ProofKind;
 use std::collections::BTreeSet;
+use std::io::Write;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -151,26 +152,28 @@ fn policy_activate_metadata(
 
 pub fn policy_draft(
     state_dir: &Path,
-    principal: &str,
     expires_at_ms: i64,
-    actions: &[String],
+    expected_policy_sha256: Option<String>,
 ) -> Result<(), CliError> {
-    let principal_id = principal
-        .parse()
-        .map_err(|_| CliError::local("USAGE", "invalid principal id"))?;
-    let actions = actions
-        .iter()
-        .map(|value| {
-            let (action_id, version) = parse_action_ref(value)?;
-            Ok(rekey_domain::capability::ActionVersionRef { action_id, version })
-        })
-        .collect::<Result<Vec<_>, CliError>>()?;
+    let input = read_bounded(
+        std::io::stdin().lock(),
+        ipc::METADATA_MAX_BYTES as usize,
+        "profiles",
+    )?;
+    let profiles = serde_json::from_slice::<Vec<rekey_domain::profile::AgentProfile>>(&input)
+        .map_err(|_| CliError::local("USAGE", "invalid Profile array"))?;
     let request = serde_json::to_vec(&ipc::PersonalPolicyDraftMeta {
-        principal_id,
-        actions,
+        profiles,
+        expected_policy_sha256,
         expires_at_ms,
     })
     .map_err(|_| CliError::local("USAGE", "cannot encode personal policy draft request"))?;
+    if request.len() > ipc::METADATA_MAX_BYTES as usize {
+        return Err(CliError::local(
+            "USAGE",
+            "personal policy draft metadata exceeds 64 KiB",
+        ));
+    }
     let (metadata, body) =
         admin(state_dir)?.call(admin_msg::PERSONAL_POLICY_DRAFT, &request, &[])?;
     let metadata: ipc::PersonalPolicyDraftResponse = serde_json::from_slice(&metadata)
@@ -183,6 +186,18 @@ pub fn policy_draft(
         serde_json::to_vec(&serde_json::json!({"metadata": metadata, "sign_bytes": sign_bytes}))
             .map_err(|_| CliError::local("INVALID_FRAME", "cannot encode personal policy draft"))?;
     print_json::<serde_json::Value>(&response)
+}
+
+pub fn profile_list(state_dir: &Path) -> Result<(), CliError> {
+    let (_, body) = admin(state_dir)?.call(admin_msg::PROFILE_LIST, b"{}", &[])?;
+    let profiles: ipc::ProfileListResponse = serde_json::from_slice(&body)
+        .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid Profile list"))?;
+    let mut output = serde_json::to_vec(&profiles)
+        .map_err(|_| CliError::local("INVALID_FRAME", "cannot encode Profile list"))?;
+    output.push(b'\n');
+    std::io::stdout()
+        .write_all(&output)
+        .map_err(|error| CliError::local("OUTPUT_FAILED", format!("cannot write output: {error}")))
 }
 
 fn personal_draft_sign_bytes(body: &[u8]) -> Result<&str, CliError> {

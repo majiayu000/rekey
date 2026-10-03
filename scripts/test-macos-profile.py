@@ -27,7 +27,7 @@ class ProfileInputTests(unittest.TestCase):
                              "unrelated-entitlement": True}}
 
     def prepare(self):
-        return profile_input.entitlements(self.profile, TEAM, CERTIFICATE, NOW)
+        return profile_input.entitlements(self.profile, TEAM, CERTIFICATE, "com.starlight.rekey", NOW)
 
     def test_exact_profile_emits_only_required_app_entitlements(self):
         result = self.prepare()
@@ -40,6 +40,19 @@ class ProfileInputTests(unittest.TestCase):
         result = self.prepare()
         self.assertEqual(result["com.apple.application-identifier"], TEAM + ".com.starlight.rekey")
         self.assertEqual(result["keychain-access-groups"], [TEAM + ".com.rekey"])
+
+    def test_daemon_profile_has_its_own_explicit_application_id(self):
+        with self.assertRaises(ValueError):
+            profile_input.entitlements(self.profile, TEAM, CERTIFICATE, "com.rekey.rekeyd", NOW)
+        self.profile["Entitlements"]["com.apple.application-identifier"] = TEAM + ".com.rekey.rekeyd"
+        result = profile_input.entitlements(self.profile, TEAM, CERTIFICATE, "com.rekey.rekeyd", NOW)
+        self.assertEqual(result["com.apple.application-identifier"], TEAM + ".com.rekey.rekeyd")
+        with self.assertRaises(ValueError): self.prepare()
+
+    def test_bundle_identifier_is_never_defaulted(self):
+        for bundle in (None, "", "com.rekey.other"):
+            with self.subTest(bundle=bundle), self.assertRaises(ValueError):
+                profile_input.entitlements(self.profile, TEAM, CERTIFICATE, bundle, NOW)
 
     def test_wrong_team_rejected(self):
         self.profile["TeamIdentifier"] = ["WRONGTEAM1"]
@@ -80,12 +93,12 @@ class ProfileInputTests(unittest.TestCase):
             with self.subTest(name=name):
                 profile = copy.deepcopy(self.profile)
                 profile["Entitlements"][name] = True
-                with self.assertRaises(ValueError): profile_input.entitlements(profile, TEAM, CERTIFICATE, NOW)
+                with self.assertRaises(ValueError): profile_input.entitlements(profile, TEAM, CERTIFICATE, "com.starlight.rekey", NOW)
 
     def test_malformed_profile_and_entitlements_rejected(self):
         for profile in ([], {}, {"TeamIdentifier": [TEAM], "Entitlements": []}):
             with self.subTest(profile=profile):
-                with self.assertRaises(ValueError): profile_input.entitlements(profile, TEAM, CERTIFICATE, NOW)
+                with self.assertRaises(ValueError): profile_input.entitlements(profile, TEAM, CERTIFICATE, "com.starlight.rekey", NOW)
 
 
 if __name__ == "__main__":

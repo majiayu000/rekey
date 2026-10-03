@@ -66,9 +66,9 @@ impl Lifecycle {
     pub fn reject_if_not_running(&self) -> Result<(), BrokerError> {
         match self.phase() {
             BrokerPhase::Running => Ok(()),
-            BrokerPhase::Locked => Err(BrokerError::Authority(AuthorityError::Locked)),
+            BrokerPhase::Locked => Err(BrokerError::Admission(AuthorityError::Locked)),
             BrokerPhase::Draining | BrokerPhase::ShuttingDown => {
-                Err(BrokerError::Authority(AuthorityError::Draining))
+                Err(BrokerError::Admission(AuthorityError::Draining))
             }
         }
     }
@@ -77,12 +77,12 @@ impl Lifecycle {
     /// lifecycle. Callers must hold the coordinator lock.
     pub fn reject_if_busy(&self) -> Result<(), BrokerError> {
         if self.remote_effect_gate.load(Ordering::SeqCst) == REMOTE_EFFECT_STOP_PENDING {
-            return Err(BrokerError::Authority(AuthorityError::Draining));
+            return Err(BrokerError::Admission(AuthorityError::Draining));
         }
         match self.phase() {
             BrokerPhase::Locked | BrokerPhase::Running => Ok(()),
             BrokerPhase::Draining | BrokerPhase::ShuttingDown => {
-                Err(BrokerError::Authority(AuthorityError::Draining))
+                Err(BrokerError::Admission(AuthorityError::Draining))
             }
         }
     }
@@ -97,7 +97,7 @@ impl Lifecycle {
     ) -> Result<MutexGuard<'_, ()>, BrokerError> {
         tokio::time::timeout_at(deadline, self.coordinator.lock())
             .await
-            .map_err(|_| BrokerError::Authority(AuthorityError::AuthorityBusy))
+            .map_err(|_| BrokerError::Admission(AuthorityError::AuthorityBusy))
     }
 
     pub fn try_coordinate(&self) -> Result<MutexGuard<'_, ()>, TryLockError> {

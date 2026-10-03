@@ -113,6 +113,10 @@ pub mod admin_msg {
     pub const APPROVAL_LOCAL_REVIEW: u16 = 55;
     pub const APPROVAL_LOCAL_APPROVE: u16 = 56;
     pub const APPROVAL_LOCAL_REJECT: u16 = 57;
+    pub const PROFILE_GET: u16 = 58;
+    pub const PROFILE_SESSION_CREATE: u16 = 59;
+    pub const PROFILE_LIST: u16 = 60;
+    pub const ROLLBACK_CONFIRM: u16 = 61;
 }
 
 /// Agent channel message types.
@@ -124,6 +128,7 @@ pub mod agent_msg {
     pub const EXECUTE_TEXT_STREAM: u16 = 5;
     pub const AWAIT_APPROVAL: u16 = 6;
     pub const CANCEL_APPROVAL: u16 = 7;
+    pub const PROFILE_INVENTORY: u16 = 8;
 }
 
 /// Response message types shared by both channels.
@@ -215,12 +220,12 @@ impl FrameHeader {
 
 /// Closed operation classification shared by managed Broker dispatch and CLI.
 pub fn managed_admin_operation(message_type: u16) -> Result<bool, FrameError> {
-    if !(1..=57).contains(&message_type) {
+    if !(1..=61).contains(&message_type) {
         return Err(FrameError::InvalidField);
     }
     Ok(!matches!(
         message_type,
-        1 | 2 | 3 | 15 | 16 | 31 | 34 | 36 | 45..=48
+        1 | 2 | 3 | 15 | 16 | 31 | 34 | 36 | 45..=48 | 61
     ))
 }
 
@@ -451,6 +456,24 @@ impl<'de> Deserialize<'de> for ErrorEnvelope {
     }
 }
 
+/// Authenticated snapshot and observed high-water presented for explicit
+/// rollback recovery. Confirmation revalidates every field before mutation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RollbackContext {
+    pub vault_id: VaultId,
+    pub source_generation: u64,
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub high_water: Option<u64>,
+    pub history_missing: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RollbackConfirmMeta {
+    pub expected: RollbackContext,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StatusResponse {
@@ -460,6 +483,8 @@ pub struct StatusResponse {
     pub lab_enabled: bool,
     pub sessions_active: u32,
     pub lease_journal: LeaseJournalStatus,
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub rollback: Option<RollbackContext>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -726,6 +751,64 @@ pub struct SessionCreatedResponse {
     pub max_uses: u32,
 }
 
+/// The Profile name is the only caller-selected scope. All limits and
+/// actions come from the current, verified policy snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileNameMeta {
+    pub profile: String,
+}
+
+/// Encoded in the response frame body with empty JSON metadata.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileGetResponse {
+    pub profile: crate::profile::AgentProfile,
+    pub policy_sha256: String,
+    pub expires_at_ms: i64,
+}
+
+/// Encoded only in the response frame body. In particular, the capability
+/// must not be copied to public response metadata or diagnostic output.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileSessionCreatedResponse {
+    pub session: SessionCreatedResponse,
+    pub profile: crate::profile::AgentProfile,
+    pub policy_sha256: String,
+    #[serde(deserialize_with = "required_profile_gateway")]
+    pub gateway: Option<ProfileGatewayEndpoint>,
+}
+
+fn required_profile_gateway<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<ProfileGatewayEndpoint>, D::Error> {
+    Option::<ProfileGatewayEndpoint>::deserialize(deserializer)
+}
+
+/// Public endpoint returned on the same authenticated connection that creates
+/// the Profile session. A port-file discovery hint is never a substitute.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileGatewayEndpoint {
+    pub port: u16,
+    pub instances: Vec<ProfileGatewayInstance>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileGatewayInstance {
+    pub instance: String,
+    pub provider: ProfileGatewayProvider,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProfileGatewayProvider {
+    Anthropic,
+    OpenAi,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PolicyActivateMeta {
@@ -737,9 +820,18 @@ pub struct PolicyActivateMeta {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PersonalPolicyDraftMeta {
-    pub principal_id: PrincipalId,
-    pub actions: Vec<ActionVersionRef>,
+    pub profiles: Vec<crate::profile::AgentProfile>,
+    pub expected_policy_sha256: Option<String>,
     pub expires_at_ms: i64,
+}
+
+/// Authenticated persisted editing base, including an expired signed policy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileListResponse {
+    pub profiles: Vec<crate::profile::AgentProfile>,
+    pub policy_sha256: Option<String>,
+    pub expires_at_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -903,6 +995,7 @@ pub struct BackupPolicyCut {
 #[serde(deny_unknown_fields)]
 pub struct BackupReceipt {
     pub vault_id: String,
+    pub generation: u64,
     pub format_version: u32,
     pub created_at_ms: i64,
     pub sha256_hex: String,
@@ -914,10 +1007,42 @@ pub struct BackupReceipt {
 #[serde(deny_unknown_fields)]
 pub struct RestoreReceipt {
     pub vault_id: String,
+    pub generation: u64,
     pub format_version: u32,
     pub input_sha256_hex: String,
     pub output_path: String,
     pub snapshot_cut: BackupSnapshotCut,
+}
+
+/// Short-lived capability authentication only; never debug-log this request.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileInventoryMeta {
+    pub capability_token: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileInventoryResponse {
+    pub profile: crate::profile::AgentProfile,
+    pub policy_sha256: String,
+    pub expires_at_ms: i64,
+    pub actions: Vec<ProfileActionDefinition>,
+}
+
+/// Public authenticated template projection: excludes credential and injection data.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileActionDefinition {
+    pub action_id: ActionId,
+    pub version: u64,
+    pub action_index: u32,
+    pub name: ActionName,
+    pub origin: HttpsOrigin,
+    pub method: FixedMethod,
+    pub target: crate::template::TemplateTarget,
+    pub body_schema: Option<serde_json::Value>,
+    pub fixed_content_type: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1438,6 +1563,47 @@ mod tests {
     }
 
     #[test]
+    fn rollback_context_and_status_require_explicit_history() {
+        let context = serde_json::json!({
+            "vault_id": "00000000-0000-0000-0000-000000000001",
+            "source_generation": 7, "high_water": null, "history_missing": true
+        });
+        let decoded: RollbackContext = serde_json::from_value(context.clone()).unwrap();
+        assert_eq!(decoded.high_water, None);
+        for field in [
+            "vault_id",
+            "source_generation",
+            "high_water",
+            "history_missing",
+        ] {
+            let mut missing = context.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(serde_json::from_value::<RollbackContext>(missing).is_err());
+        }
+        let mut status = serde_json::json!({
+            "state": "rollback-suspected", "format_version": 25,
+            "runtime_version": "3.0.0", "lab_enabled": false, "sessions_active": 0,
+            "lease_journal": {"verified": false, "pending": 0, "unknown": 0, "complete": 0},
+            "rollback": context
+        });
+        assert_eq!(
+            serde_json::from_value::<StatusResponse>(status.clone())
+                .unwrap()
+                .rollback,
+            Some(decoded)
+        );
+        status["rollback"] = serde_json::Value::Null;
+        assert!(
+            serde_json::from_value::<StatusResponse>(status.clone())
+                .unwrap()
+                .rollback
+                .is_none()
+        );
+        status.as_object_mut().unwrap().remove("rollback");
+        assert!(serde_json::from_value::<StatusResponse>(status).is_err());
+    }
+
+    #[test]
     fn backup_and_restore_receipts_have_required_cut_and_fixed_json_shape() {
         let cut = BackupSnapshotCut {
             audit_sequence: 41,
@@ -1448,6 +1614,7 @@ mod tests {
         };
         let backup = BackupReceipt {
             vault_id: "actual-vault".to_owned(),
+            generation: 7,
             format_version: 20,
             created_at_ms: 1,
             sha256_hex: "b2".repeat(32),
@@ -1456,6 +1623,7 @@ mod tests {
         };
         let restore = RestoreReceipt {
             vault_id: backup.vault_id.clone(),
+            generation: 8,
             format_version: backup.format_version,
             input_sha256_hex: backup.sha256_hex.clone(),
             output_path: "/state/restored".to_owned(),
@@ -1465,7 +1633,7 @@ mod tests {
         assert_eq!(
             value,
             serde_json::json!({
-                "vault_id": "actual-vault", "format_version": 20,
+                "vault_id": "actual-vault", "format_version": 20, "generation": 8,
                 "input_sha256_hex": "b2".repeat(32), "output_path": "/state/restored",
                 "snapshot_cut": {"audit_sequence": 41, "policy": {"version": 2, "bundle_sha256": "a1".repeat(32)}}
             })
@@ -1479,6 +1647,12 @@ mod tests {
         let mut unexpected = value;
         unexpected["latest"] = serde_json::json!(true);
         assert!(serde_json::from_value::<RestoreReceipt>(unexpected).is_err());
+        let mut missing_generation = serde_json::to_value(&restore).unwrap();
+        missing_generation
+            .as_object_mut()
+            .unwrap()
+            .remove("generation");
+        assert!(serde_json::from_value::<RestoreReceipt>(missing_generation).is_err());
         let mut old = serde_json::to_value(&backup).unwrap();
         old.as_object_mut().unwrap().remove("snapshot_cut");
         assert!(serde_json::from_value::<BackupReceipt>(old).is_err());
@@ -1529,13 +1703,38 @@ mod tests {
             assert!(parse_management_body(&bad).is_err());
         }
         assert!(parse_management_body(&body[..49]).is_err());
-        for id in 1..=57 {
+        for id in 1..=61 {
             assert_eq!(
                 managed_admin_operation(id).unwrap(),
-                !matches!(id, 1 | 2 | 3 | 15 | 16 | 31 | 34 | 36 | 45..=48)
+                !matches!(id, 1 | 2 | 3 | 15 | 16 | 31 | 34 | 36 | 45..=48 | 61)
             );
         }
-        assert!(managed_admin_operation(58).is_err());
+        assert!(managed_admin_operation(62).is_err());
+    }
+
+    #[test]
+    fn profile_requests_only_select_a_signed_profile_name() {
+        let valid = serde_json::json!({"profile":"claude-code"});
+        let decoded: ProfileNameMeta = serde_json::from_value(valid.clone()).unwrap();
+        assert_eq!(decoded.profile, "claude-code");
+        for field in [
+            "actions",
+            "principal_id",
+            "ttl_ms",
+            "max_uses",
+            "models",
+            "budget",
+            "isolation",
+            "pid",
+            "confirm_each_run",
+        ] {
+            let mut value = valid.clone();
+            value[field] = serde_json::Value::Null;
+            assert!(serde_json::from_value::<ProfileNameMeta>(value).is_err());
+        }
+        assert!(serde_json::from_value::<ProfileNameMeta>(serde_json::json!({})).is_err());
+        assert!(managed_admin_operation(admin_msg::PROFILE_GET).unwrap());
+        assert!(managed_admin_operation(admin_msg::PROFILE_SESSION_CREATE).unwrap());
     }
 
     #[test]
@@ -1640,6 +1839,30 @@ mod tests {
         ] {
             assert!(serde_json::from_str::<PolicyActivateMeta>(&invalid).is_err());
         }
+    }
+
+    #[test]
+    fn inventory_metadata_cannot_override_signed_profile_scope() {
+        assert!(
+            serde_json::from_str::<ProfileInventoryMeta>(r#"{"capability_token":"synthetic"}"#)
+                .is_ok()
+        );
+        for field in [
+            "profile",
+            "actions",
+            "principal_id",
+            "max_uses",
+            "policy_sha256",
+        ] {
+            let request = serde_json::json!({"capability_token":"synthetic",field:"override"});
+            assert!(serde_json::from_value::<ProfileInventoryMeta>(request).is_err());
+        }
+        assert!(
+            serde_json::from_str::<ProfileInventoryMeta>(
+                r#"{"capability_token":"one","capability_token":"two"}"#
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1790,3 +2013,60 @@ pub struct TextStreamTerminalMeta {
 }
 
 pub const TEXT_STREAM_CHUNK_MAX_BYTES: usize = 16 * 1024;
+
+#[cfg(test)]
+mod profile_gateway_contracts {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn session_gateway_is_required_and_endpoint_shape_is_closed() {
+        let id = "00112233-4455-4677-8899-aabbccddeeff";
+        let mut value = json!({
+            "session": {"session_id":id,"principal_id":id,"capability_token":"synthetic",
+                "expires_at_ms":100,"max_uses":1},
+            "profile": {"name":"writer","principal_id":id,
+                "grants":[{"instance":"repo","capabilities":[{"rule":"template-default","capability":"issues",
+                    "actions":[{"action_id":id,"version":1}]}]}],
+                "session":{"ttl_ms":60000,"max_uses":1},"confirm_each_run":false,
+                "isolation":"none","egress":"allow","llm_limits":[]},
+            "policy_sha256":"ab".repeat(32)
+        });
+        assert!(serde_json::from_value::<ProfileSessionCreatedResponse>(value.clone()).is_err());
+        value["gateway"] = json!(null);
+        assert!(
+            serde_json::from_value::<ProfileSessionCreatedResponse>(value.clone())
+                .unwrap()
+                .gateway
+                .is_none()
+        );
+        let endpoint = ProfileGatewayEndpoint {
+            port: 12345,
+            instances: vec![
+                ProfileGatewayInstance {
+                    instance: "claude".into(),
+                    provider: ProfileGatewayProvider::Anthropic,
+                },
+                ProfileGatewayInstance {
+                    instance: "gpt".into(),
+                    provider: ProfileGatewayProvider::OpenAi,
+                },
+            ],
+        };
+        value["gateway"] = serde_json::to_value(&endpoint).unwrap();
+        assert_eq!(value["gateway"]["instances"][1]["provider"], "openai");
+        assert_eq!(
+            serde_json::from_value::<ProfileSessionCreatedResponse>(value.clone())
+                .unwrap()
+                .gateway,
+            Some(endpoint)
+        );
+        for field in ["origin", "host", "capability"] {
+            let mut changed = value.clone();
+            changed["gateway"][field] = json!("untrusted");
+            assert!(serde_json::from_value::<ProfileSessionCreatedResponse>(changed).is_err());
+        }
+        value["gateway"]["instances"][0]["provider"] = json!("unknown");
+        assert!(serde_json::from_value::<ProfileSessionCreatedResponse>(value).is_err());
+    }
+}

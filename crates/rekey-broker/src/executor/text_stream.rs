@@ -88,14 +88,14 @@ pub(super) fn configure(
 
 /// All buffers have the Action response bound. Keep the full bounded history so
 /// scan starts can retain encoding context, and never copy an unchecked prefix.
-struct Sealer {
+pub(super) struct Sealer {
     bytes: Zeroizing<Vec<u8>>,
     emitted: usize,
     hold: usize,
     limit: usize,
 }
 impl Sealer {
-    fn new(needles: &[Zeroizing<Vec<u8>>], limit: usize) -> Result<Self, BrokerError> {
+    pub(super) fn new(needles: &[Zeroizing<Vec<u8>>], limit: usize) -> Result<Self, BrokerError> {
         let hold = needles
             .iter()
             .map(|n| n.len())
@@ -111,7 +111,11 @@ impl Sealer {
             limit,
         })
     }
-    fn push(&mut self, bytes: &[u8], needles: &[Zeroizing<Vec<u8>>]) -> Result<(), BrokerError> {
+    pub(super) fn push(
+        &mut self,
+        bytes: &[u8],
+        needles: &[Zeroizing<Vec<u8>>],
+    ) -> Result<(), BrokerError> {
         if bytes.len() > self.limit.saturating_sub(self.bytes.len()) {
             return Err(BrokerError::Upstream("response-too-large"));
         }
@@ -121,6 +125,39 @@ impl Sealer {
         self.bytes.extend_from_slice(bytes);
         if contains_secret(&self.bytes[start..], needles) {
             return Err(BrokerError::ResponseSecurityViolation);
+        }
+        Ok(())
+    }
+    pub(super) fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+    pub(super) fn hold(&self) -> usize {
+        self.hold
+    }
+    pub(super) async fn release_through(
+        &mut self,
+        end: usize,
+        sender: &TextStreamSender,
+    ) -> Result<(), BrokerError> {
+        let base = self.emitted;
+        let text = std::str::from_utf8(&self.bytes[base..end])
+            .map_err(|_| BrokerError::Upstream("invalid-stream"))?;
+        while self.emitted < end {
+            let mut chunk_end = end.min(self.emitted + TEXT_STREAM_CHUNK_MAX_BYTES);
+            while !text.is_char_boundary(chunk_end - base) {
+                chunk_end -= 1;
+            }
+            if sender
+                .send(TextStreamEvent::Chunk(
+                    self.bytes[self.emitted..chunk_end].to_vec(),
+                ))
+                .await
+                .is_err()
+            {
+                self.emitted = end;
+                return Ok(());
+            }
+            self.emitted = chunk_end;
         }
         Ok(())
     }

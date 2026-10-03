@@ -1,69 +1,65 @@
 # Rekey
 
-Rekey 把 API Key 留在本机，Agent 通过你授权的固定 Action 调用服务。
+Rekey 把 API Key 留在本机，让 Agent 只调用你授权的操作。
 
-安装：当前可用的是 [Alpha 下载包](docs/installation.md) 或源码构建。
-v3 的 macOS `.pkg` 和 Homebrew 安装尚未发布。
+当前是 **3.0.0-alpha.1 未发布候选**。macOS 安装入口为签名、公证的 pkg；
+发布工作流也会从该 pkg 生成本地 Homebrew cask，尚无公开 tap。
+[安装说明](docs/installation.md)列出前置条件；设备权限和完整发布验收仍待完成。
+
+完成 macOS 安装后，个人入口是三条命令。先在 App 确认真实模型、权限与预算：
 
 ```bash
-rekey init --mode team    # 外部签名器模式；恢复密钥只显示一次，请妥善保存
-rekey serve   # 启动本机服务，保持此终端运行
-rekey status  # 在另一个终端检查状态
+rekey setup
+rekey add anthropic
+rekey run claude-code --client claude-code -- claude --model MODEL_ID
 ```
 
-| 保护等级 | 含义与当前状态 |
+这里 `claude-code` 是已签名 Profile 的名称，`MODEL_ID` 换成你已确认的模型。
+Setup 和 Add 打开本机 App；密码、Key、策略审阅与系统认证只在管理流程中发生。
+授权范围内的 Agent 请求不逐次弹窗；`require-approval` 请求需要明确审批后由调用者重提。
+
+| 等级 | 当前可说明的边界 |
 |---|---|
-| L0 | 加密保存凭据，不交给 Agent 使用 |
-| L1-dev | 源码构建、Linux 用户安装：Agent API 不提供凭据读取 |
-| L1 | v3 签名安装目标：还须完成用户在场保护与服务端身份验证验收 |
-| L2 | L1 加受限网络和文件访问；当前只有独立的隔离参考验收 |
+| L0 | 加密保存，Agent 访问已锁定 |
+| L1-dev | Agent 接口不返回 Key；源码和 Linux 用户安装的已确认下限 |
+| L1 | 还需签名设备上的 Keychain、内存与外部锚权限验收，当前不宣称 |
+| L2 | 还需实际启动的隔离与拒绝其它网络访问，不能由 Profile 声明推断 |
 
-继续阅读：[使用指南](docs/user-guide.md)、[macOS UI](apps/macos/README.md)、
-[实际功能状态](docs/product-foundation/feature-truth-matrix.md)、
-[威胁模型](docs/product-foundation/threat-model-v2.md)。
+## 授权与执行
 
-## 配置一次，再交给 Agent
+内置 Anthropic、OpenAI、GitHub PAT 和固定 Bearer 模板支持按实例、能力及精确 Action
+版本授权。安装操作不会自动授予权限。个人模式使用本机 Secure Enclave 策略签名；
+团队模式使用外部 Ed25519 签名，两者在建库时确定。个人策略显式选择模板默认、允许或
+本机审批；完整差异由 daemon 生成，App 审阅后签署，不能静默覆盖现有授权。
 
-当前默认构建保留本机加密 vault、密码与恢复生命周期、固定 HTTP Action、
-capability session、策略引擎、Ed25519 审批、审计、备份恢复、GitHub App connector、
-本机 MCP stdio 和 `agent-run` 隔离入口。v3 模板安装、个人 P-256 策略草案与 App 签名激活已接通；
-本机一次性审批已接通，Profile 和网关接入仍在实现中；签名设备上的 Secure Enclave 验收尚未完成。
+签名 Profile 固定主体、会话期限、次数、模型与请求/每日预算。
+CLI、MCP 与 loopback SDK 网关共用授权、持久用量、审计和响应检查。
+原始 SSE 支持工具和 thinking 数据；检测到秘密反射、协议歧义或超限会阻断。
+缺失 usage 或中断按本次已校验的最大输出数保守结算，不是硬费用封顶。
 
-完成初始化后，按 [首次 Agent shell 接入](docs/user-guide.md#first-agent-shell-integration-source-checkout)
-添加凭据、注册固定 Action、激活签名策略，再创建短期 capability。
-默认拒绝策略会在授权缺失时拒绝执行。
+`rekey connect cursor --print` 预览项目 MCP 配置；正式写入需显式操作。
+Claude Code/Codex 的 SDK 接入使用 `rekey run` 的明确 client 适配。
+已安装客户端与合成上游的本地互通不代表真实 provider 验收。
+Linux Profile `netns` 目前明确不可用；Codex 的 Seatbelt 启动仍受已记录的 managed
+preferences 限制，不能把宽松接入当作 L2。
 
-凭据和管理证明通过隐藏终端输入或显式 stdin 传递。
-Agent 只能选择已注册的 Action，不能改变上游 origin、路径、认证头或重定向策略。
-响应经过大小限制与秘密反射检查后才返回。Agent API 没有读取或导出凭据的操作。
+## 管理、恢复与边界
 
-## macOS 管理界面
+App 提供凭据管理、模板安装、策略/审批、Activity 和备份恢复。
+查看明文和停止 daemon 每次需要新证明；七天系统认证授权不会因重启或恢复而续期。
+回滚检测使用认证代数与外部 high-water；疑似回滚不会自动解锁，恢复须审阅并明确确认。
 
-```bash
-scripts/build-macos-ui.sh
-open target/macos-ui/Rekey.app
-```
+永久不提供迁移、旧格式双读或回填。当前 vault25 / policy6 仍是预 GA 格式，尚未最终冻结。
+GA 后同一主版本的次/补丁版本不得改变持久格式；破坏性格式变化必须进入下一主版本。
+旧环境保留匹配的二进制、状态与备份，新格式使用新空目录重建。
 
-源码 UI 管理凭据、Action、capability、策略、审批、审计和备份。
-源码构建不能自动视为 L1；以界面的安全状态和对应验收记录为准。
+- [使用指南](docs/user-guide.md) · [安装与卸载](docs/installation.md) · [macOS App](apps/macos/README.md)
+- [运维与明确恢复](docs/operations-runbook.md) · [功能事实](docs/product-foundation/feature-truth-matrix.md)
+- [威胁模型](docs/product-foundation/threat-model-v2.md) · [候选范围](docs/alpha-scope.md) · [安全报告](SECURITY.md)
 
-## 运维与边界
+## 开发
 
-- [安装、服务与卸载](docs/installation.md)
-- [备份恢复、审计与故障处理](docs/operations-runbook.md)
-- [发布范围](docs/alpha-scope.md)与[版本记录](CHANGELOG.md)
-- [安全报告](SECURITY.md)
-
-默认构建采用本机用户拓扑。同用户的任意代码、进程内存和文件访问仍属于
-L1-dev 的边界。Linux container/namespace 验收和 macOS Seatbelt 验收只证明其指定拓扑。
-
-固定上游拒绝私有和非公开地址、代理环境变量与重定向。
-如果 TUN 返回 `198.18.0.0/15` 假 DNS 地址，需让 Action 的准确主机名返回真实 DNS，
-不要通过放宽地址限制来解决。可用 `dig +short api.github.com` 检查 GitHub 解析。
-
-状态目录和备份格式不提供迁移或旧格式回退；使用与备份对应的已验证二进制。
-
-## 开发与企业储备
+Rust/MSRV 为 `1.95.0`，默认 feature 为空：
 
 ```bash
 cargo check --workspace
@@ -71,18 +67,7 @@ cargo test --workspace
 cargo fmt --all
 ```
 
-Rust/MSRV 固定为 `1.95.0`。默认 Cargo feature 为空。
-企业执行实现、命令和二进制由 `lab` 显式启用：
-
-```bash
-cargo check --workspace --features lab
-cargo test --workspace --features lab
-```
-
-`lab` 保留工作负载身份、远程审批 relay、OIDC 管理、外部凭据 source、原生插件、
-指标以及企业运维实验。相关测试由 `lab-weekly` 每周和手动运行，默认发布包不包含
-relay、插件二进制、controlplane、审计投递/归档与 standby 脚本。
-共享纯数据类型和存储完整性代码保留；这不表示默认构建开放对应企业执行能力。
-相关历史 spec 的 `Status: Lab (v3 scope; enterprise reserve)` 状态头优先于旧发布描述。
-
-本仓库不提供 v1 MITM、系统 CA、单端口代理或旧 vault 兼容层。
+企业储备需显式 `--features lab`：工作负载身份、审批 relay、OIDC、外部 secret source、
+原生插件、指标、审计投递/归档与 standby/DR。旧指南中的这些示例不是默认产品能力。
+`lab-weekly` 的结果不替代当前候选的完整合流或发布检查。
+本仓库没有 v1 MITM、系统 CA、任意目的地代理或旧 vault 兼容层。

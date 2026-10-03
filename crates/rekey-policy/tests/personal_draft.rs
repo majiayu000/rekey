@@ -5,8 +5,9 @@ use rekey_domain::Timestamp;
 use rekey_domain::action::{ActionTarget, ExactPath, FixedHttpAction};
 use rekey_domain::authorization::PolicyTrustAlgorithm;
 use rekey_domain::ids::{ActionId, ApproverId, CredentialId, PolicySignerId, PrincipalId};
+use rekey_domain::profile::{AgentProfile, ProfileRule};
 use rekey_domain::template::TemplateValues;
-use rekey_policy::personal::{PersonalPolicyDraft, generate_personal_draft};
+use rekey_policy::personal::PersonalPolicyDraft;
 use rekey_policy::templates::{BuiltinTemplate, builtin_template};
 use rekey_policy::{
     ActionRequest, PolicyError, PolicyVerificationKey, SNAPSHOT_MAX_BYTES, ValidatedPolicyBundle,
@@ -16,6 +17,43 @@ use serde_json::{Value, json};
 
 const PREFIX: &[u8] = b"RKPOLICY\0\x01";
 const NOW: Timestamp = Timestamp::from_unix_ms(1);
+
+// Build an explicit signed Profile for the existing Action-focused fixtures.
+fn generate_personal_draft(
+    trust: &ValidatedPolicyTrust,
+    previous: Option<&ValidatedPolicyBundle>,
+    actions: &[FixedHttpAction],
+    principal: PrincipalId,
+    expires: i64,
+    now: Timestamp,
+) -> Result<PersonalPolicyDraft, PolicyError> {
+    let mut selected: Vec<_> = actions.iter().collect();
+    selected.sort_by_key(|action| (action.id, action.version));
+    let grants: Vec<_> = selected
+        .iter()
+        .map(|action| {
+            let capability = match &action.target {
+                ActionTarget::Template { source, .. } => source.capability.as_str(),
+                _ => "fixed-actions",
+            };
+            json!({"instance":format!("a-{}",action.id),"capabilities":[{"rule":"template-default","capability":capability,
+            "actions":[{"action_id":action.id,"version":action.version}]}]})
+        })
+        .collect();
+    let profiles = if grants.is_empty() {
+        Vec::new()
+    } else {
+        vec![
+            serde_json::from_value(json!({"name":"fixture","principal_id":principal,
+            "grants":grants,"session":{"ttl_ms":1000,"max_uses":100},"confirm_each_run":false,
+            "isolation":"none","egress":"allow","llm_limits":[]}))
+            .unwrap(),
+        ]
+    };
+    rekey_policy::personal::generate_personal_draft(
+        trust, previous, actions, &profiles, expires, now,
+    )
+}
 
 fn signer() -> (EcdsaKeyPair, ValidatedPolicyTrust) {
     let document =
@@ -133,6 +171,8 @@ fn low_and_medium_actions_produce_deterministic_full_policy_that_p256_verifies()
     assert_eq!(original, serde_json::to_value(&actions).unwrap());
     let snapshot: Value = serde_json::from_slice(draft.canonical_snapshot()).unwrap();
     assert_eq!(snapshot["version"], 1);
+    assert_eq!(snapshot["format_version"], 6);
+    assert_eq!(snapshot["profiles"][0]["principal_id"], json!(principal));
     assert_eq!(snapshot["approvers"], json!([]));
     assert_eq!(snapshot["workload_identities"], json!([]));
     for action in &actions {
@@ -355,7 +395,7 @@ fn duplicate_disabled_fixed_and_invalid_schema_actions_are_rejected() {
             10_000,
             NOW
         )
-        .is_ok()
+        .is_err()
     );
 }
 
@@ -546,4 +586,282 @@ fn snapshot_and_complete_diff_limits_reject_instead_of_truncating() {
         ),
         Err(PolicyError::TooLarge)
     ));
+}
+
+#[test]
+fn full_replacement_explicitly_removes_verified_profiles_in_diff() {
+    let (key, trust) = signer();
+    let principal = PrincipalId::new_random();
+    let actions = [action("read-repo")];
+    let original = generate_personal_draft(&trust, None, &actions, principal, 10_000, NOW).unwrap();
+    let mut unsigned: Value =
+        serde_json::from_slice(&original.sign_bytes()[PREFIX.len()..]).unwrap();
+    unsigned["snapshot"]["profiles"] = json!([{
+        "name":"reader","principal_id":principal,
+        "grants":[{"instance":"github","capabilities":[{"rule":"template-default","capability":"read-repo","actions":[{"action_id":actions[0].id,"version":1}]}]}],
+        "session":{"ttl_ms":1000,"max_uses":1},"confirm_each_run":true,
+        "isolation":"none","egress":"allow","llm_limits":[]
+    }]);
+    let before = unsigned["snapshot"]["profiles"].clone();
+    let previous = signed_value(unsigned, &key, &trust);
+    assert_eq!(previous.snapshot().profiles().len(), 1);
+    // Empty Profile selection is a full replacement: no hidden carry-over.
+    let draft =
+        generate_personal_draft(&trust, Some(&previous), &[], principal, 20_000, NOW).unwrap();
+    assert_eq!(change(&draft, "profiles").before, before);
+    assert_eq!(change(&draft, "profiles").after, json!([]));
+    assert!(
+        sign_draft(&draft, &key, &trust)
+            .snapshot()
+            .profiles()
+            .is_empty()
+    );
+}
+
+#[test]
+fn multiple_profiles_sign_all_limits_and_deduplicate_principal_action_rules() {
+    let (key, trust) = signer();
+    let actions = [action("read-repo")];
+    let initial = generate_personal_draft(
+        &trust,
+        None,
+        &actions,
+        PrincipalId::new_random(),
+        10000,
+        NOW,
+    )
+    .unwrap();
+    let snapshot: Value = serde_json::from_slice(initial.canonical_snapshot()).unwrap();
+    let first: rekey_domain::profile::AgentProfile =
+        serde_json::from_value(snapshot["profiles"][0].clone()).unwrap();
+    let mut second = first.clone();
+    second.name = "second".into();
+    second.confirm_each_run = true;
+    second.session.ttl_ms = 2000;
+    second.session.max_uses = 25;
+    let mut profiles = vec![first.clone(), second];
+    let shared = rekey_policy::personal::generate_personal_draft(
+        &trust, None, &actions, &profiles, 10000, NOW,
+    )
+    .unwrap();
+    let verified = sign_draft(&shared, &key, &trust);
+    assert_eq!(verified.snapshot().profiles(), profiles);
+    let value: Value = serde_json::from_slice(shared.canonical_snapshot()).unwrap();
+    assert_eq!(value["bindings"].as_array().unwrap().len(), 1);
+    assert_eq!(value["rules"].as_array().unwrap().len(), 1);
+    profiles[1].principal_id = PrincipalId::new_random();
+    let separate = rekey_policy::personal::generate_personal_draft(
+        &trust,
+        Some(&verified),
+        &actions,
+        &profiles,
+        20000,
+        NOW,
+    )
+    .unwrap();
+    let value: Value = serde_json::from_slice(separate.canonical_snapshot()).unwrap();
+    assert_eq!(value["rules"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        change(&separate, "profiles").before,
+        json!(verified.snapshot().profiles())
+    );
+    assert_eq!(change(&separate, "profiles").after, json!(profiles));
+    assert!(
+        rekey_policy::personal::generate_personal_draft(&trust, None, &actions, &[], 10000, NOW)
+            .is_err()
+    );
+}
+
+#[test]
+fn generated_profile_budget_must_not_round_before_signing() {
+    let (_, trust) = signer();
+    let actions = [action("read-repo")];
+    let initial = generate_personal_draft(
+        &trust,
+        None,
+        &actions,
+        PrincipalId::new_random(),
+        10000,
+        NOW,
+    )
+    .unwrap();
+    let value: Value = serde_json::from_slice(initial.canonical_snapshot()).unwrap();
+    let mut profiles: Vec<rekey_domain::profile::AgentProfile> =
+        serde_json::from_value(value["profiles"].clone()).unwrap();
+    let instance = profiles[0].grants[0].instance.clone();
+    profiles[0]
+        .llm_limits
+        .push(rekey_domain::profile::ProfileLlmLimit {
+            instance,
+            models: vec!["synthetic".into()],
+            max_output_tokens_per_request: 1,
+            max_requests_per_day: (1_u64 << 53) + 1,
+            max_output_tokens_per_day: 100,
+        });
+    profiles[0].validate().unwrap();
+    assert!(matches!(
+        rekey_policy::personal::generate_personal_draft(
+            &trust, None, &actions, &profiles, 10000, NOW
+        ),
+        Err(PolicyError::Invalid)
+    ));
+    profiles[0].llm_limits[0].max_requests_per_day = 100;
+    profiles[0].llm_limits[0].max_output_tokens_per_day = (1_u64 << 53) + 1;
+    assert!(matches!(
+        rekey_policy::personal::generate_personal_draft(
+            &trust, None, &actions, &profiles, 10000, NOW
+        ),
+        Err(PolicyError::Invalid)
+    ));
+}
+
+#[test]
+fn explicit_choices_sign_exact_rules_and_keep_replacement_diff() {
+    let (key, trust) = signer();
+    for (capability, choice, effect) in [
+        ("merge-pr", ProfileRule::Allow, "permit"),
+        (
+            "read-repo",
+            ProfileRule::RequireApproval,
+            "require-approval",
+        ),
+    ] {
+        let actions = [action(capability)];
+        let original = generate_personal_draft(
+            &trust,
+            None,
+            &actions,
+            PrincipalId::new_random(),
+            10000,
+            NOW,
+        )
+        .unwrap();
+        let previous = sign_draft(&original, &key, &trust);
+        let before: Value = serde_json::from_slice(original.canonical_snapshot()).unwrap();
+        let mut profiles = previous.snapshot().profiles().to_vec();
+        profiles[0].grants[0].capabilities[0].rule = choice;
+        let changed = rekey_policy::personal::generate_personal_draft(
+            &trust,
+            Some(&previous),
+            &actions,
+            &profiles,
+            20000,
+            NOW,
+        )
+        .unwrap();
+        let after: Value = serde_json::from_slice(changed.canonical_snapshot()).unwrap();
+        assert_eq!(after["rules"][0]["id"], before["rules"][0]["id"]);
+        assert_eq!(after["rules"][0]["effect"], effect);
+        assert_eq!(change(&changed, "profiles").after, json!(profiles));
+        assert_eq!(change(&changed, "rules").before, before["rules"]);
+        assert_eq!(change(&changed, "rules").after, after["rules"]);
+        assert_eq!(
+            sign_draft(&changed, &key, &trust).snapshot().profiles(),
+            profiles
+        );
+        if effect == "require-approval" {
+            assert_eq!(
+                after["rules"][0]["approver"],
+                json!({"kind":"local-presence"})
+            );
+            assert_eq!(
+                after["rules"][0]["approval"],
+                json!({"mode":"one-time","max_uses":1})
+            );
+        } else {
+            assert!(after["rules"][0]["approval"].is_null());
+        }
+    }
+}
+
+#[test]
+fn choices_conflict_only_for_the_same_principal_action_and_version() {
+    let (key, trust) = signer();
+    let actions = [action("read-repo")];
+    let original = generate_personal_draft(
+        &trust,
+        None,
+        &actions,
+        PrincipalId::new_random(),
+        10000,
+        NOW,
+    )
+    .unwrap();
+    let snapshot: Value = serde_json::from_slice(original.canonical_snapshot()).unwrap();
+    let first: AgentProfile = serde_json::from_value(snapshot["profiles"][0].clone()).unwrap();
+    let mut second = first.clone();
+    second.name = "second".into();
+    let mut profiles = vec![first, second];
+    let shared = rekey_policy::personal::generate_personal_draft(
+        &trust, None, &actions, &profiles, 10000, NOW,
+    )
+    .unwrap();
+    let shared: Value = serde_json::from_slice(shared.canonical_snapshot()).unwrap();
+    assert_eq!(shared["rules"].as_array().unwrap().len(), 1);
+    // Identical resolved effect is still conflicting authoring input.
+    for choice in [ProfileRule::Allow, ProfileRule::RequireApproval] {
+        profiles[1].grants[0].capabilities[0].rule = choice;
+        assert!(matches!(
+            rekey_policy::personal::generate_personal_draft(
+                &trust, None, &actions, &profiles, 10000, NOW
+            ),
+            Err(PolicyError::Invalid)
+        ));
+    }
+    profiles[1].principal_id = PrincipalId::new_random();
+    let separate = rekey_policy::personal::generate_personal_draft(
+        &trust, None, &actions, &profiles, 10000, NOW,
+    )
+    .unwrap();
+    let value: Value = serde_json::from_slice(separate.canonical_snapshot()).unwrap();
+    for (profile, effect) in profiles.iter().zip(["permit", "require-approval"]) {
+        let rule = value["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["principal_id"] == json!(profile.principal_id))
+            .unwrap();
+        assert_eq!(rule["effect"], effect);
+    }
+    assert_eq!(
+        sign_draft(&separate, &key, &trust).snapshot().profiles(),
+        profiles
+    );
+}
+
+#[test]
+fn choice_replacement_does_not_merge_previous_forbid_or_approval() {
+    let (key, trust) = signer();
+    let actions = [action("read-repo")];
+    let principal = PrincipalId::new_random();
+    let original = generate_personal_draft(&trust, None, &actions, principal, 10000, NOW).unwrap();
+    let mut unsigned: Value =
+        serde_json::from_slice(&original.sign_bytes()[PREFIX.len()..]).unwrap();
+    let mut forbid = unsigned["snapshot"]["rules"][0].clone();
+    forbid["id"] = json!(rekey_domain::ids::PolicyRuleId::new_random());
+    forbid["effect"] = "forbid".into();
+    unsigned["snapshot"]["rules"]
+        .as_array_mut()
+        .unwrap()
+        .push(forbid);
+    let before = unsigned["snapshot"]["rules"].clone();
+    let previous = signed_value(unsigned, &key, &trust);
+    let mut profiles = previous.snapshot().profiles().to_vec();
+    profiles[0].grants[0].capabilities[0].rule = ProfileRule::RequireApproval;
+    let draft = rekey_policy::personal::generate_personal_draft(
+        &trust,
+        Some(&previous),
+        &actions,
+        &profiles,
+        20000,
+        NOW,
+    )
+    .unwrap();
+    assert_eq!(change(&draft, "rules").before, before);
+    assert_eq!(change(&draft, "rules").after.as_array().unwrap().len(), 1);
+    assert_eq!(
+        change(&draft, "rules").after[0]["effect"],
+        "require-approval"
+    );
+    sign_draft(&draft, &key, &trust);
 }

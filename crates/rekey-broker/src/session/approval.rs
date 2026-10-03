@@ -83,11 +83,13 @@ enum ChallengeState {
 }
 
 struct LocalReview {
+    request_context: Option<rekey_domain::audit::ProfileRequestAuditContext>,
     hash: String,
     body: Zeroizing<Vec<u8>>,
 }
 
 pub(crate) struct LocalApproval {
+    pub request_context: Option<rekey_domain::audit::ProfileRequestAuditContext>,
     pub challenge: ApprovalChallenge,
     pub state: LocalApprovalState,
     pub review_sha256: String,
@@ -123,6 +125,12 @@ fn refresh_local(stored: &mut StoredChallenge, now: Timestamp) {
 }
 fn local_snapshot(stored: &StoredChallenge) -> LocalApproval {
     LocalApproval {
+        request_context: stored
+            .review
+            .as_ref()
+            .expect("local review")
+            .request_context
+            .clone(),
         challenge: stored.challenge.clone(),
         state: match stored.state {
             ChallengeState::Pending => LocalApprovalState::Pending,
@@ -320,6 +328,7 @@ impl SessionRegistry {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn publish_local_pending(
         &self,
         permit: &mut super::ExecutionPermit,
@@ -328,6 +337,7 @@ impl SessionRegistry {
         hash: String,
         anchor: Instant,
         deadline: Instant,
+        request_context: Option<rekey_domain::audit::ProfileRequestAuditContext>,
     ) -> Result<LocalApproval, BrokerError> {
         let mut inner = self.lock_inner();
         if inner.closed
@@ -347,6 +357,7 @@ impl SessionRegistry {
             monotonic_deadline: deadline.min(entry.monotonic_deadline),
             state: ChallengeState::Pending,
             review: Some(LocalReview {
+                request_context,
                 hash,
                 body: Zeroizing::new(body),
             }),
@@ -1079,6 +1090,7 @@ mod tests {
                 "hash".into(),
                 Instant::now(),
                 Instant::now() + Duration::from_secs(60),
+                None,
             )
             .unwrap();
         assert!(registry.refund_local_wait(&mut permit, id).is_err());
@@ -1144,6 +1156,7 @@ mod tests {
                     "hash".into(),
                     Instant::now(),
                     Instant::now() + Duration::from_secs(60),
+                    None,
                 )
                 .unwrap();
             assert_eq!(published.deadline, session_deadline);
@@ -1194,6 +1207,7 @@ mod tests {
                     "hash".into(),
                     Instant::now(),
                     Instant::now() + Duration::from_secs(60),
+                    None,
                 )
                 .unwrap();
             registry.decide_local(id, "hash", None, now(2)).unwrap();
@@ -1209,7 +1223,8 @@ mod tests {
                     b"review".to_vec(),
                     "hash".into(),
                     Instant::now(),
-                    Instant::now() + Duration::from_secs(60)
+                    Instant::now() + Duration::from_secs(60),
+                    None,
                 )
                 .is_err()
         );
@@ -1245,6 +1260,7 @@ mod tests {
                 "hash".into(),
                 Instant::now(),
                 Instant::now() + Duration::from_secs(60),
+                None,
             )
             .unwrap();
         let wake = registry.approval_changed.notified();

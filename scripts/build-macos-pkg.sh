@@ -39,14 +39,22 @@ trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$STAGE/root/Applications" "$STAGE/root/usr/local/bin"
 ditto "$APP" "$STAGE/root/Applications/Rekey.app"
 APP="$STAGE/root/Applications/Rekey.app"
-for binary in Rekey ../Resources/bin/rekey ../Resources/bin/rekeyd ../Resources/bin/rekey-mcp ../Resources/bin/rekey-policy-sign ../Resources/bin/rekey-approval-sign; do
+for binary in Rekey ../Helpers/RekeyDaemon.app/Contents/MacOS/rekeyd ../Resources/bin/rekey ../Resources/bin/rekey-mcp ../Resources/bin/rekey-policy-sign ../Resources/bin/rekey-approval-sign; do
   path="$APP/Contents/MacOS/$binary"
   [[ -f "$path" && -x "$path" && ! -L "$path" ]] || fail "missing or redirected executable: $binary"
 done
 cmp -s "$ROOT/apps/macos/Resources/com.rekey.rekeyd.plist" "$APP/Contents/Library/LaunchAgents/com.rekey.rekeyd.plist" || fail 'App must contain the current static LaunchAgent plist'
-VERSION="$(python3 - "$APP/Contents/Info.plist" <<'PY'
-import plistlib, re, sys
-with open(sys.argv[1], "rb") as file:
+VERSION="$(python3 - "$APP" <<'PY'
+import os, pathlib, plistlib, re, sys
+app = pathlib.Path(sys.argv[1])
+link = app / "Contents/Resources/bin/rekeyd"
+expected = "../../Helpers/RekeyDaemon.app/Contents/MacOS/rekeyd"
+if not link.is_symlink() or os.readlink(link) != expected:
+    raise SystemExit("Rekey pkg: daemon CLI link must have the fixed internal target")
+for path in app.rglob("*"):
+    if path.is_symlink() and path != link:
+        raise SystemExit("Rekey pkg: unexpected App symlink: " + str(path.relative_to(app)))
+with open(app / "Contents/Info.plist", "rb") as file:
     info = plistlib.load(file)
 version = info.get("RekeyVersion", "")
 match = re.fullmatch(r"([0-9]+\.[0-9]+\.[0-9]+)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?", version)
@@ -54,6 +62,12 @@ if not match or info.get("CFBundleIdentifier") != "com.starlight.rekey" or info.
     raise SystemExit("Rekey pkg: invalid bundle identity or RekeyVersion")
 if any(info.get(key) != match[1] for key in ("CFBundleVersion", "CFBundleShortVersionString")):
     raise SystemExit("Rekey pkg: bundle numeric versions do not match RekeyVersion")
+with open(app / "Contents/Helpers/RekeyDaemon.app/Contents/Info.plist", "rb") as file:
+    daemon = plistlib.load(file)
+if daemon.get("CFBundleIdentifier") != "com.rekey.rekeyd" or daemon.get("CFBundleExecutable") != "rekeyd" or daemon.get("CFBundlePackageType") != "APPL":
+    raise SystemExit("Rekey pkg: invalid nested daemon bundle identity")
+if any(daemon.get(key) != info.get(key) for key in ("CFBundleVersion", "CFBundleShortVersionString", "RekeyVersion")):
+    raise SystemExit("Rekey pkg: daemon and App versions differ")
 print(version)
 PY
 )"
@@ -68,8 +82,34 @@ if [[ "$UNSIGNED" == 0 ]]; then
     [[ "$details" =~ $runtime_flag ]] || fail "hardened runtime is required for $identifier"
   }
   verify_code "$APP" com.starlight.rekey
-  for binary in rekey rekeyd rekey-mcp rekey-policy-sign rekey-approval-sign; do
+  DAEMON="$APP/Contents/Helpers/RekeyDaemon.app"
+  verify_code "$DAEMON" com.rekey.rekeyd
+  verify_profile() {
+    local bundle="$1" identifier="$2" prefix="$STAGE/$2"
+    [[ -f "$bundle/Contents/embedded.provisionprofile" ]] || fail "missing profile: $identifier"
+    security cms -D -i "$bundle/Contents/embedded.provisionprofile" -o "$prefix.profile.plist"
+    codesign -d --extract-certificates "$prefix.cert-" "$bundle"
+    python3 "$ROOT/scripts/prepare-macos-profile.py" "$prefix.profile.plist" "$TEAM" \
+      "$prefix.cert-0" "$identifier" "$prefix.expected.plist"
+    codesign -d --entitlements :- "$bundle" > "$prefix.actual.plist"
+    python3 - "$prefix.expected.plist" "$prefix.actual.plist" <<'PYPROFILE'
+import plistlib, sys
+expected, actual = (plistlib.load(open(path, "rb")) for path in sys.argv[1:])
+if expected != actual:
+    raise SystemExit("Rekey pkg: signed entitlements do not match the authorized bundle profile")
+PYPROFILE
+  }
+  verify_profile "$APP" com.starlight.rekey
+  verify_profile "$DAEMON" com.rekey.rekeyd
+  for binary in rekey rekey-mcp rekey-policy-sign rekey-approval-sign; do
     verify_code "$APP/Contents/Resources/bin/$binary" "com.rekey.$binary"
+    codesign -d --entitlements :- "$APP/Contents/Resources/bin/$binary" > "$STAGE/tool.entitlements"
+    python3 - "$STAGE/tool.entitlements" <<'PYTOOL'
+import pathlib, plistlib, sys
+raw = pathlib.Path(sys.argv[1]).read_bytes()
+if raw and plistlib.loads(raw):
+    raise SystemExit("Rekey pkg: standalone tools must not claim restricted entitlements")
+PYTOOL
   done
 fi
 for binary in rekey rekeyd rekey-mcp; do

@@ -41,14 +41,23 @@ impl Worker {
                 return Err(AuthorityError::BackupFailed);
             }
         };
+        let mut header_auth_failed = false;
         let backup_result = self.store.backup_to(
             &snapshot_path,
             &snapshot,
             self.require_unlocked()?.bytes(),
             self.header.vault_id,
+            &mut header_auth_failed,
         );
-        let backup_result = self.fault_on_integrity(backup_result);
-        let snapshot_cut = match backup_result {
+        let backup_result = if header_auth_failed {
+            // A snapshot header we cannot authenticate revokes the current key,
+            // while preserving the original load/verification error.
+            self.fault("backup-header-integrity-failed");
+            backup_result
+        } else {
+            self.fault_on_integrity(backup_result)
+        };
+        let (snapshot_cut, generation) = match backup_result {
             Ok(cut) => cut,
             Err(err) => {
                 self.cleanup_reserved_snapshot(&snapshot_path)?;
@@ -103,6 +112,7 @@ impl Worker {
         self.cleanup_reserved_snapshot(&snapshot_path)?;
 
         let info = BackupInfo {
+            generation,
             vault_id: self.header.vault_id,
             format_version: self.header.format_version,
             created_at_ms,

@@ -14,17 +14,44 @@ struct Fixture {
 }
 impl Fixture {
     async fn new(max_uses: u32) -> Self {
+        Self::new_with_stream(max_uses, false).await
+    }
+    async fn new_with_stream(max_uses: u32, stream: bool) -> Self {
         let broker = common::start_broker().await;
         common::unlock(&broker).await;
         let credential =
             common::add_credential(&broker, "local-approval", b"LOCAL-CREDENTIAL-CANARY").await;
-        let (action, version) = common::create_action(&broker, &credential).await;
+        let (action, version) = if stream {
+            let mut definition = common::action_meta(&credential);
+            definition["origin"] = "https://api.anthropic.com".into();
+            definition["exact_path"] = "/v1/messages".into();
+            definition["auth_header"] = "x-api-key".into();
+            definition["auth_prefix"] = "".into();
+            definition["allowed_extra_headers"] = serde_json::json!([]);
+            definition["allowed_response_headers"] = serde_json::json!([]);
+            definition["text_stream"] =
+                serde_json::json!({"model":"fixed-test-model","max_tokens":2048});
+            let response = common::call(
+                &broker.admin_sock(),
+                Channel::Admin,
+                admin_msg::ACTION_CREATE,
+                definition.to_string().as_bytes(),
+                &common::proof_body(common::PASSWORD),
+            )
+            .await;
+            (
+                response.ok()["id"].as_str().unwrap().to_owned(),
+                response.ok()["version"].as_u64().unwrap(),
+            )
+        } else {
+            common::create_action(&broker, &credential).await
+        };
         let principal = PrincipalId::new_random().to_string();
         common::policy::activate_snapshot(
             &broker,
             serde_json::json!({
-                "format_version": 4, "version": 1, "expires_at_ms": 4_102_444_800_000_i64,
-                "approvers": [], "workload_identities": [],
+                "format_version": 6, "version": 1, "expires_at_ms": 4_102_444_800_000_i64,
+                "approvers": [], "profiles": [], "workload_identities": [],
                 "bindings": [{"action_id": action, "version": version,
                     "resource": {"type": "test-action", "id": action},
                     "parameter_schema_id": "test-any-json/v1", "parameter_schema": {}}],
@@ -455,14 +482,48 @@ async fn approval_audit_failure_faults_without_publishing_or_sending() {
         )
         .unwrap();
     assert_eq!(count, 0);
-    let _dir = f.broker.shutdown_keep_dir().await;
+    let stopped = tokio::time::timeout(std::time::Duration::from_secs(5), f.broker.serve_task)
+        .await
+        .expect("audit failure did not stop the daemon")
+        .unwrap()
+        .unwrap_err();
+    assert!(matches!(
+        stopped,
+        rekey_broker::error::BrokerError::Authority(rekey_vault::AuthorityError::Faulted)
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn stream_pre_admission_preserves_structured_approval_required() {
-    let f = Fixture::new(1).await;
+    // A wrong response opcode must not create an approval for a buffered Action.
+    let buffered = Fixture::new(1).await;
+    assert_eq!(
+        buffered
+            .execute_kind(agent_msg::EXECUTE_TEXT_STREAM, None, b"{}")
+            .await
+            .err_code(),
+        "REQUEST_DENIED"
+    );
+    let db = rusqlite::Connection::open(rekey_vault::paths::vault_db(&buffered.broker.state_dir))
+        .unwrap();
+    let pending: i64 = db
+        .query_row(
+            "SELECT count(*) FROM audit_events WHERE event_type='approval.requested'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(pending, 0);
+    assert!(buffered.broker.fake.requests.lock().unwrap().is_empty());
+    drop(db);
+    buffered.broker.shutdown().await;
+    let f = Fixture::new_with_stream(1, true).await;
     let response = f
-        .execute_kind(agent_msg::EXECUTE_TEXT_STREAM, None, b"{}")
+        .execute_kind(
+            agent_msg::EXECUTE_TEXT_STREAM,
+            None,
+            br#"{"messages":[{"role":"user","content":"hello"}]}"#,
+        )
         .await;
     assert_eq!(response.err_code(), "APPROVAL_REQUIRED");
     let id: ApprovalRequestId =

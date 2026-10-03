@@ -102,11 +102,11 @@ path, action, action_version, principal, policy_version, quorum, first, second =
 approvers = [json.loads(pathlib.Path(first).read_text()), json.loads(pathlib.Path(second).read_text())]
 resource = {"type": "fixed-http-action", "id": action}
 snapshot = {
-    "format_version": 4,
+    "format_version": 6,
     "version": int(policy_version),
     "expires_at_ms": int(time.time() * 1000) + 600000,
     "approvers": approvers,
-    "workload_identities": [],
+    "profiles": [], "workload_identities": [],
     "bindings": [{
         "action_id": action,
         "version": int(action_version),

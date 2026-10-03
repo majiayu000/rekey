@@ -699,8 +699,8 @@ pub fn anthropic() -> Result<ProviderTemplate, DomainError> {
       "credential":{"kind":"opaque-token","inject":{"header":"x-api-key","prefix":""}},
       "origin":"https://api.anthropic.com","fixed_headers":{"anthropic-version":"2023-06-01"},
       "capabilities":[
-        {"id":"messages","risk":"medium","actions":[{"method":"POST","path":"/v1/messages"}]},
-        {"id":"count-tokens","risk":"low","actions":[{"method":"POST","path":"/v1/messages/count_tokens"}]},
+        {"id":"messages","risk":"medium","actions":[{"method":"POST","path":"/v1/messages","query":{"beta":"enum:true"}}]},
+        {"id":"count-tokens","risk":"low","actions":[{"method":"POST","path":"/v1/messages/count_tokens","query":{"beta":"enum:true"}}]},
         {"id":"models","risk":"low","actions":[{"method":"GET","path":"/v1/models"}]}
       ]}"#,
     )

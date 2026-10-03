@@ -148,6 +148,20 @@ async fn dispatch(
     ctx: &BrokerCtx,
 ) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
     match frame.header.message_type {
+        agent_msg::PROFILE_INVENTORY => {
+            if !frame.body.is_empty() {
+                return Err(BrokerError::Frame(ipc::FrameError::InvalidField));
+            }
+            let request: ipc::ProfileInventoryMeta = serde_json::from_slice(&frame.metadata)
+                .map_err(|_| ipc::FrameError::InvalidField)?;
+            let body = ctx
+                .profile_inventory_until(
+                    &request.capability_token,
+                    tokio::time::Instant::now() + std::time::Duration::from_secs(25),
+                )
+                .await?;
+            Ok((b"{}".to_vec(), body))
+        }
         agent_msg::EXECUTE_FIXED_HTTP_ACTION => {
             let request = execute_request(frame)?;
             let outcome = ctx

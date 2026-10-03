@@ -1,13 +1,13 @@
 use rusqlite::{Transaction, params};
 
 use crate::error::AuthorityError;
-use crate::model::AuditEvent;
+use crate::model::{AuditEvent, AuditMetadata};
 
 pub(super) fn insert(tx: &Transaction<'_>, event: &AuditEvent) -> Result<(), AuthorityError> {
     let authorization = event.authorization.as_ref();
     let inserted = tx.execute(
-        "INSERT INTO audit_events (event_id, request_id, session_id, action_id, action_version, credential_id, credential_version, principal_id, policy_version, policy_digest, policy_rule_id, resource_type, resource_id, parameter_hash, approval_request_id, approval_id, approver_id, event_type, outcome, reason_code, upstream_status, latency_ms, created_at_ms)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+        "INSERT INTO audit_events (event_id, request_id, session_id, action_id, action_version, credential_id, credential_version, principal_id, policy_version, policy_digest, policy_rule_id, resource_type, resource_id, parameter_hash, approval_request_id, approval_id, approver_id, event_type, outcome, reason_code, upstream_status, latency_ms, created_at_ms, metadata_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
         params![
             event.event_id.as_slice(),
             event.request_id.as_ref().map(|v| v.as_bytes().as_slice()),
@@ -32,6 +32,11 @@ pub(super) fn insert(tx: &Transaction<'_>, event: &AuditEvent) -> Result<(), Aut
             event.upstream_status,
             event.latency_ms,
             event.created_at_ms,
+            if event.request_context.is_some() || event.usage.is_some() {
+                Some(serde_json::to_string(&AuditMetadata {
+                    request_context: event.request_context.clone(), usage: event.usage.clone(),
+                }).map_err(|_| AuthorityError::AuditCommitFailed)?)
+            } else { None },
         ],
     )
     .map_err(|_| AuthorityError::AuditCommitFailed)?;
@@ -39,4 +44,27 @@ pub(super) fn insert(tx: &Transaction<'_>, event: &AuditEvent) -> Result<(), Aut
         return Err(AuthorityError::AuditCommitFailed);
     }
     Ok(())
+}
+
+pub(super) fn decode_metadata(raw: Option<String>) -> Result<AuditMetadata, AuthorityError> {
+    let metadata: AuditMetadata = match raw {
+        Some(value) => {
+            serde_json::from_str(&value).map_err(|_| AuthorityError::StorageIntegrityFailed)?
+        }
+        None => AuditMetadata {
+            request_context: None,
+            usage: None,
+        },
+    };
+    if let Some(context) = &metadata.request_context {
+        context
+            .validate()
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+    }
+    if let Some(usage) = &metadata.usage {
+        usage
+            .validate()
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+    }
+    Ok(metadata)
 }

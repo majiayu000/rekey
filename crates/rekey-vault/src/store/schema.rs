@@ -1,12 +1,14 @@
 use sha2::{Digest, Sha256};
 
-/// Schema v24. This SQL text is the single source of truth; `schema_digest()`
+/// Schema v25. This SQL text is the single source of truth; `schema_digest()`
 /// hashes its normalized form to detect accidental drift, not tampering.
 pub const SCHEMA_SQL: &str = r#"
 CREATE TABLE vault_header (
     singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
-    format_version     INTEGER NOT NULL CHECK (format_version = 24),
+    format_version     INTEGER NOT NULL CHECK (format_version = 25),
     vault_id           BLOB NOT NULL CHECK (length(vault_id) = 16),
+    generation         BLOB NOT NULL CHECK (length(generation) = 8 AND generation != zeroblob(8)),
+    generation_mac     BLOB NOT NULL CHECK (length(generation_mac) = 32),
     crypto_suite       TEXT NOT NULL CHECK (crypto_suite = 'rkca-aes256gcm-argon2id-hkdfsha256-v1'),
     created_at_ms      INTEGER NOT NULL,
     schema_digest      BLOB NOT NULL CHECK (length(schema_digest) = 32),
@@ -154,6 +156,29 @@ CREATE TABLE workload_token_uses (
     CHECK (created_at_ms >= 0 AND expires_at_ms > created_at_ms)
 ) STRICT;
 
+CREATE TABLE profile_usage (
+ request_id BLOB PRIMARY KEY CHECK(length(request_id)=16),
+ principal_id BLOB NOT NULL CHECK(length(principal_id)=16),
+ instance_slug TEXT NOT NULL,
+ utc_day INTEGER NOT NULL CHECK(utc_day>=0),
+ started_at_ms INTEGER NOT NULL CHECK(started_at_ms>=0),
+ context_json TEXT NOT NULL,
+ generation_max_output INTEGER CHECK(generation_max_output>0),
+ output_tokens INTEGER CHECK(output_tokens>=0),
+ source TEXT CHECK(source IN ('measured','indeterminate','not-applicable')),
+ terminal_json TEXT,
+ settled_at_ms INTEGER CHECK(settled_at_ms>=0),
+ CHECK ((output_tokens IS NULL AND source IS NULL AND terminal_json IS NULL AND settled_at_ms IS NULL)
+     OR (output_tokens IS NOT NULL AND source IS NOT NULL AND terminal_json IS NOT NULL AND settled_at_ms IS NOT NULL))
+) STRICT;
+CREATE INDEX profile_usage_bucket ON profile_usage(principal_id,instance_slug,utc_day);
+CREATE TABLE profile_usage_state (
+ singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+ revision INTEGER NOT NULL CHECK(revision>=0), record_count INTEGER NOT NULL CHECK(record_count>=0),
+ records_digest BLOB NOT NULL CHECK(length(records_digest)=32),
+ seal_nonce BLOB NOT NULL CHECK(length(seal_nonce)=12), seal_ciphertext BLOB NOT NULL CHECK(length(seal_ciphertext)=16)
+) STRICT;
+
 CREATE TABLE audit_events (
     sequence            INTEGER PRIMARY KEY AUTOINCREMENT,
     event_id            BLOB NOT NULL UNIQUE CHECK (length(event_id) = 16),
@@ -178,6 +203,7 @@ CREATE TABLE audit_events (
     reason_code         TEXT NOT NULL,
     upstream_status     INTEGER,
     latency_ms          INTEGER,
+    metadata_json          TEXT,
     created_at_ms       INTEGER NOT NULL,
     CHECK (
         (principal_id IS NULL AND policy_version IS NULL AND policy_digest IS NULL

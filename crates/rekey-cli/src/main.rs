@@ -124,6 +124,13 @@ enum OidcLoginCommand {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Open the installed macOS App setup page; completion happens in the App.
+    Setup,
+    /// Open the installed macOS App provider onboarding page.
+    Add {
+        #[arg(value_parser = ["anthropic"])]
+        provider: String,
+    },
     /// Fixed-node OIDC administrator login lifecycle.
     #[command(subcommand)]
     #[cfg(feature = "lab")]
@@ -156,6 +163,40 @@ enum Command {
         /// SHA-256 of the backup file from the backup receipt (64 hex chars).
         #[arg(long)]
         sha256: String,
+        /// Inspect the authenticated backup and target history without restoring.
+        #[arg(long, conflicts_with = "expected_context")]
+        inspect: bool,
+        /// Exact public JSON context from a prior --inspect, explicitly accepted.
+        #[arg(long)]
+        expected_context: Option<String>,
+    },
+    /// Explicitly accept the authenticated rollback context; remains locked.
+    RollbackConfirm {
+        #[arg(long)]
+        expected_context: String,
+        #[arg(long)]
+        recovery: bool,
+        #[arg(long)]
+        password_stdin: bool,
+    },
+    /// Preview or install project MCP configuration.
+    Connect {
+        client: commands::ConnectClient,
+        #[arg(long)]
+        print: bool,
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
+    /// Run a command with a capability limited to the named signed Profile.
+    Run {
+        profile: String,
+        /// Explicit client adapter; omitted means standard SDK environment only.
+        #[arg(long, value_enum)]
+        client: Option<commands::RunClient>,
+        #[command(flatten)]
+        step_up: StepUpArgs,
+        #[arg(last = true, required = true)]
+        command: Vec<std::ffi::OsString>,
     },
     /// Launch an Agent command with deny-by-default IP egress (delegates to rekeyd).
     AgentRun {
@@ -233,6 +274,9 @@ enum Command {
     /// Typed authorization policy administration.
     #[command(subcommand)]
     Policy(PolicyCommand),
+    /// Inspect the authenticated signed Profiles before editing.
+    #[command(subcommand)]
+    Profile(ProfileCommand),
     /// Prepare a signed-approval challenge.
     #[command(subcommand)]
     Approval(ApprovalCommand),
@@ -612,18 +656,24 @@ enum PolicyCommand {
         #[command(flatten)]
         step_up: PolicyStepUpArgs,
     },
-    /// Generate a complete personal policy replacement for explicit action versions.
+    /// Generate a complete personal policy replacement from a Profile array.
     Draft {
-        #[arg(long)]
-        principal: String,
+        /// Read the complete Profile array from stdin; [] revokes all grants.
+        #[arg(long, required = true)]
+        profiles_stdin: bool,
         #[arg(long)]
         expires_at_ms: i64,
-        /// ACTION_ID@VERSION; omit all actions to revoke every previous grant.
-        #[arg(long = "action")]
-        actions: Vec<String>,
+        /// Editing base from profile list; omit only before the first policy.
+        #[arg(long)]
+        expected_policy_sha256: Option<String>,
     },
     /// Show the active policy version and digest.
     Status,
+}
+
+#[derive(Subcommand)]
+enum ProfileCommand {
+    List,
 }
 
 #[derive(Subcommand)]
@@ -829,6 +879,9 @@ enum AuditRetentionCommand {
 
 fn main() {
     let cli = Cli::parse();
+    let onboarding_inapplicable = cli.agent_socket.is_some();
+    #[cfg(feature = "lab")]
+    let onboarding_inapplicable = onboarding_inapplicable || cli.admin_session_file.is_some();
     #[cfg(feature = "lab")]
     client::configure_admin_session_file(cli.admin_session_file);
     let state_dir = match commands::resolve_state_dir(cli.state_dir) {
@@ -842,6 +895,10 @@ fn main() {
         .agent_socket
         .unwrap_or_else(|| state_dir.join("runtime").join("agent.sock"));
     let result = match cli.command {
+        Command::Setup => commands::open_onboarding(&state_dir, false, onboarding_inapplicable),
+        Command::Add { provider: _ } => {
+            commands::open_onboarding(&state_dir, true, onboarding_inapplicable)
+        }
         #[cfg(feature = "lab")]
         Command::OidcLogin(command) => match command {
             OidcLoginCommand::Begin => commands::oidc_begin(&state_dir),
@@ -871,6 +928,11 @@ fn main() {
             selected_proof(step_up.recovery, step_up.presence),
             step_up.password_stdin,
         ),
+        Command::RollbackConfirm {
+            expected_context,
+            recovery,
+            password_stdin,
+        } => commands::confirm_rollback(&state_dir, &expected_context, recovery, password_stdin),
         Command::Init {
             mode,
             password_stdin,
@@ -899,6 +961,8 @@ fn main() {
             recovery,
             password_stdin,
             sha256,
+            inspect,
+            expected_context,
         } => {
             let mut args = vec!["--input".into(), input.into_os_string()];
             if recovery {
@@ -906,8 +970,38 @@ fn main() {
             }
             args.push("--sha256".into());
             args.push(sha256.into());
+            if inspect {
+                args.push("--inspect".into());
+            }
+            if let Some(context) = expected_context {
+                args.extend(["--expected-context".into(), context.into()]);
+            }
             commands::delegate_rekeyd(&state_dir, "restore", &args, password_stdin)
         }
+        Command::Connect {
+            client,
+            print,
+            project,
+        } => commands::connect(client, print, project),
+        Command::Run {
+            profile,
+            client,
+            step_up,
+            command,
+        } => commands::run_profile(
+            &state_dir,
+            &agent_socket,
+            &profile,
+            selected_proof(step_up.recovery, step_up.presence),
+            step_up.password_stdin,
+            client,
+            command,
+        )
+        .map(|code| {
+            if code != 0 {
+                std::process::exit(code);
+            }
+        }),
         Command::AgentRun {
             capability_stdin,
             command,
@@ -1282,6 +1376,7 @@ fn main() {
                 step_up.password_stdin,
             ),
         },
+        Command::Profile(ProfileCommand::List) => commands::profile_list(&state_dir),
         Command::Policy(cmd) => match cmd {
             PolicyCommand::Trust(PolicyTrustCommand::Install {
                 file,
@@ -1310,10 +1405,10 @@ fn main() {
                 step_up.step_up_stdin,
             ),
             PolicyCommand::Draft {
-                principal,
+                profiles_stdin: _,
                 expires_at_ms,
-                actions,
-            } => commands::policy_draft(&state_dir, &principal, expires_at_ms, &actions),
+                expected_policy_sha256,
+            } => commands::policy_draft(&state_dir, expires_at_ms, expected_policy_sha256),
             PolicyCommand::Status => commands::policy_status(&state_dir),
         },
         Command::Approval(ApprovalCommand::Origin) => commands::approval_origin(&state_dir),
@@ -1461,6 +1556,19 @@ fn main() {
 #[cfg(test)]
 mod policy_target_args_tests {
     use super::*;
+
+    #[test]
+    fn onboarding_accepts_only_fixed_front_doors() {
+        assert!(Cli::try_parse_from(["rekey", "setup"]).is_ok());
+        assert!(Cli::try_parse_from(["rekey", "add", "anthropic"]).is_ok());
+        for args in [
+            vec!["rekey", "add", "openai"],
+            vec!["rekey", "setup", "--password-stdin"],
+            vec!["rekey", "add", "anthropic?secret=x"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err());
+        }
+    }
 
     #[test]
     fn init_requires_an_explicit_supported_policy_mode() {
@@ -1642,12 +1750,19 @@ mod policy_target_args_tests {
             "rekey",
             "policy",
             "draft",
-            "--principal",
-            "00112233-4455-4677-8899-aabbccddeeff",
+            "--profiles-stdin",
             "--expires-at-ms",
             "1000",
         ];
         assert!(Cli::try_parse_from(draft).is_ok());
+        assert!(
+            Cli::try_parse_from(
+                draft
+                    .into_iter()
+                    .chain(["--principal", "00112233-4455-4677-8899-aabbccddeeff",])
+            )
+            .is_err()
+        );
         assert!(Cli::try_parse_from(["rekey", "policy", "draft"]).is_err());
         let activate = [
             "rekey",

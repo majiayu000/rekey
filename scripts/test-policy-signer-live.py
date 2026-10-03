@@ -54,9 +54,9 @@ def main():
                 assert not initial["trust_installed"] and not initial["bundle_persisted"]
                 draft = root / "draft.json"
                 draft.write_text(json.dumps({
-                    "format_version": 4, "version": 1,
+                    "format_version": 6, "version": 1,
                     "expires_at_ms": int(time.time() * 1000) + 600000,
-                    "approvers": [], "workload_identities": [], "bindings": [], "rules": [],
+                    "approvers": [], "profiles": [], "workload_identities": [], "bindings": [], "rules": [],
                 }))
                 key = root / "test-key.der"
                 subprocess.run([

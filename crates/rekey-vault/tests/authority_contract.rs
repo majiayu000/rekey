@@ -79,6 +79,8 @@ async fn expired_mutation_command_never_commits_later() {
                 credential_version: None,
                 authorization: None,
                 approval: None,
+                request_context: None,
+                usage: None,
                 event_type: event_type::SESSION_CREATED,
                 outcome: outcome::SUCCESS,
                 reason_code: "expired-test".to_owned(),
@@ -102,6 +104,8 @@ async fn expired_mutation_command_never_commits_later() {
                 credential_version: None,
                 authorization: None,
                 approval: None,
+                request_context: None,
+                usage: None,
                 event_type: event_type::SESSION_REVOKED,
                 outcome: outcome::SUCCESS,
                 reason_code: "wall-expired-test".to_owned(),
@@ -1448,6 +1452,8 @@ mod lease_journal_tests {
                 credential_version: None,
                 authorization: None,
                 approval: None,
+                request_context: None,
+                usage: None,
                 event_type: event_type::EXECUTION_STARTED,
                 outcome: outcome::SUCCESS,
                 reason_code: "allowed".into(),
@@ -1902,6 +1908,13 @@ mod lease_journal_tests {
             &restored,
             RestoreProof::Password(common::password_input()),
             &info.sha256_hex,
+            rekey_vault::bootstrap::inspect_restore(
+                &path,
+                &restored,
+                RestoreProof::Password(common::password_input()),
+                &info.sha256_hex,
+            )
+            .unwrap(),
         )
         .unwrap();
         assert_eq!(recovered.snapshot_cut, info.snapshot_cut);
@@ -1963,7 +1976,8 @@ mod lease_journal_tests {
                 &path,
                 &tampered,
                 RestoreProof::Password(common::password_input()),
-                &digest
+                &digest,
+                common::unconfirmed_restore_context()
             ),
             Err(AuthorityError::StorageIntegrityFailed)
         ));

@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>Label</key><string>com.rekey.rekeyd</string>
-    <key>BundleProgram</key><string>Contents/Resources/bin/rekeyd</string>
+    <key>BundleProgram</key><string>Contents/Helpers/RekeyDaemon.app/Contents/MacOS/rekeyd</string>
     <key>ProgramArguments</key>
     <array><string>rekeyd</string><string>serve</string></array>
     <key>RunAtLoad</key><true/>

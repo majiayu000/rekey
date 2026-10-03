@@ -1,6 +1,6 @@
 # Rekey macOS UI
 
-原生 SwiftUI 本机管理客户端，按已接受的中文浅色凭证管理设计实现。需要 macOS 14+ 和 Xcode Command Line Tools；无需 Node、浏览器服务或新数据库。
+原生 SwiftUI 本机管理客户端。当前目标为 **3.0.0-alpha.1 未发布候选**，vault25 / policy6 尚未完成预 GA 格式冻结。需要 macOS 14+ 和 Xcode Command Line Tools；无需 Node、浏览器服务或新数据库。安装与设备验收仍待完成，不以软件检查宣称 L1/L2。
 
 ## 构建与打开
 
@@ -9,11 +9,11 @@ scripts/build-macos-ui.sh
 open target/macos-ui/Rekey.app
 ```
 
-脚本将当前源码的 `rekey`、`rekeyd`、`rekey-mcp`、`rekey-policy-sign`、`rekey-approval-sign` 打包到 App 内，默认做 ad-hoc 签名。正式构建显式设置 `REKEY_SIGNING_IDENTITY`（或 `APPLE_SIGNING_IDENTITY`）、`REKEY_REQUIRE_DEVELOPER_ID=1` 和 `REKEY_PROVISIONING_PROFILE=/path/to/Rekey.provisionprofile`。`REKEY_UI_OUTPUT` 可指定构建输出位置，`CARGO_TARGET_DIR` 沿用 Cargo 的构建缓存配置。不执行公证或公开发布。
+脚本将当前源码的 `rekey`、`rekeyd`、`rekey-mcp`、`rekey-policy-sign`、`rekey-approval-sign` 打包到 App 内，默认做 ad-hoc 签名。正式构建显式设置 `REKEY_SIGNING_IDENTITY`（或 `APPLE_SIGNING_IDENTITY`）、`REKEY_REQUIRE_DEVELOPER_ID=1` 、`REKEY_PROVISIONING_PROFILE=/path/to/Rekey.provisionprofile` 和 `REKEY_DAEMON_PROVISIONING_PROFILE=/path/to/RekeyDaemon.provisionprofile`。`REKEY_UI_OUTPUT` 可指定构建输出位置，`CARGO_TARGET_DIR` 沿用 Cargo 的构建缓存配置。不执行公证或公开发布。
 
-正式 App 的 profile 必须授权当前签名 Team、`com.starlight.rekey` 和 `<TeamID>.com.rekey` 访问组。构建脚本从已签名的内嵌 daemon 读取 Team ID，嵌入 profile 并只为 App 添加所需 entitlement；独立 CLI 不加入访问组。release 的 macos-ui job 需要 base64 编码的 `APPLE_PROVISIONING_PROFILE` secret。缺失或不匹配会停止正式 App 构建；源码 ad-hoc 构建仍可管理密码，但不能使用受保护的系统认证授权。profile 的最终授权由 macOS 验证，构建检查不代表 V1 通过。依据 [Apple TN3125](https://developer.apple.com/documentation/technotes/tn3125-inside-code-signing-provisioning-profiles)。
+正式构建需要两个独立 provisioning profile：App 标识符 `com.starlight.rekey`，内嵌 `Contents/Helpers/RekeyDaemon.app` 标识符 `com.rekey.rekeyd`，二者属于同一签名 Team 并授权 `<TeamID>.com.rekey` 访问组。构建脚本分别嵌入 profile 和对应 entitlement；独立 CLI 不加入访问组。release 的 macos-ui job 需要 base64 编码的 `APPLE_PROVISIONING_PROFILE` 与 `APPLE_DAEMON_PROVISIONING_PROFILE` secrets。缺失或不匹配会停止正式 App 构建；源码 ad-hoc 构建仍可管理密码，但不能使用受保护的系统认证授权。profile 的最终授权由 macOS 验证，构建检查不代表 V1 通过。依据 [Apple TN3125](https://developer.apple.com/documentation/technotes/tn3125-inside-code-signing-provisioning-profiles)。
 
-版本来自 Cargo metadata 中 `rekey-cli` 继承的 workspace version。完整 SemVer 保存在 Info.plist 的 `RekeyVersion`；`CFBundleShortVersionString` 和 `CFBundleVersion` 使用数字主、次、补丁版本，例如 `2.0.0-alpha.2` 对应 `2.0.0`。不实现 alpha/rc 排序映射。
+版本来自 Cargo metadata 中 `rekey-cli` 继承的 workspace version。完整 SemVer 保存在 Info.plist 的 `RekeyVersion`；`CFBundleShortVersionString` 和 `CFBundleVersion` 使用数字主、次、补丁版本，例如 `3.0.0-alpha.1` 对应 `3.0.0`。不实现 alpha/rc 排序映射。
 
 ## 组装 macOS pkg
 
@@ -40,7 +40,7 @@ App 在签名前会装入静态 `Contents/Library/LaunchAgents/com.rekey.rekeyd.
 
 应用图标源文件为 `Resources/AppIcon.png`（1024 × 1024）。构建脚本使用 macOS 自带的 `sips` 和 `iconutil` 生成标准尺寸的 `AppIcon.icns`，通过 `CFBundleIconFile` 配置 Finder 与 Dock 图标。当前采用用户选定的“双环 · 现代平面”：炭黑背景、米白与橙色双环。图标由内置 imagegen 基于双环参考图生成，提示词为“以参考图为基础，为 Rekey app 创作一个「现代平面设计」风格图标。保留双环相扣的识别结构，材质、配色与表现方式自由发挥。成熟、有个性，避免常见 AI 霓虹渐变。单张正方形图标，无文字。”
 
-首次打开时默认使用 `~/.rekey`。首次启动选择个人或团队模式并设置密码，模式创建后不可更改；确认界面说明创建保险库后会启用登录启动并启动服务（固定位置的安装版）。恢复密钥只在完成窗口显示一次。已有保险库请启动服务，再解锁。也可以通过“个人工作区”或设置切换目录；安装版后台服务仅管理默认目录，自定义目录或机构配置需先由 CLI 启动服务，App 再连接。格式不兼容或目录非空时沿用 CLI 的明确拒绝，不迁移、不覆盖。
+首次打开时默认使用 `~/.rekey`。首次启动选择个人或团队模式并设置密码，模式与信任根创建后不可更改；确认界面说明创建保险库后会启用登录启动并启动服务（固定位置的安装版）。恢复密钥只在完成窗口显示一次。已有保险库请启动服务，再解锁。也可以通过“个人工作区”或设置切换目录；安装版后台服务仅管理默认目录，自定义目录或机构配置需先由 CLI 启动服务，App 再连接。格式不兼容或目录非空时沿用 CLI 的明确拒绝，不迁移、不覆盖。
 
 ## 当前入口
 
@@ -48,11 +48,13 @@ App 在签名前会装入静态 `Contents/Library/LaunchAgents/com.rekey.rekeyd.
 - 固定操作：表单创建，定义文件导入/更新/禁用。表单采用 30 秒、64 KiB 请求、256 KiB 响应的当前默认；更细的限制通过定义文件配置。
 - Provider 模板：Anthropic、OpenAI、GitHub PAT 和自定义 Bearer。界面从 daemon 读取认证后的能力声明，支持勾选能力和多组固定绑定；一次管理证明后原子安装。安装不自动激活策略或发放 Agent 会话。团队签名包可通过 `rekey template catalog/install --file … --package …` 使用。
 - 模板调用：`rekey execute` 与 `rekey approval prepare` 接受重复的 `--param NAME=VALUE`、`--query NAME=VALUE`。请求只使用安装时声明的参数类型和查询键，规范路径、查询与正文绑定审批；固定操作拒绝非空参数。本地 presence 审批通过专门面板审阅完整 daemon 请求。
-- 个人策略：安装按 vault ID 绑定的本机 P-256 信任公钥，选择已安装模板的能力、主体和到期时间，查看完整替换差异与目标定义后，由 App 调用 Secure Enclave 签署 daemon 返回的原始字节，再经匿名 stdin 提交签名包与逐次管理证明。空选项清除全部授权；高风险能力在本地审批完成前明确拒绝。切换工作区、关闭表单或草案失效后，迟到的签名不会激活；不自动重签或重试。真实 SE/Touch ID 尚未做设备验收。
+- 个人策略：安装按 vault ID 绑定的本机 P-256 信任公钥，编辑完整 Profile 集合（主体、实例能力、会话、隔离、egress、模型与预算），每个能力明确选择 `template-default`、`allow` 或 `require-approval`。查看完整替换差异与目标定义后，由 App 调用 Secure Enclave 签署 daemon 返回的原始字节，经匿名 stdin 提交签名包与逐次管理证明。空集合撤销全部授权；模板默认的高风险审批不会隐式变成 allow。切换工作区、关闭表单或草案失效后，迟到签名不会激活；不自动重签或重试。snapshot6 与规则 UI 的联合 gate 待完成，真实 SE/Touch ID 仍待设备验收。
+- Agent 接入：选择 Profile 后显式 `connect` / `run`；MCP 只发现已授权工具，SDK 使用已验证的本机 gateway endpoint。实例、预算和审批在共用执行器校验。没有后台签策略或 Agent 触发的系统认证；Linux Profile netns 与 Codex Seatbelt managed-preferences 限制见平台说明。
+- Activity：按结构化审计展示 Agent/实例/操作结果和用量；不展示 provider 凭证、原始请求或敏感响应。
 - 团队策略：安装外部 Ed25519 信任根、导入签名策略并查看状态。按操作创建短期 capability、按会话 ID 撤销；没有全量活动会话列表。
 - 外部 Ed25519 审批：真实 pending 收件箱、只读详情与来源签名信封导出。详情展示主体、会话、操作版本、资源、参数/策略摘要、审批人、次数和时限，以及当前本机来源公钥；相同版本的操作定义单独标明为本机元数据。信封不含原始正文或请求头，UI 未验证签名；完整请求核对与签名继续使用独立工具和独立固定的来源公钥。
 - 审计：结果筛选、稳定快照分页和 JSONL 导出，锁定时仍可读取。
-- 备份恢复：新文件加密备份与回执、SHA-256 验证的空目录离线恢复。
+- 备份恢复：新文件加密备份与 generation 回执；离线恢复先认证预览 source generation / high-water / history-missing，再显式确认相同 context。上下文变化必须重新审阅，不自动重试。运行中的 rollback-suspected 只能用密码或恢复密钥确认，成功后仍锁定。
 - 设置：密码修改、恢复密钥轮换、数据目录、服务启动/停止。
 
 个人策略私钥保留在 Secure Enclave；App 只持有密钥引用并请求系统认证签名，无软件密钥回退。团队策略和外部审批使用独立签名工具：
@@ -63,7 +65,7 @@ target/release/rekey-policy-sign --help
 target/release/rekey-approval-sign --help
 ```
 
-签名文件的准备和 Agent shell/MCP 接入继续见根目录 `docs/user-guide.md`。这一版没有自动配置 Agent或任意执行控制台；审批通知仅在用户明确开启后、App运行期间提示。
+签名文件与 Agent 接入见 [用户指南](../../docs/user-guide.md)。`connect` 只在用户明确操作后修改所支持客户端的受管配置；不提供任意执行控制台。审批通知仅在用户开启后、App 运行期间提示，不触发认证。保护等级只按已确认事实保守显示；服务签名标签独立于等级，未知状态不宣称 L1-dev/L1/L2。
 
 关闭 UI 不会终止 Broker；默认由 Broker 在空闲 7 天后锁定。可主动点击“锁定”或设置里的“停止服务”；停止服务保留登录启动设置，且需要逐次证明。“停止并停用登录启动”在同一次证明的 SHUTDOWN 成功后才调用注销接口；服务不可达时不会未经验证强行注销，可由用户在系统登录项中管理。不缓存密码或系统认证 K；密码/恢复密钥解锁时，可明确勾选默认关闭的“启用系统认证（7天）”。新 K 保存在要求 userPresence 的数据保护钥匙串中，保险库保存绑定 vault ID 与固定到期时间的加密根密钥材料。刷新和启动不会读取 K；重启后必须点击系统认证解锁。每次支持的 A2 操作显式读取 K，操作结束不保留；恢复与验证不会延长原期限。手动锁定、空闲锁定或更改密码/恢复密钥会撤销授权；正常停止服务保留授权。管理会话允许连续添加 API Key；每次查看或复制仍需密码、恢复密钥或系统认证的新证明，既有管理 token 不能授权明文。复制后 30 秒只清理本应用仍占有的剪贴板内容，无法清理第三方历史记录；短期 capability 和恢复结果只在当前结果窗口中存在，用户可显式保存为新建的 0600 文件。
 
@@ -83,6 +85,6 @@ xcrun swiftc -warnings-as-errors -swift-version 5 -O \
 
 系统认证合成检查：`/tmp/rekey-ui-contract --presence-boundary-only`，只注入临时 CLI 和可控读取结果，不访问钥匙串。真实签名设备的访问组、未签名进程读取拒绝与 userPresence 验收使用 `scripts/v3/keychain_probe.swift` 和 `scripts/v3/run.py`；旧的无交互自动恢复测试已被新合同替换。
 
-机构登录源码入口：设置中选择受保护的 OIDC 节点配置后启动服务；先本机解锁，再开始机构登录、在浏览器完成认证，并接收结果到新的私有会话文件。也可显式选择已有会话文件，取消未完成登录或退出本机机构会话。应用只传文件路径，不读取管理 token；密码逐次确认仍保留。16 项新调用断言、80 项原有原生流程断言及完整 macOS14 App 编译通过，真实 IdP／Broker／GUI 点击仍未验收。
+机构登录仅在 `--features lab` 的服务上可用：设置中选择受保护的 OIDC 节点配置后启动服务；先本机解锁，再开始机构登录、在浏览器完成认证，并接收结果到新的私有会话文件。也可显式选择已有会话文件，取消未完成登录或退出本机机构会话。应用只传文件路径，不读取管理 token；密码逐次确认仍保留。合成调用检查不替代真实 IdP／Broker／GUI 点击验收。
 
-本机审批使用 `approval review/approve/reject`：面板验证完整原始 UTF-8 正文的 RKREVIEW 哈希，默认焦点与 Return 都是拒绝。明确决定时才逐次读取 presence key，后台通知和收件箱轮询不触发认证，取消认证不发送决定。通知使用固定文案并在本次 App 会话中去重。`/tmp/rekey-ui-contract --local-approval-boundary-only` 运行65项合成检查；它不访问真实 Keychain、Secure Enclave 或通知权限，不能替代签名设备验收。
+本机审批使用 `approval review/approve/reject`：面板验证完整原始 UTF-8 正文的 RKREVIEW 哈希，默认焦点与 Return 都是拒绝。明确决定时才逐次读取 presence key，后台通知和收件箱轮询不触发认证，取消认证不发送决定。通知使用固定文案并在本次 App 会话中去重。`/tmp/rekey-ui-contract --local-approval-boundary-only` 运行合成边界检查；它不访问真实 Keychain、Secure Enclave 或通知权限，不能替代签名设备验收。

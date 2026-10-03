@@ -1,3 +1,5 @@
+> 适用范围更新（2026-10-03）：本文保留 早期 native Admin UI 的历史合同与当时证据，不改写旧发布事实。当前 v3 行为以 [v3 personal-first SPEC](2026-10-02-rekey-v3-personal-first.md) 为准；其中保护等级、Presence/管理会话权限、逐次明文查看与 shutdown 证明、Approver/Profile/网关、格式与回滚恢复的冲突段落均已由 v3 替代。旧的“desktop token 可读取”、自动恢复或旧格式说明不得用于当前实现；永久不迁移。
+
 # 本机 macOS 管理界面
 
 用户已接受 `outputs/rekey-ui-concept-20260914/credential-manager-v1.png` 的浅色中文布局，并授权实现。此源码切片增加 SwiftUI 管理客户端，不恢复旧版 Web Vault / Dashboard，也不增加 HTTP 监听。

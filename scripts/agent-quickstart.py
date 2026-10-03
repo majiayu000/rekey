@@ -46,9 +46,9 @@ def cli_json(command):
 def policy_draft(action, session, schema):
     resource = {"type": "fixed-http-action", "id": action["id"]}
     return {
-        "format_version": 4, "version": 1,
+        "format_version": 6, "version": 1,
         "expires_at_ms": session["expires_at_ms"],
-        "approvers": [], "workload_identities": [],
+        "approvers": [], "profiles": [], "workload_identities": [],
         "bindings": [{
             "action_id": action["id"], "version": action["version"],
             "resource": resource, "parameter_schema_id": "agent-quickstart/v1",

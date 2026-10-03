@@ -283,6 +283,7 @@ async fn restore_rejects_tampered_lifecycle_metadata() {
         &target,
         RestoreProof::Password(common::password_input()),
         &sha256,
+        common::unconfirmed_restore_context(),
     )
     .unwrap_err();
     assert!(matches!(err, AuthorityError::StorageIntegrityFailed));
@@ -327,6 +328,13 @@ async fn lifecycle_seal_survives_rotate_revoke_backup_restore() {
         &restored,
         RestoreProof::Password(common::password_input()),
         &receipt.sha256_hex,
+        rekey_vault::bootstrap::inspect_restore(
+            &backup,
+            &restored,
+            RestoreProof::Password(common::password_input()),
+            &receipt.sha256_hex,
+        )
+        .unwrap(),
     )
     .unwrap();
     let (handle, join) = common::spawn(&restored);

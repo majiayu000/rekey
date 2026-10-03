@@ -21,6 +21,12 @@ struct ExecutionJob {
 enum ExecutionResponse {
     Buffered(oneshot::Sender<Result<ExecuteOutcome, BrokerError>>),
     Stream(TextStreamSender),
+    Http(oneshot::Sender<Result<HttpExecution, BrokerError>>),
+}
+
+pub(crate) enum HttpExecution {
+    Buffered(ExecuteOutcome),
+    Stream(mpsc::Receiver<TextStreamEvent>),
 }
 
 enum SupervisorEvent {
@@ -68,6 +74,21 @@ pub(crate) fn new(
 }
 
 impl ExecutionSupervisorHandle {
+    pub(crate) async fn submit_http(
+        &self,
+        request: ExecuteRequest,
+    ) -> Result<oneshot::Receiver<Result<HttpExecution, BrokerError>>, BrokerError> {
+        let (response, result) = oneshot::channel();
+        self.tx
+            .send(ExecutionJob {
+                request,
+                response: ExecutionResponse::Http(response),
+            })
+            .await
+            .map_err(|_| BrokerError::Authority(AuthorityError::Draining))?;
+        Ok(result)
+    }
+
     pub(crate) async fn submit_stream(
         &self,
         request: ExecuteRequest,
@@ -126,6 +147,39 @@ impl ExecutionSupervisor {
                         let executor = Arc::clone(&self.executor);
                         self.tasks.spawn(async move {
                             match job.response {
+                                ExecutionResponse::Http(response) => {
+                                    match executor.admit_http(job.request).await {
+                                        Ok(admitted) if admitted.raw_stream() => {
+                                            let (sender, receiver) = mpsc::channel(1);
+                                            let _ =
+                                                response.send(Ok(HttpExecution::Stream(receiver)));
+                                            let _ = sender
+                                                .send(TextStreamEvent::Admitted {
+                                                    deadline: admitted.deadline(),
+                                                })
+                                                .await;
+                                            let status = admitted
+                                                .run_stream(&sender)
+                                                .await
+                                                .ok()
+                                                .and_then(|outcome| outcome.stream_status)
+                                                .unwrap_or(TextStreamStatus::Failed);
+                                            let _ = tokio::time::timeout(
+                                                std::time::Duration::from_secs(1),
+                                                sender.send(TextStreamEvent::Terminal(status)),
+                                            )
+                                            .await;
+                                        }
+                                        Ok(admitted) => {
+                                            let outcome =
+                                                admitted.run().await.map(HttpExecution::Buffered);
+                                            let _ = response.send(outcome);
+                                        }
+                                        Err(error) => {
+                                            let _ = response.send(Err(error));
+                                        }
+                                    }
+                                }
                                 ExecutionResponse::Buffered(response) => {
                                     let outcome = match executor.admit(job.request).await {
                                         Ok(admitted) => admitted.run().await,
@@ -134,7 +188,7 @@ impl ExecutionSupervisor {
                                     let _ = response.send(outcome);
                                 }
                                 ExecutionResponse::Stream(response) => {
-                                    let outcome = match executor.admit(job.request).await {
+                                    let outcome = match executor.admit_stream(job.request).await {
                                         Ok(admitted) => {
                                             let _ = response
                                                 .send(TextStreamEvent::Admitted {

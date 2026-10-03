@@ -273,9 +273,9 @@ def main():
                 key.chmod(0o600)
                 resource = {'type': 'fixed-http-action', 'id': action['id']}
                 snapshot = write('snapshot.json', {
-                    'format_version': 4, 'version': 1,
+                    'format_version': 6, 'version': 1,
                     'expires_at_ms': int(time.time() * 1000) + 300000,
-                    'approvers': [identity], 'workload_identities': [],
+                    'approvers': [identity], 'profiles': [], 'workload_identities': [],
                     'bindings': [{'action_id': action['id'], 'version': action['version'],
                                   'resource': resource, 'parameter_schema_id': 'apr/message',
                                   'parameter_schema': {'type': 'object', 'required': ['message'],

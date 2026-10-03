@@ -3,6 +3,7 @@ pub mod action_state;
 pub mod aead;
 pub(crate) mod approval_origin;
 pub mod credential_state;
+pub(crate) mod generation;
 pub mod kdf;
 pub mod keys;
 pub mod policy_state;
@@ -34,3 +35,5 @@ pub fn random_array<const N: usize>() -> Result<[u8; N], AuthorityError> {
 }
 
 pub mod lease_journal;
+
+pub(crate) mod usage;

@@ -121,6 +121,8 @@ impl Fixture {
                 credential_version: None,
                 authorization: None,
                 approval: None,
+                request_context: None,
+                usage: None,
                 event_type: event,
                 outcome: outcome::SUCCESS,
                 reason_code: "synthetic-start".into(),

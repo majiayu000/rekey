@@ -110,10 +110,19 @@ impl BrokerCtx {
                 },
                 None => None,
             };
-            let wanted: BTreeSet<_> = request.actions.iter().copied().collect();
-            if wanted.len() != request.actions.len() {
-                return Err(rekey_policy::PolicyError::Invalid.into());
+            let current_digest = previous
+                .as_ref()
+                .map(|bundle| data_encoding::HEXLOWER.encode(&bundle.snapshot().digest()));
+            if request.expected_policy_sha256 != current_digest {
+                return Err(AuthorityError::PolicyVersionConflict.into());
             }
+            let wanted: BTreeSet<_> = request
+                .profiles
+                .iter()
+                .flat_map(|profile| &profile.grants)
+                .flat_map(|grant| &grant.capabilities)
+                .flat_map(|capability| capability.actions.iter().copied())
+                .collect();
             let available = self.authority.action_list().await?;
             let mut selected: Vec<_> = available
                 .into_iter()
@@ -128,11 +137,12 @@ impl BrokerCtx {
                 return Err(rekey_policy::PolicyError::Invalid.into());
             }
             selected.sort_by_key(|action| (action.id, action.version));
+            super::profile::validate_profiles(&request.profiles, &selected)?;
             let draft = rekey_policy::personal::generate_personal_draft(
                 &trust,
                 previous.as_ref(),
                 &selected,
-                request.principal_id,
+                &request.profiles,
                 request.expires_at_ms,
                 crate::now_ts()?,
             )?;
@@ -176,6 +186,40 @@ impl BrokerCtx {
                 return Err(AuthorityError::AuthorityBusy.into());
             }
             Ok((response, Zeroizing::new(draft.sign_bytes().to_vec())))
+        })
+        .await
+        .map_err(|_| BrokerError::Authority(AuthorityError::AuthorityBusy))?
+    }
+
+    pub(crate) async fn profile_list_until(
+        &self,
+        deadline: tokio::time::Instant,
+    ) -> Result<rekey_domain::ipc::ProfileListResponse, BrokerError> {
+        let _owner = self.lifecycle.coordinate_until(deadline).await?;
+        self.lifecycle.reject_if_not_running()?;
+        tokio::time::timeout_at(deadline, async {
+            let material = self.authority.policy_material().await?;
+            let Some(record) = material.bundle else {
+                return Ok(rekey_domain::ipc::ProfileListResponse {
+                    profiles: Vec::new(),
+                    policy_sha256: None,
+                    expires_at_ms: None,
+                });
+            };
+            let trust = material.trust.ok_or(AuthorityError::PolicyUnavailable)?;
+            let trust = ValidatedPolicyTrust::from_parts(trust.signer_id, trust.key);
+            let bundle = match verified_stored_bundle(&record, &trust) {
+                Ok(bundle) => bundle,
+                Err(error) => {
+                    drop(self.authority.fault_integrity().await);
+                    return Err(error.into());
+                }
+            };
+            Ok(rekey_domain::ipc::ProfileListResponse {
+                profiles: bundle.snapshot().profiles().to_vec(),
+                policy_sha256: Some(data_encoding::HEXLOWER.encode(&bundle.snapshot().digest())),
+                expires_at_ms: Some(bundle.snapshot().expires_at_ms()),
+            })
         })
         .await
         .map_err(|_| BrokerError::Authority(AuthorityError::AuthorityBusy))?
@@ -349,20 +393,25 @@ impl BrokerCtx {
             &trust,
             crate::now_ts()?,
         )?;
-        if trust.key().algorithm() == PolicyTrustAlgorithm::SecureEnclaveP256 {
+        if trust.key().algorithm() == PolicyTrustAlgorithm::SecureEnclaveP256
+            || !verified.snapshot().profiles().is_empty()
+        {
             // The immutable mode/key contract makes P-256 personal-only. Check
             // the authenticated current Action view even for exact retries;
             // action_list excludes retired versions and includes disabled ones.
             let actions = tokio::time::timeout_at(deadline, self.authority.action_list())
                 .await
                 .map_err(|_| BrokerError::Authority(AuthorityError::AuthorityBusy))??;
-            if verified.snapshot().action_refs().any(|wanted| {
-                !actions.iter().any(|action| {
-                    action.enabled
-                        && action.id == wanted.action_id
-                        && action.version == wanted.version
+            super::profile::validate_profile_actions(verified.snapshot(), &actions)?;
+            if trust.key().algorithm() == PolicyTrustAlgorithm::SecureEnclaveP256
+                && verified.snapshot().action_refs().any(|wanted| {
+                    !actions.iter().any(|action| {
+                        action.enabled
+                            && action.id == wanted.action_id
+                            && action.version == wanted.version
+                    })
                 })
-            }) {
+            {
                 return Err(BrokerError::Authority(
                     AuthorityError::PolicyVersionConflict,
                 ));
@@ -421,6 +470,7 @@ impl BrokerCtx {
                             self.sessions.revoke_workload();
                         }
                     }
+                    self.reconcile_gateway().await;
                     return Err(BrokerError::Authority(AuthorityError::AuthorityBusy));
                 }
                 self.sessions.close_and_revoke_all();
@@ -440,6 +490,7 @@ impl BrokerCtx {
             let mut guard = self.policy.write().await;
             *guard = Some(Arc::new(active));
         }
+        self.reconcile_gateway().await;
         Ok(())
     }
 }
@@ -507,8 +558,8 @@ mod tests {
             .ctx
             .personal_policy_draft_until(
                 rekey_domain::ipc::PersonalPolicyDraftMeta {
-                    principal_id: rekey_domain::ids::PrincipalId::new_random(),
-                    actions: vec![],
+                    profiles: vec![],
+                    expected_policy_sha256: None,
                     expires_at_ms: fixture.expires,
                 },
                 tokio::time::Instant::now() + Duration::from_millis(20),
@@ -517,7 +568,7 @@ mod tests {
             .unwrap_err();
         assert!(matches!(
             error,
-            BrokerError::Authority(AuthorityError::AuthorityBusy)
+            BrokerError::Admission(AuthorityError::AuthorityBusy)
         ));
         assert!(fixture.ctx.lifecycle.is_running());
         assert_eq!(count(), before);
@@ -581,6 +632,7 @@ mod tests {
             policy_trust: Arc::new(RwLock::new(None)),
             terminals,
             drain_timeout: Duration::from_secs(1),
+            gateway: gateway::Gateway::default(),
             shutdown_flag: AtomicBool::new(false),
             shutdown_tx,
             stop_tx,
@@ -625,7 +677,7 @@ mod tests {
         let expires = crate::now_ts().unwrap().as_unix_ms() + 60_000;
         let bundle = |version| {
             let mut unsigned = serde_json::json!({"format_version":1,"signer_id":signer_id,"snapshot":{
-                "format_version":4,"version":version,"expires_at_ms":expires,"approvers":[],"workload_identities":[],"bindings":[],"rules":[]
+                "format_version":6,"version":version,"expires_at_ms":expires,"approvers":[],"profiles": [], "workload_identities":[],"bindings":[],"rules":[]
             }});
             let mut message = b"RKPOLICY\0\x01".to_vec();
             message.extend_from_slice(&serde_jcs::to_vec(&unsigned).unwrap());
@@ -793,6 +845,7 @@ mod tests {
                 policy_trust: Arc::new(RwLock::new(None)),
                 terminals,
                 drain_timeout: Duration::from_secs(1),
+                gateway: gateway::Gateway::default(),
                 shutdown_flag: AtomicBool::new(false),
                 shutdown_tx,
                 stop_tx,
@@ -832,10 +885,10 @@ mod tests {
             let unsigned = serde_json::json!({
                 "format_version": 1, "signer_id": self.trust.signer_id(),
                 "snapshot": {
-                    "format_version": 4, "version": version, "expires_at_ms": self.expires,
+                    "format_version": 6, "version": version, "expires_at_ms": self.expires,
                     "approvers": [{"approver_id": self.approver_id, "algorithm": "ed25519",
                         "public_key": data_encoding::HEXLOWER.encode(self.signer.public_key().as_ref())}],
-                    "workload_identities": [], "bindings": [], "rules": []
+                    "profiles": [], "workload_identities": [], "bindings": [], "rules": []
                 }
             });
             self.sign(unsigned, b"RKPOLICY\0\x01")
@@ -1180,9 +1233,9 @@ mod tests {
         f.finish().await;
     }
 
-    // Block a real SQLite write beyond the Broker deadline. The Authority has
-    // already checked that deadline when it reaches the blocked transaction;
-    // reconciliation must observe the actual eventual commit or fault.
+    // Block a real SQLite write beyond the Broker deadline. The Authority
+    // generation commit checks the deadline again before reserving anchors;
+    // reconciliation must observe the actual rollback or fault.
     fn hold_policy_store(f: &PolicyFixture, fail_audit: bool) -> std::thread::JoinHandle<()> {
         let connection =
             rusqlite::Connection::open(rekey_vault::paths::vault_db(&f.state)).unwrap();
@@ -1197,7 +1250,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn policy_timeout_reconciles_first_activation_and_roll_forward() {
+    async fn policy_timeout_before_generation_reservation_preserves_state() {
         use rekey_domain::capability::SessionProvenance::{Admin, Workload};
         for version in [1, 2] {
             let f = PolicyFixture::new().await;
@@ -1206,6 +1259,34 @@ mod tests {
             }
             let (admin, _, action) = f.session(Admin);
             let (workload, _, workload_action) = f.session(Workload);
+            let database_state = || {
+                let db =
+                    rusqlite::Connection::open(rekey_vault::paths::vault_db(&f.state)).unwrap();
+                [
+                    "vault_header",
+                    "policy_state",
+                    "policy_trust",
+                    "policy_bundle",
+                    "audit_events",
+                ]
+                .map(|table| {
+                    let mut query = db
+                        .prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))
+                        .unwrap();
+                    let columns = query.column_count();
+                    query
+                        .query_map([], |row| {
+                            (0..columns)
+                                .map(|column| row.get::<_, rusqlite::types::Value>(column))
+                                .collect::<rusqlite::Result<Vec<_>>>()
+                        })
+                        .unwrap()
+                        .collect::<rusqlite::Result<Vec<_>>>()
+                        .unwrap()
+                })
+            };
+            let before = database_state();
+            let anchor = std::fs::read(f.state.join("generation")).unwrap();
             let lock = hold_policy_store(&f, false);
             let error = f
                 .ctx
@@ -1221,13 +1302,14 @@ mod tests {
                 BrokerError::Authority(AuthorityError::AuthorityBusy)
             ));
             lock.join().unwrap();
-            assert_eq!(f.ctx.policy_status().await.unwrap().version, Some(version));
-            if version == 1 {
-                f.assert_live(&admin, action);
-            } else {
-                f.assert_revoked(&admin, action);
-            }
-            f.assert_revoked(&workload, workload_action);
+            assert_eq!(
+                f.ctx.policy_status().await.unwrap().version,
+                (version == 2).then_some(1)
+            );
+            assert_eq!(database_state(), before);
+            assert_eq!(std::fs::read(f.state.join("generation")).unwrap(), anchor);
+            f.assert_live(&admin, action);
+            f.assert_live(&workload, workload_action);
             f.finish().await;
         }
     }
@@ -1261,6 +1343,8 @@ mod tests {
                     credential_version: None,
                     authorization: None,
                     approval: None,
+                    request_context: None,
+                    usage: None,
                     event_type: rekey_vault::model::event_type::SESSION_REVOKED,
                     outcome: rekey_vault::model::outcome::SUCCESS,
                     reason_code: "fixture-queued".into(),

@@ -123,13 +123,28 @@ impl Worker {
             "dek-rotation",
         ))?;
         ensure_mutation_current(not_after)?;
-        self.store.replace_version_ciphertexts(
+        let observed = self.mutation_observation()?;
+        let mut generation = crate::store::generation::GenerationAttempt::new(
+            &self.anchors,
+            &self.header,
+            observed,
+            self.require_unlocked()?.bytes(),
+            self.header
+                .generation
+                .checked_add(1)
+                .ok_or(AuthorityError::StorageIntegrityFailed)?,
+            not_after,
+            None,
+        )?;
+        let result = self.store.replace_version_ciphertexts(
             &versions,
             &journal,
             &journal_state,
             audit,
             not_after,
-        )?;
+            &mut generation,
+        );
+        self.complete_generation(result, generation.finish())?;
         Ok(versions.len() as u64)
     }
 
@@ -241,7 +256,23 @@ impl Worker {
             "add",
         ))?;
         ensure_mutation_current(not_after)?;
-        let result = self.store.insert_credential(&record, &version, audit);
+        let observed = self.mutation_observation()?;
+        let mut generation = crate::store::generation::GenerationAttempt::new(
+            &self.anchors,
+            &self.header,
+            observed,
+            self.require_unlocked()?.bytes(),
+            self.header
+                .generation
+                .checked_add(1)
+                .ok_or(AuthorityError::StorageIntegrityFailed)?,
+            not_after,
+            None,
+        )?;
+        let result = self
+            .store
+            .insert_credential(&record, &version, audit, &mut generation);
+        let result = self.complete_generation(result, generation.finish());
         self.fault_on_audit_failure(result)?;
         record_to_metadata(&record)
     }
@@ -331,7 +362,23 @@ impl Worker {
             "rotate",
         ))?;
         ensure_mutation_current(not_after)?;
-        let result = self.store.rotate_credential(&updated, &version, now, audit);
+        let observed = self.mutation_observation()?;
+        let mut generation = crate::store::generation::GenerationAttempt::new(
+            &self.anchors,
+            &self.header,
+            observed,
+            self.require_unlocked()?.bytes(),
+            self.header
+                .generation
+                .checked_add(1)
+                .ok_or(AuthorityError::StorageIntegrityFailed)?,
+            not_after,
+            None,
+        )?;
+        let result = self
+            .store
+            .rotate_credential(&updated, &version, now, audit, &mut generation);
+        let result = self.complete_generation(result, generation.finish());
         self.fault_on_audit_failure(result)?;
         record_to_metadata(&updated)
     }
@@ -357,7 +404,23 @@ impl Worker {
             "revoke",
         ))?;
         ensure_mutation_current(not_after)?;
-        let result = self.store.revoke_credential(&updated, now, audit);
+        let observed = self.mutation_observation()?;
+        let mut generation = crate::store::generation::GenerationAttempt::new(
+            &self.anchors,
+            &self.header,
+            observed,
+            self.require_unlocked()?.bytes(),
+            self.header
+                .generation
+                .checked_add(1)
+                .ok_or(AuthorityError::StorageIntegrityFailed)?,
+            not_after,
+            None,
+        )?;
+        let result = self
+            .store
+            .revoke_credential(&updated, now, audit, &mut generation);
+        let result = self.complete_generation(result, generation.finish());
         self.fault_on_audit_failure(result)?;
         record_to_metadata(&updated)
     }

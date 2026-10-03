@@ -863,3 +863,54 @@ fn materializing_checks_final_binding_expansion_length() {
         .unwrap();
     assert!(bound.materialize("read-repo", 0).is_err());
 }
+
+#[test]
+fn anthropic_beta_query_is_optional_closed_and_preserved() {
+    let bound = template::anthropic().unwrap().bind(&values(&[])).unwrap();
+    for (capability, path) in [
+        ("messages", "/v1/messages"),
+        ("count-tokens", "/v1/messages/count_tokens"),
+    ] {
+        let material = bound.materialize(capability, 0).unwrap();
+        let material: MaterializedAction =
+            serde_json::from_slice(&serde_json::to_vec(&material).unwrap()).unwrap();
+        assert_eq!(
+            material.definition().target.query().get("beta"),
+            Some(&ValueRule::Enum(vec!["true".into()]))
+        );
+        assert_eq!(
+            material
+                .render(&values(&[]), &values(&[]))
+                .unwrap()
+                .request_target(),
+            path
+        );
+        assert_eq!(
+            material
+                .render(&values(&[]), &values(&[("beta", "true")]))
+                .unwrap()
+                .request_target(),
+            format!("{path}?beta=true")
+        );
+        for query in [
+            values(&[("beta", "false")]),
+            values(&[("beta", "TRUE")]),
+            values(&[("beta", "%74rue")]),
+            values(&[("beta", "true"), ("other", "true")]),
+        ] {
+            assert!(material.render(&values(&[]), &query).is_err());
+        }
+    }
+    for (template, capability) in [
+        (template::anthropic().unwrap(), "models"),
+        (template::openai().unwrap(), "responses"),
+    ] {
+        assert!(
+            template
+                .bind(&values(&[]))
+                .unwrap()
+                .render(capability, 0, &values(&[]), &values(&[("beta", "true")]))
+                .is_err()
+        );
+    }
+}

@@ -63,7 +63,7 @@ fn bundle(
     // These ASCII keys and integer values are already in JCS order. The actual
     // policy parser verifies the signature and supplies canonical stored bytes.
     let unsigned = format!(
-        r#"{{"format_version":1,"signer_id":"{}","snapshot":{{"approvers":[],"bindings":[],"expires_at_ms":4102444800000,"format_version":4,"rules":[],"version":{},"workload_identities":[]}}}}"#,
+        r#"{{"format_version":1,"signer_id":"{}","snapshot":{{"approvers":[],"bindings":[],"expires_at_ms":4102444800000,"format_version":6,"profiles":[],"rules":[],"version":{},"workload_identities":[]}}}}"#,
         trust.signer_id, version
     );
     let mut message = b"RKPOLICY\0\x01".to_vec();
@@ -321,6 +321,13 @@ async fn personal_policy_survives_reopen_rotation_and_both_backup_generations() 
             &target,
             RestoreProof::Password(common::password_input()),
             &rekey_vault::durable::sha256_file(archive).unwrap(),
+            rekey_vault::bootstrap::inspect_restore(
+                archive,
+                &target,
+                RestoreProof::Password(common::password_input()),
+                &rekey_vault::durable::sha256_file(archive).unwrap(),
+            )
+            .unwrap(),
         )
         .unwrap();
         let (handle, join) = common::spawn(&target);
@@ -479,6 +486,7 @@ fn reject_restore(archive: &Path, target: &Path) -> AuthorityError {
         target,
         RestoreProof::Password(common::password_input()),
         &rekey_vault::durable::sha256_file(archive).unwrap(),
+        common::unconfirmed_restore_context(),
     )
     .unwrap_err();
     assert!(!paths::vault_db(target).exists());
@@ -510,11 +518,11 @@ async fn modified_backup_policy_material_and_format_twenty_two_are_rejected() {
             "{field}"
         );
     }
-    assert_eq!(rekey_vault::model::FORMAT_VERSION, 24);
+    assert_eq!(rekey_vault::model::FORMAT_VERSION, 25);
     let old = vault.dir.path().join("v23.rkbackup");
     std::fs::copy(&archive, &old).unwrap();
     let db = Connection::open(&old).unwrap();
-    db.execute_batch("PRAGMA writable_schema=ON; UPDATE sqlite_schema SET sql=replace(sql,'format_version = 24','format_version = 23') WHERE name='vault_header'; PRAGMA writable_schema=OFF;").unwrap();
+    db.execute_batch("PRAGMA writable_schema=ON; UPDATE sqlite_schema SET sql=replace(sql,'format_version = 25','format_version = 23') WHERE name='vault_header'; PRAGMA writable_schema=OFF;").unwrap();
     drop(db);
     let db = Connection::open(&old).unwrap();
     db.execute("UPDATE vault_header SET format_version=23", [])

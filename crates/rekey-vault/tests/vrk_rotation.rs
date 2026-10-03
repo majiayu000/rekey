@@ -193,6 +193,8 @@ fn workload_audit() -> rekey_vault::command::AuditDraft {
         credential_version: None,
         authorization: None,
         approval: None,
+        request_context: None,
+        usage: None,
         event_type: "session.created",
         outcome: "success",
         reason_code: "workload-attested".to_owned(),
@@ -434,6 +436,13 @@ async fn vrk_rotation_all_kinds_all_states_policy_replay_and_two_backup_generati
             &state,
             RestoreProof::Password(common::password_input()),
             &receipt.sha256_hex,
+            rekey_vault::bootstrap::inspect_restore(
+                &backup,
+                &state,
+                RestoreProof::Password(common::password_input()),
+                &receipt.sha256_hex,
+            )
+            .unwrap(),
         )
         .unwrap();
         let restored_db = Connection::open(paths::vault_db(&state)).unwrap();
@@ -728,31 +737,81 @@ fn vrk_process_fixture() {
 
 #[test]
 fn vrk_sigkill_before_commit_and_after_commit_without_client_receipt_reopens_whole_generation() {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
+    use std::io::{Read, Write};
+    use std::process::{Child, Command, ExitStatus, Stdio};
+
+    // A failed assertion must stop/reap the fixture before TempDir is removed.
+    struct ChildGuard(Child);
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            if self.0.try_wait().ok().flatten().is_none() {
+                let _ = self.0.kill();
+            }
+            let _ = self.0.wait();
+        }
+    }
+
     for mode in ["precommit", "postcommit"] {
         let dir = tempfile::tempdir().unwrap();
         let state = dir.path().join("state");
-        let mut child = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "vrk_process_fixture", "--nocapture"])
-            .env("REKEY_TEST_VRK_PROCESS_DIR", dir.path())
-            .env("REKEY_TEST_VRK_PROCESS_MODE", mode)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(25);
+        let stderr_path = dir.path().join("child-stderr.log");
+        let mut child = ChildGuard(
+            Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "vrk_process_fixture", "--nocapture"])
+                .env("REKEY_TEST_VRK_PROCESS_DIR", dir.path())
+                .env("REKEY_TEST_VRK_PROCESS_MODE", mode)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::from(std::fs::File::create(&stderr_path).unwrap()))
+                .spawn()
+                .unwrap(),
+        );
+        // A file avoids an unread stderr pipe blocking the child. Report only
+        // a bounded prefix on failure.
+        let diagnostic = |phase: &str, started: Instant, status: Option<ExitStatus>| {
+            let mut stderr = Vec::new();
+            let read = std::fs::File::open(&stderr_path)
+                .and_then(|file| file.take(8 * 1024).read_to_end(&mut stderr));
+            format!(
+                "mode={mode} phase={phase} elapsed={:?} child={status:?} ready={} desktop={} committed={} stderr_read={read:?} stderr={}",
+                started.elapsed(),
+                dir.path().join("ready").exists(),
+                state.join("desktop-unlock.bin").exists(),
+                dir.path().join("committed").exists(),
+                String::from_utf8_lossy(&stderr),
+            )
+        };
+        let setup_started = Instant::now();
+        let setup_deadline = setup_started + Duration::from_secs(25);
         while !dir.path().join("ready").exists() {
-            assert!(child.try_wait().unwrap().is_none(), "child setup failed");
-            assert!(Instant::now() < deadline);
+            let status = child.0.try_wait().unwrap();
+            assert!(
+                status.is_none(),
+                "{}",
+                diagnostic("setup-ready", setup_started, status)
+            );
+            assert!(
+                Instant::now() < setup_deadline,
+                "{}",
+                diagnostic("setup-ready", setup_started, status)
+            );
             std::thread::sleep(Duration::from_millis(10));
         }
         let db = Connection::open(paths::vault_db(&state)).unwrap();
         db.busy_timeout(Duration::ZERO).unwrap();
         let before = protected_state(&db);
         let immutable = immutable_state(&db);
-        child.stdin.as_mut().unwrap().write_all(b"start\n").unwrap();
+        // The phase budget starts at the actual command handshake, after setup
+        // and snapshots; both budgets retain the original 25-second bound.
+        let phase_started = Instant::now();
+        let deadline = phase_started + Duration::from_secs(25);
+        child
+            .0
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(b"start\n")
+            .unwrap();
         if mode == "precommit" {
             loop {
                 if !state.join("desktop-unlock.bin").exists() {
@@ -766,8 +825,17 @@ fn vrk_sigkill_before_commit_and_after_commit_without_client_receipt_reopens_who
                         Err(e) => panic!("unexpected lock probe: {e}"),
                     }
                 }
-                assert!(child.try_wait().unwrap().is_none());
-                assert!(Instant::now() < deadline);
+                let status = child.0.try_wait().unwrap();
+                assert!(
+                    status.is_none(),
+                    "{}",
+                    diagnostic("precommit-write-transaction", phase_started, status)
+                );
+                assert!(
+                    Instant::now() < deadline,
+                    "{}",
+                    diagnostic("precommit-write-transaction", phase_started, status)
+                );
                 std::thread::sleep(Duration::from_millis(10));
             }
             // The worker owns the SQL write transaction, while its final audit
@@ -775,13 +843,22 @@ fn vrk_sigkill_before_commit_and_after_commit_without_client_receipt_reopens_who
             assert!(!dir.path().join("committed").exists());
         } else {
             while !dir.path().join("committed").exists() {
-                assert!(child.try_wait().unwrap().is_none());
-                assert!(Instant::now() < deadline);
+                let status = child.0.try_wait().unwrap();
+                assert!(
+                    status.is_none(),
+                    "{}",
+                    diagnostic("postcommit-receipt", phase_started, status)
+                );
+                assert!(
+                    Instant::now() < deadline,
+                    "{}",
+                    diagnostic("postcommit-receipt", phase_started, status)
+                );
                 std::thread::sleep(Duration::from_millis(10));
             }
         }
-        child.kill().unwrap();
-        let killed = child.wait().unwrap();
+        child.0.kill().unwrap();
+        let killed = child.0.wait().unwrap();
         assert!(!killed.success());
         assert!(!state.join("desktop-unlock.bin").exists());
         assert!(state.join(".desktop-runtime-active").exists());

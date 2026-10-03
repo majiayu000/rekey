@@ -25,7 +25,7 @@
 | M1 presence proof 与钥匙串 UI | 软件已合流；设备验收待做 | proof3、受保护 K、固定双时钟期限、显式 A2 和取消边界已实现；默认 698/2 ignored、真实 CLI 与 Swift 82/53/108/16 断言通过。独立审查关闭；V1 未通过前不提高保护等级 |
 | M1 desktop-reveal step-up / 明文清零 | 本批默认验收通过 | password/recovery 逐次证明、Zeroizing 响应所有权；UI 94 项边界断言通过，失焦关闭待验证表单；旧 desktop token 不再授权明文 |
 | M1 生产客户端签名校验 / 等级显示 | 本批验收通过 | 签名 CLI 对错误 ID 同团队/ad-hoc 服务均在发送前拒绝，服务收到零字节；status/UI 展示本地验证结果；同团队 release daemon 的 status/unlock/shutdown 正向通过；仍不代表完整 L1 |
-| M1 rollback generation / MAC / 外部计数 | 待实施 | T6；旧库拒绝自动解锁与执行；备份恢复确认 |
+| M1 rollback generation / MAC / 外部计数 | 软件回归完成；设备验收待做 | C1/B1、B2/C2事务与root wire/UI共54文件已合流；四项并发/错误路径审查问题关闭，含实际旧源RED→修复GREEN。Vault默认/lab各122定向、root严格检查及真实CLI回滚/恢复通过；UI UUID互通修复后真实Swift→CLI通过。真实受保护锚和签名T6/I8验收仍待做 |
 | M1 memory hardening / core limit | 本批验收通过 | Linux arm64 容器实测 core=0/dumpable=0、独立 key 页生命周期、mlock 失败告警继续；macOS 回归与独立审查通过。仅覆盖拥有型 VRK/DEK 缓冲，非所有栈/AEAD 临时副本 |
 | M1 pkg / LaunchAgent / SMAppService | 源码与 CI 接线已实现，设备验收待做 | pkg 9 项合成结构检查和独立审查通过；静态 LaunchAgent 与 App 显式注册、无-k 启动、逐次 proof 停用入口已编译；103 UI 边界断言通过。缺 Installer 证书，未安装或实际注册；现有 release job 已接签名 pkg、公证与哈希，未运行真实 CI |
 | M1 独立安全审查 | 待完成 | 原型代码审查不等同于产品安全验收 |
@@ -36,15 +36,23 @@
 | M2 原子安装 / 规范执行 / 客户端 | 本批软件验收通过 | 52/53、原子批安装、render→审批哈希→HTTP 已接线；全量默认 647 / lab 1,111 项通过，各 2 项忽略；stdin 尾修 CLI 黑盒、lab CLI 62/1 ignored、Swift 实际 CLI 与 103 流程断言通过；独立审查关闭 |
 | M2 anthropic/openai/github/generic 模板 | 本批软件验收通过 | 四个内置声明、风险默认值、App 能力/多绑定选择已接；真实 CLI GitHub 一次安装 16 Action、Swift OpenAI 安装 2 Action 通过；策略激活仍需独立完成 |
 | M2 Approver / local-presence / 面板 | 本批软件验收通过；签名设备T10待做 | 完整原始审批正文、逐次 Presence、owner wait/cancel、一次消费及个人高风险草案已接通；独立审查、默认750/lab1,216（各2 ignored）、双配置strict Clippy与Swift328项断言通过。真实CLI/MCP单次批准执行通过，无硬件验收替代 |
-| M3 Profile / 会话生命周期 / rekey run | 纯模型独立实现待合流；运行时待实施 | Profile format5模型default139/lab193定向通过，待独立复核与外部fixtures同步；T9须真实CLI验证。macOS注册前peer身份的FD移交限制已写入SPEC |
-| M3 gateway / 认证 / SSE / model与预算 | 待实施 | T1/T8；仅 loopback；不可转发入站真实 Key |
-| M3 MCP v2 / await_approval / GET | 协议与本机审批已合流；Profile发现待实施 | 协商两个已实现版本、GET、文本/二进制和owner await/cancel已实现，真实MCP明确重试后恰一次执行；仍使用显式manifest，尚未由Profile自动发现 |
-| M3 rekey connect / diff / 备份 | 待实施 | 确认后才写第三方 Agent 配置 |
-| M3 活动页 / 审计统计 | 待实施 | 按 Profile/模板显示调用、拒绝、审批、token |
+| M3 Profile / 会话生命周期 / rekey run | 软件与macOS隔离已合流 | Profile15/Runtime8/RunCLI5 及个人编辑后端11/App4独立审查关闭；真实CLI默认/lab各2个生命周期场景及1个子进程fixture通过，SIGKILL后5秒内撤销。已合流整数组编辑、旧摘要拒绝和过期续期；Swift32/55/82/112/65/16断言及真实临时CLI通过。macOS Seatbelt helper7/glue4已合流并验证控制连接EOF后直接子进程和scratch清理；Linux Profile netns明确Unsupported，未宣称L2 |
+| M3 gateway / 认证 / SSE / model与预算 | 相关软件用例通过；真实provider待验 | Gateway11/SSE9/通用SDK2独立审查关闭；Header 16KiB完整请求绕过已有RED→修复。Anthropic beta6已合流：仅声明可选beta=true且绑定审批/上游，default/lab定向146次通过。真实Claude/Codex→真实Broker+合成上游各1/1通过，审计哈希/预算/用量/撤销通过；不替代provider或L2验收 |
+| M3 MCP v2 / await_approval / GET | 本批软件已合流 | MCP6及独立审查关闭，无参数环境接入、Agent8签名Profile发现、多Action选择和owner审批保留。root实际stdio9/9、bin15/15通过；测试接收端首字节改用既有CLI响应时限，后续帧仍2秒。新live脚本两轮合成运行通过，未运行真实Codex |
+| M3 rekey connect / diff / 备份 | 软件已合流，客户端路由合成验收通过 | 项目MCP配置/diff/TTY默认拒绝/备份与原子发布通过；显式--client适配4文件与47次定向测试通过。Claude2.1.281/Codex0.160.0已通过真实CLI→合成Admin/HTTP/SSE路由；后续真实Broker+合成上游也已通过；真实provider未验，Codex仅批准的preferences-routing场景，不证明L2 |
+| M3 活动页 / 审计统计 | 软件已合流，真实CLI数据互通通过 | 后端52与App4冻结补丁独立审查关闭；可信历史上下文、今日UTC稳定分页、已测量/上限token分列。App32 Activity/65 local/112 flow断言及严格编译通过，实际MCP调用→CLI audit JSON→App decoder与真实Swift CLI流程通过；通知回归RED与修复证据保留。 |
 | M3 遮蔽增强 / 编码与压缩限制 | 本批验收通过 | JSON/hex/base64 对齐、禁止压缩头；独立审查的窗口/短秘密问题已关闭；流式跨片回归通过；11 项 decoded source 合流回归通过；真实 TLS streaming 8/8，通过 marker fast path 避免逐字节重复扫描 |
-| M3 连续 500 次零交互与真实Agent接入 | 待实施 | T11；真实 Claude Code / Codex 独立证据 |
-| M4 新账户 5 分钟接入 | 待实施 | T12；签名 pkg、3 命令、0 JSON |
-| M4 格式冻结 / 基线 / GA 发布 | 待实施 | 公开发布需要明确发布授权；本轮默认本地实现与验证 |
+| M3 连续 500 次零交互与真实Agent接入 | 合成软件T11合流复测通过；真实Agent/签名待验 | root实际run→MCP→daemon完整500响应、第501拒绝、上游500，重复list不耗额度；Profile耗尽不会截断最后响应。m3-mcp-root-stdio.log记录9/9通过，不能替代真实Claude Code/Codex或Touch ID设备验收 |
+| M4 新账户 5 分钟接入 | 最小入口已合流；设备验收待做 | setup/add固定App入口、显式保存/能力安装/个人策略编辑与取消后复用已安装版本已实现；20最终检查通过。实际新用户安装/SE/5分钟T12未验收 |
+| M4 格式冻结 / 基线 / GA 发布 | 候选版本、文档及分发接线已实现；GA未发布 | 3.0.0-alpha.1、vault25/policy6；完整运行与定向修复已记录，GA最终格式冻结与公开发布仍待完成 |
+
+## 当前收尾状态（2026-10-03，尚未发布）
+
+- 默认与 `lab` 两配置完整workspace测试均已运行：默认仅VRK崩溃夹具超时，lab仅GCP期限夹具与插件故障清理失败，原日志在主工作区 `outputs/rekey-v3-20261003/v3-final-{joined,lab}/`。三处test-only修正经独立审查，随后按原workspace特性图重跑默认VRK全组、lab的GCP全组/插件全组/VRK全组均通过；修后all-targets、两配置strict Clippy与fmt通过，证据在 `v3-final-test-tail/`。没有将初跑失败记为一次全仓通过，也没有叠加嵌套子进程为独立用例数。
+- Swift实际个人草案、软件P256签署激活与读回覆盖三种逐能力规则，真实默认CLI检查通过。snapshot6要求显式rule字段，Vault仍为25；UUID仅在ID字段规范为小写。普通Ed25519签名自定义模板已接通Profile与实际run→MCP，同名模板不能获得内置LLM/Gateway语义；可信risk值已在能力选择卡显示。
+- 管理前置拒绝与真正的Authority工作错误已区分：前者及时返回，后者保留状态核对和故障关闭。独立审查关闭，原排空/轮换等待回归、审计故障自停和generation期限/恢复的对应全仓用例及尾修定向复验通过。首次默认9项失败及中止的旧lab运行保留，不以复跑抹除历史；CLI子进程启动超时的具体环境原因仍未确定，其原时限未放宽。VRK现在将setup与轮换各自限定25秒并确保panic回收child；GCP先观测真实发送，再等原绝对期限，保留精确请求数；插件故障测试直接断言自动停服的Faulted。三处不改生产执行或错误合同。
+- `3.0.0-alpha.1`为未发布候选。签名pkg/cask生成、systemd-user接线、保守等级与旧格式/短Key提示已有软件检查；所有公开Release项仍Pending。永久不迁移，GA后仅主版本可改变持久格式。
+- Linux新Profile netns仍明确未实现；Codex Seatbelt的managed-preferences限制保留。V1/V2、真实DPK/SE/CAS、Installer/登录项生命周期、真实provider、签名设备T11、新账户T12和独立人工安全审查仍需外部验收，不宣称完整L1/L2。未使用真实凭据，未发布或安装到用户环境。
 
 ## 本机首轮探针记录
 
@@ -52,7 +60,7 @@
 
 原型结果不能被描述成整份 v3 已完成，不能提高当前产品的 G1/L1-dev 承诺。
 
-## 当前依赖批次
+## 按批次保留的历史证据（当前状态以上表为准）
 
 M0 补丁已冻结并整合；来源 `outputs/rekey-v3-20261003/m0/m0-frozen.patch`，
 SHA-256 `57f077ce514ecaeaa57d1750c4909aaf1b97fc0e556fc8be68badba74378e1a9`。
@@ -121,3 +129,35 @@ Approver 本批完整回归已结束：`m2-approver-test-default-final.log` 706 
 App完整严格编译及328个合成断言通过（65 local、82 presence、53 personal、112 flow、16 OIDC），日志在 `m2-local-swift/`；最终lab二进制的Swift→CLI临时vault完整流程也通过，`real-cli-check.json`记录exit0。原始正文哈希、默认拒绝、取消认证不提交、失焦/退出作废、通知不触发认证均已接线；真实Keychain/SE/通知权限仍未使用。个人RequireApproval模板现在生成LocalPresence一次性规则，不降级Permit。MCP两版本协商、GET和内容类型处理、owner await/cancel已落地，Profile自动发现尚未实现。
 
 M3下一批按 `m3-foundation-preflight.json` 三路隔离实施：签名Profile纯模型、单一认证用量账本、OS进程监视。当前signed policy仍是format4/vault24；SPEC中format5/vault25为下一批合同。macOS实测证实注册前写入/FD移交可改变OS报告peer，不能追溯最初connector；注册后监视必须固定，真实run的五秒撤销仍待后续端到端。Cursor先做MCP，官方BYOK后端不能访问用户loopback，未冒充本机provider支持。
+
+M3 foundation 已合流 Profile15、Owner2、Usage52、wire1 和外部44处格式夹具及脚本同步，源码不再是前一批 snapshot4/vault24：当前为 snapshot5/vault25。各 lane 最终补丁和审查位于 `outputs/rekey-v3-20261003/m3-{profile,owner,usage}/` 及 `review/`；root 新鲜合流 all-targets check 和 policy_mode6 通过，尚未将这些定向结果称为全量回归。Usage 独立审查发现已解锁重复 resume 会提前结算活请求，修为仅 Locked→Unlocked 恢复；空账本恢复改用同一 deferred 事务避免无故抢写锁，保留原审计到期断言。
+
+下一阶段使用 `m3-runtime-preflight.json`：独立 worktree 并行实现 Broker Profile 签发/owner 控制与 CLI run，第三路只读核对 LLM 共同准入和结算接口，待上游 scope 冻结后接线。此阶段先支持明确验证的非 LLM 内置模板，未接完的 LLM 或隔离模式明确拒绝，不能将临时限制当作最终 SPEC 完成。
+
+外部格式同步的定向复测：备份同步23项、审计投递28项通过，后者使用当前源码新构建的显式 binary 路径。保留首次备份演练遗漏 FORMAT_VERSION24 和审计测试缺默认 binary 的失败日志；生产演练常量及旧 durable-header 断言现已同步25。没有改故意拒绝旧格式的测试。
+
+- Foundation integration gate first attempt exposed one stale root TestAuthority snapshot4 fixture. Updated src/lib.rs and current policy fuzz seed to5/profiles; focused broker_ipc regression now passes. Full default/lab rerun in progress; prior failed logs preserved in outputs/rekey-v3-20261003/m3-foundation-initial-*.
+
+M3 foundation 冻结切片全量结果：默认786 passed /3 ignored；lab 首轮 relay 重启测试201期望收到503，保留 `m3-foundation-test-lab.log`。排除relay后的lab core 1,208 passed /3 ignored与lab workspace严格Clippy通过，不能拼接为完整lab全套通过；relay正在独立隔离lane做确定性诊断。
+
+M3 Runtime8、RunCLI5、LLM7、Connect6、真实Run E2E1、个人Profile后端11和App4已按冻结补丁合入；各 `m3-*-final.json` 与 `review/` 保留独立审查及真实定向证据。新鲜合流all-targets check、m3-joined-checks.json全部组合定向及默认/lab strict检查通过。随后MCP6、relay测试修复及live MCP脚本按冻结补丁合流。relay已确定性复现TLS握手阻塞单accept线程并最小移入worker，21单元/24contract通过；历史那次连接本身不可追溯，新的完整lab合流gate仍待跑。raw SSE、网关、隔离、活动页与整库防回滚仍未完成。
+
+M3 SSE9、Activity52/App4、通用SDK2已通过冻结hash与独立审查合流。`m3-core-audit-joined/checks.json`的实际CLI构建、Broker共同LLM、CLI Profile与workspace严格Clippy通过；root connect指导格式随后修正，`format-correction-checks.json`全0。`m3-activity-interop/final-checks.json`记录实际MCP→CLI审计页→App统计与Swift真实临时vault互通全0，两脚本尾审关闭。上述均为合成软件证据，最终HTTP/客户端适配和整套workspace gate仍待合流。
+
+M3 Gateway11、显式客户端适配4、Anthropic beta6 和 M1 Header generation14 已按冻结补丁/文件hash合流，各自独立审查关闭。安装客户端的路由验收仅使用合成Admin/HTTP，115个artifact哈希和22条进程收据已核对；Codex preferences-routing不得视为L2。真实Broker+FakeUpstream接入正在独立树进行。
+
+联合全套前三轮发现3个旧测试边界：500ms策略到期后再mint、buffered Action用于stream审批测试、policy draft旧--principal参数。分别只修正测试输入/观测点并保留负面断言，定向复验通过；历史失败日志完整保留。`m3-full-joined/round4-checks.json`当前执行default/lab no-fail-fast完整检查，尚未宣称通过。macOS Profile helper7和CLI/runtime glue4尚在独立树，helper死亡后的direct Agent/临时目录存活问题已实证，生命周期审查未关闭。
+
+真实安装客户端→真实Broker/Authority→合成上游已完成：Claude/Codex各1/1，单次请求、output3/pending0、canonical audit hash、session.created/revoked匹配及进程清理均通过。`m3-sdk-broker-live`单测试文件和10条最终检查独立审查关闭，待整合。B1候选root/header先验证再发布6文件default/lab各85项通过；Profile helper7+glue4最终TERM收据审查关闭，实际EOF direct Agent和scratch均清理。这些候选待当前完整gate结束后按hash合流。
+
+`round4`已发现并保留两个真实RED：RESPONSE_TOO_LARGE被映射为INVALID_INPUT，以及Gateway release调用debug-only ID构造函数；两文件最小修补已独立审查，待完整gate停止后应用。下一批并行C1外锚adapter及M4最小入口；无真实Keychain/安装/发布操作。
+
+2026-10-03 后续合流：`round4`完整完成，default 937 passed/2 failed/3 ignored，lab 1,405 passed/2 failed/3 ignored，两配置相同的响应错误映射和release ID构造问题已最小修复。`reviewed-tail-checks.json`全部0，包括实际release policy进程验收；不能以这些定向复验替代新全量green。已按hash合流helper7/glue4/B1六文件/真实SDK单测试/root修补两文件共20，原失败证据保留。
+
+C1四文件已通过独立审查和7条最终检查并合流，integration all-targets0；signed daemon不回退文件模式。macOS打包已进一步合流独立daemon bundle/profile、固定内部link和对应pkg fresh/public gate；profile13/pkg10/27脚本语法与workspacealltargets均通过，新daemon profile secret仍需发布环境配置，未真实安装/签名/调用Keychain。
+
+M4首次引导六源码与打包URLscheme已合流，20最终检查通过；C2 UI四文件12最终检查（新增49恢复断言）已审查，仅overlay联合wire树等待core尾审。联合Domain/Broker/CLI生产workspacecheck0、Domain IPC16项0、实际CLI回滚与两步恢复1/1通过。独立审查发现并发init锁外检查/失败清理会删除其他成功attempt数据的P1，worker已用同锁所有权与真实屏障用例修复，等待尾审。完整workspace default/lab、实际Swift→新CLI及旧restore consumers仍在收尾；不提前声明整份SPEC或硬件安全等级完成。
+
+本次回滚合流已完成：B2/C2 final26、root wire/fixture24、UI4共54文件，root补丁 `e405968e5a8be5d62890aa375508b5b0bd36db66f9849d74751927bc29124189`。并发init误清理、普通mutation疑似回滚后未及时撤销、错误confirm提前改动Unlocked数据库、超时核验后late unlock重开四项已独立复核关闭，报告 `review/m1-rollback-review.md`。root隔离合流默认/lab all-targets与lab strict通过，generation3/header12/实际CLI2及超时停止状态1定向通过；主集成all-targets通过，不替代最终workspace全量。
+
+剩余本地工作已由 `v3-closure-plan/closure-plan.md` 逐项对照源码：恢复消费者13文件已独立审查、实际P0与大文件RSS通过，P2/P7尾部流水仍在收尾；Linux用户服务与真实pkg哈希cask在独立分发线；个人模板默认规则的明确覆盖尚待实现。root界面五文件已增加保守保护级别、精确旧格式错误重建指引和短密钥提示，Swift App/harness严格编译、保护18/回滚50/onboarding43断言通过。所有数字均为相应冻结批次，最终合流与硬件验收未提前计为通过。

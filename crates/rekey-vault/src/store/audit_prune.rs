@@ -1,3 +1,4 @@
+use super::generation::{GenerationAttempt, commit_generation};
 use std::collections::BTreeMap;
 use std::time::Instant;
 
@@ -170,6 +171,7 @@ impl SqliteRecordStore {
         record: &crate::model::AuditRetentionRecord,
         audit: AuditEvent,
         not_after: Option<Instant>,
+        generation: &mut GenerationAttempt<'_>,
     ) -> Result<(), AuthorityError> {
         ensure_current(not_after)?;
         let tx = self.conn.transaction().map_err(storage)?;
@@ -179,7 +181,7 @@ impl SqliteRecordStore {
         }
         super::audit::insert(&tx, &audit)?;
         ensure_current(not_after)?;
-        commit_audited(tx)
+        commit_generation(tx, generation)
     }
 }
 
@@ -198,6 +200,8 @@ mod tests {
             credential_version: None,
             authorization: None,
             approval: None,
+            request_context: None,
+            usage: None,
             event_type: kind,
             outcome: "success",
             reason_code: "test".into(),

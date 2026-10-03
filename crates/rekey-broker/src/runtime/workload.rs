@@ -287,6 +287,8 @@ fn workload_session_audit(session_id: SessionId) -> AuditDraft {
         credential_version: None,
         authorization: None,
         approval: None,
+        request_context: None,
+        usage: None,
         event_type: event_type::SESSION_CREATED,
         outcome: outcome::SUCCESS,
         reason_code: "workload-attested".to_owned(),

@@ -45,6 +45,7 @@ impl Worker {
             || draft.credential_version.is_some()
             || draft.upstream_status.is_some()
             || draft.latency_ms.is_some()
+            || draft.usage.is_some()
         {
             return Err(rekey_domain::DomainError::InvalidActionDefinition(
                 "invalid local approval audit".to_owned(),
@@ -126,6 +127,12 @@ impl Worker {
         self.observe_retention_clock(prior.updated_at_ms, now)?;
         request.validate_at(now)?;
         ensure_mutation_current(not_after)?;
+        if prior.days == request.days {
+            return Ok(rekey_domain::audit::AuditRetentionStatus {
+                days: prior.days,
+                updated_at_ms: prior.updated_at_ms,
+            });
+        }
         let mut record = crate::model::AuditRetentionRecord {
             days: request.days,
             updated_at_ms: now,
@@ -147,7 +154,23 @@ impl Worker {
             ),
             now,
         )?;
-        let result = self.store.set_audit_retention(&record, marker, not_after);
+        let observed = self.mutation_observation()?;
+        let mut generation = crate::store::generation::GenerationAttempt::new(
+            &self.anchors,
+            &self.header,
+            observed,
+            self.require_unlocked()?.bytes(),
+            self.header
+                .generation
+                .checked_add(1)
+                .ok_or(AuthorityError::StorageIntegrityFailed)?,
+            not_after,
+            None,
+        )?;
+        let result = self
+            .store
+            .set_audit_retention(&record, marker, not_after, &mut generation);
+        let result = self.complete_generation(result, generation.finish());
         let result = self.fault_on_integrity(result);
         self.fault_on_audit_failure(result)?;
         Ok(rekey_domain::audit::AuditRetentionStatus {
@@ -163,6 +186,7 @@ impl Worker {
         match self.state {
             VaultState::Locked => return Ok(None),
             VaultState::Faulted => return Err(AuthorityError::Faulted),
+            VaultState::RollbackSuspected(_) => return Err(AuthorityError::RollbackSuspected),
             VaultState::Unlocked { .. } => {}
         }
         let record = self.retention_record()?;
@@ -213,6 +237,8 @@ impl Worker {
                 credential_version: None,
                 authorization: None,
                 approval: None,
+                request_context: None,
+                usage: None,
                 event_type: event_type::RUNTIME_FAULTED,
                 outcome: outcome::FAILURE,
                 reason_code: reason.to_owned(),
@@ -242,6 +268,8 @@ impl Worker {
             credential_version: draft.credential_version,
             authorization: draft.authorization.map(|evidence| *evidence),
             approval: draft.approval,
+            request_context: draft.request_context,
+            usage: draft.usage,
             event_type: draft.event_type,
             outcome: draft.outcome,
             reason_code: draft.reason_code,
@@ -255,6 +283,21 @@ impl Worker {
         &mut self,
         draft: AuditDraft,
     ) -> Result<AuditEvent, AuthorityError> {
+        if draft.usage.is_some() {
+            return Err(super::usage::invalid("usage requires profile settlement"));
+        }
+        if let Some(context) = &draft.request_context {
+            context.validate()?;
+            if draft.session_id.is_none()
+                || draft.action_id.is_none()
+                || draft.action_version.is_none()
+                || draft.authorization.as_ref().is_some_and(|auth| {
+                    data_encoding::HEXLOWER.encode(&auth.policy_digest) != context.policy_sha256
+                })
+            {
+                return Err(super::usage::invalid("invalid profile audit context"));
+            }
+        }
         match self.audit_event(draft) {
             Ok(event) => Ok(event),
             Err(err) => {
@@ -268,7 +311,9 @@ impl Worker {
         &mut self,
         result: Result<T, AuthorityError>,
     ) -> Result<T, AuthorityError> {
-        if matches!(result, Err(AuthorityError::AuditCommitFailed)) {
+        if matches!(result, Err(AuthorityError::AuditCommitFailed))
+            && !matches!(self.state, VaultState::Faulted)
+        {
             self.fault("audit-commit-failed");
         }
         result
@@ -332,6 +377,8 @@ mod retention_tests {
             desktop_resume_expiry: None,
             presence_grant: None,
             desktop_session: None,
+            anchors: crate::generation_anchor::GenerationAnchors::open(&state, header.vault_id)
+                .unwrap(),
             store,
             header,
             state: VaultState::Locked,

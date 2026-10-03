@@ -34,6 +34,9 @@ use crate::upstream::{ReqwestUpstreamTransport, UpstreamTransport};
 
 mod admin;
 mod connections;
+mod gateway;
+pub(crate) mod profile;
+mod profile_inventory;
 mod shutdown;
 #[cfg(feature = "lab")]
 mod workload;
@@ -103,6 +106,7 @@ pub struct BrokerCtx {
     online_jwks_slots: Arc<tokio::sync::Semaphore>,
     pub lifecycle: Arc<Lifecycle>,
     policy: Arc<RwLock<Option<Arc<ActivePolicy>>>>,
+    gateway: gateway::Gateway,
     policy_trust: Arc<RwLock<Option<ValidatedPolicyTrust>>>,
     terminals: Arc<TerminalAuditTracker>,
     drain_timeout: Duration,
@@ -118,13 +122,23 @@ impl BrokerCtx {
     }
 
     pub(crate) fn publish_shutdown(&self) {
+        self.gateway.close();
         self.shutdown_flag.store(true, Ordering::SeqCst);
         if self.shutdown_tx.send(true).is_err() {
             tracing::debug!(event = "runtime.shutdown_notice_without_receivers");
         }
     }
 
+    pub(crate) fn close_fault_admission(&self) {
+        self.lifecycle.mark_stop_pending();
+        self.gateway.close();
+        self.lifecycle.close_remote_effect_admission();
+        self.lifecycle.signal_cancel();
+        self.sessions.close_and_revoke_all();
+    }
+
     pub(crate) fn request_fault(&self) {
+        self.close_fault_admission();
         #[cfg(feature = "lab")]
         if let Some(manager) = &self.oidc_admin {
             manager.clear();
@@ -179,7 +193,7 @@ impl BrokerCtx {
         let _owner = self
             .lifecycle
             .try_coordinate()
-            .map_err(|_| BrokerError::Authority(AuthorityError::AuthorityBusy))?;
+            .map_err(|_| BrokerError::Admission(AuthorityError::AuthorityBusy))?;
         self.lifecycle.reject_if_busy()?;
         let recover = self.lifecycle.phase() == BrokerPhase::Locked;
         self.authority.unlock(proof).await?;
@@ -233,6 +247,7 @@ impl BrokerCtx {
             return Err(transition_error);
         }
         self.sessions.open_for_admission();
+        self.reconcile_gateway().await;
         tracing::info!(event = "authority.state", state = "running");
         Ok(summary)
     }
@@ -251,7 +266,7 @@ impl BrokerCtx {
         let _owner = self
             .lifecycle
             .try_coordinate()
-            .map_err(|_| BrokerError::Authority(AuthorityError::AuthorityBusy))?;
+            .map_err(|_| BrokerError::Admission(AuthorityError::AuthorityBusy))?;
         self.lifecycle.reject_if_busy()?;
         let recover = self.lifecycle.phase() == BrokerPhase::Locked;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(25);
@@ -283,6 +298,64 @@ impl BrokerCtx {
         };
         let summary = self.activate_unlocked(recover).await?;
         Ok((session, expires, summary))
+    }
+
+    pub(crate) async fn confirm_rollback(
+        &self,
+        expected: rekey_domain::ipc::RollbackContext,
+        proof: rekey_vault::bootstrap::RestoreProof,
+        deadline: tokio::time::Instant,
+    ) -> Result<(), BrokerError> {
+        let _owner = self.lifecycle.coordinate_until(deadline).await?;
+        self.lifecycle.reject_if_busy()?;
+        let status = tokio::time::timeout_at(deadline, self.authority.status())
+            .await
+            .map_err(|_| BrokerError::Authority(AuthorityError::AuthorityBusy))??;
+        match status.state {
+            "rollback-suspected" => {}
+            "faulted" => return Err(AuthorityError::Faulted.into()),
+            _ => return Err(AuthorityError::RollbackSuspected.into()),
+        }
+        // Confirmation cannot revive old sessions or race prepared executions.
+        // The Authority retains suspected context across lock and validates
+        // both the supplied proof and current context at its trusted boundary.
+        self.run_drain_lock("rollback-confirm", tokio::time::Instant::now(), deadline)
+            .await?;
+        tokio::time::timeout_at(
+            deadline,
+            self.authority
+                .confirm_rollback(expected, proof, deadline.into_std()),
+        )
+        .await
+        .map_err(|_| BrokerError::Authority(AuthorityError::AuthorityBusy))??;
+        Ok(())
+    }
+
+    /// Runs after dispatch has released its coordinator. A failed mutation
+    /// may have faulted the Authority while retaining its original error code.
+    /// Return whether the caller must send the existing fault-stop after
+    /// attempting the original error response, including a failed write.
+    pub(crate) async fn settle_failed_admin(&self) -> bool {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let owner = self.lifecycle.coordinate_until(deadline).await;
+        if let Ok(_owner) = owner
+            && let Ok(Ok(status)) = tokio::time::timeout_at(deadline, self.authority.status()).await
+        {
+            if matches!(status.state, "locked" | "unlocked") {
+                return false;
+            }
+            if status.state == "rollback-suspected"
+                && self
+                    .run_drain_lock("rollback-suspected", tokio::time::Instant::now(), deadline)
+                    .await
+                    .is_ok()
+            {
+                return false;
+            }
+        }
+        // Unknown Authority state cannot preserve execution admission.
+        self.close_fault_admission();
+        true
     }
 
     /// Revoke sessions, wait in-flight executes, then zeroize the VRK.
@@ -408,6 +481,7 @@ impl BrokerCtx {
             }
             BrokerPhase::Draining | BrokerPhase::Running => {}
         }
+        self.gateway.close();
         if self.lifecycle.phase() == BrokerPhase::Running {
             self.lifecycle.enter_draining();
             self.sessions.close_and_revoke_all();
@@ -820,6 +894,7 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
         lifecycle,
         policy,
         policy_trust,
+        gateway: gateway::Gateway::new(config.state_dir.clone()),
         terminals,
         drain_timeout: config.drain_timeout,
         shutdown_flag: AtomicBool::new(false),
@@ -827,6 +902,9 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
         stop_tx,
         allowed_agent_uids: config.allowed_agent_uids.into(),
     });
+
+    ctx.gateway.attach(&ctx);
+    ctx.gateway.close();
 
     #[cfg(feature = "lab")]
     let mut oidc_poll_task = ctx.oidc_admin.clone().map(|manager| {

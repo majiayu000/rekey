@@ -9,13 +9,14 @@ use aws_lc_rs::rand::SystemRandom;
 use aws_lc_rs::signature::{ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair, KeyPair};
 use rekey_broker::runtime::{BrokerConfig, serve};
 use rekey_broker::testing::FakeUpstreamTransport;
-use rekey_domain::action::FixedHttpAction;
+use rekey_domain::action::{FixedHttpAction, FixedMethod};
 use rekey_domain::authorization::PolicyMode;
 use rekey_domain::capability::ActionVersionRef;
 use rekey_domain::ids::{ActionId, PolicySignerId, PrincipalId, RequestId, VaultId};
 use rekey_domain::ipc::{
     self, Channel, FrameHeader, PersonalPolicyDraftMeta, PersonalPolicyDraftResponse, admin_msg,
 };
+use rekey_domain::profile::ProfileRule;
 use rekey_vault::secret::SecretInput;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -148,12 +149,44 @@ impl Fixture {
             .collect()
     }
 
-    async fn draft(&self, actions: Vec<ActionVersionRef>, expiry: i64) -> common::WireResponse {
+    async fn draft(&self, references: Vec<ActionVersionRef>, expiry: i64) -> common::WireResponse {
+        self.draft_with_rule(references, expiry, ProfileRule::TemplateDefault)
+            .await
+    }
+
+    async fn draft_with_rule(
+        &self,
+        mut references: Vec<ActionVersionRef>,
+        expiry: i64,
+        rule: ProfileRule,
+    ) -> common::WireResponse {
+        let listed = self.call(admin_msg::PROFILE_LIST, json!({}), &[]).await;
+        let expected_policy_sha256 =
+            serde_json::from_slice::<ipc::ProfileListResponse>(&listed.body)
+                .ok()
+                .and_then(|response| response.policy_sha256);
+        let rows = self.call(admin_msg::ACTION_LIST, json!({}), &[]).await;
+        let available = serde_json::from_value::<ipc::ActionListResponse>(rows.metadata.clone())
+            .map(|response| response.actions)
+            .unwrap_or_default();
+        references.sort();
+        let grants: Vec<_> = references.iter().map(|reference| {
+            let capability = available.iter().find(|action| action.id == reference.action_id)
+                .and_then(|action| match &action.target { rekey_domain::action::ActionTarget::Template { source, .. } => Some(source.capability.as_str()), _ => None })
+                .unwrap_or("fixed-actions");
+            json!({"instance":format!("a-{}",reference.action_id),"capabilities":[{"rule":rule,"capability":capability,"actions":[reference]}]})
+        }).collect();
+        let profiles = if grants.is_empty() {
+            vec![]
+        } else {
+            vec![serde_json::from_value(json!({"name":"fixture","principal_id":self.principal,"grants":grants,
+            "session":{"ttl_ms":1000,"max_uses":100},"confirm_each_run":false,"isolation":"none","egress":"allow","llm_limits":[]})).unwrap()]
+        };
         self.call(
             admin_msg::PERSONAL_POLICY_DRAFT,
             serde_json::to_value(PersonalPolicyDraftMeta {
-                principal_id: self.principal,
-                actions,
+                profiles,
+                expected_policy_sha256,
                 expires_at_ms: expiry,
             })
             .unwrap(),
@@ -325,73 +358,113 @@ async fn locked_team_untrusted_and_invalid_selection_are_rejected_without_mutati
     f.finish().await;
 }
 
-#[tokio::test]
-async fn signed_personal_high_risk_draft_requires_local_presence_before_execution() {
+async fn signed_choice_execution(capability: &str, choice: ProfileRule, approval_required: bool) {
     let f = Fixture::new(PolicyMode::Personal, true).await;
-    let action = f
-        .seed(&["merge-pr"], 1, "personal-high-risk")
-        .await
-        .remove(0);
-    let draft = f.draft(vec![action_ref(&action)], now() + 60_000).await;
+    let action = f.seed(&[capability], 1, "personal-rule").await.remove(0);
+    let draft = f
+        .draft_with_rule(vec![action_ref(&action)], now() + 60_000, choice)
+        .await;
     let signed = f.signed(&draft);
-    assert_eq!(signed["snapshot"]["rules"][0]["effect"], "require-approval");
     assert_eq!(
-        signed["snapshot"]["rules"][0]["approver"],
-        json!({"kind":"local-presence"})
+        signed["snapshot"]["rules"][0]["effect"],
+        if approval_required {
+            "require-approval"
+        } else {
+            "permit"
+        }
+    );
+    assert_eq!(
+        signed["snapshot"]["profiles"][0]["grants"][0]["capabilities"][0]["rule"],
+        json!(choice)
     );
     f.activate(&draft, &signed).await.ok();
     let session = f.call(admin_msg::SESSION_CREATE, json!({"actions":[action_ref(&action)],"principal_id":f.principal,"ttl_ms":60_000,"max_uses":1}), &common::proof_body(common::PASSWORD)).await;
     let mut request = json!({"capability_token":session.ok()["capability_token"],"action_id":action.id,"action_version":action.version,"content_type":"application/json","extra_headers":[],"params":{"number":"1"},"query":{},"approval_grants":[]});
+    let body: &[u8] = if action.method == FixedMethod::Get {
+        request["params"] = json!({});
+        request["content_type"] = Value::Null;
+        b""
+    } else {
+        b"{}"
+    };
     let agent_socket = f.state.join("runtime/agent.sock");
     let pending = common::call(
         &agent_socket,
         Channel::Agent,
         ipc::agent_msg::EXECUTE_FIXED_HTTP_ACTION,
         request.to_string().as_bytes(),
-        b"{}",
+        body,
     )
     .await;
-    assert_eq!(pending.err_code(), "APPROVAL_REQUIRED");
-    let challenge = pending.metadata["approval"]["challenge_id"].clone();
-    let review = f
-        .call(
-            admin_msg::APPROVAL_LOCAL_REVIEW,
-            json!({"approval_request_id":challenge}),
-            &[],
+    if approval_required {
+        assert_eq!(pending.err_code(), "APPROVAL_REQUIRED");
+        let challenge = pending.metadata["approval"]["challenge_id"].clone();
+        let review = f
+            .call(
+                admin_msg::APPROVAL_LOCAL_REVIEW,
+                json!({"approval_request_id":challenge}),
+                &[],
+            )
+            .await;
+        review.ok();
+        let remembered = f
+            .call(
+                admin_msg::DESKTOP_REMEMBER,
+                json!({}),
+                &common::proof_body(common::PASSWORD),
+            )
+            .await;
+        remembered.ok();
+        let mut presence = Vec::new();
+        ipc::encode_proof_body(ipc::ProofKind::Presence, &remembered.body, &mut presence);
+        f.call(admin_msg::APPROVAL_LOCAL_APPROVE, json!({"approval_request_id":challenge,"expected_review_sha256":review.metadata["review_sha256"]}), &presence).await.ok();
+        request["local_approval_request_id"] = challenge;
+        common::call(
+            &agent_socket,
+            Channel::Agent,
+            ipc::agent_msg::EXECUTE_FIXED_HTTP_ACTION,
+            request.to_string().as_bytes(),
+            body,
         )
-        .await;
-    review.ok();
-    let remembered = f
-        .call(
-            admin_msg::DESKTOP_REMEMBER,
-            json!({}),
-            &common::proof_body(common::PASSWORD),
-        )
-        .await;
-    remembered.ok();
-    let mut presence = Vec::new();
-    ipc::encode_proof_body(ipc::ProofKind::Presence, &remembered.body, &mut presence);
-    f.call(admin_msg::APPROVAL_LOCAL_APPROVE, json!({"approval_request_id":challenge,"expected_review_sha256":review.metadata["review_sha256"]}), &presence).await.ok();
-    request["local_approval_request_id"] = challenge;
-    common::call(
-        &agent_socket,
-        Channel::Agent,
-        ipc::agent_msg::EXECUTE_FIXED_HTTP_ACTION,
-        request.to_string().as_bytes(),
-        b"{}",
-    )
-    .await
-    .ok();
+        .await
+        .ok();
+    } else {
+        pending.ok();
+    }
     let replay = common::call(
         &agent_socket,
         Channel::Agent,
         ipc::agent_msg::EXECUTE_FIXED_HTTP_ACTION,
         request.to_string().as_bytes(),
-        b"{}",
+        body,
     )
     .await;
-    assert_eq!(replay.err_code(), "CAPABILITY_EXHAUSTED");
+    if approval_required {
+        assert_eq!(replay.err_code(), "CAPABILITY_EXHAUSTED");
+    } else {
+        // Ordinary exhausted sessions may already have been compacted; local
+        // approval sessions retain their challenge and the exhausted error.
+        assert!(matches!(
+            replay.err_code().as_str(),
+            "CAPABILITY_EXHAUSTED" | "INVALID_CAPABILITY"
+        ));
+    }
     f.finish().await;
+}
+
+#[tokio::test]
+async fn signed_personal_high_risk_draft_requires_local_presence_before_execution() {
+    signed_choice_execution("merge-pr", ProfileRule::TemplateDefault, true).await;
+}
+
+#[tokio::test]
+async fn signed_explicit_allow_executes_high_risk_action_without_approval() {
+    signed_choice_execution("merge-pr", ProfileRule::Allow, false).await;
+}
+
+#[tokio::test]
+async fn signed_explicit_approval_requires_presence_for_read_action() {
+    signed_choice_execution("read-repo", ProfileRule::RequireApproval, true).await;
 }
 
 #[tokio::test]
@@ -479,8 +552,8 @@ async fn draft_frame_limits_reject_body_and_oversized_metadata_before_reading_th
         ));
     }
     let mut metadata = serde_json::to_value(PersonalPolicyDraftMeta {
-        principal_id: f.principal,
-        actions: vec![],
+        profiles: vec![],
+        expected_policy_sha256: None,
         expires_at_ms: now() + 60_000,
     })
     .unwrap();
@@ -506,5 +579,47 @@ async fn complete_review_metadata_overflow_rejects_instead_of_truncating() {
     assert_eq!(response.err_code(), "INVALID_FRAME");
     assert!(response.body.is_empty());
     assert_eq!(f.counts(), before);
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn profile_list_is_authenticated_and_draft_rejects_a_stale_editing_base() {
+    let f = Fixture::new(PolicyMode::Personal, false).await;
+    assert_eq!(
+        f.call(admin_msg::PROFILE_LIST, json!({}), &[])
+            .await
+            .err_code(),
+        "LOCKED"
+    );
+    f.unlock().await;
+    let empty = f.call(admin_msg::PROFILE_LIST, json!({}), &[]).await;
+    let empty: ipc::ProfileListResponse = serde_json::from_slice(&empty.body).unwrap();
+    assert!(empty.profiles.is_empty());
+    assert!(empty.policy_sha256.is_none());
+    assert!(empty.expires_at_ms.is_none());
+    f.install_trust().await;
+    let actions = f.seed(&["read-repo"], 1, "list").await;
+    let draft = f
+        .draft(actions.iter().map(action_ref).collect(), now() + 60000)
+        .await;
+    f.activate(&draft, &f.signed(&draft)).await.ok();
+    let listed = f.call(admin_msg::PROFILE_LIST, json!({}), &[]).await;
+    assert_eq!(listed.metadata, json!({}));
+    let listed: ipc::ProfileListResponse = serde_json::from_slice(&listed.body).unwrap();
+    assert_eq!(listed.profiles.len(), 1);
+    let before = f.counts();
+    for digest in [None, Some("0".repeat(64))] {
+        let stale = f
+            .call(
+                admin_msg::PERSONAL_POLICY_DRAFT,
+                json!({"profiles":[],"expires_at_ms":now()+60000,"expected_policy_sha256":digest}),
+                &[],
+            )
+            .await;
+        assert_eq!(stale.err_code(), "POLICY_VERSION_CONFLICT");
+        assert_eq!(f.counts(), before);
+    }
+    let current = f.call(admin_msg::PERSONAL_POLICY_DRAFT, json!({"profiles":[],"expires_at_ms":now()+60000,"expected_policy_sha256":listed.policy_sha256}), &[]).await;
+    assert_eq!(Fixture::decoded(&current).base_version, Some(1));
     f.finish().await;
 }

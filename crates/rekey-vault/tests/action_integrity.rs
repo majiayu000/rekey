@@ -291,6 +291,13 @@ async fn retired_disabled_and_active_versions_survive_rotation_and_both_backup_g
             &target,
             RestoreProof::Password(common::password_input()),
             &rekey_vault::durable::sha256_file(backup).unwrap(),
+            rekey_vault::bootstrap::inspect_restore(
+                backup,
+                &target,
+                RestoreProof::Password(common::password_input()),
+                &rekey_vault::durable::sha256_file(backup).unwrap(),
+            )
+            .unwrap(),
         )
         .unwrap();
         assert_eq!(verified_rows(&paths::vault_db(&target)).len(), 3);
@@ -435,7 +442,8 @@ async fn restore_rejects_forged_actions_in_every_lifecycle_state() {
                     &forged,
                     &target,
                     RestoreProof::Password(common::password_input()),
-                    &rekey_vault::durable::sha256_file(&forged).unwrap()
+                    &rekey_vault::durable::sha256_file(&forged).unwrap(),
+                    common::unconfirmed_restore_context()
                 ),
                 Err(AuthorityError::StorageIntegrityFailed)
             ),
@@ -508,7 +516,8 @@ async fn format_twenty_one_is_rejected_before_new_action_layout_is_read() {
             &backup,
             &target,
             RestoreProof::Password(common::password_input()),
-            &rekey_vault::durable::sha256_file(&backup).unwrap()
+            &rekey_vault::durable::sha256_file(&backup).unwrap(),
+            common::unconfirmed_restore_context()
         ),
         Err(AuthorityError::UnsupportedFormatVersion)
     ));

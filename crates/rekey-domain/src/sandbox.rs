@@ -8,6 +8,18 @@ pub const CHILD_PATH: &str = "/usr/bin:/bin";
 pub const CHILD_HOME: &str = "/tmp";
 pub const CHILD_LANG: &str = "C";
 pub const CAPABILITY_ENV: &str = "REKEY_CAPABILITY";
+/// Only these caller-configured names are inspected by the Profile launcher.
+/// HOME, temporary/config directories, PATH, LANG and the Agent socket are set
+/// by the launcher; capability is carried separately and never via argv.
+pub const PROFILE_CHILD_ENV: &[&str] = &[
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "OPENAI_BASE_URL",
+    "OPENAI_API_KEY",
+    "TERM",
+    "COLORTERM",
+];
 pub const CAPABILITY_STDIN_MAX_BYTES: usize = 128;
 pub const BWRAP_CANDIDATES: &[&str] = &["/usr/bin/bwrap", "/bin/bwrap"];
 

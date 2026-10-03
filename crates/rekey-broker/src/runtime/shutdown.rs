@@ -68,7 +68,7 @@ impl BrokerCtx {
         {
             Ok(owner) => owner,
             Err(_) if matches!(&cause, StopCause::Admin(_)) => {
-                return StopDisposition::Rejected(BrokerError::Authority(
+                return StopDisposition::Rejected(BrokerError::Admission(
                     AuthorityError::AuthorityBusy,
                 ));
             }

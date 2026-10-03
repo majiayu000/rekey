@@ -559,6 +559,7 @@ mod tests {
         executor: ActionExecutor,
         fake: Arc<crate::testing::FakeUpstreamTransport>,
         action: FixedHttpAction,
+        source_expires_at_ms: i64,
     }
     impl ActorFixture {
         async fn new(expires_in_ms: i64, timeout_ms: u32) -> Self {
@@ -584,11 +585,12 @@ mod tests {
             .unwrap();
             authority.unlock(Self::proof()).await.unwrap();
             let now = crate::now_ts().unwrap().as_unix_ms();
+            let source_expires_at_ms = now + expires_in_ms;
             let credential = authority
                 .credential_add(
                     CredentialLabel::new("gcp-actor").unwrap(),
                     CredentialKind::GcpSecretManagerSource,
-                    SecretInput::from_slice(&profile(now + expires_in_ms)),
+                    SecretInput::from_slice(&profile(source_expires_at_ms)),
                     Self::proof(),
                 )
                 .await
@@ -617,6 +619,7 @@ mod tests {
                 executor,
                 fake,
                 action,
+                source_expires_at_ms,
             }
         }
         fn proof() -> rekey_vault::command::UnlockProof {
@@ -625,7 +628,12 @@ mod tests {
             )
         }
         async fn run(&self) -> Result<ExecuteOutcome, BrokerError> {
+            self.run_until(Instant::now() + Duration::from_millis(self.action.timeout_ms.into()))
+                .await
+        }
+        async fn run_until(&self, end: Instant) -> Result<ExecuteOutcome, BrokerError> {
             let ctx = ExecutionAuditContext {
+                request_context: None,
                 request_id: RequestId::new_random(),
                 session_id: rekey_domain::ids::SessionId::new_random(),
                 action: ActionVersionRef {
@@ -647,7 +655,6 @@ mod tests {
                 approval_grants: vec![],
                 local_approval_request_id: None,
             };
-            let end = Instant::now() + Duration::from_millis(self.action.timeout_ms.into());
             let mut started = self
                 .executor
                 .terminals
@@ -792,35 +799,97 @@ mod tests {
     }
     #[tokio::test]
     async fn actor_source_expiry_and_action_deadline_do_not_restart_at_response() {
-        let f = ActorFixture::new(250, 30_000).await;
-        f.fake.push_response_delayed(
-            Ok(ActorFixture::resolved(b"123456789")),
-            Duration::from_millis(400),
-        );
-        assert!(f.run().await.is_err());
-        assert_eq!(f.fake.take_requests().len(), 1);
+        // Allow bounded fixture/audit setup, then prove that source I/O really
+        // started before withholding its response until the ORIGINAL expiry.
+        let f = ActorFixture::new(5_000, 30_000).await;
+        let gate = f
+            .fake
+            .push_response_gated(Ok(ActorFixture::resolved(b"123456789")));
+        {
+            let run = f.run();
+            tokio::pin!(run);
+            tokio::select! {
+                result = &mut run => panic!("source did not reach its gate: {}", result.is_ok()),
+                _ = tokio::time::sleep(Duration::from_secs(2)) => panic!("source admission exceeded fixture budget"),
+                _ = async {
+                    while f.fake.requests.lock().unwrap().is_empty() {
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                } => {}
+            }
+            assert_eq!(f.fake.requests.lock().unwrap().len(), 1);
+            let remaining = f.source_expires_at_ms - crate::now_ts().unwrap().as_unix_ms();
+            assert!(remaining > 0, "source was already expired at the gate");
+            // Do not poll run while waiting: release an actual late response,
+            // rather than let a background task finish before it arrives.
+            tokio::time::sleep(Duration::from_millis(remaining as u64 + 1)).await;
+            assert!(crate::now_ts().unwrap().as_unix_ms() >= f.source_expires_at_ms);
+            gate.notify_one();
+            assert!(run.await.is_err());
+            assert_eq!(f.fake.take_requests().len(), 1);
+        }
         f.finish().await;
-        let f = ActorFixture::new(60_000, 50).await;
-        f.fake.push_response_delayed(
-            Ok(ActorFixture::resolved(b"123456789")),
-            Duration::from_millis(100),
-        );
-        assert!(f.run().await.is_err());
-        assert_eq!(f.fake.take_requests().len(), 1);
+
+        let f = ActorFixture::new(60_000, 5_000).await;
+        let gate = f
+            .fake
+            .push_response_gated(Ok(ActorFixture::resolved(b"123456789")));
+        {
+            // This is the same deadline supplied before execution.started,
+            // not a fresh five-second window measured after source admission.
+            let end = Instant::now() + Duration::from_millis(f.action.timeout_ms.into());
+            let run = f.run_until(end);
+            tokio::pin!(run);
+            tokio::select! {
+                result = &mut run => panic!("source did not reach its gate: {}", result.is_ok()),
+                _ = tokio::time::sleep(Duration::from_secs(2)) => panic!("source admission exceeded fixture budget"),
+                _ = async {
+                    while f.fake.requests.lock().unwrap().is_empty() {
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                } => {}
+            }
+            assert_eq!(f.fake.requests.lock().unwrap().len(), 1);
+            assert!(Instant::now() < end, "Action already expired at the gate");
+            tokio::time::sleep_until(tokio::time::Instant::from_std(end)).await;
+            assert!(Instant::now() >= end);
+            gate.notify_one();
+            assert!(run.await.is_err());
+            assert_eq!(f.fake.take_requests().len(), 1);
+        }
         f.finish().await;
-        let f = ActorFixture::new(250, 30_000).await;
+
+        let f = ActorFixture::new(5_000, 30_000).await;
         f.fake
             .push_response(Ok(ActorFixture::resolved(b"123456789")));
-        f.fake.push_response_delayed(
-            Ok(crate::upstream::UpstreamResponse {
+        let gate = f
+            .fake
+            .push_response_gated(Ok(crate::upstream::UpstreamResponse {
                 status: 200,
                 headers: vec![].into(),
                 body: Zeroizing::new(b"clean".to_vec()),
-            }),
-            Duration::from_millis(400),
-        );
-        assert_eq!(f.run().await.unwrap().body, b"clean");
-        assert_eq!(f.fake.take_requests().len(), 2);
+            }));
+        {
+            let run = f.run();
+            tokio::pin!(run);
+            tokio::select! {
+                result = &mut run => panic!("business did not reach its gate: {}", result.is_ok()),
+                _ = tokio::time::sleep(Duration::from_secs(2)) => panic!("business admission exceeded fixture budget"),
+                _ = async {
+                    while f.fake.requests.lock().unwrap().len() < 2 {
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                } => {}
+            }
+            assert_eq!(f.fake.requests.lock().unwrap().len(), 2);
+            let remaining = f.source_expires_at_ms - crate::now_ts().unwrap().as_unix_ms();
+            assert!(remaining > 0, "source expired before business admission");
+            tokio::time::sleep(Duration::from_millis(remaining as u64 + 1)).await;
+            assert!(crate::now_ts().unwrap().as_unix_ms() >= f.source_expires_at_ms);
+            gate.notify_one();
+            assert_eq!(run.await.unwrap().body, b"clean");
+            assert_eq!(f.fake.take_requests().len(), 2);
+        }
         f.finish().await;
     }
     #[tokio::test]

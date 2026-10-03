@@ -29,7 +29,8 @@ async fn restore_rejects_format_twelve_without_installing_or_migrating() {
             &backup,
             &target,
             RestoreProof::Password(common::password_input()),
-            &file_sha256(&backup)
+            &file_sha256(&backup),
+            common::unconfirmed_restore_context()
         ),
         Err(AuthorityError::UnsupportedFormatVersion)
     ));
@@ -71,7 +72,8 @@ async fn restore_rejects_format_thirteen_without_installing_or_migrating() {
             &backup,
             &target,
             RestoreProof::Password(common::password_input()),
-            &file_sha256(&backup)
+            &file_sha256(&backup),
+            common::unconfirmed_restore_context()
         ),
         Err(AuthorityError::UnsupportedFormatVersion)
     ));
@@ -113,7 +115,8 @@ async fn restore_rejects_format_fourteen_without_installing_or_migrating() {
             &backup,
             &target,
             RestoreProof::Password(common::password_input()),
-            &file_sha256(&backup)
+            &file_sha256(&backup),
+            common::unconfirmed_restore_context()
         ),
         Err(AuthorityError::UnsupportedFormatVersion)
     ));
@@ -148,7 +151,8 @@ async fn restore_rejects_format_fifteen_without_installing_or_migrating() {
             &backup,
             &target,
             RestoreProof::Password(common::password_input()),
-            &file_sha256(&backup)
+            &file_sha256(&backup),
+            common::unconfirmed_restore_context()
         ),
         Err(AuthorityError::UnsupportedFormatVersion)
     ));
@@ -182,7 +186,8 @@ async fn restore_rejects_format_sixteen_without_installing_or_migrating() {
             &backup,
             &target,
             RestoreProof::Password(common::password_input()),
-            &file_sha256(&backup)
+            &file_sha256(&backup),
+            common::unconfirmed_restore_context()
         ),
         Err(AuthorityError::UnsupportedFormatVersion)
     ));
@@ -217,7 +222,8 @@ async fn restore_rejects_format_seventeen_without_installing_or_migrating() {
             &backup,
             &target,
             RestoreProof::Password(common::password_input()),
-            &file_sha256(&backup)
+            &file_sha256(&backup),
+            common::unconfirmed_restore_context()
         ),
         Err(AuthorityError::UnsupportedFormatVersion)
     ));
@@ -252,7 +258,8 @@ async fn restore_rejects_format_eighteen_without_installing_or_migrating() {
             &backup,
             &target,
             RestoreProof::Password(common::password_input()),
-            &file_sha256(&backup)
+            &file_sha256(&backup),
+            common::unconfirmed_restore_context()
         ),
         Err(AuthorityError::UnsupportedFormatVersion)
     ));
@@ -287,7 +294,8 @@ async fn restore_rejects_format_nineteen_without_installing_or_migrating() {
             &backup,
             &target,
             RestoreProof::Password(common::password_input()),
-            &file_sha256(&backup)
+            &file_sha256(&backup),
+            common::unconfirmed_restore_context()
         ),
         Err(AuthorityError::UnsupportedFormatVersion)
     ));

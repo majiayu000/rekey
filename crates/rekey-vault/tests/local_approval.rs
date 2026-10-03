@@ -32,6 +32,14 @@ fn draft(approved: bool) -> AuditDraft {
             approval_id: approved.then(ApprovalId::new_random),
             approver_id: None,
         }),
+        request_context: Some(rekey_domain::audit::ProfileRequestAuditContext {
+            profile_name: "local-writer".into(),
+            policy_sha256: "01".repeat(32),
+            instance_slug: "repo".into(),
+            capability: "issues".into(),
+            model: None,
+        }),
+        usage: None,
         event_type: if approved {
             event_type::APPROVAL_APPROVED
         } else {
@@ -100,6 +108,32 @@ async fn current_presence_commits_only_fixed_decisions_and_public_evidence() {
         assert!(row.3.is_none() && row.5.is_none() && row.6.is_none());
         assert_eq!(row.4, [2; 32]);
         assert!(!format!("{event:?}").contains(std::str::from_utf8(&key).unwrap()));
+        if approved {
+            let mut accepted = event.clone();
+            accepted.event_type = event_type::APPROVAL_ACCEPTED;
+            handle.append_audit(accepted).await.unwrap();
+        }
+        let page = handle
+            .audit_query(rekey_domain::audit::AuditQuery {
+                request_id: event.request_id,
+                session_id: None,
+                action_id: None,
+                credential_id: None,
+                outcome: None,
+                since_ms: None,
+                until_ms: None,
+                snapshot_max_sequence: None,
+                before_sequence: None,
+                limit: 100,
+            })
+            .await
+            .unwrap();
+        assert_eq!(page.events.len(), if approved { 2 } else { 1 });
+        assert!(
+            page.events
+                .iter()
+                .all(|row| row.request_context == event.request_context)
+        );
     }
     assert_eq!(count(&db, event_type::APPROVAL_APPROVED), 1);
     assert_eq!(count(&db, event_type::APPROVAL_REJECTED), 1);

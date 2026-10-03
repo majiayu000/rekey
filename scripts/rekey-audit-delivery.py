@@ -448,9 +448,10 @@ def main(argv=None):
             endpoint(args.endpoint)
             raw = read_external(args.vault_receipt, MAX_RESPONSE)
             receipt = decode(raw)
-            require(type(receipt) is dict and set(receipt) == {'vault_id', 'format_version', 'created_at_ms', 'sha256_hex', 'output_path', 'snapshot_cut'}
+            require(type(receipt) is dict and set(receipt) == {'vault_id', 'format_version', 'created_at_ms', 'sha256_hex', 'output_path', 'snapshot_cut', 'generation'}
                     and receipt['vault_id'] == args.vault_id and type(receipt['format_version']) is int
                     and receipt['format_version'] > 0 and number(receipt['created_at_ms'])
+                    and type(receipt['generation']) is int and 1 <= receipt['generation'] <= 2**64 - 1
                     and type(receipt['sha256_hex']) is str and len(receipt['sha256_hex']) == 64
                     and all(char in '0123456789abcdef' for char in receipt['sha256_hex'])
                     and type(receipt['output_path']) is str, 'invalid-vault-receipt')

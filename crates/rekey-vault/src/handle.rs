@@ -86,6 +86,19 @@ macro_rules! call {
 }
 
 impl AuthorityHandle {
+    pub async fn confirm_rollback(
+        &self,
+        expected: rekey_domain::ipc::RollbackContext,
+        proof: crate::bootstrap::RestoreProof,
+        not_after: std::time::Instant,
+    ) -> Result<(), AuthorityError> {
+        call!(self, |reply| AuthorityCommand::ConfirmRollback {
+            expected,
+            proof,
+            not_after,
+            reply
+        })
+    }
     pub async fn lease_acquire_begin(
         &self,
         context: crate::model::LeaseExecutionContext,
@@ -686,6 +699,65 @@ impl AuthorityHandle {
 
     pub async fn fault_integrity(&self) -> Result<(), AuthorityError> {
         call!(self, |reply| AuthorityCommand::FaultIntegrity { reply })
+    }
+
+    pub async fn begin_profile_execution(
+        &self,
+        usage: crate::command::ProfileUsageStart,
+        preceding: Vec<AuditDraft>,
+        started: AuditDraft,
+        not_after: std::time::Instant,
+        wall_not_after_ms: Option<i64>,
+    ) -> Result<crate::model::UsageAdmission, AuthorityError> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .try_send(AuthorityCommand::BeginProfileExecution {
+                usage,
+                preceding,
+                started,
+                not_after,
+                wall_not_after_ms,
+                reply: tx,
+            })
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Full(_) => AuthorityError::AuthorityBusy,
+                mpsc::error::TrySendError::Closed(_) => AuthorityError::Faulted,
+            })?;
+        rx.await.map_err(|_| AuthorityError::Faulted)?
+    }
+
+    /// A queued terminal belongs to the worker even if its caller disconnects.
+    pub async fn settle_profile_execution(
+        &self,
+        request_id: rekey_domain::ids::RequestId,
+        measured_output_tokens: Option<u64>,
+        terminal: AuditDraft,
+    ) -> Result<(), AuthorityError> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(AuthorityCommand::SettleProfileExecution {
+                request_id,
+                measured_output_tokens,
+                terminal,
+                reply: tx,
+            })
+            .await
+            .map_err(|_| AuthorityError::Faulted)?;
+        rx.await.map_err(|_| AuthorityError::Faulted)?
+    }
+
+    pub async fn profile_usage(
+        &self,
+        principal_id: rekey_domain::ids::PrincipalId,
+        instance_slug: String,
+        utc_day: i64,
+    ) -> Result<crate::model::UsageTotals, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::ProfileUsage {
+            principal_id,
+            instance_slug,
+            utc_day,
+            reply
+        })
     }
 
     /// Wait for queue capacity, then commit. Used for terminal audits after

@@ -767,6 +767,7 @@ mod tests {
         }
         async fn run(&self) -> Result<ExecuteOutcome, BrokerError> {
             let ctx = ExecutionAuditContext {
+                request_context: None,
                 request_id: RequestId::new_random(),
                 session_id: rekey_domain::ids::SessionId::new_random(),
                 action: ActionVersionRef {

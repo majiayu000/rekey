@@ -16,7 +16,7 @@ import uuid
 SPEC = importlib.util.spec_from_file_location('dr_files', Path(__file__).with_name('rekey-controlplane.py'))
 FILES = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(FILES)
-FORMAT_VERSION = 24
+FORMAT_VERSION = 25
 
 
 def stream_digest(path, private=True, pin=False):
@@ -130,13 +130,14 @@ def integer(value, maximum):
 def receipt(path, restore=False):
     raw = FILES.read_file(str(path))
     value = FILES.decode(raw)
-    fields = {'vault_id', 'format_version', 'output_path', 'snapshot_cut'}
+    fields = {'vault_id', 'format_version', 'output_path', 'snapshot_cut', 'generation'}
     fields |= {'input_sha256_hex'} if restore else {'sha256_hex', 'created_at_ms'}
     FILES.require(type(value) is dict and set(value) == fields, 'invalid-receipt')
     FILES.require(type(value['vault_id']) is str
                   and str(uuid.UUID(value['vault_id'])) == value['vault_id'], 'invalid-receipt')
     FILES.require(type(value['format_version']) is int and value['format_version'] == FORMAT_VERSION,
                   'invalid-receipt')
+    FILES.require(integer(value['generation'], 2**64 - 1) and value['generation'] > 0, 'invalid-receipt')
     FILES.require(hex_digest(value['input_sha256_hex' if restore else 'sha256_hex']), 'invalid-receipt')
     if not restore:
         FILES.require(integer(value['created_at_ms'], 2**63 - 1), 'invalid-receipt')
@@ -157,7 +158,8 @@ def verify(args):
     actual = stream_digest(args.backup)
     FILES.require(actual == backup['sha256_hex'] == restored['input_sha256_hex']
                   and backup['vault_id'] == restored['vault_id']
-                  and backup['snapshot_cut'] == restored['snapshot_cut'], 'artifact-mismatch')
+                  and backup['snapshot_cut'] == restored['snapshot_cut']
+                  and restored['generation'] > backup['generation'], 'artifact-mismatch')
     fd = FILES.directory(restored['output_path'])
     try:
         FILES.secure(os.fstat(fd), directory=True)
@@ -166,6 +168,7 @@ def verify(args):
     return dict(outcome='artifact_match', field_validated=False,
                 sha256_hex=actual, vault_id=backup['vault_id'], format_version=FORMAT_VERSION,
                 snapshot_cut=backup['snapshot_cut'], restored_state_dir=restored['output_path'],
+                backup_generation=backup['generation'], restored_generation=restored['generation'],
                 backup_receipt_sha256=backup_receipt_sha, restore_receipt_sha256=restore_receipt_sha,
                 rpo=None, rto=None, partition_validated=False, promotion_validated=False,
                 fencing_validated=False)

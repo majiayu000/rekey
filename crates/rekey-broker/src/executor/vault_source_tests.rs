@@ -229,6 +229,7 @@ impl ActorFixture {
         end: Instant,
     ) -> Result<(StartedAuditGuard, ExecuteRequest), BrokerError> {
         let ctx = ExecutionAuditContext {
+            request_context: None,
             request_id: RequestId::new_random(),
             session_id: rekey_domain::ids::SessionId::new_random(),
             action: ActionVersionRef {
@@ -2076,6 +2077,7 @@ async fn actor_approle_cancel_business_keeps_ordinary_effect_and_cleanup_ownersh
                 end,
                 &effect,
                 &cleanup_owned,
+                None,
                 None
             ),
             async {
@@ -2222,6 +2224,7 @@ async fn approle_admitted(f: &ActorFixture) -> AdmittedExecution {
         f.executor.policy.clone(),
     ));
     AdmittedExecution {
+        llm: None,
         executor,
         request,
         action: f.action.clone(),

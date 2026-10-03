@@ -108,8 +108,8 @@ class Scenario:
                             "--max-uses", "10", "--password-stdin", proof=True)
         self.capability = session["capability_token"]
         resource = {"type": "journal-action", "id": self.action}
-        private_json(self.root / "snapshot.json", {"format_version": 4, "version": 1,
-            "expires_at_ms": int(time.time() * 1000) + 600000, "approvers": [], "workload_identities": [],
+        private_json(self.root / "snapshot.json", {"format_version": 6, "version": 1,
+            "expires_at_ms": int(time.time() * 1000) + 600000, "approvers": [], "profiles": [], "workload_identities": [],
             "bindings": [{"action_id": self.action, "version": 1, "resource": resource,
                           "parameter_schema_id": "journal/v1", "parameter_schema": {}}],
             "rules": [{"id": str(uuid.uuid4()), "effect": "permit", "principal_id": session["principal_id"],
@@ -212,8 +212,10 @@ def maintenance(s):
     s.cli("shutdown", "--password-stdin", proof=True)
     s.broker.wait(timeout=10)
     s.state = s.root / "restored"
+    context = s.data("restore", "--input", str(s.root / "pending.backup"), "--sha256", backup["sha256_hex"],
+                     "--inspect", "--password-stdin", proof=True)
     s.cli("restore", "--input", str(s.root / "pending.backup"), "--sha256", backup["sha256_hex"],
-          "--password-stdin", proof=True)
+          "--expected-context", json.dumps(context, separators=(",", ":")), "--password-stdin", proof=True)
     s.broker = s.start("broker")
     require(not s.data("status")["lease_journal"]["verified"], "restored locked verification")
     recovery2 = s.data("unlock", "--password-stdin", proof=True)["lease_recovery"]

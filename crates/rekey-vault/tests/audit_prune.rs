@@ -46,6 +46,8 @@ fn event(request: RequestId, kind: &'static str, time: i64) -> AuditEvent {
         credential_version: None,
         authorization: None,
         approval: None,
+        request_context: None,
+        usage: None,
         event_type: kind,
         outcome: "success",
         reason_code: "test".into(),
@@ -693,6 +695,13 @@ async fn retention_actor_set_disable_locked_noop_restart_and_restore() {
         &restored,
         rekey_vault::bootstrap::RestoreProof::Password(common::password_input()),
         &info.sha256_hex,
+        rekey_vault::bootstrap::inspect_restore(
+            &backup,
+            &restored,
+            rekey_vault::bootstrap::RestoreProof::Password(common::password_input()),
+            &info.sha256_hex,
+        )
+        .unwrap(),
     )
     .unwrap();
     let (handle, join) = common::spawn(&restored);

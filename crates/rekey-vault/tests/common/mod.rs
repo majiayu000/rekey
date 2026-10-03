@@ -78,3 +78,82 @@ pub fn policy_key(seed: u8) -> rekey_policy::PolicyVerificationKey {
     )
     .unwrap()
 }
+
+/// Opens synthetic fixture material only; this is not a product restore preview.
+pub fn fixture_root(state: &Path) -> zeroize::Zeroizing<[u8; 32]> {
+    use rekey_vault::{
+        crypto::{
+            aad::{AadPurpose, AadV1},
+            aead, kdf,
+        },
+        model::WrapperKind,
+        store::SqliteRecordStore,
+    };
+    let store = SqliteRecordStore::open(&rekey_vault::paths::vault_db(state)).unwrap();
+    let header = store.load_header().unwrap();
+    let wrapper = store.active_wrapper(WrapperKind::Password).unwrap();
+    let params = kdf::Argon2Params::from_json(&wrapper.kdf_params_json).unwrap();
+    let mut kek = zeroize::Zeroizing::new([0u8; 32]);
+    argon2::Argon2::new(
+        argon2::Algorithm::Argon2id,
+        argon2::Version::V0x13,
+        argon2::Params::new(
+            params.memory_kib,
+            params.iterations,
+            params.parallelism,
+            Some(32),
+        )
+        .unwrap(),
+    )
+    .hash_password_into(PASSWORD, &wrapper.salt, &mut *kek)
+    .unwrap();
+    let aad = AadV1 {
+        purpose: AadPurpose::WrapVrk,
+        vault_id: header.vault_id,
+        object_id: *wrapper.wrapper_id.as_bytes(),
+        object_version: 1,
+        credential_kind: 0,
+        constraints_hash: [0; 32],
+    }
+    .encode();
+    let bytes = aead::open(&kek, &aad, &wrapper.nonce, &wrapper.wrapped_vrk).unwrap();
+    zeroize::Zeroizing::new(bytes.as_slice().try_into().unwrap())
+}
+
+pub fn fixture_anchors(state: &Path) -> rekey_vault::generation_anchor::GenerationAnchors {
+    let header = rekey_vault::store::SqliteRecordStore::open(&rekey_vault::paths::vault_db(state))
+        .unwrap()
+        .load_header()
+        .unwrap();
+    rekey_vault::generation_anchor::GenerationAnchors::open(state, header.vault_id).unwrap()
+}
+pub fn generation_attempt<'a>(
+    state: &Path,
+    anchors: &'a rekey_vault::generation_anchor::GenerationAnchors,
+) -> rekey_vault::store::generation::GenerationAttempt<'a> {
+    let header = rekey_vault::store::SqliteRecordStore::open(&rekey_vault::paths::vault_db(state))
+        .unwrap()
+        .load_header()
+        .unwrap();
+    rekey_vault::store::generation::GenerationAttempt::new(
+        anchors,
+        &header,
+        anchors.read().unwrap(),
+        &fixture_root(state),
+        header.generation + 1,
+        None,
+        None,
+    )
+    .unwrap()
+}
+
+/// Negative restore fixtures only: proof/format/seal/SHA errors must be
+/// exercised by restore itself before context comparison. Never use for success.
+pub fn unconfirmed_restore_context() -> rekey_domain::ipc::RollbackContext {
+    rekey_domain::ipc::RollbackContext {
+        vault_id: rekey_domain::ids::VaultId::from_bytes([0x59; 16]).unwrap(),
+        source_generation: 1,
+        high_water: None,
+        history_missing: true,
+    }
+}

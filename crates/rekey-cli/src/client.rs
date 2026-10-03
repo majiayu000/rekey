@@ -427,6 +427,16 @@ impl Client {
         })
     }
 
+    /// Transfers the one-use Profile owner connection; never inherited by exec.
+    pub fn into_owner_control(self) -> Result<UnixStream, CliError> {
+        let fd = self.stream.as_raw_fd();
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
+            return Err(io_err(std::io::Error::last_os_error()));
+        }
+        Ok(self.stream)
+    }
+
     pub fn peer_security(&self) -> PeerSecurity {
         self.peer_security
     }

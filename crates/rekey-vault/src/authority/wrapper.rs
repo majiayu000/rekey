@@ -74,9 +74,27 @@ impl Worker {
         ))?;
         ensure_mutation_current(not_after)?;
         self.forget_desktop()?;
-        let result = self
-            .store
-            .replace_wrapper(WrapperKind::Password, &replacement, now, audit);
+        let observed = self.mutation_observation()?;
+        let mut generation = crate::store::generation::GenerationAttempt::new(
+            &self.anchors,
+            &self.header,
+            observed,
+            self.require_unlocked()?.bytes(),
+            self.header
+                .generation
+                .checked_add(1)
+                .ok_or(AuthorityError::StorageIntegrityFailed)?,
+            not_after,
+            None,
+        )?;
+        let result = self.store.replace_wrapper(
+            WrapperKind::Password,
+            &replacement,
+            now,
+            audit,
+            &mut generation,
+        );
+        let result = self.complete_generation(result, generation.finish());
         let result = self.fault_on_integrity(result);
         self.fault_on_audit_failure(result)
     }
@@ -136,9 +154,27 @@ impl Worker {
         ))?;
         ensure_mutation_current(not_after)?;
         self.forget_desktop()?;
-        let result = self
-            .store
-            .replace_wrapper(WrapperKind::Recovery, &replacement, now, audit);
+        let observed = self.mutation_observation()?;
+        let mut generation = crate::store::generation::GenerationAttempt::new(
+            &self.anchors,
+            &self.header,
+            observed,
+            self.require_unlocked()?.bytes(),
+            self.header
+                .generation
+                .checked_add(1)
+                .ok_or(AuthorityError::StorageIntegrityFailed)?,
+            not_after,
+            None,
+        )?;
+        let result = self.store.replace_wrapper(
+            WrapperKind::Recovery,
+            &replacement,
+            now,
+            audit,
+            &mut generation,
+        );
+        let result = self.complete_generation(result, generation.finish());
         let result = self.fault_on_integrity(result);
         self.fault_on_audit_failure(result)?;
         Ok(recovery_display)

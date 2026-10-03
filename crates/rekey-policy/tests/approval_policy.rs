@@ -24,7 +24,7 @@ fn policy_fixture() -> Fixture {
         action,
         principal,
         value: json!({
-            "format_version": 4,
+            "format_version": 6, "profiles": [],
             "version": 1,
             "expires_at_ms": 10_000,
             "approvers": [],

@@ -57,6 +57,8 @@ impl<'a> AuditedSourceTransport<'a> {
                 credential_version: Some(receipt.credential_version),
                 authorization: None,
                 approval: None,
+                request_context: None,
+                usage: None,
                 event_type: "vault.source.endpoint",
                 outcome: "unknown",
                 reason_code: format!("registration={};", receipt.registration_id),

@@ -14,3 +14,7 @@ mod wrapper;
 pub use sqlite::SqliteRecordStore;
 
 mod lease_journal;
+
+pub(crate) mod usage;
+
+pub mod generation;

@@ -1,3 +1,4 @@
+use super::generation::{GenerationAttempt, commit_generation};
 use std::path::{Path, PathBuf};
 
 use rekey_domain::credential::{CredentialKind, CredentialState, VersionState};
@@ -131,6 +132,7 @@ impl SqliteRecordStore {
         &self.path
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn initialize(
         &mut self,
         header: &VaultHeaderRecord,
@@ -138,12 +140,15 @@ impl SqliteRecordStore {
         policy_state: &crate::model::PolicyStateRecord,
         retention: &crate::model::AuditRetentionRecord,
         lease_state: &crate::model::LeaseJournalState,
+        usage_state: &crate::model::UsageState,
         audit: AuditEvent,
+        anchors: &crate::generation_anchor::GenerationAnchors,
+        may_have_reserved: &mut bool,
     ) -> Result<(), AuthorityError> {
         let tx = self.conn.transaction().map_err(storage)?;
         tx.execute(
-            "INSERT INTO vault_header (singleton, format_version, vault_id, crypto_suite, created_at_ms, schema_digest, integrity_nonce, integrity_ciphertext)
-             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO vault_header (singleton, format_version, vault_id, crypto_suite, created_at_ms, schema_digest, integrity_nonce, integrity_ciphertext, generation, generation_mac)
+             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 header.format_version,
                 header.vault_id.as_bytes().as_slice(),
@@ -152,6 +157,8 @@ impl SqliteRecordStore {
                 header.schema_digest.as_slice(),
                 header.integrity_nonce.as_slice(),
                 header.integrity_ciphertext.as_slice(),
+                header.generation.to_be_bytes().as_slice(),
+                header.generation_mac.as_slice(),
             ],
         )
         .map_err(storage)?;
@@ -161,43 +168,14 @@ impl SqliteRecordStore {
         super::policy::insert_initial_state(&tx, policy_state)?;
         super::audit_prune::insert_initial_retention(&tx, retention)?;
         super::lease_journal::initial_state(&tx, lease_state)?;
+        super::usage::initial_state(&tx, usage_state)?;
         super::audit::insert(&tx, &audit)?;
+        anchors.create_new(header.generation, may_have_reserved)?;
         commit_audited(tx)
     }
 
     pub fn load_header(&self) -> Result<VaultHeaderRecord, AuthorityError> {
-        let row = self
-            .conn
-            .query_row(
-                "SELECT format_version, vault_id, crypto_suite, created_at_ms, schema_digest,
-                        integrity_nonce, integrity_ciphertext
-                 FROM vault_header WHERE singleton = 1",
-                [],
-                |r| {
-                    Ok((
-                        r.get::<_, u32>(0)?,
-                        r.get::<_, Vec<u8>>(1)?,
-                        r.get::<_, String>(2)?,
-                        r.get::<_, i64>(3)?,
-                        r.get::<_, Vec<u8>>(4)?,
-                        r.get::<_, Vec<u8>>(5)?,
-                        r.get::<_, Vec<u8>>(6)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(|_| AuthorityError::UnsupportedVaultLayout)?
-            .ok_or(AuthorityError::UnsupportedVaultLayout)?;
-        Ok(VaultHeaderRecord {
-            format_version: row.0,
-            vault_id: VaultId::from_bytes(blob16(row.1)?)
-                .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
-            crypto_suite: row.2,
-            created_at_ms: row.3,
-            schema_digest: blob32(row.4)?,
-            integrity_nonce: blob12(row.5)?,
-            integrity_ciphertext: row.6,
-        })
+        load_header(&self.conn)
     }
 
     pub fn active_wrapper(&self, kind: WrapperKind) -> Result<KeyWrapperRecord, AuthorityError> {
@@ -219,6 +197,7 @@ impl SqliteRecordStore {
         record: &CredentialRecord,
         version: &CredentialVersionRecord,
         audit: AuditEvent,
+        generation: &mut GenerationAttempt<'_>,
     ) -> Result<(), AuthorityError> {
         let tx = self.conn.transaction().map_err(storage)?;
         let inserted = tx.execute(
@@ -243,7 +222,7 @@ impl SqliteRecordStore {
         }
         insert_version(&tx, version)?;
         super::audit::insert(&tx, &audit)?;
-        commit_audited(tx)
+        commit_generation(tx, generation)
     }
 
     pub fn rotate_credential(
@@ -252,6 +231,7 @@ impl SqliteRecordStore {
         new_version: &CredentialVersionRecord,
         now_ms: i64,
         audit: AuditEvent,
+        generation: &mut GenerationAttempt<'_>,
     ) -> Result<(), AuthorityError> {
         let credential_id = updated_record.credential_id;
         let tx = self.conn.transaction().map_err(storage)?;
@@ -280,7 +260,7 @@ impl SqliteRecordStore {
             return Err(AuthorityError::CredentialNotFound);
         }
         super::audit::insert(&tx, &audit)?;
-        commit_audited(tx)
+        commit_generation(tx, generation)
     }
 
     pub fn revoke_credential(
@@ -288,6 +268,7 @@ impl SqliteRecordStore {
         updated_record: &CredentialRecord,
         now_ms: i64,
         audit: AuditEvent,
+        generation: &mut GenerationAttempt<'_>,
     ) -> Result<(), AuthorityError> {
         let credential_id = updated_record.credential_id;
         let tx = self.conn.transaction().map_err(storage)?;
@@ -315,7 +296,7 @@ impl SqliteRecordStore {
         )
         .map_err(storage)?;
         super::audit::insert(&tx, &audit)?;
-        commit_audited(tx)
+        commit_generation(tx, generation)
     }
 
     pub fn get_credential(&self, id: CredentialId) -> Result<CredentialRecord, AuthorityError> {
@@ -373,6 +354,7 @@ impl SqliteRecordStore {
         record: &ActionRecord,
         retired: &[ActionRecord],
         audit: AuditEvent,
+        generation: &mut GenerationAttempt<'_>,
     ) -> Result<(), AuthorityError> {
         let tx = self.conn.transaction().map_err(storage)?;
         for previous in retired {
@@ -387,14 +369,18 @@ impl SqliteRecordStore {
         }
         insert_action_row(&tx, record)?;
         super::audit::insert(&tx, &audit)?;
-        commit_audited(tx)
+        commit_generation(tx, generation)
     }
 
     pub fn insert_actions_before(
         &mut self,
         records: &[(ActionRecord, AuditEvent)],
         not_after: Option<std::time::Instant>,
+        generation: &mut GenerationAttempt<'_>,
     ) -> Result<(), AuthorityError> {
+        if records.is_empty() {
+            return Ok(());
+        }
         crate::authority::ensure_mutation_current(not_after)?;
         let tx = self.conn.transaction().map_err(storage)?;
         for (record, audit) in records {
@@ -403,13 +389,14 @@ impl SqliteRecordStore {
             super::audit::insert(&tx, audit)?;
         }
         crate::authority::ensure_mutation_current(not_after)?;
-        commit_audited(tx)
+        commit_generation(tx, generation)
     }
 
     pub fn disable_action(
         &mut self,
         record: &ActionRecord,
         audit: AuditEvent,
+        generation: &mut GenerationAttempt<'_>,
     ) -> Result<(), AuthorityError> {
         let tx = self.conn.transaction().map_err(storage)?;
         let updated = tx.execute(
@@ -421,7 +408,7 @@ impl SqliteRecordStore {
             return Err(AuthorityError::StorageIntegrityFailed);
         }
         super::audit::insert(&tx, &audit)?;
-        commit_audited(tx)
+        commit_generation(tx, generation)
     }
 
     /// Every lifecycle state, including versions pinned by existing sessions.
@@ -492,6 +479,12 @@ impl SqliteRecordStore {
     /// Commits one audit event in its own transaction. Failure is a hard
     /// error for the caller to handle; never downgraded to a warning.
     pub fn append_audit(&mut self, event: &AuditEvent) -> Result<(), AuthorityError> {
+        if event.usage.is_some() {
+            return Err(rekey_domain::DomainError::InvalidActionDefinition(
+                "usage requires profile settlement".into(),
+            )
+            .into());
+        }
         let tx = self
             .conn
             .transaction()
@@ -522,6 +515,12 @@ impl SqliteRecordStore {
 
     /// Commits a related sequence of audit events in one transaction.
     pub fn append_audits(&mut self, events: &[AuditEvent]) -> Result<(), AuthorityError> {
+        if events.iter().any(|event| event.usage.is_some()) {
+            return Err(rekey_domain::DomainError::InvalidActionDefinition(
+                "usage requires profile settlement".into(),
+            )
+            .into());
+        }
         let tx = self
             .conn
             .transaction()
@@ -566,6 +565,7 @@ impl SqliteRecordStore {
         journal_state: &crate::model::LeaseJournalState,
         audit: AuditEvent,
         not_after: Option<std::time::Instant>,
+        generation: &mut GenerationAttempt<'_>,
     ) -> Result<(), AuthorityError> {
         let tx = self.conn.transaction().map_err(storage)?;
         for (_, version) in versions {
@@ -595,7 +595,7 @@ impl SqliteRecordStore {
         if not_after.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
             return Err(AuthorityError::AuthorityBusy);
         }
-        commit_audited(tx)
+        commit_generation(tx, generation)
     }
 
     /// Every credential version plus its kind, for restore payload proofs.
@@ -660,7 +660,9 @@ impl SqliteRecordStore {
         created_file: &std::fs::File,
         key: &[u8; 32],
         vault_id: VaultId,
-    ) -> Result<BackupSnapshotCut, AuthorityError> {
+        header_auth_failed: &mut bool,
+    ) -> Result<(BackupSnapshotCut, u64), AuthorityError> {
+        *header_auth_failed = false;
         let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW;
         let name = dest.file_name().ok_or(AuthorityError::BackupFailed)?;
         let resolved = crate::durable::parent_dir(dest)
@@ -680,11 +682,23 @@ impl SqliteRecordStore {
             .run_to_completion(64, std::time::Duration::from_millis(5), None)
             .map_err(|_| AuthorityError::BackupFailed)?;
         drop(backup);
+        // Report only this authenticated-snapshot boundary as a header failure;
+        // destination creation, backup IO and later material errors stay distinct.
+        let generation = load_header(&dst)
+            .and_then(|header| {
+                crate::bootstrap::prove_integrity(&header, key)?;
+                if header.vault_id != vault_id {
+                    return Err(AuthorityError::StorageIntegrityFailed);
+                }
+                Ok(header.generation)
+            })
+            .inspect_err(|_| *header_auth_failed = true)?;
         super::policy::verified_policy_material(&dst, key, vault_id)?;
         for record in all_actions(&dst)? {
             crate::convert::verified_record_to_action(&record, key, vault_id)?;
         }
-        snapshot_cut(&dst)
+        super::usage::verified(&dst, key, vault_id)?;
+        Ok((snapshot_cut(&dst)?, generation))
     }
 
     pub(crate) fn snapshot_cut(&self) -> Result<BackupSnapshotCut, AuthorityError> {
@@ -942,6 +956,54 @@ pub(super) fn positive_version(version: i64) -> Result<u64, AuthorityError> {
         .ok_or(AuthorityError::StorageIntegrityFailed)
 }
 
+// Query/I/O errors retain the existing layout contract. Persisted column
+// decoding failures are integrity errors, including malformed generation blobs.
+fn load_header(conn: &Connection) -> Result<VaultHeaderRecord, AuthorityError> {
+    conn.query_row(
+        "SELECT format_version,vault_id,crypto_suite,created_at_ms,schema_digest,
+                integrity_nonce,integrity_ciphertext,generation,generation_mac
+         FROM vault_header WHERE singleton=1",
+        [],
+        |row| {
+            Ok((|| {
+                let get = |index| {
+                    row.get::<_, Vec<u8>>(index)
+                        .map_err(|_| AuthorityError::StorageIntegrityFailed)
+                };
+                let generation = u64::from_be_bytes(
+                    get(7)?
+                        .try_into()
+                        .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
+                );
+                if generation == 0 {
+                    return Err(AuthorityError::StorageIntegrityFailed);
+                }
+                Ok(VaultHeaderRecord {
+                    format_version: row
+                        .get(0)
+                        .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
+                    vault_id: VaultId::from_bytes(blob16(get(1)?)?)
+                        .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
+                    crypto_suite: row
+                        .get(2)
+                        .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
+                    created_at_ms: row
+                        .get(3)
+                        .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
+                    schema_digest: blob32(get(4)?)?,
+                    integrity_nonce: blob12(get(5)?)?,
+                    integrity_ciphertext: get(6)?,
+                    generation,
+                    generation_mac: blob32(get(8)?)?,
+                })
+            })())
+        },
+    )
+    .optional()
+    .map_err(|_| AuthorityError::UnsupportedVaultLayout)?
+    .ok_or(AuthorityError::UnsupportedVaultLayout)?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1049,6 +1111,26 @@ mod tests {
         handle.shutdown(Some(proof())).await.unwrap();
         join.join().unwrap();
         let mut store = SqliteRecordStore::open(&crate::paths::vault_db(&state)).unwrap();
+        let header = store.load_header().unwrap();
+        let wrapper = store.active_wrapper(WrapperKind::Password).unwrap();
+        let kek = crate::bootstrap::kek_for_wrapper(
+            &wrapper,
+            &SecretInput::from_slice(b"test-only-password"),
+        )
+        .unwrap();
+        let root = crate::bootstrap::unwrap_vrk(header.vault_id, &wrapper, &kek).unwrap();
+        let anchors =
+            crate::generation_anchor::GenerationAnchors::open(&state, header.vault_id).unwrap();
+        let mut generation = GenerationAttempt::new(
+            &anchors,
+            &header,
+            anchors.read().unwrap(),
+            root.bytes(),
+            header.generation + 1,
+            None,
+            None,
+        )
+        .unwrap();
         let mut versions = store.list_all_versions().unwrap();
         let before = versions[0].1.clone();
         versions[0].1.dek_nonce = [0; 12];
@@ -1080,6 +1162,8 @@ mod tests {
             credential_version: None,
             authorization: None,
             approval: None,
+            request_context: None,
+            usage: None,
             event_type: event_type::VAULT_DEK_ROTATED,
             outcome: outcome::SUCCESS,
             reason_code: "dek-rotation".to_owned(),
@@ -1095,6 +1179,7 @@ mod tests {
             &store.load_lease_state().unwrap(),
             audit,
             Some(std::time::Instant::now()),
+            &mut generation,
         );
         assert!(matches!(result, Err(AuthorityError::AuthorityBusy)));
         let after = &store.list_all_versions().unwrap()[0].1;

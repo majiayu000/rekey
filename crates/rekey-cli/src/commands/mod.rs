@@ -17,6 +17,10 @@ use crate::client::{CliError, Client};
 mod metrics;
 #[cfg(feature = "lab")]
 pub use metrics::metrics;
+mod connect;
+pub use connect::{ConnectClient, connect};
+mod run;
+pub use run::{RunClient, run_profile};
 mod templates;
 pub use templates::{template_catalog, template_install};
 
@@ -32,7 +36,7 @@ mod policy_approval;
 pub use policy_approval::{
     approval_decide, approval_get, approval_origin, approval_pending, approval_prepare,
     approval_review, approval_wait_or_cancel, policy_activate, policy_draft, policy_status,
-    policy_trust_install,
+    policy_trust_install, profile_list,
 };
 #[cfg(feature = "lab")]
 mod vault_admin;
@@ -413,6 +417,32 @@ pub fn unlock(state_dir: &Path, recovery: bool, password_stdin: bool) -> Result<
     Ok(())
 }
 
+pub fn confirm_rollback(
+    state_dir: &Path,
+    expected_context: &str,
+    recovery: bool,
+    password_stdin: bool,
+) -> Result<(), CliError> {
+    let expected =
+        serde_json::from_str::<ipc::RollbackContext>(expected_context).map_err(|_| {
+            CliError::local(
+                "USAGE",
+                "expected-context must be the complete context returned by status",
+            )
+        })?;
+    let metadata = serde_json::to_vec(&ipc::RollbackConfirmMeta { expected })
+        .map_err(|_| CliError::local("INVALID_FRAME", "cannot encode rollback context"))?;
+    let kind = proof_kind(recovery);
+    let proof = read_step_up(kind, password_stdin)?;
+    let body = proof_body(kind, &proof);
+    let (metadata, _) = admin_with_response_timeout(state_dir, LIFECYCLE_RESPONSE_TIMEOUT)?.call(
+        admin_msg::ROLLBACK_CONFIRM,
+        &metadata,
+        &body,
+    )?;
+    print_json::<LockResponse>(&metadata)
+}
+
 pub fn lock(state_dir: &Path) -> Result<(), CliError> {
     let (meta, _) = admin_with_response_timeout(state_dir, DRAIN_RESPONSE_TIMEOUT)?.call(
         admin_msg::LOCK,
@@ -484,6 +514,13 @@ pub fn credential_add(
         &body,
     )?;
     print_json::<CredentialMetadata>(&meta)?;
+    if secret.len() < 16 {
+        // A best-effort warning must not turn a completed mutation into failure.
+        let _ = writeln!(
+            std::io::stderr(),
+            "warning: this credential is shorter than 16 bytes; reflected-secret sealing has limited coverage for embedded encodings. Use the provider's complete key."
+        );
+    }
     Ok(())
 }
 
@@ -874,7 +911,15 @@ pub fn desktop_add(state_dir: &Path, label: &str) -> Result<(), CliError> {
         metadata.to_string().as_bytes(),
         &body,
     )?;
-    print_json::<CredentialMetadata>(&meta)
+    print_json::<CredentialMetadata>(&meta)?;
+    if secret.len() < 16 {
+        // A best-effort warning must not turn a completed mutation into failure.
+        let _ = writeln!(
+            std::io::stderr(),
+            "warning: this credential is shorter than 16 bytes; reflected-secret sealing has limited coverage for embedded encodings. Use the provider's complete key."
+        );
+    }
+    Ok(())
 }
 
 pub fn desktop_reveal(
@@ -1066,4 +1111,84 @@ fn write_management_session(path: &Path, token: &[u8]) -> Result<(), CliError> {
     std::fs::File::open(parent)
         .and_then(|directory| directory.sync_all())
         .map_err(|_| invalid())
+}
+
+fn onboarding_url(
+    state_dir: &Path,
+    anthropic: bool,
+    inapplicable: bool,
+) -> Result<&'static str, CliError> {
+    if inapplicable || state_dir != resolve_state_dir(None)? {
+        return Err(CliError::local(
+            "USAGE",
+            "App onboarding requires the default state directory and no socket or management-session override",
+        ));
+    }
+    Ok(if anthropic {
+        "rekey://add/anthropic"
+    } else {
+        "rekey://setup"
+    })
+}
+
+pub fn open_onboarding(
+    state_dir: &Path,
+    anthropic: bool,
+    inapplicable: bool,
+) -> Result<(), CliError> {
+    let url = onboarding_url(state_dir, anthropic, inapplicable)?;
+    #[cfg(target_os = "macos")]
+    {
+        if !Path::new("/Applications/Rekey.app").is_dir() {
+            return Err(CliError::local(
+                "LAUNCHER_UNAVAILABLE",
+                "Install Rekey.app in /Applications before opening onboarding",
+            ));
+        }
+        let status = std::process::Command::new("/usr/bin/open")
+            .args(["-a", "/Applications/Rekey.app", url])
+            .stdin(std::process::Stdio::null())
+            .status()
+            .map_err(|_| {
+                CliError::local(
+                    "LAUNCHER_UNAVAILABLE",
+                    "Could not open the installed Rekey App",
+                )
+            })?;
+        if !status.success() {
+            return Err(CliError::local(
+                "LAUNCHER_UNAVAILABLE",
+                "The system rejected the App opening request",
+            ));
+        }
+        println!("已请求打开 Rekey；请在 App 中确认并完成设置。此消息不表示保险库或授权已创建。");
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = url;
+        Err(CliError::local(
+            "LAUNCHER_UNAVAILABLE",
+            "App onboarding is available only on macOS",
+        ))
+    }
+}
+
+#[cfg(test)]
+mod onboarding_tests {
+    use super::*;
+    #[test]
+    fn routes_are_fixed_and_overrides_fail_without_launching() {
+        let state = resolve_state_dir(None).unwrap();
+        assert_eq!(
+            onboarding_url(&state, false, false).unwrap(),
+            "rekey://setup"
+        );
+        assert_eq!(
+            onboarding_url(&state, true, false).unwrap(),
+            "rekey://add/anthropic"
+        );
+        assert!(onboarding_url(&state, false, true).is_err());
+        assert!(onboarding_url(&state.join("different"), true, false).is_err());
+    }
 }

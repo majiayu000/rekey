@@ -46,33 +46,38 @@ struct RootView: View {
                             Button { model.error = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain)
                         }.foregroundStyle(Color.red).padding(14).background(Color.red.opacity(0.05)).padding(.horizontal, 28).padding(.bottom, 16)
                     }
-                    if model.page == .settings || model.page == .backup {
+                    if model.status?.state == "rollback-suspected", model.page != .backup, model.page != .settings {
+                        locked
+                    } else if let route = model.onboardingRoute {
+                        OnboardingView(route: route).id(route.rawValue)
+                    } else if model.page == .settings || model.page == .backup {
                         pageContent
                     } else if model.status == nil {
                         welcome
-                    } else if !model.unlocked && model.page != .audit && model.page != .policy {
+                    } else if !model.unlocked && model.page != .audit && model.page != .activity && model.page != .policy {
                         locked
                     } else {
                         pageContent
                     }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                if model.page == .credentials, model.unlocked, let credential = model.selected, filtered.contains(where: { $0.id == credential.id }) {
+                if model.onboardingRoute == nil, model.page == .credentials, model.unlocked, let credential = model.selected, filtered.contains(where: { $0.id == credential.id }) {
                     Divider()
                     credentialDetail(credential).frame(width: 306)
                 }
             }
         }
         .background(canvas).foregroundStyle(ink).tint(green)
-        .task { await model.refresh(); if model.status == nil && model.needsSetup { model.beginSetup() } }
+        .task { await model.refresh() }
+        .onOpenURL { url in model.openOnboarding(url); NSApp.activate(ignoringOtherApps: true) }
         .onDisappear { model.clearNativeFlow() }
         .onReceive(Timer.publish(every: 15, on: .main, in: .common).autoconnect()) { _ in
-            if (phase == .active || model.approvalNotificationsEnabled) && !model.busy && model.operation == nil && model.result == nil && !model.showAddCredential && !model.showSession && !showActionForm && !model.showTemplate && !model.showPolicyDraft {
+            if (phase == .active || model.approvalNotificationsEnabled) && !model.busy && model.operation == nil && model.result == nil && !model.showAddCredential && !model.showSession && !showActionForm && !model.showTemplate && !model.showPolicyDraft && model.onboardingRoute == nil {
                 Task { await model.refresh(passive: true) }
             }
         }
         .onChange(of: search) { _, _ in model.selectedCredential = filtered.first?.id }
         .onChange(of: type) { _, _ in model.selectedCredential = filtered.first?.id }
-        .onChange(of: model.page) { _, _ in Task { await model.refresh() } }
+        .onChange(of: model.page) { _, _ in model.onboardingRoute = nil; model.clearNativeFlow(); Task { await model.refresh() } }
         .onChange(of: phase) { _, value in if value == .active { Task { await model.refresh() } } else { model.nativeFlowBecameInactive() } }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in model.nativeFlowBecameInactive() }
         .sheet(isPresented: $model.showPolicyDraft) { PolicyDraftForm().environmentObject(model) }
@@ -108,7 +113,9 @@ struct RootView: View {
                 }.font(.system(size: 11, weight: .medium)).disabled(model.busy || (!model.unlocked && model.status?.state != "locked"))
             }
             if let status = model.status {
-                Text(status.identityLabel).font(.system(size: 10)).foregroundStyle(.secondary).padding(.top, 7)
+                Text(status.protectionLabel).font(.system(size: 10)).foregroundStyle(.secondary).padding(.top, 7)
+                    .help(status.protectionDetail)
+                Text(status.identityLabel).font(.system(size: 10)).foregroundStyle(.secondary)
             }
         }.padding(.horizontal, 20).padding(.top, 24).padding(.bottom, 20).frame(width: 210).background(sage.opacity(0.45))
     }
@@ -149,6 +156,7 @@ struct RootView: View {
         case .actions: return "明确每个 Agent 可以执行的请求"
         case .policy: return "让权限范围、使用次数和有效期都清晰可见"
         case .approvals: return "查看审批绑定信息，再通过独立工具核对原始请求并签名"
+        case .activity: return "今日 UTC 的已保留审计记录，按当时的授权范围汇总"
         case .audit: return "查询本机服务已记录的操作与结果"
         case .backup: return "备份加密数据，验证并恢复到新的目录"
         case .settings: return "管理本机服务与解锁方式"
@@ -160,6 +168,7 @@ struct RootView: View {
         case .actions: actionsPage
         case .policy: policyPage
         case .approvals: approvalsPage
+        case .activity: activityPage
         case .audit: auditPage
         case .backup: backupPage
         case .settings: settingsPage
@@ -184,6 +193,14 @@ struct RootView: View {
     private var locked: some View {
         VStack(spacing: 18) {
             Image(systemName: "lock").font(.system(size: 42, weight: .light)).foregroundStyle(green)
+            if model.status?.state == "rollback-suspected" {
+                Text("检测到疑似回滚").font(.system(size: 23, weight: .medium))
+                if let context = model.status?.rollback {
+                    Text(context.summary).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
+                    Text("自动解锁与操作已停止。请审阅快照与历史上限，单独用密码或恢复密钥确认；确认后仍保持锁定。")
+                    Button("审阅并确认此快照") { model.requestRollbackConfirmation() }.buttonStyle(PrimaryButton()).disabled(model.busy)
+                } else { Text("缺少回滚上下文，不能确认。请刷新状态。") }
+            } else {
             Text(model.status?.state == "locked" ? "保险库已锁定" : "服务暂不可用").font(.system(size: 23, weight: .medium))
             Text(model.status?.state == "locked" ? "解锁后查看凭证并管理授权。审计日志仍可查询。" : "当前服务状态：\(model.status?.state ?? "未知")。请停止服务并检查运行状态。").foregroundStyle(.secondary)
             Button("解锁保险库") { unlock() }.buttonStyle(PrimaryButton()).disabled(model.busy || model.status?.state != "locked")
@@ -191,6 +208,7 @@ struct RootView: View {
                 let revision = model.nativeFlowRevision
                 Task { await model.unlockWithPresence(revision: revision) }
             }.disabled(model.busy || model.status?.state != "locked")
+            }
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
     }
     private func unlock() { model.operation = Operation(title: "解锁保险库", detail: "输入密码或选择恢复密钥。", arguments: ["unlock"]) }
@@ -316,14 +334,14 @@ struct RootView: View {
             VStack(alignment: .leading, spacing: 25) {
                 if model.policy?.mode == .personal {
                     SectionCard(title: "个人策略", icon: "doc.text") {
-                        Text("选择主体、有效期与模板操作，由服务生成完整替换草稿。审阅全部变化后，以本机 Secure Enclave 密钥签署并激活。高风险审批操作目前不可用。")
-                        Button("生成并审阅个人策略") { model.showPolicyDraft = true }
+                        Text("创建、编辑或删除 Profile，选择实例、能力、预算与会话限制。服务保留完整列表并生成替换草稿；审阅后以本机 Secure Enclave 密钥签署并激活。高风险操作仍需逐次审批。")
+                        Button("管理 Profile 并审阅策略") { model.showPolicyDraft = true }
                             .disabled(model.busy || !model.unlocked || model.policy?.trust_installed != true)
                     }
                 } else if model.policy?.mode == .team {
-                    SectionCard(title: "未签名草稿中转", icon: "doc.text") {
+                    SectionCard(title: "团队 Profile 与外部签名", icon: "doc.text") {
                         Text("选择外部编写的原始草稿，完整审阅并导出；随后使用独立签名工具，再导入签名策略。")
-                        Button("审阅未签名草稿") { model.showPolicyDraft = true }.disabled(model.busy)
+                        Button("查看 Profile 与外部草稿") { model.showPolicyDraft = true }.disabled(model.busy)
                     }
                 }
                 SectionCard(title: "当前策略", icon: "checkmark.shield") {
@@ -396,6 +414,66 @@ struct RootView: View {
             }.padding(.horizontal, 28).padding(.bottom, 28)
         }
     }
+    private var activityPage: some View {
+        ScrollView([.horizontal, .vertical]) {
+            VStack(alignment: .leading, spacing: 18) {
+                if let message = model.activityError {
+                    Label(message, systemImage: "exclamationmark.circle").foregroundStyle(.red)
+                }
+                if let activity = model.activity {
+                    Text("UTC 当日 · 截至 \(displayDate(activity.untilMs))").font(.system(size: 12)).foregroundStyle(.secondary)
+                    if activity.complete {
+                        HStack(spacing: 28) {
+                            activityMetric("执行准入", activity.totals.admitted)
+                            activityMetric("执行拒绝", activity.totals.denied)
+                            activityMetric("触发审批", activity.totals.approvals)
+                            activityMetric("实测输出 token", activity.totals.measuredTokens)
+                            activityMetric("按上限计入 token", activity.totals.estimatedTokens)
+                        }
+                        Divider()
+                        if activity.rows.isEmpty { Text("此快照内没有已保留的活动记录。").foregroundStyle(.secondary) }
+                        Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 15) {
+                            GridRow {
+                                Text("Profile / 策略版本"); Text("实例 / 能力 / 模型")
+                                Text("准入"); Text("拒绝"); Text("审批"); Text("实测 token"); Text("按上限计入")
+                            }.font(.system(size: 12, weight: .semibold))
+                            ForEach(activity.rows) { row in
+                                GridRow {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(row.context?.profile_name ?? "未归属 Profile")
+                                        if let hash = row.context?.policy_sha256 {
+                                            Text(String(hash.prefix(12))).font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary).help(hash)
+                                        }
+                                    }
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(row.context.map { "\($0.instance_slug) / \($0.capability)" } ?? "上下文未记录")
+                                        Text(row.context?.model ?? "—").foregroundStyle(.secondary)
+                                    }
+                                    Text(String(row.counts.admitted)); Text(String(row.counts.denied)); Text(String(row.counts.approvals))
+                                    Text(String(row.counts.measuredTokens)); Text(String(row.counts.estimatedTokens))
+                                }.font(.system(size: 12))
+                            }
+                        }
+                        Text("完整读取此快照的已保留记录（\(activity.pages) 页）。已清理的历史不在统计内；准入与拒绝可以来自同一请求。输出 token 按终态时间展示，跨日预算仍按准入日记账。")
+                            .font(.system(size: 11)).foregroundStyle(.secondary).frame(maxWidth: 820, alignment: .leading)
+                    } else {
+                        HStack {
+                            if model.busy { ProgressView().controlSize(.small) }
+                            Text("已读取 \(activity.pages) 页；尚未完成，暂不显示汇总。")
+                        }
+                    }
+                } else if model.activityError == nil {
+                    Text("刷新以读取今日活动。").foregroundStyle(.secondary)
+                }
+            }.padding(.horizontal, 28).padding(.bottom, 28)
+        }
+    }
+    private func activityMetric(_ label: String, _ value: UInt64) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label).font(.system(size: 11)).foregroundStyle(.secondary)
+            Text(String(value)).font(.system(size: 22, weight: .semibold, design: .rounded))
+        }
+    }
     private var auditPage: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
@@ -433,7 +511,7 @@ struct RootView: View {
                     Button("选择备份位置") { if let file = chooseSave("rekey-backup.sqlite") { model.operation = Operation(title: "创建备份", detail: "备份到 \(file.path)。目标必须是新文件。", arguments: ["backup", "--output", file.path]) } }.buttonStyle(PrimaryButton()).disabled(!model.unlocked || model.busy)
                 }
                 SectionCard(title: "从备份恢复", icon: "arrow.counterclockwise") {
-                    Text("选择备份，再选择一个新的空目录。恢复需要匹配版本的备份、校验值与解锁证明，不会覆盖当前保险库。").font(.system(size: 13)).foregroundStyle(.secondary)
+                    Text("选择备份，再选择一个新的空目录。先只读验证源代数与历史上限，再明确确认所示输入与目标。恢复需要源备份的密码或恢复密钥；失败可能保留未完成状态，不自动清理或重试。").font(.system(size: 13)).foregroundStyle(.secondary)
                     Button("选择备份文件") { if let file = chooseFile() { model.operation = Operation(title: "恢复备份", detail: "恢复 \(file.lastPathComponent)。请输入回执中的 SHA-256，并选择空目录。", arguments: ["restore", "--input", file.path]) } }.buttonStyle(SecondaryButton()).disabled(model.busy)
                 }
             }.padding(.horizontal, 28)

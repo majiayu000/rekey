@@ -1,3 +1,4 @@
+use super::generation::{GenerationAttempt, commit_generation};
 use rekey_domain::authorization::{PolicyMode, PolicyTrustAlgorithm};
 use rekey_domain::ids::PolicySignerId;
 use rekey_policy::PolicyVerificationKey;
@@ -6,7 +7,7 @@ use sha2::{Digest, Sha256};
 
 use super::SqliteRecordStore;
 use super::audit;
-use super::sqlite::{blob12, blob16, blob32, commit_audited, positive_version, storage};
+use super::sqlite::{blob12, blob16, blob32, positive_version, storage};
 use crate::command::PolicyMaterial;
 use crate::crypto::policy_state;
 use crate::error::AuthorityError;
@@ -62,6 +63,7 @@ impl SqliteRecordStore {
         state: &PolicyStateRecord,
         trust: &PolicyTrustRecord,
         event: AuditEvent,
+        generation: &mut GenerationAttempt<'_>,
     ) -> Result<(), AuthorityError> {
         let tx = self.conn.transaction().map_err(storage)?;
         tx.execute(
@@ -79,7 +81,7 @@ impl SqliteRecordStore {
         .map_err(storage)?;
         update_state(&tx, state)?;
         audit::insert(&tx, &event)?;
-        commit_audited(tx)
+        commit_generation(tx, generation)
     }
 
     pub fn activate_policy_bundle(
@@ -87,6 +89,7 @@ impl SqliteRecordStore {
         state: &PolicyStateRecord,
         bundle: &PolicyBundleRecord,
         event: AuditEvent,
+        generation: &mut GenerationAttempt<'_>,
     ) -> Result<(), AuthorityError> {
         let tx = self.conn.transaction().map_err(storage)?;
         tx.execute(
@@ -120,7 +123,7 @@ impl SqliteRecordStore {
             .map_err(storage)?;
         update_state(&tx, state)?;
         audit::insert(&tx, &event)?;
-        commit_audited(tx)
+        commit_generation(tx, generation)
     }
 }
 

@@ -2,9 +2,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rekey_domain::DomainError;
-use rekey_domain::authorization::{
-    ApproverSpec, AuthorizationRequest, Decision, DenyReason, Principal,
-};
+use rekey_domain::authorization::{ApproverSpec, AuthorizationRequest, Decision, DenyReason};
 use rekey_domain::ids::ApprovalRequestId;
 use rekey_domain::ipc::{ApprovalChallenge, SignedApprovalChallenge};
 use rekey_domain::ipc::{
@@ -32,15 +30,18 @@ pub(super) struct EvaluatedAuthorization {
     pub approval_context: Option<ApprovalContext>,
     pub snapshot: Arc<ActivePolicy>,
     pub canonical_json: Vec<u8>,
+    pub effective_body: Option<zeroize::Zeroizing<Vec<u8>>>,
+    pub llm: Option<super::llm::LlmExecution>,
 }
 
 impl ActionExecutor {
     pub(super) async fn evaluate_request(
         &self,
         request: &ExecuteRequest,
-        principal: Principal,
+        permit: &ExecutionPermit,
         effect_deadline: Instant,
     ) -> Result<EvaluatedAuthorization, BrokerError> {
+        let principal = permit.principal;
         let pinned = deadline::await_authority(
             effect_deadline,
             self.authority
@@ -49,6 +50,15 @@ impl ActionExecutor {
         .await?;
         let action = pinned.action;
         let mut ctx = ExecutionAuditContext {
+            request_context: permit.profile_scope().map(|scope| {
+                rekey_domain::audit::ProfileRequestAuditContext {
+                    profile_name: scope.profile_name.clone(),
+                    policy_sha256: data_encoding::HEXLOWER.encode(&scope.policy_sha256),
+                    instance_slug: scope.instance_slug.clone(),
+                    capability: scope.capability.clone(),
+                    model: None,
+                }
+            }),
             request_id: request.request_id,
             session_id: principal.session_id,
             action: request.action,
@@ -75,16 +85,67 @@ impl ActionExecutor {
             self.audit_denial(effect_deadline, &ctx, reason).await?;
             return Err(BrokerError::Denied(reason));
         }
-        let (resource, parameters, target) = match snapshot.snapshot().canonicalize(
-            &action,
-            rekey_policy::ActionRequest {
-                params: &request.params,
-                query: &request.query,
-                content_type: request.content_type.as_deref(),
-                headers: &request.extra_headers,
-                body: &request.body,
-            },
-        ) {
+        let scoped = permit.profile_scope();
+        if scoped.is_some_and(|scope| scope.policy_sha256 != snapshot.snapshot().digest()) {
+            self.audit_denial(effect_deadline, &ctx, "profile-policy-changed")
+                .await?;
+            return Err(BrokerError::Denied("profile-policy-changed"));
+        }
+        let protocol = match scoped
+            .map(|scope| super::llm::protocol(&action, scope))
+            .transpose()
+        {
+            Ok(protocol) => protocol.flatten(),
+            Err(error) => {
+                self.audit_denial(effect_deadline, &ctx, "profile-llm-source-unsupported")
+                    .await?;
+                return Err(error);
+            }
+        };
+        let input = rekey_policy::ActionRequest {
+            params: &request.params,
+            query: &request.query,
+            content_type: request.content_type.as_deref(),
+            headers: &request.extra_headers,
+            body: &request.body,
+        };
+        let canonical = if let Some(protocol) = protocol {
+            let scope = scoped.ok_or(BrokerError::Denied("profile-llm-limits-missing"))?;
+            let limits = scope
+                .llm_limits
+                .as_ref()
+                .ok_or(BrokerError::Denied("profile-llm-limits-missing"))?;
+            snapshot
+                .snapshot()
+                .canonicalize_profile_llm(&action, input, protocol, limits)
+                .map(|result| {
+                    if let Some(context) = ctx.request_context.as_mut() {
+                        context.model = result.model;
+                    }
+                    (
+                        result.resource,
+                        result.parameters,
+                        result.target,
+                        Some(zeroize::Zeroizing::new(result.body)),
+                        Some(super::llm::LlmExecution {
+                            protocol,
+                            streaming: result.streaming,
+                            usage: rekey_vault::command::ProfileUsageStart {
+                                instance_slug: scope.instance_slug.clone(),
+                                max_requests_per_day: limits.max_requests_per_day,
+                                max_output_tokens_per_day: limits.max_output_tokens_per_day,
+                                generation_max_output: result.generation_max_output,
+                            },
+                        }),
+                    )
+                })
+        } else {
+            snapshot
+                .snapshot()
+                .canonicalize(&action, input)
+                .map(|(resource, parameters, target)| (resource, parameters, target, None, None))
+        };
+        let (resource, parameters, target, effective_body, llm) = match canonical {
             Ok(value) => value,
             Err(_) => {
                 let reason = DenyReason::InvalidParameters.code();
@@ -194,10 +255,12 @@ impl ActionExecutor {
             decision,
             snapshot,
             canonical_json: parameters.canonical_json,
+            effective_body,
+            llm,
         })
     }
 
-    async fn audit_denial(
+    pub(super) async fn audit_denial(
         &self,
         deadline_at: Instant,
         ctx: &ExecutionAuditContext,
@@ -222,7 +285,7 @@ impl ActionExecutor {
         let deadline_at = started + Duration::from_millis(permit.timeout_ms as u64);
         self.refuse_unless_running()?;
         let evaluated = self
-            .evaluate_request(&request, permit.principal, deadline_at)
+            .evaluate_request(&request, &permit, deadline_at)
             .await?;
         let Decision::RequireApproval { .. } = evaluated.decision else {
             return Err(BrokerError::Denied("approval-not-required"));
@@ -427,8 +490,15 @@ impl ActionExecutor {
         {
             return Err(rekey_vault::AuthorityError::AuthorityBusy.into());
         }
-        self.sessions
-            .publish_local_pending(permit, challenge, body, hash, anchor, expires)
+        self.sessions.publish_local_pending(
+            permit,
+            challenge,
+            body,
+            hash,
+            anchor,
+            expires,
+            evaluated.ctx.request_context.clone(),
+        )
     }
 
     pub(super) async fn commit_local_started(
@@ -472,15 +542,17 @@ impl ActionExecutor {
                     &evaluated.ctx,
                     event_type::APPROVAL_ACCEPTED,
                     outcome::SUCCESS,
-                    "accepted",
+                    "local-presence",
                     Some(evidence),
                 )
             })
             .collect();
-        deadline::await_authority(
-            deadline_at.min(reserved.not_after),
-            self.terminals.commit_started(
+        tokio::time::timeout_at(
+            deadline_at.min(reserved.not_after).into(),
+            super::commit_evaluated_started(
+                &self.terminals,
                 ExecutionAuditContext {
+                    request_context: evaluated.ctx.request_context.clone(),
                     request_id: evaluated.ctx.request_id,
                     session_id: evaluated.ctx.session_id,
                     action: evaluated.ctx.action,
@@ -488,11 +560,21 @@ impl ActionExecutor {
                     authorization: evaluated.ctx.authorization.clone(),
                 },
                 accepted,
-                Some(deadline_at.min(reserved.not_after)),
-                Some(reserved.wall_not_after_ms),
+                Some(
+                    deadline_at
+                        .min(reserved.not_after)
+                        .min(evaluated.snapshot.monotonic_deadline().into_std()),
+                ),
+                Some(
+                    reserved
+                        .wall_not_after_ms
+                        .min(evaluated.snapshot.snapshot().expires_at_ms()),
+                ),
+                evaluated.llm.as_ref().map(|llm| llm.usage.clone()),
             ),
         )
         .await
+        .map_err(|_| BrokerError::Upstream("upstream-timeout"))?
     }
 
     pub(crate) async fn sign_challenge_envelope(
@@ -623,6 +705,8 @@ fn approval_audit(
         credential_version: None,
         authorization: ctx.authorization.clone().map(Box::new),
         approval,
+        request_context: ctx.request_context.clone(),
+        usage: None,
         event_type: event,
         outcome: result,
         reason_code: reason.to_owned(),
@@ -634,7 +718,9 @@ fn approval_audit(
 #[cfg(test)]
 mod local_tests {
     use super::*;
-    use rekey_domain::authorization::{ApprovalMode, ApprovalRequirement, ResourceRef, SchemaId};
+    use rekey_domain::authorization::{
+        ApprovalMode, ApprovalRequirement, Principal, ResourceRef, SchemaId,
+    };
     use rekey_domain::capability::{ActionVersionRef, SessionGrant};
     use rekey_domain::ids::{
         ActionId, CredentialId, PolicyRuleId, PrincipalId, RequestId, SessionId, TenantId,
@@ -645,7 +731,7 @@ mod local_tests {
         let (dir, ctx, join, terminal) = crate::runtime::tests::oidc_test_ctx().await;
         let now = crate::now_ts().unwrap();
         let snapshot=rekey_policy::parse_and_validate_snapshot(&serde_json::to_vec(&serde_json::json!({
-            "format_version":4,"version":1,"expires_at_ms":now.as_unix_ms()+60000,"approvers":[],"workload_identities":[],"bindings":[],"rules":[]
+            "format_version":6,"version":1,"expires_at_ms":now.as_unix_ms()+60000,"approvers":[],"profiles": [], "workload_identities":[],"bindings":[],"rules":[]
         })).unwrap(),now).unwrap();
         let snapshot = Arc::new(ActivePolicy::activate(snapshot, now).unwrap());
         *ctx.executor.policy.write().await = Some(snapshot.clone());
@@ -676,10 +762,10 @@ mod local_tests {
         };
         let evaluated=EvaluatedAuthorization {
             target:rekey_domain::template::RenderedTarget {path:rekey_domain::action::ExactPath::parse("/fixed").unwrap(),params:Default::default(),query:Default::default()},
-            ctx:ExecutionAuditContext {request_id:RequestId::new_random(),session_id,action:action_ref,credential_id:action.credential_id,authorization:None},
+            ctx:ExecutionAuditContext { request_context: None,request_id:RequestId::new_random(),session_id,action:action_ref,credential_id:action.credential_id,authorization:None},
             decision:Decision::RequireApproval {policy_version:snapshot.snapshot().version(),snapshot_digest:snapshot.snapshot().digest(),determining_rule:rule,approver:ApproverSpec::LocalPresence {},requirement:requirement.clone()},
             approval_context:Some(ApprovalContext {principal,action:action_ref,resource:ResourceRef::new("test-action".into(),action.id.to_string()).unwrap(),schema_id:SchemaId::new("test/v1".into()).unwrap(),parameter_hash:[0;32],policy_version:1,policy_digest:snapshot.snapshot().digest(),policy_rule_id:rule,approver:ApproverSpec::LocalPresence {},allowed_approver_ids:vec![],requirement}),
-            action,snapshot,
+            action,snapshot,effective_body:None,llm:None,
             canonical_json:serde_json::to_vec(&serde_json::json!({"body":"x".repeat(rekey_domain::ipc::RESPONSE_BODY_MAX_BYTES as usize)})).unwrap(),
         };
         let db =
@@ -727,6 +813,7 @@ mod local_tests {
                 "hash".into(),
                 anchor,
                 expires,
+                None,
             )
             .unwrap();
         drop(permit);

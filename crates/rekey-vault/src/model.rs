@@ -4,13 +4,16 @@ use rekey_domain::ids::{
     PolicySignerId, PrincipalId, RequestId, SessionId, VaultId, WrapperId,
 };
 
-pub const FORMAT_VERSION: u32 = 24;
+pub const FORMAT_VERSION: u32 = 25;
 pub const VAULT_INTEGRITY_CIPHERTEXT_LEN: usize = 40;
 
 #[derive(Debug, Clone)]
 pub struct VaultHeaderRecord {
     pub vault_id: VaultId,
     pub format_version: u32,
+    /// Untrusted until the candidate VRK authenticates the header MAC.
+    pub generation: u64,
+    pub generation_mac: [u8; 32],
     pub crypto_suite: String,
     pub created_at_ms: i64,
     pub schema_digest: [u8; 32],
@@ -217,12 +220,21 @@ pub struct AuditEvent {
     pub credential_version: Option<u64>,
     pub authorization: Option<AuthorizationEvidence>,
     pub approval: Option<ApprovalEvidence>,
+    pub usage: Option<rekey_domain::audit::UsageEvidence>,
+    pub request_context: Option<rekey_domain::audit::ProfileRequestAuditContext>,
     pub event_type: &'static str,
     pub outcome: &'static str,
     pub reason_code: String,
     pub upstream_status: Option<u16>,
     pub latency_ms: Option<i64>,
     pub created_at_ms: i64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AuditMetadata {
+    pub request_context: Option<rekey_domain::audit::ProfileRequestAuditContext>,
+    pub usage: Option<rekey_domain::audit::UsageEvidence>,
 }
 
 #[derive(Debug, Clone)]
@@ -232,7 +244,8 @@ pub struct ApprovalEvidence {
     pub approver_id: Option<ApproverId>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AuthorizationEvidence {
     pub principal_id: PrincipalId,
     pub policy_version: u64,
@@ -451,4 +464,49 @@ pub struct LeaseRecoveryBatch {
     pub unavailable: Option<crate::error::AuthorityError>,
     pub counts: LeaseJournalCounts,
     pub known: Vec<LeaseReceipt>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsageAdmission {
+    Started,
+    BudgetDenied,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct UsageTotals {
+    pub requests: u64,
+    pub output_tokens: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct UsageContext {
+    pub request_context: Option<rekey_domain::audit::ProfileRequestAuditContext>,
+    pub session_id: SessionId,
+    pub action_id: ActionId,
+    pub action_version: u64,
+    pub credential_id: CredentialId,
+    pub credential_version: Option<u64>,
+    pub authorization: AuthorizationEvidence,
+}
+#[derive(Debug, Clone)]
+pub(crate) struct UsageRecord {
+    pub request_id: RequestId,
+    pub principal_id: PrincipalId,
+    pub instance_slug: String,
+    pub utc_day: i64,
+    pub started_at_ms: i64,
+    pub context_json: String,
+    pub generation_max_output: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub source: Option<String>,
+    pub terminal_json: Option<String>,
+    pub settled_at_ms: Option<i64>,
+}
+#[derive(Debug, Clone)]
+pub struct UsageState {
+    pub revision: u64,
+    pub record_count: u64,
+    pub records_digest: [u8; 32],
+    pub seal_nonce: [u8; 12],
+    pub seal_ciphertext: [u8; 16],
 }

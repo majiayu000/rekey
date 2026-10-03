@@ -789,6 +789,7 @@ mod tests {
         }
         async fn run(&self) -> Result<ExecuteOutcome, BrokerError> {
             let ctx = ExecutionAuditContext {
+                request_context: None,
                 request_id: RequestId::new_random(),
                 session_id: rekey_domain::ids::SessionId::new_random(),
                 action: ActionVersionRef {
@@ -1585,6 +1586,15 @@ mod tests {
                 rekey_vault::secret::SecretInput::from_slice(b"actor-proof"),
             ),
             &receipt.sha256_hex,
+            rekey_vault::bootstrap::inspect_restore(
+                &backup,
+                &restored,
+                rekey_vault::bootstrap::RestoreProof::Password(
+                    rekey_vault::secret::SecretInput::from_slice(b"actor-proof"),
+                ),
+                &receipt.sha256_hex,
+            )
+            .unwrap(),
         )
         .unwrap();
         f.fake

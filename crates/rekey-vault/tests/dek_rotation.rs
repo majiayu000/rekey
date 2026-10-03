@@ -52,6 +52,28 @@ fn immutable_state(db: &Connection) -> Vec<Vec<Vec<Value>>> {
     ].map(|sql| rows(db, sql)).to_vec()
 }
 
+// Keep every immutable table/column comparison. Only the two authenticated
+// generation fields are expected to change after a successful business commit.
+fn assert_generation_advanced(
+    db: &Connection,
+    original: &[Vec<Vec<Value>>],
+    expected_generation: u64,
+) {
+    let actual = immutable_state(db);
+    assert_eq!(actual[0].len(), 1);
+    assert_eq!(actual[0][0].len(), 10);
+    assert_eq!(
+        actual[0][0][3],
+        Value::Blob(expected_generation.to_be_bytes().to_vec())
+    );
+    assert!(matches!(&actual[0][0][4], Value::Blob(mac) if mac.len() == 32));
+    assert_ne!(actual[0][0][4], original[0][0][4]);
+    let mut expected = original.to_vec();
+    expected[0][0][3] = actual[0][0][3].clone();
+    expected[0][0][4] = actual[0][0][4].clone();
+    assert_eq!(actual, expected);
+}
+
 fn successes(db: &Connection) -> i64 {
     db.query_row("SELECT count(*) FROM audit_events WHERE event_type = 'vault.dek_rotated' AND outcome = 'success'", [], |row| row.get(0)).unwrap()
 }
@@ -214,6 +236,11 @@ async fn dek_rotation_preserves_all_kinds_versions_state_and_both_backup_generat
     }
     let db = Connection::open(paths::vault_db(&vault.state_dir)).unwrap();
     let immutable = immutable_state(&db);
+    let initial_generation = SqliteRecordStore::open(&paths::vault_db(&vault.state_dir))
+        .unwrap()
+        .load_header()
+        .unwrap()
+        .generation;
     let before = ciphertexts(&db);
     assert_eq!(before.len(), 18);
     let states = rows(
@@ -240,7 +267,7 @@ async fn dek_rotation_preserves_all_kinds_versions_state_and_both_backup_generat
     );
     let first = ciphertexts(&db);
     assert_resealed(&vault.state_dir, &before, &first);
-    assert_eq!(immutable_state(&db), immutable);
+    assert_generation_advanced(&db, &immutable, initial_generation + 1);
     verify_every_payload(&vault.state_dir);
     assert_eq!(successes(&db), 1);
     let new_backup = vault.dir.path().join("after.rkbackup");
@@ -249,14 +276,21 @@ async fn dek_rotation_preserves_all_kinds_versions_state_and_both_backup_generat
         .await
         .unwrap();
 
+    assert_eq!(old_receipt.generation, initial_generation);
+    assert_eq!(new_receipt.generation, initial_generation + 1);
+
     let recovery = UnlockProof::Recovery(SecretInput::from_slice(
         vault.outcome.recovery_key_display.as_bytes(),
     ));
     assert_eq!(handle.rotate_dek_before(recovery, None).await.unwrap(), 18);
     assert_resealed(&vault.state_dir, &first, &ciphertexts(&db));
-    assert_eq!(immutable_state(&db), immutable);
+    assert_generation_advanced(&db, &immutable, initial_generation + 2);
     verify_every_payload(&vault.state_dir);
     assert_eq!(successes(&db), 2);
+    // First rotation's MAC was authenticated by backup; authenticate the second
+    // through the real candidate-root unlock boundary as well.
+    handle.lock("verify-dek-generation").await.unwrap();
+    handle.unlock(common::password_proof()).await.unwrap();
     handle
         .shutdown(Some(common::password_proof()))
         .await
@@ -268,22 +302,47 @@ async fn dek_rotation_preserves_all_kinds_versions_state_and_both_backup_generat
         ("new", new_backup, new_receipt, &first),
     ] {
         let restored = vault.dir.path().join(name);
-        restore_vault(
+        let context = rekey_vault::bootstrap::inspect_restore(
             &backup,
             &restored,
             RestoreProof::Password(common::password_input()),
             &receipt.sha256_hex,
         )
         .unwrap();
+        assert_eq!(context.source_generation, receipt.generation);
+        let restored_generation = context
+            .source_generation
+            .max(context.high_water.unwrap_or(0))
+            + 1;
+        let restored_receipt = restore_vault(
+            &backup,
+            &restored,
+            RestoreProof::Password(common::password_input()),
+            &receipt.sha256_hex,
+            context,
+        )
+        .unwrap();
+        assert_eq!(restored_receipt.generation, restored_generation);
         verify_every_payload(&restored);
         assert_eq!(
             &ciphertexts(&Connection::open(paths::vault_db(&restored)).unwrap()),
             generation
         );
-        assert_eq!(
-            immutable_state(&Connection::open(paths::vault_db(&restored)).unwrap()),
-            immutable
+        assert_generation_advanced(
+            &Connection::open(paths::vault_db(&restored)).unwrap(),
+            &immutable,
+            restored_generation,
         );
+        let (restored_handle, restored_join) = common::spawn(&restored);
+        restored_handle
+            .unlock(common::password_proof())
+            .await
+            .unwrap();
+        restored_handle
+            .shutdown(Some(common::password_proof()))
+            .await
+            .unwrap();
+        restored_join.join().unwrap();
         let bytes = std::fs::read(backup).unwrap();
         for canary in [FIRST, SECOND, common::PASSWORD] {
             assert!(!bytes.windows(canary.len()).any(|window| window == canary));

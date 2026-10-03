@@ -1,11 +1,12 @@
 //! One transaction replaces all VRK dependencies without changing logical data.
+use super::generation::{GenerationAttempt, commit_generation};
 use std::time::Instant;
 
 use rekey_domain::credential::CredentialKind;
 use rusqlite::params;
 
 use super::SqliteRecordStore;
-use super::sqlite::{commit_audited, storage};
+use super::sqlite::storage;
 use crate::command::PolicyMaterial;
 use crate::error::AuthorityError;
 use crate::model::{
@@ -41,8 +42,10 @@ impl SqliteRecordStore {
         wrappers: &[KeyWrapperRecord],
         journal: &[crate::model::LeaseJournalRecord],
         journal_state: &crate::model::LeaseJournalState,
+        usage_state: &crate::model::UsageState,
         audit: AuditEvent,
         not_after: Option<Instant>,
+        generation: &mut GenerationAttempt<'_>,
     ) -> Result<(), AuthorityError> {
         let tx = self.conn.transaction().map_err(storage)?;
         for (_, v) in versions {
@@ -97,8 +100,9 @@ impl SqliteRecordStore {
             super::wrapper::insert_wrapper(&tx, wrapper)?;
         }
         super::lease_journal::replace_ciphertexts(&tx, journal, journal_state)?;
+        super::usage::replace_state(&tx, usage_state)?;
         super::audit::insert(&tx, &audit)?;
         current(not_after)?;
-        commit_audited(tx)
+        commit_generation(tx, generation)
     }
 }

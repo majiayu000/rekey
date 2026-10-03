@@ -6,6 +6,7 @@ use crate::error::AuthorityError;
 use crate::model::AuthorizationEvidence;
 
 pub struct UnterminatedExecution {
+    pub request_context: Option<rekey_domain::audit::ProfileRequestAuditContext>,
     pub request_id: RequestId,
     pub session_id: Option<SessionId>,
     pub action_id: Option<ActionId>,
@@ -83,10 +84,11 @@ impl SqliteRecordStore {
             .prepare(
                 "SELECT a.request_id, a.session_id, a.action_id, a.action_version, a.credential_id,
                         a.principal_id, a.policy_version, a.policy_digest, a.policy_rule_id,
-                        a.resource_type, a.resource_id, a.parameter_hash
+                        a.resource_type, a.resource_id, a.parameter_hash, a.metadata_json
                  FROM audit_events a
                  WHERE a.event_type = 'execution.started'
                    AND a.request_id IS NOT NULL
+                   AND NOT EXISTS (SELECT 1 FROM profile_usage u WHERE u.request_id=a.request_id)
                    AND NOT EXISTS (
                      SELECT 1 FROM audit_events b
                      WHERE b.request_id = a.request_id
@@ -112,6 +114,7 @@ impl SqliteRecordStore {
                     row.get::<_, Option<String>>(9)?,
                     row.get::<_, Option<String>>(10)?,
                     row.get::<_, Option<Vec<u8>>>(11)?,
+                    row.get::<_, Option<String>>(12)?,
                 ))
             })
             .map_err(storage)?
@@ -132,8 +135,11 @@ impl SqliteRecordStore {
                     resource_type,
                     resource_id,
                     parameter_hash,
+                    metadata_json,
                 )| {
                     Ok(UnterminatedExecution {
+                        request_context: super::audit::decode_metadata(metadata_json)?
+                            .request_context,
                         request_id: RequestId::from_bytes(blob16(request_id)?)
                             .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
                         session_id: optional_id(session_id, SessionId::from_bytes)?,

@@ -74,7 +74,23 @@ impl Worker {
             "policy-trust-installed",
         ))?;
         ensure_mutation_current(not_after)?;
-        let result = self.store.install_policy_trust(&state, &trust, event);
+        let observed = self.mutation_observation()?;
+        let mut generation = crate::store::generation::GenerationAttempt::new(
+            &self.anchors,
+            &self.header,
+            observed,
+            self.require_unlocked()?.bytes(),
+            self.header
+                .generation
+                .checked_add(1)
+                .ok_or(AuthorityError::StorageIntegrityFailed)?,
+            not_after,
+            None,
+        )?;
+        let result = self
+            .store
+            .install_policy_trust(&state, &trust, event, &mut generation);
+        let result = self.complete_generation(result, generation.finish());
         self.fault_on_audit_failure(result)?;
         self.policy_material()
     }
@@ -159,7 +175,23 @@ impl Worker {
         if bundle.expires_at_ms <= now_ms()? {
             return Err(AuthorityError::PolicyVersionConflict);
         }
-        let result = self.store.activate_policy_bundle(&state, &bundle, event);
+        let observed = self.mutation_observation()?;
+        let mut generation = crate::store::generation::GenerationAttempt::new(
+            &self.anchors,
+            &self.header,
+            observed,
+            self.require_unlocked()?.bytes(),
+            self.header
+                .generation
+                .checked_add(1)
+                .ok_or(AuthorityError::StorageIntegrityFailed)?,
+            not_after,
+            Some(bundle.expires_at_ms),
+        )?;
+        let result = self
+            .store
+            .activate_policy_bundle(&state, &bundle, event, &mut generation);
+        let result = self.complete_generation(result, generation.finish());
         self.fault_on_audit_failure(result)?;
         self.policy_material()
     }
