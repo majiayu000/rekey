@@ -2,7 +2,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rekey_domain::DomainError;
-use rekey_domain::authorization::{AuthorizationRequest, Decision, DenyReason, Principal};
+use rekey_domain::authorization::{
+    ApproverSpec, AuthorizationRequest, Decision, DenyReason, Principal,
+};
 use rekey_domain::ids::ApprovalRequestId;
 use rekey_domain::ipc::{ApprovalChallenge, SignedApprovalChallenge};
 use rekey_policy::VerifiedApprovalGrant;
@@ -113,12 +115,13 @@ impl ActionExecutor {
                 policy_version,
                 snapshot_digest,
                 determining_rule,
+                approver,
                 requirement,
             } => (
                 *policy_version,
                 *snapshot_digest,
                 Some(*determining_rule),
-                Some(requirement.clone()),
+                Some((approver.clone(), requirement.clone())),
             ),
             Decision::Deny {
                 policy_version: Some(policy_version),
@@ -147,8 +150,24 @@ impl ActionExecutor {
             return Err(BrokerError::Denied(reason.code()));
         }
         let approval_context = match (requirement, policy_rule_id) {
-            (Some(mut requirement), Some(policy_rule_id)) => {
-                requirement.approver_ids.sort_unstable();
+            (Some((approver, requirement)), Some(policy_rule_id)) => {
+                let allowed_approver_ids = match &approver {
+                    ApproverSpec::Ed25519 { keys, .. } => snapshot
+                        .snapshot()
+                        .ed25519_approver_ids(keys)
+                        .ok_or(BrokerError::Denied("policy-evaluation-failed"))?,
+                    ApproverSpec::LocalPresence {} => {
+                        self.audit_denial(effect_deadline, &ctx, "approval-local-unavailable")
+                            .await?;
+                        return Err(BrokerError::Denied("approval-local-unavailable"));
+                    }
+                    #[cfg(feature = "lab")]
+                    ApproverSpec::Remote {} => {
+                        self.audit_denial(effect_deadline, &ctx, "approval-remote-unavailable")
+                            .await?;
+                        return Err(BrokerError::Denied("approval-remote-unavailable"));
+                    }
+                };
                 Some(ApprovalContext {
                     principal,
                     action: request.action,
@@ -158,6 +177,8 @@ impl ActionExecutor {
                     policy_version: policy_version.get(),
                     policy_digest,
                     policy_rule_id,
+                    approver,
+                    allowed_approver_ids,
                     requirement,
                 })
             }
@@ -242,7 +263,7 @@ impl ActionExecutor {
             .checked_add(Duration::from_millis(remaining_ms as u64))
             .ok_or(BrokerError::Denied("approval-window-invalid"))?;
         let challenge = ApprovalChallenge {
-            record_type: "rekey.approval.challenge.v1".to_owned(),
+            record_type: "rekey.approval.challenge.v2".to_owned(),
             approval_request_id: crate::random_id(ApprovalRequestId::from_random_bytes)?,
             tenant_id: context.principal.tenant_id,
             principal_id: context.principal.principal_id,
@@ -256,8 +277,7 @@ impl ActionExecutor {
             policy_sha256: data_encoding::HEXLOWER.encode(&context.policy_digest),
             policy_rule_id: context.policy_rule_id,
             mode: context.requirement.mode,
-            quorum: context.requirement.quorum,
-            approver_ids: context.requirement.approver_ids.clone(),
+            approver: context.approver.clone(),
             max_uses: context.requirement.max_uses,
             created_at_ms: created,
             max_expires_at_ms,
@@ -267,7 +287,7 @@ impl ActionExecutor {
             deadline::await_authority(deadline_at, self.authority.sign_approval_origin(payload))
                 .await?;
         let envelope = SignedApprovalChallenge {
-            record_type: "rekey.approval.challenge.envelope.v1".to_owned(),
+            record_type: "rekey.approval.challenge.envelope.v2".to_owned(),
             challenge: challenge.clone(),
             signature: data_encoding::BASE64URL_NOPAD.encode(&signature),
         };
@@ -296,7 +316,7 @@ impl ActionExecutor {
         let payload = rekey_policy::approval_challenge_sign_payload(&challenge)?;
         let signature = self.authority.sign_approval_origin(payload).await?;
         Ok(SignedApprovalChallenge {
-            record_type: "rekey.approval.challenge.envelope.v1".to_owned(),
+            record_type: "rekey.approval.challenge.envelope.v2".to_owned(),
             challenge,
             signature: data_encoding::BASE64URL_NOPAD.encode(&signature),
         })

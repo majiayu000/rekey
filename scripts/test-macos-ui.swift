@@ -138,16 +138,16 @@ struct UIContract {
         // Exercise the exact production read bridge without signing or executing an action.
         let approvalID = UUID().uuidString.lowercased()
         let challenge: [String: Any] = [
-            "record_type": "rekey.approval.challenge.v1", "approval_request_id": approvalID,
+            "record_type": "rekey.approval.challenge.v2", "approval_request_id": approvalID,
             "tenant_id": UUID().uuidString.lowercased(), "principal_id": UUID().uuidString.lowercased(),
             "session_id": UUID().uuidString.lowercased(), "action_id": action.id, "action_version": action.version,
             "resource": ["type": "fixed-http-action", "id": action.id], "schema_id": "ui/request",
             "parameter_sha256": String(repeating: "a", count: 64), "policy_version": 3,
             "policy_sha256": String(repeating: "b", count: 64), "policy_rule_id": UUID().uuidString.lowercased(),
-            "mode": "one-time", "quorum": 1, "approver_ids": [UUID().uuidString.lowercased()],
+            "mode": "one-time", "approver": ["kind": "ed25519", "keys": [String(repeating: "1", count: 64)], "threshold": 1],
             "max_uses": 1, "created_at_ms": 1000, "max_expires_at_ms": 61000,
         ]
-        let envelope: [String: Any] = ["record_type": "rekey.approval.challenge.envelope.v1", "challenge": challenge, "signature": String(repeating: "A", count: 86)]
+        let envelope: [String: Any] = ["record_type": "rekey.approval.challenge.envelope.v2", "challenge": challenge, "signature": String(repeating: "A", count: 86)]
         let envelopeData = try JSONSerialization.data(withJSONObject: envelope, options: [.prettyPrinted, .sortedKeys])
         let getFile = root.appendingPathComponent("get.json")
         let originFile = root.appendingPathComponent("origin.json")
@@ -649,15 +649,28 @@ struct UIContract {
         try require((missingError as NSError).domain == NSPOSIXErrorDomain && (missingError as NSError).code == Int(ENOENT), "read underlying errno preserved")
 
         let actionID = UUID().uuidString.lowercased(), requestID = UUID().uuidString.lowercased()
-        let challenge: [String: Any] = ["record_type": "rekey.approval.challenge.v1", "approval_request_id": requestID,
+        let challenge: [String: Any] = ["record_type": "rekey.approval.challenge.v2", "approval_request_id": requestID,
             "tenant_id": "tenant", "principal_id": "principal", "session_id": "session", "action_id": actionID,
             "action_version": 7, "resource": ["type":"fixed-http-action","id":actionID], "schema_id":"request",
             "parameter_sha256":String(repeating:"a",count:64), "policy_version":3, "policy_sha256":String(repeating:"b",count:64),
-            "policy_rule_id":"rule", "mode":"one-time", "quorum":2, "approver_ids":["one","two"], "max_uses":1,
+            "policy_rule_id":"rule", "mode":"one-time", "approver":["kind":"ed25519", "keys":["one","two"], "threshold":2], "max_uses":1,
             "created_at_ms":1000, "max_expires_at_ms":61000]
-        let envelope: [String: Any] = ["record_type":"rekey.approval.challenge.envelope.v1", "challenge":challenge, "signature":"not-verified-by-ui"]
+        let envelope: [String: Any] = ["record_type":"rekey.approval.challenge.envelope.v2", "challenge":challenge, "signature":"not-verified-by-ui"]
         let envelopeData = try JSONSerialization.data(withJSONObject: envelope)
         let details = ApprovalDetails(envelope: try JSONDecoder().decode(ApprovalEnvelope.self, from: envelopeData), origin: ApprovalOrigin(algorithm: "ed25519", public_key: "separately-pinned"), data: envelopeData)
+        try require(details.envelope.challenge.approver.summary == "外部签名 · 2 人", "approval threshold comes from explicit Ed25519 approver")
+        var localChallenge = challenge
+        localChallenge["approver"] = ["kind": "local-presence"]
+        let local = try JSONDecoder().decode(ApprovalChallenge.self, from: JSONSerialization.data(withJSONObject: localChallenge))
+        try require(local.approver.summary == "本机系统认证", "local approver has no fabricated signer IDs")
+        var oldChallenge = challenge
+        oldChallenge.removeValue(forKey: "approver")
+        oldChallenge["quorum"] = 1
+        oldChallenge["approver_ids"] = ["old-id"]
+        _ = try rejected("old approval identity representation") { _ = try JSONDecoder().decode(ApprovalChallenge.self, from: JSONSerialization.data(withJSONObject: oldChallenge)) }
+        var unsupported = challenge
+        unsupported["approver"] = ["kind": "remote"]
+        _ = try rejected("unimplemented remote approval is not an external signer") { _ = try JSONDecoder().decode(ApprovalChallenge.self, from: JSONSerialization.data(withJSONObject: unsupported)) }
         let request = try JSONSerialization.jsonObject(with: approvalHandoff(details, body: body)) as! [String:Any]
         try require(request["body"] as? String == body.text && request["content_type"] as? String == "application/json", "handoff exact body and fixed content type")
         try require((request["headers"] as? [String]) == [], "handoff no extra headers")

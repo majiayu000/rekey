@@ -9,12 +9,12 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 use crate::action::{ExactPath, FixedHttpAction, FixedMethod, HttpsOrigin};
-use crate::authorization::{ApprovalMode, PolicyVersion, ResourceRef, SchemaId};
+use crate::authorization::{ApprovalMode, ApproverSpec, PolicyVersion, ResourceRef, SchemaId};
 use crate::capability::ActionVersionRef;
 use crate::credential::{CredentialLabel, CredentialMetadata};
 use crate::ids::{
-    ActionId, ApprovalRequestId, ApproverId, CredentialId, PolicyRuleId, PolicySignerId,
-    PrincipalId, RequestId, SessionId, TenantId, VaultId,
+    ActionId, ApprovalRequestId, CredentialId, PolicyRuleId, PolicySignerId, PrincipalId,
+    RequestId, SessionId, TenantId, VaultId,
 };
 use crate::template::{ProviderTemplate, TemplateValues};
 
@@ -901,27 +901,36 @@ pub struct ApprovalChallenge {
     pub policy_sha256: String,
     pub policy_rule_id: PolicyRuleId,
     pub mode: ApprovalMode,
-    pub quorum: u8,
-    pub approver_ids: Vec<ApproverId>,
+    pub approver: ApproverSpec,
     pub max_uses: u32,
     pub created_at_ms: i64,
     pub max_expires_at_ms: i64,
 }
 
+fn valid_approval_approver(approver: &ApproverSpec, mode: ApprovalMode, max_uses: u32) -> bool {
+    match approver {
+        ApproverSpec::LocalPresence {} => mode == ApprovalMode::OneTime && max_uses == 1,
+        ApproverSpec::Ed25519 { keys, threshold } => {
+            !keys.is_empty()
+                && keys.len() <= 32
+                && keys.iter().all(|key| is_lower_hex(key, 64))
+                && keys.windows(2).all(|pair| pair[0] < pair[1])
+                && (1..=2).contains(threshold)
+                && usize::from(*threshold) <= keys.len()
+        }
+        #[cfg(feature = "lab")]
+        ApproverSpec::Remote {} => false,
+    }
+}
+
 impl ApprovalChallenge {
     pub fn validate(&self) -> Result<(), crate::DomainError> {
-        let approvers: BTreeSet<_> = self.approver_ids.iter().copied().collect();
-        let valid_common = self.record_type == "rekey.approval.challenge.v1"
+        let valid_common = self.record_type == "rekey.approval.challenge.v2"
             && self.action_version > 0
             && PolicyVersion::new(self.policy_version).is_ok()
             && is_lower_hex(&self.parameter_sha256, 64)
             && is_lower_hex(&self.policy_sha256, 64)
-            && !self.approver_ids.is_empty()
-            && self.approver_ids.len() <= 32
-            && approvers.len() == self.approver_ids.len()
-            && self.approver_ids.windows(2).all(|pair| pair[0] < pair[1])
-            && (1..=2).contains(&self.quorum)
-            && usize::from(self.quorum) <= approvers.len()
+            && valid_approval_approver(&self.approver, self.mode, self.max_uses)
             && self.created_at_ms >= 0
             && self.max_expires_at_ms > self.created_at_ms;
         let window_ms = self.max_expires_at_ms.saturating_sub(self.created_at_ms);
@@ -948,7 +957,7 @@ pub struct SignedApprovalChallenge {
 
 impl SignedApprovalChallenge {
     pub fn validate(&self) -> Result<(), crate::DomainError> {
-        if self.record_type != "rekey.approval.challenge.envelope.v1"
+        if self.record_type != "rekey.approval.challenge.envelope.v2"
             || !is_canonical_unpadded_base64url(self.signature.as_str(), 64)
         {
             return Err(invalid_response());
@@ -990,7 +999,7 @@ pub struct ApprovalPendingItem {
     pub created_at_ms: i64,
     pub max_expires_at_ms: i64,
     pub mode: ApprovalMode,
-    pub quorum: u8,
+    pub approver: ApproverSpec,
     pub max_uses: u32,
     pub parameter_sha256: String,
 }
@@ -1006,7 +1015,7 @@ impl ApprovalPendingItem {
             created_at_ms: challenge.created_at_ms,
             max_expires_at_ms: challenge.max_expires_at_ms,
             mode: challenge.mode,
-            quorum: challenge.quorum,
+            approver: challenge.approver.clone(),
             max_uses: challenge.max_uses,
             parameter_sha256: challenge.parameter_sha256.clone(),
         }
@@ -1015,7 +1024,7 @@ impl ApprovalPendingItem {
     pub fn validate(&self) -> Result<(), crate::DomainError> {
         let valid_common = self.action_version > 0
             && is_lower_hex(&self.parameter_sha256, 64)
-            && (1..=2).contains(&self.quorum)
+            && valid_approval_approver(&self.approver, self.mode, self.max_uses)
             && self.created_at_ms >= 0
             && self.max_expires_at_ms > self.created_at_ms;
         let valid_mode = match self.mode {
@@ -1038,7 +1047,7 @@ pub struct ApprovalPendingResponse {
 
 impl ApprovalPendingResponse {
     pub fn validate(&self) -> Result<(), crate::DomainError> {
-        if self.record_type != "rekey.approval.pending.v1"
+        if self.record_type != "rekey.approval.pending.v2"
             || self.challenges.len() > APPROVAL_PENDING_MAX
         {
             return Err(invalid_response());
@@ -1099,6 +1108,76 @@ pub fn origin_display(origin: &HttpsOrigin) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn approval_challenge(approver: ApproverSpec) -> ApprovalChallenge {
+        let id = "11111111-1111-4111-8111-111111111111";
+        serde_json::from_value(serde_json::json!({
+            "record_type":"rekey.approval.challenge.v2", "approval_request_id":id,
+            "tenant_id":id,"principal_id":id,"session_id":id,"action_id":id,
+            "action_version":1,"resource":{"type":"test","id":"one"},"schema_id":"test/v1",
+            "parameter_sha256":"01".repeat(32),"policy_version":1,"policy_sha256":"02".repeat(32),
+            "policy_rule_id":id,"mode":"one-time","approver":approver,"max_uses":1,
+            "created_at_ms":1,"max_expires_at_ms":60001
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn approval_challenge_and_pending_have_closed_v2_approvers() {
+        let mut local = approval_challenge(ApproverSpec::LocalPresence {});
+        local.validate().unwrap();
+        let pending = ApprovalPendingItem::from_challenge(&local);
+        assert_eq!(pending.approver, ApproverSpec::LocalPresence {});
+        pending.validate().unwrap();
+        local.mode = ApprovalMode::TimeWindow;
+        assert!(local.validate().is_err());
+        assert!(
+            ApprovalPendingItem::from_challenge(&local)
+                .validate()
+                .is_err()
+        );
+        local.mode = ApprovalMode::OneTime;
+        local.max_uses = 2;
+        assert!(local.validate().is_err());
+        let ed = ApproverSpec::Ed25519 {
+            keys: vec!["01".repeat(32), "02".repeat(32)],
+            threshold: 2,
+        };
+        approval_challenge(ed).validate().unwrap();
+        for (keys, threshold) in [
+            (vec![], 1),
+            (vec!["01".repeat(32)], 0),
+            (vec!["01".repeat(32)], 2),
+            (vec!["01".repeat(32), "02".repeat(32)], 3),
+            (vec!["01".repeat(32), "01".repeat(32)], 1),
+            (vec!["02".repeat(32), "01".repeat(32)], 1),
+            (vec!["AB".repeat(32)], 1),
+        ] {
+            assert!(
+                approval_challenge(ApproverSpec::Ed25519 { keys, threshold })
+                    .validate()
+                    .is_err()
+            );
+        }
+        let mut old = approval_challenge(ApproverSpec::LocalPresence {});
+        old.record_type = "rekey.approval.challenge.v1".to_owned();
+        assert!(old.validate().is_err());
+        let mut legacy =
+            serde_json::to_value(approval_challenge(ApproverSpec::LocalPresence {})).unwrap();
+        legacy["quorum"] = 1.into();
+        assert!(serde_json::from_value::<ApprovalChallenge>(legacy).is_err());
+        let pending = ApprovalPendingResponse {
+            record_type: "rekey.approval.pending.v1".to_owned(),
+            challenges: vec![],
+        };
+        assert!(pending.validate().is_err());
+        #[cfg(feature = "lab")]
+        assert!(
+            approval_challenge(ApproverSpec::Remote {})
+                .validate()
+                .is_err()
+        );
+    }
 
     #[test]
     fn backup_and_restore_receipts_have_required_cut_and_fixed_json_shape() {

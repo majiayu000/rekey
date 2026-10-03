@@ -606,7 +606,7 @@ mod tests {
         let expires = crate::now_ts().unwrap().as_unix_ms() + 60_000;
         let bundle = |version| {
             let mut unsigned = serde_json::json!({"format_version":1,"signer_id":signer_id,"snapshot":{
-                "format_version":3,"version":version,"expires_at_ms":expires,"approvers":[],"workload_identities":[],"bindings":[],"rules":[]
+                "format_version":4,"version":version,"expires_at_ms":expires,"approvers":[],"workload_identities":[],"bindings":[],"rules":[]
             }});
             let mut message = b"RKPOLICY\0\x01".to_vec();
             message.extend_from_slice(&serde_jcs::to_vec(&unsigned).unwrap());
@@ -813,7 +813,7 @@ mod tests {
             let unsigned = serde_json::json!({
                 "format_version": 1, "signer_id": self.trust.signer_id(),
                 "snapshot": {
-                    "format_version": 3, "version": version, "expires_at_ms": self.expires,
+                    "format_version": 4, "version": version, "expires_at_ms": self.expires,
                     "approvers": [{"approver_id": self.approver_id, "algorithm": "ed25519",
                         "public_key": data_encoding::HEXLOWER.encode(self.signer.public_key().as_ref())}],
                     "workload_identities": [], "bindings": [], "rules": []
@@ -943,7 +943,7 @@ mod tests {
             .unwrap();
         let now = crate::now_ts().unwrap();
         let challenge = rekey_domain::ipc::ApprovalChallenge {
-            record_type: "rekey.approval.challenge.v1".to_owned(),
+            record_type: "rekey.approval.challenge.v2".to_owned(),
             approval_request_id: ApprovalRequestId::new_random(),
             tenant_id: pending_session.principal.tenant_id,
             principal_id: pending_session.principal.principal_id,
@@ -957,8 +957,10 @@ mod tests {
             policy_sha256: data_encoding::HEXLOWER.encode(&active.snapshot().digest()),
             policy_rule_id: PolicyRuleId::new_random(),
             mode: ApprovalMode::OneTime,
-            quorum: 1,
-            approver_ids: vec![f.approver_id],
+            approver: rekey_domain::authorization::ApproverSpec::Ed25519 {
+                keys: vec![data_encoding::HEXLOWER.encode(f.signer.public_key().as_ref())],
+                threshold: 1,
+            },
             max_uses: 1,
             created_at_ms: now.as_unix_ms(),
             max_expires_at_ms: now.as_unix_ms() + 30_000,
@@ -996,9 +998,9 @@ mod tests {
             policy_version: 1,
             policy_digest: active.snapshot().digest(),
             policy_rule_id: challenge.policy_rule_id,
+            approver: challenge.approver.clone(),
+            allowed_approver_ids: vec![f.approver_id],
             requirement: ApprovalRequirement {
-                approver_ids: challenge.approver_ids.clone(),
-                quorum: 1,
                 mode: ApprovalMode::OneTime,
                 max_uses: 1,
                 max_window_ms: None,

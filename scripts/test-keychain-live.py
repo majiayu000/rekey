@@ -104,7 +104,7 @@ def main():
             session = json.loads(cli('session', 'create', '--action', reference, '--ttl', '10m',
                                     '--max-uses', '5', '--password-stdin', data=proof + '\n'))
             resource = dict(type='keychain-test', id=action['id'])
-            snapshot = write('snapshot.json', dict(format_version=3, version=1,
+            snapshot = write('snapshot.json', dict(format_version=4, version=1,
                 expires_at_ms=int(time.time() * 1000) + 300000, approvers=[], workload_identities=[],
                 bindings=[dict(action_id=action['id'], version=action['version'], resource=resource,
                                parameter_schema_id='keychain/v1', parameter_schema={'type': 'object'})],

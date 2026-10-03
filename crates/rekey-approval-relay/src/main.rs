@@ -36,6 +36,7 @@ type Failure = &'static str;
 struct Approver {
     subject: String,
     approver_id: String,
+    public_key: String,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -78,7 +79,7 @@ fn https_url(s: &str) -> Result<url::Url, Failure> {
 }
 impl Config {
     fn validate(&self) -> Result<(), Failure> {
-        if self.format_version != 2
+        if self.format_version != 3
             || !canonical_uuid(&self.instance_id)
             || !canonical_uuid(&self.tenant_id)
             || https_url(&self.endpoint)?.path() != "/v1"
@@ -97,12 +98,24 @@ impl Config {
             .map_err(|_| "invalid-config")?;
         let mut subjects = BTreeSet::new();
         let mut ids = BTreeSet::new();
+        let mut keys = BTreeSet::new();
         for a in &self.approvers {
             if !stable(&a.subject)
                 || !canonical_uuid(&a.approver_id)
                 || !subjects.insert(&a.subject)
                 || !ids.insert(&a.approver_id)
+                || !keys.insert(&a.public_key)
             {
+                return Err("invalid-config");
+            }
+            let key = rekey_policy::validate_ed25519_public_key(&a.public_key)
+                .map_err(|_| "invalid-config")?;
+            let digest = sha(&key);
+            if !self.directory.links.iter().any(|link| {
+                link.subject == a.subject
+                    && link.approver_id.as_deref() == Some(a.approver_id.as_str())
+                    && link.public_key_sha256.as_deref() == Some(digest.as_str())
+            }) {
                 return Err("invalid-config");
             }
         }
@@ -332,14 +345,14 @@ async fn main() {
 
 #[cfg(test)]
 fn test_config(state: &Path) -> Config {
-    serde_json::from_value(serde_json::json!({"formatVersion":2,
+    serde_json::from_value(serde_json::json!({"formatVersion":3,
       "instanceId":"11111111-1111-4111-8111-111111111111","tenantId":"22222222-2222-4222-8222-222222222222",
       "endpoint":"https://localhost:443/v1","listenAddress":"127.0.0.1:443","stateDir":state,
       "tlsCertificateFile":"/fixture/ca","tlsKeyFile":"/fixture/key","idpIssuer":"https://issuer.test",
       "introspectionUrl":"https://issuer.test/introspect","idpCaCertificateFile":"/fixture/ca",
       "introspectionClientId":"relay","introspectionClientSecretFile":"/fixture/secret",
       "personnelClientId":"personnel","audience":"relay","originPublicKey":"11".repeat(32),
-      "uploaderSubject":"operator","approvers":[{"subject":"reviewer","approverId":"33333333-3333-4333-8333-333333333333"}],
+      "uploaderSubject":"operator","approvers":[{"subject":"reviewer","approverId":"33333333-3333-4333-8333-333333333333","publicKey":"11".repeat(32)}],
       "directory":{"baseUrl":"https://directory.test/scim/v2","caCertificateFile":"/fixture/ca","accessTokenFile":"/fixture/token",
       "mappingVersion":1,"nodes":[{"nodeId":"11111111-1111-4111-8111-111111111111","vaultId":"22222222-2222-4222-8222-222222222222"},
       {"nodeId":"33333333-3333-4333-8333-333333333333","vaultId":"44444444-4444-4444-8444-444444444444"}],
@@ -347,5 +360,47 @@ fn test_config(state: &Path) -> Config {
       "principalId":"11111111-1111-4111-8111-111111111111","adminAllowed":true,"confirmedBy":"operator-registrar","confirmedAtMs":1},
       {"sourceUserId":"user-2","externalId":"person-2","issuer":"https://issuer.test","subject":"reviewer",
       "principalId":"22222222-2222-4222-8222-222222222222","approverId":"33333333-3333-4333-8333-333333333333",
-      "publicKeySha256":"22".repeat(32),"adminAllowed":true,"confirmedBy":"operator-registrar","confirmedAtMs":1}]}})).unwrap()
+      "publicKeySha256":sha(&[0x11; 32]),"adminAllowed":true,"confirmedBy":"operator-registrar","confirmedAtMs":1}]}})).unwrap()
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+
+    #[test]
+    fn approver_key_is_canonical_unique_and_matches_directory_identity() {
+        let mut config = test_config(Path::new("/fixture/state"));
+        config.validate().unwrap();
+        config.format_version = 2;
+        assert_eq!(config.validate(), Err("invalid-config"));
+        config.format_version = 3;
+        config.directory.links[1].public_key_sha256 = Some("22".repeat(32));
+        assert_eq!(config.validate(), Err("invalid-config"));
+        config.directory.links[1].public_key_sha256 = Some(sha(&[0x11; 32]));
+        config.approvers[0].public_key = "00".repeat(32);
+        assert_eq!(config.validate(), Err("invalid-config"));
+        config.approvers[0].public_key = "AB".repeat(32);
+        assert_eq!(config.validate(), Err("invalid-config"));
+        config.approvers[0].public_key = "11".repeat(32);
+        config.approvers.push(Approver {
+            subject: "second-reviewer".into(),
+            approver_id: "55555555-5555-4555-8555-555555555555".into(),
+            public_key: "11".repeat(32),
+        });
+        let mut link = config.directory.links[1].clone();
+        link.source_user_id = "user-3".into();
+        link.external_id = "person-3".into();
+        link.subject = "second-reviewer".into();
+        link.principal_id = "55555555-5555-4555-8555-555555555555".into();
+        link.approver_id = Some("55555555-5555-4555-8555-555555555555".into());
+        config.directory.links.push(link);
+        config.directory.validate(&config).unwrap();
+        assert_eq!(config.validate(), Err("invalid-config"));
+        assert!(
+            serde_json::from_value::<Approver>(serde_json::json!({
+                "subject": "reviewer", "approverId": "33333333-3333-4333-8333-333333333333"
+            }))
+            .is_err()
+        );
+    }
 }

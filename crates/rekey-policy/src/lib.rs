@@ -6,8 +6,8 @@ use jsonschema::{Draft, Validator};
 use rekey_domain::Timestamp;
 use rekey_domain::action::{ActionTarget, FixedHttpAction, HeaderName};
 use rekey_domain::authorization::{
-    ApprovalMode, ApprovalRequirement, AuthorizationRequest, CanonicalParameters, Decision,
-    DenyReason, PolicyVersion, ResourceRef, SchemaId,
+    ApprovalMode, ApprovalRequirement, ApproverSpec, AuthorizationRequest, CanonicalParameters,
+    Decision, DenyReason, PolicyVersion, ResourceRef, SchemaId,
 };
 use rekey_domain::capability::ActionVersionRef;
 use rekey_domain::ids::{ActionId, ApproverId, PolicyRuleId, PrincipalId};
@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-pub const SNAPSHOT_FORMAT_VERSION: u32 = 3;
+pub const SNAPSHOT_FORMAT_VERSION: u32 = 4;
 pub const SNAPSHOT_MAX_BYTES: usize = 64 * 1024;
 pub const TRUST_MAX_BYTES: usize = 4 * 1024;
 pub const APPROVAL_GRANT_MAX_BYTES: usize = 4 * 1024;
@@ -97,6 +97,8 @@ pub struct PolicyRule {
     pub resource: ResourceRef,
     pub parameters: ParameterScope,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approver: Option<ApproverSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval: Option<ApprovalRequirement>,
 }
 
@@ -154,6 +156,12 @@ impl ValidatedSnapshot {
 
     pub fn approver_key(&self, approver_id: ApproverId) -> Option<&[u8; 32]> {
         self.approvers.get(&approver_id)
+    }
+
+    /// Resolve canonical public keys through this authenticated snapshot only.
+    /// IDs are derived for grant verification; they are never a second wire source.
+    pub fn ed25519_approver_ids(&self, keys: &[String]) -> Option<Vec<ApproverId>> {
+        resolve_approver_ids(keys, &self.approvers)
     }
 
     pub fn binding(&self, action: ActionVersionRef) -> Option<&ActionBinding> {
@@ -433,10 +441,10 @@ fn parse_and_validate_snapshot_inner(
         if let ParameterScope::ExactHash { sha256 } = &rule.parameters {
             decode_lower_hex_32(sha256)?;
         }
-        match (rule.effect, rule.approval.as_ref()) {
-            (RuleEffect::Permit | RuleEffect::Forbid, None) => {}
-            (RuleEffect::RequireApproval, Some(requirement)) => {
-                validate_requirement(requirement, &approvers)?;
+        match (rule.effect, rule.approver.as_ref(), rule.approval.as_ref()) {
+            (RuleEffect::Permit | RuleEffect::Forbid, None, None) => {}
+            (RuleEffect::RequireApproval, Some(approver), Some(requirement)) => {
+                validate_requirement(approver, requirement, &approvers)?;
             }
             _ => return Err(PolicyError::Invalid),
         }
@@ -453,7 +461,9 @@ fn parse_and_validate_snapshot_inner(
                 && left.resource == right.resource
                 && scopes_overlap(&left.parameters, &right.parameters)
                 && !requirements_equivalent(
+                    left.approver.as_ref().ok_or(PolicyError::Invalid)?,
                     left.approval.as_ref().ok_or(PolicyError::Invalid)?,
+                    right.approver.as_ref().ok_or(PolicyError::Invalid)?,
                     right.approval.as_ref().ok_or(PolicyError::Invalid)?,
                 )
             {
@@ -490,7 +500,7 @@ pub fn evaluate(
     }
     let mut permit: Option<PolicyRuleId> = None;
     let mut forbid: Option<PolicyRuleId> = None;
-    let mut approval: Option<(PolicyRuleId, &ApprovalRequirement)> = None;
+    let mut approval: Option<(PolicyRuleId, &ApproverSpec, &ApprovalRequirement)> = None;
     for rule in &snapshot.rules {
         if rule.principal_id != request.principal.principal_id
             || rule.action() != request.action
@@ -503,22 +513,29 @@ pub fn evaluate(
             RuleEffect::Forbid => forbid = minimum(forbid, rule.id),
             RuleEffect::Permit => permit = minimum(permit, rule.id),
             RuleEffect::RequireApproval => {
-                let Some(requirement) = rule.approval.as_ref() else {
+                let (Some(approver), Some(requirement)) =
+                    (rule.approver.as_ref(), rule.approval.as_ref())
+                else {
                     return deny(snapshot, DenyReason::EvaluationFailed, Some(rule.id));
                 };
                 if approval.is_none_or(|current| rule.id < current.0) {
-                    approval = Some((rule.id, requirement));
+                    approval = Some((rule.id, approver, requirement));
                 }
             }
         }
     }
     if let Some(rule) = forbid {
         deny(snapshot, DenyReason::ExplicitForbid, Some(rule))
-    } else if let Some((rule, requirement)) = approval {
+    } else if let Some((rule, approver, requirement)) = approval {
+        let mut approver = approver.clone();
+        if let ApproverSpec::Ed25519 { keys, .. } = &mut approver {
+            keys.sort();
+        }
         Decision::RequireApproval {
             policy_version: snapshot.version,
             snapshot_digest: snapshot.digest,
             determining_rule: rule,
+            approver,
             requirement: requirement.clone(),
         }
     } else if let Some(rule) = permit {
@@ -584,20 +601,44 @@ fn scopes_overlap(left: &ParameterScope, right: &ParameterScope) -> bool {
     }
 }
 
+fn resolve_approver_ids(
+    keys: &[String],
+    approvers: &BTreeMap<ApproverId, [u8; 32]>,
+) -> Option<Vec<ApproverId>> {
+    if keys.is_empty() || keys.len() > 32 {
+        return None;
+    }
+    let mut ids = BTreeSet::new();
+    for key in keys {
+        let id = approvers
+            .iter()
+            .find_map(|(id, public_key)| (HEXLOWER.encode(public_key) == *key).then_some(*id))?;
+        if !ids.insert(id) {
+            return None;
+        }
+    }
+    Some(ids.into_iter().collect())
+}
+
 fn validate_requirement(
+    approver: &ApproverSpec,
     requirement: &ApprovalRequirement,
     approvers: &BTreeMap<ApproverId, [u8; 32]>,
 ) -> Result<(), PolicyError> {
-    if requirement.approver_ids.is_empty() || requirement.approver_ids.len() > 32 {
-        return Err(PolicyError::Invalid);
-    }
-    let distinct: BTreeSet<_> = requirement.approver_ids.iter().copied().collect();
-    if distinct.len() != requirement.approver_ids.len()
-        || distinct.iter().any(|id| !approvers.contains_key(id))
-        || !(1..=2).contains(&requirement.quorum)
-        || usize::from(requirement.quorum) > distinct.len()
-    {
-        return Err(PolicyError::Invalid);
+    match approver {
+        ApproverSpec::LocalPresence {} => {
+            if requirement.mode != ApprovalMode::OneTime {
+                return Err(PolicyError::Invalid);
+            }
+        }
+        ApproverSpec::Ed25519 { keys, threshold } => {
+            let ids = resolve_approver_ids(keys, approvers).ok_or(PolicyError::Invalid)?;
+            if !(1..=2).contains(threshold) || usize::from(*threshold) > ids.len() {
+                return Err(PolicyError::Invalid);
+            }
+        }
+        #[cfg(feature = "lab")]
+        ApproverSpec::Remote {} => return Err(PolicyError::Invalid),
     }
     match requirement.mode {
         ApprovalMode::OneTime
@@ -612,11 +653,30 @@ fn validate_requirement(
     Ok(())
 }
 
-fn requirements_equivalent(left: &ApprovalRequirement, right: &ApprovalRequirement) -> bool {
-    let left_ids: BTreeSet<_> = left.approver_ids.iter().copied().collect();
-    let right_ids: BTreeSet<_> = right.approver_ids.iter().copied().collect();
-    left_ids == right_ids
-        && left.quorum == right.quorum
+fn requirements_equivalent(
+    left_approver: &ApproverSpec,
+    left: &ApprovalRequirement,
+    right_approver: &ApproverSpec,
+    right: &ApprovalRequirement,
+) -> bool {
+    let same_approver = match (left_approver, right_approver) {
+        (ApproverSpec::LocalPresence {}, ApproverSpec::LocalPresence {}) => true,
+        (
+            ApproverSpec::Ed25519 {
+                keys: left,
+                threshold: left_threshold,
+            },
+            ApproverSpec::Ed25519 {
+                keys: right,
+                threshold: right_threshold,
+            },
+        ) => {
+            left_threshold == right_threshold
+                && left.iter().collect::<BTreeSet<_>>() == right.iter().collect::<BTreeSet<_>>()
+        }
+        _ => false,
+    };
+    same_approver
         && left.mode == right.mode
         && left.max_uses == right.max_uses
         && left.max_window_ms == right.max_window_ms
@@ -778,7 +838,7 @@ mod tests {
         rule: PolicyRuleId,
     ) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
-            "format_version": 3,
+            "format_version": 4,
             "version": 1,
             "expires_at_ms": 10_000,
             "approvers": [],

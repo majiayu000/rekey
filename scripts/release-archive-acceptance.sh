@@ -108,7 +108,7 @@ import json, pathlib, sys, time, uuid
 path, action_id, action_version, principal_id, version = sys.argv[1:]
 resource = {"type": "fixed-http-action", "id": action_id}
 pathlib.Path(path).write_text(json.dumps({
-    "format_version": 3,
+    "format_version": 4,
     "version": int(version),
     "expires_at_ms": int(time.time() * 1000) + 600000,
     "approvers": [],
@@ -167,8 +167,8 @@ done
 [[ -S "$STATE/runtime/admin.sock" ]] || { echo "broker did not start"; exit 1; }
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" unlock --password-stdin >/dev/null
 status="$("$REKEY" --state-dir "$STATE" status)"
-printf '%s\n' "$status" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin)["format_version"] == 23 else 1)' || {
-  echo "expected format_version 23: $status" >&2
+printf '%s\n' "$status" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin)["format_version"] == 24 else 1)' || {
+  echo "expected format_version 24: $status" >&2
   exit 1
 }
 
@@ -267,7 +267,7 @@ path, action_id, action_version, principal_id, approver_path = sys.argv[1:]
 approver = json.loads(pathlib.Path(approver_path).read_text())
 resource = {"type": "fixed-http-action", "id": action_id}
 pathlib.Path(path).write_text(json.dumps({
-    "format_version": 3,
+    "format_version": 4,
     "version": 2,
     "expires_at_ms": int(time.time() * 1000) + 600000,
     "approvers": [approver],
@@ -287,9 +287,8 @@ pathlib.Path(path).write_text(json.dumps({
         "version": int(action_version),
         "resource": resource,
         "parameters": {"kind": "any_validated"},
+        "approver": {"kind": "ed25519", "keys": [approver["public_key"]], "threshold": 1},
         "approval": {
-            "approver_ids": [approver["approver_id"]],
-            "quorum": 1,
             "mode": "one-time",
             "max_uses": 1,
         },

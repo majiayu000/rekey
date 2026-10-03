@@ -225,7 +225,7 @@ returned values. `expires_at_ms` must be a future Unix epoch in milliseconds.
 
 ```json
 {
-  "format_version": 3,
+  "format_version": 4,
   "version": 1,
   "expires_at_ms": 1900000000000,
   "approvers": [],
@@ -341,15 +341,18 @@ Rotate a static workload verification key by signing and activating the next con
 the old policy activation revokes existing workload sessions.
 
 To require approval, add approvers to the snapshot catalog and use a
-`require-approval` rule. The rule names the allowed approvers, quorum 1 or 2,
+`require-approval` rule. The rule names the allowed Ed25519 public keys, threshold 1 or 2,
 `one-time` or `time-window` mode, and its use/window ceilings. For example:
 
 ```json
 {
   "effect": "require-approval",
+  "approver": {
+    "kind": "ed25519",
+    "keys": ["<registered approver public key, 64 lowercase hex characters>"],
+    "threshold": 1
+  },
   "approval": {
-    "approver_ids": ["00000000-0000-4000-8000-000000000020"],
-    "quorum": 1,
     "mode": "one-time",
     "max_uses": 1
   }
@@ -395,7 +398,7 @@ Pin this vault's origin public key with `rekey approval origin` and pass it as
 `--origin-key`. This is not a hosted approval service: another process running
 as your user can still read the same files. Independently choose policy, trust,
 Action, and key files from an operator-owned directory. Do not take them from
-an Agent workspace. The signer only handles `one-time` / `quorum=1` /
+an Agent workspace. The signer only handles `one-time` / `threshold=1` /
 `max_uses=1`.
 
 ### Local independent approval endpoint

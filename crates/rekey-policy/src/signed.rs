@@ -22,7 +22,7 @@ use crate::{
 
 const POLICY_FORMAT_VERSION: u32 = 1;
 const APPROVAL_FORMAT_VERSION: u32 = 1;
-pub const APPROVAL_CHALLENGE_SIGN_PREFIX: &[u8] = b"RKCHALLENGE\0\x01";
+pub const APPROVAL_CHALLENGE_SIGN_PREFIX: &[u8] = b"RKCHALLENGE\0\x02";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -540,7 +540,7 @@ mod tests {
             "format_version": 1,
             "signer_id": signer_id,
             "snapshot": {
-                "format_version": 3,
+                "format_version": 4,
                 "version": 1,
                 "expires_at_ms": 10_000,
                 "approvers": [{
@@ -564,9 +564,8 @@ mod tests {
                     "version": 1,
                     "resource": resource,
                     "parameters": {"kind": "any_validated"},
+                    "approver": {"kind":"ed25519","keys":[HEXLOWER.encode(approver.public_key().as_ref())],"threshold":1},
                     "approval": {
-                        "approver_ids": [approver_id],
-                        "quorum": 1,
                         "mode": "one-time",
                         "max_uses": 1
                     }
@@ -726,9 +725,8 @@ mod tests {
     }
 
     fn sample_challenge() -> ApprovalChallenge {
-        let approver = ApproverId::new_random();
         serde_json::from_value(json!({
-            "record_type": "rekey.approval.challenge.v1",
+            "record_type": "rekey.approval.challenge.v2",
             "approval_request_id": ApprovalRequestId::new_random(),
             "tenant_id": TenantId::new_random(),
             "principal_id": PrincipalId::new_random(),
@@ -742,8 +740,7 @@ mod tests {
             "policy_sha256": HEXLOWER.encode(&[2u8; 32]),
             "policy_rule_id": PolicyRuleId::new_random(),
             "mode": "one-time",
-            "quorum": 1,
-            "approver_ids": [approver],
+            "approver": {"kind":"ed25519","keys":[HEXLOWER.encode(key_pair().public_key().as_ref())],"threshold":1},
             "max_uses": 1,
             "created_at_ms": 1,
             "max_expires_at_ms": 60_000,
@@ -757,7 +754,7 @@ mod tests {
         let public_key: [u8; 32] = origin.public_key().as_ref().try_into().unwrap();
         let challenge = sample_challenge();
         let mut envelope = json!({
-            "record_type": "rekey.approval.challenge.envelope.v1",
+            "record_type": "rekey.approval.challenge.envelope.v2",
             "challenge": challenge,
         });
         let message = approval_challenge_sign_payload(&challenge).unwrap();
@@ -777,5 +774,45 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn challenge_v2_authenticates_approver_and_rejects_old_record_or_domain() {
+        let origin = key_pair();
+        let public_key = origin.public_key().as_ref().try_into().unwrap();
+        let challenge = sample_challenge();
+        let message = approval_challenge_sign_payload(&challenge).unwrap();
+        assert!(message.starts_with(b"RKCHALLENGE\0\x02"));
+        let envelope = json!({"record_type":"rekey.approval.challenge.envelope.v2","challenge":challenge,"signature":BASE64URL_NOPAD.encode(origin.sign(&message).as_ref())});
+        let verify = |value: &Value| {
+            parse_and_verify_approval_challenge_envelope(
+                &serde_json::to_vec(value).unwrap(),
+                &public_key,
+            )
+        };
+        verify(&envelope).unwrap();
+        let mut tampered = envelope.clone();
+        tampered["challenge"]["approver"] = json!({"kind":"local-presence"});
+        assert!(matches!(
+            verify(&tampered),
+            Err(PolicyError::InvalidSignature)
+        ));
+        for (outer, inner) in [(true, false), (false, true)] {
+            let mut old = envelope.clone();
+            if outer {
+                old["record_type"] = "rekey.approval.challenge.envelope.v1".into();
+            }
+            if inner {
+                old["challenge"]["record_type"] = "rekey.approval.challenge.v1".into();
+            }
+            assert!(verify(&old).is_err());
+        }
+        let mut old_domain = b"RKCHALLENGE\0\x01".to_vec();
+        old_domain.extend(serde_jcs::to_vec(&challenge).unwrap());
+        let mut old = envelope;
+        old["signature"] = BASE64URL_NOPAD
+            .encode(origin.sign(&old_domain).as_ref())
+            .into();
+        assert!(matches!(verify(&old), Err(PolicyError::InvalidSignature)));
     }
 }

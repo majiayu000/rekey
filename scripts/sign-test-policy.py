@@ -143,8 +143,8 @@ def sign_policy(args: argparse.Namespace) -> None:
     args.trust.write_bytes(canonical(trust))
 
     snapshot = json.loads(args.snapshot.read_text(encoding="utf-8"))
-    if snapshot.get("format_version") not in (2, 3):
-        raise SystemExit("test policy snapshot must use format_version 2 or 3")
+    if snapshot.get("format_version") != 4:
+        raise SystemExit("test policy snapshot must use format_version 4")
     unsigned = {"format_version": 1, "signer_id": signer_id, "snapshot": snapshot}
     bundle = dict(unsigned)
     bundle["signature"] = sign_bytes(key_path, b"RKPOLICY\0\x01" + canonical(unsigned))
@@ -167,14 +167,17 @@ def approval_identity(args: argparse.Namespace) -> None:
 
 
 def sign_approval(args: argparse.Namespace) -> None:
-    key_path, approver_id, _ = ensure_identity(
+    key_path, approver_id, public_key = ensure_identity(
         args.key_dir, "approver-key.pem", "approver-id"
     )
     challenge = json.loads(args.challenge.read_text(encoding="utf-8"))
-    if challenge.get("record_type") == "rekey.approval.challenge.envelope.v1":
+    if challenge.get("record_type") == "rekey.approval.challenge.envelope.v2":
         challenge = challenge.get("challenge") or {}
-    if challenge.get("record_type") != "rekey.approval.challenge.v1":
+    if challenge.get("record_type") != "rekey.approval.challenge.v2":
         raise SystemExit("invalid approval challenge")
+    approver = challenge.get("approver") or {}
+    if approver.get("kind") != "ed25519" or public_key not in approver.get("keys", []):
+        raise SystemExit("external signer is not a member of this challenge")
     expires_at_ms = min(
         challenge["max_expires_at_ms"], challenge["created_at_ms"] + args.validity_ms
     )

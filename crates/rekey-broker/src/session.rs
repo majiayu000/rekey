@@ -464,7 +464,7 @@ mod tests {
     #[cfg(feature = "lab")]
     fn oidc_principal_revocation_counts_live_pending_and_preserves_other_principals() {
         use rekey_domain::authorization::{ApprovalMode, ResourceRef, SchemaId};
-        use rekey_domain::ids::{ApprovalRequestId, ApproverId, PolicyRuleId};
+        use rekey_domain::ids::{ApprovalRequestId, PolicyRuleId};
         let registry = open_registry();
         let (mut first, action) = grant(10);
         let now = crate::now_ts().unwrap();
@@ -475,7 +475,7 @@ mod tests {
         registry.begin(&token, action, now).unwrap();
         for offset in [10_000, -1] {
             let challenge = rekey_domain::ipc::ApprovalChallenge {
-                record_type: "rekey.approval.challenge.v1".into(),
+                record_type: "rekey.approval.challenge.v2".into(),
                 approval_request_id: ApprovalRequestId::new_random(),
                 tenant_id: first.principal.tenant_id,
                 principal_id: principal,
@@ -489,8 +489,10 @@ mod tests {
                 policy_sha256: "b".repeat(64),
                 policy_rule_id: PolicyRuleId::new_random(),
                 mode: ApprovalMode::OneTime,
-                quorum: 1,
-                approver_ids: vec![ApproverId::new_random()],
+                approver: rekey_domain::authorization::ApproverSpec::Ed25519 {
+                    keys: vec!["11".repeat(32)],
+                    threshold: 1,
+                },
                 max_uses: 1,
                 created_at_ms: now.as_unix_ms() - 1000,
                 max_expires_at_ms: now.as_unix_ms() + offset,

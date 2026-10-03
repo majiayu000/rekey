@@ -35,7 +35,7 @@
 | M2 ActionTarget / 内容认证 / 格式 | 本批软件验收通过 | format22；完整原始 Action 行 AEAD、全状态重封/轮换、实际备份副本和恢复验证；44 项定向测试及独立审查通过。数值列篡改错误映射 P2 已关闭；无迁移 |
 | M2 原子安装 / 规范执行 / 客户端 | 本批软件验收通过 | 52/53、原子批安装、render→审批哈希→HTTP 已接线；全量默认 647 / lab 1,111 项通过，各 2 项忽略；stdin 尾修 CLI 黑盒、lab CLI 62/1 ignored、Swift 实际 CLI 与 103 流程断言通过；独立审查关闭 |
 | M2 anthropic/openai/github/generic 模板 | 本批软件验收通过 | 四个内置声明、风险默认值、App 能力/多绑定选择已接；真实 CLI GitHub 一次安装 16 Action、Swift OpenAI 安装 2 Action 通过；策略激活仍需独立完成 |
-| M2 Approver / local-presence / 面板 | 待实施 | T10；challenge 与 principal/参数/策略绑定、一次性消费 |
+| M2 Approver / local-presence / 面板 | 格式已合流，完整本机流程实施中 | snapshot4/challenge2/vault24、公钥成员校验、外部审批和界面分流独立审查通过；默认706/2 ignored与真实P3外部审批通过，lab回归中。本机仍拒绝执行，T10 尚未验收 |
 | M3 Profile / 会话生命周期 / rekey run | 待实施 | T9；进程异常退出与 CLI SIGKILL 后 5 秒撤销 |
 | M3 gateway / 认证 / SSE / model与预算 | 待实施 | T1/T8；仅 loopback；不可转发入站真实 Key |
 | M3 MCP v2 / await_approval / GET | 待实施 | T1/T10；文本内容与二进制正确处理 |
@@ -109,3 +109,5 @@ App 删除旧无保护钥匙串读取与后台自动恢复，保留独立 A1 添
 打包脚本现支持并在正式 App 构建中要求 provisioning profile；核对 Team、App ID、访问组、期限、发行属性和叶证书 DER，仅 App 声明访问组权限，standalone 工具不声明。release/CI 接线已改，11 项合成配置测试及独立审查通过。旧无交互钥匙串跨进程测试移除，DPK 的真实签名设备权限仍交 V1 验收，不能由合成测试替代。
 
 本批默认 workspace 698 passed /2 ignored、默认严格 Clippy/all-targets、格式、机械符号和纯 IPC CLI 依赖检查通过。lab 两轮在未修改的 relay 测试首次 PUT 分别收到 503（预期201），原失败日志 `m1-presence-test-lab.log`、`m1-presence-test-lab-final.log` 保留。独立诊断确认目录 Unknown 可触发安全拒绝，但具体偶发原因尚未确定；不以复跑通过宣称修复。排除 relay 后的完整 lab workspace 已通过 1,120 项、2 ignored，日志 `m1-presence-test-lab-core.log`。relay 按原 workspace 特性图独立验收 22/22 通过（`m1-presence-relay-workspace-final.log`），加先前同源 relay 单元 20/20，分组覆盖合计 1,162 passed /2 ignored；这不抹去原全套两次失败。
+
+M2 Approver 格式已合流：四份冻结补丁和共享 harness 一行 format4 尾修；合流前 93/93 源码哈希一致。Domain/Policy 17 文件、Broker/relay 11 文件、根脚本/格式 glue 38 文件和 Swift 4 文件均独立审查关闭。组合 default/lab all-targets、真实 Swift→CLI 临时 vault 和 Swift 112 flow /82 presence /53 personal /16 OIDC 断言通过。完整 default 首轮发现 root integration harness 仍签 snapshot3，已仅更新正向 fixture 为4，生产版本拒绝保持，broker_ipc 5/5 复测通过；最终默认全套706 passed /2 ignored及真实P3外部审批（单人/双人、重放/篡改/过期与审计）通过；lab全套正在运行。P3脚本顶部同时改为读取Cargo实际target_directory，避免多worktree验收读错二进制，4行尾修独立审查通过。LocalPresence 运行时依赖合同已固定，upstream Domain/Policy/Vault 另树实施中，不能将枚举/面板计为本机批准完成。

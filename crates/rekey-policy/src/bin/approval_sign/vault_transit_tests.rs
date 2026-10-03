@@ -640,10 +640,10 @@ fn write_json(path: &std::path::Path, value: &Value) {
     fs::write(path, serde_json::to_vec(value).unwrap()).unwrap();
 }
 fn signed_envelope(challenge: &Value, origin: &Ed25519KeyPair) -> Value {
-    let mut message = b"RKCHALLENGE\0\x01".to_vec();
+    let mut message = b"RKCHALLENGE\0\x02".to_vec();
     message.extend(serde_jcs::to_vec(challenge).unwrap());
     json!({
-        "record_type": "rekey.approval.challenge.envelope.v1",
+        "record_type": "rekey.approval.challenge.envelope.v2",
         "challenge": challenge,
         "signature": BASE64URL_NOPAD.encode(origin.sign(&message).as_ref()),
     })
@@ -682,10 +682,10 @@ impl Fixture {
         let policy_expiry = created + 300_000;
         let trust = json!({"format_version":1,"signer_id":signer_id,"algorithm":"ed25519","public_key":HEXLOWER.encode(signer.public_key().as_ref())});
         let resource = json!({"type":"test.resource","id":"one"});
-        let snapshot = json!({"format_version":3,"version":1,"expires_at_ms":policy_expiry,
+        let snapshot = json!({"format_version":4,"version":1,"expires_at_ms":policy_expiry,
             "approvers":[{"approver_id":approver,"algorithm":"ed25519","public_key":HEXLOWER.encode(key.public_key().as_ref())}],
             "workload_identities":[],"bindings":[{"action_id":action_id,"version":1,"resource":resource,"parameter_schema_id":"test/v1","parameter_schema":{"type":"object","required":["message"],"properties":{"message":{"type":"string"}},"additionalProperties":false}}],
-            "rules":[{"id":rule,"effect":"require-approval","principal_id":principal,"action_id":action_id,"version":1,"resource":resource,"parameters":{"kind":"any_validated"},"approval":{"approver_ids":[approver],"quorum":1,"mode":"one-time","max_uses":1}}]});
+            "rules":[{"id":rule,"effect":"require-approval","principal_id":principal,"action_id":action_id,"version":1,"resource":resource,"parameters":{"kind":"any_validated"},"approver":{"kind":"ed25519","keys":[HEXLOWER.encode(key.public_key().as_ref())],"threshold":1},"approval":{"mode":"one-time","max_uses":1}}]});
         let mut bundle = json!({"format_version":1,"signer_id":signer_id,"snapshot":snapshot});
         let mut message = b"RKPOLICY\0\x01".to_vec();
         message.extend(serde_jcs::to_vec(&bundle).unwrap());
@@ -719,7 +719,7 @@ impl Fixture {
                 },
             )
             .unwrap();
-        let inner = json!({"record_type":"rekey.approval.challenge.v1","approval_request_id":id(),"tenant_id":id(),"principal_id":principal,"session_id":id(),"action_id":action_id,"action_version":1,"resource":resource,"schema_id":"test/v1","parameter_sha256":HEXLOWER.encode(&parameters.canonical_hash),"policy_version":1,"policy_sha256":HEXLOWER.encode(&verified.policy_digest()),"policy_rule_id":rule,"mode":"one-time","quorum":1,"approver_ids":[approver],"max_uses":1,"created_at_ms":created,"max_expires_at_ms":created+120_000});
+        let inner = json!({"record_type":"rekey.approval.challenge.v2","approval_request_id":id(),"tenant_id":id(),"principal_id":principal,"session_id":id(),"action_id":action_id,"action_version":1,"resource":resource,"schema_id":"test/v1","parameter_sha256":HEXLOWER.encode(&parameters.canonical_hash),"policy_version":1,"policy_sha256":HEXLOWER.encode(&verified.policy_digest()),"policy_rule_id":rule,"mode":"one-time","approver":{"kind":"ed25519","keys":[HEXLOWER.encode(key.public_key().as_ref())],"threshold":1},"max_uses":1,"created_at_ms":created,"max_expires_at_ms":created+120_000});
         let request = json!({"challenge":signed_envelope(&inner, &origin),"content_type":"application/json","headers":[],"body":body});
         write_json(&dir.path().join("request.json"), &request);
         Self {

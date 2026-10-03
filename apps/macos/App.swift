@@ -375,7 +375,7 @@ struct RootView: View {
                 ForEach(model.approvals) { item in
                     SectionCard(title: model.actions.first { $0.id == item.action_id }?.name ?? "固定操作", icon: "doc.text.magnifyingglass") {
                         info("会话", item.session_id)
-                        info("所需签名", "\(item.quorum) 人")
+                        info("审批方式", item.approver.summary)
                         info("有效期至", displayDate(item.max_expires_at_ms))
                         Text("参数摘要 \(item.parameter_sha256)").font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
                         HStack {

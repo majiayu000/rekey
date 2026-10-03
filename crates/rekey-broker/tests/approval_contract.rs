@@ -198,7 +198,7 @@ async fn one_time_grant_admits_exactly_once_under_a_race() {
     )
     .await;
     let challenge = prepare(&broker, &session.capability_token, &action, version).await;
-    assert_eq!(challenge.record_type, "rekey.approval.challenge.v1");
+    assert_eq!(challenge.record_type, "rekey.approval.challenge.v2");
     let excessive = execute(
         &broker,
         &session.capability_token,
@@ -887,5 +887,72 @@ async fn vrk_rotation_requires_lock_and_changes_origin_without_reviving_approval
     )
     .await
     .ok();
+    broker.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn local_presence_never_prepares_or_consumes_credentials() {
+    let broker = common::start_broker().await;
+    common::unlock(&broker).await;
+    let credential = common::add_credential(&broker, "local-unavailable", b"secret").await;
+    let (action, version) = common::create_action(&broker, &credential).await;
+    let session = common::policy::create_session_grant(&broker, &action, version, 8).await;
+    common::policy::activate_snapshot(
+        &broker,
+        serde_json::json!({
+            "format_version": 4, "version": 1, "expires_at_ms": 4_102_444_800_000_i64,
+            "approvers": [], "workload_identities": [],
+            "bindings": [{"action_id": action, "version": version,
+                "resource": {"type": "test-action", "id": action},
+                "parameter_schema_id": "test-any-json/v1", "parameter_schema": {}}],
+            "rules": [{"id": rekey_domain::ids::PolicyRuleId::new_random(),
+                "effect": "require-approval", "principal_id": session.principal_id,
+                "action_id": action, "version": version,
+                "resource": {"type": "test-action", "id": action},
+                "parameters": {"kind": "any_validated"}, "approver": {"kind": "local-presence"},
+                "approval": {"mode": "one-time", "max_uses": 1}}]
+        }),
+    )
+    .await;
+    for response in [
+        prepare_response(&broker, &session.capability_token, &action, version).await,
+        execute(&broker, &session.capability_token, &action, version, vec![]).await,
+    ] {
+        assert_eq!(response.err_code(), "REQUEST_DENIED");
+        assert_eq!(
+            response.metadata["message"],
+            "request denied: approval-local-unavailable"
+        );
+    }
+    assert!(broker.fake.requests.lock().unwrap().is_empty());
+    assert!(pending_inbox(&broker).await.challenges.is_empty());
+    let response = common::call(
+        &broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::AUDIT_QUERY,
+        &serde_json::to_vec(&AuditQuery {
+            request_id: None,
+            session_id: Some(session.session_id.parse().unwrap()),
+            action_id: None,
+            credential_id: None,
+            outcome: None,
+            since_ms: None,
+            until_ms: None,
+            snapshot_max_sequence: None,
+            before_sequence: None,
+            limit: 100,
+        })
+        .unwrap(),
+        &[],
+    )
+    .await;
+    response.ok();
+    let page: AuditPage = serde_json::from_slice(&response.body).unwrap();
+    assert!(
+        !page
+            .events
+            .iter()
+            .any(|event| event.event_type == "execution.started")
+    );
     broker.shutdown().await;
 }

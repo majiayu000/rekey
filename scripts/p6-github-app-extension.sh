@@ -218,7 +218,7 @@ bindings.append({"action_id":comment_id,"version":1,"resource":{"type":"github-i
 rules = [{"id":str(uuid.uuid4()),"effect":"permit","principal_id":principal,
           "action_id":b["action_id"],"version":1,"resource":b["resource"],
           "parameters":{"kind":"any_validated"}} for b in bindings]
-pathlib.Path(path).write_text(json.dumps({"format_version":3,"version":1,
+pathlib.Path(path).write_text(json.dumps({"format_version":4,"version":1,
   "expires_at_ms":int(time.time()*1000)+600000,"approvers":[],"workload_identities":[],
   "bindings":bindings,"rules":rules}))
 PY

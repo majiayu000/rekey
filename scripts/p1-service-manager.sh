@@ -277,7 +277,7 @@ binding = {"action_id":action, "version":int(version), "resource":resource,
 rule = {"id":str(uuid.uuid4()), "effect":"permit", "principal_id":principal,
  "action_id":action, "version":int(version), "resource":resource,
  "parameters":{"kind":"any_validated"}}
-pathlib.Path(path).write_text(json.dumps({"format_version":3,"version":int(policy_version),
+pathlib.Path(path).write_text(json.dumps({"format_version":4,"version":int(policy_version),
  "expires_at_ms":int(time.time()*1000)+600000,"approvers":[],"workload_identities":[],
  "bindings":[binding],"rules":[rule]}))
 PY

@@ -118,6 +118,7 @@ pub fn generate_personal_draft(
             version: action.version,
             resource,
             parameters: ParameterScope::AnyValidated {},
+            approver: None,
             approval: None,
         });
     }

@@ -7,7 +7,7 @@ use data_encoding::{BASE64URL_NOPAD, HEXLOWER};
 use rekey_domain::{
     Timestamp,
     action::FixedHttpAction,
-    authorization::{ApprovalMode, AuthorizationRequest, Decision, Principal},
+    authorization::{ApprovalMode, ApproverSpec, AuthorizationRequest, Decision, Principal},
     capability::ActionVersionRef,
     ids::{ApprovalId, ApproverId},
     ipc::SignedApprovalChallenge,
@@ -186,13 +186,18 @@ fn run_args(args: Vec<String>, output_text: &mut dyn Write) -> Result<()> {
         &origin,
     )?;
     let approver: ApproverId = get("--approver-id")?.parse()?;
+    let ApproverSpec::Ed25519 { keys, threshold: 1 } = &c.approver else {
+        return Err("signer requires a single Ed25519 approver".into());
+    };
+    let approvers = snapshot
+        .ed25519_approver_ids(keys)
+        .ok_or("challenge approver is not registered in policy")?;
     if !action.enabled
         || action.id != c.action_id
         || action.version != c.action_version
         || c.mode != ApprovalMode::OneTime
-        || c.quorum != 1
         || c.max_uses != 1
-        || !c.approver_ids.contains(&approver)
+        || !approvers.contains(&approver)
     {
         return Err("action or single-use approval context mismatch".into());
     }
@@ -233,20 +238,18 @@ fn run_args(args: Vec<String>, output_text: &mut dyn Write) -> Result<()> {
         policy_version,
         snapshot_digest,
         determining_rule,
+        approver: policy_approver,
         requirement,
     } = evaluate(snapshot, &authorization, time, false)
     else {
         return Err("policy does not require approval for this request".into());
     };
-    let mut approvers = requirement.approver_ids.clone();
-    approvers.sort();
     if policy_version.get() != c.policy_version
         || HEXLOWER.encode(&snapshot_digest) != c.policy_sha256
         || determining_rule != c.policy_rule_id
         || requirement.mode != c.mode
-        || requirement.quorum != c.quorum
         || requirement.max_uses != c.max_uses
-        || approvers != c.approver_ids
+        || policy_approver != c.approver
     {
         return Err("policy and challenge mismatch".into());
     }

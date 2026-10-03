@@ -402,7 +402,11 @@ struct ApprovalDetailView: View {
             Text("审批请求详情").font(.system(size: 24, weight: .semibold))
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    Text("信封只有参数摘要，不包含原始请求正文、请求头或内容类型。请在独立签名工具中核对原始请求、操作定义与策略后再授权。").font(.system(size: 13)).foregroundStyle(.secondary)
+                    if case .ed25519 = challenge.approver {
+                        Text("信封只有参数摘要，不包含原始请求正文、请求头或内容类型。请在独立签名工具中核对原始请求、操作定义与策略后再授权。").font(.system(size: 13)).foregroundStyle(.secondary)
+                    } else {
+                        Text("当前详情只有参数摘要，缺少完整请求内容，不能据此批准本机审批。").font(.system(size: 13)).foregroundStyle(.secondary)
+                    }
                     TimelineView(.periodic(from: .now, by: 1)) { context in
                         Text(context.date.timeIntervalSince1970 * 1000 >= Double(challenge.max_expires_at_ms) ? "此审批已过期；请重新准备请求。" : "这是读取时的快照；请求可能已被撤销或使用。")
                             .font(.system(size: 12)).foregroundStyle(.secondary)
@@ -428,15 +432,25 @@ struct ApprovalDetailView: View {
                         row("策略 SHA-256", challenge.policy_sha256)
                         row("策略规则", challenge.policy_rule_id)
                         row("审批模式", challenge.mode)
-                        row("所需签名", "\(challenge.quorum) 人")
-                        row("允许的审批人 ID", challenge.approver_ids.joined(separator: "\n"))
+                        row("审批方式", challenge.approver.summary)
+                        if case let .ed25519(keys, _) = challenge.approver {
+                            row("允许的审批公钥", keys.joined(separator: "\n"))
+                        }
                         row("最大使用次数", String(challenge.max_uses))
                         row("创建时间", "\(displayDate(challenge.created_at_ms)) · \(challenge.created_at_ms) ms")
                         row("有效期至", "\(displayDate(challenge.max_expires_at_ms)) · \(challenge.max_expires_at_ms) ms")
                     }
-                    NativeApprovalForm(details: details).environmentObject(model)
+                    if case .ed25519 = challenge.approver {
+                        NativeApprovalForm(details: details).environmentObject(model)
+                    } else {
+                        Text("此请求需要本机系统认证，当前暂不可批准。").font(.system(size: 12)).foregroundStyle(.secondary)
+                    }
                     SectionCard(title: "来源与签名核验", icon: "signature") {
-                        Text("本窗口未验证信封签名。下方公钥来自当前本机 Authority；请与独立固定的公钥比较，并使用 rekey-approval-sign 验证信封。审批私钥始终留在独立签名工具中。").font(.system(size: 12)).foregroundStyle(.secondary)
+                        if case .ed25519 = challenge.approver {
+                            Text("本窗口未验证信封签名。下方公钥来自当前本机 Authority；请与独立固定的公钥比较，并使用 rekey-approval-sign 验证信封。审批私钥始终留在独立签名工具中。").font(.system(size: 12)).foregroundStyle(.secondary)
+                        } else {
+                            Text("本窗口未验证信封签名，下方公钥与信封仅供查看。").font(.system(size: 12)).foregroundStyle(.secondary)
+                        }
                         row("来源公钥（\(details.origin.algorithm)）", details.origin.public_key)
                         DisclosureGroup("查看原始签名信封") {
                             Text(String(decoding: details.data, as: UTF8.self)).font(.system(size: 11, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)

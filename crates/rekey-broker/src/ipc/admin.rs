@@ -863,7 +863,7 @@ async fn dispatch_operation(
                 .pending_approval_challenges(crate::now_ts()?)
                 .map_err(|error| BrokerError::Denied(error.code()))?;
             let response = ipc::ApprovalPendingResponse {
-                record_type: "rekey.approval.pending.v1".to_owned(),
+                record_type: "rekey.approval.pending.v2".to_owned(),
                 challenges: challenges
                     .iter()
                     .map(ipc::ApprovalPendingItem::from_challenge)

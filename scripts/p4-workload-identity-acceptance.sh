@@ -108,7 +108,7 @@ for _, profile in subjects:
         "parameters": {"kind": "any_validated"},
     })
 snapshot = {
-    "format_version": 3,
+    "format_version": 4,
     "version": int(policy_version),
     "expires_at_ms": int(time.time() * 1000) + 600000,
     "approvers": [],

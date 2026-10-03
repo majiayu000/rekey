@@ -240,9 +240,9 @@ fn run_attack(attack: Attack) -> std::process::Output {
                 request.request_id,
                 resp_msg::OK,
                 serde_json::json!({
-                    "record_type": "rekey.approval.challenge.envelope.v1",
+                    "record_type": "rekey.approval.challenge.envelope.v2",
                     "challenge": {
-                    "record_type": "rekey.approval.challenge.v1",
+                    "record_type": "rekey.approval.challenge.v2",
                     "approval_request_id": "00000000-0000-4000-8000-000000000001",
                     "tenant_id": "00000000-0000-4000-8000-000000000002",
                     "principal_id": "00000000-0000-4000-8000-000000000003",
@@ -256,11 +256,10 @@ fn run_attack(attack: Attack) -> std::process::Output {
                     "policy_sha256": "11".repeat(32),
                     "policy_rule_id": "00000000-0000-4000-8000-000000000006",
                     "mode": "one-time",
-                    "quorum": 1,
-                    "approver_ids": [
-                        "00000000-0000-4000-8000-000000000008",
-                        "00000000-0000-4000-8000-000000000007"
-                    ],
+                    "approver": {"kind": "ed25519", "threshold": 1, "keys": [
+                        "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+                        "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c"
+                    ]},
                     "max_uses": 1,
                     "created_at_ms": 1,
                     "max_expires_at_ms": 2,
@@ -276,7 +275,7 @@ fn run_attack(attack: Attack) -> std::process::Output {
                 Channel::Admin,
                 request.request_id,
                 resp_msg::OK,
-                br#"{"record_type":"rekey.approval.pending.v1","challenges":[],"secret_hint":"forged"}"#.to_vec(),
+                br#"{"record_type":"rekey.approval.pending.v2","challenges":[],"secret_hint":"forged"}"#.to_vec(),
                 0,
                 Vec::new(),
             ),

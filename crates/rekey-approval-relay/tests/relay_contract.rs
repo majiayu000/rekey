@@ -1,6 +1,7 @@
 use aws_lc_rs::signature::{Ed25519KeyPair, KeyPair};
 use data_encoding::{BASE64URL_NOPAD, HEXLOWER};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
     fs,
     net::TcpListener,
@@ -28,19 +29,31 @@ fn write(path: &Path, bytes: impl AsRef<[u8]>) {
 fn key() -> Ed25519KeyPair {
     Ed25519KeyPair::from_seed_unchecked(&[9; 32]).unwrap()
 }
+fn approver_public_key(id: &str) -> String {
+    let seed: [u8; 32] = Sha256::digest(id.as_bytes()).into();
+    HEXLOWER.encode(
+        Ed25519KeyPair::from_seed_unchecked(&seed)
+            .unwrap()
+            .public_key()
+            .as_ref(),
+    )
+}
+fn public_key_hash(key: &str) -> String {
+    HEXLOWER.encode(&Sha256::digest(HEXLOWER.decode(key.as_bytes()).unwrap()))
+}
 fn challenge(id: &str, expiry: i64) -> Vec<u8> {
     challenge_for(id, expiry, APPROVER)
 }
 fn challenge_for(id: &str, expiry: i64, approver: &str) -> Vec<u8> {
     let c: rekey_domain::ipc::ApprovalChallenge=serde_json::from_value(json!({
-        "record_type":"rekey.approval.challenge.v1","approval_request_id":id,"tenant_id":TENANT,
+        "record_type":"rekey.approval.challenge.v2","approval_request_id":id,"tenant_id":TENANT,
         "principal_id":OTHER,"session_id":OTHER,"action_id":OTHER,"action_version":1,
         "resource":{"type":"test.resource","id":"one"},"schema_id":"test/v1","parameter_sha256":"01".repeat(32),
-        "policy_version":1,"policy_sha256":"02".repeat(32),"policy_rule_id":OTHER,"mode":"one-time","quorum":1,
-        "approver_ids":[approver],"max_uses":1,"created_at_ms":now()-1000,"max_expires_at_ms":expiry})).unwrap();
+        "policy_version":1,"policy_sha256":"02".repeat(32),"policy_rule_id":OTHER,"mode":"one-time",
+        "approver":{"kind":"ed25519","keys":[approver_public_key(approver)],"threshold":1},"max_uses":1,"created_at_ms":now()-1000,"max_expires_at_ms":expiry})).unwrap();
     let message = rekey_policy::approval_challenge_sign_payload(&c).unwrap();
     serde_json::to_vec(
-        &json!({"record_type":"rekey.approval.challenge.envelope.v1","challenge":c,
+        &json!({"record_type":"rekey.approval.challenge.envelope.v2","challenge":c,
         "signature":BASE64URL_NOPAD.encode(key().sign(&message).as_ref())}),
     )
     .unwrap()
@@ -115,7 +128,7 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Self {
-        Self::with_approvers(vec![json!({"subject":"reviewer","approverId":APPROVER})]).await
+        Self::with_approvers(vec![json!({"subject":"reviewer","approverId":APPROVER,"publicKey":approver_public_key(APPROVER)})]).await
     }
     async fn with_approvers(approvers: Vec<Value>) -> Self {
         Self::with_configuration(approvers, |_, _| {}).await
@@ -174,7 +187,7 @@ impl Fixture {
         fs::create_dir(&state).unwrap();
         fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
         let base = format!("https://localhost:{port}/v1/requests/{REQUEST}");
-        let mut config = json!({"formatVersion":2,"instanceId":OTHER,"endpoint":format!("https://localhost:{port}/v1"),
+        let mut config = json!({"formatVersion":3,"instanceId":OTHER,"endpoint":format!("https://localhost:{port}/v1"),
             "listenAddress":format!("127.0.0.1:{port}"),"stateDir":state,"tlsCertificateFile":root.path().join("tls.pem"),
             "tlsKeyFile":root.path().join("key.pem"),"idpIssuer":issuer,"introspectionUrl":format!("{issuer}/introspect"),
             "idpCaCertificateFile":root.path().join("tls.pem"),"introspectionClientId":"client","introspectionClientSecretFile":root.path().join("secret"),
@@ -187,11 +200,12 @@ impl Fixture {
         for (i, a) in config["approvers"].as_array().unwrap().iter().enumerate() {
             if a["subject"] == "operator" {
                 links[0]["approverId"] = a["approverId"].clone();
-                links[0]["publicKeySha256"] = json!("02".repeat(32));
+                links[0]["publicKeySha256"] =
+                    json!(public_key_hash(a["publicKey"].as_str().unwrap()));
             } else {
                 links.push(json!({"sourceUserId":format!("member-{}",i+1),"externalId":format!("external-{}",i+1),"issuer":issuer,
                     "subject":a["subject"],"principalId":format!("50000000-0000-4000-8000-{:012x}",i+1),"approverId":a["approverId"],
-                    "publicKeySha256":"02".repeat(32),"adminAllowed":true,"confirmedBy":"fixture-registrar","confirmedAtMs":1}));
+                    "publicKeySha256":public_key_hash(a["publicKey"].as_str().unwrap()),"adminAllowed":true,"confirmedBy":"fixture-registrar","confirmedAtMs":1}));
             }
         }
         config["directory"] = json!({"baseUrl":format!("{issuer}/scim/v2"),"caCertificateFile":root.path().join("tls.pem"),
@@ -426,6 +440,49 @@ async fn fresh_claims_revoke_uncertainty_no_redirect_no_cache() {
     assert_eq!(hits, 16);
     f.no_canary();
 }
+#[tokio::test]
+async fn signed_approver_kind_threshold_and_target_key_are_enforced() {
+    let f = Fixture::new().await;
+    let bytes = challenge(REQUEST, now() + 60000);
+    let envelope: rekey_domain::ipc::SignedApprovalChallenge =
+        serde_json::from_slice(&bytes).unwrap();
+    use rekey_domain::authorization::ApproverSpec;
+    for approver in [
+        ApproverSpec::LocalPresence {},
+        ApproverSpec::Ed25519 {
+            keys: vec![approver_public_key(OTHER)],
+            threshold: 1,
+        },
+        ApproverSpec::Ed25519 {
+            keys: vec![approver_public_key(APPROVER), approver_public_key(OTHER)],
+            threshold: 2,
+        },
+    ] {
+        let mut challenge = envelope.challenge.clone();
+        challenge.approver = approver;
+        // Sign even unsupported kinds, so rejection is not merely a bad-signature test.
+        if let ApproverSpec::Ed25519 { keys, .. } = &mut challenge.approver {
+            keys.sort();
+        }
+        let payload = rekey_policy::approval_challenge_sign_payload(&challenge).unwrap();
+        let bytes = serde_json::to_vec(&json!({
+            "record_type": "rekey.approval.challenge.envelope.v2", "challenge": challenge,
+            "signature": BASE64URL_NOPAD.encode(key().sign(&payload).as_ref()),
+        }))
+        .unwrap();
+        assert_eq!(f.put("challenge", &bytes, UP).await.status(), 400);
+    }
+    assert_eq!(
+        f.db()
+            .query_row("SELECT count(*) FROM requests", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(f.put("challenge", &bytes, UP).await.status(), 201);
+    f.no_canary();
+}
+
 #[tokio::test]
 async fn origin_route_expiry_limits_and_sql_audit_fail_closed() {
     let mut f = Fixture::new().await;
@@ -875,8 +932,8 @@ async fn private_symlink_hardlink_fifo_and_short_header_timeout_are_rejected() {
 #[tokio::test]
 async fn inbox_stable_pagination_acl_cursor_and_public_metadata() {
     let f = Fixture::with_approvers(vec![
-        json!({"subject":"reviewer","approverId":APPROVER}),
-        json!({"subject":"unlisted-same-email","approverId":OTHER}),
+        json!({"subject":"reviewer","approverId":APPROVER,"publicKey":approver_public_key(APPROVER)}),
+        json!({"subject":"unlisted-same-email","approverId":OTHER,"publicKey":approver_public_key(OTHER)}),
     ])
     .await;
     let mut own = Vec::new();
@@ -1127,7 +1184,7 @@ async fn inbox_transport_states_expiry_retry_late_grant_and_restart() {
 #[tokio::test]
 async fn inbox_dual_role_dedup_fresh_revocation_and_acl_removal() {
     let mut f =
-        Fixture::with_approvers(vec![json!({"subject":"operator","approverId":APPROVER})]).await;
+        Fixture::with_approvers(vec![json!({"subject":"operator","approverId":APPROVER,"publicKey":approver_public_key(APPROVER)})]).await;
     assert_eq!(
         f.put("challenge", &challenge(REQUEST, now() + 60000), UP)
             .await
@@ -1397,7 +1454,7 @@ async fn directory_timeout_token_expiry_and_authenticated_absence_are_distinct()
 #[tokio::test]
 async fn directory_uses_only_explicit_private_ca_and_never_ambient_trust() {
     let f = Fixture::with_configuration(
-        vec![json!({"subject":"reviewer","approverId":APPROVER})],
+        vec![json!({"subject":"reviewer","approverId":APPROVER,"publicKey":approver_public_key(APPROVER)})],
         |config, root| {
             let wrong = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
             write(&root.join("wrong-directory-ca.pem"), wrong.cert.pem());
@@ -1422,18 +1479,18 @@ async fn directory_uses_only_explicit_private_ca_and_never_ambient_trust() {
 fn offline_directory_registration_reads_only_protected_profile_and_has_public_closed_shape() {
     let root = tempfile::tempdir().unwrap();
     let missing = root.path().join("must-not-be-read");
-    let mut config = json!({"formatVersion":2,"instanceId":OTHER,"endpoint":"https://localhost:443/v1",
+    let mut config = json!({"formatVersion":3,"instanceId":OTHER,"endpoint":"https://localhost:443/v1",
         "listenAddress":"127.0.0.1:443","stateDir":missing,"tlsCertificateFile":missing,
         "tlsKeyFile":missing,"idpIssuer":"https://issuer.test","introspectionUrl":"https://issuer.test/introspect",
         "idpCaCertificateFile":missing,"introspectionClientId":"client","introspectionClientSecretFile":missing,
         "personnelClientId":"personnel","audience":"relay","tenantId":TENANT,"originPublicKey":HEXLOWER.encode(key().public_key().as_ref()),
-        "uploaderSubject":"operator","approvers":[{"subject":"reviewer","approverId":APPROVER}],
+        "uploaderSubject":"operator","approvers":[{"subject":"reviewer","approverId":APPROVER,"publicKey":approver_public_key(APPROVER)}],
         "directory":{"baseUrl":"https://directory.test/scim/v2","caCertificateFile":missing,"accessTokenFile":missing,
         "mappingVersion":1,"nodes":[{"nodeId":TENANT,"vaultId":APPROVER},{"nodeId":REQUEST,"vaultId":OTHER}],
         "links":[{"sourceUserId":"operator","externalId":"operator","issuer":"https://issuer.test","subject":"operator",
         "principalId":TENANT,"adminAllowed":true,"confirmedBy":"registrar","confirmedAtMs":1},
         {"sourceUserId":"reviewer","externalId":"reviewer","issuer":"https://issuer.test","subject":"reviewer",
-        "principalId":OTHER,"approverId":APPROVER,"publicKeySha256":"02".repeat(32),"adminAllowed":false,"confirmedBy":"registrar","confirmedAtMs":1}]}});
+        "principalId":OTHER,"approverId":APPROVER,"publicKeySha256":public_key_hash(&approver_public_key(APPROVER)),"adminAllowed":false,"confirmedBy":"registrar","confirmedAtMs":1}]}});
     let path = root.path().join("config.json");
     write(&path, config.to_string());
     let run = |path: &Path| {
@@ -1489,7 +1546,7 @@ fn offline_directory_registration_reads_only_protected_profile_and_has_public_cl
 #[tokio::test]
 async fn admin_identity_fresh_self_only_fixed_route_and_transport_acl() {
     let f = Fixture::with_configuration(
-        vec![json!({"subject":"reviewer","approverId":APPROVER})],
+        vec![json!({"subject":"reviewer","approverId":APPROVER,"publicKey":approver_public_key(APPROVER)})],
         |config, _| {
             config["directory"]["links"][1]["adminAllowed"] = json!(false);
             let mut admin = config["directory"]["links"][0].clone();

@@ -145,7 +145,7 @@ def run(args, report, label):
     action_ref = action['id'] + '@' + str(action['version'])
     principal = str(uuid.uuid4())
     resource = dict(type='dr-reference', id=action['id'])
-    policy = dict(format_version=3, version=1, expires_at_ms=int(time.time() * 1000) + 900000,
+    policy = dict(format_version=4, version=1, expires_at_ms=int(time.time() * 1000) + 900000,
                   approvers=[], workload_identities=[], bindings=[dict(action_id=action['id'], version=action['version'],
                   resource=resource, parameter_schema_id='dr-reference/v1', parameter_schema={'type': 'object'})],
                   rules=[dict(id=str(uuid.uuid4()), effect='permit', principal_id=principal, action_id=action['id'],

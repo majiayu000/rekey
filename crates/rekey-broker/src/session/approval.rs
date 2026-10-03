@@ -2,9 +2,11 @@ use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 use rekey_domain::Timestamp;
-use rekey_domain::authorization::{ApprovalRequirement, Principal, ResourceRef, SchemaId};
+use rekey_domain::authorization::{
+    ApprovalRequirement, ApproverSpec, Principal, ResourceRef, SchemaId,
+};
 use rekey_domain::capability::ActionVersionRef;
-use rekey_domain::ids::{ApprovalId, ApprovalRequestId, PolicyRuleId};
+use rekey_domain::ids::{ApprovalId, ApprovalRequestId, ApproverId, PolicyRuleId};
 use rekey_domain::ipc::{APPROVAL_PENDING_MAX, ApprovalChallenge};
 use rekey_policy::VerifiedApprovalGrant;
 use rekey_vault::model::ApprovalEvidence;
@@ -21,6 +23,9 @@ pub(crate) struct ApprovalContext {
     pub policy_version: u64,
     pub policy_digest: [u8; 32],
     pub policy_rule_id: PolicyRuleId,
+    pub approver: ApproverSpec,
+    // Derived once from the same authenticated snapshot; never a wire source.
+    pub allowed_approver_ids: Vec<ApproverId>,
     pub requirement: ApprovalRequirement,
 }
 
@@ -196,6 +201,10 @@ impl SessionRegistry {
         grants: &[VerifiedApprovalGrant],
         now: Timestamp,
     ) -> Result<ApprovalReservation, ApprovalRejection> {
+        let threshold = match &context.approver {
+            ApproverSpec::Ed25519 { threshold, .. } => *threshold,
+            _ => return Err(reject("approval-approver-unsupported")),
+        };
         if grants.is_empty() || grants.len() > 2 {
             return Err(reject("approval-insufficient-quorum"));
         }
@@ -278,7 +287,7 @@ impl SessionRegistry {
                 }
             }
         }
-        if approver_ids.len() < usize::from(context.requirement.quorum) {
+        if approver_ids.len() < usize::from(threshold) {
             return Err(reject("approval-insufficient-quorum"));
         }
 
@@ -331,8 +340,7 @@ fn validate_challenge(
         || challenge.policy_sha256 != data_encoding::HEXLOWER.encode(&context.policy_digest)
         || challenge.policy_rule_id != context.policy_rule_id
         || challenge.mode != context.requirement.mode
-        || challenge.quorum != context.requirement.quorum
-        || challenge.approver_ids != context.requirement.approver_ids
+        || challenge.approver != context.approver
         || challenge.max_uses != context.requirement.max_uses
     {
         return Err(reject("approval-tuple-mismatch"));
@@ -372,7 +380,7 @@ fn validate_grant(
     {
         return Err(reject("approval-tuple-mismatch"));
     }
-    if !challenge.approver_ids.contains(&grant.approver_id) {
+    if !context.allowed_approver_ids.contains(&grant.approver_id) {
         return Err(reject("approval-approver-not-allowed"));
     }
     if grant.max_uses > challenge.max_uses {
@@ -420,7 +428,7 @@ mod tests {
     use super::*;
     use rekey_domain::authorization::{ApprovalMode, Principal, ResourceRef, SchemaId};
     use rekey_domain::capability::{ActionVersionRef, SessionGrant};
-    use rekey_domain::ids::{ActionId, ApproverId, PolicyRuleId, PrincipalId, SessionId, TenantId};
+    use rekey_domain::ids::{ActionId, PolicyRuleId, PrincipalId, SessionId, TenantId};
 
     fn now(ms: i64) -> Timestamp {
         Timestamp::from_unix_ms(ms)
@@ -461,7 +469,7 @@ mod tests {
         max_expires_at_ms: i64,
     ) -> ApprovalChallenge {
         ApprovalChallenge {
-            record_type: "rekey.approval.challenge.v1".to_owned(),
+            record_type: "rekey.approval.challenge.v2".to_owned(),
             approval_request_id: ApprovalRequestId::new_random(),
             tenant_id: grant.principal.tenant_id,
             principal_id: grant.principal.principal_id,
@@ -475,8 +483,10 @@ mod tests {
             policy_sha256: "11".repeat(32),
             policy_rule_id: PolicyRuleId::new_random(),
             mode: ApprovalMode::OneTime,
-            quorum: 1,
-            approver_ids: vec![ApproverId::new_random()],
+            approver: ApproverSpec::Ed25519 {
+                keys: vec!["11".repeat(32)],
+                threshold: 1,
+            },
             max_uses: 1,
             created_at_ms,
             max_expires_at_ms,
@@ -494,6 +504,58 @@ mod tests {
             Instant::now() + Duration::from_secs(60),
             now,
         )
+    }
+
+    #[test]
+    fn changed_approver_kind_keys_or_threshold_cannot_reuse_challenge() {
+        let (grant, action) = grant(1);
+        let challenge = challenge(&grant, action, 0, 10_000);
+        let context = ApprovalContext {
+            principal: grant.principal,
+            action,
+            resource: challenge.resource.clone(),
+            schema_id: challenge.schema_id.clone(),
+            parameter_hash: [0; 32],
+            policy_version: 1,
+            policy_digest: [0x11; 32],
+            policy_rule_id: challenge.policy_rule_id,
+            approver: challenge.approver.clone(),
+            allowed_approver_ids: vec![],
+            requirement: ApprovalRequirement {
+                mode: ApprovalMode::OneTime,
+                max_uses: 1,
+                max_window_ms: None,
+            },
+        };
+        let instant = Instant::now();
+        let mut stored = StoredChallenge {
+            challenge,
+            monotonic_anchor: instant,
+            monotonic_deadline: instant + Duration::from_secs(10),
+            expired: false,
+            consumed: false,
+        };
+        validate_challenge(&mut stored, &context, now(1), instant).unwrap();
+        for approver in [
+            ApproverSpec::LocalPresence {},
+            ApproverSpec::Ed25519 {
+                keys: vec!["22".repeat(32)],
+                threshold: 1,
+            },
+            ApproverSpec::Ed25519 {
+                keys: vec!["11".repeat(32)],
+                threshold: 2,
+            },
+        ] {
+            let changed = ApprovalContext {
+                approver,
+                ..context.clone()
+            };
+            assert_eq!(
+                validate_challenge(&mut stored, &changed, now(1), instant),
+                Err(reject("approval-tuple-mismatch"))
+            );
+        }
     }
 
     #[test]

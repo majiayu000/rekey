@@ -362,6 +362,25 @@ v3 只把"由谁批准"抽象出来。策略规则增加 `approver` 字段：
 | `ed25519` | 现有 | 外部审批人签发 grant，沿用现有的单人/双人审批和时间窗 |
 | `remote` | v4 预留 | 远程审批人，经过 relay、Slack 或身份提供方。v3 只保留枚举值，对应能力在 `lab` 中 |
 
+#### M2 审批格式接线合同（GA 前固定）
+
+- `PolicyRule.approver` 是唯一审批人来源；同规则的 `approval` 只保留 `mode`、`max_uses` 和可选 `max_window_ms`。`require-approval` 必须同时提供两者，permit/forbid 均不得携带。旧 `approver_ids`/`quorum` 不再作为规则字段。
+- `local-presence` 只接受 `kind`，只支持 one-time、max_uses=1、无时间窗。`ed25519.keys` 为 1–32 个不重复的规范小写十六进制 Ed25519 公钥，必须各自唯一对应已验签 snapshot 的审批人注册表；threshold 保留 1–2 且不大于 key 数。内部 ID 从该注册表派生，不增加第二套可编辑映射。remote 默认不能解码；lab 中可解码但无实现时验证与执行均拒绝。
+- challenge/pending 使用同一 `approver`，完整字段参与来源签名和上下文比较；Ed25519 keys 排序输出。snapshot format 升为 4，challenge/envelope/pending record 升为 v2，challenge 签名域为 `RKCHALLENGE\0\x02`。旧格式全部拒绝，不迁移。外层 policy envelope 和 `RKPOLICY\0\x01`、外部 grant format1/`RKAPPROVAL\0\x01` 保持，因为其结构和已签上下文未改变；外部 grant 只能走 Ed25519 分支。
+- 该持久策略变化同时将 vault format23 升为 24，旧库和备份在 bootstrap 拒绝，不等到 unlock 才报告策略完整性错误。lab relay 配置升为 3，审批目标增加 publicKey，以公钥匹配新 challenge；不因此实现 remote approver。
+- 个人模板的高风险能力只有在本地批准、一次消费、重试和取消的完整链路验收后才开放；中间批次明确拒绝，不能降为 permit。外部签名 CLI 保留其现有单人 one-time、最长 60 秒边界。
+
+#### M2 本机审批运行时合同
+
+- 本机批准与拒绝分别是 A2 管理操作，必须使用 Presence proof。IPC admin55 返回完整 daemon review（正文走 body），56/57 批准/拒绝时绑定 challenge ID 和 review SHA256；Agent6/7 仅等待/取消本人会话的 challenge，不接受证明或签发参数。
+- review 含完整 challenge、可信 Action 名称、origin/method 和同一次规范化产生的 target/params/query/body/content-type/headers，哈希覆盖全部内容与独立 `RKREVIEW\0\x01` 域。禁止凭据注入值、capability、K 或调用者自拟标题；超过既有 body 上限时在发布 pending 前拒绝，不截断。
+- 生命周期为 Pending、Approved、Consumed、Cancelled、Expired，授权仅在内存。批准、消费、取消、锁定和策略变更由现有生命周期协调器排序；消费绑定完整上下文和原始 session，一次消费后即使审计或上游失败也不恢复。
+- 首次进入本机等待、复用相同 pending 和本机 prepare 成功均归还本次预留调用次数。等待/查询不占执行名额、不扣次数。最后一次调用仍在处理中时，额外并发请求暂时返回 AUTHORITY_BUSY；实际耗尽后保留原耗尽错误。外部 Ed25519 的实际扣次与消费规则保持。
+- Authority 在同一命令中验证 Presence 并持久提交决定审计，提交前检查双时钟期限。Broker 在成功后再核对状态、策略和期限才发布 grant；允许已经审计的决定因到期而不产生 grant，禁止审计失败后发布。
+- 同一 challenge 重复批准仍需有效 Presence，但不再生成 grant、延长期限或重复决定审计。已入队且结果不确定的批准令 challenge 终态 Cancelled，不自动重试；已发布 Approved 后仅响应丢失则保留 Approved，查询可确认结果。单纯证明错误保留 Pending。
+- `APPROVAL_REQUIRED`，ERROR envelope 携带结构化 challenge_id/expires_at_ms。流式只在尚未 Admitted 前返回此 ERROR；开始流后保留原 terminal 协议。Agent 带 local challenge ID 重试，不可同时提交外部 grants，其他审批类型不能忽略该 ID。
+- await 最多120秒并受会话/challenge原双时钟截止限制，未获决定时返回 Pending，连接断开只结束等待。App 只审阅 daemon 正文，默认拒绝焦点，明确点击后才读取受保护 K；通知和轮询不得触发系统认证。
+
 **Agent 侧流程**
 - **CLI / MCP**
   1. 调用返回 `APPROVAL_REQUIRED{challenge_id, expires_at}`。

@@ -343,6 +343,26 @@ extension CLI {
         return try run(args, input: proof + "\n" + bundle + "\n", redacting: [proof, signature, bundle])
     }
 }
+enum Approver: Decodable {
+    case localPresence
+    case ed25519(keys: [String], threshold: UInt8)
+    private enum CodingKeys: String, CodingKey { case kind, keys, threshold }
+    init(from decoder: Decoder) throws {
+        let fields = try decoder.container(keyedBy: CodingKeys.self)
+        switch try fields.decode(String.self, forKey: .kind) {
+        case "local-presence": self = .localPresence
+        case "ed25519": self = .ed25519(keys: try fields.decode([String].self, forKey: .keys),
+                                        threshold: try fields.decode(UInt8.self, forKey: .threshold))
+        default: throw DecodingError.dataCorruptedError(forKey: .kind, in: fields, debugDescription: "Unsupported approver")
+        }
+    }
+    var summary: String {
+        switch self {
+        case .localPresence: return "本机系统认证"
+        case .ed25519(_, let threshold): return "外部签名 · \(threshold) 人"
+        }
+    }
+}
 struct PendingApproval: Decodable, Identifiable {
     let approval_request_id: String
     let action_id: String
@@ -350,7 +370,7 @@ struct PendingApproval: Decodable, Identifiable {
     let session_id: String
     let max_expires_at_ms: Int64
     let parameter_sha256: String
-    let quorum: Int
+    let approver: Approver
     var id: String { approval_request_id }
 }
 struct PendingList: Decodable { let challenges: [PendingApproval] }
@@ -370,8 +390,7 @@ struct ApprovalChallenge: Decodable {
     let policy_sha256: String
     let policy_rule_id: String
     let mode: String
-    let quorum: UInt8
-    let approver_ids: [String]
+    let approver: Approver
     let max_uses: UInt32
     let created_at_ms: Int64
     let max_expires_at_ms: Int64

@@ -148,7 +148,7 @@ fn signature_authenticates_template_schemas_and_signer_with_distinct_domain() {
     }
     for prefix in [
         b"RKPOLICY\0\x01".as_slice(),
-        b"RKCHALLENGE\0\x01",
+        b"RKCHALLENGE\0\x02",
         b"RKGRANT\0\x01",
         b"",
     ] {

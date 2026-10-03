@@ -155,7 +155,7 @@ fn policy_bundle(
         "format_version":1,
         "signer_id":signer_id,
         "snapshot":{
-            "format_version":3,
+            "format_version":4,
             "version":version,
             "expires_at_ms":4_102_444_800_000_i64,
             "approvers":[],

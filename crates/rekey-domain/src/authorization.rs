@@ -2,7 +2,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::capability::ActionVersionRef;
 use crate::error::DomainError;
-use crate::ids::{ApproverId, PolicyRuleId, PrincipalId, SessionId, TenantId};
+use crate::ids::{PolicyRuleId, PrincipalId, SessionId, TenantId};
 
 fn invalid(message: &str) -> DomainError {
     DomainError::InvalidAuthorization(message.to_owned())
@@ -155,10 +155,21 @@ pub enum ApprovalMode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum ApproverSpec {
+    LocalPresence {},
+    Ed25519 {
+        keys: Vec<String>,
+        threshold: u8,
+    },
+    #[cfg(feature = "lab")]
+    Remote {},
+}
+
+/// Usage limits only. The rule's separate `approver` is the sole authority source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApprovalRequirement {
-    pub approver_ids: Vec<ApproverId>,
-    pub quorum: u8,
     pub mode: ApprovalMode,
     pub max_uses: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -190,6 +201,7 @@ pub enum Decision {
         policy_version: PolicyVersion,
         snapshot_digest: [u8; 32],
         determining_rule: PolicyRuleId,
+        approver: ApproverSpec,
         requirement: ApprovalRequirement,
     },
     Deny {
@@ -203,6 +215,33 @@ pub enum Decision {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn approver_wire_has_one_closed_authority_source() {
+        let local: ApproverSpec = serde_json::from_str(r#"{"kind":"local-presence"}"#).unwrap();
+        assert_eq!(local, ApproverSpec::LocalPresence {});
+        for invalid in [
+            r#"{"kind":"local-presence","threshold":1}"#,
+            r#"{"kind":"local-presence","keys":[]}"#,
+            r#"{"kind":"ed25519","keys":[],"threshold":1,"quorum":1}"#,
+            r#"{"kind":"ed25519","keys":[],"threshold":1,"approver_ids":[]}"#,
+        ] {
+            assert!(serde_json::from_str::<ApproverSpec>(invalid).is_err());
+        }
+        assert!(
+            serde_json::from_str::<ApprovalRequirement>(
+                r#"{"mode":"one-time","max_uses":1,"approver_ids":[],"quorum":1}"#
+            )
+            .is_err()
+        );
+        #[cfg(not(feature = "lab"))]
+        assert!(serde_json::from_str::<ApproverSpec>(r#"{"kind":"remote"}"#).is_err());
+        #[cfg(feature = "lab")]
+        assert_eq!(
+            serde_json::from_str::<ApproverSpec>(r#"{"kind":"remote"}"#).unwrap(),
+            ApproverSpec::Remote {}
+        );
+    }
 
     #[test]
     fn policy_mode_and_trust_algorithm_have_closed_wire_names() {

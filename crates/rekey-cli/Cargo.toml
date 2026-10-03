@@ -33,7 +33,7 @@ serde_jcs = "0.2"
 
 [features]
 default = []
-lab = []
+lab = ["rekey-domain/lab"]
 
 [[test]]
 name = "workload_blackbox"

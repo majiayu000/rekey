@@ -4,9 +4,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-REKEY="$ROOT/target/release/rekey"
-REKEYD="$ROOT/target/release/rekeyd"
-FIXTURE="$ROOT/target/release/examples/p1_policy_fixture"
+TARGET_DIR="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+REKEY="$TARGET_DIR/release/rekey"
+REKEYD="$TARGET_DIR/release/rekeyd"
+FIXTURE="$TARGET_DIR/release/examples/p1_policy_fixture"
 SIGNER="$ROOT/scripts/sign-test-policy.py"
 PASSWORD="p3 acceptance horse battery staple"
 SECRET="P3-APPROVAL-CREDENTIAL-CANARY"
@@ -101,7 +102,7 @@ path, action, action_version, principal, policy_version, quorum, first, second =
 approvers = [json.loads(pathlib.Path(first).read_text()), json.loads(pathlib.Path(second).read_text())]
 resource = {"type": "fixed-http-action", "id": action}
 snapshot = {
-    "format_version": 3,
+    "format_version": 4,
     "version": int(policy_version),
     "expires_at_ms": int(time.time() * 1000) + 600000,
     "approvers": approvers,
@@ -126,9 +127,8 @@ snapshot = {
         "version": int(action_version),
         "resource": resource,
         "parameters": {"kind": "any_validated"},
+        "approver": {"kind": "ed25519", "keys": [entry["public_key"] for entry in approvers], "threshold": int(quorum)},
         "approval": {
-            "approver_ids": [entry["approver_id"] for entry in approvers],
-            "quorum": int(quorum),
             "mode": "one-time",
             "max_uses": 1,
         },

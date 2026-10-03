@@ -108,7 +108,7 @@ class Scenario:
                             "--max-uses", "10", "--password-stdin", proof=True)
         self.capability = session["capability_token"]
         resource = {"type": "journal-action", "id": self.action}
-        private_json(self.root / "snapshot.json", {"format_version": 3, "version": 1,
+        private_json(self.root / "snapshot.json", {"format_version": 4, "version": 1,
             "expires_at_ms": int(time.time() * 1000) + 600000, "approvers": [], "workload_identities": [],
             "bindings": [{"action_id": self.action, "version": 1, "resource": resource,
                           "parameter_schema_id": "journal/v1", "parameter_schema": {}}],

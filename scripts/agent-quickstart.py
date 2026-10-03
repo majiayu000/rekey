@@ -46,7 +46,7 @@ def cli_json(command):
 def policy_draft(action, session, schema):
     resource = {"type": "fixed-http-action", "id": action["id"]}
     return {
-        "format_version": 3, "version": 1,
+        "format_version": 4, "version": 1,
         "expires_at_ms": session["expires_at_ms"],
         "approvers": [], "workload_identities": [],
         "bindings": [{

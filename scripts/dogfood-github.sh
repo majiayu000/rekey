@@ -123,7 +123,7 @@ binding = {
                          "properties": {"title": {"type": "string"}, "body": {"type": "string"}}},
 }
 pathlib.Path(path).write_text(json.dumps({
-    "format_version": 3, "version": 1,
+    "format_version": 4, "version": 1,
     "expires_at_ms": int(time.time() * 1000) + 600000,
     "approvers": [], "workload_identities": [], "bindings": [binding],
     "rules": [{"id": str(uuid.uuid4()), "effect": "permit", "principal_id": principal,
