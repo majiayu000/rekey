@@ -4,7 +4,8 @@
 `Release` 均为 **Pending**。旧 v2 发布结果仅适用于其历史二进制，不可升级为 v3 证明。
 [v3 SPEC](../superpowers/specs/2026-10-02-rekey-v3-personal-first.md)定义要求，
 [唯一实施记录](../superpowers/plans/2026-10-03-v3-implementation.md)保留各冻结批次的实际命令、失败与复验。
-统一候选默认全仓已重跑通过 1,013/0 failed/6 ignored；Lab 最终全仓仍在运行，两配置严格 Clippy 通过。
+fake-IP 修复候选默认全仓通过 1,018/0 failed/6 ignored；两配置严格 Clippy 和 Lab 上游定向测试通过。
+Lab 全仓 1,482/0 failed/6 ignored 为修复前 `a6467ab` 的历史结果，本批未重复整套 Lab。
 历史失败与本轮产物、设备范围见实施记录；本地结果不替代安装后的体验或 Release 验收。
 
 ## 默认本地产品
@@ -53,7 +54,7 @@ agent-run参考不能替代该保证；Codex Seatbelt仍有managed-preferences�
 GA同一主版本的次/补丁版本必须保留持久格式，破坏性变化进入下一主版本。
 [候选说明](../releases/v3.0.0-alpha.1.md)列出全部Pending发布门槛。
 历史公开行为见[v2 alpha.2](../releases/v2.0.0-alpha.2.md)及[v2 alpha.1](../releases/v2.0.0-alpha.1.md)；
-本表不修改这些历史事实，也不宣称当前候选已上传、签名安装或通过真实provider验收。
+本表不修改这些历史事实；候选尚未公开发布，签名安装与 GLM 的有界真机结果按下节记录，不扩展为完整客户端或产品验收。
 
 ## 2026-10-03 审查修复合流与设备证据
 
@@ -65,4 +66,4 @@ GA同一主版本的次/补丁版本必须保留持久格式，破坏性变化�
 
 当前账户 CLI 验收已另建独立个人库，经生产 Secure Enclave 签署和真实 daemon 完成信任根安装、GLM Profile 激活及 run 启动/退出撤销。证明材料仅在源码外私有目录，现有两份保险库保留；该签名 helper 路径不替代 App 首次接入、登录项生命周期或 T12。
 
-原 Clash 配置下普通 HTTPS→GLM 实测 200；经当前 Rekey→GLM 为 502/UPSTREAM_FAILED。原因定位到 I6 公网 DNS 筛查与 198.18.* fake-IP 的兼容性，保持用户网络配置不动；不把该失败表述为服务不可用，也不放宽公网检查。
+原 Clash 配置下普通 HTTPS→GLM 实测 200；修复前 Rekey→GLM 为 502/UPSTREAM_FAILED。原因定位到 I6 公网 DNS 筛查与 198.18.* fake-IP 的兼容性。仅系统全虚拟地址答案触发 Cloudflare DoH，查询 A/AAAA 后沿用全部公网检查、地址固定和 TLS 域名验证；不修改 Clash、不增加 provider 例外。签名修复候选实际 `rekey run` 的普通/流式 GLM 请求均返回 200、正常结束并返回用量；17 项上游回归通过。产物、检查及范围见[统一证据](../evidence/v3-release-acceptance-2026-10-04.json)的 `fake_ip_compatibility`，不代表 500 次、Claude Code/Codex 或新账户验收。

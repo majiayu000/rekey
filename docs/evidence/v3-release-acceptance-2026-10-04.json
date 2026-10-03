@@ -11,84 +11,64 @@
   "artifact_directory": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003",
   "production_source_delta_sha256": "ebc4868bd4d4827f6159ff0d37454d1f6b86b5015c1e0490f92d5e6214679012",
   "package": {
-    "package": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/macos-pkg-glm/Rekey-3.0.0-alpha.1.pkg",
-    "bytes": 20379029,
-    "sha256": "16f72049ae6eb5ca4ad939dd9bddb0408acf936e25223fd6580a6680c1c83851"
+    "package": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/macos-pkg-dns-final/Rekey-3.0.0-alpha.1.pkg",
+    "bytes": 20392536,
+    "sha256": "2f0722b757a2a2edb1da5c5011ffbdbfe40218a3bcd3f674ef1699570e873563"
   },
   "distribution": [
     {
-      "name": "check-after-ui-copy",
+      "name": "dns-staple-pkg",
       "exit_code": 0,
-      "seconds": 0.21
+      "seconds": 0.91
     },
     {
-      "name": "final-build-app",
-      "exit_code": 0,
-      "seconds": 30.34
+      "name": "dns-staple-app",
+      "exit_code": 73,
+      "seconds": 1.03
     },
     {
-      "name": "final-archive-app",
-      "exit_code": 0,
-      "seconds": 1.54
+      "name": "dns-app-gatekeeper",
+      "exit_code": 0
     },
     {
-      "name": "final-notary-app",
-      "exit_code": 0,
-      "seconds": 38.93,
-      "submission_id": "ca513952-e535-4211-9056-701925fc2bd3",
-      "status": "Accepted"
+      "name": "dns-pkg-gatekeeper",
+      "exit_code": 0
     },
     {
-      "name": "final-staple-app",
-      "exit_code": 0,
-      "seconds": 0.92
+      "name": "dns-staple-validate-pkg",
+      "exit_code": 0
     },
     {
-      "name": "final-validate-app",
-      "exit_code": 0,
-      "seconds": 0.98
+      "name": "dns-staple-app-retry",
+      "exit_code": 73
     },
     {
-      "name": "final-verify-app",
-      "exit_code": 0,
-      "seconds": 0.04
+      "name": "dns-app-copy-staple-validate",
+      "exit_code": 0
     },
     {
-      "name": "final-gatekeeper-app",
-      "exit_code": 0,
-      "seconds": 1.13
+      "name": "dns-app-copy-signature",
+      "exit_code": 0
     },
     {
-      "name": "final-build-pkg",
-      "exit_code": 0,
-      "seconds": 11.69
+      "name": "dns-app-copy-gatekeeper",
+      "exit_code": 0
     },
     {
-      "name": "final-notary-pkg",
-      "exit_code": 0,
-      "seconds": 38.06,
-      "submission_id": "232f09e7-a288-4abe-91a5-f47c4696cef5",
-      "status": "Accepted"
+      "name": "dns-build-final-pkg",
+      "exit_code": 0
     },
     {
-      "name": "final-staple-pkg",
-      "exit_code": 0,
-      "seconds": 0.89
+      "name": "dns-final-staple-pkg",
+      "exit_code": 0
     },
     {
-      "name": "final-validate-pkg",
-      "exit_code": 0,
-      "seconds": 1.1
+      "name": "dns-final-staple-validate-pkg",
+      "exit_code": 0
     },
     {
-      "name": "final-verify-pkg",
-      "exit_code": 0,
-      "seconds": 0.87
-    },
-    {
-      "name": "final-gatekeeper-pkg",
-      "exit_code": 0,
-      "seconds": 0.26
+      "name": "dns-final-pkg-gatekeeper",
+      "exit_code": 0
     }
   ],
   "signing_material": {
@@ -107,7 +87,7 @@
     "installer_identity": "3FADBE1AF4CC6E8FDBD28BE4924EB80ECDFBD013"
   },
   "default_test_counts": {
-    "passed": 1014,
+    "passed": 1018,
     "failed": 0,
     "ignored": 6
   },
@@ -312,7 +292,7 @@
     ]
   },
   "pending": [
-    "GLM real provider through Rekey, buffered/SSE/usage and 500-call acceptance; incompatibility with Clash fake-IP reproduced, configuration kept unchanged at user request",
+    "GLM 500-call acceptance under rekey run; real buffered/SSE/usage passed after the fake-IP fix with unchanged Clash configuration",
     "real Claude Code provider acceptance",
     "real Codex OpenAI-compatible provider acceptance; no key supplied for that provider",
     "installed SMAppService registration and login-item lifecycle",
@@ -386,79 +366,24 @@
   ],
   "source_checks": [
     {
-      "name": "glm-swift-contract-compile",
+      "name": "dns-test-default",
       "exit_code": 0,
-      "seconds": 85.68
+      "seconds": 943.26
     },
     {
-      "name": "glm-swift-presence",
+      "name": "dns-test-lab-upstream",
       "exit_code": 0,
-      "seconds": 7.45
+      "seconds": 8.86
     },
     {
-      "name": "glm-swift-local-approval",
+      "name": "dns-clippy-default",
       "exit_code": 0,
-      "seconds": 2.75
+      "seconds": 4.24
     },
     {
-      "name": "glm-swift-flow",
+      "name": "dns-clippy-lab",
       "exit_code": 0,
-      "seconds": 1.16
-    },
-    {
-      "name": "glm-swift-onboarding",
-      "exit_code": 0,
-      "seconds": 0.99
-    },
-    {
-      "name": "glm-swift-profile-authoring",
-      "exit_code": 0,
-      "seconds": 1.3
-    },
-    {
-      "name": "glm-swift-personal-policy",
-      "exit_code": 0,
-      "seconds": 1.19
-    },
-    {
-      "name": "glm-swift-rollback",
-      "exit_code": 0,
-      "seconds": 1.57
-    },
-    {
-      "name": "glm-swift-activity",
-      "exit_code": 0,
-      "seconds": 3.56
-    },
-    {
-      "name": "glm-swift-protection",
-      "exit_code": 0,
-      "seconds": 2.21
-    },
-    {
-      "name": "glm-swift-oidc",
-      "exit_code": 0,
-      "seconds": 2.42
-    },
-    {
-      "name": "glm-test-default",
-      "exit_code": 0,
-      "seconds": 980.4
-    },
-    {
-      "name": "glm-test-lab",
-      "exit_code": 0,
-      "seconds": 1415.74
-    },
-    {
-      "name": "glm-clippy-default",
-      "exit_code": 0,
-      "seconds": 10.7
-    },
-    {
-      "name": "glm-clippy-lab",
-      "exit_code": 0,
-      "seconds": 13.11
+      "seconds": 5.49
     }
   ],
   "glm_candidate": {
@@ -791,5 +716,382 @@
   "hardware_evidence_scope": "Original protected-anchor, rollback, LLDB and noninteractive SE probes retain their pre-GLM binary hashes. Current GLM personal-policy signing/activation and installed hashes are recorded separately; no transitive full L1 or T12 claim.",
   "credential_source_check": {
     "known_operator_password_and_user_glm_key_absent_from_prospective_diff": true
+  },
+  "pre_dns_package": {
+    "package": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/macos-pkg-glm/Rekey-3.0.0-alpha.1.pkg",
+    "bytes": 20379029,
+    "sha256": "16f72049ae6eb5ca4ad939dd9bddb0408acf936e25223fd6580a6680c1c83851"
+  },
+  "pre_dns_distribution": [
+    {
+      "name": "check-after-ui-copy",
+      "exit_code": 0,
+      "seconds": 0.21
+    },
+    {
+      "name": "final-build-app",
+      "exit_code": 0,
+      "seconds": 30.34
+    },
+    {
+      "name": "final-archive-app",
+      "exit_code": 0,
+      "seconds": 1.54
+    },
+    {
+      "name": "final-notary-app",
+      "exit_code": 0,
+      "seconds": 38.93,
+      "submission_id": "ca513952-e535-4211-9056-701925fc2bd3",
+      "status": "Accepted"
+    },
+    {
+      "name": "final-staple-app",
+      "exit_code": 0,
+      "seconds": 0.92
+    },
+    {
+      "name": "final-validate-app",
+      "exit_code": 0,
+      "seconds": 0.98
+    },
+    {
+      "name": "final-verify-app",
+      "exit_code": 0,
+      "seconds": 0.04
+    },
+    {
+      "name": "final-gatekeeper-app",
+      "exit_code": 0,
+      "seconds": 1.13
+    },
+    {
+      "name": "final-build-pkg",
+      "exit_code": 0,
+      "seconds": 11.69
+    },
+    {
+      "name": "final-notary-pkg",
+      "exit_code": 0,
+      "seconds": 38.06,
+      "submission_id": "232f09e7-a288-4abe-91a5-f47c4696cef5",
+      "status": "Accepted"
+    },
+    {
+      "name": "final-staple-pkg",
+      "exit_code": 0,
+      "seconds": 0.89
+    },
+    {
+      "name": "final-validate-pkg",
+      "exit_code": 0,
+      "seconds": 1.1
+    },
+    {
+      "name": "final-verify-pkg",
+      "exit_code": 0,
+      "seconds": 0.87
+    },
+    {
+      "name": "final-gatekeeper-pkg",
+      "exit_code": 0,
+      "seconds": 0.26
+    }
+  ],
+  "pre_dns_source_checks": [
+    {
+      "name": "glm-swift-contract-compile",
+      "exit_code": 0,
+      "seconds": 85.68
+    },
+    {
+      "name": "glm-swift-presence",
+      "exit_code": 0,
+      "seconds": 7.45
+    },
+    {
+      "name": "glm-swift-local-approval",
+      "exit_code": 0,
+      "seconds": 2.75
+    },
+    {
+      "name": "glm-swift-flow",
+      "exit_code": 0,
+      "seconds": 1.16
+    },
+    {
+      "name": "glm-swift-onboarding",
+      "exit_code": 0,
+      "seconds": 0.99
+    },
+    {
+      "name": "glm-swift-profile-authoring",
+      "exit_code": 0,
+      "seconds": 1.3
+    },
+    {
+      "name": "glm-swift-personal-policy",
+      "exit_code": 0,
+      "seconds": 1.19
+    },
+    {
+      "name": "glm-swift-rollback",
+      "exit_code": 0,
+      "seconds": 1.57
+    },
+    {
+      "name": "glm-swift-activity",
+      "exit_code": 0,
+      "seconds": 3.56
+    },
+    {
+      "name": "glm-swift-protection",
+      "exit_code": 0,
+      "seconds": 2.21
+    },
+    {
+      "name": "glm-swift-oidc",
+      "exit_code": 0,
+      "seconds": 2.42
+    },
+    {
+      "name": "glm-test-default",
+      "exit_code": 0,
+      "seconds": 980.4
+    },
+    {
+      "name": "glm-test-lab",
+      "exit_code": 0,
+      "seconds": 1415.74
+    },
+    {
+      "name": "glm-clippy-default",
+      "exit_code": 0,
+      "seconds": 10.7
+    },
+    {
+      "name": "glm-clippy-lab",
+      "exit_code": 0,
+      "seconds": 13.11
+    }
+  ],
+  "fake_ip_compatibility": {
+    "source_parent": "a6467ab",
+    "source_file": "crates/rekey-broker/src/upstream.rs",
+    "source_file_sha256": "81a20e2e181c69ac21582246e544aadb4ef79ef05b262c102ef974b00e860653",
+    "behavior": "Only all-198.18.0.0/15 system DNS answers for domain names trigger authenticated Cloudflare DoH A/AAAA; all real answers must pass the existing public-IP check; TLS origin verification, address pinning and redirect prohibition remain.",
+    "dns_endpoint": "https://cloudflare-dns.com/dns-query",
+    "dns_bootstrap_addresses": [
+      "1.1.1.1:443",
+      "1.0.0.1:443"
+    ],
+    "dns_response_limit_bytes": 65536,
+    "provider_credentials_sent_to_dns": false,
+    "clash_configuration_modified": false,
+    "provider_ip_or_domain_exceptions_added": false,
+    "targeted_upstream_tests": {
+      "passed": 17,
+      "failed": 0,
+      "ignored": 0,
+      "new_regressions": 4
+    },
+    "real_provider": {
+      "clash_configuration_changed": false,
+      "system_dns": [
+        "198.18.7.242"
+      ],
+      "daemon_sha256": "833ed68852638a677afc65a8e624b72e3d4c62e84db79a9c5ed4db22e4a22a00",
+      "daemon_pid": 8621,
+      "unlock_exit_code": 0,
+      "run_exit_code": 0,
+      "responses": [
+        {
+          "stream": false,
+          "status": 200,
+          "usage": {
+            "input_tokens": 16,
+            "output_tokens": 72,
+            "cache_read_input_tokens": 0
+          },
+          "has_content": true,
+          "stop_reason": "end_turn",
+          "seconds": 4.506
+        },
+        {
+          "stream": true,
+          "status": 200,
+          "first_byte_seconds": 2.601,
+          "event_count": 69,
+          "message_stop_seen": true,
+          "usage": {
+            "input_tokens": 16,
+            "output_tokens": 63,
+            "cache_read_input_tokens": 0
+          },
+          "stop_reason": "end_turn",
+          "seconds": 3.478
+        }
+      ],
+      "shutdown_exit_code": 0
+    },
+    "app_path": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/macos-ui-dns-stapled/Rekey.app",
+    "package": {
+      "package": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/macos-pkg-dns-final/Rekey-3.0.0-alpha.1.pkg",
+      "bytes": 20392536,
+      "sha256": "2f0722b757a2a2edb1da5c5011ffbdbfe40218a3bcd3f674ef1699570e873563"
+    },
+    "package_notary": {
+      "package": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/macos-pkg-dns-final/Rekey-3.0.0-alpha.1.pkg",
+      "transport": "Apple documented Notary REST API via existing local proxy",
+      "uploaded": true,
+      "authenticated_history": true,
+      "submission_id": "3e575d07-892d-4201-b120-1059ad2ea73a",
+      "status": "Accepted",
+      "seconds": 75.61,
+      "issues": null,
+      "status_code": 0
+    },
+    "app_ticket_notary_submission": "eec04e93-47b8-4655-8e68-bd0290e4c64a",
+    "staple_first_failure": {
+      "exit_code": 73,
+      "observed_original_bundle_writable": false,
+      "fresh_copy_writable": true,
+      "fresh_copy_staple_exit_code": 0,
+      "scope": "Generated App copy only; binary signature/hash preserved."
+    },
+    "checks": [
+      {
+        "name": "dns-test-default",
+        "exit_code": 0,
+        "seconds": 943.26
+      },
+      {
+        "name": "dns-test-lab-upstream",
+        "exit_code": 0,
+        "seconds": 8.86
+      },
+      {
+        "name": "dns-clippy-default",
+        "exit_code": 0,
+        "seconds": 4.24
+      },
+      {
+        "name": "dns-clippy-lab",
+        "exit_code": 0,
+        "seconds": 5.49
+      }
+    ],
+    "scope": "Signed candidate and installed App binaries in the existing separate CLI acceptance vault; four actual GLM requests (two buffered/two SSE), no fresh-account T12, installed SMAppService lifecycle or 500-call claim.",
+    "default_test_counts": {
+      "passed": 1018,
+      "failed": 0,
+      "ignored": 6
+    },
+    "lab_verification": "17 upstream tests and strict all-targets Clippy passed; full lab count 1482/0/6 remains scoped to source parent a6467ab",
+    "mechanical_contracts": {
+      "forbidden_symbol_matches": 0,
+      "cli_forbidden_dependencies": [],
+      "fmt_check_exit_code": 0,
+      "diff_check_exit_code": 0
+    },
+    "installed": {
+      "installation": {
+        "first_attempt_exit_code": 1,
+        "first_attempt_error": "installer package path invalid in privileged context",
+        "staged_package": "/private/tmp/rekey-v3-dns-install-zephn3hj/Rekey-3.0.0-alpha.1.pkg",
+        "staged_sha256": "2f0722b757a2a2edb1da5c5011ffbdbfe40218a3bcd3f674ef1699570e873563",
+        "source_sha256": "2f0722b757a2a2edb1da5c5011ffbdbfe40218a3bcd3f674ef1699570e873563",
+        "install_exit_code": 0
+      },
+      "checks": {
+        "hashes": {
+          "rekey": {
+            "installed_sha256": "4d3cc8c6814e884729c125bc9d4d4d0d44710bada82cfa0d44cd4effc92899ec",
+            "candidate_sha256": "4d3cc8c6814e884729c125bc9d4d4d0d44710bada82cfa0d44cd4effc92899ec",
+            "matches": true
+          },
+          "rekeyd": {
+            "installed_sha256": "833ed68852638a677afc65a8e624b72e3d4c62e84db79a9c5ed4db22e4a22a00",
+            "candidate_sha256": "833ed68852638a677afc65a8e624b72e3d4c62e84db79a9c5ed4db22e4a22a00",
+            "matches": true
+          },
+          "rekey-mcp": {
+            "installed_sha256": "95f537305768415ad05f7e889e29e0f0e855397c488d26dcad982669ae0a763f",
+            "candidate_sha256": "95f537305768415ad05f7e889e29e0f0e855397c488d26dcad982669ae0a763f",
+            "matches": true
+          }
+        },
+        "links": {
+          "rekey": "/Applications/Rekey.app/Contents/Resources/bin/rekey",
+          "rekeyd": "/Applications/Rekey.app/Contents/Resources/bin/rekeyd",
+          "rekey-mcp": "/Applications/Rekey.app/Contents/Resources/bin/rekey-mcp"
+        },
+        "checks": [
+          {
+            "name": "signature",
+            "exit_code": 0
+          },
+          {
+            "name": "gatekeeper",
+            "exit_code": 0
+          },
+          {
+            "name": "staple",
+            "exit_code": 0
+          },
+          {
+            "name": "version",
+            "exit_code": 0
+          },
+          {
+            "name": "receipt",
+            "exit_code": 0
+          }
+        ]
+      },
+      "real_provider": {
+        "clash_configuration_changed": false,
+        "system_dns": [
+          "198.18.7.242"
+        ],
+        "daemon_sha256": "833ed68852638a677afc65a8e624b72e3d4c62e84db79a9c5ed4db22e4a22a00",
+        "daemon_pid": 14367,
+        "unlock_exit_code": 0,
+        "run_exit_code": 0,
+        "responses": [
+          {
+            "stream": false,
+            "status": 200,
+            "usage": {
+              "input_tokens": 16,
+              "output_tokens": 85,
+              "cache_read_input_tokens": 0
+            },
+            "has_content": true,
+            "stop_reason": "end_turn",
+            "seconds": 5.874
+          },
+          {
+            "stream": true,
+            "status": 200,
+            "first_byte_seconds": 2.905,
+            "event_count": 57,
+            "message_stop_seen": true,
+            "usage": {
+              "input_tokens": 16,
+              "output_tokens": 52,
+              "cache_read_input_tokens": 0
+            },
+            "stop_reason": "end_turn",
+            "seconds": 3.865
+          }
+        ],
+        "shutdown_exit_code": 0
+      }
+    },
+    "real_provider_call_count": 4,
+    "provider": "GLM Anthropic compatibility",
+    "model": "glm-5.3-flash",
+    "budget_usd": 500
   }
 }

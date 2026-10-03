@@ -198,3 +198,11 @@ M0 复核：`rekey-approval-relay` 没有 lib target，bin 与 integration-test 
 2026-10-04 当前账户进展：此前候选 pkg 已实际安装，收据、三条 CLI 链接、二进制哈希和 Gatekeeper 校验通过。现有默认保险库只读确认格式 v10，保留原数据；另建空白 `.rekey-v3-acceptance-20261004` 目录。用户推迟新账户 T12，真实 GLM 模型指定为 `glm-5.3-flash`，总调用预算上限 500 USD。固定 GLM 模板与 App 选择已实现，15 项网关测试通过；新版 App 公证 Accepted，新版 pkg 因 connectTimeout 正在重试。Clash 的 fake-IP 根因已实证；尚未获得网络修改确认，未修改配置。原验收目录已出现格式 v25 的锁定保险库，保持不动。用户要求改用代码后，另建 `.rekey-v3-cli-acceptance-20261004` 个人库；随机证明与恢复材料仅保存在源码外权限 600 的私有验收目录。生产 PolicySigning.swift 的已签名 helper 已完成 SE 建钥/签署，真实 daemon 安装信任根、激活 GLM Profile 和 `rekey run` 启动/退出撤销均通过；GLM Key 经 stdin 加密保存，尚无真实上游调用。默认最新全仓 1014/0/6、lab 1482/0/6 均通过；两配置 strict Clippy、fmt、all-targets 编译、机械合同和 10 项 pkg 回归通过。新版 pkg 另保留 S3 deadlineExceeded 与 Apple API -1005 断连，改用 Apple 官方 REST API 经既有本机代理上传；不据此宣称安装版 SMAppService 或 T12 完成。
 
 2026-10-04 当前账户补证：新版 GLM pkg 经 Apple 官方 Notary REST API、既有本机代理成功上传，公证 `b03a36c9-0a49-4417-9b61-a3fba49d20bf` Accepted，issues=null；装订/验证、App/pkg Gatekeeper、安装后哈希与三条链接通过。普通 HTTPS 在原 Clash 配置下对真实 GLM 调用返回 200（输入 16、输出 61 token），而相同请求经实际 `rekey run` 返回 502/UPSTREAM_FAILED；OS DNS 仍为 198.18.7.242，生产 `select_public_endpoint` 拒绝该非公网地址。用户要求先解释，保持 Clash 配置不动；此前 DNS 修改提议不是必要前提或既有网络故障的结论。此对照不算 Rekey 的真实 provider 或 T11 验收。
+
+2026-10-04 fake-IP 根因修复：用户要求在 Rekey 中处理兼容性，不维护 provider 例外。先更新 I6/威胁模型，再仅对系统 DNS 的全 198.18.0.0/15 域名答案使用 TLS 认证的 Cloudflare DoH 查询 A/AAAA；查询不携带 provider Key，全部真实地址仍须公网并固定连接，IP 字面量、其它非公网答案和显式私有来源合同不变。17 项上游回归通过，新增 4 项覆盖触发边界、CNAME/A/AAAA、混合/私网/虚拟答案及无效响应。Clash 配置保持不动，OS 仍解析到 198.18.7.242；签名候选实际 `rekey run` 的 GLM 普通请求 200（输入16/输出72），SSE 请求200（输入16/输出63，69个事件、正常 message_stop）。本次只有两次 provider 调用，未标记 T11 500 次通过。
+
+最终修复 pkg 公证 `3e575d07-892d-4201-b120-1059ad2ea73a` Accepted，issues=null；App/pkg 的 Gatekeeper、票据与签名检查通过。首个 App 原目录不可写，stapler 返回73；仅复制生成 bundle 后装订成功并重新打包，不改二进制签名或代码，失败证据保留。全量检查与安装收尾见同一 JSON 的 `fake_ip_compatibility`，不扩展为 T12、服务生命周期或完整发布通过。
+
+本批最终默认全仓 **1018 passed /0 failed /6 ignored**；Lab 上游17项、两配置 all-targets 严格Clippy、workspace check、fmt、diff和机械边界全通过。完整Lab 1482/0/6仍归属修复前 `a6467ab`，本批不复用成新全量结果。已获授权的本机升级先从私有工作区路径返回 installer path invalid；复制同一hash的公证pkg到系统临时目录后安装成功，临时副本精确清理，原保险库保持。
+
+安装后 App 签名、Gatekeeper、票据、版本及收据均通过；三条CLI链接与候选二进制hash匹配。再以 `/Applications/Rekey.app` 中的CLI/daemon复验，普通与SSE均200并正常结束（输入各16，输出85/52），OS仍为fake-IP，测试daemon按密码证明停机。新修复源码共四次真实GLM请求，500次持续调用与完整客户端验收仍Pending。

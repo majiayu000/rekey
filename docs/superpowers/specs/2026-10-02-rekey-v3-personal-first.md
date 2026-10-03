@@ -209,6 +209,12 @@ A2 针对的是"拿到明文或扩大权限"。A2 能做的事被限定为两类
 - **I4**：客户端发送密码或 presence key 之前，必须确认对端是签名的 rekeyd。L1-dev 下无法确认，CLI 在交互式秘密输入前、App 在证明输入或认证控件旁提示；自动化 CLI 在发送证明前向 stderr 提示，不改变 stdout 的数据格式。
 - **I5**：秘密不进入 argv、env、日志、审计或 JSON 元数据。capability 进入 `rekey run` 子进程的 env 是例外，见 §8.2。
 - **I6**：出站请求只能去往 Action 或模板声明的 origin；解析结果必须是公网 IP，连接钉在该 IP 上，禁止重定向。
+  系统 DNS 对域名只返回 `198.18.0.0/15` 虚拟地址时，Rekey 改用 Cloudflare DoH
+  `https://cloudflare-dns.com/dns-query` 查询 A/AAAA，并对全部真实地址执行同一公网检查。
+  DoH 连接使用官方引导地址 `1.1.1.1` / `1.0.0.1`、正常 TLS 域名验证、无重定向和无代理环境；
+  查询只发送域名，不发送 provider 凭据，受原请求总期限与 64 KiB 响应上限约束。
+  DoH 不可用或返回非公网地址即失败，不连接虚拟地址；IP 字面量与其它非公网系统答案仍直接拒绝。
+  不需要 provider 域名例外、Clash 配置改动或固定 provider IP。显式私有 Vault 来源不使用此路径。
 - **I7**：未知状态、审计写入失败、策略错误一律拒绝（fail closed）。
 - **I8**：Vault 状态带单调代数。回滚到更旧的代数会被检测到，并拒绝自动解锁（§5.4）。
 - **I9**：授权范围内的 Agent 调用不触发任何人工交互；只有策略中的 `require-approval` 规则会进入审批（§6.3）。
