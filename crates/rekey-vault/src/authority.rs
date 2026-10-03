@@ -620,6 +620,7 @@ impl Worker {
         let builtin = match source {
             TemplateSource::Anthropic {} => BuiltinTemplate::Anthropic,
             TemplateSource::Glm {} => BuiltinTemplate::Glm,
+            TemplateSource::GlmResponses {} => BuiltinTemplate::GlmResponses,
             TemplateSource::OpenAi {} => BuiltinTemplate::OpenAi,
             TemplateSource::GitHubPat {} => BuiltinTemplate::GitHubPat,
             TemplateSource::GenericBearer { origin, actions } => BuiltinTemplate::GenericBearer {

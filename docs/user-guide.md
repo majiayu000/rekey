@@ -27,6 +27,18 @@ model and bounded requests/output. `claude-code` is the positional Profile name,
 not a flag. The final command uses an existing signed Profile; it does not
 silently create one. `rekey profile list` lists the available names.
 
+The same Add page offers GLM · Claude Code and GLM · Codex. The former installs
+the fixed `glm@1` Messages template; the latter installs `glm-responses@1`,
+with a separate Bearer credential contract and fixed `/api/v1/responses` target.
+After reviewing and signing the Codex Profile, use the command shown by the App:
+
+```bash
+rekey run codex --client codex -- codex --model glm-5.3-flash
+```
+
+These are scoped provider templates; clients cannot choose another upstream
+origin or path. The new-account, five-minute acceptance remains pending.
+
 A Profile fixes principal, instance/capability/action versions, session limits,
 isolation, egress and LLM model/budget limits. Every capability has a required
 rule: `template-default`, `allow` or `require-approval`. Template defaults retain
@@ -37,7 +49,8 @@ The snapshot-6 rule/UI changes still require their joint release gate.
 The App uses a per-vault Secure Enclave P-256 policy key in personal mode; team
 mode uses an external Ed25519 root. The mode and root are immutable. No software
 private-key fallback or automatic policy re-signing is provided. Hardware access
-and real-provider acceptance remain pending. The Agent neither holds that key
+has bounded signed-device evidence in the [current acceptance record](evidence/v3-release-acceptance-2026-10-04.json);
+the complete installed App workflow remains pending. The Agent neither holds that key
 nor triggers background system authentication.
 
 `rekey connect CLIENT --print` previews supported client configuration; an

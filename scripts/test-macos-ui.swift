@@ -1071,10 +1071,22 @@ struct UIContract {
         try require(request["allowed_extra_headers"] as? [String] == ["anthropic-beta"], "beta header granted only by explicit install request")
         try require(request["capabilities"] as? [String] == ["messages"], "unselected capabilities not installed")
         try require(!(installRow["args"] as! [String]).contains("SYNTHETIC-PROOF"), "proof not in argv")
-        let seed = try AgentProfile.anthropic(actions: actions, model: "synthetic-model")
+        let seed = try AgentProfile.onboarding(actions: actions, model: "synthetic-model")
         try require(seed.grants[0].capabilities[0].actions[0].action_id.uuidString.lowercased() == actionID, "seed uses authenticated returned action identity")
         try require(seed.llm_limits[0].max_output_tokens_per_request == 32768 && seed.llm_limits[0].models == ["synthetic-model"], "exact model and visible Claude ceiling")
         try require(seed.isolation == .none && seed.egress == .allow && !seed.confirm_each_run, "no implied L2 or per-run prompt")
+        var responseAction = action
+        responseAction["origin"] = "https://open.bigmodel.cn"
+        var responseTarget = responseAction["target"] as! [String: Any]
+        var responseSource = responseTarget["source"] as! [String: Any]
+        responseSource["template"] = "glm-responses@1"; responseSource["capability"] = "responses"
+        responseTarget["source"] = responseSource
+        responseTarget["target"] = ["path": "/api/v1/responses", "params": [:], "query": [:]]
+        responseAction["target"] = responseTarget
+        let responseFixed = try JSONDecoder().decode(FixedAction.self, from: JSONSerialization.data(withJSONObject: responseAction))
+        let codexSeed = try AgentProfile.onboarding(actions: [responseFixed], model: "glm-5.3-flash")
+        try require(codexSeed.name == "codex" && codexSeed.grants[0].instance == "glm-responses" && codexSeed.grants[0].capabilities[0].capability == "responses", "GLM Responses prepares exact Codex capability without JSON input")
+        try require(codexSeed.onboardingLaunchCommand == "rekey run 'codex' --client codex -- codex --model 'glm-5.3-flash'", "GLM onboarding launches the explicit Codex adapter")
         let existing = AgentProfile.newProfile()
         let listData = try JSONSerialization.data(withJSONObject: ["profiles": try JSONSerialization.jsonObject(with: JSONEncoder().encode([existing])), "policy_sha256": String(repeating: "a", count: 64), "expires_at_ms": 1])
         let list = try JSONDecoder().decode(ProfileList.self, from: listData)
@@ -1084,9 +1096,9 @@ struct UIContract {
         do { _ = try list.addingOnboardingProfile(collision); throw UIError(message: "collision admitted") }
         catch { try require(error.localizedDescription.contains("不会覆盖"), "name collision never replaces old principal") }
         var quoted = seed; quoted.name = "x'; echo no"; quoted.llm_limits[0].models = ["model' value"]
-        try require(quoted.claudeLaunchCommand == "rekey run 'x'\"'\"'; echo no' --client claude-code -- claude --model 'model'\"'\"' value'", "displayed launch command shell-quotes user fields")
+        try require(quoted.onboardingLaunchCommand == "rekey run 'x'\"'\"'; echo no' --client claude-code -- claude --model 'model'\"'\"' value'", "displayed launch command shell-quotes user fields")
         var many = seed; many.llm_limits[0].models.append("other")
-        try require(many.claudeLaunchCommand == nil, "multiple models are not guessed")
+        try require(many.onboardingLaunchCommand == nil, "multiple models are not guessed")
         let before = records.count
         do { _ = try await model.installOnboardingAnthropic(credentialID: saved.id, capabilities: ["messages"], proof: "", presence: true, client: client, readPresence: { _ in throw UIError(message: "synthetic cancel") }); throw UIError(message: "cancel admitted") }
         catch { try require(error.localizedDescription.contains("synthetic cancel"), "cancelled presence submits no mutation") }
@@ -1114,7 +1126,7 @@ struct UIContract {
         try require(available.count == 1 && available[0].reference == actionID + "@7", "reopen reads exact installed version and filters credential, enabled, template, digest, signer and fixed impostors")
         try require(available[0].method == "POST" && available[0].origin == "https://api.anthropic.com" && available[0].template?.path.path == "/v1/messages", "resume exposes server target for explicit selection")
         try require(reopened.onboardingProfile == nil && reopened.onboardingCommand == nil, "reading existing actions does not select, sign or fabricate success")
-        let resumed = try AgentProfile.anthropic(actions: [available[0]], model: "synthetic-model")
+        let resumed = try AgentProfile.onboarding(actions: [available[0]], model: "synthetic-model")
         try require(resumed.grants[0].capabilities[0].actions[0].version == 7, "explicit reuse proceeds into existing profile editor with exact selected version")
         try require(try list.addingOnboardingProfile(resumed) == [existing, resumed], "resumed draft still preserves all previous Profiles")
         let resumedRows = try String(contentsOf: calls, encoding: .utf8).split(separator: "\n").dropFirst(beforeResume).map { try JSONSerialization.jsonObject(with: Data($0.utf8)) as! [String: Any] }

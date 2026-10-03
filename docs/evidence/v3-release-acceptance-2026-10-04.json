@@ -87,7 +87,7 @@
     "installer_identity": "3FADBE1AF4CC6E8FDBD28BE4924EB80ECDFBD013"
   },
   "default_test_counts": {
-    "passed": 1018,
+    "passed": 1021,
     "failed": 0,
     "ignored": 6
   },
@@ -292,11 +292,9 @@
     ]
   },
   "pending": [
-    "GLM 500-call acceptance under rekey run; real buffered/SSE/usage passed after the fake-IP fix with unchanged Clash configuration",
-    "real Claude Code provider acceptance",
-    "real Codex OpenAI-compatible provider acceptance; no key supplied for that provider",
+    "real Codex final candidate acceptance and upgrade install require normal macOS screen unlock; signed/notarized pkg ready",
+    "actual installed App focus, visible cancellation and policy-review workflow",
     "installed SMAppService registration and login-item lifecycle",
-    "signed hardware local-approval T10 and cancellation path",
     "fresh macOS account T12 deferred by user",
     "independent human security review and GA format freeze/public release"
   ],
@@ -1093,5 +1091,777 @@
     "provider": "GLM Anthropic compatibility",
     "model": "glm-5.3-flash",
     "budget_usd": 500
-  }
+  },
+  "latest_source_base": "1e3b5cd",
+  "latest_production_source_sha256": {
+    "apps/macos/Forms.swift": "a336972cafe30fabda4f096101bb411387ca0a4b70ca756c1f203520bb10157b",
+    "apps/macos/Model.swift": "c555fcd0f69f26045d8374ccd8db6e8a7229332a6debd7f2dc742f98285b0892",
+    "crates/rekey-broker/src/executor/llm.rs": "a52e8f9c05e3436bd08c82566a071ac294efa4bf0f99302b644ba05defec48aa",
+    "crates/rekey-broker/src/executor/llm_stream.rs": "650d086a2a41dbed812a1c830ae5c3c50d07746511c2a1884d58698654f7579a",
+    "crates/rekey-broker/src/runtime/gateway.rs": "48d7d01d7bf1de202983c2a8211dc37565639bba724ad2a4f70b637839633512",
+    "crates/rekey-broker/src/runtime/profile.rs": "0bfb8ded81cbbeb30e2cfc60c3fe268531d06b548b052619b15d5fb1a137fc53",
+    "crates/rekey-domain/src/ipc.rs": "ef710e77b1274a3ae930eb07c3bc1cc54ce4e9d68ecab6b6911381f5b6a34cf7",
+    "crates/rekey-domain/src/template.rs": "3b5b0dcc17fd83f2ab3dc37e1c1d7b1922c370e35ef753ebd3649589d8ee11d9",
+    "crates/rekey-policy/src/templates.rs": "8662c4d18f5ea0d3b6644501db78006fa2c5a0f5f29a3a17c0319826ef4a747a",
+    "crates/rekey-vault/src/authority.rs": "f4b5a751686ebd15d37766d51283b4d257b7138c9e0486d446a5a0005d3f8be1"
+  },
+  "current_account_agent_acceptance": {
+    "scope": "signed Developer ID candidates, isolated acceptance vaults, GLM glm-5.3-flash; no new-account T12 or full L1/L2 claim",
+    "messages_source": "1e3b5cd",
+    "real_claude_code": {
+      "source": "1e3b5cd",
+      "profile": "glm-acceptance",
+      "model": "glm-5.3-flash",
+      "client_version": "2.1.281",
+      "ui_operations_performed": 0,
+      "started_at_ms": 1791059289862,
+      "exit_code": 0,
+      "seconds": 3.756,
+      "client_result": {
+        "type": "result",
+        "subtype": "success",
+        "is_error": false,
+        "num_turns": 1,
+        "duration_ms": 3453,
+        "duration_api_ms": 3426
+      },
+      "result_is_ok": true,
+      "usage": {
+        "input_tokens": 141,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 13
+      },
+      "model_usage": {
+        "glm-5.3-flash": {
+          "inputTokens": 141,
+          "outputTokens": 13,
+          "cacheReadInputTokens": 0,
+          "cacheCreationInputTokens": 0,
+          "webSearchRequests": 0,
+          "costUSD": 0.00103,
+          "contextWindow": 262144,
+          "maxOutputTokens": 32000,
+          "thinkingTokens": 0
+        }
+      },
+      "api_error_status": [],
+      "stderr_hint_login": false,
+      "stderr_bytes": 80
+    },
+    "signed_agent_gateway_mcp": {
+      "gateway_denials": [
+        {
+          "name": "invalid-key",
+          "status": 401
+        },
+        {
+          "name": "host",
+          "status": 400
+        },
+        {
+          "name": "origin",
+          "status": 400
+        },
+        {
+          "name": "model",
+          "status": 403
+        },
+        {
+          "name": "output-limit",
+          "status": 403
+        }
+      ],
+      "mcp_exit_code": 0,
+      "mcp_tool_names": [
+        "rekey.8969d01c-d100-4534-b15a-eb5f8fc8b267.v1",
+        "await_approval",
+        "cancel_approval"
+      ],
+      "mcp_unknown_tool_error": true,
+      "source": "1e3b5cd",
+      "encoded_secret_matches": 0,
+      "secret_encoding_variants_checked": 6,
+      "after_normal_exit_status": 401,
+      "seconds": 0.132,
+      "agent_frames_checked": 134,
+      "agent_frame_scope": {
+        "channels": [
+          1,
+          2
+        ],
+        "opcodes": {
+          "inclusive_range": [
+            0,
+            61
+          ],
+          "additional": [
+            100,
+            101,
+            102,
+            103,
+            65535
+          ]
+        }
+      },
+      "source_artifact": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/signed-boundaries-acceptance.json",
+      "agent_frame_results": {
+        "closed": 67,
+        "error_response_101": 67
+      }
+    },
+    "signed_owner_sigkill": {
+      "source": "1e3b5cd",
+      "cli_pid": 36687,
+      "child_pid": 36688,
+      "before_kill_response_type": 100,
+      "after_kill_response_type": 101,
+      "revocation_seconds": 0.001,
+      "within_five_seconds": true
+    },
+    "signed_local_approval": {
+      "source": "1e3b5cd",
+      "started_at_ms": 1791061009899,
+      "helper_uses_production_model_review_and_presence": true,
+      "active_window_check_injected_for_harness": true,
+      "signed_installed_cli_and_daemon": true,
+      "prepare": {
+        "response_type": 101,
+        "code": "APPROVAL_REQUIRED",
+        "challenge": "3daf8693-8ceb-4ba5-8eb7-fdf04370f92c"
+      },
+      "initial_review_state": "pending",
+      "agent_approve": {
+        "response_type": 101,
+        "code": "INVALID_FRAME",
+        "challenge": null
+      },
+      "foreign_cancel": {
+        "response_type": 101,
+        "code": "REQUEST_DENIED",
+        "challenge": null
+      },
+      "authentication_cancellation": {
+        "authentication_cancelled": true,
+        "decision_submitted": false,
+        "context_invalidated": true
+      },
+      "state_after_authentication_cancel": "pending",
+      "hardware_approval": {
+        "state": "approved",
+        "canonical_review_checked": true,
+        "production_presence_read": true
+      },
+      "owner_await": {
+        "response_type": 100,
+        "state": "approved",
+        "upstream_status": null
+      },
+      "foreign_consume": {
+        "response_type": 101,
+        "code": "REQUEST_DENIED",
+        "challenge": null
+      },
+      "owner_consume": {
+        "response_type": 100,
+        "state": null,
+        "upstream_status": 200,
+        "stop_reason": "end_turn",
+        "usage": {
+          "input_tokens": 27,
+          "output_tokens": 31,
+          "cache_read_input_tokens": 0,
+          "server_tool_use": {
+            "web_search_requests": 0
+          },
+          "service_tier": "standard"
+        }
+      },
+      "owner_replay": {
+        "response_type": 101,
+        "code": "REQUEST_DENIED",
+        "challenge": null
+      },
+      "consumed_state": "consumed",
+      "second_prepare": {
+        "response_type": 101,
+        "code": "APPROVAL_REQUIRED",
+        "challenge": "8041a374-6bae-4de6-9f3e-9a8e24ab1771"
+      },
+      "owner_cancel": {
+        "response_type": 100,
+        "state": "cancelled",
+        "upstream_status": null
+      },
+      "cancelled_state": "cancelled",
+      "passed": true
+    },
+    "signed_presence_restrictions": {
+      "exit_code": 0,
+      "uses_production_presence_read": true,
+      "rejected_operations": {
+        "change-password": true,
+        "renew-presence": true,
+        "rotate-recovery": true
+      }
+    },
+    "T11_full_500": {
+      "source": "1e3b5cd",
+      "started_at_ms": 1791061382563,
+      "profile": "glm-acceptance",
+      "model": "glm-5.3-flash",
+      "budget_usd": 500,
+      "T11_criterion": "500 authorized calls with no UI; transport failures recorded separately; no automatic retry",
+      "installed_daemon_sha256": "833ed68852638a677afc65a8e624b72e3d4c62e84db79a9c5ed4db22e4a22a00",
+      "run_exit_code": 0,
+      "calls": {
+        "target_calls": 500,
+        "attempted_calls": 500,
+        "successful_calls": 499,
+        "failed_calls": 1,
+        "max_output_tokens_per_call": 256,
+        "input_tokens": 16467,
+        "output_tokens": 21727,
+        "stop_reasons": {
+          "end_turn": 499
+        },
+        "ui_automation_operations": 0,
+        "automatic_retries": 0,
+        "failures": [
+          {
+            "index": 296,
+            "status": 502,
+            "code": "UPSTREAM_FAILED",
+            "request_id": "e87211a5-adaf-445a-b226-0a97e0a3be74",
+            "seconds": 10.814
+          }
+        ],
+        "seconds": 1881.581,
+        "standard_successful_token_cost_cny": 0.074009
+      },
+      "session_id": "92edb8b6-6ebd-4be6-927f-984c70af4b4b",
+      "audit_event_counts": {
+        "session.revoked": 1,
+        "execution.finished": 499,
+        "execution.started": 500,
+        "execution.indeterminate": 1,
+        "session.created": 1
+      },
+      "terminal_reasons": {
+        "finished": 499,
+        "upstream-timeout": 1
+      },
+      "approval_events": 0,
+      "after_status": {
+        "state": "unlocked",
+        "format_version": 25,
+        "runtime_version": "3.0.0-alpha.1",
+        "lab_enabled": false,
+        "sessions_active": 0,
+        "lease_journal": {
+          "verified": true,
+          "pending": 0,
+          "unknown": 0,
+          "complete": 0
+        },
+        "rollback": null,
+        "peer_security": "verified_signature"
+      },
+      "T11_no_UI_passed": true,
+      "500_successful_responses": false
+    },
+    "T11_test_daemon_shutdown": {
+      "exit_code": 0
+    },
+    "T11_first_attempt": {
+      "source": "1e3b5cd",
+      "installed_daemon_sha256": "833ed68852638a677afc65a8e624b72e3d4c62e84db79a9c5ed4db22e4a22a00",
+      "profile": "glm-acceptance",
+      "model": "glm-5.3-flash",
+      "budget_usd": 500,
+      "pricing_source": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+      "started_at_ms": 1791058865123,
+      "daemon_pid": 31960,
+      "unlock_exit_code": 0,
+      "run_exit_code": 1,
+      "calls": {
+        "target_calls": 500,
+        "completed_calls": 265,
+        "failed_calls": 1,
+        "max_output_tokens_per_call": 256,
+        "input_tokens": 4240,
+        "output_tokens": 20229,
+        "stop_reasons": {
+          "end_turn": 265
+        },
+        "ui_operations_performed": 0,
+        "automatic_retries": 0,
+        "seconds": 1189.006,
+        "failure": {
+          "index": 266,
+          "status": 502
+        },
+        "standard_token_cost_cny": 0.060033
+      },
+      "audit_read_exit_code": 2,
+      "audit_event_counts": {},
+      "approval_events": 0,
+      "after_status": {
+        "state": "unlocked",
+        "format_version": 25,
+        "runtime_version": "3.0.0-alpha.1",
+        "lab_enabled": false,
+        "sessions_active": 0,
+        "lease_journal": {
+          "verified": true,
+          "pending": 0,
+          "unknown": 0,
+          "complete": 0
+        },
+        "rollback": null,
+        "peer_security": "verified_signature"
+      },
+      "shutdown_exit_code": 0
+    },
+    "limitations": [
+      "134 Agent frames and six secret encodings are bounded probes, not all arbitrary encodings",
+      "local approval helper compiles production AppModel and PresenceKey; active window is injected, so actual App focus and visible Cancel click are unverified",
+      "T11 means 500 authorized invocations with no UI, not 500 successful upstream responses; one observed upstream timeout remains unassigned to DNS/connect/response stage",
+      "client-reported USD and token-price estimate are not provider invoices"
+    ]
+  },
+  "glm_responses_candidate": {
+    "template": "glm-responses@1",
+    "fixed_origin": "https://open.bigmodel.cn",
+    "fixed_path": "/api/v1/responses",
+    "auth": "Bearer",
+    "model": "glm-5.3-flash",
+    "primary_sources": [
+      "https://docs.bigmodel.cn/cn/guide/develop/responses/introduction",
+      "https://docs.bigmodel.cn/cn/coding-plan/tool/codex",
+      "https://docs.bigmodel.cn/openapi/openapi-responses.json"
+    ],
+    "initial_codex_failure": {
+      "source_base": "1e3b5cd",
+      "source_delta": "GLM Responses fixed template, gateway and App onboarding",
+      "policy_mode": "team",
+      "policy_signing": "temporary in-memory Ed25519 test signer",
+      "model": "glm-5.3-flash",
+      "profile": "glm-codex-acceptance",
+      "client_version": "0.160.0",
+      "ui_operations_performed": 0,
+      "started_at_ms": 1791062635800,
+      "installed_candidate_daemon_sha256": "adfc2aa0a2ac7b67c889b27cea0156d9cb6caf911995f9ad010ee844cfe82b04",
+      "policy_activated": true,
+      "vault_id": "5c703123-0c75-45a4-841c-826ee3ffcac3",
+      "client_exit_code": 1,
+      "client_seconds": 38.665,
+      "client_secret_matches": 0,
+      "client_event_counts": {
+        "thread.started": 1,
+        "item.completed": 7,
+        "turn.started": 1,
+        "error": 6,
+        "turn.failed": 1
+      },
+      "completion_is_ok": true,
+      "client_usage": [],
+      "audit_event_counts": {
+        "session.revoked": 1,
+        "execution.indeterminate": 6,
+        "execution.started": 6,
+        "session.created": 1,
+        "policy.activated": 1,
+        "policy.trust_installed": 1,
+        "action.created": 1,
+        "credential.created": 1,
+        "vault.unlocked": 1,
+        "vault.initialized": 1
+      },
+      "terminal_reasons": {
+        "text-stream-failed": 6
+      },
+      "measured_usage": [
+        {
+          "instance_slug": "glm-responses",
+          "utc_day": 20729,
+          "output_tokens": 4096,
+          "source": "indeterminate"
+        },
+        {
+          "instance_slug": "glm-responses",
+          "utc_day": 20729,
+          "output_tokens": 4096,
+          "source": "indeterminate"
+        },
+        {
+          "instance_slug": "glm-responses",
+          "utc_day": 20729,
+          "output_tokens": 4096,
+          "source": "indeterminate"
+        },
+        {
+          "instance_slug": "glm-responses",
+          "utc_day": 20729,
+          "output_tokens": 4096,
+          "source": "indeterminate"
+        },
+        {
+          "instance_slug": "glm-responses",
+          "utc_day": 20729,
+          "output_tokens": 4096,
+          "source": "indeterminate"
+        },
+        {
+          "instance_slug": "glm-responses",
+          "utc_day": 20729,
+          "output_tokens": 4096,
+          "source": "indeterminate"
+        }
+      ],
+      "sessions_after_client": 0,
+      "passed": false,
+      "shutdown_exit_code": 0
+    },
+    "root_cause": "GLM appends [DONE] after response.completed; old Responses parser rejected it",
+    "fix": "accept one optional DONE after completed/incomplete; still hold terminal through EOF and settlement, reject early/duplicate/trailing data",
+    "red_regression_log": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/glm-responses-checks/done-marker-red.log",
+    "focused_final_checks": [
+      {
+        "name": "stream-tests",
+        "exit_code": 0,
+        "seconds": 6.429
+      },
+      {
+        "name": "gateway-tests",
+        "exit_code": 0,
+        "seconds": 39.813
+      }
+    ],
+    "swift_modes": [
+      {
+        "mode": "presence",
+        "exit_code": 0,
+        "seconds": 1.646
+      },
+      {
+        "mode": "local-approval",
+        "exit_code": 0,
+        "seconds": 1.518
+      },
+      {
+        "mode": "flow",
+        "exit_code": 0,
+        "seconds": 1.479
+      },
+      {
+        "mode": "onboarding",
+        "exit_code": 0,
+        "seconds": 0.803
+      },
+      {
+        "mode": "profile-authoring",
+        "exit_code": 0,
+        "seconds": 1.23
+      },
+      {
+        "mode": "personal-policy",
+        "exit_code": 0,
+        "seconds": 1.026
+      },
+      {
+        "mode": "rollback",
+        "exit_code": 0,
+        "seconds": 0.97
+      },
+      {
+        "mode": "activity",
+        "exit_code": 0,
+        "seconds": 1.274
+      },
+      {
+        "mode": "protection",
+        "exit_code": 0,
+        "seconds": 0.648
+      },
+      {
+        "mode": "oidc",
+        "exit_code": 0,
+        "seconds": 0.536
+      }
+    ],
+    "signed_build": {
+      "source_base": "1e3b5cd",
+      "exit_code": 0,
+      "seconds": 62.858,
+      "app": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/macos-ui-glm-responses-final/Rekey.app",
+      "binary_sha256": {
+        "rekey": "1f0314f2c9ac028d096cac3ec6a3c35baec51685559caacd7d6a97dcb8a81a58",
+        "rekeyd": "53c0af5ba62c541e9b53799b07f530bde149a873aeae427c2a5a414d28cd4bd8",
+        "rekey-mcp": "e3c98f9abaf1f8ed7cce08ee4acbc20c0e6297d33e706f3c82184f0fab180803"
+      },
+      "app_binary_sha256": "7bc0d38d1b8d60a00cfe1e30ec457681fcb5f9cbf298bdf7adf3a6a9ee1dcfed",
+      "production_source_sha256": {
+        "apps/macos/Forms.swift": "a336972cafe30fabda4f096101bb411387ca0a4b70ca756c1f203520bb10157b",
+        "apps/macos/Model.swift": "c555fcd0f69f26045d8374ccd8db6e8a7229332a6debd7f2dc742f98285b0892",
+        "crates/rekey-broker/src/executor/llm.rs": "a52e8f9c05e3436bd08c82566a071ac294efa4bf0f99302b644ba05defec48aa",
+        "crates/rekey-broker/src/executor/llm_stream.rs": "650d086a2a41dbed812a1c830ae5c3c50d07746511c2a1884d58698654f7579a",
+        "crates/rekey-broker/src/runtime/gateway.rs": "48d7d01d7bf1de202983c2a8211dc37565639bba724ad2a4f70b637839633512",
+        "crates/rekey-broker/src/runtime/profile.rs": "0bfb8ded81cbbeb30e2cfc60c3fe268531d06b548b052619b15d5fb1a137fc53",
+        "crates/rekey-domain/src/ipc.rs": "ef710e77b1274a3ae930eb07c3bc1cc54ce4e9d68ecab6b6911381f5b6a34cf7",
+        "crates/rekey-domain/src/template.rs": "3b5b0dcc17fd83f2ab3dc37e1c1d7b1922c370e35ef753ebd3649589d8ee11d9",
+        "crates/rekey-policy/src/templates.rs": "8662c4d18f5ea0d3b6644501db78006fa2c5a0f5f29a3a17c0319826ef4a747a",
+        "crates/rekey-vault/src/authority.rs": "f4b5a751686ebd15d37766d51283b4d257b7138c9e0486d446a5a0005d3f8be1"
+      }
+    },
+    "status": "source and signed/notarized pkg ready; real Codex requires screen unlock; upgrade requires one system administrator authentication, no renewed project authorization",
+    "screen_lock_blocker": {
+      "probe_exit_code": 0,
+      "protected_anchor_read": {
+        "status": -25308
+      },
+      "screen_locked": true
+    },
+    "app_notary": {
+      "package": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/Rekey-glm-responses-final-notary.zip",
+      "transport": "Apple documented Notary REST API via existing local proxy",
+      "uploaded": true,
+      "authenticated_history": true,
+      "submission_id": "b46ddd85-9e80-435e-b38e-19b9c8cd5924",
+      "status": "Accepted",
+      "seconds": 69.3,
+      "issues": null,
+      "status_code": 0
+    },
+    "pkg_notary": {
+      "package": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/macos-pkg-glm-responses-final/Rekey-3.0.0-alpha.1.pkg",
+      "transport": "Apple documented Notary REST API via existing local proxy",
+      "uploaded": true,
+      "authenticated_history": true,
+      "submission_id": "8b8bc6cb-235b-472b-afe0-db6d7728e777",
+      "status": "Accepted",
+      "seconds": 69.64,
+      "issues": null,
+      "status_code": 0
+    },
+    "initial_restart_failure": {
+      "source_base": "1e3b5cd",
+      "source_delta": "GLM Responses plus single optional DONE marker after terminal; unchanged EOF and sealing",
+      "policy_mode": "team",
+      "policy_signing": "existing temporary Ed25519 test policy",
+      "model": "glm-5.3-flash",
+      "profile": "glm-codex-acceptance",
+      "client_version": "0.160.0",
+      "ui_operations_performed": 0,
+      "started_at_ms": 1791063649967,
+      "candidate_daemon_sha256": "53c0af5ba62c541e9b53799b07f530bde149a873aeae427c2a5a414d28cd4bd8",
+      "failure_type": "RuntimeError",
+      "passed": false,
+      "shutdown_failed": true
+    },
+    "packaging": [
+      {
+        "name": "staple-app",
+        "exit_code": 0,
+        "seconds": 0.985
+      },
+      {
+        "name": "validate-app",
+        "exit_code": 0,
+        "seconds": 0.832
+      },
+      {
+        "name": "signature-app",
+        "exit_code": 0,
+        "seconds": 0.041
+      },
+      {
+        "name": "gatekeeper-app",
+        "exit_code": 0,
+        "seconds": 0.301
+      },
+      {
+        "name": "build-pkg",
+        "exit_code": 0,
+        "seconds": 3.375
+      },
+      {
+        "name": "staple-pkg",
+        "exit_code": 0,
+        "seconds": 0.85
+      },
+      {
+        "name": "validate-pkg",
+        "exit_code": 0,
+        "seconds": 0.797
+      },
+      {
+        "name": "signature-pkg",
+        "exit_code": 0,
+        "seconds": 0.285
+      },
+      {
+        "name": "gatekeeper-pkg",
+        "exit_code": 0,
+        "seconds": 0.213
+      }
+    ],
+    "package": {
+      "path": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/macos-pkg-glm-responses-final/Rekey-3.0.0-alpha.1.pkg",
+      "bytes": 20392071,
+      "sha256": "f011fbd5141d8cad644372f3f9740c37ecc81f819ad111cc7aad2ce6d785916d"
+    },
+    "mechanical_contracts": [
+      {
+        "name": "forbidden-operations",
+        "no_matches": true,
+        "exit_code": 1
+      },
+      {
+        "name": "agent-secret-surface",
+        "no_matches": true,
+        "exit_code": 1
+      },
+      {
+        "name": "cli-dependency-boundary",
+        "exit_code": 0,
+        "forbidden_dependencies": false
+      }
+    ],
+    "source_review": {
+      "production_source_mismatch": [],
+      "changed_files_checked": 20,
+      "credential_matches": [],
+      "encoding_variants": 6
+    },
+    "installation_scope": {
+      "installed": {
+        "rekey": "4d3cc8c6814e884729c125bc9d4d4d0d44710bada82cfa0d44cd4effc92899ec",
+        "rekeyd": "833ed68852638a677afc65a8e624b72e3d4c62e84db79a9c5ed4db22e4a22a00",
+        "rekey-mcp": "95f537305768415ad05f7e889e29e0f0e855397c488d26dcad982669ae0a763f"
+      },
+      "candidate": {
+        "rekey": "1f0314f2c9ac028d096cac3ec6a3c35baec51685559caacd7d6a97dcb8a81a58",
+        "rekeyd": "53c0af5ba62c541e9b53799b07f530bde149a873aeae427c2a5a414d28cd4bd8",
+        "rekey-mcp": "e3c98f9abaf1f8ed7cce08ee4acbc20c0e6297d33e706f3c82184f0fab180803"
+      },
+      "candidate_installed": false,
+      "pkg": {
+        "path": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/macos-pkg-glm-responses-final/Rekey-3.0.0-alpha.1.pkg",
+        "bytes": 20392071,
+        "sha256": "f011fbd5141d8cad644372f3f9740c37ecc81f819ad111cc7aad2ce6d785916d"
+      }
+    },
+    "source_checks": [
+      {
+        "name": "test-workspace-default",
+        "command": [
+          "cargo",
+          "test",
+          "--workspace",
+          "--",
+          "--test-threads=1"
+        ],
+        "exit_code": 0,
+        "seconds": 1077.909
+      },
+      {
+        "name": "check-lab",
+        "command": [
+          "cargo",
+          "check",
+          "--workspace",
+          "--all-targets",
+          "--features",
+          "lab"
+        ],
+        "exit_code": 0,
+        "seconds": 5.008
+      },
+      {
+        "name": "clippy-default",
+        "command": [
+          "cargo",
+          "clippy",
+          "--workspace",
+          "--all-targets",
+          "--",
+          "-D",
+          "warnings"
+        ],
+        "exit_code": 0,
+        "seconds": 3.994
+      },
+      {
+        "name": "clippy-lab",
+        "command": [
+          "cargo",
+          "clippy",
+          "--workspace",
+          "--all-targets",
+          "--features",
+          "lab",
+          "--",
+          "-D",
+          "warnings"
+        ],
+        "exit_code": 0,
+        "seconds": 5.629
+      },
+      {
+        "name": "test-gateway-lab",
+        "command": [
+          "cargo",
+          "test",
+          "-p",
+          "rekey-broker",
+          "--features",
+          "lab",
+          "--test",
+          "gateway",
+          "--",
+          "--test-threads=1"
+        ],
+        "exit_code": 0,
+        "seconds": 41.264
+      },
+      {
+        "name": "fmt-check",
+        "command": [
+          "cargo",
+          "fmt",
+          "--all",
+          "--check"
+        ],
+        "exit_code": 0,
+        "seconds": 0.942
+      }
+    ],
+    "default_counts": {
+      "passed": 1021,
+      "failed": 0,
+      "ignored": 6
+    },
+    "default_all_targets_check": {
+      "exit_code": 0,
+      "log": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/glm-responses-final-checks/check-default.log"
+    },
+    "upgrade_admin_check": {
+      "noninteractive_admin_available": false,
+      "probe_exit_code": 1,
+      "prompt_triggered": false
+    },
+    "final_gateway_lab_counts": {
+      "passed": 16,
+      "failed": 0,
+      "ignored": 0
+    },
+    "format_check": true
+  },
+  "pre_responses_default_test_counts": {
+    "passed": 1018,
+    "failed": 0,
+    "ignored": 6
+  },
+  "default_test_source": "GLM Responses final production_source_sha256, source base 1e3b5cd"
 }

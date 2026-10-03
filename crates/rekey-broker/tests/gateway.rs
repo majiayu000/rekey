@@ -70,10 +70,7 @@ impl UpstreamTransport for Transport {
             self.raw_paths.lock().unwrap().push(request.path.clone());
             assert_eq!(
                 request.auth_header.1.as_slice(),
-                if matches!(
-                    request.host.as_str(),
-                    "api.anthropic.com" | "open.bigmodel.cn"
-                ) {
+                if request.auth_header.0 == "x-api-key" {
                     SECRET.to_vec()
                 } else {
                     [b"Bearer ".as_slice(), SECRET].concat()
@@ -202,6 +199,7 @@ impl Fixture {
             target
                 .path_pattern()
                 .strip_prefix("/api/anthropic")
+                .or_else(|| target.path_pattern().strip_prefix("/api"))
                 .unwrap_or(target.path_pattern())
         )
     }
@@ -385,10 +383,72 @@ async fn glm_gateway_rejects_undeclared_paths_and_models_before_upstream() {
     f.broker.shutdown().await;
 }
 #[tokio::test(flavor = "multi_thread")]
+async fn glm_responses_uses_only_fixed_bearer_route_and_shared_limits() {
+    let f = Fixture::new("glm-responses", "responses", 10, 100, false).await;
+    let (owner, session) = f.mint().await;
+    assert_eq!(
+        session.gateway.as_ref().unwrap().instances[0].provider,
+        rekey_domain::ipc::ProfileGatewayProvider::OpenAi
+    );
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    for path in [
+        "/api/v1/responses",
+        "/v1/messages",
+        "/v1/models",
+        "/v1/responses/other",
+        "/v1/responses?beta=true",
+    ] {
+        let response = client
+            .post(format!(
+                "http://127.0.0.1:{}/p/work{path}",
+                session.gateway.as_ref().unwrap().port
+            ))
+            .bearer_auth(format!("rkc_{}", session.session.capability_token))
+            .header("content-type", "application/json")
+            .body(BODY.to_vec())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 404, "{path}");
+    }
+    for body in [
+        br#"{"model":"unapproved","input":"test"}"#.as_slice(),
+        br#"{"model":"allowed","max_output_tokens":21,"input":"test"}"#.as_slice(),
+    ] {
+        assert_eq!(f.post(&session, body).send().await.unwrap().status(), 403);
+    }
+    assert!(f.broker.fake.take_requests().is_empty());
+    assert_eq!(f.totals(), (0, 0, 0));
+    f.response(br#"{"status":"completed","usage":{"output_tokens":7}}"#);
+    assert_eq!(
+        f.post(&session, br#"{"model":"allowed","input":"test"}"#)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    let sent = f.broker.fake.take_requests();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].host, "open.bigmodel.cn");
+    assert_eq!(sent[0].path, "/api/v1/responses");
+    assert_eq!(sent[0].auth_name, "authorization");
+    assert_eq!(sent[0].auth_value, [b"Bearer ".as_slice(), SECRET].concat());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&sent[0].body).unwrap()["max_output_tokens"],
+        20
+    );
+    assert_eq!(f.totals(), (1, 7, 0));
+    drop(owner);
+    f.broker.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn raw_three_protocols_preserve_exact_bytes_and_settle_before_http_eof() {
     for (provider, capability, query) in [
         ("openai", "chat-completions", ""),
         ("openai", "responses", ""),
+        ("glm-responses", "responses", ""),
         ("anthropic", "messages", ""),
         ("anthropic", "messages", "?beta=true"),
         ("glm", "messages", ""),

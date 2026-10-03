@@ -145,7 +145,7 @@ pub(super) fn require_supported_profile(
         }
         let is_llm = matches!(
             first_source.template.as_str(),
-            "anthropic@1" | "glm@1" | "openai@1"
+            "anthropic@1" | "glm@1" | "glm-responses@1" | "openai@1"
         );
         if is_llm
             != profile
@@ -166,6 +166,9 @@ pub(super) fn require_supported_profile(
             "generic-bearer@1" => generic_source(first, actions)?,
             "anthropic@1" => builtin_template(BuiltinTemplate::Anthropic).map_err(|_| invalid())?,
             "glm@1" => builtin_template(BuiltinTemplate::Glm).map_err(|_| invalid())?,
+            "glm-responses@1" => {
+                builtin_template(BuiltinTemplate::GlmResponses).map_err(|_| invalid())?
+            }
             "openai@1" => builtin_template(BuiltinTemplate::OpenAi).map_err(|_| invalid())?,
             _ => {
                 return Err(BrokerError::Denied(

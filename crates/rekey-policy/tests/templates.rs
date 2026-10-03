@@ -422,6 +422,7 @@ fn builtins_have_closed_provenance_and_github_schema_is_real_content() {
     for builtin in [
         BuiltinTemplate::Anthropic,
         BuiltinTemplate::Glm,
+        BuiltinTemplate::GlmResponses,
         BuiltinTemplate::OpenAi,
         BuiltinTemplate::GitHubPat,
         BuiltinTemplate::GenericBearer {

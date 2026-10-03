@@ -140,7 +140,7 @@ impl Gateway {
                 }
                 let provider = match source.template.as_str() {
                     "anthropic@1" | "glm@1" => ProfileGatewayProvider::Anthropic,
-                    "openai@1" => ProfileGatewayProvider::OpenAi,
+                    "openai@1" | "glm-responses@1" => ProfileGatewayProvider::OpenAi,
                     _ => return None,
                 };
                 Some(ProfileGatewayInstance {
@@ -490,8 +490,12 @@ async fn handle_request(
     let mut matches=material.actions.iter().filter(|action| {
         grant.capabilities.iter().any(|capability|capability.actions.iter().any(|r|r.action_id==action.id&&r.version==action.version))
             && action.method.as_str()==parts.method.as_str()
-            && matches!(&action.target,ActionTarget::Template{target,source,..} if source.signer_id.is_none() && matches!(source.template.as_str(),"anthropic@1"|"glm@1"|"openai@1") && target.params().is_empty()
-                && (if source.template == "glm@1" { path == "/v1/messages" && target.path_pattern() == "/api/anthropic/v1/messages" } else { target.path_pattern() == path })
+            && matches!(&action.target,ActionTarget::Template{target,source,..} if source.signer_id.is_none() && matches!(source.template.as_str(),"anthropic@1"|"glm@1"|"glm-responses@1"|"openai@1") && target.params().is_empty()
+                && (match source.template.as_str() {
+                    "glm@1" => path == "/v1/messages" && target.path_pattern() == "/api/anthropic/v1/messages",
+                    "glm-responses@1" => path == "/v1/responses" && target.path_pattern() == "/api/v1/responses",
+                    _ => target.path_pattern() == path,
+                })
                 && (query.is_empty() || matches!(target.query().get("beta"),Some(ValueRule::Enum(values)) if values.as_slice()==["true"])))
     });
     let action = matches

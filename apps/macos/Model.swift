@@ -845,10 +845,12 @@ enum OnboardingRoute: String, Sendable {
 
 extension AgentProfile {
     // Only invoked by the explicit Prepare Profile button, not during rendering.
-    static func anthropic(actions: [FixedAction], model: String) throws -> AgentProfile {
+    static func onboarding(actions: [FixedAction], model: String) throws -> AgentProfile {
         guard !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw UIError(message: "请填写并确认精确模型 ID。") }
         var profile = newProfile()
-        profile.name = "claude-code"
+        let responses = actions.first?.template?.source.template == "glm-responses@1"
+        let instance = responses ? "glm-responses" : "anthropic"
+        profile.name = responses ? "codex" : "claude-code"
         var capabilities: [Capability] = []
         for action in actions {
             guard let source = action.template?.source, let id = UUID(uuidString: action.id) else { throw UIError(message: "安装响应缺少模板操作身份，未准备 Profile。") }
@@ -856,14 +858,16 @@ extension AgentProfile {
             if let index = capabilities.firstIndex(where: { $0.capability == source.capability }) { capabilities[index].actions.append(reference) }
             else { capabilities.append(.init(capability: source.capability, actions: [reference])) }
         }
-        profile.grants = [.init(instance: "anthropic", capabilities: capabilities)]
-        profile.llm_limits = [.init(instance: "anthropic", models: [model], max_output_tokens_per_request: 32768, max_requests_per_day: 100, max_output_tokens_per_day: 100_000)]
+        profile.grants = [.init(instance: instance, capabilities: capabilities)]
+        profile.llm_limits = [.init(instance: instance, models: [model], max_output_tokens_per_request: 32768, max_requests_per_day: 100, max_output_tokens_per_day: 100_000)]
         return profile
     }
-    var claudeLaunchCommand: String? {
+    var onboardingLaunchCommand: String? {
         guard llm_limits.count == 1, llm_limits[0].models.count == 1 else { return nil }
         func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\"'\"'") + "'" }
-        return "rekey run " + quote(name) + " --client claude-code -- claude --model " + quote(llm_limits[0].models[0])
+        let responses = grants.flatMap(\.capabilities).contains { $0.capability == "responses" }
+        let client = responses ? "codex -- codex" : "claude-code -- claude"
+        return "rekey run " + quote(name) + " --client " + client + " --model " + quote(llm_limits[0].models[0])
     }
 }
 
@@ -1259,7 +1263,7 @@ final class AppModel: ObservableObject {
         _ = try await Task.detached { try client.activatePersonalPolicy(draft, signature: signature, proof: operationProof, recovery: recovery, presence: presence) }.value
         if acceptsNativeCompletion(draft.revision, workspace: draft.workspace), let seed = onboardingProfile,
            let activated = draft.profiles.first(where: { $0.principal_id == seed.principal_id }) {
-            onboardingCommand = activated.claudeLaunchCommand
+            onboardingCommand = activated.onboardingLaunchCommand
         }
     }
     var needsSetup: Bool {
@@ -1383,7 +1387,8 @@ final class AppModel: ObservableObject {
         guard !operationProof.isEmpty, !operationProof.contains("\n"), !operationProof.contains("\r"),
               acceptsNativeCompletion(revision, workspace: client.stateDirectory), !Task.isCancelled else { throw UIError(message: "验证信息或接入上下文已失效，未安装。") }
         let request: [String: Any] = ["source": ["kind": provider], "credential_id": credentialID, "bindings": [[:]], "capabilities": capabilities,
-            "name_prefix": provider == "glm" ? "GLM" : "Anthropic", "timeout_ms": 30_000, "request_max_bytes": 1024 * 1024, "allowed_extra_headers": ["anthropic-beta"],
+            "name_prefix": provider == "anthropic" ? "Anthropic" : "GLM", "timeout_ms": 30_000, "request_max_bytes": 1024 * 1024,
+            "allowed_extra_headers": provider == "glm-responses" ? [] : ["anthropic-beta"],
             "response_max_bytes": 4 * 1024 * 1024, "allowed_response_headers": ["content-type"]]
         let body = operationProof + "\n" + String(decoding: try JSONSerialization.data(withJSONObject: request, options: [.sortedKeys]), as: UTF8.self) + "\n"
         let args = ["template", "install", "--stdin-request", "--password-stdin"] + (presence ? ["--presence"] : [])

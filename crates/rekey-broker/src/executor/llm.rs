@@ -40,11 +40,13 @@ pub(super) fn protocol(
     let builtin = match source.template.as_str() {
         "anthropic@1" => BuiltinTemplate::Anthropic,
         "glm@1" => BuiltinTemplate::Glm,
+        "glm-responses@1" => BuiltinTemplate::GlmResponses,
         "openai@1" => BuiltinTemplate::OpenAi,
         other => {
             if scope.llm_limits.is_some()
                 || other.starts_with("anthropic@")
                 || other.starts_with("glm@")
+                || other.starts_with("glm-responses@")
                 || other.starts_with("openai@")
             {
                 return Err(BrokerError::Denied("profile-llm-source-unsupported"));
@@ -85,7 +87,7 @@ pub(super) fn protocol(
         ("anthropic@1" | "glm@1", "messages") => AnthropicMessages,
         ("anthropic@1", "count-tokens") => CountTokens,
         ("openai@1", "chat-completions") => OpenAiChat,
-        ("openai@1", "responses") => OpenAiResponses,
+        ("openai@1" | "glm-responses@1", "responses") => OpenAiResponses,
         ("openai@1", "embeddings") => Embeddings,
         ("anthropic@1" | "openai@1", "models") => Models,
         _ => return Err(BrokerError::Denied("profile-llm-source-unsupported")),

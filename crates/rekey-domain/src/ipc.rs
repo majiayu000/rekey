@@ -662,6 +662,7 @@ pub struct ActionListResponse {
 pub enum TemplateSource {
     Anthropic {},
     Glm {},
+    GlmResponses {},
     #[serde(rename = "openai")]
     OpenAi {},
     #[serde(rename = "github-pat")]

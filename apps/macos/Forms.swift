@@ -310,6 +310,7 @@ struct TemplateForm: View {
                 Text("GitHub 个人令牌").tag("github-pat")
                 Text("Anthropic").tag("anthropic")
                 Text("GLM（Anthropic 协议）").tag("glm")
+                Text("GLM（Responses 协议）").tag("glm-responses")
                 Text("OpenAI").tag("openai")
                 Text("自定义 Bearer").tag("generic-bearer")
             }
@@ -1147,6 +1148,8 @@ private struct AnthropicOnboardingView: View {
     @State private var message: String?
     @State private var loading = false
     private var ready: Bool { model.unlocked && model.policy?.mode == .personal && model.policy?.trust_installed == true }
+    private var responses: Bool { provider == "glm-responses" }
+    private var requiredCapability: String { responses ? "responses" : "messages" }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("保存凭据与授予权限是两个阶段。取消或失败会保留已保存的凭据和操作，但不会自动授予权限或重试。")
@@ -1156,7 +1159,8 @@ private struct AnthropicOnboardingView: View {
             } else {
                 Picker("服务", selection: $provider) {
                     Text("Anthropic").tag("anthropic")
-                    Text("GLM（智谱）").tag("glm")
+                    Text("GLM · Claude Code").tag("glm")
+                    Text("GLM · Codex").tag("glm-responses")
                 }.disabled(model.busy || !installed.isEmpty)
                 if installed.isEmpty {
                     Text("1 · 保存凭据（只写入，不读取）").font(.headline)
@@ -1191,7 +1195,7 @@ private struct AnthropicOnboardingView: View {
                                 }
                             }
                             Button("使用所选版本继续，不重新安装") { installed = existing.filter { existingSelection.contains($0.reference) } }
-                                .disabled(model.busy || !existing.contains(where: { existingSelection.contains($0.reference) && $0.template?.source.capability == "messages" }))
+                                .disabled(model.busy || !existing.contains(where: { existingSelection.contains($0.reference) && $0.template?.source.capability == requiredCapability }))
                         }
                     }
                     Divider()
@@ -1203,11 +1207,13 @@ private struct AnthropicOnboardingView: View {
                                 Text(capability.id + " · " + capability.actions.map { $0.method + " " + $0.path }.joined(separator: "，"))
                             }
                         }
-                        Toggle("我授权本次安装的操作接受 anthropic-beta 请求头（Claude Code 所需）", isOn: $beta)
-                        Text("可选 beta=true 查询由内置模板声明；此选择不会改变全局模板或其它已安装操作。")
+                        if !responses {
+                            Toggle("我授权本次安装的操作接受 anthropic-beta 请求头（Claude Code 所需）", isOn: $beta)
+                            Text("可选 beta=true 查询由内置模板声明；此选择不会改变全局模板或其它已安装操作。")
+                        }
                         Toggle("使用系统认证批准本次安装", isOn: $presence).onChange(of: presence) { _, _ in proof = "" }
                         if !presence { SecureField("当前保险库密码", text: $proof) }
-                        Button("安装所选能力") { install() }.disabled(model.busy || credentialID.isEmpty || !beta || !capabilities.contains("messages") || (!presence && !singleLine(proof)))
+                        Button("安装所选能力") { install() }.disabled(model.busy || credentialID.isEmpty || (!responses && !beta) || !capabilities.contains(requiredCapability) || (!presence && !singleLine(proof)))
                     } else {
                         Button("读取内置能力") { Task { await loadCatalog() } }.disabled(model.busy || loading)
                     }
@@ -1226,10 +1232,10 @@ private struct AnthropicOnboardingView: View {
                         Button("审阅完整策略") { model.onboardingProfile = profile; model.showPolicyDraft = true }.disabled(model.busy)
                     } else {
                         Text("3 · 明确准备 Profile（当前尚不授予权限）").font(.headline)
-                        TextField("精确模型 ID，例如 claude-sonnet-4-6", text: $modelID)
-                        Text("建议单次输出上限32768；Claude 本轮实测会请求32000。会话15分钟/100次、每日100次/100000tokens，默认无沙箱。下一步均可审阅修改。")
+                        TextField(responses ? "精确模型 ID，例如 glm-5.3-flash" : "精确模型 ID，例如 claude-sonnet-4-6", text: $modelID)
+                        Text(responses ? "单次输出上限32768；会话15分钟/100次、每日100次/100000tokens，默认无沙箱。下一步均可审阅修改。" : "建议单次输出上限32768；Claude 本轮实测会请求32000。会话15分钟/100次、每日100次/100000tokens，默认无沙箱。下一步均可审阅修改。")
                         Button("创建 Profile 草稿") {
-                            do { profile = try AgentProfile.anthropic(actions: installed, model: modelID) }
+                            do { profile = try AgentProfile.onboarding(actions: installed, model: modelID) }
                             catch { message = error.localizedDescription }
                         }.disabled(model.busy || modelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
@@ -1240,8 +1246,8 @@ private struct AnthropicOnboardingView: View {
         .task { if ready { await loadCatalog() } }
         .onChange(of: provider) { _, value in
             secret = ""; proof = ""; credentialID = ""; savedLabel = nil; catalog = nil; capabilities = []; beta = false; existing = []; existingSelection = []; message = nil
-            label = value == "glm" ? "GLM" : "Anthropic"
-            modelID = value == "glm" ? "glm-5.3-flash" : ""
+            label = value == "anthropic" ? "Anthropic" : "GLM"
+            modelID = value == "anthropic" ? "" : "glm-5.3-flash"
             Task { await loadCatalog() }
         }
         .onChange(of: model.nativeFlowRevision) { _, _ in secret = ""; proof = ""; catalog = nil; capabilities = []; beta = false; message = nil; existing = []; existingSelection = [] }

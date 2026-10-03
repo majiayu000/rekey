@@ -160,6 +160,7 @@ pub fn parse_and_verify_template_package(
 pub enum BuiltinTemplate {
     Anthropic,
     Glm,
+    GlmResponses,
     OpenAi,
     GitHubPat,
     GenericBearer {
@@ -174,6 +175,7 @@ pub fn builtin_template(
     let template = match builtin {
         BuiltinTemplate::Anthropic => template::anthropic(),
         BuiltinTemplate::Glm => template::glm(),
+        BuiltinTemplate::GlmResponses => template::glm_responses(),
         BuiltinTemplate::OpenAi => template::openai(),
         BuiltinTemplate::GitHubPat => template::github_pat(),
         BuiltinTemplate::GenericBearer { origin, actions } => {

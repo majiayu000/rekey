@@ -27,7 +27,7 @@ Setup 和 Add 打开本机 App；密码、Key、策略审阅与系统认证只�
 
 ## 授权与执行
 
-内置 Anthropic、GLM（Anthropic Messages 协议）、OpenAI、GitHub PAT 和固定 Bearer 模板支持按实例、能力及精确 Action
+内置 Anthropic、GLM（Messages / Responses 协议）、OpenAI、GitHub PAT 和固定 Bearer 模板支持按实例、能力及精确 Action
 版本授权。安装操作不会自动授予权限。个人模式使用本机 Secure Enclave 策略签名；
 团队模式使用外部 Ed25519 签名，两者在建库时确定。个人策略显式选择模板默认、允许或
 本机审批；完整差异由 daemon 生成，App 审阅后签署，不能静默覆盖现有授权。

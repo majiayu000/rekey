@@ -718,6 +718,18 @@ pub fn glm() -> Result<ProviderTemplate, DomainError> {
     )
 }
 
+pub fn glm_responses() -> Result<ProviderTemplate, DomainError> {
+    builtin(
+        r#"{
+      "template":"glm-responses@1","display":"GLM（Responses）",
+      "credential":{"kind":"opaque-token","inject":{"header":"authorization","prefix":"Bearer "}},
+      "origin":"https://open.bigmodel.cn",
+      "capabilities":[
+        {"id":"responses","risk":"medium","actions":[{"method":"POST","path":"/api/v1/responses"}]}
+      ]}"#,
+    )
+}
+
 pub fn openai() -> Result<ProviderTemplate, DomainError> {
     builtin(
         r#"{

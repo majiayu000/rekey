@@ -4,7 +4,7 @@
 `Release` 均为 **Pending**。旧 v2 发布结果仅适用于其历史二进制，不可升级为 v3 证明。
 [v3 SPEC](../superpowers/specs/2026-10-02-rekey-v3-personal-first.md)定义要求，
 [唯一实施记录](../superpowers/plans/2026-10-03-v3-implementation.md)保留各冻结批次的实际命令、失败与复验。
-fake-IP 修复候选默认全仓通过 1,018/0 failed/6 ignored；两配置严格 Clippy 和 Lab 上游定向测试通过。
+GLM Responses最终源码默认全仓通过1,021/0 failed/6 ignored；两配置严格Clippy、all-targets编译与22流式/16网关定向通过。
 Lab 全仓 1,482/0 failed/6 ignored 为修复前 `a6467ab` 的历史结果，本批未重复整套 Lab。
 历史失败与本轮产物、设备范围见实施记录；本地结果不替代安装后的体验或 Release 验收。
 
@@ -54,7 +54,7 @@ agent-run参考不能替代该保证；Codex Seatbelt仍有managed-preferences�
 GA同一主版本的次/补丁版本必须保留持久格式，破坏性变化进入下一主版本。
 [候选说明](../releases/v3.0.0-alpha.1.md)列出全部Pending发布门槛。
 历史公开行为见[v2 alpha.2](../releases/v2.0.0-alpha.2.md)及[v2 alpha.1](../releases/v2.0.0-alpha.1.md)；
-本表不修改这些历史事实；候选尚未公开发布，签名安装与 GLM 的有界真机结果按下节记录，不扩展为完整客户端或产品验收。
+本表不修改这些历史事实；候选尚未公开发布，签名安装与 GLM 的有界真机结果按下节记录，后续实际客户端和500次零交互结果见下节；不扩展为完整产品验收。
 
 ## 2026-10-03 审查修复合流与设备证据
 
@@ -67,3 +67,7 @@ GA同一主版本的次/补丁版本必须保留持久格式，破坏性变化�
 当前账户 CLI 验收已另建独立个人库，经生产 Secure Enclave 签署和真实 daemon 完成信任根安装、GLM Profile 激活及 run 启动/退出撤销。证明材料仅在源码外私有目录，现有两份保险库保留；该签名 helper 路径不替代 App 首次接入、登录项生命周期或 T12。
 
 原 Clash 配置下普通 HTTPS→GLM 实测 200；修复前 Rekey→GLM 为 502/UPSTREAM_FAILED。原因定位到 I6 公网 DNS 筛查与 198.18.* fake-IP 的兼容性。仅系统全虚拟地址答案触发 Cloudflare DoH，查询 A/AAAA 后沿用全部公网检查、地址固定和 TLS 域名验证；不修改 Clash、不增加 provider 例外。签名修复候选实际 `rekey run` 的普通/流式 GLM 请求均返回 200、正常结束并返回用量；17 项上游回归通过。产物、检查及范围见[统一证据](../evidence/v3-release-acceptance-2026-10-04.json)的 `fake_ip_compatibility`，不代表 500 次、Claude Code/Codex 或新账户验收。
+
+GLM Responses 接入合同：新增固定 `glm-responses@1`（POST `/api/v1/responses`、Bearer），复用 OpenAI Responses 网关与预算。App接入页明确选择GLM/Codex；源码与软件检查已通过，最终App/pkg已签名、公证、装订且通过Gatekeeper。真实Codex复测时Mac自动锁屏，受保护锚读取返回-25308；正常解锁后的实际客户端结果仍待验，不标为通过。
+
+当前账户 Agent 实测：签名安装版`1e3b5cd`的GLM Messages普通/SSE及真实Claude Code通过；同一run完成500次授权调用，499成功/1上游超时，无UI/自动重试，按T11零交互条件通过。实际网关拒绝、Agent/MCP有界泄漏探针、正常/SIGKILL撤销及签名helper一次审批/跨owner/迟到结果守卫通过。该helper注入active-window检查，仍需已安装App的焦点/可见取消验证；新账户T12与公开发布未验。全部边界及原始失败见统一证据的`current_account_agent_acceptance`。

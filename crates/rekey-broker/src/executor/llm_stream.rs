@@ -111,6 +111,7 @@ struct Observer {
     poisoned: bool,
     reason: Option<TextStreamStatus>,
     terminal: Option<(usize, TextStreamStatus)>,
+    done_marker_seen: bool,
 }
 impl Observer {
     fn new(protocol: ProfileLlmProtocol) -> Self {
@@ -126,6 +127,7 @@ impl Observer {
             poisoned: false,
             reason: None,
             terminal: None,
+            done_marker_seen: false,
         }
     }
     fn identity(&mut self, id: &str) -> Result<(), BrokerError> {
@@ -223,6 +225,13 @@ impl Observer {
         }
     }
     fn done(&mut self, frame: usize) -> Result<(), BrokerError> {
+        if self.protocol == ProfileLlmProtocol::OpenAiResponses
+            && self.terminal.is_some()
+            && !self.done_marker_seen
+        {
+            self.done_marker_seen = true;
+            return Ok(());
+        }
         if self.protocol != ProfileLlmProtocol::OpenAiChat
             || self.terminal.is_some()
             || self.identity.is_none()
@@ -1145,6 +1154,61 @@ mod tests {
         }
         out
     }
+    #[tokio::test]
+    async fn responses_optional_done_preserves_bytes_and_holds_terminal() {
+        let raw = responses(&["OK"], json!(7)) + "data: [DONE]\n\n";
+        for split in [1, 7, raw.len()] {
+            let (tx, mut rx) = mpsc::channel(4096);
+            let mut complete = run(
+                response(raw.as_bytes(), split, false),
+                vec![],
+                65536,
+                &tx,
+                ProfileLlmProtocol::OpenAiResponses,
+            )
+            .await
+            .unwrap();
+            let mut out = drain(&mut rx);
+            assert!(!String::from_utf8_lossy(&out).contains("response.completed"));
+            assert_eq!(complete.output_tokens(), Some(7));
+            complete.release(&tx).await.unwrap();
+            out.extend(drain(&mut rx));
+            assert_eq!(out, raw.as_bytes());
+        }
+    }
+
+    #[tokio::test]
+    async fn responses_done_rejects_early_duplicate_and_trailing_data() {
+        let good = responses(&["OK"], json!(7)) + "data: [DONE]\n\n";
+        for raw in [
+            "data: [DONE]\n\n".to_owned() + &responses(&["OK"], json!(7)),
+            good.clone() + "data: [DONE]\n\n",
+            good.clone()
+                + &event(
+                    json!({"type":"response.output_text.delta","item_id":"i","output_index":0,"content_index":0,"delta":"late"}),
+                ),
+            good + &event(
+                json!({"type":"response.completed","response":{"id":"r","status":"completed","secret":"synthetic-secret-1234"}}),
+            ),
+        ] {
+            let (tx, mut rx) = mpsc::channel(4096);
+            assert!(
+                run(
+                    response(raw.as_bytes(), 1, false),
+                    vec![b"synthetic-secret-1234".to_vec().into()],
+                    65536,
+                    &tx,
+                    ProfileLlmProtocol::OpenAiResponses,
+                )
+                .await
+                .is_err()
+            );
+            let out = drain(&mut rx);
+            assert!(!String::from_utf8_lossy(&out).contains("response.completed"));
+            assert!(!String::from_utf8_lossy(&out).contains("synthetic-secret-1234"));
+        }
+    }
+
     #[tokio::test]
     async fn three_providers_preserve_bytes_and_hold_terminal_until_explicit_release() {
         for (protocol, raw, terminal) in [

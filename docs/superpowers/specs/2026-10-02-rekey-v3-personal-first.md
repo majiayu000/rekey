@@ -566,6 +566,7 @@ v3 只把"由谁批准"抽象出来。策略规则增加 `approver` 字段：
 |---|---|
 | `anthropic@1` | `/v1/messages`（含流式、tools、thinking）、`/v1/messages/count_tokens`、`/v1/models` |
 | `glm@1` | 固定 `https://open.bigmodel.cn/api/anthropic/v1/messages`，使用 Anthropic Messages 协议（含流式、tools、thinking）；仅声明 messages，不假定支持 count-tokens 或 models |
+| `glm-responses@1` | 固定 `https://open.bigmodel.cn/api/v1/responses`，Bearer 注入，仅声明 OpenAI Responses 能力；用于 Codex，不开放存储查询、删除或任意 endpoint |
 | `openai@1` | `/v1/chat/completions`、`/v1/responses`、`/v1/embeddings`、`/v1/models` |
 | `github-pat@1` | 上面的示例，再加 comments、labels、contents 的只读接口 |
 | `generic-bearer@1` | 用户自填 origin，加 1–20 条固定的 method+path，不带参数；作为兜底 |
@@ -649,6 +650,8 @@ macOS 仅允许精确 agent.sock 和可信59端口的 `127.0.0.1` TCP；其他 I
 Profile 用尽调用额度后，拒绝新执行和发现，但不把“额度耗尽”当作控制连接撤销：必须让已经准入的最后一次响应完整交付。条目保留到 owner/control 关闭、显式撤销或 TTL 到期；普通手工会话继续使用原有清理语义。
 
 `glm@1` 作为固定部署的 Anthropic Messages 实例使用现有 `anthropic` gateway provider。SDK 路径 `/v1/messages`（可选 `beta=true`）只映射到该模板认证的 `/api/anthropic/v1/messages`；不允许请求携带 origin 或任意前缀。仍校验模板摘要、固定域名、路径、凭据注入、模型白名单和预算。App 接入页可明确选择 Anthropic 或 GLM，选择变化丢弃未提交表单与能力选择。GLM 的协议兼容依据 [智谱官方文档](https://docs.bigmodel.cn/cn/guide/develop/claude/introduction)，真实服务响应仍需另行验收。
+
+`glm-responses@1` 使用现有 `openai` gateway provider；SDK 的 `/v1/responses` 只映射到该模板认证的 `/api/v1/responses`。其 Bearer 注入与 `glm@1` 的 x-api-key 分开声明，模板摘要、模型、用量和原始 SSE 仍走同一准入和结算边界。App 可明确选择 GLM 的 Claude Code 或 Codex 接入；不需要用户编写 manifest 或 JSON。依据 [智谱 Responses 官方文档](https://docs.bigmodel.cn/cn/guide/develop/responses/introduction)，流式结束可没有 `[DONE]`；真实 GLM 也已观测到完整终帧后附加该标记。只允许 `response.completed` / `response.incomplete` 之后出现单个 `[DONE]`，提前、重复或终帧后的其它数据仍拒绝。终帧必须等 EOF 与结算后才能释放，秘密遮蔽保持原合同。
 
 SDK endpoint 只从已认证 admin 连接的 opcode59 成功 body 取得。`ProfileSessionCreatedResponse` 必填 `gateway`：非 LLM 为 null；LLM 监听可用时为 `{port, instances:[{instance, provider}]}`，provider 为闭合 `anthropic` / `openai`。LLM 监听不可用时也返回 null，SDK run 以现有启动不可用错误拒绝启动，不自动重试；MCP 本身不依赖 HTTP endpoint。端口必须当前已绑定且非零，实例映射须恰好覆盖该 Profile 的 LLM 实例；响应与完整 Profile、策略摘要在同一协调点绑定。CLI 固定构造 loopback URL，Anthropic 使用 `/p/<instance>`，OpenAI 使用 `/p/<instance>/v1`；不接受任意 origin，也不读取端口文件后发送 capability。同 provider 多实例无法映射到一个 SDK 环境变量时，run 明确拒绝启动并提示拆分 Profile，不猜选第一个。Agent IPC 内部 capability 保持原值，仅 HTTP SDK 环境的 API key 添加一次 `rkc_` 前缀。
 
