@@ -3,11 +3,11 @@
 All notable public changes are recorded here. Rekey uses semantic versioning
 for release identifiers, but prerelease compatibility is not guaranteed.
 
-## 3.0.0-alpha.1 — Unreleased candidate
+## 3.0.0-alpha.1
 
 **Requires reinitialization: yes.** Older formats are rejected, never migrated.
-Vault25 and policy snapshot6 remain pre-GA and are not finally frozen. GA
-minor/patch releases within one major must preserve durable formats.
+Vault25 and policy snapshot6 are frozen from this alpha onward. All v3
+prereleases, GA, minor and patch releases must preserve these durable formats.
 
 - Personal/team immutable signing mode; explicit Presence step-up, protected
   desktop reveal, authenticated daemon peer, and all-state shutdown proof.
@@ -21,7 +21,8 @@ minor/patch releases within one major must preserve durable formats.
 - macOS onboarding, opt-in SMAppService, signed pkg/cask generation and Linux
   user-unit generation. Enterprise execution remains opt-in `lab`.
 
-These are source changes, not a published release or complete hardware claim.
+These are source changes, not a complete hardware claim. Publication and download
+status are recorded on the GitHub release and its workflow.
 Final joint checks and every release/device gate remain separate. See the
 [candidate release notes](docs/releases/v3.0.0-alpha.1.md) and
 [feature matrix](docs/product-foundation/feature-truth-matrix.md).

@@ -3,7 +3,7 @@
 路径为历史链接兼容而保留，本文描述 **3.0.0-alpha.1 未发布候选**。
 行为依据是 [v3 SPEC](../superpowers/specs/2026-10-02-rekey-v3-personal-first.md)，
 不是历史v2档案或未来企业方案。证据与未验项见[功能事实矩阵](feature-truth-matrix.md)。
-当前vault25 / policy6仍未最终冻结，不构成GA互读承诺。
+vault25 / policy6已于2026-10-05冻结，覆盖全部v3预发布与正式版本；此维护约束不提升安全等级或代替设备验收。
 
 Presence 不得签发新的七天授权、修改密码或轮换恢复密钥；签发与改密码只接受密码/恢复密钥，恢复轮换保持仅密码。已解锁 step-up、unlock 与 Locked shutdown 共用失败退避，Presence 成功不重置猜测次数。App 仅在首次成功读取后的固定十秒窗口复用 LAContext，不缓存 K。
 
@@ -111,7 +111,8 @@ capability目的地。Host/Origin/auth/path/header/body都受限，审批控制�
 策略激活已提交但bind失败时保留激活事实，endpoint不可用，SDK launch失败，不重签。
 
 SSE原始tools/thinking字节保持，raw bytes和decoded JSON字符串均检查；初始值、delta、
-done快照与SDK有序text投影共用有界遮蔽上下文。未知跨delta语义或超限拒绝。
+done快照与SDK有序text投影共用有界遮蔽上下文，包括Anthropic交错文本块的block index顺序。未知跨delta语义或超限拒绝。
+首字节前的安全拒绝保留RESPONSE_SECURITY_VIOLATION与不可重试属性；已发SSE后失败中止正文。
 完成帧必须等EOF与durable结算后释放；取消/断开仍由Supervisor终态记账。
 支持的raw/base64/base64url/hex/percent/JSON表示有限，嵌入base64完整对齐保证要求
 秘密至少16字节；短Key给固定警告。无法保证任意变换/压缩/加密/侧信道均被识别。

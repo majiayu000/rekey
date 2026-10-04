@@ -1,6 +1,6 @@
 # Rekey macOS UI
 
-原生 SwiftUI 本机管理客户端。当前目标为 **3.0.0-alpha.1 未发布候选**，vault25 / policy6 尚未完成预 GA 格式冻结。需要 macOS 14+ 和 Xcode Command Line Tools；无需 Node、浏览器服务或新数据库。安装与设备验收仍待完成，不以软件检查宣称 L1/L2。
+原生 SwiftUI 本机管理客户端。当前版本为 **3.0.0-alpha.1（alpha）**，vault25 / policy6 已冻结并覆盖全部 v3 版本。需要 macOS 14+ 和 Xcode Command Line Tools；无需 Node、浏览器服务或新数据库。新版 App 交互与登录项真机验收由用户暂缓，仍未验证，不以软件检查宣称 L1/L2。
 
 ## 构建与打开
 

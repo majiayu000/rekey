@@ -372,20 +372,47 @@ async fn streaming_http_errors_preserve_status_headers_and_body_only_after_seali
     f.settled(2).await;
     assert_eq!(f.totals(), (2, 40, 0));
     assert_eq!(f.db().query_row("SELECT count(*) FROM audit_events WHERE event_type='execution.finished' AND upstream_status IN (429,529)", [], |r|r.get::<_,u64>(0)).unwrap(), 2);
-    for (body, header, fail) in [
-        (SECRET.to_vec(), ("x-not-allowlisted", "safe"), false),
+    for (body, header, fail, status, code, retryable) in [
+        (
+            SECRET.to_vec(),
+            ("x-not-allowlisted", "safe"),
+            false,
+            502,
+            "RESPONSE_SECURITY_VIOLATION",
+            false,
+        ),
         (
             error.to_vec(),
             ("x-not-allowlisted", std::str::from_utf8(SECRET).unwrap()),
+            false,
+            502,
+            "RESPONSE_SECURITY_VIOLATION",
             false,
         ),
         (
             error.to_vec(),
             ("retry-after", std::str::from_utf8(SECRET).unwrap()),
             false,
+            502,
+            "RESPONSE_SECURITY_VIOLATION",
+            false,
         ),
-        (vec![b'x'; 65537], ("retry-after", "30"), false),
-        (error.to_vec(), ("retry-after", "30"), true),
+        (
+            vec![b'x'; 65537],
+            ("retry-after", "30"),
+            false,
+            403,
+            "RESPONSE_TOO_LARGE",
+            false,
+        ),
+        (
+            error.to_vec(),
+            ("retry-after", "30"),
+            true,
+            502,
+            "UPSTREAM_FAILED",
+            true,
+        ),
     ] {
         f.transport.streams.lock().unwrap().push_back(StreamReply {
             status: 429,
@@ -398,11 +425,14 @@ async fn streaming_http_errors_preserve_status_headers_and_body_only_after_seali
             fail,
         });
         let response = f.post(&session, request).send().await.unwrap();
-        assert_eq!(response.status(), 502);
+        assert_eq!(response.status().as_u16(), status);
         assert!(!response.headers().contains_key("retry-after"));
         let body = response.bytes().await.unwrap();
         assert!(!body.windows(SECRET.len()).any(|s| s == SECRET));
         assert!(!body.windows(error.len()).any(|s| s == error));
+        let envelope: ipc::ErrorEnvelope = serde_json::from_slice(&body).unwrap();
+        assert_eq!(envelope.code, code);
+        assert_eq!(envelope.retryable, retryable);
     }
     f.settled(7).await;
     assert_eq!(f.totals(), (7, 140, 0));
@@ -410,6 +440,45 @@ async fn streaming_http_errors_preserve_status_headers_and_body_only_after_seali
     drop(owner);
     f.broker.shutdown().await;
 }
+#[tokio::test(flavor = "multi_thread")]
+async fn stream_security_failure_before_first_chunk_preserves_nonretryable_error() {
+    let f = Fixture::new("anthropic", "messages", 3, 1000, false).await;
+    let (owner, session) = f.mint().await;
+    let request =
+        br#"{"model":"allowed","stream":true,"messages":[{"role":"user","content":"test"}]}"#;
+    let raw = format!(
+        "data: {}\n\n",
+        json!({"type":"message_start","message":{"id":std::str::from_utf8(SECRET).unwrap(),"content":[]}})
+    );
+    for (body, header) in [
+        (raw.as_bytes(), "safe"),
+        (b"".as_slice(), std::str::from_utf8(SECRET).unwrap()),
+    ] {
+        f.transport.streams.lock().unwrap().push_back(StreamReply {
+            status: 200,
+            headers: vec![
+                ("content-type".into(), "text/event-stream".into()),
+                ("x-unlisted".into(), header.into()),
+            ],
+            chunks: body.chunks(7).map(<[u8]>::to_vec).collect(),
+            eof: None,
+            fail: false,
+        });
+        let response = f.post(&session, request).send().await.unwrap();
+        assert_eq!(response.status(), 502);
+        let bytes = response.bytes().await.unwrap();
+        assert!(!bytes.windows(SECRET.len()).any(|value| value == SECRET));
+        let envelope: ipc::ErrorEnvelope = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(envelope.code, "RESPONSE_SECURITY_VIOLATION");
+        assert!(!envelope.retryable);
+    }
+    f.settled(2).await;
+    assert_eq!(f.totals(), (2, 40, 0));
+    assert_eq!(f.transport.raw_sent.lock().unwrap().len(), 2);
+    drop(owner);
+    f.broker.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn glm_gateway_rejects_undeclared_paths_and_models_before_upstream() {
     let f = Fixture::new("glm", "messages", 10, 100, false).await;

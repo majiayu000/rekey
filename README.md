@@ -2,7 +2,7 @@
 
 Rekey 把 API Key 留在本机，让 Agent 只调用你授权的操作。
 
-当前是 **3.0.0-alpha.1 未发布候选**。macOS 安装入口为签名、公证的 pkg；
+当前版本为 **3.0.0-alpha.1（alpha）**，[发布状态与下载](https://github.com/majiayu000/rekey/releases/tag/v3.0.0-alpha.1)以 GitHub 为准。macOS 安装入口为签名、公证的 pkg；
 发布工作流也会从该 pkg 生成本地 Homebrew cask，尚无公开 tap。
 [安装说明](docs/installation.md)列出前置条件；设备权限和完整发布验收仍待完成。
 
@@ -51,13 +51,14 @@ App 提供凭据管理、模板安装、策略/审批、Activity 和备份恢复
 查看明文和停止 daemon 每次需要新证明；七天系统认证授权不会因重启或恢复而续期。
 回滚检测使用认证代数与外部 high-water；疑似回滚不会自动解锁，恢复须审阅并明确确认。
 
-永久不提供迁移、旧格式双读或回填。当前 vault25 / policy6 仍是预 GA 格式，尚未最终冻结。
-GA 后同一主版本的次/补丁版本不得改变持久格式；破坏性格式变化必须进入下一主版本。
+永久不提供迁移、旧格式双读或回填。vault25 / policy6 已冻结，覆盖所有 v3 预发布与正式版本。
+同一主版本不得改变持久格式；破坏性格式变化必须进入下一主版本。
 旧环境保留匹配的二进制、状态与备份，新格式使用新空目录重建。
 
 - [使用指南](docs/user-guide.md) · [安装与卸载](docs/installation.md) · [macOS App](apps/macos/README.md)
 - [运维与明确恢复](docs/operations-runbook.md) · [功能事实](docs/product-foundation/feature-truth-matrix.md)
 - [威胁模型](docs/product-foundation/threat-model-v2.md) · [候选范围](docs/alpha-scope.md) · [安全报告](SECURITY.md)
+- [发布进度与一周自用记录](docs/v3-release-and-dogfood.md)
 
 ## 开发
 

@@ -71,7 +71,7 @@ jobs:
           mkdir -p "$stage/docs/product-foundation" "$stage/docs/releases" \
             "$stage/docs/superpowers/specs" "$stage/examples"
           install -m 0644 docs/alpha-scope.md docs/installation.md docs/user-guide.md \
-            docs/operations-runbook.md "$stage/docs/"
+            docs/operations-runbook.md docs/v3-release-and-dogfood.md "$stage/docs/"
           install -m 0644 docs/product-foundation/feature-truth-matrix.md \
             docs/product-foundation/threat-model-v2.md "$stage/docs/product-foundation/"
           install -m 0644 docs/releases/${GITHUB_REF_NAME}.md "$stage/docs/releases/"
@@ -141,6 +141,13 @@ jobs:
             docs/superpowers/specs/2026-10-02-rekey-v3-personal-first.md \
             docs/superpowers/plans/2026-10-03-v3-implementation.md \
             docs/evidence/local-capabilities-2026-10-02.json \
+            docs/evidence/v3-review-v1-presence-2026-10-03.json \
+            docs/evidence/v3-review-v2-lldb-2026-10-03.json \
+            docs/evidence/v3-review-notarization-2026-10-03.json \
+            docs/evidence/v3-release-acceptance-2026-10-04.json \
+            docs/evidence/v3-security-core-review-2026-10-05.md \
+            docs/releases/v2.0.0-alpha.1.md \
+            docs/releases/v2.0.0-alpha.2.md \
             deploy/prometheus/rekey.rules.yml \
             deploy/prometheus/rekey.rules.test.yml \
             deploy/prometheus/rekey.scrape.example.yml \

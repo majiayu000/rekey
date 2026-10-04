@@ -104,6 +104,8 @@ struct Observer {
     closed: BTreeSet<Key>,
     blocks: BTreeSet<u64>,
     stopped_blocks: BTreeSet<u64>,
+    // SDK text is joined by block index, independently of delta arrival order.
+    anthropic_text: BTreeMap<u64, Zeroizing<String>>,
     identity: Option<String>,
     // Provider assembly identity only, charged to the same response bound.
     items: BTreeMap<u64, ResponseItem>,
@@ -121,6 +123,7 @@ impl Observer {
             closed: BTreeSet::new(),
             blocks: BTreeSet::new(),
             stopped_blocks: BTreeSet::new(),
+            anthropic_text: BTreeMap::new(),
             identity: None,
             items: BTreeMap::new(),
             last_usage: None,
@@ -186,6 +189,11 @@ impl Observer {
             + self.closed.iter().map(Key::allocated).sum::<usize>()
             + (self.blocks.len() + self.stopped_blocks.len()) * std::mem::size_of::<u64>()
             + self.identity.as_ref().map_or(0, String::len)
+            + self
+                .anthropic_text
+                .values()
+                .map(|text| text.len() + std::mem::size_of::<(u64, Zeroizing<String>)>())
+                .sum::<usize>()
             + self
                 .items
                 .values()
@@ -271,7 +279,11 @@ impl Observer {
                     return Err(invalid());
                 }
                 let i = index(v, "index")?;
-                if self.stopped_blocks.contains(&i) || !self.blocks.insert(i) {
+                // SDKs append starts to their content array, then index deltas.
+                if i != (self.blocks.len() + self.stopped_blocks.len()) as u64
+                    || self.stopped_blocks.contains(&i)
+                    || !self.blocks.insert(i)
+                {
                     return Err(invalid());
                 }
                 let block = &v["content_block"];
@@ -281,6 +293,8 @@ impl Observer {
                         self.append(Key::Anthropic(i, field), text, frame, hold, needles)?;
                         if field == "text" {
                             self.append(Key::Anthropic(0, "all-text"), text, frame, hold, needles)?;
+                            self.anthropic_text.entry(i).or_default().push_str(text);
+                            self.scan_anthropic_text(hold, needles)?;
                         }
                     }
                 }
@@ -335,6 +349,11 @@ impl Observer {
                         hold,
                         needles,
                     )?;
+                    self.anthropic_text
+                        .entry(i)
+                        .or_default()
+                        .push_str(string(delta, field)?);
+                    self.scan_anthropic_text(hold, needles)?;
                 }
             }
             "content_block_stop" => {
@@ -600,6 +619,17 @@ impl Observer {
             {
                 self.response_part_snapshot(output, i as u64, part)?;
             }
+        }
+        Ok(())
+    }
+    fn scan_anthropic_text(
+        &self,
+        hold: usize,
+        needles: &[Zeroizing<Vec<u8>>],
+    ) -> Result<(), BrokerError> {
+        let mut joined = Tail::default();
+        for text in self.anthropic_text.values() {
+            joined.push(text, 0, hold, needles)?;
         }
         Ok(())
     }
@@ -993,7 +1023,10 @@ pub(super) async fn run(
             return Err(invalid());
         }
     }
-    if response.status != 200 || mime != 1 || headers_contain_secret(&response.headers, &needles) {
+    if headers_contain_secret(&response.headers, &needles) {
+        return Err(BrokerError::ResponseSecurityViolation);
+    }
+    if response.status != 200 || mime != 1 {
         return Err(invalid());
     }
     let mut raw = Sealer::new(&needles, limit)?;
@@ -1598,6 +1631,83 @@ mod tests {
         out.extend(drain(&mut rx));
         assert_eq!(out, raw.as_bytes());
     }
+    #[tokio::test]
+    async fn anthropic_interleaved_text_is_sealed_in_content_order() {
+        let secret = b"synthetic-secret-1234";
+        for initial in [false, true] {
+            for encoded in [false, true] {
+                let mut raw =
+                    event(json!({"type":"message_start","message":{"id":"m","content":[]}}));
+                for (i, text) in [(0, ""), (1, if initial { "secret-1234" } else { "" })] {
+                    raw += &event(
+                        json!({"type":"content_block_start","index":i,"content_block":{"type":"text","text":text}}),
+                    );
+                }
+                if !initial {
+                    raw += &event(
+                        json!({"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"secret-1234"}}),
+                    );
+                }
+                raw += &event(
+                    json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"synthetic-"}}),
+                );
+                for i in [1, 0] {
+                    raw += &event(json!({"type":"content_block_stop","index":i}));
+                }
+                raw += &event(
+                    json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}),
+                );
+                raw += &event(json!({"type":"message_stop"}));
+                if encoded {
+                    raw = raw
+                        .replace("synthetic-", r"synth\u0065tic-")
+                        .replace("secret-1234", r"\u0073ecret-1234");
+                }
+                let (tx, _rx) = mpsc::channel(4096);
+                assert!(
+                    matches!(
+                        run(
+                            response(raw.as_bytes(), 1, false),
+                            super::super::sealing::sealing_needles(secret, secret),
+                            65536,
+                            &tx,
+                            ProfileLlmProtocol::AnthropicMessages,
+                        )
+                        .await,
+                        Err(BrokerError::ResponseSecurityViolation)
+                    ),
+                    "initial={initial}, encoded={encoded}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn anthropic_misindexed_block_starts_cannot_change_sdk_text_assembly() {
+        let raw = [
+            json!({"type":"message_start","message":{"id":"m","content":[]}}),
+            json!({"type":"content_block_start","index":1,"content_block":{"type":"text","text":"synthetic-"}}),
+            json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":"noise"}}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"secret-1234"}}),
+            json!({"type":"content_block_stop","index":0}),
+            json!({"type":"content_block_stop","index":1}),
+            json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}),
+            json!({"type":"message_stop"}),
+        ].into_iter().map(event).collect::<String>();
+        let (tx, _rx) = mpsc::channel(4096);
+        assert!(matches!(
+            run(
+                response(raw.as_bytes(), 1, false),
+                vec![b"synthetic-secret-1234".to_vec().into()],
+                65536,
+                &tx,
+                ProfileLlmProtocol::AnthropicMessages,
+            )
+            .await,
+            Err(BrokerError::Upstream("invalid-stream"))
+        ));
+    }
+
     #[tokio::test]
     async fn reflected_encodings_and_separate_text_blocks_cannot_leak() {
         let secret = b"synthetic-secret-1234";

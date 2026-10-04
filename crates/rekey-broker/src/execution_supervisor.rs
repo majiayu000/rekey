@@ -172,7 +172,19 @@ impl ExecutionSupervisor {
                                                 Ok(outcome) => outcome
                                                     .stream_status
                                                     .unwrap_or(TextStreamStatus::Failed),
-                                                Err(_) => TextStreamStatus::Failed,
+                                                Err(error) => {
+                                                    // Before the first chunk the gateway can still
+                                                    // return the original safe error envelope. After
+                                                    // a chunk this event aborts the HTTP body.
+                                                    let _ = tokio::time::timeout(
+                                                        std::time::Duration::from_secs(1),
+                                                        sender.send(
+                                                            TextStreamEvent::AdmissionError(error),
+                                                        ),
+                                                    )
+                                                    .await;
+                                                    return;
+                                                }
                                             };
                                             let _ = tokio::time::timeout(
                                                 std::time::Duration::from_secs(1),

@@ -260,7 +260,7 @@ install -m 0755 target/release/rekey target/release/rekeyd \
 ```
 
 Current unreleased source uses state/backup format **25**. It rejects earlier
-formats without migration; pre-GA changes within 25 are not an upgrade contract. Initialize a new empty state directory; keep
+formats without migration. Vault25 / policy6 are frozen across all v3 prereleases and GA. Initialize a new empty state directory for an older format; keep
 older binaries with their matching state and backups.
 
 An Admin may instead bind a local executable to one exact Action version with
@@ -345,9 +345,9 @@ and [external collection specification](superpowers/specs/2026-09-16-external-ca
 ## Format changes and restore
 
 Unreleased v3 currently uses vault/backup format **25** and policy snapshot
-format **6**. These numbers do not indicate that a GA format has been frozen.
+format **6**. These durable formats are frozen across all v3 prereleases and GA.
 No older vault, backup or policy format is migrated or backfilled, now or after GA.
-After GA, minor and patch releases within one major version must preserve the
+All v3 prereleases, GA, minor and patch releases must preserve the
 durable format; an incompatible format requires a new major version. Keep old
 binaries, state and backups together; initialize a new empty directory for an
 incompatible format rather than pointing new binaries at old state.
