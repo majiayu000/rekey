@@ -27,7 +27,7 @@ CI收尾修复源码默认全仓1,021/0 failed/6 ignored，两配置严格Clippy
 | Profile与owner | [profile sessions](../../crates/rekey-broker/tests/profile_sessions.rs)、[实际run](../../tests/profile_run.rs)；同一签名scope、固定peer owner、EOF/死亡撤销 | 注册前FD移交不能还原最初connector | Pending |
 | 共享LLM预算 | [executor](../../crates/rekey-broker/src/executor.rs)、[LLM](../../crates/rekey-broker/src/executor/llm.rs)；model/max在共同入口，principal+instance+UTCday持久 | 有界在途超额；不是硬费用封顶 | Pending |
 | Raw SSE与遮蔽 | [stream observer](../../crates/rekey-broker/src/executor/llm_stream.rs)；raw+decoded、累计尾与SDK拼装投影、终帧等待EOF及durable settle | 未知跨delta语义拒绝；有限编码不防任意变换 | Pending |
-| MCP与SDK gateway | [MCP](../../crates/rekey-broker/src/bin/rekey-mcp.rs)、[gateway tests](../../crates/rekey-broker/tests/gateway.rs)；只读Profile发现、精确loopback、所有入口共用执行器 | 真实客户端+synthetic upstream不是实际provider | Pending |
+| MCP与SDK gateway | [MCP](../../crates/rekey-broker/src/bin/rekey-mcp.rs)、[gateway tests](../../crates/rekey-broker/tests/gateway.rs)；只读Profile发现、精确loopback、所有入口共用执行器；非200流式错误经完整遮蔽和审计后返回原状态及允许头，socket写入无进展30秒即关闭 | 新增修复验证见实施记录；真实客户端+synthetic upstream不是实际provider | Pending |
 | Activity | [App Model](../../apps/macos/Model.swift)；daemon可信审计上下文、分页/分组/预算元数据 | 不记录正文或密钥；不是SIEM/云监控 | Pending |
 | App引导与文案 | [Forms](../../apps/macos/Forms.swift)、[UI harness](../../scripts/test-macos-ui.swift)；setup/add、完整确认、保护下限、只读旧格式指引 | T12新账户三命令/五分钟未验 | Pending |
 | macOS安装分发 | [pkg builder](../../scripts/build-macos-pkg.sh)、[release](../../.github/workflows/release.yml)；daemon独立bundle/profile、SMAppService与cask接线 | 本地双 profile App/pkg 签名、公证、Gatekeeper 已通过；此前候选已在当前账户安装并核对收据/链接/哈希；GLM 升级版也已安装核对；登录项生命周期未验 | Pending |

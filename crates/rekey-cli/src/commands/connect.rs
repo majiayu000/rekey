@@ -133,12 +133,16 @@ fn json_server(client: ConnectClient, executable: &str) -> JsonServer {
 fn encode_raw(value: &impl Serialize) -> Result<Box<RawValue>, CliError> {
     serde_json::value::to_raw_value(value).map_err(|_| invalid("cannot encode MCP configuration"))
 }
-// (new bytes, existing subtree present, already equal)
+fn preview_fields<'a>(keys: impl Iterator<Item = &'a str>) -> Result<String, CliError> {
+    let fields: BTreeMap<_, _> = keys.map(|key| (key, "<existing value hidden>")).collect();
+    serde_json::to_string_pretty(&fields).map_err(|_| invalid("cannot encode MCP preview"))
+}
+// (new bytes, existing subtree field comparison with values hidden, already equal)
 fn prepare(
     client: ConnectClient,
     original: &[u8],
     executable: &str,
-) -> Result<(Vec<u8>, bool, bool), CliError> {
+) -> Result<(Vec<u8>, String, bool), CliError> {
     if matches!(client, ConnectClient::Codex) {
         let text = std::str::from_utf8(original)
             .map_err(|_| invalid("TOML configuration must be UTF-8"))?;
@@ -164,7 +168,13 @@ fn prepare(
                         && a.iter().any(|v| v.as_str() == Some("REKEY_AGENT_SOCKET"))
                 })
         });
-        let present = old.is_some();
+        let before = match old {
+            Some(old) => match old.as_table_like() {
+                Some(table) => preview_fields(table.iter().map(|(key, _)| key))?,
+                None => "<existing non-table value hidden>".into(),
+            },
+            None => "<no rekey subtree>".into(),
+        };
         let mut server = Table::new();
         server["command"] = value(executable);
         server["args"] = value(Array::new());
@@ -173,7 +183,7 @@ fn prepare(
         env.push("REKEY_AGENT_SOCKET");
         server["env_vars"] = value(env);
         servers.insert("rekey", Item::Table(server));
-        Ok((doc.to_string().into_bytes(), present, same))
+        Ok((doc.to_string().into_bytes(), before, same))
     } else {
         let mut doc = if original.is_empty() {
             Object::default()
@@ -186,9 +196,10 @@ fn prepare(
             .transpose()?
             .unwrap_or_default();
         let server = json_server(client, executable);
-        let present = servers.get("rekey").is_some();
+        let mut before = "<no rekey subtree>".into();
         let same = if let Some(old) = servers.get("rekey") {
             let object = Object::parse(old.get().as_bytes())?;
+            before = preview_fields(object.0.iter().map(|(key, _)| key.as_str()))?;
             if let Some(env) = object.get("env") {
                 Object::parse(env.get().as_bytes())?;
             }
@@ -201,7 +212,7 @@ fn prepare(
         let mut bytes = serde_json::to_vec_pretty(&doc)
             .map_err(|_| invalid("cannot encode MCP configuration"))?;
         bytes.push(b'\n');
-        Ok((bytes, present, same))
+        Ok((bytes, before, same))
     }
 }
 
@@ -440,7 +451,7 @@ pub fn connect(
     {
         return Err(invalid("existing JSON configuration is empty"));
     }
-    let (updated, present, same) = prepare(
+    let (updated, before, same) = prepare(
         client,
         original.as_ref().map_or(&[], |s| &s.bytes),
         executable,
@@ -455,12 +466,7 @@ pub fn connect(
     }
     writeln!(
         output,
-        "Before: {}\nAfter (only the rekey subtree; unrelated entries retained):",
-        if present {
-            "existing rekey subtree (values hidden)"
-        } else {
-            "no rekey subtree"
-        }
+        "Before (existing rekey fields; values hidden):\n{before}\nAfter (replacement rekey subtree; unrelated entries retained):"
     )
     .map_err(|e| io_error("cannot write preview", e))?;
     output

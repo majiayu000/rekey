@@ -3128,5 +3128,155 @@
         "scope": "ad-hoc local UI/service software contracts; real installed App and SMAppService remain pending"
       }
     }
+  },
+  "review_followup_20261005": {
+    "scope": "Review fixes on PR #62; current macOS account; no full new Lab/model/hardware/T12 claim",
+    "source_base": "1e9ffee203d8d3857b35fccbeb897b19616dd8ce",
+    "production_source_diff_sha256": "50d2005fbeb3c4aaf2be282c3462ab6003854ee28685b34b1ce2d53aa8f99a62",
+    "evidence_directory": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/review-fixes-20261005",
+    "selected_dns_policy": "Explicit REKEY_DOH_URL; default disabled; no hardcoded provider/bootstrap; no Clash or global daemon environment changes",
+    "repairs": [
+      "Sealed/audited non200 LLM stream errors preserve HTTP status/body and declared headers",
+      "30-second stalled socket write deadline; reads/upstream waiting do not renew it",
+      "connect shows old fields and replacement; old values hidden",
+      "App LLM onboarding declares retry-after; old Action permissions not rewritten"
+    ],
+    "default_workspace": {
+      "command": [
+        "cargo",
+        "test",
+        "--workspace",
+        "--offline",
+        "--no-fail-fast",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 1303.715,
+      "source_unchanged": true,
+      "passed": 1027,
+      "failed": 0,
+      "ignored": 6
+    },
+    "focused_tests": {
+      "connect": 15,
+      "dns": 19,
+      "gateway_write": 3,
+      "gateway_integration": 17,
+      "legacy_text_stream": 8,
+      "all_failed": 0
+    },
+    "strict_clippy": {
+      "default_all_targets_exit": 0,
+      "lab_all_targets_exit": 0
+    },
+    "check": {
+      "default_workspace_exit": 0,
+      "default_all_targets_exit": 0,
+      "lab_all_targets_exit": 0,
+      "fmt_exit": 0,
+      "diff_exit": 0,
+      "cli_dependency_boundary_passed": true
+    },
+    "swift_onboarding": {
+      "strict_compile_exit": 0,
+      "boundary_exit": 0,
+      "log": "swift-onboarding.log"
+    },
+    "relay_default_build": {
+      "source_head": "1e9ffee203d8d3857b35fccbeb897b19616dd8ce",
+      "manifest_unchanged_in_fix": true,
+      "default_compiler_artifacts": 0,
+      "build_finished_success": true,
+      "lab_all_targets_check_exit": 0,
+      "lab_log_compiles_relay": true,
+      "explanation": "Workspace membership is retained; the crate has no lib and both targets already require lab."
+    },
+    "production_network": {
+      "dependencies_match_workspace_lock": true,
+      "default_fake_ip_refusals": 3,
+      "explicit_doh_http_status": {
+        "api.anthropic.com": 405,
+        "api.openai.com": 401,
+        "open.bigmodel.cn": 401
+      },
+      "all_selected_ips_public": true,
+      "no_provider_credentials_or_paid_calls": true,
+      "scope": "Production transport in current TUN; not authenticated model acceptance or all TUN routing"
+    },
+    "signed_app_source": {
+      "command": "scripts/build-macos-ui.sh (Developer ID Application, both profiles, strict Swift)",
+      "base_head": "1e9ffee203d8d3857b35fccbeb897b19616dd8ce",
+      "source_diff_sha256": "50d2005fbeb3c4aaf2be282c3462ab6003854ee28685b34b1ce2d53aa8f99a62",
+      "source_unchanged": true,
+      "exit_code": 0,
+      "seconds": 60.835,
+      "app": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/review-fixes-20261005/macos-ui/Rekey.app",
+      "log": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/review-fixes-20261005/signed-app-build.log"
+    },
+    "package": {
+      "path": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/review-fixes-20261005/macos-pkg/Rekey-3.0.0-alpha.1.pkg",
+      "bytes": 20407790,
+      "sha256": "0f2e4d723ea648c1071ea09e7cd9d3d5d10f678ec3552a165bd7ec1c24bd6c77",
+      "app_notary_id": "7a750191-3642-4657-ae07-a3967be14051",
+      "pkg_notary_id": "58a40ddb-a603-4a30-bf33-f01d9c0cb37d",
+      "both_accepted": true
+    },
+    "installed": {
+      "installer_exit": 0,
+      "binary_hashes_match": true,
+      "regular_files_matching": 15,
+      "bundle_symlinks_matching": 1,
+      "root_cli_links_matching": 3,
+      "strict_signature_and_gatekeeper_exit": 0,
+      "fresh_account_t12": false
+    },
+    "credential_scan": {
+      "tracked_files_checked": 616,
+      "credential_encoding_variants": 6,
+      "matching_files": 0,
+      "real_credential_printed": false
+    },
+    "retained_failures": [
+      {
+        "name": "parallel-workspace",
+        "record": "workspace-tests.json",
+        "observed": "14 Admin IPC startup waits expired at common/mod.rs:144; no final success claimed",
+        "exact_root_cause": "not established",
+        "test_deadline_changed": false
+      },
+      {
+        "name": "first-serial-workspace",
+        "record": "workspace-tests-serial.json",
+        "observed": "one gateway fixture startup wait expired at common/mod.rs:144 while separate harness compilation was running",
+        "exact_root_cause": "not established; concurrent load is an inference",
+        "test_deadline_changed": false
+      },
+      {
+        "name": "notary-python-environment",
+        "observed": "first invocation stopped at missing requests in shell-selected unrelated virtualenv; no Apple submission was created",
+        "repair": "isolated evidence-only notary virtualenv"
+      },
+      {
+        "name": "dns-probe-initial-dependencies",
+        "record": "production-dns-acceptance-initial-unlocked-dependencies.json",
+        "observed": "first harness resolved newer dependencies instead of workspace lock",
+        "repair": "workspace lock copied and aligned; final locked rerun awaits full workspace gate"
+      },
+      {
+        "name": "dns-probe-locked-before-resolved-root",
+        "observed": "--no-deps metadata did not finalize the standalone root lock; --locked refused to run before any network query",
+        "record": "production-dns-disabled-locked.log",
+        "repair": "resolve metadata with dependencies offline, assert zero version drift, then rerun locked"
+      }
+    ],
+    "ci": "Use current PR #62 head checks; 1e9ffee historical 9/9 does not verify these changes; final observation saved in evidence directory",
+    "pending": [
+      "Independent human security review by user",
+      "Installed App hardware approvals, physical SE signing and plaintext clearing",
+      "SMAppService login-item lifecycle",
+      "Fresh-account T12 deferred by user",
+      "GA format freeze and public release"
+    ]
   }
 }

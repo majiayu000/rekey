@@ -209,12 +209,15 @@ A2 针对的是"拿到明文或扩大权限"。A2 能做的事被限定为两类
 - **I4**：客户端发送密码或 presence key 之前，必须确认对端是签名的 rekeyd。L1-dev 下无法确认，CLI 在交互式秘密输入前、App 在证明输入或认证控件旁提示；自动化 CLI 在发送证明前向 stderr 提示，不改变 stdout 的数据格式。
 - **I5**：秘密不进入 argv、env、日志、审计或 JSON 元数据。capability 进入 `rekey run` 子进程的 env 是例外，见 §8.2。
 - **I6**：出站请求只能去往 Action 或模板声明的 origin；解析结果必须是公网 IP，连接钉在该 IP 上，禁止重定向。
-  系统 DNS 对域名只返回 `198.18.0.0/15` 虚拟地址时，Rekey 改用 Cloudflare DoH
-  `https://cloudflare-dns.com/dns-query` 查询 A/AAAA，并对全部真实地址执行同一公网检查。
-  DoH 连接使用官方引导地址 `1.1.1.1` / `1.0.0.1`、正常 TLS 域名验证、无重定向和无代理环境；
+  DoH 默认关闭。仅当管理员为 daemon 显式设置 `REKEY_DOH_URL`，且系统 DNS 对域名只返回
+  `198.18.0.0/15` 虚拟地址时，才向所选 HTTPS JSON DoH 服务查询 A/AAAA。
+  未配置时明确拒绝 fake-IP，不隐式向第三方发送域名。解析服务收到目标域名；配置代表信任该服务。
+  DoH 服务本身也须解析为公网地址并固定连接，使用正常 TLS 验证、无重定向和无代理环境；
   查询只发送域名，不发送 provider 凭据，受原请求总期限与 64 KiB 响应上限约束。
   DoH 不可用或返回非公网地址即失败，不连接虚拟地址；IP 字面量与其它非公网系统答案仍直接拒绝。
-  不需要 provider 域名例外、Clash 配置改动或固定 provider IP。显式私有 Vault 来源不使用此路径。
+  上游 URL/Host/TLS SNI 保留原域名，但不承诺所有 TUN 的域名分流规则都能匹配固定 IP 连接。
+  DoH 是可选解析能力，不提供代理出口；所选解析服务及目标服务的网络可达性须另行验证。
+  显式私有 Vault 来源不使用此路径。
 - **I7**：未知状态、审计写入失败、策略错误一律拒绝（fail closed）。
 - **I8**：Vault 状态带单调代数。回滚到更旧的代数会被检测到，并拒绝自动解锁（§5.4）。
 - **I9**：授权范围内的 Agent 调用不触发任何人工交互；只有策略中的 `require-approval` 规则会进入审批（§6.3）。
@@ -669,6 +672,7 @@ rekey connect claude-code   # 同样支持 codex | cursor
 
 - 写入目标 Agent 的 MCP 配置（`rekey-mcp`），并给出对应 `run --client` 启动指引。SDK 动态 endpoint 与运行时 key 引用由 §8.2 的显式启动适配绑定，不向配置文件写入会过期的端口，也不假设 `${ENV}` 会展开；capability 值不落盘。Codex 当前忽略项目层的 provider 配置，故不把该文件冒充 SDK 路由已生效。Cursor 本批仅支持 MCP：其官方 BYOK 经服务端构造请求，不能将用户本机 loopback 网关冒充可用的远端地址。
 - **写入前展示 diff，经用户确认后才写，并备份原文件。** 此规则覆盖 2026-10-01 中"不自动修改第三方 Agent 配置"的限制。
+- diff 同时展示原有字段与替换后的 Rekey 子树，包括将删除的字段。原有值隐藏，避免输出已有凭据；不展示无关配置。`--print` 仍只打印公开的新增片段。
 - `--print` 只打印，不写入。
 
 ### 8.4 rekey-mcp v2
@@ -704,6 +708,8 @@ rekey connect claude-code   # 同样支持 codex | cursor
 - HTTP 适配器复用同一次执行准入、规范正文、审批、预算和遮蔽，不另解析或改写 model/max/stream。严格路由到签名实例的精确 method/path；拒绝编码近似路径、query、绝对 URI、CONNECT/Upgrade、压缩请求及歧义长度，头部、连接、正文和读取时间有界。
 - 可选 `x-rekey-approval-challenge` 仅接受一个 UUID，用于用户批准后的显式重提，交原审批复核并在上游前剥除。SDK 首次收到 `APPROVAL_REQUIRED`，网关不自动等待或重试。首字节前沿现有安全错误返回：认证401、路由404、格式400、策略/预算/审批403、锁定或服务故障503、上游502。
 - 流式响应在首个经过检查的 chunk 到达后才发200/SSE头，保持原事件字节；Supervisor 持有执行与唯一结算。终态失败、超时或丢失终态在已发头后中止正文，不伪造完成帧或向 SSE 插入普通 JSON 错误。客户端断开不移交或重复结算权限。
+- 流式请求收到非200上游响应时，先按 Action 大小上限读取完整错误正文，对正文与全部头执行相同秘密遮蔽，并提交终态审计；随后以普通 HTTP 响应返回原状态码、正文和声明允许的头（含 `retry-after`）。遮蔽、大小、传输或审计失败继续拒绝，不能提前发送上游错误正文。App 的 LLM 接入声明允许 `retry-after`。
+- HTTP socket 写入持续30秒没有进展即关闭该连接。读入或上游事件不能重置写入期限；关闭只释放 HTTP 接收方，执行与结算仍由 Supervisor 收口。
 
 **LLM 放宽**（覆盖 NET-07 的纯文本限制）
 - 请求体整体透传，tools 和 thinking 一并放行。

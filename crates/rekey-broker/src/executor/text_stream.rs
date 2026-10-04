@@ -13,7 +13,11 @@ use crate::upstream::{UpstreamRequest, UpstreamStreamResponse};
 
 pub(crate) enum TextStreamEvent {
     AdmissionError(BrokerError),
-    Admitted { deadline: Instant },
+    Admitted {
+        deadline: Instant,
+    },
+    /// A bounded, sealed HTTP error response after its terminal audit commits.
+    Buffered(super::ExecuteOutcome),
     Chunk(Vec<u8>),
     Terminal(TextStreamStatus),
 }

@@ -487,6 +487,45 @@ fn cancelling_existing_subtree_keeps_exact_original_without_backup() {
     assert!(siblings(&path, "staging").is_empty());
 }
 #[test]
+fn preview_shows_removed_fields_before_replacement_without_printing_old_credentials() {
+    for (client, relative, old) in [
+        (
+            "claude-code",
+            ".mcp.json",
+            format!(
+                "{{\"mcpServers\":{{\"rekey\":{{\"command\":\"{CANARY}\",\"legacy\":\"{CANARY}\",\"env\":{{\"TOKEN\":\"{CANARY}\"}}}}}}}}"
+            ),
+        ),
+        (
+            "cursor",
+            ".cursor/mcp.json",
+            format!(
+                "{{\"mcpServers\":{{\"rekey\":{{\"command\":\"{CANARY}\",\"legacy\":\"{CANARY}\"}}}}}}"
+            ),
+        ),
+        (
+            "codex",
+            ".codex/config.toml",
+            format!("[mcp_servers.rekey]\ncommand=\"{CANARY}\"\nlegacy=\"{CANARY}\"\n"),
+        ),
+    ] {
+        let f = Fixture::new();
+        let path = f.write(relative, old.as_bytes());
+        let (status, text) = Tty::start(f.command(client)).finish(b"n\n");
+        assert!(status.success(), "{text}");
+        let (before, after) = text.split_once("After (replacement rekey subtree").unwrap();
+        assert!(before.contains("Before (existing rekey fields; values hidden)"));
+        assert!(before.contains("\"legacy\""));
+        assert!(before.contains("\"command\""));
+        assert!(before.contains("<existing value hidden>"));
+        assert!(!after.contains("legacy"));
+        assert!(after.contains("rekey-mcp"));
+        assert!(!text.contains(CANARY));
+        assert_eq!(fs::read(&path).unwrap(), old.as_bytes());
+        assert!(siblings(&path, "backup").is_empty());
+    }
+}
+#[test]
 fn codex_env_allowlist_order_is_a_semantic_noop() {
     let f = Fixture::new();
     let command = serde_json::to_string(f.bin.join("rekey-mcp").to_str().unwrap()).unwrap();

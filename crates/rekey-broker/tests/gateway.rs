@@ -24,6 +24,8 @@ const BODY: &[u8] =
     br#"{"model":"allowed","tools":[{"name":"tool"}],"thinking":{"type":"enabled"}}"#;
 const CHAT:&[u8]=br#"{"object":"chat.completion","choices":[{"finish_reason":"stop"}],"usage":{"completion_tokens":7}}"#;
 struct StreamReply {
+    status: u16,
+    headers: Vec<(String, String)>,
     chunks: VecDeque<Vec<u8>>,
     eof: Option<Arc<Notify>>,
     fail: bool,
@@ -54,6 +56,8 @@ struct Transport {
 impl Transport {
     fn push(&self, raw: &[u8], eof: Option<Arc<Notify>>, fail: bool) {
         self.streams.lock().unwrap().push_back(StreamReply {
+            status: 200,
+            headers: vec![("content-type".into(), "text/event-stream".into())],
             chunks: raw.chunks(7).map(<[u8]>::to_vec).collect(),
             eof,
             fail,
@@ -76,15 +80,15 @@ impl UpstreamTransport for Transport {
                     [b"Bearer ".as_slice(), SECRET].concat()
                 }
             );
-            let body = self
+            let mut body = self
                 .streams
                 .lock()
                 .unwrap()
                 .pop_front()
                 .expect("queued synthetic stream");
             Ok(UpstreamStreamResponse {
-                status: 200,
-                headers: vec![("content-type".into(), "text/event-stream".into())].into(),
+                status: body.status,
+                headers: std::mem::take(&mut body.headers).into(),
                 body: Box::new(body),
             })
         })
@@ -122,7 +126,7 @@ impl Fixture {
         common::unlock(&broker).await;
         assert!(!broker.state_dir.join("gateway.port").exists());
         let credential = common::add_credential(&broker, "gateway-fixture", SECRET).await;
-        let install = json!({"source":{"kind":provider},"credential_id":credential,"bindings":[{}],"capabilities":[capability],"name_prefix":"gateway","timeout_ms":2000,"request_max_bytes":4096,"allowed_extra_headers":["x-test","anthropic-beta"],"response_max_bytes":65536,"allowed_response_headers":["content-type"]});
+        let install = json!({"source":{"kind":provider},"credential_id":credential,"bindings":[{}],"capabilities":[capability],"name_prefix":"gateway","timeout_ms":2000,"request_max_bytes":4096,"allowed_extra_headers":["x-test","anthropic-beta"],"response_max_bytes":65536,"allowed_response_headers":["content-type","retry-after"]});
         let response = common::call(
             &broker.admin_sock(),
             Channel::Admin,
@@ -338,6 +342,73 @@ fn raw(provider: &str) -> String {
             json!({"type":"message_stop"})
         ),
     }
+}
+#[tokio::test(flavor = "multi_thread")]
+async fn streaming_http_errors_preserve_status_headers_and_body_only_after_sealing() {
+    let f = Fixture::new("anthropic", "messages", 10, 1000, false).await;
+    let (owner, session) = f.mint().await;
+    let request =
+        br#"{"model":"allowed","stream":true,"messages":[{"role":"user","content":"test"}]}"#;
+    let error = br#"{"type":"error","error":{"type":"rate_limit_error","message":"try later"}}"#;
+    for status in [429, 529] {
+        f.transport.streams.lock().unwrap().push_back(StreamReply {
+            status,
+            headers: vec![
+                ("content-type".into(), "application/json".into()),
+                ("retry-after".into(), "30".into()),
+                ("set-cookie".into(), "must-not-forward".into()),
+            ],
+            chunks: error.chunks(7).map(<[u8]>::to_vec).collect(),
+            eof: None,
+            fail: false,
+        });
+        let response = f.post(&session, request).send().await.unwrap();
+        assert_eq!(response.status().as_u16(), status);
+        assert_eq!(response.headers()["retry-after"], "30");
+        assert_eq!(response.headers()["content-type"], "application/json");
+        assert!(!response.headers().contains_key("set-cookie"));
+        assert_eq!(response.bytes().await.unwrap().as_ref(), error);
+    }
+    f.settled(2).await;
+    assert_eq!(f.totals(), (2, 40, 0));
+    assert_eq!(f.db().query_row("SELECT count(*) FROM audit_events WHERE event_type='execution.finished' AND upstream_status IN (429,529)", [], |r|r.get::<_,u64>(0)).unwrap(), 2);
+    for (body, header, fail) in [
+        (SECRET.to_vec(), ("x-not-allowlisted", "safe"), false),
+        (
+            error.to_vec(),
+            ("x-not-allowlisted", std::str::from_utf8(SECRET).unwrap()),
+            false,
+        ),
+        (
+            error.to_vec(),
+            ("retry-after", std::str::from_utf8(SECRET).unwrap()),
+            false,
+        ),
+        (vec![b'x'; 65537], ("retry-after", "30"), false),
+        (error.to_vec(), ("retry-after", "30"), true),
+    ] {
+        f.transport.streams.lock().unwrap().push_back(StreamReply {
+            status: 429,
+            headers: vec![
+                ("content-type".into(), "application/json".into()),
+                (header.0.into(), header.1.into()),
+            ],
+            chunks: body.chunks(7).map(<[u8]>::to_vec).collect(),
+            eof: None,
+            fail,
+        });
+        let response = f.post(&session, request).send().await.unwrap();
+        assert_eq!(response.status(), 502);
+        assert!(!response.headers().contains_key("retry-after"));
+        let body = response.bytes().await.unwrap();
+        assert!(!body.windows(SECRET.len()).any(|s| s == SECRET));
+        assert!(!body.windows(error.len()).any(|s| s == error));
+    }
+    f.settled(7).await;
+    assert_eq!(f.totals(), (7, 140, 0));
+    assert_eq!(f.transport.raw_sent.lock().unwrap().len(), 7);
+    drop(owner);
+    f.broker.shutdown().await;
 }
 #[tokio::test(flavor = "multi_thread")]
 async fn glm_gateway_rejects_undeclared_paths_and_models_before_upstream() {

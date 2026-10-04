@@ -46,9 +46,10 @@ UI锁定且无会话显示L0，解锁显示已确认的L1-dev下限，未知/故
    `run`子进程环境中的短期capability是明确例外；不是provider Key，权限仍受Profile约束。
 6. **I6：固定上游。** origin/method来自认证Action，参数只能构成已声明路径/查询；拒绝
    credentials-in-URL、重定向、代理环境与非公网DNS，连接钉在已检查IP。
-   系统仅返回198.18.0.0/15虚拟地址时，域名经TLS认证的Cloudflare DoH重新解析A/AAAA；
-   全部真实答案仍须公网，连接仍钉在该地址。DoH只获得域名，不获得provider Key；
-   官方DNS引导IP不属于provider地址例外，解析失败不退回虚拟地址。显式私有来源合同不变。
+   DoH默认关闭。管理员显式设置REKEY_DOH_URL后，系统仅返回198.18.0.0/15虚拟地址时，
+   才向选定HTTPS JSON DoH服务查询A/AAAA；服务及全部答案均须公网并固定连接，TLS正常验证。
+   解析服务获得目标域名，不获得provider Key。未配置或失败均不退回虚拟地址。
+   固定IP仍保留原Host/SNI，但不保证所有TUN的域名分流；DoH不提供代理出口。显式私有来源合同不变。
 7. **I7：未知与审计失败拒绝。** canonical/schema/policy不明不能执行；durable审计失败fault。
    有副作用后的未知结果不自动重试，不将收到部分输出或部分SSE当成成功。
 8. **I8：认证代数与外锚。** 见下节。检测旧header整库回滚，不等于硬件单调计数器。

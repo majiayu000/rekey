@@ -1,6 +1,7 @@
 //! Loopback HTTP is only an adapter to the existing Profile execution owner.
 use std::convert::Infallible;
 use std::fs::{self, OpenOptions};
+use std::future::Future;
 use std::io::{self, Write};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::os::unix::fs::OpenOptionsExt;
@@ -28,6 +29,7 @@ use rekey_domain::ipc::{
 use rekey_domain::profile::AgentProfile;
 use rekey_domain::template::{TemplateValues, ValueRule};
 use rekey_vault::AuthorityError;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
@@ -42,6 +44,7 @@ use crate::executor::ExecuteRequest;
 use crate::executor::text_stream::TextStreamEvent;
 
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
+const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 const CONNECTIONS: usize = 120;
 const HEADER_BYTES: usize = 16 * 1024;
 
@@ -291,7 +294,7 @@ async fn accept(
                     });
                     let _ = http1::Builder::new().keep_alive(false).max_headers(64).max_buf_size(16*1024)
                         .timer(TokioTimer::new()).header_read_timeout(READ_TIMEOUT)
-                        .serve_connection(TokioIo::new(stream), service).await;
+                        .serve_connection(TokioIo::new(WriteTimeout::new(stream, WRITE_TIMEOUT)), service).await;
                 });
             }
         }
@@ -301,6 +304,78 @@ async fn accept(
     tasks.abort_all();
     if let Some(ctx) = weak.upgrade() {
         ctx.gateway.close_binding(&identity);
+    }
+}
+
+/// The deadline starts when a socket write stalls, not while waiting for the
+/// upstream. Only completed writes/flushes reset it; inbound reads do not.
+struct WriteTimeout<T> {
+    inner: T,
+    timeout: Duration,
+    stalled: Option<Pin<Box<tokio::time::Sleep>>>,
+}
+impl<T> WriteTimeout<T> {
+    fn new(inner: T, timeout: Duration) -> Self {
+        Self {
+            inner,
+            timeout,
+            stalled: None,
+        }
+    }
+    fn check<U>(
+        &mut self,
+        cx: &mut Context<'_>,
+        result: Poll<io::Result<U>>,
+    ) -> Poll<io::Result<U>> {
+        match result {
+            Poll::Ready(result) => {
+                self.stalled = None;
+                Poll::Ready(result)
+            }
+            Poll::Pending => {
+                let timer = self
+                    .stalled
+                    .get_or_insert_with(|| Box::pin(tokio::time::sleep(self.timeout)));
+                if timer.as_mut().poll(cx).is_ready() {
+                    Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "gateway client write stalled",
+                    )))
+                } else {
+                    Poll::Pending
+                }
+            }
+        }
+    }
+}
+impl<T: AsyncRead + Unpin> AsyncRead for WriteTimeout<T> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_read(cx, buf)
+    }
+}
+impl<T: AsyncWrite + Unpin> AsyncWrite for WriteTimeout<T> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let this = self.get_mut();
+        let result = Pin::new(&mut this.inner).poll_write(cx, buf);
+        this.check(cx, result)
+    }
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        let result = Pin::new(&mut this.inner).poll_flush(cx);
+        this.check(cx, result)
+    }
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        let result = Pin::new(&mut this.inner).poll_shutdown(cx);
+        this.check(cx, result)
     }
 }
 
@@ -556,38 +631,11 @@ async fn handle_request(
         .map_err(|_| (503, AuthorityError::Faulted.into()))?
         .map_err(map_error)?;
     match result {
-        HttpExecution::Buffered(outcome) => {
-            let mut response = Response::new(GatewayBody::full(outcome.body));
-            *response.status_mut() = StatusCode::from_u16(outcome.upstream_status)
-                .map_err(|_| (502, BrokerError::Upstream("invalid-status")))?;
-            for (name, value) in outcome.headers {
-                if matches!(
-                    name.as_str(),
-                    "connection"
-                        | "content-length"
-                        | "transfer-encoding"
-                        | "content-encoding"
-                        | "keep-alive"
-                        | "trailer"
-                        | "upgrade"
-                        | "proxy-authenticate"
-                        | "proxy-authorization"
-                        | "te"
-                ) {
-                    continue;
-                }
-                response.headers_mut().append(
-                    HeaderName::from_bytes(name.as_bytes())
-                        .map_err(|_| (502, BrokerError::Upstream("invalid-header")))?,
-                    HeaderValue::from_str(&value)
-                        .map_err(|_| (502, BrokerError::Upstream("invalid-header")))?,
-                );
-            }
-            Ok(response)
-        }
+        HttpExecution::Buffered(outcome) => buffered_response(outcome),
         HttpExecution::Stream(mut receiver) => loop {
             match receiver.recv().await {
                 Some(TextStreamEvent::Admitted { .. }) => {}
+                Some(TextStreamEvent::Buffered(outcome)) => return buffered_response(outcome),
                 Some(TextStreamEvent::Chunk(first)) => {
                     let mut response = Response::new(GatewayBody::Stream {
                         first: Some(Bytes::from(first)),
@@ -606,6 +654,38 @@ async fn handle_request(
         },
     }
 }
+fn buffered_response(
+    outcome: crate::executor::ExecuteOutcome,
+) -> Result<Response<GatewayBody>, (u16, BrokerError)> {
+    let mut response = Response::new(GatewayBody::full(outcome.body));
+    *response.status_mut() = StatusCode::from_u16(outcome.upstream_status)
+        .map_err(|_| (502, BrokerError::Upstream("invalid-status")))?;
+    for (name, value) in outcome.headers {
+        if matches!(
+            name.as_str(),
+            "connection"
+                | "content-length"
+                | "transfer-encoding"
+                | "content-encoding"
+                | "keep-alive"
+                | "trailer"
+                | "upgrade"
+                | "proxy-authenticate"
+                | "proxy-authorization"
+                | "te"
+        ) {
+            continue;
+        }
+        response.headers_mut().append(
+            HeaderName::from_bytes(name.as_bytes())
+                .map_err(|_| (502, BrokerError::Upstream("invalid-header")))?,
+            HeaderValue::from_str(&value)
+                .map_err(|_| (502, BrokerError::Upstream("invalid-header")))?,
+        );
+    }
+    Ok(response)
+}
+
 fn map_error(error: BrokerError) -> (u16, BrokerError) {
     let status = match &error {
         BrokerError::Domain(
@@ -708,6 +788,50 @@ impl Body for GatewayBody {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test(start_paused = true)]
+    async fn stalled_client_write_times_out_without_waiting_for_upstream_or_reads() {
+        let (stream, mut client) = tokio::io::duplex(8);
+        let (mut reader, mut writer) = tokio::io::split(WriteTimeout::new(stream, WRITE_TIMEOUT));
+        writer.write_all(b"12345678").await.unwrap();
+        let started = Instant::now();
+        let next = writer.write_all(b"blocked");
+        tokio::pin!(next);
+        tokio::select! {
+            result = &mut next => panic!("write unexpectedly completed: {result:?}"),
+            _ = tokio::time::sleep(WRITE_TIMEOUT / 2) => {},
+        }
+        client.write_all(b"inbound").await.unwrap();
+        reader.read_exact(&mut [0; 7]).await.unwrap();
+        let error = next.await.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(started.elapsed(), WRITE_TIMEOUT);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn successful_write_resets_deadline_and_upstream_wait_does_not_start_one() {
+        let (stream, mut client) = tokio::io::duplex(8);
+        let mut writer = WriteTimeout::new(stream, WRITE_TIMEOUT);
+        tokio::time::sleep(WRITE_TIMEOUT * 2).await;
+        writer.write_all(b"12345678").await.unwrap();
+        {
+            let next = writer.write_all(b"abcdefgh");
+            tokio::pin!(next);
+            tokio::select! {
+                result = &mut next => panic!("write unexpectedly completed: {result:?}"),
+                _ = tokio::time::sleep(WRITE_TIMEOUT / 2) => {},
+            }
+            client.read_exact(&mut [0; 8]).await.unwrap();
+            next.await.unwrap();
+        }
+        let started = Instant::now();
+        assert_eq!(
+            writer.write_all(b"blocked").await.unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+        assert_eq!(started.elapsed(), WRITE_TIMEOUT);
+    }
     #[test]
     fn late_listener_cleanup_cannot_close_a_reused_port_binding() {
         let gateway = Gateway::default();

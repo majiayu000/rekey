@@ -50,6 +50,7 @@ url = "2"
 tempfile = { workspace = true }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
 rcgen = "0.13"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }

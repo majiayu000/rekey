@@ -52,12 +52,12 @@
 实际安装包 SHA-256 为 `f011fbd5141d8cad644372f3f9740c37ecc81f819ad111cc7aad2ce6d785916d`，
 生产源码来自 `abf8c2f`；后续证据提交不改变该二进制。
 
-独立人工安全审查至少核对以下原始攻击路径及现存失败记录，尚未指定或完成审阅：
+独立人工安全审查由用户审阅，至少核对以下原始攻击路径及现存失败记录，目前尚未完成：
 
 - `authority/desktop.rs` 的真实 presence 不能签发新的七天授权；`authority/wrapper.rs` 改密码和恢复密钥轮换只接受密码或恢复密钥。确认失败不重设期限或产生永久认证因子。
 - 密码猜测退避覆盖已解锁后的每次敏感操作，成功 presence 不清除该退避；取消、到期和错误证明保留拒绝合同。
 - `PresenceKey.swift` 的十秒认证 context 复用与取消作废，及 CLI 在未验证 daemon 时的 L1-dev 警告；伪 daemon 在校验前收到零秘密字节。
-- `upstream.rs` 仅在系统答案全部属于 fake-IP 范围时采用固定 TLS DoH，继续检查全部公网地址、固定连接地址、原域名 TLS 校验与原期限；没有修改 Clash 或放行私网。
+- `upstream.rs` 的 DoH 默认关闭，仅在管理员显式配置 HTTPS JSON DoH 且系统答案全部属于 fake-IP 范围时启用；继续检查解析服务与目标的全部公网地址、固定连接地址、原域名 TLS 校验与原期限；没有修改 Clash 或放行私网。
 - 网关准入、SSE 编码秘密遮蔽、终帧后单个 DONE、一次用量结算、owner 死亡撤销，以及真实 GLM/客户端失败记录。T11 是499成功加1超时，不是500次全部成功。
 - 回滚外部锚、真实 Keychain/SE 权限及 LLDB 正负对照只支持已记录边界；当前证据不能扩大为完整 L1/L2、root 防护或全部内存副本清零。
 
@@ -262,3 +262,14 @@ GLM Responses最终源码补证：固定`glm-responses@1`（POST`/api/v1/respons
 
 
 完整Lab收尾已完成：3db80d1全仓1489 passed/0 failed/6 ignored，1943.187秒；此后只修改P3验收脚本及证据文档，Cargo/App生产源码不变。保留此前relay503与1488/1/6，不把新成功结果写成原故障已精确归因。云端两平台已通过全仓与前置进程检查，后续同时卡在P3审计事件断言；行号诊断及本机复现确认其依赖JSON空格，而audit list使用紧凑JSON。改用JSON字段解析，保留原五类事件及批准/拒绝/泄漏检查，真实脚本通过；随后streaming、GitHub App、Connector、native launchd和十步macOS软件UI合同均通过。自定义CARGO_TARGET_DIR首次未传REKEY_SERVICE_FIXTURE导致local launchd找不到example，显式传入现有override后通过，没有修改服务代码。Pkg仍为已安装9f2f4a76候选，生产源码未变；实际SMAppService与App物理交互仍Pending。
+
+
+## 2026-10-05 审查修复（PR #62）
+
+按用户选择移除隐式 Cloudflare 解析：DoH 默认关闭，只有 daemon 显式配置 `REKEY_DOH_URL` 且系统答案全部为 fake-IP 时才启用。解析服务与目标都检查公网、固定连接、正常 TLS 和原期限；没有引导 IP、备用解析服务、Clash 或全局环境改动。当前 TUN 下用工作区锁定依赖的生产 transport 补测：默认三个目标都拒绝 fake-IP；显式 DoH 后 Anthropic405、OpenAI401、GLM401，均保留原域名并选中公网地址。没有 provider Key 或付费模型调用，不承诺全部 TUN 分流。
+
+流式非200错误完整读取、有界遮蔽及终态审计后返回原状态/正文与声明允许的头；新 App LLM Action 允许 `retry-after`，旧权限不自动改写。HTTP socket 连续30秒写入无进展关闭，读流量不重置；执行/结算仍由 Supervisor 收口。connect 显示原字段和替换片段，隐藏旧值保护已有凭据。relay 已无 lib 且 bin/test 要求 lab：默认编译产物0、Lab 编译存在，README 澄清而不再拆分。
+
+最终默认全仓 **1027 passed / 0 failed / 6 ignored**，1303.715秒，生产源码 diff SHA256为 `50d2005fbeb3c4aaf2be282c3462ab6003854ee28685b34b1ce2d53aa8f99a62`。default/lab all-targets、严格Clippy、fmt、机械合同、严格Swift与onboarding软件合同通过。connect15、DNS19、写入3、网关17、原文本流8定向全部通过。前两轮 broker 启动等待失败、首次 harness 依赖偏移及锁未完成导致的拒绝保留；具体启动原因未完全归因，不改测试期限。未将此前Lab1489或真实SDK/provider结果算作本轮新全套/模型验收。
+
+新 App/pkg 公证分别 `7a750191-3642-4657-ae07-a3967be14051` / `58a40ddb-a603-4a30-bf33-f01d9c0cb37d`，均Accepted、issues=null；签名、装订、Gatekeeper通过。当前账户升级成功，15个普通文件、1个bundle链接与三条root CLI链接匹配。包SHA256为 `0f2e4d723ea648c1071ea09e7cd9d3d5d10f678ec3552a165bd7ec1c24bd6c77`。统一JSON的 `review_followup_20261005` 绑定新源码与产物；云端验证以当前PR head检查为准。人工审查、真实App硬件/明文清理、SMAppService与延后的新账户T12仍Pending，PR保持draft，不创建公开release。

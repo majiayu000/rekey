@@ -12,8 +12,6 @@ use rekey_domain::action::FixedMethod;
 use zeroize::{Zeroize, Zeroizing};
 
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const PUBLIC_DNS_HOST: &str = "cloudflare-dns.com";
-const PUBLIC_DNS_URL: &str = "https://cloudflare-dns.com/dns-query";
 const PUBLIC_DNS_MAX_BYTES: usize = 65_536;
 
 pub struct UpstreamRequest {
@@ -429,35 +427,85 @@ pub async fn screen_public_endpoint(
     host: &str,
     port: u16,
 ) -> Result<ScreenedEndpoint, UpstreamError> {
-    let mut addrs: Vec<SocketAddr> = tokio::net::lookup_host((host, port))
+    let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host, port))
         .await
         .map_err(|_| UpstreamError::Transport)?
         .collect();
+    let resolver = if needs_public_dns(host, &addrs) {
+        std::env::var_os("REKEY_DOH_URL")
+            .map(|value| {
+                value
+                    .into_string()
+                    .map_err(|_| UpstreamError::Blocked("invalid-doh-url"))
+            })
+            .transpose()?
+    } else {
+        None
+    };
+    screen_dns_answer(host, port, addrs, resolver.as_deref()).await
+}
+
+async fn screen_dns_answer(
+    host: &str,
+    port: u16,
+    mut addrs: Vec<SocketAddr>,
+    resolver: Option<&str>,
+) -> Result<ScreenedEndpoint, UpstreamError> {
     if needs_public_dns(host, &addrs) {
-        // A TUN fake-IP is a routing handle, not the upstream endpoint. Obtain
-        // real A/AAAA answers without trusting that handle or changing I6.
+        let Some(resolver) = resolver else {
+            tracing::warn!(
+                event = "upstream.dns_configuration_required",
+                "System DNS returned fake-IP addresses; configure real system DNS or explicitly set REKEY_DOH_URL for the daemon"
+            );
+            return Err(UpstreamError::Blocked("fake-ip-dns"));
+        };
+        let url = public_dns_url(resolver)?;
+        let resolver_host = match url
+            .host()
+            .ok_or(UpstreamError::Blocked("invalid-doh-url"))?
+        {
+            url::Host::Domain(host) => host.to_owned(),
+            url::Host::Ipv4(ip) => ip.to_string(),
+            url::Host::Ipv6(ip) => ip.to_string(),
+        };
+        let resolver_addrs =
+            tokio::net::lookup_host((resolver_host.as_str(), url.port_or_known_default().unwrap()))
+                .await
+                .map_err(|_| UpstreamError::Transport)?
+                .collect::<Vec<_>>();
+        let endpoint = select_public_endpoint(&resolver_host, &resolver_addrs)?;
+        // The explicitly chosen resolver is screened once and pinned too.
+        // No provider headers or credentials enter this separate client.
         let client = reqwest::Client::builder()
             .use_rustls_tls()
             .redirect(reqwest::redirect::Policy::none())
             .no_proxy()
             .connect_timeout(CONNECT_TIMEOUT)
-            .resolve_to_addrs(
-                PUBLIC_DNS_HOST,
-                &[
-                    SocketAddr::from(([1, 1, 1, 1], 443)),
-                    SocketAddr::from(([1, 0, 0, 1], 443)),
-                ],
-            )
+            .resolve_to_addrs(&resolver_host, &[endpoint.addr])
             .build()
             .map_err(|_| UpstreamError::Transport)?;
         let (mut ipv4, ipv6) = tokio::try_join!(
-            query_public_dns(&client, host, port, "A"),
-            query_public_dns(&client, host, port, "AAAA"),
+            query_public_dns(&client, &url, host, port, "A"),
+            query_public_dns(&client, &url, host, port, "AAAA"),
         )?;
         ipv4.extend(ipv6);
         addrs = ipv4;
     }
     select_public_endpoint(host, &addrs)
+}
+
+fn public_dns_url(value: &str) -> Result<url::Url, UpstreamError> {
+    let url = url::Url::parse(value).map_err(|_| UpstreamError::Blocked("invalid-doh-url"))?;
+    if url.scheme() != "https"
+        || url.host().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(UpstreamError::Blocked("invalid-doh-url"));
+    }
+    Ok(url)
 }
 
 fn needs_public_dns(host: &str, addrs: &[SocketAddr]) -> bool {
@@ -474,6 +522,7 @@ fn needs_public_dns(host: &str, addrs: &[SocketAddr]) -> bool {
 
 async fn query_public_dns(
     client: &reqwest::Client,
+    resolver: &url::Url,
     host: &str,
     port: u16,
     record_type: &str,
@@ -481,7 +530,7 @@ async fn query_public_dns(
     // No provider headers or body enter this request. The caller's DNS deadline
     // encloses both queries; no cached answer can outlive that operation.
     let mut response = client
-        .get(PUBLIC_DNS_URL)
+        .get(resolver.clone())
         .query(&[("name", host), ("type", record_type)])
         .header(reqwest::header::ACCEPT, "application/dns-json")
         .send()
@@ -1112,6 +1161,74 @@ mod tests {
             vec![virtual_addrs[0], "10.0.0.1:443".parse().unwrap()],
         ] {
             assert!(!needs_public_dns("example.com", &addrs), "{addrs:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn fake_ip_dns_requires_explicit_resolver_and_never_overrides_other_private_answers() {
+        let virtual_addrs = vec!["198.18.1.2:443".parse().unwrap()];
+        assert!(matches!(
+            screen_dns_answer("example.com", 443, virtual_addrs.clone(), None).await,
+            Err(UpstreamError::Blocked("fake-ip-dns"))
+        ));
+        for resolver in [
+            "https://127.0.0.1/dns-query",
+            "https://198.18.1.1/dns-query",
+        ] {
+            assert!(matches!(
+                screen_dns_answer("example.com", 443, virtual_addrs.clone(), Some(resolver)).await,
+                Err(UpstreamError::Blocked("private-address"))
+            ));
+        }
+        // An invalid resolver would fail before any query if it were used.
+        // The normal/mixed system answer path must remain independent of it.
+        assert_eq!(
+            screen_dns_answer(
+                "example.com",
+                443,
+                vec!["93.184.216.34:443".parse().unwrap()],
+                Some("invalid")
+            )
+            .await
+            .unwrap()
+            .addr,
+            "93.184.216.34:443".parse().unwrap()
+        );
+        assert!(matches!(
+            screen_dns_answer(
+                "example.com",
+                443,
+                vec![
+                    "93.184.216.34:443".parse().unwrap(),
+                    "198.18.1.2:443".parse().unwrap()
+                ],
+                Some("invalid")
+            )
+            .await,
+            Err(UpstreamError::Blocked("private-address"))
+        ));
+    }
+
+    #[test]
+    fn explicit_doh_url_requires_https_and_never_embeds_credentials() {
+        for url in [
+            "http://1.1.1.1/dns-query",
+            "https://user:secret@example.com/dns-query",
+            "https://example.com/dns-query?token=secret",
+            "https://example.com/dns-query#fragment",
+            "not-a-url",
+        ] {
+            assert!(matches!(
+                public_dns_url(url),
+                Err(UpstreamError::Blocked("invalid-doh-url"))
+            ));
+        }
+        for url in [
+            "https://resolver.example.com/dns-query",
+            "https://1.1.1.1/dns-query",
+            "https://[2606:4700:4700::1111]/dns-query",
+        ] {
+            assert!(public_dns_url(url).is_ok());
         }
     }
 

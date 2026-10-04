@@ -158,12 +158,22 @@ impl ExecutionSupervisor {
                                                     deadline: admitted.deadline(),
                                                 })
                                                 .await;
-                                            let status = admitted
-                                                .run_stream(&sender)
-                                                .await
-                                                .ok()
-                                                .and_then(|outcome| outcome.stream_status)
-                                                .unwrap_or(TextStreamStatus::Failed);
+                                            let status = match admitted.run_stream(&sender).await {
+                                                Ok(outcome) if outcome.stream_status.is_none() => {
+                                                    let _ = tokio::time::timeout(
+                                                        std::time::Duration::from_secs(1),
+                                                        sender.send(TextStreamEvent::Buffered(
+                                                            outcome,
+                                                        )),
+                                                    )
+                                                    .await;
+                                                    return;
+                                                }
+                                                Ok(outcome) => outcome
+                                                    .stream_status
+                                                    .unwrap_or(TextStreamStatus::Failed),
+                                                Err(_) => TextStreamStatus::Failed,
+                                            };
                                             let _ = tokio::time::timeout(
                                                 std::time::Duration::from_secs(1),
                                                 sender.send(TextStreamEvent::Terminal(status)),

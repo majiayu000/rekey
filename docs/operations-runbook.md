@@ -244,9 +244,38 @@ or capability token.
 ## DNS, network, and Clash/TUN Fake-IP
 
 Resolve the exact Action host with `dig +short HOST`. Private/reserved answers,
-including `198.18.0.0/15`, are rejected. For Clash, add the exact host to the
-DNS fake-IP filter so the host resolver returns real public addresses. Rekey
-does not follow redirects or honor HTTP proxy environment variables.
+including `198.18.0.0/15`, are rejected by default. Rekey does not silently send
+queries to a public resolver. It does not follow redirects or honor HTTP proxy
+environment variables.
+When rejected for fake-IP, the daemon records `upstream.dns_configuration_required`
+with the system-DNS/explicit-DoH remedies; inspect this event before retrying.
+
+For a TUN network that returns only fake-IP answers, an administrator may
+explicitly choose a trusted HTTPS JSON DoH service in the daemon's environment:
+
+```bash
+REKEY_DOH_URL=https://1.1.1.1/dns-query rekey serve
+```
+
+This is an optional example, not a default or a required provider. The service
+must support JSON A/AAAA queries with `name` and `type` parameters. Its URL must
+use HTTPS without userinfo, query or fragment; its own system-resolved addresses
+and every returned provider address must be public. If the resolver hostname is
+also fake-IP, use a reachable HTTPS IP URL whose certificate validates that IP,
+or configure real system DNS. No hardcoded bootstrap addresses are used.
+
+The chosen service receives each queried provider hostname. Provider credentials
+are never included. Unset `REKEY_DOH_URL` to disable it; restart the daemon for
+an environment change. A terminal setting applies to a daemon launched from
+that terminal, not an already-running App or SMAppService. Existing Actions must
+allow `retry-after` to forward that header; new App LLM onboarding includes it.
+
+DoH resolves addresses; it does not supply a proxy exit. The provider URL, Host
+and TLS SNI retain the original hostname while connecting to the screened IP.
+TUN domain rules may rely on DNS mapping or SNI sniffing, so test the actual
+provider and route on your network. Unreachable DoH/provider endpoints fail
+closed; no retry through fake-IP or alternate resolver is attempted. The JSON
+schema follows the [documented DNS JSON response](https://developers.cloudflare.com/1.1.1.1/encryption/dns-over-https/make-api-requests/dns-json/).
 
 ## Upgrade, rollback, and rejected state
 

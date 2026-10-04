@@ -1389,7 +1389,7 @@ final class AppModel: ObservableObject {
         let request: [String: Any] = ["source": ["kind": provider], "credential_id": credentialID, "bindings": [[:]], "capabilities": capabilities,
             "name_prefix": provider == "anthropic" ? "Anthropic" : "GLM", "timeout_ms": 30_000, "request_max_bytes": 1024 * 1024,
             "allowed_extra_headers": provider == "glm-responses" ? [] : ["anthropic-beta"],
-            "response_max_bytes": 4 * 1024 * 1024, "allowed_response_headers": ["content-type"]]
+            "response_max_bytes": 4 * 1024 * 1024, "allowed_response_headers": ["content-type", "retry-after"]]
         let body = operationProof + "\n" + String(decoding: try JSONSerialization.data(withJSONObject: request, options: [.sortedKeys]), as: UTF8.self) + "\n"
         let args = ["template", "install", "--stdin-request", "--password-stdin"] + (presence ? ["--presence"] : [])
         let data = try await Task.detached { try client.run(args, input: body, redacting: [operationProof]) }.value

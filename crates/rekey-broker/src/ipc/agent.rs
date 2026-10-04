@@ -401,6 +401,7 @@ async fn dispatch_stream(
             return Err(BrokerError::Upstream("stream-deadline"));
         }
         let (message, metadata, body, terminal) = match event {
+            TextStreamEvent::Buffered(_) => return Err(BrokerError::Upstream("invalid-stream")),
             TextStreamEvent::Admitted { .. } | TextStreamEvent::AdmissionError(_) => {
                 unreachable!("admission handled above")
             }

@@ -35,6 +35,8 @@ Setup 和 Add 打开本机 App；密码、Key、策略审阅与系统认证只�
 签名 Profile 固定主体、会话期限、次数、模型与请求/每日预算。
 CLI、MCP 与 loopback SDK 网关共用授权、持久用量、审计和响应检查。
 原始 SSE 支持工具和 thinking 数据；检测到秘密反射、协议歧义或超限会阻断。
+流式请求遇到上游限流或过载时，经过遮蔽和审计后返回原 HTTP 状态、错误正文及 Action 允许的重试头。
+TUN 的 fake-IP 默认拒绝；可为 daemon 显式配置可信 DoH，配置与隐私边界见[网络说明](docs/operations-runbook.md#dns-network-and-clashtun-fake-ip)。
 缺失 usage 或中断按本次已校验的最大输出数保守结算，不是硬费用封顶。
 
 `rekey connect cursor --print` 预览项目 MCP 配置；正式写入需显式操作。
@@ -69,5 +71,6 @@ cargo fmt --all
 
 企业储备需显式 `--features lab`：工作负载身份、审批 relay、OIDC、外部 secret source、
 原生插件、指标、审计投递/归档与 standby/DR。旧指南中的这些示例不是默认产品能力。
+`rekey-approval-relay` 保留为 workspace 成员，其二进制与测试均要求 `lab`；默认构建不会编译 relay。
 `lab-weekly` 的结果不替代当前候选的完整合流或发布检查。
 本仓库没有 v1 MITM、系统 CA、任意目的地代理或旧 vault 兼容层。

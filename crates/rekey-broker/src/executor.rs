@@ -826,6 +826,37 @@ impl ActionExecutor {
                     .await
                     .map_err(|_| BrokerError::Upstream("stream-transport"))?;
                 if let Some(llm) = llm.filter(|llm| llm.streaming) {
+                    if response.status != 200 {
+                        let mut response = response;
+                        let mut body = Zeroizing::new(Vec::new());
+                        let limit = action.response_policy.max_body_bytes as usize;
+                        while let Some(chunk) = response
+                            .body
+                            .next_chunk()
+                            .await
+                            .map_err(|_| BrokerError::Upstream("stream-transport"))?
+                        {
+                            if chunk.len() > limit.saturating_sub(body.len()) {
+                                return Err(BrokerError::Domain(DomainError::ResponseTooLarge));
+                            }
+                            body.extend_from_slice(&chunk);
+                        }
+                        return finish_buffered_response(
+                            started,
+                            action,
+                            crate::upstream::UpstreamResponse {
+                                status: response.status,
+                                headers: response.headers,
+                                body,
+                            },
+                            &needles,
+                            effect_deadline,
+                            credential_version,
+                            Some(llm),
+                            send_started.elapsed().as_millis() as i64,
+                        )
+                        .await;
+                    }
                     let mut complete = llm_stream::run(
                         response,
                         needles,
@@ -892,7 +923,7 @@ impl ActionExecutor {
         }
         let response = self.transport.send(upstream_request).await;
         let latency_ms = send_started.elapsed().as_millis() as i64;
-        let mut response = match response {
+        let response = match response {
             Ok(response) => response,
             Err(err) => {
                 let reason = match &err {
@@ -915,55 +946,79 @@ impl ActionExecutor {
             }
         };
 
-        // Step 12: secret sealing over the buffered body and every header
-        // the upstream sent (name and value), before any allowlist copy.
-        if contains_secret(&response.body, &needles)
-            || headers_contain_secret(&response.headers, &needles)
-        {
-            started
-                .indeterminate_until(effect_deadline, "reflected-secret")
-                .await?;
-            return Err(BrokerError::ResponseSecurityViolation);
-        }
-
-        // Step 13: response header filtering (allowlist only).
-        let headers = filter_response_headers(action, &response.headers);
-        if !response_metadata_fits(response.status, &headers, response.body.len()) {
-            started
-                .indeterminate_until(effect_deadline, "response-metadata-too-large")
-                .await?;
-            return Err(BrokerError::Domain(DomainError::ResponseTooLarge));
-        }
-
-        if let Some(llm) = llm {
-            let measured = if (200..300).contains(&response.status) {
-                rekey_policy::profile_llm_output_tokens(llm.protocol, &response.body)
-            } else {
-                None
-            };
-            started.record_profile_output(measured);
-        }
-
-        // Step 14: ExecutionFinished must commit; upstream success without
-        // evidence is not success.
-        started
-            .finished_until(
-                effect_deadline,
-                credential_version,
-                response.status,
-                latency_ms,
-            )
-            .await?;
-        let body = std::mem::take(&mut *response.body);
-
-        // Steps 15-16 (accounting + cleanup) happen in Drop of permit and secrets.
-        Ok(ExecuteOutcome {
-            stream_status: None,
-            upstream_status: response.status,
-            headers,
-            body,
-        })
+        finish_buffered_response(
+            started,
+            action,
+            response,
+            &needles,
+            effect_deadline,
+            credential_version,
+            llm,
+            latency_ms,
+        )
+        .await
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn finish_buffered_response(
+    started: &mut StartedAuditGuard,
+    action: &FixedHttpAction,
+    mut response: crate::upstream::UpstreamResponse,
+    needles: &[Zeroizing<Vec<u8>>],
+    effect_deadline: Instant,
+    credential_version: u64,
+    llm: Option<&llm::LlmExecution>,
+    latency_ms: i64,
+) -> Result<ExecuteOutcome, BrokerError> {
+    // Step 12: secret sealing over the buffered body and every header
+    // the upstream sent (name and value), before any allowlist copy.
+    if contains_secret(&response.body, needles)
+        || headers_contain_secret(&response.headers, needles)
+    {
+        started
+            .indeterminate_until(effect_deadline, "reflected-secret")
+            .await?;
+        return Err(BrokerError::ResponseSecurityViolation);
+    }
+
+    // Step 13: response header filtering (allowlist only).
+    let headers = filter_response_headers(action, &response.headers);
+    if !response_metadata_fits(response.status, &headers, response.body.len()) {
+        started
+            .indeterminate_until(effect_deadline, "response-metadata-too-large")
+            .await?;
+        return Err(BrokerError::Domain(DomainError::ResponseTooLarge));
+    }
+
+    if let Some(llm) = llm {
+        let measured = if (200..300).contains(&response.status) {
+            rekey_policy::profile_llm_output_tokens(llm.protocol, &response.body)
+        } else {
+            None
+        };
+        started.record_profile_output(measured);
+    }
+
+    // Step 14: ExecutionFinished must commit; upstream success without
+    // evidence is not success.
+    started
+        .finished_until(
+            effect_deadline,
+            credential_version,
+            response.status,
+            latency_ms,
+        )
+        .await?;
+    let body = std::mem::take(&mut *response.body);
+
+    // Steps 15-16 (accounting + cleanup) happen in Drop of permit and secrets.
+    Ok(ExecuteOutcome {
+        stream_status: None,
+        upstream_status: response.status,
+        headers,
+        body,
+    })
 }
 
 fn prepare_fixed_header(
