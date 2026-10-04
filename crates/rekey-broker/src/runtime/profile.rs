@@ -422,32 +422,53 @@ impl BrokerCtx {
             self.request_fault();
             return Err(error.into());
         }
-        check_live(self, &active, deadline)?;
-        if crate::now_ts()?.as_unix_ms() >= expires_at_ms {
-            return Err(rekey_domain::DomainError::CapabilityExpired.into());
+        let prepared = (|| {
+            check_live(self, &active, deadline)?;
+            if crate::now_ts()?.as_unix_ms() >= expires_at_ms {
+                return Err(rekey_domain::DomainError::CapabilityExpired.into());
+            }
+            #[cfg(feature = "lab")]
+            if let (Some(manager), Some(identity)) = (&self.oidc_admin, admission) {
+                manager.publish(identity, self, || ())?;
+            }
+            let gateway = self.gateway.endpoint(&active, &profile, &actions);
+            let mut response = ProfileSessionCreatedResponse {
+                session: ipc::SessionCreatedResponse {
+                    session_id,
+                    principal_id: profile.principal_id,
+                    capability_token: token.to_string(),
+                    expires_at_ms,
+                    max_uses,
+                },
+                profile,
+                policy_sha256: data_encoding::HEXLOWER.encode(&active.snapshot().digest()),
+                gateway,
+            };
+            let serialized = serde_json::to_vec(&response)
+                .map(Zeroizing::new)
+                .map_err(|_| BrokerError::Frame(ipc::FrameError::InvalidField));
+            response.session.capability_token.zeroize();
+            serialized
+        })();
+        match prepared {
+            Ok(serialized) => Ok((serialized, guard)),
+            Err(error) => {
+                // Revoke before the audit await, including after the mint deadline.
+                drop(guard);
+                if let Err(audit_error) = self
+                    .authority
+                    .commit_audit(session_audit(
+                        rekey_vault::model::event_type::SESSION_REVOKED,
+                        session_id,
+                    ))
+                    .await
+                {
+                    self.request_fault();
+                    return Err(audit_error.into());
+                }
+                Err(error)
+            }
         }
-        #[cfg(feature = "lab")]
-        if let (Some(manager), Some(identity)) = (&self.oidc_admin, admission) {
-            manager.publish(identity, self, || ())?;
-        }
-        let gateway = self.gateway.endpoint(&active, &profile, &actions);
-        let mut response = ProfileSessionCreatedResponse {
-            session: ipc::SessionCreatedResponse {
-                session_id,
-                principal_id: profile.principal_id,
-                capability_token: token.to_string(),
-                expires_at_ms,
-                max_uses,
-            },
-            profile,
-            policy_sha256: data_encoding::HEXLOWER.encode(&active.snapshot().digest()),
-            gateway,
-        };
-        let serialized = serde_json::to_vec(&response)
-            .map(Zeroizing::new)
-            .map_err(|_| BrokerError::Frame(ipc::FrameError::InvalidField));
-        response.session.capability_token.zeroize();
-        Ok((serialized?, guard))
     }
 }
 
@@ -619,6 +640,76 @@ mod tests {
         ctx.authority.status().await.unwrap();
         assert_eq!(ctx.sessions.active_count(crate::now_ts().unwrap()), 0);
         finish(ctx, join, terminals).await;
+    }
+
+    #[tokio::test]
+    async fn profile_expiry_after_created_audit_commits_revocation() {
+        for fail_revocation in [false, true] {
+            let (dir, ctx, join, terminals) = fixture().await;
+            let db =
+                rusqlite::Connection::open(rekey_vault::paths::vault_db(&dir.path().join("state")))
+                    .unwrap();
+            if fail_revocation {
+                db.execute_batch("CREATE TRIGGER fail_profile_revoke BEFORE INSERT ON audit_events WHEN NEW.event_type='session.revoked' BEGIN SELECT RAISE(ABORT,'synthetic'); END").unwrap();
+            }
+            db.execute_batch("BEGIN IMMEDIATE").unwrap();
+            let worker = ctx.clone();
+            let mint = tokio::spawn(async move {
+                worker
+                    .profile_create_until(
+                        "test",
+                        &[],
+                        #[cfg(feature = "lab")]
+                        None,
+                        Instant::now() + Duration::from_secs(3),
+                    )
+                    .await
+            });
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while ctx.sessions.active_count(crate::now_ts().unwrap()) == 0 {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .unwrap();
+            // Latch expiry while creation is blocked, without a timing race.
+            assert!(
+                ctx.policy
+                    .read()
+                    .await
+                    .as_ref()
+                    .unwrap()
+                    .is_expired(rekey_domain::Timestamp::from_unix_ms(4_102_444_800_000))
+            );
+            db.execute_batch("COMMIT").unwrap();
+            let result = mint.await.unwrap();
+            assert_eq!(ctx.sessions.active_count(crate::now_ts().unwrap()), 0);
+            let events: Vec<String> = db
+                .prepare("SELECT event_type FROM audit_events WHERE event_type IN ('session.created','session.revoked') ORDER BY rowid")
+                .unwrap()
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            if fail_revocation {
+                assert!(matches!(
+                    result,
+                    Err(BrokerError::Authority(AuthorityError::AuditCommitFailed))
+                ));
+                assert_eq!(events, ["session.created"]);
+                ctx.authority.shutdown(None).await.unwrap();
+                drop(ctx);
+                terminals.await.unwrap();
+                join.join().unwrap();
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(BrokerError::Policy(PolicyError::Expired))
+                ));
+                assert_eq!(events, ["session.created", "session.revoked"]);
+                finish(ctx, join, terminals).await;
+            }
+        }
     }
 
     #[tokio::test]

@@ -94,6 +94,8 @@ Header的非零u64大端代数由VRK派生独立HMAC密钥认证，绑定vault I
 文件模式是L1-dev弱检测：同用户可回滚文件。L1还需真实DPK读改删/重建与跨目录CAS
 验收；flock不单独提供此保证。不防root、整钥匙串回滚，也不单靠header MAC检测保留
 新header而替换旧合法行。旧备份依赖其历史因子；确认恢复不宣称使泄露的旧因子失效。
+Agent执行不推进代数：最后一次管理变更后的合法旧快照可以重置随后累积的用量，
+因此预算不防拥有本机状态写权限的攻击者回滚，也不承诺硬费用封顶。
 Incomplete marker必须保留；不能通过删marker、DB或anchor来绕过确认。没有迁移/回填。
 
 ## 共享执行、预算与返回方向
@@ -105,6 +107,8 @@ Profile的稳定principal、instance与精确能力/Action版本来源于已验�
 单一认证request ledger按principal+instance+UTCday记录一次请求与一次终态usage；
 capability续签和daemon重启不重置。未知usage/中断按saved max结算；非生成能力output=0。
 并发已在途请求可造成有界超额，不是硬费用封顶或精确账单系统。
+每次准入和结算均认证完整历史账本，成本随历史增长；alpha没有日汇总或历史压缩。
+这属于一周自用需观察的性能限制，不通过改变已冻结的格式来补一套汇总状态。
 
 Gateway只绑定127.0.0.1动态端口；run读取经验证的Admin响应，不信port缓存文件决定
 capability目的地。Host/Origin/auth/path/header/body都受限，审批控制头不会进上游。
