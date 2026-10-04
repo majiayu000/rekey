@@ -37,12 +37,12 @@
 | M2 anthropic/openai/github/generic 模板 | 本批软件验收通过 | 四个内置声明、风险默认值、App 能力/多绑定选择已接；真实 CLI GitHub 一次安装 16 Action、Swift OpenAI 安装 2 Action 通过；策略激活仍需独立完成 |
 | M2 Approver / local-presence / 面板 | 软件与签名 helper 有界 T10 通过 | 实际 Agent 无法批准、跨 owner 取消/消费拒绝；生产 AppModel/PresenceKey 审阅、认证 context 作废后迟到结果不提交、重新批准、真实 GLM 一次消费200及重放拒绝通过。helper 的 active-window 检查注入true，已安装App的真实失焦/可见取消按钮仍待验。证据见统一候选JSON |
 | M3 Profile / 会话生命周期 / rekey run | 软件与macOS隔离已合流 | Profile15/Runtime8/RunCLI5 及个人编辑后端11/App4独立审查关闭；真实CLI默认/lab各2个生命周期场景及1个子进程fixture通过，SIGKILL后5秒内撤销。已合流整数组编辑、旧摘要拒绝和过期续期；Swift32/55/82/112/65/16断言及真实临时CLI通过。macOS Seatbelt helper7/glue4已合流并验证控制连接EOF后直接子进程和scratch清理；Linux Profile netns明确Unsupported，未宣称L2 |
-| M3 gateway / 认证 / SSE / model与预算 | 软件及 GLM Messages 真实接入通过；Responses 最终复测中 | 固定GLM Messages、普通/SSE、真实Claude Code2.1.281已通过；非法key/Host/Origin/model/输出上限实际拒绝。新增固定Bearer Responses模板、App/Codex入口与终帧后单个DONE支持，22流式/16网关回归通过；真实Codex最终复测与产物收尾另记 |
+| M3 gateway / 认证 / SSE / model与预算 | 软件与真实 GLM 两种协议/客户端通过 | 最终签名候选abf8c2f的真实Claude Code2.1.281、Codex0.160.0均成功，单次调用/正常结算/退出撤销通过；22流式/16网关回归通过。已安装1e3b5cd的非法key/Host/Origin/model/输出上限也实际拒绝；最终pkg升级认证超时，安装版复测待做 |
 | M3 MCP v2 / await_approval / GET | 本批软件已合流 | MCP6及独立审查关闭，无参数环境接入、Agent8签名Profile发现、多Action选择和owner审批保留。root实际stdio9/9、bin15/15通过；测试接收端首字节改用既有CLI响应时限，后续帧仍2秒。新live脚本两轮合成运行通过，未运行真实Codex |
 | M3 rekey connect / diff / 备份 | 软件已合流，客户端路由合成验收通过 | 项目MCP配置/diff/TTY默认拒绝/备份与原子发布通过；显式--client适配4文件与47次定向测试通过。Claude2.1.281/Codex0.160.0已通过真实CLI→合成Admin/HTTP/SSE路由；后续真实Broker+合成上游也已通过；真实provider未验，Codex仅批准的preferences-routing场景，不证明L2 |
 | M3 活动页 / 审计统计 | 软件已合流，真实CLI数据互通通过 | 后端52与App4冻结补丁独立审查关闭；可信历史上下文、今日UTC稳定分页、已测量/上限token分列。App32 Activity/65 local/112 flow断言及严格编译通过，实际MCP调用→CLI audit JSON→App decoder与真实Swift CLI流程通过；通知回归RED与修复证据保留。 |
 | M3 遮蔽增强 / 编码与压缩限制 | 本批验收通过 | JSON/hex/base64 对齐、禁止压缩头；独立审查的窗口/短秘密问题已关闭；流式跨片回归通过；11 项 decoded source 合流回归通过；真实 TLS streaming 8/8，通过 marker fast path 避免逐字节重复扫描 |
-| M3 连续 500 次零交互与真实Agent接入 | 签名安装版真实 GLM T11 零交互通过 | `1e3b5cd`安装版在同一`rekey run`完成500次授权调用，499成功/1上游超时，零UI/零自动重试；审计started500/finished499/indeterminate1、无审批、退出撤销。真实Claude Code成功；真实Codex最终修复复测中。不是500次全部成功或新账户T12 |
+| M3 连续 500 次零交互与真实Agent接入 | 签名安装版 T11 与最终签名候选两客户端通过 | 1e3b5cd安装版同一run完成500次授权调用，499成功/1上游超时，零UI/自动重试，审计匹配；最终abf8c2f候选真实Claude Code/Codex各单次成功并退出撤销。不是500次全部成功或新账户T12 |
 | M4 新账户 5 分钟接入 | 最小入口已合流；设备验收待做 | setup/add固定App入口、显式保存/能力安装/个人策略编辑与取消后复用已安装版本已实现；20最终检查通过。实际新用户安装/SE/5分钟T12未验收 |
 | M4 格式冻结 / 基线 / GA 发布 | 候选版本、文档及分发接线已实现；GA未发布 | 3.0.0-alpha.1、vault25/policy6；完整运行与定向修复已记录，GA最终格式冻结与公开发布仍待完成 |
 
@@ -212,3 +212,5 @@ M0 复核：`rekey-approval-relay` 没有 lib target，bin 与 integration-test 
 T11真实运行完成：单一`rekey run`下500次授权调用，499成功/1上游超时，1881.581秒，无UI/自动重试。审计started500、finished499、indeterminate1、approval0，退出撤销且独立测试daemon按密码停机。按SPEC的零交互条件通过；不声称500次全部200。第一次运行在第266次超时后停止，失败记录保留；超时发生在DNS、连接或响应中的哪一步未归因。详见统一JSON的`current_account_agent_acceptance`。
 
 GLM Responses最终源码补证：固定`glm-responses@1`（POST`/api/v1/responses`、Bearer）与App GLM/Codex选择已实现。真实Codex首次返回OK后因旧解析器拒绝终帧后的DONE而退出1；已先修SPEC，再允许完整/不完整终帧后单个DONE，保留EOF/持久结算与秘密遮蔽，提前/重复/尾部数据仍拒绝。22流式、16网关、Swift10模式通过；最终默认全仓1021/0/6，default/lab all-targets与strict Clippy通过。最终App/pkg公证Accepted、签名/票据/Gatekeeper通过，二进制与源码哈希一致。复测重启时Mac已自动锁屏，生产受保护锚及签名探针返回-25308；旧候选也同样拒绝，不降低访问条件或重建库。新pkg已就绪，当前仍安装1e3b5cd；最终真实Codex和升级等待正常屏幕解锁/一次系统管理员认证，不再请求项目授权。
+
+2026-10-04下午续验：解锁屏幕后，原团队临时库正常解锁，但一小时策略已过期而拒绝run（没有上游调用）。另建独立团队fixture、RAM内Ed25519签名、不改原库，在最终签名abf8c2f候选完成真实Codex0.160.0→GLM Responses（9.611秒，输入13352/输出11，execution.finished1、session.revoked1、Key六类编码零命中）；同一最终候选的真实Claude Code2.1.281→GLM Messages也通过（4.361秒，输入139/输出13，finished1/revoked1）。两个测试daemon均以密码证明停机，没有新增指纹操作。pkg升级仅系统管理员认证待办：osascript等待300秒后超时，签名/公证/哈希均正确但payload未应用；现有安装仍是1e3b5cd。附加真实connect/MCP测试在Mac再次自动锁屏后、客户端启动前失败，受保护锚返回-25308，不标通过。源码SHA仍等于1021/0/6全仓gate对应的候选，不重复全仓测试；本轮仅更新设备证据。

@@ -1,6 +1,6 @@
 {
   "date": "2026-10-04",
-  "scope": "current macOS account partial acceptance; signed notarized GLM candidate installed; no public release or T12 claim",
+  "scope": "current-account bounded acceptance; final signed candidate real GLM Claude Code and Codex passed; old signed DNS candidate remains installed; no public release or T12 claim",
   "source_base": "e1460b0fe3e6b6a28a6cd49721661159832517ef",
   "branch": "codex/v3-release-acceptance-20261003",
   "imported_repairs": [
@@ -292,7 +292,8 @@
     ]
   },
   "pending": [
-    "real Codex final candidate acceptance and upgrade install require normal macOS screen unlock; signed/notarized pkg ready",
+    "final pkg upgrade and installed-version client retests: system administrator authentication timed out; no payload applied",
+    "additional real-client MCP connect check: macOS auto-locked before client startup; bounded signed MCP probes already passed",
     "actual installed App focus, visible cancellation and policy-review workflow",
     "installed SMAppService registration and login-item lifecycle",
     "fresh macOS account T12 deferred by user",
@@ -1614,7 +1615,7 @@
         "crates/rekey-vault/src/authority.rs": "f4b5a751686ebd15d37766d51283b4d257b7138c9e0486d446a5a0005d3f8be1"
       }
     },
-    "status": "source and signed/notarized pkg ready; real Codex requires screen unlock; upgrade requires one system administrator authentication, no renewed project authorization",
+    "status": "both real clients passed on final signed candidate; pkg upgrade timed out waiting for system administrator authentication; installed client retests remain pending",
     "screen_lock_blocker": {
       "probe_exit_code": 0,
       "protected_anchor_read": {
@@ -1856,7 +1857,209 @@
       "failed": 0,
       "ignored": 0
     },
-    "format_check": true
+    "format_check": true,
+    "real_codex_final_candidate": {
+      "source_commit": "abf8c2f4e74b02f575f5ee37a4b29b8a160a6764",
+      "source_delta": "GLM Responses fixed template, gateway, App onboarding and post-terminal DONE fix",
+      "policy_mode": "team",
+      "policy_signing": "temporary in-memory Ed25519 test signer",
+      "model": "glm-5.3-flash",
+      "profile": "glm-codex-acceptance",
+      "client_version": "0.160.0",
+      "ui_operations_performed": 0,
+      "started_at_ms": 1791095942771,
+      "installed_candidate_daemon_sha256": "53c0af5ba62c541e9b53799b07f530bde149a873aeae427c2a5a414d28cd4bd8",
+      "policy_activated": true,
+      "vault_id": "e867b50b-cd01-4405-a3df-feda92f90058",
+      "client_exit_code": 0,
+      "client_seconds": 9.611,
+      "client_secret_matches": 0,
+      "client_event_counts": {
+        "thread.started": 1,
+        "item.completed": 2,
+        "turn.started": 1,
+        "turn.completed": 1
+      },
+      "completion_is_ok": true,
+      "client_usage": [
+        {
+          "input_tokens": 13352,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 11,
+          "reasoning_output_tokens": 8
+        }
+      ],
+      "audit_event_counts": {
+        "session.revoked": 1,
+        "execution.finished": 1,
+        "execution.started": 1,
+        "session.created": 1,
+        "policy.activated": 1,
+        "policy.trust_installed": 1,
+        "action.created": 1,
+        "credential.created": 1,
+        "vault.unlocked": 1,
+        "vault.initialized": 1
+      },
+      "terminal_reasons": {
+        "finished": 1
+      },
+      "measured_usage": [
+        {
+          "instance_slug": "glm-responses",
+          "utc_day": 20730,
+          "output_tokens": 11,
+          "source": "measured"
+        }
+      ],
+      "sessions_after_client": 0,
+      "passed": true,
+      "shutdown_exit_code": 0
+    },
+    "screen_unlocked_anchor_read": {
+      "probe_exit_code": 0,
+      "protected_anchor_read": {
+        "generation": 5,
+        "status": 0,
+        "when_unlocked_this_device_only": true
+      }
+    },
+    "expired_test_policy_attempt": {
+      "source_base": "1e3b5cd",
+      "source_delta": "GLM Responses plus single optional DONE marker after terminal; unchanged EOF and sealing",
+      "policy_mode": "team",
+      "policy_signing": "existing temporary Ed25519 test policy",
+      "model": "glm-5.3-flash",
+      "profile": "glm-codex-acceptance",
+      "client_version": "0.160.0",
+      "ui_operations_performed": 0,
+      "started_at_ms": 1791095878931,
+      "candidate_daemon_sha256": "53c0af5ba62c541e9b53799b07f530bde149a873aeae427c2a5a414d28cd4bd8",
+      "client_exit_code": 2,
+      "client_seconds": 0.019,
+      "client_secret_matches": 0,
+      "client_event_counts": {},
+      "completion_is_ok": false,
+      "client_usage": [],
+      "audit_event_counts": {
+        "vault.unlocked": 1
+      },
+      "terminal_reasons": {},
+      "measured_usage": [],
+      "sessions_after_client": 0,
+      "passed": false,
+      "shutdown_exit_code": 0
+    },
+    "expired_test_policy_reason": "Original one-hour team test policy expired before the next-day resume; real client did not start. A fresh isolated team fixture with an in-memory signer was created without changing existing vaults.",
+    "real_claude_code_final_candidate": {
+      "source_commit": "abf8c2f4e74b02f575f5ee37a4b29b8a160a6764",
+      "profile": "glm-acceptance",
+      "model": "glm-5.3-flash",
+      "client_version": "2.1.281",
+      "ui_operations_performed": 0,
+      "started_at_ms": 1791096480794,
+      "candidate_daemon_sha256": "53c0af5ba62c541e9b53799b07f530bde149a873aeae427c2a5a414d28cd4bd8",
+      "exit_code": 0,
+      "seconds": 4.361,
+      "client_result": {
+        "type": "result",
+        "subtype": "success",
+        "is_error": false,
+        "num_turns": 1,
+        "duration_ms": 3619,
+        "duration_api_ms": 3594
+      },
+      "result_is_ok": true,
+      "usage": {
+        "input_tokens": 139,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 13
+      },
+      "model_usage": {
+        "glm-5.3-flash": {
+          "inputTokens": 139,
+          "outputTokens": 13,
+          "cacheReadInputTokens": 0,
+          "cacheCreationInputTokens": 0,
+          "webSearchRequests": 0,
+          "costUSD": 0.0008159999999999999,
+          "contextWindow": 200000,
+          "maxOutputTokens": 32000,
+          "thinkingTokens": 0
+        }
+      },
+      "api_error_status": [],
+      "stderr_hint_login": false,
+      "stderr_bytes": 80,
+      "sessions_after_client": 0,
+      "audit_event_counts": {
+        "session.revoked": 1,
+        "execution.finished": 1,
+        "execution.started": 1,
+        "session.created": 1,
+        "vault.unlocked": 1
+      },
+      "measured_usage": [
+        {
+          "instance_slug": "glm",
+          "utc_day": 20730,
+          "output_tokens": 13,
+          "source": "measured"
+        }
+      ],
+      "passed": true,
+      "shutdown_exit_code": 0
+    },
+    "package_upgrade_attempt": {
+      "original_vault_modified": false,
+      "previous_app_running": true,
+      "app_identifier": "com.starlight.rekey",
+      "app_quit_exit_code": 0,
+      "staged_package": "/private/tmp/rekey-v3-responses-install-bfg6oql8/Rekey-3.0.0-alpha.1.pkg",
+      "staged_sha256": "f011fbd5141d8cad644372f3f9740c37ecc81f819ad111cc7aad2ce6d785916d",
+      "source_sha256": "f011fbd5141d8cad644372f3f9740c37ecc81f819ad111cc7aad2ce6d785916d",
+      "install_status": "system administrator authentication timed out after 300 seconds; no installer payload applied",
+      "timeout_seconds": 300,
+      "installer_started": false,
+      "installed_binary_hashes_match": false
+    },
+    "source_checks_reused": {
+      "source_commit": "abf8c2f4e74b02f575f5ee37a4b29b8a160a6764",
+      "only_documentation_changed": true,
+      "production_sha256_matches": true
+    },
+    "additional_real_client_mcp_attempt": {
+      "scope": "additional connect/native MCP test did not reach client startup",
+      "record": {
+        "source_commit": "abf8c2f4e74b02f575f5ee37a4b29b8a160a6764",
+        "source_delta": "GLM Responses plus single optional DONE marker after terminal; unchanged EOF and sealing",
+        "policy_mode": "team",
+        "policy_signing": "existing temporary Ed25519 test policy",
+        "model": "glm-5.3-flash",
+        "profile": "glm-codex-acceptance",
+        "client_version": "0.160.0",
+        "ui_operations_performed": 0,
+        "started_at_ms": 1791097237117,
+        "candidate_daemon_sha256": "53c0af5ba62c541e9b53799b07f530bde149a873aeae427c2a5a414d28cd4bd8",
+        "cli_failure": {
+          "operation": "shutdown",
+          "exit_code": 7,
+          "stderr": "error [IPC_UNAVAILABLE]: broker unreachable: No such file or directory (os error 2)\n"
+        },
+        "failure_type": "RuntimeError",
+        "passed": false,
+        "shutdown_failed": true
+      },
+      "blocker": {
+        "screen_locked": true,
+        "protected_anchor_read": {
+          "status": -25308
+        },
+        "native_client_started": false
+      }
+    }
   },
   "pre_responses_default_test_counts": {
     "passed": 1018,
