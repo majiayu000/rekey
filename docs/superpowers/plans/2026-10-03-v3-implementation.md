@@ -22,15 +22,15 @@
 | M0 lab feature / 默认构建 / 发布和CI分离 | 本批验收通过 | 默认/lab all-targets 编译通过；84 文件补丁独立复核通过；M1 合流默认 597 / lab 1,061 项测试通过，各 2 项忽略 |
 | M0 README / spec 状态 / 格式冻结规则 | 已实现，未发布 | README 只列现有入口；35 企业 spec 标 Lab，两份研究稿改 v4；永久不迁移，GA 主版本内冻结格式；编译器源输入物理行 40,371 / 60,754（非有效代码量） |
 | M1 SHUTDOWN 全状态 step-up | 本批默认验收通过 | 29 项不重复定向 Rust 测试及 synthetic human-vault smoke 通过；Locked 验证不解锁，证明验证前超时不触发停机；独立审查通过 |
-| M1 presence proof 与钥匙串 UI | 统一候选已合入修复；已安装流程待验 | proof3、受保护 K、固定双时钟期限、显式 A2 和取消边界已实现；此前默认 698/2 ignored、真实 CLI 与 Swift 82/53/108/16 断言通过。独立修复分支的 V1 及真实认证 context 固定十秒复用通过；已安装 App 完整操作仍待验收，不提高完整 L1 承诺 |
+| M1 presence proof 与钥匙串 UI | 已安装策略激活通过；新复用软件通过 | proof3、受保护 K、固定双时钟期限、显式 A2 和取消边界已实现；此前默认 698/2 ignored、真实 CLI 与 Swift 82/53/108/16 断言通过。独立修复分支的 V1 及真实认证 context 固定十秒复用通过；旧安装版实际策略审阅/签署激活通过；新同次激活认证复用经软件验证，物理弹窗次数及明文清理仍待验，不提高完整 L1 承诺 |
 | M1 desktop-reveal step-up / 明文清零 | 本批默认验收通过 | password/recovery 逐次证明、Zeroizing 响应所有权；UI 94 项边界断言通过，失焦关闭待验证表单；旧 desktop token 不再授权明文 |
 | M1 生产客户端签名校验 / 等级显示 | 本批验收通过 | 签名 CLI 对错误 ID 同团队/ad-hoc 服务均在发送前拒绝，服务收到零字节；status/UI 展示本地验证结果；同团队 release daemon 的 status/unlock/shutdown 正向通过；仍不代表完整 L1 |
 | M1 rollback generation / MAC / 外部计数 | 软件回归完成；设备验收待做 | C1/B1、B2/C2事务与root wire/UI共54文件已合流；四项并发/错误路径审查问题关闭，含实际旧源RED→修复GREEN。Vault默认/lab各122定向、root严格检查及真实CLI回滚/恢复通过；UI UUID互通修复后真实Swift→CLI通过。本轮签名候选已实测 DPK 读/写/删权限、并发 CAS 和旧数据库认证后疑似回滚；设备证据见 `docs/evidence/v3-release-acceptance-2026-10-04.json`，完整矩阵仍待验 |
 | M1 memory hardening / core limit | 本批验收通过 | Linux arm64 容器实测 core=0/dumpable=0、独立 key 页生命周期、mlock 失败告警继续；macOS 回归与独立审查通过。仅覆盖拥有型 VRK/DEK 缓冲，非所有栈/AEAD 临时副本 |
 | M1 pkg / LaunchAgent / SMAppService | 源码与 CI 接线已实现，设备验收待做 | pkg 9 项合成结构检查和独立审查通过；静态 LaunchAgent 与 App 显式注册、无-k 启动、逐次 proof 停用入口已编译；103 UI 边界断言通过。Installer 证书与独立 daemon profile 已生成；本轮统一 App/pkg 已签名、公证、装订并通过 Gatekeeper。此前候选 pkg 已在当前账户安装并核对收据/链接/哈希；GLM 升级版 pkg 也已安装并核对签名/Gatekeeper/哈希，实际登录项生命周期和真实 CI 仍未验 |
 | M1 独立安全审查 | 待完成 | 原型代码审查不等同于产品安全验收 |
-| M2 P-256 信任根 / 固定模式 / App 初始化 | 本批软件验收通过 | format23；显式 personal/team、P-256 DER 验签、完整 mode/algorithm/key seal 与备份/轮换通过；App 本机密钥初始化已接线，已实测生产 PolicySigning 的 SE 建钥/读回、私钥导出拒绝和无交互签名拒绝；当前账户已使用生产 PolicySigning.swift 的签名 helper 完成 SE 签署与真实 daemon 激活；硬件取消与已安装 App 流程未验。draft/sign/activate 见下项 |
-| M2 个人策略 draft / diff / App 签名激活 | 本批软件验收通过 | 默认 683 / lab 1,147 项通过，各 2 ignored；纯草案 8/8、真实 CLI P-256 黑盒、Swift 47 项签名取消/字节保真断言通过；四份独立审查关闭。当前账户签名 helper 已完成生产 SE 签署→真实 CLI 激活；完整 App 审阅/取消流程未验 |
+| M2 P-256 信任根 / 固定模式 / App 初始化 | 本批软件验收通过 | format23；显式 personal/team、P-256 DER 验签、完整 mode/algorithm/key seal 与备份/轮换通过；App 本机密钥初始化已接线，已实测生产 PolicySigning 的 SE 建钥/读回、私钥导出拒绝和无交互签名拒绝；当前账户已使用生产 PolicySigning.swift 的签名 helper 完成 SE 签署与真实 daemon 激活；已安装 App 完整策略审阅/签署激活通过，硬件取消仍待验。draft/sign/activate 见下项 |
+| M2 个人策略 draft / diff / App 签名激活 | 本批软件验收通过 | 默认 683 / lab 1,147 项通过，各 2 ignored；纯草案 8/8、真实 CLI P-256 黑盒、Swift 47 项签名取消/字节保真断言通过；四份独立审查关闭。当前账户签名 helper 已完成生产 SE 签署→真实 CLI 激活；2026-10-05实际安装版完整App审阅/签署激活通过；57项新共享认证软件断言通过，新弹窗次数/可见取消未验 |
 | M2 模板规范与路径/query渲染 | 纯合同本批验收通过 | 18 个领域测试与 10 个包验签/schema 测试通过，独立审查无待修问题；单 Action 物化、团队 Ed25519、来源摘要与离线 schema 已实现；存储、授权和执行链已接线，见下列运行时证据 |
 | M2 ActionTarget / 内容认证 / 格式 | 本批软件验收通过 | format22；完整原始 Action 行 AEAD、全状态重封/轮换、实际备份副本和恢复验证；44 项定向测试及独立审查通过。数值列篡改错误映射 P2 已关闭；无迁移 |
 | M2 原子安装 / 规范执行 / 客户端 | 本批软件验收通过 | 52/53、原子批安装、render→审批哈希→HTTP 已接线；全量默认 647 / lab 1,111 项通过，各 2 项忽略；stdin 尾修 CLI 黑盒、lab CLI 62/1 ignored、Swift 实际 CLI 与 103 流程断言通过；独立审查关闭 |
@@ -46,11 +46,11 @@
 | M4 新账户 5 分钟接入 | 最小入口已合流；设备验收待做 | setup/add固定App入口、显式保存/能力安装/个人策略编辑与取消后复用已安装版本已实现；20最终检查通过。实际新用户安装/SE/5分钟T12未验收 |
 | M4 格式冻结 / 基线 / GA 发布 | 候选版本、文档及分发接线已实现；GA未发布 | 3.0.0-alpha.1、vault25/policy6；完整运行与定向修复已记录，GA最终格式冻结与公开发布仍待完成 |
 
-## 人工验收与发布交接（2026-10-04，尚未执行）
+## 人工验收与发布交接（2026-10-05，部分完成）
 
 统一结果继续以[候选证据](../../evidence/v3-release-acceptance-2026-10-04.json)为准。
-实际安装包 SHA-256 为 `f011fbd5141d8cad644372f3f9740c37ecc81f819ad111cc7aad2ce6d785916d`，
-生产源码来自 `abf8c2f`；后续证据提交不改变该二进制。
+此前 `abf8c2f` 包的 SHA-256 为 `f011fbd5141d8cad644372f3f9740c37ecc81f819ad111cc7aad2ce6d785916d`，仅作为历史产物记录。
+本次系统认证复用修复的新公证包 SHA-256 为 `29c82c7ed634e2c04b0a3f42a23ffbffa2160d77905f3f2cd40631877dc944e6`；最新检查与安装状态见统一 JSON 的 `follow_through_20261005`。
 
 独立人工安全审查由用户审阅，至少核对以下原始攻击路径及现存失败记录，目前尚未完成：
 
@@ -61,15 +61,15 @@
 - 网关准入、SSE 编码秘密遮蔽、终帧后单个 DONE、一次用量结算、owner 死亡撤销，以及真实 GLM/客户端失败记录。T11 是499成功加1超时，不是500次全部成功。
 - 回滚外部锚、真实 Keychain/SE 权限及 LLDB 正负对照只支持已记录边界；当前证据不能扩大为完整 L1/L2、root 防护或全部内存副本清零。
 
-新账户材料已准备在 `/Users/Shared/rekey-v3-acceptance-20261004`：公证 pkg、其校验值及原样复制的 Claude Code 2.1.281；没有凭据、保险库或用户配置。账户创建、系统登录与 Touch ID 设置仍由用户完成。T12 从开始安装 pkg 起计时，随后仅执行：
+最新新账户材料已准备在 `/Users/Shared/rekey-v3-acceptance-20261005`：公证 pkg、其校验值及原样复制的 Claude Code 2.1.281；没有凭据、保险库或用户配置。账户创建、系统登录与 Touch ID 设置仍由用户完成。T12 从开始安装 pkg 起计时，随后仅执行：
 
 ```sh
 rekey setup
 rekey add anthropic
-rekey run claude-code --client claude-code -- /Users/Shared/rekey-v3-acceptance-20261004/claude --model glm-5.3-flash
+rekey run claude-code --client claude-code -- /Users/Shared/rekey-v3-acceptance-20261005/claude --model glm-5.3-flash
 ```
 
-App 中显式选择 GLM Messages、输入测试 Key、确认模型/预算/Profile、审阅差异并签名；记录实际耗时、命令数、JSON 数及退出撤销。该过程尚未执行。已安装 App 的真实失焦、可见取消和策略审阅，以及 SMAppService 批准、注销/登录、升级、停用和卸载另行验收，模型测试不替代这些设备结果。
+App 中显式选择 GLM Messages、输入测试 Key、确认模型/预算/Profile、审阅差异并签名；记录实际耗时、命令数、JSON 数及退出撤销。新账户过程按用户决定延后；当前账户实际 App 的完整策略差异审阅、Secure Enclave 签署与激活已完成，旧产物上的签署成功不验证本次复用修复的弹窗次数。实际明文显示后失焦清理、审批的可见取消，以及 SMAppService 批准、注销/登录、升级、停用和卸载另行验收，模型测试不替代这些设备结果。
 
 GitHub 发布工作流仍缺 Installer 身份/证书及双 provisioning profile secrets；已授权的私钥留本机约束继续有效。候选包与 cask 已就绪，但尚未创建公开 release，GA 格式冻结、新机器公开下载验收和正式发布授权仍待完成。其他工作树不自动清理：本轮只读盘点125个，其中66个 v3 工作树有未提交变更。
 
@@ -276,3 +276,20 @@ GLM Responses最终源码补证：固定`glm-responses@1`（POST`/api/v1/respons
 
 
 推送后补充：发现已有release workflow在job级env引用runner.temp，GitHub定义校验直接拒绝六个路径，未创建job或执行发布。官方actionlint在原文件复现6项错误；将同样路径移到首个runner步骤通过GITHUB_ENV设置后零错误，分发9项、pkg10项和带空格临时目录的真实shell初始化通过。签名/发布条件保持，Rust/App与已安装包未改变，无新tag/release或签名secret上传。当前PR的新head继续跑云端门槛，旧失败保留于本轮证据。
+
+
+## 2026-10-05 当前账户续验与减少认证弹窗
+
+已安装 `dd495f5` 候选上，真实 Claude Code→GLM Messages（4.172秒）与 Codex→GLM Responses（10.224秒）通过；CLI 生成 connect 配置后，真实 Codex 完成一次 Rekey MCP 工具调用（22.129秒）。退出后均零会话， 本轮自建测试 daemon 以新密码证明停机。MCP 首次因客户端 approval=never 被拒绝，随后沿用已授权的仅本次 Rekey 工具批准与隔离 CODEX_HOME；没有修改用户客户端配置。最初过期策略的拒绝保留，不计算为 provider 成功。
+
+真实 App 显示完整策略替换差异，只变更版本2→3和期限，保留两个 Profile；经用户 Touch ID、生产 Secure Enclave 签署后显示激活成功，签名 CLI 读回 active v3。明文 canary 的实际显示顺序未观测到，用户也未留意，因此失焦清零仍 Pending；不以最终掩码状态当作通过。用户要求减少认证后停止重复硬件测试。
+
+发现一次策略激活分别为读取 K 和 SE 签署创建认证 context，可能弹两次。最小修复复用既有 PresenceReadContext，让同次激活共用固定十秒认证窗口；完成、取消、失败立即作废，不缓存 K/签名，不延长七天授权，不改变改密码/恢复因子的证明要求。57项个人策略、88项 presence、65项本机审批、112项 flow、47项 onboarding 软件断言与完整 Swift6 严格编译通过。首轮审批测试误用根工作区 cwd 而失败，正确 cwd 复验通过，原失败保留；实际新流程弹窗次数未测试。
+
+新 App/pkg 公证 `21da3a3b-d77a-458d-ad15-8e304acf50f5` / `3c5f0866-cf61-459a-b171-4b842f94f1bb` 均 Accepted；十项分发检查通过。五个内嵌 CLI/daemon/MCP/签名工具的 CodeDirectory 均与此前已测安装版相同，只有 App 源码改变；不把此前模型调用写成对新 App 的硬件验收。最新安装及默认全仓结果见 `follow_through_20261005`。
+
+SMAppService 固定使用 `~/.rekey`，该目录已有须保留的旧格式保险库和开发 daemon；安装版只读身份验证拒绝该旧开发 daemon，没有向其发送证明。自定义验收库不能验证此默认登录项；未注册、注销或停掉原服务。人工审查、实际 canary 清理/审批取消、完整登录项生命周期、新账户 T12 与 GA/公开发布继续 Pending。
+
+本次默认全仓最终 **1027 passed / 0 failed / 6 ignored**，1358.922秒；没有新Lab全仓结果。新版安装沿用既有授权，系统管理员认证与最新安装状态独立记录。
+
+本次当前账户安装已完成，installer退出0；15个普通文件、1个bundle链接、3条root CLI链接与新候选完全匹配，严格签名/Gatekeeper/版本/收据通过。新版App已通过命令打开，没有触发新的硬件验收。

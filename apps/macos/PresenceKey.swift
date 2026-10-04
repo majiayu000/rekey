@@ -68,7 +68,8 @@ enum PresenceKey {
         try reads.read(vaultID: vaultID) { try read(vaultID: vaultID, context: $0) }
     }
 
-    private static func read(vaultID: UUID, context: LAContext) throws -> String {
+    // The policy activation owns this context and shares it with the SE signer.
+    static func read(vaultID: UUID, context: LAContext) throws -> String {
         var query = try identity(vaultID: vaultID)
         query[kSecUseAuthenticationContext as String] = context
         query[kSecMatchLimit as String] = kSecMatchLimitAll

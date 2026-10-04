@@ -48,7 +48,7 @@ App 在签名前会装入静态 `Contents/Library/LaunchAgents/com.rekey.rekeyd.
 - 固定操作：表单创建，定义文件导入/更新/禁用。表单采用 30 秒、64 KiB 请求、256 KiB 响应的当前默认；更细的限制通过定义文件配置。
 - Provider 模板：Anthropic、GLM（固定智谱 Anthropic Messages 端点）、OpenAI、GitHub PAT 和自定义 Bearer。界面从 daemon 读取认证后的能力声明，支持勾选能力和多组固定绑定；一次管理证明后原子安装。安装不自动激活策略或发放 Agent 会话。团队签名包可通过 `rekey template catalog/install --file … --package …` 使用。
 - 模板调用：`rekey execute` 与 `rekey approval prepare` 接受重复的 `--param NAME=VALUE`、`--query NAME=VALUE`。请求只使用安装时声明的参数类型和查询键，规范路径、查询与正文绑定审批；固定操作拒绝非空参数。本地 presence 审批通过专门面板审阅完整 daemon 请求。
-- 个人策略：安装按 vault ID 绑定的本机 P-256 信任公钥，编辑完整 Profile 集合（主体、实例能力、会话、隔离、egress、模型与预算），每个能力明确选择 `template-default`、`allow` 或 `require-approval`。查看完整替换差异与目标定义后，由 App 调用 Secure Enclave 签署 daemon 返回的原始字节，经匿名 stdin 提交签名包与逐次管理证明。空集合撤销全部授权；模板默认的高风险审批不会隐式变成 allow。切换工作区、关闭表单或草案失效后，迟到签名不会激活；不自动重签或重试。snapshot6 与规则 UI 的联合 gate 待完成，真实 SE/Touch ID 仍待设备验收。
+- 个人策略：安装按 vault ID 绑定的本机 P-256 信任公钥，编辑完整 Profile 集合（主体、实例能力、会话、隔离、egress、模型与预算），每个能力明确选择 `template-default`、`allow` 或 `require-approval`。查看完整替换差异与目标定义后，由 App 调用 Secure Enclave 签署 daemon 返回的原始字节，经匿名 stdin 提交签名包与逐次管理证明。空集合撤销全部授权；模板默认的高风险审批不会隐式变成 allow。切换工作区、关闭表单或草案失效后，迟到签名不会激活；不自动重签或重试。使用系统认证时，本次读取授权和策略签署复用同一认证 context（固定十秒窗口）；结束、取消或失败时作废。snapshot6 与规则 UI 的软件联合 gate 已完成；此前安装候选的完整 App 审阅、真实 SE/Touch ID 签署激活已实测，本次共用 context 修复后的实际弹窗次数尚未测试。
 - Agent 接入：选择 Profile 后显式 `connect` / `run`；MCP 只发现已授权工具，SDK 使用已验证的本机 gateway endpoint。实例、预算和审批在共用执行器校验。没有后台签策略或 Agent 触发的系统认证；Linux Profile netns 与 Codex Seatbelt managed-preferences 限制见平台说明。
 - Activity：按结构化审计展示 Agent/实例/操作结果和用量；不展示 provider 凭证、原始请求或敏感响应。
 - 团队策略：安装外部 Ed25519 信任根、导入签名策略并查看状态。按操作创建短期 capability、按会话 ID 撤销；没有全量活动会话列表。

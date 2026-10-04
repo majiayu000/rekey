@@ -20,8 +20,8 @@ CI收尾修复源码默认全仓1,021/0 failed/6 ignored，两配置严格Clippy
 | 回滚检测与明确恢复 | [generation tests](../../crates/rekey-vault/tests/generation_rollback.rs)、[真实CLI测试](../../tests/rollback_cli.rs)；业务+1、外锚先保留、疑似状态无根、显式context确认后保持Locked | 真实 DPK 读/写/删权限与 CAS 已实测；不防 root/整钥匙串回滚 | Pending |
 | 认证状态与备份 | [backup tests](../../crates/rekey-vault/tests/backup_restore.rs)；完整Action/策略/用量封印、实际副本校验、receipt含generation | 不是迁移或旧因子远程失效 | Pending |
 | 固定/模板Action | [Action](../../crates/rekey-domain/src/action.rs)、[模板](../../crates/rekey-domain/src/template.rs)、[package](../../crates/rekey-policy/src/templates.rs)；原子安装、类型化绑定与一次规范化 | 未知模板不猜成LLM；安装不自动授权 | Pending |
-| 个人/团队模式 | [personal policy](../../crates/rekey-policy/src/personal.rs)、[App signing](../../apps/macos/PolicySigning.swift)；固定P256/Ed25519信任、原字节签署、完整差异 | 真实SE签署/取消设备验收 | Pending |
-| 个人逐能力规则 | 必填 template-default/allow/require-approval；snapshot6；只生成既有permit或一次local-presence规则 | 软件联合检查通过；真实SE签署仍待设备验收 | Pending |
+| 个人/团队模式 | [personal policy](../../crates/rekey-policy/src/personal.rs)、[App signing](../../apps/macos/PolicySigning.swift)；固定P256/Ed25519信任、原字节签署、完整差异 | 此前安装版 App 完整审阅/真实SE签署激活通过；可见取消和新复用流程弹窗次数未验 | Pending |
+| 个人逐能力规则 | 必填 template-default/allow/require-approval；snapshot6；只生成既有permit或一次local-presence规则 | 软件联合检查及此前安装版 App SE签署激活通过；新认证复用的物理弹窗次数未验 | Pending |
 | Approver与本机审批 | [local broker tests](../../crates/rekey-broker/tests/local_approval.rs)、[真实CLI](../../tests/local_approval_cli.rs)；完整review绑定、逐次Presence、owner wait/cancel、一次消费 | Remote枚举不代表实现；后台通知不读K | Pending |
 | 外部审批 | [approval tests](../../crates/rekey-broker/tests/approval_contract.rs)；Ed25519成员、quorum、one-time/time-window；grant v1、challenge v2 | 独立sign CLI保留窄单人能力，不冒充所有library模式 | Pending |
 | Profile与owner | [profile sessions](../../crates/rekey-broker/tests/profile_sessions.rs)、[实际run](../../tests/profile_run.rs)；同一签名scope、固定peer owner、EOF/死亡撤销 | 注册前FD移交不能还原最初connector | Pending |
@@ -77,3 +77,6 @@ GLM Responses 接入合同：新增固定 `glm-responses@1`（POST `/api/v1/resp
 2026-10-04晚间：最终Responses公证pkg已在当前账户安装，16个bundle文件与已装订候选一致，版本/收据/root所有的CLI链接/严格签名/Gatekeeper通过。安装版真实Claude Code（8.222秒、输入140/输出18）和Codex（9.008秒、输入13346/输出11）均返回OK、各一轮正常结算并退出撤销；测试daemon密码证明停机，无新增系统在场认证。当前在线stapler验证因Apple CloudKit TLS -1200失败，源App此前装订验证成功；失败未隐去，未绕过TLS。实际App焦点/取消、登录项生命周期、新账户T12及公开Release仍Pending。
 
 最终安装版connect/MCP实测通过：临时Git项目的MCP传输配置由CLI生成，真实Codex完成一次工具调用和两轮模型请求，三条execution.finished、无indeterminate、六类Key编码零命中、退出后零会话。项目信任只保存在隔离CODEX_HOME；本次进程为已授权的Rekey固定provider工具设置approve，shell保持只读。之前客户端未加载信任/拒绝工具的记录保留，不改用户设置，不扩展为新账户T12或L2。
+
+
+2026-10-05 续验：当前账户实际安装版完成个人策略完整差异审阅、Touch ID/SE签署与active v3读回；Claude Code/Codex和CLI生成配置→真实MCP工具调用通过。针对用户反馈的重复认证，同次策略激活现共用已有固定十秒 context，结束/失败/取消作废；软件同一context和取消边界验证通过，实际弹窗次数未测。新公证包及默认全仓/安装状态见统一证据 `follow_through_20261005`。实际 canary 显示后清理、可见审批取消、默认旧库占用下的SMAppService生命周期与新账户T12仍待验收，不提高保护等级或Release状态。

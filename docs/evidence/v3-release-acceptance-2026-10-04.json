@@ -3293,5 +3293,593 @@
       "signing_secrets_uploaded": false,
       "tag_or_release_created": false
     }
+  },
+  "follow_through_20261005": {
+    "scope": "Current-account follow-through; real installed native policy activation before UX patch; shared operation authentication patch",
+    "source_base": "1e9ffee203d8d3857b35fccbeb897b19616dd8ce",
+    "source_checks": {
+      "production_source_delta_sha256": "a61445414c8058c632710b6fc14f03e4cd5aac236542592cb0e966e63bfc79f4",
+      "rust_source_delta_sha256": "a2f803e0ee998c8fdf5ca8621e1bdcb51555ecfa07f1bb375e0e9d1c58d44f32",
+      "full_swift6_strict_compile": "PASS",
+      "workspace_check": "PASS",
+      "signed_build": "PASS",
+      "physical_auth_prompt_count": "not tested after UX change; repeated interactive checks stopped at user request"
+    },
+    "evidence_directory": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/follow-through-20261005",
+    "authentication_repair": {
+      "cause": "Separate LAContext for presence read and Secure Enclave signature in one policy activation",
+      "change": "Existing PresenceReadContext shared per activation, fixed 10-second monotonic non-sliding reuse; invalidated on success/cancel/failure",
+      "real_prompt_count": "NOT TESTED; repeated hardware checks stopped at user request",
+      "credentials_cached": false,
+      "seven_day_grant_renewed": false
+    },
+    "focused_software": [
+      {
+        "mode": "personal-policy",
+        "exit_code": 0,
+        "seconds": 1.67,
+        "summary": "PASS: 57 personal draft byte/preview/CLI/state assertions. Controlled synthetic signer results only test transport cancellation. No SE, Keychain, GUI or cryptographic verification claim."
+      },
+      {
+        "mode": "presence",
+        "exit_code": 0,
+        "seconds": 1.333,
+        "summary": "PASS: 88 synthetic presence transport/lifecycle assertions. No Keychain, system authentication, real vault, service or hardware protection was exercised."
+      },
+      {
+        "mode": "local-approval",
+        "exit_code": -5,
+        "seconds": 1.763,
+        "summary": "",
+        "initial_failed_exit_code": -5,
+        "initial_failure": "driver used root checkout cwd; test inspected stale root Forms.swift",
+        "correct_worktree_exit_code": 0,
+        "correct_worktree_summary": "PASS: 65 local approval raw-byte/transport/lifecycle/notification assertions. Synthetic only; no Keychain, Secure Enclave or notification center access."
+      },
+      {
+        "mode": "flow",
+        "exit_code": 0,
+        "seconds": 1.431,
+        "summary": "PASS: 112 native file/process/lifecycle assertions; exact snapshots, private new-only output, anonymous stdin, one-shot argv, non2xx/binary boundaries, typed failures, no retry, cleanup and stale-result rejection. No Broker authorization or GUI click claim."
+      },
+      {
+        "mode": "onboarding",
+        "exit_code": 0,
+        "seconds": 0.892,
+        "summary": "PASS: 47 onboarding route/A1/A2/profile/cancellation assertions. Synthetic subprocess only; no App open, registration, Keychain or Secure Enclave invocation."
+      }
+    ],
+    "default_workspace": {
+      "exit_code": 0,
+      "seconds": 1358.922,
+      "passed": 1027,
+      "failed": 0,
+      "ignored": 6
+    },
+    "package": {
+      "package": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/follow-through-20261005/macos-pkg/Rekey-3.0.0-alpha.1.pkg",
+      "bytes": 20407503,
+      "sha256": "29c82c7ed634e2c04b0a3f42a23ffbffa2160d77905f3f2cd40631877dc944e6",
+      "app_notary": "21da3a3b-d77a-458d-ad15-8e304acf50f5",
+      "pkg_notary": "3c5f0866-cf61-459a-b171-4b842f94f1bb",
+      "checks": [
+        {
+          "name": "app-staple",
+          "exit_code": 0,
+          "seconds": 1.081
+        },
+        {
+          "name": "app-staple-validate",
+          "exit_code": 0,
+          "seconds": 1.04
+        },
+        {
+          "name": "app-signature",
+          "exit_code": 0,
+          "seconds": 0.041
+        },
+        {
+          "name": "app-gatekeeper",
+          "exit_code": 0,
+          "seconds": 0.339
+        },
+        {
+          "name": "pkg-build",
+          "exit_code": 0,
+          "seconds": 3.558
+        },
+        {
+          "name": "pkg-notary-transport",
+          "exit_code": 0,
+          "seconds": 90.006
+        },
+        {
+          "name": "pkg-staple",
+          "exit_code": 0,
+          "seconds": 0.92
+        },
+        {
+          "name": "pkg-staple-validate",
+          "exit_code": 0,
+          "seconds": 1.039
+        },
+        {
+          "name": "pkg-signature",
+          "exit_code": 0,
+          "seconds": 1.207
+        },
+        {
+          "name": "pkg-gatekeeper",
+          "exit_code": 0,
+          "seconds": 0.342
+        }
+      ]
+    },
+    "installation": {
+      "installer": {
+        "started_utc": "2026-10-04T20:01:25.093490+00:00",
+        "original_vault_modified": false,
+        "source_sha256": "29c82c7ed634e2c04b0a3f42a23ffbffa2160d77905f3f2cd40631877dc944e6",
+        "staged_sha256": "29c82c7ed634e2c04b0a3f42a23ffbffa2160d77905f3f2cd40631877dc944e6",
+        "staged_package": "/private/tmp/rekey-v3-auth-context-install-ut6glvqp/Rekey-3.0.0-alpha.1.pkg",
+        "install_status": "installed",
+        "previous_timeout_retained": true,
+        "previous_app_running": true,
+        "app_quit_exit_code": 0,
+        "installer_osascript_pid": 144,
+        "authentication_focus_exit_code": 0,
+        "authentication_focus_result": "bundle=com.apple.SecurityAgent activated=true",
+        "installer_exit_code": 0,
+        "installer_stdout": "installer: Package name is Rekey-3.0.0-alpha.1\ninstaller: Upgrading at base path /\ninstaller: The upgrade was successful.\n",
+        "installer_stderr": "",
+        "finished_utc": "2026-10-04T20:02:14.025930+00:00",
+        "installed_binary_hashes": {
+          "rekey": "caed17c15ca9f9e7cd9e687ddf74e8616f1f35f7492f909e8ff415adb06f6de6",
+          "rekeyd": "ade10fcdfdb3754fc49284659887857686324de2d6bcc5bf82a7a56dc397bf86",
+          "rekey-mcp": "8b8483ae79b5ebf263cb4c907a6c71c070271043be95e029887de2295d3f86a5"
+        },
+        "installed_binary_hashes_match": true
+      },
+      "verification": {
+        "installed_app": "/Applications/Rekey.app",
+        "source_package_sha256": "29c82c7ed634e2c04b0a3f42a23ffbffa2160d77905f3f2cd40631877dc944e6",
+        "regular_files": [
+          {
+            "path": "Contents/CodeResources",
+            "sha256": "f5820dbaa4a701aa9e570500bdd6f31f464301e47f63aa38e160151277d3b47b",
+            "matches": true
+          },
+          {
+            "path": "Contents/embedded.provisionprofile",
+            "sha256": "99adb5a90d25af7f9ad65b1644bf364c017e86c3d05d1210a7924362615cf712",
+            "matches": true
+          },
+          {
+            "path": "Contents/Info.plist",
+            "sha256": "947a9934181b69a9182c4d7b978f2073c7de3ee1057be73689cc25d7504d8bfb",
+            "matches": true
+          },
+          {
+            "path": "Contents/_CodeSignature/CodeResources",
+            "sha256": "c15e19abecc5bafc2de26ec113f2ce544f2dcc7a0e335fde6d0107f907604219",
+            "matches": true
+          },
+          {
+            "path": "Contents/MacOS/Rekey",
+            "sha256": "1c0de180de7615cf89a52f1f421a50a8f9bcfa9fc224381960dd26174f4193d0",
+            "matches": true
+          },
+          {
+            "path": "Contents/Resources/AppIcon.icns",
+            "sha256": "04d4cfafa46a961adb59e8614fe7355de0db9baed7b358b90f0f8bb56fcbe477",
+            "matches": true
+          },
+          {
+            "path": "Contents/Resources/bin/rekey-approval-sign",
+            "sha256": "aea6f8da7e738550c91c0f3e6456875dd7bc911095e3b5ecb8664468d85ded42",
+            "matches": true
+          },
+          {
+            "path": "Contents/Resources/bin/rekey-mcp",
+            "sha256": "8b8483ae79b5ebf263cb4c907a6c71c070271043be95e029887de2295d3f86a5",
+            "matches": true
+          },
+          {
+            "path": "Contents/Resources/bin/rekey-policy-sign",
+            "sha256": "19cc39e5f2273fa7d2c88d8262b2221bfe394ecdc0b7f4b6d727c92f29a06446",
+            "matches": true
+          },
+          {
+            "path": "Contents/Resources/bin/rekey",
+            "sha256": "caed17c15ca9f9e7cd9e687ddf74e8616f1f35f7492f909e8ff415adb06f6de6",
+            "matches": true
+          },
+          {
+            "path": "Contents/Library/LaunchAgents/com.rekey.rekeyd.plist",
+            "sha256": "a2e71684233f0323db4795a1f439d1a0a821ab0e59b2c374c7f4d97134d62805",
+            "matches": true
+          },
+          {
+            "path": "Contents/Helpers/RekeyDaemon.app/Contents/embedded.provisionprofile",
+            "sha256": "cd9f0d3334904de950f0f13b7f1074b1e50d0c6492bc98981ee165056af80e33",
+            "matches": true
+          },
+          {
+            "path": "Contents/Helpers/RekeyDaemon.app/Contents/Info.plist",
+            "sha256": "2c56f41559d2a418c76ba62b45d206de2179c2de0360e8dfbb26b71ef0f74668",
+            "matches": true
+          },
+          {
+            "path": "Contents/Helpers/RekeyDaemon.app/Contents/_CodeSignature/CodeResources",
+            "sha256": "2c7d3a3a96a82f92fd6d959f737fa3b963b06880f007c93c0933a7a224ce9c5d",
+            "matches": true
+          },
+          {
+            "path": "Contents/Helpers/RekeyDaemon.app/Contents/MacOS/rekeyd",
+            "sha256": "ade10fcdfdb3754fc49284659887857686324de2d6bcc5bf82a7a56dc397bf86",
+            "matches": true
+          }
+        ],
+        "bundle_symlinks": [
+          {
+            "path": "Contents/Resources/bin/rekeyd",
+            "matches": true
+          }
+        ],
+        "root_cli_links": [
+          {
+            "name": "rekey",
+            "target": "/Applications/Rekey.app/Contents/Resources/bin/rekey",
+            "matches": true,
+            "owner_uid": 0
+          },
+          {
+            "name": "rekeyd",
+            "target": "/Applications/Rekey.app/Contents/Resources/bin/rekeyd",
+            "matches": true,
+            "owner_uid": 0
+          },
+          {
+            "name": "rekey-mcp",
+            "target": "/Applications/Rekey.app/Contents/Resources/bin/rekey-mcp",
+            "matches": true,
+            "owner_uid": 0
+          }
+        ],
+        "checks": [
+          {
+            "name": "signature",
+            "exit_code": 0
+          },
+          {
+            "name": "gatekeeper",
+            "exit_code": 0
+          },
+          {
+            "name": "receipt",
+            "exit_code": 0
+          },
+          {
+            "name": "cli-version",
+            "exit_code": 0
+          }
+        ],
+        "all_match": true,
+        "fresh_account_t12": false
+      }
+    },
+    "unchanged_embedded_runtime_code": [
+      {
+        "path": "Contents/Resources/bin/rekey",
+        "existing_cdhash": "52c64122af844011b535d606168da574a0a4172d",
+        "new_cdhash": "52c64122af844011b535d606168da574a0a4172d",
+        "code_directory_unchanged": true
+      },
+      {
+        "path": "Contents/Helpers/RekeyDaemon.app",
+        "existing_cdhash": "937cb7fe82045d95d126b42b1efca246ed96c586",
+        "new_cdhash": "937cb7fe82045d95d126b42b1efca246ed96c586",
+        "code_directory_unchanged": true
+      },
+      {
+        "path": "Contents/Resources/bin/rekey-mcp",
+        "existing_cdhash": "dc69242811df856a6ab658ed932d3aefbcf536c7",
+        "new_cdhash": "dc69242811df856a6ab658ed932d3aefbcf536c7",
+        "code_directory_unchanged": true
+      },
+      {
+        "path": "Contents/Resources/bin/rekey-policy-sign",
+        "existing_cdhash": "134806f3c495a0db6a8bcbd778a453ecda4caf3e",
+        "new_cdhash": "134806f3c495a0db6a8bcbd778a453ecda4caf3e",
+        "code_directory_unchanged": true
+      },
+      {
+        "path": "Contents/Resources/bin/rekey-approval-sign",
+        "existing_cdhash": "069c6a7604cad3cd7e9a7abee5e6e65ca0d5737a",
+        "new_cdhash": "069c6a7604cad3cd7e9a7abee5e6e65ca0d5737a",
+        "code_directory_unchanged": true
+      }
+    ],
+    "current_account_provider": {
+      "tested_installed_source": "dd495f58ed0d221879bb723fe50aa06acf8e4aca",
+      "tested_package_sha256": "0f2e4d723ea648c1071ea09e7cd9d3d5d10f678ec3552a165bd7ec1c24bd6c77",
+      "dns": "Process-local explicit REKEY_DOH_URL=https://1.1.1.1/dns-query; no global daemon/Clash changes",
+      "codex": {
+        "client_version": "0.160.0",
+        "client_exit_code": 0,
+        "client_seconds": 10.224,
+        "completion_is_ok": true,
+        "client_secret_matches": 0,
+        "client_usage": [
+          {
+            "input_tokens": 13349,
+            "cached_input_tokens": 0,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 30,
+            "reasoning_output_tokens": 25
+          }
+        ],
+        "audit_event_counts": {
+          "session.revoked": 1,
+          "execution.finished": 1,
+          "execution.started": 1,
+          "session.created": 1,
+          "policy.activated": 1,
+          "policy.trust_installed": 1,
+          "action.created": 1,
+          "credential.created": 1,
+          "vault.unlocked": 1,
+          "vault.initialized": 1
+        },
+        "sessions_after_client": 0,
+        "passed": true,
+        "shutdown_exit_code": 0
+      },
+      "mcp": {
+        "connect_exit_code": 0,
+        "generated_mcp_configuration_hand_edited": false,
+        "test_client_mcp_approval": "per-invocation rekey server only; existing authorized provider test; read-only shell sandbox retained; no user configuration changed",
+        "client_exit_code": 0,
+        "client_seconds": 22.129,
+        "client_secret_matches": 0,
+        "mcp_completed_calls": [
+          {
+            "server": "rekey",
+            "tool": "rekey.302231d4-10ff-4746-bf69-78c255c6bec9.v1",
+            "status": "completed"
+          }
+        ],
+        "audit_event_counts": {
+          "session.revoked": 1,
+          "execution.finished": 3,
+          "execution.started": 3,
+          "session.created": 1,
+          "vault.unlocked": 1
+        },
+        "sessions_after_client": 0,
+        "passed": true,
+        "shutdown_exit_code": 0
+      },
+      "claude": {
+        "client_version": "2.1.281",
+        "exit_code": 0,
+        "seconds": 4.172,
+        "result_is_ok": true,
+        "usage": {
+          "input_tokens": 139,
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0,
+          "output_tokens": 14
+        },
+        "audit_event_counts": {
+          "session.revoked": 1,
+          "execution.finished": 1,
+          "execution.started": 1,
+          "session.created": 1
+        },
+        "sessions_after_client": 0,
+        "passed": true
+      },
+      "owned_daemon_cleanup": {
+        "shutdown_exit_code": 0,
+        "only_owned_acceptance_daemon": true,
+        "original_default_daemon_stopped": false
+      }
+    },
+    "installed_native_ui_before_ux_patch": {
+      "source_commit": "dd495f58ed0d221879bb723fe50aa06acf8e4aca",
+      "package_sha256": "0f2e4d723ea648c1071ea09e7cd9d3d5d10f678ec3552a165bd7ec1c24bd6c77",
+      "scope": "installed App before shared-context UX patch; existing isolated current-account personal vault",
+      "policy_review": {
+        "profiles_preserved": 2,
+        "changes": [
+          "version:2->3",
+          "expires_at_ms"
+        ],
+        "actual_signed_and_activated_in_app": true,
+        "visible_result": "策略已激活。关闭窗口后刷新当前状态。",
+        "signed_cli_result": {
+          "vault_id": "2b36af24-b358-495b-a9ac-0ac33b39da3e",
+          "tenant_id": "2b36af24-b358-495b-a9ac-0ac33b39da3e",
+          "mode": "personal",
+          "algorithm": "secure-enclave-p256",
+          "trust_sha256": "3816dfd62e5955d5b19622ebb06ac4a395e0fb6b37a4f3f9e164cb427c126af9",
+          "activated_at_ms": 1791141998937,
+          "trust_installed": true,
+          "bundle_persisted": true,
+          "status": "active",
+          "signer_id": "2b36af24-b358-495b-a9ac-0ac33b39da3e",
+          "version": 3,
+          "expires_at_ms": 1791228370493,
+          "policy_sha256": "70a2d3a1ff6dd2702fd15774e55fd1e61277bcedff9307dc61e04f56753f2c94",
+          "bundle_sha256": "2214bb5713727738915879d7617e67e73b32dc20aab6f234907b2c10f6672b8a"
+        }
+      },
+      "user_completed_touch_id": true,
+      "canary_reveal": {
+        "only_synthetic_test_credential": true,
+        "fresh_proof_sheet_observed": true,
+        "initial_stale_grant_rejected": true,
+        "fresh_grant_cli_control_passed": true,
+        "visible_plaintext_after_auth_not_confirmed": true,
+        "user_observation": "did not notice",
+        "clearing_acceptance": "Pending; masked state alone does not establish a display-and-clear sequence"
+      },
+      "additional_interactive_checks": "stopped after user requested fewer authentication prompts",
+      "original_vault": "preserved",
+      "owned_daemon_cleanup": {
+        "shutdown_exit_code": 0,
+        "only_owned_acceptance_daemon": true,
+        "original_default_daemon_stopped": false
+      }
+    },
+    "macos_service_blocker": {
+      "source_commit": "dd495f58ed0d221879bb723fe50aa06acf8e4aca",
+      "checked_at_ms": 1791141807078,
+      "installed_launch_agent": {
+        "Label": "com.rekey.rekeyd",
+        "BundleProgram": "Contents/Helpers/RekeyDaemon.app/Contents/MacOS/rekeyd",
+        "ProgramArguments": [
+          "rekeyd",
+          "serve"
+        ],
+        "RunAtLoad": true
+      },
+      "default_state_exists": true,
+      "default_state_contents_read": false,
+      "existing_default_daemon_pid": 13029,
+      "existing_default_daemon_executable": "/Users/lifcc/Desktop/code/AI/tools/rekey/target/macos-ui/Rekey.app/Contents/Resources/bin/rekeyd",
+      "installed_cli_default_status_exit_code": 7,
+      "installed_cli_default_status_diagnostic": "error [IPC_UNAVAILABLE]: broker identity verification failed (peer SecCodeCheckValidity: OSStatus -67050); possible forged Rekey service\n",
+      "registered_job": false,
+      "service_registration_attempted": false,
+      "blocker": "Installed LaunchAgent uses ~/.rekey; existing default vault and its separately launched daemon must be preserved. Custom acceptance vault cannot exercise this SMAppService job.",
+      "logout_login_performed": false,
+      "uninstall_performed": false,
+      "new_account_T12": "deferred by user"
+    },
+    "handoff": {
+      "directory": "/Users/Shared/rekey-v3-acceptance-20261005",
+      "source_commit": "dd495f58ed0d221879bb723fe50aa06acf8e4aca",
+      "package_sha256": "29c82c7ed634e2c04b0a3f42a23ffbffa2160d77905f3f2cd40631877dc944e6",
+      "checks": [
+        {
+          "name": "pkg-notary-transport",
+          "exit_code": 0,
+          "seconds": 90.006
+        },
+        {
+          "name": "pkg-staple",
+          "exit_code": 0,
+          "seconds": 0.92
+        },
+        {
+          "name": "pkg-staple-validate",
+          "exit_code": 0,
+          "seconds": 1.039
+        },
+        {
+          "name": "pkg-signature",
+          "exit_code": 0,
+          "seconds": 1.207
+        },
+        {
+          "name": "pkg-gatekeeper",
+          "exit_code": 0,
+          "seconds": 0.342
+        }
+      ],
+      "contains_credentials": false,
+      "new_account_T12": "deferred by user; not run",
+      "previous_handoff": "preserved",
+      "previous_package_sha256": "0f2e4d723ea648c1071ea09e7cd9d3d5d10f678ec3552a165bd7ec1c24bd6c77",
+      "production_source_delta_sha256": "a61445414c8058c632710b6fc14f03e4cd5aac236542592cb0e966e63bfc79f4"
+    },
+    "retained_failures": [
+      {
+        "records": [
+          "claude-acceptance.json",
+          "codex-acceptance.json",
+          "mcp-acceptance.json"
+        ],
+        "observed": "Expired test policy correctly rejected before provider calls",
+        "repair": "Fresh isolated team fixture or reviewed personal policy activation; original vault preserved"
+      },
+      {
+        "record": "mcp-fresh-acceptance.json",
+        "observed": "Client approval=never rejected the tool before Rekey MCP execution",
+        "repair": "Existing authorized per-invocation Rekey-server tool approval; isolated client home and read-only shell sandbox"
+      },
+      {
+        "record": "auth-context-focused.json",
+        "observed": "Initial local approval synthetic test inspected stale root checkout due to missing driver cwd",
+        "repair": "Explicit owned-worktree cwd; 65 assertions pass; original failure retained"
+      },
+      {
+        "record": "installed-native-ui-follow-through.json",
+        "observed": "Stale presence grant rejected; after refresh CLI canary control passed; actual visible plaintext sequence was not observed",
+        "acceptance": "Pending; user did not notice; no actual API Key revealed"
+      }
+    ],
+    "pending": [
+      "Physical prompt count after new shared-context patch",
+      "Actual canary display-and-clear and approval visible cancellation/focus",
+      "SMAppService default-state lifecycle; existing legacy vault and daemon preserved",
+      "Fresh-account T12 deferred by user",
+      "Independent human security review by user",
+      "GA format freeze and public release"
+    ],
+    "build_source_binding": {
+      "signed_build_production_diff_sha256": "a61445414c8058c632710b6fc14f03e4cd5aac236542592cb0e966e63bfc79f4",
+      "current_production_diff_sha256": "dfc59148226c11178f5e8d2d3592f0731d4e968e19a71ef50c47460b96fd531e",
+      "post_build_change": "apps/macos/README.md evidence sentence only",
+      "production_diff_excluding_readme_sha256": "8dd21952e406e6acb0487a55019bd33fe78bb61f928569f1700fa92f014f9383",
+      "exact_reconstructed_build_diff_matches": true,
+      "no_executable_source_changed_after_build": true
+    },
+    "final_source_checks": {
+      "checks": [
+        {
+          "name": "fmt",
+          "exit_code": 0,
+          "passed": true
+        },
+        {
+          "name": "workspace-check",
+          "exit_code": 0,
+          "passed": true
+        },
+        {
+          "name": "diff-check",
+          "exit_code": 0,
+          "passed": true
+        },
+        {
+          "name": "mechanical-api",
+          "exit_code": 1,
+          "passed": true
+        },
+        {
+          "name": "mechanical-no-export",
+          "exit_code": 1,
+          "passed": true
+        },
+        {
+          "name": "cli-tree",
+          "exit_code": 0,
+          "passed": true
+        }
+      ],
+      "production_source_diff_sha256": "dfc59148226c11178f5e8d2d3592f0731d4e968e19a71ef50c47460b96fd531e",
+      "rust_source_diff_sha256": "a2f803e0ee998c8fdf5ca8621e1bdcb51555ecfa07f1bb375e0e9d1c58d44f32"
+    },
+    "credential_scan": {
+      "tracked_files_checked": 616,
+      "local_evidence_files_checked": 71,
+      "credential_encoding_variants": 7,
+      "matching_files": 0,
+      "real_credential_printed": false
+    },
+    "ci": "New commit checks will run after push; prior dd495f5 9/9 does not verify changed App source"
   }
 }

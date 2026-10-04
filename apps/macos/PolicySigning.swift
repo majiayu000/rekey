@@ -40,17 +40,15 @@ enum PolicySigning {
 
     // message is the daemon's exact prefix + JCS bytes, after displaying its diff.
     // expectedPublicKey must come from the daemon's verified installed trust.
-    static func sign(vaultID: UUID, message: Data, expectedPublicKey: Data) throws -> String {
+    static func sign(vaultID: UUID, message: Data, expectedPublicKey: Data, context: LAContext) throws -> String {
         guard message.starts(with: prefix), message.count > prefix.count,
               message.count <= 65_536 + prefix.count,
               expectedPublicKey.count == 65, expectedPublicKey.first == 4 else {
             throw UIError(message: "策略签名内容或已安装信任根无效，请重新获取策略草稿。")
         }
-        let context = LAContext()
         context.interactionNotAllowed = true
         context.touchIDAuthenticationAllowableReuseDuration = 0
         context.localizedReason = "批准已审阅的 Rekey 策略"
-        defer { context.invalidate() }
         guard let key = try load(vaultID: vaultID, context: context) else {
             throw UIError(message: "此保险库的策略私钥不在本机；不会生成替代密钥。")
         }

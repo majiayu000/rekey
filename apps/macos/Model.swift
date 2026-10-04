@@ -5,6 +5,7 @@ import Security
 import Darwin
 import CryptoKit
 import UserNotifications
+import LocalAuthentication
 
 struct UIError: LocalizedError {
     let message: String
@@ -1227,20 +1228,23 @@ final class AppModel: ObservableObject {
 
     func activatePersonalPolicy(_ draft: PersonalPolicyDraft, proof: String, recovery: Bool, presence: Bool = false,
                                 client injectedClient: CLI? = nil,
-                                readPresence: @escaping @Sendable (UUID) throws -> String = { try PresenceKey.read(vaultID: $0) },
-                                sign: @escaping @Sendable (UUID, Data, Data) throws -> String = { try PolicySigning.sign(vaultID: $0, message: $1, expectedPublicKey: $2) }) async throws {
+                                readPresence: @escaping @Sendable (UUID, LAContext) throws -> String = { try PresenceKey.read(vaultID: $0, context: $1) },
+                                sign: @escaping @Sendable (UUID, Data, Data, LAContext) throws -> String = { try PolicySigning.sign(vaultID: $0, message: $1, expectedPublicKey: $2, context: $3) }) async throws {
         guard !busy, acceptsNativeCompletion(draft.revision, workspace: draft.workspace),
               presence || (!proof.isEmpty && !proof.contains("\n") && !proof.contains("\r")) else {
             throw UIError(message: "草稿上下文或验证信息已失效，未提交激活。")
         }
         busy = true
-        defer { personalPolicySigning = false; busy = false }
+        let authentication = PresenceReadContext()
+        defer { authentication.invalidate(); personalPolicySigning = false; busy = false }
         let client = injectedClient ?? cli
         guard client.stateDirectory == draft.workspace else { throw UIError(message: "草稿工作区已改变。") }
         let current: PolicyStatus
         let operationProof: String
         if presence {
-            (operationProof, current) = try await readPresenceProof(client: client, revision: draft.revision, read: readPresence)
+            (operationProof, current) = try await readPresenceProof(client: client, revision: draft.revision, read: { id in
+                try authentication.read(vaultID: id) { try readPresence(id, $0) }
+            })
         } else {
             current = try await Task.detached { try client.decode(PolicyStatus.self, ["policy", "status"]) }.value
             operationProof = proof
@@ -1250,7 +1254,11 @@ final class AppModel: ObservableObject {
             throw UIError(message: "草稿上下文已失效，未请求签名。")
         }
         personalPolicySigning = true
-        let signature = try await Task.detached { try sign(draft.metadata.vault_id, draft.signBytes, draft.publicKey) }.value
+        let signature = try await Task.detached {
+            try authentication.read(vaultID: draft.metadata.vault_id) {
+                try sign(draft.metadata.vault_id, draft.signBytes, draft.publicKey, $0)
+            }
+        }.value
         personalPolicySigning = false
         guard acceptsNativeCompletion(draft.revision, workspace: draft.workspace), !Task.isCancelled else {
             throw UIError(message: "签名等待期间上下文已改变，结果已丢弃，未激活。")

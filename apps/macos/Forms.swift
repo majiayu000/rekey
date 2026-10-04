@@ -801,13 +801,13 @@ struct PersonalPolicyDraftForm: View {
                         Text("此草稿完整替换所有 Profile、规则、审批者和工作负载授权。删除的内容已列在前后变化中。")
                         Toggle("我已完整核对前后变化和操作定义，确认替换当前策略", isOn: $confirmed)
                             .disabled(model.busy || attempted)
-                        Toggle("使用系统认证批准本次激活", isOn: $presence).disabled(model.busy || attempted)
+                        Toggle("使用系统认证签署并激活", isOn: $presence).disabled(model.busy || attempted)
                         PeerSecurityWarning()
                         if !presence {
                             Toggle("使用恢复密钥验证本次激活", isOn: $recovery).disabled(model.busy || attempted)
                             SecureField(recovery ? "恢复密钥" : "保险库密码", text: $proof).disabled(model.busy || attempted)
                         }
-                        Text("策略仍由独立的 Secure Enclave 策略密钥签署；系统认证授权只用于本次激活验证。")
+                        Text(presence ? "本次系统认证同时用于策略签署与激活验证。" : "策略签署需要系统认证；输入的密码或恢复密钥只用于本次激活验证。")
                             .font(.system(size: 12)).foregroundStyle(.secondary)
                         Button(model.personalPolicySigning ? "等待系统认证…" : "签署并激活一次") { activate(draft) }
                             .disabled(model.busy || !model.unlocked || !confirmed || (!presence && proof.isEmpty) || attempted)

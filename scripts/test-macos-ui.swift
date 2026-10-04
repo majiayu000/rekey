@@ -1448,12 +1448,12 @@ struct UIContract {
         let live = try makeDraft(revision: model.nativeFlowRevision)
         model.busy = true
         do {
-            try await model.activatePersonalPolicy(live, proof: "SYNTHETIC-PROOF", recovery: false, client: client, sign: { _, _, _ in throw UIError(message:"UNREACHABLE-SIGNER") })
+            try await model.activatePersonalPolicy(live, proof: "SYNTHETIC-PROOF", recovery: false, client: client, sign: { _, _, _, _ in throw UIError(message:"UNREACHABLE-SIGNER") })
             throw UIError(message: "busy admitted")
         } catch { try require(model.busy && error.localizedDescription.contains("未提交激活"), "busy reentry refused before CLI/SE and keeps busy") }
         model.busy = false
         do {
-            try await model.activatePersonalPolicy(live, proof: "SYNTHETIC-PROOF", recovery: false, client: client, sign: { _, bytes, publicKey in
+            try await model.activatePersonalPolicy(live, proof: "SYNTHETIC-PROOF", recovery: false, client: client, sign: { _, bytes, publicKey, _ in
                 guard bytes == draft.signBytes, publicKey == draft.publicKey else { throw UIError(message:"WRONG-SIGNING-BYTES") }
                 throw UIError(message:"SYNTHETIC-USER-CANCEL")
             })
@@ -1471,7 +1471,7 @@ struct UIContract {
             let pause = Pause()
             defer { pause.release.signal() }
             let waiting = Task {
-                try await model.activatePersonalPolicy(pending, proof: "SYNTHETIC-PROOF", recovery: false, client: client, sign: { _, _, _ in
+                try await model.activatePersonalPolicy(pending, proof: "SYNTHETIC-PROOF", recovery: false, client: client, sign: { _, _, _, _ in
                     pause.entered.signal(); pause.release.wait()
                     // Controlled transport fixture, never a hardware success claim.
                     return "SYNTHETIC_SIGNATURE_AFTER_REVIEW_CLOSED"
@@ -1503,7 +1503,7 @@ struct UIContract {
         model.status = ServiceStatus(state:"unlocked",format_version:15,runtime_version:"fixture",sessions_active:0,peer_security:"L1-dev",lab_enabled:false,rollback:nil)
         let teamDraft = try makeDraft(revision: model.nativeFlowRevision)
         do {
-            try await model.activatePersonalPolicy(teamDraft, proof:"SYNTHETIC-PROOF", recovery:false, client:client, sign: { _, _, _ in throw UIError(message:"UNREACHABLE-SIGNER") })
+            try await model.activatePersonalPolicy(teamDraft, proof:"SYNTHETIC-PROOF", recovery:false, client:client, sign: { _, _, _, _ in throw UIError(message:"UNREACHABLE-SIGNER") })
             throw UIError(message:"team admitted")
         } catch { try require(error.localizedDescription.contains("模式"), "changed Team status fails before signer") }
         current["mode"] = "personal"
@@ -1518,21 +1518,46 @@ struct UIContract {
         var beforePresence = try String(contentsOf: calls, encoding: .utf8).split(separator: "\n").count
         do {
             try await model.activatePersonalPolicy(presenceDraft, proof: "", recovery: false, presence: true, client: client,
-                readPresence: { _ in throw UIError(message: "SYNTHETIC-PRESENCE-CANCEL") },
-                sign: { _, _, _ in throw UIError(message: "UNREACHABLE-SIGNER") })
+                readPresence: { _, _ in throw UIError(message: "SYNTHETIC-PRESENCE-CANCEL") },
+                sign: { _, _, _, _ in throw UIError(message: "UNREACHABLE-SIGNER") })
             throw UIError(message: "presence cancel admitted")
         } catch { try require(error.localizedDescription == "SYNTHETIC-PRESENCE-CANCEL" && !model.busy, "presence cancellation cannot reach policy signer or activation") }
         try require(try String(contentsOf: calls, encoding: .utf8).split(separator: "\n").count == beforePresence + 1, "cancelled presence permits only initial status read")
+        final class AuthenticationObservation: @unchecked Sendable {
+            let lock = NSLock()
+            var context: LAContext?
+            func record(_ value: LAContext) { lock.withLock { context = value } }
+            func matches(_ value: LAContext) -> Bool { lock.withLock { context === value } }
+            func isInvalidated() -> Bool {
+                lock.withLock {
+                    guard let context else { return false }
+                    var error: NSError?
+                    _ = context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error)
+                    return error?.domain == LAError.errorDomain && error?.code == LAError.Code.invalidContext.rawValue
+                }
+            }
+        }
+        let sharedAuthentication = AuthenticationObservation()
         beforePresence = try String(contentsOf: calls, encoding: .utf8).split(separator: "\n").count
         do {
             try await model.activatePersonalPolicy(presenceDraft, proof: "", recovery: false, presence: true, client: client,
-                readPresence: { _ in presenceKey }, sign: { _, bytes, publicKey in
+                readPresence: { _, context in sharedAuthentication.record(context); return presenceKey }, sign: { _, bytes, publicKey, context in
+                    guard sharedAuthentication.matches(context) else { throw UIError(message: "SECOND-AUTHENTICATION-CONTEXT") }
                     guard bytes == draft.signBytes, publicKey == draft.publicKey else { throw UIError(message: "WRONG-SIGNING-BYTES") }
                     throw UIError(message: "SYNTHETIC-POLICY-SIGN-CANCEL")
                 })
             throw UIError(message: "policy signer cancel admitted")
         } catch { try require(error.localizedDescription == "SYNTHETIC-POLICY-SIGN-CANCEL" && !model.busy, "A2 presence cannot replace the separate exact-byte policy signature") }
         try require(try String(contentsOf: calls, encoding: .utf8).split(separator: "\n").count == beforePresence + 2, "policy signer cancellation after presence still cannot activate")
+        try require(sharedAuthentication.isInvalidated(), "cancelled policy operation invalidates the shared authentication context")
+        do {
+            try await model.activatePersonalPolicy(presenceDraft, proof: "", recovery: false, presence: true, client: client,
+                readPresence: { _, context in
+                    guard !sharedAuthentication.matches(context) else { throw UIError(message: "STALE-AUTHENTICATION-CONTEXT") }
+                    throw UIError(message: "SYNTHETIC-NEXT-OPERATION-CANCEL")
+                }, sign: { _, _, _, _ in throw UIError(message: "UNREACHABLE-SIGNER") })
+            throw UIError(message: "next operation cancel admitted")
+        } catch { try require(error.localizedDescription == "SYNTHETIC-NEXT-OPERATION-CANCEL" && !model.busy, "the next policy activation gets fresh authentication after cancellation") }
         print("PASS: \(assertions) personal draft byte/preview/CLI/state assertions. Controlled synthetic signer results only test transport cancellation. No SE, Keychain, GUI or cryptographic verification claim.")
     }
 
