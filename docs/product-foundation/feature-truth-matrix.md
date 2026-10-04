@@ -68,8 +68,12 @@ GA同一主版本的次/补丁版本必须保留持久格式，破坏性变化�
 
 原 Clash 配置下普通 HTTPS→GLM 实测 200；修复前 Rekey→GLM 为 502/UPSTREAM_FAILED。原因定位到 I6 公网 DNS 筛查与 198.18.* fake-IP 的兼容性。仅系统全虚拟地址答案触发 Cloudflare DoH，查询 A/AAAA 后沿用全部公网检查、地址固定和 TLS 域名验证；不修改 Clash、不增加 provider 例外。签名修复候选实际 `rekey run` 的普通/流式 GLM 请求均返回 200、正常结束并返回用量；17 项上游回归通过。产物、检查及范围见[统一证据](../evidence/v3-release-acceptance-2026-10-04.json)的 `fake_ip_compatibility`，不代表 500 次、Claude Code/Codex 或新账户验收。
 
-GLM Responses 接入合同：新增固定 `glm-responses@1`（POST `/api/v1/responses`、Bearer），复用 OpenAI Responses 网关与预算。App接入页明确选择GLM/Codex；源码与软件检查已通过，最终App/pkg已签名、公证、装订且通过Gatekeeper。正常屏幕解锁后，最终签名候选的真实Codex0.160.0已通过：单请求完成、输出11token、会话撤销且六类Key编码检查零命中。此前锁屏的-25308与过期短期测试策略拒绝保留；实际升级仍等待系统管理员认证。
+GLM Responses 接入合同：新增固定 `glm-responses@1`（POST `/api/v1/responses`、Bearer），复用 OpenAI Responses 网关与预算。App接入页明确选择GLM/Codex；源码与软件检查已通过，最终App/pkg已签名、公证、装订且通过Gatekeeper。正常屏幕解锁后，最终签名候选的真实Codex0.160.0已通过：单请求完成、输出11token、会话撤销且六类Key编码检查零命中。此前锁屏的-25308与过期短期测试策略拒绝保留；最终公证pkg现已安装；安装版SDK复测结果见下段。
 
 当前账户 Agent 实测：签名安装版`1e3b5cd`的GLM Messages普通/SSE及真实Claude Code通过；同一run完成500次授权调用，499成功/1上游超时，无UI/自动重试，按T11零交互条件通过。实际网关拒绝、Agent/MCP有界泄漏探针、正常/SIGKILL撤销及签名helper一次审批/跨owner/迟到结果守卫通过。该helper注入active-window检查，仍需已安装App的焦点/可见取消验证；新账户T12与公开发布未验。全部边界及原始失败见统一证据的`current_account_agent_acceptance`。
 
 最终签名候选`abf8c2f`的两个真实客户端均已通过：Codex9.611秒（输入13352/输出11），Claude Code4.361秒（输入139/输出13），各一轮成功、一条execution.finished、退出后零会话。当前账户pkg升级的系统管理员认证在300秒后超时，未写入payload；`/Applications/Rekey.app`仍为`1e3b5cd`版本。附加connect/MCP实测因再次自动锁屏，在客户端启动前停止，不冒充MCP客户端通过。源码未改变，沿用匹配SHA的1021/0/6与strict/Swift检查；详见统一候选JSON。
+
+2026-10-04晚间：最终Responses公证pkg已在当前账户安装，16个bundle文件与已装订候选一致，版本/收据/root所有的CLI链接/严格签名/Gatekeeper通过。安装版真实Claude Code（8.222秒、输入140/输出18）和Codex（9.008秒、输入13346/输出11）均返回OK、各一轮正常结算并退出撤销；测试daemon密码证明停机，无新增系统在场认证。当前在线stapler验证因Apple CloudKit TLS -1200失败，源App此前装订验证成功；失败未隐去，未绕过TLS。实际App焦点/取消、登录项生命周期、新账户T12及公开Release仍Pending。
+
+最终安装版connect/MCP实测通过：临时Git项目的MCP传输配置由CLI生成，真实Codex完成一次工具调用和两轮模型请求，三条execution.finished、无indeterminate、六类Key编码零命中、退出后零会话。项目信任只保存在隔离CODEX_HOME；本次进程为已授权的Rekey固定provider工具设置approve，shell保持只读。之前客户端未加载信任/拒绝工具的记录保留，不改用户设置，不扩展为新账户T12或L2。

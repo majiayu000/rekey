@@ -11,64 +11,55 @@
   "artifact_directory": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003",
   "production_source_delta_sha256": "ebc4868bd4d4827f6159ff0d37454d1f6b86b5015c1e0490f92d5e6214679012",
   "package": {
-    "package": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/macos-pkg-dns-final/Rekey-3.0.0-alpha.1.pkg",
-    "bytes": 20392536,
-    "sha256": "2f0722b757a2a2edb1da5c5011ffbdbfe40218a3bcd3f674ef1699570e873563"
+    "package": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/macos-pkg-glm-responses-final/Rekey-3.0.0-alpha.1.pkg",
+    "bytes": 20392071,
+    "sha256": "f011fbd5141d8cad644372f3f9740c37ecc81f819ad111cc7aad2ce6d785916d"
   },
   "distribution": [
     {
-      "name": "dns-staple-pkg",
+      "name": "staple-app",
       "exit_code": 0,
-      "seconds": 0.91
+      "seconds": 0.985
     },
     {
-      "name": "dns-staple-app",
-      "exit_code": 73,
-      "seconds": 1.03
+      "name": "validate-app",
+      "exit_code": 0,
+      "seconds": 0.832
     },
     {
-      "name": "dns-app-gatekeeper",
-      "exit_code": 0
+      "name": "signature-app",
+      "exit_code": 0,
+      "seconds": 0.041
     },
     {
-      "name": "dns-pkg-gatekeeper",
-      "exit_code": 0
+      "name": "gatekeeper-app",
+      "exit_code": 0,
+      "seconds": 0.301
     },
     {
-      "name": "dns-staple-validate-pkg",
-      "exit_code": 0
+      "name": "build-pkg",
+      "exit_code": 0,
+      "seconds": 3.375
     },
     {
-      "name": "dns-staple-app-retry",
-      "exit_code": 73
+      "name": "staple-pkg",
+      "exit_code": 0,
+      "seconds": 0.85
     },
     {
-      "name": "dns-app-copy-staple-validate",
-      "exit_code": 0
+      "name": "validate-pkg",
+      "exit_code": 0,
+      "seconds": 0.797
     },
     {
-      "name": "dns-app-copy-signature",
-      "exit_code": 0
+      "name": "signature-pkg",
+      "exit_code": 0,
+      "seconds": 0.285
     },
     {
-      "name": "dns-app-copy-gatekeeper",
-      "exit_code": 0
-    },
-    {
-      "name": "dns-build-final-pkg",
-      "exit_code": 0
-    },
-    {
-      "name": "dns-final-staple-pkg",
-      "exit_code": 0
-    },
-    {
-      "name": "dns-final-staple-validate-pkg",
-      "exit_code": 0
-    },
-    {
-      "name": "dns-final-pkg-gatekeeper",
-      "exit_code": 0
+      "name": "gatekeeper-pkg",
+      "exit_code": 0,
+      "seconds": 0.213
     }
   ],
   "signing_material": {
@@ -292,8 +283,6 @@
     ]
   },
   "pending": [
-    "final pkg upgrade and installed-version client retests: system administrator authentication timed out; no payload applied",
-    "additional real-client MCP connect check: macOS auto-locked before client startup; bounded signed MCP probes already passed",
     "actual installed App focus, visible cancellation and policy-review workflow",
     "installed SMAppService registration and login-item lifecycle",
     "fresh macOS account T12 deferred by user",
@@ -695,15 +684,15 @@
   ],
   "current_evidence_checks": [
     {
-      "name": "fmt-before-commit",
+      "name": "fmt-before-installed-evidence-commit",
       "exit_code": 0
     },
     {
-      "name": "check-after-current-evidence",
+      "name": "workspace-check-after-installed-evidence",
       "exit_code": 0
     },
     {
-      "name": "diff-current-evidence",
+      "name": "diff-after-installed-evidence",
       "exit_code": 0
     }
   ],
@@ -1615,7 +1604,7 @@
         "crates/rekey-vault/src/authority.rs": "f4b5a751686ebd15d37766d51283b4d257b7138c9e0486d446a5a0005d3f8be1"
       }
     },
-    "status": "both real clients passed on final signed candidate; pkg upgrade timed out waiting for system administrator authentication; installed client retests remain pending",
+    "status": "final notarized pkg installed; actual installed Claude Code and Codex SDK calls and generated-config native Codex MCP call passed",
     "screen_lock_blocker": {
       "probe_exit_code": 0,
       "protected_anchor_read": {
@@ -1737,20 +1726,25 @@
     },
     "installation_scope": {
       "installed": {
-        "rekey": "4d3cc8c6814e884729c125bc9d4d4d0d44710bada82cfa0d44cd4effc92899ec",
-        "rekeyd": "833ed68852638a677afc65a8e624b72e3d4c62e84db79a9c5ed4db22e4a22a00",
-        "rekey-mcp": "95f537305768415ad05f7e889e29e0f0e855397c488d26dcad982669ae0a763f"
+        "rekey": "1f0314f2c9ac028d096cac3ec6a3c35baec51685559caacd7d6a97dcb8a81a58",
+        "rekeyd": "53c0af5ba62c541e9b53799b07f530bde149a873aeae427c2a5a414d28cd4bd8",
+        "rekey-mcp": "e3c98f9abaf1f8ed7cce08ee4acbc20c0e6297d33e706f3c82184f0fab180803"
       },
       "candidate": {
         "rekey": "1f0314f2c9ac028d096cac3ec6a3c35baec51685559caacd7d6a97dcb8a81a58",
         "rekeyd": "53c0af5ba62c541e9b53799b07f530bde149a873aeae427c2a5a414d28cd4bd8",
         "rekey-mcp": "e3c98f9abaf1f8ed7cce08ee4acbc20c0e6297d33e706f3c82184f0fab180803"
       },
-      "candidate_installed": false,
+      "candidate_installed": true,
       "pkg": {
         "path": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/macos-pkg-glm-responses-final/Rekey-3.0.0-alpha.1.pkg",
         "bytes": 20392071,
         "sha256": "f011fbd5141d8cad644372f3f9740c37ecc81f819ad111cc7aad2ce6d785916d"
+      },
+      "pre_upgrade_installed": {
+        "rekey": "4d3cc8c6814e884729c125bc9d4d4d0d44710bada82cfa0d44cd4effc92899ec",
+        "rekeyd": "833ed68852638a677afc65a8e624b72e3d4c62e84db79a9c5ed4db22e4a22a00",
+        "rekey-mcp": "95f537305768415ad05f7e889e29e0f0e855397c488d26dcad982669ae0a763f"
       }
     },
     "source_checks": [
@@ -2013,17 +2007,28 @@
       "shutdown_exit_code": 0
     },
     "package_upgrade_attempt": {
+      "started_utc": "2026-10-04T10:08:44.294032+00:00",
       "original_vault_modified": false,
-      "previous_app_running": true,
-      "app_identifier": "com.starlight.rekey",
-      "app_quit_exit_code": 0,
-      "staged_package": "/private/tmp/rekey-v3-responses-install-bfg6oql8/Rekey-3.0.0-alpha.1.pkg",
-      "staged_sha256": "f011fbd5141d8cad644372f3f9740c37ecc81f819ad111cc7aad2ce6d785916d",
       "source_sha256": "f011fbd5141d8cad644372f3f9740c37ecc81f819ad111cc7aad2ce6d785916d",
-      "install_status": "system administrator authentication timed out after 300 seconds; no installer payload applied",
-      "timeout_seconds": 300,
-      "installer_started": false,
-      "installed_binary_hashes_match": false
+      "staged_sha256": "f011fbd5141d8cad644372f3f9740c37ecc81f819ad111cc7aad2ce6d785916d",
+      "staged_package": "/private/tmp/rekey-v3-responses-install-gmvs_sje/Rekey-3.0.0-alpha.1.pkg",
+      "install_status": "installed",
+      "previous_timeout_retained": true,
+      "previous_app_running": true,
+      "app_quit_exit_code": 0,
+      "installer_osascript_pid": 60869,
+      "authentication_focus_exit_code": 0,
+      "authentication_focus_result": "bundle=com.apple.SecurityAgent activated=true",
+      "installer_exit_code": 0,
+      "installer_stdout": "installer: Package name is Rekey-3.0.0-alpha.1\ninstaller: Upgrading at base path /\ninstaller: The upgrade was successful.\n",
+      "installer_stderr": "",
+      "finished_utc": "2026-10-04T10:08:58.275969+00:00",
+      "installed_binary_hashes": {
+        "rekey": "1f0314f2c9ac028d096cac3ec6a3c35baec51685559caacd7d6a97dcb8a81a58",
+        "rekeyd": "53c0af5ba62c541e9b53799b07f530bde149a873aeae427c2a5a414d28cd4bd8",
+        "rekey-mcp": "e3c98f9abaf1f8ed7cce08ee4acbc20c0e6297d33e706f3c82184f0fab180803"
+      },
+      "installed_binary_hashes_match": true
     },
     "source_checks_reused": {
       "source_commit": "abf8c2f4e74b02f575f5ee37a4b29b8a160a6764",
@@ -2059,6 +2064,476 @@
         },
         "native_client_started": false
       }
+    },
+    "previous_package_upgrade_attempt": {
+      "original_vault_modified": false,
+      "previous_app_running": true,
+      "app_identifier": "com.starlight.rekey",
+      "app_quit_exit_code": 0,
+      "staged_package": "/private/tmp/rekey-v3-responses-install-bfg6oql8/Rekey-3.0.0-alpha.1.pkg",
+      "staged_sha256": "f011fbd5141d8cad644372f3f9740c37ecc81f819ad111cc7aad2ce6d785916d",
+      "source_sha256": "f011fbd5141d8cad644372f3f9740c37ecc81f819ad111cc7aad2ce6d785916d",
+      "install_status": "system administrator authentication timed out after 300 seconds; no installer payload applied",
+      "timeout_seconds": 300,
+      "installer_started": false,
+      "installed_binary_hashes_match": false
+    },
+    "installed_verification": {
+      "codesign": {
+        "exit_code": 0,
+        "output": "--prepared:/Applications/Rekey.app/Contents/Helpers/RekeyDaemon.app\n--validated:/Applications/Rekey.app/Contents/Helpers/RekeyDaemon.app\n/Applications/Rekey.app: valid on disk\n/Applications/Rekey.app: satisfies its Designated Requirement"
+      },
+      "gatekeeper": {
+        "exit_code": 0,
+        "output": "/Applications/Rekey.app: accepted\nsource=Notarized Developer ID"
+      },
+      "ticket": {
+        "exit_code": 68,
+        "output": "Processing: /Applications/Rekey.app\nerror is Error Domain=NSURLErrorDomain Code=-1200 \"A TLS error caused the secure connection to fail.\" UserInfo={_kCFStreamErrorCodeKey=-9816, NSUnderlyingError=0x925030a50 {Error Domain=kCFErrorDomainCFNetwork Code=-1200 \"(null)\" UserInfo={_kCFStreamPropertySSLClientCertificateState=0, _kCFNetworkCFStreamSSLErrorOriginalValue=-9816, _kCFStreamErrorDomainKey=3, _kCFStreamErrorCodeKey=-9816, _NSURLErrorNWPathKey=satisfied (Path is satisfied), viable, interface: utun0, dns}}, _NSURLErrorFailingURLSessionTaskErrorKey=LocalDataTask <E182A703-D2F3-44DA-9886-03DB6B5BD34C>.<1>, _NSURLErrorRelatedURLSessionTaskErrorKey=(\n    \"LocalDataTask <E182A703-D2F3-44DA-9886-03DB6B5BD34C>.<1>\"\n), NSLocalizedDescription=A TLS error caused the secure connection to fail., NSErrorFailingURLStringKey=https://api.apple-cloudkit.com/database/1/com.apple.gk.ticket-delivery/production/public/records/lookup, NSErrorFailingURLKey=https://api.apple-cloudkit.com/database/1/com.apple.gk.ticket-delivery/production/public/records/lookup, _kCFStreamErrorDomainKey=3}\nCloudKit's response is inconsistent with expections: (null)\nThe validate action failed! Error 68."
+      },
+      "receipt": {
+        "exit_code": 0,
+        "output": "package-id: com.starlight.rekey.pkg\nversion: 3.0.0-alpha.1\nvolume: /\nlocation: \ninstall-time: 1791108537"
+      },
+      "version": {
+        "exit_code": 0,
+        "output": "rekey 3.0.0-alpha.1"
+      },
+      "links": {
+        "rekey": {
+          "path": "/usr/local/bin/rekey",
+          "target": "/Applications/Rekey.app/Contents/Resources/bin/rekey",
+          "uid": 0
+        },
+        "rekeyd": {
+          "path": "/usr/local/bin/rekeyd",
+          "target": "/Applications/Rekey.app/Contents/Resources/bin/rekeyd",
+          "uid": 0
+        },
+        "rekey-mcp": {
+          "path": "/usr/local/bin/rekey-mcp",
+          "target": "/Applications/Rekey.app/Contents/Resources/bin/rekey-mcp",
+          "uid": 0
+        }
+      },
+      "app_owner_uid": 0,
+      "app_executable_sha256": "7bc0d38d1b8d60a00cfe1e30ec457681fcb5f9cbf298bdf7adf3a6a9ee1dcfed",
+      "ticket_first_attempt": {
+        "exit_code": 68,
+        "output": "Processing: /Applications/Rekey.app\nerror is Error Domain=NSURLErrorDomain Code=-1200 \"A TLS error caused the secure connection to fail.\" UserInfo={_kCFStreamErrorCodeKey=-9816, NSUnderlyingError=0xab7030420 {Error Domain=kCFErrorDomainCFNetwork Code=-1200 \"(null)\" UserInfo={_kCFStreamPropertySSLClientCertificateState=0, _kCFNetworkCFStreamSSLErrorOriginalValue=-9816, _kCFStreamErrorDomainKey=3, _kCFStreamErrorCodeKey=-9816, _NSURLErrorNWPathKey=satisfied (Path is satisfied), viable, interface: utun0, dns}}, _NSURLErrorFailingURLSessionTaskErrorKey=LocalDataTask <B92B936E-58DF-4880-823F-79C9E0751A7F>.<1>, _NSURLErrorRelatedURLSessionTaskErrorKey=(\n    \"LocalDataTask <B92B936E-58DF-4880-823F-79C9E0751A7F>.<1>\"\n), NSLocalizedDescription=A TLS error caused the secure connection to fail., NSErrorFailingURLStringKey=https://api.apple-cloudkit.com/database/1/com.apple.gk.ticket-delivery/production/public/records/lookup, NSErrorFailingURLKey=https://api.apple-cloudkit.com/database/1/com.apple.gk.ticket-delivery/production/public/records/lookup, _kCFStreamErrorDomainKey=3}\nCloudKit's response is inconsistent with expections: (null)\nThe validate action failed! Error 68."
+      }
+    },
+    "installed_bundle_inventory": {
+      "source_file_count": 16,
+      "installed_file_count": 16,
+      "missing": [],
+      "added": [],
+      "changed": [],
+      "all_bundle_files_match": true
+    },
+    "installed_ticket_validation_scope": "Both current online stapler validation attempts failed connecting to Apple CloudKit with TLS -1200. The same source App was previously stapled/validated successfully; all 16 installed bundle files match it exactly, strict codesign and Gatekeeper accepted the installed App. No TLS verification bypass or network configuration change.",
+    "real_codex_installed": {
+      "source_commit": "abf8c2f4e74b02f575f5ee37a4b29b8a160a6764",
+      "source_delta": "GLM Responses fixed template, gateway, App onboarding and post-terminal DONE fix",
+      "policy_mode": "team",
+      "policy_signing": "temporary in-memory Ed25519 test signer",
+      "model": "glm-5.3-flash",
+      "profile": "glm-codex-acceptance",
+      "client_version": "0.160.0",
+      "ui_operations_performed": 0,
+      "started_at_ms": 1791108624301,
+      "installed_candidate_daemon_sha256": "53c0af5ba62c541e9b53799b07f530bde149a873aeae427c2a5a414d28cd4bd8",
+      "policy_activated": true,
+      "vault_id": "a7026e18-50ed-44ff-b62a-adf80eb18351",
+      "client_exit_code": 0,
+      "client_seconds": 9.008,
+      "client_secret_matches": 0,
+      "client_event_counts": {
+        "thread.started": 1,
+        "item.completed": 2,
+        "turn.started": 1,
+        "turn.completed": 1
+      },
+      "completion_is_ok": true,
+      "client_usage": [
+        {
+          "input_tokens": 13346,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 11,
+          "reasoning_output_tokens": 8
+        }
+      ],
+      "audit_event_counts": {
+        "session.revoked": 1,
+        "execution.finished": 1,
+        "execution.started": 1,
+        "session.created": 1,
+        "policy.activated": 1,
+        "policy.trust_installed": 1,
+        "action.created": 1,
+        "credential.created": 1,
+        "vault.unlocked": 1,
+        "vault.initialized": 1
+      },
+      "terminal_reasons": {
+        "finished": 1
+      },
+      "measured_usage": [
+        {
+          "instance_slug": "glm-responses",
+          "utc_day": 20730,
+          "output_tokens": 11,
+          "source": "measured"
+        }
+      ],
+      "sessions_after_client": 0,
+      "passed": true,
+      "shutdown_exit_code": 0
+    },
+    "real_claude_code_installed": {
+      "source_commit": "abf8c2f4e74b02f575f5ee37a4b29b8a160a6764",
+      "profile": "glm-acceptance",
+      "model": "glm-5.3-flash",
+      "client_version": "2.1.281",
+      "ui_operations_performed": 0,
+      "started_at_ms": 1791108624126,
+      "candidate_daemon_sha256": "53c0af5ba62c541e9b53799b07f530bde149a873aeae427c2a5a414d28cd4bd8",
+      "exit_code": 0,
+      "seconds": 8.222,
+      "client_result": {
+        "type": "result",
+        "subtype": "success",
+        "is_error": false,
+        "num_turns": 1,
+        "duration_ms": 5548,
+        "duration_api_ms": 5516
+      },
+      "result_is_ok": true,
+      "usage": {
+        "input_tokens": 140,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 18
+      },
+      "model_usage": {
+        "glm-5.3-flash": {
+          "inputTokens": 140,
+          "outputTokens": 18,
+          "cacheReadInputTokens": 0,
+          "cacheCreationInputTokens": 0,
+          "webSearchRequests": 0,
+          "costUSD": 0.00092,
+          "contextWindow": 200000,
+          "maxOutputTokens": 32000,
+          "thinkingTokens": 0
+        }
+      },
+      "api_error_status": [],
+      "stderr_hint_login": false,
+      "stderr_bytes": 80,
+      "sessions_after_client": 0,
+      "audit_event_counts": {
+        "session.revoked": 1,
+        "execution.finished": 1,
+        "execution.started": 1,
+        "session.created": 1,
+        "vault.unlocked": 1
+      },
+      "measured_usage": [
+        {
+          "instance_slug": "glm",
+          "utc_day": 20730,
+          "output_tokens": 18,
+          "source": "measured"
+        }
+      ],
+      "passed": true,
+      "shutdown_exit_code": 0
+    },
+    "installed_sdk_scope": "Actual /Applications CLI and embedded daemon; isolated tests, no new presence or Secure Enclave interaction; normal settlement and owner revocation, password-proof shutdown.",
+    "fresh_installed_team_fixture": "Earlier one-hour policy expired; a separate empty team fixture used a temporary RAM signer and two-hour policy. Existing personal/user/earlier team vaults were preserved.",
+    "real_codex_installed_connect_mcp": {
+      "source_commit": "abf8c2f4e74b02f575f5ee37a4b29b8a160a6764",
+      "source_delta": "GLM Responses plus single optional DONE marker after terminal; unchanged EOF and sealing",
+      "policy_mode": "team",
+      "policy_signing": "existing temporary Ed25519 test policy",
+      "model": "glm-5.3-flash",
+      "profile": "glm-codex-acceptance",
+      "client_version": "0.160.0",
+      "ui_operations_performed": 0,
+      "started_at_ms": 1791111912624,
+      "candidate_daemon_sha256": "53c0af5ba62c541e9b53799b07f530bde149a873aeae427c2a5a414d28cd4bd8",
+      "project_trust_source": "isolated CODEX_HOME config; CLI trust overrides do not enable project-layer discovery",
+      "generated_mcp_configuration_hand_edited": false,
+      "test_client_mcp_approval": "per-invocation rekey server only; existing authorized provider test; read-only shell sandbox retained; no user configuration changed",
+      "connect_exit_code": 0,
+      "connect_tty_confirmation": true,
+      "connect_generated_config_sha256": "fb44bdec8649e479c0d67268dd1f5e3cef88b792d350f2a97e16706a92fb6d71",
+      "connect_config_env_vars": [
+        "REKEY_CAPABILITY",
+        "REKEY_AGENT_SOCKET"
+      ],
+      "connect_uses_candidate_mcp": true,
+      "connect_configuration_hand_edited": false,
+      "client_exit_code": 0,
+      "client_seconds": 39.085,
+      "client_secret_matches": 0,
+      "client_event_counts": {
+        "thread.started": 1,
+        "item.completed": 3,
+        "turn.started": 1,
+        "item.started": 1,
+        "turn.completed": 1
+      },
+      "completion_is_ok": true,
+      "mcp_completed_calls": [
+        {
+          "server": "rekey",
+          "tool": "rekey.6ba56ac9-4f46-4b6d-904c-bc4751fa7cf3.v1",
+          "status": "completed"
+        }
+      ],
+      "client_usage": [
+        {
+          "input_tokens": 28387,
+          "cached_input_tokens": 576,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 88,
+          "reasoning_output_tokens": 0
+        }
+      ],
+      "audit_event_counts": {
+        "session.revoked": 1,
+        "execution.finished": 3,
+        "execution.started": 3,
+        "session.created": 1,
+        "vault.unlocked": 1
+      },
+      "terminal_reasons": {
+        "finished": 3
+      },
+      "measured_usage": [
+        {
+          "instance_slug": "glm-responses",
+          "utc_day": 20730,
+          "output_tokens": 3,
+          "source": "measured"
+        },
+        {
+          "instance_slug": "glm-responses",
+          "utc_day": 20730,
+          "output_tokens": 106,
+          "source": "measured"
+        },
+        {
+          "instance_slug": "glm-responses",
+          "utc_day": 20730,
+          "output_tokens": 85,
+          "source": "measured"
+        }
+      ],
+      "sessions_after_client": 0,
+      "passed": true,
+      "shutdown_exit_code": 0
+    },
+    "native_mcp_attempts_retained": {
+      "cli_trust_not_loaded": {
+        "source_commit": "abf8c2f4e74b02f575f5ee37a4b29b8a160a6764",
+        "source_delta": "GLM Responses plus single optional DONE marker after terminal; unchanged EOF and sealing",
+        "policy_mode": "team",
+        "policy_signing": "existing temporary Ed25519 test policy",
+        "model": "glm-5.3-flash",
+        "profile": "glm-codex-acceptance",
+        "client_version": "0.160.0",
+        "ui_operations_performed": 0,
+        "started_at_ms": 1791108680892,
+        "candidate_daemon_sha256": "53c0af5ba62c541e9b53799b07f530bde149a873aeae427c2a5a414d28cd4bd8",
+        "connect_exit_code": 0,
+        "connect_tty_confirmation": true,
+        "connect_generated_config_sha256": "fb44bdec8649e479c0d67268dd1f5e3cef88b792d350f2a97e16706a92fb6d71",
+        "connect_config_env_vars": [
+          "REKEY_CAPABILITY",
+          "REKEY_AGENT_SOCKET"
+        ],
+        "connect_uses_candidate_mcp": true,
+        "connect_configuration_hand_edited": false,
+        "client_exit_code": 0,
+        "client_seconds": 26.083,
+        "client_secret_matches": 0,
+        "client_event_counts": {
+          "thread.started": 1,
+          "item.completed": 2,
+          "turn.started": 1,
+          "turn.completed": 1
+        },
+        "completion_is_ok": false,
+        "mcp_completed_calls": [],
+        "client_usage": [
+          {
+            "input_tokens": 13394,
+            "cached_input_tokens": 0,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 80,
+            "reasoning_output_tokens": 59
+          }
+        ],
+        "audit_event_counts": {
+          "session.revoked": 1,
+          "execution.finished": 1,
+          "execution.started": 3,
+          "execution.indeterminate": 2,
+          "session.created": 1,
+          "vault.unlocked": 1
+        },
+        "terminal_reasons": {
+          "finished": 1,
+          "text-stream-failed": 2
+        },
+        "measured_usage": [
+          {
+            "instance_slug": "glm-responses",
+            "utc_day": 20730,
+            "output_tokens": 80,
+            "source": "measured"
+          },
+          {
+            "instance_slug": "glm-responses",
+            "utc_day": 20730,
+            "output_tokens": 4096,
+            "source": "indeterminate"
+          },
+          {
+            "instance_slug": "glm-responses",
+            "utc_day": 20730,
+            "output_tokens": 4096,
+            "source": "indeterminate"
+          }
+        ],
+        "sessions_after_client": 0,
+        "passed": false,
+        "shutdown_exit_code": 0
+      },
+      "persisted_trust_host_tool_approval_denied": {
+        "source_commit": "abf8c2f4e74b02f575f5ee37a4b29b8a160a6764",
+        "source_delta": "GLM Responses plus single optional DONE marker after terminal; unchanged EOF and sealing",
+        "policy_mode": "team",
+        "policy_signing": "existing temporary Ed25519 test policy",
+        "model": "glm-5.3-flash",
+        "profile": "glm-codex-acceptance",
+        "client_version": "0.160.0",
+        "ui_operations_performed": 0,
+        "started_at_ms": 1791108913615,
+        "candidate_daemon_sha256": "53c0af5ba62c541e9b53799b07f530bde149a873aeae427c2a5a414d28cd4bd8",
+        "project_trust_source": "isolated CODEX_HOME config; CLI trust overrides do not enable project-layer discovery",
+        "generated_mcp_configuration_hand_edited": false,
+        "connect_exit_code": 0,
+        "connect_tty_confirmation": true,
+        "connect_generated_config_sha256": "fb44bdec8649e479c0d67268dd1f5e3cef88b792d350f2a97e16706a92fb6d71",
+        "connect_config_env_vars": [
+          "REKEY_CAPABILITY",
+          "REKEY_AGENT_SOCKET"
+        ],
+        "connect_uses_candidate_mcp": true,
+        "connect_configuration_hand_edited": false,
+        "client_exit_code": 0,
+        "client_seconds": 28.778,
+        "client_secret_matches": 0,
+        "client_event_counts": {
+          "thread.started": 1,
+          "item.completed": 3,
+          "turn.started": 1,
+          "item.started": 1,
+          "turn.completed": 1
+        },
+        "completion_is_ok": false,
+        "mcp_completed_calls": [
+          {
+            "server": "rekey",
+            "tool": "rekey.6ba56ac9-4f46-4b6d-904c-bc4751fa7cf3.v1",
+            "status": "failed"
+          }
+        ],
+        "client_usage": [
+          {
+            "input_tokens": 28371,
+            "cached_input_tokens": 14080,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 145,
+            "reasoning_output_tokens": 50
+          }
+        ],
+        "audit_event_counts": {
+          "session.revoked": 1,
+          "execution.finished": 2,
+          "execution.started": 2,
+          "session.created": 1,
+          "vault.unlocked": 1
+        },
+        "terminal_reasons": {
+          "finished": 2
+        },
+        "measured_usage": [
+          {
+            "instance_slug": "glm-responses",
+            "utc_day": 20730,
+            "output_tokens": 65,
+            "source": "measured"
+          },
+          {
+            "instance_slug": "glm-responses",
+            "utc_day": 20730,
+            "output_tokens": 80,
+            "source": "measured"
+          }
+        ],
+        "sessions_after_client": 0,
+        "passed": false,
+        "shutdown_exit_code": 0
+      },
+      "config_inspection": {
+        "connect_exit_code": 0,
+        "variants": [
+          {
+            "name": "git_repository_cli_trust",
+            "client_exit_code": 0,
+            "mcp_list": [],
+            "stderr": ""
+          },
+          {
+            "name": "git_repository_persisted_temporary_trust",
+            "client_exit_code": 0,
+            "mcp_list": [
+              {
+                "name": "rekey",
+                "enabled": true,
+                "disabled_reason": null,
+                "transport": {
+                  "type": "stdio",
+                  "command": "/Applications/Rekey.app/Contents/Resources/bin/rekey-mcp",
+                  "args": [],
+                  "env": null,
+                  "env_vars": [
+                    "REKEY_CAPABILITY",
+                    "REKEY_AGENT_SOCKET"
+                  ],
+                  "cwd": null
+                },
+                "startup_timeout_sec": null,
+                "tool_timeout_sec": null,
+                "auth_status": "unsupported"
+              }
+            ],
+            "stderr": ""
+          }
+        ],
+        "project_path": "/private/tmp/rekey-mcp-config-git-uuau95zu",
+        "temporary_home": "/private/tmp/rekey-codex-home-9r7xmb3w"
+      },
+      "observed_tool_denial": "MCP tool call requires approval, but approval policy is never",
+      "primary_client_schema": "https://raw.githubusercontent.com/openai/codex/rust-v0.160.0/codex-rs/core/config.schema.json",
+      "resolution": "Only the isolated test CODEX_HOME stores project trust; per-invocation mcp_servers.rekey.default_tools_approval_mode=approve reflects the existing authorized fixed provider test. read-only sandbox remains. CLI-generated MCP transport configuration was not edited; user configuration unchanged.",
+      "initial_indeterminate_streams": "First untrusted-project attempt produced two text-stream-failed executions before completing a model response; the exact upstream event cause was not diagnosed or counted as a successful MCP call."
     }
   },
   "pre_responses_default_test_counts": {
@@ -2066,5 +2541,79 @@
     "failed": 0,
     "ignored": 6
   },
-  "default_test_source": "GLM Responses final production_source_sha256, source base 1e3b5cd"
+  "default_test_source": "GLM Responses final production_source_sha256, source base 1e3b5cd",
+  "previous_installed_dns_package": {
+    "package": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/macos-pkg-dns-final/Rekey-3.0.0-alpha.1.pkg",
+    "bytes": 20392536,
+    "sha256": "2f0722b757a2a2edb1da5c5011ffbdbfe40218a3bcd3f674ef1699570e873563"
+  },
+  "previous_installed_dns_distribution": [
+    {
+      "name": "dns-staple-pkg",
+      "exit_code": 0,
+      "seconds": 0.91
+    },
+    {
+      "name": "dns-staple-app",
+      "exit_code": 73,
+      "seconds": 1.03
+    },
+    {
+      "name": "dns-app-gatekeeper",
+      "exit_code": 0
+    },
+    {
+      "name": "dns-pkg-gatekeeper",
+      "exit_code": 0
+    },
+    {
+      "name": "dns-staple-validate-pkg",
+      "exit_code": 0
+    },
+    {
+      "name": "dns-staple-app-retry",
+      "exit_code": 73
+    },
+    {
+      "name": "dns-app-copy-staple-validate",
+      "exit_code": 0
+    },
+    {
+      "name": "dns-app-copy-signature",
+      "exit_code": 0
+    },
+    {
+      "name": "dns-app-copy-gatekeeper",
+      "exit_code": 0
+    },
+    {
+      "name": "dns-build-final-pkg",
+      "exit_code": 0
+    },
+    {
+      "name": "dns-final-staple-pkg",
+      "exit_code": 0
+    },
+    {
+      "name": "dns-final-staple-validate-pkg",
+      "exit_code": 0
+    },
+    {
+      "name": "dns-final-pkg-gatekeeper",
+      "exit_code": 0
+    }
+  ],
+  "installed_final_candidate": {
+    "source_commit": "abf8c2f4e74b02f575f5ee37a4b29b8a160a6764",
+    "installed_app": "/Applications/Rekey.app",
+    "package_sha256": "f011fbd5141d8cad644372f3f9740c37ecc81f819ad111cc7aad2ce6d785916d",
+    "sdk_clients_passed": [
+      "claude-code",
+      "codex"
+    ],
+    "native_mcp_client_passed": "codex",
+    "gui_and_service_lifecycle_claimed": false,
+    "fresh_account_t12_claimed": false,
+    "published": false
+  }
 }
