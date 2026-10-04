@@ -619,7 +619,7 @@ Profile 进入唯一签名 `PolicySnapshot` 的必填 `profiles`；个人规则�
 
 该选择不成为第二个授权器，也不改变完整替换合同：生成个人新策略时，不自动合并或保留 previous 的额外规则，全部删除/变化继续进入差异供明确签名。团队已有 Forbid、参数限制和外部 Ed25519 审批规则保持合法；所有执行继续由现有 evaluator 按 Forbid、RequireApproval、Permit 的优先级决定，Profile 中的 allow 不是绕过这些规则的许可。
 
-会话上限使用 `ttl_ms`、`max_uses`，并签入 `confirm_each_run`。LLM 实例必须同时签入非空模型白名单、单次最大输出、每日请求数和每日输出 token 上限；同 principal/实例的多个 Profile 必须保持映射与预算一致。修改这些字段继续使用完整草案、差异、签名和激活流程。
+会话上限使用 `ttl_ms`、`max_uses`，并签入 `confirm_each_run`。LLM 实例必须同时签入非空模型白名单、单次最大输出、每日请求数和每日输出 token 上限；同 principal/实例的多个 Profile 必须保持映射与预算一致，不同 principal 可使用同名实例的独立映射。修改这些字段继续使用完整草案、差异、签名和激活流程。
 
 用量初版保留单一请求账本和一个认证集合根，不维护第二份汇总计数；代价是全集合校验成本随历史增长。请求与 `execution.started` 同事务记账，终态只结算一次。崩溃遗留的未结算请求在恢复准入前按已记录上限保守结算。内容认证与整库防回滚分开验收，后者仍依赖 §5.4 的外部锚。
 
@@ -643,7 +643,7 @@ rekey run claude-code --client claude-code -- claude
 
 隔离入口继续由 CLI 持有 owner/control，复用 sibling `rekeyd` 的平台 launcher，从首个不可信指令前安装沙箱。已实现的平台组合才可启动；`none+allow`、macOS `seatbelt+deny-other`、Linux `netns+deny-other` 分别验收，跨平台或未实现组合明确拒绝，不重试为裸进程。L2 只描述本次实际隔离的子树，Admin59 签发本身不是沙箱证明。
 
-正常控制失效时，CLI 向隔离 helper 发 SIGTERM，并有界等待直接 Agent 被终止/回收以及私有临时目录清理；超时可终止 helper，但必须报告清理未确认，不显示已停止 Agent。helper 的正常退出码143仅在该清理路径和 signal handler 恢复均成功后作为内部确认；被信号杀死不算确认。此合同不承诺终止所有后代；CLI/helper 被 SIGKILL 的边界仍以 T9 capability 撤销和存活后代的既有沙箱约束验收，不冒充清理成功。
+正常控制失效时，CLI 向隔离 helper 发 SIGTERM，并有界等待直接 Agent 被终止/回收以及私有临时目录清理；终端 Ctrl-C 给 helper 的 SIGINT 复用同一清理路径。超时可终止 helper，但必须报告清理未确认，不显示已停止 Agent。helper 的正常退出码143仅在该清理路径和 signal handler 恢复均成功后作为内部确认；被信号杀死不算确认。此合同不承诺终止所有后代；CLI/helper 被 SIGKILL 的边界仍以 T9 capability 撤销和存活后代的既有沙箱约束验收，不冒充清理成功。
 
 隔离子树的工作目录为本次显式项目目录，允许该项目内读写；HOME/TMPDIR 使用私有临时目录。项目不得与 state/端点目录重叠，不放行项目外用户配置、Keychain 或其他服务 socket；项目内原有秘密属于用户授予的项目材料。继承标准输入/输出/错误的文件、pipe、TTY/null，拒绝 socket stdio，关闭其余 FD，并新建 terminal session 防止控制原宿主终端。平台 launcher 保留固定必要环境及本次 SDK 路由，清除代理、SSH socket、动态加载和其他账号环境；不为客户端兼容而放开整个 HOME。
 

@@ -68,12 +68,13 @@ pub(super) fn validate_profiles(
                         source.signer_id,
                     );
                     if identities
-                        .insert(grant.instance.as_str(), identity)
+                        .insert((profile.principal_id, grant.instance.as_str()), identity)
                         .is_some_and(|old| old != identity)
                     {
                         return Err(invalid());
                     }
                     let key = (
+                        profile.principal_id,
                         grant.instance.as_str(),
                         capability.capability.as_str(),
                         source.action_index,
@@ -737,6 +738,29 @@ mod tests {
         drop(ctx);
         terminals.await.unwrap();
         join.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn profile_mapping_identity_is_scoped_to_principal() {
+        let (_dir, ctx, join, terminals) = fixture().await;
+        let mut actions = ctx.authority.action_list().await.unwrap();
+        let (_, original) = ctx.active_profile("test").await.unwrap();
+        let mut action = actions[0].clone();
+        action.id = rekey_domain::ids::ActionId::new_random();
+        action.credential_id = rekey_domain::ids::CredentialId::new_random();
+        let mut other = original.clone();
+        other.name = "other".into();
+        other.principal_id = PrincipalId::new_random();
+        other.grants[0].capabilities[0].actions =
+            vec![rekey_domain::capability::ActionVersionRef {
+                action_id: action.id,
+                version: action.version,
+            }];
+        actions.push(action);
+        validate_profiles(&[original.clone(), other.clone()], &actions).unwrap();
+        other.principal_id = original.principal_id;
+        assert!(validate_profiles(&[original, other], &actions).is_err());
+        finish(ctx, join, terminals).await;
     }
 
     #[tokio::test]

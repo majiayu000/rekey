@@ -814,7 +814,11 @@ fn validate_profiles(snapshot: &PolicySnapshot) -> Result<(), PolicyError> {
                 let mut refs = capability.actions.clone();
                 refs.sort();
                 if let Some(previous) = capabilities.insert(
-                    (grant.instance.as_str(), capability.capability.as_str()),
+                    (
+                        profile.principal_id,
+                        grant.instance.as_str(),
+                        capability.capability.as_str(),
+                    ),
                     refs.clone(),
                 ) && previous != refs
                 {

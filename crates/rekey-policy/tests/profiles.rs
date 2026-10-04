@@ -198,6 +198,30 @@ fn shared_principal_instance_limits_are_identical_sets_including_presence() {
 }
 
 #[test]
+fn independent_principals_can_bind_the_same_slug_to_distinct_actions() {
+    let mut value = fixture();
+    second_profile(&mut value);
+    let principal = PrincipalId::new_random();
+    let action = ActionId::new_random();
+    value["profiles"][1]["principal_id"] = json!(principal);
+    value["profiles"][1]["grants"][0]["capabilities"][0]["actions"] =
+        json!([{"action_id":action,"version":1}]);
+    let mut binding = value["bindings"][0].clone();
+    binding["action_id"] = json!(action);
+    value["bindings"].as_array_mut().unwrap().push(binding);
+    let mut rule = value["rules"][0].clone();
+    rule["id"] = json!(PolicyRuleId::new_random());
+    rule["principal_id"] = json!(principal);
+    rule["action_id"] = json!(action);
+    value["rules"].as_array_mut().unwrap().push(rule);
+    validate(&value).unwrap();
+    // Sharing a principal still cannot give one instance inconsistent mappings.
+    value["profiles"][1]["principal_id"] = value["profiles"][0]["principal_id"].clone();
+    value["rules"][1]["principal_id"] = value["profiles"][0]["principal_id"].clone();
+    assert!(validate(&value).is_err());
+}
+
+#[test]
 fn shared_slug_capability_maps_exact_sorted_refs_but_allows_subsets() {
     let mut value = fixture();
     let another = ActionId::new_random();

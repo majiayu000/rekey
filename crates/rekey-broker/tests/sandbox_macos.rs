@@ -869,46 +869,45 @@ fn profile_child_accepts_synthetic_tty_without_inheriting_its_controlling_sessio
 
 #[test]
 fn profile_term_reaps_direct_agent_and_cleans_scratch_before_exit_143() {
-    let f = Fixture::new();
-    let mut helper = profile_launch(&f, &["profile-wait"], None)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut reader = BufReader::new(helper.stdout.take().unwrap());
-    let mut ready = String::new();
-    reader.read_line(&mut ready).unwrap();
-    let mut fields = ready.trim().splitn(3, ' ');
-    assert_eq!(fields.next(), Some("ready"));
-    let agent: libc::pid_t = fields.next().unwrap().parse().unwrap();
-    let scratch = PathBuf::from(fields.next().unwrap());
-    assert!(scratch.is_dir());
-    assert_eq!(
-        unsafe { libc::kill(helper.id() as libc::pid_t, libc::SIGTERM) },
-        0
-    );
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    let status = loop {
-        if let Some(status) = helper.try_wait().unwrap() {
-            break status;
-        }
+    for signal in [libc::SIGTERM, libc::SIGINT] {
+        let f = Fixture::new();
+        let mut helper = profile_launch(&f, &["profile-wait"], None)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut reader = BufReader::new(helper.stdout.take().unwrap());
+        let mut ready = String::new();
+        reader.read_line(&mut ready).unwrap();
+        let mut fields = ready.trim().splitn(3, ' ');
+        assert_eq!(fields.next(), Some("ready"));
+        let agent: libc::pid_t = fields.next().unwrap().parse().unwrap();
+        let scratch = PathBuf::from(fields.next().unwrap());
+        assert!(scratch.is_dir());
+        assert_eq!(unsafe { libc::kill(helper.id() as libc::pid_t, signal) }, 0);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let status = loop {
+            if let Some(status) = helper.try_wait().unwrap() {
+                break status;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "helper did not finish signal cleanup"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert_eq!(status.code(), Some(143));
         assert!(
-            std::time::Instant::now() < deadline,
-            "helper did not finish TERM cleanup"
+            !scratch.exists(),
+            "143 must follow successful scratch removal"
         );
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    };
-    assert_eq!(status.code(), Some(143));
-    assert!(
-        !scratch.exists(),
-        "143 must follow successful scratch removal"
-    );
-    assert_eq!(unsafe { libc::kill(agent, 0) }, -1);
-    assert_eq!(
-        std::io::Error::last_os_error().raw_os_error(),
-        Some(libc::ESRCH)
-    );
-    let mut rest = String::new();
-    reader.read_to_string(&mut rest).unwrap();
-    assert!(rest.is_empty());
+        assert_eq!(unsafe { libc::kill(agent, 0) }, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
+        let mut rest = String::new();
+        reader.read_to_string(&mut rest).unwrap();
+        assert!(rest.is_empty());
+    }
 }

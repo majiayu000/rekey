@@ -90,6 +90,27 @@ workspace **1031 passed / 0 failed / 6 ignored**，默认与 lab 严格 Clippy�
 
 这是对意见和既有设计的有证据取舍，不把这些限制列为已修复能力。
 
+随后 `3035064` 九项 CI 全绿，新一轮自动审查确认两项补充正确性问题：
+
+- Profile 映射键遗漏 principal，误拒绝不同主体使用同名实例的独立 Action/credential。
+  Policy 与 Broker 仅在现有索引键补 principal；同主体冲突仍拒绝。
+  两层新增回归均先实际失败，再通过；Policy Profile 组9项、Broker Profile组5项通过。
+- macOS helper 只处理 SIGTERM，终端 SIGINT 会直接杀死 helper，跳过 Agent 回收和
+  scratch 清理。现用既有原子标记和清理路径处理两种信号；成功恢复原 handler 才
+  返回既有内部确认143。安装第二个 handler 失败时，Drop 恢复已安装前缀。
+  prepare 子进程矩阵旧实现实际失败；修复后两种信号均不启动已取消的 Agent。
+  真实 helper/Agent/scratch 矩阵通过，验证直接 Agent 已回收、临时目录已删除。
+
+补充涉及的[策略校验](https://github.com/majiayu000/rekey/blob/v3.0.0-alpha.1/crates/rekey-policy/src/lib.rs)、
+[Profile](https://github.com/majiayu000/rekey/blob/v3.0.0-alpha.1/crates/rekey-broker/src/runtime/profile.rs)、
+[helper](https://github.com/majiayu000/rekey/blob/v3.0.0-alpha.1/crates/rekey-broker/src/sandbox/macos.rs)
+均不增加配置或修改持久格式。日志前缀 `v3-review2-red-` / `v3-review2-green-`；
+独立 reviewer 已复核三处 principal 索引与双 handler 的安装/回滚/恢复顺序，
+无剩余阻塞；该轮只读复核、未重复运行测试。
+补充修复后的完整 workspace **1033 passed / 0 failed / 6 ignored**，default/lab
+严格 Clippy、fmt 和分发九项通过；日志前缀 `v3-review2-final-` / `v3-review2-clippy-`。
+最终 CI 另行核对，未扩展为外部人工审计结论。
+
 ## 未验证与发布边界
 
 新版认证 context 实际弹窗次数、明文失焦清除、审批可见取消、SMAppService 生命周期

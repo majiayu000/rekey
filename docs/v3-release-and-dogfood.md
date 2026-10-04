@@ -16,12 +16,16 @@ SMAppService 生命周期均**用户暂缓、未验证**；T12 仍暂缓。
 
 ## 交付进度
 
+下表是 tag 推送前的检查快照；公开发布及下载验收的当前结果以
+[GitHub release](https://github.com/majiayu000/rekey/releases/tag/v3.0.0-alpha.1)
+和对应 release workflow 为准。
+
 | 项目 | 状态 / 证据 |
 |---|---|
 | 停止扩展、冻结 vault25 / policy6 | 已写入 SPEC、AGENTS 与公开基线 |
 | relay 移出默认编译 | 已存在：无 lib；bin / test 的 required-features 均为 lab；无需新增代码 |
 | 安全核心审查 | 独立只读 reviewer 完成初审和修复复核，两项问题已关闭；范围为 presence / 签名 / gateway / 遮蔽 / 审批 / DoH；结果见[审查记录](evidence/v3-security-core-review-2026-10-05.md) |
-| PR 当前 CI | 基线 5de61bf 与安全修复 e921357 九项全绿；补充撤销审计修复后最终 head 待复验。最终本机完整 workspace 1031 passed / 0 failed / 6 ignored，default/lab all-targets 与严格 Clippy 通过 |
+| PR 当前 CI | 基线 5de61bf、安全修复 e921357 与撤销审计修复 3035064 九项全绿；补充 Profile 映射及 SIGINT 修复后最终 head 待复验。最终本机完整 workspace 1033 passed / 0 failed / 6 ignored，default/lab all-targets 与严格 Clippy 通过 |
 | 新版 App 真机三项、T12 | 用户暂缓；不能填“通过” |
 | 公开发布 | 未完成；必须用 main 上的最终提交触发既有 release workflow |
 | GitHub 签名配置 | 已使用现有签名材料补齐 Installer certificate / password / identity、App / daemon profile 五项；未覆盖已有六项，未输出任何凭据值 |

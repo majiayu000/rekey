@@ -33,14 +33,15 @@ const PROFILE: &str = include_str!("macos.sb");
 // A profile-child process launches exactly one Agent. Signals may be delivered
 // on another runtime thread; only this atomic flag is touched by the handler.
 static PROFILE_TERMINATION: AtomicBool = AtomicBool::new(false);
+const PROFILE_SIGNALS: [libc::c_int; 2] = [libc::SIGTERM, libc::SIGINT];
 
 extern "C" fn profile_terminate(_: libc::c_int) {
     PROFILE_TERMINATION.store(true, Ordering::Relaxed);
 }
 
 pub(super) struct ProfileTermination {
-    previous: libc::sigaction,
-    installed: bool,
+    previous: [libc::sigaction; 2],
+    installed: usize,
 }
 
 impl ProfileTermination {
@@ -51,25 +52,37 @@ impl ProfileTermination {
             let mut action: libc::sigaction = std::mem::zeroed();
             action.sa_sigaction = profile_terminate as *const () as usize;
             libc::sigemptyset(&mut action.sa_mask);
-            let mut previous = MaybeUninit::uninit();
+            let mut termination = Self {
+                previous: std::mem::zeroed(),
+                installed: 0,
+            };
             PROFILE_TERMINATION.store(false, Ordering::Relaxed);
-            if libc::sigaction(libc::SIGTERM, &action, previous.as_mut_ptr()) != 0 {
-                return Err(io::Error::last_os_error());
+            for (index, signal) in PROFILE_SIGNALS.into_iter().enumerate() {
+                if libc::sigaction(signal, &action, &mut termination.previous[index]) != 0 {
+                    // Drop restores any prefix already installed.
+                    return Err(io::Error::last_os_error());
+                }
+                termination.installed += 1;
             }
-            Ok(Self {
-                previous: previous.assume_init(),
-                installed: true,
-            })
+            Ok(termination)
         }
     }
 
     pub(super) fn restore(&mut self) -> io::Result<()> {
-        if self.installed {
+        while self.installed > 0 {
+            let index = self.installed - 1;
             // SAFETY: restore the exact disposition returned at installation.
-            if unsafe { libc::sigaction(libc::SIGTERM, &self.previous, ptr::null_mut()) } != 0 {
+            if unsafe {
+                libc::sigaction(
+                    PROFILE_SIGNALS[index],
+                    &self.previous[index],
+                    ptr::null_mut(),
+                )
+            } != 0
+            {
                 return Err(io::Error::last_os_error());
             }
-            self.installed = false;
+            self.installed -= 1;
         }
         Ok(())
     }
@@ -310,7 +323,7 @@ pub(super) fn spawn(prepared: &PreparedLaunch) -> io::Result<i32> {
         libc::posix_spawnattr_destroy(&mut attr);
         let Some(pid) = result? else {
             // No Agent was started; run_profile still closes scratch and
-            // restores the handler before acknowledging TERM with exit 143.
+            // restores both handlers before acknowledging cleanup with exit 143.
             return Ok(128 + libc::SIGTERM);
         };
         let mut status = 0;
@@ -367,25 +380,28 @@ mod tests {
     fn profile_term_during_prepare_does_not_spawn_and_restores_handler() {
         const CHILD: &str = "REKEY_PROFILE_TERM_PREPARE_TEST_CHILD";
         if std::env::var_os(CHILD).is_none() {
-            let output = std::process::Command::new(std::env::current_exe().unwrap())
+            for signal in [libc::SIGTERM, libc::SIGINT] {
+                let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", "sandbox::macos::tests::profile_term_during_prepare_does_not_spawn_and_restores_handler"])
-                .env(CHILD, "1")
+                .env(CHILD, signal.to_string())
                 .output()
                 .unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
             return;
         }
+        let signal = std::env::var(CHILD).unwrap().parse::<i32>().unwrap();
         let mut previous: libc::sigaction = unsafe { std::mem::zeroed() };
         assert_eq!(
-            unsafe { libc::sigaction(libc::SIGTERM, ptr::null(), &mut previous) },
+            unsafe { libc::sigaction(signal, ptr::null(), &mut previous) },
             0
         );
         let mut termination = ProfileTermination::install().unwrap();
-        assert_eq!(unsafe { libc::raise(libc::SIGTERM) }, 0);
+        assert_eq!(unsafe { libc::raise(signal) }, 0);
         let root = tempfile::tempdir().unwrap();
         let state = root.path().join("state");
         let agent = root.path().join("agent");
@@ -409,7 +425,7 @@ mod tests {
         termination.restore().unwrap();
         let mut after: libc::sigaction = unsafe { std::mem::zeroed() };
         assert_eq!(
-            unsafe { libc::sigaction(libc::SIGTERM, ptr::null(), &mut after) },
+            unsafe { libc::sigaction(signal, ptr::null(), &mut after) },
             0
         );
         assert_eq!(after.sa_sigaction, previous.sa_sigaction);
