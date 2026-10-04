@@ -109,6 +109,28 @@ async fn idle_status_poll_does_not_occupy_execution_admission() {
     drop(idle);
     db.execute_batch("COMMIT").unwrap();
     audit.await.unwrap();
+    // Once idle, a concurrent passive-status owner must not make the idle
+    // lock abandon this attempt. Queue behind it, then recheck activity.
+    let status_owner = ctx.lifecycle.coordinate().await;
+    let mut eligible_idle = Box::pin(ctx.try_idle_lock(Duration::ZERO));
+    poll_fn(|cx| {
+        assert!(eligible_idle.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    // This worker barrier guarantees the idle Status reply is available.
+    authority.status().await.unwrap();
+    poll_fn(|cx| {
+        assert!(
+            eligible_idle.as_mut().poll(cx).is_pending(),
+            "eligible idle locking must wait for the passive-status owner"
+        );
+        Poll::Ready(())
+    })
+    .await;
+    drop(status_owner);
+    eligible_idle.await.unwrap();
+    assert_eq!(authority.status().await.unwrap().state, "locked");
     authority
         .shutdown(Some(UnlockProof::Password(SecretInput::from_slice(
             b"fixture-proof",

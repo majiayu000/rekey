@@ -337,7 +337,7 @@ if unpaired:
 con.close()
 PY
 
-"$REKEY" --state-dir "$STATE" shutdown >/dev/null
+printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" shutdown --password-stdin >/dev/null
 wait "$BROKER_PID"
 BROKER_PID=""
 

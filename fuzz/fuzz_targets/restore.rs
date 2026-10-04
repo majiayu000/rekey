@@ -1,13 +1,18 @@
 #![no_main]
 
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::sync::OnceLock;
 
 use libfuzzer_sys::fuzz_target;
-use rekey_vault::bootstrap::{RestoreProof, confirm_vault_init, init_vault, restore_vault};
+use rekey_domain::authorization::PolicyMode;
+use rekey_vault::authority::spawn_authority;
+use rekey_vault::bootstrap::{
+    RestoreProof, confirm_vault_init, init_vault, inspect_restore, restore_vault,
+};
+use rekey_vault::command::UnlockProof;
 use rekey_vault::crypto::kdf::Argon2Params;
+use rekey_vault::handle::AuthorityConfig;
 use rekey_vault::secret::SecretInput;
-use rekey_vault::store::SqliteRecordStore;
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
@@ -45,16 +50,32 @@ fuzz_target!(|data: &[u8]| {
         return;
     }
     let digest = format!("{:x}", Sha256::digest(&candidate));
-    let result = restore_vault(&backup, &target, proof(data, fixture), &digest);
+    let result =
+        inspect_restore(&backup, &target, proof(data, fixture), &digest).and_then(|context| {
+            restore_vault(&backup, &target, proof(data, fixture), &digest, context)
+        });
     if mutations.is_empty() {
         assert!(result.is_ok());
     } else if result.is_err() {
-        assert_restore_cleanup(&target);
-        if data.get(2).is_some_and(|byte| byte & 0x0f == 1) {
+        // After generation reservation, restore must retain its incomplete
+        // marker. Before reservation, a failed attempt must leave no artifacts.
+        let incomplete = rekey_vault::paths::restore_incomplete(&target).exists();
+        if !incomplete {
+            assert_restore_cleanup(&target);
+        }
+        if !incomplete && data.get(2).is_some_and(|byte| byte & 0x0f == 1) {
             fs::write(&backup, &fixture.backup).expect("rewrite fixed restore fixture");
             let fixture_digest = format!("{:x}", Sha256::digest(&fixture.backup));
             assert!(
-                restore_vault(&backup, &target, proof(data, fixture), &fixture_digest).is_ok()
+                inspect_restore(&backup, &target, proof(data, fixture), &fixture_digest)
+                    .and_then(|context| restore_vault(
+                        &backup,
+                        &target,
+                        proof(data, fixture),
+                        &fixture_digest,
+                        context,
+                    ))
+                    .is_ok()
             );
         }
     }
@@ -88,6 +109,12 @@ fn assert_restore_cleanup(target: &std::path::Path) {
     ] {
         assert!(!path.exists(), "failed restore left {}", path.display());
     }
+    if target.exists() {
+        for entry in fs::read_dir(target).expect("inspect failed restore target") {
+            let entry = entry.expect("read failed restore entry");
+            assert_eq!(entry.path(), rekey_vault::paths::broker_lock(target));
+        }
+    }
 }
 
 fn fixture() -> &'static RestoreFixture {
@@ -104,21 +131,32 @@ fn fixture() -> &'static RestoreFixture {
                 iterations: 1,
                 parallelism: 1,
             },
+            PolicyMode::Team,
         )
         .expect("initialize current-format restore fixture");
         confirm_vault_init(&state).expect("confirm restore fixture");
-        let store = SqliteRecordStore::open(&rekey_vault::paths::vault_db(&state))
-            .expect("open restore fixture");
         let backup_path = work.path().join("fixture.rkbackup");
-        let backup_file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .open(&backup_path)
-            .expect("create restore fixture snapshot");
-        store
-            .backup_to(&backup_path, &backup_file)
-            .expect("snapshot restore fixture");
+        let (handle, worker) =
+            spawn_authority(AuthorityConfig::new(state)).expect("open restore fixture authority");
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("create fixture runtime")
+            .block_on(async {
+                let password_proof = || UnlockProof::Password(SecretInput::from_slice(PASSWORD));
+                handle
+                    .unlock(password_proof())
+                    .await
+                    .expect("unlock fixture");
+                handle
+                    .backup(backup_path.clone(), password_proof())
+                    .await
+                    .expect("snapshot restore fixture");
+                handle
+                    .shutdown(Some(password_proof()))
+                    .await
+                    .expect("stop fixture authority");
+            });
+        worker.join().expect("join fixture authority");
         RestoreFixture {
             backup: fs::read(backup_path).expect("read restore fixture snapshot"),
             recovery_key: Zeroizing::new(outcome.recovery_key_display.as_bytes().to_vec()),

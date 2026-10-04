@@ -381,9 +381,18 @@ impl BrokerCtx {
             && status.idle_for_ms >= idle_lock.as_millis() as u64
             && self.sessions.in_flight_total() == 0
         {
-            let Ok(_owner) = self.lifecycle.try_coordinate() else {
+            let natural_deadline = tokio::time::Instant::now() + self.drain_timeout;
+            let stop_deadline = natural_deadline + Duration::from_secs(5);
+            // Passive status holds this coordinator too. Once idle, queue
+            // fairly instead of repeatedly losing to background polling.
+            let Ok(_owner) =
+                tokio::time::timeout_at(stop_deadline, self.lifecycle.coordinate()).await
+            else {
                 return Ok(());
             };
+            if !self.lifecycle.is_running() {
+                return Ok(());
+            }
             // A terminal audit refreshes activity before its execution permit
             // drops. Re-reading after observing zero in-flight prevents stale
             // pre-completion status from immediately locking the authority.
@@ -394,8 +403,6 @@ impl BrokerCtx {
             {
                 return Ok(());
             }
-            let natural_deadline = tokio::time::Instant::now() + self.drain_timeout;
-            let stop_deadline = natural_deadline + Duration::from_secs(5);
             self.run_drain_lock("idle-timeout", natural_deadline, stop_deadline)
                 .await?;
         }

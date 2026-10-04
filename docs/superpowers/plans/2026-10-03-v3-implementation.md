@@ -252,3 +252,10 @@ GLM Responses最终源码补证：固定`glm-responses@1`（POST`/api/v1/respons
 2026-10-04晚间安装补证：屏幕解锁后沿用既有安装授权，用AppKit将系统认证窗口置前；macOS管理员认证完成，最终Responses公证pkg安装退出0。安装App/CLI/daemon/MCP均为abf8c2f产物，16个bundle文件与已装订候选完全一致，收据/三个root所有的命令链接/版本/严格签名/Gatekeeper通过。安装后的在线stapler验证两次遇Apple CloudKit TLS -1200，保留原失败，不绕过TLS；源App先前装订验证成功及本机Gatekeeper通过仍成立。真实安装版Claude Code2.1.281→GLM Messages（8.222秒、输入140/输出18）和Codex0.160.0→GLM Responses（9.008秒、输入13346/输出11）均返回OK、退出0、execution.finished1、退出后零会话，测试daemon以密码证明停机。此前短期测试策略已过期，新的独立团队fixture使用RAM签名者，不覆盖原库；没有新指纹或SE认证。本轮仅更改证据文档，生产源码SHA与1021/0/6全仓gate一致。
 
 最终安装版真实connect/MCP通过：CLI在空白临时Git项目生成配置并展示diff/TTY确认，MCP传输配置未手改。Codex0.160.0加载该配置，完成一次Rekey MCP调用及两轮GLM Responses模型请求（39.085秒，execution.started/finished各3、indeterminate0、Key六类编码零命中、退出后会话0、shutdown0）。此前两个尝试分别没有加载项目信任、以及被Codex自身never审批策略拒绝，原记录保留；首次未加载配置的两条流失败未归因，不记为MCP成功。修正仅在隔离CODEX_HOME保存项目信任，并用本次进程的rekey.default_tools_approval_mode=approve执行已获授权的固定provider测试，保留read-only shell沙盒，不改用户Codex配置、不改Rekey权限、不新增绕过模式。该实测覆盖当前账户接入，不替代新账户T12、真实App交互或服务生命周期。
+
+
+2026-10-04 CI收尾：PR #62首轮发现fuzz旧锁/旧恢复API、macOS被动状态空闲锁测试和Linux崩溃脚本未传shutdown证明。恢复夹具改用当前Authority认证备份及inspect/confirm流程，并保留已可能预留代数后的incomplete标记；不放宽--locked检查。协调锁竞争用worker屏障确定性复现旧代码放弃到期锁定，修复为到期后排队、重新检查活动/停机并保留忙碌超时延后；原80ms/20轮IPC测试不变。历史CI事件本身没有记录协调锁碰撞，不把复现当作原事件精确归因。
+
+最终修复源码默认全仓1021/0/6（1193.700秒）、fmt/all-targets/严格Clippy均通过；Lab runtime及完整Admin IPC定向和Lab严格Clippy通过。五个fuzz目标各2000次smoke通过，共享依赖零漂移；真实release daemon崩溃、重启审计补齐、新证明停机脚本通过。完整Lab历史失败仍保留，不拼接成新全套green。
+
+修复版App公证189384d5-f053-4b96-ab40-e329b654a06d、pkg公证451d1fb4-7148-44a5-98a4-9606c39ebfb7均Accepted；签名/装订/Gatekeeper、pkg10项和分发9项通过。pkg SHA256为9f2f4a761330e3777b1c44b0cf3225c450bf13e3d159a2b2f3d8d4c75d670ee0。已有安装授权下，系统管理员认证完成、安装退出0、15个普通文件/1个bundle链接及三个root CLI链接匹配新候选。安装辅助脚本首次漏改相对helper路径、以及误用MCP standalone --version的探针失败保留；没有修改MCP错误合同，没有使用Computer Use。当前账户provider结果继续绑定此前abf8c2f产物，不升级为本次新增provider调用。详见统一JSON的terminal_closure_20261004.ci_followup。真实App交互、SMAppService、新账户T12、人工审查和公共发布继续Pending。

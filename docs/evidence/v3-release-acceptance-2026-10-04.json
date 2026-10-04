@@ -2985,6 +2985,103 @@
         },
         "scope": "synthetic canary peer feasibility probe; not the complete installed App attack matrix"
       }
+    },
+    "ci_followup": {
+      "source_base": "87f49a7def8c1f98a382594ee60dc1bde6df4162",
+      "code_and_scripts_diff_sha256": "c784a15d55b91cf32359a402f25539fd5a303d244a0624221cb6d19e55499d6a",
+      "initial_ci_runs": [
+        "https://github.com/majiayu000/rekey/actions/runs/37208122123",
+        "https://github.com/majiayu000/rekey/actions/runs/37208122118"
+      ],
+      "repairs": [
+        "fuzz dependency lock aligned with v3; locked alignment remains enforced",
+        "restore fuzzer uses authenticated Authority backup and inspect/confirm restore; preserves incomplete marker after possible reservation",
+        "idle lock queues behind passive status once eligible, rechecks running/activity and retains busy-timeout deferral",
+        "crash recovery shutdown provides a fresh proof through stdin"
+      ],
+      "idle_regression": {
+        "deterministic_old_code": "failed waiting-for-coordinator assertion; idle-coordinator-red.log",
+        "fixed_assertion": "passed; final workspace gate includes same regression",
+        "unchanged_original_repetitions": {
+          "runs": 25,
+          "failed": 0
+        },
+        "original_ci_collision": "not logged; deterministic reproduction proves the discard mechanism, not the exact original scheduling"
+      },
+      "default_workspace": {
+        "counts": {
+          "passed": 1021,
+          "failed": 0,
+          "ignored": 6
+        },
+        "seconds": 1193.7,
+        "check_all_targets_exit": 0,
+        "strict_clippy_exit": 0,
+        "fmt_exit": 0,
+        "source_unchanged": true
+      },
+      "lab_focused": {
+        "counts": {
+          "passed": 28,
+          "failed": 0,
+          "ignored": 0
+        },
+        "strict_clippy_exit": 0,
+        "scope": "runtime unit tests and complete admin IPC target; no new full Lab pass claimed"
+      },
+      "fuzz": {
+        "runs_per_target": 2000,
+        "targets": [
+          "ipc",
+          "action",
+          "policy",
+          "response_sealing",
+          "restore"
+        ],
+        "all_smokes_exit": 0,
+        "locked_dependency_drift": [],
+        "restore_seconds": 146.916,
+        "artifact_records": [
+          "fuzz-lock-fixed-smoke.json",
+          "fuzz-restore-fixed-smoke.json"
+        ]
+      },
+      "crash_recovery": {
+        "exit": 0,
+        "seconds": 6.652,
+        "platform": "macOS arm64",
+        "signed": false,
+        "script": "scripts/p0-crash-recovery.sh",
+        "scope": "genuine release rekeyd crash, startup audit reconciliation, fresh proof shutdown; temporary synthetic vault"
+      },
+      "candidate": {
+        "package": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/closure-20261004/macos-pkg-ci-fixes/Rekey-3.0.0-alpha.1.pkg",
+        "sha256": "9f2f4a761330e3777b1c44b0cf3225c450bf13e3d159a2b2f3d8d4c75d670ee0",
+        "bytes": 20393378,
+        "app_notary_id": "189384d5-f053-4b96-ab40-e329b654a06d",
+        "pkg_notary_id": "451d1fb4-7148-44a5-98a4-9606c39ebfb7",
+        "notary_status": "Accepted",
+        "notary_issues": null,
+        "signature_staple_gatekeeper_checks_exit": 0,
+        "pkg_tests": 10,
+        "distribution_tests": 9,
+        "installed_app": "/Applications/Rekey.app",
+        "installer_exit": 0,
+        "bundle_regular_files_matching": 15,
+        "bundle_symlinks_matching": 1,
+        "root_cli_links_matching": 3,
+        "fresh_account_t12": false
+      },
+      "failures_preserved": [
+        "initial GitHub failures",
+        "ci-fixes-default-workspace-interrupted.log: stopped before final busy-deferral correction",
+        "ci-fixes-installation-initial-error.json: scoped harness helper path corrected; genuine successful installation followed",
+        "ci-fixes-installed-initial-invalid-probe.json: MCP standalone --version refused as its existing usage contract; binary identity verified by hash"
+      ],
+      "evidence_directory": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/closure-20261004",
+      "draft_pr": "https://github.com/majiayu000/rekey/pull/62",
+      "latest_remote_checks": "pending push and rerun",
+      "public_release_created": false
     }
   }
 }

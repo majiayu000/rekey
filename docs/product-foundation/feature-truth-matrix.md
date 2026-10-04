@@ -5,7 +5,7 @@
 [v3 SPEC](../superpowers/specs/2026-10-02-rekey-v3-personal-first.md)定义要求，
 [唯一实施记录](../superpowers/plans/2026-10-03-v3-implementation.md)保留各冻结批次的实际命令、失败与复验。
 GLM Responses最终源码默认全仓通过1,021/0 failed/6 ignored；两配置严格Clippy、all-targets编译与22流式/16网关定向通过。
-Lab 全仓 1,482/0 failed/6 ignored 为修复前 `a6467ab` 的历史结果，本批未重复整套 Lab。
+CI收尾修复源码默认全仓1,021/0 failed/6 ignored，两配置严格Clippy与Lab runtime/Admin IPC定向通过；本次Lab完整历史复跑1,488/1 failed/6 ignored及22项AppRole修后复验保留，未宣称修后完整Labgreen。
 历史失败与本轮产物、设备范围见实施记录；本地结果不替代安装后的体验或 Release 验收。
 
 ## 默认本地产品
@@ -13,7 +13,7 @@ Lab 全仓 1,482/0 failed/6 ignored 为修复前 `a6467ab` 的历史结果，本
 | 能力 | 当前事实及源码/测试入口 | 未覆盖边界 | Release |
 |---|---|---|---|
 | Vault、密码与恢复 | [Authority](../../crates/rekey-vault/src/authority.rs)、[bootstrap tests](../../crates/rekey-vault/tests/bootstrap_contract.rs)；空目录初始化、候选根校验后发布 | 真实用户备份灾难演练不是单元测试 | Pending |
-| A2 管理证明 | [Admin IPC](../../crates/rekey-broker/src/ipc/admin.rs)、[CLI](../../crates/rekey-cli/src/commands/mod.rs)；shutdown任意状态需proof、reveal不接受A1 token替代 | 系统认证设备行为 | Pending |
+| A2 管理证明 | [Admin IPC](../../crates/rekey-broker/src/ipc/admin.rs)、[CLI](../../crates/rekey-cli/src/commands/mod.rs)；shutdown任意状态需proof、reveal不接受A1 token替代；后台状态查询不续空闲期限，已到期锁定等待查询完成并重新检查 | 系统认证设备行为 | Pending |
 | Presence | [App PresenceKey](../../apps/macos/PresenceKey.swift)、[desktop authority](../../crates/rekey-vault/src/authority/desktop.rs)；显式读取、原七天双时钟上限、不自动恢复；K不能签发新授权或修改密码/恢复因子，step-up共用失败退避；仅固定十秒复用LAContext | V1/context 已实测；已安装 App 全流程待验 | Pending |
 | 服务端身份 | [macOS peer](../../crates/rekey-cli/src/client/macos_peer.rs)、[测试](../../crates/rekey-cli/tests/macos_peer_identity.rs)；发送证明前验证同Team精确daemon ID，有签名正负向软件证据 | Peer校验不是完整L1证明 | Pending |
 | 内存加固 | [crypto](../../crates/rekey-vault/src/crypto)、[V2 probe](../../scripts/v3/memory_probe.c)；根/DEK零化、页锁/core限制有有界证据 | V2 正对照与候选 LLDB 拒绝已实测；不证明所有内存副本消失 | Pending |
