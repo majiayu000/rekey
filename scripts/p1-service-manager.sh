@@ -446,7 +446,7 @@ if len(rows)!=1: raise SystemExit(f"reconcile rows: {rows}")
 PY
 
 ADMIN_PID="$MANAGER_PID"
-"$REKEY" --state-dir "$STATE" shutdown >"$WORKDIR/admin-shutdown.out"
+printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" shutdown --password-stdin >"$WORKDIR/admin-shutdown.out"
 grep -q '"shutdown": true' "$WORKDIR/admin-shutdown.out"
 wait_pid_bounded "$ADMIN_PID" 15
 # KeepAlive may already have restarted it; unload the label/unit with bounded cleanup.

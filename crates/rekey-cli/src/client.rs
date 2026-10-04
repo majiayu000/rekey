@@ -191,6 +191,7 @@ impl CliError {
 /// Local connection evidence, not a claim that every L1 requirement is met.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum PeerSecurity {
+    #[cfg(target_os = "macos")]
     #[serde(rename = "verified_signature")]
     VerifiedSignature,
     #[serde(rename = "L1-dev")]

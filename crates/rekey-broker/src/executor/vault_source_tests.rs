@@ -2316,16 +2316,30 @@ async fn actor_approle_current_typed_rotation_uses_latest_source_and_actual_auth
 
 #[tokio::test]
 async fn actor_approle_expired_secret_id_is_rechecked_after_login_started_audit() {
+    let mut f = ActorFixture::with_profile(&approle_profile()).await;
     let mut value: serde_json::Value = serde_json::from_slice(&approle_profile()).unwrap();
-    value["secret_id_expires_at_ms"] =
-        serde_json::json!(crate::now_ts().unwrap().as_unix_ms() + 500);
-    let mut f = ActorFixture::with_profile(&serde_json::to_vec(&value).unwrap()).await;
+    // Start the original short expiry after vault setup; initialization must
+    // not consume the interval intended for the login-started audit.
+    let expires_at_ms = crate::now_ts().unwrap().as_unix_ms() + 500;
+    value["secret_id_expires_at_ms"] = serde_json::json!(expires_at_ms);
+    f.authority
+        .credential_rotate_typed_before(
+            f.action.credential_id,
+            rekey_domain::credential::CredentialKind::VaultKvV2Source,
+            Some(1),
+            rekey_vault::secret::SecretInput::from_slice(&serde_json::to_vec(&value).unwrap()),
+            ActorFixture::proof(),
+            None,
+        )
+        .await
+        .unwrap();
     let authority = f.authority.clone();
     let (terminals, worker) = crate::audit::spawn_terminal_worker_with(move |draft| {
         let authority = authority.clone();
         async move {
             if draft.event_type == "vault.approle.login.started" {
-                tokio::time::sleep(Duration::from_millis(600)).await;
+                let remaining = expires_at_ms + 1 - crate::now_ts().unwrap().as_unix_ms();
+                tokio::time::sleep(Duration::from_millis(remaining.max(0) as u64)).await;
             }
             authority.commit_audit(draft).await
         }
@@ -2333,6 +2347,7 @@ async fn actor_approle_expired_secret_id_is_rechecked_after_login_started_audit(
     f.executor.terminals = terminals;
     let old = std::mem::replace(&mut f.terminal_worker, worker);
     old.await.unwrap();
+    assert!(crate::now_ts().unwrap().as_unix_ms() < expires_at_ms);
     let error = f.run().await.err().unwrap();
     assert_eq!(error.code(), "REQUEST_DENIED");
     assert!(f.fake.take_requests().is_empty());

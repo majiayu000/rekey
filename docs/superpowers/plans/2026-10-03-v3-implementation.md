@@ -46,6 +46,40 @@
 | M4 新账户 5 分钟接入 | 最小入口已合流；设备验收待做 | setup/add固定App入口、显式保存/能力安装/个人策略编辑与取消后复用已安装版本已实现；20最终检查通过。实际新用户安装/SE/5分钟T12未验收 |
 | M4 格式冻结 / 基线 / GA 发布 | 候选版本、文档及分发接线已实现；GA未发布 | 3.0.0-alpha.1、vault25/policy6；完整运行与定向修复已记录，GA最终格式冻结与公开发布仍待完成 |
 
+## 人工验收与发布交接（2026-10-04，尚未执行）
+
+统一结果继续以[候选证据](../../evidence/v3-release-acceptance-2026-10-04.json)为准。
+实际安装包 SHA-256 为 `f011fbd5141d8cad644372f3f9740c37ecc81f819ad111cc7aad2ce6d785916d`，
+生产源码来自 `abf8c2f`；后续证据提交不改变该二进制。
+
+独立人工安全审查至少核对以下原始攻击路径及现存失败记录，尚未指定或完成审阅：
+
+- `authority/desktop.rs` 的真实 presence 不能签发新的七天授权；`authority/wrapper.rs` 改密码和恢复密钥轮换只接受密码或恢复密钥。确认失败不重设期限或产生永久认证因子。
+- 密码猜测退避覆盖已解锁后的每次敏感操作，成功 presence 不清除该退避；取消、到期和错误证明保留拒绝合同。
+- `PresenceKey.swift` 的十秒认证 context 复用与取消作废，及 CLI 在未验证 daemon 时的 L1-dev 警告；伪 daemon 在校验前收到零秘密字节。
+- `upstream.rs` 仅在系统答案全部属于 fake-IP 范围时采用固定 TLS DoH，继续检查全部公网地址、固定连接地址、原域名 TLS 校验与原期限；没有修改 Clash 或放行私网。
+- 网关准入、SSE 编码秘密遮蔽、终帧后单个 DONE、一次用量结算、owner 死亡撤销，以及真实 GLM/客户端失败记录。T11 是499成功加1超时，不是500次全部成功。
+- 回滚外部锚、真实 Keychain/SE 权限及 LLDB 正负对照只支持已记录边界；当前证据不能扩大为完整 L1/L2、root 防护或全部内存副本清零。
+
+新账户材料已准备在 `/Users/Shared/rekey-v3-acceptance-20261004`：公证 pkg、其校验值及原样复制的 Claude Code 2.1.281；没有凭据、保险库或用户配置。账户创建、系统登录与 Touch ID 设置仍由用户完成。T12 从开始安装 pkg 起计时，随后仅执行：
+
+```sh
+rekey setup
+rekey add anthropic
+rekey run claude-code --client claude-code -- /Users/Shared/rekey-v3-acceptance-20261004/claude --model glm-5.3-flash
+```
+
+App 中显式选择 GLM Messages、输入测试 Key、确认模型/预算/Profile、审阅差异并签名；记录实际耗时、命令数、JSON 数及退出撤销。该过程尚未执行。已安装 App 的真实失焦、可见取消和策略审阅，以及 SMAppService 批准、注销/登录、升级、停用和卸载另行验收，模型测试不替代这些设备结果。
+
+GitHub 发布工作流仍缺 Installer 身份/证书及双 provisioning profile secrets；已授权的私钥留本机约束继续有效。候选包与 cask 已就绪，但尚未创建公开 release，GA 格式冻结、新机器公开下载验收和正式发布授权仍待完成。其他工作树不自动清理：本轮只读盘点125个，其中66个 v3 工作树有未提交变更。
+
+## 本轮终端收尾（2026-10-04）
+
+- Ubuntu24.04.4 arm64、Linux6.8、uid502真实systemd用户bus下，release CLI/BrokerRuntime夹具和release daemon服务验收均通过；覆盖排空、故障注入与恢复、启动锁定、信号停机、SIGKILL重启、新证明停用和unit卸载。临时VM已停止，没有残留测试unit。
+- Linux严格default all-targets Clippy通过；代数锚14项与CLI39项通过。修复仅两处Linux编译警告（共三行），未扩大保护等级或改变macOS运行行为。服务脚本漏传停机证明的一处旧调用已修为新密码证明，原拒绝和故障日志保留。
+- 当前完整Lab复跑1488/1/6，唯一失败为AppRole的500ms期限在初始化前开始，未达到login.started审计阶段；调整test-only设置顺序后22项AppRole通过，期限和零上游/一次审计断言不变。此前relay首次重启503后，五次原源码复测和完整复跑的relay组通过；初始传输原因未完全归因。未将定向通过拼成一次完整Lab通过。
+- macOS default/lab严格all-targets Clippy、workspace check、fmt与机械依赖边界通过；本轮最终默认workspace测试1021通过、0失败、6忽略（1213.130秒）。源文件及证据的真实GLM Key编码扫描零命中。
+
 ## 当前收尾状态（2026-10-03，尚未发布）
 
 - 默认与 `lab` 两配置完整workspace测试均已运行：默认仅VRK崩溃夹具超时，lab仅GCP期限夹具与插件故障清理失败，原日志在主工作区 `outputs/rekey-v3-20261003/v3-final-{joined,lab}/`。三处test-only修正经独立审查，随后按原workspace特性图重跑默认VRK全组、lab的GCP全组/插件全组/VRK全组均通过；修后all-targets、两配置strict Clippy与fmt通过，证据在 `v3-final-test-tail/`。没有将初跑失败记为一次全仓通过，也没有叠加嵌套子进程为独立用例数。

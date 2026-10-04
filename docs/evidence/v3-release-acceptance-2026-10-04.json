@@ -285,8 +285,10 @@
   "pending": [
     "actual installed App focus, visible cancellation and policy-review workflow",
     "installed SMAppService registration and login-item lifecycle",
-    "fresh macOS account T12 deferred by user",
-    "independent human security review and GA format freeze/public release"
+    "fresh macOS account T12; handoff prepared but account/login not performed",
+    "independent human security review and GA format freeze/public release",
+    "release CI signing secrets missing; private signing keys remain local",
+    "initial relay restart 503 not fully attributed; no full Lab pass claimed after phase fix"
   ],
   "installed_pre_glm_candidate": {
     "scope": "Current macOS account; installed pre-GLM candidate, not fresh-account T12",
@@ -2615,5 +2617,374 @@
     "gui_and_service_lifecycle_claimed": false,
     "fresh_account_t12_claimed": false,
     "published": false
+  },
+  "terminal_closure_20261004": {
+    "source_base": "ee29ba268bc9a6adecdb1180f1b508c03acc6a1f",
+    "source_delta_files": [
+      "crates/rekey-cli/src/client.rs",
+      "crates/rekey-vault/src/generation_anchor.rs",
+      "crates/rekey-broker/src/executor/vault_source_tests.rs",
+      "scripts/p1-service-manager.sh"
+    ],
+    "production_delta_scope": "three lines of Linux-only warning fixes; macOS runtime behavior unchanged; signed package still records abf8c2f provenance",
+    "lab_full_initial": {
+      "command": [
+        "cargo",
+        "test",
+        "--workspace",
+        "--features",
+        "lab",
+        "--",
+        "--test-threads=1"
+      ],
+      "source_commit": "ee29ba268bc9a6adecdb1180f1b508c03acc6a1f",
+      "exit_code": 101,
+      "seconds": 84.7,
+      "passed": 44,
+      "failed": 1,
+      "ignored": 0,
+      "log": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/closure-20261004/lab-workspace.log"
+    },
+    "lab_relay_reproduction": [
+      {
+        "attempt": 1,
+        "exit_code": 0,
+        "elapsed_seconds": 21.913
+      },
+      {
+        "attempt": 2,
+        "exit_code": 0,
+        "elapsed_seconds": 1.098
+      },
+      {
+        "attempt": 3,
+        "exit_code": 0,
+        "elapsed_seconds": 1.054
+      },
+      {
+        "attempt": 4,
+        "exit_code": 0,
+        "elapsed_seconds": 1.436
+      },
+      {
+        "attempt": 5,
+        "exit_code": 0,
+        "elapsed_seconds": 1.066
+      }
+    ],
+    "lab_full_no_fail_fast": {
+      "command": [
+        "cargo",
+        "test",
+        "--workspace",
+        "--features",
+        "lab",
+        "--no-fail-fast",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 101,
+      "elapsed_seconds": 1706.495,
+      "reported_totals": {
+        "passed": 1488,
+        "failed": 1,
+        "ignored": 6
+      },
+      "log": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/closure-20261004/lab-workspace-complete.log",
+      "rerun_of_initial_failure": true,
+      "source_base": "ee29ba268bc9a6adecdb1180f1b508c03acc6a1f",
+      "test_binaries_built_before_platform_warning_fix": true,
+      "source_edited_during_run": [
+        "Linux-only warning fixes",
+        "service acceptance proof input"
+      ],
+      "test_cases_not_removed_or_recompiled_by_this_run": true
+    },
+    "lab_approle_phase_fixed": {
+      "command": [
+        "cargo",
+        "test",
+        "--workspace",
+        "--features",
+        "lab",
+        "actor_approle",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 136.866,
+      "counts": {
+        "passed": 22,
+        "failed": 0,
+        "ignored": 0
+      },
+      "expiry_interval_ms": 500,
+      "login_started_assertion": 1,
+      "source_effects_expected": 0,
+      "test_only_fix": true
+    },
+    "linux_strict_source_checks": {
+      "exit_code": 0,
+      "seconds": 169.546,
+      "arch": "aarch64",
+      "source_base": "ee29ba2",
+      "source_delta_files": [
+        "crates/rekey-cli/src/client.rs",
+        "crates/rekey-vault/src/generation_anchor.rs"
+      ],
+      "commands": [
+        "cargo clippy --workspace --all-targets -- -D warnings",
+        "cargo test -p rekey-vault generation_anchor::tests",
+        "cargo test -p rekey-cli --bin rekey"
+      ],
+      "offline": true
+    },
+    "linux_service_lifecycle": {
+      "exit_code": 0,
+      "seconds": 12.956,
+      "platform": "Ubuntu 24.04.4 aarch64",
+      "pid1": "systemd",
+      "user_uid": 502,
+      "source_base": "ee29ba2",
+      "source_delta": "Linux warning fixes and final fixture SHUTDOWN fresh password proof",
+      "scope": [
+        "release CLI + BrokerRuntime fixture graceful drain/race/audit fault/crash reconciliation",
+        "release rekeyd locked startup/signal stop/SIGKILL restart/fresh-proof shutdown/unload"
+      ],
+      "prior_failures_preserved": true
+    },
+    "linux_inventory": {
+      "platform": "Linux 6.8.0-117-generic aarch64 GNU/Linux",
+      "pid1": "systemd",
+      "uid": "502",
+      "binaries": {
+        "rekey": {
+          "sha256": "d74a67b06e1bd29cefe0ef3aa1be77617c19c2259c2b147e521893f74f0f97a6",
+          "bytes": 3937688
+        },
+        "rekeyd": {
+          "sha256": "91c8c1a82e0e1a44d071cb262f95479e9f225f817658c966effff9ad33620b4b",
+          "bytes": 23485208
+        },
+        "rekey-mcp": {
+          "sha256": "b90193a3d9dd1d7898e532fd1803225a79723d4b968dbd2fbf5c448c6c65dbd6",
+          "bytes": 1275720
+        }
+      },
+      "remaining_test_units": {
+        "exit_code": 0,
+        "output": ""
+      }
+    },
+    "macos_platform_checks": [
+      {
+        "command": [
+          "cargo",
+          "clippy",
+          "--workspace",
+          "--all-targets",
+          "--",
+          "-D",
+          "warnings"
+        ],
+        "exit_code": 0
+      },
+      {
+        "command": [
+          "cargo",
+          "fmt",
+          "--all",
+          "--check"
+        ],
+        "exit_code": 0
+      },
+      {
+        "command": [
+          "git",
+          "diff",
+          "--check"
+        ],
+        "exit_code": 0
+      }
+    ],
+    "mechanical_contracts": [
+      {
+        "pattern": "REKEY_PASSWORD|get_secret_value|/proxy/|passthrough",
+        "exit_code": 1,
+        "matches": 0
+      },
+      {
+        "pattern": "get_secret\\b|read_secret|export_secret",
+        "exit_code": 1,
+        "matches": 0
+      },
+      {
+        "command": "cargo tree -p rekey-cli -e normal",
+        "exit_code": 0,
+        "forbidden_dependencies": []
+      }
+    ],
+    "credential_scan": {
+      "tracked_files_checked": 616,
+      "distinct_real_glm_key_encoding_variants": 6,
+      "hit_count": 0,
+      "hit_paths": [],
+      "credential_value_logged": false
+    },
+    "fresh_account_handoff": {
+      "directory": "/Users/Shared/rekey-v3-acceptance-20261004",
+      "files": {
+        "rekey-v3.0.0-alpha.1-macos.pkg": {
+          "sha256": "f011fbd5141d8cad644372f3f9740c37ecc81f819ad111cc7aad2ce6d785916d",
+          "bytes": 20392071,
+          "source": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/closure-20261004/distribution/rekey-v3.0.0-alpha.1-macos.pkg"
+        },
+        "claude": {
+          "sha256": "a922981f6f3b55a251ef9f9dbaa0621a5f99cbcb5ca67f8a797476ccfc83f626",
+          "bytes": 220931760,
+          "source": "/Users/lifcc/.local/share/claude/versions/2.1.281"
+        }
+      },
+      "credential_files_copied": false,
+      "new_account_created": false
+    },
+    "review_instructions": "docs/superpowers/plans/2026-10-03-v3-implementation.md#人工验收与发布交接2026-10-04尚未执行",
+    "failures_preserved": {
+      "relay_503": "initial restart request returned 503; five unchanged repetitions passed; full rerun also passed relay target; initial SCIM/transport cause remains undetermined",
+      "approle_expiry": "full Lab run failed because no login.started audit existed; moved original 500ms expiry after fixture initialization and waited for its absolute expiry; all 22 AppRole cases pass without widening the interval or changing production behavior",
+      "linux_setup": "initial Rustup component download was interrupted after 710 seconds; reused cached official arm64 toolchain offline",
+      "service_sqlite": "first run lacked sqlite3; installed the fixture dependency",
+      "service_shutdown": "old fixture final SHUTDOWN omitted proof and failed with no tty; fresh password proof now supplied; expected audit fault is retained"
+    },
+    "release_workflow_missing_secrets": [
+      "APPLE_INSTALLER_CERTIFICATE",
+      "APPLE_INSTALLER_CERTIFICATE_PASSWORD",
+      "APPLE_INSTALLER_SIGNING_IDENTITY",
+      "APPLE_PROVISIONING_PROFILE",
+      "APPLE_DAEMON_PROVISIONING_PROFILE"
+    ],
+    "signing_private_keys_remain_local": true,
+    "worktrees": {
+      "total": 125,
+      "v3": 68,
+      "dirty_v3": 66,
+      "other_worktrees_modified_or_removed": false
+    },
+    "public_release_created": false,
+    "full_lab_after_test_only_fix_run": false,
+    "default_workspace_final": {
+      "command": [
+        "cargo",
+        "test",
+        "--workspace",
+        "--offline",
+        "--no-fail-fast",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 1213.13,
+      "counts": {
+        "passed": 1021,
+        "failed": 0,
+        "ignored": 6
+      },
+      "source_base": "ee29ba268bc9a6adecdb1180f1b508c03acc6a1f",
+      "crates_apps_scripts_diff_sha256": "0d17b50211c3455c4792f1ab7e54756951e8db0868ba31e383bff70042a2490b"
+    },
+    "artifact_directory": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/closure-20261004",
+    "linux_cleanup": {
+      "list_exit_code": 0,
+      "vm_name": "rekey-v3-acceptance-20261004",
+      "status": "Stopped",
+      "temporary_cache_archives_removed": [
+        {
+          "name": "linux-toolchain.tar.gz",
+          "bytes": 181801035,
+          "sha256": "c07f1c45d0e70bbbc082bacd08bc936c1ba15a08c2560634b5b839971b7825c0"
+        },
+        {
+          "name": "linux-cargo-registry-cache.tar",
+          "bytes": 794347520,
+          "sha256": "4de49edd1a6f6e361062f1213cd8c407f65de07bef04b8143f8cfd3598b8fcee"
+        }
+      ]
+    },
+    "macos_lab_clippy_after_phase_fix": {
+      "command": "cargo clippy --workspace --all-targets --features lab -- -D warnings",
+      "exit_code": 0
+    },
+    "technical_choices": {
+      "frozen_on": "2026-10-04",
+      "ga_format_frozen": false,
+      "V1": "docs/evidence/v3-review-v1-presence-2026-10-03.json: V1.result.status passed",
+      "V2": "docs/evidence/v3-review-v2-lldb-2026-10-03.json: result.status passed",
+      "V3": {
+        "status": "passed",
+        "cases": {
+          "valid": {
+            "client": {
+              "audit_token_bytes": 32,
+              "event": "result",
+              "local_peertoken": true,
+              "osstatus": 0,
+              "outcome": "verified",
+              "pid_fallback": false,
+              "sent_bytes": 30,
+              "stage": "synthetic_canary_sent",
+              "exit_code": 0
+            },
+            "server": {
+              "canary_match": true,
+              "eof": true,
+              "event": "observation",
+              "outcome": "observed",
+              "received_bytes": 30
+            }
+          },
+          "wrong_identifier": {
+            "client": {
+              "audit_token_bytes": 32,
+              "event": "result",
+              "local_peertoken": true,
+              "osstatus": -67050,
+              "outcome": "rejected",
+              "pid_fallback": false,
+              "sent_bytes": 0,
+              "stage": "SecCodeCheckValidity",
+              "exit_code": 2
+            },
+            "server": {
+              "canary_match": false,
+              "eof": true,
+              "event": "observation",
+              "outcome": "observed",
+              "received_bytes": 0
+            }
+          },
+          "adhoc": {
+            "client": {
+              "audit_token_bytes": 32,
+              "event": "result",
+              "local_peertoken": true,
+              "osstatus": -67050,
+              "outcome": "rejected",
+              "pid_fallback": false,
+              "sent_bytes": 0,
+              "stage": "SecCodeCheckValidity",
+              "exit_code": 2
+            },
+            "server": {
+              "canary_match": false,
+              "eof": true,
+              "event": "observation",
+              "outcome": "observed",
+              "received_bytes": 0
+            }
+          }
+        },
+        "scope": "synthetic canary peer feasibility probe; not the complete installed App attack matrix"
+      }
+    }
   }
 }

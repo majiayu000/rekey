@@ -31,7 +31,7 @@ Lab 全仓 1,482/0 failed/6 ignored 为修复前 `a6467ab` 的历史结果，本
 | Activity | [App Model](../../apps/macos/Model.swift)；daemon可信审计上下文、分页/分组/预算元数据 | 不记录正文或密钥；不是SIEM/云监控 | Pending |
 | App引导与文案 | [Forms](../../apps/macos/Forms.swift)、[UI harness](../../scripts/test-macos-ui.swift)；setup/add、完整确认、保护下限、只读旧格式指引 | T12新账户三命令/五分钟未验 | Pending |
 | macOS安装分发 | [pkg builder](../../scripts/build-macos-pkg.sh)、[release](../../.github/workflows/release.yml)；daemon独立bundle/profile、SMAppService与cask接线 | 本地双 profile App/pkg 签名、公证、Gatekeeper 已通过；此前候选已在当前账户安装并核对收据/链接/哈希；GLM 升级版也已安装核对；登录项生命周期未验 | Pending |
-| Linux用户服务 | [generator](../../scripts/rekey-service-unit.py)、[harness](../../scripts/p1-service-manager.sh)；真实--user/default.target/no User=，生成/语法通过 | 临时环境无user bus，生命周期未验 | Pending |
+| Linux用户服务 | [generator](../../scripts/rekey-service-unit.py)、[harness](../../scripts/p1-service-manager.sh)；Ubuntu24.04.4 arm64真实非root用户bus下，release CLI/BrokerRuntime夹具与release daemon生命周期均通过 | 排空/故障恢复、锁定启动/信号停机/SIGKILL重启/新证明停用已验；不代替x86公开下载或macOS登录项 | Pending |
 
 ## 保护等级与隔离
 

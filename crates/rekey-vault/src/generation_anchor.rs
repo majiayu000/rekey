@@ -273,6 +273,8 @@ impl Protected {
         }
     }
     fn advance(&self, expected: Option<u64>, next: u64) -> Result<(), AuthorityError> {
+        #[cfg(not(any(target_os = "macos", test)))]
+        let _ = (expected, next);
         match self {
             Self::FileOnly => Ok(()),
             #[cfg(target_os = "macos")]
