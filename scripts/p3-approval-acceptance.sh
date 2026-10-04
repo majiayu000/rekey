@@ -257,9 +257,18 @@ expect_exit 2 execute_with --approval "$WORKDIR/grant-link.json"
 expect_exit 2 execute_with --approval "$WORKDIR/grant-2a.json" --approval "$WORKDIR/grant-2a.json"
 
 "$REKEY" --state-dir "$STATE" audit list --limit 100 >"$WORKDIR/audit.json"
-for event in approval.requested approval.accepted approval.rejected execution.started execution.finished; do
-  rg -q "\"event_type\": \"$event\"" "$WORKDIR/audit.json"
-done
+python3 - "$WORKDIR/audit.json" <<'PY'
+import json, sys
+expected = {
+    "approval.requested", "approval.accepted", "approval.rejected",
+    "execution.started", "execution.finished",
+}
+with open(sys.argv[1]) as source:
+    actual = {event["event_type"] for event in json.load(source)["events"]}
+missing = expected - actual
+if missing:
+    raise SystemExit("missing audit events: " + ", ".join(sorted(missing)))
+PY
 "$REKEY" --state-dir "$STATE" audit export --output "$WORKDIR/audit.jsonl" >/dev/null
 rg -q '"record_type":"rekey.audit.export.v2"' "$WORKDIR/audit.jsonl"
 rg -q '"event_type":"approval.accepted"' "$WORKDIR/audit.jsonl"

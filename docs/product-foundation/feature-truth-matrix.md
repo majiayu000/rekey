@@ -5,7 +5,7 @@
 [v3 SPEC](../superpowers/specs/2026-10-02-rekey-v3-personal-first.md)定义要求，
 [唯一实施记录](../superpowers/plans/2026-10-03-v3-implementation.md)保留各冻结批次的实际命令、失败与复验。
 GLM Responses最终源码默认全仓通过1,021/0 failed/6 ignored；两配置严格Clippy、all-targets编译与22流式/16网关定向通过。
-CI收尾修复源码默认全仓1,021/0 failed/6 ignored，两配置严格Clippy与Lab runtime/Admin IPC定向通过；本次Lab完整历史复跑1,488/1 failed/6 ignored及22项AppRole修后复验保留，未宣称修后完整Labgreen。
+CI收尾修复源码默认全仓1,021/0 failed/6 ignored，两配置严格Clippy与Lab runtime/Admin IPC定向通过；最终Lab完整复跑1,489/0 failed/6 ignored（1943.187秒）通过；此前1,488/1/6及首次relay503、22项AppRole复验均作为历史记录保留。
 历史失败与本轮产物、设备范围见实施记录；本地结果不替代安装后的体验或 Release 验收。
 
 ## 默认本地产品

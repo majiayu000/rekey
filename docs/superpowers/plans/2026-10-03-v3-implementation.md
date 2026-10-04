@@ -259,3 +259,6 @@ GLM Responses最终源码补证：固定`glm-responses@1`（POST`/api/v1/respons
 最终修复源码默认全仓1021/0/6（1193.700秒）、fmt/all-targets/严格Clippy均通过；Lab runtime及完整Admin IPC定向和Lab严格Clippy通过。五个fuzz目标各2000次smoke通过，共享依赖零漂移；真实release daemon崩溃、重启审计补齐、新证明停机脚本通过。完整Lab历史失败仍保留，不拼接成新全套green。
 
 修复版App公证189384d5-f053-4b96-ab40-e329b654a06d、pkg公证451d1fb4-7148-44a5-98a4-9606c39ebfb7均Accepted；签名/装订/Gatekeeper、pkg10项和分发9项通过。pkg SHA256为9f2f4a761330e3777b1c44b0cf3225c450bf13e3d159a2b2f3d8d4c75d670ee0。已有安装授权下，系统管理员认证完成、安装退出0、15个普通文件/1个bundle链接及三个root CLI链接匹配新候选。安装辅助脚本首次漏改相对helper路径、以及误用MCP standalone --version的探针失败保留；没有修改MCP错误合同，没有使用Computer Use。当前账户provider结果继续绑定此前abf8c2f产物，不升级为本次新增provider调用。详见统一JSON的terminal_closure_20261004.ci_followup。真实App交互、SMAppService、新账户T12、人工审查和公共发布继续Pending。
+
+
+完整Lab收尾已完成：3db80d1全仓1489 passed/0 failed/6 ignored，1943.187秒；此后只修改P3验收脚本及证据文档，Cargo/App生产源码不变。保留此前relay503与1488/1/6，不把新成功结果写成原故障已精确归因。云端两平台已通过全仓与前置进程检查，后续同时卡在P3审计事件断言；行号诊断及本机复现确认其依赖JSON空格，而audit list使用紧凑JSON。改用JSON字段解析，保留原五类事件及批准/拒绝/泄漏检查，真实脚本通过；随后streaming、GitHub App、Connector、native launchd和十步macOS软件UI合同均通过。自定义CARGO_TARGET_DIR首次未传REKEY_SERVICE_FIXTURE导致local launchd找不到example，显式传入现有override后通过，没有修改服务代码。Pkg仍为已安装9f2f4a76候选，生产源码未变；实际SMAppService与App物理交互仍Pending。

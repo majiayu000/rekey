@@ -288,7 +288,7 @@
     "fresh macOS account T12; handoff prepared but account/login not performed",
     "independent human security review and GA format freeze/public release",
     "release CI signing secrets missing; private signing keys remain local",
-    "initial relay restart 503 not fully attributed; no full Lab pass claimed after phase fix"
+    "initial relay restart 503 not fully attributed; final full Lab rerun passed"
   ],
   "installed_pre_glm_candidate": {
     "scope": "Current macOS account; installed pre-GLM candidate, not fresh-account T12",
@@ -2871,7 +2871,7 @@
       "other_worktrees_modified_or_removed": false
     },
     "public_release_created": false,
-    "full_lab_after_test_only_fix_run": false,
+    "full_lab_after_test_only_fix_run": true,
     "default_workspace_final": {
       "command": [
         "cargo",
@@ -3081,7 +3081,52 @@
       "evidence_directory": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/closure-20261004",
       "draft_pr": "https://github.com/majiayu000/rekey/pull/62",
       "latest_remote_checks": "pending push and rerun",
-      "public_release_created": false
+      "public_release_created": false,
+      "lab_workspace_final": {
+        "source_commit": "3db80d1392487c654ccfd8acf1ec01c7e24f4089",
+        "command": [
+          "cargo",
+          "test",
+          "--workspace",
+          "--features",
+          "lab",
+          "--offline",
+          "--no-fail-fast",
+          "--",
+          "--test-threads=1"
+        ],
+        "exit": 0,
+        "seconds": 1943.187,
+        "source_head_unchanged": true,
+        "counts": {
+          "passed": 1489,
+          "failed": 0,
+          "ignored": 6
+        },
+        "cargo_sources_unchanged_after_shell_assertion_fix": true
+      },
+      "p3_json_assertion_followup": {
+        "failed_run": "https://github.com/majiayu000/rekey/actions/runs/37212409709",
+        "failed_jobs": [
+          "111466093556",
+          "111466093466"
+        ],
+        "reproduced_local_exit": 1,
+        "cause": "audit list uses compact JSON; old script expected a space after event_type colon",
+        "repair": "parse JSON event fields and require the same five event types",
+        "local_fixed_exit": 0,
+        "local_tail_exits": {
+          "streaming": 0,
+          "github_app": 0,
+          "connector_sdk": 0,
+          "native_launchd_fixture": 0,
+          "macos_ui_contract_steps": 0
+        },
+        "macos_ui_contract_steps": 10,
+        "production_artifact_unchanged": true,
+        "latest_remote_checks": "pending rerun after shell assertion fix",
+        "scope": "ad-hoc local UI/service software contracts; real installed App and SMAppService remain pending"
+      }
     }
   }
 }
