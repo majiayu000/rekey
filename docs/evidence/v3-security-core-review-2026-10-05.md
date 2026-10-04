@@ -72,4 +72,3 @@ DoH 显式启用、resolver 与全部答案公网筛查、pin、正常 TLS、无
 及 T12 仍未验证；2026-10-05 用户明确暂缓，未改填通过。
 外部人工审计仍未完成；真实 Anthropic / OpenAI / GitHub 不沿用 GLM 实测结论。
 L1 / L2 保持现有未宣称状态。[发布与一周自用](../v3-release-and-dogfood.md)继续记录这些项目。
-
