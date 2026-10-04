@@ -7,9 +7,9 @@ mod commands;
 
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use rekey_domain::audit::{AUDIT_PAGE_DEFAULT_LIMIT, AUDIT_PAGE_MAX_LIMIT, AuditQuery};
-use rekey_domain::ids::{ActionId, CredentialId, RequestId, SessionId};
+use rekey_domain::ids::{ActionId, ApprovalRequestId, CredentialId, RequestId, SessionId};
 
 #[derive(Args)]
 struct StepUpArgs {
@@ -19,6 +19,53 @@ struct StepUpArgs {
     /// Read the step-up proof from stdin instead of the TTY.
     #[arg(long)]
     password_stdin: bool,
+    /// Use a presence key from the explicit stdin proof channel.
+    #[arg(long, conflicts_with = "recovery", requires = "password_stdin")]
+    presence: bool,
+}
+
+fn selected_proof(recovery: bool, presence: bool) -> rekey_domain::ipc::ProofKind {
+    if presence {
+        rekey_domain::ipc::ProofKind::Presence
+    } else if recovery {
+        rekey_domain::ipc::ProofKind::Recovery
+    } else {
+        rekey_domain::ipc::ProofKind::Password
+    }
+}
+
+#[derive(Args)]
+struct RequestArgs {
+    #[arg(long)]
+    body_file: Option<PathBuf>,
+    #[arg(long)]
+    content_type: Option<String>,
+    /// Extra header NAME:VALUE, restricted by the registered Action.
+    #[arg(long = "header")]
+    headers: Vec<String>,
+    /// Registered path parameter NAME=VALUE (repeatable).
+    #[arg(long = "param")]
+    params: Vec<String>,
+    /// Registered query parameter NAME=VALUE (repeatable).
+    #[arg(long = "query")]
+    query: Vec<String>,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum BuiltinTemplateName {
+    Anthropic,
+    Openai,
+    GithubPat,
+}
+
+impl From<BuiltinTemplateName> for rekey_domain::ipc::TemplateSource {
+    fn from(value: BuiltinTemplateName) -> Self {
+        match value {
+            BuiltinTemplateName::Anthropic => Self::Anthropic {},
+            BuiltinTemplateName::Openai => Self::OpenAi {},
+            BuiltinTemplateName::GithubPat => Self::GitHubPat {},
+        }
+    }
 }
 
 #[derive(Args)]
@@ -29,6 +76,9 @@ struct PolicyStepUpArgs {
     /// Read the step-up proof from stdin instead of the TTY.
     #[arg(long)]
     step_up_stdin: bool,
+    /// Use a presence key from the explicit stdin proof channel.
+    #[arg(long, conflicts_with = "recovery", requires = "step_up_stdin")]
+    presence: bool,
 }
 
 #[derive(Parser)]
@@ -48,9 +98,11 @@ struct Cli {
     command: Command,
     /// Explicit private OIDC management session file.
     #[arg(long, global = true)]
+    #[cfg(feature = "lab")]
     admin_session_file: Option<PathBuf>,
 }
 
+#[cfg(feature = "lab")]
 #[derive(Subcommand)]
 enum OidcLoginCommand {
     Begin,
@@ -72,17 +124,29 @@ enum OidcLoginCommand {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Open the installed macOS App setup page; completion happens in the App.
+    Setup,
+    /// Open the installed macOS App provider onboarding page.
+    Add {
+        #[arg(value_parser = ["anthropic"])]
+        provider: String,
+    },
     /// Fixed-node OIDC administrator login lifecycle.
     #[command(subcommand)]
+    #[cfg(feature = "lab")]
     OidcLogin(OidcLoginCommand),
     /// Initialize a new vault (delegates to rekeyd).
     Init {
+        /// Immutable policy signing mode for this vault.
+        #[arg(long, value_parser = ["personal", "team"])]
+        mode: String,
         #[arg(long)]
         password_stdin: bool,
     },
     /// Run the broker in the foreground (delegates to rekeyd).
     Serve {
         #[arg(long)]
+        #[cfg(feature = "lab")]
         oidc_admin_profile: Option<PathBuf>,
         #[arg(long, default_value = "7d")]
         idle_lock: String,
@@ -99,6 +163,40 @@ enum Command {
         /// SHA-256 of the backup file from the backup receipt (64 hex chars).
         #[arg(long)]
         sha256: String,
+        /// Inspect the authenticated backup and target history without restoring.
+        #[arg(long, conflicts_with = "expected_context")]
+        inspect: bool,
+        /// Exact public JSON context from a prior --inspect, explicitly accepted.
+        #[arg(long)]
+        expected_context: Option<String>,
+    },
+    /// Explicitly accept the authenticated rollback context; remains locked.
+    RollbackConfirm {
+        #[arg(long)]
+        expected_context: String,
+        #[arg(long)]
+        recovery: bool,
+        #[arg(long)]
+        password_stdin: bool,
+    },
+    /// Preview or install project MCP configuration.
+    Connect {
+        client: commands::ConnectClient,
+        #[arg(long)]
+        print: bool,
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
+    /// Run a command with a capability limited to the named signed Profile.
+    Run {
+        profile: String,
+        /// Explicit client adapter; omitted means standard SDK environment only.
+        #[arg(long, value_enum)]
+        client: Option<commands::RunClient>,
+        #[command(flatten)]
+        step_up: StepUpArgs,
+        #[arg(last = true, required = true)]
+        command: Vec<std::ffi::OsString>,
     },
     /// Launch an Agent command with deny-by-default IP egress (delegates to rekeyd).
     AgentRun {
@@ -117,13 +215,19 @@ enum Command {
     DesktopRemember {
         #[arg(long)]
         recovery: bool,
+        #[arg(long, conflicts_with = "recovery")]
+        presence: bool,
     },
     /// Resume a remembered desktop; key on stdin, session on stdout.
     DesktopResume,
     /// Save an API key; desktop token and value are read as two stdin lines.
     DesktopAdd { label: String },
-    /// Reveal a current credential to the human admin; token is read from stdin.
-    DesktopReveal { credential_id: String },
+    /// Reveal a current credential with a fresh step-up proof.
+    DesktopReveal {
+        credential_id: String,
+        #[command(flatten)]
+        step_up: StepUpArgs,
+    },
     /// Unlock the running broker.
     Unlock {
         /// Use the recovery key to unlock; does not reset the password.
@@ -141,6 +245,7 @@ enum Command {
         passive: bool,
     },
     /// Read local monitoring counters without resetting the idle-lock timer.
+    #[cfg(feature = "lab")]
     Metrics {
         /// Print Prometheus text exposition instead of JSON.
         #[arg(long)]
@@ -149,7 +254,7 @@ enum Command {
         #[arg(long, requires = "prometheus")]
         textfile_dir: Option<PathBuf>,
     },
-    /// Stop the running broker (step-up proof required while unlocked).
+    /// Stop the running broker (fresh step-up proof required).
     Shutdown {
         #[command(flatten)]
         step_up: StepUpArgs,
@@ -160,12 +265,18 @@ enum Command {
     /// Fixed action administration.
     #[command(subcommand)]
     Action(ActionCommand),
+    /// Inspect and install authenticated provider templates.
+    #[command(subcommand)]
+    Template(TemplateCommand),
     /// Capability session administration.
     #[command(subcommand)]
     Session(SessionCommand),
     /// Typed authorization policy administration.
     #[command(subcommand)]
     Policy(PolicyCommand),
+    /// Inspect the authenticated signed Profiles before editing.
+    #[command(subcommand)]
+    Profile(ProfileCommand),
     /// Prepare a signed-approval challenge.
     #[command(subcommand)]
     Approval(ApprovalCommand),
@@ -188,16 +299,14 @@ enum Command {
         /// Capability token, or '-' to read it from stdin (recommended).
         #[arg(long, allow_hyphen_values = true)]
         capability: String,
-        #[arg(long)]
-        body_file: Option<PathBuf>,
-        #[arg(long)]
-        content_type: Option<String>,
-        /// Extra header NAME:VALUE (repeatable; must be on the action's allowlist).
-        #[arg(long = "header")]
-        headers: Vec<String>,
+        #[command(flatten)]
+        request: RequestArgs,
         /// Signed approval grant JSON file (repeatable, at most two).
         #[arg(long = "approval")]
         approvals: Vec<PathBuf>,
+        /// Approved local challenge for this exact request.
+        #[arg(long, conflicts_with = "approvals")]
+        challenge: Option<ApprovalRequestId>,
     },
     /// Stream a fixed Anthropic text Action; partial text is not success.
     ExecuteTextStream {
@@ -209,6 +318,9 @@ enum Command {
         body_file: PathBuf,
         #[arg(long = "approval")]
         approvals: Vec<PathBuf>,
+        /// Approved local challenge for this exact request.
+        #[arg(long, conflicts_with = "approvals")]
+        challenge: Option<ApprovalRequestId>,
     },
     /// Write an encrypted backup (broker must be unlocked).
     Backup {
@@ -227,6 +339,8 @@ enum CredentialCommand {
         /// Use the recovery key for step-up proof; does not reset the password.
         #[arg(long)]
         recovery: bool,
+        #[arg(long, conflicts_with = "recovery", requires = "stdin_secrets")]
+        presence: bool,
         /// Read step-up proof (line 1) and credential value (line 2) from stdin.
         #[arg(long)]
         stdin_secrets: bool,
@@ -241,6 +355,7 @@ enum CredentialCommand {
         step_up: StepUpArgs,
     },
     /// Add a closed Vault KV v2 fixed-version source profile.
+    #[cfg(feature = "lab")]
     AddVaultKv {
         label: String,
         #[arg(long)]
@@ -249,6 +364,7 @@ enum CredentialCommand {
         step_up: StepUpArgs,
     },
     /// Add a closed Keycloak standard token exchange profile.
+    #[cfg(feature = "lab")]
     AddKeycloak {
         label: String,
         #[arg(long)]
@@ -257,6 +373,7 @@ enum CredentialCommand {
         step_up: StepUpArgs,
     },
     /// Add a closed one-shot Vault dynamic lease source profile.
+    #[cfg(feature = "lab")]
     AddVaultDynamic {
         label: String,
         #[arg(long)]
@@ -265,6 +382,7 @@ enum CredentialCommand {
         step_up: StepUpArgs,
     },
     /// Add a fixed GCP Secret Manager numeric version source profile.
+    #[cfg(feature = "lab")]
     AddGcpSecretManager {
         label: String,
         #[arg(long)]
@@ -273,6 +391,7 @@ enum CredentialCommand {
         step_up: StepUpArgs,
     },
     /// Rotate a fixed GCP Secret Manager source profile.
+    #[cfg(feature = "lab")]
     RotateGcpSecretManager {
         credential_id: String,
         #[arg(long)]
@@ -281,6 +400,7 @@ enum CredentialCommand {
         step_up: StepUpArgs,
     },
     /// Add a fixed Azure Key Vault pinned version source profile.
+    #[cfg(feature = "lab")]
     AddAzureKeyVault {
         label: String,
         #[arg(long)]
@@ -289,6 +409,7 @@ enum CredentialCommand {
         step_up: StepUpArgs,
     },
     /// Rotate a fixed Azure Key Vault source profile.
+    #[cfg(feature = "lab")]
     RotateAzureKeyVault {
         credential_id: String,
         #[arg(long)]
@@ -297,6 +418,7 @@ enum CredentialCommand {
         step_up: StepUpArgs,
     },
     /// Add one exact encrypted macOS file-Keychain reference.
+    #[cfg(feature = "lab")]
     AddMacosKeychain {
         label: String,
         #[arg(long)]
@@ -305,6 +427,7 @@ enum CredentialCommand {
         step_up: StepUpArgs,
     },
     /// Rotate one exact macOS file-Keychain reference.
+    #[cfg(feature = "lab")]
     RotateMacosKeychain {
         credential_id: String,
         #[arg(long)]
@@ -314,6 +437,7 @@ enum CredentialCommand {
     },
     /// Add a fixed 1Password Connect item field source profile.
     #[command(name = "add-onepassword-connect")]
+    #[cfg(feature = "lab")]
     AddOnePasswordConnect {
         label: String,
         #[arg(long)]
@@ -323,6 +447,7 @@ enum CredentialCommand {
     },
     /// Rotate a fixed 1Password Connect source profile.
     #[command(name = "rotate-onepassword-connect")]
+    #[cfg(feature = "lab")]
     RotateOnePasswordConnect {
         credential_id: String,
         #[arg(long)]
@@ -331,6 +456,7 @@ enum CredentialCommand {
         step_up: StepUpArgs,
     },
     /// Add a fixed AWS Secrets Manager pinned version source profile.
+    #[cfg(feature = "lab")]
     AddAwsSecretsManager {
         label: String,
         #[arg(long)]
@@ -339,6 +465,7 @@ enum CredentialCommand {
         step_up: StepUpArgs,
     },
     /// Rotate a fixed AWS Secrets Manager source profile.
+    #[cfg(feature = "lab")]
     RotateAwsSecretsManager {
         credential_id: String,
         #[arg(long)]
@@ -352,6 +479,8 @@ enum CredentialCommand {
         /// Use the recovery key for step-up proof; does not reset the password.
         #[arg(long)]
         recovery: bool,
+        #[arg(long, conflicts_with = "recovery", requires = "stdin_secrets")]
+        presence: bool,
         /// Read step-up proof (line 1) and credential value (line 2) from stdin.
         #[arg(long)]
         stdin_secrets: bool,
@@ -365,6 +494,7 @@ enum CredentialCommand {
         step_up: StepUpArgs,
     },
     /// Rotate a Vault KV v2 fixed-version source profile.
+    #[cfg(feature = "lab")]
     RotateVaultKv {
         credential_id: String,
         #[arg(long)]
@@ -373,6 +503,7 @@ enum CredentialCommand {
         step_up: StepUpArgs,
     },
     /// Rotate a closed Keycloak standard token exchange profile.
+    #[cfg(feature = "lab")]
     RotateKeycloak {
         credential_id: String,
         #[arg(long)]
@@ -381,6 +512,7 @@ enum CredentialCommand {
         step_up: StepUpArgs,
     },
     /// Rotate a one-shot Vault dynamic lease source profile.
+    #[cfg(feature = "lab")]
     RotateVaultDynamic {
         credential_id: String,
         #[arg(long)]
@@ -437,6 +569,42 @@ enum ActionCommand {
 }
 
 #[derive(Subcommand)]
+enum TemplateCommand {
+    /// Inspect a built-in declaration or authenticate a signed package.
+    #[command(group(clap::ArgGroup::new("source").required(true).args(["builtin", "file", "stdin_request"])))]
+    Catalog {
+        #[arg(long)]
+        builtin: Option<BuiltinTemplateName>,
+        /// JSON catalog request for generic targets or a signed package.
+        #[arg(long)]
+        file: Option<PathBuf>,
+        /// Read one compact JSON request line from stdin.
+        #[arg(long)]
+        stdin_request: bool,
+        #[arg(long, conflicts_with = "builtin")]
+        package: Option<PathBuf>,
+    },
+    /// Install all selected capabilities atomically; retry creates new actions.
+    Install {
+        /// JSON request containing credential, bindings, capabilities and limits.
+        #[arg(
+            long,
+            conflicts_with = "stdin_request",
+            required_unless_present = "stdin_request"
+        )]
+        file: Option<PathBuf>,
+        /// Read proof then compact JSON as two lines from one stdin snapshot.
+        #[arg(long, conflicts_with = "file", requires = "password_stdin")]
+        stdin_request: bool,
+        /// Signed template package; omitted for built-in sources.
+        #[arg(long)]
+        package: Option<PathBuf>,
+        #[command(flatten)]
+        step_up: StepUpArgs,
+    },
+}
+
+#[derive(Subcommand)]
 enum SessionCommand {
     /// Issue a capability session for one or more pinned actions.
     Create {
@@ -449,9 +617,11 @@ enum SessionCommand {
         max_uses: u32,
         /// Read a workload JWT from stdin and mint through the Agent socket.
         #[arg(long, conflicts_with_all = ["recovery", "password_stdin"])]
+        #[cfg(feature = "lab")]
         workload_token_stdin: bool,
         /// Reissue for an explicitly authorized principal after policy replacement.
-        #[arg(long, conflicts_with = "workload_token_stdin")]
+        #[arg(long)]
+        #[cfg_attr(feature = "lab", arg(conflicts_with = "workload_token_stdin"))]
         principal: Option<String>,
         #[command(flatten)]
         step_up: StepUpArgs,
@@ -470,8 +640,15 @@ enum PolicyCommand {
     Trust(PolicyTrustCommand),
     /// Validate, verify, persist, and activate a signed policy bundle.
     Activate {
-        #[arg(long)]
-        file: PathBuf,
+        #[arg(
+            long,
+            conflicts_with = "stdin_request",
+            required_unless_present = "stdin_request"
+        )]
+        file: Option<PathBuf>,
+        /// Read proof then the compact signed bundle through one stdin pipe.
+        #[arg(long, conflicts_with = "file", requires = "step_up_stdin")]
+        stdin_request: bool,
         #[arg(long)]
         expected_vault_id: String,
         #[arg(long)]
@@ -479,18 +656,53 @@ enum PolicyCommand {
         #[command(flatten)]
         step_up: PolicyStepUpArgs,
     },
+    /// Generate a complete personal policy replacement from a Profile array.
+    Draft {
+        /// Read the complete Profile array from stdin; [] revokes all grants.
+        #[arg(long, required = true)]
+        profiles_stdin: bool,
+        #[arg(long)]
+        expires_at_ms: i64,
+        /// Editing base from profile list; omit only before the first policy.
+        #[arg(long)]
+        expected_policy_sha256: Option<String>,
+    },
     /// Show the active policy version and digest.
     Status,
 }
 
 #[derive(Subcommand)]
+enum ProfileCommand {
+    List,
+}
+
+#[derive(Subcommand)]
 enum PolicyTrustCommand {
     Install {
-        #[arg(long)]
-        file: PathBuf,
+        #[arg(
+            long,
+            conflicts_with = "stdin_request",
+            required_unless_present = "stdin_request"
+        )]
+        file: Option<PathBuf>,
+        /// Read proof then the compact trust document through one stdin pipe.
+        #[arg(long, conflicts_with = "file", requires = "step_up_stdin")]
+        stdin_request: bool,
         #[command(flatten)]
         step_up: PolicyStepUpArgs,
     },
+}
+
+#[derive(Args)]
+struct LocalApprovalDecisionArgs {
+    approval_request_id: ApprovalRequestId,
+    #[arg(long)]
+    review_sha256: String,
+    /// Use only the current presence key, explicitly read from stdin.
+    #[arg(long, required = true)]
+    presence: bool,
+    #[arg(long, required = true)]
+    password_stdin: bool,
 }
 
 #[derive(Subcommand)]
@@ -501,18 +713,34 @@ enum ApprovalCommand {
     Pending,
     /// Print the origin-signed envelope for a pending approval request.
     Get { approval_request_id: String },
+    /// Read the complete immutable local approval review.
+    Review {
+        approval_request_id: ApprovalRequestId,
+    },
+    /// Approve a local review with an explicit presence proof.
+    Approve(LocalApprovalDecisionArgs),
+    /// Reject a local review with an explicit presence proof.
+    Reject(LocalApprovalDecisionArgs),
+    /// Wait up to 120 seconds for this session's local challenge.
+    Await {
+        approval_request_id: ApprovalRequestId,
+        #[arg(long, allow_hyphen_values = true)]
+        capability: String,
+    },
+    /// Cancel this session's local challenge without consuming a capability use.
+    Cancel {
+        approval_request_id: ApprovalRequestId,
+        #[arg(long, allow_hyphen_values = true)]
+        capability: String,
+    },
     Prepare {
         /// ACTION_ID@VERSION
         action: String,
         /// Capability token, or '-' to read it from stdin (recommended).
         #[arg(long, allow_hyphen_values = true)]
         capability: String,
-        #[arg(long)]
-        body_file: Option<PathBuf>,
-        #[arg(long)]
-        content_type: Option<String>,
-        #[arg(long = "header")]
-        headers: Vec<String>,
+        #[command(flatten)]
+        request: RequestArgs,
     },
 }
 
@@ -537,6 +765,8 @@ enum PasswordCommand {
     Change {
         #[arg(long)]
         recovery: bool,
+        #[arg(long, conflicts_with = "recovery", requires = "stdin_secrets")]
+        presence: bool,
         /// Read step-up proof (line 1) and new password (line 2) from stdin.
         #[arg(long)]
         stdin_secrets: bool,
@@ -550,6 +780,8 @@ enum RecoveryCommand {
         /// Read the required password proof from stdin.
         #[arg(long)]
         password_stdin: bool,
+        #[arg(long, requires = "password_stdin")]
+        presence: bool,
     },
 }
 
@@ -647,6 +879,10 @@ enum AuditRetentionCommand {
 
 fn main() {
     let cli = Cli::parse();
+    let onboarding_inapplicable = cli.agent_socket.is_some();
+    #[cfg(feature = "lab")]
+    let onboarding_inapplicable = onboarding_inapplicable || cli.admin_session_file.is_some();
+    #[cfg(feature = "lab")]
     client::configure_admin_session_file(cli.admin_session_file);
     let state_dir = match commands::resolve_state_dir(cli.state_dir) {
         Ok(dir) => dir,
@@ -659,6 +895,11 @@ fn main() {
         .agent_socket
         .unwrap_or_else(|| state_dir.join("runtime").join("agent.sock"));
     let result = match cli.command {
+        Command::Setup => commands::open_onboarding(&state_dir, false, onboarding_inapplicable),
+        Command::Add { provider: _ } => {
+            commands::open_onboarding(&state_dir, true, onboarding_inapplicable)
+        }
+        #[cfg(feature = "lab")]
         Command::OidcLogin(command) => match command {
             OidcLoginCommand::Begin => commands::oidc_begin(&state_dir),
             OidcLoginCommand::Finish {
@@ -670,23 +911,45 @@ fn main() {
                 commands::oidc_logout(&state_dir, &session_file)
             }
         },
-        Command::DesktopRemember { recovery } => {
-            commands::desktop_restore_access(&state_dir, false, recovery)
+        Command::DesktopRemember { recovery, presence } => {
+            commands::desktop_restore_access(&state_dir, false, selected_proof(recovery, presence))
         }
-        Command::DesktopResume => commands::desktop_restore_access(&state_dir, true, false),
+        Command::DesktopResume => {
+            commands::desktop_restore_access(&state_dir, true, selected_proof(false, false))
+        }
         Command::DesktopLogin { recovery } => commands::desktop_login(&state_dir, recovery),
         Command::DesktopAdd { label } => commands::desktop_add(&state_dir, &label),
-        Command::DesktopReveal { credential_id } => {
-            commands::desktop_reveal(&state_dir, &credential_id)
-        }
-        Command::Init { password_stdin } => {
-            commands::delegate_rekeyd(&state_dir, "init", &[], password_stdin)
-        }
+        Command::DesktopReveal {
+            credential_id,
+            step_up,
+        } => commands::desktop_reveal(
+            &state_dir,
+            &credential_id,
+            selected_proof(step_up.recovery, step_up.presence),
+            step_up.password_stdin,
+        ),
+        Command::RollbackConfirm {
+            expected_context,
+            recovery,
+            password_stdin,
+        } => commands::confirm_rollback(&state_dir, &expected_context, recovery, password_stdin),
+        Command::Init {
+            mode,
+            password_stdin,
+        } => commands::delegate_rekeyd(
+            &state_dir,
+            "init",
+            &["--mode".into(), mode.into()],
+            password_stdin,
+        ),
         Command::Serve {
             idle_lock,
+            #[cfg(feature = "lab")]
             oidc_admin_profile,
         } => {
+            #[allow(unused_mut)]
             let mut args = vec!["--idle-lock".into(), idle_lock.into()];
+            #[cfg(feature = "lab")]
             if let Some(profile) = oidc_admin_profile {
                 args.push("--oidc-admin-profile".into());
                 args.push(profile.into_os_string());
@@ -698,6 +961,8 @@ fn main() {
             recovery,
             password_stdin,
             sha256,
+            inspect,
+            expected_context,
         } => {
             let mut args = vec!["--input".into(), input.into_os_string()];
             if recovery {
@@ -705,8 +970,38 @@ fn main() {
             }
             args.push("--sha256".into());
             args.push(sha256.into());
+            if inspect {
+                args.push("--inspect".into());
+            }
+            if let Some(context) = expected_context {
+                args.extend(["--expected-context".into(), context.into()]);
+            }
             commands::delegate_rekeyd(&state_dir, "restore", &args, password_stdin)
         }
+        Command::Connect {
+            client,
+            print,
+            project,
+        } => commands::connect(client, print, project),
+        Command::Run {
+            profile,
+            client,
+            step_up,
+            command,
+        } => commands::run_profile(
+            &state_dir,
+            &agent_socket,
+            &profile,
+            selected_proof(step_up.recovery, step_up.presence),
+            step_up.password_stdin,
+            client,
+            command,
+        )
+        .map(|code| {
+            if code != 0 {
+                std::process::exit(code);
+            }
+        }),
         Command::AgentRun {
             capability_stdin,
             command,
@@ -717,19 +1012,28 @@ fn main() {
         } => commands::unlock(&state_dir, recovery, password_stdin),
         Command::Lock => commands::lock(&state_dir),
         Command::Status { passive } => commands::status(&state_dir, passive),
+        #[cfg(feature = "lab")]
         Command::Metrics {
             prometheus,
             textfile_dir,
         } => commands::metrics(&state_dir, prometheus, textfile_dir.as_deref()),
-        Command::Shutdown { step_up } => {
-            commands::shutdown(&state_dir, step_up.recovery, step_up.password_stdin)
-        }
+        Command::Shutdown { step_up } => commands::shutdown(
+            &state_dir,
+            selected_proof(step_up.recovery, step_up.presence),
+            step_up.password_stdin,
+        ),
         Command::Credential(cmd) => match cmd {
             CredentialCommand::Add {
                 label,
                 recovery,
+                presence,
                 stdin_secrets,
-            } => commands::credential_add(&state_dir, &label, recovery, stdin_secrets),
+            } => commands::credential_add(
+                &state_dir,
+                &label,
+                selected_proof(recovery, presence),
+                stdin_secrets,
+            ),
             CredentialCommand::AddGithubApp {
                 label,
                 file,
@@ -738,9 +1042,10 @@ fn main() {
                 &state_dir,
                 &label,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
+            #[cfg(feature = "lab")]
             CredentialCommand::AddVaultKv {
                 label,
                 file,
@@ -749,9 +1054,10 @@ fn main() {
                 &state_dir,
                 &label,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
+            #[cfg(feature = "lab")]
             CredentialCommand::AddVaultDynamic {
                 label,
                 file,
@@ -760,9 +1066,10 @@ fn main() {
                 &state_dir,
                 &label,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
+            #[cfg(feature = "lab")]
             CredentialCommand::AddKeycloak {
                 label,
                 file,
@@ -771,9 +1078,10 @@ fn main() {
                 &state_dir,
                 &label,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
+            #[cfg(feature = "lab")]
             CredentialCommand::RotateKeycloak {
                 credential_id,
                 file,
@@ -782,9 +1090,10 @@ fn main() {
                 &state_dir,
                 &credential_id,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
+            #[cfg(feature = "lab")]
             CredentialCommand::AddGcpSecretManager {
                 label,
                 file,
@@ -793,9 +1102,10 @@ fn main() {
                 &state_dir,
                 &label,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
+            #[cfg(feature = "lab")]
             CredentialCommand::RotateGcpSecretManager {
                 credential_id,
                 file,
@@ -804,9 +1114,10 @@ fn main() {
                 &state_dir,
                 &credential_id,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
+            #[cfg(feature = "lab")]
             CredentialCommand::AddAzureKeyVault {
                 label,
                 file,
@@ -815,9 +1126,10 @@ fn main() {
                 &state_dir,
                 &label,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
+            #[cfg(feature = "lab")]
             CredentialCommand::RotateAzureKeyVault {
                 credential_id,
                 file,
@@ -826,9 +1138,10 @@ fn main() {
                 &state_dir,
                 &credential_id,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
+            #[cfg(feature = "lab")]
             CredentialCommand::AddMacosKeychain {
                 label,
                 file,
@@ -837,9 +1150,10 @@ fn main() {
                 &state_dir,
                 &label,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
+            #[cfg(feature = "lab")]
             CredentialCommand::RotateMacosKeychain {
                 credential_id,
                 file,
@@ -848,9 +1162,10 @@ fn main() {
                 &state_dir,
                 &credential_id,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
+            #[cfg(feature = "lab")]
             CredentialCommand::AddOnePasswordConnect {
                 label,
                 file,
@@ -859,9 +1174,10 @@ fn main() {
                 &state_dir,
                 &label,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
+            #[cfg(feature = "lab")]
             CredentialCommand::RotateOnePasswordConnect {
                 credential_id,
                 file,
@@ -870,9 +1186,10 @@ fn main() {
                 &state_dir,
                 &credential_id,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
+            #[cfg(feature = "lab")]
             CredentialCommand::AddAwsSecretsManager {
                 label,
                 file,
@@ -881,9 +1198,10 @@ fn main() {
                 &state_dir,
                 &label,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
+            #[cfg(feature = "lab")]
             CredentialCommand::RotateAwsSecretsManager {
                 credential_id,
                 file,
@@ -892,15 +1210,21 @@ fn main() {
                 &state_dir,
                 &credential_id,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
             CredentialCommand::List => commands::credential_list(&state_dir),
             CredentialCommand::Rotate {
                 credential_id,
                 recovery,
+                presence,
                 stdin_secrets,
-            } => commands::credential_rotate(&state_dir, &credential_id, recovery, stdin_secrets),
+            } => commands::credential_rotate(
+                &state_dir,
+                &credential_id,
+                selected_proof(recovery, presence),
+                stdin_secrets,
+            ),
             CredentialCommand::RotateGithubApp {
                 credential_id,
                 file,
@@ -909,9 +1233,10 @@ fn main() {
                 &state_dir,
                 &credential_id,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
+            #[cfg(feature = "lab")]
             CredentialCommand::RotateVaultKv {
                 credential_id,
                 file,
@@ -920,9 +1245,10 @@ fn main() {
                 &state_dir,
                 &credential_id,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
+            #[cfg(feature = "lab")]
             CredentialCommand::RotateVaultDynamic {
                 credential_id,
                 file,
@@ -931,7 +1257,7 @@ fn main() {
                 &state_dir,
                 &credential_id,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
             CredentialCommand::ApplyGithubWebhook {
@@ -950,7 +1276,7 @@ fn main() {
                 &delivery,
                 &signature,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
             CredentialCommand::Revoke {
@@ -959,14 +1285,17 @@ fn main() {
             } => commands::credential_revoke(
                 &state_dir,
                 &credential_id,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
         },
         Command::Action(cmd) => match cmd {
-            ActionCommand::Create { file, step_up } => {
-                commands::action_create(&state_dir, &file, step_up.recovery, step_up.password_stdin)
-            }
+            ActionCommand::Create { file, step_up } => commands::action_create(
+                &state_dir,
+                &file,
+                selected_proof(step_up.recovery, step_up.presence),
+                step_up.password_stdin,
+            ),
             ActionCommand::Update {
                 action_id,
                 file,
@@ -975,14 +1304,41 @@ fn main() {
                 &state_dir,
                 &action_id,
                 &file,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
             ActionCommand::List => commands::action_list(&state_dir),
             ActionCommand::Disable { action_id, step_up } => commands::action_disable(
                 &state_dir,
                 &action_id,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
+                step_up.password_stdin,
+            ),
+        },
+        Command::Template(command) => match command {
+            TemplateCommand::Catalog {
+                builtin,
+                file,
+                stdin_request,
+                package,
+            } => commands::template_catalog(
+                &state_dir,
+                builtin.map(Into::into),
+                file.as_deref(),
+                stdin_request,
+                package.as_deref(),
+            ),
+            TemplateCommand::Install {
+                file,
+                stdin_request,
+                package,
+                step_up,
+            } => commands::template_install(
+                &state_dir,
+                file.as_deref(),
+                stdin_request,
+                package.as_deref(),
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
         },
@@ -991,56 +1347,68 @@ fn main() {
                 actions,
                 ttl,
                 max_uses,
+                #[cfg(feature = "lab")]
                 workload_token_stdin,
                 principal,
                 step_up,
-            } => {
-                if workload_token_stdin {
+            } => match () {
+                #[cfg(feature = "lab")]
+                _ if workload_token_stdin => {
                     commands::workload_session_create(&agent_socket, &actions, &ttl, max_uses)
-                } else {
-                    commands::session_create(
-                        &state_dir,
-                        &actions,
-                        &ttl,
-                        max_uses,
-                        principal.as_deref(),
-                        step_up.recovery,
-                        step_up.password_stdin,
-                    )
                 }
-            }
+                _ => commands::session_create(
+                    &state_dir,
+                    &actions,
+                    &ttl,
+                    max_uses,
+                    principal.as_deref(),
+                    selected_proof(step_up.recovery, step_up.presence),
+                    step_up.password_stdin,
+                ),
+            },
             SessionCommand::Revoke {
                 session_id,
                 step_up,
             } => commands::session_revoke(
                 &state_dir,
                 &session_id,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.password_stdin,
             ),
         },
+        Command::Profile(ProfileCommand::List) => commands::profile_list(&state_dir),
         Command::Policy(cmd) => match cmd {
-            PolicyCommand::Trust(PolicyTrustCommand::Install { file, step_up }) => {
-                commands::policy_trust_install(
-                    &state_dir,
-                    &file,
-                    step_up.recovery,
-                    step_up.step_up_stdin,
-                )
-            }
+            PolicyCommand::Trust(PolicyTrustCommand::Install {
+                file,
+                stdin_request,
+                step_up,
+            }) => commands::policy_trust_install(
+                &state_dir,
+                file.as_deref(),
+                stdin_request,
+                selected_proof(step_up.recovery, step_up.presence),
+                step_up.step_up_stdin,
+            ),
             PolicyCommand::Activate {
                 file,
+                stdin_request,
                 expected_vault_id,
                 expected_trust_sha256,
                 step_up,
             } => commands::policy_activate(
                 &state_dir,
-                &file,
+                file.as_deref(),
+                stdin_request,
                 &expected_vault_id,
                 &expected_trust_sha256,
-                step_up.recovery,
+                selected_proof(step_up.recovery, step_up.presence),
                 step_up.step_up_stdin,
             ),
+            PolicyCommand::Draft {
+                profiles_stdin: _,
+                expires_at_ms,
+                expected_policy_sha256,
+            } => commands::policy_draft(&state_dir, expires_at_ms, expected_policy_sha256),
             PolicyCommand::Status => commands::policy_status(&state_dir),
         },
         Command::Approval(ApprovalCommand::Origin) => commands::approval_origin(&state_dir),
@@ -1048,32 +1416,63 @@ fn main() {
         Command::Approval(ApprovalCommand::Get {
             approval_request_id,
         }) => commands::approval_get(&state_dir, &approval_request_id),
+        Command::Approval(ApprovalCommand::Review {
+            approval_request_id,
+        }) => commands::approval_review(&state_dir, approval_request_id),
+        Command::Approval(ApprovalCommand::Approve(args)) => commands::approval_decide(
+            &state_dir,
+            args.approval_request_id,
+            &args.review_sha256,
+            true,
+        ),
+        Command::Approval(ApprovalCommand::Reject(args)) => commands::approval_decide(
+            &state_dir,
+            args.approval_request_id,
+            &args.review_sha256,
+            false,
+        ),
+        Command::Approval(ApprovalCommand::Await {
+            approval_request_id,
+            capability,
+        }) => {
+            commands::approval_wait_or_cancel(&agent_socket, approval_request_id, &capability, true)
+        }
+        Command::Approval(ApprovalCommand::Cancel {
+            approval_request_id,
+            capability,
+        }) => commands::approval_wait_or_cancel(
+            &agent_socket,
+            approval_request_id,
+            &capability,
+            false,
+        ),
         Command::Approval(ApprovalCommand::Prepare {
             action,
             capability,
-            body_file,
-            content_type,
-            headers,
-        }) => commands::approval_prepare(
-            &agent_socket,
-            &action,
-            &capability,
-            body_file.as_deref(),
-            content_type,
-            &headers,
-        ),
+            request,
+        }) => commands::approval_prepare(&agent_socket, &action, &capability, &request),
         Command::Key(KeyCommand::RotateVrk { stdin_secrets }) => {
             commands::key_rotate_vrk(&state_dir, stdin_secrets)
         }
-        Command::Key(KeyCommand::RotateDek { step_up }) => {
-            commands::key_rotate_dek(&state_dir, step_up.recovery, step_up.password_stdin)
-        }
+        Command::Key(KeyCommand::RotateDek { step_up }) => commands::key_rotate_dek(
+            &state_dir,
+            selected_proof(step_up.recovery, step_up.presence),
+            step_up.password_stdin,
+        ),
         Command::Password(PasswordCommand::Change {
             recovery,
+            presence,
             stdin_secrets,
-        }) => commands::password_change(&state_dir, recovery, stdin_secrets),
-        Command::Recovery(RecoveryCommand::Rotate { password_stdin }) => {
-            commands::recovery_rotate(&state_dir, password_stdin)
+        }) => commands::password_change(
+            &state_dir,
+            selected_proof(recovery, presence),
+            stdin_secrets,
+        ),
+        Command::Recovery(RecoveryCommand::Rotate {
+            password_stdin,
+            presence,
+        }) => {
+            commands::recovery_rotate(&state_dir, selected_proof(false, presence), password_stdin)
         }
         Command::Audit(AuditCommand::Retention(AuditRetentionCommand::Set {
             days,
@@ -1082,7 +1481,7 @@ fn main() {
         })) => commands::audit_retention_set(
             &state_dir,
             days,
-            step_up.recovery,
+            selected_proof(step_up.recovery, step_up.presence),
             step_up.password_stdin,
         ),
         Command::Audit(AuditCommand::Retention(AuditRetentionCommand::Status)) => {
@@ -1096,7 +1495,7 @@ fn main() {
             &state_dir,
             before_ms,
             older_than_days,
-            step_up.recovery,
+            selected_proof(step_up.recovery, step_up.presence),
             step_up.password_stdin,
         ),
         Command::Audit(AuditCommand::List {
@@ -1116,40 +1515,40 @@ fn main() {
         Command::Execute {
             action,
             capability,
-            body_file,
-            content_type,
-            headers,
+            request,
             approvals,
+            challenge,
         } => commands::execute(
             &agent_socket,
             &action,
             &capability,
-            body_file.as_deref(),
-            content_type,
-            &headers,
+            &request,
             &approvals,
+            challenge,
         ),
         Command::ExecuteTextStream {
             action,
             capability,
             body_file,
             approvals,
+            challenge,
         } => commands::execute_text_stream(
             &agent_socket,
             &action,
             &capability,
             &body_file,
             &approvals,
+            challenge,
         ),
         Command::Backup { output, step_up } => commands::backup(
             &state_dir,
             &output,
-            step_up.recovery,
+            selected_proof(step_up.recovery, step_up.presence),
             step_up.password_stdin,
         ),
     };
     if let Err(err) = result {
-        eprintln!("error [{}]: {}", err.code, err.message);
+        err.print_stderr();
         std::process::exit(err.exit_code());
     }
 }
@@ -1159,6 +1558,29 @@ mod policy_target_args_tests {
     use super::*;
 
     #[test]
+    fn onboarding_accepts_only_fixed_front_doors() {
+        assert!(Cli::try_parse_from(["rekey", "setup"]).is_ok());
+        assert!(Cli::try_parse_from(["rekey", "add", "anthropic"]).is_ok());
+        for args in [
+            vec!["rekey", "add", "openai"],
+            vec!["rekey", "setup", "--password-stdin"],
+            vec!["rekey", "add", "anthropic?secret=x"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err());
+        }
+    }
+
+    #[test]
+    fn init_requires_an_explicit_supported_policy_mode() {
+        assert!(Cli::try_parse_from(["rekey", "init", "--password-stdin"]).is_err());
+        assert!(Cli::try_parse_from(["rekey", "init", "--mode", "automatic"]).is_err());
+        for mode in ["personal", "team"] {
+            assert!(Cli::try_parse_from(["rekey", "init", "--mode", mode]).is_ok());
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "lab")]
     fn oidc_login_explicit_files_and_global_admin_session_flag_parse() {
         assert!(Cli::try_parse_from(["rekey", "oidc-login", "begin"]).is_ok());
         assert!(
@@ -1195,6 +1617,22 @@ mod policy_target_args_tests {
             ])
             .is_ok()
         );
+    }
+
+    #[cfg(not(feature = "lab"))]
+    #[test]
+    fn default_cli_rejects_lab_entrypoints() {
+        for args in [
+            vec!["rekey", "metrics"],
+            vec!["rekey", "oidc-login", "begin"],
+            vec!["rekey", "credential", "add-vault-kv", "test"],
+            vec!["rekey", "serve", "--oidc-admin-profile", "test.json"],
+            vec!["rekey", "--admin-session-file", "test.json", "status"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err());
+        }
+        assert!(Cli::try_parse_from(["rekey", "status"]).is_ok());
+        assert!(Cli::try_parse_from(["rekey", "credential", "list"]).is_ok());
     }
 
     #[test]
@@ -1244,6 +1682,108 @@ mod policy_target_args_tests {
         ] {
             assert!(Cli::try_parse_from(args).is_err());
         }
+    }
+
+    #[test]
+    fn presence_requires_explicit_stdin_and_cannot_replace_unlock_material() {
+        let base = [
+            "rekey",
+            "desktop-reveal",
+            "00112233-4455-4677-8899-aabbccddeeff",
+            "--presence",
+        ];
+        assert!(Cli::try_parse_from(base).is_err());
+        assert!(Cli::try_parse_from(base.into_iter().chain(["--password-stdin"])).is_ok());
+        assert!(
+            Cli::try_parse_from(base.into_iter().chain(["--password-stdin", "--recovery"]))
+                .is_err()
+        );
+        for args in [
+            vec!["rekey", "unlock", "--presence", "--password-stdin"],
+            vec![
+                "rekey",
+                "init",
+                "--mode",
+                "personal",
+                "--presence",
+                "--password-stdin",
+            ],
+            vec!["rekey", "recovery", "rotate", "--presence"],
+            vec![
+                "rekey",
+                "recovery",
+                "rotate",
+                "--presence",
+                "--password-stdin",
+                "--recovery",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err());
+        }
+        assert!(
+            Cli::try_parse_from([
+                "rekey",
+                "credential",
+                "add",
+                "fixture",
+                "--presence",
+                "--stdin-secrets"
+            ])
+            .is_ok()
+        );
+        assert!(Cli::try_parse_from(["rekey", "desktop-remember", "--presence"]).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "rekey",
+                "recovery",
+                "rotate",
+                "--presence",
+                "--password-stdin"
+            ])
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn personal_draft_and_anonymous_activation_have_explicit_boundaries() {
+        let draft = [
+            "rekey",
+            "policy",
+            "draft",
+            "--profiles-stdin",
+            "--expires-at-ms",
+            "1000",
+        ];
+        assert!(Cli::try_parse_from(draft).is_ok());
+        assert!(
+            Cli::try_parse_from(
+                draft
+                    .into_iter()
+                    .chain(["--principal", "00112233-4455-4677-8899-aabbccddeeff",])
+            )
+            .is_err()
+        );
+        assert!(Cli::try_parse_from(["rekey", "policy", "draft"]).is_err());
+        let activate = [
+            "rekey",
+            "policy",
+            "activate",
+            "--stdin-request",
+            "--expected-vault-id",
+            "00112233-4455-4677-8899-aabbccddeeff",
+            "--expected-trust-sha256",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ];
+        assert!(Cli::try_parse_from(activate).is_err());
+        assert!(Cli::try_parse_from(activate.into_iter().chain(["--step-up-stdin"])).is_ok());
+        assert!(
+            Cli::try_parse_from(activate.into_iter().chain([
+                "--step-up-stdin",
+                "--file",
+                "bundle.json"
+            ]))
+            .is_err()
+        );
     }
 
     #[test]

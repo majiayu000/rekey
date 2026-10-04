@@ -1,0 +1,303 @@
+{
+  "schema": 1,
+  "scope": "Provisioned macOS keychain and production authentication-context device probes; signed local build only",
+  "V1": {
+    "scope": "Disposable V1 data-protection keychain feasibility probe; no user vault access",
+    "commit": "01ac4c41eabda742f035ea8c24e6e17ad8a4b599",
+    "runner_sha256": "f0c2dfc6e0bd65d3c89b94a4b711f6b17610e66f5a7d5addc4242880b76d99a3",
+    "profile_sha256": "1c95eb7eaab13785753e1ff7d71cd4e83803a55a14bab13cf099c5be5a0b5e53",
+    "host": "ProductName:\t\tmacOS\nProductVersion:\t\t26.5.1\nBuildVersion:\t\t25F80",
+    "result": {
+      "status": "passed",
+      "signatures": {
+        "owner": {
+          "sha256": "7ee0d3ce2237a20c12b56475a0598a229f982e5f5b373cdec958e6796ffca0eb",
+          "codesign": "Executable=/private/tmp/rk-v1-profile-nrbg_jfh/KeychainOwner.app/Contents/MacOS/keychain-owner\nIdentifier=com.rekey.v3.keychain\nFormat=app bundle with Mach-O thin (arm64)\nCodeDirectory v=20500 size=545 flags=0x10000(runtime) hashes=6+7 location=embedded\nVersionPlatform=1\nVersionMin=1703936\nVersionSDK=1705216\nHash type=sha256 size=32\nCandidateCDHash sha256=9df3994c558a381a39ac47681ccdec0de8b69350\nCandidateCDHashFull sha256=9df3994c558a381a39ac47681ccdec0de8b6935000026965bfc6086d9c9fd43c\nHash choices=sha256\nCMSDigest=9df3994c558a381a39ac47681ccdec0de8b6935000026965bfc6086d9c9fd43c\nCMSDigestType=2\nExecutable Segment base=0\nExecutable Segment limit=32768\nExecutable Segment flags=0x1\nPage size=16384\nCDHash=9df3994c558a381a39ac47681ccdec0de8b69350\nSignature size=4728\nAuthority=Developer ID Application: Ma JiaYu (C5UWZ934C2)\nAuthority=Developer ID Certification Authority\nAuthority=Apple Root CA\nSigned Time=Oct 3, 2026 at 19:34:15\nInfo.plist entries=4\nTeamIdentifier=C5UWZ934C2\nRuntime Version=26.5.0\nSealed Resources version=2 rules=13 files=1\nInternal requirements count=1 size=184"
+        },
+        "attacker": {
+          "sha256": "10a3ea7be915ce2ce7cb2e80ede5c443d1fedf2d2231ed2aca772609000bd280",
+          "codesign": "Executable=/private/tmp/rk-v1-profile-nrbg_jfh/keychain-attacker\nIdentifier=com.rekey.v3.attacker\nFormat=Mach-O thin (arm64)\nCodeDirectory v=20400 size=366 flags=0x2(adhoc) hashes=6+2 location=embedded\nVersionPlatform=1\nVersionMin=1703936\nVersionSDK=1705216\nHash type=sha256 size=32\nCandidateCDHash sha256=d16b8f258a4dc958121884161e3f1b2c3ef5d447\nCandidateCDHashFull sha256=d16b8f258a4dc958121884161e3f1b2c3ef5d4475173d6cd8d0d51e3d3ed40d3\nHash choices=sha256\nCMSDigest=d16b8f258a4dc958121884161e3f1b2c3ef5d4475173d6cd8d0d51e3d3ed40d3\nCMSDigestType=2\nExecutable Segment base=0\nExecutable Segment limit=32768\nExecutable Segment flags=0x1\nPage size=16384\nCDHash=d16b8f258a4dc958121884161e3f1b2c3ef5d447\nSignature=adhoc\nInfo.plist=not bound\nTeamIdentifier=not set\nSealed Resources=none\nInternal requirements count=0 size=12"
+        }
+      },
+      "test_id": "09d37d97-f328-4108-8a07-ee09dab4cdc4",
+      "create": {
+        "access_group": "C5UWZ934C2.com.rekey",
+        "account": "canary-09d37d97-f328-4108-8a07-ee09dab4cdc4",
+        "authentication_ui_allowed": false,
+        "id": "09d37d97-f328-4108-8a07-ee09dab4cdc4",
+        "mode": "create",
+        "os_status": 0,
+        "os_status_message": "No error.",
+        "outcome": "created",
+        "service": "com.rekey.v3-v1.09d37d97-f328-4108-8a07-ee09dab4cdc4",
+        "exit_code": 0
+      },
+      "attacker_explicit_group": {
+        "access_group": "C5UWZ934C2.com.rekey",
+        "account": "canary-09d37d97-f328-4108-8a07-ee09dab4cdc4",
+        "authentication_ui_allowed": false,
+        "id": "09d37d97-f328-4108-8a07-ee09dab4cdc4",
+        "mode": "read-no-ui",
+        "os_status": -34018,
+        "os_status_message": "A required entitlement isn't present.",
+        "outcome": "environment_missing_entitlement",
+        "service": "com.rekey.v3-v1.09d37d97-f328-4108-8a07-ee09dab4cdc4",
+        "exit_code": 2
+      },
+      "attacker_default_group": {
+        "access_group": null,
+        "account": "canary-09d37d97-f328-4108-8a07-ee09dab4cdc4",
+        "authentication_ui_allowed": false,
+        "id": "09d37d97-f328-4108-8a07-ee09dab4cdc4",
+        "mode": "read-no-ui",
+        "os_status": -25300,
+        "os_status_message": "The specified item could not be found in the keychain.",
+        "outcome": "item_not_found",
+        "service": "com.rekey.v3-v1.09d37d97-f328-4108-8a07-ee09dab4cdc4",
+        "exit_code": 2
+      },
+      "owner_no_ui": {
+        "access_group": "C5UWZ934C2.com.rekey",
+        "account": "canary-09d37d97-f328-4108-8a07-ee09dab4cdc4",
+        "authentication_ui_allowed": false,
+        "id": "09d37d97-f328-4108-8a07-ee09dab4cdc4",
+        "mode": "read-no-ui",
+        "os_status": -25308,
+        "os_status_message": "User interaction is not allowed.",
+        "outcome": "authentication_ui_disabled",
+        "service": "com.rekey.v3-v1.09d37d97-f328-4108-8a07-ee09dab4cdc4",
+        "exit_code": 1
+      },
+      "owner_with_ui": {
+        "access_group": "C5UWZ934C2.com.rekey",
+        "account": "canary-09d37d97-f328-4108-8a07-ee09dab4cdc4",
+        "authentication_ui_allowed": true,
+        "canary_match": true,
+        "id": "09d37d97-f328-4108-8a07-ee09dab4cdc4",
+        "mode": "read-with-ui",
+        "os_status": 0,
+        "os_status_message": "No error.",
+        "outcome": "read_success",
+        "service": "com.rekey.v3-v1.09d37d97-f328-4108-8a07-ee09dab4cdc4",
+        "exit_code": 0
+      },
+      "reason": "Authorized read succeeded; all silent controls denied.",
+      "cleanup": {
+        "access_group": "C5UWZ934C2.com.rekey",
+        "account": "canary-09d37d97-f328-4108-8a07-ee09dab4cdc4",
+        "authentication_ui_allowed": false,
+        "id": "09d37d97-f328-4108-8a07-ee09dab4cdc4",
+        "mode": "cleanup",
+        "os_status": 0,
+        "os_status_message": "No error.",
+        "outcome": "deleted",
+        "service": "com.rekey.v3-v1.09d37d97-f328-4108-8a07-ee09dab4cdc4",
+        "exit_code": 0
+      }
+    }
+  },
+  "presence_context_reuse": {
+    "scope": "Real protected keychain reads through the unchanged production PresenceReadContext; synthetic UUID item only",
+    "commit": "01ac4c41eabda742f035ea8c24e6e17ad8a4b599",
+    "presence_source_sha256": "80fef7ee3c425ae324139894bab77c148aca8e19102a2854a313d6b21c8291e6",
+    "harness_sha256": "89981a5714b5c4dd1b9c741e3c1a3e5934f9453d179dcb16931d874665525873",
+    "binary_sha256": "5a88dc5317dc8429aaebb5e8eb805f2232a6e6436120302086c8236e27f3e495",
+    "codesign": "Executable=/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/presence-reuse-20261003/PresenceReuseProbe.app/Contents/MacOS/ReuseProbe\nIdentifier=com.starlight.rekey\nFormat=app bundle with Mach-O thin (arm64)\nCodeDirectory v=20500 size=671 flags=0x10000(runtime) hashes=10+7 location=embedded\nVersionPlatform=1\nVersionMin=1703936\nVersionSDK=1705216\nHash type=sha256 size=32\nCandidateCDHash sha256=6657ad1aa289e7c229a2ed25fc0832f2806986a9\nCandidateCDHashFull sha256=6657ad1aa289e7c229a2ed25fc0832f2806986a97eb8ee9b9a6b8eab8aa63694\nHash choices=sha256\nCMSDigest=6657ad1aa289e7c229a2ed25fc0832f2806986a97eb8ee9b9a6b8eab8aa63694\nCMSDigestType=2\nExecutable Segment base=0\nExecutable Segment limit=65536\nExecutable Segment flags=0x1\nPage size=16384\nCDHash=6657ad1aa289e7c229a2ed25fc0832f2806986a9\nSignature size=4728\nAuthority=Developer ID Application: Ma JiaYu (C5UWZ934C2)\nAuthority=Developer ID Certification Authority\nAuthority=Apple Root CA\nSigned Time=Oct 3, 2026 at 20:17:00\nInfo.plist entries=5\nTeamIdentifier=C5UWZ934C2\nRuntime Version=26.5.0\nSealed Resources version=2 rules=13 files=1\nInternal requirements count=1 size=180\n",
+    "profile": {
+      "name": "Rekey Developer ID 20261003",
+      "uuid": "d6977292-afee-4482-bc5c-c1f6b9f59bd8",
+      "team": [
+        "C5UWZ934C2"
+      ],
+      "app_id": "C5UWZ934C2.com.starlight.rekey",
+      "allowed_groups": [
+        "C5UWZ934C2.*"
+      ],
+      "expires": "2044-09-28 12:12:39",
+      "certificate_sha1": "CEECE60799E03EEC36162062AA622DDF8971F688",
+      "sha256": "99adb5a90d25af7f9ad65b1644bf364c017e86c3d05d1210a7924362615cf712",
+      "checks": "passed",
+      "profile_path": "/Users/lifcc/.local/share/rekey/signing/profiles/Rekey_Developer_ID_20261003.provisionprofile"
+    },
+    "events": [
+      {
+        "event": "created",
+        "os_status": 0,
+        "test_id": "4d342524-71b2-4ecb-9aa7-37951adefe5f"
+      },
+      {
+        "event": "fresh_context_silent_read",
+        "os_status": -25308,
+        "outcome": "denied"
+      },
+      {
+        "event": "first_authentication_requested"
+      },
+      {
+        "event": "first_authenticated_read",
+        "outcome": "matched"
+      },
+      {
+        "elapsed_seconds": 0.0013885833323001862,
+        "event": "immediate_silent_reuse",
+        "outcome": "matched"
+      },
+      {
+        "elapsed_seconds": 8.007597916643135,
+        "event": "eight_second_silent_reuse",
+        "outcome": "matched"
+      },
+      {
+        "elapsed_seconds": 11.004972083319444,
+        "event": "fixed_deadline_expired",
+        "os_status": -25308,
+        "outcome": "denied"
+      },
+      {
+        "event": "second_authentication_requested"
+      },
+      {
+        "event": "expired_context_authenticated_read",
+        "outcome": "matched"
+      },
+      {
+        "event": "explicit_invalidation",
+        "os_status": -25308,
+        "outcome": "denied"
+      },
+      {
+        "event": "cleanup",
+        "os_status": 0,
+        "test_id": "4d342524-71b2-4ecb-9aa7-37951adefe5f"
+      },
+      {
+        "event": "result",
+        "status": "passed"
+      }
+    ],
+    "exit_code": 0,
+    "status": "passed"
+  },
+  "signed_app": {
+    "status": "passed",
+    "app": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/presence-reuse-20261003/signed-app/Rekey.app",
+    "version": "rekey 2.0.0-alpha.2",
+    "signed_components": {
+      "Rekey": {
+        "identifier": "com.starlight.rekey",
+        "team": "C5UWZ934C2",
+        "hardened_runtime": true,
+        "timestamped": true,
+        "sha256": "2b6ab139d9234c48f0a252589ca67cff176f76a957fd82acd2e9450186335962",
+        "identity_requirement": "passed"
+      },
+      "rekey": {
+        "identifier": "com.rekey.rekey",
+        "team": "C5UWZ934C2",
+        "hardened_runtime": true,
+        "timestamped": true,
+        "sha256": "b25e0bd7ab84504afecea91cc12435e1dc0a5dbdd2b72cd62bcd19e66e4a0ccf",
+        "identity_requirement": "passed"
+      },
+      "rekeyd": {
+        "identifier": "com.rekey.rekeyd",
+        "team": "C5UWZ934C2",
+        "hardened_runtime": true,
+        "timestamped": true,
+        "sha256": "6768835d234959f1b42f77eb8976b304f732a128c14644ddd38d9af649c701e4",
+        "identity_requirement": "passed"
+      },
+      "rekey-mcp": {
+        "identifier": "com.rekey.rekey-mcp",
+        "team": "C5UWZ934C2",
+        "hardened_runtime": true,
+        "timestamped": true,
+        "sha256": "28247f4e183e8ad5e42eff064e41d139739119f43e70649ad324363bad9ccafc",
+        "identity_requirement": "passed"
+      },
+      "rekey-policy-sign": {
+        "identifier": "com.rekey.rekey-policy-sign",
+        "team": "C5UWZ934C2",
+        "hardened_runtime": true,
+        "timestamped": true,
+        "sha256": "e3fee9aff960b8012edec21f19bb0b7bc237fa23213d7c3cfea31371edceee56",
+        "identity_requirement": "passed"
+      },
+      "rekey-approval-sign": {
+        "identifier": "com.rekey.rekey-approval-sign",
+        "team": "C5UWZ934C2",
+        "hardened_runtime": true,
+        "timestamped": true,
+        "sha256": "2610d7bbf3ca5c5400dc74904b35b9edd223410c879bc47cf6aa5a4f5ce53378",
+        "identity_requirement": "passed"
+      }
+    },
+    "app_entitlements": {
+      "com.apple.application-identifier": "C5UWZ934C2.com.starlight.rekey",
+      "com.apple.developer.team-identifier": "C5UWZ934C2",
+      "keychain-access-groups": [
+        "C5UWZ934C2.com.rekey"
+      ]
+    },
+    "profile_sha256": "99adb5a90d25af7f9ad65b1644bf364c017e86c3d05d1210a7924362615cf712",
+    "installed": false,
+    "notarized": false
+  },
+  "limitations": [
+    "The reuse fixture compiles the unchanged production PresenceKey.swift and exercises PresenceReadContext with real protected SecItemCopyMatching operations; it is not an installed App user-flow test.",
+    "User presence succeeded; these probes do not distinguish Touch ID from the allowed system-password fallback.",
+    "Secure Enclave policy signing, installed service behavior, notarization, full L1 and v3 product acceptance are not established."
+  ],
+  "build_failure_records": {
+    "timestamp": "Initial signing of rekey-approval-sign returned a missing-timestamp error; the unchanged command succeeded on retry. Root cause not established.",
+    "certificate_extraction": "Space-separated optional extract-certificates prefix was treated as a code path; equals syntax succeeded. scripts/build-macos-ui.sh now uses that syntax, and the complete script rerun exited 0."
+  },
+  "signed_app_smoke": {
+    "scope": "Signed packaged CLI/daemon in a new synthetic state; no installed service or user vault",
+    "steps": [
+      {
+        "operation": "init",
+        "exit_code": 0
+      },
+      {
+        "operation": "status",
+        "exit_code": 0,
+        "development_warning": false
+      },
+      {
+        "operation": "unlock",
+        "exit_code": 0,
+        "development_warning": false
+      },
+      {
+        "operation": "lock",
+        "exit_code": 0,
+        "development_warning": false
+      },
+      {
+        "operation": "shutdown",
+        "exit_code": 0,
+        "development_warning": false
+      }
+    ],
+    "daemon_exit_code": 0,
+    "status": "passed"
+  },
+  "supplementary_checks": {
+    "workspace_test": {
+      "passed": 753,
+      "failed": 0,
+      "ignored": 2,
+      "exit_code": 0
+    },
+    "workspace_check": "passed",
+    "profile_configuration_tests": {
+      "passed": 11,
+      "failed": 0
+    },
+    "format_and_shell_syntax": "passed",
+    "cli_dependency_boundary": "passed",
+    "lab_full_suite": "not rerun"
+  },
+  "build_script_sha256": "5335a76e94daa8c5e5240350450e3eebe9546082544e8c134aef14f9e857d139"
+}

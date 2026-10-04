@@ -265,7 +265,7 @@ class RealBrokerTests(unittest.TestCase):
                 self.assertEqual(output.returncode, 0, output.stderr)
                 return json.loads(output.stdout)
 
-            initialized = subprocess.run([str(rekeyd), "init", "--state-dir", str(state), "--password-stdin"],
+            initialized = subprocess.run([str(rekeyd), "init", "--mode", "team", "--state-dir", str(state), "--password-stdin"],
                                          input=password + "\n", capture_output=True, text=True)
             self.assertEqual(initialized.returncode, 0, initialized.stderr)
             with (work / "broker.log").open("w") as log:

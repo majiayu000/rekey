@@ -1,0 +1,29 @@
+#!/bin/sh
+set -eu
+# Installer supplies the destination volume as $3. This script only checks;
+# the package payload owns installation. It never runs or registers the app.
+volume="${3:?missing Installer destination volume}"
+case "$volume" in /*) ;; *) echo 'Rekey: destination volume must be absolute' >&2; exit 1 ;; esac
+root="${volume%/}"
+for directory in /Applications /usr /usr/local /usr/local/bin; do
+    path="$root$directory"
+    if [ -L "$path" ] || { [ -e "$path" ] && [ ! -d "$path" ]; }; then
+        echo "Rekey: refusing redirected or non-directory installation path: $path" >&2
+        exit 1
+    fi
+done
+if [ -L "$root/Applications/Rekey.app" ]; then
+    echo 'Rekey: refusing to replace a redirected Rekey.app' >&2
+    exit 1
+fi
+for binary in rekey rekeyd rekey-mcp; do
+    path="$root/usr/local/bin/$binary"
+    expected="/Applications/Rekey.app/Contents/Resources/bin/$binary"
+    if [ -L "$path" ]; then
+        if [ "$(readlink "$path")" = "$expected" ]; then continue; fi
+    elif [ ! -e "$path" ]; then
+        continue
+    fi
+    echo "Rekey: CLI path is already owned by another installation: $path" >&2
+    exit 1
+done

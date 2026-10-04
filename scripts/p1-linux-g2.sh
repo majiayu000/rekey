@@ -210,7 +210,7 @@ CANARY="$(python3 -c 'import secrets; print("rk_g2_" + secrets.token_urlsafe(24)
 printf '%s\n' "$PASSWORD" | docker run --rm -i \
   --user 10001:10001 \
   --volume "$STATE_VOLUME:/state" \
-  "$IMAGE" rekeyd init --state-dir /state --password-stdin >/dev/null
+  "$IMAGE" rekeyd init --mode team --state-dir /state --password-stdin >/dev/null
 
 docker run -d --name "$BROKER" \
   --user 10001:10001 \
@@ -275,11 +275,11 @@ POLICY_RULE_ID="$(python3 -c 'import uuid; print(uuid.uuid4())')"
 POLICY_EXPIRES_MS="$(python3 -c 'import time; print(int(time.time() * 1000) + 600000)')"
 cat >"$BUILD_DIR/policy-snapshot.json" <<EOF
 {
-  "format_version": 3,
+  "format_version": 6,
   "version": 1,
   "expires_at_ms": $POLICY_EXPIRES_MS,
   "approvers": [],
-  "workload_identities": [],
+  "profiles": [], "workload_identities": [],
   "bindings": [{
     "action_id": "$ACTION_ID",
     "version": $ACTION_VERSION,

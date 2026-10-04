@@ -7,7 +7,7 @@ use data_encoding::{BASE64URL_NOPAD, HEXLOWER};
 use rekey_domain::{
     Timestamp,
     action::FixedHttpAction,
-    authorization::{ApprovalMode, AuthorizationRequest, Decision, Principal},
+    authorization::{ApprovalMode, ApproverSpec, AuthorizationRequest, Decision, Principal},
     capability::ActionVersionRef,
     ids::{ApprovalId, ApproverId},
     ipc::SignedApprovalChallenge,
@@ -31,12 +31,18 @@ use std::{
 use zeroize::Zeroizing;
 
 #[path = "approval_sign/pkcs11.rs"]
+#[cfg(feature = "lab")]
 mod pkcs11;
 #[path = "approval_sign/vault_transit.rs"]
+#[cfg(feature = "lab")]
 mod vault_transit;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
+#[cfg(feature = "lab")]
 const USAGE: &str = "rekey-approval-sign review REQUEST.json --policy POLICY.json --trust TRUST.json --action ACTION.json --approver-id UUID --origin-key HEX\nrekey-approval-sign sign REQUEST.json --policy POLICY.json --trust TRUST.json --action ACTION.json --approver-id UUID --origin-key HEX --reviewed-sha256 HEX (--key-file KEY.der | --vault-transit-profile PRIVATE.json | --pkcs11-profile PRIVATE.json) --output NEW_GRANT.json\nHardware review requires --pkcs11-profile PRIVATE.json; Transit review requires --vault-transit-profile PRIVATE.json";
+#[cfg(not(feature = "lab"))]
+const USAGE: &str = "rekey-approval-sign review REQUEST.json --policy POLICY.json --trust TRUST.json --action ACTION.json --approver-id UUID --origin-key HEX\nrekey-approval-sign sign REQUEST.json --policy POLICY.json --trust TRUST.json --action ACTION.json --approver-id UUID --origin-key HEX --reviewed-sha256 HEX --key-file KEY.der --output NEW_GRANT.json";
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Request {
@@ -44,6 +50,10 @@ struct Request {
     content_type: Option<String>,
     headers: Vec<(String, String)>,
     body: String,
+    #[serde(default)]
+    params: rekey_domain::template::TemplateValues,
+    #[serde(default)]
+    query: rekey_domain::template::TemplateValues,
 }
 fn now() -> Result<Timestamp> {
     Ok(Timestamp::from_unix_ms(i64::try_from(
@@ -133,6 +143,10 @@ fn run_args(args: Vec<String>, output_text: &mut dyn Write) -> Result<()> {
     }
     let transit = options.contains_key("--vault-transit-profile");
     let hardware = options.contains_key("--pkcs11-profile");
+    #[cfg(not(feature = "lab"))]
+    if transit || hardware {
+        return Err(USAGE.into());
+    }
     let signing_sources = ["--key-file", "--vault-transit-profile", "--pkcs11-profile"]
         .iter()
         .filter(|name| options.contains_key(**name))
@@ -172,13 +186,18 @@ fn run_args(args: Vec<String>, output_text: &mut dyn Write) -> Result<()> {
         &origin,
     )?;
     let approver: ApproverId = get("--approver-id")?.parse()?;
+    let ApproverSpec::Ed25519 { keys, threshold: 1 } = &c.approver else {
+        return Err("signer requires a single Ed25519 approver".into());
+    };
+    let approvers = snapshot
+        .ed25519_approver_ids(keys)
+        .ok_or("challenge approver is not registered in policy")?;
     if !action.enabled
         || action.id != c.action_id
         || action.version != c.action_version
         || c.mode != ApprovalMode::OneTime
-        || c.quorum != 1
         || c.max_uses != 1
-        || !c.approver_ids.contains(&approver)
+        || !approvers.contains(&approver)
     {
         return Err("action or single-use approval context mismatch".into());
     }
@@ -189,11 +208,15 @@ fn run_args(args: Vec<String>, output_text: &mut dyn Write) -> Result<()> {
         action_id: action.id,
         version: action.version,
     };
-    let (resource, parameters) = snapshot.canonicalize(
-        action_ref,
-        request.content_type.as_deref(),
-        &request.headers,
-        request.body.as_bytes(),
+    let (resource, parameters, target) = snapshot.canonicalize(
+        &action,
+        rekey_policy::ActionRequest {
+            params: &request.params,
+            query: &request.query,
+            content_type: request.content_type.as_deref(),
+            headers: &request.headers,
+            body: request.body.as_bytes(),
+        },
     )?;
     if resource != c.resource
         || parameters.schema_id != c.schema_id
@@ -215,23 +238,22 @@ fn run_args(args: Vec<String>, output_text: &mut dyn Write) -> Result<()> {
         policy_version,
         snapshot_digest,
         determining_rule,
+        approver: policy_approver,
         requirement,
     } = evaluate(snapshot, &authorization, time, false)
     else {
         return Err("policy does not require approval for this request".into());
     };
-    let mut approvers = requirement.approver_ids.clone();
-    approvers.sort();
     if policy_version.get() != c.policy_version
         || HEXLOWER.encode(&snapshot_digest) != c.policy_sha256
         || determining_rule != c.policy_rule_id
         || requirement.mode != c.mode
-        || requirement.quorum != c.quorum
         || requirement.max_uses != c.max_uses
-        || approvers != c.approver_ids
+        || policy_approver != c.approver
     {
         return Err("policy and challenge mismatch".into());
     }
+    #[cfg(feature = "lab")]
     let profile = if transit {
         Some(vault_transit::Profile::load(get(
             "--vault-transit-profile",
@@ -239,6 +261,7 @@ fn run_args(args: Vec<String>, output_text: &mut dyn Write) -> Result<()> {
     } else {
         None
     };
+    #[cfg(feature = "lab")]
     if let Some(profile) = &profile {
         profile.check(
             snapshot
@@ -248,6 +271,7 @@ fn run_args(args: Vec<String>, output_text: &mut dyn Write) -> Result<()> {
             now()?.as_unix_ms(),
         )?;
     }
+    #[cfg(feature = "lab")]
     let hardware_profile = if hardware {
         let profile = pkcs11::Profile::load(get("--pkcs11-profile")?)?;
         profile.check(
@@ -260,10 +284,13 @@ fn run_args(args: Vec<String>, output_text: &mut dyn Write) -> Result<()> {
     } else {
         None
     };
-    let mut review = json!({"record_type":"rekey.approval.review.v1", "source_assumption":"Operator pinned origin public key from rekey approval origin; envelope authenticates Broker challenge bytes, not Action/policy/trust files or the human's intent", "action":action, "request":request, "approver_id":approver, "policy_signer_id":policy.signer_id(), "policy_sha256":HEXLOWER.encode(&snapshot.digest()), "grant_lifetime_max_ms":60000});
+    #[allow(unused_mut)]
+    let mut review = json!({"record_type":"rekey.approval.review.v1", "source_assumption":"Operator pinned origin public key from rekey approval origin; envelope authenticates Broker challenge bytes, not Action/policy/trust files or the human's intent", "action":action, "target":target, "request_target":target.request_target(), "request":request, "approver_id":approver, "policy_signer_id":policy.signer_id(), "policy_sha256":HEXLOWER.encode(&snapshot.digest()), "grant_lifetime_max_ms":60000});
+    #[cfg(feature = "lab")]
     if let Some(profile) = &profile {
         review["vault_transit"] = profile.public_review();
     }
+    #[cfg(feature = "lab")]
     if let Some(profile) = &hardware_profile {
         review["pkcs11"] = profile.public_review();
     }
@@ -282,7 +309,7 @@ fn run_args(args: Vec<String>, output_text: &mut dyn Write) -> Result<()> {
     let approver_key = snapshot
         .approver_key(approver)
         .ok_or("unknown policy approver")?;
-    let signer = if profile.is_none() && hardware_profile.is_none() {
+    let signer = if !transit && !hardware {
         let signer = key(get("--key-file")?)?;
         if approver_key.as_slice() != signer.public_key().as_ref() {
             return Err("key does not match policy approver".into());
@@ -307,6 +334,7 @@ fn run_args(args: Vec<String>, output_text: &mut dyn Write) -> Result<()> {
     let mut grant = json!({"format_version":1,"approval_id":ApprovalId::from_random_bytes(random),"approval_request_id":c.approval_request_id,"approver_id":approver,"tenant_id":c.tenant_id,"principal_id":c.principal_id,"session_id":c.session_id,"action_id":c.action_id,"action_version":c.action_version,"resource":c.resource,"schema_id":c.schema_id,"parameter_sha256":c.parameter_sha256,"policy_version":c.policy_version,"policy_sha256":c.policy_sha256,"policy_rule_id":c.policy_rule_id,"mode":c.mode,"not_before_ms":issued,"expires_at_ms":expires,"max_uses":1});
     let mut message = b"RKAPPROVAL\0\x01".to_vec();
     message.extend_from_slice(&serde_jcs::to_vec(&grant)?);
+    #[cfg(feature = "lab")]
     let signature = if let Some(profile) = &hardware_profile {
         profile.sign(&message, approver_key.as_slice(), expires)?
     } else if let Some(profile) = &profile {
@@ -320,6 +348,13 @@ fn run_args(args: Vec<String>, output_text: &mut dyn Write) -> Result<()> {
             .as_ref()
             .to_vec()
     };
+    #[cfg(not(feature = "lab"))]
+    let signature = signer
+        .as_ref()
+        .ok_or("missing explicit signing key")?
+        .sign(&message)
+        .as_ref()
+        .to_vec();
     let finished = now()?.as_unix_ms();
     if finished < issued
         || finished >= expires
@@ -328,6 +363,7 @@ fn run_args(args: Vec<String>, output_text: &mut dyn Write) -> Result<()> {
     {
         return Err("approval expired while signing".into());
     }
+    #[cfg(feature = "lab")]
     if let Some(profile) = &profile {
         profile.check(approver_key.as_slice(), finished)?;
     }
@@ -370,6 +406,7 @@ fn run_args(args: Vec<String>, output_text: &mut dyn Write) -> Result<()> {
 }
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    #[cfg(feature = "lab")]
     if pkcs11::internal_child(&args) {
         return;
     }
@@ -381,4 +418,5 @@ fn main() {
 
 #[cfg(test)]
 #[path = "approval_sign/vault_transit_tests.rs"]
+#[cfg(feature = "lab")]
 mod vault_transit_tests;

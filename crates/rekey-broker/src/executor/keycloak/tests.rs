@@ -42,7 +42,7 @@ async fn escaped_bootstrap_issued_tokens_are_rejected_without_revoke_ownership()
             .map(|b| format!("\\u{:04x}", b))
             .collect::<String>();
         let body = serde_json::to_string(&serde_json::json!({"access_token":value,"token_type":"Bearer","issued_token_type":TOKEN_TYPE,"expires_in":60})).unwrap().replace(value, &escaped).into_bytes();
-        assert!(!contains_secret(&body, &profile.needles()));
+        assert!(contains_secret(&body, &profile.needles()));
         let decoded: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(decoded["access_token"], value);
         let fake = crate::testing::FakeUpstreamTransport::new();

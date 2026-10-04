@@ -25,6 +25,8 @@ fn audit(event_type: &'static str) -> AuditEvent {
         credential_version: None,
         authorization: None,
         approval: None,
+        request_context: None,
+        usage: None,
         event_type,
         outcome: outcome::SUCCESS,
         reason_code: "test".to_owned(),
@@ -86,7 +88,7 @@ fn action(action_id: ActionId, credential_id: CredentialId, version: u64) -> Act
         credential_id,
         origin: "https://example.com".to_owned(),
         method: "POST".to_owned(),
-        exact_path: "/v1/action".to_owned(),
+        target_json: r#"{"kind":"fixed","path":"/v1/action"}"#.to_owned(),
         auth_header: "authorization".to_owned(),
         auth_prefix: "Bearer ".to_owned(),
         request_max_bytes: 1_024,
@@ -95,6 +97,8 @@ fn action(action_id: ActionId, credential_id: CredentialId, version: u64) -> Act
         allowed_response_headers_json: "[]".to_owned(),
         timeout_ms: 1_000,
         created_at_ms: version as i64,
+        seal_nonce: [0; 12],
+        seal_ciphertext: [0; 16],
     }
 }
 
@@ -267,12 +271,14 @@ fn opening_rejects_unknown_credential_suite_and_aad_version() {
         "UPDATE credential_versions SET state = 'revoked', aad_version = 2",
     ] {
         let (vault, mut store) = open_store();
+        let anchors = common::fixture_anchors(&vault.state_dir);
         let record = credential("format-marker");
         store
             .insert_credential(
                 &record,
                 &version(record.credential_id, 1),
                 audit(event_type::CREDENTIAL_CREATED),
+                &mut common::generation_attempt(&vault.state_dir, &anchors),
             )
             .unwrap();
         drop(store);
@@ -316,12 +322,14 @@ fn opening_rejects_null_crypto_discriminators() {
         ),
     ] {
         let (vault, mut store) = open_store();
+        let anchors = common::fixture_anchors(&vault.state_dir);
         let record = credential("nullable-marker");
         store
             .insert_credential(
                 &record,
                 &version(record.credential_id, 1),
                 audit(event_type::CREDENTIAL_CREATED),
+                &mut common::generation_attempt(&vault.state_dir, &anchors),
             )
             .unwrap();
         drop(store);
@@ -405,12 +413,14 @@ fn opening_rejects_missing_key_wrappers() {
 #[test]
 fn opening_rejects_orphan_credential_version() {
     let (vault, mut store) = open_store();
+    let anchors = common::fixture_anchors(&vault.state_dir);
     let record = credential("orphan-source");
     store
         .insert_credential(
             &record,
             &version(record.credential_id, 1),
             audit(event_type::CREDENTIAL_CREATED),
+            &mut common::generation_attempt(&vault.state_dir, &anchors),
         )
         .unwrap();
     drop(store);
@@ -448,12 +458,14 @@ fn opening_rejects_orphan_credential_version() {
 #[test]
 fn opening_rejects_current_version_state_mismatch() {
     let (vault, mut store) = open_store();
+    let anchors = common::fixture_anchors(&vault.state_dir);
     let record = credential("state-mismatch");
     store
         .insert_credential(
             &record,
             &version(record.credential_id, 1),
             audit(event_type::CREDENTIAL_CREATED),
+            &mut common::generation_attempt(&vault.state_dir, &anchors),
         )
         .unwrap();
     drop(store);
@@ -476,13 +488,15 @@ fn opening_rejects_current_version_state_mismatch() {
 
 #[test]
 fn duplicate_label_leaves_no_partial_rows() {
-    let (_vault, mut store) = open_store();
+    let (vault, mut store) = open_store();
+    let anchors = common::fixture_anchors(&vault.state_dir);
     let a = credential("dup");
     store
         .insert_credential(
             &a,
             &version(a.credential_id, 1),
             audit(event_type::CREDENTIAL_CREATED),
+            &mut common::generation_attempt(&vault.state_dir, &anchors),
         )
         .unwrap();
 
@@ -492,6 +506,7 @@ fn duplicate_label_leaves_no_partial_rows() {
             &b,
             &version(b.credential_id, 1),
             audit(event_type::CREDENTIAL_CREATED),
+            &mut common::generation_attempt(&vault.state_dir, &anchors),
         )
         .unwrap_err();
     assert!(matches!(err, AuthorityError::CredentialConflict));
@@ -506,13 +521,15 @@ fn duplicate_label_leaves_no_partial_rows() {
 
 #[test]
 fn rotate_keeps_single_active_version() {
-    let (_vault, mut store) = open_store();
+    let (vault, mut store) = open_store();
+    let anchors = common::fixture_anchors(&vault.state_dir);
     let c = credential("rotating");
     store
         .insert_credential(
             &c,
             &version(c.credential_id, 1),
             audit(event_type::CREDENTIAL_CREATED),
+            &mut common::generation_attempt(&vault.state_dir, &anchors),
         )
         .unwrap();
     let mut rotated = c.clone();
@@ -524,6 +541,7 @@ fn rotate_keeps_single_active_version() {
             &version(c.credential_id, 2),
             1000,
             audit(event_type::CREDENTIAL_ROTATED),
+            &mut common::generation_attempt(&vault.state_dir, &anchors),
         )
         .unwrap();
 
@@ -543,29 +561,42 @@ fn rotate_keeps_single_active_version() {
 
 #[test]
 fn action_update_retires_a_disabled_version() {
-    let (_vault, mut store) = open_store();
+    let (vault, mut store) = open_store();
+    let anchors = common::fixture_anchors(&vault.state_dir);
     let credential = credential("action-owner");
     store
         .insert_credential(
             &credential,
             &version(credential.credential_id, 1),
             audit(event_type::CREDENTIAL_CREATED),
+            &mut common::generation_attempt(&vault.state_dir, &anchors),
         )
         .unwrap();
     let action_id = ActionId::new_random();
     store
         .insert_action(
             &action(action_id, credential.credential_id, 1),
+            &[],
             audit(event_type::ACTION_CREATED),
+            &mut common::generation_attempt(&vault.state_dir, &anchors),
         )
         .unwrap();
+    let mut previous = action(action_id, credential.credential_id, 1);
+    previous.state = ActionState::Disabled;
     store
-        .disable_action(action_id, audit(event_type::ACTION_DISABLED))
+        .disable_action(
+            &previous,
+            audit(event_type::ACTION_DISABLED),
+            &mut common::generation_attempt(&vault.state_dir, &anchors),
+        )
         .unwrap();
+    previous.state = ActionState::Retired;
     store
         .insert_action(
             &action(action_id, credential.credential_id, 2),
+            &[previous],
             audit(event_type::ACTION_UPDATED),
+            &mut common::generation_attempt(&vault.state_dir, &anchors),
         )
         .unwrap();
 
@@ -581,13 +612,15 @@ fn action_update_retires_a_disabled_version() {
 
 #[test]
 fn revoke_is_terminal_and_transactional() {
-    let (_vault, mut store) = open_store();
+    let (vault, mut store) = open_store();
+    let anchors = common::fixture_anchors(&vault.state_dir);
     let c = credential("revoking");
     store
         .insert_credential(
             &c,
             &version(c.credential_id, 1),
             audit(event_type::CREDENTIAL_CREATED),
+            &mut common::generation_attempt(&vault.state_dir, &anchors),
         )
         .unwrap();
     let mut revoked = c.clone();
@@ -595,7 +628,12 @@ fn revoke_is_terminal_and_transactional() {
     revoked.updated_at_ms = 2000;
     revoked.revoked_at_ms = Some(2000);
     store
-        .revoke_credential(&revoked, 2000, audit(event_type::CREDENTIAL_REVOKED))
+        .revoke_credential(
+            &revoked,
+            2000,
+            audit(event_type::CREDENTIAL_REVOKED),
+            &mut common::generation_attempt(&vault.state_dir, &anchors),
+        )
         .unwrap();
 
     let rec = store.get_credential(c.credential_id).unwrap();
@@ -616,6 +654,7 @@ fn revoke_is_terminal_and_transactional() {
             &version(c.credential_id, 2),
             3000,
             audit(event_type::CREDENTIAL_ROTATED),
+            &mut common::generation_attempt(&vault.state_dir, &anchors),
         )
         .unwrap_err();
     assert!(matches!(err, AuthorityError::CredentialNotFound));
@@ -624,13 +663,15 @@ fn revoke_is_terminal_and_transactional() {
 
 #[test]
 fn audit_rows_commit_with_mutations() {
-    let (_vault, mut store) = open_store();
+    let (vault, mut store) = open_store();
+    let anchors = common::fixture_anchors(&vault.state_dir);
     let c = credential("audited");
     store
         .insert_credential(
             &c,
             &version(c.credential_id, 1),
             audit(event_type::CREDENTIAL_CREATED),
+            &mut common::generation_attempt(&vault.state_dir, &anchors),
         )
         .unwrap();
     let types = store.audit_event_types().unwrap();
@@ -683,7 +724,7 @@ fn schema_ten_without_stream_column_is_rejected_by_format_gate() {
     assert!(!schema.contains("text_stream_json"));
     db.execute_batch(&schema).unwrap();
     db.execute(
-        "INSERT INTO vault_header VALUES (1,10,zeroblob(16),?1,0,zeroblob(32),zeroblob(12),X'01')",
+        "INSERT INTO vault_header VALUES (1,10,zeroblob(16),X'0000000000000001',zeroblob(32),?1,0,zeroblob(32),zeroblob(12),X'01')",
         [CRYPTO_SUITE_V1],
     )
     .unwrap();
@@ -721,7 +762,7 @@ fn schema_eleven_without_plugin_column_is_rejected_before_loading_actions() {
     assert!(!schema.contains("native_plugin_json"));
     db.execute_batch(&schema).unwrap();
     db.execute(
-        "INSERT INTO vault_header VALUES (1,11,zeroblob(16),?1,0,zeroblob(32),zeroblob(12),X'01')",
+        "INSERT INTO vault_header VALUES (1,11,zeroblob(16),X'0000000000000001',zeroblob(32),?1,0,zeroblob(32),zeroblob(12),X'01')",
         [CRYPTO_SUITE_V1],
     )
     .unwrap();
@@ -767,7 +808,7 @@ fn schema_twelve_single_operation_protocol_is_rejected_without_migration() {
     );
     db.execute_batch(&schema).unwrap();
     db.execute(
-        "INSERT INTO vault_header VALUES (1,12,zeroblob(16),?1,0,zeroblob(32),zeroblob(12),X'01')",
+        "INSERT INTO vault_header VALUES (1,12,zeroblob(16),X'0000000000000001',zeroblob(32),?1,0,zeroblob(32),zeroblob(12),X'01')",
         [CRYPTO_SUITE_V1],
     )
     .unwrap();
@@ -802,7 +843,7 @@ fn schema_thirteen_github_plugin_column_is_rejected_without_migration() {
     assert!(!schema.contains("native_plugin_json"));
     db.execute_batch(&schema).unwrap();
     db.execute(
-        "INSERT INTO vault_header VALUES (1,13,zeroblob(16),?1,0,zeroblob(32),zeroblob(12),X'01')",
+        "INSERT INTO vault_header VALUES (1,13,zeroblob(16),X'0000000000000001',zeroblob(32),?1,0,zeroblob(32),zeroblob(12),X'01')",
         [CRYPTO_SUITE_V1],
     )
     .unwrap();
@@ -840,7 +881,7 @@ fn schema_fifteen_is_rejected_without_migration() {
     );
     db.execute_batch(&schema).unwrap();
     db.execute(
-        "INSERT INTO vault_header VALUES (1,15,zeroblob(16),?1,0,zeroblob(32),zeroblob(12),X'01')",
+        "INSERT INTO vault_header VALUES (1,15,zeroblob(16),X'0000000000000001',zeroblob(32),?1,0,zeroblob(32),zeroblob(12),X'01')",
         [CRYPTO_SUITE_V1],
     )
     .unwrap();
@@ -870,7 +911,7 @@ fn schema_sixteen_is_rejected_without_migration() {
     );
     db.execute_batch(&schema).unwrap();
     db.execute(
-        "INSERT INTO vault_header VALUES (1,16,zeroblob(16),?1,0,zeroblob(32),zeroblob(12),X'01')",
+        "INSERT INTO vault_header VALUES (1,16,zeroblob(16),X'0000000000000001',zeroblob(32),?1,0,zeroblob(32),zeroblob(12),X'01')",
         [CRYPTO_SUITE_V1],
     )
     .unwrap();
@@ -901,7 +942,7 @@ fn schema_seventeen_is_rejected_without_migration() {
     );
     db.execute_batch(&schema).unwrap();
     db.execute(
-        "INSERT INTO vault_header VALUES (1,17,zeroblob(16),?1,0,zeroblob(32),zeroblob(12),X'01')",
+        "INSERT INTO vault_header VALUES (1,17,zeroblob(16),X'0000000000000001',zeroblob(32),?1,0,zeroblob(32),zeroblob(12),X'01')",
         [CRYPTO_SUITE_V1],
     )
     .unwrap();
@@ -932,7 +973,7 @@ fn schema_eighteen_is_rejected_without_migration() {
     );
     db.execute_batch(&schema).unwrap();
     db.execute(
-        "INSERT INTO vault_header VALUES (1,18,zeroblob(16),?1,0,zeroblob(32),zeroblob(12),X'01')",
+        "INSERT INTO vault_header VALUES (1,18,zeroblob(16),X'0000000000000001',zeroblob(32),?1,0,zeroblob(32),zeroblob(12),X'01')",
         [CRYPTO_SUITE_V1],
     )
     .unwrap();

@@ -1,18 +1,23 @@
+use rekey_domain::ipc::ProofKind;
 use std::collections::BTreeSet;
+use std::io::Write;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use rekey_domain::action::HeaderName;
+use rekey_domain::authorization::ApproverSpec;
 use rekey_domain::ids::ApprovalRequestId;
 use rekey_domain::ipc::{self, Channel, admin_msg, agent_msg};
+use serde::Serialize;
 use zeroize::Zeroizing;
 
 use crate::client::{CliError, Client};
 
 use super::{
     ACTION_RESPONSE_TIMEOUT, admin, parse_action_ref, print_json, proof_body, read_bounded,
-    read_step_up, stdin_lines,
+    read_step_up, stdin_lines, write_json,
 };
 
 type FileIdentity = (u64, u64);
@@ -42,29 +47,70 @@ fn read_regular_nosymlink(
 
 pub fn policy_trust_install(
     state_dir: &Path,
-    file: &Path,
-    recovery: bool,
+    file: Option<&Path>,
+    stdin_request: bool,
+    kind: ProofKind,
     password_stdin: bool,
 ) -> Result<(), CliError> {
-    let (trust, _) = read_regular_nosymlink(file, 4 * 1024, "policy trust file")?;
-    let proof = read_step_up(recovery, password_stdin)?;
-    let body = proof_body(recovery, &proof);
+    let (trust, proof) = match (file, stdin_request) {
+        (Some(file), false) => {
+            let (trust, _) = read_regular_nosymlink(file, 4 * 1024, "policy trust file")?;
+            (trust, read_step_up(kind, password_stdin)?)
+        }
+        (None, true) if password_stdin => {
+            let mut lines = stdin_lines(2)?.into_iter();
+            let proof = lines.next().expect("exact line count validated");
+            let trust = lines.next().expect("exact line count validated");
+            if trust.len() > 4 * 1024 {
+                return Err(CliError::local("USAGE", "policy trust exceeds 4 KiB"));
+            }
+            (trust, proof)
+        }
+        _ => {
+            return Err(CliError::local(
+                "USAGE",
+                "choose a trust file or --stdin-request --step-up-stdin",
+            ));
+        }
+    };
+    let body = proof_body(kind, &proof);
     let (meta, _) = admin(state_dir)?.call(admin_msg::POLICY_TRUST_INSTALL, &trust, &body)?;
     print_policy_status(&meta)
 }
 
 pub fn policy_activate(
     state_dir: &Path,
-    file: &Path,
+    file: Option<&Path>,
+    stdin_request: bool,
     expected_vault_id: &str,
     expected_trust_sha256: &str,
-    recovery: bool,
+    kind: ProofKind,
     password_stdin: bool,
 ) -> Result<(), CliError> {
-    let (bundle, _) = read_regular_nosymlink(file, 64 * 1024, "policy bundle")?;
-    let metadata = policy_activate_metadata(expected_vault_id, expected_trust_sha256, &bundle)?;
-    let proof = read_step_up(recovery, password_stdin)?;
-    let body = proof_body(recovery, &proof);
+    let (metadata, proof) = match (file, stdin_request) {
+        (Some(file), false) => {
+            let (bundle, _) = read_regular_nosymlink(file, 64 * 1024, "policy bundle")?;
+            // Keep the file path's error order: reject public input before asking for proof.
+            let metadata =
+                policy_activate_metadata(expected_vault_id, expected_trust_sha256, &bundle)?;
+            (metadata, read_step_up(kind, password_stdin)?)
+        }
+        (None, true) if password_stdin => {
+            let mut lines = stdin_lines(2)?.into_iter();
+            let proof = lines.next().expect("exact line count validated");
+            let bundle = lines.next().expect("exact line count validated");
+            let metadata =
+                policy_activate_metadata(expected_vault_id, expected_trust_sha256, &bundle)?;
+            (metadata, proof)
+        }
+        _ => {
+            return Err(CliError::local(
+                "USAGE",
+                "choose a bundle file or --stdin-request --step-up-stdin",
+            ));
+        }
+    };
+    let body = proof_body(kind, &proof);
     let (meta, _) = admin(state_dir)?.call(admin_msg::POLICY_ACTIVATE, &metadata, &body)?;
     print_policy_status(&meta)
 }
@@ -102,6 +148,68 @@ fn policy_activate_metadata(
         ));
     }
     Ok(metadata)
+}
+
+pub fn policy_draft(
+    state_dir: &Path,
+    expires_at_ms: i64,
+    expected_policy_sha256: Option<String>,
+) -> Result<(), CliError> {
+    let input = read_bounded(
+        std::io::stdin().lock(),
+        ipc::METADATA_MAX_BYTES as usize,
+        "profiles",
+    )?;
+    let profiles = serde_json::from_slice::<Vec<rekey_domain::profile::AgentProfile>>(&input)
+        .map_err(|_| CliError::local("USAGE", "invalid Profile array"))?;
+    let request = serde_json::to_vec(&ipc::PersonalPolicyDraftMeta {
+        profiles,
+        expected_policy_sha256,
+        expires_at_ms,
+    })
+    .map_err(|_| CliError::local("USAGE", "cannot encode personal policy draft request"))?;
+    if request.len() > ipc::METADATA_MAX_BYTES as usize {
+        return Err(CliError::local(
+            "USAGE",
+            "personal policy draft metadata exceeds 64 KiB",
+        ));
+    }
+    let (metadata, body) =
+        admin(state_dir)?.call(admin_msg::PERSONAL_POLICY_DRAFT, &request, &[])?;
+    let metadata: ipc::PersonalPolicyDraftResponse = serde_json::from_slice(&metadata)
+        .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid draft metadata"))?;
+    metadata
+        .validate()
+        .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid draft metadata"))?;
+    let sign_bytes = personal_draft_sign_bytes(&body)?;
+    let response =
+        serde_json::to_vec(&serde_json::json!({"metadata": metadata, "sign_bytes": sign_bytes}))
+            .map_err(|_| CliError::local("INVALID_FRAME", "cannot encode personal policy draft"))?;
+    print_json::<serde_json::Value>(&response)
+}
+
+pub fn profile_list(state_dir: &Path) -> Result<(), CliError> {
+    let (_, body) = admin(state_dir)?.call(admin_msg::PROFILE_LIST, b"{}", &[])?;
+    let profiles: ipc::ProfileListResponse = serde_json::from_slice(&body)
+        .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid Profile list"))?;
+    let mut output = serde_json::to_vec(&profiles)
+        .map_err(|_| CliError::local("INVALID_FRAME", "cannot encode Profile list"))?;
+    output.push(b'\n');
+    std::io::stdout()
+        .write_all(&output)
+        .map_err(|error| CliError::local("OUTPUT_FAILED", format!("cannot write output: {error}")))
+}
+
+fn personal_draft_sign_bytes(body: &[u8]) -> Result<&str, CliError> {
+    const PREFIX: &[u8] = b"RKPOLICY\0\x01";
+    if body.len() > 64 * 1024 || body.len() <= PREFIX.len() || !body.starts_with(PREFIX) {
+        return Err(CliError::local(
+            "INVALID_FRAME",
+            "broker returned invalid signing bytes",
+        ));
+    }
+    std::str::from_utf8(body)
+        .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid signing bytes"))
 }
 
 pub fn policy_status(state_dir: &Path) -> Result<(), CliError> {
@@ -146,6 +254,167 @@ pub fn approval_get(state_dir: &Path, approval_request_id: &str) -> Result<(), C
     print_json::<ipc::SignedApprovalChallenge>(&meta)
 }
 
+// Await is the only local approval operation that holds the response for
+// 120 seconds. Keep the existing ten-second framing margin, not a new retry.
+const LOCAL_APPROVAL_AWAIT_TIMEOUT: Duration = Duration::from_secs(130);
+
+#[derive(Serialize)]
+struct LocalReviewOutput<'a> {
+    metadata: ipc::LocalApprovalReviewResponse,
+    review_json: Option<&'a str>,
+}
+
+fn lower_hex_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn local_review_response<'a>(
+    id: ApprovalRequestId,
+    metadata: &[u8],
+    body: &'a [u8],
+) -> Result<LocalReviewOutput<'a>, CliError> {
+    let invalid = || {
+        CliError::local(
+            "INVALID_FRAME",
+            "broker returned invalid local approval review",
+        )
+    };
+    let metadata: ipc::LocalApprovalReviewResponse =
+        serde_json::from_slice(metadata).map_err(|_| invalid())?;
+    if metadata.approval_request_id != id
+        || metadata.record_type != "rekey.approval.local-review.v1"
+        || !lower_hex_digest(&metadata.review_sha256)
+        || metadata.body_len as usize != body.len()
+        || body.len() > ipc::RESPONSE_BODY_MAX_BYTES as usize
+    {
+        return Err(invalid());
+    }
+    let review_json = if body.is_empty() {
+        if matches!(
+            metadata.state,
+            ipc::LocalApprovalState::Pending | ipc::LocalApprovalState::Approved
+        ) {
+            return Err(invalid());
+        }
+        None
+    } else {
+        let original = std::str::from_utf8(body).map_err(|_| invalid())?;
+        let review: ipc::LocalApprovalReview =
+            serde_json::from_str(original).map_err(|_| invalid())?;
+        review.challenge.validate().map_err(|_| invalid())?;
+        if review.record_type != "rekey.approval.review.v1"
+            || review.challenge.approval_request_id != id
+            || !matches!(review.challenge.approver, ApproverSpec::LocalPresence {})
+        {
+            return Err(invalid());
+        }
+        // The App verifies the review digest. The IPC-only CLI preserves the
+        // daemon's complete UTF-8 bytes; no Value/JCS roundtrip changes numbers.
+        Some(original)
+    };
+    Ok(LocalReviewOutput {
+        metadata,
+        review_json,
+    })
+}
+
+pub fn approval_review(state_dir: &Path, id: ApprovalRequestId) -> Result<(), CliError> {
+    let metadata = serde_json::to_vec(&ipc::ApprovalGetMeta {
+        approval_request_id: id,
+    })
+    .map_err(|_| CliError::local("USAGE", "cannot encode approval review request"))?;
+    let (metadata, body) =
+        admin(state_dir)?.call(admin_msg::APPROVAL_LOCAL_REVIEW, &metadata, &[])?;
+    write_json(&local_review_response(id, &metadata, &body)?)
+}
+
+fn local_state_response(
+    id: ApprovalRequestId,
+    metadata: &[u8],
+    body: &[u8],
+) -> Result<ipc::LocalApprovalStateResponse, CliError> {
+    let invalid = || {
+        CliError::local(
+            "INVALID_FRAME",
+            "broker returned invalid local approval state",
+        )
+    };
+    let state: ipc::LocalApprovalStateResponse =
+        serde_json::from_slice(metadata).map_err(|_| invalid())?;
+    if state.approval_request_id != id || state.expires_at_ms <= 0 || !body.is_empty() {
+        return Err(invalid());
+    }
+    Ok(state)
+}
+
+pub fn approval_decide(
+    state_dir: &Path,
+    id: ApprovalRequestId,
+    review_sha256: &str,
+    approve: bool,
+) -> Result<(), CliError> {
+    // Public input must fail before connecting or reading the presence proof.
+    if !lower_hex_digest(review_sha256) {
+        return Err(CliError::local(
+            "USAGE",
+            "review digest must be 64 lowercase hex characters",
+        ));
+    }
+    let metadata = serde_json::to_vec(&ipc::LocalApprovalDecisionMeta {
+        approval_request_id: id,
+        expected_review_sha256: review_sha256.to_owned(),
+    })
+    .map_err(|_| CliError::local("USAGE", "cannot encode local approval decision"))?;
+    let mut client = admin(state_dir)?;
+    let proof = read_step_up(ProofKind::Presence, true)?;
+    let body = proof_body(ProofKind::Presence, &proof);
+    let operation = if approve {
+        admin_msg::APPROVAL_LOCAL_APPROVE
+    } else {
+        admin_msg::APPROVAL_LOCAL_REJECT
+    };
+    // A lost response can follow a committed decision. Never resend here.
+    let (metadata, body) = client.call(operation, &metadata, &body)?;
+    write_json(&local_state_response(id, &metadata, &body)?)
+}
+
+fn local_response_timeout(wait: bool) -> Duration {
+    if wait {
+        LOCAL_APPROVAL_AWAIT_TIMEOUT
+    } else {
+        crate::client::IO_TIMEOUT
+    }
+}
+
+pub fn approval_wait_or_cancel(
+    agent_socket: &Path,
+    id: ApprovalRequestId,
+    capability: &str,
+    wait: bool,
+) -> Result<(), CliError> {
+    let capability_token = capability_value(capability)?;
+    let metadata = serde_json::to_vec(&ipc::LocalApprovalRequestMeta {
+        capability_token,
+        approval_request_id: id,
+    })
+    .map_err(|_| CliError::local("USAGE", "cannot encode local approval request"))?;
+    let operation = if wait {
+        agent_msg::AWAIT_APPROVAL
+    } else {
+        agent_msg::CANCEL_APPROVAL
+    };
+    let (metadata, body) = Client::connect_with_response_timeout(
+        agent_socket,
+        Channel::Agent,
+        local_response_timeout(wait),
+    )?
+    .call(operation, &metadata, &[])?;
+    write_json(&local_state_response(id, &metadata, &body)?)
+}
+
 fn print_policy_status(metadata: &[u8]) -> Result<(), CliError> {
     let status = serde_json::from_slice::<ipc::PolicyStatusResponse>(metadata)
         .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid response"))?;
@@ -181,20 +450,20 @@ pub fn approval_prepare(
     agent_socket: &Path,
     action: &str,
     capability: &str,
-    body_file: Option<&Path>,
-    content_type: Option<String>,
-    headers: &[String],
+    request: &crate::RequestArgs,
 ) -> Result<(), CliError> {
     let (action_id, version) = parse_action_ref(action)?;
     let capability_token = capability_value(capability)?;
-    let body = request_body(body_file)?;
-    let extra_headers = request_headers(headers)?;
+    let body = request_body(request.body_file.as_deref())?;
+    let extra_headers = request_headers(&request.headers)?;
     let metadata = serde_json::to_vec(&ipc::PrepareApprovalMeta {
         capability_token,
         action_id,
         action_version: version,
-        content_type,
+        content_type: request.content_type.clone(),
         extra_headers,
+        params: request_values(&request.params)?,
+        query: request_values(&request.query)?,
     })
     .map_err(|_| CliError::local("USAGE", "cannot encode approval request"))?;
     let (meta, _) = Client::connect_with_response_timeout(
@@ -229,6 +498,24 @@ pub(super) fn request_body(body_file: Option<&Path>) -> Result<Zeroizing<Vec<u8>
     }
 }
 
+pub(super) fn request_values(
+    values: &[String],
+) -> Result<rekey_domain::template::TemplateValues, CliError> {
+    let mut result = rekey_domain::template::TemplateValues::new();
+    for value in values {
+        let (name, value) = value
+            .split_once('=')
+            .ok_or_else(|| CliError::local("USAGE", "parameters require NAME=VALUE"))?;
+        if name.is_empty() || result.insert(name.to_owned(), value.to_owned()).is_some() {
+            return Err(CliError::local(
+                "USAGE",
+                "parameter names must be nonempty and unique",
+            ));
+        }
+    }
+    Ok(result)
+}
+
 pub(super) fn request_headers(headers: &[String]) -> Result<Vec<(String, String)>, CliError> {
     headers
         .iter()
@@ -250,6 +537,49 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    #[test]
+    fn only_local_await_extends_the_response_deadline() {
+        assert_eq!(local_response_timeout(true), Duration::from_secs(130));
+        assert_eq!(local_response_timeout(false), crate::client::IO_TIMEOUT);
+        assert_eq!(crate::client::IO_TIMEOUT, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn personal_draft_body_preserves_utf8_bytes_and_rejects_wrong_domain_or_bound() {
+        let exact = b"RKPOLICY\0\x01{\"value\":\"\\u4e2d\"}";
+        assert_eq!(personal_draft_sign_bytes(exact).unwrap().as_bytes(), exact);
+        for invalid in [
+            Vec::new(),
+            b"RKPOLICY\0\x01".to_vec(),
+            b"OTHER{ }".to_vec(),
+            [b"RKPOLICY\0\x01".as_slice(), &[0xff]].concat(),
+            [b"RKPOLICY\0\x01".as_slice(), &vec![b'a'; 65527]].concat(),
+        ] {
+            assert_eq!(
+                personal_draft_sign_bytes(&invalid).unwrap_err().code,
+                "INVALID_FRAME"
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_policy_file_fails_before_reading_stdin_proof() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("invalid.json");
+        std::fs::write(&file, b"{").unwrap();
+        let error = policy_activate(
+            dir.path(),
+            Some(&file),
+            false,
+            "00112233-4455-4677-8899-aabbccddeeff",
+            &"a".repeat(64),
+            ProofKind::Password,
+            true,
+        )
+        .unwrap_err();
+        assert_eq!(error.message, "invalid policy bundle JSON");
+    }
 
     #[test]
     fn policy_activation_preserves_duplicate_keys_and_bounds_encoded_metadata() {

@@ -2,10 +2,24 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::capability::ActionVersionRef;
 use crate::error::DomainError;
-use crate::ids::{ApproverId, PolicyRuleId, PrincipalId, SessionId, TenantId};
+use crate::ids::{PolicyRuleId, PrincipalId, SessionId, TenantId};
 
 fn invalid(message: &str) -> DomainError {
     DomainError::InvalidAuthorization(message.to_owned())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PolicyMode {
+    Personal,
+    Team,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PolicyTrustAlgorithm {
+    Ed25519,
+    SecureEnclaveP256,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -103,6 +117,8 @@ impl<'de> Deserialize<'de> for PolicyVersion {
 pub struct CanonicalParameters {
     pub schema_id: SchemaId,
     pub canonical_hash: [u8; 32],
+    /// Exact JCS request bytes used for the hash; never included in Debug.
+    pub canonical_json: Vec<u8>,
 }
 
 impl std::fmt::Debug for CanonicalParameters {
@@ -141,10 +157,21 @@ pub enum ApprovalMode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum ApproverSpec {
+    LocalPresence {},
+    Ed25519 {
+        keys: Vec<String>,
+        threshold: u8,
+    },
+    #[cfg(feature = "lab")]
+    Remote {},
+}
+
+/// Usage limits only. The rule's separate `approver` is the sole authority source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApprovalRequirement {
-    pub approver_ids: Vec<ApproverId>,
-    pub quorum: u8,
     pub mode: ApprovalMode,
     pub max_uses: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -176,6 +203,7 @@ pub enum Decision {
         policy_version: PolicyVersion,
         snapshot_digest: [u8; 32],
         determining_rule: PolicyRuleId,
+        approver: ApproverSpec,
         requirement: ApprovalRequirement,
     },
     Deny {
@@ -189,6 +217,65 @@ pub enum Decision {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn approver_wire_has_one_closed_authority_source() {
+        let local: ApproverSpec = serde_json::from_str(r#"{"kind":"local-presence"}"#).unwrap();
+        assert_eq!(local, ApproverSpec::LocalPresence {});
+        for invalid in [
+            r#"{"kind":"local-presence","threshold":1}"#,
+            r#"{"kind":"local-presence","keys":[]}"#,
+            r#"{"kind":"ed25519","keys":[],"threshold":1,"quorum":1}"#,
+            r#"{"kind":"ed25519","keys":[],"threshold":1,"approver_ids":[]}"#,
+        ] {
+            assert!(serde_json::from_str::<ApproverSpec>(invalid).is_err());
+        }
+        assert!(
+            serde_json::from_str::<ApprovalRequirement>(
+                r#"{"mode":"one-time","max_uses":1,"approver_ids":[],"quorum":1}"#
+            )
+            .is_err()
+        );
+        #[cfg(not(feature = "lab"))]
+        assert!(serde_json::from_str::<ApproverSpec>(r#"{"kind":"remote"}"#).is_err());
+        #[cfg(feature = "lab")]
+        assert_eq!(
+            serde_json::from_str::<ApproverSpec>(r#"{"kind":"remote"}"#).unwrap(),
+            ApproverSpec::Remote {}
+        );
+    }
+
+    #[test]
+    fn policy_mode_and_trust_algorithm_have_closed_wire_names() {
+        for (value, name) in [
+            (PolicyMode::Personal, "personal"),
+            (PolicyMode::Team, "team"),
+        ] {
+            let encoded = format!("\"{name}\"");
+            assert_eq!(serde_json::to_string(&value).unwrap(), encoded);
+            assert_eq!(serde_json::from_str::<PolicyMode>(&encoded).unwrap(), value);
+        }
+        for (value, name) in [
+            (PolicyTrustAlgorithm::Ed25519, "ed25519"),
+            (
+                PolicyTrustAlgorithm::SecureEnclaveP256,
+                "secure-enclave-p256",
+            ),
+        ] {
+            let encoded = format!("\"{name}\"");
+            assert_eq!(serde_json::to_string(&value).unwrap(), encoded);
+            assert_eq!(
+                serde_json::from_str::<PolicyTrustAlgorithm>(&encoded).unwrap(),
+                value
+            );
+        }
+        for invalid in ["\"Personal\"", "\"auto\"", "null"] {
+            assert!(serde_json::from_str::<PolicyMode>(invalid).is_err());
+        }
+        for invalid in ["\"p256\"", "\"SecureEnclaveP256\"", "\"rsa\"", "null"] {
+            assert!(serde_json::from_str::<PolicyTrustAlgorithm>(invalid).is_err());
+        }
+    }
 
     #[test]
     fn policy_versions_fit_the_durable_signed_range() {

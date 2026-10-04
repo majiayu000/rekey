@@ -45,6 +45,7 @@ impl ActionExecutor {
                         any(target_arch = "x86_64", target_arch = "aarch64")
                     )
                 ))]
+                #[cfg(feature = "lab")]
                 let normalized = crate::github_issue_plugin::normalize(
                     action.native_plugin.as_ref(),
                     operation,
@@ -60,6 +61,7 @@ impl ActionExecutor {
                         any(target_arch = "x86_64", target_arch = "aarch64")
                     )
                 )))]
+                #[cfg(feature = "lab")]
                 let normalized = if action.native_plugin.is_some() {
                     Err(BrokerError::Denied("github-plugin-platform-unsupported"))
                 } else {
@@ -67,6 +69,10 @@ impl ActionExecutor {
                         .normalize_body(&request.body)
                         .map_err(|_| BrokerError::Denied("github-profile-mismatch"))
                 };
+                #[cfg(not(feature = "lab"))]
+                let normalized = operation
+                    .normalize_body(&request.body)
+                    .map_err(|_| BrokerError::Denied("github-profile-mismatch"));
                 match normalized {
                     Ok(body) => body,
                     Err(err) => {

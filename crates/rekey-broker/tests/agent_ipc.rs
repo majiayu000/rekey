@@ -13,6 +13,7 @@ async fn empty_agent_uid_allowlist_fails_closed() {
         &state_dir,
         &rekey_vault::secret::SecretInput::from_slice(common::PASSWORD),
         common::TEST_PARAMS,
+        rekey_domain::authorization::PolicyMode::Team,
     )
     .expect("init vault");
     rekey_vault::bootstrap::confirm_vault_init(&state_dir).expect("confirm vault");

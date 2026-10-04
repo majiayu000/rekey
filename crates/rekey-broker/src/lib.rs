@@ -22,10 +22,12 @@ mod github_app;
         any(target_arch = "x86_64", target_arch = "aarch64")
     )
 ))]
+#[cfg(feature = "lab")]
 mod github_issue_plugin;
 mod github_profile;
 pub mod ipc;
 pub mod lifecycle;
+#[cfg(feature = "lab")]
 mod metrics;
 pub mod runtime;
 pub mod sandbox;
@@ -75,4 +77,5 @@ mod tests {
     }
 }
 
+#[cfg(feature = "lab")]
 pub(crate) mod oidc_admin;

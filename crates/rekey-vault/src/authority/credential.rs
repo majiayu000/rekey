@@ -2,7 +2,6 @@ use rekey_domain::credential::{
     CredentialKind, CredentialLabel, CredentialMetadata, CredentialState, VersionState,
 };
 use rekey_domain::ids::CredentialId;
-use zeroize::Zeroizing;
 
 use super::{VaultState, Worker, credential_audit, ensure_mutation_current, unlock_audit};
 use crate::command::UnlockProof;
@@ -124,13 +123,28 @@ impl Worker {
             "dek-rotation",
         ))?;
         ensure_mutation_current(not_after)?;
-        self.store.replace_version_ciphertexts(
+        let observed = self.mutation_observation()?;
+        let mut generation = crate::store::generation::GenerationAttempt::new(
+            &self.anchors,
+            &self.header,
+            observed,
+            self.require_unlocked()?.bytes(),
+            self.header
+                .generation
+                .checked_add(1)
+                .ok_or(AuthorityError::StorageIntegrityFailed)?,
+            not_after,
+            None,
+        )?;
+        let result = self.store.replace_version_ciphertexts(
             &versions,
             &journal,
             &journal_state,
             audit,
             not_after,
-        )?;
+            &mut generation,
+        );
+        self.complete_generation(result, generation.finish())?;
         Ok(versions.len() as u64)
     }
 
@@ -159,10 +173,10 @@ impl Worker {
             .encode();
             let dek_bytes = aead::open(old_vrk, &dek_aad, &version.dek_nonce, &version.wrapped_dek)
                 .map_err(|_| AuthorityError::CryptoFailure)?;
-            let old_dek = Zeroizing::new(
-                <[u8; 32]>::try_from(dek_bytes.as_slice())
-                    .map_err(|_| AuthorityError::CryptoFailure)?,
-            );
+            let mut old_dek_bytes = <[u8; 32]>::try_from(dek_bytes.as_slice())
+                .map_err(|_| AuthorityError::CryptoFailure)?;
+            let old_dek = DataKey::from_bytes(&mut old_dek_bytes);
+            drop(dek_bytes);
             let payload_aad = AadV1 {
                 purpose: AadPurpose::CredentialPayload,
                 vault_id: self.header.vault_id,
@@ -173,7 +187,7 @@ impl Worker {
             }
             .encode();
             let plaintext = aead::open(
-                &old_dek,
+                old_dek.bytes(),
                 &payload_aad,
                 &version.payload_nonce,
                 &version.encrypted_payload,
@@ -215,6 +229,7 @@ impl Worker {
                 rekey_domain::DomainError::InvalidCapability,
             ));
         }
+        #[cfg(feature = "lab")]
         if kind == CredentialKind::MacosKeychainSource {
             super::keychain_source::Reference::import(secret.expose(), now_ms()?)?;
         }
@@ -241,7 +256,23 @@ impl Worker {
             "add",
         ))?;
         ensure_mutation_current(not_after)?;
-        let result = self.store.insert_credential(&record, &version, audit);
+        let observed = self.mutation_observation()?;
+        let mut generation = crate::store::generation::GenerationAttempt::new(
+            &self.anchors,
+            &self.header,
+            observed,
+            self.require_unlocked()?.bytes(),
+            self.header
+                .generation
+                .checked_add(1)
+                .ok_or(AuthorityError::StorageIntegrityFailed)?,
+            not_after,
+            None,
+        )?;
+        let result = self
+            .store
+            .insert_credential(&record, &version, audit, &mut generation);
+        let result = self.complete_generation(result, generation.finish());
         self.fault_on_audit_failure(result)?;
         record_to_metadata(&record)
     }
@@ -314,6 +345,7 @@ impl Worker {
                 ),
             ));
         }
+        #[cfg(feature = "lab")]
         if expected_kind == CredentialKind::MacosKeychainSource {
             super::keychain_source::Reference::import(secret.expose(), now_ms()?)?;
         }
@@ -330,7 +362,23 @@ impl Worker {
             "rotate",
         ))?;
         ensure_mutation_current(not_after)?;
-        let result = self.store.rotate_credential(&updated, &version, now, audit);
+        let observed = self.mutation_observation()?;
+        let mut generation = crate::store::generation::GenerationAttempt::new(
+            &self.anchors,
+            &self.header,
+            observed,
+            self.require_unlocked()?.bytes(),
+            self.header
+                .generation
+                .checked_add(1)
+                .ok_or(AuthorityError::StorageIntegrityFailed)?,
+            not_after,
+            None,
+        )?;
+        let result = self
+            .store
+            .rotate_credential(&updated, &version, now, audit, &mut generation);
+        let result = self.complete_generation(result, generation.finish());
         self.fault_on_audit_failure(result)?;
         record_to_metadata(&updated)
     }
@@ -356,7 +404,23 @@ impl Worker {
             "revoke",
         ))?;
         ensure_mutation_current(not_after)?;
-        let result = self.store.revoke_credential(&updated, now, audit);
+        let observed = self.mutation_observation()?;
+        let mut generation = crate::store::generation::GenerationAttempt::new(
+            &self.anchors,
+            &self.header,
+            observed,
+            self.require_unlocked()?.bytes(),
+            self.header
+                .generation
+                .checked_add(1)
+                .ok_or(AuthorityError::StorageIntegrityFailed)?,
+            not_after,
+            None,
+        )?;
+        let result = self
+            .store
+            .revoke_credential(&updated, now, audit, &mut generation);
+        let result = self.complete_generation(result, generation.finish());
         self.fault_on_audit_failure(result)?;
         record_to_metadata(&updated)
     }
@@ -411,7 +475,9 @@ impl Worker {
         )>,
     ) -> Result<PreparedCredential, AuthorityError> {
         let credential = self.load_verified_credential(credential_id)?;
-        if credential.kind == CredentialKind::MacosKeychainSource && execution.is_none() {
+        if credential.kind == CredentialKind::MacosKeychainSource
+            && (!cfg!(feature = "lab") || execution.is_none())
+        {
             return Err(AuthorityError::CredentialSourceUnavailable);
         }
         let vrk = self.require_unlocked()?;
@@ -445,6 +511,7 @@ impl Worker {
             .try_into()
             .map_err(|_| AuthorityError::CryptoFailure)?;
         let dek = DataKey::from_bytes(&mut dek_arr);
+        drop(dek_bytes);
         let payload_aad = AadV1 {
             purpose: AadPurpose::CredentialPayload,
             vault_id: self.header.vault_id,
@@ -461,6 +528,7 @@ impl Worker {
             &version.encrypted_payload,
         )
         .map_err(|_| AuthorityError::CryptoFailure)?;
+        #[cfg(feature = "lab")]
         let payload = if credential.kind == CredentialKind::MacosKeychainSource {
             let (request_id, action_id, action_version, deadline) =
                 execution.ok_or(AuthorityError::CredentialSourceUnavailable)?;

@@ -1,5 +1,8 @@
 # P-07B One-shot Vault Dynamic Lease CredentialSource
 
+> Status: Lab (v3 scope; enterprise reserve)
+> Existing contracts and evidence are retained; this capability is excluded from the default v3 build and release package.
+
 > Status: implemented and locally verified; exact-head CI, merge, and post-main evidence pending
 >
 > Date: 2026-09-03

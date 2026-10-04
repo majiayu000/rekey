@@ -12,7 +12,12 @@ use crate::error::BrokerError;
 use crate::upstream::{UpstreamRequest, UpstreamStreamResponse};
 
 pub(crate) enum TextStreamEvent {
-    Admitted { deadline: Instant },
+    AdmissionError(BrokerError),
+    Admitted {
+        deadline: Instant,
+    },
+    /// A bounded, sealed HTTP error response after its terminal audit commits.
+    Buffered(super::ExecuteOutcome),
     Chunk(Vec<u8>),
     Terminal(TextStreamStatus),
 }
@@ -87,21 +92,21 @@ pub(super) fn configure(
 
 /// All buffers have the Action response bound. Keep the full bounded history so
 /// scan starts can retain encoding context, and never copy an unchecked prefix.
-struct Sealer {
+pub(super) struct Sealer {
     bytes: Zeroizing<Vec<u8>>,
     emitted: usize,
     hold: usize,
     limit: usize,
 }
 impl Sealer {
-    fn new(needles: &[Zeroizing<Vec<u8>>], limit: usize) -> Result<Self, BrokerError> {
+    pub(super) fn new(needles: &[Zeroizing<Vec<u8>>], limit: usize) -> Result<Self, BrokerError> {
         let hold = needles
             .iter()
             .map(|n| n.len())
             .max()
             .unwrap_or(0)
-            .checked_mul(3)
-            .and_then(|n| n.checked_add(2))
+            .checked_mul(6)
+            .and_then(|n| n.checked_add(5))
             .ok_or(BrokerError::ResponseSecurityViolation)?;
         Ok(Self {
             bytes: Zeroizing::new(Vec::with_capacity(limit)),
@@ -110,16 +115,53 @@ impl Sealer {
             limit,
         })
     }
-    fn push(&mut self, bytes: &[u8], needles: &[Zeroizing<Vec<u8>>]) -> Result<(), BrokerError> {
+    pub(super) fn push(
+        &mut self,
+        bytes: &[u8],
+        needles: &[Zeroizing<Vec<u8>>],
+    ) -> Result<(), BrokerError> {
         if bytes.len() > self.limit.saturating_sub(self.bytes.len()) {
             return Err(BrokerError::Upstream("response-too-large"));
         }
-        // Potential newly completed matches start at most 3*M bytes back.
-        // Two more bytes retain percent-normalization context at the cut.
+        // A JSON Unicode escape expands a needle byte to six input bytes.
+        // Five extra bytes retain an incomplete escape at the scan boundary.
         let start = self.bytes.len().saturating_sub(self.hold);
         self.bytes.extend_from_slice(bytes);
         if contains_secret(&self.bytes[start..], needles) {
             return Err(BrokerError::ResponseSecurityViolation);
+        }
+        Ok(())
+    }
+    pub(super) fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+    pub(super) fn hold(&self) -> usize {
+        self.hold
+    }
+    pub(super) async fn release_through(
+        &mut self,
+        end: usize,
+        sender: &TextStreamSender,
+    ) -> Result<(), BrokerError> {
+        let base = self.emitted;
+        let text = std::str::from_utf8(&self.bytes[base..end])
+            .map_err(|_| BrokerError::Upstream("invalid-stream"))?;
+        while self.emitted < end {
+            let mut chunk_end = end.min(self.emitted + TEXT_STREAM_CHUNK_MAX_BYTES);
+            while !text.is_char_boundary(chunk_end - base) {
+                chunk_end -= 1;
+            }
+            if sender
+                .send(TextStreamEvent::Chunk(
+                    self.bytes[self.emitted..chunk_end].to_vec(),
+                ))
+                .await
+                .is_err()
+            {
+                self.emitted = end;
+                return Ok(());
+            }
+            self.emitted = chunk_end;
         }
         Ok(())
     }
@@ -396,6 +438,53 @@ mod tests {
             let event = format!("event: content_block_delta\ndata: {json}");
             let text = projection.event(event.as_bytes()).unwrap().unwrap();
             assert_eq!(sealer.push(text.as_bytes(), &needles).is_err(), index == 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn unicode_encoded_hex_cannot_leak_across_text_deltas() {
+        let secret = b"synthetic-secret-1234";
+        let needles = sealing_needles(secret, secret);
+        let reflected = data_encoding::HEXLOWER
+            .encode(secret)
+            .bytes()
+            .map(|byte| format!("\\u{byte:04x}"))
+            .collect::<String>();
+        let mut projection = Projection {
+            state: 2,
+            reason: None,
+        };
+        let mut sealer = Sealer::new(&needles, 8192).unwrap();
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(32);
+        sealer.push(&vec![b'z'; 1024], &needles).unwrap();
+        sealer.release(false, &sender).await.unwrap();
+        for (index, part) in [
+            &reflected[..reflected.len() - 1],
+            &reflected[reflected.len() - 1..],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let json = serde_json::json!({"type":"content_block_delta", "index":0,
+                "delta":{"type":"text_delta", "text":part}});
+            let event = format!("event: content_block_delta\ndata: {json}");
+            let text = projection.event(event.as_bytes()).unwrap().unwrap();
+            let result = sealer.push(text.as_bytes(), &needles);
+            if index == 0 {
+                result.unwrap();
+                sealer.release(false, &sender).await.unwrap();
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(BrokerError::ResponseSecurityViolation)
+                ));
+            }
+        }
+        drop(sender);
+        while let Some(event) = receiver.recv().await {
+            if let TextStreamEvent::Chunk(bytes) = event {
+                assert!(bytes.iter().all(|byte| *byte == b'z'));
+            }
         }
     }
 

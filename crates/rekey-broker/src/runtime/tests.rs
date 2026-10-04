@@ -20,6 +20,7 @@ async fn idle_status_poll_does_not_occupy_execution_admission() {
             iterations: 1,
             parallelism: 1,
         },
+        rekey_domain::authorization::PolicyMode::Team,
     )
     .unwrap();
     confirm_vault_init(&state).unwrap();
@@ -50,19 +51,24 @@ async fn idle_status_poll_does_not_occupy_execution_admission() {
     let (shutdown_tx, _) = watch::channel(false);
     let (stop_tx, _) = mpsc::unbounded_channel();
     let ctx = BrokerCtx {
+        #[cfg(feature = "lab")]
         oidc_admin: None,
+        #[cfg(feature = "lab")]
         metrics: crate::metrics::Metrics::default(),
         authority: authority.clone(),
         sessions,
         executions,
         executor,
+        #[cfg(feature = "lab")]
         workload_transport: transport,
+        #[cfg(feature = "lab")]
         online_jwks_slots: Arc::new(tokio::sync::Semaphore::new(2)),
         lifecycle,
         policy,
         policy_trust: Arc::new(RwLock::new(None)),
         terminals,
         drain_timeout: Duration::from_secs(1),
+        gateway: gateway::Gateway::default(),
         shutdown_flag: AtomicBool::new(false),
         shutdown_tx,
         stop_tx,
@@ -80,6 +86,8 @@ async fn idle_status_poll_does_not_occupy_execution_admission() {
         credential_version: None,
         authorization: None,
         approval: None,
+        request_context: None,
+        usage: None,
         event_type: "test.idle-poll",
         outcome: "success",
         reason_code: "fixture".into(),
@@ -101,6 +109,28 @@ async fn idle_status_poll_does_not_occupy_execution_admission() {
     drop(idle);
     db.execute_batch("COMMIT").unwrap();
     audit.await.unwrap();
+    // Once idle, a concurrent passive-status owner must not make the idle
+    // lock abandon this attempt. Queue behind it, then recheck activity.
+    let status_owner = ctx.lifecycle.coordinate().await;
+    let mut eligible_idle = Box::pin(ctx.try_idle_lock(Duration::ZERO));
+    poll_fn(|cx| {
+        assert!(eligible_idle.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    // This worker barrier guarantees the idle Status reply is available.
+    authority.status().await.unwrap();
+    poll_fn(|cx| {
+        assert!(
+            eligible_idle.as_mut().poll(cx).is_pending(),
+            "eligible idle locking must wait for the passive-status owner"
+        );
+        Poll::Ready(())
+    })
+    .await;
+    drop(status_owner);
+    eligible_idle.await.unwrap();
+    assert_eq!(authority.status().await.unwrap().state, "locked");
     authority
         .shutdown(Some(UnlockProof::Password(SecretInput::from_slice(
             b"fixture-proof",
@@ -284,6 +314,7 @@ async fn fault_while_initially_locked_revokes_remembered_desktop() {
                 iterations: 1,
                 parallelism: 1,
             },
+            rekey_domain::authorization::PolicyMode::Team,
         )
         .unwrap();
         confirm_vault_init(&state).unwrap();
@@ -317,19 +348,24 @@ async fn fault_while_initially_locked_revokes_remembered_desktop() {
         let mut execution_task = tokio::spawn(supervisor.run(shutdown_rx));
         let (stop_tx, _stop_rx) = mpsc::unbounded_channel();
         let ctx = BrokerCtx {
+            #[cfg(feature = "lab")]
             oidc_admin: None,
+            #[cfg(feature = "lab")]
             metrics: crate::metrics::Metrics::default(),
             authority: authority.clone(),
             sessions,
             executions,
             executor,
+            #[cfg(feature = "lab")]
             workload_transport: transport,
+            #[cfg(feature = "lab")]
             online_jwks_slots: Arc::new(tokio::sync::Semaphore::new(2)),
             lifecycle,
             policy,
             policy_trust: Arc::new(RwLock::new(None)),
             terminals,
             drain_timeout: Duration::from_secs(1),
+            gateway: gateway::Gateway::default(),
             shutdown_flag: AtomicBool::new(false),
             shutdown_tx,
             stop_tx,
@@ -403,6 +439,7 @@ pub(crate) async fn oidc_test_ctx() -> (
             iterations: 1,
             parallelism: 1,
         },
+        rekey_domain::authorization::PolicyMode::Team,
     )
     .unwrap();
     confirm_vault_init(&state).unwrap();
@@ -434,19 +471,24 @@ pub(crate) async fn oidc_test_ctx() -> (
     let (shutdown_tx, _) = watch::channel(false);
     let (stop_tx, _) = mpsc::unbounded_channel();
     let ctx = Arc::new(BrokerCtx {
+        #[cfg(feature = "lab")]
         oidc_admin: None,
+        #[cfg(feature = "lab")]
         metrics: crate::metrics::Metrics::default(),
         authority,
         sessions,
         executions,
         executor,
+        #[cfg(feature = "lab")]
         workload_transport: transport,
+        #[cfg(feature = "lab")]
         online_jwks_slots: Arc::new(tokio::sync::Semaphore::new(2)),
         lifecycle,
         policy,
         policy_trust: Arc::new(RwLock::new(None)),
         terminals,
         drain_timeout: Duration::from_secs(1),
+        gateway: gateway::Gateway::default(),
         shutdown_flag: AtomicBool::new(false),
         shutdown_tx,
         stop_tx,
@@ -501,6 +543,7 @@ async fn retention_tick_cadence_busy_lock_shutdown_and_disable_are_coordinated()
     ctx.lifecycle.enter_shutting_down();
     due = tokio::time::Instant::now();
     ctx.audit_retention_tick(&mut due).await.unwrap();
+    #[cfg(feature = "lab")]
     assert_eq!(ctx.metrics.fault_signals.load(Ordering::Relaxed), 0);
     ctx.authority
         .shutdown(Some(UnlockProof::Password(SecretInput::from_slice(
@@ -540,6 +583,8 @@ async fn retention_tick_unknown_reply_timeout_stops_and_keeps_owner_until_outcom
         credential_version: None,
         authorization: None,
         approval: None,
+        request_context: None,
+        usage: None,
         event_type: "fixture.blocked",
         outcome: "success",
         reason_code: "test".into(),
@@ -567,6 +612,7 @@ async fn retention_tick_unknown_reply_timeout_stops_and_keeps_owner_until_outcom
         Err(BrokerError::Authority(AuthorityError::Faulted))
     ));
     assert!(started.elapsed() >= Duration::from_millis(900));
+    #[cfg(feature = "lab")]
     assert_eq!(ctx.metrics.fault_signals.load(Ordering::Relaxed), 1);
     assert!(ctx.lifecycle.try_coordinate().is_ok());
     db.execute_batch("COMMIT").unwrap();
@@ -617,6 +663,7 @@ async fn retention_closed_reply_channel_is_faulted_without_retry() {
         ctx.try_audit_retention().await,
         Err(BrokerError::Authority(AuthorityError::Faulted))
     ));
+    #[cfg(feature = "lab")]
     assert_eq!(ctx.metrics.fault_signals.load(Ordering::Relaxed), 1);
     drop(ctx);
     terminal.await.unwrap();
@@ -630,4 +677,38 @@ pub(crate) fn exact3_pause_stop_consumer(ctx: &mut Arc<BrokerCtx>) -> Box<dyn Fn
     let (tx, mut rx) = mpsc::unbounded_channel();
     Arc::get_mut(ctx).unwrap().stop_tx = tx;
     Box::new(move || rx.try_recv().is_ok())
+}
+
+#[tokio::test]
+async fn failed_admin_settlement_keeps_timeout_stop_pending_until_response() {
+    let (_dir, ctx, join, terminal_task) = oidc_test_ctx().await;
+    // An ordinary failed proof against a healthy Authority must not stop it.
+    let healthy_fault = ctx.settle_failed_admin().await;
+    let healthy_admission = ctx.lifecycle.try_begin_remote_effect();
+    let owner = ctx.lifecycle.coordinate().await;
+    // Model an in-flight unlock holding the coordinator past settlement.
+    let timeout_fault = ctx.settle_failed_admin().await;
+    let closed_before_response = !ctx.lifecycle.try_begin_remote_effect();
+    // The original error has not yet been sent, so request_fault has not run.
+    let late_unlock = ctx.lifecycle.enter_running();
+    let still_closed = !ctx.lifecycle.try_begin_remote_effect();
+    drop(owner);
+    ctx.authority
+        .shutdown(Some(UnlockProof::Password(SecretInput::from_slice(
+            b"fixture-proof",
+        ))))
+        .await
+        .unwrap();
+    drop(ctx);
+    terminal_task.await.unwrap();
+    join.join().unwrap();
+    assert!(!healthy_fault);
+    assert!(healthy_admission);
+    assert!(timeout_fault);
+    assert!(closed_before_response);
+    assert!(matches!(
+        late_unlock,
+        Err(BrokerError::Authority(AuthorityError::Draining))
+    ));
+    assert!(still_closed);
 }

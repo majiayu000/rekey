@@ -9,6 +9,8 @@ description = "Local broker and authority daemon for Rekey"
 publish = false
 
 [features]
+default = []
+lab = ["rekey-vault/lab", "rekey-policy/lab", "rekey-connector/lab"]
 fuzzing = []
 
 [[bin]]
@@ -16,6 +18,10 @@ name = "rekeyd"
 path = "src/bin/rekeyd.rs"
 
 [dependencies]
+bytes = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 rekey-connector = { workspace = true }
 rekey-domain = { workspace = true }
 rekey-policy = { workspace = true }
@@ -29,6 +35,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 rpassword = "7.5.0"
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_jcs = "0.2"
 sha2 = "0.10"
 subtle = "2"
 thiserror = { workspace = true }
@@ -43,9 +50,73 @@ url = "2"
 tempfile = { workspace = true }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
-serde_jcs = "0.2"
 rcgen = "0.13"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rusqlite = { version = "0.34", features = ["bundled"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+
+[[bin]]
+name = "rekey-github-create-issue"
+required-features = ["lab"]
+
+[[example]]
+name = "oau02_keycloak_fixture"
+required-features = ["lab"]
+
+[[example]]
+name = "p7_vault_journal_fixture"
+required-features = ["lab"]
+
+[[example]]
+name = "p7_vault_oss_fixture"
+required-features = ["lab"]
+
+[[test]]
+name = "workload_identity"
+required-features = ["lab"]
+
+[[test]]
+name = "github_jwks"
+required-features = ["lab"]
+
+[[test]]
+name = "oidc_admin_contract"
+required-features = ["lab"]
+
+[[test]]
+name = "keycloak_contract"
+required-features = ["lab"]
+
+[[test]]
+name = "vault_source_contract"
+required-features = ["lab"]
+
+[[test]]
+name = "vault_dynamic_contract"
+required-features = ["lab"]
+
+[[test]]
+name = "gcp_source_contract"
+required-features = ["lab"]
+
+[[test]]
+name = "aws_source_contract"
+required-features = ["lab"]
+
+[[test]]
+name = "azure_source_contract"
+required-features = ["lab"]
+
+[[test]]
+name = "onepassword_source_contract"
+required-features = ["lab"]
+
+[[test]]
+name = "native_plugin"
+required-features = ["lab"]
+
+[[test]]
+name = "github_issue_plugin"
+required-features = ["lab"]

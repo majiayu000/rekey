@@ -4,6 +4,7 @@ use super::aad::{AadPurpose, AadV1};
 use super::aead;
 use crate::error::AuthorityError;
 use crate::model::{PolicyBundleRecord, PolicyStateRecord, PolicyTrustRecord};
+use rekey_domain::authorization::{PolicyMode, PolicyTrustAlgorithm};
 use rekey_domain::ids::VaultId;
 
 pub struct LifecycleSeal {
@@ -18,8 +19,12 @@ pub fn canonical_state(
     validate_state(record)?;
     let mut bytes = Vec::with_capacity(148);
     bytes.extend_from_slice(b"RKPS");
-    bytes.extend_from_slice(&1u16.to_be_bytes());
+    bytes.extend_from_slice(&2u16.to_be_bytes());
     bytes.extend_from_slice(vault_id.as_bytes());
+    bytes.push(match record.mode {
+        PolicyMode::Personal => 1,
+        PolicyMode::Team => 2,
+    });
     bytes.push(u8::from(record.trust_installed));
     bytes.push(u8::from(record.bundle_activated));
     bytes.extend_from_slice(
@@ -36,13 +41,19 @@ pub fn canonical_state(
 }
 
 pub fn canonical_trust(vault_id: VaultId, record: &PolicyTrustRecord) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(76);
+    let mut bytes = Vec::with_capacity(48 + record.key.as_bytes().len());
     bytes.extend_from_slice(b"RKPT");
-    bytes.extend_from_slice(&1u16.to_be_bytes());
+    bytes.extend_from_slice(&2u16.to_be_bytes());
     bytes.extend_from_slice(vault_id.as_bytes());
     bytes.extend_from_slice(record.signer_id.as_bytes());
-    bytes.extend_from_slice(&1u16.to_be_bytes());
-    bytes.extend_from_slice(&record.public_key);
+    let algorithm: u16 = match record.key.algorithm() {
+        PolicyTrustAlgorithm::Ed25519 => 1,
+        PolicyTrustAlgorithm::SecureEnclaveP256 => 2,
+    };
+    bytes.extend_from_slice(&algorithm.to_be_bytes());
+    // A validated key is exactly 32 or 65 bytes; include its length and every byte.
+    bytes.extend_from_slice(&(record.key.as_bytes().len() as u16).to_be_bytes());
+    bytes.extend_from_slice(record.key.as_bytes());
     bytes.extend_from_slice(&record.installed_at_ms.to_be_bytes());
     bytes
 }

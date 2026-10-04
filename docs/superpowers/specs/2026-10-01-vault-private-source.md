@@ -1,5 +1,8 @@
 # VEX-01: one bound private Vault source
 
+> Status: Lab (v3 scope; enterprise reserve)
+> Existing contracts and evidence are retained; this capability is excluded from the default v3 build and release package.
+
 Frozen 2026-10-01 after VEX04 final independent closure and root17 tests.
 Minimal version: optional encrypted-profile source_endpoint containing only
 allowed_ips and ca_der_base64; four existing production modules and their tests,

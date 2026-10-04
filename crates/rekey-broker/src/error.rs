@@ -11,12 +11,20 @@ use thiserror::Error;
 pub enum BrokerError {
     #[error(transparent)]
     Authority(#[from] AuthorityError),
+    /// Broker admission rejected without an unresolved Authority command.
+    /// Keep its wire error while avoiding settlement of work that was not queued.
+    #[error(transparent)]
+    Admission(AuthorityError),
     #[error(transparent)]
     Domain(#[from] DomainError),
     #[error(transparent)]
     Policy(#[from] PolicyError),
     #[error("invalid frame")]
     Frame(#[from] FrameError),
+    #[error("local approval required")]
+    ApprovalRequired(rekey_domain::ipc::ApprovalRequired),
+    #[error("local approval outcome is unconfirmed; query its state; do not retry automatically")]
+    ApprovalOutcomeUnconfirmed,
     #[error("request denied: {0}")]
     Denied(&'static str),
     #[error("upstream request failed")]
@@ -36,7 +44,7 @@ pub enum BrokerError {
 impl BrokerError {
     pub fn code(&self) -> &'static str {
         match self {
-            Self::Authority(err) => err.code(),
+            Self::Authority(err) | Self::Admission(err) => err.code(),
             Self::Domain(DomainError::InvalidCapability) => "INVALID_CAPABILITY",
             Self::Domain(DomainError::CapabilityExpired) => "CAPABILITY_EXPIRED",
             Self::Domain(DomainError::CapabilityExhausted) => "CAPABILITY_EXHAUSTED",
@@ -49,6 +57,8 @@ impl BrokerError {
             Self::Policy(_) => "POLICY_INVALID",
             Self::Frame(_) => "INVALID_FRAME",
             Self::Denied(_) => "REQUEST_DENIED",
+            Self::ApprovalRequired(_) => "APPROVAL_REQUIRED",
+            Self::ApprovalOutcomeUnconfirmed => "APPROVAL_OUTCOME_UNCONFIRMED",
             Self::Upstream(_) => "UPSTREAM_FAILED",
             Self::Indeterminate(_) => "UPSTREAM_INDETERMINATE",
             Self::ResponseSecurityViolation => "RESPONSE_SECURITY_VIOLATION",
@@ -61,7 +71,10 @@ impl BrokerError {
     pub fn retryable(&self) -> bool {
         matches!(
             self,
-            Self::Authority(AuthorityError::AuthorityBusy) | Self::Upstream(_) | Self::Io(_)
+            Self::Authority(AuthorityError::AuthorityBusy)
+                | Self::Admission(AuthorityError::AuthorityBusy)
+                | Self::Upstream(_)
+                | Self::Io(_)
         )
     }
 
@@ -91,6 +104,23 @@ mod tests {
         let error = BrokerError::Indeterminate("resource-transport");
         assert_eq!(error.code(), "UPSTREAM_INDETERMINATE");
         assert!(!error.retryable());
+    }
+
+    #[test]
+    fn lifecycle_rejections_preserve_authority_wire_errors() {
+        use rekey_vault::AuthorityError;
+        for (local, worker) in [
+            (AuthorityError::AuthorityBusy, AuthorityError::AuthorityBusy),
+            (AuthorityError::Draining, AuthorityError::Draining),
+            (AuthorityError::Locked, AuthorityError::Locked),
+        ] {
+            let local = BrokerError::Admission(local);
+            let worker = BrokerError::Authority(worker);
+            assert_eq!(local.code(), worker.code());
+            assert_eq!(local.to_string(), worker.to_string());
+            assert_eq!(local.agent_message(), worker.agent_message());
+            assert_eq!(local.retryable(), worker.retryable());
+        }
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use rekey_domain::authorization::{PolicyMode, PolicyTrustAlgorithm};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
@@ -23,8 +24,17 @@ impl Worker {
     ) -> Result<PolicyMaterial, AuthorityError> {
         self.verify_proof(&proof)?;
         let current = self.policy_material()?;
+        if !matches!(
+            (current.state.mode, input.key.algorithm()),
+            (
+                PolicyMode::Personal,
+                PolicyTrustAlgorithm::SecureEnclaveP256
+            ) | (PolicyMode::Team, PolicyTrustAlgorithm::Ed25519)
+        ) {
+            return Err(AuthorityError::PolicyTrustConflict);
+        }
         if let Some(trust) = current.trust {
-            return if trust.signer_id == input.signer_id && trust.public_key == input.public_key {
+            return if trust.signer_id == input.signer_id && trust.key == input.key {
                 self.policy_material()
             } else {
                 Err(AuthorityError::PolicyTrustConflict)
@@ -35,7 +45,7 @@ impl Worker {
         let now = now_ms()?;
         let mut trust = PolicyTrustRecord {
             signer_id: input.signer_id,
-            public_key: input.public_key,
+            key: input.key,
             installed_at_ms: now,
             seal_nonce: [0u8; 12],
             seal_ciphertext: [0u8; 16],
@@ -44,6 +54,7 @@ impl Worker {
         trust.seal_nonce = trust_seal.nonce;
         trust.seal_ciphertext = trust_seal.ciphertext;
         let mut state = PolicyStateRecord {
+            mode: current.state.mode,
             trust_installed: true,
             bundle_activated: false,
             signer_id: Some(input.signer_id),
@@ -63,7 +74,23 @@ impl Worker {
             "policy-trust-installed",
         ))?;
         ensure_mutation_current(not_after)?;
-        let result = self.store.install_policy_trust(&state, &trust, event);
+        let observed = self.mutation_observation()?;
+        let mut generation = crate::store::generation::GenerationAttempt::new(
+            &self.anchors,
+            &self.header,
+            observed,
+            self.require_unlocked()?.bytes(),
+            self.header
+                .generation
+                .checked_add(1)
+                .ok_or(AuthorityError::StorageIntegrityFailed)?,
+            not_after,
+            None,
+        )?;
+        let result = self
+            .store
+            .install_policy_trust(&state, &trust, event, &mut generation);
+        let result = self.complete_generation(result, generation.finish());
         self.fault_on_audit_failure(result)?;
         self.policy_material()
     }
@@ -77,7 +104,7 @@ impl Worker {
         self.verify_proof(&proof)?;
         let current = self.policy_material()?;
         let trust = current.trust.ok_or(AuthorityError::PolicyUnavailable)?;
-        let trust_digest = rekey_policy::policy_trust_sha256(trust.signer_id, &trust.public_key)
+        let trust_digest = rekey_policy::policy_trust_sha256(trust.signer_id, &trust.key)
             .map_err(|_| AuthorityError::PolicyVersionConflict)?;
         if self.header.vault_id != input.expected_vault_id
             || trust_digest != input.expected_trust_sha256
@@ -121,6 +148,7 @@ impl Worker {
         bundle.seal_nonce = bundle_seal.nonce;
         bundle.seal_ciphertext = bundle_seal.ciphertext;
         let mut state = PolicyStateRecord {
+            mode: current.state.mode,
             trust_installed: true,
             bundle_activated: true,
             signer_id: Some(input.signer_id),
@@ -147,7 +175,23 @@ impl Worker {
         if bundle.expires_at_ms <= now_ms()? {
             return Err(AuthorityError::PolicyVersionConflict);
         }
-        let result = self.store.activate_policy_bundle(&state, &bundle, event);
+        let observed = self.mutation_observation()?;
+        let mut generation = crate::store::generation::GenerationAttempt::new(
+            &self.anchors,
+            &self.header,
+            observed,
+            self.require_unlocked()?.bytes(),
+            self.header
+                .generation
+                .checked_add(1)
+                .ok_or(AuthorityError::StorageIntegrityFailed)?,
+            not_after,
+            Some(bundle.expires_at_ms),
+        )?;
+        let result = self
+            .store
+            .activate_policy_bundle(&state, &bundle, event, &mut generation);
+        let result = self.complete_generation(result, generation.finish());
         self.fault_on_audit_failure(result)?;
         self.policy_material()
     }

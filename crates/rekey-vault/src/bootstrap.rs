@@ -8,7 +8,10 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::generation_anchor::GenerationAnchors;
+use crate::store::generation::{GenerationAttempt, rollback_context};
 use rekey_domain::ids::{VaultId, WrapperId};
+use rekey_domain::ipc::RollbackContext;
 use zeroize::Zeroizing;
 
 use crate::command::RestoreInfo;
@@ -46,11 +49,6 @@ pub struct InitOutcome {
 pub enum RestoreProof {
     Password(SecretInput),
     RecoveryKey(SecretInput),
-}
-
-fn dir_is_empty(dir: &Path) -> Result<bool, AuthorityError> {
-    let mut entries = fs::read_dir(dir).map_err(AuthorityError::storage)?;
-    Ok(entries.next().is_none())
 }
 
 fn dir_is_restore_empty(dir: &Path) -> Result<bool, AuthorityError> {
@@ -94,29 +92,28 @@ fn remove_sqlite_bundle(db: &Path) -> std::io::Result<()> {
     crate::durable::fsync_parent(db)
 }
 
-/// Drops a vault written by a failed init (including confirmation abort).
+/// Unconfirmed initialization cannot erase a possibly reserved generation.
+/// Cleanup before reservation is private to the current initialization attempt.
 pub fn discard_vault_files(state_dir: &Path) -> Result<(), AuthorityError> {
     if !state_dir.exists() {
         return Ok(());
     }
-    let lock = BootstrapLock::acquire(state_dir)?;
-    ensure_init_marker(state_dir)?;
-    remove_sqlite_bundle(&paths::vault_db(state_dir)).map_err(AuthorityError::storage)?;
-    let runtime = paths::runtime_dir(state_dir);
-    match fs::remove_dir(&runtime) {
-        Ok(()) => crate::durable::fsync(state_dir).map_err(AuthorityError::storage)?,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-        Err(err) => return Err(AuthorityError::storage(err)),
+    let _lock = BootstrapLock::acquire(state_dir)?;
+    if paths::vault_db(state_dir).exists() || init_marker_is_regular(state_dir)? {
+        return Err(AuthorityError::UnsupportedVaultLayout);
     }
-    drop(lock);
-    crate::durable::remove_file_and_sync(&paths::broker_lock(state_dir))
-        .map_err(AuthorityError::storage)?;
-    remove_init_marker(state_dir)?;
-    if dir_is_empty(state_dir)? {
-        fs::remove_dir(state_dir).map_err(AuthorityError::storage)?;
-        crate::durable::fsync_parent(state_dir).map_err(AuthorityError::storage)?;
+    if !dir_is_restore_empty(state_dir)? {
+        return Err(AuthorityError::StateDirectoryNotEmpty);
     }
     Ok(())
+}
+
+/// Called only by the marker-owning initialization attempt, under its original
+/// bootstrap lock and before any possible anchor reservation. Keep the shared
+/// lock inode: another waiter may already have it open.
+fn cleanup_unreserved_init(state_dir: &Path) -> Result<(), AuthorityError> {
+    remove_sqlite_bundle(&paths::vault_db(state_dir)).map_err(AuthorityError::storage)?;
+    remove_init_marker(state_dir)
 }
 
 /// Marks the recovery-key confirmation boundary durable. Until this succeeds,
@@ -126,7 +123,11 @@ pub fn confirm_vault_init(state_dir: &Path) -> Result<(), AuthorityError> {
     if !init_marker_is_regular(state_dir)? {
         return Err(AuthorityError::UnsupportedVaultLayout);
     }
-    SqliteRecordStore::open(&paths::vault_db(state_dir))?;
+    let header = SqliteRecordStore::open(&paths::vault_db(state_dir))?.load_header()?;
+    let observed = GenerationAnchors::open(state_dir, header.vault_id)?.read()?;
+    if !crate::store::generation::current(&header, observed) {
+        return Err(AuthorityError::RollbackSuspected);
+    }
     remove_init_marker(state_dir)
 }
 
@@ -221,7 +222,9 @@ pub(crate) fn unwrap_vrk(
         .as_slice()
         .try_into()
         .map_err(|_| AuthorityError::InvalidUnlockCredential)?;
-    Ok(RootKey::from_bytes(&mut bytes))
+    let key = RootKey::from_bytes(&mut bytes);
+    drop(plain);
+    Ok(key)
 }
 
 pub(crate) fn kek_for_wrapper(
@@ -252,17 +255,14 @@ pub fn init_vault(
     state_dir: &Path,
     password: &SecretInput,
     params: Argon2Params,
+    mode: rekey_domain::authorization::PolicyMode,
 ) -> Result<InitOutcome, AuthorityError> {
     params.validate()?;
     if password.is_empty() {
         return Err(AuthorityError::InvalidUnlockCredential);
     }
     if state_dir.exists() {
-        let interrupted = init_marker_is_regular(state_dir)?;
-        if !interrupted && !dir_is_empty(state_dir)? {
-            return Err(AuthorityError::StateDirectoryNotEmpty);
-        }
-        if interrupted && !dir_has_only_init_artifacts(state_dir)? {
+        if !dir_is_restore_empty(state_dir)? {
             return Err(AuthorityError::StateDirectoryNotEmpty);
         }
         fs::set_permissions(state_dir, fs::Permissions::from_mode(0o700))
@@ -274,27 +274,36 @@ pub fn init_vault(
     }
     verify_state_dir_permissions(state_dir)?;
 
-    match init_vault_inner(state_dir, password, params) {
-        Ok(outcome) => Ok(outcome),
-        Err(err) => {
-            discard_vault_files(state_dir)?;
-            Err(err)
-        }
-    }
+    init_vault_inner(state_dir, password, params, mode)
 }
 
 fn init_vault_inner(
     state_dir: &Path,
     password: &SecretInput,
     params: Argon2Params,
+    mode: rekey_domain::authorization::PolicyMode,
 ) -> Result<InitOutcome, AuthorityError> {
     let _lock = BootstrapLock::acquire(state_dir)?;
-    if init_marker_is_regular(state_dir)? {
-        remove_sqlite_bundle(&paths::vault_db(state_dir)).map_err(AuthorityError::storage)?;
-    } else {
-        create_init_marker(state_dir)?;
+    if !dir_is_restore_empty(state_dir)? {
+        return Err(AuthorityError::StateDirectoryNotEmpty);
     }
+    create_init_marker(state_dir)?;
+    let mut may_have_reserved = false;
+    let result =
+        initialize_vault_records(state_dir, password, params, mode, &mut may_have_reserved);
+    if result.is_err() && !may_have_reserved {
+        cleanup_unreserved_init(state_dir)?;
+    }
+    result
+}
 
+fn initialize_vault_records(
+    state_dir: &Path,
+    password: &SecretInput,
+    params: Argon2Params,
+    mode: rekey_domain::authorization::PolicyMode,
+    may_have_reserved: &mut bool,
+) -> Result<InitOutcome, AuthorityError> {
     let vault_id = VaultId::from_random_bytes(random_array()?);
     let vrk = RootKey::generate()?;
     let recovery_key: Zeroizing<[u8; KEY_LEN]> = Zeroizing::new(random_array()?);
@@ -341,6 +350,8 @@ fn init_vault_inner(
     let header = VaultHeaderRecord {
         vault_id,
         format_version: FORMAT_VERSION,
+        generation: 1,
+        generation_mac: crate::crypto::generation::seal(vrk.bytes(), vault_id, FORMAT_VERSION, 1)?,
         crypto_suite: CRYPTO_SUITE_V1.to_owned(),
         created_at_ms: now,
         schema_digest: schema_digest(),
@@ -349,6 +360,7 @@ fn init_vault_inner(
     };
 
     let mut policy_state_record = PolicyStateRecord {
+        mode,
         trust_installed: false,
         bundle_activated: false,
         signer_id: None,
@@ -373,12 +385,14 @@ fn init_vault_inner(
     retention.seal_nonce = retention_seal.nonce;
     retention.seal_ciphertext = retention_seal.ciphertext;
     let mut store = SqliteRecordStore::create(&paths::vault_db(state_dir))?;
+    let anchors = GenerationAnchors::open(state_dir, vault_id)?;
     store.initialize(
         &header,
         &wrappers,
         &policy_state_record,
         &retention,
         &crate::crypto::lease_journal::seal_state(vrk.bytes(), vault_id, &[], 0, None)?,
+        &crate::crypto::usage::seal(vrk.bytes(), vault_id, &[], 0)?,
         AuditEvent {
             event_id: random_array()?,
             request_id: None,
@@ -389,6 +403,8 @@ fn init_vault_inner(
             credential_version: None,
             authorization: None,
             approval: None,
+            request_context: None,
+            usage: None,
             event_type: event_type::VAULT_INITIALIZED,
             outcome: outcome::SUCCESS,
             reason_code: "init".to_owned(),
@@ -396,6 +412,8 @@ fn init_vault_inner(
             latency_ms: None,
             created_at_ms: now,
         },
+        &anchors,
+        may_have_reserved,
     )?;
     drop(store);
 
@@ -435,25 +453,6 @@ fn init_marker_is_regular(state_dir: &Path) -> Result<bool, AuthorityError> {
     }
 }
 
-fn dir_has_only_init_artifacts(state_dir: &Path) -> Result<bool, AuthorityError> {
-    let db = paths::vault_db(state_dir);
-    let sidecars = sqlite_sidecars(&db);
-    let allowed = [
-        paths::init_incomplete(state_dir),
-        paths::broker_lock(state_dir),
-        db,
-        sidecars[0].clone(),
-        sidecars[1].clone(),
-    ];
-    for entry in fs::read_dir(state_dir).map_err(AuthorityError::storage)? {
-        let path = entry.map_err(AuthorityError::storage)?.path();
-        if !allowed.iter().any(|candidate| candidate == &path) {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
 fn create_init_marker(state_dir: &Path) -> Result<(), AuthorityError> {
     let marker = paths::init_incomplete(state_dir);
     let mut file = fs::OpenOptions::new()
@@ -468,17 +467,84 @@ fn create_init_marker(state_dir: &Path) -> Result<(), AuthorityError> {
     crate::durable::fsync(state_dir).map_err(AuthorityError::storage)
 }
 
-fn ensure_init_marker(state_dir: &Path) -> Result<(), AuthorityError> {
-    if init_marker_is_regular(state_dir)? {
-        Ok(())
-    } else {
-        create_init_marker(state_dir)
-    }
-}
-
 fn remove_init_marker(state_dir: &Path) -> Result<(), AuthorityError> {
     crate::durable::remove_file_and_sync(&paths::init_incomplete(state_dir))
         .map_err(AuthorityError::storage)
+}
+
+pub(crate) fn authenticate_restore(
+    store: &SqliteRecordStore,
+    header: &VaultHeaderRecord,
+    proof: &RestoreProof,
+) -> Result<(RootKey, rekey_domain::ipc::BackupSnapshotCut), AuthorityError> {
+    let (wrapper, secret) = match proof {
+        RestoreProof::Password(secret) => (store.active_wrapper(WrapperKind::Password)?, secret),
+        RestoreProof::RecoveryKey(secret) => (store.active_wrapper(WrapperKind::Recovery)?, secret),
+    };
+    let kek = kek_for_wrapper(&wrapper, secret)?;
+    let vrk = unwrap_vrk(header.vault_id, &wrapper, &kek)?;
+    prove_integrity(header, vrk.bytes())?;
+    prove_all_credential_states(store, header.vault_id, &vrk)?;
+    prove_all_payloads(store, header.vault_id, &vrk)?;
+    for record in store.list_all_actions()? {
+        crate::convert::verified_record_to_action(&record, vrk.bytes(), header.vault_id)?;
+    }
+    store.verified_policy_material(vrk.bytes(), header.vault_id)?;
+    store.verified_audit_retention(vrk.bytes(), header.vault_id)?;
+    crate::authority::lease_journal::verify_store(store, vrk.bytes(), header.vault_id)?;
+    store.verified_usage(vrk.bytes(), header.vault_id)?;
+    let cut = store.snapshot_cut()?;
+    Ok((vrk, cut))
+}
+
+/// Authenticate a private copy and report the actual target high-water.
+/// This creates no target files, anchors, durable confirmation or authority.
+pub fn inspect_restore(
+    backup_file: &Path,
+    target_state_dir: &Path,
+    proof: RestoreProof,
+    expected_sha256_hex: &str,
+) -> Result<RollbackContext, AuthorityError> {
+    if !is_sha256_hex(expected_sha256_hex) {
+        return Err(AuthorityError::RestoreFailed);
+    }
+    let scratch = std::env::temp_dir().join(format!(
+        "rekey-restore-inspect-{}",
+        data_encoding::HEXLOWER.encode(&random_array::<16>()?)
+    ));
+    use std::os::unix::fs::DirBuilderExt;
+    fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&scratch)
+        .map_err(|_| AuthorityError::RestoreFailed)?;
+    let result = (|| {
+        let staging = scratch.join("vault.sqlite3");
+        let store = open_restore_copy(backup_file, &staging, expected_sha256_hex)?;
+        let header = store.load_header()?;
+        let _vrk = authenticate_restore(&store, &header, &proof)?;
+        let observed = GenerationAnchors::open(target_state_dir, header.vault_id)?.read()?;
+        Ok(rollback_context(&header, observed))
+    })();
+    fs::remove_dir_all(&scratch).map_err(|_| AuthorityError::RestoreFailed)?;
+    result
+}
+
+fn open_restore_copy(
+    backup: &Path,
+    staging: &Path,
+    expected_sha256: &str,
+) -> Result<SqliteRecordStore, AuthorityError> {
+    let digest = crate::durable::copy_and_sha256(backup, staging)
+        .map_err(|_| AuthorityError::RestoreFailed)?;
+    if !digest.eq_ignore_ascii_case(expected_sha256) {
+        return Err(AuthorityError::RestoreFailed);
+    }
+    SqliteRecordStore::open(staging).map_err(|error| match error {
+        AuthorityError::StorageIntegrityFailed
+        | AuthorityError::UnsupportedFormatVersion
+        | AuthorityError::UnsupportedVaultLayout => error,
+        _ => AuthorityError::RestoreFailed,
+    })
 }
 
 /// Offline restore of a v5 backup into an empty target state directory.
@@ -488,7 +554,11 @@ pub fn restore_vault(
     target_state_dir: &Path,
     proof: RestoreProof,
     expected_sha256_hex: &str,
+    expected: RollbackContext,
 ) -> Result<RestoreInfo, AuthorityError> {
+    if !is_sha256_hex(expected_sha256_hex) {
+        return Err(AuthorityError::RestoreFailed);
+    }
     if target_state_dir.exists() {
         if !restore_marker_is_regular(target_state_dir)? && !dir_is_restore_empty(target_state_dir)?
         {
@@ -500,23 +570,36 @@ pub fn restore_vault(
     fs::set_permissions(target_state_dir, fs::Permissions::from_mode(0o700))
         .map_err(AuthorityError::storage)?;
     verify_state_dir_permissions(target_state_dir)?;
-
     let _lock = BootstrapLock::acquire(target_state_dir)?;
-    if restore_marker_is_regular(target_state_dir)? {
-        cleanup_restore_artifacts(target_state_dir).map_err(|_| AuthorityError::RestoreFailed)?;
-        remove_restore_marker(target_state_dir).map_err(|_| AuthorityError::RestoreFailed)?;
-    }
-    if !dir_is_restore_empty(target_state_dir)? {
+    let inherited_marker = restore_marker_is_regular(target_state_dir)?;
+    if !inherited_marker && !dir_is_restore_empty(target_state_dir)? {
         return Err(AuthorityError::StateDirectoryNotEmpty);
     }
-    create_restore_marker(target_state_dir).map_err(|_| AuthorityError::RestoreFailed)?;
-
-    let result = restore_inner(backup_file, target_state_dir, proof, expected_sha256_hex);
-    if result.is_err() {
-        if cleanup_failed_restore(target_state_dir).is_err() {
-            return Err(AuthorityError::RestoreFailed);
-        }
-        return result;
+    use std::os::unix::fs::DirBuilderExt;
+    let scratch = target_state_dir.join(format!(
+        ".restore-staging-{}",
+        data_encoding::HEXLOWER.encode(&random_array::<16>()?)
+    ));
+    fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&scratch)
+        .map_err(|_| AuthorityError::RestoreFailed)?;
+    let mut may_have_reserved = false;
+    let result = restore_inner(
+        backup_file,
+        target_state_dir,
+        proof,
+        expected_sha256_hex,
+        expected,
+        &scratch,
+        inherited_marker,
+        &mut may_have_reserved,
+    );
+    if scratch.exists() {
+        fs::remove_dir_all(&scratch).map_err(|_| AuthorityError::RestoreFailed)?;
+    }
+    if result.is_err() && !may_have_reserved && !inherited_marker {
+        cleanup_failed_restore(target_state_dir).map_err(|_| AuthorityError::RestoreFailed)?;
     }
     result
 }
@@ -528,11 +611,16 @@ fn checked_restore_output_path(canonical_target: PathBuf) -> Result<String, Auth
         .map_err(|_| AuthorityError::RestoreFailed)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn restore_inner(
     backup_file: &Path,
     target_state_dir: &Path,
     proof: RestoreProof,
     expected_sha256_hex: &str,
+    expected: RollbackContext,
+    scratch: &Path,
+    inherited_marker: bool,
+    may_have_reserved: &mut bool,
 ) -> Result<RestoreInfo, AuthorityError> {
     if !is_sha256_hex(expected_sha256_hex) {
         return Err(AuthorityError::RestoreFailed);
@@ -542,52 +630,56 @@ fn restore_inner(
             .canonicalize()
             .map_err(|_| AuthorityError::RestoreFailed)?,
     )?;
-    let staging = target_state_dir.join(".incoming-vault.sqlite3");
-    let digest = crate::durable::copy_and_sha256(backup_file, &staging)
-        .map_err(|_| AuthorityError::RestoreFailed)?;
-    if !digest.eq_ignore_ascii_case(expected_sha256_hex) {
-        return Err(AuthorityError::RestoreFailed);
-    }
-
-    let mut store = SqliteRecordStore::open(&staging).map_err(|err| match err {
-        AuthorityError::StorageIntegrityFailed
-        | AuthorityError::UnsupportedFormatVersion
-        | AuthorityError::UnsupportedVaultLayout => err,
-        _ => AuthorityError::RestoreFailed,
-    })?;
+    let staging = scratch.join("vault.sqlite3");
+    let mut store = open_restore_copy(backup_file, &staging, expected_sha256_hex)?;
     let header = store.load_header()?;
 
-    let (wrapper, secret) = match &proof {
-        RestoreProof::Password(secret) => (store.active_wrapper(WrapperKind::Password)?, secret),
-        RestoreProof::RecoveryKey(secret) => (store.active_wrapper(WrapperKind::Recovery)?, secret),
-    };
-    let kek = kek_for_wrapper(&wrapper, secret)?;
-    let vrk = unwrap_vrk(header.vault_id, &wrapper, &kek)?;
-    prove_integrity(&header, &vrk)?;
-    prove_all_credential_states(&store, header.vault_id, &vrk)?;
-    prove_all_payloads(&store, header.vault_id, &vrk)?;
-    store.verified_policy_material(vrk.bytes(), header.vault_id)?;
-    store.verified_audit_retention(vrk.bytes(), header.vault_id)?;
-    crate::authority::lease_journal::verify_store(&store, vrk.bytes(), header.vault_id)?;
-    let snapshot_cut = store.snapshot_cut()?;
+    let (vrk, snapshot_cut) = authenticate_restore(&store, &header, &proof)?;
 
-    store.append_audit(&AuditEvent {
-        event_id: random_array()?,
-        request_id: None,
-        session_id: None,
-        action_id: None,
-        action_version: None,
-        credential_id: None,
-        credential_version: None,
-        authorization: None,
-        approval: None,
-        event_type: event_type::RESTORE_COMPLETED,
-        outcome: outcome::SUCCESS,
-        reason_code: "restore".to_owned(),
-        upstream_status: None,
-        latency_ms: None,
-        created_at_ms: now_ms()?,
-    })?;
+    let anchors = GenerationAnchors::open(target_state_dir, header.vault_id)?;
+    let observed = anchors.read()?;
+    if rollback_context(&header, observed) != expected {
+        return Err(AuthorityError::RollbackSuspected);
+    }
+    let next = expected
+        .high_water
+        .unwrap_or(0)
+        .max(header.generation)
+        .checked_add(1)
+        .ok_or(AuthorityError::StorageIntegrityFailed)?;
+    let mut generation =
+        GenerationAttempt::new(&anchors, &header, observed, vrk.bytes(), next, None, None)?;
+    // The source, proof and displayed context are authenticated before any
+    // previous interrupted artifacts are replaced. Keep inherited marker.
+    if inherited_marker {
+        cleanup_restore_artifacts(target_state_dir).map_err(|_| AuthorityError::RestoreFailed)?;
+    } else {
+        create_restore_marker(target_state_dir).map_err(|_| AuthorityError::RestoreFailed)?;
+    }
+    let committed = store.confirm_generation(
+        AuditEvent {
+            event_id: random_array()?,
+            request_id: None,
+            session_id: None,
+            action_id: None,
+            action_version: None,
+            credential_id: None,
+            credential_version: None,
+            authorization: None,
+            approval: None,
+            request_context: None,
+            usage: None,
+            event_type: event_type::RESTORE_COMPLETED,
+            outcome: outcome::SUCCESS,
+            reason_code: "restore".to_owned(),
+            upstream_status: None,
+            latency_ms: None,
+            created_at_ms: now_ms()?,
+        },
+        &mut generation,
+    );
+    *may_have_reserved |= generation.finish().2;
+    committed?;
     store.wal_checkpoint()?;
     drop(store);
 
@@ -597,11 +689,13 @@ fn restore_inner(
         remove_if_present(&side).map_err(|_| AuthorityError::RestoreFailed)?;
     }
     crate::durable::fsync(target_state_dir).map_err(|_| AuthorityError::RestoreFailed)?;
+    fs::remove_dir(scratch).map_err(|_| AuthorityError::RestoreFailed)?;
     remove_restore_marker(target_state_dir).map_err(|_| AuthorityError::RestoreFailed)?;
     Ok(RestoreInfo {
         vault_id: header.vault_id,
         format_version: header.format_version,
-        input_sha256_hex: digest,
+        generation: next,
+        input_sha256_hex: expected_sha256_hex.to_ascii_lowercase(),
         output_path,
         snapshot_cut,
     })
@@ -695,10 +789,11 @@ pub(crate) fn seal_integrity(
 
 pub(crate) fn prove_integrity(
     header: &VaultHeaderRecord,
-    vrk: &RootKey,
+    vrk: &[u8; 32],
 ) -> Result<(), AuthorityError> {
+    crate::crypto::generation::verify(vrk, header)?;
     let plain = aead::open(
-        vrk.bytes(),
+        vrk,
         &integrity_aad(header.vault_id),
         &header.integrity_nonce,
         &header.integrity_ciphertext,
@@ -737,6 +832,7 @@ fn prove_all_payloads(
             .try_into()
             .map_err(|_| AuthorityError::CryptoFailure)?;
         let dek = DataKey::from_bytes(&mut dek_arr);
+        drop(dek_bytes);
         let payload_aad = AadV1 {
             purpose: AadPurpose::CredentialPayload,
             vault_id,
@@ -773,6 +869,69 @@ fn prove_all_credential_states(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concurrent_init_preflight_cannot_clean_another_attempts_committed_vault() {
+        use std::sync::{Arc, Barrier, mpsc};
+        for confirmed in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let state = dir.path().join("init-race");
+            fs::create_dir(&state).unwrap();
+            fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+            let barrier = Arc::new(Barrier::new(2));
+            let (ready, completed) = mpsc::channel();
+            let first_state = state.clone();
+            let first_barrier = barrier.clone();
+            let first = std::thread::spawn(move || {
+                // Both real actors have passed the public preflight before
+                // either reaches the same locked initialization entry point.
+                assert!(dir_is_restore_empty(&first_state).unwrap());
+                first_barrier.wait();
+                init_vault_inner(
+                    &first_state,
+                    &SecretInput::from_slice(b"race-a"),
+                    Argon2Params {
+                        memory_kib: 8,
+                        iterations: 1,
+                        parallelism: 1,
+                    },
+                    rekey_domain::authorization::PolicyMode::Team,
+                )
+                .unwrap();
+                if confirmed {
+                    confirm_vault_init(&first_state).unwrap();
+                }
+                ready.send(()).unwrap();
+            });
+            let second = std::thread::spawn(move || {
+                assert!(dir_is_restore_empty(&state).unwrap());
+                barrier.wait();
+                completed.recv().unwrap();
+                let database = fs::read(paths::vault_db(&state)).unwrap();
+                let anchor = fs::read(state.join("generation")).unwrap();
+                let marker = init_marker_is_regular(&state).unwrap();
+                assert!(matches!(
+                    init_vault_inner(
+                        &state,
+                        &SecretInput::from_slice(b"race-b"),
+                        Argon2Params {
+                            memory_kib: 8,
+                            iterations: 1,
+                            parallelism: 1
+                        },
+                        rekey_domain::authorization::PolicyMode::Team
+                    ),
+                    Err(AuthorityError::StateDirectoryNotEmpty)
+                ));
+                assert_eq!(fs::read(paths::vault_db(&state)).unwrap(), database);
+                assert_eq!(fs::read(state.join("generation")).unwrap(), anchor);
+                assert_eq!(init_marker_is_regular(&state).unwrap(), marker);
+                assert_eq!(marker, !confirmed);
+            });
+            first.join().unwrap();
+            second.join().unwrap();
+        }
+    }
 
     #[test]
     fn restore_output_path_rejects_invalid_native_utf8() {
@@ -822,6 +981,7 @@ mod tests {
                 iterations: 1,
                 parallelism: 1,
             },
+            rekey_domain::authorization::PolicyMode::Team,
         )
         .expect("init");
         for _ in 0..8 {

@@ -12,7 +12,7 @@ use super::{
 use crate::bootstrap::{kek_for_wrapper, prove_integrity, seal_integrity, unwrap_vrk, wrap_vrk};
 use crate::crypto::kdf::{Argon2Params, KDF_ALGORITHM_ARGON2ID, KDF_ALGORITHM_HKDF_SHA256};
 use crate::crypto::keys::RootKey;
-use crate::crypto::{credential_state, policy_state, random_array};
+use crate::crypto::{action_state, credential_state, policy_state, random_array};
 use crate::error::AuthorityError;
 use crate::model::{KeyWrapperRecord, WrapperKind, WrapperState, event_type, outcome};
 use crate::secret::SecretInput;
@@ -44,6 +44,7 @@ impl Worker {
         match self.state {
             VaultState::Locked => {}
             VaultState::Faulted => return Err(AuthorityError::Faulted),
+            VaultState::RollbackSuspected(_) => return Err(AuthorityError::RollbackSuspected),
             VaultState::Unlocked { .. } => {
                 return Err(AuthorityError::Domain(
                     rekey_domain::DomainError::InvalidActionDefinition(
@@ -91,12 +92,22 @@ impl Worker {
             }
         };
         ensure_mutation_current(not_after)?;
-        prove_integrity(&self.header, &old_root)?;
+        let verified_header = self.store.load_header()?;
+        prove_integrity(&verified_header, old_root.bytes())?;
         self.store.validate_credential_version_invariants()?;
         let mut credentials = self.store.list_credentials()?;
         for record in &credentials {
             ensure_mutation_current(not_after)?;
             credential_state::verify(old_root.bytes(), self.header.vault_id, record)?;
+        }
+        let mut actions = self.store.list_all_actions()?;
+        for record in &actions {
+            ensure_mutation_current(not_after)?;
+            crate::convert::verified_record_to_action(
+                record,
+                old_root.bytes(),
+                self.header.vault_id,
+            )?;
         }
         let mut policy = self
             .store
@@ -104,7 +115,17 @@ impl Worker {
         let mut retention = self
             .store
             .verified_audit_retention(old_root.bytes(), self.header.vault_id)?;
+        let (usage, usage_state) = self
+            .store
+            .verified_usage(old_root.bytes(), self.header.vault_id)?;
+        let observed = self.check_generation(&verified_header)?;
         let new_root = RootKey::generate()?;
+        let usage_state = crate::crypto::usage::seal(
+            new_root.bytes(),
+            self.header.vault_id,
+            &usage,
+            usage_state.revision,
+        )?;
         let seal =
             policy_state::seal_retention(new_root.bytes(), self.header.vault_id, &retention)?;
         retention.seal_nonce = seal.nonce;
@@ -119,6 +140,12 @@ impl Worker {
             record.state_nonce = seal.nonce;
             record.state_ciphertext = seal.ciphertext;
         }
+        for record in &mut actions {
+            ensure_mutation_current(not_after)?;
+            let seal = action_state::seal(new_root.bytes(), self.header.vault_id, record)?;
+            record.seal_nonce = seal.nonce;
+            record.seal_ciphertext = seal.ciphertext;
+        }
         let seal = policy_state::seal_state(new_root.bytes(), self.header.vault_id, &policy.state)?;
         policy.state.seal_nonce = seal.nonce;
         policy.state.seal_ciphertext = seal.ciphertext;
@@ -132,7 +159,7 @@ impl Worker {
             bundle.seal_nonce = seal.nonce;
             bundle.seal_ciphertext = seal.ciphertext;
         }
-        let mut header = self.header.clone();
+        let mut header = verified_header.clone();
         let integrity = seal_integrity(header.vault_id, &new_root)?;
         header.integrity_nonce = integrity.nonce;
         header.integrity_ciphertext = integrity.ciphertext;
@@ -197,18 +224,37 @@ impl Worker {
             return Err(error);
         }
         ensure_mutation_current(not_after)?;
-        self.store.replace_root_ciphertexts(
+        let mut generation = crate::store::generation::GenerationAttempt::new(
+            &self.anchors,
+            &verified_header,
+            observed,
+            new_root.bytes(),
+            verified_header
+                .generation
+                .checked_add(1)
+                .ok_or(AuthorityError::StorageIntegrityFailed)?,
+            not_after,
+            None,
+        )?;
+        let result = self.store.replace_root_ciphertexts(
             &header,
             &versions,
             &credentials,
+            &actions,
             &policy,
             &retention,
             &wrappers,
             &journal,
             &journal_state,
+            &usage_state,
             audit,
             not_after,
-        )?;
+            &mut generation,
+        );
+        let completed = generation.finish();
+        self.complete_generation(result, completed)?;
+        header.generation = completed.0;
+        header.generation_mac = completed.1;
         // No fallible operation is allowed after commit.
         self.header = header;
         self.failed_unlocks = 0;

@@ -8,6 +8,7 @@ import plistlib
 import pwd
 import re
 import sys
+from typing import Optional
 
 
 STOP_HARD_CEILING_SECONDS = 130
@@ -65,18 +66,21 @@ def validate_systemd_user(user: str) -> None:
         raise ValueError("systemd service must run as a non-root user")
 
 
-def systemd_definition(rekeyd: pathlib.Path, state: pathlib.Path, user: str, oidc_profile: pathlib.Path = None) -> None:
-    validate_systemd_user(user)
+def systemd_definition(rekeyd: pathlib.Path, state: pathlib.Path, user: Optional[str], oidc_profile: pathlib.Path = None) -> None:
+    if user is not None:
+        validate_systemd_user(user)
     profile_argument = "" if oidc_profile is None else " --oidc-admin-profile " + systemd_quote(oidc_profile)
     sys.stdout.write("\n".join([
         "[Unit]",
         "Description=Rekey Credential Authority",
-        "After=local-fs.target network-online.target",
-        "Wants=network-online.target",
+        *([] if user is None else [
+            "After=local-fs.target network-online.target",
+            "Wants=network-online.target",
+        ]),
         "",
         "[Service]",
         "Type=simple",
-        f"User={user}",
+        *([] if user is None else [f"User={user}"]),
         f"ExecStart={systemd_quote(rekeyd)} serve --state-dir {systemd_quote(state)}{profile_argument}",
         "Restart=on-failure",
         "RestartSec=5s",
@@ -86,7 +90,7 @@ def systemd_definition(rekeyd: pathlib.Path, state: pathlib.Path, user: str, oid
         "NoNewPrivileges=true",
         "",
         "[Install]",
-        "WantedBy=multi-user.target",
+        "WantedBy=default.target" if user is None else "WantedBy=multi-user.target",
         "",
     ]))
 
@@ -134,7 +138,7 @@ def systemd_metrics_timer() -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("platform", choices=("launchd", "systemd", "systemd-metrics-service", "systemd-metrics-timer"))
+    parser.add_argument("platform", choices=("launchd", "systemd-user", "systemd", "systemd-metrics-service", "systemd-metrics-timer"))
     parser.add_argument("--rekeyd")
     parser.add_argument("--rekey")
     parser.add_argument("--state-dir")
@@ -175,6 +179,10 @@ def main() -> int:
                 if args.label is None or args.run_as_user is not None:
                     raise ValueError("launchd requires --label and rejects --run-as-user")
                 launchd_definition(rekeyd, state, args.label, args.oidc_admin_profile)
+            elif args.platform == "systemd-user":
+                if args.label is not None or args.run_as_user is not None:
+                    raise ValueError("systemd-user rejects --label and --run-as-user")
+                systemd_definition(rekeyd, state, None, args.oidc_admin_profile)
             else:
                 if args.label is not None or args.run_as_user is None:
                     raise ValueError("systemd requires --run-as-user and rejects --label")

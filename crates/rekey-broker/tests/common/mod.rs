@@ -100,7 +100,13 @@ async fn start_broker_configured(
 ) -> TestBroker {
     let dir = tempfile::tempdir().expect("tempdir");
     let state_dir = dir.path().join("state");
-    init_vault(&state_dir, &SecretInput::from_slice(PASSWORD), kdf).expect("init");
+    init_vault(
+        &state_dir,
+        &SecretInput::from_slice(PASSWORD),
+        kdf,
+        rekey_domain::authorization::PolicyMode::Team,
+    )
+    .expect("init");
     rekey_vault::bootstrap::confirm_vault_init(&state_dir).expect("confirm");
 
     let mut config = BrokerConfig::new(state_dir.clone());

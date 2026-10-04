@@ -30,7 +30,9 @@ enum Attack {
     AuditNonEmptyMetadata,
     AuditUnknownPageField,
     AuditMalformedRecord,
+    #[cfg_attr(not(feature = "lab"), allow(dead_code))]
     WorkloadResponseBody,
+    #[cfg_attr(not(feature = "lab"), allow(dead_code))]
     WorkloadUnknownResponseField,
 }
 
@@ -238,9 +240,9 @@ fn run_attack(attack: Attack) -> std::process::Output {
                 request.request_id,
                 resp_msg::OK,
                 serde_json::json!({
-                    "record_type": "rekey.approval.challenge.envelope.v1",
+                    "record_type": "rekey.approval.challenge.envelope.v2",
                     "challenge": {
-                    "record_type": "rekey.approval.challenge.v1",
+                    "record_type": "rekey.approval.challenge.v2",
                     "approval_request_id": "00000000-0000-4000-8000-000000000001",
                     "tenant_id": "00000000-0000-4000-8000-000000000002",
                     "principal_id": "00000000-0000-4000-8000-000000000003",
@@ -254,11 +256,10 @@ fn run_attack(attack: Attack) -> std::process::Output {
                     "policy_sha256": "11".repeat(32),
                     "policy_rule_id": "00000000-0000-4000-8000-000000000006",
                     "mode": "one-time",
-                    "quorum": 1,
-                    "approver_ids": [
-                        "00000000-0000-4000-8000-000000000008",
-                        "00000000-0000-4000-8000-000000000007"
-                    ],
+                    "approver": {"kind": "ed25519", "threshold": 1, "keys": [
+                        "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+                        "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c"
+                    ]},
                     "max_uses": 1,
                     "created_at_ms": 1,
                     "max_expires_at_ms": 2,
@@ -274,7 +275,7 @@ fn run_attack(attack: Attack) -> std::process::Output {
                 Channel::Admin,
                 request.request_id,
                 resp_msg::OK,
-                br#"{"record_type":"rekey.approval.pending.v1","challenges":[],"secret_hint":"forged"}"#.to_vec(),
+                br#"{"record_type":"rekey.approval.pending.v2","challenges":[],"secret_hint":"forged"}"#.to_vec(),
                 0,
                 Vec::new(),
             ),
@@ -419,7 +420,9 @@ fn cli_rejects_forged_broker_responses() {
         Attack::AuditNonEmptyMetadata,
         Attack::AuditUnknownPageField,
         Attack::AuditMalformedRecord,
+        #[cfg(feature = "lab")]
         Attack::WorkloadResponseBody,
+        #[cfg(feature = "lab")]
         Attack::WorkloadUnknownResponseField,
     ] {
         let output = run_attack(attack);
@@ -593,6 +596,7 @@ fn audit_export_fixture(expire_second_page: bool) {
                     code: "AUDIT_SNAPSHOT_EXPIRED".into(),
                     message: "audit snapshot expired; restart the query or export".into(),
                     retryable: false,
+                    approval: None,
                 })
                 .unwrap()
             } else {
@@ -711,6 +715,7 @@ fn valid_audit_page_with_one_event() -> Vec<u8> {
     .into_bytes()
 }
 
+#[cfg(feature = "lab")]
 fn run_metrics_response(
     metadata: serde_json::Value,
     body: &[u8],
@@ -719,6 +724,7 @@ fn run_metrics_response(
     run_metrics_response_to(metadata, body, prometheus, None)
 }
 
+#[cfg(feature = "lab")]
 fn run_metrics_response_to(
     metadata: serde_json::Value,
     body: &[u8],
@@ -771,6 +777,7 @@ fn run_metrics_response_to(
 }
 
 #[test]
+#[cfg(feature = "lab")]
 fn metrics_cli_renders_typed_snapshots_and_rejects_untrusted_shape() {
     let mut snapshot = rekey_domain::ipc::MetricsResponse::default();
     snapshot.agent.dispatch.requests_total = 42;
@@ -811,6 +818,7 @@ fn metrics_cli_renders_typed_snapshots_and_rejects_untrusted_shape() {
 }
 
 #[test]
+#[cfg(feature = "lab")]
 fn metrics_textfile_cli_publishes_and_invalidates_untrusted_or_unavailable_data() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().canonicalize().unwrap();

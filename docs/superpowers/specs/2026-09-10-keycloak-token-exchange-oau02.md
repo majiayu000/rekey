@@ -1,5 +1,8 @@
 # OAU-02 fixed Keycloak standard token exchange
 
+> Status: Lab (v3 scope; enterprise reserve)
+> Existing contracts and evidence are retained; this capability is excluded from the default v3 build and release package.
+
 This source contract adds one built-in `keycloak-token-exchange@1`. It is not
 arbitrary OAuth, GitHub ID-token federation, refresh, discovery, or a signer.
 The Agent keeps ExecuteFixedHttpAction and never receives a provider token.

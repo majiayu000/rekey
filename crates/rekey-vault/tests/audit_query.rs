@@ -295,6 +295,8 @@ fn event(
             parameter_hash: [0xab; 32],
         }),
         approval: None,
+        request_context: None,
+        usage: None,
         event_type: "test.audit",
         outcome,
         reason_code: "test".to_owned(),
@@ -302,4 +304,158 @@ fn event(
         latency_ms: Some(1),
         created_at_ms,
     }
+}
+
+fn profile_context(model: Option<String>) -> rekey_domain::audit::ProfileRequestAuditContext {
+    rekey_domain::audit::ProfileRequestAuditContext {
+        profile_name: "writer".into(),
+        policy_sha256: "cd".repeat(32),
+        instance_slug: "provider".into(),
+        capability: "messages".into(),
+        model,
+    }
+}
+
+#[test]
+fn large_profile_metadata_pages_keep_whole_records_and_every_cursor() {
+    let vault = common::init_test_vault();
+    let mut store = SqliteRecordStore::open(&paths::vault_db(&vault.state_dir)).unwrap();
+    let session = SessionId::new_random();
+    let model = "\"".repeat(30_000);
+    let context = profile_context(Some(model));
+    assert!(serde_json::to_vec(&context).unwrap().len() < 64 * 1024);
+    let principal = PrincipalId::new_random();
+    for byte in 1..=90 {
+        let mut row = event(
+            byte,
+            RequestId::new_random(),
+            session,
+            ActionId::new_random(),
+            CredentialId::new_random(),
+            "success",
+            1,
+        );
+        row.event_type = "execution.started";
+        row.authorization.as_mut().unwrap().principal_id = principal;
+        let mut historical = context.clone();
+        if byte % 2 == 0 {
+            historical.profile_name = "reader".into();
+        }
+        row.request_context = Some(historical);
+        store.append_audit(&row).unwrap();
+    }
+    let mut query = AuditQuery {
+        session_id: Some(session),
+        ..query(100)
+    };
+    let mut ids = std::collections::BTreeSet::new();
+    let mut pages = 0;
+    let mut names = std::collections::BTreeSet::new();
+    loop {
+        let page = store.audit_query(&query).unwrap();
+        page.validate_for(&query).unwrap();
+        assert!(
+            serde_json::to_vec(&page).unwrap().len()
+                <= rekey_domain::ipc::RESPONSE_BODY_MAX_BYTES as usize
+        );
+        for row in &page.events {
+            let historical = row.request_context.as_ref().unwrap();
+            assert_eq!(row.principal_id, Some(principal));
+            assert_eq!(historical.model, context.model);
+            assert_eq!(historical.policy_sha256, context.policy_sha256);
+            names.insert(historical.profile_name.clone());
+            assert!(ids.insert(row.sequence));
+        }
+        pages += 1;
+        if pages == 1 {
+            assert!(page.events.len() < 90 && !page.events.is_empty());
+            let mut later = event(
+                91,
+                RequestId::new_random(),
+                session,
+                ActionId::new_random(),
+                CredentialId::new_random(),
+                "success",
+                1,
+            );
+            later.request_context = Some(profile_context(None));
+            store.append_audit(&later).unwrap();
+        }
+        let Some(before) = page.next_before_sequence else {
+            break;
+        };
+        query.snapshot_max_sequence = Some(page.snapshot_max_sequence);
+        query.before_sequence = Some(before);
+    }
+    assert_eq!(ids.len(), 90);
+    assert_eq!(pages, 2);
+    assert_eq!(names, ["reader".to_owned(), "writer".to_owned()].into());
+}
+
+#[test]
+fn malformed_profile_metadata_is_not_silently_skipped_by_filters() {
+    let vault = common::init_test_vault();
+    let db = paths::vault_db(&vault.state_dir);
+    let store = SqliteRecordStore::open(&db).unwrap();
+    let connection = rusqlite::Connection::open(&db).unwrap();
+    for value in [
+        serde_json::json!({"request_context":profile_context(None),"usage":null,"unknown":true}),
+        serde_json::json!({"request_context":{"profile_name":"../bad","policy_sha256":"cd".repeat(32),"instance_slug":"provider","capability":"messages","model":null},"usage":null}),
+        serde_json::json!({"instance_slug":"provider","utc_day":0,"output_tokens":1,"source":"measured"}),
+    ] {
+        connection
+            .execute(
+                "UPDATE audit_events SET metadata_json=?1 WHERE sequence=1",
+                [value.to_string()],
+            )
+            .unwrap();
+        let query = AuditQuery {
+            request_id: Some(RequestId::new_random()),
+            ..query(100)
+        };
+        assert!(matches!(
+            store.audit_query(&query),
+            Err(AuthorityError::StorageIntegrityFailed)
+        ));
+    }
+}
+
+#[tokio::test]
+async fn locked_startup_preserves_non_llm_profile_context_in_abandoned_terminal() {
+    let vault = common::init_test_vault();
+    let request = RequestId::new_random();
+    let context = profile_context(None);
+    {
+        let mut store = SqliteRecordStore::open(&paths::vault_db(&vault.state_dir)).unwrap();
+        let mut started = event(
+            99,
+            request,
+            SessionId::new_random(),
+            ActionId::new_random(),
+            CredentialId::new_random(),
+            "success",
+            1,
+        );
+        started.event_type = "execution.started";
+        started.request_context = Some(context.clone());
+        store.append_audit(&started).unwrap();
+    }
+    let (handle, join) = common::spawn(&vault.state_dir);
+    assert_eq!(handle.status().await.unwrap().state, "locked");
+    let page = handle
+        .audit_query(AuditQuery {
+            request_id: Some(request),
+            ..query(100)
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.events.len(), 2);
+    assert_eq!(page.events[0].event_type, "execution.indeterminate");
+    assert!(
+        page.events
+            .iter()
+            .all(|row| row.request_context.as_ref() == Some(&context))
+    );
+    handle.shutdown(None).await.unwrap();
+    join.join().unwrap();
 }

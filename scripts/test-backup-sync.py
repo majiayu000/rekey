@@ -31,7 +31,7 @@ class BackupSyncTests(unittest.TestCase):
             binary.write_text("#!/usr/bin/env python3\nimport hashlib,json,sys\nfrom pathlib import Path\n"
                               f"with open({str(record)!r}, 'a') as f:f.write(json.dumps(sys.argv[1:])+'\\n')\n"
                               "if sys.argv[-1]=='--version':print('fixture-version')\n"
-                              "else:\n p=Path(sys.argv[-1]);p.write_bytes(b'fixture-encrypted-snapshot');print(json.dumps({'sha256_hex':hashlib.sha256(p.read_bytes()).hexdigest(),'output_path':str(p),'vault_id':'fixture-vault','created_at_ms':1,'format_version':19}))\n")
+                              "else:\n p=Path(sys.argv[-1]);p.write_bytes(b'fixture-encrypted-snapshot');print(json.dumps({'sha256_hex':hashlib.sha256(p.read_bytes()).hexdigest(),'output_path':str(p),'vault_id':'fixture-vault','created_at_ms':1,'format_version':19,'generation':18446744073709551615}))\n")
             binary.chmod(0o700)
             session = root / 'unreadable $session% path'
             session.symlink_to(root / 'missing-token')
@@ -47,6 +47,7 @@ class BackupSyncTests(unittest.TestCase):
             receipt = (completed[0] / 'receipt.json').read_text()
             self.assertNotIn(str(session), receipt)
             self.assertNotIn('admin_session', receipt)
+            self.assertEqual(json.loads(receipt)['generation'], 2**64 - 1)
             self.assertFalse(session.exists())
 
     def test_failed_cli_never_publishes_receipt(self):
@@ -122,7 +123,7 @@ class ReceiverDurabilityTests(unittest.TestCase):
         self.stage = self.root / '.upload-test'
         self.artifact = b'RKBACKUP encrypted fixture\x00' * 85000
         self.receipt = {'sha256_hex': hashlib.sha256(self.artifact).hexdigest(),
-                        'format_version': 2, 'runtime_version': 'test-only'}
+                        'format_version': 2, 'runtime_version': 'test-only', 'generation': 2**64 - 1}
         self.write_object(self.stage)
 
     def write_object(self, directory, artifact=None, receipt=None):
@@ -428,12 +429,12 @@ class DrArtifactTests(unittest.TestCase):
         self.restored = self.root / 'actual-state'
         self.restored.mkdir(mode=0o700)
         self.cut = {'audit_sequence': 27, 'policy': {'version': 3, 'bundle_sha256': 'a' * 64}}
-        self.backup = dict(vault_id='12345678-1234-4234-9234-123456789abc', format_version=21,
+        self.backup = dict(vault_id='12345678-1234-4234-9234-123456789abc', format_version=25,
                            created_at_ms=100, sha256_hex=hashlib.sha256(self.artifact.read_bytes()).hexdigest(),
-                           output_path=str(self.artifact), snapshot_cut=self.cut)
-        self.restore = dict(vault_id=self.backup['vault_id'], format_version=21,
+                           output_path=str(self.artifact), snapshot_cut=self.cut, generation=7)
+        self.restore = dict(vault_id=self.backup['vault_id'], format_version=25,
                             input_sha256_hex=self.backup['sha256_hex'], output_path=str(self.restored),
-                            snapshot_cut=self.cut)
+                            snapshot_cut=self.cut, generation=12)
         self.bp, self.rp, self.output = self.root / 'backup.json', self.root / 'restore.json', self.root / 'report'
         self.write(self.bp, self.backup)
         self.write(self.rp, self.restore)
@@ -450,6 +451,8 @@ class DrArtifactTests(unittest.TestCase):
         self.assertEqual(report['outcome'], 'artifact_match')
         self.assertEqual(report['restored_state_dir'], str(self.restored))
         self.assertEqual(report['snapshot_cut'], self.cut)
+        self.assertEqual(report['backup_generation'], 7)
+        self.assertEqual(report['restored_generation'], 12)
         self.assertFalse(report['field_validated'])
         self.assertIsNone(report['rpo'])
         self.assertIsNone(report['rto'])
@@ -470,6 +473,31 @@ class DrArtifactTests(unittest.TestCase):
                 self.write(self.rp, bad)
                 self.assertEqual(DR.main(self.argv), 1)
                 self.assertFalse(self.output.exists())
+
+    def test_required_generations_are_positive_u64_and_restore_must_advance(self):
+        for path, original in ((self.bp, self.backup), (self.rp, self.restore)):
+            for invalid in (None, True, 0, -1, 2**64, 1.5, '1'):
+                with self.subTest(receipt=path.name, generation=invalid):
+                    bad = dict(original)
+                    if invalid is None:
+                        del bad['generation']
+                    else:
+                        bad['generation'] = invalid
+                    self.write(path, bad)
+                    self.assertEqual(DR.main(self.argv), 1)
+                    self.assertFalse(self.output.exists())
+            self.write(path, original)
+        for generation in (6, 7):
+            self.write(self.rp, dict(self.restore, generation=generation))
+            self.assertEqual(DR.main(self.argv), 1)
+            self.assertFalse(self.output.exists())
+        # A known high-water may put restore more than one generation ahead.
+        self.write(self.bp, dict(self.backup, generation=2**64 - 2))
+        self.write(self.rp, dict(self.restore, generation=2**64 - 1))
+        self.assertEqual(DR.main(self.argv), 0)
+        report = json.loads((self.output / 'report.json').read_text())
+        self.assertEqual(report['backup_generation'], 2**64 - 2)
+        self.assertEqual(report['restored_generation'], 2**64 - 1)
 
     def test_actual_artifact_mutation_and_missing_partial_duplicate_receipt_reject(self):
         self.artifact.write_bytes(b'changed-encrypted-fixture')

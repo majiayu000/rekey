@@ -1,3 +1,4 @@
+use rekey_domain::ipc::ProofKind;
 use std::io::Write;
 use std::path::Path;
 
@@ -7,7 +8,7 @@ use zeroize::Zeroizing;
 
 use super::{
     LIFECYCLE_RESPONSE_TIMEOUT, admin_with_response_timeout, print_json, prompt_secret, proof_body,
-    proof_kind, stdin_lines, step_up_prompt,
+    stdin_lines, step_up_prompt,
 };
 use crate::client::CliError;
 
@@ -25,7 +26,7 @@ struct RecoveryRotatedResponse {
 
 pub fn password_change(
     state_dir: &Path,
-    recovery: bool,
+    kind: ProofKind,
     stdin_secrets: bool,
 ) -> Result<(), CliError> {
     let (proof, new_password) = if stdin_secrets {
@@ -34,7 +35,7 @@ pub fn password_change(
         let proof = lines.remove(0);
         (proof, new_password)
     } else {
-        let proof = prompt_secret(step_up_prompt(recovery))?;
+        let proof = prompt_secret(step_up_prompt(kind))?;
         let first = prompt_secret("New vault password: ")?;
         let second = prompt_secret("Confirm new password: ")?;
         if first.as_slice() != second.as_slice() {
@@ -44,7 +45,7 @@ pub fn password_change(
     };
     let body_len = 1 + 4 + proof.len() + 4 + new_password.len();
     let mut body = Zeroizing::new(Vec::with_capacity(body_len));
-    ipc::encode_proof_and_secret_body(proof_kind(recovery), &proof, &new_password, &mut body);
+    ipc::encode_proof_and_secret_body(kind, &proof, &new_password, &mut body);
     // The Broker bounds queue admission at 25 seconds, then deliberately
     // waits for an admitted transaction's definitive result. Keep the client
     // alive for that post-admission completion instead of reverting to the
@@ -63,9 +64,13 @@ pub fn password_change(
     print_json::<PasswordChangedResponse>(&metadata)
 }
 
-pub fn recovery_rotate(state_dir: &Path, password_stdin: bool) -> Result<(), CliError> {
-    let password = super::read_password(password_stdin, "Vault password (step-up): ")?;
-    let body = proof_body(false, &password);
+pub fn recovery_rotate(
+    state_dir: &Path,
+    kind: ProofKind,
+    password_stdin: bool,
+) -> Result<(), CliError> {
+    let proof = super::read_step_up(kind, password_stdin)?;
+    let body = proof_body(kind, &proof);
     let (metadata, recovery) = admin_with_response_timeout(state_dir, LIFECYCLE_RESPONSE_TIMEOUT)?
         .call(admin_msg::RECOVERY_ROTATE, b"{}", &body)?;
     let receipt: RecoveryRotatedResponse = serde_json::from_slice(&metadata)
@@ -94,11 +99,11 @@ pub fn recovery_rotate(state_dir: &Path, password_stdin: bool) -> Result<(), Cli
 
 pub fn key_rotate_dek(
     state_dir: &Path,
-    recovery: bool,
+    kind: ProofKind,
     password_stdin: bool,
 ) -> Result<(), CliError> {
-    let proof = super::read_step_up(recovery, password_stdin)?;
-    let body = proof_body(recovery, &proof);
+    let proof = super::read_step_up(kind, password_stdin)?;
+    let body = proof_body(kind, &proof);
     let (metadata, response_body) = admin_with_response_timeout(
         state_dir,
         LIFECYCLE_RESPONSE_TIMEOUT,

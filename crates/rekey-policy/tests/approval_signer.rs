@@ -3,7 +3,7 @@ use aws_lc_rs::{
     signature::{Ed25519KeyPair, KeyPair},
 };
 use data_encoding::{BASE64URL_NOPAD, HEXLOWER};
-use rekey_domain::{Timestamp, capability::ActionVersionRef, ids::ActionId};
+use rekey_domain::Timestamp;
 use rekey_policy::{
     parse_and_verify_approval_grant, parse_and_verify_policy_bundle, parse_policy_trust,
 };
@@ -30,10 +30,10 @@ fn write_json(path: &std::path::Path, value: &Value) {
     fs::write(path, serde_json::to_vec(value).unwrap()).unwrap();
 }
 fn signed_envelope(challenge: &Value, origin: &Ed25519KeyPair) -> Value {
-    let mut message = b"RKCHALLENGE\0\x01".to_vec();
+    let mut message = b"RKCHALLENGE\0\x02".to_vec();
     message.extend(serde_jcs::to_vec(challenge).unwrap());
     json!({
-        "record_type": "rekey.approval.challenge.envelope.v1",
+        "record_type": "rekey.approval.challenge.envelope.v2",
         "challenge": challenge,
         "signature": BASE64URL_NOPAD.encode(origin.sign(&message).as_ref()),
     })
@@ -71,10 +71,10 @@ impl Fixture {
         let policy_expiry = created + 300_000;
         let trust = json!({"format_version":1,"signer_id":signer_id,"algorithm":"ed25519","public_key":HEXLOWER.encode(signer.public_key().as_ref())});
         let resource = json!({"type":"test.resource","id":"one"});
-        let snapshot = json!({"format_version":3,"version":1,"expires_at_ms":policy_expiry,
+        let snapshot = json!({"format_version": 6, "profiles": [],"version":1,"expires_at_ms":policy_expiry,
             "approvers":[{"approver_id":approver,"algorithm":"ed25519","public_key":HEXLOWER.encode(key.public_key().as_ref())}],
             "workload_identities":[],"bindings":[{"action_id":action_id,"version":1,"resource":resource,"parameter_schema_id":"test/v1","parameter_schema":{"type":"object","required":["message"],"properties":{"message":{"type":"string"}},"additionalProperties":false}}],
-            "rules":[{"id":rule,"effect":"require-approval","principal_id":principal,"action_id":action_id,"version":1,"resource":resource,"parameters":{"kind":"any_validated"},"approval":{"approver_ids":[approver],"quorum":1,"mode":"one-time","max_uses":1}}]});
+            "rules":[{"id":rule,"effect":"require-approval","principal_id":principal,"action_id":action_id,"version":1,"resource":resource,"parameters":{"kind":"any_validated"},"approver":{"kind":"ed25519","keys":[HEXLOWER.encode(key.public_key().as_ref())],"threshold":1},"approval":{"mode":"one-time","max_uses":1}}]});
         let mut bundle = json!({"format_version":1,"signer_id":signer_id,"snapshot":snapshot});
         let mut message = b"RKPOLICY\0\x01".to_vec();
         message.extend(serde_jcs::to_vec(&bundle).unwrap());
@@ -89,25 +89,26 @@ impl Fixture {
             Timestamp::from_unix_ms(created),
         )
         .unwrap();
-        let body = r#"{"message":"approved"}"#;
-        let (_, parameters) = verified
-            .snapshot()
-            .canonicalize(
-                ActionVersionRef {
-                    action_id: action_id.parse::<ActionId>().unwrap(),
-                    version: 1,
-                },
-                Some("application/json"),
-                &[],
-                body.as_bytes(),
-            )
-            .unwrap();
-        let action = json!({"id":action_id,"name":"approval-test","version":1,"enabled":true,"credential_id":id(),"origin":"https://example.com","method":"POST","exact_path":"/approved","auth":{"header_name":"authorization","prefix":"Bearer "},"timeout_ms":5000,"request_policy":{"max_body_bytes":4096,"allowed_extra_headers":[]},"response_policy":{"max_body_bytes":4096,"allowed_headers":[]}});
+        let action = json!({"id":action_id,"name":"approval-test","version":1,"enabled":true,"credential_id":id(),"origin":"https://example.com","method":"POST","target":{"kind":"fixed","path":"/approved"},"auth":{"header_name":"authorization","prefix":"Bearer "},"timeout_ms":5000,"request_policy":{"max_body_bytes":4096,"allowed_extra_headers":[]},"response_policy":{"max_body_bytes":4096,"allowed_headers":[]}});
         let parsed: rekey_domain::action::FixedHttpAction =
             serde_json::from_value(action.clone()).unwrap();
         parsed.validate().unwrap();
         write_json(&dir.path().join("action.json"), &action);
-        let inner = json!({"record_type":"rekey.approval.challenge.v1","approval_request_id":id(),"tenant_id":id(),"principal_id":principal,"session_id":id(),"action_id":action_id,"action_version":1,"resource":resource,"schema_id":"test/v1","parameter_sha256":HEXLOWER.encode(&parameters.canonical_hash),"policy_version":1,"policy_sha256":HEXLOWER.encode(&verified.policy_digest()),"policy_rule_id":rule,"mode":"one-time","quorum":1,"approver_ids":[approver],"max_uses":1,"created_at_ms":created,"max_expires_at_ms":created+120_000});
+        let body = r#"{"message":"approved"}"#;
+        let (_, parameters, _) = verified
+            .snapshot()
+            .canonicalize(
+                &parsed,
+                rekey_policy::ActionRequest {
+                    params: &Default::default(),
+                    query: &Default::default(),
+                    content_type: Some("application/json"),
+                    headers: &[],
+                    body: body.as_bytes(),
+                },
+            )
+            .unwrap();
+        let inner = json!({"record_type":"rekey.approval.challenge.v2","approval_request_id":id(),"tenant_id":id(),"principal_id":principal,"session_id":id(),"action_id":action_id,"action_version":1,"resource":resource,"schema_id":"test/v1","parameter_sha256":HEXLOWER.encode(&parameters.canonical_hash),"policy_version":1,"policy_sha256":HEXLOWER.encode(&verified.policy_digest()),"policy_rule_id":rule,"mode":"one-time","approver":{"kind":"ed25519","keys":[HEXLOWER.encode(key.public_key().as_ref())],"threshold":1},"max_uses":1,"created_at_ms":created,"max_expires_at_ms":created+120_000});
         let request = json!({"challenge":signed_envelope(&inner, &origin),"content_type":"application/json","headers":[],"body":body});
         write_json(&dir.path().join("request.json"), &request);
         Self {
@@ -210,6 +211,7 @@ fn valid_grant_verifies_is_private_bounded_and_never_overwrites() {
     .unwrap();
     let verified = parse_and_verify_approval_grant(&bytes, policy.snapshot()).unwrap();
     let grant = verified.grant();
+    assert_eq!(grant.format_version, 1);
     assert_eq!(
         grant.approval_request_id.to_string(),
         f.inner()["approval_request_id"].as_str().unwrap()
@@ -247,14 +249,14 @@ fn reviewed_digest_and_changed_body_are_rejected() {
 }
 
 #[test]
-fn changed_trusted_action_requires_new_review() {
+fn changed_trusted_target_requires_a_new_challenge() {
     let f = Fixture::new();
     let digest = f.review();
     let mut action: Value =
         serde_json::from_slice(&fs::read(f.path("action.json")).unwrap()).unwrap();
-    action["exact_path"] = "/different-target".into();
+    action["target"]["path"] = "/different-target".into();
     write_json(&f.path("action.json"), &action);
-    assert_ne!(f.review(), digest);
+    assert!(!f.invoke("review", None, "unused").status.success());
     f.reject_sign(&digest);
 }
 
@@ -284,6 +286,44 @@ fn expired_challenge_is_rejected_without_signing() {
 }
 
 #[test]
+fn signer_rejects_local_remote_double_and_window_without_expanding_its_role() {
+    for kind in [
+        "local",
+        "remote",
+        "double",
+        "window",
+        "unregistered",
+        "old-record",
+    ] {
+        let mut f = Fixture::new();
+        let digest = f.review();
+        let challenge = &mut f.request["challenge"]["challenge"];
+        match kind {
+            "local" => challenge["approver"] = json!({"kind":"local-presence"}),
+            "remote" => challenge["approver"] = json!({"kind":"remote"}),
+            "double" => {
+                let other = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
+                let other = Ed25519KeyPair::from_pkcs8(other.as_ref()).unwrap();
+                let keys = challenge["approver"]["keys"].as_array_mut().unwrap();
+                keys.push(json!(HEXLOWER.encode(other.public_key().as_ref())));
+                keys.sort_by(|a, b| a.as_str().cmp(&b.as_str()));
+                challenge["approver"]["threshold"] = 2.into();
+            }
+            "window" => challenge["mode"] = "time-window".into(),
+            "unregistered" => challenge["approver"]["keys"] = json!(["ff".repeat(32)]),
+            "old-record" => challenge["record_type"] = "rekey.approval.challenge.v1".into(),
+            _ => unreachable!(),
+        }
+        f.resign_inner();
+        assert!(
+            !f.invoke("review", None, "unused").status.success(),
+            "accepted {kind}"
+        );
+        f.reject_sign(&digest);
+    }
+}
+
+#[test]
 fn unsigned_or_wrong_origin_challenge_is_rejected() {
     let mut f = Fixture::new();
     let digest = f.review();
@@ -308,4 +348,70 @@ fn unsigned_or_wrong_origin_challenge_is_rejected() {
             .success()
     );
     assert!(!f.path("rejected.json").exists());
+}
+
+#[test]
+fn template_signer_reviews_the_rendered_target_and_rejects_changed_values() {
+    let mut f = Fixture::new();
+    let mut action: Value =
+        serde_json::from_slice(&fs::read(f.path("action.json")).unwrap()).unwrap();
+    action["target"] = json!({"kind":"template","target":{"path":"/issues/{number}","params":{"number":"int:1..100"},"query":{"state":"enum:open,closed","page":"int:1..100"}},"fixed_headers":{"x-template":"one"},"body_schema":{"type":"object","required":["message"],"properties":{"message":{"const":"approved"}},"additionalProperties":false},"source":{"template":"team@1","capability":"issues","action_index":0,"digest":vec![7;32],"signer_id":null},"default_policy":{"rule":"allow"}});
+    write_json(&f.path("action.json"), &action);
+    let parsed: rekey_domain::action::FixedHttpAction = serde_json::from_value(action).unwrap();
+    f.request["params"] = json!({"number":"007"});
+    f.request["query"] = json!({"state":"open","page":"02"});
+    let trust = parse_policy_trust(&fs::read(f.path("trust.json")).unwrap()).unwrap();
+    let bundle = parse_and_verify_policy_bundle(
+        &fs::read(f.path("policy.json")).unwrap(),
+        &trust,
+        Timestamp::from_unix_ms(now_ms()),
+    )
+    .unwrap();
+    let (_, parameters, _) = bundle
+        .snapshot()
+        .canonicalize(
+            &parsed,
+            rekey_policy::ActionRequest {
+                params: &serde_json::from_value(f.request["params"].clone()).unwrap(),
+                query: &serde_json::from_value(f.request["query"].clone()).unwrap(),
+                content_type: Some("application/json"),
+                headers: &[],
+                body: f.request["body"].as_str().unwrap().as_bytes(),
+            },
+        )
+        .unwrap();
+    f.request["challenge"]["challenge"]["parameter_sha256"] =
+        HEXLOWER.encode(&parameters.canonical_hash).into();
+    f.resign_inner();
+    let reviewed = f.invoke("review", None, "unused");
+    assert!(reviewed.status.success());
+    let review: Value = serde_json::from_slice(&reviewed.stdout).unwrap();
+    assert_eq!(
+        review["review"]["request_target"],
+        "/issues/7?page=2&state=open"
+    );
+    assert_eq!(review["review"]["target"]["params"]["number"], "7");
+    let digest = review["reviewed_sha256"].as_str().unwrap();
+    assert!(
+        f.invoke("sign", Some(digest), "template-grant.json")
+            .status
+            .success()
+    );
+    let original = f.request.clone();
+    for (field, name, value) in [
+        ("params", "number", "8"),
+        ("query", "state", "closed"),
+        ("query", "page", "3"),
+    ] {
+        f.request = original.clone();
+        f.request[field][name] = value.into();
+        f.persist_request();
+        assert!(!f.invoke("review", None, "unused").status.success());
+        f.reject_sign(digest);
+    }
+    f.request = original;
+    f.request["body"] = r#"{"message":"approved","message":"changed"}"#.into();
+    f.persist_request();
+    assert!(!f.invoke("review", None, "unused").status.success());
+    f.reject_sign(digest);
 }

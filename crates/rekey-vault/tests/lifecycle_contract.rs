@@ -73,6 +73,66 @@ async fn unlock_backoff_rate_limits() {
 }
 
 #[tokio::test]
+async fn unlocked_step_up_failures_share_backoff_across_operations_and_lock() {
+    let vault = common::init_test_vault();
+    let mut config = common::test_config(&vault.state_dir);
+    config.unlock_backoff_base = Duration::from_secs(1);
+    let (handle, join) = rekey_vault::authority::spawn_authority(config).unwrap();
+    handle.unlock(common::password_proof()).await.unwrap();
+    assert!(matches!(
+        handle.desktop_remember(wrong_password(), None).await,
+        Err(AuthorityError::InvalidUnlockCredential)
+    ));
+    assert!(matches!(
+        handle
+            .password_change_before(
+                wrong_password(),
+                SecretInput::from_slice(b"replacement"),
+                None
+            )
+            .await,
+        Err(AuthorityError::InvalidUnlockCredential)
+    ));
+    assert!(matches!(
+        handle.verify_shutdown_proof(wrong_password()).await,
+        Err(AuthorityError::InvalidUnlockCredential)
+    ));
+    assert!(matches!(
+        handle
+            .recovery_rotate_before(common::password_proof(), None)
+            .await,
+        Err(AuthorityError::UnlockRateLimited)
+    ));
+    assert!(matches!(
+        handle.verify_shutdown_proof(common::password_proof()).await,
+        Err(AuthorityError::UnlockRateLimited)
+    ));
+    assert_eq!(handle.status().await.unwrap().state, "unlocked");
+    handle.lock("shared-backoff-test").await.unwrap();
+    assert!(matches!(
+        handle.unlock(common::password_proof()).await,
+        Err(AuthorityError::UnlockRateLimited)
+    ));
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    handle.unlock(common::password_proof()).await.unwrap();
+    for _ in 0..2 {
+        assert!(matches!(
+            handle.verify_shutdown_proof(wrong_password()).await,
+            Err(AuthorityError::InvalidUnlockCredential)
+        ));
+    }
+    handle
+        .verify_shutdown_proof(common::password_proof())
+        .await
+        .unwrap();
+    handle
+        .shutdown(Some(common::password_proof()))
+        .await
+        .unwrap();
+    join.join().unwrap();
+}
+
+#[tokio::test]
 async fn idle_timeout_locks() {
     let vault = common::init_test_vault();
     let mut config = common::test_config(&vault.state_dir);
@@ -113,6 +173,8 @@ async fn successful_activity_audits_reset_idle_activity() {
                 credential_version: None,
                 authorization: None,
                 approval: None,
+                request_context: None,
+                usage: None,
                 event_type: kind,
                 outcome: audit_outcome,
                 reason_code: "test-complete".to_owned(),
@@ -179,10 +241,10 @@ async fn only_admin_status_refreshes_idle_activity() {
 }
 
 #[tokio::test]
-async fn shutdown_requires_proof_only_when_unlocked() {
+async fn internal_worker_cleanup_requires_locked_state_or_proof() {
     let vault = common::init_test_vault();
 
-    // Locked: shutdown needs no proof.
+    // Internal cleanup is separate from Admin stop authentication.
     let (handle, join) = common::spawn(&vault.state_dir);
     handle.shutdown(None).await.unwrap();
     join.join().unwrap();
@@ -230,6 +292,8 @@ async fn startup_reconciles_unterminated_started() {
                 credential_version: None,
                 authorization: Some(authorization.clone()),
                 approval: None,
+                request_context: None,
+                usage: None,
                 event_type: event_type::EXECUTION_STARTED,
                 outcome: outcome::SUCCESS,
                 reason_code: "started".to_owned(),
@@ -331,5 +395,130 @@ async fn approval_origin_key_requires_unlock_and_survives_password_change() {
         ))))
         .await
         .unwrap();
+    join.join().unwrap();
+}
+
+#[tokio::test]
+async fn admin_shutdown_proof_authenticates_locked_without_unlocking_or_desktop_grant() {
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    for explicitly_locked in [false, true] {
+        if explicitly_locked {
+            handle.unlock(common::password_proof()).await.unwrap();
+            handle.lock("shutdown-proof-test").await.unwrap();
+        }
+        for proof in [
+            common::password_proof(),
+            UnlockProof::Recovery(SecretInput::from_slice(
+                vault.outcome.recovery_key_display.as_bytes(),
+            )),
+        ] {
+            handle.verify_shutdown_proof(proof).await.unwrap();
+            assert_eq!(handle.status().await.unwrap().state, "locked");
+            assert!(matches!(
+                handle.desktop_issue().await,
+                Err(AuthorityError::Locked)
+            ));
+        }
+    }
+    let db = rusqlite::Connection::open(rekey_vault::paths::vault_db(&vault.state_dir)).unwrap();
+    let unlocks: i64 = db
+        .query_row(
+            "SELECT count(*) FROM audit_events WHERE event_type='vault.unlocked'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        unlocks, 1,
+        "verification must not manufacture unlock events"
+    );
+    handle.shutdown(None).await.unwrap();
+    join.join().unwrap();
+}
+
+#[tokio::test]
+async fn admin_shutdown_proof_shares_unlock_backoff_and_rejects_retired_factors() {
+    let vault = common::init_test_vault();
+    let mut config = common::test_config(&vault.state_dir);
+    config.unlock_backoff_base = Duration::from_millis(250);
+    let (handle, join) = rekey_vault::authority::spawn_authority(config).unwrap();
+    // Failures in either entry point contribute to the same counter.
+    assert!(matches!(
+        handle.unlock(wrong_password()).await,
+        Err(AuthorityError::InvalidUnlockCredential)
+    ));
+    for _ in 0..2 {
+        assert!(matches!(
+            handle.verify_shutdown_proof(wrong_password()).await,
+            Err(AuthorityError::InvalidUnlockCredential)
+        ));
+    }
+    assert!(matches!(
+        handle.unlock(common::password_proof()).await,
+        Err(AuthorityError::UnlockRateLimited)
+    ));
+    assert!(matches!(
+        handle.verify_shutdown_proof(common::password_proof()).await,
+        Err(AuthorityError::UnlockRateLimited)
+    ));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    handle
+        .verify_shutdown_proof(common::password_proof())
+        .await
+        .unwrap();
+    assert_eq!(handle.status().await.unwrap().state, "locked");
+    handle.unlock(common::password_proof()).await.unwrap();
+    let new_recovery = handle
+        .recovery_rotate_before(common::password_proof(), None)
+        .await
+        .unwrap();
+    handle
+        .password_change_before(
+            common::password_proof(),
+            SecretInput::from_slice(b"replacement-shutdown-password"),
+            None,
+        )
+        .await
+        .unwrap();
+    handle.lock("rotate-factors").await.unwrap();
+    for proof in [
+        common::password_proof(),
+        UnlockProof::Recovery(SecretInput::from_slice(
+            vault.outcome.recovery_key_display.as_bytes(),
+        )),
+    ] {
+        assert!(matches!(
+            handle.verify_shutdown_proof(proof).await,
+            Err(AuthorityError::InvalidUnlockCredential)
+        ));
+    }
+    for proof in [
+        UnlockProof::Password(SecretInput::from_slice(b"replacement-shutdown-password")),
+        UnlockProof::Recovery(SecretInput::from_slice(new_recovery.as_bytes())),
+    ] {
+        handle.verify_shutdown_proof(proof).await.unwrap();
+        assert_eq!(handle.status().await.unwrap().state, "locked");
+    }
+    handle.shutdown(None).await.unwrap();
+    join.join().unwrap();
+}
+
+#[tokio::test]
+async fn admin_shutdown_proof_fails_closed_on_faulted_worker() {
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    let db = rusqlite::Connection::open(rekey_vault::paths::vault_db(&vault.state_dir)).unwrap();
+    db.execute_batch("CREATE TRIGGER fail_audit BEFORE INSERT ON audit_events BEGIN SELECT RAISE(ABORT, 'fixture'); END;").unwrap();
+    assert!(matches!(
+        handle.verify_shutdown_proof(wrong_password()).await,
+        Err(AuthorityError::AuditCommitFailed)
+    ));
+    assert!(matches!(
+        handle.verify_shutdown_proof(common::password_proof()).await,
+        Err(AuthorityError::Faulted)
+    ));
+    assert_eq!(handle.status().await.unwrap().state, "faulted");
+    handle.shutdown(None).await.unwrap();
     join.join().unwrap();
 }

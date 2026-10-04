@@ -21,12 +21,18 @@ struct ExecutionJob {
 enum ExecutionResponse {
     Buffered(oneshot::Sender<Result<ExecuteOutcome, BrokerError>>),
     Stream(TextStreamSender),
+    Http(oneshot::Sender<Result<HttpExecution, BrokerError>>),
+}
+
+pub(crate) enum HttpExecution {
+    Buffered(ExecuteOutcome),
+    Stream(mpsc::Receiver<TextStreamEvent>),
 }
 
 enum SupervisorEvent {
     Shutdown,
     Child(Option<Result<(), JoinError>>),
-    Job(Option<ExecutionJob>),
+    Job(Option<Box<ExecutionJob>>),
 }
 
 async fn next_event(
@@ -38,7 +44,7 @@ async fn next_event(
         biased;
         _ = shutdown.changed() => SupervisorEvent::Shutdown,
         result = tasks.join_next(), if !tasks.is_empty() => SupervisorEvent::Child(result),
-        job = rx.recv() => SupervisorEvent::Job(job),
+        job = rx.recv() => SupervisorEvent::Job(job.map(Box::new)),
     }
 }
 
@@ -68,6 +74,21 @@ pub(crate) fn new(
 }
 
 impl ExecutionSupervisorHandle {
+    pub(crate) async fn submit_http(
+        &self,
+        request: ExecuteRequest,
+    ) -> Result<oneshot::Receiver<Result<HttpExecution, BrokerError>>, BrokerError> {
+        let (response, result) = oneshot::channel();
+        self.tx
+            .send(ExecutionJob {
+                request,
+                response: ExecutionResponse::Http(response),
+            })
+            .await
+            .map_err(|_| BrokerError::Authority(AuthorityError::Draining))?;
+        Ok(result)
+    }
+
     pub(crate) async fn submit_stream(
         &self,
         request: ExecuteRequest,
@@ -126,6 +147,61 @@ impl ExecutionSupervisor {
                         let executor = Arc::clone(&self.executor);
                         self.tasks.spawn(async move {
                             match job.response {
+                                ExecutionResponse::Http(response) => {
+                                    match executor.admit_http(job.request).await {
+                                        Ok(admitted) if admitted.raw_stream() => {
+                                            let (sender, receiver) = mpsc::channel(1);
+                                            let _ =
+                                                response.send(Ok(HttpExecution::Stream(receiver)));
+                                            let _ = sender
+                                                .send(TextStreamEvent::Admitted {
+                                                    deadline: admitted.deadline(),
+                                                })
+                                                .await;
+                                            let status = match admitted.run_stream(&sender).await {
+                                                Ok(outcome) if outcome.stream_status.is_none() => {
+                                                    let _ = tokio::time::timeout(
+                                                        std::time::Duration::from_secs(1),
+                                                        sender.send(TextStreamEvent::Buffered(
+                                                            outcome,
+                                                        )),
+                                                    )
+                                                    .await;
+                                                    return;
+                                                }
+                                                Ok(outcome) => outcome
+                                                    .stream_status
+                                                    .unwrap_or(TextStreamStatus::Failed),
+                                                Err(error) => {
+                                                    // Before the first chunk the gateway can still
+                                                    // return the original safe error envelope. After
+                                                    // a chunk this event aborts the HTTP body.
+                                                    let _ = tokio::time::timeout(
+                                                        std::time::Duration::from_secs(1),
+                                                        sender.send(
+                                                            TextStreamEvent::AdmissionError(error),
+                                                        ),
+                                                    )
+                                                    .await;
+                                                    return;
+                                                }
+                                            };
+                                            let _ = tokio::time::timeout(
+                                                std::time::Duration::from_secs(1),
+                                                sender.send(TextStreamEvent::Terminal(status)),
+                                            )
+                                            .await;
+                                        }
+                                        Ok(admitted) => {
+                                            let outcome =
+                                                admitted.run().await.map(HttpExecution::Buffered);
+                                            let _ = response.send(outcome);
+                                        }
+                                        Err(error) => {
+                                            let _ = response.send(Err(error));
+                                        }
+                                    }
+                                }
                                 ExecutionResponse::Buffered(response) => {
                                     let outcome = match executor.admit(job.request).await {
                                         Ok(admitted) => admitted.run().await,
@@ -134,7 +210,7 @@ impl ExecutionSupervisor {
                                     let _ = response.send(outcome);
                                 }
                                 ExecutionResponse::Stream(response) => {
-                                    let outcome = match executor.admit(job.request).await {
+                                    let outcome = match executor.admit_stream(job.request).await {
                                         Ok(admitted) => {
                                             let _ = response
                                                 .send(TextStreamEvent::Admitted {
@@ -143,7 +219,14 @@ impl ExecutionSupervisor {
                                                 .await;
                                             admitted.run_stream(&response).await
                                         }
-                                        Err(err) => Err(err),
+                                        Err(err) => {
+                                            let _ = tokio::time::timeout(
+                                                std::time::Duration::from_secs(1),
+                                                response.send(TextStreamEvent::AdmissionError(err)),
+                                            )
+                                            .await;
+                                            return;
+                                        }
                                     };
                                     let status = outcome
                                         .ok()
@@ -199,8 +282,11 @@ mod tests {
                 },
                 content_type: None,
                 extra_headers: Vec::new(),
+                params: Default::default(),
+                query: Default::default(),
                 body: Vec::new(),
                 approval_grants: Vec::new(),
+                local_approval_request_id: None,
             },
             response: ExecutionResponse::Buffered(response),
         }

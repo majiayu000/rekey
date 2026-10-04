@@ -1,5 +1,8 @@
 # P-08 single-host Linux metrics deployment artifacts
 
+> Status: Lab (v3 scope; enterprise reserve)
+> Existing contracts and evidence are retained; this capability is excluded from the default v3 build and release package.
+
 Status: frozen minimum implementation contract, 2026-09-30. Extends the accepted
 Node Exporter textfile slice and current local publisher. Four new implementation
 files plus this specification, one existing generator change; no Rust/CLI/IPC

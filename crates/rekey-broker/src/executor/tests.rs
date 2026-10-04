@@ -13,6 +13,7 @@ use crate::audit::spawn_terminal_worker_with;
 
 fn execution_context() -> ExecutionAuditContext {
     ExecutionAuditContext {
+        request_context: None,
         request_id: RequestId::new_random(),
         session_id: SessionId::new_random(),
         action: ActionVersionRef {
@@ -338,18 +339,26 @@ fn github_comment_uncertainty_never_invites_retry() {
 // Real Authority actor and recovery orchestration, with no TCP or UDS listener.
 mod lease_recovery {
     use super::*;
-    use crate::upstream::{UpstreamFuture, UpstreamResponse};
+    #[cfg(feature = "lab")]
+    use crate::upstream::UpstreamFuture;
+    use crate::upstream::UpstreamResponse;
+    #[cfg(feature = "lab")]
     use rekey_domain::action::{
         ActionName, ExactPath, FixedMethod, HeaderCredentialUse, HeaderName, HeaderPrefix,
         HttpsOrigin, RequestPolicy, ResponsePolicy,
     };
     use rekey_domain::credential::{CredentialKind, CredentialLabel};
-    use rekey_vault::command::{ActionDefinition, AuditDraft, UnlockProof};
+    use rekey_vault::command::UnlockProof;
+    #[cfg(feature = "lab")]
+    use rekey_vault::command::{ActionDefinition, AuditDraft};
     use rekey_vault::handle::AuthorityConfig;
+    #[cfg(feature = "lab")]
     use rekey_vault::model::{LeaseExecutionContext, LeaseReceipt, LeaseSourceRef};
     use rekey_vault::secret::SecretInput;
     const PASSWORD: &[u8] = b"recovery-local-fixture";
+    #[cfg(feature = "lab")]
     const LEASE: &[u8] = b"database/creds/role/exact-recovery-fixture";
+    #[cfg(feature = "lab")]
     const PROFILE: &[u8] = br#"{"credential_type":"vault-dynamic-source-v2","origin":"https://vault.example.com","mount":"database","role":"role","key":"token","renew_increment_seconds":60,"vault_token":"synthetic-recovery-token"}"#;
     fn proof() -> UnlockProof {
         UnlockProof::Password(SecretInput::from_slice(PASSWORD))
@@ -373,6 +382,7 @@ mod lease_recovery {
                     iterations: 1,
                     parallelism: 1,
                 },
+                rekey_domain::authorization::PolicyMode::Team,
             )
             .unwrap();
             rekey_vault::bootstrap::confirm_vault_init(&state).unwrap();
@@ -395,6 +405,7 @@ mod lease_recovery {
                 worker,
             }
         }
+        #[cfg(feature = "lab")]
         async fn pending(&self) -> LeaseReceipt {
             let authority = &self.executor.authority;
             authority.unlock(proof()).await.unwrap();
@@ -417,7 +428,9 @@ mod lease_recovery {
                         credential_id: credential.id,
                         origin: HttpsOrigin::parse("https://api.example.com").unwrap(),
                         method: FixedMethod::Post,
-                        exact_path: ExactPath::parse("/business").unwrap(),
+                        target: rekey_domain::action::ActionTarget::Fixed {
+                            path: ExactPath::parse("/business").unwrap(),
+                        },
                         auth: HeaderCredentialUse::new(
                             HeaderName::new("authorization").unwrap(),
                             HeaderPrefix::new("Bearer ").unwrap(),
@@ -455,6 +468,8 @@ mod lease_recovery {
                     credential_version: Some(1),
                     authorization: None,
                     approval: None,
+                    request_context: None,
+                    usage: None,
                     event_type: rekey_vault::model::event_type::EXECUTION_STARTED,
                     outcome: rekey_vault::model::outcome::SUCCESS,
                     reason_code: "allowed".into(),
@@ -499,17 +514,21 @@ mod lease_recovery {
             self.worker.await.unwrap();
         }
     }
+    #[cfg(feature = "lab")]
     struct DelayedBuilder {
         requests: AtomicUsize,
         completed: Arc<AtomicUsize>,
         dropped: Arc<AtomicUsize>,
     }
+    #[cfg(feature = "lab")]
     struct DropEvidence(Arc<AtomicUsize>);
+    #[cfg(feature = "lab")]
     impl Drop for DropEvidence {
         fn drop(&mut self) {
             self.0.fetch_add(1, Ordering::SeqCst);
         }
     }
+    #[cfg(feature = "lab")]
     impl UpstreamTransport for DelayedBuilder {
         fn send(&self, request: UpstreamRequest) -> UpstreamFuture<'_> {
             assert_eq!(request.method, FixedMethod::Post);
@@ -541,6 +560,7 @@ mod lease_recovery {
         }
     }
     #[tokio::test]
+    #[cfg(feature = "lab")]
     async fn absolute_recovery_deadline_cancels_delayed_exact_revoke_and_keeps_source_closed() {
         let transport = Arc::new(DelayedBuilder {
             requests: AtomicUsize::new(0),
@@ -576,6 +596,7 @@ mod lease_recovery {
         fixture.stop().await;
     }
     #[tokio::test]
+    #[cfg(feature = "lab")]
     async fn unavailable_authority_snapshot_refuses_recovery_without_opening_admission() {
         let transport = Arc::new(DelayedBuilder {
             requests: AtomicUsize::new(0),
@@ -616,10 +637,12 @@ mod lease_recovery {
         assert!(!fixture.executor.lifecycle.try_begin_remote_effect());
         fixture.stop().await;
     }
+    #[cfg(feature = "lab")]
     struct LateAuditFault {
         database: Mutex<Option<std::path::PathBuf>>,
         writer: Mutex<Option<std::thread::JoinHandle<()>>>,
     }
+    #[cfg(feature = "lab")]
     impl UpstreamTransport for LateAuditFault {
         fn send(&self, request: UpstreamRequest) -> UpstreamFuture<'_> {
             assert_eq!(request.path, "/v1/sys/leases/revoke");
@@ -647,6 +670,7 @@ mod lease_recovery {
         }
     }
     #[tokio::test]
+    #[cfg(feature = "lab")]
     async fn final_recovery_snapshot_rejects_late_audit_fault_after_entry_timeout() {
         let transport = Arc::new(LateAuditFault {
             database: Mutex::new(None),
@@ -729,7 +753,7 @@ mod lease_recovery {
             let action: FixedHttpAction = serde_json::from_value(serde_json::json!({
                 "id":ActionId::new_random(),"name":"opaque-ows","version":1,"enabled":true,
                 "credential_id":credential.id,"origin":"https://api.example.com","method":"POST",
-                "exact_path":"/business","auth":{"header_name":"authorization","prefix":"Bearer "},
+                "target":{"kind":"fixed","path":"/business"},"auth":{"header_name":"authorization","prefix":"Bearer "},
                 "timeout_ms":30000,"request_policy":{"max_body_bytes":1024,"allowed_extra_headers":[]},
                 "response_policy":{"max_body_bytes":1024,"allowed_headers":[]}
             })).unwrap();
@@ -778,6 +802,7 @@ mod lease_recovery {
                     }
                     fake.push_response(Ok(reflected));
                     let ctx = ExecutionAuditContext {
+                        request_context: None,
                         request_id: RequestId::new_random(),
                         session_id: SessionId::new_random(),
                         action: ActionVersionRef {
@@ -793,8 +818,11 @@ mod lease_recovery {
                         action: ctx.action,
                         content_type: None,
                         extra_headers: vec![],
+                        params: Default::default(),
+                        query: Default::default(),
                         body: vec![],
                         approval_grants: vec![],
+                        local_approval_request_id: None,
                     };
                     let end = Instant::now() + Duration::from_secs(30);
                     let mut started = f
@@ -856,11 +884,12 @@ mod lease_recovery {
 }
 
 #[tokio::test]
+#[cfg(feature = "lab")]
 async fn keychain_fixed_header_fake_transport_injects_and_seals_all_reflected_forms() {
     let action: FixedHttpAction = serde_json::from_value(serde_json::json!({
         "id":ActionId::new_random(),"name":"keychain-fixture","version":1,"enabled":true,
         "credential_id":CredentialId::new_random(),"origin":"https://api.example.com","method":"POST",
-        "exact_path":"/business","auth":{"header_name":"authorization","prefix":"Bearer "},
+        "target":{"kind":"fixed","path":"/business"},"auth":{"header_name":"authorization","prefix":"Bearer "},
         "timeout_ms":30000,"request_policy":{"max_body_bytes":1024,"allowed_extra_headers":[]},
         "response_policy":{"max_body_bytes":1024,"allowed_headers":[]}
     })).unwrap();
@@ -881,8 +910,11 @@ async fn keychain_fixed_header_fake_transport_injects_and_seals_all_reflected_fo
         },
         content_type: None,
         extra_headers: vec![],
+        params: Default::default(),
+        query: Default::default(),
         body: vec![],
         approval_grants: vec![],
+        local_approval_request_id: None,
     };
     let value = b"synthetic-native-value";
     let forms = fixed_header_sealing_needles(value, b"Bearer synthetic-native-value", b"Bearer ");
@@ -890,9 +922,17 @@ async fn keychain_fixed_header_fake_transport_injects_and_seals_all_reflected_fo
         b"synthetic%2dnative-value".to_vec(),
     ))) {
         for location in ["body", "header-value", "header-name"] {
-            let PreparedExecution::Opaque { upstream, needles } =
-                prepare_fixed_header(&action, &request, value)
-            else {
+            let PreparedExecution::Opaque { upstream, needles } = prepare_fixed_header(
+                &action,
+                &request,
+                &RenderedTarget {
+                    path: action.target.fixed_path().unwrap().clone(),
+                    params: Default::default(),
+                    query: Default::default(),
+                },
+                value,
+            )
+            .unwrap() else {
                 unreachable!()
             };
             assert_eq!(upstream.host, "api.example.com");
@@ -929,9 +969,100 @@ async fn keychain_fixed_header_fake_transport_injects_and_seals_all_reflected_fo
             );
         }
     }
-    let PreparedExecution::Opaque { needles, .. } = prepare_fixed_header(&action, &request, value)
-    else {
+    let PreparedExecution::Opaque { needles, .. } = prepare_fixed_header(
+        &action,
+        &request,
+        &RenderedTarget {
+            path: action.target.fixed_path().unwrap().clone(),
+            params: Default::default(),
+            query: Default::default(),
+        },
+        value,
+    )
+    .unwrap() else {
         unreachable!()
     };
     assert!(!contains_secret(b"independent clean response", &needles));
+}
+
+#[tokio::test]
+async fn template_targets_preserve_locked_credential_and_fixed_profile_boundaries() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    let password =
+        rekey_vault::secret::SecretInput::from_slice(b"synthetic-template-gate-password");
+    rekey_vault::bootstrap::init_vault(
+        &state,
+        &password,
+        rekey_vault::crypto::kdf::Argon2Params {
+            memory_kib: 8,
+            iterations: 1,
+            parallelism: 1,
+        },
+        rekey_domain::authorization::PolicyMode::Team,
+    )
+    .unwrap();
+    rekey_vault::bootstrap::confirm_vault_init(&state).unwrap();
+    let (authority, join) =
+        rekey_vault::authority::spawn_authority(rekey_vault::handle::AuthorityConfig::new(state))
+            .unwrap();
+    // The authority stays locked and has no credential. Reaching preparation
+    // must still fail with Locked, with no upstream request.
+    let fake = Arc::new(crate::testing::FakeUpstreamTransport::new());
+    let (tracker, worker) = spawn_terminal_worker_with(|_| async { Ok(()) });
+    let executor = ActionExecutor::new(
+        authority.clone(),
+        Arc::new(SessionRegistry::new()),
+        fake.clone(),
+        Arc::new(Lifecycle::new()),
+        tracker.clone(),
+        Arc::new(RwLock::new(None)),
+    );
+    let action: FixedHttpAction=serde_json::from_value(serde_json::json!({
+        "id":ActionId::new_random(),"name":"template-gate","version":1,"enabled":true,"credential_id":CredentialId::new_random(),
+        "origin":"https://api.example.com","method":"GET",
+        "target":{"kind":"template","target":{"path":"/fixed","params":{},"query":{}},"fixed_headers":{},"body_schema":null,
+            "source":{"template":"team@1","capability":"read","action_index":0,"digest":vec![1;32],"signer_id":null},"default_policy":{"rule":"allow"}},
+        "auth":{"header_name":"authorization","prefix":"Bearer "},"timeout_ms":1000,
+        "request_policy":{"max_body_bytes":1024,"allowed_extra_headers":[]},"response_policy":{"max_body_bytes":1024,"allowed_headers":[]}
+    })).unwrap();
+    let request = ExecuteRequest {
+        request_id: RequestId::new_random(),
+        capability_token: "synthetic".into(),
+        action: ActionVersionRef {
+            action_id: action.id,
+            version: 1,
+        },
+        content_type: None,
+        extra_headers: vec![],
+        params: Default::default(),
+        query: Default::default(),
+        body: vec![],
+        approval_grants: vec![],
+        local_approval_request_id: None,
+    };
+    assert_eq!(validate_request(&action, &request), Ok(()));
+    assert!(build_upstream(&action, &request, Zeroizing::new(vec![])).is_err());
+    let mut guard = StartedAuditGuard::new_for_test(&tracker, execution_context());
+    assert!(matches!(
+        executor
+            .run_started(
+                &mut guard,
+                &request,
+                &action,
+                Instant::now() + Duration::from_secs(1),
+                &AtomicU8::new(0),
+                None
+            )
+            .await,
+        Err(BrokerError::Authority(AuthorityError::Locked))
+    ));
+    assert!(fake.take_requests().is_empty());
+    assert_eq!(authority.status().await.unwrap().state, "locked");
+    drop(guard);
+    drop(executor);
+    drop(tracker);
+    worker.await.unwrap();
+    authority.shutdown(None).await.unwrap();
+    join.join().unwrap();
 }

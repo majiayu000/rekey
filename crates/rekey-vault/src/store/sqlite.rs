@@ -1,3 +1,4 @@
+use super::generation::{GenerationAttempt, commit_generation};
 use std::path::{Path, PathBuf};
 
 use rekey_domain::credential::{CredentialKind, CredentialState, VersionState};
@@ -22,6 +23,40 @@ pub struct SqliteRecordStore {
 
 pub(super) fn storage(err: rusqlite::Error) -> AuthorityError {
     AuthorityError::storage(err)
+}
+
+fn insert_action_row(tx: &Transaction<'_>, record: &ActionRecord) -> Result<(), AuthorityError> {
+    let inserted = tx.execute(
+            "INSERT INTO actions (action_id, version, name, state, credential_id, origin, method, target_json, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms, text_stream_json, native_plugin_json, seal_nonce, seal_ciphertext)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+            params![
+                record.action_id.as_bytes().as_slice(),
+                record.version as i64,
+                record.name,
+                record.state.as_str(),
+                record.credential_id.as_bytes().as_slice(),
+                record.origin,
+                record.method,
+                record.target_json,
+                record.auth_header,
+                record.auth_prefix,
+                record.request_max_bytes,
+                record.allowed_extra_headers_json,
+                record.response_max_bytes,
+                record.allowed_response_headers_json,
+                record.timeout_ms,
+                record.created_at_ms,
+                record.text_stream_json,
+                record.native_plugin_json,
+                record.seal_nonce.as_slice(),
+                record.seal_ciphertext.as_slice(),
+            ],
+        )
+        .map_err(storage)?;
+    if inserted != 1 {
+        return Err(AuthorityError::StorageIntegrityFailed);
+    }
+    Ok(())
 }
 
 pub(super) fn commit_audited(tx: Transaction<'_>) -> Result<(), AuthorityError> {
@@ -97,6 +132,7 @@ impl SqliteRecordStore {
         &self.path
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn initialize(
         &mut self,
         header: &VaultHeaderRecord,
@@ -104,12 +140,15 @@ impl SqliteRecordStore {
         policy_state: &crate::model::PolicyStateRecord,
         retention: &crate::model::AuditRetentionRecord,
         lease_state: &crate::model::LeaseJournalState,
+        usage_state: &crate::model::UsageState,
         audit: AuditEvent,
+        anchors: &crate::generation_anchor::GenerationAnchors,
+        may_have_reserved: &mut bool,
     ) -> Result<(), AuthorityError> {
         let tx = self.conn.transaction().map_err(storage)?;
         tx.execute(
-            "INSERT INTO vault_header (singleton, format_version, vault_id, crypto_suite, created_at_ms, schema_digest, integrity_nonce, integrity_ciphertext)
-             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO vault_header (singleton, format_version, vault_id, crypto_suite, created_at_ms, schema_digest, integrity_nonce, integrity_ciphertext, generation, generation_mac)
+             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 header.format_version,
                 header.vault_id.as_bytes().as_slice(),
@@ -118,6 +157,8 @@ impl SqliteRecordStore {
                 header.schema_digest.as_slice(),
                 header.integrity_nonce.as_slice(),
                 header.integrity_ciphertext.as_slice(),
+                header.generation.to_be_bytes().as_slice(),
+                header.generation_mac.as_slice(),
             ],
         )
         .map_err(storage)?;
@@ -127,43 +168,14 @@ impl SqliteRecordStore {
         super::policy::insert_initial_state(&tx, policy_state)?;
         super::audit_prune::insert_initial_retention(&tx, retention)?;
         super::lease_journal::initial_state(&tx, lease_state)?;
+        super::usage::initial_state(&tx, usage_state)?;
         super::audit::insert(&tx, &audit)?;
+        anchors.create_new(header.generation, may_have_reserved)?;
         commit_audited(tx)
     }
 
     pub fn load_header(&self) -> Result<VaultHeaderRecord, AuthorityError> {
-        let row = self
-            .conn
-            .query_row(
-                "SELECT format_version, vault_id, crypto_suite, created_at_ms, schema_digest,
-                        integrity_nonce, integrity_ciphertext
-                 FROM vault_header WHERE singleton = 1",
-                [],
-                |r| {
-                    Ok((
-                        r.get::<_, u32>(0)?,
-                        r.get::<_, Vec<u8>>(1)?,
-                        r.get::<_, String>(2)?,
-                        r.get::<_, i64>(3)?,
-                        r.get::<_, Vec<u8>>(4)?,
-                        r.get::<_, Vec<u8>>(5)?,
-                        r.get::<_, Vec<u8>>(6)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(|_| AuthorityError::UnsupportedVaultLayout)?
-            .ok_or(AuthorityError::UnsupportedVaultLayout)?;
-        Ok(VaultHeaderRecord {
-            format_version: row.0,
-            vault_id: VaultId::from_bytes(blob16(row.1)?)
-                .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
-            crypto_suite: row.2,
-            created_at_ms: row.3,
-            schema_digest: blob32(row.4)?,
-            integrity_nonce: blob12(row.5)?,
-            integrity_ciphertext: row.6,
-        })
+        load_header(&self.conn)
     }
 
     pub fn active_wrapper(&self, kind: WrapperKind) -> Result<KeyWrapperRecord, AuthorityError> {
@@ -185,6 +197,7 @@ impl SqliteRecordStore {
         record: &CredentialRecord,
         version: &CredentialVersionRecord,
         audit: AuditEvent,
+        generation: &mut GenerationAttempt<'_>,
     ) -> Result<(), AuthorityError> {
         let tx = self.conn.transaction().map_err(storage)?;
         let inserted = tx.execute(
@@ -209,7 +222,7 @@ impl SqliteRecordStore {
         }
         insert_version(&tx, version)?;
         super::audit::insert(&tx, &audit)?;
-        commit_audited(tx)
+        commit_generation(tx, generation)
     }
 
     pub fn rotate_credential(
@@ -218,6 +231,7 @@ impl SqliteRecordStore {
         new_version: &CredentialVersionRecord,
         now_ms: i64,
         audit: AuditEvent,
+        generation: &mut GenerationAttempt<'_>,
     ) -> Result<(), AuthorityError> {
         let credential_id = updated_record.credential_id;
         let tx = self.conn.transaction().map_err(storage)?;
@@ -246,7 +260,7 @@ impl SqliteRecordStore {
             return Err(AuthorityError::CredentialNotFound);
         }
         super::audit::insert(&tx, &audit)?;
-        commit_audited(tx)
+        commit_generation(tx, generation)
     }
 
     pub fn revoke_credential(
@@ -254,6 +268,7 @@ impl SqliteRecordStore {
         updated_record: &CredentialRecord,
         now_ms: i64,
         audit: AuditEvent,
+        generation: &mut GenerationAttempt<'_>,
     ) -> Result<(), AuthorityError> {
         let credential_id = updated_record.credential_id;
         let tx = self.conn.transaction().map_err(storage)?;
@@ -281,7 +296,7 @@ impl SqliteRecordStore {
         )
         .map_err(storage)?;
         super::audit::insert(&tx, &audit)?;
-        commit_audited(tx)
+        commit_generation(tx, generation)
     }
 
     pub fn get_credential(&self, id: CredentialId) -> Result<CredentialRecord, AuthorityError> {
@@ -337,60 +352,68 @@ impl SqliteRecordStore {
     pub fn insert_action(
         &mut self,
         record: &ActionRecord,
+        retired: &[ActionRecord],
         audit: AuditEvent,
+        generation: &mut GenerationAttempt<'_>,
     ) -> Result<(), AuthorityError> {
         let tx = self.conn.transaction().map_err(storage)?;
-        tx.execute(
-            "UPDATE actions SET state = 'retired' WHERE action_id = ?1 AND state != 'retired'",
-            params![record.action_id.as_bytes().as_slice()],
-        )
-        .map_err(storage)?;
-        tx.execute(
-            "INSERT INTO actions (action_id, version, name, state, credential_id, origin, method, exact_path, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms, text_stream_json, native_plugin_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
-            params![
-                record.action_id.as_bytes().as_slice(),
-                record.version as i64,
-                record.name,
-                record.state.as_str(),
-                record.credential_id.as_bytes().as_slice(),
-                record.origin,
-                record.method,
-                record.exact_path,
-                record.auth_header,
-                record.auth_prefix,
-                record.request_max_bytes,
-                record.allowed_extra_headers_json,
-                record.response_max_bytes,
-                record.allowed_response_headers_json,
-                record.timeout_ms,
-                record.created_at_ms,
-                record.text_stream_json,
-                record.native_plugin_json,
-            ],
-        )
-        .map_err(storage)?;
+        for previous in retired {
+            let changed = tx.execute(
+                "UPDATE actions SET state='retired',seal_nonce=?3,seal_ciphertext=?4 WHERE action_id=?1 AND version=?2 AND state!='retired'",
+                params![previous.action_id.as_bytes().as_slice(), previous.version as i64,
+                    previous.seal_nonce.as_slice(), previous.seal_ciphertext.as_slice()],
+            ).map_err(storage)?;
+            if changed != 1 {
+                return Err(AuthorityError::StorageIntegrityFailed);
+            }
+        }
+        insert_action_row(&tx, record)?;
         super::audit::insert(&tx, &audit)?;
-        commit_audited(tx)
+        commit_generation(tx, generation)
+    }
+
+    pub fn insert_actions_before(
+        &mut self,
+        records: &[(ActionRecord, AuditEvent)],
+        not_after: Option<std::time::Instant>,
+        generation: &mut GenerationAttempt<'_>,
+    ) -> Result<(), AuthorityError> {
+        if records.is_empty() {
+            return Ok(());
+        }
+        crate::authority::ensure_mutation_current(not_after)?;
+        let tx = self.conn.transaction().map_err(storage)?;
+        for (record, audit) in records {
+            crate::authority::ensure_mutation_current(not_after)?;
+            insert_action_row(&tx, record)?;
+            super::audit::insert(&tx, audit)?;
+        }
+        crate::authority::ensure_mutation_current(not_after)?;
+        commit_generation(tx, generation)
     }
 
     pub fn disable_action(
         &mut self,
-        action_id: ActionId,
+        record: &ActionRecord,
         audit: AuditEvent,
+        generation: &mut GenerationAttempt<'_>,
     ) -> Result<(), AuthorityError> {
         let tx = self.conn.transaction().map_err(storage)?;
-        let updated = tx
-            .execute(
-                "UPDATE actions SET state = 'disabled' WHERE action_id = ?1 AND state = 'active'",
-                params![action_id.as_bytes().as_slice()],
-            )
-            .map_err(storage)?;
-        if updated == 0 {
-            return Err(AuthorityError::ActionNotFound);
+        let updated = tx.execute(
+            "UPDATE actions SET state='disabled',seal_nonce=?3,seal_ciphertext=?4 WHERE action_id=?1 AND version=?2 AND state='active'",
+            params![record.action_id.as_bytes().as_slice(), record.version as i64,
+                record.seal_nonce.as_slice(), record.seal_ciphertext.as_slice()],
+        ).map_err(storage)?;
+        if updated != 1 {
+            return Err(AuthorityError::StorageIntegrityFailed);
         }
         super::audit::insert(&tx, &audit)?;
-        commit_audited(tx)
+        commit_generation(tx, generation)
+    }
+
+    /// Every lifecycle state, including versions pinned by existing sessions.
+    pub fn list_all_actions(&self) -> Result<Vec<ActionRecord>, AuthorityError> {
+        all_actions(&self.conn)
     }
 
     pub fn get_action(
@@ -400,7 +423,7 @@ impl SqliteRecordStore {
     ) -> Result<ActionRecord, AuthorityError> {
         self.conn
             .query_row(
-                "SELECT action_id, version, name, state, credential_id, origin, method, exact_path, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms, text_stream_json, native_plugin_json
+                "SELECT action_id, version, name, state, credential_id, origin, method, target_json, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms, text_stream_json, native_plugin_json, seal_nonce, seal_ciphertext
                  FROM actions WHERE action_id = ?1 AND version = ?2",
                 params![action_id.as_bytes().as_slice(), version as i64],
                 action_from_row,
@@ -415,7 +438,7 @@ impl SqliteRecordStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT action_id, version, name, state, credential_id, origin, method, exact_path, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms, text_stream_json, native_plugin_json
+                "SELECT action_id, version, name, state, credential_id, origin, method, target_json, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms, text_stream_json, native_plugin_json, seal_nonce, seal_ciphertext
                  FROM actions WHERE state != 'retired' ORDER BY created_at_ms",
             )
             .map_err(storage)?;
@@ -436,7 +459,7 @@ impl SqliteRecordStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT action_id, version, name, state, credential_id, origin, method, exact_path, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms, text_stream_json, native_plugin_json
+                "SELECT action_id, version, name, state, credential_id, origin, method, target_json, auth_header, auth_prefix, request_max_bytes, allowed_extra_headers_json, response_max_bytes, allowed_response_headers_json, timeout_ms, created_at_ms, text_stream_json, native_plugin_json, seal_nonce, seal_ciphertext
                  FROM actions WHERE credential_id = ?1",
             )
             .map_err(storage)?;
@@ -456,6 +479,12 @@ impl SqliteRecordStore {
     /// Commits one audit event in its own transaction. Failure is a hard
     /// error for the caller to handle; never downgraded to a warning.
     pub fn append_audit(&mut self, event: &AuditEvent) -> Result<(), AuthorityError> {
+        if event.usage.is_some() {
+            return Err(rekey_domain::DomainError::InvalidActionDefinition(
+                "usage requires profile settlement".into(),
+            )
+            .into());
+        }
         let tx = self
             .conn
             .transaction()
@@ -464,8 +493,34 @@ impl SqliteRecordStore {
         commit_audited(tx)
     }
 
+    /// Local decisions must still be current after SQL work, immediately before
+    /// COMMIT. Deadline failures roll back normally; audit failures stay fatal.
+    pub(crate) fn append_local_approval_audit(
+        &mut self,
+        event: &AuditEvent,
+        not_after: std::time::Instant,
+        wall_not_after_ms: i64,
+    ) -> Result<(), AuthorityError> {
+        let tx = self
+            .conn
+            .transaction()
+            .map_err(|_| AuthorityError::AuditCommitFailed)?;
+        super::audit::insert(&tx, event).map_err(|_| AuthorityError::AuditCommitFailed)?;
+        crate::authority::ensure_mutation_current(Some(not_after))?;
+        if crate::now_ms()? >= wall_not_after_ms {
+            return Err(AuthorityError::AuthorityBusy);
+        }
+        commit_audited(tx)
+    }
+
     /// Commits a related sequence of audit events in one transaction.
     pub fn append_audits(&mut self, events: &[AuditEvent]) -> Result<(), AuthorityError> {
+        if events.iter().any(|event| event.usage.is_some()) {
+            return Err(rekey_domain::DomainError::InvalidActionDefinition(
+                "usage requires profile settlement".into(),
+            )
+            .into());
+        }
         let tx = self
             .conn
             .transaction()
@@ -510,6 +565,7 @@ impl SqliteRecordStore {
         journal_state: &crate::model::LeaseJournalState,
         audit: AuditEvent,
         not_after: Option<std::time::Instant>,
+        generation: &mut GenerationAttempt<'_>,
     ) -> Result<(), AuthorityError> {
         let tx = self.conn.transaction().map_err(storage)?;
         for (_, version) in versions {
@@ -539,7 +595,7 @@ impl SqliteRecordStore {
         if not_after.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
             return Err(AuthorityError::AuthorityBusy);
         }
-        commit_audited(tx)
+        commit_generation(tx, generation)
     }
 
     /// Every credential version plus its kind, for restore payload proofs.
@@ -602,7 +658,11 @@ impl SqliteRecordStore {
         &self,
         dest: &Path,
         created_file: &std::fs::File,
-    ) -> Result<BackupSnapshotCut, AuthorityError> {
+        key: &[u8; 32],
+        vault_id: VaultId,
+        header_auth_failed: &mut bool,
+    ) -> Result<(BackupSnapshotCut, u64), AuthorityError> {
+        *header_auth_failed = false;
         let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW;
         let name = dest.file_name().ok_or(AuthorityError::BackupFailed)?;
         let resolved = crate::durable::parent_dir(dest)
@@ -622,12 +682,41 @@ impl SqliteRecordStore {
             .run_to_completion(64, std::time::Duration::from_millis(5), None)
             .map_err(|_| AuthorityError::BackupFailed)?;
         drop(backup);
-        snapshot_cut(&dst)
+        // Report only this authenticated-snapshot boundary as a header failure;
+        // destination creation, backup IO and later material errors stay distinct.
+        let generation = load_header(&dst)
+            .and_then(|header| {
+                crate::bootstrap::prove_integrity(&header, key)?;
+                if header.vault_id != vault_id {
+                    return Err(AuthorityError::StorageIntegrityFailed);
+                }
+                Ok(header.generation)
+            })
+            .inspect_err(|_| *header_auth_failed = true)?;
+        super::policy::verified_policy_material(&dst, key, vault_id)?;
+        for record in all_actions(&dst)? {
+            crate::convert::verified_record_to_action(&record, key, vault_id)?;
+        }
+        super::usage::verified(&dst, key, vault_id)?;
+        Ok((snapshot_cut(&dst)?, generation))
     }
 
     pub(crate) fn snapshot_cut(&self) -> Result<BackupSnapshotCut, AuthorityError> {
         snapshot_cut(&self.conn)
     }
+}
+
+fn all_actions(conn: &Connection) -> Result<Vec<ActionRecord>, AuthorityError> {
+    let mut statement = conn.prepare(
+        "SELECT action_id,version,name,state,credential_id,origin,method,target_json,auth_header,auth_prefix,request_max_bytes,allowed_extra_headers_json,response_max_bytes,allowed_response_headers_json,timeout_ms,created_at_ms,text_stream_json,native_plugin_json,seal_nonce,seal_ciphertext FROM actions ORDER BY created_at_ms,action_id,version",
+    ).map_err(storage)?;
+    statement
+        .query_map([], action_from_row)
+        .map_err(storage)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(storage)?
+        .into_iter()
+        .collect()
 }
 
 fn snapshot_cut(conn: &Connection) -> Result<BackupSnapshotCut, AuthorityError> {
@@ -774,23 +863,55 @@ fn version_from_row(r: &rusqlite::Row<'_>) -> RowResult<CredentialVersionRecord>
 }
 
 fn action_from_row(r: &rusqlite::Row<'_>) -> RowResult<ActionRecord> {
-    let action_id: Vec<u8> = r.get(0)?;
-    let version: i64 = r.get(1)?;
-    let name: String = r.get(2)?;
-    let state: String = r.get(3)?;
-    let credential_id: Vec<u8> = r.get(4)?;
-    let origin: String = r.get(5)?;
-    let method: String = r.get(6)?;
-    let exact_path: String = r.get(7)?;
-    let auth_header: String = r.get(8)?;
-    let auth_prefix: String = r.get(9)?;
-    let request_max_bytes: u32 = r.get(10)?;
-    let allowed_extra_headers_json: String = r.get(11)?;
-    let response_max_bytes: u32 = r.get(12)?;
-    let allowed_response_headers_json: String = r.get(13)?;
-    let timeout_ms: u32 = r.get(14)?;
-    let created_at_ms: i64 = r.get(15)?;
     Ok((|| {
+        let action_id: Vec<u8> = r
+            .get(0)
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        let version: i64 = r
+            .get(1)
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        let name: String = r
+            .get(2)
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        let state: String = r
+            .get(3)
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        let credential_id: Vec<u8> = r
+            .get(4)
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        let origin: String = r
+            .get(5)
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        let method: String = r
+            .get(6)
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        let target_json: String = r
+            .get(7)
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        let auth_header: String = r
+            .get(8)
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        let auth_prefix: String = r
+            .get(9)
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        let request_max_bytes: u32 = r
+            .get(10)
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        let allowed_extra_headers_json: String = r
+            .get(11)
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        let response_max_bytes: u32 = r
+            .get(12)
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        let allowed_response_headers_json: String = r
+            .get(13)
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        let timeout_ms: u32 = r
+            .get(14)
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        let created_at_ms: i64 = r
+            .get(15)
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
         Ok(ActionRecord {
             native_plugin_json: r
                 .get(17)
@@ -798,6 +919,14 @@ fn action_from_row(r: &rusqlite::Row<'_>) -> RowResult<ActionRecord> {
             text_stream_json: r
                 .get(16)
                 .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
+            seal_nonce: blob12(
+                r.get(18)
+                    .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
+            )?,
+            seal_ciphertext: blob16(
+                r.get(19)
+                    .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
+            )?,
             action_id: ActionId::from_bytes(blob16(action_id)?)
                 .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
             version: positive_version(version)?,
@@ -807,7 +936,7 @@ fn action_from_row(r: &rusqlite::Row<'_>) -> RowResult<ActionRecord> {
                 .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
             origin,
             method,
-            exact_path,
+            target_json,
             auth_header,
             auth_prefix,
             request_max_bytes,
@@ -825,6 +954,54 @@ pub(super) fn positive_version(version: i64) -> Result<u64, AuthorityError> {
         .ok()
         .filter(|version| *version > 0)
         .ok_or(AuthorityError::StorageIntegrityFailed)
+}
+
+// Query/I/O errors retain the existing layout contract. Persisted column
+// decoding failures are integrity errors, including malformed generation blobs.
+fn load_header(conn: &Connection) -> Result<VaultHeaderRecord, AuthorityError> {
+    conn.query_row(
+        "SELECT format_version,vault_id,crypto_suite,created_at_ms,schema_digest,
+                integrity_nonce,integrity_ciphertext,generation,generation_mac
+         FROM vault_header WHERE singleton=1",
+        [],
+        |row| {
+            Ok((|| {
+                let get = |index| {
+                    row.get::<_, Vec<u8>>(index)
+                        .map_err(|_| AuthorityError::StorageIntegrityFailed)
+                };
+                let generation = u64::from_be_bytes(
+                    get(7)?
+                        .try_into()
+                        .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
+                );
+                if generation == 0 {
+                    return Err(AuthorityError::StorageIntegrityFailed);
+                }
+                Ok(VaultHeaderRecord {
+                    format_version: row
+                        .get(0)
+                        .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
+                    vault_id: VaultId::from_bytes(blob16(get(1)?)?)
+                        .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
+                    crypto_suite: row
+                        .get(2)
+                        .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
+                    created_at_ms: row
+                        .get(3)
+                        .map_err(|_| AuthorityError::StorageIntegrityFailed)?,
+                    schema_digest: blob32(get(4)?)?,
+                    integrity_nonce: blob12(get(5)?)?,
+                    integrity_ciphertext: get(6)?,
+                    generation,
+                    generation_mac: blob32(get(8)?)?,
+                })
+            })())
+        },
+    )
+    .optional()
+    .map_err(|_| AuthorityError::UnsupportedVaultLayout)?
+    .ok_or(AuthorityError::UnsupportedVaultLayout)?
 }
 
 #[cfg(test)]
@@ -915,6 +1092,7 @@ mod tests {
                 iterations: 1,
                 parallelism: 1,
             },
+            rekey_domain::authorization::PolicyMode::Team,
         )
         .unwrap();
         confirm_vault_init(&state).unwrap();
@@ -933,6 +1111,26 @@ mod tests {
         handle.shutdown(Some(proof())).await.unwrap();
         join.join().unwrap();
         let mut store = SqliteRecordStore::open(&crate::paths::vault_db(&state)).unwrap();
+        let header = store.load_header().unwrap();
+        let wrapper = store.active_wrapper(WrapperKind::Password).unwrap();
+        let kek = crate::bootstrap::kek_for_wrapper(
+            &wrapper,
+            &SecretInput::from_slice(b"test-only-password"),
+        )
+        .unwrap();
+        let root = crate::bootstrap::unwrap_vrk(header.vault_id, &wrapper, &kek).unwrap();
+        let anchors =
+            crate::generation_anchor::GenerationAnchors::open(&state, header.vault_id).unwrap();
+        let mut generation = GenerationAttempt::new(
+            &anchors,
+            &header,
+            anchors.read().unwrap(),
+            root.bytes(),
+            header.generation + 1,
+            None,
+            None,
+        )
+        .unwrap();
         let mut versions = store.list_all_versions().unwrap();
         let before = versions[0].1.clone();
         versions[0].1.dek_nonce = [0; 12];
@@ -964,6 +1162,8 @@ mod tests {
             credential_version: None,
             authorization: None,
             approval: None,
+            request_context: None,
+            usage: None,
             event_type: event_type::VAULT_DEK_ROTATED,
             outcome: outcome::SUCCESS,
             reason_code: "dek-rotation".to_owned(),
@@ -979,6 +1179,7 @@ mod tests {
             &store.load_lease_state().unwrap(),
             audit,
             Some(std::time::Instant::now()),
+            &mut generation,
         );
         assert!(matches!(result, Err(AuthorityError::AuthorityBusy)));
         let after = &store.list_all_versions().unwrap()[0].1;

@@ -1,5 +1,8 @@
 # WID-10 GitHub Actions OIDC interoperability
 
+> Status: Lab (v3 scope; enterprise reserve)
+> Existing contracts and evidence are retained; this capability is excluded from the default v3 build and release package.
+
 Use a disposable private GitHub Actions repository with id-token:write and
 contents:read. The initial workflow verified the published alpha.2 Linux archive,
 which rejected GitHub's standard RS256 `x5t` header. The successful workflow

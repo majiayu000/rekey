@@ -1,15 +1,17 @@
 //! One transaction replaces all VRK dependencies without changing logical data.
+use super::generation::{GenerationAttempt, commit_generation};
 use std::time::Instant;
 
 use rekey_domain::credential::CredentialKind;
 use rusqlite::params;
 
 use super::SqliteRecordStore;
-use super::sqlite::{commit_audited, storage};
+use super::sqlite::storage;
 use crate::command::PolicyMaterial;
 use crate::error::AuthorityError;
 use crate::model::{
-    AuditEvent, CredentialRecord, CredentialVersionRecord, KeyWrapperRecord, VaultHeaderRecord,
+    ActionRecord, AuditEvent, CredentialRecord, CredentialVersionRecord, KeyWrapperRecord,
+    VaultHeaderRecord,
 };
 
 fn one(changed: usize) -> Result<(), AuthorityError> {
@@ -34,13 +36,16 @@ impl SqliteRecordStore {
         header: &VaultHeaderRecord,
         versions: &[(CredentialKind, CredentialVersionRecord)],
         credentials: &[CredentialRecord],
+        actions: &[ActionRecord],
         policy: &PolicyMaterial,
         retention: &crate::model::AuditRetentionRecord,
         wrappers: &[KeyWrapperRecord],
         journal: &[crate::model::LeaseJournalRecord],
         journal_state: &crate::model::LeaseJournalState,
+        usage_state: &crate::model::UsageState,
         audit: AuditEvent,
         not_after: Option<Instant>,
+        generation: &mut GenerationAttempt<'_>,
     ) -> Result<(), AuthorityError> {
         let tx = self.conn.transaction().map_err(storage)?;
         for (_, v) in versions {
@@ -52,6 +57,12 @@ impl SqliteRecordStore {
             current(not_after)?;
             one(tx.execute("UPDATE credentials SET state_nonce=?2, state_ciphertext=?3 WHERE credential_id=?1",
                 params![c.credential_id.as_bytes().as_slice(), c.state_nonce.as_slice(), c.state_ciphertext.as_slice()]).map_err(storage)?)?;
+        }
+        for action in actions {
+            current(not_after)?;
+            one(tx.execute("UPDATE actions SET seal_nonce=?3,seal_ciphertext=?4 WHERE action_id=?1 AND version=?2",
+                params![action.action_id.as_bytes().as_slice(),action.version as i64,
+                    action.seal_nonce.as_slice(),action.seal_ciphertext.as_slice()]).map_err(storage)?)?;
         }
         one(tx
             .execute(
@@ -89,8 +100,9 @@ impl SqliteRecordStore {
             super::wrapper::insert_wrapper(&tx, wrapper)?;
         }
         super::lease_journal::replace_ciphertexts(&tx, journal, journal_state)?;
+        super::usage::replace_state(&tx, usage_state)?;
         super::audit::insert(&tx, &audit)?;
         current(not_after)?;
-        commit_audited(tx)
+        commit_generation(tx, generation)
     }
 }

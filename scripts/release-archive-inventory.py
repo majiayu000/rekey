@@ -9,12 +9,14 @@ from pathlib import Path
 
 MARKDOWN_LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 EXECUTABLES = (
-    "rekey", "rekeyd", "rekey-github-create-issue", "rekey-mcp",
-    "rekey-policy-sign", "rekey-approval-sign", "rekey-service-unit.py",
-    "agent-quickstart.py", "operator-credential-repair.py", "rekey-backup-sync.py",
-    "rekey-audit-delivery.py",
-    "rekey-approval-relay", "rekey-audit-archive.py", "rekey-controlplane.py",
+    "rekey", "rekeyd", "rekey-mcp", "rekey-policy-sign", "rekey-approval-sign",
+    "rekey-service-unit.py", "agent-quickstart.py", "operator-credential-repair.py",
 )
+LAB_EXECUTABLES = (
+    "rekey-github-create-issue", "rekey-approval-relay", "rekey-backup-sync.py",
+    "rekey-audit-delivery.py", "rekey-audit-archive.py", "rekey-controlplane.py",
+)
+
 
 
 def required_paths(version: str) -> list[str]:
@@ -33,6 +35,8 @@ def required_paths(version: str) -> list[str]:
         "docs/product-foundation/threat-model-v2.md",
         f"docs/releases/v{version}.md",
         "docs/superpowers/specs/2026-08-28-credential-authority-v2-foundation.md",
+        "docs/superpowers/specs/2026-10-02-rekey-v3-personal-first.md",
+        "docs/superpowers/plans/2026-10-03-v3-implementation.md",
         "docs/superpowers/specs/2026-09-02-password-lifecycle-p01.md",
         "docs/superpowers/specs/2026-09-03-approvals-persistent-policy-p03.md",
         "docs/superpowers/specs/2026-09-03-workload-identity-p04.md",
@@ -97,6 +101,11 @@ def main() -> int:
     print(f"release-archive-inventory: expected_version={version}")
     if not root.is_dir():
         print(f"archive directory missing: {root}", file=sys.stderr)
+        return 1
+
+    unexpected = [name for name in LAB_EXECUTABLES if (root / name).exists()]
+    if unexpected:
+        print(f"default release archive contains lab executables: {', '.join(unexpected)}", file=sys.stderr)
         return 1
 
     missing = [rel for rel in required_paths(version) if not (root / rel).exists()]

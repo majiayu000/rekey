@@ -1,5 +1,8 @@
 # DYN-05 执行内单次 Vault 动态租约续期
 
+> Status: Lab (v3 scope; enterprise reserve)
+> Existing contracts and evidence are retained; this capability is excluded from the default v3 build and release package.
+
 日期 2026-09-30。本文替代 P-07B 中动态源 profile v1 和“不续期”条款；其余固定 Action、响应封闭、500ms 清理预留及失败合同继续适用。DYN-06 持久租约 journal 不属于本次变化。
 
 ## 关闭的管理员合同

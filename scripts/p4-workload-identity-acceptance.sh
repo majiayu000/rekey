@@ -18,8 +18,8 @@ command -v openssl >/dev/null || { echo "openssl is required"; exit 1; }
 command -v python3 >/dev/null || { echo "python3 is required"; exit 1; }
 command -v rg >/dev/null || { echo "ripgrep is required"; exit 1; }
 
-cargo build --release -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd
-cargo build --release -p rekey-broker --example p1_policy_fixture
+cargo build --features lab --release -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd
+cargo build --features lab --release -p rekey-broker --example p1_policy_fixture
 
 WORKDIR="$(mktemp -d /tmp/rkp4.XXXXXX)"
 STATE="$WORKDIR/state"
@@ -108,11 +108,11 @@ for _, profile in subjects:
         "parameters": {"kind": "any_validated"},
     })
 snapshot = {
-    "format_version": 3,
+    "format_version": 6,
     "version": int(policy_version),
     "expires_at_ms": int(time.time() * 1000) + 600000,
     "approvers": [],
-    "workload_identities": identities,
+    "profiles": [], "workload_identities": identities,
     "bindings": [{
         "action_id": action,
         "version": int(action_version),
@@ -157,7 +157,7 @@ mint() {
     --ttl 10m --max-uses 5 --workload-token-stdin <"$1"
 }
 
-printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin >/dev/null
+printf '%s\n' "$PASSWORD" | "$REKEYD" init --mode team --state-dir "$STATE" --password-stdin >/dev/null
 "$FIXTURE" "$STATE" "$READY" "$HITS" >"$WORKDIR/broker.out" 2>"$WORKDIR/broker.err" &
 BROKER_PID=$!
 for _ in $(seq 1 200); do

@@ -1,5 +1,8 @@
 # DYN-06 加密租约登记与显式解锁恢复
 
+> Status: Lab (v3 scope; enterprise reserve)
+> Remote lease execution and recovery require lab. Shared journal authentication, bootstrap/restore checks and key-rotation integrity remain in the default build.
+
 格式统一为15，旧状态/备份拒绝，不迁移。第一阶段交付 Authority 的加密登记、完整集合认证、历史版本 cleanup-only 和真实轮换/restore 接线；Broker 执行/恢复接线是下一阶段，不能以单独 Authority API 宣称进程恢复已经完成。
 
 Authority 随机生成 LeaseRegistrationId，绑定现有 execution request/session/action/version、准确 credential/version、规范 HTTPS origin/mount/role 引用。source_ref_hash 只散列非秘密来源（域 `RKVSRC\0\x01`、各字段 u16 BE 长度）；token、lease ID和动态值不散列公开。每登记独立随机 DEK，VRK 包装，更新只换 payload nonce；DEK/VRK 轮换均换新登记 DEK。payload 为闭合长度编码 source+可选 unique lease ID，不含动态值、token、body/provider响应；complete 重新加密无ID的payload，不声称 WAL/备份擦除。

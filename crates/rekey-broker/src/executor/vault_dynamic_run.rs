@@ -57,6 +57,8 @@ impl<'a> AuditedSourceTransport<'a> {
                 credential_version: Some(receipt.credential_version),
                 authorization: None,
                 approval: None,
+                request_context: None,
+                usage: None,
                 event_type: "vault.source.endpoint",
                 outcome: "unknown",
                 reason_code: format!("registration={};", receipt.registration_id),
@@ -757,7 +759,12 @@ impl ActionExecutor {
                 VaultDynamicError::Deadline.reason(),
             );
         }
-        let mut upstream = build_upstream(action, request, auth_value);
+        let mut upstream = match build_upstream(action, request, auth_value) {
+            Ok(upstream) => upstream,
+            Err(reason) => {
+                return DynamicActionResult::definite_error(BrokerError::Denied(reason), reason);
+            }
+        };
         upstream.timeout = timeout;
         if !outbound_headers_are_valid(&upstream) {
             return DynamicActionResult::definite_error(

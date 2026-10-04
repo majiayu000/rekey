@@ -284,6 +284,7 @@ impl ActorFixture {
                 iterations: 1,
                 parallelism: 1,
             },
+            rekey_domain::authorization::PolicyMode::Team,
         )
         .unwrap();
         rekey_vault::bootstrap::confirm_vault_init(&state).unwrap();
@@ -305,7 +306,7 @@ impl ActorFixture {
             )
             .await
             .unwrap();
-        let action: FixedHttpAction = serde_json::from_value(serde_json::json!({"id":rekey_domain::ids::ActionId::new_random(),"name":"actor-action","version":1,"enabled":true,"credential_id":credential.id,"origin":"https://api.example.com","method":"POST","exact_path":"/business","auth":{"header_name":"authorization","prefix":if key == "token" { "Bearer " } else { "Basic " }},"timeout_ms":30_000,"request_policy":{"max_body_bytes":1024,"allowed_extra_headers":[]},"response_policy":{"max_body_bytes":1024,"allowed_headers":["content-type"]}})).unwrap();
+        let action: FixedHttpAction = serde_json::from_value(serde_json::json!({"id":rekey_domain::ids::ActionId::new_random(),"name":"actor-action","version":1,"enabled":true,"credential_id":credential.id,"origin":"https://api.example.com","method":"POST","target":{"kind":"fixed","path":"/business"},"auth":{"header_name":"authorization","prefix":if key == "token" { "Bearer " } else { "Basic " }},"timeout_ms":30_000,"request_policy":{"max_body_bytes":1024,"allowed_extra_headers":[]},"response_policy":{"max_body_bytes":1024,"allowed_headers":["content-type"]}})).unwrap();
         action.validate().unwrap();
         let (terminals, terminal_worker) = crate::audit::spawn_terminal_worker(authority.clone());
         let lifecycle = Arc::new(Lifecycle::new());
@@ -337,6 +338,7 @@ impl ActorFixture {
     }
     async fn run(&self) -> Result<ExecuteOutcome, BrokerError> {
         let ctx = ExecutionAuditContext {
+            request_context: None,
             request_id: RequestId::new_random(),
             session_id: rekey_domain::ids::SessionId::new_random(),
             action: ActionVersionRef {
@@ -352,8 +354,11 @@ impl ActorFixture {
             action: ctx.action,
             content_type: Some("application/json".into()),
             extra_headers: vec![],
+            params: Default::default(),
+            query: Default::default(),
             body: b"{}".to_vec(),
             approval_grants: vec![],
+            local_approval_request_id: None,
         };
         let end = Instant::now() + Duration::from_millis(self.action.timeout_ms.into());
         let mut started = self
@@ -414,7 +419,7 @@ async fn actor_decoded_selected_bootstrap_never_crosses_into_business() {
             .replace(token, &escaped)
             .into_bytes(),
     );
-    assert!(!contains_secret(
+    assert!(contains_secret(
         &source.body,
         &sealing_needles(PROFILE, token.as_bytes())
     ));
@@ -458,7 +463,7 @@ async fn actor_decoded_lease_identifier_bootstrap_is_compensated_before_public_a
         .collect::<String>();
     let body = serde_json::to_string(&serde_json::json!({"lease_id":lease_id,"lease_duration":60,"renewable":false,"data":{"token":"clean-dynamic-secret"}})).unwrap().replace(token, &escaped).into_bytes();
     assert!(parse_issued(&body).is_ok());
-    assert!(!contains_secret(
+    assert!(contains_secret(
         &body,
         &sealing_needles(PROFILE, token.as_bytes())
     ));
@@ -517,7 +522,7 @@ async fn actor_decoded_selected_username_password_never_enter_basic_auth_and_cle
             let body = serde_json::to_string(&serde_json::json!({"lease_id":"database/creds/role/accepted-lease","lease_duration":60,"renewable":false,"data":{key:value}})).unwrap().replace(&value, &escaped).into_bytes();
             let mut de = serde_json::Deserializer::from_slice(&body);
             assert!((IssuedSeed { key }).deserialize(&mut de).is_ok());
-            assert!(!contains_secret(
+            assert!(contains_secret(
                 &body,
                 &sealing_needles(PROFILE, b"hvs.bootstrap")
             ));

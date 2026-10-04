@@ -253,7 +253,7 @@ def main():
             transcript.extend([result.stdout, result.stderr])
             return json.loads(result.stdout)
 
-        command([binaries / "rekeyd", "init", "--state-dir", state, "--password-stdin"], proof + "\n")
+        command([binaries / "rekeyd", "init", "--mode", "team", "--state-dir", state, "--password-stdin"], proof + "\n")
         log_file = work / "broker.log"
         with log_file.open("w") as log:
             broker = subprocess.Popen(list(map(str, [binaries / "examples/oau02_keycloak_fixture", state, ca_der, tls_port])), stdout=log, stderr=log)
@@ -296,8 +296,8 @@ def main():
         transcript.pop(-2)
         resource = {"type": "fixed-http-action", "id": action["id"]}
         draft = work / "policy.json"
-        draft.write_text(json.dumps({"format_version": 3, "version": 1, "expires_at_ms": int(time.time()*1000)+600000,
-            "approvers": [], "workload_identities": [], "bindings": [{"action_id": action["id"], "version": 1,
+        draft.write_text(json.dumps({"format_version": 6, "version": 1, "expires_at_ms": int(time.time()*1000)+600000,
+            "approvers": [], "profiles": [], "workload_identities": [], "bindings": [{"action_id": action["id"], "version": 1,
                 "resource": resource, "parameter_schema_id": "keycloak-live/v1", "parameter_schema": {"type": "null"}}],
             "rules": [{"id": str(uuid.uuid4()), "effect": "permit", "principal_id": session["principal_id"],
                 "action_id": action["id"], "version": 1, "resource": resource, "parameters": {"kind": "any_validated"}}]}))

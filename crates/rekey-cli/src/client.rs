@@ -16,12 +16,19 @@ use rekey_domain::ipc::{
 };
 use zeroize::Zeroizing;
 
+#[cfg(target_os = "macos")]
+#[path = "client/macos_peer.rs"]
+mod macos_peer;
+
+#[cfg(feature = "lab")]
 static ADMIN_SESSION_FILE: std::sync::OnceLock<Option<std::path::PathBuf>> =
     std::sync::OnceLock::new();
+#[cfg(feature = "lab")]
 pub fn configure_admin_session_file(path: Option<std::path::PathBuf>) {
     let _ = ADMIN_SESSION_FILE.set(path);
 }
 
+#[cfg(feature = "lab")]
 pub(crate) fn private_session_file(path: &Path) -> Result<Zeroizing<Vec<u8>>, CliError> {
     use std::io::Read;
     use std::os::unix::fs::OpenOptionsExt;
@@ -65,10 +72,32 @@ pub(crate) fn private_session_file(path: &Path) -> Result<Zeroizing<Vec<u8>>, Cl
 
 pub const IO_TIMEOUT: Duration = Duration::from_secs(30);
 
+fn warn_l1_dev() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if !WARNED.swap(true, Ordering::Relaxed) {
+        eprintln!(
+            "警告：L1-dev · 服务签名未校验。密码、恢复密钥或系统认证授权将发送给未验证签名的本地服务；请仅在可信开发环境使用。"
+        );
+    }
+}
+
+pub(crate) fn warn_before_secret_prompt() -> Result<(), CliError> {
+    #[cfg(target_os = "macos")]
+    if macos_peer::own_team()?.is_some() {
+        return Ok(());
+    }
+    warn_l1_dev();
+    Ok(())
+}
+
 #[derive(Debug)]
 pub struct CliError {
     pub code: String,
     pub message: String,
+    pub approval: Option<rekey_domain::ipc::ApprovalRequired>,
+    pub request_id: Option<RequestId>,
+    pub retryable: bool,
 }
 
 impl CliError {
@@ -76,6 +105,36 @@ impl CliError {
         Self {
             code: code.to_owned(),
             message: message.into(),
+            approval: None,
+            request_id: None,
+            retryable: false,
+        }
+    }
+
+    fn remote(envelope: ErrorEnvelope) -> Self {
+        Self {
+            code: envelope.code,
+            message: envelope.message,
+            approval: envelope.approval,
+            request_id: Some(envelope.request_id),
+            retryable: envelope.retryable,
+        }
+    }
+
+    pub fn print_stderr(&self) {
+        if let Some(approval) = &self.approval {
+            eprintln!(
+                "{}",
+                serde_json::json!({
+                    "request_id": self.request_id,
+                    "code": self.code,
+                    "message": self.message,
+                    "retryable": self.retryable,
+                    "approval": approval,
+                })
+            );
+        } else {
+            eprintln!("error [{}]: {}", self.code, self.message);
         }
     }
 
@@ -91,7 +150,8 @@ impl CliError {
             | "UNLOCK_RATE_LIMITED"
             | "AUTHENTICATION_FAILED"
             | "LOCKED" => 3,
-            "ACTION_DENIED"
+            "APPROVAL_REQUIRED"
+            | "ACTION_DENIED"
             | "ACTION_DISABLED"
             | "ACTION_NOT_FOUND"
             | "INVALID_CAPABILITY"
@@ -128,10 +188,21 @@ impl CliError {
     }
 }
 
+/// Local connection evidence, not a claim that every L1 requirement is met.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum PeerSecurity {
+    #[cfg(target_os = "macos")]
+    #[serde(rename = "verified_signature")]
+    VerifiedSignature,
+    #[serde(rename = "L1-dev")]
+    L1Dev,
+}
+
 pub struct Client {
     stream: UnixStream,
     channel: Channel,
     response_timeout: Duration,
+    peer_security: PeerSecurity,
 }
 
 fn io_err(err: std::io::Error) -> CliError {
@@ -360,6 +431,13 @@ impl Client {
         let socket_metadata = verify_socket_contract(socket, channel)?;
         let stream = UnixStream::connect(socket).map_err(io_err)?;
         verify_connected_peer(&stream, socket, &socket_metadata, channel)?;
+        #[cfg(target_os = "macos")]
+        let peer_security = macos_peer::verify(&stream)?;
+        #[cfg(not(target_os = "macos"))]
+        let peer_security = PeerSecurity::L1Dev;
+        if channel == Channel::Admin && peer_security == PeerSecurity::L1Dev {
+            warn_l1_dev();
+        }
         stream
             .set_read_timeout(Some(response_timeout))
             .map_err(io_err)?;
@@ -368,7 +446,22 @@ impl Client {
             stream,
             channel,
             response_timeout,
+            peer_security,
         })
+    }
+
+    /// Transfers the one-use Profile owner connection; never inherited by exec.
+    pub fn into_owner_control(self) -> Result<UnixStream, CliError> {
+        let fd = self.stream.as_raw_fd();
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
+            return Err(io_err(std::io::Error::last_os_error()));
+        }
+        Ok(self.stream)
+    }
+
+    pub fn peer_security(&self) -> PeerSecurity {
+        self.peer_security
     }
 
     fn send_request(
@@ -377,6 +470,7 @@ impl Client {
         metadata: &[u8],
         body: &[u8],
     ) -> Result<RequestId, CliError> {
+        #[cfg(feature = "lab")]
         let wrapped = if self.channel == Channel::Admin
             && rekey_domain::ipc::managed_admin_operation(message_type)
                 .map_err(|_| CliError::local("INVALID_FRAME", "unknown admin operation"))?
@@ -396,6 +490,7 @@ impl Client {
         } else {
             None
         };
+        #[cfg(feature = "lab")]
         let body = wrapped.as_deref().map_or(body, |value| value.as_slice());
         let metadata_len = u32::try_from(metadata.len())
             .map_err(|_| CliError::local("INVALID_FRAME", "request metadata is too large"))?;
@@ -513,10 +608,7 @@ impl Client {
                     if error.request_id != request_id {
                         return Err(invalid());
                     }
-                    return Err(CliError {
-                        code: error.code,
-                        message: error.message,
-                    });
+                    return Err(CliError::remote(error));
                 }
                 _ => return Err(invalid()),
             }
@@ -573,10 +665,7 @@ impl Client {
                         "error response does not match request",
                     ));
                 }
-                Err(CliError {
-                    code: envelope.code,
-                    message: envelope.message,
-                })
+                Err(CliError::remote(envelope))
             }
             _ => Err(CliError::local("INVALID_FRAME", "unexpected response type")),
         }

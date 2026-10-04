@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use crate::command::{AuthorityCommand, StatusInfo};
+use crate::command::{AuthorityCommand, StatusInfo, UnlockProof};
 use crate::error::AuthorityError;
 use crate::model::{event_type, outcome};
 use crate::now_ms;
@@ -171,20 +171,25 @@ impl Worker {
                 let _ = reply.send(result);
             }
             AuthorityCommand::DesktopReveal {
-                token,
+                proof,
                 credential_id,
                 not_after,
                 reply,
             } => {
+                let reason = match &proof {
+                    UnlockProof::Password(_) => "step-up-password",
+                    UnlockProof::Recovery(_) => "step-up-recovery",
+                    UnlockProof::Presence(_) => "step-up-presence",
+                };
                 let result = ensure_mutation_current(not_after)
-                    .and_then(|_| self.verify_desktop(&token))
+                    .and_then(|_| self.verify_proof(&proof))
                     .and_then(|_| {
                         let record = self.load_verified_credential(credential_id)?;
                         let audit = credential_audit(
                             "credential.reveal_started",
                             credential_id,
                             record.current_version,
-                            "desktop-session",
+                            reason,
                         );
                         self.append_audit(audit)?;
                         ensure_mutation_current(not_after)?;
@@ -195,7 +200,7 @@ impl Worker {
                             "credential.revealed",
                             credential_id,
                             record.current_version,
-                            "desktop-session",
+                            reason,
                         ))?;
                         Ok(value)
                     });
@@ -245,12 +250,25 @@ impl Worker {
                 };
                 let _ = reply.send(Ok(StatusInfo {
                     state: self.state.name(),
+                    rollback: match &self.state {
+                        VaultState::RollbackSuspected(context) => Some(context.clone()),
+                        _ => None,
+                    },
                     vault_id: self.header.vault_id,
                     format_version: self.header.format_version,
                     idle_for_ms,
                     policy_trust_installed,
                     policy_bundle_persisted,
                 }));
+            }
+            AuthorityCommand::ConfirmRollback {
+                expected,
+                proof,
+                not_after,
+                reply,
+            } => {
+                let result = self.confirm_rollback(expected, proof, not_after);
+                let _ = reply.send(result);
             }
             AuthorityCommand::Unlock { proof, reply } => {
                 let result = self.unlock(proof);
@@ -281,11 +299,17 @@ impl Worker {
                 };
                 let ok = result.is_ok();
                 if ok {
+                    self.presence_grant = None;
                     self.desktop_session = None;
                     self.state = VaultState::Locked;
                 }
                 let _ = reply.send(result);
                 return ok;
+            }
+            AuthorityCommand::VerifyShutdownProof { proof, reply } => {
+                let result = self.verify_shutdown_proof(&proof);
+                let result = self.fault_on_integrity(result);
+                let _ = reply.send(result);
             }
             AuthorityCommand::VerifyProof { proof, reply } => {
                 let result = self
@@ -294,6 +318,18 @@ impl Worker {
                     .and_then(|_| self.verify_proof(&proof));
                 self.touch_if_ok(&result);
                 let _ = reply.send(result);
+            }
+            AuthorityCommand::AuthorizeLocalApproval {
+                proof,
+                draft,
+                not_after,
+                wall_not_after_ms,
+                reply,
+            } => {
+                let result =
+                    self.authorize_local_approval(proof, draft, not_after, wall_not_after_ms);
+                self.touch_if_ok(&result);
+                drop(reply.send(result));
             }
             AuthorityCommand::RotateVrk {
                 password,
@@ -332,14 +368,14 @@ impl Worker {
                 let _ = reply.send(result);
             }
             AuthorityCommand::RecoveryRotate {
-                password,
+                proof,
                 not_after,
                 reply,
             } => {
                 let result = if mutation_expired(not_after) {
                     Err(AuthorityError::AuthorityBusy)
                 } else {
-                    self.recovery_rotate(password, not_after)
+                    self.recovery_rotate(proof, not_after)
                 };
                 self.touch_if_ok(&result);
                 let _ = reply.send(result);
@@ -418,6 +454,30 @@ impl Worker {
                 self.touch_if_ok(&result);
                 let _ = reply.send(result);
             }
+            AuthorityCommand::TemplateCatalog {
+                source,
+                package,
+                not_after,
+                reply,
+            } => {
+                let result = ensure_mutation_current(not_after)
+                    .and_then(|_| self.template_catalog(source, &package, not_after));
+                let _ = reply.send(result);
+            }
+            AuthorityCommand::TemplateInstall {
+                input,
+                package,
+                proof,
+                request_id,
+                not_after,
+                reply,
+            } => {
+                let result = ensure_mutation_current(not_after).and_then(|_| {
+                    self.template_install(*input, &package, proof, request_id, not_after)
+                });
+                self.touch_if_ok(&result);
+                let _ = reply.send(result);
+            }
             AuthorityCommand::ActionUpsert {
                 existing,
                 definition,
@@ -463,11 +523,11 @@ impl Worker {
                 credential_id,
                 reply,
             } => {
-                let records = self.store.list_actions_for_credential(credential_id);
-                let result = self.fault_on_integrity(records).map(|records| {
+                let result = self.verified_actions().map(|records| {
                     let mut action_ids = records
                         .into_iter()
-                        .map(|record| record.action_id)
+                        .filter(|(record, _)| record.credential_id == credential_id)
+                        .map(|(record, _)| record.action_id)
                         .collect::<Vec<_>>();
                     action_ids.sort_unstable();
                     action_ids.dedup();
@@ -500,6 +560,44 @@ impl Worker {
                 let result = self.prepare_credential(credential_id);
                 self.touch_if_ok(&result);
                 let _ = reply.send(result);
+            }
+            AuthorityCommand::BeginProfileExecution {
+                usage,
+                preceding,
+                started,
+                not_after,
+                wall_not_after_ms,
+                reply,
+            } => {
+                let result = self.begin_profile_execution(
+                    usage,
+                    preceding,
+                    started,
+                    not_after,
+                    wall_not_after_ms,
+                );
+                self.touch_if_ok(&result);
+                drop(reply.send(result));
+            }
+            AuthorityCommand::SettleProfileExecution {
+                request_id,
+                measured_output_tokens,
+                terminal,
+                reply,
+            } => {
+                let result =
+                    self.settle_profile_execution(request_id, measured_output_tokens, terminal);
+                self.touch_if_ok(&result);
+                drop(reply.send(result));
+            }
+            AuthorityCommand::ProfileUsage {
+                principal_id,
+                instance_slug,
+                utc_day,
+                reply,
+            } => {
+                let result = self.profile_usage(principal_id, &instance_slug, utc_day);
+                drop(reply.send(result));
             }
             AuthorityCommand::AppendAudit {
                 draft,

@@ -49,6 +49,8 @@ async fn backup_roundtrip_and_restore() {
                 credential_version: None,
                 authorization: None,
                 approval: None,
+                request_context: None,
+                usage: None,
                 event_type: event_type::SESSION_CREATED,
                 outcome: outcome::SUCCESS,
                 reason_code: "workload-attested".to_owned(),
@@ -146,6 +148,13 @@ async fn backup_roundtrip_and_restore() {
         &target,
         RestoreProof::Password(common::password_input()),
         &receipt.sha256_hex,
+        rekey_vault::bootstrap::inspect_restore(
+            &backup_path,
+            &target,
+            RestoreProof::Password(common::password_input()),
+            &receipt.sha256_hex,
+        )
+        .unwrap(),
     )
     .unwrap();
     assert_eq!(vault_id.vault_id, vault.outcome.vault_id);
@@ -197,6 +206,8 @@ async fn backup_roundtrip_and_restore() {
                 credential_version: None,
                 authorization: None,
                 approval: None,
+                request_context: None,
+                usage: None,
                 event_type: event_type::SESSION_CREATED,
                 outcome: outcome::SUCCESS,
                 reason_code: "workload-attested".to_owned(),
@@ -246,7 +257,10 @@ async fn backups_keep_the_wrapper_generation_captured_at_snapshot_time() {
         .await
         .unwrap();
     let new_recovery = handle
-        .recovery_rotate_before(SecretInput::from_slice(NEW_PASSWORD), None)
+        .recovery_rotate_before(
+            rekey_vault::command::UnlockProof::Password(SecretInput::from_slice(NEW_PASSWORD)),
+            None,
+        )
         .await
         .unwrap();
     let new_password_proof = || UnlockProof::Password(SecretInput::from_slice(NEW_PASSWORD));
@@ -266,6 +280,15 @@ async fn backups_keep_the_wrapper_generation_captured_at_snapshot_time() {
             vault.outcome.recovery_key_display.as_bytes(),
         )),
         &old_receipt.sha256_hex,
+        rekey_vault::bootstrap::inspect_restore(
+            &old_backup,
+            &old_target,
+            RestoreProof::RecoveryKey(SecretInput::from_slice(
+                vault.outcome.recovery_key_display.as_bytes(),
+            )),
+            &old_receipt.sha256_hex,
+        )
+        .unwrap(),
     )
     .unwrap();
     let wrong_old_target = vault.dir.path().join("restore-old-with-new-password");
@@ -274,6 +297,7 @@ async fn backups_keep_the_wrapper_generation_captured_at_snapshot_time() {
         &wrong_old_target,
         RestoreProof::Password(SecretInput::from_slice(NEW_PASSWORD)),
         &old_receipt.sha256_hex,
+        common::unconfirmed_restore_context(),
     )
     .unwrap_err();
     assert!(matches!(error, AuthorityError::InvalidUnlockCredential));
@@ -286,6 +310,7 @@ async fn backups_keep_the_wrapper_generation_captured_at_snapshot_time() {
             vault.outcome.recovery_key_display.as_bytes(),
         )),
         &new_receipt.sha256_hex,
+        common::unconfirmed_restore_context(),
     )
     .unwrap_err();
     assert!(matches!(error, AuthorityError::InvalidUnlockCredential));
@@ -296,6 +321,13 @@ async fn backups_keep_the_wrapper_generation_captured_at_snapshot_time() {
         &new_target,
         RestoreProof::RecoveryKey(SecretInput::from_slice(new_recovery.as_bytes())),
         &new_receipt.sha256_hex,
+        rekey_vault::bootstrap::inspect_restore(
+            &new_backup,
+            &new_target,
+            RestoreProof::RecoveryKey(SecretInput::from_slice(new_recovery.as_bytes())),
+            &new_receipt.sha256_hex,
+        )
+        .unwrap(),
     )
     .unwrap();
     let (handle, join) = common::spawn(&new_target);
@@ -332,6 +364,7 @@ async fn restore_rejects_wrong_proof_and_nonempty_target() {
         &target,
         RestoreProof::Password(SecretInput::from_slice(b"wrong")),
         &file_sha256(&backup_path),
+        common::unconfirmed_restore_context(),
     )
     .unwrap_err();
     assert!(matches!(err, AuthorityError::InvalidUnlockCredential));
@@ -346,6 +379,7 @@ async fn restore_rejects_wrong_proof_and_nonempty_target() {
         &occupied,
         RestoreProof::Password(common::password_input()),
         &file_sha256(&backup_path),
+        common::unconfirmed_restore_context(),
     )
     .unwrap_err();
     assert!(matches!(err, AuthorityError::StateDirectoryNotEmpty));
@@ -365,6 +399,7 @@ async fn restore_rejects_wrong_proof_and_nonempty_target() {
         &target,
         RestoreProof::Password(common::password_input()),
         &file_sha256(&tampered),
+        common::unconfirmed_restore_context(),
     )
     .unwrap_err();
     assert!(
@@ -400,6 +435,7 @@ async fn restore_rejects_wrong_sha256_without_installing() {
         &target,
         RestoreProof::Password(common::password_input()),
         &"0".repeat(64),
+        common::unconfirmed_restore_context(),
     )
     .unwrap_err();
     assert!(matches!(err, AuthorityError::RestoreFailed));
@@ -430,6 +466,7 @@ async fn restore_rejects_invalid_sha256_format() {
         &target,
         RestoreProof::Password(common::password_input()),
         "not-a-hash",
+        common::unconfirmed_restore_context(),
     )
     .unwrap_err();
     assert!(matches!(err, AuthorityError::RestoreFailed));
@@ -458,6 +495,13 @@ async fn restore_empty_vault_still_proves_integrity_record() {
         &target,
         RestoreProof::Password(common::password_input()),
         &receipt.sha256_hex,
+        rekey_vault::bootstrap::inspect_restore(
+            &backup_path,
+            &target,
+            RestoreProof::Password(common::password_input()),
+            &receipt.sha256_hex,
+        )
+        .unwrap(),
     )
     .unwrap();
     let (handle, join) = common::spawn(&target);
@@ -519,6 +563,7 @@ async fn restore_rejects_corrupt_later_credential() {
         &target,
         RestoreProof::Password(common::password_input()),
         &file_sha256(&backup_path),
+        common::unconfirmed_restore_context(),
     )
     .unwrap_err();
     assert!(
@@ -586,6 +631,7 @@ async fn restore_rejects_orphan_credential_version() {
         &target,
         RestoreProof::Password(common::password_input()),
         &file_sha256(&backup_path),
+        common::unconfirmed_restore_context(),
     )
     .unwrap_err();
     assert!(matches!(err, AuthorityError::StorageIntegrityFailed));
@@ -833,6 +879,13 @@ async fn restore_recovers_only_marked_internal_artifacts_before_retry() {
         &target,
         RestoreProof::Password(common::password_input()),
         &receipt.sha256_hex,
+        rekey_vault::bootstrap::inspect_restore(
+            &backup_path,
+            &target,
+            RestoreProof::Password(common::password_input()),
+            &receipt.sha256_hex,
+        )
+        .unwrap(),
     )
     .unwrap();
     assert_eq!(restored_id.vault_id, vault.outcome.vault_id);
@@ -862,6 +915,16 @@ async fn invalid_snapshot_cut_fails_before_backup_release_and_restore_install() 
     let before: u64 = source
         .query_row("SELECT COUNT(*) FROM audit_events", [], |row| row.get(0))
         .unwrap();
+    let released_before: u64 = source
+        .query_row(
+            "SELECT COUNT(*) FROM audit_events WHERE event_type IN (?1, ?2)",
+            [
+                event_type::BACKUP_RELEASE_AUTHORIZED,
+                event_type::BACKUP_CREATED,
+            ],
+            |row| row.get(0),
+        )
+        .unwrap();
     source
         .execute("UPDATE audit_events SET sequence=-sequence", [])
         .unwrap();
@@ -877,7 +940,38 @@ async fn invalid_snapshot_cut_fails_before_backup_release_and_restore_install() 
     let after: u64 = source
         .query_row("SELECT COUNT(*) FROM audit_events", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(after, before);
+    assert_eq!(after, before + 1);
+    let fault: (String, String, String) = source
+        .query_row(
+            "SELECT event_type, outcome, reason_code FROM audit_events WHERE sequence > 0",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        fault,
+        (
+            event_type::RUNTIME_FAULTED.to_owned(),
+            outcome::FAILURE.to_owned(),
+            "persisted-state-integrity-failed".to_owned(),
+        )
+    );
+    let released_after: u64 = source
+        .query_row(
+            "SELECT COUNT(*) FROM audit_events WHERE event_type IN (?1, ?2)",
+            [
+                event_type::BACKUP_RELEASE_AUTHORIZED,
+                event_type::BACKUP_CREATED,
+            ],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(released_after, released_before);
+    assert_eq!(handle.status().await.unwrap().state, "faulted");
+    assert!(matches!(
+        handle.action_list().await,
+        Err(AuthorityError::Faulted)
+    ));
     drop(source);
     handle
         .shutdown(Some(common::password_proof()))
@@ -897,6 +991,7 @@ async fn invalid_snapshot_cut_fails_before_backup_release_and_restore_install() 
             &target,
             RestoreProof::Password(common::password_input()),
             &file_sha256(&archive),
+            common::unconfirmed_restore_context(),
         ),
         Err(AuthorityError::StorageIntegrityFailed)
     ));
@@ -935,6 +1030,7 @@ async fn restore_receipt_binds_actual_cross_vault_input_and_local_lock() {
             &wrong_target,
             RestoreProof::Password(common::password_input()),
             &backups[0].1.sha256_hex,
+            common::unconfirmed_restore_context(),
         ),
         Err(AuthorityError::RestoreFailed)
     ));
@@ -959,6 +1055,7 @@ async fn restore_receipt_binds_actual_cross_vault_input_and_local_lock() {
             &target,
             RestoreProof::Password(common::password_input()),
             &backups[1].1.sha256_hex,
+            common::unconfirmed_restore_context(),
         ),
         Err(AuthorityError::StorageUnavailable(_))
     ));
@@ -971,6 +1068,13 @@ async fn restore_receipt_binds_actual_cross_vault_input_and_local_lock() {
         &target,
         RestoreProof::Password(common::password_input()),
         &backups[1].1.sha256_hex.to_uppercase(),
+        rekey_vault::bootstrap::inspect_restore(
+            &backups[1].0,
+            &target,
+            RestoreProof::Password(common::password_input()),
+            &backups[1].1.sha256_hex.to_uppercase(),
+        )
+        .unwrap(),
     )
     .unwrap();
     assert_eq!(restored.vault_id, b.outcome.vault_id);
@@ -991,6 +1095,13 @@ async fn restore_receipt_binds_actual_cross_vault_input_and_local_lock() {
         &b.dir.path().join("another-copy"),
         RestoreProof::Password(common::password_input()),
         &backups[1].1.sha256_hex,
+        rekey_vault::bootstrap::inspect_restore(
+            &backups[1].0,
+            &b.dir.path().join("another-copy"),
+            RestoreProof::Password(common::password_input()),
+            &backups[1].1.sha256_hex,
+        )
+        .unwrap(),
     )
     .unwrap();
     assert_eq!(another.snapshot_cut, restored.snapshot_cut);
@@ -1019,6 +1130,13 @@ async fn restore_receipt_preserves_exact_canonical_unicode_output_path() {
         &target,
         RestoreProof::Password(common::password_input()),
         &backup.sha256_hex,
+        rekey_vault::bootstrap::inspect_restore(
+            &archive,
+            &target,
+            RestoreProof::Password(common::password_input()),
+            &backup.sha256_hex,
+        )
+        .unwrap(),
     )
     .unwrap();
     let canonical = target
@@ -1030,6 +1148,7 @@ async fn restore_receipt_preserves_exact_canonical_unicode_output_path() {
     assert_eq!(restored.output_path, canonical);
     assert!(rekey_vault::paths::vault_db(&target).is_file());
     let receipt = rekey_domain::ipc::RestoreReceipt {
+        generation: restored.generation,
         vault_id: restored.vault_id.to_string(),
         format_version: restored.format_version,
         input_sha256_hex: restored.input_sha256_hex,
@@ -1084,7 +1203,8 @@ async fn restore_refuses_actual_non_utf8_target_before_installing() {
                 &archive,
                 &target,
                 RestoreProof::Password(proof),
-                &backup.sha256_hex
+                &backup.sha256_hex,
+                common::unconfirmed_restore_context(),
             ),
             Err(AuthorityError::RestoreFailed)
         ));

@@ -1,3 +1,4 @@
+use rekey_domain::ipc::ProofKind;
 use std::path::Path;
 
 use rekey_domain::credential::CredentialMetadata;
@@ -6,9 +7,7 @@ use rekey_domain::ipc::{self, admin_msg};
 use serde::Deserialize;
 use zeroize::Zeroizing;
 
-use super::{
-    CliError, admin, print_json, proof_kind, read_private_regular_file_bounded, read_step_up,
-};
+use super::{CliError, admin, print_json, read_private_regular_file_bounded, read_step_up};
 
 #[derive(Deserialize)]
 struct VaultProfileMarker<'a> {
@@ -20,14 +19,14 @@ pub fn credential_add_macos_keychain(
     state_dir: &Path,
     label: &str,
     file: &Path,
-    recovery: bool,
+    kind: ProofKind,
     password_stdin: bool,
 ) -> Result<(), CliError> {
     add_vault_profile(
         state_dir,
         label,
         file,
-        recovery,
+        kind,
         password_stdin,
         "macos-keychain-source-v1",
         "macos-keychain-source",
@@ -38,14 +37,14 @@ pub fn credential_rotate_macos_keychain(
     state_dir: &Path,
     credential_id: &str,
     file: &Path,
-    recovery: bool,
+    kind: ProofKind,
     password_stdin: bool,
 ) -> Result<(), CliError> {
     rotate_vault_profile(
         state_dir,
         credential_id,
         file,
-        recovery,
+        kind,
         password_stdin,
         "macos-keychain-source-v1",
         admin_msg::CREDENTIAL_ROTATE_MACOS_KEYCHAIN,
@@ -57,14 +56,14 @@ pub fn credential_add_gcp_secret_manager(
     state_dir: &Path,
     label: &str,
     file: &Path,
-    recovery: bool,
+    kind: ProofKind,
     password_stdin: bool,
 ) -> Result<(), CliError> {
     add_vault_profile(
         state_dir,
         label,
         file,
-        recovery,
+        kind,
         password_stdin,
         "gcp-secret-manager-source-v1",
         "gcp-secret-manager-source",
@@ -76,14 +75,14 @@ pub fn credential_rotate_gcp_secret_manager(
     state_dir: &Path,
     credential_id: &str,
     file: &Path,
-    recovery: bool,
+    kind: ProofKind,
     password_stdin: bool,
 ) -> Result<(), CliError> {
     rotate_vault_profile(
         state_dir,
         credential_id,
         file,
-        recovery,
+        kind,
         password_stdin,
         "gcp-secret-manager-source-v1",
         admin_msg::CREDENTIAL_ROTATE_GCP_SECRET_MANAGER,
@@ -95,14 +94,14 @@ pub fn credential_add_azure_key_vault(
     state_dir: &Path,
     label: &str,
     file: &Path,
-    recovery: bool,
+    kind: ProofKind,
     password_stdin: bool,
 ) -> Result<(), CliError> {
     add_vault_profile(
         state_dir,
         label,
         file,
-        recovery,
+        kind,
         password_stdin,
         "azure-key-vault-source-v1",
         "azure-key-vault-source",
@@ -114,14 +113,14 @@ pub fn credential_rotate_azure_key_vault(
     state_dir: &Path,
     credential_id: &str,
     file: &Path,
-    recovery: bool,
+    kind: ProofKind,
     password_stdin: bool,
 ) -> Result<(), CliError> {
     rotate_vault_profile(
         state_dir,
         credential_id,
         file,
-        recovery,
+        kind,
         password_stdin,
         "azure-key-vault-source-v1",
         admin_msg::CREDENTIAL_ROTATE_AZURE_KEY_VAULT,
@@ -133,14 +132,14 @@ pub fn credential_add_onepassword_connect(
     state_dir: &Path,
     label: &str,
     file: &Path,
-    recovery: bool,
+    kind: ProofKind,
     password_stdin: bool,
 ) -> Result<(), CliError> {
     add_vault_profile(
         state_dir,
         label,
         file,
-        recovery,
+        kind,
         password_stdin,
         "onepassword-connect-source-v1",
         "onepassword-connect-source",
@@ -152,14 +151,14 @@ pub fn credential_rotate_onepassword_connect(
     state_dir: &Path,
     credential_id: &str,
     file: &Path,
-    recovery: bool,
+    kind: ProofKind,
     password_stdin: bool,
 ) -> Result<(), CliError> {
     rotate_vault_profile(
         state_dir,
         credential_id,
         file,
-        recovery,
+        kind,
         password_stdin,
         "onepassword-connect-source-v1",
         admin_msg::CREDENTIAL_ROTATE_ONEPASSWORD_CONNECT,
@@ -171,14 +170,14 @@ pub fn credential_add_aws_secrets_manager(
     state_dir: &Path,
     label: &str,
     file: &Path,
-    recovery: bool,
+    kind: ProofKind,
     password_stdin: bool,
 ) -> Result<(), CliError> {
     add_vault_profile(
         state_dir,
         label,
         file,
-        recovery,
+        kind,
         password_stdin,
         "aws-secrets-manager-source-v1",
         "aws-secrets-manager-source",
@@ -190,14 +189,14 @@ pub fn credential_rotate_aws_secrets_manager(
     state_dir: &Path,
     credential_id: &str,
     file: &Path,
-    recovery: bool,
+    kind: ProofKind,
     password_stdin: bool,
 ) -> Result<(), CliError> {
     rotate_vault_profile(
         state_dir,
         credential_id,
         file,
-        recovery,
+        kind,
         password_stdin,
         "aws-secrets-manager-source-v1",
         admin_msg::CREDENTIAL_ROTATE_AWS_SECRETS_MANAGER,
@@ -209,14 +208,14 @@ pub fn credential_add_keycloak(
     state_dir: &Path,
     label: &str,
     file: &Path,
-    recovery: bool,
+    kind: ProofKind,
     password_stdin: bool,
 ) -> Result<(), CliError> {
     add_vault_profile(
         state_dir,
         label,
         file,
-        recovery,
+        kind,
         password_stdin,
         "keycloak-token-exchange-v1",
         "keycloak-token-exchange",
@@ -227,14 +226,14 @@ pub fn credential_rotate_keycloak(
     state_dir: &Path,
     credential_id: &str,
     file: &Path,
-    recovery: bool,
+    kind: ProofKind,
     password_stdin: bool,
 ) -> Result<(), CliError> {
     rotate_vault_profile(
         state_dir,
         credential_id,
         file,
-        recovery,
+        kind,
         password_stdin,
         "keycloak-token-exchange-v1",
         admin_msg::CREDENTIAL_ROTATE_KEYCLOAK,
@@ -246,14 +245,14 @@ pub fn credential_add_vault_kv(
     state_dir: &Path,
     label: &str,
     file: &Path,
-    recovery: bool,
+    kind: ProofKind,
     password_stdin: bool,
 ) -> Result<(), CliError> {
     add_vault_profile(
         state_dir,
         label,
         file,
-        recovery,
+        kind,
         password_stdin,
         "vault-kv-v2-source-v1",
         "vault-kv-v2-source",
@@ -265,14 +264,14 @@ pub fn credential_add_vault_dynamic(
     state_dir: &Path,
     label: &str,
     file: &Path,
-    recovery: bool,
+    kind: ProofKind,
     password_stdin: bool,
 ) -> Result<(), CliError> {
     add_vault_profile(
         state_dir,
         label,
         file,
-        recovery,
+        kind,
         password_stdin,
         "vault-dynamic-source-v2",
         "vault-dynamic-source",
@@ -285,19 +284,19 @@ fn add_vault_profile(
     state_dir: &Path,
     label: &str,
     file: &Path,
-    recovery: bool,
+    kind: ProofKind,
     password_stdin: bool,
     marker: &'static str,
-    kind: &'static str,
+    credential_kind: &'static str,
     profile_label: &'static str,
 ) -> Result<(), CliError> {
     let profile = vault_profile_file(file, marker, profile_label)?;
-    let proof = read_step_up(recovery, password_stdin)?;
+    let proof = read_step_up(kind, password_stdin)?;
     let metadata = serde_json::json!({
         "label": label,
-        "kind": kind
+        "kind": credential_kind
     });
-    let body = proof_and_profile(recovery, &proof, &profile);
+    let body = proof_and_profile(kind, &proof, &profile);
     let (response, _) = admin(state_dir)?.call(
         admin_msg::CREDENTIAL_ADD,
         metadata.to_string().as_bytes(),
@@ -310,14 +309,14 @@ pub fn credential_rotate_vault_kv(
     state_dir: &Path,
     credential_id: &str,
     file: &Path,
-    recovery: bool,
+    kind: ProofKind,
     password_stdin: bool,
 ) -> Result<(), CliError> {
     rotate_vault_profile(
         state_dir,
         credential_id,
         file,
-        recovery,
+        kind,
         password_stdin,
         "vault-kv-v2-source-v1",
         admin_msg::CREDENTIAL_ROTATE_VAULT_KV,
@@ -329,14 +328,14 @@ pub fn credential_rotate_vault_dynamic(
     state_dir: &Path,
     credential_id: &str,
     file: &Path,
-    recovery: bool,
+    kind: ProofKind,
     password_stdin: bool,
 ) -> Result<(), CliError> {
     rotate_vault_profile(
         state_dir,
         credential_id,
         file,
-        recovery,
+        kind,
         password_stdin,
         "vault-dynamic-source-v2",
         admin_msg::CREDENTIAL_ROTATE_VAULT_DYNAMIC,
@@ -349,7 +348,7 @@ fn rotate_vault_profile(
     state_dir: &Path,
     credential_id: &str,
     file: &Path,
-    recovery: bool,
+    kind: ProofKind,
     password_stdin: bool,
     marker: &'static str,
     message_type: u16,
@@ -359,9 +358,9 @@ fn rotate_vault_profile(
         .parse()
         .map_err(|_| CliError::local("USAGE", "invalid credential id"))?;
     let profile = vault_profile_file(file, marker, profile_label)?;
-    let proof = read_step_up(recovery, password_stdin)?;
+    let proof = read_step_up(kind, password_stdin)?;
     let metadata = serde_json::json!({ "credential_id": credential_id.to_string() });
-    let body = proof_and_profile(recovery, &proof, &profile);
+    let body = proof_and_profile(kind, &proof, &profile);
     let (response, _) =
         admin(state_dir)?.call(message_type, metadata.to_string().as_bytes(), &body)?;
     print_json::<CredentialMetadata>(&response)
@@ -397,9 +396,9 @@ fn vault_profile_file(
     Ok(profile)
 }
 
-fn proof_and_profile(recovery: bool, proof: &[u8], profile: &[u8]) -> Zeroizing<Vec<u8>> {
+fn proof_and_profile(kind: ProofKind, proof: &[u8], profile: &[u8]) -> Zeroizing<Vec<u8>> {
     let mut body = Zeroizing::new(Vec::with_capacity(1 + 4 + proof.len() + 4 + profile.len()));
-    ipc::encode_proof_and_secret_body(proof_kind(recovery), proof, profile, &mut body);
+    ipc::encode_proof_and_secret_body(kind, proof, profile, &mut body);
     body
 }
 
@@ -530,7 +529,7 @@ mod tests {
             "macOS Keychain reference",
         )
         .unwrap();
-        let body = proof_and_profile(false, b"synthetic-proof", &profile);
+        let body = proof_and_profile(ProofKind::Password, b"synthetic-proof", &profile);
         let (kind, proof, reference) = ipc::parse_proof_and_secret_body(&body).unwrap();
         assert_eq!(kind, ipc::ProofKind::Password);
         assert_eq!(proof, b"synthetic-proof");

@@ -8,14 +8,15 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::action::{FixedHttpAction, HttpsOrigin};
-use crate::authorization::{ApprovalMode, PolicyVersion, ResourceRef, SchemaId};
+use crate::action::{ActionName, ExactPath, FixedHttpAction, FixedMethod, HttpsOrigin};
+use crate::authorization::{ApprovalMode, ApproverSpec, PolicyVersion, ResourceRef, SchemaId};
 use crate::capability::ActionVersionRef;
 use crate::credential::{CredentialLabel, CredentialMetadata};
 use crate::ids::{
-    ActionId, ApprovalRequestId, ApproverId, CredentialId, PolicyRuleId, PolicySignerId,
-    PrincipalId, RequestId, SessionId, TenantId, VaultId,
+    ActionId, ApprovalRequestId, CredentialId, PolicyRuleId, PolicySignerId, PrincipalId,
+    RequestId, SessionId, TenantId, VaultId,
 };
+use crate::template::{ProviderTemplate, TemplateValues};
 
 pub const FRAME_MAGIC: [u8; 4] = *b"RKIP";
 pub const FRAME_VERSION: u16 = 1;
@@ -106,6 +107,16 @@ pub mod admin_msg {
     pub const CREDENTIAL_ROTATE_MACOS_KEYCHAIN: u16 = 49;
     pub const AUDIT_RETENTION_SET: u16 = 50;
     pub const AUDIT_RETENTION_STATUS: u16 = 51;
+    pub const TEMPLATE_CATALOG: u16 = 52;
+    pub const TEMPLATE_INSTALL: u16 = 53;
+    pub const PERSONAL_POLICY_DRAFT: u16 = 54;
+    pub const APPROVAL_LOCAL_REVIEW: u16 = 55;
+    pub const APPROVAL_LOCAL_APPROVE: u16 = 56;
+    pub const APPROVAL_LOCAL_REJECT: u16 = 57;
+    pub const PROFILE_GET: u16 = 58;
+    pub const PROFILE_SESSION_CREATE: u16 = 59;
+    pub const PROFILE_LIST: u16 = 60;
+    pub const ROLLBACK_CONFIRM: u16 = 61;
 }
 
 /// Agent channel message types.
@@ -115,6 +126,9 @@ pub mod agent_msg {
     pub const PREPARE_APPROVAL: u16 = 3;
     pub const WORKLOAD_SESSION_CREATE: u16 = 4;
     pub const EXECUTE_TEXT_STREAM: u16 = 5;
+    pub const AWAIT_APPROVAL: u16 = 6;
+    pub const CANCEL_APPROVAL: u16 = 7;
+    pub const PROFILE_INVENTORY: u16 = 8;
 }
 
 /// Response message types shared by both channels.
@@ -206,12 +220,12 @@ impl FrameHeader {
 
 /// Closed operation classification shared by managed Broker dispatch and CLI.
 pub fn managed_admin_operation(message_type: u16) -> Result<bool, FrameError> {
-    if !(1..=51).contains(&message_type) {
+    if !(1..=61).contains(&message_type) {
         return Err(FrameError::InvalidField);
     }
     Ok(!matches!(
         message_type,
-        1 | 2 | 3 | 15 | 16 | 31 | 34 | 36 | 45..=48
+        1 | 2 | 3 | 15 | 16 | 31 | 34 | 36 | 45..=48 | 61
     ))
 }
 
@@ -281,6 +295,7 @@ pub struct OidcLogoutResponse {
 pub enum ProofKind {
     Password,
     Recovery,
+    Presence,
 }
 
 impl ProofKind {
@@ -288,6 +303,7 @@ impl ProofKind {
         match self {
             Self::Password => 1,
             Self::Recovery => 2,
+            Self::Presence => 3,
         }
     }
 
@@ -295,6 +311,7 @@ impl ProofKind {
         match code {
             1 => Ok(Self::Password),
             2 => Ok(Self::Recovery),
+            3 => Ok(Self::Presence),
             _ => Err(FrameError::InvalidField),
         }
     }
@@ -344,6 +361,16 @@ pub fn parse_proof_body(body: &[u8]) -> Result<(ProofKind, &[u8]), FrameError> {
     Ok((kind, proof))
 }
 
+/// Local decisions accept only an explicit, nonempty Presence proof envelope.
+/// Secret syntax and current-key verification remain in the Authority.
+pub fn parse_local_approval_proof_body(body: &[u8]) -> Result<&[u8], FrameError> {
+    let (kind, proof) = parse_proof_body(body)?;
+    if kind != ProofKind::Presence || proof.is_empty() {
+        return Err(FrameError::InvalidField);
+    }
+    Ok(proof)
+}
+
 /// Zero-copy parse; the caller owns zeroization of the backing buffer.
 pub fn parse_proof_and_secret_body(body: &[u8]) -> Result<(ProofKind, &[u8], &[u8]), FrameError> {
     let kind = ProofKind::from_code(*body.first().ok_or(FrameError::Truncated)?)?;
@@ -367,13 +394,84 @@ pub fn parse_proof_and_secret_body(body: &[u8]) -> Result<(ProofKind, &[u8], &[u
 
 // ---- metadata DTOs (JSON, never secret) ----
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct ApprovalRequired {
+    pub challenge_id: ApprovalRequestId,
+    pub expires_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct ErrorEnvelope {
     pub request_id: RequestId,
     pub code: String,
     pub message: String,
     pub retryable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval: Option<ApprovalRequired>,
+}
+
+impl ErrorEnvelope {
+    pub fn approval_required(request_id: RequestId, approval: ApprovalRequired) -> Self {
+        Self {
+            request_id,
+            code: "APPROVAL_REQUIRED".to_owned(),
+            message: "local approval required".to_owned(),
+            retryable: false,
+            approval: Some(approval),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ErrorEnvelope {
+    fn deserialize<T: serde::Deserializer<'de>>(deserializer: T) -> Result<Self, T::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            request_id: RequestId,
+            code: String,
+            message: String,
+            retryable: bool,
+            #[serde(default)]
+            approval: Option<ApprovalRequired>,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        let valid = if wire.code == "APPROVAL_REQUIRED" {
+            wire.message == "local approval required"
+                && !wire.retryable
+                && wire.approval.as_ref().is_some_and(|a| a.expires_at_ms > 0)
+        } else {
+            wire.approval.is_none()
+        };
+        if !valid {
+            return Err(serde::de::Error::custom("invalid approval error envelope"));
+        }
+        Ok(Self {
+            request_id: wire.request_id,
+            code: wire.code,
+            message: wire.message,
+            retryable: wire.retryable,
+            approval: wire.approval,
+        })
+    }
+}
+
+/// Authenticated snapshot and observed high-water presented for explicit
+/// rollback recovery. Confirmation revalidates every field before mutation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RollbackContext {
+    pub vault_id: VaultId,
+    pub source_generation: u64,
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub high_water: Option<u64>,
+    pub history_missing: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RollbackConfirmMeta {
+    pub expected: RollbackContext,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -382,8 +480,11 @@ pub struct StatusResponse {
     pub state: String,
     pub format_version: u32,
     pub runtime_version: String,
+    pub lab_enabled: bool,
     pub sessions_active: u32,
     pub lease_journal: LeaseJournalStatus,
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub rollback: Option<RollbackContext>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -555,6 +656,74 @@ pub struct ActionListResponse {
     pub actions: Vec<FixedHttpAction>,
 }
 
+/// Closed sources; signed package bytes travel only in the frame body.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum TemplateSource {
+    Anthropic {},
+    Glm {},
+    GlmResponses {},
+    #[serde(rename = "openai")]
+    OpenAi {},
+    #[serde(rename = "github-pat")]
+    GitHubPat {},
+    GenericBearer {
+        origin: HttpsOrigin,
+        actions: Vec<TemplateFixedAction>,
+    },
+    SignedPackage {},
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TemplateFixedAction {
+    pub method: FixedMethod,
+    pub path: ExactPath,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TemplateCatalogMeta {
+    pub source: TemplateSource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TemplateCatalogResponse {
+    pub template: ProviderTemplate,
+    pub digest: [u8; 32],
+    pub signer_id: Option<PolicySignerId>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TemplateInstallMeta {
+    pub source: TemplateSource,
+    pub credential_id: CredentialId,
+    pub bindings: Vec<TemplateValues>,
+    pub capabilities: Vec<String>,
+    pub name_prefix: String,
+    pub timeout_ms: u32,
+    pub request_max_bytes: u32,
+    pub allowed_extra_headers: Vec<String>,
+    pub response_max_bytes: u32,
+    pub allowed_response_headers: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TemplateInstalledAction {
+    pub binding_index: usize,
+    /// Capability and action index are part of this Action's authenticated source.
+    pub action: FixedHttpAction,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TemplateInstallResponse {
+    pub actions: Vec<TemplateInstalledAction>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionCreateMeta {
@@ -584,6 +753,64 @@ pub struct SessionCreatedResponse {
     pub max_uses: u32,
 }
 
+/// The Profile name is the only caller-selected scope. All limits and
+/// actions come from the current, verified policy snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileNameMeta {
+    pub profile: String,
+}
+
+/// Encoded in the response frame body with empty JSON metadata.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileGetResponse {
+    pub profile: crate::profile::AgentProfile,
+    pub policy_sha256: String,
+    pub expires_at_ms: i64,
+}
+
+/// Encoded only in the response frame body. In particular, the capability
+/// must not be copied to public response metadata or diagnostic output.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileSessionCreatedResponse {
+    pub session: SessionCreatedResponse,
+    pub profile: crate::profile::AgentProfile,
+    pub policy_sha256: String,
+    #[serde(deserialize_with = "required_profile_gateway")]
+    pub gateway: Option<ProfileGatewayEndpoint>,
+}
+
+fn required_profile_gateway<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<ProfileGatewayEndpoint>, D::Error> {
+    Option::<ProfileGatewayEndpoint>::deserialize(deserializer)
+}
+
+/// Public endpoint returned on the same authenticated connection that creates
+/// the Profile session. A port-file discovery hint is never a substitute.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileGatewayEndpoint {
+    pub port: u16,
+    pub instances: Vec<ProfileGatewayInstance>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileGatewayInstance {
+    pub instance: String,
+    pub provider: ProfileGatewayProvider,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProfileGatewayProvider {
+    Anthropic,
+    OpenAi,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PolicyActivateMeta {
@@ -594,9 +821,75 @@ pub struct PolicyActivateMeta {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct PersonalPolicyDraftMeta {
+    pub profiles: Vec<crate::profile::AgentProfile>,
+    pub expected_policy_sha256: Option<String>,
+    pub expires_at_ms: i64,
+}
+
+/// Authenticated persisted editing base, including an expired signed policy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileListResponse {
+    pub profiles: Vec<crate::profile::AgentProfile>,
+    pub policy_sha256: Option<String>,
+    pub expires_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PersonalPolicyFieldChange {
+    pub field: String,
+    pub before: serde_json::Value,
+    pub after: serde_json::Value,
+}
+
+/// The associated frame body contains the exact RKPOLICY-prefixed sign bytes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PersonalPolicyDraftResponse {
+    pub vault_id: VaultId,
+    pub trust_sha256: String,
+    pub public_key: String,
+    pub base_version: Option<u64>,
+    pub next_version: u64,
+    pub policy_sha256: String,
+    pub changes: Vec<PersonalPolicyFieldChange>,
+    pub actions: Vec<FixedHttpAction>,
+}
+
+impl PersonalPolicyDraftResponse {
+    /// Wire-shape validation only; the broker authenticates stored material.
+    pub fn validate(&self) -> Result<(), crate::DomainError> {
+        if !is_lower_hex(&self.trust_sha256, 64)
+            || !is_lower_hex(&self.policy_sha256, 64)
+            || !is_lower_hex(&self.public_key, 130)
+            || !self.public_key.starts_with("04")
+            || self
+                .base_version
+                .is_some_and(|v| PolicyVersion::new(v).is_err())
+            || self.base_version.unwrap_or(0).checked_add(1) != Some(self.next_version)
+            || PolicyVersion::new(self.next_version).is_err()
+            || self.actions.iter().any(|action| !action.enabled)
+            || self
+                .actions
+                .windows(2)
+                .any(|pair| (pair[0].id, pair[0].version) >= (pair[1].id, pair[1].version))
+        {
+            return Err(invalid_response());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PolicyStatusResponse {
     pub vault_id: VaultId,
     pub tenant_id: TenantId,
+    /// Present only when the policy state has been authenticated while unlocked.
+    pub mode: Option<crate::authorization::PolicyMode>,
+    pub algorithm: Option<crate::authorization::PolicyTrustAlgorithm>,
     pub trust_sha256: Option<String>,
     pub activated_at_ms: Option<i64>,
     pub trust_installed: bool,
@@ -611,7 +904,20 @@ pub struct PolicyStatusResponse {
 
 impl PolicyStatusResponse {
     pub fn validate(&self) -> Result<(), crate::DomainError> {
+        use crate::authorization::{PolicyMode, PolicyTrustAlgorithm};
         if self.tenant_id.as_bytes() != self.vault_id.as_bytes()
+            || (self.mode.is_none() && (self.algorithm.is_some() || self.trust_sha256.is_some()))
+            || (self.mode.is_some() && self.trust_installed != self.algorithm.is_some())
+            || matches!(
+                (self.mode, self.algorithm),
+                (
+                    Some(PolicyMode::Personal),
+                    Some(PolicyTrustAlgorithm::Ed25519)
+                ) | (
+                    Some(PolicyMode::Team),
+                    Some(PolicyTrustAlgorithm::SecureEnclaveP256)
+                )
+            )
             || self
                 .trust_sha256
                 .as_deref()
@@ -620,7 +926,9 @@ impl PolicyStatusResponse {
         {
             return Err(invalid_response());
         }
-        let details_present = self.trust_sha256.is_some()
+        let details_present = self.mode.is_some()
+            && self.algorithm.is_some()
+            && self.trust_sha256.is_some()
             && self.activated_at_ms.is_some_and(|value| value >= 0)
             && self.signer_id.is_some()
             && self.version.is_some()
@@ -689,6 +997,7 @@ pub struct BackupPolicyCut {
 #[serde(deny_unknown_fields)]
 pub struct BackupReceipt {
     pub vault_id: String,
+    pub generation: u64,
     pub format_version: u32,
     pub created_at_ms: i64,
     pub sha256_hex: String,
@@ -700,10 +1009,42 @@ pub struct BackupReceipt {
 #[serde(deny_unknown_fields)]
 pub struct RestoreReceipt {
     pub vault_id: String,
+    pub generation: u64,
     pub format_version: u32,
     pub input_sha256_hex: String,
     pub output_path: String,
     pub snapshot_cut: BackupSnapshotCut,
+}
+
+/// Short-lived capability authentication only; never debug-log this request.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileInventoryMeta {
+    pub capability_token: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileInventoryResponse {
+    pub profile: crate::profile::AgentProfile,
+    pub policy_sha256: String,
+    pub expires_at_ms: i64,
+    pub actions: Vec<ProfileActionDefinition>,
+}
+
+/// Public authenticated template projection: excludes credential and injection data.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileActionDefinition {
+    pub action_id: ActionId,
+    pub version: u64,
+    pub action_index: u32,
+    pub name: ActionName,
+    pub origin: HttpsOrigin,
+    pub method: FixedMethod,
+    pub target: crate::template::TemplateTarget,
+    pub body_schema: Option<serde_json::Value>,
+    pub fixed_content_type: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -717,7 +1058,13 @@ pub struct ExecuteMeta {
     /// Plain headers, only those on the action's request-policy allowlist.
     pub extra_headers: Vec<(String, String)>,
     #[serde(default)]
+    pub params: TemplateValues,
+    #[serde(default)]
+    pub query: TemplateValues,
+    #[serde(default)]
     pub approval_grants: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_approval_request_id: Option<ApprovalRequestId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -728,6 +1075,10 @@ pub struct PrepareApprovalMeta {
     pub action_version: u64,
     pub content_type: Option<String>,
     pub extra_headers: Vec<(String, String)>,
+    #[serde(default)]
+    pub params: TemplateValues,
+    #[serde(default)]
+    pub query: TemplateValues,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -747,27 +1098,36 @@ pub struct ApprovalChallenge {
     pub policy_sha256: String,
     pub policy_rule_id: PolicyRuleId,
     pub mode: ApprovalMode,
-    pub quorum: u8,
-    pub approver_ids: Vec<ApproverId>,
+    pub approver: ApproverSpec,
     pub max_uses: u32,
     pub created_at_ms: i64,
     pub max_expires_at_ms: i64,
 }
 
+fn valid_approval_approver(approver: &ApproverSpec, mode: ApprovalMode, max_uses: u32) -> bool {
+    match approver {
+        ApproverSpec::LocalPresence {} => mode == ApprovalMode::OneTime && max_uses == 1,
+        ApproverSpec::Ed25519 { keys, threshold } => {
+            !keys.is_empty()
+                && keys.len() <= 32
+                && keys.iter().all(|key| is_lower_hex(key, 64))
+                && keys.windows(2).all(|pair| pair[0] < pair[1])
+                && (1..=2).contains(threshold)
+                && usize::from(*threshold) <= keys.len()
+        }
+        #[cfg(feature = "lab")]
+        ApproverSpec::Remote {} => false,
+    }
+}
+
 impl ApprovalChallenge {
     pub fn validate(&self) -> Result<(), crate::DomainError> {
-        let approvers: BTreeSet<_> = self.approver_ids.iter().copied().collect();
-        let valid_common = self.record_type == "rekey.approval.challenge.v1"
+        let valid_common = self.record_type == "rekey.approval.challenge.v2"
             && self.action_version > 0
             && PolicyVersion::new(self.policy_version).is_ok()
             && is_lower_hex(&self.parameter_sha256, 64)
             && is_lower_hex(&self.policy_sha256, 64)
-            && !self.approver_ids.is_empty()
-            && self.approver_ids.len() <= 32
-            && approvers.len() == self.approver_ids.len()
-            && self.approver_ids.windows(2).all(|pair| pair[0] < pair[1])
-            && (1..=2).contains(&self.quorum)
-            && usize::from(self.quorum) <= approvers.len()
+            && valid_approval_approver(&self.approver, self.mode, self.max_uses)
             && self.created_at_ms >= 0
             && self.max_expires_at_ms > self.created_at_ms;
         let window_ms = self.max_expires_at_ms.saturating_sub(self.created_at_ms);
@@ -794,7 +1154,7 @@ pub struct SignedApprovalChallenge {
 
 impl SignedApprovalChallenge {
     pub fn validate(&self) -> Result<(), crate::DomainError> {
-        if self.record_type != "rekey.approval.challenge.envelope.v1"
+        if self.record_type != "rekey.approval.challenge.envelope.v2"
             || !is_canonical_unpadded_base64url(self.signature.as_str(), 64)
         {
             return Err(invalid_response());
@@ -825,6 +1185,77 @@ pub struct ApprovalGetMeta {
     pub approval_request_id: ApprovalRequestId,
 }
 
+/// Separate hash domain for the complete daemon-generated review body.
+pub const LOCAL_APPROVAL_REVIEW_HASH_PREFIX: &[u8] = b"RKREVIEW\0\x01";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LocalApprovalState {
+    Pending,
+    Approved,
+    Consumed,
+    Cancelled,
+    Expired,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalApprovalRequestMeta {
+    pub capability_token: String,
+    pub approval_request_id: ApprovalRequestId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalApprovalDecisionMeta {
+    pub approval_request_id: ApprovalRequestId,
+    pub expected_review_sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalApprovalStateResponse {
+    pub approval_request_id: ApprovalRequestId,
+    pub state: LocalApprovalState,
+    pub expires_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalApprovalReviewResponse {
+    pub record_type: String,
+    pub approval_request_id: ApprovalRequestId,
+    pub review_sha256: String,
+    pub state: LocalApprovalState,
+    pub body_len: u32,
+}
+
+/// Review JSON is a frame body, not metadata. The canonical request comes from
+/// the policy canonicalizer; RawValue preserves that exact serialized value.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalApprovalReview {
+    pub record_type: String,
+    pub challenge: ApprovalChallenge,
+    pub action_name: ActionName,
+    pub origin: HttpsOrigin,
+    pub method: FixedMethod,
+    pub canonical_request: Box<serde_json::value::RawValue>,
+}
+
+impl std::fmt::Debug for LocalApprovalReview {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LocalApprovalReview")
+            .field("record_type", &self.record_type)
+            .field("challenge", &self.challenge)
+            .field("action_name", &self.action_name)
+            .field("origin", &self.origin)
+            .field("method", &self.method)
+            .field("canonical_request", &"[REDACTED]")
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApprovalPendingItem {
@@ -836,7 +1267,7 @@ pub struct ApprovalPendingItem {
     pub created_at_ms: i64,
     pub max_expires_at_ms: i64,
     pub mode: ApprovalMode,
-    pub quorum: u8,
+    pub approver: ApproverSpec,
     pub max_uses: u32,
     pub parameter_sha256: String,
 }
@@ -852,7 +1283,7 @@ impl ApprovalPendingItem {
             created_at_ms: challenge.created_at_ms,
             max_expires_at_ms: challenge.max_expires_at_ms,
             mode: challenge.mode,
-            quorum: challenge.quorum,
+            approver: challenge.approver.clone(),
             max_uses: challenge.max_uses,
             parameter_sha256: challenge.parameter_sha256.clone(),
         }
@@ -861,7 +1292,7 @@ impl ApprovalPendingItem {
     pub fn validate(&self) -> Result<(), crate::DomainError> {
         let valid_common = self.action_version > 0
             && is_lower_hex(&self.parameter_sha256, 64)
-            && (1..=2).contains(&self.quorum)
+            && valid_approval_approver(&self.approver, self.mode, self.max_uses)
             && self.created_at_ms >= 0
             && self.max_expires_at_ms > self.created_at_ms;
         let valid_mode = match self.mode {
@@ -884,7 +1315,7 @@ pub struct ApprovalPendingResponse {
 
 impl ApprovalPendingResponse {
     pub fn validate(&self) -> Result<(), crate::DomainError> {
-        if self.record_type != "rekey.approval.pending.v1"
+        if self.record_type != "rekey.approval.pending.v2"
             || self.challenges.len() > APPROVAL_PENDING_MAX
         {
             return Err(invalid_response());
@@ -947,6 +1378,234 @@ mod tests {
     use super::*;
 
     #[test]
+    fn local_approval_metadata_is_closed_and_errors_keep_the_challenge() {
+        let id = ApprovalRequestId::new_random();
+        for state in ["pending", "approved", "consumed", "cancelled", "expired"] {
+            let value =
+                serde_json::json!({"approval_request_id":id,"state":state,"expires_at_ms":123});
+            let decoded: LocalApprovalStateResponse =
+                serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(decoded).unwrap(), value);
+        }
+        for (wire, invalid_field) in [
+            (
+                serde_json::json!({"capability_token":"synthetic-capability","approval_request_id":id}),
+                "proof",
+            ),
+            (
+                serde_json::json!({"approval_request_id":id,"expected_review_sha256":"01".repeat(32)}),
+                "reason",
+            ),
+        ] {
+            let mut changed = wire;
+            changed[invalid_field] = serde_json::json!("caller-injected");
+            if invalid_field == "proof" {
+                assert!(serde_json::from_value::<LocalApprovalRequestMeta>(changed).is_err());
+            } else {
+                assert!(serde_json::from_value::<LocalApprovalDecisionMeta>(changed).is_err());
+            }
+        }
+        let envelope = ErrorEnvelope::approval_required(
+            RequestId::new_random(),
+            ApprovalRequired {
+                challenge_id: id,
+                expires_at_ms: 123,
+            },
+        );
+        let valid = serde_json::to_value(&envelope).unwrap();
+        let decoded: ErrorEnvelope = serde_json::from_value(valid.clone()).unwrap();
+        assert_eq!(decoded.approval.unwrap().challenge_id, id);
+        for (field, value) in [
+            ("code", serde_json::json!("REQUEST_DENIED")),
+            ("message", serde_json::json!("caller title")),
+            ("retryable", serde_json::json!(true)),
+            ("approval", serde_json::Value::Null),
+        ] {
+            let mut changed = valid.clone();
+            changed[field] = value;
+            assert!(serde_json::from_value::<ErrorEnvelope>(changed).is_err());
+        }
+        let mut plain = valid;
+        plain["code"] = serde_json::json!("LOCKED");
+        plain.as_object_mut().unwrap().remove("approval");
+        let plain: ErrorEnvelope = serde_json::from_value(plain).unwrap();
+        assert!(plain.approval.is_none());
+        assert!(
+            serde_json::to_value(plain)
+                .unwrap()
+                .get("approval")
+                .is_none()
+        );
+        assert!(serde_json::from_str::<LocalApprovalState>("\"unknown\"").is_err());
+        assert_eq!(
+            [
+                admin_msg::APPROVAL_LOCAL_REVIEW,
+                admin_msg::APPROVAL_LOCAL_APPROVE,
+                admin_msg::APPROVAL_LOCAL_REJECT
+            ],
+            [55, 56, 57]
+        );
+        assert_eq!(
+            [agent_msg::AWAIT_APPROVAL, agent_msg::CANCEL_APPROVAL],
+            [6, 7]
+        );
+    }
+
+    #[test]
+    fn local_decisions_require_only_presence_and_review_debug_hides_request() {
+        let proof = b"synthetic-presence-input";
+        for kind in [
+            ProofKind::Password,
+            ProofKind::Recovery,
+            ProofKind::Presence,
+        ] {
+            let mut body = Vec::new();
+            encode_proof_body(kind, proof, &mut body);
+            if kind == ProofKind::Presence {
+                assert_eq!(parse_local_approval_proof_body(&body).unwrap(), proof);
+                body.push(0);
+                assert!(parse_local_approval_proof_body(&body).is_err());
+            } else {
+                assert!(parse_local_approval_proof_body(&body).is_err());
+            }
+        }
+        for body in [
+            vec![],
+            vec![3, 0, 0, 0, 0],
+            vec![3, 0, 0, 0, 2, 1],
+            vec![4, 0, 0, 0, 1, 1],
+        ] {
+            assert!(parse_local_approval_proof_body(&body).is_err());
+        }
+        let canonical = r#"{"body":{"input":"REVIEW-CANARY"},"headers":[]}"#;
+        let review = LocalApprovalReview {
+            record_type: "rekey.approval.review.v1".into(),
+            challenge: approval_challenge(ApproverSpec::LocalPresence {}),
+            action_name: ActionName::new("trusted action").unwrap(),
+            origin: HttpsOrigin::parse("https://example.com").unwrap(),
+            method: FixedMethod::Post,
+            canonical_request: serde_json::value::RawValue::from_string(canonical.into()).unwrap(),
+        };
+        let encoded = serde_json::to_string(&review).unwrap();
+        assert!(encoded.contains(canonical));
+        assert!(!format!("{review:?}").contains("REVIEW-CANARY"));
+        let decoded: LocalApprovalReview = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.canonical_request.get(), canonical);
+        assert_eq!(LOCAL_APPROVAL_REVIEW_HASH_PREFIX, b"RKREVIEW\0\x01");
+    }
+
+    fn approval_challenge(approver: ApproverSpec) -> ApprovalChallenge {
+        let id = "11111111-1111-4111-8111-111111111111";
+        serde_json::from_value(serde_json::json!({
+            "record_type":"rekey.approval.challenge.v2", "approval_request_id":id,
+            "tenant_id":id,"principal_id":id,"session_id":id,"action_id":id,
+            "action_version":1,"resource":{"type":"test","id":"one"},"schema_id":"test/v1",
+            "parameter_sha256":"01".repeat(32),"policy_version":1,"policy_sha256":"02".repeat(32),
+            "policy_rule_id":id,"mode":"one-time","approver":approver,"max_uses":1,
+            "created_at_ms":1,"max_expires_at_ms":60001
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn approval_challenge_and_pending_have_closed_v2_approvers() {
+        let mut local = approval_challenge(ApproverSpec::LocalPresence {});
+        local.validate().unwrap();
+        let pending = ApprovalPendingItem::from_challenge(&local);
+        assert_eq!(pending.approver, ApproverSpec::LocalPresence {});
+        pending.validate().unwrap();
+        local.mode = ApprovalMode::TimeWindow;
+        assert!(local.validate().is_err());
+        assert!(
+            ApprovalPendingItem::from_challenge(&local)
+                .validate()
+                .is_err()
+        );
+        local.mode = ApprovalMode::OneTime;
+        local.max_uses = 2;
+        assert!(local.validate().is_err());
+        let ed = ApproverSpec::Ed25519 {
+            keys: vec!["01".repeat(32), "02".repeat(32)],
+            threshold: 2,
+        };
+        approval_challenge(ed).validate().unwrap();
+        for (keys, threshold) in [
+            (vec![], 1),
+            (vec!["01".repeat(32)], 0),
+            (vec!["01".repeat(32)], 2),
+            (vec!["01".repeat(32), "02".repeat(32)], 3),
+            (vec!["01".repeat(32), "01".repeat(32)], 1),
+            (vec!["02".repeat(32), "01".repeat(32)], 1),
+            (vec!["AB".repeat(32)], 1),
+        ] {
+            assert!(
+                approval_challenge(ApproverSpec::Ed25519 { keys, threshold })
+                    .validate()
+                    .is_err()
+            );
+        }
+        let mut old = approval_challenge(ApproverSpec::LocalPresence {});
+        old.record_type = "rekey.approval.challenge.v1".to_owned();
+        assert!(old.validate().is_err());
+        let mut legacy =
+            serde_json::to_value(approval_challenge(ApproverSpec::LocalPresence {})).unwrap();
+        legacy["quorum"] = 1.into();
+        assert!(serde_json::from_value::<ApprovalChallenge>(legacy).is_err());
+        let pending = ApprovalPendingResponse {
+            record_type: "rekey.approval.pending.v1".to_owned(),
+            challenges: vec![],
+        };
+        assert!(pending.validate().is_err());
+        #[cfg(feature = "lab")]
+        assert!(
+            approval_challenge(ApproverSpec::Remote {})
+                .validate()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn rollback_context_and_status_require_explicit_history() {
+        let context = serde_json::json!({
+            "vault_id": "00000000-0000-0000-0000-000000000001",
+            "source_generation": 7, "high_water": null, "history_missing": true
+        });
+        let decoded: RollbackContext = serde_json::from_value(context.clone()).unwrap();
+        assert_eq!(decoded.high_water, None);
+        for field in [
+            "vault_id",
+            "source_generation",
+            "high_water",
+            "history_missing",
+        ] {
+            let mut missing = context.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(serde_json::from_value::<RollbackContext>(missing).is_err());
+        }
+        let mut status = serde_json::json!({
+            "state": "rollback-suspected", "format_version": 25,
+            "runtime_version": "3.0.0", "lab_enabled": false, "sessions_active": 0,
+            "lease_journal": {"verified": false, "pending": 0, "unknown": 0, "complete": 0},
+            "rollback": context
+        });
+        assert_eq!(
+            serde_json::from_value::<StatusResponse>(status.clone())
+                .unwrap()
+                .rollback,
+            Some(decoded)
+        );
+        status["rollback"] = serde_json::Value::Null;
+        assert!(
+            serde_json::from_value::<StatusResponse>(status.clone())
+                .unwrap()
+                .rollback
+                .is_none()
+        );
+        status.as_object_mut().unwrap().remove("rollback");
+        assert!(serde_json::from_value::<StatusResponse>(status).is_err());
+    }
+
+    #[test]
     fn backup_and_restore_receipts_have_required_cut_and_fixed_json_shape() {
         let cut = BackupSnapshotCut {
             audit_sequence: 41,
@@ -957,6 +1616,7 @@ mod tests {
         };
         let backup = BackupReceipt {
             vault_id: "actual-vault".to_owned(),
+            generation: 7,
             format_version: 20,
             created_at_ms: 1,
             sha256_hex: "b2".repeat(32),
@@ -965,6 +1625,7 @@ mod tests {
         };
         let restore = RestoreReceipt {
             vault_id: backup.vault_id.clone(),
+            generation: 8,
             format_version: backup.format_version,
             input_sha256_hex: backup.sha256_hex.clone(),
             output_path: "/state/restored".to_owned(),
@@ -974,7 +1635,7 @@ mod tests {
         assert_eq!(
             value,
             serde_json::json!({
-                "vault_id": "actual-vault", "format_version": 20,
+                "vault_id": "actual-vault", "format_version": 20, "generation": 8,
                 "input_sha256_hex": "b2".repeat(32), "output_path": "/state/restored",
                 "snapshot_cut": {"audit_sequence": 41, "policy": {"version": 2, "bundle_sha256": "a1".repeat(32)}}
             })
@@ -988,6 +1649,12 @@ mod tests {
         let mut unexpected = value;
         unexpected["latest"] = serde_json::json!(true);
         assert!(serde_json::from_value::<RestoreReceipt>(unexpected).is_err());
+        let mut missing_generation = serde_json::to_value(&restore).unwrap();
+        missing_generation
+            .as_object_mut()
+            .unwrap()
+            .remove("generation");
+        assert!(serde_json::from_value::<RestoreReceipt>(missing_generation).is_err());
         let mut old = serde_json::to_value(&backup).unwrap();
         old.as_object_mut().unwrap().remove("snapshot_cut");
         assert!(serde_json::from_value::<BackupReceipt>(old).is_err());
@@ -1038,13 +1705,38 @@ mod tests {
             assert!(parse_management_body(&bad).is_err());
         }
         assert!(parse_management_body(&body[..49]).is_err());
-        for id in 1..=51 {
+        for id in 1..=61 {
             assert_eq!(
                 managed_admin_operation(id).unwrap(),
-                !matches!(id, 1 | 2 | 3 | 15 | 16 | 31 | 34 | 36 | 45..=48)
+                !matches!(id, 1 | 2 | 3 | 15 | 16 | 31 | 34 | 36 | 45..=48 | 61)
             );
         }
-        assert!(managed_admin_operation(52).is_err());
+        assert!(managed_admin_operation(62).is_err());
+    }
+
+    #[test]
+    fn profile_requests_only_select_a_signed_profile_name() {
+        let valid = serde_json::json!({"profile":"claude-code"});
+        let decoded: ProfileNameMeta = serde_json::from_value(valid.clone()).unwrap();
+        assert_eq!(decoded.profile, "claude-code");
+        for field in [
+            "actions",
+            "principal_id",
+            "ttl_ms",
+            "max_uses",
+            "models",
+            "budget",
+            "isolation",
+            "pid",
+            "confirm_each_run",
+        ] {
+            let mut value = valid.clone();
+            value[field] = serde_json::Value::Null;
+            assert!(serde_json::from_value::<ProfileNameMeta>(value).is_err());
+        }
+        assert!(serde_json::from_value::<ProfileNameMeta>(serde_json::json!({})).is_err());
+        assert!(managed_admin_operation(admin_msg::PROFILE_GET).unwrap());
+        assert!(managed_admin_operation(admin_msg::PROFILE_SESSION_CREATE).unwrap());
     }
 
     #[test]
@@ -1052,6 +1744,30 @@ mod tests {
         let h = header();
         let enc = h.encode();
         assert_eq!(FrameHeader::decode(&enc).unwrap(), h);
+    }
+
+    #[test]
+    fn template_sources_cannot_override_builtin_provenance() {
+        for kind in ["anthropic", "glm", "openai", "github-pat", "signed-package"] {
+            let source = serde_json::json!({"kind": kind});
+            assert!(serde_json::from_value::<TemplateSource>(source.clone()).is_ok());
+            let mut overridden = source;
+            overridden["template"] = serde_json::json!({"origin": "https://example.com"});
+            assert!(serde_json::from_value::<TemplateSource>(overridden).is_err());
+        }
+        assert!(
+            serde_json::from_value::<TemplateSource>(serde_json::json!({
+                "kind": "generic-bearer", "origin": "http://example.com",
+                "actions": [{"method": "GET", "path": "/v1/items"}]
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<TemplateSource>(serde_json::json!({
+                "kind": "custom", "template": {}
+            }))
+            .is_err()
+        );
     }
 
     #[test]
@@ -1128,11 +1844,37 @@ mod tests {
     }
 
     #[test]
+    fn inventory_metadata_cannot_override_signed_profile_scope() {
+        assert!(
+            serde_json::from_str::<ProfileInventoryMeta>(r#"{"capability_token":"synthetic"}"#)
+                .is_ok()
+        );
+        for field in [
+            "profile",
+            "actions",
+            "principal_id",
+            "max_uses",
+            "policy_sha256",
+        ] {
+            let request = serde_json::json!({"capability_token":"synthetic",field:"override"});
+            assert!(serde_json::from_value::<ProfileInventoryMeta>(request).is_err());
+        }
+        assert!(
+            serde_json::from_str::<ProfileInventoryMeta>(
+                r#"{"capability_token":"one","capability_token":"two"}"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn policy_status_requires_actual_identity_and_complete_persisted_details() {
         let vault_id = VaultId::new_random();
         let mut status = PolicyStatusResponse {
             vault_id,
             tenant_id: TenantId::from_bytes(*vault_id.as_bytes()).unwrap(),
+            mode: Some(crate::authorization::PolicyMode::Team),
+            algorithm: Some(crate::authorization::PolicyTrustAlgorithm::Ed25519),
             trust_installed: true,
             bundle_persisted: false,
             status: "unavailable".into(),
@@ -1161,6 +1903,12 @@ mod tests {
         status.trust_sha256 = Some("A".repeat(64));
         assert!(status.validate().is_err());
         status.trust_sha256 = Some("a".repeat(64));
+        status.mode = None;
+        assert!(status.validate().is_err());
+        status.mode = Some(crate::authorization::PolicyMode::Personal);
+        assert!(status.validate().is_err());
+        status.algorithm = Some(crate::authorization::PolicyTrustAlgorithm::SecureEnclaveP256);
+        status.validate().unwrap();
         status.tenant_id = TenantId::from_random_bytes([0x55; 16]);
         assert_ne!(status.tenant_id.as_bytes(), status.vault_id.as_bytes());
         assert!(status.validate().is_err());
@@ -1193,6 +1941,30 @@ mod tests {
         assert_eq!(kind, ProofKind::Recovery);
         assert_eq!(proof, b"rk");
         assert!(parse_proof_body(&only[..3]).is_err());
+    }
+
+    #[test]
+    fn presence_proof_has_explicit_code_and_roundtrips_both_bodies() {
+        let proof = b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let mut body = Vec::new();
+        encode_proof_body(ProofKind::Presence, proof, &mut body);
+        assert_eq!(body[0], 3);
+        assert_eq!(
+            parse_proof_body(&body).unwrap(),
+            (ProofKind::Presence, proof.as_slice())
+        );
+        body.clear();
+        encode_proof_and_secret_body(ProofKind::Presence, proof, b"new-value", &mut body);
+        assert_eq!(
+            parse_proof_and_secret_body(&body).unwrap(),
+            (
+                ProofKind::Presence,
+                proof.as_slice(),
+                b"new-value".as_slice()
+            )
+        );
+        body[0] = 4;
+        assert!(parse_proof_and_secret_body(&body).is_err());
     }
 
     #[test]
@@ -1243,3 +2015,60 @@ pub struct TextStreamTerminalMeta {
 }
 
 pub const TEXT_STREAM_CHUNK_MAX_BYTES: usize = 16 * 1024;
+
+#[cfg(test)]
+mod profile_gateway_contracts {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn session_gateway_is_required_and_endpoint_shape_is_closed() {
+        let id = "00112233-4455-4677-8899-aabbccddeeff";
+        let mut value = json!({
+            "session": {"session_id":id,"principal_id":id,"capability_token":"synthetic",
+                "expires_at_ms":100,"max_uses":1},
+            "profile": {"name":"writer","principal_id":id,
+                "grants":[{"instance":"repo","capabilities":[{"rule":"template-default","capability":"issues",
+                    "actions":[{"action_id":id,"version":1}]}]}],
+                "session":{"ttl_ms":60000,"max_uses":1},"confirm_each_run":false,
+                "isolation":"none","egress":"allow","llm_limits":[]},
+            "policy_sha256":"ab".repeat(32)
+        });
+        assert!(serde_json::from_value::<ProfileSessionCreatedResponse>(value.clone()).is_err());
+        value["gateway"] = json!(null);
+        assert!(
+            serde_json::from_value::<ProfileSessionCreatedResponse>(value.clone())
+                .unwrap()
+                .gateway
+                .is_none()
+        );
+        let endpoint = ProfileGatewayEndpoint {
+            port: 12345,
+            instances: vec![
+                ProfileGatewayInstance {
+                    instance: "claude".into(),
+                    provider: ProfileGatewayProvider::Anthropic,
+                },
+                ProfileGatewayInstance {
+                    instance: "gpt".into(),
+                    provider: ProfileGatewayProvider::OpenAi,
+                },
+            ],
+        };
+        value["gateway"] = serde_json::to_value(&endpoint).unwrap();
+        assert_eq!(value["gateway"]["instances"][1]["provider"], "openai");
+        assert_eq!(
+            serde_json::from_value::<ProfileSessionCreatedResponse>(value.clone())
+                .unwrap()
+                .gateway,
+            Some(endpoint)
+        );
+        for field in ["origin", "host", "capability"] {
+            let mut changed = value.clone();
+            changed["gateway"][field] = json!("untrusted");
+            assert!(serde_json::from_value::<ProfileSessionCreatedResponse>(changed).is_err());
+        }
+        value["gateway"]["instances"][0]["provider"] = json!("unknown");
+        assert!(serde_json::from_value::<ProfileSessionCreatedResponse>(value).is_err());
+    }
+}

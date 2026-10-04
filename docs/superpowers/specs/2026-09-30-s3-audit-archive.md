@@ -1,5 +1,8 @@
 # AUD-08 固定 S3 Object Lock 审计归档
 
+> Status: Lab (v3 scope; enterprise reserve)
+> Existing contracts and evidence are retained; this capability is excluded from the default v3 build and release package.
+
 状态：实施合同；真实 AWS 权限、Object Lock 和防改写/删除验收后置。
 
 独立 `scripts/rekey-audit-archive.py` 只运输 AUD-07 已封口批次，不链接 Authority、不解锁或读数据库。复用同目录 audit delivery 的私文件及批次校验函数。新工具、定向测试和本规格是最小切片；不新增云 SDK、Provider 层、后台 daemon、bucket 创建/配置、对象删除或 retention 修改。

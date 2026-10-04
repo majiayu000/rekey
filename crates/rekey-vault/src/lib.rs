@@ -9,6 +9,7 @@ pub mod command;
 pub mod crypto;
 pub mod durable;
 pub mod error;
+pub mod generation_anchor;
 pub mod model;
 pub mod secret;
 pub mod store;

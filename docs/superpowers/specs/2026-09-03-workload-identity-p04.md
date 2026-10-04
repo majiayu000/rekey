@@ -1,5 +1,8 @@
 # Rekey v2 P-04 Workload Identity
 
+> Status: Lab (v3 scope; enterprise reserve)
+> Existing contracts and evidence are retained; this capability is excluded from the default v3 build and release package.
+
 **Date:** 2026-09-03
 **Status:** Implemented; exact-head CI and merge evidence pending
 **Depends on:** Credential Authority v2 Foundation, P-03

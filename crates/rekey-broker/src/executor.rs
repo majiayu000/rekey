@@ -9,11 +9,12 @@ use std::time::{Duration, Instant};
 
 use rekey_connector::{BuiltInConnector, resolve_builtin};
 use rekey_domain::DomainError;
-use rekey_domain::action::FixedHttpAction;
+use rekey_domain::action::{ActionTarget, FixedHttpAction};
 use rekey_domain::authorization::Decision;
 use rekey_domain::capability::ActionVersionRef;
 use rekey_domain::ids::PolicySignerId;
 use rekey_domain::ids::RequestId;
+use rekey_domain::template::{RenderedTarget, TemplateValues};
 use rekey_vault::AuthorityError;
 use rekey_vault::handle::AuthorityHandle;
 use tokio::sync::RwLock;
@@ -31,30 +32,44 @@ use crate::session::{ExecutionPermit, SessionRegistry};
 use crate::upstream::{UpstreamRequest, UpstreamTransport, outbound_headers_are_valid};
 
 mod approval;
+#[cfg(feature = "lab")]
 pub(crate) mod aws_source;
+#[cfg(feature = "lab")]
 pub(crate) mod azure_source;
 mod deadline;
+#[cfg(feature = "lab")]
 pub(crate) mod gcp_source;
 mod github_run;
+#[cfg(feature = "lab")]
 pub(crate) mod onepassword_source;
 #[cfg(test)]
 use github_run::{github_post_effect_error, github_without_token_error};
 mod http;
+#[cfg(feature = "lab")]
 pub(crate) mod keycloak;
+mod llm;
+mod llm_stream;
 mod sealing;
 pub(crate) mod text_stream;
+#[cfg(feature = "lab")]
 pub(crate) mod vault_dynamic;
+#[cfg(feature = "lab")]
 mod vault_dynamic_run;
+#[cfg(feature = "lab")]
 pub(crate) mod vault_source;
+#[cfg(any(feature = "lab", test))]
+use http::build_upstream;
 use http::{
-    build_upstream, filter_response_headers, reason_static, response_metadata_fits,
+    filter_response_headers, reason_static, response_metadata_fits,
     upstream_failure_is_indeterminate, validate_request,
 };
 pub(crate) use sealing::contains_secret;
 #[cfg(test)]
 use sealing::percent_encode;
 use sealing::{fixed_header_sealing_needles, headers_contain_secret, sealing_needles};
+#[cfg(feature = "lab")]
 use vault_dynamic::{VaultDynamicError, VaultDynamicPrepared, VaultDynamicProfile};
+#[cfg(feature = "lab")]
 use vault_source::{VaultKvError, VaultKvProfile, VaultPrepared};
 
 /// Exercises the production response-sealing implementation from the external
@@ -107,8 +122,11 @@ pub struct ExecuteRequest {
     pub action: ActionVersionRef,
     pub content_type: Option<String>,
     pub extra_headers: Vec<(String, String)>,
+    pub params: TemplateValues,
+    pub query: TemplateValues,
     pub body: Vec<u8>,
     pub approval_grants: Vec<String>,
+    pub local_approval_request_id: Option<rekey_domain::ids::ApprovalRequestId>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -143,6 +161,8 @@ pub struct AdmittedExecution {
     executor: Arc<ActionExecutor>,
     request: ExecuteRequest,
     action: FixedHttpAction,
+    target: RenderedTarget,
+    llm: Option<llm::LlmExecution>,
     effect_deadline: Instant,
     started: StartedAuditGuard,
     _permit: ExecutionPermit,
@@ -160,6 +180,7 @@ pub struct ActionExecutor {
 const EFFECT_NOT_STARTED: u8 = 0;
 const EFFECT_ORDINARY_HTTP: u8 = 1;
 const EFFECT_REVOCABLE_CONNECTOR: u8 = 2;
+#[cfg(feature = "lab")]
 const EFFECT_READ_ONLY_HTTP: u8 = 3;
 
 impl ActionExecutor {
@@ -195,19 +216,108 @@ impl ActionExecutor {
         self: &Arc<Self>,
         request: ExecuteRequest,
     ) -> Result<AdmittedExecution, BrokerError> {
+        self.admit_for_response(request, Some(false)).await
+    }
+
+    pub(crate) async fn admit_stream(
+        self: &Arc<Self>,
+        request: ExecuteRequest,
+    ) -> Result<AdmittedExecution, BrokerError> {
+        self.admit_for_response(request, Some(true)).await
+    }
+
+    /// HTTP delegates body shape selection to the same canonicalization as IPC.
+    pub(crate) async fn admit_http(
+        self: &Arc<Self>,
+        request: ExecuteRequest,
+    ) -> Result<AdmittedExecution, BrokerError> {
+        self.admit_for_response(request, None).await
+    }
+
+    async fn admit_for_response(
+        self: &Arc<Self>,
+        mut request: ExecuteRequest,
+        stream: Option<bool>,
+    ) -> Result<AdmittedExecution, BrokerError> {
         let admission_started = Instant::now();
         self.refuse_unless_running()?;
         // Step 3: capability authentication reserves one use and one
         // concurrency slot; the permit releases the slot on every path.
-        let permit =
+        let mut permit =
             self.sessions
                 .acquire(&request.capability_token, request.action, crate::now_ts()?)?;
         let effect_deadline = admission_started + Duration::from_millis(permit.timeout_ms as u64);
         self.refuse_unless_running()?;
-        let evaluated = self
-            .evaluate_request(&request, permit.principal, effect_deadline)
+        let mut evaluated = self
+            .evaluate_request(&request, &permit, effect_deadline)
             .await?;
-        let (accepted, approval_deadline) = match &evaluated.decision {
+        let expected_stream = evaluated.action.text_stream.is_some()
+            || evaluated.llm.as_ref().is_some_and(|llm| llm.streaming);
+        if stream.is_none() && evaluated.llm.is_none() {
+            return Err(BrokerError::Denied("gateway-profile-required"));
+        }
+        if stream.is_some_and(|stream| stream != expected_stream) {
+            self.audit_denial(effect_deadline, &evaluated.ctx, "stream-operation-mismatch")
+                .await?;
+            return Err(BrokerError::Denied("stream-operation-mismatch"));
+        }
+        if let Some(mut body) = evaluated.effective_body.take() {
+            zeroize::Zeroize::zeroize(&mut request.body);
+            request.body = std::mem::take(&mut *body);
+        }
+        if request.local_approval_request_id.is_some() && !request.approval_grants.is_empty() {
+            return Err(BrokerError::Denied("approval-kinds-conflict"));
+        }
+        let is_local = matches!(
+            evaluated.approval_context.as_ref().map(|c| &c.approver),
+            Some(rekey_domain::authorization::ApproverSpec::LocalPresence {})
+        );
+        if request.local_approval_request_id.is_some() && !is_local {
+            return Err(BrokerError::Denied("approval-local-not-required"));
+        }
+        if is_local {
+            if !request.approval_grants.is_empty() {
+                return Err(BrokerError::Denied("approval-kinds-conflict"));
+            }
+            let local = self
+                .ensure_local_approval(
+                    &evaluated,
+                    &mut permit,
+                    request.local_approval_request_id,
+                    false,
+                    effect_deadline,
+                )
+                .await?;
+            if request.local_approval_request_id.is_none()
+                || local.state == rekey_domain::ipc::LocalApprovalState::Pending
+            {
+                return Err(BrokerError::ApprovalRequired(
+                    rekey_domain::ipc::ApprovalRequired {
+                        challenge_id: local.challenge.approval_request_id,
+                        expires_at_ms: local.challenge.max_expires_at_ms,
+                    },
+                ));
+            }
+            let started = self
+                .commit_local_started(
+                    &evaluated,
+                    &permit,
+                    local.challenge.approval_request_id,
+                    effect_deadline,
+                )
+                .await?;
+            return Ok(AdmittedExecution {
+                executor: Arc::clone(self),
+                request,
+                action: evaluated.action,
+                target: evaluated.target,
+                llm: evaluated.llm,
+                effect_deadline,
+                started,
+                _permit: permit,
+            });
+        }
+        let (accepted, mut approval_deadline) = match &evaluated.decision {
             Decision::Allow { .. } if request.approval_grants.is_empty() => (Vec::new(), None),
             Decision::Allow { .. } => {
                 deadline::await_authority(
@@ -231,6 +341,16 @@ impl ActionExecutor {
             Decision::Deny { .. } => return Err(BrokerError::Denied("policy-evaluation-failed")),
         };
 
+        if permit.profile_scope().is_some() {
+            let policy_cap = evaluated.snapshot.monotonic_deadline().into_std();
+            let wall_cap = evaluated.snapshot.snapshot().expires_at_ms();
+            approval_deadline = Some(
+                approval_deadline.map_or((policy_cap, wall_cap), |(mono, wall)| {
+                    (mono.min(policy_cap), wall.min(wall_cap))
+                }),
+            );
+        }
+
         // Step 6: this final point linearizes with drain. Earlier Running
         // checks are advisory; no drain may transition between this re-check
         // and transfer of durable started/terminal ownership.
@@ -239,7 +359,7 @@ impl ActionExecutor {
             .unwrap_or(effect_deadline);
         let started = tokio::time::timeout_at(
             tokio::time::Instant::from_std(admission_deadline),
-            commit_started_while_running(
+            commit_started_with_usage(
                 &self.lifecycle,
                 &self.terminals,
                 &self.policy,
@@ -247,6 +367,8 @@ impl ActionExecutor {
                 evaluated.ctx,
                 accepted,
                 approval_deadline,
+                evaluated.llm.as_ref().map(|llm| llm.usage.clone()),
+                Some(admission_deadline),
             ),
         )
         .await
@@ -256,6 +378,8 @@ impl ActionExecutor {
             request,
             effect_deadline,
             action: evaluated.action,
+            target: evaluated.target,
+            llm: evaluated.llm,
             started,
             _permit: permit,
         })
@@ -284,14 +408,26 @@ impl ActionExecutor {
         effect_kind: &AtomicU8,
         stream: Option<&text_stream::TextStreamSender>,
     ) -> Result<ExecuteOutcome, BrokerError> {
+        let target = match &action.target {
+            ActionTarget::Fixed { path } => RenderedTarget {
+                path: path.clone(),
+                params: Default::default(),
+                query: Default::default(),
+            },
+            ActionTarget::Template { target, .. } => {
+                target.render(&request.params, &request.query)?
+            }
+        };
         self.run_started_owned(
             started,
             request,
             action,
+            &target,
             effect_deadline,
             effect_kind,
             &AtomicBool::new(false),
             stream,
+            None,
         )
         .await
     }
@@ -302,12 +438,16 @@ impl ActionExecutor {
         started: &mut StartedAuditGuard,
         request: &ExecuteRequest,
         action: &FixedHttpAction,
+        target: &RenderedTarget,
         effect_deadline: Instant,
         effect_kind: &AtomicU8,
         cleanup_owned: &AtomicBool,
         stream: Option<&text_stream::TextStreamSender>,
+        llm: Option<&llm::LlmExecution>,
     ) -> Result<ExecuteOutcome, BrokerError> {
-        if action.text_stream.is_some() != stream.is_some() {
+        if (action.text_stream.is_some() || llm.is_some_and(|llm| llm.streaming))
+            != stream.is_some()
+        {
             started
                 .blocked_until(effect_deadline, "stream-operation-mismatch")
                 .await?;
@@ -349,26 +489,44 @@ impl ActionExecutor {
                 .await?;
             return Err(BrokerError::Denied("stream-credential-kind"));
         }
-        let connector = match resolve_builtin(credential_kind, action) {
+        let selection = if matches!(action.target, ActionTarget::Template { .. }) {
+            if credential_kind != rekey_domain::credential::CredentialKind::OpaqueToken {
+                drop(prepared);
+                started
+                    .blocked_until(effect_deadline, "template-credential-kind")
+                    .await?;
+                return Err(BrokerError::Denied("template-credential-kind"));
+            }
+            Ok(BuiltInConnector::FixedHttpHeaderV1)
+        } else {
+            resolve_builtin(credential_kind, action)
+        };
+        let connector = match selection {
             Ok(connector) => connector,
             Err(_) => {
                 drop(prepared);
                 let reason = match credential_kind {
+                    #[cfg(feature = "lab")]
                     rekey_domain::credential::CredentialKind::GcpSecretManagerSource => {
                         gcp_source::GcpSourceError::InvalidCredential.reason()
                     }
+                    #[cfg(feature = "lab")]
                     rekey_domain::credential::CredentialKind::AzureKeyVaultSource => {
                         azure_source::AzureSourceError::InvalidCredential.reason()
                     }
+                    #[cfg(feature = "lab")]
                     rekey_domain::credential::CredentialKind::OnePasswordConnectSource => {
                         onepassword_source::OnePasswordSourceError::InvalidCredential.reason()
                     }
+                    #[cfg(feature = "lab")]
                     rekey_domain::credential::CredentialKind::AwsSecretsManagerSource => {
                         aws_source::AwsSourceError::InvalidCredential.reason()
                     }
+                    #[cfg(feature = "lab")]
                     rekey_domain::credential::CredentialKind::VaultKvV2Source => {
                         VaultKvError::InvalidCredential.reason()
                     }
+                    #[cfg(feature = "lab")]
                     rekey_domain::credential::CredentialKind::VaultDynamicSource => {
                         VaultDynamicError::InvalidCredential.reason()
                     }
@@ -379,98 +537,121 @@ impl ActionExecutor {
             }
         };
 
+        #[cfg(not(feature = "lab"))]
+        let _ = cleanup_owned;
         // Step 9: execute the selected compile-time connector. Registry
         // selection performs no IO and never receives credential bytes.
         let prepared = prepared.consume(|secret| match connector {
-            BuiltInConnector::FixedHttpHeaderV1 | BuiltInConnector::MacosKeychainSourceV1 => {
-                prepare_fixed_header(action, request, secret)
+            BuiltInConnector::FixedHttpHeaderV1 => {
+                prepare_fixed_header(action, request, target, secret)
+            }
+            #[cfg(feature = "lab")]
+            BuiltInConnector::MacosKeychainSourceV1 => {
+                prepare_fixed_header(action, request, target, secret)
             }
             BuiltInConnector::GitHubAppInstallationV1 => {
                 let profile = GitHubAppCredential::parse_profile(secret);
-                PreparedExecution::GitHub(GitHubPrepared {
+                Ok(PreparedExecution::GitHub(GitHubPrepared {
                     credential_version,
                     needles: profile
                         .as_ref()
                         .map(|profile| sealing_needles(secret, profile.private_key_bytes()))
                         .unwrap_or_default(),
                     profile,
-                })
+                }))
             }
+            #[cfg(feature = "lab")]
             BuiltInConnector::KeycloakTokenExchangeV1 => {
                 let profile = keycloak::KeycloakProfile::parse_profile(secret);
-                PreparedExecution::Keycloak(keycloak::KeycloakPrepared {
+                Ok(PreparedExecution::Keycloak(keycloak::KeycloakPrepared {
                     credential_version,
                     profile,
-                })
+                }))
             }
+            #[cfg(feature = "lab")]
             BuiltInConnector::GcpSecretManagerSourceV1 => {
                 let profile = gcp_source::GcpSourceProfile::parse_profile(secret);
-                PreparedExecution::Gcp(gcp_source::GcpPrepared {
+                Ok(PreparedExecution::Gcp(gcp_source::GcpPrepared {
                     credential_version,
                     needles: profile
                         .as_ref()
                         .map(|profile| profile.bootstrap_needles(secret))
                         .unwrap_or_default(),
                     profile,
-                })
+                }))
             }
+            #[cfg(feature = "lab")]
             BuiltInConnector::AzureKeyVaultSourceV1 => {
                 let profile = azure_source::AzureSourceProfile::parse_profile(secret);
-                PreparedExecution::Azure(azure_source::AzurePrepared {
+                Ok(PreparedExecution::Azure(azure_source::AzurePrepared {
                     credential_version,
                     needles: profile
                         .as_ref()
                         .map(|profile| profile.bootstrap_needles(secret))
                         .unwrap_or_default(),
                     profile,
-                })
+                }))
             }
+            #[cfg(feature = "lab")]
             BuiltInConnector::OnePasswordConnectSourceV1 => {
                 let profile = onepassword_source::OnePasswordSourceProfile::parse_profile(secret);
-                PreparedExecution::OnePassword(onepassword_source::OnePasswordPrepared {
-                    credential_version,
-                    needles: profile
-                        .as_ref()
-                        .map(|profile| profile.bootstrap_needles(secret))
-                        .unwrap_or_default(),
-                    profile,
-                })
+                Ok(PreparedExecution::OnePassword(
+                    onepassword_source::OnePasswordPrepared {
+                        credential_version,
+                        needles: profile
+                            .as_ref()
+                            .map(|profile| profile.bootstrap_needles(secret))
+                            .unwrap_or_default(),
+                        profile,
+                    },
+                ))
             }
+            #[cfg(feature = "lab")]
             BuiltInConnector::AwsSecretsManagerSourceV1 => {
                 let profile = aws_source::AwsSourceProfile::parse_profile(secret);
-                PreparedExecution::Aws(aws_source::AwsPrepared {
+                Ok(PreparedExecution::Aws(aws_source::AwsPrepared {
                     credential_version,
                     needles: profile
                         .as_ref()
                         .map(|profile| profile.bootstrap_needles(secret))
                         .unwrap_or_default(),
                     profile,
-                })
+                }))
             }
+            #[cfg(feature = "lab")]
             BuiltInConnector::VaultKvV2SourceV1 => {
                 let profile = VaultKvProfile::parse_profile(secret);
-                PreparedExecution::Vault(VaultPrepared {
+                Ok(PreparedExecution::Vault(VaultPrepared {
                     credential_version,
                     needles: profile
                         .as_ref()
                         .map(|profile| profile.bootstrap_needles(secret))
                         .unwrap_or_default(),
                     profile,
-                })
+                }))
             }
+            #[cfg(feature = "lab")]
             BuiltInConnector::VaultDynamicSourceV1 => {
                 let profile = VaultDynamicProfile::parse_profile(secret);
-                PreparedExecution::VaultDynamic(VaultDynamicPrepared {
+                Ok(PreparedExecution::VaultDynamic(VaultDynamicPrepared {
                     credential_version,
                     needles: profile
                         .as_ref()
                         .map(|profile| sealing_needles(secret, profile.token()))
                         .unwrap_or_default(),
                     profile,
-                })
+                }))
             }
         });
+        let prepared = match prepared {
+            Ok(prepared) => prepared,
+            Err(reason) => {
+                started.blocked_until(effect_deadline, reason).await?;
+                return Err(BrokerError::Denied(reason));
+            }
+        };
 
+        #[cfg(feature = "lab")]
         if let PreparedExecution::Keycloak(prepared) = prepared {
             return self
                 .run_keycloak(
@@ -495,6 +676,7 @@ impl ActionExecutor {
                 )
                 .await;
         }
+        #[cfg(feature = "lab")]
         if let PreparedExecution::VaultDynamic(prepared) = prepared {
             return self
                 .run_vault_dynamic(
@@ -507,6 +689,7 @@ impl ActionExecutor {
                 )
                 .await;
         }
+        #[cfg(feature = "lab")]
         if matches!(&prepared, PreparedExecution::Vault(vault) if vault.profile.as_ref().is_ok_and(|profile| profile.is_approle()))
         {
             let PreparedExecution::Vault(prepared) = prepared else {
@@ -524,6 +707,7 @@ impl ActionExecutor {
                 )
                 .await;
         }
+        #[cfg(feature = "lab")]
         let prepared = match prepared {
             PreparedExecution::Gcp(prepared) => {
                 self.resolve_gcp_source(
@@ -590,7 +774,8 @@ impl ActionExecutor {
             unreachable!("credential execution variant was matched above")
         };
 
-        if stream.is_some() {
+        if stream.is_some() && action.text_stream.is_some() {
+            #[cfg(feature = "lab")]
             let plugin_messages =
                 match anthropic_plugin_messages(action, &request.body, effect_deadline).await {
                     Ok(body) => body,
@@ -601,10 +786,18 @@ impl ActionExecutor {
                         return Err(err);
                     }
                 };
+            #[cfg(feature = "lab")]
             let messages = plugin_messages
                 .as_deref()
                 .unwrap_or(request.body.as_slice());
+            #[cfg(not(feature = "lab"))]
+            let messages = request.body.as_slice();
             text_stream::configure(action, messages, &mut upstream_request)?;
+        }
+        if llm.is_some_and(|llm| llm.streaming) {
+            upstream_request
+                .headers
+                .push(("accept-encoding".to_owned(), "identity".to_owned()));
         }
         // Steps 10-11: fixed HTTPS send with bounded response. Credential
         // preparation consumes the same action deadline as DNS and HTTP.
@@ -632,6 +825,63 @@ impl ActionExecutor {
                     .open_stream(upstream_request)
                     .await
                     .map_err(|_| BrokerError::Upstream("stream-transport"))?;
+                if let Some(llm) = llm.filter(|llm| llm.streaming) {
+                    if response.status != 200 {
+                        let mut response = response;
+                        let mut body = Zeroizing::new(Vec::new());
+                        let limit = action.response_policy.max_body_bytes as usize;
+                        while let Some(chunk) = response
+                            .body
+                            .next_chunk()
+                            .await
+                            .map_err(|_| BrokerError::Upstream("stream-transport"))?
+                        {
+                            if chunk.len() > limit.saturating_sub(body.len()) {
+                                return Err(BrokerError::Domain(DomainError::ResponseTooLarge));
+                            }
+                            body.extend_from_slice(&chunk);
+                        }
+                        return finish_buffered_response(
+                            started,
+                            action,
+                            crate::upstream::UpstreamResponse {
+                                status: response.status,
+                                headers: response.headers,
+                                body,
+                            },
+                            &needles,
+                            effect_deadline,
+                            credential_version,
+                            Some(llm),
+                            send_started.elapsed().as_millis() as i64,
+                        )
+                        .await;
+                    }
+                    let mut complete = llm_stream::run(
+                        response,
+                        needles,
+                        action.response_policy.max_body_bytes as usize,
+                        sender,
+                        llm.protocol,
+                    )
+                    .await?;
+                    started.record_profile_output(complete.output_tokens());
+                    started
+                        .finished_until(
+                            effect_deadline,
+                            credential_version,
+                            200,
+                            send_started.elapsed().as_millis() as i64,
+                        )
+                        .await?;
+                    complete.release(sender).await?;
+                    return Ok(ExecuteOutcome {
+                        stream_status: Some(complete.status()),
+                        upstream_status: 200,
+                        headers: Vec::new(),
+                        body: Vec::new(),
+                    });
+                }
                 let status = text_stream::run(
                     response,
                     needles,
@@ -673,7 +923,7 @@ impl ActionExecutor {
         }
         let response = self.transport.send(upstream_request).await;
         let latency_ms = send_started.elapsed().as_millis() as i64;
-        let mut response = match response {
+        let response = match response {
             Ok(response) => response,
             Err(err) => {
                 let reason = match &err {
@@ -696,53 +946,87 @@ impl ActionExecutor {
             }
         };
 
-        // Step 12: secret sealing over the buffered body and every header
-        // the upstream sent (name and value), before any allowlist copy.
-        if contains_secret(&response.body, &needles)
-            || headers_contain_secret(&response.headers, &needles)
-        {
-            started
-                .indeterminate_until(effect_deadline, "reflected-secret")
-                .await?;
-            return Err(BrokerError::ResponseSecurityViolation);
-        }
-
-        // Step 13: response header filtering (allowlist only).
-        let headers = filter_response_headers(action, &response.headers);
-        if !response_metadata_fits(response.status, &headers, response.body.len()) {
-            started
-                .indeterminate_until(effect_deadline, "response-metadata-too-large")
-                .await?;
-            return Err(BrokerError::Domain(DomainError::ResponseTooLarge));
-        }
-
-        // Step 14: ExecutionFinished must commit; upstream success without
-        // evidence is not success.
-        started
-            .finished_until(
-                effect_deadline,
-                credential_version,
-                response.status,
-                latency_ms,
-            )
-            .await?;
-        let body = std::mem::take(&mut *response.body);
-
-        // Steps 15-16 (accounting + cleanup) happen in Drop of permit and secrets.
-        Ok(ExecuteOutcome {
-            stream_status: None,
-            upstream_status: response.status,
-            headers,
-            body,
-        })
+        finish_buffered_response(
+            started,
+            action,
+            response,
+            &needles,
+            effect_deadline,
+            credential_version,
+            llm,
+            latency_ms,
+        )
+        .await
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn finish_buffered_response(
+    started: &mut StartedAuditGuard,
+    action: &FixedHttpAction,
+    mut response: crate::upstream::UpstreamResponse,
+    needles: &[Zeroizing<Vec<u8>>],
+    effect_deadline: Instant,
+    credential_version: u64,
+    llm: Option<&llm::LlmExecution>,
+    latency_ms: i64,
+) -> Result<ExecuteOutcome, BrokerError> {
+    // Step 12: secret sealing over the buffered body and every header
+    // the upstream sent (name and value), before any allowlist copy.
+    if contains_secret(&response.body, needles)
+        || headers_contain_secret(&response.headers, needles)
+    {
+        started
+            .indeterminate_until(effect_deadline, "reflected-secret")
+            .await?;
+        return Err(BrokerError::ResponseSecurityViolation);
+    }
+
+    // Step 13: response header filtering (allowlist only).
+    let headers = filter_response_headers(action, &response.headers);
+    if !response_metadata_fits(response.status, &headers, response.body.len()) {
+        started
+            .indeterminate_until(effect_deadline, "response-metadata-too-large")
+            .await?;
+        return Err(BrokerError::Domain(DomainError::ResponseTooLarge));
+    }
+
+    if let Some(llm) = llm {
+        let measured = if (200..300).contains(&response.status) {
+            rekey_policy::profile_llm_output_tokens(llm.protocol, &response.body)
+        } else {
+            None
+        };
+        started.record_profile_output(measured);
+    }
+
+    // Step 14: ExecutionFinished must commit; upstream success without
+    // evidence is not success.
+    started
+        .finished_until(
+            effect_deadline,
+            credential_version,
+            response.status,
+            latency_ms,
+        )
+        .await?;
+    let body = std::mem::take(&mut *response.body);
+
+    // Steps 15-16 (accounting + cleanup) happen in Drop of permit and secrets.
+    Ok(ExecuteOutcome {
+        stream_status: None,
+        upstream_status: response.status,
+        headers,
+        body,
+    })
 }
 
 fn prepare_fixed_header(
     action: &FixedHttpAction,
     request: &ExecuteRequest,
+    target: &RenderedTarget,
     secret: &[u8],
-) -> PreparedExecution {
+) -> Result<PreparedExecution, &'static str> {
     let mut auth_value = Zeroizing::new(Vec::with_capacity(
         action.auth.prefix.as_str().len() + secret.len(),
     ));
@@ -750,10 +1034,10 @@ fn prepare_fixed_header(
     auth_value.extend_from_slice(secret);
     let needles =
         fixed_header_sealing_needles(secret, &auth_value, action.auth.prefix.as_str().as_bytes());
-    PreparedExecution::Opaque {
-        upstream: build_upstream(action, request, auth_value),
+    Ok(PreparedExecution::Opaque {
+        upstream: http::build_rendered_upstream(action, request, target, auth_value),
         needles,
-    }
+    })
 }
 
 enum PreparedExecution {
@@ -762,12 +1046,19 @@ enum PreparedExecution {
         needles: Vec<Zeroizing<Vec<u8>>>,
     },
     GitHub(GitHubPrepared),
+    #[cfg(feature = "lab")]
     Vault(VaultPrepared),
+    #[cfg(feature = "lab")]
     Gcp(gcp_source::GcpPrepared),
+    #[cfg(feature = "lab")]
     Aws(aws_source::AwsPrepared),
+    #[cfg(feature = "lab")]
     Azure(azure_source::AzurePrepared),
+    #[cfg(feature = "lab")]
     OnePassword(onepassword_source::OnePasswordPrepared),
+    #[cfg(feature = "lab")]
     VaultDynamic(VaultDynamicPrepared),
+    #[cfg(feature = "lab")]
     Keycloak(keycloak::KeycloakPrepared),
 }
 
@@ -778,6 +1069,10 @@ struct GitHubPrepared {
 }
 
 impl AdmittedExecution {
+    pub(crate) fn raw_stream(&self) -> bool {
+        self.llm.as_ref().is_some_and(|llm| llm.streaming)
+    }
+
     pub(crate) fn deadline(&self) -> Instant {
         self.effect_deadline
     }
@@ -812,10 +1107,12 @@ impl AdmittedExecution {
                 &mut self.started,
                 &self.request,
                 &self.action,
+                &self.target,
                 self.effect_deadline,
                 &effect_kind,
                 &cleanup_owned,
                 stream,
+                self.llm.as_ref(),
             );
             tokio::pin!(run);
             tokio::select! {
@@ -851,6 +1148,7 @@ async fn wait_for_cancel(mut cancel: tokio::sync::watch::Receiver<bool>) {
     }
 }
 
+#[cfg(feature = "lab")]
 async fn anthropic_plugin_messages(
     action: &FixedHttpAction,
     body: &[u8],
@@ -903,6 +1201,7 @@ async fn try_begin_remote_effect(
     Err(BrokerError::Authority(AuthorityError::Draining))
 }
 
+#[cfg(test)]
 async fn commit_started_while_running(
     lifecycle: &Lifecycle,
     terminals: &TerminalAuditTracker,
@@ -912,6 +1211,32 @@ async fn commit_started_while_running(
     preceding: Vec<rekey_vault::command::AuditDraft>,
     approval_deadline: Option<(Instant, i64)>,
 ) -> Result<StartedAuditGuard, BrokerError> {
+    commit_started_with_usage(
+        lifecycle,
+        terminals,
+        policy,
+        expected_policy,
+        ctx,
+        preceding,
+        approval_deadline,
+        None,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn commit_started_with_usage(
+    lifecycle: &Lifecycle,
+    terminals: &TerminalAuditTracker,
+    policy: &RwLock<Option<Arc<ActivePolicy>>>,
+    expected_policy: Option<PolicyIdentity>,
+    ctx: ExecutionAuditContext,
+    preceding: Vec<rekey_vault::command::AuditDraft>,
+    approval_deadline: Option<(Instant, i64)>,
+    usage: Option<rekey_vault::command::ProfileUsageStart>,
+    request_deadline: Option<Instant>,
+) -> Result<StartedAuditGuard, BrokerError> {
     let _coordinator = match lifecycle.try_coordinate() {
         Ok(owner) => owner,
         Err(_) if lifecycle.phase() == BrokerPhase::Running => {
@@ -920,21 +1245,80 @@ async fn commit_started_while_running(
         Err(_) => return Err(BrokerError::Authority(AuthorityError::Draining)),
     };
     lifecycle.reject_if_not_running()?;
+    check_started_policy(policy, expected_policy, terminals, &ctx).await?;
+    let (approval_not_after, mut wall_not_after_ms) = approval_deadline.unzip();
+    let mut not_after = match (request_deadline, approval_not_after) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
+    if usage.is_some() {
+        let active = policy.read().await;
+        let active = active
+            .as_ref()
+            .ok_or(BrokerError::Denied("policy-changed"))?;
+        if active.is_expired(crate::now_ts()?) {
+            return Err(BrokerError::Denied("policy-expired"));
+        }
+        let cap = active.monotonic_deadline().into_std();
+        not_after = Some(not_after.map_or(cap, |deadline| deadline.min(cap)));
+        let expires = active.snapshot().expires_at_ms();
+        wall_not_after_ms = Some(wall_not_after_ms.map_or(expires, |wall| wall.min(expires)));
+    }
+    commit_evaluated_started(
+        terminals,
+        ctx,
+        preceding,
+        not_after,
+        wall_not_after_ms,
+        usage,
+    )
+    .await
+}
+
+async fn commit_evaluated_started(
+    terminals: &TerminalAuditTracker,
+    ctx: ExecutionAuditContext,
+    preceding: Vec<rekey_vault::command::AuditDraft>,
+    not_after: Option<Instant>,
+    wall_not_after_ms: Option<i64>,
+    usage: Option<rekey_vault::command::ProfileUsageStart>,
+) -> Result<StartedAuditGuard, BrokerError> {
+    if let Some(usage) = usage {
+        terminals
+            .commit_profile_started(
+                ctx,
+                preceding,
+                usage,
+                not_after.ok_or(BrokerError::Denied("profile-deadline-missing"))?,
+                wall_not_after_ms,
+            )
+            .await?
+            .ok_or(BrokerError::Denied("profile-budget-exceeded"))
+    } else {
+        terminals
+            .commit_started(ctx, preceding, not_after, wall_not_after_ms)
+            .await
+            .map_err(BrokerError::Authority)
+    }
+}
+
+async fn check_started_policy(
+    policy: &RwLock<Option<Arc<ActivePolicy>>>,
+    expected_policy: Option<PolicyIdentity>,
+    terminals: &TerminalAuditTracker,
+    ctx: &ExecutionAuditContext,
+) -> Result<(), BrokerError> {
     let current_policy = policy.read().await;
     if current_policy.as_deref().map(PolicyIdentity::of) != expected_policy {
         drop(current_policy);
         terminals
-            .commit(execution_blocked(&ctx, "policy-changed"))
+            .commit(execution_blocked(ctx, "policy-changed"))
             .await
             .map_err(BrokerError::Authority)?;
         return Err(BrokerError::Denied("policy-changed"));
     }
     drop(current_policy);
-    let (not_after, wall_not_after_ms) = approval_deadline.unzip();
-    terminals
-        .commit_started(ctx, preceding, not_after, wall_not_after_ms)
-        .await
-        .map_err(BrokerError::Authority)
+    Ok(())
 }
 
 fn prepare_block_reason(err: &AuthorityError) -> &'static str {
@@ -950,3 +1334,43 @@ fn prepare_block_reason(err: &AuthorityError) -> &'static str {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(not(feature = "lab"))]
+impl ActionExecutor {
+    pub(crate) async fn lease_journal_status(
+        &self,
+    ) -> Result<rekey_domain::ipc::LeaseJournalStatus, BrokerError> {
+        let counts = self.authority.lease_recovery_batch().await?.counts;
+        Ok(rekey_domain::ipc::LeaseJournalStatus {
+            verified: counts.verified,
+            pending: counts.pending,
+            unknown: counts.unknown,
+            complete: counts.complete,
+        })
+    }
+    pub(crate) async fn recover_vault_leases(
+        &self,
+        _perform: bool,
+    ) -> Result<rekey_domain::ipc::LeaseRecoverySummary, BrokerError> {
+        let batch = deadline::await_authority(
+            Instant::now() + Duration::from_secs(8),
+            self.authority.lease_recovery_batch(),
+        )
+        .await?;
+        if let Some(error) = batch.unavailable {
+            return Err(error.into());
+        }
+        let counts = batch.counts;
+        Ok(rekey_domain::ipc::LeaseRecoverySummary {
+            performed: false,
+            journal: rekey_domain::ipc::LeaseJournalStatus {
+                verified: counts.verified,
+                pending: counts.pending,
+                unknown: counts.unknown,
+                complete: counts.complete,
+            },
+            deferred: counts.pending,
+            leases: Vec::new(),
+        })
+    }
+}

@@ -70,7 +70,7 @@ json_first_field() {
   python3 -c 'import json,sys; value,_=json.JSONDecoder().raw_decode(sys.stdin.read().lstrip()); print(value['"$1"'])'
 }
 
-printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin >/dev/null
+printf '%s\n' "$PASSWORD" | "$REKEYD" init --mode team --state-dir "$STATE" --password-stdin >/dev/null
 "$REKEYD" serve --state-dir "$STATE" --idle-lock 15m >/dev/null 2>&1 &
 SERVE_PID=$!
 for _ in $(seq 1 100); do
@@ -123,9 +123,9 @@ binding = {
                          "properties": {"title": {"type": "string"}, "body": {"type": "string"}}},
 }
 pathlib.Path(path).write_text(json.dumps({
-    "format_version": 3, "version": 1,
+    "format_version": 6, "version": 1,
     "expires_at_ms": int(time.time() * 1000) + 600000,
-    "approvers": [], "workload_identities": [], "bindings": [binding],
+    "approvers": [], "profiles": [], "workload_identities": [], "bindings": [binding],
     "rules": [{"id": str(uuid.uuid4()), "effect": "permit", "principal_id": principal,
                "action_id": action_id, "version": int(version), "resource": resource,
                "parameters": {"kind": "any_validated"}}],

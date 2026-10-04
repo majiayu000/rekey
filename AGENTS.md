@@ -1,8 +1,13 @@
 # rekey — Project Rules
 
+## Computer Use
+
+- 打开文件、目录、网页或应用时，只要能通过终端或命令（例如 macOS 的 `open`）完成，就使用命令工具，不使用 Computer Use，也不通过 Computer Use 打开终端。
+- 只有命令、API 或专用工具无法完成、确实需要原生界面交互的步骤，才使用 Computer Use。
+
 ## What is this
 
-Rekey v2: a local Credential Authority for AI agents. Agents call fixed,
+Rekey v3 personal-first Credential Authority (`3.0.0-alpha.1`, alpha). Agents call fixed or template,
 admin-registered actions through a capability token and never see real
 credentials. Breaking rewrite — no v1 vault, MITM, system CA, dashboard,
 single-port proxy, or TCP passthrough exists anymore.
@@ -35,8 +40,8 @@ Cargo workspace, 7 crates + root integration-test host:
   offline bootstrap (init/restore), AuthorityWorker (single owner of the DB
   connection, VRK, and all credential mutations)
 - `rekey-broker` — BrokerRuntime: two Unix sockets (admin.sock / agent.sock,
-  0600), capability SessionRegistry, fixed-HTTP-action executor with response
-  secret sealing; ships the `rekeyd` binary (serve/init/restore)
+  0600), capability SessionRegistry, shared fixed/template executor with response
+  sealing, local approvals, signed Profiles and a bounded loopback SDK gateway; ships the `rekeyd` binary (serve/init/restore)
 - `rekey-cli` — `rekey` binary, pure IPC client; delegates init/serve/restore
   to `rekeyd` so the CLI never links crypto or SQLite
 
@@ -45,21 +50,37 @@ Cargo workspace, 7 crates + root integration-test host:
 - Agent API has no get/read/export secret operation — only ExecuteFixedHttpAction
   with a short-lived capability token; decrypted payloads exist once as a
   consume-once `PreparedCredential`
-- Admin mutations require a step-up unlock proof on every call
+- Sensitive A2 operations require a fresh proof, including all-state SHUTDOWN
+  and plaintext reveal; A1 desktop tokens cannot replace it. Presence is
+  accepted only while unlocked with an active process-local verifier. Offline
+  restore and VRK rewrapping still require their original decryption factors.
+  Presence cannot issue seven-day grants, change passwords, or rotate recovery keys.
 - Secrets travel only in frame bodies / hidden TTY / explicit stdin flags —
-  never argv, env, JSON metadata, logs, or audit rows
+  never argv, env, JSON metadata, logs, or audit rows. Profile `run` supplies
+  its short-lived capability to the child environment as an explicit exception;
+  this is never an upstream credential
 - Audit commit failure fails closed (worker faults); execution.started commits
   before any credential is decrypted
-- Upstream: fixed origin/method/path, redirects disabled, proxy env ignored,
+- Upstream: fixed origin/method and authenticated fixed or validated template
+  target, redirects disabled, proxy env ignored,
   non-public IPs refused, bounded bodies, reflected-secret sealing
-- The default topology remains G1 (same-user local). G2 claims are limited to
-  the bounded Linux container/namespace reference topology and its attack harness
-- No backward compatibility: non-empty legacy state dirs are rejected, never
-  migrated or overwritten
+- Current confirmed floor is L1-dev. Peer verification alone does not establish
+  L1; V1/V2, protected anchors and actual isolation require separate evidence.
+  Linux Profile netns and Codex Seatbelt limitations must not be hidden.
+- No migration, old-format double reader or backfill, permanently. Vault25 /
+  policy6 are frozen from v3.0.0-alpha.1, including all v3 prereleases and GA.
+  Preserve durable layouts and canonical signing semantics within v3; incompatible
+  changes require another major, including in `lab`. Stop feature expansion during
+  the seven-day dogfood period; fix only evidenced safety/correctness/release blockers.
+- Default features are empty; enterprise execution requires `--features lab`.
+- Ordinary unlock is not rollback consent. Explicit confirmation binds current
+  context; never delete or lower generation history to make a snapshot unlock.
 
 ## Spec & Baselines
 
-- Implementation spec: `docs/superpowers/specs/2026-08-28-credential-authority-v2-foundation.md`
+- Active v3 specification: `docs/superpowers/specs/2026-10-02-rekey-v3-personal-first.md`
+- Implemented versus pending v3 scope: `docs/superpowers/plans/2026-10-03-v3-implementation.md`
+- Historical foundation (v3 supersedes conflicting clauses): `docs/superpowers/specs/2026-08-28-credential-authority-v2-foundation.md`
 - Public technical baselines:
   - `docs/product-foundation/feature-truth-matrix.md`
   - `docs/product-foundation/threat-model-v2.md`

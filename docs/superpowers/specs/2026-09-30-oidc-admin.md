@@ -1,5 +1,8 @@
 # ENT-03 fixed OIDC node administrator login
 
+> Status: Lab (v3 scope; enterprise reserve)
+> Existing contracts and evidence are retained; this capability is excluded from the default v3 build and release package.
+
 Frozen minimum 2026-09-30 before implementation. Directory A and signed-policy
 session revocation B are prerequisites, not a complete login. Pure ID-token
 verification C1 below is the first serial implementation; C2 full authorization

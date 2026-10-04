@@ -194,6 +194,88 @@ impl AuditQuery {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum UsageSource {
+    Measured,
+    Indeterminate,
+    NotApplicable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UsageEvidence {
+    pub instance_slug: String,
+    pub utc_day: i64,
+    pub output_tokens: u64,
+    pub source: UsageSource,
+}
+
+impl UsageEvidence {
+    pub fn validate(&self) -> Result<(), DomainError> {
+        if self.instance_slug.is_empty()
+            || self.instance_slug.len() > 64
+            || !self
+                .instance_slug
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_alphanumeric)
+            || !self
+                .instance_slug
+                .as_bytes()
+                .last()
+                .is_some_and(u8::is_ascii_alphanumeric)
+            || !self
+                .instance_slug
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            || self.utc_day < 0
+            || self.output_tokens > i64::MAX as u64
+            || (self.source == UsageSource::NotApplicable && self.output_tokens != 0)
+        {
+            return Err(invalid("invalid usage evidence"));
+        }
+        Ok(())
+    }
+}
+
+/// Public metadata copied from the authenticated Profile scope at admission.
+/// Never reconstructed from current Profiles or caller-supplied request fields.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileRequestAuditContext {
+    pub profile_name: String,
+    pub policy_sha256: String,
+    pub instance_slug: String,
+    pub capability: String,
+    pub model: Option<String>,
+}
+
+impl ProfileRequestAuditContext {
+    pub fn validate(&self) -> Result<(), DomainError> {
+        for name in [&self.profile_name, &self.instance_slug] {
+            if !(1..=64).contains(&name.len())
+                || !name.as_bytes()[0].is_ascii_alphanumeric()
+                || !name.as_bytes()[name.len() - 1].is_ascii_alphanumeric()
+                || !name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+            {
+                return Err(invalid("invalid profile audit context"));
+            }
+        }
+        if !is_lower_hex(&self.policy_sha256, 64)
+            || !crate::template::slug(&self.capability, 64)
+            || self.model.as_ref().is_some_and(|model| {
+                model.is_empty() || model.trim() != model || model.chars().any(char::is_control)
+            })
+        {
+            return Err(invalid("invalid profile audit context"));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AuditRecord {
@@ -213,6 +295,10 @@ pub struct AuditRecord {
     pub approval_request_id: Option<ApprovalRequestId>,
     pub approval_id: Option<ApprovalId>,
     pub approver_id: Option<ApproverId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<UsageEvidence>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_context: Option<ProfileRequestAuditContext>,
     pub event_type: String,
     pub outcome: String,
     pub reason_code: String,
@@ -265,6 +351,29 @@ impl AuditPage {
                 || (event.approval_id.is_some() && event.approval_request_id.is_none())
                 || (event.approver_id.is_some() && event.approval_request_id.is_none())
                 || !approval_fields_match_event(event)
+                || event.usage.as_ref().is_some_and(|usage| {
+                    usage.validate().is_err()
+                        || event.request_id.is_none()
+                        || event.principal_id.is_none()
+                        || !matches!(
+                            event.event_type.as_str(),
+                            "execution.finished" | "execution.blocked" | "execution.indeterminate"
+                        )
+                })
+                || event.request_context.as_ref().is_some_and(|context| {
+                    context.validate().is_err()
+                        || event.session_id.is_none()
+                        || event.action_id.is_none()
+                        || event.action_version.is_none()
+                        || event
+                            .policy_digest_hex
+                            .as_ref()
+                            .is_some_and(|digest| digest != &context.policy_sha256)
+                        || event
+                            .usage
+                            .as_ref()
+                            .is_some_and(|usage| usage.instance_slug != context.instance_slug)
+                })
                 || event.event_type.is_empty()
                 || event.outcome.is_empty()
                 || event.reason_code.is_empty()
@@ -300,6 +409,20 @@ fn approval_fields_match_event(event: &AuditRecord) -> bool {
         && event.policy_version.is_some()
         && event.policy_digest_hex.is_some()
         && event.policy_rule_id.is_some();
+    if event.reason_code == "local-presence" {
+        return has_authorization
+            && event.outcome == "success"
+            && event.session_id.is_some()
+            && event.action_id.is_some()
+            && event.action_version.is_some()
+            && event.approval_request_id.is_some()
+            && event.approver_id.is_none()
+            && match event.event_type.as_str() {
+                "approval.approved" | "approval.accepted" => event.approval_id.is_some(),
+                "approval.rejected" => event.approval_id.is_none(),
+                _ => false,
+            };
+    }
     match event.event_type.as_str() {
         "approval.requested" => {
             has_authorization
@@ -378,12 +501,113 @@ mod tests {
             approval_request_id: None,
             approval_id: None,
             approver_id: None,
+            usage: None,
+            request_context: None,
             event_type: "test.event".to_owned(),
             outcome: "success".to_owned(),
             reason_code: "test".to_owned(),
             upstream_status: None,
             latency_ms: None,
             created_at_ms: sequence as i64,
+        }
+    }
+
+    fn local_page(event_type: &str, approved: bool) -> AuditPage {
+        let mut event = record(1);
+        event.event_type = event_type.into();
+        event.reason_code = "local-presence".into();
+        event.session_id = Some(SessionId::new_random());
+        event.action_id = Some(ActionId::new_random());
+        event.action_version = Some(1);
+        event.principal_id = Some(PrincipalId::new_random());
+        event.policy_version = Some(1);
+        event.policy_digest_hex = Some("01".repeat(32));
+        event.policy_rule_id = Some(PolicyRuleId::new_random());
+        event.approval_request_id = Some(ApprovalRequestId::new_random());
+        event.approval_id = approved.then(ApprovalId::new_random);
+        AuditPage {
+            schema: AUDIT_SCHEMA_V2.into(),
+            snapshot_max_sequence: 1,
+            events: vec![event],
+            next_before_sequence: None,
+        }
+    }
+
+    #[test]
+    fn local_presence_approved_audit_page_is_valid() {
+        local_page("approval.approved", true)
+            .validate_for(&query())
+            .unwrap();
+    }
+
+    #[test]
+    fn local_presence_accepted_audit_page_is_valid() {
+        local_page("approval.accepted", true)
+            .validate_for(&query())
+            .unwrap();
+    }
+
+    #[test]
+    fn local_audit_shapes_do_not_relax_external_approvers_or_other_events() {
+        local_page("approval.rejected", false)
+            .validate_for(&query())
+            .unwrap();
+        for (kind, approved) in [
+            ("approval.approved", false),
+            ("approval.accepted", false),
+            ("approval.rejected", true),
+            ("execution.finished", true),
+        ] {
+            assert!(local_page(kind, approved).validate_for(&query()).is_err());
+        }
+        let valid = local_page("approval.accepted", true);
+        for change in 0..6 {
+            let mut page = valid.clone();
+            let event = &mut page.events[0];
+            match change {
+                0 => event.reason_code = "accepted".into(),
+                1 => event.approver_id = Some(ApproverId::new_random()),
+                2 => event.outcome = "failure".into(),
+                3 => event.approval_request_id = None,
+                4 => event.session_id = None,
+                5 => event.policy_rule_id = None,
+                _ => unreachable!(),
+            }
+            assert!(page.validate_for(&query()).is_err());
+        }
+        let mut external = valid;
+        external.events[0].reason_code = "accepted".into();
+        external.events[0].approver_id = Some(ApproverId::new_random());
+        external.validate_for(&query()).unwrap();
+    }
+
+    #[test]
+    fn profile_audit_context_roundtrip_rejects_unknown_fields_and_invalid_dimensions() {
+        let context = ProfileRequestAuditContext {
+            profile_name: "writer".into(),
+            policy_sha256: "ab".repeat(32),
+            instance_slug: "provider".into(),
+            capability: "messages".into(),
+            model: Some("allowed".into()),
+        };
+        let value = serde_json::to_value(&context).unwrap();
+        let decoded: ProfileRequestAuditContext = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(decoded, context);
+        decoded.validate().unwrap();
+        let mut extra = value;
+        extra["prompt"] = serde_json::json!("not metadata");
+        assert!(serde_json::from_value::<ProfileRequestAuditContext>(extra).is_err());
+        for field in 0..5 {
+            let mut bad = context.clone();
+            match field {
+                0 => bad.profile_name = "../writer".into(),
+                1 => bad.policy_sha256 = "AB".repeat(32),
+                2 => bad.instance_slug = "_hidden".into(),
+                3 => bad.capability = "../target".into(),
+                4 => bad.model = Some("allowed\n".into()),
+                _ => unreachable!(),
+            }
+            assert!(bad.validate().is_err());
         }
     }
 
@@ -539,5 +763,40 @@ mod retention_contract_tests {
             .validate()
             .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::*;
+    #[test]
+    fn usage_evidence_retains_audit_v2_and_rejects_invalid_storage_values() {
+        let value = UsageEvidence {
+            instance_slug: "llm_Main-1".into(),
+            utc_day: 1,
+            output_tokens: 7,
+            source: UsageSource::Measured,
+        };
+        value.validate().unwrap();
+        assert_eq!(
+            serde_json::from_slice::<UsageEvidence>(&serde_json::to_vec(&value).unwrap()).unwrap(),
+            value
+        );
+        for slug in ["", "_main", "main_", "main.dot", "main/path", "名"] {
+            let mut changed = value.clone();
+            changed.instance_slug = slug.into();
+            assert!(changed.validate().is_err());
+        }
+        let mut changed = value.clone();
+        changed.output_tokens = u64::MAX;
+        assert!(changed.validate().is_err());
+        changed = value.clone();
+        changed.utc_day = -1;
+        assert!(changed.validate().is_err());
+        changed = value;
+        changed.source = UsageSource::NotApplicable;
+        assert!(changed.validate().is_err());
+        assert!(serde_json::from_str::<UsageEvidence>(r#"{"instance_slug":"llm","utc_day":1,"output_tokens":0,"source":"measured","extra":true}"#).is_err());
+        assert_eq!(AUDIT_SCHEMA_V2, "rekey.audit.v2");
     }
 }

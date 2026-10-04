@@ -13,8 +13,17 @@ use zeroize::Zeroizing;
 
 use crate::client::{CliError, Client};
 
+#[cfg(feature = "lab")]
 mod metrics;
+#[cfg(feature = "lab")]
 pub use metrics::metrics;
+mod connect;
+pub use connect::{ConnectClient, connect};
+mod run;
+pub use run::{RunClient, run_profile};
+mod templates;
+pub use templates::{template_catalog, template_install};
+
 mod password_lifecycle;
 pub use password_lifecycle::{key_rotate_dek, key_rotate_vrk, password_change, recovery_rotate};
 mod github_admin;
@@ -25,10 +34,13 @@ pub use audit::{
 };
 mod policy_approval;
 pub use policy_approval::{
-    approval_get, approval_origin, approval_pending, approval_prepare, policy_activate,
-    policy_status, policy_trust_install,
+    approval_decide, approval_get, approval_origin, approval_pending, approval_prepare,
+    approval_review, approval_wait_or_cancel, policy_activate, policy_draft, policy_status,
+    policy_trust_install, profile_list,
 };
+#[cfg(feature = "lab")]
 mod vault_admin;
+#[cfg(feature = "lab")]
 pub use vault_admin::{
     credential_add_aws_secrets_manager, credential_add_azure_key_vault,
     credential_add_gcp_secret_manager, credential_add_keycloak, credential_add_macos_keychain,
@@ -105,7 +117,11 @@ fn admin_with_response_timeout(
 fn print_json<T: DeserializeOwned + Serialize>(metadata: &[u8]) -> Result<(), CliError> {
     let value = serde_json::from_slice::<T>(metadata)
         .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid response"))?;
-    let mut output = serde_json::to_vec_pretty(&value)
+    write_json(&value)
+}
+
+fn write_json(value: &impl Serialize) -> Result<(), CliError> {
+    let mut output = serde_json::to_vec_pretty(value)
         .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid response"))?;
     output.push(b'\n');
     std::io::stdout()
@@ -114,6 +130,7 @@ fn print_json<T: DeserializeOwned + Serialize>(metadata: &[u8]) -> Result<(), Cl
 }
 
 fn prompt_secret(prompt: &str) -> Result<Zeroizing<Vec<u8>>, CliError> {
+    crate::client::warn_before_secret_prompt()?;
     let value = Zeroizing::new(
         rpassword::prompt_password(prompt)
             .map_err(|err| CliError::local("USAGE", format!("cannot read from tty: {err}")))?,
@@ -272,21 +289,27 @@ fn proof_kind(recovery: bool) -> ProofKind {
     }
 }
 
-fn step_up_prompt(recovery: bool) -> &'static str {
-    if recovery {
-        "Recovery key (step-up): "
-    } else {
-        "Vault password (step-up): "
+fn step_up_prompt(kind: ProofKind) -> &'static str {
+    match kind {
+        ProofKind::Password => "Vault password (step-up): ",
+        ProofKind::Recovery => "Recovery key (step-up): ",
+        ProofKind::Presence => "Presence proof (stdin only): ",
     }
 }
 
-fn read_step_up(recovery: bool, proof_stdin: bool) -> Result<Zeroizing<Vec<u8>>, CliError> {
-    read_password(proof_stdin, step_up_prompt(recovery))
+fn read_step_up(kind: ProofKind, proof_stdin: bool) -> Result<Zeroizing<Vec<u8>>, CliError> {
+    if kind == ProofKind::Presence && !proof_stdin {
+        return Err(CliError::local(
+            "USAGE",
+            "presence proof requires explicit stdin input",
+        ));
+    }
+    read_password(proof_stdin, step_up_prompt(kind))
 }
 
-fn proof_body(recovery: bool, proof: &[u8]) -> Zeroizing<Vec<u8>> {
+fn proof_body(kind: ProofKind, proof: &[u8]) -> Zeroizing<Vec<u8>> {
     let mut body = Zeroizing::new(Vec::with_capacity(proof.len() + 8));
-    ipc::encode_proof_body(proof_kind(recovery), proof, &mut body);
+    ipc::encode_proof_body(kind, proof, &mut body);
     body
 }
 
@@ -395,6 +418,32 @@ pub fn unlock(state_dir: &Path, recovery: bool, password_stdin: bool) -> Result<
     Ok(())
 }
 
+pub fn confirm_rollback(
+    state_dir: &Path,
+    expected_context: &str,
+    recovery: bool,
+    password_stdin: bool,
+) -> Result<(), CliError> {
+    let expected =
+        serde_json::from_str::<ipc::RollbackContext>(expected_context).map_err(|_| {
+            CliError::local(
+                "USAGE",
+                "expected-context must be the complete context returned by status",
+            )
+        })?;
+    let metadata = serde_json::to_vec(&ipc::RollbackConfirmMeta { expected })
+        .map_err(|_| CliError::local("INVALID_FRAME", "cannot encode rollback context"))?;
+    let kind = proof_kind(recovery);
+    let proof = read_step_up(kind, password_stdin)?;
+    let body = proof_body(kind, &proof);
+    let (metadata, _) = admin_with_response_timeout(state_dir, LIFECYCLE_RESPONSE_TIMEOUT)?.call(
+        admin_msg::ROLLBACK_CONFIRM,
+        &metadata,
+        &body,
+    )?;
+    print_json::<LockResponse>(&metadata)
+}
+
 pub fn lock(state_dir: &Path) -> Result<(), CliError> {
     let (meta, _) = admin_with_response_timeout(state_dir, DRAIN_RESPONSE_TIMEOUT)?.call(
         admin_msg::LOCK,
@@ -411,38 +460,35 @@ pub fn status(state_dir: &Path, passive: bool) -> Result<(), CliError> {
     } else {
         admin_msg::STATUS
     };
-    let (meta, _) = admin(state_dir)?.call(message, b"{}", &[])?;
-    print_json::<ipc::StatusResponse>(&meta)?;
-    Ok(())
+    let mut client = admin(state_dir)?;
+    let (meta, _) = client.call(message, b"{}", &[])?;
+    #[derive(Serialize)]
+    struct LocalStatus {
+        #[serde(flatten)]
+        daemon: ipc::StatusResponse,
+        peer_security: crate::client::PeerSecurity,
+    }
+    let daemon = serde_json::from_slice(&meta)
+        .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid response"))?;
+    write_json(&LocalStatus {
+        daemon,
+        peer_security: client.peer_security(),
+    })
 }
 
-pub fn shutdown(state_dir: &Path, recovery: bool, password_stdin: bool) -> Result<(), CliError> {
+pub fn shutdown(state_dir: &Path, kind: ProofKind, password_stdin: bool) -> Result<(), CliError> {
     let mut client = admin_with_response_timeout(state_dir, DRAIN_RESPONSE_TIMEOUT)?;
-    // Locked brokers shut down without proof; unlocked brokers require it.
-    match client.call(admin_msg::SHUTDOWN, b"{}", &[]) {
-        Ok((meta, _)) => {
-            print_json::<ShutdownResponse>(&meta)?;
-            Ok(())
-        }
-        Err(err) if err.code == "AUTHENTICATION_FAILED" => {
-            let proof = read_step_up(recovery, password_stdin)?;
-            let body = proof_body(recovery, &proof);
-            let (meta, _) = admin_with_response_timeout(state_dir, DRAIN_RESPONSE_TIMEOUT)?.call(
-                admin_msg::SHUTDOWN,
-                b"{}",
-                &body,
-            )?;
-            print_json::<ShutdownResponse>(&meta)?;
-            Ok(())
-        }
-        Err(err) => Err(err),
-    }
+    let proof = read_step_up(kind, password_stdin)?;
+    let body = proof_body(kind, &proof);
+    let (meta, _) = client.call(admin_msg::SHUTDOWN, b"{}", &body)?;
+    print_json::<ShutdownResponse>(&meta)?;
+    Ok(())
 }
 
 pub fn credential_add(
     state_dir: &Path,
     label: &str,
-    recovery: bool,
+    kind: ProofKind,
     stdin_secrets: bool,
 ) -> Result<(), CliError> {
     let (proof, secret) = if stdin_secrets {
@@ -452,7 +498,7 @@ pub fn credential_add(
         (proof, secret)
     } else {
         (
-            prompt_secret(step_up_prompt(recovery))?,
+            prompt_secret(step_up_prompt(kind))?,
             prompt_secret("Credential value: ")?,
         )
     };
@@ -460,7 +506,7 @@ pub fn credential_add(
     let body_len = 1 + 4 + proof.len() + 4 + secret.len();
     let mut body = Zeroizing::new(Vec::with_capacity(body_len));
     let body_capacity = body.capacity();
-    ipc::encode_proof_and_secret_body(proof_kind(recovery), &proof, &secret, &mut body);
+    ipc::encode_proof_and_secret_body(kind, &proof, &secret, &mut body);
     debug_assert_eq!(body.len(), body_len);
     debug_assert_eq!(body.capacity(), body_capacity);
     let (meta, _) = admin(state_dir)?.call(
@@ -469,6 +515,13 @@ pub fn credential_add(
         &body,
     )?;
     print_json::<CredentialMetadata>(&meta)?;
+    if secret.len() < 16 {
+        // A best-effort warning must not turn a completed mutation into failure.
+        let _ = writeln!(
+            std::io::stderr(),
+            "warning: this credential is shorter than 16 bytes; reflected-secret sealing has limited coverage for embedded encodings. Use the provider's complete key."
+        );
+    }
     Ok(())
 }
 
@@ -476,7 +529,7 @@ pub fn credential_add_github_app(
     state_dir: &Path,
     label: &str,
     file: &Path,
-    recovery: bool,
+    kind: ProofKind,
     password_stdin: bool,
 ) -> Result<(), CliError> {
     let limit = ipc::ADMIN_SECRET_FIELD_MAX_BYTES as usize;
@@ -495,7 +548,7 @@ pub fn credential_add_github_app(
             "GitHub App profile has the wrong credential_type",
         ));
     }
-    let proof = read_step_up(recovery, password_stdin)?;
+    let proof = read_step_up(kind, password_stdin)?;
     let metadata = serde_json::json!({
         "label": label,
         "kind": "github-app-installation"
@@ -503,7 +556,7 @@ pub fn credential_add_github_app(
     let body_len = 1 + 4 + proof.len() + 4 + secret.len();
     let mut body = Zeroizing::new(Vec::with_capacity(body_len));
     let body_capacity = body.capacity();
-    ipc::encode_proof_and_secret_body(proof_kind(recovery), &proof, &secret, &mut body);
+    ipc::encode_proof_and_secret_body(kind, &proof, &secret, &mut body);
     debug_assert_eq!(body.len(), body_len);
     debug_assert_eq!(body.capacity(), body_capacity);
     let (meta, _) = admin(state_dir)?.call(
@@ -524,7 +577,7 @@ pub fn credential_list(state_dir: &Path) -> Result<(), CliError> {
 pub fn credential_rotate(
     state_dir: &Path,
     credential_id: &str,
-    recovery: bool,
+    kind: ProofKind,
     stdin_secrets: bool,
 ) -> Result<(), CliError> {
     let credential_id: CredentialId = credential_id
@@ -537,7 +590,7 @@ pub fn credential_rotate(
         (proof, secret)
     } else {
         (
-            prompt_secret(step_up_prompt(recovery))?,
+            prompt_secret(step_up_prompt(kind))?,
             prompt_secret("New credential value: ")?,
         )
     };
@@ -545,7 +598,7 @@ pub fn credential_rotate(
     let body_len = 1 + 4 + proof.len() + 4 + secret.len();
     let mut body = Zeroizing::new(Vec::with_capacity(body_len));
     let body_capacity = body.capacity();
-    ipc::encode_proof_and_secret_body(proof_kind(recovery), &proof, &secret, &mut body);
+    ipc::encode_proof_and_secret_body(kind, &proof, &secret, &mut body);
     debug_assert_eq!(body.len(), body_len);
     debug_assert_eq!(body.capacity(), body_capacity);
     let (meta, _) = admin(state_dir)?.call(
@@ -560,15 +613,15 @@ pub fn credential_rotate(
 pub fn credential_revoke(
     state_dir: &Path,
     credential_id: &str,
-    recovery: bool,
+    kind: ProofKind,
     password_stdin: bool,
 ) -> Result<(), CliError> {
     let credential_id: CredentialId = credential_id
         .parse()
         .map_err(|_| CliError::local("USAGE", "invalid credential id"))?;
-    let proof = read_step_up(recovery, password_stdin)?;
+    let proof = read_step_up(kind, password_stdin)?;
     let metadata = serde_json::json!({ "credential_id": credential_id.to_string() });
-    let body = proof_body(recovery, &proof);
+    let body = proof_body(kind, &proof);
     let (meta, _) = admin(state_dir)?.call(
         admin_msg::CREDENTIAL_REVOKE,
         metadata.to_string().as_bytes(),
@@ -581,7 +634,7 @@ pub fn credential_revoke(
 pub fn action_create(
     state_dir: &Path,
     file: &Path,
-    recovery: bool,
+    kind: ProofKind,
     password_stdin: bool,
 ) -> Result<(), CliError> {
     let definition =
@@ -589,8 +642,8 @@ pub fn action_create(
     // Validate shape client-side for a friendly error; the broker re-validates.
     serde_json::from_slice::<ipc::ActionCreateMeta>(&definition)
         .map_err(|err| CliError::local("USAGE", format!("invalid action definition: {err}")))?;
-    let proof = read_step_up(recovery, password_stdin)?;
-    let body = proof_body(recovery, &proof);
+    let proof = read_step_up(kind, password_stdin)?;
+    let body = proof_body(kind, &proof);
     let (meta, _) = admin(state_dir)?.call(admin_msg::ACTION_CREATE, &definition, &body)?;
     print_json::<FixedHttpAction>(&meta)?;
     Ok(())
@@ -600,7 +653,7 @@ pub fn action_update(
     state_dir: &Path,
     action_id: &str,
     file: &Path,
-    recovery: bool,
+    kind: ProofKind,
     password_stdin: bool,
 ) -> Result<(), CliError> {
     let action_id: ActionId = action_id
@@ -616,8 +669,8 @@ pub fn action_update(
     };
     let metadata = serde_json::to_vec(&metadata)
         .map_err(|err| CliError::local("USAGE", format!("invalid action definition: {err}")))?;
-    let proof = read_step_up(recovery, password_stdin)?;
-    let body = proof_body(recovery, &proof);
+    let proof = read_step_up(kind, password_stdin)?;
+    let body = proof_body(kind, &proof);
     let (meta, _) = admin(state_dir)?.call(admin_msg::ACTION_UPDATE, &metadata, &body)?;
     print_json::<FixedHttpAction>(&meta)?;
     Ok(())
@@ -632,15 +685,15 @@ pub fn action_list(state_dir: &Path) -> Result<(), CliError> {
 pub fn action_disable(
     state_dir: &Path,
     action_id: &str,
-    recovery: bool,
+    kind: ProofKind,
     password_stdin: bool,
 ) -> Result<(), CliError> {
     let action_id: ActionId = action_id
         .parse()
         .map_err(|_| CliError::local("USAGE", "invalid action id"))?;
-    let proof = read_step_up(recovery, password_stdin)?;
+    let proof = read_step_up(kind, password_stdin)?;
     let metadata = serde_json::json!({ "action_id": action_id.to_string() });
-    let body = proof_body(recovery, &proof);
+    let body = proof_body(kind, &proof);
     let (meta, _) = admin(state_dir)?.call(
         admin_msg::ACTION_DISABLE,
         metadata.to_string().as_bytes(),
@@ -656,7 +709,7 @@ pub fn session_create(
     ttl: &str,
     max_uses: u32,
     principal: Option<&str>,
-    recovery: bool,
+    kind: ProofKind,
     password_stdin: bool,
 ) -> Result<(), CliError> {
     let mut refs = Vec::new();
@@ -672,14 +725,14 @@ pub fn session_create(
         .map(str::parse::<PrincipalId>)
         .transpose()
         .map_err(|_| CliError::local("USAGE", "invalid principal id"))?;
-    let proof = read_step_up(recovery, password_stdin)?;
+    let proof = read_step_up(kind, password_stdin)?;
     let metadata = serde_json::json!({
         "actions": refs,
         "ttl_ms": ttl_ms,
         "max_uses": max_uses,
         "principal_id": principal_id,
     });
-    let body = proof_body(recovery, &proof);
+    let body = proof_body(kind, &proof);
     let (meta, _) = admin(state_dir)?.call(
         admin_msg::SESSION_CREATE,
         metadata.to_string().as_bytes(),
@@ -690,6 +743,7 @@ pub fn session_create(
     Ok(())
 }
 
+#[cfg(feature = "lab")]
 pub fn workload_session_create(
     agent_socket: &Path,
     actions: &[String],
@@ -735,15 +789,15 @@ pub fn workload_session_create(
 pub fn session_revoke(
     state_dir: &Path,
     session_id: &str,
-    recovery: bool,
+    kind: ProofKind,
     password_stdin: bool,
 ) -> Result<(), CliError> {
     let session_id: SessionId = session_id
         .parse()
         .map_err(|_| CliError::local("USAGE", "invalid session id"))?;
-    let proof = read_step_up(recovery, password_stdin)?;
+    let proof = read_step_up(kind, password_stdin)?;
     let metadata = serde_json::json!({ "session_id": session_id.to_string() });
-    let body = proof_body(recovery, &proof);
+    let body = proof_body(kind, &proof);
     let (meta, _) = admin(state_dir)?.call(
         admin_msg::SESSION_REVOKE,
         metadata.to_string().as_bytes(),
@@ -757,23 +811,31 @@ pub fn execute(
     agent_socket: &Path,
     action: &str,
     capability: &str,
-    body_file: Option<&Path>,
-    content_type: Option<String>,
-    headers: &[String],
+    request: &crate::RequestArgs,
     approvals: &[PathBuf],
+    challenge: Option<rekey_domain::ids::ApprovalRequestId>,
 ) -> Result<(), CliError> {
+    if challenge.is_some() && !approvals.is_empty() {
+        return Err(CliError::local(
+            "USAGE",
+            "--challenge conflicts with --approval",
+        ));
+    }
     let (action_id, version) = parse_action_ref(action)?;
     let capability_token = policy_approval::capability_value(capability)?;
-    let body = policy_approval::request_body(body_file)?;
-    let extra_headers = policy_approval::request_headers(headers)?;
+    let body = policy_approval::request_body(request.body_file.as_deref())?;
+    let extra_headers = policy_approval::request_headers(&request.headers)?;
     let approval_grants = policy_approval::read_approval_files(approvals)?;
     let metadata = serde_json::json!({
         "capability_token": capability_token,
         "action_id": action_id.to_string(),
         "action_version": version,
-        "content_type": content_type,
+        "content_type": request.content_type,
+        "params": policy_approval::request_values(&request.params)?,
+        "query": policy_approval::request_values(&request.query)?,
         "extra_headers": extra_headers,
         "approval_grants": approval_grants,
+        "local_approval_request_id": challenge,
     });
     let (meta, response_body) = Client::connect_with_response_timeout(
         agent_socket,
@@ -807,15 +869,15 @@ pub fn execute(
 pub fn backup(
     state_dir: &Path,
     output: &Path,
-    recovery: bool,
+    kind: ProofKind,
     password_stdin: bool,
 ) -> Result<(), CliError> {
     let output_path = output
         .to_str()
         .ok_or_else(|| CliError::local("USAGE", "backup output path must be valid UTF-8"))?;
-    let proof = read_step_up(recovery, password_stdin)?;
+    let proof = read_step_up(kind, password_stdin)?;
     let metadata = serde_json::json!({ "output_path": output_path });
-    let body = proof_body(recovery, &proof);
+    let body = proof_body(kind, &proof);
     let (meta, _) = admin_with_response_timeout(state_dir, BACKUP_RESPONSE_TIMEOUT)?.call(
         admin_msg::BACKUP,
         metadata.to_string().as_bytes(),
@@ -829,7 +891,7 @@ pub fn backup(
 mod tests;
 
 pub fn desktop_login(state_dir: &Path, recovery: bool) -> Result<(), CliError> {
-    let proof = read_step_up(recovery, true)?;
+    let proof = read_step_up(proof_kind(recovery), true)?;
     let mut body = Zeroizing::new(Vec::with_capacity(5 + proof.len()));
     ipc::encode_proof_body(proof_kind(recovery), &proof, &mut body);
     let (_, token) = admin(state_dir)?.call(admin_msg::DESKTOP_LOGIN, b"{}", &body)?;
@@ -850,15 +912,28 @@ pub fn desktop_add(state_dir: &Path, label: &str) -> Result<(), CliError> {
         metadata.to_string().as_bytes(),
         &body,
     )?;
-    print_json::<CredentialMetadata>(&meta)
+    print_json::<CredentialMetadata>(&meta)?;
+    if secret.len() < 16 {
+        // A best-effort warning must not turn a completed mutation into failure.
+        let _ = writeln!(
+            std::io::stderr(),
+            "warning: this credential is shorter than 16 bytes; reflected-secret sealing has limited coverage for embedded encodings. Use the provider's complete key."
+        );
+    }
+    Ok(())
 }
 
-pub fn desktop_reveal(state_dir: &Path, credential_id: &str) -> Result<(), CliError> {
-    let token = read_step_up(false, true)?;
-    let mut body = Zeroizing::new(Vec::with_capacity(5 + token.len()));
-    ipc::encode_proof_body(ProofKind::Password, &token, &mut body);
+pub fn desktop_reveal(
+    state_dir: &Path,
+    credential_id: &str,
+    kind: ProofKind,
+    password_stdin: bool,
+) -> Result<(), CliError> {
+    let mut client = admin(state_dir)?;
+    let proof = read_step_up(kind, password_stdin)?;
+    let body = proof_body(kind, &proof);
     let metadata = serde_json::json!({"credential_id":credential_id});
-    let (_, value) = admin(state_dir)?.call(
+    let (_, value) = client.call(
         admin_msg::DESKTOP_REVEAL,
         metadata.to_string().as_bytes(),
         &body,
@@ -872,11 +947,11 @@ pub fn desktop_reveal(state_dir: &Path, credential_id: &str) -> Result<(), CliEr
 pub fn desktop_restore_access(
     state_dir: &Path,
     resume: bool,
-    recovery: bool,
+    kind: ProofKind,
 ) -> Result<(), CliError> {
-    let proof = read_step_up(recovery, true)?;
+    let proof = read_step_up(kind, true)?;
     let mut body = Zeroizing::new(Vec::with_capacity(5 + proof.len()));
-    ipc::encode_proof_body(proof_kind(recovery), &proof, &mut body);
+    ipc::encode_proof_body(kind, &proof, &mut body);
     let message = if resume {
         admin_msg::DESKTOP_RESUME
     } else {
@@ -913,14 +988,22 @@ pub fn execute_text_stream(
     capability: &str,
     body_file: &Path,
     approvals: &[PathBuf],
+    challenge: Option<rekey_domain::ids::ApprovalRequestId>,
 ) -> Result<(), CliError> {
+    if challenge.is_some() && !approvals.is_empty() {
+        return Err(CliError::local(
+            "USAGE",
+            "--challenge conflicts with --approval",
+        ));
+    }
     let (action_id, version) = parse_action_ref(action)?;
     let capability_token = policy_approval::capability_value(capability)?;
     let body = policy_approval::request_body(Some(body_file))?;
     let approval_grants = policy_approval::read_approval_files(approvals)?;
     let metadata = serde_json::json!({
         "capability_token":capability_token,"action_id":action_id,"action_version":version,
-        "content_type":"application/json","extra_headers":[],"approval_grants":approval_grants
+        "content_type":"application/json","extra_headers":[],"approval_grants":approval_grants,
+        "local_approval_request_id": challenge
     });
     Client::connect_with_response_timeout(agent_socket, Channel::Agent, ACTION_RESPONSE_TIMEOUT)?
         .text_stream(
@@ -932,6 +1015,7 @@ pub fn execute_text_stream(
     Ok(())
 }
 
+#[cfg(feature = "lab")]
 pub fn oidc_begin(state_dir: &Path) -> Result<(), CliError> {
     let (metadata, body) = admin(state_dir)?.call(admin_msg::OIDC_LOGIN_BEGIN, b"{}", &[])?;
     if !body.is_empty() {
@@ -942,6 +1026,7 @@ pub fn oidc_begin(state_dir: &Path) -> Result<(), CliError> {
     }
     print_json::<ipc::OidcBeginResponse>(&metadata)
 }
+#[cfg(feature = "lab")]
 pub fn oidc_cancel(state_dir: &Path, flow_id: &str) -> Result<(), CliError> {
     let metadata = serde_json::to_vec(&ipc::OidcFlowMeta {
         flow_id: flow_id.to_owned(),
@@ -961,6 +1046,7 @@ pub fn oidc_cancel(state_dir: &Path, flow_id: &str) -> Result<(), CliError> {
     }
     print_json::<Cancelled>(&metadata)
 }
+#[cfg(feature = "lab")]
 pub fn oidc_finish(state_dir: &Path, flow_id: &str, path: &Path) -> Result<(), CliError> {
     let metadata = serde_json::to_vec(&ipc::OidcFlowMeta {
         flow_id: flow_id.to_owned(),
@@ -978,6 +1064,7 @@ pub fn oidc_finish(state_dir: &Path, flow_id: &str, path: &Path) -> Result<(), C
             .map_err(|_| CliError::local("INVALID_FRAME", "invalid OIDC response"))?,
     )
 }
+#[cfg(feature = "lab")]
 pub fn oidc_logout(state_dir: &Path, path: &Path) -> Result<(), CliError> {
     let token = crate::client::private_session_file(path)?;
     let (metadata, body) = admin(state_dir)?.call(admin_msg::OIDC_LOGOUT, b"{}", &token)?;
@@ -989,6 +1076,7 @@ pub fn oidc_logout(state_dir: &Path, path: &Path) -> Result<(), CliError> {
     }
     print_json::<ipc::OidcLogoutResponse>(&metadata)
 }
+#[cfg(feature = "lab")]
 fn write_management_session(path: &Path, token: &[u8]) -> Result<(), CliError> {
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
     let invalid = || {
@@ -1024,4 +1112,84 @@ fn write_management_session(path: &Path, token: &[u8]) -> Result<(), CliError> {
     std::fs::File::open(parent)
         .and_then(|directory| directory.sync_all())
         .map_err(|_| invalid())
+}
+
+fn onboarding_url(
+    state_dir: &Path,
+    anthropic: bool,
+    inapplicable: bool,
+) -> Result<&'static str, CliError> {
+    if inapplicable || state_dir != resolve_state_dir(None)? {
+        return Err(CliError::local(
+            "USAGE",
+            "App onboarding requires the default state directory and no socket or management-session override",
+        ));
+    }
+    Ok(if anthropic {
+        "rekey://add/anthropic"
+    } else {
+        "rekey://setup"
+    })
+}
+
+pub fn open_onboarding(
+    state_dir: &Path,
+    anthropic: bool,
+    inapplicable: bool,
+) -> Result<(), CliError> {
+    let url = onboarding_url(state_dir, anthropic, inapplicable)?;
+    #[cfg(target_os = "macos")]
+    {
+        if !Path::new("/Applications/Rekey.app").is_dir() {
+            return Err(CliError::local(
+                "LAUNCHER_UNAVAILABLE",
+                "Install Rekey.app in /Applications before opening onboarding",
+            ));
+        }
+        let status = std::process::Command::new("/usr/bin/open")
+            .args(["-a", "/Applications/Rekey.app", url])
+            .stdin(std::process::Stdio::null())
+            .status()
+            .map_err(|_| {
+                CliError::local(
+                    "LAUNCHER_UNAVAILABLE",
+                    "Could not open the installed Rekey App",
+                )
+            })?;
+        if !status.success() {
+            return Err(CliError::local(
+                "LAUNCHER_UNAVAILABLE",
+                "The system rejected the App opening request",
+            ));
+        }
+        println!("已请求打开 Rekey；请在 App 中确认并完成设置。此消息不表示保险库或授权已创建。");
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = url;
+        Err(CliError::local(
+            "LAUNCHER_UNAVAILABLE",
+            "App onboarding is available only on macOS",
+        ))
+    }
+}
+
+#[cfg(test)]
+mod onboarding_tests {
+    use super::*;
+    #[test]
+    fn routes_are_fixed_and_overrides_fail_without_launching() {
+        let state = resolve_state_dir(None).unwrap();
+        assert_eq!(
+            onboarding_url(&state, false, false).unwrap(),
+            "rekey://setup"
+        );
+        assert_eq!(
+            onboarding_url(&state, true, false).unwrap(),
+            "rekey://add/anthropic"
+        );
+        assert!(onboarding_url(&state, false, true).is_err());
+        assert!(onboarding_url(&state.join("different"), true, false).is_err());
+    }
 }

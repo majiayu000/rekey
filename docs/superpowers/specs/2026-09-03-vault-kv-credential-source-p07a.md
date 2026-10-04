@@ -1,5 +1,8 @@
 # P-07A Vault KV v2 CredentialSource
 
+> Status: Lab (v3 scope; enterprise reserve)
+> Existing contracts and evidence are retained; this capability is excluded from the default v3 build and release package.
+
 > Status: complete; exact-head CI, signed squash merge, and post-main CI verified
 >
 > Date: 2026-09-03

@@ -70,7 +70,7 @@ def dogfood(args):
         state = work / "state"
         base = [str(args.bin_dir.resolve() / "rekey"), "--state-dir", str(state)]
         daemon = str(args.bin_dir.resolve() / "rekeyd")
-        run([daemon, "init", "--state-dir", str(state), "--password-stdin"], password + "\n")
+        run([daemon, "init", "--mode", "team", "--state-dir", str(state), "--password-stdin"], password + "\n")
         with (work / "broker.log").open("w") as log:
             broker = subprocess.Popen([daemon, "serve", "--state-dir", str(state)], stdout=log, stderr=log)
             try:

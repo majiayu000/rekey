@@ -253,6 +253,7 @@ async fn measure_authority_queue_and_audit() -> Value {
         &state_dir,
         &SecretInput::from_slice(common::PASSWORD),
         Argon2Params::RFC9106_LOW_MEMORY,
+        rekey_domain::authorization::PolicyMode::Team,
     )
     .unwrap();
     confirm_vault_init(&state_dir).unwrap();
@@ -559,7 +560,10 @@ fn measure_session_capacity() -> Value {
         Ok(_) => panic!("fifth concurrent execution was admitted"),
         Err(error) => error,
     };
-    assert_eq!(rejected, rekey_domain::DomainError::InvalidCapability);
+    assert!(matches!(
+        rejected,
+        rekey_broker::error::BrokerError::Domain(rekey_domain::DomainError::InvalidCapability)
+    ));
     drop(held);
     assert_eq!(registry.in_flight_total(), 0);
     let retry = registry.acquire(&token, action, now).unwrap();
@@ -764,6 +768,8 @@ fn audit_draft() -> AuditDraft {
         credential_version: None,
         authorization: None,
         approval: None,
+        request_context: None,
+        usage: None,
         event_type: event_type::POLICY_ACTIVATED,
         outcome: outcome::SUCCESS,
         reason_code: "performance-baseline".to_owned(),

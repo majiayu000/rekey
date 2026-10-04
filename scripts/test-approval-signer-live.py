@@ -132,14 +132,14 @@ class RelayFixture:
                      'links': links}
         config = root / 'relay-config.json'
         config.write_text(json.dumps({
-            'formatVersion': 2, 'instanceId': str(uuid.uuid4()), 'endpoint': f'https://localhost:{port}/v1',
+            'formatVersion': 3, 'instanceId': str(uuid.uuid4()), 'endpoint': f'https://localhost:{port}/v1',
             'listenAddress': f'127.0.0.1:{port}', 'stateDir': str(relay_state),
             'tlsCertificateFile': str(cert), 'tlsKeyFile': str(key), 'idpIssuer': self.issuer,
             'introspectionUrl': self.issuer + '/introspect', 'idpCaCertificateFile': str(cert),
             'introspectionClientId': 'relay-fixture', 'introspectionClientSecretFile': str(secret),
             'personnelClientId': 'human-fixture', 'audience': 'relay',
             'tenantId': challenge['challenge']['tenant_id'], 'originPublicKey': origin['public_key'],
-            'uploaderSubject': 'operator', 'approvers': [{'subject': 'reviewer', 'approverId': approver}],
+            'uploaderSubject': 'operator', 'approvers': [{'subject': 'reviewer', 'approverId': approver, 'publicKey': identity['public_key']}],
             'directory': directory}))
         config.chmod(0o600)
         self.approver = approver
@@ -234,7 +234,7 @@ def main():
             path.chmod(0o600)
             return path
 
-        cli('init', '--password-stdin', stdin=proof)
+        cli('init', '--mode', 'team', '--password-stdin', stdin=proof)
         ready, hits = root / 'port', root / 'hits'
         with (root / 'broker.log').open('w') as log:
             relay = None
@@ -273,9 +273,9 @@ def main():
                 key.chmod(0o600)
                 resource = {'type': 'fixed-http-action', 'id': action['id']}
                 snapshot = write('snapshot.json', {
-                    'format_version': 3, 'version': 1,
+                    'format_version': 6, 'version': 1,
                     'expires_at_ms': int(time.time() * 1000) + 300000,
-                    'approvers': [identity], 'workload_identities': [],
+                    'approvers': [identity], 'profiles': [], 'workload_identities': [],
                     'bindings': [{'action_id': action['id'], 'version': action['version'],
                                   'resource': resource, 'parameter_schema_id': 'apr/message',
                                   'parameter_schema': {'type': 'object', 'required': ['message'],
@@ -285,7 +285,8 @@ def main():
                                'principal_id': session['principal_id'], 'action_id': action['id'],
                                'version': action['version'], 'resource': resource,
                                'parameters': {'kind': 'any_validated'},
-                               'approval': {'approver_ids': [identity['approver_id']], 'quorum': 1,
+                               'approver': {'kind': 'ed25519', 'keys': [identity['public_key']], 'threshold': 1},
+                               'approval': {
                                             'mode': 'one-time', 'max_uses': 1}}],
                 })
                 policy, trust = root / 'policy.json', root / 'trust.json'

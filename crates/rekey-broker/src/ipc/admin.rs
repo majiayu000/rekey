@@ -29,12 +29,16 @@ use crate::ipc::frame::{FrameIoError, IncomingFrame, read_frame, write_error, wr
 use crate::runtime::BrokerCtx;
 use crate::session::CreateSessionError;
 
+type AdminResponse = (Vec<u8>, Zeroizing<Vec<u8>>);
+
 const ADMIN_MUTATION_TIMEOUT: Duration = Duration::from_secs(25);
 
 mod audit_query;
 mod credential_profiles;
 mod github;
 mod password_lifecycle;
+mod profile;
+#[cfg(feature = "lab")]
 mod vault_kv;
 
 fn admin_body_limit(message_type: u16, managed: bool) -> u32 {
@@ -44,7 +48,8 @@ fn admin_body_limit(message_type: u16, managed: bool) -> u32 {
         | admin_msg::DESKTOP_REVEAL
         | admin_msg::DESKTOP_REMEMBER
         | admin_msg::DESKTOP_RESUME => ipc::ADMIN_PROOF_BODY_MAX_BYTES,
-        admin_msg::DESKTOP_ADD => ipc::ADMIN_SECRET_BODY_MAX_BYTES,
+        admin_msg::DESKTOP_ADD | admin_msg::TEMPLATE_INSTALL => ipc::ADMIN_SECRET_BODY_MAX_BYTES,
+        admin_msg::TEMPLATE_CATALOG => ipc::ADMIN_SECRET_FIELD_MAX_BYTES,
         admin_msg::UNLOCK_PASSWORD | admin_msg::UNLOCK_RECOVERY => {
             ipc::ADMIN_SECRET_FIELD_MAX_BYTES
         }
@@ -62,11 +67,14 @@ fn admin_body_limit(message_type: u16, managed: bool) -> u32 {
         | admin_msg::CREDENTIAL_ROTATE_MACOS_KEYCHAIN
         | admin_msg::CREDENTIAL_ROTATE_ONEPASSWORD_CONNECT
         | admin_msg::CREDENTIAL_ROTATE_VAULT_DYNAMIC => ipc::ADMIN_SECRET_BODY_MAX_BYTES,
-        admin_msg::CREDENTIAL_REVOKE
+        admin_msg::APPROVAL_LOCAL_APPROVE
+        | admin_msg::APPROVAL_LOCAL_REJECT
+        | admin_msg::CREDENTIAL_REVOKE
         | admin_msg::ACTION_CREATE
         | admin_msg::ACTION_UPDATE
         | admin_msg::ACTION_DISABLE
         | admin_msg::SESSION_CREATE
+        | admin_msg::PROFILE_SESSION_CREATE
         | admin_msg::SESSION_REVOKE
         | admin_msg::BACKUP
         | admin_msg::SHUTDOWN
@@ -75,7 +83,8 @@ fn admin_body_limit(message_type: u16, managed: bool) -> u32 {
         | admin_msg::AUDIT_PRUNE
         | admin_msg::AUDIT_RETENTION_SET
         | admin_msg::KEY_ROTATE_DEK
-        | admin_msg::RECOVERY_ROTATE => ipc::ADMIN_PROOF_BODY_MAX_BYTES,
+        | admin_msg::RECOVERY_ROTATE
+        | admin_msg::ROLLBACK_CONFIRM => ipc::ADMIN_PROOF_BODY_MAX_BYTES,
         _ => 0,
     };
     if managed && ipc::managed_admin_operation(message_type).unwrap_or(false) {
@@ -89,6 +98,7 @@ fn proof_from(kind: ProofKind, bytes: &[u8]) -> UnlockProof {
     match kind {
         ProofKind::Password => UnlockProof::Password(SecretInput::from_slice(bytes)),
         ProofKind::Recovery => UnlockProof::Recovery(SecretInput::from_slice(bytes)),
+        ProofKind::Presence => UnlockProof::Presence(SecretInput::from_slice(bytes)),
     }
 }
 
@@ -128,6 +138,36 @@ fn json<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, BrokerError> {
     Ok(metadata)
 }
 
+async fn write_admin_error(
+    stream: &mut UnixStream,
+    message_type: u16,
+    request_id: rekey_domain::ids::RequestId,
+    error: &BrokerError,
+) -> Result<(), FrameIoError> {
+    // A timeout can race with the single commit. Repeating an install creates
+    // new Action IDs, so even pre-commit Busy failures conservatively deny retry.
+    let unconfirmed_install = message_type == admin_msg::TEMPLATE_INSTALL
+        && matches!(
+            error,
+            BrokerError::Authority(AuthorityError::AuthorityBusy)
+                | BrokerError::Admission(AuthorityError::AuthorityBusy)
+        );
+    let message = if unconfirmed_install {
+        "template installation outcome is unconfirmed; inspect Actions and audit; do not retry automatically".to_owned()
+    } else {
+        error.to_string()
+    };
+    write_error(
+        stream,
+        Channel::Admin,
+        request_id,
+        error.code(),
+        &message,
+        !unconfirmed_install && error.retryable(),
+    )
+    .await
+}
+
 pub async fn handle_admin_conn(
     mut stream: UnixStream,
     ctx: Arc<BrokerCtx>,
@@ -137,25 +177,36 @@ pub async fn handle_admin_conn(
         if *shutdown.borrow() {
             return;
         }
+        #[cfg(feature = "lab")]
+        let managed = ctx.oidc_admin.is_some();
+        #[cfg(not(feature = "lab"))]
+        let managed = false;
         let frame = match tokio::select! {
             _ = shutdown.changed() => return,
             frame = read_frame(
                 &mut stream,
                 Channel::Admin,
-                |message_type| admin_body_limit(message_type, ctx.oidc_admin.is_some()),
+                |message_type| admin_body_limit(message_type, managed),
             ) => frame,
         } {
             Ok(frame) => frame,
             Err(FrameIoError::Closed) => return,
             Err(_) => {
+                #[cfg(feature = "lab")]
                 ctx.metrics.admin.frame_failed();
                 return;
             }
         };
+        if frame.header.message_type == admin_msg::PROFILE_SESSION_CREATE {
+            profile::handle_control(stream, frame, ctx, shutdown).await;
+            return;
+        }
         let request_id = frame.header.request_id;
         let is_shutdown = frame.header.message_type == admin_msg::SHUTDOWN;
+        #[cfg(feature = "lab")]
         let metric = (frame.header.message_type != admin_msg::METRICS)
             .then(|| ctx.metrics.admin.dispatch.start());
+        #[cfg(feature = "lab")]
         let backup_metric =
             (frame.header.message_type == admin_msg::BACKUP).then(|| ctx.metrics.backup.start());
         let response = if is_shutdown {
@@ -166,32 +217,33 @@ pub async fn handle_admin_conn(
                 response = dispatch(&frame, &ctx) => response,
             }
         };
+        #[cfg(feature = "lab")]
         if let Some(metric) = metric {
             metric.finish(response.is_err());
         }
+        #[cfg(feature = "lab")]
         if let Some(metric) = backup_metric {
             metric.finish(response.is_err());
         }
+        // Admission refusals did not queue Authority work: respond immediately.
+        // Worker errors still reconcile under the coordinator, regardless of code.
+        let fault_after_response = if matches!(&response, Err(BrokerError::Authority(_))) {
+            ctx.settle_failed_admin().await
+        } else {
+            false
+        };
         let write_response = async {
             match response {
                 Ok((metadata, body)) => {
-                    let body = Zeroizing::new(body);
                     write_ok(&mut stream, Channel::Admin, request_id, &metadata, &body).await
                 }
                 Err(err) => {
-                    write_error(
-                        &mut stream,
-                        Channel::Admin,
-                        request_id,
-                        err.code(),
-                        &err.to_string(),
-                        err.retryable(),
-                    )
-                    .await
+                    write_admin_error(&mut stream, frame.header.message_type, request_id, &err)
+                        .await
                 }
             }
         };
-        let io_result = if is_shutdown {
+        let io_result = if is_shutdown || fault_after_response {
             write_response.await
         } else {
             tokio::select! {
@@ -199,6 +251,9 @@ pub async fn handle_admin_conn(
                 result = write_response => result,
             }
         };
+        if fault_after_response {
+            ctx.request_fault();
+        }
         if io_result.is_err() {
             return;
         }
@@ -208,42 +263,68 @@ pub async fn handle_admin_conn(
     }
 }
 
-async fn dispatch(
+#[cfg(feature = "lab")]
+async fn prepare_admin_frame(
     frame: &IncomingFrame,
     ctx: &BrokerCtx,
-) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
-    let deadline = admin_mutation_deadline();
+    deadline: tokio::time::Instant,
+) -> Result<(IncomingFrame, Option<crate::oidc_admin::Admission>), BrokerError> {
     let managed = ipc::managed_admin_operation(frame.header.message_type)?;
-    if !managed {
-        return dispatch_operation(frame, ctx, None, deadline).await;
-    }
-    match &ctx.oidc_admin {
-        Some(manager) => {
+    if managed {
+        if let Some(manager) = &ctx.oidc_admin {
             let (token, original) = ipc::parse_management_body(&frame.body)?;
             let admission = manager.admit(token, ctx, deadline).await?;
-            let original = IncomingFrame {
-                header: frame.header,
-                metadata: frame.metadata.clone(),
-                body: Zeroizing::new(original.to_vec()),
-            };
-            dispatch_operation(&original, ctx, Some(&admission), deadline).await
+            return Ok((
+                IncomingFrame {
+                    header: frame.header,
+                    metadata: frame.metadata.clone(),
+                    body: Zeroizing::new(original.to_vec()),
+                },
+                Some(admission),
+            ));
         }
-        None => {
-            if frame.body.starts_with(b"RKAU") {
-                return Err(BrokerError::Frame(ipc::FrameError::InvalidField));
-            }
-            dispatch_operation(frame, ctx, None, deadline).await
+        if frame.body.starts_with(b"RKAU") {
+            return Err(ipc::FrameError::InvalidField.into());
         }
     }
+    Ok((
+        IncomingFrame {
+            header: frame.header,
+            metadata: frame.metadata.clone(),
+            body: Zeroizing::new(frame.body.to_vec()),
+        },
+        None,
+    ))
+}
+
+async fn dispatch(frame: &IncomingFrame, ctx: &BrokerCtx) -> Result<AdminResponse, BrokerError> {
+    let deadline = admin_mutation_deadline();
+    #[cfg(feature = "lab")]
+    let (frame, admission) = prepare_admin_frame(frame, ctx, deadline).await?;
+    #[cfg(feature = "lab")]
+    let frame = &frame;
+    #[cfg(not(feature = "lab"))]
+    if frame.body.starts_with(b"RKAU") {
+        return Err(ipc::FrameError::InvalidField.into());
+    }
+    dispatch_operation(
+        frame,
+        ctx,
+        #[cfg(feature = "lab")]
+        admission.as_ref(),
+        deadline,
+    )
+    .await
 }
 
 async fn dispatch_operation(
     frame: &IncomingFrame,
     ctx: &BrokerCtx,
-    admission: Option<&crate::oidc_admin::Admission>,
+    #[cfg(feature = "lab")] admission: Option<&crate::oidc_admin::Admission>,
     request_deadline: tokio::time::Instant,
-) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
+) -> Result<AdminResponse, BrokerError> {
     match frame.header.message_type {
+        #[cfg(feature = "lab")]
         admin_msg::OIDC_LOGIN_BEGIN => {
             empty_request(frame)?;
             let _owner = ctx.lifecycle.coordinate_until(request_deadline).await?;
@@ -252,8 +333,9 @@ async fn dispatch_operation(
                 .oidc_admin
                 .as_ref()
                 .ok_or(BrokerError::Denied("OIDC profile is not enabled"))?;
-            Ok((json(&manager.begin()?)?, Vec::new()))
+            Ok((json(&manager.begin()?)?, Zeroizing::new(Vec::new())))
         }
+        #[cfg(feature = "lab")]
         admin_msg::OIDC_LOGIN_FINISH | admin_msg::OIDC_LOGIN_CANCEL => {
             let flow: ipc::OidcFlowMeta = meta(frame)?;
             if !frame.body.is_empty() {
@@ -265,28 +347,36 @@ async fn dispatch_operation(
                 .ok_or(BrokerError::Denied("OIDC profile is not enabled"))?;
             if frame.header.message_type == admin_msg::OIDC_LOGIN_CANCEL {
                 manager.cancel(&flow.flow_id)?;
-                Ok((json(&serde_json::json!({"cancelled":true}))?, Vec::new()))
+                Ok((
+                    json(&serde_json::json!({"cancelled":true}))?,
+                    Zeroizing::new(Vec::new()),
+                ))
             } else {
                 ctx.lifecycle.reject_if_not_running()?;
                 let (response, token) = manager.finish(&flow.flow_id, ctx).await?;
-                Ok((json(&response)?, token.to_vec()))
+                Ok((json(&response)?, token))
             }
         }
+        #[cfg(feature = "lab")]
         admin_msg::OIDC_LOGOUT => {
             empty_meta(frame)?;
             let manager = ctx
                 .oidc_admin
                 .as_ref()
                 .ok_or(BrokerError::Denied("OIDC profile is not enabled"))?;
-            Ok((json(&manager.logout(&frame.body, ctx).await?)?, Vec::new()))
+            Ok((
+                json(&manager.logout(&frame.body, ctx).await?)?,
+                Zeroizing::new(Vec::new()),
+            ))
         }
+        #[cfg(feature = "lab")]
         admin_msg::METRICS => {
             empty_request(frame)?;
             let snapshot = ctx.metrics.snapshot(
                 ctx.sessions.active_count(crate::now_ts()?),
                 ctx.sessions.in_flight_total(),
             );
-            Ok((json(&snapshot)?, Vec::new()))
+            Ok((json(&snapshot)?, Zeroizing::new(Vec::new())))
         }
         admin_msg::DESKTOP_REMEMBER => {
             let deadline = request_deadline;
@@ -298,10 +388,7 @@ async fn dispatch_operation(
                 .authority
                 .desktop_remember(proof_from(kind, proof), Some(deadline.into_std()))
                 .await?;
-            Ok((
-                json(&serde_json::json!({"expires_at_ms": expires}))?,
-                key.to_vec(),
-            ))
+            Ok((json(&serde_json::json!({"expires_at_ms": expires}))?, key))
         }
         admin_msg::DESKTOP_RESUME => {
             empty_meta(frame)?;
@@ -312,7 +399,7 @@ async fn dispatch_operation(
                 json(
                     &serde_json::json!({"expires_at_ms": expires,"lease_recovery":lease_recovery}),
                 )?,
-                token.to_vec(),
+                token,
             ))
         }
         admin_msg::DESKTOP_LOGIN => {
@@ -327,7 +414,7 @@ async fn dispatch_operation(
                 json(
                     &serde_json::json!({"expires_in_seconds": 7 * 24 * 60 * 60,"lease_recovery":lease_recovery}),
                 )?,
-                token.to_vec(),
+                token,
             ))
         }
         admin_msg::DESKTOP_ADD => {
@@ -351,24 +438,24 @@ async fn dispatch_operation(
                 ),
             )
             .await?;
-            Ok((json(&result)?, Vec::new()))
+            Ok((json(&result)?, Zeroizing::new(Vec::new())))
         }
         admin_msg::DESKTOP_REVEAL => {
             let deadline = request_deadline;
             let reference: ipc::CredentialRefMeta = meta(frame)?;
-            let (_, token) = ipc::parse_proof_body(&frame.body)?;
+            let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
             let _owner = ctx.lifecycle.coordinate_until(deadline).await?;
             ctx.lifecycle.reject_if_not_running()?;
             let value = authority_until(
                 deadline,
                 ctx.authority.desktop_reveal(
-                    SecretInput::from_slice(token),
+                    proof_from(kind, proof),
                     reference.credential_id,
                     Some(deadline.into_std()),
                 ),
             )
             .await?;
-            Ok((b"{}".to_vec(), value.to_vec()))
+            Ok((b"{}".to_vec(), value))
         }
         admin_msg::STATUS | admin_msg::PASSIVE_STATUS => {
             empty_request(frame)?;
@@ -382,10 +469,33 @@ async fn dispatch_operation(
                 state: status.state.to_owned(),
                 format_version: status.format_version,
                 runtime_version: env!("CARGO_PKG_VERSION").to_owned(),
+                lab_enabled: cfg!(feature = "lab"),
                 sessions_active: ctx.sessions.active_count(crate::now_ts()?),
                 lease_journal: ctx.executor.lease_journal_status().await?,
+                rollback: status.rollback,
             };
-            Ok((json(&response)?, Vec::new()))
+            Ok((json(&response)?, Zeroizing::new(Vec::new())))
+        }
+        admin_msg::ROLLBACK_CONFIRM => {
+            let metadata: ipc::RollbackConfirmMeta = meta(frame)?;
+            let (kind, bytes) = ipc::parse_proof_body(&frame.body)?;
+            let proof = match kind {
+                ProofKind::Password => {
+                    rekey_vault::bootstrap::RestoreProof::Password(SecretInput::from_slice(bytes))
+                }
+                ProofKind::Recovery => rekey_vault::bootstrap::RestoreProof::RecoveryKey(
+                    SecretInput::from_slice(bytes),
+                ),
+                ProofKind::Presence => {
+                    return Err(BrokerError::Frame(ipc::FrameError::InvalidField));
+                }
+            };
+            ctx.confirm_rollback(metadata.expected, proof, request_deadline)
+                .await?;
+            Ok((
+                json(&serde_json::json!({"locked": true}))?,
+                Zeroizing::new(Vec::new()),
+            ))
         }
         admin_msg::UNLOCK_PASSWORD => {
             empty_meta(frame)?;
@@ -396,7 +506,7 @@ async fn dispatch_operation(
                     unlocked: true,
                     lease_recovery,
                 })?,
-                Vec::new(),
+                Zeroizing::new(Vec::new()),
             ))
         }
         admin_msg::UNLOCK_RECOVERY => {
@@ -408,7 +518,7 @@ async fn dispatch_operation(
                     unlocked: true,
                     lease_recovery,
                 })?,
-                Vec::new(),
+                Zeroizing::new(Vec::new()),
             ))
         }
         admin_msg::KEY_ROTATE_VRK => password_lifecycle::handle_vrk_rotate(frame, ctx).await,
@@ -443,7 +553,7 @@ async fn dispatch_operation(
                 ),
             )
             .await?;
-            Ok((json(&metadata)?, Vec::new()))
+            Ok((json(&metadata)?, Zeroizing::new(Vec::new())))
         }
         admin_msg::CREDENTIAL_LIST => {
             empty_request(frame)?;
@@ -451,7 +561,7 @@ async fn dispatch_operation(
             let credentials = ctx.authority.credential_list().await?;
             Ok((
                 json(&ipc::CredentialListResponse { credentials })?,
-                Vec::new(),
+                Zeroizing::new(Vec::new()),
             ))
         }
         admin_msg::CREDENTIAL_ROTATE => {
@@ -471,27 +581,35 @@ async fn dispatch_operation(
                 ),
             )
             .await?;
-            Ok((json(&metadata)?, Vec::new()))
+            Ok((json(&metadata)?, Zeroizing::new(Vec::new())))
         }
         admin_msg::CREDENTIAL_ROTATE_GITHUB_APP => github::handle_rotate(frame, ctx).await,
         admin_msg::GITHUB_WEBHOOK_APPLY => github::handle_webhook(frame, ctx).await,
+        #[cfg(feature = "lab")]
         admin_msg::CREDENTIAL_ROTATE_KEYCLOAK => vault_kv::handle_rotate_keycloak(frame, ctx).await,
+        #[cfg(feature = "lab")]
         admin_msg::CREDENTIAL_ROTATE_VAULT_KV => vault_kv::handle_rotate(frame, ctx).await,
+        #[cfg(feature = "lab")]
         admin_msg::CREDENTIAL_ROTATE_GCP_SECRET_MANAGER => {
             vault_kv::handle_rotate_gcp(frame, ctx).await
         }
+        #[cfg(feature = "lab")]
         admin_msg::CREDENTIAL_ROTATE_AZURE_KEY_VAULT => {
             vault_kv::handle_rotate_azure(frame, ctx).await
         }
+        #[cfg(feature = "lab")]
         admin_msg::CREDENTIAL_ROTATE_MACOS_KEYCHAIN => {
             vault_kv::handle_rotate_keychain(frame, ctx).await
         }
+        #[cfg(feature = "lab")]
         admin_msg::CREDENTIAL_ROTATE_ONEPASSWORD_CONNECT => {
             vault_kv::handle_rotate_onepassword(frame, ctx).await
         }
+        #[cfg(feature = "lab")]
         admin_msg::CREDENTIAL_ROTATE_AWS_SECRETS_MANAGER => {
             vault_kv::handle_rotate_aws(frame, ctx).await
         }
+        #[cfg(feature = "lab")]
         admin_msg::CREDENTIAL_ROTATE_VAULT_DYNAMIC => {
             vault_kv::handle_rotate_dynamic(frame, ctx).await
         }
@@ -518,7 +636,42 @@ async fn dispatch_operation(
             )
             .await?;
             ctx.sessions.revoke_by_actions(&action_ids);
-            Ok((json(&metadata)?, Vec::new()))
+            Ok((json(&metadata)?, Zeroizing::new(Vec::new())))
+        }
+        admin_msg::TEMPLATE_CATALOG => {
+            let metadata: ipc::TemplateCatalogMeta = meta(frame)?;
+            let deadline = request_deadline;
+            let _owner = ctx.lifecycle.coordinate_until(deadline).await?;
+            ctx.lifecycle.reject_if_busy()?;
+            let response = authority_until(
+                deadline,
+                ctx.authority.template_catalog_before(
+                    metadata.source,
+                    frame.body.to_vec(),
+                    Some(deadline.into_std()),
+                ),
+            )
+            .await?;
+            Ok((json(&response)?, Zeroizing::new(Vec::new())))
+        }
+        admin_msg::TEMPLATE_INSTALL => {
+            let metadata: ipc::TemplateInstallMeta = meta(frame)?;
+            let (kind, proof, package) = ipc::parse_proof_and_secret_body(&frame.body)?;
+            let deadline = request_deadline;
+            let _owner = ctx.lifecycle.coordinate_until(deadline).await?;
+            ctx.lifecycle.reject_if_not_running()?;
+            let response = authority_until(
+                deadline,
+                ctx.authority.template_install_before(
+                    metadata,
+                    package.to_vec(),
+                    proof_from(kind, proof),
+                    frame.header.request_id,
+                    Some(deadline.into_std()),
+                ),
+            )
+            .await?;
+            Ok((json(&response)?, Zeroizing::new(Vec::new())))
         }
         admin_msg::ACTION_CREATE | admin_msg::ACTION_UPDATE => {
             let deadline = request_deadline;
@@ -545,7 +698,7 @@ async fn dispatch_operation(
                 ),
             )
             .await?;
-            Ok((json(&action)?, Vec::new()))
+            Ok((json(&action)?, Zeroizing::new(Vec::new())))
         }
         admin_msg::ACTION_DISABLE => {
             let deadline = request_deadline;
@@ -563,13 +716,39 @@ async fn dispatch_operation(
             )
             .await?;
             ctx.sessions.revoke_by_actions(&[ref_meta.action_id]);
-            Ok((json(&serde_json::json!({"disabled": true}))?, Vec::new()))
+            Ok((
+                json(&serde_json::json!({"disabled": true}))?,
+                Zeroizing::new(Vec::new()),
+            ))
         }
         admin_msg::ACTION_LIST => {
             empty_request(frame)?;
             let _owner = ctx.lifecycle.coordinate().await;
             let actions = ctx.authority.action_list().await?;
-            Ok((json(&ipc::ActionListResponse { actions })?, Vec::new()))
+            Ok((
+                json(&ipc::ActionListResponse { actions })?,
+                Zeroizing::new(Vec::new()),
+            ))
+        }
+        admin_msg::PROFILE_LIST => {
+            empty_request(frame)?;
+            let response = ctx.profile_list_until(request_deadline).await?;
+            Ok((b"{}".to_vec(), Zeroizing::new(json(&response)?)))
+        }
+        admin_msg::PROFILE_GET => {
+            if !frame.body.is_empty() {
+                return Err(ipc::FrameError::InvalidField.into());
+            }
+            let request: ipc::ProfileNameMeta = meta(frame)?;
+            let response = ctx
+                .profile_get_until(
+                    &request.profile,
+                    #[cfg(feature = "lab")]
+                    admission,
+                    request_deadline,
+                )
+                .await?;
+            Ok((b"{}".to_vec(), Zeroizing::new(json(&response)?)))
         }
         admin_msg::SESSION_CREATE => {
             let deadline = request_deadline;
@@ -598,6 +777,7 @@ async fn dispatch_operation(
                 action_timeouts.push((*r, pinned.action.timeout_ms));
             }
             let session_id = crate::random_id(SessionId::from_random_bytes)?;
+            #[cfg(feature = "lab")]
             let principal_id = match (admission, create.principal_id) {
                 (Some(identity), requested) => {
                     if requested.is_some_and(|principal| principal != identity.principal) {
@@ -607,6 +787,11 @@ async fn dispatch_operation(
                 }
                 (None, Some(principal)) => principal,
                 (None, None) => crate::random_id(PrincipalId::from_random_bytes)?,
+            };
+            #[cfg(not(feature = "lab"))]
+            let principal_id = match create.principal_id {
+                Some(principal) => principal,
+                None => crate::random_id(PrincipalId::from_random_bytes)?,
             };
             let vault_id = authority_until(deadline, ctx.authority.status())
                 .await?
@@ -623,6 +808,7 @@ async fn dispatch_operation(
                 principal,
                 create.actions,
                 issued_at,
+                #[cfg(feature = "lab")]
                 admission.map_or(create.ttl_ms, |identity| {
                     create.ttl_ms.min(
                         identity
@@ -630,6 +816,8 @@ async fn dispatch_operation(
                             .saturating_sub(issued_at.as_unix_ms()),
                     )
                 }),
+                #[cfg(not(feature = "lab"))]
+                create.ttl_ms,
                 create.max_uses,
             )
             .map_err(BrokerError::Domain)?;
@@ -669,6 +857,7 @@ async fn dispatch_operation(
                 }
                 return Err(expired);
             }
+            #[cfg(feature = "lab")]
             if let (Some(manager), Some(identity)) = (&ctx.oidc_admin, admission) {
                 match manager.publish(identity, ctx, || {
                     ctx.sessions
@@ -694,7 +883,19 @@ async fn dispatch_operation(
                 expires_at_ms,
                 max_uses,
             };
-            Ok((json(&response)?, Vec::new()))
+            Ok((json(&response)?, Zeroizing::new(Vec::new())))
+        }
+        admin_msg::PERSONAL_POLICY_DRAFT => {
+            if !frame.body.is_empty() {
+                return Err(BrokerError::Frame(ipc::FrameError::InvalidField));
+            }
+            let request: ipc::PersonalPolicyDraftMeta = meta(frame)?;
+            let (response, body) = ctx
+                .personal_policy_draft_until(request, request_deadline)
+                .await?;
+            let metadata = json(&response)?;
+            reject_if_deadline_elapsed(request_deadline)?;
+            Ok((metadata, body))
         }
         admin_msg::POLICY_ACTIVATE => {
             let deadline = request_deadline;
@@ -702,7 +903,10 @@ async fn dispatch_operation(
             let metadata: ipc::PolicyActivateMeta = meta(frame)?;
             ctx.activate_policy_until(metadata, proof_from(kind, proof), deadline)
                 .await?;
-            Ok((json(&ctx.policy_status().await?)?, Vec::new()))
+            Ok((
+                json(&ctx.policy_status().await?)?,
+                Zeroizing::new(Vec::new()),
+            ))
         }
         admin_msg::POLICY_TRUST_INSTALL => {
             let deadline = request_deadline;
@@ -710,13 +914,16 @@ async fn dispatch_operation(
             let trust = rekey_policy::parse_policy_trust(&frame.metadata)?;
             ctx.install_policy_trust_until(trust, proof_from(kind, proof), deadline)
                 .await?;
-            Ok((json(&ctx.policy_status().await?)?, Vec::new()))
+            Ok((
+                json(&ctx.policy_status().await?)?,
+                Zeroizing::new(Vec::new()),
+            ))
         }
         admin_msg::POLICY_STATUS => {
             empty_request(frame)?;
             let _owner = ctx.lifecycle.coordinate().await;
             let response = ctx.policy_status().await?;
-            Ok((json(&response)?, Vec::new()))
+            Ok((json(&response)?, Zeroizing::new(Vec::new())))
         }
         admin_msg::APPROVAL_ORIGIN => {
             empty_request(frame)?;
@@ -728,7 +935,22 @@ async fn dispatch_operation(
                 algorithm: "ed25519".to_owned(),
                 public_key: data_encoding::HEXLOWER.encode(&public_key),
             };
-            Ok((json(&response)?, Vec::new()))
+            Ok((json(&response)?, Zeroizing::new(Vec::new())))
+        }
+        admin_msg::APPROVAL_LOCAL_REVIEW => {
+            if !frame.body.is_empty() {
+                return Err(BrokerError::Frame(ipc::FrameError::InvalidField));
+            }
+            let get: ipc::ApprovalGetMeta = meta(frame)?;
+            let _owner = ctx.lifecycle.coordinate_until(request_deadline).await?;
+            ctx.lifecycle.reject_if_not_running()?;
+            let (metadata, body) = ctx
+                .sessions
+                .local_review(get.approval_request_id, crate::now_ts()?)?;
+            Ok((json(&metadata)?, body))
+        }
+        admin_msg::APPROVAL_LOCAL_APPROVE | admin_msg::APPROVAL_LOCAL_REJECT => {
+            local_approval_decision(frame, ctx, request_deadline).await
         }
         admin_msg::APPROVAL_PENDING => {
             empty_request(frame)?;
@@ -740,13 +962,13 @@ async fn dispatch_operation(
                 .pending_approval_challenges(crate::now_ts()?)
                 .map_err(|error| BrokerError::Denied(error.code()))?;
             let response = ipc::ApprovalPendingResponse {
-                record_type: "rekey.approval.pending.v1".to_owned(),
+                record_type: "rekey.approval.pending.v2".to_owned(),
                 challenges: challenges
                     .iter()
                     .map(ipc::ApprovalPendingItem::from_challenge)
                     .collect(),
             };
-            Ok((json(&response)?, Vec::new()))
+            Ok((json(&response)?, Zeroizing::new(Vec::new())))
         }
         admin_msg::APPROVAL_GET => {
             if !frame.body.is_empty() {
@@ -763,7 +985,7 @@ async fn dispatch_operation(
                 .approval_challenge(get.approval_request_id, crate::now_ts()?)
                 .map_err(|error| BrokerError::Denied(error.code()))?;
             let envelope = ctx.executor.sign_challenge_envelope(challenge).await?;
-            Ok((json(&envelope)?, Vec::new()))
+            Ok((json(&envelope)?, Zeroizing::new(Vec::new())))
         }
         admin_msg::SESSION_REVOKE => {
             let deadline = request_deadline;
@@ -791,7 +1013,10 @@ async fn dispatch_operation(
                 return Err(err.into());
             }
             reject_if_deadline_elapsed(deadline)?;
-            Ok((json(&serde_json::json!({"revoked": existed}))?, Vec::new()))
+            Ok((
+                json(&serde_json::json!({"revoked": existed}))?,
+                Zeroizing::new(Vec::new()),
+            ))
         }
         admin_msg::BACKUP => {
             ctx.lifecycle.reject_if_not_running()?;
@@ -805,29 +1030,35 @@ async fn dispatch_operation(
                 .await?;
             let receipt = ipc::BackupReceipt {
                 vault_id: info.vault_id.to_string(),
+                generation: info.generation,
                 format_version: info.format_version,
                 created_at_ms: info.created_at_ms,
                 sha256_hex: info.sha256_hex,
                 output_path: info.output_path.display().to_string(),
                 snapshot_cut: info.snapshot_cut,
             };
-            Ok((json(&receipt)?, Vec::new()))
+            Ok((json(&receipt)?, Zeroizing::new(Vec::new())))
         }
         admin_msg::LOCK => {
             empty_request(frame)?;
             ctx.drain_lock("admin").await?;
-            Ok((json(&serde_json::json!({"locked": true}))?, Vec::new()))
+            Ok((
+                json(&serde_json::json!({"locked": true}))?,
+                Zeroizing::new(Vec::new()),
+            ))
         }
         admin_msg::SHUTDOWN => {
             empty_meta(frame)?;
-            let proof = if frame.body.is_empty() {
-                None
-            } else {
-                let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
-                Some(proof_from(kind, proof))
-            };
+            if frame.body.is_empty() {
+                return Err(BrokerError::Admission(AuthorityError::AuthenticationFailed));
+            }
+            let (kind, bytes) = ipc::parse_proof_body(&frame.body)?;
+            let proof = proof_from(kind, bytes);
             ctx.request_admin_shutdown(proof).await?;
-            Ok((json(&serde_json::json!({"shutdown": true}))?, Vec::new()))
+            Ok((
+                json(&serde_json::json!({"shutdown": true}))?,
+                Zeroizing::new(Vec::new()),
+            ))
         }
         _ => Err(BrokerError::Frame(
             rekey_domain::ipc::FrameError::InvalidField,
@@ -856,6 +1087,139 @@ fn reject_if_deadline_elapsed(deadline: tokio::time::Instant) -> Result<(), Brok
     Ok(())
 }
 
+async fn local_approval_decision(
+    frame: &IncomingFrame,
+    ctx: &BrokerCtx,
+    deadline: tokio::time::Instant,
+) -> Result<AdminResponse, BrokerError> {
+    let decision: ipc::LocalApprovalDecisionMeta = meta(frame)?;
+    let proof = SecretInput::from_slice(ipc::parse_local_approval_proof_body(&frame.body)?);
+    let _owner = ctx.lifecycle.coordinate_until(deadline).await?;
+    ctx.lifecycle.reject_if_not_running()?;
+    let local = ctx
+        .sessions
+        .local_approval(decision.approval_request_id, crate::now_ts()?)?;
+    if local.review_sha256 != decision.expected_review_sha256 {
+        return Err(BrokerError::Denied("approval-review-mismatch"));
+    }
+    let approve = frame.header.message_type == admin_msg::APPROVAL_LOCAL_APPROVE;
+    if local.state != ipc::LocalApprovalState::Pending
+        && (approve || local.state != ipc::LocalApprovalState::Approved)
+    {
+        authority_until(
+            deadline,
+            ctx.authority.verify_proof(UnlockProof::Presence(proof)),
+        )
+        .await?;
+        reject_if_deadline_elapsed(deadline)?;
+        let current = ctx
+            .sessions
+            .local_approval(decision.approval_request_id, crate::now_ts()?)?;
+        return Ok((json(&current.response())?, Zeroizing::new(Vec::new())));
+    }
+    ctx.check_local_approval_policy(&local.challenge).await?;
+    let action = authority_until(
+        deadline,
+        ctx.authority
+            .action_get(local.challenge.action_id, local.challenge.action_version),
+    )
+    .await?;
+    if action.state == ActionState::Disabled || !action.action.enabled {
+        return Err(rekey_domain::DomainError::ActionDisabled.into());
+    }
+    let approval_id = if approve {
+        Some(crate::random_id(
+            rekey_domain::ids::ApprovalId::from_random_bytes,
+        )?)
+    } else {
+        None
+    };
+    let challenge = &local.challenge;
+    let digest = |value: &str| -> Result<[u8; 32], BrokerError> {
+        data_encoding::HEXLOWER
+            .decode(value.as_bytes())
+            .ok()
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or(BrokerError::Denied("approval-state-conflict"))
+    };
+    let draft = AuditDraft {
+        request_id: None,
+        session_id: Some(challenge.session_id),
+        action_id: Some(challenge.action_id),
+        action_version: Some(challenge.action_version),
+        credential_id: None,
+        credential_version: None,
+        authorization: Some(Box::new(rekey_vault::model::AuthorizationEvidence {
+            principal_id: challenge.principal_id,
+            policy_version: challenge.policy_version,
+            policy_digest: digest(&challenge.policy_sha256)?,
+            policy_rule_id: Some(challenge.policy_rule_id),
+            resource_type: challenge.resource.resource_type.clone(),
+            resource_id: challenge.resource.id.clone(),
+            parameter_hash: digest(&challenge.parameter_sha256)?,
+        })),
+        approval: Some(rekey_vault::model::ApprovalEvidence {
+            approval_request_id: challenge.approval_request_id,
+            approval_id,
+            approver_id: None,
+        }),
+        request_context: local.request_context.clone(),
+        usage: None,
+        event_type: if approve {
+            event_type::APPROVAL_APPROVED
+        } else {
+            event_type::APPROVAL_REJECTED
+        },
+        outcome: outcome::SUCCESS,
+        reason_code: "local-presence".into(),
+        upstream_status: None,
+        latency_ms: None,
+    };
+    let not_after = deadline.into_std().min(local.deadline);
+    let result = authority_until(
+        deadline,
+        ctx.authority.authorize_local_approval(
+            proof,
+            draft,
+            not_after,
+            challenge.max_expires_at_ms,
+        ),
+    )
+    .await;
+    if matches!(
+        result,
+        Err(BrokerError::Authority(AuthorityError::AuthorityBusy))
+    ) {
+        ctx.sessions
+            .cancel_local_unconfirmed(challenge.approval_request_id);
+        return Err(BrokerError::ApprovalOutcomeUnconfirmed);
+    }
+    result?;
+    let publication = (|| {
+        let now = crate::now_ts()?;
+        if std::time::Instant::now() >= not_after
+            || now.as_unix_ms() < challenge.created_at_ms
+            || now.as_unix_ms() >= challenge.max_expires_at_ms
+        {
+            return Err(BrokerError::ApprovalOutcomeUnconfirmed);
+        }
+        ctx.sessions.decide_local(
+            challenge.approval_request_id,
+            &local.review_sha256,
+            approval_id,
+            now,
+        )
+    })();
+    match publication {
+        Ok(response) => Ok((json(&response)?, Zeroizing::new(Vec::new()))),
+        Err(_) => {
+            ctx.sessions
+                .cancel_local_unconfirmed(challenge.approval_request_id);
+            Err(BrokerError::ApprovalOutcomeUnconfirmed)
+        }
+    }
+}
+
 fn session_audit(event_type: &'static str, session_id: SessionId) -> AuditDraft {
     AuditDraft {
         request_id: None,
@@ -866,6 +1230,8 @@ fn session_audit(event_type: &'static str, session_id: SessionId) -> AuditDraft 
         credential_version: None,
         authorization: None,
         approval: None,
+        request_context: None,
+        usage: None,
         event_type,
         outcome: outcome::SUCCESS,
         reason_code: "admin".to_owned(),
@@ -875,6 +1241,10 @@ fn session_audit(event_type: &'static str, session_id: SessionId) -> AuditDraft 
 }
 
 fn definition_from_meta(meta: ipc::ActionCreateMeta) -> Result<ActionDefinition, BrokerError> {
+    #[cfg(not(feature = "lab"))]
+    if meta.native_plugin.is_some() {
+        return Err(BrokerError::Denied("native plugins require lab"));
+    }
     let mut allowed_extra_headers = std::collections::BTreeSet::new();
     for name in &meta.allowed_extra_headers {
         allowed_extra_headers.insert(HeaderName::new(name).map_err(BrokerError::Domain)?);
@@ -890,7 +1260,9 @@ fn definition_from_meta(meta: ipc::ActionCreateMeta) -> Result<ActionDefinition,
         credential_id: meta.credential_id,
         origin: HttpsOrigin::parse(&meta.origin).map_err(BrokerError::Domain)?,
         method: FixedMethod::parse(&meta.method).map_err(BrokerError::Domain)?,
-        exact_path: ExactPath::parse(&meta.exact_path).map_err(BrokerError::Domain)?,
+        target: rekey_domain::action::ActionTarget::Fixed {
+            path: ExactPath::parse(&meta.exact_path).map_err(BrokerError::Domain)?,
+        },
         auth: HeaderCredentialUse::new(
             HeaderName::new(&meta.auth_header).map_err(BrokerError::Domain)?,
             HeaderPrefix::new(&meta.auth_prefix).map_err(BrokerError::Domain)?,
@@ -926,7 +1298,7 @@ fn ensure_action_catalog_fits(
         credential_id: definition.credential_id,
         origin: definition.origin.clone(),
         method: definition.method,
-        exact_path: definition.exact_path.clone(),
+        target: definition.target.clone(),
         auth: definition.auth.clone(),
         timeout_ms: definition.timeout_ms,
         request_policy: definition.request_policy.clone(),
@@ -959,6 +1331,279 @@ mod tests {
     use rekey_domain::ids::CredentialId;
 
     #[tokio::test]
+    async fn queued_local_decision_timeout_cancels_nonretryably_and_late_commit_cannot_publish() {
+        use aws_lc_rs::signature::{Ed25519KeyPair, KeyPair};
+        use rekey_domain::authorization::{ApprovalMode, ApproverSpec, ResourceRef, SchemaId};
+        use rekey_domain::ids::{ApprovalRequestId, PolicyRuleId, PolicySignerId};
+        let (dir, ctx, join, terminal) = crate::runtime::tests::oidc_test_ctx().await;
+        let proof = || UnlockProof::Password(SecretInput::from_slice(b"fixture-proof"));
+        let credential = ctx
+            .authority
+            .credential_add(
+                rekey_domain::credential::CredentialLabel::new("local-deadline").unwrap(),
+                CredentialKind::OpaqueToken,
+                SecretInput::from_slice(b"synthetic"),
+                proof(),
+            )
+            .await
+            .unwrap();
+        let definition = definition_from_meta(serde_json::from_value(serde_json::json!({
+            "name":"local-deadline", "credential_id":credential.id, "origin":"https://api.example.com", "method":"POST", "exact_path":"/test", "auth_header":"authorization", "auth_prefix":"Bearer ", "timeout_ms":1000, "request_max_bytes":1024, "allowed_extra_headers":[], "response_max_bytes":1024, "allowed_response_headers":[]
+        })).unwrap()).unwrap();
+        let action = ctx
+            .authority
+            .action_upsert(None, definition, proof())
+            .await
+            .unwrap();
+        let document =
+            Ed25519KeyPair::generate_pkcs8(&aws_lc_rs::rand::SystemRandom::new()).unwrap();
+        let signer = Ed25519KeyPair::from_pkcs8(document.as_ref()).unwrap();
+        let signer_id = PolicySignerId::new_random();
+        let trust = rekey_policy::ValidatedPolicyTrust::from_parts(
+            signer_id,
+            rekey_policy::PolicyVerificationKey::from_bytes(
+                rekey_domain::authorization::PolicyTrustAlgorithm::Ed25519,
+                signer.public_key().as_ref(),
+            )
+            .unwrap(),
+        );
+        ctx.install_policy_trust_until(trust.clone(), proof(), admin_mutation_deadline())
+            .await
+            .unwrap();
+        let now = crate::now_ts().unwrap();
+        let mut bundle = serde_json::json!({"format_version":1,"signer_id":signer_id,"snapshot":{"format_version":6,"version":1,"expires_at_ms":now.as_unix_ms()+60000,"approvers":[],"profiles": [], "workload_identities":[],"bindings":[],"rules":[]}});
+        let mut message = b"RKPOLICY\0\x01".to_vec();
+        message.extend_from_slice(&serde_jcs::to_vec(&bundle).unwrap());
+        bundle["signature"] = data_encoding::BASE64URL_NOPAD
+            .encode(signer.sign(&message).as_ref())
+            .into();
+        let status = ctx.authority.status().await.unwrap();
+        ctx.activate_policy_until(
+            ipc::PolicyActivateMeta {
+                expected_vault_id: status.vault_id,
+                expected_trust_sha256: data_encoding::HEXLOWER
+                    .encode(&rekey_policy::policy_trust_sha256(signer_id, trust.key()).unwrap()),
+                bundle_json: serde_json::from_value(bundle).unwrap(),
+            },
+            proof(),
+            admin_mutation_deadline(),
+        )
+        .await
+        .unwrap();
+        let session_id = SessionId::new_random();
+        let action_ref = rekey_domain::capability::ActionVersionRef {
+            action_id: action.id,
+            version: action.version,
+        };
+        let grant = SessionGrant::new(
+            session_id,
+            Principal {
+                tenant_id: TenantId::from_bytes(*status.vault_id.as_bytes()).unwrap(),
+                principal_id: PrincipalId::new_random(),
+                session_id,
+            },
+            vec![action_ref],
+            now,
+            60000,
+            1,
+        )
+        .unwrap();
+        let token = ctx.sessions.create(grant.clone()).unwrap();
+        let mut permit = ctx.sessions.acquire(&token, action_ref, now).unwrap();
+        let policy = ctx
+            .authority
+            .policy_material()
+            .await
+            .unwrap()
+            .bundle
+            .unwrap();
+        let id = ApprovalRequestId::new_random();
+        let challenge = ipc::ApprovalChallenge {
+            record_type: "rekey.approval.challenge.v2".into(),
+            approval_request_id: id,
+            tenant_id: grant.principal.tenant_id,
+            principal_id: grant.principal.principal_id,
+            session_id,
+            action_id: action.id,
+            action_version: action.version,
+            resource: ResourceRef::new("test-action".into(), action.id.to_string()).unwrap(),
+            schema_id: SchemaId::new("test/v1".into()).unwrap(),
+            parameter_sha256: "00".repeat(32),
+            policy_version: 1,
+            policy_sha256: data_encoding::HEXLOWER.encode(&policy.policy_digest),
+            policy_rule_id: PolicyRuleId::new_random(),
+            mode: ApprovalMode::OneTime,
+            approver: ApproverSpec::LocalPresence {},
+            max_uses: 1,
+            created_at_ms: now.as_unix_ms(),
+            max_expires_at_ms: now.as_unix_ms() + 60000,
+        };
+        let hash = "11".repeat(32);
+        ctx.sessions
+            .publish_local_pending(
+                &mut permit,
+                challenge,
+                b"{}".to_vec(),
+                hash.clone(),
+                std::time::Instant::now(),
+                std::time::Instant::now() + Duration::from_secs(60),
+                None,
+            )
+            .unwrap();
+        drop(permit);
+        let (key, _) = ctx.authority.desktop_remember(proof(), None).await.unwrap();
+        let metadata = serde_json::to_vec(&ipc::LocalApprovalDecisionMeta {
+            approval_request_id: id,
+            expected_review_sha256: hash,
+        })
+        .unwrap();
+        let mut body = Vec::new();
+        ipc::encode_proof_body(ProofKind::Presence, &key, &mut body);
+        let frame = IncomingFrame {
+            header: ipc::FrameHeader {
+                channel: Channel::Admin,
+                flags: 0,
+                message_type: admin_msg::APPROVAL_LOCAL_APPROVE,
+                request_id: rekey_domain::ids::RequestId::new_random(),
+                metadata_len: metadata.len() as u32,
+                body_len: body.len() as u32,
+            },
+            metadata,
+            body: Zeroizing::new(body),
+        };
+        let db =
+            rusqlite::Connection::open(rekey_vault::paths::vault_db(&dir.path().join("state")))
+                .unwrap();
+        db.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let error = local_approval_decision(
+            &frame,
+            &ctx,
+            tokio::time::Instant::now() + Duration::from_millis(100),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code(), "APPROVAL_OUTCOME_UNCONFIRMED");
+        assert!(!error.retryable());
+        let (mut writer, mut reader) = UnixStream::pair().unwrap();
+        let request_id = rekey_domain::ids::RequestId::new_random();
+        let (sent, received) = tokio::join!(
+            write_admin_error(
+                &mut writer,
+                admin_msg::APPROVAL_LOCAL_APPROVE,
+                request_id,
+                &error
+            ),
+            read_frame(&mut reader, Channel::Admin, |_| 0)
+        );
+        sent.unwrap();
+        let envelope: ipc::ErrorEnvelope =
+            serde_json::from_slice(&received.unwrap().metadata).unwrap();
+        assert_eq!(envelope.code, "APPROVAL_OUTCOME_UNCONFIRMED");
+        assert!(!envelope.retryable);
+        assert!(envelope.approval.is_none());
+        assert_eq!(
+            ctx.sessions
+                .local_approval(id, crate::now_ts().unwrap())
+                .unwrap()
+                .state,
+            ipc::LocalApprovalState::Cancelled
+        );
+        db.execute_batch("ROLLBACK").unwrap();
+        // The queued Worker command finishes after the caller timed out. Its own
+        // commit deadline prevents a late audit/grant, and a query acts as a barrier.
+        assert_eq!(ctx.authority.status().await.unwrap().state, "unlocked");
+        let response = local_approval_decision(&frame, &ctx, admin_mutation_deadline())
+            .await
+            .unwrap();
+        let state: ipc::LocalApprovalStateResponse = serde_json::from_slice(&response.0).unwrap();
+        assert_eq!(state.state, ipc::LocalApprovalState::Cancelled);
+        let count: i64 = db
+            .query_row(
+                "SELECT count(*) FROM audit_events WHERE event_type='approval.approved'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
+        ctx.authority.shutdown(Some(proof())).await.unwrap();
+        drop(ctx);
+        terminal.await.unwrap();
+        join.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn template_install_busy_wire_denies_retry_without_changing_other_operations() {
+        for error in [
+            BrokerError::Authority(AuthorityError::AuthorityBusy),
+            BrokerError::Admission(AuthorityError::AuthorityBusy),
+        ] {
+            for (message_type, retryable) in [
+                (admin_msg::TEMPLATE_INSTALL, false),
+                (admin_msg::TEMPLATE_CATALOG, true),
+                (admin_msg::ACTION_CREATE, true),
+            ] {
+                let (mut writer, mut reader) = UnixStream::pair().unwrap();
+                let request_id = rekey_domain::ids::RequestId::new_random();
+                let (sent, received) = tokio::join!(
+                    write_admin_error(&mut writer, message_type, request_id, &error),
+                    read_frame(&mut reader, Channel::Admin, |_| 0),
+                );
+                sent.unwrap();
+                let received = received.unwrap();
+                assert_eq!(received.header.message_type, ipc::resp_msg::ERROR);
+                let envelope: ipc::ErrorEnvelope =
+                    serde_json::from_slice(&received.metadata).unwrap();
+                assert_eq!(envelope.code, "AUTHORITY_BUSY");
+                assert_eq!(envelope.request_id, request_id);
+                assert_eq!(envelope.retryable, retryable);
+                if message_type == admin_msg::TEMPLATE_INSTALL {
+                    assert!(envelope.message.contains("unconfirmed"));
+                    assert!(envelope.message.contains("Actions and audit"));
+                    assert!(envelope.message.contains("do not retry automatically"));
+                } else {
+                    assert_eq!(envelope.message, error.to_string());
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn proofless_shutdown_rejects_before_waiting_on_any_coordinator() {
+        let (_dir, ctx, join, terminal) = crate::runtime::tests::oidc_test_ctx().await;
+        let owner = ctx.lifecycle.coordinate().await;
+        ctx.lifecycle.enter_draining();
+        let request = IncomingFrame {
+            header: ipc::FrameHeader {
+                channel: Channel::Admin,
+                flags: 0,
+                message_type: admin_msg::SHUTDOWN,
+                request_id: rekey_domain::ids::RequestId::new_random(),
+                metadata_len: 2,
+                body_len: 0,
+            },
+            metadata: b"{}".to_vec(),
+            body: Zeroizing::new(Vec::new()),
+        };
+        let response = tokio::time::timeout(Duration::from_millis(100), dispatch(&request, &ctx))
+            .await
+            .unwrap();
+        assert_eq!(response.unwrap_err().code(), "AUTHENTICATION_FAILED");
+        assert!(!ctx.shutdown_requested());
+        assert_eq!(
+            ctx.lifecycle.phase(),
+            crate::lifecycle::BrokerPhase::Draining
+        );
+        assert!(!ctx.lifecycle.try_begin_remote_effect());
+        drop(owner);
+        ctx.authority.lock("test-cleanup").await.unwrap();
+        ctx.authority.shutdown(None).await.unwrap();
+        drop(ctx);
+        terminal.await.unwrap();
+        join.join().unwrap();
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "lab")]
     async fn review_begin_waits_for_existing_owner_and_cannot_insert_after_lock() {
         use std::future::{Future, poll_fn};
         use std::task::Poll;
@@ -1006,7 +1651,7 @@ mod tests {
 
     #[test]
     fn oidc_envelope_limits_and_os_exceptions_are_closed() {
-        for id in 1..=51 {
+        for id in 1..=60 {
             let protected = ipc::managed_admin_operation(id).unwrap();
             if protected {
                 assert!(admin_body_limit(id, true) >= 50);
@@ -1022,6 +1667,13 @@ mod tests {
             admin_body_limit(admin_msg::UNLOCK_PASSWORD, true),
             ipc::ADMIN_SECRET_FIELD_MAX_BYTES
         );
+        assert_eq!(admin_body_limit(admin_msg::TEMPLATE_CATALOG, false), 65_536);
+        assert_eq!(admin_body_limit(admin_msg::TEMPLATE_CATALOG, true), 65_586);
+        assert_eq!(
+            admin_body_limit(admin_msg::TEMPLATE_INSTALL, false),
+            131_081
+        );
+        assert_eq!(admin_body_limit(admin_msg::TEMPLATE_INSTALL, true), 131_131);
         assert_eq!(admin_body_limit(admin_msg::AUDIT_QUERY, false), 0);
         assert_eq!(admin_body_limit(admin_msg::METRICS, false), 0);
     }
@@ -1041,12 +1693,12 @@ mod tests {
             metadata: b"{}".to_vec(),
             body: Zeroizing::new(body),
         };
-        dispatch(&request(admin_msg::METRICS, Vec::new()), &ctx)
+        dispatch(&request(admin_msg::STATUS, Vec::new()), &ctx)
             .await
             .unwrap();
         let protected = ipc::encode_management_body(&[b'A'; 43], &[]).unwrap();
         assert_eq!(
-            dispatch(&request(admin_msg::METRICS, protected), &ctx)
+            dispatch(&request(admin_msg::STATUS, protected), &ctx)
                 .await
                 .err()
                 .unwrap()
@@ -1069,6 +1721,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "lab")]
     async fn oidc_configured_all_managed_operations_require_body_token() {
         let (directory, mut ctx, join, terminal) = crate::runtime::tests::oidc_test_ctx().await;
         let path = crate::oidc_admin::tests::protected_profile_file(
@@ -1077,7 +1730,7 @@ mod tests {
         );
         Arc::get_mut(&mut ctx).unwrap().oidc_admin =
             Some(crate::oidc_admin::Manager::load(&path).unwrap());
-        for id in 1..=51 {
+        for id in 1..=60 {
             if !ipc::managed_admin_operation(id).unwrap() {
                 continue;
             }
@@ -1118,7 +1771,9 @@ mod tests {
             credential_id: CredentialId::from_random_bytes([1; 16]),
             origin: HttpsOrigin::parse("https://example.com").unwrap(),
             method: FixedMethod::Post,
-            exact_path: ExactPath::parse("/v1/action").unwrap(),
+            target: rekey_domain::action::ActionTarget::Fixed {
+                path: ExactPath::parse("/v1/action").unwrap(),
+            },
             auth: HeaderCredentialUse::new(
                 HeaderName::new("x-api-key").unwrap(),
                 HeaderPrefix::new("Bearer ").unwrap(),
@@ -1150,7 +1805,9 @@ mod tests {
             credential_id: CredentialId::from_random_bytes([1; 16]),
             origin: HttpsOrigin::parse("https://example.com").unwrap(),
             method: FixedMethod::Get,
-            exact_path: ExactPath::parse("/v1/action").unwrap(),
+            target: rekey_domain::action::ActionTarget::Fixed {
+                path: ExactPath::parse("/v1/action").unwrap(),
+            },
             auth: HeaderCredentialUse::new(
                 HeaderName::new("x-api-key").unwrap(),
                 HeaderPrefix::new("Bearer ").unwrap(),
@@ -1176,7 +1833,7 @@ mod tests {
             credential_id: definition.credential_id,
             origin: definition.origin.clone(),
             method: definition.method,
-            exact_path: definition.exact_path.clone(),
+            target: definition.target.clone(),
             auth: definition.auth.clone(),
             timeout_ms: definition.timeout_ms,
             request_policy: definition.request_policy.clone(),
@@ -1201,7 +1858,9 @@ mod tests {
             credential_id: CredentialId::from_random_bytes([1; 16]),
             origin: HttpsOrigin::parse("https://example.com").unwrap(),
             method: FixedMethod::Post,
-            exact_path: ExactPath::parse("/v1/action").unwrap(),
+            target: rekey_domain::action::ActionTarget::Fixed {
+                path: ExactPath::parse("/v1/action").unwrap(),
+            },
             auth: HeaderCredentialUse::new(
                 HeaderName::new("x-api-key").unwrap(),
                 HeaderPrefix::new("Bearer ").unwrap(),
@@ -1227,7 +1886,7 @@ mod tests {
             credential_id: definition.credential_id,
             origin: definition.origin.clone(),
             method: definition.method,
-            exact_path: definition.exact_path.clone(),
+            target: definition.target.clone(),
             auth: definition.auth.clone(),
             timeout_ms: definition.timeout_ms,
             request_policy: definition.request_policy.clone(),
@@ -1319,6 +1978,8 @@ mod tests {
             credential_version: None,
             authorization: None,
             approval: None,
+            request_context: None,
+            usage: None,
             event_type: "fixture.blocked",
             outcome: "success",
             reason_code: "exact3".into(),
@@ -1340,6 +2001,7 @@ mod tests {
         let mut set = Box::pin(dispatch_operation(
             &frame,
             &ctx,
+            #[cfg(feature = "lab")]
             None,
             admin_mutation_deadline(),
         ));
@@ -1360,8 +2022,11 @@ mod tests {
                     },
                     content_type: None,
                     extra_headers: Vec::new(),
+                    params: Default::default(),
+                    query: Default::default(),
                     body: Vec::new(),
                     approval_grants: Vec::new(),
+                    local_approval_request_id: None,
                 })
                 .await
                 .err()
@@ -1392,6 +2057,7 @@ mod tests {
             )
             .unwrap();
         let signalled = stop();
+        #[cfg(feature = "lab")]
         let calls_before = ctx
             .metrics
             .fault_signals
@@ -1399,6 +2065,7 @@ mod tests {
         crate::runtime::tests::exact3_maintenance(&ctx)
             .await
             .unwrap();
+        #[cfg(feature = "lab")]
         let no_retry = ctx
             .metrics
             .fault_signals
@@ -1414,7 +2081,9 @@ mod tests {
         terminal.await.unwrap();
         join.join().unwrap();
         assert_eq!(phase, crate::lifecycle::BrokerPhase::Draining);
-        assert!(!remote_open && !can_reopen && signalled && no_retry);
+        assert!(!remote_open && !can_reopen && signalled);
+        #[cfg(feature = "lab")]
+        assert!(no_retry);
         assert_eq!(set_error, Some("DRAINING"));
         assert_eq!(business_error, "DRAINING");
         assert_eq!(after, initial);
@@ -1433,7 +2102,13 @@ mod tests {
             let result = if near_expiry {
                 let owner = ctx.lifecycle.coordinate().await;
                 let original = tokio::time::Instant::now() + Duration::from_millis(100);
-                let mut set = Box::pin(dispatch_operation(&frame, &ctx, None, original));
+                let mut set = Box::pin(dispatch_operation(
+                    &frame,
+                    &ctx,
+                    #[cfg(feature = "lab")]
+                    None,
+                    original,
+                ));
                 poll_fn(|cx| {
                     assert!(set.as_mut().poll(cx).is_pending());
                     Poll::Ready(())
@@ -1446,6 +2121,7 @@ mod tests {
                 dispatch_operation(
                     &frame,
                     &ctx,
+                    #[cfg(feature = "lab")]
                     None,
                     tokio::time::Instant::now() - Duration::from_millis(1),
                 )

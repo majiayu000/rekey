@@ -974,6 +974,8 @@ impl Manager {
             credential_version: None,
             authorization: None,
             approval: None,
+            request_context: None,
+            usage: None,
             event_type: "admin.oidc",
             outcome: if reason.starts_with("oidc.login_failed") {
                 outcome::FAILURE
@@ -1368,6 +1370,7 @@ pub(crate) mod tests {
                 iterations: 1,
                 parallelism: 1,
             },
+            rekey_domain::authorization::PolicyMode::Team,
         )
         .unwrap();
         rekey_vault::bootstrap::confirm_vault_init(&state).unwrap();
@@ -1693,6 +1696,8 @@ pub(crate) mod tests {
             credential_version: None,
             authorization: None,
             approval: None,
+            request_context: None,
+            usage: None,
             event_type: "admin.oidc",
             outcome: outcome::FAILURE,
             reason_code: "review2.actor_sqlite_blocker".into(),

@@ -2,7 +2,7 @@
 //! is a pure IPC client; everything that must touch the database, crypto, or
 //! the network lives here. Secrets arrive only via hidden TTY prompts or the
 //! explicit stdin flags exposed by `rekey`/`rekeyd`; never via argv values or
-//! environment variables.
+//! environment variables. Profile-child carries only a scoped capability in env.
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -11,9 +11,10 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 use rekey_broker::error::BrokerError;
 use rekey_broker::runtime::{BrokerConfig, serve};
-use rekey_domain::ipc::{ADMIN_SECRET_BODY_MAX_BYTES, RestoreReceipt};
+use rekey_domain::authorization::PolicyMode;
+use rekey_domain::ipc::{ADMIN_SECRET_BODY_MAX_BYTES, RestoreReceipt, RollbackContext};
 use rekey_vault::AuthorityError;
-use rekey_vault::bootstrap::{RestoreProof, init_vault, restore_vault};
+use rekey_vault::bootstrap::{RestoreProof, init_vault, inspect_restore, restore_vault};
 use rekey_vault::crypto::kdf::Argon2Params;
 use rekey_vault::secret::SecretInput;
 use zeroize::Zeroizing;
@@ -74,6 +75,9 @@ struct Cli {
 enum Command {
     /// Initialize a new v2 vault in an empty state directory.
     Init {
+        /// Immutable policy signing mode for this vault.
+        #[arg(long, value_parser = ["personal", "team"])]
+        mode: String,
         #[arg(long)]
         state_dir: Option<PathBuf>,
         /// Read the password from stdin (first line) instead of the TTY.
@@ -83,6 +87,7 @@ enum Command {
     /// Run the broker in the foreground (starts locked).
     Serve {
         #[arg(long)]
+        #[cfg(feature = "lab")]
         oidc_admin_profile: Option<PathBuf>,
         #[arg(long)]
         state_dir: Option<PathBuf>,
@@ -113,6 +118,25 @@ enum Command {
         /// SHA-256 of the backup file from the backup receipt (64 hex chars).
         #[arg(long)]
         sha256: String,
+        #[arg(long, conflicts_with = "expected_context")]
+        inspect: bool,
+        /// Exact public context returned by a prior --inspect.
+        #[arg(long)]
+        expected_context: Option<String>,
+    },
+    /// Internal child launcher for a Profile; the parent owns its control connection.
+    #[command(hide = true)]
+    ProfileChild {
+        #[arg(long)]
+        state_dir: PathBuf,
+        #[arg(long)]
+        agent_socket: PathBuf,
+        #[arg(long, value_parser = ["seatbelt", "netns"])]
+        isolation: String,
+        #[arg(long)]
+        gateway_port: Option<std::num::NonZeroU16>,
+        #[arg(last = true, required = true)]
+        command: Vec<std::ffi::OsString>,
     },
     /// Launch one Agent command in the platform sandbox (Linux netns / macOS Seatbelt).
     AgentRun {
@@ -204,7 +228,20 @@ fn prompt_secret(prompt: &str) -> Result<SecretInput, RekeydError> {
     Ok(SecretInput::from_slice(value.as_bytes()))
 }
 
-fn cmd_init(state_dir: Option<PathBuf>, password_stdin: bool) -> Result<(), RekeydError> {
+fn cmd_init(
+    state_dir: Option<PathBuf>,
+    password_stdin: bool,
+    mode: &str,
+) -> Result<(), RekeydError> {
+    let mode = match mode {
+        "personal" => PolicyMode::Personal,
+        "team" => PolicyMode::Team,
+        _ => {
+            return Err(RekeydError::Usage(
+                "choose personal or team policy mode".into(),
+            ));
+        }
+    };
     let state_dir = resolve_state_dir(state_dir)?;
     let password = if password_stdin {
         read_stdin_secret_line()?
@@ -216,7 +253,12 @@ fn cmd_init(state_dir: Option<PathBuf>, password_stdin: bool) -> Result<(), Reke
         }
         first
     };
-    let outcome = init_vault(&state_dir, &password, Argon2Params::RFC9106_LOW_MEMORY)?;
+    let outcome = init_vault(
+        &state_dir,
+        &password,
+        Argon2Params::RFC9106_LOW_MEMORY,
+        mode,
+    )?;
     println!("vault initialized: {}", outcome.vault_id);
     println!("state directory: {}", state_dir.display());
     println!();
@@ -236,9 +278,8 @@ fn cmd_init(state_dir: Option<PathBuf>, password_stdin: bool) -> Result<(), Reke
             .map_err(|err| usage(format!("cannot read from tty: {err}")))?,
         );
         if confirmed.trim().as_bytes() != tail.as_slice() {
-            rekey_vault::bootstrap::discard_vault_files(&state_dir)?;
             return Err(usage(
-                "recovery key confirmation mismatch; the vault from this init was discarded",
+                "recovery key confirmation mismatch; incomplete initialization and generation history were retained",
             ));
         }
     }
@@ -252,7 +293,22 @@ fn cmd_restore(
     recovery: bool,
     password_stdin: bool,
     sha256: String,
+    inspect: bool,
+    expected_context: Option<String>,
 ) -> Result<(), RekeydError> {
+    if password_stdin && !inspect && expected_context.is_none() {
+        return Err(usage(
+            "restore with stdin requires --inspect or a separately accepted --expected-context",
+        ));
+    }
+    let supplied = expected_context
+        .as_deref()
+        .map(|json| {
+            serde_json::from_str::<RollbackContext>(json).map_err(|_| {
+                usage("expected-context must be the complete JSON returned by --inspect")
+            })
+        })
+        .transpose()?;
     let state_dir = resolve_state_dir(state_dir)?;
     let secret = if password_stdin {
         read_stdin_secret_line()?
@@ -261,14 +317,45 @@ fn cmd_restore(
     } else {
         prompt_secret("Vault password: ")?
     };
-    let proof = if recovery {
-        RestoreProof::RecoveryKey(secret)
-    } else {
-        RestoreProof::Password(secret)
+    let proof = || {
+        if recovery {
+            RestoreProof::RecoveryKey(SecretInput::from_slice(secret.expose()))
+        } else {
+            RestoreProof::Password(SecretInput::from_slice(secret.expose()))
+        }
     };
-    let info = restore_vault(&input, &state_dir, proof, &sha256)?;
+    let expected = if let Some(expected) = supplied {
+        expected
+    } else {
+        let context = inspect_restore(&input, &state_dir, proof(), &sha256)?;
+        if inspect {
+            println!(
+                "{}",
+                serde_json::to_string(&context).map_err(|_| AuthorityError::RestoreFailed)?
+            );
+            return Ok(());
+        }
+        eprintln!(
+            "Backup: {}\nTarget: {}\nVault: {}\nSource generation: {}\nHigh-water: {}\nHistory missing: {}",
+            input.display(),
+            state_dir.display(),
+            context.vault_id,
+            context.source_generation,
+            context
+                .high_water
+                .map_or_else(|| "none".to_owned(), |g| g.to_string()),
+            context.history_missing
+        );
+        let confirmation = prompt_secret("Type RESTORE to accept this snapshot and history: ")?;
+        if confirmation.expose() != b"RESTORE" {
+            return Err(usage("restore cancelled; no generation was reserved"));
+        }
+        context
+    };
+    let info = restore_vault(&input, &state_dir, proof(), &sha256, expected)?;
     let receipt = RestoreReceipt {
         vault_id: info.vault_id.to_string(),
+        generation: info.generation,
         format_version: info.format_version,
         input_sha256_hex: info.input_sha256_hex,
         output_path: info.output_path,
@@ -285,7 +372,7 @@ fn cmd_serve(
     agent_runtime_dir: Option<PathBuf>,
     mut agent_uids: Vec<u32>,
     agent_gid: Option<u32>,
-    oidc_admin_profile: Option<PathBuf>,
+    #[cfg(feature = "lab")] oidc_admin_profile: Option<PathBuf>,
 ) -> Result<(), RekeydError> {
     let state_dir = resolve_state_dir(state_dir)?;
     let idle = parse_duration(idle_lock)?;
@@ -311,6 +398,7 @@ fn cmd_serve(
         .build()
         .map_err(|err| usage(format!("cannot start runtime: {err}")))?;
     let config = BrokerConfig {
+        #[cfg(feature = "lab")]
         oidc_admin_profile,
         state_dir,
         agent_runtime_dir,
@@ -366,15 +454,70 @@ fn cmd_agent_run(
     }
 }
 
+fn cmd_profile_child(
+    state_dir: PathBuf,
+    agent_socket: PathBuf,
+    isolation: String,
+    gateway_port: Option<std::num::NonZeroU16>,
+    argv: Vec<std::ffi::OsString>,
+) -> Result<(), RekeydError> {
+    let isolation = match isolation.as_str() {
+        "seatbelt" => rekey_domain::profile::ProfileIsolation::Seatbelt,
+        "netns" => rekey_domain::profile::ProfileIsolation::Netns,
+        _ => return Err(usage("unsupported Profile isolation")),
+    };
+    let capability = std::env::var(rekey_domain::sandbox::CAPABILITY_ENV)
+        .map(Zeroizing::new)
+        .map_err(|_| usage("Profile capability environment is required"))?;
+    let code = rekey_broker::sandbox::run_profile(
+        rekey_broker::sandbox::LaunchRequest {
+            state_dir,
+            agent_socket,
+            argv,
+            capability: Some(capability),
+        },
+        isolation,
+        gateway_port,
+    )?;
+    if code != 0 {
+        std::process::exit(code);
+    }
+    Ok(())
+}
+
+fn restrict_process() -> std::io::Result<()> {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        let limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        if unsafe { libc::setrlimit(libc::RLIMIT_CORE, &limit) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    #[cfg(target_os = "linux")]
+    if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 fn main() {
     init_logging();
+    if let Err(error) = restrict_process() {
+        eprintln!("rekeyd: cannot apply process memory protection: {error}");
+        std::process::exit(1);
+    }
     let cli = Cli::parse();
     let result = match cli.command {
         Command::Init {
             state_dir,
             password_stdin,
-        } => cmd_init(state_dir, password_stdin),
+            mode,
+        } => cmd_init(state_dir, password_stdin, &mode),
         Command::Serve {
+            #[cfg(feature = "lab")]
             oidc_admin_profile,
             state_dir,
             idle_lock,
@@ -387,6 +530,7 @@ fn main() {
             agent_runtime_dir,
             agent_uids,
             agent_gid,
+            #[cfg(feature = "lab")]
             oidc_admin_profile,
         ),
         Command::Restore {
@@ -395,7 +539,24 @@ fn main() {
             recovery,
             password_stdin,
             sha256,
-        } => cmd_restore(input, state_dir, recovery, password_stdin, sha256),
+            inspect,
+            expected_context,
+        } => cmd_restore(
+            input,
+            state_dir,
+            recovery,
+            password_stdin,
+            sha256,
+            inspect,
+            expected_context,
+        ),
+        Command::ProfileChild {
+            state_dir,
+            agent_socket,
+            isolation,
+            gateway_port,
+            command,
+        } => cmd_profile_child(state_dir, agent_socket, isolation, gateway_port, command),
         Command::AgentRun {
             state_dir,
             agent_socket,
@@ -417,6 +578,37 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn process_restrictions_apply_in_isolated_child() {
+        const CHILD: &str = "REKEY_PROCESS_RESTRICTIONS_TEST_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            restrict_process().unwrap();
+            let mut limit = libc::rlimit {
+                rlim_cur: 1,
+                rlim_max: 1,
+            };
+            assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_CORE, &mut limit) }, 0);
+            assert_eq!((limit.rlim_cur, limit.rlim_max), (0, 0));
+            #[cfg(target_os = "linux")]
+            assert_eq!(unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) }, 0);
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::process_restrictions_apply_in_isolated_child",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     #[test]
     fn duration_parser_rejects_overflow() {

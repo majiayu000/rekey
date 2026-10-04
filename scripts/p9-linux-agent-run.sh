@@ -106,7 +106,7 @@ capture_cmd() {
 }
 
 echo "== overlap default G1 socket is rejected"
-printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin >/dev/null
+printf '%s\n' "$PASSWORD" | "$REKEYD" init --mode team --state-dir "$STATE" --password-stdin >/dev/null
 capture_cmd "$REKEY" --state-dir "$STATE" agent-run -- "$PYTHON" -c 'print(1)'
 [[ "$CAPTURE_RC" -eq 2 ]] || {
   echo "expected overlapping agent-run exit 2, got $CAPTURE_RC: $CAPTURE_OUT"
@@ -164,11 +164,11 @@ import json, pathlib, sys, time, uuid
 path, action_id, action_version, principal_id = sys.argv[1:]
 resource = {"type": "fixed-http-action", "id": action_id}
 pathlib.Path(path).write_text(json.dumps({
-    "format_version": 3,
+    "format_version": 6,
     "version": 1,
     "expires_at_ms": int(time.time() * 1000) + 600000,
     "approvers": [],
-    "workload_identities": [],
+    "profiles": [], "workload_identities": [],
     "bindings": [{
         "action_id": action_id,
         "version": int(action_version),

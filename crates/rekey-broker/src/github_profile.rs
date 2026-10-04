@@ -148,6 +148,11 @@ impl GitHubAppProfile {
         action: &FixedHttpAction,
         request: &ExecuteRequest,
     ) -> Result<GitHubAction, GitHubError> {
+        let path = action
+            .target
+            .fixed_path()
+            .ok_or(GitHubError::ProfileMismatch)?
+            .as_str();
         if action.origin.host() != "api.github.com"
             || action.origin.port() != 443
             || action.auth.header_name.as_str() != "authorization"
@@ -158,7 +163,7 @@ impl GitHubAppProfile {
             return Err(GitHubError::ProfileMismatch);
         }
         if action.method == FixedMethod::Get
-            && action.exact_path.as_str() == "/installation/repositories"
+            && path == "/installation/repositories"
             && request.content_type.is_none()
             && request.body.is_empty()
         {
@@ -169,7 +174,6 @@ impl GitHubAppProfile {
         {
             return Err(GitHubError::ProfileMismatch);
         }
-        let path = action.exact_path.as_str();
         let tail = path
             .strip_prefix("/repos/")
             .ok_or(GitHubError::ProfileMismatch)?;

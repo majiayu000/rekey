@@ -473,7 +473,7 @@ impl ActionExecutor {
             action.auth.prefix.as_str().as_bytes(),
         ));
 
-        let upstream = build_upstream(action, request, auth);
+        let upstream = build_upstream(action, request, auth).map_err(BrokerError::Denied)?;
         if !outbound_headers_are_valid(&upstream) {
             started
                 .blocked_until(effect_deadline, "invalid-upstream-header")
@@ -888,6 +888,7 @@ mod tests {
                     iterations: 1,
                     parallelism: 1,
                 },
+                rekey_domain::authorization::PolicyMode::Team,
             )
             .unwrap();
             rekey_vault::bootstrap::confirm_vault_init(&state).unwrap();
@@ -906,7 +907,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            let action: FixedHttpAction = serde_json::from_value(serde_json::json!({"id":rekey_domain::ids::ActionId::new_random(),"name":"actor-action","version":1,"enabled":true,"credential_id":credential.id,"origin":"https://api.example.com","method":"POST","exact_path":"/business","auth":{"header_name":"authorization","prefix":"Bearer "},"timeout_ms":timeout_ms,"request_policy":{"max_body_bytes":1024,"allowed_extra_headers":[]},"response_policy":{"max_body_bytes":1024,"allowed_headers":["content-type"]}})).unwrap();
+            let action: FixedHttpAction = serde_json::from_value(serde_json::json!({"id":rekey_domain::ids::ActionId::new_random(),"name":"actor-action","version":1,"enabled":true,"credential_id":credential.id,"origin":"https://api.example.com","method":"POST","target":{"kind":"fixed","path":"/business"},"auth":{"header_name":"authorization","prefix":"Bearer "},"timeout_ms":timeout_ms,"request_policy":{"max_body_bytes":1024,"allowed_extra_headers":[]},"response_policy":{"max_body_bytes":1024,"allowed_headers":["content-type"]}})).unwrap();
             action.validate().unwrap();
             let (terminals, terminal_worker) =
                 crate::audit::spawn_terminal_worker(authority.clone());
@@ -940,6 +941,7 @@ mod tests {
         }
         async fn run(&self) -> Result<ExecuteOutcome, BrokerError> {
             let ctx = ExecutionAuditContext {
+                request_context: None,
                 request_id: RequestId::new_random(),
                 session_id: rekey_domain::ids::SessionId::new_random(),
                 action: ActionVersionRef {
@@ -955,8 +957,11 @@ mod tests {
                 action: ctx.action,
                 content_type: Some("application/json".into()),
                 extra_headers: vec![],
+                params: Default::default(),
+                query: Default::default(),
                 body: b"{}".to_vec(),
                 approval_grants: vec![],
+                local_approval_request_id: None,
             };
             let end = Instant::now() + Duration::from_millis(self.action.timeout_ms.into());
             let mut started = self
@@ -1103,23 +1108,24 @@ mod tests {
     }
     #[tokio::test]
     async fn actor_source_expiry_and_action_deadline_do_not_restart_at_response() {
-        let f = ActorFixture::new(250, 30_000).await;
+        // Allow durable preparation to finish before the deliberately delayed source expires.
+        let f = ActorFixture::new(2_000, 30_000).await;
         f.fake.push_response_delayed(
             Ok(ActorFixture::resolved(b"123456789")),
-            Duration::from_millis(400),
+            Duration::from_millis(3_000),
         );
         assert!(f.run().await.is_err());
         assert_eq!(f.fake.take_requests().len(), 1);
         f.finish().await;
-        let f = ActorFixture::new(60_000, 50).await;
+        let f = ActorFixture::new(60_000, 2_000).await;
         f.fake.push_response_delayed(
             Ok(ActorFixture::resolved(b"123456789")),
-            Duration::from_millis(100),
+            Duration::from_millis(3_000),
         );
         assert!(f.run().await.is_err());
         assert_eq!(f.fake.take_requests().len(), 1);
         f.finish().await;
-        let f = ActorFixture::new(250, 30_000).await;
+        let f = ActorFixture::new(2_000, 30_000).await;
         f.fake
             .push_response(Ok(ActorFixture::resolved(b"123456789")));
         f.fake.push_response_delayed(
@@ -1128,7 +1134,7 @@ mod tests {
                 headers: vec![].into(),
                 body: Zeroizing::new(b"clean".to_vec()),
             }),
-            Duration::from_millis(400),
+            Duration::from_millis(3_000),
         );
         assert_eq!(f.run().await.unwrap().body, b"clean");
         assert_eq!(f.fake.take_requests().len(), 2);
@@ -1698,6 +1704,15 @@ mod tests {
                 rekey_vault::secret::SecretInput::from_slice(b"actor-proof"),
             ),
             &receipt.sha256_hex,
+            rekey_vault::bootstrap::inspect_restore(
+                &backup,
+                &restored,
+                rekey_vault::bootstrap::RestoreProof::Password(
+                    rekey_vault::secret::SecretInput::from_slice(b"actor-proof"),
+                ),
+                &receipt.sha256_hex,
+            )
+            .unwrap(),
         )
         .unwrap();
         f.fake

@@ -15,7 +15,7 @@ pub(super) const AUDIT_COLUMNS: &str =
     "sequence, event_id, request_id, session_id, action_id, action_version,
     credential_id, credential_version, principal_id, policy_version, policy_digest, policy_rule_id,
     resource_type, resource_id, parameter_hash, approval_request_id, approval_id, approver_id,
-    event_type, outcome, reason_code, upstream_status, latency_ms, created_at_ms";
+    event_type, outcome, reason_code, upstream_status, latency_ms, created_at_ms, metadata_json";
 
 pub(super) struct RawAuditRow {
     sequence: i64,
@@ -42,6 +42,7 @@ pub(super) struct RawAuditRow {
     upstream_status: Option<i64>,
     latency_ms: Option<i64>,
     created_at_ms: i64,
+    metadata_json: Option<String>,
 }
 
 impl SqliteRecordStore {
@@ -98,10 +99,32 @@ impl SqliteRecordStore {
         let scan_count = raw_count.min(AUDIT_SCAN_MAX_ROWS as usize);
         let mut events = Vec::with_capacity(query.limit as usize);
         let mut next_before_sequence = None;
+        // Reserve a 20-digit cursor (also larger than null). Record JSON is
+        // counted exactly; neither fields nor individual records are truncated.
+        let mut page_bytes = serde_json::to_vec(&AuditPage {
+            schema: AUDIT_SCHEMA_V2.to_owned(),
+            snapshot_max_sequence,
+            events: Vec::new(),
+            next_before_sequence: Some(u64::MAX),
+        })
+        .map_err(|_| AuthorityError::StorageIntegrityFailed)?
+        .len();
         for (index, raw) in raw.into_iter().take(scan_count).enumerate() {
             let event = record_from_raw(raw)?;
             let sequence = event.sequence;
             if query.matches(&event) {
+                let record_bytes = serde_json::to_vec(&event)
+                    .map_err(|_| AuthorityError::StorageIntegrityFailed)?
+                    .len();
+                let next_bytes = page_bytes + record_bytes + usize::from(!events.is_empty());
+                if next_bytes > rekey_domain::ipc::RESPONSE_BODY_MAX_BYTES as usize {
+                    if events.is_empty() {
+                        return Err(rekey_domain::DomainError::ResponseTooLarge.into());
+                    }
+                    next_before_sequence = Some(sequence + 1);
+                    break;
+                }
+                page_bytes = next_bytes;
                 events.push(event);
                 if events.len() == query.limit as usize {
                     if index + 1 < raw_count {
@@ -153,10 +176,12 @@ pub(super) fn raw_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawAuditRow> 
         upstream_status: row.get(21)?,
         latency_ms: row.get(22)?,
         created_at_ms: row.get(23)?,
+        metadata_json: row.get(24)?,
     })
 }
 
 pub(super) fn record_from_raw(raw: RawAuditRow) -> Result<AuditRecord, AuthorityError> {
+    let metadata = super::audit::decode_metadata(raw.metadata_json)?;
     let authorization = authorization_from_columns(
         raw.principal_id,
         raw.policy_version,
@@ -198,6 +223,8 @@ pub(super) fn record_from_raw(raw: RawAuditRow) -> Result<AuditRecord, Authority
         approval_request_id: optional_id(raw.approval_request_id, ApprovalRequestId::from_bytes)?,
         approval_id: optional_id(raw.approval_id, ApprovalId::from_bytes)?,
         approver_id: optional_id(raw.approver_id, ApproverId::from_bytes)?,
+        request_context: metadata.request_context,
+        usage: metadata.usage,
         event_type: raw.event_type,
         outcome: raw.outcome,
         reason_code: raw.reason_code,

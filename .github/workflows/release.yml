@@ -34,8 +34,6 @@ jobs:
         include:
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
-          - runner: macos-14
-            target: aarch64-apple-darwin
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -55,35 +53,7 @@ jobs:
           [[ "$GITHUB_REF_NAME" == "v$version" ]]
           [[ "$(rustc -vV | awk '/^host:/ {print $2}')" == "${{ matrix.target }}" ]]
       - name: Build release binaries
-        run: cargo build --locked --release -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd --bin rekey-github-create-issue --bin rekey-mcp -p rekey-policy --bin rekey-policy-sign --bin rekey-approval-sign -p rekey-approval-relay --bin rekey-approval-relay
-      - name: Sign macOS binaries
-        if: runner.os == 'macOS'
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-        run: |
-          set -euo pipefail
-          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY; do
-            if [ -z "${!name}" ]; then
-              echo "::error::Missing required Apple signing secret: $name"
-              exit 1
-            fi
-          done
-          cert="$RUNNER_TEMP/rekey-developer-id.p12"
-          keychain="$RUNNER_TEMP/rekey-signing.keychain-db"
-          password="$(openssl rand -base64 32)"
-          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$cert"
-          security create-keychain -p "$password" "$keychain"
-          security set-keychain-settings -lut 21600 "$keychain"
-          security unlock-keychain -p "$password" "$keychain"
-          security import "$cert" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain"
-          security list-keychains -d user -s "$keychain" login.keychain-db
-          for bin in rekey rekeyd rekey-github-create-issue rekey-mcp rekey-policy-sign rekey-approval-sign rekey-approval-relay; do
-            codesign --force --sign "$APPLE_SIGNING_IDENTITY" --options runtime --timestamp "target/release/$bin"
-            codesign --verify --strict "target/release/$bin"
-          done
+        run: cargo build --locked --release -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd --bin rekey-mcp -p rekey-policy --bin rekey-policy-sign --bin rekey-approval-sign
       - name: Package release archive
         id: package
         shell: bash
@@ -92,19 +62,16 @@ jobs:
           archive="rekey-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz"
           stage="dist/rekey-${GITHUB_REF_NAME}-${{ matrix.target }}"
           mkdir -p "$stage"
-          install -m 0755 target/release/rekey target/release/rekeyd target/release/rekey-github-create-issue \
-            target/release/rekey-mcp target/release/rekey-policy-sign target/release/rekey-approval-sign \
-            target/release/rekey-approval-relay "$stage/"
+          install -m 0755 target/release/rekey target/release/rekeyd \
+            target/release/rekey-mcp target/release/rekey-policy-sign target/release/rekey-approval-sign "$stage/"
           install -m 0755 scripts/rekey-service-unit.py scripts/agent-quickstart.py \
-            scripts/operator-credential-repair.py scripts/rekey-backup-sync.py \
-            scripts/rekey-audit-delivery.py scripts/rekey-audit-archive.py \
-            scripts/rekey-controlplane.py "$stage/"
+            scripts/operator-credential-repair.py "$stage/"
           install -m 0644 LICENSE README.md "$stage/"
           install -m 0644 CHANGELOG.md SECURITY.md SUPPORT.md "$stage/"
           mkdir -p "$stage/docs/product-foundation" "$stage/docs/releases" \
             "$stage/docs/superpowers/specs" "$stage/examples"
           install -m 0644 docs/alpha-scope.md docs/installation.md docs/user-guide.md \
-            docs/operations-runbook.md "$stage/docs/"
+            docs/operations-runbook.md docs/v3-release-and-dogfood.md "$stage/docs/"
           install -m 0644 docs/product-foundation/feature-truth-matrix.md \
             docs/product-foundation/threat-model-v2.md "$stage/docs/product-foundation/"
           install -m 0644 docs/releases/${GITHUB_REF_NAME}.md "$stage/docs/releases/"
@@ -168,6 +135,19 @@ jobs:
             docs/superpowers/specs/2026-09-30-decoded-source-bootstrap-sealing.md \
             docs/superpowers/specs/2026-09-30-metrics-deployment.md \
             docs/superpowers/specs/2026-09-30-native-policy-approval-flow.md \
+            docs/superpowers/specs/2026-10-02-docker-dr-reference.md \
+            docs/superpowers/specs/2026-10-01-pkcs11-approval-signer.md \
+            docs/superpowers/specs/2026-10-01-unlocked-audit-retention.md \
+            docs/superpowers/specs/2026-10-02-rekey-v3-personal-first.md \
+            docs/superpowers/plans/2026-10-03-v3-implementation.md \
+            docs/evidence/local-capabilities-2026-10-02.json \
+            docs/evidence/v3-review-v1-presence-2026-10-03.json \
+            docs/evidence/v3-review-v2-lldb-2026-10-03.json \
+            docs/evidence/v3-review-notarization-2026-10-03.json \
+            docs/evidence/v3-release-acceptance-2026-10-04.json \
+            docs/evidence/v3-security-core-review-2026-10-05.md \
+            docs/releases/v2.0.0-alpha.1.md \
+            docs/releases/v2.0.0-alpha.2.md \
             deploy/prometheus/rekey.rules.yml \
             deploy/prometheus/rekey.rules.test.yml \
             deploy/prometheus/rekey.scrape.example.yml \
@@ -219,16 +199,44 @@ jobs:
     runs-on: macos-14
     permissions:
       contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     steps:
+      - name: Set temporary signing paths
+        run: |
+          printf '%s\n' \
+            "REKEY_UI_SIGNING_KEYCHAIN=$RUNNER_TEMP/rekey-ui-signing.keychain-db" \
+            "REKEY_UI_CERTIFICATE_PATH=$RUNNER_TEMP/rekey-ui-developer-id.p12" \
+            "REKEY_PROVISIONING_PROFILE=$RUNNER_TEMP/rekey-app.provisionprofile" \
+            "REKEY_DAEMON_PROVISIONING_PROFILE=$RUNNER_TEMP/rekey-daemon.provisionprofile" \
+            "REKEY_INSTALLER_CERTIFICATE_PATH=$RUNNER_TEMP/rekey-installer-developer-id.p12" \
+            "APPLE_API_KEY_PATH=$RUNNER_TEMP/rekey-notary-api-key.p8" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
           toolchain: 1.95.0
+      - name: Validate package tag, version, and runner architecture
+        run: |
+          set -euo pipefail
+          version="$(cargo metadata --locked --offline --no-deps --format-version 1 | python3 -c 'import json,sys; m=json.load(sys.stdin); print(next(p["version"] for p in m["packages"] if p["name"] == "rekey-cli" and p["id"] in m["workspace_members"]))')"
+          [[ "$GITHUB_REF_NAME" == "v$version" ]]
+          [[ "$(rustc -vV | awk '/^host:/ {print $2}')" == "aarch64-apple-darwin" ]]
+      - name: Check package and profile structure
+        run: |
+          python3 scripts/test-macos-profile.py
+          python3 scripts/test-macos-pkg.py
+          python3 scripts/test-v3-distribution.py
       - name: Require Apple signing secrets
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_INSTALLER_CERTIFICATE: ${{ secrets.APPLE_INSTALLER_CERTIFICATE }}
+          APPLE_INSTALLER_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_PASSWORD }}
+          APPLE_INSTALLER_SIGNING_IDENTITY: ${{ secrets.APPLE_INSTALLER_SIGNING_IDENTITY }}
+          APPLE_PROVISIONING_PROFILE: ${{ secrets.APPLE_PROVISIONING_PROFILE }}
+          APPLE_DAEMON_PROVISIONING_PROFILE: ${{ secrets.APPLE_DAEMON_PROVISIONING_PROFILE }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
@@ -239,6 +247,11 @@ jobs:
             APPLE_CERTIFICATE \
             APPLE_CERTIFICATE_PASSWORD \
             APPLE_SIGNING_IDENTITY \
+            APPLE_INSTALLER_CERTIFICATE \
+            APPLE_INSTALLER_CERTIFICATE_PASSWORD \
+            APPLE_INSTALLER_SIGNING_IDENTITY \
+            APPLE_PROVISIONING_PROFILE \
+            APPLE_DAEMON_PROVISIONING_PROFILE \
             APPLE_API_KEY \
             APPLE_API_ISSUER \
             APPLE_API_KEY_CONTENT
@@ -249,41 +262,45 @@ jobs:
             fi
           done
           exit "$missing"
-      - name: Import Developer ID certificate
+      - name: Import Developer ID Application and Installer certificates
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_INSTALLER_CERTIFICATE: ${{ secrets.APPLE_INSTALLER_CERTIFICATE }}
+          APPLE_INSTALLER_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_PASSWORD }}
         run: |
           set -euo pipefail
-          certificate_path="$RUNNER_TEMP/rekey-ui-developer-id.p12"
-          keychain_path="$RUNNER_TEMP/rekey-ui-signing.keychain-db"
+          umask 077
           keychain_password="$(openssl rand -base64 32)"
           echo "::add-mask::$keychain_password"
-          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$certificate_path"
-          security create-keychain -p "$keychain_password" "$keychain_path"
-          security set-keychain-settings -lut 21600 "$keychain_path"
-          security unlock-keychain -p "$keychain_password" "$keychain_path"
-          security import "$certificate_path" -k "$keychain_path" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain_path"
-          security list-keychains -d user -s "$keychain_path" login.keychain-db
-          {
-            echo "APPLE_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY"
-            echo "REKEY_UI_SIGNING_KEYCHAIN=$keychain_path"
-            echo "REKEY_UI_CERTIFICATE_PATH=$certificate_path"
-          } >> "$GITHUB_ENV"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$REKEY_UI_CERTIFICATE_PATH"
+          printf '%s' "$APPLE_INSTALLER_CERTIFICATE" | base64 --decode > "$REKEY_INSTALLER_CERTIFICATE_PATH"
+          security create-keychain -p "$keychain_password" "$REKEY_UI_SIGNING_KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$REKEY_UI_SIGNING_KEYCHAIN"
+          security unlock-keychain -p "$keychain_password" "$REKEY_UI_SIGNING_KEYCHAIN"
+          security import "$REKEY_UI_CERTIFICATE_PATH" -k "$REKEY_UI_SIGNING_KEYCHAIN" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security import "$REKEY_INSTALLER_CERTIFICATE_PATH" -k "$REKEY_UI_SIGNING_KEYCHAIN" -P "$APPLE_INSTALLER_CERTIFICATE_PASSWORD" -T /usr/bin/pkgbuild -T /usr/bin/productsign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$REKEY_UI_SIGNING_KEYCHAIN"
+          security list-keychains -d user -s "$REKEY_UI_SIGNING_KEYCHAIN" login.keychain-db
       - name: Write App Store Connect API key
         env:
           APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
         run: |
           set -euo pipefail
-          api_key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY}.p8"
-          printf '%s' "$APPLE_API_KEY_CONTENT" | base64 --decode > "$api_key_path"
-          chmod 600 "$api_key_path"
-          echo "APPLE_API_KEY_PATH=$api_key_path" >> "$GITHUB_ENV"
+          umask 077
+          printf '%s' "$APPLE_API_KEY_CONTENT" | base64 --decode > "$APPLE_API_KEY_PATH"
+      - name: Write separate Developer ID App and daemon provisioning profiles
+        env:
+          APPLE_PROVISIONING_PROFILE: ${{ secrets.APPLE_PROVISIONING_PROFILE }}
+          APPLE_DAEMON_PROVISIONING_PROFILE: ${{ secrets.APPLE_DAEMON_PROVISIONING_PROFILE }}
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '%s' "$APPLE_PROVISIONING_PROFILE" | base64 --decode > "$REKEY_PROVISIONING_PROFILE"
+          printf '%s' "$APPLE_DAEMON_PROVISIONING_PROFILE" | base64 --decode > "$REKEY_DAEMON_PROVISIONING_PROFILE"
       - name: Build and sign Rekey.app
         env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           REKEY_REQUIRE_DEVELOPER_ID: "1"
         run: scripts/build-macos-ui.sh
       - name: Notarize Rekey.app
@@ -305,27 +322,86 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "$app"
           spctl --assess --type execute --verbose=4 "$app"
           mkdir -p dist
-          archive="rekey-${GITHUB_REF_NAME}-macos-app.zip"
-          ditto -c -k --sequesterRsrc --keepParent "$app" "dist/$archive"
-          (cd dist && shasum -a 256 "$archive" > "$archive.sha256")
+      - name: Build, sign, and notarize the Installer package
+        env:
+          APPLE_INSTALLER_SIGNING_IDENTITY: ${{ secrets.APPLE_INSTALLER_SIGNING_IDENTITY }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          scripts/build-macos-pkg.sh \
+            --app target/macos-ui/Rekey.app \
+            --output-dir target/macos-pkg \
+            --installer-identity "$APPLE_INSTALLER_SIGNING_IDENTITY"
+          package="rekey-${GITHUB_REF_NAME}-macos.pkg"
+          mv "target/macos-pkg/Rekey-${GITHUB_REF_NAME#v}.pkg" "dist/$package"
+          xcrun notarytool submit "dist/$package" \
+            --key "$APPLE_API_KEY_PATH" \
+            --key-id "$APPLE_API_KEY" \
+            --issuer "$APPLE_API_ISSUER" \
+            --wait
+          xcrun stapler staple "dist/$package"
+          xcrun stapler validate "dist/$package"
+          pkgutil --check-signature "dist/$package"
+          spctl --assess --type install --verbose=4 "dist/$package"
+          (cd dist && shasum -a 256 "$package" > "$package.sha256")
+      - name: Generate cask from the final notarized package
+        run: |
+          set -euo pipefail
+          python3 scripts/generate-homebrew-cask.py \
+            --package "dist/rekey-${GITHUB_REF_NAME}-macos.pkg" \
+            --version "${GITHUB_REF_NAME#v}" --repository "$GITHUB_REPOSITORY" > dist/rekey.rb
+          ruby -c dist/rekey.rb
+          (cd dist && shasum -a 256 rekey.rb > rekey.rb.sha256)
+      - name: Generate package SPDX SBOM
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          path: target/macos-ui/Rekey.app
+          format: spdx-json
+          output-file: dist/rekey-${{ github.ref_name }}-macos.pkg.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Attest package build provenance
+        id: pkg-provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/rekey-${{ github.ref_name }}-macos.pkg
+      - name: Preserve package provenance bundle
+        run: cp "${{ steps.pkg-provenance.outputs.bundle-path }}" "dist/rekey-${GITHUB_REF_NAME}-macos.pkg.provenance.intoto.jsonl"
+      - name: Attest package SBOM
+        id: pkg-sbom
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/rekey-${{ github.ref_name }}-macos.pkg
+          sbom-path: dist/rekey-${{ github.ref_name }}-macos.pkg.spdx.json
+      - name: Preserve package SBOM attestation bundle
+        run: cp "${{ steps.pkg-sbom.outputs.bundle-path }}" "dist/rekey-${GITHUB_REF_NAME}-macos.pkg.sbom.intoto.jsonl"
       - name: Remove temporary signing material
         if: always()
         run: |
-          if [ -n "${REKEY_UI_SIGNING_KEYCHAIN:-}" ]; then
-            security delete-keychain "$REKEY_UI_SIGNING_KEYCHAIN" || true
+          status=0
+          if [ -e "$REKEY_UI_SIGNING_KEYCHAIN" ]; then
+            security delete-keychain "$REKEY_UI_SIGNING_KEYCHAIN" || status=1
           fi
-          rm -f "${REKEY_UI_CERTIFICATE_PATH:-}" "${APPLE_API_KEY_PATH:-}"
+          rm -f "$REKEY_UI_CERTIFICATE_PATH" "$REKEY_INSTALLER_CERTIFICATE_PATH" "$REKEY_PROVISIONING_PROFILE" "$REKEY_DAEMON_PROVISIONING_PROFILE" \
+            "$APPLE_API_KEY_PATH" "$RUNNER_TEMP/Rekey-notarize.zip" || status=1
+          exit "$status"
       - name: Upload immutable build output
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: rekey-macos-app
+          name: rekey-macos-pkg
           path: |
-            dist/rekey-${{ github.ref_name }}-macos-app.zip
-            dist/rekey-${{ github.ref_name }}-macos-app.zip.sha256
+            dist/rekey-${{ github.ref_name }}-macos.pkg
+            dist/rekey-${{ github.ref_name }}-macos.pkg.sha256
+            dist/rekey-${{ github.ref_name }}-macos.pkg.spdx.json
+            dist/rekey-${{ github.ref_name }}-macos.pkg.provenance.intoto.jsonl
+            dist/rekey-${{ github.ref_name }}-macos.pkg.sbom.intoto.jsonl
+            dist/rekey.rb
+            dist/rekey.rb.sha256
           if-no-files-found: error
 
   fresh-install:
-    needs: build
+    needs: [build, macos-ui]
     strategy:
       fail-fast: true
       matrix:
@@ -345,10 +421,12 @@ jobs:
       - name: Install acceptance dependencies
         run: scripts/ci-install-release-smoke-deps.sh
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: runner.os != 'macOS'
         with:
           name: rekey-${{ matrix.target }}
           path: downloaded
       - name: Exercise downloaded release artifact
+        if: runner.os != 'macOS'
         shell: bash
         run: |
           set -euo pipefail
@@ -363,6 +441,22 @@ jobs:
           REKEY_SERVICE_MANAGED_DAEMON="$release_dir/rekeyd" \
           REKEY_SERVICE_REQUIRE_BINARIES=1 \
             scripts/p1-service-manager.sh
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: runner.os == 'macOS'
+        with:
+          name: rekey-macos-pkg
+          path: downloaded
+      - name: Exercise downloaded notarized package
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          package="downloaded/rekey-${GITHUB_REF_NAME}-macos.pkg"
+          gh attestation verify "$package" --repo "$GITHUB_REPOSITORY"
+          python3 scripts/generate-homebrew-cask.py --package "$package" \
+            --version "${GITHUB_REF_NAME#v}" --repository "$GITHUB_REPOSITORY" > expected-rekey.rb
+          cmp expected-rekey.rb downloaded/rekey.rb
+          python3 scripts/test-macos-pkg.py --install-smoke \
+            --package "$package" --checksum "$package.sha256" --version "${GITHUB_REF_NAME#v}"
 
   publish:
     needs: [fresh-install, macos-ui]
@@ -416,6 +510,7 @@ jobs:
       - name: Install acceptance dependencies
         run: scripts/ci-install-release-smoke-deps.sh
       - name: Download the public release artifact
+        if: runner.os != 'macOS'
         shell: bash
         run: |
           set -euo pipefail
@@ -429,6 +524,20 @@ jobs:
             "downloaded/$archive" \
             "downloaded/$archive.sha256" \
             "${GITHUB_REF_NAME#v}"
+      - name: Download and install the public notarized package
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          package="rekey-${GITHUB_REF_NAME}-macos.pkg"
+          mkdir downloaded
+          gh release download "$GITHUB_REF_NAME" --dir downloaded \
+            --pattern "$package" --pattern "$package.sha256" --pattern rekey.rb
+          gh attestation verify "downloaded/$package" --repo "$GITHUB_REPOSITORY"
+          python3 scripts/generate-homebrew-cask.py --package "downloaded/$package" \
+            --version "${GITHUB_REF_NAME#v}" --repository "$GITHUB_REPOSITORY" > expected-rekey.rb
+          cmp expected-rekey.rb downloaded/rekey.rb
+          python3 scripts/test-macos-pkg.py --install-smoke \
+            --package "downloaded/$package" --checksum "downloaded/$package.sha256" --version "${GITHUB_REF_NAME#v}"
 
   withdraw-on-public-smoke-failure:
     needs: [publish, public-url-smoke]

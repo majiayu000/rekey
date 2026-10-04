@@ -174,6 +174,8 @@ async fn oversized_audit_page_fails_before_a_success_frame() {
             credential_version: None,
             authorization: None,
             approval: None,
+            request_context: None,
+            usage: None,
             event_type: "test.oversized",
             outcome: "failure",
             reason_code: "x".repeat(RESPONSE_BODY_MAX_BYTES as usize),
@@ -208,6 +210,7 @@ async fn oversized_audit_page_fails_before_a_success_frame() {
     broker.shutdown_keep_dir().await;
 }
 
+#[cfg(feature = "lab")]
 async fn metrics_snapshot(broker: &h::TestBroker) -> rekey_domain::ipc::MetricsResponse {
     let response = h::call(
         &broker.admin_sock(),
@@ -221,6 +224,7 @@ async fn metrics_snapshot(broker: &h::TestBroker) -> rekey_domain::ipc::MetricsR
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[cfg(feature = "lab")]
 async fn metrics_are_admin_only_passive_and_track_real_dispatch_results() {
     let broker = h::start_broker().await;
     let before = metrics_snapshot(&broker).await;
@@ -308,6 +312,7 @@ async fn metrics_are_admin_only_passive_and_track_real_dispatch_results() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[cfg(feature = "lab")]
 async fn metrics_count_frame_and_connection_capacity_rejections() {
     let broker = h::start_broker().await;
     let header = FrameHeader {
@@ -423,6 +428,8 @@ async fn audit_prune_requires_admin_step_up_and_invalidates_old_ipc_snapshots() 
                 credential_version: None,
                 authorization: None,
                 approval: None,
+                request_context: None,
+                usage: None,
                 event_type: kind,
                 outcome: "success",
                 reason_code: "prune-test".into(),

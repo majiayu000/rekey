@@ -142,9 +142,29 @@ pub async fn write_error<S: AsyncWrite + Unpin>(
         code: code.to_owned(),
         message: message.to_owned(),
         retryable,
+        approval: None,
     };
     let metadata =
         serde_json::to_vec(&envelope).map_err(|_| FrameIoError::Frame(FrameError::InvalidField))?;
+    write_frame(
+        stream,
+        channel,
+        rekey_domain::ipc::resp_msg::ERROR,
+        request_id,
+        &metadata,
+        &[],
+    )
+    .await
+}
+
+pub(crate) async fn write_approval_required<S: AsyncWrite + Unpin>(
+    stream: &mut S,
+    channel: Channel,
+    request_id: RequestId,
+    approval: rekey_domain::ipc::ApprovalRequired,
+) -> Result<(), FrameIoError> {
+    let metadata = serde_json::to_vec(&ErrorEnvelope::approval_required(request_id, approval))
+        .map_err(|_| FrameIoError::Frame(FrameError::InvalidField))?;
     write_frame(
         stream,
         channel,

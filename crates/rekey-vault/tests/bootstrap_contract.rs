@@ -26,12 +26,38 @@ fn fresh_init_creates_secure_layout() {
 }
 
 #[test]
-fn discard_after_init_leaves_no_servable_vault() {
-    let vault = common::init_test_vault();
-    let db = paths::vault_db(&vault.state_dir);
+fn discard_after_init_cannot_erase_reserved_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    init_vault(
+        &state,
+        &common::password_input(),
+        common::TEST_PARAMS,
+        rekey_domain::authorization::PolicyMode::Team,
+    )
+    .unwrap();
+    let db = paths::vault_db(&state);
+    let anchor = fs::read(state.join("generation")).unwrap();
+    assert!(matches!(
+        discard_vault_files(&state),
+        Err(AuthorityError::UnsupportedVaultLayout)
+    ));
     assert!(db.exists());
-    discard_vault_files(&vault.state_dir).unwrap();
-    assert!(!db.exists());
+    assert!(paths::init_incomplete(&state).exists());
+    assert_eq!(fs::read(state.join("generation")).unwrap(), anchor);
+    assert!(matches!(
+        init_vault(
+            &state,
+            &common::password_input(),
+            common::TEST_PARAMS,
+            rekey_domain::authorization::PolicyMode::Team
+        ),
+        Err(AuthorityError::StateDirectoryNotEmpty)
+    ));
+    assert!(matches!(
+        rekey_vault::authority::spawn_authority(common::test_config(&state)),
+        Err(AuthorityError::UnsupportedVaultLayout)
+    ));
 }
 
 #[tokio::test]
@@ -42,6 +68,7 @@ async fn init_is_not_servable_until_recovery_confirmation_is_durable() {
         &state_dir,
         &SecretInput::from_slice(common::PASSWORD),
         common::TEST_PARAMS,
+        rekey_domain::authorization::PolicyMode::Team,
     )
     .unwrap();
 
@@ -59,7 +86,7 @@ async fn init_is_not_servable_until_recovery_confirmation_is_durable() {
 }
 
 #[test]
-fn failed_discard_keeps_init_marker_and_blocks_serve() {
+fn discard_preserves_confirmed_database_anchor_and_unrelated_files() {
     let vault = common::init_test_vault();
     let runtime = paths::runtime_dir(&vault.state_dir);
     fs::create_dir(&runtime).unwrap();
@@ -68,19 +95,18 @@ fn failed_discard_keeps_init_marker_and_blocks_serve() {
         b"must not be recursively deleted",
     )
     .unwrap();
-
-    let err = discard_vault_files(&vault.state_dir).unwrap_err();
-    assert!(matches!(err, AuthorityError::StorageUnavailable(_)));
-    assert!(paths::init_incomplete(&vault.state_dir).exists());
-    assert!(runtime.join("unexpected").exists());
-    let err = common::expect_err(rekey_vault::authority::spawn_authority(
-        common::test_config(&vault.state_dir),
+    let db = fs::read(paths::vault_db(&vault.state_dir)).unwrap();
+    let anchor = fs::read(vault.state_dir.join("generation")).unwrap();
+    assert!(matches!(
+        discard_vault_files(&vault.state_dir),
+        Err(AuthorityError::UnsupportedVaultLayout)
     ));
-    assert!(matches!(err, AuthorityError::UnsupportedVaultLayout));
-
-    fs::remove_file(runtime.join("unexpected")).unwrap();
-    discard_vault_files(&vault.state_dir).unwrap();
-    assert!(!vault.state_dir.exists());
+    assert_eq!(fs::read(paths::vault_db(&vault.state_dir)).unwrap(), db);
+    assert_eq!(
+        fs::read(vault.state_dir.join("generation")).unwrap(),
+        anchor
+    );
+    assert!(runtime.join("unexpected").exists());
 }
 
 #[test]
@@ -90,6 +116,7 @@ fn second_init_rejected() {
         &vault.state_dir,
         &SecretInput::from_slice(common::PASSWORD),
         common::TEST_PARAMS,
+        rekey_domain::authorization::PolicyMode::Team,
     ));
     assert!(matches!(err, AuthorityError::StateDirectoryNotEmpty));
 }
@@ -107,6 +134,7 @@ fn legacy_vault_rejected() {
         &state_dir,
         &SecretInput::from_slice(common::PASSWORD),
         common::TEST_PARAMS,
+        rekey_domain::authorization::PolicyMode::Team,
     ));
     assert!(matches!(err, AuthorityError::StateDirectoryNotEmpty));
     // Existing data must be untouched.
@@ -164,6 +192,7 @@ fn empty_password_rejected() {
         &state_dir,
         &SecretInput::new(vec![]),
         common::TEST_PARAMS,
+        rekey_domain::authorization::PolicyMode::Team,
     ));
     assert!(matches!(err, AuthorityError::InvalidUnlockCredential));
     // Failed init must not leave a usable-looking directory behind.

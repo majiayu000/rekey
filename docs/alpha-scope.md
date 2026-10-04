@@ -1,85 +1,78 @@
-# Rekey v2 public Alpha scope
+# Rekey v3 candidate scope
 
-Version: `2.0.0-alpha.2`
+Target: **3.0.0-alpha.1 — unpublished candidate, not GA**.
+Current durable formats vault25 and policy snapshot6 are frozen from alpha.1
+through all v3 releases. Source implementation, local validation and Release status
+are distinct. Every v3 Release entry remains **Pending**.
 
-This file describes the `v2.0.0-alpha.2` archive (vault schema v9, Shape A).
-A version string here is archive membership. The tagged workflow publishes a
-prerelease before public-URL smoke. Treat that Release as the completed public
-download only after smoke succeeds; a smoke failure withdraws it to draft.
-Until then, `v2.0.0-alpha.1` remains the last completed public download.
+## Distribution
 
-## Distribution and platform matrix
+| Platform | Candidate artifact / entry | Release |
+|---|---|---|
+| macOS 14+, Apple Silicon | Signed/notarized pkg; release-local generated cask; Rekey.app + CLI links | Pending |
+| Ubuntu 24.04, x86_64 | tar.gz; explicit systemd user unit | Pending |
+| Other Linux / arm64 | Source and bounded test environments only | Pending; no distribution support claim |
+| macOS Intel / Windows | No candidate artifact | Not supported |
 
-| Platform | Architecture | Status | Artifact |
-| --- | --- | --- | --- |
-| Ubuntu 24.04 with systemd | x86_64 | This archive | `rekey-v2.0.0-alpha.2-x86_64-unknown-linux-gnu.tar.gz` |
-| macOS 14 | Apple silicon arm64 | This archive | `rekey-v2.0.0-alpha.2-aarch64-apple-darwin.tar.gz` |
-| Other glibc Linux distributions | x86_64 | Experimental source build only | None |
-| Linux arm64 | arm64 | Experimental; bounded G2 development evidence is not release support | None |
-| macOS Intel | x86_64 | Unsupported in this Alpha | None |
-| Windows | Any | Unsupported | None |
+There is no public v3 tap, crates.io package or completed v3 download. The cask
+uses the actual final pkg hash; it does not bypass signing, notarization or
+Installer gates. Current Homebrew local-file opt-in is documented in
+[installation](installation.md). No auto-updater or unattended installer is added.
 
-Distribution is limited to signed GitHub Release artifacts. Rekey is not
-published to crates.io, Homebrew, or another package registry in this Alpha.
+## Default source scope
 
-## Included capabilities
+- Local encrypted vault, password/recovery/Presence lifecycle, per-call sensitive
+  proofs, authenticated daemon peer, bounded audit and backup/restore.
+- Immutable personal P-256 or team Ed25519 trust; canonical default-deny policy.
+- Anthropic/OpenAI/GitHub PAT/generic Bearer templates and exact Action versions.
+- Personal template-default/allow/require-approval choices; complete replacement
+  diff and exact-byte App signing. Snapshot6/rule UI passed the joined local software checks; device gates remain pending.
+- Local Presence one-time approval and external Ed25519 approval; no implemented
+  remote approver. Agent calls within allow rules request no human interaction.
+- Signed Profile, owner-bound `run`, MCP discovery, SDK loopback gateway, model
+  and usage limits, raw SSE reflection blocking and Activity metadata.
+- Generation MAC, external high-water reservation, rollback-suspected state and
+  authenticated explicit restore. No lowering history or automatic rollback consent.
 
-| Capability | Handling | Limit that must stay in the notes |
-| --- | --- | --- |
-| Local credentials, fixed Action, backup/restore | included | G1, one local Authority |
-| Password change, recovery rotation | included | no historical-backup invalidation; no VRK/DEK rotation |
-| Audit list/export | included | no remote delivery, deletion, or configurable retention |
-| Signed policy, one- and two-person approval | included | external signatures only; no approval service or private-key custody |
-| Workload identity | included | static public keys; no JWKS/discovery |
-| GitHub App closed profile and P-06 bounds | included | one installation; 1–16 exact repositories; `GET /installation/repositories` and `POST /repos/OWNER/REPOSITORY/issues` only; live `api.github.com` evidence does not cover every added Admin path |
-| Vault KV v2 and one-shot dynamic lease | included (Shape A) | fixture-only closed protocol; no private-network source |
-| Linux `agent-run` | included | bubblewrap; disjoint socket; Ubuntu AppArmor profile; Black-box Verified facts only |
+[The feature matrix](product-foundation/feature-truth-matrix.md) links actual
+source and bounded tests. Neither a module nor a local test result is a Release.
 
-The IO-free `rekey-connector` crate is in the git tree at this tag, not in the
-downloadable archive. It is not an MCP server or generic OAuth connector. Matrix
-`Release` for that row remains `—`.
+## Enterprise reserve
 
-Out of this Alpha: Shape B Vault cut, other cloud secret sources, MCP server,
-online JWKS, P-08 metrics, P-10 plugin isolation, macOS sandbox, general G2,
-and an enterprise control plane.
+`--features lab` gates workload identity/OIDC, approval relay, external secret
+sources, native plugins, metrics, delivery/archive and standby/DR tools. Pure
+models/storage support may remain compiled without enabling their execution.
+Historical guide examples in those sections require matching lab binaries.
+They are not a team product, support commitment or default archive contents.
 
-## Product identity decision
+## Security and remaining acceptance
 
-This Alpha uses the descriptive project name **Rekey Credential Authority**
-only within `github.com/majiayu000/rekey`, with binaries named `rekey` and
-`rekeyd`. The active `rekey.dev` auth/billing/MCP product is unrelated. This
-project does not use that domain, its package scopes, or imply affiliation.
-No project domain or registry namespace is claimed for this Alpha. A distinct
-commercial name and formal trademark clearance are required before paid or
-hosted distribution.
+Current confirmed floor is L1-dev: the Agent interface does not return provider
+credentials. Signed peer identity alone does not establish L1. V1 (DPK access),
+V2 (memory isolation with positive controls), protected-anchor DPK permissions/CAS
+and deletion/recreation behavior, real SE/Touch ID and installed App lifecycle
+remain device gates. L2 additionally requires actual verified isolation and
+restricted egress; Profile text alone proves neither.
 
-## Security grade
+Linux Profile netns remains unavailable. The older `agent-run` reference has a
+narrower contract and cannot be substituted for it. Codex strict Seatbelt launch
+has the recorded managed-preferences limitation. Installed-client tests using a
+synthetic provider prove routing only; real accounts/providers remain unaccepted.
 
-The default product topology is G1: one trusted local user administers Rekey
-and runs agents under the same user. Same-user process inspection, `ptrace`,
-direct filesystem access, host root, kernel compromise, and direct Agent
-egress are outside that boundary.
+Before release: complete final default/lab joint checks, independent reviews,
+signed/notarized artifact and public-download checks, actual user-service and
+Installer lifecycle, and T12's fresh-account three-command/under-five-minute
+path. All remain separate Pending release gates; local checks cannot replace them.
 
-The Linux container/namespace G2 recipe is a separately tested reference. It
-does not make the default deployment, arbitrary Linux hosts, or macOS G2.
-Linux `agent-run` does not change that default.
+## Format and support policy
 
-## Compatibility and support
+Migration, old-format double reading and backfill are permanently excluded.
+Old directories and backups need their matching old binaries; a new format uses
+an empty directory and deliberate re-enrollment. GA minor/patch releases within
+one major must preserve durable formats; a breaking format requires a new major.
+This alpha is not a GA compatibility commitment, SLA or general A2/L2 guarantee.
 
-This is a breaking prerelease. There is no v1 import or in-place migration.
-`2.0.0-alpha.2` is the current Alpha archive. Support is best effort through the
-public issue tracker and private security channel; no SLA, 24x7 coverage, or
-guaranteed response time is offered.
-
-`v2.0.0-alpha.2` state is vault schema v9. There is no reader or migration for
-any other format, including v1 and v4–v8. Follow [installation.md](installation.md): make and verify
-a backup with the old binaries, keep those binaries and the old directory,
-initialize the new version in an empty path, and recreate Admin
-configuration. The old backup restores only with the matching old binaries; it
-is not a v9 import.
-
-## Previous public Alpha
-
-`v2.0.0-alpha.1` is a historical v5 archive. Keep its binaries for rollback. Do
-not open v9 state with them. Do not treat alpha.1 backups as a v9 import. Do
-not rewrite `docs/releases/v2.0.0-alpha.1.md` to claim compatibility.
+Historical v2 archive facts remain in [v2 alpha.2 notes](releases/v2.0.0-alpha.2.md)
+and [v2 alpha.1 notes](releases/v2.0.0-alpha.1.md), not in this v3 release status.
+The unrelated rekey.dev product/domain is not affiliated with this repository;
+no commercial-name or registry ownership claim is made here.

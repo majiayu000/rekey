@@ -19,6 +19,8 @@ pub enum AadPurpose {
     LeaseJournalPayload,
     LeaseJournalState,
     AuditRetention,
+    ActionState,
+    ProfileUsage,
 }
 
 impl AadPurpose {
@@ -36,6 +38,8 @@ impl AadPurpose {
             Self::LeaseJournalPayload => 10,
             Self::LeaseJournalState => 11,
             Self::AuditRetention => 12,
+            Self::ActionState => 13,
+            Self::ProfileUsage => 14,
         }
     }
 }

@@ -46,11 +46,11 @@ fn immutable_state(db: &Connection) -> Vec<Vec<Vec<Value>>> {
         "SELECT singleton,format_version,vault_id,crypto_suite,created_at_ms,schema_digest FROM vault_header",
         "SELECT credential_id,label,kind,state,current_version,created_at_ms,updated_at_ms,revoked_at_ms FROM credentials ORDER BY credential_id",
         "SELECT credential_id,version,state,aad_version,crypto_suite,created_at_ms,retired_at_ms FROM credential_versions ORDER BY credential_id,version",
-        "SELECT singleton,trust_installed,bundle_activated,signer_id,highest_version,policy_digest,bundle_digest,updated_at_ms FROM policy_state",
+        "SELECT singleton,mode,trust_installed,bundle_activated,signer_id,highest_version,policy_digest,bundle_digest,updated_at_ms FROM policy_state",
         "SELECT singleton,signer_id,algorithm,public_key,installed_at_ms FROM policy_trust",
         "SELECT singleton,signer_id,version,expires_at_ms,policy_digest,bundle_digest,bundle_json,activated_at_ms FROM policy_bundle",
         "SELECT * FROM workload_token_uses ORDER BY replay_digest",
-        "SELECT * FROM actions ORDER BY action_id,version",
+        "SELECT action_id,version,name,state,credential_id,origin,method,target_json,auth_header,auth_prefix,request_max_bytes,allowed_extra_headers_json,response_max_bytes,allowed_response_headers_json,timeout_ms,created_at_ms,text_stream_json,native_plugin_json FROM actions ORDER BY action_id,version",
     ].map(|sql| rows(db, sql)).to_vec()
 }
 
@@ -193,6 +193,8 @@ fn workload_audit() -> rekey_vault::command::AuditDraft {
         credential_version: None,
         authorization: None,
         approval: None,
+        request_context: None,
+        usage: None,
         event_type: "session.created",
         outcome: "success",
         reason_code: "workload-attested".to_owned(),
@@ -209,7 +211,7 @@ async fn install_policy(handle: &AuthorityHandle, bundle: bool, expires_at_ms: i
         .policy_trust_install_before(
             PolicyTrustInput {
                 signer_id,
-                public_key: [7; 32],
+                key: common::policy_key(7),
             },
             common::password_proof(),
             None,
@@ -222,8 +224,11 @@ async fn install_policy(handle: &AuthorityHandle, bundle: bool, expires_at_ms: i
             .policy_bundle_activate_before(
                 PolicyBundleInput {
                     expected_vault_id: handle.admin_status().await.unwrap().vault_id,
-                    expected_trust_sha256: rekey_policy::policy_trust_sha256(signer_id, &[7; 32])
-                        .unwrap(),
+                    expected_trust_sha256: rekey_policy::policy_trust_sha256(
+                        signer_id,
+                        &common::policy_key(7),
+                    )
+                    .unwrap(),
                     signer_id,
                     version: 1,
                     expires_at_ms,
@@ -431,6 +436,13 @@ async fn vrk_rotation_all_kinds_all_states_policy_replay_and_two_backup_generati
             &state,
             RestoreProof::Password(common::password_input()),
             &receipt.sha256_hex,
+            rekey_vault::bootstrap::inspect_restore(
+                &backup,
+                &state,
+                RestoreProof::Password(common::password_input()),
+                &receipt.sha256_hex,
+            )
+            .unwrap(),
         )
         .unwrap();
         let restored_db = Connection::open(paths::vault_db(&state)).unwrap();
@@ -692,9 +704,13 @@ fn vrk_process_fixture() {
     let mode = std::env::var("REKEY_TEST_VRK_PROCESS_MODE").unwrap();
     let root = std::path::PathBuf::from(root);
     let state = root.join("state");
-    let outcome =
-        rekey_vault::bootstrap::init_vault(&state, &common::password_input(), common::TEST_PARAMS)
-            .unwrap();
+    let outcome = rekey_vault::bootstrap::init_vault(
+        &state,
+        &common::password_input(),
+        common::TEST_PARAMS,
+        rekey_domain::authorization::PolicyMode::Team,
+    )
+    .unwrap();
     rekey_vault::bootstrap::confirm_vault_init(&state).unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -721,31 +737,81 @@ fn vrk_process_fixture() {
 
 #[test]
 fn vrk_sigkill_before_commit_and_after_commit_without_client_receipt_reopens_whole_generation() {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
+    use std::io::{Read, Write};
+    use std::process::{Child, Command, ExitStatus, Stdio};
+
+    // A failed assertion must stop/reap the fixture before TempDir is removed.
+    struct ChildGuard(Child);
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            if self.0.try_wait().ok().flatten().is_none() {
+                let _ = self.0.kill();
+            }
+            let _ = self.0.wait();
+        }
+    }
+
     for mode in ["precommit", "postcommit"] {
         let dir = tempfile::tempdir().unwrap();
         let state = dir.path().join("state");
-        let mut child = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "vrk_process_fixture", "--nocapture"])
-            .env("REKEY_TEST_VRK_PROCESS_DIR", dir.path())
-            .env("REKEY_TEST_VRK_PROCESS_MODE", mode)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(25);
+        let stderr_path = dir.path().join("child-stderr.log");
+        let mut child = ChildGuard(
+            Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "vrk_process_fixture", "--nocapture"])
+                .env("REKEY_TEST_VRK_PROCESS_DIR", dir.path())
+                .env("REKEY_TEST_VRK_PROCESS_MODE", mode)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::from(std::fs::File::create(&stderr_path).unwrap()))
+                .spawn()
+                .unwrap(),
+        );
+        // A file avoids an unread stderr pipe blocking the child. Report only
+        // a bounded prefix on failure.
+        let diagnostic = |phase: &str, started: Instant, status: Option<ExitStatus>| {
+            let mut stderr = Vec::new();
+            let read = std::fs::File::open(&stderr_path)
+                .and_then(|file| file.take(8 * 1024).read_to_end(&mut stderr));
+            format!(
+                "mode={mode} phase={phase} elapsed={:?} child={status:?} ready={} desktop={} committed={} stderr_read={read:?} stderr={}",
+                started.elapsed(),
+                dir.path().join("ready").exists(),
+                state.join("desktop-unlock.bin").exists(),
+                dir.path().join("committed").exists(),
+                String::from_utf8_lossy(&stderr),
+            )
+        };
+        let setup_started = Instant::now();
+        let setup_deadline = setup_started + Duration::from_secs(25);
         while !dir.path().join("ready").exists() {
-            assert!(child.try_wait().unwrap().is_none(), "child setup failed");
-            assert!(Instant::now() < deadline);
+            let status = child.0.try_wait().unwrap();
+            assert!(
+                status.is_none(),
+                "{}",
+                diagnostic("setup-ready", setup_started, status)
+            );
+            assert!(
+                Instant::now() < setup_deadline,
+                "{}",
+                diagnostic("setup-ready", setup_started, status)
+            );
             std::thread::sleep(Duration::from_millis(10));
         }
         let db = Connection::open(paths::vault_db(&state)).unwrap();
         db.busy_timeout(Duration::ZERO).unwrap();
         let before = protected_state(&db);
         let immutable = immutable_state(&db);
-        child.stdin.as_mut().unwrap().write_all(b"start\n").unwrap();
+        // The phase budget starts at the actual command handshake, after setup
+        // and snapshots; both budgets retain the original 25-second bound.
+        let phase_started = Instant::now();
+        let deadline = phase_started + Duration::from_secs(25);
+        child
+            .0
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(b"start\n")
+            .unwrap();
         if mode == "precommit" {
             loop {
                 if !state.join("desktop-unlock.bin").exists() {
@@ -759,8 +825,17 @@ fn vrk_sigkill_before_commit_and_after_commit_without_client_receipt_reopens_who
                         Err(e) => panic!("unexpected lock probe: {e}"),
                     }
                 }
-                assert!(child.try_wait().unwrap().is_none());
-                assert!(Instant::now() < deadline);
+                let status = child.0.try_wait().unwrap();
+                assert!(
+                    status.is_none(),
+                    "{}",
+                    diagnostic("precommit-write-transaction", phase_started, status)
+                );
+                assert!(
+                    Instant::now() < deadline,
+                    "{}",
+                    diagnostic("precommit-write-transaction", phase_started, status)
+                );
                 std::thread::sleep(Duration::from_millis(10));
             }
             // The worker owns the SQL write transaction, while its final audit
@@ -768,13 +843,22 @@ fn vrk_sigkill_before_commit_and_after_commit_without_client_receipt_reopens_who
             assert!(!dir.path().join("committed").exists());
         } else {
             while !dir.path().join("committed").exists() {
-                assert!(child.try_wait().unwrap().is_none());
-                assert!(Instant::now() < deadline);
+                let status = child.0.try_wait().unwrap();
+                assert!(
+                    status.is_none(),
+                    "{}",
+                    diagnostic("postcommit-receipt", phase_started, status)
+                );
+                assert!(
+                    Instant::now() < deadline,
+                    "{}",
+                    diagnostic("postcommit-receipt", phase_started, status)
+                );
                 std::thread::sleep(Duration::from_millis(10));
             }
         }
-        child.kill().unwrap();
-        let killed = child.wait().unwrap();
+        child.0.kill().unwrap();
+        let killed = child.0.wait().unwrap();
         assert!(!killed.success());
         assert!(!state.join("desktop-unlock.bin").exists());
         assert!(state.join(".desktop-runtime-active").exists());

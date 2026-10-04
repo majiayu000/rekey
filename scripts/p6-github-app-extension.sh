@@ -12,8 +12,8 @@ WEBHOOK_SECRET="P6-WEBHOOK-SECRET-CANARY-0123456789"
 TOKEN_CANARY="P2-INSTALLATION-TOKEN-CANARY"
 ISSUE_BODY_CANARY="P6 issue body canary"
 
-cargo build --release -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd --bin rekey-github-create-issue
-cargo build --release -p rekey-broker --example p2_github_app_fixture
+cargo build --features lab --release -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd --bin rekey-github-create-issue
+cargo build --features lab --release -p rekey-broker --example p2_github_app_fixture
 
 WORKDIR="$(mktemp -d /tmp/rkp6github.XXXXXX)"
 STATE="$WORKDIR/state"
@@ -100,7 +100,7 @@ bad["repositories"].append({"id": 818181, "owner": "other", "name": "duplicate"}
 write_private(invalid, json.dumps(bad))
 PY
 
-printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin >/dev/null
+printf '%s\n' "$PASSWORD" | "$REKEYD" init --mode team --state-dir "$STATE" --password-stdin >/dev/null
 printf '%s\n' p6-list >"$MODE"
 fixture_command=("$FIXTURE")
 if [[ "$(uname -s)" == "Linux" && "${GITHUB_ACTIONS:-}" == "true" ]]; then
@@ -218,8 +218,8 @@ bindings.append({"action_id":comment_id,"version":1,"resource":{"type":"github-i
 rules = [{"id":str(uuid.uuid4()),"effect":"permit","principal_id":principal,
           "action_id":b["action_id"],"version":1,"resource":b["resource"],
           "parameters":{"kind":"any_validated"}} for b in bindings]
-pathlib.Path(path).write_text(json.dumps({"format_version":3,"version":1,
-  "expires_at_ms":int(time.time()*1000)+600000,"approvers":[],"workload_identities":[],
+pathlib.Path(path).write_text(json.dumps({"format_version":6,"version":1,
+  "expires_at_ms":int(time.time()*1000)+600000,"approvers":[],"profiles": [], "workload_identities":[],
   "bindings":bindings,"rules":rules}))
 PY
 python3 "$ROOT/scripts/sign-test-policy.py" policy --key-dir "$WORKDIR/policy-key" \

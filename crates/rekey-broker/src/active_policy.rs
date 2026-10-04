@@ -70,6 +70,10 @@ impl ActivePolicy {
         &self.snapshot
     }
 
+    pub(crate) fn monotonic_deadline(&self) -> tokio::time::Instant {
+        self.monotonic_deadline
+    }
+
     pub(crate) fn signer_id(&self) -> Option<PolicySignerId> {
         self.signer_id
     }
@@ -102,11 +106,11 @@ mod tests {
     fn snapshot(expires_at_ms: i64) -> ValidatedSnapshot {
         rekey_policy::parse_and_validate_snapshot(
             &serde_json::to_vec(&json!({
-                "format_version": 3,
+                "format_version": 6,
                 "version": PolicyVersion::new(1).unwrap(),
                 "expires_at_ms": expires_at_ms,
                 "approvers": [],
-                "workload_identities": [],
+                "profiles": [], "workload_identities": [],
                 "bindings": [],
                 "rules": []
             }))

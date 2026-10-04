@@ -21,7 +21,9 @@ fn action(method: FixedMethod, path: &str) -> FixedHttpAction {
         credential_id: CredentialId::new_random(),
         origin: HttpsOrigin::parse("https://api.github.com").unwrap(),
         method,
-        exact_path: ExactPath::parse(path).unwrap(),
+        target: rekey_domain::action::ActionTarget::Fixed {
+            path: ExactPath::parse(path).unwrap(),
+        },
         auth: HeaderCredentialUse::new(
             HeaderName::new("authorization").unwrap(),
             HeaderPrefix::new("Bearer ").unwrap(),
@@ -49,8 +51,11 @@ fn request(action: &FixedHttpAction, body: serde_json::Value) -> ExecuteRequest 
         },
         content_type: Some("application/json".to_owned()),
         extra_headers: Vec::new(),
+        params: Default::default(),
+        query: Default::default(),
         body: serde_json::to_vec(&body).unwrap(),
         approval_grants: Vec::new(),
+        local_approval_request_id: None,
     }
 }
 

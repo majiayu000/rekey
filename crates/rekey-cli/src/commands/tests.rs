@@ -9,7 +9,7 @@ fn ttl_parser_rejects_overflow() {
 
 #[test]
 fn recovery_step_up_uses_the_recovery_proof_kind() {
-    let body = proof_body(true, b"RKREC1-test");
+    let body = proof_body(ProofKind::Recovery, b"RKREC1-test");
     let (kind, proof) = ipc::parse_proof_body(&body).unwrap();
     assert_eq!(kind, ProofKind::Recovery);
     assert_eq!(proof, b"RKREC1-test");
@@ -75,12 +75,19 @@ fn backup_rejects_non_utf8_output_before_reading_proof() {
     use std::os::unix::ffi::OsStringExt;
 
     let output = PathBuf::from(OsString::from_vec(b"backup-\xff.rkbackup".to_vec()));
-    let error = backup(Path::new("missing-state"), &output, false, false).unwrap_err();
+    let error = backup(
+        Path::new("missing-state"),
+        &output,
+        ProofKind::Password,
+        false,
+    )
+    .unwrap_err();
     assert_eq!(error.code, "USAGE");
     assert!(error.message.contains("valid UTF-8"));
 }
 
 #[test]
+#[cfg(feature = "lab")]
 fn oidc_session_file_is_exclusive_private_nofollow_and_exact() {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     let dir = tempfile::tempdir().unwrap();
@@ -109,4 +116,14 @@ fn oidc_session_file_is_exclusive_private_nofollow_and_exact() {
     assert!(crate::client::private_session_file(&path).is_err());
     std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o770)).unwrap();
     assert!(write_management_session(&dir.path().join("other"), &token).is_err());
+}
+
+#[test]
+fn presence_proof_never_falls_back_to_a_tty_prompt() {
+    let error = read_step_up(ProofKind::Presence, false).unwrap_err();
+    assert_eq!(error.code, "USAGE");
+    let body = proof_body(ProofKind::Presence, b"synthetic-presence");
+    let (kind, secret) = ipc::parse_proof_body(&body).unwrap();
+    assert_eq!(kind, ProofKind::Presence);
+    assert_eq!(secret, b"synthetic-presence");
 }

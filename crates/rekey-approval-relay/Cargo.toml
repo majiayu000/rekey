@@ -30,3 +30,16 @@ tempfile.workspace = true
 rcgen = "0.13"
 aws-lc-rs = "1.18"
 data-encoding = "2"
+
+[features]
+default = []
+lab = ["rekey-policy/lab"]
+
+[[bin]]
+name = "rekey-approval-relay"
+path = "src/main.rs"
+required-features = ["lab"]
+
+[[test]]
+name = "relay_contract"
+required-features = ["lab"]

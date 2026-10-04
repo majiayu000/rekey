@@ -6,12 +6,15 @@ use std::sync::Arc;
 use rekey_domain::capability::ActionVersionRef;
 use rekey_domain::ids::RequestId;
 use rekey_domain::ipc::{self, Channel, agent_msg};
+use tokio::io::AsyncReadExt;
 use tokio::net::UnixStream;
 use tokio::sync::watch;
 
 use crate::error::BrokerError;
 use crate::executor::ExecuteRequest;
-use crate::ipc::frame::{IncomingFrame, read_frame, write_error, write_ok};
+use crate::ipc::frame::{
+    IncomingFrame, read_frame, write_approval_required, write_error, write_ok,
+};
 use crate::runtime::BrokerCtx;
 
 /// Agents must not distinguish credential-layer failures.
@@ -41,7 +44,7 @@ pub async fn handle_agent_conn(
                     agent_msg::EXECUTE_FIXED_HTTP_ACTION | agent_msg::PREPARE_APPROVAL | agent_msg::EXECUTE_TEXT_STREAM
                 ) {
                     ipc::AGENT_BODY_MAX_BYTES
-                } else if message_type == agent_msg::WORKLOAD_SESSION_CREATE {
+                } else if cfg!(feature = "lab") && message_type == agent_msg::WORKLOAD_SESSION_CREATE {
                     ipc::WORKLOAD_TOKEN_MAX_BYTES
                 } else {
                     0
@@ -50,6 +53,7 @@ pub async fn handle_agent_conn(
         } {
             Ok(frame) => frame,
             Err(crate::ipc::frame::FrameIoError::InboundSectionTooLarge(request_id)) => {
+                #[cfg(feature = "lab")]
                 ctx.metrics.agent.frame_failed();
                 if let Err(error) = write_error(
                     &mut stream,
@@ -67,17 +71,20 @@ pub async fn handle_agent_conn(
             }
             Err(crate::ipc::frame::FrameIoError::Closed) => return,
             Err(_) => {
+                #[cfg(feature = "lab")]
                 ctx.metrics.agent.frame_failed();
                 return;
             }
         };
         let request_id = frame.header.request_id;
+        #[cfg(feature = "lab")]
         let metric = ctx.metrics.agent.dispatch.start();
         if frame.header.message_type == agent_msg::EXECUTE_TEXT_STREAM {
             let result = tokio::select! {
                 _ = shutdown.changed() => return,
                 result = dispatch_stream(&frame, &ctx, &mut stream) => result,
             };
+            #[cfg(feature = "lab")]
             metric.finish(!matches!(result, Ok(ipc::TextStreamStatus::Completed)));
             if let Err(error) = result {
                 // Never append a legacy ERROR after CHUNKs. A closed stream
@@ -87,15 +94,28 @@ pub async fn handle_agent_conn(
             }
             continue;
         }
-        let response = tokio::select! {
-            _ = shutdown.changed() => return,
-            response = dispatch(&frame, &ctx) => response,
+        let response = if frame.header.message_type == agent_msg::AWAIT_APPROVAL {
+            let mut extra = [0u8; 1];
+            tokio::select! {
+                _ = shutdown.changed() => return,
+                _ = stream.read(&mut extra) => return,
+                response = dispatch(&frame, &ctx) => response,
+            }
+        } else {
+            tokio::select! {
+                _ = shutdown.changed() => return,
+                response = dispatch(&frame, &ctx) => response,
+            }
         };
+        #[cfg(feature = "lab")]
         metric.finish(response.is_err());
         let write_response = async {
             match response {
                 Ok((metadata, body)) => {
                     write_ok(&mut stream, Channel::Agent, request_id, &metadata, &body).await
+                }
+                Err(BrokerError::ApprovalRequired(approval)) => {
+                    write_approval_required(&mut stream, Channel::Agent, request_id, approval).await
                 }
                 Err(err) => {
                     write_error(
@@ -128,6 +148,20 @@ async fn dispatch(
     ctx: &BrokerCtx,
 ) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
     match frame.header.message_type {
+        agent_msg::PROFILE_INVENTORY => {
+            if !frame.body.is_empty() {
+                return Err(BrokerError::Frame(ipc::FrameError::InvalidField));
+            }
+            let request: ipc::ProfileInventoryMeta = serde_json::from_slice(&frame.metadata)
+                .map_err(|_| ipc::FrameError::InvalidField)?;
+            let body = ctx
+                .profile_inventory_until(
+                    &request.capability_token,
+                    tokio::time::Instant::now() + std::time::Duration::from_secs(25),
+                )
+                .await?;
+            Ok((b"{}".to_vec(), body))
+        }
         agent_msg::EXECUTE_FIXED_HTTP_ACTION => {
             let request = execute_request(frame)?;
             let outcome = ctx
@@ -157,13 +191,79 @@ async fn dispatch(
                 },
                 content_type: meta.content_type,
                 extra_headers: meta.extra_headers,
+                params: meta.params,
+                query: meta.query,
                 body: frame.body.to_vec(),
                 approval_grants: Vec::new(),
+                local_approval_request_id: None,
             };
             let envelope = ctx.executor.prepare_approval(request).await?;
             let metadata = serde_json::to_vec(&envelope)
                 .map_err(|_| BrokerError::Frame(rekey_domain::ipc::FrameError::InvalidField))?;
             Ok((metadata, Vec::new()))
+        }
+        agent_msg::AWAIT_APPROVAL | agent_msg::CANCEL_APPROVAL => {
+            if !frame.body.is_empty() {
+                return Err(BrokerError::Frame(ipc::FrameError::InvalidField));
+            }
+            let request: ipc::LocalApprovalRequestMeta = serde_json::from_slice(&frame.metadata)
+                .map_err(|_| BrokerError::Frame(ipc::FrameError::InvalidField))?;
+            if frame.header.message_type == agent_msg::CANCEL_APPROVAL {
+                let _owner = ctx
+                    .lifecycle
+                    .coordinate_until(
+                        tokio::time::Instant::now() + std::time::Duration::from_secs(25),
+                    )
+                    .await?;
+                ctx.lifecycle.reject_if_not_running()?;
+                let local = ctx.sessions.local_state_for_owner(
+                    &request.capability_token,
+                    request.approval_request_id,
+                    crate::now_ts()?,
+                )?;
+                let response = ctx.sessions.decide_local(
+                    request.approval_request_id,
+                    &local.review_sha256,
+                    None,
+                    crate::now_ts()?,
+                )?;
+                return Ok((
+                    serde_json::to_vec(&response)
+                        .map_err(|_| BrokerError::Frame(ipc::FrameError::InvalidField))?,
+                    Vec::new(),
+                ));
+            }
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
+            loop {
+                let notified = ctx.sessions.approval_changed.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                ctx.lifecycle.reject_if_not_running()?;
+                let now = crate::now_ts()?;
+                let local = ctx.sessions.local_state_for_owner(
+                    &request.capability_token,
+                    request.approval_request_id,
+                    now,
+                )?;
+                if local.state != ipc::LocalApprovalState::Pending
+                    || tokio::time::Instant::now() >= deadline
+                {
+                    return Ok((
+                        serde_json::to_vec(&local.response())
+                            .map_err(|_| BrokerError::Frame(ipc::FrameError::InvalidField))?,
+                        Vec::new(),
+                    ));
+                }
+                let wall_remaining = local
+                    .challenge
+                    .max_expires_at_ms
+                    .saturating_sub(now.as_unix_ms())
+                    .max(0) as u64;
+                let wake = deadline.min(local.deadline.into()).min(
+                    tokio::time::Instant::now() + std::time::Duration::from_millis(wall_remaining),
+                );
+                let _ = tokio::time::timeout_at(wake, notified).await;
+            }
         }
         agent_msg::AGENT_STATUS => {
             if !frame.body.is_empty() {
@@ -184,6 +284,7 @@ async fn dispatch(
                 .map_err(|_| BrokerError::Frame(rekey_domain::ipc::FrameError::InvalidField))?;
             Ok((metadata, Vec::new()))
         }
+        #[cfg(feature = "lab")]
         agent_msg::WORKLOAD_SESSION_CREATE => {
             let create: ipc::SessionCreateMeta = serde_json::from_slice(&frame.metadata)
                 .map_err(|_| BrokerError::Frame(rekey_domain::ipc::FrameError::InvalidField))?;
@@ -214,8 +315,11 @@ fn execute_request(frame: &IncomingFrame) -> Result<ExecuteRequest, BrokerError>
         },
         content_type: meta.content_type,
         extra_headers: meta.extra_headers,
+        params: meta.params,
+        query: meta.query,
         body: frame.body.to_vec(),
         approval_grants: meta.approval_grants,
+        local_approval_request_id: meta.local_approval_request_id,
     })
 }
 
@@ -253,6 +357,35 @@ async fn dispatch_stream(
         .await
         .map_err(|_| BrokerError::Upstream("stream-deadline"))?
     {
+        if let TextStreamEvent::AdmissionError(error) = event {
+            if admitted || sequence != 0 {
+                return Err(BrokerError::Upstream("invalid-stream"));
+            }
+            match error {
+                BrokerError::ApprovalRequired(approval) => {
+                    write_approval_required(
+                        stream,
+                        Channel::Agent,
+                        frame.header.request_id,
+                        approval,
+                    )
+                    .await
+                }
+                error => {
+                    write_error(
+                        stream,
+                        Channel::Agent,
+                        frame.header.request_id,
+                        agent_code(&error),
+                        &error.agent_message(),
+                        error.retryable(),
+                    )
+                    .await
+                }
+            }
+            .map_err(|_| BrokerError::Upstream("stream-client-disconnected"))?;
+            return Ok(ipc::TextStreamStatus::Failed);
+        }
         if let TextStreamEvent::Admitted {
             deadline: effect_deadline,
         } = event
@@ -268,7 +401,10 @@ async fn dispatch_stream(
             return Err(BrokerError::Upstream("stream-deadline"));
         }
         let (message, metadata, body, terminal) = match event {
-            TextStreamEvent::Admitted { .. } => unreachable!("admission handled above"),
+            TextStreamEvent::Buffered(_) => return Err(BrokerError::Upstream("invalid-stream")),
+            TextStreamEvent::Admitted { .. } | TextStreamEvent::AdmissionError(_) => {
+                unreachable!("admission handled above")
+            }
             TextStreamEvent::Chunk(body) => (
                 ipc::resp_msg::STREAM_CHUNK,
                 serde_json::to_vec(&ipc::TextStreamChunkMeta { sequence }),

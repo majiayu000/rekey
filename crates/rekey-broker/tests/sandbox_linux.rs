@@ -408,3 +408,30 @@ async fn sandbox_executes_authorized_action_through_real_broker() {
     );
     broker.shutdown().await;
 }
+
+#[test]
+fn profile_child_rejects_netns_until_pathname_socket_egress_is_enforced() {
+    let temporary = tempfile::tempdir().unwrap();
+    let marker = temporary.path().join("must-not-run");
+    for port in [None, Some(12345_u16)] {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_rekeyd"));
+        child
+            .args(["profile-child", "--state-dir"])
+            .arg(temporary.path())
+            .arg("--agent-socket")
+            .arg(temporary.path().join("absent.sock"))
+            .args(["--isolation", "netns"])
+            .env("REKEY_CAPABILITY", "synthetic-profile-capability");
+        if let Some(port) = port {
+            child.arg("--gateway-port").arg(port.to_string());
+        }
+        let output = child
+            .args(["--", "/usr/bin/touch"])
+            .arg(&marker)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("unsupported on this platform"));
+        assert!(!marker.exists());
+    }
+}

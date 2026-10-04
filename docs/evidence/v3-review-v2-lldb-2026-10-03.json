@@ -1,0 +1,82 @@
+{
+  "scope": "Disposable V2 lldb comparison; synthetic unlocked vaults; no user vault access",
+  "host": "ProductName:\t\tmacOS\nProductVersion:\t\t26.5.1\nBuildVersion:\t\t25F80",
+  "base_commit": "e281673bde92c94670c5f503424b02eceba05335",
+  "result": {
+    "status": "passed",
+    "cases": {
+      "unhardened": {
+        "signature": {
+          "sha256": "bab47b6d1e052e888d8930e6539fccbed1461fb94730a73f4862759e49c42f41",
+          "codesign": "Executable=/private/tmp/rk-v2-review-1lwpp_5u/rekeyd-unhardened\nIdentifier=com.rekey.rekeyd\nFormat=Mach-O thin (arm64)\nCodeDirectory v=20400 size=98964 flags=0x0(none) hashes=3087+2 location=embedded\nVersionPlatform=1\nVersionMin=720896\nVersionSDK=1705216\nHash type=sha256 size=32\nCandidateCDHash sha256=ee8af7bb22eb2bf0a60200806a6612cebf1e50e4\nCandidateCDHashFull sha256=ee8af7bb22eb2bf0a60200806a6612cebf1e50e418feb34fed3b5463053c2987\nHash choices=sha256\nCMSDigest=ee8af7bb22eb2bf0a60200806a6612cebf1e50e418feb34fed3b5463053c2987\nCMSDigestType=2\nExecutable Segment base=0\nExecutable Segment limit=27475968\nExecutable Segment flags=0x1\nPage size=16384\nCDHash=ee8af7bb22eb2bf0a60200806a6612cebf1e50e4\nSignature size=4728\nAuthority=Developer ID Application: Ma JiaYu (C5UWZ934C2)\nAuthority=Developer ID Certification Authority\nAuthority=Apple Root CA\nSigned Time=Oct 3, 2026 at 12:34:19\nInfo.plist=not bound\nTeamIdentifier=C5UWZ934C2\nSealed Resources=none\nInternal requirements count=1 size=176"
+        },
+        "probe": {
+          "status": "denied",
+          "caller_pid": 29452,
+          "caller_uid": 502,
+          "caller_euid": 502,
+          "target_pid": 29421,
+          "target_uid": 502,
+          "target_euid": 502,
+          "kern_return": 5,
+          "task_port_acquired": false,
+          "deallocate_return": null,
+          "phase": "task_for_pid",
+          "errno": 0,
+          "exit_code": 1
+        },
+        "debugger": {
+          "outcome": "attached_and_detached",
+          "exit_code": 0
+        }
+      },
+      "hardened": {
+        "signature": {
+          "sha256": "98e1701ca7afa7c59a7b2daba0db991eb93869ca5beef6c17a054d2ac53459a1",
+          "codesign": "Executable=/private/tmp/rk-v2-review-1lwpp_5u/rekeyd-hardened\nIdentifier=com.rekey.rekeyd\nFormat=Mach-O thin (arm64)\nCodeDirectory v=20500 size=98972 flags=0x10000(runtime) hashes=3087+2 location=embedded\nVersionPlatform=1\nVersionMin=720896\nVersionSDK=1705216\nHash type=sha256 size=32\nCandidateCDHash sha256=c78013d99f1f623417c1804e2546fc4a3c7d6d1c\nCandidateCDHashFull sha256=c78013d99f1f623417c1804e2546fc4a3c7d6d1c624d46503814dad778fd5d81\nHash choices=sha256\nCMSDigest=c78013d99f1f623417c1804e2546fc4a3c7d6d1c624d46503814dad778fd5d81\nCMSDigestType=2\nExecutable Segment base=0\nExecutable Segment limit=27475968\nExecutable Segment flags=0x1\nPage size=16384\nCDHash=c78013d99f1f623417c1804e2546fc4a3c7d6d1c\nSignature size=4728\nAuthority=Developer ID Application: Ma JiaYu (C5UWZ934C2)\nAuthority=Developer ID Certification Authority\nAuthority=Apple Root CA\nSigned Time=Oct 3, 2026 at 12:34:33\nInfo.plist=not bound\nTeamIdentifier=C5UWZ934C2\nRuntime Version=26.5.0\nSealed Resources=none\nInternal requirements count=1 size=176"
+        },
+        "probe": {
+          "status": "denied",
+          "caller_pid": 29704,
+          "caller_uid": 502,
+          "caller_euid": 502,
+          "target_pid": 29654,
+          "target_uid": 502,
+          "target_euid": 502,
+          "kern_return": 5,
+          "task_port_acquired": false,
+          "deallocate_return": null,
+          "phase": "task_for_pid",
+          "errno": 0,
+          "exit_code": 1
+        },
+        "debugger": {
+          "outcome": "denied",
+          "exit_code": 1,
+          "error": "error: attach failed: attach failed (Not allowed to attach to process.  Look in the console messages (Console.app), near the debugserver entries, when the attach failed.  The subsystem that denied the attach permission will likely have logged an informative message about why it was denied.)"
+        }
+      }
+    },
+    "debugger": {
+      "sha256": "b840ad7fc5fd2304a4d8d55a3946bab7c321a01c1938a37245722d9bb1449dcf",
+      "codesign": "Executable=/Library/Developer/CommandLineTools/usr/bin/lldb\nIdentifier=com.apple.lldb\nFormat=Mach-O universal (x86_64 arm64)\nCodeDirectory v=20400 size=4338 flags=0x0(none) hashes=130+2 location=embedded\nVersionPlatform=1\nVersionMin=851968\nVersionSDK=1704960\nHash type=sha256 size=32\nCandidateCDHash sha256=41995a5e27ead0fc8f3432361777f647d1e132e5\nCandidateCDHashFull sha256=41995a5e27ead0fc8f3432361777f647d1e132e5cc550c40f9e21f5f16289a1e\nHash choices=sha256\nCMSDigest=41995a5e27ead0fc8f3432361777f647d1e132e5cc550c40f9e21f5f16289a1e\nCMSDigestType=2\nExecutable Segment base=0\nExecutable Segment limit=327680\nExecutable Segment flags=0x1\nPage size=4096\nCDHash=41995a5e27ead0fc8f3432361777f647d1e132e5\nSignature size=4442\nAuthority=Software Signing\nAuthority=Apple Code Signing Certification Authority\nAuthority=Apple Root CA\nSigned Time=Jun 9, 2026 at 11:46:06\nInfo.plist entries=6\nTeamIdentifier=59GAB85EFG\nSealed Resources=none\nInternal requirements count=1 size=64"
+    },
+    "self_control": {
+      "status": "acquired",
+      "caller_pid": 29217,
+      "caller_uid": 502,
+      "caller_euid": 502,
+      "target_pid": 29217,
+      "target_uid": 502,
+      "target_euid": 502,
+      "kern_return": 0,
+      "task_port_acquired": true,
+      "deallocate_return": 0,
+      "phase": "task_for_pid",
+      "errno": 0,
+      "exit_code": 0
+    },
+    "reason": "Apple lldb attached without hardened runtime and was denied with it; signing identity unchanged."
+  },
+  "runner_sha256": "f0c2dfc6e0bd65d3c89b94a4b711f6b17610e66f5a7d5addc4242880b76d99a3"
+}

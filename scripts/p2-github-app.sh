@@ -9,9 +9,10 @@ command -v rg >/dev/null || {
 }
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-REKEY="$ROOT/target/release/rekey"
-REKEYD="$ROOT/target/release/rekeyd"
-FIXTURE="$ROOT/target/release/examples/p2_github_app_fixture"
+TARGET_DIR="$(cargo metadata --manifest-path "$ROOT/Cargo.toml" --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+REKEY="$TARGET_DIR/release/rekey"
+REKEYD="$TARGET_DIR/release/rekeyd"
+FIXTURE="$TARGET_DIR/release/examples/p2_github_app_fixture"
 PASSWORD="p2 github app acceptance password"
 TOKEN_CANARY="P2-INSTALLATION-TOKEN-CANARY"
 STATELESS_TOKEN_CANARY="P2-STATELESS-INSTALLATION-TOKEN-CANARY"
@@ -207,7 +208,7 @@ JWT_PRODUCER_SELFTEST_OUTPUT="$(
   exit 1
 }
 
-printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin >/dev/null
+printf '%s\n' "$PASSWORD" | "$REKEYD" init --mode team --state-dir "$STATE" --password-stdin >/dev/null
 openssl genrsa -traditional -out "$PRIVATE_KEY" 2048 >/dev/null 2>&1
 openssl rsa -in "$PRIVATE_KEY" -RSAPublicKey_out -outform DER -out "$PUBLIC_KEY_DER" \
   >/dev/null 2>&1
@@ -359,9 +360,9 @@ binding = {"action_id": action, "version": int(version), "resource": resource,
 rule = {"id": str(uuid.uuid4()), "effect": "permit", "principal_id": principal,
     "action_id": action, "version": int(version), "resource": resource,
     "parameters": {"kind": "any_validated"}}
-pathlib.Path(path).write_text(json.dumps({"format_version": 3, "version": 1,
+pathlib.Path(path).write_text(json.dumps({"format_version": 6, "version": 1,
     "expires_at_ms": int(time.time() * 1000) + 600000,
-    "approvers": [], "workload_identities": [], "bindings": [binding], "rules": [rule]}))
+    "approvers": [], "profiles": [], "workload_identities": [], "bindings": [binding], "rules": [rule]}))
 PY
 python3 "$ROOT/scripts/sign-test-policy.py" policy --key-dir "$WORKDIR/policy-key" \
   --snapshot "$WORKDIR/policy-snapshot.json" --bundle "$WORKDIR/policy.json" \
@@ -451,7 +452,7 @@ grep -q '"id":616161' "$WORKDIR/slow-resource.out"
 
 # Restart from the completed Locked state so the signal/disconnect scenario begins in a fresh runtime
 # while preserving the same vault, audit log, action, and typed credential.
-"$REKEY" --state-dir "$STATE" shutdown >/dev/null
+printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" shutdown --password-stdin >/dev/null
 wait_pid_bounded "$BROKER_PID" 6
 wait "$BROKER_PID"
 BROKER_PID=""
@@ -699,8 +700,11 @@ wait "$BROKER_PID"
 BROKER_PID=""
 
 RESTORED_STATE="$WORKDIR/restored-state"
+# Explicitly confirm the inspected context for this disposable test target.
+RESTORE_CONTEXT="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$RESTORED_STATE" restore \
+  --input "$BACKUP" --sha256 "$BACKUP_SHA256" --inspect --password-stdin)"
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$RESTORED_STATE" restore \
-  --input "$BACKUP" --sha256 "$BACKUP_SHA256" --password-stdin >/dev/null
+  --input "$BACKUP" --sha256 "$BACKUP_SHA256" --expected-context "$RESTORE_CONTEXT" --password-stdin >/dev/null
 STATE="$RESTORED_STATE"
 READY="$WORKDIR/restored-ready"
 RESTORED_TRACE="$WORKDIR/restored-trace"

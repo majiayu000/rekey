@@ -132,7 +132,7 @@ def run(args, report, label):
     report.update(primary_id=primary, standby_id=standby)
     proof = secrets.token_urlsafe(32).encode() + b'\n'
     stage('initialize')
-    docker('exec', '-i', primary, 'rekeyd', 'init', '--state-dir', STATE, '--password-stdin', data=proof)
+    docker('exec', '-i', primary, 'rekeyd', 'init', '--mode', 'team', '--state-dir', STATE, '--password-stdin', data=proof)
     start_broker(primary)
     value(primary, 'unlock', '--password-stdin', data=proof)
     retained, retained_start, retained_ack = measure_write(primary, proof, 'dr-retained')
@@ -145,8 +145,8 @@ def run(args, report, label):
     action_ref = action['id'] + '@' + str(action['version'])
     principal = str(uuid.uuid4())
     resource = dict(type='dr-reference', id=action['id'])
-    policy = dict(format_version=3, version=1, expires_at_ms=int(time.time() * 1000) + 900000,
-                  approvers=[], workload_identities=[], bindings=[dict(action_id=action['id'], version=action['version'],
+    policy = dict(format_version=6, version=1, expires_at_ms=int(time.time() * 1000) + 900000,
+                  approvers=[], profiles=[], workload_identities=[], bindings=[dict(action_id=action['id'], version=action['version'],
                   resource=resource, parameter_schema_id='dr-reference/v1', parameter_schema={'type': 'object'})],
                   rules=[dict(id=str(uuid.uuid4()), effect='permit', principal_id=principal, action_id=action['id'],
                               version=action['version'], resource=resource, parameters={'kind': 'any_validated'})])
@@ -202,12 +202,22 @@ def run(args, report, label):
     # This check is the admission boundary, immediately before standby effects.
     require_fenced(primary)
     put(standby, '/vault/snapshot.rkbackup', encrypted)
+    context = json.loads(docker('exec', '-i', standby, 'rekeyd', 'restore', '--state-dir', STATE,
+                         '--input', '/vault/snapshot.rkbackup', '--sha256', backup['sha256_hex'],
+                         '--inspect', '--password-stdin', data=proof))
+    require(context['source_generation'] == backup['generation'], 'restore-source-generation')
+    expected = json.dumps(context, separators=(',', ':'))
+    # Inspect is read-only. Re-establish external fencing immediately before
+    # the separate mutation; never refresh a rejected context or retry it.
+    require_fenced(primary)
     restored = json.loads(docker('exec', '-i', standby, 'rekeyd', 'restore', '--state-dir', STATE,
                           '--input', '/vault/snapshot.rkbackup', '--sha256', backup['sha256_hex'],
-                          '--password-stdin', data=proof))
+                          '--expected-context', expected, '--password-stdin', data=proof))
     require(restored['input_sha256_hex'] == backup['sha256_hex']
             and restored['vault_id'] == backup['vault_id']
-            and restored['snapshot_cut'] == backup['snapshot_cut'], 'restore-cut')
+            and restored['snapshot_cut'] == backup['snapshot_cut']
+            and restored['generation'] == max(context['source_generation'], context['high_water'] or 0) + 1,
+            'restore-cut')
     start_broker(standby)
     value(standby, 'unlock', '--password-stdin', data=proof)
     credentials = value(standby, 'credential', 'list')['credentials']
@@ -225,7 +235,8 @@ def run(args, report, label):
     recovered = time.monotonic_ns()
     require(docker('exec', standby, 'cat', '/vault/hits').strip() == b'1', 'one-standby-effect')
     report.update(fencing_validated=True, promotion_validated=True, old_capability_rejected=True,
-                  snapshot_cut=backup['snapshot_cut'], lost_credential_writes=1, lost_audit_sequence=lost_sequence,
+                  snapshot_cut=backup['snapshot_cut'], backup_generation=backup['generation'],
+                  restored_generation=restored['generation'], lost_credential_writes=1, lost_audit_sequence=lost_sequence,
                   rto_ms=(recovered - failure_start) / 1e6,
                   rpo_observed_ack_gap_ms=(lost_ack - retained_ack) / 1e6,
                   rpo_commit_gap_bounds_ms=[max(0, lost_start - retained_ack) / 1e6,

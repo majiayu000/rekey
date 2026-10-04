@@ -636,7 +636,15 @@ async fn plugin_update_audit_failure_rolls_back_binding_and_version() {
     assert_eq!(count_event(&broker, "action.updated"), 0);
     assert!(broker.fake.take_requests().is_empty());
     drop(db);
-    broker.shutdown().await;
+    let stopped = tokio::time::timeout(Duration::from_secs(5), broker.serve_task)
+        .await
+        .expect("audit failure did not stop the daemon")
+        .unwrap()
+        .unwrap_err();
+    assert!(matches!(
+        stopped,
+        rekey_broker::error::BrokerError::Authority(rekey_vault::AuthorityError::Faulted)
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -716,6 +724,15 @@ async fn plugin_binding_roundtrips_admin_list_restart_and_backup_restore() {
             rekey_vault::secret::SecretInput::from_slice(common::PASSWORD),
         ),
         receipt.ok()["sha256_hex"].as_str().unwrap(),
+        rekey_vault::bootstrap::inspect_restore(
+            &backup,
+            &restored,
+            rekey_vault::bootstrap::RestoreProof::Password(
+                rekey_vault::secret::SecretInput::from_slice(common::PASSWORD),
+            ),
+            receipt.ok()["sha256_hex"].as_str().unwrap(),
+        )
+        .unwrap(),
     )
     .unwrap();
     let (authority, join) = rekey_vault::authority::spawn_authority(

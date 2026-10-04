@@ -1,11 +1,12 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::net::IpAddr;
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::DomainError;
-use crate::ids::{ActionId, CredentialId};
+use crate::ids::{ActionId, CredentialId, PolicySignerId};
+use crate::template::{DefaultPolicy, DefaultRule, TemplateApprover, TemplateTarget};
 
 pub const REQUEST_BODY_HARD_MAX: u32 = 1024 * 1024;
 pub const RESPONSE_BODY_HARD_MAX: u32 = 4 * 1024 * 1024;
@@ -16,7 +17,9 @@ pub const EXACT_PATH_MAX_BYTES: usize = 2048;
 /// Header names an admin can never select as a credential slot and an agent
 /// can never supply. Hop-by-hop and framing headers are owned by the broker.
 const FORBIDDEN_HEADERS: &[&str] = &[
+    "accept-encoding",
     "connection",
+    "content-encoding",
     "content-length",
     "cookie",
     "host",
@@ -419,7 +422,100 @@ pub struct AnthropicTextStream {
     pub max_tokens: u32,
 }
 
+/// The authenticated package source for one materialized action. Its digest
+/// identifies declaration/schema content; the vault row seal authenticates it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TemplateActionSource {
+    pub template: String,
+    pub capability: String,
+    pub action_index: usize,
+    pub digest: [u8; 32],
+    pub signer_id: Option<PolicySignerId>,
+}
+
+/// One authoritative target. Template headers, resolved schema and provenance
+/// live here; origin, method and credential injection remain on the Action.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum ActionTarget {
+    Fixed {
+        path: ExactPath,
+    },
+    Template {
+        target: TemplateTarget,
+        fixed_headers: BTreeMap<HeaderName, String>,
+        body_schema: Option<serde_json::Value>,
+        source: Box<TemplateActionSource>,
+        default_policy: DefaultPolicy,
+    },
+}
+
+impl ActionTarget {
+    pub fn fixed_path(&self) -> Option<&ExactPath> {
+        match self {
+            Self::Fixed { path } => Some(path),
+            Self::Template { .. } => None,
+        }
+    }
+
+    fn validate(
+        &self,
+        auth: &HeaderCredentialUse,
+        allowed_extra_headers: &BTreeSet<HeaderName>,
+    ) -> Result<(), DomainError> {
+        if let Self::Template {
+            fixed_headers,
+            body_schema,
+            source,
+            default_policy,
+            ..
+        } = self
+        {
+            crate::template::validate_template_id(&source.template)?;
+            if !crate::template::slug(&source.capability, 100) {
+                return Err(invalid("invalid template capability source"));
+            }
+            crate::template::validate_headers(
+                &crate::template::TemplateCredential {
+                    kind: crate::credential::CredentialKind::OpaqueToken,
+                    inject: crate::template::TemplateInjection {
+                        header: auth.header_name.clone(),
+                        prefix: auth.prefix.clone(),
+                    },
+                },
+                fixed_headers,
+            )?;
+            if fixed_headers
+                .keys()
+                .any(|name| allowed_extra_headers.contains(name))
+            {
+                return Err(invalid("fixed template headers cannot be caller supplied"));
+            }
+            if body_schema
+                .as_ref()
+                .is_some_and(|schema| !schema.is_object() && !schema.is_boolean())
+            {
+                return Err(invalid(
+                    "template body schema must be a resolved JSON Schema",
+                ));
+            }
+            if !matches!(
+                (default_policy.rule, default_policy.approver),
+                (DefaultRule::Allow, None)
+                    | (
+                        DefaultRule::RequireApproval,
+                        Some(TemplateApprover::LocalPresence)
+                    )
+            ) {
+                return Err(invalid("invalid template default policy"));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FixedHttpAction {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -433,20 +529,70 @@ pub struct FixedHttpAction {
     pub credential_id: CredentialId,
     pub origin: HttpsOrigin,
     pub method: FixedMethod,
-    pub exact_path: ExactPath,
+    pub target: ActionTarget,
     pub auth: HeaderCredentialUse,
     pub timeout_ms: u32,
     pub request_policy: RequestPolicy,
     pub response_policy: ResponsePolicy,
 }
 
+impl<'de> Deserialize<'de> for FixedHttpAction {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Action {
+            #[serde(default)]
+            native_plugin: Option<NativePlugin>,
+            #[serde(default)]
+            text_stream: Option<AnthropicTextStream>,
+            id: ActionId,
+            name: ActionName,
+            version: u64,
+            enabled: bool,
+            credential_id: CredentialId,
+            origin: HttpsOrigin,
+            method: FixedMethod,
+            target: ActionTarget,
+            auth: HeaderCredentialUse,
+            timeout_ms: u32,
+            request_policy: RequestPolicy,
+            response_policy: ResponsePolicy,
+        }
+        let value = Action::deserialize(deserializer)?;
+        let action = Self {
+            native_plugin: value.native_plugin,
+            text_stream: value.text_stream,
+            id: value.id,
+            name: value.name,
+            version: value.version,
+            enabled: value.enabled,
+            credential_id: value.credential_id,
+            origin: value.origin,
+            method: value.method,
+            target: value.target,
+            auth: value.auth,
+            timeout_ms: value.timeout_ms,
+            request_policy: value.request_policy,
+            response_policy: value.response_policy,
+        };
+        action.validate().map_err(serde::de::Error::custom)?;
+        Ok(action)
+    }
+}
+
 impl FixedHttpAction {
     pub fn validate(&self) -> Result<(), DomainError> {
+        self.target
+            .validate(&self.auth, &self.request_policy.allowed_extra_headers)?;
         if let Some(plugin) = &self.native_plugin {
+            let path = self
+                .target
+                .fixed_path()
+                .ok_or_else(|| invalid("native plugins require a fixed target"))?;
             plugin.validate()?;
             match plugin.protocol.as_str() {
                 GITHUB_ISSUES_PROTOCOL => {
-                    let parts: Vec<_> = self.exact_path.as_str().split('/').collect();
+                    let parts: Vec<_> = path.as_str().split('/').collect();
                     let issue_mutation = match parts.as_slice() {
                         ["", "repos", owner, repo, "issues"] => {
                             !owner.is_empty() && !repo.is_empty()
@@ -476,7 +622,7 @@ impl FixedHttpAction {
                     if self.text_stream.is_none()
                         || self.origin.as_str() != "https://api.anthropic.com"
                         || self.method != FixedMethod::Post
-                        || self.exact_path.as_str() != "/v1/messages"
+                        || self.target.fixed_path().map(ExactPath::as_str) != Some("/v1/messages")
                         || self.auth.header_name.as_str() != "x-api-key"
                         || !self.auth.prefix.as_str().is_empty()
                     {
@@ -491,7 +637,7 @@ impl FixedHttpAction {
         if let Some(stream) = &self.text_stream
             && (self.origin.as_str() != "https://api.anthropic.com"
                 || self.method != FixedMethod::Post
-                || self.exact_path.as_str() != "/v1/messages"
+                || self.target.fixed_path().map(ExactPath::as_str) != Some("/v1/messages")
                 || self.auth.header_name.as_str() != "x-api-key"
                 || !self.auth.prefix.as_str().is_empty()
                 || !self.request_policy.allowed_extra_headers.is_empty()
@@ -721,6 +867,8 @@ mod tests {
             .is_ok()
         );
         for forbidden in [
+            "accept-encoding",
+            "content-encoding",
             "cookie",
             "host",
             "content-length",
@@ -734,6 +882,22 @@ mod tests {
                 )
                 .is_err(),
                 "{forbidden} must be rejected as auth slot"
+            );
+        }
+    }
+
+    #[test]
+    fn compression_headers_cannot_be_agent_selected() {
+        for name in ["accept-encoding", "content-encoding"] {
+            let policy = RequestPolicy {
+                max_body_bytes: 1024,
+                allowed_extra_headers: BTreeSet::from([HeaderName::new(name).unwrap()]),
+            };
+            assert!(
+                policy
+                    .validate(&HeaderName::new("authorization").unwrap())
+                    .is_err(),
+                "{name} must not be selectable"
             );
         }
     }
@@ -812,7 +976,9 @@ mod tests {
             credential_id: CredentialId::new_random(),
             origin: HttpsOrigin::parse("https://api.github.com").unwrap(),
             method: FixedMethod::Post,
-            exact_path: ExactPath::parse("/repos/owner/repo/issues").unwrap(),
+            target: ActionTarget::Fixed {
+                path: ExactPath::parse("/repos/owner/repo/issues").unwrap(),
+            },
             auth: HeaderCredentialUse::new(
                 HeaderName::new("authorization").unwrap(),
                 HeaderPrefix::new("Bearer ").unwrap(),
@@ -833,7 +999,9 @@ mod tests {
             "/repos/owner/repo/issues/1/comments",
             "/repos/owner/repo/issues/18446744073709551615/comments",
         ] {
-            action.exact_path = ExactPath::parse(path).unwrap();
+            action.target = ActionTarget::Fixed {
+                path: ExactPath::parse(path).unwrap(),
+            };
             action.validate().unwrap();
         }
         for path in [
@@ -846,10 +1014,14 @@ mod tests {
             "/repos//repo/issues",
             "/repos/owner/repo/issues/extra",
         ] {
-            action.exact_path = ExactPath::parse(path).unwrap();
+            action.target = ActionTarget::Fixed {
+                path: ExactPath::parse(path).unwrap(),
+            };
             assert!(action.validate().is_err(), "{path}");
         }
-        action.exact_path = ExactPath::parse("/repos/owner/repo/issues").unwrap();
+        action.target = ActionTarget::Fixed {
+            path: ExactPath::parse("/repos/owner/repo/issues").unwrap(),
+        };
         action.method = FixedMethod::Get;
         assert!(action.validate().is_err());
         action.method = FixedMethod::Post;
@@ -891,7 +1063,9 @@ mod tests {
             credential_id: CredentialId::new_random(),
             origin: HttpsOrigin::parse("https://api.anthropic.com").unwrap(),
             method: FixedMethod::Post,
-            exact_path: ExactPath::parse("/v1/messages").unwrap(),
+            target: ActionTarget::Fixed {
+                path: ExactPath::parse("/v1/messages").unwrap(),
+            },
             auth: HeaderCredentialUse::new(
                 HeaderName::new("x-api-key").unwrap(),
                 HeaderPrefix::new("").unwrap(),
@@ -937,7 +1111,9 @@ mod tests {
             credential_id: CredentialId::new_random(),
             origin: HttpsOrigin::parse("https://api.github.com").unwrap(),
             method: FixedMethod::Post,
-            exact_path: ExactPath::parse("/repos/owner/repo/issues").unwrap(),
+            target: ActionTarget::Fixed {
+                path: ExactPath::parse("/repos/owner/repo/issues").unwrap(),
+            },
             auth: HeaderCredentialUse::new(
                 HeaderName::new("authorization").unwrap(),
                 HeaderPrefix::new("Bearer ").unwrap(),
@@ -976,5 +1152,94 @@ mod tests {
             "allowed_response_headers": []
         });
         assert!(serde_json::from_value::<crate::ipc::ActionCreateMeta>(meta).is_err());
+    }
+
+    #[test]
+    fn action_target_roundtrip_is_closed_and_validates_template_context() {
+        let template_target = serde_json::json!({
+            "kind":"template","target":{"path":"/repos/acme/{number}","params":{"number":"int:1..100"},"query":{}},
+            "fixed_headers":{"x-fixed":"one"},"body_schema":{"type":"object"},
+            "source":{"template":"team@1","capability":"read","action_index":0,"digest":vec![1;32],"signer_id":null},
+            "default_policy":{"rule":"allow"}
+        });
+        let value = serde_json::json!({
+            "id":ActionId::new_random(),"name":"target","version":1,"enabled":true,
+            "credential_id":CredentialId::new_random(),"origin":"https://api.example.com","method":"GET",
+            "target":template_target,"auth":{"header_name":"authorization","prefix":"Bearer "},"timeout_ms":1000,
+            "request_policy":{"max_body_bytes":1024,"allowed_extra_headers":[]},
+            "response_policy":{"max_body_bytes":1024,"allowed_headers":[]}
+        });
+        let action: FixedHttpAction = serde_json::from_value(value.clone()).unwrap();
+        assert!(action.target.fixed_path().is_none());
+        assert_eq!(serde_json::to_value(&action).unwrap(), value);
+        let mut fixed = value.clone();
+        fixed["target"] = serde_json::json!({"kind":"fixed","path":"/fixed"});
+        assert_eq!(
+            serde_json::from_value::<FixedHttpAction>(fixed.clone())
+                .unwrap()
+                .target
+                .fixed_path()
+                .unwrap()
+                .as_str(),
+            "/fixed"
+        );
+        fixed["exact_path"] = serde_json::json!("/legacy");
+        assert!(serde_json::from_value::<FixedHttpAction>(fixed).is_err());
+        for (pointer, replacement) in [
+            ("/target/target/path", serde_json::json!("/repos/{missing}")),
+            (
+                "/target/target/path",
+                serde_json::json!("/repos/%2f/{number}"),
+            ),
+            ("/target/source/template", serde_json::json!("unversioned")),
+            ("/target/source/capability", serde_json::json!("bad/name")),
+            ("/target/source/digest", serde_json::json!([1])),
+            (
+                "/target/fixed_headers",
+                serde_json::json!({"authorization":"override"}),
+            ),
+            (
+                "/target/fixed_headers",
+                serde_json::json!({"accept-encoding":"gzip"}),
+            ),
+            (
+                "/target/fixed_headers",
+                serde_json::json!({"x-fixed":"line\nvalue"}),
+            ),
+            ("/target/body_schema", serde_json::json!("schema.json")),
+            (
+                "/target/default_policy",
+                serde_json::json!({"rule":"require-approval"}),
+            ),
+            (
+                "/request_policy/allowed_extra_headers",
+                serde_json::json!(["x-fixed"]),
+            ),
+        ] {
+            let mut invalid = value.clone();
+            *invalid.pointer_mut(pointer).unwrap() = replacement;
+            assert!(
+                serde_json::from_value::<FixedHttpAction>(invalid).is_err(),
+                "{pointer}"
+            );
+        }
+        for field in ["origin", "method", "auth", "exact_path"] {
+            let mut invalid = value.clone();
+            invalid["target"][field] = serde_json::json!("shadow");
+            assert!(serde_json::from_value::<FixedHttpAction>(invalid).is_err());
+        }
+        let mut forbidden_profile = action.clone();
+        forbidden_profile.text_stream = Some(AnthropicTextStream {
+            model: "fixture".into(),
+            max_tokens: 1,
+        });
+        assert!(forbidden_profile.validate().is_err());
+        forbidden_profile.text_stream = None;
+        forbidden_profile.native_plugin = Some(NativePlugin {
+            path: "/synthetic/plugin".into(),
+            sha256: "a".repeat(64),
+            protocol: GITHUB_ISSUES_PROTOCOL.into(),
+        });
+        assert!(forbidden_profile.validate().is_err());
     }
 }

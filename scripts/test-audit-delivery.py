@@ -52,7 +52,7 @@ class DeliveryTests(unittest.TestCase):
         self.source, self.vault = str(uuid.uuid4()), str(uuid.uuid4())
         self.path = self.root / 'outbox'
         self.receipt = self.root / 'receipt.json'
-        private_file(self.receipt, D.encode(dict(vault_id=self.vault, format_version=21,
+        private_file(self.receipt, D.encode(dict(vault_id=self.vault, format_version=25, generation=1,
                      created_at_ms=1, sha256_hex='a' * 64, output_path='synthetic.backup',
                      snapshot_cut=dict(audit_sequence=27, policy=None))))
         self.args = ['--outbox', str(self.path), '--source-instance-id', self.source, '--vault-id', self.vault]
@@ -362,6 +362,23 @@ class DeliveryTests(unittest.TestCase):
         self.assertIn('invalid-vault-receipt', error.getvalue())
         self.assertFalse(outbox.exists())
 
+    def test_receipt_generation_is_required_positive_full_u64(self):
+        receipt = D.decode(self.receipt.read_bytes())
+        for index, generation in enumerate((None, False, 0, -1, 2**64, 1.5, '1', 2**64 - 1)):
+            with self.subTest(generation=generation):
+                candidate = dict(receipt)
+                if generation is None:
+                    del candidate['generation']
+                else:
+                    candidate['generation'] = generation
+                path, outbox = self.root / f'generation-{index}.json', self.root / f'outbox-{index}'
+                private_file(path, D.encode(candidate))
+                args = ['--outbox', str(outbox), '--source-instance-id', self.source, '--vault-id', self.vault,
+                        'init', '--vault-receipt', str(path), '--endpoint', 'https://example.com/audit']
+                with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(D.main(args), 0 if generation == 2**64 - 1 else 1)
+                self.assertEqual(outbox.exists(), generation == 2**64 - 1)
+
     def test_hidden_tty_echo_failure_refuses_fallback(self):
         box, batch = self.queued()
         box.close()
@@ -529,7 +546,7 @@ class TLSAndCLITests(unittest.TestCase):
                                     capture_output=True, timeout=30)
             self.assertEqual(result.returncode, 0, 'real CLI operation failed (output suppressed)')
             return result.stdout
-        run(rekeyd, ['init', '--password-stdin'], (PASSWORD + '\n').encode())
+        run(rekeyd, ['init', '--mode', 'team', '--password-stdin'], (PASSWORD + '\n').encode())
         process = subprocess.Popen([str(rekeyd), 'serve', '--state-dir', str(state)],
                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         def stop():

@@ -156,7 +156,7 @@ def main():
                 args = (*args, "--expected-vault-id", target["vault_id"], "--expected-trust-sha256", target["trust_sha256"])
             return json.loads(run(base + list(args), secret))
 
-        run(base + ["init", "--password-stdin"], password + "\n")
+        run(base + ["init", "--mode", "team", "--password-stdin"], password + "\n")
         with (work / "broker.log").open("w") as log:
             broker = subprocess.Popen([str(binaries / "examples/p1_policy_fixture"), "serve",
                                        "--state-dir", str(state)], stdout=log, stderr=log)
@@ -206,8 +206,8 @@ def main():
                 resource = {"type": "fixed-http-action", "id": action["id"]}
                 draft = work / "draft.json"
                 draft.write_text(json.dumps({
-                    "format_version": 3, "version": 1, "expires_at_ms": int(time.time() * 1000) + 600000,
-                    "approvers": [], "workload_identities": [],
+                    "format_version": 6, "version": 1, "expires_at_ms": int(time.time() * 1000) + 600000,
+                    "approvers": [], "profiles": [], "workload_identities": [],
                     "bindings": [{"action_id": action["id"], "version": 1, "resource": resource,
                                   "parameter_schema_id": "repair/v1", "parameter_schema": {"type": "null"}}],
                     "rules": [{"id": str(uuid.uuid4()), "effect": "permit", "principal_id": session["principal_id"],

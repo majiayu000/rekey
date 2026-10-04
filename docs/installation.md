@@ -1,113 +1,136 @@
 # Install, upgrade, service, and uninstall
 
-This file describes the `v2.0.0-alpha.2` archive (vault schema v9). It ships
-two archives: macOS 14 arm64 and Ubuntu 24.04 x86_64. See
-[the platform matrix](alpha-scope.md) before installing.
+This page describes the **3.0.0-alpha.1 unpublished candidate and release workflow**, not an
+available v3 download. macOS distribution is a signed, notarized `.pkg` for
+macOS 14+ on Apple Silicon; Linux uses an Ubuntu 24.04 x86_64 archive. There is
+no default macOS tar/zip installation path and no published Homebrew tap.
+The release-local `rekey.rb` is generated from the final pkg bytes.
 
-The tagged workflow publishes a prerelease before public-URL smoke. Install
-`v2.0.0-alpha.2` from GitHub only after that smoke succeeds; a smoke failure
-withdraws the Release to draft. Until then, `v2.0.0-alpha.1` remains the last
-completed public download (schema v5). There is no in-place upgrade from any pre-v9
-format, including v1 and v4–v8.
+A release is usable only after its tagged workflow, installed-package checks
+and public-download smoke finish successfully. Failed public smoke withdraws
+the prerelease to draft. Local software checks do not establish Developer ID
+provisioning, device Keychain access, Touch ID, or a fresh-account install.
+Those signed-device gates remain required before making L1 claims.
 
-## Download and verify
+## macOS pkg or release-local Homebrew cask
 
-Set the version and target for your platform:
+Use an actual tag from a completed release; `TAG_FROM_COMPLETED_RELEASE` below
+is a placeholder, not a published version. Confirm the tag's release notes and
+checks before continuing.
 
 ```bash
-REKEY_VERSION=v2.0.0-alpha.2
-REKEY_TARGET=aarch64-apple-darwin       # macOS 14 arm64
-# REKEY_TARGET=x86_64-unknown-linux-gnu # Ubuntu 24.04 x86_64
-
+REKEY_VERSION='TAG_FROM_COMPLETED_RELEASE'
 gh release download "$REKEY_VERSION" --repo majiayu000/rekey \
-  --pattern "rekey-${REKEY_VERSION}-${REKEY_TARGET}.tar.gz" \
-  --pattern SHA256SUMS
-gh attestation verify "rekey-${REKEY_VERSION}-${REKEY_TARGET}.tar.gz" \
-  --repo majiayu000/rekey
+  --pattern "rekey-${REKEY_VERSION}-macos.pkg" \
+  --pattern rekey.rb --pattern SHA256SUMS
+gh attestation verify "rekey-${REKEY_VERSION}-macos.pkg" --repo majiayu000/rekey
 shasum -a 256 -c SHA256SUMS --ignore-missing
+pkgutil --check-signature "rekey-${REKEY_VERSION}-macos.pkg"
+spctl --assess --type install --verbose=4 "rekey-${REKEY_VERSION}-macos.pkg"
+```
+
+Choose **one** installation method: open the verified pkg in Installer, or
+review the downloaded cask's exact URL, SHA256 and uninstall receipt and run:
+
+```bash
+HOMEBREW_DEVELOPER=1 brew install --cask ./rekey.rb
+```
+
+Current Homebrew normally rejects casks loaded from file paths. The command
+above opts in for this invocation only; it does not change global settings or
+create a tap. A cask is executable Ruby: verify its release source and checksum
+and review its contents first. If local-file loading is explicitly prohibited
+by your Homebrew configuration, use the verified pkg instead of overriding that
+policy. [Homebrew local-path policy](https://docs.brew.sh/Manpage#environment)
+
+The cask installs the same signed pkg and uses its actual SHA256; it does not
+bypass Gatekeeper, provisioning or the Installer checks. This command uses a
+local release asset, not a tap. Homebrew's pkg uninstall mechanism removes
+receipt-tracked files. [Homebrew cask documentation](https://docs.brew.sh/Cask-Cookbook#stanza-uninstall)
+
+The pkg installs `/Applications/Rekey.app` and links `rekey`, `rekeyd`, and
+`rekey-mcp` in `/usr/local/bin`. Do not overwrite another installation's files.
+Keep the App at that installed path. The App owns the opt-in SMAppService login
+item; do not separately install a generated LaunchAgent for this package.
+
+```bash
+rekey setup
+rekey add anthropic
+# Use a model confirmed for your provider account:
+rekey run claude-code --client claude-code -- claude --model YOUR_MODEL
+```
+
+Setup opens the App for mode selection, vault creation and human authentication.
+Save the recovery key when displayed. The App handles credential entry, Profile
+review and signing; Agent processes receive capabilities, never provider keys.
+If provisioning, login-item approval or policy signing is unavailable, fix that
+reported prerequisite; do not replace the signed daemon with a source binary.
+
+## Linux download and user-owned installation
+
+After selecting a completed release as above:
+
+```bash
+REKEY_TARGET=x86_64-unknown-linux-gnu
+gh release download "$REKEY_VERSION" --repo majiayu000/rekey \
+  --pattern "rekey-${REKEY_VERSION}-${REKEY_TARGET}.tar.gz" --pattern SHA256SUMS
+gh attestation verify "rekey-${REKEY_VERSION}-${REKEY_TARGET}.tar.gz" --repo majiayu000/rekey
+sha256sum --check --ignore-missing SHA256SUMS
 tar -xzf "rekey-${REKEY_VERSION}-${REKEY_TARGET}.tar.gz"
 REKEY_RELEASE_DIR="$PWD/rekey-${REKEY_VERSION}-${REKEY_TARGET}"
-```
-
-`gh attestation verify` verifies the GitHub/Sigstore build provenance. The
-Release also carries the SPDX SBOM, provenance bundle, SBOM attestation bundle,
-and per-archive checksum.
-
-## User-owned installation
-
-This path does not use `sudo`:
-
-```bash
 mkdir -p "$HOME/.local/bin"
-install -m 0755 "$REKEY_RELEASE_DIR/rekey" "$HOME/.local/bin/rekey"
-install -m 0755 "$REKEY_RELEASE_DIR/rekeyd" "$HOME/.local/bin/rekeyd"
+install -m 0755 "$REKEY_RELEASE_DIR/rekey" "$REKEY_RELEASE_DIR/rekeyd" \
+  "$REKEY_RELEASE_DIR/rekey-mcp" "$REKEY_RELEASE_DIR/rekey-policy-sign" \
+  "$REKEY_RELEASE_DIR/rekey-approval-sign" "$HOME/.local/bin/"
 export PATH="$HOME/.local/bin:$PATH"
-command -v rekey rekeyd
 rekey --version
 rekeyd --version
-```
-
-Both commands must print `2.0.0-alpha.2`. Rekey finds `rekeyd` beside `rekey`
-or on `PATH`; install both into the same directory.
-
-## Initialize
-
-```bash
 umask 077
-rekey init
+rekey init --mode team
 ```
 
-Save the recovery key immediately in a separate secure location. It is shown
-once. Losing both the password and recovery key permanently loses access to
-the vault.
+Both binaries must match the chosen release tag. Keep all five binaries
+alongside each other. Linux uses team mode and the external signing workflow;
+the macOS personal signing/UI path is unavailable. Save the one-time recovery
+key separately. Losing both password and recovery key loses the vault.
 
-## Development archive helpers
+## systemd user service
 
-The unreleased [alpha.3 candidate](releases/v2.0.0-alpha.3.md) stages six
-binaries together: `rekey`, `rekeyd`, `rekey-github-create-issue`, `rekey-mcp`,
-`rekey-policy-sign`, and `rekey-approval-sign`. Keep them in the same directory
-when installing a candidate archive. It also includes the executable Python 3
-helpers `rekey-service-unit.py`, `agent-quickstart.py`,
-`operator-credential-repair.py`, `rekey-backup-sync.py`, and
-`rekey-audit-delivery.py`. They accept the installed `rekey` path explicitly;
-use each helper's `--help` and the linked operation specification before use.
-
-These are future archive entries. This section does not change the contents
-or format of the published alpha.2 download. Candidate archive acceptance
-checks each entry and starts its packaged MCP process for initialization and
-tool discovery. It does not replace provider, credential or policy setup.
-
-## launchd user service
-
-The release archive includes `rekey-service-unit.py`. Initialize the vault
-before installing the service, then generate and load a user LaunchAgent:
+Initialize the vault first, then run these commands as the owning non-root
+logged-in user. No `sudo`, `User=` or system-wide unit is involved:
 
 ```bash
-mkdir -p "$HOME/Library/LaunchAgents"
-python3 "$REKEY_RELEASE_DIR/rekey-service-unit.py" launchd \
-  --rekeyd "$HOME/.local/bin/rekeyd" \
-  --state-dir "$HOME/.rekey" \
-  --label io.github.majiayu000.rekey \
-  > "$HOME/Library/LaunchAgents/io.github.majiayu000.rekey.plist"
-plutil -lint "$HOME/Library/LaunchAgents/io.github.majiayu000.rekey.plist"
-launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/io.github.majiayu000.rekey.plist"
-launchctl print "gui/$(id -u)/io.github.majiayu000.rekey"
-rekey status
+REKEY_USER_UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+mkdir -p "$REKEY_USER_UNIT_DIR"
+python3 "$REKEY_RELEASE_DIR/rekey-service-unit.py" systemd-user \
+  --rekeyd "$HOME/.local/bin/rekeyd" --state-dir "$HOME/.rekey" \
+  > "$REKEY_USER_UNIT_DIR/rekey.service"
+systemd-analyze --user verify "$REKEY_USER_UNIT_DIR/rekey.service"
+systemctl --user daemon-reload
+systemctl --user enable --now rekey.service
+systemctl --user status rekey.service
+journalctl --user -u rekey.service
+rekey unlock
 ```
 
-The service starts locked. Use `rekey unlock` after boot. Logs are
-`~/.rekey/rekeyd.stdout.log` and `~/.rekey/rekeyd.stderr.log`.
+The service starts locked and targets the user manager's `default.target`.
+It follows the user manager's lifetime; this does not enable lingering or
+promise startup before login. A missing user bus requires a working user
+session, not falling back to a root system service. [systemd user target](https://github.com/systemd/systemd/blob/main/man/systemd.special.xml)
 
-Stop, reload after a binary upgrade, and uninstall the definition with:
+To stop or remove this unit (vault data remains):
 
 ```bash
-launchctl bootout "gui/$(id -u)/io.github.majiayu000.rekey"
-launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/io.github.majiayu000.rekey.plist"
-launchctl bootout "gui/$(id -u)/io.github.majiayu000.rekey"
-rm "$HOME/Library/LaunchAgents/io.github.majiayu000.rekey.plist"
+systemctl --user disable --now rekey.service
+rm "$REKEY_USER_UNIT_DIR/rekey.service"
+systemctl --user daemon-reload
 ```
 
-## systemd system service
+For development-only macOS builds, the generator retains its `launchd` mode.
+That is a manual development service path, not the signed pkg's SMAppService
+installation path.
+
+## Dedicated-account system service (optional Linux deployment)
 
 Use a dedicated non-root account. These commands intentionally show every
 privileged step:
@@ -117,7 +140,7 @@ sudo useradd --system --create-home --home-dir /var/lib/rekey --shell /usr/sbin/
 sudo install -m 0755 "$REKEY_RELEASE_DIR/rekey" /usr/local/bin/rekey
 sudo install -m 0755 "$REKEY_RELEASE_DIR/rekeyd" /usr/local/bin/rekeyd
 sudo install -d -m 0700 -o rekey -g rekey /var/lib/rekey/state
-sudo -u rekey /usr/local/bin/rekey --state-dir /var/lib/rekey/state init
+sudo -u rekey /usr/local/bin/rekey --state-dir /var/lib/rekey/state init --mode team
 sudo python3 "$REKEY_RELEASE_DIR/rekey-service-unit.py" systemd \
   --rekeyd /usr/local/bin/rekeyd \
   --state-dir /var/lib/rekey/state \
@@ -213,25 +236,31 @@ same-UID host process, host root, or kernel compromise. It does not upgrade
 G1 to G2 or implement Windows/plugin isolation. See the
 [feature truth matrix](product-foundation/feature-truth-matrix.md).
 
-## GitHub reference connector (macOS and Linux source builds)
+## Lab reference integrations (source builds)
+
+The following native plugin/sidecar, legacy independent text-stream and metrics
+paths require a source build with `--features lab`. GitHub App credential
+management remains available; the personal path uses the GitHub PAT template.
+The common Profile LLM raw-SSE path is a default v3 feature and is separate from
+the legacy text-only connector below.
+
+### GitHub reference connector
 
 The source implementation of GitHub CreateIssue and CreateIssueComment uses the bundled
 `rekey-github-create-issue` sidecar on macOS. Build it with the Broker package
-and keep it beside `rekeyd` when copying binaries. The source archive and macOS
-app build include it; published alpha.2 archives do not gain this feature.
+and keep it beside `rekeyd` when copying binaries. Default v3 archives and the macOS pkg do not ship this lab sidecar.
 A missing sidecar fails either mutation call instead of running it unsandboxed.
 
-For a source build, install all three binaries together (the published alpha.2
-installation above describes its historical archive):
+For a lab source build, install the three matching binaries together:
 
 ```bash
-cargo build --release -p rekey-cli --bin rekey -p rekey-broker --bins
+cargo build --release --features lab -p rekey-cli --bin rekey -p rekey-broker --bins
 install -m 0755 target/release/rekey target/release/rekeyd \
   target/release/rekey-github-create-issue "$HOME/.local/bin/"
 ```
 
-Current source uses state/backup format **14**. It rejects earlier formats,
-including 13, without migration. Initialize a new empty state directory; keep
+Current unreleased source uses state/backup format **25**. It rejects earlier
+formats without migration. Vault25 / policy6 are frozen across all v3 prereleases and GA. Initialize a new empty state directory for an older format; keep
 older binaries with their matching state and backups.
 
 An Admin may instead bind a local executable to one exact Action version with
@@ -313,61 +342,42 @@ This command installs no scheduler, collector, listener or alerts. The existing
 See the [local metrics contract](superpowers/specs/2026-09-16-local-metrics.md)
 and [external collection specification](superpowers/specs/2026-09-16-external-capabilities.md).
 
-## Cross-version install and rollback
+## Format changes and restore
 
-These steps apply whenever the new archive uses a different vault format,
-including `v2.0.0-alpha.1` (schema v5) to `v2.0.0-alpha.2` (schema v9).
-Release notes that say the format is unchanged may replace only the two
-binaries; **do not treat that as the path from alpha.1 to v9**.
+Unreleased v3 currently uses vault/backup format **25** and policy snapshot
+format **6**. These durable formats are frozen across all v3 prereleases and GA.
+No older vault, backup or policy format is migrated or backfilled, now or after GA.
+All v3 prereleases, GA, minor and patch releases must preserve the
+durable format; an incompatible format requires a new major version. Keep old
+binaries, state and backups together; initialize a new empty directory for an
+incompatible format rather than pointing new binaries at old state.
 
-### Keep the old environment
+Back up and verify a receipt before changing an installation. A supported
+same-format restore requires authenticated preview, visible source generation
+and external high-water context, and explicit confirmation with password or
+recovery proof. Ordinary unlock is not rollback consent. Follow the matching
+binary's `rekey restore --help` and rollback confirmation flow; never delete
+external generation history to make an old snapshot unlock.
 
-1. Using the **old** binaries, create and verify a backup as described in the
-   operations runbook. Save the receipt and its SHA-256 off the state
-   directory.
-2. Stop the old service and confirm both sockets and the process are gone.
-3. Leave the old state directory untouched. Keep the matching old `rekey` and
-   `rekeyd` binaries (copy them aside before installing new ones into the same
-   PATH directory).
+## Upgrade and uninstall
 
-The old backup restores only with those old binaries into a newly created
-empty directory. It is not a migration entry into v9.
-
-### Install the new version into a new directory
-
-1. Verify the new archive (checksum and attestation).
-2. Install the new `rekey` and `rekeyd` without pointing them at the old state
-   directory.
-3. Initialize a **new empty** state directory (`rekey --state-dir NEW_DIR init`).
-4. Recreate credentials, Actions, policy trust, signed policy, and any
-   workload or Vault source profiles through supported Admin operations.
-5. Unlock, mint a new session, and complete one authorized execute.
-
-`rekey status` on a v9 broker reports `"format_version": 9`. A v5 archive
-reports `5`. Mismatched state is rejected and left untouched.
-
-### Roll back
-
-1. Stop the new broker.
-2. Leave any v9 directory alone; do not open it with the old binaries.
-3. Restore the saved pre-cut backup into a **new empty** directory using the
-   old binaries and the matching SHA-256.
-4. Start the old broker locked, unlock, and run one fixed Action.
-
-Never point an older binary at state already opened by a newer incompatible
-version. Never point a v9 binary at v1, v4–v8, or any other pre-v9 state.
-
-## Uninstall
-
-First unload/disable the service and confirm no `rekeyd` process remains.
-Remove only the files installed for Rekey:
+On macOS, first disable login startup in Rekey.app, shut down the daemon using
+its fresh-proof shutdown action, and quit the App. Confirm it has stopped before
+replacing or removing files. For a cask installation, then run:
 
 ```bash
-rm "$HOME/.local/bin/rekey" "$HOME/.local/bin/rekeyd" # user install
-# sudo rm /usr/local/bin/rekey /usr/local/bin/rekeyd   # system install
+brew uninstall --cask rekey
 ```
 
-To retain encrypted data, leave `~/.rekey` or `/var/lib/rekey/state` untouched.
-To delete data permanently, remove that exact state directory only after a
-verified backup and explicit operator decision. Deleted vault and recovery
-material cannot be reconstructed by Rekey.
+The cask matches only the exact `com.starlight.rekey.pkg` receipt. It supplies
+no service-stop hook, signal, `zap`, vault deletion or Keychain deletion. For a
+manual pkg installation, remove only `/Applications/Rekey.app` and the three
+`/usr/local/bin` links after verifying that each link still points into that
+App; forgetting a receipt alone does not remove its files. Preserve state and
+Keychain history across uninstall and reinstall.
+
+For a Linux user installation, stop/disable its user unit as above, then remove
+only the five binaries you installed in `$HOME/.local/bin`. The optional system
+service above has its own explicitly privileged stop/removal procedure.
+Encrypted vault data, recovery material and generation history are not uninstall
+artifacts and must remain untouched.

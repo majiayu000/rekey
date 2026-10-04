@@ -1,5 +1,8 @@
 # Fixed PKCS#11 Ed25519 approval signer
 
+> Status: Lab (v3 scope; enterprise reserve)
+> Existing contracts and evidence are retained; this capability is excluded from the default v3 build and release package.
+
 Status: selected minimal EXT05 implementation contract, frozen before code. This supplements the existing independent operator approval signer. It does not expose signing or private keys through the Broker, Agent API or credential store. Physical HSM acceptance remains required.
 
 ## Identity and review

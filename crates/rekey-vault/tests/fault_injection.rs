@@ -215,7 +215,32 @@ async fn wrapper_commit_failure_rolls_back_and_faults() {
     handle.unlock(common::password_proof()).await.unwrap();
 
     let db = paths::vault_db(&vault.state_dir);
+    let header = SqliteRecordStore::open(&db).unwrap().load_header().unwrap();
+    let anchors =
+        rekey_vault::generation_anchor::GenerationAnchors::open(&vault.state_dir, header.vault_id)
+            .unwrap();
+    assert_eq!(anchors.read().unwrap().file, Some(header.generation));
+    let snapshot = |connection: &rusqlite::Connection| {
+        [
+            "SELECT * FROM vault_header",
+            "SELECT * FROM key_wrappers ORDER BY wrapper_id",
+        ]
+        .map(|sql| {
+            let mut statement = connection.prepare(sql).unwrap();
+            let columns = statement.column_count();
+            statement
+                .query_map([], |row| {
+                    (0..columns)
+                        .map(|i| row.get::<_, rusqlite::types::Value>(i))
+                        .collect::<rusqlite::Result<Vec<_>>>()
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        })
+    };
     let tamper = rusqlite_open(&db);
+    let original = snapshot(&tamper);
     tamper
         .execute_batch(
             "CREATE TABLE wrapper_commit_parent (id INTEGER PRIMARY KEY);
@@ -245,6 +270,27 @@ async fn wrapper_commit_failure_rolls_back_and_faults() {
     join.join().unwrap();
 
     let tamper = rusqlite_open(&db);
+    assert_eq!(
+        snapshot(&tamper),
+        original,
+        "header and every wrapper column rolled back"
+    );
+    let committed: i64 = tamper
+        .query_row(
+            "SELECT count(*) FROM audit_events WHERE event_type='vault.password_changed'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(committed, 0);
+    let children: i64 = tamper
+        .query_row("SELECT count(*) FROM wrapper_commit_child", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(children, 0);
+    let reserved = anchors.read().unwrap();
+    assert_eq!(reserved.file, Some(header.generation + 1));
     tamper
         .execute_batch(
             "DROP TRIGGER fail_wrapper_commit;
@@ -254,6 +300,77 @@ async fn wrapper_commit_failure_rolls_back_and_faults() {
         .unwrap();
     drop(tamper);
     let (handle, join) = common::spawn(&vault.state_dir);
+    assert!(matches!(
+        handle.unlock(common::password_proof()).await,
+        Err(AuthorityError::RollbackSuspected)
+    ));
+    let status = handle.status().await.unwrap();
+    assert_eq!(status.state, "rollback-suspected");
+    let context = status.rollback.unwrap();
+    assert_eq!(context.source_generation, header.generation);
+    assert_eq!(context.high_water, Some(header.generation + 1));
+    assert!(!context.history_missing);
+    let observer = rusqlite_open(&db);
+    let data_version = || {
+        observer
+            .query_row("PRAGMA data_version", [], |r| r.get::<_, i64>(0))
+            .unwrap()
+    };
+    let before_denials = data_version();
+    let deadline = || Instant::now() + Duration::from_secs(20);
+    assert!(matches!(
+        handle
+            .confirm_rollback(
+                context.clone(),
+                rekey_vault::bootstrap::RestoreProof::Password(SecretInput::from_slice(b"wrong")),
+                deadline(),
+            )
+            .await,
+        Err(AuthorityError::InvalidUnlockCredential)
+    ));
+    let mut stale = context.clone();
+    stale.high_water = Some(header.generation);
+    assert!(matches!(
+        handle
+            .confirm_rollback(
+                stale,
+                rekey_vault::bootstrap::RestoreProof::Password(common::password_input()),
+                deadline(),
+            )
+            .await,
+        Err(AuthorityError::RollbackSuspected)
+    ));
+    assert_eq!(
+        data_version(),
+        before_denials,
+        "denied confirmation commits no DB write"
+    );
+    assert_eq!(snapshot(&observer), original);
+    assert_eq!(anchors.read().unwrap(), reserved);
+    assert_eq!(
+        handle.status().await.unwrap().rollback,
+        Some(context.clone())
+    );
+    handle
+        .confirm_rollback(
+            context,
+            rekey_vault::bootstrap::RestoreProof::Password(common::password_input()),
+            deadline(),
+        )
+        .await
+        .unwrap();
+    let status = handle.status().await.unwrap();
+    assert_eq!(status.state, "locked");
+    assert!(status.rollback.is_none());
+    assert_eq!(
+        SqliteRecordStore::open(&db)
+            .unwrap()
+            .load_header()
+            .unwrap()
+            .generation,
+        header.generation + 2
+    );
+    assert_eq!(anchors.read().unwrap().file, Some(header.generation + 2));
     handle.unlock(common::password_proof()).await.unwrap();
     handle
         .shutdown(Some(common::password_proof()))

@@ -4,9 +4,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-REKEY="$ROOT/target/release/rekey"
-REKEYD="$ROOT/target/release/rekeyd"
-FIXTURE="$ROOT/target/release/examples/p1_policy_fixture"
+TARGET_DIR="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+REKEY="$TARGET_DIR/release/rekey"
+REKEYD="$TARGET_DIR/release/rekeyd"
+FIXTURE="$TARGET_DIR/release/examples/p1_policy_fixture"
 SIGNER="$ROOT/scripts/sign-test-policy.py"
 PASSWORD="p3 acceptance horse battery staple"
 SECRET="P3-APPROVAL-CREDENTIAL-CANARY"
@@ -101,11 +102,11 @@ path, action, action_version, principal, policy_version, quorum, first, second =
 approvers = [json.loads(pathlib.Path(first).read_text()), json.loads(pathlib.Path(second).read_text())]
 resource = {"type": "fixed-http-action", "id": action}
 snapshot = {
-    "format_version": 3,
+    "format_version": 6,
     "version": int(policy_version),
     "expires_at_ms": int(time.time() * 1000) + 600000,
     "approvers": approvers,
-    "workload_identities": [],
+    "profiles": [], "workload_identities": [],
     "bindings": [{
         "action_id": action,
         "version": int(action_version),
@@ -126,9 +127,8 @@ snapshot = {
         "version": int(action_version),
         "resource": resource,
         "parameters": {"kind": "any_validated"},
+        "approver": {"kind": "ed25519", "keys": [entry["public_key"] for entry in approvers], "threshold": int(quorum)},
         "approval": {
-            "approver_ids": [entry["approver_id"] for entry in approvers],
-            "quorum": int(quorum),
             "mode": "one-time",
             "max_uses": 1,
         },
@@ -177,7 +177,7 @@ execute_with() {
     --capability - --body-file "$WORKDIR/request.json" --content-type application/json "$@"
 }
 
-printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin >/dev/null
+printf '%s\n' "$PASSWORD" | "$REKEYD" init --mode team --state-dir "$STATE" --password-stdin >/dev/null
 python3 "$SIGNER" approval-identity --key-dir "$WORKDIR/approver-1-key" >"$WORKDIR/approver-1.json"
 python3 "$SIGNER" approval-identity --key-dir "$WORKDIR/approver-2-key" >"$WORKDIR/approver-2.json"
 printf '%s\n' '{"message":"approved"}' >"$WORKDIR/request.json"
@@ -257,9 +257,18 @@ expect_exit 2 execute_with --approval "$WORKDIR/grant-link.json"
 expect_exit 2 execute_with --approval "$WORKDIR/grant-2a.json" --approval "$WORKDIR/grant-2a.json"
 
 "$REKEY" --state-dir "$STATE" audit list --limit 100 >"$WORKDIR/audit.json"
-for event in approval.requested approval.accepted approval.rejected execution.started execution.finished; do
-  rg -q "\"event_type\": \"$event\"" "$WORKDIR/audit.json"
-done
+python3 - "$WORKDIR/audit.json" <<'PY'
+import json, sys
+expected = {
+    "approval.requested", "approval.accepted", "approval.rejected",
+    "execution.started", "execution.finished",
+}
+with open(sys.argv[1]) as source:
+    actual = {event["event_type"] for event in json.load(source)["events"]}
+missing = expected - actual
+if missing:
+    raise SystemExit("missing audit events: " + ", ".join(sorted(missing)))
+PY
 "$REKEY" --state-dir "$STATE" audit export --output "$WORKDIR/audit.jsonl" >/dev/null
 rg -q '"record_type":"rekey.audit.export.v2"' "$WORKDIR/audit.jsonl"
 rg -q '"event_type":"approval.accepted"' "$WORKDIR/audit.jsonl"

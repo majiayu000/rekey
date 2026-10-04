@@ -9,9 +9,10 @@ command -v rg >/dev/null || {
 }
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-REKEY="$ROOT/target/release/rekey"
-REKEYD="$ROOT/target/release/rekeyd"
-FIXTURE="$ROOT/target/release/examples/p2_github_app_fixture"
+TARGET_DIR="$(cargo metadata --manifest-path "$ROOT/Cargo.toml" --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+REKEY="$TARGET_DIR/release/rekey"
+REKEYD="$TARGET_DIR/release/rekeyd"
+FIXTURE="$TARGET_DIR/release/examples/p2_github_app_fixture"
 PASSWORD="p7b vault dynamic acceptance password"
 SOURCE_ONE="P7B-VAULT-SOURCE-TOKEN-ONE-CANARY"
 SOURCE_TWO="P7B-VAULT-SOURCE-TOKEN-TWO-CANARY"
@@ -20,8 +21,8 @@ RESOLVED_TWO="P7B-DYNAMIC-VALUE-TWO-CANARY"
 LEASE_ONE="database/creds/agent-api-token/p7b-one-canary"
 LEASE_TWO="database/creds/agent-api-token/p7b-two-canary"
 
-cargo build --release -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd
-cargo build --release -p rekey-broker --example p2_github_app_fixture
+cargo build --features lab --release -p rekey-cli --bin rekey -p rekey-broker --bin rekeyd
+cargo build --features lab --release -p rekey-broker --example p2_github_app_fixture
 
 WORKDIR="$(mktemp -d /tmp/rkp7bdynamic.XXXXXX)"
 STATE="$WORKDIR/state"
@@ -88,8 +89,8 @@ binding={"action_id":action,"version":1,"resource":{"type":"p7b-vault-action","i
          "required":["operation"],"properties":{"operation":{"const":"bounded"}}}}
 rule={"id":str(uuid.uuid4()),"effect":"permit","principal_id":principal,"action_id":action,
       "version":1,"resource":binding["resource"],"parameters":{"kind":"any_validated"}}
-pathlib.Path(path).write_text(json.dumps({"format_version":3,"version":int(version),
-  "expires_at_ms":int(time.time()*1000)+600000,"approvers":[],"workload_identities":[],
+pathlib.Path(path).write_text(json.dumps({"format_version":6,"version":int(version),
+  "expires_at_ms":int(time.time()*1000)+600000,"approvers":[],"profiles": [], "workload_identities":[],
   "bindings":[binding,dict(binding,action_id=malformed_action,resource={"type":"p7b-vault-action","id":malformed_action})],
   "rules":[rule,dict(rule,id=str(uuid.uuid4()),action_id=malformed_action,resource={"type":"p7b-vault-action","id":malformed_action})]}))
 PY
@@ -142,7 +143,7 @@ write_private(invalid, bad)
 PY
 
 printf '%s' '{"operation":"bounded"}' >"$REQUEST_BODY"
-printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin >/dev/null
+printf '%s\n' "$PASSWORD" | "$REKEYD" init --mode team --state-dir "$STATE" --password-stdin >/dev/null
 printf '%s\n' p7b-v1 >"$MODE"
 start_fixture "$READY" "$TRACE"
 
@@ -307,8 +308,11 @@ wait "$BROKER_PID"
 BROKER_PID=""
 
 RESTORED_STATE="$WORKDIR/restored-state"
+# Explicitly confirm the inspected context for this disposable test target.
+RESTORE_CONTEXT="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$RESTORED_STATE" restore \
+  --input "$BACKUP" --sha256 "$BACKUP_SHA256" --inspect --password-stdin)"
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$RESTORED_STATE" restore \
-  --input "$BACKUP" --sha256 "$BACKUP_SHA256" --password-stdin >/dev/null
+  --input "$BACKUP" --sha256 "$BACKUP_SHA256" --expected-context "$RESTORE_CONTEXT" --password-stdin >/dev/null
 STATE="$RESTORED_STATE"
 READY="$WORKDIR/restored-ready"
 RESTORED_TRACE="$WORKDIR/restored-trace"

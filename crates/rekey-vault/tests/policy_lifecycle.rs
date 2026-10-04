@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 fn trust_input() -> PolicyTrustInput {
     PolicyTrustInput {
         signer_id: PolicySignerId::new_random(),
-        public_key: [7u8; 32],
+        key: common::policy_key(7),
     }
 }
 
@@ -27,7 +27,8 @@ fn bundle_input(
     let bundle_json = vec![marker; 32];
     PolicyBundleInput {
         expected_vault_id: vault_id,
-        expected_trust_sha256: rekey_policy::policy_trust_sha256(signer_id, &[7; 32]).unwrap(),
+        expected_trust_sha256: rekey_policy::policy_trust_sha256(signer_id, &common::policy_key(7))
+            .unwrap(),
         signer_id,
         version,
         expires_at_ms: 4_102_444_800_000,
@@ -47,6 +48,8 @@ fn workload_audit() -> AuditDraft {
         credential_version: None,
         authorization: None,
         approval: None,
+        request_context: None,
+        usage: None,
         event_type: event_type::SESSION_CREATED,
         outcome: outcome::SUCCESS,
         reason_code: "workload-attested".to_owned(),
@@ -209,6 +212,13 @@ async fn activation_time_exact_audit_and_trust_target_survive_backup_restore() {
         &restored,
         rekey_vault::bootstrap::RestoreProof::Password(common::password_input()),
         &receipt.sha256_hex,
+        rekey_vault::bootstrap::inspect_restore(
+            &backup_path,
+            &restored,
+            rekey_vault::bootstrap::RestoreProof::Password(common::password_input()),
+            &receipt.sha256_hex,
+        )
+        .unwrap(),
     )
     .unwrap();
     assert_eq!(id.vault_id, first.expected_vault_id);
@@ -225,8 +235,7 @@ async fn activation_time_exact_audit_and_trust_target_survive_backup_restore() {
     let material = handle.policy_material().await.unwrap();
     let restored_trust = material.trust.unwrap();
     assert_eq!(
-        rekey_policy::policy_trust_sha256(restored_trust.signer_id, &restored_trust.public_key)
-            .unwrap(),
+        rekey_policy::policy_trust_sha256(restored_trust.signer_id, &restored_trust.key).unwrap(),
         first.expected_trust_sha256
     );
     assert_eq!(
@@ -511,13 +520,16 @@ async fn deleted_or_tampered_policy_records_fail_closed_on_unlock() {
     }
 
     for statement in [
-        "UPDATE policy_trust SET public_key=zeroblob(32)",
-        "UPDATE policy_bundle SET bundle_json=x'00'",
+        format!(
+            "UPDATE policy_trust SET public_key=x'{}'",
+            data_encoding::HEXLOWER.encode(common::policy_key(8).as_bytes())
+        ),
+        "UPDATE policy_bundle SET bundle_json=x'00'".to_owned(),
     ] {
         let vault = common::init_test_vault();
         persist_policy(&vault).await;
         let connection = rusqlite::Connection::open(paths::vault_db(&vault.state_dir)).unwrap();
-        connection.execute(statement, []).unwrap();
+        connection.execute(&statement, []).unwrap();
         drop(connection);
 
         let (handle, join) = common::spawn(&vault.state_dir);
@@ -554,6 +566,7 @@ fn lifecycle_seals_bind_every_canonical_record_field() {
     let vault_id: VaultId = "00112233-4455-4677-8899-aabbccddeeff".parse().unwrap();
     let signer_id: PolicySignerId = "10213243-5465-4768-899a-abbccddeeff0".parse().unwrap();
     let mut state = PolicyStateRecord {
+        mode: rekey_domain::authorization::PolicyMode::Team,
         trust_installed: true,
         bundle_activated: true,
         signer_id: Some(signer_id),
@@ -566,7 +579,7 @@ fn lifecycle_seals_bind_every_canonical_record_field() {
     };
     assert_eq!(
         data_encoding::HEXLOWER.encode(&policy_state::canonical_state(vault_id, &state).unwrap()),
-        "524b5053000100112233445546778899aabbccddeeff01011021324354654768899aabbccddeeff00000000000000007111111111111111111111111111111111111111111111111111111111111111122222222222222222222222222222222222222222222222222222222222222220000000000000009"
+        "524b5053000200112233445546778899aabbccddeeff0201011021324354654768899aabbccddeeff00000000000000007111111111111111111111111111111111111111111111111111111111111111122222222222222222222222222222222222222222222222222222222222222220000000000000009"
     );
     let seal = policy_state::seal_state(&key, vault_id, &state).unwrap();
     state.seal_nonce = seal.nonce;
@@ -577,6 +590,9 @@ fn lifecycle_seals_bind_every_canonical_record_field() {
         "vault ID must be bound"
     );
     let mut mutations = Vec::new();
+    let mut changed = state.clone();
+    changed.mode = rekey_domain::authorization::PolicyMode::Personal;
+    mutations.push(changed);
     let mut changed = state.clone();
     changed.signer_id = Some(PolicySignerId::new_random());
     mutations.push(changed);
@@ -602,14 +618,17 @@ fn lifecycle_seals_bind_every_canonical_record_field() {
 
     let mut trust = PolicyTrustRecord {
         signer_id,
-        public_key: [0x33; 32],
+        key: common::policy_key(0x33),
         installed_at_ms: 10,
         seal_nonce: [0u8; 12],
         seal_ciphertext: [0u8; 16],
     };
     assert_eq!(
         data_encoding::HEXLOWER.encode(&policy_state::canonical_trust(vault_id, &trust)),
-        "524b5054000100112233445546778899aabbccddeeff1021324354654768899aabbccddeeff000013333333333333333333333333333333333333333333333333333333333333333000000000000000a"
+        format!(
+            "524b5054000200112233445546778899aabbccddeeff1021324354654768899aabbccddeeff000010020{}000000000000000a",
+            data_encoding::HEXLOWER.encode(trust.key.as_bytes())
+        )
     );
     let seal = policy_state::seal_trust(&key, vault_id, &trust).unwrap();
     trust.seal_nonce = seal.nonce;
@@ -624,7 +643,7 @@ fn lifecycle_seals_bind_every_canonical_record_field() {
         },
         {
             let mut value = trust.clone();
-            value.public_key[0] ^= 1;
+            value.key = common::policy_key(0x34);
             value
         },
         {

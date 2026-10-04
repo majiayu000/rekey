@@ -116,8 +116,8 @@ class Fixture(unittest.TestCase):
         self.box = cp.Box(self.profile, self.node)
         self.command_id = uid()
         self.bundle = dict(format_version=1, signer_id=self.node['signer_id'], signature='test-only-not-a-real-signature',
-                           snapshot=dict(format_version=3, version=1, expires_at_ms=cp.now_ms() + 120000,
-                                         approvers=[], workload_identities=[], bindings=[], rules=[]))
+                           snapshot=dict(format_version=6, version=1, expires_at_ms=cp.now_ms() + 120000,
+                                         approvers=[], profiles=[], workload_identities=[], bindings=[], rules=[]))
         self.raw = json.dumps(self.bundle, sort_keys=True, separators=(',', ':')).encode()
         self.policy_path = put(self.base / 'policy.json', self.raw)
 

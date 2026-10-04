@@ -11,7 +11,7 @@ use hyper::{
     body::{Bytes, Incoming},
     header::{AUTHORIZATION, HeaderValue},
 };
-use rekey_domain::authorization::ApprovalMode;
+use rekey_domain::authorization::{ApprovalMode, ApproverSpec};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::json;
 use std::{
@@ -830,12 +830,9 @@ impl Store {
                 if challenge.approval_request_id.to_string() != id
                     || challenge.tenant_id.to_string() != c.tenant_id
                     || challenge.mode != ApprovalMode::OneTime
-                    || challenge.quorum != 1
                     || challenge.max_uses != 1
-                    || !challenge
-                        .approver_ids
-                        .iter()
-                        .any(|v| v.to_string() == target)
+                    || !matches!(&challenge.approver,
+                        ApproverSpec::Ed25519 { keys, threshold: 1 } if keys.contains(&a.public_key))
                 {
                     return Err(Error::Http(400));
                 }
@@ -1783,9 +1780,14 @@ mod tests {
         for n in 1..32 {
             let id = uuid::Uuid::from_u128(n).to_string();
             let subject = format!("{n:02}{}", "\"".repeat(254));
+            use aws_lc_rs::signature::KeyPair;
+            let key =
+                aws_lc_rs::signature::Ed25519KeyPair::from_seed_unchecked(&[n as u8; 32]).unwrap();
+            let public_key = data_encoding::HEXLOWER.encode(key.public_key().as_ref());
             c.approvers.push(crate::Approver {
                 subject: subject.clone(),
                 approver_id: id.clone(),
+                public_key,
             });
             c.directory.links.push(Link {
                 subject,
@@ -1794,13 +1796,13 @@ mod tests {
                 external_id: format!("{n:02}{}", "\\".repeat(254)),
                 principal_id: id.clone(),
                 approver_id: Some(id),
-                public_key_sha256: Some("11".repeat(32)),
+                public_key_sha256: Some(sha(key.public_key().as_ref())),
                 confirmed_by: "c".repeat(256),
                 confirmed_at_ms: 1,
                 admin_allowed: false,
             });
         }
-        assert!(c.directory.validate(&c).is_ok());
+        assert!(c.validate().is_ok());
         let mut s = Store::open(&c, crate::state_directory(root.path()).unwrap()).unwrap();
         both_active(&mut s, &c);
         {

@@ -54,13 +54,13 @@ json_field() {
 }
 
 echo "== init"
-printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" init --password-stdin >/dev/null
+printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" init --mode team --password-stdin >/dev/null
 
 echo "== delegated exit codes (usage=2, storage/state=5)"
 set +e
 "$REKEY" --state-dir "$STATE" serve --idle-lock 1s >/dev/null 2>&1
 usage_rc=$?
-printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" init --password-stdin >/dev/null 2>&1
+printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" init --mode team --password-stdin >/dev/null 2>&1
 state_rc=$?
 set -e
 [[ "$usage_rc" -eq 2 ]] || { echo "expected invalid idle exit 2, got $usage_rc"; exit 1; }
@@ -182,11 +182,11 @@ import json, pathlib, sys, time, uuid
 path, action_id, action_version, principal_id = sys.argv[1:]
 resource = {"type": "fixed-http-action", "id": action_id}
 pathlib.Path(path).write_text(json.dumps({
-    "format_version": 3,
+    "format_version": 6,
     "version": 1,
     "expires_at_ms": int(time.time() * 1000) + 600000,
     "approvers": [],
-    "workload_identities": [],
+    "profiles": [], "workload_identities": [],
     "bindings": [{
         "action_id": action_id,
         "version": int(action_version),
@@ -311,12 +311,16 @@ SERVE_PID=""
 echo "== restore"
 restored="$WORKDIR/r"
 bad_restore="$WORKDIR/bad"
+# These are isolated acceptance targets. Inspect with the valid proof first so
+# the negative case exercises actual restore authentication, not inspect.
+bad_context="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$bad_restore" restore --input "$backup" --sha256 "$hash" --inspect --password-stdin)"
 set +e
-printf 'wrong-password\n' | "$REKEY" --state-dir "$bad_restore" restore --input "$backup" --sha256 "$hash" --password-stdin >/dev/null 2>&1
+printf 'wrong-password\n' | "$REKEY" --state-dir "$bad_restore" restore --input "$backup" --sha256 "$hash" --expected-context "$bad_context" --password-stdin >/dev/null 2>&1
 auth_rc=$?
 set -e
 [[ "$auth_rc" -eq 3 ]] || { echo "expected wrong restore proof exit 3, got $auth_rc"; exit 1; }
-printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$restored" restore --input "$backup" --sha256 "$hash" --password-stdin >/dev/null
+restore_context="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$restored" restore --input "$backup" --sha256 "$hash" --inspect --password-stdin)"
+printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$restored" restore --input "$backup" --sha256 "$hash" --expected-context "$restore_context" --password-stdin >/dev/null
 
 echo "== restored serve + list"
 "$REKEY" --state-dir "$restored" serve --idle-lock 15m >/dev/null 2>&1 &

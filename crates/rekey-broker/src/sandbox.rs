@@ -3,6 +3,7 @@
 use std::ffi::OsString;
 use std::fs;
 use std::io::ErrorKind;
+use std::num::NonZeroU16;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::os::unix::net::UnixStream;
@@ -18,6 +19,9 @@ use rekey_domain::sandbox::{
 use zeroize::Zeroizing;
 
 use crate::error::BrokerError;
+use rekey_domain::profile::ProfileIsolation;
+
+mod profile;
 
 #[cfg(target_os = "macos")]
 mod macos;
@@ -39,10 +43,46 @@ pub struct PreparedLaunch {
     scratch: tempfile::TempDir,
     pub args: Vec<OsString>,
     pub env: Vec<(OsString, OsString)>,
+    #[cfg(target_os = "macos")]
+    profile_child: bool,
+    #[cfg(target_os = "macos")]
+    cwd: PathBuf,
 }
 
 pub fn run(request: LaunchRequest) -> Result<i32, BrokerError> {
-    let prepared = prepare(request)?;
+    finish(prepare(request)?)
+}
+
+/// The parent CLI owns the Profile/control connection. This helper neither
+/// mints nor authenticates a second policy; it installs the fixed OS boundary.
+pub fn run_profile(
+    request: LaunchRequest,
+    isolation: ProfileIsolation,
+    gateway_port: Option<NonZeroU16>,
+) -> Result<i32, BrokerError> {
+    // A writable Linux workspace also exposes pathname Unix sockets. Until
+    // deny-other can constrain that channel, do not present netns as sufficient.
+    let supported = cfg!(target_os = "macos") && isolation == ProfileIsolation::Seatbelt;
+    if !supported {
+        return Err(BrokerError::UnsupportedPlatform);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // Cover preparation too: once scratch exists, TERM must return through
+        // normal cleanup rather than terminate the helper immediately.
+        let mut termination = macos::ProfileTermination::install().map_err(BrokerError::Io)?;
+        let result = prepare_inner(request, Some(gateway_port)).and_then(finish);
+        termination.restore().map_err(BrokerError::Io)?;
+        result
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (request, gateway_port);
+        Err(BrokerError::UnsupportedPlatform)
+    }
+}
+
+fn finish(prepared: PreparedLaunch) -> Result<i32, BrokerError> {
     let result = spawn(&prepared);
     #[cfg(target_os = "macos")]
     prepared.scratch.close().map_err(BrokerError::Io)?;
@@ -50,11 +90,33 @@ pub fn run(request: LaunchRequest) -> Result<i32, BrokerError> {
 }
 
 pub fn prepare(request: LaunchRequest) -> Result<PreparedLaunch, BrokerError> {
+    prepare_inner(request, None)
+}
+
+fn prepare_inner(
+    request: LaunchRequest,
+    profile_gateway: Option<Option<NonZeroU16>>,
+) -> Result<PreparedLaunch, BrokerError> {
+    let profile_child = profile_gateway.is_some();
     let state_dir = path_to_utf8(&request.state_dir, "state directory")?;
     let agent_socket = path_to_utf8(&request.agent_socket, "agent socket")?;
-    let argv_utf8 = argv_to_utf8(&request.argv)?;
-    let argv_refs: Vec<&str> = argv_utf8.iter().map(String::as_str).collect();
-    validate_launch_plan(state_dir, agent_socket, &argv_refs)?;
+    let executable = request
+        .argv
+        .first()
+        .ok_or_else(|| profile::invalid("command must not be empty"))?;
+    let executable = path_to_utf8(Path::new(executable), "command")?;
+    if profile_child {
+        // The command tail is opaque: empty arguments, Unicode and literal
+        // '--' (including flags for the child) retain their original meaning.
+        rekey_domain::sandbox::validate_disjoint_paths(state_dir, agent_socket)?;
+        if !Path::new(executable).is_absolute() {
+            return Err(profile::invalid("command must be an absolute path"));
+        }
+    } else {
+        let argv_utf8 = argv_to_utf8(&request.argv)?;
+        let argv_refs: Vec<&str> = argv_utf8.iter().map(String::as_str).collect();
+        validate_launch_plan(state_dir, agent_socket, &argv_refs)?;
+    }
     if let Some(capability) = request.capability.as_deref() {
         validate_capability_token(capability)?;
     }
@@ -67,11 +129,9 @@ pub fn prepare(request: LaunchRequest) -> Result<PreparedLaunch, BrokerError> {
             "agent socket owner does not match the state directory",
         )));
     }
-    let canonical_command = require_launch_executable(Path::new(&argv_utf8[0]))?;
+    let canonical_command = require_launch_executable(Path::new(executable), profile_child)?;
     let mut resolved_argv = request.argv.clone();
     resolved_argv[0] = canonical_command.into_os_string();
-    let resolved_utf8 = argv_to_utf8(&resolved_argv)?;
-    let resolved_refs: Vec<&str> = resolved_utf8.iter().map(String::as_str).collect();
 
     let canonical_state = request.state_dir.canonicalize().map_err(BrokerError::Io)?;
     let canonical_socket = request
@@ -80,7 +140,7 @@ pub fn prepare(request: LaunchRequest) -> Result<PreparedLaunch, BrokerError> {
         .map_err(BrokerError::Io)?;
     let canonical_state_str = path_to_utf8(&canonical_state, "state directory")?;
     let canonical_socket_str = path_to_utf8(&canonical_socket, "agent socket")?;
-    validate_launch_plan(canonical_state_str, canonical_socket_str, &resolved_refs)?;
+    rekey_domain::sandbox::validate_disjoint_paths(canonical_state_str, canonical_socket_str)?;
 
     verify_agent_peer(&canonical_socket, state_meta.uid())?;
 
@@ -96,8 +156,28 @@ pub fn prepare(request: LaunchRequest) -> Result<PreparedLaunch, BrokerError> {
         ));
     }
 
+    if profile_child {
+        let capability = request
+            .capability
+            .as_deref()
+            .ok_or_else(|| profile::invalid("Profile capability is required"))?;
+        env.extend(profile::sdk_environment(
+            profile_gateway.flatten(),
+            capability,
+        ));
+        env.push((
+            "REKEY_AGENT_SOCKET".into(),
+            canonical_socket.as_os_str().to_owned(),
+        ));
+    }
     #[cfg(target_os = "macos")]
-    let prepared = macos::prepare(&canonical_state, &canonical_socket, &resolved_argv, env)?;
+    let prepared = macos::prepare(
+        &canonical_state,
+        &canonical_socket,
+        &resolved_argv,
+        env,
+        profile_gateway,
+    )?;
     #[cfg(not(target_os = "macos"))]
     let prepared = {
         let uid = unsafe { libc::geteuid() };
@@ -331,7 +411,7 @@ fn require_socket_not_symlink(path: &Path) -> Result<fs::Metadata, BrokerError> 
     Ok(metadata)
 }
 
-fn require_launch_executable(path: &Path) -> Result<PathBuf, BrokerError> {
+fn require_launch_executable(path: &Path, profile_child: bool) -> Result<PathBuf, BrokerError> {
     let metadata = fs::symlink_metadata(path).map_err(BrokerError::Io)?;
     if !metadata.file_type().is_symlink() && !metadata.is_file() {
         return Err(BrokerError::from(
@@ -342,7 +422,9 @@ fn require_launch_executable(path: &Path) -> Result<PathBuf, BrokerError> {
     }
     let canonical = path.canonicalize().map_err(BrokerError::Io)?;
     let utf8 = path_to_utf8(&canonical, "command")?;
-    validate_command_argv(&[utf8])?;
+    if !profile_child {
+        validate_command_argv(&[utf8])?;
+    }
     let canonical_meta = fs::metadata(&canonical).map_err(BrokerError::Io)?;
     if !canonical_meta.is_file() || canonical_meta.mode() & 0o111 == 0 {
         return Err(BrokerError::from(

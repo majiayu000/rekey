@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Real release-process durability gate: backup crash windows and audit faults,
-# bounded-RSS backup/restore, and SIGKILL recovery through the restore marker.
+# Release-process backup crash windows/audit faults and bounded-RSS backup/restore.
+# Restore SIGKILL recovery is a separate real storage-transaction test, not a
+# claim that an external watcher can stop release rekeyd inside its commit window.
 set -euo pipefail
 umask 077
 
@@ -51,7 +52,7 @@ max_rss() {
 echo "== post-publish audit failure leaves an authorized artifact without receipt"
 AUDIT_STATE="$WORKDIR/audit-state"
 AUDIT_OUTPUT="$WORKDIR/unaudited.rkbackup"
-printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$AUDIT_STATE" --password-stdin >/dev/null
+printf '%s\n' "$PASSWORD" | "$REKEYD" init --mode team --state-dir "$AUDIT_STATE" --password-stdin >/dev/null
 "$REKEYD" serve --state-dir "$AUDIT_STATE" --idle-lock 15m >/dev/null 2>"$WORKDIR/audit-serve.jsonl" &
 AUDIT_PID=$!
 PIDS="$PIDS $AUDIT_PID"
@@ -80,7 +81,7 @@ PIDS="${PIDS/ $AUDIT_PID/}"
 echo "== prepare large valid backup fixture"
 STATE="$WORKDIR/state"
 BACKUP="$WORKDIR/large.rkbackup"
-printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin >/dev/null
+printf '%s\n' "$PASSWORD" | "$REKEYD" init --mode team --state-dir "$STATE" --password-stdin >/dev/null
 sqlite3 "$STATE/vault.sqlite3" "CREATE TABLE durability_padding(payload BLOB); INSERT INTO durability_padding VALUES(zeroblob($PADDING_BYTES)); DROP TABLE durability_padding; PRAGMA wal_checkpoint(TRUNCATE);" >/dev/null
 
 echo "== backup SIGKILL before release audit exposes no external file"
@@ -217,70 +218,30 @@ BACKUP_RSS="$(max_rss "$WORKDIR/backup.time")"
 }
 [[ "$(stat -f %z "$BACKUP")" -gt "$PADDING_BYTES" ]] || { echo "backup fixture is not large"; exit 1; }
 
-echo "== SIGKILL leaves a startup-blocking marker"
-CRASH_TARGET="$WORKDIR/crash-target"
-FIFO="$WORKDIR/slow-backup.fifo"
-mkfifo "$FIFO"
-python3 - "$BACKUP" "$FIFO" <<'PY' &
-import pathlib, sys, time
-source, fifo = map(pathlib.Path, sys.argv[1:])
-try:
-    with source.open("rb") as src, fifo.open("wb") as dst:
-        while chunk := src.read(65536):
-            dst.write(chunk)
-            dst.flush()
-            time.sleep(0.001)
-except BrokenPipeError:
-    pass
-PY
-WRITER_PID=$!
-PIDS="$PIDS $WRITER_PID"
-"$REKEYD" restore --input "$FIFO" --state-dir "$CRASH_TARGET" --sha256 "$HASH" --password-stdin <"$WORKDIR/password" >/dev/null 2>"$WORKDIR/crash-restore.err" &
-RESTORE_PID=$!
-PIDS="$PIDS $RESTORE_PID"
-MARKER_DEADLINE=$((SECONDS + 60))
-while [[ ! -f "$CRASH_TARGET/.restore-incomplete" && "$SECONDS" -lt "$MARKER_DEADLINE" ]]; do
-  kill -0 "$RESTORE_PID" 2>/dev/null || {
-    echo "restore exited before persisting its incomplete marker" >&2
-    cat "$WORKDIR/crash-restore.err" >&2
-    wait "$RESTORE_PID" 2>/dev/null || true
-    exit 1
-  }
-  sleep 0.05
-done
-[[ -f "$CRASH_TARGET/.restore-incomplete" ]] || {
-  echo "restore marker was not persisted" >&2
-  cat "$WORKDIR/crash-restore.err" >&2
-  exit 1
-}
-kill -KILL "$RESTORE_PID"
-wait "$RESTORE_PID" 2>/dev/null || true
-PIDS="${PIDS/ $RESTORE_PID/}"
-kill "$WRITER_PID" 2>/dev/null || true
-wait "$WRITER_PID" 2>/dev/null || true
-PIDS="${PIDS/ $WRITER_PID/}"
-[[ -f "$CRASH_TARGET/.restore-incomplete" ]] || { echo "SIGKILL lost restore marker"; exit 1; }
-set +e
-"$REKEYD" serve --state-dir "$CRASH_TARGET" --idle-lock 15m >/dev/null 2>&1
-SERVE_RC=$?
-set -e
-[[ "$SERVE_RC" -eq 5 ]] || { echo "incomplete restore served with exit $SERVE_RC"; exit 1; }
+echo "== storage SIGKILL window preserves marker and rejects stale restore context"
+# Full authentication now precedes the marker. Delaying FIFO input cannot hold
+# that window. This existing test kills a real child after anchor reserve/fsync
+# with a SQLite transaction open, then proves marker/context recovery.
+cargo test --manifest-path "$ROOT/Cargo.toml" -p rekey-vault --test generation_rollback \
+  interrupted_restore_keeps_marker_and_requires_new_displayed_high_water -- --exact --test-threads=1
 
-echo "== retry cleans interrupted state and streaming restore stays bounded"
-/usr/bin/time -l -o "$WORKDIR/restore.time" "$REKEYD" restore --input "$BACKUP" --state-dir "$CRASH_TARGET" --sha256 "$HASH" --password-stdin <"$WORKDIR/password" >/dev/null
+echo "== release streaming restore stays bounded after explicit inspect"
+RESTORE_TARGET="$WORKDIR/restore-target"
+RESTORE_CONTEXT="$("$REKEYD" restore --input "$BACKUP" --state-dir "$RESTORE_TARGET" --sha256 "$HASH" --inspect --password-stdin <"$WORKDIR/password")"
+/usr/bin/time -l -o "$WORKDIR/restore.time" "$REKEYD" restore --input "$BACKUP" --state-dir "$RESTORE_TARGET" --sha256 "$HASH" --expected-context "$RESTORE_CONTEXT" --password-stdin <"$WORKDIR/password" >/dev/null
 RESTORE_RSS="$(max_rss "$WORKDIR/restore.time")"
 [[ -n "$RESTORE_RSS" && "$RESTORE_RSS" -lt "$RSS_LIMIT_BYTES" ]] || {
   echo "restore RSS exceeded bound: ${RESTORE_RSS:-missing}"
   exit 1
 }
-[[ ! -e "$CRASH_TARGET/.restore-incomplete" ]]
-[[ ! -e "$CRASH_TARGET/.incoming-vault.sqlite3" ]]
-"$REKEYD" serve --state-dir "$CRASH_TARGET" --idle-lock 15m >/dev/null 2>"$WORKDIR/restored-serve.jsonl" &
+[[ ! -e "$RESTORE_TARGET/.restore-incomplete" ]]
+[[ ! -e "$RESTORE_TARGET/.incoming-vault.sqlite3" ]]
+"$REKEYD" serve --state-dir "$RESTORE_TARGET" --idle-lock 15m >/dev/null 2>"$WORKDIR/restored-serve.jsonl" &
 RESTORED_PID=$!
 PIDS="$PIDS $RESTORED_PID"
-wait_for_socket "$CRASH_TARGET"
-printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$CRASH_TARGET" unlock --password-stdin >/dev/null
-printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$CRASH_TARGET" shutdown --password-stdin >/dev/null
+wait_for_socket "$RESTORE_TARGET"
+printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$RESTORE_TARGET" unlock --password-stdin >/dev/null
+printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$RESTORE_TARGET" shutdown --password-stdin >/dev/null
 wait "$RESTORED_PID"
 PIDS="${PIDS/ $RESTORED_PID/}"
 

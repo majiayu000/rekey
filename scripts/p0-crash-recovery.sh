@@ -52,7 +52,7 @@ wait_for_socket() {
   exit 1
 }
 
-printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" init --password-stdin >/dev/null
+printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" init --mode team --password-stdin >/dev/null
 "$REKEYD" serve --state-dir "$STATE" --idle-lock 15m >"$WORKDIR/serve-1.out" 2>"$WORKDIR/serve-1.jsonl" &
 BROKER_PID=$!
 wait_for_socket
@@ -89,11 +89,11 @@ import json, pathlib, sys, time, uuid
 path, action_id, action_version, principal_id = sys.argv[1:]
 resource = {"type": "fixed-http-action", "id": action_id}
 pathlib.Path(path).write_text(json.dumps({
-    "format_version": 3,
+    "format_version": 6,
     "version": 1,
     "expires_at_ms": int(time.time() * 1000) + 600000,
     "approvers": [],
-    "workload_identities": [],
+    "profiles": [], "workload_identities": [],
     "bindings": [{
         "action_id": action_id,
         "version": int(action_version),
@@ -337,7 +337,7 @@ if unpaired:
 con.close()
 PY
 
-"$REKEY" --state-dir "$STATE" shutdown >/dev/null
+printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" shutdown --password-stdin >/dev/null
 wait "$BROKER_PID"
 BROKER_PID=""
 

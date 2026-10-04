@@ -4,26 +4,32 @@ use curve25519_dalek::edwards::CompressedEdwardsY;
 use data_encoding::HEXLOWER;
 use jsonschema::{Draft, Validator};
 use rekey_domain::Timestamp;
+use rekey_domain::action::{ActionTarget, FixedHttpAction, HeaderName};
 use rekey_domain::authorization::{
-    ApprovalMode, ApprovalRequirement, AuthorizationRequest, CanonicalParameters, Decision,
-    DenyReason, PolicyVersion, ResourceRef, SchemaId,
+    ApprovalMode, ApprovalRequirement, ApproverSpec, AuthorizationRequest, CanonicalParameters,
+    Decision, DenyReason, PolicyVersion, ResourceRef, SchemaId,
 };
 use rekey_domain::capability::ActionVersionRef;
 use rekey_domain::ids::{ActionId, ApproverId, PolicyRuleId, PrincipalId};
+use rekey_domain::profile::AgentProfile;
+use rekey_domain::template::{RenderedTarget, TemplateValues};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-pub const SNAPSHOT_FORMAT_VERSION: u32 = 3;
+pub const SNAPSHOT_FORMAT_VERSION: u32 = 6;
 pub const SNAPSHOT_MAX_BYTES: usize = 64 * 1024;
 pub const TRUST_MAX_BYTES: usize = 4 * 1024;
 pub const APPROVAL_GRANT_MAX_BYTES: usize = 4 * 1024;
 
 mod json;
 use json::parse_unique_json;
+#[cfg(feature = "lab")]
 pub mod oidc_admin;
+pub mod personal;
 mod signed;
 pub use signed::*;
+pub mod templates;
 mod workload;
 pub use workload::*;
 
@@ -53,6 +59,7 @@ pub struct PolicySnapshot {
     pub expires_at_ms: i64,
     pub approvers: Vec<Approver>,
     pub workload_identities: Vec<WorkloadIdentity>,
+    pub profiles: Vec<AgentProfile>,
     pub bindings: Vec<ActionBinding>,
     pub rules: Vec<PolicyRule>,
 }
@@ -92,6 +99,8 @@ pub struct PolicyRule {
     pub resource: ResourceRef,
     pub parameters: ParameterScope,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approver: Option<ApproverSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval: Option<ApprovalRequirement>,
 }
 
@@ -123,6 +132,53 @@ pub struct ValidatedSnapshot {
     rules: Vec<PolicyRule>,
     approvers: BTreeMap<ApproverId, [u8; 32]>,
     workload_catalog: WorkloadCatalog,
+    profiles: Vec<AgentProfile>,
+}
+
+/// The untrusted, per-call values used by both the Broker and approval signer.
+pub struct ActionRequest<'a> {
+    pub params: &'a TemplateValues,
+    pub query: &'a TemplateValues,
+    pub content_type: Option<&'a str>,
+    pub headers: &'a [(String, String)],
+    pub body: &'a [u8],
+}
+
+/// Closed provider semantics used only with an authenticated Profile action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileLlmProtocol {
+    AnthropicMessages,
+    OpenAiChat,
+    OpenAiResponses,
+    Embeddings,
+    CountTokens,
+    Models,
+}
+
+/// The effective request is used unchanged for both approval and HTTP.
+/// Intentionally not Debug: bodies may contain private user input.
+pub struct ProfileLlmCanonicalRequest {
+    pub model: Option<String>,
+    pub resource: ResourceRef,
+    pub parameters: CanonicalParameters,
+    pub target: RenderedTarget,
+    pub body: Vec<u8>,
+    pub generation_max_output: Option<u64>,
+    pub streaming: bool,
+}
+
+struct CanonicalRequest {
+    resource: ResourceRef,
+    parameters: CanonicalParameters,
+    target: RenderedTarget,
+    llm_body: Option<ProfileBody>,
+}
+
+struct ProfileBody {
+    model: Option<String>,
+    bytes: Vec<u8>,
+    maximum: Option<u64>,
+    streaming: bool,
 }
 
 impl ValidatedSnapshot {
@@ -138,8 +194,22 @@ impl ValidatedSnapshot {
         self.digest
     }
 
+    pub fn profiles(&self) -> &[AgentProfile] {
+        &self.profiles
+    }
+
+    pub fn profile(&self, name: &str) -> Option<&AgentProfile> {
+        self.profiles.iter().find(|profile| profile.name == name)
+    }
+
     pub fn approver_key(&self, approver_id: ApproverId) -> Option<&[u8; 32]> {
         self.approvers.get(&approver_id)
+    }
+
+    /// Resolve canonical public keys through this authenticated snapshot only.
+    /// IDs are derived for grant verification; they are never a second wire source.
+    pub fn ed25519_approver_ids(&self, keys: &[String]) -> Option<Vec<ApproverId>> {
+        resolve_approver_ids(keys, &self.approvers)
     }
 
     pub fn binding(&self, action: ActionVersionRef) -> Option<&ActionBinding> {
@@ -147,6 +217,12 @@ impl ValidatedSnapshot {
             .iter()
             .find(|binding| binding.definition.action() == action)
             .map(|binding| &binding.definition)
+    }
+
+    pub fn action_refs(&self) -> impl Iterator<Item = ActionVersionRef> + '_ {
+        self.bindings
+            .iter()
+            .map(|binding| binding.definition.action())
     }
 
     /// Only exact signed OIDC human registrations participate in the node login gate.
@@ -204,38 +280,156 @@ impl ValidatedSnapshot {
             })
     }
 
+    /// Render exactly once and bind the resulting path, normalized parameters,
+    /// sorted query, effective headers and validated JSON body into approval JCS.
+    /// The caller carries the returned target unchanged to its HTTP transport.
     pub fn canonicalize(
         &self,
-        action: ActionVersionRef,
-        content_type: Option<&str>,
-        headers: &[(String, String)],
-        body: &[u8],
-    ) -> Result<(ResourceRef, CanonicalParameters), PolicyError> {
+        action: &FixedHttpAction,
+        request: ActionRequest<'_>,
+    ) -> Result<(ResourceRef, CanonicalParameters, RenderedTarget), PolicyError> {
+        let canonical = self.canonicalize_inner(action, request, None)?;
+        Ok((canonical.resource, canonical.parameters, canonical.target))
+    }
+
+    /// Validate Profile LLM fields and fill only an absent output ceiling before
+    /// schema validation and JCS. Repeating the original request is deterministic.
+    pub fn canonicalize_profile_llm(
+        &self,
+        action: &FixedHttpAction,
+        request: ActionRequest<'_>,
+        protocol: ProfileLlmProtocol,
+        limits: &rekey_domain::profile::ProfileLlmLimit,
+    ) -> Result<ProfileLlmCanonicalRequest, PolicyError> {
+        let canonical = self.canonicalize_inner(action, request, Some((protocol, limits)))?;
+        let body = canonical.llm_body.ok_or(PolicyError::InvalidParameters)?;
+        Ok(ProfileLlmCanonicalRequest {
+            model: body.model,
+            resource: canonical.resource,
+            parameters: canonical.parameters,
+            target: canonical.target,
+            body: body.bytes,
+            generation_max_output: body.maximum,
+            streaming: body.streaming,
+        })
+    }
+
+    fn canonicalize_inner(
+        &self,
+        action: &FixedHttpAction,
+        request: ActionRequest<'_>,
+        llm: Option<(ProfileLlmProtocol, &rekey_domain::profile::ProfileLlmLimit)>,
+    ) -> Result<CanonicalRequest, PolicyError> {
+        let action_ref = ActionVersionRef {
+            action_id: action.id,
+            version: action.version,
+        };
         let binding = self
             .bindings
             .iter()
-            .find(|binding| binding.definition.action() == action)
+            .find(|binding| binding.definition.action() == action_ref)
             .ok_or(PolicyError::InvalidParameters)?;
-        let normalized_content_type = normalize_content_type(content_type, body)?;
-        let value = if body.is_empty() {
+        let (target, fixed_headers, body_schema) = match &action.target {
+            ActionTarget::Fixed { path } => {
+                if !request.params.is_empty() || !request.query.is_empty() {
+                    return Err(PolicyError::InvalidParameters);
+                }
+                (
+                    RenderedTarget {
+                        path: path.clone(),
+                        params: BTreeMap::new(),
+                        query: BTreeMap::new(),
+                    },
+                    None,
+                    None,
+                )
+            }
+            ActionTarget::Template {
+                target,
+                fixed_headers,
+                body_schema,
+                ..
+            } => (
+                target
+                    .render(request.params, request.query)
+                    .map_err(|_| PolicyError::InvalidParameters)?,
+                Some(fixed_headers),
+                body_schema.as_ref(),
+            ),
+        };
+        if request.body.len() > action.request_policy.max_body_bytes as usize {
+            return Err(PolicyError::InvalidParameters);
+        }
+        let fixed_content_type = fixed_headers.and_then(|headers| {
+            headers
+                .iter()
+                .find(|(name, _)| name.as_str() == "content-type")
+                .map(|(_, value)| value.as_str())
+        });
+        if fixed_content_type.is_some() && request.content_type.is_some() {
+            return Err(PolicyError::InvalidParameters);
+        }
+        let content_type = fixed_content_type.or(request.content_type);
+        if content_type.is_some_and(|value| value.is_empty() || !header_value_is_safe(value)) {
+            return Err(PolicyError::InvalidParameters);
+        }
+        let normalized_content_type = normalize_content_type(content_type, request.body)?;
+        let mut value = if request.body.is_empty() {
             Value::Null
         } else {
-            parse_unique_json(body)?
+            let value = parse_unique_json(request.body)?;
+            ensure_json_number_fidelity(request.body)?;
+            value
         };
+        let llm_body = llm
+            .map(|(protocol, limits)| {
+                normalize_profile_llm_body(protocol, limits, request.body, &mut value)
+            })
+            .transpose()?;
+        if llm_body
+            .as_ref()
+            .is_some_and(|body| body.bytes.len() > action.request_policy.max_body_bytes as usize)
+        {
+            return Err(PolicyError::InvalidParameters);
+        }
         if !binding.validator.is_valid(&value) {
             return Err(PolicyError::InvalidParameters);
         }
-        let mut normalized_headers = Vec::with_capacity(headers.len());
-        let mut seen = BTreeSet::new();
-        for (name, value) in headers {
-            let lower = name.to_ascii_lowercase();
-            if !seen.insert(lower.clone()) {
+        if let Some(schema) = body_schema {
+            let validator = templates::compile_template_schema(schema.clone())
+                .map_err(|_| PolicyError::InvalidParameters)?;
+            if !validator.is_valid(&value) {
                 return Err(PolicyError::InvalidParameters);
             }
-            normalized_headers.push((lower, value.clone()));
+        }
+        let mut normalized_headers = Vec::new();
+        let mut seen = BTreeSet::new();
+        if let Some(headers) = fixed_headers {
+            for (name, value) in headers {
+                seen.insert(name.as_str().to_owned());
+                if name.as_str() != "content-type" {
+                    normalized_headers.push((name.as_str().to_owned(), value.clone()));
+                }
+            }
+        }
+        for (raw_name, value) in request.headers {
+            let name = HeaderName::new(raw_name).map_err(|_| PolicyError::InvalidParameters)?;
+            if raw_name != name.as_str()
+                || name.is_forbidden()
+                || name == action.auth.header_name
+                || name.as_str() == "authorization"
+                || name.as_str() == "content-type"
+                || !action.request_policy.allowed_extra_headers.contains(&name)
+                || !header_value_is_safe(value)
+                || !seen.insert(name.as_str().to_owned())
+            {
+                return Err(PolicyError::InvalidParameters);
+            }
+            normalized_headers.push((name.as_str().to_owned(), value.clone()));
         }
         normalized_headers.sort();
         let envelope = serde_json::json!({
+            "target": target,
             "body": value,
             "content_type": normalized_content_type,
             "headers": normalized_headers,
@@ -248,14 +442,203 @@ impl ValidatedSnapshot {
             &definition.resource,
             &canonical,
         )?;
-        Ok((
-            definition.resource.clone(),
-            CanonicalParameters {
+        Ok(CanonicalRequest {
+            resource: definition.resource.clone(),
+            parameters: CanonicalParameters {
                 schema_id: definition.parameter_schema_id.clone(),
                 canonical_hash: hash,
+                canonical_json: canonical,
             },
-        ))
+            target,
+            llm_body,
+        })
     }
+}
+
+fn normalize_profile_llm_body(
+    protocol: ProfileLlmProtocol,
+    limits: &rekey_domain::profile::ProfileLlmLimit,
+    original: &[u8],
+    value: &mut Value,
+) -> Result<ProfileBody, PolicyError> {
+    use ProfileLlmProtocol::*;
+    if protocol == Models {
+        return if original.is_empty() {
+            Ok(ProfileBody {
+                model: None,
+                bytes: Vec::new(),
+                maximum: None,
+                streaming: false,
+            })
+        } else {
+            Err(PolicyError::InvalidParameters)
+        };
+    }
+    let object = value
+        .as_object_mut()
+        .ok_or(PolicyError::InvalidParameters)?;
+    let model = object
+        .get("model")
+        .and_then(Value::as_str)
+        .ok_or(PolicyError::InvalidParameters)?;
+    if !limits.models.iter().any(|allowed| allowed == model) {
+        return Err(PolicyError::InvalidParameters);
+    }
+    let model = model.to_owned();
+    let streaming = match object.get("stream") {
+        None | Some(Value::Bool(false)) => false,
+        Some(Value::Bool(true)) => true,
+        _ => return Err(PolicyError::InvalidParameters),
+    };
+    let field = match protocol {
+        AnthropicMessages => "max_tokens",
+        OpenAiResponses => {
+            if object
+                .get("background")
+                .is_some_and(|background| background != &Value::Bool(false))
+            {
+                return Err(PolicyError::InvalidParameters);
+            }
+            "max_output_tokens"
+        }
+        OpenAiChat => {
+            if object.get("n").is_some_and(|n| n.as_u64() != Some(1))
+                || (object.contains_key("max_tokens")
+                    && object.contains_key("max_completion_tokens"))
+            {
+                return Err(PolicyError::InvalidParameters);
+            }
+            if object.contains_key("max_tokens") {
+                "max_tokens"
+            } else {
+                "max_completion_tokens"
+            }
+        }
+        Embeddings | CountTokens => {
+            return if streaming {
+                Err(PolicyError::InvalidParameters)
+            } else {
+                Ok(ProfileBody {
+                    model: Some(model),
+                    bytes: original.to_vec(),
+                    maximum: None,
+                    streaming: false,
+                })
+            };
+        }
+        Models => return Err(PolicyError::InvalidParameters),
+    };
+    let ceiling = u64::from(limits.max_output_tokens_per_request);
+    if ceiling == 0 {
+        return Err(PolicyError::InvalidParameters);
+    }
+    if let Some(maximum) = object.get(field) {
+        let maximum = maximum
+            .as_u64()
+            .filter(|n| *n > 0 && *n <= ceiling)
+            .ok_or(PolicyError::InvalidParameters)?;
+        return Ok(ProfileBody {
+            model: Some(model),
+            bytes: original.to_vec(),
+            maximum: Some(maximum),
+            streaming,
+        });
+    }
+    // The original JSON already passed the unique-key parser and number
+    // fidelity check. Insert only this ASCII property before the root '}',
+    // retaining all other bytes (including tools/thinking and whitespace).
+    let end = original
+        .iter()
+        .rposition(|b| !b.is_ascii_whitespace())
+        .ok_or(PolicyError::InvalidParameters)?;
+    if original[end] != b'}' {
+        return Err(PolicyError::InvalidParameters);
+    }
+    let separator = if object.is_empty() { "" } else { "," };
+    let property = format!("{separator}\"{field}\":{ceiling}");
+    let mut body = Vec::with_capacity(original.len() + property.len());
+    body.extend_from_slice(&original[..end]);
+    body.extend_from_slice(property.as_bytes());
+    body.extend_from_slice(&original[end..]);
+    object.insert(field.to_owned(), ceiling.into());
+    Ok(ProfileBody {
+        model: Some(model),
+        bytes: body,
+        maximum: Some(ceiling),
+        streaming,
+    })
+}
+
+/// One unique-key parsed provider event. Never Debug; decoded strings are wiped.
+pub struct ProfileLlmEvent(Value);
+impl ProfileLlmEvent {
+    pub fn value(&self) -> &Value {
+        &self.0
+    }
+}
+impl Drop for ProfileLlmEvent {
+    fn drop(&mut self) {
+        fn wipe(value: &mut Value) {
+            use zeroize::Zeroize;
+            match value {
+                Value::String(s) => s.zeroize(),
+                Value::Array(values) => values.iter_mut().for_each(wipe),
+                Value::Object(values) => {
+                    for (mut key, mut value) in std::mem::take(values) {
+                        key.zeroize();
+                        wipe(&mut value);
+                    }
+                }
+                _ => {}
+            }
+        }
+        wipe(&mut self.0);
+    }
+}
+/// The caller bounds the response/frame before this shared unique-key parser.
+pub fn parse_profile_llm_event(bytes: &[u8]) -> Result<ProfileLlmEvent, PolicyError> {
+    parse_unique_json(bytes).map(ProfileLlmEvent)
+}
+/// Extract one complete buffered response's cumulative output, never deltas.
+/// Malformed/duplicate-key responses return None for conservative settlement.
+pub fn profile_llm_output_tokens(protocol: ProfileLlmProtocol, body: &[u8]) -> Option<u64> {
+    let parsed = parse_profile_llm_event(body).ok()?;
+    profile_llm_output_value(protocol, parsed.value())
+}
+/// Same output semantics for an already parsed terminal SSE response object.
+pub fn profile_llm_output_value(protocol: ProfileLlmProtocol, value: &Value) -> Option<u64> {
+    let field = match protocol {
+        ProfileLlmProtocol::AnthropicMessages => {
+            if value.get("type")?.as_str()? != "message"
+                || value.get("stop_reason")?.as_str()?.is_empty()
+            {
+                return None;
+            }
+            "output_tokens"
+        }
+        ProfileLlmProtocol::OpenAiChat => {
+            if value.get("object")?.as_str()? != "chat.completion" {
+                return None;
+            }
+            let choices = value.get("choices")?.as_array()?;
+            if choices.len() != 1 || choices[0].get("finish_reason")?.as_str()?.is_empty() {
+                return None;
+            }
+            "completion_tokens"
+        }
+        ProfileLlmProtocol::OpenAiResponses => {
+            if !matches!(value.get("status")?.as_str()?, "completed" | "incomplete") {
+                return None;
+            }
+            "output_tokens"
+        }
+        _ => return None,
+    };
+    value
+        .get("usage")?
+        .get(field)?
+        .as_u64()
+        .filter(|n| *n <= i64::MAX as u64)
 }
 
 pub fn parse_and_validate_snapshot(
@@ -281,11 +664,7 @@ fn parse_and_validate_snapshot_inner(
         return Err(PolicyError::TooLarge);
     }
     let value = parse_unique_json(bytes)?;
-    let snapshot: PolicySnapshot =
-        serde_json::from_value(value.clone()).map_err(|_| PolicyError::Malformed)?;
-    if snapshot.format_version != SNAPSHOT_FORMAT_VERSION {
-        return Err(PolicyError::UnsupportedFormat);
-    }
+    let snapshot = snapshot_shape(&value)?;
     if snapshot.expires_at_ms < 0
         || now.is_some_and(|now| snapshot.expires_at_ms <= now.as_unix_ms())
     {
@@ -339,10 +718,10 @@ fn parse_and_validate_snapshot_inner(
         if let ParameterScope::ExactHash { sha256 } = &rule.parameters {
             decode_lower_hex_32(sha256)?;
         }
-        match (rule.effect, rule.approval.as_ref()) {
-            (RuleEffect::Permit | RuleEffect::Forbid, None) => {}
-            (RuleEffect::RequireApproval, Some(requirement)) => {
-                validate_requirement(requirement, &approvers)?;
+        match (rule.effect, rule.approver.as_ref(), rule.approval.as_ref()) {
+            (RuleEffect::Permit | RuleEffect::Forbid, None, None) => {}
+            (RuleEffect::RequireApproval, Some(approver), Some(requirement)) => {
+                validate_requirement(approver, requirement, &approvers)?;
             }
             _ => return Err(PolicyError::Invalid),
         }
@@ -359,7 +738,9 @@ fn parse_and_validate_snapshot_inner(
                 && left.resource == right.resource
                 && scopes_overlap(&left.parameters, &right.parameters)
                 && !requirements_equivalent(
+                    left.approver.as_ref().ok_or(PolicyError::Invalid)?,
                     left.approval.as_ref().ok_or(PolicyError::Invalid)?,
+                    right.approver.as_ref().ok_or(PolicyError::Invalid)?,
                     right.approval.as_ref().ok_or(PolicyError::Invalid)?,
                 )
             {
@@ -368,6 +749,7 @@ fn parse_and_validate_snapshot_inner(
         }
     }
 
+    validate_profiles(&snapshot)?;
     let workload_catalog =
         WorkloadCatalog::compile(&snapshot.workload_identities, &snapshot.rules)?;
 
@@ -382,7 +764,85 @@ fn parse_and_validate_snapshot_inner(
         rules: snapshot.rules,
         approvers,
         workload_catalog,
+        profiles: snapshot.profiles,
     })
+}
+
+// Both direct snapshots and signed envelopes enter through this shape boundary.
+// Check Profile integers before JCS can round them, including before signature
+// verification canonicalizes an envelope. Other existing numeric contracts stay unchanged.
+fn snapshot_shape(value: &Value) -> Result<PolicySnapshot, PolicyError> {
+    let format = value
+        .get("format_version")
+        .and_then(Value::as_u64)
+        .ok_or(PolicyError::Malformed)?;
+    if format != u64::from(SNAPSHOT_FORMAT_VERSION) {
+        return Err(PolicyError::UnsupportedFormat);
+    }
+    let snapshot: PolicySnapshot =
+        serde_json::from_value(value.clone()).map_err(|_| PolicyError::Malformed)?;
+    let canonical = serde_jcs::to_vec(&snapshot.profiles).map_err(|_| PolicyError::Malformed)?;
+    let roundtrip: Vec<AgentProfile> =
+        serde_json::from_slice(&canonical).map_err(|_| PolicyError::Invalid)?;
+    if roundtrip != snapshot.profiles {
+        return Err(PolicyError::Invalid);
+    }
+    Ok(snapshot)
+}
+
+fn validate_profiles(snapshot: &PolicySnapshot) -> Result<(), PolicyError> {
+    let mut names = BTreeSet::new();
+    let mut capabilities = BTreeMap::new();
+    let mut budgets = BTreeMap::new();
+    for profile in &snapshot.profiles {
+        profile.validate().map_err(|_| PolicyError::Invalid)?;
+        if !names.insert(profile.name.as_str()) {
+            return Err(PolicyError::Invalid);
+        }
+        for action in profile.action_refs() {
+            if !snapshot.bindings.iter().any(|b| b.action() == action)
+                || !snapshot
+                    .rules
+                    .iter()
+                    .any(|r| r.principal_id == profile.principal_id && r.action() == action)
+            {
+                return Err(PolicyError::Invalid);
+            }
+        }
+        for grant in &profile.grants {
+            for capability in &grant.capabilities {
+                let mut refs = capability.actions.clone();
+                refs.sort();
+                if let Some(previous) = capabilities.insert(
+                    (
+                        profile.principal_id,
+                        grant.instance.as_str(),
+                        capability.capability.as_str(),
+                    ),
+                    refs.clone(),
+                ) && previous != refs
+                {
+                    return Err(PolicyError::Invalid);
+                }
+            }
+            let mut limit = profile
+                .llm_limits
+                .iter()
+                .find(|limit| limit.instance == grant.instance)
+                .cloned();
+            if let Some(limit) = &mut limit {
+                limit.models.sort();
+            }
+            if let Some(previous) = budgets.insert(
+                (profile.principal_id, grant.instance.as_str()),
+                limit.clone(),
+            ) && previous != limit
+            {
+                return Err(PolicyError::Invalid);
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn evaluate(
@@ -396,7 +856,7 @@ pub fn evaluate(
     }
     let mut permit: Option<PolicyRuleId> = None;
     let mut forbid: Option<PolicyRuleId> = None;
-    let mut approval: Option<(PolicyRuleId, &ApprovalRequirement)> = None;
+    let mut approval: Option<(PolicyRuleId, &ApproverSpec, &ApprovalRequirement)> = None;
     for rule in &snapshot.rules {
         if rule.principal_id != request.principal.principal_id
             || rule.action() != request.action
@@ -409,22 +869,29 @@ pub fn evaluate(
             RuleEffect::Forbid => forbid = minimum(forbid, rule.id),
             RuleEffect::Permit => permit = minimum(permit, rule.id),
             RuleEffect::RequireApproval => {
-                let Some(requirement) = rule.approval.as_ref() else {
+                let (Some(approver), Some(requirement)) =
+                    (rule.approver.as_ref(), rule.approval.as_ref())
+                else {
                     return deny(snapshot, DenyReason::EvaluationFailed, Some(rule.id));
                 };
                 if approval.is_none_or(|current| rule.id < current.0) {
-                    approval = Some((rule.id, requirement));
+                    approval = Some((rule.id, approver, requirement));
                 }
             }
         }
     }
     if let Some(rule) = forbid {
         deny(snapshot, DenyReason::ExplicitForbid, Some(rule))
-    } else if let Some((rule, requirement)) = approval {
+    } else if let Some((rule, approver, requirement)) = approval {
+        let mut approver = approver.clone();
+        if let ApproverSpec::Ed25519 { keys, .. } = &mut approver {
+            keys.sort();
+        }
         Decision::RequireApproval {
             policy_version: snapshot.version,
             snapshot_digest: snapshot.digest,
             determining_rule: rule,
+            approver,
             requirement: requirement.clone(),
         }
     } else if let Some(rule) = permit {
@@ -490,20 +957,44 @@ fn scopes_overlap(left: &ParameterScope, right: &ParameterScope) -> bool {
     }
 }
 
+fn resolve_approver_ids(
+    keys: &[String],
+    approvers: &BTreeMap<ApproverId, [u8; 32]>,
+) -> Option<Vec<ApproverId>> {
+    if keys.is_empty() || keys.len() > 32 {
+        return None;
+    }
+    let mut ids = BTreeSet::new();
+    for key in keys {
+        let id = approvers
+            .iter()
+            .find_map(|(id, public_key)| (HEXLOWER.encode(public_key) == *key).then_some(*id))?;
+        if !ids.insert(id) {
+            return None;
+        }
+    }
+    Some(ids.into_iter().collect())
+}
+
 fn validate_requirement(
+    approver: &ApproverSpec,
     requirement: &ApprovalRequirement,
     approvers: &BTreeMap<ApproverId, [u8; 32]>,
 ) -> Result<(), PolicyError> {
-    if requirement.approver_ids.is_empty() || requirement.approver_ids.len() > 32 {
-        return Err(PolicyError::Invalid);
-    }
-    let distinct: BTreeSet<_> = requirement.approver_ids.iter().copied().collect();
-    if distinct.len() != requirement.approver_ids.len()
-        || distinct.iter().any(|id| !approvers.contains_key(id))
-        || !(1..=2).contains(&requirement.quorum)
-        || usize::from(requirement.quorum) > distinct.len()
-    {
-        return Err(PolicyError::Invalid);
+    match approver {
+        ApproverSpec::LocalPresence {} => {
+            if requirement.mode != ApprovalMode::OneTime {
+                return Err(PolicyError::Invalid);
+            }
+        }
+        ApproverSpec::Ed25519 { keys, threshold } => {
+            let ids = resolve_approver_ids(keys, approvers).ok_or(PolicyError::Invalid)?;
+            if !(1..=2).contains(threshold) || usize::from(*threshold) > ids.len() {
+                return Err(PolicyError::Invalid);
+            }
+        }
+        #[cfg(feature = "lab")]
+        ApproverSpec::Remote {} => return Err(PolicyError::Invalid),
     }
     match requirement.mode {
         ApprovalMode::OneTime
@@ -518,11 +1009,30 @@ fn validate_requirement(
     Ok(())
 }
 
-fn requirements_equivalent(left: &ApprovalRequirement, right: &ApprovalRequirement) -> bool {
-    let left_ids: BTreeSet<_> = left.approver_ids.iter().copied().collect();
-    let right_ids: BTreeSet<_> = right.approver_ids.iter().copied().collect();
-    left_ids == right_ids
-        && left.quorum == right.quorum
+fn requirements_equivalent(
+    left_approver: &ApproverSpec,
+    left: &ApprovalRequirement,
+    right_approver: &ApproverSpec,
+    right: &ApprovalRequirement,
+) -> bool {
+    let same_approver = match (left_approver, right_approver) {
+        (ApproverSpec::LocalPresence {}, ApproverSpec::LocalPresence {}) => true,
+        (
+            ApproverSpec::Ed25519 {
+                keys: left,
+                threshold: left_threshold,
+            },
+            ApproverSpec::Ed25519 {
+                keys: right,
+                threshold: right_threshold,
+            },
+        ) => {
+            left_threshold == right_threshold
+                && left.iter().collect::<BTreeSet<_>>() == right.iter().collect::<BTreeSet<_>>()
+        }
+        _ => false,
+    };
+    same_approver
         && left.mode == right.mode
         && left.max_uses == right.max_uses
         && left.max_window_ms == right.max_window_ms
@@ -548,6 +1058,13 @@ pub fn validate_ed25519_public_key(value: &str) -> Result<[u8; 32], PolicyError>
     Ok(public_key)
 }
 
+fn header_value_is_safe(value: &str) -> bool {
+    value.len() <= 8 * 1024
+        && value
+            .bytes()
+            .all(|byte| matches!(byte, b'\t' | 0x20..=0x7e))
+}
+
 fn normalize_content_type(
     content_type: Option<&str>,
     body: &[u8],
@@ -563,6 +1080,88 @@ fn normalize_content_type(
         }
         _ => Err(PolicyError::InvalidParameters),
     }
+}
+
+// The JSON syntax and duplicate-key checks have already succeeded. Inspect
+// only number tokens outside strings: the upstream still receives these raw
+// bytes, so even precision lost during the first parse must fail closed.
+fn ensure_json_number_fidelity(body: &[u8]) -> Result<(), PolicyError> {
+    let mut at = 0;
+    while at < body.len() {
+        match body[at] {
+            b'"' => {
+                at += 1;
+                while at < body.len() {
+                    match body[at] {
+                        b'\\' => at += 2,
+                        b'"' => {
+                            at += 1;
+                            break;
+                        }
+                        _ => at += 1,
+                    }
+                }
+            }
+            b'-' | b'0'..=b'9' => {
+                let start = at;
+                while at < body.len()
+                    && matches!(body[at], b'0'..=b'9' | b'-' | b'+' | b'.' | b'e' | b'E')
+                {
+                    at += 1;
+                }
+                let original = &body[start..at];
+                let number: serde_json::Number =
+                    serde_json::from_slice(original).map_err(|_| PolicyError::InvalidParameters)?;
+                let canonical =
+                    serde_jcs::to_vec(&number).map_err(|_| PolicyError::InvalidParameters)?;
+                let left = decimal_parts(original).ok_or(PolicyError::InvalidParameters)?;
+                let right = decimal_parts(&canonical).ok_or(PolicyError::InvalidParameters)?;
+                if left != right {
+                    return Err(PolicyError::InvalidParameters);
+                }
+            }
+            _ => at += 1,
+        }
+    }
+    Ok(())
+}
+
+// Compare exact decimal values without converting the comparison to f64.
+// Both inputs are valid JSON number tokens. Zero ignores sign and exponent;
+// nonzero exponents use checked arithmetic, with no powers or big integers.
+fn decimal_parts(number: &[u8]) -> Option<(bool, Vec<u8>, i64)> {
+    let negative = number.first() == Some(&b'-');
+    let unsigned = if negative { &number[1..] } else { number };
+    let exponent_at = unsigned
+        .iter()
+        .position(|b| matches!(b, b'e' | b'E'))
+        .unwrap_or(unsigned.len());
+    let mantissa = &unsigned[..exponent_at];
+    let digits: Vec<u8> = mantissa
+        .iter()
+        .copied()
+        .filter(u8::is_ascii_digit)
+        .collect();
+    let Some(first) = digits.iter().position(|b| *b != b'0') else {
+        return Some((false, Vec::new(), 0));
+    };
+    let end = digits.iter().rposition(|b| *b != b'0')? + 1;
+    let fractional = mantissa
+        .iter()
+        .position(|b| *b == b'.')
+        .map_or(0, |dot| mantissa.len() - dot - 1);
+    let exponent = if exponent_at == unsigned.len() {
+        0
+    } else {
+        std::str::from_utf8(&unsigned[exponent_at + 1..])
+            .ok()?
+            .parse::<i64>()
+            .ok()?
+    };
+    let exponent = exponent
+        .checked_sub(i64::try_from(fractional).ok()?)?
+        .checked_add(i64::try_from(digits.len() - end).ok()?)?;
+    Some((negative, digits[first..end].to_vec(), exponent))
 }
 
 fn parameter_hash(
@@ -637,6 +1236,29 @@ mod tests {
     use super::*;
     use rekey_domain::ids::{ActionId, PrincipalId};
 
+    fn fixed_action(action: ActionVersionRef) -> FixedHttpAction {
+        serde_json::from_value(serde_json::json!({
+            "id": action.action_id, "name": "policy-test", "version": action.version,
+            "enabled": true, "credential_id": rekey_domain::ids::CredentialId::new_random(),
+            "origin": "https://example.com", "method": "POST", "target": {"kind":"fixed","path":"/test"},
+            "auth": {"header_name":"authorization","prefix":"Bearer "}, "timeout_ms":5000,
+            "request_policy":{"max_body_bytes":4096,"allowed_extra_headers":[]},
+            "response_policy":{"max_body_bytes":4096,"allowed_headers":[]}
+        })).unwrap()
+    }
+
+    fn json_request(body: &[u8]) -> ActionRequest<'_> {
+        static EMPTY: std::sync::LazyLock<TemplateValues> =
+            std::sync::LazyLock::new(TemplateValues::new);
+        ActionRequest {
+            params: &EMPTY,
+            query: &EMPTY,
+            content_type: Some("application/json"),
+            headers: &[],
+            body,
+        }
+    }
+
     fn ids() -> (ActionVersionRef, PrincipalId, PolicyRuleId) {
         (
             ActionVersionRef {
@@ -654,7 +1276,7 @@ mod tests {
         rule: PolicyRuleId,
     ) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
-            "format_version": 3,
+            "format_version": 6, "profiles": [],
             "version": 1,
             "expires_at_ms": 10_000,
             "approvers": [],
@@ -686,8 +1308,8 @@ mod tests {
             Timestamp::from_unix_ms(1),
         )
         .unwrap();
-        let (resource, parameters) = snapshot
-            .canonicalize(action, Some("application/json"), &[], br#"{"input":1}"#)
+        let (resource, parameters, _) = snapshot
+            .canonicalize(&fixed_action(action), json_request(br#"{"input":1}"#))
             .unwrap();
         let request = AuthorizationRequest {
             principal: rekey_domain::authorization::Principal {
@@ -706,6 +1328,137 @@ mod tests {
     }
 
     #[test]
+    fn canonical_json_is_the_exact_hash_source_and_debug_hides_it() {
+        let (action, principal_id, rule) = ids();
+        let snapshot = parse_and_validate_snapshot(
+            &snapshot_json(action, principal_id, rule),
+            Timestamp::from_unix_ms(1),
+        )
+        .unwrap();
+        let (resource, parameters, target) = snapshot
+            .canonicalize(
+                &fixed_action(action),
+                json_request(br#"{ "input" : 12345 }"#),
+            )
+            .unwrap();
+        let expected = serde_jcs::to_vec(&serde_json::json!({
+            "target":target,"body":{"input":12345},"content_type":"application/json","headers":[],
+        }))
+        .unwrap();
+        assert_eq!(parameters.canonical_json, expected);
+        assert_eq!(
+            parameters.canonical_hash,
+            parameter_hash(action, &parameters.schema_id, &resource, &expected).unwrap()
+        );
+        assert!(!format!("{parameters:?}").contains("12345"));
+        let (_, same, _) = snapshot
+            .canonicalize(&fixed_action(action), json_request(br#"{"input":12345}"#))
+            .unwrap();
+        assert_eq!(parameters, same);
+        // RawValue embeds the already-canonical value without a second renderer.
+        let raw =
+            serde_json::value::RawValue::from_string(String::from_utf8(expected.clone()).unwrap())
+                .unwrap();
+        #[derive(serde::Serialize)]
+        struct Embedded {
+            canonical_request: Box<serde_json::value::RawValue>,
+        }
+        let embedded = serde_jcs::to_vec(&Embedded {
+            canonical_request: raw,
+        })
+        .unwrap();
+        assert!(
+            embedded
+                .windows(expected.len())
+                .any(|bytes| bytes == expected)
+        );
+    }
+
+    #[test]
+    fn original_json_numbers_must_survive_parse_and_jcs_exactly() {
+        let (action, principal_id, rule) = ids();
+        let mut source: Value =
+            serde_json::from_slice(&snapshot_json(action, principal_id, rule)).unwrap();
+        source["bindings"][0]["parameter_schema"] = serde_json::json!({"type":"object"});
+        let snapshot = parse_and_validate_snapshot(
+            &serde_json::to_vec(&source).unwrap(),
+            Timestamp::from_unix_ms(1),
+        )
+        .unwrap();
+        let fixed = fixed_action(action);
+        for number in [
+            "9007199254740993",
+            "-9007199254740993",
+            "18446744073709551615",
+            "-9223372036854775808",
+            "1.0000000000000001",
+            "1.234567890123456789",
+            "1e-999",
+            "1e-324",
+            "1e-9223372036854775809",
+            "4e-324",
+        ] {
+            let body = format!("{{\"nested\":[{{\"number\":{number}}}]}}");
+            assert!(
+                matches!(
+                    snapshot.canonicalize(&fixed, json_request(body.as_bytes())),
+                    Err(PolicyError::InvalidParameters)
+                ),
+                "accepted changed number {number}"
+            );
+        }
+        for number in [
+            "9007199254740992",
+            "-9007199254740992",
+            "1",
+            "1.0",
+            "1e0",
+            "1E+000",
+            "0.1",
+            "0.1000",
+            "10e-2",
+            "1e20",
+            "1e+21",
+            "5e-324",
+            "-0.0",
+            "0e-999",
+        ] {
+            let body = format!("{{\"nested\":[{{\"number\":{number}}}]}}");
+            assert!(
+                snapshot
+                    .canonicalize(&fixed, json_request(body.as_bytes()))
+                    .is_ok(),
+                "rejected preserved number {number}"
+            );
+        }
+        let canonical = |number: &str| {
+            let body = format!("{{\"number\":{number}}}");
+            snapshot
+                .canonicalize(&fixed, json_request(body.as_bytes()))
+                .unwrap()
+                .1
+        };
+        assert_eq!(canonical("1"), canonical("1.0"));
+        assert_eq!(canonical("1"), canonical("1e0"));
+        assert_eq!(canonical("0.1"), canonical("10e-2"));
+        assert_eq!(canonical("0"), canonical("-0.0"));
+        // Escaped quotes, escaped backslashes and unicode escapes are strings,
+        // including strings used as keys; none are numeric authorization data.
+        let strings=br#"{"9007199254740993":"1.0000000000000001","nested":["\"1e-999\"","\\9007199254740993","\u0031e-999"],"real":0.1}"#;
+        assert!(snapshot.canonicalize(&fixed, json_request(strings)).is_ok());
+        let mut attacked: Value = serde_json::from_slice(strings).unwrap();
+        attacked["real"] = serde_json::json!(9007199254740993_u64);
+        assert!(
+            snapshot
+                .canonicalize(
+                    &fixed,
+                    json_request(&serde_json::to_vec(&attacked).unwrap())
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
     fn duplicate_json_keys_and_schema_fail_closed() {
         let (action, principal_id, rule) = ids();
         let snapshot = parse_and_validate_snapshot(
@@ -716,16 +1469,14 @@ mod tests {
         assert!(
             snapshot
                 .canonicalize(
-                    action,
-                    Some("application/json"),
-                    &[],
-                    br#"{"input":1,"input":2}"#
+                    &fixed_action(action),
+                    json_request(br#"{"input":1,"input":2}"#)
                 )
                 .is_err()
         );
         assert!(
             snapshot
-                .canonicalize(action, Some("application/json"), &[], br#"{"other":1}"#)
+                .canonicalize(&fixed_action(action), json_request(br#"{"other":1}"#))
                 .is_err()
         );
 
@@ -786,8 +1537,8 @@ mod tests {
             Timestamp::from_unix_ms(1),
         )
         .unwrap();
-        let (resource, parameters) = snapshot
-            .canonicalize(action, Some("application/json"), &[], br#"{"input":1}"#)
+        let (resource, parameters, _) = snapshot
+            .canonicalize(&fixed_action(action), json_request(br#"{"input":1}"#))
             .unwrap();
         let mut request = AuthorizationRequest {
             principal: rekey_domain::authorization::Principal {

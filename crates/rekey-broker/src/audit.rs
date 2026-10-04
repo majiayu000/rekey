@@ -11,9 +11,9 @@ use std::time::{Duration, Instant};
 use rekey_domain::capability::ActionVersionRef;
 use rekey_domain::ids::{CredentialId, RequestId, SessionId};
 use rekey_vault::AuthorityError;
-use rekey_vault::command::AuditDraft;
+use rekey_vault::command::{AuditDraft, ProfileUsageStart};
 use rekey_vault::handle::AuthorityHandle;
-use rekey_vault::model::AuthorizationEvidence;
+use rekey_vault::model::{AuthorizationEvidence, UsageAdmission};
 use rekey_vault::model::{event_type, outcome};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -40,16 +40,19 @@ enum AuditSubmission {
 
 struct TerminalSubmission {
     draft: AuditDraft,
+    profile_usage: bool,
+    measured_output_tokens: Option<u64>,
     reply: Option<oneshot::Sender<Result<(), AuthorityError>>>,
 }
 
 struct StartedSubmission {
     drafts: Vec<AuditDraft>,
+    profile_usage: Option<ProfileUsageStart>,
     not_after: Option<Instant>,
     wall_not_after_ms: Option<i64>,
     ctx: ExecutionAuditContext,
     queue: AuditSubmissionQueue,
-    reply: oneshot::Sender<Result<StartedAuditGuard, AuthorityError>>,
+    reply: oneshot::Sender<Result<Option<StartedAuditGuard>, AuthorityError>>,
 }
 
 /// Unique ownership of the terminal event paired with a committed
@@ -61,6 +64,8 @@ pub(crate) struct StartedAuditGuard {
     ctx: ExecutionAuditContext,
     terminal_submitted: bool,
     remote_effect_started: bool,
+    profile_usage: bool,
+    measured_output_tokens: Option<u64>,
 }
 
 impl StartedAuditGuard {
@@ -75,7 +80,26 @@ impl StartedAuditGuard {
             ctx,
             terminal_submitted: false,
             remote_effect_started: false,
+            profile_usage: false,
+            measured_output_tokens: None,
         }
+    }
+
+    pub(crate) fn record_profile_output(&mut self, measured: Option<u64>) {
+        self.measured_output_tokens = measured;
+    }
+
+    fn enqueue_terminal(
+        &self,
+        draft: AuditDraft,
+        reply: Option<oneshot::Sender<Result<(), AuthorityError>>>,
+    ) {
+        self.queue.enqueue_terminal_with_usage(
+            draft,
+            reply,
+            self.profile_usage,
+            self.measured_output_tokens,
+        );
     }
 
     pub(crate) fn context(&self) -> &ExecutionAuditContext {
@@ -92,14 +116,12 @@ impl StartedAuditGuard {
 
     pub(crate) fn submit_blocked(&mut self, reason: &'static str) {
         self.terminal_submitted = true;
-        self.queue
-            .enqueue_terminal(execution_blocked(&self.ctx, reason), None);
+        self.enqueue_terminal(execution_blocked(&self.ctx, reason), None);
     }
 
     pub(crate) fn submit_indeterminate(&mut self, reason: &'static str) {
         self.terminal_submitted = true;
-        self.queue
-            .enqueue_terminal(execution_indeterminate(&self.ctx, reason), None);
+        self.enqueue_terminal(execution_indeterminate(&self.ctx, reason), None);
     }
 
     pub(crate) async fn blocked_until(
@@ -147,7 +169,7 @@ impl StartedAuditGuard {
     ) -> Result<(), BrokerError> {
         self.terminal_submitted = true;
         let (reply, result) = oneshot::channel();
-        self.queue.enqueue_terminal(draft, Some(reply));
+        self.enqueue_terminal(draft, Some(reply));
         match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), result).await {
             Ok(Ok(result)) => result.map_err(BrokerError::Authority),
             Ok(Err(_)) => Err(BrokerError::Authority(AuthorityError::AuditCommitFailed)),
@@ -164,7 +186,7 @@ impl Drop for StartedAuditGuard {
             } else {
                 execution_blocked(&self.ctx, "abandoned")
             };
-            self.queue.enqueue_terminal(draft, None);
+            self.enqueue_terminal(draft, None);
         }
     }
 }
@@ -175,9 +197,21 @@ impl AuditSubmissionQueue {
         draft: AuditDraft,
         reply: Option<oneshot::Sender<Result<(), AuthorityError>>>,
     ) {
+        self.enqueue_terminal_with_usage(draft, reply, false, None);
+    }
+
+    fn enqueue_terminal_with_usage(
+        &self,
+        draft: AuditDraft,
+        reply: Option<oneshot::Sender<Result<(), AuthorityError>>>,
+        profile_usage: bool,
+        measured_output_tokens: Option<u64>,
+    ) {
         self.enqueue(AuditSubmission::Terminal(Box::new(TerminalSubmission {
             draft,
             reply,
+            profile_usage,
+            measured_output_tokens,
         })));
     }
 
@@ -236,6 +270,7 @@ impl TerminalAuditTracker {
         self.queue
             .enqueue(AuditSubmission::Started(Box::new(StartedSubmission {
                 drafts: preceding,
+                profile_usage: None,
                 not_after,
                 wall_not_after_ms,
                 ctx,
@@ -243,9 +278,35 @@ impl TerminalAuditTracker {
                 reply,
             })));
         match result.await {
-            Ok(result) => result,
+            Ok(result) => result?.ok_or(AuthorityError::AuditCommitFailed),
             Err(_) => Err(AuthorityError::AuditCommitFailed),
         }
+    }
+
+    /// None is a normal budget denial: no started row and no terminal owner.
+    pub(crate) async fn commit_profile_started(
+        &self,
+        ctx: ExecutionAuditContext,
+        mut preceding: Vec<AuditDraft>,
+        usage: ProfileUsageStart,
+        not_after: Instant,
+        wall_not_after_ms: Option<i64>,
+    ) -> Result<Option<StartedAuditGuard>, AuthorityError> {
+        preceding.push(execution_started(&ctx));
+        let (reply, result) = oneshot::channel();
+        self.queue
+            .enqueue(AuditSubmission::Started(Box::new(StartedSubmission {
+                drafts: preceding,
+                profile_usage: Some(usage),
+                not_after: Some(not_after),
+                wall_not_after_ms,
+                ctx,
+                queue: self.queue.clone(),
+                reply,
+            })));
+        result
+            .await
+            .map_err(|_| AuthorityError::AuditCommitFailed)?
     }
 
     pub fn has_pending(&self) -> bool {
@@ -289,14 +350,17 @@ impl TerminalAuditTracker {
 pub fn spawn_terminal_worker(
     authority: AuthorityHandle,
 ) -> (Arc<TerminalAuditTracker>, JoinHandle<()>) {
-    spawn_terminal_worker_with_batch(move |drafts, not_after, wall_not_after_ms| {
-        let authority = authority.clone();
-        async move {
-            authority
-                .commit_audits_before(drafts, not_after, wall_not_after_ms)
-                .await
-        }
-    })
+    spawn_terminal_worker_inner(
+        Some(authority.clone()),
+        move |drafts, not_after, wall_not_after_ms| {
+            let authority = authority.clone();
+            async move {
+                authority
+                    .commit_audits_before(drafts, not_after, wall_not_after_ms)
+                    .await
+            }
+        },
+    )
 }
 
 #[cfg(test)]
@@ -319,7 +383,19 @@ where
     })
 }
 
+#[cfg(test)]
 fn spawn_terminal_worker_with_batch<F, Fut>(
+    commit: F,
+) -> (Arc<TerminalAuditTracker>, JoinHandle<()>)
+where
+    F: Fn(Vec<AuditDraft>, Option<Instant>, Option<i64>) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<(), AuthorityError>> + Send + 'static,
+{
+    spawn_terminal_worker_inner(None, commit)
+}
+
+fn spawn_terminal_worker_inner<F, Fut>(
+    authority: Option<AuthorityHandle>,
     commit: F,
 ) -> (Arc<TerminalAuditTracker>, JoinHandle<()>)
 where
@@ -339,7 +415,22 @@ where
             match submission {
                 AuditSubmission::Terminal(submission) => {
                     let submission = *submission;
-                    let result = commit(vec![submission.draft], None, None).await;
+                    let result = if submission.profile_usage {
+                        match (&authority, submission.draft.request_id) {
+                            (Some(authority), Some(request_id)) => {
+                                authority
+                                    .settle_profile_execution(
+                                        request_id,
+                                        submission.measured_output_tokens,
+                                        submission.draft,
+                                    )
+                                    .await
+                            }
+                            _ => Err(AuthorityError::AuditCommitFailed),
+                        }
+                    } else {
+                        commit(vec![submission.draft], None, None).await
+                    };
                     if result.is_err() {
                         failed.store(true, Ordering::SeqCst);
                     }
@@ -349,16 +440,40 @@ where
                 }
                 AuditSubmission::Started(submission) => {
                     let StartedSubmission {
-                        drafts,
+                        mut drafts,
+                        profile_usage,
                         not_after,
                         wall_not_after_ms,
                         ctx,
                         queue,
                         reply,
                     } = *submission;
-                    let result = commit(drafts, not_after, wall_not_after_ms)
-                        .await
-                        .map(|()| StartedAuditGuard::new(queue, ctx));
+                    let result = if let Some(usage) = profile_usage {
+                        match (&authority, drafts.pop(), not_after) {
+                            (Some(authority), Some(started), Some(not_after)) => authority
+                                .begin_profile_execution(
+                                    usage,
+                                    drafts,
+                                    started,
+                                    not_after,
+                                    wall_not_after_ms,
+                                )
+                                .await
+                                .map(|admission| match admission {
+                                    UsageAdmission::BudgetDenied => None,
+                                    UsageAdmission::Started => {
+                                        let mut guard = StartedAuditGuard::new(queue, ctx);
+                                        guard.profile_usage = true;
+                                        Some(guard)
+                                    }
+                                }),
+                            _ => Err(AuthorityError::AuditCommitFailed),
+                        }
+                    } else {
+                        commit(drafts, not_after, wall_not_after_ms)
+                            .await
+                            .map(|()| Some(StartedAuditGuard::new(queue, ctx)))
+                    };
                     if matches!(&result, Err(error) if !matches!(error, AuthorityError::AuthorityBusy))
                     {
                         failed.store(true, Ordering::SeqCst);
@@ -376,6 +491,7 @@ where
 }
 
 pub struct ExecutionAuditContext {
+    pub request_context: Option<rekey_domain::audit::ProfileRequestAuditContext>,
     pub request_id: RequestId,
     pub session_id: SessionId,
     pub action: ActionVersionRef,
@@ -393,6 +509,8 @@ fn base(ctx: &ExecutionAuditContext) -> AuditDraft {
         credential_version: None,
         authorization: ctx.authorization.clone().map(Box::new),
         approval: None,
+        request_context: ctx.request_context.clone(),
+        usage: None,
         event_type: event_type::EXECUTION_STARTED,
         outcome: outcome::SUCCESS,
         reason_code: String::new(),
@@ -470,6 +588,8 @@ mod tests {
             credential_version: None,
             authorization: None,
             approval: None,
+            request_context: None,
+            usage: None,
             event_type: event_type::EXECUTION_BLOCKED,
             outcome: outcome::DENIED,
             reason_code: "abandoned".to_owned(),
@@ -480,6 +600,7 @@ mod tests {
 
     fn execution_context() -> ExecutionAuditContext {
         ExecutionAuditContext {
+            request_context: None,
             request_id: RequestId::new_random(),
             session_id: SessionId::new_random(),
             action: ActionVersionRef {

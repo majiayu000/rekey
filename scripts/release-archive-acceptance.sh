@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Exercise downloaded-archive rekey/rekeyd for capabilities beyond P0.
-# Never cargo-builds. Fixture daemons are not used; Vault execute is not claimed.
+# Never cargo-builds. Exercises only the default personal build.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -13,27 +13,25 @@ NEW_PASSWORD="${REKEY_ARCHIVE_NEW_PASSWORD:-archive correct battery staple}"
 SECRET="archive-credential-canary-secret"
 ORIGIN="${REKEY_ACCEPTANCE_ORIGIN:-https://1.1.1.1}"
 EXACT_PATH="${REKEY_ACCEPTANCE_PATH:-/cdn-cgi/trace}"
-ISSUER="https://issuer.example"
-AUDIENCE="rekey://archive-acceptance"
-KID="archive-workload-key"
-VAULT_TOKEN_ONE="hvs.archive-vault-token-one"
-VAULT_TOKEN_TWO="hvs.archive-vault-token-two"
-
 command -v python3 >/dev/null || { echo "python3 is required" >&2; exit 1; }
 command -v openssl >/dev/null || { echo "openssl is required" >&2; exit 1; }
 command -v rg >/dev/null || { echo "ripgrep is required" >&2; exit 1; }
 
-for name in rekey rekeyd rekey-github-create-issue rekey-mcp rekey-policy-sign rekey-approval-sign \
-  rekey-service-unit.py agent-quickstart.py operator-credential-repair.py rekey-backup-sync.py \
-  rekey-audit-delivery.py rekey-audit-archive.py rekey-approval-relay; do
+for name in rekey rekeyd rekey-mcp rekey-policy-sign rekey-approval-sign \
+  rekey-service-unit.py agent-quickstart.py operator-credential-repair.py; do
   [[ -x "$BIN_DIR/$name" ]] || { echo "required archive executable is missing: $name" >&2; exit 1; }
 done
-for name in rekey-policy-sign rekey-approval-sign rekey-approval-relay; do
+for name in rekey-policy-sign rekey-approval-sign; do
   "$BIN_DIR/$name" --help >/dev/null
 done
-for name in rekey-service-unit.py agent-quickstart.py operator-credential-repair.py \
-  rekey-backup-sync.py rekey-audit-delivery.py rekey-audit-archive.py; do
+for name in rekey-service-unit.py agent-quickstart.py operator-credential-repair.py; do
   python3 "$BIN_DIR/$name" --help >/dev/null
+done
+for command in metrics oidc-login; do
+  if "$REKEY" "$command" --help >/dev/null 2>&1; then
+    echo "lab command unexpectedly present in default archive: $command" >&2
+    exit 1
+  fi
 done
 
 echo "release-archive-acceptance: BIN_DIR=$BIN_DIR"
@@ -110,11 +108,11 @@ import json, pathlib, sys, time, uuid
 path, action_id, action_version, principal_id, version = sys.argv[1:]
 resource = {"type": "fixed-http-action", "id": action_id}
 pathlib.Path(path).write_text(json.dumps({
-    "format_version": 3,
+    "format_version": 6,
     "version": int(version),
     "expires_at_ms": int(time.time() * 1000) + 600000,
     "approvers": [],
-    "workload_identities": [],
+    "profiles": [], "workload_identities": [],
     "bindings": [{
         "action_id": action_id,
         "version": int(action_version),
@@ -152,8 +150,8 @@ activate_snapshot() {
     --password-stdin | json_field 'capability_token')"
 }
 
-echo "== init, serve, unlock, format v21"
-init_out="$(printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$STATE" --password-stdin)"
+echo "== init, serve, unlock, format v22"
+init_out="$(printf '%s\n' "$PASSWORD" | "$REKEYD" init --mode team --state-dir "$STATE" --password-stdin)"
 printf '%s\n' "$init_out" | rg -q '^RKREC1-' || {
   echo "init did not print a recovery key" >&2
   exit 1
@@ -169,8 +167,8 @@ done
 [[ -S "$STATE/runtime/admin.sock" ]] || { echo "broker did not start"; exit 1; }
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" unlock --password-stdin >/dev/null
 status="$("$REKEY" --state-dir "$STATE" status)"
-printf '%s\n' "$status" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin)["format_version"] == 21 else 1)' || {
-  echo "expected format_version 21: $status" >&2
+printf '%s\n' "$status" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin)["format_version"] == 25 else 1)' || {
+  echo "expected format_version 25: $status" >&2
   exit 1
 }
 
@@ -269,11 +267,11 @@ path, action_id, action_version, principal_id, approver_path = sys.argv[1:]
 approver = json.loads(pathlib.Path(approver_path).read_text())
 resource = {"type": "fixed-http-action", "id": action_id}
 pathlib.Path(path).write_text(json.dumps({
-    "format_version": 3,
+    "format_version": 6,
     "version": 2,
     "expires_at_ms": int(time.time() * 1000) + 600000,
     "approvers": [approver],
-    "workload_identities": [],
+    "profiles": [], "workload_identities": [],
     "bindings": [{
         "action_id": action_id,
         "version": int(action_version),
@@ -289,9 +287,8 @@ pathlib.Path(path).write_text(json.dumps({
         "version": int(action_version),
         "resource": resource,
         "parameters": {"kind": "any_validated"},
+        "approver": {"kind": "ed25519", "keys": [approver["public_key"]], "threshold": 1},
         "approval": {
-            "approver_ids": [approver["approver_id"]],
-            "quorum": 1,
             "mode": "one-time",
             "max_uses": 1,
         },
@@ -312,72 +309,6 @@ fi
 expect_exit 4 bash -c 'printf "%s\n" "$1" | "$2" --state-dir "$3" execute "$4" --capability - --approval "$5"' \
   _ "$token" "$REKEY" "$STATE" "$action_ref" "$WORKDIR/grant.json"
 
-echo "== workload mint, execute, replay deny"
-python3 "$SIGNER" workload-key --key-dir "$WORKDIR/workload-key" --kid "$KID" \
-  >"$WORKDIR/workload-key.json"
-python3 - "$WORKDIR/policy.json" "$action_id" "$action_ver" "$principal_id" \
-  "$WORKDIR/workload-key.json" "$ISSUER" "$AUDIENCE" <<'PY'
-import json, pathlib, sys, time, uuid
-path, action_id, action_version, admin_principal, key_path, issuer, audience = sys.argv[1:]
-key = json.loads(pathlib.Path(key_path).read_text())
-resource = {"type": "fixed-http-action", "id": action_id}
-workload_principal = str(uuid.uuid4())
-pathlib.Path(path).write_text(json.dumps({
-    "format_version": 3,
-    "version": 3,
-    "expires_at_ms": int(time.time() * 1000) + 600000,
-    "approvers": [],
-    "workload_identities": [{
-        "principal_id": workload_principal,
-        "issuer": issuer,
-        "audiences": [audience],
-        "max_token_age_ms": 900000,
-        "profile": {"kind": "oidc", "subject": "service:archive"},
-        "keys": [key],
-    }],
-    "bindings": [{
-        "action_id": action_id,
-        "version": int(action_version),
-        "resource": resource,
-        "parameter_schema_id": "archive-empty/v1",
-        "parameter_schema": {"type": "null"},
-    }],
-    "rules": [
-        {
-            "id": str(uuid.uuid4()),
-            "effect": "permit",
-            "principal_id": admin_principal,
-            "action_id": action_id,
-            "version": int(action_version),
-            "resource": resource,
-            "parameters": {"kind": "any_validated"},
-        },
-        {
-            "id": str(uuid.uuid4()),
-            "effect": "permit",
-            "principal_id": workload_principal,
-            "action_id": action_id,
-            "version": int(action_version),
-            "resource": resource,
-            "parameters": {"kind": "any_validated"},
-        },
-    ],
-}))
-PY
-activate_snapshot
-python3 "$SIGNER" workload-token --key-dir "$WORKDIR/workload-key" --kid "$KID" \
-  --issuer "$ISSUER" --subject "service:archive" --audience "$AUDIENCE" \
-  --jti "archive-jti-1" --now "$(date +%s)" --validity-seconds 600 \
-  >"$WORKDIR/workload.jwt"
-workload_session="$("$REKEY" --state-dir "$STATE" session create --action "$action_ref" \
-  --ttl 10m --max-uses 5 --workload-token-stdin <"$WORKDIR/workload.jwt")"
-workload_token="$(printf '%s\n' "$workload_session" | json_field capability_token)"
-if [[ "${REKEY_ACCEPTANCE_SKIP_EXECUTE:-}" != "1" ]]; then
-  "$REKEY" --state-dir "$STATE" execute "$action_ref" --capability "$workload_token" | assert_status
-fi
-expect_exit 4 "$REKEY" --state-dir "$STATE" session create --action "$action_ref" \
-  --ttl 10m --max-uses 5 --workload-token-stdin <"$WORKDIR/workload.jwt"
-
 echo "== audit list/export records lifecycle events and omits secrets"
 "$REKEY" --state-dir "$STATE" audit list --limit 100 >"$WORKDIR/audit.json"
 rg -q '"event_type": "vault.password_changed"' "$WORKDIR/audit.json"
@@ -394,64 +325,13 @@ if rg -aF -- "$token" "$WORKDIR/audit.json" "$WORKDIR/audit.jsonl"; then
   exit 1
 fi
 
-echo "== Vault CLI register/rotate without claiming live Vault execute"
-python3 - "$WORKDIR/vault-kv-1.json" "$WORKDIR/vault-kv-2.json" \
-  "$WORKDIR/vault-dyn-1.json" "$WORKDIR/vault-dyn-2.json" \
-  "$WORKDIR/vault-bad.json" "$VAULT_TOKEN_ONE" "$VAULT_TOKEN_TWO" <<'PY'
-import json, pathlib, sys
-kv1, kv2, dyn1, dyn2, bad, token_one, token_two = sys.argv[1:]
-def kv(version, token):
-    return {"credential_type":"vault-kv-v2-source-v1","origin":"https://example.com",
-            "mount":"secret","path":"agents/archive","key":"token","version":version,
-            "vault_token":token}
-def dyn(token):
-    return {"credential_type":"vault-dynamic-source-v2","origin":"https://example.com",
-            "mount":"database","role":"agent-api-token","key":"token","vault_token":token,
-            "renew_increment_seconds":60}
-def write_private(path, payload):
-    dest = pathlib.Path(path)
-    dest.write_text(json.dumps(payload))
-    dest.chmod(0o600)
-write_private(kv1, kv(7, token_one))
-write_private(kv2, kv(8, token_two))
-write_private(dyn1, dyn(token_one))
-write_private(dyn2, dyn(token_two))
-bad_profile = kv(9, token_two)
-bad_profile["origin"] = "http://example.com"
-write_private(bad, bad_profile)
-PY
-expect_exit 2 pipe_secret "$PASSWORD" "$REKEY" --state-dir "$STATE" credential \
-  add-vault-kv archive-bad --file "$WORKDIR/vault-bad.json" --password-stdin
-kv_json="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" credential \
-  add-vault-kv archive-kv --file "$WORKDIR/vault-kv-1.json" --password-stdin)"
-kv_id="$(printf '%s\n' "$kv_json" | json_field id)"
-[[ "$(printf '%s\n' "$kv_json" | json_field kind)" == "vault-kv-v2-source" ]]
-[[ "$(printf '%s\n' "$kv_json" | json_field current_version)" == "1" ]]
-rot_kv="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" credential \
-  rotate-vault-kv "$kv_id" --file "$WORKDIR/vault-kv-2.json" --password-stdin)"
-[[ "$(printf '%s\n' "$rot_kv" | json_field current_version)" == "2" ]]
-dyn_json="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" credential \
-  add-vault-dynamic archive-dyn --file "$WORKDIR/vault-dyn-1.json" --password-stdin)"
-dyn_id="$(printf '%s\n' "$dyn_json" | json_field id)"
-[[ "$(printf '%s\n' "$dyn_json" | json_field kind)" == "vault-dynamic-source" ]]
-rot_dyn="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" credential \
-  rotate-vault-dynamic "$dyn_id" --file "$WORKDIR/vault-dyn-2.json" --password-stdin)"
-[[ "$(printf '%s\n' "$rot_dyn" | json_field current_version)" == "2" ]]
-list="$("$REKEY" --state-dir "$STATE" credential list)"
-printf '%s\n' "$list" | rg -q 'vault-kv-v2-source'
-printf '%s\n' "$list" | rg -q 'vault-dynamic-source'
-if printf '%s\n' "$list" | rg -F -- "$VAULT_TOKEN_ONE"; then
-  echo "vault token leaked into credential list" >&2
-  exit 1
-fi
-
 printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" shutdown --password-stdin >/dev/null
 SERVE_PID=""
 
 if [[ "$(uname -s)" == Darwin ]]; then
   echo "== macOS experimental Seatbelt launcher"
   mkdir -p "$AGENT_RUN"
-  printf '%s\n' "$PASSWORD" | "$REKEYD" init --state-dir "$WORKDIR/macos" --password-stdin >/dev/null
+  printf '%s\n' "$PASSWORD" | "$REKEYD" init --mode team --state-dir "$WORKDIR/macos" --password-stdin >/dev/null
   "$REKEYD" serve --state-dir "$WORKDIR/macos" --idle-lock 15m --agent-runtime-dir "$AGENT_RUN" \
     >"$WORKDIR/macos.out" 2>"$WORKDIR/macos.err" &
   SERVE_PID=$!
@@ -467,5 +347,5 @@ if [[ "$(uname -s)" == Darwin ]]; then
 fi
 
 echo "release-archive-acceptance: PASS"
-echo "release-archive-acceptance: proved=password-change,recovery-rotate,audit-list-export,policy-activate,approval-grant,workload-mint,vault-kv-register,vault-dynamic-register,packaged-helper-entries,mcp-initialize-discovery"
-echo "release-archive-acceptance: limitation=vault-execute-still-fixture-only,not-live-vault"
+echo "release-archive-acceptance: proved=password-change,recovery-rotate,audit-list-export,policy-activate,approval-grant,packaged-helper-entries,mcp-initialize-discovery"
+echo "release-archive-acceptance: lab features excluded"

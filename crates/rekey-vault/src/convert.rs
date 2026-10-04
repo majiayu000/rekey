@@ -4,8 +4,8 @@ use std::collections::BTreeSet;
 
 use rekey_domain::Timestamp;
 use rekey_domain::action::{
-    ActionName, ExactPath, FixedHttpAction, FixedMethod, HeaderCredentialUse, HeaderName,
-    HeaderPrefix, HttpsOrigin, RequestPolicy, ResponsePolicy,
+    ActionName, FixedHttpAction, FixedMethod, HeaderCredentialUse, HeaderName, HeaderPrefix,
+    HttpsOrigin, RequestPolicy, ResponsePolicy,
 };
 use rekey_domain::credential::{CredentialLabel, CredentialMetadata};
 
@@ -72,7 +72,7 @@ pub fn action_to_record(a: &FixedHttpAction, now_ms: i64) -> Result<ActionRecord
         credential_id: a.credential_id,
         origin: a.origin.as_str().to_owned(),
         method: a.method.as_str().to_owned(),
-        exact_path: a.exact_path.as_str().to_owned(),
+        target_json: integrity(serde_json::to_string(&a.target))?,
         auth_header: a.auth.header_name.as_str().to_owned(),
         auth_prefix: a.auth.prefix.as_str().to_owned(),
         request_max_bytes: a.request_policy.max_body_bytes,
@@ -81,6 +81,8 @@ pub fn action_to_record(a: &FixedHttpAction, now_ms: i64) -> Result<ActionRecord
         allowed_response_headers_json: headers_to_json(&a.response_policy.allowed_headers)?,
         timeout_ms: a.timeout_ms,
         created_at_ms: now_ms,
+        seal_nonce: [0; 12],
+        seal_ciphertext: [0; 16],
     })
 }
 
@@ -107,7 +109,7 @@ pub fn record_to_action(r: &ActionRecord) -> Result<FixedHttpAction, AuthorityEr
         credential_id: r.credential_id,
         origin: integrity(HttpsOrigin::parse(&r.origin))?,
         method: integrity(FixedMethod::parse(&r.method))?,
-        exact_path: integrity(ExactPath::parse(&r.exact_path))?,
+        target: integrity(serde_json::from_str(&r.target_json))?,
         auth: integrity(HeaderCredentialUse::new(
             integrity(HeaderName::new(&r.auth_header))?,
             integrity(HeaderPrefix::new(&r.auth_prefix))?,
@@ -124,4 +126,14 @@ pub fn record_to_action(r: &ActionRecord) -> Result<FixedHttpAction, AuthorityEr
     };
     integrity(action.validate())?;
     Ok(action)
+}
+
+/// Verify the raw persisted row before interpreting any execution fields.
+pub(crate) fn verified_record_to_action(
+    record: &ActionRecord,
+    key: &[u8; 32],
+    vault_id: rekey_domain::ids::VaultId,
+) -> Result<FixedHttpAction, AuthorityError> {
+    crate::crypto::action_state::verify(key, vault_id, record)?;
+    record_to_action(record)
 }

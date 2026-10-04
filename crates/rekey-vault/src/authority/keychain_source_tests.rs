@@ -40,6 +40,7 @@ impl Fixture {
                 iterations: 1,
                 parallelism: 1,
             },
+            rekey_domain::authorization::PolicyMode::Team,
         )
         .unwrap();
         confirm_vault_init(&state).unwrap();
@@ -77,7 +78,9 @@ impl Fixture {
                     credential_id: credential.id,
                     origin: HttpsOrigin::parse("https://example.com").unwrap(),
                     method: FixedMethod::Post,
-                    exact_path: ExactPath::parse("/fixed").unwrap(),
+                    target: rekey_domain::action::ActionTarget::Fixed {
+                        path: ExactPath::parse("/fixed").unwrap(),
+                    },
                     auth: HeaderCredentialUse::new(
                         HeaderName::new("authorization").unwrap(),
                         HeaderPrefix::new("Bearer ").unwrap(),
@@ -118,6 +121,8 @@ impl Fixture {
                 credential_version: None,
                 authorization: None,
                 approval: None,
+                request_context: None,
+                usage: None,
                 event_type: event,
                 outcome: outcome::SUCCESS,
                 reason_code: "synthetic-start".into(),

@@ -28,6 +28,7 @@ impl Worker {
         let reason = match &proof {
             UnlockProof::Password(_) => "password-step-up",
             UnlockProof::Recovery(_) => "recovery-step-up",
+            UnlockProof::Presence(_) => return Err(AuthorityError::InvalidUnlockCredential),
         };
         if let Err(error) = self.verify_proof(&proof) {
             if matches!(error, AuthorityError::InvalidUnlockCredential) {
@@ -73,20 +74,51 @@ impl Worker {
         ))?;
         ensure_mutation_current(not_after)?;
         self.forget_desktop()?;
-        let result = self
-            .store
-            .replace_wrapper(WrapperKind::Password, &replacement, now, audit);
+        let observed = self.mutation_observation()?;
+        let mut generation = crate::store::generation::GenerationAttempt::new(
+            &self.anchors,
+            &self.header,
+            observed,
+            self.require_unlocked()?.bytes(),
+            self.header
+                .generation
+                .checked_add(1)
+                .ok_or(AuthorityError::StorageIntegrityFailed)?,
+            not_after,
+            None,
+        )?;
+        let result = self.store.replace_wrapper(
+            WrapperKind::Password,
+            &replacement,
+            now,
+            audit,
+            &mut generation,
+        );
+        let result = self.complete_generation(result, generation.finish());
         let result = self.fault_on_integrity(result);
         self.fault_on_audit_failure(result)
     }
 
     pub(super) fn recovery_rotate(
         &mut self,
-        password: SecretInput,
+        proof: UnlockProof,
         not_after: Option<std::time::Instant>,
     ) -> Result<Zeroizing<String>, AuthorityError> {
+        let reason = match &proof {
+            UnlockProof::Password(_) => "password-step-up",
+            UnlockProof::Presence(_) => {
+                self.require_unlocked()?;
+                return Err(AuthorityError::InvalidUnlockCredential);
+            }
+            UnlockProof::Recovery(_) => {
+                return Err(AuthorityError::Domain(
+                    rekey_domain::DomainError::InvalidActionDefinition(
+                        "recovery rotation requires password proof".to_owned(),
+                    ),
+                ));
+            }
+        };
         self.require_unlocked()?;
-        let proof = UnlockProof::Password(password);
         if let Err(error) = self.verify_proof(&proof) {
             if matches!(error, AuthorityError::InvalidUnlockCredential) {
                 self.append_audit(unlock_audit(
@@ -121,13 +153,31 @@ impl Worker {
         let audit = self.audit_event_or_fault(unlock_audit(
             event_type::VAULT_RECOVERY_ROTATED,
             outcome::SUCCESS,
-            "password-step-up",
+            reason,
         ))?;
         ensure_mutation_current(not_after)?;
         self.forget_desktop()?;
-        let result = self
-            .store
-            .replace_wrapper(WrapperKind::Recovery, &replacement, now, audit);
+        let observed = self.mutation_observation()?;
+        let mut generation = crate::store::generation::GenerationAttempt::new(
+            &self.anchors,
+            &self.header,
+            observed,
+            self.require_unlocked()?.bytes(),
+            self.header
+                .generation
+                .checked_add(1)
+                .ok_or(AuthorityError::StorageIntegrityFailed)?,
+            not_after,
+            None,
+        )?;
+        let result = self.store.replace_wrapper(
+            WrapperKind::Recovery,
+            &replacement,
+            now,
+            audit,
+            &mut generation,
+        );
+        let result = self.complete_generation(result, generation.finish());
         let result = self.fault_on_integrity(result);
         self.fault_on_audit_failure(result)?;
         Ok(recovery_display)

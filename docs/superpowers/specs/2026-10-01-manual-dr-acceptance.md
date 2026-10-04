@@ -1,5 +1,8 @@
 # BAK-08 / ENT-05: fixed manual recovery and acceptance entries
 
+> Status: Lab (v3 scope; enterprise reserve)
+> Existing contracts and evidence are retained; this capability is excluded from the default v3 build and release package.
+
 Status: selected minimal source contract before edits. User requests remaining functions but deferred real environments. This adds executable artifact verification and fixed actual test orchestration; neither can prove fencing, full enterprise readiness, RPO/RTO or a customer provider without actual evidence.
 
 ## DR entry

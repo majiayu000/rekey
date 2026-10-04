@@ -84,7 +84,7 @@ impl KeycloakProfile {
     }
     fn accepts(&self, action: &FixedHttpAction, request: &ExecuteRequest) -> bool {
         action.origin == self.target_origin
-            && action.exact_path == self.target_path
+            && action.target.fixed_path() == Some(&self.target_path)
             && action.method == FixedMethod::Get
             && action.auth.header_name.as_str() == "authorization"
             && action.auth.prefix.as_str() == "Bearer "
@@ -378,9 +378,13 @@ impl ActionExecutor {
                     let token = &exchange.tokens[0];
                     let auth = Zeroizing::new(format!("Bearer {}", token.as_str()).into_bytes());
                     needles.extend(sealing_needles(token.as_bytes(), &auth));
-                    let mut upstream = build_upstream(action, request, auth);
-                    upstream.timeout = until.saturating_duration_since(Instant::now());
-                    send(self.transport.as_ref(), upstream, until).await
+                    match build_upstream(action, request, auth) {
+                        Ok(mut upstream) => {
+                            upstream.timeout = until.saturating_duration_since(Instant::now());
+                            send(self.transport.as_ref(), upstream, until).await
+                        }
+                        Err(reason) => Err(reason),
+                    }
                 }
                 (Err(reason), _) => Err(reason),
                 _ => Err("connector-audit-failed"),

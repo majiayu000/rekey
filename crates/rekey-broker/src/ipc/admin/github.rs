@@ -5,7 +5,10 @@ use rekey_domain::credential::CredentialKind;
 use rekey_domain::ipc;
 use rekey_vault::secret::SecretInput;
 
-use super::{IncomingFrame, admin_mutation_deadline, authority_until, json, meta, proof_from};
+use super::{
+    AdminResponse, IncomingFrame, Zeroizing, admin_mutation_deadline, authority_until, json, meta,
+    proof_from,
+};
 use crate::error::BrokerError;
 use crate::github_app::{GitHubAppCredential, GitHubError};
 use crate::runtime::BrokerCtx;
@@ -13,7 +16,7 @@ use crate::runtime::BrokerCtx;
 pub(super) async fn handle_rotate(
     frame: &IncomingFrame,
     ctx: &BrokerCtx,
-) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
+) -> Result<AdminResponse, BrokerError> {
     let deadline = admin_mutation_deadline();
     ctx.lifecycle.reject_if_not_running()?;
     let reference: ipc::CredentialRefMeta = meta(frame)?;
@@ -46,13 +49,13 @@ pub(super) async fn handle_rotate(
         ),
     )
     .await?;
-    Ok((json(&metadata)?, Vec::new()))
+    Ok((json(&metadata)?, Zeroizing::new(Vec::new())))
 }
 
 pub(super) async fn handle_webhook(
     frame: &IncomingFrame,
     ctx: &BrokerCtx,
-) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
+) -> Result<AdminResponse, BrokerError> {
     let deadline = admin_mutation_deadline();
     ctx.lifecycle.reject_if_not_running()?;
     let metadata: ipc::GitHubWebhookApplyMeta = meta(frame)?;
@@ -102,7 +105,7 @@ pub(super) async fn handle_webhook(
         ),
     )
     .await?;
-    Ok((json(&result)?, Vec::new()))
+    Ok((json(&result)?, Zeroizing::new(Vec::new())))
 }
 
 fn admin_error(error: GitHubError) -> BrokerError {

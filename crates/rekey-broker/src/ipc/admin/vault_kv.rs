@@ -3,7 +3,10 @@ use rekey_domain::credential::CredentialKind;
 use rekey_domain::ipc;
 use rekey_vault::secret::SecretInput;
 
-use super::{IncomingFrame, admin_mutation_deadline, authority_until, json, meta, proof_from};
+use super::{
+    AdminResponse, IncomingFrame, Zeroizing, admin_mutation_deadline, authority_until, json, meta,
+    proof_from,
+};
 use crate::error::BrokerError;
 use crate::executor::vault_source::VaultKvProfile;
 use crate::runtime::BrokerCtx;
@@ -11,7 +14,7 @@ use crate::runtime::BrokerCtx;
 pub(super) async fn handle_rotate(
     frame: &IncomingFrame,
     ctx: &BrokerCtx,
-) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
+) -> Result<AdminResponse, BrokerError> {
     handle_rotate_kind(
         frame,
         ctx,
@@ -25,7 +28,7 @@ pub(super) async fn handle_rotate(
 pub(super) async fn handle_rotate_dynamic(
     frame: &IncomingFrame,
     ctx: &BrokerCtx,
-) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
+) -> Result<AdminResponse, BrokerError> {
     handle_rotate_kind(
         frame,
         ctx,
@@ -39,7 +42,7 @@ pub(super) async fn handle_rotate_dynamic(
 pub(super) async fn handle_rotate_keycloak(
     frame: &IncomingFrame,
     ctx: &BrokerCtx,
-) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
+) -> Result<AdminResponse, BrokerError> {
     handle_rotate_kind(
         frame,
         ctx,
@@ -53,7 +56,7 @@ pub(super) async fn handle_rotate_keycloak(
 pub(super) async fn handle_rotate_gcp(
     frame: &IncomingFrame,
     ctx: &BrokerCtx,
-) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
+) -> Result<AdminResponse, BrokerError> {
     handle_rotate_kind(
         frame,
         ctx,
@@ -67,7 +70,7 @@ pub(super) async fn handle_rotate_gcp(
 pub(super) async fn handle_rotate_azure(
     frame: &IncomingFrame,
     ctx: &BrokerCtx,
-) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
+) -> Result<AdminResponse, BrokerError> {
     handle_rotate_kind(
         frame,
         ctx,
@@ -81,7 +84,7 @@ pub(super) async fn handle_rotate_azure(
 pub(super) async fn handle_rotate_onepassword(
     frame: &IncomingFrame,
     ctx: &BrokerCtx,
-) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
+) -> Result<AdminResponse, BrokerError> {
     handle_rotate_kind(
         frame,
         ctx,
@@ -95,7 +98,7 @@ pub(super) async fn handle_rotate_onepassword(
 pub(super) async fn handle_rotate_keychain(
     frame: &IncomingFrame,
     ctx: &BrokerCtx,
-) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
+) -> Result<AdminResponse, BrokerError> {
     let deadline = admin_mutation_deadline();
     ctx.lifecycle.reject_if_not_running()?;
     let reference: ipc::CredentialRefMeta = meta(frame)?;
@@ -114,13 +117,13 @@ pub(super) async fn handle_rotate_keychain(
         ),
     )
     .await?;
-    Ok((json(&metadata)?, Vec::new()))
+    Ok((json(&metadata)?, Zeroizing::new(Vec::new())))
 }
 
 pub(super) async fn handle_rotate_aws(
     frame: &IncomingFrame,
     ctx: &BrokerCtx,
-) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
+) -> Result<AdminResponse, BrokerError> {
     handle_rotate_kind(
         frame,
         ctx,
@@ -137,7 +140,7 @@ async fn handle_rotate_kind<E>(
     expected_kind: CredentialKind,
     validate: fn(&[u8]) -> Result<(), E>,
     error_message: &'static str,
-) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
+) -> Result<AdminResponse, BrokerError> {
     let deadline = admin_mutation_deadline();
     ctx.lifecycle.reject_if_not_running()?;
     let reference: ipc::CredentialRefMeta = meta(frame)?;
@@ -172,5 +175,5 @@ async fn handle_rotate_kind<E>(
         ),
     )
     .await?;
-    Ok((json(&metadata)?, Vec::new()))
+    Ok((json(&metadata)?, Zeroizing::new(Vec::new())))
 }

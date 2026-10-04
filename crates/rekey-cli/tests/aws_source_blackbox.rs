@@ -119,7 +119,14 @@ fn real_cli_typed_add_rotate_step_up_and_no_credential_process_or_output_leak() 
     let daemon_bin = bin.parent().unwrap().join("rekeyd");
     assert!(daemon_bin.is_file(), "build workspace binaries first");
     let mut init = Command::new(&daemon_bin)
-        .args(["init", "--state-dir", state, "--password-stdin"])
+        .args([
+            "init",
+            "--mode",
+            "team",
+            "--state-dir",
+            state,
+            "--password-stdin",
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

@@ -271,26 +271,31 @@ async fn github_revoked_audit_deadline_is_not_retryable() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[cfg(feature = "lab")]
 async fn keycloak_issued_audit_deadline_is_not_retryable() {
     audit_timeout("keycloak-token-exchange", true, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[cfg(feature = "lab")]
 async fn keycloak_revoked_audit_deadline_is_not_retryable() {
     audit_timeout("keycloak-token-exchange", false, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[cfg(feature = "lab")]
 async fn vault_issued_audit_deadline_is_not_retryable() {
     audit_timeout("vault-dynamic-source", true, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[cfg(feature = "lab")]
 async fn vault_revoked_audit_deadline_is_not_retryable() {
     audit_timeout("vault-dynamic-source", false, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[cfg(feature = "lab")]
 async fn malformed_vault_issued_audit_deadline_is_not_retryable() {
     audit_timeout("vault-dynamic-source", true, true).await;
 }

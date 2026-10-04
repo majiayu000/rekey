@@ -60,11 +60,11 @@ pub async fn activate_test_policy(
 ) {
     let resource = serde_json::json!({"type": "test-action", "id": action_id});
     let snapshot = serde_json::json!({
-        "format_version": 3,
+        "format_version": 6,
         "version": broker.policy_version.fetch_add(1, Ordering::Relaxed),
         "expires_at_ms": 4_102_444_800_000_i64,
         "approvers": [],
-        "workload_identities": [],
+        "profiles": [], "workload_identities": [],
         "bindings": [binding(action_id, action_version, &resource)],
         "rules": [{
             "id": PolicyRuleId::new_random(),
@@ -97,8 +97,6 @@ pub async fn activate_approval_policy(
     let rule_id = PolicyRuleId::new_random();
     let resource = serde_json::json!({"type": "test-action", "id": action_id});
     let mut approval = serde_json::json!({
-        "approver_ids": policy.approvers.iter().map(|(id, _)| id).collect::<Vec<_>>(),
-        "quorum": policy.quorum,
         "mode": policy.mode,
         "max_uses": policy.max_uses,
     });
@@ -109,7 +107,7 @@ pub async fn activate_approval_policy(
             .insert("max_window_ms".to_owned(), max_window_ms.into());
     }
     let snapshot = serde_json::json!({
-        "format_version": 3,
+        "format_version": 6,
         "version": broker.policy_version.fetch_add(1, Ordering::Relaxed),
         "expires_at_ms": 4_102_444_800_000_i64,
         "approvers": policy.approvers.iter().map(|(id, key)| serde_json::json!({
@@ -117,7 +115,7 @@ pub async fn activate_approval_policy(
             "algorithm": "ed25519",
             "public_key": HEXLOWER.encode(key),
         })).collect::<Vec<_>>(),
-        "workload_identities": [],
+        "profiles": [], "workload_identities": [],
         "bindings": [binding(action_id, action_version, &resource)],
         "rules": [{
             "id": rule_id,
@@ -127,6 +125,7 @@ pub async fn activate_approval_policy(
             "version": action_version,
             "resource": resource,
             "parameters": {"kind": "any_validated"},
+            "approver": {"kind": "ed25519", "keys": policy.approvers.iter().map(|(_, key)| HEXLOWER.encode(key)).collect::<Vec<_>>(), "threshold": policy.quorum},
             "approval": approval,
         }],
     });
@@ -162,11 +161,11 @@ pub async fn activate_workload_policy(
         })
         .collect::<Vec<_>>();
     let snapshot = serde_json::json!({
-        "format_version": 3,
+        "format_version": 6,
         "version": broker.policy_version.fetch_add(1, Ordering::Relaxed),
         "expires_at_ms": 4_102_444_800_000_i64,
         "approvers": [],
-        "workload_identities": [workload_identity],
+        "profiles": [], "workload_identities": [workload_identity],
         "bindings": [binding(action_id, action_version, &resource)],
         "rules": rules,
     });

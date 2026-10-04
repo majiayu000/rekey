@@ -3,37 +3,30 @@
 All notable public changes are recorded here. Rekey uses semantic versioning
 for release identifiers, but prerelease compatibility is not guaranteed.
 
-## Unreleased
+## 3.0.0-alpha.1
 
-### Added
+**Requires reinitialization: yes.** Older formats are rejected, never migrated.
+Vault25 and policy snapshot6 are frozen from this alpha onward. All v3
+prereleases, GA, minor and patch releases must preserve these durable formats.
 
-- Pinned Vault OSS KV v2 and dynamic-lease interoperability harness; separate
-  bounded public HTTPS receipts cover the recorded KV and dynamic profiles.
-- Source-only local MCP stdio server, external policy and approval signers,
-  protected Agent onboarding and operator credential repair helpers.
-- Fixed GitHub Actions online JWKS opt-in, fixed Keycloak token exchange,
-  and GitHub App issue-comment support.
-- Origin-authenticated approval envelopes and an Admin CLI pending/get inbox.
+- Personal/team immutable signing mode; explicit Presence step-up, protected
+  desktop reveal, authenticated daemon peer, and all-state shutdown proof.
+- Provider templates, canonical parameterized targets, complete personal policy
+  drafts and explicit template-default/allow/require-approval selections.
+- Local one-time Presence approval plus existing external Ed25519 approval.
+- Signed Profiles, managed Agent owner lifecycle, MCP discovery, loopback SDK
+  gateway, raw SSE sealing, persistent daily usage and trusted Activity context.
+- Authenticated generation and external high-water reservation, rollback-suspected
+  state, explicit password/recovery confirmation and two-step offline restore.
+- macOS onboarding, opt-in SMAppService, signed pkg/cask generation and Linux
+  user-unit generation. Enterprise execution remains opt-in `lab`.
 
-### Changed
-
-- Development vault format is v14; older state and backups are rejected
-  without migration. Public alpha.2 remains v9.
-- GitHub exchange or post-effect uncertainty returns non-retryable
-  `UPSTREAM_INDETERMINATE`; write failures must not trigger automatic retries.
-- Hardened private profile/handoff files, JWKS admission bounds, MCP input
-  handling, and backup publication.
-
-### Fixed
-
-- Post-effect GitHub, Keycloak and Vault connector audit failures return
-  non-retryable `UPSTREAM_INDETERMINATE`, including successful cleanup (#56).
-- Linux and macOS launchers reject capabilities in child command arguments (#57).
-- Idle status polling leaves execution admission available and does not fault
-  a concurrent clean shutdown. Soak failures report public error codes.
-
-This is an unpublished candidate. Archive scope and remaining release gates:
-[alpha.3 candidate](docs/releases/v2.0.0-alpha.3.md).
+These are source changes, not a complete hardware claim. Publication and download
+status are recorded on the GitHub release and its workflow.
+Final joint checks and every release/device gate remain separate. See the
+[candidate release notes](docs/releases/v3.0.0-alpha.1.md) and
+[feature matrix](docs/product-foundation/feature-truth-matrix.md).
+The v2 entries below are immutable historical descriptions, not current usage.
 
 ## 2.0.0-alpha.2 - 2026-09-08
 

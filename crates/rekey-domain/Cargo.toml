@@ -8,6 +8,9 @@ repository.workspace = true
 description = "Pure domain models and IPC codec for Rekey"
 publish = false
 
+[features]
+lab = []
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -29,7 +29,9 @@ fn action_definition(credential_id: rekey_domain::ids::CredentialId) -> ActionDe
         credential_id,
         origin: HttpsOrigin::parse("https://api.github.com").unwrap(),
         method: FixedMethod::Post,
-        exact_path: ExactPath::parse("/repos/acme/rekey/issues").unwrap(),
+        target: rekey_domain::action::ActionTarget::Fixed {
+            path: ExactPath::parse("/repos/acme/rekey/issues").unwrap(),
+        },
         auth: HeaderCredentialUse::new(
             HeaderName::new("authorization").unwrap(),
             HeaderPrefix::new("Bearer ").unwrap(),
@@ -77,6 +79,8 @@ async fn expired_mutation_command_never_commits_later() {
                 credential_version: None,
                 authorization: None,
                 approval: None,
+                request_context: None,
+                usage: None,
                 event_type: event_type::SESSION_CREATED,
                 outcome: outcome::SUCCESS,
                 reason_code: "expired-test".to_owned(),
@@ -100,6 +104,8 @@ async fn expired_mutation_command_never_commits_later() {
                 credential_version: None,
                 authorization: None,
                 approval: None,
+                request_context: None,
+                usage: None,
                 event_type: event_type::SESSION_REVOKED,
                 outcome: outcome::SUCCESS,
                 reason_code: "wall-expired-test".to_owned(),
@@ -755,17 +761,20 @@ async fn recovery_rotation_is_retryable_when_the_first_response_is_lost() {
         .unwrap();
 
     let error = handle
-        .recovery_rotate_before(SecretInput::from_slice(b"wrong"), None)
+        .recovery_rotate_before(
+            rekey_vault::command::UnlockProof::Password(SecretInput::from_slice(b"wrong")),
+            None,
+        )
         .await
         .unwrap_err();
     assert!(matches!(error, AuthorityError::InvalidUnlockCredential));
 
     let first_recovery = handle
-        .recovery_rotate_before(common::password_input(), None)
+        .recovery_rotate_before(common::password_proof(), None)
         .await
         .unwrap();
     let current_recovery = handle
-        .recovery_rotate_before(common::password_input(), None)
+        .recovery_rotate_before(common::password_proof(), None)
         .await
         .unwrap();
 
@@ -830,7 +839,7 @@ async fn recovery_rotation_is_retryable_when_the_first_response_is_lost() {
 }
 
 #[tokio::test]
-async fn desktop_session_saves_and_reveals_without_password_but_dies_on_lock() {
+async fn desktop_session_saves_but_reveal_requires_each_password_or_recovery_proof() {
     let vault = common::init_test_vault();
     let (handle, join) = common::spawn(&vault.state_dir);
     assert!(handle.desktop_issue().await.is_err());
@@ -856,14 +865,20 @@ async fn desktop_session_saves_and_reveals_without_password_but_dies_on_lock() {
         .unwrap();
     assert_eq!(
         &*handle
-            .desktop_reveal(SecretInput::from_slice(&token), existing.id, None)
+            .desktop_reveal(common::password_proof(), existing.id, None)
             .await
             .unwrap(),
         b"existing-key-canary"
     );
     assert_eq!(
         &*handle
-            .desktop_reveal(SecretInput::from_slice(&token), saved.id, None)
+            .desktop_reveal(
+                UnlockProof::Recovery(SecretInput::from_slice(
+                    vault.outcome.recovery_key_display.as_bytes()
+                )),
+                saved.id,
+                None
+            )
             .await
             .unwrap(),
         b"new-key-canary"
@@ -871,7 +886,7 @@ async fn desktop_session_saves_and_reveals_without_password_but_dies_on_lock() {
     assert!(
         handle
             .desktop_reveal(
-                SecretInput::from_slice(b"agent-or-forged-token"),
+                UnlockProof::Password(SecretInput::from_slice(&token)),
                 saved.id,
                 None
             )
@@ -903,7 +918,7 @@ async fn desktop_session_saves_and_reveals_without_password_but_dies_on_lock() {
     ));
     assert!(matches!(
         handle
-            .desktop_reveal(SecretInput::from_slice(&token), saved.id, expired)
+            .desktop_reveal(common::password_proof(), saved.id, expired)
             .await,
         Err(AuthorityError::AuthorityBusy)
     ));
@@ -920,30 +935,37 @@ async fn desktop_session_saves_and_reveals_without_password_but_dies_on_lock() {
     assert_eq!(denied, 1);
     assert_eq!(failed, 1);
     assert_eq!(revealed, 2, "expired reveal never decrypts or succeeds");
+    let reasons: Vec<String> = db.prepare("SELECT reason_code FROM audit_events WHERE event_type='credential.revealed' ORDER BY sequence").unwrap()
+        .query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+    assert_eq!(reasons, ["step-up-password", "step-up-recovery"]);
     drop(db);
     assert_eq!(handle.credential_list().await.unwrap().len(), 2);
     handle.lock("test").await.unwrap();
     assert!(
         handle
-            .desktop_reveal(SecretInput::from_slice(&token), saved.id, None)
+            .desktop_reveal(common::password_proof(), saved.id, None)
             .await
             .is_err()
     );
     handle.unlock(common::password_proof()).await.unwrap();
     assert!(
         handle
-            .desktop_reveal(SecretInput::from_slice(&token), saved.id, None)
+            .desktop_reveal(
+                UnlockProof::Password(SecretInput::from_slice(&token)),
+                saved.id,
+                None
+            )
             .await
             .is_err()
     );
-    let fresh = handle.desktop_issue().await.unwrap();
+
     handle
         .credential_revoke(saved.id, common::password_proof())
         .await
         .unwrap();
     assert!(
         handle
-            .desktop_reveal(SecretInput::from_slice(&fresh), saved.id, None)
+            .desktop_reveal(common::password_proof(), saved.id, None)
             .await
             .is_err()
     );
@@ -1008,10 +1030,9 @@ async fn remembered_desktop_survives_restart_but_not_manual_lock() {
         expires,
         "restart cannot extend expiry"
     );
-    let token = handle.desktop_issue().await.unwrap();
     assert_eq!(
         &*handle
-            .desktop_reveal(SecretInput::from_slice(&token), saved.id, None)
+            .desktop_reveal(common::password_proof(), saved.id, None)
             .await
             .unwrap(),
         b"restart-canary"
@@ -1122,7 +1143,12 @@ async fn wrapper_changes_revoke_remembered_access_only_after_valid_proof() {
         .await
         .unwrap();
     handle
-        .recovery_rotate_before(SecretInput::from_slice(b"new-password-for-test"), None)
+        .recovery_rotate_before(
+            rekey_vault::command::UnlockProof::Password(SecretInput::from_slice(
+                b"new-password-for-test",
+            )),
+            None,
+        )
         .await
         .unwrap();
     assert!(!path.exists());
@@ -1235,7 +1261,9 @@ async fn explicit_github_plugin_registration_fails_closed_on_unsupported_platfor
         "/repos/acme/rekey/issues",
         "/repos/acme/rekey/issues/1/comments",
     ] {
-        definition.exact_path = ExactPath::parse(path).unwrap();
+        definition.target = rekey_domain::action::ActionTarget::Fixed {
+            path: ExactPath::parse(path).unwrap(),
+        };
         let error = handle
             .action_upsert(None, definition.clone(), common::password_proof())
             .await
@@ -1299,7 +1327,9 @@ async fn native_plugin_rejects_wrong_credential_kind() {
         max_tokens: 128,
     });
     anthropic_plugin.origin = HttpsOrigin::parse("https://api.anthropic.com").unwrap();
-    anthropic_plugin.exact_path = ExactPath::parse("/v1/messages").unwrap();
+    anthropic_plugin.target = rekey_domain::action::ActionTarget::Fixed {
+        path: ExactPath::parse("/v1/messages").unwrap(),
+    };
     anthropic_plugin.auth = HeaderCredentialUse::new(
         HeaderName::new("x-api-key").unwrap(),
         HeaderPrefix::new("").unwrap(),
@@ -1422,6 +1452,8 @@ mod lease_journal_tests {
                 credential_version: None,
                 authorization: None,
                 approval: None,
+                request_context: None,
+                usage: None,
                 event_type: event_type::EXECUTION_STARTED,
                 outcome: outcome::SUCCESS,
                 reason_code: "allowed".into(),
@@ -1876,6 +1908,13 @@ mod lease_journal_tests {
             &restored,
             RestoreProof::Password(common::password_input()),
             &info.sha256_hex,
+            rekey_vault::bootstrap::inspect_restore(
+                &path,
+                &restored,
+                RestoreProof::Password(common::password_input()),
+                &info.sha256_hex,
+            )
+            .unwrap(),
         )
         .unwrap();
         assert_eq!(recovered.snapshot_cut, info.snapshot_cut);
@@ -1937,7 +1976,8 @@ mod lease_journal_tests {
                 &path,
                 &tampered,
                 RestoreProof::Password(common::password_input()),
-                &digest
+                &digest,
+                common::unconfirmed_restore_context()
             ),
             Err(AuthorityError::StorageIntegrityFailed)
         ));
@@ -2393,4 +2433,42 @@ fn keychain_format_twenty_rejects_old_nineteen_state_without_migration() {
             .unwrap(),
         19
     );
+}
+
+#[tokio::test]
+async fn desktop_reveal_audit_failures_never_release_plaintext() {
+    for event in ["credential.reveal_started", "credential.revealed"] {
+        let vault = common::init_test_vault();
+        let (handle, join) = common::spawn(&vault.state_dir);
+        handle.unlock(common::password_proof()).await.unwrap();
+        let saved = handle
+            .credential_add(
+                CredentialLabel::new("reveal-audit-canary").unwrap(),
+                CredentialKind::OpaqueToken,
+                SecretInput::from_slice(b"REVEAL-AUDIT-SECRET-CANARY"),
+                common::password_proof(),
+            )
+            .await
+            .unwrap();
+        let db =
+            rusqlite::Connection::open(rekey_vault::paths::vault_db(&vault.state_dir)).unwrap();
+        db.execute_batch(&format!("CREATE TRIGGER fail_reveal_audit BEFORE INSERT ON audit_events WHEN NEW.event_type='{event}' BEGIN SELECT RAISE(ABORT, 'fixture'); END;")).unwrap();
+        assert!(matches!(
+            handle
+                .desktop_reveal(common::password_proof(), saved.id, None)
+                .await,
+            Err(AuthorityError::AuditCommitFailed)
+        ));
+        assert_eq!(handle.status().await.unwrap().state, "faulted");
+        let completed: i64 = db
+            .query_row(
+                "SELECT count(*) FROM audit_events WHERE event_type='credential.revealed'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(completed, 0);
+        handle.shutdown(None).await.unwrap();
+        join.join().unwrap();
+    }
 }

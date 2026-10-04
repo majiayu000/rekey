@@ -1,5 +1,8 @@
 # P-10: Linux GNU delegated cgroup-v2 plugin containment
 
+> Status: Lab (v3 scope; enterprise reserve)
+> Existing contracts and evidence are retained; this capability is excluded from the default v3 build and release package.
+
 Status: selected implementation contract before source edits; actual kernel acceptance pending. This replaces the Linux AS-only and enumerated descendant cleanup portions of the existing GitHub reference-plugin spec. The registered GNU artifact and existing fixed protocols/effect boundary remain unchanged. macOS remains on its documented weaker backend; this increment does not close its physical-memory/startup gap.
 
 ## Minimal implementation

@@ -1,637 +1,136 @@
-# Rekey v2 威胁模型与“Agent 不得获得密钥”安全合同
-
-状态：基线草案 v2
-
-日期：2026-08-28
-
-范围：资产、攻击者、信任边界、部署等级、安全保证、限制与验证
-相关文档：[功能事实矩阵](./feature-truth-matrix.md) · [P0 实施规格](../superpowers/specs/2026-08-28-credential-authority-v2-foundation.md)
-
-## 1. 核心结论
-
-可以让 Agent 在使用 API、MCP、SSH 或其他受保护资源时完全拿不到真实密钥，但这个保证必须建立在明确的系统边界上。
-
-正确的安全合同是：
-
-> 在强隔离部署中，Agent、Agent harness、Agent 启动的子进程、Agent 可读文件系统以及 Agent 所在网络命名空间，永远不会接收、读取或导出真实凭据。真实凭据只在独立可信的 Rekey 数据面或外部密码学设备中短暂解析，并在授权通过后直接用于一次受约束的上游操作。
-
-这个保证不意味着秘密在整个系统中从未出现：
-
-- 对 Bearer Token、API Key、Basic Auth 等可导出凭据，明文会短暂存在于可信 Broker 内存和 Broker 到上游的 TLS 请求构造过程中。
-- 对 SSH 私钥、HSM 密钥、云签名身份等不可导出凭据，Broker 可以只请求签名或 Token Exchange，连 Broker 也不获得原始私钥。
-- Agent 只持有无秘密价值、短期、可撤销、受会话约束的 Capability。
-
-如果 Broker 与 Agent 运行在同一 OS 用户下，Agent 拥有完整 Shell，且没有文件、进程和网络隔离，则只能降低误泄漏，不能声称恶意 Agent 永远拿不到秘密。
-
-## 2. “Agent”安全边界的定义
-
-本威胁模型中的 Agent 不是只指 LLM。
-
-不可信 Agent 边界包括：
-
-- 模型及其上下文。
-- Agent harness 和插件。
-- MCP Client。
-- Agent 生成或修改的代码。
-- Agent 启动的 shell、curl、git、SDK、编译器、测试和任意子进程。
-- Agent 可访问的环境变量、argv、文件、IPC、日志和进程信息。
-- Agent 容器或沙箱中的 root。
-- Agent 能访问的网络。
-- 来自网页、Issue、README、工具输出和依赖的恶意指令。
-
-只要其中任意组件能读取真实凭据，就不满足强隔离保证。
-
-## 3. 保护资产
-
-| 资产 | 安全目标 |
-| --- | --- |
-| 长期 API Key、PAT、密码、Refresh Token | 不进入 Agent 边界；可轮换；不可被重定向 |
-| Vault Root Key、包装密钥和恢复材料 | 不持久化明文；不进入 Agent、CLI 参数、环境变量或普通日志 |
-| Credential ciphertext、版本和元数据 | 防未认证篡改和跨记录替换；不保证旧的已认证状态 freshness；可备份和恢复 |
-| 私钥和签名密钥 | 尽量不可导出；签名需策略和批准 |
-| 外部 Vault bootstrap credential | 仅存在于 Broker 信任边界 |
-| 用户委托 | 不能被扩大、转移、重放或跨任务使用 |
-| Agent/工作负载身份 | 不能由 Agent 自报或伪造 |
-| 策略 | 不可被 Agent 修改；版本可验证 |
-| 审批 | 与精确动作和参数绑定；不可重放 |
-| 审计证据 | 完整、按租户隔离、可验证、默认无正文秘密 |
-| CA、mTLS、签名配置 | 不可被 Agent 读取或替换 |
-| 多租户边界 | 一个租户不能发现或使用另一租户的身份、策略和凭据 |
-
-## 4. 威胁参与者
-
-1. 被 Prompt Injection 劫持的 Agent。
-2. 主动恶意的 Agent harness、MCP Server 或插件。
-3. Agent 生成并执行的恶意代码。
-4. 同一主机上的低权限恶意进程。
-5. 拥有 Agent 容器 root、但没有宿主 root 的攻击者。
-6. 恶意或被攻陷的上游 API。
-7. 被攻陷的 Rekey 数据面、控制面或 Connector。
-8. 恶意租户管理员或被盗企业账户。
-9. 网络攻击者、DNS 攻击者和供应链攻击者。
-
-宿主内核、Hypervisor、HSM 和外部 Vault 的完全攻陷属于残余风险，不在“Agent 无法获得密钥”的直接保证内，但必须进入企业风险说明和纵深防御。
-
-## 5. 信任组件
-
-### 强隔离模式中的可信组件
-
-- Rekey Gateway/Broker 数据面。
-- Rekey 内置 Credential Authority 及其第一方加密存储实现。
-- 数据面加载的已验证策略快照。
-- 身份证明适配器。
-- 可选外部 Vault、KMS、HSM、TPM、Secure Enclave 或密码管理器。
-- 宿主内核、Hypervisor 或容器隔离边界。
-- 数据面到上游的 TLS 实现。
-- 审批签发组件。
-
-### 不可信组件
-
-- Agent 及其所有后代进程。
-- Agent 提供的任何身份 Header。
-- Agent 提供的目标 URL、Host、路径、Header 和请求体。
-- 工具描述、MCP metadata、OpenAPI 文档和网页内容。
-- 上游响应正文和 Header。
-- 可选 LLM 风险分类器的 allow 结果。
-
-## 6. 安全保证等级
-
-| 等级 | 名称 | 能保证什么 | 不能保证什么 |
-| --- | --- | --- | --- |
-| G0 | 存储卫生 | 密钥不写入代码仓库和普通配置文件 | Agent 运行时仍可能拿到密钥 |
-| G1 | 上下文隔离 | 密钥不进入 Prompt；配置使用引用 | Agent 进程、MCP Server 或子进程可能从 env/文件读取 |
-| G2 | Broker 隔离 | Agent 进程和网络都无法读取、重定向或绕过 Broker 获得密钥 | 不抵御宿主内核、Broker、Vault 或上游完全攻陷 |
-| G3 | 不可导出操作 | 私钥或根身份连 Broker 也不能导出，只能签名、兑换或执行 | 只适用于支持 HSM、SSH Agent、STS、OAuth 等协议的资源 |
-
-公开宣传“Agent 拿不到真实密钥”至少需要 G2。对于 SSH、云身份和签名场景，应优先达到 G3。
-
-## 7. 推荐的无密钥执行路径
-
-### 7.1 MCP 或类型化 Action，最强首选
-
-~~~text
-Agent
-  │  action + parameters + rkcap session token
-  ▼
-Rekey Gateway
-  │  验证 user + agent + workload + task
-  │  规范化参数
-  │  固定 policy version
-  │  allow / deny / require approval
-  │  allow 后才解析 credential reference
-  ▼
-Credential Provider / HSM / OAuth
-  │
-  ▼
-Connector 构造固定上游请求
-  │
-  ▼
-上游服务
-  │
-  ▼
-响应 schema、Header 和 secret sealing
-  │
-  ▼
-Agent 仅看到允许返回的数据
-~~~
-
-Agent 不能控制 Authorization Header、真实目标 origin、重定向行为或凭据解析。
-
-### 7.2 显式 Reverse Proxy，兼容任意 HTTP
-
-Agent 请求 Rekey 提供的固定 Connector endpoint。Gateway 根据 Connector 配置决定真实 origin，移除客户端 Authorization、Cookie 和敏感 Header，再按策略构造上游请求。
-
-此模式必须：
-
-- 禁止 Agent 指定任意上游 URL。
-- 禁止自动跟随 redirect。
-- Host、SNI、DNS 解析结果和连接 IP 一致验证。
-- 私网、link-local、metadata endpoint 默认拒绝。
-- 解析与连接之间防止 DNS rebinding。
-- 请求 Header 使用替换语义，不允许重复 credential header。
-- 对 method/path/query/body/content-type/size 做约束。
-
-### 7.3 非 v2 P0：未来若评估网络拦截模式
-
-v2 P0 删除透明 MITM、系统 CA 和任意 TCP passthrough，不提供旧代理兼容路径。未来只有出现不能接入显式 Action/Connector、且有真实设计伙伴证据的场景时，才重新评估网络拦截模式。它只有在 Agent 所在容器、VM 或网络命名空间无法绕过 egress gateway 时才可能达到 G2。
-
-要求：
-
-- 每个 Agent 会话独立 CA 或受控短期 CA。
-- CA 只注入该沙箱，不写入系统全局信任库。
-- Agent 无法读取 CA 私钥。
-- 宿主防火墙或 Hypervisor 强制所有目标流量经过数据面。
-- 未匹配目标默认拒绝，而不是透明 passthrough。
-- 证书、SNI、Host 和策略目标必须一致。
-
-本地同用户、系统 CA、自由 egress 的 MITM 最多只能标记为 G1，不能作为 v2 安全承诺或默认发布路径。
-
-## 8. 凭据生命周期
-
-### 8.1 内置 Credential Authority 的密钥层级
-
-内置实现采用信封加密，不允许由用户密码直接长期加密所有 Credential：
-
-~~~text
-password / recovery key / OS keystore / enterprise KMS
-  -> Key Encryption Key (KEK)
-  -> wraps Vault Root Key (VRK)
-  -> wraps per-credential Data Encryption Key (DEK)
-  -> encrypts one immutable CredentialVersion
-~~~
-
-首个实现继续使用经过维护的 Argon2id 和 AES-256-GCM 库，不自行设计密码学算法。每个 CredentialVersion 使用独立随机 nonce，并以 vault、tenant、credential、version、type、provider 和约束元数据作为 AAD，防止密文跨记录替换。
-
-Foundation 在初始化时创建 password 和 recovery 两个 VRK wrapper。P-01 在不轮换 VRK、DEK 或 Credential ciphertext 的前提下，原子替换其中一个 wrapper：密码可由当前密码或 recovery step-up 更换，recovery key 只能由当前密码轮换。旧 wrapper 的密钥材料在同一事务中 tombstone；历史 backup 仍受其快照中的历史 factor 保护，不宣称对 SSD、快照或旧 backup 做追溯销毁。轮换单个凭据生成新版本和新 DEK；旧版本按保留策略撤销或密码学删除，不允许原地覆盖唯一可恢复版本。
-
-### 8.2 解锁与运行时生命周期
-
-1. `rekey init` 生成随机 VRK、恢复材料和版本化加密格式。
-2. 密码只用于派生 KEK；不得通过 argv、环境变量、普通文件或日志传递给守护进程。
-3. Broker 通过受保护的本地 IPC、TTY 或平台安全 UI 完成解锁；错误密码必须在解锁阶段明确失败。
-4. Broker 是解密材料和 Credential mutation 的唯一状态所有者。CLI、Dashboard、Agent、MCP Server 和 Connector 不直接打开 Vault 数据库。
-5. 自动锁定、显式锁定、退出和崩溃恢复必须清理 VRK、DEK、SecretBuffer 和未使用 Lease。
-6. OS Keychain、TPM、Secure Enclave、KMS 和 HSM 是可选 KEK wrapper 或不可导出操作提供者，不是 Community 运行的前置依赖。
-
-### 8.3 每次 Action 的使用生命周期
-
-1. 策略只引用 CredentialRef，不包含真实值。
-2. 收到请求后先完成身份、Action 规范化、策略和批准验证。
-3. 只有最终 allow 后才请求 Credential Authority 生成 SecretLease、签名或短期 Token。
-4. 凭据在最小作用域内进入 SecretBuffer，不实现 Debug、Clone、Serialize 或日志格式化。
-5. 请求构造结束后立即 zeroize；连接池和重试不得隐式复制秘密。
-6. 审计只记录 CredentialRef、版本和用途，不记录值。
-7. 会话结束后撤销 Capability；动态凭据按用途立即失效或等待短 TTL。
-8. 长期凭据轮换不要求重启 Agent。
-
-### 8.4 禁止的接口
-
-Agent 数据面和公开 Runtime 接口永久禁止：
-
-- `get_secret`、`read_secret`、`export_secret` 或等价原始值返回接口。
-- 接收 `credential_ref + arbitrary_url` 的通用请求接口。
-- 将 Secret 注入 Agent 的 env、argv、临时文件、配置文件或 stdin。
-- 让 Agent 获得 Vault 数据库路径、VRK、KEK、外部 Vault Token 或管理 IPC。
-
-管理面可以支持人工确认后的加密备份、恢复和未来格式升级，但不得复用 Agent 数据面通道，也不能把明文导出作为正常工作流。v2 P0 不读取、迁移或覆盖 v1 Vault。
-
-## 9. Capability 与批准模型
-
-Agent 获得的 Capability 不是真实上游凭据。当前实现使用：
-
-- 不透明随机 Token。
-- 服务器端会话记录。
-- 短 TTL。
-- 明确 tenant、principal、session 和固定 Action version。
-- 可立即撤销。
-- 只在本进程的 Agent UDS 数据面有效，锁定和重启即失效。
-- 不作为 Vault API Token。
-
-P-03 的 policy bundle 由外部 Ed25519 policy signer 生成。每个 vault 只安装
-一个不可替换的 public trust root；Authority 以 VRK-authenticated lifecycle seal
-持久化 trust、bundle 和最高版本，Broker 每次解锁重新验证签名后才加载。Rekey
-不生成或保存 policy/approver 私钥，也不远程获取 policy。
-
-P-03 批准签名绑定：
-
-~~~text
-tenant
-principal tuple
-session and approval request
-fixed Action ID and version
-resource
-parameter schema
-canonical parameter hash
-determining rule and policy version/digest
-not-before and expiry
-max uses
-approver
-~~~
-
-一次性、时间窗口和一至两人 quorum 都在 SessionRegistry 内计数。参数、策略、
-Action、身份、session 或时间边界变化后必须重新授权；grant 不会在 lock、session
-撤销或重启后恢复。`approval.accepted` 与 `execution.started` 在同一 Authority
-transaction 中提交，失败时不发生远程 effect。没有托管远程 approval service、通知、
-dashboard、目录或离线 bypass。`PrepareApproval` 返回 VRK 派生 origin 密钥签名的
-challenge 信封，供操作者把 challenge 搬到自己控制的机器上签发；这不是公网审批
-控制面。Admin `approval pending` / `approval get` 只是本机 pull 未占用的内存
-challenge，不是托管通知或 GUI。
-
-## 10. 响应方向保护
-
-仅保护出站注入不足以保证秘密不回到 Agent。恶意或错误上游可能反射 Authorization、Cookie、Token 或签名材料。
-
-数据面必须：
-
-- 删除 hop-by-hop Header。
-- 默认删除 Set-Cookie、WWW-Authenticate 中敏感值和上游调试认证 Header。
-- 在流式响应中跨 chunk 检测本次注入秘密的精确字节和常见编码变体。
-- 命中后中止或结构化脱敏，产生高优先级安全事件。
-- 对类型化 Connector 使用响应 schema 和字段 allowlist。
-- 限制响应体大小；超限明确报错，不能截断后返回 200。
-- 禁止把完整响应写入审计。
-
-当前 Secret Sealing 检测 raw、base64、base64url、percent-encoded 和跨 chunk
-反射。它不保证识别任意压缩、加密、哈希派生、拆分或业务自定义编码，因此类型化
-Action 和最小响应 schema 比通用透明代理更强。任何新增 canonicalization 规则都必须
-配套攻击测试。
-
-## 11. 主要攻击与控制
-
-| 攻击 | 必需控制 | 计划验证 |
-| --- | --- | --- |
-| Agent 读取 env/argv | Agent 环境只含占位符和 Capability；Vault Token 只在 Broker | agent_env_contains_no_secret |
-| 主密码经 daemon 环境泄漏 | 受保护 IPC/TTY 解锁；禁止 `REKEY_PASSWORD` 传递 | daemon_environment_contains_no_password |
-| Agent 读取 Broker 进程内存 | 独立 OS 用户/VM；禁止 ptrace；不同 PID namespace | agent_cannot_ptrace_broker |
-| Agent 读取 Vault/SQLite/CA | 文件所有权和 namespace 隔离；Agent 无挂载 | agent_cannot_read_broker_state |
-| 密文跨 Credential/版本替换 | AEAD AAD 绑定完整记录身份和版本 | ciphertext_record_swap_rejected |
-| Vault 未认证篡改/跨记录复制 | Credential lifecycle seal 与 AAD identity binding | credential_state_tamper_rejected |
-| 旧的已认证 Credential record/subgraph replay | G1 不防 freshness replay；G2 阻止 Agent 访问状态，企业版需数据库外单调锚点或远程透明日志 | G1 明示限制；企业 gate 待设计 |
-| 重启绕过密码尝试限速 | 当前 backoff 为进程内状态，重启后重置；G1 Alpha 明示接受，不把重启视为认证防线 | lifecycle_contract + 用户文档限制 |
-| 未授权管理 IPC | 独立 socket/pipe、peer identity、权限和 capability | agent_cannot_call_admin_api |
-| 备份或恢复泄密 | 只输出版本化密文；恢复先验证完整性和所有权 | backup_restore_no_plaintext |
-| 修改 host/path/policy 导流 | 策略只读签名快照；管理面独立；目标固定 | tampered_policy_rejected |
-| 任意 URL confused deputy | Connector 固定 origin；无通用 credential+URL API | arbitrary_origin_denied |
-| DNS rebinding/SSRF | 解析固定、IP 验证、私网策略、redirect 禁止 | dns_rebinding_denied |
-| 重复 Authorization Header | 先移除全部敏感 Header，再唯一设置 | duplicate_auth_header_replaced |
-| 上游重定向到攻击域 | 不自动跟随；每一跳重新授权 | credential_redirect_denied |
-| 上游反射秘密 | 流式 secret sealing 和响应 schema | reflected_secret_blocked |
-| Agent 绕过代理直连 | 宿主/Hypervisor egress deny-by-default；Linux `agent-run` netns launcher | `scripts/p1-linux-g2.sh`; `scripts/p9-linux-agent-run.sh` (`direct_egress_denied`) |
-| 调用 Vault API | Vault endpoint 不可路由；Broker 身份不可读 | vault_unreachable_from_agent |
-| Capability 重放 | audience/channel/task/TTL/use-count 绑定 | capability_replay_denied |
-| 伪造或错配 workload JWT | P-04 signed policy 固定 issuer、subject/profile、audience、token age、kid/alg 和 Ed25519/RS256 公钥；验证失败统一拒绝 | workload_identity_invalid |
-| workload JWT 重放 | policy digest + issuer + subject + jti 的持久 replay digest 与 session.created audit 原子提交 | workload_token_replay_denied |
-| 跨 Agent 使用 | workload identity 映射为固定 policy principal，session 只允许 policy 已授权 Action | cross_agent_token_denied |
-| 审批后改参数 | canonical parameter hash | approval_parameter_tamper_denied |
-| 策略服务离线 | 有效快照内按策略运行；过期后拒绝 | expired_policy_fails_closed |
-| 审计失败后继续高危写入 | 高风险动作将关键审计写入视为提交条件 | critical_audit_failure_denies |
-| 多租户混淆 | tenant 进入每个主键、缓存键和授权查询 | cross_tenant_isolation_suite |
-| 日志泄漏 | Secret 类型不可格式化；结构化日志字段 allowlist | log_canary_absent |
-| Agent 容器 root | Broker 在容器外；宿主强制网络 | container_root_cannot_escape |
-| 控制面被攻陷 | 控制面无真实秘密；策略签名、数据面限制 | forged_control_policy_rejected |
-
-## 12. 1Password 和外部 Vault 的参考价值与边界
-
-### 12.1 应借鉴的模式
-
-1Password SSH Agent 的核心模式非常适合 Rekey：客户端只能请求签名，私钥不会离开 1Password 应用，且使用需要授权。这是 G3 的典型实现。
-
-1Password Agentic Autofill 也值得参考：用户批准后，凭据经端到端加密通道送到可信浏览器扩展并直接填入目标页面；Agent 不直接处理秘密。
-
-可以形成两类可选 Rekey Adapter：
-
-- Secret Resolver Adapter：Broker 从 1Password Connect/SDK 解析 API Key。
-- Operation Provider Adapter：像 SSH Agent 一样只执行签名、登录或授权动作，不返回秘密。
-
-### 12.2 不满足 G2 的用法
-
-- 在 Agent 进程中调用 op read。
-- 用 op run 把秘密注入 Agent 或 Agent 可控制的 MCP Server 环境。
-- 把 OP_SERVICE_ACCOUNT_TOKEN 放入 Agent 环境。
-- 让 Agent 直接访问 1Password Connect 或 SDK。
-- 把任何外部 Vault 变成 Rekey Community、内置 Store 或 G2 安全路径的强制依赖。
-
-1Password 官方文档确认 op run 会把秘密提供给子进程环境；其 SDK 教程也明确警告直接向 AI 模型暴露原始凭据有显著风险。
-
-来源：
-
-- [1Password SSH Agent](https://www.1password.dev/ssh/agent)
-- [1Password Agentic Autofill](https://www.1password.dev/agentic-autofill)
-- [1Password Connect](https://www.1password.dev/connect)
-- [1Password CLI Secret Loading](https://developer.1password.com/docs/cli/secrets-scripts)
-- [1Password AI Agent SDK Tutorial](https://www.1password.dev/sdks/ai-agent)
-
-## 13. 错误策略
-
-| 错误 | 行为 |
-| --- | --- |
-| 身份缺失或验证失败 | 拒绝，401/403 |
-| 策略缺失、无匹配或 evaluator error | 拒绝，记录决策原因 |
-| 策略快照过期或签名失败 | 拒绝 |
-| 凭据无法解析 | 拒绝，502/503；不得无凭据重试 |
-| Vault 未解锁、完整性失败或版本不兼容 | 拒绝；不得静默创建新 Vault 或跳过损坏记录 |
-| 密钥包装、备份恢复或格式升级失败 | 保留原版本并拒绝提交；不得部分成功 |
-| 审批服务不可用 | 需要批准的动作拒绝 |
-| 审计普通指标失败 | 可按策略继续低风险读；显式 diagnostic |
-| 审计提交失败且动作是高风险写 | 拒绝或使用事务性 outbox 后执行 |
-| 响应超过限制 | 明确 502/413；不得成功截断 |
-| Secret Sealing 命中 | 中止/脱敏，记录安全事件 |
-| Connector 不支持某认证类型 | 显式 unsupported，不回退到裸请求 |
-
-## 14. 残余风险和不可能保证
-
-以下情况不能承诺 Agent 永远拿不到秘密：
-
-- Agent 拥有宿主 root、内核或 Hypervisor 控制权。
-- Agent 与 Broker 同用户运行且能 ptrace、读文件或修改网络。
-- Agent 可以绕过 Gateway 直接访问 Vault 或上游。
-- Broker、Vault、HSM、密码管理器或上游服务被完全攻陷。
-- 用户主动要求把秘密返回 Agent。
-- 上游通过任意变换、侧信道或业务数据编码秘密，而 Connector 没有响应 schema。
-- 第三方 CLI 协议只能通过环境变量接收秘密，且该 CLI 属于 Agent 可控边界。
-
-产品必须展示当前部署等级和未满足条件，不能把 G1 标为 G2。
-
-## 15. 验证矩阵
-
-以下为 v2 实现后的强制验证名称。P0 行与 [P0 实施规格](../superpowers/specs/2026-08-28-credential-authority-v2-foundation.md)的验证命令一致；P1 及之后行的 crate 命名以各自未来实施 spec 为准。
-
-| 阶段 | 层级 | 测试 | 通过条件 |
-| --- | --- | --- | --- |
-| P0 | 内置 Credential Authority | cargo test -p rekey-vault --test authority_contract | envelope、AAD、轮换、锁定、恢复和零化合同通过 |
-| P0 | Clean bootstrap | cargo test -p rekey-vault --test bootstrap_contract | 全新 v2 初始化成功；非空目录和 v1 布局明确拒绝且不修改原始数据 |
-| P0 | Broker IPC | cargo test --test broker_ipc | Agent 不能调用管理 API、读取或导出 Secret |
-| P0 | 数据面对抗 | cargo test -p rekey-broker --test adversarial_http | 表中 P0 范围攻击用例拒绝或安全执行 |
-| P0 | 反射秘密 | cargo test -p rekey-broker --test reflected_secret | 缓冲响应中的注入秘密及编码变体被阻断 |
-| P0 | 日志 | cargo test --test secret_canary | 所有日志、错误和审计中不存在 canary |
-| P0 | 故障注入 | cargo test -p rekey-vault --test fault_injection | storage/audit/crypto 故障按合同 fail closed |
-| P1 | 策略引擎 | cargo test -p rekey-policy | default-deny、forbid、schema、参数哈希和错误矩阵全通过 |
-| P-03 | 签名策略与审批 | `scripts/p3-approval-acceptance.sh` | trust 安装、连续版本、重启 reload、单人/双人 grant、重放/篡改/过期拒绝和 audit list/export 全通过 |
-| P1 | Linux 隔离 | cargo test -p rekey-e2e --test linux_g2 | Agent root 仍不能读 Broker/Vault 或直连 |
-| P1 | 完整缓冲的跨 chunk 秘密反射检查 | `scripts/p1-streaming-sealing.sh` | HTTP/TLS 分块中的秘密反射拒绝；失败只交付一个空 ERROR，不是 NET-07 Agent 可见实时流 |
-| OS-05 | macOS 实验 Seatbelt 启动器 | `cargo test -p rekey-broker --test sandbox_macos`; `cargo test -p rekey-broker sandbox:: --lib` | 固定 `macos-seatbelt-v1`；当前目录只读、private scratch 可写、精确 canonical Agent UDS；真实 Broker + fake upstream 授权调用成功；文件/网络/FD/子孙攻击 fixtures 拒绝；仅本次 OS build；不升级 G2。task_for_pid 控制组也拒绝，不能归功于本沙箱；父死不保证全后代终止 |
-| P-05 | Connector 契约 | `scripts/p5-connector-sdk.sh` | 静态 registry、effect/lifecycle、MCP/OAuth projection 和 reserved GitHub no-fallback 一致 |
-| P-07A | Vault KV v2 固定版本源 | `cargo test -p rekey-broker --test vault_source_contract`; `scripts/p7-vault-kv-source.sh` | 精确版本读取、源与结果 sealing、drain 准入、轮换、重启及备份恢复通过；不外推为通用 Vault |
-| P-07B | Vault 一次性动态 lease 源 | `cargo test -p rekey-broker --test vault_dynamic_contract`; `scripts/p7-vault-dynamic-source.sh` | 单次获取、5–300 秒边界、固定 Action 注入、exact sync revoke-before-success、失败清理和 lock drain 通过；不承诺续租或 crash-time revoke |
-| P-09 | Linux agent-run netns launcher | `cargo test -p rekey-domain sandbox::`; `cargo test -p rekey-broker sandbox::`; `scripts/p9-linux-agent-run.sh` | 默认 G1 socket 拒绝；Linux 子进程无公网 TCP、看不见 state、不继承 `REKEY_PASSWORD`；disjoint `agent.sock`（含 `/tmp` 下 socket 在 tmpfs overlay 后 bind 回去）上的 authorized execute 成功；macOS 行为由 OS-05 覆盖；不升级通用 G2 |
-| H | 持续 Fuzz | `cargo fuzz run <ipc|action|policy|response_sealing|restore>` | 五个边界无 crash、hang、越界资源使用或解析分歧 |
-| P2 | 多租户 | cargo test -p rekey-control --test tenant_isolation | 跨租户读取、缓存和 token 全拒绝 |
-
-上表里标为 P0 且 crate 已存在的命令（`authority_contract`、`bootstrap_contract`、`broker_ipc`、`adversarial_http`、`reflected_secret`、`secret_canary`、`fault_injection`）已经在本仓库实现，并以 `docs/product-foundation/feature-truth-matrix.md` 为是否“通过”的唯一状态源。P1 typed policy、bounded Linux G2 reference、chunk-boundary sealing 和 native service-manager，P2.1 GitHub App local profile、P-05 静态 Connector contract，以及 H-01 持续 fuzz 已有对应实现和门槛。P-05 是 IO-free SDK、五个内置 descriptor（含 `keycloak-token-exchange@1`）和纯 MCP/OAuth projection；源码 MCP-03 的本地 stdio server 与 OAU-02 固定 Keycloak 交换另有边界验收，但仍不是通用 provider、产品级 MCP server 或 live generic OAuth 互操作证据；macOS G2、企业多租户 control plane 与 HA/DR 仍是计划合同。
-
-## 16. 已锁定与待决事项
-
-### 已锁定
-
-- 强安全承诺要求 G2。
-- Agent 边界包含所有子进程和工具。
-- Agent 不获得 Vault 访问能力。
-- 内置 Credential Authority 是第一方默认实现，外部 Vault 不构成运行前置条件。
-- Broker 是解密凭据和 Credential mutation 的唯一状态所有者。
-- Agent/Runtime 公共 API 永远不提供 Secret 读取或导出。
-- 内置存储使用版本化信封加密；密码、恢复密钥和平台/KMS 只包装 VRK。
-- 凭据在授权完成后才解析。
-- 强模式 egress 默认拒绝。
-- 类型化 Action 优先于透明 MITM。
-- 响应方向必须防止凭据反射。
-
-### 当前范围已锁定
-
-- Linux container/namespace recipe 是首个有界 G2 reference；默认部署仍为 G1。
-- macOS 当前只承诺 G1，不提供通用强隔离保证。
-- Capability 是双 UDS 上的内存短期 bearer token，不持久化、不复制，重启即失效。
-- P-03 policy trust 和 signed bundle 持久化并在 unlock 后重新验证；approval
-  challenge、grant 使用计数和 capability session 仍只存在内存，lock/restart 清空。
-  Rekey 只是签名验证与 enforcement point，不提供私钥托管或远程审批控制面。
-- P-04 原始 workload identity 接受 signed policy 内静态 Ed25519/RS256 公钥和四种
-  closed JWT profile。源码 WID-09 另加显式签名选择的固定 GitHub HTTPS JWKS，每次
-  mint 重新获取，不缓存或退回旧 key；远端 key 不修改 policy digest 或 replay 范围。
-  不做 discovery/introspection，也不调用 SPIRE、Kubernetes 或任意 JWT 给出的 URL。
-  JWT replay digest 持久化，只有 new-version policy activation
-  撤销 workload-minted session，exact same-bundle retry 保留现有 session；默认拓扑
-  和已发布 Alpha 范围不变。
-- P-05 `rekey-connector` 只是编译期静态 contract registry。它描述既有 opaque
-  header inject、closed GitHub App、closed Vault KV v2 source 和 one-shot Vault dynamic source 的 effect/lifecycle，由 Broker 继续持有 Secret、
-  IO、deadline、audit、sealing 和 revoke。MCP/OAuth adapter 只做无秘密投影；源码
-  MCP-03 的独立 stdio server 仅复用该投影与 Agent IPC，读取 operator 限定的 manifest
-  和受保护 capability 文件，不访问 Vault 或 Admin。Codex 工具发现与直接 MCP 调用
-  分别验收；不由此推导 live generic OAuth、dynamic plugin/registry 或新 Agent operation。
-- 源码 OAU-02 是固定 Keycloak Standard V2 交换、单一 audience/GET 目标和已签发
-  token 的直接撤销。源凭证与标准 JSON 转义表示参与响应 sealing；成功结果要求撤销
-  与审计先完成。Agent 不能取得 token，也不能选 source/target；没有 refresh、后台续期
-  或进程崩溃后的撤销保证。provider introspection inactive 不代表只做离线 JWT 验证的
-  resource 会立即拒绝。真实 Keycloak + Broker 的本地 TLS fixture 不是公网筛选证明。
-  新 kind/AAD code 5 最初使用 schema 10；独立文本流曾使用 schema 11，两操作 Action 插件登记曾使用 schema 13，封闭原生插件引入 schema 14；租约 journal 引入 schema 15，GCP source 引入 schema 16，AWS source 引入 schema 17，Azure source 引入 schema 18，当前 1Password Connect source 使用 schema 19，含 v18 在内的旧 state/backup 明确拒绝，不做迁移。
-- P-07A 只允许管理员登记一个 public HTTPS Vault KV v2 origin、mount、path、精确
-  非零版本、精确 string key 和 bootstrap token。Broker 在 durable started audit 与
-  remote-effect admission 后执行一次无重试 GET，解析后只把值注入既有 fixed Action；
-  Agent 不能选择 source 或取得 token/value。该边界不包含 private Vault 网络、latest、
-  Vault auth、namespace、cloud KMS/secrets、1Password、HSM 或 keychain。
-  开发源码 EXT-07 的独立审批 signer 可使用一个固定 Vault Transit Ed25519 key/version：可信 policy 与 origin challenge 校验后，review digest 绑定公开 provider 身份；返回的签名须本地验证并通过既有 grant verifier。它不新增 Agent signing API，不把远端 token 或密钥交给 Broker/Agent，也不声明真实 ACL、不可导出或 HSM 已验收。
-- P-07B 只允许管理员登记一个 public HTTPS Vault origin、一个 `creds` mount/role、
-  一个精确 string key 和 bootstrap token。每次执行最多获取一个 5–300 秒 lease，
-  只在既有 fixed Action 中使用选中值，并在成功返回前 exact synchronous revoke。
-  发布版不做 renewal；开发源码 DYN-05 以 v2 profile 加入一次条件续租，renewal_started 审计先于远端请求，实际 TTL 从续期请求开始计算并受原 Action 截止与 500ms 清理预留约束。续期未知或结果审计失败仍 exact revoke，向 Agent 返回非重试未知结果。开发源码 DYN-06 已接 schema 15 加密 journal 和显式 unlock 有界 exact-ID 清理，两项故障路径修复已通过新增回归与独立静态复核，整合运行仍受网络沙箱门禁限制；不保证未知 acquire 窗口、旧备份之后租约、private Vault 网络或 crash-time revoke。
-- Audit 使用本地 SQLite/WAL fail-closed；P-02 只通过 owner-checked Admin socket
-  提供每次最多扫描 1,000 行、游标续查的稳定快照脱敏查询和 mode-0600 JSONL 导出，
-  Agent socket 无此接口。
-  输出省略 Secret、body/header、capability、resource ID 和 parameter hash。显式清理的源码规格见 `2026-09-16-audit-prune.md`：仅完整、无审批关联的过期执行组可删除，并使旧分页快照显式失效；实现证据以 Feature Truth Matrix 为准。
-  开发源码 AUD-07 的独立工具只能读取完整脱敏导出，固定来源/vault/HTTPS 目标，并以持久批次和精确 durable ACK 推进 cursor。工具无解锁权；丢 ACK 至少一次重发、接收端负责去重，永久错误或缺口停止。生产 SIEM 持久存储与认证未现场验证。
-  独立 AUD-08 固定 S3 工具保存发送前意图与具体version绑定，核 SHA256/长度/SSE-S3，再读实际retention/hold并保存回执；未知响应只在同key/同bytes条件下恢复。管理Hold使用不同purpose的私profile，真实IAM角色分离、governance绕过能力、compliance与WORM都需现场验证。工具不删除或修改retention，无Vault解锁权，也不证明外部回执不可伪造或宿主回滚不可行。
-  独立 APR-08 HTTPS 文件中继每请求固定IdP introspection与显式subject运输权限，来源信封仍验签、人工signer仍核完整请求、Broker仍核grant精确绑定与生命周期。relay持TLS和IdP运输身份，不持审批/origin私钥、Transit token或capability；原body/headers由操作方另选安全通道。中继可保存过时或结构合法的伪grant，不能据receipt认定授权或执行。客户人员登录/停用、双设备隔离、公网部署及人员目录未现场验证。
-- Secret Sealing 命中即中止并返回空 Agent error response，不做脱敏回退。
-- 本地恢复材料使用单一 recovery key。
-- recovery key 可用于解锁、显式 Admin step-up、验证 backup restore，或在 P-01 中为丢失的密码设置替代值；recovery 自身轮换仍必须使用当前密码。
-- idle lock、central stop 和 in-flight drain 行为由 Foundation spec 锁定并已有攻击测试。
-
-### 未来范围待决
-
-- 通用 G2 产品部署最终采用 native namespace、gVisor、Firecracker 或其他隔离边界。
-- macOS 已选择实验 Seatbelt 启动器（OS-05）；未来通用强隔离是否采用 Virtualization.framework 或独立虚拟机仍未决定。
-- 跨主机 Gateway/Agent 是否要求双向 mTLS 或 DPoP。
-- 集群 Capability 的持久化、复制和撤销模型。
-- 企业审计采用事务性 outbox、WORM 或客户 SIEM 的具体合同。
-
-## 17. Readiness
-
-本威胁模型已经锁定内置 Credential Authority 的密钥层级、状态所有权和禁止接口。当前 P0/P1/P2.1/P-03/P-04/P-05 local gates 的实际状态以 Feature Truth Matrix 为准；required systemd gate 和一次真实 `github.com` GitHub App provider 验证已经完成。哪些能力进入哪个公开 archive 以 Matrix 的 `Release` 列为准。默认同用户拓扑仍只有 G1，有界 Linux container/namespace recipe 的 G2 证据不能外推为通用产品保证；签名 policy/approval、静态 workload JWT 验证和 Connector contract 也不建立远程控制面、企业身份、在线 IdP 或通用 provider。源码 MCP-03 / OAU-02 只证明有界本地 stdio 与固定 Keycloak 交换，不能外推为产品级 MCP server 或 live generic OAuth 互操作。在独立 crypto、IPC 边界和 audit/failure-semantics 人工审查完成前，不能对外声称恶意 Agent 在所有部署中永远无法获得或重定向密钥。
-
-## Source-only native Admin UI
-
-The macOS SwiftUI client is part of the trusted G1 Admin surface. It invokes
-its bundled CLI through fixed Process argument arrays and anonymous stdin
-pipes, without a shell or HTTP listener. It does not read the Vault database.
-Passwords and newly entered values exist in UI/child memory; Swift String
-copies do not provide a verifiable zeroization guarantee. A password-authenticated desktop session permits human API-key add/reveal for 7 days without repeated password entry; other sensitive mutations retain per-call step-up. Agent capabilities cannot authorize reveal. Plaintext reveal travels only in the Admin response body after audit commits. Explicit clipboard copies may be captured by clipboard history applications. Capability/recovery
-results appear once in a result sheet and can be explicitly saved to a new
-0600 file. UserDefaults stores only the non-secret state directory. Closing
-the app does not stop the Broker; idle locking remains the Broker's job.
-
-The local ad-hoc-signed app is not notarized or part of the public Alpha
-archives. UI acceptance does not upgrade G1 or count as human security review.
-
-### Remembered desktop unlock
-
-The native macOS app stores an independent random restore key in the local login Keychain, never the master password. The Authority stores an AES-256-GCM wrapped VRK in a 0600 file; authenticated context binds vault identity, format and the original seven-day validity window. Restart resumes a new memory session capped at the original deadline. Explicit/idle lock, wrapper rotation and faults revoke the local ticket; graceful shutdown preserves it. The Keychain and same-user G1 boundary apply; this is not a claim of protection against a compromised login session or copied key material. Backups contain the vault database, not this local desktop ticket.
-
-Runtime crash markers are cleared only after all broker and Authority tasks join successfully. A failed final directory sync revokes the remembered ticket before reporting failure. Remember operations await their definitive worker result; failed resumed-session issuance locks the Authority before returning.
-
-### Source-only key rotation and local observability (2026-09-16)
-
-DEK rotation replaces every stored version's encryption key and ciphertext in
-one audited transaction while retaining the VRK, metadata, values and capability
-bindings. Retired and revoked versions are included. It does not erase old WAL
-pages, revoke copied backups or replace credentials at their providers.
-The source-only locked-state VRK operation also changes the approval origin
-key and revokes remembered desktop access before database replacement. It
-requires both current factors, retains their values and preserves workload
-replay records. A later SQL failure can leave desktop authorization revoked
-while the database retains its complete old generation. Successful shutdown
-joins the worker; an over-budget stop instead exits nonzero, preserves the crash
-marker and leaves the caller with an unknown rotation result. Independent human
-security review and release status remain tracked by the Feature Truth Matrix.
-
-Local metrics expose only fixed numeric counters and gauges through the Admin
-socket, including while locked. They have no credential labels or new listener,
-do not extend idle unlock and reset on process restart. The approval review UI
-shows signed bindings and exact-version metadata, but does not verify signatures
-or hold approval signing keys. These Admin surfaces do not change G1/G2 claims.
-
-
-## 本机参考插件与独立文本流（2026-09-16 源码）
-
-macOS GitHub CreateIssue 在固定打包的 Seatbelt 子进程中仅处理公开 title/body；Broker
-复核完整规范请求并保留凭据、权限、HTTP、撤销与审计责任。无网络、fork 或状态目录权限。
-CPU 限额、deadline、有界 IO 和采样 RSS 看门狗不等于完整硬内存上限；父进程 SIGKILL
-不保证子进程立即退出。artifact 快照摘要证明本次复制一致，发布来源仍依赖可信安装目录。
-该参考实现不关闭 SDK-04 通用注册加载或完整 P-10。
-
-独立 ExecuteTextStream 只服务固定 Anthropic 纯文本 Action，分开检查原始 SSE 与 JSON
-解码后的连续文本，并保持有限编码的跨块匹配上下文。已检查前缀可能在后段秘密反射、
-截断、超时或审计失败前可见且不可收回；只有最终 completed 才是成功，EOF/failed/incomplete
-均不能当作完整结果。共享准入、运行时收尾和绝对 deadline；旧 Execute 的完整缓冲合同保留。
-这不保证识别任意编码或隐蔽信道，也不代表第三方 provider 的实网验收。
-
-
-SDK-04 当前源码按 `2026-09-16-native-action-plugin.md` 将 Admin 批准的 artifact 摘要绑定到精确 Action 版本（`native_plugin`，`github-issues-v1` 或 `anthropic-messages-v1`）；不把登记成功等同于文件可运行。执行时校验已打开文件的字节，显式绑定不支持的平台直接失败。仍不防御恶意同 UID 宿主，RSS 采样不是硬物理内存上限；当前源码格式 15 拒绝旧状态及备份。这不是市场或完整 P-10。
-
-### 2026-09-17 two-operation plugin boundary
-
-`github-issues-v1` selects create_issue/create_issue_comment from the trusted Action. The plugin cannot select routes or effects; the Broker compares the entire canonical operation/body envelope before credential exchange. The plugin increment introduced schema 14; the journal was introduced in format 15; GCP introduced format 16; current format 19 adds AWS and rejects prior formats, including 16. Linux launcher tests must distinguish an actually launched sandbox from namespace setup failure and must not treat the Agent launcher as a plugin sandbox.
-
-当前 macOS 探针进一步表明：最终 SETEXEC 设置 jetsam 后，允许 self-exec 的恶意 artifact 仍可再次 exec 并清空限额；固定可信、禁止全部 exec 的 sidecar 结果不能升级任意登记插件的保障。详细结果见 GitHub 参考插件规格。
-
-2026-09-17 Linux 验收已重现继承 FD 绕过路径隔离：FD 211 可以承载已打开的 state 文件（首轮在此失败，未执行后续 socket 分支）。修复合同为 Linux post-fork/pre-exec 对所有 3+ FD 标记 CLOSE_RANGE_CLOEXEC，调用失败即拒绝，不将挂载遮罩当作 FD 撤权。该修复需要 Linux 5.11+；原失败测试已通过，并验证文件/socket FD211、先保留 FD500 再降低 NOFILE 至128 的场景；最终 LinuxKit 容器内 root 与 UID/GID65534 各5项通过。
-
-
-## Linux 显式插件后端边界（2026-09-17 源码合同）
-
-按参考插件规格新增 GNU x86_64/aarch64 固定最小 rootfs 与 seccomp allowlist。AS64MiB 是每进程虚拟映射硬限额，不是总物理内存。重新 exec 保留过滤器和 AS，但不禁止所有 exec。父死清理仅验收 READY 后路径，bwrap 初始化窗口仍存在；不扩大 G1/G2 声明。
-
-
-DYN-06 development boundary (2026-09-30): Authority commits acquisition intent,
-encrypted exact lease ID, renew/cleanup phases, set manifest and matching audit
-in one transaction per mutation. No dynamic value or provider response enters
-the journal. All unlock/resume/restore paths verify row/set/history bindings;
-the set seal links the latest lease audit so selective replay of old valid rows
-with newer lease audits fails. Whole-database rollback including its audit still
-requires external fencing/freshness evidence. An acquisition crash before its
-exact ID is committed leaves a durable unknown source gate; recovery never
-reconstructs IDs, replays business or substitutes current credentials. Successful
-unlock alone does not prove every external account is gone: unconfirmed/deferred
-and unknown remain visible. The broker's first explicit unlock recovery is
-bounded to eight records/eight seconds and historical cleanup-only profiles;
-repeat unlock while Running performs no live-lease cleanup. Spec and evidence
-are tracked in `2026-09-30-vault-lease-journal.md` and the all-capabilities plan.
-
-Recovery admission consumes typed availability from the same Authority batch
-snapshot at both ends. Locked/Faulted counts remain diagnostic, never recovery
-proof. An absolute provider deadline also encloses delayed transport preparation;
-timeout cancels its future and retains unconfirmed source isolation. Four actual
-Actor/SQLite regressions passed without a listener; full runtime validation is
-blocked by the current sandbox and is not replaced by compilation.
-
-2026-09-30 EXT-04 implementation contract: fixed public Connect item/field source with local import-use deadline and exact current item version, kind9/format19/rotate44 under local verification. It is not historical reads, item-scoped provider permissions, private-network support or proof of cloud synchronization freshness. Source/audit failures deny business; response sealing includes known HTTP edge-OWS forms while retaining raw outbound bytes. The isolated implementation is integrated for review; full workspace and real Connect field acceptance have not passed.
-
-
-2026-10-01 VEX-04 planned latest read accepts source-version drift only through
-an administrator's fixed encrypted profile. It cannot provide prior approval of
-a specific external secret version; exact must serve that requirement. Returned
-actual version/value must freeze for one execution, with audit before target
-effect and unchanged response sealing. Implementation verification is pending.
-
-2026-10-01 VEX04 integrated: explicit latest single-read/frozen actual-version audit and first-poll absolute deadline guard passed 17 root pure/Actor cases; independent P2 closure confirmed five exact source SHA. Strict TLS/UDS remain compiled/listed only, full workspace unpassed; no latest-state or field acceptance claim.
-
-2026-10-01 VEX01 selected minimal implementation contract: explicit per-profile RFC1918/ULA exact address and fixed CA binding, current Authority credential version, source-only routing, historical cleanup. No global private permission or trusted Admin mis-import prevention; code and strict private TLS/runtime acceptance not yet completed. See 2026-10-01-vault-private-source.md.
-
-2026-10-01 H2 local snapshot cut/restore receipt completed: final18 source SHA independently reviewed including checked canonicalUTF8 path; ROOT36 feature cases/51 unique with IPC regressions and4 actual offline CLI/SQLite cases passed. Explicit input digest and pre-restore audit/policy cut are artifact evidence, not latest-state, fencing, HA or RPO/RTO proof. Invalid-name filesystem case/current full workspace remain unpassed.
-
-2026-10-01 EXT06 selected minimal source contract before code: format20/kind10/rotate49 reserved for exact file-Keychain reference and execution-only Authority native preparation after actual started audit. One official SDK UI-Fail constant binding, native no-UI/query/status behavior still field deferred; no syscall cancellation guarantee. Code not implemented yet. See 2026-10-01-macos-keychain-source.md.
-
-2026-10-01 VEX02 selected: one explicit execution-scoped AppRole login using existing KV kind/format20, finite observed service-token TTL, one read and bounded revoke-self. Login may consume SecretID/create remote identity; unknown login and failed cleanup are not retry-safe or success. Cleanup ownership is separate from ordinary HTTP effect. Partial transport bodies/unknown TTL and crash cleanup are not claimed. Implementation/local tests pending; see `2026-10-01-vault-approle-source.md`.
-
-2026-10-01 current format20 local integration: VEX01 final7 SHA and43 focused tests passed; both confirmed private-source P1 findings independently CLOSED. EXT06 final29 SHA independently reviewed,67 unique worker tests and ROOT18 native-focused/40 Domain/230 full Vault/8 admin IPC/7 connector cases passed. Two stale format test fixtures fixed and independently reviewed; old formats remain rejected without migration. Current all-targets check/Clippy/fmt/mechanical/CLI dependency checks passed. Actual Keychain item API calls0; native item/strictTLS/UDS/TTY/full workspace/customer acceptance remains unpassed. Historical earlier format receipts/packages remain immutable.
-
-2026-10-01 AUD06 explicit age convenience is locally implemented: --older-than-days selects the existing cutoff after per-call hiddenTTY/explicitstdin step-up; checked24h arithmetic and epoch refusal, no changed Authority/Store deletion set or new protocol/schema. Two new CLI cases RED→GREEN; actual CLI27 passed/6UnixListener.bind EPERM failed, existing6 real Actor/SQLite prune passed,3 real CLI local age-refusal paths passed. Independent spec-wording P2 CLOSED and source2SHA bound. Unattended automatic retention policy, archive ACK dependency guarantees, physical secure erase and current CLI→UDS remain unaccepted.
-
-2026-10-01 SDK AppRole supplement selected before code: existing Vault KV descriptor declares static/AppRole capability union (exchange/lease/resolve/inject/revoke), ProviderDefined and cleanup-before-success for acquired temporary tokens. Static token path has no acquired-token obligation; other source contracts unchanged. No new kind/connector/schema/lifetime surface; root owns existing SDK source/contract test separately. Registry actual10; stale count9 fixture requires repair. Root local acceptance pending.
-
-2026-10-01 AppRole local implementation accepted at currentformat20: one login/read/revoke, acquired-token cleanup ownership separated from ordinary business effect, typed fatal audit errors preserved. Independent nine-file source/evidence review found no confirmed P0/P1/P2. Root executor188 and SDK19 passed; broader targeted regression266 passed/one Unix socket bind EPERM failed. No full-workspace, provider ACL/TTL/revoke, strictTLS/UDS/TTY/native Keychain, HA or release acceptance is claimed. Evidence: `approle-integrated-final-acceptance.json`; earlier selection/pending records above are historical.
-
-2026-10-01 remaining P10 implementation selected before code: mandatory delegated Linux cgroup-v2 payload, fixed memory.max/swap.max/oom.group, original-deadline guardian arming and cgroup.kill/drain before success. No weaker fallback or new protocol/config/dependency. Kernel charged-memory is not strict RSS or birth-time accounting; Darwin full guarantees and actual Linux kernel gates remain OPEN. See `2026-10-01-linux-plugin-cgroup.md`.
-
-## Selected PKCS#11 approval signer (2026-10-01)
-
-The fixed independent Ed25519 operator signer contract is recorded in `../superpowers/specs/2026-10-01-pkcs11-approval-signer.md`. Implementation, local contract tests, actual token support and physical HSM acceptance are separate gates. Profile identity is reviewed before PIN/device access; native modules retain operator G1 trust. No Broker/Agent private-key operation is added.
-
-## Authorized automatic audit retention (2026-10-01)
-
-The user explicitly authorized a step-up-set/revoked, sealed retention policy. Only the unlocked trusted Worker may automatically prune existing eligible complete execution groups; no stored proof, automatic unlock or Agent deletion operation. The spec `../superpowers/specs/2026-10-01-unlocked-audit-retention.md` freezes format21/Admin50-51 before implementation. Local and field acceptance remain pending; physical erasure, old backup removal and strict real-world maximum retention are not promised.
-
-2026-10-01 selected PKCS#11 signer local closure: exact fixed Ed25519 profile, normal cryptoki0.12.0 registry dependency, 17 focused local contracts, workspace all-targets/Clippy/fmt pass. Independent review closed both original P1 deadline-cleanup and final-cancellation findings, with no confirmed new P1/P2 in the mechanical supplement. At this snapshot, device, nonexportability, driver behavior and operator controlling TTY acceptance were unexecuted; local process/injected cases do not close physical HSM claims. Evidence: `../../../evidence/hsm-selected-local-final.json`.
-
-2026-10-02 dependency follow-up: cryptoki is now pinned to 0.12.1 to close RUSTSEC-2026-0286, without an advisory exception or unrelated dependency updates. Actual SoftHSM/controlling-TTY/Broker acceptance was repeated successfully on the patch. Physical HSM/vendor-driver claims remain open; see [current local evidence](../evidence/local-capabilities-2026-10-02.json).
-
-2026-10-01 authorized automatic retention local closure: format21 sealed policy and Admin50/51 are implemented. Every set/revoke needs step-up; unlocked background maintenance holds the lifecycle owner and preserves the original idle lock. Unknown completion synchronously closes admission and revokes sessions before releasing ownership. Desktop resume verifies the retention seal, and SET uses the original Admin deadline. Independent review closed all original 2P1+1P2 findings; root Broker6/Vault4/Desktop2 targeted sets and CLI5 entry checks passed (sets overlap). Full workspace remains unpassed; physical erasure, backup deletion and maximum real-world retention are not claimed. Evidence: `../../../evidence/retention-exact3-root-local-final.json`.
-
-## 2026-10-02 local Admin issuance and Docker recovery
-
-Local per-call step-up Admin may explicitly issue a new capability for a signed
-policy principal (`session create --principal UUID`). This is trusted identity
-assignment, not personnel authentication. Managed OIDC Admin remains restricted
-to its authenticated principal; workload metadata cannot select a principal.
-Policy replacement still revokes all prior capabilities and pending approvals.
-
-The disposable Docker DR reference trusts one external host daemon. Neither node
-receives its control socket; only a successful daemon enumeration proving the old
-immutable container ID absent admits promotion. Network loss and stopped state
-alone do not suffice. Trusted administrators can recreate containers; host/kernel
-compromise and shared physical failure domains remain outside this guarantee.
-See [the measured reference contract](../superpowers/specs/2026-10-02-docker-dr-reference.md).
-
-2026-10-02 file-Keychain no-interaction correction: the noninteractive Broker
-must disable process-level Keychain interaction before opening/querying the
-explicit file, in addition to the query UI-fail attribute. It does not re-enable
-interaction. Failure to establish that boundary denies through the existing
-CREDENTIAL_UNAVAILABLE contract; no prompt, retry or ambient Keychain fallback
-is introduced. The GUI's remembered-unlock process is separate.
+# Rekey v3 威胁模型与保护边界
+
+路径为历史链接兼容而保留，本文描述 **3.0.0-alpha.1 未发布候选**。
+行为依据是 [v3 SPEC](../superpowers/specs/2026-10-02-rekey-v3-personal-first.md)，
+不是历史v2档案或未来企业方案。证据与未验项见[功能事实矩阵](feature-truth-matrix.md)。
+vault25 / policy6已于2026-10-05冻结，覆盖全部v3预发布与正式版本；此维护约束不提升安全等级或代替设备验收。
+
+Presence 不得签发新的七天授权、修改密码或轮换恢复密钥；签发与改密码只接受密码/恢复密钥，恢复轮换保持仅密码。已解锁 step-up、unlock 与 Locked shutdown 共用失败退避，Presence 成功不重置猜测次数。App 仅在首次成功读取后的固定十秒窗口复用 LAContext，不缓存 K。
+
+## 资产、主体与信任边界
+
+保护对象是provider Key、VRK/DEK、解锁证明、策略签名私钥、审批与预算授权，以及可验证
+的当前状态。可信端为Authority、已验证策略/Action、执行器和管理App；上游、Agent输入、
+MCP客户端和网页均不可信。CLI不直接打开数据库或链接Vault crypto。
+
+| 攻击者 | 本合同边界 |
+|---|---|
+| A1：被prompt注入、只能调用Agent接口 | 所有等级均禁止读取凭据、任意URL与越权执行 |
+| A2：同用户任意代码，无root/物理在场 | L1目标；当前L1-dev不能承诺阻止其直接读进程/文件或窃取bearer |
+| A3：还能诱导用户确认 | 规范请求、可信目标及完整差异减少误批，不能消除社会工程 |
+| A4：root、内核、物理取证、恶意管理员 | 不保护 |
+| A5：上游返回/变换秘密 | 只阻断已实现的有限表示，不保护任意编码、哈希或隐蔽信道 |
+
+## 保护等级
+
+L0是加密保存、Agent访问锁定。L1-dev保证Agent接口不返回Key，适用于当前源码和Linux
+用户安装。L1还依赖签名hardened App/daemon、发送证明前的peer验证、userPresence、
+同用户内存与受保护锚权限。V1/V2、DPK与CAS设备验收未完成，不能宣称L1。
+L2还必须由实际启动的隔离子树及deny-other网络策略证明，不能从Profile字段推断。
+
+UI锁定且无会话显示L0，解锁显示已确认的L1-dev下限，未知/故障不报等级；服务签名
+是独立标签。签名peer正负向软件测试不代替完整A2验收。
+
+## 九项不变量及具体边界
+
+1. **I1：Agent无secret-read。** Agent UDS、MCP和gateway只能使用已授权Action。Admin
+   reveal是另一通道，每次需要新证明；A1 desktop token不能替代。
+2. **I2：先授权与durable started，后credential。** Authority持有解密材料，请求中的
+   PreparedCredential只消费一次，受控内存零化；不能把页锁等同所有临时副本证明。
+3. **I3：敏感管理逐次证明。** 查看明文、扩大范围、策略激活、七天授权、备份/恢复、
+   wrapper/根轮换与shutdown均按其合同验证；shutdown在Locked也需证明。LOCK无需证明。
+   离线restore需源密码/恢复因子；VRK轮换保留两因子要求，不让Presence替代解密材料。
+4. **I4：先验证daemon身份。** 正式macOS CLI/App在发密码或K前查同Team精确rekeyd身份；
+   开发/未签名路径必须提示身份未校验，等级仍只按已确认状态显示，不能声称L1。
+5. **I5：秘密不进argv/env/log/audit/metadata。** 管理证明走隐藏TTY或显式stdin/frame body。
+   `run`子进程环境中的短期capability是明确例外；不是provider Key，权限仍受Profile约束。
+6. **I6：固定上游。** origin/method来自认证Action，参数只能构成已声明路径/查询；拒绝
+   credentials-in-URL、重定向、代理环境与非公网DNS，连接钉在已检查IP。
+   DoH默认关闭。管理员显式设置REKEY_DOH_URL后，系统仅返回198.18.0.0/15虚拟地址时，
+   才向选定HTTPS JSON DoH服务查询A/AAAA；服务及全部答案均须公网并固定连接，TLS正常验证。
+   解析服务获得目标域名，不获得provider Key。未配置或失败均不退回虚拟地址。
+   固定IP仍保留原Host/SNI，但不保证所有TUN的域名分流；DoH不提供代理出口。显式私有来源合同不变。
+7. **I7：未知与审计失败拒绝。** canonical/schema/policy不明不能执行；durable审计失败fault。
+   有副作用后的未知结果不自动重试，不将收到部分输出或部分SSE当成成功。
+8. **I8：认证代数与外锚。** 见下节。检测旧header整库回滚，不等于硬件单调计数器。
+9. **I9：范围内Agent零打扰。** allow调用不会触发系统认证；只有require-approval进入
+   明确审批。确认每次run由签名Profile显式选择；后台轮询/通知不会读取K。
+
+## Presence、Approver与策略
+
+K是七天有效的随机bearer证明，App只在用户明确操作时从userPresence保护的DPK读取。
+Worker保留hash和原双时钟上限；重复resume、错误resume或重启不续期。普通密码unlock
+不会从磁盘自动发布K verifier；手动/idle lock、wrapper变化或故障撤销授权。
+正常停机可以保留wrapped ticket，但不保留进程内授权。泄露K仍可在有效期内重放；
+hash不是不可重放证明，challenge nonce防的是grant挪用/重用。
+
+个人模式使用固定SE P256信任，团队模式使用固定外部Ed25519信任；私钥不进daemon。
+App只签daemon给出的原始RKPOLICY字节并展示完整替换差异；切工作区、关闭表单、取消或
+过期会使上下文失效，迟到认证不激活；正常系统认证造成的暂时失焦保留既定例外。真实SE/Touch ID行为未以软件签名测试替代。
+
+规则中的Approver是唯一来源：LocalPresence一次性一次使用，或Ed25519 keys+threshold。
+外部library保留单/多人及时间窗；窄sign CLI不因此自动扩大。Remote保留lab枚举但拒绝执行。
+本机review绑定完整canonical请求、上下文和期限；每次决定需当前K，默认拒绝，owner
+wait/cancel不执行请求也不消耗最后一次capability。approve后仍需调用者显式重提原请求，
+最终一次消费先于started/凭据使用；未知决定结果取消而不自动补发。
+
+个人规则必填template-default/allow/require-approval，选择本身进入签名snapshot6。
+同一principal+Action不能出现冲突选择；App放宽规则必须经完整差异、新证明及新签名。
+实现/API已冻结，最新全量合流结果仍待完成；没有新增自动许可或第二规则引擎。
+
+## 代数、恢复与储存攻击
+
+Header的非零u64大端代数由VRK派生独立HMAC密钥认证，绑定vault ID与格式。
+业务真实变更每事务+1；无变化/失败+0，查询、普通审计、Agent执行不加代数。
+实际DB事务COMMIT前，先推进受保护high-water，再原子替换/fsync文件锚。锚已保留后
+提交失败或超时不能回退；fault并保持原错误，重启可能出现安全侧疑似回滚。
+
+普通unlock/resume先验证候选root、header及必需状态，成功审计后才发布。
+旧snapshot或历史缺失进入无VRK的rollback-suspected，lock/重启不是自动同意。
+确认必须重新认证源密码或恢复因子，比较明确展示的vault/source generation/high-water，
+完整校验内容后重新定代到最大已知值+1，并保持Locked。离线restore同样先inspect再确认。
+错误/取消证明不写DB或锚；context变化必须重读并由用户重新判断，不自动重试。
+
+文件模式是L1-dev弱检测：同用户可回滚文件。L1还需真实DPK读改删/重建与跨目录CAS
+验收；flock不单独提供此保证。不防root、整钥匙串回滚，也不单靠header MAC检测保留
+新header而替换旧合法行。旧备份依赖其历史因子；确认恢复不宣称使泄露的旧因子失效。
+Agent执行不推进代数：最后一次管理变更后的合法旧快照可以重置随后累积的用量，
+因此预算不防拥有本机状态写权限的攻击者回滚，也不承诺硬费用封顶。
+Incomplete marker必须保留；不能通过删marker、DB或anchor来绕过确认。没有迁移/回填。
+
+## 共享执行、预算与返回方向
+
+Profile的稳定principal、instance与精确能力/Action版本来源于已验证snapshot；仍执行
+普通策略。共同canonicalization在审批之前校验model并补入/收紧实际output bound，
+同一effective body进入hash、review与HTTP。原始JSON数字如发生parse/JCS精度丢失被拒绝。
+
+单一认证request ledger按principal+instance+UTCday记录一次请求与一次终态usage；
+capability续签和daemon重启不重置。未知usage/中断按saved max结算；非生成能力output=0。
+并发已在途请求可造成有界超额，不是硬费用封顶或精确账单系统。
+每次准入和结算均认证完整历史账本，成本随历史增长；alpha没有日汇总或历史压缩。
+这属于一周自用需观察的性能限制，不通过改变已冻结的格式来补一套汇总状态。
+
+Gateway只绑定127.0.0.1动态端口；run读取经验证的Admin响应，不信port缓存文件决定
+capability目的地。Host/Origin/auth/path/header/body都受限，审批控制头不会进上游。
+策略激活已提交但bind失败时保留激活事实，endpoint不可用，SDK launch失败，不重签。
+
+SSE原始tools/thinking字节保持，raw bytes和decoded JSON字符串均检查；初始值、delta、
+done快照与SDK有序text投影共用有界遮蔽上下文，包括Anthropic交错文本块的block index顺序。未知跨delta语义或超限拒绝。
+首字节前的安全拒绝保留RESPONSE_SECURITY_VIOLATION与不可重试属性；已发SSE后失败中止正文。
+完成帧必须等EOF与durable结算后释放；取消/断开仍由Supervisor终态记账。
+支持的raw/base64/base64url/hex/percent/JSON表示有限，嵌入base64完整对齐保证要求
+秘密至少16字节；短Key给固定警告。无法保证任意变换/压缩/加密/侧信道均被识别。
+
+## 平台、发布与残余风险
+
+Linux Profile netns目前不可用：共享可写工作目录/Unix socket边界及SDK桥未完成。
+旧agent-run与Docker参考只证明指定拓扑，不能升格为当前Profile L2。
+Codex Seatbelt受managed-preferences限制；不能自动放宽规则或重试裸进程。
+macOS sandbox-exec是受限实验入口；仅按实际已测build/arch说明。
+
+真实provider/模型、计费usage、V1/V2、DPK/CAS、SE/Touch ID、Installer/SMAppService
+全生命周期、T12与公开下载全部是独立门槛。当前合成/CLI/MCP/Broker/UI证据不替代它们。
+企业source/relay/OIDC/插件/指标/DR均属lab；没有SLA、通用多租户或云端权限承诺。
+历史v2发布事实保留在原release notes，不改变本候选Pending状态。
+
+2026-10-04 [统一候选设备证据](../evidence/v3-release-acceptance-2026-10-04.json)已覆盖受保护代数的 ad-hoc 读/写/删拒绝、双并发 CAS、旧库认证后疑似回滚及实际 hardened daemon 的 LLDB 拒绝。SE 建钥/重载、私钥不可导出和无交互签名拒绝已验证；交互签名/取消、已安装服务与完整产品攻击矩阵仍是独立门槛，不提升保护等级。

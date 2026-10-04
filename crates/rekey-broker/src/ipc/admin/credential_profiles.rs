@@ -15,10 +15,11 @@ pub(super) async fn validate_add(
     proof: &[u8],
     secret: &[u8],
 ) -> Result<(), BrokerError> {
-    if matches!(
-        kind,
-        CredentialKind::OpaqueToken | CredentialKind::MacosKeychainSource
-    ) {
+    if kind == CredentialKind::OpaqueToken {
+        return Ok(());
+    }
+    #[cfg(feature = "lab")]
+    if kind == CredentialKind::MacosKeychainSource {
         return Ok(());
     }
     authority_until(
@@ -27,7 +28,10 @@ pub(super) async fn validate_add(
     )
     .await?;
     let error = match kind {
-        CredentialKind::OpaqueToken | CredentialKind::MacosKeychainSource => return Ok(()),
+        CredentialKind::OpaqueToken => return Ok(()),
+        #[cfg(feature = "lab")]
+        CredentialKind::MacosKeychainSource => return Ok(()),
+        #[cfg(feature = "lab")]
         CredentialKind::KeycloakTokenExchange => {
             crate::executor::keycloak::KeycloakProfile::validate_profile(secret)
                 .err()
@@ -36,36 +40,44 @@ pub(super) async fn validate_add(
         CredentialKind::GitHubAppInstallation => GitHubAppCredential::validate_profile(secret)
             .err()
             .map(|_| "invalid GitHub App credential profile"),
+        #[cfg(feature = "lab")]
         CredentialKind::GcpSecretManagerSource => {
             crate::executor::gcp_source::GcpSourceProfile::validate_profile(secret)
                 .err()
                 .map(|_| "invalid GCP Secret Manager credential profile")
         }
+        #[cfg(feature = "lab")]
         CredentialKind::AzureKeyVaultSource => {
             crate::executor::azure_source::AzureSourceProfile::validate_profile(secret)
                 .err()
                 .map(|_| "invalid Azure Key Vault credential profile")
         }
+        #[cfg(feature = "lab")]
         CredentialKind::OnePasswordConnectSource => {
             crate::executor::onepassword_source::OnePasswordSourceProfile::validate_profile(secret)
                 .err()
                 .map(|_| "invalid 1Password Connect credential profile")
         }
+        #[cfg(feature = "lab")]
         CredentialKind::AwsSecretsManagerSource => {
             crate::executor::aws_source::AwsSourceProfile::validate_profile(secret)
                 .err()
                 .map(|_| "invalid AWS Secrets Manager credential profile")
         }
+        #[cfg(feature = "lab")]
         CredentialKind::VaultKvV2Source => {
             crate::executor::vault_source::VaultKvProfile::validate_profile(secret)
                 .err()
                 .map(|_| "invalid Vault KV credential profile")
         }
+        #[cfg(feature = "lab")]
         CredentialKind::VaultDynamicSource => {
             crate::executor::vault_dynamic::VaultDynamicProfile::validate_profile(secret)
                 .err()
                 .map(|_| "invalid Vault dynamic credential profile")
         }
+        #[cfg(not(feature = "lab"))]
+        _ => Some("credential source requires lab"),
     };
     if let Some(message) = error {
         return Err(BrokerError::Domain(DomainError::InvalidActionDefinition(

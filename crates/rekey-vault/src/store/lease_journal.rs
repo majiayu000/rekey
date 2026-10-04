@@ -258,6 +258,7 @@ mod tests {
                 iterations: 1,
                 parallelism: 1,
             },
+            rekey_domain::authorization::PolicyMode::Team,
         )
         .unwrap();
         confirm_vault_init(&state_dir).unwrap();
@@ -295,6 +296,8 @@ mod tests {
             credential_version: None,
             authorization: None,
             approval: None,
+            request_context: None,
+            usage: None,
             event_type: "execution.started",
             outcome: "success",
             reason_code: "fixture".into(),

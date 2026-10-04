@@ -33,7 +33,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" init --password-stdin >/dev/null
+printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" init --mode team --password-stdin >/dev/null
 
 (
   ulimit -n 64

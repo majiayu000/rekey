@@ -1,3 +1,5 @@
+> 适用范围更新（2026-10-03）：本文保留 v2 foundation 的历史合同与当时证据，不改写旧发布事实。当前 v3 行为以 [v3 personal-first SPEC](2026-10-02-rekey-v3-personal-first.md) 为准；其中保护等级、Presence/管理会话权限、逐次明文查看与 shutdown 证明、Approver/Profile/网关、格式与回滚恢复的冲突段落均已由 v3 替代。旧的“desktop token 可读取”、自动恢复或旧格式说明不得用于当前实现；永久不迁移。
+
 > 2026-09-15 用户修订：已认证的本机 Admin UI 可以通过短期管理会话添加和读取当前凭证；Agent API 仍禁止读取。该例外覆盖本文 Admin 不可读取/添加必需逐次密码的旧约定，详见 `2026-09-14-native-admin-ui.md` 的个人密钥管理节。
 
 # Rekey Credential Authority v2 Foundation 实施规格
@@ -990,7 +992,7 @@ body           raw bytes
 | PasswordChange (P-01) | no | password/recovery | new password | receipt |
 | RecoveryRotate (P-01) | no | password only | none | recovery key once / receipt |
 | Lock | yes | no | none | locked/draining receipt |
-| Shutdown | yes | password/recovery when unlocked | proof body | receipt |
+| Shutdown | yes | password/recovery in every Admin state (v3 target) | proof body | receipt |
 
 Step-up password/recovery proof 只在 AuthorityWorker 内派生 KEK 并验证 wrapper，成功后立即 zeroize；不能因为 Broker 已 Unlocked 就跳过敏感 mutation 的人类证明。
 
@@ -1599,8 +1601,10 @@ effect 仍由 supervisor-owned task 持有到该 Action 的单一总 deadline；
 落盘一个 POST 后不响应，证明最终 terminal 是 indeterminate，且绝不是 denied。
 
 Admin Shutdown、SIGTERM、SIGINT、listener/idle/execution-supervisor fault 必须进入同一个 central stop router，
-且不可逆 stop 只由一次 lifecycle coordinator owner 执行。Admin 在 Locked 时不需要
-proof；在 Running 时先验证 proof，失败必须保持服务可用。进入不可逆 stop 后立即关闭
+且不可逆 stop 只由一次 lifecycle coordinator owner 执行。v3 中 Admin 在任意状态均需
+proof；Locked 只验证当前 wrapper、不解锁，Faulted 或证明不可验证时拒绝。验证失败
+或验证前等待 coordinator 超时均不得触发不可逆停机；仍 Running 时恢复 admission。
+Signal/Fault 内部收尾不要求 proof。实施状态以 v3 清单为准。进入不可逆 stop 后立即关闭
 Session admission、撤销 token、关闭 execution submission、通知 partial frame reader 与
 response waiter 退出，但 supervisor-owned admitted task 继续。stop 聚合第一个错误而不
 早退：等待 ordinary execution、必要时 lifecycle cancel、等待 supervisor、使用绝对
@@ -1965,3 +1969,13 @@ The Action-bound GitHub reference plugin is extended to the two fixed issue oper
 ## Linux explicitly registered GitHub plugins
 
 The subsequent Linux backend follows [the reference plugin contract](2026-09-16-github-reference-plugin.md), limited to GNU x86_64/aarch64 and explicitly bound artifacts. Format13 and both fixed operations remain unchanged. A minimal read-only rootfs and default-deny seccomp are separate from the Agent launcher; AS64MiB is per-process virtual memory, with no total physical-memory or all-startup-phase parent-death claim.
+# v3 development delta (2026-10-03)
+
+The authorized v3 implementation adds bounded response sealing for uppercase/lowercase
+hex, three base64 alignment offsets for secrets of at least 16 bytes, and decoded
+JSON escapes. Shorter secrets retain complete-encoding detection. Streaming text
+retains `6 * max_needle_len + 5` bytes for escaped detection spans. Action-selected
+`accept-encoding` and `content-encoding` headers are forbidden. These additions do
+not imply protection against arbitrary upstream transformations, compressed bodies,
+or completion of the v3 same-user attacker contract. The current implementation and
+verification state is tracked in `../plans/2026-10-03-v3-implementation.md`.

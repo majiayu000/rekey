@@ -23,7 +23,7 @@ with tempfile.TemporaryDirectory(prefix='rk-human-') as root:
             assert result.returncode != 0, args
             assert not result.stdout, 'failure returned stdout'
         return result.stdout
-    call(['init', '--password-stdin'], password + '\n')
+    call(['init', '--mode', 'team', '--password-stdin'], password + '\n')
     broker = subprocess.Popen([str(binary.parent / 'rekeyd'), 'serve', '--state-dir', str(state)],
                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                               stderr=subprocess.DEVNULL)
@@ -38,15 +38,15 @@ with tempfile.TemporaryDirectory(prefix='rk-human-') as root:
         assert len(token) == 64
         for name in ['GLM personal', 'GLM work']:
             item = json.loads(call(['desktop-add', name], token+'\n'+canary+'\n'))
-            assert call(['desktop-reveal', item['id']], token+'\n') == canary.encode()
-        assert call(['desktop-reveal', existing['id']], token+'\n') == canary.encode()
-        call(['desktop-reveal', existing['id']], 'forged-token\n', ok=False)
+            assert call(['desktop-reveal', item['id'], '--password-stdin'], password+'\n') == canary.encode()
+        assert call(['desktop-reveal', existing['id'], '--password-stdin'], password+'\n') == canary.encode()
+        call(['desktop-reveal', existing['id'], '--password-stdin'], 'forged-token\n', ok=False)
         audit = call(['audit', 'list'])
         assert canary.encode() not in audit and token.encode() not in audit
         call(['lock'])
-        call(['desktop-reveal', existing['id']], token+'\n', ok=False)
+        call(['desktop-reveal', existing['id'], '--password-stdin'], token+'\n', ok=False)
         fresh = call(['desktop-login'], password+'\n').decode()
-        call(['desktop-reveal', existing['id']], token+'\n', ok=False)
+        call(['desktop-reveal', existing['id'], '--password-stdin'], token+'\n', ok=False)
         expiry, remember_key = call(['desktop-remember'], password+'\n').decode().split('\n')
         broker.terminate()
         broker.wait(timeout=10)
@@ -60,7 +60,7 @@ with tempfile.TemporaryDirectory(prefix='rk-human-') as root:
                 time.sleep(.1)
         restored_expiry, fresh = call(['desktop-resume'], remember_key+'\n').decode().split('\n')
         assert restored_expiry == expiry
-        assert call(['desktop-reveal', existing['id']], fresh+'\n') == canary.encode()
+        assert call(['desktop-reveal', existing['id'], '--password-stdin'], password+'\n') == canary.encode()
         audit = call(['audit', 'list'])
         assert remember_key.encode() not in audit
         call(['lock'])
@@ -71,9 +71,16 @@ with tempfile.TemporaryDirectory(prefix='rk-human-') as root:
         db.execute("CREATE TRIGGER fail_human_audit BEFORE INSERT ON audit_events BEGIN SELECT RAISE(ABORT, 'test audit unavailable'); END")
         db.commit()
         db.close()
-        call(['desktop-reveal', existing['id']], fresh+'\n', ok=False)
-        assert json.loads(call(['status']))['state'] == 'faulted'
-        print('PASS: existing/new keys, repeated saves, body-only reveal, forged/locked/stale denial, audit canaries, restart resume, manual revocation, audit failure closes without plaintext')
+        call(['desktop-reveal', existing['id'], '--password-stdin'], password+'\n', ok=False)
+        status = subprocess.run([str(binary), '--state-dir', str(state), 'status'],
+                                capture_output=True, timeout=10)
+        if status.returncode == 0:
+            assert json.loads(status.stdout)['state'] == 'faulted'
+        else:
+            # The runtime's independent fault route may already have closed IPC.
+            assert b'IPC_UNAVAILABLE' in status.stderr
+            assert broker.wait(timeout=10) != 0, 'audit fault must not claim a clean stop'
+        print('PASS: existing/new keys, repeated saves, per-call proof and body-only reveal, token/locked denial, audit canaries, restart resume, manual revocation, audit failure closes without plaintext')
     finally:
         broker.terminate()
         broker.wait(timeout=10)

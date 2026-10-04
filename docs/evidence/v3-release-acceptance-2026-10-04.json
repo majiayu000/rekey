@@ -1,0 +1,3885 @@
+{
+  "date": "2026-10-04",
+  "scope": "current-account bounded acceptance; final signed candidate real GLM Claude Code and Codex passed; old signed DNS candidate remains installed; no public release or T12 claim",
+  "source_base": "e1460b0fe3e6b6a28a6cd49721661159832517ef",
+  "branch": "codex/v3-release-acceptance-20261003",
+  "imported_repairs": [
+    "01ac4c41eabda742f035ea8c24e6e17ad8a4b599",
+    "50d79f3a3fe659ebe58aa89877de0741a4ceeb1c",
+    "05c2cb7dd7dedb0fa04b001c18dbc7b10570d9c7"
+  ],
+  "artifact_directory": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003",
+  "production_source_delta_sha256": "ebc4868bd4d4827f6159ff0d37454d1f6b86b5015c1e0490f92d5e6214679012",
+  "package": {
+    "package": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/macos-pkg-glm-responses-final/Rekey-3.0.0-alpha.1.pkg",
+    "bytes": 20392071,
+    "sha256": "f011fbd5141d8cad644372f3f9740c37ecc81f819ad111cc7aad2ce6d785916d"
+  },
+  "distribution": [
+    {
+      "name": "staple-app",
+      "exit_code": 0,
+      "seconds": 0.985
+    },
+    {
+      "name": "validate-app",
+      "exit_code": 0,
+      "seconds": 0.832
+    },
+    {
+      "name": "signature-app",
+      "exit_code": 0,
+      "seconds": 0.041
+    },
+    {
+      "name": "gatekeeper-app",
+      "exit_code": 0,
+      "seconds": 0.301
+    },
+    {
+      "name": "build-pkg",
+      "exit_code": 0,
+      "seconds": 3.375
+    },
+    {
+      "name": "staple-pkg",
+      "exit_code": 0,
+      "seconds": 0.85
+    },
+    {
+      "name": "validate-pkg",
+      "exit_code": 0,
+      "seconds": 0.797
+    },
+    {
+      "name": "signature-pkg",
+      "exit_code": 0,
+      "seconds": 0.285
+    },
+    {
+      "name": "gatekeeper-pkg",
+      "exit_code": 0,
+      "seconds": 0.213
+    }
+  ],
+  "signing_material": {
+    "name": "Rekey Daemon Developer ID 20261004",
+    "uuid": "7017bc32-28df-4dc9-ac1d-0283df7cbe08",
+    "team": [
+      "C5UWZ934C2"
+    ],
+    "app_identifier": "C5UWZ934C2.com.rekey.rekeyd",
+    "profile_access_groups": [
+      "C5UWZ934C2.*"
+    ],
+    "expiration": "2044-09-28T16:06:06",
+    "sha256": "cd9f0d3334904de950f0f13b7f1074b1e50d0c6492bc98981ee165056af80e33",
+    "matching_application_certificate": true,
+    "installer_identity": "3FADBE1AF4CC6E8FDBD28BE4924EB80ECDFBD013"
+  },
+  "default_test_counts": {
+    "passed": 1021,
+    "failed": 0,
+    "ignored": 6
+  },
+  "strict_clippy": {
+    "glm-clippy-default": {
+      "name": "glm-clippy-default",
+      "exit_code": 0,
+      "seconds": 10.7
+    },
+    "glm-clippy-lab": {
+      "name": "glm-clippy-lab",
+      "exit_code": 0,
+      "seconds": 13.11
+    }
+  },
+  "swift_boundary_modes": [
+    {
+      "mode": "presence",
+      "exit_code": 0
+    },
+    {
+      "mode": "local-approval",
+      "exit_code": 0
+    },
+    {
+      "mode": "flow",
+      "exit_code": 0
+    },
+    {
+      "mode": "onboarding",
+      "exit_code": 0
+    },
+    {
+      "mode": "profile-authoring",
+      "exit_code": 0
+    },
+    {
+      "mode": "personal-policy",
+      "exit_code": 0
+    },
+    {
+      "mode": "rollback",
+      "exit_code": 0
+    },
+    {
+      "mode": "activity",
+      "exit_code": 0
+    },
+    {
+      "mode": "protection",
+      "exit_code": 0
+    },
+    {
+      "mode": "oidc",
+      "exit_code": 0
+    }
+  ],
+  "mechanical_checks": [
+    {
+      "name": "forbidden_operations",
+      "no_matches": true
+    },
+    {
+      "name": "agent_secret_surface",
+      "no_matches": true
+    },
+    {
+      "name": "cli_dependency_boundary",
+      "forbidden_dependencies": false
+    }
+  ],
+  "secure_enclave": {
+    "exit_code": 0,
+    "production_source_sha256": "7a0793642432dfe219522cf66f19bcd3c9e6e918932abc656de152ff69b4ae1a",
+    "results": [
+      "production_create_reload_secure_enclave_p256=pass",
+      "private_key_export=denied",
+      "noninteractive_sign=denied,code=-1004",
+      "synthetic_key_cleanup=0"
+    ],
+    "scope": "production key creation/reload; private export and no-UI signing denial; interactive signature/cancellation not tested"
+  },
+  "protected_anchor": [
+    {
+      "name": "synthetic_vault_identity",
+      "vault_id": "73403359-7077-4ffc-b7e2-09240e3c0c82"
+    },
+    {
+      "name": "signed_daemon_init_created_protected_anchor",
+      "result": "pass",
+      "generation": 1
+    },
+    {
+      "name": "adhoc_cannot_read_protected_anchor",
+      "result": "pass",
+      "status": -34018
+    },
+    {
+      "name": "adhoc_cannot_update_or_delete_protected_anchor",
+      "result": "pass",
+      "delete_status": -34018,
+      "update_status": -34018
+    },
+    {
+      "name": "protected_item_concurrent_cas",
+      "result": "pass",
+      "cas_statuses": [
+        -25300,
+        0
+      ],
+      "generation": 12,
+      "status": 0,
+      "when_unlocked_this_device_only": true
+    },
+    {
+      "name": "database_generations",
+      "backup": 2,
+      "live": 3
+    },
+    {
+      "name": "production_mutations_advanced_protected_anchor",
+      "result": "pass",
+      "generation": 3
+    },
+    {
+      "name": "actual_hardened_daemon_lldb_attach",
+      "result": "denied",
+      "exit_code": 1
+    },
+    {
+      "name": "rollback_status_observed",
+      "state": "rollback-suspected",
+      "rollback": {
+        "vault_id": "73403359-7077-4ffc-b7e2-09240e3c0c82",
+        "source_generation": 2,
+        "high_water": 3,
+        "history_missing": false
+      }
+    },
+    {
+      "name": "old_database_detected_against_real_protected_anchor",
+      "result": "pass",
+      "state": "rollback-suspected",
+      "context": {
+        "vault_id": "73403359-7077-4ffc-b7e2-09240e3c0c82",
+        "source_generation": 2,
+        "high_water": 3,
+        "history_missing": false
+      }
+    },
+    {
+      "name": "scope",
+      "production_binaries": {
+        "rekey": "9be5981233ea384be4873adf0d0f03bbd150a3d0f14bb9a82c32fcdcc0b508e3",
+        "rekeyd": "9882cda364ca2f110e5f27bf7def36cca5140f0264c6e8d4f66bff55c044195b"
+      },
+      "synthetic_vault_only": true,
+      "no_provider_requests": true
+    },
+    {
+      "name": "synthetic_anchor_cleanup",
+      "id": "73403359-7077-4ffc-b7e2-09240e3c0c82",
+      "status": 0
+    },
+    {
+      "name": "synthetic_anchor_cleanup",
+      "id": "2737ad1c-a81b-4107-8f34-75d0b90cd1b6",
+      "status": 0
+    }
+  ],
+  "initialization_harness_cleanup": {
+    "scope": "single synthetic generation item from the initial harness parsing failure, identified within the recorded test creation window",
+    "account": "55909691-4061-481d-af1b-3b9f6d8c915c",
+    "before": {
+      "generation": 1,
+      "status": 0,
+      "when_unlocked_this_device_only": true
+    },
+    "cleanup": {
+      "status": 0
+    },
+    "after": {
+      "status": -25300
+    }
+  },
+  "first_failures": {
+    "default": {
+      "passed": 1011,
+      "failed": 2,
+      "ignored": 6
+    },
+    "lab": {
+      "passed": 1479,
+      "failed": 2,
+      "ignored": 6
+    },
+    "notes": [
+      "rollback CLI error parser did not allow the required L1-dev warning; corrected and focused test passed",
+      "500ms gateway and 1000ms lab AWS fixtures expired during preparation; both isolated retests passed, original failures preserved",
+      "pkg codesign requirement needed literal = prefix; real signed pkg now succeeds and rejection fixture checks the compiled requirement error",
+      "protected-anchor harness initially parsed text init as JSON and tested status before unlock; revised to read public vault ID and check rollback after authenticated header verification"
+    ]
+  },
+  "pending": [
+    "actual installed App focus, visible cancellation and policy-review workflow",
+    "installed SMAppService registration and login-item lifecycle",
+    "fresh macOS account T12; handoff prepared but account/login not performed",
+    "independent human security review and GA format freeze/public release",
+    "release CI signing secrets missing; private signing keys remain local",
+    "initial relay restart 503 not fully attributed; final full Lab rerun passed"
+  ],
+  "installed_pre_glm_candidate": {
+    "scope": "Current macOS account; installed pre-GLM candidate, not fresh-account T12",
+    "steps": [
+      {
+        "name": "receipt",
+        "exit_code": 0,
+        "output": "package-id: com.starlight.rekey.pkg\nversion: 3.0.0-alpha.1\nvolume: /\nlocation: \ninstall-time: 1791046637\n"
+      },
+      {
+        "name": "cli-version",
+        "exit_code": 0,
+        "output": "rekey 3.0.0-alpha.1\n"
+      },
+      {
+        "name": "signature",
+        "exit_code": 0,
+        "output": ""
+      },
+      {
+        "name": "gatekeeper",
+        "exit_code": 0,
+        "output": "/Applications/Rekey.app: accepted\nsource=Notarized Developer ID\norigin=Developer ID Application: Ma JiaYu (C5UWZ934C2)\n"
+      }
+    ],
+    "binaries": {
+      "rekey": {
+        "path": "/Applications/Rekey.app/Contents/Resources/bin/rekey",
+        "sha256": "9be5981233ea384be4873adf0d0f03bbd150a3d0f14bb9a82c32fcdcc0b508e3"
+      },
+      "rekeyd": {
+        "path": "/Applications/Rekey.app/Contents/Helpers/RekeyDaemon.app/Contents/MacOS/rekeyd",
+        "sha256": "9882cda364ca2f110e5f27bf7def36cca5140f0264c6e8d4f66bff55c044195b"
+      }
+    },
+    "cli_links": {
+      "rekey": "/Applications/Rekey.app/Contents/Resources/bin/rekey",
+      "rekeyd": "/Applications/Rekey.app/Contents/Resources/bin/rekeyd",
+      "rekey-mcp": "/Applications/Rekey.app/Contents/Resources/bin/rekey-mcp"
+    },
+    "existing_vault_format": 10,
+    "existing_vault_modified": false
+  },
+  "pre_glm_source_checks": [
+    {
+      "name": "pkg-check",
+      "exit_code": 0,
+      "seconds": 0.28
+    },
+    {
+      "name": "pkg-regression",
+      "exit_code": 0,
+      "seconds": 1.37
+    },
+    {
+      "name": "fmt-final",
+      "exit_code": 0,
+      "seconds": 1.17
+    },
+    {
+      "name": "test-default-final",
+      "exit_code": 0,
+      "seconds": 939.1
+    }
+  ],
+  "source_checks": [
+    {
+      "name": "dns-test-default",
+      "exit_code": 0,
+      "seconds": 943.26
+    },
+    {
+      "name": "dns-test-lab-upstream",
+      "exit_code": 0,
+      "seconds": 8.86
+    },
+    {
+      "name": "dns-clippy-default",
+      "exit_code": 0,
+      "seconds": 4.24
+    },
+    {
+      "name": "dns-clippy-lab",
+      "exit_code": 0,
+      "seconds": 5.49
+    }
+  ],
+  "glm_candidate": {
+    "app_notary": {
+      "submission_id": "a528de74-af41-4cdd-9332-f96a6510e21d",
+      "status": "Accepted",
+      "stapled": true
+    },
+    "app_path": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/macos-ui-glm/Rekey.app",
+    "package_path": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/macos-pkg-glm/Rekey-3.0.0-alpha.1.pkg",
+    "package_notary_status": "Accepted; stapled and validated; Gatekeeper accepted",
+    "source_changes": "fixed GLM template, authenticated SDK path mapping, App service picker; no arbitrary origin",
+    "gateway_tests": {
+      "passed": 15,
+      "failed": 0
+    },
+    "provider": "https://open.bigmodel.cn/api/anthropic",
+    "model": "glm-5.3-flash",
+    "budget_usd": 500,
+    "real_upstream_calls": 0,
+    "network_config_modified": false,
+    "package_notary": {
+      "package": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/macos-pkg-glm/Rekey-3.0.0-alpha.1.pkg",
+      "transport": "Apple documented Notary REST API via existing local proxy",
+      "uploaded": true,
+      "authenticated_history": true,
+      "submission_id": "b03a36c9-0a49-4417-9b61-a3fba49d20bf",
+      "status": "Accepted",
+      "seconds": 78.75,
+      "issues": null,
+      "status_code": 0
+    },
+    "distribution": [
+      {
+        "name": "glm-staple-pkg",
+        "exit_code": 0,
+        "seconds": 27.7
+      },
+      {
+        "name": "glm-staple-validate",
+        "exit_code": 0,
+        "seconds": 1.03
+      },
+      {
+        "name": "glm-app-signature",
+        "exit_code": 0,
+        "seconds": 0.04
+      },
+      {
+        "name": "glm-app-gatekeeper",
+        "exit_code": 0,
+        "seconds": 0.31
+      },
+      {
+        "name": "glm-pkg-signature",
+        "exit_code": 0,
+        "seconds": 0.29
+      },
+      {
+        "name": "glm-pkg-gatekeeper",
+        "exit_code": 0,
+        "seconds": 0.21
+      },
+      {
+        "package": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/macos-pkg-glm/Rekey-3.0.0-alpha.1.pkg",
+        "bytes": 20379029,
+        "sha256": "16f72049ae6eb5ca4ad939dd9bddb0408acf936e25223fd6580a6680c1c83851"
+      }
+    ],
+    "installed": {
+      "scope": "GLM candidate installed upgrade in current account; no SMAppService lifecycle or T12 claim",
+      "checks": [
+        {
+          "name": "strict_signature",
+          "exit_code": 0
+        },
+        {
+          "name": "gatekeeper",
+          "exit_code": 0
+        },
+        {
+          "name": "cli_version",
+          "exit_code": 0
+        },
+        {
+          "name": "daemon_version",
+          "exit_code": 0
+        },
+        {
+          "name": "receipt",
+          "exit_code": 0
+        }
+      ],
+      "hashes": {
+        "rekey": {
+          "installed_sha256": "82328b3a88d1b134992a57cf8568c85673a0832a52fae704419d8c1bc8393aed",
+          "matches_candidate": true
+        },
+        "rekeyd": {
+          "installed_sha256": "f699196e1fcbf69e36154694f1b2d471ac23a623dfc601caddb943a8fb0ff8c2",
+          "matches_candidate": true
+        },
+        "rekey-mcp": {
+          "installed_sha256": "0000765791e2e0ec32ac0fad86efe9e954727702927a373e8fe9b4dee6a91169",
+          "matches_candidate": true
+        }
+      },
+      "links": {
+        "rekey": {
+          "symlink": true,
+          "target": "/Applications/Rekey.app/Contents/Resources/bin/rekey",
+          "correct": true
+        },
+        "rekeyd": {
+          "symlink": true,
+          "target": "/Applications/Rekey.app/Contents/Helpers/RekeyDaemon.app/Contents/MacOS/rekeyd",
+          "correct": true
+        },
+        "rekey-mcp": {
+          "symlink": true,
+          "target": "/Applications/Rekey.app/Contents/Resources/bin/rekey-mcp",
+          "correct": true
+        }
+      },
+      "receipt": "package-id: com.starlight.rekey.pkg\nversion: 3.0.0-alpha.1\nvolume: /\nlocation: \ninstall-time: 1791051620\n",
+      "non_gate_probe": {
+        "mcp_version_arg_exit_code": 1,
+        "reason": "MCP intentionally does not expose --version; usage reply retained"
+      },
+      "verified_at_ms": 1791052128682
+    },
+    "network_comparison": {
+      "system_dns": [
+        "198.18.7.242"
+      ],
+      "clash_configuration_changed": false,
+      "ordinary_https": {
+        "status": 200,
+        "usage": {
+          "input_tokens": 16,
+          "output_tokens": 61,
+          "cache_read_input_tokens": 0
+        }
+      },
+      "rekey_run": {
+        "exit_code": 0,
+        "response": {
+          "status": 502,
+          "error_fields": {
+            "code": "UPSTREAM_FAILED"
+          }
+        }
+      },
+      "ordinary_https_request_count": 1,
+      "ordinary_https_token_limit": 2048,
+      "rekey_dns_repro_attempts": 2
+    },
+    "outside_rekey_calibration_calls": 1,
+    "real_upstream_calls_scope": "through Rekey; ordinary HTTPS calibration is separate"
+  },
+  "current_account_cli_acceptance": {
+    "initialization": {
+      "state_dir": "/Users/lifcc/.rekey-v3-cli-acceptance-20261004",
+      "private_material_dir": "/Users/lifcc/.local/share/rekey/acceptance/20261004-cli",
+      "exit_code": 0,
+      "cli_sha256": "82328b3a88d1b134992a57cf8568c85673a0832a52fae704419d8c1bc8393aed",
+      "credentials_in_output": false,
+      "existing_app_vault_preserved": true
+    },
+    "status": {
+      "unlock_exit_code": 0,
+      "status_exit_code": 0,
+      "status": {
+        "state": "unlocked",
+        "format_version": 25,
+        "runtime_version": "3.0.0-alpha.1",
+        "lab_enabled": false,
+        "sessions_active": 0,
+        "lease_journal": {
+          "verified": true,
+          "pending": 0,
+          "unknown": 0,
+          "complete": 0
+        },
+        "rollback": null,
+        "peer_security": "verified_signature"
+      }
+    },
+    "trust_install": {
+      "exit_code": 0,
+      "vault_id": "2b36af24-b358-495b-a9ac-0ac33b39da3e",
+      "implementation": "production PolicySigning.createOrLoadPublicKey; Secure Enclave P-256",
+      "policy_status": {
+        "vault_id": "2b36af24-b358-495b-a9ac-0ac33b39da3e",
+        "tenant_id": "2b36af24-b358-495b-a9ac-0ac33b39da3e",
+        "mode": "personal",
+        "algorithm": "secure-enclave-p256",
+        "trust_sha256": "3816dfd62e5955d5b19622ebb06ac4a395e0fb6b37a4f3f9e164cb427c126af9",
+        "activated_at_ms": null,
+        "trust_installed": true,
+        "bundle_persisted": false,
+        "status": "unavailable",
+        "signer_id": null,
+        "version": null,
+        "expires_at_ms": null,
+        "policy_sha256": null,
+        "bundle_sha256": null
+      }
+    },
+    "policy_activation": {
+      "activation_exit_code": 0,
+      "signed_by": "production Secure Enclave P-256 sign; userPresence",
+      "upstream_calls": 0,
+      "status": {
+        "vault_id": "2b36af24-b358-495b-a9ac-0ac33b39da3e",
+        "tenant_id": "2b36af24-b358-495b-a9ac-0ac33b39da3e",
+        "mode": "personal",
+        "algorithm": "secure-enclave-p256",
+        "trust_sha256": "3816dfd62e5955d5b19622ebb06ac4a395e0fb6b37a4f3f9e164cb427c126af9",
+        "activated_at_ms": 1791051083493,
+        "trust_installed": true,
+        "bundle_persisted": true,
+        "status": "active",
+        "signer_id": "2b36af24-b358-495b-a9ac-0ac33b39da3e",
+        "version": 1,
+        "expires_at_ms": 1791137346647,
+        "policy_sha256": "41b897a4042395db337268cd2dd406b9a0a2c0dde9516198cccda21286c21dc7",
+        "bundle_sha256": "a228370033b81709049ff94d95a664f4e4a76cb6883f1dd1bd11bc5459ee5988"
+      }
+    },
+    "launcher": {
+      "exit_code": 0,
+      "upstream_calls": 0,
+      "child": {
+        "gateway_is_loopback": true,
+        "capability_present": true,
+        "sdk_key_is_scoped_capability": true
+      },
+      "after": {
+        "state": "unlocked",
+        "format_version": 25,
+        "runtime_version": "3.0.0-alpha.1",
+        "lab_enabled": false,
+        "sessions_active": 0,
+        "lease_journal": {
+          "verified": true,
+          "pending": 0,
+          "unknown": 0,
+          "complete": 0
+        },
+        "rollback": null,
+        "peer_security": "verified_signature"
+      }
+    },
+    "policy_sign": {
+      "exit_code": 0,
+      "seconds": 3.24,
+      "production_implementation": "PolicySigning.sign",
+      "user_presence_required": true,
+      "vault_id": "2b36af24-b358-495b-a9ac-0ac33b39da3e"
+    },
+    "credential_added": true,
+    "scope": "separate test vault with operator proof material outside source; signed helper uses exact production PolicySigning.swift; no installed App onboarding, SMAppService or T12 claim",
+    "shutdown": {
+      "shutdown_exit_code": 0,
+      "scope": "only CLI acceptance daemon; existing default and App-created vaults preserved"
+    }
+  },
+  "lab_test_counts": {
+    "passed": 1482,
+    "failed": 0,
+    "ignored": 6
+  },
+  "strict_clippy_pre_glm": {
+    "clippy-default": {
+      "name": "clippy-default",
+      "exit_code": 0,
+      "seconds": 10.11
+    },
+    "clippy-lab": {
+      "name": "clippy-lab",
+      "exit_code": 0,
+      "seconds": 14.42
+    }
+  },
+  "pre_glm_package": {
+    "path": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/macos-pkg-final/Rekey-3.0.0-alpha.1.pkg",
+    "bytes": 20357081,
+    "sha256": "73c7d2bff5a59a8ad7c185899bf37fd202e782cbafb9c481e92bc4c6030b8115"
+  },
+  "mechanical_contracts": [
+    {
+      "name": "closed-secret-contract",
+      "rg_exit_code": 1,
+      "passed": true,
+      "matched_lines": 0
+    },
+    {
+      "name": "agent-secret-contract",
+      "rg_exit_code": 1,
+      "passed": true,
+      "matched_lines": 0
+    },
+    {
+      "name": "cli-dependency-contract",
+      "exit_code": 0,
+      "passed": true,
+      "violations": []
+    }
+  ],
+  "current_evidence_checks": [
+    {
+      "name": "fmt-before-installed-evidence-commit",
+      "exit_code": 0
+    },
+    {
+      "name": "workspace-check-after-installed-evidence",
+      "exit_code": 0
+    },
+    {
+      "name": "diff-after-installed-evidence",
+      "exit_code": 0
+    }
+  ],
+  "pkg_regression": {
+    "passed": 10,
+    "failed": 0,
+    "latest_run_exit_code": 0
+  },
+  "hardware_evidence_scope": "Original protected-anchor, rollback, LLDB and noninteractive SE probes retain their pre-GLM binary hashes. Current GLM personal-policy signing/activation and installed hashes are recorded separately; no transitive full L1 or T12 claim.",
+  "credential_source_check": {
+    "known_operator_password_and_user_glm_key_absent_from_prospective_diff": true
+  },
+  "pre_dns_package": {
+    "package": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/macos-pkg-glm/Rekey-3.0.0-alpha.1.pkg",
+    "bytes": 20379029,
+    "sha256": "16f72049ae6eb5ca4ad939dd9bddb0408acf936e25223fd6580a6680c1c83851"
+  },
+  "pre_dns_distribution": [
+    {
+      "name": "check-after-ui-copy",
+      "exit_code": 0,
+      "seconds": 0.21
+    },
+    {
+      "name": "final-build-app",
+      "exit_code": 0,
+      "seconds": 30.34
+    },
+    {
+      "name": "final-archive-app",
+      "exit_code": 0,
+      "seconds": 1.54
+    },
+    {
+      "name": "final-notary-app",
+      "exit_code": 0,
+      "seconds": 38.93,
+      "submission_id": "ca513952-e535-4211-9056-701925fc2bd3",
+      "status": "Accepted"
+    },
+    {
+      "name": "final-staple-app",
+      "exit_code": 0,
+      "seconds": 0.92
+    },
+    {
+      "name": "final-validate-app",
+      "exit_code": 0,
+      "seconds": 0.98
+    },
+    {
+      "name": "final-verify-app",
+      "exit_code": 0,
+      "seconds": 0.04
+    },
+    {
+      "name": "final-gatekeeper-app",
+      "exit_code": 0,
+      "seconds": 1.13
+    },
+    {
+      "name": "final-build-pkg",
+      "exit_code": 0,
+      "seconds": 11.69
+    },
+    {
+      "name": "final-notary-pkg",
+      "exit_code": 0,
+      "seconds": 38.06,
+      "submission_id": "232f09e7-a288-4abe-91a5-f47c4696cef5",
+      "status": "Accepted"
+    },
+    {
+      "name": "final-staple-pkg",
+      "exit_code": 0,
+      "seconds": 0.89
+    },
+    {
+      "name": "final-validate-pkg",
+      "exit_code": 0,
+      "seconds": 1.1
+    },
+    {
+      "name": "final-verify-pkg",
+      "exit_code": 0,
+      "seconds": 0.87
+    },
+    {
+      "name": "final-gatekeeper-pkg",
+      "exit_code": 0,
+      "seconds": 0.26
+    }
+  ],
+  "pre_dns_source_checks": [
+    {
+      "name": "glm-swift-contract-compile",
+      "exit_code": 0,
+      "seconds": 85.68
+    },
+    {
+      "name": "glm-swift-presence",
+      "exit_code": 0,
+      "seconds": 7.45
+    },
+    {
+      "name": "glm-swift-local-approval",
+      "exit_code": 0,
+      "seconds": 2.75
+    },
+    {
+      "name": "glm-swift-flow",
+      "exit_code": 0,
+      "seconds": 1.16
+    },
+    {
+      "name": "glm-swift-onboarding",
+      "exit_code": 0,
+      "seconds": 0.99
+    },
+    {
+      "name": "glm-swift-profile-authoring",
+      "exit_code": 0,
+      "seconds": 1.3
+    },
+    {
+      "name": "glm-swift-personal-policy",
+      "exit_code": 0,
+      "seconds": 1.19
+    },
+    {
+      "name": "glm-swift-rollback",
+      "exit_code": 0,
+      "seconds": 1.57
+    },
+    {
+      "name": "glm-swift-activity",
+      "exit_code": 0,
+      "seconds": 3.56
+    },
+    {
+      "name": "glm-swift-protection",
+      "exit_code": 0,
+      "seconds": 2.21
+    },
+    {
+      "name": "glm-swift-oidc",
+      "exit_code": 0,
+      "seconds": 2.42
+    },
+    {
+      "name": "glm-test-default",
+      "exit_code": 0,
+      "seconds": 980.4
+    },
+    {
+      "name": "glm-test-lab",
+      "exit_code": 0,
+      "seconds": 1415.74
+    },
+    {
+      "name": "glm-clippy-default",
+      "exit_code": 0,
+      "seconds": 10.7
+    },
+    {
+      "name": "glm-clippy-lab",
+      "exit_code": 0,
+      "seconds": 13.11
+    }
+  ],
+  "fake_ip_compatibility": {
+    "source_parent": "a6467ab",
+    "source_file": "crates/rekey-broker/src/upstream.rs",
+    "source_file_sha256": "81a20e2e181c69ac21582246e544aadb4ef79ef05b262c102ef974b00e860653",
+    "behavior": "Only all-198.18.0.0/15 system DNS answers for domain names trigger authenticated Cloudflare DoH A/AAAA; all real answers must pass the existing public-IP check; TLS origin verification, address pinning and redirect prohibition remain.",
+    "dns_endpoint": "https://cloudflare-dns.com/dns-query",
+    "dns_bootstrap_addresses": [
+      "1.1.1.1:443",
+      "1.0.0.1:443"
+    ],
+    "dns_response_limit_bytes": 65536,
+    "provider_credentials_sent_to_dns": false,
+    "clash_configuration_modified": false,
+    "provider_ip_or_domain_exceptions_added": false,
+    "targeted_upstream_tests": {
+      "passed": 17,
+      "failed": 0,
+      "ignored": 0,
+      "new_regressions": 4
+    },
+    "real_provider": {
+      "clash_configuration_changed": false,
+      "system_dns": [
+        "198.18.7.242"
+      ],
+      "daemon_sha256": "833ed68852638a677afc65a8e624b72e3d4c62e84db79a9c5ed4db22e4a22a00",
+      "daemon_pid": 8621,
+      "unlock_exit_code": 0,
+      "run_exit_code": 0,
+      "responses": [
+        {
+          "stream": false,
+          "status": 200,
+          "usage": {
+            "input_tokens": 16,
+            "output_tokens": 72,
+            "cache_read_input_tokens": 0
+          },
+          "has_content": true,
+          "stop_reason": "end_turn",
+          "seconds": 4.506
+        },
+        {
+          "stream": true,
+          "status": 200,
+          "first_byte_seconds": 2.601,
+          "event_count": 69,
+          "message_stop_seen": true,
+          "usage": {
+            "input_tokens": 16,
+            "output_tokens": 63,
+            "cache_read_input_tokens": 0
+          },
+          "stop_reason": "end_turn",
+          "seconds": 3.478
+        }
+      ],
+      "shutdown_exit_code": 0
+    },
+    "app_path": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/macos-ui-dns-stapled/Rekey.app",
+    "package": {
+      "package": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/macos-pkg-dns-final/Rekey-3.0.0-alpha.1.pkg",
+      "bytes": 20392536,
+      "sha256": "2f0722b757a2a2edb1da5c5011ffbdbfe40218a3bcd3f674ef1699570e873563"
+    },
+    "package_notary": {
+      "package": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/macos-pkg-dns-final/Rekey-3.0.0-alpha.1.pkg",
+      "transport": "Apple documented Notary REST API via existing local proxy",
+      "uploaded": true,
+      "authenticated_history": true,
+      "submission_id": "3e575d07-892d-4201-b120-1059ad2ea73a",
+      "status": "Accepted",
+      "seconds": 75.61,
+      "issues": null,
+      "status_code": 0
+    },
+    "app_ticket_notary_submission": "eec04e93-47b8-4655-8e68-bd0290e4c64a",
+    "staple_first_failure": {
+      "exit_code": 73,
+      "observed_original_bundle_writable": false,
+      "fresh_copy_writable": true,
+      "fresh_copy_staple_exit_code": 0,
+      "scope": "Generated App copy only; binary signature/hash preserved."
+    },
+    "checks": [
+      {
+        "name": "dns-test-default",
+        "exit_code": 0,
+        "seconds": 943.26
+      },
+      {
+        "name": "dns-test-lab-upstream",
+        "exit_code": 0,
+        "seconds": 8.86
+      },
+      {
+        "name": "dns-clippy-default",
+        "exit_code": 0,
+        "seconds": 4.24
+      },
+      {
+        "name": "dns-clippy-lab",
+        "exit_code": 0,
+        "seconds": 5.49
+      }
+    ],
+    "scope": "Signed candidate and installed App binaries in the existing separate CLI acceptance vault; four actual GLM requests (two buffered/two SSE), no fresh-account T12, installed SMAppService lifecycle or 500-call claim.",
+    "default_test_counts": {
+      "passed": 1018,
+      "failed": 0,
+      "ignored": 6
+    },
+    "lab_verification": "17 upstream tests and strict all-targets Clippy passed; full lab count 1482/0/6 remains scoped to source parent a6467ab",
+    "mechanical_contracts": {
+      "forbidden_symbol_matches": 0,
+      "cli_forbidden_dependencies": [],
+      "fmt_check_exit_code": 0,
+      "diff_check_exit_code": 0
+    },
+    "installed": {
+      "installation": {
+        "first_attempt_exit_code": 1,
+        "first_attempt_error": "installer package path invalid in privileged context",
+        "staged_package": "/private/tmp/rekey-v3-dns-install-zephn3hj/Rekey-3.0.0-alpha.1.pkg",
+        "staged_sha256": "2f0722b757a2a2edb1da5c5011ffbdbfe40218a3bcd3f674ef1699570e873563",
+        "source_sha256": "2f0722b757a2a2edb1da5c5011ffbdbfe40218a3bcd3f674ef1699570e873563",
+        "install_exit_code": 0
+      },
+      "checks": {
+        "hashes": {
+          "rekey": {
+            "installed_sha256": "4d3cc8c6814e884729c125bc9d4d4d0d44710bada82cfa0d44cd4effc92899ec",
+            "candidate_sha256": "4d3cc8c6814e884729c125bc9d4d4d0d44710bada82cfa0d44cd4effc92899ec",
+            "matches": true
+          },
+          "rekeyd": {
+            "installed_sha256": "833ed68852638a677afc65a8e624b72e3d4c62e84db79a9c5ed4db22e4a22a00",
+            "candidate_sha256": "833ed68852638a677afc65a8e624b72e3d4c62e84db79a9c5ed4db22e4a22a00",
+            "matches": true
+          },
+          "rekey-mcp": {
+            "installed_sha256": "95f537305768415ad05f7e889e29e0f0e855397c488d26dcad982669ae0a763f",
+            "candidate_sha256": "95f537305768415ad05f7e889e29e0f0e855397c488d26dcad982669ae0a763f",
+            "matches": true
+          }
+        },
+        "links": {
+          "rekey": "/Applications/Rekey.app/Contents/Resources/bin/rekey",
+          "rekeyd": "/Applications/Rekey.app/Contents/Resources/bin/rekeyd",
+          "rekey-mcp": "/Applications/Rekey.app/Contents/Resources/bin/rekey-mcp"
+        },
+        "checks": [
+          {
+            "name": "signature",
+            "exit_code": 0
+          },
+          {
+            "name": "gatekeeper",
+            "exit_code": 0
+          },
+          {
+            "name": "staple",
+            "exit_code": 0
+          },
+          {
+            "name": "version",
+            "exit_code": 0
+          },
+          {
+            "name": "receipt",
+            "exit_code": 0
+          }
+        ]
+      },
+      "real_provider": {
+        "clash_configuration_changed": false,
+        "system_dns": [
+          "198.18.7.242"
+        ],
+        "daemon_sha256": "833ed68852638a677afc65a8e624b72e3d4c62e84db79a9c5ed4db22e4a22a00",
+        "daemon_pid": 14367,
+        "unlock_exit_code": 0,
+        "run_exit_code": 0,
+        "responses": [
+          {
+            "stream": false,
+            "status": 200,
+            "usage": {
+              "input_tokens": 16,
+              "output_tokens": 85,
+              "cache_read_input_tokens": 0
+            },
+            "has_content": true,
+            "stop_reason": "end_turn",
+            "seconds": 5.874
+          },
+          {
+            "stream": true,
+            "status": 200,
+            "first_byte_seconds": 2.905,
+            "event_count": 57,
+            "message_stop_seen": true,
+            "usage": {
+              "input_tokens": 16,
+              "output_tokens": 52,
+              "cache_read_input_tokens": 0
+            },
+            "stop_reason": "end_turn",
+            "seconds": 3.865
+          }
+        ],
+        "shutdown_exit_code": 0
+      }
+    },
+    "real_provider_call_count": 4,
+    "provider": "GLM Anthropic compatibility",
+    "model": "glm-5.3-flash",
+    "budget_usd": 500
+  },
+  "latest_source_base": "1e3b5cd",
+  "latest_production_source_sha256": {
+    "apps/macos/Forms.swift": "a336972cafe30fabda4f096101bb411387ca0a4b70ca756c1f203520bb10157b",
+    "apps/macos/Model.swift": "c555fcd0f69f26045d8374ccd8db6e8a7229332a6debd7f2dc742f98285b0892",
+    "crates/rekey-broker/src/executor/llm.rs": "a52e8f9c05e3436bd08c82566a071ac294efa4bf0f99302b644ba05defec48aa",
+    "crates/rekey-broker/src/executor/llm_stream.rs": "650d086a2a41dbed812a1c830ae5c3c50d07746511c2a1884d58698654f7579a",
+    "crates/rekey-broker/src/runtime/gateway.rs": "48d7d01d7bf1de202983c2a8211dc37565639bba724ad2a4f70b637839633512",
+    "crates/rekey-broker/src/runtime/profile.rs": "0bfb8ded81cbbeb30e2cfc60c3fe268531d06b548b052619b15d5fb1a137fc53",
+    "crates/rekey-domain/src/ipc.rs": "ef710e77b1274a3ae930eb07c3bc1cc54ce4e9d68ecab6b6911381f5b6a34cf7",
+    "crates/rekey-domain/src/template.rs": "3b5b0dcc17fd83f2ab3dc37e1c1d7b1922c370e35ef753ebd3649589d8ee11d9",
+    "crates/rekey-policy/src/templates.rs": "8662c4d18f5ea0d3b6644501db78006fa2c5a0f5f29a3a17c0319826ef4a747a",
+    "crates/rekey-vault/src/authority.rs": "f4b5a751686ebd15d37766d51283b4d257b7138c9e0486d446a5a0005d3f8be1"
+  },
+  "current_account_agent_acceptance": {
+    "scope": "signed Developer ID candidates, isolated acceptance vaults, GLM glm-5.3-flash; no new-account T12 or full L1/L2 claim",
+    "messages_source": "1e3b5cd",
+    "real_claude_code": {
+      "source": "1e3b5cd",
+      "profile": "glm-acceptance",
+      "model": "glm-5.3-flash",
+      "client_version": "2.1.281",
+      "ui_operations_performed": 0,
+      "started_at_ms": 1791059289862,
+      "exit_code": 0,
+      "seconds": 3.756,
+      "client_result": {
+        "type": "result",
+        "subtype": "success",
+        "is_error": false,
+        "num_turns": 1,
+        "duration_ms": 3453,
+        "duration_api_ms": 3426
+      },
+      "result_is_ok": true,
+      "usage": {
+        "input_tokens": 141,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 13
+      },
+      "model_usage": {
+        "glm-5.3-flash": {
+          "inputTokens": 141,
+          "outputTokens": 13,
+          "cacheReadInputTokens": 0,
+          "cacheCreationInputTokens": 0,
+          "webSearchRequests": 0,
+          "costUSD": 0.00103,
+          "contextWindow": 262144,
+          "maxOutputTokens": 32000,
+          "thinkingTokens": 0
+        }
+      },
+      "api_error_status": [],
+      "stderr_hint_login": false,
+      "stderr_bytes": 80
+    },
+    "signed_agent_gateway_mcp": {
+      "gateway_denials": [
+        {
+          "name": "invalid-key",
+          "status": 401
+        },
+        {
+          "name": "host",
+          "status": 400
+        },
+        {
+          "name": "origin",
+          "status": 400
+        },
+        {
+          "name": "model",
+          "status": 403
+        },
+        {
+          "name": "output-limit",
+          "status": 403
+        }
+      ],
+      "mcp_exit_code": 0,
+      "mcp_tool_names": [
+        "rekey.8969d01c-d100-4534-b15a-eb5f8fc8b267.v1",
+        "await_approval",
+        "cancel_approval"
+      ],
+      "mcp_unknown_tool_error": true,
+      "source": "1e3b5cd",
+      "encoded_secret_matches": 0,
+      "secret_encoding_variants_checked": 6,
+      "after_normal_exit_status": 401,
+      "seconds": 0.132,
+      "agent_frames_checked": 134,
+      "agent_frame_scope": {
+        "channels": [
+          1,
+          2
+        ],
+        "opcodes": {
+          "inclusive_range": [
+            0,
+            61
+          ],
+          "additional": [
+            100,
+            101,
+            102,
+            103,
+            65535
+          ]
+        }
+      },
+      "source_artifact": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/signed-boundaries-acceptance.json",
+      "agent_frame_results": {
+        "closed": 67,
+        "error_response_101": 67
+      }
+    },
+    "signed_owner_sigkill": {
+      "source": "1e3b5cd",
+      "cli_pid": 36687,
+      "child_pid": 36688,
+      "before_kill_response_type": 100,
+      "after_kill_response_type": 101,
+      "revocation_seconds": 0.001,
+      "within_five_seconds": true
+    },
+    "signed_local_approval": {
+      "source": "1e3b5cd",
+      "started_at_ms": 1791061009899,
+      "helper_uses_production_model_review_and_presence": true,
+      "active_window_check_injected_for_harness": true,
+      "signed_installed_cli_and_daemon": true,
+      "prepare": {
+        "response_type": 101,
+        "code": "APPROVAL_REQUIRED",
+        "challenge": "3daf8693-8ceb-4ba5-8eb7-fdf04370f92c"
+      },
+      "initial_review_state": "pending",
+      "agent_approve": {
+        "response_type": 101,
+        "code": "INVALID_FRAME",
+        "challenge": null
+      },
+      "foreign_cancel": {
+        "response_type": 101,
+        "code": "REQUEST_DENIED",
+        "challenge": null
+      },
+      "authentication_cancellation": {
+        "authentication_cancelled": true,
+        "decision_submitted": false,
+        "context_invalidated": true
+      },
+      "state_after_authentication_cancel": "pending",
+      "hardware_approval": {
+        "state": "approved",
+        "canonical_review_checked": true,
+        "production_presence_read": true
+      },
+      "owner_await": {
+        "response_type": 100,
+        "state": "approved",
+        "upstream_status": null
+      },
+      "foreign_consume": {
+        "response_type": 101,
+        "code": "REQUEST_DENIED",
+        "challenge": null
+      },
+      "owner_consume": {
+        "response_type": 100,
+        "state": null,
+        "upstream_status": 200,
+        "stop_reason": "end_turn",
+        "usage": {
+          "input_tokens": 27,
+          "output_tokens": 31,
+          "cache_read_input_tokens": 0,
+          "server_tool_use": {
+            "web_search_requests": 0
+          },
+          "service_tier": "standard"
+        }
+      },
+      "owner_replay": {
+        "response_type": 101,
+        "code": "REQUEST_DENIED",
+        "challenge": null
+      },
+      "consumed_state": "consumed",
+      "second_prepare": {
+        "response_type": 101,
+        "code": "APPROVAL_REQUIRED",
+        "challenge": "8041a374-6bae-4de6-9f3e-9a8e24ab1771"
+      },
+      "owner_cancel": {
+        "response_type": 100,
+        "state": "cancelled",
+        "upstream_status": null
+      },
+      "cancelled_state": "cancelled",
+      "passed": true
+    },
+    "signed_presence_restrictions": {
+      "exit_code": 0,
+      "uses_production_presence_read": true,
+      "rejected_operations": {
+        "change-password": true,
+        "renew-presence": true,
+        "rotate-recovery": true
+      }
+    },
+    "T11_full_500": {
+      "source": "1e3b5cd",
+      "started_at_ms": 1791061382563,
+      "profile": "glm-acceptance",
+      "model": "glm-5.3-flash",
+      "budget_usd": 500,
+      "T11_criterion": "500 authorized calls with no UI; transport failures recorded separately; no automatic retry",
+      "installed_daemon_sha256": "833ed68852638a677afc65a8e624b72e3d4c62e84db79a9c5ed4db22e4a22a00",
+      "run_exit_code": 0,
+      "calls": {
+        "target_calls": 500,
+        "attempted_calls": 500,
+        "successful_calls": 499,
+        "failed_calls": 1,
+        "max_output_tokens_per_call": 256,
+        "input_tokens": 16467,
+        "output_tokens": 21727,
+        "stop_reasons": {
+          "end_turn": 499
+        },
+        "ui_automation_operations": 0,
+        "automatic_retries": 0,
+        "failures": [
+          {
+            "index": 296,
+            "status": 502,
+            "code": "UPSTREAM_FAILED",
+            "request_id": "e87211a5-adaf-445a-b226-0a97e0a3be74",
+            "seconds": 10.814
+          }
+        ],
+        "seconds": 1881.581,
+        "standard_successful_token_cost_cny": 0.074009
+      },
+      "session_id": "92edb8b6-6ebd-4be6-927f-984c70af4b4b",
+      "audit_event_counts": {
+        "session.revoked": 1,
+        "execution.finished": 499,
+        "execution.started": 500,
+        "execution.indeterminate": 1,
+        "session.created": 1
+      },
+      "terminal_reasons": {
+        "finished": 499,
+        "upstream-timeout": 1
+      },
+      "approval_events": 0,
+      "after_status": {
+        "state": "unlocked",
+        "format_version": 25,
+        "runtime_version": "3.0.0-alpha.1",
+        "lab_enabled": false,
+        "sessions_active": 0,
+        "lease_journal": {
+          "verified": true,
+          "pending": 0,
+          "unknown": 0,
+          "complete": 0
+        },
+        "rollback": null,
+        "peer_security": "verified_signature"
+      },
+      "T11_no_UI_passed": true,
+      "500_successful_responses": false
+    },
+    "T11_test_daemon_shutdown": {
+      "exit_code": 0
+    },
+    "T11_first_attempt": {
+      "source": "1e3b5cd",
+      "installed_daemon_sha256": "833ed68852638a677afc65a8e624b72e3d4c62e84db79a9c5ed4db22e4a22a00",
+      "profile": "glm-acceptance",
+      "model": "glm-5.3-flash",
+      "budget_usd": 500,
+      "pricing_source": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+      "started_at_ms": 1791058865123,
+      "daemon_pid": 31960,
+      "unlock_exit_code": 0,
+      "run_exit_code": 1,
+      "calls": {
+        "target_calls": 500,
+        "completed_calls": 265,
+        "failed_calls": 1,
+        "max_output_tokens_per_call": 256,
+        "input_tokens": 4240,
+        "output_tokens": 20229,
+        "stop_reasons": {
+          "end_turn": 265
+        },
+        "ui_operations_performed": 0,
+        "automatic_retries": 0,
+        "seconds": 1189.006,
+        "failure": {
+          "index": 266,
+          "status": 502
+        },
+        "standard_token_cost_cny": 0.060033
+      },
+      "audit_read_exit_code": 2,
+      "audit_event_counts": {},
+      "approval_events": 0,
+      "after_status": {
+        "state": "unlocked",
+        "format_version": 25,
+        "runtime_version": "3.0.0-alpha.1",
+        "lab_enabled": false,
+        "sessions_active": 0,
+        "lease_journal": {
+          "verified": true,
+          "pending": 0,
+          "unknown": 0,
+          "complete": 0
+        },
+        "rollback": null,
+        "peer_security": "verified_signature"
+      },
+      "shutdown_exit_code": 0
+    },
+    "limitations": [
+      "134 Agent frames and six secret encodings are bounded probes, not all arbitrary encodings",
+      "local approval helper compiles production AppModel and PresenceKey; active window is injected, so actual App focus and visible Cancel click are unverified",
+      "T11 means 500 authorized invocations with no UI, not 500 successful upstream responses; one observed upstream timeout remains unassigned to DNS/connect/response stage",
+      "client-reported USD and token-price estimate are not provider invoices"
+    ]
+  },
+  "glm_responses_candidate": {
+    "template": "glm-responses@1",
+    "fixed_origin": "https://open.bigmodel.cn",
+    "fixed_path": "/api/v1/responses",
+    "auth": "Bearer",
+    "model": "glm-5.3-flash",
+    "primary_sources": [
+      "https://docs.bigmodel.cn/cn/guide/develop/responses/introduction",
+      "https://docs.bigmodel.cn/cn/coding-plan/tool/codex",
+      "https://docs.bigmodel.cn/openapi/openapi-responses.json"
+    ],
+    "initial_codex_failure": {
+      "source_base": "1e3b5cd",
+      "source_delta": "GLM Responses fixed template, gateway and App onboarding",
+      "policy_mode": "team",
+      "policy_signing": "temporary in-memory Ed25519 test signer",
+      "model": "glm-5.3-flash",
+      "profile": "glm-codex-acceptance",
+      "client_version": "0.160.0",
+      "ui_operations_performed": 0,
+      "started_at_ms": 1791062635800,
+      "installed_candidate_daemon_sha256": "adfc2aa0a2ac7b67c889b27cea0156d9cb6caf911995f9ad010ee844cfe82b04",
+      "policy_activated": true,
+      "vault_id": "5c703123-0c75-45a4-841c-826ee3ffcac3",
+      "client_exit_code": 1,
+      "client_seconds": 38.665,
+      "client_secret_matches": 0,
+      "client_event_counts": {
+        "thread.started": 1,
+        "item.completed": 7,
+        "turn.started": 1,
+        "error": 6,
+        "turn.failed": 1
+      },
+      "completion_is_ok": true,
+      "client_usage": [],
+      "audit_event_counts": {
+        "session.revoked": 1,
+        "execution.indeterminate": 6,
+        "execution.started": 6,
+        "session.created": 1,
+        "policy.activated": 1,
+        "policy.trust_installed": 1,
+        "action.created": 1,
+        "credential.created": 1,
+        "vault.unlocked": 1,
+        "vault.initialized": 1
+      },
+      "terminal_reasons": {
+        "text-stream-failed": 6
+      },
+      "measured_usage": [
+        {
+          "instance_slug": "glm-responses",
+          "utc_day": 20729,
+          "output_tokens": 4096,
+          "source": "indeterminate"
+        },
+        {
+          "instance_slug": "glm-responses",
+          "utc_day": 20729,
+          "output_tokens": 4096,
+          "source": "indeterminate"
+        },
+        {
+          "instance_slug": "glm-responses",
+          "utc_day": 20729,
+          "output_tokens": 4096,
+          "source": "indeterminate"
+        },
+        {
+          "instance_slug": "glm-responses",
+          "utc_day": 20729,
+          "output_tokens": 4096,
+          "source": "indeterminate"
+        },
+        {
+          "instance_slug": "glm-responses",
+          "utc_day": 20729,
+          "output_tokens": 4096,
+          "source": "indeterminate"
+        },
+        {
+          "instance_slug": "glm-responses",
+          "utc_day": 20729,
+          "output_tokens": 4096,
+          "source": "indeterminate"
+        }
+      ],
+      "sessions_after_client": 0,
+      "passed": false,
+      "shutdown_exit_code": 0
+    },
+    "root_cause": "GLM appends [DONE] after response.completed; old Responses parser rejected it",
+    "fix": "accept one optional DONE after completed/incomplete; still hold terminal through EOF and settlement, reject early/duplicate/trailing data",
+    "red_regression_log": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/glm-responses-checks/done-marker-red.log",
+    "focused_final_checks": [
+      {
+        "name": "stream-tests",
+        "exit_code": 0,
+        "seconds": 6.429
+      },
+      {
+        "name": "gateway-tests",
+        "exit_code": 0,
+        "seconds": 39.813
+      }
+    ],
+    "swift_modes": [
+      {
+        "mode": "presence",
+        "exit_code": 0,
+        "seconds": 1.646
+      },
+      {
+        "mode": "local-approval",
+        "exit_code": 0,
+        "seconds": 1.518
+      },
+      {
+        "mode": "flow",
+        "exit_code": 0,
+        "seconds": 1.479
+      },
+      {
+        "mode": "onboarding",
+        "exit_code": 0,
+        "seconds": 0.803
+      },
+      {
+        "mode": "profile-authoring",
+        "exit_code": 0,
+        "seconds": 1.23
+      },
+      {
+        "mode": "personal-policy",
+        "exit_code": 0,
+        "seconds": 1.026
+      },
+      {
+        "mode": "rollback",
+        "exit_code": 0,
+        "seconds": 0.97
+      },
+      {
+        "mode": "activity",
+        "exit_code": 0,
+        "seconds": 1.274
+      },
+      {
+        "mode": "protection",
+        "exit_code": 0,
+        "seconds": 0.648
+      },
+      {
+        "mode": "oidc",
+        "exit_code": 0,
+        "seconds": 0.536
+      }
+    ],
+    "signed_build": {
+      "source_base": "1e3b5cd",
+      "exit_code": 0,
+      "seconds": 62.858,
+      "app": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/macos-ui-glm-responses-final/Rekey.app",
+      "binary_sha256": {
+        "rekey": "1f0314f2c9ac028d096cac3ec6a3c35baec51685559caacd7d6a97dcb8a81a58",
+        "rekeyd": "53c0af5ba62c541e9b53799b07f530bde149a873aeae427c2a5a414d28cd4bd8",
+        "rekey-mcp": "e3c98f9abaf1f8ed7cce08ee4acbc20c0e6297d33e706f3c82184f0fab180803"
+      },
+      "app_binary_sha256": "7bc0d38d1b8d60a00cfe1e30ec457681fcb5f9cbf298bdf7adf3a6a9ee1dcfed",
+      "production_source_sha256": {
+        "apps/macos/Forms.swift": "a336972cafe30fabda4f096101bb411387ca0a4b70ca756c1f203520bb10157b",
+        "apps/macos/Model.swift": "c555fcd0f69f26045d8374ccd8db6e8a7229332a6debd7f2dc742f98285b0892",
+        "crates/rekey-broker/src/executor/llm.rs": "a52e8f9c05e3436bd08c82566a071ac294efa4bf0f99302b644ba05defec48aa",
+        "crates/rekey-broker/src/executor/llm_stream.rs": "650d086a2a41dbed812a1c830ae5c3c50d07746511c2a1884d58698654f7579a",
+        "crates/rekey-broker/src/runtime/gateway.rs": "48d7d01d7bf1de202983c2a8211dc37565639bba724ad2a4f70b637839633512",
+        "crates/rekey-broker/src/runtime/profile.rs": "0bfb8ded81cbbeb30e2cfc60c3fe268531d06b548b052619b15d5fb1a137fc53",
+        "crates/rekey-domain/src/ipc.rs": "ef710e77b1274a3ae930eb07c3bc1cc54ce4e9d68ecab6b6911381f5b6a34cf7",
+        "crates/rekey-domain/src/template.rs": "3b5b0dcc17fd83f2ab3dc37e1c1d7b1922c370e35ef753ebd3649589d8ee11d9",
+        "crates/rekey-policy/src/templates.rs": "8662c4d18f5ea0d3b6644501db78006fa2c5a0f5f29a3a17c0319826ef4a747a",
+        "crates/rekey-vault/src/authority.rs": "f4b5a751686ebd15d37766d51283b4d257b7138c9e0486d446a5a0005d3f8be1"
+      }
+    },
+    "status": "final notarized pkg installed; actual installed Claude Code and Codex SDK calls and generated-config native Codex MCP call passed",
+    "screen_lock_blocker": {
+      "probe_exit_code": 0,
+      "protected_anchor_read": {
+        "status": -25308
+      },
+      "screen_locked": true
+    },
+    "app_notary": {
+      "package": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/Rekey-glm-responses-final-notary.zip",
+      "transport": "Apple documented Notary REST API via existing local proxy",
+      "uploaded": true,
+      "authenticated_history": true,
+      "submission_id": "b46ddd85-9e80-435e-b38e-19b9c8cd5924",
+      "status": "Accepted",
+      "seconds": 69.3,
+      "issues": null,
+      "status_code": 0
+    },
+    "pkg_notary": {
+      "package": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/macos-pkg-glm-responses-final/Rekey-3.0.0-alpha.1.pkg",
+      "transport": "Apple documented Notary REST API via existing local proxy",
+      "uploaded": true,
+      "authenticated_history": true,
+      "submission_id": "8b8bc6cb-235b-472b-afe0-db6d7728e777",
+      "status": "Accepted",
+      "seconds": 69.64,
+      "issues": null,
+      "status_code": 0
+    },
+    "initial_restart_failure": {
+      "source_base": "1e3b5cd",
+      "source_delta": "GLM Responses plus single optional DONE marker after terminal; unchanged EOF and sealing",
+      "policy_mode": "team",
+      "policy_signing": "existing temporary Ed25519 test policy",
+      "model": "glm-5.3-flash",
+      "profile": "glm-codex-acceptance",
+      "client_version": "0.160.0",
+      "ui_operations_performed": 0,
+      "started_at_ms": 1791063649967,
+      "candidate_daemon_sha256": "53c0af5ba62c541e9b53799b07f530bde149a873aeae427c2a5a414d28cd4bd8",
+      "failure_type": "RuntimeError",
+      "passed": false,
+      "shutdown_failed": true
+    },
+    "packaging": [
+      {
+        "name": "staple-app",
+        "exit_code": 0,
+        "seconds": 0.985
+      },
+      {
+        "name": "validate-app",
+        "exit_code": 0,
+        "seconds": 0.832
+      },
+      {
+        "name": "signature-app",
+        "exit_code": 0,
+        "seconds": 0.041
+      },
+      {
+        "name": "gatekeeper-app",
+        "exit_code": 0,
+        "seconds": 0.301
+      },
+      {
+        "name": "build-pkg",
+        "exit_code": 0,
+        "seconds": 3.375
+      },
+      {
+        "name": "staple-pkg",
+        "exit_code": 0,
+        "seconds": 0.85
+      },
+      {
+        "name": "validate-pkg",
+        "exit_code": 0,
+        "seconds": 0.797
+      },
+      {
+        "name": "signature-pkg",
+        "exit_code": 0,
+        "seconds": 0.285
+      },
+      {
+        "name": "gatekeeper-pkg",
+        "exit_code": 0,
+        "seconds": 0.213
+      }
+    ],
+    "package": {
+      "path": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/macos-pkg-glm-responses-final/Rekey-3.0.0-alpha.1.pkg",
+      "bytes": 20392071,
+      "sha256": "f011fbd5141d8cad644372f3f9740c37ecc81f819ad111cc7aad2ce6d785916d"
+    },
+    "mechanical_contracts": [
+      {
+        "name": "forbidden-operations",
+        "no_matches": true,
+        "exit_code": 1
+      },
+      {
+        "name": "agent-secret-surface",
+        "no_matches": true,
+        "exit_code": 1
+      },
+      {
+        "name": "cli-dependency-boundary",
+        "exit_code": 0,
+        "forbidden_dependencies": false
+      }
+    ],
+    "source_review": {
+      "production_source_mismatch": [],
+      "changed_files_checked": 20,
+      "credential_matches": [],
+      "encoding_variants": 6
+    },
+    "installation_scope": {
+      "installed": {
+        "rekey": "1f0314f2c9ac028d096cac3ec6a3c35baec51685559caacd7d6a97dcb8a81a58",
+        "rekeyd": "53c0af5ba62c541e9b53799b07f530bde149a873aeae427c2a5a414d28cd4bd8",
+        "rekey-mcp": "e3c98f9abaf1f8ed7cce08ee4acbc20c0e6297d33e706f3c82184f0fab180803"
+      },
+      "candidate": {
+        "rekey": "1f0314f2c9ac028d096cac3ec6a3c35baec51685559caacd7d6a97dcb8a81a58",
+        "rekeyd": "53c0af5ba62c541e9b53799b07f530bde149a873aeae427c2a5a414d28cd4bd8",
+        "rekey-mcp": "e3c98f9abaf1f8ed7cce08ee4acbc20c0e6297d33e706f3c82184f0fab180803"
+      },
+      "candidate_installed": true,
+      "pkg": {
+        "path": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/macos-pkg-glm-responses-final/Rekey-3.0.0-alpha.1.pkg",
+        "bytes": 20392071,
+        "sha256": "f011fbd5141d8cad644372f3f9740c37ecc81f819ad111cc7aad2ce6d785916d"
+      },
+      "pre_upgrade_installed": {
+        "rekey": "4d3cc8c6814e884729c125bc9d4d4d0d44710bada82cfa0d44cd4effc92899ec",
+        "rekeyd": "833ed68852638a677afc65a8e624b72e3d4c62e84db79a9c5ed4db22e4a22a00",
+        "rekey-mcp": "95f537305768415ad05f7e889e29e0f0e855397c488d26dcad982669ae0a763f"
+      }
+    },
+    "source_checks": [
+      {
+        "name": "test-workspace-default",
+        "command": [
+          "cargo",
+          "test",
+          "--workspace",
+          "--",
+          "--test-threads=1"
+        ],
+        "exit_code": 0,
+        "seconds": 1077.909
+      },
+      {
+        "name": "check-lab",
+        "command": [
+          "cargo",
+          "check",
+          "--workspace",
+          "--all-targets",
+          "--features",
+          "lab"
+        ],
+        "exit_code": 0,
+        "seconds": 5.008
+      },
+      {
+        "name": "clippy-default",
+        "command": [
+          "cargo",
+          "clippy",
+          "--workspace",
+          "--all-targets",
+          "--",
+          "-D",
+          "warnings"
+        ],
+        "exit_code": 0,
+        "seconds": 3.994
+      },
+      {
+        "name": "clippy-lab",
+        "command": [
+          "cargo",
+          "clippy",
+          "--workspace",
+          "--all-targets",
+          "--features",
+          "lab",
+          "--",
+          "-D",
+          "warnings"
+        ],
+        "exit_code": 0,
+        "seconds": 5.629
+      },
+      {
+        "name": "test-gateway-lab",
+        "command": [
+          "cargo",
+          "test",
+          "-p",
+          "rekey-broker",
+          "--features",
+          "lab",
+          "--test",
+          "gateway",
+          "--",
+          "--test-threads=1"
+        ],
+        "exit_code": 0,
+        "seconds": 41.264
+      },
+      {
+        "name": "fmt-check",
+        "command": [
+          "cargo",
+          "fmt",
+          "--all",
+          "--check"
+        ],
+        "exit_code": 0,
+        "seconds": 0.942
+      }
+    ],
+    "default_counts": {
+      "passed": 1021,
+      "failed": 0,
+      "ignored": 6
+    },
+    "default_all_targets_check": {
+      "exit_code": 0,
+      "log": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/glm-responses-final-checks/check-default.log"
+    },
+    "upgrade_admin_check": {
+      "noninteractive_admin_available": false,
+      "probe_exit_code": 1,
+      "prompt_triggered": false
+    },
+    "final_gateway_lab_counts": {
+      "passed": 16,
+      "failed": 0,
+      "ignored": 0
+    },
+    "format_check": true,
+    "real_codex_final_candidate": {
+      "source_commit": "abf8c2f4e74b02f575f5ee37a4b29b8a160a6764",
+      "source_delta": "GLM Responses fixed template, gateway, App onboarding and post-terminal DONE fix",
+      "policy_mode": "team",
+      "policy_signing": "temporary in-memory Ed25519 test signer",
+      "model": "glm-5.3-flash",
+      "profile": "glm-codex-acceptance",
+      "client_version": "0.160.0",
+      "ui_operations_performed": 0,
+      "started_at_ms": 1791095942771,
+      "installed_candidate_daemon_sha256": "53c0af5ba62c541e9b53799b07f530bde149a873aeae427c2a5a414d28cd4bd8",
+      "policy_activated": true,
+      "vault_id": "e867b50b-cd01-4405-a3df-feda92f90058",
+      "client_exit_code": 0,
+      "client_seconds": 9.611,
+      "client_secret_matches": 0,
+      "client_event_counts": {
+        "thread.started": 1,
+        "item.completed": 2,
+        "turn.started": 1,
+        "turn.completed": 1
+      },
+      "completion_is_ok": true,
+      "client_usage": [
+        {
+          "input_tokens": 13352,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 11,
+          "reasoning_output_tokens": 8
+        }
+      ],
+      "audit_event_counts": {
+        "session.revoked": 1,
+        "execution.finished": 1,
+        "execution.started": 1,
+        "session.created": 1,
+        "policy.activated": 1,
+        "policy.trust_installed": 1,
+        "action.created": 1,
+        "credential.created": 1,
+        "vault.unlocked": 1,
+        "vault.initialized": 1
+      },
+      "terminal_reasons": {
+        "finished": 1
+      },
+      "measured_usage": [
+        {
+          "instance_slug": "glm-responses",
+          "utc_day": 20730,
+          "output_tokens": 11,
+          "source": "measured"
+        }
+      ],
+      "sessions_after_client": 0,
+      "passed": true,
+      "shutdown_exit_code": 0
+    },
+    "screen_unlocked_anchor_read": {
+      "probe_exit_code": 0,
+      "protected_anchor_read": {
+        "generation": 5,
+        "status": 0,
+        "when_unlocked_this_device_only": true
+      }
+    },
+    "expired_test_policy_attempt": {
+      "source_base": "1e3b5cd",
+      "source_delta": "GLM Responses plus single optional DONE marker after terminal; unchanged EOF and sealing",
+      "policy_mode": "team",
+      "policy_signing": "existing temporary Ed25519 test policy",
+      "model": "glm-5.3-flash",
+      "profile": "glm-codex-acceptance",
+      "client_version": "0.160.0",
+      "ui_operations_performed": 0,
+      "started_at_ms": 1791095878931,
+      "candidate_daemon_sha256": "53c0af5ba62c541e9b53799b07f530bde149a873aeae427c2a5a414d28cd4bd8",
+      "client_exit_code": 2,
+      "client_seconds": 0.019,
+      "client_secret_matches": 0,
+      "client_event_counts": {},
+      "completion_is_ok": false,
+      "client_usage": [],
+      "audit_event_counts": {
+        "vault.unlocked": 1
+      },
+      "terminal_reasons": {},
+      "measured_usage": [],
+      "sessions_after_client": 0,
+      "passed": false,
+      "shutdown_exit_code": 0
+    },
+    "expired_test_policy_reason": "Original one-hour team test policy expired before the next-day resume; real client did not start. A fresh isolated team fixture with an in-memory signer was created without changing existing vaults.",
+    "real_claude_code_final_candidate": {
+      "source_commit": "abf8c2f4e74b02f575f5ee37a4b29b8a160a6764",
+      "profile": "glm-acceptance",
+      "model": "glm-5.3-flash",
+      "client_version": "2.1.281",
+      "ui_operations_performed": 0,
+      "started_at_ms": 1791096480794,
+      "candidate_daemon_sha256": "53c0af5ba62c541e9b53799b07f530bde149a873aeae427c2a5a414d28cd4bd8",
+      "exit_code": 0,
+      "seconds": 4.361,
+      "client_result": {
+        "type": "result",
+        "subtype": "success",
+        "is_error": false,
+        "num_turns": 1,
+        "duration_ms": 3619,
+        "duration_api_ms": 3594
+      },
+      "result_is_ok": true,
+      "usage": {
+        "input_tokens": 139,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 13
+      },
+      "model_usage": {
+        "glm-5.3-flash": {
+          "inputTokens": 139,
+          "outputTokens": 13,
+          "cacheReadInputTokens": 0,
+          "cacheCreationInputTokens": 0,
+          "webSearchRequests": 0,
+          "costUSD": 0.0008159999999999999,
+          "contextWindow": 200000,
+          "maxOutputTokens": 32000,
+          "thinkingTokens": 0
+        }
+      },
+      "api_error_status": [],
+      "stderr_hint_login": false,
+      "stderr_bytes": 80,
+      "sessions_after_client": 0,
+      "audit_event_counts": {
+        "session.revoked": 1,
+        "execution.finished": 1,
+        "execution.started": 1,
+        "session.created": 1,
+        "vault.unlocked": 1
+      },
+      "measured_usage": [
+        {
+          "instance_slug": "glm",
+          "utc_day": 20730,
+          "output_tokens": 13,
+          "source": "measured"
+        }
+      ],
+      "passed": true,
+      "shutdown_exit_code": 0
+    },
+    "package_upgrade_attempt": {
+      "started_utc": "2026-10-04T10:08:44.294032+00:00",
+      "original_vault_modified": false,
+      "source_sha256": "f011fbd5141d8cad644372f3f9740c37ecc81f819ad111cc7aad2ce6d785916d",
+      "staged_sha256": "f011fbd5141d8cad644372f3f9740c37ecc81f819ad111cc7aad2ce6d785916d",
+      "staged_package": "/private/tmp/rekey-v3-responses-install-gmvs_sje/Rekey-3.0.0-alpha.1.pkg",
+      "install_status": "installed",
+      "previous_timeout_retained": true,
+      "previous_app_running": true,
+      "app_quit_exit_code": 0,
+      "installer_osascript_pid": 60869,
+      "authentication_focus_exit_code": 0,
+      "authentication_focus_result": "bundle=com.apple.SecurityAgent activated=true",
+      "installer_exit_code": 0,
+      "installer_stdout": "installer: Package name is Rekey-3.0.0-alpha.1\ninstaller: Upgrading at base path /\ninstaller: The upgrade was successful.\n",
+      "installer_stderr": "",
+      "finished_utc": "2026-10-04T10:08:58.275969+00:00",
+      "installed_binary_hashes": {
+        "rekey": "1f0314f2c9ac028d096cac3ec6a3c35baec51685559caacd7d6a97dcb8a81a58",
+        "rekeyd": "53c0af5ba62c541e9b53799b07f530bde149a873aeae427c2a5a414d28cd4bd8",
+        "rekey-mcp": "e3c98f9abaf1f8ed7cce08ee4acbc20c0e6297d33e706f3c82184f0fab180803"
+      },
+      "installed_binary_hashes_match": true
+    },
+    "source_checks_reused": {
+      "source_commit": "abf8c2f4e74b02f575f5ee37a4b29b8a160a6764",
+      "only_documentation_changed": true,
+      "production_sha256_matches": true
+    },
+    "additional_real_client_mcp_attempt": {
+      "scope": "additional connect/native MCP test did not reach client startup",
+      "record": {
+        "source_commit": "abf8c2f4e74b02f575f5ee37a4b29b8a160a6764",
+        "source_delta": "GLM Responses plus single optional DONE marker after terminal; unchanged EOF and sealing",
+        "policy_mode": "team",
+        "policy_signing": "existing temporary Ed25519 test policy",
+        "model": "glm-5.3-flash",
+        "profile": "glm-codex-acceptance",
+        "client_version": "0.160.0",
+        "ui_operations_performed": 0,
+        "started_at_ms": 1791097237117,
+        "candidate_daemon_sha256": "53c0af5ba62c541e9b53799b07f530bde149a873aeae427c2a5a414d28cd4bd8",
+        "cli_failure": {
+          "operation": "shutdown",
+          "exit_code": 7,
+          "stderr": "error [IPC_UNAVAILABLE]: broker unreachable: No such file or directory (os error 2)\n"
+        },
+        "failure_type": "RuntimeError",
+        "passed": false,
+        "shutdown_failed": true
+      },
+      "blocker": {
+        "screen_locked": true,
+        "protected_anchor_read": {
+          "status": -25308
+        },
+        "native_client_started": false
+      }
+    },
+    "previous_package_upgrade_attempt": {
+      "original_vault_modified": false,
+      "previous_app_running": true,
+      "app_identifier": "com.starlight.rekey",
+      "app_quit_exit_code": 0,
+      "staged_package": "/private/tmp/rekey-v3-responses-install-bfg6oql8/Rekey-3.0.0-alpha.1.pkg",
+      "staged_sha256": "f011fbd5141d8cad644372f3f9740c37ecc81f819ad111cc7aad2ce6d785916d",
+      "source_sha256": "f011fbd5141d8cad644372f3f9740c37ecc81f819ad111cc7aad2ce6d785916d",
+      "install_status": "system administrator authentication timed out after 300 seconds; no installer payload applied",
+      "timeout_seconds": 300,
+      "installer_started": false,
+      "installed_binary_hashes_match": false
+    },
+    "installed_verification": {
+      "codesign": {
+        "exit_code": 0,
+        "output": "--prepared:/Applications/Rekey.app/Contents/Helpers/RekeyDaemon.app\n--validated:/Applications/Rekey.app/Contents/Helpers/RekeyDaemon.app\n/Applications/Rekey.app: valid on disk\n/Applications/Rekey.app: satisfies its Designated Requirement"
+      },
+      "gatekeeper": {
+        "exit_code": 0,
+        "output": "/Applications/Rekey.app: accepted\nsource=Notarized Developer ID"
+      },
+      "ticket": {
+        "exit_code": 68,
+        "output": "Processing: /Applications/Rekey.app\nerror is Error Domain=NSURLErrorDomain Code=-1200 \"A TLS error caused the secure connection to fail.\" UserInfo={_kCFStreamErrorCodeKey=-9816, NSUnderlyingError=0x925030a50 {Error Domain=kCFErrorDomainCFNetwork Code=-1200 \"(null)\" UserInfo={_kCFStreamPropertySSLClientCertificateState=0, _kCFNetworkCFStreamSSLErrorOriginalValue=-9816, _kCFStreamErrorDomainKey=3, _kCFStreamErrorCodeKey=-9816, _NSURLErrorNWPathKey=satisfied (Path is satisfied), viable, interface: utun0, dns}}, _NSURLErrorFailingURLSessionTaskErrorKey=LocalDataTask <E182A703-D2F3-44DA-9886-03DB6B5BD34C>.<1>, _NSURLErrorRelatedURLSessionTaskErrorKey=(\n    \"LocalDataTask <E182A703-D2F3-44DA-9886-03DB6B5BD34C>.<1>\"\n), NSLocalizedDescription=A TLS error caused the secure connection to fail., NSErrorFailingURLStringKey=https://api.apple-cloudkit.com/database/1/com.apple.gk.ticket-delivery/production/public/records/lookup, NSErrorFailingURLKey=https://api.apple-cloudkit.com/database/1/com.apple.gk.ticket-delivery/production/public/records/lookup, _kCFStreamErrorDomainKey=3}\nCloudKit's response is inconsistent with expections: (null)\nThe validate action failed! Error 68."
+      },
+      "receipt": {
+        "exit_code": 0,
+        "output": "package-id: com.starlight.rekey.pkg\nversion: 3.0.0-alpha.1\nvolume: /\nlocation: \ninstall-time: 1791108537"
+      },
+      "version": {
+        "exit_code": 0,
+        "output": "rekey 3.0.0-alpha.1"
+      },
+      "links": {
+        "rekey": {
+          "path": "/usr/local/bin/rekey",
+          "target": "/Applications/Rekey.app/Contents/Resources/bin/rekey",
+          "uid": 0
+        },
+        "rekeyd": {
+          "path": "/usr/local/bin/rekeyd",
+          "target": "/Applications/Rekey.app/Contents/Resources/bin/rekeyd",
+          "uid": 0
+        },
+        "rekey-mcp": {
+          "path": "/usr/local/bin/rekey-mcp",
+          "target": "/Applications/Rekey.app/Contents/Resources/bin/rekey-mcp",
+          "uid": 0
+        }
+      },
+      "app_owner_uid": 0,
+      "app_executable_sha256": "7bc0d38d1b8d60a00cfe1e30ec457681fcb5f9cbf298bdf7adf3a6a9ee1dcfed",
+      "ticket_first_attempt": {
+        "exit_code": 68,
+        "output": "Processing: /Applications/Rekey.app\nerror is Error Domain=NSURLErrorDomain Code=-1200 \"A TLS error caused the secure connection to fail.\" UserInfo={_kCFStreamErrorCodeKey=-9816, NSUnderlyingError=0xab7030420 {Error Domain=kCFErrorDomainCFNetwork Code=-1200 \"(null)\" UserInfo={_kCFStreamPropertySSLClientCertificateState=0, _kCFNetworkCFStreamSSLErrorOriginalValue=-9816, _kCFStreamErrorDomainKey=3, _kCFStreamErrorCodeKey=-9816, _NSURLErrorNWPathKey=satisfied (Path is satisfied), viable, interface: utun0, dns}}, _NSURLErrorFailingURLSessionTaskErrorKey=LocalDataTask <B92B936E-58DF-4880-823F-79C9E0751A7F>.<1>, _NSURLErrorRelatedURLSessionTaskErrorKey=(\n    \"LocalDataTask <B92B936E-58DF-4880-823F-79C9E0751A7F>.<1>\"\n), NSLocalizedDescription=A TLS error caused the secure connection to fail., NSErrorFailingURLStringKey=https://api.apple-cloudkit.com/database/1/com.apple.gk.ticket-delivery/production/public/records/lookup, NSErrorFailingURLKey=https://api.apple-cloudkit.com/database/1/com.apple.gk.ticket-delivery/production/public/records/lookup, _kCFStreamErrorDomainKey=3}\nCloudKit's response is inconsistent with expections: (null)\nThe validate action failed! Error 68."
+      }
+    },
+    "installed_bundle_inventory": {
+      "source_file_count": 16,
+      "installed_file_count": 16,
+      "missing": [],
+      "added": [],
+      "changed": [],
+      "all_bundle_files_match": true
+    },
+    "installed_ticket_validation_scope": "Both current online stapler validation attempts failed connecting to Apple CloudKit with TLS -1200. The same source App was previously stapled/validated successfully; all 16 installed bundle files match it exactly, strict codesign and Gatekeeper accepted the installed App. No TLS verification bypass or network configuration change.",
+    "real_codex_installed": {
+      "source_commit": "abf8c2f4e74b02f575f5ee37a4b29b8a160a6764",
+      "source_delta": "GLM Responses fixed template, gateway, App onboarding and post-terminal DONE fix",
+      "policy_mode": "team",
+      "policy_signing": "temporary in-memory Ed25519 test signer",
+      "model": "glm-5.3-flash",
+      "profile": "glm-codex-acceptance",
+      "client_version": "0.160.0",
+      "ui_operations_performed": 0,
+      "started_at_ms": 1791108624301,
+      "installed_candidate_daemon_sha256": "53c0af5ba62c541e9b53799b07f530bde149a873aeae427c2a5a414d28cd4bd8",
+      "policy_activated": true,
+      "vault_id": "a7026e18-50ed-44ff-b62a-adf80eb18351",
+      "client_exit_code": 0,
+      "client_seconds": 9.008,
+      "client_secret_matches": 0,
+      "client_event_counts": {
+        "thread.started": 1,
+        "item.completed": 2,
+        "turn.started": 1,
+        "turn.completed": 1
+      },
+      "completion_is_ok": true,
+      "client_usage": [
+        {
+          "input_tokens": 13346,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 11,
+          "reasoning_output_tokens": 8
+        }
+      ],
+      "audit_event_counts": {
+        "session.revoked": 1,
+        "execution.finished": 1,
+        "execution.started": 1,
+        "session.created": 1,
+        "policy.activated": 1,
+        "policy.trust_installed": 1,
+        "action.created": 1,
+        "credential.created": 1,
+        "vault.unlocked": 1,
+        "vault.initialized": 1
+      },
+      "terminal_reasons": {
+        "finished": 1
+      },
+      "measured_usage": [
+        {
+          "instance_slug": "glm-responses",
+          "utc_day": 20730,
+          "output_tokens": 11,
+          "source": "measured"
+        }
+      ],
+      "sessions_after_client": 0,
+      "passed": true,
+      "shutdown_exit_code": 0
+    },
+    "real_claude_code_installed": {
+      "source_commit": "abf8c2f4e74b02f575f5ee37a4b29b8a160a6764",
+      "profile": "glm-acceptance",
+      "model": "glm-5.3-flash",
+      "client_version": "2.1.281",
+      "ui_operations_performed": 0,
+      "started_at_ms": 1791108624126,
+      "candidate_daemon_sha256": "53c0af5ba62c541e9b53799b07f530bde149a873aeae427c2a5a414d28cd4bd8",
+      "exit_code": 0,
+      "seconds": 8.222,
+      "client_result": {
+        "type": "result",
+        "subtype": "success",
+        "is_error": false,
+        "num_turns": 1,
+        "duration_ms": 5548,
+        "duration_api_ms": 5516
+      },
+      "result_is_ok": true,
+      "usage": {
+        "input_tokens": 140,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 18
+      },
+      "model_usage": {
+        "glm-5.3-flash": {
+          "inputTokens": 140,
+          "outputTokens": 18,
+          "cacheReadInputTokens": 0,
+          "cacheCreationInputTokens": 0,
+          "webSearchRequests": 0,
+          "costUSD": 0.00092,
+          "contextWindow": 200000,
+          "maxOutputTokens": 32000,
+          "thinkingTokens": 0
+        }
+      },
+      "api_error_status": [],
+      "stderr_hint_login": false,
+      "stderr_bytes": 80,
+      "sessions_after_client": 0,
+      "audit_event_counts": {
+        "session.revoked": 1,
+        "execution.finished": 1,
+        "execution.started": 1,
+        "session.created": 1,
+        "vault.unlocked": 1
+      },
+      "measured_usage": [
+        {
+          "instance_slug": "glm",
+          "utc_day": 20730,
+          "output_tokens": 18,
+          "source": "measured"
+        }
+      ],
+      "passed": true,
+      "shutdown_exit_code": 0
+    },
+    "installed_sdk_scope": "Actual /Applications CLI and embedded daemon; isolated tests, no new presence or Secure Enclave interaction; normal settlement and owner revocation, password-proof shutdown.",
+    "fresh_installed_team_fixture": "Earlier one-hour policy expired; a separate empty team fixture used a temporary RAM signer and two-hour policy. Existing personal/user/earlier team vaults were preserved.",
+    "real_codex_installed_connect_mcp": {
+      "source_commit": "abf8c2f4e74b02f575f5ee37a4b29b8a160a6764",
+      "source_delta": "GLM Responses plus single optional DONE marker after terminal; unchanged EOF and sealing",
+      "policy_mode": "team",
+      "policy_signing": "existing temporary Ed25519 test policy",
+      "model": "glm-5.3-flash",
+      "profile": "glm-codex-acceptance",
+      "client_version": "0.160.0",
+      "ui_operations_performed": 0,
+      "started_at_ms": 1791111912624,
+      "candidate_daemon_sha256": "53c0af5ba62c541e9b53799b07f530bde149a873aeae427c2a5a414d28cd4bd8",
+      "project_trust_source": "isolated CODEX_HOME config; CLI trust overrides do not enable project-layer discovery",
+      "generated_mcp_configuration_hand_edited": false,
+      "test_client_mcp_approval": "per-invocation rekey server only; existing authorized provider test; read-only shell sandbox retained; no user configuration changed",
+      "connect_exit_code": 0,
+      "connect_tty_confirmation": true,
+      "connect_generated_config_sha256": "fb44bdec8649e479c0d67268dd1f5e3cef88b792d350f2a97e16706a92fb6d71",
+      "connect_config_env_vars": [
+        "REKEY_CAPABILITY",
+        "REKEY_AGENT_SOCKET"
+      ],
+      "connect_uses_candidate_mcp": true,
+      "connect_configuration_hand_edited": false,
+      "client_exit_code": 0,
+      "client_seconds": 39.085,
+      "client_secret_matches": 0,
+      "client_event_counts": {
+        "thread.started": 1,
+        "item.completed": 3,
+        "turn.started": 1,
+        "item.started": 1,
+        "turn.completed": 1
+      },
+      "completion_is_ok": true,
+      "mcp_completed_calls": [
+        {
+          "server": "rekey",
+          "tool": "rekey.6ba56ac9-4f46-4b6d-904c-bc4751fa7cf3.v1",
+          "status": "completed"
+        }
+      ],
+      "client_usage": [
+        {
+          "input_tokens": 28387,
+          "cached_input_tokens": 576,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 88,
+          "reasoning_output_tokens": 0
+        }
+      ],
+      "audit_event_counts": {
+        "session.revoked": 1,
+        "execution.finished": 3,
+        "execution.started": 3,
+        "session.created": 1,
+        "vault.unlocked": 1
+      },
+      "terminal_reasons": {
+        "finished": 3
+      },
+      "measured_usage": [
+        {
+          "instance_slug": "glm-responses",
+          "utc_day": 20730,
+          "output_tokens": 3,
+          "source": "measured"
+        },
+        {
+          "instance_slug": "glm-responses",
+          "utc_day": 20730,
+          "output_tokens": 106,
+          "source": "measured"
+        },
+        {
+          "instance_slug": "glm-responses",
+          "utc_day": 20730,
+          "output_tokens": 85,
+          "source": "measured"
+        }
+      ],
+      "sessions_after_client": 0,
+      "passed": true,
+      "shutdown_exit_code": 0
+    },
+    "native_mcp_attempts_retained": {
+      "cli_trust_not_loaded": {
+        "source_commit": "abf8c2f4e74b02f575f5ee37a4b29b8a160a6764",
+        "source_delta": "GLM Responses plus single optional DONE marker after terminal; unchanged EOF and sealing",
+        "policy_mode": "team",
+        "policy_signing": "existing temporary Ed25519 test policy",
+        "model": "glm-5.3-flash",
+        "profile": "glm-codex-acceptance",
+        "client_version": "0.160.0",
+        "ui_operations_performed": 0,
+        "started_at_ms": 1791108680892,
+        "candidate_daemon_sha256": "53c0af5ba62c541e9b53799b07f530bde149a873aeae427c2a5a414d28cd4bd8",
+        "connect_exit_code": 0,
+        "connect_tty_confirmation": true,
+        "connect_generated_config_sha256": "fb44bdec8649e479c0d67268dd1f5e3cef88b792d350f2a97e16706a92fb6d71",
+        "connect_config_env_vars": [
+          "REKEY_CAPABILITY",
+          "REKEY_AGENT_SOCKET"
+        ],
+        "connect_uses_candidate_mcp": true,
+        "connect_configuration_hand_edited": false,
+        "client_exit_code": 0,
+        "client_seconds": 26.083,
+        "client_secret_matches": 0,
+        "client_event_counts": {
+          "thread.started": 1,
+          "item.completed": 2,
+          "turn.started": 1,
+          "turn.completed": 1
+        },
+        "completion_is_ok": false,
+        "mcp_completed_calls": [],
+        "client_usage": [
+          {
+            "input_tokens": 13394,
+            "cached_input_tokens": 0,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 80,
+            "reasoning_output_tokens": 59
+          }
+        ],
+        "audit_event_counts": {
+          "session.revoked": 1,
+          "execution.finished": 1,
+          "execution.started": 3,
+          "execution.indeterminate": 2,
+          "session.created": 1,
+          "vault.unlocked": 1
+        },
+        "terminal_reasons": {
+          "finished": 1,
+          "text-stream-failed": 2
+        },
+        "measured_usage": [
+          {
+            "instance_slug": "glm-responses",
+            "utc_day": 20730,
+            "output_tokens": 80,
+            "source": "measured"
+          },
+          {
+            "instance_slug": "glm-responses",
+            "utc_day": 20730,
+            "output_tokens": 4096,
+            "source": "indeterminate"
+          },
+          {
+            "instance_slug": "glm-responses",
+            "utc_day": 20730,
+            "output_tokens": 4096,
+            "source": "indeterminate"
+          }
+        ],
+        "sessions_after_client": 0,
+        "passed": false,
+        "shutdown_exit_code": 0
+      },
+      "persisted_trust_host_tool_approval_denied": {
+        "source_commit": "abf8c2f4e74b02f575f5ee37a4b29b8a160a6764",
+        "source_delta": "GLM Responses plus single optional DONE marker after terminal; unchanged EOF and sealing",
+        "policy_mode": "team",
+        "policy_signing": "existing temporary Ed25519 test policy",
+        "model": "glm-5.3-flash",
+        "profile": "glm-codex-acceptance",
+        "client_version": "0.160.0",
+        "ui_operations_performed": 0,
+        "started_at_ms": 1791108913615,
+        "candidate_daemon_sha256": "53c0af5ba62c541e9b53799b07f530bde149a873aeae427c2a5a414d28cd4bd8",
+        "project_trust_source": "isolated CODEX_HOME config; CLI trust overrides do not enable project-layer discovery",
+        "generated_mcp_configuration_hand_edited": false,
+        "connect_exit_code": 0,
+        "connect_tty_confirmation": true,
+        "connect_generated_config_sha256": "fb44bdec8649e479c0d67268dd1f5e3cef88b792d350f2a97e16706a92fb6d71",
+        "connect_config_env_vars": [
+          "REKEY_CAPABILITY",
+          "REKEY_AGENT_SOCKET"
+        ],
+        "connect_uses_candidate_mcp": true,
+        "connect_configuration_hand_edited": false,
+        "client_exit_code": 0,
+        "client_seconds": 28.778,
+        "client_secret_matches": 0,
+        "client_event_counts": {
+          "thread.started": 1,
+          "item.completed": 3,
+          "turn.started": 1,
+          "item.started": 1,
+          "turn.completed": 1
+        },
+        "completion_is_ok": false,
+        "mcp_completed_calls": [
+          {
+            "server": "rekey",
+            "tool": "rekey.6ba56ac9-4f46-4b6d-904c-bc4751fa7cf3.v1",
+            "status": "failed"
+          }
+        ],
+        "client_usage": [
+          {
+            "input_tokens": 28371,
+            "cached_input_tokens": 14080,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 145,
+            "reasoning_output_tokens": 50
+          }
+        ],
+        "audit_event_counts": {
+          "session.revoked": 1,
+          "execution.finished": 2,
+          "execution.started": 2,
+          "session.created": 1,
+          "vault.unlocked": 1
+        },
+        "terminal_reasons": {
+          "finished": 2
+        },
+        "measured_usage": [
+          {
+            "instance_slug": "glm-responses",
+            "utc_day": 20730,
+            "output_tokens": 65,
+            "source": "measured"
+          },
+          {
+            "instance_slug": "glm-responses",
+            "utc_day": 20730,
+            "output_tokens": 80,
+            "source": "measured"
+          }
+        ],
+        "sessions_after_client": 0,
+        "passed": false,
+        "shutdown_exit_code": 0
+      },
+      "config_inspection": {
+        "connect_exit_code": 0,
+        "variants": [
+          {
+            "name": "git_repository_cli_trust",
+            "client_exit_code": 0,
+            "mcp_list": [],
+            "stderr": ""
+          },
+          {
+            "name": "git_repository_persisted_temporary_trust",
+            "client_exit_code": 0,
+            "mcp_list": [
+              {
+                "name": "rekey",
+                "enabled": true,
+                "disabled_reason": null,
+                "transport": {
+                  "type": "stdio",
+                  "command": "/Applications/Rekey.app/Contents/Resources/bin/rekey-mcp",
+                  "args": [],
+                  "env": null,
+                  "env_vars": [
+                    "REKEY_CAPABILITY",
+                    "REKEY_AGENT_SOCKET"
+                  ],
+                  "cwd": null
+                },
+                "startup_timeout_sec": null,
+                "tool_timeout_sec": null,
+                "auth_status": "unsupported"
+              }
+            ],
+            "stderr": ""
+          }
+        ],
+        "project_path": "/private/tmp/rekey-mcp-config-git-uuau95zu",
+        "temporary_home": "/private/tmp/rekey-codex-home-9r7xmb3w"
+      },
+      "observed_tool_denial": "MCP tool call requires approval, but approval policy is never",
+      "primary_client_schema": "https://raw.githubusercontent.com/openai/codex/rust-v0.160.0/codex-rs/core/config.schema.json",
+      "resolution": "Only the isolated test CODEX_HOME stores project trust; per-invocation mcp_servers.rekey.default_tools_approval_mode=approve reflects the existing authorized fixed provider test. read-only sandbox remains. CLI-generated MCP transport configuration was not edited; user configuration unchanged.",
+      "initial_indeterminate_streams": "First untrusted-project attempt produced two text-stream-failed executions before completing a model response; the exact upstream event cause was not diagnosed or counted as a successful MCP call."
+    }
+  },
+  "pre_responses_default_test_counts": {
+    "passed": 1018,
+    "failed": 0,
+    "ignored": 6
+  },
+  "default_test_source": "GLM Responses final production_source_sha256, source base 1e3b5cd",
+  "previous_installed_dns_package": {
+    "package": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/macos-pkg-dns-final/Rekey-3.0.0-alpha.1.pkg",
+    "bytes": 20392536,
+    "sha256": "2f0722b757a2a2edb1da5c5011ffbdbfe40218a3bcd3f674ef1699570e873563"
+  },
+  "previous_installed_dns_distribution": [
+    {
+      "name": "dns-staple-pkg",
+      "exit_code": 0,
+      "seconds": 0.91
+    },
+    {
+      "name": "dns-staple-app",
+      "exit_code": 73,
+      "seconds": 1.03
+    },
+    {
+      "name": "dns-app-gatekeeper",
+      "exit_code": 0
+    },
+    {
+      "name": "dns-pkg-gatekeeper",
+      "exit_code": 0
+    },
+    {
+      "name": "dns-staple-validate-pkg",
+      "exit_code": 0
+    },
+    {
+      "name": "dns-staple-app-retry",
+      "exit_code": 73
+    },
+    {
+      "name": "dns-app-copy-staple-validate",
+      "exit_code": 0
+    },
+    {
+      "name": "dns-app-copy-signature",
+      "exit_code": 0
+    },
+    {
+      "name": "dns-app-copy-gatekeeper",
+      "exit_code": 0
+    },
+    {
+      "name": "dns-build-final-pkg",
+      "exit_code": 0
+    },
+    {
+      "name": "dns-final-staple-pkg",
+      "exit_code": 0
+    },
+    {
+      "name": "dns-final-staple-validate-pkg",
+      "exit_code": 0
+    },
+    {
+      "name": "dns-final-pkg-gatekeeper",
+      "exit_code": 0
+    }
+  ],
+  "installed_final_candidate": {
+    "source_commit": "abf8c2f4e74b02f575f5ee37a4b29b8a160a6764",
+    "installed_app": "/Applications/Rekey.app",
+    "package_sha256": "f011fbd5141d8cad644372f3f9740c37ecc81f819ad111cc7aad2ce6d785916d",
+    "sdk_clients_passed": [
+      "claude-code",
+      "codex"
+    ],
+    "native_mcp_client_passed": "codex",
+    "gui_and_service_lifecycle_claimed": false,
+    "fresh_account_t12_claimed": false,
+    "published": false
+  },
+  "terminal_closure_20261004": {
+    "source_base": "ee29ba268bc9a6adecdb1180f1b508c03acc6a1f",
+    "source_delta_files": [
+      "crates/rekey-cli/src/client.rs",
+      "crates/rekey-vault/src/generation_anchor.rs",
+      "crates/rekey-broker/src/executor/vault_source_tests.rs",
+      "scripts/p1-service-manager.sh"
+    ],
+    "production_delta_scope": "three lines of Linux-only warning fixes; macOS runtime behavior unchanged; signed package still records abf8c2f provenance",
+    "lab_full_initial": {
+      "command": [
+        "cargo",
+        "test",
+        "--workspace",
+        "--features",
+        "lab",
+        "--",
+        "--test-threads=1"
+      ],
+      "source_commit": "ee29ba268bc9a6adecdb1180f1b508c03acc6a1f",
+      "exit_code": 101,
+      "seconds": 84.7,
+      "passed": 44,
+      "failed": 1,
+      "ignored": 0,
+      "log": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/closure-20261004/lab-workspace.log"
+    },
+    "lab_relay_reproduction": [
+      {
+        "attempt": 1,
+        "exit_code": 0,
+        "elapsed_seconds": 21.913
+      },
+      {
+        "attempt": 2,
+        "exit_code": 0,
+        "elapsed_seconds": 1.098
+      },
+      {
+        "attempt": 3,
+        "exit_code": 0,
+        "elapsed_seconds": 1.054
+      },
+      {
+        "attempt": 4,
+        "exit_code": 0,
+        "elapsed_seconds": 1.436
+      },
+      {
+        "attempt": 5,
+        "exit_code": 0,
+        "elapsed_seconds": 1.066
+      }
+    ],
+    "lab_full_no_fail_fast": {
+      "command": [
+        "cargo",
+        "test",
+        "--workspace",
+        "--features",
+        "lab",
+        "--no-fail-fast",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 101,
+      "elapsed_seconds": 1706.495,
+      "reported_totals": {
+        "passed": 1488,
+        "failed": 1,
+        "ignored": 6
+      },
+      "log": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/closure-20261004/lab-workspace-complete.log",
+      "rerun_of_initial_failure": true,
+      "source_base": "ee29ba268bc9a6adecdb1180f1b508c03acc6a1f",
+      "test_binaries_built_before_platform_warning_fix": true,
+      "source_edited_during_run": [
+        "Linux-only warning fixes",
+        "service acceptance proof input"
+      ],
+      "test_cases_not_removed_or_recompiled_by_this_run": true
+    },
+    "lab_approle_phase_fixed": {
+      "command": [
+        "cargo",
+        "test",
+        "--workspace",
+        "--features",
+        "lab",
+        "actor_approle",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 136.866,
+      "counts": {
+        "passed": 22,
+        "failed": 0,
+        "ignored": 0
+      },
+      "expiry_interval_ms": 500,
+      "login_started_assertion": 1,
+      "source_effects_expected": 0,
+      "test_only_fix": true
+    },
+    "linux_strict_source_checks": {
+      "exit_code": 0,
+      "seconds": 169.546,
+      "arch": "aarch64",
+      "source_base": "ee29ba2",
+      "source_delta_files": [
+        "crates/rekey-cli/src/client.rs",
+        "crates/rekey-vault/src/generation_anchor.rs"
+      ],
+      "commands": [
+        "cargo clippy --workspace --all-targets -- -D warnings",
+        "cargo test -p rekey-vault generation_anchor::tests",
+        "cargo test -p rekey-cli --bin rekey"
+      ],
+      "offline": true
+    },
+    "linux_service_lifecycle": {
+      "exit_code": 0,
+      "seconds": 12.956,
+      "platform": "Ubuntu 24.04.4 aarch64",
+      "pid1": "systemd",
+      "user_uid": 502,
+      "source_base": "ee29ba2",
+      "source_delta": "Linux warning fixes and final fixture SHUTDOWN fresh password proof",
+      "scope": [
+        "release CLI + BrokerRuntime fixture graceful drain/race/audit fault/crash reconciliation",
+        "release rekeyd locked startup/signal stop/SIGKILL restart/fresh-proof shutdown/unload"
+      ],
+      "prior_failures_preserved": true
+    },
+    "linux_inventory": {
+      "platform": "Linux 6.8.0-117-generic aarch64 GNU/Linux",
+      "pid1": "systemd",
+      "uid": "502",
+      "binaries": {
+        "rekey": {
+          "sha256": "d74a67b06e1bd29cefe0ef3aa1be77617c19c2259c2b147e521893f74f0f97a6",
+          "bytes": 3937688
+        },
+        "rekeyd": {
+          "sha256": "91c8c1a82e0e1a44d071cb262f95479e9f225f817658c966effff9ad33620b4b",
+          "bytes": 23485208
+        },
+        "rekey-mcp": {
+          "sha256": "b90193a3d9dd1d7898e532fd1803225a79723d4b968dbd2fbf5c448c6c65dbd6",
+          "bytes": 1275720
+        }
+      },
+      "remaining_test_units": {
+        "exit_code": 0,
+        "output": ""
+      }
+    },
+    "macos_platform_checks": [
+      {
+        "command": [
+          "cargo",
+          "clippy",
+          "--workspace",
+          "--all-targets",
+          "--",
+          "-D",
+          "warnings"
+        ],
+        "exit_code": 0
+      },
+      {
+        "command": [
+          "cargo",
+          "fmt",
+          "--all",
+          "--check"
+        ],
+        "exit_code": 0
+      },
+      {
+        "command": [
+          "git",
+          "diff",
+          "--check"
+        ],
+        "exit_code": 0
+      }
+    ],
+    "mechanical_contracts": [
+      {
+        "pattern": "REKEY_PASSWORD|get_secret_value|/proxy/|passthrough",
+        "exit_code": 1,
+        "matches": 0
+      },
+      {
+        "pattern": "get_secret\\b|read_secret|export_secret",
+        "exit_code": 1,
+        "matches": 0
+      },
+      {
+        "command": "cargo tree -p rekey-cli -e normal",
+        "exit_code": 0,
+        "forbidden_dependencies": []
+      }
+    ],
+    "credential_scan": {
+      "tracked_files_checked": 616,
+      "distinct_real_glm_key_encoding_variants": 6,
+      "hit_count": 0,
+      "hit_paths": [],
+      "credential_value_logged": false
+    },
+    "fresh_account_handoff": {
+      "directory": "/Users/Shared/rekey-v3-acceptance-20261004",
+      "files": {
+        "rekey-v3.0.0-alpha.1-macos.pkg": {
+          "sha256": "f011fbd5141d8cad644372f3f9740c37ecc81f819ad111cc7aad2ce6d785916d",
+          "bytes": 20392071,
+          "source": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/closure-20261004/distribution/rekey-v3.0.0-alpha.1-macos.pkg"
+        },
+        "claude": {
+          "sha256": "a922981f6f3b55a251ef9f9dbaa0621a5f99cbcb5ca67f8a797476ccfc83f626",
+          "bytes": 220931760,
+          "source": "/Users/lifcc/.local/share/claude/versions/2.1.281"
+        }
+      },
+      "credential_files_copied": false,
+      "new_account_created": false
+    },
+    "review_instructions": "docs/superpowers/plans/2026-10-03-v3-implementation.md#人工验收与发布交接2026-10-04尚未执行",
+    "failures_preserved": {
+      "relay_503": "initial restart request returned 503; five unchanged repetitions passed; full rerun also passed relay target; initial SCIM/transport cause remains undetermined",
+      "approle_expiry": "full Lab run failed because no login.started audit existed; moved original 500ms expiry after fixture initialization and waited for its absolute expiry; all 22 AppRole cases pass without widening the interval or changing production behavior",
+      "linux_setup": "initial Rustup component download was interrupted after 710 seconds; reused cached official arm64 toolchain offline",
+      "service_sqlite": "first run lacked sqlite3; installed the fixture dependency",
+      "service_shutdown": "old fixture final SHUTDOWN omitted proof and failed with no tty; fresh password proof now supplied; expected audit fault is retained"
+    },
+    "release_workflow_missing_secrets": [
+      "APPLE_INSTALLER_CERTIFICATE",
+      "APPLE_INSTALLER_CERTIFICATE_PASSWORD",
+      "APPLE_INSTALLER_SIGNING_IDENTITY",
+      "APPLE_PROVISIONING_PROFILE",
+      "APPLE_DAEMON_PROVISIONING_PROFILE"
+    ],
+    "signing_private_keys_remain_local": true,
+    "worktrees": {
+      "total": 125,
+      "v3": 68,
+      "dirty_v3": 66,
+      "other_worktrees_modified_or_removed": false
+    },
+    "public_release_created": false,
+    "full_lab_after_test_only_fix_run": true,
+    "default_workspace_final": {
+      "command": [
+        "cargo",
+        "test",
+        "--workspace",
+        "--offline",
+        "--no-fail-fast",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 1213.13,
+      "counts": {
+        "passed": 1021,
+        "failed": 0,
+        "ignored": 6
+      },
+      "source_base": "ee29ba268bc9a6adecdb1180f1b508c03acc6a1f",
+      "crates_apps_scripts_diff_sha256": "0d17b50211c3455c4792f1ab7e54756951e8db0868ba31e383bff70042a2490b"
+    },
+    "artifact_directory": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/closure-20261004",
+    "linux_cleanup": {
+      "list_exit_code": 0,
+      "vm_name": "rekey-v3-acceptance-20261004",
+      "status": "Stopped",
+      "temporary_cache_archives_removed": [
+        {
+          "name": "linux-toolchain.tar.gz",
+          "bytes": 181801035,
+          "sha256": "c07f1c45d0e70bbbc082bacd08bc936c1ba15a08c2560634b5b839971b7825c0"
+        },
+        {
+          "name": "linux-cargo-registry-cache.tar",
+          "bytes": 794347520,
+          "sha256": "4de49edd1a6f6e361062f1213cd8c407f65de07bef04b8143f8cfd3598b8fcee"
+        }
+      ]
+    },
+    "macos_lab_clippy_after_phase_fix": {
+      "command": "cargo clippy --workspace --all-targets --features lab -- -D warnings",
+      "exit_code": 0
+    },
+    "technical_choices": {
+      "frozen_on": "2026-10-04",
+      "ga_format_frozen": false,
+      "V1": "docs/evidence/v3-review-v1-presence-2026-10-03.json: V1.result.status passed",
+      "V2": "docs/evidence/v3-review-v2-lldb-2026-10-03.json: result.status passed",
+      "V3": {
+        "status": "passed",
+        "cases": {
+          "valid": {
+            "client": {
+              "audit_token_bytes": 32,
+              "event": "result",
+              "local_peertoken": true,
+              "osstatus": 0,
+              "outcome": "verified",
+              "pid_fallback": false,
+              "sent_bytes": 30,
+              "stage": "synthetic_canary_sent",
+              "exit_code": 0
+            },
+            "server": {
+              "canary_match": true,
+              "eof": true,
+              "event": "observation",
+              "outcome": "observed",
+              "received_bytes": 30
+            }
+          },
+          "wrong_identifier": {
+            "client": {
+              "audit_token_bytes": 32,
+              "event": "result",
+              "local_peertoken": true,
+              "osstatus": -67050,
+              "outcome": "rejected",
+              "pid_fallback": false,
+              "sent_bytes": 0,
+              "stage": "SecCodeCheckValidity",
+              "exit_code": 2
+            },
+            "server": {
+              "canary_match": false,
+              "eof": true,
+              "event": "observation",
+              "outcome": "observed",
+              "received_bytes": 0
+            }
+          },
+          "adhoc": {
+            "client": {
+              "audit_token_bytes": 32,
+              "event": "result",
+              "local_peertoken": true,
+              "osstatus": -67050,
+              "outcome": "rejected",
+              "pid_fallback": false,
+              "sent_bytes": 0,
+              "stage": "SecCodeCheckValidity",
+              "exit_code": 2
+            },
+            "server": {
+              "canary_match": false,
+              "eof": true,
+              "event": "observation",
+              "outcome": "observed",
+              "received_bytes": 0
+            }
+          }
+        },
+        "scope": "synthetic canary peer feasibility probe; not the complete installed App attack matrix"
+      }
+    },
+    "ci_followup": {
+      "source_base": "87f49a7def8c1f98a382594ee60dc1bde6df4162",
+      "code_and_scripts_diff_sha256": "c784a15d55b91cf32359a402f25539fd5a303d244a0624221cb6d19e55499d6a",
+      "initial_ci_runs": [
+        "https://github.com/majiayu000/rekey/actions/runs/37208122123",
+        "https://github.com/majiayu000/rekey/actions/runs/37208122118"
+      ],
+      "repairs": [
+        "fuzz dependency lock aligned with v3; locked alignment remains enforced",
+        "restore fuzzer uses authenticated Authority backup and inspect/confirm restore; preserves incomplete marker after possible reservation",
+        "idle lock queues behind passive status once eligible, rechecks running/activity and retains busy-timeout deferral",
+        "crash recovery shutdown provides a fresh proof through stdin"
+      ],
+      "idle_regression": {
+        "deterministic_old_code": "failed waiting-for-coordinator assertion; idle-coordinator-red.log",
+        "fixed_assertion": "passed; final workspace gate includes same regression",
+        "unchanged_original_repetitions": {
+          "runs": 25,
+          "failed": 0
+        },
+        "original_ci_collision": "not logged; deterministic reproduction proves the discard mechanism, not the exact original scheduling"
+      },
+      "default_workspace": {
+        "counts": {
+          "passed": 1021,
+          "failed": 0,
+          "ignored": 6
+        },
+        "seconds": 1193.7,
+        "check_all_targets_exit": 0,
+        "strict_clippy_exit": 0,
+        "fmt_exit": 0,
+        "source_unchanged": true
+      },
+      "lab_focused": {
+        "counts": {
+          "passed": 28,
+          "failed": 0,
+          "ignored": 0
+        },
+        "strict_clippy_exit": 0,
+        "scope": "runtime unit tests and complete admin IPC target; no new full Lab pass claimed"
+      },
+      "fuzz": {
+        "runs_per_target": 2000,
+        "targets": [
+          "ipc",
+          "action",
+          "policy",
+          "response_sealing",
+          "restore"
+        ],
+        "all_smokes_exit": 0,
+        "locked_dependency_drift": [],
+        "restore_seconds": 146.916,
+        "artifact_records": [
+          "fuzz-lock-fixed-smoke.json",
+          "fuzz-restore-fixed-smoke.json"
+        ]
+      },
+      "crash_recovery": {
+        "exit": 0,
+        "seconds": 6.652,
+        "platform": "macOS arm64",
+        "signed": false,
+        "script": "scripts/p0-crash-recovery.sh",
+        "scope": "genuine release rekeyd crash, startup audit reconciliation, fresh proof shutdown; temporary synthetic vault"
+      },
+      "candidate": {
+        "package": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/closure-20261004/macos-pkg-ci-fixes/Rekey-3.0.0-alpha.1.pkg",
+        "sha256": "9f2f4a761330e3777b1c44b0cf3225c450bf13e3d159a2b2f3d8d4c75d670ee0",
+        "bytes": 20393378,
+        "app_notary_id": "189384d5-f053-4b96-ab40-e329b654a06d",
+        "pkg_notary_id": "451d1fb4-7148-44a5-98a4-9606c39ebfb7",
+        "notary_status": "Accepted",
+        "notary_issues": null,
+        "signature_staple_gatekeeper_checks_exit": 0,
+        "pkg_tests": 10,
+        "distribution_tests": 9,
+        "installed_app": "/Applications/Rekey.app",
+        "installer_exit": 0,
+        "bundle_regular_files_matching": 15,
+        "bundle_symlinks_matching": 1,
+        "root_cli_links_matching": 3,
+        "fresh_account_t12": false
+      },
+      "failures_preserved": [
+        "initial GitHub failures",
+        "ci-fixes-default-workspace-interrupted.log: stopped before final busy-deferral correction",
+        "ci-fixes-installation-initial-error.json: scoped harness helper path corrected; genuine successful installation followed",
+        "ci-fixes-installed-initial-invalid-probe.json: MCP standalone --version refused as its existing usage contract; binary identity verified by hash"
+      ],
+      "evidence_directory": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/closure-20261004",
+      "draft_pr": "https://github.com/majiayu000/rekey/pull/62",
+      "latest_remote_checks": "pending push and rerun",
+      "public_release_created": false,
+      "lab_workspace_final": {
+        "source_commit": "3db80d1392487c654ccfd8acf1ec01c7e24f4089",
+        "command": [
+          "cargo",
+          "test",
+          "--workspace",
+          "--features",
+          "lab",
+          "--offline",
+          "--no-fail-fast",
+          "--",
+          "--test-threads=1"
+        ],
+        "exit": 0,
+        "seconds": 1943.187,
+        "source_head_unchanged": true,
+        "counts": {
+          "passed": 1489,
+          "failed": 0,
+          "ignored": 6
+        },
+        "cargo_sources_unchanged_after_shell_assertion_fix": true
+      },
+      "p3_json_assertion_followup": {
+        "failed_run": "https://github.com/majiayu000/rekey/actions/runs/37212409709",
+        "failed_jobs": [
+          "111466093556",
+          "111466093466"
+        ],
+        "reproduced_local_exit": 1,
+        "cause": "audit list uses compact JSON; old script expected a space after event_type colon",
+        "repair": "parse JSON event fields and require the same five event types",
+        "local_fixed_exit": 0,
+        "local_tail_exits": {
+          "streaming": 0,
+          "github_app": 0,
+          "connector_sdk": 0,
+          "native_launchd_fixture": 0,
+          "macos_ui_contract_steps": 0
+        },
+        "macos_ui_contract_steps": 10,
+        "production_artifact_unchanged": true,
+        "latest_remote_checks": "pending rerun after shell assertion fix",
+        "scope": "ad-hoc local UI/service software contracts; real installed App and SMAppService remain pending"
+      }
+    }
+  },
+  "review_followup_20261005": {
+    "scope": "Review fixes on PR #62; current macOS account; no full new Lab/model/hardware/T12 claim",
+    "source_base": "1e9ffee203d8d3857b35fccbeb897b19616dd8ce",
+    "production_source_diff_sha256": "50d2005fbeb3c4aaf2be282c3462ab6003854ee28685b34b1ce2d53aa8f99a62",
+    "evidence_directory": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/review-fixes-20261005",
+    "selected_dns_policy": "Explicit REKEY_DOH_URL; default disabled; no hardcoded provider/bootstrap; no Clash or global daemon environment changes",
+    "repairs": [
+      "Sealed/audited non200 LLM stream errors preserve HTTP status/body and declared headers",
+      "30-second stalled socket write deadline; reads/upstream waiting do not renew it",
+      "connect shows old fields and replacement; old values hidden",
+      "App LLM onboarding declares retry-after; old Action permissions not rewritten"
+    ],
+    "default_workspace": {
+      "command": [
+        "cargo",
+        "test",
+        "--workspace",
+        "--offline",
+        "--no-fail-fast",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 1303.715,
+      "source_unchanged": true,
+      "passed": 1027,
+      "failed": 0,
+      "ignored": 6
+    },
+    "focused_tests": {
+      "connect": 15,
+      "dns": 19,
+      "gateway_write": 3,
+      "gateway_integration": 17,
+      "legacy_text_stream": 8,
+      "all_failed": 0
+    },
+    "strict_clippy": {
+      "default_all_targets_exit": 0,
+      "lab_all_targets_exit": 0
+    },
+    "check": {
+      "default_workspace_exit": 0,
+      "default_all_targets_exit": 0,
+      "lab_all_targets_exit": 0,
+      "fmt_exit": 0,
+      "diff_exit": 0,
+      "cli_dependency_boundary_passed": true
+    },
+    "swift_onboarding": {
+      "strict_compile_exit": 0,
+      "boundary_exit": 0,
+      "log": "swift-onboarding.log"
+    },
+    "relay_default_build": {
+      "source_head": "1e9ffee203d8d3857b35fccbeb897b19616dd8ce",
+      "manifest_unchanged_in_fix": true,
+      "default_compiler_artifacts": 0,
+      "build_finished_success": true,
+      "lab_all_targets_check_exit": 0,
+      "lab_log_compiles_relay": true,
+      "explanation": "Workspace membership is retained; the crate has no lib and both targets already require lab."
+    },
+    "production_network": {
+      "dependencies_match_workspace_lock": true,
+      "default_fake_ip_refusals": 3,
+      "explicit_doh_http_status": {
+        "api.anthropic.com": 405,
+        "api.openai.com": 401,
+        "open.bigmodel.cn": 401
+      },
+      "all_selected_ips_public": true,
+      "no_provider_credentials_or_paid_calls": true,
+      "scope": "Production transport in current TUN; not authenticated model acceptance or all TUN routing"
+    },
+    "signed_app_source": {
+      "command": "scripts/build-macos-ui.sh (Developer ID Application, both profiles, strict Swift)",
+      "base_head": "1e9ffee203d8d3857b35fccbeb897b19616dd8ce",
+      "source_diff_sha256": "50d2005fbeb3c4aaf2be282c3462ab6003854ee28685b34b1ce2d53aa8f99a62",
+      "source_unchanged": true,
+      "exit_code": 0,
+      "seconds": 60.835,
+      "app": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/review-fixes-20261005/macos-ui/Rekey.app",
+      "log": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/review-fixes-20261005/signed-app-build.log"
+    },
+    "package": {
+      "path": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/review-fixes-20261005/macos-pkg/Rekey-3.0.0-alpha.1.pkg",
+      "bytes": 20407790,
+      "sha256": "0f2e4d723ea648c1071ea09e7cd9d3d5d10f678ec3552a165bd7ec1c24bd6c77",
+      "app_notary_id": "7a750191-3642-4657-ae07-a3967be14051",
+      "pkg_notary_id": "58a40ddb-a603-4a30-bf33-f01d9c0cb37d",
+      "both_accepted": true
+    },
+    "installed": {
+      "installer_exit": 0,
+      "binary_hashes_match": true,
+      "regular_files_matching": 15,
+      "bundle_symlinks_matching": 1,
+      "root_cli_links_matching": 3,
+      "strict_signature_and_gatekeeper_exit": 0,
+      "fresh_account_t12": false
+    },
+    "credential_scan": {
+      "tracked_files_checked": 616,
+      "credential_encoding_variants": 6,
+      "matching_files": 0,
+      "real_credential_printed": false
+    },
+    "retained_failures": [
+      {
+        "name": "parallel-workspace",
+        "record": "workspace-tests.json",
+        "observed": "14 Admin IPC startup waits expired at common/mod.rs:144; no final success claimed",
+        "exact_root_cause": "not established",
+        "test_deadline_changed": false
+      },
+      {
+        "name": "first-serial-workspace",
+        "record": "workspace-tests-serial.json",
+        "observed": "one gateway fixture startup wait expired at common/mod.rs:144 while separate harness compilation was running",
+        "exact_root_cause": "not established; concurrent load is an inference",
+        "test_deadline_changed": false
+      },
+      {
+        "name": "notary-python-environment",
+        "observed": "first invocation stopped at missing requests in shell-selected unrelated virtualenv; no Apple submission was created",
+        "repair": "isolated evidence-only notary virtualenv"
+      },
+      {
+        "name": "dns-probe-initial-dependencies",
+        "record": "production-dns-acceptance-initial-unlocked-dependencies.json",
+        "observed": "first harness resolved newer dependencies instead of workspace lock",
+        "repair": "workspace lock copied and aligned; final locked rerun awaits full workspace gate"
+      },
+      {
+        "name": "dns-probe-locked-before-resolved-root",
+        "observed": "--no-deps metadata did not finalize the standalone root lock; --locked refused to run before any network query",
+        "record": "production-dns-disabled-locked.log",
+        "repair": "resolve metadata with dependencies offline, assert zero version drift, then rerun locked"
+      }
+    ],
+    "ci": "Use current PR #62 head checks; 1e9ffee historical 9/9 does not verify these changes; final observation saved in evidence directory",
+    "pending": [
+      "Independent human security review by user",
+      "Installed App hardware approvals, physical SE signing and plaintext clearing",
+      "SMAppService login-item lifecycle",
+      "Fresh-account T12 deferred by user",
+      "GA format freeze and public release"
+    ],
+    "release_workflow_validation_followup": {
+      "failed_run": "https://github.com/majiayu000/rekey/actions/runs/37223556722",
+      "failed_run_source": "c2c3e22b32b6e5437d3ed21b79df3d601cd2f0d1",
+      "failure_phase": "GitHub workflow validation; no job or publish step started",
+      "cause": "Six job-level env expressions used runner.temp, which is unavailable at that location",
+      "repair": "Set the same six RUNNER_TEMP paths in the first runner step through GITHUB_ENV",
+      "actionlint_red_errors": 6,
+      "actionlint_green_exit": 0,
+      "distribution_exit": 0,
+      "pkg_exit": 0,
+      "actual_shell_path_initializer_exit": 0,
+      "code_and_installed_package_unchanged": true,
+      "signing_secrets_uploaded": false,
+      "tag_or_release_created": false
+    }
+  },
+  "follow_through_20261005": {
+    "scope": "Current-account follow-through; real installed native policy activation before UX patch; shared operation authentication patch",
+    "source_base": "1e9ffee203d8d3857b35fccbeb897b19616dd8ce",
+    "source_checks": {
+      "production_source_delta_sha256": "a61445414c8058c632710b6fc14f03e4cd5aac236542592cb0e966e63bfc79f4",
+      "rust_source_delta_sha256": "a2f803e0ee998c8fdf5ca8621e1bdcb51555ecfa07f1bb375e0e9d1c58d44f32",
+      "full_swift6_strict_compile": "PASS",
+      "workspace_check": "PASS",
+      "signed_build": "PASS",
+      "physical_auth_prompt_count": "not tested after UX change; repeated interactive checks stopped at user request"
+    },
+    "evidence_directory": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/follow-through-20261005",
+    "authentication_repair": {
+      "cause": "Separate LAContext for presence read and Secure Enclave signature in one policy activation",
+      "change": "Existing PresenceReadContext shared per activation, fixed 10-second monotonic non-sliding reuse; invalidated on success/cancel/failure",
+      "real_prompt_count": "NOT TESTED; repeated hardware checks stopped at user request",
+      "credentials_cached": false,
+      "seven_day_grant_renewed": false
+    },
+    "focused_software": [
+      {
+        "mode": "personal-policy",
+        "exit_code": 0,
+        "seconds": 1.67,
+        "summary": "PASS: 57 personal draft byte/preview/CLI/state assertions. Controlled synthetic signer results only test transport cancellation. No SE, Keychain, GUI or cryptographic verification claim."
+      },
+      {
+        "mode": "presence",
+        "exit_code": 0,
+        "seconds": 1.333,
+        "summary": "PASS: 88 synthetic presence transport/lifecycle assertions. No Keychain, system authentication, real vault, service or hardware protection was exercised."
+      },
+      {
+        "mode": "local-approval",
+        "exit_code": -5,
+        "seconds": 1.763,
+        "summary": "",
+        "initial_failed_exit_code": -5,
+        "initial_failure": "driver used root checkout cwd; test inspected stale root Forms.swift",
+        "correct_worktree_exit_code": 0,
+        "correct_worktree_summary": "PASS: 65 local approval raw-byte/transport/lifecycle/notification assertions. Synthetic only; no Keychain, Secure Enclave or notification center access."
+      },
+      {
+        "mode": "flow",
+        "exit_code": 0,
+        "seconds": 1.431,
+        "summary": "PASS: 112 native file/process/lifecycle assertions; exact snapshots, private new-only output, anonymous stdin, one-shot argv, non2xx/binary boundaries, typed failures, no retry, cleanup and stale-result rejection. No Broker authorization or GUI click claim."
+      },
+      {
+        "mode": "onboarding",
+        "exit_code": 0,
+        "seconds": 0.892,
+        "summary": "PASS: 47 onboarding route/A1/A2/profile/cancellation assertions. Synthetic subprocess only; no App open, registration, Keychain or Secure Enclave invocation."
+      }
+    ],
+    "default_workspace": {
+      "exit_code": 0,
+      "seconds": 1358.922,
+      "passed": 1027,
+      "failed": 0,
+      "ignored": 6
+    },
+    "package": {
+      "package": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/v3-release-acceptance-20261003/follow-through-20261005/macos-pkg/Rekey-3.0.0-alpha.1.pkg",
+      "bytes": 20407503,
+      "sha256": "29c82c7ed634e2c04b0a3f42a23ffbffa2160d77905f3f2cd40631877dc944e6",
+      "app_notary": "21da3a3b-d77a-458d-ad15-8e304acf50f5",
+      "pkg_notary": "3c5f0866-cf61-459a-b171-4b842f94f1bb",
+      "checks": [
+        {
+          "name": "app-staple",
+          "exit_code": 0,
+          "seconds": 1.081
+        },
+        {
+          "name": "app-staple-validate",
+          "exit_code": 0,
+          "seconds": 1.04
+        },
+        {
+          "name": "app-signature",
+          "exit_code": 0,
+          "seconds": 0.041
+        },
+        {
+          "name": "app-gatekeeper",
+          "exit_code": 0,
+          "seconds": 0.339
+        },
+        {
+          "name": "pkg-build",
+          "exit_code": 0,
+          "seconds": 3.558
+        },
+        {
+          "name": "pkg-notary-transport",
+          "exit_code": 0,
+          "seconds": 90.006
+        },
+        {
+          "name": "pkg-staple",
+          "exit_code": 0,
+          "seconds": 0.92
+        },
+        {
+          "name": "pkg-staple-validate",
+          "exit_code": 0,
+          "seconds": 1.039
+        },
+        {
+          "name": "pkg-signature",
+          "exit_code": 0,
+          "seconds": 1.207
+        },
+        {
+          "name": "pkg-gatekeeper",
+          "exit_code": 0,
+          "seconds": 0.342
+        }
+      ]
+    },
+    "installation": {
+      "installer": {
+        "started_utc": "2026-10-04T20:01:25.093490+00:00",
+        "original_vault_modified": false,
+        "source_sha256": "29c82c7ed634e2c04b0a3f42a23ffbffa2160d77905f3f2cd40631877dc944e6",
+        "staged_sha256": "29c82c7ed634e2c04b0a3f42a23ffbffa2160d77905f3f2cd40631877dc944e6",
+        "staged_package": "/private/tmp/rekey-v3-auth-context-install-ut6glvqp/Rekey-3.0.0-alpha.1.pkg",
+        "install_status": "installed",
+        "previous_timeout_retained": true,
+        "previous_app_running": true,
+        "app_quit_exit_code": 0,
+        "installer_osascript_pid": 144,
+        "authentication_focus_exit_code": 0,
+        "authentication_focus_result": "bundle=com.apple.SecurityAgent activated=true",
+        "installer_exit_code": 0,
+        "installer_stdout": "installer: Package name is Rekey-3.0.0-alpha.1\ninstaller: Upgrading at base path /\ninstaller: The upgrade was successful.\n",
+        "installer_stderr": "",
+        "finished_utc": "2026-10-04T20:02:14.025930+00:00",
+        "installed_binary_hashes": {
+          "rekey": "caed17c15ca9f9e7cd9e687ddf74e8616f1f35f7492f909e8ff415adb06f6de6",
+          "rekeyd": "ade10fcdfdb3754fc49284659887857686324de2d6bcc5bf82a7a56dc397bf86",
+          "rekey-mcp": "8b8483ae79b5ebf263cb4c907a6c71c070271043be95e029887de2295d3f86a5"
+        },
+        "installed_binary_hashes_match": true
+      },
+      "verification": {
+        "installed_app": "/Applications/Rekey.app",
+        "source_package_sha256": "29c82c7ed634e2c04b0a3f42a23ffbffa2160d77905f3f2cd40631877dc944e6",
+        "regular_files": [
+          {
+            "path": "Contents/CodeResources",
+            "sha256": "f5820dbaa4a701aa9e570500bdd6f31f464301e47f63aa38e160151277d3b47b",
+            "matches": true
+          },
+          {
+            "path": "Contents/embedded.provisionprofile",
+            "sha256": "99adb5a90d25af7f9ad65b1644bf364c017e86c3d05d1210a7924362615cf712",
+            "matches": true
+          },
+          {
+            "path": "Contents/Info.plist",
+            "sha256": "947a9934181b69a9182c4d7b978f2073c7de3ee1057be73689cc25d7504d8bfb",
+            "matches": true
+          },
+          {
+            "path": "Contents/_CodeSignature/CodeResources",
+            "sha256": "c15e19abecc5bafc2de26ec113f2ce544f2dcc7a0e335fde6d0107f907604219",
+            "matches": true
+          },
+          {
+            "path": "Contents/MacOS/Rekey",
+            "sha256": "1c0de180de7615cf89a52f1f421a50a8f9bcfa9fc224381960dd26174f4193d0",
+            "matches": true
+          },
+          {
+            "path": "Contents/Resources/AppIcon.icns",
+            "sha256": "04d4cfafa46a961adb59e8614fe7355de0db9baed7b358b90f0f8bb56fcbe477",
+            "matches": true
+          },
+          {
+            "path": "Contents/Resources/bin/rekey-approval-sign",
+            "sha256": "aea6f8da7e738550c91c0f3e6456875dd7bc911095e3b5ecb8664468d85ded42",
+            "matches": true
+          },
+          {
+            "path": "Contents/Resources/bin/rekey-mcp",
+            "sha256": "8b8483ae79b5ebf263cb4c907a6c71c070271043be95e029887de2295d3f86a5",
+            "matches": true
+          },
+          {
+            "path": "Contents/Resources/bin/rekey-policy-sign",
+            "sha256": "19cc39e5f2273fa7d2c88d8262b2221bfe394ecdc0b7f4b6d727c92f29a06446",
+            "matches": true
+          },
+          {
+            "path": "Contents/Resources/bin/rekey",
+            "sha256": "caed17c15ca9f9e7cd9e687ddf74e8616f1f35f7492f909e8ff415adb06f6de6",
+            "matches": true
+          },
+          {
+            "path": "Contents/Library/LaunchAgents/com.rekey.rekeyd.plist",
+            "sha256": "a2e71684233f0323db4795a1f439d1a0a821ab0e59b2c374c7f4d97134d62805",
+            "matches": true
+          },
+          {
+            "path": "Contents/Helpers/RekeyDaemon.app/Contents/embedded.provisionprofile",
+            "sha256": "cd9f0d3334904de950f0f13b7f1074b1e50d0c6492bc98981ee165056af80e33",
+            "matches": true
+          },
+          {
+            "path": "Contents/Helpers/RekeyDaemon.app/Contents/Info.plist",
+            "sha256": "2c56f41559d2a418c76ba62b45d206de2179c2de0360e8dfbb26b71ef0f74668",
+            "matches": true
+          },
+          {
+            "path": "Contents/Helpers/RekeyDaemon.app/Contents/_CodeSignature/CodeResources",
+            "sha256": "2c7d3a3a96a82f92fd6d959f737fa3b963b06880f007c93c0933a7a224ce9c5d",
+            "matches": true
+          },
+          {
+            "path": "Contents/Helpers/RekeyDaemon.app/Contents/MacOS/rekeyd",
+            "sha256": "ade10fcdfdb3754fc49284659887857686324de2d6bcc5bf82a7a56dc397bf86",
+            "matches": true
+          }
+        ],
+        "bundle_symlinks": [
+          {
+            "path": "Contents/Resources/bin/rekeyd",
+            "matches": true
+          }
+        ],
+        "root_cli_links": [
+          {
+            "name": "rekey",
+            "target": "/Applications/Rekey.app/Contents/Resources/bin/rekey",
+            "matches": true,
+            "owner_uid": 0
+          },
+          {
+            "name": "rekeyd",
+            "target": "/Applications/Rekey.app/Contents/Resources/bin/rekeyd",
+            "matches": true,
+            "owner_uid": 0
+          },
+          {
+            "name": "rekey-mcp",
+            "target": "/Applications/Rekey.app/Contents/Resources/bin/rekey-mcp",
+            "matches": true,
+            "owner_uid": 0
+          }
+        ],
+        "checks": [
+          {
+            "name": "signature",
+            "exit_code": 0
+          },
+          {
+            "name": "gatekeeper",
+            "exit_code": 0
+          },
+          {
+            "name": "receipt",
+            "exit_code": 0
+          },
+          {
+            "name": "cli-version",
+            "exit_code": 0
+          }
+        ],
+        "all_match": true,
+        "fresh_account_t12": false
+      }
+    },
+    "unchanged_embedded_runtime_code": [
+      {
+        "path": "Contents/Resources/bin/rekey",
+        "existing_cdhash": "52c64122af844011b535d606168da574a0a4172d",
+        "new_cdhash": "52c64122af844011b535d606168da574a0a4172d",
+        "code_directory_unchanged": true
+      },
+      {
+        "path": "Contents/Helpers/RekeyDaemon.app",
+        "existing_cdhash": "937cb7fe82045d95d126b42b1efca246ed96c586",
+        "new_cdhash": "937cb7fe82045d95d126b42b1efca246ed96c586",
+        "code_directory_unchanged": true
+      },
+      {
+        "path": "Contents/Resources/bin/rekey-mcp",
+        "existing_cdhash": "dc69242811df856a6ab658ed932d3aefbcf536c7",
+        "new_cdhash": "dc69242811df856a6ab658ed932d3aefbcf536c7",
+        "code_directory_unchanged": true
+      },
+      {
+        "path": "Contents/Resources/bin/rekey-policy-sign",
+        "existing_cdhash": "134806f3c495a0db6a8bcbd778a453ecda4caf3e",
+        "new_cdhash": "134806f3c495a0db6a8bcbd778a453ecda4caf3e",
+        "code_directory_unchanged": true
+      },
+      {
+        "path": "Contents/Resources/bin/rekey-approval-sign",
+        "existing_cdhash": "069c6a7604cad3cd7e9a7abee5e6e65ca0d5737a",
+        "new_cdhash": "069c6a7604cad3cd7e9a7abee5e6e65ca0d5737a",
+        "code_directory_unchanged": true
+      }
+    ],
+    "current_account_provider": {
+      "tested_installed_source": "dd495f58ed0d221879bb723fe50aa06acf8e4aca",
+      "tested_package_sha256": "0f2e4d723ea648c1071ea09e7cd9d3d5d10f678ec3552a165bd7ec1c24bd6c77",
+      "dns": "Process-local explicit REKEY_DOH_URL=https://1.1.1.1/dns-query; no global daemon/Clash changes",
+      "codex": {
+        "client_version": "0.160.0",
+        "client_exit_code": 0,
+        "client_seconds": 10.224,
+        "completion_is_ok": true,
+        "client_secret_matches": 0,
+        "client_usage": [
+          {
+            "input_tokens": 13349,
+            "cached_input_tokens": 0,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 30,
+            "reasoning_output_tokens": 25
+          }
+        ],
+        "audit_event_counts": {
+          "session.revoked": 1,
+          "execution.finished": 1,
+          "execution.started": 1,
+          "session.created": 1,
+          "policy.activated": 1,
+          "policy.trust_installed": 1,
+          "action.created": 1,
+          "credential.created": 1,
+          "vault.unlocked": 1,
+          "vault.initialized": 1
+        },
+        "sessions_after_client": 0,
+        "passed": true,
+        "shutdown_exit_code": 0
+      },
+      "mcp": {
+        "connect_exit_code": 0,
+        "generated_mcp_configuration_hand_edited": false,
+        "test_client_mcp_approval": "per-invocation rekey server only; existing authorized provider test; read-only shell sandbox retained; no user configuration changed",
+        "client_exit_code": 0,
+        "client_seconds": 22.129,
+        "client_secret_matches": 0,
+        "mcp_completed_calls": [
+          {
+            "server": "rekey",
+            "tool": "rekey.302231d4-10ff-4746-bf69-78c255c6bec9.v1",
+            "status": "completed"
+          }
+        ],
+        "audit_event_counts": {
+          "session.revoked": 1,
+          "execution.finished": 3,
+          "execution.started": 3,
+          "session.created": 1,
+          "vault.unlocked": 1
+        },
+        "sessions_after_client": 0,
+        "passed": true,
+        "shutdown_exit_code": 0
+      },
+      "claude": {
+        "client_version": "2.1.281",
+        "exit_code": 0,
+        "seconds": 4.172,
+        "result_is_ok": true,
+        "usage": {
+          "input_tokens": 139,
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0,
+          "output_tokens": 14
+        },
+        "audit_event_counts": {
+          "session.revoked": 1,
+          "execution.finished": 1,
+          "execution.started": 1,
+          "session.created": 1
+        },
+        "sessions_after_client": 0,
+        "passed": true
+      },
+      "owned_daemon_cleanup": {
+        "shutdown_exit_code": 0,
+        "only_owned_acceptance_daemon": true,
+        "original_default_daemon_stopped": false
+      }
+    },
+    "installed_native_ui_before_ux_patch": {
+      "source_commit": "dd495f58ed0d221879bb723fe50aa06acf8e4aca",
+      "package_sha256": "0f2e4d723ea648c1071ea09e7cd9d3d5d10f678ec3552a165bd7ec1c24bd6c77",
+      "scope": "installed App before shared-context UX patch; existing isolated current-account personal vault",
+      "policy_review": {
+        "profiles_preserved": 2,
+        "changes": [
+          "version:2->3",
+          "expires_at_ms"
+        ],
+        "actual_signed_and_activated_in_app": true,
+        "visible_result": "策略已激活。关闭窗口后刷新当前状态。",
+        "signed_cli_result": {
+          "vault_id": "2b36af24-b358-495b-a9ac-0ac33b39da3e",
+          "tenant_id": "2b36af24-b358-495b-a9ac-0ac33b39da3e",
+          "mode": "personal",
+          "algorithm": "secure-enclave-p256",
+          "trust_sha256": "3816dfd62e5955d5b19622ebb06ac4a395e0fb6b37a4f3f9e164cb427c126af9",
+          "activated_at_ms": 1791141998937,
+          "trust_installed": true,
+          "bundle_persisted": true,
+          "status": "active",
+          "signer_id": "2b36af24-b358-495b-a9ac-0ac33b39da3e",
+          "version": 3,
+          "expires_at_ms": 1791228370493,
+          "policy_sha256": "70a2d3a1ff6dd2702fd15774e55fd1e61277bcedff9307dc61e04f56753f2c94",
+          "bundle_sha256": "2214bb5713727738915879d7617e67e73b32dc20aab6f234907b2c10f6672b8a"
+        }
+      },
+      "user_completed_touch_id": true,
+      "canary_reveal": {
+        "only_synthetic_test_credential": true,
+        "fresh_proof_sheet_observed": true,
+        "initial_stale_grant_rejected": true,
+        "fresh_grant_cli_control_passed": true,
+        "visible_plaintext_after_auth_not_confirmed": true,
+        "user_observation": "did not notice",
+        "clearing_acceptance": "Pending; masked state alone does not establish a display-and-clear sequence"
+      },
+      "additional_interactive_checks": "stopped after user requested fewer authentication prompts",
+      "original_vault": "preserved",
+      "owned_daemon_cleanup": {
+        "shutdown_exit_code": 0,
+        "only_owned_acceptance_daemon": true,
+        "original_default_daemon_stopped": false
+      }
+    },
+    "macos_service_blocker": {
+      "source_commit": "dd495f58ed0d221879bb723fe50aa06acf8e4aca",
+      "checked_at_ms": 1791141807078,
+      "installed_launch_agent": {
+        "Label": "com.rekey.rekeyd",
+        "BundleProgram": "Contents/Helpers/RekeyDaemon.app/Contents/MacOS/rekeyd",
+        "ProgramArguments": [
+          "rekeyd",
+          "serve"
+        ],
+        "RunAtLoad": true
+      },
+      "default_state_exists": true,
+      "default_state_contents_read": false,
+      "existing_default_daemon_pid": 13029,
+      "existing_default_daemon_executable": "/Users/lifcc/Desktop/code/AI/tools/rekey/target/macos-ui/Rekey.app/Contents/Resources/bin/rekeyd",
+      "installed_cli_default_status_exit_code": 7,
+      "installed_cli_default_status_diagnostic": "error [IPC_UNAVAILABLE]: broker identity verification failed (peer SecCodeCheckValidity: OSStatus -67050); possible forged Rekey service\n",
+      "registered_job": false,
+      "service_registration_attempted": false,
+      "blocker": "Installed LaunchAgent uses ~/.rekey; existing default vault and its separately launched daemon must be preserved. Custom acceptance vault cannot exercise this SMAppService job.",
+      "logout_login_performed": false,
+      "uninstall_performed": false,
+      "new_account_T12": "deferred by user"
+    },
+    "handoff": {
+      "directory": "/Users/Shared/rekey-v3-acceptance-20261005",
+      "source_commit": "dd495f58ed0d221879bb723fe50aa06acf8e4aca",
+      "package_sha256": "29c82c7ed634e2c04b0a3f42a23ffbffa2160d77905f3f2cd40631877dc944e6",
+      "checks": [
+        {
+          "name": "pkg-notary-transport",
+          "exit_code": 0,
+          "seconds": 90.006
+        },
+        {
+          "name": "pkg-staple",
+          "exit_code": 0,
+          "seconds": 0.92
+        },
+        {
+          "name": "pkg-staple-validate",
+          "exit_code": 0,
+          "seconds": 1.039
+        },
+        {
+          "name": "pkg-signature",
+          "exit_code": 0,
+          "seconds": 1.207
+        },
+        {
+          "name": "pkg-gatekeeper",
+          "exit_code": 0,
+          "seconds": 0.342
+        }
+      ],
+      "contains_credentials": false,
+      "new_account_T12": "deferred by user; not run",
+      "previous_handoff": "preserved",
+      "previous_package_sha256": "0f2e4d723ea648c1071ea09e7cd9d3d5d10f678ec3552a165bd7ec1c24bd6c77",
+      "production_source_delta_sha256": "a61445414c8058c632710b6fc14f03e4cd5aac236542592cb0e966e63bfc79f4"
+    },
+    "retained_failures": [
+      {
+        "records": [
+          "claude-acceptance.json",
+          "codex-acceptance.json",
+          "mcp-acceptance.json"
+        ],
+        "observed": "Expired test policy correctly rejected before provider calls",
+        "repair": "Fresh isolated team fixture or reviewed personal policy activation; original vault preserved"
+      },
+      {
+        "record": "mcp-fresh-acceptance.json",
+        "observed": "Client approval=never rejected the tool before Rekey MCP execution",
+        "repair": "Existing authorized per-invocation Rekey-server tool approval; isolated client home and read-only shell sandbox"
+      },
+      {
+        "record": "auth-context-focused.json",
+        "observed": "Initial local approval synthetic test inspected stale root checkout due to missing driver cwd",
+        "repair": "Explicit owned-worktree cwd; 65 assertions pass; original failure retained"
+      },
+      {
+        "record": "installed-native-ui-follow-through.json",
+        "observed": "Stale presence grant rejected; after refresh CLI canary control passed; actual visible plaintext sequence was not observed",
+        "acceptance": "Pending; user did not notice; no actual API Key revealed"
+      }
+    ],
+    "pending": [
+      "Physical prompt count after new shared-context patch",
+      "Actual canary display-and-clear and approval visible cancellation/focus",
+      "SMAppService default-state lifecycle; existing legacy vault and daemon preserved",
+      "Fresh-account T12 deferred by user",
+      "Independent human security review by user",
+      "GA format freeze and public release"
+    ],
+    "build_source_binding": {
+      "signed_build_production_diff_sha256": "a61445414c8058c632710b6fc14f03e4cd5aac236542592cb0e966e63bfc79f4",
+      "current_production_diff_sha256": "dfc59148226c11178f5e8d2d3592f0731d4e968e19a71ef50c47460b96fd531e",
+      "post_build_change": "apps/macos/README.md evidence sentence only",
+      "production_diff_excluding_readme_sha256": "8dd21952e406e6acb0487a55019bd33fe78bb61f928569f1700fa92f014f9383",
+      "exact_reconstructed_build_diff_matches": true,
+      "no_executable_source_changed_after_build": true
+    },
+    "final_source_checks": {
+      "checks": [
+        {
+          "name": "fmt",
+          "exit_code": 0,
+          "passed": true
+        },
+        {
+          "name": "workspace-check",
+          "exit_code": 0,
+          "passed": true
+        },
+        {
+          "name": "diff-check",
+          "exit_code": 0,
+          "passed": true
+        },
+        {
+          "name": "mechanical-api",
+          "exit_code": 1,
+          "passed": true
+        },
+        {
+          "name": "mechanical-no-export",
+          "exit_code": 1,
+          "passed": true
+        },
+        {
+          "name": "cli-tree",
+          "exit_code": 0,
+          "passed": true
+        }
+      ],
+      "production_source_diff_sha256": "dfc59148226c11178f5e8d2d3592f0731d4e968e19a71ef50c47460b96fd531e",
+      "rust_source_diff_sha256": "a2f803e0ee998c8fdf5ca8621e1bdcb51555ecfa07f1bb375e0e9d1c58d44f32"
+    },
+    "credential_scan": {
+      "tracked_files_checked": 616,
+      "local_evidence_files_checked": 71,
+      "credential_encoding_variants": 7,
+      "matching_files": 0,
+      "real_credential_printed": false
+    },
+    "ci": "New commit checks will run after push; prior dd495f5 9/9 does not verify changed App source"
+  }
+}

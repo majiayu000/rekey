@@ -176,6 +176,7 @@ impl ActorFixture {
                 iterations: 1,
                 parallelism: 1,
             },
+            rekey_domain::authorization::PolicyMode::Team,
         )
         .unwrap();
         rekey_vault::bootstrap::confirm_vault_init(&state).unwrap();
@@ -193,7 +194,7 @@ impl ActorFixture {
             )
             .await
             .unwrap();
-        let action: FixedHttpAction = serde_json::from_value(serde_json::json!({"id":rekey_domain::ids::ActionId::new_random(),"name":"actor-action","version":1,"enabled":true,"credential_id":credential.id,"origin":"https://api.example.com","method":"POST","exact_path":"/business","auth":{"header_name":"authorization","prefix":"Bearer "},"timeout_ms":30_000,"request_policy":{"max_body_bytes":1024,"allowed_extra_headers":[]},"response_policy":{"max_body_bytes":1024,"allowed_headers":["content-type"]}})).unwrap();
+        let action: FixedHttpAction = serde_json::from_value(serde_json::json!({"id":rekey_domain::ids::ActionId::new_random(),"name":"actor-action","version":1,"enabled":true,"credential_id":credential.id,"origin":"https://api.example.com","method":"POST","target":{"kind":"fixed","path":"/business"},"auth":{"header_name":"authorization","prefix":"Bearer "},"timeout_ms":30_000,"request_policy":{"max_body_bytes":1024,"allowed_extra_headers":[]},"response_policy":{"max_body_bytes":1024,"allowed_headers":["content-type"]}})).unwrap();
         action.validate().unwrap();
         let (terminals, terminal_worker) = crate::audit::spawn_terminal_worker(authority.clone());
         let lifecycle = Arc::new(Lifecycle::new());
@@ -228,6 +229,7 @@ impl ActorFixture {
         end: Instant,
     ) -> Result<(StartedAuditGuard, ExecuteRequest), BrokerError> {
         let ctx = ExecutionAuditContext {
+            request_context: None,
             request_id: RequestId::new_random(),
             session_id: rekey_domain::ids::SessionId::new_random(),
             action: ActionVersionRef {
@@ -243,8 +245,11 @@ impl ActorFixture {
             action: ctx.action,
             content_type: Some("application/json".into()),
             extra_headers: vec![],
+            params: Default::default(),
+            query: Default::default(),
             body: b"{}".to_vec(),
             approval_grants: vec![],
+            local_approval_request_id: None,
         };
         let started = self
             .executor
@@ -311,7 +316,7 @@ async fn actor_decoded_selected_bootstrap_never_crosses_into_business() {
             .replace(token, &escaped)
             .into_bytes(),
     );
-    assert!(!contains_secret(
+    assert!(contains_secret(
         &source.body,
         &sealing_needles(PROFILE, token.as_bytes())
     ));
@@ -368,7 +373,7 @@ async fn actor_decoded_selected_known_bootstrap_forms_are_sealed_and_clean_value
                 .replace(&value, &escaped)
                 .into_bytes(),
         );
-        assert!(!contains_secret(
+        assert!(contains_secret(
             &source.body,
             &sealing_needles(PROFILE, b"hvs.source-canary")
         ));
@@ -2058,14 +2063,21 @@ async fn actor_approle_cancel_business_keeps_ordinary_effect_and_cleanup_ownersh
         let effect = AtomicU8::new(EFFECT_NOT_STARTED);
         let cleanup_owned = AtomicBool::new(false);
         let lifecycle = f.executor.lifecycle.clone();
+        let target = RenderedTarget {
+            path: f.action.target.fixed_path().unwrap().clone(),
+            params: Default::default(),
+            query: Default::default(),
+        };
         let (result, ()) = tokio::join!(
             f.executor.run_started_owned(
                 &mut started,
                 &request,
                 &f.action,
+                &target,
                 end,
                 &effect,
                 &cleanup_owned,
+                None,
                 None
             ),
             async {
@@ -2212,9 +2224,15 @@ async fn approle_admitted(f: &ActorFixture) -> AdmittedExecution {
         f.executor.policy.clone(),
     ));
     AdmittedExecution {
+        llm: None,
         executor,
         request,
         action: f.action.clone(),
+        target: RenderedTarget {
+            path: f.action.target.fixed_path().unwrap().clone(),
+            params: Default::default(),
+            query: Default::default(),
+        },
         effect_deadline: end,
         started,
         _permit: permit,
@@ -2298,16 +2316,30 @@ async fn actor_approle_current_typed_rotation_uses_latest_source_and_actual_auth
 
 #[tokio::test]
 async fn actor_approle_expired_secret_id_is_rechecked_after_login_started_audit() {
+    let mut f = ActorFixture::with_profile(&approle_profile()).await;
     let mut value: serde_json::Value = serde_json::from_slice(&approle_profile()).unwrap();
-    value["secret_id_expires_at_ms"] =
-        serde_json::json!(crate::now_ts().unwrap().as_unix_ms() + 500);
-    let mut f = ActorFixture::with_profile(&serde_json::to_vec(&value).unwrap()).await;
+    // Start the original short expiry after vault setup; initialization must
+    // not consume the interval intended for the login-started audit.
+    let expires_at_ms = crate::now_ts().unwrap().as_unix_ms() + 500;
+    value["secret_id_expires_at_ms"] = serde_json::json!(expires_at_ms);
+    f.authority
+        .credential_rotate_typed_before(
+            f.action.credential_id,
+            rekey_domain::credential::CredentialKind::VaultKvV2Source,
+            Some(1),
+            rekey_vault::secret::SecretInput::from_slice(&serde_json::to_vec(&value).unwrap()),
+            ActorFixture::proof(),
+            None,
+        )
+        .await
+        .unwrap();
     let authority = f.authority.clone();
     let (terminals, worker) = crate::audit::spawn_terminal_worker_with(move |draft| {
         let authority = authority.clone();
         async move {
             if draft.event_type == "vault.approle.login.started" {
-                tokio::time::sleep(Duration::from_millis(600)).await;
+                let remaining = expires_at_ms + 1 - crate::now_ts().unwrap().as_unix_ms();
+                tokio::time::sleep(Duration::from_millis(remaining.max(0) as u64)).await;
             }
             authority.commit_audit(draft).await
         }
@@ -2315,6 +2347,7 @@ async fn actor_approle_expired_secret_id_is_rechecked_after_login_started_audit(
     f.executor.terminals = terminals;
     let old = std::mem::replace(&mut f.terminal_worker, worker);
     old.await.unwrap();
+    assert!(crate::now_ts().unwrap().as_unix_ms() < expires_at_ms);
     let error = f.run().await.err().unwrap();
     assert_eq!(error.code(), "REQUEST_DENIED");
     assert!(f.fake.take_requests().is_empty());

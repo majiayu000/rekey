@@ -17,6 +17,7 @@ async fn full_lifecycle_via_public_api() {
         &state_dir,
         &SecretInput::from_slice(h::PASSWORD),
         h::TEST_PARAMS,
+        rekey_domain::authorization::PolicyMode::Team,
     )
     .unwrap();
     confirm_vault_init(&state_dir).unwrap();

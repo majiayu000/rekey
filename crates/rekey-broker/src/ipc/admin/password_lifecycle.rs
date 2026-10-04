@@ -1,7 +1,7 @@
 use rekey_domain::ipc::{self, ProofKind};
 use rekey_vault::secret::SecretInput;
 
-use super::{admin_mutation_deadline, empty_meta, json, proof_from};
+use super::{AdminResponse, Zeroizing, admin_mutation_deadline, empty_meta, json, proof_from};
 use crate::error::BrokerError;
 use crate::ipc::frame::IncomingFrame;
 use crate::runtime::BrokerCtx;
@@ -13,7 +13,7 @@ use crate::runtime::BrokerCtx;
 pub(super) async fn handle_password_change(
     frame: &IncomingFrame,
     ctx: &BrokerCtx,
-) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
+) -> Result<AdminResponse, BrokerError> {
     let deadline = admin_mutation_deadline();
     ctx.lifecycle.reject_if_not_running()?;
     empty_meta(frame)?;
@@ -28,41 +28,37 @@ pub(super) async fn handle_password_change(
         )
         .await
         .map_err(BrokerError::Authority)?;
-    Ok((json(&serde_json::json!({"changed": true}))?, Vec::new()))
+    Ok((
+        json(&serde_json::json!({"changed": true}))?,
+        Zeroizing::new(Vec::new()),
+    ))
 }
 
 pub(super) async fn handle_recovery_rotate(
     frame: &IncomingFrame,
     ctx: &BrokerCtx,
-) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
+) -> Result<AdminResponse, BrokerError> {
     let deadline = admin_mutation_deadline();
     ctx.lifecycle.reject_if_not_running()?;
     empty_meta(frame)?;
     let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
-    if kind != ProofKind::Password {
-        return Err(BrokerError::Domain(
-            rekey_domain::DomainError::InvalidActionDefinition(
-                "recovery rotation requires password proof".to_owned(),
-            ),
-        ));
-    }
     let _owner = ctx.lifecycle.coordinate_until(deadline).await?;
     ctx.lifecycle.reject_if_not_running()?;
     let recovery = ctx
         .authority
-        .recovery_rotate_before(SecretInput::from_slice(proof), Some(deadline.into_std()))
+        .recovery_rotate_before(proof_from(kind, proof), Some(deadline.into_std()))
         .await
         .map_err(BrokerError::Authority)?;
     Ok((
         json(&serde_json::json!({"rotated": true}))?,
-        recovery.as_bytes().to_vec(),
+        Zeroizing::new(recovery.as_bytes().to_vec()),
     ))
 }
 
 pub(super) async fn handle_vrk_rotate(
     frame: &IncomingFrame,
     ctx: &BrokerCtx,
-) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
+) -> Result<AdminResponse, BrokerError> {
     let deadline = admin_mutation_deadline();
     empty_meta(frame)?;
     let (kind, password, recovery) = ipc::parse_proof_and_secret_body(&frame.body)?;
@@ -91,13 +87,13 @@ pub(super) async fn handle_vrk_rotate(
             Some(deadline.into_std()),
         )
         .await?;
-    Ok((json(&receipt)?, Vec::new()))
+    Ok((json(&receipt)?, Zeroizing::new(Vec::new())))
 }
 
 pub(super) async fn handle_dek_rotate(
     frame: &IncomingFrame,
     ctx: &BrokerCtx,
-) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
+) -> Result<AdminResponse, BrokerError> {
     let deadline = admin_mutation_deadline();
     ctx.lifecycle.reject_if_not_running()?;
     empty_meta(frame)?;
@@ -110,6 +106,6 @@ pub(super) async fn handle_dek_rotate(
         .await?;
     Ok((
         json(&ipc::DekRotatedResponse { rotated_versions })?,
-        Vec::new(),
+        Zeroizing::new(Vec::new()),
     ))
 }

@@ -1,9 +1,19 @@
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use rekey_domain::ipc::PolicyStatusResponse;
-use rekey_policy::{ValidatedPolicyTrust, parse_and_verify_policy_bundle_for_load};
+use rekey_domain::authorization::{PolicyMode, PolicyTrustAlgorithm};
+use rekey_domain::capability::ActionVersionRef;
+use rekey_domain::ipc::{
+    PersonalPolicyDraftMeta, PersonalPolicyDraftResponse, PersonalPolicyFieldChange,
+    PolicyStatusResponse,
+};
+use rekey_policy::{
+    ValidatedPolicyBundle, ValidatedPolicyTrust, parse_and_verify_policy_bundle_for_load,
+};
 use rekey_vault::AuthorityError;
 use rekey_vault::command::UnlockProof;
+use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
 
 use super::BrokerCtx;
 use crate::active_policy::ActivePolicy;
@@ -11,7 +21,210 @@ use crate::error::BrokerError;
 
 const POLICY_RECONCILE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+fn ensure_activation_metadata_fits(
+    vault_id: rekey_domain::ids::VaultId,
+    trust_sha256: &str,
+    sign_bytes_len: usize,
+) -> Result<(), BrokerError> {
+    let empty = rekey_domain::ipc::PolicyActivateMeta {
+        expected_vault_id: vault_id,
+        expected_trust_sha256: trust_sha256.to_owned(),
+        bundle_json: serde_json::value::RawValue::from_string("{}".to_owned())
+            .map_err(|_| rekey_policy::PolicyError::Malformed)?,
+    };
+    let outer_len = serde_json::to_vec(&empty)
+        .map_err(|_| rekey_policy::PolicyError::Malformed)?
+        .len()
+        - 2;
+    let unsigned_len = sign_bytes_len
+        .checked_sub(b"RKPOLICY\0\x01".len())
+        .ok_or(rekey_policy::PolicyError::Invalid)?;
+    // The exact outer metadata plus the largest P-256 DER signature (72B,
+    // 96 unpadded base64url characters) must fit before asking the user to sign.
+    let maximum_len = outer_len + unsigned_len + b",\"signature\":\"\"".len() + 96;
+    if maximum_len > rekey_domain::ipc::METADATA_MAX_BYTES as usize {
+        return Err(rekey_policy::PolicyError::TooLarge.into());
+    }
+    Ok(())
+}
+
+fn verified_stored_bundle(
+    record: &rekey_vault::model::PolicyBundleRecord,
+    trust: &ValidatedPolicyTrust,
+) -> Result<ValidatedPolicyBundle, AuthorityError> {
+    match parse_and_verify_policy_bundle_for_load(&record.bundle_json, trust) {
+        Ok(verified)
+            if verified.signer_id() == record.signer_id
+                && verified.snapshot().version().get() == record.version
+                && verified.snapshot().expires_at_ms() == record.expires_at_ms
+                && verified.policy_digest() == record.policy_digest
+                && verified.bundle_digest() == record.bundle_digest =>
+        {
+            Ok(verified)
+        }
+        _ => Err(AuthorityError::StorageIntegrityFailed),
+    }
+}
+
 impl BrokerCtx {
+    pub(crate) async fn check_local_approval_policy(
+        &self,
+        challenge: &rekey_domain::ipc::ApprovalChallenge,
+    ) -> Result<(), BrokerError> {
+        let now = crate::now_ts()?;
+        let policy = self.policy.read().await;
+        let current = policy
+            .as_ref()
+            .filter(|p| !p.is_expired(now))
+            .ok_or(BrokerError::Denied("policy-changed"))?;
+        if current.snapshot().version().get() != challenge.policy_version
+            || data_encoding::HEXLOWER.encode(&current.snapshot().digest())
+                != challenge.policy_sha256
+        {
+            return Err(BrokerError::Denied("policy-changed"));
+        }
+        Ok(())
+    }
+
+    pub async fn personal_policy_draft_until(
+        &self,
+        request: PersonalPolicyDraftMeta,
+        deadline: tokio::time::Instant,
+    ) -> Result<(PersonalPolicyDraftResponse, Zeroizing<Vec<u8>>), BrokerError> {
+        let _owner = self.lifecycle.coordinate_until(deadline).await?;
+        self.lifecycle.reject_if_not_running()?;
+        tokio::time::timeout_at(deadline, async {
+            let material = self.authority.policy_material().await?;
+            if material.state.mode != PolicyMode::Personal {
+                return Err(BrokerError::Authority(AuthorityError::PolicyTrustConflict));
+            }
+            let record = material.trust.ok_or(AuthorityError::PolicyUnavailable)?;
+            let trust = ValidatedPolicyTrust::from_parts(record.signer_id, record.key);
+            let previous = match material.bundle {
+                Some(record) => match verified_stored_bundle(&record, &trust) {
+                    Ok(verified) => Some(verified),
+                    Err(error) => {
+                        drop(self.authority.fault_integrity().await);
+                        return Err(error.into());
+                    }
+                },
+                None => None,
+            };
+            let current_digest = previous
+                .as_ref()
+                .map(|bundle| data_encoding::HEXLOWER.encode(&bundle.snapshot().digest()));
+            if request.expected_policy_sha256 != current_digest {
+                return Err(AuthorityError::PolicyVersionConflict.into());
+            }
+            let wanted: BTreeSet<_> = request
+                .profiles
+                .iter()
+                .flat_map(|profile| &profile.grants)
+                .flat_map(|grant| &grant.capabilities)
+                .flat_map(|capability| capability.actions.iter().copied())
+                .collect();
+            let available = self.authority.action_list().await?;
+            let mut selected: Vec<_> = available
+                .into_iter()
+                .filter(|action| {
+                    wanted.contains(&ActionVersionRef {
+                        action_id: action.id,
+                        version: action.version,
+                    })
+                })
+                .collect();
+            if selected.len() != wanted.len() || selected.iter().any(|action| !action.enabled) {
+                return Err(rekey_policy::PolicyError::Invalid.into());
+            }
+            selected.sort_by_key(|action| (action.id, action.version));
+            super::profile::validate_profiles(&request.profiles, &selected)?;
+            let draft = rekey_policy::personal::generate_personal_draft(
+                &trust,
+                previous.as_ref(),
+                &selected,
+                &request.profiles,
+                request.expires_at_ms,
+                crate::now_ts()?,
+            )?;
+            let base_version = previous
+                .as_ref()
+                .map(|bundle| bundle.snapshot().version().get());
+            let response = PersonalPolicyDraftResponse {
+                vault_id: self.authority.admin_status().await?.vault_id,
+                trust_sha256: data_encoding::HEXLOWER.encode(&rekey_policy::policy_trust_sha256(
+                    trust.signer_id(),
+                    trust.key(),
+                )?),
+                public_key: data_encoding::HEXLOWER.encode(trust.public_key()),
+                base_version,
+                next_version: base_version
+                    .unwrap_or(0)
+                    .checked_add(1)
+                    .ok_or(rekey_policy::PolicyError::Invalid)?,
+                policy_sha256: data_encoding::HEXLOWER
+                    .encode(&Sha256::digest(draft.canonical_snapshot())),
+                changes: draft
+                    .diff()
+                    .iter()
+                    .map(|change| PersonalPolicyFieldChange {
+                        field: change.field.to_owned(),
+                        before: change.before.clone(),
+                        after: change.after.clone(),
+                    })
+                    .collect(),
+                actions: selected,
+            };
+            if draft.sign_bytes().len() > rekey_policy::SNAPSHOT_MAX_BYTES {
+                return Err(rekey_policy::PolicyError::TooLarge.into());
+            }
+            ensure_activation_metadata_fits(
+                response.vault_id,
+                &response.trust_sha256,
+                draft.sign_bytes().len(),
+            )?;
+            if tokio::time::Instant::now() >= deadline {
+                return Err(AuthorityError::AuthorityBusy.into());
+            }
+            Ok((response, Zeroizing::new(draft.sign_bytes().to_vec())))
+        })
+        .await
+        .map_err(|_| BrokerError::Authority(AuthorityError::AuthorityBusy))?
+    }
+
+    pub(crate) async fn profile_list_until(
+        &self,
+        deadline: tokio::time::Instant,
+    ) -> Result<rekey_domain::ipc::ProfileListResponse, BrokerError> {
+        let _owner = self.lifecycle.coordinate_until(deadline).await?;
+        self.lifecycle.reject_if_not_running()?;
+        tokio::time::timeout_at(deadline, async {
+            let material = self.authority.policy_material().await?;
+            let Some(record) = material.bundle else {
+                return Ok(rekey_domain::ipc::ProfileListResponse {
+                    profiles: Vec::new(),
+                    policy_sha256: None,
+                    expires_at_ms: None,
+                });
+            };
+            let trust = material.trust.ok_or(AuthorityError::PolicyUnavailable)?;
+            let trust = ValidatedPolicyTrust::from_parts(trust.signer_id, trust.key);
+            let bundle = match verified_stored_bundle(&record, &trust) {
+                Ok(bundle) => bundle,
+                Err(error) => {
+                    drop(self.authority.fault_integrity().await);
+                    return Err(error.into());
+                }
+            };
+            Ok(rekey_domain::ipc::ProfileListResponse {
+                profiles: bundle.snapshot().profiles().to_vec(),
+                policy_sha256: Some(data_encoding::HEXLOWER.encode(&bundle.snapshot().digest())),
+                expires_at_ms: Some(bundle.snapshot().expires_at_ms()),
+            })
+        })
+        .await
+        .map_err(|_| BrokerError::Authority(AuthorityError::AuthorityBusy))?
+    }
+
     pub async fn policy_status(&self) -> Result<PolicyStatusResponse, BrokerError> {
         let authority = self.authority.admin_status().await?;
         let tenant_id = rekey_domain::ids::TenantId::from_bytes(*authority.vault_id.as_bytes())?;
@@ -23,12 +236,17 @@ impl BrokerCtx {
         let trust_sha256 = material
             .as_ref()
             .and_then(|value| value.trust.as_ref())
-            .map(|trust| rekey_policy::policy_trust_sha256(trust.signer_id, &trust.public_key))
+            .map(|trust| rekey_policy::policy_trust_sha256(trust.signer_id, &trust.key))
             .transpose()?
             .map(|digest| data_encoding::HEXLOWER.encode(&digest));
         let mut response = PolicyStatusResponse {
             vault_id: authority.vault_id,
             tenant_id,
+            mode: material.as_ref().map(|value| value.state.mode),
+            algorithm: material
+                .as_ref()
+                .and_then(|value| value.trust.as_ref())
+                .map(|trust| trust.key.algorithm()),
             trust_sha256,
             activated_at_ms: None,
             trust_installed: authority.policy_trust_installed,
@@ -70,28 +288,17 @@ impl BrokerCtx {
         let material = self.authority.policy_material().await?;
         let trust = material
             .trust
-            .map(|record| ValidatedPolicyTrust::from_parts(record.signer_id, record.public_key));
+            .map(|record| ValidatedPolicyTrust::from_parts(record.signer_id, record.key));
         let active = match (trust.as_ref(), material.bundle) {
             (_, None) => None,
             (Some(trust), Some(record)) => {
-                let verified =
-                    match parse_and_verify_policy_bundle_for_load(&record.bundle_json, trust) {
-                        Ok(verified)
-                            if verified.signer_id() == record.signer_id
-                                && verified.snapshot().version().get() == record.version
-                                && verified.snapshot().expires_at_ms() == record.expires_at_ms
-                                && verified.policy_digest() == record.policy_digest
-                                && verified.bundle_digest() == record.bundle_digest =>
-                        {
-                            verified
-                        }
-                        _ => {
-                            drop(self.authority.fault_integrity().await);
-                            return Err(BrokerError::Authority(
-                                AuthorityError::StorageIntegrityFailed,
-                            ));
-                        }
-                    };
+                let verified = match verified_stored_bundle(&record, trust) {
+                    Ok(verified) => verified,
+                    Err(error) => {
+                        drop(self.authority.fault_integrity().await);
+                        return Err(BrokerError::Authority(error));
+                    }
+                };
                 Some(Arc::new(ActivePolicy::load_bundle(
                     verified,
                     crate::now_ts()?,
@@ -133,7 +340,7 @@ impl BrokerCtx {
             self.authority.policy_trust_install_before(
                 rekey_vault::command::PolicyTrustInput {
                     signer_id: trust.signer_id(),
-                    public_key: *trust.public_key(),
+                    key: trust.key().clone(),
                 },
                 proof,
                 Some(deadline.into_std()),
@@ -186,6 +393,30 @@ impl BrokerCtx {
             &trust,
             crate::now_ts()?,
         )?;
+        if trust.key().algorithm() == PolicyTrustAlgorithm::SecureEnclaveP256
+            || !verified.snapshot().profiles().is_empty()
+        {
+            // The immutable mode/key contract makes P-256 personal-only. Check
+            // the authenticated current Action view even for exact retries;
+            // action_list excludes retired versions and includes disabled ones.
+            let actions = tokio::time::timeout_at(deadline, self.authority.action_list())
+                .await
+                .map_err(|_| BrokerError::Authority(AuthorityError::AuthorityBusy))??;
+            super::profile::validate_profile_actions(verified.snapshot(), &actions)?;
+            if trust.key().algorithm() == PolicyTrustAlgorithm::SecureEnclaveP256
+                && verified.snapshot().action_refs().any(|wanted| {
+                    !actions.iter().any(|action| {
+                        action.enabled
+                            && action.id == wanted.action_id
+                            && action.version == wanted.version
+                    })
+                })
+            {
+                return Err(BrokerError::Authority(
+                    AuthorityError::PolicyVersionConflict,
+                ));
+            }
+        }
         let input = rekey_vault::command::PolicyBundleInput {
             expected_vault_id: metadata.expected_vault_id,
             expected_trust_sha256,
@@ -239,6 +470,7 @@ impl BrokerCtx {
                             self.sessions.revoke_workload();
                         }
                     }
+                    self.reconcile_gateway().await;
                     return Err(BrokerError::Authority(AuthorityError::AuthorityBusy));
                 }
                 self.sessions.close_and_revoke_all();
@@ -258,6 +490,7 @@ impl BrokerCtx {
             let mut guard = self.policy.write().await;
             *guard = Some(Arc::new(active));
         }
+        self.reconcile_gateway().await;
         Ok(())
     }
 }
@@ -270,6 +503,79 @@ mod tests {
     use rekey_vault::bootstrap::{confirm_vault_init, init_vault};
     use rekey_vault::crypto::kdf::Argon2Params;
     use rekey_vault::secret::SecretInput;
+
+    #[test]
+    fn personal_draft_activation_size_includes_exact_outer_metadata() {
+        let vault_id = rekey_domain::ids::VaultId::new_random();
+        let trust = "a".repeat(64);
+        // A synthetic object isolates wire size from policy schema validation.
+        let mut unsigned = serde_json::json!({"payload":""});
+        let encode = |unsigned: &serde_json::Value| {
+            let mut signed = unsigned.clone();
+            signed["signature"] = "A".repeat(96).into();
+            serde_json::to_vec(&rekey_domain::ipc::PolicyActivateMeta {
+                expected_vault_id: vault_id,
+                expected_trust_sha256: trust.clone(),
+                bundle_json: serde_json::value::RawValue::from_string(
+                    serde_json::to_string(&signed).unwrap(),
+                )
+                .unwrap(),
+            })
+            .unwrap()
+        };
+        let padding = rekey_domain::ipc::METADATA_MAX_BYTES as usize - encode(&unsigned).len();
+        for extra in [0, 1] {
+            unsigned["payload"] = "x".repeat(padding + extra).into();
+            assert_eq!(
+                encode(&unsigned).len(),
+                rekey_domain::ipc::METADATA_MAX_BYTES as usize + extra
+            );
+            let sign_len = b"RKPOLICY\0\x01".len() + serde_jcs::to_vec(&unsigned).unwrap().len();
+            let result = super::ensure_activation_metadata_fits(vault_id, &trust, sign_len);
+            assert_eq!(result.is_ok(), extra == 0);
+            if let Err(error) = result {
+                assert!(matches!(
+                    error,
+                    BrokerError::Policy(rekey_policy::PolicyError::TooLarge)
+                ));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn personal_draft_coordinator_timeout_does_not_mutate_or_lock() {
+        let fixture = PolicyFixture::new().await;
+        let db = rusqlite::Connection::open(rekey_vault::paths::vault_db(&fixture.state)).unwrap();
+        let count = || {
+            db.query_row("SELECT count(*) FROM audit_events", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap()
+        };
+        let before = count();
+        let owner = fixture.ctx.lifecycle.coordinate().await;
+        let error = fixture
+            .ctx
+            .personal_policy_draft_until(
+                rekey_domain::ipc::PersonalPolicyDraftMeta {
+                    profiles: vec![],
+                    expected_policy_sha256: None,
+                    expires_at_ms: fixture.expires,
+                },
+                tokio::time::Instant::now() + Duration::from_millis(20),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            BrokerError::Admission(AuthorityError::AuthorityBusy)
+        ));
+        assert!(fixture.ctx.lifecycle.is_running());
+        assert_eq!(count(), before);
+        drop(owner);
+        drop(db);
+        fixture.finish().await;
+    }
 
     #[tokio::test]
     async fn policy_status_uses_actual_material_and_preserves_expiry_latch() {
@@ -284,6 +590,7 @@ mod tests {
                 iterations: 1,
                 parallelism: 1,
             },
+            rekey_domain::authorization::PolicyMode::Team,
         )
         .unwrap();
         confirm_vault_init(&state).unwrap();
@@ -308,19 +615,24 @@ mod tests {
         let (shutdown_tx, _) = watch::channel(false);
         let (stop_tx, _) = mpsc::unbounded_channel();
         let ctx = BrokerCtx {
+            #[cfg(feature = "lab")]
             oidc_admin: None,
+            #[cfg(feature = "lab")]
             metrics: crate::metrics::Metrics::default(),
             authority: authority.clone(),
             sessions,
             executions,
             executor,
+            #[cfg(feature = "lab")]
             workload_transport: transport,
+            #[cfg(feature = "lab")]
             online_jwks_slots: Arc::new(tokio::sync::Semaphore::new(2)),
             lifecycle,
             policy,
             policy_trust: Arc::new(RwLock::new(None)),
             terminals,
             drain_timeout: Duration::from_secs(1),
+            gateway: gateway::Gateway::default(),
             shutdown_flag: AtomicBool::new(false),
             shutdown_tx,
             stop_tx,
@@ -332,8 +644,17 @@ mod tests {
         assert_eq!(locked.tenant_id.as_bytes(), initialized.vault_id.as_bytes());
         assert!(locked.trust_sha256.is_none());
         assert!(locked.activated_at_ms.is_none());
+        assert!(locked.mode.is_none());
+        assert!(locked.algorithm.is_none());
         authority.unlock(proof()).await.unwrap();
-        assert!(ctx.policy_status().await.unwrap().trust_sha256.is_none());
+        let initialized_status = ctx.policy_status().await.unwrap();
+        initialized_status.validate().unwrap();
+        assert!(initialized_status.trust_sha256.is_none());
+        assert_eq!(
+            initialized_status.mode,
+            Some(rekey_domain::authorization::PolicyMode::Team)
+        );
+        assert!(initialized_status.algorithm.is_none());
         let document = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
         let signer = Ed25519KeyPair::from_pkcs8(document.as_ref()).unwrap();
         let signer_id = rekey_domain::ids::PolicySignerId::new_random();
@@ -349,10 +670,14 @@ mod tests {
         assert_eq!(before.status, "unavailable");
         assert!(before.trust_sha256.is_some());
         assert!(before.activated_at_ms.is_none());
+        assert_eq!(
+            before.algorithm,
+            Some(rekey_domain::authorization::PolicyTrustAlgorithm::Ed25519)
+        );
         let expires = crate::now_ts().unwrap().as_unix_ms() + 60_000;
         let bundle = |version| {
             let mut unsigned = serde_json::json!({"format_version":1,"signer_id":signer_id,"snapshot":{
-                "format_version":3,"version":version,"expires_at_ms":expires,"approvers":[],"workload_identities":[],"bindings":[],"rules":[]
+                "format_version":6,"version":version,"expires_at_ms":expires,"approvers":[],"profiles": [], "workload_identities":[],"bindings":[],"rules":[]
             }});
             let mut message = b"RKPOLICY\0\x01".to_vec();
             message.extend_from_slice(&serde_jcs::to_vec(&unsigned).unwrap());
@@ -418,6 +743,8 @@ mod tests {
         assert_eq!(locked.vault_id, initialized.vault_id);
         assert!(locked.trust_sha256.is_none());
         assert!(locked.activated_at_ms.is_none());
+        assert!(locked.mode.is_none());
+        assert!(locked.algorithm.is_none());
         authority.unlock(proof()).await.unwrap();
         ctx.reload_policy_after_unlock().await.unwrap();
         assert_eq!(ctx.policy_status().await.unwrap().status, "expired");
@@ -475,6 +802,7 @@ mod tests {
                     iterations: 1,
                     parallelism: 1,
                 },
+                rekey_domain::authorization::PolicyMode::Team,
             )
             .unwrap();
             confirm_vault_init(&state).unwrap();
@@ -500,19 +828,24 @@ mod tests {
             let (shutdown_tx, _) = watch::channel(false);
             let (stop_tx, _) = mpsc::unbounded_channel();
             let ctx = BrokerCtx {
+                #[cfg(feature = "lab")]
                 oidc_admin: None,
+                #[cfg(feature = "lab")]
                 metrics: crate::metrics::Metrics::default(),
                 authority: authority.clone(),
                 sessions,
                 executions,
                 executor,
+                #[cfg(feature = "lab")]
                 workload_transport: transport,
+                #[cfg(feature = "lab")]
                 online_jwks_slots: Arc::new(tokio::sync::Semaphore::new(2)),
                 lifecycle,
                 policy,
                 policy_trust: Arc::new(RwLock::new(None)),
                 terminals,
                 drain_timeout: Duration::from_secs(1),
+                gateway: gateway::Gateway::default(),
                 shutdown_flag: AtomicBool::new(false),
                 shutdown_tx,
                 stop_tx,
@@ -525,7 +858,11 @@ mod tests {
             let signer = Ed25519KeyPair::from_pkcs8(document.as_ref()).unwrap();
             let trust = rekey_policy::ValidatedPolicyTrust::from_parts(
                 rekey_domain::ids::PolicySignerId::new_random(),
-                signer.public_key().as_ref().try_into().unwrap(),
+                rekey_policy::PolicyVerificationKey::from_bytes(
+                    rekey_domain::authorization::PolicyTrustAlgorithm::Ed25519,
+                    signer.public_key().as_ref(),
+                )
+                .unwrap(),
             );
             ctx.install_policy_trust_until(trust.clone(), proof(), deadline())
                 .await
@@ -548,10 +885,10 @@ mod tests {
             let unsigned = serde_json::json!({
                 "format_version": 1, "signer_id": self.trust.signer_id(),
                 "snapshot": {
-                    "format_version": 3, "version": version, "expires_at_ms": self.expires,
+                    "format_version": 6, "version": version, "expires_at_ms": self.expires,
                     "approvers": [{"approver_id": self.approver_id, "algorithm": "ed25519",
                         "public_key": data_encoding::HEXLOWER.encode(self.signer.public_key().as_ref())}],
-                    "workload_identities": [], "bindings": [], "rules": []
+                    "profiles": [], "workload_identities": [], "bindings": [], "rules": []
                 }
             });
             self.sign(unsigned, b"RKPOLICY\0\x01")
@@ -573,11 +910,8 @@ mod tests {
             rekey_domain::ipc::PolicyActivateMeta {
                 expected_vault_id: self.vault_id,
                 expected_trust_sha256: data_encoding::HEXLOWER.encode(
-                    &rekey_policy::policy_trust_sha256(
-                        self.trust.signer_id(),
-                        self.trust.public_key(),
-                    )
-                    .unwrap(),
+                    &rekey_policy::policy_trust_sha256(self.trust.signer_id(), self.trust.key())
+                        .unwrap(),
                 ),
                 bundle_json: serde_json::from_slice(bytes).unwrap(),
             }
@@ -639,7 +973,9 @@ mod tests {
                 self.ctx
                     .sessions
                     .begin(token, action, crate::now_ts().unwrap()),
-                Err(rekey_domain::DomainError::InvalidCapability)
+                Err(BrokerError::Domain(
+                    rekey_domain::DomainError::InvalidCapability
+                ))
             ));
         }
 
@@ -681,7 +1017,7 @@ mod tests {
             .unwrap();
         let now = crate::now_ts().unwrap();
         let challenge = rekey_domain::ipc::ApprovalChallenge {
-            record_type: "rekey.approval.challenge.v1".to_owned(),
+            record_type: "rekey.approval.challenge.v2".to_owned(),
             approval_request_id: ApprovalRequestId::new_random(),
             tenant_id: pending_session.principal.tenant_id,
             principal_id: pending_session.principal.principal_id,
@@ -695,8 +1031,10 @@ mod tests {
             policy_sha256: data_encoding::HEXLOWER.encode(&active.snapshot().digest()),
             policy_rule_id: PolicyRuleId::new_random(),
             mode: ApprovalMode::OneTime,
-            quorum: 1,
-            approver_ids: vec![f.approver_id],
+            approver: rekey_domain::authorization::ApproverSpec::Ed25519 {
+                keys: vec![data_encoding::HEXLOWER.encode(f.signer.public_key().as_ref())],
+                threshold: 1,
+            },
             max_uses: 1,
             created_at_ms: now.as_unix_ms(),
             max_expires_at_ms: now.as_unix_ms() + 30_000,
@@ -734,9 +1072,9 @@ mod tests {
             policy_version: 1,
             policy_digest: active.snapshot().digest(),
             policy_rule_id: challenge.policy_rule_id,
+            approver: challenge.approver.clone(),
+            allowed_approver_ids: vec![f.approver_id],
             requirement: ApprovalRequirement {
-                approver_ids: challenge.approver_ids.clone(),
-                quorum: 1,
                 mode: ApprovalMode::OneTime,
                 max_uses: 1,
                 max_window_ms: None,
@@ -895,9 +1233,9 @@ mod tests {
         f.finish().await;
     }
 
-    // Block a real SQLite write beyond the Broker deadline. The Authority has
-    // already checked that deadline when it reaches the blocked transaction;
-    // reconciliation must observe the actual eventual commit or fault.
+    // Block a real SQLite write beyond the Broker deadline. The Authority
+    // generation commit checks the deadline again before reserving anchors;
+    // reconciliation must observe the actual rollback or fault.
     fn hold_policy_store(f: &PolicyFixture, fail_audit: bool) -> std::thread::JoinHandle<()> {
         let connection =
             rusqlite::Connection::open(rekey_vault::paths::vault_db(&f.state)).unwrap();
@@ -912,7 +1250,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn policy_timeout_reconciles_first_activation_and_roll_forward() {
+    async fn policy_timeout_before_generation_reservation_preserves_state() {
         use rekey_domain::capability::SessionProvenance::{Admin, Workload};
         for version in [1, 2] {
             let f = PolicyFixture::new().await;
@@ -921,6 +1259,34 @@ mod tests {
             }
             let (admin, _, action) = f.session(Admin);
             let (workload, _, workload_action) = f.session(Workload);
+            let database_state = || {
+                let db =
+                    rusqlite::Connection::open(rekey_vault::paths::vault_db(&f.state)).unwrap();
+                [
+                    "vault_header",
+                    "policy_state",
+                    "policy_trust",
+                    "policy_bundle",
+                    "audit_events",
+                ]
+                .map(|table| {
+                    let mut query = db
+                        .prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))
+                        .unwrap();
+                    let columns = query.column_count();
+                    query
+                        .query_map([], |row| {
+                            (0..columns)
+                                .map(|column| row.get::<_, rusqlite::types::Value>(column))
+                                .collect::<rusqlite::Result<Vec<_>>>()
+                        })
+                        .unwrap()
+                        .collect::<rusqlite::Result<Vec<_>>>()
+                        .unwrap()
+                })
+            };
+            let before = database_state();
+            let anchor = std::fs::read(f.state.join("generation")).unwrap();
             let lock = hold_policy_store(&f, false);
             let error = f
                 .ctx
@@ -936,13 +1302,14 @@ mod tests {
                 BrokerError::Authority(AuthorityError::AuthorityBusy)
             ));
             lock.join().unwrap();
-            assert_eq!(f.ctx.policy_status().await.unwrap().version, Some(version));
-            if version == 1 {
-                f.assert_live(&admin, action);
-            } else {
-                f.assert_revoked(&admin, action);
-            }
-            f.assert_revoked(&workload, workload_action);
+            assert_eq!(
+                f.ctx.policy_status().await.unwrap().version,
+                (version == 2).then_some(1)
+            );
+            assert_eq!(database_state(), before);
+            assert_eq!(std::fs::read(f.state.join("generation")).unwrap(), anchor);
+            f.assert_live(&admin, action);
+            f.assert_live(&workload, workload_action);
             f.finish().await;
         }
     }
@@ -976,6 +1343,8 @@ mod tests {
                     credential_version: None,
                     authorization: None,
                     approval: None,
+                    request_context: None,
+                    usage: None,
                     event_type: rekey_vault::model::event_type::SESSION_REVOKED,
                     outcome: rekey_vault::model::outcome::SUCCESS,
                     reason_code: "fixture-queued".into(),
@@ -1054,6 +1423,7 @@ mod tests {
             f.ctx.lifecycle.phase(),
             crate::lifecycle::BrokerPhase::Running
         );
+        #[cfg(feature = "lab")]
         assert_eq!(f.ctx.metrics.fault_signals.load(Ordering::Relaxed), 1);
         f.finish().await;
     }

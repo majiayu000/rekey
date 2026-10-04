@@ -1,5 +1,8 @@
 # ENT-01/02 Fixed two-node policy distribution and target binding
 
+> Status: Lab (v3 scope; enterprise reserve)
+> Existing contracts and evidence are retained; this capability is excluded from the default v3 build and release package.
+
 Implementation contract frozen2026-09-30; Rust target/status, existing producers
 and private file helper implemented locally. Strict PTY recovery remains unpassed
 (66/67 root tests pass; actual setter EPERM); real two-node field acceptance is

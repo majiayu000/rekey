@@ -1,5 +1,8 @@
 # EXT-02 Fixed GCP Secret Manager version source
 
+> Status: Lab (v3 scope; enterprise reserve)
+> Existing contracts and evidence are retained; this capability is excluded from the default v3 build and release package.
+
 Status: frozen implementation contract, 2026-09-30; implementation begins only
 after the DYN-06 recovery correction and independent review gate. This extends
 [the accepted external source scope](2026-09-16-external-capabilities.md#ext-02-gcp固定-secretversion-只读源).

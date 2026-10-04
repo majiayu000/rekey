@@ -86,6 +86,19 @@ macro_rules! call {
 }
 
 impl AuthorityHandle {
+    pub async fn confirm_rollback(
+        &self,
+        expected: rekey_domain::ipc::RollbackContext,
+        proof: crate::bootstrap::RestoreProof,
+        not_after: std::time::Instant,
+    ) -> Result<(), AuthorityError> {
+        call!(self, |reply| AuthorityCommand::ConfirmRollback {
+            expected,
+            proof,
+            not_after,
+            reply
+        })
+    }
     pub async fn lease_acquire_begin(
         &self,
         context: crate::model::LeaseExecutionContext,
@@ -243,12 +256,12 @@ impl AuthorityHandle {
     }
     pub async fn desktop_reveal(
         &self,
-        token: SecretInput,
+        proof: UnlockProof,
         credential_id: CredentialId,
         not_after: Option<std::time::Instant>,
     ) -> Result<Zeroizing<Vec<u8>>, AuthorityError> {
         call!(self, |reply| AuthorityCommand::DesktopReveal {
-            token,
+            proof,
             credential_id,
             not_after,
             reply
@@ -276,6 +289,32 @@ impl AuthorityHandle {
 
     pub async fn shutdown(&self, proof: Option<UnlockProof>) -> Result<(), AuthorityError> {
         call!(self, |reply| AuthorityCommand::Shutdown { proof, reply })
+    }
+
+    /// Authenticate an Admin stop in Locked or Unlocked state without unlocking.
+    pub async fn verify_shutdown_proof(&self, proof: UnlockProof) -> Result<(), AuthorityError> {
+        call!(self, |reply| AuthorityCommand::VerifyShutdownProof {
+            proof,
+            reply
+        })
+    }
+
+    /// Verifies only the current Presence key and atomically audits one local
+    /// approval decision. Dropping the receiver does not revoke queued work.
+    pub async fn authorize_local_approval(
+        &self,
+        proof: SecretInput,
+        draft: AuditDraft,
+        not_after: std::time::Instant,
+        wall_not_after_ms: i64,
+    ) -> Result<(), AuthorityError> {
+        call!(self, |reply| AuthorityCommand::AuthorizeLocalApproval {
+            proof,
+            draft,
+            not_after,
+            wall_not_after_ms,
+            reply
+        })
     }
 
     pub async fn verify_proof(&self, proof: UnlockProof) -> Result<(), AuthorityError> {
@@ -324,11 +363,11 @@ impl AuthorityHandle {
 
     pub async fn recovery_rotate_before(
         &self,
-        password: SecretInput,
+        proof: UnlockProof,
         not_after: Option<std::time::Instant>,
     ) -> Result<Zeroizing<String>, AuthorityError> {
         call!(self, |reply| AuthorityCommand::RecoveryRotate {
-            password,
+            proof,
             not_after,
             reply
         })
@@ -431,6 +470,38 @@ impl AuthorityHandle {
         call!(self, |reply| AuthorityCommand::CredentialRevoke {
             credential_id,
             proof,
+            not_after,
+            reply
+        })
+    }
+
+    pub async fn template_catalog_before(
+        &self,
+        source: rekey_domain::ipc::TemplateSource,
+        package: Vec<u8>,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<rekey_domain::ipc::TemplateCatalogResponse, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::TemplateCatalog {
+            source,
+            package,
+            not_after,
+            reply
+        })
+    }
+
+    pub async fn template_install_before(
+        &self,
+        input: rekey_domain::ipc::TemplateInstallMeta,
+        package: Vec<u8>,
+        proof: UnlockProof,
+        request_id: rekey_domain::ids::RequestId,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<rekey_domain::ipc::TemplateInstallResponse, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::TemplateInstall {
+            input: Box::new(input),
+            package,
+            proof,
+            request_id,
             not_after,
             reply
         })
@@ -628,6 +699,65 @@ impl AuthorityHandle {
 
     pub async fn fault_integrity(&self) -> Result<(), AuthorityError> {
         call!(self, |reply| AuthorityCommand::FaultIntegrity { reply })
+    }
+
+    pub async fn begin_profile_execution(
+        &self,
+        usage: crate::command::ProfileUsageStart,
+        preceding: Vec<AuditDraft>,
+        started: AuditDraft,
+        not_after: std::time::Instant,
+        wall_not_after_ms: Option<i64>,
+    ) -> Result<crate::model::UsageAdmission, AuthorityError> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .try_send(AuthorityCommand::BeginProfileExecution {
+                usage,
+                preceding,
+                started,
+                not_after,
+                wall_not_after_ms,
+                reply: tx,
+            })
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Full(_) => AuthorityError::AuthorityBusy,
+                mpsc::error::TrySendError::Closed(_) => AuthorityError::Faulted,
+            })?;
+        rx.await.map_err(|_| AuthorityError::Faulted)?
+    }
+
+    /// A queued terminal belongs to the worker even if its caller disconnects.
+    pub async fn settle_profile_execution(
+        &self,
+        request_id: rekey_domain::ids::RequestId,
+        measured_output_tokens: Option<u64>,
+        terminal: AuditDraft,
+    ) -> Result<(), AuthorityError> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(AuthorityCommand::SettleProfileExecution {
+                request_id,
+                measured_output_tokens,
+                terminal,
+                reply: tx,
+            })
+            .await
+            .map_err(|_| AuthorityError::Faulted)?;
+        rx.await.map_err(|_| AuthorityError::Faulted)?
+    }
+
+    pub async fn profile_usage(
+        &self,
+        principal_id: rekey_domain::ids::PrincipalId,
+        instance_slug: String,
+        utc_day: i64,
+    ) -> Result<crate::model::UsageTotals, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::ProfileUsage {
+            principal_id,
+            instance_slug,
+            utc_day,
+            reply
+        })
     }
 
     /// Wait for queue capacity, then commit. Used for terminal audits after

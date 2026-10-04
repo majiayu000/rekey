@@ -83,6 +83,7 @@ fn init_at(state_dir: &Path) {
             iterations: 1,
             parallelism: 1,
         },
+        rekey_domain::authorization::PolicyMode::Team,
     )
     .expect("initialize test vault");
     confirm_vault_init(state_dir).expect("confirm test vault");
@@ -145,6 +146,8 @@ fn audit_draft() -> AuditDraft {
         credential_version: None,
         authorization: None,
         approval: None,
+        request_context: None,
+        usage: None,
         event_type: event_type::POLICY_ACTIVATED,
         outcome: outcome::SUCCESS,
         reason_code: "enospc-probe".to_owned(),
@@ -280,6 +283,8 @@ async fn workload_replay_enospc_is_atomic_and_retryable() {
 
 fn workload_audit_draft() -> AuditDraft {
     AuditDraft {
+        request_context: None,
+        usage: None,
         event_type: event_type::SESSION_CREATED,
         reason_code: "workload-attested".to_owned(),
         ..audit_draft()
@@ -355,12 +360,20 @@ async fn restore_enospc_cleans_internal_artifacts_and_retries() {
 
     let target = case.path().join("target");
     fs::create_dir(&target).unwrap();
+    let expected = rekey_vault::bootstrap::inspect_restore(
+        &backup,
+        &target,
+        RestoreProof::Password(common::password_input()),
+        &receipt.sha256_hex,
+    )
+    .unwrap();
     let exhausted = exhaust_space(case.path(), RESERVE_BYTES);
     let error = restore_vault(
         &backup,
         &target,
         RestoreProof::Password(common::password_input()),
         &receipt.sha256_hex,
+        expected,
     )
     .unwrap_err();
     assert!(matches!(error, AuthorityError::RestoreFailed));
@@ -374,6 +387,13 @@ async fn restore_enospc_cleans_internal_artifacts_and_retries() {
         &target,
         RestoreProof::Password(common::password_input()),
         &receipt.sha256_hex,
+        rekey_vault::bootstrap::inspect_restore(
+            &backup,
+            &target,
+            RestoreProof::Password(common::password_input()),
+            &receipt.sha256_hex,
+        )
+        .unwrap(),
     )
     .expect("restore retry must succeed after space is restored");
 }

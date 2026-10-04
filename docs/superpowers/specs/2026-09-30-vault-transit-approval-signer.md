@@ -1,5 +1,8 @@
 # EXT-07 固定 Vault Transit 审批签名
 
+> Status: Lab (v3 scope; enterprise reserve)
+> Existing contracts and evidence are retained; this capability is excluded from the default v3 build and release package.
+
 状态：本地实现合同，真实 Vault ACL、非派生密钥配置与撤权未现场验收。
 
 现有独立 `rekey-approval-sign` 增加显式 `--vault-transit-profile PRIVATE.json`，不改变 policy library 的纯函数或 Agent API。sign 时该参数与 `--key-file` 必须二选一；review 可选相同 profile，既有软件签名 review 保持原合同。没有自动 fallback、解锁、provider 注册表或新 crate。

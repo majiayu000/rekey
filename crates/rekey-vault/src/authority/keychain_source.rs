@@ -124,6 +124,8 @@ impl Worker {
             credential_version: Some(version),
             authorization: None,
             approval: None,
+            request_context: None,
+            usage: None,
             event_type: phase,
             outcome: result,
             reason_code: format!("macos-keychain-source:{digest}"),

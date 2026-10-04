@@ -1,5 +1,10 @@
 # Operations runbook
 
+Scope: **3.0.0-alpha.1 unpublished candidate**, vault/backup 25 and policy 6.
+These durable formats are frozen across all v3 prereleases and GA. Local checks are not signed-device,
+provider or release acceptance. Enterprise references below require a source
+build with `--features lab`; they are not installed personal services.
+
 Every command below assumes the exact state directory and service identity have
 been confirmed first. Never delete, overwrite, or change ownership recursively
 until a verified backup exists and the target path has been written down.
@@ -16,10 +21,15 @@ proof.
    does not exist.
 2. Save the successful receipt and its SHA-256 separately from the backup.
 3. Run `shasum -a 256 BACKUP` and compare the exact 64-character digest.
-4. Stop the broker. Restore into a newly created empty mode-0700 directory.
-5. Start the restored broker locked, unlock it, list credentials/actions, and
-   execute a disposable fixed Action.
-6. Shut it down and retain the drill record. Never replace production state
+4. Stop the broker. In a new mode-0700 destination, run `restore --inspect`
+   with the input, receipt SHA and source password/recovery proof. Review the
+   returned vault ID, source generation, high-water and missing-history flag.
+5. Submit the exact reviewed JSON with `restore --expected-context`, the same
+   input/SHA and a fresh proof. Record the new receipt generation; a stale
+   context requires a new preview and human decision, not automatic retry.
+6. Start the restored broker locked, unlock it, list credentials/actions, and
+   execute a disposable allowed Action. See the [commands](user-guide.md#backup-and-restore).
+7. Shut it down with fresh proof and retain the drill record. Never replace production state
    merely to test restore.
 
 Missing receipt/SHA-256 means restore is not authorized: locate the original
@@ -27,6 +37,8 @@ receipt or create a new backup. A wrong proof, bad digest, corrupt backup, or
 nonempty destination must fail without producing a servable vault.
 
 ## Disposable Docker primary/standby drill (source checkout)
+
+Lab reference: use a source build with `--features lab`; this is not a default personal installation.
 
 Use a local Docker daemon and a new output directory. No existing vault or cloud
 account is used; all credentials and keys are generated for this run.
@@ -47,57 +59,48 @@ host failure, continuous replication, automatic routing and production RPO/RTO
 are outside this [reference contract](superpowers/specs/2026-10-02-docker-dr-reference.md).
 Only resources labeled for this invocation are removed.
 
-## Installed personal backup transfer
+## Operator-managed backup transfer (lab reference)
 
-On this workstation, use `~/.rekey` as the future default source state and
-`~/.local/share/rekey-backups/outbox` as the export queue. The hourly user launch
-agent uploads completed exports to `apple:/Users/apple/Documents/rekey-backups`
-and also runs at login. No real authority is initialized yet; the installed
-job only transfers snapshots after the operator exports them. Retention is
-keep-all. Desktop/Documents are not used for the local queue because macOS
-TCC denied access from the background process.
+The pkg does not install a backup transfer job, destination or retention policy.
+The retained `scripts/rekey-backup-sync.py` helper can export a new snapshot
+through the matching CLI, or transfer completed encrypted exports and receipts.
+An operator must explicitly choose private local/remote destinations, service
+identity and schedule. Never reuse another workstation's path or SSH host.
 
-After initializing and starting your authority, create a snapshot in a trusted
-terminal using the existing hidden step-up prompt:
-
-```sh
-/usr/bin/python3 "$HOME/Library/Application Support/Rekey/backup-sync.py" \
-  --outbox "$HOME/.local/share/rekey-backups/outbox" export \
-  --state-dir "$HOME/.rekey" \
-  --rekey /Users/lifcc/Desktop/code/AI/tools/rekey/target/debug/rekey
-```
-
-The `--rekey` path must refer to the binary matching your running authority.
-Failed exports remain hidden `.pending-*` directories and are not uploaded.
-Do not rename them into the queue. Retry export into a new directory.
-
-Inspect or trigger the installed transfer job:
-
-```sh
-launchctl print "gui/$(id -u)/io.github.majiayu000.rekey.backup-sync"
-launchctl kickstart "gui/$(id -u)/io.github.majiayu000.rekey.backup-sync"
-tail -n 30 "$HOME/Library/Application Support/Rekey/backup-sync.stdout.log"
-tail -n 30 "$HOME/Library/Application Support/Rekey/backup-sync.stderr.log"
-```
-
-Check the latest exit code and timestamps: old failure lines remain in the log.
-`SYNC OK exports=0` means there was nothing to transfer, not that a snapshot
-was created. `VERIFIED` means the remote digest and receipt matched. Missing
-receipts, digest conflicts and SSH errors fail nonzero. Failed remote uploads
-remain hidden `.upload-*` directories for diagnosis; they are not completed
-backups. No unlock material is stored in the job or sent over SSH. To disable:
-`launchctl bootout "gui/$(id -u)/io.github.majiayu000.rekey.backup-sync"`, then
-remove only its named plist if disabling across future logins as well.
+Use the helper's `--help` and the [external backup contract](superpowers/specs/2026-09-10-external-backup-operations.md).
+No scheduler receives an unlock proof. Hidden `.pending-*` exports or
+`.upload-*` transfers are incomplete; do not rename them into successful backup
+queues. `SYNC OK exports=0` means no transfer was needed, not that a backup was
+created. Verify the remote digest and receipt. Removing a transfer job must not
+delete vault state, generation anchors, keys or retained backups.
 
 ## Interrupted restore or init
 
-`.restore-incomplete` and `.init-incomplete` are safety markers, not files to
-delete casually. Keep the broker stopped. Re-run the same restore against the
-same directory only when the marker is a regular file created by Rekey and the
-same trusted backup/digest/proof are available; Rekey cleans only its known
-partial artifacts before retry. For an interrupted init, run init again and
-complete recovery-key confirmation. A symlink or unexpected file type is a
-security incident; preserve the directory for inspection.
+`.restore-incomplete` and `.init-incomplete` are durable safety markers. Stop the
+broker and preserve them with the database, wrappers and generation history.
+A failed operation may already have reserved a higher external generation; the
+absence of a success receipt does not authorize deleting or decrementing it.
+
+For interrupted restore, authenticate the intended backup again with
+`restore --inspect`, review the actual current high-water context, then explicitly
+supply that context to the write call. Only the supported restore path may clean
+its own verified partial files. A stale context or uncertain result requires a
+new inspection and deliberate decision, never an automatic retry. A symlink or
+unexpected file type is a security incident.
+
+Interrupted init is not a restartable cleanup command. If it has reserved
+history, rerunning init must not delete its database or marker. Preserve the
+attempt and recovery material; use the supported authenticated restore flow
+when a valid backup exists, or deliberately select a different new workspace.
+Do not remove history to make the original directory appear empty.
+
+`ROLLBACK_SUSPECTED` is a separate state with no usable root key. Review the
+`rollback` object in `rekey status`; confirm it only through
+`rollback-confirm --expected-context` with password or recovery proof. Presence
+cannot confirm a rollback. The actual history is reread; a changed context
+rejects without treating an ordinary unlock as consent. Confirmation leaves the
+vault locked. Locking a suspected vault preserves its context; after restart,
+unlock must detect the condition again. See [the exact CLI flow](user-guide.md#backup-and-restore).
 
 ## Database, worker, and audit faults
 
@@ -125,9 +128,10 @@ directory sync. Treat a retained partial file as failure evidence, choose a new
 path for retry, and do not append or resume it. Exports are redacted but still
 sensitive operational metadata and are not encrypted Credential backups.
 
-The released alpha.2 binary keeps local rows append-only. Development source
-adds completed-execution pruning, unlocked-only retention and the audit
-delivery/archival tools described below; their field acceptance is separate.
+Current source supports completed-execution pruning and authenticated
+unlocked-only retention. Usage history is a separate authenticated ledger and
+is not reset by pruning display audit rows. Delivery/archival below are lab
+tools; their field acceptance is separate.
 
 ## ENOSPC and filesystem errors
 
@@ -152,13 +156,16 @@ the wrong user. Fix the exact cause; do not relax the client checks.
 
 ## Service startup and logs
 
-- launchd: `launchctl print gui/$(id -u)/io.github.majiayu000.rekey`; logs are
-  `~/.rekey/rekeyd.stdout.log` and `~/.rekey/rekeyd.stderr.log`.
-- systemd: `systemctl status rekey.service` and
-  `journalctl -u rekey.service --since today`.
+- Installed macOS pkg: use the App service controls. Its opt-in SMAppService
+  job is `com.rekey.rekeyd`; `launchctl print gui/$(id -u)/com.rekey.rekeyd`
+  is read-only diagnosis. Do not register a second generated LaunchAgent.
+- Linux personal service: `systemctl --user status rekey.service` and
+  `journalctl --user -u rekey.service --since today`. This unit uses
+  `default.target` and no `User=`. A deliberately configured dedicated-account
+  system service instead uses system-level commands. See [installation](installation.md).
 
 Expected boot state is locked. `SIGTERM` drains accepted work before exit;
-Admin shutdown requires step-up while unlocked. A crash restart also starts
+Admin shutdown requires fresh step-up in every state, including locked. A crash restart also starts
 locked and reconciles unterminated `execution.started` audit rows. A persisted
 policy reports `unavailable` until the first successful unlock reverifies and
 loads its signed bundle. `expired` is terminal for that loaded bundle; clock
@@ -166,10 +173,12 @@ rollback does not revive it.
 
 ## Policy and approval operations
 
-Keep policy-signing and approver private keys outside Rekey state, processes,
-and backups. Rekey stores only the immutable policy trust public key,
-VRK-authenticated signed bundles, and redacted approval audit identifiers. It never signs policy
-or approval artifacts.
+In team mode, keep external Ed25519 policy/approver private keys outside Rekey
+state and backups. Personal mode instead uses a per-vault Secure Enclave P-256
+key through explicit App authentication; there is no software fallback. The
+Broker stores the immutable typed public trust root and authenticated signed
+bundles, not the private policy key. Local Presence approval is a one-time
+context-bound decision, not an external signature or background Agent prompt.
 
 Install the trust root once with `rekey policy trust install --file TRUST.json
 --step-up-stdin`. Exact retries are idempotent; a different signer or key is a
@@ -189,7 +198,7 @@ Locking or restarting intentionally revokes every capability, challenge, and
 in-memory approval use record; create a new session and challenge afterward.
 There is no remote approval availability fallback or offline bypass.
 
-The source-only `rekey-approval-sign` binary is a local one-person, one-time
+The packaged `rekey-approval-sign` binary is a local one-person, one-time
 review/sign tool. Pin `rekey approval origin` on the Broker host; obtain the
 origin-signed envelope from this host's `rekey approval prepare` or from
 `rekey approval pending` / `rekey approval get`; wrap the
@@ -199,7 +208,7 @@ same request. Do not take trusted inputs from an Agent directory. This is not a
 hosted approval service. Operator steps are in
 [the user guide](user-guide.md#local-independent-approval-endpoint).
 
-For workload identity, keep issuer private keys outside Rekey and place only
+For lab workload identity, keep issuer private keys outside Rekey and place only
 the intended static Ed25519 or RS256 public keys in the signed policy. The
 source-only [WID-09 extension](superpowers/specs/2026-09-10-github-actions-jwks.md)
 alternatively accepts `keys: []` and `online_key_source: "github-actions-jwks"`
@@ -209,9 +218,9 @@ rotation does not alter the policy digest or reset consumed JWT replay records.
 There is no discovery, introspection, SPIRE or Kubernetes integration.
 For static identities, rotate verification keys by signing the next
 consecutive policy version with the replacement key set, activate it, and
-confirm status before issuing new workload tokens. A new-version activation
-revokes all workload-minted sessions while preserving Admin-minted sessions.
-Retrying the exact active bundle preserves both kinds of session.
+confirm status before issuing new workload tokens. Replacing an active policy revokes all existing sessions. A first activation
+without an active predecessor preserves manually issued sessions but revokes
+workload-issued ones. Retrying the exact active bundle preserves both kinds.
 
 `WORKLOAD_IDENTITY_INVALID` deliberately covers malformed, expired, replayed,
 wrong-issuer, wrong-subject, wrong-audience, wrong-key, and otherwise
@@ -235,22 +244,53 @@ or capability token.
 ## DNS, network, and Clash/TUN Fake-IP
 
 Resolve the exact Action host with `dig +short HOST`. Private/reserved answers,
-including `198.18.0.0/15`, are rejected. For Clash, add the exact host to the
-DNS fake-IP filter so the host resolver returns real public addresses. Rekey
-does not follow redirects or honor HTTP proxy environment variables.
+including `198.18.0.0/15`, are rejected by default. Rekey does not silently send
+queries to a public resolver. It does not follow redirects or honor HTTP proxy
+environment variables.
+When rejected for fake-IP, the daemon records `upstream.dns_configuration_required`
+with the system-DNS/explicit-DoH remedies; inspect this event before retrying.
+
+For a TUN network that returns only fake-IP answers, an administrator may
+explicitly choose a trusted HTTPS JSON DoH service in the daemon's environment:
+
+```bash
+REKEY_DOH_URL=https://1.1.1.1/dns-query rekey serve
+```
+
+This is an optional example, not a default or a required provider. The service
+must support JSON A/AAAA queries with `name` and `type` parameters. Its URL must
+use HTTPS without userinfo, query or fragment; its own system-resolved addresses
+and every returned provider address must be public. If the resolver hostname is
+also fake-IP, use a reachable HTTPS IP URL whose certificate validates that IP,
+or configure real system DNS. No hardcoded bootstrap addresses are used.
+
+The chosen service receives each queried provider hostname. Provider credentials
+are never included. Unset `REKEY_DOH_URL` to disable it; restart the daemon for
+an environment change. A terminal setting applies to a daemon launched from
+that terminal, not an already-running App or SMAppService. Existing Actions must
+allow `retry-after` to forward that header; new App LLM onboarding includes it.
+
+DoH resolves addresses; it does not supply a proxy exit. The provider URL, Host
+and TLS SNI retain the original hostname while connecting to the screened IP.
+TUN domain rules may rely on DNS mapping or SNI sniffing, so test the actual
+provider and route on your network. Unreachable DoH/provider endpoints fail
+closed; no retry through fake-IP or alternate resolver is attempted. The JSON
+schema follows the [documented DNS JSON response](https://developers.cloudflare.com/1.1.1.1/encryption/dns-over-https/make-api-requests/dns-json/).
 
 ## Upgrade, rollback, and rejected state
 
-Follow [installation.md](installation.md). This Alpha (`v2.0.0-alpha.2`)
-initializes vault schema **v9**. The historical `v2.0.0-alpha.1` archive
-initialized schema **v5**. There is no reader or migration for any other format,
-including v1 and v4–v8. Unknown or mismatched layouts are rejected and never overwritten.
+Follow [installation](installation.md). The target is **3.0.0-alpha.1, unpublished**,
+with vault/backup 25 and policy 6. These formats are frozen across all v3 releases.
+Incompatible state and backups are always rejected: no migration, backfill or
+legacy reader will be added. All v3 prereleases, GA and minor/patch releases must keep
+the durable format; a breaking format needs a new major version.
 
-A backup made with an older binary restores only with that same generation of
-binaries into an empty directory. It is not an import path into v9. Rollback
-means the preserved old binaries plus their matching backup; never point those
-binaries at a directory a v9 process has opened, and never point a v9 binary at
-older state.
+Keep historical binaries, state and backups together. A historical backup is
+not an import path to this candidate. The App's unsupported-format message is
+read-only guidance; it does not migrate, inspect secret payloads or delete the
+old workspace. Create a separate workspace intentionally. Do not switch an old
+binary onto a directory touched by a newer format, and never erase external
+generation history to force a software downgrade.
 
 ## Lost keys
 
@@ -262,7 +302,7 @@ older state.
 - New recovery-key output lost, password available: rotate recovery again.
   Only the latest successfully displayed key is active.
 - Both lost: encrypted credentials and backups are permanently inaccessible.
-  Rekey has no backdoor, escrow, reset, or export operation.
+  Rekey has no backdoor, escrow or factor-reset bypass.
 - Policy-signing private key lost: the current signed policy can continue until
   expiry, but no next version can be issued. The immutable trust root cannot be
   replaced; initialize a new vault and recreate state through supported Admin
@@ -280,6 +320,8 @@ permanently unrecoverable.
 
 ## Fixed Keycloak exchange (source only)
 
+Lab reference: use a source build with `--features lab`; this is not a default personal installation.
+
 Use an owner-only profile with the fixed issuer origin/realm, confidential
 client, subject access token, audience and GET target described in
 `superpowers/specs/2026-09-10-keycloak-token-exchange-oau02.md`. The typed
@@ -291,9 +333,9 @@ operator recovery; no background renewal or crash-time cleanup is promised.
 Resource servers using only offline JWT verification may continue accepting a
 revoked JWT until expiry; immediate rejection requires their own online check.
 
-Current source storage format is 15; old state/backups are rejected without
-migration. The format-9 backup drill receipts remain historical evidence for
-the recorded binaries and are not format-15 restore evidence.
+Current source uses vault/backup 25 and policy 6, without migration. Older
+backup drill receipts remain evidence only for their recorded binaries; they
+do not establish current restore or provider acceptance.
 
 ## Local Agent tools and operator repair
 
@@ -318,6 +360,8 @@ any possible earlier write effect. Revoked and provider-specific credentials
 remain outside this ordinary-token repair flow.
 
 ## Audit delivery (development source)
+
+Lab reference: use a source build with `--features lab`; this is not a default personal installation.
 
 The [bounded audit delivery helper](superpowers/specs/2026-09-30-audit-delivery.md)
 ships in the unreleased candidate archive. First obtain a trusted BackupReceipt
@@ -352,6 +396,8 @@ permissions, deduplication and capacity must be validated at that receiver.
 
 ## Vault Transit approval signing (development source)
 
+Lab reference: use a source build with `--features lab`; this is not a default personal installation.
+
 For the fixed [Transit approval signer](superpowers/specs/2026-09-30-vault-transit-approval-signer.md),
 the operator supplies one private profile containing the token, its absolute
 expiry, the public HTTPS origin/mount/key, explicit key version and pinned
@@ -376,11 +422,13 @@ claiming remote key custody or hardware protection.
 
 ## Independent HTTPS approval-file relay (source checkout)
 
+Lab reference: use a source build with `--features lab`; this is not a default personal installation.
+
 Build `rekey-approval-relay` or use a future archive that contains it. Create
 an operator-owned mode-0700 state directory. Configure one organization,
 Broker origin public key, uploader subject, subject-to-ApproverId transport
-access list and independently confirmed directory links. Relay config/store2
-rejects nonempty v1 state without migration; use an empty private state directory
+access list and independently confirmed directory links. Relay configuration 3
+and store 2 reject incompatible older inputs without migration; use an empty private state directory
 for this breaking development version. Directory tombstones persist, changed
 mapping/configuration does not clear them. A stop/restart does not revoke
 downloaded grants or update a Broker policy.
@@ -390,7 +438,7 @@ public placeholders and file paths with independently trusted values:
 
 ```json
 {
-  "formatVersion": 2,
+  "formatVersion": 3,
   "instanceId": "<INSTANCE_UUID>",
   "endpoint": "https://approval.example.com/v1",
   "listenAddress": "127.0.0.1:8443",
@@ -407,7 +455,7 @@ public placeholders and file paths with independently trusted values:
   "tenantId": "<TENANT_UUID>",
   "originPublicKey": "<INDEPENDENTLY_PINNED_HEX_PUBLIC_KEY>",
   "uploaderSubject": "<STABLE_OPERATOR_SUBJECT>",
-  "approvers": [{"subject": "<STABLE_APPROVER_SUBJECT>", "approverId": "<APPROVER_UUID>"}],
+  "approvers": [{"subject": "<STABLE_APPROVER_SUBJECT>", "approverId": "<APPROVER_UUID>", "publicKey": "<LOWERCASE_HEX_ED25519_PUBLIC_KEY>"}],
   "directory": {
     "baseUrl": "https://directory.example.com/scim/v2",
     "caCertificateFile": "/secure/scim-ca.pem",
@@ -523,6 +571,8 @@ require separate field acceptance.
 
 ## Authenticated remote approval inbox (source checkout)
 
+Lab reference: use a source build with `--features lab`; this is not a default personal installation.
+
 Use the same protected personnel curl configuration as the relay. Query the
 fixed endpoint; the response contains public source labels, request IDs and
 transport states, with authenticated relative detail/receipt paths.
@@ -548,6 +598,8 @@ for the bounded statuses and cursor contract. This is a protected terminal
 interface; a complete graphical review and signing flow is still separate work.
 
 ## Fixed S3 audit archive and Legal Hold (source checkout)
+
+Lab reference: use a source build with `--features lab`; this is not a default personal installation.
 
 Use a sealed `batch-N.json` from the independent AUD-07 outbox. Choose the
 actual bucket owner, commercial region, prefix, retention mode/UTC deadline
@@ -591,6 +643,8 @@ against the real test bucket and then the intended production configuration.
 
 ## 开发版持久租约与显式恢复
 
+Lab reference: use a source build with `--features lab`; this is not a default personal installation.
+
 格式 15 的动态 Vault 源先持久登记 acquire intent，再请求远端；取得 exact ID 后
 必须完成 issued 提交才能执行业务。重启后先保持 Locked，无后台清理请求。
 首次显式 unlock 使用登记时的历史凭证版本清理最多 8 条已知 ID，总预算 8 秒；
@@ -613,6 +667,8 @@ Vault 管理面核对对应角色、token 权限和自然到期；当前代码�
 
 ## 开发版 GCP 固定 SecretVersion 源
 
+Lab reference: use a source build with `--features lab`; this is not a default personal installation.
+
 使用 `credential add-gcp-secret-manager LABEL --file PRIVATE_PROFILE` 注册，
 使用 `credential rotate-gcp-secret-manager ID --file PRIVATE_PROFILE` 轮换；
 每次都按现有隐藏 TTY 或 `--password-stdin` 完成 Admin step-up。profile 须为
@@ -625,24 +681,27 @@ canonical 数字 project number；返回 name 必须精确匹配，不查别名�
 一次读取得到完整非空 UTF-8 值，仅注入当前固定 Action，不选择 JSON 子字段、
 缓存、自动刷新或向 Agent 返回凭证。需要独立 IAM 最小权限与真实 provider 验收。
 
-当前格式为 16，旧 state/backup（含 15）拒绝恢复，不做迁移。纯解析与实际
-Authority 合同、加密轮换/备份门禁及 CLI 拒绝路径有本地证据；真实 IPC/TLS
-正向链因宿主 EPERM 未通过，响应头全部字节的传输修正仍在复审。不要将这些
-局部证据写成完整云源或现场通过。
+当前候选使用 vault25 / policy6，旧 state/backup 拒绝恢复且永久不迁移。
+解析、Authority、轮换/备份与 CLI 的合成证据仅支持对应本地边界；
+真实 Google IAM、token 到期与撤权仍需实际 provider 验收。
 
 ## 开发版指标调度与规则
 
+Lab reference: use a source build with `--features lab`; this is not a default personal installation.
+
 使用现有 `rekey-service-unit.py systemd-metrics-service` 输出 oneshot，传入实际安装的 `--rekey`、`--state-dir` 与 Broker 所属 `--run-as-user`；`systemd-metrics-timer` 输出固定 30 秒 timer。此生成器只输出文件，不安装或启动服务。先按[部署合同](superpowers/specs/2026-09-30-metrics-deployment.md)预置专用 `rekey-metrics` 只读组与 `/var/lib/rekey-metrics` 目录，collector 使用独立 UID，不能访问 Broker state/admin.sock。
 
-`deploy/prometheus/` 中提供固定 textfile 路径的 scrape 示例、规则和 22 个官方 promtool 向量。过期、缺失、未来时间、解析错误、失联或时钟不可信时，不输出业务 rate 为零，转为 freshness 告警。当前只完成本地生成器/静态检查；本机缺少 promtool/systemd-analyze，规则引擎、Linux 调度与告警交付尚未实测。上线前需实际通过默认工具检查及权限、时钟、网络验收。
+`deploy/prometheus/` 中提供固定 textfile 路径的 scrape 示例、规则和 22 个官方 promtool 向量。过期、缺失、未来时间、解析错误、失联或时钟不可信时，不输出业务 rate 为零，转为 freshness 告警。生成器/静态检查不替代部署环境的 promtool、systemd 用户 bus、调度与告警交付验收。上线前需在实际目标完成权限、时钟、网络检查。
 
 ## 开发版原生策略与审批文件流程
 
 策略页可预览并私密导出原始 UTF-8 草稿，再交给独立 `rekey-policy-sign` review/sign；既有信任与激活仍需显式 step-up。审批详情中选择原始 JSON 正文并导出 REQUEST，交给独立审批 signer 检查绑定、签名；选回一或两个签名 grant 后，以隐藏 capability 显式执行固定 `action@version`。界面不保管签名私钥，也不自动重试。
 
-草稿最多 64KiB，每个 grant 最多 4KiB，正文遵守实际 Action 大小限制。导出为新建私密文件；执行采用受控快照，capability 仅走匿名 stdin。失焦、锁定、断开、切换 vault 或关闭表单会清空界面敏感状态并忽略迟到回调；这不会撤销已发生的远程效果。HTTP 状态与正文供人工核对，未知响应应查审计，勿自动重试。80 项本地边界断言与完整 App 严格编译已通过，实际点击和真实 Broker/signer 端到端仍待验收，详见[原生流程合同](superpowers/specs/2026-09-30-native-policy-approval-flow.md)。
+草稿最多 64KiB，每个 grant 最多 4KiB，正文遵守实际 Action 大小限制。导出为新建私密文件；执行采用受控快照，capability 仅走匿名 stdin。失焦、锁定、断开、切换 vault 或关闭表单会清空界面敏感状态并忽略迟到回调；这不会撤销已发生的远程效果。HTTP 状态与正文供人工核对，未知响应应查审计，勿自动重试。合成边界检查不能替代实际 GUI 与独立 signer 的设备验收，详见[原生流程合同](superpowers/specs/2026-09-30-native-policy-approval-flow.md)。
 
 ## 开发版 AWS 固定版本源
+
+Lab reference: use a source build with `--features lab`; this is not a default personal installation.
 
 使用 `rekey credential add-aws-secrets-manager LABEL --file PRIVATE_PROFILE` 或
 `rekey credential rotate-aws-secrets-manager ID --file PRIVATE_PROFILE`，按既有
@@ -653,15 +712,15 @@ session token 和声明到期，不能放 argv、env 或公开日志。
 仅取完整 SecretString 作为本次固定 Action 的值，拒绝二进制、标签/latest、
 错误 ARN/version、过期、反射和不合法 header；不执行 SDK discovery、refresh、
 缓存、写入或 Agent KMS。SigV4 用原始配置签名，并对签名规范化后的 token
-表示一并封口。当前是格式17，旧状态/备份拒绝且不迁移；alpha.2 格式9的公开
-下载没有因此更新。具体九字段和时间边界见[AWS 合同](superpowers/specs/2026-09-30-aws-secret-source.md)。
+表示一并封口。当前候选使用 vault25 / policy6，旧状态/备份拒绝且永久不迁移。具体九字段和时间边界见[AWS 合同](superpowers/specs/2026-09-30-aws-secret-source.md)。
 
-本地 Actor/加密/签名检查不证明真实 IAM/KMS/STS 撤权或 CloudTrail。严格 TLS
-监听尝试因 EPERM 失败，UDS/CLI 正向及完整当前 workspace 尚未通过；不要
-把候选代码视为已发布或已完成现场验收。
+本地 Actor、加密和签名检查不证明真实 IAM/KMS/STS 撤权或 CloudTrail；
+不要把合成测试或历史检查记录视为当前发布及现场验收。
 
 
 ### Fixed Azure Key Vault source (local source implementation)
+
+Lab reference: use a source build with `--features lab`; this is not a default personal installation.
 
 Use a private regular profile file (closed azure-key-vault-source-v1 contract)
 with one commercial vault origin/name/explicit version and imported token/use
@@ -671,12 +730,14 @@ Both require a current per-call proof via hidden TTY or explicit `--password-std
 The Agent executes only its registered Action. Source GET uses2025-07-01; disabled,
 not-yet-valid, expired or mismatched SecretBundle blocks business dispatch.
 Full token/value bytes remain unchanged; standard HTTP parsed representations
-are also sealed. Azure introduced format18; current source format19 rejects all older formats without migration.
-Current local focused tests/static review are available; full workspace,
-TLS/UDS and actual Entra/RBAC/firewall/revocation acceptance remain unverified.
+are also sealed. The current vault25 / policy6 candidate rejects incompatible older formats
+without migration. Local fixtures/static review do not establish actual
+Entra/RBAC/firewall/revocation acceptance.
 See [the fixed Azure contract](superpowers/specs/2026-09-30-azure-secret-source.md).
 
 ## Fixed 1Password Connect field source (EXT-04, local verification pending)
+
+Lab reference: use a source build with `--features lab`; this is not a default personal installation.
 
 Prepare the closed eight-field private onepassword-connect-source-v1 profile
 from `2026-09-30-onepassword-secret-source.md`. The declared
@@ -690,9 +751,12 @@ version, then uses its complete value only for the registered Action.
 An item update needs explicit re-registration; matching Connect version does
 not prove the synchronized item is cloud-latest. Private Connect, real TLS/READ
 permissions/token revocation and synchronization acceptance remain pending.
-State/backup format19 rejects1..18; no migration or overwrite is attempted.
+Current vault/backup format25 rejects incompatible older layouts; no migration
+or overwrite is attempted.
 
 ## Fixed two-node policy file box (ENT-01/02 local slice)
+
+Lab reference: use a source build with `--features lab`; this is not a default personal installation.
 
 `scripts/rekey-controlplane.py` uses one administrator-owned version1 registration
 profile for exactly two nodes. Register real vault/node/signer IDs, canonical
@@ -733,14 +797,16 @@ Do not resend an unknown command. CLI exit/code and activation confirmation are
 reported separately: a CLI error can still accompany a verified commit.
 
 Controlling TTY metadata is saved and restored after the owned activation child
-exits or is killed. The host currently denies the synthetic PTY restoration ioctl;
-that strict runtime gate remains unpassed. Kernel filesystem stalls have no
-proven hard45s wall limit. Actual hidden input and two-node/VM/UID/network/backup
+exits or is killed. A synthetic PTY check does not prove terminal
+restoration on the deployment host. Kernel filesystem stalls have no proven
+hard45s wall limit. Actual hidden input and two-node/VM/UID/network/backup
 isolation require separate field acceptance. No commit or release readiness is
 claimed from fake CLI fixtures.
 
 
 ## OIDC node administrator login
+
+Lab reference: use a source build with `--features lab`; this is not a default personal installation.
 
 Register a public PKCE client on the exact issuer, with the exact fixed loopback
 redirect URI on the same machine as rekeyd. Obtain the reviewed directory mapping
@@ -812,6 +878,8 @@ login. See the canonical all-capabilities tracker for review and execution gates
 
 ## PKCS#11 approval signing (development source)
 
+Lab reference: use a source build with `--features lab`; this is not a default personal installation.
+
 Use `rekey-approval-sign review` and `sign` with `--pkcs11-profile PRIVATE.json`
 in place of the software key or Transit profile. Review the fixed module,
 token and public-key identity, then sign with the exact reviewed digest.
@@ -826,7 +894,7 @@ tests do not prove token compatibility, hardware nonexportability or driver
 cleanup; validate those on the intended HSM before production use.
 
 
-## Automatic audit retention (development source, format 21)
+## Automatic audit retention (current source)
 
 Choose an explicit age, inspect the current policy, or disable it:
 
