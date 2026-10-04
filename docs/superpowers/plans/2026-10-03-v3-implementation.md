@@ -273,3 +273,6 @@ GLM Responses最终源码补证：固定`glm-responses@1`（POST`/api/v1/respons
 最终默认全仓 **1027 passed / 0 failed / 6 ignored**，1303.715秒，生产源码 diff SHA256为 `50d2005fbeb3c4aaf2be282c3462ab6003854ee28685b34b1ce2d53aa8f99a62`。default/lab all-targets、严格Clippy、fmt、机械合同、严格Swift与onboarding软件合同通过。connect15、DNS19、写入3、网关17、原文本流8定向全部通过。前两轮 broker 启动等待失败、首次 harness 依赖偏移及锁未完成导致的拒绝保留；具体启动原因未完全归因，不改测试期限。未将此前Lab1489或真实SDK/provider结果算作本轮新全套/模型验收。
 
 新 App/pkg 公证分别 `7a750191-3642-4657-ae07-a3967be14051` / `58a40ddb-a603-4a30-bf33-f01d9c0cb37d`，均Accepted、issues=null；签名、装订、Gatekeeper通过。当前账户升级成功，15个普通文件、1个bundle链接与三条root CLI链接匹配。包SHA256为 `0f2e4d723ea648c1071ea09e7cd9d3d5d10f678ec3552a165bd7ec1c24bd6c77`。统一JSON的 `review_followup_20261005` 绑定新源码与产物；云端验证以当前PR head检查为准。人工审查、真实App硬件/明文清理、SMAppService与延后的新账户T12仍Pending，PR保持draft，不创建公开release。
+
+
+推送后补充：发现已有release workflow在job级env引用runner.temp，GitHub定义校验直接拒绝六个路径，未创建job或执行发布。官方actionlint在原文件复现6项错误；将同样路径移到首个runner步骤通过GITHUB_ENV设置后零错误，分发9项、pkg10项和带空格临时目录的真实shell初始化通过。签名/发布条件保持，Rust/App与已安装包未改变，无新tag/release或签名secret上传。当前PR的新head继续跑云端门槛，旧失败保留于本轮证据。

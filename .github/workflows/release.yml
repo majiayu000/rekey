@@ -195,14 +195,16 @@ jobs:
       id-token: write
       attestations: write
       artifact-metadata: write
-    env:
-      REKEY_UI_SIGNING_KEYCHAIN: ${{ runner.temp }}/rekey-ui-signing.keychain-db
-      REKEY_UI_CERTIFICATE_PATH: ${{ runner.temp }}/rekey-ui-developer-id.p12
-      REKEY_PROVISIONING_PROFILE: ${{ runner.temp }}/rekey-app.provisionprofile
-      REKEY_DAEMON_PROVISIONING_PROFILE: ${{ runner.temp }}/rekey-daemon.provisionprofile
-      REKEY_INSTALLER_CERTIFICATE_PATH: ${{ runner.temp }}/rekey-installer-developer-id.p12
-      APPLE_API_KEY_PATH: ${{ runner.temp }}/rekey-notary-api-key.p8
     steps:
+      - name: Set temporary signing paths
+        run: |
+          printf '%s\n' \
+            "REKEY_UI_SIGNING_KEYCHAIN=$RUNNER_TEMP/rekey-ui-signing.keychain-db" \
+            "REKEY_UI_CERTIFICATE_PATH=$RUNNER_TEMP/rekey-ui-developer-id.p12" \
+            "REKEY_PROVISIONING_PROFILE=$RUNNER_TEMP/rekey-app.provisionprofile" \
+            "REKEY_DAEMON_PROVISIONING_PROFILE=$RUNNER_TEMP/rekey-daemon.provisionprofile" \
+            "REKEY_INSTALLER_CERTIFICATE_PATH=$RUNNER_TEMP/rekey-installer-developer-id.p12" \
+            "APPLE_API_KEY_PATH=$RUNNER_TEMP/rekey-notary-api-key.p8" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:

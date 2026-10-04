@@ -3277,6 +3277,21 @@
       "SMAppService login-item lifecycle",
       "Fresh-account T12 deferred by user",
       "GA format freeze and public release"
-    ]
+    ],
+    "release_workflow_validation_followup": {
+      "failed_run": "https://github.com/majiayu000/rekey/actions/runs/37223556722",
+      "failed_run_source": "c2c3e22b32b6e5437d3ed21b79df3d601cd2f0d1",
+      "failure_phase": "GitHub workflow validation; no job or publish step started",
+      "cause": "Six job-level env expressions used runner.temp, which is unavailable at that location",
+      "repair": "Set the same six RUNNER_TEMP paths in the first runner step through GITHUB_ENV",
+      "actionlint_red_errors": 6,
+      "actionlint_green_exit": 0,
+      "distribution_exit": 0,
+      "pkg_exit": 0,
+      "actual_shell_path_initializer_exit": 0,
+      "code_and_installed_package_unchanged": true,
+      "signing_secrets_uploaded": false,
+      "tag_or_release_created": false
+    }
   }
 }
