@@ -1,9 +1,13 @@
-# Rekey v3 candidate scope
+# Rekey 0.3 candidate scope (v3 design)
 
-Target: **3.0.0-alpha.4 — unpublished candidate, not GA**.
-Current durable formats vault25 and policy snapshot6 are frozen from alpha.1
-through all v3 releases. Source implementation, local validation and Release status
-are distinct. Every v3 Release entry remains **Pending**.
+Pre-tag candidate snapshot; current publication status is recorded on the
+[GitHub release](https://github.com/majiayu000/rekey/releases/tag/v0.3.0-alpha.1) and its complete workflow.
+
+Target: **0.3.0-alpha.1 — unpublished candidate, not GA**.
+Current durable formats vault25 and policy snapshot6 remain frozen through
+all 0.3 releases, including prereleases. Product version 0.3 reflects current
+maturity; v3 still names the design stage, not a GA release. Source implementation,
+local validation and Release status are distinct. Every current candidate Release entry remains **Pending**.
 
 ## Distribution
 
@@ -14,7 +18,9 @@ are distinct. Every v3 Release entry remains **Pending**.
 | Other Linux / arm64 | Source and bounded test environments only | Pending; no distribution support claim |
 | macOS Intel / Windows | No candidate artifact | Not supported |
 
-There is no public v3 tap, crates.io package or completed v3 download. The cask
+There is no public tap or crates.io package. The historical v3.0.0-alpha.4
+[public release workflow](https://github.com/majiayu000/rekey/actions/runs/37262839187)
+completed; the new 0.3 candidate must pass its own public-download checks. The cask
 uses the actual final pkg hash; it does not bypass signing, notarization or
 Installer gates. Current Homebrew local-file opt-in is documented in
 [installation](installation.md). No auto-updater or unattended installer is added.
@@ -59,20 +65,23 @@ narrower contract and cannot be substituted for it. Codex strict Seatbelt launch
 has the recorded managed-preferences limitation. Installed-client tests using a
 synthetic provider prove routing only; real accounts/providers remain unaccepted.
 
-Before release: complete final default/lab joint checks, independent reviews,
-signed/notarized artifact and public-download checks, actual user-service and
-Installer lifecycle, and T12's fresh-account three-command/under-five-minute
-path. All remain separate Pending release gates; local checks cannot replace them.
+The release workflow requires security gates, signed/notarized artifacts,
+installed-package checks and public-download smoke. The user deferred the three
+installed-App interaction/lifecycle checks and T12's fresh-account
+three-command/under-five-minute path for this alpha; they remain unverified.
+External human security review and real-provider dogfood are also unfinished.
+Software and distribution checks cannot replace these acceptance results.
 
 ## Format and support policy
 
 Migration, old-format double reading and backfill are permanently excluded.
 Old directories and backups need their matching old binaries; a new format uses
-an empty directory and deliberate re-enrollment. GA minor/patch releases within
-one major must preserve durable formats; a breaking format requires a new major.
+an empty directory and deliberate re-enrollment. All 0.3 releases, including
+prereleases, must preserve durable formats.
+An incompatible format requires a separately planned release line and SPEC revision.
 This alpha is not a GA compatibility commitment, SLA or general A2/L2 guarantee.
 
 Historical v2 archive facts remain in [v2 alpha.2 notes](releases/v2.0.0-alpha.2.md)
-and [v2 alpha.1 notes](releases/v2.0.0-alpha.1.md), not in this v3 release status.
+and [v2 alpha.1 notes](releases/v2.0.0-alpha.1.md), not in this 0.3 candidate status.
 The unrelated rekey.dev product/domain is not affiliated with this repository;
 no commercial-name or registry ownership claim is made here.

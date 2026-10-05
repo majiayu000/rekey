@@ -1,7 +1,10 @@
 # Operations runbook
 
-Scope: **3.0.0-alpha.4 unpublished candidate**, vault/backup 25 and policy 6.
-These durable formats are frozen across all v3 prereleases and GA. Local checks are not signed-device,
+Pre-tag candidate snapshot; current publication status is recorded on the
+[GitHub release](https://github.com/majiayu000/rekey/releases/tag/v0.3.0-alpha.1) and its complete workflow.
+
+Scope: **0.3.0-alpha.1 unpublished candidate**, vault/backup 25 and policy 6.
+These durable formats are frozen across all 0.3 releases, including prereleases. Local checks are not signed-device,
 provider or release acceptance. Enterprise references below require a source
 build with `--features lab`; they are not installed personal services.
 
@@ -279,11 +282,12 @@ schema follows the [documented DNS JSON response](https://developers.cloudflare.
 
 ## Upgrade, rollback, and rejected state
 
-Follow [installation](installation.md). The target is **3.0.0-alpha.4, unpublished**,
-with vault/backup 25 and policy 6. These formats are frozen across all v3 releases.
+Follow [installation](installation.md). The target is **0.3.0-alpha.1, unpublished**,
+with vault/backup 25 and policy 6. These formats are frozen across all 0.3 releases.
 Incompatible state and backups are always rejected: no migration, backfill or
-legacy reader will be added. All v3 prereleases, GA and minor/patch releases must keep
-the durable format; a breaking format needs a new major version.
+legacy reader will be added. All 0.3 releases must keep the durable format; an incompatible format requires
+a separately planned release line and prior SPEC revision. Renumbering from
+v3.0.0-alpha.4 does not require reinitialization of vault25 / policy6.
 
 Keep historical binaries, state and backups together. A historical backup is
 not an import path to this candidate. The App's unsupported-format message is

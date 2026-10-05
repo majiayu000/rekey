@@ -2,7 +2,7 @@
 
 Rekey 把 API Key 留在本机，让 Agent 只调用你授权的操作。
 
-当前版本为 **3.0.0-alpha.4（alpha）**，[发布状态与下载](https://github.com/majiayu000/rekey/releases/tag/v3.0.0-alpha.4)以 GitHub 为准。macOS 安装入口为签名、公证的 pkg；
+当前版本为 **0.3.0-alpha.1（alpha）**，[发布状态与下载](https://github.com/majiayu000/rekey/releases/tag/v0.3.0-alpha.1)以 GitHub 为准。macOS 安装入口为签名、公证的 pkg；
 发布工作流也会从该 pkg 生成本地 Homebrew cask，尚无公开 tap。
 [安装说明](docs/installation.md)列出前置条件；设备权限和完整发布验收仍待完成。
 
@@ -52,8 +52,8 @@ App 提供凭据管理、模板安装、策略/审批、Activity 和备份恢复
 回滚检测使用认证代数与外部 high-water；疑似回滚不会自动解锁，恢复须审阅并明确确认。
 Agent 执行不推进代数，日预算不防本机合法旧状态回滚，也不是硬费用封顶。
 
-永久不提供迁移、旧格式双读或回填。vault25 / policy6 已冻结，覆盖所有 v3 预发布与正式版本。
-同一主版本不得改变持久格式；破坏性格式变化必须进入下一主版本。
+永久不提供迁移、旧格式双读或回填。vault25 / policy6 已冻结，覆盖所有 0.3 版本，包括预发布。
+0.3 是原 v3 设计的产品发布编号；改号不解冻格式，未来不兼容变化须另行规划发布线。
 旧环境保留匹配的二进制、状态与备份，新格式使用新空目录重建。
 
 - [使用指南](docs/user-guide.md) · [安装与卸载](docs/installation.md) · [macOS App](apps/macos/README.md)
