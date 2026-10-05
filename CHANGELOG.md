@@ -4,7 +4,16 @@ All notable public changes are recorded here. Rekey uses semantic versioning
 for release identifiers. Vault25 / policy snapshot6 stay unchanged throughout v3,
 including prereleases; CLI and UI prerelease behavior may still change.
 
-## 3.0.0-alpha.2
+## 3.0.0-alpha.3
+
+**Requires reinitialization: no for vault25 / policy6.** Formats remain frozen.
+Keep archive-only Python helper checks in the tar.gz smoke entry point, so the
+macOS package can run the same native behavior and service-manager acceptance.
+The macOS manager exercises the installed daemon inside its profiled bundle.
+Alpha.2 passed signing/notarization but its install gate exposed the misplaced
+archive checks; its immutable tag remains unpublished. See [release notes](docs/releases/v3.0.0-alpha.3.md).
+
+## 3.0.0-alpha.2 (unpublished tag)
 
 **Requires reinitialization: no for vault25 / policy6.** Formats remain frozen.
 Split the Activity list comparison into explicitly typed expressions so the

@@ -1654,7 +1654,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "rekey-approval-relay"
-version = "3.0.0-alpha.2"
+version = "3.0.0-alpha.3"
 dependencies = [
  "aws-lc-rs",
  "data-encoding",
@@ -1681,7 +1681,7 @@ dependencies = [
 
 [[package]]
 name = "rekey-broker"
-version = "3.0.0-alpha.2"
+version = "3.0.0-alpha.3"
 dependencies = [
  "aws-lc-rs",
  "bytes",
@@ -1719,7 +1719,7 @@ dependencies = [
 
 [[package]]
 name = "rekey-cli"
-version = "3.0.0-alpha.2"
+version = "3.0.0-alpha.3"
 dependencies = [
  "aws-lc-rs",
  "clap",
@@ -1738,7 +1738,7 @@ dependencies = [
 
 [[package]]
 name = "rekey-connector"
-version = "3.0.0-alpha.2"
+version = "3.0.0-alpha.3"
 dependencies = [
  "rekey-domain",
  "serde",
@@ -1749,7 +1749,7 @@ dependencies = [
 
 [[package]]
 name = "rekey-domain"
-version = "3.0.0-alpha.2"
+version = "3.0.0-alpha.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -1759,7 +1759,7 @@ dependencies = [
 
 [[package]]
 name = "rekey-integration"
-version = "3.0.0-alpha.2"
+version = "3.0.0-alpha.3"
 dependencies = [
  "aws-lc-rs",
  "data-encoding",
@@ -1775,7 +1775,7 @@ dependencies = [
 
 [[package]]
 name = "rekey-policy"
-version = "3.0.0-alpha.2"
+version = "3.0.0-alpha.3"
 dependencies = [
  "aws-lc-rs",
  "cryptoki",
@@ -1801,7 +1801,7 @@ dependencies = [
 
 [[package]]
 name = "rekey-vault"
-version = "3.0.0-alpha.2"
+version = "3.0.0-alpha.3"
 dependencies = [
  "aes",
  "aes-gcm",

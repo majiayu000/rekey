@@ -1,6 +1,6 @@
 # Rekey v3 candidate scope
 
-Target: **3.0.0-alpha.2 — unpublished candidate, not GA**.
+Target: **3.0.0-alpha.3 — unpublished candidate, not GA**.
 Current durable formats vault25 and policy snapshot6 are frozen from alpha.1
 through all v3 releases. Source implementation, local validation and Release status
 are distinct. Every v3 Release entry remains **Pending**.

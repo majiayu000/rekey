@@ -17,15 +17,11 @@ command -v python3 >/dev/null || { echo "python3 is required" >&2; exit 1; }
 command -v openssl >/dev/null || { echo "openssl is required" >&2; exit 1; }
 command -v rg >/dev/null || { echo "ripgrep is required" >&2; exit 1; }
 
-for name in rekey rekeyd rekey-mcp rekey-policy-sign rekey-approval-sign \
-  rekey-service-unit.py agent-quickstart.py operator-credential-repair.py; do
+for name in rekey rekeyd rekey-mcp rekey-policy-sign rekey-approval-sign; do
   [[ -x "$BIN_DIR/$name" ]] || { echo "required archive executable is missing: $name" >&2; exit 1; }
 done
 for name in rekey-policy-sign rekey-approval-sign; do
   "$BIN_DIR/$name" --help >/dev/null
-done
-for name in rekey-service-unit.py agent-quickstart.py operator-credential-repair.py; do
-  python3 "$BIN_DIR/$name" --help >/dev/null
 done
 for command in metrics oidc-login; do
   if "$REKEY" "$command" --help >/dev/null 2>&1; then
@@ -347,5 +343,5 @@ if [[ "$(uname -s)" == Darwin ]]; then
 fi
 
 echo "release-archive-acceptance: PASS"
-echo "release-archive-acceptance: proved=password-change,recovery-rotate,audit-list-export,policy-activate,approval-grant,packaged-helper-entries,mcp-initialize-discovery"
+echo "release-archive-acceptance: proved=password-change,recovery-rotate,audit-list-export,policy-activate,approval-grant,mcp-initialize-discovery"
 echo "release-archive-acceptance: lab features excluded"

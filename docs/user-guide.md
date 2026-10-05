@@ -3,13 +3,13 @@
 This guide assumes verified binaries are installed and the broker is running.
 Read [the security and platform scope](alpha-scope.md) first.
 
-This guide describes **3.0.0-alpha.2, an unpublished candidate**: vault/backup
+This guide describes **3.0.0-alpha.3, an unpublished candidate**: vault/backup
 format 25 and policy snapshot 6. Pre-GA formats are not yet finally frozen.
 Rekey never migrates, backfills or dual-reads old formats. Preserve old binaries
 with their matching state and backups; use a new empty directory for a new
 incompatible format. After GA, minor/patch releases within one major version
 must keep the durable format. See [installation](installation.md) and the
-[candidate release gates](releases/v3.0.0-alpha.2.md).
+[candidate release gates](releases/v3.0.0-alpha.3.md).
 
 ## Personal setup and Profiles
 
