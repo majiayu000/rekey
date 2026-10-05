@@ -1,3 +1,4 @@
+#![cfg(feature = "lab")]
 //! Admin IPC contract: locked-state behavior, step-up proofs, and channel
 //! separation on the admin socket.
 

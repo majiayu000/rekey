@@ -1,3 +1,4 @@
+#![cfg(feature = "lab")]
 //! Real loopback HTTP and UDS control, real Authority, synthetic upstream only.
 mod common;
 use std::collections::VecDeque;
@@ -154,8 +155,8 @@ impl Fixture {
                 rule["approval"] = json!({"mode":"one-time","max_uses":1});
             }
         }
-        let snapshot = json!({"format_version":6,"version":1,"expires_at_ms":4_102_444_800_000_i64,"approvers":[],"workload_identities":[],
-            "profiles":[{"name":"test","principal_id":principal,"grants":[{"instance":"work","capabilities":[{"rule":"template-default","capability":capability,"actions":refs}]}],"session":{"ttl_ms":60000,"max_uses":max_uses},"confirm_each_run":false,"isolation":"none","egress":"allow","llm_limits":[{"instance":"work","models":["allowed"],"max_output_tokens_per_request":20,"max_requests_per_day":100,"max_output_tokens_per_day":budget}]}],
+        let snapshot = json!({"format_version":7,"version":1,"expires_at_ms":4_102_444_800_000_i64,"approvers":[],"workload_identities":[],
+            "connections":[], "ssh_keys":[], "profiles":[{"name":"test","principal_id":principal,"grants":[{"instance":"work","capabilities":[{"rule":"template-default","capability":capability,"actions":refs}]}],"session":{"ttl_ms":60000,"max_uses":max_uses},"confirm_each_run":false,"isolation":"none","egress":"allow","llm_limits":[{"instance":"work","models":["allowed"],"max_output_tokens_per_request":20,"max_requests_per_day":100,"max_output_tokens_per_day":budget}]}],
             "bindings":actions.iter().map(|a|json!({"action_id":a.id,"version":a.version,"resource":{"type":"gateway","id":a.id},"parameter_schema_id":"any/v1","parameter_schema":{}})).collect::<Vec<_>>(),"rules":rules});
         common::policy::activate_snapshot(&broker, snapshot.clone()).await;
         Self {

@@ -397,6 +397,12 @@ pub fn resolve_builtin(
         }
         #[cfg(feature = "lab")]
         CredentialKind::AwsSecretsManagerSource => Err(ConnectorSelectionError::SelectionRejected),
+        #[cfg(feature = "lab")]
+        CredentialKind::SshEd25519
+        | CredentialKind::SshP256
+        | CredentialKind::SshSecureEnclaveP256
+        | CredentialKind::OAuthGrant
+        | CredentialKind::AwsStatic => Err(ConnectorSelectionError::SelectionRejected),
         #[cfg(not(feature = "lab"))]
         _ => Err(ConnectorSelectionError::SelectionRejected),
     }

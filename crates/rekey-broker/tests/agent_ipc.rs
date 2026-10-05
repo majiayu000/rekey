@@ -1,3 +1,4 @@
+#![cfg(feature = "lab")]
 //! Agent IPC contract: the agent socket carries execution and a redacted
 //! status only — no admin messages, no secret reads, no unlock.
 

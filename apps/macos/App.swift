@@ -27,6 +27,7 @@ struct RootView: View {
     @State private var search = ""
     @State private var type = "全部类型"
     @State private var showActionForm = false
+    @State private var activityDetail:ActivityRow?
     var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -89,6 +90,7 @@ struct RootView: View {
         .sheet(item: $model.result, onDismiss: { model.result = nil }) { ResultView(result: $0).environmentObject(model) }
         .sheet(item: $model.approvalDetails) { ApprovalDetailView(details: $0).environmentObject(model) }
         .sheet(item: $model.localApprovalDetails) { _ in LocalApprovalView().environmentObject(model) }
+        .sheet(item:$activityDetail){ActivityRecentView(row:$0).environmentObject(model)}
     }
 
     private var sidebar: some View {
@@ -98,7 +100,7 @@ struct RootView: View {
             Button { if let url = chooseFile(directory: true) { model.changeDirectory(url.path) } } label: {
                 HStack { Image(systemName: "person.crop.square"); Text("个人工作区"); Spacer(); Image(systemName: "chevron.down").font(.system(size: 10)) }.padding(12)
             }.buttonStyle(.plain).background(.white.opacity(0.65), in: RoundedRectangle(cornerRadius: 7)).overlay(RoundedRectangle(cornerRadius: 7).stroke(.gray.opacity(0.2))).padding(.vertical, 28).help(model.stateDirectory).disabled(model.busy)
-            ForEach(Page.allCases.filter { $0 != .settings }) { page in nav(page) }
+            ForEach(Page.allCases.filter { $0 != .settings && ($0 != .actions || model.status?.lab_enabled == true) }) { page in nav(page) }
             Spacer()
             nav(.settings)
             Divider().padding(.vertical, 15)
@@ -334,14 +336,14 @@ struct RootView: View {
             VStack(alignment: .leading, spacing: 25) {
                 if model.policy?.mode == .personal {
                     SectionCard(title: "个人策略", icon: "doc.text") {
-                        Text("创建、编辑或删除 Profile，选择实例、能力、预算与会话限制。服务保留完整列表并生成替换草稿；审阅后以本机 Secure Enclave 密钥签署并激活。高风险操作仍需逐次审批。")
-                        Button("管理 Profile 并审阅策略") { model.showPolicyDraft = true }
+                        Text("按连接的 host、路径与读写规则授权。读操作可自动允许，写操作默认审批；调用方覆盖只能收紧。审阅完整变化后以本机 Secure Enclave 签署激活。")
+                        Button("管理连接与规则") { model.showPolicyDraft = true }
                             .disabled(model.busy || !model.unlocked || model.policy?.trust_installed != true)
                     }
                 } else if model.policy?.mode == .team {
-                    SectionCard(title: "团队 Profile 与外部签名", icon: "doc.text") {
+                    SectionCard(title: "团队连接与外部签名", icon: "doc.text") {
                         Text("选择外部编写的原始草稿，完整审阅并导出；随后使用独立签名工具，再导入签名策略。")
-                        Button("查看 Profile 与外部草稿") { model.showPolicyDraft = true }.disabled(model.busy)
+                        Button("查看连接与外部草稿") { model.showPolicyDraft = true }.disabled(model.busy)
                     }
                 }
                 SectionCard(title: "当前策略", icon: "checkmark.shield") {
@@ -363,14 +365,14 @@ struct RootView: View {
                     Text(model.policy?.mode == .personal ? "个人策略签名需要系统在场认证，激活还需本次密码或恢复密钥验证。" : "导入由外部签名工具生成的文件。创建授权本身不会绕过默认拒绝策略。")
                         .font(.system(size: 12)).foregroundStyle(.secondary)
                 }
-                SectionCard(title: "Agent 授权", icon: "person.badge.key") {
+                if model.status?.lab_enabled == true { SectionCard(title: "工作负载授权", icon: "person.badge.key") {
                     Text("按固定操作授予短期权限，限制有效期与使用次数。授权令牌只在创建完成时显示。").font(.system(size: 13)).foregroundStyle(.secondary)
                     HStack {
                         Button("创建授权") { model.showSession = true }.buttonStyle(PrimaryButton())
                         Button("撤销授权") { model.operation = Operation(title: "撤销授权", detail: "输入需要撤销的会话 ID。", arguments: ["session", "revoke"]) }.buttonStyle(SecondaryButton())
                     }.disabled(!model.unlocked || model.busy)
                     Text("服务锁定或重启会撤销会话。MCP 与 shell 接入使用同一套固定操作权限。").font(.system(size: 12)).foregroundStyle(.secondary)
-                }
+                } }
             }.padding(.horizontal, 28).padding(.bottom, 28)
         }
     }
@@ -390,6 +392,7 @@ struct RootView: View {
     private var approvalsPage: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 15) {
+                AccessRequestsPanel()
                 HStack {
                     Button(model.approvalNotificationsEnabled ? "关闭审批提醒" : "启用审批提醒") {
                         Task { await model.setApprovalNotifications(!model.approvalNotificationsEnabled) }
@@ -434,19 +437,19 @@ struct RootView: View {
                         if activity.rows.isEmpty { Text("此快照内没有已保留的活动记录。").foregroundStyle(.secondary) }
                         Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 15) {
                             GridRow {
-                                Text("Profile / 策略版本"); Text("实例 / 能力 / 模型")
+                                Text("调用方"); Text("连接 / 读写")
                                 Text("准入"); Text("拒绝"); Text("审批"); Text("实测 token"); Text("按上限计入")
                             }.font(.system(size: 12, weight: .semibold))
                             ForEach(activity.rows) { row in
                                 GridRow {
                                     VStack(alignment: .leading, spacing: 4) {
-                                        Text(row.context?.profile_name ?? "未归属 Profile")
+                                        Text(row.context?.caller ?? row.context?.profile_name ?? "未记录调用方")
                                         if let hash = row.context?.policy_sha256 {
                                             Text(String(hash.prefix(12))).font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary).help(hash)
                                         }
                                     }
                                     VStack(alignment: .leading, spacing: 4) {
-                                        Text(row.context.map { "\($0.instance_slug) / \($0.capability)" } ?? "上下文未记录")
+                                        Button {activityDetail=row} label:{Text(row.context.map { "\($0.connection ?? $0.instance_slug ?? "—") / \($0.classification)" } ?? "上下文未记录")}.buttonStyle(.plain).disabled(row.recent.isEmpty).help("查看最近 50 条调用")
                                         Text(row.context?.model ?? "—").foregroundStyle(.secondary)
                                     }
                                     Text(String(row.counts.admitted)); Text(String(row.counts.denied)); Text(String(row.counts.approvals))

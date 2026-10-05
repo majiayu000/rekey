@@ -1,6 +1,7 @@
 use super::*;
 
 #[test]
+#[cfg(feature = "lab")]
 fn ttl_parser_rejects_overflow() {
     assert_eq!(parse_ttl_ms("1h").unwrap(), 3_600_000);
     let error = parse_ttl_ms("2305843009213693953s").unwrap_err();

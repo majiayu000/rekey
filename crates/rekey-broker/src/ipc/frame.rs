@@ -137,12 +137,34 @@ pub async fn write_error<S: AsyncWrite + Unpin>(
     message: &str,
     retryable: bool,
 ) -> Result<(), FrameIoError> {
+    write_error_with_next(
+        stream,
+        channel,
+        request_id,
+        code,
+        message,
+        retryable,
+        agent_next(code),
+    )
+    .await
+}
+
+pub async fn write_error_with_next<S: AsyncWrite + Unpin>(
+    stream: &mut S,
+    channel: Channel,
+    request_id: RequestId,
+    code: &str,
+    message: &str,
+    retryable: bool,
+    next: &str,
+) -> Result<(), FrameIoError> {
     let envelope = ErrorEnvelope {
         request_id,
         code: code.to_owned(),
         message: message.to_owned(),
         retryable,
         approval: None,
+        next: Some(next.to_owned()),
     };
     let metadata =
         serde_json::to_vec(&envelope).map_err(|_| FrameIoError::Frame(FrameError::InvalidField))?;
@@ -174,6 +196,25 @@ pub(crate) async fn write_approval_required<S: AsyncWrite + Unpin>(
         &[],
     )
     .await
+}
+
+pub(crate) fn agent_next(code: &str) -> &'static str {
+    match code {
+        "NOT_CONFIGURED" => "Use request_access with a reason; never ask the user for a key.",
+        "LOCKED" => "Use await_unlock(), then retry the call.",
+        "APPROVAL_REQUIRED" => {
+            "Use await_approval(request_id), then retry the same call with approval_request_id."
+        }
+        "DENIED" | "REQUEST_DENIED" => "Use request_access to explain the required operation.",
+        "BUDGET_EXCEEDED" => "Retry after the budget or rate window resets.",
+        "RESPONSE_BLOCKED" | "RESPONSE_SECURITY_VIOLATION" => {
+            "Do not retry this request: its response reflected credential material."
+        }
+        "UPSTREAM_INDETERMINATE" => {
+            "Check the upstream effect before retrying; the request may have completed."
+        }
+        _ => "Inspect the error code and connection configuration before retrying.",
+    }
 }
 
 #[cfg(test)]

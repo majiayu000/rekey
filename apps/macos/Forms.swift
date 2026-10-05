@@ -156,65 +156,60 @@ struct OperationForm: View {
 }
 
 struct AddCredentialForm: View {
-    @EnvironmentObject var model: AppModel
+    @EnvironmentObject var model:AppModel
     @Environment(\.dismiss) var dismiss
-    @State private var label = ""
-    @State private var kind = "add"
-    @State private var secret = ""
-    @State private var proof = ""
-    @State private var presence = false
-    @State private var profile: URL?
-    private var valid: Bool { !label.trimmingCharacters(in: .whitespaces).isEmpty && (kind == "add" ? singleLine(secret) : (presence || singleLine(proof)) && profile != nil) }
-    var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            Text("添加 API Key").font(.system(size: 24, weight: .semibold))
-            Text("先保存密钥，之后随时查看、复制，或配置给 Agent 使用。").font(.system(size: 13)).foregroundStyle(.secondary)
-            TextField("名称，例如 智谱 · 个人开发", text: $label).textFieldStyle(.roundedBorder)
-            DisclosureGroup("其他凭证类型") { Picker("类型", selection: $kind) {
-                Text("API Key / 访问令牌").tag("add")
-                Text("GitHub App").tag("add-github-app")
-                if model.status?.lab_enabled == true {
-                Text("Vault KV v2").tag("add-vault-kv")
-                Text("Vault 动态租约").tag("add-vault-dynamic")
-                Text("Keycloak Token Exchange").tag("add-keycloak")
-                }
+    @State private var label=""
+    @State private var connectionName=""
+    @State private var secret=""
+    @State private var preset="github-pat"
+    @State private var origin=""
+    @State private var header="x-api-key"
+    @State private var prefix=""
+    @State private var saved:Credential?
+    @State private var message:String?
+    private var generic:Bool {preset.hasPrefix("generic-")}
+    var body:some View {
+        VStack(alignment:.leading,spacing:18) {
+            Text("添加密钥与连接").font(.system(size:24,weight:.semibold))
+            Text("密钥只交给 Rekey。选择预设、审阅规则并签署后，Agent 照常启动即可使用。").foregroundStyle(.secondary)
+            if !OAuthSetup.presets.contains(preset) {TextField("密钥名称",text:$label).textFieldStyle(.roundedBorder).disabled(saved != nil)
+            TextField("连接名称，例如 github-personal",text:$connectionName).textFieldStyle(.roundedBorder)}
+            Picker("服务预设",selection:$preset) {
+                ForEach(["github-pat","github-git","anthropic","openai","glm","glm-responses","generic-bearer","generic-header"]+OAuthSetup.presets,id:\.self) {Text($0).tag($0)}
+            }.disabled(saved != nil)
+            if OAuthSetup.presets.contains(preset) {OAuthAddForm(preset:preset).id(preset)} else {
+            if generic {
+                TextField("固定 origin，例如 https://api.example.com",text:$origin).textFieldStyle(.roundedBorder)
+                if preset=="generic-header" {TextField("凭据头名称",text:$header).textFieldStyle(.roundedBorder);TextField("头前缀（可为空）",text:$prefix).textFieldStyle(.roundedBorder)}
+                Text("自定义服务默认读和写都需要审批。").font(.caption).foregroundStyle(.secondary)
             }
-            }
+            if saved==nil {SecureField("粘贴 API Key，无需 Bearer 前缀",text:$secret).textFieldStyle(.roundedBorder)}
+            else {Label("密钥已保存；连接尚未激活。继续审阅规则，不会再次添加密钥。",systemImage:"checkmark.shield")}
             PeerSecurityWarning()
-            if kind == "add" { SecureField("粘贴 API Key，无需 Bearer 前缀", text: $secret).textFieldStyle(.roundedBorder) }
-            else {
-                HStack { Text(profile?.lastPathComponent ?? "选择私有 JSON 配置文件").font(.system(size: 12)); Spacer(); Button("选择文件") { profile = chooseFile() } }
-                Text("配置文件须归当前用户所有，且不可被其他用户读取。内容与权限由服务验证。").font(.system(size: 11)).foregroundStyle(.secondary)
+            if !model.desktopReady {Text("请先解锁管理会话。").foregroundStyle(.secondary)}
+            if model.policy?.trust_installed != true {Text("请先在授权页完成此保险库的一次性签名密钥设置。").foregroundStyle(.secondary)}
+            if let message {Text(message).foregroundStyle(.red).textSelection(.enabled)}
+            HStack {Button("取消"){secret="";dismiss()}.keyboardShortcut(.cancelAction);Spacer();Button(saved==nil ? "保存并审阅规则":"继续审阅规则"){prepare()}.buttonStyle(PrimaryButton()).disabled(model.busy || !model.desktopReady || model.policy?.trust_installed != true || connectionName.isEmpty || saved==nil && (!singleLine(secret) || label.isEmpty) || generic && origin.isEmpty)}
             }
-            if kind == "add" && !secret.isEmpty && secret.utf8.count < 16 {
-                Text("密钥短于 16 字节，嵌入编码的反射遮蔽覆盖有限。建议使用服务商生成的完整 Key。")
-                    .font(.system(size: 11)).foregroundStyle(.orange)
-            }
-            if kind != "add" {
-                Toggle("使用系统认证批准本次操作", isOn: $presence).disabled(model.busy)
-                if !presence { SecureField("当前保险库密码", text: $proof).textFieldStyle(.roundedBorder) }
-            }
-            if let error = model.error { Text(error).font(.system(size: 12)).foregroundStyle(.red) }
-            if kind == "add" && !model.desktopReady { Text("管理会话已过期，请关闭此窗口并重新解锁管理会话。").foregroundStyle(.secondary) }
-            HStack {
-                Button("取消") { clear(); dismiss() }.keyboardShortcut(.cancelAction)
-                Spacer()
-                Button("保存") {
-                    if kind == "add" {
-                        Task { if await model.addAPIKey(label: label, secret: secret) { clear(); dismiss() } }
-                        return
-                    }
-                    var args = ["credential", kind, label]
-                    if let profile, kind != "add" { args += ["--file", profile.path] }
-                    let op = Operation(title: "添加凭证", detail: "", arguments: args, newSecret: kind == "add")
-                    let p = proof, s = secret, usePresence = presence, revision = model.nativeFlowRevision
-                    clear(); if !usePresence { dismiss() }
-                    Task { await model.perform(op, proof: p, secret: s, presence: usePresence, presenceRevision: revision); if usePresence { dismiss() } }
-                }.buttonStyle(PrimaryButton()).disabled(!valid || model.busy || (kind == "add" && !model.desktopReady))
-            }
-        }.padding(30).frame(width: 480).background(canvas).onDisappear { clear(); if presence { model.clearNativeFlow() } }
+        }.padding(30).frame(width:530).background(canvas)
+        .onAppear{preset=model.addPreset}
+        .onDisappear{secret=""}
     }
-    private func clear() { proof = ""; secret = "" }
+    private func prepare() {
+        let value=secret,name=label,connection=connectionName,selectedPreset=preset,selectedOrigin=origin,selectedHeader=header,selectedPrefix=prefix
+        secret="";message=nil
+        Task {
+            do {
+                let credential:Credential
+                if let prior=saved {credential=prior}else{credential=try await model.saveAPIKey(label:name,secret:value);saved=credential}
+                let definition=try await model.loadPreset(selectedPreset,origin:selectedOrigin,header:selectedPreset=="generic-header" ? selectedHeader:"",prefix:selectedPreset=="generic-header" ? selectedPrefix:"")
+                model.onboardingConnection=definition.connection(name:connection,credentialID:credential.id)
+                dismiss()
+                await Task.yield()
+                model.showPolicyDraft=true
+            } catch {message=error.localizedDescription}
+        }
+    }
 }
 
 struct ActionForm: View {
@@ -464,26 +459,39 @@ struct LocalApprovalView: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.dismiss) var dismiss
     @State private var failure: String?
+    @State private var window = "once"
+    @State private var customMinutes = "30"
     @FocusState private var rejectFocused: Bool
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             if let details = model.localApprovalDetails {
-                Text(details.review?.action_name ?? "本机审批").font(.system(size: 22, weight: .semibold))
+                Text(details.review?.title ?? "本机审批").font(.system(size: 22, weight: .semibold))
                 TimelineView(.periodic(from: .now, by: 1)) { timeline in
                     VStack(alignment: .leading, spacing: 8) {
                         Text(details.state.label).foregroundStyle(.secondary)
                         if let review = details.review {
-                            Text("\(review.method) \(review.origin)").font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
+                            if let ssh=review.ssh {
+                                Text("用途：\(ssh.purposeLabel) · 用户：\(ssh.use.username ?? "不适用")").textSelection(.enabled)
+                                Text("host：\(ssh.host)").textSelection(.enabled)
+                                if ssh.bound_host_key==nil || ssh.host=="unknown-host" {Text("目标尚未绑定或未登记；本次批准不能验证 host 身份。").font(.caption).foregroundStyle(.orange)}
+                                if let unverified=ssh.use.unverified_host {Text("请求声明的 host key（未经验证）：\(unverified)").font(.caption).textSelection(.enabled)}
+                                Text("签名数据 SHA-256：\(ssh.data_sha256)").font(.system(size:11,design:.monospaced)).textSelection(.enabled)
+                            } else {Text("\(review.method ?? "") \(review.origin ?? "")").font(.system(size: 12, design: .monospaced)).textSelection(.enabled)}
                             Text("资源：\(review.challenge.resource.type) / \(review.challenge.resource.id)").textSelection(.enabled)
                             Text("有效期至 \(displayDate(review.challenge.max_expires_at_ms))").font(.system(size: 12)).foregroundStyle(.secondary)
                         }
-                        Text("请完整审阅下方请求。批准只授权这次请求，不会替 Agent 执行。").font(.system(size: 12)).foregroundStyle(.secondary)
+                        Text("请完整审阅下方请求。批准后由 Agent 继续调用。").font(.system(size: 12)).foregroundStyle(.secondary)
+                        if details.review?.windowAllowed == true {
+                            Picker("批准范围",selection:$window) { Text("仅这次").tag("once");Text("30 分钟").tag("30");Text("自定义").tag("custom") }.pickerStyle(.segmented)
+                            if window == "custom" { TextField("分钟（1–480）",text:$customMinutes).textFieldStyle(.roundedBorder) }
+                            Text("时间窗只适用于同一连接、规则和调用方；锁定或更改策略后失效，拒绝规则始终有效。").font(.system(size:11)).foregroundStyle(.secondary)
+                        }
                         if !details.raw.isEmpty {
                             ScrollView([.vertical, .horizontal]) {
                                 Text(details.text).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
                                     .frame(maxWidth: .infinity, alignment: .topLeading).padding(12)
                             }.frame(maxWidth: .infinity, maxHeight: .infinity).background(Color.black.opacity(0.03))
-                            Text("正文包含目标、参数、查询、请求体、请求头、策略与会话的完整快照。").font(.system(size: 11)).foregroundStyle(.secondary)
+                            Text(details.review?.ssh == nil ? "正文包含目标、参数、查询、请求体、请求头与策略的完整快照。":"正文包含用途、用户、host 绑定、公钥以及完整待签数据 base64；请审阅后明确决定。").font(.system(size: 11)).foregroundStyle(.secondary)
                         } else { Spacer(); Text("此请求已结束，完整正文已释放。"); Spacer() }
                         if let failure { Text(failure).font(.system(size: 12)).foregroundStyle(.red).textSelection(.enabled) }
                         PeerSecurityWarning()
@@ -494,7 +502,7 @@ struct LocalApprovalView: View {
                             Button("拒绝") { decide(details, approve: false) }.keyboardShortcut(.defaultAction).focused($rejectFocused)
                                 .disabled(!details.canDecide(at: timeline.date) || !model.unlocked || model.busy || model.localApprovalNeedsRefresh)
                             Button("系统认证并批准") { decide(details, approve: true) }
-                                .disabled(!details.canDecide(at: timeline.date) || !model.unlocked || model.busy || model.localApprovalNeedsRefresh)
+                                .disabled(!details.canDecide(at: timeline.date) || !model.unlocked || model.busy || model.localApprovalNeedsRefresh || (details.review?.windowAllowed == true && window == "custom" && !(1...480).contains(Int(customMinutes) ?? 0)))
                         }
                     }
                 }
@@ -506,7 +514,7 @@ struct LocalApprovalView: View {
     private func decide(_ details: LocalApprovalDetails, approve: Bool) {
         failure = nil
         Task {
-            do { try await model.decideLocalApproval(details, approve: approve) }
+            do { try await model.decideLocalApproval(details, approve: approve,windowSeconds:approve && details.review?.windowAllowed == true ? (window == "once" ? nil : UInt32(window == "30" ? 1800 : (Int(customMinutes) ?? 0) * 60)) : nil) }
             catch {
                 if model.acceptsNativeCompletion(details.revision, workspace: details.workspace) { failure = error.localizedDescription }
             }
@@ -635,285 +643,237 @@ struct ResultView: View {
 struct PolicyDraftForm: View {
     @EnvironmentObject var model: AppModel
     var body: some View {
-        if model.policy?.mode == .personal { PersonalPolicyDraftForm(seed: model.onboardingProfile) }
+        if model.policy?.mode == .personal { PersonalPolicyDraftForm(seed: model.onboardingConnection) }
         else if model.policy?.mode == .team { TeamPolicyDraftForm() }
         else { Text("请解锁后重新检查策略模式。").padding(28) }
     }
 }
 
-private struct ProfileSummary: View {
-    let profile: AgentProfile
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(profile.name).font(.headline)
-            Text("主体：\(profile.principal_id.uuidString.lowercased())").textSelection(.enabled)
-            Text("会话：\(profile.session.ttl_ms) 毫秒，最多 \(profile.session.max_uses) 次；每次启动确认：\(profile.confirm_each_run ? "是" : "否")")
-            Text("隔离声明：\(profile.isolation.rawValue)；网络声明：\(profile.egress.rawValue)")
-            ForEach(profile.grants.indices, id: \.self) { index in
-                let grant = profile.grants[index]
-                Text("实例：\(grant.instance)")
-                ForEach(grant.capabilities.indices, id: \.self) { cap in
-                    Text("能力：\(grant.capabilities[cap].capability) · 基线：\(grant.capabilities[cap].rule.label)\n" + grant.capabilities[cap].actions.map { "\($0.action_id.uuidString.lowercased())@\($0.version)" }.joined(separator: "\n"))
-                        .font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
-                }
-            }
-            ForEach(profile.llm_limits.indices, id: \.self) { index in
-                let limit = profile.llm_limits[index]
-                Text("\(limit.instance) 模型：\(limit.models.joined(separator: ", "))\n单次输出：\(limit.max_output_tokens_per_request)；每日请求：\(limit.max_requests_per_day)；每日输出：\(limit.max_output_tokens_per_day)")
-                    .textSelection(.enabled)
-            }
-        }.frame(maxWidth: .infinity, alignment: .leading).padding(12).background(.white.opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
+private struct ConnectionSummary:View {
+    let connection:ConnectionDefinition
+    var body:some View {
+        VStack(alignment:.leading,spacing:6) {
+            Text(connection.name).font(.headline)
+            Text("\(connection.origin) · \(connection.grade)").textSelection(.enabled)
+            ForEach(connection.rules) {rule in Text("\(rule.methods.text) \(rule.path) → \(rule.effect)").font(.system(size:12,design:.monospaced))}
+            Text("调用方识别用于记录，不是身份认证；覆盖规则只能收紧。").font(.caption).foregroundStyle(.secondary)
+            if connection.grade=="T1" {Text("Agent 进程会拿到短期、权限受限的临时凭证。").foregroundStyle(.orange)}
+        }.frame(maxWidth:.infinity,alignment:.leading).padding(12).background(.white.opacity(0.6),in:RoundedRectangle(cornerRadius:8))
     }
 }
-
-private struct ProfileEditor: View {
-    @Binding var profile: AgentProfile
-    let available: [FixedAction]
-    private var templates: [FixedAction] { available.filter { $0.enabled && $0.template != nil } }
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            TextField("Profile 名称（字母、数字、_、-）", text: $profile.name)
-            Text("稳定主体：\(profile.principal_id.uuidString.lowercased())").font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
-            HStack {
-                Text("会话时长（毫秒，最多 24 小时）")
-                TextField("时长", value: $profile.session.ttl_ms, format: .number.grouping(.never))
-                Text("使用次数（最多 10000）")
-                TextField("次数", value: $profile.session.max_uses, format: .number.grouping(.never))
-            }
-            Toggle("每次启动都确认", isOn: $profile.confirm_each_run)
-            HStack {
-                Picker("隔离", selection: $profile.isolation) {
-                    Text("无隔离").tag(AgentProfile.Isolation.none)
-                    Text("macOS Seatbelt").tag(AgentProfile.Isolation.seatbelt)
-                    Text("Linux 网络命名空间").tag(AgentProfile.Isolation.netns)
-                }
-                Picker("网络", selection: $profile.egress) {
-                    Text("允许").tag(AgentProfile.Egress.allow)
-                    Text("拒绝其它目标").tag(AgentProfile.Egress.denyOther)
+private struct ConnectionEditor:View {
+    @Binding var connection:ConnectionDefinition
+    @State private var caller="codex"
+    @State private var bindingName=""
+    var body:some View {
+        VStack(alignment:.leading,spacing:12) {
+            TextField("连接名称",text:$connection.name).textFieldStyle(.roundedBorder)
+            Text("\(connection.preset) · \(connection.origin)").textSelection(.enabled)
+            Toggle("启用连接",isOn:$connection.enabled)
+            Text("规则：read 包括 GET/HEAD 和签名预设声明的语义读；其他调用为 write。具体方法可用逗号列出。deny 优先；未匹配的调用拒绝。").font(.caption).foregroundStyle(.secondary)
+            ForEach(connection.rules.indices,id:\.self) {i in
+                HStack {
+                    TextField("read / write / POST",text:Binding(get:{connection.rules[i].methods.text},set:{connection.rules[i].methods = .init(text:$0)})).frame(width:125)
+                    TextField("路径模式",text:$connection.rules[i].path)
+                    Picker("判定",selection:$connection.rules[i].effect) {Text("允许").tag("allow");Text("审批").tag("approve");Text("拒绝").tag("deny")}.frame(width:110)
+                    Button(role:.destructive){connection.rules.remove(at:i)}label:{Image(systemName:"minus.circle")}
                 }
             }
-            Text("这些是签名策略声明。当前启动器不支持的隔离或网络要求会拒绝启动，不会自动降级。")
-                .font(.system(size: 12)).foregroundStyle(.secondary)
-            ForEach(profile.grants.indices, id: \.self) { index in
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        TextField("实例名称（稳定路由名称）", text: Binding(get: { profile.grants[index].instance }, set: { name in
-                            let old = profile.grants[index].instance
-                            profile.grants[index].instance = name
-                            for limit in profile.llm_limits.indices where profile.llm_limits[limit].instance == old { profile.llm_limits[limit].instance = name }
-                        }))
-                        Button("移除此实例", role: .destructive) {
-                            let old = profile.grants.remove(at: index).instance
-                            profile.llm_limits.removeAll { $0.instance == old }
-                        }
-                    }
-                    ForEach(templates) { action in
-                        if let source = action.template?.source, let id = UUID(uuidString: action.id) {
-                            let reference = AgentProfile.ActionRef(action_id: id, version: action.version)
-                            Toggle(isOn: Binding(get: { profile.grants[index].capabilities.contains { $0.capability == source.capability && $0.actions.contains(reference) } }, set: { selected in
-                                if selected {
-                                    if let cap = profile.grants[index].capabilities.firstIndex(where: { $0.capability == source.capability }) {
-                                        profile.grants[index].capabilities[cap].actions.append(reference)
-                                    } else { profile.grants[index].capabilities.append(.init(capability: source.capability, actions: [reference])) }
-                                } else {
-                                    for cap in profile.grants[index].capabilities.indices { profile.grants[index].capabilities[cap].actions.removeAll { $0 == reference } }
-                                    profile.grants[index].capabilities.removeAll { $0.actions.isEmpty }
-                                }
-                            })) {
-                                Text("\(source.capability) · \(action.name) · \(action.reference)\n\(source.template) · 凭据 \(action.credential_id)\n\(action.method) \(action.origin)\(action.target.summary)\n默认规则：\(action.template?.defaultPolicy.rule ?? "")")
-                                    .font(.system(size: 12)).textSelection(.enabled)
-                            }
-                        }
-                    }
-                    ForEach(profile.grants[index].capabilities.indices, id: \.self) { cap in
-                        let selected = profile.grants[index].capabilities[cap]
-                        Picker(selected.capability + " · 基线规则", selection: $profile.grants[index].capabilities[cap].rule) {
-                            ForEach(AgentProfile.Rule.allCases, id: \.self) { rule in Text(rule.label).tag(rule) }
-                        }
-                        if selected.rule == .allow && templates.contains(where: { action in
-                            selected.actions.contains(where: { $0.action_id.uuidString.lowercased() == action.id.lowercased() && $0.version == action.version }) && action.template?.defaultPolicy.rule == "require-approval"
-                        }) {
-                            Text("这会取消此能力模板默认的逐次审批，让 Agent 在已签授权范围内直接执行。请在下一步完整差异中核对并明确签名。")
-                                .font(.system(size: 12)).foregroundStyle(.orange)
-                        }
-                    }
-                    let missing = profile.grants[index].capabilities.flatMap(\.actions).filter { ref in !templates.contains { $0.id.lowercased() == ref.action_id.uuidString.lowercased() && $0.version == ref.version } }
-                    if !missing.isEmpty {
-                        Text("此实例含已禁用、退休或不可用的操作引用；不会自动换版本。请移除此实例并重新选择。\n" + missing.map { "\($0.action_id.uuidString.lowercased())@\($0.version)" }.joined(separator: "\n"))
-                            .foregroundStyle(.orange).textSelection(.enabled)
-                    }
-                    if let limit = profile.llm_limits.firstIndex(where: { $0.instance == profile.grants[index].instance }) {
-                        Text("允许的模型（每行一个，不能为空）")
-                        TextEditor(text: Binding(get: { profile.llm_limits[limit].models.joined(separator: "\n") }, set: { profile.llm_limits[limit].models = $0.components(separatedBy: "\n") })).frame(height: 70)
-                        HStack {
-                            Text("单次最大输出")
-                            TextField("tokens", value: $profile.llm_limits[limit].max_output_tokens_per_request, format: .number.grouping(.never))
-                            Text("每日请求数")
-                            TextField("次数", value: $profile.llm_limits[limit].max_requests_per_day, format: .number.grouping(.never))
-                            Text("每日输出 tokens")
-                            TextField("tokens", value: $profile.llm_limits[limit].max_output_tokens_per_day, format: .number.grouping(.never))
-                        }
-                        Button("移除模型与预算限制", role: .destructive) { profile.llm_limits.remove(at: limit) }
-                    } else {
-                        Button("设置模型白名单与预算") {
-                            profile.llm_limits.append(.init(instance: profile.grants[index].instance, models: [], max_output_tokens_per_request: 4096, max_requests_per_day: 100, max_output_tokens_per_day: 100_000))
-                        }.disabled(profile.grants[index].instance.isEmpty)
-                    }
-                    Text("LLM 实例必须提供白名单和正数上限。服务根据认证的能力校验，缺少限制会拒绝生成。")
-                        .font(.system(size: 12)).foregroundStyle(.secondary)
-                }.padding(12).background(.white.opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
+            Button("添加规则"){connection.rules.append(.init(id:UUID().uuidString.lowercased(),methods:.category("write"),path:"/**",effect:"approve"))}
+            if !connection.bindings.isEmpty {
+                ForEach(connection.bindings.keys.sorted(),id:\.self) {key in
+                    TextField(connection.preset=="github-git" ? "\(key) 的固定值（repo 为完整仓库名，如 rekey.git；不允许 *）":"\(key) 的允许值（逗号分隔，* 表示任意 slug）",text:Binding(get:{connection.bindings[key]?.joined(separator:",") ?? ""},set:{connection.bindings[key]=$0.split(separator:",").map{String($0).trimmingCharacters(in:.whitespaces)}}))
+                }
             }
-            Button("添加实例") { profile.grants.append(.init(instance: "", capabilities: [])) }
+            HStack { TextField("路径参数名（如 owner）",text:$bindingName);Button("添加允许值"){connection.bindings[bindingName]=[];bindingName=""}.disabled(bindingName.isEmpty || connection.bindings[bindingName] != nil) }
+            HStack {TextField("调用方标注",text:$caller);Button("限制此调用方为只读"){connection.caller_overrides[caller]=[.init(id:UUID().uuidString.lowercased(),methods:.category("write"),path:"/**",effect:"deny")]}}
+            ForEach(connection.caller_overrides.keys.sorted(),id:\.self) {label in
+                HStack {Text("\(label)：\(connection.caller_overrides[label]?.map{"\($0.methods.text) \($0.path) → \($0.effect)"}.joined(separator:"；") ?? "")");Spacer();Button("移除"){connection.caller_overrides.removeValue(forKey:label)}}.font(.caption)
+            }
+            Text("调用方识别用于记录，不是身份认证。缺少标注时使用默认规则。").font(.caption).foregroundStyle(.secondary)
+            HStack {Text("每小时请求数");TextField("次数",value:$connection.limits.requests_per_hour,format:.number.grouping(.never))}
+            if connection.llm != nil {
+                Text("允许的精确模型 ID（每行一个）").font(.caption)
+                TextEditor(text:Binding(get:{connection.llm?.models.joined(separator:"\n") ?? ""},set:{connection.llm?.models=$0.components(separatedBy:"\n").filter{!$0.isEmpty}})).frame(height:65)
+                HStack {Text("每次输出 token 上限");TextField("tokens",value:Binding(get:{connection.llm?.max_tokens ?? 0},set:{connection.llm?.max_tokens=$0}),format:.number.grouping(.never))}
+                HStack {Text("每日请求");TextField("次数",value:Binding(get:{connection.llm?.max_requests_per_day ?? 0},set:{connection.llm?.max_requests_per_day=$0}),format:.number.grouping(.never));Text("每日输出 token");TextField("tokens",value:Binding(get:{connection.llm?.max_output_tokens_per_day ?? 0},set:{connection.llm?.max_output_tokens_per_day=$0}),format:.number.grouping(.never))}
+            }
+            Text("具名操作："+connection.operations.map(\.name).joined(separator:", ")).font(.caption).textSelection(.enabled)
+            if let oauth=connection.oauth {Text("已签名 OAuth client ID："+oauth.client_id);Text((oauth.provider=="notion" ? "Portal capabilities：":"Scope ceiling：")+oauth.scopes.joined(separator:", ")).font(.caption).textSelection(.enabled)}
+            if connection.preset=="github-git" {Text("Git smart HTTP 固定 owner / repo。GET info/refs 与 POST git-upload-pack 为读，POST git-receive-pack 为写；默认请求正文上限 1 MiB。").font(.caption).foregroundStyle(.secondary)}
         }
     }
 }
 
-struct PersonalPolicyDraftForm: View {
-    var seed: AgentProfile? = nil
-    @EnvironmentObject var model: AppModel
+private struct SSHKeySummary:View {
+    let key:SSHKeyDefinition
+    var body:some View {
+        VStack(alignment:.leading,spacing:6){
+            Text("SSH · "+key.name).font(.headline)
+            Text(key.publicKeyText).font(.system(size:11,design:.monospaced)).textSelection(.enabled)
+            Text("git 签名："+key.git_signing+"；未登记或未绑定 host：审批").font(.caption)
+            ForEach(key.hosts.indices,id:\.self){i in
+                Text(key.hosts[i].host+" · "+key.hosts[i].effect+" · rule "+key.hosts[i].rule_id).font(.caption)
+                Text(key.hosts[i].host_key).font(.system(size:11,design:.monospaced)).textSelection(.enabled)
+            }
+        }
+    }
+}
+private struct SSHKeyEditor:View {
+    @Binding var key:SSHKeyDefinition
+    var body:some View {
+        VStack(alignment:.leading,spacing:10){
+            TextField("SSH 连接名称",text:$key.name)
+            Text("公钥（可复制到目标服务）").font(.caption)
+            Text(key.publicKeyText).font(.system(size:11,design:.monospaced)).textSelection(.enabled)
+            Picker("git 签名",selection:$key.git_signing){Text("审批").tag("approve");Text("允许").tag("allow");Text("拒绝").tag("deny")}
+            ForEach(key.hosts.indices,id:\.self){i in
+                TextField("已登记 host",text:$key.hosts[i].host)
+                Text("Host 公钥：base64 wire blob、OpenSSH 公钥或 known_hosts 条目。请从独立可信来源核对；不会自动信任扫描结果。").font(.caption).foregroundStyle(.secondary)
+                TextEditor(text:$key.hosts[i].host_key).font(.system(size:11,design:.monospaced)).frame(height:65)
+                Picker("此 host 判定",selection:$key.hosts[i].effect){Text("审批").tag("approve");Text("允许").tag("allow");Text("拒绝").tag("deny")}
+                Text("规则 ID："+key.hosts[i].rule_id).font(.caption).textSelection(.enabled)
+                Button("删除此 host 规则",role:.destructive){key.hosts.remove(at:i)}
+            }
+            Button("登记 host 公钥"){key.hosts.append(.init(host:"",host_key:"",rule_id:UUID().uuidString.lowercased(),effect:"approve"))}
+        }.padding(12).background(.quaternary,in:RoundedRectangle(cornerRadius:8))
+    }
+}
+
+struct PersonalPolicyDraftForm:View {
+    var seed:ConnectionDefinition?=nil
+    @EnvironmentObject var model:AppModel
     @Environment(\.dismiss) var dismiss
-    @State private var profiles: [AgentProfile] = []
-    @State private var baseline: ProfileList?
-    @State private var available: [FixedAction] = []
-    @State private var selectedIndex: Int?
-    @State private var expiry = Date().addingTimeInterval(86400)
-    @State private var draft: PersonalPolicyDraft?
-    @State private var proof = ""
-    @State private var recovery = false
-    @State private var presence = false
-    @State private var confirmed = false
-    @State private var attempted = false
-    @State private var message: String?
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("个人策略 · 完整替换").font(.system(size: 24, weight: .semibold))
+    @State private var connections:[ConnectionDefinition]=[]
+    @State private var derived:[DerivedCredentialDefinition]=[]
+    @State private var sshKeys:[SSHKeyDefinition]=[]
+    @State private var sshSocket=""
+    @State private var sshLabel=""
+    @State private var sshMode:SSHKeyMode = .secureEnclave
+    @State private var sshPresence=true
+    @State private var sshRecovery=false
+    @State private var sshProof=""
+    @State private var showRootCredential=false
+    @State private var derivedCredential=""
+    @State private var derivedKind="aws-assume-role"
+    @State private var baseline:ConnectionList?
+    @State private var selectedIndex:Int?
+    @State private var expiry=Date().addingTimeInterval(86400)
+    @State private var draft:PersonalPolicyDraft?
+    @State private var proof=""
+    @State private var recovery=false
+    @State private var presence=true
+    @State private var confirmed=false
+    @State private var attempted=false
+    @State private var message:String?
+    var body:some View {
+        VStack(alignment:.leading,spacing:14) {
+            Text("连接与规则 · 审阅后签署").font(.system(size:24,weight:.semibold))
             ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment:.leading,spacing:14) {
                     if let draft {
-                        ForEach(draft.profiles.indices, id: \.self) { ProfileSummary(profile: draft.profiles[$0]) }
-                        Text("有效期至：\(displayDate(draft.expiresAtMs))")
-                        Text("保险库：\(draft.metadata.vault_id.uuidString.lowercased())\n版本：\(draft.metadata.base_version.map(String.init) ?? "无") → \(draft.metadata.next_version)\n策略摘要：\(draft.metadata.policy_sha256)")
-                            .font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
-                        Text("全部变化（before / after，包含删除）").font(.headline)
-                        Text(draft.changesText).font(.system(size: 12, design: .monospaced)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                        Text("所选操作完整定义（目标与 schema）").font(.headline)
-                        Text(draft.actionsText).font(.system(size: 12, design: .monospaced)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                        Text("此草稿完整替换所有 Profile、规则、审批者和工作负载授权。删除的内容已列在前后变化中。")
-                        Toggle("我已完整核对前后变化和操作定义，确认替换当前策略", isOn: $confirmed)
-                            .disabled(model.busy || attempted)
-                        Toggle("使用系统认证签署并激活", isOn: $presence).disabled(model.busy || attempted)
+                        ForEach(draft.connections){ConnectionSummary(connection:$0)}
+                        ForEach(draft.sshKeys){key in SSHKeySummary(key:key)}
+                        ForEach(draft.derivedCredentials){grant in Text("T1 · Agent会拿到 \(grant.max_ttl_seconds/60) 分钟临时值：\n"+grant.publicDescription).font(.system(size:12,design:.monospaced)).foregroundStyle(.orange).textSelection(.enabled)}
+                        Text("版本 \(draft.metadata.base_version.map(String.init) ?? "无") → \(draft.metadata.next_version)，有效期至 \(displayDate(draft.expiresAtMs))")
+                        Text("完整变化（before / after，包含删除）").font(.headline)
+                        Text(draft.changesText).font(.system(size:12,design:.monospaced)).textSelection(.enabled)
+                        Text("HTTP / SSH / T1 完整签名定义与参数 schema").font(.headline)
+                        Text(draft.actionsText).font(.system(size:12,design:.monospaced)).textSelection(.enabled)
+                        Toggle("我已审阅完整变化，确认替换连接规则",isOn:$confirmed).disabled(model.busy || attempted)
+                        Toggle("使用系统认证签署并激活",isOn:$presence).disabled(model.busy || attempted)
                         PeerSecurityWarning()
-                        if !presence {
-                            Toggle("使用恢复密钥验证本次激活", isOn: $recovery).disabled(model.busy || attempted)
-                            SecureField(recovery ? "恢复密钥" : "保险库密码", text: $proof).disabled(model.busy || attempted)
+                        if !presence {Toggle("使用恢复密钥",isOn:$recovery);SecureField(recovery ? "恢复密钥":"保险库密码",text:$proof)}
+                        Button(model.personalPolicySigning ? "等待系统认证…":"签署并激活一次"){activate(draft)}.buttonStyle(PrimaryButton()).disabled(model.busy || !confirmed || attempted || !presence && proof.isEmpty)
+                        Button("放弃草稿，继续编辑"){clear()}.disabled(model.busy)
+                    } else if baseline != nil {
+                        Text("编辑完整已签署授权集合。allow 不打扰；approve 进入审批；deny 直接拒绝。HTTP / SSH / T1 将一起审阅并保存。")
+                        ForEach(connections.indices,id:\.self){i in Button{selectedIndex=i}label:{HStack{Image(systemName:selectedIndex==i ? "checkmark.circle.fill":"circle");Text(connections[i].name);Spacer();Text(connections[i].origin).font(.caption)}}.buttonStyle(.plain)}
+                        if let i=selectedIndex,connections.indices.contains(i){ConnectionEditor(connection:$connections[i]).disabled(model.busy);Button("删除此连接",role:.destructive){connections.remove(at:i);selectedIndex=nil}.disabled(model.busy)}
+                        Button("添加连接"){dismiss();model.showAddCredential=true}.disabled(model.busy)
+                        if let i=selectedIndex,connections.indices.contains(i),connections[i].oauth != nil {Button("打开浏览器 OAuth 授权"){let name=connections[i].name;dismiss();model.showPolicyDraft=false;model.onboardingRoute = .oauth(name)}}
+                        Divider()
+                        Text("SSH · 私钥不导出").font(.headline)
+                        if !sshSocket.isEmpty {Text("IdentityAgent："+sshSocket).font(.system(size:12,design:.monospaced)).textSelection(.enabled)}
+                        Text("已加载完整签名 SSH 集合。删除连接只撤销签名权限；不会删除保险库里的密钥。未知 host 或缺少 session-bind 需要审批，明确 deny 不能用窗口绕过。").font(.caption)
+                        ForEach(sshKeys.indices,id:\.self){i in
+                            SSHKeyEditor(key:$sshKeys[i]).disabled(model.busy)
+                            Button("撤销此 SSH 连接",role:.destructive){sshKeys.remove(at:i)}.disabled(model.busy)
                         }
-                        Text(presence ? "本次系统认证同时用于策略签署与激活验证。" : "策略签署需要系统认证；输入的密码或恢复密钥只用于本次激活验证。")
-                            .font(.system(size: 12)).foregroundStyle(.secondary)
-                        Button(model.personalPolicySigning ? "等待系统认证…" : "签署并激活一次") { activate(draft) }
-                            .disabled(model.busy || !model.unlocked || !confirmed || (!presence && proof.isEmpty) || attempted)
-                        Button("放弃此草稿，重新选择") { clear() }.disabled(model.busy)
-                    } else {
-                        if let baseline {
-                            Text(baseline.policy_sha256 == nil ? "尚无策略；新增 Profile 后生成第一版策略。" : "已加载完整策略。编辑只在本窗口中保留，未选中的 Profile 不会被删除。")
-                            if let prior = baseline.expires_at_ms { Text("当前策略有效期至：\(displayDate(prior))").foregroundStyle(.secondary) }
-                            HStack {
-                                Button("新增 Profile") { profiles.append(.newProfile()); selectedIndex = profiles.count - 1 }.disabled(model.busy)
-                                Button("删除所选 Profile", role: .destructive) {
-                                    if let index = selectedIndex, profiles.indices.contains(index) { profiles.remove(at: index); selectedIndex = nil }
-                                }.disabled(selectedIndex == nil || model.busy)
-                                Spacer()
-                                Text("共 \(profiles.count) 个 Profile")
-                            }
-                            ForEach(profiles.indices, id: \.self) { index in
-                                Button { selectedIndex = index } label: {
-                                    HStack { Image(systemName: selectedIndex == index ? "checkmark.circle.fill" : "circle")
-                                        Text(profiles[index].name.isEmpty ? "未命名 Profile" : profiles[index].name)
-                                        Spacer(); Text(profiles[index].principal_id.uuidString.lowercased()).font(.system(size: 11, design: .monospaced))
-                                    }
-                                }.buttonStyle(.plain)
-                            }
-                            if let index = selectedIndex, profiles.indices.contains(index) {
-                                Divider()
-                                ProfileEditor(profile: $profiles[index], available: available).disabled(model.busy)
-                            }
-                            DatePicker("新策略有效期至", selection: $expiry, displayedComponents: [.date, .hourAndMinute])
-                            if profiles.isEmpty { Text("当前列表为空：生成并激活后，将撤销全部 Profile 和旧策略授权。").foregroundStyle(.orange) }
-                            HStack {
-                                Button("生成完整替换草稿") { generate() }
-                                    .disabled(expiry <= Date() || model.busy || !model.unlocked)
-                                Button("放弃修改并重新加载") {
-                                    clear(); self.baseline = nil; profiles = []; selectedIndex = nil; available = []
-                                    Task { await load() }
-                                }.disabled(model.busy)
-                            }
-                        } else {
-                            Text("必须先成功加载完整 Profile 列表，才能编辑或生成草稿。")
-                            Button("加载 Profile 列表") { Task { await load() } }.disabled(model.busy)
-                        }
-                    }
-                    if let message { Text(message).textSelection(.enabled) }
-                }.frame(maxWidth: .infinity, alignment: .leading)
+                        TextField("新 SSH 密钥的凭据名称",text:$sshLabel)
+                        Picker("密钥存储",selection:$sshMode){ForEach(SSHKeyMode.allCases,id:\.self){mode in Text(mode.label).tag(mode)}}
+                        Text("默认使用 macOS Secure Enclave；不自动回退软件。生成后只显示公钥，仍须审阅并签署 SSH 连接规则。").font(.caption).foregroundStyle(.secondary)
+                        Toggle("使用系统认证生成 SSH 密钥",isOn:$sshPresence).disabled(model.busy)
+                        if !sshPresence {Toggle("使用恢复密钥生成",isOn:$sshRecovery);SecureField(sshRecovery ? "恢复密钥":"保险库密码",text:$sshProof)}
+                        PeerSecurityWarning()
+                        Button("生成密钥并添加待签署 SSH 连接"){generateSSH()}.disabled(model.busy || sshLabel.isEmpty || !sshPresence && sshProof.isEmpty)
+                        Divider()
+                        Text("T1 · 派生临时凭据").font(.headline)
+                        ForEach(derived.indices,id:\.self){i in DerivedGrantEditor(grant:$derived[i]);Button("撤销此T1连接",role:.destructive){derived.remove(at:i)}}
+                        Picker("根凭据",selection:$derivedCredential){Text("选择已保存的 AWS / GitHub App 根凭据").tag("");ForEach(model.credentials.filter{$0.active && ["aws-static","github-app-installation"].contains($0.kind)}){Text($0.label).tag($0.id)}}
+                        Picker("派生方式",selection:$derivedKind){Text("AWS AssumeRole").tag("aws-assume-role");Text("EKS kubectl").tag("kubernetes-eks");Text("GitHub App").tag("github-app")}
+                        HStack{Button("添加T1授权"){addDerived()}.disabled(derivedCredential.isEmpty || model.busy);Button("保存派生根凭据"){showRootCredential=true}.disabled(model.busy)}
+                        DatePicker("策略有效期至",selection:$expiry,displayedComponents:[.date,.hourAndMinute])
+                        if connections.isEmpty {Text("签署空集合将撤销全部 HTTP 连接。").foregroundStyle(.orange)}
+                        Button("生成完整审阅草稿"){generate()}.buttonStyle(PrimaryButton()).disabled(model.busy || expiry<=Date())
+                    } else {Text("先加载已认证连接列表。");Button("重新加载"){Task{await load()}}.disabled(model.busy)}
+                    if let message{Text(message).foregroundStyle(.red).textSelection(.enabled)}
+                }.frame(maxWidth:.infinity,alignment:.leading)
             }
-            Text("不自动重签或重试。激活结果未确认时，请检查当前策略与审计，再决定下一步。")
-                .font(.system(size: 12)).foregroundStyle(.secondary)
-            HStack {
-                if model.busy { ProgressView().controlSize(.small) }
-                Spacer()
-                Button("关闭") { clear(); model.showPolicyDraft = false; dismiss(); Task { await model.refresh() } }
-                    .keyboardShortcut(.cancelAction).disabled(model.busy)
-            }
-        }.padding(28).frame(width: 780, height: 720).background(canvas).interactiveDismissDisabled(model.busy)
-        .task { await load() }
-        .onChange(of: model.nativeFlowRevision) { _, _ in clear(); baseline = nil; profiles = []; selectedIndex = nil; available = [] }
-        .onDisappear { clear(); model.clearNativeFlow() }
+            Text("未确认或认证取消时不激活。签名与激活失败不会自动重试。").font(.caption).foregroundStyle(.secondary)
+            HStack {if model.busy{ProgressView()};Spacer();Button("关闭"){clear();model.showPolicyDraft=false;dismiss();Task{await model.refresh()}}.disabled(model.busy)}
+        }.padding(28).frame(width:780,height:720).background(canvas).interactiveDismissDisabled(model.busy)
+        .task{await load()}
+        .onChange(of:model.nativeFlowRevision){_,_ in clear();baseline=nil;connections=[];derived=[];sshKeys=[];sshSocket="";selectedIndex=nil}
+        .onDisappear{clear();model.clearNativeFlow()}
+        .sheet(isPresented:$showRootCredential){RootCredentialForm().environmentObject(model)}
     }
-    private func clear() { draft = nil; proof = ""; confirmed = false; attempted = false; message = nil }
+    private func addDerived(){
+        guard let credential=model.credentials.first(where:{$0.id==derivedCredential}),credential.kind==(derivedKind=="github-app" ? "github-app-installation":"aws-static")else{message="根凭据类型与派生方式不符。";return}
+        var target=DerivedCredentialDefinition.Target(kind:derivedKind)
+        if derivedKind=="aws-assume-role"{target.role_arn="";target.region="us-east-1";target.session_policy = .object([:])}
+        else if derivedKind=="kubernetes-eks"{target.cluster_id="";target.region="us-east-1"}
+        else{target.installation_id=0;target.repository_ids=[];target.permissions=[:]}
+        derived.append(.init(name:"t1-"+UUID().uuidString.lowercased().prefix(8),credential_id:credential.id,effect:"approve",max_ttl_seconds:derivedKind=="github-app" ? 3600:900,target:target))
+    }
+    private func clear(){draft=nil;proof="";sshProof="";confirmed=false;attempted=false;message=nil}
     private func load() async {
-        guard baseline == nil, !model.busy else { return }
-        let revision = model.nativeFlowRevision, workspace = model.stateDirectory
+        guard baseline==nil,!model.busy else{return}
+        let revision=model.nativeFlowRevision,workspace=model.stateDirectory
         do {
-            let loaded = try await model.loadProfileEditor()
-            guard model.acceptsNativeCompletion(revision, workspace: workspace) else { return }
-            let all = try loaded.0.addingOnboardingProfile(seed)
-            baseline = loaded.0; profiles = all; available = loaded.1
-            selectedIndex = seed == nil ? (profiles.isEmpty ? nil : 0) : profiles.count - 1
-            if let expires = loaded.0.expires_at_ms, expires > Int64(Date().timeIntervalSince1970 * 1000) {
-                expiry = Date(timeIntervalSince1970: Double(expires) / 1000)
-            }
-        } catch {
-            if model.acceptsNativeCompletion(revision, workspace: workspace) { message = error.localizedDescription }
-        }
+            let loaded=try await model.loadConnectionEditor()
+            guard model.acceptsNativeCompletion(revision,workspace:workspace)else{return}
+            var all=loaded.connections
+            if let seed {guard !all.contains(where:{$0.name==seed.name})else{throw UIError(message:"已有同名连接；请关闭后编辑现有项。")};all.append(seed)}
+            let sshStatus=try await model.loadSSHStatus()
+            guard model.acceptsNativeCompletion(revision,workspace:workspace)else{return}
+            baseline=loaded;connections=all;derived=loaded.derived_credentials;sshKeys=loaded.ssh_keys;sshSocket=sshStatus.socket;selectedIndex=all.isEmpty ? nil:all.count-1
+            if let expires=loaded.expires_at_ms,expires>Int64(Date().timeIntervalSince1970*1000){expiry=Date(timeIntervalSince1970:Double(expires)/1000)}
+        } catch{if model.acceptsNativeCompletion(revision,workspace:workspace){message=error.localizedDescription}}
     }
-    private func generate() {
-        guard let baseline, !model.busy else { return }
-        let expiresAtMs = Int64(expiry.timeIntervalSince1970 * 1000)
-        let selectedProfiles = profiles, revision = model.nativeFlowRevision, workspace = model.stateDirectory
+    private func generate(){
+        guard let baseline,!model.busy else{return}
+        var keys=sshKeys
+        for i in keys.indices {for j in keys[i].hosts.indices {keys[i].hosts[j].host_key=SSHHostDefinition.wireBlob(keys[i].hosts[j].host_key)}}
+        let ssh=keys,selected=connections,grants=derived,expires=Int64(expiry.timeIntervalSince1970*1000),revision=model.nativeFlowRevision,workspace=model.stateDirectory
         clear()
-        Task {
-            do {
-                let result = try await model.personalPolicyDraft(profiles: selectedProfiles, expectedPolicySHA256: baseline.policy_sha256, expiresAtMs: expiresAtMs)
-                guard model.acceptsNativeCompletion(revision, workspace: workspace) else { return }
-                draft = result
-            } catch {
-                guard model.acceptsNativeCompletion(revision, workspace: workspace) else { return }
-                message = error.localizedDescription
-            }
-        }
+        Task{do{let result=try await model.personalPolicyDraft(connections:selected,sshKeys:ssh,derivedCredentials:grants,expectedPolicySHA256:baseline.policy_sha256,expiresAtMs:expires);guard model.acceptsNativeCompletion(revision,workspace:workspace)else{return};draft=result}catch{if model.acceptsNativeCompletion(revision,workspace:workspace){message=error.localizedDescription}}}
     }
-    private func activate(_ draft: PersonalPolicyDraft) {
-        guard confirmed, !attempted, !model.busy else { return }
-        let currentProof = proof, useRecovery = recovery, usePresence = presence
-        proof = ""; confirmed = false; attempted = true; message = nil
-        Task {
-            do {
-                try await model.activatePersonalPolicy(draft, proof: currentProof, recovery: useRecovery, presence: usePresence)
-                guard model.acceptsNativeCompletion(draft.revision, workspace: draft.workspace) else { return }
-                message = "策略已激活。关闭窗口后刷新当前状态。"
-            } catch {
-                guard model.acceptsNativeCompletion(draft.revision, workspace: draft.workspace) else { return }
-                message = error.localizedDescription
-            }
-        }
+    private func generateSSH(){
+        guard baseline != nil,!model.busy else{return}
+        let label=sshLabel,mode=sshMode,proof=sshProof,usePresence=sshPresence,useRecovery=sshRecovery,revision=model.nativeFlowRevision,workspace=model.stateDirectory
+        sshProof="";message=nil
+        Task{do{
+            let receipt=try await model.generateSSHKey(label:label,mode:mode,proof:proof,recovery:useRecovery,presence:usePresence)
+            guard model.acceptsNativeCompletion(revision,workspace:workspace)else{return}
+            sshKeys.append(.init(name:"ssh-"+UUID().uuidString.lowercased().prefix(8),credential_id:receipt.credential.id,user_public_key:receipt.public_key,hosts:[],git_signing:"approve"))
+            sshLabel="";message="密钥已保存在保险库。请登记并独立核对 host 公钥，审阅完整草稿后签署；尚未启用 SSH 权限。"
+        }catch{if model.acceptsNativeCompletion(revision,workspace:workspace){message=error.localizedDescription+"\n结果未知时先检查凭据列表，勿自动重试。"}}}
+    }
+    private func activate(_ draft:PersonalPolicyDraft){
+        guard confirmed,!attempted,!model.busy else{return}
+        let value=proof,usePresence=presence,useRecovery=recovery;proof="";attempted=true;confirmed=false
+        Task{do{try await model.activatePersonalPolicy(draft,proof:value,recovery:useRecovery,presence:usePresence);guard model.acceptsNativeCompletion(draft.revision,workspace:draft.workspace)else{return};message="规则已激活。运行 rekey connect 完成接入，Agent 照常启动。"}catch{if model.acceptsNativeCompletion(draft.revision,workspace:draft.workspace){message=error.localizedDescription}}}
     }
 }
 
@@ -921,21 +881,21 @@ struct TeamPolicyDraftForm: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.dismiss) var dismiss
     @State private var draft: NativeFileSnapshot?
-    @State private var profiles: ProfileList?
+    @State private var profiles: ConnectionList?
     @State private var message: String?
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("团队 Profile · 只读与外部签名").font(.system(size: 24, weight: .semibold))
+            Text("团队连接 · 只读与外部签名").font(.system(size: 24, weight: .semibold))
             if let profiles {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
-                        if profiles.profiles.isEmpty { Text("当前策略没有 Profile。") }
-                        ForEach(profiles.profiles.indices, id: \.self) { ProfileSummary(profile: profiles.profiles[$0]) }
+                        if profiles.connections.isEmpty { Text("当前策略没有连接。") }
+                        ForEach(profiles.connections.indices, id: \.self) { ConnectionSummary(connection: profiles.connections[$0]) }
                         if let expires = profiles.expires_at_ms { Text("当前策略有效期至：\(displayDate(expires))") }
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }.frame(maxHeight: 240)
             }
-            Text("团队 Profile 由外部签名策略管理，本机不编辑或签署。以下文件尚未验证，只中转原始内容。")
+            Text("团队连接 由外部签名策略管理，本机不编辑或签署。以下文件尚未验证，只中转原始内容。")
             Button("选择草稿（最多 64 KiB）") {
                 guard let file = chooseFile() else { return }
                 draft = nil; message = nil
@@ -958,8 +918,8 @@ struct TeamPolicyDraftForm: View {
         .task {
             let revision = model.nativeFlowRevision, workspace = model.stateDirectory
             do {
-                let loaded = try await model.loadProfileEditor()
-                if model.acceptsNativeCompletion(revision, workspace: workspace) { profiles = loaded.0 }
+                let loaded = try await model.loadConnectionEditor()
+                if model.acceptsNativeCompletion(revision, workspace: workspace) { profiles = loaded }
             } catch {
                 if model.acceptsNativeCompletion(revision, workspace: workspace) { message = error.localizedDescription }
             }
@@ -1086,11 +1046,13 @@ struct OnboardingView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 HStack {
-                    Text(route == .setup ? "开始使用 Rekey" : "接入 LLM 服务").font(.system(size: 25, weight: .semibold))
+                    Text(route == .setup ? "开始使用 Rekey" : "连接服务").font(.system(size: 25, weight: .semibold))
                     Spacer()
                     Button("关闭设置页面") { model.clearNativeFlow(); model.onboardingRoute = nil; Task { await model.refresh() } }.disabled(model.busy)
                 }
-                if route == .setup { setup }
+                if case .importEnv(let path) = route { EnvImportView(path:path) }
+                else if case .oauth(let connection)=route {OAuthLoginView(connection:connection)}
+                else if route == .setup { setup }
                 else { AnthropicOnboardingView() }
             }.padding(28).frame(maxWidth: 850, alignment: .leading)
         }
@@ -1128,177 +1090,325 @@ struct OnboardingView: View {
     }
 }
 
-private struct AnthropicOnboardingView: View {
-    @EnvironmentObject var model: AppModel
-    @State private var provider = "anthropic"
-    @State private var label = "Anthropic"
-    @State private var secret = ""
-    @State private var credentialID = ""
-    @State private var savedLabel: String?
-    @State private var catalog: ProviderTemplateCatalog?
-    @State private var capabilities = Set<String>()
-    @State private var beta = false
-    @State private var proof = ""
-    @State private var presence = false
-    @State private var installed: [FixedAction] = []
-    @State private var existing: [FixedAction] = []
-    @State private var existingSelection = Set<String>()
-    @State private var modelID = ""
-    @State private var profile: AgentProfile?
-    @State private var message: String?
-    @State private var loading = false
-    private var ready: Bool { model.unlocked && model.policy?.mode == .personal && model.policy?.trust_installed == true }
-    private var responses: Bool { provider == "glm-responses" }
-    private var requiredCapability: String { responses ? "responses" : "messages" }
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("保存凭据与授予权限是两个阶段。取消或失败会保留已保存的凭据和操作，但不会自动授予权限或重试。")
-            if !ready {
-                Text("请先完成个人保险库设置并解锁。团队模式保留外部签名，不使用此个人授权流程。")
-                Button("打开设置步骤") { model.openOnboarding(URL(string: OnboardingRoute.setup.rawValue)!) }.disabled(model.busy)
-            } else {
-                Picker("服务", selection: $provider) {
-                    Text("Anthropic").tag("anthropic")
-                    Text("GLM · Claude Code").tag("glm")
-                    Text("GLM · Codex").tag("glm-responses")
-                }.disabled(model.busy || !installed.isEmpty)
-                if installed.isEmpty {
-                    Text("1 · 保存凭据（只写入，不读取）").font(.headline)
-                    if credentialID.isEmpty {
-                        TextField("凭据名称", text: $label)
-                        SecureField("API Key，无需 Bearer 前缀", text: $secret)
-                        if !secret.isEmpty && secret.utf8.count < 16 {
-                            Text("密钥短于 16 字节，嵌入编码的反射遮蔽覆盖有限。建议使用服务商生成的完整 Key。")
-                                .font(.system(size: 11)).foregroundStyle(.orange)
-                        }
-                        if model.desktopReady {
-                            Button("保存此 API Key") { save() }.disabled(model.busy || !singleLine(secret) || label.isEmpty)
-                        } else { Button("解锁保存凭据的管理会话") { model.requestDesktopLogin() }.disabled(model.busy) }
-                        Picker("或明确选择已保存的凭据", selection: $credentialID) {
-                            Text("未选择").tag("")
-                            ForEach(model.credentials.filter { $0.active && $0.kind == "opaque-token" }) { Text($0.label).tag($0.id) }
-                        }
-                    } else {
-                        Text("已选凭据：" + (savedLabel ?? model.credentials.first(where: { $0.id == credentialID })?.label ?? credentialID))
-                        Button("另选已保存凭据") { credentialID = ""; savedLabel = nil }.disabled(model.busy)
-                    }
-                    if !credentialID.isEmpty {
-                        DisclosureGroup("使用已安装能力继续") {
-                            Text("重新读取此凭据在所选服务的真实操作，明确选择精确版本。沿用已安装的请求头与限制，不会重新安装或修改操作。")
-                            Button("读取已安装能力") { Task { await loadExisting() } }.disabled(model.busy)
-                            ForEach(existing) { action in
-                                Toggle(isOn: Binding(get: { existingSelection.contains(action.reference) }, set: { if $0 { existingSelection.insert(action.reference) } else { existingSelection.remove(action.reference) } })) {
-                                    VStack(alignment: .leading) {
-                                        Text((action.template?.source.capability ?? "") + " · " + action.reference)
-                                        Text(action.method + " " + action.origin + action.target.summary).textSelection(.enabled)
-                                    }
+private struct AnthropicOnboardingView:View {
+    @EnvironmentObject var model:AppModel
+    var body:some View {
+        VStack(alignment:.leading,spacing:15){
+            Text(OAuthSetup.presets.contains(model.addPreset) ? "保存自己的 OAuth client → 审阅并签署 scope 与规则 → 在浏览器授权。":"添加 API Key → 选择预设与规则 → 系统认证激活。")
+            Text("Agent 自身连接模型的登录或 Key 由 Agent 自己管理；这里提供 Agent 主动调用的服务连接。").foregroundStyle(.secondary)
+            Button("添加密钥并审阅连接"){model.showAddCredential=true}.buttonStyle(PrimaryButton()).disabled(!model.desktopReady || model.busy)
+            Text("激活后运行 rekey connect claude-code / codex / cursor；调用方不需要令牌。").font(.system(size:12,design:.monospaced)).textSelection(.enabled)
+        }
+    }
+}
+
+struct AccessRequestsPanel:View {
+    @EnvironmentObject var model:AppModel
+    var body:some View {
+        SectionCard(title:"连接与权限请求",icon:"person.crop.circle.badge.questionmark") {
+            Text("理由来自调用方，作为不可信文本展示。调用方识别用于记录，不是身份认证。授权只有在对应规则已签署激活后才能完成。").font(.caption).foregroundStyle(.secondary)
+            if let inbox=model.accessInbox {
+                let pending=inbox.requests.filter{$0.status=="PENDING"}
+                if pending.isEmpty{Text("没有待处理访问请求。").foregroundStyle(.secondary)}
+                ForEach(pending){request in
+                    VStack(alignment:.leading,spacing:8){
+                        Text("\(request.caller) → \(request.connection ?? request.provider ?? "未指定连接")").font(.headline)
+                        if let operation=request.operation{Text("操作："+operation)}
+                        Text(request.reason).textSelection(.enabled).font(.system(size:12)).padding(8).background(sage.opacity(0.3),in:RoundedRectangle(cornerRadius:6))
+                        Text("有效期至："+displayDate(request.expires_at_ms)).font(.caption).foregroundStyle(.secondary)
+                        HStack {
+                            Button("添加连接"){let provider=request.provider ?? "generic-bearer";model.addPreset=(["anthropic","openai","glm","glm-responses","github-pat","github-git"]+OAuthSetup.presets).contains(provider) ? provider:"generic-bearer";model.showAddCredential=true}
+                            Button("编辑规则"){model.onboardingConnection=nil;model.showPolicyDraft=true}
+                            Button("规则已激活，完成请求"){Task{await model.resolveAccess(request,granted:true)}}
+                            Button("拒绝",role:.destructive){Task{await model.resolveAccess(request,granted:false)}}
+                        }.disabled(model.busy)
+                        Button("屏蔽此调用方并拒绝",role:.destructive){Task{await model.resolveAccess(request,granted:false,blockCaller:true)}}.font(.caption).disabled(model.busy)
+                    }.padding(.vertical,8)
+                }
+                ForEach(inbox.blocked_callers,id:\.self){caller in HStack{Text("已屏蔽："+caller);Spacer();Button("解除屏蔽"){Task{await model.setAccessBlocked(caller,blocked:false)}}.disabled(model.busy)}}
+            } else {Text("访问请求列表尚未加载。").foregroundStyle(.secondary)}
+            Button("刷新访问请求"){Task{do{try await model.loadAccessInbox()}catch{model.error=error.localizedDescription}}}.disabled(model.busy)
+        }
+    }
+}
+
+private struct EnvImportItem:Identifiable {
+    let key:String
+    var selected=false
+    var label:String
+    var name:String
+    var preset:String
+    var origin=""
+    var header="authorization"
+    var prefix="Bearer "
+    var id:String{key}
+}
+private struct EnvImportConnection:Identifiable {
+    let key:String
+    let label:String
+    var baseURLVariable:String
+    var definition:ConnectionDefinition
+    var id:String{key}
+}
+struct EnvImportView:View {
+    let path:String
+    @EnvironmentObject var model:AppModel
+    @State private var preview:EnvPreview?
+    @State private var items:[EnvImportItem]=[]
+    @State private var prepared:[EnvImportConnection]=[]
+    @State private var baseline:ConnectionList?
+    @State private var report:EnvImportReport?
+    @State private var draft:PersonalPolicyDraft?
+    @State private var expiry=Date().addingTimeInterval(86400)
+    @State private var confirmed=false
+    @State private var rewrite=false
+    @State private var importAttempted=false
+    @State private var activationAttempted=false
+    @State private var activated=false
+    @State private var message:String?
+    @State private var authentication=PresenceReadContext()
+    private let presets=["anthropic","openai","glm","glm-responses","github-pat","generic-bearer","generic-header"]
+    var body:some View {
+        VStack(alignment:.leading,spacing:14) {
+            Text("从 .env 导入").font(.title2)
+            Text(path).font(.system(size:12,design:.monospaced)).textSelection(.enabled)
+            Text("这里只显示变量名和服务提示。选择要导入的密钥，审阅并签署连接规则，再明确选择是否替换原文件。").font(.callout)
+            if model.policy?.mode != .personal || model.policy?.trust_installed != true {Text("请先解锁个人保险库，并在授权页完成签名密钥设置。").foregroundStyle(.secondary)}
+            if let preview {
+                if prepared.isEmpty {
+                    ForEach(items.indices,id:\.self) {i in
+                        VStack(alignment:.leading,spacing:8) {
+                            Toggle(items[i].key,isOn:$items[i].selected)
+                            if items[i].selected {
+                                HStack {TextField("密钥名称",text:$items[i].label);TextField("连接名称",text:$items[i].name)}
+                                Picker("预设",selection:$items[i].preset){ForEach(presets,id:\.self){Text($0).tag($0)}}
+                                if items[i].preset.hasPrefix("generic-") {
+                                    TextField("固定 HTTPS origin",text:$items[i].origin)
+                                    if items[i].preset=="generic-header" {TextField("凭据头",text:$items[i].header);TextField("前缀（可为空）",text:$items[i].prefix)}
                                 }
                             }
-                            Button("使用所选版本继续，不重新安装") { installed = existing.filter { existingSelection.contains($0.reference) } }
-                                .disabled(model.busy || !existing.contains(where: { existingSelection.contains($0.reference) && $0.template?.source.capability == requiredCapability }))
-                        }
+                        }.textFieldStyle(.roundedBorder).padding(12).background(.white.opacity(0.6),in:RoundedRectangle(cornerRadius:8))
                     }
-                    Divider()
-                    Text("2 · 或安装新的所选能力（本次验证）").font(.headline)
-                    if let catalog {
-                        Text(catalog.template.origin).textSelection(.enabled)
-                        ForEach(catalog.template.capabilities) { capability in
-                            Toggle(isOn: Binding(get: { capabilities.contains(capability.id) }, set: { if $0 { capabilities.insert(capability.id) } else { capabilities.remove(capability.id) } })) {
-                                Text(capability.id + " · " + capability.actions.map { $0.method + " " + $0.path }.joined(separator: "，"))
-                            }
-                        }
-                        if !responses {
-                            Toggle("我授权本次安装的操作接受 anthropic-beta 请求头（Claude Code 所需）", isOn: $beta)
-                            Text("可选 beta=true 查询由内置模板声明；此选择不会改变全局模板或其它已安装操作。")
-                        }
-                        Toggle("使用系统认证批准本次安装", isOn: $presence).onChange(of: presence) { _, _ in proof = "" }
-                        if !presence { SecureField("当前保险库密码", text: $proof) }
-                        Button("安装所选能力") { install() }.disabled(model.busy || credentialID.isEmpty || (!responses && !beta) || !capabilities.contains(requiredCapability) || (!presence && !singleLine(proof)))
-                    } else {
-                        Button("读取内置能力") { Task { await loadCatalog() } }.disabled(model.busy || loading)
+                    Button("读取预设并审阅规则"){prepare()}.buttonStyle(PrimaryButton()).disabled(model.busy || !items.contains(where:{$0.selected}) || model.policy?.mode != .personal || model.policy?.trust_installed != true)
+                } else if let draft {
+                    Text("完整策略变化（before / after）").font(.headline)
+                    Text(draft.changesText).font(.system(size:12,design:.monospaced)).textSelection(.enabled)
+                    Text("待签署的完整连接定义").font(.headline)
+                    Text(draft.actionsText).font(.system(size:12,design:.monospaced)).textSelection(.enabled)
+                    Toggle("我已审阅所有连接、规则、模型及预算",isOn:$confirmed).disabled(activationAttempted)
+                    Toggle("激活后替换 .env 中选中的密钥，并创建备份",isOn:$rewrite).disabled(activationAttempted)
+                    if rewrite {
+                        Text("所选密钥将替换为 REKEY 占位值，以下变量将指向本机服务。未支持的行保持原样。").font(.caption)
+                        ForEach(prepared.indices,id:\.self){i in TextField("base URL 变量名",text:$prepared[i].baseURLVariable).textFieldStyle(.roundedBorder).disabled(activationAttempted)}
                     }
+                    Button(activated ? "连接已激活":"系统认证、签署并激活"){activate(draft)}.buttonStyle(PrimaryButton()).disabled(model.busy || !confirmed || activationAttempted || rewrite && prepared.contains(where:{$0.baseURLVariable.isEmpty}))
                 } else {
-                    Text("已安装 \(installed.count) 个操作；尚未因安装自动授予 Agent 权限。")
-                    if let command = model.onboardingCommand {
-                        Text("已完成本次策略激活。在该签名策略有效时，用明确的模型启动：").font(.headline)
-                        Text(command).font(.system(.body, design: .monospaced)).textSelection(.enabled)
-                        Button("复制启动命令") {
-                            let board = NSPasteboard.general; board.clearContents()
-                            if !board.setString(command, forType: .string) { message = "无法写入剪贴板，请手动选择启动命令。" }
-                        }
-                    } else if profile != nil {
-                        ProfileEditor(profile: Binding(get: { profile! }, set: { profile = $0 }), available: installed).disabled(model.busy)
-                        Text("随后加载并保留所有已有 Profile，展示完整替换差异、期限和操作定义；确认后才请求系统签名。")
-                        Button("审阅完整策略") { model.onboardingProfile = profile; model.showPolicyDraft = true }.disabled(model.busy)
-                    } else {
-                        Text("3 · 明确准备 Profile（当前尚不授予权限）").font(.headline)
-                        TextField(responses ? "精确模型 ID，例如 glm-5.3-flash" : "精确模型 ID，例如 claude-sonnet-4-6", text: $modelID)
-                        Text(responses ? "单次输出上限32768；会话15分钟/100次、每日100次/100000tokens，默认无沙箱。下一步均可审阅修改。" : "建议单次输出上限32768；Claude 本轮实测会请求32000。会话15分钟/100次、每日100次/100000tokens，默认无沙箱。下一步均可审阅修改。")
-                        Button("创建 Profile 草稿") {
-                            do { profile = try AgentProfile.onboarding(actions: installed, model: modelID) }
-                            catch { message = error.localizedDescription }
-                        }.disabled(model.busy || modelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    ForEach(prepared.indices,id:\.self){i in
+                        Text("变量：\(prepared[i].key) · 密钥名称：\(prepared[i].label)").font(.headline)
+                        ConnectionEditor(connection:$prepared[i].definition)
                     }
+                    DatePicker("策略有效期",selection:$expiry,in:Date()...,displayedComponents:[.date,.hourAndMinute])
+                    Text("同名连接将由完整草案替换；保存密钥后仍须审阅并签署草案才会授权调用。").font(.caption).foregroundStyle(.secondary)
+                    if report != nil {Text("所选密钥已保存；下次只重新生成草案，不重复导入。").foregroundStyle(.secondary)}
+                    Button(report == nil ? "系统认证、保存选择并生成草案":"重新生成连接草案"){saveAndDraft()}.buttonStyle(PrimaryButton()).disabled(model.busy || importAttempted && report == nil)
+                    if !importAttempted {Button("返回变量选择"){prepared=[];baseline=nil}}
                 }
+                if !preview.unsupported.isEmpty {
+                    Text("以下行不能自动导入，保留原样：").font(.caption)
+                    ForEach(preview.unsupported.indices,id:\.self){i in Text("第 \(preview.unsupported[i].line) 行 · \(preview.unsupported[i].key ?? "无变量名")").font(.caption).foregroundStyle(.secondary)}
+                }
+            } else {Button("预览变量名"){load()}.disabled(model.busy || !model.unlocked)}
+            if let message {Text(message).foregroundStyle(activated ? Color.secondary:Color.red).textSelection(.enabled)}
+            Text("每个写操作都有独立的管理证明。系统认证 context 在当前流程内复用；审阅超过有效窗口时会重新认证。").font(.caption).foregroundStyle(.secondary)
+        }.onAppear{if model.unlocked {load()}}.onDisappear{authentication.invalidate()}
+    }
+    private func load(){Task{do{let value=try await model.previewEnv(path);preview=value;items=value.entries.map{entry in EnvImportItem(key:entry.key,label:entry.key,name:entry.key.lowercased().replacingOccurrences(of:"_",with:"-"),preset:presets.contains(entry.preset_hint ?? "") ? entry.preset_hint!:"generic-bearer")}}catch{message=error.localizedDescription}}}
+    private func prepare(){
+        let selected=items.filter(\.selected);let revision=model.nativeFlowRevision;message=nil
+        Task {do{
+            let base=try await model.loadConnectionEditor();var next:[EnvImportConnection]=[]
+            for item in selected {
+                let preset=try await model.loadPreset(item.preset,origin:item.origin,header:item.preset=="generic-header" ? item.header:"",prefix:item.preset=="generic-header" ? item.prefix:"")
+                next.append(.init(key:item.key,label:item.label,baseURLVariable:item.key+"_BASE_URL",definition:preset.connection(name:item.name,credentialID:UUID().uuidString.lowercased())))
             }
-            if let message { Text(message).foregroundStyle(.red).textSelection(.enabled) }
-        }
-        .task { if ready { await loadCatalog() } }
-        .onChange(of: provider) { _, value in
-            secret = ""; proof = ""; credentialID = ""; savedLabel = nil; catalog = nil; capabilities = []; beta = false; existing = []; existingSelection = []; message = nil
-            label = value == "anthropic" ? "Anthropic" : "GLM"
-            modelID = value == "anthropic" ? "" : "glm-5.3-flash"
-            Task { await loadCatalog() }
-        }
-        .onChange(of: model.nativeFlowRevision) { _, _ in secret = ""; proof = ""; catalog = nil; capabilities = []; beta = false; message = nil; existing = []; existingSelection = [] }
-        .onChange(of: credentialID) { _, _ in existing = []; existingSelection = [] }
-        .onDisappear { secret = ""; proof = "" }
+            guard revision==model.nativeFlowRevision else{throw UIError(message:"导入工作区已改变，请重新预览。")}
+            baseline=base;prepared=next
+        }catch{message=error.localizedDescription}}
     }
-    private func loadExisting() async {
-        let revision = model.nativeFlowRevision, workspace = model.stateDirectory, id = credentialID
-        let selectedProvider = provider
-        message = nil; existing = []; existingSelection = []
-        do {
-            let actions = try await model.loadOnboardingActions(credentialID: id, provider: selectedProvider)
-            guard provider == selectedProvider, credentialID == id, model.acceptsNativeCompletion(revision, workspace: workspace) else { return }
-            existing = actions
-            if actions.isEmpty { message = "该凭据没有可继续使用的所选服务操作。" }
-        } catch { if model.acceptsNativeCompletion(revision, workspace: workspace) { message = error.localizedDescription } }
+    private func saveAndDraft(){
+        guard let baseline else{return};message=nil
+        Task {do{
+            if report==nil {importAttempted=true;report=try await model.importSelected(path:path,selections:prepared.map{.init(key:$0.key,label:$0.label)},authentication:authentication)}
+            guard let report else{return}
+            for i in prepared.indices {guard let entry=report.entries.first(where:{$0.key==prepared[i].key})else{throw UIError(message:"导入回执缺少所选变量，请检查凭证列表，勿重复保存。")};prepared[i].definition.credential_id=entry.credential.id}
+            let names=Set(prepared.map{ $0.definition.name });let definitions=baseline.connections.filter{!names.contains($0.name)}+prepared.map(\.definition)
+            draft=try await model.personalPolicyDraft(connections:definitions,expectedPolicySHA256:baseline.policy_sha256,expiresAtMs:Int64(expiry.timeIntervalSince1970*1000))
+        }catch{message=error.localizedDescription}}
     }
-    private func loadCatalog() async {
-        guard ready, !model.busy else { return }
-        let selectedProvider = provider
-        loading = true; defer { if provider == selectedProvider { loading = false } }
-        let client = model.cli, revision = model.nativeFlowRevision, workspace = model.stateDirectory
-        do {
-            let request = try JSONSerialization.data(withJSONObject: ["source": ["kind": selectedProvider]], options: [.sortedKeys])
-            let result = try await Task.detached { try client.templateCatalog(source: request) }.value
-            guard provider == selectedProvider, model.acceptsNativeCompletion(revision, workspace: workspace) else { return }
-            catalog = result
-        } catch { if provider == selectedProvider, model.acceptsNativeCompletion(revision, workspace: workspace) { message = error.localizedDescription } }
+    private func activate(_ draft:PersonalPolicyDraft){
+        activationAttempted=true;message=nil;let replacements=prepared.map{EnvReplacement(key:$0.key,connection:$0.definition.name,base_url_variable:$0.baseURLVariable)};let replace=rewrite
+        Task {do{
+            try await model.activatePersonalPolicy(draft,proof:"",recovery:false,presence:true,sharedAuthentication:authentication);activated=true
+            if replace {let result=try await model.rewriteImported(path:path,replacements:replacements,revision:draft.revision,authentication:authentication);message="连接已激活，文件已替换。备份："+result.backup}
+            else{message="连接已激活；原 .env 文件保持原样。"}
+            authentication.invalidate();await model.refresh()
+        }catch{authentication.invalidate();message=(activated ? "连接已激活，文件替换结果未确认，请检查文件与备份。\n":"操作结果未确认，请检查凭证与策略状态，勿重复提交。\n")+error.localizedDescription}}
     }
-    private func save() {
-        let value = secret, name = label, revision = model.nativeFlowRevision, workspace = model.stateDirectory
-        let selectedProvider = provider
-        secret = ""; message = nil
-        Task {
-            do {
-                let receipt = try await model.saveAPIKey(label: name, secret: value)
-                guard provider == selectedProvider, model.acceptsNativeCompletion(revision, workspace: workspace) else { return }
-                credentialID = receipt.id; savedLabel = receipt.label
-            } catch { if model.acceptsNativeCompletion(revision, workspace: workspace) { message = error.localizedDescription } }
-        }
+}
+
+struct ActivityRecentView:View {
+    let row:ActivityRow
+    @EnvironmentObject var model:AppModel
+    @Environment(\.dismiss) var dismiss
+    var body:some View {
+        VStack(alignment:.leading,spacing:14) {
+            Text("最近 50 条 · \(row.context?.connection ?? "连接")").font(.title2)
+            Text("\(row.context?.caller ?? "未知调用方") · \(row.context?.classification ?? "—")").foregroundStyle(.secondary)
+            Text("调用方标注只用于记录；展示的是当前活动快照中仍保留的记录。").font(.caption).foregroundStyle(.secondary)
+            ScrollView {
+                VStack(alignment:.leading,spacing:12) {
+                    ForEach(row.recent) {event in
+                        DisclosureGroup("\(displayDate(event.created_at_ms)) · \(event.outcome) · \(event.request_context?.normalized_path ?? event.event_type)") {
+                            VStack(alignment:.leading,spacing:6) {
+                                Text("结果：\(event.event_type) / \(event.reason_code)")
+                                Text("请求：\(event.request_id ?? "—")")
+                                if let target=event.request_context?.target {
+                                    Text("签名目标与权限：\n"+target.text)
+                                    Text("实际过期：\(event.request_context?.expires_at_ms.map(displayDate) ?? "尚未签发")")
+                                    Text("Agent 进程会拿到临时凭据值。").foregroundStyle(.orange)
+                                } else {
+                                    Text("路径：\(event.request_context?.normalized_path ?? "—")")
+                                    Text("规则：\(event.request_context?.rule_id ?? "—")")
+                                }
+                                if let id=event.approval_request_id {Button("查看审批详情"){dismiss();Task{await Task.yield();await model.reviewLocalApproval(id)}}.disabled(model.busy || !model.unlocked)}
+                            }.font(.system(size:12,design:.monospaced)).textSelection(.enabled).frame(maxWidth:.infinity,alignment:.leading).padding(.top,8)
+                        }
+                    }
+                }.padding(8)
+            }
+            HStack{Spacer();Button("关闭"){dismiss()}.keyboardShortcut(.cancelAction)}
+        }.padding(26).frame(width:760,height:600).background(canvas)
     }
-    private func install() {
-        let value = proof, usePresence = presence, id = credentialID, selected = capabilities.sorted(), revision = model.nativeFlowRevision, workspace = model.stateDirectory
-        let selectedProvider = provider
-        proof = ""; message = nil
-        Task {
-            do {
-                let actions = try await model.installOnboardingAnthropic(credentialID: id, capabilities: selected, proof: value, presence: usePresence, provider: selectedProvider)
-                guard provider == selectedProvider, model.acceptsNativeCompletion(revision, workspace: workspace) else { return }
-                installed = actions
-            } catch { if model.acceptsNativeCompletion(revision, workspace: workspace) { message = error.localizedDescription } }
-        }
+}
+
+private struct OAuthAddForm:View {
+    @EnvironmentObject var model:AppModel
+    @Environment(\.dismiss) var dismiss
+    let preset:String
+    @State private var label="";@State private var connection="";@State private var clientID="";@State private var clientSecret=""
+    @State private var write=false;@State private var definition:ConnectionPreset?;@State private var saved:Credential?;@State private var message:String?
+    private var scopes:[String] {definition.map{OAuthSetup.scopeCeiling($0,write:write)} ?? []}
+    var body:some View {
+        VStack(alignment:.leading,spacing:12) {
+            TextField("凭据名称",text:$label).disabled(saved != nil)
+            TextField("连接名称",text:$connection)
+            TextField("自己的 OAuth client ID",text:$clientID).disabled(saved != nil)
+            if OAuthSetup.provider(preset) != "slack" {SecureField("client secret（Google 可选）",text:$clientSecret).disabled(saved != nil)}
+            Text(OAuthSetup.guidance(preset)).font(.caption).foregroundStyle(.secondary)
+            Link("服务官方申请说明",destination:OAuthSetup.documentation(preset))
+            Toggle("申请写操作所需权限（写操作仍按签名规则审批）",isOn:$write).disabled(saved != nil)
+            Text(preset=="notion" ? "需要配置的 Portal capabilities：":"请求的 scope ceiling：").font(.headline)
+            Text(scopes.joined(separator:"\n")).font(.system(size:11,design:.monospaced)).textSelection(.enabled)
+            PeerSecurityWarning()
+            if saved != nil {Text("凭据已加密保存；先签署连接，再从规则页面打开浏览器授权。失败不会重复保存。")}
+            if let message{Text(message).foregroundStyle(.red).textSelection(.enabled)}
+            HStack{Button("取消"){clientSecret="";dismiss()};Spacer();Button("保存并审阅 OAuth 连接"){prepare()}.buttonStyle(PrimaryButton()).disabled(model.busy || !model.unlocked || model.policy?.trust_installed != true || definition==nil || label.isEmpty || connection.isEmpty || clientID.isEmpty || saved==nil && ["github","notion"].contains(OAuthSetup.provider(preset)) && clientSecret.isEmpty)}
+        }.id(preset).task{do{definition=try await model.loadPreset(preset)}catch{message=error.localizedDescription}}.onDisappear{clientSecret=""}
+    }
+    private func prepare(){
+        guard let definition else{return};let chosenScopes=scopes,id=clientID,secret=clientSecret,name=label,connectionName=connection
+        clientSecret="";message=nil
+        Task{do{
+            let credential:Credential
+            if let saved{credential=saved}else{
+                var payload:[String:Any]=["credential_type":"oauth-grant-v1","provider":OAuthSetup.provider(preset),"client_id":id,"scopes":[]]
+                if !secret.isEmpty {payload["client_secret"]=secret}
+                let encoded=try JSONSerialization.data(withJSONObject:payload,options:[.sortedKeys,.withoutEscapingSlashes])
+                credential=try await model.saveTypedCredential(label:name,kind:"oauth-grant",secret:String(decoding:encoded,as:UTF8.self));saved=credential
+            }
+            var c=definition.connection(name:connectionName,credentialID:credential.id)
+            c.oauth = .init(provider:OAuthSetup.provider(preset),client_id:id,scopes:chosenScopes)
+            if !write {c.rules.append(.init(id:UUID().uuidString.lowercased(),methods:.category("write"),path:"/**",effect:"deny"))}
+            model.onboardingConnection=c;dismiss();await Task.yield();model.showPolicyDraft=true
+        }catch{message=error.localizedDescription}}
+    }
+}
+
+struct OAuthLoginView:View {
+    @EnvironmentObject var model:AppModel
+    let connection:String
+    @State private var binding:ConnectionDefinition?;@State private var redirectURI="";@State private var login:OAuthLoginResult?;@State private var message:String?
+    var body:some View {
+        VStack(alignment:.leading,spacing:14) {
+            Text("在浏览器授权："+connection).font(.headline)
+            if let binding,let oauth=binding.oauth {
+                Text(OAuthSetup.guidance(binding.preset));Link("官方配置说明",destination:OAuthSetup.documentation(binding.preset))
+                Text("已签名 client ID："+oauth.client_id).textSelection(.enabled)
+                Text(oauth.provider=="notion" ? "已签名 Portal capabilities：":"已签名 scope ceiling：")
+                Text(oauth.scopes.joined(separator:"\n")).font(.system(size:12,design:.monospaced)).textSelection(.enabled)
+                if ["slack","notion"].contains(oauth.provider) {TextField("已登记本机回调，如 http://localhost:8080/callback",text:$redirectURI).textFieldStyle(.roundedBorder)}
+                PeerSecurityWarning()
+                Button("验证并打开服务授权页"){begin()}.buttonStyle(PrimaryButton()).disabled(model.busy || login != nil || ["slack","notion"].contains(oauth.provider) && redirectURI.isEmpty)
+            }else {Text("先添加 OAuth client，并签署激活此连接。");Button("加载已签名连接"){Task{await load()}}.disabled(model.busy)}
+            if let login {Text("授权请求 \(login.request_id)，到期 \(displayDate(login.expires_at_ms))。在浏览器完成授权后，刷新 Activity 查看 oauth 授权结果；此页面收到 URL 只表示授权已开始。");Button("刷新状态"){Task{await model.refresh()}}.disabled(model.busy)}
+            if let message{Text(message).foregroundStyle(.red).textSelection(.enabled)}
+        }.task{await load()}
+    }
+    private func load() async {do{let base=try await model.loadConnectionEditor();binding=base.connections.first{$0.name==connection && $0.oauth != nil};if binding==nil{message="没有已激活的 OAuth 连接。"}}catch{message=error.localizedDescription}}
+    private func begin(){Task{do{let result=try await model.beginOAuth(connection,redirectURI:redirectURI);guard let url=URL(string:result.authorization_url),url.scheme=="https" else{throw UIError(message:"授权页地址无效。")};login=result;guard NSWorkspace.shared.open(url)else{throw UIError(message:"默认浏览器未打开；授权请求已建立，请检查系统浏览器设置。")}}catch{message=error.localizedDescription}}}
+}
+
+private struct RootCredentialForm:View {
+    @EnvironmentObject var model:AppModel
+    @Environment(\.dismiss) var dismiss
+    @State private var kind="aws-static";@State private var label="";@State private var accessID="";@State private var secret=""
+    @State private var clientID="";@State private var installationID:UInt64=0;@State private var message:String?
+    var body:some View {
+        VStack(alignment:.leading,spacing:14) {
+            Text("保存派生根凭据").font(.title2)
+            Picker("类型",selection:$kind){Text("AWS 长期密钥").tag("aws-static");Text("GitHub App 私钥").tag("github-app-installation")}
+            TextField("凭据名称",text:$label)
+            if kind=="aws-static" {SecureField("Access key ID",text:$accessID);SecureField("Secret access key",text:$secret);Text("EKS 使用长期 key；不添加 session token。IAM 和 EKS RBAC 决定临时身份的上游权限。").font(.caption)}
+            else {TextField("GitHub App client ID",text:$clientID);TextField("Installation ID",value:$installationID,format:.number.grouping(.never));SecureField("PKCS#1 RSA 私钥 PEM 或 DER base64",text:$secret);Text("只接受 RSA PRIVATE KEY（PKCS#1）；私钥仅传给 Rekey 并加密，不包含 webhook 配置。").font(.caption)}
+            Text("保存后没有派生权限。需要逐个添加 T1 授权、审阅目标和权限，再签名开启。Agent 会拿到临时值，根凭据不会交出。").foregroundStyle(.orange)
+            PeerSecurityWarning();if let message{Text(message).foregroundStyle(.red)}
+            HStack{Button("取消"){secret="";accessID="";dismiss()};Spacer();Button("验证并加密保存"){save()}.buttonStyle(PrimaryButton()).disabled(model.busy || label.isEmpty || secret.isEmpty || kind=="aws-static" && accessID.isEmpty || kind != "aws-static" && (clientID.isEmpty || installationID==0))}
+        }.padding(28).frame(width:560).onDisappear{secret="";accessID=""}
+    }
+    private func save(){
+        let secretValue=secret,access=accessID,client=clientID,installation=installationID,selected=kind,name=label;secret="";accessID=""
+        Task{do{
+            let payload:[String:Any]
+            if selected=="aws-static" {payload=["credential_type":"aws-static-v1","access_key_id":access,"secret_access_key":secretValue]}
+            else {let key=secretValue.replacingOccurrences(of:"-----BEGIN RSA PRIVATE KEY-----",with:"").replacingOccurrences(of:"-----END RSA PRIVATE KEY-----",with:"").filter{!$0.isWhitespace};payload=["credential_type":"github-app-root-v1","client_id":client,"installation_id":installation,"private_key_pkcs1_der_base64":key]}
+            let encoded=try JSONSerialization.data(withJSONObject:payload,options:[.sortedKeys,.withoutEscapingSlashes]);_=try await model.saveTypedCredential(label:name,kind:selected,secret:String(decoding:encoded,as:UTF8.self));dismiss()
+        }catch{message=error.localizedDescription}}
+    }
+}
+
+private struct DerivedGrantEditor:View {
+    @Binding var grant:DerivedCredentialDefinition
+    @State private var policyText="";@State private var repositories="";@State private var permissions="";@State private var message:String?
+    var body:some View {
+        VStack(alignment:.leading,spacing:10) {
+            TextField("T1 连接名称",text:$grant.name)
+            Text("Agent 进程会拿到 \(grant.max_ttl_seconds/60) 分钟有效的临时凭据；每次签发按以下固定范围判定。").foregroundStyle(.orange)
+            Picker("签发判定",selection:$grant.effect){Text("每次审批").tag("approve");Text("允许").tag("allow");Text("拒绝").tag("deny")}
+            if grant.target.kind=="aws-assume-role" {
+                TextField("Role ARN",text:Binding(get:{grant.target.role_arn ?? ""},set:{grant.target.role_arn=$0}));TextField("区域",text:Binding(get:{grant.target.region ?? ""},set:{grant.target.region=$0}))
+                TextField("有效期秒数（900–3600）",value:$grant.max_ttl_seconds,format:.number.grouping(.never))
+                Text("显式 session policy JSON（与角色权限求交）");TextEditor(text:$policyText).frame(height:80)
+                Button("应用 session policy"){do{grant.target.session_policy=try JSONDecoder().decode(ConnectionJSON.self,from:Data(policyText.utf8));message=nil}catch{message="session policy JSON 无效。"}}
+            } else if grant.target.kind=="kubernetes-eks" {TextField("EKS cluster ID",text:Binding(get:{grant.target.cluster_id ?? ""},set:{grant.target.cluster_id=$0}));TextField("区域",text:Binding(get:{grant.target.region ?? ""},set:{grant.target.region=$0}));Text("签名固定15分钟上限；IAM/EKS RBAC限制实际权限。").font(.caption)}
+            else {
+                TextField("Installation ID",value:Binding(get:{grant.target.installation_id ?? 0},set:{grant.target.installation_id=$0}),format:.number.grouping(.never))
+                TextField("明确允许的 repository IDs（逗号分隔）",text:$repositories)
+                Text("权限 JSON，例如 {\"issues\":\"read\"}");TextEditor(text:$permissions).frame(height:60)
+                Button("应用仓库与权限"){do{let ids=try repositories.split(separator:",").map{value->UInt64 in guard let id=UInt64(value.trimmingCharacters(in:.whitespaces))else{throw UIError(message:"repository ID无效")};return id};let values=try JSONDecoder().decode([String:String].self,from:Data(permissions.utf8));grant.target.repository_ids=ids;grant.target.permissions=values;message=nil}catch{message="仓库 ID 或权限 JSON 无效。"}}
+                Text("上游令牌实际有效60分钟；仓库和权限只允许缩小既有 installation 授权。").font(.caption)
+            }
+            if let message{Text(message).foregroundStyle(.red)}
+            Text("实际将签署："+grant.publicDescription).font(.system(size:11,design:.monospaced)).textSelection(.enabled)
+        }.onAppear{policyText=grant.target.session_policy.flatMap{try? String(decoding:JSONEncoder().encode($0),as:UTF8.self)} ?? "{}";repositories=grant.target.repository_ids?.map(String.init).joined(separator:",") ?? "";permissions=(try? String(decoding:JSONEncoder().encode(grant.target.permissions ?? [:]),as:UTF8.self)) ?? "{}"}
     }
 }

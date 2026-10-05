@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Opt-in Layer B: public HTTPS Vault through unmodified production rekeyd."""
+"""Lab-only archived Vault dogfood; requires lab wiring and 0.4 fixture revalidation."""
 
 import argparse
 import datetime

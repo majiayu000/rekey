@@ -25,6 +25,7 @@ enum Attack {
     MissingOkFields,
     UnknownOkField,
     InvalidPolicyStatus,
+    #[cfg_attr(not(feature = "lab"), allow(dead_code))]
     InvalidApprovalChallenge,
     InvalidApprovalPending,
     AuditNonEmptyMetadata,
@@ -75,12 +76,7 @@ fn indeterminate_connector_audit_exits_without_inviting_retry() {
     let mut child = Command::new(rekey_bin())
         .arg("--state-dir")
         .arg(dir.path())
-        .args([
-            "execute",
-            "00000000-0000-4000-8000-000000000001@1",
-            "--capability",
-            "-",
-        ])
+        .args(["call", "github.create_issue", "--no-wait"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -415,6 +411,7 @@ fn cli_rejects_forged_broker_responses() {
         Attack::MissingOkFields,
         Attack::UnknownOkField,
         Attack::InvalidPolicyStatus,
+        #[cfg(feature = "lab")]
         Attack::InvalidApprovalChallenge,
         Attack::InvalidApprovalPending,
         Attack::AuditNonEmptyMetadata,
@@ -597,6 +594,7 @@ fn audit_export_fixture(expire_second_page: bool) {
                     message: "audit snapshot expired; restart the query or export".into(),
                     retryable: false,
                     approval: None,
+                    next: None,
                 })
                 .unwrap()
             } else {

@@ -170,6 +170,9 @@ pub fn generate_personal_draft(
     }
     let snapshot = PolicySnapshot {
         format_version: SNAPSHOT_FORMAT_VERSION,
+        connections: Vec::new(),
+        ssh_keys: Vec::new(),
+        derived_credentials: Vec::new(),
         version,
         expires_at_ms,
         approvers: Vec::new(),
@@ -178,6 +181,107 @@ pub fn generate_personal_draft(
         bindings,
         rules,
     };
+    finish_draft(trust, previous, snapshot, now)
+}
+
+/// Complete signed replacement of personal Connection rules. No Action rows
+/// or Profiles are needed for local caller authorization.
+pub fn generate_connection_draft(
+    trust: &ValidatedPolicyTrust,
+    previous: Option<&ValidatedPolicyBundle>,
+    connections: &[rekey_domain::connection::Connection],
+    expires_at_ms: i64,
+    now: Timestamp,
+) -> Result<PersonalPolicyDraft, PolicyError> {
+    if trust.key().algorithm() != PolicyTrustAlgorithm::SecureEnclaveP256 {
+        return Err(PolicyError::Invalid);
+    }
+    if previous.is_some_and(|bundle| bundle.signer_id() != trust.signer_id()) {
+        return Err(PolicyError::InvalidSignature);
+    }
+    generate_connection_draft_with_ssh(trust, previous, connections, None, expires_at_ms, now)
+}
+
+pub fn generate_connection_draft_with_ssh(
+    trust: &ValidatedPolicyTrust,
+    previous: Option<&ValidatedPolicyBundle>,
+    connections: &[rekey_domain::connection::Connection],
+    ssh_keys: Option<&[rekey_domain::connection::SshKeyConnection]>,
+    expires_at_ms: i64,
+    now: Timestamp,
+) -> Result<PersonalPolicyDraft, PolicyError> {
+    generate_connection_draft_with_grants(
+        trust,
+        previous,
+        connections,
+        ssh_keys,
+        None,
+        expires_at_ms,
+        now,
+    )
+}
+
+/// Omitted optional editor sections retain the authenticated previous grants;
+/// explicit empty arrays revoke that section in the new signed snapshot.
+pub fn generate_connection_draft_with_grants(
+    trust: &ValidatedPolicyTrust,
+    previous: Option<&ValidatedPolicyBundle>,
+    connections: &[rekey_domain::connection::Connection],
+    ssh_keys: Option<&[rekey_domain::connection::SshKeyConnection]>,
+    derived_credentials: Option<&[rekey_domain::connection::DerivedCredentialConnection]>,
+    expires_at_ms: i64,
+    now: Timestamp,
+) -> Result<PersonalPolicyDraft, PolicyError> {
+    if trust.key().algorithm() != PolicyTrustAlgorithm::SecureEnclaveP256 {
+        return Err(PolicyError::Invalid);
+    }
+    if previous.is_some_and(|bundle| bundle.signer_id() != trust.signer_id()) {
+        return Err(PolicyError::InvalidSignature);
+    }
+    let next = previous
+        .map_or(0, |bundle| bundle.snapshot().version().get())
+        .checked_add(1)
+        .ok_or(PolicyError::Invalid)?;
+    let mut connections = connections.to_vec();
+    connections.sort_by(|a, b| a.name.cmp(&b.name));
+    finish_draft(
+        trust,
+        previous,
+        PolicySnapshot {
+            format_version: SNAPSHOT_FORMAT_VERSION,
+            version: PolicyVersion::new(next).map_err(|_| PolicyError::Invalid)?,
+            expires_at_ms,
+            ssh_keys: ssh_keys.map_or_else(
+                || previous.map_or_else(Vec::new, |bundle| bundle.snapshot().ssh_keys().to_vec()),
+                |keys| keys.to_vec(),
+            ),
+            derived_credentials: derived_credentials.map_or_else(
+                || {
+                    previous.map_or_else(Vec::new, |bundle| {
+                        bundle.snapshot().derived_credentials().to_vec()
+                    })
+                },
+                |connections| connections.to_vec(),
+            ),
+            connections,
+            approvers: Vec::new(),
+            workload_identities: Vec::new(),
+            profiles: Vec::new(),
+            bindings: Vec::new(),
+            rules: Vec::new(),
+        },
+        now,
+    )
+}
+
+fn finish_draft(
+    trust: &ValidatedPolicyTrust,
+    previous: Option<&ValidatedPolicyBundle>,
+    snapshot: PolicySnapshot,
+    now: Timestamp,
+) -> Result<PersonalPolicyDraft, PolicyError> {
+    let next = snapshot.version.get();
+    let expires_at_ms = snapshot.expires_at_ms;
     let canonical_snapshot = serde_jcs::to_vec(&snapshot).map_err(|_| PolicyError::Malformed)?;
     parse_and_validate_snapshot(&canonical_snapshot, now)?;
     let after: Value =
@@ -189,6 +293,11 @@ pub fn generate_personal_draft(
         || serde_json::from_value::<Vec<AgentProfile>>(after["profiles"].clone())
             .map_err(|_| PolicyError::Invalid)?
             != snapshot.profiles
+        || serde_json::from_value::<Vec<rekey_domain::connection::DerivedCredentialConnection>>(
+            after["derived_credentials"].clone(),
+        )
+        .map_err(|_| PolicyError::Invalid)?
+            != snapshot.derived_credentials
         || after["bindings"]
             .as_array()
             .ok_or(PolicyError::Malformed)?
@@ -225,6 +334,9 @@ pub fn generate_personal_draft(
         "approvers",
         "workload_identities",
         "profiles",
+        "connections",
+        "ssh_keys",
+        "derived_credentials",
         "bindings",
         "rules",
     ] {

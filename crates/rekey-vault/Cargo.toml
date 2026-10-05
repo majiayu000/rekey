@@ -35,10 +35,10 @@ tempfile = { workspace = true }
 tokio = { version = "1", default-features = false, features = ["sync", "rt", "rt-multi-thread", "macros", "time"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-security-framework = { version = "=3.7.0", default-features = false, optional = true }
+security-framework = { version = "=3.7.0", default-features = false, features = ["OSX_10_15"] }
 security-framework-sys = { version = "=2.17.0", default-features = false, features = ["OSX_10_15"] }
 core-foundation = { version = "=0.10.1" }
 
 [features]
 default = []
-lab = ["rekey-policy/lab", "dep:security-framework"]
+lab = ["rekey-policy/lab"]

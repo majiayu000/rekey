@@ -22,14 +22,14 @@ async fn connection_closes_without_reply(socket: &std::path::Path, request: &[u8
 async fn agent_socket_has_no_admin_or_export_surface() {
     let broker = h::start_broker().await;
     h::unlock(&broker).await;
-    let credential_id = h::add_credential(&broker, "ipc", b"secret-bytes").await;
-    let (action_id, version) = h::create_action(&broker, &credential_id).await;
-    let _token = h::create_session(&broker, &action_id, version).await;
+    h::add_credential(&broker, "ipc", b"secret-bytes").await;
 
-    // Every admin message id (other than the two legitimate agent ids) is
-    // rejected on the agent socket — including everything that could read or
-    // export a secret.
+    // Opcodes use separate channel namespaces. Only documented Agent opcodes
+    // may dispatch on this socket; admin operations never become reachable.
     for message_type in 3u16..=64 {
+        if matches!(message_type, 6 | 7 | 9..=16) {
+            continue;
+        }
         let response = h::call(
             &broker.agent_sock(),
             Channel::Agent,

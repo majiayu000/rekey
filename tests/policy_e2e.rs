@@ -1,3 +1,4 @@
+#![cfg(feature = "lab")]
 //! The P1 authorization acceptance is intentionally a process test. Unit
 //! evaluators and FakeTransport cannot stand in for release binaries, UDS,
 //! SQLite audit durability, or the local CA/TLS hop.

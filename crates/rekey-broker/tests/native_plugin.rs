@@ -1,3 +1,4 @@
+#![cfg(feature = "lab")]
 //! Bind the GitHub reference sidecar as anthropic-messages-v1 on a real stream Action.
 #![cfg(any(
     target_os = "macos",

@@ -295,38 +295,47 @@ async fn cancellation_after_terminal_submission_does_not_submit_fallback() {
 }
 
 #[tokio::test]
-async fn closed_remote_effect_gate_commits_one_blocked_terminal() {
-    let commits = Arc::new(Mutex::new(Vec::new()));
-    let (tracker, worker) = spawn_terminal_worker_with({
-        let commits = Arc::clone(&commits);
-        move |draft| {
-            commits.lock().unwrap().push(draft);
-            async { Ok(()) }
+async fn closed_remote_effect_gate_preserves_prior_effect_and_commits_one_terminal() {
+    for prior_effect in [false, true] {
+        let commits = Arc::new(Mutex::new(Vec::new()));
+        let (tracker, worker) = spawn_terminal_worker_with({
+            let commits = Arc::clone(&commits);
+            move |draft| {
+                commits.lock().unwrap().push(draft);
+                async { Ok(()) }
+            }
+        });
+        let mut guard = StartedAuditGuard::new_for_test(&tracker, execution_context());
+        if prior_effect {
+            guard.mark_remote_effect_started();
         }
-    });
-    let mut guard = StartedAuditGuard::new_for_test(&tracker, execution_context());
-    let lifecycle = Lifecycle::new();
-    let error = try_begin_remote_effect(
-        &lifecycle,
-        &mut guard,
-        Instant::now() + Duration::from_secs(1),
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(error.code(), "DRAINING");
-    tracker.wait_idle(Duration::from_secs(1)).await.unwrap();
-    {
-        let commits = commits.lock().unwrap();
-        assert_eq!(commits.len(), 1);
-        assert_eq!(
-            commits[0].event_type,
-            rekey_vault::model::event_type::EXECUTION_BLOCKED
-        );
-        assert_eq!(commits[0].reason_code, "remote-effect-admission-closed");
+        let lifecycle = Lifecycle::new();
+        let error = try_begin_remote_effect(
+            &lifecycle,
+            &mut guard,
+            Instant::now() + Duration::from_secs(1),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code(), "DRAINING");
+        drop(guard);
+        tracker.wait_idle(Duration::from_secs(1)).await.unwrap();
+        {
+            let commits = commits.lock().unwrap();
+            assert_eq!(commits.len(), 1);
+            assert_eq!(
+                commits[0].event_type,
+                if prior_effect {
+                    rekey_vault::model::event_type::EXECUTION_INDETERMINATE
+                } else {
+                    rekey_vault::model::event_type::EXECUTION_BLOCKED
+                }
+            );
+            assert_eq!(commits[0].reason_code, "remote-effect-admission-closed");
+        }
+        drop(tracker);
+        worker.await.unwrap();
     }
-    drop(guard);
-    drop(tracker);
-    worker.await.unwrap();
 }
 
 #[test]

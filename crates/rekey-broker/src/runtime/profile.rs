@@ -521,7 +521,7 @@ pub(crate) fn session_audit(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "lab"))]
 mod tests {
     use super::*;
     use aws_lc_rs::{
@@ -565,7 +565,7 @@ mod tests {
         let principal = PrincipalId::new_random();
         let rule = PolicyRuleId::new_random();
         let signer = PolicySignerId::new_random();
-        let snapshot = json!({"format_version":6,"version":1,"expires_at_ms":4_102_444_800_000_i64,"approvers":[],"workload_identities":[],"profiles":[{"name":"test","principal_id":principal,"grants":[{"instance":"one","capabilities":[{"rule":"template-default","capability":"fixed-actions","actions":[{"action_id":action.id,"version":action.version}]}]}],"session":{"ttl_ms":60000,"max_uses":4},"confirm_each_run":false,"isolation":"none","egress":"allow","llm_limits":[]}],"bindings":[{"action_id":action.id,"version":action.version,"resource":{"type":"test","id":"one"},"parameter_schema_id":"any/v1","parameter_schema":{}}],"rules":[{"id":rule,"effect":"permit","principal_id":principal,"action_id":action.id,"version":action.version,"resource":{"type":"test","id":"one"},"parameters":{"kind":"any_validated"}}]});
+        let snapshot = json!({"format_version":7,"version":1,"expires_at_ms":4_102_444_800_000_i64,"approvers":[],"workload_identities":[],"connections":[], "ssh_keys":[], "profiles":[{"name":"test","principal_id":principal,"grants":[{"instance":"one","capabilities":[{"rule":"template-default","capability":"fixed-actions","actions":[{"action_id":action.id,"version":action.version}]}]}],"session":{"ttl_ms":60000,"max_uses":4},"confirm_each_run":false,"isolation":"none","egress":"allow","llm_limits":[]}],"bindings":[{"action_id":action.id,"version":action.version,"resource":{"type":"test","id":"one"},"parameter_schema_id":"any/v1","parameter_schema":{}}],"rules":[{"id":rule,"effect":"permit","principal_id":principal,"action_id":action.id,"version":action.version,"resource":{"type":"test","id":"one"},"parameters":{"kind":"any_validated"}}]});
         let doc = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
         let key = Ed25519KeyPair::from_pkcs8(doc.as_ref()).unwrap();
         let trust = rekey_policy::ValidatedPolicyTrust::from_parts(

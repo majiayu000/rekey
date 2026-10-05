@@ -59,13 +59,16 @@ fn output_text(output: &Output) -> String {
         String::from_utf8_lossy(&output.stderr)
     )
 }
+static PTY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 struct Tty {
+    _guard: std::sync::MutexGuard<'static, ()>,
     child: Child,
     master: File,
     text: String,
 }
 impl Tty {
     fn start(mut command: Command) -> Self {
+        let guard = PTY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (mut master, mut slave) = (-1, -1);
         assert_eq!(
             unsafe {
@@ -87,6 +90,7 @@ impl Tty {
             .stderr(Stdio::from(slave));
         let child = command.spawn().unwrap();
         let mut tty = Self {
+            _guard: guard,
             child,
             master,
             text: String::new(),
@@ -170,26 +174,13 @@ fn print_all_formats_is_public_and_creates_nothing() {
         assert!(output.status.success(), "{}", output_text(&output));
         let text = output_text(&output);
         assert!(text.contains(f.project().join(path).to_str().unwrap()));
-        let command = match client {
-            "claude-code" => "rekey run <profile> --client claude-code -- claude",
-            "codex" => "rekey run <profile> --client codex -- codex",
-            _ => "rekey run <profile> -- cursor",
-        };
-        assert!(text.contains(command));
+        assert!(text.contains("rekey-mcp"));
+        assert!(text.contains("<!-- rekey:begin -->"));
         assert!(!text.contains(CANARY));
         assert!(!text.contains("[y/N]"));
-        assert!(!text.contains("--manifest"));
+        assert!(!text.contains("REKEY_CAPABILITY"));
+        assert!(!text.contains("env_vars"));
         assert!(!f.project().join(path).exists());
-        if client == "codex" {
-            assert!(text.contains("env_vars"));
-            assert!(!text.contains("type ="));
-        }
-        if client == "cursor" {
-            assert!(text.contains("${env:REKEY_CAPABILITY}"));
-        }
-        if client == "claude-code" {
-            assert!(text.contains("${REKEY_CAPABILITY}"));
-        }
     }
     assert_eq!(fs::read_dir(f.project()).unwrap().count(), 0);
 }
@@ -239,16 +230,18 @@ fn json_replacement_preserves_raw_values_and_exact_private_backup() {
         assert_eq!(parsed["secret"], CANARY);
         assert_eq!(parsed["mcpServers"]["other"]["env"]["TOKEN"], CANARY);
         let server = &parsed["mcpServers"]["rekey"];
-        assert_eq!(server["command"], f.bin.join("rekey-mcp").to_str().unwrap());
-        assert_eq!(server["type"], "stdio");
-        assert_eq!(server["args"], serde_json::json!([]));
+        assert_eq!(server, &serde_json::json!({"command":"rekey-mcp"}));
+        let instructions = f.project().join(if client == "claude-code" {
+            "CLAUDE.md"
+        } else {
+            "AGENTS.md"
+        });
+        let instructions_before = fs::read(&instructions).unwrap();
         assert_eq!(
-            server["env"]["REKEY_CAPABILITY"],
-            if client == "cursor" {
-                "${env:REKEY_CAPABILITY}"
-            } else {
-                "${REKEY_CAPABILITY}"
-            }
+            String::from_utf8_lossy(&instructions_before)
+                .matches("<!-- rekey:begin -->")
+                .count(),
+            1
         );
         let backups = siblings(&path, "backup");
         assert_eq!(backups.len(), 1);
@@ -296,25 +289,13 @@ fn codex_retains_comments_other_tables_and_supports_inline_servers() {
             doc["mcp_servers"]["other"]["command"].as_str(),
             Some("other")
         );
-        assert!(
-            doc["mcp_servers"]["rekey"]["args"]
-                .as_array()
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            doc["mcp_servers"]["rekey"]["command"].as_str(),
+            Some("rekey-mcp")
         );
         assert_eq!(
-            doc["mcp_servers"]["rekey"]["env_vars"]
-                .as_array()
-                .unwrap()
-                .len(),
-            2
-        );
-        assert!(
-            doc["mcp_servers"]["rekey"]
-                .as_table_like()
-                .unwrap()
-                .get("env")
-                .is_none()
+            doc["mcp_servers"]["rekey"].as_table_like().unwrap().len(),
+            1
         );
         assert_eq!(
             fs::read(siblings(&path, "backup").pop().unwrap()).unwrap(),
@@ -444,12 +425,13 @@ fn fresh_target_creation_is_private_and_does_not_require_a_manifest() {
     assert!(f.command("cursor").output().unwrap().status.success());
 }
 #[test]
-fn missing_sibling_is_a_clear_error() {
+fn stable_command_does_not_depend_on_a_developer_binary_path() {
     let f = Fixture::new();
     fs::remove_file(f.bin.join("rekey-mcp")).unwrap();
     let output = f.command("claude-code").arg("--print").output().unwrap();
-    assert_eq!(output.status.code(), Some(2));
-    assert!(output_text(&output).contains("existing sibling"));
+    assert!(output.status.success());
+    assert!(output_text(&output).contains("rekey-mcp"));
+    assert!(!output_text(&output).contains(f.bin.to_str().unwrap()));
     assert_eq!(fs::read_dir(f.project()).unwrap().count(), 0);
 }
 
@@ -513,8 +495,8 @@ fn preview_shows_removed_fields_before_replacement_without_printing_old_credenti
         let path = f.write(relative, old.as_bytes());
         let (status, text) = Tty::start(f.command(client)).finish(b"n\n");
         assert!(status.success(), "{text}");
-        let (before, after) = text.split_once("After (replacement rekey subtree").unwrap();
-        assert!(before.contains("Before (existing rekey fields; values hidden)"));
+        let (before, after) = text.split_once("+++ after").unwrap();
+        assert!(before.contains("--- before"));
         assert!(before.contains("\"legacy\""));
         assert!(before.contains("\"command\""));
         assert!(before.contains("<existing value hidden>"));
@@ -526,15 +508,87 @@ fn preview_shows_removed_fields_before_replacement_without_printing_old_credenti
     }
 }
 #[test]
-fn codex_env_allowlist_order_is_a_semantic_noop() {
+fn instructions_preserve_unrelated_text_and_replace_markers_once() {
     let f = Fixture::new();
-    let command = serde_json::to_string(f.bin.join("rekey-mcp").to_str().unwrap()).unwrap();
-    let old = format!(
-        "# preserve this exact layout\n[mcp_servers.rekey]\ncommand={command}\nargs=[]\nenv_vars=['REKEY_AGENT_SOCKET','REKEY_CAPABILITY']\n"
+    let old = "User rules before\n\n<!-- rekey:begin -->\nold instructions\n<!-- rekey:end -->\n\nUser rules after\n";
+    let path = f.write("AGENTS.md", old.as_bytes());
+    let (status, text) = Tty::start(f.command("codex")).finish(b"y\n");
+    assert!(status.success(), "{text}");
+    let new = fs::read_to_string(&path).unwrap();
+    assert!(new.starts_with("User rules before\n\n"));
+    assert!(new.ends_with("\nUser rules after\n"));
+    assert!(!new.contains("old instructions"));
+    assert_eq!(new.matches("<!-- rekey:begin -->").count(), 1);
+    assert_eq!(
+        fs::read(siblings(&path, "backup").pop().unwrap()).unwrap(),
+        old.as_bytes()
     );
+    assert!(f.command("codex").output().unwrap().status.success());
+    assert_eq!(fs::read_to_string(path).unwrap(), new);
+}
+#[test]
+fn malformed_instruction_markers_and_instruction_races_fail_before_any_write() {
+    let f = Fixture::new();
+    let instructions = f.write("CLAUDE.md", b"<!-- rekey:begin -->\nmissing end");
+    let output = f.command("claude-code").output().unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(!f.project().join(".mcp.json").exists());
+    fs::write(&instructions, b"rules").unwrap();
+    let tty = Tty::start(f.command("claude-code"));
+    fs::write(&instructions, b"rules changed after preview").unwrap();
+    let (status, text) = tty.finish(b"y\n");
+    assert!(!status.success(), "{text}");
+    assert!(!f.project().join(".mcp.json").exists());
+    assert!(siblings(&instructions, "backup").is_empty());
+}
+#[test]
+fn command_only_codex_config_is_a_semantic_noop_after_instructions_installed() {
+    let f = Fixture::new();
+    let (status, text) = Tty::start(f.command("codex")).finish(b"y\n");
+    assert!(status.success(), "{text}");
+    let old = "# preserve this exact layout\n[mcp_servers.rekey]\ncommand='rekey-mcp'\n";
     let path = f.write(".codex/config.toml", old.as_bytes());
     let output = f.command("codex").output().unwrap();
     assert!(output.status.success(), "{}", output_text(&output));
     assert_eq!(fs::read(&path).unwrap(), old.as_bytes());
     assert!(siblings(&path, "backup").is_empty());
+}
+
+#[test]
+fn optional_hook_preserves_existing_shell_and_uses_the_staged_scanner() {
+    let f = Fixture::new();
+    assert!(
+        Command::new("git")
+            .args(["init"])
+            .current_dir(f.project())
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "true")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    );
+    let path = f.write(
+        ".git/hooks/pre-commit",
+        b"#!/bin/sh\n# existing operator hook\ntrue\n",
+    );
+    let original = fs::read(&path).unwrap();
+    let mut command = f.command("claude-code");
+    command.arg("--with-hooks");
+    let (status, text) = Tty::start(command).finish(b"y\n");
+    assert!(status.success(), "{text}");
+    let new = fs::read_to_string(&path).unwrap();
+    assert!(new.starts_with("#!/bin/sh\n# existing operator hook\ntrue\n"));
+    assert!(new.contains("rekey scan --staged || exit $?"));
+    assert_eq!(new.matches("# rekey:begin").count(), 1);
+    assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o700);
+    assert_eq!(
+        fs::read(siblings(&path, "backup").pop().unwrap()).unwrap(),
+        original
+    );
+    let mut command = f.command("claude-code");
+    command.arg("--with-hooks");
+    assert!(command.output().unwrap().status.success());
+    assert_eq!(fs::read_to_string(path).unwrap(), new);
 }

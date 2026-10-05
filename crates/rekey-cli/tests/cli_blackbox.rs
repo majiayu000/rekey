@@ -4,6 +4,7 @@
 //! Requires both binaries to be built (`cargo test --workspace` builds them).
 
 use std::io::Write;
+#[cfg(feature = "lab")]
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -11,6 +12,7 @@ use std::time::Duration;
 
 const PASSWORD: &str = "blackbox horse battery staple";
 const NEW_PASSWORD: &str = "blackbox replacement battery staple";
+#[cfg(feature = "lab")]
 const FINAL_PASSWORD: &str = "blackbox recovered battery staple";
 const SECRET: &str = "CLI-CANARY-SECRET-0x5eed";
 
@@ -25,6 +27,16 @@ fn rekeyd_bin() -> PathBuf {
         "rekeyd binary not built; run `cargo build --workspace` (or `cargo test --workspace`) first"
     );
     sibling
+}
+
+fn configure_test_service(state_dir: &Path) {
+    let reservation = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let port = reservation.local_addr().unwrap().port();
+    std::fs::write(
+        state_dir.join("service.json"),
+        serde_json::to_vec(&serde_json::json!({ "port": port })).unwrap(),
+    )
+    .unwrap();
 }
 
 struct Output {
@@ -61,6 +73,7 @@ fn run(binary: &Path, args: &[&str], stdin: Option<&str>) -> Output {
     }
 }
 
+#[cfg(feature = "lab")]
 fn run_audit(state_dir: &str, args: &[&str]) -> Output {
     let mut command = vec!["--state-dir", state_dir, "audit"];
     command.extend_from_slice(args);
@@ -145,6 +158,7 @@ impl Drop for ServeGuard {
 }
 
 #[test]
+#[cfg(feature = "lab")]
 fn cli_end_to_end() {
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
@@ -189,6 +203,7 @@ fn cli_end_to_end() {
     assert_ne!(output.status, 0);
 
     // serve in the background (foreground process, no daemon mode).
+    configure_test_service(&state_dir);
     let child = Command::new(rekeyd_bin())
         .args(["serve", "--state-dir", state, "--idle-lock", "15m"])
         .stdin(Stdio::null())
@@ -822,6 +837,7 @@ fn cli_end_to_end() {
         Some(expected_generation)
     );
 
+    configure_test_service(Path::new(restored_s));
     let child = Command::new(rekeyd_bin())
         .args(["serve", "--state-dir", restored_s, "--idle-lock", "15m"])
         .stdin(Stdio::null())
@@ -855,6 +871,7 @@ fn cli_end_to_end() {
 }
 
 #[test]
+#[cfg(feature = "lab")]
 fn cli_rejects_oversized_file_and_stdin_before_connecting() {
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("missing-state");
@@ -895,6 +912,7 @@ fn cli_rejects_oversized_file_and_stdin_before_connecting() {
 }
 
 #[test]
+#[cfg(feature = "lab")]
 fn agent_run_rejects_the_default_colocated_socket() {
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
@@ -945,6 +963,7 @@ fn cli_vrk_rotation_two_stdin_factors_keep_broker_locked_and_leave_no_plaintext(
         .find(|l| l.starts_with("RKREC1-"))
         .unwrap()
         .to_owned();
+    configure_test_service(&state_dir);
     let child = Command::new(rekeyd_bin())
         .args(["serve", "--state-dir", state, "--idle-lock", "15m"])
         .stdin(Stdio::null())
@@ -1024,7 +1043,7 @@ fn cli_vrk_rotation_two_stdin_factors_keep_broker_locked_and_leave_no_plaintext(
 }
 
 #[test]
-fn desktop_reveal_and_locked_shutdown_require_each_step_up() {
+fn locked_shutdown_requires_step_up_with_reveal_only_in_lab() {
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
     let state = state_dir.to_str().unwrap();
@@ -1046,6 +1065,7 @@ fn desktop_reveal_and_locked_shutdown_require_each_step_up() {
         .lines()
         .find(|line| line.starts_with("RKREC1-"))
         .unwrap();
+    configure_test_service(&state_dir);
     let server = Command::new(rekeyd_bin())
         .args(["serve", "--state-dir", state])
         .stdin(Stdio::null())
@@ -1080,45 +1100,48 @@ fn desktop_reveal_and_locked_shutdown_require_each_step_up() {
         Some(rekey_domain::authorization::PolicyMode::Personal)
     );
     assert!(personal.algorithm.is_none());
-    let token = login.stdout;
-    let added = run(
-        &rekey_bin(),
-        &["--state-dir", state, "desktop-add", "step-up-canary"],
-        Some(&format!("{token}\n{SECRET}\n")),
-    );
-    assert_eq!(added.status, 0, "{}", added.stderr);
-    let metadata: serde_json::Value = serde_json::from_str(&added.stdout).unwrap();
-    let id = metadata["id"].as_str().unwrap();
-    for (factor, recovery_factor) in [(PASSWORD, false), (recovery, true)] {
-        let mut args = vec![
-            "--state-dir",
-            state,
-            "desktop-reveal",
-            id,
-            "--password-stdin",
-        ];
-        if recovery_factor {
-            args.push("--recovery");
-        }
-        let revealed = run(&rekey_bin(), &args, Some(&format!("{factor}\n")));
-        assert_eq!(revealed.status, 0, "{}", revealed.stderr);
-        assert_eq!(revealed.stdout, SECRET);
-        assert!(!revealed.stderr.contains(SECRET));
-        let denied = run(
+    #[cfg(feature = "lab")]
+    {
+        let token = login.stdout;
+        let added = run(
             &rekey_bin(),
-            &[
+            &["--state-dir", state, "desktop-add", "step-up-canary"],
+            Some(&format!("{token}\n{SECRET}\n")),
+        );
+        assert_eq!(added.status, 0, "{}", added.stderr);
+        let metadata: serde_json::Value = serde_json::from_str(&added.stdout).unwrap();
+        let id = metadata["id"].as_str().unwrap();
+        for (factor, recovery_factor) in [(PASSWORD, false), (recovery, true)] {
+            let mut args = vec![
                 "--state-dir",
                 state,
                 "desktop-reveal",
                 id,
                 "--password-stdin",
-            ],
-            Some(&format!("{token}\n")),
-        );
-        assert_ne!(denied.status, 0);
-        assert!(denied.stdout.is_empty());
-        assert!(!denied.stderr.contains(SECRET));
-        assert!(!denied.stderr.contains(&token));
+            ];
+            if recovery_factor {
+                args.push("--recovery");
+            }
+            let revealed = run(&rekey_bin(), &args, Some(&format!("{factor}\n")));
+            assert_eq!(revealed.status, 0, "{}", revealed.stderr);
+            assert_eq!(revealed.stdout, SECRET);
+            assert!(!revealed.stderr.contains(SECRET));
+            let denied = run(
+                &rekey_bin(),
+                &[
+                    "--state-dir",
+                    state,
+                    "desktop-reveal",
+                    id,
+                    "--password-stdin",
+                ],
+                Some(&format!("{token}\n")),
+            );
+            assert_ne!(denied.status, 0);
+            assert!(denied.stdout.is_empty());
+            assert!(!denied.stderr.contains(SECRET));
+            assert!(!denied.stderr.contains(&token));
+        }
     }
     assert_eq!(
         run(&rekey_bin(), &["--state-dir", state, "lock"], None).status,
@@ -1152,6 +1175,7 @@ fn desktop_reveal_and_locked_shutdown_require_each_step_up() {
 }
 
 #[test]
+#[cfg(feature = "lab")]
 fn template_cli_installs_bound_actions_atomically_without_exposing_proof() {
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
@@ -1170,6 +1194,7 @@ fn template_cli_installs_bound_actions_atomically_without_exposing_proof() {
         Some(&proof),
     );
     assert_eq!(initialized.status, 0, "{}", initialized.stderr);
+    configure_test_service(&state_dir);
     let server = Command::new(rekeyd_bin())
         .args(["serve", "--state-dir", state])
         .stdin(Stdio::null())
@@ -1337,7 +1362,7 @@ fn template_cli_installs_bound_actions_atomically_without_exposing_proof() {
 }
 
 #[test]
-fn personal_policy_draft_sign_and_activate_over_anonymous_stdin() {
+fn personal_connection_draft_sign_and_activate_over_anonymous_stdin() {
     use aws_lc_rs::rand::SystemRandom;
     use aws_lc_rs::signature::{ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair, KeyPair};
     use data_encoding::{BASE64URL_NOPAD, HEXLOWER};
@@ -1360,6 +1385,7 @@ fn personal_policy_draft_sign_and_activate_over_anonymous_stdin() {
         Some(&proof),
     );
     assert_eq!(initialized.status, 0, "{}", initialized.stderr);
+    configure_test_service(&state_dir);
     let server = Command::new(rekeyd_bin())
         .args(["serve", "--state-dir", state])
         .stdin(Stdio::null())
@@ -1414,43 +1440,38 @@ fn personal_policy_draft_sign_and_activate_over_anonymous_stdin() {
         &["credential", "add", "personal fixture", "--stdin-secrets"],
         Some(&format!("{proof}{SECRET}\n")),
     ));
-    let install = json!({"source":{"kind":"openai"},"credential_id":credential["id"],"bindings":[{}],
-        "capabilities":["models"],"name_prefix":"Personal model list","timeout_ms":30000,
-        "request_max_bytes":65536,"allowed_extra_headers":[],"response_max_bytes":262144,"allowed_response_headers":["content-type"]});
-    let installed = success(call(
-        &["template", "install", "--stdin-request", "--password-stdin"],
-        Some(&format!("{proof}{install}\n")),
-    ));
-    let action = &installed["actions"][0]["action"];
-    let principal = rekey_domain::ids::PrincipalId::new_random().to_string();
+    let preset: rekey_domain::connection::Preset =
+        serde_json::from_value(success(call(&["connection", "preset", "github-pat"], None)))
+            .unwrap();
+    let connection = preset.connection(
+        "fixture".into(),
+        serde_json::from_value(credential["id"].clone()).unwrap(),
+    );
     let expires = (std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_millis()
         + 600_000)
         .to_string();
-    let selected_profile = json!({"name":"fixture","principal_id":principal,
-        "grants":[{"instance":"openai","capabilities":[{"capability":"models","rule":"template-default","actions":[{"action_id":action["id"],"version":action["version"]}]}]}],
-        "session":{"ttl_ms":60000,"max_uses":100},"confirm_each_run":false,"isolation":"none","egress":"allow",
-        "llm_limits":[{"instance":"openai","models":["synthetic-model"],"max_output_tokens_per_request":100,"max_requests_per_day":100,"max_output_tokens_per_day":1000}]});
     let draft = |selected: bool| {
-        let current = success(call(&["profile", "list"], None));
+        let current = success(call(&["connection", "list"], None));
+        assert!(current["ssh_keys"].is_array());
         let mut args = vec![
             "policy",
             "draft",
-            "--profiles-stdin",
+            "--connections-stdin",
             "--expires-at-ms",
             &expires,
         ];
         if let Some(digest) = current["policy_sha256"].as_str() {
             args.extend(["--expected-policy-sha256", digest]);
         }
-        let profiles = if selected {
-            json!([selected_profile.clone()])
+        let connections = if selected {
+            json!([connection.clone()])
         } else {
             json!([])
         };
-        success(call(&args, Some(&profiles.to_string())))
+        success(call(&args, Some(&connections.to_string())))
     };
     let sign = |draft: &Value| {
         let bytes = draft["sign_bytes"].as_str().unwrap().as_bytes();
@@ -1486,9 +1507,45 @@ fn personal_policy_draft_sign_and_activate_over_anonymous_stdin() {
     let first = draft(true);
     assert_eq!(first["metadata"]["base_version"], Value::Null);
     assert_eq!(first["metadata"]["next_version"], 1);
-    assert_eq!(first["metadata"]["actions"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        first["metadata"]["connections"].as_array().unwrap().len(),
+        1
+    );
     let first_bundle = sign(&first);
+    let bundle: Value = serde_json::from_str(&first_bundle).unwrap();
+    assert_eq!(bundle["snapshot"]["format_version"], 7);
+    assert_eq!(bundle["snapshot"]["ssh_keys"], json!([]));
     assert_eq!(success(activate(&first_bundle))["version"], 1);
+    let capabilities = success(call(&["list", "--json"], None));
+    assert_eq!(capabilities["connections"][0]["connection"], "fixture");
+    assert_eq!(capabilities["connections"][0]["read"], "allow");
+    assert_eq!(capabilities["connections"][0]["write"], "approve");
+    let scan = call(
+        &["scan", "--stdin"],
+        Some(&format!("before\n{SECRET}\nafter\n")),
+    );
+    assert_eq!(scan.status, 4, "{}", scan.stderr);
+    let findings: Value = serde_json::from_str(&scan.stdout).unwrap();
+    assert_eq!(findings[0]["connection"], "fixture");
+    assert_eq!(findings[0]["line"], 2);
+    let operation = success(call(&["describe", "github.get_issue"], None));
+    assert_eq!(operation["connection"], "fixture");
+    let preview = success(call(
+        &[
+            "call",
+            "github.get_issue",
+            "--owner",
+            "test",
+            "--repo",
+            "project",
+            "--number",
+            "7",
+            "--dry-run",
+        ],
+        None,
+    ));
+    assert_eq!(preview["path"], "/repos/test/project/issues/7");
+    assert_eq!(preview["effect"], "allow");
     // Exact same signed bytes are idempotent; no ECDSA resign/retry required.
     assert_eq!(success(activate(&first_bundle))["version"], 1);
     let stale = sign(&draft(false));
@@ -1497,26 +1554,25 @@ fn personal_policy_draft_sign_and_activate_over_anonymous_stdin() {
     let rejected = activate(&stale);
     assert_ne!(rejected.status, 0);
     assert!(rejected.stderr.contains("POLICY_VERSION_CONFLICT"));
-    let retired_draft = sign(&draft(true));
-    success(call(
-        &[
-            "action",
-            "disable",
-            action["id"].as_str().unwrap(),
-            "--password-stdin",
-        ],
-        Some(&proof),
-    ));
-    assert_ne!(activate(&retired_draft).status, 0);
-    assert_eq!(success(call(&["policy", "status"], None))["version"], 2);
     let empty = draft(false);
-    assert!(empty["metadata"]["actions"].as_array().unwrap().is_empty());
+    assert!(
+        empty["metadata"]["connections"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     let revoke_bundle = sign(&empty);
     let revoke: Value = serde_json::from_str(&revoke_bundle).unwrap();
     assert_eq!(revoke["snapshot"]["rules"], json!([]));
     assert_eq!(success(activate(&revoke_bundle))["version"], 3);
+    assert!(
+        success(call(&["list", "--json"], None))["connections"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     let audit = call(&["audit", "list"], None);
-    assert_eq!(audit.status, 0);
+    assert_eq!(audit.status, 0, "{}", audit.stderr);
     assert_eq!(
         call(&["shutdown", "--password-stdin"], Some(&proof)).status,
         0
@@ -1547,6 +1603,7 @@ fn presence_cli_proof_rotation_and_restart_remain_explicit_and_private() {
         0
     );
     let start = || {
+        configure_test_service(&state_dir);
         let child = Command::new(rekeyd_bin())
             .args(["serve", "--state-dir", state])
             .stdin(Stdio::null())
@@ -1593,51 +1650,47 @@ fn presence_cli_proof_rotation_and_restart_remain_explicit_and_private() {
     let credential: serde_json::Value = serde_json::from_str(&credential.stdout).unwrap();
     let id = credential["id"].as_str().unwrap();
     let first = key(call(&["desktop-remember"], Some(&password)));
-    let reveal = ["desktop-reveal", id, "--presence", "--password-stdin"];
-    assert_ne!(
-        call(&reveal, Some(&format!("{}\n", "0".repeat(64)))).status,
-        0
-    );
+    let rotation = ["credential", "rotate", id, "--presence", "--stdin-secrets"];
+    let input = |proof: &str| format!("{proof}\n{SECRET}\n");
+    let private_rotation = |output: Output| {
+        let output = ok(output);
+        assert!(!output.stdout.contains(SECRET));
+        assert!(!output.stderr.contains(SECRET));
+        let metadata: rekey_domain::credential::CredentialMetadata =
+            serde_json::from_str(&output.stdout).unwrap();
+        assert_eq!(metadata.id.to_string(), id);
+    };
+    assert_ne!(call(&rotation, Some(&input(&"0".repeat(64)))).status, 0);
     let mut boundary = vec!["--state-dir", state];
-    boundary.extend(reveal);
-    let revealed = run_with_process_boundary(
+    boundary.extend(rotation);
+    let rotated = run_with_process_boundary(
         &rekey_bin(),
         &boundary,
-        &format!("{first}\n"),
+        &input(&first),
         &[&first, PASSWORD, SECRET],
     );
-    assert_eq!(revealed.status, 0, "{}", revealed.stderr);
-    assert_eq!(revealed.stdout, SECRET);
+    private_rotation(rotated);
     let denied = call(
         &["desktop-remember", "--presence"],
         Some(&format!("{first}\n")),
     );
     assert_eq!(denied.status, 3, "{}", denied.stderr);
-    assert_eq!(
-        ok(call(&reveal, Some(&format!("{first}\n")))).stdout,
-        SECRET
-    );
+    private_rotation(call(&rotation, Some(&input(&first))));
     let second = key(call(&["desktop-remember"], Some(&password)));
     assert_ne!(first, second);
-    assert_ne!(call(&reveal, Some(&format!("{first}\n"))).status, 0);
-    assert_eq!(
-        ok(call(&reveal, Some(&format!("{second}\n")))).stdout,
-        SECRET
-    );
+    assert_ne!(call(&rotation, Some(&input(&first))).status, 0);
+    private_rotation(call(&rotation, Some(&input(&second))));
     let denied = call(
         &["password", "change", "--presence", "--stdin-secrets"],
         Some(&format!("{second}\n{NEW_PASSWORD}\n")),
     );
     assert_eq!(denied.status, 3, "{}", denied.stderr);
-    assert_eq!(
-        ok(call(&reveal, Some(&format!("{second}\n")))).stdout,
-        SECRET
-    );
+    private_rotation(call(&rotation, Some(&input(&second))));
     ok(call(
         &["password", "change", "--stdin-secrets"],
         Some(&format!("{password}{NEW_PASSWORD}\n")),
     ));
-    assert_ne!(call(&reveal, Some(&format!("{second}\n"))).status, 0);
+    assert_ne!(call(&rotation, Some(&input(&second))).status, 0);
     let current_password = format!("{NEW_PASSWORD}\n");
     let third = key(call(&["desktop-remember"], Some(&current_password)));
     let denied = call(
@@ -1645,16 +1698,13 @@ fn presence_cli_proof_rotation_and_restart_remain_explicit_and_private() {
         Some(&format!("{third}\n")),
     );
     assert_eq!(denied.status, 3, "{}", denied.stderr);
-    assert_eq!(
-        ok(call(&reveal, Some(&format!("{third}\n")))).stdout,
-        SECRET
-    );
+    private_rotation(call(&rotation, Some(&input(&third))));
     let recovery = ok(call(
         &["recovery", "rotate", "--password-stdin"],
         Some(&current_password),
     ));
     assert!(recovery.stdout.contains("RECOVERY KEY"));
-    assert_ne!(call(&reveal, Some(&format!("{third}\n"))).status, 0);
+    assert_ne!(call(&rotation, Some(&input(&third))).status, 0);
     let fourth = key(call(&["desktop-remember"], Some(&current_password)));
     ok(call(
         &["shutdown", "--presence", "--password-stdin"],
@@ -1663,12 +1713,9 @@ fn presence_cli_proof_rotation_and_restart_remain_explicit_and_private() {
     assert!(guard.finish().status.success());
     let guard = start();
     // No process-local verifier survives restart. Explicit resume establishes it.
-    assert_ne!(call(&reveal, Some(&format!("{fourth}\n"))).status, 0);
+    assert_ne!(call(&rotation, Some(&input(&fourth))).status, 0);
     ok(call(&["desktop-resume"], Some(&format!("{fourth}\n"))));
-    assert_eq!(
-        ok(call(&reveal, Some(&format!("{fourth}\n")))).stdout,
-        SECRET
-    );
+    private_rotation(call(&rotation, Some(&input(&fourth))));
     ok(call(&["lock"], None));
     assert_ne!(
         call(
@@ -1682,7 +1729,7 @@ fn presence_cli_proof_rotation_and_restart_remain_explicit_and_private() {
         &["unlock", "--password-stdin"],
         Some(&current_password),
     ));
-    assert_ne!(call(&reveal, Some(&format!("{fourth}\n"))).status, 0);
+    assert_ne!(call(&rotation, Some(&input(&fourth))).status, 0);
     let audit = ok(call(&["audit", "list"], None));
     for canary in [
         &first,

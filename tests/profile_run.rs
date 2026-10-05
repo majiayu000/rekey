@@ -1,3 +1,4 @@
+#![cfg(feature = "lab")]
 //! Actual `rekey run` owners over real Broker/Authority/SQLite and signed policy.
 //! Only the fixed upstream transport is synthetic; no Keychain or network IO.
 use std::io::{Read, Write};
@@ -76,9 +77,9 @@ impl Fixture {
         let principal = PrincipalId::new_random();
         let resource = json!({"type":"run-fixture","id":action["id"]});
         let mut bundle = json!({"format_version":1,"signer_id":signer,"snapshot":{
-            "format_version":6,"version":1,"expires_at_ms":4_102_444_800_000_i64,
+            "format_version":7,"version":1,"expires_at_ms":4_102_444_800_000_i64,
             "approvers":[],"workload_identities":[],
-            "profiles":[{"name":PROFILE,"principal_id":principal,
+            "connections":[], "ssh_keys":[], "profiles":[{"name":PROFILE,"principal_id":principal,
                 "grants":[{"instance":"run-fixture","capabilities":[{"capability":"fixed-actions","rule":"template-default",
                     "actions":[{"action_id":action["id"],"version":action["version"]}]}]}],
                 "session":{"ttl_ms":120000,"max_uses":100},"confirm_each_run":false,

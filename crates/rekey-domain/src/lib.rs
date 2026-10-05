@@ -7,6 +7,7 @@ pub mod action;
 pub mod audit;
 pub mod authorization;
 pub mod capability;
+pub mod connection;
 pub mod credential;
 pub mod error;
 pub mod ids;

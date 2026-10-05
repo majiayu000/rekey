@@ -1,3 +1,4 @@
+#![cfg(feature = "lab")]
 //! Workspace vertical slice: init → serve → unlock → credential → action →
 //! session → agent execution, with the credential injected server-side and
 //! the agent never seeing the secret.

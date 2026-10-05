@@ -1,0 +1,12 @@
+{
+  "name": "rekey",
+  "owner": {
+    "name": "majiayu000"
+  },
+  "plugins": [
+    {
+      "name": "rekey",
+      "source": "./plugins/rekey"
+    }
+  ]
+}

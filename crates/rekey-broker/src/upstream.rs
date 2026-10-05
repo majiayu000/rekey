@@ -681,6 +681,7 @@ async fn open_stream_fixed_roots(
     private_only: bool,
 ) -> Result<UpstreamStreamResponse, UpstreamError> {
     let mut builder = reqwest::Client::builder()
+        .user_agent(concat!("rekey/", env!("CARGO_PKG_VERSION")))
         .use_rustls_tls()
         .redirect(reqwest::redirect::Policy::none())
         .no_proxy()

@@ -117,6 +117,10 @@ pub mod admin_msg {
     pub const PROFILE_SESSION_CREATE: u16 = 59;
     pub const PROFILE_LIST: u16 = 60;
     pub const ROLLBACK_CONFIRM: u16 = 61;
+    pub const IMPORT_ENV: u16 = 62;
+    pub const SSH_KEY: u16 = 63;
+    pub const ACCESS_RESOLVE: u16 = 64;
+    pub const OAUTH_LOGIN: u16 = 65;
 }
 
 /// Agent channel message types.
@@ -129,6 +133,14 @@ pub mod agent_msg {
     pub const AWAIT_APPROVAL: u16 = 6;
     pub const CANCEL_APPROVAL: u16 = 7;
     pub const PROFILE_INVENTORY: u16 = 8;
+    pub const LIST_CAPABILITIES: u16 = 9;
+    pub const DESCRIBE: u16 = 10;
+    pub const CALL: u16 = 11;
+    pub const REQUEST_ACCESS: u16 = 12;
+    pub const AWAIT_ACCESS: u16 = 13;
+    pub const AWAIT_UNLOCK: u16 = 14;
+    pub const SCAN: u16 = 15;
+    pub const DERIVE_CREDENTIAL: u16 = 16;
 }
 
 /// Response message types shared by both channels.
@@ -220,7 +232,7 @@ impl FrameHeader {
 
 /// Closed operation classification shared by managed Broker dispatch and CLI.
 pub fn managed_admin_operation(message_type: u16) -> Result<bool, FrameError> {
-    if !(1..=61).contains(&message_type) {
+    if !(1..=64).contains(&message_type) {
         return Err(FrameError::InvalidField);
     }
     Ok(!matches!(
@@ -409,6 +421,8 @@ pub struct ErrorEnvelope {
     pub retryable: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub approval: Option<ApprovalRequired>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next: Option<String>,
 }
 
 impl ErrorEnvelope {
@@ -419,6 +433,7 @@ impl ErrorEnvelope {
             message: "local approval required".to_owned(),
             retryable: false,
             approval: Some(approval),
+            next: Some("Call await_approval(request_id) to wait for the user decision.".into()),
         }
     }
 }
@@ -434,6 +449,8 @@ impl<'de> Deserialize<'de> for ErrorEnvelope {
             retryable: bool,
             #[serde(default)]
             approval: Option<ApprovalRequired>,
+            #[serde(default)]
+            next: Option<String>,
         }
         let wire = Wire::deserialize(deserializer)?;
         let valid = if wire.code == "APPROVAL_REQUIRED" {
@@ -452,6 +469,7 @@ impl<'de> Deserialize<'de> for ErrorEnvelope {
             message: wire.message,
             retryable: wire.retryable,
             approval: wire.approval,
+            next: wire.next,
         })
     }
 }
@@ -822,7 +840,11 @@ pub struct PolicyActivateMeta {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PersonalPolicyDraftMeta {
-    pub profiles: Vec<crate::profile::AgentProfile>,
+    pub connections: Vec<crate::connection::Connection>,
+    #[serde(default)]
+    pub ssh_keys: Option<Vec<crate::connection::SshKeyConnection>>,
+    #[serde(default)]
+    pub derived_credentials: Option<Vec<crate::connection::DerivedCredentialConnection>>,
     pub expected_policy_sha256: Option<String>,
     pub expires_at_ms: i64,
 }
@@ -855,7 +877,9 @@ pub struct PersonalPolicyDraftResponse {
     pub next_version: u64,
     pub policy_sha256: String,
     pub changes: Vec<PersonalPolicyFieldChange>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<FixedHttpAction>,
+    pub connections: Vec<crate::connection::Connection>,
 }
 
 impl PersonalPolicyDraftResponse {
@@ -870,6 +894,14 @@ impl PersonalPolicyDraftResponse {
                 .is_some_and(|v| PolicyVersion::new(v).is_err())
             || self.base_version.unwrap_or(0).checked_add(1) != Some(self.next_version)
             || PolicyVersion::new(self.next_version).is_err()
+            || self
+                .connections
+                .iter()
+                .any(|connection| connection.validate().is_err())
+            || self
+                .connections
+                .windows(2)
+                .any(|pair| pair[0].name >= pair[1].name)
             || self.actions.iter().any(|action| !action.enabled)
             || self
                 .actions
@@ -1210,6 +1242,8 @@ pub struct LocalApprovalRequestMeta {
 pub struct LocalApprovalDecisionMeta {
     pub approval_request_id: ApprovalRequestId,
     pub expected_review_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_seconds: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1378,6 +1412,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn public_inventory_requires_signed_derived_capabilities_without_source_ids() {
+        let value = serde_json::json!({
+            "connections":[],"service_url":null,"derived_credentials":[{
+                "connection":"eks-build","kind":"kubernetes-eks",
+                "target":{"kind":"kubernetes-eks","cluster_id":"build","region":"us-east-1"},
+                "max_ttl_seconds":900,"effect":"approve","grade":"T1"
+            }]
+        });
+        let response: ListCapabilitiesResponse = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(response).unwrap(), value);
+        let mut missing = value.clone();
+        missing
+            .as_object_mut()
+            .unwrap()
+            .remove("derived_credentials");
+        assert!(serde_json::from_value::<ListCapabilitiesResponse>(missing).is_err());
+        let mut with_source = value;
+        with_source["derived_credentials"][0]["credential_id"] =
+            serde_json::json!(CredentialId::new_random());
+        assert!(serde_json::from_value::<ListCapabilitiesResponse>(with_source).is_err());
+    }
+
+    #[test]
     fn local_approval_metadata_is_closed_and_errors_keep_the_challenge() {
         let id = ApprovalRequestId::new_random();
         for state in ["pending", "approved", "consumed", "cancelled", "expired"] {
@@ -1479,7 +1536,7 @@ mod tests {
         }
         let canonical = r#"{"body":{"input":"REVIEW-CANARY"},"headers":[]}"#;
         let review = LocalApprovalReview {
-            record_type: "rekey.approval.review.v1".into(),
+            record_type: "rekey.approval.local-review.v1".into(),
             challenge: approval_challenge(ApproverSpec::LocalPresence {}),
             action_name: ActionName::new("trusted action").unwrap(),
             origin: HttpsOrigin::parse("https://example.com").unwrap(),
@@ -1711,7 +1768,7 @@ mod tests {
                 !matches!(id, 1 | 2 | 3 | 15 | 16 | 31 | 34 | 36 | 45..=48 | 61)
             );
         }
-        assert!(managed_admin_operation(62).is_err());
+        assert!(managed_admin_operation(65).is_err());
     }
 
     #[test]
@@ -2071,4 +2128,220 @@ mod profile_gateway_contracts {
         value["gateway"]["instances"][0]["provider"] = json!("unknown");
         assert!(serde_json::from_value::<ProfileSessionCreatedResponse>(value).is_err());
     }
+}
+
+// 0.4 local Agent protocol. Request bodies are raw frame bytes, never metadata.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CallMeta {
+    pub connection: String,
+    #[serde(default)]
+    pub method: Option<FixedMethod>,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub query: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub headers: Vec<(String, String)>,
+    #[serde(default)]
+    pub dry_run: bool,
+    #[serde(default)]
+    pub approval_request_id: Option<ApprovalRequestId>,
+    #[serde(default)]
+    pub operation: Option<String>,
+    #[serde(default)]
+    pub args: std::collections::BTreeMap<String, String>,
+}
+impl CallMeta {
+    pub fn http(connection: String, method: FixedMethod, path: String) -> Self {
+        Self {
+            connection,
+            method: Some(method),
+            path: Some(path),
+            query: Default::default(),
+            headers: Vec::new(),
+            dry_run: false,
+            approval_request_id: None,
+            operation: None,
+            args: Default::default(),
+        }
+    }
+    pub fn operation(operation: String, args: std::collections::BTreeMap<String, String>) -> Self {
+        Self {
+            connection: String::new(),
+            method: None,
+            path: None,
+            query: Default::default(),
+            headers: Vec::new(),
+            dry_run: false,
+            approval_request_id: None,
+            operation: Some(operation),
+            args,
+        }
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DescribeMeta {
+    pub operation: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectionCapability {
+    pub connection: String,
+    pub preset: String,
+    pub origin: HttpsOrigin,
+    pub grade: crate::connection::CredentialGrade,
+    pub read: crate::connection::RuleEffect,
+    pub write: crate::connection::RuleEffect,
+    pub operations: Vec<crate::connection::PresetOperation>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListCapabilitiesResponse {
+    pub connections: Vec<ConnectionCapability>,
+    pub derived_credentials: Vec<DerivedCredentialCapability>,
+    pub service_url: Option<String>,
+}
+/// Public signed T1 authority. The source credential identifier is not part of
+/// agent discovery, and this record contains no issued credential values.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DerivedCredentialCapability {
+    pub connection: String,
+    pub kind: String,
+    pub target: crate::connection::DerivedCredentialTarget,
+    pub max_ttl_seconds: u32,
+    pub effect: crate::connection::RuleEffect,
+    pub grade: crate::connection::CredentialGrade,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DescribeResponse {
+    pub connection: String,
+    pub operation: crate::connection::PresetOperation,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CallResponseMetadata {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub body_encoding: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DryRunResponse {
+    pub connection: String,
+    pub origin: HttpsOrigin,
+    pub body: String,
+    pub body_encoding: String,
+    pub method: FixedMethod,
+    pub path: String,
+    pub query: std::collections::BTreeMap<String, String>,
+    pub headers: Vec<(String, String)>,
+    pub credential_placeholder: String,
+    pub effect: crate::connection::RuleEffect,
+    pub rule_id: Option<PolicyRuleId>,
+    pub grade: crate::connection::CredentialGrade,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestAccessMeta {
+    pub provider: Option<String>,
+    pub connection: Option<String>,
+    pub operation: Option<String>,
+    pub reason: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestAccessResponse {
+    pub request_id: RequestId,
+    pub expires_at_ms: i64,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum AccessRequestStatus {
+    Pending,
+    Granted,
+    Rejected,
+    Expired,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AwaitAccessMeta {
+    pub request_id: RequestId,
+    pub timeout_s: u16,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AwaitAccessResponse {
+    pub status: AccessRequestStatus,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AwaitUnlockMeta {
+    pub timeout_s: u16,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AwaitUnlockResponse {
+    pub unlocked: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalAwaitApprovalMeta {
+    pub request_id: ApprovalRequestId,
+    pub timeout_s: u16,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalCancelApprovalMeta {
+    pub request_id: ApprovalRequestId,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScanMeta {
+    pub path: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScanFinding {
+    pub path: String,
+    pub line: u32,
+    pub column: u32,
+    pub connection: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScanResponse {
+    pub findings: Vec<ScanFinding>,
+}
+
+/// Authenticated signed editing base returned by admin CONNECTION_LIST (60).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectionListResponse {
+    pub connections: Vec<crate::connection::Connection>,
+    pub ssh_keys: Vec<crate::connection::SshKeyConnection>,
+    pub derived_credentials: Vec<crate::connection::DerivedCredentialConnection>,
+    pub policy_sha256: Option<String>,
+    pub expires_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeriveCredentialMeta {
+    pub connection: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_request_id: Option<ApprovalRequestId>,
+}
+
+/// The frame body carries only the standard step-up proof. Client credentials
+/// have already been encrypted as OAuthGrant by CREDENTIAL_ADD.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OAuthLoginMeta {
+    pub connection: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redirect_uri: Option<String>,
 }

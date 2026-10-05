@@ -4,6 +4,7 @@ use rekey_domain::ipc::ProofKind;
 
 use super::{authority_until, proof_from};
 use crate::error::BrokerError;
+#[cfg(feature = "lab")]
 use crate::github_app::GitHubAppCredential;
 use crate::runtime::BrokerCtx;
 
@@ -28,6 +29,16 @@ pub(super) async fn validate_add(
     )
     .await?;
     let error = match kind {
+        #[cfg(feature = "lab")]
+        CredentialKind::SshEd25519
+        | CredentialKind::SshP256
+        | CredentialKind::SshSecureEnclaveP256 => {
+            return Err(BrokerError::LocalCall(
+                "INVALID_INPUT",
+                "use the dedicated SSH key operation",
+                "Use rekey ssh generate or import in Rekey App.",
+            ));
+        }
         CredentialKind::OpaqueToken => return Ok(()),
         #[cfg(feature = "lab")]
         CredentialKind::MacosKeychainSource => return Ok(()),
@@ -37,9 +48,15 @@ pub(super) async fn validate_add(
                 .err()
                 .map(|_| "invalid Keycloak credential profile")
         }
+        #[cfg(feature = "lab")]
         CredentialKind::GitHubAppInstallation => GitHubAppCredential::validate_profile(secret)
             .err()
             .map(|_| "invalid GitHub App credential profile"),
+        #[cfg(not(feature = "lab"))]
+        CredentialKind::GitHubAppInstallation => crate::derived::GitHubRoot::parse(secret)
+            .err()
+            .map(|_| "invalid GitHub App root credential"),
+        CredentialKind::OAuthGrant | CredentialKind::AwsStatic => return Ok(()),
         #[cfg(feature = "lab")]
         CredentialKind::GcpSecretManagerSource => {
             crate::executor::gcp_source::GcpSourceProfile::validate_profile(secret)

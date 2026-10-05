@@ -1,3 +1,4 @@
+#![cfg(feature = "lab")]
 //! Response secret sealing: an upstream that reflects the injected secret —
 //! raw or encoded — is blocked before anything reaches the agent.
 

@@ -1,10 +1,19 @@
 # Changelog
 
-All notable public changes are recorded here. Rekey uses semantic versioning
-for release identifiers. The current product line is 0.3 (the v3 design stage),
-not a 1.0 maturity claim. Vault25 / policy snapshot6 remain frozen across all 0.3
-releases, including prereleases; CLI and UI prerelease behavior may still change.
-Historical v3/v2 tags and entries below are retained.
+All notable public changes are recorded here. The current source candidate is
+0.4.0-alpha.1 (vault26 / policy7). Actual published downloads are determined by
+GitHub Releases. Historical 0.3/v3/v2 entries below remain release history.
+
+## 0.4.0-alpha.1 (unpublished candidate)
+
+**Requires a new vault.** Replace local capability/Profile launching with signed
+Connections and ordinary Agent calls through CLI, MCP, local HTTP and SSH agent.
+Add read/write/path rules, approval windows, access requests, connect tooling,
+exact secret scanning, managed OAuth and explicit T1 temporary credentials.
+Archive personal isolation launchers behind lab. The macOS editor signs the
+complete Connection, SSH and derivation policy. See [candidate release notes](docs/releases/v0.4.0-alpha.1.md)
+and the [acceptance record](docs/evidence/agent-call-acceptance-2026-10-05.md) for
+completed checks and remaining device/account/public-release gates.
 
 ## 0.3.0-alpha.1
 

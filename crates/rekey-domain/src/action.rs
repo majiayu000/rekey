@@ -73,6 +73,7 @@ impl<'de> Deserialize<'de> for ActionName {
 #[serde(rename_all = "UPPERCASE")]
 pub enum FixedMethod {
     Get,
+    Head,
     Post,
     Put,
     Patch,
@@ -83,6 +84,7 @@ impl FixedMethod {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Get => "GET",
+            Self::Head => "HEAD",
             Self::Post => "POST",
             Self::Put => "PUT",
             Self::Patch => "PATCH",
@@ -93,6 +95,7 @@ impl FixedMethod {
     pub fn parse(s: &str) -> Result<Self, DomainError> {
         match s {
             "GET" => Ok(Self::Get),
+            "HEAD" => Ok(Self::Head),
             "POST" => Ok(Self::Post),
             "PUT" => Ok(Self::Put),
             "PATCH" => Ok(Self::Patch),

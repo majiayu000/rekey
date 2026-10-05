@@ -57,3 +57,31 @@ bench = false
 
 [workspace]
 members = ["."]
+
+[[bin]]
+name = "dotenv"
+path = "fuzz_targets/dotenv.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "secret_scan"
+path = "fuzz_targets/secret_scan.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "connection_rules"
+path = "fuzz_targets/connection_rules.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ssh_agent"
+path = "fuzz_targets/ssh_agent.rs"
+test = false
+doc = false
+bench = false

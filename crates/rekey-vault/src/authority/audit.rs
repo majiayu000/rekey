@@ -249,10 +249,6 @@ impl Worker {
         }
     }
 
-    fn audit_event(&self, draft: AuditDraft) -> Result<AuditEvent, AuthorityError> {
-        self.audit_event_at(draft, now_ms()?)
-    }
-
     fn audit_event_at(
         &self,
         draft: AuditDraft,
@@ -288,17 +284,59 @@ impl Worker {
         }
         if let Some(context) = &draft.request_context {
             context.validate()?;
-            if draft.session_id.is_none()
-                || draft.action_id.is_none()
-                || draft.action_version.is_none()
-                || draft.authorization.as_ref().is_some_and(|auth| {
-                    data_encoding::HEXLOWER.encode(&auth.policy_digest) != context.policy_sha256
-                })
-            {
-                return Err(super::usage::invalid("invalid profile audit context"));
+            match context {
+                rekey_domain::audit::RequestAuditContext::Profile(profile) => {
+                    if draft.session_id.is_none()
+                        || draft.action_id.is_none()
+                        || draft.action_version.is_none()
+                        || draft.authorization.as_ref().is_some_and(|auth| {
+                            data_encoding::HEXLOWER.encode(&auth.policy_digest)
+                                != profile.policy_sha256
+                        })
+                    {
+                        return Err(super::usage::invalid("invalid profile audit context"));
+                    }
+                }
+                rekey_domain::audit::RequestAuditContext::Connection(connection) => {
+                    if draft.request_id.is_none()
+                        || draft.authorization.as_ref().is_none_or(|auth| {
+                            auth.resource_type != "connection"
+                                || auth.resource_id != connection.connection
+                                || auth.policy_rule_id != connection.rule_id
+                        })
+                    {
+                        return Err(super::usage::invalid("invalid connection audit binding"));
+                    }
+                }
+                rekey_domain::audit::RequestAuditContext::Derived(derived) => {
+                    if draft.request_id.is_none()
+                        || draft.authorization.as_ref().is_none_or(|auth| {
+                            auth.resource_type != "connection"
+                                || auth.resource_id != derived.connection
+                        })
+                    {
+                        return Err(super::usage::invalid("invalid derived audit binding"));
+                    }
+                }
             }
         }
-        match self.audit_event(draft) {
+        let created_at_ms = match now_ms() {
+            Ok(value) => value,
+            Err(err) => {
+                self.fault("audit-event-construction-failed");
+                return Err(err);
+            }
+        };
+        if let Some(rekey_domain::audit::RequestAuditContext::Derived(context)) =
+            &draft.request_context
+            && draft.event_type == "credential.derived_issued"
+            && context
+                .expires_at_ms
+                .is_none_or(|expiry| expiry <= created_at_ms)
+        {
+            return Err(super::usage::invalid("invalid derived credential expiry"));
+        }
+        match self.audit_event_at(draft, created_at_ms) {
             Ok(event) => Ok(event),
             Err(err) => {
                 self.fault("audit-event-construction-failed");

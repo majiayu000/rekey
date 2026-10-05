@@ -13,17 +13,55 @@ use tokio::sync::watch;
 use crate::error::BrokerError;
 use crate::executor::ExecuteRequest;
 use crate::ipc::frame::{
-    IncomingFrame, read_frame, write_approval_required, write_error, write_ok,
+    IncomingFrame, read_frame, write_approval_required, write_error, write_error_with_next,
+    write_ok,
 };
 use crate::runtime::BrokerCtx;
 
 /// Agents must not distinguish credential-layer failures.
-fn agent_code(err: &BrokerError) -> &'static str {
+pub(crate) fn local_agent_code(err: &BrokerError) -> &'static str {
     match err.code() {
+        "RESPONSE_SECURITY_VIOLATION" => "RESPONSE_BLOCKED",
+        "UPSTREAM_FAILED" => "UPSTREAM_ERROR",
+        "REQUEST_DENIED" => "DENIED",
+        "POLICY_INVALID"
+            if matches!(err, BrokerError::Policy(rekey_policy::PolicyError::Expired)) =>
+        {
+            "DENIED"
+        }
+        "POLICY_INVALID"
+            if matches!(
+                err,
+                BrokerError::Policy(rekey_policy::PolicyError::NotConfigured)
+            ) =>
+        {
+            "NOT_CONFIGURED"
+        }
+        "POLICY_INVALID"
+            if matches!(
+                err,
+                BrokerError::Policy(rekey_policy::PolicyError::InvalidParameters)
+            ) =>
+        {
+            "INVALID_INPUT"
+        }
         "CRYPTO_FAILURE" | "STORAGE_INTEGRITY_FAILED" | "CREDENTIAL_CONFLICT" => {
             "CREDENTIAL_UNAVAILABLE"
         }
         code => code,
+    }
+}
+
+fn agent_code(err: &BrokerError) -> &'static str {
+    if cfg!(feature = "lab") {
+        match err.code() {
+            "CRYPTO_FAILURE" | "STORAGE_INTEGRITY_FAILED" | "CREDENTIAL_CONFLICT" => {
+                "CREDENTIAL_UNAVAILABLE"
+            }
+            code => code,
+        }
+    } else {
+        local_agent_code(err)
     }
 }
 
@@ -41,9 +79,11 @@ pub async fn handle_agent_conn(
             frame = read_frame(&mut stream, Channel::Agent, |message_type| {
                 if matches!(
                     message_type,
-                    agent_msg::EXECUTE_FIXED_HTTP_ACTION | agent_msg::PREPARE_APPROVAL | agent_msg::EXECUTE_TEXT_STREAM
+                    agent_msg::CALL | agent_msg::EXECUTE_FIXED_HTTP_ACTION | agent_msg::PREPARE_APPROVAL | agent_msg::EXECUTE_TEXT_STREAM
                 ) {
                     ipc::AGENT_BODY_MAX_BYTES
+                } else if message_type == agent_msg::SCAN {
+                    10 * 1024 * 1024
                 } else if cfg!(feature = "lab") && message_type == agent_msg::WORKLOAD_SESSION_CREATE {
                     ipc::WORKLOAD_TOKEN_MAX_BYTES
                 } else {
@@ -79,7 +119,7 @@ pub async fn handle_agent_conn(
         let request_id = frame.header.request_id;
         #[cfg(feature = "lab")]
         let metric = ctx.metrics.agent.dispatch.start();
-        if frame.header.message_type == agent_msg::EXECUTE_TEXT_STREAM {
+        if cfg!(feature = "lab") && frame.header.message_type == agent_msg::EXECUTE_TEXT_STREAM {
             let result = tokio::select! {
                 _ = shutdown.changed() => return,
                 result = dispatch_stream(&frame, &ctx, &mut stream) => result,
@@ -94,17 +134,18 @@ pub async fn handle_agent_conn(
             }
             continue;
         }
+        let caller = super::caller::unix_caller(&stream);
         let response = if frame.header.message_type == agent_msg::AWAIT_APPROVAL {
             let mut extra = [0u8; 1];
             tokio::select! {
                 _ = shutdown.changed() => return,
                 _ = stream.read(&mut extra) => return,
-                response = dispatch(&frame, &ctx) => response,
+                response = dispatch_local(&frame, &ctx, &caller) => response,
             }
         } else {
             tokio::select! {
                 _ = shutdown.changed() => return,
-                response = dispatch(&frame, &ctx) => response,
+                response = dispatch_local(&frame, &ctx, &caller) => response,
             }
         };
         #[cfg(feature = "lab")]
@@ -118,13 +159,14 @@ pub async fn handle_agent_conn(
                     write_approval_required(&mut stream, Channel::Agent, request_id, approval).await
                 }
                 Err(err) => {
-                    write_error(
+                    write_error_with_next(
                         &mut stream,
                         Channel::Agent,
                         request_id,
-                        agent_code(&err),
+                        local_agent_code(&err),
                         &err.agent_message(),
                         err.retryable(),
+                        &err.agent_next(),
                     )
                     .await
                 }
@@ -441,6 +483,266 @@ async fn dispatch_stream(
             .ok_or(BrokerError::Frame(ipc::FrameError::InvalidField))?;
     }
     Err(BrokerError::Upstream("stream-terminal-missing"))
+}
+
+async fn dispatch_local(
+    frame: &IncomingFrame,
+    ctx: &BrokerCtx,
+    caller: &str,
+) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
+    match frame.header.message_type {
+        agent_msg::LIST_CAPABILITIES => {
+            require_empty(frame)?;
+            Ok((
+                b"{}".to_vec(),
+                serde_json::to_vec(&ctx.list_capabilities(caller).await?)
+                    .map_err(|_| ipc::FrameError::InvalidField)?,
+            ))
+        }
+        agent_msg::DESCRIBE => {
+            if !frame.body.is_empty() {
+                return Err(ipc::FrameError::InvalidField.into());
+            }
+            let meta: ipc::DescribeMeta = serde_json::from_slice(&frame.metadata)
+                .map_err(|_| ipc::FrameError::InvalidField)?;
+            Ok((
+                b"{}".to_vec(),
+                serde_json::to_vec(&ctx.describe_operation(&meta.operation).await?)
+                    .map_err(|_| ipc::FrameError::InvalidField)?,
+            ))
+        }
+        agent_msg::CALL => {
+            let meta: ipc::CallMeta = serde_json::from_slice(&frame.metadata)
+                .map_err(|_| ipc::FrameError::InvalidField)?;
+            if meta.dry_run {
+                let dry = ctx.dry_run_call(&meta, &frame.body, caller).await?;
+                return Ok((
+                    b"{}".to_vec(),
+                    serde_json::to_vec(&dry).map_err(|_| ipc::FrameError::InvalidField)?,
+                ));
+            }
+            let receiver = ctx
+                .executions
+                .submit_local(crate::executor::LocalExecuteRequest {
+                    request_id: frame.header.request_id,
+                    meta,
+                    body: frame.body.clone(),
+                    caller: caller.to_owned(),
+                })
+                .await?;
+            let result = receiver
+                .await
+                .map_err(|_| rekey_vault::AuthorityError::Faulted)??;
+            let result = match result {
+                crate::execution_supervisor::HttpExecution::Buffered(outcome) => outcome,
+                crate::execution_supervisor::HttpExecution::Stream(mut stream) => {
+                    let mut body = Vec::new();
+                    while let Some(event) = stream.recv().await {
+                        match event {
+                            crate::executor::text_stream::TextStreamEvent::Chunk(bytes) => {
+                                if body.len() + bytes.len() > ipc::RESPONSE_BODY_MAX_BYTES as usize
+                                {
+                                    return Err(rekey_domain::DomainError::ResponseTooLarge.into());
+                                }
+                                body.extend_from_slice(&bytes);
+                            }
+                            crate::executor::text_stream::TextStreamEvent::Buffered(outcome) => {
+                                return call_response(outcome);
+                            }
+                            crate::executor::text_stream::TextStreamEvent::AdmissionError(
+                                error,
+                            ) => return Err(error),
+                            crate::executor::text_stream::TextStreamEvent::Terminal(
+                                ipc::TextStreamStatus::Completed,
+                            ) => {
+                                return call_response(crate::executor::ExecuteOutcome {
+                                    stream_status: None,
+                                    upstream_status: 200,
+                                    headers: vec![(
+                                        "content-type".into(),
+                                        "text/event-stream".into(),
+                                    )],
+                                    body,
+                                });
+                            }
+                            crate::executor::text_stream::TextStreamEvent::Terminal(_) => {
+                                return Err(BrokerError::Upstream("stream-incomplete"));
+                            }
+                            _ => {}
+                        }
+                    }
+                    return Err(BrokerError::Upstream("stream-incomplete"));
+                }
+            };
+            call_response(result)
+        }
+        agent_msg::REQUEST_ACCESS => {
+            if !frame.body.is_empty() {
+                return Err(ipc::FrameError::InvalidField.into());
+            }
+            let meta: ipc::RequestAccessMeta = serde_json::from_slice(&frame.metadata)
+                .map_err(|_| ipc::FrameError::InvalidField)?;
+            let request = ctx.local_calls.create_access(caller, meta)?;
+            let mut audit =
+                super::super::runtime::call_audit("access_request.created", "pending", caller)?;
+            audit.request_context = None;
+            audit.request_id = Some(request.request_id);
+            ctx.authority.append_audit(audit).await?;
+            Ok((
+                b"{}".to_vec(),
+                serde_json::to_vec(&request).map_err(|_| ipc::FrameError::InvalidField)?,
+            ))
+        }
+        agent_msg::AWAIT_ACCESS => {
+            if !frame.body.is_empty() {
+                return Err(ipc::FrameError::InvalidField.into());
+            }
+            let meta: ipc::AwaitAccessMeta = serde_json::from_slice(&frame.metadata)
+                .map_err(|_| ipc::FrameError::InvalidField)?;
+            let response = ctx
+                .local_calls
+                .await_access(meta.request_id, caller, meta.timeout_s)
+                .await?;
+            Ok((
+                b"{}".to_vec(),
+                serde_json::to_vec(&response).map_err(|_| ipc::FrameError::InvalidField)?,
+            ))
+        }
+        agent_msg::DERIVE_CREDENTIAL => {
+            if !frame.body.is_empty() {
+                return Err(ipc::FrameError::InvalidField.into());
+            }
+            ctx.derive_credential(
+                serde_json::from_slice(&frame.metadata)
+                    .map_err(|_| ipc::FrameError::InvalidField)?,
+                caller,
+            )
+            .await
+        }
+        agent_msg::SCAN => {
+            let meta: ipc::ScanMeta = serde_json::from_slice(&frame.metadata)
+                .map_err(|_| ipc::FrameError::InvalidField)?;
+            ctx.lifecycle.reject_if_not_running()?;
+            ctx.local_calls
+                .admit_rate("scan:local-uid", 60, std::time::Duration::from_secs(60))?;
+            let active = ctx
+                .policy
+                .read()
+                .await
+                .clone()
+                .filter(|p| p.signer_id().is_some())
+                .ok_or(rekey_policy::PolicyError::NotConfigured)?;
+            if active.is_expired(crate::now_ts()?) {
+                return Err(rekey_policy::PolicyError::Expired.into());
+            }
+            let credentials = active
+                .snapshot()
+                .connections()
+                .iter()
+                .filter(|c| c.enabled)
+                .map(|c| rekey_vault::hygiene::ScanCredential {
+                    connection: c.name.clone(),
+                    credential_id: c.credential_id,
+                })
+                .chain(active.snapshot().ssh_keys().iter().map(|c| {
+                    rekey_vault::hygiene::ScanCredential {
+                        connection: c.name.clone(),
+                        credential_id: c.credential_id,
+                    }
+                }))
+                .chain(active.snapshot().derived_credentials().iter().map(|c| {
+                    rekey_vault::hygiene::ScanCredential {
+                        connection: c.name.clone(),
+                        credential_id: c.credential_id,
+                    }
+                }))
+                .collect();
+            let findings = ctx
+                .authority
+                .scan_credentials(
+                    vec![rekey_vault::hygiene::ScanInput::new(
+                        meta.path,
+                        frame.body.to_vec(),
+                    )],
+                    credentials,
+                )
+                .await?;
+            Ok((
+                b"{}".to_vec(),
+                serde_json::to_vec(&ipc::ScanResponse { findings })
+                    .map_err(|_| ipc::FrameError::InvalidField)?,
+            ))
+        }
+        agent_msg::AWAIT_UNLOCK => {
+            if !frame.body.is_empty() {
+                return Err(ipc::FrameError::InvalidField.into());
+            }
+            let meta: ipc::AwaitUnlockMeta = serde_json::from_slice(&frame.metadata)
+                .map_err(|_| ipc::FrameError::InvalidField)?;
+            Ok((
+                b"{}".to_vec(),
+                serde_json::to_vec(&ctx.await_unlock(meta.timeout_s).await?)
+                    .map_err(|_| ipc::FrameError::InvalidField)?,
+            ))
+        }
+        agent_msg::AWAIT_APPROVAL => {
+            if !frame.body.is_empty() {
+                return Err(ipc::FrameError::InvalidField.into());
+            }
+            let meta: ipc::LocalAwaitApprovalMeta = serde_json::from_slice(&frame.metadata)
+                .map_err(|_| ipc::FrameError::InvalidField)?;
+            Ok((
+                b"{}".to_vec(),
+                serde_json::to_vec(
+                    &ctx.local_calls
+                        .await_state(meta.request_id, caller, meta.timeout_s)
+                        .await?,
+                )
+                .map_err(|_| ipc::FrameError::InvalidField)?,
+            ))
+        }
+        agent_msg::CANCEL_APPROVAL => {
+            if !frame.body.is_empty() {
+                return Err(ipc::FrameError::InvalidField.into());
+            }
+            let meta: ipc::LocalCancelApprovalMeta = serde_json::from_slice(&frame.metadata)
+                .map_err(|_| ipc::FrameError::InvalidField)?;
+            Ok((
+                b"{}".to_vec(),
+                serde_json::to_vec(&ctx.local_calls.cancel(meta.request_id, caller)?)
+                    .map_err(|_| ipc::FrameError::InvalidField)?,
+            ))
+        }
+        agent_msg::AGENT_STATUS => dispatch(frame, ctx).await,
+        _ if cfg!(feature = "lab") => dispatch(frame, ctx).await,
+        _ => Err(ipc::FrameError::InvalidField.into()),
+    }
+}
+fn require_empty(frame: &IncomingFrame) -> Result<(), BrokerError> {
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&frame.metadata).map_err(|_| ipc::FrameError::InvalidField)?;
+    if !frame.body.is_empty() || metadata != serde_json::json!({}) {
+        return Err(ipc::FrameError::InvalidField.into());
+    }
+    Ok(())
+}
+fn call_response(
+    outcome: crate::executor::ExecuteOutcome,
+) -> Result<(Vec<u8>, Vec<u8>), BrokerError> {
+    let encoding = if std::str::from_utf8(&outcome.body).is_ok() {
+        "text"
+    } else {
+        "base64"
+    };
+    let metadata = ipc::CallResponseMetadata {
+        status: outcome.upstream_status,
+        headers: outcome.headers,
+        body_encoding: encoding.into(),
+    };
+    Ok((
+        serde_json::to_vec(&metadata).map_err(|_| ipc::FrameError::InvalidField)?,
+        outcome.body,
+    ))
 }
 
 #[cfg(test)]

@@ -1,3 +1,4 @@
+#![cfg(feature = "lab")]
 //! Ordinary HTTP effects that reach a TLS upstream but lose their response
 //! must be audited as unknown, never denied.
 

@@ -1,3 +1,4 @@
+#![cfg(feature = "lab")]
 //! Actual linux-netns-v1 launcher acceptance, using only disposable fixtures.
 //! Requires bubblewrap plus user, mount, network and PID namespaces. A namespace
 //! setup failure is a failed test, never counted as a denied attack.

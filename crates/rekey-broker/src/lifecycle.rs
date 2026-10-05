@@ -1,7 +1,8 @@
 //! Broker-owned lifecycle: one coordinator for idle / explicit lock /
 //! shutdown. Phase is not an AtomicBool that concurrent drains can flip.
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 
 use rekey_vault::AuthorityError;
 use tokio::sync::{Mutex, MutexGuard, TryLockError, watch};
@@ -33,6 +34,7 @@ impl BrokerPhase {
 }
 
 pub struct Lifecycle {
+    local_in_flight: AtomicU32,
     phase: AtomicU8,
     coordinator: Mutex<()>,
     cancel_tx: watch::Sender<bool>,
@@ -43,11 +45,22 @@ impl Lifecycle {
     pub fn new() -> Self {
         let (cancel_tx, _) = watch::channel(false);
         Self {
+            local_in_flight: AtomicU32::new(0),
             phase: AtomicU8::new(BrokerPhase::Locked as u8),
             coordinator: Mutex::new(()),
             cancel_tx,
             remote_effect_gate: AtomicU8::new(REMOTE_EFFECT_CLOSED),
         }
+    }
+
+    pub(crate) fn local_in_flight(&self) -> u32 {
+        self.local_in_flight.load(Ordering::SeqCst)
+    }
+
+    // Called under the coordinator before the admitted execution is published.
+    pub(crate) fn local_permit(self: &Arc<Self>) -> LocalExecutionPermit {
+        self.local_in_flight.fetch_add(1, Ordering::SeqCst);
+        LocalExecutionPermit(Arc::clone(self))
     }
 
     pub fn phase(&self) -> BrokerPhase {
@@ -179,6 +192,13 @@ impl Lifecycle {
 impl Default for Lifecycle {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+pub(crate) struct LocalExecutionPermit(Arc<Lifecycle>);
+impl Drop for LocalExecutionPermit {
+    fn drop(&mut self) {
+        self.0.local_in_flight.fetch_sub(1, Ordering::SeqCst);
     }
 }
 

@@ -86,6 +86,34 @@ macro_rules! call {
 }
 
 impl AuthorityHandle {
+    pub async fn scan_credentials(
+        &self,
+        inputs: Vec<crate::hygiene::ScanInput>,
+        credentials: Vec<crate::hygiene::ScanCredential>,
+    ) -> Result<Vec<crate::hygiene::ScanFinding>, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::ScanCredentials {
+            inputs,
+            credentials,
+            reply
+        })
+    }
+
+    /// One step-up covers this selected batch. The broker creates signed
+    /// connections before invoking the separate file rewrite operation.
+    pub async fn import_env(
+        &self,
+        request: crate::hygiene::EnvImportRequest,
+        proof: UnlockProof,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<crate::hygiene::EnvImportReport, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::ImportEnv {
+            request,
+            proof,
+            not_after,
+            reply
+        })
+    }
+
     pub async fn confirm_rollback(
         &self,
         expected: rekey_domain::ipc::RollbackContext,
@@ -577,6 +605,127 @@ impl AuthorityHandle {
     ) -> Result<Vec<ActionId>, AuthorityError> {
         call!(self, |reply| AuthorityCommand::ActionIdsForCredential {
             credential_id,
+            reply
+        })
+    }
+
+    pub async fn oauth_grant_create(
+        &self,
+        label: rekey_domain::credential::CredentialLabel,
+        payload: SecretInput,
+        proof: UnlockProof,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<rekey_domain::credential::CredentialMetadata, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::OAuthGrantCreate {
+            label,
+            payload,
+            proof,
+            not_after,
+            reply
+        })
+    }
+    pub async fn oauth_grant_update(
+        &self,
+        credential_id: CredentialId,
+        expected_version: u64,
+        payload: SecretInput,
+        proof: UnlockProof,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<rekey_domain::credential::CredentialMetadata, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::OAuthGrantUpdate {
+            credential_id,
+            expected_version,
+            payload,
+            proof,
+            not_after,
+            reply
+        })
+    }
+    /// Trusted callback/refresh only; never exposed as a general IPC setter.
+    pub async fn rotate_oauth_grant(
+        &self,
+        credential_id: CredentialId,
+        expected_version: u64,
+        payload: SecretInput,
+        reason: crate::command::OAuthGrantUpdateReason,
+        not_after: std::time::Instant,
+    ) -> Result<rekey_domain::credential::CredentialMetadata, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::RotateOAuthGrant {
+            credential_id,
+            expected_version,
+            payload,
+            reason,
+            not_after,
+            reply
+        })
+    }
+    pub async fn prepare_oauth_grant(
+        &self,
+        credential_id: CredentialId,
+    ) -> Result<PreparedCredential, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::PrepareOAuthGrant {
+            credential_id,
+            reply
+        })
+    }
+    pub async fn prepare_aws_static(
+        &self,
+        credential_id: CredentialId,
+    ) -> Result<PreparedCredential, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::PrepareAwsStatic {
+            credential_id,
+            reply
+        })
+    }
+
+    pub async fn ssh_generate(
+        &self,
+        label: rekey_domain::credential::CredentialLabel,
+        mode: crate::command::SshKeyMode,
+        proof: UnlockProof,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<crate::command::SshIdentity, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::SshGenerate {
+            label,
+            mode,
+            proof,
+            not_after,
+            reply
+        })
+    }
+
+    pub async fn ssh_import(
+        &self,
+        label: rekey_domain::credential::CredentialLabel,
+        private_key: crate::secret::SecretInput,
+        proof: UnlockProof,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<crate::command::SshIdentity, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::SshImport {
+            label,
+            private_key,
+            proof,
+            not_after,
+            reply
+        })
+    }
+
+    /// The Authority commits the start and terminal audits itself; signatures
+    /// are returned only after those commits succeed.
+    pub async fn ssh_sign(
+        &self,
+        credential_id: CredentialId,
+        public_key: Vec<u8>,
+        data: Vec<u8>,
+        started: AuditDraft,
+        not_after: std::time::Instant,
+    ) -> Result<Vec<u8>, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::SshSign {
+            credential_id,
+            public_key,
+            data,
+            started: Box::new(started),
+            not_after,
             reply
         })
     }

@@ -132,7 +132,11 @@ async fn start_broker_configured(
 
     let admin_sock = state_dir.join("runtime").join("admin.sock");
     let mut ready = false;
-    for _ in 0..200 {
+    let startup_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while tokio::time::Instant::now() < startup_deadline {
+        if serve_task.is_finished() {
+            panic!("broker exited during startup: {:?}", serve_task.await);
+        }
         if UnixStream::connect(&admin_sock).await.is_ok()
             && UnixStream::connect(&agent_socket).await.is_ok()
         {

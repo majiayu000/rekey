@@ -1,3 +1,4 @@
+#![cfg(feature = "lab")]
 //! Fixed online-key retrieval through the real Broker and signed policy boundary.
 mod common;
 

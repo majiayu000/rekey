@@ -95,7 +95,8 @@ pub(crate) fn warn_before_secret_prompt() -> Result<(), CliError> {
 pub struct CliError {
     pub code: String,
     pub message: String,
-    pub approval: Option<rekey_domain::ipc::ApprovalRequired>,
+    pub next: Option<String>,
+    pub approval: Option<Box<rekey_domain::ipc::ApprovalRequired>>,
     pub request_id: Option<RequestId>,
     pub retryable: bool,
 }
@@ -105,6 +106,12 @@ impl CliError {
         Self {
             code: code.to_owned(),
             message: message.into(),
+            next: Some(match code {
+                "IPC_UNAVAILABLE" => "Open Rekey or start rekeyd serve; wait for unlock before issuing a new call. Do not replay a write whose outcome is unknown.",
+                "USAGE" | "INVALID_INPUT" => "Check the command arguments; use describe for the named operation's parameters.",
+                "UPSTREAM_ERROR" => "Inspect the returned status and sealed response body. Do not automatically repeat a write.",
+                _ => "Review the error and Rekey status before taking another action. Do not automatically repeat a write.",
+            }.to_owned()),
             approval: None,
             request_id: None,
             retryable: false,
@@ -115,27 +122,25 @@ impl CliError {
         Self {
             code: envelope.code,
             message: envelope.message,
-            approval: envelope.approval,
+            next: envelope.next,
+            approval: envelope.approval.map(Box::new),
             request_id: Some(envelope.request_id),
             retryable: envelope.retryable,
         }
     }
 
     pub fn print_stderr(&self) {
-        if let Some(approval) = &self.approval {
-            eprintln!(
-                "{}",
-                serde_json::json!({
-                    "request_id": self.request_id,
-                    "code": self.code,
-                    "message": self.message,
-                    "retryable": self.retryable,
-                    "approval": approval,
-                })
-            );
-        } else {
-            eprintln!("error [{}]: {}", self.code, self.message);
-        }
+        eprintln!(
+            "{}",
+            serde_json::json!({
+                "request_id": self.request_id,
+                "code": self.code,
+                "message": self.message,
+                "next": self.next,
+                "retryable": self.retryable,
+                "approval": self.approval,
+            })
+        );
     }
 
     /// Exit codes per the CLI contract.
@@ -150,7 +155,12 @@ impl CliError {
             | "UNLOCK_RATE_LIMITED"
             | "AUTHENTICATION_FAILED"
             | "LOCKED" => 3,
-            "APPROVAL_REQUIRED"
+            "LEAK_DETECTED"
+            | "NOT_CONFIGURED"
+            | "DENIED"
+            | "BUDGET_EXCEEDED"
+            | "RATE_LIMITED"
+            | "APPROVAL_REQUIRED"
             | "ACTION_DENIED"
             | "ACTION_DISABLED"
             | "ACTION_NOT_FOUND"
@@ -178,8 +188,9 @@ impl CliError {
             | "CLOCK_UNAVAILABLE"
             | "FAULTED"
             | "LAUNCHER_UNAVAILABLE" => 5,
-            "UPSTREAM_FAILED" | "RESPONSE_TOO_LARGE" | "STREAM_INCOMPLETE" => 6,
-            "RESPONSE_SECURITY_VIOLATION"
+            "UPSTREAM_ERROR" | "UPSTREAM_FAILED" | "RESPONSE_TOO_LARGE" | "STREAM_INCOMPLETE" => 6,
+            "RESPONSE_BLOCKED"
+            | "RESPONSE_SECURITY_VIOLATION"
             | "STREAM_FAILED"
             | "AUDIT_COMMIT_FAILED_AFTER_EXECUTION"
             | "UPSTREAM_INDETERMINATE" => 8,
@@ -451,6 +462,7 @@ impl Client {
     }
 
     /// Transfers the one-use Profile owner connection; never inherited by exec.
+    #[cfg(feature = "lab")]
     pub fn into_owner_control(self) -> Result<UnixStream, CliError> {
         let fd = self.stream.as_raw_fd();
         let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
@@ -506,6 +518,9 @@ impl Client {
             Channel::Admin => {
                 ADMIN_SECRET_BODY_MAX_BYTES + rekey_domain::ipc::ADMIN_MANAGEMENT_OVERHEAD
             }
+            Channel::Agent if message_type == rekey_domain::ipc::agent_msg::SCAN => {
+                10 * 1024 * 1024
+            }
             Channel::Agent => AGENT_BODY_MAX_BYTES,
         };
         if body_len > request_body_max {
@@ -534,6 +549,7 @@ impl Client {
     }
 
     /// Writes checked UTF-8 chunks immediately; only completed terminal succeeds.
+    #[cfg(feature = "lab")]
     pub fn text_stream(
         &mut self,
         metadata: &[u8],
@@ -811,6 +827,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "lab")]
     fn text_stream_requires_matching_sequenced_completed_terminal() {
         use rekey_domain::ipc::{TextStreamStatus, resp_msg};
         for (case, expected) in [

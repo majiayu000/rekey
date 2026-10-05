@@ -114,6 +114,10 @@ impl StartedAuditGuard {
         self.remote_effect_started = true;
     }
 
+    pub(crate) fn remote_effect_started(&self) -> bool {
+        self.remote_effect_started
+    }
+
     pub(crate) fn submit_blocked(&mut self, reason: &'static str) {
         self.terminal_submitted = true;
         self.enqueue_terminal(execution_blocked(&self.ctx, reason), None);
@@ -491,7 +495,7 @@ where
 }
 
 pub struct ExecutionAuditContext {
-    pub request_context: Option<rekey_domain::audit::ProfileRequestAuditContext>,
+    pub request_context: Option<rekey_domain::audit::RequestAuditContext>,
     pub request_id: RequestId,
     pub session_id: SessionId,
     pub action: ActionVersionRef,

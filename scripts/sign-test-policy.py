@@ -143,8 +143,8 @@ def sign_policy(args: argparse.Namespace) -> None:
     args.trust.write_bytes(canonical(trust))
 
     snapshot = json.loads(args.snapshot.read_text(encoding="utf-8"))
-    if snapshot.get("format_version") != 6:
-        raise SystemExit("test policy snapshot must use format_version 6")
+    if snapshot.get("format_version") != 7:
+        raise SystemExit("test policy snapshot must use format_version 7")
     unsigned = {"format_version": 1, "signer_id": signer_id, "snapshot": snapshot}
     bundle = dict(unsigned)
     bundle["signature"] = sign_bytes(key_path, b"RKPOLICY\0\x01" + canonical(unsigned))

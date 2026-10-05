@@ -1,3 +1,4 @@
+#![cfg(feature = "lab")]
 //! Connector registry binding at the real Broker/Authority/UDS boundary.
 
 mod common;

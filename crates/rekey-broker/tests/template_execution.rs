@@ -1,3 +1,4 @@
+#![cfg(feature = "lab")]
 //! Real Authority/UDS authorization with synthetic template rows; installation is
 //! a separate contract. The TLS case uses the existing screened transport seam.
 mod common;

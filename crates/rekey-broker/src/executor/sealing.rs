@@ -7,7 +7,7 @@ use crate::upstream::ResponseHeaders;
 /// reflecting upstream could echo: raw, base64 standard/url with and without
 /// padding, and full percent-encoding. Percent escape comparison normalizes
 /// hex digit case because each escape is independently case-insensitive.
-pub(super) fn sealing_needles(secret: &[u8], auth_value: &[u8]) -> Vec<Zeroizing<Vec<u8>>> {
+pub(crate) fn sealing_needles(secret: &[u8], auth_value: &[u8]) -> Vec<Zeroizing<Vec<u8>>> {
     let mut needles = Vec::new();
     for source in [secret, auth_value] {
         if source.is_empty() {

@@ -1,3 +1,4 @@
+#![cfg(feature = "lab")]
 //! Vault KV v2 source resolution at the real Broker/Authority/UDS boundary.
 
 mod common;

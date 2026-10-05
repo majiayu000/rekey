@@ -1,4 +1,23 @@
-# Rekey 0.3 威胁模型与保护边界（v3 设计）
+# Rekey 0.4 威胁模型
+
+行为来源为 [Agent call SPEC](../superpowers/specs/2026-10-05-rekey-agent-call-model.md)。0.4 默认本机调用没有 capability token，连接和权限由用户签名决定。以下边界不继承旧版设备验收。
+
+- G1同用户程序可调用本机接口；调用方名称可伪造，仅记录/收紧，绝不能放宽默认权限。
+- A6网页/SDK请求：loopback IPv4绑定；Host只接受发布地址；要求公开rekey占位头，并拒绝Origin、Sec-Fetch-Site、CONNECT、Upgrade、混淆长度与真实认证头。抢占端口会使daemon启动失败；0600地址文件不代表对恶意同用户的网络隔离。
+- 签名规则固定host/方法/路径/查询键，默认读允许、写审批、危险写拒绝；参数规范化一次，规则和审计共享结果。写审批绑定具体规范请求、策略摘要与调用方；时间窗不覆盖Deny，锁定/策略变更即清除。
+- 源凭据用途分离：HTTP、SSH、OAuth和AWS源不能互相当作普通Bearer使用。SSH公共身份来自签名策略，私钥不为列举解密；服务器签名绑定校验后按host公钥判定，未知/未绑定需审批。
+- T0结果遮蔽防止源值与支持的可逆表示反射；T1经显式签名开启，Agent收到临时凭据，目标/权限/实际期限另行审计。EKS presign暴露public access-key identifier而不返回secret key；拒绝嵌入bootstrap session token。
+- OAuth使用固定供应商端点、随机state与适用的S256，refresh/client secret加密、缓存按锁定/策略变更清除；Notion非expiring access持久化是显式供应商例外。网络失败与需重新授权区分，后台审计失败关闭服务。
+- scan是完整值匹配接口，限速与有界输入，不返回匹配内容；它仍可被同用户用来验证一个完整猜测值，不能宣称没有任何oracle。
+- 凭据只在受控内存和出站请求内出现，管理输入走隐藏TTY/显式stdin；审计不写正文、查询值或认证值。审计提交失败关闭服务；started在解密前提交，取消不能伪造成功。
+
+真实Keychain、SE私钥、Touch ID、签名MCP阳性、供应商授权和公开安装必须有0.4设备证据。lab受管环境、G2和企业能力仅为储备；编译不代表部署验收。
+
+## 旧版历史说明
+
+以下是历史0.3/v2边界，Profile/run/L2等声明不适用于0.4个人产品。
+
+### Rekey 0.3 威胁模型与保护边界（v3 设计）
 
 路径为历史链接兼容而保留，本文描述 **0.3.0-alpha.1 未发布候选**。
 行为依据是 [v3 SPEC](../superpowers/specs/2026-10-02-rekey-v3-personal-first.md)，

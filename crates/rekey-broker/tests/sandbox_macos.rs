@@ -1,3 +1,4 @@
+#![cfg(feature = "lab")]
 //! Real macOS kernel boundary tests. Only disposable fixtures are attacked.
 #![cfg(target_os = "macos")]
 

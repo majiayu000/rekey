@@ -1,24 +1,31 @@
 use rekey_domain::ipc::ProofKind;
+#[cfg(feature = "lab")]
 use std::collections::BTreeSet;
+#[cfg(feature = "lab")]
 use std::io::Write;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::path::Path;
+#[cfg(feature = "lab")]
+use std::path::PathBuf;
 
 use rekey_domain::action::HeaderName;
 use rekey_domain::authorization::ApproverSpec;
 use rekey_domain::ids::ApprovalRequestId;
-use rekey_domain::ipc::{self, Channel, admin_msg, agent_msg};
+use rekey_domain::ipc::{self, admin_msg};
+#[cfg(feature = "lab")]
+use rekey_domain::ipc::{Channel, agent_msg};
 use serde::Serialize;
 use zeroize::Zeroizing;
 
-use crate::client::{CliError, Client};
+use crate::client::CliError;
+#[cfg(feature = "lab")]
+use crate::client::Client;
 
-use super::{
-    ACTION_RESPONSE_TIMEOUT, admin, parse_action_ref, print_json, proof_body, read_bounded,
-    read_step_up, stdin_lines, write_json,
-};
+use super::{admin, print_json, proof_body, read_bounded, read_step_up, stdin_lines, write_json};
+
+#[cfg(feature = "lab")]
+use super::{ACTION_RESPONSE_TIMEOUT, parse_action_ref};
 
 type FileIdentity = (u64, u64);
 
@@ -158,12 +165,14 @@ pub fn policy_draft(
     let input = read_bounded(
         std::io::stdin().lock(),
         ipc::METADATA_MAX_BYTES as usize,
-        "profiles",
+        "connections",
     )?;
-    let profiles = serde_json::from_slice::<Vec<rekey_domain::profile::AgentProfile>>(&input)
-        .map_err(|_| CliError::local("USAGE", "invalid Profile array"))?;
+    let connections = serde_json::from_slice::<Vec<rekey_domain::connection::Connection>>(&input)
+        .map_err(|_| CliError::local("USAGE", "invalid Connection array"))?;
     let request = serde_json::to_vec(&ipc::PersonalPolicyDraftMeta {
-        profiles,
+        connections,
+        ssh_keys: None,
+        derived_credentials: None,
         expected_policy_sha256,
         expires_at_ms,
     })
@@ -174,8 +183,23 @@ pub fn policy_draft(
             "personal policy draft metadata exceeds 64 KiB",
         ));
     }
+    request_personal_draft(state_dir, &request)
+}
+
+pub fn policy_draft_request(state_dir: &Path) -> Result<(), CliError> {
+    let input = read_bounded(
+        std::io::stdin().lock(),
+        ipc::METADATA_MAX_BYTES as usize,
+        "policy draft request",
+    )?;
+    serde_json::from_slice::<ipc::PersonalPolicyDraftMeta>(&input)
+        .map_err(|_| CliError::local("USAGE", "invalid personal policy draft request"))?;
+    request_personal_draft(state_dir, &input)
+}
+
+fn request_personal_draft(state_dir: &Path, request: &[u8]) -> Result<(), CliError> {
     let (metadata, body) =
-        admin(state_dir)?.call(admin_msg::PERSONAL_POLICY_DRAFT, &request, &[])?;
+        admin(state_dir)?.call(admin_msg::PERSONAL_POLICY_DRAFT, request, &[])?;
     let metadata: ipc::PersonalPolicyDraftResponse = serde_json::from_slice(&metadata)
         .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid draft metadata"))?;
     metadata
@@ -188,6 +212,7 @@ pub fn policy_draft(
     print_json::<serde_json::Value>(&response)
 }
 
+#[cfg(feature = "lab")]
 pub fn profile_list(state_dir: &Path) -> Result<(), CliError> {
     let (_, body) = admin(state_dir)?.call(admin_msg::PROFILE_LIST, b"{}", &[])?;
     let profiles: ipc::ProfileListResponse = serde_json::from_slice(&body)
@@ -253,10 +278,6 @@ pub fn approval_get(state_dir: &Path, approval_request_id: &str) -> Result<(), C
         .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid response"))?;
     print_json::<ipc::SignedApprovalChallenge>(&meta)
 }
-
-// Await is the only local approval operation that holds the response for
-// 120 seconds. Keep the existing ten-second framing margin, not a new retry.
-const LOCAL_APPROVAL_AWAIT_TIMEOUT: Duration = Duration::from_secs(130);
 
 #[derive(Serialize)]
 struct LocalReviewOutput<'a> {
@@ -355,6 +376,7 @@ pub fn approval_decide(
     id: ApprovalRequestId,
     review_sha256: &str,
     approve: bool,
+    window_seconds: Option<u32>,
 ) -> Result<(), CliError> {
     // Public input must fail before connecting or reading the presence proof.
     if !lower_hex_digest(review_sha256) {
@@ -366,6 +388,7 @@ pub fn approval_decide(
     let metadata = serde_json::to_vec(&ipc::LocalApprovalDecisionMeta {
         approval_request_id: id,
         expected_review_sha256: review_sha256.to_owned(),
+        window_seconds,
     })
     .map_err(|_| CliError::local("USAGE", "cannot encode local approval decision"))?;
     let mut client = admin(state_dir)?;
@@ -381,40 +404,6 @@ pub fn approval_decide(
     write_json(&local_state_response(id, &metadata, &body)?)
 }
 
-fn local_response_timeout(wait: bool) -> Duration {
-    if wait {
-        LOCAL_APPROVAL_AWAIT_TIMEOUT
-    } else {
-        crate::client::IO_TIMEOUT
-    }
-}
-
-pub fn approval_wait_or_cancel(
-    agent_socket: &Path,
-    id: ApprovalRequestId,
-    capability: &str,
-    wait: bool,
-) -> Result<(), CliError> {
-    let capability_token = capability_value(capability)?;
-    let metadata = serde_json::to_vec(&ipc::LocalApprovalRequestMeta {
-        capability_token,
-        approval_request_id: id,
-    })
-    .map_err(|_| CliError::local("USAGE", "cannot encode local approval request"))?;
-    let operation = if wait {
-        agent_msg::AWAIT_APPROVAL
-    } else {
-        agent_msg::CANCEL_APPROVAL
-    };
-    let (metadata, body) = Client::connect_with_response_timeout(
-        agent_socket,
-        Channel::Agent,
-        local_response_timeout(wait),
-    )?
-    .call(operation, &metadata, &[])?;
-    write_json(&local_state_response(id, &metadata, &body)?)
-}
-
 fn print_policy_status(metadata: &[u8]) -> Result<(), CliError> {
     let status = serde_json::from_slice::<ipc::PolicyStatusResponse>(metadata)
         .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid response"))?;
@@ -424,6 +413,7 @@ fn print_policy_status(metadata: &[u8]) -> Result<(), CliError> {
     print_json::<ipc::PolicyStatusResponse>(metadata)
 }
 
+#[cfg(feature = "lab")]
 pub(super) fn read_approval_files(paths: &[PathBuf]) -> Result<Vec<String>, CliError> {
     if paths.len() > 2 {
         return Err(CliError::local(
@@ -446,6 +436,7 @@ pub(super) fn read_approval_files(paths: &[PathBuf]) -> Result<Vec<String>, CliE
     Ok(grants)
 }
 
+#[cfg(feature = "lab")]
 pub fn approval_prepare(
     agent_socket: &Path,
     action: &str,
@@ -480,6 +471,7 @@ pub fn approval_prepare(
     print_json::<ipc::SignedApprovalChallenge>(&meta)
 }
 
+#[cfg(feature = "lab")]
 pub(super) fn capability_value(capability: &str) -> Result<String, CliError> {
     if capability == "-" {
         String::from_utf8(stdin_lines(1)?.remove(0).to_vec())
@@ -537,13 +529,6 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-
-    #[test]
-    fn only_local_await_extends_the_response_deadline() {
-        assert_eq!(local_response_timeout(true), Duration::from_secs(130));
-        assert_eq!(local_response_timeout(false), crate::client::IO_TIMEOUT);
-        assert_eq!(crate::client::IO_TIMEOUT, Duration::from_secs(30));
-    }
 
     #[test]
     fn personal_draft_body_preserves_utf8_bytes_and_rejects_wrong_domain_or_bound() {
@@ -622,6 +607,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "lab")]
     fn approval_reader_rejects_hard_link_aliases() {
         let dir = tempfile::tempdir().unwrap();
         let grant = dir.path().join("grant.json");

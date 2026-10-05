@@ -66,6 +66,9 @@ jobs:
             target/release/rekey-mcp target/release/rekey-policy-sign target/release/rekey-approval-sign "$stage/"
           install -m 0755 scripts/rekey-service-unit.py scripts/agent-quickstart.py \
             scripts/operator-credential-repair.py "$stage/"
+          mkdir -p "$stage/.claude-plugin" "$stage/plugins"
+          install -m 0644 .claude-plugin/marketplace.json "$stage/.claude-plugin/"
+          cp -R plugins/rekey "$stage/plugins/"
           install -m 0644 LICENSE README.md "$stage/"
           install -m 0644 CHANGELOG.md SECURITY.md SUPPORT.md "$stage/"
           mkdir -p "$stage/docs/product-foundation" "$stage/docs/releases" \
@@ -139,6 +142,9 @@ jobs:
             docs/superpowers/specs/2026-10-01-pkcs11-approval-signer.md \
             docs/superpowers/specs/2026-10-01-unlocked-audit-retention.md \
             docs/superpowers/specs/2026-10-02-rekey-v3-personal-first.md \
+            docs/superpowers/specs/2026-10-05-rekey-agent-call-model.md \
+            docs/superpowers/plans/2026-10-05-agent-call-implementation.md \
+            docs/evidence/agent-call-acceptance-2026-10-05.md \
             docs/superpowers/plans/2026-10-03-v3-implementation.md \
             docs/evidence/local-capabilities-2026-10-02.json \
             docs/evidence/v3-review-v1-presence-2026-10-03.json \
@@ -159,6 +165,30 @@ jobs:
             mkdir -p "$stage/$(dirname "$doc")"
             install -m 0644 "$doc" "$stage/$doc"
           done
+          # Preserve source links without shipping source files in the archive.
+          python3 - "$stage" "$GITHUB_REF_NAME" <<'PY'
+          import os, pathlib, re, sys
+          stage = pathlib.Path(sys.argv[1]).resolve()
+          source = pathlib.Path.cwd().resolve()
+          tag = sys.argv[2]
+          def rewrite(path, match):
+              raw = match.group(1)
+              target = raw.split()[0].strip("<>")
+              if target.startswith(("#", "https://", "http://", "mailto:")):
+                  return match.group(0)
+              relative, marker, fragment = target.partition("#")
+              destination = (path.parent / relative).resolve()
+              if destination.exists() and destination.is_relative_to(stage):
+                  return match.group(0)
+              original = (source / path.relative_to(stage).parent / relative).resolve()
+              if not original.is_relative_to(source) or not original.exists():
+                  raise SystemExit("missing original documentation target: " + relative)
+              url = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/blob/{tag}/{original.relative_to(source).as_posix()}"
+              return match.group(0).replace(raw, url + (marker + fragment if marker else ""))
+          for path in stage.rglob("*.md"):
+              text = re.sub(r"\[[^\]]*\]\(([^)]+)\)", lambda match: rewrite(path, match), path.read_text())
+              path.write_text(text)
+          PY
           tar -czf "dist/$archive" -C dist "$(basename "$stage")"
           (cd dist && shasum -a 256 "$archive" > "$archive.sha256")
           echo "archive=$archive" >> "$GITHUB_OUTPUT"

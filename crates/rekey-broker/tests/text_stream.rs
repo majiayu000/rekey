@@ -1,3 +1,4 @@
+#![cfg(feature = "lab")]
 //! Deterministic real TLS -> production streaming transport -> Broker -> Agent UDS.
 mod common;
 

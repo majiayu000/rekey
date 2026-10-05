@@ -1,3 +1,4 @@
+#![cfg(feature = "lab")]
 //! Repeatable H-07 performance, capacity, and soak evidence.
 //!
 //! This test is ignored by the ordinary workspace suite. The dedicated

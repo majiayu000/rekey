@@ -1,3 +1,4 @@
+#![cfg(feature = "lab")]
 mod common;
 
 use std::sync::Arc;

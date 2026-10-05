@@ -1,3 +1,4 @@
+#![cfg(feature = "lab")]
 //! Broker-owned drain: idle/lock/shutdown revoke sessions, wait in-flight,
 //! and pair every execution.started with a terminal event.
 

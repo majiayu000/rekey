@@ -1,4 +1,4 @@
-//! Project MCP configuration only. No credentials or client processes are involved.
+//! Project MCP configuration and marked instructions. No credentials are involved.
 use std::collections::{BTreeMap, HashSet};
 use std::ffi::{CStr, CString};
 use std::fs::{File, Metadata, OpenOptions};
@@ -12,7 +12,7 @@ use clap::ValueEnum;
 use rand::TryRngCore;
 use serde::{Deserialize, Serialize, de, ser::SerializeMap};
 use serde_json::value::RawValue;
-use toml_edit::{Array, DocumentMut, Item, Table, value};
+use toml_edit::{DocumentMut, Item, Table, value};
 
 use crate::client::CliError;
 
@@ -25,17 +25,10 @@ pub enum ConnectClient {
     Cursor,
 }
 impl ConnectClient {
-    fn session_guidance(self) -> &'static str {
+    fn instruction_file(self) -> &'static str {
         match self {
-            Self::ClaudeCode => {
-                "Start with rekey run <profile> --client claude-code -- claude. The Profile must include Anthropic access. Gateway settings and credentials are supplied only to that process."
-            }
-            Self::Codex => {
-                "Start with rekey run <profile> --client codex -- codex. The Profile must include OpenAI Responses access. Gateway settings and credentials are supplied only to that process."
-            }
-            Self::Cursor => {
-                "For MCP access, start with rekey run <profile> -- cursor. Cursor provider settings are not configured."
-            }
+            Self::ClaudeCode => "CLAUDE.md",
+            _ => "AGENTS.md",
         }
     }
     fn location(self) -> (Option<&'static str>, &'static str) {
@@ -109,25 +102,11 @@ impl Object {
 #[derive(Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct JsonServer {
-    #[serde(rename = "type")]
-    kind: String,
     command: String,
-    args: Vec<String>,
-    env: BTreeMap<String, String>,
 }
-fn json_server(client: ConnectClient, executable: &str) -> JsonServer {
-    let reference = |key| match client {
-        ConnectClient::Cursor => format!("${{env:{key}}}"),
-        _ => format!("${{{key}}}"),
-    };
+fn json_server(executable: &str) -> JsonServer {
     JsonServer {
-        kind: "stdio".into(),
         command: executable.into(),
-        args: vec![],
-        env: ["REKEY_CAPABILITY", "REKEY_AGENT_SOCKET"]
-            .into_iter()
-            .map(|key| (key.into(), reference(key)))
-            .collect(),
     }
 }
 fn encode_raw(value: &impl Serialize) -> Result<Box<RawValue>, CliError> {
@@ -157,16 +136,7 @@ fn prepare(
             .ok_or_else(|| invalid("mcp_servers must be a TOML table"))?;
         let old = servers.get("rekey");
         let same = old.and_then(Item::as_table_like).is_some_and(|t| {
-            t.len() == 3
-                && t.get("command").and_then(Item::as_str) == Some(executable)
-                && t.get("args")
-                    .and_then(Item::as_array)
-                    .is_some_and(Array::is_empty)
-                && t.get("env_vars").and_then(Item::as_array).is_some_and(|a| {
-                    a.len() == 2
-                        && a.iter().any(|v| v.as_str() == Some("REKEY_CAPABILITY"))
-                        && a.iter().any(|v| v.as_str() == Some("REKEY_AGENT_SOCKET"))
-                })
+            t.len() == 1 && t.get("command").and_then(Item::as_str) == Some(executable)
         });
         let before = match old {
             Some(old) => match old.as_table_like() {
@@ -177,11 +147,6 @@ fn prepare(
         };
         let mut server = Table::new();
         server["command"] = value(executable);
-        server["args"] = value(Array::new());
-        let mut env = Array::new();
-        env.push("REKEY_CAPABILITY");
-        env.push("REKEY_AGENT_SOCKET");
-        server["env_vars"] = value(env);
         servers.insert("rekey", Item::Table(server));
         Ok((doc.to_string().into_bytes(), before, same))
     } else {
@@ -195,7 +160,7 @@ fn prepare(
             .map(|r| Object::parse(r.get().as_bytes()))
             .transpose()?
             .unwrap_or_default();
-        let server = json_server(client, executable);
+        let server = json_server(executable);
         let mut before = "<no rekey subtree>".into();
         let same = if let Some(old) = servers.get("rekey") {
             let object = Object::parse(old.get().as_bytes())?;
@@ -401,88 +366,343 @@ fn publish(dir: &File, stage: &CStr, target: &CStr, replace: bool) -> io::Result
     dir.sync_all()
 }
 
+const INSTRUCTIONS: &str = "<!-- rekey:begin -->
+## 使用密钥
+- 需要调用外部 API、git push 或使用任何凭据时，使用 Rekey：MCP 工具 `list_capabilities` / `call`，或命令 `rekey list` / `rekey call`。
+- 不要向用户索要 API Key，不要读取或写入 .env 中的密钥，不要把密钥写进代码。
+- 缺少权限或连接时调用 `request_access` 并说明理由；收到 APPROVAL_REQUIRED 时调用 `await_approval`。
+- Agent 写的程序使用 `rekey list` 给出的本机服务地址和占位 Key `rekey`。
+<!-- rekey:end -->
+";
+
+fn marked(original: &[u8], replacement: &str, begin: &str, end: &str) -> Result<Vec<u8>, CliError> {
+    let text = std::str::from_utf8(original).map_err(|_| invalid("managed text must be UTF-8"))?;
+    let starts: Vec<_> = text.match_indices(begin).map(|(i, _)| i).collect();
+    let ends: Vec<_> = text.match_indices(end).map(|(i, _)| i).collect();
+    let updated = match (starts.as_slice(), ends.as_slice()) {
+        ([], []) if replacement.is_empty() => text.to_owned(),
+        ([], []) => format!(
+            "{text}{}{replacement}",
+            if text.is_empty() || text.ends_with("\n\n") {
+                ""
+            } else if text.ends_with('\n') {
+                "\n"
+            } else {
+                "\n\n"
+            }
+        ),
+        ([start], [finish]) if start < finish => {
+            let finish = finish + end.len();
+            let finish = finish + usize::from(text[finish..].starts_with('\n'));
+            format!("{}{}{}", &text[..*start], replacement, &text[finish..])
+        }
+        _ => {
+            return Err(invalid(
+                "Rekey markers are malformed or duplicated; repair them before connecting",
+            ));
+        }
+    };
+    Ok(updated.into_bytes())
+}
+
+struct Edit {
+    root_path: PathBuf,
+    root: File,
+    subdir: Option<&'static str>,
+    filename: &'static str,
+    parent: Option<File>,
+    original: Option<Snapshot>,
+    updated: Vec<u8>,
+    before: String,
+    after: String,
+}
+impl Edit {
+    fn load(
+        root_path: PathBuf,
+        subdir: Option<&'static str>,
+        filename: &'static str,
+    ) -> Result<Self, CliError> {
+        let root = directory(&root_path)?;
+        let parent = parent(&root, subdir)?;
+        let original = read(parent.as_ref(), &name(filename.as_ref())?)?;
+        Ok(Self {
+            root_path,
+            root,
+            subdir,
+            filename,
+            parent,
+            original,
+            updated: Vec::new(),
+            before: String::new(),
+            after: String::new(),
+        })
+    }
+    fn bytes(&self) -> &[u8] {
+        self.original.as_ref().map_or(&[], |s| &s.bytes)
+    }
+    fn changed(&self) -> bool {
+        self.original
+            .as_ref()
+            .is_none_or(|s| s.bytes != self.updated)
+    }
+    fn path(&self) -> PathBuf {
+        self.subdir
+            .map_or_else(|| self.root_path.clone(), |d| self.root_path.join(d))
+            .join(self.filename)
+    }
+    fn verify(&self) -> Result<(), CliError> {
+        unchanged(
+            &self.root_path,
+            &self.root,
+            self.subdir,
+            self.parent.as_ref(),
+            &name(self.filename.as_ref())?,
+            &self.original,
+        )
+    }
+    fn apply(&mut self) -> Result<(), CliError> {
+        self.verify()?;
+        if self.parent.is_none() {
+            let part = name(
+                self.subdir
+                    .expect("missing parent has a subdirectory")
+                    .as_ref(),
+            )?;
+            if unsafe { libc::mkdirat(self.root.as_raw_fd(), part.as_ptr(), 0o700) } != 0 {
+                return Err(io_error(
+                    "cannot create client directory",
+                    io::Error::last_os_error(),
+                ));
+            }
+            self.root
+                .sync_all()
+                .map_err(|e| io_error("cannot sync project directory", e))?;
+            self.parent = parent(&self.root, self.subdir)?;
+        }
+        let dir = self
+            .parent
+            .as_ref()
+            .ok_or_else(|| invalid("client directory disappeared"))?;
+        let mut retained = Vec::new();
+        let result = (|| {
+            if let Some(old) = &self.original {
+                let (backup, mut file) = create_sibling(dir, self.filename, "backup")?;
+                retained.push(backup.to_string_lossy().into_owned());
+                file.write_all(&old.bytes)
+                    .and_then(|()| file.sync_all())
+                    .map_err(|e| io_error("cannot sync exact configuration backup", e))?;
+            }
+            let (stage, mut file) = create_sibling(dir, self.filename, "staging")?;
+            retained.push(stage.to_string_lossy().into_owned());
+            file.write_all(&self.updated)
+                .and_then(|()| file.sync_all())
+                .map_err(|e| io_error("cannot sync new configuration", e))?;
+            if self.filename == "pre-commit"
+                && unsafe { libc::fchmod(file.as_raw_fd(), 0o700) } != 0
+            {
+                return Err(io_error(
+                    "cannot make pre-commit executable",
+                    io::Error::last_os_error(),
+                ));
+            }
+            self.verify()?;
+            publish(dir, &stage, &name(self.filename.as_ref())?, self.original.is_some()).map_err(|e| io_error("configuration publication or directory sync failed; inspect targets before retrying", e))?;
+            retained.pop();
+            Ok(())
+        })();
+        let report = if retained.is_empty() {
+            Ok(())
+        } else {
+            writeln!(
+                io::stderr(),
+                "Private backup/staging files beside {} (may remain on failure): {}",
+                self.path().display(),
+                retained.join(", ")
+            )
+            .map_err(|e| io_error("cannot report backup paths", e))
+        };
+        result?;
+        report
+    }
+}
+
 pub fn connect(
     client: ConnectClient,
     print: bool,
     project: Option<PathBuf>,
+    with_hooks: bool,
+    ssh_hosts: Vec<String>,
+    state_dir: &Path,
 ) -> Result<(), CliError> {
     let project_path = std::path::absolute(
         project
             .unwrap_or(std::env::current_dir().map_err(|e| io_error("cannot resolve project", e))?),
     )
     .map_err(|e| io_error("cannot resolve project", e))?;
-    let executable = std::env::current_exe()
-        .map_err(|e| io_error("cannot locate rekey executable", e))?
-        .with_file_name("rekey-mcp");
-    if !executable
-        .metadata()
-        .is_ok_and(|m| m.is_file() && m.mode() & 0o111 != 0)
-    {
-        return Err(invalid("existing sibling rekey-mcp executable is required"));
-    }
-    let executable = executable
-        .to_str()
-        .ok_or_else(|| invalid("rekey-mcp path must be UTF-8"))?;
     let (subdir, filename) = client.location();
-    let target_path = subdir
-        .map_or_else(|| project_path.clone(), |part| project_path.join(part))
-        .join(filename);
-    let fragment = prepare(client, &[], executable)?.0;
-    let mut output = io::stdout().lock();
-    let session_guidance = client.session_guidance();
-    writeln!(
-        output,
-        "Target: {}\n{session_guidance}",
-        target_path.display()
-    )
-    .map_err(|e| io_error("cannot write preview", e))?;
-    if print {
-        output
-            .write_all(&fragment)
-            .map_err(|e| io_error("cannot write preview", e))?;
-        return Ok(());
-    }
-    let project = directory(&project_path)?;
-    let mut dir = parent(&project, subdir)?;
-    let target = name(filename.as_ref())?;
-    let original = read(dir.as_ref(), &target)?;
+    let mut config = Edit::load(project_path.clone(), subdir, filename)?;
     if !matches!(client, ConnectClient::Codex)
-        && original.as_ref().is_some_and(|s| s.bytes.is_empty())
+        && config.original.is_some()
+        && config.bytes().is_empty()
     {
         return Err(invalid("existing JSON configuration is empty"));
     }
-    let (updated, before, same) = prepare(
-        client,
-        original.as_ref().map_or(&[], |s| &s.bytes),
-        executable,
+    let (updated, before, same) = prepare(client, config.bytes(), "rekey-mcp")?;
+    config.updated = if same {
+        config.bytes().to_vec()
+    } else {
+        updated
+    };
+    config.before = before;
+    config.after =
+        String::from_utf8(prepare(client, &[], "rekey-mcp")?.0).expect("generated UTF-8");
+    let mut instructions = Edit::load(project_path, None, client.instruction_file())?;
+    instructions.updated = marked(
+        instructions.bytes(),
+        INSTRUCTIONS,
+        "<!-- rekey:begin -->",
+        "<!-- rekey:end -->",
     )?;
-    if updated.len() > MAX_CONFIG {
-        return Err(invalid("updated configuration exceeds 1 MiB"));
+    instructions.before = if instructions
+        .bytes()
+        .windows(19)
+        .any(|s| s == b"<!-- rekey:begin -->")
+    {
+        "<existing Rekey instructions; values hidden>"
+    } else {
+        "<no Rekey instructions>"
     }
-    if same {
+    .into();
+    instructions.after = INSTRUCTIONS.into();
+    let mut edits = vec![config, instructions];
+    if with_hooks {
+        let result = std::process::Command::new("git")
+            .args([
+                "-C",
+                edits[0]
+                    .root_path
+                    .to_str()
+                    .ok_or_else(|| invalid("project path must be UTF-8"))?,
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-path",
+                "hooks",
+            ])
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map_err(|_| invalid("cannot locate Git hooks directory"))?;
+        if !result.status.success() {
+            return Err(invalid("--with-hooks requires a Git repository"));
+        }
+        let path = std::str::from_utf8(&result.stdout)
+            .map_err(|_| invalid("Git hooks path must be UTF-8"))?
+            .trim_end_matches('\n');
+        let hooks = std::path::absolute(path)
+            .map_err(|e| io_error("cannot resolve Git hooks directory", e))?;
+        let hooks_parent = hooks
+            .parent()
+            .ok_or_else(|| invalid("Git hooks directory has no parent"))?
+            .to_owned();
+        let mut hook = if hooks.is_dir() {
+            Edit::load(hooks, None, "pre-commit")?
+        } else if hooks.file_name().and_then(|s| s.to_str()) == Some("hooks") {
+            Edit::load(hooks_parent, Some("hooks"), "pre-commit")?
+        } else {
+            return Err(invalid("custom Git hooks directories must already exist"));
+        };
+        let old = if hook.bytes().is_empty() {
+            b"#!/bin/sh\n".as_slice()
+        } else {
+            hook.bytes()
+        };
+        hook.updated = marked(
+            old,
+            "# rekey:begin\nrekey scan --staged || exit $?\n# rekey:end\n",
+            "# rekey:begin",
+            "# rekey:end",
+        )?;
+        hook.before = "<existing hook retained outside Rekey markers>".into();
+        hook.after = "# rekey:begin\nrekey scan --staged || exit $?\n# rekey:end\n".into();
+        edits.push(hook);
+    }
+    if !ssh_hosts.is_empty() {
+        if ssh_hosts.iter().any(|h| {
+            h.is_empty()
+                || !h
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b".-".contains(&b))
+        }) {
+            return Err(invalid(
+                "SSH host must be a concrete hostname, without wildcards or whitespace",
+            ));
+        }
+        let home = std::env::home_dir().ok_or_else(|| invalid("cannot resolve home directory"))?;
+        let mut ssh = Edit::load(home, Some(".ssh"), "config")?;
+        let socket = std::path::absolute(state_dir)
+            .map_err(|e| io_error("cannot resolve SSH socket", e))?
+            .join("ssh-agent.sock");
+        let socket = socket
+            .to_str()
+            .ok_or_else(|| invalid("SSH socket must be UTF-8"))?;
+        if socket.contains(['\n', '\r', '"']) {
+            return Err(invalid("SSH socket path cannot be quoted safely"));
+        }
+        let block = format!(
+            "# rekey:begin\nHost {}\n    IdentityAgent \"{}\"\n# rekey:end\n",
+            ssh_hosts.join(" "),
+            socket
+        );
+        let unmanaged = marked(ssh.bytes(), "", "# rekey:begin", "# rekey:end")?;
+        ssh.updated = block
+            .as_bytes()
+            .iter()
+            .chain(unmanaged.iter())
+            .copied()
+            .collect();
+        ssh.before = "<existing SSH configuration retained outside Rekey markers>".into();
+        ssh.after = block;
+        edits.push(ssh);
+    }
+    let mut output = io::stdout().lock();
+    for edit in &edits {
+        if edit.updated.len() > MAX_CONFIG {
+            return Err(invalid("updated configuration exceeds 1 MiB"));
+        }
+        writeln!(
+            output,
+            "Target: {}\n--- before\n- {}\n+++ after",
+            edit.path().display(),
+            edit.before
+        )
+        .map_err(|e| io_error("cannot write preview", e))?;
+        for line in edit.after.lines() {
+            writeln!(output, "+ {line}").map_err(|e| io_error("cannot write preview", e))?;
+        }
+    }
+    if print {
+        return Ok(());
+    }
+    if !edits.iter().any(Edit::changed) {
         writeln!(output, "Already configured; no files changed.")
             .map_err(|e| io_error("cannot write result", e))?;
         return Ok(());
     }
-    writeln!(
-        output,
-        "Before (existing rekey fields; values hidden):\n{before}\nAfter (replacement rekey subtree; unrelated entries retained):"
-    )
-    .map_err(|e| io_error("cannot write preview", e))?;
     output
-        .write_all(&fragment)
-        .and_then(|()| output.flush())
+        .flush()
         .map_err(|e| io_error("cannot write preview", e))?;
     if !io::stdin().is_terminal() {
         return Err(invalid(
             "TTY confirmation is required; use --print to preview without writing",
         ));
     }
-    write!(io::stderr(), "Apply project MCP configuration? [y/N] ")
-        .map_err(|e| io_error("cannot write confirmation", e))?;
-    io::stderr()
-        .flush()
-        .map_err(|e| io_error("cannot write confirmation", e))?;
+    write!(
+        io::stderr(),
+        "Apply Rekey configuration and instructions? [y/N] "
+    )
+    .and_then(|()| io::stderr().flush())
+    .map_err(|e| io_error("cannot write confirmation", e))?;
     let mut answer = String::new();
     io::stdin()
         .lock()
@@ -492,72 +712,17 @@ pub fn connect(
     if answer.len() == 32 || !matches!(answer.trim(), "y" | "Y" | "yes" | "YES") {
         return Ok(());
     }
-    unchanged(
-        &project_path,
-        &project,
-        subdir,
-        dir.as_ref(),
-        &target,
-        &original,
-    )?;
-    if dir.is_none() {
-        let part = name(
-            subdir
-                .expect("missing parent requires subdirectory")
-                .as_ref(),
-        )?;
-        if unsafe { libc::mkdirat(project.as_raw_fd(), part.as_ptr(), 0o700) } != 0 {
-            return Err(io_error(
-                "cannot create client directory",
-                io::Error::last_os_error(),
-            ));
-        }
-        project
-            .sync_all()
-            .map_err(|e| io_error("cannot sync project directory", e))?;
-        dir = parent(&project, subdir)?;
+    for edit in &edits {
+        edit.verify()?;
     }
-    let dir = dir.ok_or_else(|| invalid("client directory disappeared"))?;
-    let mut retained = Vec::new();
-    let result = (|| {
-        if let Some(old) = &original {
-            let (backup, mut file) = create_sibling(&dir, filename, "backup")?;
-            retained.push(backup.to_string_lossy().into_owned());
-            file.write_all(&old.bytes)
-                .and_then(|()| file.sync_all())
-                .map_err(|e| io_error("cannot sync exact configuration backup", e))?;
-        }
-        let (stage, mut file) = create_sibling(&dir, filename, "staging")?;
-        retained.push(stage.to_string_lossy().into_owned());
-        file.write_all(&updated)
-            .and_then(|()| file.sync_all())
-            .map_err(|e| io_error("cannot sync new configuration", e))?;
-        unchanged(
-            &project_path,
-            &project,
-            subdir,
-            Some(&dir),
-            &target,
-            &original,
-        )?;
-        publish(&dir, &stage, &target, original.is_some()).map_err(|e| io_error("configuration publication, staging cleanup, or final directory sync failed; inspect the target before retrying", e))?;
-        retained.pop();
-        Ok(())
-    })();
-    let report = if retained.is_empty() {
-        Ok(())
-    } else {
-        writeln!(
-            io::stderr(),
-            "Private backup/staging files beside the target (may remain on failure): {}",
-            retained.join(", ")
-        )
-        .map_err(|e| io_error("cannot report backup/staging paths", e))
-    };
-    result?;
-    report?;
-    writeln!(output, "Project configuration saved. {session_guidance}")
-        .map_err(|e| io_error("cannot write result", e))
+    for edit in edits.iter_mut().filter(|e| e.changed()) {
+        edit.apply()?;
+    }
+    writeln!(
+        output,
+        "Rekey configured. Start your Agent normally; no token is required."
+    )
+    .map_err(|e| io_error("cannot write result", e))
 }
 
 #[cfg(test)]

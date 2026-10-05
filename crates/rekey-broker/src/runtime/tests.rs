@@ -51,6 +51,7 @@ async fn idle_status_poll_does_not_occupy_execution_admission() {
     let (shutdown_tx, _) = watch::channel(false);
     let (stop_tx, _) = mpsc::unbounded_channel();
     let ctx = BrokerCtx {
+        state_dir: state.clone(),
         #[cfg(feature = "lab")]
         oidc_admin: None,
         #[cfg(feature = "lab")]
@@ -58,6 +59,7 @@ async fn idle_status_poll_does_not_occupy_execution_admission() {
         authority: authority.clone(),
         sessions,
         executions,
+        local_calls: Arc::clone(&executor.local_calls),
         executor,
         #[cfg(feature = "lab")]
         workload_transport: transport,
@@ -348,6 +350,7 @@ async fn fault_while_initially_locked_revokes_remembered_desktop() {
         let mut execution_task = tokio::spawn(supervisor.run(shutdown_rx));
         let (stop_tx, _stop_rx) = mpsc::unbounded_channel();
         let ctx = BrokerCtx {
+            state_dir: state.clone(),
             #[cfg(feature = "lab")]
             oidc_admin: None,
             #[cfg(feature = "lab")]
@@ -355,6 +358,7 @@ async fn fault_while_initially_locked_revokes_remembered_desktop() {
             authority: authority.clone(),
             sessions,
             executions,
+            local_calls: Arc::clone(&executor.local_calls),
             executor,
             #[cfg(feature = "lab")]
             workload_transport: transport,
@@ -444,7 +448,7 @@ pub(crate) async fn oidc_test_ctx() -> (
     .unwrap();
     confirm_vault_init(&state).unwrap();
     let (authority, join) =
-        rekey_vault::authority::spawn_authority(AuthorityConfig::new(state)).unwrap();
+        rekey_vault::authority::spawn_authority(AuthorityConfig::new(state.clone())).unwrap();
     authority
         .unlock(UnlockProof::Password(SecretInput::from_slice(
             b"fixture-proof",
@@ -471,6 +475,7 @@ pub(crate) async fn oidc_test_ctx() -> (
     let (shutdown_tx, _) = watch::channel(false);
     let (stop_tx, _) = mpsc::unbounded_channel();
     let ctx = Arc::new(BrokerCtx {
+        state_dir: state.clone(),
         #[cfg(feature = "lab")]
         oidc_admin: None,
         #[cfg(feature = "lab")]
@@ -478,6 +483,7 @@ pub(crate) async fn oidc_test_ctx() -> (
         authority,
         sessions,
         executions,
+        local_calls: Arc::clone(&executor.local_calls),
         executor,
         #[cfg(feature = "lab")]
         workload_transport: transport,

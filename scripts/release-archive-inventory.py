@@ -22,6 +22,12 @@ LAB_EXECUTABLES = (
 def required_paths(version: str) -> list[str]:
     return [
         *EXECUTABLES,
+        ".claude-plugin/marketplace.json",
+        "plugins/rekey/.claude-plugin/plugin.json",
+        "plugins/rekey/.mcp.json",
+        "plugins/rekey/skills/rekey/SKILL.md",
+        "plugins/rekey/commands/rekey-list.md",
+        "plugins/rekey/commands/rekey-request.md",
         "LICENSE",
         "README.md",
         "CHANGELOG.md",
@@ -34,6 +40,9 @@ def required_paths(version: str) -> list[str]:
         "docs/product-foundation/feature-truth-matrix.md",
         "docs/product-foundation/threat-model-v2.md",
         f"docs/releases/v{version}.md",
+        "docs/superpowers/specs/2026-10-05-rekey-agent-call-model.md",
+        "docs/superpowers/plans/2026-10-05-agent-call-implementation.md",
+        "docs/evidence/agent-call-acceptance-2026-10-05.md",
         "docs/superpowers/specs/2026-08-28-credential-authority-v2-foundation.md",
         "docs/superpowers/specs/2026-10-02-rekey-v3-personal-first.md",
         "docs/superpowers/plans/2026-10-03-v3-implementation.md",
