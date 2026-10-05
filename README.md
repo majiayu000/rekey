@@ -2,7 +2,7 @@
 
 Rekey 把 API Key 留在本机，让 Agent 只调用你授权的操作。
 
-当前版本为 **3.0.0-alpha.3（alpha）**，[发布状态与下载](https://github.com/majiayu000/rekey/releases/tag/v3.0.0-alpha.3)以 GitHub 为准。macOS 安装入口为签名、公证的 pkg；
+当前版本为 **3.0.0-alpha.4（alpha）**，[发布状态与下载](https://github.com/majiayu000/rekey/releases/tag/v3.0.0-alpha.4)以 GitHub 为准。macOS 安装入口为签名、公证的 pkg；
 发布工作流也会从该 pkg 生成本地 Homebrew cask，尚无公开 tap。
 [安装说明](docs/installation.md)列出前置条件；设备权限和完整发布验收仍待完成。
 

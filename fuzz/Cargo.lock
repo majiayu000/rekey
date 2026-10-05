@@ -1615,7 +1615,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "rekey-broker"
-version = "3.0.0-alpha.3"
+version = "3.0.0-alpha.4"
 dependencies = [
  "aws-lc-rs",
  "bytes",
@@ -1649,7 +1649,7 @@ dependencies = [
 
 [[package]]
 name = "rekey-connector"
-version = "3.0.0-alpha.3"
+version = "3.0.0-alpha.4"
 dependencies = [
  "rekey-domain",
  "serde",
@@ -1659,7 +1659,7 @@ dependencies = [
 
 [[package]]
 name = "rekey-domain"
-version = "3.0.0-alpha.3"
+version = "3.0.0-alpha.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -1686,7 +1686,7 @@ dependencies = [
 
 [[package]]
 name = "rekey-policy"
-version = "3.0.0-alpha.3"
+version = "3.0.0-alpha.4"
 dependencies = [
  "aws-lc-rs",
  "curve25519-dalek",
@@ -1705,7 +1705,7 @@ dependencies = [
 
 [[package]]
 name = "rekey-vault"
-version = "3.0.0-alpha.3"
+version = "3.0.0-alpha.4"
 dependencies = [
  "aes",
  "aes-gcm",

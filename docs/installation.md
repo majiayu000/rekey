@@ -1,6 +1,6 @@
 # Install, upgrade, service, and uninstall
 
-This page describes the **3.0.0-alpha.3 unpublished candidate and release workflow**, not an
+This page describes the **3.0.0-alpha.4 unpublished candidate and release workflow**, not an
 available v3 download. macOS distribution is a signed, notarized `.pkg` for
 macOS 14+ on Apple Silicon; Linux uses an Ubuntu 24.04 x86_64 archive. There is
 no default macOS tar/zip installation path and no published Homebrew tap.

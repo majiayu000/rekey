@@ -1,6 +1,6 @@
 # Operations runbook
 
-Scope: **3.0.0-alpha.3 unpublished candidate**, vault/backup 25 and policy 6.
+Scope: **3.0.0-alpha.4 unpublished candidate**, vault/backup 25 and policy 6.
 These durable formats are frozen across all v3 prereleases and GA. Local checks are not signed-device,
 provider or release acceptance. Enterprise references below require a source
 build with `--features lab`; they are not installed personal services.
@@ -279,7 +279,7 @@ schema follows the [documented DNS JSON response](https://developers.cloudflare.
 
 ## Upgrade, rollback, and rejected state
 
-Follow [installation](installation.md). The target is **3.0.0-alpha.3, unpublished**,
+Follow [installation](installation.md). The target is **3.0.0-alpha.4, unpublished**,
 with vault/backup 25 and policy 6. These formats are frozen across all v3 releases.
 Incompatible state and backups are always rejected: no migration, backfill or
 legacy reader will be added. All v3 prereleases, GA and minor/patch releases must keep
