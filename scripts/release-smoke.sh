@@ -49,6 +49,7 @@ python3 "$ROOT/scripts/release-archive-inventory.py" "$BIN_DIR" "$EXPECTED_VERSI
 for name in rekey-service-unit.py agent-quickstart.py operator-credential-repair.py; do
   python3 "$BIN_DIR/$name" --help >/dev/null
 done
+echo "release-smoke: proved=packaged-helper-entries"
 
 BIN_DIR="$BIN_DIR" \
 REKEY_ACCEPTANCE_REQUIRE_BINARIES=1 \

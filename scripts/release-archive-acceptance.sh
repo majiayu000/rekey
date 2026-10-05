@@ -343,5 +343,5 @@ if [[ "$(uname -s)" == Darwin ]]; then
 fi
 
 echo "release-archive-acceptance: PASS"
-echo "release-archive-acceptance: proved=password-change,recovery-rotate,audit-list-export,policy-activate,approval-grant,packaged-helper-entries,mcp-initialize-discovery"
+echo "release-archive-acceptance: proved=password-change,recovery-rotate,audit-list-export,policy-activate,approval-grant,mcp-initialize-discovery"
 echo "release-archive-acceptance: lab features excluded"
