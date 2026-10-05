@@ -45,18 +45,18 @@ rekey --state-dir /absolute/path/rekey-04 status --passive
 在项目目录先预览，再确认写入：
 
 ```bash
-rekey connect claude-code --print
-rekey connect claude-code
+rekey --state-dir /absolute/path/rekey-04 connect claude-code --print
+rekey --state-dir /absolute/path/rekey-04 connect claude-code
 ```
 
 支持 `claude-code`、`codex`、`cursor`。指定项目目录：
 
 ```bash
-rekey connect codex --project /absolute/path/project --print
-rekey connect codex --project /absolute/path/project
+rekey --state-dir /absolute/path/rekey-04 connect codex --project /absolute/path/project --print
+rekey --state-dir /absolute/path/rekey-04 connect codex --project /absolute/path/project
 ```
 
-命令更新受管 MCP 配置及 `CLAUDE.md` / `AGENTS.md` 的 Rekey 标记段，显示变更并要求确认，已有文件会保留私有备份。重复执行替换同一标记段，不写凭据或调用令牌。随后按客户端正常方式启动 Agent，让它先列出 Rekey 能力。
+命令更新受管 MCP 配置及 `CLAUDE.md` / `AGENTS.md` 的 Rekey 标记段，显示变更并要求确认，已有文件会保留私有备份。MCP、受管 CLI 说明及扫描钩子均绑定本次选择的 vault 绝对目录；更换目录后重新执行 `connect`。重复执行替换同一标记段，不写凭据或调用令牌。随后按客户端正常方式启动 Agent，让它先列出 Rekey 能力。
 
 Claude Code 插件位于 [`plugins/rekey`](../plugins/rekey)，由仓库根目录的 marketplace 清单注册。先添加本地源码或解压后的发行目录，再安装：
 
@@ -146,7 +146,7 @@ CLI 只让 daemon 预览变量名、预设提示和未支持的行，不读取�
 ```bash
 rekey scan --staged
 rekey scan /absolute/path/project/file
-rekey connect claude-code --with-hooks
+rekey --state-dir /absolute/path/rekey-04 connect claude-code --with-hooks
 ```
 
 扫描使用保险库中完整秘密及支持的变体，结果仅含位置，不回显匹配内容。`--with-hooks` 安装受管 pre-commit 检查。扫描失败不等于文件安全；保险库锁定、超限或限速时应先处理错误。它不是对所有可能编码和历史提交的完整泄漏证明。
@@ -156,8 +156,8 @@ rekey connect claude-code --with-hooks
 ```bash
 rekey ssh-agent status
 rekey ssh-agent generate work-key
-rekey connect codex --with-ssh --ssh-host github.com --print
-rekey connect codex --with-ssh --ssh-host github.com
+rekey --state-dir /absolute/path/rekey-04 connect codex --with-ssh --ssh-host github.com --print
+rekey --state-dir /absolute/path/rekey-04 connect codex --with-ssh --ssh-host github.com
 ```
 
 macOS 默认生成 Secure Enclave P-256 密钥；软件 Ed25519 / P-256 只能用显式 `--mode` 选择。生成密钥本身不启用 SSH：策略还须包含签名公钥及 host 规则，公钥也须按目标服务要求登记。在 App 的个人策略编辑中加载完整 SSH 集合，或直接生成新密钥，复制公钥到目标服务；登记独立核对过的 host 公钥，选择 Allow/Approve/Deny 和 git 签名判定。可粘贴标准 OpenSSH 公钥、known_hosts 条目或 base64 wire blob。既有 host 与 rule ID 会保留，生成草稿时 HTTP、SSH 与 T1 三组完整一起审阅和签署。撤销 SSH 连接不删除保险库里的私钥。已有签名 SSH 授权的配置使用 `<state-dir>/ssh-agent.sock` 的 `IdentityAgent`，私钥不交给 Agent。已验证 session-bind 按签名 host 规则判定；未知 host 或缺少绑定需要审批，明确 deny 不能用窗口绕过。真实 OpenSSH 向 GitHub 测试仓库 push 已通过，临时 deploy key 和 ref 已清理；这不代替 App 真机上的生成、签署和 Touch ID 验收。

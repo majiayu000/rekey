@@ -256,7 +256,7 @@ class RealBrokerTests(unittest.TestCase):
                 self.assertIn("Discovery is pending", transcript)
                 self.assertNotIn(proof, transcript)
                 config = json.loads((project / ".mcp.json").read_text())
-                self.assertEqual(config["mcpServers"]["rekey"], {"command": "rekey-mcp"})
+                self.assertEqual(config["mcpServers"]["rekey"], {"command": "rekey-mcp", "args": ["--state-dir", str(state)]})
                 self.assertIn("rekey:begin", (project / "CLAUDE.md").read_text())
                 self.assertEqual((project / ".mcp.json").stat().st_mode & 0o777, 0o600)
                 unlocked = subprocess.run(base + ["unlock", "--password-stdin"], input=proof + "\n", capture_output=True, text=True)

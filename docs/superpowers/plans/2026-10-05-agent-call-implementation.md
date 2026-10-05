@@ -40,11 +40,13 @@ SPEC 要求每个里程碑出预发布版本；目前仅汇总一个本地 `0.4.
 
 ## 检查与规模约束
 
+最终合成源码全仓exit0，101组 **918 passed /0 failed /10 ignored**；root逐文件确认334个workspace/App/human夹具文件与整合源码一致。19项connect、真实quickstart12、opaque human保存/轮转/审计fault及Swift真实链通过；目录绑定和默认App旧reveal缺口已修复。最新命令与版本口径见canonical报告，最终head远端CI仍须通过。
+
 性能恢复前的整合 `cargo test --workspace --no-fail-fast -- --test-threads=1` exit0，101组汇总 **917 passed /0 failed /9 ignored**，原始日志 `/tmp/rekey-call-workspace-submission.log`。default/lab all-targets check 与 strict Clippy 已通过；完整命令、日志和 ignored 解释只在 canonical 报告维护。局部 worktree 的旧依赖检查失败保留为失败记录，不混入最终通过数。
 
 上述整合统计先于旧性能夹具恢复；perf lane全仓的一项计时失败和两次独立复跑结果在canonical报告记录，不混成全绿。性能60秒实跑1 passed，default新增1个ignored。上述整合统计包含 User-Agent、OAuth 生命周期修复、两项新增 OAuth 回归及三个原生 Agent 手动测试的编译；ignored 不计通过。原生Codex独立通过；历史GitHub双客户端整体测试因当次Claude错误无实际读而失败，不推断当前账号状态。本轮用户排除该客户端验收，分项和总结果在canonical报告分别列明。
 
-当前源head `f1a5ab9` 的远端Linux P0通过，workspace918/0/7；macOS workspace917/0/10通过，但整个P0 job被旧 `test-human-vault` 的 `desktop-reveal` 调用阻断，修复后须另验。9个fuzz jobs通过；远端性能实跑1test/110.62秒、1001 CALL零错误及1015精确审计组，JSON的 `a7e98c9` 是PR merge ref，不是源head。当前Developer ID bundle已build和严格签名校验，但尚未发布或安装；日志与界限统一见canonical报告。
+前一轮源head `f1a5ab9` 的远端Linux P0通过，workspace918/0/7；macOS workspace917/0/10通过，但整个P0 job被旧 `test-human-vault` 的 `desktop-reveal` 调用阻断，修复后须另验。9个fuzz jobs通过；远端性能实跑1test/110.62秒、1001 CALL零错误及1015精确审计组，JSON的 `a7e98c9` 是PR merge ref，不是源head。当前Developer ID bundle已build和严格签名校验，但尚未发布或安装；日志与界限统一见canonical报告。
 
 旧 policy6 / Profile / G2 runtime 夹具作为 lab 企业储备保留；lab gate 只声明 `--features lab` all-targets 编译/Clippy 和归档脚本语法，不声称旧运行时验收通过。默认 P0 fault、备份耐久、ENOSPC、crypto、机械和 fuzz 门槛仍保留，不能用归档来掩盖新合同失败。
 

@@ -6,13 +6,14 @@
 |---|---|---|
 | 无令牌 Connection | domain/connection、policy/connections、broker/executor/local；真实 IPC / HTTP / MCP tests | 调用方标注仅收紧；G1同用户模型 |
 | 默认读 / 写审批 / 危险写拒绝 | policy tests/connections、broker tests/personal_policy | Deny 不能被审批绕过；时间窗至多8h，锁定/策略变更清除 |
-| CLI / MCP / connect / 插件 | CLI tests/agent_call、hygiene；broker tests/mcp_stdio | 原生真实 Agent C15 与安装插件 C14 另行验收 |
+| CLI / MCP / connect / 插件 | CLI tests/agent_call、connect、hygiene；broker tests/mcp_stdio | MCP、CLI说明与hook绑定所选vault；Claude本轮按用户要求不验，Codex结果见canonical验收报告 |
 | HTTP / LLM / SSE | runtime/gateway、executor/llm；personal_policy、MCP stdio | Host/Origin/入站真实Key拒绝，持久预算按Connection共享 |
 | 访问请求 / 等待 / App | runtime/local_calls、macOS Model/Forms、ConnectionContract | 真实 Touch ID次数与C16仍待设备验收 |
 | dotenv / 精确 scan / hook | vault/hygiene、CLI hygiene tests | 0600备份与有界扫描；锁定hook默认告警放行 |
-| SSH agent / Git HTTP | broker/ssh_agent、SSH UDS tests、github-git preset | 软件SSH签名通过；真实OpenSSH git push、SE签名另行验收 |
+| SSH agent / Git HTTP | broker/ssh_agent、SSH UDS tests、github-git preset | 软件SSH签名及真实OpenSSH git push通过；App/SE设备签名另行验收 |
 | OAuth 4 providers | broker/oauth、vault/authority/tokens、OAuth scopes presets | 专项合成测试通过；供应商grant/登录与账户权限另行验收 |
-| 显式 T1 | domain DerivedCredentialTarget、broker/derived、runtime/derived | Agent收到临时值；目标/权限/TTL签名固定；真实IPC专项正在补齐 |
+| 显式 T1 | domain DerivedCredentialTarget、broker/derived、runtime/derived、delegated_credentials | Agent收到临时值；目标/权限/TTL签名固定；9项合成合同通过，真实云服务待验 |
+| 人类凭据管理 | App保存/轮转、scripts/test-human-vault.py | 默认App/CLI不显示、复制或导出长期密钥；保存与轮转通过签名Connection扫描验证，逐次A2及审计故障仍验 |
 | run / Profile / 本机capability | Removed in default | 仅lab工作负载代码保留，不提供旧vault迁移 |
 | Seatbelt / netns / G2 | Lab reserve | 编译/脚本语法不宣称运行时或企业部署通过 |
 | Vault / backup / A2 / audit | 原Authority安全合同继续，完整workspace验收 | 历史设备证据不能升格为新0.4验证 |

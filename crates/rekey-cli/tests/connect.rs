@@ -37,10 +37,15 @@ impl Fixture {
         self.root.join("project")
     }
     fn command(&self, client: &str) -> Command {
+        self.command_for_state(client, &self.root.join("vault"))
+    }
+    fn command_for_state(&self, client: &str, state: &Path) -> Command {
         let mut command = Command::new(self.bin.join("rekey"));
         command
             .args(["connect", client, "--project"])
             .arg(self.project())
+            .arg("--state-dir")
+            .arg(state)
             .env("REKEY_CAPABILITY", CANARY)
             .env("REKEY_AGENT_SOCKET", CANARY);
         command
@@ -230,7 +235,10 @@ fn json_replacement_preserves_raw_values_and_exact_private_backup() {
         assert_eq!(parsed["secret"], CANARY);
         assert_eq!(parsed["mcpServers"]["other"]["env"]["TOKEN"], CANARY);
         let server = &parsed["mcpServers"]["rekey"];
-        assert_eq!(server, &serde_json::json!({"command":"rekey-mcp"}));
+        assert_eq!(
+            server,
+            &serde_json::json!({"command":"rekey-mcp", "args":["--state-dir", f.root.join("vault")]})
+        );
         let instructions = f.project().join(if client == "claude-code" {
             "CLAUDE.md"
         } else {
@@ -295,7 +303,7 @@ fn codex_retains_comments_other_tables_and_supports_inline_servers() {
         );
         assert_eq!(
             doc["mcp_servers"]["rekey"].as_table_like().unwrap().len(),
-            1
+            2
         );
         assert_eq!(
             fs::read(siblings(&path, "backup").pop().unwrap()).unwrap(),
@@ -542,11 +550,15 @@ fn malformed_instruction_markers_and_instruction_races_fail_before_any_write() {
     assert!(siblings(&instructions, "backup").is_empty());
 }
 #[test]
-fn command_only_codex_config_is_a_semantic_noop_after_instructions_installed() {
+fn selected_vault_codex_config_is_a_semantic_noop_after_instructions_installed() {
     let f = Fixture::new();
     let (status, text) = Tty::start(f.command("codex")).finish(b"y\n");
     assert!(status.success(), "{text}");
-    let old = "# preserve this exact layout\n[mcp_servers.rekey]\ncommand='rekey-mcp'\n";
+    let state = f.root.join("vault");
+    let old = format!(
+        "# preserve this exact layout\n[mcp_servers.rekey]\ncommand='rekey-mcp'\nargs=['--state-dir','{}']\n",
+        state.display()
+    );
     let path = f.write(".codex/config.toml", old.as_bytes());
     let output = f.command("codex").output().unwrap();
     assert!(output.status.success(), "{}", output_text(&output));
@@ -580,7 +592,10 @@ fn optional_hook_preserves_existing_shell_and_uses_the_staged_scanner() {
     assert!(status.success(), "{text}");
     let new = fs::read_to_string(&path).unwrap();
     assert!(new.starts_with("#!/bin/sh\n# existing operator hook\ntrue\n"));
-    assert!(new.contains("rekey scan --staged || exit $?"));
+    assert!(new.contains(&format!(
+        "rekey --state-dir '{}' scan --staged || exit $?",
+        f.root.join("vault").display()
+    )));
     assert_eq!(new.matches("# rekey:begin").count(), 1);
     assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o700);
     assert_eq!(
@@ -591,4 +606,123 @@ fn optional_hook_preserves_existing_shell_and_uses_the_staged_scanner() {
     command.arg("--with-hooks");
     assert!(command.output().unwrap().status.success());
     assert_eq!(fs::read_to_string(path).unwrap(), new);
+}
+
+#[test]
+fn custom_vault_binding_reaches_clients_instructions_and_hook_without_shell_expansion() {
+    for client in ["codex", "cursor", "claude-code"] {
+        let f = Fixture::new();
+        let state = f.root.join("vault with 'quote' $(touch connect-sentinel)");
+        assert!(
+            Command::new("git")
+                .arg("init")
+                .current_dir(f.project())
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "true")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap()
+                .success()
+        );
+        let connect = |state: &Path| {
+            let mut command = f.command_for_state(client, state);
+            command.arg("--with-hooks");
+            command
+        };
+        let configured_args = || -> Vec<String> {
+            if client == "codex" {
+                let text = fs::read_to_string(f.project().join(".codex/config.toml")).unwrap();
+                let doc = text.parse::<toml_edit::DocumentMut>().unwrap();
+                doc["mcp_servers"]["rekey"]["args"]
+                    .as_array()
+                    .expect("MCP must bind the selected vault")
+                    .iter()
+                    .map(|item| item.as_str().unwrap().to_owned())
+                    .collect()
+            } else {
+                let path = if client == "cursor" {
+                    ".cursor/mcp.json"
+                } else {
+                    ".mcp.json"
+                };
+                let doc: serde_json::Value =
+                    serde_json::from_slice(&fs::read(f.project().join(path)).unwrap()).unwrap();
+                serde_json::from_value(doc["mcpServers"]["rekey"]["args"].clone())
+                    .expect("MCP must bind the selected vault")
+            }
+        };
+        let (status, text) = Tty::start(connect(&state)).finish(b"y\n");
+        assert!(status.success(), "{text}");
+        assert_eq!(configured_args(), ["--state-dir", state.to_str().unwrap()]);
+        let instructions = f.project().join(if client == "claude-code" {
+            "CLAUDE.md"
+        } else {
+            "AGENTS.md"
+        });
+        assert!(
+            fs::read_to_string(&instructions)
+                .unwrap()
+                .contains("--state-dir")
+        );
+
+        let recorder = f.root.join("recorder");
+        fs::create_dir(&recorder).unwrap();
+        let stub = recorder.join("rekey");
+        fs::write(
+            &stub,
+            b"#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$REKEY_TEST_ARGV_FILE\"\nexit 4\n",
+        )
+        .unwrap();
+        fs::set_permissions(&stub, fs::Permissions::from_mode(0o700)).unwrap();
+        let argv = f.root.join("hook-argv");
+        let hook = f.project().join(".git/hooks/pre-commit");
+        let run_hook = || {
+            Command::new(&hook)
+                .current_dir(f.project())
+                .env("PATH", format!("{}:/usr/bin:/bin", recorder.display()))
+                .env("REKEY_TEST_ARGV_FILE", &argv)
+                .status()
+                .unwrap()
+        };
+        assert_eq!(
+            run_hook().code(),
+            Some(4),
+            "scan denial must block the hook"
+        );
+        assert_eq!(
+            fs::read_to_string(&argv)
+                .unwrap()
+                .lines()
+                .collect::<Vec<_>>(),
+            ["--state-dir", state.to_str().unwrap(), "scan", "--staged"]
+        );
+        assert!(
+            !f.project().join("connect-sentinel").exists(),
+            "state path must never execute shell substitutions"
+        );
+        assert!(
+            connect(&state).output().unwrap().status.success(),
+            "same vault must be idempotent"
+        );
+
+        let other = f.root.join("another vault");
+        let (status, text) = Tty::start(connect(&other)).finish(b"y\n");
+        assert!(status.success(), "{text}");
+        assert_eq!(configured_args(), ["--state-dir", other.to_str().unwrap()]);
+        assert_eq!(run_hook().code(), Some(4));
+        assert_eq!(
+            fs::read_to_string(&argv)
+                .unwrap()
+                .lines()
+                .collect::<Vec<_>>(),
+            ["--state-dir", other.to_str().unwrap(), "scan", "--staged"]
+        );
+        let text = fs::read_to_string(instructions).unwrap();
+        assert!(text.contains(other.to_str().unwrap()));
+        assert!(
+            !text.contains("connect-sentinel"),
+            "instructions must switch to the selected vault"
+        );
+    }
 }

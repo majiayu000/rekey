@@ -12,7 +12,7 @@ use clap::ValueEnum;
 use rand::TryRngCore;
 use serde::{Deserialize, Serialize, de, ser::SerializeMap};
 use serde_json::value::RawValue;
-use toml_edit::{DocumentMut, Item, Table, value};
+use toml_edit::{Array, DocumentMut, Item, Table, value};
 
 use crate::client::CliError;
 
@@ -103,10 +103,12 @@ impl Object {
 #[serde(deny_unknown_fields)]
 struct JsonServer {
     command: String,
+    args: Vec<String>,
 }
-fn json_server(executable: &str) -> JsonServer {
+fn json_server(executable: &str, state_dir: &str) -> JsonServer {
     JsonServer {
         command: executable.into(),
+        args: vec!["--state-dir".into(), state_dir.into()],
     }
 }
 fn encode_raw(value: &impl Serialize) -> Result<Box<RawValue>, CliError> {
@@ -121,6 +123,7 @@ fn prepare(
     client: ConnectClient,
     original: &[u8],
     executable: &str,
+    state_dir: &str,
 ) -> Result<(Vec<u8>, String, bool), CliError> {
     if matches!(client, ConnectClient::Codex) {
         let text = std::str::from_utf8(original)
@@ -136,7 +139,13 @@ fn prepare(
             .ok_or_else(|| invalid("mcp_servers must be a TOML table"))?;
         let old = servers.get("rekey");
         let same = old.and_then(Item::as_table_like).is_some_and(|t| {
-            t.len() == 1 && t.get("command").and_then(Item::as_str) == Some(executable)
+            t.len() == 2
+                && t.get("command").and_then(Item::as_str) == Some(executable)
+                && t.get("args").and_then(Item::as_array).is_some_and(|args| {
+                    args.len() == 2
+                        && args.get(0).and_then(toml_edit::Value::as_str) == Some("--state-dir")
+                        && args.get(1).and_then(toml_edit::Value::as_str) == Some(state_dir)
+                })
         });
         let before = match old {
             Some(old) => match old.as_table_like() {
@@ -147,6 +156,7 @@ fn prepare(
         };
         let mut server = Table::new();
         server["command"] = value(executable);
+        server["args"] = value(Array::from_iter(["--state-dir", state_dir]));
         servers.insert("rekey", Item::Table(server));
         Ok((doc.to_string().into_bytes(), before, same))
     } else {
@@ -160,7 +170,7 @@ fn prepare(
             .map(|r| Object::parse(r.get().as_bytes()))
             .transpose()?
             .unwrap_or_default();
-        let server = json_server(executable);
+        let server = json_server(executable, state_dir);
         let mut before = "<no rekey subtree>".into();
         let same = if let Some(old) = servers.get("rekey") {
             let object = Object::parse(old.get().as_bytes())?;
@@ -368,10 +378,10 @@ fn publish(dir: &File, stage: &CStr, target: &CStr, replace: bool) -> io::Result
 
 const INSTRUCTIONS: &str = "<!-- rekey:begin -->
 ## 使用密钥
-- 需要调用外部 API、git push 或使用任何凭据时，使用 Rekey：MCP 工具 `list_capabilities` / `call`，或命令 `rekey list` / `rekey call`。
+- 需要调用外部 API、git push 或使用任何凭据时，使用 Rekey：MCP 工具 `list_capabilities` / `call`，或命令 `{rekey} list` / `{rekey} call`。
 - 不要向用户索要 API Key，不要读取或写入 .env 中的密钥，不要把密钥写进代码。
 - 缺少权限或连接时调用 `request_access` 并说明理由；收到 APPROVAL_REQUIRED 时调用 `await_approval`。
-- Agent 写的程序使用 `rekey list` 给出的本机服务地址和占位 Key `rekey`。
+- Agent 写的程序使用 `{rekey} list` 给出的本机服务地址和占位 Key `rekey`。
 <!-- rekey:end -->
 ";
 
@@ -534,6 +544,13 @@ pub fn connect(
     ssh_hosts: Vec<String>,
     state_dir: &Path,
 ) -> Result<(), CliError> {
+    let state_dir = std::path::absolute(state_dir)
+        .map_err(|e| io_error("cannot resolve state directory", e))?;
+    let state = state_dir
+        .to_str()
+        .ok_or_else(|| invalid("state directory must be UTF-8"))?;
+    let rekey = format!("rekey --state-dir '{}'", state.replace('\'', "'\"'\"'"));
+    let instruction_text = INSTRUCTIONS.replace("{rekey}", &rekey);
     let project_path = std::path::absolute(
         project
             .unwrap_or(std::env::current_dir().map_err(|e| io_error("cannot resolve project", e))?),
@@ -547,7 +564,7 @@ pub fn connect(
     {
         return Err(invalid("existing JSON configuration is empty"));
     }
-    let (updated, before, same) = prepare(client, config.bytes(), "rekey-mcp")?;
+    let (updated, before, same) = prepare(client, config.bytes(), "rekey-mcp", state)?;
     config.updated = if same {
         config.bytes().to_vec()
     } else {
@@ -555,11 +572,11 @@ pub fn connect(
     };
     config.before = before;
     config.after =
-        String::from_utf8(prepare(client, &[], "rekey-mcp")?.0).expect("generated UTF-8");
+        String::from_utf8(prepare(client, &[], "rekey-mcp", state)?.0).expect("generated UTF-8");
     let mut instructions = Edit::load(project_path, None, client.instruction_file())?;
     instructions.updated = marked(
         instructions.bytes(),
-        INSTRUCTIONS,
+        &instruction_text,
         "<!-- rekey:begin -->",
         "<!-- rekey:end -->",
     )?;
@@ -573,7 +590,7 @@ pub fn connect(
         "<no Rekey instructions>"
     }
     .into();
-    instructions.after = INSTRUCTIONS.into();
+    instructions.after = instruction_text;
     let mut edits = vec![config, instructions];
     if with_hooks {
         let result = std::process::Command::new("git")
@@ -617,14 +634,10 @@ pub fn connect(
         } else {
             hook.bytes()
         };
-        hook.updated = marked(
-            old,
-            "# rekey:begin\nrekey scan --staged || exit $?\n# rekey:end\n",
-            "# rekey:begin",
-            "# rekey:end",
-        )?;
+        let block = format!("# rekey:begin\n{rekey} scan --staged || exit $?\n# rekey:end\n");
+        hook.updated = marked(old, &block, "# rekey:begin", "# rekey:end")?;
         hook.before = "<existing hook retained outside Rekey markers>".into();
-        hook.after = "# rekey:begin\nrekey scan --staged || exit $?\n# rekey:end\n".into();
+        hook.after = block;
         edits.push(hook);
     }
     if !ssh_hosts.is_empty() {
@@ -640,9 +653,7 @@ pub fn connect(
         }
         let home = std::env::home_dir().ok_or_else(|| invalid("cannot resolve home directory"))?;
         let mut ssh = Edit::load(home, Some(".ssh"), "config")?;
-        let socket = std::path::absolute(state_dir)
-            .map_err(|e| io_error("cannot resolve SSH socket", e))?
-            .join("ssh-agent.sock");
+        let socket = state_dir.join("ssh-agent.sock");
         let socket = socket
             .to_str()
             .ok_or_else(|| invalid("SSH socket must be UTF-8"))?;

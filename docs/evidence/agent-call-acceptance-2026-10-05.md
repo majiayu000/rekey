@@ -4,7 +4,11 @@
 
 ## 证据口径与已完成检查
 
-本次开发使用隔离 worktree；本轮核查源 head 为 `f1a5ab95d1654912da8d80d13eabacb777f91c38`，对应 draft [PR #68](https://github.com/majiayu000/rekey/pull/68)。实现与审查修复均已提交；以下历史日志按各自执行版本保留，不把早期基底 hash 当作当时未提交源码的快照。
+本次开发使用隔离 worktree；前一轮远端核查源 head 为 `f1a5ab95d1654912da8d80d13eabacb777f91c38`，对应 draft [PR #68](https://github.com/majiayu000/rekey/pull/68)。实现与审查修复均已提交；以下历史日志按各自执行版本保留，不把早期基底 hash 当作当时未提交源码的快照。
+
+后续收尾已修复默认 App 仍调用旧明文 reveal 和 `connect` 忽略所选 vault 的缺口。最终合成源码完整 workspace **exit0，101组，918 passed /0 failed /10 ignored /0 filtered**，日志 `/tmp/rekey-human-workspace-test.log`。该轮在独占 `rekey-agent-call-macos-ci` 工作树执行，含 human/App 提交 `226f881` 与 root 的两个 connect 源码/测试依赖；整合后逐文件比对334个 workspace/App/human夹具文件，差异为0，不用该树基底 hash 代替当时未提交源码快照。
+
+最新专项：19项connect通过（`/tmp/rekey-call-connect-state-green.log`），真实quickstart12通过（`/tmp/rekey-call-connect-quickstart-real.log`），default/lab all-targets check及CLI两模式strict Clippy通过。目录回归在旧实现因MCP缺少args失败（`/tmp/rekey-call-connect-state-red.log`），新实现以真实PTY写三格式，并执行hook argv recorder，覆盖空格/单引号/命令替换字面路径、扫描拒绝传递、幂等与更换vault。软件human gate与真实Swift/CLI/Broker链通过（`/tmp/rekey-human-live.log`、`/tmp/rekey-human-ui-contract.log`），完整App WAE typecheck及ConnectionContract通过；没有读取真实provider密钥或使用硬件签名者。
 
 用户明确排除 Claude 客户端的本轮验收：C14 与 C15/C16 中的 Claude 场景不再执行命令、登录、模型或插件测试，也不记作通过。此前 `account_on_hold` / `api_error` 仅为当次返回错误，不证明用户当前邮箱或账号状态。Codex、Rekey App、provider 与设备项按各自证据判断。
 
@@ -88,6 +92,8 @@ Rules/SSH fuzz 都是短 smoke，不是长期 fuzz 或漏洞不存在证明。do
 
 | finding | 触发与修复 | 证据 |
 |---|---|---|
+| P1 connect连接错误vault | MCP配置、受管CLI说明与pre-commit未使用所选state目录，可能误连旧default vault；现全部绑定同一绝对目录并安全引用shell路径。 | 旧实现RED、新实现connect19/0；真实hook argv、三格式、幂等及更换目录通过，独立只读复审闭环。 |
+| 默认App使用已归档reveal | UI显示/复制入口与新I1冲突，默认CLI没有该命令；移除无效UI及读取缓存链，human gate改为opaque保存/轮转及签名扫描。 | 3项存值、v2轮转、逐次A2、remember/restart/revoke、真实audit-failed mutation无stdout且版本不变；Python与Swift真实链通过。 |
 | P1 命名路径参数可扩大语义读 | 签名外部 preset 的 string schema 不含 regex，`a/b` 原样插入 `{id}`，POST 可跨越原单段授权；所有替换段复用既有 `slug(value,100)`。 | `0278225`；`signed_external_preset_path_arguments_cannot_expand_semantic_read_segments` 真实签名 RED→GREEN；190 项 domain/policy 通过。 |
 | P1 派生取消后仍可能发布结果 | 派生完成与锁定/取消之间的竞态；root 以执行存活检查阻止终态发布。 | 修复已整合于 `d6937e2`；历史回归 `f571974` 的 `locking_during_sts_issuance_cancels_without_publishing_temporary_credentials` 通过。 |
 | P1 OAuth 刷新副作用 | 发出前复用生命周期gate，取消/后续拒绝保留已发生的刷新，缓存命中保持blocked语义；只记录一个终态。 | 锁定/排队与刷新后preflight均RED→GREEN，最终9/9 M6，独立复审确认闭环。 |
@@ -95,7 +101,7 @@ Rules/SSH fuzz 都是短 smoke，不是长期 fuzz 或漏洞不存在证明。do
 
 OAuth 活动审计现使用绑定签名 Connection / credential / policy 的 factory；callback 与 refresh 失败不再因缺少授权证据导致审计完整性拒绝，6/6 修复检查绿。失败审计仍 fail-closed，没有删掉审计断言来放行。
 
-审查另外促成强制公开 HTTP 占位标记、固定 UID scan 桶、公开出站 User-Agent 和 `.env` 并发编辑限制说明。当前源head的 Developer ID App 为 `target/agent-call-pr68-signed/Rekey.app`，构建日志 `/tmp/rekey-call-pr68-signed.log`，build exit0、`codesign --verify --deep --strict` exit0。它尚未发布或安装；历史 `agent-call-reviewed-signed` 结果不替代本次构建。DPK只读查询与独立synthetic写入、旧版/新版 init 对照排除了目前可证实的profile漏配；设备锁定下插入-25308的证据为 `/tmp/rekey-call-dpk-mutation-probe.log`，未读取真实Keychain值或降低DPK边界。
+审查另外促成强制公开 HTTP 占位标记、固定 UID scan 桶、公开出站 User-Agent 和 `.env` 并发编辑限制说明。收尾源码的 Developer ID App 为 `target/agent-call-pr68-final-signed/Rekey.app`，构建日志 `/tmp/rekey-call-pr68-final-signed.log`，build exit0、`codesign --verify --deep --strict` exit0。它尚未发布或安装；历史 `agent-call-reviewed-signed` 结果不替代本次构建。DPK只读查询与独立synthetic写入、旧版/新版 init 对照排除了目前可证实的profile漏配；设备锁定下插入-25308的证据为 `/tmp/rekey-call-dpk-mutation-probe.log`，未读取真实Keychain值或降低DPK边界。
 
 独立最终审阅发现OAuth刷新未复用副作用gate：等待刷新锁的请求可能在LOCK后继续发起轮换，取消时错记blocked。修复先进入SPEC，再复用现有gate/guard/AtomicU8；缓存命中保持无副作用，失败与取消产生唯一indeterminate。`locking_during_oauth_refresh_records_one_remote_terminal_and_cancels_queued_reads`在旧实现RED，在最终实现GREEN，并检查invalid_grant失败终态与无二次IdP/API请求；最终又补成功刷新后目标 preflight 拒绝分支：有先前刷新记 indeterminate，缓存命中仍 blocked，回归验证唯一终态与不再次刷新；`/tmp/rekey-call-oauth-preflight-red.log` 为旧实现 RED，`/tmp/rekey-call-delegated-reviewed.log` 为9/9 GREEN，default/lab strict Clippy通过。独立复审确认该P1闭环，无相关实质残留。
 
@@ -104,12 +110,12 @@ OAuth 活动审计现使用绑定签名 Connection / credential / policy 的 fac
 新版archive smoke已替换旧Profile/capability/P9，使用archive提供的5个默认binary、vault26/policy7、固定公开测试origin、合成密钥和外部软件签名，实跑CLI/MCP读取、写审批、scan、connect预览、lock/shutdown通过，最终包含新marketplace/plugin与修复脚本（`/tmp/rekey-call-smoke-reviewed.log`）。实际workflow的打包步骤本机执行，Markdown原始source链接转为精确tag GitHub链接；inventory通过。macOS profile/pkg/distribution共32项再次通过（`/tmp/rekey-call-{profile,pkg,distribution}-reviewed.log`）。它们不是已公开下载或已安装的notarized包证明。
 
 
-[default security gate](../../.github/workflows/security-gate.yml)保留 check / strict Clippy / workspace、真实 quickstart、Vault / P0 故障与备份耐久、ENOSPC、机械和依赖边界、Swift 软件合同；本机检查与当前远端结果见上表；Linux真实ENOSPC已通过，macOS整个P0仍失败，正式安装/下载仍需独立证据。[lab gate](../../.github/workflows/lab-weekly.yml)仅声明企业储备编译与归档语法，旧 runtime fixtures 未验收。
+[default security gate](../../.github/workflows/security-gate.yml)保留 check / strict Clippy / workspace、真实 quickstart、Vault / P0 故障与备份耐久、ENOSPC、机械和依赖边界、Swift 软件合同；本机检查与当前远端结果见上表；Linux真实ENOSPC已通过，前一轮macOS整个P0因旧human脚本失败；其修复本机已验，最终head的CI及正式安装/下载仍需独立证据。[lab gate](../../.github/workflows/lab-weekly.yml)仅声明企业储备编译与归档语法，旧 runtime fixtures 未验收。
 
 C10 真实 push 使用 `majiayu000/rekey` 临时 deploy key 和 ref，结束后已核对 key 列表为空、准确 ref 查询404；没有把生产私钥导出。临时 ref 为 `rekey-c10-acceptance-1791201885233`，证据在上述专用日志。
 
 新增IPC共12个（agent9–16、admin62–65，复用agent6/7），以 [ipc常量](../../crates/rekey-domain/src/ipc.rs)核对。OAuth/T1 与 App 源码已落地；M1–M7没有分别公开预发布，也没有按里程碑完成生产/测试LOC拆分，≤3000生产净增目标尚未证明。
 
-M7 尚未闭合：Claude相关C14/C15/C16已按用户要求排除本轮执行，未验项不记通过；真实OAuth/云服务、App设备C16、macOS P0修复后CI及公开预发布下载/安装仍待补。最终本机软件gate绿不等于候选版冻结或已经发布。未创建公开 tag 或发布，不将候选文档当成可下载 release 的证据。新日志应更新本报告中的对应行并附实际命令、时间、版本和结果，不能凭实现代码把待验改为通过。
+M7 尚未闭合：Claude相关C14/C15/C16已按用户要求排除本轮执行，未验项不记通过；真实OAuth/云服务、App设备C16、最终head CI及公开预发布下载/安装仍待补。最终本机软件gate绿不等于候选版冻结或已经发布。未创建公开 tag 或发布，不将候选文档当成可下载 release 的证据。新日志应更新本报告中的对应行并附实际命令、时间、版本和结果，不能凭实现代码把待验改为通过。
 
-远端PR为[#68](https://github.com/majiayu000/rekey/pull/68)，源head `f1a5ab9`，仍为draft。首个head的Linux strict Clippy导入错误已修复，早期performance success实际0 tests的结果不作为验收；当前真实performance通过，具体CI分项和macOS剩余失败见上表。本次只读main规则仍要求 `P0 (ubuntu-latest)`、`P0 (macos-latest)` 和旧 `Linux container G2 reference boundary`；SPEC已把G2移入lab，合并前须maintainer对齐必检规则，不能以lab编译冒充旧G2运行验收。
+远端PR为[#68](https://github.com/majiayu000/rekey/pull/68)，前一轮CI源head `f1a5ab9`，仍为draft。首个head的Linux strict Clippy导入错误已修复，早期performance success实际0 tests的结果不作为验收；当前真实performance通过，具体CI分项和macOS剩余失败见上表。本次只读main规则仍要求 `P0 (ubuntu-latest)`、`P0 (macos-latest)` 和旧 `Linux container G2 reference boundary`；SPEC已把G2移入lab，合并前须maintainer对齐必检规则，不能以lab编译冒充旧G2运行验收。
