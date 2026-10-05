@@ -99,23 +99,31 @@ EOF
 }
 
 write_permit_policy() {
-  python3 - "$WORKDIR/policy.json" "$action_id" "$action_ver" "$principal_id" "$1" <<'PY'
+  python3 - "$WORKDIR/policy.json" "$action_id" "$action_ver" "$principal_id" "$1" \
+    "$mcp_action_id" "$mcp_action_ver" <<'PY'
 import json, pathlib, sys, time, uuid
-path, action_id, action_version, principal_id, version = sys.argv[1:]
+path, action_id, action_version, principal_id, version, mcp_id, mcp_version = sys.argv[1:]
 resource = {"type": "fixed-http-action", "id": action_id}
+reference = {"action_id": mcp_id, "version": int(mcp_version)}
+mcp_resource = {"type": "fixed-http-action", "id": mcp_id}
 pathlib.Path(path).write_text(json.dumps({
     "format_version": 6,
     "version": int(version),
     "expires_at_ms": int(time.time() * 1000) + 600000,
     "approvers": [],
-    "profiles": [], "workload_identities": [],
+    "profiles": [{"name": "archive-mcp", "principal_id": principal_id,
+        "grants": [{"instance": "archive-mcp", "capabilities": [{
+            "capability": "fixed-actions", "rule": "template-default", "actions": [reference]}]}],
+        "session": {"ttl_ms": 120000, "max_uses": 10}, "confirm_each_run": False,
+        "isolation": "none", "egress": "allow", "llm_limits": []}], "workload_identities": [],
     "bindings": [{
         "action_id": action_id,
         "version": int(action_version),
         "resource": resource,
         "parameter_schema_id": "archive-empty/v1",
         "parameter_schema": {"type": "null"},
-    }],
+    }, dict(reference, resource=mcp_resource, parameter_schema_id="archive-mcp/v1",
+        parameter_schema={"type": "null"})],
     "rules": [{
         "id": str(uuid.uuid4()),
         "effect": "permit",
@@ -124,7 +132,8 @@ pathlib.Path(path).write_text(json.dumps({
         "version": int(action_version),
         "resource": resource,
         "parameters": {"kind": "any_validated"},
-    }],
+    }, dict(reference, id=str(uuid.uuid4()), effect="permit", principal_id=principal_id,
+        resource=mcp_resource, parameters={"kind": "any_validated"})],
 }))
 PY
 }
@@ -146,7 +155,7 @@ activate_snapshot() {
     --password-stdin | json_field 'capability_token')"
 }
 
-echo "== init, serve, unlock, format v22"
+echo "== init, serve, unlock, format v25"
 init_out="$(printf '%s\n' "$PASSWORD" | "$REKEYD" init --mode team --state-dir "$STATE" --password-stdin)"
 printf '%s\n' "$init_out" | rg -q '^RKREC1-' || {
   echo "init did not print a recovery key" >&2
@@ -208,17 +217,31 @@ session_json="$(printf '%s\n' "$PASSWORD" | "$REKEY" --state-dir "$STATE" sessio
 token="$(printf '%s\n' "$session_json" | json_field capability_token)"
 principal_id="$(printf '%s\n' "$session_json" | json_field principal_id)"
 
-echo "== packaged MCP initialize and discovery"
-printf '%s\n' "$session_json" >"$WORKDIR/mcp-session.json"
-chmod 0600 "$WORKDIR/mcp-session.json"
-python3 - "$BIN_DIR/rekey-mcp" "$STATE/runtime/agent.sock" "$WORKDIR" <<'PY'
-import json, pathlib, subprocess, sys
-binary, socket, work = sys.argv[1:]
-root = pathlib.Path(work)
-manifest = root / 'mcp.json'
-manifest.write_text(json.dumps({'agent_socket': socket,
-    'session_file': str(root / 'mcp-session.json'), 'tools': []}))
-manifest.chmod(0o600)
+echo "== install a synthetic MCP template"
+template_json="$(python3 - "$cred_id" "$ORIGIN" "$EXACT_PATH" <<'PY'
+import json, sys
+credential, origin, path = sys.argv[1:]
+print(json.dumps({'source': {'kind': 'generic-bearer', 'origin': origin,
+    'actions': [{'method': 'GET', 'path': path}]}, 'credential_id': credential,
+    'bindings': [{}], 'capabilities': ['fixed-actions'], 'name_prefix': 'archive-mcp',
+    'timeout_ms': 15000, 'request_max_bytes': 1024, 'allowed_extra_headers': [],
+    'response_max_bytes': 65536, 'allowed_response_headers': ['content-type']}))
+PY
+)"
+installed_json="$(printf '%s\n%s\n' "$PASSWORD" "$template_json" | "$REKEY" --state-dir "$STATE" \
+  template install --stdin-request --password-stdin)"
+read -r mcp_action_id mcp_action_ver < <(printf '%s\n' "$installed_json" | python3 -c \
+  'import json,sys; a=json.load(sys.stdin)["actions"][0]["action"]; print(a["id"], a["version"])')
+
+echo "== signed policy activate, unauthorized deny, authorized execute, unlock reload"
+write_permit_policy 1
+activate_snapshot install-trust
+"$REKEY" --state-dir "$STATE" policy status | rg -q '"status": "active"'
+
+echo "== packaged Profile MCP initialize and discovery"
+python3 - "$REKEY" "$BIN_DIR/rekey-mcp" "$STATE" "$mcp_action_id" "$mcp_action_ver" <<'PY'
+import json, os, subprocess, sys
+rekey, binary, state, action_id, version = sys.argv[1:]
 messages = [
     {'jsonrpc': '2.0', 'id': 1, 'method': 'initialize',
      'params': {'protocolVersion': '2025-06-18', 'capabilities': {},
@@ -226,21 +249,24 @@ messages = [
     {'jsonrpc': '2.0', 'method': 'notifications/initialized'},
     {'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list'},
 ]
-result = subprocess.run([binary, '--manifest', str(manifest)],
+environment = dict(os.environ)
+environment.pop('REKEY_CAPABILITY', None)
+environment.pop('REKEY_AGENT_SOCKET', None)
+result = subprocess.run([rekey, '--state-dir', state, 'run', 'archive-mcp', '--', binary],
     input=''.join(json.dumps(item) + '\n' for item in messages),
-    text=True, capture_output=True, timeout=10, check=True)
+    text=True, capture_output=True, timeout=15, env=environment)
+if result.returncode:
+    raise SystemExit(f'packaged Profile MCP exited {result.returncode}; output withheld')
 replies = [json.loads(line) for line in result.stdout.splitlines()]
 assert len(replies) == 2
 assert replies[0]['id'] == 1 and replies[0]['result']['protocolVersion'] == '2025-06-18'
-assert replies[1]['id'] == 2 and replies[1]['result']['tools'] == []
-assert not result.stderr
-print('archive MCP initialize/discovery: PASS (empty exposure list; no upstream IO)')
+assert replies[1]['id'] == 2
+assert {tool['name'] for tool in replies[1]['result']['tools']} == {
+    f'rekey.{action_id}.v{version}', 'await_approval', 'cancel_approval'}
+# The outer CLI may emit the documented L1-dev peer warning on an unsigned build.
+print('archive MCP initialize/discovery: PASS (signed Profile; no upstream IO)')
 PY
 
-echo "== signed policy activate, unauthorized deny, authorized execute, unlock reload"
-write_permit_policy 1
-activate_snapshot install-trust
-"$REKEY" --state-dir "$STATE" policy status | rg -q '"status": "active"'
 expect_exit 4 "$REKEY" --state-dir "$STATE" execute "$action_ref" --capability "not-a-token"
 if [[ "${REKEY_ACCEPTANCE_SKIP_EXECUTE:-}" != "1" ]]; then
   "$REKEY" --state-dir "$STATE" execute "$action_ref" --capability "$token" | assert_status
@@ -307,8 +333,12 @@ expect_exit 4 bash -c 'printf "%s\n" "$1" | "$2" --state-dir "$3" execute "$4" -
 
 echo "== audit list/export records lifecycle events and omits secrets"
 "$REKEY" --state-dir "$STATE" audit list --limit 100 >"$WORKDIR/audit.json"
-rg -q '"event_type": "vault.password_changed"' "$WORKDIR/audit.json"
-rg -q '"event_type": "policy.activated"' "$WORKDIR/audit.json"
+python3 - "$WORKDIR/audit.json" <<'PY'
+import json, sys
+with open(sys.argv[1]) as source:
+    events = {event['event_type'] for event in json.load(source)['events']}
+assert {'vault.password_changed', 'policy.activated'} <= events
+PY
 "$REKEY" --state-dir "$STATE" audit export --output "$WORKDIR/audit.jsonl" >/dev/null
 rg -q '"record_type":"rekey.audit.export.v2"' "$WORKDIR/audit.jsonl"
 if rg -aF -- "$SECRET" "$WORKDIR/audit.json" "$WORKDIR/audit.jsonl" "$WORKDIR/broker.out" \

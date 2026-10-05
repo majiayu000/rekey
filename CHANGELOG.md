@@ -4,6 +4,14 @@ All notable public changes are recorded here. Rekey uses semantic versioning
 for release identifiers. Vault25 / policy snapshot6 stay unchanged throughout v3,
 including prereleases; CLI and UI prerelease behavior may still change.
 
+## 3.0.0-alpha.4
+
+Run packaged MCP discovery through the v3 signed Profile and `rekey run`, using
+an installed synthetic template. The v2 manifest/session-file interface has been
+removed. alpha.3 completed signing, notarization and installed P0, then its stale
+MCP harness blocked publication; preserve the immutable tag. Formats remain
+vault25 / policy6. See [release notes](docs/releases/v3.0.0-alpha.4.md).
+
 ## 3.0.0-alpha.3
 
 **Requires reinitialization: no for vault25 / policy6.** Formats remain frozen.
