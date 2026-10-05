@@ -44,6 +44,18 @@ rekey run codex --client codex -- codex --model glm-5.3-flash
 These are scoped provider templates; clients cannot choose another upstream
 origin or path. The new-account, five-minute acceptance remains pending.
 
+Anthropic, OpenAI, GitHub PAT, GLM Messages/Responses and fixed Bearer templates
+already exist. The short `add` command currently accepts only `anthropic` and
+opens the App; select other templates in the App. Installing a template does
+not grant access: review the exact actions, model and budgets, sign the Profile,
+then choose a name from `rekey profile list`. Do not place provider keys in
+Agent configuration or the `run` command.
+
+If the key is currently in a `.env` file, enter it through the human-operated
+App. Automated `.env` import is not implemented. Measure setup time
+until the first real provider response; the three-command example alone does
+not establish a five- or ten-minute onboarding result.
+
 A Profile fixes principal, instance/capability/action versions, session limits,
 isolation, egress and LLM model/budget limits. Every capability has a required
 rule: `template-default`, `allow` or `require-approval`. Template defaults retain

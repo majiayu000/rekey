@@ -1,0 +1,140 @@
+{
+  "name": "Rekey",
+  "premise": {
+    "product": "Rekey：本机凭据代理，Agent 只通过固定动作和短期能力令牌调用，拿不到真实 key",
+    "from_scratch": true,
+    "baseline": "majiayu000/rekey@043a0206 (v0.3.0-alpha.1)",
+    "scope": "全产品；本轮补市场层（采用度、口碑、定位、替代物）并复评竞品变化",
+    "out_of_scope": "重跑性能与安全实测（沿用 2026-10-05 结果）",
+    "intent": "借鉴与定位判断",
+    "known_peers": [
+      "Agent Vault (Infisical)",
+      "KeyFence",
+      "OpenBao",
+      "1Password developer surfaces"
+    ],
+    "resources": "本机 M3 Max；无付费账号",
+    "confirmed": true,
+    "confirmed_by": "user",
+    "tier": "standard",
+    "stage": 3
+  },
+  "peers": [
+    {
+      "name": "OneCLI",
+      "type": "direct"
+    },
+    {
+      "name": "Agent Vault",
+      "type": "direct"
+    },
+    {
+      "name": "Kontext CLI",
+      "type": "direct"
+    },
+    {
+      "name": "AgentSecrets",
+      "type": "direct"
+    },
+    {
+      "name": "passless",
+      "type": "direct"
+    },
+    {
+      "name": "Aegis",
+      "type": "direct"
+    },
+    {
+      "name": "KeyFence",
+      "type": "direct"
+    },
+    {
+      "name": "agentgateway",
+      "type": "adjacent"
+    },
+    {
+      "name": "OpenBao",
+      "type": "adjacent"
+    },
+    {
+      "name": "HashiCorp Vault",
+      "type": "adjacent"
+    },
+    {
+      "name": "WorkOS Relay",
+      "type": "adjacent"
+    },
+    {
+      "name": "Keychains.dev",
+      "type": "adjacent"
+    },
+    {
+      "name": "Nango",
+      "type": "tool-auth"
+    },
+    {
+      "name": "Arcade",
+      "type": "tool-auth"
+    },
+    {
+      "name": "Composio",
+      "type": "tool-auth"
+    },
+    {
+      "name": "Auth0 Token Vault",
+      "type": "tool-auth"
+    },
+    {
+      "name": "1Password",
+      "type": "platform"
+    },
+    {
+      "name": "Bitwarden",
+      "type": "platform"
+    },
+    {
+      "name": "Keeper",
+      "type": "platform"
+    },
+    {
+      "name": ".env + scanners",
+      "type": "status_quo"
+    },
+    {
+      "name": "DIY mitmproxy/keyring",
+      "type": "diy"
+    },
+    {
+      "name": "sandboxes (Zerobox/containers)",
+      "type": "alternative"
+    }
+  ],
+  "rubric": {
+    "version": 1,
+    "source": "2026-10-05 deep comparison (product layer)",
+    "market_layer_added": "20261006-s3"
+  },
+  "rules": [
+    "不从新闻和 README 下结论（10-05 用户口径）",
+    "产品层沿用 2026-10-05 deep 对比，未重跑的项标“沿用”"
+  ],
+  "available_skills": [],
+  "rounds": [
+    "20261006-s3"
+  ],
+  "stage": 3,
+  "tiers": {
+    "20261006-s3": "standard"
+  },
+  "previous_external_round": ".git/codex/evidence/competitive-comparison-20261005/comparison.md",
+  "follow_up": {
+    "date": "2026-10-06",
+    "scope": "整合与复验现有SSE修复；定位、上手及信任模型文档；市场事实更正",
+    "candidate": "2e1a152",
+    "worktree": "/Users/lifcc/Desktop/code/AI/tools/rekey-peerscope-fixes",
+    "external_password_manager": "deferred_by_user",
+    "released_baseline_unchanged": true,
+    "ssh_mtls": "exclude_from_0.3_baseline; review_candidates_separately",
+    "report": "rounds/20261006-s3/02-my-plan.md"
+  }
+}

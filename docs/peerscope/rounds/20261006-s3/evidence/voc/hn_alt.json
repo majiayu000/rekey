@@ -1,0 +1,42 @@
+[
+ {
+  "tag": "story",
+  "url": "https://news.ycombinator.com/item?id=47765374",
+  "date": "2026-04-14",
+  "points": 70,
+  "author_hash": "414373c4",
+  "text": "Show HN: Kontext CLI – Credential broker for AI coding agents in Go"
+ },
+ {
+  "tag": "story",
+  "url": "https://news.ycombinator.com/item?id=48188727",
+  "date": "2026-05-19",
+  "points": 18,
+  "author_hash": "9531f7df",
+  "text": "Sieve – scans Cursor/Claude chat history for leaked API keys"
+ },
+ {
+  "tag": "comment",
+  "url": "https://news.ycombinator.com/item?id=47755182",
+  "date": "2026-04-13",
+  "points": null,
+  "author_hash": "25a462f2",
+  "text": "This post got viral on reddit as users have a tendency to not put secrets (like api keys etc.) in .env but instead paste it in the chat and let agents wire it up<p>Agents like claude code&#x2F;openclaw save secrets in plaintext within config files, which makes a big attack vector for a local comprom"
+ },
+ {
+  "tag": "comment",
+  "url": "https://news.ycombinator.com/item?id=47234242",
+  "date": "2026-03-03",
+  "points": null,
+  "author_hash": "84ce646b",
+  "text": "This is a real gap. I&#x27;ve seen teams adopt Claude Code and immediately start pasting API keys into .env files that the agent can read — zero access control, zero audit trail.<p>We built KeyEnv (keyenv.dev) to handle this: secrets are encrypted at rest, pulled via CLI, and injected at runtime. Th"
+ },
+ {
+  "tag": "comment",
+  "url": "https://news.ycombinator.com/item?id=47101272",
+  "date": "2026-02-21",
+  "points": null,
+  "author_hash": "2abe516d",
+  "text": "I use Cursor and Claude Code daily. The code they write compiles, passes typescript, passes eslint. Then I find a hardcoded Supabase key in a client component, or an import for a package that was never installed, or a server action that takes raw formData with zero validation.<p>These aren&#x27;t ed"
+ }
+]

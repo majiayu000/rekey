@@ -1,0 +1,162 @@
+[
+ {
+  "tag": "story",
+  "url": "https://news.ycombinator.com/item?id=46849615",
+  "date": "2026-02-01",
+  "points": 4,
+  "author_hash": "08c5aa01",
+  "text": "Show HN: Nono – Kernel-enforced sandboxing for AI agents"
+ },
+ {
+  "tag": "story",
+  "url": "https://news.ycombinator.com/item?id=46863963",
+  "date": "2026-02-02",
+  "points": 1,
+  "author_hash": "08c5aa01",
+  "text": "Show HN: Nono – Kernel-enforced sandboxing for AI agents"
+ },
+ {
+  "tag": "story",
+  "url": "https://news.ycombinator.com/item?id=47075823",
+  "date": "2026-02-19",
+  "points": 10,
+  "author_hash": "469ef5ea",
+  "text": "Show HN: ClawShell, Process-Level Isolation for OpenClaw Credentials"
+ },
+ {
+  "tag": "story",
+  "url": "https://news.ycombinator.com/item?id=47067070",
+  "date": "2026-02-18",
+  "points": 2,
+  "author_hash": "df8f68f1",
+  "text": "Show HN: ClawShield – Open-source firewall for agent-to-agent AI communication"
+ },
+ {
+  "tag": "story",
+  "url": "https://news.ycombinator.com/item?id=47078448",
+  "date": "2026-02-19",
+  "points": 1,
+  "author_hash": "df8f68f1",
+  "text": "Show HN: ClawShield – Open-source firewall for agent-to-agent AI communication"
+ },
+ {
+  "tag": "story",
+  "url": "https://news.ycombinator.com/item?id=47833278",
+  "date": "2026-04-20",
+  "points": 1,
+  "author_hash": "0a50be5f",
+  "text": "Is anyone else bothered that AI agents can basically do what they want?"
+ },
+ {
+  "tag": "story",
+  "url": "https://news.ycombinator.com/item?id=47088895",
+  "date": "2026-02-20",
+  "points": 1,
+  "author_hash": "f3e955ea",
+  "text": "Show HN: Aguara – Security scanner for AI agent skills and MCP servers"
+ },
+ {
+  "tag": "story",
+  "url": "https://news.ycombinator.com/item?id=46900771",
+  "date": "2026-02-05",
+  "points": 22,
+  "author_hash": "71866dfa",
+  "text": "Show HN: Risk Analysis Database of Every MCP Server"
+ },
+ {
+  "tag": "story",
+  "url": "https://news.ycombinator.com/item?id=47498251",
+  "date": "2026-03-24",
+  "points": 2,
+  "author_hash": "c75591f9",
+  "text": "AI coding tools have broad filesystem and network access"
+ },
+ {
+  "tag": "story",
+  "url": "https://news.ycombinator.com/item?id=47041889",
+  "date": "2026-02-16",
+  "points": 2,
+  "author_hash": "10a00a0a",
+  "text": "Show HN: Security-Risk Patterns in OpenClaw Skills"
+ },
+ {
+  "tag": "story",
+  "url": "https://news.ycombinator.com/item?id=49348136",
+  "date": "2026-08-18",
+  "points": 83,
+  "author_hash": "e8a6f47a",
+  "text": "Launch HN: machine0 (YC S26) – Persistent CPU and GPU VMs from the CLI"
+ },
+ {
+  "tag": "story",
+  "url": "https://news.ycombinator.com/item?id=47005607",
+  "date": "2026-02-13",
+  "points": 9,
+  "author_hash": "cfea8ff2",
+  "text": "Show HN: My agents are building a secure fork of OpenClaw"
+ },
+ {
+  "tag": "comment",
+  "url": "https://news.ycombinator.com/item?id=47326321",
+  "date": "2026-03-10",
+  "points": null,
+  "author_hash": "59f1f7cc",
+  "text": "The keychain-per-agent model is the right instinct, but the threat model gets complicated fast. When five agents share a keychain process, a prompt injection in agent A can exfiltrate credentials for agents B–E — one bad LLM output becomes a full company compromise.<p>The safer architecture is per-s"
+ },
+ {
+  "tag": "comment",
+  "url": "https://news.ycombinator.com/item?id=47237328",
+  "date": "2026-03-03",
+  "points": null,
+  "author_hash": "08c5aa01",
+  "text": "Hey HN. I&#x27;m Luke, security engineer and creator of Sigstore and other open source security projects. I&#x27;ve been building nono, an open source sandbox for AI coding agents that uses kernel-level enforcement (Landlock&#x2F;Seatbelt) to restrict what agents can do on your machine.<p>One thing "
+ },
+ {
+  "tag": "comment",
+  "url": "https://news.ycombinator.com/item?id=47740943",
+  "date": "2026-04-12",
+  "points": null,
+  "author_hash": "049d222d",
+  "text": "The per-identity model is the right direction — shared credentials for agents is one of the most under-discussed risks in the space.<p>One thing we&#x27;ve run into: even with proper credential isolation, agents can still exfiltrate data if they&#x27;re compromised via prompt injection. The credenti"
+ },
+ {
+  "tag": "comment",
+  "url": "https://news.ycombinator.com/item?id=47016890",
+  "date": "2026-02-14",
+  "points": null,
+  "author_hash": "7863679b",
+  "text": "Hi HN, we built Clawsec as a security layer for OpenClaw.ai (openclaw.ai).<p>The problem: AI agents are getting good enough to run shell commands, query databases, and manage infrastructure autonomously. But one hallucinated rm -rf &#x2F; or a prompt injection that exfiltrates your .env can do real "
+ },
+ {
+  "tag": "comment",
+  "url": "https://news.ycombinator.com/item?id=46865831",
+  "date": "2026-02-03",
+  "points": null,
+  "author_hash": "5e81682e",
+  "text": "The rapid adoption of AI coding agents raises important questions about trust boundaries. When an agent like Claude Code needs to handle sensitive operations - API keys, credentials, database connections - how do you prevent those secrets from ending up in the model&#x27;s context or logs?<p>We ran "
+ },
+ {
+  "tag": "comment",
+  "url": "https://news.ycombinator.com/item?id=46959630",
+  "date": "2026-02-10",
+  "points": null,
+  "author_hash": "7f33d9a2",
+  "text": "After watching OpenClaw hit 179K GitHub stars while accumulating 5 CVEs, and 341 malicious marketplace skills, and exposing 42K instances in 10 days, I spent 3 hours building AgentVault.<p>The Issue\nThe research conducted by Penligent, Zenity, and CrowdStrike reached the conclusion that prompt injec"
+ },
+ {
+  "tag": "comment",
+  "url": "https://news.ycombinator.com/item?id=47234693",
+  "date": "2026-03-03",
+  "points": null,
+  "author_hash": "68c4fef2",
+  "text": "Hi! I have spent decades building security primitives such as bcrypt and Safe Browsing. The current rise in AI agents scares me due to them leveraging our full ambient authority. When proxying your full permissions, a single prompt injection can lead to sensitive data being exfiltrated or all your e"
+ },
+ {
+  "tag": "comment",
+  "url": "https://news.ycombinator.com/item?id=47063268",
+  "date": "2026-02-18",
+  "points": null,
+  "author_hash": "482fbdf6",
+  "text": "The only ways that I can think of to deal with prompt injection, are to severely limit what an agent can access.<p>* Never give an agent any input that is not trusted<p>* Never give an agent access to anything that would cause a security problem (read only access to any sensitive data&#x2F;credentia"
+ }
+]

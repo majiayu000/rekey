@@ -117,6 +117,9 @@ capability目的地。Host/Origin/auth/path/header/body都受限，审批控制�
 SSE原始tools/thinking字节保持，raw bytes和decoded JSON字符串均检查；初始值、delta、
 done快照与SDK有序text投影共用有界遮蔽上下文，包括Anthropic交错文本块的block index顺序。未知跨delta语义或超限拒绝。
 首字节前的安全拒绝保留RESPONSE_SECURITY_VIOLATION与不可重试属性；已发SSE后失败中止正文。
+2026-10-06 本机修复候选在完整检测后回收已发 raw 前缀及不再需要的工具元数据尾；
+累计 wire 和 retained 限额仍生效，真实 needle 前缀和编码标记仍可能保留到限额。
+已有 4MiB fixture 通过不代表任意元数据流都可接受。
 完成帧必须等EOF与durable结算后释放；取消/断开仍由Supervisor终态记账。
 支持的raw/base64/base64url/hex/percent/JSON表示有限，嵌入base64完整对齐保证要求
 秘密至少16字节；短Key给固定警告。无法保证任意变换/压缩/加密/侧信道均被识别。

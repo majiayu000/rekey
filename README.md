@@ -1,6 +1,9 @@
 # Rekey
 
-Rekey 把 API Key 留在本机，让 Agent 只调用你授权的操作。
+Rekey 是本机 API 凭据执行器：Agent 只执行你授权的操作，拿不到上游 Key。
+
+授权固定上游、操作和参数范围；执行前持久审计，返回时检查凭据反射。
+检查覆盖明确支持的表示，不能阻止所有数据外泄或授权范围内的误用。
 
 当前版本为 **0.3.0-alpha.1（alpha）**，[发布状态与下载](https://github.com/majiayu000/rekey/releases/tag/v0.3.0-alpha.1)以 GitHub 为准。macOS 安装入口为签名、公证的 pkg；
 发布工作流也会从该 pkg 生成本地 Homebrew cask，尚无公开 tap。
@@ -17,6 +20,10 @@ rekey run claude-code --client claude-code -- claude --model MODEL_ID
 这里 `claude-code` 是已签名 Profile 的名称，`MODEL_ID` 换成你已确认的模型。
 Setup 和 Add 打开本机 App；密码、Key、策略审阅与系统认证只在管理流程中发生。
 授权范围内的 Agent 请求不逐次弹窗；`require-approval` 请求需要明确审批后由调用者重提。
+
+Anthropic、OpenAI、GitHub PAT、GLM 和固定 Bearer 模板已经内置。`rekey add anthropic`
+只负责打开管理页；在 App 选择模板、输入 Key、审阅模型/操作/预算并签署 Profile 后再启动 Agent。
+其它模板从 App 安装；不要把三条命令理解为省略授权审阅。首次使用步骤见[上手说明](docs/user-guide.md#personal-setup-and-profiles)。
 
 | 等级 | 当前可说明的边界 |
 |---|---|
@@ -44,6 +51,15 @@ Claude Code/Codex 的 SDK 接入使用 `rekey run` 的明确 client 适配。
 已安装客户端与合成上游的本地互通不代表真实 provider 验收。
 Linux Profile `netns` 目前明确不可用；Codex 的 Seatbelt 启动仍受已记录的 managed
 preferences 限制，不能把宽松接入当作 L2。
+
+## 同机信任边界
+
+- 只通过 Agent 接口调用的进程不能读取上游 Key；请求受已签名的操作、参数、模型和预算约束。
+- 当前确认下限为 **L1-dev**。同一用户下能执行任意代码的进程仍可能直接攻击文件、内存或窃取能力令牌，不能承诺抵抗这种攻击。root 和恶意管理员也不在保护范围内。
+- L1 需要完整签名设备验收；L2 还需要真正运行的进程与网络隔离。Linux Profile netns 目前不可用，旧容器参考不能代替当前 L2 验收。
+- 密码库解决凭据保存；Rekey 同时约束凭据可以执行的操作。允许的操作仍可能被误用，反射检查也不覆盖任意编码和隐蔽信道。
+
+现行分级是 L0/L1-dev/L1/L2；历史 G1/G2 拓扑不是当前产品等级。完整依据见[威胁模型](docs/product-foundation/threat-model-v2.md)。
 
 ## 管理、恢复与边界
 

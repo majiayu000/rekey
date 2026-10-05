@@ -1691,6 +1691,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "libc",
+ "memchr",
  "rand 0.9.5",
  "rcgen",
  "rekey-connector",

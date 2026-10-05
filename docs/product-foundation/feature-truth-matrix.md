@@ -10,6 +10,15 @@ GLM Responses最终源码默认全仓通过1,021/0 failed/6 ignored；两配置�
 CI收尾修复源码默认全仓1,021/0 failed/6 ignored，两配置严格Clippy与Lab runtime/Admin IPC定向通过；最终Lab完整复跑1,489/0 failed/6 ignored（1943.187秒）通过；此前1,488/1/6及首次relay503、22项AppRole复验均作为历史记录保留。
 历史失败与本轮产物、设备范围见实施记录；本地结果不替代安装后的体验或 Release 验收。
 
+## 2026-10-06 SSE 修复候选（未发布）
+
+本机整合候选来源为 `2e1a152`，发布基线仍是 `043a020`。原协议 `optimized-v6`
+的 4MiB text/tool SSE 在 c1 和 c4 下各完成 192/192，成功正文 SHA-256 无差异。
+修复回收已发前缀和安全检查后的工具元数据尾，保留累计 wire/retained 限额、
+完整反射投影、EOF/审计结算及取消错误合同；不放宽 0.3 冻结格式。
+这不提升 L1/L2，不证明真实 provider 或 c16/c64 容量通过。
+本轮整合验收与原始数据入口见[复评后续处理](../peerscope/rounds/20261006-s3/02-my-plan.md)。
+
 ## 默认本地产品
 
 | 能力 | 当前事实及源码/测试入口 | 未覆盖边界 | Release |
