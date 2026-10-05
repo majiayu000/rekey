@@ -20,7 +20,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 DAEMON = pathlib.Path("Contents/Helpers/RekeyDaemon.app")
 LINK = "../../Helpers/RekeyDaemon.app/Contents/MacOS/rekeyd"
 TOOLS = ("rekey", "rekey-mcp", "rekey-policy-sign", "rekey-approval-sign")
-VERSION = "3.0.0-alpha.4"
+VERSION = "0.3.0-alpha.1"
 
 
 def run(argv, *, expected=0, **kwargs):
@@ -37,7 +37,7 @@ def fixture(app, executable):
         shutil.copy2(executable, bundle / "Contents/MacOS" / name)
         (bundle / "Contents/Info.plist").write_bytes(plistlib.dumps(dict(
             CFBundleIdentifier=identifier, CFBundleExecutable=name, CFBundlePackageType="APPL",
-            CFBundleVersion="3.0.0", CFBundleShortVersionString="3.0.0", RekeyVersion=VERSION)))
+            CFBundleVersion="0.3.0", CFBundleShortVersionString="0.3.0", RekeyVersion=VERSION)))
     binaries = app / "Contents/Resources/bin"
     binaries.mkdir(parents=True)
     for name in TOOLS:

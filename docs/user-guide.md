@@ -1,15 +1,20 @@
 # User guide
 
+Pre-tag candidate snapshot; current publication status is recorded on the
+[GitHub release](https://github.com/majiayu000/rekey/releases/tag/v0.3.0-alpha.1) and its complete workflow.
+
 This guide assumes verified binaries are installed and the broker is running.
 Read [the security and platform scope](alpha-scope.md) first.
 
-This guide describes **3.0.0-alpha.4, an unpublished candidate**: vault/backup
-format 25 and policy snapshot 6. Pre-GA formats are not yet finally frozen.
+This guide describes **0.3.0-alpha.1, an unpublished candidate**: vault/backup
+format 25 and policy snapshot 6. These formats remain frozen across all 0.3
+releases, including prereleases. Version 0.3 names the existing v3 design
+without claiming 1.0 maturity; renumbering does not require reinitialization.
 Rekey never migrates, backfills or dual-reads old formats. Preserve old binaries
 with their matching state and backups; use a new empty directory for a new
-incompatible format. After GA, minor/patch releases within one major version
-must keep the durable format. See [installation](installation.md) and the
-[candidate release gates](releases/v3.0.0-alpha.4.md).
+incompatible format. An incompatible format requires a separately planned release
+line and prior SPEC revision. See [installation](installation.md) and the
+[candidate release gates](releases/v0.3.0-alpha.1.md).
 
 ## Personal setup and Profiles
 

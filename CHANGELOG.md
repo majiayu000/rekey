@@ -1,8 +1,19 @@
 # Changelog
 
 All notable public changes are recorded here. Rekey uses semantic versioning
-for release identifiers. Vault25 / policy snapshot6 stay unchanged throughout v3,
-including prereleases; CLI and UI prerelease behavior may still change.
+for release identifiers. The current product line is 0.3 (the v3 design stage),
+not a 1.0 maturity claim. Vault25 / policy snapshot6 remain frozen across all 0.3
+releases, including prereleases; CLI and UI prerelease behavior may still change.
+Historical v3/v2 tags and entries below are retained.
+
+## 0.3.0-alpha.1
+
+**Requires reinitialization: no for vault25 / policy6.** Renumber the product line
+from 3.0.0-alpha.4 to reflect its pre-1.0 maturity. Align binaries, macOS bundle
+metadata, signed package/cask and Linux archive versions. Keep the alpha status,
+existing formats, security boundaries and historical releases. Publication must
+pass the existing signed-package and public-download gates again. See
+[release notes](docs/releases/v0.3.0-alpha.1.md).
 
 ## 3.0.0-alpha.4
 

@@ -1,7 +1,12 @@
 # Install, upgrade, service, and uninstall
 
-This page describes the **3.0.0-alpha.4 unpublished candidate and release workflow**, not an
-available v3 download. macOS distribution is a signed, notarized `.pkg` for
+Pre-tag candidate snapshot; current publication status is recorded on the
+[GitHub release](https://github.com/majiayu000/rekey/releases/tag/v0.3.0-alpha.1) and its complete workflow.
+
+This page describes the **0.3.0-alpha.1 unpublished candidate and release
+workflow**, not proof of an available 0.3 download. Product version 0.3 represents the existing v3 design
+without claiming 1.0 maturity; historical tags and releases remain unchanged.
+macOS distribution is a signed, notarized `.pkg` for
 macOS 14+ on Apple Silicon; Linux uses an Ubuntu 24.04 x86_64 archive. There is
 no default macOS tar/zip installation path and no published Homebrew tap.
 The release-local `rekey.rb` is generated from the final pkg bytes.
@@ -260,7 +265,8 @@ install -m 0755 target/release/rekey target/release/rekeyd \
 ```
 
 Current unreleased source uses state/backup format **25**. It rejects earlier
-formats without migration. Vault25 / policy6 are frozen across all v3 prereleases and GA. Initialize a new empty state directory for an older format; keep
+formats without migration. Vault25 / policy6 are frozen across all 0.3 releases,
+including prereleases. Initialize a new empty state directory for an older format; keep
 older binaries with their matching state and backups.
 
 An Admin may instead bind a local executable to one exact Action version with
@@ -344,11 +350,12 @@ and [external collection specification](superpowers/specs/2026-09-16-external-ca
 
 ## Format changes and restore
 
-Unreleased v3 currently uses vault/backup format **25** and policy snapshot
-format **6**. These durable formats are frozen across all v3 prereleases and GA.
+The 0.3 candidate uses vault/backup format **25** and policy snapshot
+format **6**. These durable formats are frozen across all 0.3 releases, including prereleases.
 No older vault, backup or policy format is migrated or backfilled, now or after GA.
-All v3 prereleases, GA, minor and patch releases must preserve the
-durable format; an incompatible format requires a new major version. Keep old
+All 0.3 releases must preserve the durable format; an incompatible format
+requires a separately planned release line and prior SPEC revision. Renumbering
+from v3.0.0-alpha.4 does not require reinitializing vault25 / policy6. Keep old
 binaries, state and backups together; initialize a new empty directory for an
 incompatible format rather than pointing new binaries at old state.
 

@@ -7,7 +7,7 @@
 
 ## What is this
 
-Rekey v3 personal-first Credential Authority (`3.0.0-alpha.4`, alpha). Agents call fixed or template,
+Rekey 0.3 personal-first Credential Authority (v3 design) (`0.3.0-alpha.1`, alpha). Agents call fixed or template,
 admin-registered actions through a capability token and never see real
 credentials. Breaking rewrite — no v1 vault, MITM, system CA, dashboard,
 single-port proxy, or TCP passthrough exists anymore.
@@ -68,9 +68,10 @@ Cargo workspace, 7 crates + root integration-test host:
   L1; V1/V2, protected anchors and actual isolation require separate evidence.
   Linux Profile netns and Codex Seatbelt limitations must not be hidden.
 - No migration, old-format double reader or backfill, permanently. Vault25 /
-  policy6 are frozen from v3.0.0-alpha.1, including all v3 prereleases and GA.
-  Preserve durable layouts and canonical signing semantics within v3; incompatible
-  changes require another major, including in `lab`. Stop feature expansion during
+  policy6 remain frozen across all 0.3 releases, including prereleases and `lab`.
+  The product version is 0.3; v3 names the design stage. Preserve durable layouts
+  and canonical signing semantics; incompatible changes require a separately
+  planned release line and a prior SPEC revision. Stop feature expansion during
   the seven-day dogfood period; fix only evidenced safety/correctness/release blockers.
 - Default features are empty; enterprise execution requires `--features lab`.
 - Ordinary unlock is not rollback consent. Explicit confirmation binds current
