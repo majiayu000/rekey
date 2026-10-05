@@ -153,7 +153,11 @@ trap cleanup EXIT
 
 # LaunchAgents may not execute a developer binary beneath a TCC-protected
 # Desktop checkout. Exercise the exact release artifact from its install path.
-install -m 0755 "$MANAGED_DAEMON_SOURCE" "$MANAGED_DAEMON"
+if [[ "$PLATFORM" == Darwin && "$ARTIFACT_DAEMON_MODE" -eq 1 ]]; then
+  MANAGED_DAEMON="$MANAGED_DAEMON_SOURCE"
+else
+  install -m 0755 "$MANAGED_DAEMON_SOURCE" "$MANAGED_DAEMON"
+fi
 
 # Generator contract: real non-root passwd entry, no UID-0 alias, escaped '$'.
 GOLDEN_STATE="$WORKDIR/systemd\$state"
