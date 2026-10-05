@@ -246,7 +246,7 @@ struct RootView: View {
                 }
             }
             Spacer(minLength: 18)
-            Label("你可以查看和复制密钥，Agent 无法读取", systemImage: "lock").font(.system(size: 12)).foregroundStyle(.secondary).padding(.vertical, 18)
+            Label("密钥已保存在 Rekey，可通过连接调用", systemImage: "lock").font(.system(size: 12)).foregroundStyle(.secondary).padding(.vertical, 18)
             Divider()
             HStack(spacing: 16) {
                 step(1, "添加 API Key", "接入所需的凭证") {
@@ -272,15 +272,7 @@ struct RootView: View {
             StatusPill(active: item.active, text: item.active ? "可用" : "已撤销")
             info("类型", item.typeName)
             info("当前版本", "v\(item.current_version)")
-            Text(model.visibleSecret ?? "••••••••••••••••").font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
-            HStack {
-                Button(model.visibleSecret == nil ? "显示密钥" : "隐藏密钥") {
-                    if model.visibleSecret != nil { model.visibleSecret = nil }
-                    else { model.requestRevealCredential(item.id, copy: false) }
-                }
-                Button(model.copiedCredential == item.id ? "已复制" : "复制密钥") { model.requestRevealCredential(item.id, copy: true) }
-            }.disabled(!item.active || model.busy)
-            Text("复制后 30 秒清理本次剪贴板内容；剪贴板历史工具可能保留副本。").font(.system(size: 11)).foregroundStyle(.secondary)
+            Text("密钥已保存在 Rekey，可通过连接调用").font(.system(size: 12)).foregroundStyle(.secondary)
             Divider().padding(.vertical, 4)
             Text("关联操作").font(.system(size: 14, weight: .semibold))
             ScrollView {

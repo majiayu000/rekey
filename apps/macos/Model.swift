@@ -99,13 +99,6 @@ struct CLI: Sendable {
         catch { throw UIError(message: "服务返回了无法识别的数据，请确认客户端与服务版本一致。") }
     }
 
-    func revealCredential(_ id: String, proof: String, recovery: Bool, presence: Bool = false) throws -> Data {
-        var arguments = ["desktop-reveal", id, "--password-stdin"]
-        if presence { arguments.append("--presence") }
-        else if recovery { arguments.append("--recovery") }
-        return try run(arguments, input: proof + "\n", redacting: [proof])
-    }
-
     func approvalDetails(_ id: String) throws -> ApprovalDetails {
         let data = try run(["approval", "get", id])
         let envelope: ApprovalEnvelope
@@ -916,13 +909,6 @@ enum Page: String, CaseIterable, Identifiable {
     }
 }
 
-struct CredentialReveal {
-    let id: String
-    let copy: Bool
-    let workspace: String
-    let revision: UUID
-}
-
 struct ProviderTemplateCatalog: Decodable, Sendable {
     struct Declaration: Decodable, Sendable {
         struct BindingRule: Decodable, Sendable {
@@ -972,7 +958,6 @@ struct Operation: Identifiable {
     var temporaryFile: URL?
     var templateRequest: Data?
     var personalTrustVaultID: UUID?
-    var reveal: CredentialReveal?
     var rollbackContext: RollbackContext?
     var rollbackRevision: UUID?
     var unregisterBackgroundService = false
@@ -980,7 +965,6 @@ struct Operation: Identifiable {
         guard proof else { return false }
         let command = arguments.prefix(2).joined(separator: " ")
         if ["backup", "shutdown"].contains(arguments.first ?? "") { return true }
-        if arguments.first == "desktop-reveal" { return true }
         if ["policy trust install", "audit retention set"].contains(arguments.prefix(3).joined(separator: " ")) { return true }
         return ["credential add", "credential rotate", "credential revoke", "credential add-github-app", "credential rotate-github-app",
                 "credential add-vault-kv", "credential rotate-vault-kv", "credential add-vault-dynamic", "credential rotate-vault-dynamic",
@@ -1047,11 +1031,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var activityError: String?
     private var activityRevision = UUID()
     @Published var desktopToken: String?
-    @Published var copiedCredential: String?
-    @Published var visibleSecret: String?
     private var desktopExpiry = Date.distantPast
     @Published var selectedCredential: String? { didSet {
-        visibleSecret = nil; copiedCredential = nil
         if oldValue != selectedCredential { nativeFlowRevision = UUID() }
     } }
     @Published var busy = false
@@ -1159,10 +1140,9 @@ final class AppModel: ObservableObject {
         onboardingConnection = nil
         nativeFlowRevision = UUID(); showPolicyDraft = false; approvalDetails = nil; localApprovalDetails = nil; localApprovalNeedsRefresh = false
         showTemplate = false
-        if operation?.reveal != nil || presenceAuthenticating { operation = nil }
+        if presenceAuthenticating { operation = nil }
     }
     func nativeFlowBecameInactive() {
-        visibleSecret = nil
         // A system authentication dialog may deactivate the App. Only the
         // explicit signing interval survives that event; lock/path changes do not.
         if !personalPolicySigning && !presenceAuthenticating { clearNativeFlow() }
@@ -1358,7 +1338,7 @@ final class AppModel: ObservableObject {
     var backgroundServiceNeedsApproval: Bool { managesBackgroundService && BackgroundService.requiresApproval }
     var desktopReady: Bool { desktopToken != nil && Date() < desktopExpiry && unlocked }
     func requestDesktopLogin() {
-        operation = Operation(title: "解锁管理会话", detail: "验证后，7 天内可连续保存密钥。每次查看或复制密钥仍需单独验证。手动锁定会取消管理授权。", arguments: ["unlock"])
+        operation = Operation(title: "解锁管理会话", detail: "验证后，7 天内可连续保存密钥。轮换或撤销凭证需要单独验证。手动锁定会取消管理授权。", arguments: ["unlock"])
     }
     func openOnboarding(_ url: URL) {
         guard let route = OnboardingRoute(url: url) else { error = "不支持的 Rekey 页面地址。"; return }
@@ -1382,12 +1362,6 @@ final class AppModel: ObservableObject {
         do { _ = try await saveAPIKey(label: label, secret: secret); await refresh(); return true }
         catch { rejectDesktopSession(error); self.error = error.localizedDescription; return false }
     }
-    func requestRevealCredential(_ id: String, copy: Bool) {
-        guard !busy, unlocked, selectedCredential == id else { return }
-        visibleSecret = nil; copiedCredential = nil
-        let detail = copy ? "请验证本次复制。密钥会写入系统剪贴板，并在 30 秒后清除本应用的那次写入。" : "请验证本次查看。切换条目、锁定或离开窗口后会隐藏密钥。"
-        operation = Operation(title: copy ? "复制密钥" : "显示密钥", detail: detail, arguments: ["desktop-reveal", id], reveal: CredentialReveal(id: id, copy: copy, workspace: stateDirectory, revision: nativeFlowRevision))
-    }
     func requestShutdown() {
         guard !busy, status != nil else { return }
         operation = Operation(title: "停止服务", detail: "请输入当前密码或恢复密钥。正在执行的操作会按服务的退出规则收尾。登录启动设置保持不变。", arguments: ["shutdown"], targetDirectory: stateDirectory)
@@ -1396,49 +1370,11 @@ final class AppModel: ObservableObject {
         guard !busy, status != nil, managesBackgroundService else { return }
         operation = Operation(title: "停止并停用登录启动", detail: "验证后先让服务收尾停止，再取消本用户的登录启动。保险库文件会保留。", arguments: ["shutdown"], targetDirectory: stateDirectory, unregisterBackgroundService: true)
     }
-    private func acceptsCredentialReveal(_ request: CredentialReveal) -> Bool {
-        acceptsNativeCompletion(request.revision, workspace: request.workspace) && selectedCredential == request.id
-    }
-    private func performReveal(_ request: CredentialReveal, proof: String, recovery: Bool, presence: Bool = false,
-                               readPresence: @escaping @Sendable (UUID) throws -> String = { try PresenceKey.read(vaultID: $0) }) async {
-        guard !busy, acceptsCredentialReveal(request), NSApp.isActive else { return }
-        busy = true; error = nil
-        defer { busy = false }
-        let client = cli
-        let outcome: Result<Data, Error>
-        do {
-            let operationProof: String
-            if presence { (operationProof, _) = try await readPresenceProof(client: client, revision: request.revision, read: readPresence) }
-            else { operationProof = proof }
-            guard acceptsCredentialReveal(request), !Task.isCancelled else { return }
-            outcome = await Task.detached { Result { try client.revealCredential(request.id, proof: operationProof, recovery: recovery, presence: presence) } }.value
-        } catch { outcome = .failure(error) }
-        _ = finishCredentialReveal(outcome, request: request, active: NSApp.isActive)
-    }
-    @discardableResult
-    func finishCredentialReveal(_ outcome: Result<Data, Error>, request: CredentialReveal, active: Bool) -> Bool {
-        guard acceptsCredentialReveal(request), active else { return false }
-        do {
-            let data = try outcome.get()
-            guard let text = String(data: data, encoding: .utf8) else { throw UIError(message: "此凭证不是可显示的 UTF-8 文本。") }
-            if request.copy {
-                let board = NSPasteboard.general
-                board.clearContents()
-                guard board.setString(text, forType: .string) else { throw UIError(message: "写入剪贴板失败。") }
-                copiedCredential = request.id
-                let revision = board.changeCount
-                DispatchQueue.main.asyncAfter(deadline: .now() + 30) {
-                    if board.changeCount == revision { board.clearContents() }
-                }
-            } else { visibleSecret = text }
-        } catch { visibleSecret = nil; self.error = error.localizedDescription }
-        return true
-    }
     func rejectDesktopSession(_ error: Error) {
         let message = error.localizedDescription
         if message.contains("INVALID_UNLOCK_CREDENTIAL") || message.contains("LOCKED") || message.contains("FAULTED") {
             PresenceKey.invalidateAuthentication()
-            desktopToken = nil; desktopExpiry = .distantPast; visibleSecret = nil; copiedCredential = nil
+            desktopToken = nil; desktopExpiry = .distantPast
         }
     }
     func clearCache() {
@@ -1446,7 +1382,7 @@ final class AppModel: ObservableObject {
         PresenceKey.invalidateAuthentication()
         clearNativeFlow(); clearOIDCLogin()
         oidcSessionFile = nil; oidcIdentity = nil
-        desktopToken = nil; visibleSecret = nil; copiedCredential = nil
+        desktopToken = nil
         notifiedApprovalIDs.removeAll()
         credentials = []; actions = []; approvals = []; approvalDetails = nil; policy = nil; audit = nil; selectedCredential = nil
     }
@@ -1466,7 +1402,7 @@ final class AppModel: ObservableObject {
         do {
             let current = try await Task.detached { try client.decode(ServiceStatus.self, passive ? ["status", "--passive"] : ["status"]) }.value
             status = current; connectionError = nil
-            if Date() >= desktopExpiry { desktopToken = nil; visibleSecret = nil; copiedCredential = nil }
+            if Date() >= desktopExpiry { desktopToken = nil }
             if !current.unlocked { clearCache() }
 
         } catch {
@@ -1557,10 +1493,6 @@ final class AppModel: ObservableObject {
                  readPresence: @escaping @Sendable (UUID) throws -> String = { try PresenceKey.read(vaultID: $0) }) async {
         if ["restore", "rollback-confirm"].contains(op.arguments.first ?? "") {
             error = "此操作必须先展示恢复上下文，再由专用确认入口提交。"; return
-        }
-        if let request = op.reveal {
-            await performReveal(request, proof: proof, recovery: recovery, presence: presence, readPresence: readPresence)
-            return
         }
         guard !busy else {
             if presence || op.temporaryFile != nil || op.templateRequest != nil || op.personalTrustVaultID != nil {
