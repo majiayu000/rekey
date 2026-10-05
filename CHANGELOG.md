@@ -1,9 +1,18 @@
 # Changelog
 
 All notable public changes are recorded here. Rekey uses semantic versioning
-for release identifiers, but prerelease compatibility is not guaranteed.
+for release identifiers. Vault25 / policy snapshot6 stay unchanged throughout v3,
+including prereleases; CLI and UI prerelease behavior may still change.
 
-## 3.0.0-alpha.1
+## 3.0.0-alpha.2
+
+**Requires reinitialization: no for vault25 / policy6.** Formats remain frozen.
+Split the Activity list comparison into explicitly typed expressions so the
+macOS release runner can compile it. Sorting and security behavior are unchanged.
+Alpha.1's immutable tag remains as the failed, unpublished build; alpha.2 carries
+that source plus this release fix. See [release notes](docs/releases/v3.0.0-alpha.2.md).
+
+## 3.0.0-alpha.1 (unpublished tag)
 
 **Requires reinitialization: yes.** Older formats are rejected, never migrated.
 Vault25 and policy snapshot6 are frozen from this alpha onward. All v3

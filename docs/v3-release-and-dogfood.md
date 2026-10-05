@@ -16,8 +16,10 @@ SMAppService 生命周期均**用户暂缓、未验证**；T12 仍暂缓。
 
 ## 交付进度
 
-下表是 tag 推送前的检查快照；公开发布及下载验收的当前结果以
-[GitHub release](https://github.com/majiayu000/rekey/releases/tag/v3.0.0-alpha.1)
+PR #62 已合并到 main（`fa7905a`），最终源码九项 CI 全绿。alpha.1 发布流程在 macOS Swift 编译时失败；保留原 tag，修复构建后以 alpha.2 重新发布，持久格式不变。
+
+下表是 alpha.2 tag 推送前的检查快照；公开发布及下载验收的当前结果以
+[GitHub release](https://github.com/majiayu000/rekey/releases/tag/v3.0.0-alpha.2)
 和对应 release workflow 为准。
 
 | 项目 | 状态 / 证据 |
@@ -25,7 +27,7 @@ SMAppService 生命周期均**用户暂缓、未验证**；T12 仍暂缓。
 | 停止扩展、冻结 vault25 / policy6 | 已写入 SPEC、AGENTS 与公开基线 |
 | relay 移出默认编译 | 已存在：无 lib；bin / test 的 required-features 均为 lab；无需新增代码 |
 | 安全核心审查 | 独立只读 reviewer 完成初审和修复复核，两项问题已关闭；范围为 presence / 签名 / gateway / 遮蔽 / 审批 / DoH；结果见[审查记录](evidence/v3-security-core-review-2026-10-05.md) |
-| PR 当前 CI | 基线 5de61bf、安全修复 e921357 与撤销审计修复 3035064 九项全绿；补充 Profile 映射及 SIGINT 修复后最终 head 待复验。最终本机完整 workspace 1033 passed / 0 failed / 6 ignored，default/lab all-targets 与严格 Clippy 通过 |
+| PR 当前 CI | PR #62 最终 head 339047a 九项全绿；本机完整 workspace 1033 passed / 0 failed / 6 ignored，default/lab all-targets 与严格 Clippy 通过。alpha.2 的 Swift 编译修复须通过新 PR CI |
 | 新版 App 真机三项、T12 | 用户暂缓；不能填“通过” |
 | 公开发布 | 未完成；必须用 main 上的最终提交触发既有 release workflow |
 | GitHub 签名配置 | 已使用现有签名材料补齐 Installer certificate / password / identity、App / daemon profile 五项；未覆盖已有六项，未输出任何凭据值 |
@@ -42,8 +44,8 @@ SMAppService 生命周期均**用户暂缓、未验证**；T12 仍暂缓。
 ## 发版顺序
 
 1. 当前 head 必需 CI 通过，关闭安全审查中确认的阻塞问题。
-2. 合并 PR #62（仓库 ruleset 仅允许 squash），取实际 main 提交；不强推 main。
-3. 核对 Cargo 版本与 `v3.0.0-alpha.1` 一致，确认 tag 不存在，再把 tag 指向该 main 提交。
+2. 合并当前修复 PR（#62 已合并；仓库 ruleset 仅允许 squash），取实际 main 提交；不强推 main。
+3. 核对 Cargo 版本与 `v3.0.0-alpha.2` 一致，确认 tag 不存在，再把 tag 指向该 main 提交。
 4. 用既有 release workflow 构建、签名、公证、验证 provenance / SBOM、
    fresh-install 并发布；公共 URL smoke 失败时沿用现有撤回机制。
 5. 记录 tag、main 提交、workflow URL、公开下载 URL、checksum 及最终 smoke 状态。

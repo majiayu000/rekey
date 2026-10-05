@@ -20,7 +20,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 DAEMON = pathlib.Path("Contents/Helpers/RekeyDaemon.app")
 LINK = "../../Helpers/RekeyDaemon.app/Contents/MacOS/rekeyd"
 TOOLS = ("rekey", "rekey-mcp", "rekey-policy-sign", "rekey-approval-sign")
-VERSION = "3.0.0-alpha.1"
+VERSION = "3.0.0-alpha.2"
 
 
 def run(argv, *, expected=0, **kwargs):
@@ -130,7 +130,7 @@ class PackageTests(unittest.TestCase):
     def test_daemon_identity_version_and_launch_target_must_match(self):
         path = self.app / DAEMON / "Contents/Info.plist"
         original = plistlib.loads(path.read_bytes())
-        for key, value in (("CFBundleIdentifier", "com.rekey.wrong"), ("RekeyVersion", "3.0.0-alpha.2")):
+        for key, value in (("CFBundleIdentifier", "com.rekey.wrong"), ("RekeyVersion", "0.0.0-synthetic-mismatch")):
             altered = dict(original, **{key: value})
             path.write_bytes(plistlib.dumps(altered))
             self.package("--unsigned", expected=1)
