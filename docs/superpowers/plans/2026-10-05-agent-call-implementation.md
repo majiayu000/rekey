@@ -1,8 +1,8 @@
 # Rekey 0.4 并行实现
 
-基线：`origin/main` @ `043a020`，整合分支 `codex/agent-call-model-20261005`。行为合同：[Agent 调用模型 SPEC](../specs/2026-10-05-rekey-agent-call-model.md)；§15 推荐值已采用。当前工作版本 `0.4.0-alpha.1`，vault/backup26、policy7，旧保险库在新目录重建，无迁移。
+基线：`origin/main` @ `043a020`，整合分支 `codex/agent-call-model-20261005`。行为合同：[Agent 调用模型 SPEC](../specs/2026-10-05-rekey-agent-call-model.md)；§15 推荐值已采用。本轮证据核查源head `f1a5ab9`（draft PR #68）；当前工作版本 `0.4.0-alpha.1`，vault/backup26、policy7，旧保险库在新目录重建，无迁移。
 
-复用 Authority、固定出站、审计、反射密封和 personal 签名流程，替换默认个人调用合同。三个执行 lane 使用独占工作树，integration 汇总，不覆盖原工作树未提交资料。
+复用 Authority、固定出站、审计、反射密封和 personal 签名流程，替换默认个人调用合同。三个执行 lane 使用独占工作树，integration 汇总，保留原工作树资料。
 
 | Lane | 所有权 | 实际交付 |
 |---|---|---|
@@ -29,20 +29,22 @@ AWAIT_APPROVAL / CANCEL_APPROVAL 复用 agent6/7，为本机无令牌审批合�
 | 里程碑 | 当前实现交付 | 尚未闭合 |
 |---|---|---|
 | M1 调用核心 | Connection / 规则 / Preset、CALL、CLI discovery/call/http/dry-run、错误 next、调用方只收紧、格式26/7；默认移除 run / Profile / 本机 capability。 | 通过软件测试不代替真实设备/Agent 验收；发布线还未冻结。 |
-| M2 MCP 与服务 | MCP 工具与动态操作、loopback HTTP 公开占位标记、connect/说明书/插件；MCP13 unit +11 stdio、HTTP 拒绝合同已绿。 | Claude 插件 user/project 隔离安装已通过；实际对话、完整 C15、公开下载安装仍待验。 |
-| M3 人在回路 | request/await/await_unlock、同规则审批窗口、App 完整 Connection 审阅签署与 Activity；Codex 已实际完成审批和访问请求链。 | Claude 账号阻塞；真实 Touch ID 次数/两分钟计时、App 通知与交互仍待验。 |
+| M2 MCP 与服务 | MCP 工具与动态操作、loopback HTTP 公开占位标记、connect/说明书/插件；MCP13 unit +11 stdio、HTTP 拒绝合同已绿。 | 历史Claude插件隔离安装已通过；用户排除本轮Claude C14/C15/C16，不再执行该客户端验收，未验项不记通过。公开下载安装仍待验。 |
+| M3 人在回路 | request/await/await_unlock、同规则审批窗口、App 完整 Connection 审阅签署与 Activity；Codex 已实际完成审批和访问请求链。 | 本轮Claude验收排除；真实 Touch ID 次数/两分钟计时、App 通知与交互仍待验。 |
 | M4 开发卫生 | daemon dotenv 预览/导入/私有备份与原子改写、精确 scan、受管 pre-commit；最终 workspace 中 broker/vault hygiene 已绿。 | App→签署→改写→真实 SDK 完整现场链仍待验；并发编辑残余窗口不作 CAS 承诺。 |
 | M5 SSH | Authority 内签名、标准 agent/session-bind、host/git 规则、Git smart HTTP；App 生成、公钥与完整 SSH 编辑/签署；真实 OpenSSH GitHub push 已通过并清理。 | 正式签名 App 上真实生成、host 登记和系统认证交互仍待验。 |
 | M6 OAuth 与 T1 | Google/GitHub/Slack/Notion 有限操作与用户 client、callback/refresh/cache/rotation；AWS AssumeRole、EKS、GitHub App 固定签名目标/权限/TTL；App 与 CLI adapter 已落地，delegated9 通过。 | 真实 OAuth provider 与云服务可用性仍待验；T1 明确把临时值交给进程。 |
-| M7 发布 | 默认指南/运维/候选说明、独立安全审查与专项修复、软件 gates、短 fuzz 与真实 Codex/SSH 证据；Codex 真实 GitHub 读/审批创建关闭分项已实测。 | Claude、真实 OAuth provider、完整C15/C16、签名包初始化/设备交互、公开 tag/包/下载/安装未闭合，未发布。 |
+| M7 发布 | 默认指南/运维/候选说明、独立安全审查与专项修复、软件 gates、短 fuzz 与真实 Codex/SSH 证据；Codex 真实 GitHub 读/审批创建关闭分项已实测。 | Claude场景按用户要求排除；真实OAuth/云服务、App设备C16、macOS旧脚本修复后CI、公开tag/包/下载/安装仍未闭合，未发布。 |
 
 SPEC 要求每个里程碑出预发布版本；目前仅汇总一个本地 `0.4.0-alpha.1` 候选，**没有把 M1–M7 分别公开预发布**。不得用源码交付或本地测试改写为“七个里程碑都已发布/冻结”。
 
 ## 检查与规模约束
 
-最终 `cargo test --workspace --no-fail-fast -- --test-threads=1` exit0，101 组汇总 **917 passed /0 failed /9 ignored**，原始日志 `/tmp/rekey-call-workspace-submission.log`。default/lab all-targets check 与 strict Clippy 已通过；完整命令、日志和 ignored 解释只在 canonical 报告维护。局部 worktree 的旧依赖检查失败保留为失败记录，不混入最终通过数。
+性能恢复前的整合 `cargo test --workspace --no-fail-fast -- --test-threads=1` exit0，101组汇总 **917 passed /0 failed /9 ignored**，原始日志 `/tmp/rekey-call-workspace-submission.log`。default/lab all-targets check 与 strict Clippy 已通过；完整命令、日志和 ignored 解释只在 canonical 报告维护。局部 worktree 的旧依赖检查失败保留为失败记录，不混入最终通过数。
 
-上述整合统计先于旧性能夹具恢复；perf lane全仓的一项计时失败和两次独立复跑结果在canonical报告记录，不混成全绿。性能60秒实跑1 passed，default新增1个ignored。上述整合统计包含 User-Agent、OAuth 生命周期修复、两项新增 OAuth 回归及三个原生 Agent 手动测试的编译；ignored 不计通过。原生 Codex 独立通过，真实 GitHub 双客户端整体测试因 Claude 账号仍失败，分项和总结果在 canonical 报告分别列明。
+上述整合统计先于旧性能夹具恢复；perf lane全仓的一项计时失败和两次独立复跑结果在canonical报告记录，不混成全绿。性能60秒实跑1 passed，default新增1个ignored。上述整合统计包含 User-Agent、OAuth 生命周期修复、两项新增 OAuth 回归及三个原生 Agent 手动测试的编译；ignored 不计通过。原生Codex独立通过；历史GitHub双客户端整体测试因当次Claude错误无实际读而失败，不推断当前账号状态。本轮用户排除该客户端验收，分项和总结果在canonical报告分别列明。
+
+当前源head `f1a5ab9` 的远端Linux P0通过，workspace918/0/7；macOS workspace917/0/10通过，但整个P0 job被旧 `test-human-vault` 的 `desktop-reveal` 调用阻断，修复后须另验。9个fuzz jobs通过；远端性能实跑1test/110.62秒、1001 CALL零错误及1015精确审计组，JSON的 `a7e98c9` 是PR merge ref，不是源head。当前Developer ID bundle已build和严格签名校验，但尚未发布或安装；日志与界限统一见canonical报告。
 
 旧 policy6 / Profile / G2 runtime 夹具作为 lab 企业储备保留；lab gate 只声明 `--features lab` all-targets 编译/Clippy 和归档脚本语法，不声称旧运行时验收通过。默认 P0 fault、备份耐久、ENOSPC、crypto、机械和 fuzz 门槛仍保留，不能用归档来掩盖新合同失败。
 
