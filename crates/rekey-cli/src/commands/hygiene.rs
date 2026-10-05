@@ -1,4 +1,5 @@
 //! File contents travel only in bounded Agent frame bodies. Import is daemon-owned.
+#[cfg(target_os = "macos")]
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};

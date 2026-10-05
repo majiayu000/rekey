@@ -83,10 +83,13 @@ jobs:
           REKEY_PERF_REPORT: ${{ github.workspace }}/target/performance-report.json
         run: |
           set -euo pipefail
+          # Each run must produce its own report, including when no test matches.
+          rm -f target/performance-report.json
           /usr/bin/time -v -o target/performance-time.txt \
             cargo test --locked -p rekey-broker --test performance_baseline \
               performance_and_soak_baseline -- --ignored --exact --nocapture \
               2>&1 | tee target/performance-test.log
+          test -s target/performance-report.json
       - name: Upload exact-run evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

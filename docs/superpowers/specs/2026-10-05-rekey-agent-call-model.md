@@ -612,7 +612,7 @@ GitHub App 的根载荷为 `github-app-root-v1`（CredentialKind `github-app-ins
 | C15 | 真实 Agent | Claude Code 和 Codex 在不经任何包装的情况下完成 U2–U5（合成上游，加一次真实 GitHub 测试仓库） |
 | C16 | 体验 | 已安装用户：添加 GitHub PAT 到 Claude Code 首次成功调用，总时长不超过 2 分钟，密码最多 1 次，Touch ID 最多 2 次 |
 
-现有 P0、fuzz、性能门槛全部保留；新增 fuzz 目标：规则路径匹配器、dotenv 解析器、SSH agent 协议解析器。
+现有 P0、fuzz、性能门槛全部保留；新增 fuzz 目标：规则路径匹配器、dotenv 解析器、SSH agent 协议解析器。 性能夹具必须使用签名 Connection 和无令牌 CALL，保留生产 KDF、Authority 队列/IPC 容量、500 次审计、4 MiB 密封、备份干扰、锁定/关停和 soak；旧 capability 的每 Session 四 permit 指标随该模型作废，该 UDS 性能夹具测量实际 IPC 请求处理器容量。默认 CI 必须实际执行测试并生成本次报告，不能将 lab 条件下的零测试视为通过。
 
 ---
 

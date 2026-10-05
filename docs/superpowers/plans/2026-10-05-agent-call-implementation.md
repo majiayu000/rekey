@@ -42,7 +42,7 @@ SPEC 要求每个里程碑出预发布版本；目前仅汇总一个本地 `0.4.
 
 最终 `cargo test --workspace --no-fail-fast -- --test-threads=1` exit0，101 组汇总 **917 passed /0 failed /9 ignored**，原始日志 `/tmp/rekey-call-workspace-submission.log`。default/lab all-targets check 与 strict Clippy 已通过；完整命令、日志和 ignored 解释只在 canonical 报告维护。局部 worktree 的旧依赖检查失败保留为失败记录，不混入最终通过数。
 
-上述最终统计包含 User-Agent、OAuth 生命周期修复、两项新增 OAuth 回归及三个原生 Agent 手动测试的编译；ignored 不计通过。原生 Codex 独立通过，真实 GitHub 双客户端整体测试因 Claude 账号仍失败，分项和总结果在 canonical 报告分别列明。
+上述整合统计先于旧性能夹具恢复；perf lane全仓的一项计时失败和两次独立复跑结果在canonical报告记录，不混成全绿。性能60秒实跑1 passed，default新增1个ignored。上述整合统计包含 User-Agent、OAuth 生命周期修复、两项新增 OAuth 回归及三个原生 Agent 手动测试的编译；ignored 不计通过。原生 Codex 独立通过，真实 GitHub 双客户端整体测试因 Claude 账号仍失败，分项和总结果在 canonical 报告分别列明。
 
 旧 policy6 / Profile / G2 runtime 夹具作为 lab 企业储备保留；lab gate 只声明 `--features lab` all-targets 编译/Clippy 和归档脚本语法，不声称旧运行时验收通过。默认 P0 fault、备份耐久、ENOSPC、crypto、机械和 fuzz 门槛仍保留，不能用归档来掩盖新合同失败。
 

@@ -1,5 +1,7 @@
 # Performance and soak baseline
 
+The current 0.4 fixture uses signed Connections and token-free CALL. The 2026-09-02 H-07 result below belongs to the historical capability model and is not 0.4 acceptance evidence.
+
 Rekey's H-07 gate is a repeatable capacity and stability baseline, not a public
 throughput SLO. It exercises real IPC, policy evaluation, envelope decryption,
 SQLite audit commits, lock/unlock, backup, response sealing, and shutdown. The
@@ -17,11 +19,12 @@ The ignored `performance_and_soak_baseline` integration test records:
   held simultaneously, with one overload responder reserved inside each
   channel's 120/8 budget. Concurrent additional connections on both sockets
   must receive retryable `AUTHORITY_BUSY` instead of a silent close.
-- Four held execution permits for one session. A fifth permit must return
-  `INVALID_CAPABILITY`, and a released slot must be reusable.
+- The current local model has no capability session. This UDS baseline measures
+  the actual IPC request-handler budget above; the historical four-per-session
+  permit metric is retired with personal capability sessions.
 - Twelve 4 MiB response-sealing samples with p50/p95/p99/max latency and RSS.
 - 500 durable audit commits with p50/p95/p99/max latency and commits per second.
-- Repeated fixed-action execution with the production 64 MiB Argon2 profile,
+- Repeated signed Connection CALL with the production 64 MiB Argon2 profile,
   periodic lock/unlock, periodic backup, current and high-water RSS, error rate,
   and exact durable started/terminal audit counts during soak.
 - Backup while one remote effect is in flight, and shutdown while one admitted
@@ -66,7 +69,7 @@ Set `REKEY_SOAK_SECONDS` from 30 through 3600. Local results are diagnostic;
 closeout evidence must identify one fixed host and must not be compared with a
 GitHub-hosted run unless the full environment fingerprint matches.
 
-## H-07 closeout result
+## Historical H-07 closeout result (capability model)
 
 The fixed-host 1,800-second closeout passed on 2026-09-02 at merge commit
 `83da2233f73dbd996d9c23af0e12937840a41c03`: macOS 26.5.1 (Darwin 25.5.0),

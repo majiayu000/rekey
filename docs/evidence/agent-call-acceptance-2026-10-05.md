@@ -20,7 +20,7 @@
 | 原生 Codex | 真实 Codex 六个 MCP 工具的 U2–U5 合成上游链通过，1 passed、2 filtered、67.74秒；软件 P256 与合成 Presence 模拟用户批准，trace 无 canary。 | `e54a2dd` 的 `crates/rekey-broker/tests/native_agents.rs`；`/tmp/rekey-clients-native-codex.log` |
 | Codex / 真实 GitHub 分项 | GitHub preflight200，原生 Codex 实际 read200；Rekey Presence 审批 POST201 创建 issue67，再审批 PATCH200 关闭，typed audit 校验和秘密未泄漏检查通过。整体双客户端测试仍 exit101，因 Claude 无实际读。 | [native_agents](../../crates/rekey-broker/tests/native_agents.rs)，`/tmp/rekey-clients-live-github-ua-fixed.log`，74.07秒 |
 
-最终整合检查 `cargo test --workspace --no-fail-fast -- --test-threads=1` **exit0**。最终源代码包括两项OAuth回归、插件marketplace与修复脚本；按 `/tmp/rekey-call-workspace-submission.log` 的101个 `test result` 行相加，合计 **917 passed /0 failed /9 ignored /0 filtered**。通过数包含 broker lib188、MCP unit13/stdio11、CLI agent_call6、个人 Connection8、delegated9、SSH UDS4 与完整 vault 回归，不重复加到917。
+最终整合检查 `cargo test --workspace --no-fail-fast -- --test-threads=1` **exit0**。该轮源代码包括两项OAuth回归、插件marketplace与修复脚本，先于性能夹具恢复；按 `/tmp/rekey-call-workspace-submission.log` 的101个 `test result` 行相加，合计 **917 passed /0 failed /9 ignored /0 filtered**。Linux平台导入修正后的整合目录又以4线程通过同样917/0/9（`/tmp/rekey-call-workspace-current-ci-fixes.log`）；此轮仍先于性能夹具恢复为默认ignored。通过数包含 broker lib188、MCP unit13/stdio11、CLI agent_call6、个人 Connection8、delegated9、SSH UDS4 与完整 vault 回归，不重复加到917。
 
 9个 ignored 为：broker owner 子进程辅助夹具1、generation rollback 子进程辅助夹具1、手动 live SSH1、旧 SDK Claude/Codex 场景2、原生 Agent 手动场景3、正式签名 peer identity1。它们未在这轮自动测试直接通过；live SSH另有独立实跑记录，子进程 helper 由各自父测试调用，旧 SDK 与设备项不能借 ignored 宣称完成。默认 cfg 排除的 lab targets 显示0项测试也不代表其 runtime 通过。前一轮旧 `broker_ipc` 夹具的 `INVALID_FRAME` 失败保留在 `/tmp/rekey-clients-workspace-m6-fixed.log`，最终修复后的全仓绿不改写旧日志。
 
@@ -35,6 +35,10 @@
 | 完整 workspace | `cargo test --workspace --no-fail-fast -- --test-threads=1` | `/tmp/rekey-call-workspace-submission.log`，exit0，917/0/9 |
 | Rules fuzz smoke | [`connection_rules`](../../fuzz/fuzz_targets/connection_rules.rs)，41,065次 | `/tmp/rekey-call-fuzz-rules-final.log`，exit0，OOM/timeout/crash=0/0/0 |
 | SSH ASan fuzz smoke | [`ssh_agent`](../../fuzz/fuzz_targets/ssh_agent.rs)，38,124次 | `/tmp/rekey-hygiene-m7-fuzz-ssh-agent.log`，exit0，OOM/timeout/crash=0/0/0 |
+
+恢复性能夹具之后，默认suite会多发现1个ignored benchmark。perf worktree的完整workspace为 **916 passed /1 failed /10 ignored**（`/tmp/rekey-perf-workspace-test.log`）；唯一失败是未修改的 `successful_admin_lists_reset_idle_activity` 的30ms相对计时断言。其serial exact独立复跑两次均exit0（`/tmp/rekey-perf-idle-rerun1.log`、`/tmp/rekey-perf-idle-rerun2.log`）。CPU争用是可能解释，尚未独立证明原因；保留失败，不改Vault代码/阈值，不将该lane全仓说成通过。
+
+性能门槛已恢复为默认可选中的签名Connection/CALL，独立60秒soak **1 passed /0 failed**，总运行100.92秒含setup，日志 `/tmp/rekey-perf-current-run.log`，JSON `/tmp/rekey-perf-current-report.json`。1927调用/0错误，1941 started/terminal/finished精确配对；512 queue尝试中128接受/384busy、500 durable audit、119/7 IPC handlers及各1reserve、12×4MiB密封、3次lock/unlock、2次周期备份、备份干扰和shutdown drain1均通过，RSS窗口差-4602KiB在64MiB增长上限内。原capability每Session四permit随模型作废，其余门槛保持。该本机报告在提交前执行，JSON commit标记为基底d6937e2；对应fixture文件完整提交为7c2d783，不把基底hash当作未提交源码快照。default/lab all-targets check与scoped strict Clippy通过，独立审阅无finding。CI先删旧JSON再要求本次非空报告，防止零测试/旧报告假绿。
 
 Rules/SSH fuzz 都是短 smoke，不是长期 fuzz 或漏洞不存在证明。dotenv / secret_scan 此前各有1000次局部执行报告，但本次未找到原始日志，不补编日志，不作为最终发布 gate 通过证据。旧 hygiene 规则 fuzz 日志曾产生 crash，不能拿其当最终绿；上表引用的是修复后的独立最终 rules 日志。CI 配置存在不等于远端 GitHub workflow 已成功运行。
 
@@ -92,3 +96,5 @@ C10 真实 push 使用 `majiayu000/rekey` 临时 deploy key 和 ref，结束后�
 新增IPC共12个（agent9–16、admin62–65，复用agent6/7），以 [ipc常量](../../crates/rekey-domain/src/ipc.rs)核对。OAuth/T1 与 App 源码已落地；M1–M7没有分别公开预发布，也没有按里程碑完成生产/测试LOC拆分，≤3000生产净增目标尚未证明。
 
 M7 尚未闭合：Claude与完整C15、真实provider、C16、App设备交互、公开预发布下载/安装仍待补。最终本机软件gate绿不等于候选版冻结或已经发布。未创建公开 tag 或发布，不将候选文档当成可下载 release 的证据。新日志应更新本报告中的对应行并附实际命令、时间、版本和结果，不能凭实现代码把待验改为通过。
+
+远端PR为[#68](https://github.com/majiayu000/rekey/pull/68)，保留draft。首个head的9个fuzz jobs通过，Linux P0因仅macOS使用的Write导入而strict Clippy失败，平台条件已修复、本机CLI hygiene14通过；旧performance success实际0 tests，不作为验收。最终head的CI仍须重新通过。main活跃ruleset还要求旧Linux G2 context，SPEC已移入lab；合并前需maintainer对齐必检规则，不以lab编译冒充G2运行验收。
