@@ -1,4 +1,3 @@
-#![cfg(feature = "lab")]
 //! Repeatable H-07 performance, capacity, and soak evidence.
 //!
 //! This test is ignored by the ordinary workspace suite. The dedicated
@@ -16,13 +15,11 @@ use rekey_broker::runtime::{
     CAPACITY_REPLY_CONNECTIONS_PER_CHANNEL, MAX_ADMIN_CONNECTIONS, MAX_ADMIN_REQUEST_CONNECTIONS,
     MAX_AGENT_CONNECTIONS, MAX_AGENT_REQUEST_CONNECTIONS,
 };
-use rekey_broker::session::SessionRegistry;
 use rekey_broker::upstream::UpstreamResponse;
-use rekey_domain::Timestamp;
-use rekey_domain::authorization::Principal;
-use rekey_domain::capability::{ActionVersionRef, SESSION_MAX_CONCURRENT_EXECUTIONS, SessionGrant};
-use rekey_domain::ids::{ActionId, PrincipalId, RequestId, SessionId, TenantId};
-use rekey_domain::ipc::{self, Channel, FrameHeader, admin_msg, agent_msg};
+use rekey_domain::action::{FixedMethod, HttpsOrigin};
+use rekey_domain::connection::{ConnectionRule, MethodSelector, RuleEffect};
+use rekey_domain::ids::{PolicyRuleId, RequestId};
+use rekey_domain::ipc::{self, CallMeta, Channel, FrameHeader, admin_msg, agent_msg};
 use rekey_vault::bootstrap::{confirm_vault_init, init_vault};
 use rekey_vault::command::{AuditDraft, UnlockProof};
 use rekey_vault::crypto::kdf::Argon2Params;
@@ -38,7 +35,7 @@ use tokio::task::JoinSet;
 
 const LARGE_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 const RESPONSE_SEALING_SAMPLES: usize = 12;
-const SESSION_USES: u32 = 10_000;
+const CONNECTION: &str = "performance";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "run through the performance-baseline workflow"]
@@ -57,15 +54,12 @@ async fn performance_and_soak_baseline() {
     )
     .await;
     let ipc_capacity = measure_ipc_capacity(&broker).await;
-    let session_capacity = measure_session_capacity();
     common::unlock(&broker).await;
     let credential_id = common::add_credential(&broker, "performance", b"performance-secret").await;
-    let (action_id, version) = create_large_action(&broker, &credential_id).await;
-    let mut token = create_session(&broker, &action_id, version).await;
+    activate_connection(&broker, &credential_id).await;
 
-    let response_sealing = measure_response_sealing(&broker, &token, &action_id, version).await;
-    let backup_interference =
-        measure_backup_interference(&broker, &token, &action_id, version).await;
+    let response_sealing = measure_response_sealing(&broker).await;
+    let backup_interference = measure_backup_interference(&broker).await;
 
     let soak_started = Instant::now();
     let soak_deadline = soak_started + Duration::from_secs(soak_seconds);
@@ -80,17 +74,11 @@ async fn performance_and_soak_baseline() {
     let mut backup_latencies = Vec::new();
     let mut rss_samples = Vec::new();
     let mut unexpected_errors = 0u64;
-    let mut session_uses = 0u32;
     let mut backup_index = 0u64;
 
     while Instant::now() < soak_deadline {
-        if session_uses >= SESSION_USES - 100 {
-            token = create_session(&broker, &action_id, version).await;
-            session_uses = 0;
-        }
-        let (latency, response) = execute(&broker, &token, &action_id, version).await;
+        let (latency, response) = execute(&broker).await;
         execution_latencies.push(latency.as_micros());
-        session_uses += 1;
         if response.message_type != ipc::resp_msg::OK {
             unexpected_errors += 1;
             eprintln!(
@@ -115,8 +103,6 @@ async fn performance_and_soak_baseline() {
             .ok();
             common::unlock(&broker).await;
             let lock_unlock_latency = started.elapsed();
-            token = create_session(&broker, &action_id, version).await;
-            session_uses = 0;
             lock_latencies.push(lock_unlock_latency.as_micros());
             next_lock += Duration::from_secs(lock_interval);
         }
@@ -148,8 +134,7 @@ async fn performance_and_soak_baseline() {
     assert!(!execution_latencies.is_empty());
     assert_memory_stable(&rss_samples);
 
-    let (shutdown_drain, drained_executions) =
-        measure_shutdown_drain(&broker, &token, &action_id, version).await;
+    let (shutdown_drain, drained_executions) = measure_shutdown_drain(&broker).await;
     let state_dir = broker.state_dir.clone();
     let serve_task = broker.serve_task;
     tokio::time::timeout(Duration::from_secs(15), serve_task)
@@ -214,13 +199,11 @@ async fn performance_and_soak_baseline() {
             "admin_request_handlers": MAX_ADMIN_REQUEST_CONNECTIONS,
             "capacity_reply_reserve_per_channel": CAPACITY_REPLY_CONNECTIONS_PER_CHANNEL,
             "total_connection_budget": MAX_AGENT_CONNECTIONS + MAX_ADMIN_CONNECTIONS,
-            "session_concurrency": 4,
             "large_response_bytes": LARGE_RESPONSE_BYTES,
             "soak_seconds": soak_seconds,
         },
         "authority_queue_and_audit": queue,
         "ipc_capacity": ipc_capacity,
-        "session_capacity": session_capacity,
         "response_sealing": response_sealing,
         "backup_interference": backup_interference,
         "soak": {
@@ -445,76 +428,70 @@ async fn release_connections(streams: Vec<UnixStream>) {
     }
 }
 
-async fn create_large_action(broker: &common::TestBroker, credential_id: &str) -> (String, u64) {
-    let mut meta = common::action_meta(credential_id);
-    meta["response_max_bytes"] = json!(LARGE_RESPONSE_BYTES);
-    let response = common::call(
-        &broker.admin_sock(),
-        Channel::Admin,
-        admin_msg::ACTION_CREATE,
-        meta.to_string().as_bytes(),
-        &common::proof_body(common::PASSWORD),
+async fn activate_connection(broker: &common::TestBroker, credential_id: &str) {
+    let mut connection = rekey_policy::presets::generic_preset(
+        HttpsOrigin::parse("https://api.example.com").unwrap(),
+        "authorization",
+        "Bearer ",
     )
-    .await;
-    let ok = response.ok();
-    (
-        ok["id"].as_str().unwrap().to_owned(),
-        ok["version"].as_u64().unwrap(),
-    )
-}
-
-async fn create_session(broker: &common::TestBroker, action_id: &str, version: u64) -> String {
-    let principal = PrincipalId::new_random().to_string();
-    common::activate_test_policy(broker, action_id, version, &principal).await;
-    let meta = json!({
-        "actions": [{"action_id": action_id, "version": version}],
-        "ttl_ms": 3_600_000,
-        "max_uses": SESSION_USES,
-        "principal_id": principal,
+    .unwrap()
+    .connection(CONNECTION.into(), credential_id.parse().unwrap());
+    connection.rules = vec![ConnectionRule {
+        id: PolicyRuleId::new_random(),
+        methods: MethodSelector::Methods(vec![FixedMethod::Get]),
+        path: "/performance".into(),
+        effect: RuleEffect::Allow,
+    }];
+    // The bounded 3,600-second soak must measure execution, not exhaust its
+    // signed hourly allowance at the fixture's 20 ms pacing interval.
+    connection.limits.requests_per_hour = 1_000_000;
+    connection.limits.max_response_bytes = LARGE_RESPONSE_BYTES as u32;
+    let snapshot = json!({
+        "format_version": 7,
+        "version": 1,
+        "expires_at_ms": 4_102_444_800_000_i64,
+        "approvers": [],
+        "connections": [connection],
+        "ssh_keys": [],
+        "derived_credentials": [],
+        "profiles": [],
+        "workload_identities": [],
+        "bindings": [],
+        "rules": [],
     });
-    let response = common::call(
-        &broker.admin_sock(),
-        Channel::Admin,
-        admin_msg::SESSION_CREATE,
-        meta.to_string().as_bytes(),
-        &common::proof_body(common::PASSWORD),
-    )
-    .await;
-    let ok = response.ok();
-    ok["capability_token"].as_str().unwrap().to_owned()
+    common::policy::activate_snapshot(broker, snapshot).await;
 }
 
-async fn execute(
-    broker: &common::TestBroker,
-    token: &str,
-    action_id: &str,
-    version: u64,
-) -> (Duration, common::WireResponse) {
-    let meta = common::execute_meta(token, action_id, version);
+fn call_metadata() -> Vec<u8> {
+    serde_json::to_vec(&CallMeta::http(
+        CONNECTION.into(),
+        FixedMethod::Get,
+        "/performance".into(),
+    ))
+    .unwrap()
+}
+
+async fn execute(broker: &common::TestBroker) -> (Duration, common::WireResponse) {
+    let metadata = call_metadata();
     let started = Instant::now();
     let response = common::call(
         &broker.agent_sock(),
         Channel::Agent,
-        agent_msg::EXECUTE_FIXED_HTTP_ACTION,
-        meta.to_string().as_bytes(),
+        agent_msg::CALL,
+        &metadata,
         b"{}",
     )
     .await;
     (started.elapsed(), response)
 }
 
-async fn measure_response_sealing(
-    broker: &common::TestBroker,
-    token: &str,
-    action_id: &str,
-    version: u64,
-) -> Value {
+async fn measure_response_sealing(broker: &common::TestBroker) -> Value {
     let mut latencies = Vec::new();
     for _ in 0..RESPONSE_SEALING_SAMPLES {
         broker
             .fake
             .push_response(Ok(clean_response(LARGE_RESPONSE_BYTES)));
-        let (latency, response) = execute(broker, token, action_id, version).await;
+        let (latency, response) = execute(broker).await;
         response.ok();
         assert_eq!(response.body.len(), LARGE_RESPONSE_BYTES);
         latencies.push(latency.as_micros());
@@ -527,67 +504,13 @@ async fn measure_response_sealing(
     })
 }
 
-fn measure_session_capacity() -> Value {
-    let registry = Arc::new(SessionRegistry::new());
-    registry.open_for_admission();
-    let session_id = SessionId::new_random();
-    let action = ActionVersionRef {
-        action_id: ActionId::new_random(),
-        version: 1,
-    };
-    let now = Timestamp::from_unix_ms(1_000);
-    let grant = SessionGrant::new(
-        session_id,
-        Principal {
-            tenant_id: TenantId::new_random(),
-            principal_id: PrincipalId::new_random(),
-            session_id,
-        },
-        vec![action],
-        now,
-        60_000,
-        100,
-    )
-    .unwrap();
-    let token = registry.admit(grant, vec![(action, 30_000)]).unwrap();
-    let held: Vec<_> = (0..SESSION_MAX_CONCURRENT_EXECUTIONS)
-        .map(|_| registry.acquire(&token, action, now).unwrap())
-        .collect();
-    assert_eq!(
-        registry.in_flight_total(),
-        SESSION_MAX_CONCURRENT_EXECUTIONS
-    );
-    let rejected = match registry.acquire(&token, action, now) {
-        Ok(_) => panic!("fifth concurrent execution was admitted"),
-        Err(error) => error,
-    };
-    assert!(matches!(
-        rejected,
-        rekey_broker::error::BrokerError::Domain(rekey_domain::DomainError::InvalidCapability)
-    ));
-    drop(held);
-    assert_eq!(registry.in_flight_total(), 0);
-    let retry = registry.acquire(&token, action, now).unwrap();
-    drop(retry);
-    json!({
-        "capacity": SESSION_MAX_CONCURRENT_EXECUTIONS,
-        "fifth_attempt_error": "INVALID_CAPABILITY",
-        "slot_reusable_after_release": true,
-    })
-}
-
-async fn measure_backup_interference(
-    broker: &common::TestBroker,
-    token: &str,
-    action_id: &str,
-    version: u64,
-) -> Value {
+async fn measure_backup_interference(broker: &common::TestBroker) -> Value {
     broker.fake.take_requests();
     broker
         .fake
         .push_response_delayed(Ok(clean_response(32)), Duration::from_millis(100));
     let execution_started = Instant::now();
-    let executions = concurrent_execute_task(broker, token, action_id, version, 1);
+    let executions = concurrent_execute_task(broker, 1);
     tokio::time::timeout(Duration::from_secs(2), async {
         while broker.fake.requests.lock().unwrap().is_empty() {
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -617,27 +540,19 @@ async fn measure_backup_interference(
 
 fn concurrent_execute_task(
     broker: &common::TestBroker,
-    token: &str,
-    action_id: &str,
-    version: u64,
     count: usize,
 ) -> tokio::task::JoinHandle<Vec<common::WireResponse>> {
     let socket = broker.agent_sock();
-    let token = token.to_owned();
-    let action_id = action_id.to_owned();
     tokio::spawn(async move {
         let mut tasks = JoinSet::new();
         for _ in 0..count {
             let socket = socket.clone();
-            let token = token.clone();
-            let action_id = action_id.clone();
             tasks.spawn(async move {
-                let meta = common::execute_meta(&token, &action_id, version);
                 common::call(
                     &socket,
                     Channel::Agent,
-                    agent_msg::EXECUTE_FIXED_HTTP_ACTION,
-                    meta.to_string().as_bytes(),
+                    agent_msg::CALL,
+                    &call_metadata(),
                     b"{}",
                 )
                 .await
@@ -664,21 +579,14 @@ async fn backup(broker: &common::TestBroker, output: &Path) {
     .ok();
 }
 
-async fn measure_shutdown_drain(
-    broker: &common::TestBroker,
-    token: &str,
-    action_id: &str,
-    version: u64,
-) -> (Duration, usize) {
+async fn measure_shutdown_drain(broker: &common::TestBroker) -> (Duration, usize) {
     broker.fake.take_requests();
     let release_effect = broker.fake.push_response_gated(Ok(clean_response(32)));
-    let metadata = common::execute_meta(token, action_id, version)
-        .to_string()
-        .into_bytes();
+    let metadata = call_metadata();
     let header = FrameHeader {
         channel: Channel::Agent,
         flags: 0,
-        message_type: agent_msg::EXECUTE_FIXED_HTTP_ACTION,
+        message_type: agent_msg::CALL,
         request_id: RequestId::new_random(),
         metadata_len: metadata.len() as u32,
         body_len: 2,
