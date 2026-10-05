@@ -799,10 +799,11 @@ struct ActivitySnapshot {
         return result
     }
     var rows: [ActivityRow] {
-        groups.values.sorted {
-            let a = $0.context, b = $1.context
-            return [a?.profile_name ?? "", a?.policy_sha256 ?? "", a?.instance_slug ?? "", a?.capability ?? "", a?.model ?? ""]
-                .lexicographicallyPrecedes([b?.profile_name ?? "", b?.policy_sha256 ?? "", b?.instance_slug ?? "", b?.capability ?? "", b?.model ?? ""])
+        groups.values.sorted { (lhs: ActivityRow, rhs: ActivityRow) in
+            let a = lhs.context, b = rhs.context
+            let left: [String] = [a?.profile_name ?? "", a?.policy_sha256 ?? "", a?.instance_slug ?? "", a?.capability ?? "", a?.model ?? ""]
+            let right: [String] = [b?.profile_name ?? "", b?.policy_sha256 ?? "", b?.instance_slug ?? "", b?.capability ?? "", b?.model ?? ""]
+            return left.lexicographicallyPrecedes(right)
         }
     }
     mutating func ingest(_ page: AuditPage) throws {

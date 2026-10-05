@@ -7,7 +7,7 @@
 
 ## What is this
 
-Rekey v3 personal-first Credential Authority (`3.0.0-alpha.1`, alpha). Agents call fixed or template,
+Rekey v3 personal-first Credential Authority (`3.0.0-alpha.2`, alpha). Agents call fixed or template,
 admin-registered actions through a capability token and never see real
 credentials. Breaking rewrite — no v1 vault, MITM, system CA, dashboard,
 single-port proxy, or TCP passthrough exists anymore.

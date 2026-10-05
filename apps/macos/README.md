@@ -1,6 +1,6 @@
 # Rekey macOS UI
 
-原生 SwiftUI 本机管理客户端。当前版本为 **3.0.0-alpha.1（alpha）**，vault25 / policy6 已冻结并覆盖全部 v3 版本。需要 macOS 14+ 和 Xcode Command Line Tools；无需 Node、浏览器服务或新数据库。新版 App 交互与登录项真机验收由用户暂缓，仍未验证，不以软件检查宣称 L1/L2。
+原生 SwiftUI 本机管理客户端。当前版本为 **3.0.0-alpha.2（alpha）**，vault25 / policy6 已冻结并覆盖全部 v3 版本。需要 macOS 14+ 和 Xcode Command Line Tools；无需 Node、浏览器服务或新数据库。新版 App 交互与登录项真机验收由用户暂缓，仍未验证，不以软件检查宣称 L1/L2。
 
 ## 构建与打开
 
@@ -13,7 +13,7 @@ open target/macos-ui/Rekey.app
 
 正式构建需要两个独立 provisioning profile：App 标识符 `com.starlight.rekey`，内嵌 `Contents/Helpers/RekeyDaemon.app` 标识符 `com.rekey.rekeyd`，二者属于同一签名 Team 并授权 `<TeamID>.com.rekey` 访问组。构建脚本分别嵌入 profile 和对应 entitlement；独立 CLI 不加入访问组。release 的 macos-ui job 需要 base64 编码的 `APPLE_PROVISIONING_PROFILE` 与 `APPLE_DAEMON_PROVISIONING_PROFILE` secrets。缺失或不匹配会停止正式 App 构建；源码 ad-hoc 构建仍可管理密码，但不能使用受保护的系统认证授权。profile 的最终授权由 macOS 验证，构建检查不代表 V1 通过。依据 [Apple TN3125](https://developer.apple.com/documentation/technotes/tn3125-inside-code-signing-provisioning-profiles)。
 
-版本来自 Cargo metadata 中 `rekey-cli` 继承的 workspace version。完整 SemVer 保存在 Info.plist 的 `RekeyVersion`；`CFBundleShortVersionString` 和 `CFBundleVersion` 使用数字主、次、补丁版本，例如 `3.0.0-alpha.1` 对应 `3.0.0`。不实现 alpha/rc 排序映射。
+版本来自 Cargo metadata 中 `rekey-cli` 继承的 workspace version。完整 SemVer 保存在 Info.plist 的 `RekeyVersion`；`CFBundleShortVersionString` 和 `CFBundleVersion` 使用数字主、次、补丁版本，例如 `3.0.0-alpha.2` 对应 `3.0.0`。不实现 alpha/rc 排序映射。
 
 ## 组装 macOS pkg
 
