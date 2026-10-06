@@ -20,7 +20,7 @@
 
 ### Rekey 0.3 威胁模型与保护边界（v3 设计）
 
-路径为历史链接兼容而保留，本文描述 **0.3.0-alpha.1 未发布候选**。
+路径为历史链接兼容而保留，本文描述 **0.3.0-alpha.2 未发布候选**。
 行为依据是 [v3 SPEC](../superpowers/specs/2026-10-02-rekey-v3-personal-first.md)，
 不是历史v2档案或未来企业方案。证据与未验项见[功能事实矩阵](feature-truth-matrix.md)。
 vault25 / policy6已于2026-10-05冻结，继续覆盖全部0.3版本，包括预发布；改号不改变安全模型；此维护约束不提升安全等级或代替设备验收。
@@ -137,6 +137,9 @@ capability目的地。Host/Origin/auth/path/header/body都受限，审批控制�
 SSE原始tools/thinking字节保持，raw bytes和decoded JSON字符串均检查；初始值、delta、
 done快照与SDK有序text投影共用有界遮蔽上下文，包括Anthropic交错文本块的block index顺序。未知跨delta语义或超限拒绝。
 首字节前的安全拒绝保留RESPONSE_SECURITY_VIOLATION与不可重试属性；已发SSE后失败中止正文。
+2026-10-06 本机修复候选在完整检测后回收已发 raw 前缀及不再需要的工具元数据尾；
+累计 wire 和 retained 限额仍生效，真实 needle 前缀和编码标记仍可能保留到限额。
+已有 4MiB fixture 通过不代表任意元数据流都可接受。
 完成帧必须等EOF与durable结算后释放；取消/断开仍由Supervisor终态记账。
 支持的raw/base64/base64url/hex/percent/JSON表示有限，嵌入base64完整对齐保证要求
 秘密至少16字节；短Key给固定警告。无法保证任意变换/压缩/加密/侧信道均被识别。

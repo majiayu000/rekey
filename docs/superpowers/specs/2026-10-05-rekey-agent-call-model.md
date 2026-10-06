@@ -3,6 +3,7 @@
 **状态**：冻结（Accepted）。2026-10-05 用户授权按本文并行实现；§15 采用推荐值。
 **日期**：2026-10-05
 **基线**：`origin/main` @ `043a020`（v0.3.0-alpha.1，vault25 / policy6 已冻结）。
+**整合边界（2026-10-06）**：继承 `main` @ `0828fca` 的 0.3.0-alpha.2 SSE、首次 HTTP handoff 与认证用量账本优化；当前发布线仍为 0.4.0-alpha.1、vault26 / policy7。0.3 的发布记录和测量只适用于原源码；整合后的软件门禁与性能需要重新验证。
 **取代关系**：本文取代 `2026-10-02-rekey-v3-personal-first.md` 中的以下内容：
 - §8 Agent 接入（`rekey run`、Agent Profile 会话、网关的 capability 认证）；
 - §3.3 中 L2 依赖启动器的部分。
@@ -244,6 +245,7 @@ Profile、capability session、Action 这三个概念**不再暴露给个人用�
 - 调用方只能设置 Preset 允许的请求头。
 - 出站传输默认发送公开的 `User-Agent: rekey/<version>`，满足 GitHub 等服务的必需请求头；它不携带调用方身份或凭据。
 - OAuth refresh-token 轮换也属于远程副作用：发出前检查同一个生命周期 gate，取消或超时后无法确认结果时记为 indeterminate，不能记成未执行。缓存命中不打开该 gate。
+- 普通 HTTP 的最后一次 `send` / `open_stream` 在既有 lifecycle coordinator 内构造并首次 poll，再交给已准入执行持有；lab capability 调用同时验证原预留 permit，Connection 调用继续由其终态审计持有准入许可。Connection gate 已关闭时在等待 coordinator 前拒绝，锁内仍重新检查；已排队后才关闭的竞态继续受绝对期限及原取消/自然 drain 宽限约束。首次交接后保留自然 drain 宽限和原绝对期限。若 OAuth refresh 已发生副作用，后续 handoff 被拒绝或目标传输在发送前失败仍记为 indeterminate。
 - 认证类头（`authorization`、`x-api-key`、`cookie`、`proxy-*`、`host`）一律由 Rekey 控制。
 - 正文大小受 `limits` 约束；Preset 可以附带 JSON Schema 作为额外校验，不是必需。
 
@@ -286,6 +288,7 @@ Profile、capability session、Action 这三个概念**不再暴露给个人用�
 - 超额返回 `BUDGET_EXCEEDED`，附带重置时间。
 - HTTP Connection 小时请求额度计数成功持久准入（`execution.started`）；并发预留先占额度，准入拒绝归还，已准入后失败仍计数。access/scan 的防滥用尝试限速保持原合同。
 - HTTP Connection 固定最多 120 个全局在途执行、每个 Connection 最多 4 个；调用方标注不产生新容量。许可在 started 前取得，随受监管执行及其终态审计提交移交；HTTP/IPC 断开、流式结束或排队终态尚未提交不能提前释放。终态提交失败关闭后续远程副作用准入。Supervisor 的任务数也固定不超过 120，超限使用现有可重试 `AUTHORITY_BUSY`；不增加持久字段或用户配置。
+- 继承的账本优化只改变摘要实现、SQL prepare 复用及已认证记录定位，继续完整认证有序历史后解析 context，不新增持久格式或跳过历史。历史规模基准入口保留；旧 debug 测量与 0.3 优化测量均不能作为当前整合头的时延结果。
 
 ---
 

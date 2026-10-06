@@ -1721,6 +1721,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "libc",
+ "memchr",
  "quick-xml",
  "rand 0.9.5",
  "rcgen",

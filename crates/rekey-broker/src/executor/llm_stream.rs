@@ -1,7 +1,7 @@
 //! Bounded, lossless provider SSE. Only checked prefixes precede durable settlement.
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use rekey_domain::ipc::TextStreamStatus;
+use rekey_domain::ipc::{TEXT_STREAM_CHUNK_MAX_BYTES, TextStreamStatus};
 use rekey_policy::{ProfileLlmProtocol, parse_profile_llm_event, profile_llm_output_value};
 use serde_json::Value;
 use zeroize::{Zeroize, Zeroizing};
@@ -61,6 +61,27 @@ impl Tail {
         if value.is_empty() {
             return Ok(());
         }
+        if value.len() > self.bytes.capacity() - self.bytes.len() {
+            let needed = self
+                .bytes
+                .len()
+                .checked_add(value.len())
+                .ok_or_else(invalid)?;
+            let capacity = needed.max(self.bytes.capacity().saturating_mul(2)).max(8);
+            let mut grown = Zeroizing::new(Vec::with_capacity(capacity));
+            grown.extend_from_slice(&self.bytes);
+            // Never let Vec realloc a live prefix into an unwiped old buffer.
+            self.bytes.as_mut_slice().zeroize();
+            #[cfg(test)]
+            if tests::CHECK_TAIL_GROWTH.with(|enabled| enabled.get()) {
+                assert!(
+                    self.bytes.iter().all(|byte| *byte == 0),
+                    "retired tail must be wiped before swapping allocations"
+                );
+            }
+            std::mem::swap(&mut self.bytes, &mut grown);
+            // The retired Zeroizing buffer also wipes its full capacity on drop.
+        }
         self.bytes.extend_from_slice(value.as_bytes());
         if contains_secret(&self.bytes, needles) {
             return Err(BrokerError::ResponseSecurityViolation);
@@ -80,6 +101,65 @@ impl Tail {
             self.frames.pop_front();
         }
         Ok(())
+    }
+    fn reclaim_metadata(&mut self, needles: &[Zeroizing<Vec<u8>>]) {
+        // push already checked the complete old tail + fragment, then kept B.
+        // Escape markers need the original H for the JSON/percent projections.
+        let keep = if needles.iter().all(|needle| needle.is_empty()) {
+            0
+        } else if self.bytes.iter().any(|byte| matches!(byte, b'%' | b'\\')) {
+            return;
+        } else {
+            let bound = needles
+                .iter()
+                .map(|needle| needle.len().saturating_sub(1).min(self.bytes.len()))
+                .max()
+                .unwrap_or(0);
+            let mut fallback = Zeroizing::new(vec![0usize; bound]);
+            let mut keep = 0;
+            for needle in needles {
+                let bound = needle.len().saturating_sub(1).min(self.bytes.len());
+                if bound <= keep {
+                    continue;
+                }
+                // Borrow only the proper prefix that could fit in B. Building
+                // and scanning its KMP table is linear even for periodic input.
+                for i in 1..bound {
+                    let mut matched = fallback[i - 1];
+                    while matched > 0 && needle[i] != needle[matched] {
+                        matched = fallback[matched - 1];
+                    }
+                    if needle[i] == needle[matched] {
+                        matched += 1;
+                    }
+                    fallback[i] = matched;
+                }
+                let mut matched = 0;
+                // At most bound bytes: matched cannot reach bound until the
+                // last byte, so every needle[matched] access is in this prefix.
+                for byte in &self.bytes[self.bytes.len() - bound..] {
+                    while matched > 0 && *byte != needle[matched] {
+                        matched = fallback[matched - 1];
+                    }
+                    if *byte == needle[matched] {
+                        matched += 1;
+                    }
+                }
+                keep = keep.max(matched);
+            }
+            keep
+        };
+        let offset = self.bytes.len() - keep;
+        self.bytes.copy_within(offset.., 0);
+        self.bytes[keep..].zeroize();
+        self.bytes.truncate(keep);
+        while self
+            .frames
+            .front()
+            .is_some_and(|(end, _)| *end <= self.total - keep)
+        {
+            self.frames.pop_front();
+        }
     }
 }
 
@@ -161,10 +241,13 @@ impl Observer {
         if self.closed.contains(&key) {
             return Err(invalid());
         }
-        self.channels
-            .entry(key)
-            .or_default()
-            .push(text, frame, hold, needles)
+        let metadata = matches!(key, Key::Chat(_, "tool-id" | "tool-name"));
+        let tail = self.channels.entry(key).or_default();
+        tail.push(text, frame, hold, needles)?;
+        if metadata {
+            tail.reclaim_metadata(needles);
+        }
+        Ok(())
     }
     fn close(&mut self, key: Key) {
         self.channels.remove(&key);
@@ -915,12 +998,19 @@ fn scan_json(value: &Value, needles: &[Zeroizing<Vec<u8>>]) -> Result<(), Broker
 }
 
 /// End of a complete frame, including its empty line; a split CRLF stays pending.
-fn boundary(bytes: &[u8], scan: &mut usize, line: &mut usize, eof: bool) -> Option<usize> {
-    while *scan < bytes.len() {
-        let width = match bytes[*scan] {
+fn boundary(
+    bytes: &[u8],
+    base: usize,
+    scan: &mut usize,
+    line: &mut usize,
+    eof: bool,
+) -> Option<usize> {
+    while *scan - base < bytes.len() {
+        let offset = *scan - base;
+        let width = match bytes[offset] {
             b'\n' => 1,
-            b'\r' if *scan + 1 == bytes.len() && !eof => return None,
-            b'\r' if bytes.get(*scan + 1) == Some(&b'\n') => 2,
+            b'\r' if offset + 1 == bytes.len() && !eof => return None,
+            b'\r' if bytes.get(offset + 1) == Some(&b'\n') => 2,
             b'\r' => 1,
             _ => {
                 *scan += 1;
@@ -992,9 +1082,7 @@ impl Complete {
     }
     /// Called only after terminal settlement/audit commits, never by the parser.
     pub(super) async fn release(&mut self, sender: &TextStreamSender) -> Result<(), BrokerError> {
-        self.raw
-            .release_through(self.raw.bytes().len(), sender)
-            .await
+        self.raw.release_through(self.raw.end(), sender).await
     }
 }
 
@@ -1042,34 +1130,50 @@ pub(super) async fn run(
             .await
             .map_err(|_| BrokerError::Upstream("stream-transport"))?;
         let eof = chunk.is_none();
-        if let Some(chunk) = chunk {
-            raw.push(&chunk, &needles)?;
+        if chunk
+            .as_ref()
+            .is_some_and(|bytes| bytes.len() > limit.saturating_sub(raw.end()))
+        {
+            return Err(BrokerError::Upstream("response-too-large"));
         }
-        while let Some(end) = boundary(raw.bytes(), &mut scan, &mut line, eof) {
-            observe_frame(
-                &mut observer,
-                &raw.bytes()[cursor..end],
-                cursor,
-                raw.hold(),
-                &needles,
-            )?;
-            cursor = end;
-            frames.push_back(cursor);
-            let retained = raw
-                .bytes()
-                .len()
-                .checked_add(observer.retained())
-                .and_then(|n| n.checked_add(frames.len() * std::mem::size_of::<usize>()));
-            if retained.is_none_or(|n| n > limit) {
-                return Err(BrokerError::Upstream("response-too-large"));
+        // A large network read is not a reason to retain the whole wire history.
+        // The same cumulative wire bound and per-frame retained bound still apply.
+        for part in chunk
+            .as_ref()
+            .map_or(&[][..], |bytes| bytes.as_slice())
+            .chunks(TEXT_STREAM_CHUNK_MAX_BYTES)
+            .chain(eof.then_some(&[][..]))
+        {
+            if !part.is_empty() {
+                raw.push(part, &needles)?;
             }
-            let watermark = observer.watermark(raw.bytes().len().saturating_sub(raw.hold()));
-            let mut end = None;
-            while frames.front().is_some_and(|end| *end <= watermark) {
-                end = frames.pop_front();
-            }
-            if let Some(end) = end {
-                raw.release_through(end, sender).await?;
+            while let Some(end) = boundary(raw.bytes(), raw.base(), &mut scan, &mut line, eof) {
+                observe_frame(
+                    &mut observer,
+                    &raw.bytes()[cursor - raw.base()..end - raw.base()],
+                    cursor,
+                    raw.hold(),
+                    &needles,
+                )?;
+                cursor = end;
+                frames.push_back(cursor);
+                let retained = raw
+                    .bytes()
+                    .len()
+                    .checked_add(observer.retained())
+                    .and_then(|n| n.checked_add(frames.len() * std::mem::size_of::<usize>()));
+                if retained.is_none_or(|n| n > limit) {
+                    return Err(BrokerError::Upstream("response-too-large"));
+                }
+                let watermark = observer.watermark(raw.end().saturating_sub(raw.hold()));
+                let mut end = None;
+                while frames.front().is_some_and(|end| *end <= watermark) {
+                    end = frames.pop_front();
+                }
+                if let Some(end) = end {
+                    raw.release_through(end, sender).await?;
+                    raw.compact(cursor);
+                }
             }
             tokio::task::yield_now().await;
         }
@@ -1077,7 +1181,7 @@ pub(super) async fn run(
             break;
         }
     }
-    if cursor != raw.bytes().len() {
+    if cursor != raw.end() {
         return Err(BrokerError::Upstream("truncated-stream"));
     }
     let (_, status) = observer
@@ -1102,6 +1206,10 @@ mod tests {
     use crate::upstream::{UpstreamBody, UpstreamChunkFuture, UpstreamError};
     use serde_json::json;
     use tokio::sync::mpsc;
+
+    std::thread_local! {
+        pub(super) static CHECK_TAIL_GROWTH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
 
     struct Chunks {
         chunks: VecDeque<Vec<u8>>,
@@ -1186,6 +1294,548 @@ mod tests {
             out.extend(bytes);
         }
         out
+    }
+    fn chat_metadata(parts: &[(u64, &str, &str)]) -> String {
+        let calls: Vec<_> = parts
+            .iter()
+            .map(|(index, field, value)| match *field {
+                "id" => json!({"index":index,"id":value}),
+                "name" => json!({"index":index,"function":{"name":value}}),
+                _ => panic!("not a metadata field"),
+            })
+            .collect();
+        event(json!({"id":"c","object":"chat.completion.chunk",
+            "choices":[{"index":0,"delta":{"tool_calls":calls},"finish_reason":null}],"usage":null}))
+    }
+    fn four_mib_chat_tool_stream(id: &str, name: &str) -> String {
+        const LIMIT: usize = 4 * 1024 * 1024;
+        let first = event(json!({"id":"c","object":"chat.completion.chunk",
+            "choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":id,
+                "type":"function","function":{"name":name,"arguments":""}}]},
+                "finish_reason":null}],"usage":null}));
+        let part = "z".repeat(16 * 1024);
+        let frame = event(json!({"id":"c","object":"chat.completion.chunk",
+            "choices":[{"index":0,"delta":{"tool_calls":[{"index":0,
+                "function":{"arguments":part}}]},"finish_reason":null}],"usage":null}));
+        let mut raw = first + &frame.repeat(250) + &chat(&[], json!(7));
+        let padding = LIMIT - raw.len() - 3;
+        raw.push(':');
+        raw.extend(std::iter::repeat_n('z', padding));
+        raw.push_str("\n\n");
+        assert_eq!(raw.len(), LIMIT);
+        raw
+    }
+
+    #[test]
+    fn chat_metadata_growth_wipes_retired_prefix_and_keeps_amortized_capacity() {
+        let secret = b"credential-tail-1234";
+        let needles =
+            super::super::sealing::sealing_needles(secret, b"Bearer credential-tail-1234");
+        let hold = Sealer::new(&needles, 65536).unwrap().hold();
+        let mut fixed = Tail::default();
+        let mut reclaimed = Tail::default();
+        for frame in 0..512 {
+            fixed.push("z", frame, hold, &needles).unwrap();
+            reclaimed.push("z", frame, hold, &needles).unwrap();
+            reclaimed.reclaim_metadata(&needles);
+        }
+        assert!(fixed.bytes.capacity() >= 512);
+        assert_eq!(reclaimed.bytes.capacity(), 8);
+        assert!(reclaimed.bytes.is_empty());
+        let prefix = std::str::from_utf8(&secret[..7]).unwrap();
+        reclaimed.push(prefix, 512, hold, &needles).unwrap();
+        reclaimed.reclaim_metadata(&needles);
+        assert_eq!(reclaimed.bytes.as_slice(), prefix.as_bytes());
+        assert_eq!(reclaimed.frames.front(), Some(&(519, 512)));
+        let old_pointer = reclaimed.bytes.as_ptr();
+        let old_capacity = reclaimed.bytes.capacity();
+        let mut fragment = std::str::from_utf8(&secret[7..]).unwrap().to_owned();
+        fragment.extend(std::iter::repeat_n('z', 100 - fragment.len()));
+        // This grows with a live seven-byte prefix. The pre-swap assertion in
+        // push observes the old allocation; removing its wipe fails this test.
+        struct RestoreGrowthCheck(bool);
+        impl Drop for RestoreGrowthCheck {
+            fn drop(&mut self) {
+                CHECK_TAIL_GROWTH.with(|enabled| enabled.set(self.0));
+            }
+        }
+        assert!(!CHECK_TAIL_GROWTH.with(|enabled| enabled.get()));
+        let result = {
+            let _restore =
+                RestoreGrowthCheck(CHECK_TAIL_GROWTH.with(|enabled| enabled.replace(true)));
+            reclaimed.push(&fragment, 513, hold, &needles)
+        };
+        assert!(!CHECK_TAIL_GROWTH.with(|enabled| enabled.get()));
+        assert!(matches!(
+            result,
+            Err(BrokerError::ResponseSecurityViolation)
+        ));
+        assert_ne!(reclaimed.bytes.as_ptr(), old_pointer);
+        assert!(reclaimed.bytes.capacity() >= old_capacity * 2);
+        assert!(reclaimed.bytes.capacity() >= prefix.len() + fragment.len());
+        assert_eq!(reclaimed.frames.front(), Some(&(519, 512)));
+        assert_eq!(
+            reclaimed.bytes.as_slice(),
+            format!("{prefix}{fragment}").as_bytes()
+        );
+
+        let mut tail = Tail::default();
+        let mut growths = 0;
+        for frame in 0..128 {
+            let previous = tail.bytes.capacity();
+            tail.push("z", frame, 512, &needles).unwrap();
+            if tail.bytes.capacity() != previous {
+                growths += 1;
+                assert!(tail.bytes.capacity() >= previous * 2);
+            }
+        }
+        assert!(growths <= 6, "append growth must stay amortized");
+    }
+
+    #[test]
+    fn chat_metadata_suffix_matches_oracle_and_handles_periodic_patterns() {
+        fn words(max: usize) -> Vec<Vec<u8>> {
+            (0..=max)
+                .flat_map(|len| {
+                    (0..1usize << len).map(move |bits| {
+                        (0..len)
+                            .map(|i| if bits & (1 << i) == 0 { b'a' } else { b'b' })
+                            .collect()
+                    })
+                })
+                .collect()
+        }
+        let mut sets: Vec<Vec<Zeroizing<Vec<u8>>>> = words(4)
+            .into_iter()
+            .map(|needle| vec![needle.into()])
+            .collect();
+        sets.push(vec![]);
+        sets.push(vec![
+            vec![].into(),
+            b"aba".to_vec().into(),
+            b"aba".to_vec().into(),
+            b"baab".to_vec().into(),
+        ]);
+        sets.push(words(3).into_iter().map(Into::into).collect());
+        let mut inputs = words(6);
+        inputs.extend([b"a%7".to_vec(), br"a\u00".to_vec(), vec![]]);
+        for needles in &sets {
+            for bytes in &inputs {
+                let expected = if needles.iter().all(|needle| needle.is_empty()) {
+                    0
+                } else if bytes.iter().any(|byte| matches!(byte, b'%' | b'\\')) {
+                    bytes.len()
+                } else {
+                    (1..=bytes.len())
+                        .filter(|len| {
+                            needles.iter().any(|needle| {
+                                *len < needle.len() && bytes.ends_with(&needle[..*len])
+                            })
+                        })
+                        .max()
+                        .unwrap_or(0)
+                };
+                let mut tail = Tail {
+                    bytes: bytes.clone().into(),
+                    total: bytes.len(),
+                    frames: if bytes.is_empty() {
+                        VecDeque::new()
+                    } else {
+                        VecDeque::from([(bytes.len(), 10)])
+                    },
+                };
+                tail.reclaim_metadata(needles);
+                assert_eq!(tail.bytes.as_slice(), &bytes[bytes.len() - expected..]);
+                assert_eq!(tail.frames.is_empty(), expected == 0);
+            }
+        }
+        // Each possible suffix nearly matches: descending direct comparisons
+        // would do quadratic work on this input. The bounded KMP stays linear.
+        let mut needle = vec![b'a'; 128 * 1024];
+        needle.push(b'b');
+        let needles = vec![Zeroizing::new(needle)];
+        for (last, expected) in [(b'c', 0), (b'a', 128 * 1024)] {
+            let mut bytes = vec![b'a'; 128 * 1024];
+            *bytes.last_mut().unwrap() = last;
+            let mut tail = Tail {
+                total: bytes.len(),
+                bytes: bytes.into(),
+                ..Tail::default()
+            };
+            tail.reclaim_metadata(&needles);
+            assert_eq!(tail.bytes.len(), expected);
+        }
+    }
+
+    #[test]
+    fn chat_metadata_multifragment_matches_fixed_hold_detection() {
+        let cases = [
+            (b"aba".as_slice(), "zzababaz"),
+            (b"ababa".as_slice(), "abababaz"),
+            (b"qrst".as_slice(), "q%72st"),
+            (b"qrst".as_slice(), r"q\u0072st"),
+            (b"%ab%cd".as_slice(), "%Ab%Cd"),
+        ];
+        for (secret, text) in cases {
+            let mut needles = super::super::sealing::sealing_needles(secret, secret);
+            needles.push(vec![].into());
+            needles.push(needles[0].clone());
+            let hold = Sealer::new(&needles, 65536).unwrap().hold();
+            for partition in 0..1usize << (text.len() - 1) {
+                let mut fixed = Tail::default();
+                let mut reclaimed = Tail::default();
+                let mut start = 0;
+                for end in 1..=text.len() {
+                    if end != text.len() && partition & (1 << (end - 1)) == 0 {
+                        continue;
+                    }
+                    let old = fixed.push(&text[start..end], start, hold, &needles);
+                    let new = reclaimed.push(&text[start..end], start, hold, &needles);
+                    assert_eq!(old.is_err(), new.is_err(), "{text:?}, {partition}, {end}");
+                    if new.is_err() {
+                        break;
+                    }
+                    reclaimed.reclaim_metadata(&needles);
+                    start = end;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn chat_metadata_reclaims_only_tool_id_and_name_and_preserves_watermark() {
+        let needles = super::super::sealing::sealing_needles(b"qrst", b"Bearer qrst");
+        let hold = Sealer::new(&needles, 65536).unwrap().hold();
+        for field in [
+            "tool-id",
+            "tool-name",
+            "tool-arguments",
+            "content",
+            "refusal",
+            "function-name",
+            "function-arguments",
+        ] {
+            let mut observer = Observer::new(ProfileLlmProtocol::OpenAiChat);
+            observer
+                .append(Key::Chat(0, field), "z", 10, hold, &needles)
+                .unwrap();
+            let metadata = matches!(field, "tool-id" | "tool-name");
+            assert_eq!(
+                observer.channels[&Key::Chat(0, field)].bytes.is_empty(),
+                metadata
+            );
+            assert_eq!(observer.watermark(100), if metadata { 100 } else { 10 });
+        }
+        for field in ["tool-id", "tool-name"] {
+            let mut observer = Observer::new(ProfileLlmProtocol::OpenAiChat);
+            observer
+                .append(Key::Chat(0, field), "q", 10, hold, &needles)
+                .unwrap();
+            observer
+                .append(Key::Chat(1, field), "z", 20, hold, &needles)
+                .unwrap();
+            assert_eq!(observer.watermark(100), 10);
+            observer
+                .append(Key::Chat(0, field), "xq", 25, hold, &needles)
+                .unwrap();
+            assert_eq!(
+                observer.channels[&Key::Chat(0, field)].bytes.as_slice(),
+                b"q"
+            );
+            assert_eq!(observer.watermark(100), 25);
+            observer
+                .append(Key::Chat(0, field), "-z", 30, hold, &needles)
+                .unwrap();
+            assert_eq!(observer.watermark(100), 100);
+            assert!(observer.channels[&Key::Chat(0, field)].frames.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_metadata_encoded_reflections_never_release_prefix_frames() {
+        for (secret, parts) in [
+            (b"qrst".as_slice(), vec!["q%7", "2st"]),
+            (b"qrst".as_slice(), vec![r"q\u007", "2st"]),
+            (b"%ab%cd".as_slice(), vec!["%Ab%", "Cd"]),
+            (b"q\nrst".as_slice(), vec!["q\\", "nrst"]),
+            ("q😀st".as_bytes(), vec![r"q\uD83", r"D\uDE0", "0st"]),
+            (br"q\u00XZst".as_slice(), vec![r"q\u00", "XZst"]),
+            (br"q\uD83Dst".as_slice(), vec![r"q\uD83", "Dst"]),
+        ] {
+            let needles = super::super::sealing::sealing_needles(secret, secret);
+            for field in ["id", "name"] {
+                let mut raw = chat_metadata(&[(0, field, parts[0]), (1, field, "other-tool-z")]);
+                for part in &parts[1..] {
+                    raw += &chat_metadata(&[(0, field, part)]);
+                }
+                raw += &chat(&[], json!(7));
+                for split in [1, 7, raw.len()] {
+                    let (tx, mut rx) = mpsc::channel(4096);
+                    assert!(matches!(
+                        run(
+                            response(raw.as_bytes(), split, false),
+                            needles.clone(),
+                            65536,
+                            &tx,
+                            ProfileLlmProtocol::OpenAiChat
+                        )
+                        .await,
+                        Err(BrokerError::ResponseSecurityViolation)
+                    ));
+                    assert!(drain(&mut rx).is_empty(), "{field}, {parts:?}, {split}");
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_metadata_all_needle_projections_seal_interleaved_and_same_frame_fragments() {
+        let needles = super::super::sealing::sealing_needles(
+            b"synthetic-secret-1234",
+            b"Bearer synthetic-secret-1234",
+        );
+        for needle in &needles {
+            let text = std::str::from_utf8(needle).unwrap();
+            for field in ["id", "name"] {
+                let mut raw = chat_metadata(&[
+                    (0, field, &text[..1]),
+                    (1, field, "other-tool-z"),
+                    (0, field, &text[1..2]),
+                ]);
+                for byte in text.as_bytes()[2..].chunks(1) {
+                    raw += &chat_metadata(&[(0, field, std::str::from_utf8(byte).unwrap())]);
+                }
+                raw += &chat(&[], json!(7));
+                for split in [1, 7, raw.len()] {
+                    let (tx, mut rx) = mpsc::channel(4096);
+                    assert!(matches!(
+                        run(
+                            response(raw.as_bytes(), split, false),
+                            needles.clone(),
+                            65536,
+                            &tx,
+                            ProfileLlmProtocol::OpenAiChat
+                        )
+                        .await,
+                        Err(BrokerError::ResponseSecurityViolation)
+                    ));
+                    assert!(drain(&mut rx).is_empty(), "{field}, {text}, {split}");
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_metadata_malformed_markers_are_lossless_and_terminal_needs_release() {
+        let needles = super::super::sealing::sealing_needles(b"qrst", b"Bearer qrst");
+        for parts in [
+            vec!["q%7", "Zst"],
+            vec![r"q\u00XZ", "2st"],
+            vec![r"q\uD83D", r"\u0041st"],
+        ] {
+            for field in ["id", "name"] {
+                let raw = parts
+                    .iter()
+                    .map(|part| chat_metadata(&[(0, field, part)]))
+                    .collect::<String>()
+                    + &chat(&[], json!(7));
+                let (tx, mut rx) = mpsc::channel(4096);
+                let mut complete = run(
+                    response(raw.as_bytes(), 1, false),
+                    needles.clone(),
+                    65536,
+                    &tx,
+                    ProfileLlmProtocol::OpenAiChat,
+                )
+                .await
+                .unwrap();
+                assert_eq!(complete.output_tokens(), Some(7));
+                assert_eq!(complete.raw.base(), 0);
+                assert!(drain(&mut rx).is_empty());
+                complete.release(&tx).await.unwrap();
+                assert_eq!(drain(&mut rx), raw.as_bytes());
+            }
+        }
+        for field in ["id", "name"] {
+            let first = chat_metadata(&[(0, field, "q")]);
+            let raw = first.clone()
+                + &chat_metadata(&[(1, field, "other-tool-z"), (0, field, "-z")])
+                + &chat(&[&"z".repeat(1024)], json!(7));
+            for release in [false, true] {
+                let (tx, mut rx) = mpsc::channel(4096);
+                let mut complete = run(
+                    response(raw.as_bytes(), 7, false),
+                    needles.clone(),
+                    65536,
+                    &tx,
+                    ProfileLlmProtocol::OpenAiChat,
+                )
+                .await
+                .unwrap();
+                assert_eq!(complete.output_tokens(), Some(7));
+                assert!(complete.raw.base() >= first.len());
+                let mut out = drain(&mut rx);
+                assert!(out.starts_with(first.as_bytes()));
+                assert!(!String::from_utf8_lossy(&out).contains("[DONE]"));
+                if release {
+                    complete.release(&tx).await.unwrap();
+                    out.extend(drain(&mut rx));
+                    assert_eq!(out, raw.as_bytes());
+                } else {
+                    drop(complete);
+                    assert!(drain(&mut rx).is_empty());
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn four_mib_chat_text_and_arguments_only_reclaim_history_without_raising_bounds() {
+        const LIMIT: usize = 4 * 1024 * 1024;
+        let part = "z".repeat(16 * 1024);
+        for tools in [false, true] {
+            let delta = if tools {
+                json!({"tool_calls":[{"index":0,"function":{"arguments":part}}]})
+            } else {
+                json!({"content":part})
+            };
+            let frame = event(json!({"id":"c","object":"chat.completion.chunk",
+                "choices":[{"index":0,"delta":delta,"finish_reason":null}],"usage":null}));
+            let mut raw = frame.repeat(250) + &chat(&[], json!(7));
+            let padding = LIMIT - raw.len() - 3;
+            raw.push(':');
+            raw.extend(std::iter::repeat_n('z', padding));
+            raw.push_str("\n\n");
+            assert_eq!(raw.len(), LIMIT);
+            for split in [TEXT_STREAM_CHUNK_MAX_BYTES, raw.len()] {
+                let (tx, mut rx) = mpsc::channel(4096);
+                let mut complete = run(
+                    response(raw.as_bytes(), split, false),
+                    vec![],
+                    LIMIT,
+                    &tx,
+                    ProfileLlmProtocol::OpenAiChat,
+                )
+                .await
+                .unwrap();
+                assert_eq!(complete.output_tokens(), Some(7));
+                assert_eq!(complete.raw.end(), LIMIT);
+                assert!(complete.raw.base() > LIMIT * 3 / 4);
+                assert!(complete.raw.bytes().len() < LIMIT / 8);
+                let mut output = drain(&mut rx);
+                assert!(!String::from_utf8_lossy(&output).contains("[DONE]"));
+                complete.release(&tx).await.unwrap();
+                output.extend(drain(&mut rx));
+                assert_eq!(output, raw.as_bytes());
+
+                let oversized = raw.clone() + "z";
+                assert!(matches!(
+                    run(
+                        response(oversized.as_bytes(), split, false),
+                        vec![],
+                        LIMIT,
+                        &tx,
+                        ProfileLlmProtocol::OpenAiChat,
+                    )
+                    .await,
+                    Err(BrokerError::Upstream("response-too-large"))
+                ));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn four_mib_chat_full_tool_reclaims_metadata_with_empty_and_real_shape_needles() {
+        const LIMIT: usize = 4 * 1024 * 1024;
+        let raw = four_mib_chat_tool_stream("call-1", "fixture_tool");
+        for needles in [
+            vec![],
+            super::super::sealing::sealing_needles(
+                b"synthetic-secret-1234",
+                b"Bearer synthetic-secret-1234",
+            ),
+        ] {
+            for split in [TEXT_STREAM_CHUNK_MAX_BYTES, raw.len()] {
+                let (tx, mut rx) = mpsc::channel(4096);
+                let mut complete = run(
+                    response(raw.as_bytes(), split, false),
+                    needles.clone(),
+                    LIMIT,
+                    &tx,
+                    ProfileLlmProtocol::OpenAiChat,
+                )
+                .await
+                .unwrap();
+                assert_eq!(complete.output_tokens(), Some(7));
+                assert_eq!(complete.raw.end(), LIMIT);
+                assert!(complete.raw.base() > LIMIT * 3 / 4);
+                assert!(complete.raw.bytes().len() < LIMIT / 8);
+                let mut output = drain(&mut rx);
+                assert!(!String::from_utf8_lossy(&output).contains("[DONE]"));
+                complete.release(&tx).await.unwrap();
+                output.extend(drain(&mut rx));
+                assert_eq!(output, raw.as_bytes());
+                let oversized = raw.clone() + "z";
+                assert!(matches!(
+                    run(
+                        response(oversized.as_bytes(), split, false),
+                        needles.clone(),
+                        LIMIT,
+                        &tx,
+                        ProfileLlmProtocol::OpenAiChat
+                    )
+                    .await,
+                    Err(BrokerError::Upstream("response-too-large"))
+                ));
+                assert!(!String::from_utf8_lossy(&drain(&mut rx)).contains("[DONE]"));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn four_mib_chat_true_metadata_prefix_and_markers_still_pin_and_fail_retained_bound() {
+        const LIMIT: usize = 4 * 1024 * 1024;
+        let needles = super::super::sealing::sealing_needles(
+            b"synthetic-secret-1234",
+            b"Bearer synthetic-secret-1234",
+        );
+        for value in ["s", "harmless%", r"harmless\"] {
+            for (id, name) in [(value, "fixture_tool"), ("call-1", value)] {
+                let raw = four_mib_chat_tool_stream(id, name);
+                let (tx, mut rx) = mpsc::channel(4096);
+                assert!(matches!(
+                    run(
+                        response(raw.as_bytes(), TEXT_STREAM_CHUNK_MAX_BYTES, false),
+                        needles.clone(),
+                        LIMIT,
+                        &tx,
+                        ProfileLlmProtocol::OpenAiChat
+                    )
+                    .await,
+                    Err(BrokerError::Upstream("response-too-large"))
+                ));
+                assert!(drain(&mut rx).is_empty(), "{id}, {name}");
+            }
+        }
+        let raw = format!(":{}\n\n", "z".repeat(65536 - 3));
+        for split in [1, TEXT_STREAM_CHUNK_MAX_BYTES, raw.len()] {
+            let (tx, mut rx) = mpsc::channel(4096);
+            assert!(matches!(
+                run(
+                    response(raw.as_bytes(), split, false),
+                    needles.clone(),
+                    raw.len(),
+                    &tx,
+                    ProfileLlmProtocol::OpenAiChat
+                )
+                .await,
+                Err(BrokerError::Upstream("response-too-large"))
+            ));
+            assert!(
+                drain(&mut rx).is_empty(),
+                "a giant frame cannot bypass retained accounting"
+            );
+        }
     }
     #[tokio::test]
     async fn responses_optional_done_preserves_bytes_and_holds_terminal() {
@@ -1546,6 +2196,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(complete.output_tokens(), Some(7));
+        assert!(complete.raw.base() > 0);
         assert!(
             run(
                 response(raw.as_bytes(), 1, false),
@@ -1565,6 +2216,8 @@ mod tests {
         let raw = chat(&[&part, &part, &part, &part, &part], json!(7));
         let expected = raw.clone();
         let (tx, mut rx) = mpsc::channel(1);
+        let (parsed_tx, mut parsed_rx) = tokio::sync::oneshot::channel();
+        let (settled_tx, settled_rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
             let mut complete = run(
                 response(raw.as_bytes(), 17, false),
@@ -1576,11 +2229,30 @@ mod tests {
             .await
             .unwrap();
             assert_eq!(complete.output_tokens(), Some(7));
+            assert!(complete.raw.base() > 0);
+            parsed_tx.send(()).unwrap();
+            settled_rx.await.unwrap();
             complete.release(&tx).await.unwrap();
         });
         tokio::task::yield_now().await;
         assert!(!task.is_finished());
         let mut output = Vec::new();
+        loop {
+            tokio::select! {
+                result = &mut parsed_rx => {
+                    result.unwrap();
+                    break;
+                }
+                event = rx.recv() => {
+                    let Some(TextStreamEvent::Chunk(bytes)) = event else { panic!("early close") };
+                    output.extend(bytes);
+                    tokio::task::yield_now().await;
+                }
+            }
+        }
+        output.extend(drain(&mut rx));
+        assert!(!String::from_utf8_lossy(&output).contains("[DONE]"));
+        settled_tx.send(()).unwrap();
         while let Some(TextStreamEvent::Chunk(bytes)) = rx.recv().await {
             assert!(bytes.len() <= 16 * 1024);
             output.extend(bytes);
@@ -2385,8 +3057,8 @@ mod tests {
             event(empty),
             event(done)
         );
-        let (tx, _rx) = mpsc::channel(4096);
-        assert!(
+        let (tx, mut rx) = mpsc::channel(4096);
+        assert!(matches!(
             run(
                 response(raw.as_bytes(), 1, false),
                 vec![],
@@ -2394,8 +3066,9 @@ mod tests {
                 &tx,
                 ProfileLlmProtocol::OpenAiResponses
             )
-            .await
-            .is_err()
-        );
+            .await,
+            Err(BrokerError::Upstream("response-too-large"))
+        ));
+        assert!(!String::from_utf8_lossy(&drain(&mut rx)).contains("response.completed"));
     }
 }

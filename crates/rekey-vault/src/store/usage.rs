@@ -41,7 +41,7 @@ fn get<T: rusqlite::types::FromSql>(
         .map_err(|_| AuthorityError::StorageIntegrityFailed)
 }
 fn load(conn: &Connection) -> Result<(Vec<UsageRecord>, UsageState), AuthorityError> {
-    let mut query = conn.prepare("SELECT request_id,principal_id,instance_slug,utc_day,started_at_ms,context_json,generation_max_output,output_tokens,source,terminal_json,settled_at_ms FROM profile_usage ORDER BY request_id").map_err(storage)?;
+    let mut query = conn.prepare_cached("SELECT request_id,principal_id,instance_slug,utc_day,started_at_ms,context_json,generation_max_output,output_tokens,source,terminal_json,settled_at_ms FROM profile_usage ORDER BY request_id").map_err(storage)?;
     let mut results = query.query([]).map_err(storage)?;
     let mut rows = Vec::new();
     while let Some(r) = results.next().map_err(storage)? {
@@ -61,7 +61,7 @@ fn load(conn: &Connection) -> Result<(Vec<UsageRecord>, UsageState), AuthorityEr
             settled_at_ms: get(r, 10)?,
         });
     }
-    let mut query = conn.prepare("SELECT revision,record_count,records_digest,seal_nonce,seal_ciphertext FROM profile_usage_state WHERE singleton=1").map_err(storage)?;
+    let mut query = conn.prepare_cached("SELECT revision,record_count,records_digest,seal_nonce,seal_ciphertext FROM profile_usage_state WHERE singleton=1").map_err(storage)?;
     let state = query
         .query_row([], |r| {
             Ok((|| -> Result<UsageState, AuthorityError> {
@@ -102,13 +102,13 @@ pub(super) fn initial_state(
     tx: &Transaction<'_>,
     state: &UsageState,
 ) -> Result<(), AuthorityError> {
-    one(tx.execute("INSERT INTO profile_usage_state(singleton,revision,record_count,records_digest,seal_nonce,seal_ciphertext) VALUES(1,?1,?2,?3,?4,?5)",params![state.revision as i64,state.record_count as i64,state.records_digest.as_slice(),state.seal_nonce.as_slice(),state.seal_ciphertext.as_slice()]).map_err(storage)?)
+    one(tx.prepare_cached("INSERT INTO profile_usage_state(singleton,revision,record_count,records_digest,seal_nonce,seal_ciphertext) VALUES(1,?1,?2,?3,?4,?5)").map_err(storage)?.execute(params![state.revision as i64,state.record_count as i64,state.records_digest.as_slice(),state.seal_nonce.as_slice(),state.seal_ciphertext.as_slice()]).map_err(storage)?)
 }
 pub(super) fn replace_state(
     tx: &Transaction<'_>,
     state: &UsageState,
 ) -> Result<(), AuthorityError> {
-    one(tx.execute("UPDATE profile_usage_state SET revision=?1,record_count=?2,records_digest=?3,seal_nonce=?4,seal_ciphertext=?5 WHERE singleton=1",params![state.revision as i64,state.record_count as i64,state.records_digest.as_slice(),state.seal_nonce.as_slice(),state.seal_ciphertext.as_slice()]).map_err(storage)?)
+    one(tx.prepare_cached("UPDATE profile_usage_state SET revision=?1,record_count=?2,records_digest=?3,seal_nonce=?4,seal_ciphertext=?5 WHERE singleton=1").map_err(storage)?.execute(params![state.revision as i64,state.record_count as i64,state.records_digest.as_slice(),state.seal_nonce.as_slice(),state.seal_ciphertext.as_slice()]).map_err(storage)?)
 }
 fn write(tx: &Transaction<'_>, row: &UsageRecord, insert: bool) -> Result<(), AuthorityError> {
     let sql = if insert {
@@ -117,22 +117,21 @@ fn write(tx: &Transaction<'_>, row: &UsageRecord, insert: bool) -> Result<(), Au
         "UPDATE profile_usage SET principal_id=?2,instance_slug=?3,utc_day=?4,started_at_ms=?5,context_json=?6,generation_max_output=?7,output_tokens=?8,source=?9,terminal_json=?10,settled_at_ms=?11 WHERE request_id=?1"
     };
     one(tx
-        .execute(
-            sql,
-            params![
-                row.request_id.as_bytes().as_slice(),
-                row.principal_id.as_bytes().as_slice(),
-                row.instance_slug,
-                row.utc_day,
-                row.started_at_ms,
-                row.context_json,
-                row.generation_max_output.map(|v| v as i64),
-                row.output_tokens.map(|v| v as i64),
-                row.source,
-                row.terminal_json,
-                row.settled_at_ms
-            ],
-        )
+        .prepare_cached(sql)
+        .map_err(storage)?
+        .execute(params![
+            row.request_id.as_bytes().as_slice(),
+            row.principal_id.as_bytes().as_slice(),
+            row.instance_slug,
+            row.utc_day,
+            row.started_at_ms,
+            row.context_json,
+            row.generation_max_output.map(|v| v as i64),
+            row.output_tokens.map(|v| v as i64),
+            row.source,
+            row.terminal_json,
+            row.settled_at_ms
+        ])
         .map_err(storage)?)
 }
 fn totals(
@@ -286,9 +285,10 @@ impl SqliteRecordStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|_| AuthorityError::AuditCommitFailed)?;
         let (mut rows, state) = verified(&tx, key, vault)?;
-        if rows.iter().any(|r| r.request_id == row.request_id) {
-            return Err(invalid());
-        }
+        let position = rows
+            .binary_search_by_key(row.request_id.as_bytes(), |r| *r.request_id.as_bytes())
+            .err()
+            .ok_or_else(invalid)?;
         row.started_at_ms = now_ms()?;
         row.utc_day = row.started_at_ms / 86_400_000;
         let sum = totals(&rows, row.principal_id, &row.instance_slug, row.utc_day)?;
@@ -296,8 +296,7 @@ impl SqliteRecordStore {
             && sum.output_tokens < usage.max_output_tokens_per_day;
         if admitted {
             write(&tx, &row, true)?;
-            rows.push(row);
-            rows.sort_by_key(|r| *r.request_id.as_bytes());
+            rows.insert(position, row);
             replace_state(&tx, &next_state(key, vault, &rows, &state)?)?;
             for event in events {
                 super::audit::insert(&tx, event)?;
@@ -330,10 +329,10 @@ impl SqliteRecordStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|_| AuthorityError::AuditCommitFailed)?;
         let (mut rows, state) = verified(&tx, key, vault)?;
-        let row = rows
-            .iter_mut()
-            .find(|r| r.request_id == request)
-            .ok_or_else(invalid)?;
+        let position = rows
+            .binary_search_by_key(request.as_bytes(), |r| *r.request_id.as_bytes())
+            .map_err(|_| invalid())?;
+        let row = &mut rows[position];
         if !settle_row(row, measured, &mut event)? {
             return Ok(());
         }

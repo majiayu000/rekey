@@ -1218,11 +1218,19 @@ mod tests {
         chunks: std::collections::VecDeque<Vec<u8>>,
         eof: Option<Arc<tokio::sync::Notify>>,
         error: bool,
+        cancel_on_chunk: Option<Arc<crate::lifecycle::Lifecycle>>,
+        reads: Option<Arc<std::sync::atomic::AtomicUsize>>,
     }
     impl crate::upstream::UpstreamBody for StreamReply {
         fn next_chunk(&mut self) -> crate::upstream::UpstreamChunkFuture<'_> {
             Box::pin(async {
+                if let Some(reads) = &self.reads {
+                    reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
                 if let Some(bytes) = self.chunks.pop_front() {
+                    if let Some(cancel) = self.cancel_on_chunk.take() {
+                        cancel.signal_cancel();
+                    }
                     return Ok(Some(bytes.into()));
                 }
                 if let Some(gate) = self.eof.take() {
@@ -1279,6 +1287,8 @@ mod tests {
                 chunks: raw.chunks(7).map(<[u8]>::to_vec).collect(),
                 eof,
                 error,
+                cancel_on_chunk: None,
+                reads: None,
             });
         }
     }
@@ -1997,6 +2007,70 @@ mod tests {
             f.finish().await;
         }
     }
+    #[tokio::test]
+    async fn raw_cancel_on_first_partial_ready_chunk_stops_upstream_reads() {
+        let mut f = Fixture::new(BuiltinTemplate::OpenAi, "chat-completions", "permit", 100).await;
+        activate_signed(&mut f, 2).await;
+        let (t, stop, supervisor) = install_stream_transport(&mut f);
+        let (owner, owner_task, token) = mint_wire(&f).await;
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        t.push(RAW_CHAT.as_bytes(), None, false);
+        {
+            let mut queued = t.queued.lock().unwrap();
+            let body = queued.back_mut().unwrap();
+            body.cancel_on_chunk = Some(Arc::clone(&f.ctx.lifecycle));
+            body.reads = Some(Arc::clone(&reads));
+        }
+        let (mut client, task) = agent_connection(&f).await;
+        send_wire(
+            &mut client,
+            rekey_domain::ipc::Channel::Agent,
+            rekey_domain::ipc::agent_msg::EXECUTE_TEXT_STREAM,
+            &wire_meta(&f, &token),
+            RAW_BODY,
+        )
+        .await;
+        let (out, terminal) =
+            tokio::time::timeout(Duration::from_secs(5), read_stream(&mut client))
+                .await
+                .unwrap();
+        assert!(out.is_empty());
+        assert_eq!(terminal["status"], "failed");
+        drop(client);
+        task.await.unwrap();
+        f.ctx
+            .executor
+            .terminals
+            .wait_idle(Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            f.totals().await,
+            UsageTotals {
+                requests: 1,
+                output_tokens: 20
+            }
+        );
+        assert_eq!(f.count("execution.started"), 1);
+        assert_eq!(f.count("execution.indeterminate"), 1);
+        assert_eq!(f.count("execution.finished"), 0);
+        assert_eq!(f.count("execution.blocked"), 0);
+        assert_eq!(
+            f.activity()
+                .await
+                .iter()
+                .filter(|row| row.event_type == "execution.indeterminate"
+                    && row.reason_code == "cancelled-after-remote-effect")
+                .count(),
+            1
+        );
+        drop(owner);
+        owner_task.await.unwrap();
+        stop_supervisor(&f, stop, supervisor).await;
+        f.finish().await;
+    }
+
     #[tokio::test]
     async fn raw_lifecycle_cancel_after_remote_effect_has_one_conservative_terminal() {
         let mut f = Fixture::new(BuiltinTemplate::OpenAi, "chat-completions", "permit", 100).await;

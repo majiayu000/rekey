@@ -1,0 +1,30 @@
+{
+  "checked_on": "2026-10-06",
+  "sources": [
+    {
+      "url": "https://github.com/majiayu000/rekey/releases/tag/v0.3.0-alpha.1",
+      "fact": "public prerelease, publishedAt=2026-10-05T06:45:29Z",
+      "verification": "gh release view, isDraft=false, isPrerelease=true"
+    },
+    {
+      "url": "https://workos.com/docs/pipes/relay",
+      "fact": "provider credentials kept server-side; WorkOS API key remains a secret; early access",
+      "evidence": "E2, not runtime-tested"
+    },
+    {
+      "url": "https://workos.com/blog/credentials-out-of-agent-context",
+      "fact": "official blog states launched August 6, 2026",
+      "evidence": "E2"
+    },
+    {
+      "url": "https://bitwarden.com/blog/introducing-agent-access-sdk/",
+      "fact": "official March 24, 2026 announcement describes OneCLI integration; SDK run env injection differs from gateway injection",
+      "evidence": "E2, not runtime-tested"
+    },
+    {
+      "url": "https://keychains.dev/docs/threat-model",
+      "fact": "vendor describes scoped server-side delegation and explicitly excludes unauthorized calls within approved scopes; official quickstart also read",
+      "evidence": "E2, not runtime-tested; Product Hunt exact release date remains E1"
+    }
+  ]
+}

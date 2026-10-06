@@ -3,8 +3,11 @@
 //! started-audit, credential, upstream, sealing, filtering, finished-audit,
 //! accounting, cleanup.
 
+use std::future::{Future, poll_fn};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use rekey_connector::{BuiltInConnector, resolve_builtin};
@@ -348,15 +351,13 @@ impl ActionExecutor {
             Decision::Deny { .. } => return Err(BrokerError::Denied("policy-evaluation-failed")),
         };
 
-        if permit.profile_scope().is_some() {
-            let policy_cap = evaluated.snapshot.monotonic_deadline().into_std();
-            let wall_cap = evaluated.snapshot.snapshot().expires_at_ms();
-            approval_deadline = Some(
-                approval_deadline.map_or((policy_cap, wall_cap), |(mono, wall)| {
-                    (mono.min(policy_cap), wall.min(wall_cap))
-                }),
-            );
-        }
+        let policy_cap = evaluated.snapshot.monotonic_deadline().into_std();
+        let wall_cap = evaluated.snapshot.snapshot().expires_at_ms();
+        approval_deadline = Some(
+            approval_deadline.map_or((policy_cap, wall_cap), |(mono, wall)| {
+                (mono.min(policy_cap), wall.min(wall_cap))
+            }),
+        );
 
         // Step 6: this final point linearizes with drain. Earlier Running
         // checks are advisory; no drain may transition between this re-check
@@ -435,6 +436,7 @@ impl ActionExecutor {
             &AtomicBool::new(false),
             stream,
             None,
+            None,
         )
         .await
     }
@@ -451,6 +453,7 @@ impl ActionExecutor {
         cleanup_owned: &AtomicBool,
         stream: Option<&text_stream::TextStreamSender>,
         llm: Option<&llm::LlmExecution>,
+        permit: Option<&ExecutionPermit>,
     ) -> Result<ExecuteOutcome, BrokerError> {
         if (action.text_stream.is_some() || llm.is_some_and(|llm| llm.streaming))
             != stream.is_some()
@@ -932,19 +935,20 @@ impl ActionExecutor {
         // A successful OAuth refresh already contacted its provider. Preserve
         // that effect if the target transport rejects before sending anything.
         let prior_remote_effect = started.remote_effect_started();
-        try_begin_remote_effect(&self.lifecycle, started, effect_deadline).await?;
-        // No await separates the gate from this marker. Cancellation after
-        // this point cannot truthfully claim the upstream saw no effect.
-        started.mark_remote_effect_started();
-        effect_kind.store(EFFECT_ORDINARY_HTTP, Ordering::SeqCst);
         let send_started = Instant::now();
         if let Some(sender) = stream {
             let run = async {
-                let response = self
-                    .transport
-                    .open_stream(upstream_request)
-                    .await
-                    .map_err(|_| BrokerError::Upstream("stream-transport"))?;
+                let response = poll_http_while_live(
+                    &self.lifecycle,
+                    permit,
+                    started,
+                    effect_kind,
+                    effect_deadline,
+                    "text-stream-failed",
+                    || self.transport.open_stream(upstream_request),
+                )
+                .await?
+                .map_err(|_| BrokerError::Upstream("stream-transport"))?;
                 if let Some(llm) = llm.filter(|llm| llm.streaming) {
                     if response.status != 200 {
                         let mut response = response;
@@ -1041,7 +1045,16 @@ impl ActionExecutor {
             }
             return result;
         }
-        let response = self.transport.send(upstream_request).await;
+        let response = poll_http_while_live(
+            &self.lifecycle,
+            permit,
+            started,
+            effect_kind,
+            effect_deadline,
+            "upstream-timeout",
+            || self.transport.send(upstream_request),
+        )
+        .await?;
         let latency_ms = send_started.elapsed().as_millis() as i64;
         let response = match response {
             Ok(response) => response,
@@ -1240,6 +1253,7 @@ impl AdmittedExecution {
                 &cleanup_owned,
                 stream,
                 self.llm.as_ref(),
+                self._permit.as_ref(),
             );
             tokio::pin!(run);
             tokio::select! {
@@ -1265,6 +1279,99 @@ impl AdmittedExecution {
         }
         Err(BrokerError::Authority(AuthorityError::Draining))
     }
+}
+
+/// Transfer ordinary HTTP work once under its live permit. Already handed-off
+/// work retains the existing natural-drain grace; private-key runners need a
+/// separate per-poll and owned-backend cancellation contract.
+async fn poll_http_while_live<T, F: Future<Output = T>>(
+    lifecycle: &Lifecycle,
+    permit: Option<&ExecutionPermit>,
+    started: &mut StartedAuditGuard,
+    effect_kind: &AtomicU8,
+    effect_deadline: Instant,
+    timeout_reason: &'static str,
+    make_future: impl FnOnce() -> F,
+) -> Result<T, BrokerError> {
+    let run = async {
+        let owner = match permit {
+            Some(permit) => tokio::select! {
+                biased;
+                _ = permit.wait_revoked() => return Err(DomainError::InvalidCapability.into()),
+                owner = lifecycle.coordinate_until(effect_deadline.into()) => owner?,
+            },
+            None => {
+                // A drain owns the coordinator while waiting for Connection
+                // terminals. Reject an already closed gate before joining that
+                // wait; the protected handoff below still rechecks admission.
+                if !lifecycle.try_begin_remote_effect() {
+                    return Err(BrokerError::Authority(AuthorityError::Draining));
+                }
+                lifecycle.coordinate_until(effect_deadline.into()).await?
+            }
+        };
+        let mut make_future = Some(make_future);
+        let mut future: Option<Pin<Box<F>>> = None;
+        // Return the backend's first Poll as a value so no lock survives
+        // Pending. The future is constructed and first-polled in one live gate.
+        let first = poll_fn(|cx| {
+            let mut handoff = || {
+                if !lifecycle.try_begin_remote_effect() {
+                    return Err(BrokerError::Authority(AuthorityError::Draining));
+                }
+                lifecycle.reject_if_not_running()?;
+                started.mark_remote_effect_started();
+                effect_kind.store(EFFECT_ORDINARY_HTTP, Ordering::SeqCst);
+                future = Some(Box::pin(make_future.take().expect("single HTTP handoff")()));
+                Ok(future
+                    .as_mut()
+                    .expect("constructed HTTP future")
+                    .as_mut()
+                    .poll(cx))
+            };
+            Poll::Ready(match permit {
+                Some(permit) => match crate::now_ts() {
+                    Ok(now) => permit.with_live_handoff(now, effect_deadline, handoff)?,
+                    Err(error) => Err(error),
+                },
+                None => handoff(), // signed Connections and direct executor unit harnesses
+            })
+        })
+        .await;
+        drop(owner);
+        match first? {
+            Poll::Ready(value) => Ok(value),
+            Poll::Pending => Ok(future.expect("HTTP ownership transferred").await),
+        }
+    };
+    // Keep the original action deadline independent of a concrete transport's
+    // relative timeout, which may start only after coordinator queueing.
+    let result = tokio::select! {
+        biased;
+        _ = tokio::time::sleep_until(effect_deadline.into()) => {
+            Err(BrokerError::Upstream("upstream-timeout"))
+        }
+        result = run => result,
+    };
+    if result.is_err() && !started.is_completed() {
+        let timed_out = matches!(&result, Err(BrokerError::Upstream("upstream-timeout")));
+        // The guard also remembers a completed OAuth refresh before this
+        // target's handoff. A rejected handoff cannot erase that prior effect.
+        if started.remote_effect_started() {
+            started.submit_indeterminate(if timed_out {
+                timeout_reason
+            } else {
+                "cancelled-after-remote-effect"
+            });
+        } else {
+            started.submit_blocked(if timed_out {
+                "upstream-timeout"
+            } else {
+                "remote-effect-admission-closed"
+            });
+        }
+    }
+    result
 }
 
 pub(crate) async fn wait_for_cancel(mut cancel: tokio::sync::watch::Receiver<bool>) {
@@ -1373,7 +1480,10 @@ async fn commit_started_with_usage(
     let _coordinator = match lifecycle.try_coordinate() {
         Ok(owner) => owner,
         Err(_) if lifecycle.phase() == BrokerPhase::Running => {
-            return Err(BrokerError::Authority(AuthorityError::AuthorityBusy));
+            // Production admission wraps this wait in its absolute deadline.
+            // Another valid request's durable started commit is temporary
+            // contention, not evidence that the Authority queue is full.
+            lifecycle.coordinate().await
         }
         Err(_) => return Err(BrokerError::Authority(AuthorityError::Draining)),
     };
@@ -1384,7 +1494,7 @@ async fn commit_started_with_usage(
         (Some(a), Some(b)) => Some(a.min(b)),
         (a, b) => a.or(b),
     };
-    if usage.is_some() {
+    if expected_policy.is_some() {
         let active = policy.read().await;
         let active = active
             .as_ref()
