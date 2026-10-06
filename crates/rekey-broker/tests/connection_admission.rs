@@ -5,6 +5,7 @@ mod common;
 use std::sync::Arc;
 use std::time::Duration;
 
+use rekey_broker::runtime::MAX_AGENT_REQUEST_CONNECTIONS;
 use rekey_broker::upstream::UpstreamResponse;
 use rekey_domain::connection::{Connection, MethodClass, MethodSelector, RuleEffect};
 use rekey_domain::ids::{PolicyRuleId, RequestId};
@@ -114,7 +115,12 @@ impl Fixture {
             }
         })
         .await
-        .expect("expected supervised upstream request");
+        .unwrap_or_else(|_| {
+            panic!(
+                "expected {expected} supervised upstream requests, observed {}",
+                self.broker.fake.requests.lock().unwrap().len()
+            )
+        });
     }
 
     async fn wait_finished(&self, expected: usize) {
@@ -124,7 +130,12 @@ impl Fixture {
             }
         })
         .await
-        .expect("expected durable terminal commits");
+        .unwrap_or_else(|_| {
+            panic!(
+                "expected {expected} durable terminal commits, observed {}",
+                self.count("execution.finished")
+            )
+        });
     }
 
     // Disconnect only after the transport confirms a durable admitted effect.
@@ -251,28 +262,42 @@ async fn disconnected_calls_keep_per_connection_capacity_and_approved_busy_retry
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn disconnected_connections_share_global_supervised_capacity() {
-    let f = Fixture::new(31, 1000, false).await;
+async fn disconnected_calls_keep_agent_request_capacity_until_terminal() {
+    // CALL handlers retain their IPC slots while admitted work is supervised,
+    // even after the client disconnects. Agent IPC reserves one connection for
+    // capacity replies; the independent global-120 executor regression lives in
+    // executor::local::tests::disconnected_receivers_cannot_exceed_global_supervised_execution_limit.
+    let capacity = MAX_AGENT_REQUEST_CONNECTIONS;
+    let spare_connection = capacity.div_ceil(4);
+    let f = Fixture::new(spare_connection + 1, 1000, false).await;
     let mut gates = Vec::new();
-    for count in 0..120 {
+    for count in 0..capacity {
         gates.push(f.gate());
         f.disconnect_after_admission(&read(count / 4), count + 1)
             .await;
     }
     for _ in 0..5 {
-        assert_eq!(f.call(&read(30), &[]).await.err_code(), "AUTHORITY_BUSY");
+        let busy = f.call(&read(spare_connection), &[]).await;
+        assert_eq!(busy.err_code(), "AUTHORITY_BUSY");
+        assert_eq!(busy.metadata["message"], "connection capacity exhausted");
+        assert_eq!(busy.metadata["retryable"], true);
     }
-    assert_eq!(f.broker.fake.requests.lock().unwrap().len(), 120);
+    assert_eq!(f.broker.fake.requests.lock().unwrap().len(), capacity);
+    assert_eq!(f.count("execution.started"), capacity);
+    assert_eq!(f.count("execution.finished"), 0);
     gates.pop().unwrap().notify_one();
     f.wait_finished(1).await;
-    // A committed terminal releases one slot, including its supervisor child.
+    // After the terminal commits, the disconnected handler can finish and
+    // release its request slot. No rejected call reached execution admission.
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
-            let retry = f.call(&read(30), &[]).await;
+            let retry = f.call(&read(spare_connection), &[]).await;
             if retry.message_type == ipc::resp_msg::OK {
                 break;
             }
             assert_eq!(retry.err_code(), "AUTHORITY_BUSY");
+            assert_eq!(retry.metadata["message"], "connection capacity exhausted");
+            assert_eq!(retry.metadata["retryable"], true);
             tokio::task::yield_now().await;
         }
     })
@@ -281,8 +306,9 @@ async fn disconnected_connections_share_global_supervised_capacity() {
     for gate in gates {
         gate.notify_one();
     }
-    f.wait_finished(121).await;
-    f.assert_paired_terminals(121);
+    f.wait_finished(capacity + 1).await;
+    assert_eq!(f.broker.fake.requests.lock().unwrap().len(), capacity + 1);
+    f.assert_paired_terminals(capacity + 1);
     f.broker.shutdown().await;
 }
 
