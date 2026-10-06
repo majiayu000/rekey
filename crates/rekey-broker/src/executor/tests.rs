@@ -67,8 +67,15 @@ async fn drain_linearizes_before_started() {
 }
 
 #[tokio::test]
-async fn running_coordinator_contention_fails_without_waiting() {
-    let (tracker, worker) = spawn_terminal_worker_with(|_| async { Ok(()) });
+async fn running_coordinator_contention_is_bounded_by_admission_deadline() {
+    let commits = Arc::new(AtomicUsize::new(0));
+    let (tracker, worker) = spawn_terminal_worker_with({
+        let commits = Arc::clone(&commits);
+        move |_| {
+            commits.fetch_add(1, Ordering::SeqCst);
+            async { Ok(()) }
+        }
+    });
     let lifecycle = Arc::new(Lifecycle::new());
     lifecycle.enter_running().unwrap();
     let policy = RwLock::new(None);
@@ -104,9 +111,10 @@ async fn running_coordinator_contention_fails_without_waiting() {
     assert_eq!(sessions.in_flight_total(), 1);
     let _coordinator = lifecycle.coordinate().await;
 
-    let result = tokio::time::timeout(
-        Duration::from_millis(50),
-        commit_started_while_running(
+    let deadline = Instant::now() + Duration::from_millis(50);
+    let result = tokio::time::timeout_at(
+        tokio::time::Instant::from_std(deadline),
+        commit_started_with_usage(
             &lifecycle,
             &tracker,
             &policy,
@@ -114,17 +122,169 @@ async fn running_coordinator_contention_fails_without_waiting() {
             execution_context(),
             Vec::new(),
             None,
+            None,
+            Some(deadline),
         ),
     )
-    .await
-    .expect("final admission gate must not wait behind the drain coordinator");
-    let err = match result {
-        Ok(_) => panic!("contended admission unexpectedly committed started"),
-        Err(err) => err,
-    };
-    assert_eq!(err.code(), "AUTHORITY_BUSY");
+    .await;
+    assert!(
+        result.is_err(),
+        "running contention must wait within the action deadline"
+    );
+    drop(_coordinator);
+    tokio::task::yield_now().await;
+    assert_eq!(commits.load(Ordering::SeqCst), 0);
     drop(permit);
     assert_eq!(sessions.in_flight_total(), 0);
+    drop(tracker);
+    worker.await.unwrap();
+}
+
+#[tokio::test]
+async fn running_coordinator_contention_waits_and_commits_after_release() {
+    let commits = Arc::new(AtomicUsize::new(0));
+    let (tracker, worker) = spawn_terminal_worker_with({
+        let commits = Arc::clone(&commits);
+        move |_| {
+            commits.fetch_add(1, Ordering::SeqCst);
+            async { Ok(()) }
+        }
+    });
+    let lifecycle = Lifecycle::new();
+    lifecycle.enter_running().unwrap();
+    let policy = RwLock::new(None);
+    let coordinator = lifecycle.coordinate().await;
+    let mut started = {
+        let admission = commit_started_while_running(
+            &lifecycle,
+            &tracker,
+            &policy,
+            None,
+            execution_context(),
+            Vec::new(),
+            None,
+        );
+        tokio::pin!(admission);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), admission.as_mut())
+                .await
+                .is_err()
+        );
+        assert_eq!(commits.load(Ordering::SeqCst), 0);
+        drop(coordinator);
+        tokio::time::timeout(Duration::from_secs(1), admission)
+            .await
+            .unwrap()
+            .unwrap()
+    };
+    assert_eq!(commits.load(Ordering::SeqCst), 1);
+    started
+        .blocked_until(Instant::now() + Duration::from_secs(1), "test-no-effect")
+        .await
+        .unwrap();
+    drop(started);
+    drop(tracker);
+    worker.await.unwrap();
+}
+
+#[tokio::test]
+async fn queued_started_rechecks_draining_after_coordinator_release() {
+    let commits = Arc::new(AtomicUsize::new(0));
+    let (tracker, worker) = spawn_terminal_worker_with({
+        let commits = Arc::clone(&commits);
+        move |_| {
+            commits.fetch_add(1, Ordering::SeqCst);
+            async { Ok(()) }
+        }
+    });
+    let lifecycle = Lifecycle::new();
+    lifecycle.enter_running().unwrap();
+    let policy = RwLock::new(None);
+    let coordinator = lifecycle.coordinate().await;
+    {
+        let admission = commit_started_while_running(
+            &lifecycle,
+            &tracker,
+            &policy,
+            None,
+            execution_context(),
+            Vec::new(),
+            None,
+        );
+        tokio::pin!(admission);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), admission.as_mut())
+                .await
+                .is_err()
+        );
+        lifecycle.enter_draining();
+        drop(coordinator);
+        let result = tokio::time::timeout(Duration::from_secs(1), admission)
+            .await
+            .unwrap();
+        assert!(matches!(result, Err(err) if err.code() == "DRAINING"));
+    }
+    assert_eq!(commits.load(Ordering::SeqCst), 0);
+    drop(tracker);
+    worker.await.unwrap();
+}
+
+#[tokio::test]
+async fn queued_started_rechecks_changed_policy_after_coordinator_release() {
+    let commits = Arc::new(Mutex::new(Vec::new()));
+    let (tracker, worker) = spawn_terminal_worker_with({
+        let commits = Arc::clone(&commits);
+        move |draft| {
+            commits.lock().unwrap().push(draft);
+            async { Ok(()) }
+        }
+    });
+    let now = crate::now_ts().unwrap();
+    let snapshot = rekey_policy::parse_and_validate_snapshot(
+        &serde_json::to_vec(&serde_json::json!({
+            "format_version": 6, "version": 1, "expires_at_ms": now.as_unix_ms() + 60_000,
+            "approvers": [], "profiles": [], "workload_identities": [], "bindings": [], "rules": []
+        }))
+        .unwrap(),
+        now,
+    )
+    .unwrap();
+    let active = Arc::new(ActivePolicy::activate(snapshot, now).unwrap());
+    let expected = PolicyIdentity::of(&active);
+    let policy = RwLock::new(Some(active));
+    let lifecycle = Lifecycle::new();
+    lifecycle.enter_running().unwrap();
+    let coordinator = lifecycle.coordinate().await;
+    {
+        let admission = commit_started_while_running(
+            &lifecycle,
+            &tracker,
+            &policy,
+            Some(expected),
+            execution_context(),
+            Vec::new(),
+            None,
+        );
+        tokio::pin!(admission);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), admission.as_mut())
+                .await
+                .is_err()
+        );
+        *policy.write().await = None;
+        drop(coordinator);
+        let result = tokio::time::timeout(Duration::from_secs(1), admission)
+            .await
+            .unwrap();
+        assert!(matches!(result, Err(err) if err.code() == "REQUEST_DENIED"));
+    }
+    tracker.wait_idle(Duration::from_secs(1)).await.unwrap();
+    {
+        let commits = commits.lock().unwrap();
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].event_type, "execution.blocked");
+        assert_eq!(commits[0].reason_code, "policy-changed");
+    }
     drop(tracker);
     worker.await.unwrap();
 }
@@ -306,10 +466,14 @@ async fn closed_remote_effect_gate_commits_one_blocked_terminal() {
     });
     let mut guard = StartedAuditGuard::new_for_test(&tracker, execution_context());
     let lifecycle = Lifecycle::new();
-    let error = try_begin_remote_effect(
+    let error = poll_http_while_live(
         &lifecycle,
+        None,
         &mut guard,
+        &AtomicU8::new(EFFECT_NOT_STARTED),
         Instant::now() + Duration::from_secs(1),
+        "upstream-timeout",
+        || std::future::ready(()),
     )
     .await
     .unwrap_err();
@@ -325,6 +489,256 @@ async fn closed_remote_effect_gate_commits_one_blocked_terminal() {
         assert_eq!(commits[0].reason_code, "remote-effect-admission-closed");
     }
     drop(guard);
+    drop(tracker);
+    worker.await.unwrap();
+}
+
+fn handoff_permit() -> (Arc<SessionRegistry>, ExecutionPermit) {
+    let registry = Arc::new(SessionRegistry::new());
+    registry.open_for_admission();
+    let action = ActionVersionRef {
+        action_id: ActionId::new_random(),
+        version: 1,
+    };
+    let id = SessionId::new_random();
+    let grant = SessionGrant::new(
+        id,
+        Principal {
+            tenant_id: TenantId::new_random(),
+            principal_id: PrincipalId::new_random(),
+            session_id: id,
+        },
+        vec![action],
+        crate::now_ts().unwrap(),
+        30_000,
+        1,
+    )
+    .unwrap();
+    let token = registry.admit(grant, vec![(action, 30_000)]).unwrap();
+    let permit = registry
+        .acquire(&token, action, crate::now_ts().unwrap())
+        .unwrap();
+    (registry, permit)
+}
+
+#[tokio::test]
+async fn live_http_handoff_revoked_before_factory_is_blocked() {
+    let commits = Arc::new(Mutex::new(Vec::new()));
+    let (tracker, worker) = spawn_terminal_worker_with({
+        let commits = Arc::clone(&commits);
+        move |draft| {
+            commits.lock().unwrap().push(draft);
+            async { Ok(()) }
+        }
+    });
+    let (registry, permit) = handoff_permit();
+    registry.revoke(permit.session_id);
+    let lifecycle = Lifecycle::new();
+    lifecycle.enter_running().unwrap();
+    let mut started = StartedAuditGuard::new_for_test(&tracker, execution_context());
+    let effect = AtomicU8::new(EFFECT_NOT_STARTED);
+    let made = std::cell::Cell::new(false);
+    let error = poll_http_while_live(
+        &lifecycle,
+        Some(&permit),
+        &mut started,
+        &effect,
+        Instant::now() + Duration::from_secs(5),
+        "upstream-timeout",
+        || {
+            made.set(true);
+            std::future::ready(())
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code(), "INVALID_CAPABILITY");
+    assert!(!made.get());
+    assert_eq!(effect.load(Ordering::SeqCst), EFFECT_NOT_STARTED);
+    tracker.wait_idle(Duration::from_secs(1)).await.unwrap();
+    assert_eq!(
+        commits.lock().unwrap()[0].event_type,
+        rekey_vault::model::event_type::EXECUTION_BLOCKED
+    );
+    drop(started);
+    drop(tracker);
+    worker.await.unwrap();
+}
+
+#[tokio::test]
+async fn live_http_handoff_keeps_existing_inflight_grace_after_transfer() {
+    let commits = Arc::new(Mutex::new(Vec::new()));
+    let (tracker, worker) = spawn_terminal_worker_with({
+        let commits = Arc::clone(&commits);
+        move |draft| {
+            commits.lock().unwrap().push(draft);
+            async { Ok(()) }
+        }
+    });
+    let (registry, permit) = handoff_permit();
+    let id = permit.session_id;
+    let lifecycle = Arc::new(Lifecycle::new());
+    lifecycle.enter_running().unwrap();
+    let polls = Arc::new(AtomicUsize::new(0));
+    let waker = Arc::new(Mutex::new(None::<std::task::Waker>));
+    let ready = Arc::new(AtomicBool::new(false));
+    let (first_tx, first_rx) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn({
+        let lifecycle = Arc::clone(&lifecycle);
+        let polls = Arc::clone(&polls);
+        let ready = Arc::clone(&ready);
+        let waker = Arc::clone(&waker);
+        let mut started = StartedAuditGuard::new_for_test(&tracker, execution_context());
+        async move {
+            let effect = AtomicU8::new(EFFECT_NOT_STARTED);
+            let mut first_tx = Some(first_tx);
+            let result = poll_http_while_live(
+                &lifecycle,
+                Some(&permit),
+                &mut started,
+                &effect,
+                Instant::now() + Duration::from_secs(5),
+                "upstream-timeout",
+                || {
+                    poll_fn(|cx| {
+                        polls.fetch_add(1, Ordering::SeqCst);
+                        if ready.load(Ordering::SeqCst) {
+                            return Poll::Ready(());
+                        }
+                        *waker.lock().unwrap() = Some(cx.waker().clone());
+                        if let Some(tx) = first_tx.take() {
+                            tx.send(()).unwrap();
+                        }
+                        Poll::<()>::Pending
+                    })
+                },
+            )
+            .await;
+            (result, effect.load(Ordering::SeqCst))
+        }
+    });
+    first_rx.await.unwrap();
+    // Ordinary work is already transferred. Its existing in-flight grace
+    // must not be replaced by private-runner cancellation semantics.
+    let owner = lifecycle.coordinate().await;
+    registry.revoke(id);
+    ready.store(true, Ordering::SeqCst);
+    waker.lock().unwrap().take().unwrap().wake();
+    drop(owner);
+    let (result, effect) = tokio::time::timeout(Duration::from_secs(2), task)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(result.is_ok());
+    assert!(polls.load(Ordering::SeqCst) >= 2);
+    assert_eq!(effect, EFFECT_ORDINARY_HTTP);
+    tracker.wait_idle(Duration::from_secs(1)).await.unwrap();
+    assert_eq!(
+        commits.lock().unwrap()[0].event_type,
+        rekey_vault::model::event_type::EXECUTION_INDETERMINATE
+    );
+    drop(tracker);
+    worker.await.unwrap();
+}
+
+#[tokio::test]
+async fn live_http_handoff_absolute_deadline_covers_queue_then_quiet_backend() {
+    for reason in ["upstream-timeout", "text-stream-failed"] {
+        let commits = Arc::new(Mutex::new(Vec::new()));
+        let (tracker, worker) = spawn_terminal_worker_with({
+            let commits = Arc::clone(&commits);
+            move |draft| {
+                commits.lock().unwrap().push(draft);
+                async { Ok(()) }
+            }
+        });
+        let (_, permit) = handoff_permit();
+        let lifecycle = Arc::new(Lifecycle::new());
+        lifecycle.enter_running().unwrap();
+        let owner = lifecycle.coordinate().await;
+        let end = Instant::now() + Duration::from_millis(250);
+        let (factory_tx, mut factory_rx) = tokio::sync::oneshot::channel();
+        let completed_relative_timeout = Arc::new(AtomicBool::new(false));
+        let task = tokio::spawn({
+            let lifecycle = Arc::clone(&lifecycle);
+            let relative_completed = Arc::clone(&completed_relative_timeout);
+            let mut started = StartedAuditGuard::new_for_test(&tracker, execution_context());
+            async move {
+                let effect = AtomicU8::new(EFFECT_NOT_STARTED);
+                let result = poll_http_while_live(
+                    &lifecycle,
+                    Some(&permit),
+                    &mut started,
+                    &effect,
+                    end,
+                    reason,
+                    || {
+                        factory_tx.send(()).unwrap();
+                        async move {
+                            // Model the request.timeout value computed before the
+                            // coordinator wait, then restarted by a concrete send.
+                            tokio::time::sleep(Duration::from_millis(250)).await;
+                            relative_completed.store(true, Ordering::SeqCst);
+                        }
+                    },
+                )
+                .await;
+                (result, effect.load(Ordering::SeqCst))
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        assert!(matches!(
+            factory_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        drop(owner);
+        factory_rx.await.unwrap();
+        let (result, effect) = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            result.unwrap_err(),
+            BrokerError::Upstream("upstream-timeout")
+        ));
+        assert_eq!(effect, EFFECT_ORDINARY_HTTP);
+        assert!(!completed_relative_timeout.load(Ordering::SeqCst));
+        tracker.wait_idle(Duration::from_secs(1)).await.unwrap();
+        assert_eq!(
+            commits.lock().unwrap()[0].event_type,
+            rekey_vault::model::event_type::EXECUTION_INDETERMINATE
+        );
+        assert_eq!(commits.lock().unwrap()[0].reason_code, reason);
+        drop(tracker);
+        worker.await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn live_http_handoff_queue_deadline_is_upstream_timeout_before_effect() {
+    let (tracker, worker) = spawn_terminal_worker_with(|_| async { Ok(()) });
+    let (_, permit) = handoff_permit();
+    let lifecycle = Lifecycle::new();
+    lifecycle.enter_running().unwrap();
+    let owner = lifecycle.coordinate().await;
+    let mut started = StartedAuditGuard::new_for_test(&tracker, execution_context());
+    let effect = AtomicU8::new(EFFECT_NOT_STARTED);
+    let error = poll_http_while_live(
+        &lifecycle,
+        Some(&permit),
+        &mut started,
+        &effect,
+        Instant::now() + Duration::from_millis(20),
+        "upstream-timeout",
+        || -> std::future::Ready<()> { panic!("deadline passed before local handoff") },
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(error, BrokerError::Upstream("upstream-timeout")));
+    assert_eq!(effect.load(Ordering::SeqCst), EFFECT_NOT_STARTED);
+    drop(owner);
+    drop(started);
+    tracker.wait_idle(Duration::from_secs(1)).await.unwrap();
     drop(tracker);
     worker.await.unwrap();
 }
@@ -714,6 +1128,105 @@ mod lease_recovery {
         assert!(!fixture.executor.lifecycle.try_begin_remote_effect());
         fixture.stop().await;
     }
+    #[tokio::test]
+    async fn admitted_http_direct_revoke_exits_while_coordinator_remains_owned() {
+        let fake = Arc::new(crate::testing::FakeUpstreamTransport::new());
+        let f = Fixture::new(fake.clone()).await;
+        f.executor.authority.unlock(proof()).await.unwrap();
+        let credential = f
+            .executor
+            .authority
+            .credential_add(
+                CredentialLabel::new("handoff-queue").unwrap(),
+                CredentialKind::OpaqueToken,
+                SecretInput::from_slice(b"synthetic-queue-credential"),
+                proof(),
+            )
+            .await
+            .unwrap();
+        let (registry, permit) = handoff_permit();
+        let action: FixedHttpAction = serde_json::from_value(serde_json::json!({
+            "id":permit.action.action_id,"name":"handoff-queue","version":1,"enabled":true,
+            "credential_id":credential.id,"origin":"https://api.example.com","method":"POST",
+            "target":{"kind":"fixed","path":"/business"},"auth":{"header_name":"authorization","prefix":"Bearer "},
+            "timeout_ms":30000,"request_policy":{"max_body_bytes":1024,"allowed_extra_headers":[]},
+            "response_policy":{"max_body_bytes":1024,"allowed_headers":[]}
+        })).unwrap();
+        let mut ctx = execution_context();
+        ctx.session_id = permit.session_id;
+        ctx.action = permit.action;
+        ctx.credential_id = credential.id;
+        let request_id = ctx.request_id;
+        let started = StartedAuditGuard::new_for_test(&f.executor.terminals, ctx);
+        let executor = Arc::new(ActionExecutor::new(
+            f.executor.authority.clone(),
+            registry.clone(),
+            fake.clone(),
+            f.executor.lifecycle.clone(),
+            f.executor.terminals.clone(),
+            f.executor.policy.clone(),
+        ));
+        executor.lifecycle.enter_running().unwrap();
+        let owner = executor.lifecycle.coordinate().await;
+        let id = permit.session_id;
+        let request = ExecuteRequest {
+            request_id,
+            capability_token: "already-admitted-unit-fixture".to_owned(),
+            action: permit.action,
+            content_type: None,
+            extra_headers: vec![],
+            params: Default::default(),
+            query: Default::default(),
+            body: vec![],
+            approval_grants: vec![],
+            local_approval_request_id: None,
+        };
+        let admitted = AdmittedExecution {
+            executor: executor.clone(),
+            request,
+            target: RenderedTarget {
+                path: action.target.fixed_path().unwrap().clone(),
+                params: Default::default(),
+                query: Default::default(),
+            },
+            action,
+            llm: None,
+            effect_deadline: Instant::now() + Duration::from_secs(5),
+            started,
+            _permit: permit,
+        };
+        let mut run = Box::pin(admitted.run());
+        poll_fn(|cx| match run.as_mut().poll(cx) {
+            Poll::Pending => Poll::Ready(()),
+            Poll::Ready(_) => panic!("admitted execution completed before prepare barrier"),
+        })
+        .await;
+        // Prepare was enqueued by the first poll. A reply to this following
+        // command on the same Worker FIFO means its payload reply is ready.
+        executor.authority.status().await.unwrap();
+        poll_fn(|cx| match run.as_mut().poll(cx) {
+            Poll::Pending => Poll::Ready(()),
+            Poll::Ready(_) => panic!("HTTP handoff escaped the owned coordinator"),
+        })
+        .await;
+        // No global lifecycle cancellation, no backend wake and no release of
+        // the coordinator. This mirrors the direct Profile guard revoke path.
+        registry.revoke(id);
+        let result = tokio::time::timeout(Duration::from_secs(1), run)
+            .await
+            .unwrap();
+        assert!(matches!(
+            result,
+            Err(BrokerError::Domain(DomainError::InvalidCapability))
+        ));
+        assert_eq!(registry.in_flight_total(), 0);
+        assert!(fake.take_requests().is_empty());
+        assert!(executor.lifecycle.try_coordinate().is_err());
+        drop(owner);
+        drop(executor);
+        f.stop().await;
+    }
+
     #[tokio::test]
     async fn actor_opaque_edge_ows_seals_exact_parsed_forms_without_changing_outbound_bytes() {
         let fake = Arc::new(crate::testing::FakeUpstreamTransport::new());

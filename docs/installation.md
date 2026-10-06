@@ -1,9 +1,9 @@
 # Install, upgrade, service, and uninstall
 
 Pre-tag candidate snapshot; current publication status is recorded on the
-[GitHub release](https://github.com/majiayu000/rekey/releases/tag/v0.3.0-alpha.1) and its complete workflow.
+[GitHub release](https://github.com/majiayu000/rekey/releases/tag/v0.3.0-alpha.2) and its complete workflow.
 
-This page describes the **0.3.0-alpha.1 unpublished candidate and release
+This page describes the **0.3.0-alpha.2 unpublished candidate and release
 workflow**, not proof of an available 0.3 download. Product version 0.3 represents the existing v3 design
 without claiming 1.0 maturity; historical tags and releases remain unchanged.
 macOS distribution is a signed, notarized `.pkg` for

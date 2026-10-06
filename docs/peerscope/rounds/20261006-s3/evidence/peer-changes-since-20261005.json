@@ -1,0 +1,43 @@
+{
+  "Infisical/agent-vault": {
+    "pin": "872578e4cdf9",
+    "head_branch": "main",
+    "ahead": 0,
+    "stars": 2306,
+    "pushed_at": "2026-10-04T01:53:50Z",
+    "commits": [],
+    "releases": [
+      "v0.40.0 2026-10-01",
+      "v0.39.3 2026-09-01",
+      "v0.39.2 2026-09-01"
+    ]
+  },
+  "atgreen/keyfence": {
+    "pin": "672cdefc0fe9",
+    "head_branch": "main",
+    "ahead": 0,
+    "stars": 4,
+    "pushed_at": "2026-09-22T10:53:41Z",
+    "commits": [],
+    "releases": [
+      "v0.4.0 2026-09-20",
+      "v0.3.0 2026-09-19",
+      "v0.2.0 2026-09-19"
+    ]
+  },
+  "openbao/openbao": {
+    "pin": "2fff36bce808",
+    "head_branch": "main",
+    "ahead": 1,
+    "stars": 8315,
+    "pushed_at": "2026-10-05T14:03:23Z",
+    "commits": [
+      "ece2557 2026-10-05 Add v2.7.x release blog post (#4168)"
+    ],
+    "releases": [
+      "v2.7.1 2026-10-01",
+      "v2.6.4 2026-10-01",
+      "v2.7.0 2026-09-23"
+    ]
+  }
+}

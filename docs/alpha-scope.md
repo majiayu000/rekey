@@ -1,9 +1,9 @@
 # Rekey 0.3 candidate scope (v3 design)
 
 Pre-tag candidate snapshot; current publication status is recorded on the
-[GitHub release](https://github.com/majiayu000/rekey/releases/tag/v0.3.0-alpha.1) and its complete workflow.
+[GitHub release](https://github.com/majiayu000/rekey/releases/tag/v0.3.0-alpha.2) and its complete workflow.
 
-Target: **0.3.0-alpha.1 — unpublished candidate, not GA**.
+Target: **0.3.0-alpha.2 — unpublished candidate, not GA**.
 Current durable formats vault25 and policy snapshot6 remain frozen through
 all 0.3 releases, including prereleases. Product version 0.3 reflects current
 maturity; v3 still names the design stage, not a GA release. Source implementation,

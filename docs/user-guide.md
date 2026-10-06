@@ -1,12 +1,12 @@
 # User guide
 
 Pre-tag candidate snapshot; current publication status is recorded on the
-[GitHub release](https://github.com/majiayu000/rekey/releases/tag/v0.3.0-alpha.1) and its complete workflow.
+[GitHub release](https://github.com/majiayu000/rekey/releases/tag/v0.3.0-alpha.2) and its complete workflow.
 
 This guide assumes verified binaries are installed and the broker is running.
 Read [the security and platform scope](alpha-scope.md) first.
 
-This guide describes **0.3.0-alpha.1, an unpublished candidate**: vault/backup
+This guide describes **0.3.0-alpha.2, an unpublished candidate**: vault/backup
 format 25 and policy snapshot 6. These formats remain frozen across all 0.3
 releases, including prereleases. Version 0.3 names the existing v3 design
 without claiming 1.0 maturity; renumbering does not require reinitialization.
@@ -14,7 +14,7 @@ Rekey never migrates, backfills or dual-reads old formats. Preserve old binaries
 with their matching state and backups; use a new empty directory for a new
 incompatible format. An incompatible format requires a separately planned release
 line and prior SPEC revision. See [installation](installation.md) and the
-[candidate release gates](releases/v0.3.0-alpha.1.md).
+[candidate release gates](releases/v0.3.0-alpha.2.md).
 
 ## Personal setup and Profiles
 
@@ -43,6 +43,18 @@ rekey run codex --client codex -- codex --model glm-5.3-flash
 
 These are scoped provider templates; clients cannot choose another upstream
 origin or path. The new-account, five-minute acceptance remains pending.
+
+Anthropic, OpenAI, GitHub PAT, GLM Messages/Responses and fixed Bearer templates
+already exist. The short `add` command currently accepts only `anthropic` and
+opens the App; select other templates in the App. Installing a template does
+not grant access: review the exact actions, model and budgets, sign the Profile,
+then choose a name from `rekey profile list`. Do not place provider keys in
+Agent configuration or the `run` command.
+
+If the key is currently in a `.env` file, enter it through the human-operated
+App. Automated `.env` import is not implemented. Measure setup time
+until the first real provider response; the three-command example alone does
+not establish a five- or ten-minute onboarding result.
 
 A Profile fixes principal, instance/capability/action versions, session limits,
 isolation, egress and LLM model/budget limits. Every capability has a required

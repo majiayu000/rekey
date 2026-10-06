@@ -38,6 +38,10 @@ pub(super) fn sealing_needles(secret: &[u8], auth_value: &[u8]) -> Vec<Zeroizing
         needles.push(Zeroizing::new(percent_encode(source, true).into_bytes()));
         needles.push(Zeroizing::new(percent_encode_all(source)));
     }
+    // Several encodings coincide for ASCII credentials. Scan each exact byte
+    // sequence once; the detection union and maximum held tail are unchanged.
+    needles.sort_unstable_by(|a, b| a.as_slice().cmp(b.as_slice()));
+    needles.dedup_by(|a, b| a.as_slice() == b.as_slice());
     needles
 }
 
@@ -71,6 +75,8 @@ pub(super) fn fixed_header_sealing_needles(
         needles.extend(sealing_needles(value, edge_ows(&normalized_auth)));
         needles.extend(sealing_needles(value, edge_ows(actual_auth)));
     }
+    needles.sort_unstable_by(|a, b| a.as_slice().cmp(b.as_slice()));
+    needles.dedup_by(|a, b| a.as_slice() == b.as_slice());
     needles
 }
 
@@ -101,16 +107,17 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> bool {
     if needle.is_empty() || needle.len() > haystack.len() {
         return false;
     }
-    haystack
-        .windows(needle.len())
-        .any(|window| window == needle)
+    if memchr::memchr(needle[0], haystack).is_none() {
+        return false;
+    }
+    memchr::memmem::find(haystack, needle).is_some()
 }
 
 pub(crate) fn contains_secret(haystack: &[u8], needles: &[Zeroizing<Vec<u8>>]) -> bool {
     if needles.iter().any(|needle| find_subslice(haystack, needle)) {
         return true;
     }
-    if haystack.contains(&b'\\') {
+    if memchr::memchr(b'\\', haystack).is_some() {
         let json_decoded = decode_json_escapes(haystack);
         if needles
             .iter()
@@ -121,7 +128,7 @@ pub(crate) fn contains_secret(haystack: &[u8], needles: &[Zeroizing<Vec<u8>>]) -
     }
     // With no percent marker both projections equal the raw bytes already
     // checked above. Avoid rescanning each bytewise SSE window unchanged.
-    if !haystack.contains(&b'%') {
+    if memchr::memchr(b'%', haystack).is_none() {
         return false;
     }
     let decoded_haystack = percent_decode(haystack);
@@ -250,6 +257,301 @@ pub(super) fn headers_contain_secret(
 #[cfg(test)]
 mod v3_tests {
     use super::*;
+
+    // Keep all four projections unconditional to detect an invalid marker
+    // guard. The bytewise literal search is independent of the fast matcher.
+    fn ungated_contains_secret(haystack: &[u8], needles: &[Zeroizing<Vec<u8>>]) -> bool {
+        fn literal(haystack: &[u8], needle: &[u8]) -> bool {
+            !needle.is_empty()
+                && needle.len() <= haystack.len()
+                && haystack.windows(needle.len()).any(|bytes| bytes == needle)
+        }
+        let json = decode_json_escapes(haystack);
+        let percent = percent_decode(haystack);
+        let folded = normalize_percent_hex(haystack);
+        needles.iter().any(|needle| {
+            literal(haystack, needle)
+                || literal(&json, needle)
+                || literal(&percent, needle)
+                || literal(&folded, &normalize_percent_hex(needle))
+        })
+    }
+
+    #[test]
+    fn transform_guards_match_ungated_reference_for_short_binary_inputs() {
+        fn inputs(max_len: u32) -> Vec<Vec<u8>> {
+            let alphabet = [0, b'a', b'A', b'%', b'\\', b'0', 0xff];
+            let mut values = Vec::new();
+            for length in 0..=max_len {
+                for mut value in 0..(alphabet.len() as u32).pow(length) {
+                    let mut bytes = Vec::new();
+                    for _ in 0..length {
+                        bytes.push(alphabet[value as usize % alphabet.len()]);
+                        value /= alphabet.len() as u32;
+                    }
+                    values.push(bytes);
+                }
+            }
+            values
+        }
+        let haystacks = inputs(4);
+        let candidates = inputs(2);
+        for haystack in &haystacks {
+            assert!(!contains_secret(haystack, &[]));
+            assert!(!contains_secret(haystack, &[Zeroizing::new(Vec::new())]));
+            for (index, needle) in candidates.iter().enumerate() {
+                let needles = [
+                    Zeroizing::new(Vec::new()),
+                    Zeroizing::new(needle.clone()),
+                    Zeroizing::new(needle.clone()),
+                    Zeroizing::new(candidates[(index + 17) % candidates.len()].clone()),
+                ];
+                assert_eq!(
+                    contains_secret(haystack, &needles),
+                    ungated_contains_secret(haystack, &needles),
+                    "haystack={haystack:?}, needle={needle:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn transform_guards_preserve_partial_malformed_and_single_projection_contracts() {
+        let cases: &[(&[u8], &[u8], bool)] = &[
+            (b"ordinary", b"synthetic", false),
+            (br"\u0073", b"s", true),
+            (br"\u007", b"s", false),
+            (br"\uZZ73", b"s", false),
+            (br"\u007", br"\u007", true),
+            (br"\/", b"/", true),
+            (br"\n", b"\n", true),
+            (br"\q", b"q", true),
+            (br"\", b"s", false),
+            (br"\uD83D\uDE00", "😀".as_bytes(), true),
+            (br"\uD83D\u0041", b"A", true),
+            (br"\uDE00", "😀".as_bytes(), false),
+            (b"%72", b"r", true),
+            (b"%7", b"r", false),
+            (b"%", b"r", false),
+            (b"%g2", b"r", false),
+            (b"%7", b"%7", true),
+            (b"%AB", b"%ab", true),
+            (b"%aB%Cd%eF", b"%ab%cd%EF", true),
+            (br"\u0025\u0037\u0033", b"s", false),
+            (b"%5Cu0073", b"s", false),
+            (b"%2573", b"s", false),
+            (br"\\u0073", b"s", false),
+        ];
+        for (fragment, needle, expected) in cases {
+            let needles = [Zeroizing::new(needle.to_vec())];
+            for (prefix, suffix) in [(0, 9), (7, 9), (7, 0)] {
+                let mut haystack = vec![0xfe; prefix];
+                haystack.extend_from_slice(fragment);
+                haystack.extend(vec![0xfe; suffix]);
+                assert_eq!(
+                    ungated_contains_secret(&haystack, &needles),
+                    *expected,
+                    "reference fragment={fragment:?}, needle={needle:?}"
+                );
+                assert_eq!(
+                    contains_secret(&haystack, &needles),
+                    *expected,
+                    "fragment={fragment:?}, needle={needle:?}, prefix={prefix}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn percent_fold_only_reflections_keep_independent_hex_case() {
+        let needles = [Zeroizing::new(b"%ab%CD%ef".to_vec())];
+        let haystack = b"%Ab%cd%eF";
+        assert!(!find_subslice(haystack, &needles[0]));
+        assert!(!find_subslice(&percent_decode(haystack), &needles[0]));
+        assert!(!find_subslice(&decode_json_escapes(haystack), &needles[0]));
+        assert!(contains_secret(haystack, &needles));
+        assert_eq!(
+            contains_secret(haystack, &needles),
+            ungated_contains_secret(haystack, &needles)
+        );
+    }
+
+    #[test]
+    fn every_generated_needle_matches_each_single_projection_at_every_position() {
+        fn mixed_percent_case(bytes: &[u8]) -> Vec<u8> {
+            let mut result = bytes.to_vec();
+            let mut index = 0;
+            let mut escape = 0;
+            while index + 2 < result.len() {
+                if result[index] == b'%'
+                    && result[index + 1].is_ascii_hexdigit()
+                    && result[index + 2].is_ascii_hexdigit()
+                {
+                    if escape % 2 == 0 {
+                        result[index + 1].make_ascii_uppercase();
+                        result[index + 2].make_ascii_lowercase();
+                    } else {
+                        result[index + 1].make_ascii_lowercase();
+                        result[index + 2].make_ascii_uppercase();
+                    }
+                    escape += 1;
+                    index += 3;
+                } else {
+                    index += 1;
+                }
+            }
+            result
+        }
+        let secret = b"SYNTHETIC-REFLECTION/?+~_=20261005";
+        let auth = [b"Bearer ".as_slice(), secret].concat();
+        let needles = sealing_needles(secret, &auth);
+        for needle in &needles {
+            let only = [Zeroizing::new(needle.to_vec())];
+            let json = needle
+                .iter()
+                .map(|byte| format!("\\u{byte:04x}"))
+                .collect::<String>()
+                .into_bytes();
+            for (projection, form) in [
+                ("literal", needle.to_vec()),
+                ("JSON", json),
+                ("percent", percent_encode_all(needle)),
+                ("fold", mixed_percent_case(needle)),
+            ] {
+                for (prefix, suffix) in [(0, 9), (7, 9), (7, 0)] {
+                    let mut haystack = vec![0xfe; prefix];
+                    haystack.extend_from_slice(&form);
+                    haystack.extend(vec![0xfe; suffix]);
+                    assert!(
+                        ungated_contains_secret(&haystack, &only),
+                        "reference projection={projection}, needle={needle:?}"
+                    );
+                    assert!(
+                        contains_secret(&haystack, &only),
+                        "projection={projection}, needle={needle:?}, prefix={prefix}"
+                    );
+                    assert!(contains_secret(&haystack, &needles));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn literal_search_matches_reference_for_short_binary_inputs() {
+        fn inputs(max_len: u32) -> Vec<Vec<u8>> {
+            let alphabet = [0, b'a', 0xff];
+            let mut values = Vec::new();
+            for length in 0..=max_len {
+                for mut value in 0..3_u32.pow(length) {
+                    let mut bytes = Vec::new();
+                    for _ in 0..length {
+                        bytes.push(alphabet[(value % 3) as usize]);
+                        value /= 3;
+                    }
+                    values.push(bytes);
+                }
+            }
+            values
+        }
+        let haystacks = inputs(6);
+        let needles = inputs(5);
+        for haystack in &haystacks {
+            for needle in &needles {
+                let expected = !needle.is_empty()
+                    && needle.len() <= haystack.len()
+                    && haystack.windows(needle.len()).any(|bytes| bytes == needle);
+                assert_eq!(find_subslice(haystack, needle), expected);
+            }
+        }
+        // Longer overlapping prefixes exercise the optimized algorithm beyond
+        // the short-needle paths covered by exhaustive binary enumeration.
+        let haystack = [vec![b'a'; 4096], b"b".to_vec()].concat();
+        for length in [16, 32, 64, 255, 4096, 4097, 4098] {
+            let needle = [vec![b'a'; length - 1], b"b".to_vec()].concat();
+            let expected = needle.len() <= haystack.len()
+                && haystack.windows(needle.len()).any(|bytes| bytes == needle);
+            assert_eq!(find_subslice(&haystack, &needle), expected);
+        }
+    }
+
+    #[test]
+    fn literal_prefilter_preserves_all_first_bytes_and_match_positions() {
+        assert!(!find_subslice(b"", b""));
+        assert!(!find_subslice(b"ordinary", b""));
+        assert!(!find_subslice(b"a", b"aa"));
+        for first in 0..=u8::MAX {
+            let needle = [first, first.wrapping_add(1), 0x80, 0, 0xff];
+            let absent: Vec<u8> = (0..=u8::MAX).filter(|byte| *byte != first).collect();
+            assert!(!find_subslice(&absent, &needle), "first={first}");
+            assert!(!find_subslice(&[first; 64], &needle), "first={first}");
+            for (prefix, suffix) in [(0, 9), (7, 9), (7, 0)] {
+                let mut haystack = vec![first.wrapping_add(17); prefix];
+                haystack.extend_from_slice(&needle);
+                haystack.extend(vec![first.wrapping_add(17); suffix]);
+                assert!(find_subslice(&haystack, &needle), "first={first}");
+            }
+        }
+        assert!(find_subslice(b"ababababac", b"ababac"));
+        assert!(!find_subslice(b"ababababab", b"ababac"));
+        assert!(find_subslice(b"aaaaaab", b"aaaab"));
+        assert!(!find_subslice(b"aaaaaaa", b"aaaab"));
+    }
+
+    #[test]
+    fn literal_prefilter_keeps_marker_heavy_nonreflections_false() {
+        let secret = b"SYNTHETIC-REKEY-BENCH-SECRET";
+        let auth = [b"Bearer ".as_slice(), secret].concat();
+        let needles = sealing_needles(secret, &auth);
+        for body in [
+            br"S!B!C!J!N!Q!T!U!4!5!%!\u0078%78\q%g2\\text\/raw\n".as_slice(),
+            br"\u0025\u0035\u0033%5Cu0053%2553".as_slice(),
+            br"\u0053YNTHETIC-REKEY-BENCH-SECREX%53YNTHETIC-REKEY-BENCH-SECREX".as_slice(),
+        ] {
+            assert!(!ungated_contains_secret(body, &needles));
+            assert!(!contains_secret(body, &needles));
+        }
+    }
+
+    #[test]
+    fn large_body_reflections_at_start_middle_and_end_are_sealed() {
+        const BODY_BYTES: usize = 4 * 1024 * 1024;
+        let secret = b"SYNTHETIC-SCANNER-REFLECTION-ONLY";
+        let auth = [b"Bearer ".as_slice(), secret].concat();
+        let needles = sealing_needles(secret, &auth);
+        let mut forms = vec![secret.to_vec(), auth];
+        for encoding in [
+            &BASE64,
+            &BASE64_NOPAD,
+            &BASE64URL,
+            &BASE64URL_NOPAD,
+            &HEXLOWER,
+            &HEXUPPER,
+        ] {
+            forms.push(encoding.encode(secret).into_bytes());
+        }
+        forms.push(percent_encode_all(secret));
+        forms.push(
+            secret
+                .iter()
+                .map(|byte| format!("\\u{byte:04x}"))
+                .collect::<String>()
+                .into_bytes(),
+        );
+        let mut body = vec![b'x'; BODY_BYTES];
+        assert!(!contains_secret(&body, &needles));
+        for form in forms {
+            for position in [0, BODY_BYTES / 2, BODY_BYTES - form.len()] {
+                body[position..position + form.len()].copy_from_slice(&form);
+                assert!(
+                    contains_secret(&body, &needles),
+                    "missed form length={} at position={position}",
+                    form.len()
+                );
+                body[position..position + form.len()].fill(b'x');
+            }
+        }
+        assert!(!contains_secret(&body, &needles));
+    }
 
     #[test]
     fn detects_embedded_base64_for_all_alignments_and_tails() {

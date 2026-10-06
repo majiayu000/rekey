@@ -1,0 +1,2624 @@
+{
+ "stories": [
+  [
+   "48169874",
+   "2026-05-17",
+   445,
+   151,
+   "Show HN: Semble – Code search for agents that uses 98% fewer tokens than grep"
+  ],
+  [
+   "47414440",
+   "2026-03-17",
+   161,
+   86,
+   "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil (2025)"
+  ],
+  [
+   "47353558",
+   "2026-03-12",
+   161,
+   52,
+   "Show HN: OneCLI – Vault for AI Agents in Rust"
+  ],
+  [
+   "47865822",
+   "2026-04-22",
+   156,
+   55,
+   "Show HN: Agent Vault – Open-source credential proxy and vault for agents"
+  ],
+  [
+   "47574871",
+   "2026-03-30",
+   141,
+   93,
+   "Show HN: Zerobox – Sandbox any command with file, network, credential controls"
+  ],
+  [
+   "47501840",
+   "2026-03-24",
+   112,
+   31,
+   "NanoClaw Adopts OneCLI Agent Vault"
+  ],
+  [
+   "49023427",
+   "2026-07-23",
+   110,
+   32,
+   "Show HN: OneCLI – OSS credential gateway that keeps secrets out of AI agents"
+  ],
+  [
+   "47765374",
+   "2026-04-14",
+   70,
+   17,
+   "Show HN: Kontext CLI – Credential broker for AI coding agents in Go"
+  ],
+  [
+   "42655630",
+   "2025-01-10",
+   63,
+   103,
+   "Making Beautiful API Keys"
+  ],
+  [
+   "47575950",
+   "2026-03-30",
+   63,
+   43,
+   "Bitwarden integrates with OneCLI agent vault"
+  ],
+  [
+   "46706796",
+   "2026-01-21",
+   60,
+   76,
+   "Show HN: yolo-cage – AI coding agents that can't exfiltrate secrets"
+  ],
+  [
+   "49085503",
+   "2026-07-28",
+   25,
+   12,
+   "Show HN: Flashpaper – Self-destructing secret sharing with no database"
+  ]
+ ],
+ "comments": [
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48170972",
+   "date": "2026-05-17",
+   "author_hash": "57ca6462",
+   "text": "Is the benchmark measuring one-shot retrieval accuracy, or Coding agent response accuracy?"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48171050",
+   "date": "2026-05-17",
+   "author_hash": "b320ff93",
+   "text": "Hey! Co-author here. The benchmark currently only measures retrieval accuracy. We’re interested in measuring it end to end and also optimizing, e.g. the prompt and tools, for this, but we just haven’t gotten around to it."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48171250",
+   "date": "2026-05-17",
+   "author_hash": "57ca6462",
+   "text": "Two follow-ups: 1) How do you compare accuracy? by checking if the answer is in any of the returned grep/bm25/semble snippets? 2) How do you measure token use without the agent, prompt, and tools?"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48171482",
+   "date": "2026-05-17",
+   "author_hash": "6cad7629",
+   "text": "grep doesn't need tokens, so what is 98% fewer than zero?"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48171680",
+   "date": "2026-05-17",
+   "author_hash": "b320ff93",
+   "text": "You need readfile to do something with those tokens.\nGrep only gives you the matching lines, not the context."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48171990",
+   "date": "2026-05-17",
+   "author_hash": "1784ea61",
+   "text": "`grep -C $NUM` ? ;)"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48178687",
+   "date": "2026-05-18",
+   "author_hash": "7f337933",
+   "text": "We might not be AI/agent enough for this product. I wondered about that as well, but it's not actually a grep problem, it's an ingest problem for agents. Apparently some agents use grep to navigate code and it's this \"operation\" that consume tokens, grep does in fact consume zero tokens."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48171856",
+   "date": "2026-05-17",
+   "author_hash": "0067a405",
+   "text": "Does this work well for non-coding documents as well? Say api docs or AI memory files?"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48171927",
+   "date": "2026-05-17",
+   "author_hash": "b320ff93",
+   "text": "Hey, this is something we're actively investigating. We recently added a flag, `--include-text-files`, which, when set, also makes Semble index regular documents (i.e., markdown, text, json). This should also work relatively well."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48172599",
+   "date": "2026-05-17",
+   "author_hash": "c508ba19",
+   "text": "I'd be interested in seeing actual agent benchmarks (eg CC or Copilot CLI with grep removed and this tool instead). For example, I have explored RTK and various LSP implementations and find that the models are so heavily RL'd with grep that they do not trust results in other forms and will continually retry or reread, and all token savings are lost because the model does not trust the results of t"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48172742",
+   "date": "2026-05-17",
+   "author_hash": "b320ff93",
+   "text": "Yeah we're also interested in doing this, it's on the roadmap together with optimization of the prompt and descriptions so that models have an easier time using it. Perhaps anecdotally: we do use this tool ourselves of course, and it's been working pretty well so far. Anthropic models call it and seem to trust the results."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48173096",
+   "date": "2026-05-17",
+   "author_hash": "9ae29578",
+   "text": "I forced Claude to have a global memory for RTK and my own AI memory system (GuardRails) which it happily uses both, the only times it doesnt use GuardRails is if I dont mention it at all, otherwise it always uses RTK unless RTK falls apart running a tool it does not support."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48173503",
+   "date": "2026-05-17",
+   "author_hash": "bdf7bf64",
+   "text": "Codex CLI is quite happy running RTK. Well with GPT 5.5 xhigh anyway One thing that irks me is that when it doesn't support eg. a cli flag of find, it gives an error message rather than sending the full output of the command instead. Then the agent wastes tokens retrying, or worse, doesn't even try because the prompting may make them afraid to not run commands without rtk"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48173601",
+   "date": "2026-05-17",
+   "author_hash": "543f2878",
+   "text": "how effective is RTK for you? worth using?"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48173663",
+   "date": "2026-05-17",
+   "author_hash": "1c66628f",
+   "text": "I just put something in my global CLAUDE.md (under ~/.Claude) asking it to use the LSP instead of grep and have never had this issue since."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48173687",
+   "date": "2026-05-17",
+   "author_hash": "96b50807",
+   "text": "My q would have been this. Lsp solved this no?"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48173893",
+   "date": "2026-05-17",
+   "author_hash": "d8cc7761",
+   "text": "can you share that prompt?"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48176586",
+   "date": "2026-05-18",
+   "author_hash": "e82ad0e5",
+   "text": "I've tried all sorts of tricks with Copilot CLI to get it to use LSP; project instructions, file extension instructions, but it just keeps forgetting. And says \"yea you're right I should have used it\" but then doesn't."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48175701",
+   "date": "2026-05-18",
+   "author_hash": "5a74c987",
+   "text": "Hey, this is something we're actively working on, but this is hard (and expensive) to do well across harnesses/models. The grep pretraining thing is very interesting though, I've noticed the same. E.g. Sonnet 4.6 seems to trust semble but Opus 4.7 less so. I'm hoping we can quantitatively test this and improve it when we have proper benchmarks for this as well. If you do have any feedback though l"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48175902",
+   "date": "2026-05-18",
+   "author_hash": "b41a50a0",
+   "text": ">so heavily RL'd with grep At least codex listens to me telling it to use rg instead of grep, cause grep is often so slow. But when adding rtk it uses grep through rtk which is kind of annoying."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48175951",
+   "date": "2026-05-18",
+   "author_hash": "c166de3b",
+   "text": "Token savings is more and more important, but it also important if the agent trusts the result and stops searching. it should measure the full agent loop instead of just the search output"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48175974",
+   "date": "2026-05-18",
+   "author_hash": "b688047c",
+   "text": "I think the best bet is to use some kind of proxy so when the model calls grep, you intercept the call, use other tool to search and give back the results to the model."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48194319",
+   "date": "2026-05-19",
+   "author_hash": "b99902c7",
+   "text": "True. Just have the interface that behaves like grep and the output is as expected like grep but internally: indexed, ranked, ... So the model trusts the output because it is grep :D"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48179257",
+   "date": "2026-05-18",
+   "author_hash": "23062123",
+   "text": "I tried to use rtk once and the model got stuck just running and rerunning and rerunning in a loop, until I killed it. I have no idea what happened."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48173163",
+   "date": "2026-05-17",
+   "author_hash": "79263862",
+   "text": "Semantic code search seems like a useful tool for a human too. Not just for agents."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48175422",
+   "date": "2026-05-18",
+   "author_hash": "b320ff93",
+   "text": "Yeah I agree. I have used semble to quickly index a large monorepo and just ask a question about it, it surfaced the right files pretty quickly. Although without an IDE, it's difficult to display them in nice way"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48173229",
+   "date": "2026-05-17",
+   "author_hash": "2c61ce77",
+   "text": "very curious to give it a spin but why write a cli in python? would surely be faster and more portable with go or rust?"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48173819",
+   "date": "2026-05-17",
+   "author_hash": "63ca675d",
+   "text": "Perhaps Python is their main language (they seem to be ML peeps, which would make that most likely), which means it's easier for them to do manual reviews even if they're using AI for implementing, etc."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48175393",
+   "date": "2026-05-18",
+   "author_hash": "b320ff93",
+   "text": "Yes, this is the main reason. We've released some rust stuff in the past, but Python is our main language"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48173270",
+   "date": "2026-05-17",
+   "author_hash": "fad55db4",
+   "text": "How does it compare to context-mode or serina that are both well established now?"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48175752",
+   "date": "2026-05-18",
+   "author_hash": "5a74c987",
+   "text": "Serena does a lot more than semble (I actually used serena before building this and didn't like how much it does by default). That also made it hard to see if it was actually working well with how many moving parts there are. Semble only does 1 thing: very quick code search, that's it. Context-mode I have not used before though, I will have a look at that, thanks for sharing!"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48173477",
+   "date": "2026-05-17",
+   "author_hash": "c6ac413a",
+   "text": "Congratulations on the release! Could you add fff to the benchmarks?"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48175399",
+   "date": "2026-05-18",
+   "author_hash": "b320ff93",
+   "text": "We hadn't found that one yet. Will do!"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48173506",
+   "date": "2026-05-17",
+   "author_hash": "5318bb5b",
+   "text": "Shouldn’t it be a part of the harness at least for local codebase?  I wonder how many harnesses are doing that already."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48173555",
+   "date": "2026-05-17",
+   "author_hash": "99da35ac",
+   "text": "I'm playing with PI as a custom harness ( for Claude code because that what is provided to me ) I will try that ! It make sense and I'm curious to see results, for this or any similar projects mentioned in the thread"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48173586",
+   "date": "2026-05-17",
+   "author_hash": "ac416f61",
+   "text": "allegedly this one is good for PI \n https://pi.dev/packages/@ff-labs/pi-fff "
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48175733",
+   "date": "2026-05-18",
+   "author_hash": "5a74c987",
+   "text": "Afaik many harnesses ship the \"default\" which is grep+read (like Claude Code). But I agree, IMO it's a weird gap. To be fair I don't think providers are that incentivised to reduce token burn at the moment, but my guess is that that will change and tools like this will become at least an natively supported option in some harnesses."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48176279",
+   "date": "2026-05-18",
+   "author_hash": "aac84030",
+   "text": "I would be surprised if, in the \"mature\" future of AI tools/products, the labs building the models are also selling/building to end users like they are now."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48173521",
+   "date": "2026-05-17",
+   "author_hash": "bdf7bf64",
+   "text": "How does this compare with colgrep?  https://github.com/lightonai/next-plaid/tree/main/colgrep "
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48175419",
+   "date": "2026-05-18",
+   "author_hash": "b320ff93",
+   "text": "The comparison is in the benchmarks, see the README"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48173657",
+   "date": "2026-05-17",
+   "author_hash": "1c66628f",
+   "text": "Better than grep obviously, but how does this compare to existing LSPs?"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48174181",
+   "date": "2026-05-17",
+   "author_hash": "c983363d",
+   "text": "Or tools like `ck`:  https://beaconbay.github.io/ck/ "
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48174927",
+   "date": "2026-05-18",
+   "author_hash": "45119a3f",
+   "text": "Try running both on the CK codebase. CK takes like 15 minutes to index itself and gives hundreds of completely irrelevant doc comments as results for “run model on CPU” query. Semble indexes for like 3 seconds and prints out the actual code that runs the model on the CPU."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48173704",
+   "date": "2026-05-17",
+   "author_hash": "d61ab47a",
+   "text": "Would this replace something like codebase-memory-mcp[1] or improve when both is being used? [1] -  https://github.com/DeusData/codebase-memory-mcp "
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48173726",
+   "date": "2026-05-17",
+   "author_hash": "c5ed2638",
+   "text": "This looks great! I built a tool in the same space- and I found that the biggest challenge was often to get the agent to prefer to use the tool over bash tools. What’s your experience with that?"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48173835",
+   "date": "2026-05-17",
+   "author_hash": "de519536",
+   "text": "Setup hooks. Hooks are how your harness forces compliance with your own rules."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48180350",
+   "date": "2026-05-18",
+   "author_hash": "5a74c987",
+   "text": "This is mostly done with the prompt. To be fair, we are still evaluating and improving this as well!"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48173813",
+   "date": "2026-05-17",
+   "author_hash": "b66e1490",
+   "text": "I also like the index feature form  https://maki.sh \nSource code has a lot of structure, using a real parser instead of grepping and reading files can potentially save a lot of tokens"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48175728",
+   "date": "2026-05-18",
+   "author_hash": "5a74c987",
+   "text": "Interesting, will have a look at this, thanks for sharing."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48173950",
+   "date": "2026-05-17",
+   "author_hash": "92e14630",
+   "text": "Very useful thanks for sharing!"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48174550",
+   "date": "2026-05-18",
+   "author_hash": "0d715601",
+   "text": "I did some evals with pi and GPT 5.5. I tested RTK on / headroom on / both on / both off (all with the standard pi system instructions and no AGENTS.md). I forget the exact tests I used (a couple of the standard agent evals that people use, one python and one typescript because those are what I use). I don't claim it was an exhaustive test, or even a good one. It's possible I could have spent a da"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48174613",
+   "date": "2026-05-18",
+   "author_hash": "b7902c5c",
+   "text": "with AI the \"they could so they never wondered if they should\" will be a very frequent thing."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48174911",
+   "date": "2026-05-18",
+   "author_hash": "d2f22f7e",
+   "text": "yeah I think I'm prone to do the same, it is so easy to create and we get too excited by it instead of first doing the research necessary which is much more boring than actually producing something."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48175536",
+   "date": "2026-05-18",
+   "author_hash": "b320ff93",
+   "text": "This is a bit rude. We didn't generate this project, we wrote it, a lot of it manually, and trained custom models. We'd been working in the real-time retrieval space for a while, and we thought coding was a good fit for this specific technology."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48176108",
+   "date": "2026-05-18",
+   "author_hash": "4673e4b7",
+   "text": "There's an industry wide deficit of tests for AI right now. It's not just this tool, it's everything you add to your code base or your development flow that uses AI. Nobody had tests for \"how fast/well was this developed\" before AI and they haven't added them now."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48205921",
+   "date": "2026-05-20",
+   "author_hash": "1cd8082a",
+   "text": "Have you tried  https://github.com/mksglu/context-mode ? I prefer it over rtk / headroom (at least in Cursor). The stop hooks seem to work well / prevent the agent from blowing up its context window."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48174555",
+   "date": "2026-05-18",
+   "author_hash": "8e3debce",
+   "text": "fantastic token savings and performance... but unlike grep it's probabilistic search on search terms. is that an issue? the tiny model might not surface something important"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48175622",
+   "date": "2026-05-18",
+   "author_hash": "b320ff93",
+   "text": "It's not probabilistic, and exact matches will always be preferred over non-exact. So if you search for a function name this will surface it."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48174827",
+   "date": "2026-05-18",
+   "author_hash": "36d3b40f",
+   "text": "thanks for sharing!"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48174924",
+   "date": "2026-05-18",
+   "author_hash": "ab80fd38",
+   "text": "Nice, this sounds great. I want to mention a related issue here, which is that on small codebases, Claude spends a lot of time looking for stuff when it could have just dumped the whole codebase into the context in one go and used very little tokens. I found a nice workaround which is that you can just dump the whole directory into context, as a startup hook. So then Claude skips the \"fumble aroun"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48175353",
+   "date": "2026-05-18",
+   "author_hash": "50127c38",
+   "text": "Maybe aider?  https://aider.chat/2023/10/22/repomap.html "
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48176464",
+   "date": "2026-05-18",
+   "author_hash": "19da5970",
+   "text": "Good old aider ahead of its time"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48180133",
+   "date": "2026-05-18",
+   "author_hash": "ab80fd38",
+   "text": "I actually made a custom harness based on Aider's edit format (the find/replace thing). (I think most AI stuff ended up using a very similar format.) It just does what I need and no more: load code into context, append my question or instruction, call LLM, apply patches. Repeat. I haven't used Aider itself though, maybe it does that too. My harness was nice relative to Claude Code and Codex becaus"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48175436",
+   "date": "2026-05-18",
+   "author_hash": "b320ff93",
+   "text": "This is true, agents just don't know a lot about the things they're looking at, e.g., the number of files, file sizes, etc. Although for small codebases it also holds that whatever you would like to find it easy to find, so search still might help you with cost"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48175025",
+   "date": "2026-05-18",
+   "author_hash": "3759059c",
+   "text": "Seems like a cool idea so I decided to play with it a bit. The test I ran was in the browsercode ( https://github.com/browser-use/browsercode ) repo with the following prompt: \"Answer this question by only using the `semble` CLI (docs below): > What tools does Browsercode provide to the agent other than the base OpenCode tools? Provide the exact schema for tool input and tool output and briefly su"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48175443",
+   "date": "2026-05-18",
+   "author_hash": "b320ff93",
+   "text": "Wow awesome, thanks for sharing! This is really useful and very much like the experiments we want to be doing in the near future"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48175026",
+   "date": "2026-05-18",
+   "author_hash": "1ef3383a",
+   "text": "Nice!"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48175065",
+   "date": "2026-05-18",
+   "author_hash": "b86ef7d5",
+   "text": "Does this support any language or is it limited to a specific set of languages?"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48175416",
+   "date": "2026-05-18",
+   "author_hash": "b320ff93",
+   "text": "For chunking Semble supports all languages supported by tree-sitter-language-pack. The models we train are trained on 6 languages, but can handle way more."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48175368",
+   "date": "2026-05-18",
+   "author_hash": "f467e895",
+   "text": "Interesting. I too have been working in this space, though I took a different approach. Rather than building an index, I worked on making a \"smarter grep\" by offering search over codebases (and any text content really) with ranking and some structural awareness of the code. Most of my time was spend dealing with performance, and as a result it runs extremely quickly. I will have to add this as a c"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48175802",
+   "date": "2026-05-18",
+   "author_hash": "5a74c987",
+   "text": "Nice! Let us know if you have any feedback or results to share, would be happy to do the same."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48177641",
+   "date": "2026-05-18",
+   "author_hash": "12ec5ac3",
+   "text": "I was going to share a link to this. Thank you for making `cs`, I use it both with LLMs and directly in the terminal, despite not performing indexing it's pretty fast for my needs. Also definitely planning to try out semble."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48187872",
+   "date": "2026-05-19",
+   "author_hash": "f467e895",
+   "text": "You are welcome. Glad to hear its working for you. I have a few ideas I am working on to improve its relevance too that I hope pan out."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48175406",
+   "date": "2026-05-18",
+   "author_hash": "ce9a8bf4",
+   "text": "What I have personally observed with such tools is that they make the AI's dumb, similar to how it makes coders dumb when relying more on AI tools. These agentic AI's are already smart enough to figure out a highly optimized path to code exploration or search. But, with these tools, they just go very aggressive, partly because the search results from these tools almost in 100% of the cases do not "
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48175665",
+   "date": "2026-05-18",
+   "author_hash": "5a74c987",
+   "text": "Hey, codebase-memory-mcp and semble are not exactly the same, but it's an interesting comparison, I'll put it on the todolist to check that out and add it to our benchmarks if feasible. If you ever get a chance to do this same comparison with semble it would be super useful feedback since these \"real\" scenarios are hard to benchmark/replicate."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48175777",
+   "date": "2026-05-18",
+   "author_hash": "ce9a8bf4",
+   "text": "So, I just tested with semble. Your MCP integration did not work, and kept throwing error (Failed to connect to \"semble\": MCP error -32000: Connection closed) though I installed using documented manner (tried both: pip and ux methods). Anyways, I made it work by making it generate relevant doc (using semble init), and then copying this into AGENTS.md, and then prompting it with this line: \"\"\"\nStar"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48176193",
+   "date": "2026-05-18",
+   "author_hash": "e853c6f1",
+   "text": "> These agentic AI's are already smart enough to figure out a highly optimized path to code exploration or search. Hasn't been my experience. We used to use Augment Code at work which has a thing called Context Engine - basically an MCP that can answer natural language queries about pre-indexed code. Then we switched to Claude Code, which for some reason prefers to use sed to read from files using"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48176713",
+   "date": "2026-05-18",
+   "author_hash": "91df01cf",
+   "text": "Lol... I noticed it does weird stuff sometimes. I'll see it generate a python script inline on the CLI to edit files. Like... Yo what the fuck? It literally used the edit tool until 5 turn ago. Also, it'll run a formatter, read, edit to undo auto formatting and then continue on its merry way. What is the point of that??? Lol"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48179282",
+   "date": "2026-05-18",
+   "author_hash": "c3226cbf",
+   "text": "> Just one line in AGENTS.md and CLAUDE.md: \"Start by reading PROJECT.md\" . > And PROJECT.md contains... …Why not just use that PROJECT.md as the AGENTS/CLAUDE.md?"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48180539",
+   "date": "2026-05-18",
+   "author_hash": "ce9a8bf4",
+   "text": "Doing that would mean copying and keeping in-sync two files: AGENTS.md and CLAUDE.md since I use both, claude, and others intercheangeably in one project. Also, I dont want to keep my project's details in those files, but, keep it separate. With current setup/way, a single line in both satisifies all constraints and requirements."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48181904",
+   "date": "2026-05-18",
+   "author_hash": "0b2f4f0c",
+   "text": "I'm seeing over and over again people claiming absurd optimizations for coding agents: > Our tool uses 99x fewer tokens and delivers 88x better results. Okay, great, but... 1) It's VERY difficult to quantify something is  better . 2) They almost never post how they measured how much better it is and what the margin of error might be. 3) I  assume  they are incompetent and don't even try the tool. "
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48189691",
+   "date": "2026-05-19",
+   "author_hash": "5a74c987",
+   "text": "Hey, this skepticism is fair and we share it, which is why we don't claim end-to-end agent improvements since we haven't measured those (yet). The benchmark we published measures retrieval quality and token count during search, not overall agent performance. We are working on agent-level evals, but those are unfortunately much harder to get right. However, we do believe that Semble makes agents be"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48205933",
+   "date": "2026-05-20",
+   "author_hash": "1cd8082a",
+   "text": "I found this prompt works well to nudge it to use a better grep as the start, then just keep using grep (Cursors instant grep in my case): ```\n- For planning, prefer using morph-mcp `codebase_search` - subagent that takes in a search string and tries to find relevant context. Best practice is to use it at the beginning of codebase explorations to fast track finding relevant files/lines. Do not use"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48175502",
+   "date": "2026-05-18",
+   "author_hash": "41fe14cc",
+   "text": "Cool project. I built a custome IDE and coding agent harness and will integrate this into it. If you’re interested in a collaboration, I’d be happy to share revenue to sponsor your open source repo.  https://calendly.com/ryanwmartin/open-office-hours "
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48175522",
+   "date": "2026-05-18",
+   "author_hash": "17ec4381",
+   "text": "The instructions on how to install and use it could use some work. I did eventually install it. Will try it later and report back."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48175526",
+   "date": "2026-05-18",
+   "author_hash": "b320ff93",
+   "text": "Oh sorry that happened. Feel free to open an issue or report it here"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48175739",
+   "date": "2026-05-18",
+   "author_hash": "eb2a1a0a",
+   "text": "How does that compare to Cursors’s workspace indexing? Also curious what the authors think about Claude team explicitly trying out indexing and deciding against it."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48175780",
+   "date": "2026-05-18",
+   "author_hash": "5a74c987",
+   "text": "The first is hard to test for us unfortunately since we don't use Cursor. But the Claude thing is interesting. I think that providers (especially the ones that directly sell LLM calls like Anthropic) are not incentivised per se to think about token efficiency vs performance, so if you're chasing pure performance, just loading the full codebase into memory might still be the \"benchmark topping\" way"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48175878",
+   "date": "2026-05-18",
+   "author_hash": "53b9875b",
+   "text": "The one thing I'm a bit nervous about: security. Thoughts of supply-chain \"what-ifs\" gives me a bit of pause here.  Would like to hear security-minded folks give their thoughts on this."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48176196",
+   "date": "2026-05-18",
+   "author_hash": "5a74c987",
+   "text": "Hey, we do a couple of things specifically to prevent supply-chain attacks. We use trusted publishing on PyPI, and --exclude newer for uv's package resolution. We also try to use the least amount of dependencies possible. A transitive dependency could in theory still be problematic though, e.g. if there's a supply-chain attack on numpy. The tool itself is fully local though, so there's no real sec"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48176075",
+   "date": "2026-05-18",
+   "author_hash": "65ee6a42",
+   "text": "The savings are calculated against the assumption that agents read the matched files in their entirety. In my experience, they are smart enough to use grep to bring up a few lines of surrounding context, then read in full only the files that look relevant."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48176154",
+   "date": "2026-05-18",
+   "author_hash": "5a74c987",
+   "text": "In practice this rarely happens though, at least in practice I rarely see agents \"grep -C N\" or something like that on files it didn't read yet. I use Claude Code and OpenCode extensively, and especially during the first pass through a codebase that is not well understood the agent often just does \"cat file\" or something similar and gets the entire file in context first, and only then starts doing"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48176126",
+   "date": "2026-05-18",
+   "author_hash": "a4b063a6",
+   "text": "Would be nice to see the actual % token/time saving across end-to-end coding sessions over these time periods  https://github.com/MinishLab/semble#savings  My observation is that greps and the processing of grep outputs account for only a small portion of overall consumption; I haven't measured this scientifically though."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48176165",
+   "date": "2026-05-18",
+   "author_hash": "5a74c987",
+   "text": "Yeah this is a good point, but it's complicated to do well since semble then has to be aware of everything else that happens in a session, which would then make it more intrusive (and it's deliberately designed as a local, non-intrusive alternative to other solutions). I'm thinking that perhaps we can do an isolated opt-in benchmark for this perhaps."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48176203",
+   "date": "2026-05-18",
+   "author_hash": "8b3dad8d",
+   "text": "Have you considered solving a different problem? What are agents trying to achieve when searching a code base?  Finding seams. How about indexing seams instead?"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48176246",
+   "date": "2026-05-18",
+   "author_hash": "5a74c987",
+   "text": "What do you mean by this exactly?"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48176235",
+   "date": "2026-05-18",
+   "author_hash": "bac7df1f",
+   "text": "“> Claude: Semble surfaced things grep missed — here are the additions to the earlier answer.” Nice!"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48176348",
+   "date": "2026-05-18",
+   "author_hash": "3c10c5de",
+   "text": "The bigger problem with solutions like these is that most AI already know how to use grep and search really well because of their training. Any such new tool that you handle to the AI, takes away from the cognitive capability of the AI. Humans would normally 'learn' how to operate tools like this - but the learning in LLM's is frozen and they already with a very strong depth in existing tools like"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48176396",
+   "date": "2026-05-18",
+   "author_hash": "661ae58a",
+   "text": "> uses 98% fewer tokens than grep So are we supposed to believe that grep is so wasteful that models are reading 98% useless garbage every time they call it? Either this claim is not representative, or you're missing something else when you throw away the vast majority of context for the model."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48176452",
+   "date": "2026-05-18",
+   "author_hash": "f467e895",
+   "text": "Grep prints out every matching line. For some searches a LLM might do it will get a lot of noise, and it might have to make that search because it cannot be specific. Targeted search can reduce the number of tokens. I suspect this comparison is against reading the whole codebase though compared to just getting the bits you need."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48176626",
+   "date": "2026-05-18",
+   "author_hash": "19c2a0db",
+   "text": "I had problems with Claude reading hundreds of kilobytes of outputs because grep found things in node_modules. (ripgrep helps, so it makes sense to add a line about it into some memory file.)"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48177156",
+   "date": "2026-05-18",
+   "author_hash": "5a74c987",
+   "text": "The 98% is vs the grep+read loop, not grep output alone. When an agent hits an unfamiliar codebase it typically does \"cat file\" or reads the whole thing first, at least in my experience. If you're reliably getting agents to do \"grep -C N\" and stop there I'd genuinely be curious what your setup looks like, because I think the quality of the results is just too low to serve as useful context."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48181400",
+   "date": "2026-05-18",
+   "author_hash": "29a32db8",
+   "text": "> When an agent hits an unfamiliar codebase it typically does \"cat file\" or reads the whole thing first, at least in my experience. Depends on the size of the project and specific files. I have definitely seen agents make smart use of pi's \"read\" tool, which can take an offset and line limit (or defaults to a max 2000 lines/50KiB if the model doesn't specify). The bash tool also has the same max o"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48176621",
+   "date": "2026-05-18",
+   "author_hash": "d6e3a973",
+   "text": "Do inefficient grep/sed behaviors have a secondary benefit in seeding the context with breadcrumbs of code from irrelevant matches?"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48177204",
+   "date": "2026-05-18",
+   "author_hash": "5a74c987",
+   "text": "In theory maybe, but in practice it hurts more than it helps I think. Irrelevant context makes the model more likely to reason from the wrong code (and it's slower and more expensive)."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48176916",
+   "date": "2026-05-18",
+   "author_hash": "338c9f13",
+   "text": "Feedback: codex-cli hangs when calling this through the MCP. The semble process even sticks around as a zombie, forever stalled out. No idea why, logs have nothing. When called through a skill via CLI style calling, GPT 5.5 loves to give a ton of search terms like it is used to doing with ripgrep. Not sure how effective this is, the short docs in the github and the instructions the agent has isn't"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48177188",
+   "date": "2026-05-18",
+   "author_hash": "5a74c987",
+   "text": "Hey, thanks for the detailed feedback. For the bug, would you mind opening an issue with your setup details? This is definitely something we want to investigate and fix. The multiple queries thing is really good feedback, thanks for that, we'll update the prompt/instructions to prevent this from happening and we'll try to add some tests for this. The external connection errors during install are u"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48176929",
+   "date": "2026-05-18",
+   "author_hash": "54185001",
+   "text": "Exciting. I've been playing with AI dev pipelines and the \"give the agent the full codebase vs. let it search\" trade-off is what I keep running into - both have  pros and cons depending on the task. This looks like the latter pushed harder than I've seen before. Looking forward to trying it"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48177252",
+   "date": "2026-05-18",
+   "author_hash": "22295c0c",
+   "text": "I know this tool was meant for AI, but I am more interested in using it myself when exploring new code bases or even my own, when I want to refactor something and want an overview of where to change stuff. LSPs do that, but this tool sounds like it can go one step further."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48177905",
+   "date": "2026-05-18",
+   "author_hash": "630dddc4",
+   "text": "\"The problem is that there are several bottlenecks internally,\" which include the requirements, specs, and testing. Another one not mentioned in the article. Before you had faster implementation times, something would take six weeks to implement. Feedback from the client about how far off target you were came through in the same amount of time: a help desk ticket, a post-call check-in, a quarter e"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48177913",
+   "date": "2026-05-18",
+   "author_hash": "630dddc4",
+   "text": "Metric that measures the quality beyond simple tokens count: correction loop frequency. When grep does not find a file of interest, the agent does not fail; it will continue working on an incomplete context. For a monolingual code base, the miss rate is okay. In case of polylingual code (Python backend code and TypeScript frontend code), the problems emerge when it comes to querying for cross-file"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48177986",
+   "date": "2026-05-18",
+   "author_hash": "158ba393",
+   "text": "I feel this should be a mode on ripgrep. a disk search-lib in python? really? Burntsushi (author of ripgrep), please chime in!"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48178169",
+   "date": "2026-05-18",
+   "author_hash": "5a74c987",
+   "text": "Hey, what's the issue with a disk search-lib in python specifically? The library is extremely fast. Yes, we could probably squeeze some more performance in Rust, but that's not our native programming language, so we opted for doing it correctly rather than use a language that we don't understand well enough."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48178226",
+   "date": "2026-05-18",
+   "author_hash": "e0d81669",
+   "text": "LSPs are already miles better than grep-like tools. This was true for humans as much as it is for LLMs. It's a shame that Claude still treats it as a second-class citizen (both in the app itself and in the training). A simple \"remember to use LSP instead of grep\" is usually enough to get it on the right track."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48178864",
+   "date": "2026-05-18",
+   "author_hash": "35e25713",
+   "text": "Interesting approach, gonna leave a gh star clap"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48179113",
+   "date": "2026-05-18",
+   "author_hash": "0c60485d",
+   "text": "amazing jobs"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48180998",
+   "date": "2026-05-18",
+   "author_hash": "5e567cfe",
+   "text": "These almost always come with the cost of worse adherence"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48189706",
+   "date": "2026-05-19",
+   "author_hash": "5a74c987",
+   "text": "Fair, many tools trade off cost for performance/adherence. So far our experience is good with Semble (at least with Anthropic/OpenAI models), but if you have any feedback feel free to reach out. We're working on evaluations for this as well, though it will take some time as this is much harder than benchmarking retrieval quality."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48181151",
+   "date": "2026-05-18",
+   "author_hash": "b6b007cc",
+   "text": "Interesting for sure, but I think I need to be convinced this is necessary. How many tokens does Grep use on the average response anyways? Does this reduce input token usage from 100k to 2k per query or from 1k to 20? How does this effect output code quality?"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48189698",
+   "date": "2026-05-19",
+   "author_hash": "5a74c987",
+   "text": "There's a \"semble savings\" command you can run to see token savings. It varies heavily based on the repo: in general, the larger the project the larger the savings. Output code quality is something we're still trying to measure, but it's much harder than measuring retrieval quality."
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48193247",
+   "date": "2026-05-19",
+   "author_hash": "b6b007cc",
+   "text": "Gotcha. Might be interesting to show some plots of average/median/max input token savings per query as a function of repo size if you're going to do some more comparison testing. The efficiency gains are compelling, but I'd want to see the magnitude of gains as well to get a full picture. Regardless, cool project and I'll check it out for myself"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48182190",
+   "date": "2026-05-18",
+   "author_hash": "59733afe",
+   "text": "So about a year ago I wrote my own attempt at something like this using vector indexing and BM25 (the latest version uses CocoIndex, I had a custom coded solution using ChromaDB before). I wrote a comprehensive enough test set that showed performance increases on the quality of search results and reduction in token usage versus grep and rg. I haven't had time to really polish it but it worked well"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48189672",
+   "date": "2026-05-19",
+   "author_hash": "5a74c987",
+   "text": "Wow, thanks for sharing, and cool that you're working on similar things! Feel free to drop any feedback on the repo if you want!"
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48190303",
+   "date": "2026-05-19",
+   "author_hash": "da1b2c39",
+   "text": "Related:  https://github.com/jahala/tilth \nEdit: recent HN discussion:  https://news.ycombinator.com/item?id=46952321 "
+  },
+  {
+   "story": "Show HN: Semble – Code search for agents that uses 98% fewer",
+   "url": "https://news.ycombinator.com/item?id=48205911",
+   "date": "2026-05-20",
+   "author_hash": "1cd8082a",
+   "text": "Related read (not from me):  https://entire.io/blog/improving-agentic-search-in-coding-ag...  > The clearest result was that faster search alone only modestly helps, while better-ranked results improve first-query retrieval and help agents find the right code sooner. Their tool \"pgr\" is a research preview only, so it'd be interesting to see semble vs pgr. I'm also collecting other tools that are s"
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47415844",
+   "date": "2026-03-17",
+   "author_hash": "1038a20b",
+   "text": "The Secret Agent was not an easy movie for the average movie watcher. It had an unorthodox ending, graphic violence, and it's in a different language. With that said, it's too bad it wasn't able to come out with any Oscars. I can see why OBAA won quite a few awards."
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47416452",
+   "date": "2026-03-17",
+   "author_hash": "32947007",
+   "text": "Having grown up in Brazil in the 70s, I thought the cinematography of \"The Secret Agent\" absolutely nailed the aesthetics of that era."
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47416945",
+   "date": "2026-03-17",
+   "author_hash": "89dac1df",
+   "text": "Kleber Mendonça Filho's other films are great at analysing modern Brazil."
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47417082",
+   "date": "2026-03-17",
+   "author_hash": "04e04182",
+   "text": "Bacurau is one of the best movies I’ve seen in recent memory and Pictures of Ghosts tells an amazing story about the history of Recife’s relationship to cinema."
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47417117",
+   "date": "2026-03-17",
+   "author_hash": "24d61384",
+   "text": "Bacurau was quite a trip. I left that one pleasingly befuddled."
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47417652",
+   "date": "2026-03-17",
+   "author_hash": "ebea0a0b",
+   "text": "Neighboring Sounds is my favourite. It's the only movie I've ever watched that captures the psychology of living in a violent city: the mental load of constantly being in fear that something might happen to you, likely not today, but probably someday."
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47419026",
+   "date": "2026-03-17",
+   "author_hash": "728bbd18",
+   "text": "I liked Bacurau. The villains were a little stupid though. At some point after the brazilians mounted an armed resistance the americans basically gave up and started killing each other instead for no reason. Still an extremely subversive film for modern Brazil which is dominated by a brand of leftism that wants to disarm the population. Without weapons, the americans would have genocided Bacurau a"
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47430599",
+   "date": "2026-03-18",
+   "author_hash": "7785bd7f",
+   "text": "I grew up in the 80s/90s further south, and still the film was very much a high fidelity memory playing on-screen. The production design will never be fully appreciated by people that didn’t live that time, it was truly special."
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47416795",
+   "date": "2026-03-17",
+   "author_hash": "e28dee47",
+   "text": "One thing I noticed is that both this and another incredible film this year,  Sirāt , were, at least in part, funded by a grants and state institutions.  https://en.wikipedia.org/wiki/Sir%C4%81t   https://en.wikipedia.org/wiki/The_Secret_Agent_(2025_film)  If you haven't seen either, highly recommended. Don't watch Sirat if you're wanting a \"good time,\" but I honestly can't think of the last time "
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47416912",
+   "date": "2026-03-17",
+   "author_hash": "49f75fda",
+   "text": "Another movie that kind of slid under the radar but is very watchable (and mainstream) is Nuremberg. It's just entertaining without trying to be too much. It's not \"great\" but it's not bad, either.  https://en.wikipedia.org/wiki/Nuremberg_(2025_film) "
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47419809",
+   "date": "2026-03-17",
+   "author_hash": "595477bd",
+   "text": "> One thing I noticed is that both this and another incredible film this year, Sirāt, were, at least in part, funded by a grants and state institutions. Aren't almost  all  films partially funded by grants and state institutions? For example the MPAA publishes guides like [1], and if you watch the credits of most films at the end you'll see \"thanks to XYZ\" where it was filmed. Even if you film in "
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47416941",
+   "date": "2026-03-17",
+   "author_hash": "2298e187",
+   "text": "Decent film but to me 'I'm Still Here' (Ainda Estou Aqui) was still a too fresh experience from last year to have  a similar film again from Brazil set in the 70s covering the military dictatorship. I also think that I'm Still Here is a much better film."
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47417051",
+   "date": "2026-03-17",
+   "author_hash": "89dac1df",
+   "text": "I definitely like that film, especially the acting and the music, but I think that, as with most material that covers that era (arts, history, journalism), it focuses on the middle and the upper classes. The poor get a footnote: what happened to Zezé? But the poor were the biggest losers of the dictatorship. It was at the precise moment that the country needed to modernise that the coup made every"
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47418025",
+   "date": "2026-03-17",
+   "author_hash": "66c2da7e",
+   "text": "It's just now starting to become common knowledge that the military dictatorship didn't industrialize Brazil. On most circles, saying that it deindustrialized the country will surprise every single person, and get immediately rejected as false by a large share. Propaganda is a hell of a thing. We are not even close to start that discussion, so it mostly won't appear anywhere."
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47417161",
+   "date": "2026-03-17",
+   "author_hash": "c6af535f",
+   "text": "The immersion into the time and place was fantastic, the surreal elements being bold , outlandish, and unexpected were great. The time jump at the end was interesting. a great piece of work that some felt divided over as a general audience but overall memorable and ambitious"
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47417442",
+   "date": "2026-03-17",
+   "author_hash": "8ae5d5bb",
+   "text": "One of the strongest movie start sequences in a while, it immediately sets the vibe."
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47420773",
+   "date": "2026-03-18",
+   "author_hash": "9a8a1cfd",
+   "text": "the vibe of snoozefest"
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47424876",
+   "date": "2026-03-18",
+   "author_hash": "c654c427",
+   "text": "It didn't set the vibe though, After the strong start it is slow, wobbly and incoherent. It is ok, but could be much better."
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47417986",
+   "date": "2026-03-17",
+   "author_hash": "b008f56c",
+   "text": "I watched both The Secret Agent and One Battle After Another (didn’t see any of the other nominees). For me, The Secret Agent was definitely better."
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47419898",
+   "date": "2026-03-17",
+   "author_hash": "1038a20b",
+   "text": "I wonder how many in the Academy actually watched The Secret Agent. I've heard before that a lot don't watch all the movies before making their picks."
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47420022",
+   "date": "2026-03-17",
+   "author_hash": "b008f56c",
+   "text": "Starting this year, an academy member was required to watch all films in a category in order to vote on that category. I’m sure compliance was not perfect, but it seems a much better process than the honor system.  https://www.latimes.com/entertainment-arts/awards/story/2025... "
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47418022",
+   "date": "2026-03-17",
+   "author_hash": "859e472a",
+   "text": "I found it unsatisfying. Such a strong opening let down by a meandering movie with no payoff. Made all the sadder by great moments and performances spread thinly through the 2-something hours. I remember coming out of the movie theatre thinking there was a really enjoyable film buried underneath the crud if they could have had more restraint in the editing room. To each their own I suppose."
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47418524",
+   "date": "2026-03-17",
+   "author_hash": "fdaeb4ae",
+   "text": "Yes, I was a big fan of Bacurau and it works well as a fable but this one is very grounded historically and even with a basic knowledge of Brazilian history of this era I spent too much time wondering what was happening and why (even though I did understand everything, it's not cryptic either, just the rythm feels a bit off) Excellent aesthetics though but I am less sensitive to that"
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47418617",
+   "date": "2026-03-17",
+   "author_hash": "2c3f8cae",
+   "text": "Having no payoff  is  the payoff. After everything that's happened to him, he is killed offscreen and his son, now an adult, doesn't even quite remember him. The journey is the point, basically :) The scenes with the fellow \"refugees\" are great, insightful glimpses into Brasil, into that 1970s Brasil in particular. They don't need to lead anywhere in particular for me to enjoy it. That being said,"
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47418895",
+   "date": "2026-03-17",
+   "author_hash": "859e472a",
+   "text": "Fair enough if you enjoyed it. I'm no stranger to the period or the director's movies and still found this one overly contrived. The tense bits are so engaging that the fantastic/anachronistic felt like it detracted from a great story."
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47419145",
+   "date": "2026-03-17",
+   "author_hash": "0091e8e7",
+   "text": "I did too. It felt like there were a bunch of subplots that never ended up tying together. The leg was the most disappointing to me. My take home at the end was that it was supposed to show the audience that the story was recreated from the parts of the story that could be pieced together by the future journalists. Basically it felt meandering because it was meandering to the journalists trying to"
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47419317",
+   "date": "2026-03-17",
+   "author_hash": "79dbcc46",
+   "text": "The leg is used both as a urban legend that was told at the region at the time, but also as a metaphor. The surrealist scene where it shows the leg brutally attacking people at night: all the people attacked are prostitutes, gays, etc. People that during the dictatorship the police used to just dissappear, and society turned a blind eye to it. And it is meant to feel meandering cause that is how t"
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47419864",
+   "date": "2026-03-17",
+   "author_hash": "1038a20b",
+   "text": "Part of what it was trying to speak on was how truth and stories were lost during the dictatorship. What you felt was what a lot of Brazilians felt. Like part of them (or movie) was missing and they'll never be whole."
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47427006",
+   "date": "2026-03-18",
+   "author_hash": "b3538261",
+   "text": "I found it the 2nd best movie of the year, right behind House of Dynamite. Brazil has so much to catch up compared to Argentina, which jailed most of the generals. This one tries it differently, not directing the blame directly, but one bystander who took advantage. Much better than I'm Still Here. But the Argentinian fascism era movie are much better still. El bunaerense, Crónica de una fuga,..."
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47418301",
+   "date": "2026-03-17",
+   "author_hash": "cc3309e8",
+   "text": "I've had the privilege to watch it at São Luis movie theater in Recife. The place is really a character of the movie. The theater was at full capacity. 10% of the public was with a yellow t-shirt that Wagner Moura uses for 10s :-) I forgot how good it was to see movies in a theater. Everybody laughed or clapped together. I've never more seen a movie with so much popular appeal. People seeing their"
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47418876",
+   "date": "2026-03-17",
+   "author_hash": "fd52f64f",
+   "text": "Secret Agent has a slow, difficult beginning (~hour). Not much happens. And it's not clear why what's happening is happening, particularly for someone unfamiliar with Brazil's political climate in the 1970s. As someone who's never been to Brazil, certainly not in the 1970s, watching Secret Agent still felt like being transported there. How did they make a movie that makes you feel like you're in a"
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47419846",
+   "date": "2026-03-17",
+   "author_hash": "1038a20b",
+   "text": "Felt the same as you. It felt like you didn't quite understand what was happening or what was going to happen in the beginning. Only for you to miss the characters by the end."
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47420300",
+   "date": "2026-03-18",
+   "author_hash": "dbef23b7",
+   "text": "> Secret Agent has a slow, difficult beginning (~hour). Not much happens. And it's not clear why what's happening is happening, particularly for someone unfamiliar with Brazil's political climate in the 1970s. That's very much the director's philosophy. He values the dead time between things. I saw him talk years ago. He's a bit of an intelectual. Very competent too. I haven't watched Secret Agent"
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47421008",
+   "date": "2026-03-18",
+   "author_hash": "701e58be",
+   "text": "Well said. I felt similar"
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47421502",
+   "date": "2026-03-18",
+   "author_hash": "11fdd220",
+   "text": "Good to know it pays off. I turned it off after 45+ minutes because I was falling asleep. The world was impressive and immersive, but felt more like being on a tour than living a narrative."
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47420627",
+   "date": "2026-03-18",
+   "author_hash": "44f2901a",
+   "text": "That movie was an absolute snooze-fest—way too slow and dull. I actually went to the theater with high hopes, but 15 minutes in, I felt like scrubbing the toilet would’ve been more fun.\n It’s a shame Brazilian cinema is so stuck on such a tired trope like the dictatorship era. Enough already. That’s a oranje that’s been squeezed dry.\n But I wouldn't bet against another one popping up this year...\n"
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47421414",
+   "date": "2026-03-18",
+   "author_hash": "6f2a88bf",
+   "text": "Considering Brazil almost suffered a coup just recently and the last president was convicted and jailed because of the attempt, how is it not a very much recent theme? Maybe you didn't like the movie, but it's got nothing to do with the theme of the movie."
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47420835",
+   "date": "2026-03-18",
+   "author_hash": "4564a838",
+   "text": "It is a shame, but culturally Brazil can't let the 60's go. Americans may complain about their boomers, but American boomers can't handle a candle to the obstinate grip Brasilian boomers have on the brazilian imaginarium and culture. Imagine if every single hollywood movie done nowadays was kind of a pastiche of Antonioni's Blow Up, and if the Grateful Dead were the great gatekeepers of popular cu"
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47421111",
+   "date": "2026-03-18",
+   "author_hash": "d7433bb2",
+   "text": "> In a certain way, that's how Brazilian culture works That's how Brazilian media conglomerate culture works"
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47421636",
+   "date": "2026-03-18",
+   "author_hash": "22d0acca",
+   "text": "I spent the early 70s and early 80s in Brazil. I left at around the time of the abertura in 1984 when we lost a semester at UnB due to the student and faculty strikes. It was convenient that my family was coming to the USA. There's a lot I missed while living in Brazil but I've enjoyed watching Peninha (Eduardo Bueno) explain Brazilian history on his \"Buenas [sic] Ideias\" YouTube channel. He spend"
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47431768",
+   "date": "2026-03-18",
+   "author_hash": "dd468e80",
+   "text": "Chilean here, totally understandable by paying attention. I didn't even know Brazil was under dictatorship in '77. The whole point of the secret agent framing is that it works better if you don't know much about the setting. Are you sure your opinion isn't being colored by culture war bullshit?"
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47520963",
+   "date": "2026-03-25",
+   "author_hash": "0419b3c7",
+   "text": "Better than Marvel film reworks."
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47421468",
+   "date": "2026-03-18",
+   "author_hash": "805ae417",
+   "text": "I liked it, but I didn’t understand how it became so successful abroad. A lot of the plot makes no sense if you’re not familiar with Brazil."
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47431574",
+   "date": "2026-03-18",
+   "author_hash": "dd468e80",
+   "text": "Not really familiar with Brazil (although I am with military juntas) but I think the spy misdirect helps a lot. If you are slightly observant you will get the gist by the middle of the movie. The spy thriller aspect avoids making the uncertainty frustrating until then. Obviously by judging the comments it doesn't work for everyone, specially the leg scene confusing a lot people, which I didn't exp"
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47424843",
+   "date": "2026-03-18",
+   "author_hash": "2f24d1ca",
+   "text": "One of the boring and meaningless movies I ever seen. No arc, no coherent story, (almost) no humor, no development, no intrigue, nothing. Only nice picture - then it qualifies as a good YouTube video, not really a movie. Because movies have some laws of the genre, this thing doesn’t even break any laws like great art does sometimes. It just presents a series of visially appealing but fundamentally"
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47431647",
+   "date": "2026-03-18",
+   "author_hash": "dd468e80",
+   "text": ">One of the boring and meaningless movies I ever seen. No arc, no coherent story, (almost) no humor, no development, no intrigue, nothing. I understand finding the movie too long or difficult to follow without historical context, or even just not feeling it. But if this is your conclusion after the last scene, you either didn't watch it or are being contrarian."
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47434223",
+   "date": "2026-03-19",
+   "author_hash": "2f24d1ca",
+   "text": "Yes I didn’t finish it. If only few scenes are worth watching it’s not a movie it’s a bunch of clips"
+  },
+  {
+   "story": "'The Secret Agent': Exploring a Vibrant, yet Violent Brazil ",
+   "url": "https://news.ycombinator.com/item?id=47431176",
+   "date": "2026-03-18",
+   "author_hash": "b2d6cbcd",
+   "text": "I rarely leave movies midway through, but this one was too much for whatever the payoff was supposed to be. I'd rather sit through Cats (2020)."
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47353841",
+   "date": "2026-03-12",
+   "author_hash": "8b86f0aa",
+   "text": "The fake key for real key thing seems like a problem.   A lot of enterprise scanning tools look for keys in repos and other locations and you will get a lot of false positives. Otherwise this is cool, we need more competition here."
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47353932",
+   "date": "2026-03-12",
+   "author_hash": "53ce754e",
+   "text": "It's a good point, I don't think the placeholders we use will trigger a secret scanner, but we can adjust if it's an issue.  https://github.com/onecli/onecli/blob/942cfc6c6fd6e184504e01... "
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47353933",
+   "date": "2026-03-12",
+   "author_hash": "49b6e617",
+   "text": "IronClaw seems to do this natively, I like the idea in general, so it's good too see this pulled out. I have few questions: - How can a proxy inject stuff if it's TLS encrypted?  (same for IronClaw and others) - Any adapters for existing secret stores? like maybe my fake credential can be a 1Password entry path (like 1Password:vault-name/entry/field and it would pull from 1P instead of having to h"
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47354798",
+   "date": "2026-03-12",
+   "author_hash": "908701c7",
+   "text": "You use a forward proxy that can MITM."
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47356190",
+   "date": "2026-03-12",
+   "author_hash": "49b6e617",
+   "text": "So would I have to add that Proxy's certificate to my trust store?"
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47362505",
+   "date": "2026-03-13",
+   "author_hash": "132c3c07",
+   "text": "Re IronClaw is probably the most hardened open-source implementation I've seen for this, but a sufficiently clever prompt injection against the built-in tools (especially shell) could still reach secrets. Re TLS: OneCLI itself runs in a separate container, acting as an HTTPS proxy. The SDK auto-configures agent containers with proxy env vars + a local CA cert. When the agent hits an intercepted do"
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47364286",
+   "date": "2026-03-13",
+   "author_hash": "49b6e617",
+   "text": "Ok that's what I assumed it probably did (modify the container's certificate trust store), thanks for the explanation."
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47354001",
+   "date": "2026-03-12",
+   "author_hash": "097b64e8",
+   "text": "Does it act like an auth proxy?"
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47354122",
+   "date": "2026-03-12",
+   "author_hash": "88585b6e",
+   "text": "This is the right approach. I built a similar system to  https://github.com/airutorg/airut  - couple of learnings to share: 1) Not all systems respect HTTP_PROXY. Node in particular is very uncooperative in this regard. 2) AWS access keys can’t be handled by simple credential swap; the requests need to be resigned with the real keys. Replicating the SigV4 and SigV4A exactly was bit of a pain. 3) T"
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47354640",
+   "date": "2026-03-12",
+   "author_hash": "d8886cac",
+   "text": "Im literally working on the exact same solution. Difference is I'm running the system in a Kubernetes cluster. I essentially run a sidecar container that sets up ip tables that redirect all requests through my mitm proxy.  This was specifically required because of Node not respecting HTTP_PROXY. Also had to inject a self signed cert to ensure SSL could be proxied and terminated by the mitm proxy, "
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47354854",
+   "date": "2026-03-12",
+   "author_hash": "88585b6e",
+   "text": "I’ve been running this with workloads accessing Anthropic, GitHub, Gemini, and AWS & CF R2 APIs for a while now, and have not ran into issues. I’m sure there’s an API out there that won’t work out of the box but I’m positive that support could be added. Another thing I did was to allow configuring which hosts each credential is scoped to. Replacement /resigning doesn’t happen unless host matches. "
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47360678",
+   "date": "2026-03-13",
+   "author_hash": "368b552f",
+   "text": "I'm working on something similar with  https://github.com/dtkav/agent-creds  though I keep growing the scope. The model is solid. It feels like the right way to use YOLO mode. I've been working on making the auth setup more granular with macaroons and third party caveats. My dream is to have plugins for upstreams using OpenAPI specs and then make it really easy to stitch together grants across sub"
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47354778",
+   "date": "2026-03-12",
+   "author_hash": "908701c7",
+   "text": "This is basically what  https://www.verygoodsecurity.com/  (their main product), but it's heavily focused on credit card data."
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47355136",
+   "date": "2026-03-12",
+   "author_hash": "c9474186",
+   "text": "Node 24+ does respect HTTP_PROXY when NODE_USE_ENV_PROXY=1 is set."
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47362066",
+   "date": "2026-03-13",
+   "author_hash": "3e9750f0",
+   "text": "Node v22.21+ as well"
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47362126",
+   "date": "2026-03-13",
+   "author_hash": "46e60115",
+   "text": "Also doesn't this mean I have to reconfigure all my tools to use HTTP and then when I forget to enable this it will fall back to getting MITM'd by the Internet? Fails open in the most insecure method ever"
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47458553",
+   "date": "2026-03-20",
+   "author_hash": "fea9a74b",
+   "text": "Great tool. Yours is much more sophisticated than mine, but I also came up with a similar solution to my personal problem of running opencode web in a container with access to all my API keys. I also settled on mitmproxy. Before I was trying to use IPTables, but that didnt really safely work, because the agent could still escape if he tried hard enough.\nI'm happy there is some work being done of s"
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47354125",
+   "date": "2026-03-12",
+   "author_hash": "c678552f",
+   "text": "This can also be done using existing Vaults or Secrets manager. Hashicorp Vault can do this and agents can be instructed to get secrets, which are set without the agent's knowledge. I use these 2 simple scripts with OpenClaw to achieve this, along with time-scoped expiration. The call to vault_get.sh is inside the agent's skill script so that the secrets are not leaked to LLMs or in any trace logs"
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47354269",
+   "date": "2026-03-12",
+   "author_hash": "48bac89b",
+   "text": "It seems that the architecture you describe still gives the key to the agent (who could email it to red team or perform nefarious actions with it). The advantage of OP's architecture is that the agent never sees the key and you could inspect the request before proxying it. Is that right or do I misunderstand something?"
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47355168",
+   "date": "2026-03-12",
+   "author_hash": "913539e4",
+   "text": "Sort of. The point of Vault is you're supposed to actually use RBAC and least privilege and store NPE credentials that are properly scoped to the actions you're comfortable automating, which your NPE then gets a certificate to fetch on demand, rather than just giving it your own personal root credentials that can do anything. We're going to see this reinvented thousands of times in the next few mo"
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47355371",
+   "date": "2026-03-12",
+   "author_hash": "c678552f",
+   "text": "The call flow is:\nagent -> select skill (ex: reddit) -> execute action in skill -> script or code associated with skill -> get api key -> call reddit -> reddit posts -> agent. The agent sees the output of the service, it does not directly see the keys. In OpenClaw, it’s possible to create the skill in a way that the agent does not directly know about or use vault_get command."
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47354144",
+   "date": "2026-03-12",
+   "author_hash": "71f879b9",
+   "text": "Why not just use AWS Secrets Manager?"
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47354636",
+   "date": "2026-03-12",
+   "author_hash": "d8d74a38",
+   "text": "A program making a call to github.com needs an authentication token. What are you suggesting?  The program makes a call to retrieve the secret from AWS?  Then has full access to do with it what they want?  That's exactly the risk and the problem this, and related solutions mentioned in this thread, is trying to solve."
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47354176",
+   "date": "2026-03-12",
+   "author_hash": "4792cb41",
+   "text": "Don't see any reason to use this over vault."
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47354335",
+   "date": "2026-03-12",
+   "author_hash": "00289ed1",
+   "text": "This problem+solution, like many others in the agentic-space, have nothing agent-specific. Giving a \"box\" API keys was always considered a risk, and auth-proxying has existed as a solution forever. See tokenizer[0] by the fly.io team, which makes it a stateless service for eg  - no database or dashboard. Or the buzzfeed SSO proxy, which lets you do the same via an OAuth2-dance at the frontend, and"
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47354417",
+   "date": "2026-03-12",
+   "author_hash": "c6ecd8a6",
+   "text": "Just because it's been done before for a different use-case doesn't mean that building exclusively for this use-case doesn't remove friction."
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47362117",
+   "date": "2026-03-13",
+   "author_hash": "46e60115",
+   "text": "But it hasn't been built exclusively for that use case. It's literally the same."
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47362315",
+   "date": "2026-03-13",
+   "author_hash": "132c3c07",
+   "text": "It's not the same. The core overlap is that agents shouldn't be holding raw credentials, that part isn't new, agreed. But the problem space goes further when you're building for agents specifically: - Requiring human approval before sensitive actions go through (as @guyb3 mentioned in the post) - Managing short-lived JWT tokens (refresh/access) with tight TTLs. - Scoping permissions per-session ra"
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47362708",
+   "date": "2026-03-13",
+   "author_hash": "0218e046",
+   "text": "I think you have a point. The credential part feels like a solved problem — auth-proxying has been around for a while. What seems genuinely new to me is the approval layer, the idea that a human should confirm before a sensitive action actually executes. I'm not sure that's covered by tokenizer or SSO proxy, but I could be wrong. Is that the real differentiator here, or am I missing something?"
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47354343",
+   "date": "2026-03-12",
+   "author_hash": "a106ee54",
+   "text": "tl;dr \"scrt [set|get|list|....]\" is also a great option --- If this is of interest, I also recommend looking into:  https://github.com/loderunner/scrt . To me, it's a compliment to 1password. I use it to save every new secret/api key I get via the CLI. It's intentionally very feature limited. Haven't tried it with agents, but wouldn't be surprised if the CLI (as is) would be enough."
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47354790",
+   "date": "2026-03-12",
+   "author_hash": "734362b0",
+   "text": "You don't want to give the agent a raw key, so you give it a dummy one which will automatically be converted into the real key in the proxy. So how does that help exactly? The agent can still do exactly what it could have done if it had the real key."
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47354945",
+   "date": "2026-03-12",
+   "author_hash": "c7a85525",
+   "text": "For one thing, it cannot leak secrets between services."
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47355070",
+   "date": "2026-03-12",
+   "author_hash": "734362b0",
+   "text": "Is that really a problem? All the examples on the repo page themselves show LLMs running unintended operations on the \"correct\" service and messing up your data. And that is very much still going to happen with this wrapper. If anything it is going to provide a false sense of security."
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47357558",
+   "date": "2026-03-12",
+   "author_hash": "76838324",
+   "text": "it cannot email your secret key to an attacker because of prompt injection etc."
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47354879",
+   "date": "2026-03-12",
+   "author_hash": "30392193",
+   "text": "Secret and credential sprawl is a real problem in agent pipelines specifically -- each agent needs its own scoped access and the blast radius of a leaked credential is much larger when an agent can act autonomously. We ended up with a tiered secret model: agents get short-lived derived tokens scoped to exactly the tools they need for a given task, not broad API keys. Revocation on task completion,"
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47356415",
+   "date": "2026-03-12",
+   "author_hash": "493fd56c",
+   "text": "This is slick but the only thing it prevents is agents from directly sharing the credentials through git or something. But that’s not the biggest risk of giving credentials to agents. If they can still make arbitrary API calls, they can still cost money or cause security problems or delete production. If you’re worried about creds leakage only because your credentials are static and permanent, wel"
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47356630",
+   "date": "2026-03-12",
+   "author_hash": "0db88e01",
+   "text": "Oops, i read vault and thought obsidian vault haha - but yeah, one of the issues is if your agent can _execute_ on the secret at all, it can be potentially convinced to use it in a way that does not benefit you, even if it doesn't have access to the secret itself."
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47356645",
+   "date": "2026-03-12",
+   "author_hash": "9b2c5b60",
+   "text": "I don't get the benefit. Yes, agents should not have access to API keys because they can easily be fooled into giving up those API keys. But what's to prevent a malicious agent from re-using the honest agent's fake API key that it exfiltrates via prompt injection? The gateway can't tell that the request is coming from the malicious agent. If the honest agent can read its own proxy authorization to"
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47356823",
+   "date": "2026-03-12",
+   "author_hash": "9fefe9c6",
+   "text": "But surely the point is that the proxy key is for your local network, it ain't got no value on the interwebz."
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47356988",
+   "date": "2026-03-12",
+   "author_hash": "9b2c5b60",
+   "text": "Precisely. You absolutely have to ensure that random agents can't join your local network, which means you need a deterministic orchestrator or an AI orchestrator that only spins up a handful of vetted agents."
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47358129",
+   "date": "2026-03-12",
+   "author_hash": "b9f55690",
+   "text": "This seems to prevent your keys from being exfiltrated through prompt injection. But if your agent could've been prompt injected into giving out keys, then it can also be prompt injected into using the services it has (fake) keys for to the attacker's benefit."
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47359147",
+   "date": "2026-03-13",
+   "author_hash": "f9d75e18",
+   "text": "It’s an approach that works and I’ve thought of implementing the same thing but stopped short because I feel it just pushes the underlying problem around. Now I have to share my creds with a black box that I know very little about and it’s not a real vault. This should be solved by the vaults (hashi corp / AWS Secrets Manager). The one thing that I did build was based on a service that AWS provide"
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47359912",
+   "date": "2026-03-13",
+   "author_hash": "8d24cefd",
+   "text": "Use Vault and use a proxy. They address different problems. Vault protects keys at rest, but the agent still gets them at runtime. The proxy keeps the key away from the agent entirely, which closes key leakage. But a prompt-injected agent can still exfiltrate data it reads through the proxy. The trust boundary shifts, it doesn't disappear. Looks like OneCLI combines both into one tool, which is th"
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47362797",
+   "date": "2026-03-13",
+   "author_hash": "132c3c07",
+   "text": "that's exactly the idea. appreciate you framing it so clearly"
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47360369",
+   "date": "2026-03-13",
+   "author_hash": "c9561422",
+   "text": "I mean it's just not solving the problem right? If the model got injected then whatever the wrapper do can not prevent the consequences? Sorry but am I missing something here?"
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47373412",
+   "date": "2026-03-14",
+   "author_hash": "c894a631",
+   "text": "How do you defend against prompt-injection attacks that cause the agent to call legitimate endpoints but exfiltrate sensitive data through the response?"
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47376859",
+   "date": "2026-03-14",
+   "author_hash": "11af4f80",
+   "text": "This is a smart approach, giving agents access without exposing secrets is definitely needed.\nCurious how you handle dynamic access policies for agents that need temporary elevated permissions, or if you integrate with existing IAM systems.\nAlso, do you track or enforce agent-level audit logs for requests that go through the proxy?"
+  },
+  {
+   "story": "Show HN: OneCLI – Vault for AI Agents in Rust",
+   "url": "https://news.ycombinator.com/item?id=47503344",
+   "date": "2026-03-24",
+   "author_hash": "939c8c8b",
+   "text": "wow very ncie - just in time for agents. I love the idea of agents not holding the credentials. Who knows how they log it into some .md file somewhere where it can be further exploited."
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47866105",
+   "date": "2026-04-22",
+   "author_hash": "d1df74fb",
+   "text": "This doesn't change the fact that you'd still be able to exfiltrate data like sure they don't get credentials but if they get the proxy auth key then they would also be able to make requests through it no?"
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47866292",
+   "date": "2026-04-22",
+   "author_hash": "d274a658",
+   "text": "Yeah so Agent Vault (AV) solves the credential exfiltration problem which is related to but different from data exfiltration. You're right that if an attacker can access the proxy vault then by definition they'd similarly be able to proxy requests through it to get data back but at least AV prevents them from gaining direct access to begin with (the key to access the proxy vault itself can also be"
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47883416",
+   "date": "2026-04-23",
+   "author_hash": "c79fd773",
+   "text": "This isn't the only thing you'd want to do. I use containers to isolate agents to just the data I intend for them to read and modify. If I have a data exfiltration event, it'll be limited to what I put into the container plus whatever code run inside the container can reach. I have limited data in reach of the agent, limited network access for it, and was missing exactly this Vault.  I'm relieved "
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47891912",
+   "date": "2026-04-24",
+   "author_hash": "e3aebb6a",
+   "text": "This doesn’t solve hostile agents. This solves hostile or compromised inference providers. You really don’t want your secrets in the logs of a random AI provider through OpenRouter or even in Anthropic logs."
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47895775",
+   "date": "2026-04-24",
+   "author_hash": "d274a658",
+   "text": "What attack vector are you thinking? Could you elaborate more. Would love to explore this train of thought and what we can do about it."
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47873327",
+   "date": "2026-04-23",
+   "author_hash": "7bf6831a",
+   "text": "Can I use Infisical cloud vaults with Agent Vault? I like the UI of secret management there. I like that I can manage secrets from many environments in a single place."
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47877127",
+   "date": "2026-04-23",
+   "author_hash": "d274a658",
+   "text": "We'll be releasing a closer integration between Agent Vault and Infisical in the coming 1-2 weeks! The way we see it is that you'd still need to centrally store/manage secrets from a vault; this part isn't going anywhere and should still deliver secrets to the rest of your workloads. The part that's new is Agent Vault which is really a delivery mechanism to help agents use secrets in a way that th"
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47882758",
+   "date": "2026-04-23",
+   "author_hash": "2a358ab1",
+   "text": "infisical is great so excited to see this"
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47882903",
+   "date": "2026-04-23",
+   "author_hash": "d274a658",
+   "text": "Thank you! Me too - very excited to see where this goes :)"
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47882886",
+   "date": "2026-04-23",
+   "author_hash": "d274a658",
+   "text": "T from Infisical here - Also forgot to mention that this is a research preview launch for Agent Vault and should be treated as such - experimental << Since the project is in active development, the form factor including API is unstable but I think it gives a good first glance into how we're thinking about secrets management for AI agents; we made some interesting architectural decisions along the "
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47883149",
+   "date": "2026-04-23",
+   "author_hash": "cc8c403f",
+   "text": "Curious how you think about this meeting the agent-identity side. The proxy knows who's calling, but the callee (what agent lives at api.example.com, what auth it expects, what its card looks like) doesn't really have a home. Been poking at that half at agents.ml and it feels like the two pieces want to fit together"
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47883390",
+   "date": "2026-04-23",
+   "author_hash": "d650a4ac",
+   "text": "From what I can tell, agent-vault does not solve identity, only how its stored. For true agent identity, you should look into:  https://github.com/highflame-ai/zeroid  (author: full disclosure)"
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47883549",
+   "date": "2026-04-23",
+   "author_hash": "c79fd773",
+   "text": "ZeroID looks like a good idea to me. Lots there I'll be digging into over time, and related to the use of token exchange for authorising back-end M2M transactions on behalf of a user at the front-end. As far as I can tell the parent post is talking about discovery for agent-to-agent communications, which is not something I have much interest in myself: it feels very \"OpenClaw\" to replace stable, d"
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47883917",
+   "date": "2026-04-24",
+   "author_hash": "d274a658",
+   "text": "Hey! At the moment Agent Vault doesn't address the identity piece. The identity piece would be the next logical step at some point likely after we figure out the optimal ergonomics for deploying and integrating AV into different infrastructure / agent use cases first. We actually work a lot with identity at Infisical (anything from workload identity to X.509 certificates) and had considered tackli"
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47883597",
+   "date": "2026-04-23",
+   "author_hash": "0d83071e",
+   "text": "How is it different from Onecli ? And does it do credential stripping ? Will it support access SDK from Bitwarden and integrate with infiscal ?"
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47884170",
+   "date": "2026-04-24",
+   "author_hash": "75bb0da5",
+   "text": "It looks a lot like OneCLI too. Curious how it differs."
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47884502",
+   "date": "2026-04-24",
+   "author_hash": "d274a658",
+   "text": "We're still in the early innings of credential brokering so there'll be a lot of overlap but I expect the way the tool evolves will start to diverge a lot since we are thinking very infra-workflow first. See my other comment regarding an example of this."
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47884189",
+   "date": "2026-04-24",
+   "author_hash": "d274a658",
+   "text": "To be honest, I haven't used OneCLI personally before so I can't speak to it in detail but Agent Vault does take a similar approach with the MITM architecture and setting HTTPS_PROXY in the agent's environment to route traffic through the proxy; we feel like this is the right approach in terms of interface-agnostic ergonomics given that agents may interact with upstream services thru a number of m"
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47884783",
+   "date": "2026-04-24",
+   "author_hash": "2b6420d3",
+   "text": "NVIDIA's OpenShell also has its own version of this, though its also in very early stages."
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47883826",
+   "date": "2026-04-24",
+   "author_hash": "eb39dac2",
+   "text": "I have a related question, is anyone developing standards on how agents can proxy the requestor identity to backend database or application layers? (short lived oauth tokens perhaps, not long lived credentials like the ShowHN seems to focus on?)"
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47890570",
+   "date": "2026-04-24",
+   "author_hash": "aa9ac885",
+   "text": "Well, there's the token exchange RFC, which defines on-behalf-of/delegation and impersonation semantics.  https://datatracker.ietf.org/doc/html/rfc8693  has all the details, but here's an example:      {\n      \"aud\":\"https://consumer.example.com\",\n      \"iss\":\"https://issuer.example.com\",\n      \"exp\":1443904177,\n      \"nbf\":1443904077,\n      \"sub\":\"user@example.com\",\n      \"act\":\n      {\n        \""
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47883994",
+   "date": "2026-04-24",
+   "author_hash": "db54ee0a",
+   "text": "Completely unaffiliated but I just installed executor.sh today and it looks almost exactly the same"
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47884389",
+   "date": "2026-04-24",
+   "author_hash": "d274a658",
+   "text": "I haven't used executor.sh but this seems to operate at a different layer from Agent Vault. From what I'm seeing, executor.sh is an integration and execution layer for agents. Where Agent Vault shines is that it fits right into the tools and workflows that your agents are already using in an interface-agnostic way: API, CLI, SDK, MCP. Put differently, the MITM architecture of Agent Vault (operates"
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47884428",
+   "date": "2026-04-24",
+   "author_hash": "cf296292",
+   "text": "How do you solve for the agent signing up for a service and needing to save it and guaranteeing the credit wont go to the chat?"
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47884480",
+   "date": "2026-04-24",
+   "author_hash": "d274a658",
+   "text": "Can you please elaborate on the agent signing up for a service piece? I'm curious to understand the use case more (type of agent, what credit, etc.). The current modal assumes that you have a trusted entity whose able to save credentials to Agent Vault; that entity is likely not the agent itself because that would mean that the agent would have access to credentials. The agent is then simply confi"
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47884574",
+   "date": "2026-04-24",
+   "author_hash": "cf296292",
+   "text": "Yeah idk if this is solveable but let's say I have a master agent that I say go sign me up for these services so you can build secure agents to use the keys securely. It seems like it simply has to stop and tell me to handle the secrets to put them in vault. Because of the data/instructions in same channel problem."
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47884712",
+   "date": "2026-04-24",
+   "author_hash": "e22cf683",
+   "text": "how do you deal with \"access to the proxy\"? because one can access maliciously without accessing to the token/secret."
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47885026",
+   "date": "2026-04-24",
+   "author_hash": "d274a658",
+   "text": "Agent Vault should remain in close proximity to the sandboxed agent and not be exposed to the public internet; your standard network security controls apply. The proxy itself currently implements a token-based auth scheme. Depending on your setup, you can have an orchestrator mint an ephemeral token to be passed to a sandboxed agent to authenticate with the proxy."
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47885114",
+   "date": "2026-04-24",
+   "author_hash": "e22cf683",
+   "text": "this feels like vpn all over again. the location shouldn't grant any inherent trust."
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47884735",
+   "date": "2026-04-24",
+   "author_hash": "d60e6ba7",
+   "text": "I really like the approach you've taken of providing an egress proxy. That let's you do a lot of things that layer around providing gaurdrails and auditing. I've been taking a similar approach on an open source embedded iPaaS project I've been working on where it primarily offers an authenticating egress proxy to whatever business logic needs it (agent, sync engine, etc).  https://github.com/rmorl"
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47885182",
+   "date": "2026-04-24",
+   "author_hash": "2f300a4a",
+   "text": "yea"
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47886162",
+   "date": "2026-04-24",
+   "author_hash": "687364ae",
+   "text": "This is a good start, it does covers gaps in certain areas. There are few more areas I can think of 1. The end point matters, example if the credential is OAuth2 token and service has a token refresh endpoint then the response would have a new token in the payload reaching directly to the agent 2. Not all the end points are made the same even on the service side, some may not even require credenti"
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47895700",
+   "date": "2026-04-24",
+   "author_hash": "d274a658",
+   "text": "Thanks for this feedback! Will keep in mind all of these points as we iterate on Agent Vault. We're pretty swarmed on requests at the moment but I've noted these down as improvements to AV; it's a work in progress, we'll be molding it into the right shape over the next few months. A few thoughts for each of the above: 1. AV doesn't consider OAuth2 tokens atm but this is definitely a next step. 2. "
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47886582",
+   "date": "2026-04-24",
+   "author_hash": "07aeaac4",
+   "text": "been thinking about this exact problem for a while. my own setup uses OS keyring with a <secret:name> token substitution pattern — the agent requests a credential by name, the substitution happens at execution time, the LLM never sees the raw value in context or logs. works reasonably well. but the problem with that model is it's static protection. if the agent process itself becomes hostile or ge"
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47887053",
+   "date": "2026-04-24",
+   "author_hash": "e12f4a7a",
+   "text": "Been tinkering with something of my own at  https://github.com/manojbajaj95/authsome . Core goal was to do credential management, from an ease point of view and not security."
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47887242",
+   "date": "2026-04-24",
+   "author_hash": "dd9e37f0",
+   "text": "It looks promising if I have a request to llm with secrets is it handle it as well?"
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47887297",
+   "date": "2026-04-24",
+   "author_hash": "e12f4a7a",
+   "text": "Try out,  https://github.com/manojbajaj95/authsome  . I'm trying to work with LLM secrets too. Still alpha, but thats the direction i'm taking"
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47887524",
+   "date": "2026-04-24",
+   "author_hash": "c0181247",
+   "text": "I like this direction. Agents having direct access to credentials always felt a bit scary. This seems cleaner, even if it just moves the trust somewhere else."
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47895751",
+   "date": "2026-04-24",
+   "author_hash": "d274a658",
+   "text": "Yup! I think the terminologies we're going to be seeing more and more of are \"credential exfiltration\" and conversely \"credential brokering\" as a solution to that."
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47888906",
+   "date": "2026-04-24",
+   "author_hash": "8e5423f2",
+   "text": "Could this work (or planned) on gVisor-based sandboxes?"
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47895806",
+   "date": "2026-04-24",
+   "author_hash": "d274a658",
+   "text": "This would be deployed separately but in close proximity to your sandboxes. You'd want to add network restrictions around sandboxes to only allow outbound requests to AV. You'd add HTTPS_PROXY to your sandbox environment and pre-configure it to trust the AV CA."
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47889017",
+   "date": "2026-04-24",
+   "author_hash": "98f1e4ed",
+   "text": "It’s an idea that obfuscates keys a bit, but how are you going to prevent the agent from gaining access to the vault and keys itself? I’ve seen it reverse engineer many things to expose the underlying credentials. I can only think running this on a firewall that the agent can’t access to prevent escalation."
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47895871",
+   "date": "2026-04-24",
+   "author_hash": "d274a658",
+   "text": "The sandboxed agent and AV should  ideally  not run on the same host because if it did then you're right that a sufficiently sophisticated agent like Mythos could try to reverse engineer and like find kernel exploits to gain access AV credentials. For this reason, you'd want to keep the two separate; we have some ideas in the works for that atm but largely still experimental."
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47889602",
+   "date": "2026-04-24",
+   "author_hash": "96e1caf9",
+   "text": "Does it work for websockets too, where the authentication is done in a websocket frame? Like for Home Assistant? Also, if the LLM manages to do something to reflect the authentication token back in a response, do you detect it and strip it out as an extra layer of protection?"
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47895740",
+   "date": "2026-04-24",
+   "author_hash": "d274a658",
+   "text": "Not yet for both but this would definitely be on the roadmap; especially the credential stripping portion. For AV to be really useful, it'd have to support more protocols but we think this first implementation makes a move in the right direction."
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47890495",
+   "date": "2026-04-24",
+   "author_hash": "46dfae86",
+   "text": "Love this. Our team has been frustrated that nothing like this exists. You run into this problem as soon as you start thinking seriously about capable cloud agents, but there was no generic solution. Existing options are either tied to a specific cloud vendor or protocol, like git or MCP. We had a design on the whiteboard for something like this when this release dropped in our laps--with lots of "
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47895419",
+   "date": "2026-04-24",
+   "author_hash": "d274a658",
+   "text": "Yup it turns out many teams building their own custom agents end up stitching together their own solutions for this problem. What we thought was basically: If everyone is making some version of this egress proxy, maybe we're actually missing a new infrastructure component that does not yet exist in a mainstream way for this use case. The form factor of this was very important in the design of it s"
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47921078",
+   "date": "2026-04-27",
+   "author_hash": "e12f4a7a",
+   "text": "I'm building  https://github.com/manojbajaj95/authsome  to solve similar problem. Would love to know your opinion."
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47891421",
+   "date": "2026-04-24",
+   "author_hash": "a5102cc3",
+   "text": "From the comments looks like lots of people looking at this problem from different angles. We (harriethq.com) also have a somewhat similar insight, which is that setting up connectors is a drag for non-technical users, and a lot of systems don't support per-user connectivity so need an API shim. The thing I like about this (Agent Vault) approach is that it's more extensible than what we're offerin"
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47895475",
+   "date": "2026-04-24",
+   "author_hash": "d274a658",
+   "text": "Hey! Yeah I think there's overlapping functionality for sure, and you're spot on on people looking at it from different angles. The \"connectors angle\" is something we thought about as well and we built a whole product line around that called Agent Sentinel (I'll link that below). We weren't convinced, however, that enterprises were ready for this and instead took it back to our infra roots (Infisi"
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47899573",
+   "date": "2026-04-25",
+   "author_hash": "382e8be4",
+   "text": "I like this idea. I’ve always felt a bit uneasy about agents getting direct access to keys. Once they have them, it’s hard to know where those keys might go. This feels cleaner to me. The agent does not need to see the real secrets. You still have to trust another layer, but that layer feels easier to control and reason about."
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47900150",
+   "date": "2026-04-25",
+   "author_hash": "18ace551",
+   "text": "The HTTPS_PROXY approach is clever — interface-agnostic credential brokering without modifying the agent itself. We ran into the same problem from the infrastructure side. When you're running agent workloads on Kubernetes, the blast radius of a leaked credential scales with whatever the pod's ServiceAccount can reach. We ended up combining Cilium FQDN egress policies (agents can only call approved"
+  },
+  {
+   "story": "Show HN: Agent Vault – Open-source credential proxy and vaul",
+   "url": "https://news.ycombinator.com/item?id=47902940",
+   "date": "2026-04-25",
+   "author_hash": "d274a658",
+   "text": "Yeah this should work in an interface agnostic way so be it that the agent invokes CLI, MCP, SDK, or makes an API call, all traffic is routed through the proxy. That said, there are many DX improvements to be made such as making it easier to load in credentials into AV and more thinking more around how to optimally handle token refreshes. Part of the questioning there is how much work should be de"
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47603903",
+   "date": "2026-04-01",
+   "author_hash": "dd4a2599",
+   "text": "Cool project, and I think there would be a lot of value in just logging all operations."
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47604147",
+   "date": "2026-04-01",
+   "author_hash": "19a1c988",
+   "text": "For just logging would it really give any more info than a trace already does?"
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47604802",
+   "date": "2026-04-01",
+   "author_hash": "dd4a2599",
+   "text": "Forgot about that, was mostly thinking about how AI agents with unrestricted permissions would ideally have some external logging and monitoring, so there would be a record of what it touched. A trace has all of the raw information, so some kind of wrapper around that would be useful."
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47606923",
+   "date": "2026-04-01",
+   "author_hash": "19a1c988",
+   "text": "*strace that is - annoyingly it seems it was autocorrected away"
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47604374",
+   "date": "2026-04-01",
+   "author_hash": "734585aa",
+   "text": "Agreed. I added the `--debug` flag this morning. It does simple logging including the proxy calls: ``` $ zerobox --debug --allow-net=httpbin.org -- curl 2026-04-01T18:06:33.928486Z CONNECT blocked (client=127.0.0.1:59225, host=example.com, reason=not_allowed) curl: (56) CONNECT tunnel failed, response 403 ``` I'm planning on adding otel integration as well."
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47604114",
+   "date": "2026-04-01",
+   "author_hash": "5bab6a2c",
+   "text": "Personally I would probably always reach for a docker container if I want a sandboxed command that can run identically anywhere. I appreciate that alternate sandboxing tools can reduce some of the heavier parts of docker though (i.e. building or downloading the correct image) How would you compare this tool to say bubblewrap  https://github.com/containers/ "
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47604163",
+   "date": "2026-04-01",
+   "author_hash": "9360c0ca",
+   "text": "The text says that it uses OS-level tools, specifically bubble wrap on Linux."
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47604545",
+   "date": "2026-04-01",
+   "author_hash": "734585aa",
+   "text": "That's right. It uses the same kernel mechanisms as Docker, the runtime is different though (bwrap on linux, seatbelt on mac, etc.)"
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47604140",
+   "date": "2026-04-01",
+   "author_hash": "0e055849",
+   "text": "Very interesting. I just started researching this topic yesterday to build something for adjacent use cases (sandboxing LLM authored programs). My initial prototype is using a wasm based sandbox, but I want something more robust and flexible. Some of my use cases are very latency sensitive. What sort of overhead are you seeing?"
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47604408",
+   "date": "2026-04-01",
+   "author_hash": "734585aa",
+   "text": "I added a benchmark test (Apple M5) and on average I'm seeing 10ms overhead. I added a benchmark section to the repo as well  https://github.com/afshinm/zerobox?tab=readme-ov-file#perfor...  Also, I'm literally wrapping Claude with zerobox now! No latency issues at all."
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47605701",
+   "date": "2026-04-01",
+   "author_hash": "1eb4d043",
+   "text": "Wasm sandboxes are fast for pure compute but get painful the moment LLM code needs filesystem access or subprocess spawning. And it will, constantly. Containers with seccomp filters give you near-native speed and way broader syscall support — overhead is basically startup time (~2s cold, sub-second warm). For anything IO-heavy it's not even close. We're doing throwaway containers at  https://cyqle"
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47607493",
+   "date": "2026-04-01",
+   "author_hash": "734585aa",
+   "text": "I will run the same benchmark test on wasm sandboxes just to be able to compare it with Zerobox. I will share the results tomorrow."
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47606614",
+   "date": "2026-04-01",
+   "author_hash": "734585aa",
+   "text": "Here is the video, running Claude with Zerobox, you can see the latency, etc.  https://www.youtube.com/watch?v=xzsGsSsx0OI "
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47604258",
+   "date": "2026-04-01",
+   "author_hash": "4c875494",
+   "text": "Again, it’s blacklisting so kind of impossible to get right. I’ve looked at this many times, but in order for things to properly work, you have to create a huge, huge, huge, huge sandbox file. Especially for your application that you any kind of Apple framework."
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47604525",
+   "date": "2026-04-01",
+   "author_hash": "f2d582bd",
+   "text": "This doesn't look like it's blacklisting to me. It's an allowlist system:     --allow-net=api.openai.com # Explicitly allow access to that host\n\n  --allow-write=config.txt # Explicitly allow write to that file  "
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47604564",
+   "date": "2026-04-01",
+   "author_hash": "734585aa",
+   "text": "That's correct. The pattern is: reads allowed, write and network I/O blocked by default. ``` zerobox -- curl  https://example.com  Could not resolve host: example.com ```"
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47604533",
+   "date": "2026-04-01",
+   "author_hash": "734585aa",
+   "text": "That's interesting, thanks for sharing that. Could you elaborate a bit more? I'd like to understand the use case is a bit better."
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47604394",
+   "date": "2026-04-01",
+   "author_hash": "e4a989e1",
+   "text": "You should probably add a huge disclaimer that this is an untested, experimental project. Related, a direct comparison to other sandboxes and what you offer over those would be nice"
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47604495",
+   "date": "2026-04-01",
+   "author_hash": "734585aa",
+   "text": "I agree to some extend. I'm using the OpenAI Codex crates for sandboxing though, which I think it's properly tested? They launched last year and iterated many times. I will add a note though, thanks!"
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47604487",
+   "date": "2026-04-01",
+   "author_hash": "f2d582bd",
+   "text": "This looks really good - the CLI interface design is solid, and I especially like the secrets / network proxy pattern -  but the thing it needs most is  copiously detailed  documentation about exactly how the sandbox mechanism works - and how it was tested. There are dozens of projects like this emerging right now. They all share the same challenge: establishing credibility. I'm loathe to spend ti"
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47604506",
+   "date": "2026-04-01",
+   "author_hash": "734585aa",
+   "text": "Simon! Thanks. I appreciate your comment and totally agreed. I will improve the docs as well as tests."
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47604585",
+   "date": "2026-04-01",
+   "author_hash": "69f4b027",
+   "text": "> There are dozens of projects like this emerging right now. They all share the same challenge: establishing credibility. Care to elaborate on the kind of \"credibility\" to be established here? All these bazillion sandboxing tools use the same underlying frameworks for isolation (e.g., ebpf, landlock, VMs, cgroups, namespaces) that are already credible."
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47604626",
+   "date": "2026-04-01",
+   "author_hash": "f2d582bd",
+   "text": "The problem is that those underlying frameworks can very easily be misconfigured. I need to know that the higher level sandboxing tools were written by people with a  deep  understanding of the primitives that they are building on, and a very robust approach to testing that their assumptions hold and they don't have any bugs in their layer that affect the security of the overall system. Most peopl"
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47604725",
+   "date": "2026-04-01",
+   "author_hash": "8b98066b",
+   "text": "I trust sandbox-exec more, or Docker on Linux. Those come from the OS, well tested and known. MITM proxy is nice idea to avoid leaking secrets. Isn’t it very brittle though? Anthropic changes some URL-s and it’ll break."
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47604754",
+   "date": "2026-04-01",
+   "author_hash": "734585aa",
+   "text": "Thanks for sharing that. Zerobox _does_ use the native OS sandboxing mechanisms (e.g. seatbelt) under the hood. I'm not trying to reinvent the wheel when it comes to sandboxing. Re the URLs, I agree, that's why I added wildcard support, e.g. `*.openai.com` for secret injection as well as network call filtering."
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47604891",
+   "date": "2026-04-01",
+   "author_hash": "8b98066b",
+   "text": "How do you intercept network traffic on mac os? How do you fake certificates?"
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47605087",
+   "date": "2026-04-01",
+   "author_hash": "8b98066b",
+   "text": "You know, the thing is, that it is super easy to create such tools with AI nowadays. …and if you create your own, you can avoid these unnecessary abstractions. You get exactly what you want."
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47605108",
+   "date": "2026-04-01",
+   "author_hash": "913539e4",
+   "text": "This is more a criticism of codex's linux-sandboxing, which you're just wrapping, but it's the first I've ever looked at it. I don't see how it makes sense to invoke bwrap as a forked subprocess. Bubblewrap can't do anything beyond what you can do with unshare directly, which you can simply invoke as a system call without needing to spawn a subprocess or requiring the user to have bwrap installed."
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47605326",
+   "date": "2026-04-01",
+   "author_hash": "734585aa",
+   "text": "Thanks for sharing this, I read your comment multiple times. What would be the alternative though? It is true that the program being written in Rust doesn't solve the problem of spawning subprocesses, but what's the alternative in that case?"
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47605889",
+   "date": "2026-04-01",
+   "author_hash": "f2d582bd",
+   "text": "Is your criticism here that there's no point in invoking bwrap directly when you could instead implement the same things that bwrap implements? I'd much rather a system call bwrap than re-implement bwrap, because bwrap has already been extensively tested."
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47606305",
+   "date": "2026-04-01",
+   "author_hash": "734585aa",
+   "text": "That was my thinking, too. The only other option would be reimplement it in Rust (never researched what exists though)."
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47605370",
+   "date": "2026-04-01",
+   "author_hash": "96b50807",
+   "text": "there's been so many of these -- which of these sandboxing tools is best?"
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47605550",
+   "date": "2026-04-01",
+   "author_hash": "ef6a46c3",
+   "text": "Not a single one. All of them are solving the obvious (and wrong) problem."
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47605794",
+   "date": "2026-04-01",
+   "author_hash": "734585aa",
+   "text": "I'd love to learn more please. I'm interested in sandboxing AI tools/agents regardless of the underlying mechanism (I explored Firecracker VMs briefly as well, terrible cross platform support though)."
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47605821",
+   "date": "2026-04-01",
+   "author_hash": "f2d582bd",
+   "text": "What's the right problem to be solving here?"
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47605694",
+   "date": "2026-04-01",
+   "author_hash": "fa450da1",
+   "text": "This is really useful! How well does it compare though to Docker etc. Because I am worried about sandbox escapes. This is what we currently use to sandbox JS inside Browsers and Node (without anything extra) :  https://github.com/Qbix/Platform/blob/main/platform/plugins/...  I like tools like this, but they all seem to share the same underlying shape: take an arbitrary process and try to restrict "
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47605778",
+   "date": "2026-04-01",
+   "author_hash": "734585aa",
+   "text": "Zerobox uses the same kernel mechanisms (namespaces + seccomp) but no daemon, no root and cold start ~10ms (Docker is much worse in that regard). Docker gives you full filesystem isolation and resource limits. Zerobox gives you granular file/network/credential controls with near zero overhead. You can in fact use Zerobox _inside_ Docker (e.g. for secret management)"
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47605801",
+   "date": "2026-04-01",
+   "author_hash": "6b601a4d",
+   "text": "Compare with and steal any ideas you like from mine if you like. I've got a semi-decent curl|bash pattern covered, and also add network filtering via pasta (which may be more robust than rolling your own).  https://github.com/reubenfirmin/bubblewrap-tui "
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47605830",
+   "date": "2026-04-01",
+   "author_hash": "734585aa",
+   "text": "Ohh! thanks for sharing this. You are using DNS proxy which is interesting and useful if a process doesn't respect the HTTPS_PROXY/HTTP_PROXY/etc. env vars that I'm injecting. I will take a look, very interesting."
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47605999",
+   "date": "2026-04-01",
+   "author_hash": "21287d71",
+   "text": "Very cool. Is there a way to have a notion of a session, saving state between runs?"
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47606015",
+   "date": "2026-04-01",
+   "author_hash": "734585aa",
+   "text": "No, it's stateless right now. What is your requirement though? How do you define a session? Are you referring to \"snapshotting\" between sessions?"
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47624122",
+   "date": "2026-04-03",
+   "author_hash": "734585aa",
+   "text": "I'm adding snapshotting as well  https://github.com/afshinm/zerobox/pull/21  Then you can run: ``` zerobox --snapshot -- sh -c 'echo \"abc\" > a' ``` and also `zerobox snapshot list/diff/restore`"
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47606060",
+   "date": "2026-04-01",
+   "author_hash": "479b581f",
+   "text": "It’s terrific to see this. I’m definitely going to give it a whirl. I’ve been working on a specific JavaScript isolate[^1]. This is great source of inspiration for it. [^1]:  https://github.com/jonathannen/hermit "
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47606259",
+   "date": "2026-04-01",
+   "author_hash": "734585aa",
+   "text": "I'd love to hear your thoughts! I've been primarily testing this with Bun + Vercel AI SDK for tool call sandboxing."
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47606104",
+   "date": "2026-04-01",
+   "author_hash": "5c22e6b9",
+   "text": "Wish it wasn’t rust… it’s so hard to read."
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47606576",
+   "date": "2026-04-01",
+   "author_hash": "734585aa",
+   "text": "I know. I will add more docs soon though, that should make it easier to navigate the code and understand what's going on."
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47606505",
+   "date": "2026-04-01",
+   "author_hash": "9bf8470c",
+   "text": "> zerobox --secret OPENAI_API_KEY=$OPENAI_API_KEY Linux by default allows all users to read CLI arguments of running processes. While it looks like your bwrap invocation prevents the sandbox from looking at this process (--unshare-pid), any other process running on your system can read the secret."
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47606645",
+   "date": "2026-04-01",
+   "author_hash": "734585aa",
+   "text": "That's true and the expected behaviour but I see your point. The example there is not great, I should've used `sk_s123...` to show that you are passing the env var to the sandbox as opposed to setting it on the host, then proxying it. I will update it."
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47606925",
+   "date": "2026-04-01",
+   "author_hash": "958d1f33",
+   "text": "Does Zerobox support audit logging for blocked network or file operations?"
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47607170",
+   "date": "2026-04-01",
+   "author_hash": "734585aa",
+   "text": "I added some basic --debug support earlier today, but I will work on proper JSONL/Otel integration soon."
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47607742",
+   "date": "2026-04-01",
+   "author_hash": "b3af1a1b",
+   "text": "Hey - I'd love for you to add a documented / standard way to use this inside dockers so we can use build on it for various agentic efforts. I've solved getting bubblewrap to work inside a docker once for the nanobot project, but the folks there are dragging their feet on incorporating sandboxing.  https://github.com/HKUDS/nanobot/pull/1940 "
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47607803",
+   "date": "2026-04-01",
+   "author_hash": "734585aa",
+   "text": "I've been testing this on Docker today, including the credential injection, env vars, net calls control. I will add more docs but one interesting use case would be to have something like `zerobox --profile nanoclaw -- nanoclaw`, or something similar. I'd like to hear your thoughts."
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47608509",
+   "date": "2026-04-02",
+   "author_hash": "b3af1a1b",
+   "text": "I'll give it a shot later today, but basically you need a pretty specific seccomp profile (see my example - I pulled from the podman repo) to allow bubblewrap to run inside an unpriviledged docker."
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47609530",
+   "date": "2026-04-02",
+   "author_hash": "467bf5cf",
+   "text": "I love sandboxes man"
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47611931",
+   "date": "2026-04-02",
+   "author_hash": "9306cf3a",
+   "text": "Oh wow, this looks nicely done! It's also nice that it's cross platform. I've done something similar with  https://github.com/Gerharddc/litterbox  which takes things a bit further by allowing you to easily sandbox your entire development environment (i.e. IDE and everything) using containers. Unfortunately I have not gotten around to the network sandboxing part though, that seems very tricky to ge"
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47612802",
+   "date": "2026-04-02",
+   "author_hash": "734585aa",
+   "text": "Thanks for sharing this. I really like the idea"
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47624597",
+   "date": "2026-04-03",
+   "author_hash": "eff3795c",
+   "text": "Cool project! I think there would be a lot of value in just having a mode that logs all the file operations a script tries to make. Great work!"
+  },
+  {
+   "story": "Show HN: Zerobox – Sandbox any command with file, network, c",
+   "url": "https://news.ycombinator.com/item?id=47762392",
+   "date": "2026-04-14",
+   "author_hash": "14033a6b",
+   "text": "We've seen cases where filesystem sandboxing alone wasn't enough — outbound requests still allowed credential exfiltration attempts."
+  },
+  {
+   "story": "NanoClaw Adopts OneCLI Agent Vault",
+   "url": "https://news.ycombinator.com/item?id=47502039",
+   "date": "2026-03-24",
+   "author_hash": "ef6a46c3",
+   "text": "From a security standpoint, I'm glad that people are starting to pay attention to basic security practices. That said, while I'm hardly a fan of MCP (judge for yourself by reviewing my previous comments on the matter), at least its security model was standardised around OAuth, which in my opinion is a good thing, albeit with a few small issues. I personally prefer CLIs, but their security is in fa"
+  },
+  {
+   "story": "NanoClaw Adopts OneCLI Agent Vault",
+   "url": "https://news.ycombinator.com/item?id=47502754",
+   "date": "2026-03-24",
+   "author_hash": "8d394909",
+   "text": "What this appears to be is that we are now reinventing proxies with policy control and the best part of this is the solution (OneCLI) has no security audit. This would give a complete dismissal from the infosec teams to even attempt integrating this vibe-coded slop. As long as the fake keys are known, they can be mapped directly to the real key with the endpoint in OneCLI to exfiltrate the data an"
+  },
+  {
+   "story": "NanoClaw Adopts OneCLI Agent Vault",
+   "url": "https://news.ycombinator.com/item?id=47503430",
+   "date": "2026-03-24",
+   "author_hash": "07295172",
+   "text": "Yeah, I think that’s broadly right. MCP has plenty of problems, but standardising on OAuth was one of the better calls. Expiry, scopes, rotation, delegated access, all much better than the usual CLI pattern of long-lived API keys. The CLI story there is still pretty rough. And once the policy model is host/path matching, GraphQL and JSON-RPC become awkward immediately unless the proxy starts under"
+  },
+  {
+   "story": "NanoClaw Adopts OneCLI Agent Vault",
+   "url": "https://news.ycombinator.com/item?id=47504215",
+   "date": "2026-03-24",
+   "author_hash": "6badcde9",
+   "text": "> I bet we will move from CLIs to something else in about 3-6 months. My bet would be OpenAPI specs. The model will think its calling a cli but we intercept the tool call and proxy it with the oauth credentials. There are some implementations already out there in open web ui and bionic gpt."
+  },
+  {
+   "story": "NanoClaw Adopts OneCLI Agent Vault",
+   "url": "https://news.ycombinator.com/item?id=47502418",
+   "date": "2026-03-24",
+   "author_hash": "ca09205b",
+   "text": "Nice upgrade. userpsace HTTP proxies are a good start and should make unlikely that a secret gets into the context window due to a high permission read. There are a few missing pieces in the agent security world in general 1. Full secret-memory isolation whereby an agent with root privileges can't exfilrate. Let's assume my agent is prompt injected to write a full-permissions script to spin up One"
+  },
+  {
+   "story": "NanoClaw Adopts OneCLI Agent Vault",
+   "url": "https://news.ycombinator.com/item?id=47502679",
+   "date": "2026-03-24",
+   "author_hash": "132c3c07",
+   "text": "Creator of OneCLI here. On (1), the agent runs in its own container where OneCLI doesn't exist. It can't spin up OneCLI or access its process because it's completely isolated from it. The agent only ever sees placeholder tokens, the real secrets live in a separate container it has no way to reach. On (2), we actually address this with OneCLI Rules, deterministic constraints enforced at the proxy l"
+  },
+  {
+   "story": "NanoClaw Adopts OneCLI Agent Vault",
+   "url": "https://news.ycombinator.com/item?id=47505516",
+   "date": "2026-03-24",
+   "author_hash": "64c9a9fa",
+   "text": "At a basic levels, access layers should be aware of operations that are Read-only and operations that are Write/Delete. It should be easy to give agents access to read anything, then require permission/prompt to execute any state changing operations."
+  },
+  {
+   "story": "NanoClaw Adopts OneCLI Agent Vault",
+   "url": "https://news.ycombinator.com/item?id=47502648",
+   "date": "2026-03-24",
+   "author_hash": "49a5a298",
+   "text": "Interesting! I still wouldn't give to any claw access to my mail accounts, but it is a step in the good direction. I love how NanoClaw is aggregating the effort of making personal assistants more secure. Good job!"
+  },
+  {
+   "story": "NanoClaw Adopts OneCLI Agent Vault",
+   "url": "https://news.ycombinator.com/item?id=47503084",
+   "date": "2026-03-24",
+   "author_hash": "f5b6969c",
+   "text": "I don't get the idea of giving a claw access to your own mail account, but am now playing with the idea of it having its own email account that I selectively forward to - that offers almost the full benefit, with significantly less risk."
+  },
+  {
+   "story": "NanoClaw Adopts OneCLI Agent Vault",
+   "url": "https://news.ycombinator.com/item?id=47504600",
+   "date": "2026-03-24",
+   "author_hash": "e39e84f7",
+   "text": "yeah, that's the approach I've taken. I quite liked the idea of giving it full delegated perms on my email account and calendar (eg, dig out that email and reply back to them for me) but the risk profile is just too high, and forwarding emails where needed mostly works."
+  },
+  {
+   "story": "NanoClaw Adopts OneCLI Agent Vault",
+   "url": "https://news.ycombinator.com/item?id=47505476",
+   "date": "2026-03-24",
+   "author_hash": "33045253",
+   "text": "Same here. Coupled with configuring the agent's email account at the provider to only be able to send and receive to my email address."
+  },
+  {
+   "story": "NanoClaw Adopts OneCLI Agent Vault",
+   "url": "https://news.ycombinator.com/item?id=47503249",
+   "date": "2026-03-24",
+   "author_hash": "876d1f9f",
+   "text": "I really don't understand the fascination with openclaw. Can only assume it's mostly just guerrilla marketing spam."
+  },
+  {
+   "story": "NanoClaw Adopts OneCLI Agent Vault",
+   "url": "https://news.ycombinator.com/item?id=47503636",
+   "date": "2026-03-24",
+   "author_hash": "9e2a9190",
+   "text": "can someone explain openclaw/nanoclaw use cases to me? I also do not understand the uses right now. Are we just grasping at usefulness ?"
+  },
+  {
+   "story": "NanoClaw Adopts OneCLI Agent Vault",
+   "url": "https://news.ycombinator.com/item?id=47503783",
+   "date": "2026-03-24",
+   "author_hash": "d0c866d5",
+   "text": "It's a mess in terms of code/filesystem organization, but it's nice to be able to text somebody \"hey, create and deploy a branch of codebase X with feature Y\" while I'm on the go. Not exactly magic, and probably not sustainable, but there's definitely something to it. Also, attaching an LLM with my raindrop.io and Todoist credentials to cron is fun. Haven't got the kinks worked out, yet, but it's "
+  },
+  {
+   "story": "NanoClaw Adopts OneCLI Agent Vault",
+   "url": "https://news.ycombinator.com/item?id=47504352",
+   "date": "2026-03-24",
+   "author_hash": "dc7a0cd8",
+   "text": "Most things I use it for could be done without it, it's just more convenient and entertaining. I had it make a daily aviation weather brief for a private airpark. It uses METAR, outdoor IP cameras I have including one that looks at a windsock and another that looks at the runway surface, and a local weatherstation. It sends me a text message with all of that information aggregated into \"It's going"
+  },
+  {
+   "story": "NanoClaw Adopts OneCLI Agent Vault",
+   "url": "https://news.ycombinator.com/item?id=47504530",
+   "date": "2026-03-24",
+   "author_hash": "e39e84f7",
+   "text": "Honestly, I installed Hermes Agent last weekend, and while there isn't any \"killer use case\", the combination of \"your little assistant agent on it's own machine\" and good messaging integration is really quite cool. I've set it up with it's own mailbox, and a git token to make PRs etc. So far I've set up a few automations (check thing X and message me if Y) but the combination of enough \"intellige"
+  },
+  {
+   "story": "NanoClaw Adopts OneCLI Agent Vault",
+   "url": "https://news.ycombinator.com/item?id=47504778",
+   "date": "2026-03-24",
+   "author_hash": "89ef70b2",
+   "text": "Here are some things I use it for: 1. monitoring anything online and giving me a summary when something changes 2. contribute or make edits to any online forum (where TOS allows it) 3. Giving it access to any API / cli gives you a natural language interface to that service. 4. Memory / notes retrieval. It can search through its discussion / thought history and answer detailed questions about what "
+  },
+  {
+   "story": "NanoClaw Adopts OneCLI Agent Vault",
+   "url": "https://news.ycombinator.com/item?id=47505647",
+   "date": "2026-03-24",
+   "author_hash": "c5b3954a",
+   "text": "Twitter grasps at usefulness, mostly for engagement farming (those TUI dashboards with a thousand agents mucking around). Me and others I know use it for things similar to the following: - I get a lot of emails from various organisations about talks and events (today there was one by andrew barto). I ask it to read emails from announce@*, filter to those adjacent to my field, or from notable peopl"
+  },
+  {
+   "story": "NanoClaw Adopts OneCLI Agent Vault",
+   "url": "https://news.ycombinator.com/item?id=47506424",
+   "date": "2026-03-24",
+   "author_hash": "e72f288d",
+   "text": "I am not running either of these at the moment, because of security concerns, but I did play with openclaw for a day or so. It was clearly potentially useful. I got two use cases working easily: 1. When I get a weekly Scarecrow Video pre-order email, extract a list of movies and use my Letterboxd rating history to determine which of them might be interesting to me. Let me know what I should pay at"
+  },
+  {
+   "story": "NanoClaw Adopts OneCLI Agent Vault",
+   "url": "https://news.ycombinator.com/item?id=47506464",
+   "date": "2026-03-24",
+   "author_hash": "7ebd9d8e",
+   "text": "I am planning on using it to visit some websites before I wake up and compile them in to an epub and send it to my kindle"
+  },
+  {
+   "story": "NanoClaw Adopts OneCLI Agent Vault",
+   "url": "https://news.ycombinator.com/item?id=47504837",
+   "date": "2026-03-24",
+   "author_hash": "81a5a8d9",
+   "text": "To be clear this is not OpenClaw. Maybe the difference doesn't matter to you. NanoClaw is pretty interesting to me. It's a really small piece of software and a different category of software than we've seen before, one that you are expected to customize by editing it yourself (via Claude Code). For that reason alone I find it interesting to play around with. I don't find it actually useful at the "
+  },
+  {
+   "story": "NanoClaw Adopts OneCLI Agent Vault",
+   "url": "https://news.ycombinator.com/item?id=47504981",
+   "date": "2026-03-24",
+   "author_hash": "c39933a5",
+   "text": "Have you tried it?"
+  },
+  {
+   "story": "NanoClaw Adopts OneCLI Agent Vault",
+   "url": "https://news.ycombinator.com/item?id=47505995",
+   "date": "2026-03-24",
+   "author_hash": "5c46bf14",
+   "text": "What do you use it for? The only thing I can think of this doing \"usefully\" for people is spamming social media. The high friction things I'd want automated are precisely the things I'd worry it would fuck up. There's not a lot of middle ground."
+  },
+  {
+   "story": "NanoClaw Adopts OneCLI Agent Vault",
+   "url": "https://news.ycombinator.com/item?id=47505058",
+   "date": "2026-03-24",
+   "author_hash": "184effbe",
+   "text": "People don't want to have to manage or derive context from searching across multiple different apps, emails, spreadsheets, CRMs, etc. It's like having your own personal assistant or oracle. I find it interesting how European and American devs (especially on HN) are so luddite about AI and OpenClaw, but Chinese, Indian, and Israeli developers both domestically and in the diaspora have been adopting"
+  },
+  {
+   "story": "NanoClaw Adopts OneCLI Agent Vault",
+   "url": "https://news.ycombinator.com/item?id=47504782",
+   "date": "2026-03-24",
+   "author_hash": "3934627b",
+   "text": "> You can set rate limits so an agent can only send or delete a few emails per hour Nice idea, but it will not work. Agents are so resourceful and determined, they will find that weird call which can delete all emails with one request (/delete?filter=*)"
+  },
+  {
+   "story": "NanoClaw Adopts OneCLI Agent Vault",
+   "url": "https://news.ycombinator.com/item?id=47505255",
+   "date": "2026-03-24",
+   "author_hash": "d9ba8253",
+   "text": "Since the vault sees every outbound request with the real credential attached, are you logging all of that? Feels like you're sitting on a full audit trail of everything agents actually did across services. That would be huge for debugging agent behavior after the fact."
+  },
+  {
+   "story": "NanoClaw Adopts OneCLI Agent Vault",
+   "url": "https://news.ycombinator.com/item?id=47505294",
+   "date": "2026-03-24",
+   "author_hash": "477a6eac",
+   "text": "The main problem still isn’t solved. It’s not that agents have access to something the shouldn’t have but that the creates havoc exactly with the access they are allowed to have."
+  },
+  {
+   "story": "NanoClaw Adopts OneCLI Agent Vault",
+   "url": "https://news.ycombinator.com/item?id=47505879",
+   "date": "2026-03-24",
+   "author_hash": "1bc69593",
+   "text": "OneCLI doesn't solve the problem of the agent wrecking havoc, you're right, but it does help protect against the agent leaking private credentials from prompt injections / malicious skills."
+  },
+  {
+   "story": "NanoClaw Adopts OneCLI Agent Vault",
+   "url": "https://news.ycombinator.com/item?id=47505502",
+   "date": "2026-03-24",
+   "author_hash": "60dd4372",
+   "text": "I'm a little shocked that someone like 1Password hasn't released a vault access + approvals model. There are a lot of little menial tasks that I'd love for an agent to take care of (\"book me a hair appointment next week when my calendar says I'm free\"). Agent has access to a locally synced calendar and can see the existence of a password for the booking portal in my vault, asks to use it, I get a "
+  },
+  {
+   "story": "NanoClaw Adopts OneCLI Agent Vault",
+   "url": "https://news.ycombinator.com/item?id=47509360",
+   "date": "2026-03-24",
+   "author_hash": "e8e3283b",
+   "text": "I'm curious how you manage https. If OneCLI intercepts all traffic from the agent (harness/tools/...) and then replaces parts with other data, it should break https. Or is that a man in the middle \"attack\". And users have to install a certificate?"
+  }
+ ]
+}

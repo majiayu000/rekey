@@ -1,0 +1,34 @@
+[
+ {
+  "tag": "story",
+  "url": "https://news.ycombinator.com/item?id=46956070",
+  "date": "2026-02-10",
+  "points": 2,
+  "author_hash": "673bc284",
+  "text": "Show HN: Pincer-MCP – Stop AI agents from reading their own credentials"
+ },
+ {
+  "tag": "story",
+  "url": "https://news.ycombinator.com/item?id=48188727",
+  "date": "2026-05-19",
+  "points": 18,
+  "author_hash": "9531f7df",
+  "text": "Sieve – scans Cursor/Claude chat history for leaked API keys"
+ },
+ {
+  "tag": "comment",
+  "url": "https://news.ycombinator.com/item?id=49354881",
+  "date": "2026-08-19",
+  "points": null,
+  "author_hash": "9f821b39",
+  "text": "I have something embarrassing to share: my computer was compromised, and I don’t know whether my keys were leaked.<p>It was an old computer that I had stopped using and let my family use. Most of the sensitive things had already been cleared, but still, when they told me they had “mistakenly run som"
+ },
+ {
+  "tag": "comment",
+  "url": "https://news.ycombinator.com/item?id=45801262",
+  "date": "2025-11-03",
+  "points": null,
+  "author_hash": "7d87d533",
+  "text": "&gt;&gt; [...] while GrapheneOS is just...\n&gt; ...disabling features. Android Auto, Google Pay, enhanced GPS,<p>This is broadly false, not just misleading but false.\n- Android Auto: working wired or wireless without problems\n- Google Pay: app vendor choice to put it behind DEVICE_INTEGRITY check, n"
+ }
+]

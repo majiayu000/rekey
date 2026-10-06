@@ -90,10 +90,12 @@ pub(super) fn configure(
     Ok(())
 }
 
-/// All buffers have the Action response bound. Keep the full bounded history so
-/// scan starts can retain encoding context, and never copy an unchecked prefix.
+/// Absolute offsets survive prefix reclamation; total input keeps its wire bound.
+/// Only emitted, unreferenced bytes outside the scanner lookbehind are reclaimed.
 pub(super) struct Sealer {
     bytes: Zeroizing<Vec<u8>>,
+    base: usize,
+    total: usize,
     emitted: usize,
     hold: usize,
     limit: usize,
@@ -109,7 +111,11 @@ impl Sealer {
             .and_then(|n| n.checked_add(5))
             .ok_or(BrokerError::ResponseSecurityViolation)?;
         Ok(Self {
+            // Keep one allocation: growth could leave unchecked response
+            // fragments in an old allocation that Zeroizing cannot clear.
             bytes: Zeroizing::new(Vec::with_capacity(limit)),
+            base: 0,
+            total: 0,
             emitted: 0,
             hold,
             limit,
@@ -120,13 +126,14 @@ impl Sealer {
         bytes: &[u8],
         needles: &[Zeroizing<Vec<u8>>],
     ) -> Result<(), BrokerError> {
-        if bytes.len() > self.limit.saturating_sub(self.bytes.len()) {
+        if bytes.len() > self.limit.saturating_sub(self.total) {
             return Err(BrokerError::Upstream("response-too-large"));
         }
         // A JSON Unicode escape expands a needle byte to six input bytes.
         // Five extra bytes retain an incomplete escape at the scan boundary.
         let start = self.bytes.len().saturating_sub(self.hold);
         self.bytes.extend_from_slice(bytes);
+        self.total += bytes.len();
         if contains_secret(&self.bytes[start..], needles) {
             return Err(BrokerError::ResponseSecurityViolation);
         }
@@ -135,29 +142,50 @@ impl Sealer {
     pub(super) fn bytes(&self) -> &[u8] {
         &self.bytes
     }
+    pub(super) fn base(&self) -> usize {
+        self.base
+    }
+    pub(super) fn end(&self) -> usize {
+        self.total
+    }
     pub(super) fn hold(&self) -> usize {
         self.hold
+    }
+    pub(super) fn compact(&mut self, referenced: usize) {
+        let end = referenced
+            .min(self.emitted)
+            .min(self.total.saturating_sub(self.hold));
+        let used = end.saturating_sub(self.base);
+        if used == 0 {
+            return;
+        }
+        let remaining = self.bytes.len() - used;
+        self.bytes.copy_within(used.., 0);
+        self.bytes[remaining..].zeroize();
+        self.bytes.truncate(remaining);
+        self.base = end;
     }
     pub(super) async fn release_through(
         &mut self,
         end: usize,
         sender: &TextStreamSender,
     ) -> Result<(), BrokerError> {
-        let base = self.emitted;
-        let text = std::str::from_utf8(&self.bytes[base..end])
+        let start = self.emitted;
+        let text = std::str::from_utf8(&self.bytes[start - self.base..end - self.base])
             .map_err(|_| BrokerError::Upstream("invalid-stream"))?;
         while self.emitted < end {
             let mut chunk_end = end.min(self.emitted + TEXT_STREAM_CHUNK_MAX_BYTES);
-            while !text.is_char_boundary(chunk_end - base) {
+            while !text.is_char_boundary(chunk_end - start) {
                 chunk_end -= 1;
             }
             if sender
                 .send(TextStreamEvent::Chunk(
-                    self.bytes[self.emitted..chunk_end].to_vec(),
+                    self.bytes[self.emitted - self.base..chunk_end - self.base].to_vec(),
                 ))
                 .await
                 .is_err()
             {
+                // Runtime owns checked settlement even after the client leaves.
                 self.emitted = end;
                 return Ok(());
             }
@@ -172,33 +200,15 @@ impl Sealer {
     ) -> Result<(), BrokerError> {
         let text = std::str::from_utf8(&self.bytes)
             .map_err(|_| BrokerError::Upstream("invalid-stream"))?;
-        let mut end = if final_text {
-            text.len()
-        } else {
-            text.len().saturating_sub(self.hold)
-        };
-        while !text.is_char_boundary(end) {
-            end -= 1;
+        let mut retained = text.len().saturating_sub(self.hold);
+        while !text.is_char_boundary(retained) {
+            retained -= 1;
         }
-        while self.emitted < end {
-            let mut chunk_end = end.min(self.emitted + TEXT_STREAM_CHUNK_MAX_BYTES);
-            while !text.is_char_boundary(chunk_end) {
-                chunk_end -= 1;
-            }
-            if sender
-                .send(TextStreamEvent::Chunk(
-                    self.bytes[self.emitted..chunk_end].to_vec(),
-                ))
-                .await
-                .is_err()
-            {
-                // Disconnected clients own no cleanup. Continue the runtime-owned
-                // request to its checked terminal audit without retaining output.
-                self.emitted = end;
-                return Ok(());
-            }
-            self.emitted = chunk_end;
-        }
+        let end = if final_text { text.len() } else { retained };
+        let end = self.base + end;
+        let retained = self.base + retained;
+        self.release_through(end, sender).await?;
+        self.compact(retained);
         Ok(())
     }
 }
@@ -331,6 +341,9 @@ pub(super) async fn run(
         .map_err(|_| BrokerError::Upstream("stream-transport"))?
     {
         raw.push(&chunk, &needles)?;
+        // This projection never forwards raw frames; only the scanner uses them.
+        raw.emitted = raw.end();
+        raw.compact(raw.end());
         if chunk.len() > limit.saturating_sub(pending.len()) {
             return Err(BrokerError::Upstream("response-too-large"));
         }
@@ -368,6 +381,26 @@ pub(super) async fn run(
 #[cfg(test)]
 mod tests {
     use super::super::sealing::sealing_needles;
+
+    #[test]
+    fn sensitive_buffer_keeps_one_allocation_across_push_and_compaction() {
+        let needles = sealing_needles(
+            b"synthetic-private-test-value",
+            b"synthetic-private-test-value",
+        );
+        let mut sealer = Sealer::new(&needles, 1024).unwrap();
+        let allocation = sealer.bytes.as_ptr();
+        assert_eq!(sealer.bytes.capacity(), 1024);
+        sealer.push(&[b'a'; 512], &needles).unwrap();
+        sealer.emitted = sealer.end();
+        sealer.compact(sealer.end());
+        assert!(sealer.base() > 0);
+        // An incomplete reflected value must stay in this zeroizable allocation.
+        sealer.push(b"synthetic-private-", &needles).unwrap();
+        sealer.push(&[b'b'; 400], &needles).unwrap();
+        assert_eq!(sealer.bytes.as_ptr(), allocation);
+        assert_eq!(sealer.bytes.capacity(), 1024);
+    }
     use super::*;
 
     #[tokio::test]
@@ -385,6 +418,7 @@ mod tests {
                 let mut sealer = Sealer::new(&needles, 4096).unwrap();
                 sealer.push(&vec![b'z'; 256], &needles).unwrap();
                 sealer.release(false, &sender).await.unwrap();
+                assert!(sealer.base() > 0, "test must reclaim a checked prefix");
                 let first = sealer.push(&reflected[..split], &needles);
                 let blocked = if first.is_err() {
                     true
@@ -415,7 +449,8 @@ mod tests {
         let mut sealer = Sealer::new(&needles, 4096).unwrap();
         sealer.push(text.as_bytes(), &needles).unwrap();
         sealer.release(false, &sender).await.unwrap();
-        assert!(sealer.bytes.len() - sealer.emitted >= sealer.hold);
+        assert!(sealer.end() - sealer.emitted >= sealer.hold);
+        assert!(sealer.base() > 0);
         sealer.release(true, &sender).await.unwrap();
         drop(sender);
         let mut result = Vec::new();
@@ -458,6 +493,7 @@ mod tests {
         let (sender, mut receiver) = tokio::sync::mpsc::channel(32);
         sealer.push(&vec![b'z'; 1024], &needles).unwrap();
         sealer.release(false, &sender).await.unwrap();
+        assert!(sealer.base() > 0);
         for (index, part) in [
             &reflected[..reflected.len() - 1],
             &reflected[reflected.len() - 1..],
@@ -483,6 +519,73 @@ mod tests {
         drop(sender);
         while let Some(event) = receiver.recv().await {
             if let TextStreamEvent::Chunk(bytes) = event {
+                assert!(bytes.iter().all(|byte| *byte == b'z'));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn reclamation_preserves_the_cumulative_wire_limit() {
+        let needles = sealing_needles(b"bound-token", b"bound-token");
+        let (sender, mut receiver) = mpsc::channel(8);
+        let mut sealer = Sealer::new(&needles, 1024).unwrap();
+        for _ in 0..4 {
+            sealer.push(&[b'z'; 256], &needles).unwrap();
+            sealer.release(false, &sender).await.unwrap();
+        }
+        assert_eq!(sealer.end(), 1024);
+        assert!(sealer.base() > 0);
+        assert_eq!(sealer.bytes().len(), sealer.hold());
+        assert!(matches!(
+            sealer.push(b"z", &needles),
+            Err(BrokerError::Upstream("response-too-large"))
+        ));
+        sealer.release(true, &sender).await.unwrap();
+        drop(sender);
+        let mut output = Vec::new();
+        while let Some(TextStreamEvent::Chunk(bytes)) = receiver.recv().await {
+            output.extend(bytes);
+        }
+        assert_eq!(output, vec![b'z'; 1024]);
+    }
+
+    #[tokio::test]
+    async fn bytewise_encoded_reflections_fail_after_repeated_reclamation() {
+        let secret = b"synthetic-secret-1234";
+        let needles = sealing_needles(secret, secret);
+        for reflected in [
+            secret.to_vec(),
+            data_encoding::BASE64.encode(secret).into_bytes(),
+            secret
+                .iter()
+                .flat_map(|b| format!("%{b:02x}").into_bytes())
+                .collect(),
+            secret
+                .iter()
+                .flat_map(|b| format!("\\u{b:04x}").into_bytes())
+                .collect(),
+        ] {
+            let (sender, mut receiver) = mpsc::channel(1024);
+            let mut sealer = Sealer::new(&needles, 8192).unwrap();
+            for _ in 0..4 {
+                sealer.push(&[b'z'; 512], &needles).unwrap();
+                sealer.release(false, &sender).await.unwrap();
+            }
+            assert!(sealer.base() > 1024);
+            let mut blocked = false;
+            for byte in reflected {
+                match sealer.push(&[byte], &needles) {
+                    Ok(()) => sealer.release(false, &sender).await.unwrap(),
+                    Err(BrokerError::ResponseSecurityViolation) => {
+                        blocked = true;
+                        break;
+                    }
+                    Err(error) => panic!("unexpected error: {error}"),
+                }
+            }
+            assert!(blocked);
+            drop(sender);
+            while let Some(TextStreamEvent::Chunk(bytes)) = receiver.recv().await {
                 assert!(bytes.iter().all(|byte| *byte == b'z'));
             }
         }

@@ -1,0 +1,191 @@
+{
+  "baseline": "043a020",
+  "candidate": "2e1a152",
+  "scope": "same protocol subset; correctness rerun only, no new latency ranking; concurrent host activity",
+  "source": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/peerscope-resolution-20261006",
+  "source_overlay_files": 13,
+  "all_source_hashes_match": true,
+  "all_frozen_binary_hashes_match": true,
+  "cells": 12,
+  "attempts": 768,
+  "hash_mismatches": [],
+  "groups": [
+    {
+      "mode": "sse",
+      "concurrency": 1,
+      "attempts": 192,
+      "successful": 192,
+      "exact_body_hash_mismatches": 0,
+      "reflection": [
+        {
+          "status": 502,
+          "reflected": false,
+          "error": null
+        },
+        {
+          "status": 502,
+          "reflected": false,
+          "error": null
+        },
+        {
+          "status": 502,
+          "reflected": false,
+          "error": null
+        }
+      ]
+    },
+    {
+      "mode": "sse",
+      "concurrency": 4,
+      "attempts": 192,
+      "successful": 192,
+      "exact_body_hash_mismatches": 0,
+      "reflection": [
+        {
+          "status": 502,
+          "reflected": false,
+          "error": null
+        },
+        {
+          "status": 502,
+          "reflected": false,
+          "error": null
+        },
+        {
+          "status": 502,
+          "reflected": false,
+          "error": null
+        }
+      ]
+    },
+    {
+      "mode": "toolstream",
+      "concurrency": 1,
+      "attempts": 192,
+      "successful": 192,
+      "exact_body_hash_mismatches": 0,
+      "reflection": [
+        {
+          "status": 502,
+          "reflected": false,
+          "error": null
+        },
+        {
+          "status": 502,
+          "reflected": false,
+          "error": null
+        },
+        {
+          "status": 502,
+          "reflected": false,
+          "error": null
+        }
+      ]
+    },
+    {
+      "mode": "toolstream",
+      "concurrency": 4,
+      "attempts": 192,
+      "successful": 192,
+      "exact_body_hash_mismatches": 0,
+      "reflection": [
+        {
+          "status": 502,
+          "reflected": false,
+          "error": null
+        },
+        {
+          "status": 502,
+          "reflected": false,
+          "error": null
+        },
+        {
+          "status": 502,
+          "reflected": false,
+          "error": null
+        }
+      ]
+    }
+  ],
+  "status": {
+    "matrix_exit": 0,
+    "aggregate_exit": 0,
+    "fixture_exit": 0
+  },
+  "workspace_test": {
+    "command": [
+      "cargo",
+      "test",
+      "--workspace",
+      "--locked",
+      "--",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "passed": 1069,
+    "failed": 0,
+    "ignored": 6,
+    "log": "/Users/lifcc/Desktop/code/AI/tools/rekey/.git/codex/evidence/peerscope-resolution-20261006/workspace-test.log"
+  },
+  "compile_and_clippy": [
+    {
+      "name": "all-targets-check",
+      "command": [
+        "cargo",
+        "check",
+        "--workspace",
+        "--all-targets",
+        "--locked"
+      ],
+      "exit_code": 0,
+      "began": 1791227766.453202,
+      "ended": 1791227777.679034
+    },
+    {
+      "name": "all-features-check",
+      "command": [
+        "cargo",
+        "check",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--locked"
+      ],
+      "exit_code": 0,
+      "began": 1791227777.67936,
+      "ended": 1791227790.639285
+    },
+    {
+      "name": "clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "began": 1791227790.639571,
+      "ended": 1791227801.610867
+    }
+  ],
+  "mechanical_contracts": [
+    {
+      "pattern": "REKEY_PASSWORD|get_secret_value|/proxy/|passthrough",
+      "no_matches": true,
+      "exit_code": 1
+    },
+    {
+      "pattern": "get_secret\\b|read_secret|export_secret",
+      "no_matches": true,
+      "exit_code": 1
+    },
+    {
+      "cli_tree_exit": 0,
+      "forbidden_found": []
+    }
+  ]
+}

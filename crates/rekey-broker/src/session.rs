@@ -145,6 +145,53 @@ impl ExecutionPermit {
     pub(crate) fn profile_scope(&self) -> Option<&ProfileActionScope> {
         self.profile_scope.as_ref()
     }
+
+    pub(crate) async fn wait_revoked(&self) {
+        self.registry.wait_revoked(self.session_id).await;
+    }
+
+    /// Serialize a local handoff with every registry revocation path, including
+    /// ProfileSessionGuard::drop. Caller holds the lifecycle coordinator first.
+    /// The closure must not await or call back into this registry.
+    pub(crate) fn with_live_handoff<R>(
+        &self,
+        now: Timestamp,
+        effect_deadline: Instant,
+        handoff: impl FnOnce() -> R,
+    ) -> Result<R, BrokerError> {
+        let inner = self.registry.lock_inner();
+        if inner.closed {
+            return Err(DomainError::InvalidCapability.into());
+        }
+        let entry = inner
+            .entries
+            .iter()
+            .find(|entry| entry.grant.id == self.session_id)
+            .ok_or(DomainError::InvalidCapability)?;
+        if entry.revoked || entry.in_flight == 0 {
+            return Err(DomainError::InvalidCapability.into());
+        }
+        if entry.grant.expired_at(now)
+            || Instant::now() >= entry.monotonic_deadline
+            || Instant::now() >= effect_deadline
+        {
+            return Err(DomainError::CapabilityExpired.into());
+        }
+        if !entry.grant.allows(self.action) {
+            return Err(DomainError::ActionNotAllowed.into());
+        }
+        // This permit already reserved its use. Exhaustion rejects new work,
+        // but must not reject the last admitted execution or consume it again.
+        // Backend construction/poll may panic. Release this read-only guard
+        // before restoring unwind so the supervisor can fault the runtime and
+        // permit cleanup cannot abort on a poisoned registry.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(handoff));
+        drop(inner);
+        match result {
+            Ok(value) => Ok(value),
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
 }
 
 impl Drop for ExecutionPermit {
@@ -899,6 +946,138 @@ mod tests {
             registry.begin(&token, r, now(1)).unwrap();
         }
         assert!(registry.begin(&token, r, now(1)).is_err());
+    }
+
+    #[test]
+    fn live_handoff_preserves_last_reserved_use_and_rejects_invalid_state() {
+        let registry = Arc::new(open_registry());
+        let (g, action) = grant(1);
+        let token = registry.create(g).unwrap();
+        let mut permit = registry.acquire(&token, action, now(1)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        assert_eq!(permit.with_live_handoff(now(2), deadline, || 7).unwrap(), 7);
+        assert_eq!(registry.lock_inner().entries[0].uses_left, 0);
+        assert_eq!(registry.in_flight_total(), 1);
+        let calls = std::cell::Cell::new(0);
+        let rejected = || calls.set(calls.get() + 1);
+        assert_eq!(
+            permit
+                .with_live_handoff(now(10_000), deadline, rejected)
+                .unwrap_err()
+                .code(),
+            "CAPABILITY_EXPIRED"
+        );
+        assert_eq!(
+            permit
+                .with_live_handoff(now(2), Instant::now(), rejected)
+                .unwrap_err()
+                .code(),
+            "CAPABILITY_EXPIRED"
+        );
+        let saved = permit.action;
+        permit.action.version += 1;
+        assert_eq!(
+            permit
+                .with_live_handoff(now(2), deadline, rejected)
+                .unwrap_err()
+                .code(),
+            "ACTION_DENIED"
+        );
+        permit.action = saved;
+        {
+            let mut inner = registry.lock_inner();
+            inner.entries[0].monotonic_deadline = Instant::now();
+        }
+        assert_eq!(
+            permit
+                .with_live_handoff(now(2), deadline, rejected)
+                .unwrap_err()
+                .code(),
+            "CAPABILITY_EXPIRED"
+        );
+        registry.lock_inner().entries[0].monotonic_deadline = deadline;
+        registry.lock_inner().entries[0].in_flight = 0;
+        assert!(
+            permit
+                .with_live_handoff(now(2), deadline, rejected)
+                .is_err()
+        );
+        registry.lock_inner().entries[0].in_flight = 1;
+        registry.revoke(permit.session_id);
+        assert!(
+            permit
+                .with_live_handoff(now(2), deadline, rejected)
+                .is_err()
+        );
+        assert_eq!(calls.get(), 0);
+        drop(permit);
+        let (g, action) = grant(1);
+        let token = registry.create(g).unwrap();
+        let permit = registry.acquire(&token, action, now(1)).unwrap();
+        registry.close_and_revoke_all();
+        assert!(
+            permit
+                .with_live_handoff(now(2), deadline, rejected)
+                .is_err()
+        );
+        assert_eq!(calls.get(), 0);
+    }
+
+    #[test]
+    fn live_handoff_backend_panic_preserves_registry_and_permit_cleanup() {
+        let registry = Arc::new(open_registry());
+        let (grant, action) = grant(1);
+        let token = registry.create(grant).unwrap();
+        let permit = registry.acquire(&token, action, now(1)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = permit.with_live_handoff(now(2), deadline, || {
+                std::panic::panic_any(37_u32);
+            });
+        }));
+        assert_eq!(*panic.unwrap_err().downcast::<u32>().unwrap(), 37);
+        assert_eq!(registry.in_flight_total(), 1);
+        drop(permit);
+        assert_eq!(registry.in_flight_total(), 0);
+        registry.close_and_revoke_all();
+        assert!(registry.lock_inner().closed);
+    }
+
+    #[test]
+    fn live_handoff_serializes_with_direct_registry_revocation() {
+        let registry = Arc::new(open_registry());
+        let (grant, action) = grant(1);
+        let token = registry.create(grant).unwrap();
+        let permit = registry.acquire(&token, action, now(1)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (attempt_tx, attempt_rx) = std::sync::mpsc::channel();
+        let (ack_tx, ack_rx) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let mut revoke = None;
+            permit
+                .with_live_handoff(now(2), deadline, || {
+                    let registry = Arc::clone(&registry);
+                    let id = permit.session_id;
+                    revoke = Some(scope.spawn(move || {
+                        attempt_tx.send(()).unwrap();
+                        assert!(registry.revoke(id));
+                        ack_tx.send(()).unwrap();
+                    }));
+                    attempt_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+                    assert!(matches!(
+                        ack_rx.try_recv(),
+                        Err(std::sync::mpsc::TryRecvError::Empty)
+                    ));
+                })
+                .unwrap();
+            revoke.unwrap().join().unwrap();
+            ack_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        });
+        assert!(
+            permit
+                .with_live_handoff(now(2), deadline, || panic!("post-revoke handoff"))
+                .is_err()
+        );
     }
 
     #[test]
