@@ -1,6 +1,7 @@
 # 0.3 发布与一周自用（v3 设计）
 
-当前代码基线：PR [#62](https://github.com/majiayu000/rekey/pull/62) 的 `5de61bf`。
+历史基础实现：PR [#62](https://github.com/majiayu000/rekey/pull/62) 的 `5de61bf`。
+2026-10-06 当前修复候选为 `v0.3.0-alpha.2`，基于已发布的 `043a020`；用户授权合并及发布 SSE 修复，第三方凭据源不接入，既有暂缓项保持未验证。
 2026-10-05 用户授权合并和发布 alpha，并明确先跳过新版 App 真机三项。
 停止新增功能；只处理已证实的安全、正确性和发布阻塞。
 
@@ -21,7 +22,7 @@ PR #62 已合并到 main（`fa7905a`），最终源码九项 CI 全绿。alpha.1
 
 alpha.2 已通过签名、公证和安装后的 P0；共享验收将归档 Python 工具误套到 App，发布因此阻止。alpha.3 同样完成签名、公证和安装后的 P0，但后续 MCP 验收仍调用已删除的 v2 manifest 接口。修正为真实签名 Profile 与 run 发现后，v3.0.0-alpha.4 已[公开发布并通过两平台公共下载验收](https://github.com/majiayu000/rekey/actions/runs/37262839187)，三个失败 tag 均保留。
 
-用户随后决定将产品发布编号调整到 0.3，当前目标为 v0.3.0-alpha.1；历史 v3 标签和发布保留。
+用户随后决定将产品发布编号调整到 0.3，v0.3.0-alpha.1 已公开发布；历史 v3 标签和发布保留。alpha.2 仅包含已测 SSE 修复及对应文档，发布门槛须重新通过。
 
 下表是 0.3.0-alpha.1 tag 推送前的检查快照；公开发布及下载验收的当前结果以
 [GitHub release](https://github.com/majiayu000/rekey/releases/tag/v0.3.0-alpha.1)
@@ -50,7 +51,7 @@ alpha.2 已通过签名、公证和安装后的 P0；共享验收将归档 Pytho
 
 1. 当前 head 必需 CI 通过，关闭安全审查中确认的阻塞问题。
 2. 合并当前修复 PR（#62 已合并；仓库 ruleset 仅允许 squash），取实际 main 提交；不强推 main。
-3. 核对 Cargo 版本与 `v0.3.0-alpha.1` 一致，确认 tag 不存在，再把 tag 指向该 main 提交。
+3. 核对 Cargo 版本与 `v0.3.0-alpha.2` 一致，确认 tag 不存在，再把 tag 指向该 main 提交。
 4. 用既有 release workflow 构建、签名、公证、验证 provenance / SBOM、
    fresh-install 并发布；公共 URL smoke 失败时沿用现有撤回机制。
 5. 记录 tag、main 提交、workflow URL、公开下载 URL、checksum 及最终 smoke 状态。

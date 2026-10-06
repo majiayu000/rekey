@@ -5,7 +5,7 @@ Rekey 是本机 API 凭据执行器：Agent 只执行你授权的操作，拿不
 授权固定上游、操作和参数范围；执行前持久审计，返回时检查凭据反射。
 检查覆盖明确支持的表示，不能阻止所有数据外泄或授权范围内的误用。
 
-当前版本为 **0.3.0-alpha.1（alpha）**，[发布状态与下载](https://github.com/majiayu000/rekey/releases/tag/v0.3.0-alpha.1)以 GitHub 为准。macOS 安装入口为签名、公证的 pkg；
+当前版本为 **0.3.0-alpha.2（alpha）**，[发布状态与下载](https://github.com/majiayu000/rekey/releases/tag/v0.3.0-alpha.2)以 GitHub 为准。macOS 安装入口为签名、公证的 pkg；
 发布工作流也会从该 pkg 生成本地 Homebrew cask，尚无公开 tap。
 [安装说明](docs/installation.md)列出前置条件；设备权限和完整发布验收仍待完成。
 

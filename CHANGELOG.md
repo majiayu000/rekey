@@ -6,6 +6,15 @@ not a 1.0 maturity claim. Vault25 / policy snapshot6 remain frozen across all 0.
 releases, including prereleases; CLI and UI prerelease behavior may still change.
 Historical v3/v2 tags and entries below are retained.
 
+## 0.3.0-alpha.2
+
+**Requires reinitialization: no for vault25 / policy6.** Fix premature rejection
+of bounded large text/tool SSE responses by reclaiming checked stream buffers.
+Improve stream scheduling, revoke-before-poll handling and authenticated usage
+ledger processing without changing durable formats or authorization boundaries.
+Clarify the product positioning, L1-dev threat model and pinned competitor evidence.
+See [release notes](docs/releases/v0.3.0-alpha.2.md).
+
 ## 0.3.0-alpha.1
 
 **Requires reinitialization: no for vault25 / policy6.** Renumber the product line

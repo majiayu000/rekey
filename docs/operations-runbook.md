@@ -1,9 +1,9 @@
 # Operations runbook
 
 Pre-tag candidate snapshot; current publication status is recorded on the
-[GitHub release](https://github.com/majiayu000/rekey/releases/tag/v0.3.0-alpha.1) and its complete workflow.
+[GitHub release](https://github.com/majiayu000/rekey/releases/tag/v0.3.0-alpha.2) and its complete workflow.
 
-Scope: **0.3.0-alpha.1 unpublished candidate**, vault/backup 25 and policy 6.
+Scope: **0.3.0-alpha.2 unpublished candidate**, vault/backup 25 and policy 6.
 These durable formats are frozen across all 0.3 releases, including prereleases. Local checks are not signed-device,
 provider or release acceptance. Enterprise references below require a source
 build with `--features lab`; they are not installed personal services.
@@ -282,7 +282,7 @@ schema follows the [documented DNS JSON response](https://developers.cloudflare.
 
 ## Upgrade, rollback, and rejected state
 
-Follow [installation](installation.md). The target is **0.3.0-alpha.1, unpublished**,
+Follow [installation](installation.md). The target is **0.3.0-alpha.2, unpublished**,
 with vault/backup 25 and policy 6. These formats are frozen across all 0.3 releases.
 Incompatible state and backups are always rejected: no migration, backfill or
 legacy reader will be added. All 0.3 releases must keep the durable format; an incompatible format requires

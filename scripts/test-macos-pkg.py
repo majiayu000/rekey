@@ -20,7 +20,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 DAEMON = pathlib.Path("Contents/Helpers/RekeyDaemon.app")
 LINK = "../../Helpers/RekeyDaemon.app/Contents/MacOS/rekeyd"
 TOOLS = ("rekey", "rekey-mcp", "rekey-policy-sign", "rekey-approval-sign")
-VERSION = "0.3.0-alpha.1"
+VERSION = "0.3.0-alpha.2"
 
 
 def run(argv, *, expected=0, **kwargs):
