@@ -267,6 +267,7 @@ Profile、capability session、Action 这三个概念**不再暴露给个人用�
 
 - 沿用 local-presence：daemon 生成审阅正文（含 method、完整 URL、请求头名、正文），绑定 `RKREVIEW` 哈希，只能使用一次。
 - 调用方得到结构化的 `APPROVAL_REQUIRED{request_id, expires_at}`，可以等待或取消。CLI 默认等待（`--no-wait` 可关闭），MCP 返回后由 Agent 调用 `await_approval`。
+- HTTP Connection 重提只预留一次审批；同一个批准的并发重提不能同时取得预留。`approval.accepted` 与 `execution.started` 在同一 Authority 事务成功后才消费批准并清除审阅正文。忙、小时额度、日预算或 started 提交拒绝释放预留，尚有效批准可重试；已取消、过期、锁定或策略更新清除的批准不得恢复。两种时钟的审批期限也约束实际 started 提交。
 
 ### 5.5 时间窗审批（新增）
 
@@ -283,6 +284,8 @@ Profile、capability session、Action 这三个概念**不再暴露给个人用�
   - LLM 类连接按 token 结算，日预算是软上限（v3 已说明）；
   - 其他连接按请求数限速（`limits.requests_per_hour`）。
 - 超额返回 `BUDGET_EXCEEDED`，附带重置时间。
+- HTTP Connection 小时请求额度计数成功持久准入（`execution.started`）；并发预留先占额度，准入拒绝归还，已准入后失败仍计数。access/scan 的防滥用尝试限速保持原合同。
+- HTTP Connection 固定最多 120 个全局在途执行、每个 Connection 最多 4 个；调用方标注不产生新容量。许可在 started 前取得，随受监管执行及其终态审计提交移交；HTTP/IPC 断开、流式结束或排队终态尚未提交不能提前释放。终态提交失败关闭后续远程副作用准入。Supervisor 的任务数也固定不超过 120，超限使用现有可重试 `AUTHORITY_BUSY`；不增加持久字段或用户配置。
 
 ---
 

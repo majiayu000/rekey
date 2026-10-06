@@ -15,6 +15,7 @@ use crate::executor::{
 use rekey_domain::ipc::TextStreamStatus;
 
 const EXECUTION_QUEUE_CAPACITY: usize = 120;
+const MAX_EXECUTION_TASKS: usize = crate::lifecycle::MAX_CONNECTION_EXECUTIONS as usize;
 
 struct ExecutionJob {
     request: ExecutionRequest,
@@ -43,6 +44,32 @@ enum ExecutionResponse {
     Buffered(oneshot::Sender<Result<ExecuteOutcome, BrokerError>>),
     Stream(TextStreamSender),
     Http(oneshot::Sender<Result<HttpExecution, BrokerError>>),
+}
+
+impl ExecutionResponse {
+    fn reject_busy(self) {
+        let error = BrokerError::Admission(AuthorityError::AuthorityBusy);
+        match self {
+            Self::Buffered(response) => {
+                let _ = response.send(Err(error));
+            }
+            Self::Http(response) => {
+                let _ = response.send(Err(error));
+            }
+            Self::Stream(response) => {
+                let _ = response.try_send(TextStreamEvent::AdmissionError(error));
+            }
+        }
+    }
+}
+
+fn admit_job(job: ExecutionJob, active_tasks: usize) -> Option<ExecutionJob> {
+    if active_tasks >= MAX_EXECUTION_TASKS {
+        job.response.reject_busy();
+        None
+    } else {
+        Some(job)
+    }
 }
 
 pub(crate) enum HttpExecution {
@@ -165,6 +192,9 @@ impl ExecutionSupervisor {
                     }
                     SupervisorEvent::Job(job) => {
                         let Some(job) = job else { break };
+                        let Some(job) = admit_job(*job, self.tasks.len()) else {
+                            continue;
+                        };
                         let executor = Arc::clone(&self.executor);
                         self.tasks.spawn(async move {
                             match job.response {
@@ -314,6 +344,22 @@ mod tests {
             }),
             response: ExecutionResponse::Buffered(response),
         }
+    }
+
+    #[tokio::test]
+    async fn saturated_tasks_reject_without_spawning_even_when_caller_disconnects() {
+        let (response, result) = oneshot::channel();
+        let mut job = queued_job();
+        job.response = ExecutionResponse::Buffered(response);
+        assert!(admit_job(job, MAX_EXECUTION_TASKS).is_none());
+        let error = result.await.unwrap().err().expect("capacity error");
+        assert_eq!(error.code(), "AUTHORITY_BUSY");
+        // All receivers in queued_job are already disconnected. Disconnection
+        // cannot bypass the same task bound or create unobserved child tasks.
+        for _ in 0..2 * EXECUTION_QUEUE_CAPACITY {
+            assert!(admit_job(queued_job(), MAX_EXECUTION_TASKS).is_none());
+        }
+        assert!(admit_job(queued_job(), MAX_EXECUTION_TASKS - 1).is_some());
     }
 
     #[tokio::test]

@@ -1,6 +1,6 @@
 //! Process-local request approvals. There is no local capability or session grant.
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rekey_domain::ids::{ApprovalId, ApprovalRequestId};
@@ -9,6 +9,7 @@ use tokio::sync::Notify;
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::error::BrokerError;
+use crate::lifecycle::ConnectionExecutionPermit;
 
 #[derive(Default)]
 pub(crate) struct LocalCalls {
@@ -31,6 +32,7 @@ pub(crate) struct LocalCallApproval {
     pub(crate) deadline: Instant,
     pub(crate) state: LocalApprovalState,
     pub(crate) approval_id: Option<ApprovalId>,
+    pub(crate) reserved: bool,
 }
 impl LocalCallApproval {
     pub(crate) fn response(&self) -> ipc::LocalApprovalStateResponse {
@@ -60,6 +62,15 @@ impl LocalCalls {
         max: u32,
         window: Duration,
     ) -> Result<(), BrokerError> {
+        self.take_rate(connection, max, window).map(|_| ())
+    }
+
+    fn take_rate(
+        &self,
+        connection: &str,
+        max: u32,
+        window: Duration,
+    ) -> Result<Instant, BrokerError> {
         let mut rates = self.rates.lock().unwrap_or_else(|e| e.into_inner());
         let entry = rates
             .entry(connection.to_owned())
@@ -74,7 +85,21 @@ impl LocalCalls {
             });
         }
         entry.1 += 1;
-        Ok(())
+        Ok(entry.0)
+    }
+
+    pub(crate) fn reserve_rate(
+        self: &Arc<Self>,
+        connection: &str,
+        max: u32,
+        window: Duration,
+    ) -> Result<LocalRateReservation, BrokerError> {
+        Ok(LocalRateReservation {
+            calls: Arc::clone(self),
+            connection: connection.into(),
+            window_start: self.take_rate(connection, max, window)?,
+            committed: false,
+        })
     }
     pub(crate) fn clear(&self) {
         self.approvals
@@ -203,6 +228,7 @@ impl LocalCalls {
             || entry.challenge.parameter_sha256 != parameter_hash
             || entry.challenge.policy_sha256 != policy_hash
             || entry.state != LocalApprovalState::Approved
+            || entry.reserved
         {
             return Err(BrokerError::Denied("approval-request-mismatch"));
         }
@@ -210,6 +236,39 @@ impl LocalCalls {
         entry.review.zeroize();
         self.changed.notify_waiters();
         Ok(entry.clone())
+    }
+
+    pub(crate) fn reserve_approval(
+        self: &Arc<Self>,
+        id: ApprovalRequestId,
+        caller: &str,
+        parameter_hash: &str,
+        policy_hash: &str,
+        now_ms: i64,
+    ) -> Result<LocalApprovalReservation, BrokerError> {
+        let mut entries = self.approvals.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = entries
+            .get_mut(&id)
+            .ok_or(BrokerError::Denied("approval-request-unknown"))?;
+        entry.refresh(now_ms);
+        if entry.caller != caller
+            || entry.challenge.parameter_sha256 != parameter_hash
+            || entry.challenge.policy_sha256 != policy_hash
+            || entry.state != LocalApprovalState::Approved
+        {
+            return Err(BrokerError::Denied("approval-request-mismatch"));
+        }
+        if entry.reserved {
+            return Err(BrokerError::Admission(
+                rekey_vault::AuthorityError::AuthorityBusy,
+            ));
+        }
+        entry.reserved = true;
+        Ok(LocalApprovalReservation {
+            calls: Arc::clone(self),
+            approval: entry.clone(),
+            committed: false,
+        })
     }
     pub(crate) async fn await_state(
         &self,
@@ -250,6 +309,253 @@ impl LocalCalls {
             None,
             crate::now_ts()?.as_unix_ms(),
         )
+    }
+}
+
+// These reservations cross the audit queue before the first durable await.
+// If the original receiver disappears, the worker still commits consumption
+// with started or rolls it back on rejection; it never re-inserts an approval.
+pub(crate) struct LocalApprovalReservation {
+    calls: Arc<LocalCalls>,
+    pub(crate) approval: LocalCallApproval,
+    committed: bool,
+}
+
+impl LocalApprovalReservation {
+    pub(crate) fn validate(&self, now_ms: i64) -> Result<(), BrokerError> {
+        let entry = self
+            .calls
+            .get(self.approval.challenge.approval_request_id, now_ms)?;
+        if entry.reserved && entry.state == LocalApprovalState::Approved {
+            Ok(())
+        } else {
+            Err(BrokerError::Denied("approval-request-mismatch"))
+        }
+    }
+
+    fn commit(mut self) {
+        let mut entries = self
+            .calls
+            .approvals
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(entry) = entries.get_mut(&self.approval.challenge.approval_request_id) {
+            // Authority already checked the approval's deadlines at commit.
+            // Do not re-create entries cleared by a lock or policy change.
+            if entry.reserved {
+                entry.reserved = false;
+                entry.state = LocalApprovalState::Consumed;
+                entry.review.zeroize();
+            }
+        }
+        self.committed = true;
+        self.calls.changed.notify_waiters();
+    }
+}
+
+impl Drop for LocalApprovalReservation {
+    fn drop(&mut self) {
+        if !self.committed {
+            let mut entries = self
+                .calls
+                .approvals
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if let Some(entry) = entries.get_mut(&self.approval.challenge.approval_request_id) {
+                entry.reserved = false;
+                if let Ok(now) = crate::now_ts() {
+                    entry.refresh(now.as_unix_ms());
+                }
+            }
+            self.calls.changed.notify_waiters();
+        }
+    }
+}
+
+pub(crate) struct LocalRateReservation {
+    calls: Arc<LocalCalls>,
+    connection: String,
+    window_start: Instant,
+    committed: bool,
+}
+
+impl Drop for LocalRateReservation {
+    fn drop(&mut self) {
+        if !self.committed {
+            let mut rates = self.calls.rates.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some((window_start, count)) = rates.get_mut(&self.connection)
+                && *window_start == self.window_start
+            {
+                *count = count.saturating_sub(1);
+            }
+        }
+    }
+}
+
+pub(crate) struct ConnectionAdmission {
+    pub(crate) approval: Option<LocalApprovalReservation>,
+    pub(crate) rate: LocalRateReservation,
+    pub(crate) permit: ConnectionExecutionPermit,
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use rekey_domain::authorization::{ApprovalMode, ApproverSpec, ResourceRef, SchemaId};
+    use rekey_domain::ids::{ActionId, PolicyRuleId, PrincipalId, SessionId, TenantId};
+
+    pub(crate) fn approved(calls: &Arc<LocalCalls>) -> LocalCallApproval {
+        let now = crate::now_ts().unwrap().as_unix_ms();
+        let approval = LocalCallApproval {
+            challenge: ApprovalChallenge {
+                record_type: "rekey.approval.challenge.v2".into(),
+                approval_request_id: ApprovalRequestId::new_random(),
+                tenant_id: TenantId::new_random(),
+                principal_id: PrincipalId::new_random(),
+                session_id: SessionId::new_random(),
+                action_id: ActionId::new_random(),
+                action_version: 1,
+                resource: ResourceRef::new("connection".into(), "fixture".into()).unwrap(),
+                schema_id: SchemaId::new("test/v1".into()).unwrap(),
+                parameter_sha256: "11".repeat(32),
+                policy_version: 1,
+                policy_sha256: "22".repeat(32),
+                policy_rule_id: PolicyRuleId::new_random(),
+                mode: ApprovalMode::OneTime,
+                approver: ApproverSpec::LocalPresence {},
+                max_uses: 1,
+                created_at_ms: now,
+                max_expires_at_ms: now + 600_000,
+            },
+            caller: "fixture".into(),
+            request_context: None,
+            review_sha256: "33".repeat(32),
+            review: b"review retained until started".to_vec().into(),
+            deadline: Instant::now() + Duration::from_secs(600),
+            state: LocalApprovalState::Approved,
+            approval_id: Some(ApprovalId::new_random()),
+            reserved: false,
+        };
+        calls.register(approval, now).unwrap()
+    }
+
+    pub(crate) fn reserve(
+        calls: &Arc<LocalCalls>,
+        approval: &LocalCallApproval,
+    ) -> Result<LocalApprovalReservation, BrokerError> {
+        calls.reserve_approval(
+            approval.challenge.approval_request_id,
+            &approval.caller,
+            &approval.challenge.parameter_sha256,
+            &approval.challenge.policy_sha256,
+            crate::now_ts().unwrap().as_unix_ms(),
+        )
+    }
+
+    #[test]
+    fn approval_retry_reservation_is_exclusive_and_consumption_is_final() {
+        let calls = Arc::new(LocalCalls::default());
+        let approval = approved(&calls);
+        let first = reserve(&calls, &approval).unwrap();
+        assert_eq!(
+            reserve(&calls, &approval).err().unwrap().code(),
+            "AUTHORITY_BUSY"
+        );
+        assert!(
+            !calls
+                .get(
+                    approval.challenge.approval_request_id,
+                    crate::now_ts().unwrap().as_unix_ms()
+                )
+                .unwrap()
+                .review
+                .is_empty()
+        );
+        drop(first);
+        let retry = reserve(&calls, &approval).unwrap();
+        retry.commit();
+        let consumed = calls
+            .get(
+                approval.challenge.approval_request_id,
+                crate::now_ts().unwrap().as_unix_ms(),
+            )
+            .unwrap();
+        assert_eq!(consumed.state, LocalApprovalState::Consumed);
+        assert!(consumed.review.is_empty());
+        assert!(reserve(&calls, &approval).is_err());
+    }
+
+    #[test]
+    fn rejected_reservations_never_revive_expired_cancelled_or_cleared_approvals() {
+        for reason in ["expired", "cancelled", "cleared"] {
+            let calls = Arc::new(LocalCalls::default());
+            let approval = approved(&calls);
+            let reservation = reserve(&calls, &approval).unwrap();
+            match reason {
+                "expired" => {
+                    calls
+                        .approvals
+                        .lock()
+                        .unwrap()
+                        .get_mut(&approval.challenge.approval_request_id)
+                        .unwrap()
+                        .deadline = Instant::now();
+                }
+                "cancelled" => calls.cancel_unconfirmed(approval.challenge.approval_request_id),
+                _ => calls.clear(),
+            }
+            assert!(
+                reservation
+                    .validate(crate::now_ts().unwrap().as_unix_ms())
+                    .is_err()
+            );
+            drop(reservation);
+            assert!(
+                reserve(&calls, &approval).is_err(),
+                "{reason} must remain invalid"
+            );
+        }
+    }
+
+    #[test]
+    fn rejected_rate_reservation_returns_only_its_own_window_slot() {
+        let calls = Arc::new(LocalCalls::default());
+        let first = calls
+            .reserve_rate("fixture", 1, Duration::from_secs(3600))
+            .unwrap();
+        assert_eq!(
+            calls
+                .reserve_rate("fixture", 1, Duration::from_secs(3600))
+                .err()
+                .unwrap()
+                .code(),
+            "BUDGET_EXCEEDED"
+        );
+        drop(first);
+        let old = calls
+            .reserve_rate("fixture", 1, Duration::from_secs(3600))
+            .unwrap();
+        let mut current = calls.reserve_rate("fixture", 1, Duration::ZERO).unwrap();
+        current.committed = true;
+        drop(current);
+        drop(old);
+        assert!(
+            calls
+                .reserve_rate("fixture", 1, Duration::from_secs(3600))
+                .is_err(),
+            "old rollback must not erase current window usage"
+        );
+    }
+}
+
+impl ConnectionAdmission {
+    pub(crate) fn commit(mut self) -> ConnectionExecutionPermit {
+        if let Some(approval) = self.approval.take() {
+            approval.commit();
+        }
+        self.rate.committed = true;
+        self.permit.started();
+        self.permit
     }
 }
 
@@ -455,8 +761,8 @@ impl LocalCalls {
 pub(crate) struct WindowApproval {
     pub(crate) request_id: ApprovalRequestId,
     pub(crate) approval_id: ApprovalId,
-    deadline: Instant,
-    expires_at_ms: i64,
+    pub(crate) deadline: Instant,
+    pub(crate) expires_at_ms: i64,
 }
 impl LocalCalls {
     pub(crate) fn cancel_unconfirmed(&self, id: ApprovalRequestId) {

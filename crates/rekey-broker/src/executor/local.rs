@@ -16,7 +16,10 @@ use zeroize::Zeroizing;
 use super::{ActionExecutor, AdmittedExecution, ExecuteRequest, PolicyIdentity};
 use crate::audit::{ExecutionAuditContext, execution_blocked};
 use crate::error::BrokerError;
-use crate::runtime::local_calls::LocalCallApproval;
+use crate::runtime::local_calls::{ConnectionAdmission, LocalCallApproval};
+
+#[cfg(test)]
+mod tests;
 
 pub(crate) struct LocalExecuteRequest {
     pub(crate) request_id: RequestId,
@@ -70,8 +73,10 @@ impl ActionExecutor {
         }
         let policy_hash = data_encoding::HEXLOWER.encode(&active.snapshot().digest());
         let parameter_hash = data_encoding::HEXLOWER.encode(&authorized.parameters.canonical_hash);
-        let deadline = (started_at + Duration::from_millis(authorized.action.timeout_ms as u64))
-            .min(active.monotonic_deadline().into_std());
+        let mut deadline = (started_at
+            + Duration::from_millis(authorized.action.timeout_ms as u64))
+        .min(active.monotonic_deadline().into_std());
+        let mut wall_not_after_ms = active.snapshot().expires_at_ms();
         let ctx = ExecutionAuditContext {
             request_context: Some(RequestAuditContext::Connection(
                 ConnectionRequestAuditContext {
@@ -101,6 +106,7 @@ impl ActionExecutor {
             }),
         };
         let mut preceding = Vec::new();
+        let mut approval_reservation = None;
         match authorized.effect {
             RuleEffect::Deny => {
                 self.authority
@@ -114,13 +120,16 @@ impl ActionExecutor {
             }
             RuleEffect::Approve => {
                 if let Some(id) = input.meta.approval_request_id {
-                    let approval = self.local_calls.consume(
+                    let reservation = self.local_calls.reserve_approval(
                         id,
                         &input.caller,
                         &parameter_hash,
                         &policy_hash,
                         now.as_unix_ms(),
                     )?;
+                    let approval = &reservation.approval;
+                    deadline = deadline.min(approval.deadline);
+                    wall_not_after_ms = wall_not_after_ms.min(approval.challenge.max_expires_at_ms);
                     let mut accepted = crate::audit::execution_started(&ctx);
                     accepted.event_type = event_type::APPROVAL_ACCEPTED;
                     accepted.reason_code = "local-presence".into();
@@ -130,6 +139,7 @@ impl ActionExecutor {
                         approver_id: None,
                     });
                     preceding.push(accepted);
+                    approval_reservation = Some(reservation);
                 } else if let Some(window) = self.local_calls.window(
                     &policy_hash,
                     &authorized.connection.name,
@@ -137,6 +147,8 @@ impl ActionExecutor {
                     &input.caller,
                     now.as_unix_ms(),
                 ) {
+                    deadline = deadline.min(window.deadline);
+                    wall_not_after_ms = wall_not_after_ms.min(window.expires_at_ms);
                     let mut accepted = crate::audit::execution_started(&ctx);
                     accepted.event_type = event_type::APPROVAL_ACCEPTED;
                     accepted.reason_code = "local-presence-window".into();
@@ -201,6 +213,7 @@ impl ActionExecutor {
                             .min(active.monotonic_deadline().into_std()),
                         state: ipc::LocalApprovalState::Pending,
                         approval_id: None,
+                        reserved: false,
                     };
                     let local = self.local_calls.register(local, now.as_unix_ms())?;
                     if local.challenge.approval_request_id == id {
@@ -269,27 +282,38 @@ impl ActionExecutor {
         if active.is_expired(crate::now_ts()?) {
             return Err(BrokerError::Denied("policy-expired"));
         }
-        self.local_calls.admit_rate(
+        if let Some(approval) = &approval_reservation {
+            approval.validate(crate::now_ts()?.as_unix_ms())?;
+        }
+        if self.terminals.has_failed() {
+            return Err(BrokerError::Admission(rekey_vault::AuthorityError::Faulted));
+        }
+        let permit = self
+            .lifecycle
+            .connection_permit(&authorized.connection.name)?;
+        let rate = self.local_calls.reserve_rate(
             &authorized.connection.name,
             authorized.connection.limits.requests_per_hour,
             Duration::from_secs(3600),
         )?;
-        let permit = self.lifecycle.local_permit();
-        let started = super::commit_evaluated_started(
-            &self.terminals,
-            ctx,
-            preceding,
-            Some(deadline),
-            Some(active.snapshot().expires_at_ms()),
-            llm.as_ref().map(|l| l.usage.clone()),
-        )
-        .await
-        .map_err(|error| match error {
-            BrokerError::Denied("profile-budget-exceeded") => BrokerError::BudgetExceeded {
+        let started = self
+            .terminals
+            .commit_connection_started(
+                ctx,
+                preceding,
+                llm.as_ref().map(|l| l.usage.clone()),
+                deadline,
+                wall_not_after_ms,
+                ConnectionAdmission {
+                    approval: approval_reservation,
+                    rate,
+                    permit,
+                },
+            )
+            .await?
+            .ok_or_else(|| BrokerError::BudgetExceeded {
                 reset_at_ms: (now.as_unix_ms().div_euclid(86_400_000) + 1) * 86_400_000,
-            },
-            other => other,
-        })?;
+            })?;
         Ok(AdmittedExecution {
             executor: Arc::clone(self),
             request,
@@ -299,7 +323,6 @@ impl ActionExecutor {
             effect_deadline: deadline,
             started,
             _permit: None,
-            _local_permit: Some(permit),
         })
     }
 }

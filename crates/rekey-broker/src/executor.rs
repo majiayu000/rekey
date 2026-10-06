@@ -169,7 +169,6 @@ pub struct AdmittedExecution {
     effect_deadline: Instant,
     started: StartedAuditGuard,
     _permit: Option<ExecutionPermit>,
-    _local_permit: Option<crate::lifecycle::LocalExecutionPermit>,
 }
 
 pub struct ActionExecutor {
@@ -323,7 +322,6 @@ impl ActionExecutor {
                 effect_deadline,
                 started,
                 _permit: Some(permit),
-                _local_permit: None,
             });
         }
         let (accepted, mut approval_deadline) = match &evaluated.decision {
@@ -391,7 +389,6 @@ impl ActionExecutor {
             llm: evaluated.llm,
             started,
             _permit: Some(permit),
-            _local_permit: None,
         })
     }
 

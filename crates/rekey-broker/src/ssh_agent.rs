@@ -459,6 +459,7 @@ async fn sign(
                     deadline,
                     state: LocalApprovalState::Pending,
                     approval_id: None,
+                    reserved: false,
                 },
                 now.as_unix_ms(),
             )?;

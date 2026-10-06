@@ -19,6 +19,8 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use crate::error::BrokerError;
+use crate::lifecycle::ConnectionExecutionPermit;
+use crate::runtime::local_calls::ConnectionAdmission;
 
 /// Accepts terminal audits from Drop/panic paths and waits them to commit
 /// before Authority shutdown. Commit errors and timeouts are never ignored.
@@ -43,6 +45,7 @@ struct TerminalSubmission {
     profile_usage: bool,
     measured_output_tokens: Option<u64>,
     reply: Option<oneshot::Sender<Result<(), AuthorityError>>>,
+    connection_permit: Option<ConnectionExecutionPermit>,
 }
 
 struct StartedSubmission {
@@ -52,6 +55,7 @@ struct StartedSubmission {
     wall_not_after_ms: Option<i64>,
     ctx: ExecutionAuditContext,
     queue: AuditSubmissionQueue,
+    connection_admission: Option<ConnectionAdmission>,
     reply: oneshot::Sender<Result<Option<StartedAuditGuard>, AuthorityError>>,
 }
 
@@ -66,6 +70,7 @@ pub(crate) struct StartedAuditGuard {
     remote_effect_started: bool,
     profile_usage: bool,
     measured_output_tokens: Option<u64>,
+    connection_permit: Option<ConnectionExecutionPermit>,
 }
 
 impl StartedAuditGuard {
@@ -82,6 +87,7 @@ impl StartedAuditGuard {
             remote_effect_started: false,
             profile_usage: false,
             measured_output_tokens: None,
+            connection_permit: None,
         }
     }
 
@@ -90,7 +96,7 @@ impl StartedAuditGuard {
     }
 
     fn enqueue_terminal(
-        &self,
+        &mut self,
         draft: AuditDraft,
         reply: Option<oneshot::Sender<Result<(), AuthorityError>>>,
     ) {
@@ -99,6 +105,7 @@ impl StartedAuditGuard {
             reply,
             self.profile_usage,
             self.measured_output_tokens,
+            self.connection_permit.take(),
         );
     }
 
@@ -201,7 +208,7 @@ impl AuditSubmissionQueue {
         draft: AuditDraft,
         reply: Option<oneshot::Sender<Result<(), AuthorityError>>>,
     ) {
-        self.enqueue_terminal_with_usage(draft, reply, false, None);
+        self.enqueue_terminal_with_usage(draft, reply, false, None, None);
     }
 
     fn enqueue_terminal_with_usage(
@@ -210,12 +217,14 @@ impl AuditSubmissionQueue {
         reply: Option<oneshot::Sender<Result<(), AuthorityError>>>,
         profile_usage: bool,
         measured_output_tokens: Option<u64>,
+        connection_permit: Option<ConnectionExecutionPermit>,
     ) {
         self.enqueue(AuditSubmission::Terminal(Box::new(TerminalSubmission {
             draft,
             reply,
             profile_usage,
             measured_output_tokens,
+            connection_permit,
         })));
     }
 
@@ -279,6 +288,7 @@ impl TerminalAuditTracker {
                 wall_not_after_ms,
                 ctx,
                 queue: self.queue.clone(),
+                connection_admission: None,
                 reply,
             })));
         match result.await {
@@ -306,6 +316,7 @@ impl TerminalAuditTracker {
                 wall_not_after_ms,
                 ctx,
                 queue: self.queue.clone(),
+                connection_admission: None,
                 reply,
             })));
         result
@@ -315,6 +326,36 @@ impl TerminalAuditTracker {
 
     pub fn has_pending(&self) -> bool {
         self.queue.pending.load(Ordering::SeqCst) > 0
+    }
+
+    /// Reservations belong to the durable worker before any await. A lost
+    /// receiver cannot roll back an approval after started actually commits.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn commit_connection_started(
+        &self,
+        ctx: ExecutionAuditContext,
+        mut preceding: Vec<AuditDraft>,
+        usage: Option<ProfileUsageStart>,
+        not_after: Instant,
+        wall_not_after_ms: i64,
+        admission: ConnectionAdmission,
+    ) -> Result<Option<StartedAuditGuard>, AuthorityError> {
+        preceding.push(execution_started(&ctx));
+        let (reply, result) = oneshot::channel();
+        self.queue
+            .enqueue(AuditSubmission::Started(Box::new(StartedSubmission {
+                drafts: preceding,
+                profile_usage: usage,
+                not_after: Some(not_after),
+                wall_not_after_ms: Some(wall_not_after_ms),
+                ctx,
+                queue: self.queue.clone(),
+                connection_admission: Some(admission),
+                reply,
+            })));
+        result
+            .await
+            .map_err(|_| AuthorityError::AuditCommitFailed)?
     }
 
     pub fn has_failed(&self) -> bool {
@@ -438,6 +479,13 @@ where
                     if result.is_err() {
                         failed.store(true, Ordering::SeqCst);
                     }
+                    // An uncommitted terminal drops an armed permit and
+                    // closes remote admission before capacity is reused.
+                    if let Some(permit) = submission.connection_permit
+                        && result.is_ok()
+                    {
+                        permit.complete();
+                    }
                     if let Some(reply) = submission.reply {
                         drop(reply.send(result));
                     }
@@ -450,9 +498,10 @@ where
                         wall_not_after_ms,
                         ctx,
                         queue,
+                        mut connection_admission,
                         reply,
                     } = *submission;
-                    let result = if let Some(usage) = profile_usage {
+                    let mut result = if let Some(usage) = profile_usage {
                         match (&authority, drafts.pop(), not_after) {
                             (Some(authority), Some(started), Some(not_after)) => authority
                                 .begin_profile_execution(
@@ -478,6 +527,13 @@ where
                             .await
                             .map(|()| Some(StartedAuditGuard::new(queue, ctx)))
                     };
+                    if let Ok(Some(guard)) = &mut result {
+                        guard.connection_permit =
+                            connection_admission.take().map(ConnectionAdmission::commit);
+                    }
+                    // Roll back rejected admission before publishing its
+                    // error or budget denial to the requester.
+                    drop(connection_admission);
                     if matches!(&result, Err(error) if !matches!(error, AuthorityError::AuthorityBusy))
                     {
                         failed.store(true, Ordering::SeqCst);
@@ -614,6 +670,183 @@ mod tests {
             credential_id: CredentialId::new_random(),
             authorization: None,
         }
+    }
+
+    fn connection_admission(
+        lifecycle: &Arc<crate::lifecycle::Lifecycle>,
+        calls: &Arc<crate::runtime::local_calls::LocalCalls>,
+        approval: &crate::runtime::local_calls::LocalCallApproval,
+    ) -> ConnectionAdmission {
+        ConnectionAdmission {
+            approval: Some(crate::runtime::local_calls::tests::reserve(calls, approval).unwrap()),
+            rate: calls
+                .reserve_rate("fixture", 1, Duration::from_secs(3600))
+                .unwrap(),
+            permit: lifecycle.connection_permit("fixture").unwrap(),
+        }
+    }
+
+    #[tokio::test]
+    async fn connection_admission_survives_cancelled_reply_through_terminal_commit() {
+        use crate::runtime::local_calls::{LocalCalls, tests::approved};
+        let lifecycle = Arc::new(crate::lifecycle::Lifecycle::new());
+        lifecycle.enter_running().unwrap();
+        let calls = Arc::new(LocalCalls::default());
+        let approval = approved(&calls);
+        let entered = Arc::new(Notify::new());
+        let start_release = Arc::new(Notify::new());
+        let terminal_entered = Arc::new(Notify::new());
+        let terminal_release = Arc::new(Notify::new());
+        let committed = Arc::new(Mutex::new(Vec::new()));
+        let (tracker, worker) = spawn_terminal_worker_with({
+            let entered = entered.clone();
+            let start_release = start_release.clone();
+            let terminal_entered = terminal_entered.clone();
+            let terminal_release = terminal_release.clone();
+            let committed = committed.clone();
+            move |draft| {
+                let entered = entered.clone();
+                let start_release = start_release.clone();
+                let terminal_entered = terminal_entered.clone();
+                let terminal_release = terminal_release.clone();
+                let committed = committed.clone();
+                async move {
+                    if draft.event_type == event_type::EXECUTION_STARTED {
+                        entered.notify_one();
+                        start_release.notified().await;
+                    } else {
+                        terminal_entered.notify_one();
+                        terminal_release.notified().await;
+                    }
+                    committed.lock().unwrap().push(draft.event_type);
+                    Ok(())
+                }
+            }
+        });
+        let admission = connection_admission(&lifecycle, &calls, &approval);
+        let caller = tokio::spawn({
+            let tracker = tracker.clone();
+            async move {
+                tracker
+                    .commit_connection_started(
+                        execution_context(),
+                        Vec::new(),
+                        None,
+                        Instant::now() + Duration::from_secs(10),
+                        crate::now_ts().unwrap().as_unix_ms() + 10_000,
+                        admission,
+                    )
+                    .await
+            }
+        });
+        entered.notified().await;
+        caller.abort();
+        drop(caller.await);
+        assert_eq!(lifecycle.local_in_flight(), 1);
+        assert!(crate::runtime::local_calls::tests::reserve(&calls, &approval).is_err());
+        start_release.notify_one();
+        terminal_entered.notified().await;
+        assert_eq!(
+            calls
+                .get(
+                    approval.challenge.approval_request_id,
+                    crate::now_ts().unwrap().as_unix_ms()
+                )
+                .unwrap()
+                .state,
+            rekey_domain::ipc::LocalApprovalState::Consumed
+        );
+        assert_eq!(
+            lifecycle.local_in_flight(),
+            1,
+            "queued terminal still owns capacity"
+        );
+        terminal_release.notify_one();
+        tracker.wait_idle(Duration::from_secs(1)).await.unwrap();
+        assert_eq!(lifecycle.local_in_flight(), 0);
+        assert!(lifecycle.try_begin_remote_effect());
+        assert_eq!(
+            *committed.lock().unwrap(),
+            [event_type::EXECUTION_STARTED, event_type::EXECUTION_BLOCKED]
+        );
+        drop(tracker);
+        worker.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rejected_connection_started_returns_approval_rate_and_capacity_before_reply() {
+        use crate::runtime::local_calls::{
+            LocalCalls,
+            tests::{approved, reserve},
+        };
+        for fault in [false, true] {
+            let lifecycle = Arc::new(crate::lifecycle::Lifecycle::new());
+            lifecycle.enter_running().unwrap();
+            let calls = Arc::new(LocalCalls::default());
+            let approval = approved(&calls);
+            let (tracker, worker) = spawn_terminal_worker_with(move |_| async move {
+                Err(if fault {
+                    AuthorityError::AuditCommitFailed
+                } else {
+                    AuthorityError::AuthorityBusy
+                })
+            });
+            let result = tracker
+                .commit_connection_started(
+                    execution_context(),
+                    Vec::new(),
+                    None,
+                    Instant::now() + Duration::from_secs(10),
+                    crate::now_ts().unwrap().as_unix_ms() + 10_000,
+                    connection_admission(&lifecycle, &calls, &approval),
+                )
+                .await;
+            assert!(result.is_err());
+            assert_eq!(lifecycle.local_in_flight(), 0);
+            assert_eq!(tracker.has_failed(), fault);
+            drop(reserve(&calls, &approval).unwrap());
+            drop(
+                calls
+                    .reserve_rate("fixture", 1, Duration::from_secs(3600))
+                    .unwrap(),
+            );
+            drop(tracker);
+            worker.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn connection_terminal_failure_closes_remote_admission() {
+        use crate::runtime::local_calls::{LocalCalls, tests::approved};
+        let lifecycle = Arc::new(crate::lifecycle::Lifecycle::new());
+        lifecycle.enter_running().unwrap();
+        let calls = Arc::new(LocalCalls::default());
+        let approval = approved(&calls);
+        let (tracker, worker) = spawn_terminal_worker_with(|draft| async move {
+            if draft.event_type == event_type::EXECUTION_STARTED {
+                Ok(())
+            } else {
+                Err(AuthorityError::AuditCommitFailed)
+            }
+        });
+        let guard = tracker
+            .commit_connection_started(
+                execution_context(),
+                Vec::new(),
+                None,
+                Instant::now() + Duration::from_secs(10),
+                crate::now_ts().unwrap().as_unix_ms() + 10_000,
+                connection_admission(&lifecycle, &calls, &approval),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        drop(guard);
+        assert!(tracker.wait_idle(Duration::from_secs(1)).await.is_err());
+        assert_eq!(lifecycle.local_in_flight(), 0);
+        assert!(!lifecycle.try_begin_remote_effect());
+        drop(tracker);
+        worker.await.unwrap();
     }
 
     #[tokio::test]

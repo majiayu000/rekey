@@ -2236,7 +2236,6 @@ async fn approle_admitted(f: &ActorFixture) -> AdmittedExecution {
         effect_deadline: end,
         started,
         _permit: Some(permit),
-        _local_permit: None,
     }
 }
 
