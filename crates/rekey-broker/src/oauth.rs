@@ -174,6 +174,7 @@ async fn exchange(
     g: &mut Grant,
     fields: &[(&str, &str)],
     transport: &dyn UpstreamTransport,
+    proven_no_effect: Option<&mut bool>,
 ) -> Result<Access, BrokerError> {
     let (_, host, path) = endpoints(g.provider);
     let mut form = fields.to_vec();
@@ -219,7 +220,15 @@ async fn exchange(
             response_max_bytes: 64 * 1024,
         })
         .await
-        .map_err(|_| BrokerError::Upstream("oauth-exchange-transport"))?;
+        .map_err(|error| {
+            if matches!(&error, crate::upstream::UpstreamError::Blocked(_))
+                && !crate::executor::upstream_failure_is_indeterminate(&error)
+                && let Some(proven_no_effect) = proven_no_effect
+            {
+                *proven_no_effect = true;
+            }
+            BrokerError::Upstream("oauth-exchange-transport")
+        })?;
     let mut raw: TokenResponse = serde_json::from_slice(&response.body)
         .map_err(|_| BrokerError::Upstream("oauth-response"))?;
     if raw.error.as_deref().is_some_and(|e| {
@@ -402,6 +411,10 @@ impl Manager {
             .ok_or_else(needs_reauth)?
             .clone();
         crate::executor::try_begin_remote_effect(lifecycle, started, deadline).await?;
+        // Preserve any earlier effect if this refresh is refused before send.
+        let prior_remote_effect = started.remote_effect_started();
+        let prior_effect_kind = effect_kind.load(Ordering::SeqCst);
+        let mut proven_no_effect = false;
         // Refresh-token rotation can consume a provider credential even before
         // the requested API call starts. Cache hits above have no such effect.
         started.mark_remote_effect_started();
@@ -415,9 +428,14 @@ impl Manager {
                     ("refresh_token", refresh.as_str()),
                 ],
                 transport,
+                Some(&mut proven_no_effect),
             ),
         )
         .await;
+        if proven_no_effect {
+            started.record_target_no_effect(prior_remote_effect);
+            effect_kind.store(prior_effect_kind, Ordering::SeqCst);
+        }
         let access = match result {
             Ok(Ok(access)) => access,
             other => {
@@ -618,7 +636,7 @@ impl Manager {
                     fields.push(("code_verifier", verifier.as_str()));
                 }
                 grant.scopes = binding.scopes.clone();
-                let access = exchange(&mut grant, &fields, transport.as_ref()).await?;
+                let access = exchange(&mut grant, &fields, transport.as_ref(), None).await?;
                 let deadline = Instant::now() + Duration::from_secs(10);
                 let _owner = lifecycle.coordinate_until(deadline.into()).await?;
                 if lifecycle.phase() != BrokerPhase::Running
@@ -857,6 +875,7 @@ mod tests {
                 ("refresh_token", "synthetic-refresh-before"),
             ],
             &fake,
+            None,
         )
         .await
         .unwrap();
@@ -884,14 +903,22 @@ mod tests {
             br#"{"error":"bad_refresh_token"}"#.to_vec(),
         )));
         assert_eq!(
-            exchange(&mut g, &[], &fake).await.err().unwrap().code(),
+            exchange(&mut g, &[], &fake, None)
+                .await
+                .err()
+                .unwrap()
+                .code(),
             "NEEDS_REAUTH"
         );
         fake.push_response(Ok(response(200,vec![],br#"{"access_token":"synthetic-access","refresh_token":"synthetic-refresh","expires_in":3600,"scope":"repo,offline_access","token_type":"Bearer"}"#.to_vec())));
-        assert!(exchange(&mut g, &[], &fake).await.is_ok());
+        assert!(exchange(&mut g, &[], &fake, None).await.is_ok());
         fake.push_response(Ok(response(200,vec![],br#"{"access_token":"synthetic-access","refresh_token":"synthetic-refresh","expires_in":3600,"scope":"repo,admin:org","token_type":"Bearer"}"#.to_vec())));
         assert_eq!(
-            exchange(&mut g, &[], &fake).await.err().unwrap().code(),
+            exchange(&mut g, &[], &fake, None)
+                .await
+                .err()
+                .unwrap()
+                .code(),
             "DENIED"
         );
     }
@@ -905,7 +932,8 @@ mod tests {
             exchange(
                 &mut slack,
                 &[("code_verifier", "synthetic-verifier")],
-                &fake
+                &fake,
+                None,
             )
             .await
             .is_ok()
@@ -926,7 +954,7 @@ mod tests {
             vec![],
             br#"{"access_token":"synthetic-notion-token","token_type":"bearer"}"#.to_vec(),
         )));
-        let access = exchange(&mut notion, &[("code", "synthetic-code")], &fake)
+        let access = exchange(&mut notion, &[("code", "synthetic-code")], &fake, None)
             .await
             .unwrap();
         assert!(access.expires_at_ms.is_none());

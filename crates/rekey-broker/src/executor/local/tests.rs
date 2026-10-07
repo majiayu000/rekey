@@ -3,7 +3,7 @@
 //! are real; policy signer, local approval decision and upstream are synthetic.
 use super::*;
 use crate::active_policy::ActivePolicy;
-use crate::audit::spawn_terminal_worker;
+use crate::audit::{StartedAuditGuard, spawn_terminal_worker};
 use crate::execution_supervisor::{ExecutionSupervisorHandle, HttpExecution};
 use crate::lifecycle::Lifecycle;
 use crate::session::SessionRegistry;
@@ -45,6 +45,10 @@ impl Fixture {
     }
 
     async fn with_connections(hourly: u32, llm: bool, count: usize) -> Self {
+        Self::build(hourly, llm, count, false).await
+    }
+
+    async fn build(hourly: u32, llm: bool, count: usize, oauth: bool) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let state = dir.path().join("state");
         rekey_vault::bootstrap::init_vault(
@@ -55,22 +59,34 @@ impl Fixture {
                 iterations: 1,
                 parallelism: 1,
             },
-            rekey_domain::authorization::PolicyMode::Team,
+            if oauth {
+                rekey_domain::authorization::PolicyMode::Personal
+            } else {
+                rekey_domain::authorization::PolicyMode::Team
+            },
         )
         .unwrap();
         rekey_vault::bootstrap::confirm_vault_init(&state).unwrap();
         let (authority, authority_thread) =
             rekey_vault::authority::spawn_authority(AuthorityConfig::new(state.clone())).unwrap();
         authority.unlock(proof()).await.unwrap();
-        let credential = authority
-            .credential_add(
+        let credential = if oauth {
+            authority.oauth_grant_create(
                 CredentialLabel::new("fixture").unwrap(),
-                CredentialKind::OpaqueToken,
-                SecretInput::from_slice(b"synthetic-upstream-key"),
-                proof(),
-            )
-            .await
-            .unwrap();
+                SecretInput::from_slice(br#"{"credential_type":"oauth-grant-v1","provider":"google","client_id":"synthetic-client","client_secret":"synthetic-client-secret","scopes":["https://www.googleapis.com/auth/drive.readonly"],"refresh_token":"synthetic-refresh-token","expires_at_ms":null}"#),
+                proof(), None,
+            ).await.unwrap()
+        } else {
+            authority
+                .credential_add(
+                    CredentialLabel::new("fixture").unwrap(),
+                    CredentialKind::OpaqueToken,
+                    SecretInput::from_slice(b"synthetic-upstream-key"),
+                    proof(),
+                )
+                .await
+                .unwrap()
+        };
         let preset = if count > 1 {
             rekey_policy::presets::generic_preset(
                 rekey_domain::action::HttpsOrigin::parse("https://api.example.com").unwrap(),
@@ -79,11 +95,26 @@ impl Fixture {
             )
             .unwrap()
         } else {
-            rekey_policy::presets::builtin_preset(if llm { "openai" } else { "github-pat" })
-                .unwrap()
+            rekey_policy::presets::builtin_preset(if oauth {
+                "google-drive"
+            } else if llm {
+                "openai"
+            } else {
+                "github-pat"
+            })
+            .unwrap()
         };
         let mut connection = preset.connection("fixture".into(), credential.id);
         connection.limits.requests_per_hour = hourly;
+        if oauth {
+            connection.oauth = Some(rekey_domain::connection::OAuthBinding {
+                provider: rekey_domain::connection::OAuthProvider::Google,
+                client_id: "synthetic-client".into(),
+                scopes: ["https://www.googleapis.com/auth/drive.readonly".into()]
+                    .into_iter()
+                    .collect(),
+            });
+        }
         for rule in &mut connection.rules {
             rule.id = PolicyRuleId::new_random();
             if matches!(rule.methods, MethodSelector::Class(MethodClass::Read)) {
@@ -508,5 +539,578 @@ async fn disconnected_receivers_cannot_exceed_global_supervised_execution_limit(
     assert_eq!(f.count("execution.started"), 121);
     assert_eq!(f.count("execution.finished"), 121);
     assert_eq!(f.fake.requests.lock().unwrap().len(), 121);
+    f.stop().await;
+}
+
+#[tokio::test]
+async fn oauth_refresh_authority_queue_full_is_unconfirmed() {
+    use std::future::Future;
+    use std::task::Poll;
+    for scenario in ["rotation", "transport", "invalid-grant"] {
+        let f = Fixture::build(1000, false, 1, true).await;
+        let upstream = if scenario == "rotation" {
+            Ok(UpstreamResponse {
+                status: 200,
+                headers: vec![("content-type".into(), "application/json".into())].into(),
+                body: br#"{"access_token":"synthetic-access","refresh_token":"synthetic-rotated","token_type":"Bearer","expires_in":3600,"scope":"https://www.googleapis.com/auth/drive.readonly"}"#.to_vec().into(),
+            })
+        } else if scenario == "invalid-grant" {
+            Ok(UpstreamResponse {
+                status: 400,
+                headers: vec![("content-type".into(), "application/json".into())].into(),
+                body: br#"{"error":"invalid_grant"}"#.to_vec().into(),
+            })
+        } else {
+            Err(crate::upstream::UpstreamError::Transport)
+        };
+        let release = f.fake.push_response_gated(upstream);
+        let admitted = f
+            .executor
+            .admit_connection(Fixture::request(
+                FixedMethod::Get,
+                "/drive/v3/files",
+                &[],
+                None,
+            ))
+            .await
+            .unwrap();
+        let mut run = Box::pin(admitted.run());
+        std::future::poll_fn(|cx| {
+            assert!(run.as_mut().poll(cx).is_pending());
+            if f.fake.requests.lock().unwrap().is_empty() {
+                Poll::Pending
+            } else {
+                Poll::Ready(())
+            }
+        })
+        .await;
+        let db = f.db();
+        db.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let ctx = ExecutionAuditContext {
+            request_context: None,
+            request_id: RequestId::new_random(),
+            session_id: SessionId::new_random(),
+            action: ActionVersionRef {
+                action_id: rekey_domain::ids::ActionId::new_random(),
+                version: 1,
+            },
+            credential_id: rekey_domain::ids::CredentialId::new_random(),
+            authorization: None,
+        };
+        let audit = crate::audit::execution_blocked(&ctx, "synthetic-queue-blocker");
+        let authority = f.executor.authority.clone();
+        let mut blocker = Box::pin(authority.append_audit(audit));
+        std::future::poll_fn(|cx| {
+            assert!(blocker.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        // Count commands actually admitted to the queue. CheckIdle is
+        // fire-and-forget: rejected sends cannot prove that the owner has
+        // dequeued the blocker, leaving its later free slot unaccounted for.
+        for _ in 0..rekey_vault::handle::DEFAULT_QUEUE_CAPACITY {
+            loop {
+                let mut queued = Box::pin(authority.status());
+                let polled = std::future::poll_fn(|cx| Poll::Ready(queued.as_mut().poll(cx))).await;
+                match polled {
+                    Poll::Pending => break,
+                    Poll::Ready(Err(rekey_vault::AuthorityError::AuthorityBusy)) => {
+                        tokio::task::yield_now().await;
+                    }
+                    other => panic!("queue blocker did not hold the owner: {other:?}"),
+                }
+            }
+        }
+        assert!(matches!(
+            f.executor.authority.status().await,
+            Err(rekey_vault::AuthorityError::AuthorityBusy)
+        ));
+        release.notify_one();
+        std::future::poll_fn(|cx| {
+            assert!(run.as_mut().poll(cx).is_pending());
+            if f.executor.terminals.has_pending() {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+        .await;
+        // The refresh's Busy error has now transferred its terminal to the
+        // tracker. Release SQL by that observed handoff, not a sleep timer.
+        db.execute_batch("COMMIT").unwrap();
+        let error = run
+            .await
+            .err()
+            .expect("saturated Authority must reject refresh persistence");
+        blocker.await.unwrap();
+        assert_eq!(f.fake.take_requests().len(), 1, "target must not be sent");
+        f.executor
+            .terminals
+            .wait_idle(Duration::from_secs(2))
+            .await
+            .unwrap();
+        assert_eq!(f.count("execution.indeterminate"), 1);
+        assert_eq!(error.code(), "UPSTREAM_FAILED");
+        assert_eq!(error.agent_message(), "upstream request failed");
+        assert!(
+            !error.retryable(),
+            "post-refresh Busy must never invite replay"
+        );
+        f.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn lost_response_terminal_worker_deadline_is_unconfirmed() {
+    use std::future::Future;
+    use std::task::Poll;
+    let f = Fixture::new(1000, false).await;
+    let release = f
+        .fake
+        .push_response_gated(Err(crate::upstream::UpstreamError::Transport));
+    let mut admitted = f
+        .executor
+        .admit_connection(Fixture::request(FixedMethod::Get, "/repos/a/b", &[], None))
+        .await
+        .unwrap();
+    admitted.effect_deadline = Instant::now() + Duration::from_millis(150);
+    let mut run = Box::pin(admitted.run());
+    std::future::poll_fn(|cx| {
+        assert!(run.as_mut().poll(cx).is_pending());
+        if f.fake.requests.lock().unwrap().is_empty() {
+            Poll::Pending
+        } else {
+            Poll::Ready(())
+        }
+    })
+    .await;
+    let db = f.db();
+    db.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let unlock = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(400));
+        db.execute_batch("COMMIT").unwrap();
+    });
+    release.notify_one();
+    let error = run.await.err().expect("response is lost");
+    assert!(
+        !error.retryable(),
+        "terminal audit timeout must never invite replay"
+    );
+    assert_eq!(error.code(), "UPSTREAM_FAILED");
+    unlock.join().unwrap();
+    f.executor
+        .terminals
+        .wait_idle(Duration::from_secs(2))
+        .await
+        .unwrap();
+    assert_eq!(f.fake.take_requests().len(), 1);
+    assert_eq!(f.count("execution.started"), 1);
+    assert_eq!(f.count("execution.indeterminate"), 1);
+    assert_eq!(f.count("execution.blocked"), 0);
+    f.stop().await;
+}
+
+#[tokio::test]
+async fn terminal_guard_real_authority_busy_reply_is_unconfirmed() {
+    for terminal in ["finished", "indeterminate", "blocked"] {
+        let f = Fixture::new(1000, false).await;
+        let ctx = ExecutionAuditContext {
+            request_context: None,
+            request_id: RequestId::new_random(),
+            session_id: SessionId::new_random(),
+            action: ActionVersionRef {
+                action_id: rekey_domain::ids::ActionId::new_random(),
+                version: 1,
+            },
+            credential_id: rekey_domain::ids::CredentialId::new_random(),
+            authorization: None,
+        };
+        // Production terminal commits wait for capacity. This test hook gets
+        // a real immediate Busy from an expired Authority mutation instead:
+        // no SQLite lock or caller deadline must race the guard assertion.
+        let (tracker, worker) = crate::audit::spawn_terminal_worker_with({
+            let authority = f.executor.authority.clone();
+            move |draft| {
+                let authority = authority.clone();
+                async move {
+                    authority
+                        .commit_audit_before(draft, Some(Instant::now()))
+                        .await
+                }
+            }
+        });
+        let mut guard = StartedAuditGuard::new_for_test(&tracker, ctx);
+        if terminal != "blocked" {
+            guard.mark_remote_effect_started();
+        }
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let error = match terminal {
+            "finished" => guard.finished_until(deadline, 1, 200, 0).await,
+            "indeterminate" => {
+                guard
+                    .indeterminate_until(deadline, "upstream-transport")
+                    .await
+            }
+            _ => guard.blocked_until(deadline, "private-address").await,
+        }
+        .unwrap_err();
+        assert!(tracker.wait_idle(Duration::from_secs(2)).await.is_err());
+        assert!(tracker.has_failed());
+        assert_eq!(f.count("execution.finished"), 0);
+        assert_eq!(f.count("execution.indeterminate"), 0);
+        if terminal == "blocked" {
+            assert_eq!(error.code(), "AUTHORITY_BUSY");
+            assert!(error.retryable());
+        } else {
+            assert_eq!(error.code(), "UPSTREAM_FAILED");
+            assert!(
+                !error.retryable(),
+                "post-effect terminal Busy must never invite replay"
+            );
+        }
+        drop(guard);
+        drop(tracker);
+        worker.await.unwrap();
+        f.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn proven_target_block_terminal_deadline_preserves_prior_oauth_effect() {
+    use std::future::Future;
+    use std::task::Poll;
+    for oauth in [false, true] {
+        let f = Fixture::build(1000, false, 1, oauth).await;
+        if oauth {
+            f.fake.push_response(Ok(UpstreamResponse {
+                status: 200, headers: vec![("content-type".into(), "application/json".into())].into(),
+                body: br#"{"access_token":"synthetic-access","token_type":"Bearer","expires_in":3600,"scope":"https://www.googleapis.com/auth/drive.readonly"}"#.to_vec().into(),
+            }));
+        }
+        let release = f
+            .fake
+            .push_response_gated(Err(crate::upstream::UpstreamError::Blocked(
+                "private-address",
+            )));
+        let path = if oauth {
+            "/drive/v3/files"
+        } else {
+            "/repos/a/b"
+        };
+        let mut admitted = f
+            .executor
+            .admit_connection(Fixture::request(FixedMethod::Get, path, &[], None))
+            .await
+            .unwrap();
+        admitted.effect_deadline = Instant::now() + Duration::from_millis(150);
+        let mut run = Box::pin(admitted.run());
+        std::future::poll_fn(|cx| {
+            assert!(run.as_mut().poll(cx).is_pending());
+            if f.fake.requests.lock().unwrap().len() < 1 + usize::from(oauth) {
+                Poll::Pending
+            } else {
+                Poll::Ready(())
+            }
+        })
+        .await;
+        let db = f.db();
+        db.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let unlock = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(400));
+            db.execute_batch("COMMIT").unwrap();
+        });
+        release.notify_one();
+        let error = run.await.err().unwrap();
+        unlock.join().unwrap();
+        f.executor
+            .terminals
+            .wait_idle(Duration::from_secs(2))
+            .await
+            .unwrap();
+        assert_eq!(f.fake.take_requests().len(), 1 + usize::from(oauth));
+        assert_eq!(f.count("execution.started"), 1);
+        assert_eq!(f.count("execution.indeterminate"), usize::from(oauth));
+        assert_eq!(f.count("execution.blocked"), usize::from(!oauth));
+        assert_eq!(error.code(), "UPSTREAM_FAILED");
+        assert_eq!(
+            error.retryable(),
+            !oauth,
+            "only a proven no-effect execution permits retry"
+        );
+        f.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn proven_stream_open_block_keeps_safe_retry_and_one_blocked_terminal() {
+    let f = Fixture::new(1000, true).await;
+    let body = br#"{"model":"synthetic-model","messages":[],"max_tokens":8,"stream":true}"#;
+    let approval = f.approve("/v1/chat/completions", body).await;
+    let admitted = f
+        .executor
+        .admit_connection(Fixture::request(
+            FixedMethod::Post,
+            "/v1/chat/completions",
+            body,
+            Some(approval),
+        ))
+        .await
+        .unwrap();
+    let (sender, _receiver) = tokio::sync::mpsc::channel(8);
+    // The existing fake's default open_stream refuses before any IO.
+    let error = admitted.run_stream(&sender).await.err().unwrap();
+    assert!(error.retryable());
+    assert_eq!(error.code(), "UPSTREAM_FAILED");
+    assert_eq!(f.count("execution.started"), 1);
+    assert_eq!(f.count("execution.blocked"), 1);
+    assert_eq!(f.count("execution.indeterminate"), 0);
+    assert!(f.fake.take_requests().is_empty());
+    f.stop().await;
+}
+
+#[tokio::test]
+async fn oauth_refresh_non_retryable_persistence_failure_is_unconfirmed() {
+    use std::future::Future;
+    use std::task::Poll;
+    for epoch_changed in [false, true] {
+        let f = Fixture::build(1000, false, 1, true).await;
+        let release = f.fake.push_response_gated(Ok(UpstreamResponse {
+            status: 200, headers: vec![("content-type".into(), "application/json".into())].into(),
+            body: br#"{"access_token":"synthetic-access","refresh_token":"synthetic-rotated","token_type":"Bearer","expires_in":3600,"scope":"https://www.googleapis.com/auth/drive.readonly"}"#.to_vec().into(),
+        }));
+        let admitted = f
+            .executor
+            .admit_connection(Fixture::request(
+                FixedMethod::Get,
+                "/drive/v3/files",
+                &[],
+                None,
+            ))
+            .await
+            .unwrap();
+        let credential_id = admitted.action.credential_id;
+        let mut run = Box::pin(admitted.run());
+        std::future::poll_fn(|cx| {
+            assert!(run.as_mut().poll(cx).is_pending());
+            if f.fake.requests.lock().unwrap().is_empty() {
+                Poll::Pending
+            } else {
+                Poll::Ready(())
+            }
+        })
+        .await;
+        if epoch_changed {
+            // This is the production invalidation used during lock/restart.
+            f.executor.oauth.clear();
+        } else {
+            f.executor.authority.oauth_grant_update(
+                credential_id, 1,
+                SecretInput::from_slice(br#"{"credential_type":"oauth-grant-v1","provider":"google","client_id":"synthetic-client","client_secret":"synthetic-client-secret","scopes":["https://www.googleapis.com/auth/drive.readonly"],"refresh_token":"synthetic-replacement","expires_at_ms":null}"#),
+                proof(), None,
+            ).await.unwrap();
+        }
+        release.notify_one();
+        let error = run.await.err().unwrap();
+        f.executor
+            .terminals
+            .wait_idle(Duration::from_secs(2))
+            .await
+            .unwrap();
+        assert_eq!(
+            f.fake.take_requests().len(),
+            1,
+            "only the refresh provider was contacted"
+        );
+        assert_eq!(f.count("execution.started"), 1);
+        assert_eq!(f.count("execution.indeterminate"), 1);
+        assert_eq!(f.count("execution.blocked"), 0);
+        assert_eq!(error.code(), "UPSTREAM_FAILED");
+        assert!(!error.retryable());
+        assert_eq!(error.agent_message(), "upstream request failed");
+        assert_eq!(
+            error.agent_next(),
+            "Check whether the upstream effect completed; do not retry automatically."
+        );
+        f.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn oauth_pre_refresh_locked_preserves_authority_error() {
+    let f = Fixture::build(1000, false, 1, true).await;
+    let admitted = f
+        .executor
+        .admit_connection(Fixture::request(
+            FixedMethod::Get,
+            "/drive/v3/files",
+            &[],
+            None,
+        ))
+        .await
+        .unwrap();
+    f.executor
+        .authority
+        .lock("synthetic-pre-refresh-lock")
+        .await
+        .unwrap();
+    let error = admitted.run().await.err().unwrap();
+    assert_eq!(error.code(), "LOCKED");
+    assert!(!error.retryable());
+    assert!(f.fake.take_requests().is_empty());
+    assert_eq!(f.count("execution.blocked"), 1);
+    assert_eq!(f.count("execution.indeterminate"), 0);
+    f.stop().await;
+}
+
+#[tokio::test]
+async fn oauth_refresh_terminal_audit_failure_preserves_authority_contract() {
+    use std::future::Future;
+    use std::task::Poll;
+    let f = Fixture::build(1000, false, 1, true).await;
+    let release = f
+        .fake
+        .push_response_gated(Err(crate::upstream::UpstreamError::Transport));
+    let admitted = f
+        .executor
+        .admit_connection(Fixture::request(
+            FixedMethod::Get,
+            "/drive/v3/files",
+            &[],
+            None,
+        ))
+        .await
+        .unwrap();
+    let mut run = Box::pin(admitted.run());
+    std::future::poll_fn(|cx| {
+        assert!(run.as_mut().poll(cx).is_pending());
+        if f.fake.requests.lock().unwrap().is_empty() {
+            Poll::Pending
+        } else {
+            Poll::Ready(())
+        }
+    })
+    .await;
+    f.db().execute_batch("CREATE TRIGGER reject_refresh_terminal BEFORE INSERT ON audit_events WHEN NEW.event_type='execution.indeterminate' BEGIN SELECT RAISE(ABORT,'synthetic terminal failure'); END;").unwrap();
+    release.notify_one();
+    let error = run.await.err().unwrap();
+    assert_eq!(error.code(), "AUDIT_COMMIT_FAILED");
+    assert!(!error.retryable());
+    assert!(f.executor.terminals.has_failed());
+    assert_eq!(f.fake.take_requests().len(), 1);
+    assert_eq!(f.count("execution.started"), 1);
+    assert_eq!(f.count("execution.indeterminate"), 0);
+    f.stop().await;
+}
+
+struct PrivateOAuthPreflightTransport {
+    port: u16,
+    attempts: std::sync::atomic::AtomicUsize,
+}
+impl crate::upstream::UpstreamTransport for PrivateOAuthPreflightTransport {
+    fn send(
+        &self,
+        mut request: crate::upstream::UpstreamRequest,
+    ) -> crate::upstream::UpstreamFuture<'_> {
+        Box::pin(async move {
+            assert_eq!(request.host, "oauth2.googleapis.com");
+            assert_eq!(request.path, "/token");
+            self.attempts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            // Exercise the real transport's address screen without public DNS
+            // or a live provider. It must reject before opening the listener.
+            request.host = "127.0.0.1".into();
+            request.port = self.port;
+            let result = crate::upstream::ReqwestUpstreamTransport
+                .send(request)
+                .await;
+            assert!(matches!(
+                &result,
+                Err(crate::upstream::UpstreamError::Blocked("private-address"))
+            ));
+            result
+        })
+    }
+}
+
+#[tokio::test]
+async fn oauth_private_preflight_sends_nothing_and_keeps_safe_retry() {
+    let f = Fixture::build(1000, false, 1, true).await;
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let transport = Arc::new(PrivateOAuthPreflightTransport {
+        port: listener.local_addr().unwrap().port(),
+        attempts: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let executor = Arc::new(ActionExecutor::new(
+        f.executor.authority.clone(),
+        Arc::new(SessionRegistry::new()),
+        transport.clone(),
+        f.executor.lifecycle.clone(),
+        f.executor.terminals.clone(),
+        f.executor.policy.clone(),
+    ));
+    let error = executor
+        .admit_connection(Fixture::request(
+            FixedMethod::Get,
+            "/drive/v3/files",
+            &[],
+            None,
+        ))
+        .await
+        .unwrap()
+        .run()
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock,
+        "the real address preflight must not open a TCP connection"
+    );
+    assert_eq!(
+        transport.attempts.load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+    assert_eq!(error.code(), "UPSTREAM_FAILED");
+    assert!(
+        error.retryable(),
+        "a proven no-send OAuth failure permits a safe retry"
+    );
+    assert_eq!(f.count("execution.started"), 1);
+    assert_eq!(f.count("execution.blocked"), 1);
+    assert_eq!(f.count("execution.indeterminate"), 0);
+    assert_eq!(f.count("oauth.refresh_failed"), 1);
+    assert_eq!(f.count("oauth.refreshed"), 0);
+    drop(executor);
+    f.stop().await;
+}
+
+#[tokio::test]
+async fn oauth_redirect_block_does_not_prove_no_effect() {
+    let f = Fixture::build(1000, false, 1, true).await;
+    f.fake
+        .push_response(Err(crate::upstream::UpstreamError::Blocked("redirect")));
+    let error = f
+        .executor
+        .admit_connection(Fixture::request(
+            FixedMethod::Get,
+            "/drive/v3/files",
+            &[],
+            None,
+        ))
+        .await
+        .unwrap()
+        .run()
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(error.code(), "UPSTREAM_FAILED");
+    assert!(
+        !error.retryable(),
+        "a redirect refusal can follow an accepted refresh POST"
+    );
+    assert_eq!(f.fake.take_requests().len(), 1);
+    assert_eq!(f.count("execution.indeterminate"), 1);
+    assert_eq!(f.count("execution.blocked"), 0);
     f.stop().await;
 }

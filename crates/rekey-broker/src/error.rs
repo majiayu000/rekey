@@ -33,6 +33,9 @@ pub enum BrokerError {
     Denied(&'static str),
     #[error("upstream request failed")]
     Upstream(&'static str),
+    /// A prior remote effect may have completed; replay is unsafe.
+    #[error("upstream request failed")]
+    UpstreamUnconfirmed(&'static str),
     #[error("upstream effect outcome is indeterminate")]
     Indeterminate(&'static str),
     #[error("response blocked by security policy")]
@@ -65,7 +68,7 @@ impl BrokerError {
             Self::Denied(_) => "REQUEST_DENIED",
             Self::ApprovalRequired(_) => "APPROVAL_REQUIRED",
             Self::ApprovalOutcomeUnconfirmed => "APPROVAL_OUTCOME_UNCONFIRMED",
-            Self::Upstream(_) => "UPSTREAM_FAILED",
+            Self::Upstream(_) | Self::UpstreamUnconfirmed(_) => "UPSTREAM_FAILED",
             Self::Indeterminate(_) => "UPSTREAM_INDETERMINATE",
             Self::ResponseSecurityViolation => "RESPONSE_SECURITY_VIOLATION",
             Self::Io(_) => "IPC_UNAVAILABLE",
@@ -111,6 +114,10 @@ impl BrokerError {
                 format!("Retry after {reset} UTC.")
             }
             Self::LocalCall(_, _, next) => (*next).to_owned(),
+            Self::UpstreamUnconfirmed(_) => {
+                "Check whether the upstream effect completed; do not retry automatically."
+                    .to_owned()
+            }
             other => {
                 crate::ipc::frame::agent_next(crate::ipc::agent::local_agent_code(other)).to_owned()
             }
@@ -127,6 +134,18 @@ mod tests {
         let error = BrokerError::Indeterminate("resource-transport");
         assert_eq!(error.code(), "UPSTREAM_INDETERMINATE");
         assert!(!error.retryable());
+    }
+
+    #[test]
+    fn unconfirmed_upstream_guidance_forbids_automatic_replay() {
+        let error = BrokerError::UpstreamUnconfirmed("upstream-timeout");
+        assert_eq!(error.code(), "UPSTREAM_FAILED");
+        assert!(!error.retryable());
+        assert_eq!(error.agent_message(), "upstream request failed");
+        assert_eq!(
+            error.agent_next(),
+            "Check whether the upstream effect completed; do not retry automatically."
+        );
     }
 
     #[test]

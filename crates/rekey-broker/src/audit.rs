@@ -121,6 +121,12 @@ impl StartedAuditGuard {
         self.remote_effect_started = true;
     }
 
+    /// A transport refusal can prove that this target sent nothing. Retain
+    /// any effect recorded before its handoff, such as an OAuth refresh.
+    pub(crate) fn record_target_no_effect(&mut self, prior_remote_effect: bool) {
+        self.remote_effect_started = prior_remote_effect;
+    }
+
     pub(crate) fn remote_effect_started(&self) -> bool {
         self.remote_effect_started
     }
@@ -181,11 +187,23 @@ impl StartedAuditGuard {
         self.terminal_submitted = true;
         let (reply, result) = oneshot::channel();
         self.enqueue_terminal(draft, Some(reply));
-        match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), result).await {
-            Ok(Ok(result)) => result.map_err(BrokerError::Authority),
-            Ok(Err(_)) => Err(BrokerError::Authority(AuthorityError::AuditCommitFailed)),
-            Err(_) => Err(BrokerError::Upstream("upstream-timeout")),
-        }
+        let result =
+            match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), result).await {
+                Ok(Ok(result)) => result.map_err(BrokerError::Authority),
+                Ok(Err(_)) => Err(BrokerError::Authority(AuthorityError::AuditCommitFailed)),
+                Err(_) => Err(BrokerError::Upstream("upstream-timeout")),
+            };
+        result.map_err(|error| {
+            if self.remote_effect_started && error.retryable() {
+                let reason = match error {
+                    BrokerError::Upstream(reason) => reason,
+                    _ => "terminal-audit-failed",
+                };
+                BrokerError::UpstreamUnconfirmed(reason)
+            } else {
+                error
+            }
+        })
     }
 }
 

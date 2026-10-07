@@ -803,6 +803,11 @@ async fn oauth_refresh_effect_survives_target_preflight_rejection_but_cache_hit_
             )));
         let result = f.agent(agent_msg::CALL, get_drive()).await;
         assert_eq!(result.err_code(), "UPSTREAM_ERROR");
+        assert_eq!(result.metadata["message"], "upstream request failed");
+        assert_eq!(
+            result.metadata["retryable"],
+            expected == "execution.blocked"
+        );
         assert_private(&result, &[CLIENT_SECRET, access, refresh, rotated]);
         let requests = f.fake.take_requests();
         assert_eq!(requests.len(), request_count);
@@ -834,6 +839,124 @@ async fn oauth_refresh_effect_survives_target_preflight_rejection_but_cache_hit_
         for secret in [CLIENT_SECRET, access, refresh, rotated] {
             assert!(!audit_json.contains(secret), "OAuth secret in public audit");
         }
+    }
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn oauth_refresh_lost_response_is_unconfirmed_without_target_handoff() {
+    let f = Fixture::new().await;
+    let refresh = "SYNTHETIC-REFRESH-LOST";
+    let id = f.add("oauth-grant", &oauth_payload(Some(refresh))).await;
+    f.activate(vec![oauth_connection(id)], vec![]).await;
+    f.fake
+        .push_response(Err(rekey_broker::upstream::UpstreamError::Transport));
+    let result = f.agent(agent_msg::CALL, get_drive()).await;
+    assert_eq!(result.err_code(), "UPSTREAM_ERROR");
+    assert_eq!(result.metadata["message"], "upstream request failed");
+    assert_eq!(result.metadata["retryable"], false);
+    assert_private(&result, &[CLIENT_SECRET, refresh]);
+    let requests = f.fake.take_requests();
+    assert_eq!(
+        requests.len(),
+        1,
+        "a failed refresh must not send the target request"
+    );
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(requests[0].host, "oauth2.googleapis.com");
+    assert_eq!(form(&requests[0])["refresh_token"], refresh);
+    let page = f.audit().await;
+    let started = page
+        .events
+        .iter()
+        .find(|event| event.event_type == "execution.started")
+        .expect("refresh was not admitted");
+    let terminals: Vec<_> = page
+        .events
+        .iter()
+        .filter(|event| {
+            event.request_id == started.request_id
+                && matches!(
+                    event.event_type.as_str(),
+                    "execution.finished" | "execution.blocked" | "execution.indeterminate"
+                )
+        })
+        .collect();
+    assert_eq!(terminals.len(), 1);
+    assert_eq!(terminals[0].event_type, "execution.indeterminate");
+    assert_eq!(
+        f.version(id).await,
+        1,
+        "unconfirmed refresh must not rotate root material"
+    );
+    assert!(!serde_json::to_string(&page).unwrap().contains(refresh));
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn signed_connection_post_lost_response_is_unconfirmed_once() {
+    let f = Fixture::new().await;
+    let secret = "SYNTHETIC-POST-KEY";
+    let id = f.add("opaque-token", secret.as_bytes()).await;
+    let mut connection = rekey_policy::presets::generic_preset(
+        rekey_domain::action::HttpsOrigin::parse("https://api.example.com").unwrap(),
+        "authorization",
+        "Bearer ",
+    )
+    .unwrap()
+    .connection("post-effect".into(), id);
+    for rule in &mut connection.rules {
+        rule.effect = RuleEffect::Allow;
+    }
+    f.activate(vec![connection], vec![]).await;
+    for failure in [
+        rekey_broker::upstream::UpstreamError::Transport,
+        rekey_broker::upstream::UpstreamError::Timeout,
+    ] {
+        let before = f.audit().await;
+        f.fake.push_response(Err(failure));
+        let result = f
+            .wire(
+                Channel::Agent,
+                agent_msg::CALL,
+                json!({"connection":"post-effect","method":"POST","path":"/effect"}),
+                b"{\"synthetic\":true}",
+            )
+            .await;
+        assert_eq!(result.err_code(), "UPSTREAM_ERROR");
+        assert_eq!(result.metadata["message"], "upstream request failed");
+        assert_eq!(result.metadata["retryable"], false);
+        assert_private(&result, &[secret]);
+        let requests = f.fake.take_requests();
+        assert_eq!(requests.len(), 1, "the POST must never be replayed");
+        assert_eq!(requests[0].method, "POST");
+        assert_eq!(requests[0].body, b"{\"synthetic\":true}");
+        let page = f.audit().await;
+        let started = page
+            .events
+            .iter()
+            .find(|event| {
+                event.event_type == "execution.started"
+                    && !before
+                        .events
+                        .iter()
+                        .any(|old| old.event_id == event.event_id)
+            })
+            .expect("signed POST was not admitted");
+        let terminals: Vec<_> = page
+            .events
+            .iter()
+            .filter(|event| {
+                event.request_id == started.request_id
+                    && matches!(
+                        event.event_type.as_str(),
+                        "execution.finished" | "execution.blocked" | "execution.indeterminate"
+                    )
+            })
+            .collect();
+        assert_eq!(terminals.len(), 1);
+        assert_eq!(terminals[0].event_type, "execution.indeterminate");
+        assert!(!serde_json::to_string(&page).unwrap().contains(secret));
     }
     f.finish().await;
 }
