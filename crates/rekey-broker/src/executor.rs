@@ -522,6 +522,11 @@ impl ActionExecutor {
                         {
                             BrokerError::UpstreamUnconfirmed(reason)
                         }
+                        // A definitive provider rejection asks for fresh
+                        // authorization, never replay of the consumed grant.
+                        // Authority persistence failures have a different
+                        // variant and must still use the unconfirmed arm.
+                        Ok(Err(error @ BrokerError::LocalCall("NEEDS_REAUTH", _, _))) => error,
                         Ok(Err(_)) if started.remote_effect_started() => {
                             BrokerError::UpstreamUnconfirmed("oauth-refresh-unavailable")
                         }

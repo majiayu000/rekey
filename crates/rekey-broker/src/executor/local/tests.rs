@@ -546,13 +546,19 @@ async fn disconnected_receivers_cannot_exceed_global_supervised_execution_limit(
 async fn oauth_refresh_authority_queue_full_is_unconfirmed() {
     use std::future::Future;
     use std::task::Poll;
-    for rotated in [true, false] {
+    for scenario in ["rotation", "transport", "invalid-grant"] {
         let f = Fixture::build(1000, false, 1, true).await;
-        let upstream = if rotated {
+        let upstream = if scenario == "rotation" {
             Ok(UpstreamResponse {
                 status: 200,
                 headers: vec![("content-type".into(), "application/json".into())].into(),
                 body: br#"{"access_token":"synthetic-access","refresh_token":"synthetic-rotated","token_type":"Bearer","expires_in":3600,"scope":"https://www.googleapis.com/auth/drive.readonly"}"#.to_vec().into(),
+            })
+        } else if scenario == "invalid-grant" {
+            Ok(UpstreamResponse {
+                status: 400,
+                headers: vec![("content-type".into(), "application/json".into())].into(),
+                body: br#"{"error":"invalid_grant"}"#.to_vec().into(),
             })
         } else {
             Err(crate::upstream::UpstreamError::Transport)
