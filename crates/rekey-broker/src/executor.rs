@@ -958,8 +958,22 @@ impl ActionExecutor {
                     "text-stream-failed",
                     || self.transport.open_stream(upstream_request),
                 )
-                .await?
-                .map_err(|_| BrokerError::Upstream("stream-transport"))?;
+                .await?;
+                let response = match response {
+                    Ok(response) => response,
+                    Err(error) => {
+                        if !upstream_failure_is_indeterminate(&error) {
+                            started.record_target_no_effect(prior_remote_effect);
+                            if !prior_remote_effect {
+                                effect_kind.store(EFFECT_NOT_STARTED, Ordering::SeqCst);
+                                started
+                                    .blocked_until(effect_deadline, "stream-transport")
+                                    .await?;
+                            }
+                        }
+                        return Err(BrokerError::Upstream("stream-transport"));
+                    }
+                };
                 if let Some(llm) = llm.filter(|llm| llm.streaming) {
                     if response.status != 200 {
                         let mut response = response;
@@ -1086,6 +1100,8 @@ impl ActionExecutor {
                 if indeterminate {
                     started.indeterminate_until(effect_deadline, reason).await?;
                 } else {
+                    started.record_target_no_effect(prior_remote_effect);
+                    effect_kind.store(EFFECT_NOT_STARTED, Ordering::SeqCst);
                     started.blocked_until(effect_deadline, reason).await?;
                 }
                 return Err(match err {

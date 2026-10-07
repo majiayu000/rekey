@@ -114,6 +114,10 @@ impl BrokerError {
                 format!("Retry after {reset} UTC.")
             }
             Self::LocalCall(_, _, next) => (*next).to_owned(),
+            Self::UpstreamUnconfirmed(_) => {
+                "Check whether the upstream effect completed; do not retry automatically."
+                    .to_owned()
+            }
             other => {
                 crate::ipc::frame::agent_next(crate::ipc::agent::local_agent_code(other)).to_owned()
             }
@@ -130,6 +134,18 @@ mod tests {
         let error = BrokerError::Indeterminate("resource-transport");
         assert_eq!(error.code(), "UPSTREAM_INDETERMINATE");
         assert!(!error.retryable());
+    }
+
+    #[test]
+    fn unconfirmed_upstream_guidance_forbids_automatic_replay() {
+        let error = BrokerError::UpstreamUnconfirmed("upstream-timeout");
+        assert_eq!(error.code(), "UPSTREAM_FAILED");
+        assert!(!error.retryable());
+        assert_eq!(error.agent_message(), "upstream request failed");
+        assert_eq!(
+            error.agent_next(),
+            "Check whether the upstream effect completed; do not retry automatically."
+        );
     }
 
     #[test]

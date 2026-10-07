@@ -182,6 +182,10 @@ async fn post_side_effect_timeout_is_indeterminate() {
     assert_eq!(response.err_code(), "UPSTREAM_ERROR");
     assert_eq!(response.metadata["message"], "upstream request failed");
     assert_eq!(response.metadata["retryable"], false);
+    assert_eq!(
+        response.metadata["next"],
+        "Check whether the upstream effect completed; do not retry automatically."
+    );
     assert!(
         fixture.request_observed.load(Ordering::SeqCst),
         "TLS upstream must receive the complete request before timeout"
@@ -274,6 +278,10 @@ async fn signed_connection_post_lost_response_is_unconfirmed() {
     assert_eq!(response.err_code(), "UPSTREAM_ERROR");
     assert_eq!(response.metadata["message"], "upstream request failed");
     assert_eq!(response.metadata["retryable"], false);
+    assert_eq!(
+        response.metadata["next"],
+        "Check whether the upstream effect completed; do not retry automatically."
+    );
     assert!(
         fixture.request_observed.load(Ordering::SeqCst),
         "TLS server must receive the complete POST before losing the response"

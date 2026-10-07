@@ -3,7 +3,7 @@
 //! are real; policy signer, local approval decision and upstream are synthetic.
 use super::*;
 use crate::active_policy::ActivePolicy;
-use crate::audit::spawn_terminal_worker;
+use crate::audit::{StartedAuditGuard, spawn_terminal_worker};
 use crate::execution_supervisor::{ExecutionSupervisorHandle, HttpExecution};
 use crate::lifecycle::Lifecycle;
 use crate::session::SessionRegistry;
@@ -684,5 +684,182 @@ async fn lost_response_terminal_worker_deadline_is_unconfirmed() {
     assert_eq!(f.count("execution.started"), 1);
     assert_eq!(f.count("execution.indeterminate"), 1);
     assert_eq!(f.count("execution.blocked"), 0);
+    f.stop().await;
+}
+
+#[tokio::test]
+async fn terminal_guard_real_authority_busy_reply_is_unconfirmed() {
+    use std::future::Future;
+    use std::task::Poll;
+    for terminal in ["finished", "indeterminate", "blocked"] {
+        let f = Fixture::new(1000, false).await;
+        let db = f.db();
+        db.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let ctx = ExecutionAuditContext {
+            request_context: None,
+            request_id: RequestId::new_random(),
+            session_id: SessionId::new_random(),
+            action: ActionVersionRef {
+                action_id: rekey_domain::ids::ActionId::new_random(),
+                version: 1,
+            },
+            credential_id: rekey_domain::ids::CredentialId::new_random(),
+            authorization: None,
+        };
+        let authority = f.executor.authority.clone();
+        let mut blocker = Box::pin(authority.append_audit(crate::audit::execution_blocked(
+            &ctx,
+            "synthetic-queue-blocker",
+        )));
+        std::future::poll_fn(|cx| {
+            assert!(blocker.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        for _ in 0..=rekey_vault::handle::DEFAULT_QUEUE_CAPACITY {
+            f.executor.authority.check_idle();
+        }
+        assert!(matches!(
+            f.executor.authority.status().await,
+            Err(rekey_vault::AuthorityError::AuthorityBusy)
+        ));
+        // Production terminal commits wait for queue capacity. This hook
+        // supplies a real fail-fast Authority reply to exercise the guard's
+        // error contract, not production saturation reachability.
+        let (tracker, worker) = crate::audit::spawn_terminal_worker_with({
+            let authority = f.executor.authority.clone();
+            move |draft| {
+                let authority = authority.clone();
+                async move { authority.append_audit(draft).await }
+            }
+        });
+        let mut guard = StartedAuditGuard::new_for_test(&tracker, ctx);
+        if terminal != "blocked" {
+            guard.mark_remote_effect_started();
+        }
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let error = match terminal {
+            "finished" => guard.finished_until(deadline, 1, 200, 0).await,
+            "indeterminate" => {
+                guard
+                    .indeterminate_until(deadline, "upstream-transport")
+                    .await
+            }
+            _ => guard.blocked_until(deadline, "private-address").await,
+        }
+        .unwrap_err();
+        db.execute_batch("COMMIT").unwrap();
+        blocker.await.unwrap();
+        assert!(tracker.wait_idle(Duration::from_secs(2)).await.is_err());
+        assert!(tracker.has_failed());
+        assert_eq!(f.count("execution.finished"), 0);
+        assert_eq!(f.count("execution.indeterminate"), 0);
+        if terminal == "blocked" {
+            assert_eq!(error.code(), "AUTHORITY_BUSY");
+            assert!(error.retryable());
+        } else {
+            assert_eq!(error.code(), "UPSTREAM_FAILED");
+            assert!(
+                !error.retryable(),
+                "post-effect terminal Busy must never invite replay"
+            );
+        }
+        drop(guard);
+        drop(tracker);
+        worker.await.unwrap();
+        f.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn proven_target_block_terminal_deadline_preserves_prior_oauth_effect() {
+    use std::future::Future;
+    use std::task::Poll;
+    for oauth in [false, true] {
+        let f = Fixture::build(1000, false, 1, oauth).await;
+        if oauth {
+            f.fake.push_response(Ok(UpstreamResponse {
+                status: 200, headers: vec![("content-type".into(), "application/json".into())].into(),
+                body: br#"{"access_token":"synthetic-access","token_type":"Bearer","expires_in":3600,"scope":"https://www.googleapis.com/auth/drive.readonly"}"#.to_vec().into(),
+            }));
+        }
+        let release = f
+            .fake
+            .push_response_gated(Err(crate::upstream::UpstreamError::Blocked(
+                "private-address",
+            )));
+        let path = if oauth {
+            "/drive/v3/files"
+        } else {
+            "/repos/a/b"
+        };
+        let mut admitted = f
+            .executor
+            .admit_connection(Fixture::request(FixedMethod::Get, path, &[], None))
+            .await
+            .unwrap();
+        admitted.effect_deadline = Instant::now() + Duration::from_millis(150);
+        let mut run = Box::pin(admitted.run());
+        std::future::poll_fn(|cx| {
+            assert!(run.as_mut().poll(cx).is_pending());
+            if f.fake.requests.lock().unwrap().len() < 1 + usize::from(oauth) {
+                Poll::Pending
+            } else {
+                Poll::Ready(())
+            }
+        })
+        .await;
+        let db = f.db();
+        db.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let unlock = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(400));
+            db.execute_batch("COMMIT").unwrap();
+        });
+        release.notify_one();
+        let error = run.await.err().unwrap();
+        unlock.join().unwrap();
+        f.executor
+            .terminals
+            .wait_idle(Duration::from_secs(2))
+            .await
+            .unwrap();
+        assert_eq!(f.fake.take_requests().len(), 1 + usize::from(oauth));
+        assert_eq!(f.count("execution.started"), 1);
+        assert_eq!(f.count("execution.indeterminate"), usize::from(oauth));
+        assert_eq!(f.count("execution.blocked"), usize::from(!oauth));
+        assert_eq!(error.code(), "UPSTREAM_FAILED");
+        assert_eq!(
+            error.retryable(),
+            !oauth,
+            "only a proven no-effect execution permits retry"
+        );
+        f.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn proven_stream_open_block_keeps_safe_retry_and_one_blocked_terminal() {
+    let f = Fixture::new(1000, true).await;
+    let body = br#"{"model":"synthetic-model","messages":[],"max_tokens":8,"stream":true}"#;
+    let approval = f.approve("/v1/chat/completions", body).await;
+    let admitted = f
+        .executor
+        .admit_connection(Fixture::request(
+            FixedMethod::Post,
+            "/v1/chat/completions",
+            body,
+            Some(approval),
+        ))
+        .await
+        .unwrap();
+    let (sender, _receiver) = tokio::sync::mpsc::channel(8);
+    // The existing fake's default open_stream refuses before any IO.
+    let error = admitted.run_stream(&sender).await.err().unwrap();
+    assert!(error.retryable());
+    assert_eq!(error.code(), "UPSTREAM_FAILED");
+    assert_eq!(f.count("execution.started"), 1);
+    assert_eq!(f.count("execution.blocked"), 1);
+    assert_eq!(f.count("execution.indeterminate"), 0);
+    assert!(f.fake.take_requests().is_empty());
     f.stop().await;
 }
