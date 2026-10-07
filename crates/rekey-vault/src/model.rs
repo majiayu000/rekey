@@ -4,7 +4,7 @@ use rekey_domain::ids::{
     PolicySignerId, PrincipalId, RequestId, SessionId, VaultId, WrapperId,
 };
 
-pub const FORMAT_VERSION: u32 = 25;
+pub const FORMAT_VERSION: u32 = 26;
 pub const VAULT_INTEGRITY_CIPHERTEXT_LEN: usize = 40;
 
 #[derive(Debug, Clone)]
@@ -221,7 +221,7 @@ pub struct AuditEvent {
     pub authorization: Option<AuthorizationEvidence>,
     pub approval: Option<ApprovalEvidence>,
     pub usage: Option<rekey_domain::audit::UsageEvidence>,
-    pub request_context: Option<rekey_domain::audit::ProfileRequestAuditContext>,
+    pub request_context: Option<rekey_domain::audit::RequestAuditContext>,
     pub event_type: &'static str,
     pub outcome: &'static str,
     pub reason_code: String,
@@ -233,7 +233,7 @@ pub struct AuditEvent {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct AuditMetadata {
-    pub request_context: Option<rekey_domain::audit::ProfileRequestAuditContext>,
+    pub request_context: Option<rekey_domain::audit::RequestAuditContext>,
     pub usage: Option<rekey_domain::audit::UsageEvidence>,
 }
 
@@ -480,7 +480,7 @@ pub struct UsageTotals {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct UsageContext {
-    pub request_context: Option<rekey_domain::audit::ProfileRequestAuditContext>,
+    pub request_context: Option<rekey_domain::audit::RequestAuditContext>,
     pub session_id: SessionId,
     pub action_id: ActionId,
     pub action_version: u64,

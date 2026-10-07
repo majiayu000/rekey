@@ -27,7 +27,7 @@ fn limits() -> ProfileLlmLimit {
 }
 fn snapshot(action: &FixedHttpAction, schema: Value) -> rekey_policy::ValidatedSnapshot {
     parse_and_validate_snapshot(&serde_json::to_vec(&json!({
-        "format_version":6,"profiles":[],"version":1,"expires_at_ms":10000,"approvers":[],"workload_identities":[],"rules":[],
+        "format_version":7,"connections":[],"ssh_keys":[],"derived_credentials":[],"profiles":[],"version":1,"expires_at_ms":10000,"approvers":[],"workload_identities":[],"rules":[],
         "bindings":[{"action_id":action.id,"version":1,"resource":{"type":"test","id":"llm"},"parameter_schema_id":"llm/v1","parameter_schema":schema}]
     })).unwrap(), Timestamp::from_unix_ms(1)).unwrap()
 }

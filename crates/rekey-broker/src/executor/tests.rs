@@ -242,8 +242,10 @@ async fn queued_started_rechecks_changed_policy_after_coordinator_release() {
     let now = crate::now_ts().unwrap();
     let snapshot = rekey_policy::parse_and_validate_snapshot(
         &serde_json::to_vec(&serde_json::json!({
-            "format_version": 6, "version": 1, "expires_at_ms": now.as_unix_ms() + 60_000,
-            "approvers": [], "profiles": [], "workload_identities": [], "bindings": [], "rules": []
+            "format_version": rekey_policy::SNAPSHOT_FORMAT_VERSION, "version": 1,
+            "expires_at_ms": now.as_unix_ms() + 60_000,
+            "approvers": [], "profiles": [], "workload_identities": [], "bindings": [], "rules": [],
+            "connections": [], "ssh_keys": [], "derived_credentials": []
         }))
         .unwrap(),
         now,
@@ -455,42 +457,125 @@ async fn cancellation_after_terminal_submission_does_not_submit_fallback() {
 }
 
 #[tokio::test]
-async fn closed_remote_effect_gate_commits_one_blocked_terminal() {
-    let commits = Arc::new(Mutex::new(Vec::new()));
-    let (tracker, worker) = spawn_terminal_worker_with({
-        let commits = Arc::clone(&commits);
-        move |draft| {
-            commits.lock().unwrap().push(draft);
-            async { Ok(()) }
+async fn closed_remote_effect_gate_preserves_prior_effect_and_commits_one_terminal() {
+    for prior_effect in [false, true] {
+        let commits = Arc::new(Mutex::new(Vec::new()));
+        let (tracker, worker) = spawn_terminal_worker_with({
+            let commits = Arc::clone(&commits);
+            move |draft| {
+                commits.lock().unwrap().push(draft);
+                async { Ok(()) }
+            }
+        });
+        let mut guard = StartedAuditGuard::new_for_test(&tracker, execution_context());
+        if prior_effect {
+            guard.mark_remote_effect_started();
         }
-    });
-    let mut guard = StartedAuditGuard::new_for_test(&tracker, execution_context());
-    let lifecycle = Lifecycle::new();
-    let error = poll_http_while_live(
-        &lifecycle,
-        None,
-        &mut guard,
-        &AtomicU8::new(EFFECT_NOT_STARTED),
-        Instant::now() + Duration::from_secs(1),
-        "upstream-timeout",
-        || std::future::ready(()),
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(error.code(), "DRAINING");
-    tracker.wait_idle(Duration::from_secs(1)).await.unwrap();
-    {
-        let commits = commits.lock().unwrap();
-        assert_eq!(commits.len(), 1);
-        assert_eq!(
-            commits[0].event_type,
-            rekey_vault::model::event_type::EXECUTION_BLOCKED
-        );
-        assert_eq!(commits[0].reason_code, "remote-effect-admission-closed");
+        let lifecycle = Lifecycle::new();
+        let error = try_begin_remote_effect(
+            &lifecycle,
+            &mut guard,
+            Instant::now() + Duration::from_secs(1),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code(), "DRAINING");
+        drop(guard);
+        tracker.wait_idle(Duration::from_secs(1)).await.unwrap();
+        {
+            let commits = commits.lock().unwrap();
+            assert_eq!(commits.len(), 1);
+            assert_eq!(
+                commits[0].event_type,
+                if prior_effect {
+                    rekey_vault::model::event_type::EXECUTION_INDETERMINATE
+                } else {
+                    rekey_vault::model::event_type::EXECUTION_BLOCKED
+                }
+            );
+            assert_eq!(commits[0].reason_code, "remote-effect-admission-closed");
+        }
+        drop(tracker);
+        worker.await.unwrap();
     }
-    drop(guard);
-    drop(tracker);
-    worker.await.unwrap();
+}
+
+#[tokio::test]
+async fn live_http_handoff_closed_gate_preserves_prior_effect_and_commits_one_terminal() {
+    for prior_effect in [false, true] {
+        let commits = Arc::new(Mutex::new(Vec::new()));
+        let (tracker, worker) = spawn_terminal_worker_with({
+            let commits = Arc::clone(&commits);
+            move |draft| {
+                commits.lock().unwrap().push(draft);
+                async { Ok(()) }
+            }
+        });
+        let mut started = StartedAuditGuard::new_for_test(&tracker, execution_context());
+        let effect = AtomicU8::new(if prior_effect {
+            EFFECT_ORDINARY_HTTP
+        } else {
+            EFFECT_NOT_STARTED
+        });
+        if prior_effect {
+            started.mark_remote_effect_started();
+        }
+        let lifecycle = Lifecycle::new();
+        lifecycle.enter_running().unwrap();
+        let owner = lifecycle.coordinate().await;
+        lifecycle.close_remote_effect_admission();
+        let made = std::cell::Cell::new(false);
+        let error = tokio::time::timeout(
+            Duration::from_secs(1),
+            poll_http_while_live(
+                &lifecycle,
+                None,
+                &mut started,
+                &effect,
+                Instant::now() + Duration::from_secs(5),
+                "upstream-timeout",
+                || {
+                    made.set(true);
+                    std::future::ready(())
+                },
+            ),
+        )
+        .await
+        .expect("a closed Connection gate must not wait for the drain's coordinator")
+        .unwrap_err();
+        assert_eq!(error.code(), "DRAINING");
+        assert!(
+            !made.get(),
+            "a closed handoff must not construct the backend"
+        );
+        assert!(lifecycle.try_coordinate().is_err());
+        assert_eq!(started.remote_effect_started(), prior_effect);
+        drop(owner);
+        drop(started);
+        tracker.wait_idle(Duration::from_secs(1)).await.unwrap();
+        {
+            let commits = commits.lock().unwrap();
+            assert_eq!(commits.len(), 1);
+            assert_eq!(
+                commits[0].event_type,
+                if prior_effect {
+                    rekey_vault::model::event_type::EXECUTION_INDETERMINATE
+                } else {
+                    rekey_vault::model::event_type::EXECUTION_BLOCKED
+                }
+            );
+            assert_eq!(
+                commits[0].reason_code,
+                if prior_effect {
+                    "cancelled-after-remote-effect"
+                } else {
+                    "remote-effect-admission-closed"
+                }
+            );
+        }
+        drop(tracker);
+        worker.await.unwrap();
+    }
 }
 
 fn handoff_permit() -> (Arc<SessionRegistry>, ExecutionPermit) {
@@ -1193,7 +1278,7 @@ mod lease_recovery {
             llm: None,
             effect_deadline: Instant::now() + Duration::from_secs(5),
             started,
-            _permit: permit,
+            _permit: Some(permit),
         };
         let mut run = Box::pin(admitted.run());
         poll_fn(|cx| match run.as_mut().poll(cx) {

@@ -1,3 +1,4 @@
+#![cfg(feature = "lab")]
 //! Actual CLI + Broker rollback confirmation and offline inspect/restore.
 //! Synthetic vault only: no system Keychain, profile or real credentials.
 use std::io::Write;

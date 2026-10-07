@@ -178,6 +178,32 @@ async fn read_exact_until(
     }
 }
 
+pub(super) async fn accept_ssh_loop(
+    listener: UnixListener,
+    ctx: Arc<BrokerCtx>,
+    mut shutdown: watch::Receiver<bool>,
+) -> Result<(), BrokerError> {
+    let slots = Arc::new(tokio::sync::Semaphore::new(
+        super::MAX_AGENT_REQUEST_CONNECTIONS,
+    ));
+    let mut conns = JoinSet::new();
+    loop {
+        tokio::select! {
+            _=shutdown.changed()=>break,
+            accepted=listener.accept()=>{
+                let (stream,_)=accepted.map_err(|e|{ctx.request_fault();BrokerError::Io(e)})?;
+                if crate::ipc::peer::peer_uid(&stream).ok()!=Some(crate::ipc::peer::current_uid()){continue;}
+                let Ok(permit)=Arc::clone(&slots).try_acquire_owned() else{continue;};
+                let ctx=Arc::clone(&ctx);let shutdown=shutdown.clone();
+                conns.spawn(async move{crate::ssh_agent::handle_connection(stream,ctx,shutdown).await;drop(permit);});
+            }
+            Some(_)=conns.join_next(),if !conns.is_empty()=>{},
+        }
+    }
+    while conns.join_next().await.is_some() {}
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;

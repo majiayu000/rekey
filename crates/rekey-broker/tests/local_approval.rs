@@ -1,3 +1,4 @@
+#![cfg(feature = "lab")]
 mod common;
 
 use rekey_broker::upstream::UpstreamResponse;
@@ -50,8 +51,8 @@ impl Fixture {
         common::policy::activate_snapshot(
             &broker,
             serde_json::json!({
-                "format_version": 6, "version": 1, "expires_at_ms": 4_102_444_800_000_i64,
-                "approvers": [], "profiles": [], "workload_identities": [],
+                "format_version": 7, "version": 1, "expires_at_ms": 4_102_444_800_000_i64,
+                "approvers": [], "connections":[], "ssh_keys":[], "profiles": [], "workload_identities": [],
                 "bindings": [{"action_id": action, "version": version,
                     "resource": {"type": "test-action", "id": action},
                     "parameter_schema_id": "test-any-json/v1", "parameter_schema": {}}],
@@ -148,6 +149,7 @@ impl Fixture {
             &serde_json::to_vec(&ipc::LocalApprovalDecisionMeta {
                 approval_request_id: id,
                 expected_review_sha256: hash.into(),
+                window_seconds: None,
             })
             .unwrap(),
             &body,
@@ -584,6 +586,7 @@ async fn disconnected_waiter_does_not_cancel_and_lost_approval_reply_keeps_appro
         &serde_json::to_vec(&ipc::LocalApprovalDecisionMeta {
             approval_request_id: id,
             expected_review_sha256: hash.into(),
+            window_seconds: None,
         })
         .unwrap(),
         &body,

@@ -17,16 +17,18 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-pub const SNAPSHOT_FORMAT_VERSION: u32 = 6;
+pub const SNAPSHOT_FORMAT_VERSION: u32 = 7;
 pub const SNAPSHOT_MAX_BYTES: usize = 64 * 1024;
 pub const TRUST_MAX_BYTES: usize = 4 * 1024;
 pub const APPROVAL_GRANT_MAX_BYTES: usize = 4 * 1024;
 
 mod json;
 use json::parse_unique_json;
+pub mod connections;
 #[cfg(feature = "lab")]
 pub mod oidc_admin;
 pub mod personal;
+pub mod presets;
 mod signed;
 pub use signed::*;
 pub mod templates;
@@ -37,6 +39,8 @@ pub use workload::*;
 pub enum PolicyError {
     #[error("policy snapshot is malformed")]
     Malformed,
+    #[error("connection is not configured")]
+    NotConfigured,
     #[error("policy snapshot is too large")]
     TooLarge,
     #[error("policy snapshot format is unsupported")]
@@ -60,6 +64,9 @@ pub struct PolicySnapshot {
     pub approvers: Vec<Approver>,
     pub workload_identities: Vec<WorkloadIdentity>,
     pub profiles: Vec<AgentProfile>,
+    pub connections: Vec<rekey_domain::connection::Connection>,
+    pub ssh_keys: Vec<rekey_domain::connection::SshKeyConnection>,
+    pub derived_credentials: Vec<rekey_domain::connection::DerivedCredentialConnection>,
     pub bindings: Vec<ActionBinding>,
     pub rules: Vec<PolicyRule>,
 }
@@ -133,6 +140,9 @@ pub struct ValidatedSnapshot {
     approvers: BTreeMap<ApproverId, [u8; 32]>,
     workload_catalog: WorkloadCatalog,
     profiles: Vec<AgentProfile>,
+    connections: Vec<rekey_domain::connection::Connection>,
+    ssh_keys: Vec<rekey_domain::connection::SshKeyConnection>,
+    derived_credentials: Vec<rekey_domain::connection::DerivedCredentialConnection>,
 }
 
 /// The untrusted, per-call values used by both the Broker and approval signer.
@@ -192,6 +202,31 @@ impl ValidatedSnapshot {
 
     pub fn digest(&self) -> [u8; 32] {
         self.digest
+    }
+
+    pub fn connections(&self) -> &[rekey_domain::connection::Connection] {
+        &self.connections
+    }
+
+    pub fn connection(&self, name: &str) -> Option<&rekey_domain::connection::Connection> {
+        self.connections.iter().find(|c| c.name == name)
+    }
+
+    pub fn ssh_keys(&self) -> &[rekey_domain::connection::SshKeyConnection] {
+        &self.ssh_keys
+    }
+    pub fn ssh_key(&self, name: &str) -> Option<&rekey_domain::connection::SshKeyConnection> {
+        self.ssh_keys.iter().find(|k| k.name == name)
+    }
+
+    pub fn derived_credentials(&self) -> &[rekey_domain::connection::DerivedCredentialConnection] {
+        &self.derived_credentials
+    }
+    pub fn derived_credential(
+        &self,
+        name: &str,
+    ) -> Option<&rekey_domain::connection::DerivedCredentialConnection> {
+        self.derived_credentials.iter().find(|c| c.name == name)
     }
 
     pub fn profiles(&self) -> &[AgentProfile] {
@@ -749,6 +784,76 @@ fn parse_and_validate_snapshot_inner(
         }
     }
 
+    let mut connection_names = BTreeSet::new();
+    for connection in &snapshot.connections {
+        connection.validate().map_err(|_| PolicyError::Invalid)?;
+        presets::validate_oauth_connection(connection)?;
+        presets::validate_git_connection(connection)?;
+        if !connection_names.insert(&connection.name) {
+            return Err(PolicyError::Invalid);
+        }
+        for operation in &connection.operations {
+            reject_remote_refs(&operation.parameters)?;
+            jsonschema::options()
+                .with_draft(Draft::Draft202012)
+                .build(&operation.parameters)
+                .map_err(|_| PolicyError::Invalid)?;
+        }
+    }
+    let mut ssh_names = BTreeSet::new();
+    let mut ssh_public_keys = BTreeSet::new();
+    let mut ssh_credentials = BTreeSet::new();
+    for key in &snapshot.ssh_keys {
+        if !crate::connections::ssh_name_valid(&key.name)
+            || connection_names.contains(&key.name)
+            || !ssh_names.insert(&key.name)
+            || !ssh_public_keys.insert(&key.user_public_key)
+            || !ssh_credentials.insert(key.credential_id)
+        {
+            return Err(PolicyError::Invalid);
+        }
+        if key.user_public_key.len() > 16384 {
+            return Err(PolicyError::Invalid);
+        }
+        let user_key = data_encoding::BASE64
+            .decode(key.user_public_key.as_bytes())
+            .map_err(|_| PolicyError::Invalid)?;
+        if user_key.is_empty() || data_encoding::BASE64.encode(&user_key) != key.user_public_key {
+            return Err(PolicyError::Invalid);
+        }
+        let mut rule_ids = BTreeSet::new();
+        let mut host_keys = BTreeSet::new();
+        for host in &key.hosts {
+            if host.host.is_empty()
+                || host.host.len() > 253
+                || !host
+                    .host
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b':'))
+                || !rule_ids.insert(host.rule_id)
+                || !host_keys.insert(&host.host_key)
+                || host.host_key.len() > 16384
+            {
+                return Err(PolicyError::Invalid);
+            }
+            let blob = data_encoding::BASE64
+                .decode(host.host_key.as_bytes())
+                .map_err(|_| PolicyError::Invalid)?;
+            if blob.is_empty() || data_encoding::BASE64.encode(&blob) != host.host_key {
+                return Err(PolicyError::Invalid);
+            }
+        }
+    }
+    let mut derived_names = BTreeSet::new();
+    for connection in &snapshot.derived_credentials {
+        connection.validate().map_err(|_| PolicyError::Invalid)?;
+        if connection_names.contains(&connection.name)
+            || ssh_names.contains(&connection.name)
+            || !derived_names.insert(&connection.name)
+        {
+            return Err(PolicyError::Invalid);
+        }
+    }
     validate_profiles(&snapshot)?;
     let workload_catalog =
         WorkloadCatalog::compile(&snapshot.workload_identities, &snapshot.rules)?;
@@ -765,6 +870,9 @@ fn parse_and_validate_snapshot_inner(
         approvers,
         workload_catalog,
         profiles: snapshot.profiles,
+        connections: snapshot.connections,
+        ssh_keys: snapshot.ssh_keys,
+        derived_credentials: snapshot.derived_credentials,
     })
 }
 
@@ -781,6 +889,20 @@ fn snapshot_shape(value: &Value) -> Result<PolicySnapshot, PolicyError> {
     }
     let snapshot: PolicySnapshot =
         serde_json::from_value(value.clone()).map_err(|_| PolicyError::Malformed)?;
+    let connections =
+        serde_jcs::to_vec(&snapshot.connections).map_err(|_| PolicyError::Malformed)?;
+    let roundtrip: Vec<rekey_domain::connection::Connection> =
+        serde_json::from_slice(&connections).map_err(|_| PolicyError::Invalid)?;
+    if roundtrip != snapshot.connections {
+        return Err(PolicyError::Invalid);
+    }
+    let canonical =
+        serde_jcs::to_vec(&snapshot.derived_credentials).map_err(|_| PolicyError::Malformed)?;
+    let roundtrip: Vec<rekey_domain::connection::DerivedCredentialConnection> =
+        serde_json::from_slice(&canonical).map_err(|_| PolicyError::Invalid)?;
+    if roundtrip != snapshot.derived_credentials {
+        return Err(PolicyError::Invalid);
+    }
     let canonical = serde_jcs::to_vec(&snapshot.profiles).map_err(|_| PolicyError::Malformed)?;
     let roundtrip: Vec<AgentProfile> =
         serde_json::from_slice(&canonical).map_err(|_| PolicyError::Invalid)?;
@@ -1276,7 +1398,7 @@ mod tests {
         rule: PolicyRuleId,
     ) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
-            "format_version": 6, "profiles": [],
+            "format_version": 7, "connections": [], "ssh_keys": [], "derived_credentials": [], "profiles": [],
             "version": 1,
             "expires_at_ms": 10_000,
             "approvers": [],

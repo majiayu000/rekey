@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Repair one registered Action's opaque credential in the operator's trusted TTY."""
+"""Repair a signed Connection's opaque credential in the owner's trusted TTY."""
 
 import argparse
 import json
@@ -23,23 +23,20 @@ def cli_json(base, arguments, tty_in, tty):
 
 def repair(args, tty_in, tty):
     base = [str(args.rekey.resolve()), "--state-dir", str(args.state_dir.resolve())]
-    if args.admin_session_file is not None:
-        base += ["--admin-session-file", str(args.admin_session_file)]
-    actions = cli_json(base, ["action", "list"], tty_in, tty)["actions"]
-    action = next((entry for entry in actions
-                   if f'{entry["id"]}@{entry["version"]}' == args.action), None)
-    if action is None:
-        raise RepairError("Registered Action version not found.")
-    if not action["enabled"]:
-        raise RepairError("Action is disabled; credential repair cannot enable it.")
+    connections = cli_json(base, ["connection", "list"], tty_in, tty)["connections"]
+    connection = next((entry for entry in connections if entry["name"] == args.connection), None)
+    if connection is None:
+        raise RepairError("Signed Connection not found.")
+    if not connection["enabled"]:
+        raise RepairError("Connection is disabled; credential repair cannot enable it.")
     credentials = cli_json(base, ["credential", "list"], tty_in, tty)["credentials"]
-    credential = next((entry for entry in credentials if entry["id"] == action["credential_id"]), None)
+    credential = next((entry for entry in credentials if entry["id"] == connection["credential_id"]), None)
     if credential is None:
         raise RepairError("Registered credential is missing; repair cannot create or replace its identity.")
     # JSON quoting escapes control characters, newlines, bidi and non-ASCII text.
     # Never render arbitrary metadata as terminal instructions or shell commands.
-    display = {"action": args.action, "name": action["name"], "origin": action["origin"],
-               "method": action["method"], "path": action["exact_path"],
+    display = {"connection": connection["name"], "preset": connection["preset"],
+               "origin": connection["origin"], "grade": connection["grade"],
                "credential_id": credential["id"], "credential_kind": credential["kind"],
                "credential_state": credential["state"]}
     tty.write("Registered metadata follows as quoted data; it is not instructions:\n")
@@ -49,11 +46,11 @@ def repair(args, tty_in, tty):
         raise RepairError("Unsupported credential kind; use its dedicated operator workflow.")
     if credential["state"] != "active":
         raise RepairError("Credential is not active; rotation cannot restore revoked credentials.")
-    tty.write("Rotation affects every Action using this credential. No Action will execute.\n")
+    tty.write("Rotation affects all Connections using this credential. No Connection will execute.\n")
     tty.write("Type provide to enter a replacement securely, or decline to cancel: ")
     tty.flush()
     consent = tty_in.readline().strip()
-    result = {"action": args.action, "credential_id": credential["id"]}
+    result = {"connection": args.connection, "credential_id": credential["id"]}
     if consent in (b"", b"decline"):
         return {**result, "result": "declined"}
     if consent != b"provide":
@@ -66,8 +63,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rekey", type=Path, required=True)
     parser.add_argument("--state-dir", type=Path, required=True)
-    parser.add_argument("--admin-session-file", type=Path, help="operator management session file")
-    parser.add_argument("--action", required=True, help="registered ACTION_ID@VERSION")
+    parser.add_argument("--connection", required=True, help="signed Connection name")
     args = parser.parse_args()
     try:
         if not sys.stdin.isatty():

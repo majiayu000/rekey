@@ -1,24 +1,23 @@
 #!/usr/bin/env python3
-"""Focused shell handoff tests, plus an opt-in real binary authorization test."""
+"""Connection onboarding checks; opt in to real CLI/daemon and TTY confirmation."""
 
 import argparse
-import base64
 import contextlib
 import importlib.util
 import io
 import json
 import os
+from pathlib import Path
 import pty
 import select
 import signal
-from pathlib import Path
+import socket
 import subprocess
 import sys
 import tempfile
-import termios
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEC = importlib.util.spec_from_file_location("quickstart", ROOT / "scripts/agent-quickstart.py")
@@ -28,47 +27,23 @@ VAULT_SPEC = importlib.util.spec_from_file_location("vault_dogfood", ROOT / "scr
 VAULT = importlib.util.module_from_spec(VAULT_SPEC)
 VAULT_SPEC.loader.exec_module(VAULT)
 
-REPO = "example/dedicated-test"
-WEBHOOK_SECRET = "QUICKSTART-GITHUB-WEBHOOK-SECRET-0123456789"
+
+def completed(code=0, stdout="", stderr=""):
+    return subprocess.CompletedProcess([], code, stdout, stderr)
 
 
-def write_github_app_profile(path, private_key_der, installation_id=515151):
-    owner, name = REPO.split("/", 1)
-    path.write_text(json.dumps({
-        "credential_type": "github-app-installation-v2",
-        "client_id": "Iv1.8a61f9b3a7aba766",
-        "app_id": 424242,
-        "installation_id": installation_id,
-        "repositories": [{"id": 616161, "owner": owner, "name": name}],
-        "permissions": {"metadata": "read", "issues": "write"},
-        "webhook_secret": WEBHOOK_SECRET,
-        "private_key_pkcs1_der_base64": base64.b64encode(private_key_der).decode(),
-    }))
-    path.chmod(0o600)
+def unavailable():
+    return completed(5, stderr=json.dumps({"code": "IPC_UNAVAILABLE", "next": "Start Rekey"}) + "\n")
 
 
-def generate_pkcs1_der(work):
-    pem = work / "github-app.pem"
-    der = work / "github-app.der"
-    subprocess.run(
-        ["openssl", "genrsa", "-traditional", "-out", str(pem), "2048"],
-        check=True, capture_output=True,
-    )
-    subprocess.run(
-        ["openssl", "rsa", "-in", str(pem), "-traditional", "-outform", "DER", "-out", str(der)],
-        check=True, capture_output=True,
-    )
-    return der.read_bytes()
-
-
-def run_terminal(command, responses, expected_exit=0):
-    """Exercise real /dev/tty prompts without putting proofs in argv or env."""
+def run_terminal(command, responses, expected_exit):
+    """Use a real terminal for connect confirmation; no proof is supplied here."""
     pid, terminal = pty.fork()
     if pid == 0:
         os.execv(command[0], command)
     transcript = bytearray()
-    position = 0
     answered = 0
+    position = 0
     deadline = time.monotonic() + 30
     try:
         while time.monotonic() < deadline:
@@ -77,7 +52,7 @@ def run_terminal(command, responses, expected_exit=0):
                 try:
                     chunk = os.read(terminal, 4096)
                 except OSError as error:
-                    if error.errno != 5:  # Linux PTY returns EIO after child exit.
+                    if error.errno != 5:
                         raise
                     break
                 if not chunk:
@@ -87,12 +62,6 @@ def run_terminal(command, responses, expected_exit=0):
                     prompt, response = responses[answered]
                     offset = transcript.find(prompt.encode(), position)
                     if offset >= 0:
-                        # rpassword writes the prompt before changing terminal
-                        # attributes. Wait for actual hidden-input readiness.
-                        while termios.tcgetattr(terminal)[3] & termios.ECHO:
-                            if time.monotonic() >= deadline:
-                                raise AssertionError("password prompt never disabled terminal echo")
-                            time.sleep(0.005)
                         os.write(terminal, (response + "\n").encode())
                         position = offset + len(prompt)
                         answered += 1
@@ -101,7 +70,8 @@ def run_terminal(command, responses, expected_exit=0):
         _, status = os.waitpid(pid, 0)
         pid = None
         if os.waitstatus_to_exitcode(status) != expected_exit or answered != len(responses):
-            raise AssertionError("interactive onboarding failed or omitted a required prompt")
+            raise AssertionError("interactive onboarding exit={} expected={} confirmations={}/{}\n{}".format(
+                os.waitstatus_to_exitcode(status), expected_exit, answered, len(responses), transcript.decode()))
         return transcript.decode()
     finally:
         os.close(terminal)
@@ -110,35 +80,135 @@ def run_terminal(command, responses, expected_exit=0):
             os.waitpid(pid, 0)
 
 
-class HandoffTests(unittest.TestCase):
-    def test_prepare_management_path_reaches_cli_without_becoming_handoff(self):
+class OnboardingTests(unittest.TestCase):
+    def args(self, work, **changes):
+        args = argparse.Namespace(rekey=work / "rekey", state_dir=work / "state",
+                                  project=work / "project with spaces", client="claude-code", print=False)
+        for name, value in changes.items():
+            setattr(args, name, value)
+        return args
+
+    def invoke(self, args):
+        output, errors = io.StringIO(), io.StringIO()
+        with patch.object(APP.sys.stdin, "isatty", return_value=True), contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            code = APP.quickstart(args)
+        return code, output.getvalue(), errors.getvalue()
+
+    def test_print_never_runs_cli_or_creates_state(self):
         with tempfile.TemporaryDirectory() as directory:
-            work = Path(directory)
-            binary = work / "fixture-cli"
-            record = work / "argv.jsonl"
-            binary.write_text("#!/usr/bin/env python3\nimport json,sys\n"
-                              f"with open({str(record)!r}, 'a') as f:f.write(json.dumps(sys.argv[1:])+'\\n')\n"
-                              "print(json.dumps({'state':'unlocked'} if sys.argv[-1]=='status' and sys.argv[-2]!='policy' else {'bundle_persisted':False,'trust_installed':False}))\n")
-            binary.chmod(0o700)
-            session = work / "unreadable $session% path"
-            session.symlink_to(work / "missing-token")
-            args = argparse.Namespace(rekey=binary, state_dir=work / "state",
-                                      admin_session_file=session, output=work / "handoff",
-                                      repo=REPO, credential=None, github_app_profile=None,
-                                      action=None, schema=None)
-            with patch.object(APP.sys.stdin, "isatty", return_value=True):
-                with self.assertRaises(APP.InputError):
-                    APP.prepare(args)
-            calls = [json.loads(line) for line in record.read_text().splitlines()]
-            expected = ["--state-dir", str(args.state_dir.resolve()), "--admin-session-file", str(session)]
-            self.assertEqual(calls, [expected + ["status"], expected + ["policy", "status"]])
-            self.assertFalse(args.output.exists())
-            self.assertFalse(session.exists())
-            rejected = subprocess.run([sys.executable, str(ROOT / "scripts/agent-quickstart.py"),
-                                       "execute", "--handoff", str(args.output),
-                                       "--admin-session-file", str(session)], capture_output=True)
-            self.assertEqual(rejected.returncode, 2)
-            self.assertIn(b"unrecognized arguments", rejected.stderr)
+            args = self.args(Path(directory), print=True)
+            with patch.object(APP.subprocess, "run") as run, patch.object(APP.subprocess, "Popen") as spawn:
+                code, output, _ = self.invoke(args)
+            self.assertEqual(code, 0)
+            run.assert_not_called()
+            spawn.assert_not_called()
+            self.assertFalse(args.state_dir.exists())
+            for command in ["init --mode personal", "serve", "connect claude-code", "list --json"]:
+                self.assertIn(command, output)
+            self.assertIn("start the Agent normally", output)
+            self.assertNotIn("capability", output)
+
+    def test_nonterminal_refuses_before_any_action(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = self.args(Path(directory))
+            with patch.object(APP.sys.stdin, "isatty", return_value=False), patch.object(APP.subprocess, "run") as run:
+                with self.assertRaisesRegex(APP.InputError, "requires the operator's terminal"):
+                    APP.quickstart(args)
+            run.assert_not_called()
+
+    def test_existing_daemon_runs_only_connect_and_discovery(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = self.args(Path(directory))
+            with patch.object(APP.subprocess, "run", side_effect=[completed(stdout='{"unlocked":true}'), completed(), completed()]) as run, patch.object(APP, "start_daemon", return_value=0) as start:
+                code, output, _ = self.invoke(args)
+            base = [str(args.rekey), "--state-dir", str(args.state_dir)]
+            self.assertEqual(code, 0)
+            self.assertEqual([call.args[0] for call in run.call_args_list], [base + ["status", "--passive"], base + ["connect", "claude-code", "--project", str(args.project)], base + ["list", "--json"]])
+            start.assert_not_called()
+            for call in run.call_args_list:
+                self.assertNotIn("input", call.kwargs)
+                self.assertNotIn("env", call.kwargs)
+            self.assertIn("approve Connections in Rekey.app", output)
+
+    def test_fresh_vault_initializes_before_start_and_connect(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = self.args(Path(directory))
+            events = []
+            def run(command, **kwargs):
+                events.append(command[-1] if command[-1] == "--passive" else command[3])
+                return unavailable() if command[-1] == "--passive" else completed()
+            with patch.object(APP.subprocess, "run", side_effect=run), patch.object(APP, "start_daemon", side_effect=lambda _: (events.append("serve") or 0)):
+                code, _, _ = self.invoke(args)
+            self.assertEqual(code, 0)
+            self.assertEqual(events, ["--passive", "init", "serve", "connect", "list"])
+
+    def test_existing_nonempty_state_is_never_initialized(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = self.args(Path(directory))
+            args.state_dir.mkdir()
+            marker = args.state_dir / "legacy.keep"
+            marker.write_text("untouched")
+            with patch.object(APP.subprocess, "run", side_effect=[unavailable(), completed(), completed()]) as run, patch.object(APP, "start_daemon", return_value=0) as start:
+                self.assertEqual(self.invoke(args)[0], 0)
+            self.assertFalse(any("init" in call.args[0] for call in run.call_args_list))
+            start.assert_called_once()
+            self.assertEqual(marker.read_text(), "untouched")
+
+    def test_init_or_connect_failure_stops_without_replay(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = self.args(Path(directory))
+            with patch.object(APP.subprocess, "run", side_effect=[unavailable(), completed(3)]) as run, patch.object(APP, "start_daemon", return_value=0) as start:
+                self.assertEqual(self.invoke(args)[0], 3)
+            self.assertEqual(run.call_count, 2)
+            start.assert_not_called()
+            with patch.object(APP.subprocess, "run", side_effect=[completed(stdout='{"unlocked":true}'), completed(2)]) as run:
+                self.assertEqual(self.invoke(args)[0], 2)
+            self.assertEqual(run.call_count, 2)
+
+    def test_locked_discovery_keeps_error_exit_and_does_not_claim_authorization(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = self.args(Path(directory))
+            with patch.object(APP.subprocess, "run", side_effect=[completed(stdout='{"unlocked":false}'), completed(), completed(3)]) as run:
+                code, output, errors = self.invoke(args)
+            self.assertEqual(code, 3)
+            self.assertEqual(run.call_count, 3)
+            self.assertIn("Discovery is pending", errors)
+            self.assertNotIn("authorized", output)
+
+    def test_status_error_preserves_diagnostic_and_never_starts_broker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = self.args(Path(directory))
+            for error in [json.dumps({"code": "STORAGE_INTEGRITY_FAILED", "next": "Inspect audit"}) + "\n", "non-json CLI diagnostic\n", "[]\n"]:
+                with patch.object(APP.subprocess, "run", return_value=completed(5, stderr=error)) as run, patch.object(APP, "start_daemon", return_value=0) as start:
+                    code, _, errors = self.invoke(args)
+                self.assertEqual(code, 5)
+                self.assertEqual(errors, error)
+                run.assert_called_once()
+                start.assert_not_called()
+
+    def test_startup_uses_no_inherited_pipes_and_stops_only_its_own_failed_child(self):
+        process = Mock()
+        process.poll.side_effect = [None, None, None, 0]
+        with patch.object(APP.subprocess, "Popen", return_value=process) as spawn, patch.object(APP, "status_once", return_value=(None, unavailable())), patch.object(APP.time, "monotonic", side_effect=[0, 16]), contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaisesRegex(APP.InputError, "broker did not start"):
+                APP.start_daemon(["/synthetic/rekey"])
+        process.terminate.assert_called_once()
+        process.wait.assert_called_once_with(timeout=10)
+        self.assertEqual(spawn.call_args.args[0], ["/synthetic/rekey", "serve"])
+        self.assertEqual(spawn.call_args.kwargs["stdin"], subprocess.DEVNULL)
+        self.assertEqual(spawn.call_args.kwargs["stdout"], subprocess.DEVNULL)
+        self.assertTrue(spawn.call_args.kwargs["start_new_session"])
+
+    def test_startup_integrity_error_is_not_retried_or_changed_to_unavailable(self):
+        process = Mock()
+        process.poll.return_value = None
+        failure = completed(5, stderr=json.dumps({"code": "STORAGE_INTEGRITY_FAILED", "next": "Inspect audit"}))
+        errors = io.StringIO()
+        with patch.object(APP.subprocess, "Popen", return_value=process), patch.object(APP, "status_once", return_value=(None, failure)) as status, contextlib.redirect_stderr(errors):
+            self.assertEqual(APP.start_daemon(["/synthetic/rekey"]), 5)
+        status.assert_called_once()
+        process.terminate.assert_called_once()
+        self.assertEqual(errors.getvalue(), failure.stderr)
 
     def test_vault_dynamic_receipt_requires_revoke_before_finished(self):
         names = ["execution.started", "vault.lease.issued", "vault.lease.revoked", "execution.finished"]
@@ -154,210 +224,50 @@ class HandoffTests(unittest.TestCase):
         with self.assertRaises(VAULT.QUICKSTART.InputError):
             VAULT.verify_events(events, True)
 
-    def test_private_file_rejects_public_mode_symlink_and_existing_output(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "session.json"
-            APP.write_new(path, {"capability_token": "CANARY"})
-            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
-            self.assertEqual(APP.read_private(path)["capability_token"], "CANARY")
-            with self.assertRaises(FileExistsError):
-                APP.write_new(path, {})
-            alias = Path(directory) / "alias"
-            alias.symlink_to(path)
-            with self.assertRaises(OSError):
-                APP.read_private(alias)
-            path.chmod(0o644)
-            with self.assertRaises(APP.InputError):
-                APP.read_private(path)
-
-    def test_execute_keeps_capability_off_argv_and_never_retries_http_error(self):
-        with tempfile.TemporaryDirectory() as directory:
-            handoff = Path(directory)
-            APP.write_new(handoff / "session.json", {"capability_token": "CANARY"})
-            APP.write_new(handoff / "agent.json", {
-                "rekey": "/example/rekey", "agent_socket": "/example/agent.sock",
-                "action": "fixed-action@1", "headers": [],
-            })
-            args = argparse.Namespace(handoff=handoff, body_file=None, approval=[])
-            for status, expected in [(201, 0), (403, 1), (500, 1)]:
-                payload = json.dumps({"upstream_status": status}).encode() + b"\n\xff\x00\r\nbody\r\n"
-                result = subprocess.CompletedProcess([], 0, payload)
-                output = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
-                with patch.object(APP.subprocess, "run", return_value=result) as run:
-                    with contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()):
-                        self.assertEqual(APP.execute(args), expected)
-                    run.assert_called_once()
-                    self.assertNotIn("CANARY", str(run.call_args.args))
-                    self.assertEqual(run.call_args.kwargs["input"], b"CANARY\n")
-                    self.assertFalse(run.call_args.kwargs.get("text", False))
-                    self.assertEqual(output.buffer.getvalue(), payload)
-
-    def test_prepare_validates_before_claiming_exclusive_handoff(self):
-        with tempfile.TemporaryDirectory() as directory:
-            work = Path(directory)
-            output = work / "handoff"
-            status = json.dumps({"state": "unlocked"}).encode()
-            policy = json.dumps({"bundle_persisted": False, "trust_installed": False}).encode()
-            args = argparse.Namespace(
-                rekey=work / "rekey",
-                state_dir=work / "state",
-                admin_session_file=None,
-                output=output,
-                repo=REPO,
-                credential=None,
-                github_app_profile=None,
-                action=None,
-                schema=None,
-            )
-            with patch.object(APP.sys.stdin, "isatty", return_value=True):
-                with patch.object(
-                    APP.subprocess,
-                    "run",
-                    side_effect=[
-                        subprocess.CompletedProcess([], 0, status.decode()),
-                        subprocess.CompletedProcess([], 0, policy.decode()),
-                    ],
-                ):
-                    with self.assertRaises(APP.InputError):
-                        APP.prepare(args)
-            self.assertFalse(output.exists())
-
-            public_profile = work / "public-profile.json"
-            public_profile.write_text("{}")
-            public_profile.chmod(0o644)
-            args.github_app_profile = public_profile
-            with patch.object(APP.sys.stdin, "isatty", return_value=True):
-                with patch.object(
-                    APP.subprocess,
-                    "run",
-                    side_effect=[
-                        subprocess.CompletedProcess([], 0, status.decode()),
-                        subprocess.CompletedProcess([], 0, policy.decode()),
-                    ],
-                ):
-                    with self.assertRaisesRegex(APP.InputError, "owner-only regular file"):
-                        APP.prepare(args)
-            self.assertFalse(output.exists())
-
 
 @unittest.skipUnless(os.environ.get("REKEY_QUICKSTART_REAL") == "1", "set REKEY_QUICKSTART_REAL=1 after building workspace")
 class RealBrokerTests(unittest.TestCase):
-    def test_prepare_signed_policy_and_revoke(self):
-        metadata = subprocess.run(
-            ["cargo", "metadata", "--format-version", "1", "--no-deps"],
-            cwd=ROOT, check=True, capture_output=True, text=True,
-        )
-        target_dir = Path(json.loads(metadata.stdout)["target_directory"])
-        rekey = target_dir / "debug/rekey"
-        rekeyd = target_dir / "debug/rekeyd"
-        password = "quickstart acceptance password"
-        with tempfile.TemporaryDirectory(prefix="rkqs.", dir="/tmp") as directory:
+    def test_real_connect_confirmation_and_locked_discovery(self):
+        metadata = subprocess.run(["cargo", "metadata", "--format-version", "1", "--no-deps"], cwd=ROOT, check=True, capture_output=True, text=True)
+        target = Path(json.loads(metadata.stdout)["target_directory"]) / "debug"
+        rekey, rekeyd = target / "rekey", target / "rekeyd"
+        proof = "QUICKSTART-SYNTHETIC-PROOF"
+        with tempfile.TemporaryDirectory(prefix="rkqs.", dir=Path("/tmp").resolve()) as directory:
             work = Path(directory)
-            state = work / "state"
+            state, project = work / "state", work / "project"
+            project.mkdir()
             base = [str(rekey), "--state-dir", str(state)]
-            profile = work / "github-app-profile.json"
-            rotated_profile = work / "github-app-rotated.json"
-            write_github_app_profile(profile, generate_pkcs1_der(work))
-            write_github_app_profile(rotated_profile, generate_pkcs1_der(work), installation_id=515152)
-
-            def run(args, secret=None):
-                output = subprocess.run(args, input=secret, capture_output=True, text=True)
-                self.assertEqual(output.returncode, 0, output.stderr)
-                return json.loads(output.stdout)
-
-            initialized = subprocess.run([str(rekeyd), "init", "--mode", "team", "--state-dir", str(state), "--password-stdin"],
-                                         input=password + "\n", capture_output=True, text=True)
+            initialized = subprocess.run(base + ["init", "--mode", "personal", "--password-stdin"], input=proof + "\n", capture_output=True, text=True)
             self.assertEqual(initialized.returncode, 0, initialized.stderr)
-            with (work / "broker.log").open("w") as log:
-                broker = subprocess.Popen([str(rekeyd), "serve", "--state-dir", str(state)], stdout=log, stderr=log)
-                try:
-                    deadline = time.monotonic() + 10
-                    while not (state / "runtime/admin.sock").exists():
-                        self.assertIsNone(broker.poll())
-                        self.assertLess(time.monotonic(), deadline)
-                        time.sleep(0.05)
-                    run(base + ["unlock", "--password-stdin"], password + "\n")
-                    handoff = work / "handoff"
-                    transcript = run_terminal(
-                        [sys.executable, str(ROOT / "scripts/agent-quickstart.py"), "prepare",
-                         "--rekey", str(rekey), "--state-dir", str(state),
-                         "--output", str(handoff), "--repo", REPO,
-                         "--github-app-profile", str(profile)],
-                        [("Vault password (step-up): ", password),
-                         ("Vault password (step-up): ", password),
-                         ("Vault password (step-up): ", password)],
-                    )
-                    self.assertNotIn(password, transcript)
-                    self.assertNotIn(WEBHOOK_SECRET, transcript)
-                    session = APP.read_private(handoff / "session.json")
-                    config = APP.read_private(handoff / "agent.json")
-                    schema = work / "schema.json"
-                    schema.write_text(json.dumps(APP.read_private(handoff / "policy-draft.json")["bindings"][0]["parameter_schema"]))
-                    existing_handoff = work / "existing-handoff"
-                    transcript += run_terminal(
-                        [sys.executable, str(ROOT / "scripts/agent-quickstart.py"), "prepare",
-                         "--rekey", str(rekey), "--state-dir", str(state),
-                         "--output", str(existing_handoff), "--action", config["action"], "--schema", str(schema)],
-                        [("Vault password (step-up): ", password)],
-                    )
-                    self.assertEqual(APP.read_private(existing_handoff / "agent.json")["action"], config["action"])
-                    self.assertEqual(handoff.stat().st_mode & 0o777, 0o700)
-                    body = work / "body.json"
-                    body.write_text('{"title":"test"}')
-                    command = [sys.executable, str(ROOT / "scripts/agent-quickstart.py"), "execute",
-                               "--handoff", str(handoff), "--body-file", str(body)]
-                    denied = subprocess.run(command, capture_output=True, text=True)
-                    self.assertNotEqual(denied.returncode, 0)
-                    self.assertIn("REQUEST_DENIED", denied.stderr)
-                    subprocess.run([sys.executable, str(ROOT / "scripts/sign-test-policy.py"), "policy",
-                                    "--key-dir", str(work / "signer"), "--snapshot", str(handoff / "policy-draft.json"),
-                                    "--trust", str(work / "trust.json"), "--bundle", str(work / "bundle.json")], check=True)
-                    for operation, filename in [(["policy", "trust", "install"], "trust.json"),
-                                                (["policy", "activate"], "bundle.json")]:
-                        target_flags = []
-                        if operation == ["policy", "activate"]:
-                            target = run(base + ["policy", "status"])
-                            target_flags = ["--expected-vault-id", target["vault_id"], "--expected-trust-sha256", target["trust_sha256"]]
-                        run(base + operation + target_flags + ["--file", str(work / filename), "--step-up-stdin"], password + "\n")
-                    self.assertEqual(run(base + ["policy", "status"])["version"], 1)
-                    rejected_handoff = work / "rejected-handoff"
-                    refused = run_terminal(
-                        [sys.executable, str(ROOT / "scripts/agent-quickstart.py"), "prepare",
-                         "--rekey", str(rekey), "--state-dir", str(state),
-                         "--output", str(rejected_handoff), "--repo", REPO,
-                         "--github-app-profile", str(profile)],
-                        [], expected_exit=2,
-                    )
-                    self.assertIn("requires a fresh policy", refused)
-                    self.assertFalse(rejected_handoff.exists())
-                    action = APP.read_private(handoff / "registered-action.json")
-                    transcript += run_terminal(
-                        base + ["credential", "rotate-github-app", action["credential_id"],
-                                "--file", str(rotated_profile)],
-                        [("Vault password (step-up): ", password)],
-                    )
-                    credentials = run(base + ["credential", "list"])["credentials"]
-                    self.assertEqual(next(c for c in credentials if c["id"] == action["credential_id"])["current_version"], 2)
-                    self.assertNotIn(password, transcript)
-                    self.assertNotIn(WEBHOOK_SECRET, transcript)
-                    # A signed session still rejects invalid parameters before
-                    # any public HTTP request can be made.
-                    body.write_text('{"unexpected":"field"}')
-                    invalid = subprocess.run(command, capture_output=True, text=True)
-                    self.assertNotEqual(invalid.returncode, 0)
-                    self.assertIn("REQUEST_DENIED", invalid.stderr)
-                    run(base + ["session", "revoke", session["session_id"], "--password-stdin"], password + "\n")
-                    revoked = subprocess.run(command, capture_output=True, text=True)
-                    self.assertNotEqual(revoked.returncode, 0)
-                    self.assertIn("INVALID_CAPABILITY", revoked.stderr)
-                    for content in [denied.stdout, denied.stderr, revoked.stdout, revoked.stderr,
-                                    invalid.stdout, invalid.stderr, transcript,
-                                    (handoff / "policy-draft.json").read_text()]:
-                        self.assertNotIn(session["capability_token"], content)
-                        self.assertNotIn(WEBHOOK_SECRET, content)
-                finally:
-                    broker.terminate()
-                    broker.wait(timeout=10)
+            with socket.socket() as reservation:
+                reservation.bind(("127.0.0.1", 0))
+                port = reservation.getsockname()[1]
+            (state / "service.json").write_text(json.dumps({"port": port}))
+            (state / "service.json").chmod(0o600)
+            broker = subprocess.Popen([str(rekeyd), "serve", "--state-dir", str(state)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                deadline = time.monotonic() + 10
+                while not (state / "runtime/admin.sock").exists():
+                    self.assertIsNone(broker.poll())
+                    self.assertLess(time.monotonic(), deadline)
+                    time.sleep(0.05)
+                transcript = run_terminal([sys.executable, str(ROOT / "scripts/agent-quickstart.py"), "--rekey", str(rekey), "--state-dir", str(state), "--project", str(project)], [("Apply Rekey configuration and instructions? [y/N] ", "y")], expected_exit=3)
+                self.assertIn("LOCKED", transcript)
+                self.assertIn("Discovery is pending", transcript)
+                self.assertNotIn(proof, transcript)
+                config = json.loads((project / ".mcp.json").read_text())
+                self.assertEqual(config["mcpServers"]["rekey"], {"command": "rekey-mcp", "args": ["--state-dir", str(state)]})
+                self.assertIn("rekey:begin", (project / "CLAUDE.md").read_text())
+                self.assertEqual((project / ".mcp.json").stat().st_mode & 0o777, 0o600)
+                unlocked = subprocess.run(base + ["unlock", "--password-stdin"], input=proof + "\n", capture_output=True, text=True)
+                self.assertEqual(unlocked.returncode, 0, unlocked.stderr)
+                empty = subprocess.run(base + ["connection", "list"], capture_output=True, text=True)
+                self.assertEqual(empty.returncode, 0, empty.stderr)
+                self.assertEqual(json.loads(empty.stdout)["connections"], [])
+                self.assertEqual(json.loads(empty.stdout)["derived_credentials"], [])
+            finally:
+                broker.terminate()
+                broker.wait(timeout=10)
 
 
 if __name__ == "__main__":

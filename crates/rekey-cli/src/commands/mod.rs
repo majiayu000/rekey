@@ -5,9 +5,15 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use rekey_domain::ids::{ActionId, CredentialId, PrincipalId, SessionId};
-use rekey_domain::ipc::{self, Channel, ProofKind, admin_msg, agent_msg};
-use rekey_domain::{action::FixedHttpAction, credential::CredentialMetadata};
+#[cfg(feature = "lab")]
+use rekey_domain::action::FixedHttpAction;
+use rekey_domain::credential::CredentialMetadata;
+use rekey_domain::ids::CredentialId;
+#[cfg(feature = "lab")]
+use rekey_domain::ids::{ActionId, PrincipalId, SessionId};
+#[cfg(feature = "lab")]
+use rekey_domain::ipc::agent_msg;
+use rekey_domain::ipc::{self, Channel, ProofKind, admin_msg};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use zeroize::Zeroizing;
 
@@ -17,11 +23,20 @@ use crate::client::{CliError, Client};
 mod metrics;
 #[cfg(feature = "lab")]
 pub use metrics::metrics;
+pub mod agent;
 mod connect;
+pub mod connections;
+pub mod delegated;
+pub mod hygiene;
+pub mod ssh;
 pub use connect::{ConnectClient, connect};
+#[cfg(feature = "lab")]
 mod run;
+#[cfg(feature = "lab")]
 pub use run::{RunClient, run_profile};
+#[cfg(feature = "lab")]
 mod templates;
+#[cfg(feature = "lab")]
 pub use templates::{template_catalog, template_install};
 
 mod password_lifecycle;
@@ -34,10 +49,11 @@ pub use audit::{
 };
 mod policy_approval;
 pub use policy_approval::{
-    approval_decide, approval_get, approval_origin, approval_pending, approval_prepare,
-    approval_review, approval_wait_or_cancel, policy_activate, policy_draft, policy_status,
-    policy_trust_install, profile_list,
+    approval_decide, approval_get, approval_origin, approval_pending, approval_review,
+    policy_activate, policy_draft, policy_draft_request, policy_status, policy_trust_install,
 };
+#[cfg(feature = "lab")]
+pub use policy_approval::{approval_prepare, profile_list};
 #[cfg(feature = "lab")]
 mod vault_admin;
 #[cfg(feature = "lab")]
@@ -51,6 +67,7 @@ pub use vault_admin::{
     credential_rotate_vault_dynamic, credential_rotate_vault_kv,
 };
 
+#[cfg(feature = "lab")]
 const ACTION_RESPONSE_TIMEOUT: Duration = Duration::from_secs(130);
 const DRAIN_RESPONSE_TIMEOUT: Duration = Duration::from_secs(130);
 const BACKUP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(300);
@@ -76,12 +93,14 @@ struct ShutdownResponse {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[cfg(feature = "lab")]
 struct RevokeResponse {
     revoked: bool,
 }
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[cfg(feature = "lab")]
 struct DisableResponse {
     disabled: bool,
 }
@@ -313,6 +332,7 @@ fn proof_body(kind: ProofKind, proof: &[u8]) -> Zeroizing<Vec<u8>> {
     body
 }
 
+#[cfg(feature = "lab")]
 fn parse_action_ref(input: &str) -> Result<(ActionId, u64), CliError> {
     let (id, version) = input
         .split_once('@')
@@ -326,6 +346,7 @@ fn parse_action_ref(input: &str) -> Result<(ActionId, u64), CliError> {
     Ok((action_id, version))
 }
 
+#[cfg(feature = "lab")]
 fn parse_ttl_ms(input: &str) -> Result<i64, CliError> {
     let (value, unit) = input.split_at(input.len().saturating_sub(1));
     let n: i64 = value
@@ -383,6 +404,7 @@ pub fn delegate_rekeyd(
     }
 }
 
+#[cfg(feature = "lab")]
 pub fn delegate_agent_run(
     state_dir: &Path,
     agent_socket: &Path,
@@ -488,9 +510,16 @@ pub fn shutdown(state_dir: &Path, kind: ProofKind, password_stdin: bool) -> Resu
 pub fn credential_add(
     state_dir: &Path,
     label: &str,
+    credential_kind: &str,
     kind: ProofKind,
     stdin_secrets: bool,
 ) -> Result<(), CliError> {
+    if credential_kind != "opaque-token" && !stdin_secrets {
+        return Err(CliError::local(
+            "USAGE",
+            "typed credential JSON requires --stdin-secrets",
+        ));
+    }
     let (proof, secret) = if stdin_secrets {
         let mut lines = stdin_lines(2)?;
         let secret = lines.remove(1);
@@ -502,7 +531,7 @@ pub fn credential_add(
             prompt_secret("Credential value: ")?,
         )
     };
-    let metadata = serde_json::json!({ "label": label, "kind": "opaque-token" });
+    let metadata = serde_json::json!({ "label": label, "kind": credential_kind });
     let body_len = 1 + 4 + proof.len() + 4 + secret.len();
     let mut body = Zeroizing::new(Vec::with_capacity(body_len));
     let body_capacity = body.capacity();
@@ -631,6 +660,7 @@ pub fn credential_revoke(
     Ok(())
 }
 
+#[cfg(feature = "lab")]
 pub fn action_create(
     state_dir: &Path,
     file: &Path,
@@ -649,6 +679,7 @@ pub fn action_create(
     Ok(())
 }
 
+#[cfg(feature = "lab")]
 pub fn action_update(
     state_dir: &Path,
     action_id: &str,
@@ -676,12 +707,14 @@ pub fn action_update(
     Ok(())
 }
 
+#[cfg(feature = "lab")]
 pub fn action_list(state_dir: &Path) -> Result<(), CliError> {
     let (meta, _) = admin(state_dir)?.call(admin_msg::ACTION_LIST, b"{}", &[])?;
     print_json::<ipc::ActionListResponse>(&meta)?;
     Ok(())
 }
 
+#[cfg(feature = "lab")]
 pub fn action_disable(
     state_dir: &Path,
     action_id: &str,
@@ -703,6 +736,7 @@ pub fn action_disable(
     Ok(())
 }
 
+#[cfg(feature = "lab")]
 pub fn session_create(
     state_dir: &Path,
     actions: &[String],
@@ -786,6 +820,7 @@ pub fn workload_session_create(
     print_json::<ipc::SessionCreatedResponse>(&response)
 }
 
+#[cfg(feature = "lab")]
 pub fn session_revoke(
     state_dir: &Path,
     session_id: &str,
@@ -807,6 +842,7 @@ pub fn session_revoke(
     Ok(())
 }
 
+#[cfg(feature = "lab")]
 pub fn execute(
     agent_socket: &Path,
     action: &str,
@@ -923,6 +959,7 @@ pub fn desktop_add(state_dir: &Path, label: &str) -> Result<(), CliError> {
     Ok(())
 }
 
+#[cfg(feature = "lab")]
 pub fn desktop_reveal(
     state_dir: &Path,
     credential_id: &str,
@@ -982,6 +1019,7 @@ pub fn desktop_restore_access(
         .map_err(|e| CliError::local("IO", e.to_string()))
 }
 
+#[cfg(feature = "lab")]
 pub fn execute_text_stream(
     agent_socket: &Path,
     action: &str,
@@ -1116,28 +1154,27 @@ fn write_management_session(path: &Path, token: &[u8]) -> Result<(), CliError> {
 
 fn onboarding_url(
     state_dir: &Path,
-    anthropic: bool,
+    provider: Option<&str>,
     inapplicable: bool,
-) -> Result<&'static str, CliError> {
+) -> Result<String, CliError> {
     if inapplicable || state_dir != resolve_state_dir(None)? {
         return Err(CliError::local(
             "USAGE",
             "App onboarding requires the default state directory and no socket or management-session override",
         ));
     }
-    Ok(if anthropic {
-        "rekey://add/anthropic"
-    } else {
-        "rekey://setup"
+    Ok(match provider {
+        Some(provider) => format!("rekey://add/{provider}"),
+        None => "rekey://setup".into(),
     })
 }
 
 pub fn open_onboarding(
     state_dir: &Path,
-    anthropic: bool,
+    provider: Option<&str>,
     inapplicable: bool,
 ) -> Result<(), CliError> {
-    let url = onboarding_url(state_dir, anthropic, inapplicable)?;
+    let url = onboarding_url(state_dir, provider, inapplicable)?;
     #[cfg(target_os = "macos")]
     {
         if !Path::new("/Applications/Rekey.app").is_dir() {
@@ -1147,7 +1184,7 @@ pub fn open_onboarding(
             ));
         }
         let status = std::process::Command::new("/usr/bin/open")
-            .args(["-a", "/Applications/Rekey.app", url])
+            .args(["-a", "/Applications/Rekey.app", &url])
             .stdin(std::process::Stdio::null())
             .status()
             .map_err(|_| {
@@ -1182,14 +1219,14 @@ mod onboarding_tests {
     fn routes_are_fixed_and_overrides_fail_without_launching() {
         let state = resolve_state_dir(None).unwrap();
         assert_eq!(
-            onboarding_url(&state, false, false).unwrap(),
+            onboarding_url(&state, None, false).unwrap(),
             "rekey://setup"
         );
         assert_eq!(
-            onboarding_url(&state, true, false).unwrap(),
+            onboarding_url(&state, Some("anthropic"), false).unwrap(),
             "rekey://add/anthropic"
         );
-        assert!(onboarding_url(&state, false, true).is_err());
-        assert!(onboarding_url(&state.join("different"), true, false).is_err());
+        assert!(onboarding_url(&state, None, true).is_err());
+        assert!(onboarding_url(&state.join("different"), Some("anthropic"), false).is_err());
     }
 }

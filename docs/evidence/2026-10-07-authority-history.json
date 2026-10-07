@@ -1,0 +1,273 @@
+{
+  "date_utc": "2026-10-07",
+  "runtime_source_commit": "7085c96d796b695bf61a17380d4ec27a736baa15",
+  "benchmark_source": "crates/rekey-vault/src/store/usage/history_benchmark.rs",
+  "benchmark_sha256": "4419255c4f6e925ee00f0287ff2ea65b31ddce3ba6a59788e706fec64c427cde",
+  "environment": {
+    "os": "Linux",
+    "arch": "x86_64",
+    "rustc": "1.97.0",
+    "profile": "test (debug assertions enabled)",
+    "parallel_benchmark_tests": 1,
+    "shared_cloud_host": true
+  },
+  "command": "cargo test --locked -p rekey-vault --lib history_benchmark -- --ignored --nocapture --test-threads=1",
+  "result": {
+    "passed": 2,
+    "failed": 0,
+    "duration_seconds": 474.89
+  },
+  "limitations": [
+    "Five timing samples per operation; medians are diagnostic observations, not production SLA estimates.",
+    "Fixture seeding is excluded; actual Authority admission, settlement, audit, reads, backup and unlock run through production code.",
+    "Broker IPC, remote providers, native applications and device isolation acceptance are excluded.",
+    "RSS is sampled in one sequential process; allocator retention from earlier sizes and the preceding store benchmark affects later measurements. Peak RSS is cumulative.",
+    "Shared host load and debug builds prohibit attributing timing differences versus historical release benchmarks to a code optimization."
+  ],
+  "measurements": [
+    {
+      "authenticated_read": {
+        "max_us": 61420,
+        "median_us": 49703,
+        "min_us": 43939,
+        "samples": 5
+      },
+      "debug_assertions": true,
+      "history_rows": 1000,
+      "pending_history_rows": 1,
+      "process_rss_kib": 15228,
+      "scope": "authenticated SQLite store methods; excludes Authority queue and network",
+      "settled": {
+        "max_us": 60527,
+        "median_us": 50489,
+        "min_us": 46368,
+        "samples": 5
+      },
+      "started": {
+        "max_us": 65670,
+        "median_us": 50265,
+        "min_us": 46671,
+        "samples": 5
+      }
+    },
+    {
+      "authenticated_read": {
+        "max_us": 606259,
+        "median_us": 324823,
+        "min_us": 261675,
+        "samples": 5
+      },
+      "debug_assertions": true,
+      "history_rows": 10000,
+      "pending_history_rows": 3,
+      "process_rss_kib": 27956,
+      "scope": "authenticated SQLite store methods; excludes Authority queue and network",
+      "settled": {
+        "max_us": 1085748,
+        "median_us": 485669,
+        "min_us": 392237,
+        "samples": 5
+      },
+      "started": {
+        "max_us": 504538,
+        "median_us": 317519,
+        "min_us": 278830,
+        "samples": 5
+      }
+    },
+    {
+      "authenticated_read": {
+        "max_us": 3298657,
+        "median_us": 3062638,
+        "min_us": 2906129,
+        "samples": 5
+      },
+      "debug_assertions": true,
+      "history_rows": 100000,
+      "pending_history_rows": 25,
+      "process_rss_kib": 137860,
+      "scope": "authenticated SQLite store methods; excludes Authority queue and network",
+      "settled": {
+        "max_us": 4189562,
+        "median_us": 3368455,
+        "min_us": 3076400,
+        "samples": 5
+      },
+      "started": {
+        "max_us": 4361018,
+        "median_us": 4012845,
+        "min_us": 2881245,
+        "samples": 5
+      }
+    },
+    {
+      "admin_status": {
+        "max_us": 302,
+        "median_us": 209,
+        "min_us": 120,
+        "samples": 5
+      },
+      "admin_status_during_admission": {
+        "max_us": 39977,
+        "median_us": 32870,
+        "min_us": 23459,
+        "samples": 5
+      },
+      "authority_settled": {
+        "max_us": 32616,
+        "median_us": 25360,
+        "min_us": 24422,
+        "samples": 5
+      },
+      "authority_started": {
+        "max_us": 40109,
+        "median_us": 32870,
+        "min_us": 24555,
+        "samples": 5
+      },
+      "authority_usage_read": {
+        "max_us": 39722,
+        "median_us": 25558,
+        "min_us": 24662,
+        "samples": 5
+      },
+      "backup": {
+        "max_us": 5722394,
+        "median_us": 4525866,
+        "min_us": 3944528,
+        "samples": 5
+      },
+      "debug_assertions": true,
+      "history_rows": 1000,
+      "kdf": {
+        "iterations": 3,
+        "memory_kib": 65536,
+        "parallelism": 4
+      },
+      "pending_history_rows": 1,
+      "process_peak_rss_kib": 207044,
+      "process_rss_kib": 141732,
+      "recovery_unlock_us": 4778404,
+      "scope": "real Authority queue, SQLite, audit, backup and password unlock; excludes Broker IPC and network",
+      "steady_unlock": {
+        "max_us": 4366229,
+        "median_us": 4117743,
+        "min_us": 3827711,
+        "samples": 5
+      }
+    },
+    {
+      "admin_status": {
+        "max_us": 5528,
+        "median_us": 386,
+        "min_us": 218,
+        "samples": 5
+      },
+      "admin_status_during_admission": {
+        "max_us": 579757,
+        "median_us": 326768,
+        "min_us": 277881,
+        "samples": 5
+      },
+      "authority_settled": {
+        "max_us": 363018,
+        "median_us": 308801,
+        "min_us": 282569,
+        "samples": 5
+      },
+      "authority_started": {
+        "max_us": 562725,
+        "median_us": 325618,
+        "min_us": 277903,
+        "samples": 5
+      },
+      "authority_usage_read": {
+        "max_us": 414283,
+        "median_us": 317177,
+        "min_us": 260148,
+        "samples": 5
+      },
+      "backup": {
+        "max_us": 5545697,
+        "median_us": 5361008,
+        "min_us": 5079357,
+        "samples": 5
+      },
+      "debug_assertions": true,
+      "history_rows": 10000,
+      "kdf": {
+        "iterations": 3,
+        "memory_kib": 65536,
+        "parallelism": 4
+      },
+      "pending_history_rows": 3,
+      "process_peak_rss_kib": 221332,
+      "process_rss_kib": 156116,
+      "recovery_unlock_us": 6528033,
+      "scope": "real Authority queue, SQLite, audit, backup and password unlock; excludes Broker IPC and network",
+      "steady_unlock": {
+        "max_us": 5978789,
+        "median_us": 5039479,
+        "min_us": 4344057,
+        "samples": 5
+      }
+    },
+    {
+      "admin_status": {
+        "max_us": 925,
+        "median_us": 330,
+        "min_us": 205,
+        "samples": 5
+      },
+      "admin_status_during_admission": {
+        "max_us": 3891632,
+        "median_us": 3583426,
+        "min_us": 2587686,
+        "samples": 5
+      },
+      "authority_settled": {
+        "max_us": 4023383,
+        "median_us": 3186728,
+        "min_us": 2788244,
+        "samples": 5
+      },
+      "authority_started": {
+        "max_us": 3891328,
+        "median_us": 3583141,
+        "min_us": 2587285,
+        "samples": 5
+      },
+      "authority_usage_read": {
+        "max_us": 4643160,
+        "median_us": 3198530,
+        "min_us": 2447020,
+        "samples": 5
+      },
+      "backup": {
+        "max_us": 15140592,
+        "median_us": 12289904,
+        "min_us": 12089201,
+        "samples": 5
+      },
+      "debug_assertions": true,
+      "history_rows": 100000,
+      "kdf": {
+        "iterations": 3,
+        "memory_kib": 65536,
+        "parallelism": 4
+      },
+      "pending_history_rows": 25,
+      "process_peak_rss_kib": 396200,
+      "process_rss_kib": 331060,
+      "recovery_unlock_us": 6450024,
+      "scope": "real Authority queue, SQLite, audit, backup and password unlock; excludes Broker IPC and network",
+      "steady_unlock": {
+        "max_us": 11021556,
+        "median_us": 7712223,
+        "min_us": 7245830,
+        "samples": 5
+      }
+    }
+  ],
+  "status_measurement": "The admin_status and admin_status_during_admission measurement keys time AuthorityHandle::status() with refresh_activity=false, not AuthorityHandle::admin_status() or Broker admin IPC."
+}

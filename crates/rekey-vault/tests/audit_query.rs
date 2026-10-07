@@ -341,7 +341,7 @@ fn large_profile_metadata_pages_keep_whole_records_and_every_cursor() {
         if byte % 2 == 0 {
             historical.profile_name = "reader".into();
         }
-        row.request_context = Some(historical);
+        row.request_context = Some(historical.into());
         store.append_audit(&row).unwrap();
     }
     let mut query = AuditQuery {
@@ -359,7 +359,7 @@ fn large_profile_metadata_pages_keep_whole_records_and_every_cursor() {
                 <= rekey_domain::ipc::RESPONSE_BODY_MAX_BYTES as usize
         );
         for row in &page.events {
-            let historical = row.request_context.as_ref().unwrap();
+            let historical = row.request_context.as_ref().unwrap().as_profile().unwrap();
             assert_eq!(row.principal_id, Some(principal));
             assert_eq!(historical.model, context.model);
             assert_eq!(historical.policy_sha256, context.policy_sha256);
@@ -378,7 +378,7 @@ fn large_profile_metadata_pages_keep_whole_records_and_every_cursor() {
                 "success",
                 1,
             );
-            later.request_context = Some(profile_context(None));
+            later.request_context = Some(profile_context(None).into());
             store.append_audit(&later).unwrap();
         }
         let Some(before) = page.next_before_sequence else {
@@ -437,7 +437,7 @@ async fn locked_startup_preserves_non_llm_profile_context_in_abandoned_terminal(
             1,
         );
         started.event_type = "execution.started";
-        started.request_context = Some(context.clone());
+        started.request_context = Some(context.clone().into());
         store.append_audit(&started).unwrap();
     }
     let (handle, join) = common::spawn(&vault.state_dir);
@@ -451,11 +451,12 @@ async fn locked_startup_preserves_non_llm_profile_context_in_abandoned_terminal(
         .unwrap();
     assert_eq!(page.events.len(), 2);
     assert_eq!(page.events[0].event_type, "execution.indeterminate");
-    assert!(
-        page.events
-            .iter()
-            .all(|row| row.request_context.as_ref() == Some(&context))
-    );
+    assert!(page.events.iter().all(|row| {
+        row.request_context
+            .as_ref()
+            .and_then(|ctx| ctx.as_profile())
+            == Some(&context)
+    }));
     handle.shutdown(None).await.unwrap();
     join.join().unwrap();
 }

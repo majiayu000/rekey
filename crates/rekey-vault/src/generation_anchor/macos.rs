@@ -2,7 +2,7 @@
 //! Protected-item permissions and concurrent CAS still require signed-device
 //! verification; a file-mode test does not establish the production L1 claim.
 
-use std::{io, ptr};
+use std::{io, ptr, sync::OnceLock};
 
 use core_foundation::{
     base::{CFType, CFTypeRef, TCFType},
@@ -15,7 +15,8 @@ use core_foundation::{
 use rekey_domain::ids::VaultId;
 use security_framework_sys::{
     code_signing::{
-        SecCodeCheckValidity, SecCodeCopySelf, SecCodeRef, SecRequirementCreateWithString,
+        SecCodeCheckValidity, SecCodeCopyGuestWithAttributes, SecCodeCopySelf, SecCodeRef,
+        SecRequirementCreateWithString, kSecGuestAttributeAudit,
     },
     item::*,
     keychain_item::{SecItemAdd, SecItemCopyMatching, SecItemUpdate},
@@ -95,8 +96,11 @@ pub(super) fn own_team() -> Result<Option<String>, AuthorityError> {
         "SecCodeCopySelf",
     )?;
     let code = unsafe { owned(raw_code.cast(), "SecCodeCopySelf") }?;
-    let validity =
-        unsafe { SecCodeCheckValidity(code.as_CFTypeRef().cast_mut().cast(), 0, ptr::null_mut()) };
+    code_team(code.as_CFTypeRef().cast_mut().cast())
+}
+
+fn code_team(raw_code: SecCodeRef) -> Result<Option<String>, AuthorityError> {
+    let validity = unsafe { SecCodeCheckValidity(raw_code, 0, ptr::null_mut()) };
     if validity != 0 && validity != UNSIGNED {
         status(validity, "self signature")?;
     }
@@ -145,6 +149,43 @@ pub(super) fn own_team() -> Result<Option<String>, AuthorityError> {
         .filter(|value| !value.is_empty())
         .ok_or_else(integrity)?;
     Ok(Some(team))
+}
+
+/// Code identity comes from the kernel's complete audit token, including
+/// pidversion. No PID supplied by an IPC client or pathname is trusted here.
+pub(super) fn peer_has_own_team(audit: [u32; 8]) -> Result<bool, AuthorityError> {
+    static CALLER_OWN_TEAM: OnceLock<Option<String>> = OnceLock::new();
+    let own = match CALLER_OWN_TEAM.get() {
+        Some(team) => team,
+        None => {
+            // Only a successful immutable self identity is cached. Signature
+            // failures remain retryable and peer code is verified each time.
+            let team = own_team()?;
+            CALLER_OWN_TEAM.get_or_init(|| team)
+        }
+    };
+    let Some(own) = own else {
+        return Ok(false);
+    };
+    let bytes: Vec<u8> = audit.iter().flat_map(|word| word.to_ne_bytes()).collect();
+    let attributes = CFDictionary::from_CFType_pairs(&[pair(
+        unsafe { kSecGuestAttributeAudit },
+        CFData::from_buffer(&bytes).as_CFType(),
+    )]);
+    let mut raw_code = ptr::null_mut();
+    status(
+        unsafe {
+            SecCodeCopyGuestWithAttributes(
+                ptr::null_mut(),
+                attributes.as_concrete_TypeRef(),
+                0,
+                &mut raw_code,
+            )
+        },
+        "SecCodeCopyGuestWithAttributes",
+    )?;
+    let code = unsafe { owned(raw_code.cast(), "SecCodeCopyGuestWithAttributes") }?;
+    Ok(code_team(code.as_CFTypeRef().cast_mut().cast())?.is_some_and(|peer| &peer == own))
 }
 
 pub(super) struct ProtectedAnchor {

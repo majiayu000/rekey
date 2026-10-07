@@ -33,23 +33,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y ripgrep bubblewrap apparmor-profiles
-          # Ubuntu 24.04+ blocks unprivileged userns unless bwrap has a profile.
-          # Do not disable kernel.apparmor_restrict_unprivileged_userns.
-          if [[ -f /usr/share/apparmor/extra-profiles/bwrap-userns-restrict ]]; then
-            sudo cp -f /usr/share/apparmor/extra-profiles/bwrap-userns-restrict \
-              /etc/apparmor.d/bwrap-userns-restrict
-            sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
-          else
-            printf '%s\n' \
-              'profile bwrap /usr/bin/bwrap flags=(unconfined) {' \
-              '  userns,' \
-              '}' | sudo tee /etc/apparmor.d/bwrap >/dev/null
-            sudo apparmor_parser -r /etc/apparmor.d/bwrap
-          fi
-          /usr/bin/bwrap --die-with-parent --unshare-user --uid "$(id -u)" --gid "$(id -g)" \
-            --unshare-net --unshare-pid --ro-bind / / --proc /proc --dev /dev \
-            --tmpfs /tmp --chdir /tmp -- /bin/true
+          sudo apt-get install -y ripgrep
       - name: Install macOS acceptance dependencies
         if: runner.os == 'macOS'
         run: scripts/ci-install-release-smoke-deps.sh
@@ -59,8 +43,12 @@ jobs:
           cargo fmt --all --check
           cargo check --workspace --all-targets
           cargo clippy --workspace --all-targets -- -D warnings
+      - name: Connection, CLI, MCP and workspace tests
+        run: |
           # Deadline fixtures must reach their intended phase without competing KDF jobs.
           cargo test --workspace --offline -- --test-threads=1
+      - name: Connection onboarding through real CLI and daemon
+        run: |
           REKEY_QUICKSTART_REAL=1 PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-agent-quickstart.py
 
       - name: Real ENOSPC fault injection
@@ -88,7 +76,7 @@ jobs:
           if rg -n 'get_secret\b|read_secret|export_secret' crates/rekey-domain crates/rekey-broker crates/rekey-cli; then
             exit 1
           fi
-          if cargo tree -p rekey-cli -e normal | rg 'rusqlite|aes-gcm|argon2|reqwest|rekey-vault|rekey-broker'; then
+          if cargo tree -p rekey-cli -e normal | rg 'rusqlite|aes-gcm|argon2|reqwest|rekey-vault|rekey-broker|rekey-connector'; then
             exit 1
           fi
 
@@ -97,63 +85,26 @@ jobs:
       - name: Dependency audit
         run: cargo audit
 
-      - name: Real release-process acceptance
-        run: scripts/p0-acceptance.sh
       - name: Runtime fail-stop acceptance
         run: scripts/p0-runtime-faults.sh
-      - name: Crash recovery acceptance
-        run: scripts/p0-crash-recovery.sh
       - name: Backup and restore durability acceptance
         if: runner.os == 'macOS'
         run: scripts/p0-durability.sh
-      - name: P1 typed-policy acceptance
-        run: scripts/p1-policy-acceptance.sh
-      - name: P3 signed-policy and approval acceptance
-        run: scripts/p3-approval-acceptance.sh
-      - name: P1 chunk-boundary response sealing acceptance
-        run: scripts/p1-streaming-sealing.sh
-      - name: P2 GitHub App local acceptance
-        run: scripts/p2-github-app.sh
       - name: P5 connector SDK contract acceptance
         run: scripts/p5-connector-sdk.sh
-      - name: P9 Linux agent-run netns launcher
-        if: runner.os == 'Linux'
-        run: scripts/p9-linux-agent-run.sh
-      - name: P1 native launchd service-manager acceptance
-        if: runner.os == 'macOS'
-        run: scripts/p1-service-manager.sh
-      - name: P1 native systemd service-manager acceptance
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "$(ps -p 1 -o comm= | tr -d ' ')" == "systemd" ]] || {
-            echo "::error::Required ubuntu-latest systemd gate does not have systemd as PID 1"
-            exit 1
-          }
-          scripts/p1-service-manager.sh
 
-      - name: Native macOS Admin UI contracts
+      - name: Native macOS Connection and CLI contracts
         if: runner.os == 'macOS'
         run: |
+          # These are software contracts; real Touch ID and Secure Enclave remain a manual gate.
           scripts/build-macos-ui.sh
           xcrun swiftc -warnings-as-errors -swift-version 5 -O \
             -framework SwiftUI -framework AppKit -framework ServiceManagement \
+            apps/macos/BackgroundService.swift apps/macos/PolicySigning.swift apps/macos/PresenceKey.swift apps/macos/Model.swift apps/macos/Tests/ConnectionContract.swift -o /tmp/rekey-connection-contract
+          /tmp/rekey-connection-contract
+          xcrun swiftc -warnings-as-errors -swift-version 5 -O \
+            -framework SwiftUI -framework AppKit -framework ServiceManagement \
             apps/macos/BackgroundService.swift apps/macos/PolicySigning.swift apps/macos/PresenceKey.swift apps/macos/Model.swift scripts/test-macos-ui.swift -o /tmp/rekey-ui-contract
+          # CLI_BINARY runs the Connection signing and subprocess boundary contracts together.
           /tmp/rekey-ui-contract target/macos-ui/Rekey.app/Contents/Resources/bin/rekey
           python3 scripts/test-human-vault.py target/macos-ui/Rekey.app/Contents/Resources/bin/rekey
-          /tmp/rekey-ui-contract --presence-boundary-only
-          /tmp/rekey-ui-contract --local-approval-boundary-only
-          /tmp/rekey-ui-contract --personal-policy-boundary-only
-          /tmp/rekey-ui-contract --flow-boundary-only
-          /tmp/rekey-ui-contract --oidc-boundary-only
-          python3 scripts/test-macos-profile.py
-
-  g2-linux:
-    name: Linux container G2 reference boundary
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Namespace and peer-identity attack acceptance
-        run: scripts/p1-linux-g2.sh

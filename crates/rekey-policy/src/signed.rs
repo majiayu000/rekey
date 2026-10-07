@@ -536,7 +536,7 @@ mod tests {
             "format_version": 1,
             "signer_id": signer_id,
             "snapshot": {
-                "format_version": 6, "profiles": [],
+                "format_version": 7, "connections": [], "ssh_keys": [], "derived_credentials": [], "profiles": [],
                 "version": 1,
                 "expires_at_ms": 10_000,
                 "approvers": [{

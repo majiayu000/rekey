@@ -65,7 +65,7 @@ pub struct AuditDraft {
     pub authorization: Option<Box<AuthorizationEvidence>>,
     pub approval: Option<ApprovalEvidence>,
     pub usage: Option<rekey_domain::audit::UsageEvidence>,
-    pub request_context: Option<rekey_domain::audit::ProfileRequestAuditContext>,
+    pub request_context: Option<rekey_domain::audit::RequestAuditContext>,
     pub event_type: &'static str,
     pub outcome: &'static str,
     pub reason_code: String,
@@ -138,7 +138,100 @@ pub struct PolicyMaterial {
     pub bundle: Option<crate::model::PolicyBundleRecord>,
 }
 
+/// Explicit software selection never follows a Secure Enclave failure.
+#[derive(Debug, Clone, Copy)]
+pub enum SshKeyMode {
+    Default,
+    Ed25519Software,
+    P256Software,
+}
+
+#[derive(Debug, Clone)]
+pub struct SshIdentity {
+    pub credential: CredentialMetadata,
+    /// OpenSSH public-key wire blob; contains no private bytes.
+    pub public_key: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum OAuthGrantUpdateReason {
+    Authorized,
+    Refreshed,
+}
+impl OAuthGrantUpdateReason {
+    pub(crate) fn event_type(self) -> &'static str {
+        match self {
+            Self::Authorized => "oauth.authorized",
+            Self::Refreshed => "oauth.refreshed",
+        }
+    }
+}
+
 pub enum AuthorityCommand {
+    OAuthGrantCreate {
+        label: CredentialLabel,
+        payload: SecretInput,
+        proof: UnlockProof,
+        not_after: Option<Instant>,
+        reply: Reply<CredentialMetadata>,
+    },
+    OAuthGrantUpdate {
+        credential_id: CredentialId,
+        expected_version: u64,
+        payload: SecretInput,
+        proof: UnlockProof,
+        not_after: Option<Instant>,
+        reply: Reply<CredentialMetadata>,
+    },
+    RotateOAuthGrant {
+        credential_id: CredentialId,
+        expected_version: u64,
+        payload: SecretInput,
+        reason: OAuthGrantUpdateReason,
+        not_after: Instant,
+        reply: Reply<CredentialMetadata>,
+    },
+    PrepareOAuthGrant {
+        credential_id: CredentialId,
+        reply: Reply<PreparedCredential>,
+    },
+    PrepareAwsStatic {
+        credential_id: CredentialId,
+        reply: Reply<PreparedCredential>,
+    },
+    SshGenerate {
+        label: CredentialLabel,
+        mode: SshKeyMode,
+        proof: UnlockProof,
+        not_after: Option<Instant>,
+        reply: Reply<SshIdentity>,
+    },
+    SshImport {
+        label: CredentialLabel,
+        private_key: SecretInput,
+        proof: UnlockProof,
+        not_after: Option<Instant>,
+        reply: Reply<SshIdentity>,
+    },
+    SshSign {
+        credential_id: CredentialId,
+        public_key: Vec<u8>,
+        data: Vec<u8>,
+        started: Box<AuditDraft>,
+        not_after: Instant,
+        reply: Reply<Vec<u8>>,
+    },
+    ScanCredentials {
+        inputs: Vec<crate::hygiene::ScanInput>,
+        credentials: Vec<crate::hygiene::ScanCredential>,
+        reply: Reply<Vec<crate::hygiene::ScanFinding>>,
+    },
+    ImportEnv {
+        request: crate::hygiene::EnvImportRequest,
+        proof: UnlockProof,
+        not_after: Option<Instant>,
+        reply: Reply<crate::hygiene::EnvImportReport>,
+    },
     LeaseAcquireBegin {
         context: crate::model::LeaseExecutionContext,
         source: crate::model::LeaseSourceRef,

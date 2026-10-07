@@ -1,1122 +1,197 @@
-# User guide
+# Rekey 0.4 用户指南
 
-Pre-tag candidate snapshot; current publication status is recorded on the
-[GitHub release](https://github.com/majiayu000/rekey/releases/tag/v0.3.0-alpha.2) and its complete workflow.
+本文对应 **0.4.0-alpha.1 候选版，尚未公开发布**。当前模型使用 vault/backup 格式 **26**、签名策略格式 **7**。0.3 的保险库和备份不兼容；请保留旧目录，在新目录重建。完整验收状态见[验收报告](evidence/agent-call-acceptance-2026-10-05.md)。
 
-This guide assumes verified binaries are installed and the broker is running.
-Read [the security and platform scope](alpha-scope.md) first.
+本机软件检查、真实 Codex 的合成上游链及 GitHub 读写分项已有通过证据；Claude 账号、真实 OAuth/云服务、正式设备交互与公开下载安装仍待验。以下命令描述当前实现的操作，不表示候选版已经完成发布验收。
 
-This guide describes **0.3.0-alpha.2, an unpublished candidate**: vault/backup
-format 25 and policy snapshot 6. These formats remain frozen across all 0.3
-releases, including prereleases. Version 0.3 names the existing v3 design
-without claiming 1.0 maturity; renumbering does not require reinitialization.
-Rekey never migrates, backfills or dual-reads old formats. Preserve old binaries
-with their matching state and backups; use a new empty directory for a new
-incompatible format. An incompatible format requires a separately planned release
-line and prior SPEC revision. See [installation](installation.md) and the
-[candidate release gates](releases/v0.3.0-alpha.2.md).
+Rekey 保存凭据，Agent 正常启动，在需要凭据时调用 Rekey。CLI、MCP、本机 HTTP 和 SSH agent 的本机调用不需要授权令牌；权限来自用户签署的 Connection / SSH / 临时凭据规则。HTTP 请求仍须带公开占位值 `rekey`，它只是请求标记。AWS、EKS 和 GitHub App 的 T1 派生入口会把临时凭据交给 Agent，使用前须单独签署开启。
 
-## Personal setup and Profiles
+## 首次使用
 
-For the installed macOS App, the short path is:
+确认使用的二进制和目录：
+
+```bash
+rekey --version
+rekey --help
+```
+
+macOS 安装版的首选入口是：
 
 ```bash
 rekey setup
-rekey add anthropic
-rekey run claude-code --client claude-code -- claude --model YOUR_MODEL
+rekey add github-pat
 ```
 
-The first two commands open explicit App flows. Save the recovery key, install a
-provider template, then review and sign a Profile that permits the selected
-model and bounded requests/output. `claude-code` is the positional Profile name,
-not a flag. The final command uses an existing signed Profile; it does not
-silently create one. `rekey profile list` lists the available names.
+在 App 中创建新的个人保险库、保存恢复密钥，添加 API Key，选择预设并审阅 Connection：凭据、固定 host、路径、读写规则和可选调用方限制。随后签署并激活策略。保存密钥本身不会授予调用权限；已有保险库先启动服务并解锁。个人签名使用 Secure Enclave，没有软件签名回退。新版真实设备上的系统认证次数与耗时仍待验。
 
-The same Add page offers GLM · Claude Code and GLM · Codex. The former installs
-the fixed `glm@1` Messages template; the latter installs `glm-responses@1`,
-with a separate Bearer credential contract and fixed `/api/v1/responses` target.
-After reviewing and signing the Codex Profile, use the command shown by the App:
+需要独立目录的源码用户可在自己的终端中操作：
 
 ```bash
-rekey run codex --client codex -- codex --model glm-5.3-flash
+rekey --state-dir /absolute/path/rekey-04 init --mode personal
+rekey --state-dir /absolute/path/rekey-04 serve
 ```
 
-These are scoped provider templates; clients cannot choose another upstream
-origin or path. The new-account, five-minute acceptance remains pending.
-
-Anthropic, OpenAI, GitHub PAT, GLM Messages/Responses and fixed Bearer templates
-already exist. The short `add` command currently accepts only `anthropic` and
-opens the App; select other templates in the App. Installing a template does
-not grant access: review the exact actions, model and budgets, sign the Profile,
-then choose a name from `rekey profile list`. Do not place provider keys in
-Agent configuration or the `run` command.
-
-If the key is currently in a `.env` file, enter it through the human-operated
-App. Automated `.env` import is not implemented. Measure setup time
-until the first real provider response; the three-command example alone does
-not establish a five- or ten-minute onboarding result.
-
-A Profile fixes principal, instance/capability/action versions, session limits,
-isolation, egress and LLM model/budget limits. Every capability has a required
-rule: `template-default`, `allow` or `require-approval`. Template defaults retain
-the declared risk behavior; an explicit change requires a newly reviewed and
-signed full policy. Conflicting choices for the same principal/action reject.
-The snapshot-6 rule/UI changes still require their joint release gate.
-
-The App uses a per-vault Secure Enclave P-256 policy key in personal mode; team
-mode uses an external Ed25519 root. The mode and root are immutable. No software
-private-key fallback or automatic policy re-signing is provided. Hardware access
-has bounded signed-device evidence in the [current acceptance record](evidence/v3-release-acceptance-2026-10-04.json);
-the complete installed App workflow remains pending. The Agent neither holds that key
-nor triggers background system authentication.
-
-`rekey connect CLIENT --print` previews supported client configuration; an
-explicit connect operation changes only its managed configuration. `run` supplies
-capabilities and a verified loopback endpoint to the child, not provider keys.
-MCP Profile discovery and the HTTP gateway share the same executor, approval and
-daily usage ledger. Generation requests have an effective output ceiling before
-hashing/review; missing or interrupted usage charges that saved ceiling. A new
-token or broker restart does not reset the principal/instance/UTC-day budget.
-
-Linux Profile `isolation=netns` currently rejects as unavailable. The older
-Linux launcher below is a separate bounded reference. macOS Seatbelt is
-experimental; Codex access to managed preferences remains a documented limit.
-See [platform scope](alpha-scope.md) before choosing a Profile.
-
-The remaining manual/team workflows are available at their stated boundaries.
-Enterprise sources, workload/OIDC, relay, remote signing and metrics sections
-are lab features: build with `--features lab`. They are not the default personal
-setup and are not evidence of a supported enterprise deployment.
-
-## Start, unlock, and status
+`serve` 在前台运行，启动后锁定。在另一个终端解锁同一目录，并在 App 中选择该目录完成凭据与规则签署：
 
 ```bash
-rekey serve                    # foreground; starts locked
-rekey unlock                   # hidden password prompt
-rekey status
+rekey --state-dir /absolute/path/rekey-04 unlock
+rekey --state-dir /absolute/path/rekey-04 status --passive
 ```
 
-`rekey serve` delegates to `rekeyd serve`; agents and Admin clients never open
-the SQLite database. `rekey lock` revokes sessions and clears the active
-policy. The default idle lock is 7 days. `rekey shutdown` requires a
-fresh step-up proof in every state, including locked. The App can explicitly
-store a userPresence-protected key for a fixed seven-day unlock window. Refresh,
-startup and Agent requests never read it or prompt for authentication. Restart
-and successful reuse do not extend the window; explicit/idle lock and wrapper
-changes revoke it. Clean shutdown preserves the encrypted wrap for a later
-explicit system-authentication unlock. Device Keychain enforcement remains a
-release acceptance gate.
+密码和 API Key 使用隐藏输入或显式 stdin，不能放进命令参数、环境变量、项目说明文件或 MCP 配置。恢复密钥应离线保存；它不是 Agent 的调用令牌。
 
-For deliberate automation, password-only commands accept `--password-stdin`.
-Credential add/rotate accepts `--stdin-secrets`, with proof on line 1 and the
-credential on line 2. Do not place secrets in argv, environment variables,
-JSON metadata, logs, or Action files.
+## 接入 Agent
 
-## Inspect local metrics (lab source checkout)
+在项目目录先预览，再确认写入：
 
 ```bash
-rekey metrics                 # numeric JSON snapshot
-rekey metrics --prometheus    # Prometheus text, written to stdout
+rekey --state-dir /absolute/path/rekey-04 connect claude-code --print
+rekey --state-dir /absolute/path/rekey-04 connect claude-code
 ```
 
-These source-only commands use the existing Admin socket and work while locked.
-They do not unlock the vault or extend its idle deadline. Counters cover local
-dispatch, rejection, cancellation, latency and backup requests; capability
-gauges reuse the current session registry. Values reset when the broker starts
-and are approximate under concurrent work. Fault signals count fault requests,
-not confirmed state transitions. No HTTP listener or remote collector is added.
-See the [measurement contract](superpowers/specs/2026-09-16-local-metrics.md).
-
-## Replace password or recovery key
-
-Both operations require an unlocked broker and rewrap the existing VRK without
-rewriting credential payloads. Remembered Presence authorization is revoked;
-factor changes are not retroactive to historical backups.
+支持 `claude-code`、`codex`、`cursor`。指定项目目录：
 
 ```bash
-rekey password change              # current password, then new password twice
-rekey password change --recovery   # current recovery key, then new password
-rekey recovery rotate              # current password; new key is shown once
+rekey --state-dir /absolute/path/rekey-04 connect codex --project /absolute/path/project --print
+rekey --state-dir /absolute/path/rekey-04 connect codex --project /absolute/path/project
 ```
 
-For deliberate automation, password replacement uses `--stdin-secrets` with
-the current proof on line 1 and new password on line 2. Recovery rotation uses
-`--password-stdin`. Save the newly displayed recovery key before closing the
-terminal. If that output is lost, the password remains valid: rotate recovery
-again and retain only the latest key.
+命令更新受管 MCP 配置及 `CLAUDE.md` / `AGENTS.md` 的 Rekey 标记段，显示变更并要求确认，已有文件会保留私有备份。MCP、受管 CLI 说明及扫描钩子均绑定本次选择的 vault 绝对目录；更换目录后重新执行 `connect`。重复执行替换同一标记段，不写凭据或调用令牌。随后按客户端正常方式启动 Agent，让它先列出 Rekey 能力。
 
-Rotation does not invalidate historical backups. Each backup remains tied to
-the password and recovery wrappers captured in that snapshot.
-
-## Rotate encryption keys (source checkout)
+Claude Code 插件位于 [`plugins/rekey`](../plugins/rekey)，由仓库根目录的 marketplace 清单注册。先添加本地源码或解压后的发行目录，再安装：
 
 ```bash
-rekey key rotate-dek
-rekey key rotate-dek --recovery --password-stdin
+claude plugin marketplace add /path/to/rekey --scope user
+claude plugin install rekey --scope user
 ```
 
-While unlocked, this Admin operation requires fresh password or recovery proof
-and replaces every stored version's DEK, including retired and revoked versions.
-The returned `rotated_versions` count includes all versions. Credential values,
-IDs, versions, VRK, unlock factors and existing capability bindings stay the same.
-Replacement ciphertexts and the success audit commit together; a failure leaves
-no partial key rotation. This does not rotate provider credentials, revoke old
-backups, erase old SQLite pages, or repair a compromised VRK. See the
-[DEK rotation contract](superpowers/specs/2026-09-16-key04-dek-rotation.md).
+在项目目录将两条命令的 scope 都改为 `project` 可只为该项目启用。隔离配置下两种安装已通过，`rekey@rekey` 为 enabled，MCP 配置和 skill 已进入插件缓存；真实 Claude 对话仍因账号暂停未验收。
 
-To replace the VRK as well, first lock explicitly:
+## 发现与调用
 
 ```bash
-rekey lock
-rekey key rotate-vrk
+rekey list --json
+rekey connection list
+rekey describe github.list_issues
 ```
 
-Enter the current password and current recovery key at the two hidden prompts.
-For deliberate automation, `--stdin-secrets` reads those factors as exactly two
-lines. Both are required. The operation creates a new VRK and fresh DEKs,
-reseals all dependent state, and leaves the broker locked. Credential values,
-versions, policy and workload replay records remain unchanged. The original
-password and recovery key still unlock the current vault independently.
+`list` 返回可用的公共能力，包括已签署的 T1 派生能力；不会返回密钥或 T1 根凭据 ID。`connection list` 是管理员编辑视图，返回完整签名编辑基线。操作是否可用由当前策略决定，不凭命令名称假定授权。
 
-The receipt includes the new `approval_origin` public key. Re-pin it through
-your trusted approval channel before preparing and signing new challenges;
-old sessions and challenges were revoked by the explicit lock. Remembered
-unlock authorization is revoked before the database transaction, so a later
-failure may require manual unlock even when the old key generation remains.
-
-A lost connection or unclean shutdown means the result is unknown, not that
-rotation rolled back. Do not retry automatically: reconnect, inspect the
-rotation audit and unlock to read `rekey approval origin`. An over-budget stop
-exits with an error and preserves the crash marker. Backups remain tied to
-their own key generation; this operation neither revokes old backups nor
-replaces compromised password/recovery values. See the
-[VRK rotation contract](superpowers/specs/2026-09-16-key04-vrk-rotation.md).
-
-## Query and export local audit metadata
-
-Audit queries use the owner-checked Admin socket and work while the broker is
-locked. A list call returns at most 100 newest-first records:
+以下例子假定 App 已激活名为 `github` 的 GitHub PAT Connection，绑定相应仓库规则。替换公开的 owner / repo 参数：
 
 ```bash
+rekey call github.list_issues --owner OWNER --repo REPO --dry-run
+rekey call github.list_issues --owner OWNER --repo REPO
+rekey call github.create_issue --owner OWNER --repo REPO --title 'Test from Rekey' --dry-run
+```
+
+`dry-run` 返回规范化路径、读写分类、命中规则与判定，不访问上游、不解密凭据、不消耗审批。确认后去掉 `--dry-run`。命名操作的参数使用 `--name value`；查询使用 `--query name=value`，额外公开请求头使用 `--header name:value`，正文可通过 `--body-file FILE` 传入。
+
+通用 HTTP 入口使用同一套签名规则：
+
+```bash
+rekey http github GET /repos/OWNER/REPO/issues --query per_page=10 --dry-run
+rekey http github POST /repos/OWNER/REPO/issues --json '{"title":"Test from Rekey"}' --dry-run
+```
+
+路径段必须是允许的 slug，不能用百分号编码、斜杠注入或 `..` 扩大授权。查询键、请求头与值也受规则约束。普通 POST 归写；只有签名预设明确声明的具体操作可按语义读处理。GraphQL mutation、歧义文档或解析失败归写。
+
+## 审批与访问请求
+
+默认规则为读允许、写审批、危险写拒绝；具体 Connection 可进一步收紧。命中审批时，CLI 默认等待 App 决定，再对同一个请求重试一次。`--no-wait` 立即返回审批信息。拒绝、取消、超时或未知结果后不要自动循环重试写操作。
+
+App 显示完整请求后可批准一次、30 分钟或自定义时间窗，最长 8 小时。窗口绑定同一 Connection、规则、调用方和策略摘要，锁定或改策略后失效；不能覆盖 deny。SSH 未绑定目标和 git 签名不提供时间窗。
+
+调用方显示用于记录和附加限制，不是认证边界。同一系统用户下的程序可以伪造标签，因此调用方规则只能收紧默认权限。
+
+缺少 Connection 或权限时，Agent 可发起访问请求：
+
+```bash
+rekey request github --op github.list_issues --reason 'Read issues for this task'
+rekey await REQUEST_ID --timeout 120
+rekey await-unlock --timeout 120
+```
+
+在 App 中添加凭据并激活对应规则后，再批准访问请求；批准请求不能绕过签名授权。请求 10 分钟过期，用户可拒绝或屏蔽调用方。CLI 错误中的 `next` 指示下一步，Agent 应照该提示处理。
+
+## 本机 HTTP 与 SDK
+
+服务默认监听 `127.0.0.1:7787`；实际端口见所选保险库的 `service.json`。路由是 `/c/CONNECTION/UPSTREAM_PATH`。占位头必须是 `Authorization: Bearer rekey` 或 `x-api-key: rekey`；真实 Key 会被拒绝，不会转发。浏览器 Origin、异常 Host 和不允许的请求形态会被拒绝。
+
+```bash
+curl -H 'Authorization: Bearer rekey' \
+  'http://127.0.0.1:7787/c/github/repos/OWNER/REPO/issues'
+```
+
+SDK 的 key 设置为公开占位值 `rekey`，base URL 指向相应 Connection：
+
+| 预设 | 本机 base URL（默认端口，连接名仅示例） |
+|---|---|
+| Anthropic | `http://127.0.0.1:7787/c/anthropic` |
+| OpenAI | `http://127.0.0.1:7787/c/openai/v1` |
+| GLM Anthropic | `http://127.0.0.1:7787/c/glm/api/anthropic` |
+| GLM Responses | `http://127.0.0.1:7787/c/glm-responses/api/v1` |
+
+在 App 中明确签署允许的模型、单次输出上限和日预算后再使用 LLM。CLI 与 HTTP 共用预算。预算按已结算用量准入，在途并发可能超出；它不保证对抗本机状态回滚的费用封顶。流式响应未完成或安全检查失败时应视为失败，不能把收到部分正文当成完整成功。
+
+## 导入 `.env` 与防泄漏
+
+```bash
+rekey import /absolute/path/project/.env --dry-run
+rekey import /absolute/path/project/.env
+```
+
+CLI 只让 daemon 预览变量名、预设提示和未支持的行，不读取或显示变量值。第二条命令打开 App。用户选择后导入凭据，再审阅并签署 Connection；原文件默认不变。明确确认改写后，daemon 创建 mode-0600 备份、把选中的值替换成占位值并添加所需 base URL，再原子发布新文件。不要同时用编辑器或脚本修改该文件；元数据检查与 rename 之间不构成并发写入的原子比较交换。
+
+```bash
+rekey scan --staged
+rekey scan /absolute/path/project/file
+rekey --state-dir /absolute/path/rekey-04 connect claude-code --with-hooks
+```
+
+扫描使用保险库中完整秘密及支持的变体，结果仅含位置，不回显匹配内容。`--with-hooks` 安装受管 pre-commit 检查。扫描失败不等于文件安全；保险库锁定、超限或限速时应先处理错误。它不是对所有可能编码和历史提交的完整泄漏证明。
+
+## SSH 与 Git
+
+```bash
+rekey ssh-agent status
+rekey ssh-agent generate work-key
+rekey --state-dir /absolute/path/rekey-04 connect codex --with-ssh --ssh-host github.com --print
+rekey --state-dir /absolute/path/rekey-04 connect codex --with-ssh --ssh-host github.com
+```
+
+macOS 默认生成 Secure Enclave P-256 密钥；软件 Ed25519 / P-256 只能用显式 `--mode` 选择。生成密钥本身不启用 SSH：策略还须包含签名公钥及 host 规则，公钥也须按目标服务要求登记。在 App 的个人策略编辑中加载完整 SSH 集合，或直接生成新密钥，复制公钥到目标服务；登记独立核对过的 host 公钥，选择 Allow/Approve/Deny 和 git 签名判定。可粘贴标准 OpenSSH 公钥、known_hosts 条目或 base64 wire blob。既有 host 与 rule ID 会保留，生成草稿时 HTTP、SSH 与 T1 三组完整一起审阅和签署。撤销 SSH 连接不删除保险库里的私钥。已有签名 SSH 授权的配置使用 `<state-dir>/ssh-agent.sock` 的 `IdentityAgent`，私钥不交给 Agent。已验证 session-bind 按签名 host 规则判定；未知 host 或缺少绑定需要审批，明确 deny 不能用窗口绕过。真实 OpenSSH 向 GitHub 测试仓库 push 已通过，临时 deploy key 和 ref 已清理；这不代替 App 真机上的生成、签署和 Touch ID 验收。
+
+Git smart HTTP 使用独立 `github-git` 预设，固定 `https://github.com`、owner 和完整 `repo.git`。`info/refs` 与 `git-upload-pack` 为读，`git-receive-pack` 为写；PAT 在 daemon 内转换为固定 Basic 认证。通过本机 HTTP 使用时也要配置公开请求标记，例如只对该 URL 设置 Git 的 `http.extraHeader=Authorization: Bearer rekey`。默认请求正文上限为 1 MiB，不宣称无限仓库传输。
+
+## OAuth 与 T1
+
+OAuth 通过 App 保存用户自己的 client、签署有限操作和 scope ceiling，再打开浏览器：
+
+```bash
+rekey add google-drive
+rekey oauth login CONNECTION
+```
+
+支持 Google Drive / Gmail / Calendar、GitHub OAuth App、Slack 和 Notion 的有限操作。Google / GitHub 使用本机随机回调；Slack / Notion 需填写登记的固定本机回调。Notion 的权限来自 Portal capabilities，不是 OAuth 请求 scope。OAuth token 保留在 Rekey；真实 provider 登录与刷新仍待验。
+
+T1 必须逐个签署开启，**Agent 进程会拿到临时值**：
+
+```bash
+rekey aws-credentials CONNECTION
+rekey kubectl-credentials CONNECTION
+rekey github-token CONNECTION
+```
+
+AWS 返回 `credential_process` JSON，固定 role / region / session policy，TTL 为 900–3600 秒；EKS 返回 `ExecCredential`，固定 cluster / region，AWS 验证窗口约 15 分钟，客户端过期时间提前到约 14 分钟；GitHub App 返回安装令牌，固定 installation、repository IDs 与 permission ceiling，TTL 上限 3600 秒。调用方不能覆盖签名目标。根密钥不会返回；T1 stdout 本身包含临时秘密，不应贴进日志或提交。
+
+## 日常维护
+
+```bash
+rekey status --passive
 rekey audit list --limit 50
-rekey audit list --request REQUEST_ID --session SESSION_ID \
-  --action ACTION_ID --credential CREDENTIAL_ID --outcome denied \
-  --since-ms 1900000000000 --until-ms 1900003600000
-```
-
-To continue a page, pass both the returned `snapshot_max_sequence` and
-`next_before_sequence` as `--snapshot-max-sequence` and `--before-sequence`.
-The high-water mark prevents newly committed rows entering that traversal. A
-selective query can return no records and still include a continuation cursor:
-each request scans at most 1,000 audit rows, so continue until the cursor is
-null.
-
-Export captures the complete matching snapshot in bounded pages:
-
-```bash
-rekey audit export --output /secure/new/audit.jsonl --outcome failure
-```
-
-The destination must not exist. Rekey creates a regular owner-only mode-0600
-JSONL file, refuses symlinks and overwrites, syncs the file and parent directory,
-verifies the destination pathname still names that file, and prints a receipt
-only after completion. On failure, a partial new file may remain for inspection
-and is never resumed. Output omits credentials, recovery material, capability
-tokens, bodies, headers, resource IDs, and parameter hashes. Protect it as
-sensitive metadata. Current source supports explicit pruning and authenticated
-unlocked-only automatic retention. Delivery and S3 archival are separate lab
-tools in the [operations runbook](operations-runbook.md); customer SIEM and
-WORM/Legal Hold permissions still require independent field acceptance.
-
-### Prune completed execution audit groups (source checkout)
-
-```bash
-rekey audit prune --before-ms CUTOFF_UNIX_MS
-# Current unreleased source: select by age instead of an absolute cutoff.
-rekey audit prune --older-than-days 30
-```
-
-Choose exactly one cutoff option. Days are positive integers of 24 hours; age overflow or a cutoff before Unix epoch is rejected. Choose a non-negative absolute cutoff no later than now. While unlocked, supply fresh
-password or recovery proof (`--recovery`; explicit `--password-stdin` is available).
-The command removes only entire completed execution groups with every event
-strictly before the cutoff. It preserves all approval-associated groups,
-unfinished or unpaired groups, management events, backups and cleanup markers.
-Corrupt stored records fail the operation instead of being removed.
-The JSON receipt reports `before_ms`, `deleted_rows`, `deleted_groups` and
-`prune_sequence`; a no-op reports zero counts and a null sequence.
-
-A successful deletion invalidates older pagination snapshots with
-`AUDIT_SNAPSHOT_EXPIRED`. Start a new query/export after that error; an interrupted
-export remains incomplete and receives no success receipt. Deletion and its
-marker commit together. A disconnected call has an unknown result and is not
-proof that nothing was deleted. This does not securely erase disk pages, shrink
-the database file or delete historical backups. See the
-[pruning contract](superpowers/specs/2026-09-16-audit-prune.md).
-
-## Create a fixed HTTPS Action
-
-Add an opaque token and retain the returned credential ID:
-
-```bash
-rekey credential add github-token
-rekey credential list
-```
-
-Create `action.json` with the returned ID:
-
-```json
-{
-  "name": "github-create-issue",
-  "credential_id": "00000000-0000-4000-8000-000000000000",
-  "origin": "https://api.github.com",
-  "method": "POST",
-  "exact_path": "/repos/OWNER/REPOSITORY/issues",
-  "auth_header": "authorization",
-  "auth_prefix": "Bearer ",
-  "timeout_ms": 30000,
-  "request_max_bytes": 65536,
-  "allowed_extra_headers": ["x-request-id"],
-  "response_max_bytes": 262144,
-  "allowed_response_headers": ["content-type"]
-}
-```
-
-The origin, method, path, authentication slot, body bound, and response
-allowlist are fixed by the Admin. Rekey rejects redirects, proxy environment
-variables, private/reserved addresses, and unexpected headers.
-
-```bash
-rekey action create --file action.json
-rekey action list
-```
-
-Record the returned `ACTION_ID@VERSION`.
-
-## Session and policy
-
-This manual example uses a team-mode Ed25519 root. Personal users normally
-review complete Profiles and sign through the App instead.
-
-Create a capability session and record its `principal_id` and token:
-
-```bash
-rekey session create --action ACTION_ID@1 --ttl 1h --max-uses 10
-```
-
-Replacing an active signed policy revokes all existing capabilities. After
-activating the replacement, issue a new capability for the principal named in
-that policy with `rekey session create --action ACTION_ID@1 --principal PRINCIPAL_ID`.
-This still requires an Admin step-up proof. OIDC-managed issuance remains bound
-to the authenticated administrator; workload issuance cannot select a principal.
-
-Create a policy snapshot, replacing all UUIDs and the Action version with
-returned values. `expires_at_ms` must be a future Unix epoch in milliseconds.
-
-```json
-{
-  "format_version": 6,
-  "version": 1,
-  "expires_at_ms": 1900000000000,
-  "approvers": [],
-  "profiles": [],
-  "workload_identities": [],
-  "bindings": [
-    {
-      "action_id": "00000000-0000-4000-8000-000000000000",
-      "version": 1,
-      "resource": {
-        "type": "fixed-http-action",
-        "id": "00000000-0000-4000-8000-000000000000"
-      },
-      "parameter_schema_id": "github-issue/v1",
-      "parameter_schema": {
-        "type": "object",
-        "required": ["title"],
-        "properties": {"title": {"type": "string"}},
-        "additionalProperties": true
-      }
-    }
-  ],
-  "rules": [
-    {
-      "id": "00000000-0000-4000-8000-000000000001",
-      "effect": "permit",
-      "principal_id": "00000000-0000-4000-8000-000000000002",
-      "action_id": "00000000-0000-4000-8000-000000000000",
-      "version": 1,
-      "resource": {
-        "type": "fixed-http-action",
-        "id": "00000000-0000-4000-8000-000000000000"
-      },
-      "parameters": {"kind": "any_validated"}
-    }
-  ]
-}
-```
-
-An external Ed25519 policy signer wraps this snapshot in
-`rekey.policy.bundle.v1` and signs the canonical bytes defined by the
-[P-03 specification](superpowers/specs/2026-09-03-approvals-persistent-policy-p03.md).
-The Broker does not create or store that external private key. Install its public trust root
-once, then activate the signed bundle:
-
-```json
-{
-  "format_version": 1,
-  "signer_id": "00000000-0000-4000-8000-000000000010",
-  "algorithm": "ed25519",
-  "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
-}
-```
-
-```bash
-rekey policy trust install --file trust.json
-rekey policy activate --file bundle.json --expected-vault-id "$VAULT_ID" \
-  --expected-trust-sha256 "$TRUST_SHA256"
-rekey policy status
-```
-
-Read `vault_id` and `trust_sha256` from `rekey policy status` after trust
-installation; substitute those public values for the two activation arguments.
-The Authority checks both again after step-up and before committing.
-
-There is one immutable trust root per vault. Policy version 1 must be first;
-later bundles must be exactly consecutive. A malformed, unsigned, expired,
-wrong-signer, skipped-version, or rollback bundle is rejected without changing
-the active policy. Lock clears the compiled policy and a successful unlock
-reverifies the signed, lifecycle-sealed persisted bundle before loading it. Before that unlock,
-status is `unavailable`. Capability sessions still disappear on lock or restart.
-
-### Create a workload-attested session
-
-With `--features lab`, a signed snapshot can map a generic OIDC, SPIFFE JWT-SVID, Kubernetes service
-account, or CI/cloud JWT subject to a Rekey `principal_id`. Each mapping pins an
-exact HTTPS issuer, exact subject/profile, canonical audience set, maximum token
-age, and static Ed25519 or RS256 verification keys. See the
-[P-04 specification](superpowers/specs/2026-09-03-workload-identity-p04.md) for
-the closed JSON schema.
-
-After activating that signed policy, send the workload JWT only through stdin:
-
-```bash
-printf '%s\n' "$WORKLOAD_TOKEN" | rekey session create \
-  --action ACTION_ID@1 --ttl 15m --max-uses 20 \
-  --workload-token-stdin
-```
-
-This uses `agent.sock` and does not require an Admin step-up. Rekey verifies the
-signature and exact claims, checks that the mapped principal may request every
-Action, and atomically consumes the token replay identity before returning the
-capability. Replay remains denied after restart and after restoring a backup
-that already contains the consumption record. A valid backup created before
-consumption cannot contain that record; restoring it is complete-vault rollback
-and is outside the G1 freshness guarantee described below. Activating a new
-policy version revokes workload-minted sessions but preserves Admin-minted
-sessions. Retrying the exact active bundle preserves both kinds of session.
-Lock, restart, expiry, use exhaustion, and explicit revoke still end the
-resulting capability.
-
-Released Alpha uses static keys. In this source tree, the
-[WID-09 extension](superpowers/specs/2026-09-10-github-actions-jwks.md) also accepts
-the exact GitHub issuer with `keys: []` and
-`online_key_source: "github-actions-jwks"` in the signed identity. The Broker
-fetches only its fixed public HTTPS JWKS for each mint, bounds concurrent
-unauthenticated JWKS fetches separately from Agent request slots, and denies
-admission on outage, saturation, or invalid keys; no cache, discovery or
-introspection is used.
-Rekey does not contact SPIRE or Kubernetes APIs or hold issuer private keys.
-Rotate a static workload verification key by signing and activating the next consecutive policy bundle;
-the old policy activation revokes existing workload sessions.
-
-To require approval, add approvers to the snapshot catalog and use a
-`require-approval` rule. The rule names the allowed Ed25519 public keys, threshold 1 or 2,
-`one-time` or `time-window` mode, and its use/window ceilings. For example:
-
-```json
-{
-  "effect": "require-approval",
-  "approver": {
-    "kind": "ed25519",
-    "keys": ["<registered approver public key, 64 lowercase hex characters>"],
-    "threshold": 1
-  },
-  "approval": {
-    "mode": "one-time",
-    "max_uses": 1
-  }
-}
-```
-
-Prepare the exact request and give the challenge JSON to an external approver:
-
-```bash
-printf '%s\n' "$CAPABILITY_FROM_SECURE_STORAGE" | \
-  rekey approval prepare ACTION_ID@1 --capability - \
-    --body-file request.json --content-type application/json >challenge.json
-```
-
-After the approver returns a signed grant, execute the same request:
-
-```bash
-printf '%s\n' "$CAPABILITY_FROM_SECURE_STORAGE" | \
-  rekey execute ACTION_ID@1 --capability - \
-    --body-file request.json --content-type application/json \
-    --approval grant.json
-```
-
-Two-person rules require two distinct `--approval` files. Each file must be a
-regular non-symlink UTF-8 JSON file no larger than 4 KiB. A grant is bound to
-the exact challenge/session/principal/Action/resource/canonical parameters,
-determining rule, policy version/digest, expiry, and signed use count. Approval
-requests and usage are memory-only and vanish on session revocation, lock, or
-restart. Source builds include an independently deployed HTTPS approval-file
-relay. It records transport snapshots; Broker validates the grant at execute.
-Hosted operations, human directory and dashboard remain outside this scope.
-
-Operators can also pull a pending challenge from Admin without catching Agent
-stdout: `rekey approval pending` lists unused in-memory summaries, and
-`rekey approval get APPROVAL_REQUEST_ID` reprints a freshly origin-signed
-envelope. That inbox is a local CLI pull, not a GUI, push notification, or
-hosted service. After the first successful grant reservation the item leaves
-the inbox. Lock, session revoke, and restart still clear every challenge.
-
-Source builds also provide `rekey-approval-sign` for a local operator's
-single-person, one-time review. Prepare prints an origin-signed envelope.
-Pin this vault's origin public key with `rekey approval origin` and pass it as
-`--origin-key`. This is not a hosted approval service: another process running
-as your user can still read the same files. Independently choose policy, trust,
-Action, and key files from an operator-owned directory. Do not take them from
-an Agent workspace. The signer only handles `one-time` / `threshold=1` /
-`max_uses=1`.
-
-### Local independent approval endpoint
-
-Keep these files in an operator directory that the Agent cannot write:
-
-- `policy.json` and `trust.json` from `rekey-policy-sign` (or another external
-  signer), already installed/activated on this Broker
-- `trusted-action.json`: the full `FixedHttpAction` printed by
-  `rekey action create` / `rekey action update`, or one object copied from
-  `rekey action list` after you confirm origin, method, path, and version
-- `approver.der`: PKCS8 Ed25519, owned by the current user, mode `0600`, not a
-  symlink. Generate and extract the 32-byte public key as lowercase hex:
-
-```bash
-openssl genpkey -algorithm Ed25519 -outform DER -out approver.der
-chmod 600 approver.der
-openssl pkey -in approver.der -inform DER -pubout -outform DER | tail -c 32 | xxd -p -c 32
-```
-
-Put that public key and a stable approver UUID into the signed policy catalog.
-The `--approver-id` you pass later must be that UUID, and the key must match it.
-
-1. From a trusted terminal, pin this vault's origin public key, then prepare
-   the **exact** request that will later execute. `body` in the approval request
-   must be that same original text.
-
-```bash
-rekey approval origin >origin.json
-printf '%s\n' "$CAPABILITY_FROM_SECURE_STORAGE" | \
-  rekey approval prepare ACTION_ID@1 --capability - \
-    --body-file request.json --content-type application/json >challenge.json
-# Or, independently of Agent stdout:
-# rekey approval pending
-# rekey approval get APPROVAL_REQUEST_ID >challenge.json
-python3 - <<'PY'
-import json
-from pathlib import Path
-challenge = json.loads(Path("challenge.json").read_text())
-body = Path("request.json").read_text()
-Path("approval-request.json").write_text(json.dumps({
-    "challenge": challenge,
-    "content_type": "application/json",
-    "headers": [],
-    "body": body,
-}, indent=2) + "\n")
-PY
-chmod 600 approval-request.json
-```
-
-`headers` is an array of `[name, value]` pairs for extra headers that were
-also passed to `approval prepare`. Omit them when unused. `content_type` may
-be `null` when the original call had none.
-
-2. Review on the operator machine. Read the printed Action, request, approver,
-   and `source_assumption`. Copy `reviewed_sha256` only if those fields are the
-   operation you intend to allow.
-
-```bash
-cargo build -p rekey-policy --bin rekey-approval-sign
-ORIGIN=$(python3 -c 'import json; print(json.load(open("origin.json"))["public_key"])')
-rekey-approval-sign review approval-request.json \
-  --policy policy.json --trust trust.json \
-  --action trusted-action.json --approver-id APPROVER_UUID \
-  --origin-key "$ORIGIN"
-```
-
-3. Sign the **same** files and digest. The grant file is created exclusively
-   (`0600`) and will not overwrite an existing path. It is valid for at most 60
-   seconds and still has to pass the live Broker challenge/session/policy checks.
-
-```bash
-rekey-approval-sign sign approval-request.json \
-  --policy policy.json --trust trust.json \
-  --action trusted-action.json --approver-id APPROVER_UUID \
-  --origin-key "$ORIGIN" \
-  --reviewed-sha256 REVIEWED_HEX \
-  --key-file approver.der --output grant.json
-```
-
-4. Immediately execute the **same** body, content type, headers, capability,
-   and Action version:
-
-```bash
-printf '%s\n' "$CAPABILITY_FROM_SECURE_STORAGE" | \
-  rekey execute ACTION_ID@1 --capability - \
-    --body-file request.json --content-type application/json \
-    --approval grant.json
-```
-
-A changed body, a grant from another session, an expired challenge, or a
-replay is rejected by the existing Broker verifier. See the
-[local approval specification](superpowers/specs/2026-09-10-local-approval-endpoint.md).
-
-Failed password throttling is also process-local and resets when `rekeyd`
-restarts. Restarting the broker is not an authentication defense. Current source checks
-an authenticated generation against external high-water history and enters
-`rollback-suspected` on rollback or missing history. The software-only file
-anchor cannot defend against a same-UID attacker restoring all files; protected
-macOS anchor/CAS enforcement is still awaiting device acceptance. Ordinary
-unlock is not rollback consent. Use the explicit confirmation flow below.
-
-## Local Presence approval (v3 source checkout)
-
-A rule with `approver: {"kind":"local-presence"}` requires an explicit local
-decision for the exact request. `template-default` retains the high-risk
-template requirement; an explicit signed Profile rule can select a different
-policy, which must be visible in the full replacement review. `execute` and `execute-text-stream` return exit 4
-with a JSON `APPROVAL_REQUIRED` error containing the challenge ID and expiry;
-this response never executes the upstream action.
-
-The macOS approval inbox retrieves the complete daemon-authored review with
-`rekey approval review CHALLENGE_ID`. It verifies the hash of the original
-review bytes and defaults to **Reject**. Approve or reject requires a fresh
-Presence proof; cancelling authentication submits no decision. Notifications
-are optional for the current App session and never request authentication.
-Signed-device Keychain and Touch ID acceptance is still pending.
-
-The Agent can use `rekey approval await CHALLENGE_ID --capability -` or
-`rekey approval cancel CHALLENGE_ID --capability -`, supplying its capability
-through stdin. Only the owning session can wait or cancel. Waiting consumes
-no capability use and does not execute anything. After `approved`, explicitly
-repeat the original execution with `--challenge CHALLENGE_ID`; the daemon
-rechecks the complete request and consumes approval once. Local challenges
-cannot be combined with external `--approval` files.
-
-A lost decision response is not permission to resubmit automatically. Query
-the current state first. `APPROVAL_OUTCOME_UNCONFIRMED` is non-retryable; a new
-attempt needs a newly reviewed challenge. Lock, policy changes, expiry and
-session revocation invalidate pending authorization.
-
-MCP exposes the same owner-only `await_approval` and `cancel_approval` tools.
-Action inputs are `{params, query, body, approval_challenge?}`. The challenge
-field belongs to the wrapper, not the upstream body. GET omits `body`; text
-and JSON responses are text, while other MIME types use base64 resources.
-Profile-based discovery and `rekey run` are implemented in the candidate;
-software fixtures do not establish compatibility with a real Agent/provider.
-
-## Execute without exposing the token in argv
-
-Create a request body such as `request.json`, then pipe the capability token:
-
-```bash
-printf '%s\n' "$CAPABILITY_FROM_SECURE_STORAGE" | \
-  rekey execute ACTION_ID@1 --capability - \
-    --body-file request.json --content-type application/json
-```
-
-Only response headers on the Action allowlist are returned. Secret sealing
-detects raw, base64, base64url, percent-encoded, header, and chunk-boundary
-reflections. It does not guarantee detection of arbitrary compression,
-encryption, hashes, derivations, or application-specific encodings.
-
-## Independent text streaming (lab source checkout)
-
-Default Profile LLM requests use the common raw SSE path: tool, thinking and
-other supported frames retain their original bytes. Completion is released
-only after EOF and durable settlement. A blocked, disconnected or malformed
-stream is not success; do not automatically retry. Raw/decoded secret reflection
-checks are bounded, not a guarantee against arbitrary encodings.
-
-The following older text-only registration requires `--features lab`:
-
-`execute-text-stream ACTION_ID@VERSION --capability - --body-file messages.json`
-uses a separately registered fixed Anthropic text Action. Capability input stays
-on stdin; the body is `{"messages":[{"role":"user","content":"hello"}]}`.
-Only a completed terminal yields exit zero. A failed or incomplete call can leave
-already checked text on stdout; a visible prefix is not success and must not
-trigger automatic retries. Existing `execute` remains buffered, and MCP rejects
-stream-only Actions. See [registration and invocation](installation.md#independent-text-streaming-source-build)
-and the [bounded stream contract](superpowers/specs/2026-09-16-anthropic-text-stream.md).
-
-## Launch an Agent with deny-by-default IP egress (Linux)
-
-This Linux-only command requires bubblewrap. It does not upgrade default G1 or
-replace the Docker G2 reference harness. The Agent socket must be disjoint from
-the state directory; the default `runtime/agent.sock` is rejected.
-
-```bash
-rekeyd serve --state-dir /var/lib/rekey/state \
-  --agent-runtime-dir /run/rekey-agent
-rekey --state-dir /var/lib/rekey/state \
-  --agent-socket /run/rekey-agent/agent.sock \
-  agent-run -- /usr/bin/my-agent
-```
-
-The Ubuntu black-box harness recorded that the child had no IP/TCP/UDP path,
-could not see the vault or Admin socket, and could still connect to
-`agent.sock`, including when that socket is under `/tmp` (the launcher
-bind-mounts the socket inode back after overlaying `/tmp`). Those facts are
-not Adversarially Verified isolation. This section describes the Linux
-reference launcher, not the unavailable Linux Profile netns path. macOS has a
-separate experimental Seatbelt implementation. See
-[the P-09 specification](superpowers/specs/2026-09-04-agent-egress-launcher-p09.md).
-
-## GitHub App closed profile
-
-The retained closed connector uses `github-app-installation-v2` with the bounds below. Live
-`api.github.com` evidence does not cover every added Admin path. This is not a
-general GitHub connector. One profile binds one installation, 1-16 exact
-repositories, `metadata=read`, and optional `issues=write`. It supports only
-repository listing and issue creation at a configured repository path. The
-profile is:
-
-```json
-{
-  "credential_type": "github-app-installation-v2",
-  "client_id": "Iv1.REPLACE_ME",
-  "app_id": 123456,
-  "installation_id": 234567,
-  "repositories": [
-    {"id": 345678, "owner": "OWNER", "name": "REPOSITORY"}
-  ],
-  "permissions": {"metadata": "read", "issues": "write"},
-  "webhook_secret": "REPLACE_WITH_32_OR_MORE_BYTES",
-  "private_key_pkcs1_der_base64": "REPLACE_WITH_BASE64_PKCS1_DER"
-}
-```
-
-Add it with `rekey credential add-github-app LABEL --file profile.json`. Keep
-the profile owner-readable only and delete the plaintext file after the
-encrypted mutation succeeds. The corresponding Action must use origin
-`https://api.github.com`, `authorization` with prefix `Bearer `, and either
-`GET /installation/repositories` with no body or
-`POST /repos/OWNER/REPOSITORY/issues` with a closed JSON `title`/`body` input.
-Provider responses are reduced to the documented non-secret fields.
-
-### Register a local GitHub issue plugin (lab source checkout)
-
-On macOS and Linux GNU x86_64/aarch64, GitHub App CreateIssue and
-CreateIssueComment Actions can contain this optional field. Linux requires
-system bubblewrap, permitted namespaces and the fixed GNU runtime files
-described in [installation](installation.md#github-reference-connector):
-
-```json
-{
-  "native_plugin": {
-    "path": "/absolute/path/to/connector",
-    "sha256": "ADMIN_APPROVED_64_LOWERCASE_HEX_DIGEST",
-    "protocol": "github-issues-v1"
-  }
-}
-```
-
-Obtain the expected digest from the trusted build before approving the Action;
-replace the placeholder with that digest. Use the existing commands:
-
-```bash
-rekey action create --file action.json
-rekey action update ACTION_ID --file action-v2.json
-rekey action list
-```
-
-One executable can serve both operations, but each Action fixes a single route.
-The plugin receives a closed operation/body envelope from the Broker and must
-return its canonical form unchanged. Agents still send the normal issue or
-comment body; they cannot select an operation through the plugin protocol.
-
-Create/update require step-up. Registration stores a declaration, while every
-execution verifies the actual file and runs its private snapshot. A wrong hash,
-missing file or unsupported platform fails without falling back to the bundled
-implementation. The binding belongs to `Action@VERSION`; an old capability never
-switches to a newer artifact automatically. Disable the Action to revoke its
-sessions. See [the closed native plugin contract](superpowers/specs/2026-09-16-native-action-plugin.md)
-and [the GitHub registration history](superpowers/specs/2026-09-16-action-plugin-registration.md).
-The same `native_plugin` field with `protocol` `anthropic-messages-v1` can bind
-that executable to the existing Anthropic text-stream Action. Unregistered
-Anthropic streaming stays in-process.
-
-### Rotate the GitHub App profile
-
-Rotate the whole typed profile from a regular file:
-
-```bash
-rekey credential rotate-github-app CREDENTIAL_ID --file profile.json
-```
-
-There is no public webhook listener. Forward a raw GitHub delivery through the
-owner-only Admin socket; the signature covers the exact file bytes and the
-expected version makes a successful delivery non-repeatable:
-
-```bash
-rekey credential apply-github-webhook CREDENTIAL_ID \
-  --expected-version 3 --event installation_repositories \
-  --delivery DELIVERY_UUID --signature 'sha256=LOWERCASE_HEX' \
-  --file payload.json
-```
-
-Only a non-empty `added` or `removed` repository delta for the exact
-installation is accepted. Exchange, create-issue, revoke, transport failures,
-and mutative effects are never retried; repository listing may retry once only
-for a bounded canonical `Retry-After` response.
-
-## macOS file-Keychain source (lab)
-
-Use `rekey credential add-macos-keychain LABEL --file PRIVATE_PROFILE` and
-`rekey credential rotate-macos-keychain ID --file PRIVATE_PROFILE` with fresh
-Admin step-up. The closed `macos-keychain-source-v1` profile contains an explicit
-absolute `keychain_path`, exact `service` and `account`, and a future
-`reference_expires_at_ms`. The reference is stored encrypted; execution looks up
-one generic-password item inside the Authority Worker and uses the value only
-for the registered fixed HTTP header Action. Native lookup refuses interactive
-unlock/access prompts. This source is separate from remembered desktop unlock.
-Local contracts and a disposable native file-Keychain item test passed: actual
-Broker execution, reflected-value sealing, and locked-Keychain refusal without
-a prompt. Run `python3 scripts/test-keychain-live.py --bin-dir target/debug` after
-building the binaries and `p1_policy_fixture` example. Existing customer items,
-their ACLs and deployed service identities still need their own acceptance.
-See [the source contract](superpowers/specs/2026-10-01-macos-keychain-source.md).
-
-## Vault KV v2 fixed-version source (lab)
-
-This fixture-bounded feature is in this Alpha archive. It resolves one exact
-string from one exact HashiCorp Vault KV v2 version and uses it only as the
-credential for an existing fixed HTTPS Action. Create an owner-readable profile
-and delete it after the encrypted Admin mutation succeeds:
-
-```json
-{
-  "credential_type": "vault-kv-v2-source-v1",
-  "origin": "https://vault.example.com",
-  "mount": "secret",
-  "path": "agents/github",
-  "key": "token",
-  "version": 7,
-  "vault_token": "hvs.REPLACE_ME"
-}
-```
-
-```bash
-rekey credential add-vault-kv LABEL --file profile.json
-rekey credential rotate-vault-kv CREDENTIAL_ID --file profile.json
-```
-
-The Broker issues only `GET /v1/MOUNT/data/PATH?version=N` with
-`X-Vault-Token`, through the existing public-address HTTPS screen. It does not
-retry the source request. The selected response field must be the only field in
-`data.data`, must be a visible-ASCII string no larger than 8 KiB, and must match
-the configured nonzero version. Deleted, destroyed, malformed, reflected, or
-wrong-version results stop before the final Action request.
-
-The Agent cannot select the Vault location or read either the Vault token or
-resolved value. The published Alpha snapshot supports the fixed-version public
-source described above. Current development source additionally supports
-[one KV latest read](superpowers/specs/2026-10-01-vault-kv-latest.md),
-[an explicitly bound private Vault endpoint](superpowers/specs/2026-10-01-vault-private-source.md),
-and the AppRole profile below; these additions still require provider acceptance.
-Namespaces and generic source templates remain unsupported.
-
-## Vault AppRole source (lab)
-
-The existing `add-vault-kv` and `rotate-vault-kv` commands also accept the closed
-`vault-approle-kv-v2-source-v1` profile. Put the required `origin`, `auth_mount`,
-`role_id`, `secret_id`, `secret_id_expires_at_ms`, `mount`, `path`, `key`, and
-`version` in an owner-readable profile file. `version` is a positive exact
-integer or `"latest"`; the SecretID expiry is an absolute Unix millisecond
-value in the future. Supply actual bootstrap credentials only through this
-protected file, then remove it after the encrypted Admin mutation succeeds.
-An optional `source_endpoint` uses the private endpoint contract linked above.
-
-Each execution commits its login audit, sends one AppRole login, uses the
-returned service token for one KV read and the fixed business Action, then
-revokes that token before releasing a successful response. The observed token
-TTL must cover the original Action deadline and cleanup reserve. Login response
-loss, ambiguous cleanup, or an admitted business request without its response
-returns a nonretryable indeterminate result. Rekey does not retry login or
-renew the token. A crash can leave a token until its actual provider expiry;
-an unknown login has no observed TTL. Validate the role ACL, SecretID uses,
-natural expiry and revoke behavior against your Vault deployment before use.
-See [the AppRole contract](superpowers/specs/2026-10-01-vault-approle-source.md).
-
-## Vault one-shot dynamic lease source (lab)
-
-The published Alpha supports one-shot leases. The development source adds
-[one conditional renewal per execution](superpowers/specs/2026-09-30-vault-lease-renewal.md)
-with a breaking v2 profile. It acquires one bounded
-Vault dynamic lease, uses one selected string as the credential for an existing
-fixed HTTPS Action, and synchronously revokes the exact lease before returning
-success:
-
-```json
-{
-  "credential_type": "vault-dynamic-source-v2",
-  "origin": "https://vault.example.com",
-  "mount": "database",
-  "role": "agent-api-token",
-  "key": "token",
-  "vault_token": "hvs.REPLACE_ME",
-  "renew_increment_seconds": 60
-}
-```
-
-```bash
-rekey credential add-vault-dynamic LABEL --file profile.json
-rekey credential rotate-vault-dynamic CREDENTIAL_ID --file profile.json
-```
-
-The Broker sends one non-retried `GET /v1/MOUNT/creds/ROLE`, accepts only a
-5–300 second lease with one exact selected visible-ASCII string. If the lease
-is renewable and its initial deadline precedes the Action deadline, the Broker
-audits and sends one `POST /v1/sys/leases/renew` before business IO. It uses the
-actual returned TTL, capped by the original Action deadline, with 500ms reserved
-for cleanup. It executes the fixed Action, then sends
-`POST /v1/sys/leases/revoke` with the exact lease ID
-and `sync: true`. A revoke failure hides any Action response and returns a
-non-retryable indeterminate result.
-
-Rekey does not persist an outstanding-lease registry. A hard
-process or host crash may leave the lease active until Vault expires it, so
-this feature does not claim crash-time cleanup, general Vault support, or
-private-network support.
-
-## Connector SDK contract
-
-The lab-only [fixed Keycloak exchange](superpowers/specs/2026-09-10-keycloak-token-exchange-oau02.md)
-stores an operator-owned encrypted profile and executes one registered GET for
-one audience. Use `rekey credential add-keycloak LABEL --file PROFILE` or
-`rekey credential rotate-keycloak ID --file PROFILE`; proof is read through the
-existing hidden TTY flow. Keep the profile file owner-only. It contains the
-client secret and subject access token and must not go through Agent messages.
-The Broker exchanges, executes, seals the response and directly revokes the
-issued token before returning success. There is no refresh or automatic retry;
-replace an expired or withdrawn subject token through the typed rotate command.
-See the spec for exact fields and resource-server revocation limits.
-
-The current durable formats are vault 25 / policy 6; old source checkpoints are
-not import formats. No migration or backfill is performed.
-
-The IO-free `rekey-connector` library supplies closed compile-time descriptors
-and projections. Its lab source/remote exchange contracts do not turn it into a
-dynamic registry or give a client access to credential IO. The shipped
-`rekey-mcp` executable is a separate Agent IPC adapter: it discovers only the
-capability's verified Profile inventory and routes execution through the common
-Broker. The lab operator-manifest path is retained for its bounded use case.
-MCP capabilities stay outside tool arguments and are never upstream tokens.
-Network, audit, deadlines, response sealing and lease cleanup remain Broker-owned.
-
-## Backup and restore
-
-Backup requires fresh step-up and returns the actual authenticated snapshot
-`generation` plus SHA-256. Backup itself does not advance the generation.
-
-```bash
-rekey backup --output /secure/path/rekey.backup
-# Save the successful receipt and its SHA-256 separately.
+rekey lock
 rekey shutdown
-mkdir -m 700 /secure/path/restored-state
-rekey --state-dir /secure/path/restored-state restore \
-  --input /secure/path/rekey.backup --sha256 RECEIPT_SHA256 \
-  --inspect > /secure/path/restore-context.json
 ```
 
-Inspect the public context: `vault_id`, `source_generation`, `high_water` and
-`history_missing`. Verify it identifies the intended backup and target history.
-Only after that review, explicitly confirm the exact returned JSON:
-
-```bash
-rekey --state-dir /secure/path/restored-state restore \
-  --input /secure/path/rekey.backup --sha256 RECEIPT_SHA256 \
-  --expected-context "$(cat /secure/path/restore-context.json)"
-```
-
-Both calls authenticate the source using a hidden password prompt; add
-`--recovery` to both for its recovery key. Explicit stdin automation requires
-`--password-stdin` and the confirmed context on the write call. Never supply a
-password in argv or the context JSON. The preview is read-only; ordinary
-password verification is not consent to replace generation history. A stale
-context must be inspected and reviewed again, not retried automatically.
-
-Restore is offline, supports only the current format, and requires an empty
-destination or its verified interrupted-restore state. It reserves a generation
-above both source and actual high-water history before installing the database.
-The receipt reports that new target generation. Restored state starts locked
-and keeps the source's password/recovery factors. Never remove an anchor or
-incomplete marker to bypass this check.
-
-For a running vault that reports `ROLLBACK_SUSPECTED`, ordinary unlock has not
-released credentials. Read `rekey status`, review its `rollback` object, and use
-`rekey rollback-confirm --expected-context 'EXACT_ROLLBACK_OBJECT'` with password
-or recovery proof. Presence is not accepted. Confirmation checks the actual
-history again and leaves the vault locked; explicitly unlock afterward. A wrong
-proof does not advance generation or write a decision. After lock/restart,
-ordinary unlock must detect the condition again before confirmation is allowed.
-See the [recovery runbook](operations-runbook.md#interrupted-restore-or-init).
-
-## First Agent shell integration (lab source checkout)
-
-The source-only `scripts/agent-quickstart.py` provides an explicit shell entry
-for a host such as Codex CLI. It prepares one Action and a short session on a
-dedicated, unlocked vault. It refuses existing policy/trust so it cannot replace
-your other grants. This is a bounded onboarding flow, not an MCP server or an
-automatic signing service.
-
-Build with `cargo build --workspace --features lab`. In your operator terminal:
-
-```bash
-target/debug/rekey --state-dir /tmp/rekey-agent-demo init --mode team
-target/debug/rekey --state-dir /tmp/rekey-agent-demo serve
-# In another operator terminal:
-target/debug/rekey --state-dir /tmp/rekey-agent-demo unlock
-# Prepare an owner-only github-app-installation-v2 profile first (see GitHub App
-# closed profile above), then:
-python3 scripts/agent-quickstart.py prepare \
-  --rekey target/debug/rekey --state-dir /tmp/rekey-agent-demo \
-  --repo OWNER/DEDICATED-TEST-REPO \
-  --github-app-profile /secure/path/github-app-profile.json \
-  --output /tmp/rekey-agent-handoff
-```
-
-Record the recovery key from init. `prepare --repo` requires a GitHub App
-credential because `/repos/{owner}/{repo}/issues` is reserved for that
-connector; pass `--github-app-profile PATH` or reuse `--credential ID`. Keep
-the profile owner-readable only and delete it after enrollment. The App needs
-Issues: Write on that test repository, and Issues must be enabled there.
-After an indeterminate write result, inspect the repository and audit trail
-before any new attempt. Every Admin mutation still prompts for its step-up
-proof. To use an existing fixed Action instead of creating the GitHub Action,
-pass `--action ID@VERSION --schema schema.json`.
-
-Review `policy-draft.json`: it permits one principal to execute one Action
-version, accepts only the indicated request schema, and expires with the
-15-minute/10-use session. Have your external signer produce `trust.json` and
-`bundle.json`. Then activate them in the operator terminal:
-
-```bash
-target/debug/rekey --state-dir /tmp/rekey-agent-demo policy trust install --file trust.json
-target/debug/rekey --state-dir /tmp/rekey-agent-demo policy activate --file bundle.json --expected-vault-id "$VAULT_ID" \
-  --expected-trust-sha256 "$TRUST_SHA256"
-```
-
-For a disposable local demo only, the repository's external **test signer**
-can produce those artifacts; keep the private key outside the Agent workspace:
-
-```bash
-python3 scripts/sign-test-policy.py policy --key-dir /tmp/rekey-demo-signer \
-  --snapshot /tmp/rekey-agent-handoff/policy-draft.json \
-  --trust /tmp/rekey-demo-trust.json --bundle /tmp/rekey-demo-bundle.json
-```
-
-Use these two generated paths in the activation commands. The test signer is
-not a production key-management workflow. This team-mode example keeps the
-external signer key outside Rekey; personal mode instead uses the App SE key.
-
-Give the host the absolute script and handoff paths plus this instruction:
-
-> To create an issue in the authorized test repository, write a JSON file
-> with `title` and optional `body`, then run `python3 /ABS/REKEY/scripts/agent-quickstart.py
-> execute --handoff /tmp/rekey-agent-handoff --body-file /ABS/request.json`.
-> Report the returned issue URL. On failure, stop and ask the operator to
-> repair access. Never ask for a token or vault password in chat and never
-> automatically retry a write whose outcome is uncertain.
-
-The wrapper uses only `agent.sock` for execution. Capability input travels
-over stdin, not argv or environment. The handoff directory is 0700 and files
-are 0600; it contains a short-lived capability, so do not commit or paste it.
-The wrapper exits nonzero on upstream HTTP errors. A host shell must be able
-to access the script, handoff and Unix socket; this adds no OS isolation.
-
-If the credential becomes unavailable, the operator inspects `credential list`
-and uses `credential rotate ID` in a trusted terminal, then explicitly retries
-after checking whether an effect already occurred. A revoked credential may
-need a new credential and Action version; `rotate` does not undo revocation.
-Lock/restart/expiry requires a new session and a newly signed policy naming its
-new principal. The bounded helper does not renew sessions or edit existing
-policy; use the existing Admin commands for subsequent sessions. To close a
-demo immediately, `rekey --state-dir /tmp/rekey-agent-demo lock` revokes its
-sessions. Remove the temporary handoff and demo signing key when finished.
-
-## Public Vault Layer B acceptance (lab operator terminal)
-
-Prepare a public HTTPS Vault test origin, an exact KV version or dynamic role,
-and a disposable token. The public source JSON omits `vault_token`, for example:
-
-```json
-{"credential_type":"vault-kv-v2-source-v1","origin":"https://YOUR-VAULT-HOST",
- "mount":"secret","path":"agents/test","version":1,"key":"token"}
-```
-
-Prepare `action.json` as a fixed HTTPS Action (its credential_id is replaced
-by the harness) and `schema.json` for the request. The target should accept
-the selected credential and return your expected status only on success.
-
-```bash
-cargo build --release -p rekey-cli -p rekey-broker --features lab
-python3 scripts/dogfood-vault.py --source source-public.json \
-  --action action.json --schema schema.json --body-file request.json \
-  --expected-status 200 --receipt /tmp/rekey-vault-layer-b.json
-```
-
-Use `vault-dynamic-source-v2` with `mount`, `role`, `key`,
-`renew_increment_seconds` (5–300) and public `origin`
-for the dynamic path. A hidden prompt reads the token. The harness creates and
-removes a disposable local vault and test signer, uses production TLS/IP
-screening, and writes a new metadata-only receipt only after the expected HTTP
-status and audit sequence pass. It does not deploy Vault or configure provider
-permissions. Dynamic receipt validation requires `vault.lease.issued` and
-`vault.lease.revoked` before `execution.finished`. Provider expiry still bounds
-crash-time cleanup. No public run is claimed merely by adding this script.
-
-## Errors and exit codes
-
-| Exit | Meaning | Typical codes |
-| --- | --- | --- |
-| 2 | Invalid input, frame, or policy | `USAGE`, `INVALID_INPUT`, `POLICY_INVALID` |
-| 3 | Locked or authentication failure | `LOCKED`, `AUTHENTICATION_FAILED`, `UNLOCK_RATE_LIMITED` |
-| 4 | Authorization/capability/credential denial | `ACTION_DENIED`, `INVALID_CAPABILITY`, `CREDENTIAL_UNAVAILABLE`, `APPROVAL_REQUIRED` |
-| 5 | Durable state, crypto, audit, or bootstrap failure | `STORAGE_UNAVAILABLE`, `FAULTED`, `RESTORE_FAILED` |
-| 6 | Upstream transport/size failure | `UPSTREAM_FAILED`, `RESPONSE_TOO_LARGE` |
-| 7 | Other explicit failure | code shown on stderr |
-| 8 | Post-effect security/audit uncertainty | `UPSTREAM_INDETERMINATE`, `RESPONSE_SECURITY_VIOLATION`, `AUDIT_COMMIT_FAILED_AFTER_EXECUTION` |
-
-An exit 8 means a remote effect may have occurred; do not blindly retry.
-
-If a domain resolves only into `198.18.0.0/15`, Clash/TUN Fake-IP is being
-rejected by design. Configure real DNS for that exact host; never weaken
-private-IP screening or set a proxy environment variable as a workaround.
-
-
-### Node administrator OIDC login (lab)
-
-An administrator-configured node may require a short-lived OIDC identity for
-its management operations. Follow the [profile and login procedure](operations-runbook.md#oidc-node-administrator-login):
-unlock locally, Begin, open the returned HTTPS URL on the node's machine, then
-Finish to a new private session file. Add `--admin-session-file FILE` to operator
-CLI calls; step-up proof remains required for mutations. The token is never
-shown in stdout. Cancel stops an unfinished flow; Logout revokes local management
-identities and their capabilities.
-
-The macOS Settings screen exposes profile selection, Begin/open/Finish/Cancel,
-existing session-file selection and Logout. Selecting a new file clears the old
-displayed principal; switching workspace, locking or disconnecting clears login
-state. Browser focus changes preserve the pending login. Actual GUI/IdP/Broker
-execution is still an acceptance gate; local source tests alone do not prove SSO.
+锁定立即终止本机授权和审批窗口。关闭 App 不等于停止 daemon。`shutdown` 和备份等写操作需要新的逐次证明。备份、恢复、磁盘故障和格式升级的具体步骤见[运维手册](operations-runbook.md)。公开安装包、真实设备验收和发布状态见[候选发布说明](releases/v0.4.0-alpha.1.md)。

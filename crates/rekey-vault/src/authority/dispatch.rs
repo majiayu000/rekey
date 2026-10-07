@@ -13,6 +13,122 @@ impl Worker {
     /// Returns true when the worker should stop.
     pub(super) fn handle(&mut self, cmd: AuthorityCommand) -> bool {
         match cmd {
+            AuthorityCommand::OAuthGrantCreate {
+                label,
+                payload,
+                proof,
+                not_after,
+                reply,
+            } => {
+                let result = self.oauth_grant_create(label, payload, proof, not_after);
+                self.touch_if_ok(&result);
+                let _ = reply.send(result);
+            }
+            AuthorityCommand::OAuthGrantUpdate {
+                credential_id,
+                expected_version,
+                payload,
+                proof,
+                not_after,
+                reply,
+            } => {
+                let result = self.oauth_grant_update(
+                    credential_id,
+                    expected_version,
+                    payload,
+                    proof,
+                    not_after,
+                );
+                self.touch_if_ok(&result);
+                let _ = reply.send(result);
+            }
+            AuthorityCommand::RotateOAuthGrant {
+                credential_id,
+                expected_version,
+                payload,
+                reason,
+                not_after,
+                reply,
+            } => {
+                let result = self.rotate_oauth_grant(
+                    credential_id,
+                    expected_version,
+                    payload,
+                    reason,
+                    not_after,
+                );
+                self.touch_if_ok(&result);
+                let _ = reply.send(result);
+            }
+            AuthorityCommand::PrepareOAuthGrant {
+                credential_id,
+                reply,
+            } => {
+                let result = self.prepare_oauth_grant(credential_id);
+                self.touch_if_ok(&result);
+                let _ = reply.send(result);
+            }
+            AuthorityCommand::PrepareAwsStatic {
+                credential_id,
+                reply,
+            } => {
+                let result = self.prepare_aws_static(credential_id);
+                self.touch_if_ok(&result);
+                let _ = reply.send(result);
+            }
+            AuthorityCommand::SshGenerate {
+                label,
+                mode,
+                proof,
+                not_after,
+                reply,
+            } => {
+                let result = self.ssh_generate(label, mode, proof, not_after);
+                self.touch_if_ok(&result);
+                let _ = reply.send(result);
+            }
+            AuthorityCommand::SshImport {
+                label,
+                private_key,
+                proof,
+                not_after,
+                reply,
+            } => {
+                let result = self.ssh_import(label, private_key, proof, not_after);
+                self.touch_if_ok(&result);
+                let _ = reply.send(result);
+            }
+            AuthorityCommand::SshSign {
+                credential_id,
+                public_key,
+                data,
+                started,
+                not_after,
+                reply,
+            } => {
+                let result = self.ssh_sign(credential_id, public_key, data, *started, not_after);
+                self.touch_if_ok(&result);
+                let _ = reply.send(result);
+            }
+            AuthorityCommand::ScanCredentials {
+                inputs,
+                credentials,
+                reply,
+            } => {
+                let result = self.scan_credentials(inputs, credentials);
+                self.touch_if_ok(&result);
+                let _ = reply.send(result);
+            }
+            AuthorityCommand::ImportEnv {
+                request,
+                proof,
+                not_after,
+                reply,
+            } => {
+                let result = self.import_env(request, proof, not_after);
+                self.touch_if_ok(&result);
+                let _ = reply.send(result);
+            }
             AuthorityCommand::LeaseAcquireBegin {
                 context,
                 source,

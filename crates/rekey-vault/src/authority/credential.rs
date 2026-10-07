@@ -214,6 +214,22 @@ impl Worker {
     ) -> Result<CredentialMetadata, AuthorityError> {
         self.require_unlocked()?;
         self.verify_proof(&proof)?;
+        // Dedicated SSH generation/import validates the private/public pair
+        // and establishes the hardware origin; generic bytes cannot do so.
+        if matches!(
+            kind,
+            CredentialKind::SshEd25519
+                | CredentialKind::SshP256
+                | CredentialKind::SshSecureEnclaveP256
+        ) {
+            return Err(AuthorityError::CredentialSourceUnavailable);
+        }
+        if kind == CredentialKind::OAuthGrant {
+            return Err(AuthorityError::CredentialSourceUnavailable);
+        }
+        if kind == CredentialKind::AwsStatic {
+            super::tokens::validate_aws(secret.expose())?;
+        }
         self.insert_credential(label, kind, secret, not_after)
     }
 
@@ -322,6 +338,31 @@ impl Worker {
     ) -> Result<CredentialMetadata, AuthorityError> {
         self.require_unlocked()?;
         self.verify_proof(&proof)?;
+        if expected_kind == CredentialKind::OAuthGrant {
+            return Err(AuthorityError::CredentialSourceUnavailable);
+        }
+        self.rotate_credential_inner(
+            credential_id,
+            expected_kind,
+            expected_version,
+            secret,
+            not_after,
+            event_type::CREDENTIAL_ROTATED,
+        )
+    }
+
+    /// Callers establish their own mutation authorization before entering this
+    /// shared atomic persistence path. OAuth refresh is deliberately narrow.
+    pub(super) fn rotate_credential_inner(
+        &mut self,
+        credential_id: CredentialId,
+        expected_kind: CredentialKind,
+        expected_version: Option<u64>,
+        secret: SecretInput,
+        not_after: Option<std::time::Instant>,
+        audit_type: &'static str,
+    ) -> Result<CredentialMetadata, AuthorityError> {
+        self.require_unlocked()?;
         if secret.is_empty() {
             return Err(AuthorityError::Domain(
                 rekey_domain::DomainError::InvalidCapability,
@@ -338,6 +379,14 @@ impl Worker {
                 ),
             ));
         }
+        if matches!(
+            expected_kind,
+            CredentialKind::SshEd25519
+                | CredentialKind::SshP256
+                | CredentialKind::SshSecureEnclaveP256
+        ) {
+            return Err(AuthorityError::CredentialSourceUnavailable);
+        }
         if expected_version.is_some_and(|version| version != updated.current_version) {
             return Err(AuthorityError::Domain(
                 rekey_domain::DomainError::InvalidActionDefinition(
@@ -349,17 +398,28 @@ impl Worker {
         if expected_kind == CredentialKind::MacosKeychainSource {
             super::keychain_source::Reference::import(secret.expose(), now_ms()?)?;
         }
-        let next = updated.current_version + 1;
+        if expected_kind == CredentialKind::AwsStatic {
+            super::tokens::validate_aws(secret.expose())?;
+        }
+        let next = updated
+            .current_version
+            .checked_add(1)
+            .filter(|v| *v <= i64::MAX as u64)
+            .ok_or(AuthorityError::StorageIntegrityFailed)?;
         let now = now_ms()?;
         let version = self.encrypt_new_version(credential_id, next, expected_kind, &secret, now)?;
         updated.current_version = next;
         updated.updated_at_ms = now;
         self.refresh_state_seal(&mut updated)?;
         let audit = self.audit_event_or_fault(credential_audit(
-            event_type::CREDENTIAL_ROTATED,
+            audit_type,
             credential_id,
             next,
-            "rotate",
+            match audit_type {
+                "oauth.refreshed" => "oauth-refresh",
+                "oauth.authorized" => "oauth-authorization",
+                _ => "rotate",
+            },
         ))?;
         ensure_mutation_current(not_after)?;
         let observed = self.mutation_observation()?;
@@ -432,7 +492,7 @@ impl Worker {
         &mut self,
         credential_id: CredentialId,
     ) -> Result<PreparedCredential, AuthorityError> {
-        let result = self.prepare_credential_inner(credential_id, None);
+        let result = self.prepare_credential_inner(credential_id, None, false);
         if matches!(
             result,
             Err(AuthorityError::CryptoFailure | AuthorityError::StorageIntegrityFailed)
@@ -454,6 +514,7 @@ impl Worker {
         let result = self.prepare_credential_inner(
             credential_id,
             Some((request_id, action_id, action_version, deadline)),
+            false,
         );
         if matches!(
             result,
@@ -462,6 +523,14 @@ impl Worker {
             self.fault("credential-integrity-failed");
         }
         result
+    }
+
+    pub(super) fn prepare_internal_credential(
+        &mut self,
+        credential_id: CredentialId,
+    ) -> Result<PreparedCredential, AuthorityError> {
+        let result = self.prepare_credential_inner(credential_id, None, true);
+        self.fault_on_integrity(result)
     }
 
     fn prepare_credential_inner(
@@ -473,8 +542,21 @@ impl Worker {
             u64,
             std::time::Instant,
         )>,
+        allow_service_material: bool,
     ) -> Result<PreparedCredential, AuthorityError> {
         let credential = self.load_verified_credential(credential_id)?;
+        if !allow_service_material
+            && matches!(
+                credential.kind,
+                CredentialKind::SshEd25519
+                    | CredentialKind::SshP256
+                    | CredentialKind::SshSecureEnclaveP256
+                    | CredentialKind::OAuthGrant
+                    | CredentialKind::AwsStatic
+            )
+        {
+            return Err(AuthorityError::CredentialSourceUnavailable);
+        }
         if credential.kind == CredentialKind::MacosKeychainSource
             && (!cfg!(feature = "lab") || execution.is_none())
         {

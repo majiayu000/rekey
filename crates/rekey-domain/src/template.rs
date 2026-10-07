@@ -30,7 +30,8 @@ fn safe_value(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
-pub(crate) fn slug(value: &str, max: usize) -> bool {
+/// Shared ASCII slug grammar for declaration names and individual path segments.
+pub fn slug(value: &str, max: usize) -> bool {
     safe_value(value) && value.len() <= max && value.as_bytes()[0].is_ascii_alphanumeric()
 }
 
@@ -625,11 +626,28 @@ fn request_target(path: &ExactPath, query: &TemplateValues) -> String {
             path.as_str(),
             query
                 .iter()
-                .map(|(key, value)| format!("{key}={value}"))
+                .map(|(key, value)| format!("{key}={}", encode_query_value(value)))
                 .collect::<Vec<_>>()
                 .join("&")
         )
     }
+}
+
+// RFC3986 unreserved bytes retain the existing template rendering. Other bytes
+// cannot introduce query keys, delimiters, or a fragment in local CALL values.
+fn encode_query_value(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    const HEX: &[u8] = b"0123456789ABCDEF";
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            output.push(char::from(byte));
+        } else {
+            output.push('%');
+            output.push(char::from(HEX[(byte >> 4) as usize]));
+            output.push(char::from(HEX[(byte & 15) as usize]));
+        }
+    }
+    output
 }
 
 impl BoundTemplate {

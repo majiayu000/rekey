@@ -12,9 +12,11 @@ use serde_json::{Value, json};
 
 const ID: &str = "00112233-4455-4677-8899-aabbccddeeff";
 const OTHER_ID: &str = "00112233-4455-4677-8899-aabbccddee00";
+#[cfg(feature = "lab")]
 const ACTION: &str = "00112233-4455-4677-8899-aabbccddeeff@1";
 const DIGEST: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const PRESENCE: &[u8] = b"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n";
+#[cfg(feature = "lab")]
 const CAPABILITY: &[u8] = b"synthetic-capability\n";
 
 enum Reply {
@@ -379,23 +381,27 @@ fn explicit_presence_decisions_bind_hash_and_only_send_proof_in_body() {
 }
 
 #[test]
-fn await_and_cancel_use_owner_token_and_return_only_typed_bound_state() {
+fn await_and_cancel_are_token_free_and_return_only_typed_bound_state() {
     for (command, opcode, result) in [
         ("await", agent_msg::AWAIT_APPROVAL, "pending"),
         ("cancel", agent_msg::CANCEL_APPROVAL, "cancelled"),
     ] {
         let output = exchange(
             Channel::Agent,
-            &["approval", command, ID, "--capability", "-"],
-            CAPABILITY,
+            &["approval", command, ID],
+            &[],
             move |request, meta, body| {
                 assert_eq!(request.message_type, opcode);
                 assert!(body.is_empty());
                 assert_eq!(
                     meta,
-                    json!({"approval_request_id":ID,"capability_token":"synthetic-capability"})
+                    if command == "await" {
+                        json!({"request_id":ID,"timeout_s":120})
+                    } else {
+                        json!({"request_id":ID})
+                    }
                 );
-                Reply::Ok(state(result), Vec::new())
+                Reply::Ok(json!({}), state(result).to_string().into_bytes())
             },
         );
         assert!(output.status.success());
@@ -407,7 +413,7 @@ fn await_and_cancel_use_owner_token_and_return_only_typed_bound_state() {
     for case in ["id", "expiry", "state", "extra", "body"] {
         assert_invalid(exchange(
             Channel::Agent,
-            &["approval", "await", ID, "--capability", "fixture"],
+            &["approval", "await", ID],
             &[],
             move |_, _, _| {
                 let mut meta = state("approved");
@@ -419,18 +425,19 @@ fn await_and_cancel_use_owner_token_and_return_only_typed_bound_state() {
                     _ => {}
                 }
                 Reply::Ok(
-                    meta,
                     if case == "body" {
-                        b"unexpected".to_vec()
+                        json!({"unexpected":true})
                     } else {
-                        Vec::new()
+                        json!({})
                     },
+                    meta.to_string().into_bytes(),
                 )
             },
         ));
     }
 }
 
+#[cfg(feature = "lab")]
 fn execute_args(stream: bool) -> Vec<&'static str> {
     if stream {
         vec![
@@ -447,6 +454,7 @@ fn execute_args(stream: bool) -> Vec<&'static str> {
 }
 
 #[test]
+#[cfg(feature = "lab")]
 fn execute_and_stream_preserve_structured_approval_required_and_challenge() {
     for stream in [false, true] {
         let mut args = execute_args(stream);
@@ -485,6 +493,7 @@ fn execute_and_stream_preserve_structured_approval_required_and_challenge() {
 }
 
 #[test]
+#[cfg(feature = "lab")]
 fn malformed_approval_required_is_rejected_for_buffered_and_stream() {
     for stream in [false, true] {
         for case in ["missing", "retryable", "message", "id", "other-code"] {
@@ -584,6 +593,7 @@ fn invalid_decision_and_conflicting_execution_flags_fail_before_stdin_or_connect
         assert_eq!(output.status.code(), Some(2));
         assert!(String::from_utf8_lossy(&output.stderr).contains("review digest"));
     }
+    #[cfg(feature = "lab")]
     for stream in [false, true] {
         let output = Command::new(env!("CARGO_BIN_EXE_rekey"))
             .args(execute_args(stream))
@@ -594,4 +604,55 @@ fn invalid_decision_and_conflicting_execution_flags_fail_before_stdin_or_connect
         assert_eq!(output.status.code(), Some(2));
         assert!(String::from_utf8_lossy(&output.stderr).contains("cannot be used with"));
     }
+}
+
+#[test]
+fn only_explicit_approve_can_select_a_rule_time_window() {
+    let output = exchange(
+        Channel::Admin,
+        &[
+            "approval",
+            "approve",
+            ID,
+            "--review-sha256",
+            DIGEST,
+            "--presence",
+            "--password-stdin",
+            "--window-seconds",
+            "1800",
+        ],
+        PRESENCE,
+        |request, metadata, body| {
+            assert_eq!(request.message_type, admin_msg::APPROVAL_LOCAL_APPROVE);
+            assert_eq!(
+                metadata,
+                json!({"approval_request_id":ID,"expected_review_sha256":DIGEST,"window_seconds":1800})
+            );
+            assert_eq!(
+                ipc::parse_local_approval_proof_body(&body).unwrap(),
+                &PRESENCE[..PRESENCE.len() - 1]
+            );
+            Reply::Ok(state("approved"), Vec::new())
+        },
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let denied = Command::new(env!("CARGO_BIN_EXE_rekey"))
+        .args([
+            "approval",
+            "reject",
+            ID,
+            "--review-sha256",
+            DIGEST,
+            "--presence",
+            "--password-stdin",
+            "--window-seconds",
+            "1800",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(denied.status.code(), Some(2));
 }

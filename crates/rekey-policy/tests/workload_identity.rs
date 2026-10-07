@@ -64,7 +64,7 @@ fn snapshot(identities: Vec<Value>) -> (Vec<u8>, ActionVersionRef) {
         })
         .collect::<Vec<_>>();
     let value = json!({
-        "format_version": 6, "profiles": [],
+        "format_version": 7, "connections": [], "ssh_keys": [], "derived_credentials": [], "profiles": [],
         "version": 1,
         "expires_at_ms": 2_000_000_000,
         "approvers": [],

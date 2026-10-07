@@ -25,11 +25,11 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 zeroize = "1"
 toml_edit = "=0.25.15"
+data-encoding = "2"
 
 [dev-dependencies]
 tempfile = { workspace = true }
 aws-lc-rs = "1.18"
-data-encoding = "2"
 serde_jcs = "0.2"
 
 [features]
@@ -54,4 +54,8 @@ required-features = ["lab"]
 
 [[test]]
 name = "onepassword_source_blackbox"
+required-features = ["lab"]
+
+[[test]]
+name = "profile_run"
 required-features = ["lab"]

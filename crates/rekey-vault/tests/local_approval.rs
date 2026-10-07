@@ -32,13 +32,16 @@ fn draft(approved: bool) -> AuditDraft {
             approval_id: approved.then(ApprovalId::new_random),
             approver_id: None,
         }),
-        request_context: Some(rekey_domain::audit::ProfileRequestAuditContext {
-            profile_name: "local-writer".into(),
-            policy_sha256: "01".repeat(32),
-            instance_slug: "repo".into(),
-            capability: "issues".into(),
-            model: None,
-        }),
+        request_context: Some(
+            rekey_domain::audit::ProfileRequestAuditContext {
+                profile_name: "local-writer".into(),
+                policy_sha256: "01".repeat(32),
+                instance_slug: "repo".into(),
+                capability: "issues".into(),
+                model: None,
+            }
+            .into(),
+        ),
         usage: None,
         event_type: if approved {
             event_type::APPROVAL_APPROVED

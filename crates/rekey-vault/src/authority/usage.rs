@@ -69,7 +69,15 @@ impl Worker {
         if ctx
             .request_context
             .as_ref()
-            .is_some_and(|context| context.instance_slug != usage.instance_slug)
+            .is_some_and(|context| match context {
+                rekey_domain::audit::RequestAuditContext::Profile(profile) => {
+                    profile.instance_slug != usage.instance_slug
+                }
+                rekey_domain::audit::RequestAuditContext::Connection(connection) => {
+                    connection.connection != usage.instance_slug
+                }
+                rekey_domain::audit::RequestAuditContext::Derived(_) => true,
+            })
         {
             return Err(invalid("profile usage instance mismatch"));
         }

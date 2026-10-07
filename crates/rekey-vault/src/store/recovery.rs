@@ -6,7 +6,7 @@ use crate::error::AuthorityError;
 use crate::model::AuthorizationEvidence;
 
 pub struct UnterminatedExecution {
-    pub request_context: Option<rekey_domain::audit::ProfileRequestAuditContext>,
+    pub request_context: Option<rekey_domain::audit::RequestAuditContext>,
     pub request_id: RequestId,
     pub session_id: Option<SessionId>,
     pub action_id: Option<ActionId>,

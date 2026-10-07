@@ -62,6 +62,12 @@ pub enum CredentialKind {
     #[serde(rename = "onepassword-connect-source")]
     OnePasswordConnectSource,
     MacosKeychainSource,
+    SshEd25519,
+    SshP256,
+    SshSecureEnclaveP256,
+    #[serde(rename = "oauth-grant")]
+    OAuthGrant,
+    AwsStatic,
 }
 
 impl CredentialKind {
@@ -77,6 +83,11 @@ impl CredentialKind {
             Self::AzureKeyVaultSource => "azure-key-vault-source",
             Self::OnePasswordConnectSource => "onepassword-connect-source",
             Self::MacosKeychainSource => "macos-keychain-source",
+            Self::SshEd25519 => "ssh-ed25519",
+            Self::SshP256 => "ssh-p256",
+            Self::SshSecureEnclaveP256 => "ssh-secure-enclave-p256",
+            Self::OAuthGrant => "oauth-grant",
+            Self::AwsStatic => "aws-static",
         }
     }
 
@@ -92,6 +103,11 @@ impl CredentialKind {
             "azure-key-vault-source" => Ok(Self::AzureKeyVaultSource),
             "onepassword-connect-source" => Ok(Self::OnePasswordConnectSource),
             "macos-keychain-source" => Ok(Self::MacosKeychainSource),
+            "ssh-ed25519" => Ok(Self::SshEd25519),
+            "ssh-p256" => Ok(Self::SshP256),
+            "ssh-secure-enclave-p256" => Ok(Self::SshSecureEnclaveP256),
+            "oauth-grant" => Ok(Self::OAuthGrant),
+            "aws-static" => Ok(Self::AwsStatic),
             _ => Err(DomainError::InvalidId),
         }
     }
@@ -109,6 +125,11 @@ impl CredentialKind {
             Self::AzureKeyVaultSource => 8,
             Self::OnePasswordConnectSource => 9,
             Self::MacosKeychainSource => 10,
+            Self::SshEd25519 => 11,
+            Self::SshP256 => 12,
+            Self::SshSecureEnclaveP256 => 13,
+            Self::OAuthGrant => 14,
+            Self::AwsStatic => 15,
         }
     }
 }
@@ -188,6 +209,17 @@ pub struct CredentialVersionMetadata {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn oauth_and_aws_source_kinds_bind_distinct_aad_codes() {
+        for (kind, wire, code) in [
+            (CredentialKind::OAuthGrant, "oauth-grant", 14),
+            (CredentialKind::AwsStatic, "aws-static", 15),
+        ] {
+            assert_eq!(kind.aad_code(), code);
+            assert_eq!(CredentialKind::parse(wire).unwrap(), kind);
+            assert_eq!(serde_json::to_value(kind).unwrap(), wire);
+        }
+    }
     use super::*;
 
     #[test]

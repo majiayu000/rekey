@@ -639,7 +639,11 @@ async fn vrk_rotation_late_corruption_sql_rowcount_audit_and_commit_fail_closed(
 async fn vrk_rotation_missing_wrapper_uses_denial_backoff_but_corrupt_kdf_faults() {
     for mode in ["missing-password", "missing-recovery", "kdf"] {
         let vault = common::init_test_vault();
-        let (handle, join) = common::spawn(&vault.state_dir);
+        let mut config = common::test_config(&vault.state_dir);
+        // The denial audit is durable before this call returns. Its fsync and
+        // scheduler delay may outlast the shared fixture's 20 ms backoff.
+        config.unlock_backoff_base = Duration::from_secs(30);
+        let (handle, join) = rekey_vault::authority::spawn_authority(config).unwrap();
         let db = Connection::open(paths::vault_db(&vault.state_dir)).unwrap();
         if mode == "kdf" {
             db.execute(

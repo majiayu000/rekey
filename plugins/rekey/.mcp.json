@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "rekey": {
+      "command": "rekey-mcp"
+    }
+  }
+}

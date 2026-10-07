@@ -9,19 +9,67 @@ use tokio::task::{JoinError, JoinSet};
 
 use crate::error::BrokerError;
 use crate::executor::text_stream::{TextStreamEvent, TextStreamSender};
-use crate::executor::{ActionExecutor, ExecuteOutcome, ExecuteRequest};
+use crate::executor::{
+    ActionExecutor, AdmittedExecution, ExecuteOutcome, ExecuteRequest, LocalExecuteRequest,
+};
 use rekey_domain::ipc::TextStreamStatus;
 
 const EXECUTION_QUEUE_CAPACITY: usize = 120;
+const MAX_EXECUTION_TASKS: usize = crate::lifecycle::MAX_CONNECTION_EXECUTIONS as usize;
 
 struct ExecutionJob {
-    request: ExecuteRequest,
+    request: ExecutionRequest,
     response: ExecutionResponse,
+}
+enum ExecutionRequest {
+    Action(ExecuteRequest),
+    Local(LocalExecuteRequest),
+}
+impl ExecutionRequest {
+    async fn admit(
+        self,
+        executor: &Arc<ActionExecutor>,
+        http: bool,
+        stream: bool,
+    ) -> Result<AdmittedExecution, BrokerError> {
+        match self {
+            Self::Local(request) => executor.admit_connection(request).await,
+            Self::Action(request) if http => executor.admit_http(request).await,
+            Self::Action(request) if stream => executor.admit_stream(request).await,
+            Self::Action(request) => executor.admit(request).await,
+        }
+    }
 }
 enum ExecutionResponse {
     Buffered(oneshot::Sender<Result<ExecuteOutcome, BrokerError>>),
     Stream(TextStreamSender),
     Http(oneshot::Sender<Result<HttpExecution, BrokerError>>),
+}
+
+impl ExecutionResponse {
+    fn reject_busy(self) {
+        let error = BrokerError::Admission(AuthorityError::AuthorityBusy);
+        match self {
+            Self::Buffered(response) => {
+                let _ = response.send(Err(error));
+            }
+            Self::Http(response) => {
+                let _ = response.send(Err(error));
+            }
+            Self::Stream(response) => {
+                let _ = response.try_send(TextStreamEvent::AdmissionError(error));
+            }
+        }
+    }
+}
+
+fn admit_job(job: ExecutionJob, active_tasks: usize) -> Option<ExecutionJob> {
+    if active_tasks >= MAX_EXECUTION_TASKS {
+        job.response.reject_busy();
+        None
+    } else {
+        Some(job)
+    }
 }
 
 pub(crate) enum HttpExecution {
@@ -74,14 +122,14 @@ pub(crate) fn new(
 }
 
 impl ExecutionSupervisorHandle {
-    pub(crate) async fn submit_http(
+    pub(crate) async fn submit_local(
         &self,
-        request: ExecuteRequest,
+        request: LocalExecuteRequest,
     ) -> Result<oneshot::Receiver<Result<HttpExecution, BrokerError>>, BrokerError> {
         let (response, result) = oneshot::channel();
         self.tx
             .send(ExecutionJob {
-                request,
+                request: ExecutionRequest::Local(request),
                 response: ExecutionResponse::Http(response),
             })
             .await
@@ -96,7 +144,7 @@ impl ExecutionSupervisorHandle {
         let (response, result) = mpsc::channel(1);
         self.tx
             .send(ExecutionJob {
-                request,
+                request: ExecutionRequest::Action(request),
                 response: ExecutionResponse::Stream(response),
             })
             .await
@@ -112,7 +160,7 @@ impl ExecutionSupervisorHandle {
         let (response, result) = oneshot::channel();
         self.tx
             .send(ExecutionJob {
-                request,
+                request: ExecutionRequest::Action(request),
                 response: ExecutionResponse::Buffered(response),
             })
             .await
@@ -144,11 +192,14 @@ impl ExecutionSupervisor {
                     }
                     SupervisorEvent::Job(job) => {
                         let Some(job) = job else { break };
+                        let Some(job) = admit_job(*job, self.tasks.len()) else {
+                            continue;
+                        };
                         let executor = Arc::clone(&self.executor);
                         self.tasks.spawn(async move {
                             match job.response {
                                 ExecutionResponse::Http(response) => {
-                                    match executor.admit_http(job.request).await {
+                                    match job.request.admit(&executor, true, false).await {
                                         Ok(admitted) if admitted.raw_stream() => {
                                             let (sender, receiver) = mpsc::channel(1);
                                             let _ =
@@ -203,31 +254,34 @@ impl ExecutionSupervisor {
                                     }
                                 }
                                 ExecutionResponse::Buffered(response) => {
-                                    let outcome = match executor.admit(job.request).await {
-                                        Ok(admitted) => admitted.run().await,
-                                        Err(err) => Err(err),
-                                    };
+                                    let outcome =
+                                        match job.request.admit(&executor, false, false).await {
+                                            Ok(admitted) => admitted.run().await,
+                                            Err(err) => Err(err),
+                                        };
                                     let _ = response.send(outcome);
                                 }
                                 ExecutionResponse::Stream(response) => {
-                                    let outcome = match executor.admit_stream(job.request).await {
-                                        Ok(admitted) => {
-                                            let _ = response
-                                                .send(TextStreamEvent::Admitted {
-                                                    deadline: admitted.deadline(),
-                                                })
+                                    let outcome =
+                                        match job.request.admit(&executor, false, true).await {
+                                            Ok(admitted) => {
+                                                let _ = response
+                                                    .send(TextStreamEvent::Admitted {
+                                                        deadline: admitted.deadline(),
+                                                    })
+                                                    .await;
+                                                admitted.run_stream(&response).await
+                                            }
+                                            Err(err) => {
+                                                let _ = tokio::time::timeout(
+                                                    std::time::Duration::from_secs(1),
+                                                    response
+                                                        .send(TextStreamEvent::AdmissionError(err)),
+                                                )
                                                 .await;
-                                            admitted.run_stream(&response).await
-                                        }
-                                        Err(err) => {
-                                            let _ = tokio::time::timeout(
-                                                std::time::Duration::from_secs(1),
-                                                response.send(TextStreamEvent::AdmissionError(err)),
-                                            )
-                                            .await;
-                                            return;
-                                        }
-                                    };
+                                                return;
+                                            }
+                                        };
                                     let status = outcome
                                         .ok()
                                         .and_then(|o| o.stream_status)
@@ -273,7 +327,7 @@ mod tests {
     fn queued_job() -> ExecutionJob {
         let (response, _) = oneshot::channel();
         ExecutionJob {
-            request: ExecuteRequest {
+            request: ExecutionRequest::Action(ExecuteRequest {
                 request_id: RequestId::new_random(),
                 capability_token: String::new(),
                 action: ActionVersionRef {
@@ -287,9 +341,25 @@ mod tests {
                 body: Vec::new(),
                 approval_grants: Vec::new(),
                 local_approval_request_id: None,
-            },
+            }),
             response: ExecutionResponse::Buffered(response),
         }
+    }
+
+    #[tokio::test]
+    async fn saturated_tasks_reject_without_spawning_even_when_caller_disconnects() {
+        let (response, result) = oneshot::channel();
+        let mut job = queued_job();
+        job.response = ExecutionResponse::Buffered(response);
+        assert!(admit_job(job, MAX_EXECUTION_TASKS).is_none());
+        let error = result.await.unwrap().err().expect("capacity error");
+        assert_eq!(error.code(), "AUTHORITY_BUSY");
+        // All receivers in queued_job are already disconnected. Disconnection
+        // cannot bypass the same task bound or create unobserved child tasks.
+        for _ in 0..2 * EXECUTION_QUEUE_CAPACITY {
+            assert!(admit_job(queued_job(), MAX_EXECUTION_TASKS).is_none());
+        }
+        assert!(admit_job(queued_job(), MAX_EXECUTION_TASKS - 1).is_some());
     }
 
     #[tokio::test]

@@ -1,8 +1,6 @@
-use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use rekey_domain::authorization::{PolicyMode, PolicyTrustAlgorithm};
-use rekey_domain::capability::ActionVersionRef;
 use rekey_domain::ipc::{
     PersonalPolicyDraftMeta, PersonalPolicyDraftResponse, PersonalPolicyFieldChange,
     PolicyStatusResponse,
@@ -116,35 +114,29 @@ impl BrokerCtx {
             if request.expected_policy_sha256 != current_digest {
                 return Err(AuthorityError::PolicyVersionConflict.into());
             }
-            let wanted: BTreeSet<_> = request
-                .profiles
-                .iter()
-                .flat_map(|profile| &profile.grants)
-                .flat_map(|grant| &grant.capabilities)
-                .flat_map(|capability| capability.actions.iter().copied())
-                .collect();
-            let available = self.authority.action_list().await?;
-            let mut selected: Vec<_> = available
-                .into_iter()
-                .filter(|action| {
-                    wanted.contains(&ActionVersionRef {
-                        action_id: action.id,
-                        version: action.version,
-                    })
-                })
-                .collect();
-            if selected.len() != wanted.len() || selected.iter().any(|action| !action.enabled) {
-                return Err(rekey_policy::PolicyError::Invalid.into());
+            let available=self.authority.credential_list().await?;
+            for connection in &request.connections {
+                connection.validate()?;
+                let required = if connection.oauth.is_some() { rekey_domain::credential::CredentialKind::OAuthGrant } else { rekey_domain::credential::CredentialKind::OpaqueToken };
+                if !available.iter().any(|c| c.id == connection.credential_id && c.state == rekey_domain::credential::CredentialState::Active && c.kind == required) { return Err(AuthorityError::CredentialNotFound.into()); }
             }
-            selected.sort_by_key(|action| (action.id, action.version));
-            super::profile::validate_profiles(&request.profiles, &selected)?;
-            let draft = rekey_policy::personal::generate_personal_draft(
-                &trust,
-                previous.as_ref(),
-                &selected,
-                &request.profiles,
-                request.expires_at_ms,
-                crate::now_ts()?,
+            if let Some(grants) = &request.derived_credentials {
+                for grant in grants {
+                    grant.validate()?;
+                    let required = match grant.target {
+                        rekey_domain::connection::DerivedCredentialTarget::GitHubApp { .. } => rekey_domain::credential::CredentialKind::GitHubAppInstallation,
+                        _ => rekey_domain::credential::CredentialKind::AwsStatic,
+                    };
+                    if !available.iter().any(|c| c.id == grant.credential_id && c.state == rekey_domain::credential::CredentialState::Active && c.kind == required) { return Err(AuthorityError::CredentialNotFound.into()); }
+                }
+            }
+            if let Some(keys)=&request.ssh_keys {
+                for key in keys {
+                    if !available.iter().any(|c|c.id==key.credential_id && c.state==rekey_domain::credential::CredentialState::Active && matches!(c.kind,rekey_domain::credential::CredentialKind::SshEd25519|rekey_domain::credential::CredentialKind::SshP256|rekey_domain::credential::CredentialKind::SshSecureEnclaveP256)){return Err(AuthorityError::CredentialNotFound.into());}
+                }
+            }
+            let draft = rekey_policy::personal::generate_connection_draft_with_grants(
+                &trust,previous.as_ref(),&request.connections,request.ssh_keys.as_deref(),request.derived_credentials.as_deref(),request.expires_at_ms,crate::now_ts()?,
             )?;
             let base_version = previous
                 .as_ref()
@@ -172,7 +164,8 @@ impl BrokerCtx {
                         after: change.after.clone(),
                     })
                     .collect(),
-                actions: selected,
+                actions: Vec::new(),
+                connections: request.connections,
             };
             if draft.sign_bytes().len() > rekey_policy::SNAPSHOT_MAX_BYTES {
                 return Err(rekey_policy::PolicyError::TooLarge.into());
@@ -194,14 +187,16 @@ impl BrokerCtx {
     pub(crate) async fn profile_list_until(
         &self,
         deadline: tokio::time::Instant,
-    ) -> Result<rekey_domain::ipc::ProfileListResponse, BrokerError> {
+    ) -> Result<rekey_domain::ipc::ConnectionListResponse, BrokerError> {
         let _owner = self.lifecycle.coordinate_until(deadline).await?;
         self.lifecycle.reject_if_not_running()?;
         tokio::time::timeout_at(deadline, async {
             let material = self.authority.policy_material().await?;
             let Some(record) = material.bundle else {
-                return Ok(rekey_domain::ipc::ProfileListResponse {
-                    profiles: Vec::new(),
+                return Ok(rekey_domain::ipc::ConnectionListResponse {
+                    connections: Vec::new(),
+                    ssh_keys: Vec::new(),
+                    derived_credentials: Vec::new(),
                     policy_sha256: None,
                     expires_at_ms: None,
                 });
@@ -215,8 +210,10 @@ impl BrokerCtx {
                     return Err(error.into());
                 }
             };
-            Ok(rekey_domain::ipc::ProfileListResponse {
-                profiles: bundle.snapshot().profiles().to_vec(),
+            Ok(rekey_domain::ipc::ConnectionListResponse {
+                connections: bundle.snapshot().connections().to_vec(),
+                ssh_keys: bundle.snapshot().ssh_keys().to_vec(),
+                derived_credentials: bundle.snapshot().derived_credentials().to_vec(),
                 policy_sha256: Some(data_encoding::HEXLOWER.encode(&bundle.snapshot().digest())),
                 expires_at_ms: Some(bundle.snapshot().expires_at_ms()),
             })
@@ -361,6 +358,8 @@ impl BrokerCtx {
                     return Err(BrokerError::Authority(AuthorityError::AuthorityBusy));
                 }
                 self.sessions.close_and_revoke_all();
+                self.local_calls.clear();
+                self.executor.oauth.clear();
                 *self.policy.write().await = None;
                 *self.policy_trust.write().await = None;
                 self.lifecycle.enter_locked();
@@ -474,6 +473,8 @@ impl BrokerCtx {
                     return Err(BrokerError::Authority(AuthorityError::AuthorityBusy));
                 }
                 self.sessions.close_and_revoke_all();
+                self.local_calls.clear();
+                self.executor.oauth.clear();
                 *self.policy.write().await = None;
                 *self.policy_trust.write().await = None;
                 self.lifecycle.enter_locked();
@@ -558,7 +559,9 @@ mod tests {
             .ctx
             .personal_policy_draft_until(
                 rekey_domain::ipc::PersonalPolicyDraftMeta {
-                    profiles: vec![],
+                    connections: vec![],
+                    ssh_keys: None,
+                    derived_credentials: None,
                     expected_policy_sha256: None,
                     expires_at_ms: fixture.expires,
                 },
@@ -615,6 +618,7 @@ mod tests {
         let (shutdown_tx, _) = watch::channel(false);
         let (stop_tx, _) = mpsc::unbounded_channel();
         let ctx = BrokerCtx {
+            state_dir: state.clone(),
             #[cfg(feature = "lab")]
             oidc_admin: None,
             #[cfg(feature = "lab")]
@@ -622,6 +626,7 @@ mod tests {
             authority: authority.clone(),
             sessions,
             executions,
+            local_calls: Arc::clone(&executor.local_calls),
             executor,
             #[cfg(feature = "lab")]
             workload_transport: transport,
@@ -677,7 +682,7 @@ mod tests {
         let expires = crate::now_ts().unwrap().as_unix_ms() + 60_000;
         let bundle = |version| {
             let mut unsigned = serde_json::json!({"format_version":1,"signer_id":signer_id,"snapshot":{
-                "format_version":6,"version":version,"expires_at_ms":expires,"approvers":[],"profiles": [], "workload_identities":[],"bindings":[],"rules":[]
+                "format_version":7,"version":version,"expires_at_ms":expires,"approvers":[],"connections":[], "ssh_keys":[], "derived_credentials":[], "profiles": [], "workload_identities":[],"bindings":[],"rules":[]
             }});
             let mut message = b"RKPOLICY\0\x01".to_vec();
             message.extend_from_slice(&serde_jcs::to_vec(&unsigned).unwrap());
@@ -828,6 +833,7 @@ mod tests {
             let (shutdown_tx, _) = watch::channel(false);
             let (stop_tx, _) = mpsc::unbounded_channel();
             let ctx = BrokerCtx {
+                state_dir: state.clone(),
                 #[cfg(feature = "lab")]
                 oidc_admin: None,
                 #[cfg(feature = "lab")]
@@ -835,6 +841,7 @@ mod tests {
                 authority: authority.clone(),
                 sessions,
                 executions,
+                local_calls: Arc::clone(&executor.local_calls),
                 executor,
                 #[cfg(feature = "lab")]
                 workload_transport: transport,
@@ -885,10 +892,10 @@ mod tests {
             let unsigned = serde_json::json!({
                 "format_version": 1, "signer_id": self.trust.signer_id(),
                 "snapshot": {
-                    "format_version": 6, "version": version, "expires_at_ms": self.expires,
+                    "format_version": 7, "version": version, "expires_at_ms": self.expires,
                     "approvers": [{"approver_id": self.approver_id, "algorithm": "ed25519",
                         "public_key": data_encoding::HEXLOWER.encode(self.signer.public_key().as_ref())}],
-                    "profiles": [], "workload_identities": [], "bindings": [], "rules": []
+                    "connections":[], "ssh_keys":[], "derived_credentials":[], "profiles": [], "workload_identities": [], "bindings": [], "rules": []
                 }
             });
             self.sign(unsigned, b"RKPOLICY\0\x01")

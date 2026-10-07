@@ -190,6 +190,8 @@ A2 针对的是"拿到明文或扩大权限"。A2 能做的事被限定为两类
 - 锁定 vault；
 - 在已有 Profile 范围内签发 capability，这与 Agent 本身已有的权限等价。
 
+> 2026-10-05：本节依赖 Agent 启动器的 L2 内容已移为 lab 储备，个人调用合同见 `2026-10-05-rekey-agent-call-model.md`。
+
 ### 3.3 保护等级（产品界面必须展示当前等级）
 
 | 等级 | 条件 | 可以对外宣称 |
@@ -582,6 +584,8 @@ v3 只把"由谁批准"抽象出来。策略规则增加 `approver` 字段：
 GitHub App、Vault、Keycloak 等现有 connector 保留为"高级"类型，不出现在首页。
 
 ---
+
+> 2026-10-05：以下 Agent 接入、Profile、run 与本机 capability 合同已由 `2026-10-05-rekey-agent-call-model.md` 取代。
 
 ## 8. 模块规格：Agent 接入
 

@@ -30,8 +30,10 @@ pub mod lifecycle;
 #[cfg(feature = "lab")]
 mod metrics;
 pub mod runtime;
+#[cfg(feature = "lab")]
 pub mod sandbox;
 pub mod session;
+pub(crate) mod ssh_agent;
 pub mod testing;
 pub mod upstream;
 
@@ -79,3 +81,12 @@ mod tests {
 
 #[cfg(feature = "lab")]
 pub(crate) mod oidc_admin;
+
+mod derived;
+mod oauth;
+
+/// Pure SSH wire parser entry for the protocol fuzz target.
+#[cfg(feature = "fuzzing")]
+pub fn fuzz_ssh_agent(bytes: &[u8]) {
+    ssh_agent::fuzz_wire(bytes);
+}

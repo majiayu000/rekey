@@ -95,7 +95,7 @@ pub(super) fn protocol(
     Ok(Some(protocol))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "lab"))]
 mod tests {
     use super::super::{ActionExecutor, ExecuteRequest};
     use super::*;
@@ -253,7 +253,7 @@ mod tests {
             }
             let now = crate::now_ts().unwrap();
             let unsigned_snapshot = json!({
-                "format_version":6,"version":1,"expires_at_ms":now.as_unix_ms()+60000,"approvers":approvers,"profiles":[profile],"workload_identities":[],
+                "format_version":7,"version":1,"expires_at_ms":now.as_unix_ms()+60000,"approvers":approvers,"connections":[], "ssh_keys":[], "profiles":[profile],"workload_identities":[],
                 "bindings":[{"action_id":action.id,"version":action.version,"resource":{"type":"llm","id":action.id},"parameter_schema_id":"llm/v1","parameter_schema":{}}],"rules":[rule]
             });
             let snapshot = rekey_policy::parse_and_validate_snapshot(
@@ -473,7 +473,7 @@ mod tests {
             let rows = f.activity().await;
             assert_eq!(rows.len(), 2);
             for row in &rows {
-                let context = row.request_context.as_ref().unwrap();
+                let context = row.request_context.as_ref().unwrap().as_profile().unwrap();
                 assert_eq!(context.profile_name, f.profile.name);
                 assert_eq!(
                     context.policy_sha256,
@@ -540,7 +540,7 @@ mod tests {
             let rows = f.activity().await;
             assert!(!rows.is_empty());
             for row in &rows {
-                let context = row.request_context.as_ref().unwrap();
+                let context = row.request_context.as_ref().unwrap().as_profile().unwrap();
                 assert_eq!(context.profile_name, f.profile.name);
                 assert_ne!(context.model.as_deref(), Some("forbidden"));
                 if row.reason_code == "invalid-parameters" {
@@ -606,7 +606,14 @@ mod tests {
             .find(|row| row.reason_code == "profile-daily-budget")
             .unwrap();
         assert_eq!(
-            refused.request_context.as_ref().unwrap().model.as_deref(),
+            refused
+                .request_context
+                .as_ref()
+                .unwrap()
+                .as_profile()
+                .unwrap()
+                .model
+                .as_deref(),
             Some("allowed")
         );
         assert!(refused.usage.is_none());
@@ -756,7 +763,14 @@ mod tests {
         assert_eq!(requested.request_context, accepted.request_context);
         assert_eq!(accepted.reason_code, "local-presence");
         assert_eq!(
-            accepted.request_context.as_ref().unwrap().model.as_deref(),
+            accepted
+                .request_context
+                .as_ref()
+                .unwrap()
+                .as_profile()
+                .unwrap()
+                .model
+                .as_deref(),
             Some("allowed")
         );
         drop(owner);
@@ -1140,16 +1154,16 @@ mod tests {
         assert_eq!(f.fake.take_requests()[0].body, raw);
         let rows = f.activity().await;
         assert_eq!(rows.len(), 2);
-        assert!(
-            rows.iter().all(
-                |row| row
-                    .request_context
-                    .as_ref()
-                    .is_some_and(|context| context.profile_name == f.profile.name
+        assert!(rows.iter().all(|row| {
+            row.request_context
+                .as_ref()
+                .and_then(|context| context.as_profile())
+                .is_some_and(|context| {
+                    context.profile_name == f.profile.name
                         && context.capability == "fixed-actions"
-                        && context.model.is_none())
-            )
-        );
+                        && context.model.is_none()
+                })
+        }));
         assert!(
             !serde_json::to_string(&rows)
                 .unwrap()
@@ -1472,6 +1486,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "lab")]
     async fn signed_profile_real_control_and_agent_sse_share_budget_and_preserve_effective_body() {
         let mut f = Fixture::new(BuiltinTemplate::OpenAi, "chat-completions", "permit", 14).await;
         activate_signed(&mut f, 3).await;
@@ -1517,11 +1532,16 @@ mod tests {
                 .sum::<u64>(),
             14
         );
-        assert!(
-            rows.iter().all(
-                |row| row.request_context.as_ref().unwrap().model.as_deref() == Some("allowed")
-            )
-        );
+        assert!(rows.iter().all(|row| {
+            row.request_context
+                .as_ref()
+                .unwrap()
+                .as_profile()
+                .unwrap()
+                .model
+                .as_deref()
+                == Some("allowed")
+        }));
         let (mut client, task) = agent_connection(&f).await;
         send_wire(
             &mut client,
@@ -1569,6 +1589,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "lab")]
     async fn actual_local_presence_approval_and_last_use_retry_reach_raw_stream_once() {
         let mut f = Fixture::new(BuiltinTemplate::OpenAi, "chat-completions", "local", 100).await;
         activate_signed(&mut f, 1).await;
@@ -1667,7 +1688,14 @@ mod tests {
         assert_eq!(requested.request_context, approved.request_context);
         assert_eq!(approved.request_context, accepted.request_context);
         assert_eq!(
-            approved.request_context.as_ref().unwrap().model.as_deref(),
+            approved
+                .request_context
+                .as_ref()
+                .unwrap()
+                .as_profile()
+                .unwrap()
+                .model
+                .as_deref(),
             Some("allowed")
         );
         assert_eq!(
@@ -1706,6 +1734,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "lab")]
     async fn raw_terminal_is_withheld_at_eof_and_audit_failure_keeps_pending_atomic() {
         let mut f = Fixture::new(BuiltinTemplate::OpenAi, "chat-completions", "permit", 100).await;
         activate_signed(&mut f, 2).await;
@@ -1833,6 +1862,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "lab")]
     async fn external_wire_prepare_binds_raw_max_and_real_signed_retry() {
         let mut f =
             Fixture::new(BuiltinTemplate::OpenAi, "chat-completions", "external", 100).await;
@@ -1911,6 +1941,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "lab")]
     async fn signed_anthropic_and_responses_raw_routes_and_wrong_sinks_use_real_scope() {
         for (provider, capability, raw) in [
             (

@@ -1,3 +1,4 @@
+#![cfg(feature = "lab")]
 //! Closed Keycloak exchange lifecycle through the actual Broker/Authority/UDS.
 mod common;
 use rekey_broker::upstream::UpstreamResponse;

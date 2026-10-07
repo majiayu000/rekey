@@ -1,3 +1,5 @@
+#[cfg(test)]
+use rekey_domain::ipc::LocalApprovalReviewResponse;
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
@@ -9,8 +11,7 @@ use rekey_domain::authorization::{
 use rekey_domain::capability::ActionVersionRef;
 use rekey_domain::ids::{ApprovalId, ApprovalRequestId, ApproverId, PolicyRuleId};
 use rekey_domain::ipc::{
-    APPROVAL_PENDING_MAX, ApprovalChallenge, LocalApprovalReviewResponse, LocalApprovalState,
-    LocalApprovalStateResponse,
+    APPROVAL_PENDING_MAX, ApprovalChallenge, LocalApprovalState, LocalApprovalStateResponse,
 };
 use rekey_policy::VerifiedApprovalGrant;
 use rekey_vault::model::ApprovalEvidence;
@@ -83,13 +84,14 @@ enum ChallengeState {
 }
 
 struct LocalReview {
-    request_context: Option<rekey_domain::audit::ProfileRequestAuditContext>,
+    request_context: Option<rekey_domain::audit::RequestAuditContext>,
     hash: String,
     body: Zeroizing<Vec<u8>>,
 }
 
 pub(crate) struct LocalApproval {
-    pub request_context: Option<rekey_domain::audit::ProfileRequestAuditContext>,
+    #[cfg_attr(not(feature = "lab"), allow(dead_code))]
+    pub request_context: Option<rekey_domain::audit::RequestAuditContext>,
     pub challenge: ApprovalChallenge,
     pub state: LocalApprovalState,
     pub review_sha256: String,
@@ -220,6 +222,7 @@ impl SessionRegistry {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn pending_approval_challenges(
         &self,
         now: Timestamp,
@@ -337,7 +340,7 @@ impl SessionRegistry {
         hash: String,
         anchor: Instant,
         deadline: Instant,
-        request_context: Option<rekey_domain::audit::ProfileRequestAuditContext>,
+        request_context: Option<rekey_domain::audit::RequestAuditContext>,
     ) -> Result<LocalApproval, BrokerError> {
         let mut inner = self.lock_inner();
         if inner.closed
@@ -393,6 +396,7 @@ impl SessionRegistry {
         refund_local_wait(entry, permit)
     }
 
+    #[cfg(any(test, feature = "lab"))]
     pub(crate) fn local_approval(
         &self,
         id: ApprovalRequestId,
@@ -404,6 +408,7 @@ impl SessionRegistry {
         Ok(local_snapshot(stored))
     }
 
+    #[cfg(test)]
     pub(crate) fn local_review(
         &self,
         id: ApprovalRequestId,
@@ -507,6 +512,7 @@ impl SessionRegistry {
 
     // A queued decision whose result is unknown cannot be retried. Missing state
     // is already revoked; this cleanup never restores an entry or a grant.
+    #[cfg(any(test, feature = "lab"))]
     pub(crate) fn cancel_local_unconfirmed(&self, id: ApprovalRequestId) {
         let mut inner = self.lock_inner();
         for stored in inner

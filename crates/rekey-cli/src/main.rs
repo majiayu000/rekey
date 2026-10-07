@@ -24,6 +24,31 @@ struct StepUpArgs {
     presence: bool,
 }
 
+#[derive(Args)]
+struct DerivedCredentialArgs {
+    connection: String,
+    /// Use one explicitly approved derivation request; issuance is never automatically replayed.
+    #[arg(long)]
+    approval: Option<ApprovalRequestId>,
+}
+
+#[derive(Subcommand)]
+enum OAuthCommand {
+    /// Open the App to confirm OAuth login and authorize in the browser.
+    Login {
+        connection: String,
+        /// Internal App IPC: read exactly one explicit step-up proof line.
+        #[arg(long)]
+        proof_stdin: bool,
+        #[arg(long, requires = "proof_stdin")]
+        redirect_uri: Option<String>,
+        #[arg(long, requires = "proof_stdin", conflicts_with = "presence")]
+        recovery: bool,
+        #[arg(long, requires = "proof_stdin")]
+        presence: bool,
+    },
+}
+
 fn selected_proof(recovery: bool, presence: bool) -> rekey_domain::ipc::ProofKind {
     if presence {
         rekey_domain::ipc::ProofKind::Presence
@@ -34,6 +59,7 @@ fn selected_proof(recovery: bool, presence: bool) -> rekey_domain::ipc::ProofKin
     }
 }
 
+#[cfg(feature = "lab")]
 #[derive(Args)]
 struct RequestArgs {
     #[arg(long)]
@@ -51,6 +77,7 @@ struct RequestArgs {
     query: Vec<String>,
 }
 
+#[cfg(feature = "lab")]
 #[derive(Clone, Copy, ValueEnum)]
 enum BuiltinTemplateName {
     Anthropic,
@@ -58,6 +85,7 @@ enum BuiltinTemplateName {
     GithubPat,
 }
 
+#[cfg(feature = "lab")]
 impl From<BuiltinTemplateName> for rekey_domain::ipc::TemplateSource {
     fn from(value: BuiltinTemplateName) -> Self {
         match value {
@@ -124,13 +152,102 @@ enum OidcLoginCommand {
 
 #[derive(Subcommand)]
 enum Command {
+    /// AWS credential_process JSON. T1: the Agent receives temporary credentials.
+    AwsCredentials(DerivedCredentialArgs),
+    /// kubectl ExecCredential JSON. T1: the Agent receives a temporary token.
+    KubectlCredentials(DerivedCredentialArgs),
+    /// GitHub App installation token. T1: the Agent receives the temporary token.
+    GithubToken(DerivedCredentialArgs),
+    /// Authorize OAuth through the App and browser; no tokens are returned.
+    #[command(subcommand)]
+    Oauth(OAuthCommand),
+    /// Discover locally authorized connections and named operations; never returns keys.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Describe a named operation and its rules; never returns keys.
+    Describe { operation: String },
+    /// Call a named operation with --name value parameters; never returns keys.
+    Call {
+        operation: String,
+        #[arg(num_args = 0.., allow_hyphen_values = true, trailing_var_arg = true)]
+        arguments: Vec<String>,
+    },
+    /// Call an HTTP path through a Connection's signed rules; never returns keys.
+    Http {
+        connection: String,
+        method: String,
+        path: String,
+        #[arg(long, conflicts_with = "body_file")]
+        json: Option<String>,
+        #[arg(long)]
+        body_file: Option<PathBuf>,
+        #[arg(long = "query")]
+        query: Vec<String>,
+        #[arg(long = "header")]
+        headers: Vec<String>,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        no_wait: bool,
+        #[arg(long)]
+        approval: Option<ApprovalRequestId>,
+    },
+    /// Ask the user to add a Connection or permission; do not collect keys.
+    Request {
+        provider: String,
+        #[arg(long = "op")]
+        operation: Option<String>,
+        #[arg(long)]
+        reason: String,
+    },
+    /// Wait for an access request to be granted or rejected.
+    Await {
+        request_id: RequestId,
+        #[arg(long, default_value_t = 120, value_parser = clap::value_parser!(u16).range(1..=120))]
+        timeout: u16,
+    },
+    /// Wait for the user to unlock Rekey.
+    AwaitUnlock {
+        #[arg(long, default_value_t = 120, value_parser = clap::value_parser!(u16).range(1..=120))]
+        timeout: u16,
+    },
+    /// Scan complete credential values and variants without returning matching content.
+    Scan {
+        #[arg(conflicts_with_all = ["staged", "stdin"]) ]
+        paths: Vec<PathBuf>,
+        #[arg(long, conflicts_with = "stdin")]
+        staged: bool,
+        #[arg(long)]
+        stdin: bool,
+        #[arg(long)]
+        strict: bool,
+    },
+    /// Preview .env variable names, then open the App to approve import.
+    Import {
+        path: PathBuf,
+        #[arg(long)]
+        dry_run: bool,
+        /// Internal App request: proof line followed by a public selection array.
+        #[arg(long, requires = "password_stdin", conflicts_with_all = ["rewrite_stdin", "dry_run"])]
+        selections_stdin: bool,
+        /// Internal App request: proof line followed by a public replacement array.
+        #[arg(long, requires = "password_stdin", conflicts_with = "dry_run")]
+        rewrite_stdin: bool,
+        #[command(flatten)]
+        step_up: StepUpArgs,
+    },
     /// Open the installed macOS App setup page; completion happens in the App.
     Setup,
     /// Open the installed macOS App provider onboarding page.
     Add {
-        #[arg(value_parser = ["anthropic"])]
+        #[arg(value_parser = ["anthropic", "openai", "glm", "glm-responses", "github-pat", "github-git", "google-drive", "google-gmail", "google-calendar", "github-oauth", "slack", "notion", "generic-bearer", "generic-header"])]
         provider: String,
     },
+    /// Manage non-exportable SSH signing keys and inspect the local agent.
+    #[command(subcommand)]
+    SshAgent(SshAgentCommand),
     /// Fixed-node OIDC administrator login lifecycle.
     #[command(subcommand)]
     #[cfg(feature = "lab")]
@@ -186,8 +303,17 @@ enum Command {
         print: bool,
         #[arg(long)]
         project: Option<PathBuf>,
+        /// Install a marked pre-commit secret scan hook.
+        #[arg(long)]
+        with_hooks: bool,
+        /// Configure SSH IdentityAgent for explicit --ssh-host targets.
+        #[arg(long, requires = "ssh_hosts")]
+        with_ssh: bool,
+        #[arg(long = "ssh-host", requires = "with_ssh")]
+        ssh_hosts: Vec<String>,
     },
     /// Run a command with a capability limited to the named signed Profile.
+    #[cfg(feature = "lab")]
     Run {
         profile: String,
         /// Explicit client adapter; omitted means standard SDK environment only.
@@ -199,6 +325,7 @@ enum Command {
         command: Vec<std::ffi::OsString>,
     },
     /// Launch an Agent command with deny-by-default IP egress (delegates to rekeyd).
+    #[cfg(feature = "lab")]
     AgentRun {
         /// Read the capability token from stdin (first line).
         #[arg(long)]
@@ -223,6 +350,7 @@ enum Command {
     /// Save an API key; desktop token and value are read as two stdin lines.
     DesktopAdd { label: String },
     /// Reveal a current credential with a fresh step-up proof.
+    #[cfg(feature = "lab")]
     DesktopReveal {
         credential_id: String,
         #[command(flatten)]
@@ -259,23 +387,33 @@ enum Command {
         #[command(flatten)]
         step_up: StepUpArgs,
     },
+    /// Inspect signed Connections and daemon-owned Presets.
+    #[command(subcommand)]
+    Connection(ConnectionCommand),
+    /// Resolve access requests or block callers with an explicit step-up proof.
+    #[command(subcommand)]
+    Access(AccessCommand),
     /// Credential administration.
     #[command(subcommand)]
     Credential(CredentialCommand),
     /// Fixed action administration.
     #[command(subcommand)]
+    #[cfg(feature = "lab")]
     Action(ActionCommand),
     /// Inspect and install authenticated provider templates.
     #[command(subcommand)]
+    #[cfg(feature = "lab")]
     Template(TemplateCommand),
     /// Capability session administration.
     #[command(subcommand)]
+    #[cfg(feature = "lab")]
     Session(SessionCommand),
     /// Typed authorization policy administration.
     #[command(subcommand)]
     Policy(PolicyCommand),
     /// Inspect the authenticated signed Profiles before editing.
     #[command(subcommand)]
+    #[cfg(feature = "lab")]
     Profile(ProfileCommand),
     /// Prepare a signed-approval challenge.
     #[command(subcommand)]
@@ -293,6 +431,7 @@ enum Command {
     #[command(subcommand)]
     Audit(AuditCommand),
     /// Execute a fixed action through the agent channel.
+    #[cfg(feature = "lab")]
     Execute {
         /// ACTION_ID@VERSION
         action: String,
@@ -309,6 +448,7 @@ enum Command {
         challenge: Option<ApprovalRequestId>,
     },
     /// Stream a fixed Anthropic text Action; partial text is not success.
+    #[cfg(feature = "lab")]
     ExecuteTextStream {
         /// ACTION_ID@VERSION
         action: String,
@@ -332,10 +472,86 @@ enum Command {
 }
 
 #[derive(Subcommand)]
+enum ConnectionCommand {
+    List,
+    Preset {
+        preset: String,
+        #[arg(long)]
+        origin: Option<String>,
+        #[arg(long)]
+        header: Option<String>,
+        #[arg(long)]
+        prefix: Option<String>,
+    },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum SshKeyMode {
+    Default,
+    Ed25519Software,
+    P256Software,
+}
+impl SshKeyMode {
+    fn wire_name(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Ed25519Software => "ed25519_software",
+            Self::P256Software => "p256_software",
+        }
+    }
+}
+#[derive(Subcommand)]
+enum SshAgentCommand {
+    /// Show the SSH agent socket and signed key/host rules; never returns private keys.
+    Status,
+    /// Generate a private key inside Rekey; default macOS storage uses Secure Enclave.
+    Generate {
+        label: String,
+        #[arg(long, value_enum, default_value = "default")]
+        mode: SshKeyMode,
+        #[command(flatten)]
+        step_up: StepUpArgs,
+    },
+    /// Import an unencrypted OpenSSH key: proof line then complete key on stdin.
+    Import {
+        label: String,
+        #[arg(long, required = true)]
+        stdin_secrets: bool,
+        #[arg(long)]
+        recovery: bool,
+        #[arg(long, conflicts_with = "recovery")]
+        presence: bool,
+    },
+}
+#[derive(Subcommand)]
+enum AccessCommand {
+    List,
+    Resolve {
+        request_id: RequestId,
+        #[arg(long, action = clap::ArgAction::Set, required = true)]
+        granted: bool,
+        #[arg(long)]
+        block_caller: bool,
+        #[command(flatten)]
+        step_up: StepUpArgs,
+    },
+    Block {
+        caller: String,
+        #[arg(long, action = clap::ArgAction::Set, required = true)]
+        blocked: bool,
+        #[command(flatten)]
+        step_up: StepUpArgs,
+    },
+}
+
+#[derive(Subcommand)]
 enum CredentialCommand {
     /// Add a credential (prompts for step-up password and the value).
     Add {
         label: String,
+        /// Internal App credential payload kind; non-opaque JSON requires --stdin-secrets.
+        #[arg(long, default_value = "opaque-token", value_parser = ["opaque-token", "oauth-grant", "aws-static", "github-app-installation"])]
+        kind: String,
         /// Use the recovery key for step-up proof; does not reset the password.
         #[arg(long)]
         recovery: bool,
@@ -543,6 +759,7 @@ enum CredentialCommand {
     },
 }
 
+#[cfg(feature = "lab")]
 #[derive(Subcommand)]
 enum ActionCommand {
     /// Create an action from a JSON definition file.
@@ -568,6 +785,7 @@ enum ActionCommand {
     },
 }
 
+#[cfg(feature = "lab")]
 #[derive(Subcommand)]
 enum TemplateCommand {
     /// Inspect a built-in declaration or authenticate a signed package.
@@ -604,6 +822,7 @@ enum TemplateCommand {
     },
 }
 
+#[cfg(feature = "lab")]
 #[derive(Subcommand)]
 enum SessionCommand {
     /// Issue a capability session for one or more pinned actions.
@@ -656,21 +875,33 @@ enum PolicyCommand {
         #[command(flatten)]
         step_up: PolicyStepUpArgs,
     },
-    /// Generate a complete personal policy replacement from a Profile array.
+    /// Generate a complete personal policy replacement from public policy inputs.
     Draft {
-        /// Read the complete Profile array from stdin; [] revokes all grants.
-        #[arg(long, required = true)]
-        profiles_stdin: bool,
-        #[arg(long)]
-        expires_at_ms: i64,
-        /// Editing base from profile list; omit only before the first policy.
-        #[arg(long)]
+        /// Read the complete Connection array from stdin; [] revokes all local access.
+        #[arg(
+            long,
+            required_unless_present = "request_stdin",
+            conflicts_with = "request_stdin"
+        )]
+        connections_stdin: bool,
+        /// Internal App request containing explicit Connection, SSH and T1 editing scopes.
+        #[arg(long, conflicts_with_all = ["connections_stdin", "expires_at_ms", "expected_policy_sha256"])]
+        request_stdin: bool,
+        #[arg(
+            long,
+            required_unless_present = "request_stdin",
+            requires = "connections_stdin"
+        )]
+        expires_at_ms: Option<i64>,
+        /// Editing base from connection list; omit only before the first policy.
+        #[arg(long, requires = "connections_stdin")]
         expected_policy_sha256: Option<String>,
     },
     /// Show the active policy version and digest.
     Status,
 }
 
+#[cfg(feature = "lab")]
 #[derive(Subcommand)]
 enum ProfileCommand {
     List,
@@ -705,6 +936,15 @@ struct LocalApprovalDecisionArgs {
     password_stdin: bool,
 }
 
+#[derive(Args)]
+struct LocalApprovalApproveArgs {
+    #[command(flatten)]
+    decision: LocalApprovalDecisionArgs,
+    /// Allow the same rule and caller for this many seconds (daemon caps it at eight hours).
+    #[arg(long)]
+    window_seconds: Option<u32>,
+}
+
 #[derive(Subcommand)]
 enum ApprovalCommand {
     /// Pin this vault's approval-origin public key.
@@ -718,21 +958,20 @@ enum ApprovalCommand {
         approval_request_id: ApprovalRequestId,
     },
     /// Approve a local review with an explicit presence proof.
-    Approve(LocalApprovalDecisionArgs),
+    Approve(LocalApprovalApproveArgs),
     /// Reject a local review with an explicit presence proof.
     Reject(LocalApprovalDecisionArgs),
-    /// Wait up to 120 seconds for this session's local challenge.
+    /// Wait up to 120 seconds for this caller's local approval.
     Await {
         approval_request_id: ApprovalRequestId,
-        #[arg(long, allow_hyphen_values = true)]
-        capability: String,
+        #[arg(long, default_value_t = 120, value_parser = clap::value_parser!(u16).range(1..=120))]
+        timeout: u16,
     },
-    /// Cancel this session's local challenge without consuming a capability use.
+    /// Cancel this caller's local approval request.
     Cancel {
         approval_request_id: ApprovalRequestId,
-        #[arg(long, allow_hyphen_values = true)]
-        capability: String,
     },
+    #[cfg(feature = "lab")]
     Prepare {
         /// ACTION_ID@VERSION
         action: String,
@@ -895,10 +1134,124 @@ fn main() {
         .agent_socket
         .unwrap_or_else(|| state_dir.join("runtime").join("agent.sock"));
     let result = match cli.command {
-        Command::Setup => commands::open_onboarding(&state_dir, false, onboarding_inapplicable),
-        Command::Add { provider: _ } => {
-            commands::open_onboarding(&state_dir, true, onboarding_inapplicable)
+        Command::AwsCredentials(args) => commands::delegated::derive(
+            &agent_socket,
+            args.connection,
+            args.approval,
+            commands::delegated::DerivedFormat::Aws,
+        ),
+        Command::KubectlCredentials(args) => commands::delegated::derive(
+            &agent_socket,
+            args.connection,
+            args.approval,
+            commands::delegated::DerivedFormat::Kubectl,
+        ),
+        Command::GithubToken(args) => commands::delegated::derive(
+            &agent_socket,
+            args.connection,
+            args.approval,
+            commands::delegated::DerivedFormat::GitHub,
+        ),
+        Command::Oauth(OAuthCommand::Login {
+            connection,
+            redirect_uri,
+            proof_stdin,
+            recovery,
+            presence,
+        }) => commands::delegated::oauth_login(
+            &state_dir,
+            connection,
+            redirect_uri,
+            proof_stdin,
+            selected_proof(recovery, presence),
+            onboarding_inapplicable,
+        ),
+        Command::List { json } => commands::agent::list(&agent_socket, json),
+        Command::Describe { operation } => commands::agent::describe(&agent_socket, operation),
+        Command::Call {
+            operation,
+            arguments,
+        } => commands::agent::call(&agent_socket, operation, arguments),
+        Command::Http {
+            connection,
+            method,
+            path,
+            json,
+            body_file,
+            query,
+            headers,
+            dry_run,
+            no_wait,
+            approval,
+        } => commands::agent::http(
+            &agent_socket,
+            connection,
+            method,
+            path,
+            json,
+            body_file,
+            query,
+            headers,
+            dry_run,
+            no_wait,
+            approval,
+        ),
+        Command::Request {
+            provider,
+            operation,
+            reason,
+        } => commands::agent::request(&agent_socket, provider, operation, reason),
+        Command::Await {
+            request_id,
+            timeout,
+        } => commands::agent::await_access(&agent_socket, request_id, timeout),
+        Command::AwaitUnlock { timeout } => commands::agent::await_unlock(&agent_socket, timeout),
+
+        Command::Scan {
+            paths,
+            staged,
+            stdin,
+            strict,
+        } => commands::hygiene::scan(&agent_socket, paths, staged, stdin, strict),
+        Command::Import {
+            path,
+            dry_run,
+            selections_stdin,
+            rewrite_stdin,
+            step_up,
+        } => commands::hygiene::import(
+            &state_dir,
+            path,
+            dry_run,
+            selections_stdin,
+            rewrite_stdin,
+            selected_proof(step_up.recovery, step_up.presence),
+            step_up.password_stdin,
+        ),
+        Command::Setup => commands::open_onboarding(&state_dir, None, onboarding_inapplicable),
+        Command::Add { provider } => {
+            commands::open_onboarding(&state_dir, Some(&provider), onboarding_inapplicable)
         }
+        Command::SshAgent(command) => match command {
+            SshAgentCommand::Status => commands::ssh::status(&state_dir),
+            SshAgentCommand::Generate {
+                label,
+                mode,
+                step_up,
+            } => commands::ssh::generate(
+                &state_dir,
+                label,
+                mode.wire_name(),
+                selected_proof(step_up.recovery, step_up.presence),
+                step_up.password_stdin,
+            ),
+            SshAgentCommand::Import {
+                label,
+                stdin_secrets: _,
+                recovery,
+                presence,
+            } => commands::ssh::import(&state_dir, label, selected_proof(recovery, presence)),
+        },
         #[cfg(feature = "lab")]
         Command::OidcLogin(command) => match command {
             OidcLoginCommand::Begin => commands::oidc_begin(&state_dir),
@@ -919,6 +1272,7 @@ fn main() {
         }
         Command::DesktopLogin { recovery } => commands::desktop_login(&state_dir, recovery),
         Command::DesktopAdd { label } => commands::desktop_add(&state_dir, &label),
+        #[cfg(feature = "lab")]
         Command::DesktopReveal {
             credential_id,
             step_up,
@@ -982,7 +1336,11 @@ fn main() {
             client,
             print,
             project,
-        } => commands::connect(client, print, project),
+            with_hooks,
+            with_ssh: _,
+            ssh_hosts,
+        } => commands::connect(client, print, project, with_hooks, ssh_hosts, &state_dir),
+        #[cfg(feature = "lab")]
         Command::Run {
             profile,
             client,
@@ -1002,6 +1360,7 @@ fn main() {
                 std::process::exit(code);
             }
         }),
+        #[cfg(feature = "lab")]
         Command::AgentRun {
             capability_stdin,
             command,
@@ -1022,15 +1381,49 @@ fn main() {
             selected_proof(step_up.recovery, step_up.presence),
             step_up.password_stdin,
         ),
+        Command::Connection(ConnectionCommand::List) => commands::connections::list(&state_dir),
+        Command::Connection(ConnectionCommand::Preset {
+            preset,
+            origin,
+            header,
+            prefix,
+        }) => commands::connections::preset(&state_dir, preset, origin, header, prefix),
+        Command::Access(AccessCommand::List) => commands::connections::access_list(&state_dir),
+        Command::Access(AccessCommand::Resolve {
+            request_id,
+            granted,
+            block_caller,
+            step_up,
+        }) => commands::connections::resolve(
+            &state_dir,
+            request_id,
+            granted,
+            block_caller,
+            selected_proof(step_up.recovery, step_up.presence),
+            step_up.password_stdin,
+        ),
+        Command::Access(AccessCommand::Block {
+            caller,
+            blocked,
+            step_up,
+        }) => commands::connections::block(
+            &state_dir,
+            caller,
+            blocked,
+            selected_proof(step_up.recovery, step_up.presence),
+            step_up.password_stdin,
+        ),
         Command::Credential(cmd) => match cmd {
             CredentialCommand::Add {
                 label,
+                kind,
                 recovery,
                 presence,
                 stdin_secrets,
             } => commands::credential_add(
                 &state_dir,
                 &label,
+                &kind,
                 selected_proof(recovery, presence),
                 stdin_secrets,
             ),
@@ -1289,6 +1682,7 @@ fn main() {
                 step_up.password_stdin,
             ),
         },
+        #[cfg(feature = "lab")]
         Command::Action(cmd) => match cmd {
             ActionCommand::Create { file, step_up } => commands::action_create(
                 &state_dir,
@@ -1315,6 +1709,7 @@ fn main() {
                 step_up.password_stdin,
             ),
         },
+        #[cfg(feature = "lab")]
         Command::Template(command) => match command {
             TemplateCommand::Catalog {
                 builtin,
@@ -1342,6 +1737,7 @@ fn main() {
                 step_up.password_stdin,
             ),
         },
+        #[cfg(feature = "lab")]
         Command::Session(cmd) => match cmd {
             SessionCommand::Create {
                 actions,
@@ -1376,6 +1772,7 @@ fn main() {
                 step_up.password_stdin,
             ),
         },
+        #[cfg(feature = "lab")]
         Command::Profile(ProfileCommand::List) => commands::profile_list(&state_dir),
         Command::Policy(cmd) => match cmd {
             PolicyCommand::Trust(PolicyTrustCommand::Install {
@@ -1405,10 +1802,21 @@ fn main() {
                 step_up.step_up_stdin,
             ),
             PolicyCommand::Draft {
-                profiles_stdin: _,
+                connections_stdin: _,
+                request_stdin,
                 expires_at_ms,
                 expected_policy_sha256,
-            } => commands::policy_draft(&state_dir, expires_at_ms, expected_policy_sha256),
+            } => {
+                if request_stdin {
+                    commands::policy_draft_request(&state_dir)
+                } else {
+                    commands::policy_draft(
+                        &state_dir,
+                        expires_at_ms.expect("clap requires expiry"),
+                        expected_policy_sha256,
+                    )
+                }
+            }
             PolicyCommand::Status => commands::policy_status(&state_dir),
         },
         Command::Approval(ApprovalCommand::Origin) => commands::approval_origin(&state_dir),
@@ -1421,31 +1829,26 @@ fn main() {
         }) => commands::approval_review(&state_dir, approval_request_id),
         Command::Approval(ApprovalCommand::Approve(args)) => commands::approval_decide(
             &state_dir,
-            args.approval_request_id,
-            &args.review_sha256,
+            args.decision.approval_request_id,
+            &args.decision.review_sha256,
             true,
+            args.window_seconds,
         ),
         Command::Approval(ApprovalCommand::Reject(args)) => commands::approval_decide(
             &state_dir,
             args.approval_request_id,
             &args.review_sha256,
             false,
+            None,
         ),
         Command::Approval(ApprovalCommand::Await {
             approval_request_id,
-            capability,
-        }) => {
-            commands::approval_wait_or_cancel(&agent_socket, approval_request_id, &capability, true)
-        }
+            timeout,
+        }) => commands::agent::approval(&agent_socket, approval_request_id, timeout, false),
         Command::Approval(ApprovalCommand::Cancel {
             approval_request_id,
-            capability,
-        }) => commands::approval_wait_or_cancel(
-            &agent_socket,
-            approval_request_id,
-            &capability,
-            false,
-        ),
+        }) => commands::agent::approval(&agent_socket, approval_request_id, 30, true),
+        #[cfg(feature = "lab")]
         Command::Approval(ApprovalCommand::Prepare {
             action,
             capability,
@@ -1512,6 +1915,7 @@ fn main() {
             &output,
             filters.into_query(None, None, AUDIT_PAGE_MAX_LIMIT),
         ),
+        #[cfg(feature = "lab")]
         Command::Execute {
             action,
             capability,
@@ -1526,6 +1930,7 @@ fn main() {
             &approvals,
             challenge,
         ),
+        #[cfg(feature = "lab")]
         Command::ExecuteTextStream {
             action,
             capability,
@@ -1560,9 +1965,26 @@ mod policy_target_args_tests {
     #[test]
     fn onboarding_accepts_only_fixed_front_doors() {
         assert!(Cli::try_parse_from(["rekey", "setup"]).is_ok());
-        assert!(Cli::try_parse_from(["rekey", "add", "anthropic"]).is_ok());
+        for preset in [
+            "anthropic",
+            "openai",
+            "glm",
+            "glm-responses",
+            "github-pat",
+            "github-git",
+            "google-drive",
+            "google-gmail",
+            "google-calendar",
+            "github-oauth",
+            "slack",
+            "notion",
+            "generic-bearer",
+            "generic-header",
+        ] {
+            assert!(Cli::try_parse_from(["rekey", "add", preset]).is_ok());
+        }
         for args in [
-            vec!["rekey", "add", "openai"],
+            vec!["rekey", "add", "unknown"],
             vec!["rekey", "setup", "--password-stdin"],
             vec!["rekey", "add", "anthropic?secret=x"],
         ] {
@@ -1623,6 +2045,8 @@ mod policy_target_args_tests {
     #[test]
     fn default_cli_rejects_lab_entrypoints() {
         for args in [
+            vec!["rekey", "action", "list"],
+            vec!["rekey", "template", "catalog", "--builtin", "github-pat"],
             vec!["rekey", "metrics"],
             vec!["rekey", "oidc-login", "begin"],
             vec!["rekey", "credential", "add-vault-kv", "test"],
@@ -1688,7 +2112,8 @@ mod policy_target_args_tests {
     fn presence_requires_explicit_stdin_and_cannot_replace_unlock_material() {
         let base = [
             "rekey",
-            "desktop-reveal",
+            "credential",
+            "revoke",
             "00112233-4455-4677-8899-aabbccddeeff",
             "--presence",
         ];
@@ -1750,7 +2175,7 @@ mod policy_target_args_tests {
             "rekey",
             "policy",
             "draft",
-            "--profiles-stdin",
+            "--connections-stdin",
             "--expires-at-ms",
             "1000",
         ];
@@ -1764,6 +2189,28 @@ mod policy_target_args_tests {
             .is_err()
         );
         assert!(Cli::try_parse_from(["rekey", "policy", "draft"]).is_err());
+        assert!(Cli::try_parse_from(["rekey", "policy", "draft", "--request-stdin"]).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "rekey",
+                "policy",
+                "draft",
+                "--request-stdin",
+                "--connections-stdin"
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "rekey",
+                "policy",
+                "draft",
+                "--request-stdin",
+                "--expires-at-ms",
+                "1000"
+            ])
+            .is_err()
+        );
         let activate = [
             "rekey",
             "policy",

@@ -1,4 +1,4 @@
-//! Loopback HTTP is only an adapter to the existing Profile execution owner.
+//! Loopback HTTP adapts signed Connection calls; inbound keys are placeholders.
 use std::convert::Infallible;
 use std::fs::{self, OpenOptions};
 use std::future::Future;
@@ -20,14 +20,12 @@ use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::{TokioIo, TokioTimer};
 use rekey_domain::action::{ActionTarget, FixedHttpAction};
-use rekey_domain::capability::ActionVersionRef;
 use rekey_domain::ids::{ApprovalRequestId, RequestId};
 use rekey_domain::ipc::{
     ErrorEnvelope, ProfileGatewayEndpoint, ProfileGatewayInstance, ProfileGatewayProvider,
     TextStreamStatus,
 };
 use rekey_domain::profile::AgentProfile;
-use rekey_domain::template::{TemplateValues, ValueRule};
 use rekey_vault::AuthorityError;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpListener;
@@ -36,11 +34,10 @@ use tokio::task::JoinSet;
 use tokio::time::Instant;
 use zeroize::Zeroizing;
 
-use super::{BrokerCtx, profile};
+use super::BrokerCtx;
 use crate::active_policy::ActivePolicy;
 use crate::error::BrokerError;
 use crate::execution_supervisor::HttpExecution;
-use crate::executor::ExecuteRequest;
 use crate::executor::text_stream::TextStreamEvent;
 
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
@@ -53,6 +50,7 @@ pub(super) struct Gateway {
     bound: Mutex<Option<Bound>>,
     context: OnceLock<Weak<BrokerCtx>>,
     state_dir: Option<PathBuf>,
+    port: Option<u16>,
 }
 struct Bound {
     port: u16,
@@ -70,15 +68,23 @@ impl Drop for Gateway {
     }
 }
 impl Gateway {
-    pub(super) fn new(state_dir: PathBuf) -> Self {
+    pub(super) fn new(state_dir: PathBuf, port: Option<u16>) -> Self {
         Self {
             state_dir: Some(state_dir),
+            port,
             bound: Mutex::new(None),
             context: OnceLock::new(),
         }
     }
     pub(super) fn attach(&self, ctx: &Arc<BrokerCtx>) {
         let _ = self.context.set(Arc::downgrade(ctx));
+    }
+    pub(super) fn service_url(&self) -> Option<String> {
+        self.bound
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|b| format!("http://127.0.0.1:{}", b.port))
     }
     pub(super) fn close(&self) {
         let mut state = self.bound.lock().unwrap_or_else(|e| e.into_inner());
@@ -95,14 +101,7 @@ impl Gateway {
             self.remove_cache();
         }
     }
-    fn remove_cache(&self) {
-        if let Some(dir) = &self.state_dir
-            && let Err(error) = fs::remove_file(dir.join("gateway.port"))
-            && error.kind() != io::ErrorKind::NotFound
-        {
-            tracing::warn!(event = "gateway.cache_cleanup_failed");
-        }
-    }
+    fn remove_cache(&self) {}
     fn current(&self, port: u16) -> bool {
         self.bound
             .lock()
@@ -170,9 +169,9 @@ impl Gateway {
                 .create_new(true)
                 .mode(0o600)
                 .open(&temporary)?;
-            writeln!(file, "{port}")?;
+            writeln!(file, "{{\"port\":{port}}}")?;
             file.sync_all()?;
-            fs::rename(&temporary, dir.join("gateway.port"))?;
+            fs::rename(&temporary, dir.join("service.json"))?;
             fs::File::open(dir)?.sync_all()
         })();
         if result.is_err() {
@@ -182,89 +181,48 @@ impl Gateway {
     }
 }
 impl BrokerCtx {
-    /// The policy transaction has already committed. Availability is reported
-    /// separately through the authenticated Profile session response.
     pub(super) async fn reconcile_gateway(&self) {
-        let Some(weak) = self.gateway.context.get().cloned() else {
-            return;
-        };
-        let active = self.policy.read().await.clone();
-        let Some(active) = active.filter(|policy| {
-            policy.signer_id().is_some()
-                && crate::now_ts().is_ok_and(|now| !policy.is_expired(now))
-                && policy
-                    .snapshot()
-                    .profiles()
-                    .iter()
-                    .any(|profile| !profile.llm_limits.is_empty())
-        }) else {
-            self.gateway.close();
-            return;
-        };
-        if !self.lifecycle.is_running() {
-            self.gateway.close();
-            return;
+        if let Err(error) = self.start_local_service().await {
+            tracing::warn!(event = "service.bind_failed", code = error.code());
         }
+    }
+    pub(super) async fn start_local_service(&self) -> Result<(), BrokerError> {
+        let Some(port) = self.gateway.port else {
+            return Ok(());
+        };
         if self
             .gateway
             .bound
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .is_some_and(|bound| bound.policy == active.snapshot().digest())
+            .is_some()
         {
-            return;
+            return Ok(());
         }
-        self.gateway.close();
-        let Ok(Ok(actions)) =
-            tokio::time::timeout(READ_TIMEOUT, self.authority.action_list()).await
-        else {
-            tracing::warn!(event = "gateway.material_unavailable");
-            return;
-        };
-        if !active.snapshot().profiles().iter().any(|profile| {
-            !profile.llm_limits.is_empty()
-                && profile::validate_profiles(std::slice::from_ref(profile), &actions).is_ok()
-                && profile::require_supported_profile(profile, &actions).is_ok()
-        }) {
-            return;
-        }
-        let listener = match TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await {
-            Ok(listener) => listener,
-            Err(_) => {
-                tracing::warn!(event = "gateway.bind_failed");
-                return;
-            }
-        };
-        let Ok(address) = listener.local_addr() else {
-            tracing::warn!(event = "gateway.bind_failed");
-            return;
-        };
-        let port = address.port();
-        if self.gateway.publish_cache(port).is_err() {
-            self.gateway.close();
-            tracing::warn!(event = "gateway.cache_publish_failed");
-            return;
-        }
-        if !self.lifecycle.is_running()
-            || crate::now_ts().map_or(true, |now| active.is_expired(now))
-        {
-            self.gateway.close();
-            return;
-        }
+        let weak = self
+            .gateway
+            .context
+            .get()
+            .cloned()
+            .ok_or(BrokerError::Denied("service-context-unavailable"))?;
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port))
+            .await
+            .map_err(BrokerError::Io)?;
+        let port = listener.local_addr().map_err(BrokerError::Io)?.port();
+        self.gateway.publish_cache(port).map_err(BrokerError::Io)?;
         let (stop, stop_rx) = watch::channel(false);
         *self.gateway.bound.lock().unwrap_or_else(|e| e.into_inner()) = Some(Bound {
             port,
-            policy: active.snapshot().digest(),
+            policy: [0; 32],
             stop: stop.clone(),
         });
-        tokio::spawn(accept(weak, listener, active, stop, stop_rx));
+        tokio::spawn(accept(weak, listener, stop, stop_rx));
+        Ok(())
     }
 }
 async fn accept(
     weak: Weak<BrokerCtx>,
     listener: TcpListener,
-    active: Arc<ActivePolicy>,
     identity: watch::Sender<bool>,
     mut stop: watch::Receiver<bool>,
 ) {
@@ -277,10 +235,8 @@ async fn accept(
         tokio::select! {
             biased;
             _ = stop.changed() => break,
-            _ = tokio::time::sleep_until(active.monotonic_deadline()) => break,
             _ = wall.tick() => {
-                if crate::now_ts().map_or(true, |now| active.is_expired(now)) { break; }
-                if weak.upgrade().is_none_or(|ctx| !ctx.lifecycle.is_running()) { break; }
+                if weak.upgrade().is_none_or(|ctx| ctx.shutdown_requested()) { break; }
             }
             _ = tasks.join_next(), if !tasks.is_empty() => {}
             accepted = listener.accept() => {
@@ -392,73 +348,6 @@ fn single<'a>(headers: &'a HeaderMap, name: &str) -> Result<Option<&'a str>, Bro
         .map(|value| value.to_str().map_err(|_| bad_input()))
         .transpose()
 }
-fn auth(headers: &HeaderMap) -> Result<Zeroizing<String>, BrokerError> {
-    let invalid = || BrokerError::Domain(rekey_domain::DomainError::InvalidCapability);
-    let bearer = single(headers, "authorization").map_err(|_| invalid())?;
-    let key = single(headers, "x-api-key").map_err(|_| invalid())?;
-    let wrapped = match (bearer, key) {
-        (Some(value), None) => value.strip_prefix("Bearer ").ok_or_else(invalid)?,
-        (None, Some(value)) => value,
-        _ => return Err(invalid()),
-    };
-    let token = wrapped.strip_prefix("rkc_").ok_or_else(invalid)?;
-    if token.len() != 43
-        || !token
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
-    {
-        return Err(invalid());
-    }
-    Ok(Zeroizing::new(token.to_owned()))
-}
-type ForwardHeaders = (Option<String>, Vec<(String, String)>);
-
-fn headers_for(
-    action: &FixedHttpAction,
-    headers: &HeaderMap,
-) -> Result<ForwardHeaders, BrokerError> {
-    let ActionTarget::Template { fixed_headers, .. } = &action.target else {
-        return Err(bad_input());
-    };
-    for (name, expected) in fixed_headers {
-        if single(headers, name.as_str())?.is_some_and(|value| value != expected) {
-            return Err(bad_input());
-        }
-    }
-    let content_type = single(headers, "content-type")?;
-    let fixed_type = fixed_headers
-        .keys()
-        .any(|name| name.as_str() == "content-type");
-    // MIME and JSON validity belong to the existing canonicalization boundary.
-    let extra = action
-        .request_policy
-        .allowed_extra_headers
-        .iter()
-        .filter(|name| {
-            !matches!(
-                name.as_str(),
-                "authorization"
-                    | "x-api-key"
-                    | "x-rekey-approval-challenge"
-                    | "host"
-                    | "content-type"
-            )
-        })
-        .filter_map(|name| match single(headers, name.as_str()) {
-            Ok(None) => None,
-            Ok(Some(value)) => Some(Ok((name.as_str().to_owned(), value.to_owned()))),
-            Err(error) => Some(Err(error)),
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok((
-        if fixed_type {
-            None
-        } else {
-            content_type.map(str::to_owned)
-        },
-        extra,
-    ))
-}
 async fn handle(
     weak: Weak<BrokerCtx>,
     address: SocketAddr,
@@ -513,6 +402,7 @@ async fn handle_request(
         return Err((400, bad_input()));
     }
     if parts.headers.contains_key("origin")
+        || parts.headers.contains_key("sec-fetch-site")
         || parts.headers.contains_key("upgrade")
         || parts.method == hyper::Method::CONNECT
         || parts.uri.scheme().is_some()
@@ -525,68 +415,111 @@ async fn handle_request(
     {
         return Err((400, bad_input()));
     }
-    let token = auth(&parts.headers).map_err(|e| (401, e))?;
-    let path = parts.uri.path();
-    let query = match parts.uri.query() {
-        None => TemplateValues::new(),
-        Some("beta=true") => TemplateValues::from([("beta".into(), "true".into())]),
-        Some(_) => return Err((404, BrokerError::Denied("gateway-route"))),
-    };
-    if path.contains(['%', '\\', '#'])
-        || path.contains("//")
-        || path.split('/').any(|part| matches!(part, "." | ".."))
-    {
-        return Err((404, BrokerError::Denied("gateway-route")));
+    let mut placeholder_present = false;
+    for header in ["authorization", "x-api-key"] {
+        if let Some(value) = single(&parts.headers, header).map_err(|e| (400, e))? {
+            let value = if header == "authorization" {
+                value.strip_prefix("Bearer ").unwrap_or(value)
+            } else {
+                value
+            };
+            if value != "rekey" {
+                return Err((
+                    400,
+                    BrokerError::LocalCall(
+                        "REAL_KEY_PRESENTED",
+                        "only the rekey placeholder is accepted",
+                        "Use rekey import; never give this program a real key.",
+                    ),
+                ));
+            }
+            placeholder_present = true;
+        }
     }
-    let (instance, path) = path
-        .strip_prefix("/p/")
-        .and_then(|value| value.split_once('/'))
-        .filter(|(instance, _)| !instance.is_empty())
-        .ok_or((404, BrokerError::Denied("gateway-route")))?;
+    if !placeholder_present {
+        return Err((
+            400,
+            BrokerError::LocalCall(
+                "INVALID_INPUT",
+                "the public rekey request marker is required",
+                "Send Authorization: Bearer rekey or x-api-key: rekey; this is a public placeholder, not a token.",
+            ),
+        ));
+    }
+    let (connection, path) = parts
+        .uri
+        .path()
+        .strip_prefix("/c/")
+        .and_then(|v| v.split_once('/'))
+        .ok_or((404, BrokerError::Denied("service-route")))?;
     let path = format!("/{path}");
-    let deadline = Instant::now() + READ_TIMEOUT;
-    let material = ctx
-        .profile_material_until(&token, deadline)
+    let method = rekey_domain::action::FixedMethod::parse(parts.method.as_str())
+        .map_err(|e| (400, e.into()))?;
+    let active = ctx
+        .policy
+        .read()
         .await
-        .map_err(map_error)?;
-    let grant = material
-        .profile
-        .grants
+        .clone()
+        .filter(|p| p.signer_id().is_some())
+        .ok_or((
+            503,
+            BrokerError::Policy(rekey_policy::PolicyError::NotConfigured),
+        ))?;
+    ctx.lifecycle.reject_if_not_running().map_err(map_error)?;
+    let declaration = active
+        .snapshot()
+        .connections()
         .iter()
-        .find(|grant| {
-            grant.instance == instance
-                && material
-                    .profile
-                    .llm_limits
-                    .iter()
-                    .any(|limit| limit.instance == instance)
-        })
-        .ok_or((404, BrokerError::Denied("gateway-route")))?;
-    let mut matches=material.actions.iter().filter(|action| {
-        grant.capabilities.iter().any(|capability|capability.actions.iter().any(|r|r.action_id==action.id&&r.version==action.version))
-            && action.method.as_str()==parts.method.as_str()
-            && matches!(&action.target,ActionTarget::Template{target,source,..} if source.signer_id.is_none() && matches!(source.template.as_str(),"anthropic@1"|"glm@1"|"glm-responses@1"|"openai@1") && target.params().is_empty()
-                && (match source.template.as_str() {
-                    "glm@1" => path == "/v1/messages" && target.path_pattern() == "/api/anthropic/v1/messages",
-                    "glm-responses@1" => path == "/v1/responses" && target.path_pattern() == "/api/v1/responses",
-                    _ => target.path_pattern() == path,
-                })
-                && (query.is_empty() || matches!(target.query().get("beta"),Some(ValueRule::Enum(values)) if values.as_slice()==["true"])))
-    });
-    let action = matches
-        .next()
-        .ok_or((404, BrokerError::Denied("gateway-route")))?;
-    if matches.next().is_some() {
-        return Err((404, BrokerError::Denied("gateway-route")));
+        .find(|c| c.enabled && c.name == connection)
+        .ok_or((
+            404,
+            BrokerError::Policy(rekey_policy::PolicyError::NotConfigured),
+        ))?;
+    let mut query = std::collections::BTreeMap::new();
+    for (key, value) in url::form_urlencoded::parse(parts.uri.query().unwrap_or("").as_bytes()) {
+        if query.insert(key.into_owned(), value.into_owned()).is_some() {
+            return Err((400, bad_input()));
+        }
     }
-    let (content_type, extra_headers) =
-        headers_for(action, &parts.headers).map_err(|e| (400, e))?;
     let challenge = single(&parts.headers, "x-rekey-approval-challenge")
         .map_err(|e| (400, e))?
         .map(str::parse::<ApprovalRequestId>)
         .transpose()
         .map_err(|e| (400, e.into()))?;
-    let limit = action.request_policy.max_body_bytes as usize;
+    let mut headers = Vec::new();
+    for (name, value) in &parts.headers {
+        if matches!(
+            name.as_str(),
+            "host"
+                | "authorization"
+                | "x-api-key"
+                | "content-length"
+                | "transfer-encoding"
+                | "connection"
+                | "user-agent"
+                | "accept"
+                | "accept-encoding"
+                | "accept-language"
+                | "sec-fetch-mode"
+                | "x-rekey-approval-challenge"
+        ) || name.as_str().starts_with("x-stainless-")
+        {
+            continue;
+        }
+        let value = value.to_str().map_err(|_| (400, bad_input()))?;
+        if let Some(fixed) = declaration.fixed_headers.get(
+            &rekey_domain::action::HeaderName::new(name.as_str()).map_err(|e| (400, e.into()))?,
+        ) {
+            if fixed != value {
+                return Err((400, bad_input()));
+            }
+            continue;
+        }
+        headers.push((name.as_str().to_owned(), value.to_owned()));
+    }
+    let deadline = Instant::now() + READ_TIMEOUT;
+    let limit = declaration.limits.max_request_bytes as usize;
+
     if single(&parts.headers, "content-length")
         .map_err(|e| (400, e))?
         .is_some_and(|value| value.parse::<usize>().map_or(true, |n| n > limit))
@@ -610,20 +543,21 @@ async fn handle_request(
     }
     let result = ctx
         .executions
-        .submit_http(ExecuteRequest {
+        .submit_local(crate::executor::LocalExecuteRequest {
             request_id,
-            capability_token: token.to_string(),
-            action: ActionVersionRef {
-                action_id: action.id,
-                version: action.version,
+            meta: rekey_domain::ipc::CallMeta {
+                connection: connection.to_owned(),
+                method: Some(method),
+                path: Some(path),
+                query,
+                headers,
+                dry_run: false,
+                approval_request_id: challenge,
+                operation: None,
+                args: Default::default(),
             },
-            content_type,
-            extra_headers,
-            params: Default::default(),
-            query,
-            body: bytes,
-            approval_grants: Vec::new(),
-            local_approval_request_id: challenge,
+            body: Zeroizing::new(bytes),
+            caller: "unknown".into(),
         })
         .await
         .map_err(map_error)?
@@ -707,10 +641,11 @@ fn error_response(status: u16, id: RequestId, error: BrokerError) -> Response<Ga
         BrokerError::ApprovalRequired(approval) => ErrorEnvelope::approval_required(id, approval),
         other => ErrorEnvelope {
             request_id: id,
-            code: other.code().to_owned(),
+            code: crate::ipc::agent::local_agent_code(&other).to_owned(),
             message: other.agent_message(),
             retryable: other.retryable(),
             approval: None,
+            next: Some(other.agent_next()),
         },
     };
     let body = serde_json::to_vec(&envelope).unwrap_or_default();

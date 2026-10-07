@@ -41,11 +41,14 @@ mod backup;
 mod credential;
 mod desktop;
 mod dispatch;
+mod hygiene;
 #[cfg(feature = "lab")]
 mod keychain_source;
 #[cfg(all(test, feature = "lab"))]
 mod keychain_source_tests;
 pub(crate) mod lease_journal;
+mod ssh;
+mod tokens;
 /// Clear the crash marker only after every runtime task has joined cleanly,
 /// while the caller still holds the exclusive runtime lock.
 pub use desktop::finish_runtime;

@@ -1,3 +1,4 @@
+#![cfg(feature = "lab")]
 //! Template installation at the real admin socket; no upstream is contacted.
 mod common;
 

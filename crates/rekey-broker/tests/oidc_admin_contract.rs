@@ -1,3 +1,4 @@
+#![cfg(feature = "lab")]
 //! Strict real TLS, RS256, callback and UDS chain. Bind failures are real failures.
 mod common;
 

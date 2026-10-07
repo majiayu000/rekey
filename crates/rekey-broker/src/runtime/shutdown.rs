@@ -44,7 +44,9 @@ fn remember(first: &mut Option<BrokerError>, error: BrokerError) {
 }
 
 async fn wait_in_flight_until(ctx: &BrokerCtx, deadline: tokio::time::Instant) {
-    while ctx.sessions.in_flight_total() > 0 && tokio::time::Instant::now() < deadline {
+    while (ctx.sessions.in_flight_total() + ctx.lifecycle.local_in_flight()) > 0
+        && tokio::time::Instant::now() < deadline
+    {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
 }
@@ -145,17 +147,19 @@ impl BrokerCtx {
             manager.clear();
         }
         self.sessions.close_and_revoke_all();
+        self.local_calls.clear();
+        self.executor.oauth.clear();
         self.publish_shutdown();
 
         let natural_deadline = stop_deadline
             .checked_sub(FINALIZE_GRACE)
             .unwrap_or(stop_deadline);
         wait_in_flight_until(self, natural_deadline).await;
-        if self.sessions.in_flight_total() > 0 {
+        if (self.sessions.in_flight_total() + self.lifecycle.local_in_flight()) > 0 {
             self.lifecycle.signal_cancel();
             wait_in_flight_until(self, stop_deadline).await;
         }
-        if self.sessions.in_flight_total() > 0 {
+        if (self.sessions.in_flight_total() + self.lifecycle.local_in_flight()) > 0 {
             remember(
                 &mut first_error,
                 BrokerError::Authority(AuthorityError::AuthorityBusy),

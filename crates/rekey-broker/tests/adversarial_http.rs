@@ -1,3 +1,4 @@
+#![cfg(feature = "lab")]
 //! Adversarial agent inputs: the wire protocol offers no field for origin,
 //! method, path, or auth — and everything adjacent (headers, sizes,
 //! upstream failures) fails closed.

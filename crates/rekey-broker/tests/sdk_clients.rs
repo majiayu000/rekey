@@ -344,8 +344,8 @@ async fn acceptance(anthropic: bool) {
     let action: FixedHttpAction =
         serde_json::from_value(installed.ok()["actions"][0]["action"].clone()).unwrap();
     let principal = PrincipalId::new_random();
-    let snapshot = json!({"format_version":6,"version":1,"expires_at_ms":4_102_444_800_000_i64,"approvers":[],"workload_identities":[],
-        "profiles":[{"name":"sdk-live","principal_id":principal,"grants":[{"instance":"work","capabilities":[{"rule":"template-default","capability":capability,"actions":[{"action_id":action.id,"version":action.version}]}]}],"session":{"ttl_ms":60000,"max_uses":10},"confirm_each_run":false,"isolation":"none","egress":"allow","llm_limits":[{"instance":"work","models":[model],"max_output_tokens_per_request":ceiling,"max_requests_per_day":10,"max_output_tokens_per_day":65536}]}],
+    let snapshot = json!({"format_version":7,"version":1,"expires_at_ms":4_102_444_800_000_i64,"approvers":[],"workload_identities":[],
+        "connections":[], "ssh_keys":[], "profiles":[{"name":"sdk-live","principal_id":principal,"grants":[{"instance":"work","capabilities":[{"rule":"template-default","capability":capability,"actions":[{"action_id":action.id,"version":action.version}]}]}],"session":{"ttl_ms":60000,"max_uses":10},"confirm_each_run":false,"isolation":"none","egress":"allow","llm_limits":[{"instance":"work","models":[model],"max_output_tokens_per_request":ceiling,"max_requests_per_day":10,"max_output_tokens_per_day":65536}]}],
         "bindings":[{"action_id":action.id,"version":action.version,"resource":{"type":"sdk","id":action.id},"parameter_schema_id":"sdk/v1","parameter_schema":{}}],
         "rules":[{"id":PolicyRuleId::new_random(),"effect":"permit","principal_id":principal,"action_id":action.id,"version":action.version,"resource":{"type":"sdk","id":action.id},"parameters":{"kind":"any_validated"}}]});
     common::policy::activate_snapshot(&broker, snapshot.clone()).await;

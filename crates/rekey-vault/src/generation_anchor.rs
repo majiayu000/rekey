@@ -16,6 +16,13 @@ use crate::{AuthorityError, durable};
 #[cfg(target_os = "macos")]
 mod macos;
 
+/// Best-effort caller attribution only. Failed/unsigned/ad-hoc code queries
+/// cannot establish the matching non-empty, trusted macOS signing team.
+#[cfg(target_os = "macos")]
+pub fn peer_has_own_team(kernel_audit_token: [u32; 8]) -> bool {
+    macos::peer_has_own_team(kernel_audit_token).unwrap_or(false)
+}
+
 const MAGIC: &[u8; 8] = b"RKGEN\0\x01\0";
 const RECORD_LEN: usize = 8 + 16 + 8;
 

@@ -51,6 +51,8 @@ mod http;
 #[cfg(feature = "lab")]
 pub(crate) mod keycloak;
 mod llm;
+mod local;
+pub(crate) use local::LocalExecuteRequest;
 mod llm_stream;
 mod sealing;
 pub(crate) mod text_stream;
@@ -69,7 +71,8 @@ use http::{
 pub(crate) use sealing::contains_secret;
 #[cfg(test)]
 use sealing::percent_encode;
-use sealing::{fixed_header_sealing_needles, headers_contain_secret, sealing_needles};
+pub(crate) use sealing::sealing_needles;
+use sealing::{fixed_header_sealing_needles, headers_contain_secret};
 #[cfg(feature = "lab")]
 use vault_dynamic::{VaultDynamicError, VaultDynamicPrepared, VaultDynamicProfile};
 #[cfg(feature = "lab")]
@@ -168,20 +171,22 @@ pub struct AdmittedExecution {
     llm: Option<llm::LlmExecution>,
     effect_deadline: Instant,
     started: StartedAuditGuard,
-    _permit: ExecutionPermit,
+    _permit: Option<ExecutionPermit>,
 }
 
 pub struct ActionExecutor {
+    pub(crate) local_calls: Arc<crate::runtime::local_calls::LocalCalls>,
+    pub(crate) oauth: Arc<crate::oauth::Manager>,
     authority: AuthorityHandle,
     sessions: Arc<SessionRegistry>,
-    transport: Arc<dyn UpstreamTransport>,
+    pub(crate) transport: Arc<dyn UpstreamTransport>,
     lifecycle: Arc<Lifecycle>,
     terminals: Arc<TerminalAuditTracker>,
     policy: Arc<RwLock<Option<Arc<ActivePolicy>>>>,
 }
 
 const EFFECT_NOT_STARTED: u8 = 0;
-const EFFECT_ORDINARY_HTTP: u8 = 1;
+pub(crate) const EFFECT_ORDINARY_HTTP: u8 = 1;
 const EFFECT_REVOCABLE_CONNECTOR: u8 = 2;
 #[cfg(feature = "lab")]
 const EFFECT_READ_ONLY_HTTP: u8 = 3;
@@ -196,6 +201,8 @@ impl ActionExecutor {
         policy: Arc<RwLock<Option<Arc<ActivePolicy>>>>,
     ) -> Self {
         Self {
+            local_calls: Arc::new(crate::runtime::local_calls::LocalCalls::default()),
+            oauth: Arc::new(crate::oauth::Manager::default()),
             authority,
             sessions,
             transport,
@@ -317,7 +324,7 @@ impl ActionExecutor {
                 llm: evaluated.llm,
                 effect_deadline,
                 started,
-                _permit: permit,
+                _permit: Some(permit),
             });
         }
         let (accepted, mut approval_deadline) = match &evaluated.decision {
@@ -382,7 +389,7 @@ impl ActionExecutor {
             target: evaluated.target,
             llm: evaluated.llm,
             started,
-            _permit: permit,
+            _permit: Some(permit),
         })
     }
 
@@ -456,33 +463,107 @@ impl ActionExecutor {
                 .await?;
             return Err(BrokerError::Denied("stream-operation-mismatch"));
         }
-        // Steps 7-8: credential eligibility and preparation (single owner).
-        let prepared = match tokio::time::timeout_at(
-            tokio::time::Instant::from_std(effect_deadline),
-            self.authority.prepare_execution_credential(
-                action.credential_id,
-                request.request_id,
-                action.id,
-                action.version,
-                effect_deadline,
-            ),
-        )
-        .await
-        {
-            Ok(Ok(prepared)) => prepared,
-            Ok(Err(err)) => {
-                started
-                    .blocked_until(effect_deadline, prepare_block_reason(&err))
-                    .await?;
-                return Err(BrokerError::Authority(err));
+        let oauth_connection =
+            if let Some(rekey_domain::audit::RequestAuditContext::Connection(context)) =
+                &started.context().request_context
+            {
+                let policy = self.policy.read().await;
+                policy.as_ref().and_then(|p| {
+                    p.snapshot()
+                        .connections()
+                        .iter()
+                        .find(|c| c.name == context.connection && c.oauth.is_some())
+                        .map(|c| (c.clone(), Arc::clone(p)))
+                })
+            } else {
+                None
+            };
+        let bearer = if let Some((connection, active)) = oauth_connection {
+            if connection.credential_id != action.credential_id
+                || started
+                    .context()
+                    .authorization
+                    .as_ref()
+                    .is_none_or(|a| a.policy_digest != active.snapshot().digest())
+            {
+                return Err(BrokerError::Denied("policy-changed"));
             }
-            Err(_) => {
-                started.submit_blocked("upstream-timeout");
-                return Err(BrokerError::Upstream("upstream-timeout"));
+            match tokio::time::timeout_at(
+                effect_deadline.into(),
+                self.oauth.bearer(
+                    &connection,
+                    &active,
+                    &self.authority,
+                    self.transport.as_ref(),
+                    effect_deadline,
+                    &self.lifecycle,
+                    started,
+                    effect_kind,
+                ),
+            )
+            .await
+            {
+                Ok(Ok(bearer)) => Some(bearer),
+                result => {
+                    if !started.is_completed() {
+                        if effect_kind.load(Ordering::SeqCst) == EFFECT_ORDINARY_HTTP {
+                            started
+                                .indeterminate_until(effect_deadline, "oauth-refresh-unavailable")
+                                .await?;
+                        } else {
+                            started
+                                .blocked_until(effect_deadline, "oauth-unavailable")
+                                .await?;
+                        }
+                    }
+                    return Err(match result {
+                        Ok(Err(error)) => error,
+                        _ => BrokerError::Upstream("oauth-refresh-timeout"),
+                    });
+                }
             }
+        } else {
+            None
         };
-        let credential_version = prepared.version();
-        let credential_kind = prepared.kind();
+        // Steps 7-8: credential eligibility and preparation (single owner).
+        let prepared = if bearer.is_some() {
+            None
+        } else {
+            Some(
+                match tokio::time::timeout_at(
+                    tokio::time::Instant::from_std(effect_deadline),
+                    self.authority.prepare_execution_credential(
+                        action.credential_id,
+                        request.request_id,
+                        action.id,
+                        action.version,
+                        effect_deadline,
+                    ),
+                )
+                .await
+                {
+                    Ok(Ok(prepared)) => prepared,
+                    Ok(Err(err)) => {
+                        started
+                            .blocked_until(effect_deadline, prepare_block_reason(&err))
+                            .await?;
+                        return Err(BrokerError::Authority(err));
+                    }
+                    Err(_) => {
+                        started.submit_blocked("upstream-timeout");
+                        return Err(BrokerError::Upstream("upstream-timeout"));
+                    }
+                },
+            )
+        };
+        let credential_version = bearer
+            .as_ref()
+            .map(|b| b.version)
+            .unwrap_or_else(|| prepared.as_ref().expect("prepared credential").version());
+        let credential_kind = prepared
+            .as_ref()
+            .map(|p| p.kind())
+            .unwrap_or(rekey_domain::credential::CredentialKind::OpaqueToken);
         if stream.is_some()
             && credential_kind != rekey_domain::credential::CredentialKind::OpaqueToken
         {
@@ -492,7 +573,17 @@ impl ActionExecutor {
                 .await?;
             return Err(BrokerError::Denied("stream-credential-kind"));
         }
-        let selection = if matches!(action.target, ActionTarget::Template { .. }) {
+        // A signed Connection explicitly authorizes this fixed HTTP request,
+        // including PAT-backed GitHub writes formerly reserved for App Actions.
+        let local_http = matches!(
+            started.context().request_context,
+            Some(rekey_domain::audit::RequestAuditContext::Connection(_))
+        );
+        let selection = if local_http
+            && credential_kind == rekey_domain::credential::CredentialKind::OpaqueToken
+        {
+            Ok(BuiltInConnector::FixedHttpHeaderV1)
+        } else if matches!(action.target, ActionTarget::Template { .. }) {
             if credential_kind != rekey_domain::credential::CredentialKind::OpaqueToken {
                 drop(prepared);
                 started
@@ -544,112 +635,128 @@ impl ActionExecutor {
         let _ = cleanup_owned;
         // Step 9: execute the selected compile-time connector. Registry
         // selection performs no IO and never receives credential bytes.
-        let prepared = prepared.consume(|secret| match connector {
-            BuiltInConnector::FixedHttpHeaderV1 => {
-                prepare_fixed_header(action, request, target, secret)
-            }
-            #[cfg(feature = "lab")]
-            BuiltInConnector::MacosKeychainSourceV1 => {
-                prepare_fixed_header(action, request, target, secret)
-            }
-            BuiltInConnector::GitHubAppInstallationV1 => {
-                let profile = GitHubAppCredential::parse_profile(secret);
-                Ok(PreparedExecution::GitHub(GitHubPrepared {
-                    credential_version,
-                    needles: profile
-                        .as_ref()
-                        .map(|profile| sealing_needles(secret, profile.private_key_bytes()))
-                        .unwrap_or_default(),
-                    profile,
-                }))
-            }
-            #[cfg(feature = "lab")]
-            BuiltInConnector::KeycloakTokenExchangeV1 => {
-                let profile = keycloak::KeycloakProfile::parse_profile(secret);
-                Ok(PreparedExecution::Keycloak(keycloak::KeycloakPrepared {
-                    credential_version,
-                    profile,
-                }))
-            }
-            #[cfg(feature = "lab")]
-            BuiltInConnector::GcpSecretManagerSourceV1 => {
-                let profile = gcp_source::GcpSourceProfile::parse_profile(secret);
-                Ok(PreparedExecution::Gcp(gcp_source::GcpPrepared {
-                    credential_version,
-                    needles: profile
-                        .as_ref()
-                        .map(|profile| profile.bootstrap_needles(secret))
-                        .unwrap_or_default(),
-                    profile,
-                }))
-            }
-            #[cfg(feature = "lab")]
-            BuiltInConnector::AzureKeyVaultSourceV1 => {
-                let profile = azure_source::AzureSourceProfile::parse_profile(secret);
-                Ok(PreparedExecution::Azure(azure_source::AzurePrepared {
-                    credential_version,
-                    needles: profile
-                        .as_ref()
-                        .map(|profile| profile.bootstrap_needles(secret))
-                        .unwrap_or_default(),
-                    profile,
-                }))
-            }
-            #[cfg(feature = "lab")]
-            BuiltInConnector::OnePasswordConnectSourceV1 => {
-                let profile = onepassword_source::OnePasswordSourceProfile::parse_profile(secret);
-                Ok(PreparedExecution::OnePassword(
-                    onepassword_source::OnePasswordPrepared {
-                        credential_version,
-                        needles: profile
-                            .as_ref()
-                            .map(|profile| profile.bootstrap_needles(secret))
-                            .unwrap_or_default(),
-                        profile,
-                    },
-                ))
-            }
-            #[cfg(feature = "lab")]
-            BuiltInConnector::AwsSecretsManagerSourceV1 => {
-                let profile = aws_source::AwsSourceProfile::parse_profile(secret);
-                Ok(PreparedExecution::Aws(aws_source::AwsPrepared {
-                    credential_version,
-                    needles: profile
-                        .as_ref()
-                        .map(|profile| profile.bootstrap_needles(secret))
-                        .unwrap_or_default(),
-                    profile,
-                }))
-            }
-            #[cfg(feature = "lab")]
-            BuiltInConnector::VaultKvV2SourceV1 => {
-                let profile = VaultKvProfile::parse_profile(secret);
-                Ok(PreparedExecution::Vault(VaultPrepared {
-                    credential_version,
-                    needles: profile
-                        .as_ref()
-                        .map(|profile| profile.bootstrap_needles(secret))
-                        .unwrap_or_default(),
-                    profile,
-                }))
-            }
-            #[cfg(feature = "lab")]
-            BuiltInConnector::VaultDynamicSourceV1 => {
-                let profile = VaultDynamicProfile::parse_profile(secret);
-                Ok(PreparedExecution::VaultDynamic(VaultDynamicPrepared {
-                    credential_version,
-                    needles: profile
-                        .as_ref()
-                        .map(|profile| sealing_needles(secret, profile.token()))
-                        .unwrap_or_default(),
-                    profile,
-                }))
-            }
-        });
+        let prepared = if let Some(bearer) = bearer {
+            prepare_fixed_header(action, request, target, &bearer.token).map(|mut prepared| {
+                if let PreparedExecution::Opaque { needles, .. } = &mut prepared {
+                    needles.extend(bearer.needles);
+                }
+                prepared
+            })
+        } else {
+            prepared
+                .expect("prepared credential")
+                .consume(|secret| match connector {
+                    BuiltInConnector::FixedHttpHeaderV1 => {
+                        prepare_fixed_header(action, request, target, secret)
+                    }
+                    #[cfg(feature = "lab")]
+                    BuiltInConnector::MacosKeychainSourceV1 => {
+                        prepare_fixed_header(action, request, target, secret)
+                    }
+                    BuiltInConnector::GitHubAppInstallationV1 => {
+                        let profile = GitHubAppCredential::parse_profile(secret);
+                        Ok(PreparedExecution::GitHub(GitHubPrepared {
+                            credential_version,
+                            needles: profile
+                                .as_ref()
+                                .map(|profile| sealing_needles(secret, profile.private_key_bytes()))
+                                .unwrap_or_default(),
+                            profile,
+                        }))
+                    }
+                    #[cfg(feature = "lab")]
+                    BuiltInConnector::KeycloakTokenExchangeV1 => {
+                        let profile = keycloak::KeycloakProfile::parse_profile(secret);
+                        Ok(PreparedExecution::Keycloak(keycloak::KeycloakPrepared {
+                            credential_version,
+                            profile,
+                        }))
+                    }
+                    #[cfg(feature = "lab")]
+                    BuiltInConnector::GcpSecretManagerSourceV1 => {
+                        let profile = gcp_source::GcpSourceProfile::parse_profile(secret);
+                        Ok(PreparedExecution::Gcp(gcp_source::GcpPrepared {
+                            credential_version,
+                            needles: profile
+                                .as_ref()
+                                .map(|profile| profile.bootstrap_needles(secret))
+                                .unwrap_or_default(),
+                            profile,
+                        }))
+                    }
+                    #[cfg(feature = "lab")]
+                    BuiltInConnector::AzureKeyVaultSourceV1 => {
+                        let profile = azure_source::AzureSourceProfile::parse_profile(secret);
+                        Ok(PreparedExecution::Azure(azure_source::AzurePrepared {
+                            credential_version,
+                            needles: profile
+                                .as_ref()
+                                .map(|profile| profile.bootstrap_needles(secret))
+                                .unwrap_or_default(),
+                            profile,
+                        }))
+                    }
+                    #[cfg(feature = "lab")]
+                    BuiltInConnector::OnePasswordConnectSourceV1 => {
+                        let profile =
+                            onepassword_source::OnePasswordSourceProfile::parse_profile(secret);
+                        Ok(PreparedExecution::OnePassword(
+                            onepassword_source::OnePasswordPrepared {
+                                credential_version,
+                                needles: profile
+                                    .as_ref()
+                                    .map(|profile| profile.bootstrap_needles(secret))
+                                    .unwrap_or_default(),
+                                profile,
+                            },
+                        ))
+                    }
+                    #[cfg(feature = "lab")]
+                    BuiltInConnector::AwsSecretsManagerSourceV1 => {
+                        let profile = aws_source::AwsSourceProfile::parse_profile(secret);
+                        Ok(PreparedExecution::Aws(aws_source::AwsPrepared {
+                            credential_version,
+                            needles: profile
+                                .as_ref()
+                                .map(|profile| profile.bootstrap_needles(secret))
+                                .unwrap_or_default(),
+                            profile,
+                        }))
+                    }
+                    #[cfg(feature = "lab")]
+                    BuiltInConnector::VaultKvV2SourceV1 => {
+                        let profile = VaultKvProfile::parse_profile(secret);
+                        Ok(PreparedExecution::Vault(VaultPrepared {
+                            credential_version,
+                            needles: profile
+                                .as_ref()
+                                .map(|profile| profile.bootstrap_needles(secret))
+                                .unwrap_or_default(),
+                            profile,
+                        }))
+                    }
+                    #[cfg(feature = "lab")]
+                    BuiltInConnector::VaultDynamicSourceV1 => {
+                        let profile = VaultDynamicProfile::parse_profile(secret);
+                        Ok(PreparedExecution::VaultDynamic(VaultDynamicPrepared {
+                            credential_version,
+                            needles: profile
+                                .as_ref()
+                                .map(|profile| sealing_needles(secret, profile.token()))
+                                .unwrap_or_default(),
+                            profile,
+                        }))
+                    }
+                })
+        };
         let prepared = match prepared {
             Ok(prepared) => prepared,
             Err(reason) => {
-                started.blocked_until(effect_deadline, reason).await?;
+                if effect_kind.load(Ordering::SeqCst) == EFFECT_ORDINARY_HTTP {
+                    started.indeterminate_until(effect_deadline, reason).await?;
+                } else {
+                    started.blocked_until(effect_deadline, reason).await?;
+                }
                 return Err(BrokerError::Denied(reason));
             }
         };
@@ -806,15 +913,28 @@ impl ActionExecutor {
         // preparation consumes the same action deadline as DNS and HTTP.
         upstream_request.timeout = effect_deadline.saturating_duration_since(Instant::now());
         if upstream_request.timeout.is_zero() {
-            started.submit_blocked("upstream-timeout");
+            if effect_kind.load(Ordering::SeqCst) == EFFECT_ORDINARY_HTTP {
+                started.submit_indeterminate("upstream-timeout");
+            } else {
+                started.submit_blocked("upstream-timeout");
+            }
             return Err(BrokerError::Upstream("upstream-timeout"));
         }
         if !outbound_headers_are_valid(&upstream_request) {
-            started
-                .blocked_until(effect_deadline, "invalid-upstream-header")
-                .await?;
+            if effect_kind.load(Ordering::SeqCst) == EFFECT_ORDINARY_HTTP {
+                started
+                    .indeterminate_until(effect_deadline, "invalid-upstream-header")
+                    .await?;
+            } else {
+                started
+                    .blocked_until(effect_deadline, "invalid-upstream-header")
+                    .await?;
+            }
             return Err(BrokerError::Denied("invalid-upstream-header"));
         }
+        // A successful OAuth refresh already contacted its provider. Preserve
+        // that effect if the target transport rejects before sending anything.
+        let prior_remote_effect = started.remote_effect_started();
         let send_started = Instant::now();
         if let Some(sender) = stream {
             let run = async {
@@ -945,7 +1065,7 @@ impl ActionExecutor {
                     crate::upstream::UpstreamError::Timeout => "upstream-timeout",
                     crate::upstream::UpstreamError::Transport => "upstream-transport",
                 };
-                if upstream_failure_is_indeterminate(&err) {
+                if prior_remote_effect || upstream_failure_is_indeterminate(&err) {
                     started.indeterminate_until(effect_deadline, reason).await?;
                 } else {
                     started.blocked_until(effect_deadline, reason).await?;
@@ -1044,7 +1164,14 @@ fn prepare_fixed_header(
         action.auth.prefix.as_str().len() + secret.len(),
     ));
     auth_value.extend_from_slice(action.auth.prefix.as_str().as_bytes());
-    auth_value.extend_from_slice(secret);
+    if action.auth.prefix.as_str() == "Basic " && action.origin.as_str() == "https://github.com" {
+        let mut basic = Zeroizing::new(b"x-access-token:".to_vec());
+        basic.extend_from_slice(secret);
+        let encoded = Zeroizing::new(data_encoding::BASE64.encode(&basic));
+        auth_value.extend_from_slice(encoded.as_bytes());
+    } else {
+        auth_value.extend_from_slice(secret);
+    }
     let needles =
         fixed_header_sealing_needles(secret, &auth_value, action.auth.prefix.as_str().as_bytes());
     Ok(PreparedExecution::Opaque {
@@ -1126,7 +1253,7 @@ impl AdmittedExecution {
                 &cleanup_owned,
                 stream,
                 self.llm.as_ref(),
-                Some(&self._permit),
+                self._permit.as_ref(),
             );
             tokio::pin!(run);
             tokio::select! {
@@ -1173,7 +1300,15 @@ async fn poll_http_while_live<T, F: Future<Output = T>>(
                 _ = permit.wait_revoked() => return Err(DomainError::InvalidCapability.into()),
                 owner = lifecycle.coordinate_until(effect_deadline.into()) => owner?,
             },
-            None => lifecycle.coordinate_until(effect_deadline.into()).await?,
+            None => {
+                // A drain owns the coordinator while waiting for Connection
+                // terminals. Reject an already closed gate before joining that
+                // wait; the protected handoff below still rechecks admission.
+                if !lifecycle.try_begin_remote_effect() {
+                    return Err(BrokerError::Authority(AuthorityError::Draining));
+                }
+                lifecycle.coordinate_until(effect_deadline.into()).await?
+            }
         };
         let mut make_future = Some(make_future);
         let mut future: Option<Pin<Box<F>>> = None;
@@ -1199,7 +1334,7 @@ async fn poll_http_while_live<T, F: Future<Output = T>>(
                     Ok(now) => permit.with_live_handoff(now, effect_deadline, handoff)?,
                     Err(error) => Err(error),
                 },
-                None => handoff(), // existing direct executor unit harness only
+                None => handoff(), // signed Connections and direct executor unit harnesses
             })
         })
         .await;
@@ -1220,7 +1355,9 @@ async fn poll_http_while_live<T, F: Future<Output = T>>(
     };
     if result.is_err() && !started.is_completed() {
         let timed_out = matches!(&result, Err(BrokerError::Upstream("upstream-timeout")));
-        if effect_kind.load(Ordering::SeqCst) == EFFECT_ORDINARY_HTTP {
+        // The guard also remembers a completed OAuth refresh before this
+        // target's handoff. A rejected handoff cannot erase that prior effect.
+        if started.remote_effect_started() {
             started.submit_indeterminate(if timed_out {
                 timeout_reason
             } else {
@@ -1237,7 +1374,7 @@ async fn poll_http_while_live<T, F: Future<Output = T>>(
     result
 }
 
-async fn wait_for_cancel(mut cancel: tokio::sync::watch::Receiver<bool>) {
+pub(crate) async fn wait_for_cancel(mut cancel: tokio::sync::watch::Receiver<bool>) {
     while !*cancel.borrow_and_update() {
         if cancel.changed().await.is_err() {
             return;
@@ -1284,7 +1421,7 @@ async fn anthropic_plugin_messages(
     }
 }
 
-async fn try_begin_remote_effect(
+pub(crate) async fn try_begin_remote_effect(
     lifecycle: &Lifecycle,
     started: &mut StartedAuditGuard,
     effect_deadline: Instant,
@@ -1292,9 +1429,15 @@ async fn try_begin_remote_effect(
     if lifecycle.try_begin_remote_effect() {
         return Ok(());
     }
-    started
-        .blocked_until(effect_deadline, "remote-effect-admission-closed")
-        .await?;
+    if started.remote_effect_started() {
+        started
+            .indeterminate_until(effect_deadline, "remote-effect-admission-closed")
+            .await?;
+    } else {
+        started
+            .blocked_until(effect_deadline, "remote-effect-admission-closed")
+            .await?;
+    }
     Err(BrokerError::Authority(AuthorityError::Draining))
 }
 

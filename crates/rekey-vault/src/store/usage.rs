@@ -20,6 +20,9 @@ use rekey_domain::{
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::time::Instant;
 
+#[cfg(test)]
+mod history_benchmark;
+
 fn corrupt<T>() -> Result<T, AuthorityError> {
     Err(AuthorityError::StorageIntegrityFailed)
 }

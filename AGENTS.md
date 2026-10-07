@@ -89,3 +89,10 @@ Cargo workspace, 7 crates + root integration-test host:
   repository behavior source unless it is explicitly tracked later
 - If code and spec disagree, fix the spec (and baselines) first, then the code
 - 2026-04-01 design/plan docs are superseded; never treat them as behavior sources
+
+## 0.4 Agent call implementation
+
+- Active contract: `docs/superpowers/specs/2026-10-05-rekey-agent-call-model.md`. This overrides conflicting 0.3 Profile/run/capability and format-freeze clauses for this release line.
+- Local callers invoke signed Connection rules without capability tokens; caller labels can only restrict rules. Secrets remain inside the Authority.
+- Implement and validate milestone gates before claiming release readiness. Preserve the old vault; initialize a new 0.4 vault with no migration.
+- For this implementation's external Agent acceptance, the user requires Codex only. Do not run Claude CLI, account, model or plugin tests, or change Claude login state. Preserve historical results without inferring that a particular account is suspended.

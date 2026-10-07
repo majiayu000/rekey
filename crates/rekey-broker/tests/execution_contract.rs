@@ -1,3 +1,4 @@
+#![cfg(feature = "lab")]
 //! Fixed HTTP action execution: injection happens server-side, the agent
 //! never influences origin/method/path/auth, and audit evidence is written
 //! in order.

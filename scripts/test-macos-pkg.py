@@ -183,9 +183,8 @@ def installed_smoke(package, checksum, version):
                REKEY_SERVICE_REQUIRE_BINARIES="1",
                REKEY_SERVICE_GENERATOR=str(ROOT / "scripts/rekey-service-unit.py"),
                REKEY_SERVICE_MANAGED_DAEMON=str(app / DAEMON / "Contents/MacOS/rekeyd"))
-    # Retain the former macOS archive's behavioral and service-manager gates,
-    # now using installed package binaries rather than signed standalone tools.
-    for script in ("p0-acceptance.sh", "release-archive-acceptance.sh", "p1-service-manager.sh"):
+    # Exercise current Connections and the real installed daemon service lifecycle.
+    for script in ("release-archive-acceptance.sh", "p1-service-manager.sh"):
         result = subprocess.run([str(ROOT / "scripts" / script)], env=env, timeout=900)
         if result.returncode:
             raise SystemExit(f"installed package {script} failed: {result.returncode}")

@@ -1,4 +1,32 @@
-# Rekey 0.3 功能事实矩阵（v3 设计）
+# Rekey 0.4 功能事实矩阵
+
+当前源码候选为 0.4.0-alpha.1，vault26 / policy7。[当前 SPEC](../superpowers/specs/2026-10-05-rekey-agent-call-model.md)与[实施记录](../superpowers/plans/2026-10-05-agent-call-implementation.md)为行为与验收来源。各项发布状态仍为 Pending，完成代码与软件检查不等同真实设备、Agent 或公开安装验收。
+
+2026-10-06 整合 `main` @ `0828fca` 的 SSE 安全回收、首次 HTTP handoff 和认证账本优化，同时保留下列 Connection 准入/审批合同。整合头的软件验证与性能复测另行记录；下方 0.3 数据及此前 0.4 历史规模 debug 测量不代表新头已通过或具有相同时延。
+
+| 能力 | 实现与证据入口 | 当前边界 |
+|---|---|---|
+| 无令牌 Connection | domain/connection、policy/connections、broker/executor/local；真实 IPC / HTTP / MCP tests | 调用方标注仅收紧；G1同用户模型 |
+| 默认读 / 写审批 / 危险写拒绝 | policy tests/connections、broker tests/personal_policy | Deny 不能被审批绕过；时间窗至多8h，锁定/策略变更清除 |
+| CLI / MCP / connect / 插件 | CLI tests/agent_call、connect、hygiene；broker tests/mcp_stdio | MCP、CLI说明与hook绑定所选vault；Claude本轮按用户要求不验，Codex结果见canonical验收报告 |
+| HTTP / LLM / SSE | runtime/gateway、executor/llm；personal_policy、MCP stdio | Host/Origin/入站真实Key拒绝，持久预算按Connection共享 |
+| Connection 准入与收尾 | lifecycle、execution_supervisor、audit、executor/local、runtime/local_calls；验收见 connection_admission tests | 合同为全局120 / 每Connection4，在途许可持有至终态审计完成；一次审批与小时额度只在 durable started 成功时消费；故障拒绝继续执行。软件回归不替代真实负载或设备验收 |
+| 访问请求 / 等待 / App | runtime/local_calls、macOS Model/Forms、ConnectionContract | 真实 Touch ID次数与C16仍待设备验收 |
+| dotenv / 精确 scan / hook | vault/hygiene、CLI hygiene tests | 0600备份与有界扫描；锁定hook默认告警放行 |
+| SSH agent / Git HTTP | broker/ssh_agent、SSH UDS tests、github-git preset | 软件SSH签名及真实OpenSSH git push通过；App/SE设备签名另行验收 |
+| OAuth 4 providers | broker/oauth、vault/authority/tokens、OAuth scopes presets | 专项合成测试通过；供应商grant/登录与账户权限另行验收 |
+| 显式 T1 | domain DerivedCredentialTarget、broker/derived、runtime/derived、delegated_credentials | Agent收到临时值；目标/权限/TTL签名固定；9项合成合同通过，真实云服务待验 |
+| 人类凭据管理 | App保存/轮转、scripts/test-human-vault.py | 默认App/CLI不显示、复制或导出长期密钥；保存与轮转通过签名Connection扫描验证，逐次A2及审计故障仍验 |
+| run / Profile / 本机capability | Removed in default | 仅lab工作负载代码保留，不提供旧vault迁移 |
+| Seatbelt / netns / G2 | Lab reserve | 编译/脚本语法不宣称运行时或企业部署通过 |
+| Vault / backup / A2 / audit | 原Authority安全合同继续，完整workspace验收 | 历史设备证据不能升格为新0.4验证 |
+| 发布 | release workflow / signed App/pkg / public smoke | Pending；以实际GitHub版本与安装证据为准 |
+
+## 0.3 历史证据
+
+下表只适用于原0.3源码/二进制，包含已经移除的个人入口，不是0.4行为说明。
+
+### 0.3 功能事实矩阵（历史 v3 设计）
 
 发布前候选快照；发布后的状态以 [GitHub release](https://github.com/majiayu000/rekey/releases/tag/v0.3.0-alpha.2) 与完整 workflow 为准。
 

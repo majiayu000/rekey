@@ -1,7 +1,9 @@
 //! Broker-owned lifecycle: one coordinator for idle / explicit lock /
 //! shutdown. Phase is not an AtomicBool that concurrent drains can flip.
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
 
 use rekey_vault::AuthorityError;
 use tokio::sync::{Mutex, MutexGuard, TryLockError, watch};
@@ -11,6 +13,9 @@ use crate::error::BrokerError;
 const REMOTE_EFFECT_CLOSED: u8 = 0;
 const REMOTE_EFFECT_OPEN: u8 = 1;
 const REMOTE_EFFECT_STOP_PENDING: u8 = 2;
+
+pub(crate) const MAX_CONNECTION_EXECUTIONS: u32 = 120;
+pub(crate) const MAX_EXECUTIONS_PER_CONNECTION: u32 = 4;
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,6 +38,8 @@ impl BrokerPhase {
 }
 
 pub struct Lifecycle {
+    local_in_flight: AtomicU32,
+    connection_in_flight: StdMutex<BTreeMap<String, u32>>,
     phase: AtomicU8,
     coordinator: Mutex<()>,
     cancel_tx: watch::Sender<bool>,
@@ -43,11 +50,50 @@ impl Lifecycle {
     pub fn new() -> Self {
         let (cancel_tx, _) = watch::channel(false);
         Self {
+            local_in_flight: AtomicU32::new(0),
+            connection_in_flight: StdMutex::new(BTreeMap::new()),
             phase: AtomicU8::new(BrokerPhase::Locked as u8),
             coordinator: Mutex::new(()),
             cancel_tx,
             remote_effect_gate: AtomicU8::new(REMOTE_EFFECT_CLOSED),
         }
+    }
+
+    pub(crate) fn local_in_flight(&self) -> u32 {
+        self.local_in_flight.load(Ordering::SeqCst)
+    }
+
+    // Called under the coordinator before the admitted execution is published.
+    pub(crate) fn local_permit(self: &Arc<Self>) -> LocalExecutionPermit {
+        self.local_in_flight.fetch_add(1, Ordering::SeqCst);
+        LocalExecutionPermit(Arc::clone(self))
+    }
+
+    // Caller labels do not create another slot. Keep the permit with the
+    // durable started/terminal owner, including asynchronous fallback commits.
+    pub(crate) fn connection_permit(
+        self: &Arc<Self>,
+        connection: &str,
+    ) -> Result<ConnectionExecutionPermit, BrokerError> {
+        self.reject_if_not_running()?;
+        if !self.try_begin_remote_effect() {
+            return Err(BrokerError::Admission(AuthorityError::Draining));
+        }
+        let mut active = self
+            .connection_in_flight
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if active.values().sum::<u32>() >= MAX_CONNECTION_EXECUTIONS
+            || active.get(connection).copied().unwrap_or(0) >= MAX_EXECUTIONS_PER_CONNECTION
+        {
+            return Err(BrokerError::Admission(AuthorityError::AuthorityBusy));
+        }
+        *active.entry(connection.to_owned()).or_default() += 1;
+        Ok(ConnectionExecutionPermit {
+            local: self.local_permit(),
+            connection: connection.to_owned(),
+            needs_terminal: false,
+        })
     }
 
     pub fn phase(&self) -> BrokerPhase {
@@ -182,9 +228,97 @@ impl Default for Lifecycle {
     }
 }
 
+pub(crate) struct LocalExecutionPermit(Arc<Lifecycle>);
+impl Drop for LocalExecutionPermit {
+    fn drop(&mut self) {
+        self.0.local_in_flight.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+pub(crate) struct ConnectionExecutionPermit {
+    local: LocalExecutionPermit,
+    connection: String,
+    needs_terminal: bool,
+}
+
+impl ConnectionExecutionPermit {
+    pub(crate) fn started(&mut self) {
+        self.needs_terminal = true;
+    }
+
+    pub(crate) fn complete(mut self) {
+        self.needs_terminal = false;
+    }
+}
+
+impl Drop for ConnectionExecutionPermit {
+    fn drop(&mut self) {
+        let lifecycle = &self.local.0;
+        if self.needs_terminal {
+            lifecycle.mark_stop_pending();
+        }
+        let mut active = lifecycle
+            .connection_in_flight
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(count) = active.get_mut(&self.connection) {
+            *count -= 1;
+            if *count == 0 {
+                active.remove(&self.connection);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connection_capacity_is_per_connection_and_global_until_owner_drops() {
+        let lifecycle = Arc::new(Lifecycle::new());
+        lifecycle.enter_running().unwrap();
+        let mut held = Vec::new();
+        for _ in 0..MAX_EXECUTIONS_PER_CONNECTION {
+            held.push(lifecycle.connection_permit("shared").unwrap());
+        }
+        assert!(matches!(
+            lifecycle.connection_permit("shared"),
+            Err(BrokerError::Admission(AuthorityError::AuthorityBusy))
+        ));
+        for index in MAX_EXECUTIONS_PER_CONNECTION..MAX_CONNECTION_EXECUTIONS {
+            held.push(
+                lifecycle
+                    .connection_permit(&format!("connection-{index}"))
+                    .unwrap(),
+            );
+        }
+        assert_eq!(lifecycle.local_in_flight(), MAX_CONNECTION_EXECUTIONS);
+        assert!(matches!(
+            lifecycle.connection_permit("another"),
+            Err(BrokerError::Admission(AuthorityError::AuthorityBusy))
+        ));
+        held.pop();
+        drop(lifecycle.connection_permit("another").unwrap());
+        drop(held);
+        assert_eq!(lifecycle.local_in_flight(), 0);
+        assert!(lifecycle.connection_in_flight.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn unfinished_terminal_closes_admission_before_capacity_returns() {
+        let lifecycle = Arc::new(Lifecycle::new());
+        lifecycle.enter_running().unwrap();
+        let mut permit = lifecycle.connection_permit("test").unwrap();
+        permit.started();
+        drop(permit);
+        assert_eq!(lifecycle.local_in_flight(), 0);
+        assert!(!lifecycle.try_begin_remote_effect());
+        assert!(matches!(
+            lifecycle.connection_permit("test"),
+            Err(BrokerError::Admission(AuthorityError::Draining))
+        ));
+    }
 
     #[tokio::test]
     async fn bounded_coordinator_wait_does_not_acquire_later() {

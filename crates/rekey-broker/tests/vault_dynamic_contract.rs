@@ -1,3 +1,4 @@
+#![cfg(feature = "lab")]
 //! One-shot Vault dynamic leases at the real Broker/Authority/UDS boundary.
 
 mod common;

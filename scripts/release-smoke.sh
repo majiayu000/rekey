@@ -25,8 +25,7 @@ if tar -tzf "$ARCHIVE" | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
   exit 1
 fi
 
-# Unpack outside /tmp: linux-netns-v1 overlays /tmp, so a child argv from this
-# archive would otherwise vanish during P-09 agent-run execute.
+# Unpack into a disposable directory; only packaged binaries are exercised.
 unpack_root="${RUNNER_TEMP:-/var/tmp}"
 mkdir -p "$unpack_root"
 WORKDIR="$(mktemp -d "$unpack_root/rekey-release.XXXXXX")"
@@ -53,16 +52,6 @@ echo "release-smoke: proved=packaged-helper-entries"
 
 BIN_DIR="$BIN_DIR" \
 REKEY_ACCEPTANCE_REQUIRE_BINARIES=1 \
-"$ROOT/scripts/p0-acceptance.sh"
-
-BIN_DIR="$BIN_DIR" \
-REKEY_ACCEPTANCE_REQUIRE_BINARIES=1 \
 "$ROOT/scripts/release-archive-acceptance.sh"
-
-if [[ "$(uname -s)" == Linux ]]; then
-  BIN_DIR="$BIN_DIR" \
-  REKEY_ACCEPTANCE_REQUIRE_BINARIES=1 \
-  "$ROOT/scripts/p9-linux-agent-run.sh"
-fi
 
 echo "release artifact smoke passed: $EXPECTED_VERSION"

@@ -9,6 +9,10 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum BrokerError {
+    #[error("{1}")]
+    LocalCall(&'static str, &'static str, &'static str),
+    #[error("connection budget exceeded")]
+    BudgetExceeded { reset_at_ms: i64 },
     #[error(transparent)]
     Authority(#[from] AuthorityError),
     /// Broker admission rejected without an unresolved Authority command.
@@ -44,6 +48,8 @@ pub enum BrokerError {
 impl BrokerError {
     pub fn code(&self) -> &'static str {
         match self {
+            Self::LocalCall(code, _, _) => code,
+            Self::BudgetExceeded { .. } => "BUDGET_EXCEEDED",
             Self::Authority(err) | Self::Admission(err) => err.code(),
             Self::Domain(DomainError::InvalidCapability) => "INVALID_CAPABILITY",
             Self::Domain(DomainError::CapabilityExpired) => "CAPABILITY_EXPIRED",
@@ -91,6 +97,23 @@ impl BrokerError {
                 | AuthorityError::StorageIntegrityFailed,
             ) => "credential unavailable".to_owned(),
             other => other.to_string(),
+        }
+    }
+
+    pub(crate) fn agent_next(&self) -> String {
+        match self {
+            Self::BudgetExceeded { reset_at_ms } => {
+                let reset = time::OffsetDateTime::from_unix_timestamp_nanos(
+                    i128::from(*reset_at_ms) * 1_000_000,
+                )
+                .map(|time| time.to_string())
+                .unwrap_or_else(|_| format!("Unix milliseconds {reset_at_ms}"));
+                format!("Retry after {reset} UTC.")
+            }
+            Self::LocalCall(_, _, next) => (*next).to_owned(),
+            other => {
+                crate::ipc::frame::agent_next(crate::ipc::agent::local_agent_code(other)).to_owned()
+            }
         }
     }
 }

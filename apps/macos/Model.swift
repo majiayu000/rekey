@@ -67,7 +67,7 @@ struct CLI: Sendable {
             if process.isRunning { process.terminate() }
             throw UIError(message: "无法传递输入。操作结果未确认，请刷新后检查，勿自动重试。")
         }
-        let output = OutputCapture(limit: arguments.prefix(2) == ["approval", "review"] ? LocalApprovalDetails.stdoutLimit : arguments == ["profile", "list"] ? ProfileList.stdoutLimit : arguments.prefix(2) == ["audit", "list"] ? AuditPage.stdoutLimit : 2 * 1024 * 1024)
+        let output = OutputCapture(limit: arguments.prefix(2) == ["approval", "review"] ? LocalApprovalDetails.stdoutLimit : arguments == ["connection", "list"] ? ConnectionList.stdoutLimit : arguments.prefix(2) == ["audit", "list"] ? AuditPage.stdoutLimit : 2 * 1024 * 1024)
         output.read(stdout.fileHandleForReading, process: process)
         process.waitUntilExit()
         group.wait()
@@ -97,13 +97,6 @@ struct CLI: Sendable {
         let output = try run(arguments)
         do { return try JSONDecoder().decode(type, from: output) }
         catch { throw UIError(message: "服务返回了无法识别的数据，请确认客户端与服务版本一致。") }
-    }
-
-    func revealCredential(_ id: String, proof: String, recovery: Bool, presence: Bool = false) throws -> Data {
-        var arguments = ["desktop-reveal", id, "--password-stdin"]
-        if presence { arguments.append("--presence") }
-        else if recovery { arguments.append("--recovery") }
-        return try run(arguments, input: proof + "\n", redacting: [proof])
     }
 
     func approvalDetails(_ id: String) throws -> ApprovalDetails {
@@ -162,7 +155,7 @@ struct ServiceStatus: Decodable {
         }
     }
     var protectionDetail: String {
-        "L0 表示只保存凭据。L1-dev 表示 Agent 接口不返回密钥；当前构建的钥匙串访问和同用户内存隔离仍待设备验收，服务签名通过也不宣称 L1。L2 还需要经验证的 L1 与实际启用的隔离、拒绝其它网络访问；Profile 中的隔离声明不能单独证明 L2。"
+        "L0 表示只保存凭据。L1-dev 表示 Agent 接口不返回密钥；当前构建的钥匙串访问和同用户内存隔离仍待设备验收，服务签名通过也不宣称 L1。同用户调用方可伪造标注；调用方规则只能收紧，不能扩大已签署权限。"
     }
     var unlocked: Bool { state == "unlocked" }
     var label: String {
@@ -444,7 +437,7 @@ struct PersonalPolicyDraft: Sendable {
     }
     private struct Response: Decodable { let metadata: Metadata; let sign_bytes: String }
     private struct Envelope: Decodable {
-        struct Snapshot: Decodable { let version: UInt64; let expires_at_ms: Int64; let profiles: [AgentProfile] }
+        struct Snapshot: Decodable { let version: UInt64; let expires_at_ms: Int64; let connections: [ConnectionDefinition]; let ssh_keys:[SSHKeyDefinition]; let derived_credentials:[DerivedCredentialDefinition] }
         let snapshot: Snapshot
         let signer_id: String
     }
@@ -454,7 +447,9 @@ struct PersonalPolicyDraft: Sendable {
     let publicKey: Data
     let changesText: String
     let actionsText: String
-    let profiles: [AgentProfile]
+    let connections: [ConnectionDefinition]
+    let derivedCredentials:[DerivedCredentialDefinition]
+    let sshKeys:[SSHKeyDefinition]
     let expectedPolicySHA256: String?
     let expiresAtMs: Int64
     let workspace: String
@@ -472,7 +467,7 @@ struct PersonalPolicyDraft: Sendable {
               let outer = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let metadata = outer["metadata"] as? [String: Any],
               let changes = metadata["changes"] as? [[String: Any]],
-              let actions = metadata["actions"] as? [[String: Any]],
+              let connections = metadata["connections"] as? [[String: Any]],
               Self.isLowerHex(response.metadata.trust_sha256, count: 64),
               Self.isLowerHex(response.metadata.policy_sha256, count: 64),
               Self.isLowerHex(response.metadata.public_key, count: 130),
@@ -480,6 +475,8 @@ struct PersonalPolicyDraft: Sendable {
             throw UIError(message: "个人策略草稿响应无效，请重新生成。")
         }
         let envelope = try JSONDecoder().decode(Envelope.self, from: Data(bytes.dropFirst(Self.prefix.count)))
+        let definitions=try JSONDecoder().decode([ConnectionDefinition].self,from:JSONSerialization.data(withJSONObject:connections))
+        guard definitions==envelope.snapshot.connections else {throw UIError(message:"审阅连接定义与实际签名字节不一致，已拒绝签名。")}
         guard envelope.snapshot.version == response.metadata.next_version,
               envelope.snapshot.expires_at_ms == expiresAtMs,
               (response.metadata.base_version == nil) == (expectedPolicySHA256 == nil) else {
@@ -491,8 +488,8 @@ struct PersonalPolicyDraft: Sendable {
             UInt8(String(decoding: hex[$0..<$0 + 2], as: UTF8.self), radix: 16)!
         })
         changesText = String(decoding: try JSONSerialization.data(withJSONObject: changes, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]), as: UTF8.self)
-        actionsText = String(decoding: try JSONSerialization.data(withJSONObject: actions, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]), as: UTF8.self)
-        profiles = envelope.snapshot.profiles; self.expectedPolicySHA256 = expectedPolicySHA256
+        actionsText = String(decoding: try JSONSerialization.data(withJSONObject: ["connections":connections,"ssh_keys":try JSONSerialization.jsonObject(with:JSONEncoder().encode(envelope.snapshot.ssh_keys)),"derived_credentials":try JSONSerialization.jsonObject(with:JSONEncoder().encode(envelope.snapshot.derived_credentials))], options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]), as: UTF8.self)
+        self.connections = envelope.snapshot.connections; self.derivedCredentials=envelope.snapshot.derived_credentials; self.sshKeys=envelope.snapshot.ssh_keys; self.expectedPolicySHA256 = expectedPolicySHA256
         self.expiresAtMs = expiresAtMs
         self.workspace = workspace; self.revision = revision
     }
@@ -526,29 +523,29 @@ struct PersonalPolicyDraft: Sendable {
 }
 
 extension CLI {
-    func personalPolicyDraft(profiles: [AgentProfile], expectedPolicySHA256: String?, expiresAtMs: Int64, revision: UUID) throws -> PersonalPolicyDraft {
+    func personalPolicyDraft(connections: [ConnectionDefinition], sshKeys:[SSHKeyDefinition]?=nil, derivedCredentials:[DerivedCredentialDefinition]?=nil, expectedPolicySHA256: String?, expiresAtMs: Int64, revision: UUID) throws -> PersonalPolicyDraft {
         struct Request: Encodable {
-            let profiles: [AgentProfile]; let expires_at_ms: Int64; let expected_policy_sha256: String?
-            private enum CodingKeys: String, CodingKey { case profiles, expires_at_ms, expected_policy_sha256 }
+            let connections: [ConnectionDefinition]; let ssh_keys:[SSHKeyDefinition]?; let derived_credentials:[DerivedCredentialDefinition]?;let expires_at_ms: Int64; let expected_policy_sha256: String?
+            private enum CodingKeys: String, CodingKey { case connections, ssh_keys, derived_credentials, expires_at_ms, expected_policy_sha256 }
             func encode(to encoder: Encoder) throws {
                 var fields = encoder.container(keyedBy: CodingKeys.self)
-                try fields.encode(profiles, forKey: .profiles)
+                try fields.encode(connections, forKey: .connections)
+                try fields.encodeIfPresent(ssh_keys, forKey: .ssh_keys)
+                try fields.encode(derived_credentials,forKey:.derived_credentials)
                 try fields.encode(expires_at_ms, forKey: .expires_at_ms)
                 try fields.encode(expected_policy_sha256, forKey: .expected_policy_sha256)
             }
         }
         guard expectedPolicySHA256.map({ PersonalPolicyDraft.isLowerHex($0, count: 64) }) ?? true else {
-            throw UIError(message: "策略基线摘要无效，请重新加载 Profile。")
+            throw UIError(message: "策略基线摘要无效，请重新加载 连接。")
         }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.withoutEscapingSlashes]
-        let input = try encoder.encode(profiles)
-        let metadata = try encoder.encode(Request(profiles: profiles, expires_at_ms: expiresAtMs, expected_policy_sha256: expectedPolicySHA256))
-        guard input.count <= 65536, metadata.count <= 65536 else {
-            throw UIError(message: "Profile 草稿请求超过 64 KiB，请缩小授权范围。")
+        let input = try encoder.encode(Request(connections:connections,ssh_keys:sshKeys,derived_credentials:derivedCredentials,expires_at_ms:expiresAtMs,expected_policy_sha256:expectedPolicySHA256))
+        guard input.count <= 65536 else {
+            throw UIError(message: "连接 草稿请求超过 64 KiB，请缩小授权范围。")
         }
-        var args = ["policy", "draft", "--profiles-stdin", "--expires-at-ms", String(expiresAtMs)]
-        if let digest = expectedPolicySHA256 { args += ["--expected-policy-sha256", digest] }
+        let args = ["policy", "draft", "--request-stdin"]
         return try PersonalPolicyDraft(response: run(args, input: String(decoding: input, as: UTF8.self)), expectedPolicySHA256: expectedPolicySHA256,
                                        expiresAtMs: expiresAtMs, workspace: stateDirectory, revision: revision)
     }
@@ -656,11 +653,22 @@ struct LocalApprovalDetails: Identifiable {
         let body_len: Int
     }
     struct Review: Decodable {
+        struct SSH:Decodable {
+            struct Use:Decodable {let purpose:String;let username:String?;let unverified_host:String?}
+            let key:String;let host:String;let bound_host_key:String?;let session_id:String?
+            let public_key:String;let data_sha256:String;let data_base64:String;let use:Use
+            let window_allowed:Bool
+            var purposeLabel:String {switch use.purpose{case "authentication":return "SSH 用户认证";case "git":return "Git 签名";default:return "其它 SSH 签名"}}
+        }
         let record_type: String
         let challenge: ApprovalChallenge
-        let action_name: String
-        let origin: String
-        let method: String
+        let action_name: String?
+        let origin: String?
+        let method: String?
+        let canonical_request:ConnectionJSON?
+        let ssh:SSH?
+        var title:String {action_name ?? ssh.map{"\($0.purposeLabel) · \($0.key)"} ?? "本机审批"}
+        var windowAllowed:Bool {if let ssh{return ssh.window_allowed};return challenge.resource.type=="connection"}
     }
     private struct Response: Decodable { let metadata: Metadata; let review_json: String? }
     let metadata: Metadata
@@ -694,9 +702,14 @@ struct LocalApprovalDetails: Identifiable {
             let digest = SHA256.hash(data: Data("RKREVIEW\0\u{1}".utf8) + raw).map { String(format: "%02x", $0) }.joined()
             guard digest == meta.review_sha256 else { throw UIError(message: "审批正文校验失败，请重新读取。") }
             let decoded = try JSONDecoder().decode(Review.self, from: raw)
-            guard decoded.record_type == "rekey.approval.review.v1", decoded.challenge.record_type == "rekey.approval.challenge.v2",
+            guard decoded.record_type == "rekey.approval.local-review.v1", decoded.challenge.record_type == "rekey.approval.challenge.v2",
                   decoded.challenge.approval_request_id == id, case .localPresence = decoded.challenge.approver else {
                 throw UIError(message: "此正文不是所选本机审批请求。")
+            }
+            if decoded.challenge.schema_id=="rekey.ssh-sign.v1" {
+                guard decoded.ssh != nil,decoded.action_name==nil,decoded.origin==nil,decoded.method==nil,decoded.canonical_request==nil else{throw UIError(message:"SSH 审批正文类型不匹配。")}
+            } else {
+                guard decoded.ssh==nil,decoded.action_name != nil,decoded.origin != nil,decoded.method != nil,decoded.canonical_request != nil else{throw UIError(message:"HTTP 审批缺少完整目标或规范请求。")}
             }
             review = decoded
         }
@@ -707,10 +720,12 @@ extension CLI {
     func localApprovalReview(_ id: String, revision: UUID) throws -> LocalApprovalDetails {
         try LocalApprovalDetails.parse(run(["approval", "review", id]), id: id, workspace: stateDirectory, revision: revision)
     }
-    func decideLocalApproval(_ details: LocalApprovalDetails, approve: Bool, proof: String) throws -> LocalApprovalStateResponse {
+    func decideLocalApproval(_ details: LocalApprovalDetails, approve: Bool, proof: String, windowSeconds: UInt32? = nil) throws -> LocalApprovalStateResponse {
         let key = try PresenceKey.validated(proof)
-        let data = try run(["approval", approve ? "approve" : "reject", details.id, "--review-sha256", details.metadata.review_sha256,
-                            "--presence", "--password-stdin"], input: key + "\n", redacting: [key])
+        var arguments = ["approval", approve ? "approve" : "reject", details.id, "--review-sha256", details.metadata.review_sha256,
+                         "--presence", "--password-stdin"]
+        if approve, let windowSeconds { arguments += ["--window-seconds", String(windowSeconds)] }
+        let data = try run(arguments, input: key + "\n", redacting: [key])
         let response = try JSONDecoder().decode(LocalApprovalStateResponse.self, from: data)
         guard response.approval_request_id == details.id,
               response.expires_at_ms == details.review?.challenge.max_expires_at_ms else {
@@ -741,12 +756,16 @@ struct AuditPage: Decodable {
 }
 
 struct ActivityContext: Decodable, Hashable {
-    let profile_name: String
-    let policy_sha256: String
-    let instance_slug: String
-    let capability: String
-    let model: String?
+    let connection:String?;let caller:String?;let method_class:String?
+    let profile_name:String?;let policy_sha256:String?;let instance_slug:String?;let capability:String?;let model:String?
+    var normalized_path:String? = nil
+    var rule_id:String? = nil
+    var target:ConnectionJSON? = nil
+    var expires_at_ms:Int64? = nil
+    var classification:String {target == nil ? (method_class ?? capability ?? "—") : "临时凭据"}
+    var group:Self {var value=self;value.normalized_path=nil;value.rule_id=nil;value.expires_at_ms=nil;return value}
 }
+
 struct ActivityUsage: Decodable {
     enum Source: String, Decodable { case measured, indeterminate, notApplicable = "not-applicable" }
     let instance_slug: String
@@ -773,6 +792,7 @@ struct ActivityCounts {
 struct ActivityRow: Identifiable {
     let context: ActivityContext?
     var counts = ActivityCounts()
+    var recent:[AuditEvent]=[]
     var id: ActivityContext? { context }
 }
 
@@ -801,8 +821,8 @@ struct ActivitySnapshot {
     var rows: [ActivityRow] {
         groups.values.sorted { (lhs: ActivityRow, rhs: ActivityRow) in
             let a = lhs.context, b = rhs.context
-            let left: [String] = [a?.profile_name ?? "", a?.policy_sha256 ?? "", a?.instance_slug ?? "", a?.capability ?? "", a?.model ?? ""]
-            let right: [String] = [b?.profile_name ?? "", b?.policy_sha256 ?? "", b?.instance_slug ?? "", b?.capability ?? "", b?.model ?? ""]
+            let left: [String] = [a?.caller ?? a?.profile_name ?? "", a?.connection ?? a?.instance_slug ?? "", a?.method_class ?? a?.capability ?? "", a?.model ?? ""]
+            let right: [String] = [b?.caller ?? b?.profile_name ?? "", b?.connection ?? b?.instance_slug ?? "", b?.method_class ?? b?.capability ?? "", b?.model ?? ""]
             return left.lexicographicallyPrecedes(right)
         }
     }
@@ -828,10 +848,19 @@ struct ActivitySnapshot {
                 case .notApplicable: break
                 }
             }
-            guard counts.admitted != 0 || counts.denied != 0 || counts.approvals != 0 || counts.measuredTokens != 0 || counts.estimatedTokens != 0 else { continue }
-            var row = next.groups[event.request_context] ?? ActivityRow(context: event.request_context)
+            guard counts.admitted != 0 || counts.denied != 0 || counts.approvals != 0 || counts.measuredTokens != 0 || counts.estimatedTokens != 0 || event.request_context?.connection != nil else { continue }
+            let group=event.request_context?.group
+            var row = next.groups[group] ?? ActivityRow(context:group)
+            if event.request_context?.connection != nil {
+                let id=event.request_id ?? event.approval_request_id ?? event.event_id
+                if let index=row.recent.firstIndex(where:{($0.request_id ?? $0.approval_request_id ?? $0.event_id)==id}) {
+                    // Keep the issued record's actual expiry when a later
+                    // execution terminal record describes the same request.
+                    if event.event_type == "credential.derived_issued" {row.recent[index]=event}
+                } else if row.recent.count<50 {row.recent.append(event)}
+            }
             try row.counts.add(counts); try next.totals.add(counts)
-            next.groups[event.request_context] = row
+            next.groups[group] = row
         }
         next.snapshot = page.snapshot_max_sequence; next.cursor = page.next_before_sequence
         next.pages += 1; next.complete = page.next_before_sequence == nil
@@ -839,49 +868,24 @@ struct ActivitySnapshot {
     }
 }
 
-enum OnboardingRoute: String, Sendable {
-    case setup = "rekey://setup"
-    case anthropic = "rekey://add/anthropic"
-    init?(url: URL) { self.init(rawValue: url.absoluteString) }
-}
-
-extension AgentProfile {
-    // Only invoked by the explicit Prepare Profile button, not during rendering.
-    static func onboarding(actions: [FixedAction], model: String) throws -> AgentProfile {
-        guard !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw UIError(message: "请填写并确认精确模型 ID。") }
-        var profile = newProfile()
-        let responses = actions.first?.template?.source.template == "glm-responses@1"
-        let instance = responses ? "glm-responses" : "anthropic"
-        profile.name = responses ? "codex" : "claude-code"
-        var capabilities: [Capability] = []
-        for action in actions {
-            guard let source = action.template?.source, let id = UUID(uuidString: action.id) else { throw UIError(message: "安装响应缺少模板操作身份，未准备 Profile。") }
-            let reference = ActionRef(action_id: id, version: action.version)
-            if let index = capabilities.firstIndex(where: { $0.capability == source.capability }) { capabilities[index].actions.append(reference) }
-            else { capabilities.append(.init(capability: source.capability, actions: [reference])) }
-        }
-        profile.grants = [.init(instance: instance, capabilities: capabilities)]
-        profile.llm_limits = [.init(instance: instance, models: [model], max_output_tokens_per_request: 32768, max_requests_per_day: 100, max_output_tokens_per_day: 100_000)]
-        return profile
-    }
-    var onboardingLaunchCommand: String? {
-        guard llm_limits.count == 1, llm_limits[0].models.count == 1 else { return nil }
-        func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\"'\"'") + "'" }
-        let responses = grants.flatMap(\.capabilities).contains { $0.capability == "responses" }
-        let client = responses ? "codex -- codex" : "claude-code -- claude"
-        return "rekey run " + quote(name) + " --client " + client + " --model " + quote(llm_limits[0].models[0])
+enum OnboardingRoute: Equatable, Hashable, Sendable {
+    case setup
+    case add(String)
+    case importEnv(String)
+    case oauth(String)
+    var rawValue: String { switch self { case .setup:return "rekey://setup";case .add(let preset):return "rekey://add/"+preset;case .importEnv(let path):return "import:"+path;case .oauth(let connection):return "oauth:"+connection } }
+    init?(url: URL) {
+        guard url.scheme == "rekey", url.fragment == nil else { return nil }
+        if url.host == "import",url.path.isEmpty,let components=URLComponents(url:url,resolvingAgainstBaseURL:false),let query=components.queryItems,query.count==1,query[0].name=="path",let path=query[0].value,path.hasPrefix("/"),!path.contains("\0") {self = .importEnv(path);return}
+        if url.host == "oauth",url.path.isEmpty,let query=URLComponents(url:url,resolvingAgainstBaseURL:false)?.queryItems,query.count==1,query[0].name=="connection",let connection=query[0].value,!connection.isEmpty,connection.utf8.count<=100,connection.utf8.allSatisfy({$0>=48 && $0<=57 || $0>=65 && $0<=90 || $0>=97 && $0<=122 || [45,46,95].contains($0)}) {self = .oauth(connection);return}
+        guard url.query == nil else{return nil}
+        if url.host == "setup", url.path.isEmpty { self = .setup; return }
+        let presets = ["anthropic","openai","glm","glm-responses","github-pat","github-git","generic-bearer","generic-header","google-drive","google-gmail","google-calendar","github-oauth","slack","notion"]
+        guard url.host == "add", presets.contains(String(url.path.dropFirst())),url.path.hasPrefix("/") else { return nil }
+        self = .add(String(url.path.dropFirst()))
     }
 }
 
-extension ProfileList {
-    func addingOnboardingProfile(_ seed: AgentProfile?) throws -> [AgentProfile] {
-        guard let seed else { return profiles }
-        guard !profiles.contains(where: { $0.name == seed.name || $0.principal_id == seed.principal_id }) else {
-            throw UIError(message: "已有同名 Profile。请关闭并另取名称，或前往授权页面明确编辑已有项；不会覆盖旧主体。")
-        }
-        return profiles + [seed]
-    }
-}
 
 struct InstalledTemplateActions: Decodable, Sendable {
     struct Item: Decodable, Sendable { let binding_index: UInt64; let action: FixedAction }
@@ -903,13 +907,6 @@ enum Page: String, CaseIterable, Identifiable {
         case .settings: return "gearshape"
         }
     }
-}
-
-struct CredentialReveal {
-    let id: String
-    let copy: Bool
-    let workspace: String
-    let revision: UUID
 }
 
 struct ProviderTemplateCatalog: Decodable, Sendable {
@@ -961,7 +958,6 @@ struct Operation: Identifiable {
     var temporaryFile: URL?
     var templateRequest: Data?
     var personalTrustVaultID: UUID?
-    var reveal: CredentialReveal?
     var rollbackContext: RollbackContext?
     var rollbackRevision: UUID?
     var unregisterBackgroundService = false
@@ -969,7 +965,6 @@ struct Operation: Identifiable {
         guard proof else { return false }
         let command = arguments.prefix(2).joined(separator: " ")
         if ["backup", "shutdown"].contains(arguments.first ?? "") { return true }
-        if arguments.first == "desktop-reveal" { return true }
         if ["policy trust install", "audit retention set"].contains(arguments.prefix(3).joined(separator: " ")) { return true }
         return ["credential add", "credential rotate", "credential revoke", "credential add-github-app", "credential rotate-github-app",
                 "credential add-vault-kv", "credential rotate-vault-kv", "credential add-vault-dynamic", "credential rotate-vault-dynamic",
@@ -1020,9 +1015,13 @@ final class AppModel: ObservableObject {
     private(set) var notifiedApprovalIDs = Set<String>()
     private var notificationRevision = UUID()
     @Published var onboardingRoute: OnboardingRoute?
-    @Published var onboardingProfile: AgentProfile?
+    @Published var onboardingConnection: ConnectionDefinition?
     @Published var onboardingCommand: String?
     @Published var showPolicyDraft = false
+    @Published var addPreset="github-pat"
+    @Published var accessInbox:AccessInbox?
+    private var notifiedAccessIDs=Set<String>()
+    @Published var importPath:String?
     @Published var showTemplate = false
     @Published private(set) var nativeFlowRevision = UUID()
     @Published private(set) var personalPolicySigning = false
@@ -1032,11 +1031,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var activityError: String?
     private var activityRevision = UUID()
     @Published var desktopToken: String?
-    @Published var copiedCredential: String?
-    @Published var visibleSecret: String?
     private var desktopExpiry = Date.distantPast
     @Published var selectedCredential: String? { didSet {
-        visibleSecret = nil; copiedCredential = nil
         if oldValue != selectedCredential { nativeFlowRevision = UUID() }
     } }
     @Published var busy = false
@@ -1055,7 +1051,7 @@ final class AppModel: ObservableObject {
     @Published var auditOutcome = ""
     @Published var stateDirectory: String { didSet {
         if oldValue != stateDirectory {
-            onboardingRoute = nil; onboardingProfile = nil; onboardingCommand = nil
+            onboardingRoute = nil; onboardingConnection = nil; onboardingCommand = nil
             clearActivity()
             PresenceKey.invalidateAuthentication()
             notifiedApprovalIDs.removeAll(); clearNativeFlow(); clearOIDCLogin(); oidcProfileFile = nil; oidcSessionFile = nil; oidcIdentity = nil
@@ -1141,13 +1137,12 @@ final class AppModel: ObservableObject {
         revision == oidcFlowRevision && workspace == stateDirectory && unlocked
     }
     func clearNativeFlow() {
-        onboardingProfile = nil
+        onboardingConnection = nil
         nativeFlowRevision = UUID(); showPolicyDraft = false; approvalDetails = nil; localApprovalDetails = nil; localApprovalNeedsRefresh = false
         showTemplate = false
-        if operation?.reveal != nil || presenceAuthenticating { operation = nil }
+        if presenceAuthenticating { operation = nil }
     }
     func nativeFlowBecameInactive() {
-        visibleSecret = nil
         // A system authentication dialog may deactivate the App. Only the
         // explicit signing interval survives that event; lock/path changes do not.
         if !personalPolicySigning && !presenceAuthenticating { clearNativeFlow() }
@@ -1202,33 +1197,33 @@ final class AppModel: ObservableObject {
         busy = false
         if injectedClient == nil { await refresh() }
     }
-    func loadProfileEditor(client injectedClient: CLI? = nil) async throws -> (ProfileList, [FixedAction]) {
-        guard !busy, unlocked else { throw UIError(message: "请先解锁并等待当前操作完成。") }
-        busy = true; defer { busy = false }
-        let client = injectedClient ?? cli, revision = nativeFlowRevision
-        let loaded = try await Task.detached {
-            (try client.decode(ProfileList.self, ["profile", "list"]), try client.decode(ActionList.self, ["action", "list"]).actions)
-        }.value
-        guard acceptsNativeCompletion(revision, workspace: client.stateDirectory), !Task.isCancelled else {
-            throw UIError(message: "Profile 加载期间上下文已改变，结果已丢弃。")
-        }
-        return loaded
+    func loadConnectionEditor(client injectedClient:CLI?=nil) async throws -> ConnectionList {
+        guard !busy,unlocked else {throw UIError(message:"请先解锁并等待当前操作完成。")}
+        busy=true;defer{busy=false};let client=injectedClient ?? cli,revision=nativeFlowRevision
+        let list=try await Task.detached{try client.decode(ConnectionList.self,["connection","list"])}.value
+        guard acceptsNativeCompletion(revision,workspace:client.stateDirectory),!Task.isCancelled else {throw UIError(message:"连接加载期间上下文已改变，结果已丢弃。")}
+        return list
     }
-    func personalPolicyDraft(profiles: [AgentProfile], expectedPolicySHA256: String?, expiresAtMs: Int64,
-                             client injectedClient: CLI? = nil) async throws -> PersonalPolicyDraft {
-        guard !busy, unlocked, policy?.mode == .personal else { throw UIError(message: "请先解锁个人保险库并等待当前操作完成。") }
-        busy = true
-        defer { busy = false }
-        let client = injectedClient ?? cli, revision = nativeFlowRevision
-        let draft = try await Task.detached { try client.personalPolicyDraft(profiles: profiles, expectedPolicySHA256: expectedPolicySHA256, expiresAtMs: expiresAtMs, revision: revision) }.value
-        guard acceptsNativeCompletion(revision, workspace: client.stateDirectory), !Task.isCancelled else {
-            throw UIError(message: "草稿读取期间上下文已改变，请重新生成。")
-        }
+    func personalPolicyDraft(connections:[ConnectionDefinition],sshKeys:[SSHKeyDefinition]?=nil,derivedCredentials:[DerivedCredentialDefinition]?=nil,expectedPolicySHA256:String?,expiresAtMs:Int64,client injectedClient:CLI?=nil) async throws -> PersonalPolicyDraft {
+        guard !busy,unlocked,policy?.mode == .personal else {throw UIError(message:"请先解锁个人保险库。")}
+        busy=true;defer{busy=false};let client=injectedClient ?? cli,revision=nativeFlowRevision
+        let draft=try await Task.detached{try client.personalPolicyDraft(connections:connections,sshKeys:sshKeys,derivedCredentials:derivedCredentials,expectedPolicySHA256:expectedPolicySHA256,expiresAtMs:expiresAtMs,revision:revision)}.value
+        guard acceptsNativeCompletion(revision,workspace:client.stateDirectory),!Task.isCancelled else {throw UIError(message:"草稿读取期间上下文已改变，请重新生成。")}
         return draft
     }
-
+    func loadPreset(_ name:String,origin:String="",header:String="",prefix:String="") async throws -> ConnectionPreset {
+        guard !busy,unlocked else {throw UIError(message:"请先解锁保险库。")}
+        busy=true;defer{busy=false};let client=cli,revision=nativeFlowRevision
+        var args=["connection","preset",name]
+        if !origin.isEmpty {args += ["--origin",origin]};if !header.isEmpty{args += ["--header",header]};if name=="generic-header"{args += ["--prefix",prefix]}
+        let command=args
+        let preset=try await Task.detached{try client.decode(ConnectionPreset.self,command)}.value
+        guard acceptsNativeCompletion(revision,workspace:client.stateDirectory),!Task.isCancelled else{throw UIError(message:"预设读取期间上下文已改变。")}
+        return preset
+    }
     func activatePersonalPolicy(_ draft: PersonalPolicyDraft, proof: String, recovery: Bool, presence: Bool = false,
                                 client injectedClient: CLI? = nil,
+                                sharedAuthentication: PresenceReadContext? = nil,
                                 readPresence: @escaping @Sendable (UUID, LAContext) throws -> String = { try PresenceKey.read(vaultID: $0, context: $1) },
                                 sign: @escaping @Sendable (UUID, Data, Data, LAContext) throws -> String = { try PolicySigning.sign(vaultID: $0, message: $1, expectedPublicKey: $2, context: $3) }) async throws {
         guard !busy, acceptsNativeCompletion(draft.revision, workspace: draft.workspace),
@@ -1236,8 +1231,8 @@ final class AppModel: ObservableObject {
             throw UIError(message: "草稿上下文或验证信息已失效，未提交激活。")
         }
         busy = true
-        let authentication = PresenceReadContext()
-        defer { authentication.invalidate(); personalPolicySigning = false; busy = false }
+        let authentication = sharedAuthentication ?? PresenceReadContext()
+        defer { if sharedAuthentication == nil { authentication.invalidate() }; personalPolicySigning = false; busy = false }
         let client = injectedClient ?? cli
         guard client.stateDirectory == draft.workspace else { throw UIError(message: "草稿工作区已改变。") }
         let current: PolicyStatus
@@ -1270,10 +1265,8 @@ final class AppModel: ObservableObject {
             throw UIError(message: "签名完成后上下文已改变，未激活。")
         }
         _ = try await Task.detached { try client.activatePersonalPolicy(draft, signature: signature, proof: operationProof, recovery: recovery, presence: presence) }.value
-        if acceptsNativeCompletion(draft.revision, workspace: draft.workspace), let seed = onboardingProfile,
-           let activated = draft.profiles.first(where: { $0.principal_id == seed.principal_id }) {
-            onboardingCommand = activated.onboardingLaunchCommand
-        }
+        if acceptsNativeCompletion(draft.revision,workspace:draft.workspace),let seed=onboardingConnection,draft.connections.contains(where:{$0.name==seed.name}) {onboardingCommand="rekey connect claude-code"}
+
     }
     var needsSetup: Bool {
         !FileManager.default.fileExists(atPath: stateDirectory + "/vault.sqlite3")
@@ -1345,7 +1338,7 @@ final class AppModel: ObservableObject {
     var backgroundServiceNeedsApproval: Bool { managesBackgroundService && BackgroundService.requiresApproval }
     var desktopReady: Bool { desktopToken != nil && Date() < desktopExpiry && unlocked }
     func requestDesktopLogin() {
-        operation = Operation(title: "解锁管理会话", detail: "验证后，7 天内可连续保存密钥。每次查看或复制密钥仍需单独验证。手动锁定会取消管理授权。", arguments: ["unlock"])
+        operation = Operation(title: "解锁管理会话", detail: "验证后，7 天内可连续保存密钥。轮换或撤销凭证需要单独验证。手动锁定会取消管理授权。", arguments: ["unlock"])
     }
     func openOnboarding(_ url: URL) {
         guard let route = OnboardingRoute(url: url) else { error = "不支持的 Rekey 页面地址。"; return }
@@ -1353,7 +1346,8 @@ final class AppModel: ObservableObject {
               BackgroundService.usesDefaultState(stateDirectory), oidcProfileFile == nil, oidcSessionFile == nil else {
             error = "请先完成当前操作，并在默认保险库工作区打开设置或接入页面。"; return
         }
-        clearNativeFlow(); onboardingProfile = nil; onboardingCommand = nil; onboardingRoute = route
+        clearNativeFlow(); onboardingConnection = nil; onboardingCommand = nil; onboardingRoute = route
+        if case .add(let preset) = route { addPreset = preset }
     }
     func saveAPIKey(label: String, secret: String, client injectedClient: CLI? = nil) async throws -> Credential {
         guard desktopReady, let token = desktopToken else { throw UIError(message: "管理会话已过期，请先解锁管理会话。") }
@@ -1368,49 +1362,6 @@ final class AppModel: ObservableObject {
         do { _ = try await saveAPIKey(label: label, secret: secret); await refresh(); return true }
         catch { rejectDesktopSession(error); self.error = error.localizedDescription; return false }
     }
-    func loadOnboardingActions(credentialID: String, provider: String = "anthropic", client injectedClient: CLI? = nil) async throws -> [FixedAction] {
-        guard !busy, unlocked else { throw UIError(message: "请先解锁并等待当前操作完成。") }
-        busy = true; defer { busy = false }
-        let client = injectedClient ?? cli, revision = nativeFlowRevision
-        let request = try JSONSerialization.data(withJSONObject: ["source": ["kind": provider]], options: [.sortedKeys])
-        let (catalog, available) = try await Task.detached {
-            (try client.templateCatalog(source: request),
-             try client.decode(ActionList.self, ["action", "list"]).actions)
-        }.value
-        guard acceptsNativeCompletion(revision, workspace: client.stateDirectory), !Task.isCancelled else { throw UIError(message: "读取期间上下文已改变，结果已丢弃。") }
-        return available.filter { action in
-            guard action.enabled, action.credential_id == credentialID, let source = action.template?.source else { return false }
-            return source.template == catalog.template.template && source.digest == catalog.digest && source.signer_id == catalog.signer_id
-        }
-    }
-    func installOnboardingAnthropic(credentialID: String, capabilities: [String], proof: String, presence: Bool,
-                                    provider: String = "anthropic",
-                                    client injectedClient: CLI? = nil,
-                                    readPresence: @escaping @Sendable (UUID) throws -> String = { try PresenceKey.read(vaultID: $0) }) async throws -> [FixedAction] {
-        guard !busy, unlocked, policy?.mode == .personal else { throw UIError(message: "请先解锁个人保险库。团队模式请使用现有外部签名流程。") }
-        busy = true; defer { busy = false }
-        let client = injectedClient ?? cli, revision = nativeFlowRevision
-        let operationProof: String
-        if presence { (operationProof, _) = try await readPresenceProof(client: client, revision: revision, read: readPresence) }
-        else { operationProof = proof }
-        guard !operationProof.isEmpty, !operationProof.contains("\n"), !operationProof.contains("\r"),
-              acceptsNativeCompletion(revision, workspace: client.stateDirectory), !Task.isCancelled else { throw UIError(message: "验证信息或接入上下文已失效，未安装。") }
-        let request: [String: Any] = ["source": ["kind": provider], "credential_id": credentialID, "bindings": [[:]], "capabilities": capabilities,
-            "name_prefix": provider == "anthropic" ? "Anthropic" : "GLM", "timeout_ms": 30_000, "request_max_bytes": 1024 * 1024,
-            "allowed_extra_headers": provider == "glm-responses" ? [] : ["anthropic-beta"],
-            "response_max_bytes": 4 * 1024 * 1024, "allowed_response_headers": ["content-type", "retry-after"]]
-        let body = operationProof + "\n" + String(decoding: try JSONSerialization.data(withJSONObject: request, options: [.sortedKeys]), as: UTF8.self) + "\n"
-        let args = ["template", "install", "--stdin-request", "--password-stdin"] + (presence ? ["--presence"] : [])
-        let data = try await Task.detached { try client.run(args, input: body, redacting: [operationProof]) }.value
-        guard acceptsNativeCompletion(revision, workspace: client.stateDirectory), !Task.isCancelled else { throw UIError(message: "上下文已改变，请检查已安装操作，勿自动重试。") }
-        return try JSONDecoder().decode(InstalledTemplateActions.self, from: data).actions.map(\.action)
-    }
-    func requestRevealCredential(_ id: String, copy: Bool) {
-        guard !busy, unlocked, selectedCredential == id else { return }
-        visibleSecret = nil; copiedCredential = nil
-        let detail = copy ? "请验证本次复制。密钥会写入系统剪贴板，并在 30 秒后清除本应用的那次写入。" : "请验证本次查看。切换条目、锁定或离开窗口后会隐藏密钥。"
-        operation = Operation(title: copy ? "复制密钥" : "显示密钥", detail: detail, arguments: ["desktop-reveal", id], reveal: CredentialReveal(id: id, copy: copy, workspace: stateDirectory, revision: nativeFlowRevision))
-    }
     func requestShutdown() {
         guard !busy, status != nil else { return }
         operation = Operation(title: "停止服务", detail: "请输入当前密码或恢复密钥。正在执行的操作会按服务的退出规则收尾。登录启动设置保持不变。", arguments: ["shutdown"], targetDirectory: stateDirectory)
@@ -1419,49 +1370,11 @@ final class AppModel: ObservableObject {
         guard !busy, status != nil, managesBackgroundService else { return }
         operation = Operation(title: "停止并停用登录启动", detail: "验证后先让服务收尾停止，再取消本用户的登录启动。保险库文件会保留。", arguments: ["shutdown"], targetDirectory: stateDirectory, unregisterBackgroundService: true)
     }
-    private func acceptsCredentialReveal(_ request: CredentialReveal) -> Bool {
-        acceptsNativeCompletion(request.revision, workspace: request.workspace) && selectedCredential == request.id
-    }
-    private func performReveal(_ request: CredentialReveal, proof: String, recovery: Bool, presence: Bool = false,
-                               readPresence: @escaping @Sendable (UUID) throws -> String = { try PresenceKey.read(vaultID: $0) }) async {
-        guard !busy, acceptsCredentialReveal(request), NSApp.isActive else { return }
-        busy = true; error = nil
-        defer { busy = false }
-        let client = cli
-        let outcome: Result<Data, Error>
-        do {
-            let operationProof: String
-            if presence { (operationProof, _) = try await readPresenceProof(client: client, revision: request.revision, read: readPresence) }
-            else { operationProof = proof }
-            guard acceptsCredentialReveal(request), !Task.isCancelled else { return }
-            outcome = await Task.detached { Result { try client.revealCredential(request.id, proof: operationProof, recovery: recovery, presence: presence) } }.value
-        } catch { outcome = .failure(error) }
-        _ = finishCredentialReveal(outcome, request: request, active: NSApp.isActive)
-    }
-    @discardableResult
-    func finishCredentialReveal(_ outcome: Result<Data, Error>, request: CredentialReveal, active: Bool) -> Bool {
-        guard acceptsCredentialReveal(request), active else { return false }
-        do {
-            let data = try outcome.get()
-            guard let text = String(data: data, encoding: .utf8) else { throw UIError(message: "此凭证不是可显示的 UTF-8 文本。") }
-            if request.copy {
-                let board = NSPasteboard.general
-                board.clearContents()
-                guard board.setString(text, forType: .string) else { throw UIError(message: "写入剪贴板失败。") }
-                copiedCredential = request.id
-                let revision = board.changeCount
-                DispatchQueue.main.asyncAfter(deadline: .now() + 30) {
-                    if board.changeCount == revision { board.clearContents() }
-                }
-            } else { visibleSecret = text }
-        } catch { visibleSecret = nil; self.error = error.localizedDescription }
-        return true
-    }
     func rejectDesktopSession(_ error: Error) {
         let message = error.localizedDescription
         if message.contains("INVALID_UNLOCK_CREDENTIAL") || message.contains("LOCKED") || message.contains("FAULTED") {
             PresenceKey.invalidateAuthentication()
-            desktopToken = nil; desktopExpiry = .distantPast; visibleSecret = nil; copiedCredential = nil
+            desktopToken = nil; desktopExpiry = .distantPast
         }
     }
     func clearCache() {
@@ -1469,7 +1382,7 @@ final class AppModel: ObservableObject {
         PresenceKey.invalidateAuthentication()
         clearNativeFlow(); clearOIDCLogin()
         oidcSessionFile = nil; oidcIdentity = nil
-        desktopToken = nil; visibleSecret = nil; copiedCredential = nil
+        desktopToken = nil
         notifiedApprovalIDs.removeAll()
         credentials = []; actions = []; approvals = []; approvalDetails = nil; policy = nil; audit = nil; selectedCredential = nil
     }
@@ -1489,7 +1402,7 @@ final class AppModel: ObservableObject {
         do {
             let current = try await Task.detached { try client.decode(ServiceStatus.self, passive ? ["status", "--passive"] : ["status"]) }.value
             status = current; connectionError = nil
-            if Date() >= desktopExpiry { desktopToken = nil; visibleSecret = nil; copiedCredential = nil }
+            if Date() >= desktopExpiry { desktopToken = nil }
             if !current.unlocked { clearCache() }
 
         } catch {
@@ -1502,19 +1415,19 @@ final class AppModel: ObservableObject {
         }
         do {
             if unlocked {
+                let lab=status?.lab_enabled == true
                 let lists = try await Task.detached {
-                    (try client.decode(CredentialList.self, ["credential", "list"]),
-                     try client.decode(ActionList.self, ["action", "list"]))
+                    (try client.decode(CredentialList.self,["credential","list"]),lab ? try client.decode(ActionList.self,["action","list"]).actions : [])
                 }.value
-                credentials = lists.0.credentials; actions = lists.1.actions
+                credentials=lists.0.credentials;actions=lists.1
+                policy=try await Task.detached{try client.decode(PolicyStatus.self,["policy","status"])}.value
                 if !credentials.contains(where: { $0.id == selectedCredential }) { selectedCredential = credentials.first?.id }
             }
             switch page {
-            case .policy:
-                policy = try await Task.detached { try client.decode(PolicyStatus.self, ["policy", "status"]) }.value
+            case .policy: break
             case .approvals where unlocked:
                 let items = try await Task.detached { try client.decode(PendingList.self, ["approval", "pending"]) }.value.challenges
-                if client.stateDirectory == stateDirectory && unlocked { try await receiveApprovals(items) }
+                if client.stateDirectory == stateDirectory && unlocked { try await receiveApprovals(items);try await loadAccessInbox(client:client) }
             case .audit:
                 var args = ["audit", "list", "--limit", "50"]
                 if !auditOutcome.isEmpty { args += ["--outcome", auditOutcome] }
@@ -1580,10 +1493,6 @@ final class AppModel: ObservableObject {
                  readPresence: @escaping @Sendable (UUID) throws -> String = { try PresenceKey.read(vaultID: $0) }) async {
         if ["restore", "rollback-confirm"].contains(op.arguments.first ?? "") {
             error = "此操作必须先展示恢复上下文，再由专用确认入口提交。"; return
-        }
-        if let request = op.reveal {
-            await performReveal(request, proof: proof, recovery: recovery, presence: presence, readPresence: readPresence)
-            return
         }
         guard !busy else {
             if presence || op.temporaryFile != nil || op.templateRequest != nil || op.personalTrustVaultID != nil {
@@ -1796,7 +1705,7 @@ final class AppModel: ObservableObject {
             if acceptsNativeCompletion(revision, workspace: client.stateDirectory) { self.error = error.localizedDescription }
         }
     }
-    func decideLocalApproval(_ details: LocalApprovalDetails, approve: Bool, client injectedClient: CLI? = nil,
+    func decideLocalApproval(_ details: LocalApprovalDetails, approve: Bool, windowSeconds: UInt32? = nil, client injectedClient: CLI? = nil,
                              active: @MainActor () -> Bool = { NSApp?.isActive == true },
                              readPresence: @escaping @Sendable (UUID) throws -> String = { try PresenceKey.read(vaultID: $0) }) async throws {
         guard !busy, localApprovalCurrent(details), !localApprovalNeedsRefresh else { throw UIError(message: "审批上下文已失效，请重新查看请求。") }
@@ -1813,7 +1722,7 @@ final class AppModel: ObservableObject {
                 throw UIError(message: "审批已过期或状态改变，请重新查看；未提交决定。")
             }
             submitted = true
-            let response = try await Task.detached { try client.decideLocalApproval(details, approve: approve, proof: key) }.value
+            let response = try await Task.detached { try client.decideLocalApproval(details, approve: approve, proof: key, windowSeconds: windowSeconds) }.value
             guard acceptsNativeCompletion(details.revision, workspace: details.workspace), localApprovalDetails?.id == details.id else { return }
             submitted = false
             localApprovalDetails?.state = response.state
@@ -1846,6 +1755,7 @@ final class AppModel: ObservableObject {
             let items = try await Task.detached { try client.decode(PendingList.self, ["approval", "pending"]) }.value.challenges
             guard current() else { return }
             try await receiveApprovals(items)
+            try await loadAccessInbox(client:client)
         } catch {
             if current() { approvalNotificationMessage = "无法刷新审批提醒，请手动查看收件箱。" }
         }
@@ -2034,4 +1944,293 @@ extension CLI {
 
 func displayDate(_ milliseconds: Int64) -> String {
     Date(timeIntervalSince1970: Double(milliseconds) / 1000).formatted(date: .abbreviated, time: .shortened)
+}
+
+// The daemon supplies provider declarations; the App edits one signed snapshot.
+enum ConnectionJSON: Codable, Equatable, Hashable, Sendable {
+    case object([String:ConnectionJSON]), array([ConnectionJSON]), string(String), integer(Int64), number(Double), bool(Bool), null
+    init(from decoder:Decoder) throws {
+        let value=try decoder.singleValueContainer()
+        if value.decodeNil() {self = .null}
+        else if let v=try? value.decode(Bool.self) {self = .bool(v)}
+        else if let v=try? value.decode(Int64.self) {self = .integer(v)}
+        else if let v=try? value.decode(Double.self) {self = .number(v)}
+        else if let v=try? value.decode(String.self) {self = .string(v)}
+        else if let v=try? value.decode([String:ConnectionJSON].self) {self = .object(v)}
+        else {self = .array(try value.decode([ConnectionJSON].self))}
+    }
+    func encode(to encoder:Encoder) throws {
+        var value=encoder.singleValueContainer()
+        switch self {case .object(let v):try value.encode(v);case .array(let v):try value.encode(v);case .string(let v):try value.encode(v);case .integer(let v):try value.encode(v);case .number(let v):try value.encode(v);case .bool(let v):try value.encode(v);case .null:try value.encodeNil()}
+    }
+    var text:String {
+        let encoder=JSONEncoder();encoder.outputFormatting=[.prettyPrinted,.sortedKeys,.withoutEscapingSlashes]
+        return (try? String(decoding:encoder.encode(self),as:UTF8.self)) ?? "公开授权无法编码"
+    }
+}
+struct ConnectionRule: Codable, Equatable, Identifiable, Sendable {
+    enum Methods: Codable, Equatable, Sendable {
+        case category(String), exact([String])
+        init(from decoder:Decoder) throws {let value=try decoder.singleValueContainer();if let v=try? value.decode(String.self){self = .category(v)}else{self = .exact(try value.decode([String].self))}}
+        func encode(to encoder:Encoder) throws {var value=encoder.singleValueContainer();switch self{case .category(let v):try value.encode(v);case .exact(let v):try value.encode(v)}}
+        var text:String {switch self {case .category(let v):return v;case .exact(let v):return v.joined(separator:",")}}
+        init(text:String) {if text=="read" || text=="write" {self = .category(text)}else{self = .exact(text.split(separator:",").map{String($0).trimmingCharacters(in:.whitespaces)})}}
+    }
+    var id:String
+    var methods:Methods
+    var path:String
+    var effect:String
+}
+struct ConnectionOperation: Codable, Equatable, Sendable {let name:String;let description:String;let method:String;let path:String;let parameters:ConnectionJSON;let read_semantics:String?}
+struct ConnectionDefinition: Codable, Equatable, Identifiable, Sendable {
+    struct Auth:Codable,Equatable,Sendable {var header_name:String;var prefix:String}
+    struct Limits:Codable,Equatable,Sendable {var requests_per_hour:UInt32;var max_request_bytes:UInt32;var max_response_bytes:UInt32}
+    struct Llm:Codable,Equatable,Sendable {var models:[String];var max_tokens:UInt32;var max_requests_per_day:UInt32;var max_output_tokens_per_day:UInt64}
+    var name:String;var preset:String;var credential_id:String;var origin:String;var auth:Auth
+    var enabled:Bool;var grade:String;var rules:[ConnectionRule];var bindings:[String:[String]];var caller_overrides:[String:[ConnectionRule]]
+    var limits:Limits;var allowed_headers:[String];var fixed_headers:[String:String];var allowed_response_headers:[String];var query_allowlist:[String]?
+    var operations:[ConnectionOperation];var llm:Llm?;var oauth:OAuthBindingDefinition?
+    var id:String {name}
+}
+struct ConnectionPreset: Decodable, Sendable {
+    let name:String;let origin:String;let auth:ConnectionDefinition.Auth;let rules:[ConnectionRule]
+    let allowed_headers:[String];let fixed_headers:[String:String];let allowed_response_headers:[String];let query_allowlist:[String]?;let operations:[ConnectionOperation]
+    func connection(name:String,credentialID:String)->ConnectionDefinition {
+        ConnectionDefinition(name:name,preset:self.name,credential_id:credentialID,origin:origin,auth:auth,enabled:true,grade:"T0",rules:rules,bindings:self.name=="github-git" ? ["owner":[],"repo":[]]:[:],caller_overrides:[:],limits:.init(requests_per_hour:600,max_request_bytes:1_048_576,max_response_bytes:4_194_304),allowed_headers:allowed_headers,fixed_headers:fixed_headers,allowed_response_headers:allowed_response_headers,query_allowlist:query_allowlist,operations:operations,llm:["anthropic","openai","glm","glm-responses"].contains(self.name) ? .init(models:[],max_tokens:4096,max_requests_per_day:100,max_output_tokens_per_day:100_000):nil,oauth:nil)
+    }
+}
+struct ConnectionList: Decodable, Sendable {
+    static let stdoutLimit=4*1024*1024+1
+    let connections:[ConnectionDefinition];let ssh_keys:[SSHKeyDefinition];let derived_credentials:[DerivedCredentialDefinition];let policy_sha256:String?;let expires_at_ms:Int64?
+    private enum CodingKeys:String,CodingKey {case connections,ssh_keys,derived_credentials,policy_sha256,expires_at_ms}
+    init(from decoder:Decoder) throws {
+        let fields=try decoder.container(keyedBy:CodingKeys.self)
+        guard fields.contains(.policy_sha256),fields.contains(.expires_at_ms)else{throw UIError(message:"连接列表缺少已认证策略基线。")}
+        connections=try fields.decode([ConnectionDefinition].self,forKey:.connections);ssh_keys=try fields.decode([SSHKeyDefinition].self,forKey:.ssh_keys);derived_credentials=try fields.decode([DerivedCredentialDefinition].self,forKey:.derived_credentials)
+        policy_sha256=try fields.decodeIfPresent(String.self,forKey:.policy_sha256);expires_at_ms=try fields.decodeIfPresent(Int64.self,forKey:.expires_at_ms)
+        guard (policy_sha256==nil)==(expires_at_ms==nil),policy_sha256.map({PersonalPolicyDraft.isLowerHex($0,count:64)}) ?? (connections.isEmpty && ssh_keys.isEmpty && derived_credentials.isEmpty)else{throw UIError(message:"连接列表策略基线无效，未开始编辑。")}
+    }
+}
+struct AccessRequestItem:Decodable,Identifiable,Sendable {
+    let request_id:String;let caller:String;let provider:String?;let connection:String?;let operation:String?;let reason:String;let created_at_ms:Int64;let expires_at_ms:Int64;let status:String
+    var id:String {request_id}
+}
+struct AccessInbox:Decodable,Sendable {let requests:[AccessRequestItem];let blocked_callers:[String]}
+
+extension AppModel {
+    func loadAccessInbox(client injectedClient:CLI?=nil) async throws {
+        let client=injectedClient ?? cli,revision=nativeFlowRevision,workspace=stateDirectory
+        let inbox=try await Task.detached{try client.decode(AccessInbox.self,["access","list"])}.value
+        guard acceptsNativeCompletion(revision,workspace:workspace)else{return}
+        accessInbox=inbox
+        notifiedAccessIDs.formIntersection(Set(inbox.requests.filter{$0.status=="PENDING"}.map(\.id)))
+        if approvalNotificationsEnabled {
+            for request in inbox.requests where request.status=="PENDING" && !notifiedAccessIDs.contains(request.id) {
+                notifiedAccessIDs.insert(request.id)
+                let content=UNMutableNotificationContent();content.title="Rekey 有连接或权限请求";content.body="请打开 Rekey 审批收件箱，审阅请求并签署规则。"
+                try await UNUserNotificationCenter.current().add(UNNotificationRequest(identifier:"rekey.access."+request.id,content:content,trigger:nil))
+            }
+        }
+    }
+    func resolveAccess(_ request:AccessRequestItem,granted:Bool,blockCaller:Bool=false) async {
+        guard !busy,unlocked else{return};busy=true;defer{busy=false};error=nil
+        let client=cli,revision=nativeFlowRevision
+        do {
+            let (proof,_)=try await readPresenceProof(client:client,revision:revision)
+            var arguments=["access","resolve",request.id,"--granted",granted ? "true":"false","--presence","--password-stdin"]
+            if blockCaller{arguments.append("--block-caller")};let command=arguments
+            _=try await Task.detached{try client.run(command,input:proof+"\n",redacting:[proof])}.value
+            guard acceptsNativeCompletion(revision,workspace:client.stateDirectory)else{return}
+            try await loadAccessInbox()
+        } catch{if acceptsNativeCompletion(revision,workspace:client.stateDirectory){self.error=error.localizedDescription}}
+    }
+    func setAccessBlocked(_ caller:String,blocked:Bool) async {
+        guard !busy,unlocked else{return};busy=true;defer{busy=false};error=nil
+        let client=cli,revision=nativeFlowRevision
+        do {
+            let (proof,_)=try await readPresenceProof(client:client,revision:revision)
+            _=try await Task.detached{try client.run(["access","block",caller,"--blocked",blocked ? "true":"false","--presence","--password-stdin"],input:proof+"\n",redacting:[proof])}.value
+            guard acceptsNativeCompletion(revision,workspace:client.stateDirectory)else{return};try await loadAccessInbox()
+        } catch{if acceptsNativeCompletion(revision,workspace:client.stateDirectory){self.error=error.localizedDescription}}
+    }
+}
+
+struct EnvPreview:Decodable {
+    struct Entry:Decodable,Identifiable {let key:String;let preset_hint:String?;var id:String{key}}
+    struct Unsupported:Decodable {let line:UInt64;let key:String?}
+    let entries:[Entry]
+    let unsupported:[Unsupported]
+}
+struct EnvImportSelection:Encodable {let key:String;let label:String}
+struct EnvImportReport:Decodable {
+    struct Entry:Decodable {let key:String;let credential:Credential}
+    let entries:[Entry]
+    let unsupported:[EnvPreview.Unsupported]
+}
+struct EnvReplacement:Encodable {let key:String;let connection:String;let base_url_variable:String}
+struct EnvRewriteReport:Decodable {let backup:String}
+extension CLI {
+    func importSelected(path:String,selections:[EnvImportSelection],proof:String)throws->EnvImportReport {
+        let key=try PresenceKey.validated(proof)
+        let payload=try JSONEncoder().encode(selections)
+        return try JSONDecoder().decode(EnvImportReport.self,from:run(["import",path,"--selections-stdin","--presence","--password-stdin"],input:key+"\n"+String(decoding:payload,as:UTF8.self),redacting:[key]))
+    }
+    func rewriteImported(path:String,replacements:[EnvReplacement],proof:String)throws->EnvRewriteReport {
+        let key=try PresenceKey.validated(proof)
+        let payload=try JSONEncoder().encode(replacements)
+        return try JSONDecoder().decode(EnvRewriteReport.self,from:run(["import",path,"--rewrite-stdin","--presence","--password-stdin"],input:key+"\n"+String(decoding:payload,as:UTF8.self),redacting:[key]))
+    }
+}
+extension AppModel {
+    func previewEnv(_ path:String)async throws->EnvPreview {
+        guard !busy,unlocked else{throw UIError(message:"请先解锁并等待当前操作完成。")}
+        busy=true;defer{busy=false};let client=cli,revision=nativeFlowRevision
+        let preview=try await Task.detached{try client.decode(EnvPreview.self,["import",path,"--dry-run"])}.value
+        guard acceptsNativeCompletion(revision,workspace:client.stateDirectory),!Task.isCancelled else{throw UIError(message:"导入预览期间上下文已改变。")}
+        return preview
+    }
+    func importSelected(path:String,selections:[EnvImportSelection],authentication:PresenceReadContext)async throws->EnvImportReport {
+        guard !busy,unlocked else{throw UIError(message:"请先解锁并等待当前操作完成。")}
+        busy=true;defer{busy=false};let client=cli,revision=nativeFlowRevision
+        let (proof,_)=try await readPresenceProof(client:client,revision:revision,read:{id in try authentication.read(vaultID:id){try PresenceKey.read(vaultID:id,context:$0)}})
+        let report=try await Task.detached{try client.importSelected(path:path,selections:selections,proof:proof)}.value
+        guard acceptsNativeCompletion(revision,workspace:client.stateDirectory),!Task.isCancelled else{throw UIError(message:"导入结果的工作区已改变，请检查凭证列表，勿自动重试。")}
+        return report
+    }
+    func rewriteImported(path:String,replacements:[EnvReplacement],revision:UUID,authentication:PresenceReadContext)async throws->EnvRewriteReport {
+        guard !busy,acceptsNativeCompletion(revision,workspace:stateDirectory)else{throw UIError(message:"导入上下文已失效，请重新审阅文件替换。")}
+        busy=true;defer{busy=false};let client=cli
+        let (proof,_)=try await readPresenceProof(client:client,revision:revision,read:{id in try authentication.read(vaultID:id){try PresenceKey.read(vaultID:id,context:$0)}})
+        let report=try await Task.detached{try client.rewriteImported(path:path,replacements:replacements,proof:proof)}.value
+        guard acceptsNativeCompletion(revision,workspace:client.stateDirectory),!Task.isCancelled else{throw UIError(message:"文件替换结果未确认，请检查原文件及备份，勿自动重试。")}
+        return report
+    }
+}
+
+struct OAuthBindingDefinition:Codable,Equatable,Sendable {
+    var provider:String;var client_id:String;var scopes:[String]
+}
+struct DerivedCredentialDefinition:Codable,Equatable,Identifiable,Sendable {
+    struct Target:Codable,Equatable,Sendable {
+        var kind:String
+        var role_arn:String? = nil;var region:String? = nil;var session_policy:ConnectionJSON? = nil
+        var cluster_id:String? = nil;var installation_id:UInt64? = nil;var repository_ids:[UInt64]? = nil;var permissions:[String:String]? = nil
+    }
+    var name:String;var credential_id:String;var effect:String;var max_ttl_seconds:UInt32;var target:Target
+    var id:String{name}
+    var publicDescription:String { (try? String(decoding:JSONEncoder().encode(self),as:UTF8.self)) ?? name }
+}
+
+extension ConnectionOperation {
+    var oauthScopes:[String] {
+        guard case .object(let schema)=parameters,case .array(let scopes)=schema["x-rekey-oauth-scopes"] else{return []}
+        return scopes.compactMap{if case .string(let scope)=$0{return scope};return nil}
+    }
+    var semanticRead:Bool {method=="GET" || method=="HEAD" || read_semantics != nil}
+}
+enum OAuthSetup {
+    static let presets=["google-drive","google-gmail","google-calendar","github-oauth","slack","notion"]
+    static func provider(_ preset:String)->String {if preset.hasPrefix("google-"){return "google"};return preset=="github-oauth" ? "github":preset}
+    static func scopeCeiling(_ preset:ConnectionPreset,write:Bool)->[String] {
+        var scopes=Set(preset.operations.filter{write || $0.semanticRead}.flatMap(\.oauthScopes))
+        if preset.name=="github-oauth" {scopes.insert("offline_access")}
+        return scopes.sorted()
+    }
+    static func guidance(_ preset:String)->String {
+        switch provider(preset) {
+        case "google":return "使用自己的 Google Desktop OAuth client，开启对应 API。支持 PKCE 和随机本机回调；client secret 可选。Drive 的 drive.file 只覆盖 App 创建或明确选择的文件；Calendar 预设只访问 primary 本人日历。"
+        case "github":return "创建自己的 GitHub OAuth App，提供 client ID 和 secret，回调登记 http://127.0.0.1/callback。私有仓库读取也需要 repo，它在上游同时具备写权限；本机签名规则继续限制写操作。offline_access 用于取得可刷新令牌。"
+        case "slack":return "创建自己的 Slack App，启用 PKCE（public client）和 token rotation，登记固定本机 /callback。此预设使用 user scopes，以本人身份访问公共频道及发消息；不请求 bot scopes，不需要 client secret。"
+        default:return "创建自己的 Notion public connection，配置 read content / insert content / update content capabilities 与已登记的本机 /callback，并提供 client ID 和 secret。这些名称是 Developer Portal capabilities，不是 OAuth 请求 scopes。用户在浏览器中选择共享页面。"
+        }
+    }
+    static func documentation(_ preset:String)->URL {
+        let url:String
+        switch provider(preset) {case "google":url="https://developers.google.com/identity/protocols/oauth2/native-app";case "github":url="https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps";case "slack":url="https://docs.slack.dev/authentication/using-pkce/";default:url="https://developers.notion.com/guides/get-started/authorization"}
+        return URL(string:url)!
+    }
+}
+struct OAuthLoginResult:Decodable,Sendable {let authorization_url:String;let request_id:String;let expires_at_ms:Int64}
+
+extension AppModel {
+    func saveTypedCredential(label:String,kind:String,secret:String) async throws -> Credential {
+        guard !busy,unlocked else{throw UIError(message:"请先解锁并等待当前操作完成。")}
+        busy=true;defer{busy=false};let client=cli,revision=nativeFlowRevision
+        let (proof,_)=try await readPresenceProof(client:client,revision:revision)
+        let data=try await Task.detached{try client.run(["credential","add",label,"--kind",kind,"--stdin-secrets","--presence"],input:proof+"\n"+secret+"\n",redacting:[proof,secret])}.value
+        guard acceptsNativeCompletion(revision,workspace:client.stateDirectory),!Task.isCancelled else{throw UIError(message:"上下文已改变，请检查已保存凭据，勿自动重试。")}
+        let credential=try JSONDecoder().decode(Credential.self,from:data)
+        credentials.append(credential)
+        return credential
+    }
+    func beginOAuth(_ connection:String,redirectURI:String) async throws -> OAuthLoginResult {
+        guard !busy,unlocked else{throw UIError(message:"请先解锁并等待当前操作完成。")}
+        busy=true;defer{busy=false};let client=cli,revision=nativeFlowRevision
+        let (proof,_)=try await readPresenceProof(client:client,revision:revision)
+        var arguments=["oauth","login",connection,"--proof-stdin","--presence"]
+        if !redirectURI.isEmpty{arguments += ["--redirect-uri",redirectURI]};let command=arguments
+        let data=try await Task.detached{try client.run(command,input:proof+"\n",redacting:[proof])}.value
+        guard acceptsNativeCompletion(revision,workspace:client.stateDirectory),!Task.isCancelled else{throw UIError(message:"登录上下文已改变，请重新开始。")}
+        return try JSONDecoder().decode(OAuthLoginResult.self,from:data)
+    }
+}
+
+
+// Public SSH records are part of the same signed snapshot, not a separate store.
+struct SSHHostDefinition:Codable,Equatable,Sendable {
+    var host:String;var host_key:String;var rule_id:String;var effect:String
+    static func wireBlob(_ input:String)->String {
+        let parts=input.split(whereSeparator:{$0.isWhitespace})
+        if parts.count>=2,parts[0].hasPrefix("ssh-") || parts[0].hasPrefix("ecdsa-"){return String(parts[1])}
+        if parts.count>=3,parts[1].hasPrefix("ssh-") || parts[1].hasPrefix("ecdsa-"){return String(parts[2])}
+        return input.trimmingCharacters(in:.whitespacesAndNewlines)
+    }
+}
+struct SSHKeyDefinition:Codable,Equatable,Identifiable,Sendable {
+    var name:String;var credential_id:String;var user_public_key:String
+    var hosts:[SSHHostDefinition];var git_signing:String
+    var id:String{credential_id}
+    var publicKeyText:String {
+        guard let bytes=Data(base64Encoded:user_public_key),bytes.count>=4 else{return user_public_key}
+        let length=bytes.prefix(4).reduce(0){($0<<8)|Int($1)}
+        guard length>0,length<=bytes.count-4,let kind=String(data:bytes.subdata(in:4..<(4+length)),encoding:.utf8) else{return user_public_key}
+        return kind+" "+user_public_key
+    }
+}
+enum SSHKeyMode:String,CaseIterable {
+    case secureEnclave="default",ed25519Software="ed25519-software",p256Software="p256-software"
+    var label:String {switch self{case .secureEnclave:return "默认 · Secure Enclave（macOS）";case .ed25519Software:return "软件 Ed25519（明确选择）";case .p256Software:return "软件 P-256（明确选择）"}}
+}
+struct SSHStatus:Decodable,Sendable {let socket:String;let ssh_keys:[SSHKeyDefinition]}
+struct SSHKeyReceipt:Decodable {let credential:Credential;let public_key:String}
+extension CLI {
+    func sshStatus()throws->SSHStatus {try decode(SSHStatus.self,["ssh-agent","status"])}
+    func generateSSHKey(label:String,mode:SSHKeyMode,proof:String,recovery:Bool,presence:Bool)throws->SSHKeyReceipt {
+        guard !proof.isEmpty,!proof.contains("\n"),!proof.contains("\r")else{throw UIError(message:"验证信息无效，未生成密钥。")}
+        var args=["ssh-agent","generate",label,"--mode",mode.rawValue,"--password-stdin"]
+        if presence{args.append("--presence")}else if recovery{args.append("--recovery")}
+        return try JSONDecoder().decode(SSHKeyReceipt.self,from:run(args,input:proof+"\n",redacting:[proof]))
+    }
+}
+extension AppModel {
+    func loadSSHStatus(client injectedClient:CLI?=nil)async throws->SSHStatus {
+        guard !busy,unlocked else{throw UIError(message:"请先解锁并等待当前操作完成。")}
+        busy=true;defer{busy=false};let client=injectedClient ?? cli,revision=nativeFlowRevision
+        let result=try await Task.detached{try client.sshStatus()}.value
+        guard acceptsNativeCompletion(revision,workspace:client.stateDirectory),!Task.isCancelled else{throw UIError(message:"SSH 状态读取期间上下文已改变。")}
+        return result
+    }
+    func generateSSHKey(label:String,mode:SSHKeyMode,proof:String,recovery:Bool,presence:Bool,
+                        client injectedClient:CLI?=nil,
+                        readPresence:@escaping @Sendable(UUID)throws->String={try PresenceKey.read(vaultID:$0)})async throws->SSHKeyReceipt {
+        guard !busy,unlocked,policy?.mode == .personal else{throw UIError(message:"请先解锁个人保险库。")}
+        busy=true;defer{busy=false};let client=injectedClient ?? cli,revision=nativeFlowRevision
+        let operationProof:String
+        if presence{(operationProof,_)=try await readPresenceProof(client:client,revision:revision,read:readPresence)}else{operationProof=proof}
+        guard acceptsNativeCompletion(revision,workspace:client.stateDirectory),!Task.isCancelled else{throw UIError(message:"SSH 密钥生成上下文已改变，未提交。")}
+        let receipt=try await Task.detached{try client.generateSSHKey(label:label,mode:mode,proof:operationProof,recovery:recovery,presence:presence)}.value
+        guard acceptsNativeCompletion(revision,workspace:client.stateDirectory),!Task.isCancelled else{throw UIError(message:"SSH 密钥生成结果未确认，请检查凭据列表，勿自动重试。")}
+        credentials.append(receipt.credential)
+        return receipt
+    }
 }

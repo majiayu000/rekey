@@ -1,3 +1,4 @@
+#![cfg(feature = "lab")]
 //! Capability session contract at the broker boundary: creation requires
 //! step-up, tokens die with restart/lock, and expiry/use limits bind.
 

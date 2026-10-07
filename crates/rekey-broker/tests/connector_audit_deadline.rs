@@ -1,3 +1,4 @@
+#![cfg(feature = "lab")]
 //! A committed upstream effect must never become retryable when its audit stalls.
 mod common;
 

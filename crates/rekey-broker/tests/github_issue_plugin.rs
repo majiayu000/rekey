@@ -1,3 +1,4 @@
+#![cfg(feature = "lab")]
 //! Real Broker/Authority/Agent IPC and native reference sidecar; no GitHub IO.
 #![cfg(any(
     target_os = "macos",

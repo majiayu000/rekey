@@ -48,13 +48,16 @@ fn draft(principal: PrincipalId) -> AuditDraft {
 }
 fn profile_draft(principal: PrincipalId) -> AuditDraft {
     let mut value = draft(principal);
-    value.request_context = Some(rekey_domain::audit::ProfileRequestAuditContext {
-        profile_name: "original-profile".into(),
-        policy_sha256: "01".repeat(32),
-        instance_slug: "sample-model".into(),
-        capability: "messages".into(),
-        model: Some("allowed".into()),
-    });
+    value.request_context = Some(
+        rekey_domain::audit::ProfileRequestAuditContext {
+            profile_name: "original-profile".into(),
+            policy_sha256: "01".repeat(32),
+            instance_slug: "sample-model".into(),
+            capability: "messages".into(),
+            model: Some("allowed".into()),
+        }
+        .into(),
+    );
     value
 }
 fn audit_query(request: RequestId) -> rekey_domain::audit::AuditQuery {
@@ -106,6 +109,60 @@ async fn sum(h: &AuthorityHandle, p: PrincipalId) -> UsageTotals {
     h.profile_usage(p, "sample-model".into(), now() / 86_400_000)
         .await
         .unwrap()
+}
+
+#[tokio::test]
+async fn derived_audit_keeps_public_target_and_real_expiry_without_model_usage() {
+    use rekey_domain::{audit::DerivedRequestAuditContext, connection::DerivedCredentialTarget};
+    let vault = common::init_test_vault();
+    let (h, join) = common::spawn(&vault.state_dir);
+    h.unlock(common::password_proof()).await.unwrap();
+    let principal = PrincipalId::new_random();
+    let mut started = draft(principal);
+    started.authorization.as_mut().unwrap().resource_type = "connection".into();
+    started.authorization.as_mut().unwrap().resource_id = "sample-model".into();
+    let context = DerivedRequestAuditContext {
+        connection: "sample-model".into(),
+        caller: "codex".into(),
+        target: DerivedCredentialTarget::KubernetesEks {
+            cluster_id: "synthetic-cluster".into(),
+            region: "us-east-1".into(),
+        },
+        expires_at_ms: None,
+    };
+    started.request_context = Some(context.clone().into());
+    assert!(begin(&h, limits(Some(20)), started.clone()).await.is_err());
+    assert_eq!(sum(&h, principal).await.requests, 0);
+    h.append_audit(started.clone()).await.unwrap();
+    let mut issued = started.clone();
+    issued.event_type = "credential.derived_issued";
+    let mut issued_context = context;
+    issued_context.expires_at_ms = Some(now() + 900_000);
+    issued.request_context = Some(issued_context.clone().into());
+    for expiry in [None, Some(1)] {
+        let mut bad = issued.clone();
+        let mut bad_context = issued_context.clone();
+        bad_context.expires_at_ms = expiry;
+        bad.request_context = Some(bad_context.into());
+        assert!(h.append_audit(bad).await.is_err());
+    }
+    let mut bad = issued.clone();
+    bad.authorization.as_mut().unwrap().resource_id = "other-target".into();
+    assert!(h.append_audit(bad).await.is_err());
+    h.append_audit(issued).await.unwrap();
+    let query = audit_query(started.request_id.unwrap());
+    let page = h.audit_query(query.clone()).await.unwrap();
+    page.validate_for(&query).unwrap();
+    assert_eq!(page.events.len(), 2);
+    assert!(page.events.iter().all(|event| event.usage.is_none()));
+    let issued = page
+        .events
+        .iter()
+        .find(|event| event.event_type == "credential.derived_issued")
+        .unwrap();
+    assert_eq!(issued.request_context, Some(issued_context.into()));
+    assert_eq!(h.status().await.unwrap().state, "unlocked");
+    finish(h, join).await;
 }
 async fn finish(h: AuthorityHandle, j: std::thread::JoinHandle<()>) {
     h.shutdown(Some(common::password_proof())).await.unwrap();
@@ -634,7 +691,7 @@ async fn format_24_state_and_backup_are_rejected_without_migration() {
     finish(h, j).await;
     for file in [&archive, &paths::vault_db(&v.state_dir)] {
         let db = Connection::open(file).unwrap();
-        db.execute_batch("PRAGMA writable_schema=ON; UPDATE sqlite_schema SET sql=replace(sql,'format_version = 25','format_version = 24') WHERE name='vault_header'; PRAGMA writable_schema=OFF;").unwrap();
+        db.execute_batch("PRAGMA writable_schema=ON; UPDATE sqlite_schema SET sql=replace(sql,'format_version = 26','format_version = 24') WHERE name='vault_header'; PRAGMA writable_schema=OFF;").unwrap();
         drop(db);
         let db = Connection::open(file).unwrap();
         db.execute("UPDATE vault_header SET format_version=24", [])
@@ -861,7 +918,11 @@ async fn profile_context_is_authenticated_and_terminal_cannot_rewrite_it() {
     begin(&h, limits(Some(30)), started.clone()).await.unwrap();
     for field in 0..5 {
         let mut end = terminal(&started);
-        let context = end.request_context.as_mut().unwrap();
+        let rekey_domain::audit::RequestAuditContext::Profile(context) =
+            end.request_context.as_mut().unwrap()
+        else {
+            panic!("expected profile fixture")
+        };
         match field {
             0 => context.profile_name = "renamed".into(),
             1 => context.policy_sha256 = "02".repeat(32),
@@ -911,5 +972,59 @@ async fn profile_context_is_authenticated_and_terminal_cannot_rewrite_it() {
         Err(AuthorityError::StorageIntegrityFailed)
     ));
     assert_eq!(h.status().await.unwrap().state, "faulted");
+    finish(h, j).await;
+}
+
+#[tokio::test]
+async fn connection_usage_is_bound_to_connection_and_settles_once() {
+    let v = common::init_test_vault();
+    let (h, j) = common::spawn(&v.state_dir);
+    h.unlock(common::password_proof()).await.unwrap();
+    let principal = PrincipalId::new_random();
+    let mut started = draft(principal);
+    let auth = started.authorization.as_mut().unwrap();
+    auth.resource_type = "connection".into();
+    auth.resource_id = "sample-model".into();
+    started.request_context = Some(
+        rekey_domain::connection::ConnectionRequestAuditContext {
+            connection: "sample-model".into(),
+            caller: "synthetic".into(),
+            method_class: rekey_domain::connection::MethodClass::Write,
+            normalized_path: "/v1/messages".into(),
+            rule_id: auth.policy_rule_id,
+        }
+        .into(),
+    );
+    let mut wrong = limits(Some(30));
+    wrong.instance_slug = "other-connection".into();
+    assert!(matches!(
+        begin(&h, wrong, started.clone()).await,
+        Err(AuthorityError::Domain(_))
+    ));
+    assert_eq!(
+        begin(&h, limits(Some(30)), started.clone()).await.unwrap(),
+        UsageAdmission::Started
+    );
+    let end = terminal(&started);
+    for _ in 0..2 {
+        h.settle_profile_execution(started.request_id.unwrap(), Some(7), end.clone())
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        sum(&h, principal).await,
+        UsageTotals {
+            requests: 1,
+            output_tokens: 7
+        }
+    );
+    assert!(
+        h.audit_query(audit_query(started.request_id.unwrap()))
+            .await
+            .unwrap()
+            .events
+            .iter()
+            .all(|row| row.request_context == started.request_context)
+    );
     finish(h, j).await;
 }

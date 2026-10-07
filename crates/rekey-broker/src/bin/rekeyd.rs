@@ -126,6 +126,7 @@ enum Command {
     },
     /// Internal child launcher for a Profile; the parent owns its control connection.
     #[command(hide = true)]
+    #[cfg(feature = "lab")]
     ProfileChild {
         #[arg(long)]
         state_dir: PathBuf,
@@ -139,6 +140,7 @@ enum Command {
         command: Vec<std::ffi::OsString>,
     },
     /// Launch one Agent command in the platform sandbox (Linux netns / macOS Seatbelt).
+    #[cfg(feature = "lab")]
     AgentRun {
         #[arg(long)]
         state_dir: Option<PathBuf>,
@@ -397,7 +399,19 @@ fn cmd_serve(
         .enable_all()
         .build()
         .map_err(|err| usage(format!("cannot start runtime: {err}")))?;
+    let port_path = state_dir.join("service.json");
+    let service_port = match std::fs::read(&port_path) {
+        Ok(bytes) => serde_json::from_slice::<serde_json::Value>(&bytes)
+            .ok()
+            .and_then(|v| v.get("port").and_then(|v| v.as_u64()))
+            .filter(|p| *p > 0 && *p <= u16::MAX as u64)
+            .map(|p| p as u16)
+            .ok_or_else(|| usage("invalid service.json port"))?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => 7787,
+        Err(error) => return Err(usage(format!("cannot read service configuration: {error}"))),
+    };
     let config = BrokerConfig {
+        service_port: Some(service_port),
         #[cfg(feature = "lab")]
         oidc_admin_profile,
         state_dir,
@@ -421,6 +435,7 @@ fn cmd_serve(
     result
 }
 
+#[cfg(feature = "lab")]
 fn cmd_agent_run(
     state_dir: Option<PathBuf>,
     agent_socket: PathBuf,
@@ -454,6 +469,7 @@ fn cmd_agent_run(
     }
 }
 
+#[cfg(feature = "lab")]
 fn cmd_profile_child(
     state_dir: PathBuf,
     agent_socket: PathBuf,
@@ -550,6 +566,7 @@ fn main() {
             inspect,
             expected_context,
         ),
+        #[cfg(feature = "lab")]
         Command::ProfileChild {
             state_dir,
             agent_socket,
@@ -557,6 +574,7 @@ fn main() {
             gateway_port,
             command,
         } => cmd_profile_child(state_dir, agent_socket, isolation, gateway_port, command),
+        #[cfg(feature = "lab")]
         Command::AgentRun {
             state_dir,
             agent_socket,

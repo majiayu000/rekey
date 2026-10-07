@@ -301,3 +301,52 @@ async fn restore_rejects_format_nineteen_without_installing_or_migrating() {
     ));
     assert!(!rekey_vault::paths::vault_db(&target).exists());
 }
+
+#[tokio::test]
+async fn restore_and_open_reject_format_twenty_five_without_touching_snapshot() {
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    handle.unlock(common::password_proof()).await.unwrap();
+    let backup = vault.dir.path().join("v25.rkbackup");
+    handle
+        .backup(backup.clone(), common::password_proof())
+        .await
+        .unwrap();
+    handle
+        .shutdown(Some(common::password_proof()))
+        .await
+        .unwrap();
+    join.join().unwrap();
+    let db = rusqlite::Connection::open(&backup).unwrap();
+    db.execute_batch(&format!("PRAGMA writable_schema=ON; UPDATE sqlite_schema SET sql=replace(sql,'format_version = {}','format_version = 25') WHERE name='vault_header'; PRAGMA writable_schema=OFF;", rekey_vault::model::FORMAT_VERSION)).unwrap();
+    drop(db);
+    let db = rusqlite::Connection::open(&backup).unwrap();
+    db.execute("UPDATE vault_header SET format_version=25", [])
+        .unwrap();
+    drop(db);
+    let before = file_sha256(&backup);
+    assert!(matches!(
+        rekey_vault::store::SqliteRecordStore::open(&backup),
+        Err(AuthorityError::UnsupportedFormatVersion)
+    ));
+    let target = vault.dir.path().join("restored-v25");
+    assert!(matches!(
+        restore_vault(
+            &backup,
+            &target,
+            RestoreProof::Password(common::password_input()),
+            &before,
+            common::unconfirmed_restore_context()
+        ),
+        Err(AuthorityError::UnsupportedFormatVersion)
+    ));
+    assert!(!rekey_vault::paths::vault_db(&target).exists());
+    assert_eq!(file_sha256(&backup), before);
+    let db = rusqlite::Connection::open(&backup).unwrap();
+    assert_eq!(
+        db.query_row("SELECT format_version FROM vault_header", [], |r| r
+            .get::<_, u32>(0))
+            .unwrap(),
+        25
+    );
+}

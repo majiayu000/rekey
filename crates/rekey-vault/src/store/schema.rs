@@ -1,11 +1,11 @@
 use sha2::{Digest, Sha256};
 
-/// Schema v25. This SQL text is the single source of truth; `schema_digest()`
+/// Schema v26. This SQL text is the single source of truth; `schema_digest()`
 /// hashes its normalized form to detect accidental drift, not tampering.
 pub const SCHEMA_SQL: &str = r#"
 CREATE TABLE vault_header (
     singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
-    format_version     INTEGER NOT NULL CHECK (format_version = 25),
+    format_version     INTEGER NOT NULL CHECK (format_version = 26),
     vault_id           BLOB NOT NULL CHECK (length(vault_id) = 16),
     generation         BLOB NOT NULL CHECK (length(generation) = 8 AND generation != zeroblob(8)),
     generation_mac     BLOB NOT NULL CHECK (length(generation_mac) = 32),
@@ -38,7 +38,7 @@ ON key_wrappers(wrapper_kind) WHERE wrapper_kind = 'password' AND state = 'activ
 CREATE TABLE credentials (
     credential_id      BLOB PRIMARY KEY CHECK (length(credential_id) = 16),
     label              TEXT NOT NULL UNIQUE,
-    kind               TEXT NOT NULL CHECK (kind IN ('opaque-token', 'github-app-installation', 'vault-kv-v2-source', 'vault-dynamic-source', 'keycloak-token-exchange', 'gcp-secret-manager-source', 'aws-secrets-manager-source', 'azure-key-vault-source', 'onepassword-connect-source', 'macos-keychain-source')),
+    kind               TEXT NOT NULL CHECK (kind IN ('opaque-token', 'github-app-installation', 'vault-kv-v2-source', 'vault-dynamic-source', 'keycloak-token-exchange', 'gcp-secret-manager-source', 'aws-secrets-manager-source', 'azure-key-vault-source', 'onepassword-connect-source', 'macos-keychain-source', 'ssh-ed25519', 'ssh-p256', 'ssh-secure-enclave-p256', 'oauth-grant', 'aws-static')),
     state              TEXT NOT NULL CHECK (state IN ('active', 'revoked')),
     current_version    INTEGER NOT NULL CHECK (current_version >= 1),
     created_at_ms      INTEGER NOT NULL,

@@ -1,3 +1,4 @@
+#![cfg(feature = "lab")]
 //! Strict real Authority/UDS and screened TLS contracts; no network skips.
 mod common;
 

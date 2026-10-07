@@ -33,8 +33,11 @@ use crate::session::SessionRegistry;
 use crate::upstream::{ReqwestUpstreamTransport, UpstreamTransport};
 
 mod admin;
+mod call;
 mod connections;
+mod derived;
 mod gateway;
+pub(crate) mod local_calls;
 pub(crate) mod profile;
 mod profile_inventory;
 mod shutdown;
@@ -58,6 +61,8 @@ pub fn default_drain_timeout() -> Duration {
 
 pub struct BrokerConfig {
     pub state_dir: PathBuf,
+    /// Explicit HTTP port; embedded/test runtimes can omit the listener.
+    pub service_port: Option<u16>,
     #[cfg(feature = "lab")]
     pub oidc_admin_profile: Option<PathBuf>,
     /// P1 seam: an isolated Agent endpoint may live outside the private state tree.
@@ -78,6 +83,7 @@ impl BrokerConfig {
     pub fn new(state_dir: PathBuf) -> Self {
         Self {
             state_dir,
+            service_port: None,
             #[cfg(feature = "lab")]
             oidc_admin_profile: None,
             agent_runtime_dir: None,
@@ -92,6 +98,7 @@ impl BrokerConfig {
 }
 
 pub struct BrokerCtx {
+    pub(crate) state_dir: PathBuf,
     #[cfg(feature = "lab")]
     pub(crate) metrics: crate::metrics::Metrics,
     pub authority: AuthorityHandle,
@@ -105,8 +112,9 @@ pub struct BrokerCtx {
     #[cfg(feature = "lab")]
     online_jwks_slots: Arc<tokio::sync::Semaphore>,
     pub lifecycle: Arc<Lifecycle>,
-    policy: Arc<RwLock<Option<Arc<ActivePolicy>>>>,
+    pub(crate) policy: Arc<RwLock<Option<Arc<ActivePolicy>>>>,
     gateway: gateway::Gateway,
+    pub(crate) local_calls: Arc<local_calls::LocalCalls>,
     policy_trust: Arc<RwLock<Option<ValidatedPolicyTrust>>>,
     terminals: Arc<TerminalAuditTracker>,
     drain_timeout: Duration,
@@ -135,6 +143,8 @@ impl BrokerCtx {
         self.lifecycle.close_remote_effect_admission();
         self.lifecycle.signal_cancel();
         self.sessions.close_and_revoke_all();
+        self.local_calls.clear();
+        self.executor.oauth.clear();
     }
 
     pub(crate) fn request_fault(&self) {
@@ -143,6 +153,8 @@ impl BrokerCtx {
         if let Some(manager) = &self.oidc_admin {
             manager.clear();
             self.sessions.close_and_revoke_all();
+            self.local_calls.clear();
+            self.executor.oauth.clear();
         }
         #[cfg(feature = "lab")]
         self.metrics.fault_signals.fetch_add(1, Ordering::Relaxed);
@@ -211,6 +223,8 @@ impl BrokerCtx {
     ) -> Result<rekey_domain::ipc::LeaseRecoverySummary, BrokerError> {
         if let Err(error) = self.reload_policy_after_unlock().await {
             self.sessions.close_and_revoke_all();
+            self.local_calls.clear();
+            self.executor.oauth.clear();
             let lock_result = self.authority.lock("policy-reload-failed").await;
             *self.policy.write().await = None;
             *self.policy_trust.write().await = None;
@@ -224,6 +238,8 @@ impl BrokerCtx {
             Ok(summary) => summary,
             Err(error) => {
                 self.sessions.close_and_revoke_all();
+                self.local_calls.clear();
+                self.executor.oauth.clear();
                 let locked = self.authority.lock("lease-recovery-failed").await;
                 *self.policy.write().await = None;
                 *self.policy_trust.write().await = None;
@@ -236,6 +252,8 @@ impl BrokerCtx {
         };
         if let Err(transition_error) = self.lifecycle.enter_running() {
             self.sessions.close_and_revoke_all();
+            self.local_calls.clear();
+            self.executor.oauth.clear();
             let lock_result = self.authority.lock("stop-during-unlock").await;
             *self.policy.write().await = None;
             *self.policy_trust.write().await = None;
@@ -379,7 +397,7 @@ impl BrokerCtx {
         let status = status?;
         if status.state == "unlocked"
             && status.idle_for_ms >= idle_lock.as_millis() as u64
-            && self.sessions.in_flight_total() == 0
+            && (self.sessions.in_flight_total() + self.lifecycle.local_in_flight()) == 0
         {
             let natural_deadline = tokio::time::Instant::now() + self.drain_timeout;
             let stop_deadline = natural_deadline + Duration::from_secs(5);
@@ -399,7 +417,7 @@ impl BrokerCtx {
             let status = self.authority.status().await?;
             if status.state != "unlocked"
                 || status.idle_for_ms < idle_lock.as_millis() as u64
-                || self.sessions.in_flight_total() != 0
+                || (self.sessions.in_flight_total() + self.lifecycle.local_in_flight()) != 0
             {
                 return Ok(());
             }
@@ -460,6 +478,8 @@ impl BrokerCtx {
             self.lifecycle.enter_draining();
             self.lifecycle.mark_stop_pending();
             self.sessions.close_and_revoke_all();
+            self.local_calls.clear();
+            self.executor.oauth.clear();
             self.request_fault();
         }
         result
@@ -488,10 +508,11 @@ impl BrokerCtx {
             }
             BrokerPhase::Draining | BrokerPhase::Running => {}
         }
-        self.gateway.close();
         if self.lifecycle.phase() == BrokerPhase::Running {
             self.lifecycle.enter_draining();
             self.sessions.close_and_revoke_all();
+            self.local_calls.clear();
+            self.executor.oauth.clear();
         }
         self.wait_executes_drained_until(natural_deadline, stop_deadline)
             .await?;
@@ -514,21 +535,21 @@ impl BrokerCtx {
         natural_deadline: tokio::time::Instant,
         stop_deadline: tokio::time::Instant,
     ) -> Result<(), BrokerError> {
-        wait_in_flight_until(&self.sessions, natural_deadline).await;
-        if self.sessions.in_flight_total() > 0 {
+        wait_in_flight_until(self, natural_deadline).await;
+        if (self.sessions.in_flight_total() + self.lifecycle.local_in_flight()) > 0 {
             self.lifecycle.signal_cancel();
-            wait_in_flight_until(&self.sessions, stop_deadline).await;
+            wait_in_flight_until(self, stop_deadline).await;
         }
-        if self.sessions.in_flight_total() > 0 {
+        if (self.sessions.in_flight_total() + self.lifecycle.local_in_flight()) > 0 {
             return Err(BrokerError::Authority(AuthorityError::AuthorityBusy));
         }
         Ok(())
     }
 }
 
-async fn wait_in_flight_until(sessions: &SessionRegistry, deadline: tokio::time::Instant) {
+async fn wait_in_flight_until(ctx: &BrokerCtx, deadline: tokio::time::Instant) {
     loop {
-        if sessions.in_flight_total() == 0 {
+        if ctx.sessions.in_flight_total() + ctx.lifecycle.local_in_flight() == 0 {
             return;
         }
         if tokio::time::Instant::now() >= deadline {
@@ -863,6 +884,8 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
         0o600
     };
     let agent_listener = bind_socket(&agent_socket, agent_mode, config.agent_socket_gid)?;
+    let ssh_socket = config.state_dir.join("ssh-agent.sock");
+    let ssh_listener = bind_socket(&ssh_socket, 0o600, None)?;
 
     let sessions = Arc::new(SessionRegistry::new());
     let transport = config
@@ -886,6 +909,7 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
     let mut execution_task = tokio::spawn(execution_supervisor.run(shutdown_rx.clone()));
     let (stop_tx, mut stop_rx) = mpsc::unbounded_channel();
     let ctx = Arc::new(BrokerCtx {
+        state_dir: config.state_dir.clone(),
         #[cfg(feature = "lab")]
         metrics: crate::metrics::Metrics::default(),
         #[cfg(feature = "lab")]
@@ -897,11 +921,12 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
         oidc_admin,
         sessions,
         executions,
+        local_calls: Arc::clone(&executor.local_calls),
         executor,
         lifecycle,
         policy,
         policy_trust,
-        gateway: gateway::Gateway::new(config.state_dir.clone()),
+        gateway: gateway::Gateway::new(config.state_dir.clone(), config.service_port),
         terminals,
         drain_timeout: config.drain_timeout,
         shutdown_flag: AtomicBool::new(false),
@@ -911,7 +936,13 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
     });
 
     ctx.gateway.attach(&ctx);
-    ctx.gateway.close();
+    ctx.executor.oauth.attach(&ctx);
+    if let Err(error) = ctx.start_local_service().await {
+        ctx.publish_shutdown();
+        let _ = execution_task.await;
+        let _ = authority.shutdown(None).await;
+        return Err(error);
+    }
 
     #[cfg(feature = "lab")]
     let mut oidc_poll_task = ctx.oidc_admin.clone().map(|manager| {
@@ -979,6 +1010,11 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
         }
     });
 
+    let mut ssh_task = tokio::spawn(connections::accept_ssh_loop(
+        ssh_listener,
+        Arc::clone(&ctx),
+        shutdown_rx.clone(),
+    ));
     let mut admin_task = tokio::spawn(connections::accept_loop(
         admin_listener,
         Arc::clone(&ctx),
@@ -1068,13 +1104,18 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
         tokio::time::Instant::now() + Duration::from_secs(1),
     );
     match tokio::time::timeout_at(connection_deadline, async {
-        tokio::join!(&mut admin_task, &mut agent_task, &mut idle_task)
+        tokio::join!(
+            &mut admin_task,
+            &mut agent_task,
+            &mut idle_task,
+            &mut ssh_task
+        )
     })
     .await
     {
-        Ok((admin_result, agent_result, idle_result)) => {
+        Ok((admin_result, agent_result, idle_result, ssh_result)) => {
             if runtime_error.is_none() {
-                runtime_error = [admin_result, agent_result, idle_result]
+                runtime_error = [admin_result, agent_result, idle_result, ssh_result]
                     .into_iter()
                     .find_map(|result| match result {
                         Ok(Ok(())) => None,
@@ -1087,6 +1128,7 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
             admin_task.abort();
             agent_task.abort();
             idle_task.abort();
+            ssh_task.abort();
             runtime_error.get_or_insert(BrokerError::Authority(AuthorityError::Faulted));
             tracing::error!(event = "runtime.connection_join_timeout", code = "FAULTED");
         }
@@ -1119,6 +1161,7 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
     }
 
     let _ = fs::remove_file(paths::admin_socket(&config.state_dir));
+    let _ = fs::remove_file(ssh_socket);
     let _ = fs::remove_file(agent_socket);
 
     drop(authority);
@@ -1142,3 +1185,65 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+pub(crate) fn call_audit(
+    event: &'static str,
+    connection: &str,
+    caller: &str,
+) -> Result<rekey_vault::command::AuditDraft, BrokerError> {
+    Ok(rekey_vault::command::AuditDraft {
+        request_id: Some(crate::random_id(
+            rekey_domain::ids::RequestId::from_random_bytes,
+        )?),
+        session_id: None,
+        action_id: None,
+        action_version: None,
+        credential_id: None,
+        credential_version: None,
+        authorization: None,
+        approval: None,
+        request_context: Some(rekey_domain::audit::RequestAuditContext::Connection(
+            rekey_domain::connection::ConnectionRequestAuditContext {
+                connection: connection.to_owned(),
+                caller: caller.to_owned(),
+                method_class: rekey_domain::connection::MethodClass::Read,
+                normalized_path: "/".into(),
+                rule_id: None,
+            },
+        )),
+        usage: None,
+        event_type: event,
+        outcome: rekey_vault::model::outcome::SUCCESS,
+        reason_code: "local-call".into(),
+        upstream_status: None,
+        latency_ms: None,
+    })
+}
+
+/// Public connection evidence for non-execution OAuth lifecycle events.
+pub(crate) fn oauth_audit(
+    event: &'static str,
+    connection: &rekey_domain::connection::Connection,
+    active: &ActivePolicy,
+) -> Result<rekey_vault::command::AuditDraft, BrokerError> {
+    use sha2::{Digest, Sha256};
+    let mut draft = call_audit(event, &connection.name, "rekeyd")?;
+    let digest = Sha256::digest(connection.name.as_bytes());
+    let mut principal = [0; 16];
+    principal.copy_from_slice(&digest[..16]);
+    draft.credential_id = Some(connection.credential_id);
+    draft.authorization = Some(Box::new(rekey_vault::model::AuthorizationEvidence {
+        principal_id: rekey_domain::ids::PrincipalId::from_random_bytes(principal),
+        policy_version: active.snapshot().version().get(),
+        policy_digest: active.snapshot().digest(),
+        policy_rule_id: None,
+        resource_type: "connection".into(),
+        resource_id: connection.name.clone(),
+        parameter_hash: Sha256::digest(
+            serde_jcs::to_vec(&connection.oauth)
+                .map_err(|_| rekey_domain::ipc::FrameError::InvalidField)?,
+        )
+        .into(),
+    }));
+    Ok(draft)
+}

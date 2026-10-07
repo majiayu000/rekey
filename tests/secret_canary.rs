@@ -1,3 +1,4 @@
+#![cfg(feature = "lab")]
 //! Secret canary: after a full lifecycle, the canary value must appear
 //! nowhere on disk, in audit rows, or in agent-visible output — only inside
 //! the upstream request the broker itself constructed.

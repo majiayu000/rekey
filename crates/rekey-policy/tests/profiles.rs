@@ -18,7 +18,7 @@ fn fixture() -> Value {
     let principal = PrincipalId::new_random();
     let action = ActionId::new_random();
     json!({
-        "format_version":6,"version":1,"expires_at_ms":10_000,
+        "format_version":7,"connections":[],"ssh_keys":[],"derived_credentials":[],"version":1,"expires_at_ms":10_000,
         "approvers":[],"workload_identities":[],
         "bindings":[{"action_id":action,"version":1,"resource":{"type":"action","id":action},"parameter_schema_id":"test","parameter_schema":true}],
         "rules":[{"id":PolicyRuleId::new_random(),"effect":"require-approval","principal_id":principal,
