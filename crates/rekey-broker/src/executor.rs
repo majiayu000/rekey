@@ -517,7 +517,15 @@ impl ActionExecutor {
                         }
                     }
                     return Err(match result {
+                        Ok(Err(BrokerError::Upstream(reason)))
+                            if started.remote_effect_started() =>
+                        {
+                            BrokerError::UpstreamUnconfirmed(reason)
+                        }
                         Ok(Err(error)) => error,
+                        _ if started.remote_effect_started() => {
+                            BrokerError::UpstreamUnconfirmed("oauth-refresh-timeout")
+                        }
                         _ => BrokerError::Upstream("oauth-refresh-timeout"),
                     });
                 }
@@ -913,11 +921,11 @@ impl ActionExecutor {
         // preparation consumes the same action deadline as DNS and HTTP.
         upstream_request.timeout = effect_deadline.saturating_duration_since(Instant::now());
         if upstream_request.timeout.is_zero() {
-            if effect_kind.load(Ordering::SeqCst) == EFFECT_ORDINARY_HTTP {
+            if started.remote_effect_started() {
                 started.submit_indeterminate("upstream-timeout");
-            } else {
-                started.submit_blocked("upstream-timeout");
+                return Err(BrokerError::UpstreamUnconfirmed("upstream-timeout"));
             }
+            started.submit_blocked("upstream-timeout");
             return Err(BrokerError::Upstream("upstream-timeout"));
         }
         if !outbound_headers_are_valid(&upstream_request) {
@@ -1038,6 +1046,12 @@ impl ActionExecutor {
                 tokio::time::timeout_at(tokio::time::Instant::from_std(effect_deadline), run)
                     .await
                     .unwrap_or(Err(BrokerError::Upstream("upstream-timeout")));
+            let result = match result {
+                Err(BrokerError::Upstream(reason)) if started.remote_effect_started() => {
+                    Err(BrokerError::UpstreamUnconfirmed(reason))
+                }
+                other => other,
+            };
             if result.is_err() && !started.is_completed() {
                 // Terminal tracker owns this audit even if the effect deadline
                 // expired or the socket disappeared.
@@ -1065,7 +1079,8 @@ impl ActionExecutor {
                     crate::upstream::UpstreamError::Timeout => "upstream-timeout",
                     crate::upstream::UpstreamError::Transport => "upstream-transport",
                 };
-                if prior_remote_effect || upstream_failure_is_indeterminate(&err) {
+                let indeterminate = prior_remote_effect || upstream_failure_is_indeterminate(&err);
+                if indeterminate {
                     started.indeterminate_until(effect_deadline, reason).await?;
                 } else {
                     started.blocked_until(effect_deadline, reason).await?;
@@ -1074,6 +1089,7 @@ impl ActionExecutor {
                     crate::upstream::UpstreamError::ResponseTooLarge => {
                         BrokerError::Domain(DomainError::ResponseTooLarge)
                     }
+                    _ if indeterminate => BrokerError::UpstreamUnconfirmed(reason_static(reason)),
                     _ => BrokerError::Upstream(reason_static(reason)),
                 });
             }
@@ -1353,8 +1369,18 @@ async fn poll_http_while_live<T, F: Future<Output = T>>(
         }
         result = run => result,
     };
+    let result = match result {
+        Err(BrokerError::Upstream(reason)) if started.remote_effect_started() => {
+            Err(BrokerError::UpstreamUnconfirmed(reason))
+        }
+        other => other,
+    };
     if result.is_err() && !started.is_completed() {
-        let timed_out = matches!(&result, Err(BrokerError::Upstream("upstream-timeout")));
+        let timed_out = matches!(
+            &result,
+            Err(BrokerError::Upstream("upstream-timeout")
+                | BrokerError::UpstreamUnconfirmed("upstream-timeout"))
+        );
         // The guard also remembers a completed OAuth refresh before this
         // target's handoff. A rejected handoff cannot erase that prior effect.
         if started.remote_effect_started() {

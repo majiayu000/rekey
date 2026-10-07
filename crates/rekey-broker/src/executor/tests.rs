@@ -782,10 +782,14 @@ async fn live_http_handoff_absolute_deadline_covers_queue_then_quiet_backend() {
             .await
             .unwrap()
             .unwrap();
+        let error = result.unwrap_err();
         assert!(matches!(
-            result.unwrap_err(),
-            BrokerError::Upstream("upstream-timeout")
+            error,
+            BrokerError::UpstreamUnconfirmed("upstream-timeout")
         ));
+        assert_eq!(error.code(), "UPSTREAM_FAILED");
+        assert_eq!(error.agent_message(), "upstream request failed");
+        assert!(!error.retryable());
         assert_eq!(effect, EFFECT_ORDINARY_HTTP);
         assert!(!completed_relative_timeout.load(Ordering::SeqCst));
         tracker.wait_idle(Duration::from_secs(1)).await.unwrap();
@@ -801,31 +805,39 @@ async fn live_http_handoff_absolute_deadline_covers_queue_then_quiet_backend() {
 
 #[tokio::test]
 async fn live_http_handoff_queue_deadline_is_upstream_timeout_before_effect() {
-    let (tracker, worker) = spawn_terminal_worker_with(|_| async { Ok(()) });
-    let (_, permit) = handoff_permit();
-    let lifecycle = Lifecycle::new();
-    lifecycle.enter_running().unwrap();
-    let owner = lifecycle.coordinate().await;
-    let mut started = StartedAuditGuard::new_for_test(&tracker, execution_context());
-    let effect = AtomicU8::new(EFFECT_NOT_STARTED);
-    let error = poll_http_while_live(
-        &lifecycle,
-        Some(&permit),
-        &mut started,
-        &effect,
-        Instant::now() + Duration::from_millis(20),
-        "upstream-timeout",
-        || -> std::future::Ready<()> { panic!("deadline passed before local handoff") },
-    )
-    .await
-    .unwrap_err();
-    assert!(matches!(error, BrokerError::Upstream("upstream-timeout")));
-    assert_eq!(effect.load(Ordering::SeqCst), EFFECT_NOT_STARTED);
-    drop(owner);
-    drop(started);
-    tracker.wait_idle(Duration::from_secs(1)).await.unwrap();
-    drop(tracker);
-    worker.await.unwrap();
+    for prior_effect in [false, true] {
+        let (tracker, worker) = spawn_terminal_worker_with(|_| async { Ok(()) });
+        let (_, permit) = handoff_permit();
+        let lifecycle = Lifecycle::new();
+        lifecycle.enter_running().unwrap();
+        let owner = lifecycle.coordinate().await;
+        let mut started = StartedAuditGuard::new_for_test(&tracker, execution_context());
+        if prior_effect {
+            // OAuth refresh can be remembered before the target handoff flag changes.
+            started.mark_remote_effect_started();
+        }
+        let effect = AtomicU8::new(EFFECT_NOT_STARTED);
+        let error = poll_http_while_live(
+            &lifecycle,
+            Some(&permit),
+            &mut started,
+            &effect,
+            Instant::now() + Duration::from_millis(20),
+            "upstream-timeout",
+            || -> std::future::Ready<()> { panic!("deadline passed before local handoff") },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code(), "UPSTREAM_FAILED");
+        assert_eq!(error.agent_message(), "upstream request failed");
+        assert_eq!(error.retryable(), !prior_effect);
+        assert_eq!(effect.load(Ordering::SeqCst), EFFECT_NOT_STARTED);
+        drop(owner);
+        drop(started);
+        tracker.wait_idle(Duration::from_secs(1)).await.unwrap();
+        drop(tracker);
+        worker.await.unwrap();
+    }
 }
 
 #[test]

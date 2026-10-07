@@ -1,4 +1,3 @@
-#![cfg(feature = "lab")]
 //! Ordinary HTTP effects that reach a TLS upstream but lose their response
 //! must be audited as unknown, never denied.
 
@@ -12,7 +11,9 @@ use rekey_broker::testing::FakeUpstreamTransport;
 use rekey_broker::upstream::{
     ScreenedEndpoint, UpstreamFuture, UpstreamRequest, UpstreamTransport, send_screened,
 };
-use rekey_domain::ipc::{Channel, admin_msg, agent_msg};
+#[cfg(feature = "lab")]
+use rekey_domain::ipc::admin_msg;
+use rekey_domain::ipc::{Channel, agent_msg};
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
@@ -103,6 +104,10 @@ async fn spawn_timeout_tls() -> TlsFixture {
                 request.extend_from_slice(&chunk[..read]);
             }
             assert!(request_is_complete(&request), "incomplete HTTP request");
+            assert!(
+                request.starts_with(b"POST /"),
+                "expected an ordinary HTTP POST"
+            );
             request_observed.store(true, Ordering::SeqCst);
             // Keep the TLS connection open without returning a response. The
             // real reqwest timeout must fire after the server saw the effect.
@@ -116,6 +121,7 @@ async fn spawn_timeout_tls() -> TlsFixture {
     }
 }
 
+#[cfg(feature = "lab")]
 async fn create_timeout_action(
     broker: &common::TestBroker,
     credential_id: &str,
@@ -139,6 +145,7 @@ async fn create_timeout_action(
     )
 }
 
+#[cfg(feature = "lab")]
 #[tokio::test(flavor = "multi_thread")]
 async fn post_side_effect_timeout_is_indeterminate() {
     let fixture = spawn_timeout_tls().await;
@@ -173,6 +180,8 @@ async fn post_side_effect_timeout_is_indeterminate() {
     )
     .await;
     assert_eq!(response.err_code(), "UPSTREAM_FAILED");
+    assert_eq!(response.metadata["message"], "upstream request failed");
+    assert_eq!(response.metadata["retryable"], false);
     assert!(
         fixture.request_observed.load(Ordering::SeqCst),
         "TLS upstream must receive the complete request before timeout"
@@ -211,6 +220,76 @@ async fn post_side_effect_timeout_is_indeterminate() {
                 "unknown".into(),
                 "upstream-timeout".into(),
             ),
+        ]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn signed_connection_post_lost_response_is_unconfirmed() {
+    let fixture = spawn_timeout_tls().await;
+    let fake = Arc::new(FakeUpstreamTransport::new());
+    let broker = common::start_broker_with_transport(
+        Duration::from_secs(300),
+        Duration::from_secs(2),
+        fake,
+        Arc::new(TimeoutTlsTransport {
+            endpoint: ScreenedEndpoint {
+                host: HOST.to_owned(),
+                addr: format!("127.0.0.1:{}", fixture.port).parse().unwrap(),
+            },
+            ca_der: fixture.ca_der,
+        }),
+    )
+    .await;
+    common::unlock(&broker).await;
+    let id = common::add_credential(&broker, "call-effect", b"synthetic-call-effect-key").await;
+    let mut connection = rekey_policy::presets::generic_preset(
+        rekey_domain::action::HttpsOrigin::parse(&format!("https://{HOST}:{}", fixture.port))
+            .unwrap(),
+        "authorization",
+        "Bearer ",
+    )
+    .unwrap()
+    .connection("post-effect".into(), id.parse().unwrap());
+    for rule in &mut connection.rules {
+        rule.effect = rekey_domain::connection::RuleEffect::Allow;
+    }
+    common::policy::activate_snapshot(
+        &broker,
+        serde_json::json!({
+            "format_version":7,"version":1,"expires_at_ms":4_102_444_800_000_i64,
+            "approvers":[],"workload_identities":[],"profiles":[],"bindings":[],"rules":[],
+            "connections":[connection],"ssh_keys":[],"derived_credentials":[],
+        }),
+    )
+    .await;
+    let response = common::call(
+        &broker.agent_sock(),
+        Channel::Agent,
+        agent_msg::CALL,
+        br#"{"connection":"post-effect","method":"POST","path":"/effect"}"#,
+        br#"{"synthetic":true}"#,
+    )
+    .await;
+    assert_eq!(response.err_code(), "UPSTREAM_ERROR");
+    assert_eq!(response.metadata["message"], "upstream request failed");
+    assert_eq!(response.metadata["retryable"], false);
+    assert!(
+        fixture.request_observed.load(Ordering::SeqCst),
+        "TLS server must receive the complete POST before losing the response"
+    );
+    let state = broker.state_dir.clone();
+    let _dir = broker.shutdown_keep_dir().await;
+    let db = rusqlite::Connection::open(rekey_vault::paths::vault_db(&state)).unwrap();
+    let events: Vec<(String, String)> = db.prepare(
+        "SELECT event_type, outcome FROM audit_events WHERE event_type LIKE 'execution.%' ORDER BY sequence"
+    ).unwrap().query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap().collect::<Result<_, _>>().unwrap();
+    assert_eq!(
+        events,
+        vec![
+            ("execution.started".into(), "success".into()),
+            ("execution.indeterminate".into(), "unknown".into()),
         ]
     );
 }

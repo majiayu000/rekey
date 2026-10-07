@@ -33,6 +33,9 @@ pub enum BrokerError {
     Denied(&'static str),
     #[error("upstream request failed")]
     Upstream(&'static str),
+    /// A prior remote effect may have completed; replay is unsafe.
+    #[error("upstream request failed")]
+    UpstreamUnconfirmed(&'static str),
     #[error("upstream effect outcome is indeterminate")]
     Indeterminate(&'static str),
     #[error("response blocked by security policy")]
@@ -65,7 +68,7 @@ impl BrokerError {
             Self::Denied(_) => "REQUEST_DENIED",
             Self::ApprovalRequired(_) => "APPROVAL_REQUIRED",
             Self::ApprovalOutcomeUnconfirmed => "APPROVAL_OUTCOME_UNCONFIRMED",
-            Self::Upstream(_) => "UPSTREAM_FAILED",
+            Self::Upstream(_) | Self::UpstreamUnconfirmed(_) => "UPSTREAM_FAILED",
             Self::Indeterminate(_) => "UPSTREAM_INDETERMINATE",
             Self::ResponseSecurityViolation => "RESPONSE_SECURITY_VIOLATION",
             Self::Io(_) => "IPC_UNAVAILABLE",
