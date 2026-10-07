@@ -151,4 +151,3 @@ cargo +1.95.0 test --release --locked -p rekey-vault --lib history_benchmark -- 
 此次读取的 [Protect main](https://github.com/majiayu000/rekey/rules/22063399)（active ruleset `22063399`）要求 `P0 (ubuntu-latest)` 与 `P0 (macos-latest)`；旧 `Linux container G2 reference boundary` 已在 0.4 合并窗口退休，其他现有保护继续生效。本文不修改 ruleset、不恢复退休夹具，也不代表 release/device acceptance。上述合并和规则调整是同步基线时观察到的既有远端状态，不是本 docs PR 的改动。
 
 本 docs PR 的验收是源码/契约引用核对、现有入口与测试名核对、文档差异审查及准确披露运行限制。§4 是下一次实现的真实执行清单；不是一份声称已在本轮跑完的成绩单。
-
