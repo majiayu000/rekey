@@ -522,7 +522,7 @@ impl ActionExecutor {
                         {
                             BrokerError::UpstreamUnconfirmed(reason)
                         }
-                        Ok(Err(error)) if started.remote_effect_started() && error.retryable() => {
+                        Ok(Err(_)) if started.remote_effect_started() => {
                             BrokerError::UpstreamUnconfirmed("oauth-refresh-unavailable")
                         }
                         Ok(Err(error)) => error,

@@ -599,27 +599,44 @@ async fn oauth_refresh_authority_queue_full_is_unconfirmed() {
             Poll::Ready(())
         })
         .await;
-        // The real owner is blocked by the SQLite write lock. Saturate its
-        // bounded queue so refresh audit/rotation gets the actual Busy error.
-        for _ in 0..=rekey_vault::handle::DEFAULT_QUEUE_CAPACITY {
-            f.executor.authority.check_idle();
+        // Count commands actually admitted to the queue. CheckIdle is
+        // fire-and-forget: rejected sends cannot prove that the owner has
+        // dequeued the blocker, leaving its later free slot unaccounted for.
+        for _ in 0..rekey_vault::handle::DEFAULT_QUEUE_CAPACITY {
+            loop {
+                let mut queued = Box::pin(authority.status());
+                let polled = std::future::poll_fn(|cx| Poll::Ready(queued.as_mut().poll(cx))).await;
+                match polled {
+                    Poll::Pending => break,
+                    Poll::Ready(Err(rekey_vault::AuthorityError::AuthorityBusy)) => {
+                        tokio::task::yield_now().await;
+                    }
+                    other => panic!("queue blocker did not hold the owner: {other:?}"),
+                }
+            }
         }
         assert!(matches!(
             f.executor.authority.status().await,
             Err(rekey_vault::AuthorityError::AuthorityBusy)
         ));
-        let unlock = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(300));
-            db.execute_batch("COMMIT").unwrap();
-        });
         release.notify_one();
+        std::future::poll_fn(|cx| {
+            assert!(run.as_mut().poll(cx).is_pending());
+            if f.executor.terminals.has_pending() {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+        .await;
+        // The refresh's Busy error has now transferred its terminal to the
+        // tracker. Release SQL by that observed handoff, not a sleep timer.
+        db.execute_batch("COMMIT").unwrap();
         let error = run
             .await
             .err()
             .expect("saturated Authority must reject refresh persistence");
-        // Drain the already-owned write before asserting, including on RED.
         blocker.await.unwrap();
-        unlock.join().unwrap();
         assert_eq!(f.fake.take_requests().len(), 1, "target must not be sent");
         f.executor
             .terminals
@@ -689,12 +706,8 @@ async fn lost_response_terminal_worker_deadline_is_unconfirmed() {
 
 #[tokio::test]
 async fn terminal_guard_real_authority_busy_reply_is_unconfirmed() {
-    use std::future::Future;
-    use std::task::Poll;
     for terminal in ["finished", "indeterminate", "blocked"] {
         let f = Fixture::new(1000, false).await;
-        let db = f.db();
-        db.execute_batch("BEGIN IMMEDIATE").unwrap();
         let ctx = ExecutionAuditContext {
             request_context: None,
             request_id: RequestId::new_random(),
@@ -706,38 +719,25 @@ async fn terminal_guard_real_authority_busy_reply_is_unconfirmed() {
             credential_id: rekey_domain::ids::CredentialId::new_random(),
             authorization: None,
         };
-        let authority = f.executor.authority.clone();
-        let mut blocker = Box::pin(authority.append_audit(crate::audit::execution_blocked(
-            &ctx,
-            "synthetic-queue-blocker",
-        )));
-        std::future::poll_fn(|cx| {
-            assert!(blocker.as_mut().poll(cx).is_pending());
-            Poll::Ready(())
-        })
-        .await;
-        for _ in 0..=rekey_vault::handle::DEFAULT_QUEUE_CAPACITY {
-            f.executor.authority.check_idle();
-        }
-        assert!(matches!(
-            f.executor.authority.status().await,
-            Err(rekey_vault::AuthorityError::AuthorityBusy)
-        ));
-        // Production terminal commits wait for queue capacity. This hook
-        // supplies a real fail-fast Authority reply to exercise the guard's
-        // error contract, not production saturation reachability.
+        // Production terminal commits wait for capacity. This test hook gets
+        // a real immediate Busy from an expired Authority mutation instead:
+        // no SQLite lock or caller deadline must race the guard assertion.
         let (tracker, worker) = crate::audit::spawn_terminal_worker_with({
             let authority = f.executor.authority.clone();
             move |draft| {
                 let authority = authority.clone();
-                async move { authority.append_audit(draft).await }
+                async move {
+                    authority
+                        .commit_audit_before(draft, Some(Instant::now()))
+                        .await
+                }
             }
         });
         let mut guard = StartedAuditGuard::new_for_test(&tracker, ctx);
         if terminal != "blocked" {
             guard.mark_remote_effect_started();
         }
-        let deadline = Instant::now() + Duration::from_secs(1);
+        let deadline = Instant::now() + Duration::from_secs(30);
         let error = match terminal {
             "finished" => guard.finished_until(deadline, 1, 200, 0).await,
             "indeterminate" => {
@@ -748,8 +748,6 @@ async fn terminal_guard_real_authority_busy_reply_is_unconfirmed() {
             _ => guard.blocked_until(deadline, "private-address").await,
         }
         .unwrap_err();
-        db.execute_batch("COMMIT").unwrap();
-        blocker.await.unwrap();
         assert!(tracker.wait_idle(Duration::from_secs(2)).await.is_err());
         assert!(tracker.has_failed());
         assert_eq!(f.count("execution.finished"), 0);
@@ -861,5 +859,139 @@ async fn proven_stream_open_block_keeps_safe_retry_and_one_blocked_terminal() {
     assert_eq!(f.count("execution.blocked"), 1);
     assert_eq!(f.count("execution.indeterminate"), 0);
     assert!(f.fake.take_requests().is_empty());
+    f.stop().await;
+}
+
+#[tokio::test]
+async fn oauth_refresh_non_retryable_persistence_failure_is_unconfirmed() {
+    use std::future::Future;
+    use std::task::Poll;
+    for epoch_changed in [false, true] {
+        let f = Fixture::build(1000, false, 1, true).await;
+        let release = f.fake.push_response_gated(Ok(UpstreamResponse {
+            status: 200, headers: vec![("content-type".into(), "application/json".into())].into(),
+            body: br#"{"access_token":"synthetic-access","refresh_token":"synthetic-rotated","token_type":"Bearer","expires_in":3600,"scope":"https://www.googleapis.com/auth/drive.readonly"}"#.to_vec().into(),
+        }));
+        let admitted = f
+            .executor
+            .admit_connection(Fixture::request(
+                FixedMethod::Get,
+                "/drive/v3/files",
+                &[],
+                None,
+            ))
+            .await
+            .unwrap();
+        let credential_id = admitted.action.credential_id;
+        let mut run = Box::pin(admitted.run());
+        std::future::poll_fn(|cx| {
+            assert!(run.as_mut().poll(cx).is_pending());
+            if f.fake.requests.lock().unwrap().is_empty() {
+                Poll::Pending
+            } else {
+                Poll::Ready(())
+            }
+        })
+        .await;
+        if epoch_changed {
+            // This is the production invalidation used during lock/restart.
+            f.executor.oauth.clear();
+        } else {
+            f.executor.authority.oauth_grant_update(
+                credential_id, 1,
+                SecretInput::from_slice(br#"{"credential_type":"oauth-grant-v1","provider":"google","client_id":"synthetic-client","client_secret":"synthetic-client-secret","scopes":["https://www.googleapis.com/auth/drive.readonly"],"refresh_token":"synthetic-replacement","expires_at_ms":null}"#),
+                proof(), None,
+            ).await.unwrap();
+        }
+        release.notify_one();
+        let error = run.await.err().unwrap();
+        f.executor
+            .terminals
+            .wait_idle(Duration::from_secs(2))
+            .await
+            .unwrap();
+        assert_eq!(
+            f.fake.take_requests().len(),
+            1,
+            "only the refresh provider was contacted"
+        );
+        assert_eq!(f.count("execution.started"), 1);
+        assert_eq!(f.count("execution.indeterminate"), 1);
+        assert_eq!(f.count("execution.blocked"), 0);
+        assert_eq!(error.code(), "UPSTREAM_FAILED");
+        assert!(!error.retryable());
+        assert_eq!(error.agent_message(), "upstream request failed");
+        assert_eq!(
+            error.agent_next(),
+            "Check whether the upstream effect completed; do not retry automatically."
+        );
+        f.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn oauth_pre_refresh_locked_preserves_authority_error() {
+    let f = Fixture::build(1000, false, 1, true).await;
+    let admitted = f
+        .executor
+        .admit_connection(Fixture::request(
+            FixedMethod::Get,
+            "/drive/v3/files",
+            &[],
+            None,
+        ))
+        .await
+        .unwrap();
+    f.executor
+        .authority
+        .lock("synthetic-pre-refresh-lock")
+        .await
+        .unwrap();
+    let error = admitted.run().await.err().unwrap();
+    assert_eq!(error.code(), "LOCKED");
+    assert!(!error.retryable());
+    assert!(f.fake.take_requests().is_empty());
+    assert_eq!(f.count("execution.blocked"), 1);
+    assert_eq!(f.count("execution.indeterminate"), 0);
+    f.stop().await;
+}
+
+#[tokio::test]
+async fn oauth_refresh_terminal_audit_failure_preserves_authority_contract() {
+    use std::future::Future;
+    use std::task::Poll;
+    let f = Fixture::build(1000, false, 1, true).await;
+    let release = f
+        .fake
+        .push_response_gated(Err(crate::upstream::UpstreamError::Transport));
+    let admitted = f
+        .executor
+        .admit_connection(Fixture::request(
+            FixedMethod::Get,
+            "/drive/v3/files",
+            &[],
+            None,
+        ))
+        .await
+        .unwrap();
+    let mut run = Box::pin(admitted.run());
+    std::future::poll_fn(|cx| {
+        assert!(run.as_mut().poll(cx).is_pending());
+        if f.fake.requests.lock().unwrap().is_empty() {
+            Poll::Pending
+        } else {
+            Poll::Ready(())
+        }
+    })
+    .await;
+    f.db().execute_batch("CREATE TRIGGER reject_refresh_terminal BEFORE INSERT ON audit_events WHEN NEW.event_type='execution.indeterminate' BEGIN SELECT RAISE(ABORT,'synthetic terminal failure'); END;").unwrap();
+    release.notify_one();
+    let error = run.await.err().unwrap();
+    assert_eq!(error.code(), "AUDIT_COMMIT_FAILED");
+    assert!(!error.retryable());
+    assert!(f.executor.terminals.has_failed());
+    assert_eq!(f.fake.take_requests().len(), 1);
+    assert_eq!(f.count("execution.started"), 1);
+    assert_eq!(f.count("execution.indeterminate"), 0);
     f.stop().await;
 }
