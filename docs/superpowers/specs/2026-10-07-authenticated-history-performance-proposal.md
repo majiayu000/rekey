@@ -68,7 +68,7 @@ SHA-256 换为已有 AWS-LC、SQL prepare 复用、有序插入/二分定位已�
 5. 中途 deadline 只能按原错误语义安全回滚，不能提前提交半个扫描。保持先 started commit 后远程效果；不新增允许其他 Authority mutation 在半个事务中插入的调度路径。
 6. 对最大行宽 W，目标工作内存是 O(W + 固定状态)，不声称无条件固定内存上限。SQLite page cache、allocator retention、备份与 KDF RSS 分开测；不通过偷偷缩短合法 context 来达到上限。
 
-此方案首先适用于单次查询/变更。恢复多个 pending、backup 和 rotation 的多记录输出需求必须分别设计，不能把已有 Vec helper 全部替换后宣称所有生命周期都已流式化。若其额外扫描显著拖慢 admission，保留原实现，报告内存/时延取舍；不要把降低 RSS 自动宣传成提速。
+此方案首先适用于单次查询/变更。恢复多个 pending、backup 和 rotation 的多记录输出需求必须分别设计，不能把已有 Vec helper 全部替换后宣称所有生命周期都已流式化。若其额外扫描让 §5 中任一认证读取或变更的时延门槛失败，保留原实现，报告内存/时延取舍；不要把降低 RSS 自动宣传成提速。
 
 ### C. 真正减少历史扫描，必须另立已接受的契约
 
@@ -130,13 +130,13 @@ cargo +1.95.0 test --release --locked -p rekey-vault --lib history_benchmark -- 
 | K03-07 | 丢 receiver、hard kill、unlock/re-auth、backup/restore、VRK rotation、audit prune 仍满足原完整性和幂等合同。 | 现有 usage lifecycle tests 与 §4 lifecycle suites；拟补每规模/最大行宽代表组合。 |
 | K03-08 | 真实 Authority 1k/10k/100k，包含空目标桶与所有记录落入同一当前桶，两种极端都通过。 | 现有 4 instance × 30 日、少量 pending；拟补当前日热桶与多个 principal。 |
 | K03-09 | 0/现有稀疏/高比例 pending、窄/宽 context，分别测 recovery 和 steady state；不可由 fixture 分布隐藏成本。 | 拟补参数化；先文档化实际允许范围，不靠丢合法输入压低内存。 |
-| K03-10 | store / Authority / Broker 管理 IPC 分层报告；status、lock/revoke 与 backup 干扰要真走对应操作并等待业务断言。 | 前两层已有；真实管理 IPC、长历史下 lock/revoke、重叠 backup 为拟补，不能由 `status()` 代替。 |
+| K03-10 | store / Authority / Broker 管理 IPC 分层报告；store 与 Authority 的认证用量读取（含 `profile_usage`）分别测量并受下文相同的时延回归门槛约束；status、lock/revoke 与 backup 干扰要真走对应操作并等待业务断言。 | 前两层已有测量入口；store 现有 `authenticated_read` 只计 `verified_usage`，拟补完整 `profile_usage` 覆盖；真实管理 IPC、长历史下 lock/revoke、重叠 backup 也为拟补，不能由 `status()` 代替。 |
 | K03-11 | 单独进程测每个规模，fixture seed 在测量进程外完成；分别报告进程 RSS/HWM 与操作窗口峰值相对窗口开始 RSS 的增量，记录采样方法/间隔及 KDF/SQLite/allocator 干扰；同一受控宿主对基线/候选交错测至少 3 批，每批每热操作至少 50 样本。 | 拟补采样/独立进程 harness；备份、cold unlock 单列，现有 5 样本历史数据不回写伪造。 |
 | K03-12 | 原始结果包含 checkout SHA、实际测试树、harness hash、Rust/profile、OS/CPU、features、实际条数/宽度/pending 比例、原始时长和失败计数。 | 现有 receipt 可扩展；必须同时保留 baseline/candidate 结果与完整退出状态。 |
 
 **正确性硬失败：** 任意 oracle 不一致、少/多记一笔、漏扫坏行、未认证数据影响预算、错误地成功/可重试、部分状态提交、降低安全检查或 crash/reopen 失效，立即拒绝候选；无论快多少都不进入性能比较。
 
-**拟议性能决策门槛（尚非产品 SLA）：** 在同机、同 Rust/profile、同 harness 与规模下，3 批独立结果方向一致才讨论收益。若 B 以“降低内存”交付，100k 稳态操作窗口的增量峰值 RSS（按 K03-11 的相同采样方法）至少下降 25%，且 1k/10k/100k 的 admission、settlement、队列 status 中位时延均不得增加超过 10%；冷启动与备份变化另报。阈值需在实施前评审固定，不能看到候选结果后调整。如果数据落在噪声区，结论为未证明收益，保留旧实现。若声称时延优化，则需事先另定主指标/容忍度，不能拿内存指标代替。
+**拟议性能决策门槛（尚非产品 SLA）：** 在同机、同 Rust/profile、同 harness 与规模下，3 批独立结果方向一致才讨论收益。若 B 以“降低内存”交付，100k 稳态操作窗口的增量峰值 RSS（按 K03-11 的相同采样方法）至少下降 25%，且 1k/10k/100k 的 store 与 Authority 认证用量读取（含 `profile_usage`，按层分别判定）、admission、settlement、队列 status 中位时延均不得增加超过 10%；各操作、各层和各规模都与对应基线比较，不以跨操作平均值抵消单项回归；冷启动与备份变化另报。阈值需在实施前评审固定，不能看到候选结果后调整。如果数据落在噪声区，结论为未证明收益，保留旧实现。若声称时延优化，则需事先另定主指标/容忍度，不能拿内存指标代替。
 
 无论达到哪个常数门槛，B 仍逐次 O(N)，KEY-03 的历史增长问题只能标注“缓解部分成本”或“仍开放”，不能标记成已解决。
 
