@@ -246,7 +246,7 @@ Profile、capability session、Action 这三个概念**不再暴露给个人用�
 - 出站传输默认发送公开的 `User-Agent: rekey/<version>`，满足 GitHub 等服务的必需请求头；它不携带调用方身份或凭据。
 - OAuth refresh-token 轮换也属于远程副作用：发出前检查同一个生命周期 gate，取消或超时后无法确认结果时记为 indeterminate，不能记成未执行。缓存命中不打开该 gate。
 - 普通 HTTP 的最后一次 `send` / `open_stream` 在既有 lifecycle coordinator 内构造并首次 poll，再交给已准入执行持有；lab capability 调用同时验证原预留 permit，Connection 调用继续由其终态审计持有准入许可。Connection gate 已关闭时在等待 coordinator 前拒绝，锁内仍重新检查；已排队后才关闭的竞态继续受绝对期限及原取消/自然 drain 宽限约束。首次交接后保留自然 drain 宽限和原绝对期限。若 OAuth refresh 已发生副作用，后续 handoff 被拒绝或目标传输在发送前失败仍记为 indeterminate。
-- 普通 HTTP 或 OAuth refresh 的未知副作用失败保留内部 `UPSTREAM_FAILED` 与安全 message `upstream request failed`，但 `retryable=false`，不得邀请重放；当前 CALL 信封继续映射为 `UPSTREAM_ERROR`，lab EXECUTE 保留 `UPSTREAM_FAILED`。
+- 普通 HTTP 或 OAuth refresh 的未知副作用失败保留内部 `UPSTREAM_FAILED` 与安全 message `upstream request failed`，但 `retryable=false`，不得邀请重放；当前 CALL 与 lab unary EXECUTE 的公开信封继续映射为 `UPSTREAM_ERROR`。终态审计等待超过绝对期限不能把已发生的未知副作用重新标为可重试；OAuth refresh 后的 Authority 忙等可重试错误也必须返回不可重试的未知结果。
   未发生远端副作用的 coordinator 截止或地址预检拒绝保留原可重试合同；响应过大与安全策略拒绝保留各自错误。
 - 认证类头（`authorization`、`x-api-key`、`cookie`、`proxy-*`、`host`）一律由 Rekey 控制。
 - 正文大小受 `limits` 约束；Preset 可以附带 JSON Schema 作为额外校验，不是必需。

@@ -184,6 +184,9 @@ impl StartedAuditGuard {
         match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), result).await {
             Ok(Ok(result)) => result.map_err(BrokerError::Authority),
             Ok(Err(_)) => Err(BrokerError::Authority(AuthorityError::AuditCommitFailed)),
+            Err(_) if self.remote_effect_started => {
+                Err(BrokerError::UpstreamUnconfirmed("upstream-timeout"))
+            }
             Err(_) => Err(BrokerError::Upstream("upstream-timeout")),
         }
     }

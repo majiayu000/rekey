@@ -45,6 +45,10 @@ impl Fixture {
     }
 
     async fn with_connections(hourly: u32, llm: bool, count: usize) -> Self {
+        Self::build(hourly, llm, count, false).await
+    }
+
+    async fn build(hourly: u32, llm: bool, count: usize, oauth: bool) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let state = dir.path().join("state");
         rekey_vault::bootstrap::init_vault(
@@ -55,22 +59,34 @@ impl Fixture {
                 iterations: 1,
                 parallelism: 1,
             },
-            rekey_domain::authorization::PolicyMode::Team,
+            if oauth {
+                rekey_domain::authorization::PolicyMode::Personal
+            } else {
+                rekey_domain::authorization::PolicyMode::Team
+            },
         )
         .unwrap();
         rekey_vault::bootstrap::confirm_vault_init(&state).unwrap();
         let (authority, authority_thread) =
             rekey_vault::authority::spawn_authority(AuthorityConfig::new(state.clone())).unwrap();
         authority.unlock(proof()).await.unwrap();
-        let credential = authority
-            .credential_add(
+        let credential = if oauth {
+            authority.oauth_grant_create(
                 CredentialLabel::new("fixture").unwrap(),
-                CredentialKind::OpaqueToken,
-                SecretInput::from_slice(b"synthetic-upstream-key"),
-                proof(),
-            )
-            .await
-            .unwrap();
+                SecretInput::from_slice(br#"{"credential_type":"oauth-grant-v1","provider":"google","client_id":"synthetic-client","client_secret":"synthetic-client-secret","scopes":["https://www.googleapis.com/auth/drive.readonly"],"refresh_token":"synthetic-refresh-token","expires_at_ms":null}"#),
+                proof(), None,
+            ).await.unwrap()
+        } else {
+            authority
+                .credential_add(
+                    CredentialLabel::new("fixture").unwrap(),
+                    CredentialKind::OpaqueToken,
+                    SecretInput::from_slice(b"synthetic-upstream-key"),
+                    proof(),
+                )
+                .await
+                .unwrap()
+        };
         let preset = if count > 1 {
             rekey_policy::presets::generic_preset(
                 rekey_domain::action::HttpsOrigin::parse("https://api.example.com").unwrap(),
@@ -79,11 +95,26 @@ impl Fixture {
             )
             .unwrap()
         } else {
-            rekey_policy::presets::builtin_preset(if llm { "openai" } else { "github-pat" })
-                .unwrap()
+            rekey_policy::presets::builtin_preset(if oauth {
+                "google-drive"
+            } else if llm {
+                "openai"
+            } else {
+                "github-pat"
+            })
+            .unwrap()
         };
         let mut connection = preset.connection("fixture".into(), credential.id);
         connection.limits.requests_per_hour = hourly;
+        if oauth {
+            connection.oauth = Some(rekey_domain::connection::OAuthBinding {
+                provider: rekey_domain::connection::OAuthProvider::Google,
+                client_id: "synthetic-client".into(),
+                scopes: ["https://www.googleapis.com/auth/drive.readonly".into()]
+                    .into_iter()
+                    .collect(),
+            });
+        }
         for rule in &mut connection.rules {
             rule.id = PolicyRuleId::new_random();
             if matches!(rule.methods, MethodSelector::Class(MethodClass::Read)) {
@@ -508,5 +539,150 @@ async fn disconnected_receivers_cannot_exceed_global_supervised_execution_limit(
     assert_eq!(f.count("execution.started"), 121);
     assert_eq!(f.count("execution.finished"), 121);
     assert_eq!(f.fake.requests.lock().unwrap().len(), 121);
+    f.stop().await;
+}
+
+#[tokio::test]
+async fn oauth_refresh_authority_queue_full_is_unconfirmed() {
+    use std::future::Future;
+    use std::task::Poll;
+    for rotated in [true, false] {
+        let f = Fixture::build(1000, false, 1, true).await;
+        let upstream = if rotated {
+            Ok(UpstreamResponse {
+                status: 200,
+                headers: vec![("content-type".into(), "application/json".into())].into(),
+                body: br#"{"access_token":"synthetic-access","refresh_token":"synthetic-rotated","token_type":"Bearer","expires_in":3600,"scope":"https://www.googleapis.com/auth/drive.readonly"}"#.to_vec().into(),
+            })
+        } else {
+            Err(crate::upstream::UpstreamError::Transport)
+        };
+        let release = f.fake.push_response_gated(upstream);
+        let admitted = f
+            .executor
+            .admit_connection(Fixture::request(
+                FixedMethod::Get,
+                "/drive/v3/files",
+                &[],
+                None,
+            ))
+            .await
+            .unwrap();
+        let mut run = Box::pin(admitted.run());
+        std::future::poll_fn(|cx| {
+            assert!(run.as_mut().poll(cx).is_pending());
+            if f.fake.requests.lock().unwrap().is_empty() {
+                Poll::Pending
+            } else {
+                Poll::Ready(())
+            }
+        })
+        .await;
+        let db = f.db();
+        db.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let ctx = ExecutionAuditContext {
+            request_context: None,
+            request_id: RequestId::new_random(),
+            session_id: SessionId::new_random(),
+            action: ActionVersionRef {
+                action_id: rekey_domain::ids::ActionId::new_random(),
+                version: 1,
+            },
+            credential_id: rekey_domain::ids::CredentialId::new_random(),
+            authorization: None,
+        };
+        let audit = crate::audit::execution_blocked(&ctx, "synthetic-queue-blocker");
+        let authority = f.executor.authority.clone();
+        let mut blocker = Box::pin(authority.append_audit(audit));
+        std::future::poll_fn(|cx| {
+            assert!(blocker.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        // The real owner is blocked by the SQLite write lock. Saturate its
+        // bounded queue so refresh audit/rotation gets the actual Busy error.
+        for _ in 0..=rekey_vault::handle::DEFAULT_QUEUE_CAPACITY {
+            f.executor.authority.check_idle();
+        }
+        assert!(matches!(
+            f.executor.authority.status().await,
+            Err(rekey_vault::AuthorityError::AuthorityBusy)
+        ));
+        let unlock = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            db.execute_batch("COMMIT").unwrap();
+        });
+        release.notify_one();
+        let error = run
+            .await
+            .err()
+            .expect("saturated Authority must reject refresh persistence");
+        // Drain the already-owned write before asserting, including on RED.
+        blocker.await.unwrap();
+        unlock.join().unwrap();
+        assert_eq!(f.fake.take_requests().len(), 1, "target must not be sent");
+        f.executor
+            .terminals
+            .wait_idle(Duration::from_secs(2))
+            .await
+            .unwrap();
+        assert_eq!(f.count("execution.indeterminate"), 1);
+        assert_eq!(error.code(), "UPSTREAM_FAILED");
+        assert_eq!(error.agent_message(), "upstream request failed");
+        assert!(
+            !error.retryable(),
+            "post-refresh Busy must never invite replay"
+        );
+        f.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn lost_response_terminal_worker_deadline_is_unconfirmed() {
+    use std::future::Future;
+    use std::task::Poll;
+    let f = Fixture::new(1000, false).await;
+    let release = f
+        .fake
+        .push_response_gated(Err(crate::upstream::UpstreamError::Transport));
+    let mut admitted = f
+        .executor
+        .admit_connection(Fixture::request(FixedMethod::Get, "/repos/a/b", &[], None))
+        .await
+        .unwrap();
+    admitted.effect_deadline = Instant::now() + Duration::from_millis(150);
+    let mut run = Box::pin(admitted.run());
+    std::future::poll_fn(|cx| {
+        assert!(run.as_mut().poll(cx).is_pending());
+        if f.fake.requests.lock().unwrap().is_empty() {
+            Poll::Pending
+        } else {
+            Poll::Ready(())
+        }
+    })
+    .await;
+    let db = f.db();
+    db.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let unlock = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(400));
+        db.execute_batch("COMMIT").unwrap();
+    });
+    release.notify_one();
+    let error = run.await.err().expect("response is lost");
+    assert!(
+        !error.retryable(),
+        "terminal audit timeout must never invite replay"
+    );
+    assert_eq!(error.code(), "UPSTREAM_FAILED");
+    unlock.join().unwrap();
+    f.executor
+        .terminals
+        .wait_idle(Duration::from_secs(2))
+        .await
+        .unwrap();
+    assert_eq!(f.fake.take_requests().len(), 1);
+    assert_eq!(f.count("execution.started"), 1);
+    assert_eq!(f.count("execution.indeterminate"), 1);
+    assert_eq!(f.count("execution.blocked"), 0);
     f.stop().await;
 }

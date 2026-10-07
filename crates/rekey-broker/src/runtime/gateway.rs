@@ -630,6 +630,7 @@ fn map_error(error: BrokerError) -> (u16, BrokerError) {
         BrokerError::Authority(_) | BrokerError::Io(_) => 503,
         BrokerError::Frame(_) => 400,
         BrokerError::Upstream(_)
+        | BrokerError::UpstreamUnconfirmed(_)
         | BrokerError::Indeterminate(_)
         | BrokerError::ResponseSecurityViolation => 502,
         _ => 403,
@@ -724,6 +725,18 @@ impl Body for GatewayBody {
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn unconfirmed_upstream_is_bad_gateway_with_safe_agent_envelope() {
+        let (status, error) = map_error(BrokerError::UpstreamUnconfirmed("upstream-transport"));
+        assert_eq!(status, 502);
+        assert_eq!(
+            crate::ipc::agent::local_agent_code(&error),
+            "UPSTREAM_ERROR"
+        );
+        assert_eq!(error.agent_message(), "upstream request failed");
+        assert!(!error.retryable());
+    }
 
     #[tokio::test(start_paused = true)]
     async fn stalled_client_write_times_out_without_waiting_for_upstream_or_reads() {

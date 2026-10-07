@@ -179,7 +179,7 @@ async fn post_side_effect_timeout_is_indeterminate() {
         b"{}",
     )
     .await;
-    assert_eq!(response.err_code(), "UPSTREAM_FAILED");
+    assert_eq!(response.err_code(), "UPSTREAM_ERROR");
     assert_eq!(response.metadata["message"], "upstream request failed");
     assert_eq!(response.metadata["retryable"], false);
     assert!(
