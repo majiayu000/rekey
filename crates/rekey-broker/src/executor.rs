@@ -64,10 +64,8 @@ mod vault_dynamic_run;
 pub(crate) mod vault_source;
 #[cfg(any(feature = "lab", test))]
 use http::build_upstream;
-use http::{
-    filter_response_headers, reason_static, response_metadata_fits,
-    upstream_failure_is_indeterminate, validate_request,
-};
+pub(crate) use http::upstream_failure_is_indeterminate;
+use http::{filter_response_headers, reason_static, response_metadata_fits, validate_request};
 pub(crate) use sealing::contains_secret;
 #[cfg(test)]
 use sealing::percent_encode;

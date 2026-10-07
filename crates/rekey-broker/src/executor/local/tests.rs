@@ -1001,3 +1001,116 @@ async fn oauth_refresh_terminal_audit_failure_preserves_authority_contract() {
     assert_eq!(f.count("execution.indeterminate"), 0);
     f.stop().await;
 }
+
+struct PrivateOAuthPreflightTransport {
+    port: u16,
+    attempts: std::sync::atomic::AtomicUsize,
+}
+impl crate::upstream::UpstreamTransport for PrivateOAuthPreflightTransport {
+    fn send(
+        &self,
+        mut request: crate::upstream::UpstreamRequest,
+    ) -> crate::upstream::UpstreamFuture<'_> {
+        Box::pin(async move {
+            assert_eq!(request.host, "oauth2.googleapis.com");
+            assert_eq!(request.path, "/token");
+            self.attempts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            // Exercise the real transport's address screen without public DNS
+            // or a live provider. It must reject before opening the listener.
+            request.host = "127.0.0.1".into();
+            request.port = self.port;
+            let result = crate::upstream::ReqwestUpstreamTransport
+                .send(request)
+                .await;
+            assert!(matches!(
+                &result,
+                Err(crate::upstream::UpstreamError::Blocked("private-address"))
+            ));
+            result
+        })
+    }
+}
+
+#[tokio::test]
+async fn oauth_private_preflight_sends_nothing_and_keeps_safe_retry() {
+    let f = Fixture::build(1000, false, 1, true).await;
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let transport = Arc::new(PrivateOAuthPreflightTransport {
+        port: listener.local_addr().unwrap().port(),
+        attempts: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let executor = Arc::new(ActionExecutor::new(
+        f.executor.authority.clone(),
+        Arc::new(SessionRegistry::new()),
+        transport.clone(),
+        f.executor.lifecycle.clone(),
+        f.executor.terminals.clone(),
+        f.executor.policy.clone(),
+    ));
+    let error = executor
+        .admit_connection(Fixture::request(
+            FixedMethod::Get,
+            "/drive/v3/files",
+            &[],
+            None,
+        ))
+        .await
+        .unwrap()
+        .run()
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock,
+        "the real address preflight must not open a TCP connection"
+    );
+    assert_eq!(
+        transport.attempts.load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+    assert_eq!(error.code(), "UPSTREAM_FAILED");
+    assert!(
+        error.retryable(),
+        "a proven no-send OAuth failure permits a safe retry"
+    );
+    assert_eq!(f.count("execution.started"), 1);
+    assert_eq!(f.count("execution.blocked"), 1);
+    assert_eq!(f.count("execution.indeterminate"), 0);
+    assert_eq!(f.count("oauth.refresh_failed"), 1);
+    assert_eq!(f.count("oauth.refreshed"), 0);
+    drop(executor);
+    f.stop().await;
+}
+
+#[tokio::test]
+async fn oauth_redirect_block_does_not_prove_no_effect() {
+    let f = Fixture::build(1000, false, 1, true).await;
+    f.fake
+        .push_response(Err(crate::upstream::UpstreamError::Blocked("redirect")));
+    let error = f
+        .executor
+        .admit_connection(Fixture::request(
+            FixedMethod::Get,
+            "/drive/v3/files",
+            &[],
+            None,
+        ))
+        .await
+        .unwrap()
+        .run()
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(error.code(), "UPSTREAM_FAILED");
+    assert!(
+        !error.retryable(),
+        "a redirect refusal can follow an accepted refresh POST"
+    );
+    assert_eq!(f.fake.take_requests().len(), 1);
+    assert_eq!(f.count("execution.indeterminate"), 1);
+    assert_eq!(f.count("execution.blocked"), 0);
+    f.stop().await;
+}

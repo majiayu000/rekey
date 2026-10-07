@@ -247,7 +247,7 @@ Profile、capability session、Action 这三个概念**不再暴露给个人用�
 - OAuth refresh-token 轮换也属于远程副作用：发出前检查同一个生命周期 gate，取消或超时后无法确认结果时记为 indeterminate，不能记成未执行。缓存命中不打开该 gate。
 - 普通 HTTP 的最后一次 `send` / `open_stream` 在既有 lifecycle coordinator 内构造并首次 poll，再交给已准入执行持有；lab capability 调用同时验证原预留 permit，Connection 调用继续由其终态审计持有准入许可。Connection gate 已关闭时在等待 coordinator 前拒绝，锁内仍重新检查；已排队后才关闭的竞态继续受绝对期限及原取消/自然 drain 宽限约束。首次交接后保留自然 drain 宽限和原绝对期限。若 OAuth refresh 已发生副作用，后续 handoff 被拒绝或目标传输在发送前失败仍记为 indeterminate。
 - 普通 HTTP 或 OAuth refresh 的未知副作用失败保留内部 `UPSTREAM_FAILED` 与安全 message `upstream request failed`，但 `retryable=false`，不得邀请重放；当前 CALL 与 lab unary EXECUTE 的公开信封继续映射为 `UPSTREAM_ERROR`。终态审计的可重试错误（包括立即返回的 Authority 忙和等待超过绝对期限）不能把已交接的远端副作用重新标为可重试；OAuth refresh 交接后且无法证明未发生副作用时，refresh 或其持久化失败（含不可重试的锁定、epoch 变化及凭据版本冲突）必须返回不可重试的未知结果；provider 明确撤销或拒绝 grant 的既有 `NEEDS_REAUTH` 保留，并只引导重新授权，不重放 refresh；写入失败审计时出现的 Authority 错误不能使用此业务结果。终态审计本身失败仍保留 Authority 的原错误合同。此类信封的 `error.next` 必须要求核对上游结果，禁止自动重试。
-  未发生远端副作用的 coordinator 截止或地址预检拒绝（含其终态审计截止）保留原可重试合同；目标传输证明未发送时仅撤销该目标的交接标记，不能抹去此前 OAuth refresh 的真实副作用。响应过大与安全策略拒绝保留各自错误。
+  未发生远端副作用的 coordinator 截止或地址预检拒绝（含其终态审计截止）保留原可重试合同。OAuth refresh 的 transport 也必须保留明确的发送前拒绝分类，不能先折叠成普通上游错误再推断副作用；只有明确未发送时恢复该次交接前的副作用状态。目标传输证明未发送时也仅撤销该目标的交接标记，不能抹去此前真实副作用。redirect、timeout、transport 或响应过大的失败仍不能证明未发送。响应过大与安全策略拒绝保留各自错误。
 - 认证类头（`authorization`、`x-api-key`、`cookie`、`proxy-*`、`host`）一律由 Rekey 控制。
 - 正文大小受 `limits` 约束；Preset 可以附带 JSON Schema 作为额外校验，不是必需。
 

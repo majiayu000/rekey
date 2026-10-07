@@ -56,7 +56,7 @@ pub(super) fn reason_static(reason: &str) -> &'static str {
     }
 }
 
-pub(super) fn upstream_failure_is_indeterminate(err: &UpstreamError) -> bool {
+pub(crate) fn upstream_failure_is_indeterminate(err: &UpstreamError) -> bool {
     matches!(
         err,
         UpstreamError::Timeout
