@@ -124,6 +124,7 @@ struct ConnectionUIContract {
                 sys.exit(5)
             if (root/'fail-lock').exists():
                 sys.stderr.write(json.dumps({'code':'IPC_UNAVAILABLE'},separators=(',',':')))
+                time.sleep(.2)  # Controlled late failure completion, as on a loaded runner.
                 sys.exit(4)
             print(json.dumps({'locked':True}))
         elif args[:2]==['policy','status']:
@@ -140,7 +141,7 @@ struct ConnectionUIContract {
         func settled() async throws {
             let deadline = Date().addingTimeInterval(3)
             while model.pendingDesktopLocks > 0 {
-                guard Date() < deadline else { throw UIError(message: "synthetic revocation did not settle") }
+                guard Date() < deadline else { throw UIError(message: "synthetic revocation did not settle: " + (model.error ?? "no failure callback")) }
                 try await Task.sleep(nanoseconds: 10_000_000)
             }
         }
@@ -178,7 +179,11 @@ struct ConnectionUIContract {
         try FileManager.default.removeItem(at: root.appendingPathComponent("locked-reply"))
         try writePrivateNew(Data(), to: root.appendingPathComponent("fail-lock"))
         await login(); model.lockDesktop()
-        try await Task.sleep(nanoseconds: 100_000_000)
+        let failureDeadline = Date().addingTimeInterval(10)
+        while model.error?.contains("IPC_UNAVAILABLE") != true {
+            guard Date() < failureDeadline else { throw UIError(message: "synthetic revocation failure was not observed") }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
         try require(model.pendingDesktopLocks == 1 && model.desktopLocked, "failed server cleanup stays visible and locked")
         await login()
         try require(model.desktopLocked && model.pendingDesktopLocks == 1, "pending cleanup blocks another login")

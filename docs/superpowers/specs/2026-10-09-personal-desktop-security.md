@@ -14,7 +14,7 @@ lock on sleep/display sleep/user switch/screen-lock signals (default on), passwo
 recheck every unlock or after 1/7/30 days (default seven). Only non-secret choices
 are persisted. DESKTOP_REMEMBER requires explicit lifetime_ms in the existing
 1,000..=2,592,000,000 ms range, checked once by the Worker before effects. Existing
-84-byte ticket headers bind original issue/expiry/vault identity; no format change,
+84-byte tickets bind original issue/expiry/vault identity; no format change,
 migration or reader fallback. Resume never extends expiry. Seven days remains the
 ordinary A1 desktop session maximum; remembering clamps that session to the
 selected shorter grant deadline when applicable.
@@ -81,3 +81,8 @@ activity sheets close on privacy lock. Initially locked setup keeps its explicit
 recovery-key saving result. Captured form revisions are checked before ordinary
 password commands too, so a pre-lock form cannot start a late command. Synthetic
 regressions cover these paths separately from actual device authentication.
+
+CI harness correction: a fixed 100ms pause could request retry before the
+synthetic failure callback completed. A controlled 200ms late failure reproduces
+the exact timeout. The test now waits for the observable failure before retrying,
+retaining the pending-cleanup, blocked-login and successful-retry assertions.
