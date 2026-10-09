@@ -1,6 +1,6 @@
 # Rekey macOS UI
 
-原生 SwiftUI 本机管理客户端。当前版本为 **0.4.0-alpha.1（alpha）**，使用 vault26 / policy7。0.3 保险库需要在新目录重建，不提供迁移。需要 macOS 14+ 和 Xcode Command Line Tools；无需 Node、浏览器服务或新数据库。新版 App 交互与登录项真机验收仍未验证，不以软件检查宣称 L1/L2。
+原生 SwiftUI 本机管理客户端。当前开发整合候选为 **0.5.0-alpha.1**，使用 vault27 / policy8。已发布 0.4 使用 vault26 / policy7；新格式需在新目录重建，不提供迁移。需要 macOS 14+ 和 Xcode Command Line Tools；无需 Node、浏览器服务或新数据库。新版 App 交互与登录项真机验收仍未验证，不以软件检查宣称 L1/L2。
 
 ## 构建与打开
 

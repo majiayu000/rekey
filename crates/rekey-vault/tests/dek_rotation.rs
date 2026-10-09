@@ -61,7 +61,7 @@ fn assert_generation_advanced(
 ) {
     let actual = immutable_state(db);
     assert_eq!(actual[0].len(), 1);
-    assert_eq!(actual[0][0].len(), 10);
+    assert_eq!(actual[0][0].len(), 11);
     assert_eq!(
         actual[0][0][3],
         Value::Blob(expected_generation.to_be_bytes().to_vec())

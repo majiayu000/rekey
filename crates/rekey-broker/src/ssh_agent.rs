@@ -18,7 +18,7 @@ use rekey_domain::ipc::{self, ApprovalChallenge, LocalApprovalState};
 use rekey_vault::command::AuditDraft;
 use rekey_vault::model::{ApprovalEvidence, AuthorizationEvidence, event_type, outcome};
 use sha2::{Digest, Sha256};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
 use tokio::net::UnixStream;
 use tokio::sync::watch;
 use zeroize::Zeroizing;
@@ -174,6 +174,7 @@ pub(crate) fn fuzz_wire(bytes: &[u8]) {
 #[derive(Default)]
 struct AgentSession {
     bound: Option<BoundSession>,
+    budgets: std::collections::BTreeMap<String, (Instant, u32)>,
 }
 struct BoundSession {
     host: Vec<u8>,
@@ -303,10 +304,85 @@ fn id_bytes(input: &[u8]) -> [u8; 16] {
     digest[..16].try_into().expect("fixed digest")
 }
 
+pub(crate) fn verify_external_grants(
+    challenge: &ApprovalChallenge,
+    raw: &[Box<serde_json::value::RawValue>],
+    snapshot: &rekey_policy::ValidatedSnapshot,
+    now_ms: i64,
+) -> Result<(Vec<ApprovalEvidence>, i64), BrokerError> {
+    let ApproverSpec::Ed25519 { keys, threshold } = &challenge.approver else {
+        return Err(BrokerError::Denied("approval-authority-mismatch"));
+    };
+    if challenge.schema_id.as_str() != "rekey.ssh-sign.v1"
+        || raw.len() != usize::from(*threshold)
+        || raw.len() > 2
+        || now_ms < challenge.created_at_ms
+        || now_ms >= challenge.max_expires_at_ms
+    {
+        return Err(BrokerError::Denied("approval-insufficient-quorum"));
+    }
+    let allowed = snapshot
+        .ed25519_approver_ids(keys)
+        .ok_or(BrokerError::Denied("approval-grant-invalid"))?;
+    let mut approvers = std::collections::BTreeSet::new();
+    let mut ids = std::collections::BTreeSet::new();
+    let mut evidence = Vec::new();
+    let mut expires = challenge.max_expires_at_ms;
+    for raw in raw {
+        let verified =
+            rekey_policy::parse_and_verify_approval_grant(raw.get().as_bytes(), snapshot)?;
+        let g = verified.grant();
+        if g.approval_request_id != challenge.approval_request_id
+            || g.tenant_id != challenge.tenant_id
+            || g.principal_id != challenge.principal_id
+            || g.session_id != challenge.session_id
+            || g.action_id != challenge.action_id
+            || g.action_version != challenge.action_version
+            || g.resource != challenge.resource
+            || g.schema_id != challenge.schema_id
+            || g.parameter_sha256 != challenge.parameter_sha256
+            || g.policy_version.get() != challenge.policy_version
+            || g.policy_sha256 != challenge.policy_sha256
+            || g.policy_rule_id != challenge.policy_rule_id
+            || g.mode != ApprovalMode::OneTime
+            || g.max_uses != 1
+            || g.not_before_ms < challenge.created_at_ms
+            || now_ms < g.not_before_ms
+            || now_ms >= g.expires_at_ms
+            || g.expires_at_ms > challenge.max_expires_at_ms
+            || !allowed.contains(&g.approver_id)
+            || !approvers.insert(g.approver_id)
+            || !ids.insert(g.approval_id)
+        {
+            return Err(BrokerError::Denied("approval-grant-mismatch"));
+        }
+        expires = expires.min(g.expires_at_ms);
+        evidence.push(ApprovalEvidence {
+            approval_request_id: g.approval_request_id,
+            approval_id: Some(g.approval_id),
+            approver_id: Some(g.approver_id),
+        });
+    }
+    Ok((evidence, expires))
+}
+
+struct PendingApproval {
+    calls: Arc<crate::runtime::local_calls::LocalCalls>,
+    id: Option<ApprovalRequestId>,
+}
+impl Drop for PendingApproval {
+    fn drop(&mut self) {
+        if let Some(id) = self.id {
+            self.calls.cancel_unconfirmed(id);
+        }
+    }
+}
+
 async fn sign(
     ctx: &Arc<BrokerCtx>,
-    session: &AgentSession,
+    session: &mut AgentSession,
     packet: &[u8],
+    cancel: watch::Receiver<bool>,
 ) -> Result<Vec<u8>, BrokerError> {
     ctx.lifecycle.reject_if_not_running()?;
     let mut r = Reader(packet);
@@ -343,7 +419,7 @@ async fn sign(
     let action_id = ActionId::from_random_bytes(id_bytes(format!("ssh:{}", key.name).as_bytes()));
     let caller = "ssh-agent";
     let digest = active.snapshot().digest();
-    let review_request = serde_json::json!({"key":key.name,"host":host,"bound_host_key":session.bound.as_ref().map(|b| BASE64.encode(&b.host)),"session_id":session.bound.as_ref().map(|b| HEXLOWER.encode(&b.session)),"public_key":encoded,"data_sha256":HEXLOWER.encode(&Sha256::digest(&data)),"data_base64":BASE64.encode(&data),"window_allowed":effect==RuleEffect::Approve && matched_host_rule,"use":purpose});
+    let review_request = serde_json::json!({"key":key.name,"host":host,"bound_host_key":session.bound.as_ref().map(|b| BASE64.encode(&b.host)),"session_id":session.bound.as_ref().map(|b| HEXLOWER.encode(&b.session)),"public_key":encoded,"data_sha256":HEXLOWER.encode(&Sha256::digest(&data)),"data_base64":BASE64.encode(&data),"window_allowed":effect==RuleEffect::Approve && matched_host_rule && matches!(key.approver, ApproverSpec::LocalPresence {}),"use":purpose});
     let canonical = Zeroizing::new(serde_jcs::to_vec(&review_request).map_err(|_| denied())?);
     let parameter_hash: [u8; 32] = Sha256::digest(&*canonical).into();
     let rule = rule.unwrap_or_else(|| {
@@ -391,10 +467,30 @@ async fn sign(
         ctx.authority.append_audit(started).await?;
         return Err(BrokerError::Denied("ssh-host-denied"));
     }
-    let deadline =
-        (Instant::now() + Duration::from_secs(600)).min(active.monotonic_deadline().into_std());
+    let budget_started = session
+        .budgets
+        .get(&key.name)
+        .map_or_else(Instant::now, |(start, _)| *start);
+    let mut deadline = (budget_started
+        + Duration::from_secs(u64::from(key.session_budget.max_seconds)))
+    .min(Instant::now() + Duration::from_secs(600))
+    .min(active.monotonic_deadline().into_std());
+    if session
+        .budgets
+        .get(&key.name)
+        .is_some_and(|(_, used)| *used >= key.session_budget.max_signatures)
+        || Instant::now() >= deadline
+    {
+        return Err(BrokerError::Denied("ssh-session-budget-exceeded"));
+    }
+    let mut approvals = Vec::new();
+    let mut pending = PendingApproval {
+        calls: Arc::clone(&ctx.local_calls),
+        id: None,
+    };
     if effect == RuleEffect::Approve {
-        let window = if matched_host_rule {
+        let window = if matched_host_rule && matches!(key.approver, ApproverSpec::LocalPresence {})
+        {
             ctx.local_calls.window(
                 &HEXLOWER.encode(&digest),
                 &key.name,
@@ -414,7 +510,7 @@ async fn sign(
                 approval_id: Some(window.approval_id),
                 approver_id: None,
             });
-            ctx.authority.append_audit(accepted).await?;
+            approvals.push(accepted);
         } else {
             let approval_id = crate::random_id(ApprovalRequestId::from_random_bytes)?;
             let status = ctx.authority.status().await?;
@@ -439,10 +535,13 @@ async fn sign(
                 policy_sha256: policy_sha256.clone(),
                 policy_rule_id: rule,
                 mode: ApprovalMode::OneTime,
-                approver: ApproverSpec::LocalPresence {},
+                approver: key.approver.clone(),
                 max_uses: 1,
                 created_at_ms: now.as_unix_ms(),
-                max_expires_at_ms: (now.as_unix_ms() + 600_000)
+                max_expires_at_ms: (now.as_unix_ms()
+                    + deadline
+                        .saturating_duration_since(Instant::now())
+                        .as_millis() as i64)
                     .min(active.snapshot().expires_at_ms()),
             };
             let review = Zeroizing::new(serde_jcs::to_vec(&serde_json::json!({"record_type":"rekey.approval.local-review.v1","challenge":challenge,"ssh":review_request})).map_err(|_| denied())?);
@@ -459,11 +558,13 @@ async fn sign(
                     deadline,
                     state: LocalApprovalState::Pending,
                     approval_id: None,
+                    external_evidence: Vec::new(),
                     reserved: false,
                 },
                 now.as_unix_ms(),
             )?;
             let id = local.challenge.approval_request_id;
+            pending.id = Some(id);
             if id == approval_id {
                 let mut requested = started.clone();
                 requested.event_type = event_type::APPROVAL_REQUESTED;
@@ -476,7 +577,13 @@ async fn sign(
                 ctx.authority.append_audit(requested).await?;
             }
             loop {
-                let response = ctx.local_calls.await_state(id, caller, 120).await?;
+                let response = tokio::select! {
+                    biased;
+                    _ = crate::executor::wait_for_cancel(cancel.clone()) => return Err(BrokerError::Denied("ssh-peer-closed")),
+                    _ = crate::executor::wait_for_cancel(ctx.lifecycle.subscribe_cancel()) => return Err(BrokerError::Denied("ssh-draining")),
+                    _ = tokio::time::sleep_until(deadline.into()) => return Err(BrokerError::Denied("ssh-approval-expired")),
+                    response = ctx.local_calls.await_state(id, caller, 120) => response?,
+                };
                 match response.state {
                     LocalApprovalState::Pending if Instant::now() < deadline => continue,
                     LocalApprovalState::Approved => break,
@@ -498,7 +605,17 @@ async fn sign(
                 approval_id: consumed.approval_id,
                 approver_id: None,
             });
-            ctx.authority.append_audit(accepted).await?;
+            if consumed.external_evidence.is_empty() {
+                approvals.push(accepted);
+            } else {
+                deadline = deadline.min(consumed.deadline);
+                for evidence in consumed.external_evidence {
+                    let mut accepted = accepted.clone();
+                    accepted.reason_code = "ed25519".into();
+                    accepted.approval = Some(evidence);
+                    approvals.push(accepted);
+                }
+            }
         }
     }
     let _owner = ctx
@@ -515,14 +632,37 @@ async fn sign(
     if current.snapshot().digest() != digest || current.is_expired(crate::now_ts()?) {
         return Err(BrokerError::Denied("ssh-policy-changed"));
     }
+    if *cancel.borrow() || !ctx.lifecycle.try_begin_remote_effect() || Instant::now() >= deadline {
+        return Err(BrokerError::Denied("ssh-peer-closed"));
+    }
+    let entry = session
+        .budgets
+        .entry(key.name.clone())
+        .or_insert((budget_started, 0));
+    entry.1 += 1;
     let _permit = ctx.lifecycle.local_permit();
-    ctx.authority
-        .ssh_sign(key.credential_id, public, data, started, deadline)
-        .await
-        .map_err(Into::into)
+    // Once queued, retain both permit and receiver through durable terminal completion.
+    let result = ctx
+        .authority
+        .ssh_sign(
+            key.credential_id,
+            public,
+            data,
+            started,
+            approvals,
+            deadline,
+        )
+        .await;
+    pending.id = None;
+    result.map_err(Into::into)
 }
 
-async fn process(ctx: &Arc<BrokerCtx>, session: &mut AgentSession, packet: &[u8]) -> Vec<u8> {
+async fn process(
+    ctx: &Arc<BrokerCtx>,
+    session: &mut AgentSession,
+    packet: &[u8],
+    cancel: watch::Receiver<bool>,
+) -> Vec<u8> {
     let Some((&message, contents)) = packet.split_first() else {
         return vec![FAILURE];
     };
@@ -553,7 +693,7 @@ async fn process(ctx: &Arc<BrokerCtx>, session: &mut AgentSession, packet: &[u8]
             }
             .await
         }
-        13 => sign(ctx, session, contents).await.map(|sig| {
+        13 => sign(ctx, session, contents, cancel).await.map(|sig| {
             let mut out = vec![14];
             string(&mut out, &sig);
             out
@@ -576,38 +716,110 @@ async fn process(ctx: &Arc<BrokerCtx>, session: &mut AgentSession, packet: &[u8]
     })
 }
 
+async fn write_live(
+    writer: &mut tokio::net::unix::OwnedWriteHalf,
+    ctx: &BrokerCtx,
+    digest: [u8; 32],
+    response: &[u8],
+    deadline: tokio::time::Instant,
+) -> Result<(), BrokerError> {
+    use std::future::Future;
+    use std::task::Poll;
+    use tokio::io::AsyncWrite;
+    let mut frame = Zeroizing::new(Vec::with_capacity(response.len() + 4));
+    frame.extend_from_slice(&(response.len() as u32).to_be_bytes());
+    frame.extend_from_slice(response);
+    let mut written = 0;
+    while written < frame.len() {
+        let mut gate = None;
+        let count = tokio::time::timeout_at(
+            deadline,
+            std::future::poll_fn(|cx| {
+                if gate.is_none() {
+                    gate = Some(Box::pin(async {
+                        let owner = ctx.lifecycle.coordinate_until(deadline).await?;
+                        ctx.lifecycle.reject_if_not_running()?;
+                        if !ctx.lifecycle.try_begin_remote_effect() {
+                            return Err(denied());
+                        }
+                        let policy = tokio::time::timeout_at(deadline, ctx.policy.read())
+                            .await
+                            .map_err(|_| denied())?;
+                        let now = crate::now_ts()?;
+                        if policy
+                            .as_ref()
+                            .is_none_or(|p| p.snapshot().digest() != digest || p.is_expired(now))
+                        {
+                            return Err(denied());
+                        }
+                        Ok::<_, BrokerError>((owner, policy))
+                    }));
+                }
+                let live = match gate.as_mut().expect("live output gate").as_mut().poll(cx) {
+                    Poll::Pending => return Poll::Pending,
+                    Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                    Poll::Ready(Ok(live)) => live,
+                };
+                gate = None;
+                let output = std::pin::Pin::new(&mut *writer).poll_write(cx, &frame[written..]);
+                drop(live);
+                output.map(|r| r.map_err(|_| denied()))
+            }),
+        )
+        .await
+        .map_err(|_| denied())??;
+        if count == 0 {
+            return Err(denied());
+        }
+        written += count;
+    }
+    Ok(())
+}
+
 pub(crate) async fn handle_connection(
-    mut stream: UnixStream,
+    stream: UnixStream,
     ctx: Arc<BrokerCtx>,
     mut shutdown: watch::Receiver<bool>,
 ) {
+    let (mut reader, mut writer) = stream.into_split();
     let mut session = AgentSession::default();
     loop {
         let packet = tokio::select! {
-            _=shutdown.changed()=>break,
+            biased;
+            _=crate::executor::wait_for_cancel(shutdown.clone())=>break,
             packet=async {
-                let length=stream.read_u32().await? as usize;
+                let length=reader.read_u32().await? as usize;
                 if length==0 || length>MAX_PACKET { return Err(std::io::Error::from(std::io::ErrorKind::InvalidData)); }
                 let mut packet=Zeroizing::new(vec![0;length]);
-                stream.read_exact(&mut packet).await?;
+                reader.read_exact(&mut packet).await?;
                 Ok::<_,std::io::Error>(packet)
             }=>match packet {Ok(packet)=>packet,Err(_)=>break},
         };
+        let active = ctx.policy.read().await.clone();
+        let Some(active) = active else {
+            break;
+        };
+        let (cancel, receiver) = watch::channel(false);
+        let operation = process(&ctx, &mut session, &packet, receiver);
+        tokio::pin!(operation);
         let response = tokio::select! {
-            _=shutdown.changed()=>break,
-            response=process(&ctx,&mut session,&packet)=>response,
+            biased;
+            _=shutdown.changed()=>{ cancel.send_replace(true); let _ = operation.await; break; },
+            _=reader.read_u8()=>{ cancel.send_replace(true); let _ = operation.await; break; },
+            response=&mut operation=>response,
         };
         if response.len() > MAX_PACKET {
             break;
         }
+        let deadline = (tokio::time::Instant::now() + Duration::from_secs(10))
+            .min(active.monotonic_deadline());
         let written = tokio::select! {
+            biased;
             _=shutdown.changed()=>break,
-            written=tokio::time::timeout(Duration::from_secs(10),async {
-                stream.write_u32(response.len() as u32).await?;
-                stream.write_all(&response).await
-            })=>written,
+            _=reader.read_u8()=>break,
+            written=write_live(&mut writer, &ctx, active.snapshot().digest(), &response, deadline)=>written,
         };
-        if !matches!(written, Ok(Ok(()))) {
+        if written.is_err() {
             break;
         }
     }
@@ -734,6 +946,11 @@ mod tests {
             credential_id: CredentialId::new_random(),
             user_public_key: BASE64.encode(&public),
             git_signing: RuleEffect::Allow,
+            approver: rekey_domain::authorization::ApproverSpec::LocalPresence {},
+            session_budget: rekey_domain::connection::SshSessionBudget {
+                max_signatures: 100,
+                max_seconds: 600,
+            },
             hosts: vec![
                 rekey_domain::connection::SshHostRule {
                     host: "denied.example".into(),

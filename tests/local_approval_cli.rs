@@ -188,7 +188,7 @@ async fn real_cli_local_approval_preserves_last_use_and_executes_only_once() {
         .as_millis() as i64
         + 600_000;
     let mut bundle = json!({"format_version":1,"signer_id":signer_id,"snapshot":{
-        "format_version":7,"version":1,"expires_at_ms":expires,"approvers":[],"connections":[], "ssh_keys":[], "profiles": [], "workload_identities":[],
+        "format_version":8,"version":1,"expires_at_ms":expires,"approvers":[],"connections":[], "ssh_keys":[], "profiles": [], "workload_identities":[],
         "bindings":[{"action_id":action["id"],"version":action["version"],"resource":resource,
             "parameter_schema_id":"local-cli/v1","parameter_schema":{"type":"object",
                 "required":["message"],"properties":{"message":{"type":"string"}},"additionalProperties":false}}],

@@ -177,6 +177,7 @@ async fn software_keys_sign_inside_authority_and_never_prepare_as_http_credentia
                 identity.public_key.clone(),
                 b"synthetic sign input".to_vec(),
                 draft.clone(),
+                Vec::new(),
                 Instant::now() + Duration::from_secs(5),
             )
             .await
@@ -204,6 +205,7 @@ async fn software_keys_sign_inside_authority_and_never_prepare_as_http_credentia
                 b"different public key".to_vec(),
                 b"synthetic sign input".to_vec(),
                 started(identity.credential.id),
+                Vec::new(),
                 Instant::now() + Duration::from_secs(5),
             )
             .await;
@@ -235,6 +237,7 @@ async fn terminal_audit_failure_withholds_signature_and_faults_worker() {
             identity.public_key,
             b"synthetic input".to_vec(),
             started(identity.credential.id),
+            Vec::new(),
             Instant::now() + Duration::from_secs(5),
         )
         .await;

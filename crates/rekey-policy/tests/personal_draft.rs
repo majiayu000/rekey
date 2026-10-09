@@ -171,7 +171,7 @@ fn low_and_medium_actions_produce_deterministic_full_policy_that_p256_verifies()
     assert_eq!(original, serde_json::to_value(&actions).unwrap());
     let snapshot: Value = serde_json::from_slice(draft.canonical_snapshot()).unwrap();
     assert_eq!(snapshot["version"], 1);
-    assert_eq!(snapshot["format_version"], 7);
+    assert_eq!(snapshot["format_version"], 8);
     assert_eq!(snapshot["profiles"][0]["principal_id"], json!(principal));
     assert_eq!(snapshot["approvers"], json!([]));
     assert_eq!(snapshot["workload_identities"], json!([]));

@@ -60,7 +60,7 @@ pub async fn activate_test_policy(
 ) {
     let resource = serde_json::json!({"type": "test-action", "id": action_id});
     let snapshot = serde_json::json!({
-        "format_version": 7,
+        "format_version": 8,
         "version": broker.policy_version.fetch_add(1, Ordering::Relaxed),
         "expires_at_ms": 4_102_444_800_000_i64,
         "approvers": [],
@@ -107,7 +107,7 @@ pub async fn activate_approval_policy(
             .insert("max_window_ms".to_owned(), max_window_ms.into());
     }
     let snapshot = serde_json::json!({
-        "format_version": 7,
+        "format_version": 8,
         "version": broker.policy_version.fetch_add(1, Ordering::Relaxed),
         "expires_at_ms": 4_102_444_800_000_i64,
         "approvers": policy.approvers.iter().map(|(id, key)| serde_json::json!({
@@ -161,7 +161,7 @@ pub async fn activate_workload_policy(
         })
         .collect::<Vec<_>>();
     let snapshot = serde_json::json!({
-        "format_version": 7,
+        "format_version": 8,
         "version": broker.policy_version.fetch_add(1, Ordering::Relaxed),
         "expires_at_ms": 4_102_444_800_000_i64,
         "approvers": [],

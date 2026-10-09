@@ -279,6 +279,21 @@ pub fn approval_get(state_dir: &Path, approval_request_id: &str) -> Result<(), C
     print_json::<ipc::SignedApprovalChallenge>(&meta)
 }
 
+pub fn approval_submit(state_dir: &Path, id: ApprovalRequestId) -> Result<(), CliError> {
+    let body = read_bounded(
+        &mut std::io::stdin().lock(),
+        ipc::METADATA_MAX_BYTES as usize,
+        "approval grants",
+    )?;
+    let metadata = serde_json::to_vec(&ipc::ApprovalGetMeta {
+        approval_request_id: id,
+    })
+    .map_err(|_| CliError::local("USAGE", "cannot encode approval request"))?;
+    let (meta, _) =
+        admin(state_dir)?.call(admin_msg::APPROVAL_EXTERNAL_SUBMIT, &metadata, &body)?;
+    print_json::<ipc::LocalApprovalStateResponse>(&meta)
+}
+
 #[derive(Serialize)]
 struct LocalReviewOutput<'a> {
     metadata: ipc::LocalApprovalReviewResponse,

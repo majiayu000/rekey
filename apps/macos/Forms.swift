@@ -572,7 +572,9 @@ struct ApprovalDetailView: View {
                         row("创建时间", "\(displayDate(challenge.created_at_ms)) · \(challenge.created_at_ms) ms")
                         row("有效期至", "\(displayDate(challenge.max_expires_at_ms)) · \(challenge.max_expires_at_ms) ms")
                     }
-                    if case .ed25519 = challenge.approver {
+                    if challenge.schema_id == "rekey.ssh-sign.v1" {
+                        Text("此 SSH 请求需要独立签名审批。请使用 rekey approval review 获取完整签名内容，在 rekey-approval-sign 中核对后，通过 rekey approval submit 提交所需签名。").font(.system(size:12)).foregroundStyle(.secondary)
+                    } else if case .ed25519 = challenge.approver {
                         NativeApprovalForm(details: details).environmentObject(model)
                     } else {
                         Text("此请求需要本机系统认证，当前暂不可批准。").font(.system(size: 12)).foregroundStyle(.secondary)
@@ -715,6 +717,7 @@ private struct SSHKeySummary:View {
             Text("SSH · "+key.name).font(.headline)
             Text(key.publicKeyText).font(.system(size:11,design:.monospaced)).textSelection(.enabled)
             Text("git 签名："+key.git_signing+"；未登记或未绑定 host：审批").font(.caption)
+            Text("每个连接最多 \(key.session_budget.max_signatures) 次签名，有效 \(key.session_budget.max_seconds) 秒；"+(key.approver.kind=="ed25519" ? "需 \(key.approver.threshold ?? 0) 名签名审批人":"本机确认")).font(.caption)
             ForEach(key.hosts.indices,id:\.self){i in
                 Text(key.hosts[i].host+" · "+key.hosts[i].effect+" · rule "+key.hosts[i].rule_id).font(.caption)
                 Text(key.hosts[i].host_key).font(.system(size:11,design:.monospaced)).textSelection(.enabled)

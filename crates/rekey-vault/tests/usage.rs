@@ -691,7 +691,7 @@ async fn format_24_state_and_backup_are_rejected_without_migration() {
     finish(h, j).await;
     for file in [&archive, &paths::vault_db(&v.state_dir)] {
         let db = Connection::open(file).unwrap();
-        db.execute_batch("PRAGMA writable_schema=ON; UPDATE sqlite_schema SET sql=replace(sql,'format_version = 26','format_version = 24') WHERE name='vault_header'; PRAGMA writable_schema=OFF;").unwrap();
+        db.execute_batch("PRAGMA writable_schema=ON; UPDATE sqlite_schema SET sql=replace(sql,'format_version = 27','format_version = 24') WHERE name='vault_header'; PRAGMA writable_schema=OFF;").unwrap();
         drop(db);
         let db = Connection::open(file).unwrap();
         db.execute("UPDATE vault_header SET format_version=24", [])

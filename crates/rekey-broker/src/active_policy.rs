@@ -106,7 +106,7 @@ mod tests {
     fn snapshot(expires_at_ms: i64) -> ValidatedSnapshot {
         rekey_policy::parse_and_validate_snapshot(
             &serde_json::to_vec(&json!({
-                "format_version": 7,
+                "format_version": 8,
                 "version": PolicyVersion::new(1).unwrap(),
                 "expires_at_ms": expires_at_ms,
                 "approvers": [],

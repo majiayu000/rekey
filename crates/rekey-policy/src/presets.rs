@@ -357,7 +357,7 @@ pub(crate) fn validate_git_connection(
     }
     let preset = github_git_preset()?;
     if connection.origin != preset.origin
-        || connection.auth != preset.auth
+        || connection.auth != preset.auth.into()
         || connection.operations != preset.operations
         || ["owner", "repo"].iter().any(|key| {
             connection.bindings.get(*key).is_none_or(|values| {
@@ -709,7 +709,7 @@ pub(crate) fn validate_oauth_connection(
     }
     let preset = builtin_preset(&connection.preset)?;
     if connection.origin != preset.origin
-        || connection.auth != preset.auth
+        || connection.auth != preset.auth.into()
         || connection
             .operations
             .iter()

@@ -253,7 +253,7 @@ mod tests {
             }
             let now = crate::now_ts().unwrap();
             let unsigned_snapshot = json!({
-                "format_version":7,"version":1,"expires_at_ms":now.as_unix_ms()+60000,"approvers":approvers,"connections":[], "ssh_keys":[], "profiles":[profile],"workload_identities":[],
+                "format_version":8,"version":1,"expires_at_ms":now.as_unix_ms()+60000,"approvers":approvers,"connections":[], "ssh_keys":[], "profiles":[profile],"workload_identities":[],
                 "bindings":[{"action_id":action.id,"version":action.version,"resource":{"type":"llm","id":action.id},"parameter_schema_id":"llm/v1","parameter_schema":{}}],"rules":[rule]
             });
             let snapshot = rekey_policy::parse_and_validate_snapshot(

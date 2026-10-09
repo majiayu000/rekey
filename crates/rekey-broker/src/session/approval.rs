@@ -253,6 +253,7 @@ impl SessionRegistry {
         Ok(out)
     }
 
+    #[cfg(any(feature = "lab", test))]
     pub(crate) fn approval_challenge(
         &self,
         approval_request_id: ApprovalRequestId,

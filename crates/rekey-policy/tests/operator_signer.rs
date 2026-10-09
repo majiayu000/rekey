@@ -33,7 +33,7 @@ impl Fixture {
         fs::write(
             &draft,
             serde_json::to_vec(&json!({
-                "format_version": 7, "connections": [], "ssh_keys": [], "derived_credentials": [], "profiles": [], "version": 1, "expires_at_ms": 4102444800000i64,
+                "format_version": 8, "connections": [], "ssh_keys": [], "derived_credentials": [], "profiles": [], "version": 1, "expires_at_ms": 4102444800000i64,
                 "approvers": [], "workload_identities": [], "bindings": [], "rules": []
             }))
             .unwrap(),

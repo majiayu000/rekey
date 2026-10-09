@@ -156,8 +156,8 @@ async fn openssh_git_push_uses_rekey_generated_key_and_cleans_remote_resources()
         .decode(host_blob.as_bytes())
         .map_err(|_| "invalid public host key")?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as i64;
-    common::policy::activate_snapshot(&broker,json!({"format_version":7,"version":1,"expires_at_ms":now+600000,"approvers":[],"connections":[],"derived_credentials":[],"profiles":[],"workload_identities":[],"bindings":[],"rules":[],
-        "ssh_keys":[{"name":"live-github-ssh","credential_id":identity["credential"]["id"],"user_public_key":public,"hosts":[{"host":"ssh.github.com","host_key":host_blob,"rule_id":PolicyRuleId::new_random(),"effect":"allow"}],"git_signing":"deny"}]})).await;
+    common::policy::activate_snapshot(&broker,json!({"format_version":8,"version":1,"expires_at_ms":now+600000,"approvers":[],"connections":[],"derived_credentials":[],"profiles":[],"workload_identities":[],"bindings":[],"rules":[],
+        "ssh_keys":[{"name":"live-github-ssh","credential_id":identity["credential"]["id"],"user_public_key":public,"hosts":[{"host":"ssh.github.com","host_key":host_blob,"rule_id":PolicyRuleId::new_random(),"effect":"allow"}],"git_signing":"deny","approver":{"kind":"local-presence"},"session_budget":{"max_signatures":100,"max_seconds":600}}]})).await;
 
     // Replace the synthetic fixture password before the public key gains live permissions.
     let mut random = Zeroizing::new([0u8; 32]);

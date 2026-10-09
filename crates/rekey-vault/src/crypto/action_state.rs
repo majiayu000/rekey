@@ -27,39 +27,40 @@ fn optional(out: &mut Vec<u8>, value: &Option<String>) {
 // Raw stored strings are authenticated verbatim: parsing/normalization must not
 // discard unknown JSON fields, duplicate keys, whitespace or lifecycle state.
 // Only the nonce and seal itself are omitted. Lengths and integers are big endian.
-fn canonical(vault_id: VaultId, record: &ActionRecord) -> Vec<u8> {
-    let mut out = Vec::new();
+fn canonical(vault_id: VaultId, record: &ActionRecord, out: &mut Vec<u8>) {
+    out.clear();
     out.extend_from_slice(b"RKAS\0\x01");
     out.extend_from_slice(vault_id.as_bytes());
     out.extend_from_slice(record.action_id.as_bytes());
     out.extend_from_slice(&record.version.to_be_bytes());
-    bytes(&mut out, record.name.as_bytes());
-    bytes(&mut out, record.state.as_str().as_bytes());
+    bytes(out, record.name.as_bytes());
+    bytes(out, record.state.as_str().as_bytes());
     out.extend_from_slice(record.credential_id.as_bytes());
-    bytes(&mut out, record.origin.as_bytes());
-    bytes(&mut out, record.method.as_bytes());
-    bytes(&mut out, record.target_json.as_bytes());
-    bytes(&mut out, record.auth_header.as_bytes());
-    bytes(&mut out, record.auth_prefix.as_bytes());
+    bytes(out, record.origin.as_bytes());
+    bytes(out, record.method.as_bytes());
+    bytes(out, record.target_json.as_bytes());
+    bytes(out, record.auth_header.as_bytes());
+    bytes(out, record.auth_prefix.as_bytes());
     out.extend_from_slice(&record.request_max_bytes.to_be_bytes());
-    bytes(&mut out, record.allowed_extra_headers_json.as_bytes());
+    bytes(out, record.allowed_extra_headers_json.as_bytes());
     out.extend_from_slice(&record.response_max_bytes.to_be_bytes());
-    bytes(&mut out, record.allowed_response_headers_json.as_bytes());
+    bytes(out, record.allowed_response_headers_json.as_bytes());
     out.extend_from_slice(&record.timeout_ms.to_be_bytes());
     out.extend_from_slice(&record.created_at_ms.to_be_bytes());
-    optional(&mut out, &record.native_plugin_json);
-    optional(&mut out, &record.text_stream_json);
-    out
+    optional(out, &record.native_plugin_json);
+    optional(out, &record.text_stream_json);
 }
 
 fn aad(vault_id: VaultId, record: &ActionRecord) -> [u8; 84] {
+    let mut raw = Vec::new();
+    canonical(vault_id, record, &mut raw);
     AadV1 {
         purpose: AadPurpose::ActionState,
         vault_id,
         object_id: *record.action_id.as_bytes(),
         object_version: record.version,
         credential_kind: 0,
-        constraints_hash: Sha256::digest(canonical(vault_id, record)).into(),
+        constraints_hash: Sha256::digest(raw).into(),
     }
     .encode()
 }
@@ -95,4 +96,29 @@ pub fn verify(
         return Err(AuthorityError::StorageIntegrityFailed);
     }
     Ok(())
+}
+
+// Complete membership and raw seals are bound to the authenticated generation.
+const COLLECTION_DOMAIN: &[u8] = b"RKHTTPACTIONSET\0\x01";
+pub(crate) fn empty_collection_digest() -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(COLLECTION_DOMAIN);
+    hash.update(0u64.to_be_bytes());
+    hash.finalize().into()
+}
+pub(crate) fn collection_digest(vault_id: VaultId, actions: &[ActionRecord]) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(COLLECTION_DOMAIN);
+    let mut ordered: Vec<_> = actions.iter().collect();
+    ordered.sort_by_key(|r| (r.action_id, r.version));
+    hash.update((ordered.len() as u64).to_be_bytes());
+    let mut raw = Vec::new();
+    for record in ordered {
+        canonical(vault_id, record, &mut raw);
+        hash.update((raw.len() as u64).to_be_bytes());
+        hash.update(&raw);
+        hash.update(record.seal_nonce);
+        hash.update(record.seal_ciphertext);
+    }
+    hash.finalize().into()
 }

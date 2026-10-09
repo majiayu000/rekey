@@ -1007,6 +1007,12 @@ fn boundary(
 ) -> Option<usize> {
     while *scan - base < bytes.len() {
         let offset = *scan - base;
+        let Some(skip) = memchr::memchr2(b'\r', b'\n', &bytes[offset..]) else {
+            *scan = base + bytes.len();
+            return None;
+        };
+        *scan += skip;
+        let offset = *scan - base;
         let width = match bytes[offset] {
             b'\n' => 1,
             b'\r' if offset + 1 == bytes.len() && !eof => return None,
@@ -1036,8 +1042,8 @@ fn observe_frame(
 ) -> Result<(), BrokerError> {
     let text = std::str::from_utf8(bytes).map_err(|_| invalid())?;
     let mut name = None;
-    let mut data = Zeroizing::new(String::new());
-    let mut data_seen = false;
+    let mut data = None;
+    let mut multiline = Zeroizing::new(String::new());
     for line in text.split(['\r', '\n']) {
         if line.is_empty() || line.starts_with(':') {
             continue;
@@ -1048,19 +1054,28 @@ fn observe_frame(
             "event" if name.replace(value).is_some() => return Err(invalid()),
             "event" => {}
             "data" => {
-                if data_seen {
-                    data.push('\n');
+                if let Some(first) = data {
+                    if multiline.is_empty() {
+                        multiline.push_str(first);
+                    }
+                    multiline.push('\n');
+                    multiline.push_str(value);
+                } else {
+                    data = Some(value);
                 }
-                data.push_str(value);
-                data_seen = true;
             }
             _ => {} // SSE id/retry/unknown fields are preserved, never interpreted as authorization.
         }
     }
-    if !data_seen {
+    let Some(data) = data else {
         return Ok(());
-    }
-    if data.as_str() == "[DONE]" {
+    };
+    let data = if multiline.is_empty() {
+        data
+    } else {
+        multiline.as_str()
+    };
+    if data == "[DONE]" {
         return observer.done(start);
     }
     let value = parse_profile_llm_event(data.as_bytes()).map_err(|_| invalid())?;
@@ -1324,6 +1339,157 @@ mod tests {
         raw.push_str("\n\n");
         assert_eq!(raw.len(), LIMIT);
         raw
+    }
+
+    // Frozen pre-optimization byte loop; never delegates to boundary.
+    fn boundary_oracle(
+        bytes: &[u8],
+        base: usize,
+        scan: &mut usize,
+        line: &mut usize,
+        eof: bool,
+    ) -> Option<usize> {
+        while *scan - base < bytes.len() {
+            let offset = *scan - base;
+            let width = match bytes[offset] {
+                b'\n' => 1,
+                b'\r' if offset + 1 == bytes.len() && !eof => return None,
+                b'\r' if bytes.get(offset + 1) == Some(&b'\n') => 2,
+                b'\r' => 1,
+                _ => {
+                    *scan += 1;
+                    continue;
+                }
+            };
+            let empty = *line == *scan;
+            *scan += width;
+            *line = *scan;
+            if empty {
+                return Some(*scan);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn sse_boundary_matches_byte_oracle_for_all_short_chunks_and_reclaimed_prefixes() {
+        for len in 0..=6u32 {
+            for word in 0..3usize.pow(len) {
+                let mut digits = word;
+                let input: Vec<_> = (0..len)
+                    .map(|_| {
+                        let byte = [b'a', b'\r', b'\n'][digits % 3];
+                        digits /= 3;
+                        byte
+                    })
+                    .collect();
+                // Every partition of the input, plus empty reads and final EOF.
+                for splits in 0..1usize << input.len().saturating_sub(1) {
+                    for initial_base in [0, 37] {
+                        for compact in [false, true] {
+                            let mut cuts = vec![(0, false)];
+                            for end in 1..input.len() {
+                                if splits & (1 << (end - 1)) != 0 {
+                                    cuts.push((end, false));
+                                }
+                            }
+                            cuts.push((input.len(), false));
+                            cuts.push((input.len(), true));
+                            let mut bytes = Vec::new();
+                            let mut base = initial_base;
+                            let (mut scan, mut line) = (base, base);
+                            let (mut old_scan, mut old_line) = (base, base);
+                            let mut previous = 0;
+                            for (end, eof) in cuts {
+                                bytes.extend_from_slice(&input[previous..end]);
+                                previous = end;
+                                loop {
+                                    let actual = boundary(&bytes, base, &mut scan, &mut line, eof);
+                                    let expected = boundary_oracle(
+                                        &bytes,
+                                        base,
+                                        &mut old_scan,
+                                        &mut old_line,
+                                        eof,
+                                    );
+                                    assert_eq!(
+                                        (actual, scan, line),
+                                        (expected, old_scan, old_line),
+                                        "input={input:?} splits={splits} base={base} eof={eof}"
+                                    );
+                                    let Some(frame_end) = actual else {
+                                        break;
+                                    };
+                                    if compact {
+                                        bytes.drain(..frame_end - base);
+                                        base = frame_end;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sse_boundary_keeps_nonempty_line_and_split_cr_pending_until_eof() {
+        let (mut scan, mut line) = (40, 40);
+        assert_eq!(boundary(b"aaaa", 40, &mut scan, &mut line, false), None);
+        assert_eq!((scan, line), (44, 40));
+        assert_eq!(boundary(b"aaaa\r", 40, &mut scan, &mut line, false), None);
+        assert_eq!((scan, line), (44, 40));
+        assert_eq!(boundary(b"aaaa\r\n", 40, &mut scan, &mut line, false), None);
+        assert_eq!((scan, line), (46, 46));
+        assert_eq!(
+            boundary(b"aaaa\r\n\r", 40, &mut scan, &mut line, false),
+            None
+        );
+        assert_eq!((scan, line), (46, 46));
+        assert_eq!(
+            boundary(b"aaaa\r\n\r", 40, &mut scan, &mut line, true),
+            Some(47)
+        );
+        assert_eq!((scan, line), (47, 47));
+        let (mut scan, mut line) = (40, 40);
+        assert_eq!(
+            boundary(b"a\r\nb\rc\n\n", 40, &mut scan, &mut line, false),
+            Some(48)
+        );
+        assert_eq!((scan, line), (48, 48));
+    }
+
+    #[tokio::test]
+    async fn sse_boundary_matches_byte_oracle_after_actual_sealer_compaction() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut raw = Sealer::new(&[], 65536).unwrap();
+        let (mut scan, mut line) = (0, 0);
+        let (mut old_scan, mut old_line) = (0, 0);
+        for (chunk, eof) in [
+            (&b":prefix\r\n\r\nbody\r"[..], false),
+            (&b"\n\r\nnext\r"[..], false),
+            (&b""[..], true),
+        ] {
+            raw.push(chunk, &[]).unwrap();
+            loop {
+                let actual = boundary(raw.bytes(), raw.base(), &mut scan, &mut line, eof);
+                let expected =
+                    boundary_oracle(raw.bytes(), raw.base(), &mut old_scan, &mut old_line, eof);
+                assert_eq!((actual, scan, line), (expected, old_scan, old_line));
+                let Some(end) = actual else {
+                    break;
+                };
+                raw.release_through(end, &tx).await.unwrap();
+                drain(&mut rx);
+                raw.compact(end);
+                assert!(raw.base() > 0);
+            }
+            if !eof {
+                assert_eq!(scan, raw.end() - 1);
+            }
+        }
+        assert_eq!((scan, line), (raw.end(), raw.end()));
     }
 
     #[test]
@@ -1933,6 +2099,55 @@ mod tests {
         }
     }
     #[tokio::test]
+    async fn long_sse_data_split_crlf_preserves_bytes_and_withholds_terminal() {
+        let content = "界".repeat(TEXT_STREAM_CHUNK_MAX_BYTES / 2);
+        let data = chat(&[&content], json!(7)).replace('\n', "\r\n");
+        let first_cr = data.find("\r\n").unwrap();
+        let prefix_len = TEXT_STREAM_CHUNK_MAX_BYTES
+            + (TEXT_STREAM_CHUNK_MAX_BYTES - 1 - first_cr % TEXT_STREAM_CHUNK_MAX_BYTES);
+        let raw = format!(":{}\r\n\r\n{data}", "z".repeat(prefix_len - 5));
+        let limit = 65536;
+        assert!(first_cr > TEXT_STREAM_CHUNK_MAX_BYTES);
+        assert!(raw.len() <= limit);
+        let cr = prefix_len + first_cr;
+        assert_eq!(
+            cr % TEXT_STREAM_CHUNK_MAX_BYTES,
+            TEXT_STREAM_CHUNK_MAX_BYTES - 1
+        );
+        assert_eq!(&raw.as_bytes()[cr..cr + 2], b"\r\n");
+        let terminal = raw.find("data: [DONE]").unwrap();
+        for split in [
+            TEXT_STREAM_CHUNK_MAX_BYTES - 1,
+            TEXT_STREAM_CHUNK_MAX_BYTES,
+            TEXT_STREAM_CHUNK_MAX_BYTES + 1,
+            raw.len(),
+        ] {
+            let (tx, mut rx) = mpsc::channel(4096);
+            let mut complete = run(
+                response(raw.as_bytes(), split, false),
+                vec![b"synthetic-secret-1234".to_vec().into()],
+                limit,
+                &tx,
+                ProfileLlmProtocol::OpenAiChat,
+            )
+            .await
+            .unwrap();
+            let mut out = drain(&mut rx);
+            assert!(!out.is_empty());
+            assert!(
+                out.len() <= terminal,
+                "terminal bytes precede explicit release"
+            );
+            assert_eq!(out.as_slice(), &raw.as_bytes()[..out.len()]);
+            assert_eq!(complete.output_tokens(), Some(7));
+            assert_eq!(complete.status(), TextStreamStatus::Completed);
+            complete.release(&tx).await.unwrap();
+            out.extend(drain(&mut rx));
+            assert_eq!(out, raw.as_bytes());
+        }
+    }
+
+    #[tokio::test]
     async fn secret_split_across_semantic_deltas_never_releases_first_fragment() {
         let secret = b"synthetic-secret-1234";
         for (protocol, make) in [
@@ -2079,6 +2294,148 @@ mod tests {
             .is_err()
         );
     }
+    #[tokio::test]
+    async fn sse_late_duplicate_events_never_release_the_invalid_frame() {
+        let good = chat(&["safe"], json!(7));
+        for (raw, first_frame_invalid) in [
+            (
+                good.replacen("\n\n", "\nevent: chunk\nevent: chunk\n\n", 1),
+                true,
+            ),
+            (
+                good.replace(
+                    "data: [DONE]\n\n",
+                    "data: [DONE]\nevent: chunk\nevent: chunk\n\n",
+                ),
+                false,
+            ),
+        ] {
+            for split in [1, 7, raw.len()] {
+                let (tx, mut rx) = mpsc::channel(4096);
+                assert!(matches!(
+                    run(
+                        response(raw.as_bytes(), split, false),
+                        vec![],
+                        65536,
+                        &tx,
+                        ProfileLlmProtocol::OpenAiChat
+                    )
+                    .await,
+                    Err(BrokerError::Upstream("invalid-stream"))
+                ));
+                let out = drain(&mut rx);
+                assert!(!String::from_utf8_lossy(&out).contains("[DONE]"));
+                if first_frame_invalid {
+                    assert!(out.is_empty());
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn sse_empty_fields_and_multiline_join_preserve_bytes_and_refusals() {
+        let original = anthropic(&["safe"], json!(7));
+        for body in [
+            original.clone(),
+            original.replace("data: {", "data:\ndata: {"),
+            original.replace("data: {", "data\ndata: {"),
+            original.replace("}\n\n", "}\ndata:\n\n"),
+            original
+                .replace("data: {", "data:\ndata\ndata: {\ndata: ")
+                .replace("}\n\n", "}\ndata\ndata:\n\n"),
+            original.replacen(
+                "\n\n",
+                "\nevent: message_start\nid: retained\nretry: 123\n: comment\nfuture: accepted\n\n",
+                1,
+            ),
+        ] {
+            for line in ["\n", "\r\n", "\r"] {
+                let raw = format!(": safe comment\nid: ignored\nretry: 123\n\n{body}")
+                    .replace('\n', line);
+                for split in [1, 7, raw.len()] {
+                    let (tx, mut rx) = mpsc::channel(4096);
+                    let mut complete = run(
+                        response(raw.as_bytes(), split, false),
+                        vec![],
+                        65536,
+                        &tx,
+                        ProfileLlmProtocol::AnthropicMessages,
+                    )
+                    .await
+                    .unwrap();
+                    let mut out = drain(&mut rx);
+                    assert!(!String::from_utf8_lossy(&out).contains("message_stop"));
+                    assert_eq!(complete.output_tokens(), Some(7));
+                    complete.release(&tx).await.unwrap();
+                    out.extend(drain(&mut rx));
+                    assert_eq!(out, raw.as_bytes());
+                }
+            }
+        }
+        for raw in [
+            "data:\n\n".to_owned(),
+            "data\ndata:\n\n".to_owned(),
+            chat(&[], json!(7)).replace("data: [DONE]\n\n", "data\ndata: [DONE]\n\n"),
+            chat(&[], json!(7)).replace("data: [DONE]\n\n", "data: [DONE]\ndata:\n\n"),
+            chat(&[], json!(7)).replace(
+                "\"completion_tokens\":7",
+                "\"completion_tokens\":7\ndata: 0",
+            ),
+        ] {
+            for split in [1, 7, raw.len()] {
+                let (tx, mut rx) = mpsc::channel(4096);
+                assert!(matches!(
+                    run(
+                        response(raw.as_bytes(), split, false),
+                        vec![],
+                        65536,
+                        &tx,
+                        ProfileLlmProtocol::OpenAiChat
+                    )
+                    .await,
+                    Err(BrokerError::Upstream("invalid-stream"))
+                ));
+                assert!(!String::from_utf8_lossy(&drain(&mut rx)).contains("[DONE]"));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn sse_single_and_multiline_decoded_reflections_never_release_frames() {
+        let needles = super::super::sealing::sealing_needles(b"qrst", b"Bearer qrst");
+        let metadata = event(json!({"id":"c","object":"chat.completion.chunk",
+            "choices":[{"index":0,"delta":{"content":"safe"},"finish_reason":null}],
+            "future_metadata":{"opaque":r"\u0071\u0072\u0073\u0074"}}));
+        for first in [
+            metadata.clone(),
+            metadata.replace(",\"future_metadata\":", ",\ndata: \"future_metadata\":"),
+            chat_metadata(&[(0, "name", "q"), (0, "name", r"\u0072st")])
+                .replace("},{", "},\ndata: {"),
+            chat_metadata(&[(0, "name", "q")]).replace("data: {", "data: {\ndata: ")
+                + &chat_metadata(&[(0, "name", r"\u0072st")]).replace("data: {", "data\ndata: {"),
+        ] {
+            let raw = first + &chat(&[], json!(7));
+            // The raw projection cannot establish this refusal: JSON decoding
+            // or semantic joining must find the reflected credential.
+            assert!(!contains_secret(raw.as_bytes(), &needles));
+            for split in [1, 7, raw.len()] {
+                let (tx, mut rx) = mpsc::channel(4096);
+                assert!(matches!(
+                    run(
+                        response(raw.as_bytes(), split, false),
+                        needles.clone(),
+                        65536,
+                        &tx,
+                        ProfileLlmProtocol::OpenAiChat
+                    )
+                    .await,
+                    Err(BrokerError::ResponseSecurityViolation)
+                ));
+                assert!(drain(&mut rx).is_empty());
+            }
+        }
+    }
+
     #[tokio::test]
     async fn comments_multiline_crlf_and_cr_are_lossless_but_unknown_delta_is_rejected() {
         let original = anthropic(&["safe"], json!(7));

@@ -69,6 +69,21 @@ impl PreparedCredential {
         self.version
     }
 
+    /// The trusted mTLS decoder is reused for the sole authorized runner.
+    /// Raw and private DER buffers remain wipe-on-drop and are not cloneable.
+    pub fn consume_mtls<R>(
+        self,
+        f: impl FnOnce(&[u8], PreparedMtlsIdentity) -> R,
+    ) -> Result<R, crate::AuthorityError> {
+        if self.kind != CredentialKind::MtlsIdentity {
+            return Err(crate::AuthorityError::CredentialSourceUnavailable);
+        }
+        let text = std::str::from_utf8(&self.bytes)
+            .map_err(|_| crate::AuthorityError::CredentialSourceUnavailable)?;
+        let material = crate::private_material::decode_mtls(text)?;
+        Ok(f(&self.bytes, material))
+    }
+
     /// Consumes the credential; drop zeroizes the backing buffer.
     pub fn consume<R>(self, f: impl FnOnce(&[u8]) -> R) -> R {
         f(&self.bytes)
@@ -106,4 +121,10 @@ impl PreparedLeaseCleanup {
     pub fn consume<R>(self, f: impl FnOnce(&[u8], &[u8]) -> R) -> R {
         f(&self.profile, &self.lease_id)
     }
+}
+/// Concrete one-use identity. Certificates are public; private DER is owned
+/// and zeroized. Provider/parser internal copies are outside this guarantee.
+pub struct PreparedMtlsIdentity {
+    pub certificates: Vec<rustls::pki_types::CertificateDer<'static>>,
+    pub private_key: Zeroizing<rustls::pki_types::PrivateKeyDer<'static>>,
 }

@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
+use rekey_domain::ids::{CredentialId, RequestId};
 use rekey_vault::AuthorityError;
 use tokio::sync::{Mutex, MutexGuard, TryLockError, watch};
 
@@ -44,6 +45,8 @@ pub struct Lifecycle {
     coordinator: Mutex<()>,
     cancel_tx: watch::Sender<bool>,
     remote_effect_gate: AtomicU8,
+    private_credentials: StdMutex<BTreeMap<(CredentialId, RequestId), watch::Sender<bool>>>,
+    private_closed: tokio::sync::Notify,
 }
 
 impl Lifecycle {
@@ -56,6 +59,8 @@ impl Lifecycle {
             coordinator: Mutex::new(()),
             cancel_tx,
             remote_effect_gate: AtomicU8::new(REMOTE_EFFECT_CLOSED),
+            private_credentials: StdMutex::new(BTreeMap::new()),
+            private_closed: tokio::sync::Notify::new(),
         }
     }
 
@@ -94,6 +99,68 @@ impl Lifecycle {
             connection: connection.to_owned(),
             needs_terminal: false,
         })
+    }
+
+    // Registration and cancellation are serialized by the existing coordinator.
+    // This tracks live private-key owners only; authorization stays in policy.
+    pub(crate) fn private_credential_owner(
+        self: &Arc<Self>,
+        credential: CredentialId,
+        request: RequestId,
+    ) -> Result<PrivateCredentialOwner, BrokerError> {
+        self.reject_if_not_running()?;
+        let (cancel, receiver) = watch::channel(false);
+        let mut owners = self
+            .private_credentials
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if owners.contains_key(&(credential, request)) {
+            return Err(BrokerError::Admission(AuthorityError::AuthorityBusy));
+        }
+        owners.insert((credential, request), cancel);
+        Ok(PrivateCredentialOwner {
+            lifecycle: Arc::clone(self),
+            credential,
+            request,
+            cancel: receiver,
+        })
+    }
+
+    pub(crate) async fn cancel_private_credentials_until(
+        &self,
+        credential: Option<CredentialId>,
+        deadline: tokio::time::Instant,
+    ) -> Result<(), BrokerError> {
+        {
+            let owners = self
+                .private_credentials
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            for ((id, _), cancel) in owners
+                .iter()
+                .filter(|((id, _), _)| credential.is_none_or(|target| target == *id))
+            {
+                let _ = id;
+                cancel.send_replace(true);
+            }
+        }
+        loop {
+            let closed = self.private_closed.notified();
+            tokio::pin!(closed);
+            closed.as_mut().enable();
+            if !self
+                .private_credentials
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .keys()
+                .any(|(id, _)| credential.is_none_or(|target| target == *id))
+            {
+                return Ok(());
+            }
+            tokio::time::timeout_at(deadline, closed)
+                .await
+                .map_err(|_| BrokerError::Authority(AuthorityError::AuthorityBusy))?;
+        }
     }
 
     pub fn phase(&self) -> BrokerPhase {
@@ -267,6 +334,24 @@ impl Drop for ConnectionExecutionPermit {
                 active.remove(&self.connection);
             }
         }
+    }
+}
+
+/// Dropped after every TLS/protocol/key owner has closed, including cancellation.
+pub(crate) struct PrivateCredentialOwner {
+    lifecycle: Arc<Lifecycle>,
+    credential: CredentialId,
+    request: RequestId,
+    pub(crate) cancel: watch::Receiver<bool>,
+}
+impl Drop for PrivateCredentialOwner {
+    fn drop(&mut self) {
+        self.lifecycle
+            .private_credentials
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&(self.credential, self.request));
+        self.lifecycle.private_closed.notify_waiters();
     }
 }
 

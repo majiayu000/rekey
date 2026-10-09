@@ -55,6 +55,67 @@ struct Request {
     #[serde(default)]
     query: rekey_domain::template::TemplateValues,
 }
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SshRequest {
+    challenge: SignedApprovalChallenge,
+    ssh: serde_json::Value,
+}
+
+fn verify_ssh_review(
+    snapshot: &rekey_policy::ValidatedSnapshot,
+    c: &rekey_domain::ipc::ApprovalChallenge,
+    key: &rekey_domain::connection::SshKeyConnection,
+    ssh: &serde_json::Value,
+) -> Result<()> {
+    use rekey_domain::connection::RuleEffect;
+    if snapshot.ssh_key(&key.name) != Some(key)
+        || ssh["key"] != key.name
+        || ssh["public_key"] != key.user_public_key
+        || c.resource.resource_type != "connection"
+        || c.resource.id != key.name
+        || c.schema_id.as_str() != "rekey.ssh-sign.v1"
+        || c.approver != key.approver
+        || c.policy_version != snapshot.version().get()
+        || c.policy_sha256 != HEXLOWER.encode(&snapshot.digest())
+        || HEXLOWER.encode(&Sha256::digest(serde_jcs::to_vec(ssh)?)) != c.parameter_sha256
+    {
+        return Err("SSH review does not match signed policy and challenge".into());
+    }
+    let (effect, rule, host) = match ssh["use"]["purpose"].as_str() {
+        Some("git") => (key.git_signing, None, "git"),
+        Some("authentication") => match ssh["bound_host_key"].as_str().and_then(|blob| {
+            key.hosts
+                .iter()
+                .filter(|h| h.host_key == blob)
+                .max_by_key(|h| h.effect)
+        }) {
+            Some(h) => (h.effect, Some(h.rule_id), h.host.as_str()),
+            None => (RuleEffect::Approve, None, "unknown-host"),
+        },
+        _ => (RuleEffect::Approve, None, "unknown-purpose"),
+    };
+    let expected_rule = rule.unwrap_or_else(|| {
+        let digest = Sha256::digest(format!("{}:ssh-default:{host}", key.name).as_bytes());
+        rekey_domain::ids::PolicyRuleId::from_random_bytes(
+            digest[..16].try_into().expect("fixed digest"),
+        )
+    });
+    let action_digest = Sha256::digest(format!("ssh:{}", key.name).as_bytes());
+    if effect != RuleEffect::Approve
+        || ssh["host"] != host
+        || c.policy_rule_id != expected_rule
+        || c.action_id
+            != rekey_domain::ids::ActionId::from_random_bytes(
+                action_digest[..16].try_into().expect("fixed digest"),
+            )
+        || c.action_version != 1
+    {
+        return Err("SSH signed rule does not require this approval".into());
+    }
+    Ok(())
+}
+
 fn now() -> Result<Timestamp> {
     Ok(Timestamp::from_unix_ms(i64::try_from(
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
@@ -177,82 +238,125 @@ fn run_args(args: Vec<String>, output_text: &mut dyn Write) -> Result<()> {
         time,
     )?;
     let snapshot = policy.snapshot();
-    let action: FixedHttpAction = serde_json::from_slice(&read(get("--action")?, 65536)?)?;
-    action.validate()?;
     let origin = validate_ed25519_public_key(get("--origin-key")?)?;
-    let request: Request = serde_json::from_slice(&read(&args[1], 2 * 1024 * 1024)?)?;
-    let c = parse_and_verify_approval_challenge_envelope(
-        &serde_json::to_vec(&request.challenge)?,
-        &origin,
-    )?;
     let approver: ApproverId = get("--approver-id")?.parse()?;
-    let ApproverSpec::Ed25519 { keys, threshold: 1 } = &c.approver else {
-        return Err("signer requires a single Ed25519 approver".into());
+    let request_bytes = read(&args[1], 2 * 1024 * 1024)?;
+    let protocol: serde_json::Value = serde_json::from_slice(&request_bytes)?;
+    let (c, action, target, request, request_target) = if protocol.get("ssh").is_some() {
+        let request: SshRequest = serde_json::from_slice(&request_bytes)?;
+        let key: rekey_domain::connection::SshKeyConnection =
+            serde_json::from_slice(&read(get("--action")?, 65536)?)?;
+        let c = parse_and_verify_approval_challenge_envelope(
+            &serde_json::to_vec(&request.challenge)?,
+            &origin,
+        )?;
+        verify_ssh_review(snapshot, &c, &key, &request.ssh)?;
+        let ApproverSpec::Ed25519 { keys, threshold } = &c.approver else {
+            return Err("SSH challenge requires external Ed25519 authority".into());
+        };
+        if !(1..=2).contains(threshold)
+            || !snapshot
+                .ed25519_approver_ids(keys)
+                .is_some_and(|ids| ids.contains(&approver))
+            || c.mode != ApprovalMode::OneTime
+            || c.max_uses != 1
+            || c.created_at_ms > time.as_unix_ms()
+            || c.max_expires_at_ms <= time.as_unix_ms()
+        {
+            return Err("SSH approval context mismatch or expired".into());
+        }
+        let target = request.ssh.clone();
+        (
+            c,
+            serde_json::to_value(key)?,
+            target,
+            serde_json::to_value(request)?,
+            None,
+        )
+    } else {
+        let action: FixedHttpAction = serde_json::from_slice(&read(get("--action")?, 65536)?)?;
+        action.validate()?;
+        let request: Request = serde_json::from_slice(&request_bytes)?;
+        let c = parse_and_verify_approval_challenge_envelope(
+            &serde_json::to_vec(&request.challenge)?,
+            &origin,
+        )?;
+        let ApproverSpec::Ed25519 { keys, threshold: 1 } = &c.approver else {
+            return Err("signer requires a single Ed25519 approver".into());
+        };
+        let approvers = snapshot
+            .ed25519_approver_ids(keys)
+            .ok_or("challenge approver is not registered in policy")?;
+        if !action.enabled
+            || action.id != c.action_id
+            || action.version != c.action_version
+            || c.mode != ApprovalMode::OneTime
+            || c.max_uses != 1
+            || !approvers.contains(&approver)
+        {
+            return Err("action or single-use approval context mismatch".into());
+        }
+        if c.created_at_ms > time.as_unix_ms() || c.max_expires_at_ms <= time.as_unix_ms() {
+            return Err("challenge is not currently valid".into());
+        }
+        let action_ref = ActionVersionRef {
+            action_id: action.id,
+            version: action.version,
+        };
+        let (resource, parameters, target) = snapshot.canonicalize(
+            &action,
+            rekey_policy::ActionRequest {
+                params: &request.params,
+                query: &request.query,
+                content_type: request.content_type.as_deref(),
+                headers: &request.headers,
+                body: request.body.as_bytes(),
+            },
+        )?;
+        if resource != c.resource
+            || parameters.schema_id != c.schema_id
+            || HEXLOWER.encode(&parameters.canonical_hash) != c.parameter_sha256
+        {
+            return Err("request does not match challenge".into());
+        }
+        let authorization = AuthorizationRequest {
+            principal: Principal {
+                tenant_id: c.tenant_id,
+                principal_id: c.principal_id,
+                session_id: c.session_id,
+            },
+            action: action_ref,
+            resource,
+            parameters,
+        };
+        let Decision::RequireApproval {
+            policy_version,
+            snapshot_digest,
+            determining_rule,
+            approver: policy_approver,
+            requirement,
+        } = evaluate(snapshot, &authorization, time, false)
+        else {
+            return Err("policy does not require approval for this request".into());
+        };
+        if policy_version.get() != c.policy_version
+            || HEXLOWER.encode(&snapshot_digest) != c.policy_sha256
+            || determining_rule != c.policy_rule_id
+            || requirement.mode != c.mode
+            || requirement.max_uses != c.max_uses
+            || policy_approver != c.approver
+        {
+            return Err("policy and challenge mismatch".into());
+        }
+        let request_target = target.request_target();
+        (
+            c,
+            serde_json::to_value(action)?,
+            serde_json::to_value(target)?,
+            serde_json::to_value(request)?,
+            Some(request_target),
+        )
     };
-    let approvers = snapshot
-        .ed25519_approver_ids(keys)
-        .ok_or("challenge approver is not registered in policy")?;
-    if !action.enabled
-        || action.id != c.action_id
-        || action.version != c.action_version
-        || c.mode != ApprovalMode::OneTime
-        || c.max_uses != 1
-        || !approvers.contains(&approver)
-    {
-        return Err("action or single-use approval context mismatch".into());
-    }
-    if c.created_at_ms > time.as_unix_ms() || c.max_expires_at_ms <= time.as_unix_ms() {
-        return Err("challenge is not currently valid".into());
-    }
-    let action_ref = ActionVersionRef {
-        action_id: action.id,
-        version: action.version,
-    };
-    let (resource, parameters, target) = snapshot.canonicalize(
-        &action,
-        rekey_policy::ActionRequest {
-            params: &request.params,
-            query: &request.query,
-            content_type: request.content_type.as_deref(),
-            headers: &request.headers,
-            body: request.body.as_bytes(),
-        },
-    )?;
-    if resource != c.resource
-        || parameters.schema_id != c.schema_id
-        || HEXLOWER.encode(&parameters.canonical_hash) != c.parameter_sha256
-    {
-        return Err("request does not match challenge".into());
-    }
-    let authorization = AuthorizationRequest {
-        principal: Principal {
-            tenant_id: c.tenant_id,
-            principal_id: c.principal_id,
-            session_id: c.session_id,
-        },
-        action: action_ref,
-        resource,
-        parameters,
-    };
-    let Decision::RequireApproval {
-        policy_version,
-        snapshot_digest,
-        determining_rule,
-        approver: policy_approver,
-        requirement,
-    } = evaluate(snapshot, &authorization, time, false)
-    else {
-        return Err("policy does not require approval for this request".into());
-    };
-    if policy_version.get() != c.policy_version
-        || HEXLOWER.encode(&snapshot_digest) != c.policy_sha256
-        || determining_rule != c.policy_rule_id
-        || requirement.mode != c.mode
-        || requirement.max_uses != c.max_uses
-        || policy_approver != c.approver
-    {
-        return Err("policy and challenge mismatch".into());
-    }
     #[cfg(feature = "lab")]
     let profile = if transit {
         Some(vault_transit::Profile::load(get(
@@ -285,7 +389,7 @@ fn run_args(args: Vec<String>, output_text: &mut dyn Write) -> Result<()> {
         None
     };
     #[allow(unused_mut)]
-    let mut review = json!({"record_type":"rekey.approval.review.v1", "source_assumption":"Operator pinned origin public key from rekey approval origin; envelope authenticates Broker challenge bytes, not Action/policy/trust files or the human's intent", "action":action, "target":target, "request_target":target.request_target(), "request":request, "approver_id":approver, "policy_signer_id":policy.signer_id(), "policy_sha256":HEXLOWER.encode(&snapshot.digest()), "grant_lifetime_max_ms":60000});
+    let mut review = json!({"record_type":"rekey.approval.review.v1", "source_assumption":"Operator pinned origin public key from rekey approval origin; envelope authenticates Broker challenge bytes. Native SSH host proof is verified by the Broker; offline review verifies the signed policy and bound transcript digest.", "action":action, "target":target, "request_target":request_target, "request":request, "approver_id":approver, "policy_signer_id":policy.signer_id(), "policy_sha256":HEXLOWER.encode(&snapshot.digest()), "grant_lifetime_max_ms":60000});
     #[cfg(feature = "lab")]
     if let Some(profile) = &profile {
         review["vault_transit"] = profile.public_review();
@@ -400,7 +504,7 @@ fn run_args(args: Vec<String>, output_text: &mut dyn Write) -> Result<()> {
     File::open(&parent)?.sync_all()?;
     writeln!(
         output_text,
-        "Signed reviewed approval {digest}; submit the grant through the existing Broker execute command."
+        "Signed reviewed approval {digest}; submit the grant through Broker execute, or use approval submit for SSH."
     )?;
     Ok(())
 }

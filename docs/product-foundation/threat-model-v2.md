@@ -1,4 +1,6 @@
-# Rekey 0.4 威胁模型
+# Rekey 0.5 开发整合威胁模型
+
+当前开发线为 vault27 / policy8，新增能力以[统一整合合同](../superpowers/specs/2026-10-09-unified-experiments.md)为准。已发布 0.4 的 vault26 / policy7 不迁移、不双读。以下通用边界继续适用。
 
 行为来源为 [Agent call SPEC](../superpowers/specs/2026-10-05-rekey-agent-call-model.md)。0.4 默认本机调用没有 capability token，连接和权限由用户签名决定。以下边界不继承旧版设备验收。
 
@@ -12,7 +14,14 @@
 - 凭据只在受控内存和出站请求内出现，管理输入走隐藏TTY/显式stdin；审计不写正文、查询值或认证值。审计提交失败关闭服务；started在解密前提交，取消不能伪造成功。
 - 默认App和CLI不提供长期密钥的显示、复制或导出；人类保存/轮转仍需对应管理证明，软件验收通过签名Connection扫描确认真实存值，不能用旧版reveal合同恢复默认导出。
 
-真实Keychain、SE私钥、Touch ID、签名MCP阳性、供应商授权和公开安装必须有0.4设备证据。lab受管环境、G2和企业能力仅为储备；编译不代表部署验收。
+真实Keychain、SE私钥、Touch ID、签名MCP阳性、供应商授权和公开安装必须有当前0.5设备证据；历史0.4及更早结果不能替代。lab受管环境、G2和企业能力仅为储备；编译不代表部署验收。
+
+## 新增实验能力边界
+
+- mTLS 只接受签名 Connection 中显式的 T0 固定 HTTPS 认证声明。客户端私钥由 Worker 验证当前策略摘要与已提交 started 后一次性交给 TLS owner；每次后端 poll 检查策略、期限与生命周期。轮换、撤销和策略激活确认前取消并排空旧 owner；不复用连接、TLS session 或重试。客户端认证不提升 G1 隔离等级。
+- CA signer 为独立类型，仅管理员逐次 A2 可导入、轮换、签发外部 CSR、撤销序列号与发布完整 CRL。Agent 无 CA 签名/读取入口。证书、CRL 与现有 HTTP action 的完整集合由 generation MAC 认证；授权变更只允许预期增量，触发器引起的额外删除拒绝提交。软件证据不代表真实 CA 运维与吊销分发已部署。
+- SSH 仍由 Worker 持有密钥。每个 socket 按签名策略限制签名次数和持续时间；一次授权不绕过该预算。外部审批需一人或两名不同的允许审批者，绑定完整 challenge 与请求 review；本机 Presence 不能代替外部签名。接受审批与 started 同事务提交，待审批连接 EOF/额外输入使 challenge 失效；Worker 入队后由原 owner 等待终态，所有输出按当前策略和生命周期门控。
+- Agent PKI 准入与 HA 没有实现；lab 编译、合成 TLS/SSH 与历史性能数据不代表这些能力或真实硬件验收。
 
 ## 旧版历史说明
 

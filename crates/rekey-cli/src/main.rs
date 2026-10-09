@@ -550,7 +550,7 @@ enum CredentialCommand {
     Add {
         label: String,
         /// Internal App credential payload kind; non-opaque JSON requires --stdin-secrets.
-        #[arg(long, default_value = "opaque-token", value_parser = ["opaque-token", "oauth-grant", "aws-static", "github-app-installation"])]
+        #[arg(long, default_value = "opaque-token", value_parser = ["opaque-token", "oauth-grant", "aws-static", "github-app-installation", "mtls-identity", "pki-ca-signer"])]
         kind: String,
         /// Use the recovery key for step-up proof; does not reset the password.
         #[arg(long)]
@@ -689,9 +689,37 @@ enum CredentialCommand {
         #[command(flatten)]
         step_up: StepUpArgs,
     },
+    /// Generate a complete public PEM CRL using a current or historical CA version.
+    GenerateCrl {
+        credential_id: String,
+        #[arg(long)]
+        version: u64,
+        #[command(flatten)]
+        step_up: StepUpArgs,
+    },
+    /// Record the first revocation time of an issued certificate (fresh step-up).
+    RevokeCertificate {
+        serial: String,
+        #[command(flatten)]
+        step_up: StepUpArgs,
+    },
+    /// Issue a one-hour client-auth leaf from a public PEM CSR (local step-up).
+    IssueClientCsr {
+        credential_id: String,
+        #[arg(long)]
+        expected_version: u64,
+        #[arg(long)]
+        csr: PathBuf,
+        #[command(flatten)]
+        step_up: StepUpArgs,
+    },
     List,
     Rotate {
         credential_id: String,
+        #[arg(long, default_value = "opaque-token", value_parser = ["opaque-token", "mtls-identity", "pki-ca-signer"])]
+        kind: String,
+        #[arg(long)]
+        expected_version: Option<u64>,
         /// Use the recovery key for step-up proof; does not reset the password.
         #[arg(long)]
         recovery: bool,
@@ -953,6 +981,10 @@ enum ApprovalCommand {
     Pending,
     /// Print the origin-signed envelope for a pending approval request.
     Get { approval_request_id: String },
+    /// Submit one or two signed SSH grants as a JSON array on stdin.
+    Submit {
+        approval_request_id: ApprovalRequestId,
+    },
     /// Read the complete immutable local approval review.
     Review {
         approval_request_id: ApprovalRequestId,
@@ -1427,6 +1459,38 @@ fn main() {
                 selected_proof(recovery, presence),
                 stdin_secrets,
             ),
+            CredentialCommand::GenerateCrl {
+                credential_id,
+                version,
+                step_up,
+            } => commands::pki_generate_crl(
+                &state_dir,
+                &credential_id,
+                version,
+                selected_proof(step_up.recovery, step_up.presence),
+                step_up.password_stdin,
+            ),
+            CredentialCommand::RevokeCertificate { serial, step_up } => {
+                commands::pki_revoke_certificate(
+                    &state_dir,
+                    &serial,
+                    selected_proof(step_up.recovery, step_up.presence),
+                    step_up.password_stdin,
+                )
+            }
+            CredentialCommand::IssueClientCsr {
+                credential_id,
+                expected_version,
+                csr,
+                step_up,
+            } => commands::pki_issue_client_csr(
+                &state_dir,
+                &credential_id,
+                expected_version,
+                &csr,
+                selected_proof(step_up.recovery, step_up.presence),
+                step_up.password_stdin,
+            ),
             CredentialCommand::AddGithubApp {
                 label,
                 file,
@@ -1609,12 +1673,16 @@ fn main() {
             CredentialCommand::List => commands::credential_list(&state_dir),
             CredentialCommand::Rotate {
                 credential_id,
+                kind,
+                expected_version,
                 recovery,
                 presence,
                 stdin_secrets,
             } => commands::credential_rotate(
                 &state_dir,
                 &credential_id,
+                &kind,
+                expected_version,
                 selected_proof(recovery, presence),
                 stdin_secrets,
             ),
@@ -1819,6 +1887,9 @@ fn main() {
             }
             PolicyCommand::Status => commands::policy_status(&state_dir),
         },
+        Command::Approval(ApprovalCommand::Submit {
+            approval_request_id,
+        }) => commands::approval_submit(&state_dir, approval_request_id),
         Command::Approval(ApprovalCommand::Origin) => commands::approval_origin(&state_dir),
         Command::Approval(ApprovalCommand::Pending) => commands::approval_pending(&state_dir),
         Command::Approval(ApprovalCommand::Get {

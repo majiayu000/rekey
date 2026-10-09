@@ -71,7 +71,7 @@ impl Fixture {
         let policy_expiry = created + 300_000;
         let trust = json!({"format_version":1,"signer_id":signer_id,"algorithm":"ed25519","public_key":HEXLOWER.encode(signer.public_key().as_ref())});
         let resource = json!({"type":"test.resource","id":"one"});
-        let snapshot = json!({"format_version": 7, "connections": [], "ssh_keys": [], "derived_credentials": [], "profiles": [],"version":1,"expires_at_ms":policy_expiry,
+        let snapshot = json!({"format_version": 8, "connections": [], "ssh_keys": [], "derived_credentials": [], "profiles": [],"version":1,"expires_at_ms":policy_expiry,
             "approvers":[{"approver_id":approver,"algorithm":"ed25519","public_key":HEXLOWER.encode(key.public_key().as_ref())}],
             "workload_identities":[],"bindings":[{"action_id":action_id,"version":1,"resource":resource,"parameter_schema_id":"test/v1","parameter_schema":{"type":"object","required":["message"],"properties":{"message":{"type":"string"}},"additionalProperties":false}}],
             "rules":[{"id":rule,"effect":"require-approval","principal_id":principal,"action_id":action_id,"version":1,"resource":resource,"parameters":{"kind":"any_validated"},"approver":{"kind":"ed25519","keys":[HEXLOWER.encode(key.public_key().as_ref())],"threshold":1},"approval":{"mode":"one-time","max_uses":1}}]});
@@ -414,4 +414,73 @@ fn template_signer_reviews_the_rendered_target_and_rejects_changed_values() {
     f.persist_request();
     assert!(!f.invoke("review", None, "unused").status.success());
     f.reject_sign(digest);
+}
+
+#[test]
+fn native_ssh_review_and_sign_support_one_or_two_approver_policy() {
+    for threshold in [1, 2] {
+        let mut f = Fixture::new();
+        let signer = Ed25519KeyPair::from_seed_unchecked(&[91; 32]).unwrap();
+        let approver = Ed25519KeyPair::from_pkcs8(&fs::read(f.path("key.der")).unwrap()).unwrap();
+        let other = Ed25519KeyPair::from_seed_unchecked(&[92; 32]).unwrap();
+        let signer_id = id();
+        let rule = id();
+        let credential = id();
+        let public = data_encoding::BASE64.encode(b"synthetic SSH public key");
+        let host_key = data_encoding::BASE64.encode(b"synthetic bound host key");
+        let mut keys = vec![
+            HEXLOWER.encode(approver.public_key().as_ref()),
+            HEXLOWER.encode(other.public_key().as_ref()),
+        ];
+        keys.sort();
+        let key = json!({"name":"synthetic-ssh","credential_id":credential,"user_public_key":public,"hosts":[{"host":"synthetic.example","host_key":host_key,"rule_id":rule,"effect":"approve"}],"git_signing":"deny","approver":{"kind":"ed25519","keys":keys,"threshold":threshold},"session_budget":{"max_signatures":2,"max_seconds":600}});
+        let snapshot = json!({"format_version":8,"version":1,"expires_at_ms":f.policy_expiry,"approvers":[{"approver_id":f.approver,"algorithm":"ed25519","public_key":HEXLOWER.encode(approver.public_key().as_ref())},{"approver_id":id(),"algorithm":"ed25519","public_key":HEXLOWER.encode(other.public_key().as_ref())}],"connections":[],"ssh_keys":[key],"derived_credentials":[],"profiles":[],"bindings":[],"rules":[],"workload_identities":[]});
+        let trust = json!({"format_version":1,"signer_id":signer_id,"algorithm":"ed25519","public_key":HEXLOWER.encode(signer.public_key().as_ref())});
+        let mut bundle = json!({"format_version":1,"signer_id":signer_id,"snapshot":snapshot});
+        let mut bytes = b"RKPOLICY\0\x01".to_vec();
+        bytes.extend(serde_jcs::to_vec(&bundle).unwrap());
+        bundle["signature"] = BASE64URL_NOPAD.encode(signer.sign(&bytes).as_ref()).into();
+        write_json(&f.path("trust.json"), &trust);
+        write_json(&f.path("policy.json"), &bundle);
+        write_json(&f.path("action.json"), &key);
+        let verified = parse_and_verify_policy_bundle(
+            &serde_json::to_vec(&bundle).unwrap(),
+            &parse_policy_trust(&serde_json::to_vec(&trust).unwrap()).unwrap(),
+            Timestamp::from_unix_ms(now_ms()),
+        )
+        .unwrap();
+        let ssh = json!({"key":"synthetic-ssh","host":"synthetic.example","bound_host_key":host_key,"session_id":"ab".repeat(32),"public_key":public,"data_sha256":"cd".repeat(32),"data_base64":"c3ludGhldGlj","window_allowed":false,"use":{"purpose":"authentication","username":"git","unverified_host":null}});
+        let mut challenge = f.inner().clone();
+        use sha2::{Digest, Sha256};
+        let action_hash = Sha256::digest(b"ssh:synthetic-ssh");
+        challenge["action_id"] =
+            rekey_domain::ids::ActionId::from_random_bytes(action_hash[..16].try_into().unwrap())
+                .to_string()
+                .into();
+        challenge["resource"] = json!({"type":"connection","id":"synthetic-ssh"});
+        challenge["schema_id"] = "rekey.ssh-sign.v1".into();
+        challenge["policy_rule_id"] = rule.into();
+        challenge["approver"] = key["approver"].clone();
+        challenge["policy_sha256"] = HEXLOWER.encode(&verified.policy_digest()).into();
+        challenge["parameter_sha256"] = HEXLOWER
+            .encode(&Sha256::digest(serde_jcs::to_vec(&ssh).unwrap()))
+            .into();
+        f.request = json!({"challenge":signed_envelope(&challenge,&f.origin()),"ssh":ssh});
+        f.persist_request();
+        let digest = f.review();
+        let output = f.invoke("sign", Some(&digest), "ssh-grant.json");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        parse_and_verify_approval_grant(
+            &fs::read(f.path("ssh-grant.json")).unwrap(),
+            verified.snapshot(),
+        )
+        .unwrap();
+        f.request["ssh"]["host"] = "evil.example".into();
+        f.persist_request();
+        assert!(!f.invoke("review", None, "unused").status.success());
+    }
 }

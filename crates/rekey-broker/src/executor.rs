@@ -52,6 +52,7 @@ mod http;
 pub(crate) mod keycloak;
 mod llm;
 mod local;
+mod mtls;
 pub(crate) use local::LocalExecuteRequest;
 mod llm_stream;
 mod sealing;
@@ -181,6 +182,8 @@ pub struct ActionExecutor {
     lifecycle: Arc<Lifecycle>,
     terminals: Arc<TerminalAuditTracker>,
     policy: Arc<RwLock<Option<Arc<ActivePolicy>>>>,
+    #[cfg(test)]
+    mtls_fixture: std::sync::Mutex<Option<mtls::TestFixture>>,
 }
 
 const EFFECT_NOT_STARTED: u8 = 0;
@@ -207,6 +210,8 @@ impl ActionExecutor {
             lifecycle,
             terminals,
             policy,
+            #[cfg(test)]
+            mtls_fixture: std::sync::Mutex::new(None),
         }
     }
 
@@ -460,6 +465,33 @@ impl ActionExecutor {
                 .blocked_until(effect_deadline, "stream-operation-mismatch")
                 .await?;
             return Err(BrokerError::Denied("stream-operation-mismatch"));
+        }
+        let mtls = if let Some(rekey_domain::audit::RequestAuditContext::Connection(context)) =
+            &started.context().request_context
+        {
+            let policy = self.policy.read().await;
+            policy.as_ref().is_some_and(|policy| {
+                policy
+                    .snapshot()
+                    .connections()
+                    .iter()
+                    .any(|c| c.name == context.connection && c.auth.is_mtls())
+            })
+        } else {
+            false
+        };
+        if mtls {
+            return mtls::run(
+                self,
+                request,
+                action,
+                target,
+                started,
+                effect_deadline,
+                effect_kind,
+                cleanup_owned,
+            )
+            .await;
         }
         let oauth_connection =
             if let Some(rekey_domain::audit::RequestAuditContext::Connection(context)) =

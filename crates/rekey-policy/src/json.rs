@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Number, Value};
@@ -66,13 +64,13 @@ impl<'de> Visitor<'de> for UniqueVisitor {
     }
 
     fn visit_map<A: MapAccess<'de>>(self, mut access: A) -> Result<Self::Value, A::Error> {
-        let mut values = BTreeMap::new();
+        let mut values = Map::new();
         while let Some((key, value)) = access.next_entry::<String, UniqueValue>()? {
             if values.insert(key, value.0).is_some() {
                 return Err(serde::de::Error::custom("duplicate JSON object key"));
             }
         }
-        Ok(UniqueValue(Value::Object(Map::from_iter(values))))
+        Ok(UniqueValue(Value::Object(values)))
     }
 }
 
@@ -81,4 +79,73 @@ pub(crate) fn parse_unique_json(bytes: &[u8]) -> Result<Value, PolicyError> {
     let value = UniqueValue::deserialize(&mut deserializer).map_err(|_| PolicyError::Malformed)?;
     deserializer.end().map_err(|_| PolicyError::Malformed)?;
     Ok(value.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn duplicate_free_json_preserves_values_serialization_and_jcs() {
+        let samples = [
+            r#"{"z":{"b":2,"a":1},"a":[{"z":false,"a":null}]}"#,
+            r#"{"😀":[{"é":"\uD834\uDD1E","a":1.5}],"λ":"line\n\t\u0000","a\u0062":"quote: \" slash: \\","é":"\u0061"}"#,
+            r#"[-9223372036854775808,18446744073709551615,0,-0.0,1.5,1e-10,1e30]"#,
+            r#""\u0061\n\uD834\uDD1E""#,
+            "null",
+            "true",
+            "\n {}\t",
+        ];
+
+        for sample in samples {
+            let parsed = parse_unique_json(sample.as_bytes()).unwrap();
+            let ordinary: Value = serde_json::from_str(sample).unwrap();
+            assert_eq!(parsed, ordinary, "sample: {sample}");
+            assert_eq!(
+                serde_json::to_vec(&parsed).unwrap(),
+                serde_json::to_vec(&ordinary).unwrap(),
+                "sample: {sample}"
+            );
+            assert_eq!(
+                serde_jcs::to_vec(&parsed).unwrap(),
+                serde_jcs::to_vec(&ordinary).unwrap(),
+                "sample: {sample}"
+            );
+        }
+
+        assert_eq!(
+            serde_json::to_string(&parse_unique_json(samples[0].as_bytes()).unwrap()).unwrap(),
+            r#"{"a":[{"a":null,"z":false}],"z":{"a":1,"b":2}}"#
+        );
+    }
+
+    #[test]
+    fn duplicate_keys_at_any_depth_are_malformed() {
+        for sample in [
+            r#"{"a":1,"a":2}"#,
+            r#"{"outer":[{"b":1,"b":2}]}"#,
+            r#"{"outer":{"key":1,"\u006bey":2}}"#,
+        ] {
+            assert!(
+                matches!(
+                    parse_unique_json(sample.as_bytes()),
+                    Err(PolicyError::Malformed)
+                ),
+                "sample: {sample}"
+            );
+        }
+    }
+
+    #[test]
+    fn trailing_data_is_malformed() {
+        for sample in [r#"{} {}"#, r#"{"a":1}false"#, "[] true", "nullx"] {
+            assert!(
+                matches!(
+                    parse_unique_json(sample.as_bytes()),
+                    Err(PolicyError::Malformed)
+                ),
+                "sample: {sample}"
+            );
+        }
+    }
 }

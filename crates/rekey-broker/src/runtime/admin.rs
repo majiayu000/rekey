@@ -117,7 +117,7 @@ impl BrokerCtx {
             let available=self.authority.credential_list().await?;
             for connection in &request.connections {
                 connection.validate()?;
-                let required = if connection.oauth.is_some() { rekey_domain::credential::CredentialKind::OAuthGrant } else { rekey_domain::credential::CredentialKind::OpaqueToken };
+                let required = if connection.auth.is_mtls() { rekey_domain::credential::CredentialKind::MtlsIdentity } else if connection.oauth.is_some() { rekey_domain::credential::CredentialKind::OAuthGrant } else { rekey_domain::credential::CredentialKind::OpaqueToken };
                 if !available.iter().any(|c| c.id == connection.credential_id && c.state == rekey_domain::credential::CredentialState::Active && c.kind == required) { return Err(AuthorityError::CredentialNotFound.into()); }
             }
             if let Some(grants) = &request.derived_credentials {
@@ -469,6 +469,12 @@ impl BrokerCtx {
                             self.sessions.revoke_workload();
                         }
                     }
+                    self.lifecycle
+                        .cancel_private_credentials_until(
+                            None,
+                            tokio::time::Instant::now() + POLICY_RECONCILE_TIMEOUT,
+                        )
+                        .await?;
                     self.reconcile_gateway().await;
                     return Err(BrokerError::Authority(AuthorityError::AuthorityBusy));
                 }
@@ -482,6 +488,9 @@ impl BrokerCtx {
                 return Err(BrokerError::Authority(AuthorityError::Faulted));
             }
         }
+        self.lifecycle
+            .cancel_private_credentials_until(None, deadline)
+            .await?;
         if !was_target_active {
             if had_active_policy {
                 self.sessions.revoke_all();
@@ -682,7 +691,7 @@ mod tests {
         let expires = crate::now_ts().unwrap().as_unix_ms() + 60_000;
         let bundle = |version| {
             let mut unsigned = serde_json::json!({"format_version":1,"signer_id":signer_id,"snapshot":{
-                "format_version":7,"version":version,"expires_at_ms":expires,"approvers":[],"connections":[], "ssh_keys":[], "derived_credentials":[], "profiles": [], "workload_identities":[],"bindings":[],"rules":[]
+                "format_version":8,"version":version,"expires_at_ms":expires,"approvers":[],"connections":[], "ssh_keys":[], "derived_credentials":[], "profiles": [], "workload_identities":[],"bindings":[],"rules":[]
             }});
             let mut message = b"RKPOLICY\0\x01".to_vec();
             message.extend_from_slice(&serde_jcs::to_vec(&unsigned).unwrap());
@@ -892,7 +901,7 @@ mod tests {
             let unsigned = serde_json::json!({
                 "format_version": 1, "signer_id": self.trust.signer_id(),
                 "snapshot": {
-                    "format_version": 7, "version": version, "expires_at_ms": self.expires,
+                    "format_version": 8, "version": version, "expires_at_ms": self.expires,
                     "approvers": [{"approver_id": self.approver_id, "algorithm": "ed25519",
                         "public_key": data_encoding::HEXLOWER.encode(self.signer.public_key().as_ref())}],
                     "connections":[], "ssh_keys":[], "derived_credentials":[], "profiles": [], "workload_identities": [], "bindings": [], "rules": []

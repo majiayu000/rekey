@@ -96,3 +96,7 @@ Cargo workspace, 7 crates + root integration-test host:
 - Local callers invoke signed Connection rules without capability tokens; caller labels can only restrict rules. Secrets remain inside the Authority.
 - Implement and validate milestone gates before claiming release readiness. Preserve the old vault; initialize a new 0.4 vault with no migration.
 - For this implementation's external Agent acceptance, the user requires Codex only. Do not run Claude CLI, account, model or plugin tests, or change Claude login state. Preserve historical results without inferring that a particular account is suspended.
+
+## Unified development line
+
+`docs/superpowers/specs/2026-10-09-unified-experiments.md` is the active integration contract for 0.5 development (vault27/policy8). It supersedes conflicting format freezes for this checkout only. Published 0.4/0.3 vaults are preserved; no migration or dual reader. Integration remains unvalidated until the combined-head gates pass.

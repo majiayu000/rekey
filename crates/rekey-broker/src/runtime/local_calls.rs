@@ -32,6 +32,7 @@ pub(crate) struct LocalCallApproval {
     pub(crate) deadline: Instant,
     pub(crate) state: LocalApprovalState,
     pub(crate) approval_id: Option<ApprovalId>,
+    pub(crate) external_evidence: Vec<rekey_vault::model::ApprovalEvidence>,
     pub(crate) reserved: bool,
 }
 impl LocalCallApproval {
@@ -125,6 +126,8 @@ impl LocalCalls {
             a.caller == approval.caller
                 && a.challenge.parameter_sha256 == approval.challenge.parameter_sha256
                 && a.challenge.policy_sha256 == approval.challenge.policy_sha256
+                && (approval.challenge.schema_id.as_str() != "rekey.ssh-sign.v1"
+                    || a.challenge.session_id == approval.challenge.session_id)
                 && a.state == LocalApprovalState::Pending
         }) {
             return Ok(existing.clone());
@@ -210,6 +213,36 @@ impl LocalCalls {
         let response = entry.response();
         self.changed.notify_waiters();
         Ok(response)
+    }
+    pub(crate) fn approve_external(
+        &self,
+        id: ApprovalRequestId,
+        expected_review: &str,
+        evidence: Vec<rekey_vault::model::ApprovalEvidence>,
+        expires_at_ms: i64,
+        now_ms: i64,
+    ) -> Result<ipc::LocalApprovalStateResponse, BrokerError> {
+        let mut entries = self.approvals.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = entries
+            .get_mut(&id)
+            .ok_or(BrokerError::Denied("approval-request-unknown"))?;
+        entry.refresh(now_ms);
+        if entry.state != LocalApprovalState::Pending
+            || entry.review_sha256 != expected_review
+            || evidence.is_empty()
+            || now_ms >= expires_at_ms
+        {
+            return Err(BrokerError::Denied("approval-state-conflict"));
+        }
+        entry.approval_id = evidence[0].approval_id;
+        entry.external_evidence = evidence;
+        entry.challenge.max_expires_at_ms = entry.challenge.max_expires_at_ms.min(expires_at_ms);
+        entry.deadline = entry
+            .deadline
+            .min(Instant::now() + Duration::from_millis((expires_at_ms - now_ms) as u64));
+        entry.state = LocalApprovalState::Approved;
+        self.changed.notify_waiters();
+        Ok(entry.response())
     }
     pub(crate) fn consume(
         &self,
@@ -434,6 +467,7 @@ pub(crate) mod tests {
             deadline: Instant::now() + Duration::from_secs(600),
             state: LocalApprovalState::Approved,
             approval_id: Some(ApprovalId::new_random()),
+            external_evidence: Vec::new(),
             reserved: false,
         };
         calls.register(approval, now).unwrap()

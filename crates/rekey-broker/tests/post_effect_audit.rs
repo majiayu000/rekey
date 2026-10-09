@@ -261,7 +261,7 @@ async fn signed_connection_post_lost_response_is_unconfirmed() {
     common::policy::activate_snapshot(
         &broker,
         serde_json::json!({
-            "format_version":7,"version":1,"expires_at_ms":4_102_444_800_000_i64,
+            "format_version":8,"version":1,"expires_at_ms":4_102_444_800_000_i64,
             "approvers":[],"workload_identities":[],"profiles":[],"bindings":[],"rules":[],
             "connections":[connection],"ssh_keys":[],"derived_credentials":[],
         }),

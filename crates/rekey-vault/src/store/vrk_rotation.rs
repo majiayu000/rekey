@@ -47,7 +47,11 @@ impl SqliteRecordStore {
         not_after: Option<Instant>,
         generation: &mut GenerationAttempt<'_>,
     ) -> Result<(), AuthorityError> {
-        let tx = self.conn.transaction().map_err(storage)?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(storage)?;
+        super::pki::verified(&tx, &generation.prior_pki_digest)?;
         for (_, v) in versions {
             current(not_after)?;
             one(tx.execute("UPDATE credential_versions SET dek_nonce=?3, wrapped_dek=?4, payload_nonce=?5, encrypted_payload=?6 WHERE credential_id=?1 AND version=?2",

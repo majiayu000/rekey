@@ -43,6 +43,7 @@ mod vault_kv;
 
 fn admin_body_limit(message_type: u16, managed: bool) -> u32 {
     let base = match message_type {
+        admin_msg::APPROVAL_EXTERNAL_SUBMIT => ipc::METADATA_MAX_BYTES,
         admin_msg::OIDC_LOGOUT => 43,
         admin_msg::DESKTOP_LOGIN
         | admin_msg::DESKTOP_REVEAL
@@ -57,6 +58,9 @@ fn admin_body_limit(message_type: u16, managed: bool) -> u32 {
         }
         admin_msg::CREDENTIAL_ADD
         | admin_msg::CREDENTIAL_ROTATE
+        | admin_msg::CREDENTIAL_ROTATE_MTLS
+        | admin_msg::PKI_ISSUE_CLIENT_CSR
+        | admin_msg::CREDENTIAL_ROTATE_CA
         | admin_msg::PASSWORD_CHANGE
         | admin_msg::KEY_ROTATE_VRK => ipc::ADMIN_SECRET_BODY_MAX_BYTES,
         admin_msg::CREDENTIAL_ROTATE_GITHUB_APP
@@ -75,6 +79,8 @@ fn admin_body_limit(message_type: u16, managed: bool) -> u32 {
         | admin_msg::APPROVAL_LOCAL_APPROVE
         | admin_msg::APPROVAL_LOCAL_REJECT
         | admin_msg::CREDENTIAL_REVOKE
+        | admin_msg::PKI_REVOKE_CERTIFICATE
+        | admin_msg::PKI_GENERATE_CRL
         | admin_msg::ACTION_CREATE
         | admin_msg::ACTION_UPDATE
         | admin_msg::ACTION_DISABLE
@@ -337,7 +343,6 @@ async fn dispatch_operation(
                 | admin_msg::PROFILE_SESSION_CREATE
                 | admin_msg::SESSION_CREATE
                 | admin_msg::SESSION_REVOKE
-                | admin_msg::APPROVAL_GET
         )
     {
         return Err(ipc::FrameError::InvalidField.into());
@@ -682,6 +687,109 @@ async fn dispatch_operation(
             };
             Ok((json(&metadata)?, Zeroizing::new(Vec::new())))
         }
+        admin_msg::CREDENTIAL_ROTATE_MTLS => {
+            let deadline = request_deadline;
+            let metadata: ipc::CredentialRotateMtlsMeta = meta(frame)?;
+            let (kind, proof, secret) = ipc::parse_proof_and_secret_body(&frame.body)?;
+            let _owner = ctx.lifecycle.coordinate_until(deadline).await?;
+            ctx.lifecycle.reject_if_not_running()?;
+            let rotated = authority_until(
+                deadline,
+                ctx.authority.credential_rotate_typed_before(
+                    metadata.credential_id,
+                    CredentialKind::MtlsIdentity,
+                    Some(metadata.expected_version),
+                    SecretInput::from_slice(secret),
+                    proof_from(kind, proof),
+                    Some(deadline.into_std()),
+                ),
+            )
+            .await?;
+            ctx.lifecycle
+                .cancel_private_credentials_until(Some(metadata.credential_id), deadline)
+                .await?;
+            Ok((json(&rotated)?, Zeroizing::new(Vec::new())))
+        }
+        admin_msg::PKI_GENERATE_CRL => {
+            let deadline = request_deadline;
+            ctx.lifecycle.reject_if_not_running()?;
+            let input: ipc::PkiGenerateCrlMeta = meta(frame)?;
+            let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
+            let _owner = ctx.lifecycle.coordinate_until(deadline).await?;
+            ctx.lifecycle.reject_if_not_running()?;
+            let (info, pem) = authority_until(
+                deadline,
+                ctx.authority.pki_generate_crl_before(
+                    input,
+                    proof_from(kind, proof),
+                    frame.header.request_id,
+                    deadline.into_std(),
+                ),
+            )
+            .await?;
+            Ok((json(&info)?, Zeroizing::new(pem)))
+        }
+        admin_msg::PKI_REVOKE_CERTIFICATE => {
+            let deadline = request_deadline;
+            ctx.lifecycle.reject_if_not_running()?;
+            let input: ipc::PkiRevokeCertificateMeta = meta(frame)?;
+            let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
+            let _owner = ctx.lifecycle.coordinate_until(deadline).await?;
+            ctx.lifecycle.reject_if_not_running()?;
+            let revoked = authority_until(
+                deadline,
+                ctx.authority.pki_revoke_certificate_before(
+                    input,
+                    proof_from(kind, proof),
+                    frame.header.request_id,
+                    deadline.into_std(),
+                ),
+            )
+            .await?;
+            Ok((json(&revoked)?, Zeroizing::new(Vec::new())))
+        }
+        admin_msg::PKI_ISSUE_CLIENT_CSR => {
+            let deadline = request_deadline;
+            ctx.lifecycle.reject_if_not_running()?;
+            let input: ipc::PkiIssueClientCsrMeta = meta(frame)?;
+            let (kind, proof, csr) = ipc::parse_proof_and_secret_body(&frame.body)?;
+            let _owner = ctx.lifecycle.coordinate_until(deadline).await?;
+            ctx.lifecycle.reject_if_not_running()?;
+            let certificate = authority_until(
+                deadline,
+                ctx.authority.pki_issue_client_csr_before(
+                    input,
+                    SecretInput::from_slice(csr),
+                    proof_from(kind, proof),
+                    frame.header.request_id,
+                    deadline.into_std(),
+                ),
+            )
+            .await?;
+            Ok((json(&certificate)?, Zeroizing::new(Vec::new())))
+        }
+        admin_msg::CREDENTIAL_ROTATE_CA => {
+            let deadline = request_deadline;
+            ctx.lifecycle.reject_if_not_running()?;
+            let metadata: ipc::CredentialRotateCaMeta = meta(frame)?;
+            let (kind, proof, secret) = ipc::parse_proof_and_secret_body(&frame.body)?;
+            let owner = ctx.lifecycle.coordinate_until(deadline).await?;
+            ctx.lifecycle.reject_if_not_running()?;
+            let rotated = authority_until(
+                deadline,
+                ctx.authority.credential_rotate_typed_before(
+                    metadata.credential_id,
+                    CredentialKind::PkiCaSigner,
+                    Some(metadata.expected_version),
+                    SecretInput::from_slice(secret),
+                    proof_from(kind, proof),
+                    Some(deadline.into_std()),
+                ),
+            )
+            .await?;
+            drop(owner);
+            Ok((json(&rotated)?, Zeroizing::new(Vec::new())))
+        }
         admin_msg::CREDENTIAL_ROTATE_GITHUB_APP => github::handle_rotate(frame, ctx).await,
         admin_msg::GITHUB_WEBHOOK_APPLY => github::handle_webhook(frame, ctx).await,
         #[cfg(feature = "lab")]
@@ -735,6 +843,9 @@ async fn dispatch_operation(
             )
             .await?;
             ctx.sessions.revoke_by_actions(&action_ids);
+            ctx.lifecycle
+                .cancel_private_credentials_until(Some(ref_meta.credential_id), deadline)
+                .await?;
             Ok((json(&metadata)?, Zeroizing::new(Vec::new())))
         }
         admin_msg::TEMPLATE_CATALOG
@@ -1071,6 +1182,36 @@ async fn dispatch_operation(
             };
             Ok((json(&response)?, Zeroizing::new(Vec::new())))
         }
+        admin_msg::APPROVAL_EXTERNAL_SUBMIT => {
+            let get: ipc::ApprovalGetMeta = meta(frame)?;
+            let raw: Vec<Box<serde_json::value::RawValue>> =
+                serde_json::from_slice(&frame.body).map_err(|_| ipc::FrameError::InvalidField)?;
+            let _owner = ctx.lifecycle.coordinate_until(request_deadline).await?;
+            ctx.lifecycle.reject_if_not_running()?;
+            let now = crate::now_ts()?.as_unix_ms();
+            let local = ctx.local_calls.get(get.approval_request_id, now)?;
+            ctx.check_local_approval_policy(&local.challenge).await?;
+            let active = ctx
+                .policy
+                .read()
+                .await
+                .clone()
+                .ok_or(BrokerError::Denied("policy-changed"))?;
+            let (evidence, expires) = crate::ssh_agent::verify_external_grants(
+                &local.challenge,
+                &raw,
+                active.snapshot(),
+                now,
+            )?;
+            let response = ctx.local_calls.approve_external(
+                get.approval_request_id,
+                &local.review_sha256,
+                evidence,
+                expires,
+                now,
+            )?;
+            Ok((json(&response)?, Zeroizing::new(Vec::new())))
+        }
         admin_msg::APPROVAL_LOCAL_REVIEW => {
             if !frame.body.is_empty() {
                 return Err(BrokerError::Frame(ipc::FrameError::InvalidField));
@@ -1122,10 +1263,26 @@ async fn dispatch_operation(
             let get: ipc::ApprovalGetMeta = meta(frame)?;
             let _owner = ctx.lifecycle.coordinate().await;
             ctx.lifecycle.reject_if_not_running()?;
-            let challenge = ctx
-                .sessions
-                .approval_challenge(get.approval_request_id, crate::now_ts()?)
-                .map_err(|error| BrokerError::Denied(error.code()))?;
+            let challenge = match ctx
+                .local_calls
+                .get(get.approval_request_id, crate::now_ts()?.as_unix_ms())
+            {
+                Ok(local) => {
+                    ctx.check_local_approval_policy(&local.challenge).await?;
+                    local.challenge
+                }
+                Err(error) => {
+                    #[cfg(not(feature = "lab"))]
+                    return Err(error);
+                    #[cfg(feature = "lab")]
+                    {
+                        let _ = error;
+                        ctx.sessions
+                            .approval_challenge(get.approval_request_id, crate::now_ts()?)
+                            .map_err(|error| BrokerError::Denied(error.code()))?
+                    }
+                }
+            };
             let envelope = ctx.executor.sign_challenge_envelope(challenge).await?;
             Ok((json(&envelope)?, Zeroizing::new(Vec::new())))
         }
@@ -1242,6 +1399,12 @@ async fn local_approval_decision(
     let local = ctx
         .sessions
         .local_approval(decision.approval_request_id, crate::now_ts()?)?;
+    if !matches!(
+        local.challenge.approver,
+        rekey_domain::authorization::ApproverSpec::LocalPresence {}
+    ) {
+        return Err(BrokerError::Denied("approval-authority-mismatch"));
+    }
     if local.review_sha256 != decision.expected_review_sha256 {
         return Err(BrokerError::Denied("approval-review-mismatch"));
     }
@@ -1487,6 +1650,12 @@ async fn connection_approval_decision(
     let local = ctx
         .local_calls
         .get(decision.approval_request_id, crate::now_ts()?.as_unix_ms())?;
+    if !matches!(
+        local.challenge.approver,
+        rekey_domain::authorization::ApproverSpec::LocalPresence {}
+    ) {
+        return Err(BrokerError::Denied("approval-authority-mismatch"));
+    }
     if local.review_sha256 != decision.expected_review_sha256 {
         return Err(BrokerError::Denied("approval-review-mismatch"));
     }
@@ -2026,7 +2195,7 @@ mod tests {
             .await
             .unwrap();
         let now = crate::now_ts().unwrap();
-        let mut bundle = serde_json::json!({"format_version":1,"signer_id":signer_id,"snapshot":{"format_version":7,"version":1,"expires_at_ms":now.as_unix_ms()+60000,"approvers":[],"connections":[], "ssh_keys":[], "derived_credentials":[], "profiles": [], "workload_identities":[],"bindings":[],"rules":[]}});
+        let mut bundle = serde_json::json!({"format_version":1,"signer_id":signer_id,"snapshot":{"format_version":8,"version":1,"expires_at_ms":now.as_unix_ms()+60000,"approvers":[],"connections":[], "ssh_keys":[], "derived_credentials":[], "profiles": [], "workload_identities":[],"bindings":[],"rules":[]}});
         let mut message = b"RKPOLICY\0\x01".to_vec();
         message.extend_from_slice(&serde_jcs::to_vec(&bundle).unwrap());
         bundle["signature"] = data_encoding::BASE64URL_NOPAD
@@ -2307,6 +2476,15 @@ mod tests {
 
     #[test]
     fn oidc_envelope_limits_and_os_exceptions_are_closed() {
+        assert_eq!(
+            admin_body_limit(admin_msg::PKI_GENERATE_CRL, false),
+            ipc::ADMIN_PROOF_BODY_MAX_BYTES
+        );
+        assert_eq!(
+            admin_body_limit(admin_msg::PKI_GENERATE_CRL, true),
+            ipc::ADMIN_PROOF_BODY_MAX_BYTES
+        );
+
         for id in 1..=60 {
             let protected = ipc::managed_admin_operation(id).unwrap();
             if protected {
@@ -2330,6 +2508,14 @@ mod tests {
             131_081
         );
         assert_eq!(admin_body_limit(admin_msg::TEMPLATE_INSTALL, true), 131_131);
+        assert_eq!(
+            admin_body_limit(admin_msg::PKI_REVOKE_CERTIFICATE, false),
+            ipc::ADMIN_PROOF_BODY_MAX_BYTES
+        );
+        assert_eq!(
+            admin_body_limit(admin_msg::PKI_REVOKE_CERTIFICATE, true),
+            ipc::ADMIN_PROOF_BODY_MAX_BYTES
+        );
         assert_eq!(admin_body_limit(admin_msg::AUDIT_QUERY, false), 0);
         assert_eq!(admin_body_limit(admin_msg::METRICS, false), 0);
     }

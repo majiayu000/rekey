@@ -68,6 +68,8 @@ pub enum CredentialKind {
     #[serde(rename = "oauth-grant")]
     OAuthGrant,
     AwsStatic,
+    MtlsIdentity,
+    PkiCaSigner,
 }
 
 impl CredentialKind {
@@ -88,6 +90,8 @@ impl CredentialKind {
             Self::SshSecureEnclaveP256 => "ssh-secure-enclave-p256",
             Self::OAuthGrant => "oauth-grant",
             Self::AwsStatic => "aws-static",
+            Self::MtlsIdentity => "mtls-identity",
+            Self::PkiCaSigner => "pki-ca-signer",
         }
     }
 
@@ -108,6 +112,8 @@ impl CredentialKind {
             "ssh-secure-enclave-p256" => Ok(Self::SshSecureEnclaveP256),
             "oauth-grant" => Ok(Self::OAuthGrant),
             "aws-static" => Ok(Self::AwsStatic),
+            "mtls-identity" => Ok(Self::MtlsIdentity),
+            "pki-ca-signer" => Ok(Self::PkiCaSigner),
             _ => Err(DomainError::InvalidId),
         }
     }
@@ -130,6 +136,8 @@ impl CredentialKind {
             Self::SshSecureEnclaveP256 => 13,
             Self::OAuthGrant => 14,
             Self::AwsStatic => 15,
+            Self::MtlsIdentity => 16,
+            Self::PkiCaSigner => 17,
         }
     }
 }

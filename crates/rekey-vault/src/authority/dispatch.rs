@@ -98,15 +98,35 @@ impl Worker {
                 self.touch_if_ok(&result);
                 let _ = reply.send(result);
             }
+            AuthorityCommand::PrepareMtlsConnection {
+                request_id,
+                connection,
+                policy_digest,
+                not_after,
+                reply,
+            } => {
+                let result =
+                    self.prepare_mtls_connection(request_id, &connection, policy_digest, not_after);
+                let result = self.fault_on_integrity(result);
+                let _ = reply.send(result);
+            }
             AuthorityCommand::SshSign {
                 credential_id,
                 public_key,
                 data,
                 started,
+                approvals,
                 not_after,
                 reply,
             } => {
-                let result = self.ssh_sign(credential_id, public_key, data, *started, not_after);
+                let result = self.ssh_sign(
+                    credential_id,
+                    public_key,
+                    data,
+                    *started,
+                    approvals,
+                    not_after,
+                );
                 self.touch_if_ok(&result);
                 let _ = reply.send(result);
             }
@@ -553,6 +573,42 @@ impl Worker {
                         not_after,
                     )
                 };
+                self.touch_if_ok(&result);
+                let _ = reply.send(result);
+            }
+            AuthorityCommand::PkiGenerateCrl {
+                input,
+                proof,
+                request_id,
+                not_after,
+                reply,
+            } => {
+                let result = self.pki_generate_crl(input, proof, request_id, not_after, &reply);
+                self.touch_if_ok(&result);
+                let _ = reply.send(result);
+            }
+            AuthorityCommand::PkiRevokeCertificate {
+                input,
+                proof,
+                request_id,
+                not_after,
+                reply,
+            } => {
+                let result =
+                    self.pki_revoke_certificate(input, proof, request_id, not_after, &reply);
+                self.touch_if_ok(&result);
+                let _ = reply.send(result);
+            }
+            AuthorityCommand::PkiIssueClientCsr {
+                input,
+                csr,
+                proof,
+                request_id,
+                not_after,
+                reply,
+            } => {
+                let result =
+                    self.pki_issue_client_csr(input, csr, proof, request_id, not_after, &reply);
                 self.touch_if_ok(&result);
                 let _ = reply.send(result);
             }

@@ -222,7 +222,7 @@ async fn signed_connection_draft_readonly_idempotent_and_revocable() {
     let draft = f.draft(vec![connection]).await;
     let bundle = f.signed(&draft);
     assert_eq!(f.counts(), before);
-    assert_eq!(bundle["snapshot"]["format_version"], 7);
+    assert_eq!(bundle["snapshot"]["format_version"], 8);
     assert_eq!(bundle["snapshot"]["profiles"], json!([]));
     assert_eq!(bundle["snapshot"]["ssh_keys"], json!([]));
     let stale = f.draft(vec![]).await;

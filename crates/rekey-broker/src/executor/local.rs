@@ -213,6 +213,7 @@ impl ActionExecutor {
                             .min(active.monotonic_deadline().into_std()),
                         state: ipc::LocalApprovalState::Pending,
                         approval_id: None,
+                        external_evidence: Vec::new(),
                         reserved: false,
                     };
                     let local = self.local_calls.register(local, now.as_unix_ms())?;

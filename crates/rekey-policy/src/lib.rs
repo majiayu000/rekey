@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-pub const SNAPSHOT_FORMAT_VERSION: u32 = 7;
+pub const SNAPSHOT_FORMAT_VERSION: u32 = 8;
 pub const SNAPSHOT_MAX_BYTES: usize = 64 * 1024;
 pub const TRUST_MAX_BYTES: usize = 4 * 1024;
 pub const APPROVAL_GRANT_MAX_BYTES: usize = 4 * 1024;
@@ -812,6 +812,27 @@ fn parse_and_validate_snapshot_inner(
         {
             return Err(PolicyError::Invalid);
         }
+        if key.session_budget.max_signatures == 0
+            || key.session_budget.max_signatures > 10_000
+            || key.session_budget.max_seconds == 0
+            || key.session_budget.max_seconds > 28_800
+        {
+            return Err(PolicyError::Invalid);
+        }
+        validate_requirement(
+            &key.approver,
+            &ApprovalRequirement {
+                mode: ApprovalMode::OneTime,
+                max_uses: 1,
+                max_window_ms: None,
+            },
+            &approvers,
+        )?;
+        if let ApproverSpec::Ed25519 { keys, .. } = &key.approver
+            && !keys.windows(2).all(|pair| pair[0] < pair[1])
+        {
+            return Err(PolicyError::Invalid);
+        }
         if key.user_public_key.len() > 16384 {
             return Err(PolicyError::Invalid);
         }
@@ -1398,7 +1419,7 @@ mod tests {
         rule: PolicyRuleId,
     ) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
-            "format_version": 7, "connections": [], "ssh_keys": [], "derived_credentials": [], "profiles": [],
+            "format_version": 8, "connections": [], "ssh_keys": [], "derived_credentials": [], "profiles": [],
             "version": 1,
             "expires_at_ms": 10_000,
             "approvers": [],

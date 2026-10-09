@@ -184,7 +184,7 @@ impl Fixture {
         common::policy::activate_snapshot(
             &self.broker,
             json!({
-                "format_version":7,"version":version,"expires_at_ms":4_102_444_800_000_i64,
+                "format_version":8,"version":version,"expires_at_ms":4_102_444_800_000_i64,
                 "approvers":[],"workload_identities":[],"profiles":[],"bindings":[],"rules":[],
                 "connections":[self.connection],"ssh_keys":[],"derived_credentials":[],
             }),

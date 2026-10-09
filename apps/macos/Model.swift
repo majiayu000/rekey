@@ -1988,7 +1988,18 @@ struct ConnectionRule: Codable, Equatable, Identifiable, Sendable {
 }
 struct ConnectionOperation: Codable, Equatable, Sendable {let name:String;let description:String;let method:String;let path:String;let parameters:ConnectionJSON;let read_semantics:String?}
 struct ConnectionDefinition: Codable, Equatable, Identifiable, Sendable {
-    struct Auth:Codable,Equatable,Sendable {var header_name:String;var prefix:String}
+    struct Auth:Codable,Equatable,Sendable {
+        var header_name:String?;var prefix:String?;var kind:String? = nil
+        private enum CodingKeys:String,CodingKey {case header_name,prefix,kind}
+        init(header_name:String,prefix:String){self.header_name=header_name;self.prefix=prefix}
+        init(from decoder:Decoder)throws {
+            let fields=try decoder.container(keyedBy:CodingKeys.self)
+            kind=try fields.decodeIfPresent(String.self,forKey:.kind)
+            header_name=try fields.decodeIfPresent(String.self,forKey:.header_name)
+            prefix=try fields.decodeIfPresent(String.self,forKey:.prefix)
+            guard kind=="mtls" && header_name==nil && prefix==nil || kind==nil && header_name != nil && prefix != nil else{throw UIError(message:"连接认证声明无效。")}
+        }
+    }
     struct Limits:Codable,Equatable,Sendable {var requests_per_hour:UInt32;var max_request_bytes:UInt32;var max_response_bytes:UInt32}
     struct Llm:Codable,Equatable,Sendable {var models:[String];var max_tokens:UInt32;var max_requests_per_day:UInt32;var max_output_tokens_per_day:UInt64}
     var name:String;var preset:String;var credential_id:String;var origin:String;var auth:Auth
@@ -2191,9 +2202,13 @@ struct SSHHostDefinition:Codable,Equatable,Sendable {
         return input.trimmingCharacters(in:.whitespacesAndNewlines)
     }
 }
+struct SSHApproverDefinition: Codable, Equatable, Sendable { var kind:String;var keys:[String]?;var threshold:Int? }
+struct SSHSessionBudget: Codable, Equatable, Sendable { var max_signatures:Int;var max_seconds:Int }
 struct SSHKeyDefinition:Codable,Equatable,Identifiable,Sendable {
     var name:String;var credential_id:String;var user_public_key:String
     var hosts:[SSHHostDefinition];var git_signing:String
+    var approver = SSHApproverDefinition(kind:"local-presence", keys:nil, threshold:nil)
+    var session_budget = SSHSessionBudget(max_signatures:100,max_seconds:600)
     var id:String{credential_id}
     var publicKeyText:String {
         guard let bytes=Data(base64Encoded:user_public_key),bytes.count>=4 else{return user_public_key}

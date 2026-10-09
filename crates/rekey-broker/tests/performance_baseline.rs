@@ -447,7 +447,7 @@ async fn activate_connection(broker: &common::TestBroker, credential_id: &str) {
     connection.limits.requests_per_hour = 1_000_000;
     connection.limits.max_response_bytes = LARGE_RESPONSE_BYTES as u32;
     let snapshot = json!({
-        "format_version": 7,
+        "format_version": 8,
         "version": 1,
         "expires_at_ms": 4_102_444_800_000_i64,
         "approvers": [],

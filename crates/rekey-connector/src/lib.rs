@@ -401,6 +401,8 @@ pub fn resolve_builtin(
         CredentialKind::SshEd25519
         | CredentialKind::SshP256
         | CredentialKind::SshSecureEnclaveP256
+        | CredentialKind::MtlsIdentity
+        | CredentialKind::PkiCaSigner
         | CredentialKind::OAuthGrant
         | CredentialKind::AwsStatic => Err(ConnectorSelectionError::SelectionRejected),
         #[cfg(not(feature = "lab"))]

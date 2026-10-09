@@ -119,7 +119,7 @@ impl Fixture {
             .iter()
             .map(|a| json!({"action_id":a.id,"version":a.version}))
             .collect();
-        let snapshot = json!({"format_version":7,"version":1,"expires_at_ms":4_102_444_800_000_i64,"approvers":[],"workload_identities":[],
+        let snapshot = json!({"format_version":8,"version":1,"expires_at_ms":4_102_444_800_000_i64,"approvers":[],"workload_identities":[],
             "connections":[], "ssh_keys":[], "profiles":[{"name":"test-run","principal_id":principal,"grants":[{"instance":"work","capabilities":[{"rule":"template-default","capability":capability,"actions":refs}]}],"session":{"ttl_ms":60000,"max_uses":100},"confirm_each_run":confirm,"isolation":"none","egress":"allow","llm_limits":[]}],
             "bindings":actions.iter().map(|a|json!({"action_id":a.id,"version":a.version,"resource":{"type":"fixture","id":a.id},"parameter_schema_id":"any/v1","parameter_schema":{}})).collect::<Vec<_>>(),
             "rules":actions.iter().map(|a|json!({"id":PolicyRuleId::new_random(),"effect":"permit","principal_id":principal,"action_id":a.id,"version":a.version,"resource":{"type":"fixture","id":a.id},"parameters":{"kind":"any_validated"}})).collect::<Vec<_>>()});

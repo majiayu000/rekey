@@ -100,7 +100,8 @@ impl Worker {
             ensure_mutation_current(not_after)?;
             credential_state::verify(old_root.bytes(), self.header.vault_id, record)?;
         }
-        let mut actions = self.store.list_all_actions()?;
+        let mut metadata = self.store.verified_metadata(&verified_header)?;
+        let mut actions = std::mem::take(&mut metadata.actions);
         for record in &actions {
             ensure_mutation_current(not_after)?;
             crate::convert::verified_record_to_action(
@@ -236,6 +237,9 @@ impl Worker {
             not_after,
             None,
         )?;
+        metadata.actions = actions.clone();
+        header.pki_digest = metadata.digest();
+        generation.bind_pki_digest(new_root.bytes(), header.pki_digest)?;
         let result = self.store.replace_root_ciphertexts(
             &header,
             &versions,

@@ -318,6 +318,8 @@ impl Worker {
                     return Err(error);
                 }
             };
+            let pki = self.store.verified_certificates(&header);
+            self.fault_on_integrity(pki)?;
             if let Err(error) = self
                 .store
                 .verified_policy_material(vrk.bytes(), header.vault_id)
@@ -1095,6 +1097,7 @@ mod tests {
     }
 
     fn advance_authenticated_header(worker: &Worker, db: &rusqlite::Connection) {
+        let generation = worker.header.generation + 1;
         let wrapper = worker
             .store
             .active_wrapper(crate::model::WrapperKind::Password)
@@ -1106,17 +1109,18 @@ mod tests {
             key.bytes(),
             worker.header.vault_id,
             worker.header.format_version,
-            2,
+            generation,
+            &worker.header.pki_digest,
         )
         .unwrap();
         db.execute(
             "UPDATE vault_header SET generation=?1,generation_mac=?2",
-            rusqlite::params![2u64.to_be_bytes().as_slice(), mac.as_slice()],
+            rusqlite::params![generation.to_be_bytes().as_slice(), mac.as_slice()],
         )
         .unwrap();
         worker
             .anchors
-            .reserve(worker.anchors.read().unwrap(), 2, &mut false)
+            .reserve(worker.anchors.read().unwrap(), generation, &mut false)
             .unwrap();
     }
 
@@ -1129,9 +1133,25 @@ mod tests {
                     "audit_retention",
                     "vault_lease_journal_state",
                     "profile_usage_state",
+                    "pki_certificates",
                     "audit",
                 ] {
                     let (_dir, mut worker, _) = fixture();
+                    if table == "pki_certificates" {
+                        worker
+                            .credential_add(
+                                rekey_domain::credential::CredentialLabel::new(
+                                    "pki-resume-fixture",
+                                )
+                                .unwrap(),
+                                rekey_domain::credential::CredentialKind::OpaqueToken,
+                                SecretInput::from_slice(b"synthetic-pki-resume-fixture"),
+                                password(),
+                                None,
+                            )
+                            .unwrap();
+                    }
+                    let original_generation = worker.header.generation;
                     let (ticket, _) = worker.remember_desktop(password(), None).unwrap();
                     if !unlocked {
                         worker.set_locked("candidate-test", true).unwrap();
@@ -1141,7 +1161,17 @@ mod tests {
                     ))
                     .unwrap();
                     advance_authenticated_header(&worker, &db);
-                    if table == "audit" {
+                    if table == "pki_certificates" {
+                        db.pragma_update(None, "foreign_keys", true).unwrap();
+                        let inserted = db.execute(
+                            "INSERT INTO pki_certificates(serial,credential_id,credential_version,request_id,request_digest,created_at_ms,state) SELECT ?1,credential_id,version,?2,zeroblob(32),0,0 FROM credential_versions",
+                            rusqlite::params![[1u8;16].as_slice(), [2u8;16].as_slice()],
+                        ).unwrap();
+                        assert_eq!(
+                            inserted, 1,
+                            "tamper must reference the existing valid version"
+                        );
+                    } else if table == "audit" {
                         db.execute_batch("CREATE TRIGGER reject_unlock BEFORE INSERT ON audit_events WHEN NEW.event_type IN ('vault.unlocked','desktop.resumed') BEGIN SELECT RAISE(ABORT,'synthetic audit failure'); END;").unwrap();
                     } else {
                         db.execute(
@@ -1174,7 +1204,7 @@ mod tests {
                         "{desktop}/{unlocked}/{table}"
                     );
                     assert_eq!(
-                        worker.header.generation, 1,
+                        worker.header.generation, original_generation,
                         "candidate header was published before {desktop}/{unlocked}/{table}"
                     );
                     assert!(worker.presence_grant.is_none());
