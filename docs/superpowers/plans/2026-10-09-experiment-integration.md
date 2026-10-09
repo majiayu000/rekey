@@ -76,7 +76,7 @@ Combined-head local software gates passed. Raw logs are retained in the reposito
 | Changed shell/Python/YAML syntax | passed |
 | `cargo audit --file Cargo.lock --json` | 0 vulnerabilities, no warnings; advisory DB updated 2026-10-08 |
 
-The default workspace includes 4 mTLS, 8 broker SSH, 9 offline signer, 22 client CSR, 2 CA contract, 12 action integrity, 4 DEK and 30 storage contracts. It does not turn ignored device/provider/load fixtures into passes. Full lab runtime acceptance remains the lab CI gate, not a claimed local full-suite run.
+The default workspace includes 4 mTLS, 8 broker SSH, 9 offline signer, 22 client CSR, 2 CA contract, 12 action integrity, 4 DEK and 30 storage contracts. It does not turn ignored device/provider/load fixtures into passes. Full lab runtime acceptance remains unverified: `lab-weekly.yml` checks compilation, Clippy and archived harness syntax only. The PR security gate runs the two `child_wait` regressions with lab enabled; it does not execute the full lab runtime suite.
 
 Failure history retained during integration:
 
@@ -94,4 +94,4 @@ Use `rekey approval review ID` and `rekey approval get ID` to obtain the public 
 
 ## Remaining evidence boundaries
 
-Real Touch ID, Secure Enclave, Keychain, installed App behavior, Linux event-wait runtime, real provider/CA deployment and public packaging/release are separate gates. This integration makes no combined-head speedup claim and does not implement Agent PKI admission or HA. Experimental branches are retained for provenance.
+Real Touch ID, Secure Enclave, Keychain, installed App behavior, full lab runtime, real provider/CA deployment and public packaging/release are separate gates. Linux event-wait coverage is limited to the two child-wait regressions run by the PR security gate, not a complete launcher acceptance. This integration makes no combined-head speedup claim and does not implement Agent PKI admission or HA. Experimental branches are retained for provenance.
