@@ -136,7 +136,7 @@ struct ConnectionUIContract {
         let model = AppModel(stateDirectory: state, preferences: preferences, binary: executable)
         model.status = ServiceStatus(state: "unlocked", format_version: 27, runtime_version: "0.5.0-alpha.1", sessions_active: 1, peer_security: "same-user", lab_enabled: false, rollback: nil)
         let client = CLI(binary: executable, stateDirectory: state)
-        func login() async { await model.perform(Operation(title: "login", detail: "synthetic", arguments: ["unlock"]), proof: "synthetic-proof", client: client) }
+        func login() async { await model.perform(Operation(title: "login", detail: "synthetic", arguments: ["unlock"]), proof: "synthetic-proof", presenceRevision: model.nativeFlowRevision, client: client) }
         func settled() async throws {
             let deadline = Date().addingTimeInterval(3)
             while model.pendingDesktopLocks > 0 {
@@ -145,8 +145,25 @@ struct ConnectionUIContract {
             }
         }
         try require(model.desktopLocked && !model.unlocked && !model.desktopReady, "startup remains private-locked with an unlocked daemon")
+        model.result = ResultMessage(title: "recovery", text: "synthetic-new-vault-recovery", sensitive: true)
+        model.clearCache()
+        try require(model.result != nil, "an initially locked setup preserves the required recovery-key saving step")
+        model.result = nil
+        let beforeLock = model.nativeFlowRevision
+        model.lockDesktop()
+        await model.perform(Operation(title: "stale login", detail: "synthetic", arguments: ["unlock"]), proof: "synthetic-proof", presenceRevision: beforeLock, client: client)
+        try require(model.desktopLocked && model.desktopToken == nil && !FileManager.default.fileExists(atPath: root.appendingPathComponent("login-started").path), "a pre-lock form cannot begin a later password command")
         await login()
         try require(model.desktopReady, "explicit password login opens the desktop")
+        model.result = ResultMessage(title: "synthetic", text: "synthetic-visible-secret", sensitive: true)
+        model.operation = Operation(title: "synthetic", detail: "", arguments: ["backup"])
+        model.clearCache(); try await settled()
+        try require(model.desktopLocked && model.result == nil && model.operation == nil, "connection loss clears detached sensitive presentation")
+        await login()
+        model.result = ResultMessage(title: "synthetic", text: "synthetic-visible-secret", sensitive: true)
+        model.rejectDesktopSession(UIError(message: "INVALID_UNLOCK_CREDENTIAL")); try await settled()
+        try require(model.desktopLocked && model.desktopToken == nil && model.result == nil, "rejected desktop session locks and clears presentation immediately")
+        await login()
         model.result = ResultMessage(title: "synthetic", text: "synthetic-visible-secret", sensitive: true)
         let revision = model.nativeFlowRevision
         model.checkDesktopIdle(elapsed: 301)

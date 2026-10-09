@@ -1510,11 +1510,14 @@ final class AppModel: ObservableObject {
     func rejectDesktopSession(_ error: Error) {
         let message = error.localizedDescription
         if message.contains("INVALID_UNLOCK_CREDENTIAL") || message.contains("LOCKED") || message.contains("FAULTED") {
-            PresenceKey.invalidateAuthentication()
-            desktopToken = nil; desktopExpiry = .distantPast
+            lockDesktop(reason: "管理会话已失效，请重新验证身份。")
         }
     }
     func clearCache() {
+        if !desktopLocked {
+            operation = nil; result = nil; showAddCredential = false; showSession = false
+            onboardingRoute = nil; onboardingConnection = nil; onboardingCommand = nil
+        }
         let token = desktopToken
         let owner = token.map { _ in cli }
         desktopToken = nil; desktopExpiry = .distantPast
@@ -1676,7 +1679,7 @@ final class AppModel: ObservableObject {
         do {
             guard !presence || op.presenceAllowed,
                   !rememberPresence || desktopLogin,
-                  !guarded || (presenceRevision == nativeFlowRevision && client.stateDirectory == stateDirectory) else {
+                  (!guarded && presenceRevision == nil) || (presenceRevision == nativeFlowRevision && client.stateDirectory == stateDirectory) else {
                 throw UIError(message: "此操作不支持系统认证，或操作上下文已失效，未提交。")
             }
             let operationProof: String

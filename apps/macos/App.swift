@@ -78,6 +78,7 @@ struct RootView: View {
                 Task { await model.refresh(passive: true) }
             }
         }
+        .onChange(of: model.desktopLocked) { _, locked in if locked { showActionForm = false; activityDetail = nil } }
         .onChange(of: search) { _, _ in model.selectedCredential = filtered.first?.id }
         .onChange(of: type) { _, _ in model.selectedCredential = filtered.first?.id }
         .onChange(of: model.page) { _, _ in model.onboardingRoute = nil; model.clearNativeFlow(); Task { await model.refresh() } }

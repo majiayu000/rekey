@@ -74,3 +74,10 @@ part of the personal Connection flow; laboratory providers remain governed by
 their existing lab CLI/contracts. Team raw draft editing preserves all current
 fields and the independent review/sign/activate boundary. Docker HA has its own
 controller specification and PR; it is not an acceptance dependency of this UI.
+
+Follow-up cache review: a connection failure or rejected A1 closes sensitive
+result/operation sheets as well as the main presentation; Root-owned action and
+activity sheets close on privacy lock. Initially locked setup keeps its explicit
+recovery-key saving result. Captured form revisions are checked before ordinary
+password commands too, so a pre-lock form cannot start a late command. Synthetic
+regressions cover these paths separately from actual device authentication.
