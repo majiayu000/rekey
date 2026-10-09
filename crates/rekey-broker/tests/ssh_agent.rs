@@ -655,3 +655,122 @@ async fn accepted_approval_and_started_roll_back_together_on_audit_failure() {
     assert_eq!(f.started(), 0);
     f.broker.shutdown().await;
 }
+
+/// Manual local comparison; all keys/files/sockets are disposable synthetic state.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "manual OpenSSH concurrency/latency comparison; requires ssh-agent, ssh-add and ssh-keygen"]
+async fn real_openssh_concurrency_comparison_counts_every_failure() {
+    use std::process::Stdio;
+    use std::time::Instant;
+    let f = Fixture::new(RuleEffect::Deny).await;
+    let root = f.broker.dir.path();
+    let rekey_public = root.join("rekey-public");
+    std::fs::write(
+        &rekey_public,
+        format!("ssh-ed25519 {} synthetic-only\n", BASE64.encode(&f.public)),
+    )
+    .unwrap();
+    let baseline_key = root.join("baseline-key");
+    assert!(
+        tokio::process::Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+            .arg(&baseline_key)
+            .status()
+            .await
+            .unwrap()
+            .success()
+    );
+    let baseline_socket = root.join("baseline.sock");
+    let mut baseline = tokio::process::Command::new("ssh-agent")
+        .arg("-D")
+        .arg("-a")
+        .arg(&baseline_socket)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !baseline_socket.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        tokio::process::Command::new("ssh-add")
+            .arg(&baseline_key)
+            .env("SSH_AUTH_SOCK", &baseline_socket)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await
+            .unwrap()
+            .success()
+    );
+    let mut results = Vec::new();
+    for (name, public, socket) in [
+        (
+            "openssh-agent",
+            baseline_key.with_extension("pub"),
+            baseline_socket,
+        ),
+        (
+            "rekey",
+            rekey_public,
+            f.broker.state_dir.join("ssh-agent.sock"),
+        ),
+    ] {
+        for concurrency in [1, 4, 16] {
+            let mut durations = Vec::new();
+            let mut failures = 0;
+            for start in (0..16).step_by(concurrency) {
+                let mut jobs = tokio::task::JoinSet::new();
+                for n in start..start + concurrency {
+                    let input = root.join(format!("{name}-{concurrency}-{n}"));
+                    std::fs::write(&input, b"synthetic concurrency comparison").unwrap();
+                    let public = public.clone();
+                    let socket = socket.clone();
+                    jobs.spawn(async move {
+                        let started = Instant::now();
+                        let output = tokio::time::timeout(
+                            Duration::from_secs(20),
+                            tokio::process::Command::new("ssh-keygen")
+                                .args(["-Y", "sign", "-q", "-n", "git", "-f"])
+                                .arg(public)
+                                .arg(input)
+                                .env("SSH_AUTH_SOCK", socket)
+                                .kill_on_drop(true)
+                                .output(),
+                        )
+                        .await;
+                        (
+                            started.elapsed().as_micros() as u64,
+                            output.is_ok_and(|r| r.is_ok_and(|o| o.status.success())),
+                        )
+                    });
+                }
+                while let Some(result) = jobs.join_next().await {
+                    let (duration, ok) = result.unwrap();
+                    durations.push(duration);
+                    failures += usize::from(!ok);
+                }
+            }
+            durations.sort_unstable();
+            results.push(json!({"backend":name,"concurrency":concurrency,"attempts":durations.len(),"failures":failures,
+                "mean_us":durations.iter().sum::<u64>() / durations.len() as u64,"p95_us":durations[15]}));
+        }
+    }
+    baseline.kill().await.unwrap();
+    baseline.wait().await.unwrap();
+    println!(
+        "{}",
+        json!({"scope":"local Ed25519 git-namespace signing; unequal security contracts; all attempts counted", "results":results})
+    );
+    assert!(
+        results.iter().all(|r| r["failures"] == 0),
+        "concurrency errors must not be excluded from acceptance"
+    );
+    assert_eq!(f.started(), 48);
+    f.broker.shutdown().await;
+}

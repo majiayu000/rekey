@@ -308,6 +308,7 @@ mod tests {
                     vec![(reference, timeout_ms)],
                     ProfileSessionScope::new(self.profile.clone(), self.digest),
                     Instant::now() + Duration::from_secs(60),
+                    self.ctx.sessions.reserve_control_owner().unwrap(),
                 )
                 .unwrap()
         }
@@ -958,6 +959,7 @@ mod tests {
                 vec![(action, 5000)],
                 stale,
                 Instant::now() + Duration::from_secs(60),
+                f.ctx.sessions.reserve_control_owner().unwrap(),
             )
             .unwrap();
         assert!(matches!(
@@ -1202,6 +1204,7 @@ mod tests {
                 vec![(reference, 5000)],
                 ProfileSessionScope::new(f.profile.clone(), [0; 32]),
                 Instant::now() + Duration::from_secs(60),
+                f.ctx.sessions.reserve_control_owner().unwrap(),
             )
             .unwrap();
         assert!(matches!(

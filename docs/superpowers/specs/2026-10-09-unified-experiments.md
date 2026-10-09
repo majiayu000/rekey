@@ -18,3 +18,21 @@ No new Agent PKI admission or HA implementation is included. No historical green
 ## Verification
 
 Run repository format/check/Clippy/test and mechanical dependency gates on the combined head. Exercise real TLS client authentication, PKI CSR/serial/CRL/restart/backup/rotation/tamper paths, native SSH approval and cancellation/owner drains, and the current Connection/OAuth/T1 contracts. Keep hardware/Touch ID/Secure Enclave and real deployment evidence separate from software fixtures. Preserve the native startup regression from the auto-connect fix.
+## Shared control owner capacity (issue #70)
+
+Keep seven short admin requests independently available at the full quota of
+16 live native SSH/Profile owners. Accept at most 23 normal admin connections,
+plus one bounded capacity responder. Profile registration consumes a short
+request slot only until registration completes; an idle control does not hold it.
+Admission uses immediate retryable `AUTHORITY_BUSY` on RKIP. Native OpenSSH
+capacity refusal remains a bounded socket close under its existing protocol.
+These are private constants, with no configuration, schema or opcode changes.
+
+The shared owner permit belongs to the real socket, registration and admitted
+execution. Profile registry entries retain only Weak references. Revocation
+prevents further admission immediately, while queued Authority work and admitted
+effects retain strong ownership until actual completion. EOF during registration
+drains already queued work before releasing its owner; it never publishes a token
+to a disconnected client. Registration deadlines prevent late admission, but
+cleanup may outlive the deadline while the Worker finishes. Gateway replacement
+cleanup is not established by this quota contract.

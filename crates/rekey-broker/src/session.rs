@@ -2,8 +2,8 @@
 //! SHA-256 is stored. Sessions live in memory only: restart, lock, idle
 //! drain, and shutdown revoke everything.
 
-use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use crate::error::BrokerError;
@@ -18,11 +18,13 @@ use rekey_domain::profile::{AgentProfile, ProfileLlmLimit};
 use rekey_domain::{DomainError, Timestamp};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
-use tokio::sync::Notify;
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use zeroize::Zeroizing;
 
 mod approval;
 pub(crate) use approval::{ApprovalContext, LocalApproval};
+
+const CONTROL_OWNER_LIMIT: usize = 16;
 
 #[derive(Debug)]
 pub enum CreateSessionError {
@@ -35,6 +37,7 @@ struct Entry {
     grant: SessionGrant,
     provenance: SessionProvenance,
     profile_scope: Option<Arc<ProfileSessionScope>>,
+    control_owner: Option<Weak<OwnedSemaphorePermit>>,
     action_timeouts: Vec<(ActionVersionRef, u32)>,
     uses_left: u32,
     in_flight: u32,
@@ -107,6 +110,7 @@ pub(crate) struct ProfileActionScope {
 pub(crate) struct ProfileSessionGuard {
     registry: Arc<SessionRegistry>,
     session_id: SessionId,
+    _control_owner: Arc<OwnedSemaphorePermit>,
 }
 impl Drop for ProfileSessionGuard {
     fn drop(&mut self) {
@@ -126,6 +130,7 @@ pub struct SessionTicket {
     pub timeout_ms: u32,
     pub expires_at_ms: i64,
     profile_scope: Option<ProfileActionScope>,
+    control_owner: Option<Arc<OwnedSemaphorePermit>>,
 }
 
 /// RAII permit for one execution. Drop always releases the concurrency slot,
@@ -139,6 +144,7 @@ pub struct ExecutionPermit {
     pub timeout_ms: u32,
     pub expires_at_ms: i64,
     profile_scope: Option<ProfileActionScope>,
+    _control_owner: Option<Arc<OwnedSemaphorePermit>>,
 }
 
 impl ExecutionPermit {
@@ -228,10 +234,24 @@ impl Default for Inner {
     }
 }
 
-#[derive(Default)]
 pub struct SessionRegistry {
     inner: Mutex<Inner>,
     pub(crate) approval_changed: Notify,
+    pub(crate) admin_requests: Arc<Semaphore>,
+    control_owners: Arc<Semaphore>,
+}
+
+impl Default for SessionRegistry {
+    fn default() -> Self {
+        Self {
+            inner: Mutex::new(Inner::default()),
+            approval_changed: Notify::new(),
+            admin_requests: Arc::new(Semaphore::new(
+                crate::runtime::MAX_ADMIN_REQUEST_CONNECTIONS,
+            )),
+            control_owners: Arc::new(Semaphore::new(CONTROL_OWNER_LIMIT)),
+        }
+    }
 }
 
 fn entropy_token() -> Result<(Zeroizing<[u8; CAPABILITY_TOKEN_BYTES]>, String), DomainError> {
@@ -252,6 +272,15 @@ fn hash_token(raw: &[u8]) -> [u8; 32] {
 }
 
 impl SessionRegistry {
+    pub(crate) fn reserve_control_owner(
+        &self,
+    ) -> Result<Arc<OwnedSemaphorePermit>, rekey_vault::AuthorityError> {
+        Arc::clone(&self.control_owners)
+            .try_acquire_owned()
+            .map(Arc::new)
+            .map_err(|_| rekey_vault::AuthorityError::AuthorityBusy)
+    }
+
     /// Authenticate once without reserving an execution or refreshing lifetime.
     pub(crate) fn profile_inventory(
         &self,
@@ -354,7 +383,7 @@ impl SessionRegistry {
         action_timeouts: Vec<(ActionVersionRef, u32)>,
         provenance: SessionProvenance,
     ) -> Result<String, CreateSessionError> {
-        self.admit_inner(grant, action_timeouts, provenance, None, None)
+        self.admit_inner(grant, action_timeouts, provenance, None, None, None)
     }
 
     pub(crate) fn admit_profile(
@@ -363,6 +392,7 @@ impl SessionRegistry {
         action_timeouts: Vec<(ActionVersionRef, u32)>,
         scope: ProfileSessionScope,
         deadline: Instant,
+        control_owner: Arc<OwnedSemaphorePermit>,
     ) -> Result<(Zeroizing<String>, ProfileSessionGuard), CreateSessionError> {
         let session_id = grant.id;
         let token = self.admit_inner(
@@ -371,6 +401,7 @@ impl SessionRegistry {
             SessionProvenance::Admin,
             Some(Arc::new(scope)),
             Some(deadline),
+            Some(Arc::downgrade(&control_owner)),
         )?;
         // No await or fallible work may separate insertion from ownership.
         Ok((
@@ -378,6 +409,7 @@ impl SessionRegistry {
             ProfileSessionGuard {
                 registry: Arc::clone(self),
                 session_id,
+                _control_owner: control_owner,
             },
         ))
     }
@@ -389,6 +421,7 @@ impl SessionRegistry {
         provenance: SessionProvenance,
         profile_scope: Option<Arc<ProfileSessionScope>>,
         deadline: Option<Instant>,
+        control_owner: Option<Weak<OwnedSemaphorePermit>>,
     ) -> Result<String, CreateSessionError> {
         let (raw, encoded) = entropy_token().map_err(CreateSessionError::Domain)?;
         let ttl_ms = grant
@@ -401,6 +434,7 @@ impl SessionRegistry {
         let monotonic_deadline =
             deadline.map_or(monotonic_deadline, |cap| cap.min(monotonic_deadline));
         let entry = Entry {
+            control_owner,
             profile_scope,
             token_hash: hash_token(raw.as_ref()),
             action_timeouts,
@@ -486,6 +520,12 @@ impl SessionRegistry {
             .as_ref()
             .map(|scope| scope.action(wanted))
             .transpose()?;
+        // Upgrade while the revocation lock is held; the registry never owns a control.
+        let control_owner = entry
+            .control_owner
+            .as_ref()
+            .map(|owner| owner.upgrade().ok_or(DomainError::InvalidCapability))
+            .transpose()?;
         entry.uses_left -= 1;
         entry.in_flight += 1;
         if entry.uses_left == 0 {
@@ -493,6 +533,7 @@ impl SessionRegistry {
             entry.exhausted = true;
         }
         Ok(SessionTicket {
+            control_owner,
             profile_scope,
             session_id: entry.grant.id,
             principal: entry.grant.principal,
@@ -511,6 +552,7 @@ impl SessionRegistry {
     ) -> Result<ExecutionPermit, BrokerError> {
         let ticket = self.begin(token, wanted, now)?;
         Ok(ExecutionPermit {
+            _control_owner: ticket.control_owner,
             profile_scope: ticket.profile_scope,
             use_refunded: false,
             registry: Arc::clone(self),
@@ -1200,6 +1242,44 @@ mod profile_tests {
     }
 
     #[test]
+    fn revoked_control_quota_is_retained_by_actual_execution_only() {
+        let registry = Arc::new(SessionRegistry::new());
+        registry.open_for_admission();
+        let mut guards = Vec::new();
+        let mut execution = None;
+        for n in 0..CONTROL_OWNER_LIMIT {
+            let (grant, scope, action) = grant_scope();
+            let (token, guard) = registry
+                .admit_profile(
+                    grant,
+                    vec![(action, 100)],
+                    scope,
+                    Instant::now() + Duration::from_secs(60),
+                    registry.reserve_control_owner().unwrap(),
+                )
+                .unwrap();
+            if n == 0 {
+                execution = Some(
+                    registry
+                        .acquire(&token, action, crate::now_ts().unwrap())
+                        .unwrap(),
+                );
+            }
+            guards.push(guard);
+        }
+        assert!(registry.reserve_control_owner().is_err());
+        drop(guards);
+        let mut replacements = Vec::new();
+        for _ in 0..CONTROL_OWNER_LIMIT - 1 {
+            replacements.push(registry.reserve_control_owner().unwrap());
+        }
+        assert!(registry.reserve_control_owner().is_err());
+        drop(execution);
+        replacements.push(registry.reserve_control_owner().unwrap());
+        assert!(registry.reserve_control_owner().is_err());
+    }
+
+    #[test]
     fn inventory_never_reserves_uses_and_distinguishes_inflight_last_use() {
         let registry = Arc::new(SessionRegistry::new());
         registry.open_for_admission();
@@ -1210,6 +1290,7 @@ mod profile_tests {
                 vec![(action, 100)],
                 scope,
                 Instant::now() + Duration::from_secs(60),
+                registry.reserve_control_owner().unwrap(),
             )
             .unwrap();
         for _ in 0..10 {
@@ -1254,6 +1335,7 @@ mod profile_tests {
                     vec![(action, 100)],
                     scope,
                     Instant::now() + Duration::from_secs(60),
+                    registry.reserve_control_owner().unwrap(),
                 )
                 .unwrap();
             let id = guard.session_id();
@@ -1327,6 +1409,7 @@ mod profile_tests {
                 vec![(action, 100)],
                 scope,
                 Instant::now() + Duration::from_secs(60),
+                registry.reserve_control_owner().unwrap(),
             )
             .unwrap();
         let (id, _, _) = registry
@@ -1354,6 +1437,7 @@ mod profile_tests {
                 vec![(action, 100)],
                 scope,
                 Instant::now() - Duration::from_millis(1),
+                registry.reserve_control_owner().unwrap(),
             )
             .unwrap();
         assert_eq!(
@@ -1392,6 +1476,7 @@ mod profile_tests {
                 vec![(action, 100)],
                 scope,
                 Instant::now() + Duration::from_secs(60),
+                registry.reserve_control_owner().unwrap(),
             )
             .unwrap();
         let permit = registry
@@ -1432,6 +1517,7 @@ mod profile_tests {
                 vec![(action, 100)],
                 scope,
                 Instant::now() + Duration::from_secs(60),
+                registry.reserve_control_owner().unwrap(),
             )
             .unwrap();
         assert!(matches!(
@@ -1459,6 +1545,7 @@ mod profile_tests {
                 vec![(action, 100)],
                 scope,
                 Instant::now() + Duration::from_millis(40),
+                registry.reserve_control_owner().unwrap(),
             )
             .unwrap();
         assert!(
@@ -1495,6 +1582,7 @@ mod profile_tests {
                     vec![(action, 100)],
                     scope,
                     Instant::now() + Duration::from_secs(60),
+                    registry.reserve_control_owner().unwrap(),
                 )
                 .unwrap();
             let (mut writer, reader) = tokio::io::duplex(1);
