@@ -48,6 +48,7 @@ fn admin_body_limit(message_type: u16, managed: bool) -> u32 {
         admin_msg::DESKTOP_LOGIN
         | admin_msg::DESKTOP_REVEAL
         | admin_msg::DESKTOP_REMEMBER
+        | admin_msg::DESKTOP_LOCK
         | admin_msg::DESKTOP_RESUME => ipc::ADMIN_PROOF_BODY_MAX_BYTES,
         admin_msg::DESKTOP_ADD | admin_msg::TEMPLATE_INSTALL | admin_msg::SSH_KEY => {
             ipc::ADMIN_SECRET_BODY_MAX_BYTES
@@ -404,15 +405,35 @@ async fn dispatch_operation(
         }
         admin_msg::DESKTOP_REMEMBER => {
             let deadline = request_deadline;
-            empty_meta(frame)?;
+            let settings: ipc::DesktopRememberMeta = meta(frame)?;
             let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
             let _owner = ctx.lifecycle.coordinate_until(deadline).await?;
             ctx.lifecycle.reject_if_not_running()?;
             let (key, expires) = ctx
                 .authority
-                .desktop_remember(proof_from(kind, proof), Some(deadline.into_std()))
+                .desktop_remember(
+                    proof_from(kind, proof),
+                    Some(deadline.into_std()),
+                    settings.lifetime_ms,
+                )
                 .await?;
             Ok((json(&serde_json::json!({"expires_at_ms": expires}))?, key))
+        }
+        admin_msg::DESKTOP_LOCK => {
+            let settings: ipc::DesktopLockMeta = meta(frame)?;
+            let (_, token) = ipc::parse_proof_body(&frame.body)?;
+            let _owner = ctx.lifecycle.coordinate_until(request_deadline).await?;
+            ctx.authority
+                .desktop_lock(
+                    SecretInput::from_slice(token),
+                    settings.forget_remembered,
+                    Some(request_deadline.into_std()),
+                )
+                .await?;
+            Ok((
+                json(&serde_json::json!({"locked":true}))?,
+                Zeroizing::new(Vec::new()),
+            ))
         }
         admin_msg::DESKTOP_RESUME => {
             empty_meta(frame)?;
@@ -2275,7 +2296,11 @@ mod tests {
             )
             .unwrap();
         drop(permit);
-        let (key, _) = ctx.authority.desktop_remember(proof(), None).await.unwrap();
+        let (key, _) = ctx
+            .authority
+            .desktop_remember(proof(), None, 604_800_000)
+            .await
+            .unwrap();
         let metadata = serde_json::to_vec(&ipc::LocalApprovalDecisionMeta {
             approval_request_id: id,
             expected_review_sha256: hash,

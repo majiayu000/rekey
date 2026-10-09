@@ -6,6 +6,7 @@ import Darwin
 import CryptoKit
 import UserNotifications
 import LocalAuthentication
+import CoreGraphics
 
 struct UIError: LocalizedError {
     let message: String
@@ -21,6 +22,28 @@ struct DesktopReceipt {
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
         guard lines.count == 2, let expiry = Int64(lines[0]), expiry > 0 else { throw UIError(message: "管理会话响应无效。") }
         return DesktopReceipt(token: try PresenceKey.validated(String(lines[1])), expiresAt: Date(timeIntervalSince1970: Double(expiry) / 1000))
+    }
+}
+
+enum DesktopIdleInterval: Int, Codable, CaseIterable, Identifiable {
+    case disabled = 0, oneMinute = 60, fiveMinutes = 300, fifteenMinutes = 900, thirtyMinutes = 1800, oneHour = 3600
+    var id: Int { rawValue }
+    var label: String { self == .disabled ? "不因空闲锁定" : "\(rawValue / 60) 分钟" }
+}
+
+enum DesktopPasswordInterval: Int, Codable, CaseIterable, Identifiable {
+    case everyUnlock = 0, oneDay = 24, sevenDays = 168, thirtyDays = 720
+    var id: Int { rawValue }
+    var label: String { self == .everyUnlock ? "每次解锁都输入" : "\(rawValue / 24) 天" }
+}
+
+struct DesktopSecuritySettings: Codable, Equatable {
+    var idle: DesktopIdleInterval = .fiveMinutes
+    var lockWithDevice = true
+    var passwordInterval: DesktopPasswordInterval = .sevenDays
+
+    func idleLockDue(_ elapsed: TimeInterval) -> Bool {
+        idle != .disabled && elapsed.isFinite && elapsed >= Double(idle.rawValue)
     }
 }
 
@@ -1033,6 +1056,17 @@ final class AppModel: ObservableObject {
     private var activityRevision = UUID()
     @Published var desktopToken: String?
     private var desktopExpiry = Date.distantPast
+    @Published private(set) var desktopLocked = true
+    @Published private(set) var desktopLockReason = "请输入保险库密码，或显式选择系统认证。"
+    @Published private(set) var securitySettings: DesktopSecuritySettings
+    @Published private(set) var pendingDesktopLocks = 0
+    private var desktopRevision = UUID()
+    private var securityTimer: Timer?
+    private var securityObservers: [(NotificationCenter, NSObjectProtocol)] = []
+    private var pendingRevocations: [String: (CLI, Bool)] = [:]
+    private var revocationsRunning = Set<String>()
+    private let preferences: UserDefaults
+    private let cliBinary: URL?
     @Published var selectedCredential: String? { didSet {
         if oldValue != selectedCredential { nativeFlowRevision = UUID() }
     } }
@@ -1052,6 +1086,8 @@ final class AppModel: ObservableObject {
     @Published var auditOutcome = ""
     @Published var stateDirectory: String { didSet {
         if oldValue != stateDirectory {
+            let previous = CLI(binary: cli.binary, stateDirectory: oldValue, adminSessionFile: oidcSessionFile)
+            lockDesktop(reason: "工作区已切换，请重新验证身份。", client: previous)
             onboardingRoute = nil; onboardingConnection = nil; onboardingCommand = nil
             clearActivity()
             PresenceKey.invalidateAuthentication()
@@ -1061,13 +1097,113 @@ final class AppModel: ObservableObject {
     private var launchedService: Process?
     private var launchedServiceDirectory: String?
     var cli: CLI {
-        CLI(binary: Bundle.main.resourceURL!.appendingPathComponent("bin/rekey"), stateDirectory: stateDirectory, adminSessionFile: oidcSessionFile)
+        CLI(binary: cliBinary ?? Bundle.main.resourceURL!.appendingPathComponent("bin/rekey"), stateDirectory: stateDirectory, adminSessionFile: oidcSessionFile)
     }
-    var unlocked: Bool { status?.unlocked == true }
+    var unlocked: Bool { status?.unlocked == true && !desktopLocked }
     var serviceIsRunning: Bool { status != nil || (launchedServiceDirectory == stateDirectory && launchedService?.isRunning == true) }
     var selected: Credential? { credentials.first { $0.id == selectedCredential } }
-    init(stateDirectory: String? = nil) {
-        self.stateDirectory = stateDirectory ?? (UserDefaults.standard.string(forKey: "stateDirectory") ?? NSHomeDirectory() + "/.rekey")
+    init(stateDirectory: String? = nil, preferences: UserDefaults = .standard, binary: URL? = nil) {
+        self.preferences = preferences; self.cliBinary = binary
+        self.stateDirectory = stateDirectory ?? (preferences.string(forKey: "stateDirectory") ?? NSHomeDirectory() + "/.rekey")
+        self.securitySettings = preferences.data(forKey: "desktopSecurity").flatMap { try? JSONDecoder().decode(DesktopSecuritySettings.self, from: $0) } ?? DesktopSecuritySettings()
+    }
+    deinit {
+        securityTimer?.invalidate()
+        for (center, observer) in securityObservers { center.removeObserver(observer) }
+    }
+
+    func startSecurityMonitoring(workspace: NotificationCenter = NSWorkspace.shared.notificationCenter,
+                                 distributed: NotificationCenter = DistributedNotificationCenter.default()) {
+        guard securityTimer == nil else { return }
+        for name in [NSWorkspace.willSleepNotification, NSWorkspace.screensDidSleepNotification, NSWorkspace.sessionDidResignActiveNotification] {
+            let observer = workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.deviceLocked() }
+            }
+            securityObservers.append((workspace, observer))
+        }
+        // This signal only reduces access; it is never accepted as authentication.
+        let observer = distributed.addObserver(forName: Notification.Name("com.apple.screenIsLocked"), object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.deviceLocked() }
+        }
+        securityObservers.append((distributed, observer))
+        securityTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.checkDesktopIdle() }
+        }
+        if let timer = securityTimer { RunLoop.main.add(timer, forMode: .common) }
+    }
+    func deviceLocked() {
+        if securitySettings.lockWithDevice { lockDesktop(reason: "电脑已锁屏、休眠或切换用户。") }
+    }
+    func checkDesktopIdle(elapsed: TimeInterval? = nil) {
+        let elapsed = elapsed ?? CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: UInt32.max)!)
+        if securitySettings.idleLockDue(elapsed) && (!desktopLocked || busy || operation != nil || result != nil) {
+            lockDesktop(reason: "电脑已空闲 \(securitySettings.idle.label)，管理界面已锁定。")
+        }
+        if desktopToken != nil && Date() >= desktopExpiry {
+            lockDesktop(reason: "解锁授权已到期，请重新验证身份。")
+        }
+    }
+    private func clearDesktopPresentation() {
+        clearCache(); desktopExpiry = .distantPast
+        operation = nil; result = nil; showAddCredential = false; showSession = false
+        onboardingRoute = nil; onboardingConnection = nil; onboardingCommand = nil
+    }
+    func lockDesktop(reason: String = "管理界面已锁定；已授权的 Agent 继续工作。", client: CLI? = nil) {
+        let token = desktopToken
+        let current = token.map { _ in client ?? cli }
+        desktopToken = nil
+        clearDesktopPresentation(); desktopLockReason = reason
+        if let token, let current { revokeDesktop(token, client: current) }
+    }
+    private func revokeDesktop(_ token: String, client: CLI, forget: Bool = false) {
+        let previousForget = pendingRevocations[token]?.1 ?? false
+        pendingRevocations[token] = (client, forget || previousForget)
+        pendingDesktopLocks = pendingRevocations.count
+        retryDesktopLock()
+    }
+    func retryDesktopLock() {
+        for (token, value) in pendingRevocations where !revocationsRunning.contains(token) {
+            let (client, forget) = value
+            revocationsRunning.insert(token)
+            Task {
+                defer { revocationsRunning.remove(token) }
+                do {
+                    let args = ["desktop-lock"] + (forget ? ["--forget-remembered"] : [])
+                    _ = try await Task.detached { try client.run(args, input: token + "\n", redacting: [token]) }.value
+                    pendingRevocations.removeValue(forKey: token)
+                } catch {
+                    // Lock clears A1 tokens in the Worker. Rejection confirms no live session.
+                    let message = error.localizedDescription
+                    if !forget && (message.contains("INVALID_UNLOCK_CREDENTIAL") || message.contains("\"code\":\"LOCKED\"")) {
+                        pendingRevocations.removeValue(forKey: token)
+                    } else { self.error = "管理界面已锁定，但服务端撤销尚未确认。请重试完成锁定。\n" + message }
+                }
+                pendingDesktopLocks = pendingRevocations.count
+            }
+        }
+    }
+    private func acceptDesktopSession(_ token: String, expiry: Date) {
+        desktopToken = token; desktopExpiry = expiry; desktopLocked = false; desktopLockReason = ""
+    }
+    func saveSecuritySettings(_ settings: DesktopSecuritySettings, client injectedClient: CLI? = nil,
+                              forget: @escaping @Sendable (UUID) throws -> Void = { try PresenceKey.forget(vaultID: $0) }) async {
+        guard desktopReady, !busy, let token = desktopToken, let id = policy.flatMap({ UUID(uuidString: $0.vault_id) }) else { return }
+        let client = injectedClient ?? cli
+        desktopToken = nil
+        clearDesktopPresentation(); busy = true; error = nil
+        defer { busy = false }
+        var revoked = false
+        do {
+            _ = try await Task.detached { try client.run(["desktop-lock", "--forget-remembered"], input: token + "\n", redacting: [token]) }.value
+            revoked = true
+            try await Task.detached { try forget(id) }.value
+            preferences.set(try JSONEncoder().encode(settings), forKey: "desktopSecurity")
+            securitySettings = settings
+            desktopLockReason = "安全设置已保存。请重新输入保险库密码以应用新的期限。"
+        } catch {
+            if !revoked { revokeDesktop(token, client: client, forget: true) }
+            self.error = error.localizedDescription
+        }
     }
     func beginOIDCLogin() async {
         guard !busy, !oidcBusy, unlocked else { return }
@@ -1149,11 +1285,11 @@ final class AppModel: ObservableObject {
         if !personalPolicySigning && !presenceAuthenticating { clearNativeFlow() }
     }
     func acceptsNativeCompletion(_ revision: UUID, workspace: String) -> Bool {
-        revision == nativeFlowRevision && workspace == stateDirectory && unlocked
+        revision == nativeFlowRevision && workspace == stateDirectory && unlocked && !desktopLocked
     }
     func acceptsPresenceCompletion(_ revision: UUID, workspace: String, allowLocked: Bool = false) -> Bool {
         revision == nativeFlowRevision && workspace == stateDirectory &&
-            (unlocked || (allowLocked && status?.state == "locked"))
+            ((unlocked && !desktopLocked) || (allowLocked && (status?.state == "locked" || status?.unlocked == true)))
     }
     func readPresenceProof(client: CLI, revision: UUID, allowLocked: Bool = false,
                            read: @escaping @Sendable (UUID) throws -> String = { try PresenceKey.read(vaultID: $0) }) async throws -> (String, PolicyStatus) {
@@ -1181,17 +1317,17 @@ final class AppModel: ObservableObject {
     }
     func unlockWithPresence(revision: UUID, client injectedClient: CLI? = nil,
                             read: @escaping @Sendable (UUID) throws -> String = { try PresenceKey.read(vaultID: $0) }) async {
-        guard !busy else { return }
+        guard !busy, pendingDesktopLocks == 0, securitySettings.passwordInterval != .everyUnlock else { return }
         busy = true; error = nil
-        let client = injectedClient ?? cli
+        let client = injectedClient ?? cli, desktopAttempt = desktopRevision
         do {
             let (key, _) = try await readPresenceProof(client: client, revision: revision, allowLocked: true, read: read)
             let data = try await Task.detached { try client.run(["desktop-resume"], input: key + "\n", redacting: [key]) }.value
-            guard acceptsPresenceCompletion(revision, workspace: client.stateDirectory, allowLocked: true), !Task.isCancelled else {
-                busy = false; return
-            }
             let receipt = try DesktopReceipt.parse(data)
-            desktopToken = receipt.token; desktopExpiry = receipt.expiresAt
+            guard desktopAttempt == desktopRevision, acceptsPresenceCompletion(revision, workspace: client.stateDirectory, allowLocked: true), !Task.isCancelled else {
+                revokeDesktop(receipt.token, client: client); busy = false; return
+            }
+            acceptDesktopSession(receipt.token, expiry: receipt.expiresAt)
         } catch {
             if revision == nativeFlowRevision && client.stateDirectory == stateDirectory { self.error = error.localizedDescription }
         }
@@ -1337,9 +1473,9 @@ final class AppModel: ObservableObject {
     var serviceStartTitle: String { managesBackgroundService ? "启用登录启动并启动服务" : "启动服务" }
     var backgroundServiceDescription: String? { managesBackgroundService ? BackgroundService.statusDescription : nil }
     var backgroundServiceNeedsApproval: Bool { managesBackgroundService && BackgroundService.requiresApproval }
-    var desktopReady: Bool { desktopToken != nil && Date() < desktopExpiry && unlocked }
+    var desktopReady: Bool { desktopToken != nil && Date() < desktopExpiry && unlocked && !desktopLocked && pendingDesktopLocks == 0 }
     func requestDesktopLogin() {
-        operation = Operation(title: "解锁管理会话", detail: "验证后，7 天内可连续保存密钥。轮换或撤销凭证需要单独验证。手动锁定会取消管理授权。", arguments: ["unlock"])
+        operation = Operation(title: "解锁管理会话", detail: "验证后可管理密钥。自动锁定只关闭管理界面；锁定整个保险库会撤销 Agent 授权。", arguments: ["unlock"])
     }
     func openOnboarding(_ url: URL) {
         guard let route = OnboardingRoute(url: url) else { error = "不支持的 Rekey 页面地址。"; return }
@@ -1379,6 +1515,10 @@ final class AppModel: ObservableObject {
         }
     }
     func clearCache() {
+        let token = desktopToken
+        let owner = token.map { _ in cli }
+        desktopToken = nil; desktopExpiry = .distantPast
+        desktopLocked = true; desktopRevision = UUID()
         clearActivity()
         PresenceKey.invalidateAuthentication()
         clearNativeFlow(); clearOIDCLogin()
@@ -1386,6 +1526,7 @@ final class AppModel: ObservableObject {
         desktopToken = nil
         notifiedApprovalIDs.removeAll()
         credentials = []; actions = []; approvals = []; approvalDetails = nil; policy = nil; audit = nil; selectedCredential = nil
+        if let token, let owner { revokeDesktop(token, client: owner) }
     }
     func changeDirectory(_ path: String) {
         guard !busy, !oidcBusy else { return }
@@ -1406,17 +1547,20 @@ final class AppModel: ObservableObject {
         guard !busy else { return }
         busy = true
         defer { busy = false }
-        let client = injectedClient ?? cli
+        let client = injectedClient ?? cli, refreshRevision = desktopRevision
+        func currentRefresh() -> Bool { refreshRevision == desktopRevision && client.stateDirectory == stateDirectory && !Task.isCancelled }
         do {
             let current = try await Task.detached { try client.decode(ServiceStatus.self, passive ? ["status", "--passive"] : ["status"]) }.value
+            guard currentRefresh() else { return }
             status = current; connectionError = nil
-            if Date() >= desktopExpiry { desktopToken = nil }
+            if desktopToken != nil && Date() >= desktopExpiry { lockDesktop(reason: "管理会话已过期，请重新验证。") }
             if !current.unlocked { clearCache() }
 
         } catch {
             status = nil; clearCache(); connectionError = error.localizedDescription
             return
         }
+        if desktopLocked { return }
         if passive {
             await refreshApprovalNotifications(client: client)
             return
@@ -1427,8 +1571,9 @@ final class AppModel: ObservableObject {
                 let lists = try await Task.detached {
                     (try client.decode(CredentialList.self,["credential","list"]),lab ? try client.decode(ActionList.self,["action","list"]).actions : [])
                 }.value
-                credentials=lists.0.credentials;actions=lists.1
-                policy=try await Task.detached{try client.decode(PolicyStatus.self,["policy","status"])}.value
+                let loadedPolicy = try await Task.detached{try client.decode(PolicyStatus.self,["policy","status"])}.value
+                guard currentRefresh(), !desktopLocked else { return }
+                credentials=lists.0.credentials;actions=lists.1;policy=loadedPolicy
                 if !credentials.contains(where: { $0.id == selectedCredential }) { selectedCredential = credentials.first?.id }
             }
             switch page {
@@ -1443,7 +1588,9 @@ final class AppModel: ObservableObject {
                     args += ["--snapshot-max-sequence", String(prior.snapshot_max_sequence), "--before-sequence", String(cursor)]
                 }
                 let command = args
-                audit = try await Task.detached { try client.decode(AuditPage.self, command) }.value
+                let loadedAudit = try await Task.detached { try client.decode(AuditPage.self, command) }.value
+                guard currentRefresh(), !desktopLocked else { return }
+                audit = loadedAudit
             default: break
             }
         } catch {
@@ -1478,6 +1625,7 @@ final class AppModel: ObservableObject {
             await refreshApprovalNotifications(client: client)
             guard current() else { return }
         }
+        if desktopLocked { return }
         if passive && activity?.sinceMs == refreshTime / 86_400_000 * 86_400_000 { return }
         activityError = nil
         var value = ActivitySnapshot(nowMs: refreshTime)
@@ -1516,6 +1664,8 @@ final class AppModel: ObservableObject {
         busy = true; error = nil
         let client = injectedClient ?? CLI(binary: cli.binary, stateDirectory: op.targetDirectory ?? stateDirectory, adminSessionFile: oidcSessionFile)
         let desktopLogin = op.arguments == ["unlock"]
+        if desktopLogin && pendingDesktopLocks > 0 { busy = false; error = "请先重试完成服务端会话撤销。"; return }
+        let desktopAttempt = desktopRevision
         let revision = presenceRevision ?? nativeFlowRevision
         let guarded = presence || rememberPresence
         let onboarding = onboardingRoute
@@ -1568,24 +1718,29 @@ final class AppModel: ObservableObject {
             guard onboardingCurrent() else { throw UIError(message: "设置上下文已改变，未提交后续操作。") }
             let command = args, requestInput = body
             let data = try await Task.detached { try client.run(command, input: requestInput, redacting: [operationProof, secret]) }.value
+            guard desktopAttempt == desktopRevision, client.stateDirectory == stateDirectory else {
+                if desktopLogin, let token = String(data: data, encoding: .utf8), let valid = try? PresenceKey.validated(token) { revokeDesktop(valid, client: client) }
+                busy = false; return
+            }
             guard !guarded || acceptsPresenceCompletion(revision, workspace: client.stateDirectory, allowLocked: desktopLogin) else {
                 throw UIError(message: "操作上下文已改变，结果未展示；请检查审计，不要自动重试。")
             }
             guard onboardingCurrent() else { throw UIError(message: "设置上下文已改变，结果未展示；已提交步骤可能完成，请检查状态，勿自动重试。") }
             guard let output = String(data: data, encoding: .utf8) else { throw UIError(message: "命令返回了无法解码的内容，操作结果需重新确认。") }
             if desktopLogin {
-                desktopToken = try PresenceKey.validated(output)
-                desktopExpiry = Date().addingTimeInterval(7 * 24 * 60 * 60)
+                acceptDesktopSession(try PresenceKey.validated(output), expiry: Date().addingTimeInterval(7 * 24 * 60 * 60))
                 if let vaultID = issuingVault {
                     let current = try await Task.detached { try client.decode(PolicyStatus.self, ["policy", "status"]) }.value
                     guard UUID(uuidString: current.vault_id) == vaultID, current.mode != nil,
                           acceptsPresenceCompletion(revision, workspace: client.stateDirectory, allowLocked: true), !Task.isCancelled else {
                         throw UIError(message: "保险库或操作上下文已改变，未签发系统认证授权。")
                     }
-                    let rememberArgs = recovery ? ["desktop-remember", "--recovery"] : ["desktop-remember"]
+                    guard securitySettings.passwordInterval != .everyUnlock else { throw UIError(message: "当前设置要求每次输入保险库密码，未签发系统认证授权。") }
+                    let rememberArgs = ["desktop-remember", "--ttl", "\(securitySettings.passwordInterval.rawValue)h"] + (recovery ? ["--recovery"] : [])
                     let receipt = try await Task.detached { try client.run(rememberArgs, input: requestInput, redacting: [operationProof]) }.value
                     let key = try PresenceKey.issuedKey(receipt)
-                    guard acceptsPresenceCompletion(revision, workspace: client.stateDirectory, allowLocked: true), !Task.isCancelled else {
+                    desktopExpiry = min(desktopExpiry, try DesktopReceipt.parse(receipt).expiresAt)
+                    guard desktopAttempt == desktopRevision, acceptsPresenceCompletion(revision, workspace: client.stateDirectory, allowLocked: true), !Task.isCancelled else {
                         throw UIError(message: "操作上下文已改变，新授权未保存，请重新用密码解锁。")
                     }
                     presenceAuthenticating = true
@@ -1668,9 +1823,12 @@ final class AppModel: ObservableObject {
         } catch { self.error = "无法启动服务：\(error.localizedDescription)" }
     }
     func lock() async {
-        clearNativeFlow()
+        lockDesktop(reason: "正在锁定整个保险库。")
         await perform(Operation(title: "锁定", detail: "", arguments: ["lock"], proof: false))
         result = nil
+        if error == nil, status?.state == "locked" {
+            pendingRevocations.removeAll(); pendingDesktopLocks = 0
+        }
     }
     func exportApproval(_ item: PendingApproval) async {
         guard let destination = chooseSave("approval-\(item.id).json") else { return }
@@ -2252,5 +2410,22 @@ extension AppModel {
         guard acceptsNativeCompletion(revision,workspace:client.stateDirectory),!Task.isCancelled else{throw UIError(message:"SSH 密钥生成结果未确认，请检查凭据列表，勿自动重试。")}
         credentials.append(receipt.credential)
         return receipt
+    }
+}
+
+// Exact bytes are exported; policy semantics belong to the independent Rust signer.
+enum TeamDraftText {
+    static func bytes(_ text: String) throws -> Data {
+        let data = Data(text.utf8)
+        guard !data.isEmpty, data.count <= 65536 else { throw UIError(message: "草稿必须为 1..65536 字节 UTF-8 文本。") }
+        return data
+    }
+    static func empty(version: Int, expiresAt: Date) throws -> String {
+        let value: [String: Any] = ["format_version": 8, "version": version,
+            "expires_at_ms": Int64(expiresAt.timeIntervalSince1970 * 1000), "approvers": [],
+            "workload_identities": [], "connections": [], "ssh_keys": [], "derived_credentials": [],
+            "profiles": [], "bindings": [], "rules": []]
+        let data = try JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys])
+        return String(decoding: data, as: UTF8.self)
     }
 }

@@ -830,7 +830,7 @@ async fn approval_required_waits_for_explicit_same_body_retry_with_one_use() {
         &f.broker.admin_sock(),
         Channel::Admin,
         admin_msg::DESKTOP_REMEMBER,
-        b"{}",
+        br#"{"lifetime_ms":604800000}"#,
         &common::proof_body(common::PASSWORD),
     )
     .await

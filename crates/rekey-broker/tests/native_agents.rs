@@ -305,7 +305,11 @@ impl Fixture {
                     "write sent before local approval"
                 );
                 let remember = self
-                    .admin(admin_msg::DESKTOP_REMEMBER, json!({}), &self.proof())
+                    .admin(
+                        admin_msg::DESKTOP_REMEMBER,
+                        json!({"lifetime_ms":604800000}),
+                        &self.proof(),
+                    )
                     .await;
                 remember.ok();
                 let mut proof = Vec::new();
@@ -642,7 +646,11 @@ async fn approve_live(f: &Fixture, id: &Value, method: &str, path: &str) -> bool
         return false;
     }
     let remembered = f
-        .admin(admin_msg::DESKTOP_REMEMBER, json!({}), &f.proof())
+        .admin(
+            admin_msg::DESKTOP_REMEMBER,
+            json!({"lifetime_ms":604800000}),
+            &f.proof(),
+        )
         .await;
     if remembered.message_type != ipc::resp_msg::OK {
         return false;

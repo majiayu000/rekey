@@ -64,7 +64,7 @@ pub async fn activate_test_policy(
         "version": broker.policy_version.fetch_add(1, Ordering::Relaxed),
         "expires_at_ms": 4_102_444_800_000_i64,
         "approvers": [],
-        "connections":[], "ssh_keys":[], "profiles": [], "workload_identities": [],
+        "connections":[], "ssh_keys":[], "profiles": [], "derived_credentials": [], "workload_identities": [],
         "bindings": [binding(action_id, action_version, &resource)],
         "rules": [{
             "id": PolicyRuleId::new_random(),
@@ -115,7 +115,7 @@ pub async fn activate_approval_policy(
             "algorithm": "ed25519",
             "public_key": HEXLOWER.encode(key),
         })).collect::<Vec<_>>(),
-        "connections":[], "ssh_keys":[], "profiles": [], "workload_identities": [],
+        "connections":[], "ssh_keys":[], "profiles": [], "derived_credentials": [], "workload_identities": [],
         "bindings": [binding(action_id, action_version, &resource)],
         "rules": [{
             "id": rule_id,
@@ -165,7 +165,7 @@ pub async fn activate_workload_policy(
         "version": broker.policy_version.fetch_add(1, Ordering::Relaxed),
         "expires_at_ms": 4_102_444_800_000_i64,
         "approvers": [],
-        "connections":[], "ssh_keys":[], "profiles": [], "workload_identities": [workload_identity],
+        "connections":[], "ssh_keys":[], "profiles": [], "derived_credentials": [], "workload_identities": [workload_identity],
         "bindings": [binding(action_id, action_version, &resource)],
         "rules": rules,
     });

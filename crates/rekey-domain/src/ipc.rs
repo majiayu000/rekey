@@ -127,6 +127,7 @@ pub mod admin_msg {
     pub const PKI_REVOKE_CERTIFICATE: u16 = 69;
     pub const PKI_GENERATE_CRL: u16 = 70;
     pub const APPROVAL_EXTERNAL_SUBMIT: u16 = 71;
+    pub const DESKTOP_LOCK: u16 = 72;
 }
 
 /// Agent channel message types.
@@ -241,7 +242,8 @@ pub fn managed_admin_operation(message_type: u16) -> Result<bool, FrameError> {
     // PKI issuance is a local step-up operation, outside OIDC management sessions.
     if matches!(
         message_type,
-        admin_msg::APPROVAL_EXTERNAL_SUBMIT
+        admin_msg::DESKTOP_LOCK
+            | admin_msg::APPROVAL_EXTERNAL_SUBMIT
             | admin_msg::PKI_GENERATE_CRL
             | admin_msg::PKI_ISSUE_CLIENT_CSR
             | admin_msg::PKI_REVOKE_CERTIFICATE
@@ -1848,6 +1850,7 @@ mod tests {
         assert!(!managed_admin_operation(admin_msg::PKI_ISSUE_CLIENT_CSR).unwrap());
         assert!(!managed_admin_operation(admin_msg::PKI_REVOKE_CERTIFICATE).unwrap());
         assert!(!managed_admin_operation(admin_msg::PKI_GENERATE_CRL).unwrap());
+        assert!(!managed_admin_operation(admin_msg::DESKTOP_LOCK).unwrap());
     }
 
     #[test]
@@ -2423,4 +2426,16 @@ pub struct OAuthLoginMeta {
     pub connection: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub redirect_uri: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DesktopRememberMeta {
+    pub lifetime_ms: i64,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DesktopLockMeta {
+    pub forget_remembered: bool,
 }

@@ -538,7 +538,7 @@ async fn backup_restore_rotation_and_presence_resume_keep_usage_and_recover_pend
     );
     finish(r, rj).await;
     let (key, _) = h
-        .desktop_remember(common::password_proof(), None)
+        .desktop_remember(common::password_proof(), None, 604_800_000)
         .await
         .unwrap();
     h.lock_for_restart("test").await.unwrap();
@@ -868,7 +868,7 @@ async fn reauthentication_while_unlocked_never_recovers_a_live_pending_request()
     let s = draft(p);
     begin(&h, limits(Some(20)), s.clone()).await.unwrap();
     let (key, _) = h
-        .desktop_remember(common::password_proof(), None)
+        .desktop_remember(common::password_proof(), None, 604_800_000)
         .await
         .unwrap();
     let db = Connection::open(paths::vault_db(&v.state_dir)).unwrap();

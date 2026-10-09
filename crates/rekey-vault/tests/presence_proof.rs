@@ -25,7 +25,7 @@ async fn presence_authorizes_atomic_reveal_but_desktop_session_never_does() {
         .unwrap();
     let desktop = handle.desktop_issue().await.unwrap();
     let (key, _) = handle
-        .desktop_remember(common::password_proof(), None)
+        .desktop_remember(common::password_proof(), None, 604_800_000)
         .await
         .unwrap();
     // The existing A1 session remains valid for write-only addition after remember.
@@ -69,7 +69,7 @@ async fn clean_restart_needs_explicit_resume_and_preserves_original_expiry() {
     let (handle, join) = common::spawn(&vault.state_dir);
     handle.unlock(common::password_proof()).await.unwrap();
     let (key, expiry) = handle
-        .desktop_remember(common::password_proof(), None)
+        .desktop_remember(common::password_proof(), None, 604_800_000)
         .await
         .unwrap();
     handle.shutdown(Some(presence(&key))).await.unwrap();
@@ -117,7 +117,7 @@ async fn recovery_rotation_requires_password_and_rejects_presence_and_recovery_s
     let (handle, join) = common::spawn(&vault.state_dir);
     handle.unlock(common::password_proof()).await.unwrap();
     let (key, _) = handle
-        .desktop_remember(common::password_proof(), None)
+        .desktop_remember(common::password_proof(), None, 604_800_000)
         .await
         .unwrap();
     assert!(matches!(

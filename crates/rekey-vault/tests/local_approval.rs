@@ -78,7 +78,7 @@ async fn current_presence_commits_only_fixed_decisions_and_public_evidence() {
     let (handle, join) = common::spawn(&vault.state_dir);
     handle.unlock(common::password_proof()).await.unwrap();
     let (key, _) = handle
-        .desktop_remember(common::password_proof(), None)
+        .desktop_remember(common::password_proof(), None, 604_800_000)
         .await
         .unwrap();
     let db = rusqlite::Connection::open(rekey_vault::paths::vault_db(&vault.state_dir)).unwrap();
@@ -161,11 +161,11 @@ async fn missing_wrong_a1_old_presence_and_locked_or_faulted_never_authorize() {
     handle.unlock(common::password_proof()).await.unwrap();
     let a1 = handle.desktop_issue().await.unwrap();
     let (old, _) = handle
-        .desktop_remember(common::password_proof(), None)
+        .desktop_remember(common::password_proof(), None, 604_800_000)
         .await
         .unwrap();
     let (key, _) = handle
-        .desktop_remember(common::password_proof(), None)
+        .desktop_remember(common::password_proof(), None, 604_800_000)
         .await
         .unwrap();
     let db = rusqlite::Connection::open(rekey_vault::paths::vault_db(&vault.state_dir)).unwrap();
@@ -212,7 +212,7 @@ async fn fixed_audit_boundary_rejects_unrelated_types_fields_and_missing_context
     let (handle, join) = common::spawn(&vault.state_dir);
     handle.unlock(common::password_proof()).await.unwrap();
     let (key, _) = handle
-        .desktop_remember(common::password_proof(), None)
+        .desktop_remember(common::password_proof(), None, 604_800_000)
         .await
         .unwrap();
     let db = rusqlite::Connection::open(rekey_vault::paths::vault_db(&vault.state_dir)).unwrap();
@@ -261,7 +261,7 @@ async fn both_clocks_expiring_after_sql_insert_roll_back_without_fault() {
         let (handle, join) = common::spawn(&vault.state_dir);
         handle.unlock(common::password_proof()).await.unwrap();
         let (key, _) = handle
-            .desktop_remember(common::password_proof(), None)
+            .desktop_remember(common::password_proof(), None, 604_800_000)
             .await
             .unwrap();
         let db =
@@ -311,7 +311,7 @@ async fn insert_and_deferred_commit_failure_fault_without_success_audit() {
         let (handle, join) = common::spawn(&vault.state_dir);
         handle.unlock(common::password_proof()).await.unwrap();
         let (key, _) = handle
-            .desktop_remember(common::password_proof(), None)
+            .desktop_remember(common::password_proof(), None, 604_800_000)
             .await
             .unwrap();
         let db =

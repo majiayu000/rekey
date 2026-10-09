@@ -177,7 +177,13 @@ async fn openssh_git_push_uses_rekey_generated_key_and_cleans_remote_resources()
         .ok();
     let mut proof = Zeroizing::new(Vec::new());
     ipc::encode_proof_body(ProofKind::Password, &password, &mut proof);
-    let remembered = admin(&broker, admin_msg::DESKTOP_REMEMBER, json!({}), &proof).await;
+    let remembered = admin(
+        &broker,
+        admin_msg::DESKTOP_REMEMBER,
+        json!({"lifetime_ms":604800000}),
+        &proof,
+    )
+    .await;
     remembered.ok();
     let presence = Zeroizing::new(remembered.body);
     let branch = format!("rekey-c10-acceptance-{now}");

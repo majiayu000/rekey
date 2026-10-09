@@ -347,9 +347,13 @@ fn parse_action_ref(input: &str) -> Result<(ActionId, u64), CliError> {
     Ok((action_id, version))
 }
 
-#[cfg(feature = "lab")]
 fn parse_ttl_ms(input: &str) -> Result<i64, CliError> {
-    let (value, unit) = input.split_at(input.len().saturating_sub(1));
+    let offset = input
+        .char_indices()
+        .next_back()
+        .map(|(offset, _)| offset)
+        .ok_or_else(|| CliError::local("USAGE", "empty ttl"))?;
+    let (value, unit) = input.split_at(offset);
     let n: i64 = value
         .parse()
         .map_err(|_| CliError::local("USAGE", format!("invalid ttl: {input}")))?;
@@ -1108,6 +1112,7 @@ pub fn desktop_restore_access(
     state_dir: &Path,
     resume: bool,
     kind: ProofKind,
+    ttl: Option<&str>,
 ) -> Result<(), CliError> {
     let proof = read_step_up(kind, true)?;
     let mut body = Zeroizing::new(Vec::with_capacity(5 + proof.len()));
@@ -1117,7 +1122,14 @@ pub fn desktop_restore_access(
     } else {
         admin_msg::DESKTOP_REMEMBER
     };
-    let (meta, secret) = admin(state_dir)?.call(message, b"{}", &body)?;
+    let metadata = match ttl {
+        Some(ttl) => serde_json::to_vec(&ipc::DesktopRememberMeta {
+            lifetime_ms: parse_ttl_ms(ttl)?,
+        })
+        .map_err(|_| CliError::local("INVALID_FRAME", "invalid remember request"))?,
+        None => b"{}".to_vec(),
+    };
+    let (meta, secret) = admin(state_dir)?.call(message, &metadata, &body)?;
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Expiry {
@@ -1333,6 +1345,15 @@ pub fn open_onboarding(
             "App onboarding is available only on macOS",
         ))
     }
+}
+
+pub fn desktop_lock(state_dir: &Path, forget_remembered: bool) -> Result<(), CliError> {
+    let token = read_step_up(ProofKind::Password, true)?;
+    let body = proof_body(ProofKind::Password, &token);
+    let metadata = serde_json::to_vec(&ipc::DesktopLockMeta { forget_remembered })
+        .map_err(|_| CliError::local("INVALID_FRAME", "invalid desktop lock request"))?;
+    let (reply, _) = admin(state_dir)?.call(admin_msg::DESKTOP_LOCK, &metadata, &body)?;
+    print_json::<serde_json::Value>(&reply)
 }
 
 #[cfg(test)]

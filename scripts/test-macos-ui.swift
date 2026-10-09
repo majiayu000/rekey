@@ -12,6 +12,10 @@ struct ConnectionUIContract {
             try subprocessBoundary()
             return
         }
+        if CommandLine.arguments == [CommandLine.arguments[0], "--privacy-only"] {
+            try await privacy()
+            return
+        }
         if CommandLine.arguments == [CommandLine.arguments[0], "--startup-only"] {
             try await startup()
             return
@@ -20,6 +24,7 @@ struct ConnectionUIContract {
             throw UIError(message: "usage: test-macos-ui CLI_BINARY | --subprocess-boundary-only | --startup-only")
         }
         try subprocessBoundary()
+        try await privacy()
         try await live(binary: URL(fileURLWithPath: CommandLine.arguments[1]))
     }
 
@@ -94,6 +99,111 @@ struct ConnectionUIContract {
         try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: file)
         try rejected("private file cannot follow symlink") { try writePrivateNew(Data(), to: alias) }
         print("PASS: production App subprocess argv/stdin/environment, bounded output, error redaction and private-file boundaries.")
+    }
+
+    @MainActor
+    static func privacy() async throws {
+        let root = try fixture()
+        let suite = "rekey.privacy-test." + UUID().uuidString
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { preferences.removePersistentDomain(forName: suite); cleanup(root) }
+        let executable = root.appendingPathComponent("synthetic-cli")
+        let fixtureScript = """
+        #!/usr/bin/python3
+        import json,pathlib,sys,time
+        root=pathlib.Path(__file__).parent
+        args=sys.argv[3:]
+        body=sys.stdin.read()
+        if args[0]=='desktop-login':
+            (root/'login-started').touch()
+            while (root/'delay-login').exists():time.sleep(.01)
+            sys.stdout.write('a'*64)
+        elif args[0]=='desktop-lock':
+            if (root/'locked-reply').exists():
+                sys.stderr.write(json.dumps({'code':'LOCKED'},separators=(',',':')))
+                sys.exit(5)
+            if (root/'fail-lock').exists():
+                sys.stderr.write(json.dumps({'code':'IPC_UNAVAILABLE'},separators=(',',':')))
+                sys.exit(4)
+            print(json.dumps({'locked':True}))
+        elif args[:2]==['policy','status']:
+            print(json.dumps({'vault_id':'00000000-0000-4000-8000-000000000001','mode':'personal','bundle_persisted':False,'trust_installed':False,'status':'absent'}))
+        else:sys.exit(2)
+        """
+        try writePrivateNew(Data(fixtureScript.utf8), to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        let state = root.appendingPathComponent("state").path
+        let model = AppModel(stateDirectory: state, preferences: preferences, binary: executable)
+        model.status = ServiceStatus(state: "unlocked", format_version: 27, runtime_version: "0.5.0-alpha.1", sessions_active: 1, peer_security: "same-user", lab_enabled: false, rollback: nil)
+        let client = CLI(binary: executable, stateDirectory: state)
+        func login() async { await model.perform(Operation(title: "login", detail: "synthetic", arguments: ["unlock"]), proof: "synthetic-proof", client: client) }
+        func settled() async throws {
+            let deadline = Date().addingTimeInterval(3)
+            while model.pendingDesktopLocks > 0 {
+                guard Date() < deadline else { throw UIError(message: "synthetic revocation did not settle") }
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
+        }
+        try require(model.desktopLocked && !model.unlocked && !model.desktopReady, "startup remains private-locked with an unlocked daemon")
+        await login()
+        try require(model.desktopReady, "explicit password login opens the desktop")
+        model.result = ResultMessage(title: "synthetic", text: "synthetic-visible-secret", sensitive: true)
+        let revision = model.nativeFlowRevision
+        model.checkDesktopIdle(elapsed: 301)
+        try require(model.desktopLocked && model.desktopToken == nil && model.result == nil && model.operation == nil && model.nativeFlowRevision != revision, "idle lock clears sensitive presentation and completion revision")
+        try await settled()
+        await login(); model.deviceLocked(); try await settled()
+        try require(model.desktopLocked, "device signals only lock")
+        await login()
+        try writePrivateNew(Data(), to: root.appendingPathComponent("locked-reply"))
+        model.lockDesktop(); try await settled()
+        try require(model.desktopLocked && model.pendingDesktopLocks == 0, "a locked Worker confirms that the old session is already revoked")
+        try FileManager.default.removeItem(at: root.appendingPathComponent("locked-reply"))
+        try writePrivateNew(Data(), to: root.appendingPathComponent("fail-lock"))
+        await login(); model.lockDesktop()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        try require(model.pendingDesktopLocks == 1 && model.desktopLocked, "failed server cleanup stays visible and locked")
+        await login()
+        try require(model.desktopLocked && model.pendingDesktopLocks == 1, "pending cleanup blocks another login")
+        try FileManager.default.removeItem(at: root.appendingPathComponent("fail-lock"))
+        model.retryDesktopLock(); try await settled()
+        try writePrivateNew(Data(), to: root.appendingPathComponent("delay-login"))
+        try FileManager.default.removeItem(at: root.appendingPathComponent("login-started"))
+        let late = Task { await login() }
+        let deadline = Date().addingTimeInterval(3)
+        while !FileManager.default.fileExists(atPath: root.appendingPathComponent("login-started").path) {
+            guard Date() < deadline else { throw UIError(message: "synthetic login did not start") }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        model.lockDesktop()
+        try FileManager.default.removeItem(at: root.appendingPathComponent("delay-login"))
+        await late.value; try await settled()
+        try require(model.desktopLocked && model.desktopToken == nil, "late login is revoked instead of reopening the UI")
+        await model.unlockWithPresence(revision: model.nativeFlowRevision, client: client, read: { _ in throw UIError(message: "synthetic authentication cancelled") })
+        try require(model.desktopLocked && model.desktopToken == nil, "cancelled authentication never opens the UI")
+        var disabled = DesktopSecuritySettings(); disabled.idle = .disabled; disabled.lockWithDevice = false
+        preferences.set(try JSONEncoder().encode(disabled), forKey: "desktopSecurity")
+        let unlocked = AppModel(stateDirectory: state, preferences: preferences, binary: executable)
+        unlocked.status = model.status
+        await unlocked.perform(Operation(title: "login", detail: "synthetic", arguments: ["unlock"]), proof: "synthetic-proof", client: client)
+        unlocked.checkDesktopIdle(elapsed: 999999); unlocked.deviceLocked()
+        try require(unlocked.desktopReady, "disabled idle and device settings are respected")
+        unlocked.policy = try client.decode(PolicyStatus.self, ["policy", "status"])
+        var everyUnlock = DesktopSecuritySettings(); everyUnlock.passwordInterval = .everyUnlock
+        await unlocked.saveSecuritySettings(everyUnlock, client: client, forget: { _ in })
+        try require(unlocked.desktopLocked && unlocked.securitySettings == everyUnlock && unlocked.pendingDesktopLocks == 0, "settings change revokes session/grant before persisting choices")
+        let saved = try JSONDecoder().decode(DesktopSecuritySettings.self, from: preferences.data(forKey: "desktopSecurity")!)
+        try require(saved == everyUnlock, "only non-secret choices persist")
+        await unlocked.unlockWithPresence(revision: unlocked.nativeFlowRevision, client: client, read: { _ in throw UIError(message: "must not read Keychain") })
+        try require(unlocked.desktopLocked && unlocked.error == nil, "every-unlock setting refuses system authentication without reading Keychain")
+        let text = " {\"duplicate\":1,\"duplicate\":2}\r\n"
+        let bytes = try TeamDraftText.bytes(text)
+        try require(bytes == Data(text.utf8), "draft editing preserves exact visible UTF-8 bytes including duplicate keys")
+        try rejected("draft byte bound") { _ = try TeamDraftText.bytes(String(repeating: "界", count: 22000)) }
+        let draft = try TeamDraftText.empty(version: 3, expiresAt: Date().addingTimeInterval(3600))
+        let object = try JSONSerialization.jsonObject(with: Data(draft.utf8)) as! [String: Any]
+        try require(object["format_version"] as? Int == 8 && object["version"] as? Int == 3 && object["derived_credentials"] is [Any], "new draft uses current policy8 fields")
+        print("PASS: desktop idle/device/disabled controls, failed cleanup, late login, cancelled authentication and exact draft text.")
     }
 
     @MainActor

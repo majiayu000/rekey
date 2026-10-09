@@ -135,3 +135,7 @@ Implemented under [the unified contract](../superpowers/specs/2026-10-09-unified
 | Lab child exit watcher | macOS/Linux PR gate runs the two owned-child/control-channel regressions | Linux result requires that CI run |
 
 Published 0.4 and older installed App evidence do not establish unified-head hardware acceptance. Agent PKI admission and HA remain pending. No candidate installation or public release was performed.
+
+## Personal desktop security extension (0.5 development)
+
+[Contract](../superpowers/specs/2026-10-09-personal-desktop-security.md): separate desktop privacy lock, configurable idle/device signals and explicit 1/7/30-day presence issuance. A1 stays at most seven days and is capped by the grant's wall and monotonic lifetime; Presence cannot issue grants. Real disposable IPC tests cover Agent continuity, token revocation, forgotten grants and expiry. Synthetic Swift tests cover stale login/cancellation, cleanup failure, settings persistence and exact team draft text. No installed App, actual sleep/screen-lock/Touch ID or stronger protection-level acceptance is claimed. Docker HA is a separate PR and acceptance.

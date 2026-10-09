@@ -338,8 +338,10 @@ enum Command {
         #[arg(long)]
         recovery: bool,
     },
-    /// Remember this desktop for seven days; proof on stdin, key on stdout.
+    /// Remember this desktop for an explicit duration; proof on stdin, key on stdout.
     DesktopRemember {
+        #[arg(long, default_value = "168h")]
+        ttl: String,
         #[arg(long)]
         recovery: bool,
         #[arg(long, conflicts_with = "recovery")]
@@ -347,6 +349,11 @@ enum Command {
     },
     /// Resume a remembered desktop; key on stdin, session on stdout.
     DesktopResume,
+    /// Revoke the current desktop session only; token on stdin.
+    DesktopLock {
+        #[arg(long)]
+        forget_remembered: bool,
+    },
     /// Save an API key; desktop token and value are read as two stdin lines.
     DesktopAdd { label: String },
     /// Reveal a current credential with a fresh step-up proof.
@@ -1296,11 +1303,21 @@ fn main() {
                 commands::oidc_logout(&state_dir, &session_file)
             }
         },
-        Command::DesktopRemember { recovery, presence } => {
-            commands::desktop_restore_access(&state_dir, false, selected_proof(recovery, presence))
-        }
+        Command::DesktopRemember {
+            ttl,
+            recovery,
+            presence,
+        } => commands::desktop_restore_access(
+            &state_dir,
+            false,
+            selected_proof(recovery, presence),
+            Some(&ttl),
+        ),
         Command::DesktopResume => {
-            commands::desktop_restore_access(&state_dir, true, selected_proof(false, false))
+            commands::desktop_restore_access(&state_dir, true, selected_proof(false, false), None)
+        }
+        Command::DesktopLock { forget_remembered } => {
+            commands::desktop_lock(&state_dir, forget_remembered)
         }
         Command::DesktopLogin { recovery } => commands::desktop_login(&state_dir, recovery),
         Command::DesktopAdd { label } => commands::desktop_add(&state_dir, &label),
