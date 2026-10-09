@@ -524,7 +524,11 @@ async fn vrk_rotation_empty_trust_only_and_expired_policy_remain_exactly_as_stor
 #[tokio::test]
 async fn vrk_rotation_rejects_unlocked_wrong_factors_and_applies_shared_backoff() {
     let vault = common::init_test_vault();
-    let (handle, join) = common::spawn(&vault.state_dir);
+    let mut config = common::test_config(&vault.state_dir);
+    // Durable denial auditing and scheduling may outlast the shared fixture's
+    // 20 ms backoff. Match the other rotation backoff fixture's timing margin.
+    config.unlock_backoff_base = Duration::from_secs(30);
+    let (handle, join) = rekey_vault::authority::spawn_authority(config).unwrap();
     handle.unlock(common::password_proof()).await.unwrap();
     assert!(
         handle
