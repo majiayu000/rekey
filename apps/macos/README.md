@@ -36,11 +36,11 @@ scripts/build-macos-pkg.sh --app /path/to/synthetic/Rekey.app --unsigned
 
 该选项跳过代码签名校验和 Installer 签名，产物名含 `-unsigned.pkg`；**未签名、未公证，不得安装或分发**。它不能与签名身份同时使用，也不能作为正式构建的回退路径。打包脚本本身不提交公证。现有 release workflow 已接入最终 pkg 公证、staple 与签名检查，使用新增的 `APPLE_INSTALLER_CERTIFICATE`、`APPLE_INSTALLER_CERTIFICATE_PASSWORD`、`APPLE_INSTALLER_SIGNING_IDENTITY` secrets；只支持 Developer ID Installer，不能拿 Application 证书替代。本地尚未运行该 CI 链，也未完成真实新用户安装验收。
 
-App 在签名前会装入静态 `Contents/Library/LaunchAgents/com.rekey.rekeyd.plist`，以 `BundleProgram` 指向内嵌 `rekeyd serve`，使用默认用户 `~/.rekey`，不指定 UserName、动态 state-dir 或 KeepAlive。安装到固定位置后，App 提供显式启用登录启动与启动服务的 SMAppService 入口。已注册的服务使用不带 `-k` 的 `launchctl kickstart` 启动，不先注销或杀掉已有实例。刷新和读取记住的凭据不注册服务；系统要求批准时，用户自行打开登录项设置。仅打包 plist 不会启动或注册服务。源码构建的开发 App 仍使用 Process 启动。**真实签名设备的注册、批准、重登录、升级与卸载验收尚未完成**；编译和结构测试不替代这些结果。
+App 在签名前会装入静态 `Contents/Library/LaunchAgents/com.rekey.rekeyd.plist`，以 `BundleProgram` 指向内嵌 `rekeyd serve`，使用默认用户 `~/.rekey`，不指定 UserName、动态 state-dir 或 KeepAlive。安装到固定位置后，App 打开后自动连接已有保险库，未运行时通过 SMAppService 注册或启动服务。已注册的服务使用不带 `-k` 的 `launchctl kickstart` 启动，不先注销或杀掉已有实例。普通刷新和读取记住的凭据不注册服务；系统要求批准时，用户自行打开登录项设置。仅打包 plist 不会启动或注册服务。源码构建的开发 App 和自定义目录使用 Process 自动启动随包服务。**真实签名设备的注册、批准、重登录、升级与卸载验收尚未完成**；编译和结构测试不替代这些结果。
 
 应用图标源文件为 `Resources/AppIcon.png`（1024 × 1024）。构建脚本使用 macOS 自带的 `sips` 和 `iconutil` 生成标准尺寸的 `AppIcon.icns`，通过 `CFBundleIconFile` 配置 Finder 与 Dock 图标。当前采用用户选定的“双环 · 现代平面”：炭黑背景、米白与橙色双环。图标由内置 imagegen 基于双环参考图生成，提示词为“以参考图为基础，为 Rekey app 创作一个「现代平面设计」风格图标。保留双环相扣的识别结构，材质、配色与表现方式自由发挥。成熟、有个性，避免常见 AI 霓虹渐变。单张正方形图标，无文字。”
 
-首次打开时默认使用 `~/.rekey`。首次启动选择个人或团队模式并设置密码，模式与信任根创建后不可更改；确认界面说明创建保险库后会启用登录启动并启动服务（固定位置的安装版）。恢复密钥只在完成窗口显示一次。已有保险库请启动服务，再解锁。也可以通过“个人工作区”或设置切换目录；安装版后台服务仅管理默认目录，自定义目录或机构配置需先由 CLI 启动服务，App 再连接。格式不兼容或目录非空时沿用 CLI 的明确拒绝，不迁移、不覆盖。
+首次打开时默认使用 `~/.rekey`。首次启动选择个人或团队模式并设置密码，模式与信任根创建后不可更改；确认界面说明保存恢复密钥后会自动连接并启动服务（固定位置且默认目录的安装版同时启用登录启动）。恢复密钥只在完成窗口显示一次。已有保险库自动连接，服务未运行则自动启动，随后按需解锁。也可以通过“个人工作区”或设置切换目录；安装版后台服务仅管理默认目录，自定义目录或机构配置由 App 自动启动随包服务，不注册默认目录的登录项。格式不兼容或目录非空时沿用 CLI 的明确拒绝，不迁移、不覆盖。
 
 ## 当前入口
 
@@ -80,6 +80,17 @@ xcrun swiftc -warnings-as-errors -swift-version 5 -O \
   apps/macos/BackgroundService.swift apps/macos/PolicySigning.swift apps/macos/PresenceKey.swift apps/macos/Model.swift scripts/test-macos-ui.swift -o /tmp/rekey-ui-contract
 /tmp/rekey-ui-contract target/macos-ui/Rekey.app/Contents/Resources/bin/rekey
 ```
+
+自动连接回归检查复用同一个测试程序和随包 CLI，不访问用户保险库：
+
+```bash
+mkdir -p /tmp/RekeyStartupContract.app/Contents/MacOS
+cp /tmp/rekey-ui-contract /tmp/RekeyStartupContract.app/Contents/MacOS/RekeyStartupContract
+ln -s "$PWD/target/macos-ui/Rekey.app/Contents/Resources" /tmp/RekeyStartupContract.app/Contents/Resources
+/tmp/RekeyStartupContract.app/Contents/MacOS/RekeyStartupContract --startup-only
+```
+
+覆盖空目录不自动初始化、保存恢复密钥后连接、已有保险库自动启动并保持锁定、复用已运行服务、显式停止后普通刷新不重启，以及启动失败诊断。CI 同样执行此检查。
 
 连接 UI 软件契约检查：
 

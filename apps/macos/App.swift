@@ -68,7 +68,7 @@ struct RootView: View {
             }
         }
         .background(canvas).foregroundStyle(ink).tint(green)
-        .task { await model.refresh() }
+        .task { await model.connectOnOpen() }
         .onOpenURL { url in model.openOnboarding(url); NSApp.activate(ignoringOtherApps: true) }
         .onDisappear { model.clearNativeFlow() }
         .onReceive(Timer.publish(every: 15, on: .main, in: .common).autoconnect()) { _ in
@@ -183,7 +183,15 @@ struct RootView: View {
             Text("首次使用只需设置密码，应用会自动创建保险库并启动服务。已有保险库可通过左侧工作区选择目录。").font(.system(size: 14)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Text(model.stateDirectory).font(.system(size: 12, design: .monospaced)).foregroundStyle(.secondary).textSelection(.enabled)
             HStack(spacing: 12) {
-                Button(model.needsSetup ? "设置密码并开始" : model.serviceStartTitle) { model.startService() }.buttonStyle(PrimaryButton())
+                if model.needsSetup {
+                    Button("设置密码并开始") { model.beginSetup() }.buttonStyle(PrimaryButton())
+                } else if model.busy {
+                    ProgressView("正在连接保险库…")
+                } else if model.backgroundServiceNeedsApproval {
+                    Button("允许后台运行") { BackgroundService.openSettings() }.buttonStyle(PrimaryButton())
+                } else {
+                    Button("重新连接") { Task { await model.connectOnOpen() } }.buttonStyle(PrimaryButton())
+                }
 
             }.disabled(model.busy)
             if let error = model.connectionError {

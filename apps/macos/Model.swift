@@ -978,6 +978,7 @@ struct ResultMessage: Identifiable {
     let title: String
     let text: String
     var sensitive: Bool = false
+    var connectsAfterSaving: Bool = false
 }
 
 struct OIDCLoginBegin: Decodable, Sendable {
@@ -1272,7 +1273,7 @@ final class AppModel: ObservableObject {
         !FileManager.default.fileExists(atPath: stateDirectory + "/vault.sqlite3")
     }
     func beginSetup() {
-        let startup = onboardingRoute == .setup ? "保存恢复密钥后，请明确启动服务。" : managesBackgroundService ? "同时启用本用户登录启动并启动服务。" : "随后启动服务。"
+        let startup = managesBackgroundService ? "保存恢复密钥后自动连接，并启用本用户登录启动。" : "保存恢复密钥后自动连接。"
         operation = Operation(title: "创建保险库", detail: "设置并确认密码后，应用会创建保险库，" + startup + "请保存随后显示的恢复密钥。取消、未确认或失败可能保留未完成状态；应用不会删除文件、清除历史锚或自动重试。", arguments: ["init"], confirmSecret: true, sensitiveResult: true, recoveryAllowed: false)
     }
     func requestRollbackConfirmation() {
@@ -1391,7 +1392,14 @@ final class AppModel: ObservableObject {
         stateDirectory = path
         UserDefaults.standard.set(path, forKey: "stateDirectory")
         status = nil; clearCache(); result = nil; error = nil
-        Task { await refresh() }
+        Task { await connectOnOpen() }
+    }
+    func connectOnOpen() async {
+        guard !busy, !oidcBusy else { return }
+        let directory = stateDirectory
+        await refresh()
+        guard directory == stateDirectory, status == nil, !needsSetup, result == nil, operation == nil else { return }
+        startService()
     }
     func refresh(nextAuditPage: Bool = false, passive: Bool = false, client injectedClient: CLI? = nil) async {
         if page == .activity { await refreshActivity(passive: passive, client: injectedClient); return }
@@ -1591,7 +1599,7 @@ final class AppModel: ObservableObject {
                     do { try await BackgroundService.unregisterAfterAuthorizedShutdown() }
                     catch { throw UIError(message: "服务已停止，但未能停用登录启动：" + error.localizedDescription) }
                 }
-                result = ResultMessage(title: op.title + "完成", text: output, sensitive: op.sensitiveResult)
+                result = ResultMessage(title: op.title + "完成", text: output, sensitive: op.sensitiveResult, connectsAfterSaving: op.arguments.first == "init")
             }
         } catch {
             operationError = error.localizedDescription + (op.arguments.first == "init" ? "\n初始化可能保留未完成状态；应用未删除文件或清除历史锚，也不会自动重试。" : "")
@@ -1605,14 +1613,11 @@ final class AppModel: ObservableObject {
         }
         busy = false
         if injectedClient == nil { await refresh() }
-        if operationError == nil && op.arguments.first == "init" && onboarding == nil { startService() }
     }
     func startService() {
         guard !busy else { return }
-        if BackgroundService.isInstalledApplication {
-            guard managesBackgroundService else {
-                error = "登录启动仅支持默认保险库目录。自定义目录或机构配置请先通过 CLI 启动服务，再在应用中连接。"; return
-            }
+        error = nil
+        if managesBackgroundService {
             guard !needsSetup else { beginSetup(); return }
             busy = true; error = nil
             Task {

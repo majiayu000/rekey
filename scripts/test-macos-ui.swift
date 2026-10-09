@@ -12,8 +12,12 @@ struct ConnectionUIContract {
             try subprocessBoundary()
             return
         }
+        if CommandLine.arguments == [CommandLine.arguments[0], "--startup-only"] {
+            try await startup()
+            return
+        }
         guard CommandLine.arguments.count == 2 else {
-            throw UIError(message: "usage: test-macos-ui CLI_BINARY | --subprocess-boundary-only")
+            throw UIError(message: "usage: test-macos-ui CLI_BINARY | --subprocess-boundary-only | --startup-only")
         }
         try subprocessBoundary()
         try await live(binary: URL(fileURLWithPath: CommandLine.arguments[1]))
@@ -90,6 +94,54 @@ struct ConnectionUIContract {
         try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: file)
         try rejected("private file cannot follow symlink") { try writePrivateNew(Data(), to: alias) }
         print("PASS: production App subprocess argv/stdin/environment, bounded output, error redaction and private-file boundaries.")
+    }
+
+    @MainActor
+    static func startup() async throws {
+        let root = try fixture()
+        let model = AppModel(stateDirectory: root.appendingPathComponent("state").path)
+        let client = model.cli
+        let proof = "UI-SYNTHETIC-STARTUP-PROOF"
+        defer {
+            if model.serviceIsRunning {
+                do { _ = try client.run(["shutdown", "--password-stdin"], input: proof + "\n") }
+                catch { fputs("startup fixture shutdown failed\n", stderr) }
+            }
+            cleanup(root)
+        }
+        await model.connectOnOpen()
+        try require(model.needsSetup && !model.serviceIsRunning && model.operation == nil, "opening an empty directory does not initialize a vault")
+        await model.perform(Operation(title: "创建保险库", detail: "synthetic setup", arguments: ["init", "--mode", "personal"], sensitiveResult: true), proof: proof)
+        try require(model.result?.connectsAfterSaving == true && model.status == nil && !model.serviceIsRunning, "setup waits for recovery-key saving")
+        await model.connectOnOpen()
+        try require(!model.serviceIsRunning, "opening cannot bypass the recovery-key result")
+        model.result = nil
+        try writePrivateNew(JSONSerialization.data(withJSONObject: ["port": try reservePort()]), to: URL(fileURLWithPath: client.stateDirectory).appendingPathComponent("service.json"))
+        await model.connectOnOpen()
+        let deadline = Date().addingTimeInterval(10)
+        while model.busy || model.status == nil {
+            guard Date() < deadline else { throw UIError(message: "automatic startup failed: " + (model.error ?? model.connectionError ?? "unknown")) }
+            try await Task.sleep(nanoseconds: 100_000_000)
+            if !model.busy { await model.refresh() }
+        }
+        try require(model.status?.state == "locked" && !model.desktopReady && model.operation == nil, "opening an existing vault starts service without unlocking or requesting proof")
+        let socket = client.stateDirectory + "/runtime/admin.sock"
+        let before = try FileManager.default.attributesOfItem(atPath: socket)[.systemFileNumber] as? NSNumber
+        await model.connectOnOpen()
+        let after = try FileManager.default.attributesOfItem(atPath: socket)[.systemFileNumber] as? NSNumber
+        try require(before != nil && before == after && model.error == nil, "repeated opening reuses the live service")
+        _ = try client.run(["shutdown", "--password-stdin"], input: proof + "\n")
+        try await Task.sleep(nanoseconds: 300_000_000)
+        await model.refresh(passive: true)
+        try require(model.status == nil && !model.serviceIsRunning, "ordinary refresh does not restart an explicitly stopped service")
+        let malformed = root.appendingPathComponent("invalid")
+        try FileManager.default.createDirectory(at: malformed, withIntermediateDirectories: false)
+        try writePrivateNew(Data("synthetic-invalid-vault".utf8), to: malformed.appendingPathComponent("vault.sqlite3"))
+        let invalid = AppModel(stateDirectory: malformed.path)
+        await invalid.connectOnOpen()
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+        try require(invalid.status == nil && invalid.error != nil, "automatic startup failure remains visible")
+        print("PASS: empty-directory setup, automatic locked startup, existing-service reuse, explicit-stop preservation and startup diagnostics.")
     }
 
     static func reservePort() throws -> Int {
@@ -188,16 +240,19 @@ struct ConnectionUIContract {
         let receiptData = try client.run(["backup", "--output", backup.path, "--password-stdin"], input: proof + "\n")
         _ = try JSONDecoder().decode(BackupReceipt.self, from: receiptData)
         let receipt = try JSONSerialization.jsonObject(with: receiptData) as! [String: Any]
-        let restored = CLI(binary: binary, stateDirectory: root.appendingPathComponent("restored").path)
-        let restoreArguments = ["restore", "--input", backup.path, "--sha256", receipt["sha256_hex"] as! String]
-        let preview = try JSONDecoder().decode(RollbackContext.self, from: restored.run(restoreArguments + ["--inspect", "--password-stdin"], input: proof + "\n"))
-        _ = try JSONDecoder().decode(RestoreReceipt.self, from: restored.run(restoreArguments + ["--expected-context", try preview.encodedArgument(), "--password-stdin"], input: proof + "\n"))
+        // Restore advances the shared vault's protected generation. Finish the
+        // source lifecycle first so the fixture never continues a stale instance.
         _ = try client.run(["credential", "revoke", credential.id, "--password-stdin"], input: proof + "\n")
         try require(!(try client.decode(CredentialList.self, ["credential", "list"])).credentials[0].active, "real revocation")
         _ = try client.run(["lock"])
         try rejected("locked mutation denied") { _ = try client.run(["credential", "add", "blocked", "--stdin-secrets"], input: proof + "\n" + first + "\n") }
         _ = try client.decode(AuditPage.self, ["audit", "list"])
         _ = try client.run(["shutdown", "--password-stdin"], input: proof + "\n")
+        broker.waitUntilExit()
+        let restored = CLI(binary: binary, stateDirectory: root.appendingPathComponent("restored").path)
+        let restoreArguments = ["restore", "--input", backup.path, "--sha256", receipt["sha256_hex"] as! String]
+        let preview = try JSONDecoder().decode(RollbackContext.self, from: restored.run(restoreArguments + ["--inspect", "--password-stdin"], input: proof + "\n"))
+        _ = try JSONDecoder().decode(RestoreReceipt.self, from: restored.run(restoreArguments + ["--expected-context", try preview.encodedArgument(), "--password-stdin"], input: proof + "\n"))
         print("PASS: real Swift/CLI/Broker Connection signing, discovery, dry-run, credential lifecycle, audit and backup/restore. Software signer only; hardware acceptance remains separate.")
     }
 }

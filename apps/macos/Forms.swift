@@ -633,7 +633,10 @@ struct ResultView: View {
                     catch { failure = error.localizedDescription }
                 }
                 Spacer()
-                Button("完成") { model.result = nil; dismiss() }.buttonStyle(PrimaryButton()).disabled(result.sensitive && !saved)
+                Button("完成") {
+                    model.result = nil; dismiss()
+                    if result.connectsAfterSaving { Task { await model.connectOnOpen() } }
+                }.buttonStyle(PrimaryButton()).disabled(result.sensitive && !saved)
             }
         }.padding(30).frame(width: 570).background(canvas).interactiveDismissDisabled(result.sensitive)
     }
@@ -1065,8 +1068,9 @@ struct OnboardingView: View {
                 Text("1 · 选择个人或团队模式，设置密码并离线保存恢复密钥。模式创建后不可更改。")
                 Button("创建保险库") { model.beginSetup() }.buttonStyle(PrimaryButton()).disabled(model.busy)
             } else if model.status == nil {
-                Text("2 · 保险库已存在。启用本用户登录启动，并连接已验证的服务。")
-                Button(model.serviceStartTitle) { model.startService() }.buttonStyle(PrimaryButton()).disabled(model.busy)
+                Text("2 · 自动连接保险库；首次使用需允许系统后台运行。")
+                if model.busy { ProgressView("正在连接保险库…") }
+                else { Button("重新连接") { Task { await model.connectOnOpen() } }.buttonStyle(PrimaryButton()) }
                 if model.backgroundServiceNeedsApproval { Button("打开系统登录项设置") { BackgroundService.openSettings() } }
                 Button("检查服务状态") { Task { await model.refresh() } }.disabled(model.busy)
                 Text(model.backgroundServiceDescription ?? "服务状态尚未确认；系统接受启动请求不代表服务已就绪。")

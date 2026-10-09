@@ -107,4 +107,8 @@ jobs:
             apps/macos/BackgroundService.swift apps/macos/PolicySigning.swift apps/macos/PresenceKey.swift apps/macos/Model.swift scripts/test-macos-ui.swift -o /tmp/rekey-ui-contract
           # CLI_BINARY runs the Connection signing and subprocess boundary contracts together.
           /tmp/rekey-ui-contract target/macos-ui/Rekey.app/Contents/Resources/bin/rekey
+          mkdir -p /tmp/RekeyStartupContract.app/Contents/MacOS
+          cp /tmp/rekey-ui-contract /tmp/RekeyStartupContract.app/Contents/MacOS/RekeyStartupContract
+          ln -s "$PWD/target/macos-ui/Rekey.app/Contents/Resources" /tmp/RekeyStartupContract.app/Contents/Resources
+          /tmp/RekeyStartupContract.app/Contents/MacOS/RekeyStartupContract --startup-only
           python3 scripts/test-human-vault.py target/macos-ui/Rekey.app/Contents/Resources/bin/rekey
