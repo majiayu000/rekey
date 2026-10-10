@@ -351,7 +351,14 @@ fn initialize_vault_records(
         vault_id,
         format_version: FORMAT_VERSION,
         generation: 1,
-        generation_mac: crate::crypto::generation::seal(vrk.bytes(), vault_id, FORMAT_VERSION, 1)?,
+        generation_mac: crate::crypto::generation::seal(
+            vrk.bytes(),
+            vault_id,
+            FORMAT_VERSION,
+            1,
+            &crate::store::pki::empty_digest(),
+        )?,
+        pki_digest: crate::store::pki::empty_digest(),
         crypto_suite: CRYPTO_SUITE_V1.to_owned(),
         created_at_ms: now,
         schema_digest: schema_digest(),
@@ -484,6 +491,7 @@ pub(crate) fn authenticate_restore(
     let kek = kek_for_wrapper(&wrapper, secret)?;
     let vrk = unwrap_vrk(header.vault_id, &wrapper, &kek)?;
     prove_integrity(header, vrk.bytes())?;
+    store.verified_certificates(header)?;
     prove_all_credential_states(store, header.vault_id, &vrk)?;
     prove_all_payloads(store, header.vault_id, &vrk)?;
     for record in store.list_all_actions()? {

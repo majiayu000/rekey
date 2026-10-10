@@ -1513,7 +1513,7 @@ fn personal_connection_draft_sign_and_activate_over_anonymous_stdin() {
     );
     let first_bundle = sign(&first);
     let bundle: Value = serde_json::from_str(&first_bundle).unwrap();
-    assert_eq!(bundle["snapshot"]["format_version"], 7);
+    assert_eq!(bundle["snapshot"]["format_version"], 8);
     assert_eq!(bundle["snapshot"]["ssh_keys"], json!([]));
     assert_eq!(success(activate(&first_bundle))["version"], 1);
     let capabilities = success(call(&["list", "--json"], None));

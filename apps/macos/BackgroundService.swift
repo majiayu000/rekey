@@ -27,8 +27,8 @@ enum BackgroundService {
     }
     static var requiresApproval: Bool { agent.status == .requiresApproval }
 
-    /// Only called for an explicit user start action. No automatic registration
-    /// from refresh, remembered credentials, installer scripts, or agent requests.
+    /// Called when the user opens the App, completes setup or retries connection.
+    /// Ordinary refresh, remembered credentials and agent requests do not register it.
     static func start() async throws {
         let service = agent
         switch service.status {

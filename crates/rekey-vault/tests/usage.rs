@@ -538,7 +538,7 @@ async fn backup_restore_rotation_and_presence_resume_keep_usage_and_recover_pend
     );
     finish(r, rj).await;
     let (key, _) = h
-        .desktop_remember(common::password_proof(), None)
+        .desktop_remember(common::password_proof(), None, 604_800_000)
         .await
         .unwrap();
     h.lock_for_restart("test").await.unwrap();
@@ -691,7 +691,7 @@ async fn format_24_state_and_backup_are_rejected_without_migration() {
     finish(h, j).await;
     for file in [&archive, &paths::vault_db(&v.state_dir)] {
         let db = Connection::open(file).unwrap();
-        db.execute_batch("PRAGMA writable_schema=ON; UPDATE sqlite_schema SET sql=replace(sql,'format_version = 26','format_version = 24') WHERE name='vault_header'; PRAGMA writable_schema=OFF;").unwrap();
+        db.execute_batch("PRAGMA writable_schema=ON; UPDATE sqlite_schema SET sql=replace(sql,'format_version = 27','format_version = 24') WHERE name='vault_header'; PRAGMA writable_schema=OFF;").unwrap();
         drop(db);
         let db = Connection::open(file).unwrap();
         db.execute("UPDATE vault_header SET format_version=24", [])
@@ -868,7 +868,7 @@ async fn reauthentication_while_unlocked_never_recovers_a_live_pending_request()
     let s = draft(p);
     begin(&h, limits(Some(20)), s.clone()).await.unwrap();
     let (key, _) = h
-        .desktop_remember(common::password_proof(), None)
+        .desktop_remember(common::password_proof(), None, 604_800_000)
         .await
         .unwrap();
     let db = Connection::open(paths::vault_db(&v.state_dir)).unwrap();

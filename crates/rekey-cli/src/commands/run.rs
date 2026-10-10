@@ -432,35 +432,205 @@ fn wait_child(
     control: &std::os::unix::net::UnixStream,
     child: &mut Child,
 ) -> Result<i32, CliError> {
+    let status_code = |status: std::process::ExitStatus| {
+        status
+            .code()
+            .unwrap_or_else(|| 128 + status.signal().unwrap_or(1))
+    };
+    let unavailable = || CliError::local("IPC_UNAVAILABLE", "Profile control connection failed");
+    #[cfg(target_os = "macos")]
+    let events = {
+        if let Some(status) = child.try_wait().map_err(|_| {
+            CliError::local("LAUNCHER_UNAVAILABLE", "cannot wait for session command")
+        })? {
+            return Ok(status_code(status));
+        }
+        let fd = unsafe { libc::kqueue() };
+        if fd < 0 {
+            return Err(unavailable());
+        }
+        // SAFETY: kqueue returned a new descriptor, owned only by this guard.
+        let events = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
+            return Err(unavailable());
+        }
+        let changes = [
+            libc::kevent {
+                ident: control.as_raw_fd() as libc::uintptr_t,
+                filter: libc::EVFILT_READ,
+                flags: libc::EV_ADD | libc::EV_RECEIPT,
+                fflags: 0,
+                data: 0,
+                udata: std::ptr::null_mut(),
+            },
+            libc::kevent {
+                // This child is still ours and unreaped, so its PID cannot be reused.
+                ident: child.id() as libc::uintptr_t,
+                filter: libc::EVFILT_PROC,
+                flags: libc::EV_ADD | libc::EV_ONESHOT | libc::EV_RECEIPT,
+                fflags: libc::NOTE_EXIT,
+                data: 0,
+                udata: std::ptr::null_mut(),
+            },
+        ];
+        let mut receipts = changes;
+        let zero = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        let count = loop {
+            let count =
+                unsafe { libc::kevent(fd, changes.as_ptr(), 2, receipts.as_mut_ptr(), 2, &zero) };
+            if count >= 0
+                || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
+            {
+                break count;
+            }
+        };
+        if count != 2 || receipts.iter().any(|receipt| receipt.data != 0) {
+            // An exit between try_wait and registration may report ESRCH.
+            if let Some(status) = child.try_wait().map_err(|_| {
+                CliError::local("LAUNCHER_UNAVAILABLE", "cannot wait for session command")
+            })? {
+                return Ok(status_code(status));
+            }
+            if count == 2 && receipts[0].data == 0 && receipts[1].data == libc::ESRCH as isize {
+                // Our unreaped PID cannot be reused. XNU can hide this exiting
+                // child from proc_find before it becomes waitable.
+                return child.wait().map(status_code).map_err(|_| {
+                    CliError::local("LAUNCHER_UNAVAILABLE", "cannot wait for session command")
+                });
+            }
+            return Err(unavailable());
+        }
+        events
+    };
+    #[cfg(target_os = "linux")]
+    let child_exit = {
+        if let Some(status) = child.try_wait().map_err(|_| {
+            CliError::local("LAUNCHER_UNAVAILABLE", "cannot wait for session command")
+        })? {
+            return Ok(status_code(status));
+        }
+        // The child is ours and unreaped; there is no other reaper. Linux 5.3+
+        // keeps this PID stable through exit, and flags=0 sets close-on-exec.
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, child.id(), 0) };
+        if fd < 0 {
+            if let Some(status) = child.try_wait().map_err(|_| {
+                CliError::local("LAUNCHER_UNAVAILABLE", "cannot wait for session command")
+            })? {
+                return Ok(status_code(status));
+            }
+            return Err(unavailable());
+        }
+        // SAFETY: pidfd_open returned a new descriptor owned by this guard.
+        unsafe { std::os::fd::OwnedFd::from_raw_fd(fd as libc::c_int) }
+    };
     loop {
         if let Some(status) = child.try_wait().map_err(|_| {
-            CliError::local("LAUNCHER_UNAVAILABLE", "cannot wait for Profile command")
+            CliError::local("LAUNCHER_UNAVAILABLE", "cannot wait for session command")
         })? {
-            return Ok(status
-                .code()
-                .unwrap_or_else(|| 128 + status.signal().unwrap_or(1)));
+            return Ok(status_code(status));
         }
-        let mut descriptor = libc::pollfd {
-            fd: control.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        let ready = unsafe { libc::poll(&mut descriptor, 1, 100) };
-        if ready < 0 {
-            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
-                continue;
+        #[cfg(target_os = "macos")]
+        {
+            let mut ready_events: [libc::kevent; 2] = unsafe { std::mem::zeroed() };
+            let ready = unsafe {
+                libc::kevent(
+                    events.as_raw_fd(),
+                    std::ptr::null(),
+                    0,
+                    ready_events.as_mut_ptr(),
+                    2,
+                    std::ptr::null(),
+                )
+            };
+            if ready < 0 {
+                if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(unavailable());
             }
-            return Err(CliError::local(
-                "IPC_UNAVAILABLE",
-                "Profile control connection failed",
-            ));
+            let ready_events = &ready_events[..ready as usize];
+            if ready_events
+                .iter()
+                .any(|event| event.flags & libc::EV_ERROR != 0)
+            {
+                return Err(unavailable());
+            }
+            if ready_events
+                .iter()
+                .any(|event| event.filter == libc::EVFILT_READ)
+            {
+                return Err(CliError::local(
+                    "IPC_UNAVAILABLE",
+                    "Profile session ended; command stopped",
+                ));
+            }
+            if ready_events.iter().any(|event| {
+                event.filter == libc::EVFILT_PROC && event.fflags & libc::NOTE_EXIT != 0
+            }) {
+                // NOTE_EXIT can precede the waitable zombie state. The one-shot
+                // notification is consumed, so reap our exiting child directly.
+                return child.wait().map(status_code).map_err(|_| {
+                    CliError::local("LAUNCHER_UNAVAILABLE", "cannot wait for session command")
+                });
+            }
         }
-        if ready > 0 {
-            // No post-CREATE message is valid: bytes, EOF and error all revoke.
-            return Err(CliError::local(
-                "IPC_UNAVAILABLE",
-                "Profile session ended; command stopped",
-            ));
+        #[cfg(target_os = "linux")]
+        {
+            let mut descriptors = [
+                libc::pollfd {
+                    fd: control.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: child_exit.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+            ];
+            let ready = unsafe { libc::poll(descriptors.as_mut_ptr(), 2, -1) };
+            if ready < 0 {
+                if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(unavailable());
+            }
+            if descriptors[0].revents != 0 {
+                return Err(CliError::local(
+                    "IPC_UNAVAILABLE",
+                    "Profile session ended; command stopped",
+                ));
+            }
+            if descriptors[1].revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
+                return Err(unavailable());
+            }
+            // An exited pidfd is readable until our next try_wait reaps it.
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        {
+            let mut descriptor = libc::pollfd {
+                fd: control.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let ready = unsafe { libc::poll(&mut descriptor, 1, 100) };
+            if ready < 0 {
+                if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(unavailable());
+            }
+            if ready > 0 {
+                // No post-CREATE message is valid: bytes, EOF and error all revoke.
+                return Err(CliError::local(
+                    "IPC_UNAVAILABLE",
+                    "Profile session ended; command stopped",
+                ));
+            }
         }
     }
 }
@@ -468,6 +638,46 @@ fn wait_child(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn child_wait_observes_quick_exit_and_reaps_actual_owned_process() {
+        for (script, expected) in [("exit 0", 0), ("exit 23", 23), ("kill -TERM $$", 143)] {
+            for _ in 0..32 {
+                let (_peer, control) = std::os::unix::net::UnixStream::pair().unwrap();
+                let mut child = Command::new("/bin/sh")
+                    .args(["-c", script])
+                    .spawn()
+                    .unwrap();
+                assert_eq!(wait_child(&control, &mut child).unwrap(), expected);
+                assert!(child.try_wait().unwrap().is_some());
+            }
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn child_wait_control_bytes_or_eof_keep_cancel_and_reap_contract() {
+        use std::io::Write;
+        for send_byte in [false, true] {
+            let (mut peer, control) = std::os::unix::net::UnixStream::pair().unwrap();
+            let mut child = Command::new("/bin/sh")
+                .args(["-c", "exec sleep 10"])
+                .spawn()
+                .unwrap();
+            if send_byte {
+                peer.write_all(&[1]).unwrap();
+            } else {
+                drop(peer);
+            }
+            let error = wait_child(&control, &mut child).unwrap_err();
+            assert_eq!(error.code, "IPC_UNAVAILABLE");
+            assert!(child.try_wait().unwrap().is_none());
+            let killed = child.kill();
+            finish_termination(&mut child, killed).unwrap();
+            assert!(child.try_wait().unwrap().is_some());
+        }
+    }
 
     #[test]
     fn exited_isolated_helper_requires_normal_cleanup_acknowledgement() {

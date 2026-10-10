@@ -39,7 +39,9 @@ pub(super) async fn validate_add(
                 "Use rekey ssh generate or import in Rekey App.",
             ));
         }
-        CredentialKind::OpaqueToken => return Ok(()),
+        CredentialKind::OpaqueToken
+        | CredentialKind::MtlsIdentity
+        | CredentialKind::PkiCaSigner => return Ok(()),
         #[cfg(feature = "lab")]
         CredentialKind::MacosKeychainSource => return Ok(()),
         #[cfg(feature = "lab")]

@@ -89,7 +89,7 @@ struct OperationForm: View {
             }
             if !presence { SecureField(recovery ? "恢复密钥" : operation.arguments.first == "init" ? "设置保险库密码" : "当前保险库密码", text: $proof).textFieldStyle(.roundedBorder) }
             if operation.arguments == ["unlock"] {
-                Toggle("启用系统认证（授权有效期 7 天）", isOn: $rememberPresence).disabled(model.busy)
+                Toggle("启用系统认证（授权有效期 \(model.securitySettings.passwordInterval.label)）", isOn: $rememberPresence).disabled(model.busy || model.securitySettings.passwordInterval == .everyUnlock)
                 Text("仅在本次解锁成功后保存受系统认证保护的新授权；不会导入旧授权。").font(.system(size: 11)).foregroundStyle(.secondary)
                 Button("用系统认证解锁") {
                     let revision = model.nativeFlowRevision
@@ -572,7 +572,9 @@ struct ApprovalDetailView: View {
                         row("创建时间", "\(displayDate(challenge.created_at_ms)) · \(challenge.created_at_ms) ms")
                         row("有效期至", "\(displayDate(challenge.max_expires_at_ms)) · \(challenge.max_expires_at_ms) ms")
                     }
-                    if case .ed25519 = challenge.approver {
+                    if challenge.schema_id == "rekey.ssh-sign.v1" {
+                        Text("此 SSH 请求需要独立签名审批。请使用 rekey approval review 获取完整签名内容，在 rekey-approval-sign 中核对后，通过 rekey approval submit 提交所需签名。").font(.system(size:12)).foregroundStyle(.secondary)
+                    } else if case .ed25519 = challenge.approver {
                         NativeApprovalForm(details: details).environmentObject(model)
                     } else {
                         Text("此请求需要本机系统认证，当前暂不可批准。").font(.system(size: 12)).foregroundStyle(.secondary)
@@ -633,7 +635,10 @@ struct ResultView: View {
                     catch { failure = error.localizedDescription }
                 }
                 Spacer()
-                Button("完成") { model.result = nil; dismiss() }.buttonStyle(PrimaryButton()).disabled(result.sensitive && !saved)
+                Button("完成") {
+                    model.result = nil; dismiss()
+                    if result.connectsAfterSaving { Task { await model.connectOnOpen() } }
+                }.buttonStyle(PrimaryButton()).disabled(result.sensitive && !saved)
             }
         }.padding(30).frame(width: 570).background(canvas).interactiveDismissDisabled(result.sensitive)
     }
@@ -712,6 +717,7 @@ private struct SSHKeySummary:View {
             Text("SSH · "+key.name).font(.headline)
             Text(key.publicKeyText).font(.system(size:11,design:.monospaced)).textSelection(.enabled)
             Text("git 签名："+key.git_signing+"；未登记或未绑定 host：审批").font(.caption)
+            Text("每个连接最多 \(key.session_budget.max_signatures) 次签名，有效 \(key.session_budget.max_seconds) 秒；"+(key.approver.kind=="ed25519" ? "需 \(key.approver.threshold ?? 0) 名签名审批人":"本机确认")).font(.caption)
             ForEach(key.hosts.indices,id:\.self){i in
                 Text(key.hosts[i].host+" · "+key.hosts[i].effect+" · rule "+key.hosts[i].rule_id).font(.caption)
                 Text(key.hosts[i].host_key).font(.system(size:11,design:.monospaced)).textSelection(.enabled)
@@ -880,12 +886,14 @@ struct PersonalPolicyDraftForm:View {
 struct TeamPolicyDraftForm: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.dismiss) var dismiss
-    @State private var draft: NativeFileSnapshot?
+    @State private var draftText = ""
+    @State private var version = 1
+    @State private var expiry = Date().addingTimeInterval(30 * 24 * 60 * 60)
     @State private var profiles: ConnectionList?
     @State private var message: String?
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("团队连接 · 只读与外部签名").font(.system(size: 24, weight: .semibold))
+            Text("团队策略草稿 · 外部签名").font(.system(size: 24, weight: .semibold))
             if let profiles {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
@@ -895,25 +903,31 @@ struct TeamPolicyDraftForm: View {
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }.frame(maxHeight: 240)
             }
-            Text("团队连接 由外部签名策略管理，本机不编辑或签署。以下文件尚未验证，只中转原始内容。")
+            Text("草稿尚未验证，只在独立签名工具中签署。编辑不会激活策略；导入内容不会经过部分表单重建。")
+            HStack {
+                TextField("新策略版本", value: $version, format: .number.grouping(.never))
+                DatePicker("有效期至", selection: $expiry)
+                Button("生成新的空策略草稿") { generateDraft() }
+            }
+            Text("生成会明确替换下方文本。新草稿没有授权；请填写连接和审批公钥后完整审阅。").font(.caption).foregroundStyle(.secondary)
             Button("选择草稿（最多 64 KiB）") {
                 guard let file = chooseFile() else { return }
-                draft = nil; message = nil
-                do { draft = try NativeFileSnapshot.read(file, limit: 65536) }
+                draftText = ""; message = nil
+                do { draftText = try NativeFileSnapshot.read(file, limit: 65536).text }
                 catch { message = error.localizedDescription }
             }
-            if let draft {
-                ScrollView { Text(draft.text).font(.system(size: 12, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
-                Button("原样导出到新私有文件") {
-                    guard let destination = chooseSave("DRAFT.json") else { return }
-                    do { try writePrivateNew(draft.data, to: destination); message = "原始快照已导出。" }
-                    catch { message = error.localizedDescription }
-                }
-            }
+            TextEditor(text: $draftText).font(.system(size: 12, design: .monospaced)).frame(minHeight: 180)
+            Button("导出可见 UTF-8 文本到新私有文件") {
+                guard let destination = chooseSave("DRAFT.json") else { return }
+                do {
+                    try writePrivateNew(try TeamDraftText.bytes(draftText), to: destination)
+                    message = "可见文本已原样导出；尚未验证或签署。"
+                } catch { message = error.localizedDescription }
+            }.disabled(draftText.isEmpty)
             Text("下一步：在独立工具运行 rekey-policy-sign review DRAFT.json，完整核对后按其 reviewed digest 签名。再回到策略页，分别安装信任根、激活签名策略；这两步仍需 Admin step-up。")
                 .font(.system(size: 12)).foregroundStyle(.secondary)
             if let message { Text(message).font(.system(size: 12)).textSelection(.enabled) }
-            HStack { Spacer(); Button("关闭") { draft = nil; message = nil; model.showPolicyDraft = false; dismiss() }.keyboardShortcut(.cancelAction) }
+            HStack { Spacer(); Button("关闭") { draftText = ""; message = nil; model.showPolicyDraft = false; dismiss() }.keyboardShortcut(.cancelAction) }
         }.padding(28).frame(width: 720, height: 620).background(canvas)
         .task {
             let revision = model.nativeFlowRevision, workspace = model.stateDirectory
@@ -924,9 +938,14 @@ struct TeamPolicyDraftForm: View {
                 if model.acceptsNativeCompletion(revision, workspace: workspace) { message = error.localizedDescription }
             }
         }
-        .onChange(of: model.nativeFlowRevision) { _, _ in draft = nil; profiles = nil; message = nil }
-        .onDisappear { draft = nil; profiles = nil; message = nil; model.clearNativeFlow() }
+        .onChange(of: model.nativeFlowRevision) { _, _ in draftText = ""; profiles = nil; message = nil }
+        .onDisappear { draftText = ""; profiles = nil; message = nil; model.clearNativeFlow() }
     }
+    private func generateDraft() {
+        do { draftText = try TeamDraftText.empty(version: version, expiresAt: expiry); message = nil }
+        catch { message = error.localizedDescription }
+    }
+
 }
 
 struct NativeApprovalForm: View {
@@ -1065,8 +1084,9 @@ struct OnboardingView: View {
                 Text("1 · 选择个人或团队模式，设置密码并离线保存恢复密钥。模式创建后不可更改。")
                 Button("创建保险库") { model.beginSetup() }.buttonStyle(PrimaryButton()).disabled(model.busy)
             } else if model.status == nil {
-                Text("2 · 保险库已存在。启用本用户登录启动，并连接已验证的服务。")
-                Button(model.serviceStartTitle) { model.startService() }.buttonStyle(PrimaryButton()).disabled(model.busy)
+                Text("2 · 自动连接保险库；首次使用需允许系统后台运行。")
+                if model.busy { ProgressView("正在连接保险库…") }
+                else { Button("重新连接") { Task { await model.connectOnOpen() } }.buttonStyle(PrimaryButton()) }
                 if model.backgroundServiceNeedsApproval { Button("打开系统登录项设置") { BackgroundService.openSettings() } }
                 Button("检查服务状态") { Task { await model.refresh() } }.disabled(model.busy)
                 Text(model.backgroundServiceDescription ?? "服务状态尚未确认；系统接受启动请求不代表服务已就绪。")
@@ -1410,5 +1430,26 @@ private struct DerivedGrantEditor:View {
             if let message{Text(message).foregroundStyle(.red)}
             Text("实际将签署："+grant.publicDescription).font(.system(size:11,design:.monospaced)).textSelection(.enabled)
         }.onAppear{policyText=grant.target.session_policy.flatMap{try? String(decoding:JSONEncoder().encode($0),as:UTF8.self)} ?? "{}";repositories=grant.target.repository_ids?.map(String.init).joined(separator:",") ?? "";permissions=(try? String(decoding:JSONEncoder().encode(grant.target.permissions ?? [:]),as:UTF8.self)) ?? "{}"}
+    }
+}
+
+struct DesktopSecurityForm: View {
+    @EnvironmentObject var model: AppModel
+    @State private var settings = DesktopSecuritySettings()
+    var body: some View {
+        SectionCard(title: "管理界面隐私锁", icon: "lock.shield") {
+            Picker("电脑空闲后锁定", selection: $settings.idle) {
+                ForEach(DesktopIdleInterval.allCases) { Text($0.label).tag($0) }
+            }
+            Toggle("锁屏、休眠或切换用户时锁定界面", isOn: $settings.lockWithDevice)
+            Picker("重新输入保险库密码", selection: $settings.passwordInterval) {
+                ForEach(DesktopPasswordInterval.allCases) { Text($0.label).tag($0) }
+            }
+            Text("自动锁定只关闭管理界面，Agent 继续工作。保存设置会撤销当前管理会话和系统认证授权，再次输入密码后应用新期限。").font(.caption).foregroundStyle(.secondary)
+            Button("保存并锁定界面") { let value = settings; Task { await model.saveSecuritySettings(value) } }.disabled(model.busy || !model.desktopReady || settings == model.securitySettings)
+            Button("锁定整个保险库") { Task { await model.lock() } }.disabled(model.busy || model.status?.unlocked != true)
+        }
+        .onAppear { settings = model.securitySettings }
+        .onChange(of: model.securitySettings) { _, value in settings = value }
     }
 }

@@ -8,8 +8,8 @@ use zeroize::Zeroizing;
 use crate::error::AuthorityError;
 use crate::model::VaultHeaderRecord;
 
-const KEY_INFO: &[u8] = b"rekey/header-generation-hmac-sha256/v1";
-const MESSAGE_DOMAIN: &[u8] = b"RKGENERATION\0\x01";
+const KEY_INFO: &[u8] = b"rekey/header-generation-hmac-sha256/v2";
+const MESSAGE_DOMAIN: &[u8] = b"RKGENERATION\0\x02";
 
 fn key(vrk: &[u8; 32], vault_id: VaultId) -> Result<hmac::Key, AuthorityError> {
     let hk = Hkdf::<Sha256>::new(Some(vault_id.as_bytes()), vrk);
@@ -19,15 +19,21 @@ fn key(vrk: &[u8; 32], vault_id: VaultId) -> Result<hmac::Key, AuthorityError> {
     Ok(hmac::Key::new(hmac::HMAC_SHA256, bytes.as_ref()))
 }
 
-fn message(vault_id: VaultId, format: u32, generation: u64) -> Result<Vec<u8>, AuthorityError> {
+fn message(
+    vault_id: VaultId,
+    format: u32,
+    generation: u64,
+    pki_digest: &[u8; 32],
+) -> Result<Vec<u8>, AuthorityError> {
     if generation == 0 {
         return Err(AuthorityError::StorageIntegrityFailed);
     }
-    let mut bytes = Vec::with_capacity(MESSAGE_DOMAIN.len() + 16 + 4 + 8);
+    let mut bytes = Vec::with_capacity(MESSAGE_DOMAIN.len() + 16 + 4 + 8 + 32);
     bytes.extend_from_slice(MESSAGE_DOMAIN);
     bytes.extend_from_slice(vault_id.as_bytes());
     bytes.extend_from_slice(&format.to_be_bytes());
     bytes.extend_from_slice(&generation.to_be_bytes());
+    bytes.extend_from_slice(pki_digest);
     Ok(bytes)
 }
 
@@ -36,10 +42,11 @@ pub(crate) fn seal(
     vault_id: VaultId,
     format: u32,
     generation: u64,
+    pki_digest: &[u8; 32],
 ) -> Result<[u8; 32], AuthorityError> {
     let tag = hmac::sign(
         &key(vrk, vault_id)?,
-        &message(vault_id, format, generation)?,
+        &message(vault_id, format, generation, pki_digest)?,
     );
     tag.as_ref()
         .try_into()
@@ -50,7 +57,12 @@ pub(crate) fn verify(vrk: &[u8; 32], header: &VaultHeaderRecord) -> Result<(), A
     // aws-lc-rs verifies HMAC tags in constant time.
     hmac::verify(
         &key(vrk, header.vault_id)?,
-        &message(header.vault_id, header.format_version, header.generation)?,
+        &message(
+            header.vault_id,
+            header.format_version,
+            header.generation,
+            &header.pki_digest,
+        )?,
         &header.generation_mac,
     )
     .map_err(|_| AuthorityError::StorageIntegrityFailed)
@@ -70,7 +82,15 @@ mod tests {
             vault_id,
             format_version: FORMAT_VERSION,
             generation,
-            generation_mac: seal(key.bytes(), vault_id, FORMAT_VERSION, generation).unwrap(),
+            generation_mac: seal(
+                key.bytes(),
+                vault_id,
+                FORMAT_VERSION,
+                generation,
+                &crate::store::pki::empty_digest(),
+            )
+            .unwrap(),
+            pki_digest: crate::store::pki::empty_digest(),
             crypto_suite: crate::crypto::CRYPTO_SUITE_V1.to_owned(),
             created_at_ms: 1,
             schema_digest: [0; 32],
@@ -85,13 +105,14 @@ mod tests {
         for generation in [1, 2, i64::MAX as u64, (i64::MAX as u64) + 1, u64::MAX] {
             let good = header(&root, generation);
             prove_integrity(&good, root.bytes()).unwrap();
-            for field in ["generation", "vault", "format", "mac"] {
+            for field in ["generation", "vault", "format", "mac", "pki_digest"] {
                 let mut bad = good.clone();
                 match field {
                     "generation" => bad.generation ^= 1,
                     "vault" => bad.vault_id = VaultId::from_bytes([2; 16]).unwrap(),
                     "format" => bad.format_version += 1,
                     "mac" => bad.generation_mac[0] ^= 1,
+                    "pki_digest" => bad.pki_digest[0] ^= 1,
                     _ => unreachable!(),
                 }
                 assert!(
@@ -112,7 +133,8 @@ mod tests {
                 root.bytes(),
                 VaultId::from_bytes([1; 16]).unwrap(),
                 FORMAT_VERSION,
-                0
+                0,
+                &crate::store::pki::empty_digest()
             ),
             Err(AuthorityError::StorageIntegrityFailed)
         ));
@@ -141,7 +163,14 @@ mod tests {
             prove_integrity(&h, new.bytes()),
             Err(AuthorityError::StorageIntegrityFailed)
         ));
-        h.generation_mac = seal(new.bytes(), h.vault_id, h.format_version, h.generation).unwrap();
+        h.generation_mac = seal(
+            new.bytes(),
+            h.vault_id,
+            h.format_version,
+            h.generation,
+            &h.pki_digest,
+        )
+        .unwrap();
         prove_integrity(&h, new.bytes()).unwrap();
         assert!(matches!(
             prove_integrity(&h, old.bytes()),
@@ -191,6 +220,7 @@ mod tests {
             header.vault_id,
             header.format_version,
             header.generation,
+            &header.pki_digest,
         )
         .unwrap();
         let db = rusqlite::Connection::open(crate::paths::vault_db(&state)).unwrap();

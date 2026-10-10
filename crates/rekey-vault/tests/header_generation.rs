@@ -100,7 +100,7 @@ async fn desktop_resume_authenticates_header_before_candidate_publication() {
     let (handle, join) = common::spawn(&vault.state_dir);
     handle.unlock(common::password_proof()).await.unwrap();
     let (key, _) = handle
-        .desktop_remember(common::password_proof(), None)
+        .desktop_remember(common::password_proof(), None, 604_800_000)
         .await
         .unwrap();
     handle.lock_for_restart("test-preserve-wrap").await.unwrap();
@@ -208,7 +208,7 @@ async fn candidate_marker_failure_faults_locked_and_unlocked_without_reclassifyi
             if method == "desktop" {
                 presence = Some(
                     handle
-                        .desktop_remember(common::password_proof(), None)
+                        .desktop_remember(common::password_proof(), None, 604_800_000)
                         .await
                         .unwrap()
                         .0,
@@ -330,7 +330,7 @@ async fn unavailable_header_revokes_password_and_desktop_permissions_in_both_sta
                 let (handle, join) = common::spawn(&vault.state_dir);
                 handle.unlock(common::password_proof()).await.unwrap();
                 let (key, _) = handle
-                    .desktop_remember(common::password_proof(), None)
+                    .desktop_remember(common::password_proof(), None, 604_800_000)
                     .await
                     .unwrap();
                 if !unlocked {

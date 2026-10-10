@@ -1,6 +1,6 @@
 # Rekey macOS UI
 
-原生 SwiftUI 本机管理客户端。当前版本为 **0.4.0-alpha.1（alpha）**，使用 vault26 / policy7。0.3 保险库需要在新目录重建，不提供迁移。需要 macOS 14+ 和 Xcode Command Line Tools；无需 Node、浏览器服务或新数据库。新版 App 交互与登录项真机验收仍未验证，不以软件检查宣称 L1/L2。
+原生 SwiftUI 本机管理客户端。当前开发整合候选为 **0.5.0-alpha.1**，使用 vault27 / policy8。已发布 0.4 使用 vault26 / policy7；新格式需在新目录重建，不提供迁移。需要 macOS 14+ 和 Xcode Command Line Tools；无需 Node、浏览器服务或新数据库。新版 App 交互与登录项真机验收仍未验证，不以软件检查宣称 L1/L2。
 
 ## 构建与打开
 
@@ -36,11 +36,11 @@ scripts/build-macos-pkg.sh --app /path/to/synthetic/Rekey.app --unsigned
 
 该选项跳过代码签名校验和 Installer 签名，产物名含 `-unsigned.pkg`；**未签名、未公证，不得安装或分发**。它不能与签名身份同时使用，也不能作为正式构建的回退路径。打包脚本本身不提交公证。现有 release workflow 已接入最终 pkg 公证、staple 与签名检查，使用新增的 `APPLE_INSTALLER_CERTIFICATE`、`APPLE_INSTALLER_CERTIFICATE_PASSWORD`、`APPLE_INSTALLER_SIGNING_IDENTITY` secrets；只支持 Developer ID Installer，不能拿 Application 证书替代。本地尚未运行该 CI 链，也未完成真实新用户安装验收。
 
-App 在签名前会装入静态 `Contents/Library/LaunchAgents/com.rekey.rekeyd.plist`，以 `BundleProgram` 指向内嵌 `rekeyd serve`，使用默认用户 `~/.rekey`，不指定 UserName、动态 state-dir 或 KeepAlive。安装到固定位置后，App 提供显式启用登录启动与启动服务的 SMAppService 入口。已注册的服务使用不带 `-k` 的 `launchctl kickstart` 启动，不先注销或杀掉已有实例。刷新和读取记住的凭据不注册服务；系统要求批准时，用户自行打开登录项设置。仅打包 plist 不会启动或注册服务。源码构建的开发 App 仍使用 Process 启动。**真实签名设备的注册、批准、重登录、升级与卸载验收尚未完成**；编译和结构测试不替代这些结果。
+App 在签名前会装入静态 `Contents/Library/LaunchAgents/com.rekey.rekeyd.plist`，以 `BundleProgram` 指向内嵌 `rekeyd serve`，使用默认用户 `~/.rekey`，不指定 UserName、动态 state-dir 或 KeepAlive。安装到固定位置后，App 打开后自动连接已有保险库，未运行时通过 SMAppService 注册或启动服务。已注册的服务使用不带 `-k` 的 `launchctl kickstart` 启动，不先注销或杀掉已有实例。普通刷新和读取记住的凭据不注册服务；系统要求批准时，用户自行打开登录项设置。仅打包 plist 不会启动或注册服务。源码构建的开发 App 和自定义目录使用 Process 自动启动随包服务。**真实签名设备的注册、批准、重登录、升级与卸载验收尚未完成**；编译和结构测试不替代这些结果。
 
 应用图标源文件为 `Resources/AppIcon.png`（1024 × 1024）。构建脚本使用 macOS 自带的 `sips` 和 `iconutil` 生成标准尺寸的 `AppIcon.icns`，通过 `CFBundleIconFile` 配置 Finder 与 Dock 图标。当前采用用户选定的“双环 · 现代平面”：炭黑背景、米白与橙色双环。图标由内置 imagegen 基于双环参考图生成，提示词为“以参考图为基础，为 Rekey app 创作一个「现代平面设计」风格图标。保留双环相扣的识别结构，材质、配色与表现方式自由发挥。成熟、有个性，避免常见 AI 霓虹渐变。单张正方形图标，无文字。”
 
-首次打开时默认使用 `~/.rekey`。首次启动选择个人或团队模式并设置密码，模式与信任根创建后不可更改；确认界面说明创建保险库后会启用登录启动并启动服务（固定位置的安装版）。恢复密钥只在完成窗口显示一次。已有保险库请启动服务，再解锁。也可以通过“个人工作区”或设置切换目录；安装版后台服务仅管理默认目录，自定义目录或机构配置需先由 CLI 启动服务，App 再连接。格式不兼容或目录非空时沿用 CLI 的明确拒绝，不迁移、不覆盖。
+首次打开时默认使用 `~/.rekey`。首次启动选择个人或团队模式并设置密码，模式与信任根创建后不可更改；确认界面说明保存恢复密钥后会自动连接并启动服务（固定位置且默认目录的安装版同时启用登录启动）。恢复密钥只在完成窗口显示一次。已有保险库自动连接，服务未运行则自动启动，随后按需解锁。也可以通过“个人工作区”或设置切换目录；安装版后台服务仅管理默认目录，自定义目录或机构配置由 App 自动启动随包服务，不注册默认目录的登录项。格式不兼容或目录非空时沿用 CLI 的明确拒绝，不迁移、不覆盖。
 
 ## 当前入口
 
@@ -81,6 +81,17 @@ xcrun swiftc -warnings-as-errors -swift-version 5 -O \
 /tmp/rekey-ui-contract target/macos-ui/Rekey.app/Contents/Resources/bin/rekey
 ```
 
+自动连接回归检查复用同一个测试程序和随包 CLI，不访问用户保险库：
+
+```bash
+mkdir -p /tmp/RekeyStartupContract.app/Contents/MacOS
+cp /tmp/rekey-ui-contract /tmp/RekeyStartupContract.app/Contents/MacOS/RekeyStartupContract
+ln -s "$PWD/target/macos-ui/Rekey.app/Contents/Resources" /tmp/RekeyStartupContract.app/Contents/Resources
+/tmp/RekeyStartupContract.app/Contents/MacOS/RekeyStartupContract --startup-only
+```
+
+覆盖空目录不自动初始化、保存恢复密钥后连接、已有保险库自动启动并保持锁定、复用已运行服务、显式停止后普通刷新不重启，以及启动失败诊断。CI 同样执行此检查。
+
 连接 UI 软件契约检查：
 
 ```bash
@@ -102,3 +113,11 @@ xcrun swiftc -warnings-as-errors -swift-version 5 \
 机构登录仅在 `--features lab` 的服务上可用：设置中选择受保护的 OIDC 节点配置后启动服务；先本机解锁，再开始机构登录、在浏览器完成认证，并接收结果到新的私有会话文件。也可显式选择已有会话文件，取消未完成登录或退出本机机构会话。应用只传文件路径，不读取管理 token；密码逐次确认仍保留。合成调用检查不替代真实 IdP／Broker／GUI 点击验收。
 
 本机审批使用 `approval review/approve/reject`：面板验证完整原始 UTF-8 正文的 RKREVIEW 哈希，默认焦点与 Return 都是拒绝。明确决定时才逐次读取 presence key，后台通知和收件箱轮询不触发认证，取消认证不发送决定。通知使用固定文案并在本次 App 会话中去重。`/tmp/rekey-ui-contract --local-approval-boundary-only` 运行合成边界检查；它不访问真实 Keychain、Secure Enclave 或通知权限，不能替代签名设备验收。
+
+## 0.5 开发版界面隐私锁
+
+打开和重开窗口时，界面保持锁定；服务已解锁也需要显式输入密码或选择系统认证。设置可选电脑空闲 1/5/15/30/60 分钟或禁用，默认五分钟；锁屏、休眠和切换用户默认锁定界面。隐私锁立即清除展示内容并撤销 A1 管理会话，已有 Agent 工作继续。“锁定整个保险库”另行撤销 Agent 授权。服务端撤销未确认时，界面保持锁定并提供重试。
+
+系统认证授权可选择每次输入密码或记住 1/7/30 天，默认七天；仅密码或恢复密钥可以签发，恢复不续期，单次管理会话仍最多七天。保存设置先撤销当前会话和记住授权，再要求输入密码；只保存非秘密偏好。当前 PresenceKey 访问控制保持不变，不能以 ad-hoc 构建证明真实 Keychain/Touch ID 通过。
+
+团队策略草稿可编辑原始 UTF-8 文本或显式生成 policy8 空草稿，最多 64 KiB，导出到新的私有文件。编辑不会签署或激活；独立 signer 的完整审阅和摘要确认仍必需。个人连接使用现有完整 Connection 表单。

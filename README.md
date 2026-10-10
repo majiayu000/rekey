@@ -4,7 +4,7 @@ Rekey 把密钥留在本机，让 Agent 调用你签署规则允许的操作。
 
 执行前持久审计，返回时检查凭据反射。检查覆盖明确支持的表示，不能阻止所有数据外泄或授权范围内的误用。
 
-当前源码为 **0.4.0-alpha.1 候选**，使用 vault26 / policy7。公开版本与下载以 [GitHub Releases](https://github.com/majiayu000/rekey/releases) 为准；源码检查不代表新版本已经发布或通过真机安装验收。0.3 vault 需要在新目录重建，旧目录不会迁移或覆盖。
+当前源码为 **0.5.0-alpha.1 开发整合候选**，使用 vault27 / policy8。已发布 0.4 的 vault26 / policy7 保持原样；公开版本与下载以 [GitHub Releases](https://github.com/majiayu000/rekey/releases) 为准；源码检查不代表新版本已经发布或通过真机安装验收。0.3 vault 需要在新目录重建，旧目录不会迁移或覆盖。
 
 ## 开始使用
 

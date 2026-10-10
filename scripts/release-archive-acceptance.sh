@@ -68,7 +68,7 @@ with tempfile.TemporaryDirectory(prefix="rkarch-") as directory:
             time.sleep(.1)
         assert (state / "runtime/admin.sock").exists(), "packaged daemon did not become ready"
         run(["unlock", "--password-stdin"], password)
-        assert public(["status"])["format_version"] == 26
+        assert public(["status"])["format_version"] == 27
         credential = public(["credential", "add", "archive-canary", "--kind", "opaque-token",
                              "--stdin-secrets"], password + secret + b"\n")
         preset = public(["connection", "preset", "generic-header", "--origin", origin,
@@ -85,7 +85,7 @@ with tempfile.TemporaryDirectory(prefix="rkarch-") as directory:
             {"id": str(uuid.uuid4()), "methods": ["GET"], "path": path, "effect": "allow"},
             {"id": str(uuid.uuid4()), "methods": "write", "path": "/**", "effect": "approve"},
         ]
-        snapshot = dict(format_version=7, version=1, expires_at_ms=int(time.time()*1000)+600000,
+        snapshot = dict(format_version=8, version=1, expires_at_ms=int(time.time()*1000)+600000,
                         approvers=[], workload_identities=[], profiles=[], connections=[connection],
                         ssh_keys=[], derived_credentials=[], bindings=[], rules=[])
         (work / "policy.json").write_text(json.dumps(snapshot))
@@ -157,7 +157,7 @@ with tempfile.TemporaryDirectory(prefix="rkarch-") as directory:
         run(["shutdown", "--password-stdin"], password)
         daemon.wait(timeout=15)
         assert daemon.returncode == 0
-        print("release-archive-acceptance: PASS (vault26/policy7, signed Connections, CLI/MCP/read/write-approval/scan/connect-preview/lock)")
+        print("release-archive-acceptance: PASS (vault27/policy8, signed Connections, CLI/MCP/read/write-approval/scan/connect-preview/lock)")
     finally:
         if mcp is not None:
             mcp.terminate()

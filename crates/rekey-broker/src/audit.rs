@@ -67,7 +67,7 @@ pub(crate) struct StartedAuditGuard {
     queue: AuditSubmissionQueue,
     ctx: ExecutionAuditContext,
     terminal_submitted: bool,
-    remote_effect_started: bool,
+    remote_effect_started: Arc<AtomicBool>,
     profile_usage: bool,
     measured_output_tokens: Option<u64>,
     connection_permit: Option<ConnectionExecutionPermit>,
@@ -84,7 +84,7 @@ impl StartedAuditGuard {
             queue,
             ctx,
             terminal_submitted: false,
-            remote_effect_started: false,
+            remote_effect_started: Arc::new(AtomicBool::new(false)),
             profile_usage: false,
             measured_output_tokens: None,
             connection_permit: None,
@@ -118,17 +118,22 @@ impl StartedAuditGuard {
     }
 
     pub(crate) fn mark_remote_effect_started(&mut self) {
-        self.remote_effect_started = true;
+        self.remote_effect_started.store(true, Ordering::SeqCst);
     }
 
     /// A transport refusal can prove that this target sent nothing. Retain
     /// any effect recorded before its handoff, such as an OAuth refresh.
     pub(crate) fn record_target_no_effect(&mut self, prior_remote_effect: bool) {
-        self.remote_effect_started = prior_remote_effect;
+        self.remote_effect_started
+            .store(prior_remote_effect, Ordering::SeqCst);
+    }
+
+    pub(crate) fn remote_effect_marker(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.remote_effect_started)
     }
 
     pub(crate) fn remote_effect_started(&self) -> bool {
-        self.remote_effect_started
+        self.remote_effect_started.load(Ordering::SeqCst)
     }
 
     pub(crate) fn submit_blocked(&mut self, reason: &'static str) {
@@ -194,7 +199,7 @@ impl StartedAuditGuard {
                 Err(_) => Err(BrokerError::Upstream("upstream-timeout")),
             };
         result.map_err(|error| {
-            if self.remote_effect_started && error.retryable() {
+            if self.remote_effect_started() && error.retryable() {
                 let reason = match error {
                     BrokerError::Upstream(reason) => reason,
                     _ => "terminal-audit-failed",
@@ -210,7 +215,7 @@ impl StartedAuditGuard {
 impl Drop for StartedAuditGuard {
     fn drop(&mut self) {
         if !self.terminal_submitted {
-            let draft = if self.remote_effect_started {
+            let draft = if self.remote_effect_started() {
                 execution_indeterminate(&self.ctx, "abandoned-after-remote-effect")
             } else {
                 execution_blocked(&self.ctx, "abandoned")

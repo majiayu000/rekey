@@ -674,3 +674,73 @@ async fn negative_persisted_limits_are_integrity_failures_at_every_read_boundary
         finish(handle, join).await;
     }
 }
+
+#[tokio::test]
+async fn collection_detects_deleted_valid_rows_in_every_lifecycle_state() {
+    for lifecycle in ["active", "disabled", "retired", "all"] {
+        let vault = common::init_test_vault();
+        let (handle, join) = common::spawn(&vault.state_dir);
+        let (credential, action) = seed(&handle).await;
+        if lifecycle == "disabled" {
+            handle
+                .action_disable(action.id, common::password_proof())
+                .await
+                .unwrap();
+        }
+        if matches!(lifecycle, "retired" | "all") {
+            handle
+                .action_upsert(
+                    Some(action.id),
+                    definition(credential),
+                    common::password_proof(),
+                )
+                .await
+                .unwrap();
+        }
+        let db = Connection::open(paths::vault_db(&vault.state_dir)).unwrap();
+        let clause = if lifecycle == "all" {
+            ""
+        } else {
+            " WHERE version=1"
+        };
+        assert_eq!(
+            db.execute(&format!("DELETE FROM actions{clause}"), [])
+                .unwrap(),
+            if lifecycle == "all" { 2 } else { 1 }
+        );
+        assert!(
+            matches!(
+                handle.action_list().await,
+                Err(AuthorityError::StorageIntegrityFailed)
+            ),
+            "{lifecycle}"
+        );
+        assert_eq!(handle.status().await.unwrap().state, "faulted");
+        finish(handle, join).await;
+    }
+}
+
+#[tokio::test]
+async fn collection_does_not_authenticate_trigger_deleted_history() {
+    let vault = common::init_test_vault();
+    let (handle, join) = common::spawn(&vault.state_dir);
+    let (credential, first) = seed(&handle).await;
+    let db = Connection::open(paths::vault_db(&vault.state_dir)).unwrap();
+    db.execute_batch("CREATE TRIGGER erase_previous AFTER INSERT ON actions WHEN NEW.version=2 BEGIN DELETE FROM actions WHERE version=1; END;").unwrap();
+    assert!(matches!(
+        handle
+            .action_upsert(
+                Some(first.id),
+                definition(credential),
+                common::password_proof()
+            )
+            .await,
+        Err(AuthorityError::StorageIntegrityFailed)
+    ));
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM actions", [], |r| r.get::<_, u32>(0))
+            .unwrap(),
+        1
+    );
+    finish(handle, join).await;
+}

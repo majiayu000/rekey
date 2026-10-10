@@ -20,6 +20,7 @@ use rekey_policy::templates::{
 };
 use subtle::ConstantTimeEq;
 use tokio::sync::mpsc;
+use zeroize::Zeroizing;
 
 use crate::bootstrap::{kek_for_wrapper, unwrap_vrk, verify_state_dir_permissions};
 use crate::command::{ActionDefinition, AuditDraft, AuthorityCommand, PinnedAction, UnlockProof};
@@ -52,6 +53,7 @@ mod tokens;
 /// Clear the crash marker only after every runtime task has joined cleanly,
 /// while the caller still holds the exclusive runtime lock.
 pub use desktop::finish_runtime;
+mod pki;
 mod policy;
 mod vrk_rotation;
 mod wrapper;
@@ -262,12 +264,13 @@ impl Worker {
     fn complete_generation<T>(
         &mut self,
         result: Result<T, AuthorityError>,
-        completed: (u64, [u8; 32], bool),
+        completed: (u64, [u8; 32], bool, [u8; 32]),
     ) -> Result<T, AuthorityError> {
-        let (generation, mac, reserved) = completed;
+        let (generation, mac, reserved, pki_digest) = completed;
         if result.is_ok() {
             self.header.generation = generation;
             self.header.generation_mac = mac;
+            self.header.pki_digest = pki_digest;
         } else if reserved && !matches!(self.state, VaultState::Faulted) {
             self.fault("generation-reserved-commit-failed");
         }
@@ -527,6 +530,8 @@ impl Worker {
                     self.fault("lease-journal-integrity-failed");
                     return Err(error);
                 }
+                let pki = self.store.verified_certificates(&header);
+                self.fault_on_integrity(pki)?;
                 self.check_generation(&header)?;
                 let usage = if recover_usage {
                     self.store
@@ -805,6 +810,7 @@ impl Worker {
             return Ok(response);
         }
         let observed = self.mutation_observation()?;
+        let key = Zeroizing::new(*self.require_unlocked()?.bytes());
         let mut generation = crate::store::generation::GenerationAttempt::new(
             &self.anchors,
             &self.header,
@@ -819,7 +825,7 @@ impl Worker {
         )?;
         let result = self
             .store
-            .insert_actions_before(&records, not_after, &mut generation);
+            .insert_actions_before(&records, not_after, &key, &mut generation);
         let result = self.complete_generation(result, generation.finish());
         let result = self.fault_on_integrity(result);
         self.fault_on_audit_failure(result)?;
@@ -836,6 +842,15 @@ impl Worker {
         self.require_unlocked()?;
         self.verify_proof(&proof)?;
         let credential = self.load_verified_credential(definition.credential_id)?;
+        if matches!(
+            credential.kind,
+            CredentialKind::MtlsIdentity | CredentialKind::PkiCaSigner
+        ) {
+            return Err(rekey_domain::DomainError::InvalidActionDefinition(
+                "private credentials require their dedicated execution boundary".into(),
+            )
+            .into());
+        }
         if credential.state != CredentialState::Active {
             return Err(AuthorityError::CredentialRevoked);
         }
@@ -932,6 +947,7 @@ impl Worker {
         let audit = self.audit_event_or_fault(draft)?;
         ensure_mutation_current(not_after)?;
         let observed = self.mutation_observation()?;
+        let key = Zeroizing::new(*self.require_unlocked()?.bytes());
         let mut generation = crate::store::generation::GenerationAttempt::new(
             &self.anchors,
             &self.header,
@@ -946,7 +962,7 @@ impl Worker {
         )?;
         let result = self
             .store
-            .insert_action(&record, &retired, audit, &mut generation);
+            .insert_action(&record, &retired, audit, &key, &mut generation);
         let result = self.complete_generation(result, generation.finish());
         let result = self.fault_on_integrity(result);
         self.fault_on_audit_failure(result)?;
@@ -1016,6 +1032,7 @@ impl Worker {
         let audit = self.audit_event_or_fault(draft)?;
         ensure_mutation_current(not_after)?;
         let observed = self.mutation_observation()?;
+        let key = Zeroizing::new(*self.require_unlocked()?.bytes());
         let mut generation = crate::store::generation::GenerationAttempt::new(
             &self.anchors,
             &self.header,
@@ -1028,7 +1045,9 @@ impl Worker {
             not_after,
             None,
         )?;
-        let result = self.store.disable_action(&record, audit, &mut generation);
+        let result = self
+            .store
+            .disable_action(&record, audit, &key, &mut generation);
         let result = self.complete_generation(result, generation.finish());
         let result = self.fault_on_integrity(result);
         self.fault_on_audit_failure(result)
@@ -1039,7 +1058,8 @@ impl Worker {
         let result = (|| {
             let key = self.require_unlocked()?.bytes();
             self.store
-                .list_all_actions()?
+                .verified_metadata(&self.header)?
+                .actions
                 .into_iter()
                 .map(|record| {
                     let action = verified_record_to_action(&record, key, self.header.vault_id)?;
@@ -1066,7 +1086,13 @@ impl Worker {
     ) -> Result<PinnedAction, AuthorityError> {
         self.require_unlocked()?;
         let result = (|| {
-            let record = self.store.get_action(action_id, version)?;
+            let record = self
+                .store
+                .verified_metadata(&self.header)?
+                .actions
+                .into_iter()
+                .find(|r| r.action_id == action_id && r.version == version)
+                .ok_or(AuthorityError::ActionNotFound)?;
             Ok(PinnedAction {
                 action: verified_record_to_action(
                     &record,

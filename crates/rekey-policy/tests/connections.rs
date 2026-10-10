@@ -24,7 +24,7 @@ fn connection() -> Connection {
     c
 }
 fn snapshot(connection: &Connection) -> ValidatedSnapshot {
-    parse_and_validate_snapshot(&serde_json::to_vec(&json!({"format_version":7,"version":1,"expires_at_ms":10000,"connections":[connection],"ssh_keys":[],"derived_credentials":[],"profiles":[],"bindings":[],"rules":[],"approvers":[],"workload_identities":[]})).unwrap(),Timestamp::from_unix_ms(1)).unwrap()
+    parse_and_validate_snapshot(&serde_json::to_vec(&json!({"format_version":8,"version":1,"expires_at_ms":10000,"connections":[connection],"ssh_keys":[],"derived_credentials":[],"profiles":[],"bindings":[],"rules":[],"approvers":[],"workload_identities":[]})).unwrap(),Timestamp::from_unix_ms(1)).unwrap()
 }
 fn rule(methods: MethodSelector, path: &str, effect: RuleEffect) -> ConnectionRule {
     ConnectionRule {
@@ -418,9 +418,9 @@ fn llm_read_requires_signed_model_budget_and_output_ceiling() {
 }
 
 #[test]
-fn policy7_is_required_and_connections_are_not_unsigned_side_data() {
+fn policy8_is_required_and_connections_are_not_unsigned_side_data() {
     let c = connection();
-    let mut value = json!({"format_version":7,"version":1,"expires_at_ms":10000,"connections":[c],"ssh_keys":[],"derived_credentials":[],"profiles":[],"bindings":[],"rules":[],"approvers":[],"workload_identities":[]});
+    let mut value = json!({"format_version":8,"version":1,"expires_at_ms":10000,"connections":[c],"ssh_keys":[],"derived_credentials":[],"profiles":[],"bindings":[],"rules":[],"approvers":[],"workload_identities":[]});
     value["format_version"] = 6.into();
     assert!(matches!(
         parse_and_validate_snapshot(
@@ -429,7 +429,7 @@ fn policy7_is_required_and_connections_are_not_unsigned_side_data() {
         ),
         Err(PolicyError::UnsupportedFormat)
     ));
-    value["format_version"] = 7.into();
+    value["format_version"] = 8.into();
     value.as_object_mut().unwrap().remove("connections");
     assert!(
         parse_and_validate_snapshot(
@@ -455,6 +455,11 @@ fn ssh_identity_aliases_and_http_names_cannot_shadow_authorization() {
             effect: RuleEffect::Allow,
         }],
         git_signing: RuleEffect::Allow,
+        approver: rekey_domain::authorization::ApproverSpec::LocalPresence {},
+        session_budget: rekey_domain::connection::SshSessionBudget {
+            max_signatures: 100,
+            max_seconds: 600,
+        },
     };
     let mut second = first.clone();
     second.name = "ssh-second".into();
@@ -462,7 +467,7 @@ fn ssh_identity_aliases_and_http_names_cannot_shadow_authorization() {
     second.user_public_key = data_encoding::BASE64.encode(b"synthetic public key two");
     second.hosts[0].effect = RuleEffect::Deny;
     second.git_signing = RuleEffect::Deny;
-    let value = |keys: Vec<SshKeyConnection>| json!({"format_version":7,"version":1,"expires_at_ms":10000,"connections":[c],"ssh_keys":keys,"derived_credentials":[],"profiles":[],"bindings":[],"rules":[],"approvers":[],"workload_identities":[]});
+    let value = |keys: Vec<SshKeyConnection>| json!({"format_version":8,"version":1,"expires_at_ms":10000,"connections":[c],"ssh_keys":keys,"derived_credentials":[],"profiles":[],"bindings":[],"rules":[],"approvers":[],"workload_identities":[]});
     let parse = |keys| {
         parse_and_validate_snapshot(
             &serde_json::to_vec(&value(keys)).unwrap(),
@@ -540,6 +545,11 @@ fn personal_draft_signs_entire_connection_rules_and_detects_tampering() {
         credential_id: CredentialId::new_random(),
         hosts: Vec::new(),
         git_signing: RuleEffect::Allow,
+        approver: rekey_domain::authorization::ApproverSpec::LocalPresence {},
+        session_budget: rekey_domain::connection::SshSessionBudget {
+            max_signatures: 100,
+            max_seconds: 600,
+        },
     };
     let ssh_draft = rekey_policy::personal::generate_connection_draft_with_ssh(
         &trust,
@@ -804,7 +814,7 @@ fn github_git_fixed_endpoints_bind_repo_and_classify_upload_as_read() {
     c.bindings.insert("owner".into(), vec!["acme".into()]);
     c.bindings.insert("repo".into(), vec!["rekey.git".into()]);
     assert_eq!(c.origin.as_str(), "https://github.com");
-    assert_eq!(c.auth.prefix.as_str(), "Basic ");
+    assert_eq!(c.auth.header().unwrap().prefix.as_str(), "Basic ");
     for (method, path, class, effect) in [
         (
             FixedMethod::Get,
@@ -839,7 +849,7 @@ fn github_git_fixed_endpoints_bind_repo_and_classify_upload_as_read() {
         Err(PolicyError::NotConfigured)
     ));
     c.bindings.insert("owner".into(), vec!["*".into()]);
-    let value = json!({"format_version":7,"version":1,"expires_at_ms":10000,"connections":[c],"ssh_keys":[],"derived_credentials":[],"profiles":[],"bindings":[],"rules":[],"approvers":[],"workload_identities":[]});
+    let value = json!({"format_version":8,"version":1,"expires_at_ms":10000,"connections":[c],"ssh_keys":[],"derived_credentials":[],"profiles":[],"bindings":[],"rules":[],"approvers":[],"workload_identities":[]});
     assert!(
         parse_and_validate_snapshot(
             &serde_json::to_vec(&value).unwrap(),

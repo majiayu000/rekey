@@ -1,10 +1,22 @@
 # Changelog
 
 All notable public changes are recorded here. The current source candidate is
-0.4.0-alpha.1 (vault26 / policy7). Actual published downloads are determined by
+0.5.0-alpha.1 (vault27 / policy8). Actual published downloads are determined by
 GitHub Releases. Historical 0.3/v3/v2 entries below remain release history.
 
-## 0.4.0-alpha.1 (unpublished candidate)
+## 0.5.0-alpha.1 (unreleased development integration)
+
+**Requires a new vault.** Integrate native connect-on-open, explicit Connection
+mTLS, administrator CA import/CSR/revocation/CRL operations, authenticated complete
+PKI/action collections, and SSH cancellation, one/two-person external approvals
+and per-socket budgets. Retain main's Worker-owned SSH signing and signed
+Connections; no old-format reader or migration. Include the remaining accepted
+JSON/SSE allocation changes and the lab child-exit event watcher. See the
+[integration contract](docs/superpowers/specs/2026-10-09-unified-experiments.md)
+and [integration record](docs/superpowers/plans/2026-10-09-experiment-integration.md).
+This is source integration, with device/deployment/release gates separate.
+
+## 0.4.0-alpha.1
 
 **Requires a new vault.** Replace local capability/Profile launching with signed
 Connections and ordinary Agent calls through CLI, MCP, local HTTP and SSH agent.

@@ -1106,7 +1106,7 @@ async fn aws_signed_target_and_presence_gate_issuance_and_actual_expiry_audit() 
     let remembered = f
         .admin(
             admin_msg::DESKTOP_REMEMBER,
-            json!({}),
+            json!({"lifetime_ms":604800000}),
             &common::proof_body(common::PASSWORD),
         )
         .await;

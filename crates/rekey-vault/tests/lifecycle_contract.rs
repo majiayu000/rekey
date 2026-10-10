@@ -80,7 +80,9 @@ async fn unlocked_step_up_failures_share_backoff_across_operations_and_lock() {
     let (handle, join) = rekey_vault::authority::spawn_authority(config).unwrap();
     handle.unlock(common::password_proof()).await.unwrap();
     assert!(matches!(
-        handle.desktop_remember(wrong_password(), None).await,
+        handle
+            .desktop_remember(wrong_password(), None, 604_800_000)
+            .await,
         Err(AuthorityError::InvalidUnlockCredential)
     ));
     assert!(matches!(

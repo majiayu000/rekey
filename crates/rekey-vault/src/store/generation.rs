@@ -41,6 +41,8 @@ pub struct GenerationAttempt<'a> {
     pub(crate) format_version: u32,
     pub(crate) prior_generation: u64,
     pub(crate) prior_mac: [u8; 32],
+    pub(crate) prior_pki_digest: [u8; 32],
+    pub(crate) pki_digest: [u8; 32],
     pub(crate) generation: u64,
     pub(crate) mac: [u8; 32],
     pub(crate) not_after: Option<Instant>,
@@ -73,12 +75,15 @@ impl<'a> GenerationAttempt<'a> {
             format_version: header.format_version,
             prior_generation: header.generation,
             prior_mac: header.generation_mac,
+            prior_pki_digest: header.pki_digest,
+            pki_digest: header.pki_digest,
             generation,
             mac: crate::crypto::generation::seal(
                 next_key,
                 header.vault_id,
                 header.format_version,
                 generation,
+                &header.pki_digest,
             )?,
             not_after,
             wall_not_after_ms,
@@ -87,8 +92,29 @@ impl<'a> GenerationAttempt<'a> {
     }
 
     /// Consumes the borrow before the Worker handles a result or changes state.
-    pub(crate) fn finish(self) -> (u64, [u8; 32], bool) {
-        (self.generation, self.mac, self.may_have_reserved)
+    pub(crate) fn finish(self) -> (u64, [u8; 32], bool, [u8; 32]) {
+        (
+            self.generation,
+            self.mac,
+            self.may_have_reserved,
+            self.pki_digest,
+        )
+    }
+
+    pub(crate) fn bind_pki_digest(
+        &mut self,
+        key: &[u8; 32],
+        digest: [u8; 32],
+    ) -> Result<(), AuthorityError> {
+        self.mac = crate::crypto::generation::seal(
+            key,
+            self.vault_id,
+            self.format_version,
+            self.generation,
+            &digest,
+        )?;
+        self.pki_digest = digest;
+        Ok(())
     }
 
     fn check_deadline(&self) -> Result<(), AuthorityError> {
@@ -107,12 +133,23 @@ pub(super) fn commit_generation(
     attempt: &mut GenerationAttempt<'_>,
 ) -> Result<(), AuthorityError> {
     let changed = tx.execute(
-        "UPDATE vault_header SET generation=?1,generation_mac=?2 WHERE singleton=1 AND vault_id=?3 AND format_version=?4 AND generation=?5 AND generation_mac=?6",
-        params![attempt.generation.to_be_bytes().as_slice(), attempt.mac.as_slice(), attempt.vault_id.as_bytes().as_slice(), attempt.format_version, attempt.prior_generation.to_be_bytes().as_slice(), attempt.prior_mac.as_slice()],
+        "UPDATE vault_header SET generation=?1,generation_mac=?2,pki_digest=?7 WHERE singleton=1 AND vault_id=?3 AND format_version=?4 AND generation=?5 AND generation_mac=?6 AND pki_digest=?8",
+        params![attempt.generation.to_be_bytes().as_slice(), attempt.mac.as_slice(), attempt.vault_id.as_bytes().as_slice(), attempt.format_version, attempt.prior_generation.to_be_bytes().as_slice(), attempt.prior_mac.as_slice(), attempt.pki_digest.as_slice(), attempt.prior_pki_digest.as_slice()],
     ).map_err(storage)?;
     if changed != 1 {
         return Err(AuthorityError::StorageIntegrityFailed);
     }
+    // Check after header UPDATE as well: a trigger must not alter either the
+    // collection or the authenticated header between hashing and commit.
+    let header_matches: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM vault_header WHERE singleton=1 AND vault_id=?1 AND format_version=?2 AND generation=?3 AND generation_mac=?4 AND pki_digest=?5)",
+        params![attempt.vault_id.as_bytes().as_slice(), attempt.format_version, attempt.generation.to_be_bytes().as_slice(), attempt.mac.as_slice(), attempt.pki_digest.as_slice()],
+        |r| r.get(0),
+    ).map_err(storage)?;
+    if !header_matches {
+        return Err(AuthorityError::StorageIntegrityFailed);
+    }
+    super::pki::verified(&tx, &attempt.pki_digest)?;
     attempt.check_deadline()?;
     attempt.anchors.reserve(
         attempt.observed,

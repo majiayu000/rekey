@@ -175,6 +175,7 @@ impl BrokerCtx {
                                 .min(active.monotonic_deadline().into_std()),
                             state: ipc::LocalApprovalState::Pending,
                             approval_id: None,
+                            external_evidence: Vec::new(),
                             reserved: false,
                         },
                         now.as_unix_ms(),

@@ -253,7 +253,7 @@ mod tests {
             }
             let now = crate::now_ts().unwrap();
             let unsigned_snapshot = json!({
-                "format_version":7,"version":1,"expires_at_ms":now.as_unix_ms()+60000,"approvers":approvers,"connections":[], "ssh_keys":[], "profiles":[profile],"workload_identities":[],
+                "format_version":8,"version":1,"expires_at_ms":now.as_unix_ms()+60000,"approvers":approvers,"connections":[], "ssh_keys":[], "profiles":[profile],"workload_identities":[],
                 "bindings":[{"action_id":action.id,"version":action.version,"resource":{"type":"llm","id":action.id},"parameter_schema_id":"llm/v1","parameter_schema":{}}],"rules":[rule]
             });
             let snapshot = rekey_policy::parse_and_validate_snapshot(
@@ -308,6 +308,7 @@ mod tests {
                     vec![(reference, timeout_ms)],
                     ProfileSessionScope::new(self.profile.clone(), self.digest),
                     Instant::now() + Duration::from_secs(60),
+                    self.ctx.sessions.reserve_control_owner().unwrap(),
                 )
                 .unwrap()
         }
@@ -958,6 +959,7 @@ mod tests {
                 vec![(action, 5000)],
                 stale,
                 Instant::now() + Duration::from_secs(60),
+                f.ctx.sessions.reserve_control_owner().unwrap(),
             )
             .unwrap();
         assert!(matches!(
@@ -1202,6 +1204,7 @@ mod tests {
                 vec![(reference, 5000)],
                 ProfileSessionScope::new(f.profile.clone(), [0; 32]),
                 Instant::now() + Duration::from_secs(60),
+                f.ctx.sessions.reserve_control_owner().unwrap(),
             )
             .unwrap();
         assert!(matches!(
@@ -1627,7 +1630,7 @@ mod tests {
         let (key, _) = f
             .ctx
             .authority
-            .desktop_remember(proof(), None)
+            .desktop_remember(proof(), None, 604_800_000)
             .await
             .unwrap();
         let mut proof_body = Vec::new();

@@ -74,7 +74,7 @@ impl Fixture {
         common::policy::activate_snapshot(
             &broker,
             json!({
-                "format_version":7,"version":1,"expires_at_ms":4_102_444_800_000_i64,
+                "format_version":8,"version":1,"expires_at_ms":4_102_444_800_000_i64,
                 "approvers":[],"workload_identities":[],"profiles":[],"bindings":[],"rules":[],
                 "connections":connections,"ssh_keys":[],"derived_credentials":[],
             }),
@@ -182,7 +182,7 @@ impl Fixture {
             &self.broker.admin_sock(),
             Channel::Admin,
             admin_msg::DESKTOP_REMEMBER,
-            b"{}",
+            br#"{"lifetime_ms":604800000}"#,
             &common::proof_body(common::PASSWORD),
         )
         .await;

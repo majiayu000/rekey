@@ -4,7 +4,7 @@ use rekey_domain::ids::{
     PolicySignerId, PrincipalId, RequestId, SessionId, VaultId, WrapperId,
 };
 
-pub const FORMAT_VERSION: u32 = 26;
+pub const FORMAT_VERSION: u32 = 27;
 pub const VAULT_INTEGRITY_CIPHERTEXT_LEN: usize = 40;
 
 #[derive(Debug, Clone)]
@@ -14,11 +14,51 @@ pub struct VaultHeaderRecord {
     /// Untrusted until the candidate VRK authenticates the header MAC.
     pub generation: u64,
     pub generation_mac: [u8; 32],
+    /// Authenticated complete public certificate and CRL collection.
+    pub pki_digest: [u8; 32],
     pub crypto_suite: String,
     pub created_at_ms: i64,
     pub schema_digest: [u8; 32],
     pub integrity_nonce: [u8; 12],
     pub integrity_ciphertext: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum PkiCertificateState {
+    Reserved = 0,
+    Issued = 1,
+    Failed = 2,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PkiCertificateRecord {
+    pub serial: [u8; 16],
+    pub credential_id: CredentialId,
+    pub credential_version: u64,
+    pub request_id: RequestId,
+    pub request_digest: [u8; 32],
+    pub created_at_ms: i64,
+    pub state: PkiCertificateState,
+    pub finished_at_ms: Option<i64>,
+    pub certificate_der: Option<Vec<u8>>,
+    pub issuer_der: Option<Vec<u8>>,
+    pub revoked_at_ms: Option<i64>,
+}
+
+/// Public CRL signing facts; numbers are never recycled, including reservations.
+#[derive(Debug, Clone)]
+pub(crate) struct PkiCrlRecord {
+    pub number: u64,
+    pub credential_id: CredentialId,
+    pub credential_version: u64,
+    pub request_id: RequestId,
+    pub snapshot_digest: [u8; 32],
+    pub created_at_ms: i64,
+    pub state: PkiCertificateState,
+    pub finished_at_ms: Option<i64>,
+    pub crl_der: Option<Vec<u8>>,
+    pub issuer_der: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -299,6 +339,11 @@ pub mod event_type {
     pub const VAULT_LEASE_RENEWAL_STARTED: &str = "vault.lease.renewal_started";
     pub const VAULT_LEASE_RENEWED: &str = "vault.lease.renewed";
     pub const VAULT_LEASE_REVOKED: &str = "vault.lease.revoked";
+    pub const PKI_CERTIFICATE_STARTED: &str = "pki.certificate.started";
+    pub const PKI_CERTIFICATE_FINISHED: &str = "pki.certificate.finished";
+    pub const PKI_CERTIFICATE_REVOKED: &str = "pki.certificate.revoked";
+    pub const PKI_CRL_STARTED: &str = "pki.crl.started";
+    pub const PKI_CRL_FINISHED: &str = "pki.crl.finished";
     pub const EXECUTION_STARTED: &str = "execution.started";
     pub const EXECUTION_FINISHED: &str = "execution.finished";
     pub const EXECUTION_BLOCKED: &str = "execution.blocked";

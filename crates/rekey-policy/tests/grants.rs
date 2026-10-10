@@ -27,7 +27,7 @@ fn aws() -> DerivedCredentialConnection {
     }
 }
 fn snapshot(grants: &[DerivedCredentialConnection]) -> Value {
-    json!({"format_version":7,"version":1,"expires_at_ms":10000,"connections":[],"ssh_keys":[],"derived_credentials":grants,"profiles":[],"bindings":[],"rules":[],"approvers":[],"workload_identities":[]})
+    json!({"format_version":8,"version":1,"expires_at_ms":10000,"connections":[],"ssh_keys":[],"derived_credentials":grants,"profiles":[],"bindings":[],"rules":[],"approvers":[],"workload_identities":[]})
 }
 fn parse(value: &Value) -> Result<rekey_policy::ValidatedSnapshot, PolicyError> {
     parse_and_validate_snapshot(
@@ -74,7 +74,7 @@ fn derived_grants_are_required_and_names_are_unique_across_protocols() {
     http_collision["connections"] = json!([c]);
     assert!(matches!(parse(&http_collision), Err(PolicyError::Invalid)));
     let mut ssh_collision = snapshot(std::slice::from_ref(&grant));
-    ssh_collision["ssh_keys"] = json!([{"name":grant.name,"credential_id":CredentialId::new_random(),"user_public_key":data_encoding::BASE64.encode(b"synthetic public key"),"hosts":[],"git_signing":"deny"}]);
+    ssh_collision["ssh_keys"] = json!([{"name":grant.name,"credential_id":CredentialId::new_random(),"user_public_key":data_encoding::BASE64.encode(b"synthetic public key"),"hosts":[],"git_signing":"deny","approver":{"kind":"local-presence"},"session_budget":{"max_signatures":100,"max_seconds":600}}]);
     assert!(matches!(parse(&ssh_collision), Err(PolicyError::Invalid)));
 }
 

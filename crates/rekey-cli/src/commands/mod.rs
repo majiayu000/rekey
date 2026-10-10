@@ -50,7 +50,8 @@ pub use audit::{
 mod policy_approval;
 pub use policy_approval::{
     approval_decide, approval_get, approval_origin, approval_pending, approval_review,
-    policy_activate, policy_draft, policy_draft_request, policy_status, policy_trust_install,
+    approval_submit, policy_activate, policy_draft, policy_draft_request, policy_status,
+    policy_trust_install,
 };
 #[cfg(feature = "lab")]
 pub use policy_approval::{approval_prepare, profile_list};
@@ -346,9 +347,13 @@ fn parse_action_ref(input: &str) -> Result<(ActionId, u64), CliError> {
     Ok((action_id, version))
 }
 
-#[cfg(feature = "lab")]
 fn parse_ttl_ms(input: &str) -> Result<i64, CliError> {
-    let (value, unit) = input.split_at(input.len().saturating_sub(1));
+    let offset = input
+        .char_indices()
+        .next_back()
+        .map(|(offset, _)| offset)
+        .ok_or_else(|| CliError::local("USAGE", "empty ttl"))?;
+    let (value, unit) = input.split_at(offset);
     let n: i64 = value
         .parse()
         .map_err(|_| CliError::local("USAGE", format!("invalid ttl: {input}")))?;
@@ -520,7 +525,22 @@ pub fn credential_add(
             "typed credential JSON requires --stdin-secrets",
         ));
     }
-    let (proof, secret) = if stdin_secrets {
+    let (proof, secret) = if matches!(credential_kind, "mtls-identity" | "pki-ca-signer") {
+        let mut input = std::io::stdin().lock();
+        let proof = read_lines_bounded(
+            &mut input,
+            1,
+            ipc::ADMIN_SECRET_FIELD_MAX_BYTES as usize,
+            "proof",
+        )?
+        .remove(0);
+        let secret = read_bounded(
+            &mut input,
+            ipc::ADMIN_SECRET_FIELD_MAX_BYTES as usize,
+            "private material",
+        )?;
+        (proof, secret)
+    } else if stdin_secrets {
         let mut lines = stdin_lines(2)?;
         let secret = lines.remove(1);
         let proof = lines.remove(0);
@@ -606,36 +626,143 @@ pub fn credential_list(state_dir: &Path) -> Result<(), CliError> {
 pub fn credential_rotate(
     state_dir: &Path,
     credential_id: &str,
+    credential_kind: &str,
+    expected_version: Option<u64>,
     kind: ProofKind,
     stdin_secrets: bool,
 ) -> Result<(), CliError> {
     let credential_id: CredentialId = credential_id
         .parse()
         .map_err(|_| CliError::local("USAGE", "invalid credential id"))?;
-    let (proof, secret) = if stdin_secrets {
+    let private = matches!(credential_kind, "mtls-identity" | "pki-ca-signer");
+    let (message, metadata) = if private {
+        if !stdin_secrets {
+            return Err(CliError::local(
+                "USAGE",
+                "private credentials require --stdin-secrets",
+            ));
+        }
+        let expected_version = expected_version.ok_or_else(|| {
+            CliError::local("USAGE", "private rotation requires --expected-version")
+        })?;
+        (
+            if credential_kind == "mtls-identity" {
+                admin_msg::CREDENTIAL_ROTATE_MTLS
+            } else {
+                admin_msg::CREDENTIAL_ROTATE_CA
+            },
+            serde_json::json!({"credential_id":credential_id,"expected_version":expected_version}),
+        )
+    } else {
+        if credential_kind != "opaque-token" || expected_version.is_some() {
+            return Err(CliError::local("USAGE", "invalid rotation kind or version"));
+        }
+        (
+            admin_msg::CREDENTIAL_ROTATE,
+            serde_json::json!({"credential_id":credential_id}),
+        )
+    };
+    let (proof, secret) = if private {
+        let mut input = std::io::stdin().lock();
+        let proof = read_lines_bounded(
+            &mut input,
+            1,
+            ipc::ADMIN_SECRET_FIELD_MAX_BYTES as usize,
+            "proof",
+        )?
+        .remove(0);
+        let secret = read_bounded(
+            &mut input,
+            ipc::ADMIN_SECRET_FIELD_MAX_BYTES as usize,
+            "private material",
+        )?;
+        (proof, secret)
+    } else if stdin_secrets {
         let mut lines = stdin_lines(2)?;
         let secret = lines.remove(1);
-        let proof = lines.remove(0);
-        (proof, secret)
+        (lines.remove(0), secret)
     } else {
         (
             prompt_secret(step_up_prompt(kind))?,
             prompt_secret("New credential value: ")?,
         )
     };
-    let metadata = serde_json::json!({ "credential_id": credential_id.to_string() });
-    let body_len = 1 + 4 + proof.len() + 4 + secret.len();
-    let mut body = Zeroizing::new(Vec::with_capacity(body_len));
-    let body_capacity = body.capacity();
+    let mut body = Zeroizing::new(Vec::with_capacity(1 + 4 + proof.len() + 4 + secret.len()));
     ipc::encode_proof_and_secret_body(kind, &proof, &secret, &mut body);
-    debug_assert_eq!(body.len(), body_len);
-    debug_assert_eq!(body.capacity(), body_capacity);
-    let (meta, _) = admin(state_dir)?.call(
-        admin_msg::CREDENTIAL_ROTATE,
-        metadata.to_string().as_bytes(),
-        &body,
-    )?;
+    let (meta, _) = admin(state_dir)?.call(message, metadata.to_string().as_bytes(), &body)?;
     print_json::<CredentialMetadata>(&meta)?;
+    Ok(())
+}
+
+pub fn pki_generate_crl(
+    state_dir: &Path,
+    credential_id: &str,
+    version: u64,
+    kind: ProofKind,
+    password_stdin: bool,
+) -> Result<(), CliError> {
+    let credential_id: CredentialId = credential_id
+        .parse()
+        .map_err(|_| CliError::local("USAGE", "invalid credential id"))?;
+    let proof = read_step_up(kind, password_stdin)?;
+    let metadata = serde_json::to_vec(&ipc::PkiGenerateCrlMeta {
+        credential_id,
+        version,
+    })
+    .map_err(|_| CliError::local("USAGE", "cannot encode CRL request"))?;
+    let (meta, body) = admin(state_dir)?.call(
+        admin_msg::PKI_GENERATE_CRL,
+        &metadata,
+        &proof_body(kind, &proof),
+    )?;
+    let _: ipc::PkiCrlResponse = serde_json::from_slice(&meta)
+        .map_err(|_| CliError::local("INVALID_FRAME", "broker returned invalid CRL response"))?;
+    std::io::stdout()
+        .write_all(&body)
+        .map_err(|err| CliError::local("OUTPUT_FAILED", format!("cannot write output: {err}")))?;
+    Ok(())
+}
+
+pub fn pki_revoke_certificate(
+    state_dir: &Path,
+    serial_hex: &str,
+    kind: ProofKind,
+    password_stdin: bool,
+) -> Result<(), CliError> {
+    let proof = read_step_up(kind, password_stdin)?;
+    let metadata = serde_json::to_vec(&ipc::PkiRevokeCertificateMeta {
+        serial_hex: serial_hex.into(),
+    })
+    .map_err(|_| CliError::local("USAGE", "cannot encode certificate revocation"))?;
+    let body = proof_body(kind, &proof);
+    let (meta, _) = admin(state_dir)?.call(admin_msg::PKI_REVOKE_CERTIFICATE, &metadata, &body)?;
+    print_json::<ipc::PkiRevocationResponse>(&meta)?;
+    Ok(())
+}
+
+pub fn pki_issue_client_csr(
+    state_dir: &Path,
+    credential_id: &str,
+    expected_version: u64,
+    csr_file: &Path,
+    kind: ProofKind,
+    password_stdin: bool,
+) -> Result<(), CliError> {
+    let credential_id: CredentialId = credential_id
+        .parse()
+        .map_err(|_| CliError::local("USAGE", "invalid credential id"))?;
+    let csr =
+        read_regular_file_bounded(csr_file, ipc::ADMIN_SECRET_FIELD_MAX_BYTES as usize, "CSR")?;
+    let proof = read_step_up(kind, password_stdin)?;
+    let metadata = serde_json::to_vec(&ipc::PkiIssueClientCsrMeta {
+        credential_id,
+        expected_version,
+    })
+    .map_err(|_| CliError::local("USAGE", "cannot encode CSR metadata"))?;
+    let mut body = Zeroizing::new(Vec::with_capacity(9 + proof.len() + csr.len()));
+    ipc::encode_proof_and_secret_body(kind, &proof, &csr, &mut body);
+    let (meta, _) = admin(state_dir)?.call(admin_msg::PKI_ISSUE_CLIENT_CSR, &metadata, &body)?;
+    print_json::<ipc::PkiCertificateResponse>(&meta)?;
     Ok(())
 }
 
@@ -985,6 +1112,7 @@ pub fn desktop_restore_access(
     state_dir: &Path,
     resume: bool,
     kind: ProofKind,
+    ttl: Option<&str>,
 ) -> Result<(), CliError> {
     let proof = read_step_up(kind, true)?;
     let mut body = Zeroizing::new(Vec::with_capacity(5 + proof.len()));
@@ -994,7 +1122,14 @@ pub fn desktop_restore_access(
     } else {
         admin_msg::DESKTOP_REMEMBER
     };
-    let (meta, secret) = admin(state_dir)?.call(message, b"{}", &body)?;
+    let metadata = match ttl {
+        Some(ttl) => serde_json::to_vec(&ipc::DesktopRememberMeta {
+            lifetime_ms: parse_ttl_ms(ttl)?,
+        })
+        .map_err(|_| CliError::local("INVALID_FRAME", "invalid remember request"))?,
+        None => b"{}".to_vec(),
+    };
+    let (meta, secret) = admin(state_dir)?.call(message, &metadata, &body)?;
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Expiry {
@@ -1210,6 +1345,15 @@ pub fn open_onboarding(
             "App onboarding is available only on macOS",
         ))
     }
+}
+
+pub fn desktop_lock(state_dir: &Path, forget_remembered: bool) -> Result<(), CliError> {
+    let token = read_step_up(ProofKind::Password, true)?;
+    let body = proof_body(ProofKind::Password, &token);
+    let metadata = serde_json::to_vec(&ipc::DesktopLockMeta { forget_remembered })
+        .map_err(|_| CliError::local("INVALID_FRAME", "invalid desktop lock request"))?;
+    let (reply, _) = admin(state_dir)?.call(admin_msg::DESKTOP_LOCK, &metadata, &body)?;
+    print_json::<serde_json::Value>(&reply)
 }
 
 #[cfg(test)]

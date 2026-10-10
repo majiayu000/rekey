@@ -121,6 +121,13 @@ pub mod admin_msg {
     pub const SSH_KEY: u16 = 63;
     pub const ACCESS_RESOLVE: u16 = 64;
     pub const OAUTH_LOGIN: u16 = 65;
+    pub const CREDENTIAL_ROTATE_MTLS: u16 = 66;
+    pub const CREDENTIAL_ROTATE_CA: u16 = 67;
+    pub const PKI_ISSUE_CLIENT_CSR: u16 = 68;
+    pub const PKI_REVOKE_CERTIFICATE: u16 = 69;
+    pub const PKI_GENERATE_CRL: u16 = 70;
+    pub const APPROVAL_EXTERNAL_SUBMIT: u16 = 71;
+    pub const DESKTOP_LOCK: u16 = 72;
 }
 
 /// Agent channel message types.
@@ -232,6 +239,19 @@ impl FrameHeader {
 
 /// Closed operation classification shared by managed Broker dispatch and CLI.
 pub fn managed_admin_operation(message_type: u16) -> Result<bool, FrameError> {
+    // PKI issuance is a local step-up operation, outside OIDC management sessions.
+    if matches!(
+        message_type,
+        admin_msg::DESKTOP_LOCK
+            | admin_msg::APPROVAL_EXTERNAL_SUBMIT
+            | admin_msg::PKI_GENERATE_CRL
+            | admin_msg::PKI_ISSUE_CLIENT_CSR
+            | admin_msg::PKI_REVOKE_CERTIFICATE
+            | admin_msg::CREDENTIAL_ROTATE_CA
+            | admin_msg::CREDENTIAL_ROTATE_MTLS
+    ) {
+        return Ok(false);
+    }
     if !(1..=64).contains(&message_type) {
         return Err(FrameError::InvalidField);
     }
@@ -616,6 +636,64 @@ pub struct CredentialAddMeta {
 #[serde(deny_unknown_fields)]
 pub struct CredentialRefMeta {
     pub credential_id: CredentialId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CredentialRotateMtlsMeta {
+    pub credential_id: CredentialId,
+    pub expected_version: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CredentialRotateCaMeta {
+    pub credential_id: CredentialId,
+    pub expected_version: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PkiIssueClientCsrMeta {
+    pub credential_id: CredentialId,
+    pub expected_version: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PkiGenerateCrlMeta {
+    pub credential_id: CredentialId,
+    pub version: u64,
+}
+
+/// The full public PEM CRL is in the response body.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PkiCrlResponse {
+    pub number: u64,
+    pub issuer_version: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PkiRevokeCertificateMeta {
+    pub serial_hex: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PkiRevocationResponse {
+    pub serial_hex: String,
+    pub revoked_at_ms: i64,
+}
+
+/// Public certificate only; contains no CA or subject private material.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PkiCertificateResponse {
+    pub certificate_pem: String,
+    pub serial_hex: String,
+    pub issuer_version: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1769,6 +1847,10 @@ mod tests {
             );
         }
         assert!(managed_admin_operation(65).is_err());
+        assert!(!managed_admin_operation(admin_msg::PKI_ISSUE_CLIENT_CSR).unwrap());
+        assert!(!managed_admin_operation(admin_msg::PKI_REVOKE_CERTIFICATE).unwrap());
+        assert!(!managed_admin_operation(admin_msg::PKI_GENERATE_CRL).unwrap());
+        assert!(!managed_admin_operation(admin_msg::DESKTOP_LOCK).unwrap());
     }
 
     #[test]
@@ -2344,4 +2426,16 @@ pub struct OAuthLoginMeta {
     pub connection: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub redirect_uri: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DesktopRememberMeta {
+    pub lifetime_ms: i64,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DesktopLockMeta {
+    pub forget_remembered: bool,
 }

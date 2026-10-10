@@ -578,6 +578,7 @@ fn action_update_retires_a_disabled_version() {
             &action(action_id, credential.credential_id, 1),
             &[],
             audit(event_type::ACTION_CREATED),
+            &common::fixture_root(&vault.state_dir),
             &mut common::generation_attempt(&vault.state_dir, &anchors),
         )
         .unwrap();
@@ -587,6 +588,7 @@ fn action_update_retires_a_disabled_version() {
         .disable_action(
             &previous,
             audit(event_type::ACTION_DISABLED),
+            &common::fixture_root(&vault.state_dir),
             &mut common::generation_attempt(&vault.state_dir, &anchors),
         )
         .unwrap();
@@ -596,6 +598,7 @@ fn action_update_retires_a_disabled_version() {
             &action(action_id, credential.credential_id, 2),
             &[previous],
             audit(event_type::ACTION_UPDATED),
+            &common::fixture_root(&vault.state_dir),
             &mut common::generation_attempt(&vault.state_dir, &anchors),
         )
         .unwrap();
@@ -724,7 +727,7 @@ fn schema_ten_without_stream_column_is_rejected_by_format_gate() {
     assert!(!schema.contains("text_stream_json"));
     db.execute_batch(&schema).unwrap();
     db.execute(
-        "INSERT INTO vault_header VALUES (1,10,zeroblob(16),X'0000000000000001',zeroblob(32),?1,0,zeroblob(32),zeroblob(12),X'01')",
+        "INSERT INTO vault_header VALUES (1,10,zeroblob(16),X'0000000000000001',zeroblob(32),zeroblob(32),?1,0,zeroblob(32),zeroblob(12),X'01')",
         [CRYPTO_SUITE_V1],
     )
     .unwrap();
@@ -762,7 +765,7 @@ fn schema_eleven_without_plugin_column_is_rejected_before_loading_actions() {
     assert!(!schema.contains("native_plugin_json"));
     db.execute_batch(&schema).unwrap();
     db.execute(
-        "INSERT INTO vault_header VALUES (1,11,zeroblob(16),X'0000000000000001',zeroblob(32),?1,0,zeroblob(32),zeroblob(12),X'01')",
+        "INSERT INTO vault_header VALUES (1,11,zeroblob(16),X'0000000000000001',zeroblob(32),zeroblob(32),?1,0,zeroblob(32),zeroblob(12),X'01')",
         [CRYPTO_SUITE_V1],
     )
     .unwrap();
@@ -808,7 +811,7 @@ fn schema_twelve_single_operation_protocol_is_rejected_without_migration() {
     );
     db.execute_batch(&schema).unwrap();
     db.execute(
-        "INSERT INTO vault_header VALUES (1,12,zeroblob(16),X'0000000000000001',zeroblob(32),?1,0,zeroblob(32),zeroblob(12),X'01')",
+        "INSERT INTO vault_header VALUES (1,12,zeroblob(16),X'0000000000000001',zeroblob(32),zeroblob(32),?1,0,zeroblob(32),zeroblob(12),X'01')",
         [CRYPTO_SUITE_V1],
     )
     .unwrap();
@@ -843,7 +846,7 @@ fn schema_thirteen_github_plugin_column_is_rejected_without_migration() {
     assert!(!schema.contains("native_plugin_json"));
     db.execute_batch(&schema).unwrap();
     db.execute(
-        "INSERT INTO vault_header VALUES (1,13,zeroblob(16),X'0000000000000001',zeroblob(32),?1,0,zeroblob(32),zeroblob(12),X'01')",
+        "INSERT INTO vault_header VALUES (1,13,zeroblob(16),X'0000000000000001',zeroblob(32),zeroblob(32),?1,0,zeroblob(32),zeroblob(12),X'01')",
         [CRYPTO_SUITE_V1],
     )
     .unwrap();
@@ -881,7 +884,7 @@ fn schema_fifteen_is_rejected_without_migration() {
     );
     db.execute_batch(&schema).unwrap();
     db.execute(
-        "INSERT INTO vault_header VALUES (1,15,zeroblob(16),X'0000000000000001',zeroblob(32),?1,0,zeroblob(32),zeroblob(12),X'01')",
+        "INSERT INTO vault_header VALUES (1,15,zeroblob(16),X'0000000000000001',zeroblob(32),zeroblob(32),?1,0,zeroblob(32),zeroblob(12),X'01')",
         [CRYPTO_SUITE_V1],
     )
     .unwrap();
@@ -911,7 +914,7 @@ fn schema_sixteen_is_rejected_without_migration() {
     );
     db.execute_batch(&schema).unwrap();
     db.execute(
-        "INSERT INTO vault_header VALUES (1,16,zeroblob(16),X'0000000000000001',zeroblob(32),?1,0,zeroblob(32),zeroblob(12),X'01')",
+        "INSERT INTO vault_header VALUES (1,16,zeroblob(16),X'0000000000000001',zeroblob(32),zeroblob(32),?1,0,zeroblob(32),zeroblob(12),X'01')",
         [CRYPTO_SUITE_V1],
     )
     .unwrap();
@@ -942,7 +945,7 @@ fn schema_seventeen_is_rejected_without_migration() {
     );
     db.execute_batch(&schema).unwrap();
     db.execute(
-        "INSERT INTO vault_header VALUES (1,17,zeroblob(16),X'0000000000000001',zeroblob(32),?1,0,zeroblob(32),zeroblob(12),X'01')",
+        "INSERT INTO vault_header VALUES (1,17,zeroblob(16),X'0000000000000001',zeroblob(32),zeroblob(32),?1,0,zeroblob(32),zeroblob(12),X'01')",
         [CRYPTO_SUITE_V1],
     )
     .unwrap();
@@ -973,7 +976,7 @@ fn schema_eighteen_is_rejected_without_migration() {
     );
     db.execute_batch(&schema).unwrap();
     db.execute(
-        "INSERT INTO vault_header VALUES (1,18,zeroblob(16),X'0000000000000001',zeroblob(32),?1,0,zeroblob(32),zeroblob(12),X'01')",
+        "INSERT INTO vault_header VALUES (1,18,zeroblob(16),X'0000000000000001',zeroblob(32),zeroblob(32),?1,0,zeroblob(32),zeroblob(12),X'01')",
         [CRYPTO_SUITE_V1],
     )
     .unwrap();

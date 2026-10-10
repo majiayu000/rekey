@@ -240,6 +240,7 @@ impl Worker {
         secret: SecretInput,
         not_after: Option<std::time::Instant>,
     ) -> Result<CredentialMetadata, AuthorityError> {
+        crate::private_material::validate(kind, secret.expose())?;
         if secret.is_empty() {
             return Err(AuthorityError::Domain(
                 rekey_domain::DomainError::InvalidCapability,
@@ -394,6 +395,17 @@ impl Worker {
                 ),
             ));
         }
+        if matches!(
+            expected_kind,
+            CredentialKind::MtlsIdentity | CredentialKind::PkiCaSigner
+        ) && expected_version.is_none()
+        {
+            return Err(rekey_domain::DomainError::InvalidActionDefinition(
+                "private rotation requires an expected version".into(),
+            )
+            .into());
+        }
+        crate::private_material::validate(expected_kind, secret.expose())?;
         #[cfg(feature = "lab")]
         if expected_kind == CredentialKind::MacosKeychainSource {
             super::keychain_source::Reference::import(secret.expose(), now_ms()?)?;
@@ -545,6 +557,12 @@ impl Worker {
         allow_service_material: bool,
     ) -> Result<PreparedCredential, AuthorityError> {
         let credential = self.load_verified_credential(credential_id)?;
+        if matches!(
+            credential.kind,
+            CredentialKind::MtlsIdentity | CredentialKind::PkiCaSigner
+        ) {
+            return Err(AuthorityError::CredentialSourceUnavailable);
+        }
         if !allow_service_material
             && matches!(
                 credential.kind,
@@ -562,7 +580,6 @@ impl Worker {
         {
             return Err(AuthorityError::CredentialSourceUnavailable);
         }
-        let vrk = self.require_unlocked()?;
         if credential.state != CredentialState::Active {
             return Err(AuthorityError::CredentialRevoked);
         }
@@ -572,6 +589,94 @@ impl Worker {
         if version.state != VersionState::Active {
             return Err(AuthorityError::CredentialRevoked);
         }
+        let payload = self.decrypt_credential_payload(&credential, &version)?;
+        #[cfg(feature = "lab")]
+        let payload = if credential.kind == CredentialKind::MacosKeychainSource {
+            let (request_id, action_id, action_version, deadline) =
+                execution.ok_or(AuthorityError::CredentialSourceUnavailable)?;
+            self.resolve_keychain(
+                payload,
+                credential_id,
+                version.version,
+                (request_id, action_id, action_version, deadline),
+            )?
+        } else {
+            payload
+        };
+        Ok(PreparedCredential::new(
+            payload,
+            credential_id,
+            credential.kind,
+            version.version,
+        ))
+    }
+    pub(super) fn prepare_mtls_connection(
+        &mut self,
+        request_id: rekey_domain::ids::RequestId,
+        name: &str,
+        policy_digest: [u8; 32],
+        not_after: std::time::Instant,
+    ) -> Result<PreparedCredential, AuthorityError> {
+        self.require_unlocked()?;
+        ensure_mutation_current(Some(not_after))?;
+        let denied = || AuthorityError::CredentialSourceUnavailable;
+        let material = self.policy_material()?;
+        let bundle = material.bundle.ok_or_else(denied)?;
+        if bundle.policy_digest != policy_digest || bundle.expires_at_ms <= crate::now_ms()? {
+            return Err(denied());
+        }
+        let envelope: serde_json::Value = serde_json::from_slice(&bundle.bundle_json)
+            .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        let bytes = serde_json::to_vec(
+            envelope
+                .get("snapshot")
+                .ok_or(AuthorityError::StorageIntegrityFailed)?,
+        )
+        .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+        let snapshot = rekey_policy::parse_and_validate_snapshot(
+            &bytes,
+            rekey_domain::Timestamp::from_unix_ms(crate::now_ms()?),
+        )
+        .map_err(|_| denied())?;
+        let connection = snapshot
+            .connections()
+            .iter()
+            .find(|c| c.name == name && c.enabled && c.auth.is_mtls())
+            .ok_or_else(denied)?;
+        let rows = self.store.unterminated_executions()?;
+        let mut rows = rows.iter().filter(|r| r.request_id == request_id);
+        let row = rows.next().ok_or_else(denied)?;
+        if rows.next().is_some() || row.credential_id != Some(connection.credential_id) || row.authorization.as_ref().is_none_or(|auth| auth.policy_digest != policy_digest || auth.resource_type != "connection" || auth.resource_id != name) || row.request_context.as_ref().is_none_or(|context| !matches!(context, rekey_domain::audit::RequestAuditContext::Connection(c) if c.connection == name)) { return Err(denied()); }
+        let credential = self.load_verified_credential(connection.credential_id)?;
+        if credential.kind != CredentialKind::MtlsIdentity
+            || credential.state != CredentialState::Active
+        {
+            return Err(denied());
+        }
+        let version = self
+            .store
+            .get_version(credential.credential_id, credential.current_version)?;
+        if version.state != VersionState::Active {
+            return Err(denied());
+        }
+        ensure_mutation_current(Some(not_after))?;
+        let payload = self.decrypt_credential_payload(&credential, &version)?;
+        ensure_mutation_current(Some(not_after))?;
+        Ok(PreparedCredential::new(
+            payload,
+            credential.credential_id,
+            credential.kind,
+            version.version,
+        ))
+    }
+
+    pub(super) fn decrypt_credential_payload(
+        &self,
+        credential: &CredentialRecord,
+        version: &CredentialVersionRecord,
+    ) -> Result<zeroize::Zeroizing<Vec<u8>>, AuthorityError> {
+        let vrk = self.require_unlocked()?;
+        let credential_id = credential.credential_id;
         let dek_aad = AadV1 {
             purpose: AadPurpose::WrapDek,
             vault_id: self.header.vault_id,
@@ -603,31 +708,12 @@ impl Worker {
             constraints_hash: [0u8; 32],
         }
         .encode();
-        let payload = aead::open(
+        aead::open(
             dek.bytes(),
             &payload_aad,
             &version.payload_nonce,
             &version.encrypted_payload,
         )
-        .map_err(|_| AuthorityError::CryptoFailure)?;
-        #[cfg(feature = "lab")]
-        let payload = if credential.kind == CredentialKind::MacosKeychainSource {
-            let (request_id, action_id, action_version, deadline) =
-                execution.ok_or(AuthorityError::CredentialSourceUnavailable)?;
-            self.resolve_keychain(
-                payload,
-                credential_id,
-                version.version,
-                (request_id, action_id, action_version, deadline),
-            )?
-        } else {
-            payload
-        };
-        Ok(PreparedCredential::new(
-            payload,
-            credential_id,
-            credential.kind,
-            version.version,
-        ))
+        .map_err(|_| AuthorityError::CryptoFailure)
     }
 }

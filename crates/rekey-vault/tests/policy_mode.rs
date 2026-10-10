@@ -63,7 +63,7 @@ fn bundle(
     // These ASCII keys and integer values are already in JCS order. The actual
     // policy parser verifies the signature and supplies canonical stored bytes.
     let unsigned = format!(
-        r#"{{"format_version":1,"signer_id":"{}","snapshot":{{"approvers":[],"bindings":[],"connections":[],"derived_credentials":[],"expires_at_ms":4102444800000,"format_version":7,"profiles":[],"rules":[],"ssh_keys":[],"version":{},"workload_identities":[]}}}}"#,
+        r#"{{"format_version":1,"signer_id":"{}","snapshot":{{"approvers":[],"bindings":[],"connections":[],"derived_credentials":[],"expires_at_ms":4102444800000,"format_version":8,"profiles":[],"rules":[],"ssh_keys":[],"version":{},"workload_identities":[]}}}}"#,
         trust.signer_id, version
     );
     let mut message = b"RKPOLICY\0\x01".to_vec();
@@ -518,11 +518,11 @@ async fn modified_backup_policy_material_and_format_twenty_two_are_rejected() {
             "{field}"
         );
     }
-    assert_eq!(rekey_vault::model::FORMAT_VERSION, 26);
+    assert_eq!(rekey_vault::model::FORMAT_VERSION, 27);
     let old = vault.dir.path().join("v23.rkbackup");
     std::fs::copy(&archive, &old).unwrap();
     let db = Connection::open(&old).unwrap();
-    db.execute_batch("PRAGMA writable_schema=ON; UPDATE sqlite_schema SET sql=replace(sql,'format_version = 26','format_version = 23') WHERE name='vault_header'; PRAGMA writable_schema=OFF;").unwrap();
+    db.execute_batch("PRAGMA writable_schema=ON; UPDATE sqlite_schema SET sql=replace(sql,'format_version = 27','format_version = 23') WHERE name='vault_header'; PRAGMA writable_schema=OFF;").unwrap();
     drop(db);
     let db = Connection::open(&old).unwrap();
     db.execute("UPDATE vault_header SET format_version=23", [])

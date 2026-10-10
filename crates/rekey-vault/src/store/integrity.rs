@@ -17,13 +17,13 @@ impl SqliteRecordStore {
                     'vault_header', 'key_wrappers', 'credentials',
                     'credential_versions', 'actions', 'policy_state',
                     'policy_trust', 'policy_bundle', 'workload_token_uses',
-                    'audit_events', 'vault_lease_journal', 'vault_lease_journal_state', 'audit_retention', 'profile_usage', 'profile_usage_state'
+                    'audit_events', 'pki_certificates', 'pki_crls', 'vault_lease_journal', 'vault_lease_journal_state', 'audit_retention', 'profile_usage', 'profile_usage_state'
                  )",
                 [],
                 |row| row.get(0),
             )
             .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
-        if table_count != 15 {
+        if table_count != 17 {
             return Err(AuthorityError::UnsupportedVaultLayout);
         }
         // Reject the earlier unreleased v25 layout before reading its absent
@@ -32,12 +32,12 @@ impl SqliteRecordStore {
             .conn
             .query_row(
                 "SELECT count(*) FROM pragma_table_info('vault_header')
-             WHERE name IN ('generation', 'generation_mac')",
+             WHERE name IN ('generation', 'generation_mac', 'pki_digest')",
                 [],
                 |row| row.get(0),
             )
             .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
-        if header_columns != 2 {
+        if header_columns != 3 {
             return Err(AuthorityError::UnsupportedVaultLayout);
         }
         Ok(())
@@ -144,6 +144,8 @@ impl SqliteRecordStore {
                        OR generation IS zeroblob(8)
                        OR typeof(generation_mac) IS NOT 'blob'
                        OR length(generation_mac) IS NOT 32
+                       OR typeof(pki_digest) IS NOT 'blob'
+                       OR length(pki_digest) IS NOT 32
                        OR typeof(created_at_ms) IS NOT 'integer'
                        OR typeof(schema_digest) IS NOT 'blob'
                        OR length(schema_digest) IS NOT 32

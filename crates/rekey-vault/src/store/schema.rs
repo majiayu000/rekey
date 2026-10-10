@@ -1,19 +1,55 @@
 use sha2::{Digest, Sha256};
 
-/// Schema v26. This SQL text is the single source of truth; `schema_digest()`
+/// Schema v27. This SQL text is the single source of truth; `schema_digest()`
 /// hashes its normalized form to detect accidental drift, not tampering.
 pub const SCHEMA_SQL: &str = r#"
 CREATE TABLE vault_header (
     singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
-    format_version     INTEGER NOT NULL CHECK (format_version = 26),
+    format_version     INTEGER NOT NULL CHECK (format_version = 27),
     vault_id           BLOB NOT NULL CHECK (length(vault_id) = 16),
     generation         BLOB NOT NULL CHECK (length(generation) = 8 AND generation != zeroblob(8)),
     generation_mac     BLOB NOT NULL CHECK (length(generation_mac) = 32),
+    pki_digest         BLOB NOT NULL CHECK (length(pki_digest) = 32),
     crypto_suite       TEXT NOT NULL CHECK (crypto_suite = 'rkca-aes256gcm-argon2id-hkdfsha256-v1'),
     created_at_ms      INTEGER NOT NULL,
     schema_digest      BLOB NOT NULL CHECK (length(schema_digest) = 32),
     integrity_nonce    BLOB NOT NULL CHECK (length(integrity_nonce) = 12),
     integrity_ciphertext BLOB NOT NULL
+) STRICT;
+
+CREATE TABLE pki_certificates (
+    serial BLOB PRIMARY KEY CHECK (length(serial)=16 AND serial>zeroblob(16) AND serial<x'80000000000000000000000000000000'),
+    credential_id BLOB NOT NULL CHECK (length(credential_id)=16),
+    credential_version INTEGER NOT NULL CHECK (credential_version>0),
+    request_id BLOB NOT NULL CHECK (length(request_id)=16),
+    request_digest BLOB NOT NULL CHECK (length(request_digest)=32),
+    created_at_ms INTEGER NOT NULL CHECK (created_at_ms>=0),
+    state INTEGER NOT NULL CHECK (state IN (0,1,2)),
+    finished_at_ms INTEGER CHECK (finished_at_ms>=0),
+    certificate_der BLOB,
+    issuer_der BLOB,
+    revoked_at_ms INTEGER CHECK (revoked_at_ms IS NULL OR (revoked_at_ms>=0 AND state=1)),
+    CHECK ((state=0 AND finished_at_ms IS NULL AND certificate_der IS NULL AND issuer_der IS NULL)
+        OR (state=1 AND finished_at_ms IS NOT NULL AND certificate_der IS NOT NULL AND length(certificate_der) BETWEEN 1 AND 65536 AND issuer_der IS NOT NULL AND length(issuer_der) BETWEEN 1 AND 65536)
+        OR (state=2 AND finished_at_ms IS NOT NULL AND certificate_der IS NULL AND issuer_der IS NULL)),
+    FOREIGN KEY (credential_id,credential_version) REFERENCES credential_versions(credential_id,version) ON DELETE RESTRICT
+) STRICT;
+
+CREATE TABLE pki_crls (
+    number BLOB PRIMARY KEY CHECK (length(number)=8 AND number>zeroblob(8)),
+    credential_id BLOB NOT NULL CHECK (length(credential_id)=16),
+    credential_version INTEGER NOT NULL CHECK (credential_version>0),
+    request_id BLOB NOT NULL CHECK (length(request_id)=16),
+    snapshot_digest BLOB NOT NULL CHECK (length(snapshot_digest)=32),
+    created_at_ms INTEGER NOT NULL CHECK (created_at_ms>=0),
+    state INTEGER NOT NULL CHECK (state IN (0,1,2)),
+    finished_at_ms INTEGER CHECK (finished_at_ms>=0),
+    crl_der BLOB,
+    issuer_der BLOB,
+    CHECK ((state=0 AND finished_at_ms IS NULL AND crl_der IS NULL AND issuer_der IS NULL)
+        OR (state=1 AND finished_at_ms IS NOT NULL AND crl_der IS NOT NULL AND length(crl_der)>0 AND issuer_der IS NOT NULL AND length(issuer_der) BETWEEN 1 AND 65536)
+        OR (state=2 AND finished_at_ms IS NOT NULL AND crl_der IS NULL AND issuer_der IS NULL)),
+    FOREIGN KEY (credential_id,credential_version) REFERENCES credential_versions(credential_id,version) ON DELETE RESTRICT
 ) STRICT;
 
 CREATE TABLE key_wrappers (
@@ -38,7 +74,7 @@ ON key_wrappers(wrapper_kind) WHERE wrapper_kind = 'password' AND state = 'activ
 CREATE TABLE credentials (
     credential_id      BLOB PRIMARY KEY CHECK (length(credential_id) = 16),
     label              TEXT NOT NULL UNIQUE,
-    kind               TEXT NOT NULL CHECK (kind IN ('opaque-token', 'github-app-installation', 'vault-kv-v2-source', 'vault-dynamic-source', 'keycloak-token-exchange', 'gcp-secret-manager-source', 'aws-secrets-manager-source', 'azure-key-vault-source', 'onepassword-connect-source', 'macos-keychain-source', 'ssh-ed25519', 'ssh-p256', 'ssh-secure-enclave-p256', 'oauth-grant', 'aws-static')),
+    kind               TEXT NOT NULL CHECK (kind IN ('opaque-token', 'github-app-installation', 'vault-kv-v2-source', 'vault-dynamic-source', 'keycloak-token-exchange', 'gcp-secret-manager-source', 'aws-secrets-manager-source', 'azure-key-vault-source', 'onepassword-connect-source', 'macos-keychain-source', 'ssh-ed25519', 'ssh-p256', 'ssh-secure-enclave-p256', 'oauth-grant', 'aws-static', 'mtls-identity', 'pki-ca-signer')),
     state              TEXT NOT NULL CHECK (state IN ('active', 'revoked')),
     current_version    INTEGER NOT NULL CHECK (current_version >= 1),
     created_at_ms      INTEGER NOT NULL,

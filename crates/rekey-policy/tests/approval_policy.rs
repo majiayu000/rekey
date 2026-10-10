@@ -24,7 +24,7 @@ fn policy_fixture() -> Fixture {
         action,
         principal,
         value: json!({
-            "format_version": 7, "connections": [], "ssh_keys": [], "derived_credentials": [], "profiles": [],
+            "format_version": 8, "connections": [], "ssh_keys": [], "derived_credentials": [], "profiles": [],
             "version": 1,
             "expires_at_ms": 10_000,
             "approvers": [],

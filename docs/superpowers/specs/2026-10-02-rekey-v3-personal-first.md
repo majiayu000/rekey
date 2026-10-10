@@ -781,7 +781,7 @@ App 新增"活动"页，按 Profile 和模板能力汇总：
   - 包含 `/Applications/Rekey.app`；
   - 内嵌独立 `com.rekey.rekeyd` daemon bundle 与其 Developer ID provisioning profile，使 daemon 可使用受保护计数项的 keychain access group；App 保留自己的 profile。该结构只承载签名与授权，不引入 XPC 通信；
   - CLI 链接到 `/usr/local/bin`；
-  - 通过 SMAppService 注册 LaunchAgent。
+  - 打开 App 时自动连接已有保险库；服务未运行则自动启动。固定安装位置和默认目录通过 SMAppService 注册或启动 LaunchAgent；开发构建及自定义目录由 App 启动随包服务。首次创建仍需确认密码并保存恢复密钥，保存完成后自动连接。无需另外点击“启动服务”。系统要求后台运行批准时显示设置入口，启动失败保留错误并允许重试；自动启动不读取证明、不解锁、不重启已运行服务。停止服务后，普通刷新不重新启动，下一次打开 App 或切换工作区才重新连接。
 - Homebrew cask。
 - Linux：`.tar.gz` 加 systemd user unit，等级为 L1-dev。
 
@@ -803,8 +803,8 @@ macOS pkg 的功能验收只使用实际安装的原生工具；归档专用 Pyt
 ### 9.4 三命令入口（macOS 安装版）
 
 - `rekey setup` 与 `rekey add anthropic` 只打开 `/Applications/Rekey.app` 的固定 `rekey://setup` / `rekey://add/anthropic` 页面。URL 不接受 query、fragment、证明、路径或任意 provider；CLI exit 0 只表示系统已接受打开请求，完成以 App 显示为准。
-- 此入口使用默认 state-dir；非默认 state-dir 或不适用的 socket/session 参数明确拒绝，不忽略。运行中的 App 同样接收固定路由。路由只选页面，不自动执行初始化、保存、注册服务、签名或激活。
-- Setup 复用个人/团队选择、初始化、离线保存恢复密钥确认、显式启用服务及已认证状态检查。个人模式再显式建立既有 SE trust；团队模式保留外部签署。重复打开不重建已有 vault 或 trust，不缓存跨步骤密码。
+- 此入口使用默认 state-dir；非默认 state-dir 或不适用的 socket/session 参数明确拒绝，不忽略。运行中的 App 同样接收固定路由。路由只选页面，不自动执行初始化、保存、签名或激活；App 打开的连接与服务启动遵守 §9.3。
+- Setup 复用个人/团队选择、初始化、离线保存恢复密钥确认、自动连接服务及已认证状态检查。个人模式再显式建立既有 SE trust；团队模式保留外部签署。重复打开不重建已有 vault 或 trust，不缓存跨步骤密码。
 - Anthropic 接入展示“保存凭据”和“授予权限”两个阶段：A1 保存获得真实 credential ID，逐次 A2 安装用户选择的模板 capabilities，再用现有完整 Profile 草稿、差异审阅和 SE 精确字节签名。此次安装显式展示并授权 `anthropic-beta` header，不改变模板全局默认。
 - 模型白名单为用户明确确认的精确 ID；第三条命令携带同一 `--model`。会话、单次/每日预算和策略到期可见且需确认；Claude 初始单次建议 32768 以覆盖本次实测 32000 请求，不静默扩大已有授权。默认不启用 L2。
 - 已有 Profile 完整保留；重名需明确编辑或另名，旧 principal 不改变。基线漂移重新加载并审阅，不自动合并/重签。保存、安装和激活为现有分步事务；取消或失败保留已完成阶段，不后台重试或自动删除。

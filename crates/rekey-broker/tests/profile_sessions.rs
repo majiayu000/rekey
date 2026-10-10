@@ -119,8 +119,8 @@ impl Fixture {
             .iter()
             .map(|a| json!({"action_id":a.id,"version":a.version}))
             .collect();
-        let snapshot = json!({"format_version":7,"version":1,"expires_at_ms":4_102_444_800_000_i64,"approvers":[],"workload_identities":[],
-            "connections":[], "ssh_keys":[], "profiles":[{"name":"test-run","principal_id":principal,"grants":[{"instance":"work","capabilities":[{"rule":"template-default","capability":capability,"actions":refs}]}],"session":{"ttl_ms":60000,"max_uses":100},"confirm_each_run":confirm,"isolation":"none","egress":"allow","llm_limits":[]}],
+        let snapshot = json!({"format_version":8,"version":1,"expires_at_ms":4_102_444_800_000_i64,"approvers":[],"workload_identities":[],
+            "connections":[], "ssh_keys":[], "derived_credentials":[], "profiles":[{"name":"test-run","principal_id":principal,"grants":[{"instance":"work","capabilities":[{"rule":"template-default","capability":capability,"actions":refs}]}],"session":{"ttl_ms":60000,"max_uses":100},"confirm_each_run":confirm,"isolation":"none","egress":"allow","llm_limits":[]}],
             "bindings":actions.iter().map(|a|json!({"action_id":a.id,"version":a.version,"resource":{"type":"fixture","id":a.id},"parameter_schema_id":"any/v1","parameter_schema":{}})).collect::<Vec<_>>(),
             "rules":actions.iter().map(|a|json!({"id":PolicyRuleId::new_random(),"effect":"permit","principal_id":principal,"action_id":a.id,"version":a.version,"resource":{"type":"fixture","id":a.id},"parameters":{"kind":"any_validated"}})).collect::<Vec<_>>()});
         let fixture = Self {
@@ -605,5 +605,145 @@ async fn signed_custom_template_source_rewrite_fails_seal_before_mint() {
     assert_eq!(f.mint(&[]).await.1.err_code(), "STORAGE_INTEGRITY_FAILED");
     assert!(f.broker.fake.take_requests().is_empty());
     drop(db);
+    f.broker.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn live_profiles_leave_admin_management_available() {
+    let f = Fixture::generic(false).await;
+    for _ in 0..17 {
+        assert_eq!(
+            f.mint(&common::proof_body(common::PASSWORD))
+                .await
+                .1
+                .err_code(),
+            "INVALID_FRAME"
+        );
+    }
+    let mut controls = Vec::new();
+    let mut sessions = Vec::new();
+    for _ in 0..16 {
+        let (control, response) = f.mint(&[]).await;
+        sessions.push(session(&response).session);
+        controls.push(control);
+    }
+    let (_, refused) = f.mint(&[]).await;
+    assert_eq!(refused.err_code(), "AUTHORITY_BUSY");
+    assert_eq!(refused.metadata["retryable"], true);
+    let status = common::call(
+        &f.broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::STATUS,
+        b"{}",
+        &[],
+    )
+    .await;
+    assert_eq!(status.ok()["state"], "unlocked");
+    common::call(
+        &f.broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::SESSION_REVOKE,
+        &serde_json::to_vec(&json!({"session_id":sessions[0].session_id})).unwrap(),
+        &common::proof_body(common::PASSWORD),
+    )
+    .await
+    .ok();
+    closed(&mut controls[0]).await;
+    let (mut replacement, response) = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let result = f.mint(&[]).await;
+            if result.1.message_type == ipc::resp_msg::OK {
+                break result;
+            }
+            assert_eq!(result.1.err_code(), "AUTHORITY_BUSY");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("revoked owner actually returns its quota");
+    let replacement_session = session(&response).session;
+    common::call(
+        &f.broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::LOCK,
+        b"{}",
+        &[],
+    )
+    .await
+    .ok();
+    for control in &mut controls {
+        closed(control).await;
+    }
+    closed(&mut replacement).await;
+    assert_eq!(
+        f.execute(&replacement_session.capability_token)
+            .await
+            .err_code(),
+        "LOCKED"
+    );
+    common::unlock(&f.broker).await;
+    assert_eq!(
+        f.execute(&replacement_session.capability_token)
+            .await
+            .err_code(),
+        "INVALID_CAPABILITY"
+    );
+    drop(controls);
+    f.broker.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn native_ssh_and_profiles_share_one_finite_quota() {
+    let f = Fixture::generic(false).await;
+    let mut profiles = Vec::new();
+    let mut ssh = Vec::new();
+    for _ in 0..8 {
+        profiles.push(f.mint(&[]).await);
+        profiles.last().unwrap().1.ok();
+    }
+    for _ in 0..8 {
+        let mut stream = UnixStream::connect(f.broker.state_dir.join("ssh-agent.sock"))
+            .await
+            .unwrap();
+        stream.write_u32(1).await.unwrap();
+        stream.write_all(&[11]).await.unwrap();
+        assert_eq!(stream.read_u32().await.unwrap(), 5);
+        let mut identities = [0; 5];
+        stream.read_exact(&mut identities).await.unwrap();
+        assert_eq!(identities, [12, 0, 0, 0, 0]);
+        ssh.push(stream);
+    }
+    let (_, response) = f.mint(&[]).await;
+    assert_eq!(response.err_code(), "AUTHORITY_BUSY");
+    assert_eq!(response.metadata["retryable"], true);
+    assert_eq!(
+        common::call(
+            &f.broker.admin_sock(),
+            Channel::Admin,
+            admin_msg::STATUS,
+            b"{}",
+            &[]
+        )
+        .await
+        .ok()["state"],
+        "unlocked"
+    );
+    drop(ssh.pop());
+    let (control, response) = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let result = f.mint(&[]).await;
+            if result.1.message_type == ipc::resp_msg::OK {
+                break result;
+            }
+            assert_eq!(result.1.err_code(), "AUTHORITY_BUSY");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    response.ok();
+    drop(control);
+    drop(ssh);
+    drop(profiles);
     f.broker.shutdown().await;
 }

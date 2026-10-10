@@ -343,7 +343,7 @@ async fn measure_ipc_capacity(broker: &common::TestBroker) -> Value {
         &broker.admin_sock(),
         Channel::Admin,
         admin_msg::STATUS,
-        MAX_ADMIN_REQUEST_CONNECTIONS,
+        MAX_ADMIN_CONNECTIONS - CAPACITY_REPLY_CONNECTIONS_PER_CHANNEL,
     )
     .await;
     let open_all_latency = started.elapsed();
@@ -356,7 +356,7 @@ async fn measure_ipc_capacity(broker: &common::TestBroker) -> Value {
     tokio::join!(release_connections(agent), release_connections(admin));
     json!({
         "held_agent_request_handlers": MAX_AGENT_REQUEST_CONNECTIONS,
-        "held_admin_request_handlers": MAX_ADMIN_REQUEST_CONNECTIONS,
+        "held_admin_connections": MAX_ADMIN_CONNECTIONS - CAPACITY_REPLY_CONNECTIONS_PER_CHANNEL,
         "simultaneous_capacity_responders": 2 * CAPACITY_REPLY_CONNECTIONS_PER_CHANNEL,
         "total_broker_connections_at_rejection": MAX_AGENT_CONNECTIONS + MAX_ADMIN_CONNECTIONS,
         "open_all_latency_us": open_all_latency.as_micros(),
@@ -447,7 +447,7 @@ async fn activate_connection(broker: &common::TestBroker, credential_id: &str) {
     connection.limits.requests_per_hour = 1_000_000;
     connection.limits.max_response_bytes = LARGE_RESPONSE_BYTES as u32;
     let snapshot = json!({
-        "format_version": 7,
+        "format_version": 8,
         "version": 1,
         "expires_at_ms": 4_102_444_800_000_i64,
         "approvers": [],

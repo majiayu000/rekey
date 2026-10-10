@@ -734,7 +734,7 @@ mod local_tests {
         let (dir, ctx, join, terminal) = crate::runtime::tests::oidc_test_ctx().await;
         let now = crate::now_ts().unwrap();
         let snapshot=rekey_policy::parse_and_validate_snapshot(&serde_json::to_vec(&serde_json::json!({
-            "format_version":7,"version":1,"expires_at_ms":now.as_unix_ms()+60000,"approvers":[],"connections":[], "ssh_keys":[], "derived_credentials":[], "profiles": [], "workload_identities":[],"bindings":[],"rules":[]
+            "format_version":8,"version":1,"expires_at_ms":now.as_unix_ms()+60000,"approvers":[],"connections":[], "ssh_keys":[], "derived_credentials":[], "profiles": [], "workload_identities":[],"bindings":[],"rules":[]
         })).unwrap(),now).unwrap();
         let snapshot = Arc::new(ActivePolicy::activate(snapshot, now).unwrap());
         *ctx.executor.policy.write().await = Some(snapshot.clone());

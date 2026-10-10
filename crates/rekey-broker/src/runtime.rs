@@ -45,12 +45,12 @@ mod shutdown;
 mod workload;
 
 pub const MAX_AGENT_CONNECTIONS: usize = 120;
-pub const MAX_ADMIN_CONNECTIONS: usize = 8;
+pub const MAX_ADMIN_CONNECTIONS: usize = 24;
 pub const CAPACITY_REPLY_CONNECTIONS_PER_CHANNEL: usize = 1;
 pub const MAX_AGENT_REQUEST_CONNECTIONS: usize =
     MAX_AGENT_CONNECTIONS - CAPACITY_REPLY_CONNECTIONS_PER_CHANNEL;
-pub const MAX_ADMIN_REQUEST_CONNECTIONS: usize =
-    MAX_ADMIN_CONNECTIONS - CAPACITY_REPLY_CONNECTIONS_PER_CHANNEL;
+/// Short admin requests; live controls have a separate finite owner quota.
+pub const MAX_ADMIN_REQUEST_CONNECTIONS: usize = 7;
 /// Dedicated bound for unauthenticated online JWKS fetches. Kept far below
 /// Agent request slots so forged JWTs cannot monopolize the Agent channel.
 pub const MAX_ONLINE_JWKS_FETCHES: usize = 2;
@@ -300,6 +300,11 @@ impl BrokerCtx {
                 .await?;
             return Err(BrokerError::Authority(AuthorityError::AuthorityBusy));
         }
+        let expires = expires.min(
+            crate::now_ts()?
+                .as_unix_ms()
+                .saturating_add(7 * 24 * 60 * 60 * 1000),
+        );
         let session = match self.authority.desktop_issue().await {
             Ok(session) => session,
             Err(error) => {
@@ -967,7 +972,9 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
 
     // Reserve Admin capacity. An untrusted Agent can exhaust only its own
     // channel and must never make lock or shutdown unreachable.
-    let admin_slots = Arc::new(tokio::sync::Semaphore::new(MAX_ADMIN_REQUEST_CONNECTIONS));
+    let admin_slots = Arc::new(tokio::sync::Semaphore::new(
+        MAX_ADMIN_CONNECTIONS - CAPACITY_REPLY_CONNECTIONS_PER_CHANNEL,
+    ));
     let agent_slots = Arc::new(tokio::sync::Semaphore::new(MAX_AGENT_REQUEST_CONNECTIONS));
 
     let idle_ctx = Arc::clone(&ctx);

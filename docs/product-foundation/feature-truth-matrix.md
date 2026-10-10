@@ -1,6 +1,6 @@
-# Rekey 0.4 功能事实矩阵
+# Rekey 功能事实矩阵
 
-当前源码候选为 0.4.0-alpha.1，vault26 / policy7。[当前 SPEC](../superpowers/specs/2026-10-05-rekey-agent-call-model.md)与[实施记录](../superpowers/plans/2026-10-05-agent-call-implementation.md)为行为与验收来源。各项发布状态仍为 Pending，完成代码与软件检查不等同真实设备、Agent 或公开安装验收。
+当前源码为 0.5.0-alpha.1 开发整合候选，vault27 / policy8；[整合合同](../superpowers/specs/2026-10-09-unified-experiments.md)约束下述新增实验能力，统一头默认 workspace 1,032 项通过 / 0 失败 / 13 忽略；其余检查与边界见[整合记录](../superpowers/plans/2026-10-09-experiment-integration.md)。已发布 0.4.0-alpha.1 为 vault26 / policy7，以下 0.4 表保留原始证据。[当前 SPEC](../superpowers/specs/2026-10-05-rekey-agent-call-model.md)与[实施记录](../superpowers/plans/2026-10-05-agent-call-implementation.md)为行为与验收来源。各项发布状态仍为 Pending，完成代码与软件检查不等同真实设备、Agent 或公开安装验收。
 
 2026-10-06 整合 `main` @ `0828fca` 的 SSE 安全回收、首次 HTTP handoff 和认证账本优化，同时保留下列 Connection 准入/审批合同。整合头的软件验证与性能复测另行记录；下方 0.3 数据及此前 0.4 历史规模 debug 测量不代表新头已通过或具有相同时延。
 
@@ -119,3 +119,23 @@ GLM Responses 接入合同：新增固定 `glm-responses@1`（POST `/api/v1/resp
 
 
 2026-10-05 续验：当前账户实际安装版完成个人策略完整差异审阅、Touch ID/SE签署与active v3读回；Claude Code/Codex和CLI生成配置→真实MCP工具调用通过。针对用户反馈的重复认证，同次策略激活现共用已有固定十秒 context，结束/失败/取消作废；软件同一context和取消边界验证通过，实际弹窗次数未测。新公证包及默认全仓/安装状态见统一证据 `follow_through_20261005`。实际 canary 显示后清理、可见审批取消、默认旧库占用下的SMAppService生命周期与新账户T12仍待验收，不提高保护等级或Release状态。
+
+2026-10-08 macOS 启动体验修订：打开 App 和切换保险库自动连接，服务未运行时自动启动；首次创建并保存恢复密钥后自动连接。自动启动不解锁、不读取证明、不重启已有服务；后台运行批准仍由系统控制。0.4 合成启动回归通过，并接入 CI；本机旧版 3.0 安装版在用户已选的自定义目录验证了自动启动、保持锁定及重开复用服务。后者不代表 0.4 真机或默认目录 SMAppService 验收，不据此提升 Release 状态。
+
+## Unified experimental integration (2026-10-09)
+
+Implemented under [the unified contract](../superpowers/specs/2026-10-09-unified-experiments.md), using vault27 / policy8. The combined default workspace passed 1,032 tests with 0 failures and 13 explicit ignores. Native App compilation, Connection models (including mTLS and external SSH budget preservation), real Swift/CLI/Broker contracts, connect-on-open and human credential management software checks passed. See [the integration record](../superpowers/plans/2026-10-09-experiment-integration.md) for both configurations, dependency audit and provenance.
+
+| Added capability | Current software evidence | Remaining boundary |
+|---|---|---|
+| Signed Connection mTLS | Four real TLS/owner-drain/reflection/policy tests; rotation pauses cover preparation, TLS construction, HTTP enqueue and body | Real provider/installed App deployment untested |
+| Admin CA / CSR / serial revocation / full CRL | 22 client-CSR contracts plus two CA import/rotation contracts, including tamper, restart, backup and root/DEK rotation | No Agent PKI admission; real CA deployment untested |
+| SSH external approvals and socket budgets | Eight broker native SSH regressions plus nine offline signer contracts | Real Secure Enclave/device and external approver deployment untested |
+| Collection integrity and allocation changes | Twelve action integrity tests, canonical JSON/SSE equivalence and split/reflection regressions | No combined-head performance improvement claimed |
+| Lab child exit watcher | macOS/Linux PR gate runs the two owned-child/control-channel regressions | Linux result requires that CI run |
+
+Published 0.4 and older installed App evidence do not establish unified-head hardware acceptance. Agent PKI admission and HA remain pending. No candidate installation or public release was performed.
+
+## Personal desktop security extension (0.5 development)
+
+[Contract](../superpowers/specs/2026-10-09-personal-desktop-security.md): separate desktop privacy lock, configurable idle/device signals and explicit 1/7/30-day presence issuance. A1 stays at most seven days and is capped by the grant's wall and monotonic lifetime; Presence cannot issue grants. Real disposable IPC tests cover Agent continuity, token revocation, forgotten grants and expiry. Synthetic Swift tests cover stale login/cancellation, cleanup failure, settings persistence and exact team draft text. No installed App, actual sleep/screen-lock/Touch ID or stronger protection-level acceptance is claimed. Docker HA is a separate PR and acceptance.

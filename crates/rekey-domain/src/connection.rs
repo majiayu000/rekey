@@ -109,6 +109,35 @@ pub struct ConnectionLlmLimits {
     pub max_output_tokens_per_day: u64,
 }
 
+/// Signed authentication choice. mTLS has no HTTP credential header.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum ConnectionAuth {
+    Header(HeaderCredentialUse),
+    Mtls { kind: MtlsAuthKind },
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MtlsAuthKind {
+    Mtls,
+}
+impl From<HeaderCredentialUse> for ConnectionAuth {
+    fn from(value: HeaderCredentialUse) -> Self {
+        Self::Header(value)
+    }
+}
+impl ConnectionAuth {
+    pub fn is_mtls(&self) -> bool {
+        matches!(self, Self::Mtls { .. })
+    }
+    pub fn header(&self) -> Option<&HeaderCredentialUse> {
+        match self {
+            Self::Header(header) => Some(header),
+            Self::Mtls { .. } => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Connection {
@@ -116,7 +145,7 @@ pub struct Connection {
     pub preset: String,
     pub credential_id: CredentialId,
     pub origin: HttpsOrigin,
-    pub auth: HeaderCredentialUse,
+    pub auth: ConnectionAuth,
     pub enabled: bool,
     pub grade: CredentialGrade,
     pub rules: Vec<ConnectionRule>,
@@ -152,7 +181,7 @@ impl Preset {
             preset: self.name.clone(),
             credential_id,
             origin: self.origin.clone(),
-            auth: self.auth.clone(),
+            auth: self.auth.clone().into(),
             enabled: true,
             grade: CredentialGrade::T0,
             rules: self.rules.clone(),
@@ -262,7 +291,11 @@ impl Connection {
         }) {
             return Err(invalid("invalid OAuth binding"));
         }
-        HeaderCredentialUse::new(self.auth.header_name.clone(), self.auth.prefix.clone())?;
+        if let Some(auth) = self.auth.header() {
+            HeaderCredentialUse::new(auth.header_name.clone(), auth.prefix.clone())?;
+        } else if self.grade != CredentialGrade::T0 || self.oauth.is_some() || self.llm.is_some() {
+            return Err(invalid("mTLS requires T0 fixed HTTP semantics"));
+        }
         let mut ids = BTreeSet::new();
         for rule in self
             .rules
@@ -270,6 +303,9 @@ impl Connection {
             .chain(self.caller_overrides.values().flatten())
         {
             validate_path_pattern(&rule.path)?;
+            if self.auth.is_mtls() && rule.path.contains(['*', '{', '}']) {
+                return Err(invalid("mTLS requires fixed paths"));
+            }
             if !ids.insert(rule.id) {
                 return Err(invalid("duplicate rule id"));
             }
@@ -309,7 +345,10 @@ impl Connection {
             if name.is_forbidden()
                 || matches!(name.as_str(), "authorization" | "x-api-key")
                 || name.as_str().starts_with("proxy-")
-                || name == &self.auth.header_name
+                || self
+                    .auth
+                    .header()
+                    .is_some_and(|auth| name == &auth.header_name)
             {
                 return Err(invalid("protected caller header"));
             }
@@ -384,6 +423,15 @@ pub struct SshKeyConnection {
     pub user_public_key: String,
     pub hosts: Vec<SshHostRule>,
     pub git_signing: RuleEffect,
+    pub approver: crate::authorization::ApproverSpec,
+    pub session_budget: SshSessionBudget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SshSessionBudget {
+    pub max_signatures: u32,
+    pub max_seconds: u32,
 }
 
 /// Explicitly signed T1 permission: the caller receives the issued temporary

@@ -294,7 +294,7 @@ async fn vrk_rotation_all_kinds_all_states_policy_replay_and_two_backup_generati
         .await
         .unwrap();
     let (desktop_key, _) = handle
-        .desktop_remember(common::password_proof(), None)
+        .desktop_remember(common::password_proof(), None, 604_800_000)
         .await
         .unwrap();
     handle
@@ -524,7 +524,11 @@ async fn vrk_rotation_empty_trust_only_and_expired_policy_remain_exactly_as_stor
 #[tokio::test]
 async fn vrk_rotation_rejects_unlocked_wrong_factors_and_applies_shared_backoff() {
     let vault = common::init_test_vault();
-    let (handle, join) = common::spawn(&vault.state_dir);
+    let mut config = common::test_config(&vault.state_dir);
+    // Durable denial auditing and scheduling may outlast the shared fixture's
+    // 20 ms backoff. Match the other rotation backoff fixture's timing margin.
+    config.unlock_backoff_base = Duration::from_secs(30);
+    let (handle, join) = rekey_vault::authority::spawn_authority(config).unwrap();
     handle.unlock(common::password_proof()).await.unwrap();
     assert!(
         handle
@@ -582,7 +586,7 @@ async fn vrk_rotation_late_corruption_sql_rowcount_audit_and_commit_fail_closed(
         handle.unlock(common::password_proof()).await.unwrap();
         two_versions(&handle, CredentialKind::OpaqueToken, "rollback").await;
         let (desktop_key, _) = handle
-            .desktop_remember(common::password_proof(), None)
+            .desktop_remember(common::password_proof(), None, 604_800_000)
             .await
             .unwrap();
         handle.lock_for_restart("fixture").await.unwrap();
@@ -724,7 +728,7 @@ fn vrk_process_fixture() {
         let (handle,_join)=common::spawn(&state);
         handle.unlock(common::password_proof()).await.unwrap();
         two_versions(&handle,CredentialKind::OpaqueToken,"process-canary").await;
-        handle.desktop_remember(common::password_proof(),None).await.unwrap();
+        handle.desktop_remember(common::password_proof(),None, 604_800_000).await.unwrap();
         handle.lock_for_restart("process-fixture").await.unwrap();
         if mode=="precommit" {
             let db=Connection::open(paths::vault_db(&state)).unwrap();
@@ -902,7 +906,7 @@ async fn vrk_precommit_deadline_rolls_back_after_final_audit_sql_work() {
     handle.unlock(common::password_proof()).await.unwrap();
     two_versions(&handle, CredentialKind::OpaqueToken, "deadline").await;
     handle
-        .desktop_remember(common::password_proof(), None)
+        .desktop_remember(common::password_proof(), None, 604_800_000)
         .await
         .unwrap();
     handle.lock_for_restart("deadline-fixture").await.unwrap();

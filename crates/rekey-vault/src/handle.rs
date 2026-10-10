@@ -246,9 +246,24 @@ impl AuthorityHandle {
         &self,
         proof: UnlockProof,
         not_after: Option<std::time::Instant>,
+        lifetime_ms: i64,
     ) -> Result<(Zeroizing<Vec<u8>>, i64), AuthorityError> {
         call!(self, |reply| AuthorityCommand::DesktopRemember {
             proof,
+            lifetime_ms,
+            not_after,
+            reply
+        })
+    }
+    pub async fn desktop_lock(
+        &self,
+        token: SecretInput,
+        forget_remembered: bool,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<(), AuthorityError> {
+        call!(self, |reply| AuthorityCommand::DesktopLock {
+            token,
+            forget_remembered,
             not_after,
             reply
         })
@@ -475,6 +490,56 @@ impl AuthorityHandle {
             expected_version,
             secret,
             proof,
+            not_after,
+            reply
+        })
+    }
+
+    pub async fn pki_generate_crl_before(
+        &self,
+        input: rekey_domain::ipc::PkiGenerateCrlMeta,
+        proof: UnlockProof,
+        request_id: rekey_domain::ids::RequestId,
+        not_after: std::time::Instant,
+    ) -> Result<(rekey_domain::ipc::PkiCrlResponse, Vec<u8>), AuthorityError> {
+        call!(self, |reply| AuthorityCommand::PkiGenerateCrl {
+            input,
+            proof,
+            request_id,
+            not_after,
+            reply
+        })
+    }
+
+    pub async fn pki_revoke_certificate_before(
+        &self,
+        input: rekey_domain::ipc::PkiRevokeCertificateMeta,
+        proof: UnlockProof,
+        request_id: rekey_domain::ids::RequestId,
+        not_after: std::time::Instant,
+    ) -> Result<rekey_domain::ipc::PkiRevocationResponse, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::PkiRevokeCertificate {
+            input,
+            proof,
+            request_id,
+            not_after,
+            reply
+        })
+    }
+
+    pub async fn pki_issue_client_csr_before(
+        &self,
+        input: rekey_domain::ipc::PkiIssueClientCsrMeta,
+        csr: SecretInput,
+        proof: UnlockProof,
+        request_id: rekey_domain::ids::RequestId,
+        not_after: std::time::Instant,
+    ) -> Result<rekey_domain::ipc::PkiCertificateResponse, AuthorityError> {
+        call!(self, |reply| AuthorityCommand::PkiIssueClientCsr {
+            input,
+            csr,
+            proof,
+            request_id,
             not_after,
             reply
         })
@@ -712,12 +777,29 @@ impl AuthorityHandle {
 
     /// The Authority commits the start and terminal audits itself; signatures
     /// are returned only after those commits succeed.
+    pub async fn prepare_mtls_connection(
+        &self,
+        request_id: rekey_domain::ids::RequestId,
+        connection: String,
+        policy_digest: [u8; 32],
+        not_after: std::time::Instant,
+    ) -> Result<crate::secret::PreparedCredential, crate::AuthorityError> {
+        call!(self, |reply| AuthorityCommand::PrepareMtlsConnection {
+            request_id,
+            connection,
+            policy_digest,
+            not_after,
+            reply
+        })
+    }
+
     pub async fn ssh_sign(
         &self,
         credential_id: CredentialId,
         public_key: Vec<u8>,
         data: Vec<u8>,
         started: AuditDraft,
+        approvals: Vec<AuditDraft>,
         not_after: std::time::Instant,
     ) -> Result<Vec<u8>, AuthorityError> {
         call!(self, |reply| AuthorityCommand::SshSign {
@@ -725,6 +807,7 @@ impl AuthorityHandle {
             public_key,
             data,
             started: Box::new(started),
+            approvals,
             not_after,
             reply
         })

@@ -52,6 +52,12 @@ import CryptoKit
         let encoded=try JSONSerialization.data(withJSONObject:object)
         let decoded=try JSONDecoder().decode(ConnectionDefinition.self,from:encoded)
         precondition(decoded==connection)
+        var mtlsObject=object as! [String:Any];mtlsObject["auth"]=["kind":"mtls"]
+        let mtls=try JSONDecoder().decode(ConnectionDefinition.self,from:JSONSerialization.data(withJSONObject:mtlsObject))
+        let mtlsRoundtrip=try JSONSerialization.jsonObject(with:JSONEncoder().encode(mtls)) as! [String:Any]
+        precondition((mtlsRoundtrip["auth"] as? [String:String])==["kind":"mtls"])
+        mtlsObject["auth"]=["kind":"mtls","header_name":"authorization","prefix":"Bearer "]
+        do{_=try JSONDecoder().decode(ConnectionDefinition.self,from:JSONSerialization.data(withJSONObject:mtlsObject));fatalError("mixed mTLS/header auth accepted")}catch{}
         let empty:[String:Any] = ["connections":[],"ssh_keys":[],"derived_credentials":[],"policy_sha256":NSNull(),"expires_at_ms":NSNull()]
         let list=try JSONDecoder().decode(ConnectionList.self,from:JSONSerialization.data(withJSONObject:empty));precondition(list.connections.isEmpty)
         var invalid=empty;invalid.removeValue(forKey:"policy_sha256")
@@ -67,6 +73,11 @@ import CryptoKit
         let publicBlob=publicWire.base64EncodedString(),hostRuleID=UUID().uuidString.lowercased()
         let sshKey=SSHKeyDefinition(name:"synthetic-ssh",credential_id:UUID().uuidString.lowercased(),user_public_key:publicBlob,hosts:[.init(host:"github.com",host_key:publicBlob,rule_id:hostRuleID,effect:"deny")],git_signing:"approve")
         let sshObject=try JSONSerialization.jsonObject(with:JSONEncoder().encode(sshKey))
+        var externalSSH=sshKey
+        externalSSH.approver = .init(kind:"ed25519",keys:["first","second"],threshold:2)
+        externalSSH.session_budget = .init(max_signatures:3,max_seconds:45)
+        let preservedExternal=try JSONDecoder().decode(SSHKeyDefinition.self,from:JSONEncoder().encode(externalSSH))
+        precondition(preservedExternal==externalSSH && preservedExternal.session_budget.max_signatures==3 && preservedExternal.approver.threshold==2)
         precondition(sshKey.publicKeyText=="ssh-ed25519 "+publicBlob)
         precondition(SSHHostDefinition.wireBlob(sshKey.publicKeyText+" synthetic-comment")==publicBlob)
         precondition(SSHHostDefinition.wireBlob("github.com "+sshKey.publicKeyText)==publicBlob)

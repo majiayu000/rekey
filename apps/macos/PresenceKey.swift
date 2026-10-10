@@ -123,6 +123,12 @@ enum PresenceKey {
         guard added == errSecSuccess else { throw failure(added) }
     }
 
+    static func forget(vaultID: UUID) throws {
+        reads.invalidate()
+        let status = SecItemDelete(try identity(vaultID: vaultID) as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else { throw failure(status) }
+    }
+
     private static func authenticationContext(_ reason: String) -> LAContext {
         let context = LAContext()
         context.localizedReason = reason

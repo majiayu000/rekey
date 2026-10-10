@@ -339,6 +339,7 @@ impl Worker {
         public_key: Vec<u8>,
         data: Vec<u8>,
         mut started: AuditDraft,
+        mut approvals: Vec<AuditDraft>,
         not_after: Instant,
     ) -> Result<Vec<u8>, AuthorityError> {
         self.require_unlocked()?;
@@ -368,7 +369,22 @@ impl Worker {
             return Err(AuthorityError::CredentialSourceUnavailable);
         }
         // UNIQUE request_id prevents the same authorization executing twice.
-        self.append_audit(started.clone())?;
+        if approvals.len() > 2
+            || approvals.iter().any(|a| {
+                a.event_type != event_type::APPROVAL_ACCEPTED
+                    || a.outcome != outcome::SUCCESS
+                    || a.request_id != started.request_id
+                    || a.session_id != started.session_id
+                    || a.credential_id != started.credential_id
+                    || a.authorization != started.authorization
+                    || a.request_context != started.request_context
+                    || a.approval.is_none()
+            })
+        {
+            return Err(invalid());
+        }
+        approvals.push(started.clone());
+        self.append_audits(approvals)?;
         let result = (|| {
             ensure_mutation_current(Some(not_after))?;
             let prepared = self.prepare_internal_credential(credential_id)?;

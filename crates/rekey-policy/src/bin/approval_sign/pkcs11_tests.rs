@@ -837,7 +837,7 @@ impl Fixture {
         let policy_expiry = created + 300_000;
         let trust = json!({"format_version":1,"signer_id":signer_id,"algorithm":"ed25519","public_key":HEXLOWER.encode(signer.public_key().as_ref())});
         let resource = json!({"type":"test.resource","id":"one"});
-        let snapshot = json!({"format_version": 7, "connections": [], "ssh_keys": [], "derived_credentials": [], "profiles": [],"version":1,"expires_at_ms":policy_expiry,
+        let snapshot = json!({"format_version": 8, "connections": [], "ssh_keys": [], "derived_credentials": [], "profiles": [],"version":1,"expires_at_ms":policy_expiry,
             "approvers":[{"approver_id":approver,"algorithm":"ed25519","public_key":HEXLOWER.encode(key.public_key().as_ref())}],
             "workload_identities":[],"bindings":[{"action_id":action_id,"version":1,"resource":resource,"parameter_schema_id":"test/v1","parameter_schema":{"type":"object","required":["message"],"properties":{"message":{"type":"string"}},"additionalProperties":false}}],
             "rules":[{"id":rule,"effect":"require-approval","principal_id":principal,"action_id":action_id,"version":1,"resource":resource,"parameters":{"kind":"any_validated"},"approver":{"kind":"ed25519","keys":[HEXLOWER.encode(key.public_key().as_ref())],"threshold":1},"approval":{"mode":"one-time","max_uses":1}}]});

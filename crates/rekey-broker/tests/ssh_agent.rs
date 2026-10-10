@@ -77,6 +77,20 @@ struct Fixture {
 }
 impl Fixture {
     async fn new(effect: RuleEffect) -> Self {
+        Self::configured(
+            effect,
+            json!({"kind":"local-presence"}),
+            json!({"max_signatures":100,"max_seconds":600}),
+            vec![],
+        )
+        .await
+    }
+    async fn configured(
+        effect: RuleEffect,
+        approver: serde_json::Value,
+        budget: serde_json::Value,
+        approvers: Vec<serde_json::Value>,
+    ) -> Self {
         let broker = common::start_broker().await;
         common::unlock(&broker).await;
         let generated = common::call(
@@ -96,13 +110,13 @@ impl Fixture {
             .decode(identity["public_key"].as_str().unwrap().as_bytes())
             .unwrap();
         let (_, host_public) = host();
-        common::policy::activate_snapshot(&broker,json!({"format_version":7,"version":1,"expires_at_ms":4102444800000_i64,"approvers":[],"connections":[],"derived_credentials":[],"profiles":[],"workload_identities":[],"bindings":[],"rules":[],
-            "ssh_keys":[{"name":"synthetic-ssh","credential_id":identity["credential"]["id"],"user_public_key":BASE64.encode(&public),"hosts":[{"host":"synthetic.example","host_key":BASE64.encode(&host_public),"rule_id":PolicyRuleId::new_random(),"effect":effect}],"git_signing":"allow"}]})).await;
+        common::policy::activate_snapshot(&broker,json!({"format_version":8,"version":1,"expires_at_ms":4102444800000_i64,"approvers":approvers,"connections":[],"derived_credentials":[],"profiles":[],"workload_identities":[],"bindings":[],"rules":[],
+            "ssh_keys":[{"name":"synthetic-ssh","credential_id":identity["credential"]["id"],"user_public_key":BASE64.encode(&public),"hosts":[{"host":"synthetic.example","host_key":BASE64.encode(&host_public),"rule_id":PolicyRuleId::new_random(),"effect":effect}],"git_signing":"allow","approver":approver,"session_budget":budget}]})).await;
         let remembered = common::call(
             &broker.admin_sock(),
             Channel::Admin,
             admin_msg::DESKTOP_REMEMBER,
-            b"{}",
+            br#"{"lifetime_ms":604800000}"#,
             &common::proof_body(common::PASSWORD),
         )
         .await;
@@ -391,5 +405,372 @@ async fn git_namespace_is_separate_and_real_openssh_can_sign_without_export() {
     assert!(input.with_extension("sig").exists());
     assert_eq!(f.started(), 1);
     f.verify_audit_page(1).await;
+    f.broker.shutdown().await;
+}
+
+#[tokio::test]
+async fn pending_peer_disconnect_and_pipelining_cancel_without_signing() {
+    for extra_byte in [false, true] {
+        let f = Fixture::new(RuleEffect::Approve).await;
+        let mut stream = f.socket().await;
+        let packet = request(&f.public, &userauth(&f.public, &[31; 32]));
+        stream.write_u32(packet.len() as u32).await.unwrap();
+        stream.write_all(&packet).await.unwrap();
+        let id = f.pending().await;
+        if extra_byte {
+            stream.write_all(&[11]).await.unwrap();
+        } else {
+            drop(stream);
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let listed = common::call(
+                    &f.broker.admin_sock(),
+                    Channel::Admin,
+                    admin_msg::APPROVAL_PENDING,
+                    b"{}",
+                    &[],
+                )
+                .await;
+                if listed.ok()["challenges"].as_array().unwrap().is_empty() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(f.started(), 0);
+        let review = common::call(
+            &f.broker.admin_sock(),
+            Channel::Admin,
+            admin_msg::APPROVAL_LOCAL_REVIEW,
+            &serde_json::to_vec(&json!({"approval_request_id":id})).unwrap(),
+            &[],
+        )
+        .await;
+        assert_eq!(review.ok()["state"], "cancelled");
+        f.broker.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn signed_session_budget_counts_signatures_and_expires_on_the_same_socket() {
+    for ttl in [false, true] {
+        let budget = if ttl {
+            json!({"max_signatures":5,"max_seconds":1})
+        } else {
+            json!({"max_signatures":1,"max_seconds":600})
+        };
+        let f = Fixture::configured(
+            RuleEffect::Allow,
+            json!({"kind":"local-presence"}),
+            budget,
+            vec![],
+        )
+        .await;
+        let mut stream = f.socket().await;
+        let (host, public) = host();
+        let sid = [31; 32];
+        assert_eq!(
+            exchange(&mut stream, &bind(&host, &public, &sid)).await,
+            vec![6]
+        );
+        let packet = request(&f.public, &userauth(&f.public, &sid));
+        assert_eq!(exchange(&mut stream, &packet).await[0], 14);
+        if ttl {
+            tokio::time::sleep(Duration::from_millis(1100)).await;
+        }
+        assert_eq!(exchange(&mut stream, &packet).await, vec![5]);
+        assert_eq!(f.started(), 1);
+        drop(stream);
+        f.broker.shutdown().await;
+    }
+}
+
+fn signed_grant(
+    challenge: &serde_json::Value,
+    id: rekey_domain::ids::ApproverId,
+    key: &signature::Ed25519KeyPair,
+) -> serde_json::Value {
+    let mut grant = json!({"format_version":1,"approval_id":rekey_domain::ids::ApprovalId::new_random(),"approval_request_id":challenge["approval_request_id"],"approver_id":id,"tenant_id":challenge["tenant_id"],"principal_id":challenge["principal_id"],"session_id":challenge["session_id"],"action_id":challenge["action_id"],"action_version":challenge["action_version"],"resource":challenge["resource"],"schema_id":challenge["schema_id"],"parameter_sha256":challenge["parameter_sha256"],"policy_version":challenge["policy_version"],"policy_sha256":challenge["policy_sha256"],"policy_rule_id":challenge["policy_rule_id"],"mode":"one-time","not_before_ms":challenge["created_at_ms"],"expires_at_ms":challenge["max_expires_at_ms"],"max_uses":1});
+    let mut bytes = b"RKAPPROVAL\0\x01".to_vec();
+    bytes.extend(serde_jcs::to_vec(&grant).unwrap());
+    grant["signature"] = data_encoding::BASE64URL_NOPAD
+        .encode(key.try_sign(&bytes).unwrap().as_ref())
+        .into();
+    grant
+}
+
+#[tokio::test]
+async fn external_ssh_quorum_binds_challenge_and_cannot_be_replaced_by_presence() {
+    for threshold in [1, 2] {
+        let keys: Vec<_> = (0..2)
+            .map(|n| signature::Ed25519KeyPair::from_seed_unchecked(&[71 + n; 32]).unwrap())
+            .collect();
+        let ids: Vec<_> = (0..2)
+            .map(|_| rekey_domain::ids::ApproverId::new_random())
+            .collect();
+        let mut public: Vec<_> = keys
+            .iter()
+            .map(|k| data_encoding::HEXLOWER.encode(k.public_key().as_ref()))
+            .collect();
+        let approvers: Vec<_> = ids
+            .iter()
+            .zip(&public)
+            .map(|(id, key)| json!({"approver_id":id,"algorithm":"ed25519","public_key":key}))
+            .collect();
+        public.sort();
+        let f = Fixture::configured(
+            RuleEffect::Approve,
+            json!({"kind":"ed25519","keys":public,"threshold":threshold}),
+            json!({"max_signatures":2,"max_seconds":600}),
+            approvers,
+        )
+        .await;
+        let mut stream = f.socket().await;
+        let packet = request(&f.public, &userauth(&f.public, &[31; 32]));
+        let task = tokio::spawn(async move { exchange(&mut stream, &packet).await });
+        let id = f.pending().await;
+        let metadata = serde_json::to_vec(&json!({"approval_request_id":id})).unwrap();
+        let review = common::call(
+            &f.broker.admin_sock(),
+            Channel::Admin,
+            admin_msg::APPROVAL_LOCAL_REVIEW,
+            &metadata,
+            &[],
+        )
+        .await;
+        assert_eq!(
+            f.approve(&id, review.ok()["review_sha256"].as_str().unwrap(), None)
+                .await
+                .message_type,
+            ipc::resp_msg::ERROR
+        );
+        let envelope = common::call(
+            &f.broker.admin_sock(),
+            Channel::Admin,
+            admin_msg::APPROVAL_GET,
+            &metadata,
+            &[],
+        )
+        .await;
+        let challenge = &envelope.ok()["challenge"];
+        let grants: Vec<_> = (0..threshold as usize)
+            .map(|n| signed_grant(challenge, ids[n], &keys[n]))
+            .collect();
+        let bad = if threshold == 2 {
+            vec![grants[0].clone(), grants[0].clone()]
+        } else {
+            vec![]
+        };
+        let rejected = common::call(
+            &f.broker.admin_sock(),
+            Channel::Admin,
+            admin_msg::APPROVAL_EXTERNAL_SUBMIT,
+            &metadata,
+            &serde_json::to_vec(&bad).unwrap(),
+        )
+        .await;
+        assert_eq!(rejected.message_type, ipc::resp_msg::ERROR);
+        assert_eq!(f.started(), 0);
+        common::call(
+            &f.broker.admin_sock(),
+            Channel::Admin,
+            admin_msg::APPROVAL_EXTERNAL_SUBMIT,
+            &metadata,
+            &serde_json::to_vec(&grants).unwrap(),
+        )
+        .await
+        .ok();
+        assert_eq!(task.await.unwrap()[0], 14);
+        assert_eq!(f.started(), 1);
+        let replay = common::call(
+            &f.broker.admin_sock(),
+            Channel::Admin,
+            admin_msg::APPROVAL_EXTERNAL_SUBMIT,
+            &metadata,
+            &serde_json::to_vec(&grants).unwrap(),
+        )
+        .await;
+        assert_eq!(replay.message_type, ipc::resp_msg::ERROR);
+        let db =
+            rusqlite::Connection::open(rekey_vault::paths::vault_db(&f.broker.state_dir)).unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM audit_events WHERE event_type='approval.accepted'",
+                [],
+                |r| r.get::<_, u32>(0)
+            )
+            .unwrap(),
+            threshold
+        );
+        f.verify_audit_page(1).await;
+        f.broker.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn accepted_approval_and_started_roll_back_together_on_audit_failure() {
+    let f = Fixture::new(RuleEffect::Approve).await;
+    let mut stream = f.socket().await;
+    let packet = request(&f.public, &userauth(&f.public, &[31; 32]));
+    let task = tokio::spawn(async move {
+        stream.write_u32(packet.len() as u32).await.unwrap();
+        stream.write_all(&packet).await.unwrap();
+        match tokio::time::timeout(Duration::from_secs(5), stream.read_u32())
+            .await
+            .unwrap()
+        {
+            Ok(length) => {
+                assert_eq!(length, 1);
+                assert_eq!(stream.read_u8().await.unwrap(), 5);
+            }
+            Err(error) => assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof),
+        }
+    });
+    let id = f.pending().await;
+    let review = common::call(
+        &f.broker.admin_sock(),
+        Channel::Admin,
+        admin_msg::APPROVAL_LOCAL_REVIEW,
+        &serde_json::to_vec(&json!({"approval_request_id":id})).unwrap(),
+        &[],
+    )
+    .await;
+    let db = rusqlite::Connection::open(rekey_vault::paths::vault_db(&f.broker.state_dir)).unwrap();
+    db.execute_batch("CREATE TRIGGER fail_ssh_started BEFORE INSERT ON audit_events WHEN NEW.event_type='execution.started' BEGIN SELECT RAISE(ABORT,'synthetic failure'); END;").unwrap();
+    f.approve(&id, review.ok()["review_sha256"].as_str().unwrap(), None)
+        .await
+        .ok();
+    task.await.unwrap();
+    let accepted: u32 = db
+        .query_row(
+            "SELECT count(*) FROM audit_events WHERE event_type='approval.accepted'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(accepted, 0);
+    assert_eq!(f.started(), 0);
+    f.broker.shutdown().await;
+}
+
+/// Manual local comparison; all keys/files/sockets are disposable synthetic state.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "manual OpenSSH concurrency/latency comparison; requires ssh-agent, ssh-add and ssh-keygen"]
+async fn real_openssh_concurrency_comparison_counts_every_failure() {
+    use std::process::Stdio;
+    use std::time::Instant;
+    let f = Fixture::new(RuleEffect::Deny).await;
+    let root = f.broker.dir.path();
+    let rekey_public = root.join("rekey-public");
+    std::fs::write(
+        &rekey_public,
+        format!("ssh-ed25519 {} synthetic-only\n", BASE64.encode(&f.public)),
+    )
+    .unwrap();
+    let baseline_key = root.join("baseline-key");
+    assert!(
+        tokio::process::Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+            .arg(&baseline_key)
+            .status()
+            .await
+            .unwrap()
+            .success()
+    );
+    let baseline_socket = root.join("baseline.sock");
+    let mut baseline = tokio::process::Command::new("ssh-agent")
+        .arg("-D")
+        .arg("-a")
+        .arg(&baseline_socket)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !baseline_socket.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        tokio::process::Command::new("ssh-add")
+            .arg(&baseline_key)
+            .env("SSH_AUTH_SOCK", &baseline_socket)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await
+            .unwrap()
+            .success()
+    );
+    let mut results = Vec::new();
+    for (name, public, socket) in [
+        (
+            "openssh-agent",
+            baseline_key.with_extension("pub"),
+            baseline_socket,
+        ),
+        (
+            "rekey",
+            rekey_public,
+            f.broker.state_dir.join("ssh-agent.sock"),
+        ),
+    ] {
+        for concurrency in [1, 4, 16] {
+            let mut durations = Vec::new();
+            let mut failures = 0;
+            for start in (0..16).step_by(concurrency) {
+                let mut jobs = tokio::task::JoinSet::new();
+                for n in start..start + concurrency {
+                    let input = root.join(format!("{name}-{concurrency}-{n}"));
+                    std::fs::write(&input, b"synthetic concurrency comparison").unwrap();
+                    let public = public.clone();
+                    let socket = socket.clone();
+                    jobs.spawn(async move {
+                        let started = Instant::now();
+                        let output = tokio::time::timeout(
+                            Duration::from_secs(20),
+                            tokio::process::Command::new("ssh-keygen")
+                                .args(["-Y", "sign", "-q", "-n", "git", "-f"])
+                                .arg(public)
+                                .arg(input)
+                                .env("SSH_AUTH_SOCK", socket)
+                                .kill_on_drop(true)
+                                .output(),
+                        )
+                        .await;
+                        (
+                            started.elapsed().as_micros() as u64,
+                            output.is_ok_and(|r| r.is_ok_and(|o| o.status.success())),
+                        )
+                    });
+                }
+                while let Some(result) = jobs.join_next().await {
+                    let (duration, ok) = result.unwrap();
+                    durations.push(duration);
+                    failures += usize::from(!ok);
+                }
+            }
+            durations.sort_unstable();
+            results.push(json!({"backend":name,"concurrency":concurrency,"attempts":durations.len(),"failures":failures,
+                "mean_us":durations.iter().sum::<u64>() / durations.len() as u64,"p95_us":durations[15]}));
+        }
+    }
+    baseline.kill().await.unwrap();
+    baseline.wait().await.unwrap();
+    println!(
+        "{}",
+        json!({"scope":"local Ed25519 git-namespace signing; unequal security contracts; all attempts counted", "results":results})
+    );
+    assert!(
+        results.iter().all(|r| r["failures"] == 0),
+        "concurrency errors must not be excluded from acceptance"
+    );
+    assert_eq!(f.started(), 48);
     f.broker.shutdown().await;
 }

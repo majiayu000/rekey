@@ -157,7 +157,16 @@ pub fn evaluate_connection(
         origin: connection.origin.clone(),
         method,
         target: ActionTarget::Fixed { path: exact },
-        auth: connection.auth.clone(),
+        // FixedHttpAction is an internal request projection. The mTLS runner
+        // never consumes this header placeholder or injects a credential header.
+        auth: connection.auth.header().cloned().unwrap_or(
+            rekey_domain::action::HeaderCredentialUse::new(
+                rekey_domain::action::HeaderName::new("authorization")
+                    .map_err(|_| PolicyError::Invalid)?,
+                rekey_domain::action::HeaderPrefix::new("").map_err(|_| PolicyError::Invalid)?,
+            )
+            .map_err(|_| PolicyError::Invalid)?,
+        ),
         timeout_ms: 120_000,
         request_policy: RequestPolicy {
             max_body_bytes: connection.limits.max_request_bytes,

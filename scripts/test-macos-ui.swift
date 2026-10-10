@@ -12,10 +12,19 @@ struct ConnectionUIContract {
             try subprocessBoundary()
             return
         }
+        if CommandLine.arguments == [CommandLine.arguments[0], "--privacy-only"] {
+            try await privacy()
+            return
+        }
+        if CommandLine.arguments == [CommandLine.arguments[0], "--startup-only"] {
+            try await startup()
+            return
+        }
         guard CommandLine.arguments.count == 2 else {
-            throw UIError(message: "usage: test-macos-ui CLI_BINARY | --subprocess-boundary-only")
+            throw UIError(message: "usage: test-macos-ui CLI_BINARY | --subprocess-boundary-only | --startup-only")
         }
         try subprocessBoundary()
+        try await privacy()
         try await live(binary: URL(fileURLWithPath: CommandLine.arguments[1]))
     }
 
@@ -90,6 +99,181 @@ struct ConnectionUIContract {
         try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: file)
         try rejected("private file cannot follow symlink") { try writePrivateNew(Data(), to: alias) }
         print("PASS: production App subprocess argv/stdin/environment, bounded output, error redaction and private-file boundaries.")
+    }
+
+    @MainActor
+    static func privacy() async throws {
+        let root = try fixture()
+        let suite = "rekey.privacy-test." + UUID().uuidString
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { preferences.removePersistentDomain(forName: suite); cleanup(root) }
+        let executable = root.appendingPathComponent("synthetic-cli")
+        let fixtureScript = """
+        #!/usr/bin/python3
+        import json,pathlib,sys,time
+        root=pathlib.Path(__file__).parent
+        args=sys.argv[3:]
+        body=sys.stdin.read()
+        if args[0]=='desktop-login':
+            (root/'login-started').touch()
+            while (root/'delay-login').exists():time.sleep(.01)
+            sys.stdout.write('a'*64)
+        elif args[0]=='desktop-lock':
+            if (root/'locked-reply').exists():
+                sys.stderr.write(json.dumps({'code':'LOCKED'},separators=(',',':')))
+                sys.exit(5)
+            if (root/'fail-lock').exists():
+                sys.stderr.write(json.dumps({'code':'IPC_UNAVAILABLE'},separators=(',',':')))
+                time.sleep(.2)  # Controlled late failure completion, as on a loaded runner.
+                sys.exit(4)
+            print(json.dumps({'locked':True}))
+        elif args[:2]==['policy','status']:
+            print(json.dumps({'vault_id':'00000000-0000-4000-8000-000000000001','mode':'personal','bundle_persisted':False,'trust_installed':False,'status':'absent'}))
+        else:sys.exit(2)
+        """
+        try writePrivateNew(Data(fixtureScript.utf8), to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        let state = root.appendingPathComponent("state").path
+        let model = AppModel(stateDirectory: state, preferences: preferences, binary: executable)
+        model.status = ServiceStatus(state: "unlocked", format_version: 27, runtime_version: "0.5.0-alpha.1", sessions_active: 1, peer_security: "same-user", lab_enabled: false, rollback: nil)
+        let client = CLI(binary: executable, stateDirectory: state)
+        func login() async { await model.perform(Operation(title: "login", detail: "synthetic", arguments: ["unlock"]), proof: "synthetic-proof", presenceRevision: model.nativeFlowRevision, client: client) }
+        func settled() async throws {
+            let deadline = Date().addingTimeInterval(3)
+            while model.pendingDesktopLocks > 0 {
+                guard Date() < deadline else { throw UIError(message: "synthetic revocation did not settle: " + (model.error ?? "no failure callback")) }
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
+        }
+        try require(model.desktopLocked && !model.unlocked && !model.desktopReady, "startup remains private-locked with an unlocked daemon")
+        model.result = ResultMessage(title: "recovery", text: "synthetic-new-vault-recovery", sensitive: true)
+        model.clearCache()
+        try require(model.result != nil, "an initially locked setup preserves the required recovery-key saving step")
+        model.result = nil
+        let beforeLock = model.nativeFlowRevision
+        model.lockDesktop()
+        await model.perform(Operation(title: "stale login", detail: "synthetic", arguments: ["unlock"]), proof: "synthetic-proof", presenceRevision: beforeLock, client: client)
+        try require(model.desktopLocked && model.desktopToken == nil && !FileManager.default.fileExists(atPath: root.appendingPathComponent("login-started").path), "a pre-lock form cannot begin a later password command")
+        await login()
+        try require(model.desktopReady, "explicit password login opens the desktop")
+        model.result = ResultMessage(title: "synthetic", text: "synthetic-visible-secret", sensitive: true)
+        model.operation = Operation(title: "synthetic", detail: "", arguments: ["backup"])
+        model.clearCache(); try await settled()
+        try require(model.desktopLocked && model.result == nil && model.operation == nil, "connection loss clears detached sensitive presentation")
+        await login()
+        model.result = ResultMessage(title: "synthetic", text: "synthetic-visible-secret", sensitive: true)
+        model.rejectDesktopSession(UIError(message: "INVALID_UNLOCK_CREDENTIAL")); try await settled()
+        try require(model.desktopLocked && model.desktopToken == nil && model.result == nil, "rejected desktop session locks and clears presentation immediately")
+        await login()
+        model.result = ResultMessage(title: "synthetic", text: "synthetic-visible-secret", sensitive: true)
+        let revision = model.nativeFlowRevision
+        model.checkDesktopIdle(elapsed: 301)
+        try require(model.desktopLocked && model.desktopToken == nil && model.result == nil && model.operation == nil && model.nativeFlowRevision != revision, "idle lock clears sensitive presentation and completion revision")
+        try await settled()
+        await login(); model.deviceLocked(); try await settled()
+        try require(model.desktopLocked, "device signals only lock")
+        await login()
+        try writePrivateNew(Data(), to: root.appendingPathComponent("locked-reply"))
+        model.lockDesktop(); try await settled()
+        try require(model.desktopLocked && model.pendingDesktopLocks == 0, "a locked Worker confirms that the old session is already revoked")
+        try FileManager.default.removeItem(at: root.appendingPathComponent("locked-reply"))
+        try writePrivateNew(Data(), to: root.appendingPathComponent("fail-lock"))
+        await login(); model.lockDesktop()
+        let failureDeadline = Date().addingTimeInterval(10)
+        while model.error?.contains("IPC_UNAVAILABLE") != true {
+            guard Date() < failureDeadline else { throw UIError(message: "synthetic revocation failure was not observed") }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        try require(model.pendingDesktopLocks == 1 && model.desktopLocked, "failed server cleanup stays visible and locked")
+        await login()
+        try require(model.desktopLocked && model.pendingDesktopLocks == 1, "pending cleanup blocks another login")
+        try FileManager.default.removeItem(at: root.appendingPathComponent("fail-lock"))
+        model.retryDesktopLock(); try await settled()
+        try writePrivateNew(Data(), to: root.appendingPathComponent("delay-login"))
+        try FileManager.default.removeItem(at: root.appendingPathComponent("login-started"))
+        let late = Task { await login() }
+        let deadline = Date().addingTimeInterval(3)
+        while !FileManager.default.fileExists(atPath: root.appendingPathComponent("login-started").path) {
+            guard Date() < deadline else { throw UIError(message: "synthetic login did not start") }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        model.lockDesktop()
+        try FileManager.default.removeItem(at: root.appendingPathComponent("delay-login"))
+        await late.value; try await settled()
+        try require(model.desktopLocked && model.desktopToken == nil, "late login is revoked instead of reopening the UI")
+        await model.unlockWithPresence(revision: model.nativeFlowRevision, client: client, read: { _ in throw UIError(message: "synthetic authentication cancelled") })
+        try require(model.desktopLocked && model.desktopToken == nil, "cancelled authentication never opens the UI")
+        var disabled = DesktopSecuritySettings(); disabled.idle = .disabled; disabled.lockWithDevice = false
+        preferences.set(try JSONEncoder().encode(disabled), forKey: "desktopSecurity")
+        let unlocked = AppModel(stateDirectory: state, preferences: preferences, binary: executable)
+        unlocked.status = model.status
+        await unlocked.perform(Operation(title: "login", detail: "synthetic", arguments: ["unlock"]), proof: "synthetic-proof", client: client)
+        unlocked.checkDesktopIdle(elapsed: 999999); unlocked.deviceLocked()
+        try require(unlocked.desktopReady, "disabled idle and device settings are respected")
+        unlocked.policy = try client.decode(PolicyStatus.self, ["policy", "status"])
+        var everyUnlock = DesktopSecuritySettings(); everyUnlock.passwordInterval = .everyUnlock
+        await unlocked.saveSecuritySettings(everyUnlock, client: client, forget: { _ in })
+        try require(unlocked.desktopLocked && unlocked.securitySettings == everyUnlock && unlocked.pendingDesktopLocks == 0, "settings change revokes session/grant before persisting choices")
+        let saved = try JSONDecoder().decode(DesktopSecuritySettings.self, from: preferences.data(forKey: "desktopSecurity")!)
+        try require(saved == everyUnlock, "only non-secret choices persist")
+        await unlocked.unlockWithPresence(revision: unlocked.nativeFlowRevision, client: client, read: { _ in throw UIError(message: "must not read Keychain") })
+        try require(unlocked.desktopLocked && unlocked.error == nil, "every-unlock setting refuses system authentication without reading Keychain")
+        let text = " {\"duplicate\":1,\"duplicate\":2}\r\n"
+        let bytes = try TeamDraftText.bytes(text)
+        try require(bytes == Data(text.utf8), "draft editing preserves exact visible UTF-8 bytes including duplicate keys")
+        try rejected("draft byte bound") { _ = try TeamDraftText.bytes(String(repeating: "界", count: 22000)) }
+        let draft = try TeamDraftText.empty(version: 3, expiresAt: Date().addingTimeInterval(3600))
+        let object = try JSONSerialization.jsonObject(with: Data(draft.utf8)) as! [String: Any]
+        try require(object["format_version"] as? Int == 8 && object["version"] as? Int == 3 && object["derived_credentials"] is [Any], "new draft uses current policy8 fields")
+        print("PASS: desktop idle/device/disabled controls, failed cleanup, late login, cancelled authentication and exact draft text.")
+    }
+
+    @MainActor
+    static func startup() async throws {
+        let root = try fixture()
+        let model = AppModel(stateDirectory: root.appendingPathComponent("state").path)
+        let client = model.cli
+        let proof = "UI-SYNTHETIC-STARTUP-PROOF"
+        defer {
+            if model.serviceIsRunning {
+                do { _ = try client.run(["shutdown", "--password-stdin"], input: proof + "\n") }
+                catch { fputs("startup fixture shutdown failed\n", stderr) }
+            }
+            cleanup(root)
+        }
+        await model.connectOnOpen()
+        try require(model.needsSetup && !model.serviceIsRunning && model.operation == nil, "opening an empty directory does not initialize a vault")
+        await model.perform(Operation(title: "创建保险库", detail: "synthetic setup", arguments: ["init", "--mode", "personal"], sensitiveResult: true), proof: proof)
+        try require(model.result?.connectsAfterSaving == true && model.status == nil && !model.serviceIsRunning, "setup waits for recovery-key saving")
+        await model.connectOnOpen()
+        try require(!model.serviceIsRunning, "opening cannot bypass the recovery-key result")
+        model.result = nil
+        try writePrivateNew(JSONSerialization.data(withJSONObject: ["port": try reservePort()]), to: URL(fileURLWithPath: client.stateDirectory).appendingPathComponent("service.json"))
+        await model.connectOnOpen()
+        let deadline = Date().addingTimeInterval(10)
+        while model.busy || model.status == nil {
+            guard Date() < deadline else { throw UIError(message: "automatic startup failed: " + (model.error ?? model.connectionError ?? "unknown")) }
+            try await Task.sleep(nanoseconds: 100_000_000)
+            if !model.busy { await model.refresh() }
+        }
+        try require(model.status?.state == "locked" && !model.desktopReady && model.operation == nil, "opening an existing vault starts service without unlocking or requesting proof")
+        let socket = client.stateDirectory + "/runtime/admin.sock"
+        let before = try FileManager.default.attributesOfItem(atPath: socket)[.systemFileNumber] as? NSNumber
+        await model.connectOnOpen()
+        let after = try FileManager.default.attributesOfItem(atPath: socket)[.systemFileNumber] as? NSNumber
+        try require(before != nil && before == after && model.error == nil, "repeated opening reuses the live service")
+        _ = try client.run(["shutdown", "--password-stdin"], input: proof + "\n")
+        try await Task.sleep(nanoseconds: 300_000_000)
+        await model.refresh(passive: true)
+        try require(model.status == nil && !model.serviceIsRunning, "ordinary refresh does not restart an explicitly stopped service")
+        let malformed = root.appendingPathComponent("invalid")
+        try FileManager.default.createDirectory(at: malformed, withIntermediateDirectories: false)
+        try writePrivateNew(Data("synthetic-invalid-vault".utf8), to: malformed.appendingPathComponent("vault.sqlite3"))
+        let invalid = AppModel(stateDirectory: malformed.path)
+        await invalid.connectOnOpen()
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+        try require(invalid.status == nil && invalid.error != nil, "automatic startup failure remains visible")
+        print("PASS: empty-directory setup, automatic locked startup, existing-service reuse, explicit-stop preservation and startup diagnostics.")
     }
 
     static func reservePort() throws -> Int {
@@ -188,16 +372,19 @@ struct ConnectionUIContract {
         let receiptData = try client.run(["backup", "--output", backup.path, "--password-stdin"], input: proof + "\n")
         _ = try JSONDecoder().decode(BackupReceipt.self, from: receiptData)
         let receipt = try JSONSerialization.jsonObject(with: receiptData) as! [String: Any]
-        let restored = CLI(binary: binary, stateDirectory: root.appendingPathComponent("restored").path)
-        let restoreArguments = ["restore", "--input", backup.path, "--sha256", receipt["sha256_hex"] as! String]
-        let preview = try JSONDecoder().decode(RollbackContext.self, from: restored.run(restoreArguments + ["--inspect", "--password-stdin"], input: proof + "\n"))
-        _ = try JSONDecoder().decode(RestoreReceipt.self, from: restored.run(restoreArguments + ["--expected-context", try preview.encodedArgument(), "--password-stdin"], input: proof + "\n"))
+        // Restore advances the shared vault's protected generation. Finish the
+        // source lifecycle first so the fixture never continues a stale instance.
         _ = try client.run(["credential", "revoke", credential.id, "--password-stdin"], input: proof + "\n")
         try require(!(try client.decode(CredentialList.self, ["credential", "list"])).credentials[0].active, "real revocation")
         _ = try client.run(["lock"])
         try rejected("locked mutation denied") { _ = try client.run(["credential", "add", "blocked", "--stdin-secrets"], input: proof + "\n" + first + "\n") }
         _ = try client.decode(AuditPage.self, ["audit", "list"])
         _ = try client.run(["shutdown", "--password-stdin"], input: proof + "\n")
+        broker.waitUntilExit()
+        let restored = CLI(binary: binary, stateDirectory: root.appendingPathComponent("restored").path)
+        let restoreArguments = ["restore", "--input", backup.path, "--sha256", receipt["sha256_hex"] as! String]
+        let preview = try JSONDecoder().decode(RollbackContext.self, from: restored.run(restoreArguments + ["--inspect", "--password-stdin"], input: proof + "\n"))
+        _ = try JSONDecoder().decode(RestoreReceipt.self, from: restored.run(restoreArguments + ["--expected-context", try preview.encodedArgument(), "--password-stdin"], input: proof + "\n"))
         print("PASS: real Swift/CLI/Broker Connection signing, discovery, dry-run, credential lifecycle, audit and backup/restore. Software signer only; hardware acceptance remains separate.")
     }
 }
