@@ -331,9 +331,12 @@ impl BrokerCtx {
         proof_body: &[u8],
         #[cfg(feature = "lab")] admission: Option<&crate::oidc_admin::Admission>,
         deadline: Instant,
+        control_owner: Arc<tokio::sync::OwnedSemaphorePermit>,
+        cancel: tokio::sync::watch::Receiver<bool>,
     ) -> Result<(Zeroizing<Vec<u8>>, ProfileSessionGuard), BrokerError> {
         let _coordinator = self.lifecycle.coordinate_until(deadline).await?;
         let (active, profile) = self.active_profile(name).await?;
+        check_live(self, &active, deadline, &cancel)?;
         if profile.confirm_each_run {
             let (kind, secret) = ipc::parse_proof_body(proof_body)?;
             let secret = rekey_vault::secret::SecretInput::from_slice(secret);
@@ -342,7 +345,8 @@ impl BrokerCtx {
                 ipc::ProofKind::Recovery => UnlockProof::Recovery(secret),
                 ipc::ProofKind::Presence => UnlockProof::Presence(secret),
             };
-            authority_until(deadline, self.authority.verify_proof(proof)).await?;
+            self.authority.verify_proof(proof).await?;
+            check_live(self, &active, deadline, &cancel)?;
         } else if !proof_body.is_empty() {
             return Err(ipc::FrameError::InvalidField.into());
         }
@@ -350,7 +354,8 @@ impl BrokerCtx {
         if admission.is_some_and(|identity| identity.principal != profile.principal_id) {
             return Err(BrokerError::Denied("management principal mismatch"));
         }
-        let actions = authority_until(deadline, self.authority.action_list()).await?;
+        let actions = self.authority.action_list().await?;
+        check_live(self, &active, deadline, &cancel)?;
         // Other Profiles may reference Actions since retired; only this mint's
         // exact signed scope must remain current.
         validate_profiles(std::slice::from_ref(&profile), &actions)?;
@@ -362,9 +367,8 @@ impl BrokerCtx {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let session_id = crate::random_id(SessionId::from_random_bytes)?;
-        let vault_id = authority_until(deadline, self.authority.status())
-            .await?
-            .vault_id;
+        let vault_id = self.authority.status().await?.vault_id;
+        check_live(self, &active, deadline, &cancel)?;
         let issued_at = crate::now_ts()?;
         let ttl = profile.session.ttl_ms.min(
             active
@@ -396,7 +400,7 @@ impl BrokerCtx {
             ttl,
             profile.session.max_uses,
         )?;
-        check_live(self, &active, deadline)?;
+        check_live(self, &active, deadline, &cancel)?;
         let expires_at_ms = grant.expires_at.as_unix_ms();
         let max_uses = grant.max_uses;
         let (token, guard) = self
@@ -406,6 +410,7 @@ impl BrokerCtx {
                 action_timeouts,
                 ProfileSessionScope::new(profile.clone(), active.snapshot().digest()),
                 monotonic_deadline,
+                Arc::clone(&control_owner),
             )
             .map_err(|error| match error {
                 CreateSessionError::Closed => BrokerError::Authority(AuthorityError::Draining),
@@ -424,7 +429,7 @@ impl BrokerCtx {
             return Err(error.into());
         }
         let prepared = (|| {
-            check_live(self, &active, deadline)?;
+            check_live(self, &active, deadline, &cancel)?;
             if crate::now_ts()?.as_unix_ms() >= expires_at_ms {
                 return Err(rekey_domain::DomainError::CapabilityExpired.into());
             }
@@ -477,7 +482,11 @@ fn check_live(
     ctx: &BrokerCtx,
     active: &ActivePolicy,
     deadline: Instant,
+    cancel: &tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), BrokerError> {
+    if *cancel.borrow() {
+        return Err(BrokerError::Denied("profile-peer-closed"));
+    }
     ctx.lifecycle.reject_if_not_running()?;
     if Instant::now() >= deadline {
         return Err(AuthorityError::AuthorityBusy.into());
@@ -486,16 +495,6 @@ fn check_live(
         return Err(PolicyError::Expired.into());
     }
     Ok(())
-}
-
-async fn authority_until<T>(
-    deadline: Instant,
-    future: impl std::future::Future<Output = Result<T, AuthorityError>>,
-) -> Result<T, BrokerError> {
-    tokio::time::timeout_at(deadline, future)
-        .await
-        .map_err(|_| AuthorityError::AuthorityBusy)?
-        .map_err(Into::into)
 }
 
 pub(crate) fn session_audit(
@@ -565,7 +564,7 @@ mod tests {
         let principal = PrincipalId::new_random();
         let rule = PolicyRuleId::new_random();
         let signer = PolicySignerId::new_random();
-        let snapshot = json!({"format_version":8,"version":1,"expires_at_ms":4_102_444_800_000_i64,"approvers":[],"workload_identities":[],"connections":[], "ssh_keys":[], "profiles":[{"name":"test","principal_id":principal,"grants":[{"instance":"one","capabilities":[{"rule":"template-default","capability":"fixed-actions","actions":[{"action_id":action.id,"version":action.version}]}]}],"session":{"ttl_ms":60000,"max_uses":4},"confirm_each_run":false,"isolation":"none","egress":"allow","llm_limits":[]}],"bindings":[{"action_id":action.id,"version":action.version,"resource":{"type":"test","id":"one"},"parameter_schema_id":"any/v1","parameter_schema":{}}],"rules":[{"id":rule,"effect":"permit","principal_id":principal,"action_id":action.id,"version":action.version,"resource":{"type":"test","id":"one"},"parameters":{"kind":"any_validated"}}]});
+        let snapshot = json!({"format_version":8,"version":1,"expires_at_ms":4_102_444_800_000_i64,"approvers":[],"workload_identities":[],"connections":[], "ssh_keys":[], "derived_credentials":[], "profiles":[{"name":"test","principal_id":principal,"grants":[{"instance":"one","capabilities":[{"rule":"template-default","capability":"fixed-actions","actions":[{"action_id":action.id,"version":action.version}]}]}],"session":{"ttl_ms":60000,"max_uses":4},"confirm_each_run":false,"isolation":"none","egress":"allow","llm_limits":[]}],"bindings":[{"action_id":action.id,"version":action.version,"resource":{"type":"test","id":"one"},"parameter_schema_id":"any/v1","parameter_schema":{}}],"rules":[{"id":rule,"effect":"permit","principal_id":principal,"action_id":action.id,"version":action.version,"resource":{"type":"test","id":"one"},"parameters":{"kind":"any_validated"}}]});
         let doc = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
         let key = Ed25519KeyPair::from_pkcs8(doc.as_ref()).unwrap();
         let trust = rekey_policy::ValidatedPolicyTrust::from_parts(
@@ -620,6 +619,8 @@ mod tests {
                     #[cfg(feature = "lab")]
                     None,
                     Instant::now() + Duration::from_secs(3),
+                    worker.sessions.reserve_control_owner().unwrap(),
+                    worker.lifecycle.subscribe_cancel(),
                 )
                 .await
         });
@@ -644,6 +645,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancelled_registration_retains_owner_until_queued_audit_finishes() {
+        let (dir, ctx, join, terminals) = fixture().await;
+        let db =
+            rusqlite::Connection::open(rekey_vault::paths::vault_db(&dir.path().join("state")))
+                .unwrap();
+        db.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let mut owners = Vec::new();
+        for _ in 0..15 {
+            owners.push(ctx.sessions.reserve_control_owner().unwrap());
+        }
+        let (cancel, receiver) = tokio::sync::watch::channel(false);
+        let worker = ctx.clone();
+        let mint = tokio::spawn(async move {
+            worker
+                .profile_create_until(
+                    "test",
+                    &[],
+                    None,
+                    Instant::now() + Duration::from_secs(3),
+                    worker.sessions.reserve_control_owner().unwrap(),
+                    receiver,
+                )
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while ctx.sessions.active_count(crate::now_ts().unwrap()) == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        cancel.send_replace(true);
+        assert!(ctx.sessions.reserve_control_owner().is_err());
+        assert!(
+            !mint.is_finished(),
+            "queued audit must retain its real owner"
+        );
+        db.execute_batch("COMMIT").unwrap();
+        assert!(matches!(
+            mint.await.unwrap(),
+            Err(BrokerError::Denied("profile-peer-closed"))
+        ));
+        assert_eq!(ctx.sessions.active_count(crate::now_ts().unwrap()), 0);
+        owners.push(ctx.sessions.reserve_control_owner().unwrap());
+        assert!(ctx.sessions.reserve_control_owner().is_err());
+        drop(owners);
+        finish(ctx, join, terminals).await;
+    }
+
+    #[tokio::test]
     async fn profile_expiry_after_created_audit_commits_revocation() {
         for fail_revocation in [false, true] {
             let (dir, ctx, join, terminals) = fixture().await;
@@ -663,6 +714,8 @@ mod tests {
                         #[cfg(feature = "lab")]
                         None,
                         Instant::now() + Duration::from_secs(3),
+                        worker.sessions.reserve_control_owner().unwrap(),
+                        worker.lifecycle.subscribe_cancel(),
                     )
                     .await
             });
@@ -727,6 +780,8 @@ mod tests {
                 #[cfg(feature = "lab")]
                 None,
                 Instant::now() + Duration::from_secs(2),
+                ctx.sessions.reserve_control_owner().unwrap(),
+                ctx.lifecycle.subscribe_cancel(),
             )
             .await;
         assert!(matches!(

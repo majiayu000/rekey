@@ -9,6 +9,8 @@ pub(super) async fn handle_control(
     frame: IncomingFrame,
     ctx: Arc<BrokerCtx>,
     mut shutdown: watch::Receiver<bool>,
+    request_permit: tokio::sync::OwnedSemaphorePermit,
+    control_owner: Arc<tokio::sync::OwnedSemaphorePermit>,
 ) {
     let request_id = frame.header.request_id;
     let mut owner = match PeerProcess::from_peer(&stream) {
@@ -33,6 +35,7 @@ pub(super) async fn handle_control(
     };
     let (mut reader, mut writer) = stream.into_split();
     let mut unexpected = [0u8; 1];
+    let (cancel, receiver) = watch::channel(false);
     let create = async {
         let deadline = admin_mutation_deadline();
         #[cfg(feature = "lab")]
@@ -48,19 +51,27 @@ pub(super) async fn handle_control(
             #[cfg(feature = "lab")]
             admission.as_ref(),
             deadline,
+            Arc::clone(&control_owner),
+            receiver,
         )
         .await
     };
-    let created = tokio::select! {
+    tokio::pin!(create);
+    // A disconnected caller cannot cancel already queued Authority work. Drain it
+    // with its owner retained, then revoke any session created in the meantime.
+    let (created, connected) = tokio::select! {
         biased;
-        _ = owner.wait_exit() => return,
-        _ = reader.read(&mut unexpected) => return,
-        _ = shutdown.changed() => return,
-        created = create => created,
+        _ = owner.wait_exit() => { cancel.send_replace(true); (create.await, false) },
+        _ = reader.read(&mut unexpected) => { cancel.send_replace(true); (create.await, false) },
+        _ = shutdown.changed() => { cancel.send_replace(true); (create.await, false) },
+        created = &mut create => (created, true),
     };
     let (body, guard) = match created {
         Ok(created) => created,
         Err(error) => {
+            if !connected {
+                return;
+            }
             let message = error.to_string();
             tokio::select! {
                 biased;
@@ -72,15 +83,17 @@ pub(super) async fn handle_control(
             return;
         }
     };
+    drop(request_permit);
     let session_id = guard.session_id();
-    let wrote = tokio::select! {
-        biased;
-        _ = owner.wait_exit() => false,
-        _ = reader.read(&mut unexpected) => false,
-        _ = shutdown.changed() => false,
-        _ = ctx.sessions.wait_revoked(session_id) => false,
-        result = write_ok(&mut writer, Channel::Admin, request_id, b"{}", &body) => result.is_ok(),
-    };
+    let wrote = connected
+        && tokio::select! {
+            biased;
+            _ = owner.wait_exit() => false,
+            _ = reader.read(&mut unexpected) => false,
+            _ = shutdown.changed() => false,
+            _ = ctx.sessions.wait_revoked(session_id) => false,
+            result = write_ok(&mut writer, Channel::Admin, request_id, b"{}", &body) => result.is_ok(),
+        };
     drop(body);
     if wrote {
         tokio::select! {
@@ -95,15 +108,13 @@ pub(super) async fn handle_control(
     drop(guard);
     drop(writer);
     drop(reader);
-    if let Err(error) = authority_until(
-        admin_mutation_deadline(),
-        ctx.authority
-            .commit_audit(crate::runtime::profile::session_audit(
-                rekey_vault::model::event_type::SESSION_REVOKED,
-                session_id,
-            )),
-    )
-    .await
+    if let Err(error) = ctx
+        .authority
+        .commit_audit(crate::runtime::profile::session_audit(
+            rekey_vault::model::event_type::SESSION_REVOKED,
+            session_id,
+        ))
+        .await
     {
         tracing::debug!(event = "profile.revoke_audit_failed", code = error.code());
         ctx.request_fault();

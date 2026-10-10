@@ -208,8 +208,36 @@ pub async fn handle_admin_conn(
                 return;
             }
         };
+        let request_permit = match Arc::clone(&ctx.sessions.admin_requests).try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                let error = BrokerError::Admission(AuthorityError::AuthorityBusy);
+                let _ = write_admin_error(
+                    &mut stream,
+                    frame.header.message_type,
+                    frame.header.request_id,
+                    &error,
+                )
+                .await;
+                return;
+            }
+        };
         if frame.header.message_type == admin_msg::PROFILE_SESSION_CREATE {
-            profile::handle_control(stream, frame, ctx, shutdown).await;
+            let control_owner = match ctx.sessions.reserve_control_owner() {
+                Ok(owner) => owner,
+                Err(error) => {
+                    let _ = write_admin_error(
+                        &mut stream,
+                        frame.header.message_type,
+                        frame.header.request_id,
+                        &BrokerError::Admission(error),
+                    )
+                    .await;
+                    return;
+                }
+            };
+            profile::handle_control(stream, frame, ctx, shutdown, request_permit, control_owner)
+                .await;
             return;
         }
         let request_id = frame.header.request_id;
