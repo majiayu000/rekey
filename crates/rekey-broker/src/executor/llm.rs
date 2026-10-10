@@ -1630,7 +1630,7 @@ mod tests {
         let (key, _) = f
             .ctx
             .authority
-            .desktop_remember(proof(), None)
+            .desktop_remember(proof(), None, 604_800_000)
             .await
             .unwrap();
         let mut proof_body = Vec::new();

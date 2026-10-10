@@ -501,7 +501,7 @@ async fn local_approval_preserves_next_wait_and_exactly_one_explicit_replay() {
     let remembered = f
         .admin(
             admin_msg::DESKTOP_REMEMBER,
-            json!({}),
+            json!({"lifetime_ms":604800000}),
             &common::proof_body(common::PASSWORD),
         )
         .await;

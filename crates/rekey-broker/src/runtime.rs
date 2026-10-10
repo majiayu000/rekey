@@ -300,6 +300,11 @@ impl BrokerCtx {
                 .await?;
             return Err(BrokerError::Authority(AuthorityError::AuthorityBusy));
         }
+        let expires = expires.min(
+            crate::now_ts()?
+                .as_unix_ms()
+                .saturating_add(7 * 24 * 60 * 60 * 1000),
+        );
         let session = match self.authority.desktop_issue().await {
             Ok(session) => session,
             Err(error) => {

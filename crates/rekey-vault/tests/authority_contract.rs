@@ -991,7 +991,7 @@ async fn remembered_desktop_survives_restart_but_not_manual_lock() {
         .await
         .unwrap();
     let (key, expires) = handle
-        .desktop_remember(common::password_proof(), None)
+        .desktop_remember(common::password_proof(), None, 604_800_000)
         .await
         .unwrap();
     assert_eq!(key.len(), 64);
@@ -1055,7 +1055,7 @@ async fn remembered_desktop_rejects_tampering_expiry_and_cross_vault_use() {
     let (handle, join) = common::spawn(&vault.state_dir);
     handle.unlock(common::password_proof()).await.unwrap();
     let (key, _) = handle
-        .desktop_remember(common::password_proof(), None)
+        .desktop_remember(common::password_proof(), None, 604_800_000)
         .await
         .unwrap();
     let path = vault.state_dir.join("desktop-unlock.bin");
@@ -1105,7 +1105,7 @@ async fn wrapper_changes_revoke_remembered_access_only_after_valid_proof() {
     let (handle, join) = common::spawn(&vault.state_dir);
     handle.unlock(common::password_proof()).await.unwrap();
     let (key, _) = handle
-        .desktop_remember(common::password_proof(), None)
+        .desktop_remember(common::password_proof(), None, 604_800_000)
         .await
         .unwrap();
     let path = vault.state_dir.join("desktop-unlock.bin");
@@ -1139,6 +1139,7 @@ async fn wrapper_changes_revoke_remembered_access_only_after_valid_proof() {
         .desktop_remember(
             UnlockProof::Password(SecretInput::from_slice(b"new-password-for-test")),
             None,
+            604_800_000,
         )
         .await
         .unwrap();
@@ -1169,7 +1170,7 @@ async fn slow_resume_audit_rolls_back_before_reporting_timeout() {
     let (handle, join) = common::spawn(&vault.state_dir);
     handle.unlock(common::password_proof()).await.unwrap();
     let (key, _) = handle
-        .desktop_remember(common::password_proof(), None)
+        .desktop_remember(common::password_proof(), None, 604_800_000)
         .await
         .unwrap();
     handle.lock_for_restart("restart").await.unwrap();
@@ -1205,7 +1206,7 @@ async fn unclean_worker_exit_revokes_before_next_resume() {
         let (handle, join) = common::spawn(&vault.state_dir);
         handle.unlock(common::password_proof()).await.unwrap();
         let (key, _) = handle
-            .desktop_remember(common::password_proof(), None)
+            .desktop_remember(common::password_proof(), None, 604_800_000)
             .await
             .unwrap();
         if worker_shutdown {
@@ -1817,7 +1818,7 @@ mod lease_journal_tests {
         let c = fixture(&handle, "journal-desktop").await;
         begin(&handle, &c).await;
         let (token, _) = handle
-            .desktop_remember(common::password_proof(), None)
+            .desktop_remember(common::password_proof(), None, 604_800_000)
             .await
             .unwrap();
         handle.lock_for_restart("journal-desktop").await.unwrap();

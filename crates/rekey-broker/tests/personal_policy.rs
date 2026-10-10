@@ -430,7 +430,7 @@ async fn one_time_approval_binds_body_and_window_never_overrides_deny_or_lock() 
     let remembered = f
         .call(
             admin_msg::DESKTOP_REMEMBER,
-            json!({}),
+            json!({"lifetime_ms":604800000}),
             &common::proof_body(common::PASSWORD),
         )
         .await;

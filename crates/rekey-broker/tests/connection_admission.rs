@@ -182,7 +182,7 @@ impl Fixture {
             &self.broker.admin_sock(),
             Channel::Admin,
             admin_msg::DESKTOP_REMEMBER,
-            b"{}",
+            br#"{"lifetime_ms":604800000}"#,
             &common::proof_body(common::PASSWORD),
         )
         .await;

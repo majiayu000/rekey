@@ -289,8 +289,15 @@ pub enum AuthorityCommand {
     },
     DesktopRemember {
         proof: UnlockProof,
+        lifetime_ms: i64,
         not_after: Option<std::time::Instant>,
         reply: Reply<(Zeroizing<Vec<u8>>, i64)>,
+    },
+    DesktopLock {
+        token: SecretInput,
+        forget_remembered: bool,
+        not_after: Option<Instant>,
+        reply: Reply<()>,
     },
     DesktopResume {
         token: SecretInput,

@@ -166,3 +166,7 @@ macOS sandbox-exec是受限实验入口；仅按实际已测build/arch说明。
 历史v2发布事实保留在原release notes，不改变本候选Pending状态。
 
 2026-10-04 [统一候选设备证据](../evidence/v3-release-acceptance-2026-10-04.json)已覆盖受保护代数的 ad-hoc 读/写/删拒绝、双并发 CAS、旧库认证后疑似回滚及实际 hardened daemon 的 LLDB 拒绝。SE 建钥/重载、私钥不可导出和无交互签名拒绝已验证；交互签名/取消、已安装服务与完整产品攻击矩阵仍是独立门槛，不提升保护等级。
+
+## 0.5 desktop privacy extension
+
+The [personal desktop contract](../superpowers/specs/2026-10-09-personal-desktop-security.md) extends remembered grants to explicit 1/7/30-day choices while retaining protected PresenceKey access, one-way replacement and same-ticket monotonic caps. Password/recovery alone issue grants; A1 remains at most seven days. Admin opcode72 revokes only the authenticated desktop token, optionally forgets the remembered grant, and audits before success. Agent authorization is unchanged by privacy lock; full-vault lock retains its drain/revocation behavior. UI cache clearing is a presentation boundary, not same-user isolation or new hardware attestation.

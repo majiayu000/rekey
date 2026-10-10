@@ -246,9 +246,24 @@ impl AuthorityHandle {
         &self,
         proof: UnlockProof,
         not_after: Option<std::time::Instant>,
+        lifetime_ms: i64,
     ) -> Result<(Zeroizing<Vec<u8>>, i64), AuthorityError> {
         call!(self, |reply| AuthorityCommand::DesktopRemember {
             proof,
+            lifetime_ms,
+            not_after,
+            reply
+        })
+    }
+    pub async fn desktop_lock(
+        &self,
+        token: SecretInput,
+        forget_remembered: bool,
+        not_after: Option<std::time::Instant>,
+    ) -> Result<(), AuthorityError> {
+        call!(self, |reply| AuthorityCommand::DesktopLock {
+            token,
+            forget_remembered,
             not_after,
             reply
         })

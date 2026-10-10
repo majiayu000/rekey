@@ -49,6 +49,8 @@ struct RootView: View {
                     }
                     if model.status?.state == "rollback-suspected", model.page != .backup, model.page != .settings {
                         locked
+                    } else if model.desktopLocked, model.status != nil, model.page != .settings, model.page != .backup {
+                        locked
                     } else if let route = model.onboardingRoute {
                         OnboardingView(route: route).id(route.rawValue)
                     } else if model.page == .settings || model.page == .backup {
@@ -68,18 +70,19 @@ struct RootView: View {
             }
         }
         .background(canvas).foregroundStyle(ink).tint(green)
-        .task { await model.connectOnOpen() }
+        .task { model.startSecurityMonitoring(); await model.connectOnOpen() }
         .onOpenURL { url in model.openOnboarding(url); NSApp.activate(ignoringOtherApps: true) }
-        .onDisappear { model.clearNativeFlow() }
+        .onDisappear { model.lockDesktop(reason: "窗口已关闭，请重新验证身份。") }
         .onReceive(Timer.publish(every: 15, on: .main, in: .common).autoconnect()) { _ in
             if (phase == .active || model.approvalNotificationsEnabled) && !model.busy && model.operation == nil && model.result == nil && !model.showAddCredential && !model.showSession && !showActionForm && !model.showTemplate && !model.showPolicyDraft && model.onboardingRoute == nil {
                 Task { await model.refresh(passive: true) }
             }
         }
+        .onChange(of: model.desktopLocked) { _, locked in if locked { showActionForm = false; activityDetail = nil } }
         .onChange(of: search) { _, _ in model.selectedCredential = filtered.first?.id }
         .onChange(of: type) { _, _ in model.selectedCredential = filtered.first?.id }
         .onChange(of: model.page) { _, _ in model.onboardingRoute = nil; model.clearNativeFlow(); Task { await model.refresh() } }
-        .onChange(of: phase) { _, value in if value == .active { Task { await model.refresh() } } else { model.nativeFlowBecameInactive() } }
+        .onChange(of: phase) { _, value in if value == .active { model.checkDesktopIdle(); Task { await model.refresh() } } else { model.nativeFlowBecameInactive() } }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in model.nativeFlowBecameInactive() }
         .sheet(isPresented: $model.showPolicyDraft) { PolicyDraftForm().environmentObject(model) }
         .sheet(item: $model.operation) { OperationForm(operation: $0).environmentObject(model) }
@@ -109,10 +112,9 @@ struct RootView: View {
                 Text(model.status?.label ?? "未连接").font(.system(size: 11))
                 Spacer()
                 if model.busy { ProgressView().controlSize(.small) }
-                Button(model.unlocked ? "锁定" : "解锁") {
-                    if model.unlocked { Task { await model.lock() } }
-                    else { unlock() }
-                }.font(.system(size: 11, weight: .medium)).disabled(model.busy || (!model.unlocked && model.status?.state != "locked"))
+                Button(model.desktopReady ? "锁定界面" : "解锁界面") {
+                    if model.desktopReady { model.lockDesktop() } else { unlock() }
+                }.font(.system(size: 11, weight: .medium)).disabled(model.busy || model.status == nil || model.pendingDesktopLocks > 0)
             }
             if let status = model.status {
                 Text(status.protectionLabel).font(.system(size: 10)).foregroundStyle(.secondary).padding(.top, 7)
@@ -134,6 +136,9 @@ struct RootView: View {
         VStack(alignment: .leading, spacing: 18) {
             HStack {
                 Text("个人工作区  /  \(model.page.rawValue)").font(.system(size: 12)).foregroundStyle(.secondary)
+                if !model.desktopLocked && !model.approvals.isEmpty {
+                    Button("\(model.approvals.count) 项待审批") { model.page = .approvals }.font(.caption)
+                }
                 Spacer()
                 Button { Task { await model.refresh() } } label: { Image(systemName: "arrow.clockwise") }.buttonStyle(.plain).help("刷新真实服务状态").disabled(model.busy)
             }
@@ -211,13 +216,15 @@ struct RootView: View {
                     Button("审阅并确认此快照") { model.requestRollbackConfirmation() }.buttonStyle(PrimaryButton()).disabled(model.busy)
                 } else { Text("缺少回滚上下文，不能确认。请刷新状态。") }
             } else {
-            Text(model.status?.state == "locked" ? "保险库已锁定" : "服务暂不可用").font(.system(size: 23, weight: .medium))
-            Text(model.status?.state == "locked" ? "解锁后查看凭证并管理授权。审计日志仍可查询。" : "当前服务状态：\(model.status?.state ?? "未知")。请停止服务并检查运行状态。").foregroundStyle(.secondary)
-            Button("解锁保险库") { unlock() }.buttonStyle(PrimaryButton()).disabled(model.busy || model.status?.state != "locked")
+            Text(model.status?.unlocked == true ? "管理界面已锁定" : model.status?.state == "locked" ? "保险库已锁定" : "服务暂不可用").font(.system(size: 23, weight: .medium))
+            Text(model.desktopLockReason).foregroundStyle(.secondary)
+            Button("输入保险库密码") { unlock() }.buttonStyle(PrimaryButton()).disabled(model.busy || model.pendingDesktopLocks > 0 || !(model.status?.unlocked == true || model.status?.state == "locked"))
             Button("用系统认证解锁") {
                 let revision = model.nativeFlowRevision
                 Task { await model.unlockWithPresence(revision: revision) }
-            }.disabled(model.busy || model.status?.state != "locked")
+            }.disabled(model.busy || model.pendingDesktopLocks > 0 || model.securitySettings.passwordInterval == .everyUnlock || !(model.status?.unlocked == true || model.status?.state == "locked"))
+            if model.pendingDesktopLocks > 0 { Button("重试服务端锁定") { model.retryDesktopLock() }.disabled(model.busy) }
+            if model.status?.unlocked == true { Button("锁定整个保险库并撤销 Agent 授权") { Task { await model.lock() } }.disabled(model.busy) }
             }
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -537,10 +544,11 @@ struct RootView: View {
                         Button("停止并停用登录启动") { model.requestDisableBackgroundService() }.disabled(model.status == nil || model.busy)
                     }
                 }
+                DesktopSecurityForm().environmentObject(model)
                 SectionCard(title: "解锁与恢复", icon: "lock.rotation") {
                     Button("修改密码") { model.operation = Operation(title: "修改密码", detail: "旧密码将不再解锁当前保险库。历史备份不受这次修改影响。", arguments: ["password", "change"], newSecret: true, confirmSecret: true) }
                     Button("轮换恢复密钥") { model.operation = Operation(title: "轮换恢复密钥", detail: "仅使用当前密码验证。新恢复密钥只显示一次，请安全保存。", arguments: ["recovery", "rotate"], sensitiveResult: true, recoveryAllowed: false) }
-                }.disabled(!model.unlocked || model.busy)
+                }.disabled(!model.desktopReady || model.busy)
                 if model.status?.lab_enabled == true {
                   SectionCard(title: "机构登录", icon: "person.badge.key") {
                     Text("先解锁本机，再完成机构登录。登录不会替代管理操作的本机密码确认。").font(.system(size: 13)).foregroundStyle(.secondary)

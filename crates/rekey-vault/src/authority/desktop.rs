@@ -54,6 +54,7 @@ pub fn finish_runtime(state: &std::path::Path) -> Result<(), AuthorityError> {
 }
 const MAGIC: &[u8; 8] = b"RKDSK001";
 const LIFETIME_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+const MAX_REMEMBER_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 
 // The verifier is authority material, even though the original bearer key is not retained.
 // Do not derive Debug or persist this value.
@@ -103,7 +104,12 @@ fn decode_presence_key(input: &[u8]) -> Result<Zeroizing<[u8; 32]>, AuthorityErr
 impl PresenceGrant {
     fn new(key: &[u8; 32], issued: i64, expires: i64) -> Result<Self, AuthorityError> {
         let now = crate::now_ms()?;
-        if expires.checked_sub(issued) != Some(LIFETIME_MS) || now < issued || now >= expires {
+        if !expires
+            .checked_sub(issued)
+            .is_some_and(|duration| (1_000..=MAX_REMEMBER_MS).contains(&duration))
+            || now < issued
+            || now >= expires
+        {
             return Err(AuthorityError::InvalidUnlockCredential);
         }
         let monotonic_deadline = Instant::now()
@@ -179,8 +185,12 @@ impl Worker {
         &mut self,
         proof: UnlockProof,
         not_after: Option<Instant>,
+        lifetime_ms: i64,
     ) -> Result<(Zeroizing<Vec<u8>>, i64), AuthorityError> {
         ensure_mutation_current(not_after)?;
+        if !(1_000..=MAX_REMEMBER_MS).contains(&lifetime_ms) {
+            return Err(AuthorityError::InvalidUnlockCredential);
+        }
         if matches!(proof, UnlockProof::Presence(_)) {
             self.require_unlocked()?;
             return Err(AuthorityError::InvalidUnlockCredential);
@@ -195,7 +205,7 @@ impl Worker {
         let result = (|| {
             let issued = crate::now_ms()?;
             let expires = issued
-                .checked_add(LIFETIME_MS)
+                .checked_add(lifetime_ms)
                 .ok_or(AuthorityError::ClockUnavailable)?;
             let key = Zeroizing::new(random_array::<32>()?);
             let grant = PresenceGrant::new(&key, issued, expires)?;
@@ -220,7 +230,7 @@ impl Worker {
             self.append_audit(unlock_audit(
                 "desktop.remembered",
                 outcome::SUCCESS,
-                "seven-days",
+                "explicit-lifetime",
             ))?;
             ensure_mutation_current(not_after)?;
             grant.verify_at(&key, crate::now_ms()?, Instant::now())?;
@@ -232,6 +242,9 @@ impl Worker {
         })();
         match result {
             Ok((key, expires, grant)) => {
+                if let Some((_, deadline)) = &mut self.desktop_session {
+                    *deadline = (*deadline).min(grant.monotonic_deadline);
+                }
                 self.presence_grant = Some(PresenceState::Active(grant));
                 Ok((key, expires))
             }
@@ -243,6 +256,36 @@ impl Worker {
                 Err(error)
             }
         }
+    }
+
+    pub(super) fn lock_desktop(
+        &mut self,
+        token: SecretInput,
+        forget_remembered: bool,
+        not_after: Option<Instant>,
+    ) -> Result<(), AuthorityError> {
+        ensure_mutation_current(not_after)?;
+        self.verify_desktop(&token)?;
+        self.desktop_session = None;
+        if forget_remembered && let Err(error) = self.forget_desktop() {
+            self.fault("desktop-revocation-failed");
+            return Err(error);
+        }
+        let audited = self.append_audit(unlock_audit(
+            "desktop.locked",
+            outcome::SUCCESS,
+            if forget_remembered {
+                "forget-remembered"
+            } else {
+                "privacy-lock"
+            },
+        ));
+        if let Err(error) = audited {
+            self.fault("desktop-lock-audit-failed");
+            return Err(error);
+        }
+        ensure_mutation_current(not_after)?;
+        Ok(())
     }
 
     pub(super) fn resume_desktop(
@@ -403,7 +446,15 @@ impl Worker {
                 .ok_or(AuthorityError::InvalidUnlockCredential)?,
             None => LIFETIME_MS,
         };
-        Ok(Duration::from_millis(millis as u64))
+        let duration = Duration::from_millis(millis.min(LIFETIME_MS) as u64);
+        match (&self.presence_grant, self.desktop_resume_expiry) {
+            (Some(PresenceState::Active(grant)), Some(_)) => Ok(duration.min(
+                grant
+                    .monotonic_deadline
+                    .saturating_duration_since(Instant::now()),
+            )),
+            _ => Ok(duration),
+        }
     }
 }
 
@@ -468,6 +519,64 @@ mod tests {
     }
 
     #[test]
+    fn invalid_lifetime_preserves_existing_grant_and_long_resume_keeps_a1_maximum() {
+        let (_dir, mut worker, _) = fixture();
+        let (key, _) = worker
+            .remember_desktop(password(), None, MAX_REMEMBER_MS)
+            .unwrap();
+        let ticket = fs::read(worker.config.state_dir.join(FILE)).unwrap();
+        for lifetime in [0, 999, MAX_REMEMBER_MS + 1] {
+            assert!(worker.remember_desktop(password(), None, lifetime).is_err());
+            assert_eq!(
+                fs::read(worker.config.state_dir.join(FILE)).unwrap(),
+                ticket
+            );
+            worker.verify_proof(&presence(&key)).unwrap();
+        }
+        worker
+            .resume_desktop(SecretInput::from_slice(&key), None)
+            .unwrap();
+        assert_eq!(
+            worker.desktop_session_duration().unwrap(),
+            Duration::from_millis(LIFETIME_MS as u64)
+        );
+    }
+
+    #[test]
+    fn resumed_a1_session_keeps_same_ticket_monotonic_deadline() {
+        let (_dir, mut worker, _) = fixture();
+        let (key, _) = worker
+            .remember_desktop(password(), None, MAX_REMEMBER_MS)
+            .unwrap();
+        if let Some(PresenceState::Active(grant)) = &mut worker.presence_grant {
+            grant.monotonic_deadline = Instant::now() + Duration::from_secs(1);
+        }
+        worker
+            .resume_desktop(SecretInput::from_slice(&key), None)
+            .unwrap();
+        assert!(worker.desktop_session_duration().unwrap() <= Duration::from_secs(1));
+    }
+
+    #[test]
+    fn privacy_lock_audit_failure_revokes_session_and_faults() {
+        let (_dir, mut worker, _) = fixture();
+        let token = [b'a'; 64];
+        worker.desktop_session = Some((
+            Zeroizing::new(token.to_vec()),
+            Instant::now() + Duration::from_secs(60),
+        ));
+        let db =
+            rusqlite::Connection::open(crate::paths::vault_db(&worker.config.state_dir)).unwrap();
+        db.execute_batch("CREATE TRIGGER fail_desktop_lock BEFORE INSERT ON audit_events WHEN NEW.event_type='desktop.locked' BEGIN SELECT RAISE(ABORT,'synthetic'); END").unwrap();
+        assert!(matches!(
+            worker.lock_desktop(SecretInput::from_slice(&token), false, None),
+            Err(AuthorityError::AuditCommitFailed)
+        ));
+        assert!(worker.desktop_session.is_none());
+        assert!(matches!(worker.state, VaultState::Faulted));
+    }
+
+    #[test]
     fn presence_strict_key_and_independent_wall_monotonic_expiry() {
         let key = [0xab; 32];
         let encoded = data_encoding::HEXLOWER.encode(&key);
@@ -502,13 +611,15 @@ mod tests {
                 .verify_at(&key, now, grant.monotonic_deadline)
                 .is_err()
         );
-        assert!(PresenceGrant::new(&key, now, now + LIFETIME_MS + 1).is_err());
+        assert!(PresenceGrant::new(&key, now, now + MAX_REMEMBER_MS + 1).is_err());
     }
 
     #[test]
     fn presence_reissue_replaces_hash_and_failed_resume_preserves_existing_root_only() {
         let (_dir, mut worker, initialized) = fixture();
-        let (old, _) = worker.remember_desktop(password(), None).unwrap();
+        let (old, _) = worker
+            .remember_desktop(password(), None, 604_800_000)
+            .unwrap();
         worker.verify_proof(&presence(&old)).unwrap();
         let ticket = fs::read(worker.config.state_dir.join(FILE)).unwrap();
         let deadline = worker
@@ -518,7 +629,7 @@ mod tests {
             .grant()
             .monotonic_deadline;
         assert!(matches!(
-            worker.remember_desktop(presence(&old), None),
+            worker.remember_desktop(presence(&old), None, 604_800_000),
             Err(AuthorityError::InvalidUnlockCredential)
         ));
         assert_eq!(
@@ -541,6 +652,7 @@ mod tests {
                     initialized.recovery_key_display.as_bytes(),
                 )),
                 None,
+                604_800_000,
             )
             .unwrap();
         assert!(worker.verify_proof(&presence(&old)).is_err());
@@ -603,7 +715,9 @@ mod tests {
     #[test]
     fn presence_success_cannot_reset_password_guess_backoff() {
         let (_dir, mut worker, _) = fixture();
-        let (key, _) = worker.remember_desktop(password(), None).unwrap();
+        let (key, _) = worker
+            .remember_desktop(password(), None, 604_800_000)
+            .unwrap();
         worker.config.unlock_backoff_base = Duration::from_secs(30);
         for _ in 0..2 {
             assert!(matches!(
@@ -635,7 +749,9 @@ mod tests {
     #[test]
     fn presence_cannot_replace_permanent_unlock_factors() {
         let (_dir, mut worker, _) = fixture();
-        let (key, _) = worker.remember_desktop(password(), None).unwrap();
+        let (key, _) = worker
+            .remember_desktop(password(), None, 604_800_000)
+            .unwrap();
         let ticket = fs::read(worker.config.state_dir.join(FILE)).unwrap();
         let password_wrapper = worker
             .store
@@ -681,7 +797,7 @@ mod tests {
         worker.verify_proof(&password()).unwrap();
         worker.set_locked("factor-boundary-test", true).unwrap();
         assert!(matches!(
-            worker.remember_desktop(presence(&key), None),
+            worker.remember_desktop(presence(&key), None, 604_800_000),
             Err(AuthorityError::Locked)
         ));
         assert!(matches!(
@@ -694,7 +810,9 @@ mod tests {
     fn presence_all_revocation_paths_clear_hash_and_persisted_wrap() {
         for operation in ["lock", "idle", "fault", "password", "recovery", "vrk"] {
             let (_dir, mut worker, initialized) = fixture();
-            let (key, _) = worker.remember_desktop(password(), None).unwrap();
+            let (key, _) = worker
+                .remember_desktop(password(), None, 604_800_000)
+                .unwrap();
             match operation {
                 "lock" => worker.lock("presence-test").unwrap(),
                 "idle" => {
@@ -738,12 +856,14 @@ mod tests {
     #[test]
     fn presence_reissue_deletion_failure_is_visible_and_old_hash_is_revoked() {
         let (_dir, mut worker, _) = fixture();
-        let (key, _) = worker.remember_desktop(password(), None).unwrap();
+        let (key, _) = worker
+            .remember_desktop(password(), None, 604_800_000)
+            .unwrap();
         let path = worker.config.state_dir.join(FILE);
         fs::remove_file(&path).unwrap();
         fs::create_dir(&path).unwrap();
         assert!(matches!(
-            worker.remember_desktop(password(), None),
+            worker.remember_desktop(password(), None, 604_800_000),
             Err(AuthorityError::StorageUnavailable(_))
         ));
         assert!(worker.presence_grant.is_none());
@@ -753,14 +873,16 @@ mod tests {
     #[test]
     fn presence_readable_ticket_deletion_failure_faults_before_it_can_resume() {
         let (_dir, mut worker, _) = fixture();
-        let (key, _) = worker.remember_desktop(password(), None).unwrap();
+        let (key, _) = worker
+            .remember_desktop(password(), None, 604_800_000)
+            .unwrap();
         let state = worker.config.state_dir.clone();
         let path = state.join(FILE);
         let original = fs::read(&path).unwrap();
         fs::set_permissions(&state, fs::Permissions::from_mode(0o500)).unwrap();
         let readable = fs::read(&path);
         let deletion = fs::remove_file(&path);
-        let result = worker.remember_desktop(password(), None);
+        let result = worker.remember_desktop(password(), None, 604_800_000);
         // Restore the temporary directory before assertions or TempDir cleanup.
         fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
         assert_eq!(readable.unwrap(), original);
@@ -786,7 +908,9 @@ mod tests {
     #[test]
     fn presence_resume_cannot_extend_the_same_ticket_cap_after_wall_rollback_or_failure() {
         let (_dir, mut worker, _) = fixture();
-        let (key, _) = worker.remember_desktop(password(), None).unwrap();
+        let (key, _) = worker
+            .remember_desktop(password(), None, 604_800_000)
+            .unwrap();
         let original_root = Zeroizing::new(*worker.require_unlocked().unwrap().bytes());
         // Model a cap established when the wall clock was further ahead. The current
         // wall is still within issued/expires, but recomputing remaining time is longer.
@@ -864,7 +988,9 @@ mod tests {
     fn presence_audit_failure_never_publishes_remember_or_resume() {
         for operation in ["remember", "resume-locked", "resume-unlocked"] {
             let (_dir, mut worker, _) = fixture();
-            let (key, _) = worker.remember_desktop(password(), None).unwrap();
+            let (key, _) = worker
+                .remember_desktop(password(), None, 604_800_000)
+                .unwrap();
             if operation == "resume-locked" {
                 worker.set_locked("test", true).unwrap();
                 // Model the first explicit resume after a clean process restart.
@@ -874,7 +1000,9 @@ mod tests {
                 .unwrap();
             db.execute_batch("CREATE TRIGGER fail_presence_audit BEFORE INSERT ON audit_events BEGIN SELECT RAISE(ABORT, 'synthetic'); END;").unwrap();
             let result = if operation == "remember" {
-                worker.remember_desktop(password(), None).map(|_| ())
+                worker
+                    .remember_desktop(password(), None, 604_800_000)
+                    .map(|_| ())
             } else {
                 worker
                     .resume_desktop(SecretInput::from_slice(&key), None)
@@ -890,7 +1018,9 @@ mod tests {
     fn presence_deadline_after_audit_does_not_publish_a_new_grant_or_root() {
         for operation in ["remember", "resume-locked", "resume-unlocked"] {
             let (_dir, mut worker, _) = fixture();
-            let (key, _) = worker.remember_desktop(password(), None).unwrap();
+            let (key, _) = worker
+                .remember_desktop(password(), None, 604_800_000)
+                .unwrap();
             let original_root = Zeroizing::new(*worker.require_unlocked().unwrap().bytes());
             if operation == "resume-locked" {
                 worker.set_locked("test", true).unwrap();
@@ -907,7 +1037,9 @@ mod tests {
             });
             let deadline = Some(Instant::now() + Duration::from_millis(500));
             let result = if operation == "remember" {
-                worker.remember_desktop(password(), deadline).map(|_| ())
+                worker
+                    .remember_desktop(password(), deadline, 604_800_000)
+                    .map(|_| ())
             } else {
                 worker
                     .resume_desktop(SecretInput::from_slice(&key), deadline)
@@ -1067,6 +1199,7 @@ mod tests {
                 .remember_desktop(
                     UnlockProof::Password(SecretInput::from_slice(b"synthetic-resume")),
                     None,
+                    604_800_000,
                 )
                 .unwrap();
             worker.set_locked("synthetic-resume", true).unwrap();
@@ -1152,7 +1285,9 @@ mod tests {
                             .unwrap();
                     }
                     let original_generation = worker.header.generation;
-                    let (ticket, _) = worker.remember_desktop(password(), None).unwrap();
+                    let (ticket, _) = worker
+                        .remember_desktop(password(), None, 604_800_000)
+                        .unwrap();
                     if !unlocked {
                         worker.set_locked("candidate-test", true).unwrap();
                     }
@@ -1219,7 +1354,9 @@ mod tests {
     fn successful_candidate_publishes_verified_header_and_root_together() {
         for desktop in [false, true] {
             let (_dir, mut worker, _) = fixture();
-            let (ticket, _) = worker.remember_desktop(password(), None).unwrap();
+            let (ticket, _) = worker
+                .remember_desktop(password(), None, 604_800_000)
+                .unwrap();
             worker.set_locked("candidate-test", true).unwrap();
             let db = rusqlite::Connection::open(crate::paths::vault_db(&worker.config.state_dir))
                 .unwrap();
@@ -1248,7 +1385,9 @@ mod tests {
     #[test]
     fn header_failure_preserves_failed_resume_audit_error_priority() {
         let (_dir, mut worker, _) = fixture();
-        let (ticket, _) = worker.remember_desktop(password(), None).unwrap();
+        let (ticket, _) = worker
+            .remember_desktop(password(), None, 604_800_000)
+            .unwrap();
         let db =
             rusqlite::Connection::open(crate::paths::vault_db(&worker.config.state_dir)).unwrap();
         db.execute_batch("DELETE FROM vault_header; CREATE TRIGGER reject_failure BEFORE INSERT ON audit_events WHEN NEW.event_type='desktop.resume_failed' BEGIN SELECT RAISE(ABORT,'synthetic audit failure'); END;").unwrap();
