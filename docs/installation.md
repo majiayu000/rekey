@@ -1,6 +1,6 @@
 # Install, upgrade, service, and uninstall
 
-The source candidate is **0.4.0-alpha.1** (vault26 / policy7). Publication and available artifacts are determined by [GitHub Releases](https://github.com/majiayu000/rekey/releases), not this page. The 0.3 vault format is rejected: create a new state directory; there is no migration or overwrite.
+This guide describes the published **0.4.0-alpha.1** (vault26 / policy7). Current source is the unreleased **0.5.0-alpha.1** development integration (vault27 / policy8); it requires a separate new vault and does not migrate or overwrite published vaults. Publication and available artifacts are determined by [GitHub Releases](https://github.com/majiayu000/rekey/releases), not this page. The 0.4 instructions below reject the 0.3 vault format: create a new state directory; there is no migration or overwrite.
 
 macOS distribution uses a Developer ID signed, notarized pkg with independently provisioned App and daemon, for macOS 14+ on Apple Silicon. Linux uses the released Ubuntu 24.04 x86_64 archive. No public Homebrew tap is claimed. Verify the actual completed release, package bytes, signature and public smoke before installation. Hardware Touch ID, SE, login-item and C16 checks are independent of software tests.
 
