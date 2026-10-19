@@ -7,9 +7,10 @@
 
 ## What is this
 
-Rekey 0.3 personal-first Credential Authority (v3 design) (`0.3.0-alpha.2`, alpha). Agents call fixed or template,
-admin-registered actions through a capability token and never see real
-credentials. Breaking rewrite — no v1 vault, MITM, system CA, dashboard,
+Rekey personal-first Credential Authority. Source is the unreleased
+`0.5.0-alpha.1` development line (vault27 / policy8); the latest published
+release is `0.4.0-alpha.1` (vault26 / policy7). Local Agents call signed
+Connection rules and never see real credentials. Breaking rewrite — no v1 vault, MITM, system CA, dashboard,
 single-port proxy, or TCP passthrough exists anymore.
 
 ## Build
@@ -67,10 +68,10 @@ Cargo workspace, 7 crates + root integration-test host:
 - Current confirmed floor is L1-dev. Peer verification alone does not establish
   L1; V1/V2, protected anchors and actual isolation require separate evidence.
   Linux Profile netns and Codex Seatbelt limitations must not be hidden.
-- No migration, old-format double reader or backfill, permanently. Vault25 /
-  policy6 remain frozen across all 0.3 releases, including prereleases and `lab`.
-  The product version is 0.3; v3 names the design stage. Preserve durable layouts
-  and canonical signing semantics; incompatible changes require a separately
+- No migration, old-format double reader or backfill, permanently. Each release
+  line freezes its formats: 0.3 = vault25 / policy6, 0.4 = vault26 / policy7,
+  0.5 = vault27 / policy8. Preserve durable layouts and canonical signing
+  semantics within a line; incompatible changes require a separately
   planned release line and a prior SPEC revision. Stop feature expansion during
   the seven-day dogfood period; fix only evidenced safety/correctness/release blockers.
 - Default features are empty; enterprise execution requires `--features lab`.
