@@ -34,8 +34,10 @@ Cargo workspace, 7 crates + root integration-test host:
   offline bootstrap (init/restore), AuthorityWorker (single owner of the DB
   connection, VRK, and all credential mutations)
 - `rekey-broker` — BrokerRuntime: two Unix sockets (admin.sock / agent.sock,
-  0600), capability SessionRegistry, shared fixed/template executor with response
-  sealing, local approvals, signed Profiles and a bounded loopback SDK gateway; ships the `rekeyd` binary (serve/init/restore)
+  0600), tokenless local CALL against signed Connection rules, shared
+  executor with response sealing, local and time-window approvals, MCP, a
+  bounded loopback HTTP service and SSH agent; ships the `rekeyd` binary
+  (serve/init/restore). Capability sessions and signed Profiles remain lab-only
 - `rekey-cli` — `rekey` binary, pure IPC client; delegates init/serve/restore
   to `rekeyd` so the CLI never links crypto or SQLite
 
@@ -71,11 +73,12 @@ Cargo workspace, 7 crates + root integration-test host:
 
 - Active contracts (newest overrides older on conflict):
   - 0.5: `docs/superpowers/specs/2026-10-09-unified-experiments.md`,
-    `2026-10-09-personal-desktop-security.md`, `2026-10-09-docker-ha-controller.md`
+    `docs/superpowers/specs/2026-10-09-personal-desktop-security.md`,
+    `docs/superpowers/specs/2026-10-09-docker-ha-controller.md`
   - 0.4 Agent call model: `docs/superpowers/specs/2026-10-05-rekey-agent-call-model.md`
   - 0.3 / v3 base: `docs/superpowers/specs/2026-10-02-rekey-v3-personal-first.md`
 - Implementation/evidence trackers: `docs/superpowers/plans/2026-10-09-experiment-integration.md`,
-  `2026-10-05-agent-call-implementation.md`, `2026-10-03-v3-implementation.md`
+  `docs/superpowers/plans/2026-10-05-agent-call-implementation.md`, `docs/superpowers/plans/2026-10-03-v3-implementation.md`
 - Historical foundation: `docs/superpowers/specs/2026-08-28-credential-authority-v2-foundation.md`
 - Public technical baselines:
   - `docs/product-foundation/feature-truth-matrix.md`

@@ -41,25 +41,27 @@ Cargo workspace, 7 crates + root integration-test host:
   offline bootstrap (init/restore), AuthorityWorker (single owner of the DB
   connection, VRK, and all credential mutations)
 - `rekey-broker` — BrokerRuntime: two Unix sockets (admin.sock / agent.sock,
-  0600), capability SessionRegistry, shared fixed/template executor with response
-  sealing, local approvals, signed Profiles and a bounded loopback SDK gateway; ships the `rekeyd` binary (serve/init/restore)
+  0600), tokenless local CALL against signed Connection rules, shared
+  executor with response sealing, local and time-window approvals, MCP, a
+  bounded loopback HTTP service and SSH agent; ships the `rekeyd` binary
+  (serve/init/restore). Capability sessions and signed Profiles remain lab-only
 - `rekey-cli` — `rekey` binary, pure IPC client; delegates init/serve/restore
   to `rekeyd` so the CLI never links crypto or SQLite
 
 ## Key Design Decisions
 
-- Agent API has no get/read/export secret operation — only ExecuteFixedHttpAction
-  with a short-lived capability token; decrypted payloads exist once as a
-  consume-once `PreparedCredential`
+- Agent API has no get/read/export secret operation — Agents invoke signed
+  Connection rules (no local capability token since 0.4); decrypted payloads
+  exist once as a consume-once `PreparedCredential`
 - Sensitive A2 operations require a fresh proof, including all-state SHUTDOWN
   and plaintext reveal; A1 desktop tokens cannot replace it. Presence is
   accepted only while unlocked with an active process-local verifier. Offline
   restore and VRK rewrapping still require their original decryption factors.
   Presence cannot issue seven-day grants, change passwords, or rotate recovery keys.
 - Secrets travel only in frame bodies / hidden TTY / explicit stdin flags —
-  never argv, env, JSON metadata, logs, or audit rows. Profile `run` supplies
-  its short-lived capability to the child environment as an explicit exception;
-  this is never an upstream credential
+  never argv, env, JSON metadata, logs, or audit rows. Lab-only Profile `run`
+  supplies its short-lived capability to the child environment as an explicit
+  exception; this is never an upstream credential
 - Audit commit failure fails closed (worker faults); execution.started commits
   before any credential is decrypted
 - Upstream: fixed origin/method and authenticated fixed or validated template
