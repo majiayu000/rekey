@@ -1,6 +1,6 @@
 # 0.4 Alpha 范围
 
-**0.4.0-alpha.1 为未发布候选版。** 本页描述默认本机产品的实现范围；软件检查不等于真实 Agent、设备或 provider 验收。最终证据集中在[验收报告](evidence/agent-call-acceptance-2026-10-05.md)，操作见[用户指南](user-guide.md)。
+**0.4.0-alpha.1 已于 2026-10-08 公开预发布（GitHub prerelease）；下列验收缺口仍未闭合。** 本页描述默认本机产品的实现范围；软件检查不等于真实 Agent、设备或 provider 验收。最终证据集中在[验收报告](evidence/agent-call-acceptance-2026-10-05.md)，操作见[用户指南](user-guide.md)。
 
 ## 默认模型
 
