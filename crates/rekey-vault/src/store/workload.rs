@@ -46,6 +46,8 @@ mod tests {
     use rekey_domain::ids::RequestId;
 
     use super::*;
+    #[cfg(not(debug_assertions))]
+    use crate::TestRandomId as _;
     use crate::model::{event_type, outcome};
 
     fn audit(created_at_ms: i64, event_id: [u8; 16]) -> AuditEvent {

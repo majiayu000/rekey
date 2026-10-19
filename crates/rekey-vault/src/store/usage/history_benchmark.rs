@@ -2,9 +2,218 @@
 //! Authority, plus the actual Authority queue and lifecycle. Fixture seeding is
 //! outside timing. Neither benchmark invokes Broker IPC or a real provider.
 use super::*;
+#[cfg(not(debug_assertions))]
+use crate::TestRandomId as _;
 use crate::model::AuthorizationEvidence;
 use rekey_domain::ids::{ActionId, CredentialId, PolicyRuleId, SessionId};
-use std::time::Duration;
+use std::{
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct StageSample {
+    pub sql_decode_us: u128,
+    pub canonical_digest_us: u128,
+    pub aead_verify_us: u128,
+    pub context_parse_us: u128,
+    pub budget_totals_us: u128,
+    pub new_digest_us: u128,
+    pub new_seal_us: u128,
+    pub audit_commit_us: u128,
+    pub total_rows: usize,
+    pub rows_scanned: usize,
+    pub contexts_parsed: usize,
+    pub raw_context_bytes: usize,
+    pub max_record_width_bytes: usize,
+    pub allocated_row_vec_bytes: usize,
+    pub allocated_heap_string_bytes: usize,
+    pub allocated_total_bytes: usize,
+}
+
+static STAGE_COLLECTION_ENABLED: AtomicBool = AtomicBool::new(false);
+static CURRENT_STAGE_SAMPLE: Mutex<StageSample> = Mutex::new(StageSample {
+    sql_decode_us: 0,
+    canonical_digest_us: 0,
+    aead_verify_us: 0,
+    context_parse_us: 0,
+    budget_totals_us: 0,
+    new_digest_us: 0,
+    new_seal_us: 0,
+    audit_commit_us: 0,
+    total_rows: 0,
+    rows_scanned: 0,
+    contexts_parsed: 0,
+    raw_context_bytes: 0,
+    max_record_width_bytes: 0,
+    allocated_row_vec_bytes: 0,
+    allocated_heap_string_bytes: 0,
+    allocated_total_bytes: 0,
+});
+
+fn record_width_bytes(row: &UsageRecord) -> usize {
+    16 + 16
+        + row.instance_slug.len()
+        + 8
+        + 8
+        + row.context_json.len()
+        + row.generation_max_output.map_or(0, |_| 8)
+        + row.output_tokens.map_or(0, |_| 8)
+        + row.source.as_ref().map_or(0, String::len)
+        + row.terminal_json.as_ref().map_or(0, String::len)
+        + row.settled_at_ms.map_or(0, |_| 8)
+}
+
+pub(crate) fn record_sql_decode_stage(
+    elapsed_us: u128,
+    rows: &[UsageRecord],
+    row_vec_capacity: usize,
+) {
+    if !STAGE_COLLECTION_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    let raw_context_bytes = rows.iter().map(|r| r.context_json.len()).sum();
+    let max_record_width_bytes = rows.iter().map(record_width_bytes).max().unwrap_or(0);
+    let allocated_row_vec_bytes = row_vec_capacity * std::mem::size_of::<UsageRecord>();
+    let allocated_heap_string_bytes = rows
+        .iter()
+        .map(|r| {
+            r.instance_slug.capacity()
+                + r.context_json.capacity()
+                + r.source.as_ref().map_or(0, String::capacity)
+                + r.terminal_json.as_ref().map_or(0, String::capacity)
+        })
+        .sum();
+    let mut sample = CURRENT_STAGE_SAMPLE.lock().unwrap();
+    sample.sql_decode_us += elapsed_us;
+    sample.total_rows = rows.len();
+    sample.rows_scanned += rows.len();
+    sample.raw_context_bytes = raw_context_bytes;
+    sample.max_record_width_bytes = max_record_width_bytes;
+    sample.allocated_row_vec_bytes = allocated_row_vec_bytes;
+    sample.allocated_heap_string_bytes = allocated_heap_string_bytes;
+    sample.allocated_total_bytes = allocated_row_vec_bytes + allocated_heap_string_bytes;
+}
+
+pub(crate) fn record_verify_digest_stage(elapsed_us: u128, rows: usize) {
+    if !STAGE_COLLECTION_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    let mut sample = CURRENT_STAGE_SAMPLE.lock().unwrap();
+    sample.canonical_digest_us += elapsed_us;
+    sample.rows_scanned += rows;
+}
+
+pub(crate) fn record_aead_verify_stage(elapsed_us: u128) {
+    if !STAGE_COLLECTION_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    CURRENT_STAGE_SAMPLE.lock().unwrap().aead_verify_us += elapsed_us;
+}
+
+pub(crate) fn record_context_parse_stage(
+    elapsed_us: u128,
+    rows_scanned: usize,
+    contexts_parsed: usize,
+) {
+    if !STAGE_COLLECTION_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    let mut sample = CURRENT_STAGE_SAMPLE.lock().unwrap();
+    sample.context_parse_us += elapsed_us;
+    sample.rows_scanned += rows_scanned;
+    sample.contexts_parsed += contexts_parsed;
+}
+
+pub(crate) fn record_budget_totals_stage(elapsed_us: u128, rows: usize) {
+    if !STAGE_COLLECTION_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    let mut sample = CURRENT_STAGE_SAMPLE.lock().unwrap();
+    sample.budget_totals_us += elapsed_us;
+    sample.rows_scanned += rows;
+}
+
+pub(crate) fn record_new_digest_stage(elapsed_us: u128, rows: usize) {
+    if !STAGE_COLLECTION_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    let mut sample = CURRENT_STAGE_SAMPLE.lock().unwrap();
+    sample.new_digest_us += elapsed_us;
+    sample.rows_scanned += rows;
+}
+
+pub(crate) fn record_new_seal_stage(elapsed_us: u128) {
+    if !STAGE_COLLECTION_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    CURRENT_STAGE_SAMPLE.lock().unwrap().new_seal_us += elapsed_us;
+}
+
+pub(crate) fn record_audit_commit_stage(elapsed_us: u128) {
+    if !STAGE_COLLECTION_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    CURRENT_STAGE_SAMPLE.lock().unwrap().audit_commit_us += elapsed_us;
+}
+
+fn begin_stage_sample() {
+    *CURRENT_STAGE_SAMPLE.lock().unwrap() = StageSample::default();
+    STAGE_COLLECTION_ENABLED.store(true, Ordering::SeqCst);
+}
+
+fn finish_stage_sample() -> StageSample {
+    STAGE_COLLECTION_ENABLED.store(false, Ordering::SeqCst);
+    *CURRENT_STAGE_SAMPLE.lock().unwrap()
+}
+
+fn stage_summary(samples: &[StageSample]) -> serde_json::Value {
+    let median_u128 = |f: fn(&StageSample) -> u128| -> u128 {
+        let mut vals: Vec<u128> = samples.iter().map(f).collect();
+        vals.sort_unstable();
+        vals[vals.len() / 2]
+    };
+    let last = samples.last().copied().unwrap_or_default();
+    let sql_decode_us = median_u128(|s| s.sql_decode_us);
+    let canonical_digest_us = median_u128(|s| s.canonical_digest_us);
+    let aead_verify_us = median_u128(|s| s.aead_verify_us);
+    let context_parse_us = median_u128(|s| s.context_parse_us);
+    let budget_totals_us = median_u128(|s| s.budget_totals_us);
+    let new_digest_us = median_u128(|s| s.new_digest_us);
+    let new_seal_us = median_u128(|s| s.new_seal_us);
+    let audit_commit_us = median_u128(|s| s.audit_commit_us);
+    let stage_total_us = sql_decode_us
+        + canonical_digest_us
+        + aead_verify_us
+        + context_parse_us
+        + budget_totals_us
+        + new_digest_us
+        + new_seal_us
+        + audit_commit_us;
+    serde_json::json!({
+        "samples": samples.len(),
+        "sql_decode_us": sql_decode_us,
+        "canonical_digest_us": canonical_digest_us,
+        "aead_verify_us": aead_verify_us,
+        "context_parse_us": context_parse_us,
+        "budget_totals_us": budget_totals_us,
+        "new_digest_us": new_digest_us,
+        "new_seal_us": new_seal_us,
+        "audit_commit_us": audit_commit_us,
+        "stage_total_us": stage_total_us,
+        "total_rows": last.total_rows,
+        "rows_scanned": last.rows_scanned,
+        "contexts_parsed": last.contexts_parsed,
+        "raw_context_bytes": last.raw_context_bytes,
+        "max_record_width_bytes": last.max_record_width_bytes,
+        "allocated_row_vec_bytes": last.allocated_row_vec_bytes,
+        "allocated_heap_string_bytes": last.allocated_heap_string_bytes,
+        "allocated_total_bytes": last.allocated_total_bytes,
+    })
+}
 
 fn context() -> UsageContext {
     UsageContext {
@@ -92,6 +301,53 @@ fn history(context: &UsageContext, size: usize) -> Vec<UsageRecord> {
     rows
 }
 
+fn rss_field(field: &str) -> Option<u64> {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()?
+        .lines()
+        .find(|line| line.starts_with(field))?
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()
+}
+
+fn current_rss_kib() -> Option<u64> {
+    if let Some(kib) = rss_field("VmRSS:") {
+        return Some(kib);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut info: libc::rusage_info_v4 = unsafe { std::mem::zeroed() };
+        let rc = unsafe {
+            libc::proc_pid_rusage(
+                libc::getpid(),
+                libc::RUSAGE_INFO_V4,
+                (&raw mut info).cast::<libc::rusage_info_t>(),
+            )
+        };
+        if rc == 0 {
+            return Some(info.ri_resident_size / 1024);
+        }
+    }
+    None
+}
+
+fn peak_rss_kib() -> Option<u64> {
+    if let Some(kib) = rss_field("VmHWM:") {
+        return Some(kib);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+        if unsafe { libc::getrusage(libc::RUSAGE_SELF, &raw mut usage) } == 0 && usage.ru_maxrss > 0
+        {
+            return Some((usage.ru_maxrss as u64) / 1024);
+        }
+    }
+    None
+}
+
 #[test]
 #[ignore = "opt-in authenticated SQLite history benchmark; uses 1k/10k/100k synthetic rows"]
 fn authenticated_usage_history_benchmark() {
@@ -118,15 +374,41 @@ fn authenticated_usage_history_benchmark() {
             generation_max_output: Some(32),
         };
         let mut verified = Vec::new();
+        let mut verified_stages = Vec::new();
+        let mut profile_usage = Vec::new();
+        let mut profile_usage_stages = Vec::new();
         let mut started = Vec::new();
+        let mut started_stages = Vec::new();
         let mut settled = Vec::new();
-        for _ in 0..5 {
+        let mut settled_stages = Vec::new();
+        for sample in 0..5 {
+            begin_stage_sample();
             let began = Instant::now();
             let _ = store.verified_usage(&key, vault).unwrap();
             verified.push(began.elapsed().as_micros());
+            verified_stages.push(finish_stage_sample());
+
+            let day = now_ms().unwrap() / 86_400_000;
+            begin_stage_sample();
+            let began = Instant::now();
+            let totals = store
+                .profile_usage(
+                    &key,
+                    vault,
+                    context.authorization.principal_id,
+                    "history-fixture",
+                    day,
+                )
+                .unwrap();
+            profile_usage.push(began.elapsed().as_micros());
+            profile_usage_stages.push(finish_stage_sample());
+            assert_eq!(totals.requests, sample as u64);
+            assert_eq!(totals.output_tokens, sample as u64 * 7);
+
             let row = row(&context);
             let request = row.request_id;
             let started_event = event(&context, request, false);
+            begin_stage_sample();
             let began = Instant::now();
             assert!(matches!(
                 store
@@ -143,28 +425,40 @@ fn authenticated_usage_history_benchmark() {
                 UsageAdmission::Started
             ));
             started.push(began.elapsed().as_micros());
+            started_stages.push(finish_stage_sample());
+
             let terminal = event(&context, request, true);
+            begin_stage_sample();
             let began = Instant::now();
             store
                 .settle_profile_execution(&key, vault, request, Some(7), terminal)
                 .unwrap();
             settled.push(began.elapsed().as_micros());
+            settled_stages.push(finish_stage_sample());
         }
         assert_eq!(store.verified_usage(&key, vault).unwrap().0.len(), size + 5);
-        let rss_kib = std::fs::read_to_string("/proc/self/status")
-            .ok()
-            .and_then(|text| {
-                text.lines()
-                    .find(|line| line.starts_with("VmRSS:"))
-                    .and_then(|line| line.split_whitespace().nth(1))
-                    .and_then(|value| value.parse::<u64>().ok())
-            });
+        let rss_kib = current_rss_kib();
+        let high_water = peak_rss_kib();
         println!(
             "{}",
-            serde_json::json!({"history_rows":size,"pending_history_rows":size.div_ceil(4096),
-            "authenticated_read":timings(verified),"started":timings(started),"settled":timings(settled),
-            "process_rss_kib":rss_kib,"debug_assertions":cfg!(debug_assertions),
-            "scope":"authenticated SQLite store methods; excludes Authority queue and network"})
+            serde_json::json!({
+                "history_rows":size,
+                "pending_history_rows":size.div_ceil(4096),
+                "authenticated_read":timings(verified),
+                "profile_usage":timings(profile_usage),
+                "started":timings(started),
+                "settled":timings(settled),
+                "stage_attribution":{
+                    "authenticated_read":stage_summary(&verified_stages),
+                    "profile_usage":stage_summary(&profile_usage_stages),
+                    "started":stage_summary(&started_stages),
+                    "settled":stage_summary(&settled_stages),
+                },
+                "process_rss_kib":rss_kib,
+                "process_peak_rss_kib":high_water,
+                "debug_assertions":cfg!(debug_assertions),
+                "scope":"authenticated SQLite store methods; excludes Authority queue and network"
+            })
         );
     }
 }
@@ -195,17 +489,6 @@ fn draft(context: &UsageContext) -> crate::command::AuditDraft {
     }
 }
 
-fn rss_field(field: &str) -> Option<u64> {
-    std::fs::read_to_string("/proc/self/status")
-        .ok()?
-        .lines()
-        .find(|line| line.starts_with(field))?
-        .split_whitespace()
-        .nth(1)?
-        .parse()
-        .ok()
-}
-
 #[tokio::test]
 #[ignore = "opt-in real Authority history benchmark; uses 1k/10k/100k synthetic rows"]
 async fn authority_usage_history_benchmark() {
@@ -217,7 +500,8 @@ async fn authority_usage_history_benchmark() {
 
     for size in [1_000, 10_000, 100_000] {
         let dir = tempfile::tempdir().unwrap();
-        let state_dir = dir.path().join("state");
+        let canonical_dir = dir.path().canonicalize().unwrap();
+        let state_dir = canonical_dir.join("state");
         let password = SecretInput::from_slice(b"synthetic-history-benchmark-only");
         init_vault(
             &state_dir,
@@ -259,9 +543,11 @@ async fn authority_usage_history_benchmark() {
         }
         let (handle, worker) =
             crate::authority::spawn_authority(AuthorityConfig::new(state_dir.clone())).unwrap();
+        begin_stage_sample();
         let began = Instant::now();
         handle.unlock(proof()).await.unwrap();
         let recovery_unlock_us = began.elapsed().as_micros();
+        let recovery_unlock_stage = finish_stage_sample();
         let usage = ProfileUsageStart {
             instance_slug: "history-fixture".into(),
             max_requests_per_day: 1_000_000,
@@ -269,16 +555,21 @@ async fn authority_usage_history_benchmark() {
             generation_max_output: Some(32),
         };
         let mut read = Vec::new();
+        let mut read_stages = Vec::new();
         let mut started = Vec::new();
+        let mut started_stages = Vec::new();
         let mut settled = Vec::new();
+        let mut settled_stages = Vec::new();
         let mut status = Vec::new();
         let mut status_during_start = Vec::new();
         let mut backup = Vec::new();
         let mut unlock = Vec::new();
+        let mut unlock_stages = Vec::new();
         for sample in 0..5 {
             let began = Instant::now();
             assert_eq!(handle.status().await.unwrap().state, "unlocked");
             status.push(began.elapsed().as_micros());
+            begin_stage_sample();
             let began = Instant::now();
             let totals = handle
                 .profile_usage(
@@ -289,11 +580,13 @@ async fn authority_usage_history_benchmark() {
                 .await
                 .unwrap();
             read.push(began.elapsed().as_micros());
+            read_stages.push(finish_stage_sample());
             assert_eq!(totals.requests, sample as u64);
             assert_eq!(totals.output_tokens, sample as u64 * 7);
 
             let start = draft(&context);
             let request = start.request_id.unwrap();
+            begin_stage_sample();
             let ((admitted, started_us), status_us) = tokio::join!(
                 biased;
                 async {
@@ -312,6 +605,7 @@ async fn authority_usage_history_benchmark() {
             );
             assert!(matches!(admitted.unwrap(), UsageAdmission::Started));
             started.push(started_us);
+            started_stages.push(finish_stage_sample());
             status_during_start.push(status_us);
 
             let mut terminal = start;
@@ -319,19 +613,21 @@ async fn authority_usage_history_benchmark() {
             terminal.reason_code = "finished".into();
             terminal.upstream_status = Some(200);
             terminal.latency_ms = Some(1);
+            begin_stage_sample();
             let began = Instant::now();
             handle
                 .settle_profile_execution(request, Some(7), terminal.clone())
                 .await
                 .unwrap();
             settled.push(began.elapsed().as_micros());
+            settled_stages.push(finish_stage_sample());
             // Replay uses the same worker path and must not add another charge.
             handle
                 .settle_profile_execution(request, Some(7), terminal)
                 .await
                 .unwrap();
 
-            let output = dir.path().join(format!("history-{sample}.backup"));
+            let output = canonical_dir.join(format!("history-{sample}.backup"));
             let began = Instant::now();
             let saved = handle.backup(output.clone(), proof()).await.unwrap();
             backup.push(began.elapsed().as_micros());
@@ -339,9 +635,11 @@ async fn authority_usage_history_benchmark() {
             assert!(std::fs::metadata(&output).unwrap().len() > 0);
             std::fs::remove_file(output).unwrap();
             handle.lock("history-benchmark").await.unwrap();
+            begin_stage_sample();
             let began = Instant::now();
             handle.unlock(proof()).await.unwrap();
             unlock.push(began.elapsed().as_micros());
+            unlock_stages.push(finish_stage_sample());
         }
         let totals = handle
             .profile_usage(
@@ -353,8 +651,8 @@ async fn authority_usage_history_benchmark() {
             .unwrap();
         assert_eq!(totals.requests, 5);
         assert_eq!(totals.output_tokens, 35);
-        let rss = rss_field("VmRSS:");
-        let high_water = rss_field("VmHWM:");
+        let rss = current_rss_kib();
+        let high_water = peak_rss_kib();
         handle.shutdown(Some(proof())).await.unwrap();
         worker.join().unwrap();
         {
@@ -384,7 +682,15 @@ async fn authority_usage_history_benchmark() {
                 "authority_settled":timings(settled),"admin_status":timings(status),
                 "admin_status_during_admission":timings(status_during_start),
                 "recovery_unlock_us":recovery_unlock_us,"steady_unlock":timings(unlock),
-                "backup":timings(backup),"process_rss_kib":rss,"process_peak_rss_kib":high_water,
+                "backup":timings(backup),
+                "stage_attribution":{
+                    "recovery_unlock":stage_summary(&[recovery_unlock_stage]),
+                    "authority_usage_read":stage_summary(&read_stages),
+                    "authority_started":stage_summary(&started_stages),
+                    "authority_settled":stage_summary(&settled_stages),
+                    "steady_unlock":stage_summary(&unlock_stages),
+                },
+                "process_rss_kib":rss,"process_peak_rss_kib":high_water,
                 "debug_assertions":cfg!(debug_assertions),
                 "kdf":Argon2Params::RFC9106_LOW_MEMORY,
                 "scope":"real Authority queue, SQLite, audit, backup and password unlock; excludes Broker IPC and network",

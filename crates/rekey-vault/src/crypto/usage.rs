@@ -89,14 +89,23 @@ pub(crate) fn seal(
     if revision > i64::MAX as u64 {
         return Err(AuthorityError::StorageIntegrityFailed);
     }
+    #[cfg(test)]
+    let digest_began = std::time::Instant::now();
+    let records_digest = digest(rows)?;
+    #[cfg(test)]
+    crate::store::usage::record_new_digest_stage(digest_began.elapsed().as_micros(), rows.len());
     let mut state = UsageState {
         revision,
         record_count: rows.len() as u64,
-        records_digest: digest(rows)?,
+        records_digest,
         seal_nonce: [0; 12],
         seal_ciphertext: [0; 16],
     };
+    #[cfg(test)]
+    let seal_began = std::time::Instant::now();
     let sealed = aead::seal(key, &aad(vault, &state), &[])?;
+    #[cfg(test)]
+    crate::store::usage::record_new_seal_stage(seal_began.elapsed().as_micros());
     state.seal_nonce = sealed.nonce;
     state.seal_ciphertext = sealed
         .ciphertext
@@ -110,9 +119,16 @@ pub(crate) fn verify(
     rows: &[UsageRecord],
     state: &UsageState,
 ) -> Result<(), AuthorityError> {
-    if state.record_count != rows.len() as u64 || state.records_digest != digest(rows)? {
+    #[cfg(test)]
+    let digest_began = std::time::Instant::now();
+    let computed_digest = digest(rows)?;
+    #[cfg(test)]
+    crate::store::usage::record_verify_digest_stage(digest_began.elapsed().as_micros(), rows.len());
+    if state.record_count != rows.len() as u64 || state.records_digest != computed_digest {
         return Err(AuthorityError::StorageIntegrityFailed);
     }
+    #[cfg(test)]
+    let aead_began = std::time::Instant::now();
     let bytes = aead::open(
         key,
         &aad(vault, state),
@@ -120,6 +136,8 @@ pub(crate) fn verify(
         &state.seal_ciphertext,
     )
     .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+    #[cfg(test)]
+    crate::store::usage::record_aead_verify_stage(aead_began.elapsed().as_micros());
     if !bytes.is_empty() {
         return Err(AuthorityError::StorageIntegrityFailed);
     }
