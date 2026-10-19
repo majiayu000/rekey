@@ -29,9 +29,9 @@ pub(crate) struct StageSample {
     pub contexts_parsed: usize,
     pub raw_context_bytes: usize,
     pub max_record_width_bytes: usize,
-    pub allocated_row_vec_bytes: usize,
-    pub allocated_heap_string_bytes: usize,
-    pub allocated_total_bytes: usize,
+    pub retained_row_vec_bytes: usize,
+    pub retained_heap_string_bytes: usize,
+    pub retained_total_bytes: usize,
 }
 
 static STAGE_COLLECTION_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -49,9 +49,9 @@ static CURRENT_STAGE_SAMPLE: Mutex<StageSample> = Mutex::new(StageSample {
     contexts_parsed: 0,
     raw_context_bytes: 0,
     max_record_width_bytes: 0,
-    allocated_row_vec_bytes: 0,
-    allocated_heap_string_bytes: 0,
-    allocated_total_bytes: 0,
+    retained_row_vec_bytes: 0,
+    retained_heap_string_bytes: 0,
+    retained_total_bytes: 0,
 });
 
 fn record_width_bytes(row: &UsageRecord) -> usize {
@@ -77,8 +77,8 @@ pub(crate) fn record_sql_decode_stage(
     }
     let raw_context_bytes = rows.iter().map(|r| r.context_json.len()).sum();
     let max_record_width_bytes = rows.iter().map(record_width_bytes).max().unwrap_or(0);
-    let allocated_row_vec_bytes = row_vec_capacity * std::mem::size_of::<UsageRecord>();
-    let allocated_heap_string_bytes = rows
+    let retained_row_vec_bytes = row_vec_capacity * std::mem::size_of::<UsageRecord>();
+    let retained_heap_string_bytes = rows
         .iter()
         .map(|r| {
             r.instance_slug.capacity()
@@ -93,9 +93,9 @@ pub(crate) fn record_sql_decode_stage(
     sample.rows_scanned += rows.len();
     sample.raw_context_bytes = raw_context_bytes;
     sample.max_record_width_bytes = max_record_width_bytes;
-    sample.allocated_row_vec_bytes = allocated_row_vec_bytes;
-    sample.allocated_heap_string_bytes = allocated_heap_string_bytes;
-    sample.allocated_total_bytes = allocated_row_vec_bytes + allocated_heap_string_bytes;
+    sample.retained_row_vec_bytes = retained_row_vec_bytes;
+    sample.retained_heap_string_bytes = retained_heap_string_bytes;
+    sample.retained_total_bytes = retained_row_vec_bytes + retained_heap_string_bytes;
 }
 
 pub(crate) fn record_verify_digest_stage(elapsed_us: u128, rows: usize) {
@@ -185,6 +185,7 @@ fn stage_summary(samples: &[StageSample]) -> serde_json::Value {
     let new_digest_us = median_u128(|s| s.new_digest_us);
     let new_seal_us = median_u128(|s| s.new_seal_us);
     let audit_commit_us = median_u128(|s| s.audit_commit_us);
+    // Sum of independently selected per-stage medians, not any single run's total.
     let stage_total_us = sql_decode_us
         + canonical_digest_us
         + aead_verify_us
@@ -209,9 +210,9 @@ fn stage_summary(samples: &[StageSample]) -> serde_json::Value {
         "contexts_parsed": last.contexts_parsed,
         "raw_context_bytes": last.raw_context_bytes,
         "max_record_width_bytes": last.max_record_width_bytes,
-        "allocated_row_vec_bytes": last.allocated_row_vec_bytes,
-        "allocated_heap_string_bytes": last.allocated_heap_string_bytes,
-        "allocated_total_bytes": last.allocated_total_bytes,
+        "retained_row_vec_bytes": last.retained_row_vec_bytes,
+        "retained_heap_string_bytes": last.retained_heap_string_bytes,
+        "retained_total_bytes": last.retained_total_bytes,
     })
 }
 

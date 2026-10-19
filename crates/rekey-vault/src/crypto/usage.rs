@@ -119,12 +119,15 @@ pub(crate) fn verify(
     rows: &[UsageRecord],
     state: &UsageState,
 ) -> Result<(), AuthorityError> {
+    if state.record_count != rows.len() as u64 {
+        return Err(AuthorityError::StorageIntegrityFailed);
+    }
     #[cfg(test)]
     let digest_began = std::time::Instant::now();
     let computed_digest = digest(rows)?;
     #[cfg(test)]
     crate::store::usage::record_verify_digest_stage(digest_began.elapsed().as_micros(), rows.len());
-    if state.record_count != rows.len() as u64 || state.records_digest != computed_digest {
+    if state.records_digest != computed_digest {
         return Err(AuthorityError::StorageIntegrityFailed);
     }
     #[cfg(test)]
