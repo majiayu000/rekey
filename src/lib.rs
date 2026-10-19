@@ -103,9 +103,17 @@ pub mod harness {
             "parse generated policy key",
         ));
         let admin_sock = state_dir.join("runtime").join("admin.sock");
+        let agent_sock = state_dir.join("runtime").join("agent.sock");
         let mut ready = false;
-        for _ in 0..200 {
-            if tokio::net::UnixStream::connect(&admin_sock).await.is_ok() {
+        let startup_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        while tokio::time::Instant::now() < startup_deadline {
+            if serve_task.is_finished() {
+                serve_task.await.expect("join failed startup broker");
+                panic!("broker exited during startup");
+            }
+            if tokio::net::UnixStream::connect(&admin_sock).await.is_ok()
+                && tokio::net::UnixStream::connect(&agent_sock).await.is_ok()
+            {
                 ready = true;
                 break;
             }
