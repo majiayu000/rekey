@@ -23,6 +23,13 @@ use std::time::Instant;
 #[cfg(test)]
 mod history_benchmark;
 
+#[cfg(test)]
+pub(crate) use history_benchmark::{
+    record_aead_verify_stage, record_audit_commit_stage, record_budget_totals_stage,
+    record_context_parse_stage, record_new_digest_stage, record_new_seal_stage,
+    record_sql_decode_stage, record_verify_digest_stage,
+};
+
 fn corrupt<T>() -> Result<T, AuthorityError> {
     Err(AuthorityError::StorageIntegrityFailed)
 }
@@ -41,6 +48,8 @@ fn get<T: rusqlite::types::FromSql>(
         .map_err(|_| AuthorityError::StorageIntegrityFailed)
 }
 fn load(conn: &Connection) -> Result<(Vec<UsageRecord>, UsageState), AuthorityError> {
+    #[cfg(test)]
+    let decode_began = Instant::now();
     let mut query = conn.prepare_cached("SELECT request_id,principal_id,instance_slug,utc_day,started_at_ms,context_json,generation_max_output,output_tokens,source,terminal_json,settled_at_ms FROM profile_usage ORDER BY request_id").map_err(storage)?;
     let mut results = query.query([]).map_err(storage)?;
     let mut rows = Vec::new();
@@ -77,6 +86,8 @@ fn load(conn: &Connection) -> Result<(Vec<UsageRecord>, UsageState), AuthorityEr
         .optional()
         .map_err(storage)?
         .ok_or(AuthorityError::StorageIntegrityFailed)??;
+    #[cfg(test)]
+    record_sql_decode_stage(decode_began.elapsed().as_micros(), &rows, rows.capacity());
     Ok((rows, state))
 }
 pub(crate) fn verified(
@@ -86,6 +97,8 @@ pub(crate) fn verified(
 ) -> Result<(Vec<UsageRecord>, UsageState), AuthorityError> {
     let (rows, state) = load(conn)?;
     crypto::usage::verify(key, vault, &rows, &state)?;
+    #[cfg(test)]
+    let parse_began = Instant::now();
     // Decode context only after authenticating the complete raw row text.
     for row in &rows {
         let context: UsageContext = serde_json::from_str(&row.context_json)
@@ -96,6 +109,8 @@ pub(crate) fn verified(
             return corrupt();
         }
     }
+    #[cfg(test)]
+    record_context_parse_stage(parse_began.elapsed().as_micros(), rows.len(), rows.len());
     Ok((rows, state))
 }
 pub(super) fn initial_state(
@@ -140,7 +155,10 @@ fn totals(
     instance: &str,
     day: i64,
 ) -> Result<UsageTotals, AuthorityError> {
-    rows.iter()
+    #[cfg(test)]
+    let totals_began = Instant::now();
+    let result = rows
+        .iter()
         .filter(|r| r.principal_id == principal && r.instance_slug == instance && r.utc_day == day)
         .try_fold(UsageTotals::default(), |mut sum, row| {
             sum.requests = sum
@@ -152,7 +170,10 @@ fn totals(
                 .checked_add(row.output_tokens.unwrap_or(0))
                 .ok_or(AuthorityError::StorageIntegrityFailed)?;
             Ok(sum)
-        })
+        });
+    #[cfg(test)]
+    record_budget_totals_stage(totals_began.elapsed().as_micros(), rows.len());
+    result
 }
 fn current(not_after: Instant, wall: Option<i64>) -> Result<(), AuthorityError> {
     if Instant::now() >= not_after {
@@ -197,8 +218,12 @@ fn settle_row(
     measured: Option<u64>,
     event: &mut AuditEvent,
 ) -> Result<bool, AuthorityError> {
+    #[cfg(test)]
+    let parse_began = Instant::now();
     let stored: UsageContext = serde_json::from_str(&row.context_json)
         .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+    #[cfg(test)]
+    record_context_parse_stage(parse_began.elapsed().as_micros(), 0, 1);
     let mut actual = event_context(event)?;
     if stored.credential_version.is_none() {
         actual.credential_version = None;
@@ -295,21 +320,36 @@ impl SqliteRecordStore {
         let admitted = sum.requests < usage.max_requests_per_day
             && sum.output_tokens < usage.max_output_tokens_per_day;
         if admitted {
+            #[cfg(test)]
+            let write_began = Instant::now();
             write(&tx, &row, true)?;
+            #[cfg(test)]
+            let write_us = write_began.elapsed().as_micros();
             rows.insert(position, row);
-            replace_state(&tx, &next_state(key, vault, &rows, &state)?)?;
+            let next = next_state(key, vault, &rows, &state)?;
+            #[cfg(test)]
+            let commit_began = Instant::now();
+            replace_state(&tx, &next)?;
             for event in events {
                 super::audit::insert(&tx, event)?;
             }
+            current(not_after, wall)?;
+            commit_audited(tx)?;
+            #[cfg(test)]
+            record_audit_commit_stage(write_us + commit_began.elapsed().as_micros());
         } else {
+            #[cfg(test)]
+            let commit_began = Instant::now();
             let mut blocked = events.last().ok_or_else(invalid)?.clone();
             blocked.event_type = event_type::EXECUTION_BLOCKED;
             blocked.outcome = outcome::DENIED;
             blocked.reason_code = "profile-daily-budget".into();
             super::audit::insert(&tx, &blocked)?;
+            current(not_after, wall)?;
+            commit_audited(tx)?;
+            #[cfg(test)]
+            record_audit_commit_stage(commit_began.elapsed().as_micros());
         }
-        current(not_after, wall)?;
-        commit_audited(tx)?;
         Ok(if admitted {
             UsageAdmission::Started
         } else {
@@ -336,10 +376,20 @@ impl SqliteRecordStore {
         if !settle_row(row, measured, &mut event)? {
             return Ok(());
         }
+        #[cfg(test)]
+        let write_began = Instant::now();
         write(&tx, row, false)?;
-        replace_state(&tx, &next_state(key, vault, &rows, &state)?)?;
+        #[cfg(test)]
+        let write_us = write_began.elapsed().as_micros();
+        let next = next_state(key, vault, &rows, &state)?;
+        #[cfg(test)]
+        let commit_began = Instant::now();
+        replace_state(&tx, &next)?;
         super::audit::insert(&tx, &event)?;
-        commit_audited(tx)
+        commit_audited(tx)?;
+        #[cfg(test)]
+        record_audit_commit_stage(write_us + commit_began.elapsed().as_micros());
+        Ok(())
     }
     pub(crate) fn recover_profile_usage(
         &mut self,
@@ -352,9 +402,15 @@ impl SqliteRecordStore {
             .map_err(|_| AuthorityError::AuditCommitFailed)?;
         let (mut rows, state) = verified(&tx, key, vault)?;
         let mut changed = false;
+        #[cfg(test)]
+        let mut write_us = 0u128;
         for row in rows.iter_mut().filter(|r| r.output_tokens.is_none()) {
+            #[cfg(test)]
+            let parse_began = Instant::now();
             let ctx: UsageContext = serde_json::from_str(&row.context_json)
                 .map_err(|_| AuthorityError::StorageIntegrityFailed)?;
+            #[cfg(test)]
+            record_context_parse_stage(parse_began.elapsed().as_micros(), 0, 1);
             let mut event = AuditEvent {
                 event_id: crypto::random_array()?,
                 request_id: Some(row.request_id),
@@ -375,21 +431,35 @@ impl SqliteRecordStore {
                 created_at_ms: now_ms()?,
             };
             settle_row(row, None, &mut event)?;
+            #[cfg(test)]
+            let write_began = Instant::now();
             write(&tx, row, false)?;
             super::audit::insert(&tx, &event)?;
+            #[cfg(test)]
+            {
+                write_us += write_began.elapsed().as_micros();
+            }
             changed = true;
         }
         if !changed {
             return Ok(());
         }
-        replace_state(&tx, &next_state(key, vault, &rows, &state)?)?;
-        commit_audited(tx)
+        let next = next_state(key, vault, &rows, &state)?;
+        #[cfg(test)]
+        let commit_began = Instant::now();
+        replace_state(&tx, &next)?;
+        commit_audited(tx)?;
+        #[cfg(test)]
+        record_audit_commit_stage(write_us + commit_began.elapsed().as_micros());
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(debug_assertions))]
+    use crate::TestRandomId as _;
     use crate::model::AuthorizationEvidence;
     use rekey_domain::ids::{ActionId, CredentialId, PolicyRuleId, SessionId};
 

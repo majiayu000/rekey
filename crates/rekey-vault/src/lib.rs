@@ -48,4 +48,39 @@ mod tests {
     }
 }
 
+#[cfg(all(test, not(debug_assertions)))]
+pub(crate) trait TestRandomId {
+    fn new_random() -> Self;
+}
+
+#[cfg(all(test, not(debug_assertions)))]
+macro_rules! impl_test_random_id {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            impl TestRandomId for $ty {
+                fn new_random() -> Self {
+                    use std::sync::atomic::{AtomicU64, Ordering};
+                    static NEXT_TEST_ID: AtomicU64 = AtomicU64::new(1);
+                    let value = NEXT_TEST_ID.fetch_add(1, Ordering::Relaxed);
+                    let mut bytes = [0u8; 16];
+                    bytes[8..].copy_from_slice(&value.to_be_bytes());
+                    Self::from_random_bytes(bytes)
+                }
+            }
+        )+
+    };
+}
+
+#[cfg(all(test, not(debug_assertions)))]
+impl_test_random_id!(
+    rekey_domain::ids::VaultId,
+    rekey_domain::ids::CredentialId,
+    rekey_domain::ids::ActionId,
+    rekey_domain::ids::SessionId,
+    rekey_domain::ids::RequestId,
+    rekey_domain::ids::PrincipalId,
+    rekey_domain::ids::PolicyRuleId,
+    rekey_domain::ids::LeaseRegistrationId,
+);
+
 mod private_material;

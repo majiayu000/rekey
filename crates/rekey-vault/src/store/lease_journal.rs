@@ -237,6 +237,8 @@ impl SqliteRecordStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(debug_assertions))]
+    use crate::TestRandomId as _;
     #[tokio::test]
     async fn journal_expiry_at_commit_rolls_back_row_audit_and_manifest_after_all_writes() {
         use crate::{

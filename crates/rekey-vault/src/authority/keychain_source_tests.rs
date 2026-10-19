@@ -1,5 +1,7 @@
 //! Synthetic-only Actor/SQLite proof; never calls a Keychain item API.
 use super::*;
+#[cfg(not(debug_assertions))]
+use crate::TestRandomId as _;
 use crate::bootstrap::{confirm_vault_init, init_vault};
 use crate::crypto::kdf::Argon2Params;
 use crate::secret::SecretInput;

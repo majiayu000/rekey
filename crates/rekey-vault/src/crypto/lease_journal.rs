@@ -373,6 +373,8 @@ pub(crate) fn verify_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(debug_assertions))]
+    use crate::TestRandomId as _;
     use crate::model::LeaseExecutionContext;
     use rekey_domain::ids::{ActionId, CredentialId, LeaseRegistrationId, RequestId, SessionId};
     fn fixture() -> (VaultId, LeaseJournalRecord, LeasePayload) {

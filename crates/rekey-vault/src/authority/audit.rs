@@ -388,6 +388,8 @@ impl Worker {
 #[cfg(test)]
 mod retention_tests {
     use super::*;
+    #[cfg(not(debug_assertions))]
+    use crate::TestRandomId as _;
     use crate::handle::AuthorityConfig;
     use crate::secret::SecretInput;
     use std::time::{Duration, Instant};

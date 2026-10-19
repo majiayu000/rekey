@@ -69,3 +69,46 @@ absolute performance conclusions. Do not compare these milliseconds with the
 historical release-profile measurements as an optimization result. No native
 application, macOS device, external Codex, Linux container G2 reference-boundary,
 L1 upgrade or release-readiness claim follows from these tests.
+
+## Phase A Stage Attribution (2026-10-14, `9537cf2`, Darwin arm64)
+
+Test-only stage attribution (`#[cfg(test)]`), store-level `profile_usage` timing,
+and macOS `proc_pid_rusage` / `getrusage` RSS sampling were added in
+`crates/rekey-vault/src/store/usage/history_benchmark.rs` without changing any
+production runtime behavior, schema, or cryptographic format. Both `--release`
+(36.27s vs 35.27s pre-attribution baseline) and `debug` (238.64s vs 292.33s
+pre-attribution baseline) runs completed with 2 passed and 0 failed on Darwin
+arm64 (`rustc 1.95.0`). See
+[the stage-attributed JSON receipt](2026-10-14-authority-history-attribution.json).
+
+### Release Profile (`--release`, `debug_assertions = false`) Medians (ms)
+
+| History rows | Store read | Store `profile_usage` | Store admission | Store settlement | Authority read | Authority admission | Authority settlement | Contended `status()` |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1,000 | 2.27 | 2.27 | 2.88 | 2.73 | 1.86 | 2.40 | 2.33 | 2.41 |
+| 10,000 | 19.78 | 20.81 | 24.60 | 24.89 | 20.38 | 24.33 | 24.39 | 24.35 |
+| 100,000 | 200.72 | 198.37 | 232.60 | 233.70 | 206.90 | 239.84 | 243.51 | 239.87 |
+
+### Stage Breakdown at 100,000 Rows (`authority_started`)
+
+| Stage | `--release` median (ms) | `--release` share | `debug` median (ms) | `debug` share |
+| :--- | ---: | ---: | ---: | ---: |
+| `context_parse_us` (`100,004` JSON decodes) | 104.47 | 44.56% | 1,359.47 | 80.77% |
+| `sql_decode_us` (full-table `SELECT` + `88.0 MiB` alloc) | 54.42 | 23.21% | 171.95 | 10.22% |
+| `canonical_digest_us` (read SHA-256 over all rows) | 37.49 | 15.99% | 74.82 | 4.44% |
+| `new_digest_us` (write SHA-256 over all rows) | 37.25 | 15.89% | 74.90 | 4.45% |
+| `audit_commit_us` (SQLite write + `commit_audited`) | 0.54 | 0.23% | 0.55 | 0.03% |
+| `budget_totals_us` (in-memory linear fold) | 0.25 | 0.11% | 1.34 | 0.08% |
+| `new_seal_us` + `aead_verify_us` (AES-256-GCM) | 0.02 | 0.01% | 0.12 | 0.01% |
+| **Attributed stage sum (`stage_total_us`, sum of per-stage medians)** | **234.43** | **100.00%** | **1,683.15** | **100.00%** |
+| **Total `authority_started` wall-clock** | **239.84** | — | **1,696.79** | — |
+
+`stage_total_us` adds each stage's median across the five samples, so it need not equal any single run. The wall-clock total also includes the benchmark's own O(N) metric passes (row widths and retained capacity) that run outside the stage timers; that instrumentation, plus untimed glue, accounts for the gap between the stage sum and the wall-clock row. Instrumented source: `48861ed` on the production base `9537cf2`.
+
+Per-operation structural and allocation metrics at `100,000` rows (`authority_started`):
+- `total_rows`: `100,004`
+- `rows_scanned`: `500,021` (`5N + 1` across `load`, `verify`, `context_parse`, `totals`, and `next_state`)
+- `contexts_parsed`: `100,004` (`60,002,400` bytes of `context_json` parsed per call)
+- `retained_total_bytes`: `92,269,357` bytes (`88.00 MiB` of capacity retained by the loaded rows, not total allocation; transient buffers freed during decode are excluded: `25,165,824` bytes `Vec<UsageRecord>` + `67,103,533` bytes heap strings)
+- End-of-benchmark `process_rss_kib` / `process_peak_rss_kib`: `906,432 KiB` (`885.19 MiB` in `--release`), `664,544` / `690,608 KiB` (in `debug`).
+
