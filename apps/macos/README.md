@@ -51,7 +51,7 @@ App 在签名前会装入静态 `Contents/Library/LaunchAgents/com.rekey.rekeyd.
 - 个人策略：读取当前完整 signed Connection 集合及策略摘要；编辑 read/write/具体方法、路径和允许值，调用方覆盖只能收紧。草案展示完整 before/after 与连接定义，App 确认展示定义与原始签名字节一致，再用 Secure Enclave 签名并提交逐次证明。现有 SSH 规则在连接编辑时保留；空连接集合撤销全部 HTTP 连接。窗口或工作区变化取消迟到结果，不自动重签或重试。
 - Agent 接入：通过 `rekey connect claude-code`、`rekey connect codex`、`rekey connect generic` 写入客户端配置和说明；本机调用不需要 token。Agent 正常启动，需要密钥时调用 Rekey。固定操作和 capability 页面仅在 lab 显示。
 - 本机审批：审阅 daemon 的完整请求后显式批准一次、30 分钟或最多 8 小时。时间窗绑定同一连接、规则、调用方和策略，锁定或更改策略后失效，不能覆盖 deny。默认焦点与 Return 是拒绝。
-- 访问请求：收件箱展示 Agent 请求的 provider、connection、operation 与理由。先添加密钥并激活对应签名规则，再完成请求；可拒绝并拉黑或解除拉黑。调用方标注仅用于记录，不代表认证。后台轮询及通知不触发系统认证。
+- 访问请求：收件箱展示 Agent 请求的 provider、connection、operation 与理由。先添加密钥并激活对应签名规则，再完成请求；可拒绝并拉黑或解除拉黑。调用方标注仅用于记录，不代表认证。App 运行期间（含界面锁定、窗口关闭）每 15 秒后台轮询访问请求与本机审批，更新 Dock 角标；通知权限在首次连接或首次请求时询问一次并持久保存。后台轮询及通知不触发系统认证。
 - Activity：按调用方、连接和 read/write / 临时凭据展示结构化审计计数与用量，不展示 provider 凭证、原始请求或敏感响应；点击分组可查看最近 50 条调用的路径、结果、规则和审批详情。T1 显示签名目标 / 权限与签发事件的实际过期时间。
 - 团队策略：安装外部 Ed25519 信任根、导入签名策略并查看状态。导入后查看连接集合；短期 capability 管理仅在 lab 显示。
 - 外部 Ed25519 审批：真实 pending 收件箱、只读详情与来源签名信封导出。详情展示主体、会话、操作版本、资源、参数/策略摘要、审批人、次数和时限，以及当前本机来源公钥；相同版本的操作定义单独标明为本机元数据。信封不含原始正文或请求头，UI 未验证签名；完整请求核对与签名继续使用独立工具和独立固定的来源公钥。
@@ -67,7 +67,7 @@ target/release/rekey-policy-sign --help
 target/release/rekey-approval-sign --help
 ```
 
-签名文件与 Agent 接入见 [用户指南](../../docs/user-guide.md)。`connect` 只在用户明确操作后修改所支持客户端的受管配置和说明文件；不提供任意执行控制台。审批通知仅在用户开启后、App 运行期间提示，不触发认证。保护等级只按已确认事实保守显示；服务签名标签独立于等级，未知状态不宣称 L1-dev/L1/L2。
+签名文件与 Agent 接入见 [用户指南](../../docs/user-guide.md)。`connect` 只在用户明确操作后修改所支持客户端的受管配置和说明文件；不提供任意执行控制台。请求通知在用户授予系统权限后、App 运行期间提示，不含请求内容，不触发认证；未授权时仅显示 Dock 角标。保护等级只按已确认事实保守显示；服务签名标签独立于等级，未知状态不宣称 L1-dev/L1/L2。
 
 关闭 UI 不会终止 Broker；默认由 Broker 在空闲 7 天后锁定。可主动点击“锁定”或设置里的“停止服务”；停止服务保留登录启动设置，且需要逐次证明。“停止并停用登录启动”在同一次证明的 SHUTDOWN 成功后才调用注销接口；服务不可达时不会未经验证强行注销，可由用户在系统登录项中管理。不缓存密码或系统认证 K；密码/恢复密钥解锁时，可明确勾选默认关闭的“启用系统认证（7天）”。新 K 保存在要求 userPresence 的数据保护钥匙串中，保险库保存绑定 vault ID 与固定到期时间的加密根密钥材料。刷新和启动不会读取 K；重启后必须点击系统认证解锁。每次支持的 A2 操作显式读取 K，操作结束不保留；恢复与验证不会延长原期限。手动锁定、空闲锁定或更改密码/恢复密钥会撤销授权；正常停止服务保留授权。管理会话允许连续添加 API Key；轮换或撤销凭证仍需密码、恢复密钥或系统认证的新证明。默认 App 不显示或复制已有密钥，只通过签名连接调用；CLI 的明文查看仅在 lab 中保留。恢复结果只在当前结果窗口中存在，用户可显式保存为新建的 0600 文件。
 
@@ -112,7 +112,7 @@ xcrun swiftc -warnings-as-errors -swift-version 5 \
 
 机构登录仅在 `--features lab` 的服务上可用：设置中选择受保护的 OIDC 节点配置后启动服务；先本机解锁，再开始机构登录、在浏览器完成认证，并接收结果到新的私有会话文件。也可显式选择已有会话文件，取消未完成登录或退出本机机构会话。应用只传文件路径，不读取管理 token；密码逐次确认仍保留。合成调用检查不替代真实 IdP／Broker／GUI 点击验收。
 
-本机审批使用 `approval review/approve/reject`：面板验证完整原始 UTF-8 正文的 RKREVIEW 哈希，默认焦点与 Return 都是拒绝。明确决定时才逐次读取 presence key，后台通知和收件箱轮询不触发认证，取消认证不发送决定。通知使用固定文案并在本次 App 会话中去重。`/tmp/rekey-ui-contract --local-approval-boundary-only` 运行合成边界检查；它不访问真实 Keychain、Secure Enclave 或通知权限，不能替代签名设备验收。
+本机审批使用 `approval review/approve/reject`：面板验证完整原始 UTF-8 正文的 RKREVIEW 哈希，默认焦点与 Return 都是拒绝。明确决定时才逐次读取 presence key，后台通知和收件箱轮询不触发认证，取消认证不发送决定。通知使用固定文案并在本次 App 会话中去重；`/tmp/rekey-ui-contract --privacy-only` 用合成 CLI 覆盖后台提醒、权限选择持久化与角标回退。`/tmp/rekey-ui-contract --local-approval-boundary-only` 运行合成边界检查；它不访问真实 Keychain、Secure Enclave 或通知权限，不能替代签名设备验收。
 
 ## 0.5 开发版界面隐私锁
 
