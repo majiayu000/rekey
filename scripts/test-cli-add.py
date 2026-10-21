@@ -6,6 +6,7 @@ Usage: python3 scripts/test-cli-add.py target/debug/rekey
 """
 import json
 import os
+import signal
 from pathlib import Path
 import socket
 import subprocess
@@ -127,8 +128,10 @@ with tempfile.TemporaryDirectory(prefix='rk-add-') as root:
         assert b'not Secure Enclave' in remembered.stderr
         remember_file = state / 'remembered-unlock.key'
         assert (remember_file.stat().st_mode & 0o777) == 0o600
-        broker.terminate()
+        # A closed terminal (SIGHUP) is an orderly stop: the remembered ticket survives.
+        broker.send_signal(signal.SIGHUP)
         broker.wait(timeout=10)
+        assert not (state / '.desktop-runtime-active').exists(), 'SIGHUP left a crash marker'
         broker = subprocess.Popen([str(binary.parent / 'rekeyd'), 'serve', '--state-dir', str(state)],
                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                   stderr=subprocess.DEVNULL, env=environment)
