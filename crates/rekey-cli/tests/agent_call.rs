@@ -260,7 +260,20 @@ fn public_requests_and_errors_preserve_agent_next_step() {
         },
     );
     assert!(output.status.success());
-    assert_eq!(output_json(&output)["expires_at_ms"], 1234);
+    let requested = output_json(&output);
+    assert_eq!(requested["expires_at_ms"], 1234);
+    assert!(
+        requested["next"]
+            .as_str()
+            .unwrap()
+            .contains("rekey await 00112233-4455-4677-8899-aabbccddeeff")
+    );
+    assert!(
+        requested["user_hint"]
+            .as_str()
+            .unwrap()
+            .contains("Open Rekey")
+    );
     let output = exchange(&["call", "github.create_issue", "--no-wait"], |listener| {
         let (mut stream, _) = listener.accept().unwrap();
         let (header, _, _) = receive(&mut stream);

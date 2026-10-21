@@ -1,10 +1,30 @@
 import SwiftUI
 import AppKit
+import UserNotifications
 
 let ink = Color(red: 0.10, green: 0.17, blue: 0.15)
 let green = Color(red: 0.10, green: 0.36, blue: 0.24)
 let canvas = Color(red: 0.975, green: 0.98, blue: 0.966)
 let sage = Color(red: 0.92, green: 0.95, blue: 0.92)
+
+/// Opening a request notification only brings the inbox forward; it never approves anything.
+final class NotificationRouter: NSObject, UNUserNotificationCenterDelegate {
+    weak var model: AppModel?
+    static let inboxURL = URL(string: "rekey://inbox")!
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+        await MainActor.run {
+            // With every window closed, only an external event recreates the
+            // SwiftUI window; the URL handler then selects the inbox.
+            if NSApp.windows.contains(where: { $0.isVisible }) {
+                model?.page = .approvals
+                NSApp.activate(ignoringOtherApps: true)
+            } else {
+                NSWorkspace.shared.open(Self.inboxURL)
+            }
+        }
+    }
+}
+let notificationRouter = NotificationRouter()
 
 @main
 struct RekeyApp: App {
@@ -14,7 +34,9 @@ struct RekeyApp: App {
             RootView().environmentObject(model)
                 .frame(minWidth: 1040, minHeight: 700)
                 .preferredColorScheme(.light)
+                .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
         }
+        .handlesExternalEvents(matching: ["*"])
         .defaultSize(width: 1380, height: 870)
         .windowStyle(.hiddenTitleBar)
         .commands { CommandGroup(replacing: .newItem) {} }
@@ -70,11 +92,19 @@ struct RootView: View {
             }
         }
         .background(canvas).foregroundStyle(ink).tint(green)
-        .task { model.startSecurityMonitoring(); await model.connectOnOpen() }
-        .onOpenURL { url in model.openOnboarding(url); NSApp.activate(ignoringOtherApps: true) }
+        .task {
+            notificationRouter.model = model
+            if RequestAlert.available { UNUserNotificationCenter.current().delegate = notificationRouter }
+            model.startSecurityMonitoring(); model.startRequestPolling(); await model.connectOnOpen()
+        }
+        .onOpenURL { url in
+            if url == NotificationRouter.inboxURL { model.page = .approvals } else { model.openOnboarding(url) }
+            NSApp.activate(ignoringOtherApps: true)
+        }
         .onDisappear { model.lockDesktop(reason: "窗口已关闭，请重新验证身份。") }
         .onReceive(Timer.publish(every: 15, on: .main, in: .common).autoconnect()) { _ in
-            if (phase == .active || model.approvalNotificationsEnabled) && !model.busy && model.operation == nil && model.result == nil && !model.showAddCredential && !model.showSession && !showActionForm && !model.showTemplate && !model.showPolicyDraft && model.onboardingRoute == nil {
+            // Background request alerts and the Dock badge come from AppModel.startRequestPolling.
+            if phase == .active && !model.busy && model.operation == nil && model.result == nil && !model.showAddCredential && !model.showSession && !showActionForm && !model.showTemplate && !model.showPolicyDraft && model.onboardingRoute == nil {
                 Task { await model.refresh(passive: true) }
             }
         }
@@ -401,10 +431,10 @@ struct RootView: View {
             VStack(alignment: .leading, spacing: 15) {
                 AccessRequestsPanel()
                 HStack {
-                    Button(model.approvalNotificationsEnabled ? "关闭审批提醒" : "启用审批提醒") {
+                    Button(model.approvalNotificationsEnabled ? "关闭请求提醒" : "启用请求提醒") {
                         Task { await model.setApprovalNotifications(!model.approvalNotificationsEnabled) }
                     }.disabled(model.approvalNotificationBusy)
-                    Text("仅发送静态提醒，不会自动批准。").font(.system(size: 12)).foregroundStyle(.secondary)
+                    Text("后台每 15 秒检查一次；提醒不含请求内容，也不会自动批准。").font(.system(size: 12)).foregroundStyle(.secondary)
                 }
                 if let message = model.approvalNotificationMessage { Text(message).font(.system(size: 12)).foregroundStyle(.secondary) }
                 if model.approvals.isEmpty { EmptyState(icon: "tray", title: "没有待审批请求", detail: "Agent 提交的有效审批请求会出现在这里。") }

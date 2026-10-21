@@ -7,6 +7,7 @@ import CryptoKit
 import UserNotifications
 import LocalAuthentication
 import CoreGraphics
+import os
 
 struct UIError: LocalizedError {
     let message: String
@@ -1033,7 +1034,12 @@ final class AppModel: ObservableObject {
     @Published var approvalDetails: ApprovalDetails?
     @Published var localApprovalDetails: LocalApprovalDetails?
     @Published private(set) var localApprovalNeedsRefresh = false
-    @Published private(set) var approvalNotificationsEnabled = false
+    @Published private(set) var approvalNotificationsEnabled: Bool
+    /// Pending access requests plus local approvals, as last seen by the background poll.
+    @Published private(set) var pendingRequestCount = 0
+    static let requestNotificationsKey = "requestNotifications"
+    private var requestPollTimer: Timer?
+    private var requestPollRunning = false
     @Published private(set) var approvalNotificationBusy = false
     @Published private(set) var approvalNotificationMessage: String?
     private(set) var notifiedApprovalIDs = Set<String>()
@@ -1091,7 +1097,7 @@ final class AppModel: ObservableObject {
             onboardingRoute = nil; onboardingConnection = nil; onboardingCommand = nil
             clearActivity()
             PresenceKey.invalidateAuthentication()
-            notifiedApprovalIDs.removeAll(); clearNativeFlow(); clearOIDCLogin(); oidcProfileFile = nil; oidcSessionFile = nil; oidcIdentity = nil
+            notifiedApprovalIDs.removeAll(); notifiedAccessIDs.removeAll(); pendingRequestCount = 0; clearNativeFlow(); clearOIDCLogin(); oidcProfileFile = nil; oidcSessionFile = nil; oidcIdentity = nil
         }
     } }
     private var launchedService: Process?
@@ -1106,9 +1112,11 @@ final class AppModel: ObservableObject {
         self.preferences = preferences; self.cliBinary = binary
         self.stateDirectory = stateDirectory ?? (preferences.string(forKey: "stateDirectory") ?? NSHomeDirectory() + "/.rekey")
         self.securitySettings = preferences.data(forKey: "desktopSecurity").flatMap { try? JSONDecoder().decode(DesktopSecuritySettings.self, from: $0) } ?? DesktopSecuritySettings()
+        self.approvalNotificationsEnabled = preferences.bool(forKey: Self.requestNotificationsKey)
     }
     deinit {
         securityTimer?.invalidate()
+        requestPollTimer?.invalidate()
         for (center, observer) in securityObservers { center.removeObserver(observer) }
     }
 
@@ -1527,7 +1535,6 @@ final class AppModel: ObservableObject {
         clearNativeFlow(); clearOIDCLogin()
         oidcSessionFile = nil; oidcIdentity = nil
         desktopToken = nil
-        notifiedApprovalIDs.removeAll()
         credentials = []; actions = []; approvals = []; approvalDetails = nil; policy = nil; audit = nil; selectedCredential = nil
         if let token, let owner { revokeDesktop(token, client: owner) }
     }
@@ -1542,6 +1549,7 @@ final class AppModel: ObservableObject {
         guard !busy, !oidcBusy else { return }
         let directory = stateDirectory
         await refresh()
+        if status != nil { await requestNotificationsIfUndecided() }
         guard directory == stateDirectory, status == nil, !needsSetup, result == nil, operation == nil else { return }
         startService()
     }
@@ -1783,6 +1791,7 @@ final class AppModel: ObservableObject {
                     try await BackgroundService.start()
                     busy = false
                     await refresh()
+                    if status != nil { await requestNotificationsIfUndecided() }
                     if backgroundServiceNeedsApproval { error = BackgroundService.statusDescription }
                 } catch { busy = false; self.error = error.localizedDescription }
             }
@@ -1914,7 +1923,7 @@ final class AppModel: ObservableObject {
         let revision = notificationRevision
         let flowRevision = nativeFlowRevision
         func current() -> Bool {
-            client.stateDirectory == stateDirectory && unlocked && approvalNotificationsEnabled && revision == notificationRevision && flowRevision == nativeFlowRevision
+            client.stateDirectory == stateDirectory && unlocked && revision == notificationRevision && flowRevision == nativeFlowRevision
         }
         guard current() else { return }
         do {
@@ -1923,49 +1932,89 @@ final class AppModel: ObservableObject {
             try await receiveApprovals(items)
             try await loadAccessInbox(client:client)
         } catch {
-            if current() { approvalNotificationMessage = "无法刷新审批提醒，请手动查看收件箱。" }
+            if current() { approvalNotificationMessage = "无法刷新收件箱，请手动刷新。" }
         }
     }
     func setApprovalNotifications(_ enabled: Bool,
                                   request: @escaping @Sendable () async throws -> Bool = {
-                                      try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert])
+                                      try await RequestAlert.authorize()
                                   }) async {
+        // A concurrent enable (first open plus first poll) must not invalidate the
+        // request already waiting for the user's answer; disabling always wins.
+        if enabled && approvalNotificationBusy { return }
         notificationRevision = UUID()
         let revision = notificationRevision
-        if !enabled { approvalNotificationsEnabled = false; approvalNotificationMessage = nil; return }
-        guard !approvalNotificationBusy else { return }
+        if !enabled { approvalNotificationsEnabled = false; preferences.set(false, forKey: Self.requestNotificationsKey); approvalNotificationMessage = nil; return }
         approvalNotificationBusy = true
         defer { approvalNotificationBusy = false }
         do {
             let granted = try await request()
             guard revision == notificationRevision else { return }
             approvalNotificationsEnabled = granted
-            approvalNotificationMessage = granted ? "已启用静态提醒；通知不会批准请求。" : "未获得通知权限，可继续手动查看收件箱。"
+            preferences.set(granted, forKey: Self.requestNotificationsKey)
+            RequestAlert.log.notice("request alerts authorization granted=\(granted, privacy: .public)")
+            approvalNotificationMessage = granted ? "已启用静态提醒；通知不会批准请求。横幅约 5 秒后收起，可在“系统设置 › 通知 › Rekey”把样式改为“提醒”。" : "未获得通知权限；Dock 图标角标仍会显示待处理请求数。"
         } catch {
+            RequestAlert.log.error("request alerts authorization failed: \(error.localizedDescription, privacy: .public)")
             if revision == notificationRevision { approvalNotificationsEnabled = false; approvalNotificationMessage = "通知权限请求失败，请稍后手动开启。" }
         }
     }
-    func receiveApprovals(_ items: [PendingApproval],
-                          send: @escaping @Sendable (String) async throws -> Void = { id in
-                              let center = UNUserNotificationCenter.current()
-                              guard await center.notificationSettings().authorizationStatus == .authorized else { throw UIError(message: "通知权限不可用。") }
-                              let content = UNMutableNotificationContent()
-                              content.title = "Rekey 有待审批请求"
-                              content.body = "请打开 Rekey 收件箱，查看完整请求后作出决定。"
-                              try await center.add(UNNotificationRequest(identifier: "rekey.approval." + id, content: content, trigger: nil))
-                          }) async throws {
+    func receiveApprovals(_ items: [PendingApproval]) async throws {
         guard items.count <= 128, Set(items.map(\.id)).count == items.count else { throw UIError(message: "审批列表超过上限或包含重复请求。") }
         approvals = items
-        let pending = Set(items.filter { if case .localPresence = $0.approver { return true }; return false }.map(\.id))
-        notifiedApprovalIDs.formIntersection(pending)
-        guard approvalNotificationsEnabled else { return }
-        let workspace = stateDirectory, revision = notificationRevision
-        for id in pending.sorted() where !notifiedApprovalIDs.contains(id) {
+    }
+    /// Asks for notification permission once per install; the answer persists across launches.
+    func requestNotificationsIfUndecided(request: @escaping @Sendable () async throws -> Bool = {
+        try await RequestAlert.authorize()
+    }) async {
+        guard preferences.object(forKey: Self.requestNotificationsKey) == nil else { return }
+        await setApprovalNotifications(true, request: request)
+    }
+    /// Polls independently of the window, desktop lock and busy UI state, so a background App
+    /// still surfaces Agent requests. Notifications are static: they carry no request text,
+    /// never approve anything, and only route the user to the inbox.
+    func startRequestPolling() {
+        guard requestPollTimer == nil else { return }
+        requestPollTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            Task { @MainActor in await self?.pollPendingRequests() }
+        }
+        if let timer = requestPollTimer { RunLoop.main.add(timer, forMode: .common) }
+        Task { await pollPendingRequests() }
+    }
+    func pollPendingRequests(client injectedClient: CLI? = nil,
+                             badge: @escaping @MainActor (Int) -> Void = { count in NSApp?.dockTile.badgeLabel = count > 0 ? String(count) : nil },
+                             request: @escaping @Sendable () async throws -> Bool = {
+                                 try await RequestAlert.authorize()
+                             },
+                             send: @escaping @Sendable (RequestAlert) async throws -> Void = { try await RequestAlert.deliver($0) }) async {
+        guard !requestPollRunning else { return }
+        requestPollRunning = true
+        defer { requestPollRunning = false }
+        let client = injectedClient ?? cli, workspace = stateDirectory
+        let inbox = try? await Task.detached { try client.decode(AccessInbox.self, ["access", "list"]) }.value
+        let pending = try? await Task.detached { try client.decode(PendingList.self, ["approval", "pending"]) }.value.challenges
+        guard workspace == stateDirectory else { return }
+        let accessIDs = inbox.map { Set($0.requests.filter { $0.status == "PENDING" }.map(\.id)) }
+        let approvalIDs = pending.map { Set($0.filter { if case .localPresence = $0.approver { return true }; return false }.map(\.id)) }
+        // Only a successful read may forget delivered IDs; a failed read must not re-notify later.
+        if let accessIDs { notifiedAccessIDs.formIntersection(accessIDs) }
+        if let approvalIDs { notifiedApprovalIDs.formIntersection(approvalIDs) }
+        let count = (accessIDs?.count ?? 0) + (approvalIDs?.count ?? 0)
+        pendingRequestCount = count
+        badge(count)
+        guard count > 0 else { return }
+        await requestNotificationsIfUndecided(request: request)
+        let revision = notificationRevision
+        let alerts = (accessIDs ?? []).subtracting(notifiedAccessIDs).sorted().map { RequestAlert(kind: .access, id: $0) }
+            + (approvalIDs ?? []).subtracting(notifiedApprovalIDs).sorted().map { RequestAlert(kind: .approval, id: $0) }
+        for alert in alerts {
             guard approvalNotificationsEnabled, workspace == stateDirectory, revision == notificationRevision else { return }
             // Mark before awaiting delivery: concurrent refreshes cannot duplicate it.
-            notifiedApprovalIDs.insert(id)
-            do { try await send(id) }
-            catch { approvalNotificationsEnabled = false; approvalNotificationMessage = "审批提醒发送失败，请手动查看收件箱。"; return }
+            if alert.kind == .access { notifiedAccessIDs.insert(alert.id) } else { notifiedApprovalIDs.insert(alert.id) }
+            do { try await send(alert) }
+            catch {
+                RequestAlert.log.error("request alert \(alert.identifier, privacy: .public) failed; alerts paused until relaunch: \(error.localizedDescription, privacy: .public)")
+                approvalNotificationsEnabled = false; approvalNotificationMessage = "提醒发送失败，请检查系统通知权限；Dock 角标仍会显示待处理数。"; return }
         }
     }
     @discardableResult
@@ -2195,6 +2244,35 @@ struct AccessRequestItem:Decodable,Identifiable,Sendable {
     var id:String {request_id}
 }
 struct AccessInbox:Decodable,Sendable {let requests:[AccessRequestItem];let blocked_callers:[String]}
+/// A static notification: identifiers only, never request text, providers or secrets.
+struct RequestAlert:Equatable,Sendable {
+    enum Kind:Sendable {case access,approval}
+    let kind:Kind;let id:String
+    var identifier:String {(kind == .access ? "rekey.access." : "rekey.approval.")+id}
+    var title:String {kind == .access ? "Rekey 有连接或权限请求" : "Rekey 有待审批请求"}
+    var body:String {kind == .access ? "请打开 Rekey 审批收件箱，审阅请求并签署规则。" : "请打开 Rekey 收件箱，查看完整请求后作出决定。"}
+    /// Diagnostics only: identifiers and system settings, never request text. Read with
+    /// `/usr/bin/log show --predicate 'subsystem == "com.starlight.rekey"' --info`.
+    static let log=Logger(subsystem:"com.starlight.rekey",category:"request-alerts")
+    /// Sound makes the default 5-second banner noticeable while another App is in front.
+    /// UNUserNotificationCenter raises an uncatchable exception without a bundle
+    /// identifier (bare test bundles); the Dock badge still covers that case.
+    static var available:Bool {Bundle.main.bundleIdentifier != nil}
+    static func authorize() async throws -> Bool {
+        guard available else {return false}
+        return try await UNUserNotificationCenter.current().requestAuthorization(options:[.alert,.sound])
+    }
+    static func deliver(_ alert:RequestAlert) async throws {
+        guard available else {throw UIError(message:"通知不可用：应用缺少 bundle 标识。")}
+        let center=UNUserNotificationCenter.current()
+        let settings=await center.notificationSettings()
+        log.notice("request alert \(alert.identifier, privacy: .public): authorization=\(settings.authorizationStatus.rawValue, privacy: .public) alert=\(settings.alertSetting.rawValue, privacy: .public) style=\(settings.alertStyle.rawValue, privacy: .public) sound=\(settings.soundSetting.rawValue, privacy: .public)")
+        guard settings.authorizationStatus == .authorized else { throw UIError(message:"通知权限不可用。") }
+        let content=UNMutableNotificationContent();content.title=alert.title;content.body=alert.body;content.sound = .default
+        try await center.add(UNNotificationRequest(identifier:alert.identifier,content:content,trigger:nil))
+        log.notice("request alert \(alert.identifier, privacy: .public) handed to Notification Center")
+    }
+}
 
 extension AppModel {
     func loadAccessInbox(client injectedClient:CLI?=nil) async throws {
@@ -2202,14 +2280,6 @@ extension AppModel {
         let inbox=try await Task.detached{try client.decode(AccessInbox.self,["access","list"])}.value
         guard acceptsNativeCompletion(revision,workspace:workspace)else{return}
         accessInbox=inbox
-        notifiedAccessIDs.formIntersection(Set(inbox.requests.filter{$0.status=="PENDING"}.map(\.id)))
-        if approvalNotificationsEnabled {
-            for request in inbox.requests where request.status=="PENDING" && !notifiedAccessIDs.contains(request.id) {
-                notifiedAccessIDs.insert(request.id)
-                let content=UNMutableNotificationContent();content.title="Rekey 有连接或权限请求";content.body="请打开 Rekey 审批收件箱，审阅请求并签署规则。"
-                try await UNUserNotificationCenter.current().add(UNNotificationRequest(identifier:"rekey.access."+request.id,content:content,trigger:nil))
-            }
-        }
     }
     func resolveAccess(_ request:AccessRequestItem,granted:Bool,blockCaller:Bool=false) async {
         guard !busy,unlocked else{return};busy=true;defer{busy=false};error=nil
