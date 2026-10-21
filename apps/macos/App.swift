@@ -10,10 +10,17 @@ let sage = Color(red: 0.92, green: 0.95, blue: 0.92)
 /// Opening a request notification only brings the inbox forward; it never approves anything.
 final class NotificationRouter: NSObject, UNUserNotificationCenterDelegate {
     weak var model: AppModel?
+    static let inboxURL = URL(string: "rekey://inbox")!
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
         await MainActor.run {
-            model?.page = .approvals
-            NSApp.activate(ignoringOtherApps: true)
+            // With every window closed, only an external event recreates the
+            // SwiftUI window; the URL handler then selects the inbox.
+            if NSApp.windows.contains(where: { $0.isVisible }) {
+                model?.page = .approvals
+                NSApp.activate(ignoringOtherApps: true)
+            } else {
+                NSWorkspace.shared.open(Self.inboxURL)
+            }
         }
     }
 }
@@ -90,7 +97,10 @@ struct RootView: View {
             UNUserNotificationCenter.current().delegate = notificationRouter
             model.startSecurityMonitoring(); model.startRequestPolling(); await model.connectOnOpen()
         }
-        .onOpenURL { url in model.openOnboarding(url); NSApp.activate(ignoringOtherApps: true) }
+        .onOpenURL { url in
+            if url == NotificationRouter.inboxURL { model.page = .approvals } else { model.openOnboarding(url) }
+            NSApp.activate(ignoringOtherApps: true)
+        }
         .onDisappear { model.lockDesktop(reason: "窗口已关闭，请重新验证身份。") }
         .onReceive(Timer.publish(every: 15, on: .main, in: .common).autoconnect()) { _ in
             // Background request alerts and the Dock badge come from AppModel.startRequestPolling.

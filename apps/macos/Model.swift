@@ -1791,6 +1791,7 @@ final class AppModel: ObservableObject {
                     try await BackgroundService.start()
                     busy = false
                     await refresh()
+                    if status != nil { await requestNotificationsIfUndecided() }
                     if backgroundServiceNeedsApproval { error = BackgroundService.statusDescription }
                 } catch { busy = false; self.error = error.localizedDescription }
             }
@@ -1938,10 +1939,12 @@ final class AppModel: ObservableObject {
                                   request: @escaping @Sendable () async throws -> Bool = {
                                       try await RequestAlert.authorize()
                                   }) async {
+        // A concurrent enable (first open plus first poll) must not invalidate the
+        // request already waiting for the user's answer; disabling always wins.
+        if enabled && approvalNotificationBusy { return }
         notificationRevision = UUID()
         let revision = notificationRevision
         if !enabled { approvalNotificationsEnabled = false; preferences.set(false, forKey: Self.requestNotificationsKey); approvalNotificationMessage = nil; return }
-        guard !approvalNotificationBusy else { return }
         approvalNotificationBusy = true
         defer { approvalNotificationBusy = false }
         do {

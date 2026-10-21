@@ -117,7 +117,7 @@ pub fn request(
     }))
 }
 /// Shown to the human; the App alerts them, and nothing here grants access.
-const ACCESS_USER_HINT: &str = "Rekey App shows this request in its inbox. Open Rekey to add the key and approve; it expires in 10 minutes.";
+const ACCESS_USER_HINT: &str = "Rekey App shows this request in its inbox. Open Rekey to add the key or grant the permission there; it expires in 10 minutes.";
 pub fn await_access(socket: &Path, request_id: RequestId, timeout_s: u16) -> Result<(), CliError> {
     let response: AwaitAccessResponse = decode(public(
         socket,
