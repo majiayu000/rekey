@@ -85,6 +85,26 @@ pub fn add(state_dir: &Path, request: AddRequest) -> Result<(), CliError> {
         }
     }
     let signer = signer_binary();
+    // Check the signer before asking for any secret, so a missing tool never
+    // wastes a typed password or key.
+    let probe = Command::new(&signer)
+        .arg("--help")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|err| {
+            CliError::local(
+                "SIGNER_UNAVAILABLE",
+                format!("cannot run {}: {err}", signer.display()),
+            )
+        })?;
+    if !probe.success() {
+        return Err(CliError::local(
+            "SIGNER_UNAVAILABLE",
+            format!("{} is not a working policy signer", signer.display()),
+        ));
+    }
     let key_file = state_dir.join(SOFTWARE_SIGNER_FILE);
     let mut install_trust = None;
     if status.trust_installed {
@@ -133,7 +153,9 @@ pub fn add(state_dir: &Path, request: AddRequest) -> Result<(), CliError> {
     let credential_id = match (reuse, secret) {
         (Some(id), _) => id,
         (None, Some(secret)) => save_credential(state_dir, &proof, &secret, &request, &name)?,
-        (None, None) => unreachable!("collect_add_inputs returns a value unless reusing a credential"),
+        (None, None) => {
+            unreachable!("collect_add_inputs returns a value unless reusing a credential")
+        }
     };
     let connection = build_connection(preset, &name, credential_id, &models)?;
 
@@ -389,8 +411,10 @@ fn preset_operations(draft: &ipc::PersonalPolicyDraftResponse, name: &str) -> Ve
         .collect()
 }
 
+/// The signer ships beside the real `rekey` binary inside the App bundle;
+/// resolve the /usr/local/bin symlink so it is found from the installed CLI.
 fn signer_binary() -> PathBuf {
-    if let Ok(exe) = std::env::current_exe()
+    if let Ok(exe) = std::env::current_exe().and_then(std::fs::canonicalize)
         && let Some(dir) = exe.parent()
     {
         let sibling = dir.join("rekey-policy-sign");

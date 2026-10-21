@@ -67,7 +67,16 @@ with tempfile.TemporaryDirectory(prefix='rk-add-') as root:
 
         # First add installs basic-mode trust, saves the key, signs and activates.
         fails(['add', 'glm', '--stdin-secrets'], password + '\n' + glm_key + '\n', '--model')
-        first = call(['add', 'glm', '--model', 'glm-test', '--stdin-secrets'], password + '\n' + glm_key + '\n')
+        # Run it through a symlink, as /usr/local/bin/rekey is installed, so the
+        # bundled signer must be found beside the resolved binary.
+        linked = Path(root) / 'bin' / 'rekey'
+        linked.parent.mkdir()
+        linked.symlink_to(binary)
+        first = subprocess.run([str(linked), '--state-dir', str(state), 'add', 'glm', '--model', 'glm-test',
+                                '--stdin-secrets'], input=(password + '\n' + glm_key + '\n').encode(),
+                               capture_output=True, timeout=60, env=environment)
+        safe_output(first.stdout + first.stderr)
+        assert first.returncode == 0, first.stderr.decode()
         assert b'not Secure Enclave' in first.stdout + first.stderr
         assert b'glm.messages' in first.stdout
         key_file = state / 'policy-signer-p256.p8'
