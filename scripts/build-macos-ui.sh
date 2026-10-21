@@ -1,4 +1,5 @@
-#!/usr/bin/env bash
+#!/bin/bash
+# System bash on purpose: Homebrew bash 5.3 intermittently hung on this script's here-documents.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
