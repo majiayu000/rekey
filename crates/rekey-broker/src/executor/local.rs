@@ -247,15 +247,21 @@ impl ActionExecutor {
             authorized.streaming,
             authorized.generation_max_output,
         )?;
+        // Named operations (MCP / `rekey call`) send JSON parameters without
+        // headers; upstreams such as GLM reject a JSON body without its type.
+        let content_type = authorized
+            .headers
+            .iter()
+            .find(|(n, _)| n == "content-type")
+            .map(|(_, v)| v.clone())
+            .or_else(|| {
+                json_object_body(&authorized.request_body).then(|| "application/json".to_owned())
+            });
         let request = ExecuteRequest {
             request_id: input.request_id,
             capability_token: String::new(),
             action: ctx.action,
-            content_type: authorized
-                .headers
-                .iter()
-                .find(|(n, _)| n == "content-type")
-                .map(|(_, v)| v.clone()),
+            content_type,
             extra_headers: authorized
                 .headers
                 .iter()
@@ -358,4 +364,22 @@ fn connection_llm(
             generation_max_output: maximum,
         },
     }))
+}
+
+fn json_object_body(body: &[u8]) -> bool {
+    !body.is_empty()
+        && serde_json::from_slice::<serde_json::Value>(body).is_ok_and(|v| v.is_object())
+}
+
+#[cfg(test)]
+mod content_type_tests {
+    use super::json_object_body;
+
+    #[test]
+    fn only_json_object_bodies_get_a_default_content_type() {
+        assert!(json_object_body(br#"{"model":"m","messages":[]}"#));
+        assert!(!json_object_body(b""));
+        assert!(!json_object_body(b"[1,2]"));
+        assert!(!json_object_body(b"plain text"));
+    }
 }
