@@ -271,6 +271,8 @@ async fn sigterm_selection_closes_paused_remote_effect_admission() {
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
     let mut sigint =
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).unwrap();
+    let mut sighup =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()).unwrap();
     let mut execution_task = tokio::spawn(async {
         std::future::pending::<()>().await;
         Ok(())
@@ -284,6 +286,7 @@ async fn sigterm_selection_closes_paused_remote_effect_admission() {
             &mut stop_rx,
             &mut sigterm,
             &mut sigint,
+            &mut sighup,
             &mut execution_task,
         ),
     )

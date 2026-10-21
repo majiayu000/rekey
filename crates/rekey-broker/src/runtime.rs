@@ -803,6 +803,7 @@ async fn select_stop(
     stop_rx: &mut mpsc::UnboundedReceiver<shutdown::StopCommand>,
     sigterm: &mut tokio::signal::unix::Signal,
     sigint: &mut tokio::signal::unix::Signal,
+    sighup: &mut tokio::signal::unix::Signal,
     execution_task: &mut JoinHandle<Result<(), BrokerError>>,
 ) -> SelectedStop {
     let selected = tokio::select! {
@@ -814,6 +815,9 @@ async fn select_stop(
         },
         _ = sigterm.recv() => SelectedStop::Signal("sigterm"),
         _ = sigint.recv() => SelectedStop::Signal("sigint"),
+        // A closed controlling terminal is an orderly stop, not a crash: a crash
+        // marker would revoke the remembered desktop on the next start.
+        _ = sighup.recv() => SelectedStop::Signal("sighup"),
         result = &mut *execution_task => SelectedStop::Execution(result),
     };
     // Admin authentication must precede any stop admission change. A pending
@@ -899,6 +903,8 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .map_err(BrokerError::Io)?;
     let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+        .map_err(BrokerError::Io)?;
+    let mut sighup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
         .map_err(BrokerError::Io)?;
 
     let mut authority_config = AuthorityConfig::new(config.state_dir.clone());
@@ -1103,6 +1109,7 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
             &mut stop_rx,
             &mut sigterm,
             &mut sigint,
+            &mut sighup,
             &mut execution_task,
         )
         .await;
