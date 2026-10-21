@@ -2172,8 +2172,10 @@ struct ConnectionDefinition: Codable, Equatable, Identifiable, Sendable {
 struct ConnectionPreset: Decodable, Sendable {
     let name:String;let origin:String;let auth:ConnectionDefinition.Auth;let rules:[ConnectionRule]
     let allowed_headers:[String];let fixed_headers:[String:String];let allowed_response_headers:[String];let query_allowlist:[String]?;let operations:[ConnectionOperation]
-    func connection(name:String,credentialID:String)->ConnectionDefinition {
-        ConnectionDefinition(name:name,preset:self.name,credential_id:credentialID,origin:origin,auth:auth,enabled:true,grade:"T0",rules:rules,bindings:self.name=="github-git" ? ["owner":[],"repo":[]]:[:],caller_overrides:[:],limits:.init(requests_per_hour:600,max_request_bytes:1_048_576,max_response_bytes:4_194_304),allowed_headers:allowed_headers,fixed_headers:fixed_headers,allowed_response_headers:allowed_response_headers,query_allowlist:query_allowlist,operations:operations,llm:["anthropic","openai","glm","glm-responses"].contains(self.name) ? .init(models:[],max_tokens:4096,max_requests_per_day:100,max_output_tokens_per_day:100_000):nil,oauth:nil)
+    static let llmPresets=["anthropic","openai","glm","glm-responses"]
+    /// LLM Connections must sign a non-empty exact model allow-list; callers pass it.
+    func connection(name:String,credentialID:String,models:[String]=[])->ConnectionDefinition {
+        ConnectionDefinition(name:name,preset:self.name,credential_id:credentialID,origin:origin,auth:auth,enabled:true,grade:"T0",rules:rules,bindings:self.name=="github-git" ? ["owner":[],"repo":[]]:[:],caller_overrides:[:],limits:.init(requests_per_hour:600,max_request_bytes:1_048_576,max_response_bytes:4_194_304),allowed_headers:allowed_headers,fixed_headers:fixed_headers,allowed_response_headers:allowed_response_headers,query_allowlist:query_allowlist,operations:operations,llm:Self.llmPresets.contains(self.name) ? .init(models:Array(Set(models)).sorted(),max_tokens:4096,max_requests_per_day:100,max_output_tokens_per_day:100_000):nil,oauth:nil)
     }
 }
 struct ConnectionList: Decodable, Sendable {

@@ -165,9 +165,12 @@ struct AddCredentialForm: View {
     @State private var origin=""
     @State private var header="x-api-key"
     @State private var prefix=""
+    @State private var models=""
     @State private var saved:Credential?
     @State private var message:String?
     private var generic:Bool {preset.hasPrefix("generic-")}
+    private var llm:Bool {ConnectionPreset.llmPresets.contains(preset)}
+    private var modelList:[String] {models.split(separator:",").map{$0.trimmingCharacters(in:.whitespaces)}.filter{!$0.isEmpty}}
     var body:some View {
         VStack(alignment:.leading,spacing:18) {
             Text("添加密钥与连接").font(.system(size:24,weight:.semibold))
@@ -183,27 +186,31 @@ struct AddCredentialForm: View {
                 if preset=="generic-header" {TextField("凭据头名称",text:$header).textFieldStyle(.roundedBorder);TextField("头前缀（可为空）",text:$prefix).textFieldStyle(.roundedBorder)}
                 Text("自定义服务默认读和写都需要审批。").font(.caption).foregroundStyle(.secondary)
             }
+            if llm {
+                TextField("允许的模型，逗号分隔（精确名称，例如 Agent 请求的模型）",text:$models).textFieldStyle(.roundedBorder)
+                Text("LLM 连接必须签署模型白名单与每日额度（100 次 / 10 万输出 token）。").font(.caption).foregroundStyle(.secondary)
+            }
             if saved==nil {SecureField("粘贴 API Key，无需 Bearer 前缀",text:$secret).textFieldStyle(.roundedBorder)}
             else {Label("密钥已保存；连接尚未激活。继续审阅规则，不会再次添加密钥。",systemImage:"checkmark.shield")}
             PeerSecurityWarning()
             if !model.desktopReady {Text("请先解锁管理会话。").foregroundStyle(.secondary)}
             if model.policy?.trust_installed != true {Text("请先在授权页完成此保险库的一次性签名密钥设置。").foregroundStyle(.secondary)}
             if let message {Text(message).foregroundStyle(.red).textSelection(.enabled)}
-            HStack {Button("取消"){secret="";dismiss()}.keyboardShortcut(.cancelAction);Spacer();Button(saved==nil ? "保存并审阅规则":"继续审阅规则"){prepare()}.buttonStyle(PrimaryButton()).disabled(model.busy || !model.desktopReady || model.policy?.trust_installed != true || connectionName.isEmpty || saved==nil && (!singleLine(secret) || label.isEmpty) || generic && origin.isEmpty)}
+            HStack {Button("取消"){secret="";dismiss()}.keyboardShortcut(.cancelAction);Spacer();Button(saved==nil ? "保存并审阅规则":"继续审阅规则"){prepare()}.buttonStyle(PrimaryButton()).disabled(model.busy || !model.desktopReady || model.policy?.trust_installed != true || connectionName.isEmpty || saved==nil && (!singleLine(secret) || label.isEmpty) || generic && origin.isEmpty || llm && modelList.isEmpty)}
             }
         }.padding(30).frame(width:530).background(canvas)
         .onAppear{preset=model.addPreset}
         .onDisappear{secret=""}
     }
     private func prepare() {
-        let value=secret,name=label,connection=connectionName,selectedPreset=preset,selectedOrigin=origin,selectedHeader=header,selectedPrefix=prefix
+        let value=secret,name=label,connection=connectionName,selectedPreset=preset,selectedOrigin=origin,selectedHeader=header,selectedPrefix=prefix,selectedModels=modelList
         secret="";message=nil
         Task {
             do {
                 let credential:Credential
                 if let prior=saved {credential=prior}else{credential=try await model.saveAPIKey(label:name,secret:value);saved=credential}
                 let definition=try await model.loadPreset(selectedPreset,origin:selectedOrigin,header:selectedPreset=="generic-header" ? selectedHeader:"",prefix:selectedPreset=="generic-header" ? selectedPrefix:"")
-                model.onboardingConnection=definition.connection(name:connection,credentialID:credential.id)
+                model.onboardingConnection=definition.connection(name:connection,credentialID:credential.id,models:selectedModels)
                 dismiss()
                 await Task.yield()
                 model.showPolicyDraft=true

@@ -136,6 +136,10 @@ Implemented under [the unified contract](../superpowers/specs/2026-10-09-unified
 
 Published 0.4 and older installed App evidence do not establish unified-head hardware acceptance. Agent PKI admission remains pending. The single-host Docker recovery controller is integrated; its [recorded disposable acceptance](../superpowers/specs/2026-10-09-docker-ha-controller.md#software-acceptance-on-the-current-integration-base) used the earlier `fa734a5` product base and does not establish current-head deployment or multi-host HA. No candidate installation or public release was performed.
 
+## Basic-mode one-step add (0.5 development, 2026-10-21)
+
+`rekey add <preset>` saves the key, builds the preset Connection, signs with a software P-256 key (`policy-signer-p256.p8`, mode 0600, not Secure Enclave) via `rekey-policy-sign software-key`, and activates with one password. Evidence: `scripts/test-cli-add.py` against a real daemon (trust install/reuse, credential reuse, locked, duplicate, wrong password, OAuth/generic routing and trust-mismatch refusals, Agent discovery, no secret in output). LLM presets now require an exact model allow-list in CLI and App. Not claimed: Secure Enclave or L1 protection for basic mode, installed-App or device acceptance.
+
 ## Personal desktop security extension (0.5 development)
 
 [Contract](../superpowers/specs/2026-10-09-personal-desktop-security.md): separate desktop privacy lock, configurable idle/device signals and explicit 1/7/30-day presence issuance. A1 stays at most seven days and is capped by the grant's wall and monotonic lifetime; Presence cannot issue grants. Real disposable IPC tests cover Agent continuity, token revocation, forgotten grants and expiry. Synthetic Swift tests cover stale login/cancellation, cleanup failure, settings persistence and exact team draft text. No installed App, actual sleep/screen-lock/Touch ID or stronger protection-level acceptance is claimed. The separately developed single-host Docker recovery controller is now integrated; controller contracts, the recorded earlier-base Docker drill, and real deployment acceptance remain distinct evidence.

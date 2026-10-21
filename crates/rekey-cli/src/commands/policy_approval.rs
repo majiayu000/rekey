@@ -122,7 +122,7 @@ pub fn policy_activate(
     print_policy_status(&meta)
 }
 
-fn policy_activate_metadata(
+pub(super) fn policy_activate_metadata(
     expected_vault_id: &str,
     expected_trust_sha256: &str,
     bundle: &[u8],

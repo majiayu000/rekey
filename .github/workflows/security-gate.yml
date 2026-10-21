@@ -117,3 +117,4 @@ jobs:
           ln -s "$PWD/target/macos-ui/Rekey.app/Contents/Resources" /tmp/RekeyStartupContract.app/Contents/Resources
           /tmp/RekeyStartupContract.app/Contents/MacOS/RekeyStartupContract --startup-only
           python3 scripts/test-human-vault.py target/macos-ui/Rekey.app/Contents/Resources/bin/rekey
+          python3 scripts/test-cli-add.py target/macos-ui/Rekey.app/Contents/Resources/bin/rekey

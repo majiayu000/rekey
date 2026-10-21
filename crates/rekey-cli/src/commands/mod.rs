@@ -23,6 +23,7 @@ use crate::client::{CliError, Client};
 mod metrics;
 #[cfg(feature = "lab")]
 pub use metrics::metrics;
+pub mod add;
 pub mod agent;
 mod connect;
 pub mod connections;

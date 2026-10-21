@@ -264,6 +264,10 @@ Profile、capability session、Action 这三个概念**不再暴露给个人用�
 ### 5.3 签名与激活
 
 - 规则集属于策略。个人模式下由 App 生成规范化草案，展示完整 diff，用 Secure Enclave 签名后激活。现有 `PERSONAL_POLICY_DRAFT` 流程改为输出规则集。
+- **基础模式（2026-10-21 修订，0.5 开发线）**：个人保险库也可以由 `rekey add <preset>` 在命令行一步完成“保存密钥 → 生成预设 Connection → 签名 → 激活”。签名由随包的 `rekey-policy-sign software-key` 用软件 P-256 私钥完成，私钥是状态目录中当前用户 0600 的 `policy-signer-p256.p8`，同用户进程可读，**不是 Secure Enclave**。CLI 本身仍不链接加密库；激活仍需保险库密码（A2），daemon 照常校验签名与信任根。
+  - 信任根仍是每个保险库唯一且不可替换：首次 `rekey add` 在未安装信任时安装软件密钥的信任根；已信任 App Secure Enclave 密钥的保险库拒绝软件签名（`TRUST_MISMATCH`），只能用 `--app` 或新建保险库。
+  - 安装的信任算法沿用现有 P-256 标签 `secure-enclave-p256`（该标签只描述曲线与签名编码，`signed.rs` 已声明不证明硬件位置），不新增持久格式。命令行输出与指南必须如实说明“软件签名、基础模式”，不得把基础模式称为 Secure Enclave 或 L1 以上。
+  - LLM 预设必须签署非空的精确模型白名单与每日额度；CLI 交互时询问一次模型，`--stdin-secrets` 时必须给 `--model`，不猜测默认模型。
 - 团队模式沿用外部 Ed25519。
 - 删除"每次安装展开成 N 个 Action 再逐个签名"的流程。内部执行时，daemon 把一次请求规范化成一个临时 Action 视图，以复用渲染器、审批哈希和执行器。这个视图不持久化，不需要签名。
 
