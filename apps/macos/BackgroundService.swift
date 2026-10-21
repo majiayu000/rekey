@@ -21,7 +21,7 @@ enum BackgroundService {
         case .notRegistered: return "尚未启用登录启动"
         case .enabled: return "已启用登录启动；服务运行状态以当前连接为准"
         case .requiresApproval: return "请在系统登录项中允许 Rekey 后台运行"
-        case .notFound: return "找不到应用内的后台服务声明，请重新安装"
+        case .notFound: return "系统尚未找到后台服务；重新连接时会尝试注册"
         @unknown default: return "系统返回了未知的后台服务状态"
         }
     }
@@ -32,15 +32,15 @@ enum BackgroundService {
     static func start() async throws {
         let service = agent
         switch service.status {
-        case .notRegistered:
+        case .notRegistered, .notFound:
+            // On a fresh install, notFound can mean BTM has no registration record,
+            // even when the bundled plist exists. Let register report actual failures.
             try service.register()
         case .enabled:
             let serviceLabel = label
             try await Task.detached { try kickstart(serviceLabel) }.value
         case .requiresApproval:
             throw UIError(message: "请先在系统登录项中允许 Rekey 后台运行。")
-        case .notFound:
-            throw UIError(message: "应用内缺少后台服务声明，请重新安装 Rekey。")
         @unknown default:
             throw UIError(message: "无法识别系统后台服务状态。")
         }

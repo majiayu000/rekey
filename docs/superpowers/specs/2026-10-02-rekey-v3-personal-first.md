@@ -782,6 +782,8 @@ App 新增"活动"页，按 Profile 和模板能力汇总：
   - 内嵌独立 `com.rekey.rekeyd` daemon bundle 与其 Developer ID provisioning profile，使 daemon 可使用受保护计数项的 keychain access group；App 保留自己的 profile。该结构只承载签名与授权，不引入 XPC 通信；
   - CLI 链接到 `/usr/local/bin`；
   - 打开 App 时自动连接已有保险库；服务未运行则自动启动。固定安装位置和默认目录通过 SMAppService 注册或启动 LaunchAgent；开发构建及自定义目录由 App 启动随包服务。首次创建仍需确认密码并保存恢复密钥，保存完成后自动连接。无需另外点击“启动服务”。系统要求后台运行批准时显示设置入口，启动失败保留错误并允许重试；自动启动不读取证明、不解锁、不重启已运行服务。停止服务后，普通刷新不重新启动，下一次打开 App 或切换工作区才重新连接。
+  - 首次启动时，SMAppService 的 `notFound` 也可能表示系统尚无注册记录，不能据此认定安装包缺文件；与 `notRegistered` 一样尝试注册，并保留注册失败的实际错误。`requiresApproval` 仍等待用户在系统设置中批准。
+  - `rekey://` 接入链接优先交给已有 App 窗口，不为每次接入创建新窗口并重新触发启动刷新；进行中的敏感操作仍由原有检查保护。
 - Homebrew cask。
 - Linux：`.tar.gz` 加 systemd user unit，等级为 L1-dev。
 

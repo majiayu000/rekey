@@ -27,7 +27,9 @@ struct RekeyApp: App {
             RootView().environmentObject(model)
                 .frame(minWidth: 1040, minHeight: 700)
                 .preferredColorScheme(.light)
+                .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
         }
+        .handlesExternalEvents(matching: ["*"])
         .defaultSize(width: 1380, height: 870)
         .windowStyle(.hiddenTitleBar)
         .commands { CommandGroup(replacing: .newItem) {} }
