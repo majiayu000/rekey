@@ -19,10 +19,16 @@ macOS 安装版的首选入口是：
 
 ```bash
 rekey setup
-rekey add github-pat
+rekey add glm
 ```
 
-在 App 中创建新的个人保险库、保存恢复密钥，添加 API Key，选择预设并审阅 Connection：凭据、固定 host、路径、读写规则和可选调用方限制。随后签署并激活策略。保存密钥本身不会授予调用权限；已有保险库先启动服务并解锁。个人签名使用 Secure Enclave，没有软件签名回退。新版真实设备上的系统认证次数与耗时仍待验。
+`setup` 在 App 中创建新的个人保险库并保存恢复密钥。`rekey add <预设>` 随后在终端一步完成：输入保险库密码、在隐藏输入中粘贴 Key（LLM 预设先填允许的精确模型名，逗号分隔），CLI 保存密钥、按预设生成 Connection（读允许、写审批）、签名并激活，规则默认 90 天有效（`--valid-days` 可改）。
+
+这是**基础模式**：签名私钥是状态目录中当前用户 0600 的 `policy-signer-p256.p8`，同用户进程可读，不是 Secure Enclave。第一次 `rekey add` 会为尚未安装信任根的保险库安装它；信任根装上后不能更换。已在 App 中用 Secure Enclave 建立信任的保险库请用 `rekey add <预设> --app`，命令行会以 `TRUST_MISMATCH` 拒绝软件签名。
+
+**免重复解锁（基础模式）**：`rekey unlock --remember 7d`（最长 30d）解锁后，daemon 重启时会在有效期内自动解锁，无需再输密码。实现是把“记住此电脑”的解封密钥写成状态目录中 0600 的 `remembered-unlock.key`，同用户进程可读，不是 Secure Enclave；`rekey lock --forget-remembered` 删除它，之后重启保持锁定。
+
+其他常用选项：`--name` 设连接名（默认是预设名），`--credential-id` 复用已保存的密钥而不再输入 Key，`--model` 可重复，脚本中用 `--stdin-secrets` 依次读入密码和 Key。OAuth 预设需要浏览器授权，仍用 `--app`。
 
 需要独立目录的源码用户可在自己的终端中操作：
 

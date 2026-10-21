@@ -16,6 +16,9 @@ use rekey_policy::{
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
+#[path = "policy_sign/software.rs"]
+mod software;
+
 const USAGE: &str = "usage: rekey-policy-sign review DRAFT.json\n       rekey-policy-sign sign DRAFT.json --reviewed-sha256 DIGEST --signer-id UUID --key-file KEY.der --output NEW_DIRECTORY";
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -42,7 +45,8 @@ fn draft(path: &Path) -> Result<(Value, String)> {
     Ok((value, HEXLOWER.encode(&validated.digest())))
 }
 
-fn key(path: &Path) -> Result<Ed25519KeyPair> {
+/// Reads a private key file that only the current user can read or write.
+fn read_key_bytes(path: &Path) -> Result<Zeroizing<Vec<u8>>> {
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
@@ -63,6 +67,11 @@ fn key(path: &Path) -> Result<Ed25519KeyPair> {
     if bytes.len() > 4096 {
         return Err("key file exceeds size limit".into());
     }
+    Ok(bytes)
+}
+
+fn key(path: &Path) -> Result<Ed25519KeyPair> {
+    let bytes = read_key_bytes(path)?;
     Ed25519KeyPair::from_pkcs8(bytes.as_slice()).map_err(|_| "invalid Ed25519 DER PKCS8 key".into())
 }
 
@@ -104,8 +113,11 @@ fn terminal_json(value: &serde_json::Value) -> Result<String> {
 fn run() -> Result<()> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     if args.len() == 1 && args[0] == "--help" {
-        println!("{USAGE}");
+        println!("{USAGE}\n{}", software::USAGE);
         return Ok(());
+    }
+    if args.first().is_some_and(|arg| arg == "software-key") {
+        return software::run(&args[1..]);
     }
     if args.len() == 2 && args[0] == "review" {
         let (snapshot, digest) = draft(Path::new(&args[1]))?;

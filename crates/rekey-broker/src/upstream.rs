@@ -431,19 +431,35 @@ pub async fn screen_public_endpoint(
         .await
         .map_err(|_| UpstreamError::Transport)?
         .collect();
-    let resolver = if needs_public_dns(host, &addrs) {
-        std::env::var_os("REKEY_DOH_URL")
-            .map(|value| {
-                value
-                    .into_string()
-                    .map_err(|_| UpstreamError::Blocked("invalid-doh-url"))
-            })
-            .transpose()?
-    } else {
-        None
-    };
-    screen_dns_answer(host, port, addrs, resolver.as_deref()).await
+    if !needs_public_dns(host, &addrs) {
+        return screen_dns_answer(host, port, addrs, None).await;
+    }
+    // An explicit resolver wins; otherwise fake-IP proxies (Clash/Surge TUN)
+    // fall back to fixed public DoH resolvers addressed by IP, so the daemon
+    // works whether it was started by the App, launchd or a terminal.
+    if let Some(value) = std::env::var_os("REKEY_DOH_URL") {
+        let resolver = value
+            .into_string()
+            .map_err(|_| UpstreamError::Blocked("invalid-doh-url"))?;
+        return screen_dns_answer(host, port, addrs, Some(&resolver)).await;
+    }
+    let mut last = UpstreamError::Blocked("fake-ip-dns");
+    for resolver in DEFAULT_PUBLIC_DOH {
+        match screen_dns_answer(host, port, addrs.clone(), Some(resolver)).await {
+            Ok(endpoint) => return Ok(endpoint),
+            Err(error) => last = error,
+        }
+    }
+    tracing::warn!(
+        event = "upstream.dns_configuration_required",
+        "System DNS returned fake-IP addresses and the default public DoH resolvers failed; set REKEY_DOH_URL for the daemon"
+    );
+    Err(last)
 }
+
+/// JSON DoH resolvers tried in order when system DNS returns fake IPs and
+/// REKEY_DOH_URL is unset. IP hosts avoid resolving the resolver itself.
+const DEFAULT_PUBLIC_DOH: [&str; 2] = ["https://223.5.5.5/resolve", "https://1.1.1.1/dns-query"];
 
 async fn screen_dns_answer(
     host: &str,

@@ -12,13 +12,13 @@ Rekey 把密钥留在本机，让 Agent 调用你签署规则允许的操作。
 
 ```bash
 rekey setup
-rekey add github-pat
+rekey add glm
 rekey connect claude-code --print
 rekey connect claude-code
 claude
 ```
 
-`setup` 和 `add` 打开 macOS App，密码、密钥和规则审阅在管理界面完成。`connect` 在写入前展示配置与说明书差异；已有配置会备份，重复执行保持幂等。Codex 使用 `rekey connect codex`，然后正常启动 `codex`。本机调用不需要 capability 或令牌。
+`rekey add <预设>` 在命令行一步完成：输入保险库密码、粘贴 Key（LLM 预设再填允许的模型），随后自动保存密钥、生成预设连接、签名并激活。这是**基础模式**：规则用状态目录里的软件 P-256 私钥签名（0600 文件，不是 Secure Enclave）。想用 App 的 Secure Enclave 签名，用 `rekey add <预设> --app`；两种方式由保险库第一次安装的信任根决定，之后不能互换。`setup` 打开 macOS App 创建保险库。`connect` 在写入前展示配置与说明书差异；已有配置会备份，重复执行保持幂等。Codex 使用 `rekey connect codex`，然后正常启动 `codex`。本机调用不需要 capability 或令牌。
 
 每个连接绑定一个密钥、一个固定 host 和规则。默认读允许、写审批、危险写拒绝；路径、方法、模型与预算由签名规则限定。调用方名称只用于记录和收紧权限，同一系统用户的程序可以伪造名称。
 

@@ -240,10 +240,41 @@ enum Command {
     },
     /// Open the installed macOS App setup page; completion happens in the App.
     Setup,
-    /// Open the installed macOS App provider onboarding page.
+    /// Add an API key and activate its preset Connection in one step (basic
+    /// mode: software policy key). Use --app to finish in the macOS App instead.
     Add {
         #[arg(value_parser = ["anthropic", "openai", "glm", "glm-responses", "github-pat", "github-git", "google-drive", "google-gmail", "google-calendar", "github-oauth", "slack", "notion", "generic-bearer", "generic-header"])]
         provider: String,
+        /// Open the installed macOS App onboarding page instead.
+        #[arg(long)]
+        app: bool,
+        /// Connection name Agents call (default: the provider name).
+        #[arg(long)]
+        name: Option<String>,
+        /// Credential label (default: the Connection name).
+        #[arg(long)]
+        label: Option<String>,
+        /// Reuse an already saved credential instead of entering the key again.
+        #[arg(long)]
+        credential_id: Option<String>,
+        /// Fixed HTTPS origin for generic presets.
+        #[arg(long)]
+        origin: Option<String>,
+        /// Credential header for generic-header.
+        #[arg(long)]
+        header: Option<String>,
+        /// Header value prefix for generic-header.
+        #[arg(long)]
+        prefix: Option<String>,
+        /// Days until the signed rules expire.
+        #[arg(long, default_value_t = 90)]
+        valid_days: u32,
+        /// Allowed LLM model (repeatable); also enables the daily budget.
+        #[arg(long = "model")]
+        models: Vec<String>,
+        /// Read the vault password and then the key as two stdin lines.
+        #[arg(long)]
+        stdin_secrets: bool,
     },
     /// Manage non-exportable SSH signing keys and inspect the local agent.
     #[command(subcommand)]
@@ -370,9 +401,17 @@ enum Command {
         recovery: bool,
         #[arg(long)]
         password_stdin: bool,
+        /// Also unlock automatically after daemon restarts for this long
+        /// (e.g. 7d, max 30d). Basic mode: the key is a 0600 file, not Secure Enclave.
+        #[arg(long)]
+        remember: Option<String>,
     },
     /// Lock the running broker and revoke all sessions.
-    Lock,
+    Lock {
+        /// Also delete the remembered unlock so restarts stay locked.
+        #[arg(long)]
+        forget_remembered: bool,
+    },
     /// Show broker status.
     Status {
         /// Observe without resetting the idle-lock timer.
@@ -1268,9 +1307,38 @@ fn main() {
             step_up.password_stdin,
         ),
         Command::Setup => commands::open_onboarding(&state_dir, None, onboarding_inapplicable),
-        Command::Add { provider } => {
-            commands::open_onboarding(&state_dir, Some(&provider), onboarding_inapplicable)
-        }
+        Command::Add {
+            provider,
+            app: true,
+            ..
+        } => commands::open_onboarding(&state_dir, Some(&provider), onboarding_inapplicable),
+        Command::Add {
+            provider,
+            app: false,
+            name,
+            label,
+            credential_id,
+            origin,
+            header,
+            prefix,
+            valid_days,
+            models,
+            stdin_secrets,
+        } => commands::add::add(
+            &state_dir,
+            commands::add::AddRequest {
+                provider,
+                name,
+                label,
+                credential_id,
+                origin,
+                header,
+                prefix,
+                valid_days,
+                models,
+                stdin_secrets,
+            },
+        ),
         Command::SshAgent(command) => match command {
             SshAgentCommand::Status => commands::ssh::status(&state_dir),
             SshAgentCommand::Generate {
@@ -1417,8 +1485,9 @@ fn main() {
         Command::Unlock {
             recovery,
             password_stdin,
-        } => commands::unlock(&state_dir, recovery, password_stdin),
-        Command::Lock => commands::lock(&state_dir),
+            remember,
+        } => commands::unlock(&state_dir, recovery, password_stdin, remember.as_deref()),
+        Command::Lock { forget_remembered } => commands::lock(&state_dir, forget_remembered),
         Command::Status { passive } => commands::status(&state_dir, passive),
         #[cfg(feature = "lab")]
         Command::Metrics {
