@@ -825,6 +825,65 @@ async fn select_stop(
 }
 
 /// Runs the broker until an admin Shutdown arrives. Foreground only.
+/// Basic-mode remembered unlock written by `rekey unlock --remember`: the
+/// remembered-desktop key beside the vault (mode 0600, readable by the same
+/// user, not Secure Enclave). A still-valid key unlocks on start without a
+/// password; an expired or revoked one leaves the vault locked.
+pub const REMEMBERED_UNLOCK_FILE: &str = "remembered-unlock.key";
+
+async fn resume_remembered_unlock(ctx: &Arc<BrokerCtx>) {
+    let path = ctx.state_dir.join(REMEMBERED_UNLOCK_FILE);
+    let key = match read_remembered_key(&path) {
+        Ok(Some(key)) => key,
+        Ok(None) => return,
+        Err(reason) => {
+            tracing::warn!(
+                event = "runtime.remembered_unlock",
+                outcome = "ignored",
+                reason
+            );
+            return;
+        }
+    };
+    match ctx
+        .resume_desktop(rekey_vault::secret::SecretInput::from_slice(&key))
+        .await
+    {
+        // The returned desktop session token is not needed by the daemon itself.
+        Ok(_) => tracing::info!(event = "runtime.remembered_unlock", outcome = "success"),
+        Err(error) => tracing::warn!(
+            event = "runtime.remembered_unlock",
+            outcome = "failed",
+            code = error.code()
+        ),
+    }
+}
+
+fn read_remembered_key(path: &Path) -> Result<Option<zeroize::Zeroizing<Vec<u8>>>, &'static str> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err("unreadable"),
+    };
+    // SAFETY: geteuid has no arguments or memory preconditions.
+    let euid = unsafe { libc::geteuid() };
+    if !metadata.file_type().is_file()
+        || metadata.uid() != euid
+        || metadata.mode() & 0o077 != 0
+        || metadata.len() > 128
+    {
+        return Err("not-owner-only-regular-file");
+    }
+    let mut bytes = zeroize::Zeroizing::new(fs::read(path).map_err(|_| "unreadable")?);
+    while bytes.last().is_some_and(u8::is_ascii_whitespace) {
+        bytes.pop();
+    }
+    if bytes.is_empty() {
+        return Err("empty");
+    }
+    Ok(Some(bytes))
+}
+
 pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
     verify_state_dir_permissions(&config.state_dir)?;
     #[cfg(feature = "lab")]
@@ -948,6 +1007,7 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
         let _ = authority.shutdown(None).await;
         return Err(error);
     }
+    resume_remembered_unlock(&ctx).await;
 
     #[cfg(feature = "lab")]
     let mut oidc_poll_task = ctx.oidc_admin.clone().map(|manager| {

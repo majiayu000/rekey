@@ -401,9 +401,17 @@ enum Command {
         recovery: bool,
         #[arg(long)]
         password_stdin: bool,
+        /// Also unlock automatically after daemon restarts for this long
+        /// (e.g. 7d, max 30d). Basic mode: the key is a 0600 file, not Secure Enclave.
+        #[arg(long)]
+        remember: Option<String>,
     },
     /// Lock the running broker and revoke all sessions.
-    Lock,
+    Lock {
+        /// Also delete the remembered unlock so restarts stay locked.
+        #[arg(long)]
+        forget_remembered: bool,
+    },
     /// Show broker status.
     Status {
         /// Observe without resetting the idle-lock timer.
@@ -1477,8 +1485,9 @@ fn main() {
         Command::Unlock {
             recovery,
             password_stdin,
-        } => commands::unlock(&state_dir, recovery, password_stdin),
-        Command::Lock => commands::lock(&state_dir),
+            remember,
+        } => commands::unlock(&state_dir, recovery, password_stdin, remember.as_deref()),
+        Command::Lock { forget_remembered } => commands::lock(&state_dir, forget_remembered),
         Command::Status { passive } => commands::status(&state_dir, passive),
         #[cfg(feature = "lab")]
         Command::Metrics {

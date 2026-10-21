@@ -121,8 +121,42 @@ with tempfile.TemporaryDirectory(prefix='rk-add-') as root:
         key_file.rename(state / 'moved-signer.p8')
         fails(['add', 'anthropic', '--model', 'claude-test', '--stdin-secrets'], password + '\n' + glm_key + '\n', 'TRUST_MISMATCH')
         assert set(connections()) == {'glm', 'openai', 'glm-second'}
+        # Remembered unlock survives a daemon restart without a password.
+        (state / 'moved-signer.p8').rename(key_file)  # restore the signer moved above
+        remembered = call(['unlock', '--password-stdin', '--remember', '7d'], password + '\n')
+        assert b'not Secure Enclave' in remembered.stderr
+        remember_file = state / 'remembered-unlock.key'
+        assert (remember_file.stat().st_mode & 0o777) == 0o600
+        broker.terminate()
+        broker.wait(timeout=10)
+        broker = subprocess.Popen([str(binary.parent / 'rekeyd'), 'serve', '--state-dir', str(state)],
+                                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL, env=environment)
+        deadline = time.monotonic() + 10
+        while True:
+            status = run(['status', '--passive'])
+            if status.returncode == 0 and b'"unlocked"' in status.stdout:
+                break
+            assert broker.poll() is None and time.monotonic() < deadline, status.stdout + status.stderr
+            time.sleep(.1)
+        assert 'glm' in connections()
+        # A revoked grant leaves the next start locked.
+        call(['lock', '--forget-remembered'])
+        assert not remember_file.exists()
+        broker.terminate()
+        broker.wait(timeout=10)
+        broker = subprocess.Popen([str(binary.parent / 'rekeyd'), 'serve', '--state-dir', str(state)],
+                                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL, env=environment)
+        deadline = time.monotonic() + 10
+        while run(['status', '--passive']).returncode:
+            assert broker.poll() is None and time.monotonic() < deadline
+            time.sleep(.1)
+        time.sleep(1)
+        assert b'"locked"' in call(['status', '--passive']).stdout
         print('PASS: one-step add (trust install, save, sign, activate), trust reuse, duplicate/locked/'
-              'wrong-password/OAuth/generic/trust-mismatch refusals, credential reuse, Agent discovery. '
+              'wrong-password/OAuth/generic/trust-mismatch refusals, credential reuse, Agent discovery, '
+              'remembered unlock across restart and its revocation. '
               'Software signer (basic mode), not Secure Enclave.')
     finally:
         broker.terminate()
