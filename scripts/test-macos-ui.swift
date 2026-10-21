@@ -14,6 +14,7 @@ struct ConnectionUIContract {
         }
         if CommandLine.arguments == [CommandLine.arguments[0], "--privacy-only"] {
             try await privacy()
+            try await requestAlerts()
             return
         }
         if CommandLine.arguments == [CommandLine.arguments[0], "--startup-only"] {
@@ -25,6 +26,7 @@ struct ConnectionUIContract {
         }
         try subprocessBoundary()
         try await privacy()
+        try await requestAlerts()
         try await live(binary: URL(fileURLWithPath: CommandLine.arguments[1]))
     }
 
@@ -226,6 +228,76 @@ struct ConnectionUIContract {
         let object = try JSONSerialization.jsonObject(with: Data(draft.utf8)) as! [String: Any]
         try require(object["format_version"] as? Int == 8 && object["version"] as? Int == 3 && object["derived_credentials"] is [Any], "new draft uses current policy8 fields")
         print("PASS: desktop idle/device/disabled controls, failed cleanup, late login, cancelled authentication and exact draft text.")
+    }
+
+    final class AlertLog: @unchecked Sendable {
+        private let lock = NSLock(); private var items: [RequestAlert] = []; private var asks = 0
+        func record(_ alert: RequestAlert) { lock.lock(); items.append(alert); lock.unlock() }
+        func ask() { lock.lock(); asks += 1; lock.unlock() }
+        var alerts: [RequestAlert] { lock.lock(); defer { lock.unlock() }; return items }
+        var requests: Int { lock.lock(); defer { lock.unlock() }; return asks }
+    }
+
+    @MainActor
+    static func requestAlerts() async throws {
+        let root = try fixture()
+        let suite = "rekey.request-alerts-test." + UUID().uuidString
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { preferences.removePersistentDomain(forName: suite); cleanup(root) }
+        let executable = root.appendingPathComponent("synthetic-cli")
+        let fixtureScript = """
+        #!/usr/bin/python3
+        import pathlib,sys
+        root=pathlib.Path(__file__).parent
+        args=sys.argv[3:]
+        name={'access list':'inbox.json','approval pending':'pending.json'}.get(' '.join(args))
+        if name is None or not (root/name).exists():sys.exit(2)
+        sys.stdout.write((root/name).read_text())
+        """
+        try writePrivateNew(Data(fixtureScript.utf8), to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        let reason = "SYNTHETIC-REQUEST-REASON", requestID = UUID().uuidString.lowercased()
+        let inbox = try JSONSerialization.data(withJSONObject: ["requests": [["request_id": requestID, "caller": "codex", "provider": "glm", "connection": NSNull(), "operation": NSNull(), "reason": reason, "created_at_ms": 1, "expires_at_ms": 4000000000000, "status": "PENDING"]], "blocked_callers": []])
+        let inboxFile = root.appendingPathComponent("inbox.json")
+        try inbox.write(to: inboxFile)
+        try Data(#"{"challenges":[]}"#.utf8).write(to: root.appendingPathComponent("pending.json"))
+        let state = root.appendingPathComponent("state").path
+        let client = CLI(binary: executable, stateDirectory: state)
+        let log = AlertLog()
+        var badges: [Int] = []
+        let model = AppModel(stateDirectory: state, preferences: preferences, binary: executable)
+        try require(!model.approvalNotificationsEnabled && preferences.object(forKey: AppModel.requestNotificationsKey) == nil, "fresh install has not decided notifications")
+        func poll(_ target: AppModel, grant: Bool = true) async {
+            await target.pollPendingRequests(client: client, badge: { badges.append($0) },
+                                             request: { log.ask(); return grant }, send: { log.record($0) })
+        }
+        // The desktop stays locked and no window refresh runs: this is the background path.
+        await poll(model)
+        try require(model.desktopLocked && log.requests == 1 && model.approvalNotificationsEnabled, "first pending request asks for notification permission once")
+        try require(preferences.object(forKey: AppModel.requestNotificationsKey) as? Bool == true, "granted permission persists")
+        try require(log.alerts == [RequestAlert(kind: .access, id: requestID)] && badges.last == 1 && model.pendingRequestCount == 1, "locked background App alerts and badges a pending access request")
+        try require(log.alerts.allSatisfy { !$0.title.contains(reason) && !$0.body.contains(reason) && !$0.body.contains("glm") }, "alerts carry no request text")
+        await poll(model)
+        try require(log.alerts.count == 1 && log.requests == 1 && badges.last == 1, "repeated polls neither re-alert nor re-ask")
+        try FileManager.default.removeItem(at: inboxFile)
+        await poll(model)
+        try require(badges.last == 0, "unreadable inbox clears the badge")
+        try inbox.write(to: inboxFile)
+        await poll(model)
+        try require(log.alerts.count == 1 && badges.last == 1, "failed read does not cause a duplicate alert")
+        let relaunched = AppModel(stateDirectory: state, preferences: preferences, binary: executable)
+        try require(relaunched.approvalNotificationsEnabled, "notification choice survives relaunch")
+        await relaunched.setApprovalNotifications(false)
+        try require(AppModel(stateDirectory: state, preferences: preferences, binary: executable).approvalNotificationsEnabled == false, "turning alerts off persists")
+        let deniedSuite = suite + ".denied", denied = UserDefaults(suiteName: deniedSuite)!
+        defer { denied.removePersistentDomain(forName: deniedSuite) }
+        let deniedModel = AppModel(stateDirectory: state, preferences: denied, binary: executable)
+        await poll(deniedModel, grant: false)
+        try require(!deniedModel.approvalNotificationsEnabled && denied.object(forKey: AppModel.requestNotificationsKey) as? Bool == false, "denied permission persists without alerts")
+        try require(log.alerts.count == 1 && badges.last == 1, "denied notifications fall back to the Dock badge")
+        await poll(deniedModel, grant: false)
+        try require(log.requests == 2, "a recorded denial is not asked again")
+        print("PASS: background request alerts, persisted notification choice, static alert text and Dock badge fallback.")
     }
 
     @MainActor

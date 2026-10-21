@@ -461,6 +461,7 @@ async fn access_request_waits_pending_and_resolves_without_a_token_or_implicit_e
     );
     let access = successful(&requested);
     assert!(access["next"].as_str().unwrap().contains("await_access"));
+    assert!(access["user_hint"].as_str().unwrap().contains("open Rekey"));
     let wait = json!({"request_id":access["request_id"],"timeout_s":1});
     assert_eq!(
         successful(&mcp.call("await_access", wait.clone()))["status"],

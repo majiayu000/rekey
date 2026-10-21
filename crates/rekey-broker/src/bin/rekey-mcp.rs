@@ -387,6 +387,7 @@ impl Server {
                     .and_then(checked::<RequestAccessResponse>)
                     .map(|mut value| {
                         value["next"] = json!(format!("Call await_access with request_id {}. After GRANTED, explicitly retry the original request.", value["request_id"].as_str().unwrap()));
+                        value["user_hint"] = json!("Rekey App shows this request in its inbox. Tell the user to open Rekey to add the key or grant the permission there; it expires in 10 minutes.");
                         text_result(value)
                     })
             }
