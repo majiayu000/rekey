@@ -7,6 +7,7 @@ import CryptoKit
 import UserNotifications
 import LocalAuthentication
 import CoreGraphics
+import os
 
 struct UIError: LocalizedError {
     let message: String
@@ -1935,7 +1936,7 @@ final class AppModel: ObservableObject {
     }
     func setApprovalNotifications(_ enabled: Bool,
                                   request: @escaping @Sendable () async throws -> Bool = {
-                                      try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert])
+                                      try await RequestAlert.authorize()
                                   }) async {
         notificationRevision = UUID()
         let revision = notificationRevision
@@ -1948,8 +1949,10 @@ final class AppModel: ObservableObject {
             guard revision == notificationRevision else { return }
             approvalNotificationsEnabled = granted
             preferences.set(granted, forKey: Self.requestNotificationsKey)
-            approvalNotificationMessage = granted ? "已启用静态提醒；通知不会批准请求。" : "未获得通知权限；Dock 图标角标仍会显示待处理请求数。"
+            RequestAlert.log.notice("request alerts authorization granted=\(granted, privacy: .public)")
+            approvalNotificationMessage = granted ? "已启用静态提醒；通知不会批准请求。横幅约 5 秒后收起，可在“系统设置 › 通知 › Rekey”把样式改为“提醒”。" : "未获得通知权限；Dock 图标角标仍会显示待处理请求数。"
         } catch {
+            RequestAlert.log.error("request alerts authorization failed: \(error.localizedDescription, privacy: .public)")
             if revision == notificationRevision { approvalNotificationsEnabled = false; approvalNotificationMessage = "通知权限请求失败，请稍后手动开启。" }
         }
     }
@@ -1959,7 +1962,7 @@ final class AppModel: ObservableObject {
     }
     /// Asks for notification permission once per install; the answer persists across launches.
     func requestNotificationsIfUndecided(request: @escaping @Sendable () async throws -> Bool = {
-        try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert])
+        try await RequestAlert.authorize()
     }) async {
         guard preferences.object(forKey: Self.requestNotificationsKey) == nil else { return }
         await setApprovalNotifications(true, request: request)
@@ -1978,7 +1981,7 @@ final class AppModel: ObservableObject {
     func pollPendingRequests(client injectedClient: CLI? = nil,
                              badge: @escaping @MainActor (Int) -> Void = { count in NSApp?.dockTile.badgeLabel = count > 0 ? String(count) : nil },
                              request: @escaping @Sendable () async throws -> Bool = {
-                                 try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert])
+                                 try await RequestAlert.authorize()
                              },
                              send: @escaping @Sendable (RequestAlert) async throws -> Void = { try await RequestAlert.deliver($0) }) async {
         guard !requestPollRunning else { return }
@@ -2006,7 +2009,9 @@ final class AppModel: ObservableObject {
             // Mark before awaiting delivery: concurrent refreshes cannot duplicate it.
             if alert.kind == .access { notifiedAccessIDs.insert(alert.id) } else { notifiedApprovalIDs.insert(alert.id) }
             do { try await send(alert) }
-            catch { approvalNotificationsEnabled = false; approvalNotificationMessage = "提醒发送失败，请检查系统通知权限；Dock 角标仍会显示待处理数。"; return }
+            catch {
+                RequestAlert.log.error("request alert \(alert.identifier, privacy: .public) failed; alerts paused until relaunch: \(error.localizedDescription, privacy: .public)")
+                approvalNotificationsEnabled = false; approvalNotificationMessage = "提醒发送失败，请检查系统通知权限；Dock 角标仍会显示待处理数。"; return }
         }
     }
     @discardableResult
@@ -2241,11 +2246,21 @@ struct RequestAlert:Equatable,Sendable {
     var identifier:String {(kind == .access ? "rekey.access." : "rekey.approval.")+id}
     var title:String {kind == .access ? "Rekey 有连接或权限请求" : "Rekey 有待审批请求"}
     var body:String {kind == .access ? "请打开 Rekey 审批收件箱，审阅请求并签署规则。" : "请打开 Rekey 收件箱，查看完整请求后作出决定。"}
+    /// Diagnostics only: identifiers and system settings, never request text. Read with
+    /// `/usr/bin/log show --predicate 'subsystem == "com.starlight.rekey"' --info`.
+    static let log=Logger(subsystem:"com.starlight.rekey",category:"request-alerts")
+    /// Sound makes the default 5-second banner noticeable while another App is in front.
+    static func authorize() async throws -> Bool {
+        try await UNUserNotificationCenter.current().requestAuthorization(options:[.alert,.sound])
+    }
     static func deliver(_ alert:RequestAlert) async throws {
         let center=UNUserNotificationCenter.current()
-        guard await center.notificationSettings().authorizationStatus == .authorized else { throw UIError(message:"通知权限不可用。") }
-        let content=UNMutableNotificationContent();content.title=alert.title;content.body=alert.body
+        let settings=await center.notificationSettings()
+        log.notice("request alert \(alert.identifier, privacy: .public): authorization=\(settings.authorizationStatus.rawValue, privacy: .public) alert=\(settings.alertSetting.rawValue, privacy: .public) style=\(settings.alertStyle.rawValue, privacy: .public) sound=\(settings.soundSetting.rawValue, privacy: .public)")
+        guard settings.authorizationStatus == .authorized else { throw UIError(message:"通知权限不可用。") }
+        let content=UNMutableNotificationContent();content.title=alert.title;content.body=alert.body;content.sound = .default
         try await center.add(UNNotificationRequest(identifier:alert.identifier,content:content,trigger:nil))
+        log.notice("request alert \(alert.identifier, privacy: .public) handed to Notification Center")
     }
 }
 
