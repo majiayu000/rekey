@@ -94,7 +94,7 @@ struct RootView: View {
         .background(canvas).foregroundStyle(ink).tint(green)
         .task {
             notificationRouter.model = model
-            UNUserNotificationCenter.current().delegate = notificationRouter
+            if RequestAlert.available { UNUserNotificationCenter.current().delegate = notificationRouter }
             model.startSecurityMonitoring(); model.startRequestPolling(); await model.connectOnOpen()
         }
         .onOpenURL { url in

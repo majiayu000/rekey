@@ -2253,10 +2253,15 @@ struct RequestAlert:Equatable,Sendable {
     /// `/usr/bin/log show --predicate 'subsystem == "com.starlight.rekey"' --info`.
     static let log=Logger(subsystem:"com.starlight.rekey",category:"request-alerts")
     /// Sound makes the default 5-second banner noticeable while another App is in front.
+    /// UNUserNotificationCenter raises an uncatchable exception without a bundle
+    /// identifier (bare test bundles); the Dock badge still covers that case.
+    static var available:Bool {Bundle.main.bundleIdentifier != nil}
     static func authorize() async throws -> Bool {
-        try await UNUserNotificationCenter.current().requestAuthorization(options:[.alert,.sound])
+        guard available else {return false}
+        return try await UNUserNotificationCenter.current().requestAuthorization(options:[.alert,.sound])
     }
     static func deliver(_ alert:RequestAlert) async throws {
+        guard available else {throw UIError(message:"通知不可用：应用缺少 bundle 标识。")}
         let center=UNUserNotificationCenter.current()
         let settings=await center.notificationSettings()
         log.notice("request alert \(alert.identifier, privacy: .public): authorization=\(settings.authorizationStatus.rawValue, privacy: .public) alert=\(settings.alertSetting.rawValue, privacy: .public) style=\(settings.alertStyle.rawValue, privacy: .public) sound=\(settings.soundSetting.rawValue, privacy: .public)")
