@@ -6,6 +6,11 @@ use std::io::IsTerminal;
 
 use super::CliError;
 
+/// True when the caller explicitly asked for the JSON error envelope.
+pub fn json_output_forced() -> bool {
+    std::env::var("REKEY_OUTPUT").as_deref() == Ok("json")
+}
+
 /// `REKEY_OUTPUT=json` always wins; `REKEY_OUTPUT=human` forces this mode
 /// (tests, scripts that want the human text); otherwise a TTY stderr decides.
 pub(super) fn enabled() -> bool {
@@ -15,6 +20,11 @@ pub(super) fn enabled() -> bool {
         _ => std::io::stderr().is_terminal(),
     }
 }
+
+#[cfg(target_os = "macos")]
+const NOT_CONFIGURED_NEXT: &str = "用 `rekey add <provider> --app` 在 App 中添加密钥；仅测试时可用 `rekey add <provider>` 基础模式（不安全）。";
+#[cfg(not(target_os = "macos"))]
+const NOT_CONFIGURED_NEXT: &str = "用 `rekey credential add` 保存密钥，再按团队模式的外部签名流程签署并激活连接（见安装说明）；`rekey add <provider>` 基础模式仅限测试。";
 
 /// Localized summary and next step for a stable error code.
 fn hint(code: &str) -> (&'static str, &'static str) {
@@ -31,10 +41,7 @@ fn hint(code: &str) -> (&'static str, &'static str) {
             "还没有创建保险库。",
             "打开 Rekey App 创建保险库，或运行 `rekey init --mode personal`。",
         ),
-        "NOT_CONFIGURED" => (
-            "这个服务还没有配置连接。",
-            "用 `rekey add <provider> --app` 在 App 中添加密钥；仅测试时可用 `rekey add <provider>` 基础模式。",
-        ),
+        "NOT_CONFIGURED" => ("这个服务还没有配置连接。", NOT_CONFIGURED_NEXT),
         "TRUST_MISMATCH" => (
             "这个保险库信任的签名密钥不在本机 CLI 手里（例如 App 的 Secure Enclave 密钥）。",
             "改用 `rekey add <provider> --app` 在 App 里完成（基础模式仅限测试，需另建保险库）。",
@@ -44,8 +51,8 @@ fn hint(code: &str) -> (&'static str, &'static str) {
             "确认 Rekey 安装完整（签名工具与 `rekey` 在同一目录），或改用 `rekey add <provider> --app`。",
         ),
         "INVALID_UNLOCK_CREDENTIAL" | "AUTHENTICATION_FAILED" => (
-            "密码或恢复密钥不正确。",
-            "重新输入；忘记密码可用 `rekey unlock --recovery` 配合恢复密钥。",
+            "身份验证没有通过（密码、恢复密钥或系统认证授权无效、缺失或已过期）。",
+            "重新执行命令并完成验证；忘记密码可用 `rekey unlock --recovery` 配合恢复密钥。",
         ),
         "UNLOCK_RATE_LIMITED" => ("解锁尝试过于频繁，已被暂时限制。", "稍等片刻再试。"),
         "BUDGET_EXCEEDED" => (
