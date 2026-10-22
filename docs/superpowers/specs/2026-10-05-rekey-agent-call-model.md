@@ -87,7 +87,7 @@
 
 - 加密层级、Authority Worker、presence、回滚检测、内存加固。
 - 模板路径与查询参数的安全渲染规则（`crates/rekey-domain/src/template.rs`）。
-- 出站请求：公网 IP 钉死、禁止重定向、忽略代理、fake-IP 默认拒绝与可选 DoH。
+- 出站请求：公网 IP 钉死、禁止重定向、忽略代理、fake-IP 时仅用 DoH 解析（0.4 须显式 `REKEY_DOH_URL`；0.5 起未设置时回退到 223.5.5.5、1.1.1.1，见 v3 spec I6）。
 - 响应遮蔽：原始与解码双层，SSE 按块序号投影。
 - 预算、用量账本、审计、本机审批（presence + 审阅哈希）。
 - 个人策略签名（Secure Enclave P-256）、团队 Ed25519。
