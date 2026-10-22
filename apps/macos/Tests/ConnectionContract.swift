@@ -4,7 +4,8 @@ import CryptoKit
 
 @main struct ConnectionContract {
     static func main() throws {
-        for name in ["anthropic","openai","glm","glm-responses","github-pat","github-git","generic-bearer","generic-header"]+OAuthSetup.presets {
+        precondition(ConnectionPreset.apiKeyPresets.count==18 && Set(ConnectionPreset.apiKeyPresets+OAuthSetup.presets).count==24)
+        for name in ConnectionPreset.apiKeyPresets+OAuthSetup.presets {
             precondition(OnboardingRoute(url:URL(string:"rekey://add/"+name)!) == .add(name))
         }
         precondition(OnboardingRoute(url:URL(string:"rekey://add/anthropic?secret=synthetic")!) == nil)

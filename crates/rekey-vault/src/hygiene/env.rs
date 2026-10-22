@@ -196,15 +196,49 @@ fn parse_value(text: &str) -> Option<Zeroizing<Vec<u8>>> {
 fn preset_hint(entry: &ParsedEntry) -> Option<String> {
     let key = entry.key.as_str();
     let value = entry.value.as_slice();
-    if key.starts_with("OPENAI_") || value.starts_with(b"sk-") {
+    // Names alone only count when they look like a credential, so provider
+    // settings such as GEMINI_MODEL or OPENROUTER_BASE_URL get no hint.
+    let credential_name = ["_KEY", "_TOKEN", "_SECRET", "_PAT"]
+        .iter()
+        .any(|suffix| key.ends_with(suffix));
+    let named = |prefixes: &[&str]| {
+        credential_name && prefixes.iter().any(|prefix| key.starts_with(prefix))
+    };
+    // Provider-named keys first: several providers also issue `sk-` keys.
+    let providers: [(&[&str], &str); 5] = [
+        (&["DEEPSEEK_"], "deepseek"),
+        (&["MOONSHOT_", "KIMI_"], "moonshot"),
+        (&["DASHSCOPE_", "QWEN_"], "qwen"),
+        (&["OPENROUTER_"], "openrouter"),
+        (&["GEMINI_"], "gemini"),
+    ];
+    // Only Stripe API keys fit the Bearer preset; webhook (`whsec_`) and
+    // publishable (`pk_`) values under STRIPE_ names are not API credentials.
+    let stripe_api_name = matches!(
+        key,
+        "STRIPE_SECRET_KEY" | "STRIPE_API_KEY" | "STRIPE_RESTRICTED_KEY"
+    ) && !value.starts_with(b"whsec_")
+        && !value.starts_with(b"pk_");
+    if let Some((_, preset)) = providers.iter().find(|(prefixes, _)| named(prefixes)) {
+        Some((*preset).to_owned())
+    } else if value.starts_with(b"sk-or-") {
+        Some("openrouter".to_owned())
+    } else if named(&["ANTHROPIC_"]) || value.starts_with(b"sk-ant-") {
+        Some("anthropic".to_owned())
+    } else if stripe_api_name
+        || ["sk_live_", "sk_test_", "rk_live_", "rk_test_"]
+            .iter()
+            .any(|prefix| value.starts_with(prefix.as_bytes()))
+    {
+        Some("stripe".to_owned())
+    } else if named(&["OPENAI_"]) || value.starts_with(b"sk-") {
         Some("openai".to_owned())
-    } else if key.starts_with("GITHUB_")
-        || key == "GH_TOKEN"
+    } else if named(&["GITHUB_", "GH_"])
         || value.starts_with(b"ghp_")
         || value.starts_with(b"github_pat_")
     {
         Some("github".to_owned())
-    } else if key.starts_with("AWS_") || value.starts_with(b"AKIA") {
+    } else if named(&["AWS_"]) || value.starts_with(b"AKIA") {
         Some("aws".to_owned())
     } else {
         None
@@ -451,4 +485,42 @@ pub fn rewrite_env(
     }
     mutation?;
     Ok(path.with_file_name(std::ffi::OsStr::from_bytes(backup_name.as_bytes())))
+}
+
+#[cfg(test)]
+mod preset_hint_tests {
+    #[test]
+    fn hints_need_credential_names_or_credential_values() {
+        let preview = super::preview_bytes(
+            b"DEEPSEEK_API_KEY=sk-a\nOPENROUTER_KEY=x\nX=sk-or-v1-a\nSTRIPE_SECRET_KEY=sk_test_a\nY=rk_live_a\nGEMINI_API_KEY=a\nOPENAI_API_KEY=sk-b\nSTRIPE_API_KEY=opaque\nSTRIPE_WEBHOOK_SECRET=whsec_a\nSTRIPE_PUBLISHABLE_KEY=pk_test_a\nSTRIPE_RESTRICTED_KEY=whsec_b\nGEMINI_MODEL=gemini-pro\nOPENROUTER_BASE_URL=https://openrouter.ai/api/v1\nQWEN_MODEL=qwen-plus\nOPENAI_BASE_URL=https://example.com\nDASHSCOPE_API_KEY=sk-c\nZ=sk-ant-a\nGH_TOKEN=x\n",
+        );
+        let hints: Vec<_> = preview
+            .entries
+            .iter()
+            .map(|entry| entry.preset_hint.as_deref())
+            .collect();
+        assert_eq!(
+            hints,
+            [
+                Some("deepseek"),
+                Some("openrouter"),
+                Some("openrouter"),
+                Some("stripe"),
+                Some("stripe"),
+                Some("gemini"),
+                Some("openai"),
+                Some("stripe"),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some("qwen"),
+                Some("anthropic"),
+                Some("github"),
+            ]
+        );
+    }
 }
