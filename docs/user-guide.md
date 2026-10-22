@@ -15,11 +15,11 @@ rekey --version
 rekey --help
 ```
 
-macOS 安装版保护真实密钥的入口是：
+macOS 安装版（已发布的 0.4）的入口是：
 
 ```bash
 rekey setup
-rekey add glm --app
+rekey add glm
 ```
 
 `setup` 在 App 中创建新的个人保险库并保存恢复密钥。**当前 0.5 开发版**在 macOS 默认目录且已安装 App 时，`rekey add <预设>` 会打开 App：保存或选择已有凭据，审阅完整连接规则，再系统认证签署并激活。CLI 的打开回执只表示已发起跳转，是否成功以 App 的激活结果为准。连接名、凭据 ID、模型白名单和有效期都会带入表单；用户仍须审阅确认。
@@ -122,7 +122,7 @@ rekey await REQUEST_ID --timeout 120
 rekey await-unlock --timeout 120
 ```
 
-在 App 中添加凭据并激活对应规则后，再批准访问请求；批准请求不能绕过签名授权。请求 10 分钟过期，用户可拒绝或屏蔽调用方。CLI 错误在终端里直接运行时显示为中文说明和建议命令；通过管道调用（Agent、脚本）或设置 `REKEY_OUTPUT=json` 时输出单行 JSON，其中 `next` 指示下一步，Agent 应照该提示处理；`rekey request` 和 MCP `request_access` 的返回另含 `user_hint`，供 Agent 提醒用户打开 Rekey。
+在 App 中添加凭据并激活对应规则后，再批准访问请求；批准请求不能绕过签名授权。请求 10 分钟过期，用户可拒绝或屏蔽调用方。CLI 错误输出单行 JSON，其中 `next` 指示下一步，Agent 应照该提示处理；`rekey request` 和 MCP `request_access` 的返回另含 `user_hint`，供 Agent 提醒用户打开 Rekey。0.5 源码起，在终端里直接运行时错误改为中文说明和建议命令，通过管道调用（Agent、脚本）或设置 `REKEY_OUTPUT=json` 时仍是 JSON；`init`、`serve`、`restore` 由 `rekeyd` 执行，它们的失败输出由 `rekeyd` 直接给出，不走这套格式。
 
 App 运行时（包括窗口关闭、界面锁定或在后台）每 15 秒检查访问请求和本机审批。首次连接服务或首次出现请求时，App 请求系统通知权限，选择会保存，重启后保留；可在审批收件箱关闭或重新开启。允许通知时，每个新请求发一条带提示音、固定文案的系统通知，不含提供方、理由或任何密钥，点击只会打开收件箱，不会批准。macOS 默认的横幅约 5 秒后收起，错过时可在通知中心找到；想让它一直显示，到“系统设置 › 通知 › Rekey”把样式改为“提醒”。排查时运行 `/usr/bin/log show --last 30m --info --predicate 'subsystem == "com.starlight.rekey"'`，日志只含请求编号和系统通知设置。无论是否允许通知，Dock 图标角标都会显示待处理请求数。App 未运行时没有提醒。
 
