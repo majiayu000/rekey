@@ -89,14 +89,17 @@ class DistributionTests(unittest.TestCase):
         self.assertEqual(plist["ExitTimeOut"], 130)
         self.assertNotIn("EnvironmentVariables", plist)
 
-    def test_cask_hash_url_and_only_receipt_uninstall(self):
+    def test_cask_hash_url_and_bounded_uninstall(self):
         text = self.success(self.cask())
         self.assertIn(f'sha256 "{hashlib.sha256(self.package.read_bytes()).hexdigest()}"', text)
         self.assertIn('url "https://github.com/example/rekey/releases/download/v3.0.0-test.1/rekey-v3.0.0-test.1-macos.pkg"', text)
         self.assertIn('pkg "rekey-v3.0.0-test.1-macos.pkg"', text)
         self.assertIn("depends_on macos: :sonoma", text)
-        self.assertIn('uninstall pkgutil: "^com[.]starlight[.]rekey[.]pkg$"', text)
-        for directive in ["signal:", "launchctl:", "quit:", "delete:", "zap ", "preflight", ":no_check"]:
+        self.assertIn('pkgutil:   "^com[.]starlight[.]rekey[.]pkg$"', text)
+        self.assertIn('uninstall quit:      "com.starlight.rekey",', text)
+        self.assertIn('launchctl: "com.rekey.rekeyd",', text)
+        self.assertIn("strategy :github_releases", text)
+        for directive in ["signal:", "delete:", "trash:", "zap ", "preflight", ":no_check"]:
             self.assertNotIn(directive, text)
         self.package.write_bytes(self.package.read_bytes() + b"changed after stapling")
         changed = self.success(self.cask())

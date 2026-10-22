@@ -45,14 +45,22 @@ def generate(package: pathlib.Path, version: str, repository: str) -> str:
   depends_on arch: :arm64
   depends_on macos: :sonoma
 
+  livecheck do
+    url :url
+    strategy :github_releases
+  end
+
   pkg "{expected}"
 
-  uninstall pkgutil: "^com[.]starlight[.]rekey[.]pkg$"
+  uninstall quit:      "com.starlight.rekey",
+            launchctl: "com.rekey.rekeyd",
+            pkgutil:   "^com[.]starlight[.]rekey[.]pkg$"
 
   caveats <<~EOS
     Before upgrade or uninstall, disable login startup and shut down the daemon
-    in Rekey.app with a fresh proof, then quit the App. This cask does not stop
-    services or delete vault data or Keychain items.
+    in Rekey.app with a fresh proof, then quit the App. Uninstall only quits the
+    App and removes the com.rekey.rekeyd login service as a fallback; it never
+    deletes vault data or Keychain items.
   EOS
 end
 '''

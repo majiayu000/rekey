@@ -575,6 +575,72 @@ jobs:
           python3 scripts/test-macos-pkg.py --install-smoke \
             --package "downloaded/$package" --checksum "downloaded/$package.sha256" --version "${GITHUB_REF_NAME#v}"
 
+  homebrew-tap:
+    # Optional: opens a cask PR in <owner>/homebrew-rekey only after the public
+    # package passed smoke. Without the TAP_TOKEN secret it skips and succeeds.
+    needs: [publish, public-url-smoke]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+      TAP_REPOSITORY: ${{ github.repository_owner }}/homebrew-rekey
+    steps:
+      - name: Skip without a tap token
+        id: tap
+        shell: bash
+        run: |
+          if [[ -z "$TAP_TOKEN" ]]; then
+            echo "::notice::TAP_TOKEN is not configured; skipping the Homebrew tap update."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.tap.outputs.enabled == 'true'
+      - name: Regenerate the cask from the published package
+        if: steps.tap.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="rekey-${GITHUB_REF_NAME}-macos.pkg"
+          mkdir downloaded
+          gh release download "$GITHUB_REF_NAME" --dir downloaded \
+            --pattern "$package" --pattern "$package.sha256" --pattern rekey.rb
+          (cd downloaded && shasum -a 256 -c "$package.sha256")
+          python3 scripts/generate-homebrew-cask.py --package "downloaded/$package" \
+            --version "${GITHUB_REF_NAME#v}" --repository "$GITHUB_REPOSITORY" > rekey.rb
+          cmp rekey.rb downloaded/rekey.rb
+          ruby -c rekey.rb
+      - name: Open a pull request in the tap repository
+        if: steps.tap.outputs.enabled == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          branch="rekey-${version}"
+          gh auth setup-git
+          git clone --depth 1 "https://github.com/${TAP_REPOSITORY}.git" tap
+          mkdir -p tap/Casks
+          cp rekey.rb tap/Casks/rekey.rb
+          cd tap
+          if git diff --quiet -- Casks/rekey.rb && [[ -z "$(git status --porcelain -- Casks/rekey.rb)" ]]; then
+            echo "::notice::${TAP_REPOSITORY} already carries this cask."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add Casks/rekey.rb
+          git commit -m "rekey ${version}"
+          git push origin "$branch"
+          gh pr create --repo "$TAP_REPOSITORY" --head "$branch" \
+            --title "rekey ${version}" \
+            --body "Cask generated from the public, smoke-tested ${GITHUB_REF_NAME} package of ${GITHUB_REPOSITORY}."
+
   withdraw-on-public-smoke-failure:
     needs: [publish, public-url-smoke]
     if: ${{ always() && needs.publish.result == 'success' && needs.public-url-smoke.result != 'success' }}

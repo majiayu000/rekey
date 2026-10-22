@@ -77,7 +77,7 @@ target/release/rekey-approval-sign --help
 cargo check --workspace
 xcrun swiftc -warnings-as-errors -swift-version 5 -O \
   -framework SwiftUI -framework AppKit -framework ServiceManagement \
-  apps/macos/BackgroundService.swift apps/macos/PolicySigning.swift apps/macos/PresenceKey.swift apps/macos/Model.swift scripts/test-macos-ui.swift -o /tmp/rekey-ui-contract
+  apps/macos/BackgroundService.swift apps/macos/PolicySigning.swift apps/macos/PresenceKey.swift apps/macos/Model.swift apps/macos/Updater.swift scripts/test-macos-ui.swift -o /tmp/rekey-ui-contract
 /tmp/rekey-ui-contract target/macos-ui/Rekey.app/Contents/Resources/bin/rekey
 ```
 
@@ -98,7 +98,7 @@ ln -s "$PWD/target/macos-ui/Rekey.app/Contents/Resources" /tmp/RekeyStartupContr
 xcrun swiftc -warnings-as-errors -swift-version 5 \
   -framework SwiftUI -framework AppKit -framework ServiceManagement \
   apps/macos/BackgroundService.swift apps/macos/PolicySigning.swift apps/macos/PresenceKey.swift \
-  apps/macos/Model.swift apps/macos/Tests/ConnectionContract.swift -o /tmp/rekey-connection-app-contract
+  apps/macos/Model.swift apps/macos/Updater.swift apps/macos/Tests/ConnectionContract.swift -o /tmp/rekey-connection-app-contract
 /tmp/rekey-connection-app-contract
 ```
 
