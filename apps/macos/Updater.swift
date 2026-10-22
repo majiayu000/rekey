@@ -112,7 +112,7 @@ enum UpdateFeed {
 }
 
 @MainActor final class Updater: ObservableObject {
-    enum State: Equatable { case idle, checking, upToDate, available(UpdateRelease), downloading(UpdateRelease), ready(UpdateRelease, URL), failed(String) }
+    enum State: Equatable { case idle, checking, upToDate, available(UpdateRelease), downloading(UpdateRelease), ready(UpdateRelease, URL, String), failed(String) }
     @Published private(set) var state = State.idle
 
     private func fetch(_ url: URL) async throws -> Data {
@@ -145,25 +145,40 @@ enum UpdateFeed {
                 try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
                 let package = folder.appendingPathComponent(release.packageName)
                 try FileManager.default.moveItem(at: temporary, to: package)
-                guard try UpdateFeed.sha256(of: package) == expected else {
-                    try? FileManager.default.removeItem(at: folder)
-                    throw UIError(message: "安装包 SHA-256 与发布校验值不一致，已删除下载文件。")
-                }
-                let (output, status) = try await Task.detached { try UpdateFeed.checkSignature(package) }.value
-                guard UpdateFeed.trustedSignature(output, status: status) else {
-                    try? FileManager.default.removeItem(at: folder)
-                    throw UIError(message: "安装包不是 Rekey 发布者（Team \(UpdateFeed.teamID)）签名的，已删除下载文件。")
-                }
-                state = .ready(release, package)
+                // Read-only file in a read-only private folder: the verified bytes cannot be replaced by accident.
+                try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: package.path)
+                try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: folder.path)
+                try await verify(package, expected: expected)
+                state = .ready(release, package, expected)
             } catch { state = .failed((error as? UIError)?.message ?? "下载失败：\(error.localizedDescription)") }
         }
     }
 
-    /// Installer and Gatekeeper verify the Developer ID signature and notarization; the App never installs silently.
+    /// Checks the exact file that will be opened: release SHA-256 first, then the Developer ID Installer Team.
+    private func verify(_ package: URL, expected: String) async throws {
+        let folder = package.deletingLastPathComponent()
+        func reject(_ message: String) -> UIError {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: folder.path)
+            try? FileManager.default.removeItem(at: folder)
+            return UIError(message: message)
+        }
+        guard try UpdateFeed.sha256(of: package) == expected else { throw reject("安装包 SHA-256 与发布校验值不一致，已删除下载文件。") }
+        let (output, status) = try await Task.detached { try UpdateFeed.checkSignature(package) }.value
+        guard UpdateFeed.trustedSignature(output, status: status) else { throw reject("安装包不是 Rekey 发布者（Team \(UpdateFeed.teamID)）签名的，已删除下载文件。") }
+    }
+
+    /// Re-verifies immediately before opening, so the file handed to Installer is the one that passed both checks.
+    /// Installer and Gatekeeper then verify signature and notarization; the App never installs silently. A process
+    /// running as the same user could still race the open, which the local threat model does not defend against.
     /// The App quits once Installer opens so reopening after installation launches the new bundle, not this process.
-    func install(_ package: URL) {
-        guard NSWorkspace.shared.open(package) else { state = .failed("无法打开安装器。"); return }
-        NSApp.terminate(nil)
+    func install(_ package: URL, expected: String) {
+        Task {
+            do { try await verify(package, expected: expected) } catch {
+                state = .failed((error as? UIError)?.message ?? "安装包复核失败：\(error.localizedDescription)"); return
+            }
+            guard NSWorkspace.shared.open(package) else { state = .failed("无法打开安装器。"); return }
+            NSApp.terminate(nil)
+        }
     }
 }
 
@@ -180,10 +195,10 @@ struct UpdateSection: View {
                 Text("发现新版本 \(release.version)。").font(.system(size: 13, weight: .medium))
                 Link("阅读发布说明", destination: release.page).font(.system(size: 13))
                 Button("下载并校验") { updater.download(release) }
-            case .downloading: HStack { ProgressView().controlSize(.small); Text("正在下载并校验 SHA-256…").font(.system(size: 13)) }
-            case .ready(let release, let package):
+            case .downloading: HStack { ProgressView().controlSize(.small); Text("正在下载并校验 SHA-256 与发布者签名…").font(.system(size: 13)) }
+            case .ready(let release, let package, let expected):
                 Text("\(release.version) 安装包已通过 SHA-256 与发布者签名校验。安装会替换 Rekey.app 和内嵌后台服务。请先点击本页“停止并停用登录启动”，否则旧进程会继续运行。点击下方按钮后 Rekey 会打开安装器并退出；安装完成后重新打开 Rekey，后台服务会以新版本启动，正在进行的 Agent 请求会中断，需要重新解锁。保险库数据不会被删除。跨版本线升级（如 0.4 → 0.5）可能需要新的保险库，请先阅读发布说明。").font(.system(size: 13)).fixedSize(horizontal: false, vertical: true)
-                Button("打开安装器并退出 Rekey") { updater.install(package) }
+                Button("复核并打开安装器，然后退出 Rekey") { updater.install(package, expected: expected) }
             case .failed(let message):
                 Label(message, systemImage: "exclamationmark.circle").font(.system(size: 13)).foregroundStyle(.red)
                 Button("重试") { updater.check() }
