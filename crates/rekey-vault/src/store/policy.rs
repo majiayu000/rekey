@@ -66,19 +66,7 @@ impl SqliteRecordStore {
         generation: &mut GenerationAttempt<'_>,
     ) -> Result<(), AuthorityError> {
         let tx = self.conn.transaction().map_err(storage)?;
-        tx.execute(
-            "INSERT INTO policy_trust (singleton, signer_id, algorithm, public_key, installed_at_ms,
-                seal_nonce, seal_ciphertext) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                trust.signer_id.as_bytes().as_slice(),
-                algorithm_name(trust.key.algorithm()),
-                trust.key.as_bytes(),
-                trust.installed_at_ms,
-                trust.seal_nonce.as_slice(),
-                trust.seal_ciphertext.as_slice(),
-            ],
-        )
-        .map_err(storage)?;
+        insert_trust(&tx, trust)?;
         update_state(&tx, state)?;
         audit::insert(&tx, &event)?;
         commit_generation(tx, generation)
@@ -127,7 +115,30 @@ impl SqliteRecordStore {
     }
 }
 
-fn update_state(tx: &Transaction<'_>, state: &PolicyStateRecord) -> Result<(), AuthorityError> {
+pub(super) fn insert_trust(
+    tx: &Transaction<'_>,
+    trust: &PolicyTrustRecord,
+) -> Result<(), AuthorityError> {
+    tx.execute(
+        "INSERT INTO policy_trust (singleton, signer_id, algorithm, public_key, installed_at_ms,
+            seal_nonce, seal_ciphertext) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            trust.signer_id.as_bytes().as_slice(),
+            algorithm_name(trust.key.algorithm()),
+            trust.key.as_bytes(),
+            trust.installed_at_ms,
+            trust.seal_nonce.as_slice(),
+            trust.seal_ciphertext.as_slice(),
+        ],
+    )
+    .map_err(storage)?;
+    Ok(())
+}
+
+pub(super) fn update_state(
+    tx: &Transaction<'_>,
+    state: &PolicyStateRecord,
+) -> Result<(), AuthorityError> {
     let updated = tx
         .execute(
             "UPDATE policy_state SET trust_installed=?1, bundle_activated=?2,

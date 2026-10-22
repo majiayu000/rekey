@@ -1,8 +1,8 @@
 # Unified experiment integration (development contract)
 
-Status: implementation integrated; combined-head software verification is recorded in [the integration record](../plans/2026-10-09-experiment-integration.md). No release or existing-vault upgrade is authorized by this document.
+Status: implementation integrated; combined-head software verification is recorded in [the integration record](../plans/2026-10-09-experiment-integration.md). No release is authorized by this document. Existing vaults change only through the explicit offline migration below, run by the owner.
 
-This contract supersedes conflicting format and authorization clauses only for the next development line. The published 0.4 line remains vault26 / policy7. The 0.5.0-alpha.1 development line uses vault27 / policy8; non-current layouts are rejected with no migration, double reader, or backfill. Existing user vaults and the installed app are left untouched.
+This contract supersedes conflicting format and authorization clauses only for the next development line. The published 0.4 line remains vault26 / policy7. The 0.5.0-alpha.1 development line uses vault27 / policy8; open, unlock and restore reject non-current layouts with no in-place upgrade, runtime double reader, or backfill; the only cross-line path is [upgrade migration](#upgrade-migration) into a new vault. Existing user vaults and the installed app are left untouched.
 
 ## Minimal integration
 
@@ -14,6 +14,17 @@ This contract supersedes conflicting format and authorization clauses only for t
 - Integrate accepted action-collection authentication only where the retained lab action API remains executable. Connection records already bind the complete signed snapshot; they do not acquire a second authorization ledger.
 
 No new Agent PKI admission is included, and this contract adds no HA. The single-host Docker recovery controller was integrated later under its own [contract](2026-10-09-docker-ha-controller.md); multi-host HA remains out of scope. No historical green test count is a unified-head result.
+
+## Upgrade migration
+
+Owner decision 2026-10-22: user data may cross release lines through an in-Authority migration instead of forcing a new vault per release. This supersedes the "no migration" clauses of the 0.3/0.4 SPECs and the per-feature Lab SPECs for released formats 25 and later.
+
+- `rekeyd migrate --from <old-state-dir> --to <new-empty-dir> --password-stdin` (`rekey migrate --from` delegates; the CLI links no crypto). Offline like restore: the source must not be in use (shared lock on its `broker.lock`), have no init/restore marker, and be at its own generation high-water.
+- The source is never written. Its database (and WAL) is copied into a private 0700 scratch directory and read by a frozen reader that accepts only the released vault25, vault26 and vault27 layouts, pinned by `sqlite_schema` and header schema digests. Formats older than 25 stay rejected.
+- The password unwraps the source VRK; the reader verifies the header MAC (v1 for 25/26, v2 for 27), integrity mark, every credential state seal, every version payload, policy state/trust/bundle seals and audit retention. Plaintext stays inside the process and is never exported or passed to an Agent.
+- The target is a normal init (same password, new vault id, new VRK, new recovery key shown once) followed by one generation-advancing import transaction: credentials keep id, label, kind, state, version numbers and timestamps and are re-encrypted with fresh DEKs; policy trust and audit retention carry over; one `migration.completed` audit event names the source vault id, format and generation. The target is re-opened through the normal integrity path and its credential count, metadata and per-version payload digests must equal the source before the init is confirmed.
+- Not carried: audit history, usage ledgers, workload replay digests, remembered/desktop unlock grants and `service.json` (re-established by normal flows). Migration refuses a non-empty lease journal, lab Actions and PKI issuance history rather than dropping them.
+- The signed policy is not carried because its signature binds the old vault. Policy7/8 Connections, SSH keys and T1 permissions are converted mechanically (policy7 SSH keys get a local-presence approver and 100 signatures / 600 s budget, flagged for review) and written as an unsigned draft request `migrated-policy-request.json` (0600) for the owner to review and re-sign. Policy6 had no Connections. A basic-mode software signer key beside the source is copied so the carried trust stays usable.
 
 ## Verification
 

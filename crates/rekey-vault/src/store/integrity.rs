@@ -282,7 +282,9 @@ impl SqliteRecordStore {
     }
 }
 
-fn schema_layout(conn: &Connection) -> rusqlite::Result<Vec<(String, String, String, String)>> {
+pub(super) fn schema_layout(
+    conn: &Connection,
+) -> rusqlite::Result<Vec<(String, String, String, String)>> {
     let mut statement = conn.prepare(
         "SELECT type, name, tbl_name, sql FROM sqlite_schema
          WHERE sql IS NOT NULL AND name NOT GLOB 'sqlite_*'

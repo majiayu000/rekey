@@ -1,6 +1,6 @@
 # Durable PKI issuance acceptance
 
-Related: #71; implementation is integrated in PR #74 on the fresh 0.5 development line (vault27/policy8). Published 0.4 vault26 files are never migrated or read through a second decoder.
+Related: #71; implementation is integrated in PR #74 on the fresh 0.5 development line (vault27/policy8). Published 0.4 vault26 files are never read through a runtime second decoder; they reach vault27 only through offline `rekey migrate` into a new vault, which refuses sources with PKI history.
 
 The 22 regular cases in `crates/rekey-vault/tests/pki_client_csr.rs` cover constrained CSR validation, reserve-before-key-use, persisted DER and terminal audits, restart/rotation/backup, tamper/replay, extra trigger effects, audit failure, closed receivers, cancellation and a killed reservation owner. Serial revocation and CRL cases are additional scope; they do not replace the issuance ledger checks.
 

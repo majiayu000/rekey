@@ -124,6 +124,18 @@ enum Command {
         #[arg(long)]
         expected_context: Option<String>,
     },
+    /// Upgrade a vault from an earlier release line into a new empty directory (offline).
+    Migrate {
+        /// Source state directory (vault25, vault26 or vault27); never written.
+        #[arg(long)]
+        from: PathBuf,
+        /// New empty target state directory (default ~/.rekey).
+        #[arg(long, alias = "state-dir")]
+        to: Option<PathBuf>,
+        /// Read the source vault password from stdin (first line) instead of the TTY.
+        #[arg(long)]
+        password_stdin: bool,
+    },
     /// Internal child launcher for a Profile; the parent owns its control connection.
     #[command(hide = true)]
     #[cfg(feature = "lab")]
@@ -368,6 +380,92 @@ fn cmd_restore(
     Ok(())
 }
 
+fn cmd_migrate(
+    from: PathBuf,
+    to: Option<PathBuf>,
+    password_stdin: bool,
+) -> Result<(), RekeydError> {
+    let to = resolve_state_dir(to)?;
+    let password = if password_stdin {
+        read_stdin_secret_line()?
+    } else {
+        prompt_secret("Source vault password (the new vault keeps it): ")?
+    };
+    let outcome = rekey_vault::migrate::migrate_vault(
+        &from,
+        &to,
+        &password,
+        Argon2Params::RFC9106_LOW_MEMORY,
+    )?;
+    println!(
+        "migrated vault {} (format {}, generation {}) into new vault {}",
+        outcome.source_vault_id, outcome.source_format, outcome.source_generation, outcome.vault_id
+    );
+    println!("state directory: {}", to.display());
+    println!(
+        "credentials: {} ({} versions), payload digests verified; source left unchanged",
+        outcome.credentials, outcome.versions
+    );
+    println!(
+        "policy trust: {}{}",
+        if outcome.trust_carried {
+            "carried over"
+        } else {
+            "none"
+        },
+        if outcome.signer_key_copied {
+            "; basic-mode software signer key copied"
+        } else {
+            ""
+        }
+    );
+    println!("audit history, usage ledgers and remembered unlocks were not carried over");
+    if let Some(path) = &outcome.policy_request {
+        println!(
+            "signed policy NOT active: {} Connections, {} SSH keys, {} T1 permissions saved as an unsigned draft request:",
+            outcome.connections, outcome.ssh_keys, outcome.derived_credentials
+        );
+        println!("  {}", path.display());
+        for item in &outcome.review {
+            println!("  review: {item}");
+        }
+        match outcome.mode {
+            PolicyMode::Personal => println!(
+                "  re-sign it: `rekey policy draft --request-stdin < FILE`, sign with your policy signer (App or basic-mode key), then `rekey policy activate`"
+            ),
+            PolicyMode::Team => println!(
+                "  re-sign it: put these entries in a policy8 snapshot, sign it with the team signer (rekey-policy-sign), then `rekey policy activate`"
+            ),
+        }
+    }
+    println!();
+    println!(
+        "NEW RECOVERY KEY (the old recovery key does not open this vault; shown exactly once):"
+    );
+    println!("{}", *outcome.recovery_key_display);
+    if !password_stdin {
+        let tail_start = outcome
+            .recovery_key_display
+            .len()
+            .checked_sub(6)
+            .ok_or_else(|| usage("generated recovery key is too short"))?;
+        let tail = Zeroizing::new(outcome.recovery_key_display.as_bytes()[tail_start..].to_vec());
+        let confirmed = Zeroizing::new(
+            rpassword::prompt_password(
+                "Type the last 6 characters of the recovery key to confirm you saved it: ",
+            )
+            .map_err(|err| usage(format!("cannot read from tty: {err}")))?,
+        );
+        if confirmed.trim().as_bytes() != tail.as_slice() {
+            return Err(usage(
+                "recovery key confirmation mismatch; the migrated vault stays unconfirmed and will not serve",
+            ));
+        }
+    }
+    rekey_vault::bootstrap::confirm_vault_init(&to)?;
+    Ok(())
+}
+
 fn cmd_serve(
     state_dir: Option<PathBuf>,
     idle_lock: &str,
@@ -566,6 +664,11 @@ fn main() {
             inspect,
             expected_context,
         ),
+        Command::Migrate {
+            from,
+            to,
+            password_stdin,
+        } => cmd_migrate(from, to, password_stdin),
         #[cfg(feature = "lab")]
         Command::ProfileChild {
             state_dir,

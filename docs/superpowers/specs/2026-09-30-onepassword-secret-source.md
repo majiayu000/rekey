@@ -2,6 +2,7 @@
 
 > Status: Lab (v3 scope; enterprise reserve)
 > Existing contracts and evidence are retained; this capability is excluded from the default v3 build and release package.
+> 2026-10-22: the "no migration" statements below remain true for formats older than 25. Released formats 25+ may be copied into a new vault by offline `rekey migrate`; see [Upgrade migration](2026-10-09-unified-experiments.md#upgrade-migration).
 
 Implementation contract frozen after the completed Azure/GCP and Opaque/AWS
 sealing gates, 2026-09-30: CredentialKind::OnePasswordConnectSource, wire name

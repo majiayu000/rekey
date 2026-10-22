@@ -70,7 +70,9 @@ Cargo workspace, 7 crates + root integration-test host:
 - Current confirmed floor is L1-dev. Peer verification alone does not establish
   L1; V1/V2, protected anchors and actual isolation require separate evidence.
   Linux Profile netns and Codex Seatbelt limitations must not be hidden.
-- No migration, old-format double reader or backfill, permanently. Each release
+- No in-place upgrade, runtime old-format double reader or backfill. The only
+  cross-line path is offline `rekeyd migrate` into a new vault (owner decision
+  2026-10-22; see the unified experiments SPEC). Each release
   line freezes its formats: 0.3 = vault25 / policy6, 0.4 = vault26 / policy7,
   0.5 = vault27 / policy8. Preserve durable layouts and canonical signing
   semantics within a line; incompatible changes require a separately
@@ -97,9 +99,9 @@ Cargo workspace, 7 crates + root integration-test host:
 
 - Active contract: `docs/superpowers/specs/2026-10-05-rekey-agent-call-model.md`. This overrides conflicting 0.3 Profile/run/capability and format-freeze clauses for this release line.
 - Local callers invoke signed Connection rules without capability tokens; caller labels can only restrict rules. Secrets remain inside the Authority.
-- Implement and validate milestone gates before claiming release readiness. Preserve the old vault; initialize a new 0.4 vault with no migration.
+- Implement and validate milestone gates before claiming release readiness. Preserve the old vault; 0.4 itself shipped without migration (0.5 adds offline `rekey migrate` into a new vault).
 - For this implementation's external Agent acceptance, the user requires Codex only. Do not run Claude CLI, account, model or plugin tests, or change Claude login state. Preserve historical results without inferring that a particular account is suspended.
 
 ## Unified development line
 
-`docs/superpowers/specs/2026-10-09-unified-experiments.md` is the active integration contract for 0.5 development (vault27/policy8). It supersedes conflicting format freezes for this checkout only. Published 0.4/0.3 vaults are preserved; no migration or dual reader. Integration remains unvalidated until the combined-head gates pass.
+`docs/superpowers/specs/2026-10-09-unified-experiments.md` is the active integration contract for 0.5 development (vault27/policy8). It supersedes conflicting format freezes for this checkout only. Published 0.4/0.3 vaults are preserved; they upgrade only through offline `rekey migrate` into a new vault, with no runtime dual reader. Integration remains unvalidated until the combined-head gates pass.

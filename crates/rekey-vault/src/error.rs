@@ -74,6 +74,8 @@ pub enum AuthorityError {
     BackupFailed,
     #[error("restore failed")]
     RestoreFailed,
+    #[error("migration refused: {0}")]
+    MigrationRefused(&'static str),
     #[error("invalid input: {0}")]
     Domain(#[from] rekey_domain::DomainError),
 }
@@ -120,6 +122,7 @@ impl AuthorityError {
             Self::AuditCommitFailedAfterExecution => "AUDIT_COMMIT_FAILED_AFTER_EXECUTION",
             Self::BackupFailed => "BACKUP_FAILED",
             Self::RestoreFailed => "RESTORE_FAILED",
+            Self::MigrationRefused(_) => "MIGRATION_REFUSED",
             Self::Domain(rekey_domain::DomainError::ResponseTooLarge) => "RESPONSE_TOO_LARGE",
             Self::Domain(_) => "INVALID_INPUT",
         }

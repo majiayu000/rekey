@@ -351,6 +351,7 @@ pub mod event_type {
     pub const BACKUP_RELEASE_AUTHORIZED: &str = "backup.release_authorized";
     pub const BACKUP_CREATED: &str = "backup.created";
     pub const RESTORE_COMPLETED: &str = "restore.completed";
+    pub const MIGRATION_COMPLETED: &str = "migration.completed";
     pub const RUNTIME_FAULTED: &str = "runtime.faulted";
 }
 
