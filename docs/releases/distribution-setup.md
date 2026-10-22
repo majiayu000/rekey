@@ -4,7 +4,7 @@
 
 ## Homebrew tap
 
-`release.yml` 的 `homebrew-tap` job 在 `public-url-smoke` 通过后运行：从已公开的 Release 下载 macOS pkg 及其 `.sha256`，校验后用 `scripts/generate-homebrew-cask.py` 重新生成 cask，并与 Release 中的 `rekey.rb` 逐字节比较，然后向 `<owner>/homebrew-rekey` 的默认分支开一个更新 `Casks/rekey.rb` 的 PR。未配置 `TAP_TOKEN` 时该 job 只输出提示并成功结束；tap 失败不会撤回已公开的 Release。
+`release.yml` 的 `homebrew-tap` job 在 `public-url-smoke` 通过后运行：从已公开的 Release 下载 macOS pkg，要求其 SHA-256 与 `public-url-smoke` 实际安装测试过的字节一致（macOS smoke 上传的 `smoke-tested-macos-pkg` artifact），同时符合 Release 的 `.sha256` 并通过 `gh attestation verify`，然后用 `scripts/generate-homebrew-cask.py` 重新生成 cask，并与 Release 中的 `rekey.rb` 逐字节比较，然后向 `<owner>/homebrew-rekey` 的默认分支开一个更新 `Casks/rekey.rb` 的 PR。未配置 `TAP_TOKEN` 时该 job 只输出提示并成功结束；tap 失败不会撤回已公开的 Release。
 
 一次性设置：
 
@@ -13,10 +13,10 @@
 3. 在 `majiayu000/rekey` → Settings → Secrets and variables → Actions 新建 repository secret `TAP_TOKEN`，值为上一步的 token。
 4. 发布后审阅并合并 tap 仓库里的 `rekey <版本>` PR。合并后用户可执行 `brew install --cask majiayu000/rekey/rekey`。
 
-cask 声明 `livecheck`（GitHub Releases）、卸载时退出 `com.starlight.rekey`、移除 `com.rekey.rekeyd` 登录服务并按 receipt 删除 pkg 文件；不删除保险库数据或钥匙串条目。真实安装、升级与卸载验收仍需在签名设备上单独完成。
+cask 声明 `livecheck`（GitHub Releases，包含预发布、跳过草稿和改号前的 v2/v3 标签）、卸载时退出 `com.starlight.rekey`、移除 `com.rekey.rekeyd` 登录服务并按 receipt 删除 pkg 文件；不删除保险库数据或钥匙串条目。真实安装、升级与卸载验收仍需在签名设备上单独完成。
 
 ## App 内检查更新
 
-设置页的“检查更新”读取 `https://api.github.com/repos/majiayu000/rekey/releases`（含预发布，跳过草稿），只接受该仓库 `releases/download/<tag>/` 下的 `rekey-<tag>-macos.pkg` 与同名 `.sha256`。下载后核对 SHA-256，一致才交给 Installer 打开，由 Installer / Gatekeeper 验证 Developer ID 签名与公证。因此每个 Release 必须保留 pkg 的 `.sha256` 资产（`release.yml` 已上传）。
+设置页的“检查更新”读取 `https://api.github.com/repos/majiayu000/rekey/releases`（含预发布，跳过草稿），只接受该仓库 `releases/download/<tag>/` 下的 `rekey-<tag>-macos.pkg` 与同名 `.sha256`。下载后核对 SHA-256，并用 `pkgutil --check-signature` 要求 Apple 签发的 Developer ID Installer 证书且 Team ID 为 `C5UWZ934C2`（`UpdateFeed.teamID`；更换签名 Team 时必须同步修改并发布新 App）。安装包保存为私有临时目录中的只读文件；点击安装时对同一文件再做两项复核，通过后才交给 Installer 打开并退出 App，Installer / Gatekeeper 再验证签名与公证。同一用户下的恶意进程仍可能抢在打开前替换文件，这不在本机威胁模型的防护范围内。每个 Release 必须保留 pkg 的 `.sha256` 资产（`release.yml` 已上传）。
 
-未认证的 GitHub API 每个 IP 每小时 60 次，App 只在用户点击时请求。App 不静默安装，也不自动停止服务；跨版本线升级（如 0.4 → 0.5）需要新的保险库，提示文字会引导用户先阅读发布说明。
+未认证的 GitHub API 每个 IP 每小时 60 次，App 只在用户点击时请求。App 不静默安装，也不自动停止服务（提示用户先“停止并停用登录启动”）；跨版本线升级（如 0.4 → 0.5）需要新的保险库，提示文字会引导用户先阅读发布说明。
