@@ -1771,7 +1771,10 @@ fn errors_stay_json_on_pipes_and_render_for_people_on_request() {
         stderr.starts_with("错误：连不上 Rekey 后台服务。\n"),
         "{stderr}"
     );
-    assert!(stderr.contains("下一步：打开 Rekey App"), "{stderr}");
+    // The start-service wording is platform specific (App vs systemd).
+    assert!(stderr.contains("下一步："), "{stderr}");
+    assert!(stderr.contains("`rekey status`"), "{stderr}");
+    assert!(stderr.contains("不要直接重放"), "{stderr}");
     assert!(stderr.trim_end().ends_with("(IPC_UNAVAILABLE)"), "{stderr}");
     assert!(serde_json::from_str::<serde_json::Value>(stderr.trim()).is_err());
 
