@@ -45,13 +45,13 @@ def generate(package: pathlib.Path, version: str, repository: str) -> str:
   depends_on arch: :arm64
   depends_on macos: :sonoma
 
-  # v2.x/v3.x tags predate the 0.x renumbering; only the 0.x line is current.
   livecheck do
     url :url
-    regex(/^v?(0\\.\\d+\\.\\d+(?:-[0-9A-Za-z.]+)?)$/i)
+    regex(/^v?(\\d+(?:\\.\\d+)+(?:-[0-9A-Za-z.]+)?)$/i)
     strategy :github_releases do |json, regex|
       json.map do |release|
-        next if release["draft"]
+        # Tags published before the 0.x renumbering are older lines, not upgrades.
+        next if release["draft"] || %w[v2.0.0-alpha.1 v2.0.0-alpha.2 v3.0.0-alpha.1 v3.0.0-alpha.2 v3.0.0-alpha.3 v3.0.0-alpha.4].include?(release["tag_name"])
         match = release["tag_name"]&.match(regex)
         next if match.blank?
 

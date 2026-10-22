@@ -76,9 +76,11 @@ UI锁定且无会话显示L0，解锁显示已确认的L1-dev下限，未知/故
    `run`子进程环境中的短期capability是明确例外；不是provider Key，权限仍受Profile约束。
 6. **I6：固定上游。** origin/method来自认证Action，参数只能构成已声明路径/查询；拒绝
    credentials-in-URL、重定向、代理环境与非公网DNS，连接钉在已检查IP。
-   DoH默认关闭。管理员显式设置REKEY_DOH_URL后，系统仅返回198.18.0.0/15虚拟地址时，
-   才向选定HTTPS JSON DoH服务查询A/AAAA；服务及全部答案均须公网并固定连接，TLS正常验证。
-   解析服务获得目标域名，不获得provider Key。未配置或失败均不退回虚拟地址。
+   DoH仅在系统DNS只返回198.18.0.0/15虚拟地址时触发（0.5起）：设置REKEY_DOH_URL则只查询该
+   HTTPS JSON DoH服务；未设置时依次回退到固定IP的公共解析器223.5.5.5、1.1.1.1，
+   因此会把目标主机名泄露给这些第三方解析器。无单独关闭开关：用REKEY_DOH_URL覆盖为可信解析器，
+   或给daemon真实系统DNS（关闭fake-IP）。服务及全部答案均须公网并固定连接，TLS正常验证。
+   解析服务获得目标域名，不获得provider Key。全部失败均不退回虚拟地址。
    固定IP仍保留原Host/SNI，但不保证所有TUN的域名分流；DoH不提供代理出口。显式私有来源合同不变。
 7. **I7：未知与审计失败拒绝。** canonical/schema/policy不明不能执行；durable审计失败fault。
    有副作用后的未知结果不自动重试，不将收到部分输出或部分SSE当成成功。

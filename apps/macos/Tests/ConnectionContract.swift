@@ -192,6 +192,13 @@ import CryptoKit
         let feed=try JSONSerialization.data(withJSONObject:[release("v3.0.0-alpha.4"),release("v2.0.0-alpha.2"),release("v0.6.0",draft:true),release("v0.5.1",host:"https://example.com/"),release("v0.5.0-alpha.1"),release("v0.4.0-alpha.1")])
         let upgrade=try UpdateFeed.newest(feed,current:"0.4.0-alpha.1"),current=try UpdateFeed.newest(feed,current:"0.5.0-alpha.1")
         precondition(upgrade?.version=="0.5.0-alpha.1" && current==nil)
+        let major=try UpdateFeed.newest(try JSONSerialization.data(withJSONObject:[release("v3.0.0-alpha.4"),release("v1.0.0")]),current:"0.5.0-alpha.1")
+        precondition(major?.version=="1.0.0")
+        let signed="Package \"rekey.pkg\":\n   Status: signed by a developer certificate issued by Apple for distribution\n   Certificate Chain:\n    1. Developer ID Installer: Synthetic (C5UWZ934C2)\n    2. Developer ID Certification Authority\n    3. Apple Root CA\n"
+        precondition(UpdateFeed.trustedSignature(signed,status:0) && !UpdateFeed.trustedSignature(signed,status:1))
+        precondition(!UpdateFeed.trustedSignature(signed.replacingOccurrences(of:"C5UWZ934C2",with:"ABCDE12345"),status:0))
+        precondition(!UpdateFeed.trustedSignature(signed.replacingOccurrences(of:"Developer ID Installer",with:"Developer ID Application"),status:0))
+        precondition(!UpdateFeed.trustedSignature("Package \"rekey.pkg\":\n   Status: no signature\n",status:0))
         let digest=String(repeating:"ab",count:32)
         precondition(UpdateFeed.expectedDigest("\(digest)  rekey-v0.5.0-alpha.1-macos.pkg\n",file:"rekey-v0.5.0-alpha.1-macos.pkg")==digest)
         precondition(UpdateFeed.expectedDigest("\(digest)  other.pkg\nnot-hex  rekey.pkg",file:"rekey.pkg")==nil)
