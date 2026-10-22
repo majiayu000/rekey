@@ -98,7 +98,9 @@ class DistributionTests(unittest.TestCase):
         self.assertIn('pkgutil:   "^com[.]starlight[.]rekey[.]pkg$"', text)
         self.assertIn('uninstall quit:      "com.starlight.rekey",', text)
         self.assertIn('launchctl: "com.rekey.rekeyd",', text)
-        self.assertIn("strategy :github_releases", text)
+        self.assertIn("strategy :github_releases do |json, regex|", text)
+        self.assertIn('next if release["draft"]', text)
+        self.assertNotIn('release["prerelease"]', text)
         for directive in ["signal:", "delete:", "trash:", "zap ", "preflight", ":no_check"]:
             self.assertNotIn(directive, text)
         self.package.write_bytes(self.package.read_bytes() + b"changed after stapling")

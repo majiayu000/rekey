@@ -47,7 +47,16 @@ def generate(package: pathlib.Path, version: str, repository: str) -> str:
 
   livecheck do
     url :url
-    strategy :github_releases
+    regex(/^v?(\\d+(?:\\.\\d+)+(?:-[0-9A-Za-z.]+)?)$/i)
+    strategy :github_releases do |json, regex|
+      json.map do |release|
+        next if release["draft"]
+        match = release["tag_name"]&.match(regex)
+        next if match.blank?
+
+        match[1]
+      end
+    end
   end
 
   pkg "{expected}"

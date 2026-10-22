@@ -176,10 +176,10 @@ and [active SPEC](superpowers/specs/2026-10-05-rekey-agent-call-model.md).
 
 ## Format changes and restore
 
-The 0.4 candidate uses vault/backup format **26** and policy snapshot format **7**.
-A 0.3 vault or backup cannot be opened or restored by 0.4. Keep the old binary,
-state directory and backups together; create a new empty 0.4 directory and add
-credentials/sign Connections again. No migration, backfill or overwrite occurs.
+0.5.0-alpha.1 uses vault/backup format **27** and policy snapshot format **8**.
+A 0.4 (vault26 / policy7) vault, rule set or backup cannot be opened or restored
+by 0.5. Keep the old binary, state directory and backups together; create a new
+empty 0.5 directory and add credentials/sign Connections again. No migration, backfill or overwrite occurs.
 
 Back up and verify a receipt before changing an installation. A supported
 same-format restore requires authenticated preview, visible source generation
