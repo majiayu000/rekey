@@ -36,6 +36,7 @@ def required_paths(version: str) -> list[str]:
         "docs/alpha-scope.md",
         "docs/installation.md",
         "docs/user-guide.md",
+        "docs/security/README.md",
         "docs/operations-runbook.md",
         "docs/product-foundation/feature-truth-matrix.md",
         "docs/product-foundation/threat-model-v2.md",

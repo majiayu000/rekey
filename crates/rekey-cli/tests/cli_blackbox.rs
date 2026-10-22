@@ -1749,3 +1749,38 @@ fn presence_cli_proof_rotation_and_restart_remain_explicit_and_private() {
     ));
     assert!(guard.finish().status.success());
 }
+
+#[test]
+fn errors_stay_json_on_pipes_and_render_for_people_on_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().to_str().unwrap();
+    let piped = run(&rekey_bin(), &["--state-dir", state_dir, "status"], None);
+    let json: serde_json::Value = serde_json::from_str(piped.stderr.trim()).unwrap();
+    assert_eq!(json["code"], "IPC_UNAVAILABLE");
+    assert!(json["next"].is_string());
+
+    let output = Command::new(rekey_bin())
+        .args(["--state-dir", state_dir, "status"])
+        .env("REKEY_OUTPUT", "human")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(output.status.code(), Some(piped.status));
+    assert!(
+        stderr.starts_with("错误：连不上 Rekey 后台服务。\n"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("下一步：打开 Rekey App"), "{stderr}");
+    assert!(stderr.trim_end().ends_with("(IPC_UNAVAILABLE)"), "{stderr}");
+    assert!(serde_json::from_str::<serde_json::Value>(stderr.trim()).is_err());
+
+    let forced_json = Command::new(rekey_bin())
+        .args(["--state-dir", state_dir, "status"])
+        .env("REKEY_OUTPUT", "json")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(forced_json.stderr.trim_ascii()).unwrap();
+    assert_eq!(json["code"], "IPC_UNAVAILABLE");
+}
