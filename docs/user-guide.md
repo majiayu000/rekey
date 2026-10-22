@@ -15,20 +15,20 @@ rekey --version
 rekey --help
 ```
 
-macOS 安装版保护真实密钥的入口是：
+macOS 安装版（已发布的 0.4）的入口是：
 
 ```bash
 rekey setup
-rekey add glm --app
+rekey add glm
 ```
 
-`setup` 在 App 中创建新的个人保险库并保存恢复密钥；`--app` 在 App 中粘贴 Key、填写允许的模型，用 Secure Enclave 签署并激活规则。
+`setup` 在 App 中创建新的个人保险库并保存恢复密钥；0.4 的 `rekey add <预设>` 打开 App，在 App 中粘贴 Key、填写允许的模型，用 Secure Enclave 签署并激活规则。
 
-只做测试/体验时，可在另一个保险库里用不带 `--app` 的 `rekey add <预设>`（基础模式）在终端一步完成：输入保险库密码、在隐藏输入中粘贴 Key（LLM 预设先填允许的精确模型名，逗号分隔），CLI 保存密钥、按预设生成 Connection（读允许、写审批）、签名并激活，规则默认 90 天有效（`--valid-days` 可改）。
+**当前源码（0.5，未发布）**里，这条 App 路径改为 `rekey add <预设> --app`，用来保护真实密钥；不带 `--app` 的 `rekey add <预设>` 变成基础模式，只用于测试/体验，请放在另一个保险库里。基础模式在终端一步完成：输入保险库密码、在隐藏输入中粘贴 Key（LLM 预设先填允许的精确模型名，逗号分隔），CLI 保存密钥、按预设生成 Connection（读允许、写审批）、签名并激活，规则默认 90 天有效（`--valid-days` 可改）。
 
 这是**基础模式，仅限测试，不安全**：基础模式的签名私钥（`~/.rekey/policy-signer-p256.p8`）和记住解锁的密钥（`remembered-unlock.key`）是同用户可读的文件。本机以你身份运行的任何程序——包括 AI Agent，尤其是跳过权限确认运行的 Agent——都能读到它们，从而自己批准访问请求和写操作、签出放宽的规则，甚至结合 `desktop-unlock.bin` 离线解密保险库。所以基础模式只用于开发和测试，不要存放需要保护的密钥；保护真实密钥请用 App 的 Secure Enclave 个人模式（`rekey add <预设> --app`）。第一次 `rekey add` 会为尚未安装信任根的保险库安装它；信任根装上后不能更换。已在 App 中用 Secure Enclave 建立信任的保险库请用 `rekey add <预设> --app`，命令行会以 `TRUST_MISMATCH` 拒绝软件签名。
 
-**免重复解锁（基础模式，仅限测试）**：`rekey unlock --remember 7d`（最长 30d）解锁后，daemon 重启时会在有效期内自动解锁，无需再输密码。实现是把“记住此电脑”的解封密钥写成状态目录中 0600 的 `remembered-unlock.key`，同用户进程可读，不是 Secure Enclave；`rekey lock --forget-remembered` 删除它，之后重启保持锁定。
+**免重复解锁（0.5 源码，基础模式，仅限测试）**：`rekey unlock --remember 7d`（最长 30d）解锁后，daemon 重启时会在有效期内自动解锁，无需再输密码。实现是把“记住此电脑”的解封密钥写成状态目录中 0600 的 `remembered-unlock.key`，同用户进程可读，不是 Secure Enclave；`rekey lock --forget-remembered` 删除它，之后重启保持锁定。
 
 其他常用选项：`--name` 设连接名（默认是预设名），`--credential-id` 复用已保存的密钥而不再输入 Key，`--model` 可重复，脚本中用 `--stdin-secrets` 依次读入密码和 Key。OAuth 预设需要浏览器授权，仍用 `--app`。
 
@@ -120,7 +120,7 @@ rekey await REQUEST_ID --timeout 120
 rekey await-unlock --timeout 120
 ```
 
-在 App 中添加凭据并激活对应规则后，再批准访问请求；批准请求不能绕过签名授权。请求 10 分钟过期，用户可拒绝或屏蔽调用方。CLI 错误在终端里直接运行时显示为中文说明和建议命令；通过管道调用（Agent、脚本）或设置 `REKEY_OUTPUT=json` 时输出单行 JSON，其中 `next` 指示下一步，Agent 应照该提示处理；`rekey request` 和 MCP `request_access` 的返回另含 `user_hint`，供 Agent 提醒用户打开 Rekey。
+在 App 中添加凭据并激活对应规则后，再批准访问请求；批准请求不能绕过签名授权。请求 10 分钟过期，用户可拒绝或屏蔽调用方。CLI 错误输出单行 JSON，其中 `next` 指示下一步，Agent 应照该提示处理；`rekey request` 和 MCP `request_access` 的返回另含 `user_hint`，供 Agent 提醒用户打开 Rekey。0.5 源码起，在终端里直接运行时错误改为中文说明和建议命令，通过管道调用（Agent、脚本）或设置 `REKEY_OUTPUT=json` 时仍是 JSON；`init`、`serve`、`restore` 由 `rekeyd` 执行，它们的失败输出由 `rekeyd` 直接给出，不走这套格式。
 
 App 运行时（包括窗口关闭、界面锁定或在后台）每 15 秒检查访问请求和本机审批。首次连接服务或首次出现请求时，App 请求系统通知权限，选择会保存，重启后保留；可在审批收件箱关闭或重新开启。允许通知时，每个新请求发一条带提示音、固定文案的系统通知，不含提供方、理由或任何密钥，点击只会打开收件箱，不会批准。macOS 默认的横幅约 5 秒后收起，错过时可在通知中心找到；想让它一直显示，到“系统设置 › 通知 › Rekey”把样式改为“提醒”。排查时运行 `/usr/bin/log show --last 30m --info --predicate 'subsystem == "com.starlight.rekey"'`，日志只含请求编号和系统通知设置。无论是否允许通知，Dock 图标角标都会显示待处理请求数。App 未运行时没有提醒。
 

@@ -1,30 +1,22 @@
 # Rekey
 
-Rekey 把 API Key 留在你的电脑上。Agent（Claude Code、Codex 等）需要调用模型或服务时，请 Rekey 代为调用；Rekey 按你签署的规则放行，把结果交回 Agent，Agent 拿不到真实的 Key。
+Rekey 把 API Key 留在你的电脑上。Agent（Claude Code、Codex 等）需要调用模型或服务时，请 Rekey 代为调用；Rekey 按你签署的规则放行，把结果交回 Agent。通过 Rekey 的接口，Agent 拿不到真实的 Key（AWS、EKS、GitHub App 的临时凭据入口是显式开启的例外，只交出短期凭据）。
 
-执行前持久审计，返回时检查凭据反射：上游响应里出现 Key 的原值或支持的可逆编码形式会被遮蔽。检查只覆盖这些明确支持的表示，不能阻止所有数据外泄或授权范围内的误用。
+执行前持久审计，返回时检查凭据反射：上游响应里出现 Key 的原值或支持的可逆编码形式会被遮蔽。检查只覆盖这些明确支持的表示，不能阻止所有数据外泄或授权范围内的误用；同一系统用户下的恶意程序也不在防护范围内。
 
-> 当前源码是未发布的 0.5 开发版；最新公开版本以 [GitHub Releases](https://github.com/majiayu000/rekey/releases) 为准。版本格式、保护等级等细节见[安全模型与术语](docs/security/README.md)。
+> 最新公开版本是 0.4.0-alpha.1，以 [GitHub Releases](https://github.com/majiayu000/rekey/releases) 为准；当前源码是未发布的 0.5 开发版。版本格式、保护等级等细节见[安全模型与术语](docs/security/README.md)。
 
-## 快速开始（macOS）
+## 快速开始（已发布的 0.4，macOS）
 
 1. **安装**：从 [GitHub Releases](https://github.com/majiayu000/rekey/releases) 下载签名的 `.pkg` 安装（也可以用随版本发布的 Homebrew cask，见[安装说明](docs/installation.md)）。
-2. **打开 Rekey，创建保险库**：运行 `rekey setup` 或直接打开 Rekey App，设置密码并离线保存恢复密钥。
-3. **添加 Key**：真实密钥用 App 的 Secure Enclave 个人模式：
+2. **打开 Rekey，创建保险库**：运行 `rekey setup`，在 App 里设置密码并离线保存恢复密钥。
+3. **添加 Key**：
 
    ```bash
-   rekey add glm --app
+   rekey add glm
    ```
 
-   在 App 中粘贴 Key、填写允许的模型并签署规则。只想**测试/体验**时，可以用命令行一步完成的基础模式（不安全，见下方警告）：
-
-   ```bash
-   rekey add glm --model glm-5.3-flash
-   ```
-
-   按提示输入保险库密码、粘贴 Key。Rekey 会保存 Key 并生成一条连接规则：读请求直接放行，写请求要你批准，危险写入拒绝；LLM 只允许列出的模型，并带每日预算。
-
-   （一步完成的 `rekey add` 属于当前源码；已发布的 0.4 安装版里，这条命令会打开 App，在 App 中粘贴 Key 并签署规则。）
+   命令会打开 App：粘贴 Key、填写允许的模型，再用 Secure Enclave 签署规则。默认规则是读请求直接放行，写请求要你批准，危险写入拒绝；LLM 只允许签署的模型，并带每日预算。
 4. **接入 Agent**：
 
    ```bash
@@ -32,11 +24,13 @@ Rekey 把 API Key 留在你的电脑上。Agent（Claude Code、Codex 等）需�
    ```
 
    先展示要改的配置，确认后写入（已有文件会备份）。Codex 用 `rekey connect codex`。
-5. **正常使用 Agent**：直接运行 `claude` 或 `codex`。Agent 读数据时直接拿到结果；**要写入时**（例如创建 issue），Rekey App 会弹出通知，你批准一次或在一段时间内放行，拒绝则不会执行。
+5. **正常使用 Agent**：直接运行 `claude` 或 `codex`。读请求直接返回结果；**要写入时**（例如创建 issue）需要你在 Rekey App 中批准一次或在一段时间内放行，拒绝则不会执行。App 运行且允许通知时会发系统通知提醒；App 没在运行时不会提醒。
 
-**测试时不想每次重启都输密码**：`rekey unlock --remember 7d`（最长 30 天）。它同样属于基础模式，只用于测试；`rekey lock --forget-remembered` 可取消。
+## 当前源码（0.5，未发布）的变化
 
-命令行出错时会用中文提示原因和下一步；Agent 和脚本通过管道调用时仍得到 JSON（也可设置 `REKEY_OUTPUT=json` 强制 JSON）。
+- **App 路径改名**：保护真实密钥用 `rekey add glm --app`，流程与上面第 3 步相同。
+- **基础模式（仅限测试，不安全）**：不带 `--app` 的 `rekey add glm --model glm-5.3-flash` 在命令行一步完成：输入保险库密码、粘贴 Key，自动生成并签署规则；`rekey unlock --remember 7d`（最长 30 天）让后台服务重启后自动解锁，`rekey lock --forget-remembered` 取消。
+- **中文错误提示**：在终端里直接运行时，出错会显示中文原因和下一步；Agent 和脚本通过管道调用、或设置 `REKEY_OUTPUT=json` 时仍是 JSON。`init`、`serve`、`restore` 由 `rekeyd` 执行，它们的失败输出由 `rekeyd` 直接给出，不走这套格式。
 
 > **警告：基础模式（不带 `--app` 的 `rekey add`、`rekey unlock --remember`）仅限测试，不安全。** 基础模式的签名私钥（`~/.rekey/policy-signer-p256.p8`）和记住解锁的密钥（`remembered-unlock.key`）是同用户可读的文件。本机以你身份运行的任何程序——包括 AI Agent，尤其是跳过权限确认运行的 Agent——都能读到它们，从而自己批准访问请求和写操作、签出放宽的规则，甚至结合 `desktop-unlock.bin` 离线解密保险库。所以基础模式只用于开发和测试，不要存放需要保护的密钥；保护真实密钥请用 App 的 Secure Enclave 个人模式（`rekey add <预设> --app`）。同一个保险库第一次选定签名方式后不能互换，测试和真实使用请用不同的保险库。
 
