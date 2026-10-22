@@ -3,7 +3,9 @@
 //!
 //! Signing is delegated to the bundled `rekey-policy-sign` so this CLI still
 //! links no cryptography. The software key is a mode-0600 file in the state
-//! directory, not Secure Enclave; every output says so.
+//! directory, not Secure Enclave; every output says so. Basic mode is for
+//! testing only: any process of this user, including an Agent, can read the
+//! key and sign or (with a remembered unlock) approve on its own.
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -159,7 +161,7 @@ pub fn add(state_dir: &Path, request: AddRequest) -> Result<(), CliError> {
         admin(state_dir)?.call(admin_msg::POLICY_TRUST_INSTALL, &trust, &body)?;
         write_owner_only(&id_file, install_signer_id.to_string().as_bytes())?;
         eprintln!(
-            "Installed basic-mode policy trust: software P-256 key {} (mode 0600, not Secure Enclave).",
+            "Installed basic-mode policy trust: software P-256 key {} (mode 0600, not Secure Enclave).\nTEST ONLY - INSECURE: any program running as this user, including AI Agents, can read this file and use it to approve its own requests, change rules or decrypt the vault. Do not store keys you need to protect.",
             key_file.display()
         );
     }
@@ -203,7 +205,7 @@ pub fn add(state_dir: &Path, request: AddRequest) -> Result<(), CliError> {
 
     let operations: Vec<_> = preset_operations(&draft, &name);
     println!(
-        "Connection {name} is active (policy v{}, valid {} days). Signed with the basic-mode software key, not Secure Enclave.",
+        "Connection {name} is active (policy v{}, valid {} days). Signed with the basic-mode software key, not Secure Enclave. Basic mode is for testing only and is not secure against other programs of this user.",
         draft.next_version, request.valid_days
     );
     if !operations.is_empty() {

@@ -205,6 +205,7 @@ struct AddCredentialForm: View {
             if model.basicMode, let draft {
                 Divider()
                 Text("确认后签署并激活（基础模式 · 软件签名，非 Secure Enclave）").font(.headline)
+                Text("基础模式仅限测试：本机以你身份运行的任何程序（包括 AI Agent）都能读到签名密钥和记住的解锁，从而自己批准请求、修改规则甚至解密保险库。不要存放需要保护的密钥。").font(.caption).foregroundStyle(.orange)
                 ForEach(draft.connections.filter{$0.name==connectionName}){ConnectionSummary(connection:$0)}
                 Text("规则有效期至 \(displayDate(draft.expiresAtMs))，策略版本 \(draft.metadata.base_version.map(String.init) ?? "无") → \(draft.metadata.next_version)").font(.caption)
                 Toggle("我已确认这个连接的地址、读写规则和模型",isOn:$confirmed).disabled(model.busy || activated)

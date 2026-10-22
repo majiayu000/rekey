@@ -500,7 +500,7 @@ fn remember_unlock(
     })?;
     let days = lifetime_ms / (24 * 60 * 60 * 1000);
     eprintln!(
-        "Remembered for {days} day(s) (until unix ms {expires_at_ms}): rekeyd unlocks itself after restarts. Basic mode: {} is a 0600 file readable by this user, not Secure Enclave. Forget it with `rekey lock --forget-remembered`.",
+        "Remembered for {days} day(s) (until unix ms {expires_at_ms}): rekeyd unlocks itself after restarts. Basic mode: {} is a 0600 file readable by this user, not Secure Enclave.\nTEST ONLY - INSECURE: any program running as this user, including AI Agents, can read this file and use it to approve its own requests, change rules or decrypt the vault. Do not store keys you need to protect. Forget it with `rekey lock --forget-remembered`.",
         path.display()
     );
     Ok(())

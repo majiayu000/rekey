@@ -58,7 +58,7 @@ struct MenuBarContent: View {
     @EnvironmentObject var model: AppModel
     var body: some View {
         Text(model.pendingRequestCount > 0 ? "\(model.pendingRequestCount) 个待处理请求" : "没有待处理请求")
-        if model.basicMode { Text("基础模式 · 软件签名") }
+        if model.basicMode { Text("基础模式 · 仅限测试，不安全") }
         Button("打开收件箱") { NSWorkspace.shared.open(NotificationRouter.inboxURL) }
         Divider()
         Button("退出 Rekey") { NSApp.terminate(nil) }
