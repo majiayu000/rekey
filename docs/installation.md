@@ -1,10 +1,10 @@
 # Install, upgrade, service, and uninstall
 
-This guide describes the published **0.4.0-alpha.1** (vault26 / policy7). Current source is the unreleased **0.5.0-alpha.1** development integration (vault27 / policy8); it requires a separate new vault and does not migrate or overwrite published vaults. Publication and available artifacts are determined by [GitHub Releases](https://github.com/majiayu000/rekey/releases), not this page. The 0.4 instructions below reject the 0.3 vault format: create a new state directory; there is no migration or overwrite.
+This guide describes the published **0.4.0-alpha.1**. Current source is the unreleased **0.5.0-alpha.1**; each release line needs its own new vault and never migrates or overwrites an older one, so keep old vaults and create a new state directory. Publication and available artifacts are determined by [GitHub Releases](https://github.com/majiayu000/rekey/releases), not this page. Data formats per release line are listed in [Security model and terms](security/README.md).
 
-macOS distribution uses a Developer ID signed, notarized pkg with independently provisioned App and daemon, for macOS 14+ on Apple Silicon. Linux uses the released Ubuntu 24.04 x86_64 archive. No public Homebrew tap is claimed. Verify the actual completed release, package bytes, signature and public smoke before installation. Hardware Touch ID, SE, login-item and C16 checks are independent of software tests.
+macOS distribution uses a Developer ID signed, notarized pkg with independently provisioned App and daemon, for macOS 14+ on Apple Silicon. Linux uses the released Ubuntu 24.04 x86_64 archive. No public Homebrew tap is claimed. Verify the actual completed release, package bytes, signature and public smoke before installation. Touch ID, Secure Enclave and login-item checks on real hardware are separate from software tests.
 
-After installation, open the App with `rekey setup`, add a key with `rekey add github-pat`, review/sign its Connection, run `rekey connect claude-code` (or `codex`), then start the Agent normally. Local calls require no tokens. Profile/run and personal isolation launchers are removed; see [README](../README.md) for the 0.4 call model.
+After installation, open the App with `rekey setup`, add a key with `rekey add github-pat`, review/sign its Connection, run `rekey connect claude-code` (or `codex`), then start the Agent normally. Local calls require no tokens; see the [README](../README.md) quick start.
 
 ## macOS pkg or release-local Homebrew cask
 
@@ -58,7 +58,8 @@ claude
 Setup opens the App for mode selection, vault creation and human authentication.
 Save the recovery key when displayed. The App handles credential entry and
 Connection review/signing. Agent processes call Rekey without local tokens and
-receive sealed call results. T1 derivation explicitly returns short-lived credentials.
+receive call results, never the key. Temporary-credential helpers (AWS, EKS,
+GitHub App) are the explicit exception and return short-lived credentials.
 If provisioning, login-item approval or policy signing is unavailable, fix that
 reported prerequisite; do not replace the signed daemon with a source binary.
 
@@ -161,22 +162,19 @@ sudo rm /etc/systemd/system/rekey.service
 sudo systemctl daemon-reload
 ```
 
-For the bounded Linux G2 reference, use `--agent-socket` with the UID/GID and
+To run Agents under a separate Linux account, use `--agent-socket` with the UID/GID and
 runtime-directory layout documented in the repository file
 `scripts/p1-linux-g2.sh` (not shipped in the release archive). Do not make
 the state directory or Admin socket group-writable.
 
-## Lab source builds
+## Experimental source builds
 
-Personal Seatbelt/netns launchers, Profile/capability APIs and enterprise integrations
-are archived behind `--features lab`; they are not part of the default 0.4 archive
-or App. The lab compile and lint checks do not prove those historical runtime
-fixtures work with the new policy format. See the [feature truth matrix](product-foundation/feature-truth-matrix.md)
-and [active SPEC](superpowers/specs/2026-10-05-rekey-agent-call-model.md).
+Archived enterprise and isolation features are not part of the default archive
+or App; see [Security model and terms](security/README.md#lab-实验功能).
 
 ## Format changes and restore
 
-The 0.4 candidate uses vault/backup format **26** and policy snapshot format **7**.
+Each release line has its own vault/backup and policy format ([Security model and terms](security/README.md)).
 A 0.3 vault or backup cannot be opened or restored by 0.4. Keep the old binary,
 state directory and backups together; create a new empty 0.4 directory and add
 credentials/sign Connections again. No migration, backfill or overwrite occurs.

@@ -1,10 +1,10 @@
 # Rekey 0.4 用户指南
 
-本文对应 **2026-10-08 已公开预发布的 0.4.0-alpha.1**（GitHub prerelease）。当前源码为未发布的 0.5.0-alpha.1（vault27 / policy8），需另建新 vault。当前模型使用 vault/backup 格式 **26**、签名策略格式 **7**。0.3 的保险库和备份不兼容；请保留旧目录，在新目录重建。完整验收状态见[验收报告](evidence/agent-call-acceptance-2026-10-05.md)。
+本文对应 **2026-10-08 已公开预发布的 0.4.0-alpha.1**（GitHub prerelease）。当前源码为未发布的 0.5.0-alpha.1。每个版本线都需要新建保险库，不会迁移或覆盖旧的；请保留旧目录，在新目录重建。各版本的数据格式和保护等级见[安全模型与术语](security/README.md)。完整验收状态见[验收报告](evidence/agent-call-acceptance-2026-10-05.md)。
 
 本机软件检查、真实 Codex 的合成上游链及 GitHub 读写分项已有通过证据；Claude 账号、真实 OAuth/云服务、正式设备交互与公开下载安装仍待验。以下命令描述当前实现的操作，不表示候选版已经完成发布验收。
 
-Rekey 保存凭据，Agent 正常启动，在需要凭据时调用 Rekey。CLI、MCP、本机 HTTP 和 SSH agent 的本机调用不需要授权令牌；权限来自用户签署的 Connection / SSH / 临时凭据规则。HTTP 请求仍须带公开占位值 `rekey`，它只是请求标记。AWS、EKS 和 GitHub App 的 T1 派生入口会把临时凭据交给 Agent，使用前须单独签署开启。
+Rekey 保存凭据，Agent 正常启动，在需要凭据时调用 Rekey。CLI、MCP、本机 HTTP 和 SSH agent 的本机调用不需要授权令牌；权限来自用户签署的 Connection / SSH / 临时凭据规则。HTTP 请求仍须带公开占位值 `rekey`，它只是请求标记。AWS、EKS 和 GitHub App 的临时凭据入口会把短期凭据交给 Agent，使用前须单独签署开启。
 
 ## 首次使用
 
@@ -15,33 +15,35 @@ rekey --version
 rekey --help
 ```
 
-macOS 安装版的首选入口是：
+macOS 安装版保护真实密钥的入口是：
 
 ```bash
 rekey setup
-rekey add glm
+rekey add glm --app
 ```
 
-`setup` 在 App 中创建新的个人保险库并保存恢复密钥。`rekey add <预设>` 随后在终端一步完成：输入保险库密码、在隐藏输入中粘贴 Key（LLM 预设先填允许的精确模型名，逗号分隔），CLI 保存密钥、按预设生成 Connection（读允许、写审批）、签名并激活，规则默认 90 天有效（`--valid-days` 可改）。
+`setup` 在 App 中创建新的个人保险库并保存恢复密钥；`--app` 在 App 中粘贴 Key、填写允许的模型，用 Secure Enclave 签署并激活规则。
 
-这是**基础模式**：签名私钥是状态目录中当前用户 0600 的 `policy-signer-p256.p8`，同用户进程可读，不是 Secure Enclave。第一次 `rekey add` 会为尚未安装信任根的保险库安装它；信任根装上后不能更换。已在 App 中用 Secure Enclave 建立信任的保险库请用 `rekey add <预设> --app`，命令行会以 `TRUST_MISMATCH` 拒绝软件签名。
+只做测试/体验时，可在另一个保险库里用不带 `--app` 的 `rekey add <预设>`（基础模式）在终端一步完成：输入保险库密码、在隐藏输入中粘贴 Key（LLM 预设先填允许的精确模型名，逗号分隔），CLI 保存密钥、按预设生成 Connection（读允许、写审批）、签名并激活，规则默认 90 天有效（`--valid-days` 可改）。
 
-**免重复解锁（基础模式）**：`rekey unlock --remember 7d`（最长 30d）解锁后，daemon 重启时会在有效期内自动解锁，无需再输密码。实现是把“记住此电脑”的解封密钥写成状态目录中 0600 的 `remembered-unlock.key`，同用户进程可读，不是 Secure Enclave；`rekey lock --forget-remembered` 删除它，之后重启保持锁定。
+这是**基础模式，仅限测试，不安全**：基础模式的签名私钥（`~/.rekey/policy-signer-p256.p8`）和记住解锁的密钥（`remembered-unlock.key`）是同用户可读的文件。本机以你身份运行的任何程序——包括 AI Agent，尤其是跳过权限确认运行的 Agent——都能读到它们，从而自己批准访问请求和写操作、签出放宽的规则，甚至结合 `desktop-unlock.bin` 离线解密保险库。所以基础模式只用于开发和测试，不要存放需要保护的密钥；保护真实密钥请用 App 的 Secure Enclave 个人模式（`rekey add <预设> --app`）。第一次 `rekey add` 会为尚未安装信任根的保险库安装它；信任根装上后不能更换。已在 App 中用 Secure Enclave 建立信任的保险库请用 `rekey add <预设> --app`，命令行会以 `TRUST_MISMATCH` 拒绝软件签名。
+
+**免重复解锁（基础模式，仅限测试）**：`rekey unlock --remember 7d`（最长 30d）解锁后，daemon 重启时会在有效期内自动解锁，无需再输密码。实现是把“记住此电脑”的解封密钥写成状态目录中 0600 的 `remembered-unlock.key`，同用户进程可读，不是 Secure Enclave；`rekey lock --forget-remembered` 删除它，之后重启保持锁定。
 
 其他常用选项：`--name` 设连接名（默认是预设名），`--credential-id` 复用已保存的密钥而不再输入 Key，`--model` 可重复，脚本中用 `--stdin-secrets` 依次读入密码和 Key。OAuth 预设需要浏览器授权，仍用 `--app`。
 
 需要独立目录的源码用户可在自己的终端中操作：
 
 ```bash
-rekey --state-dir /absolute/path/rekey-04 init --mode personal
-rekey --state-dir /absolute/path/rekey-04 serve
+rekey --state-dir /absolute/path/rekey-dev init --mode personal
+rekey --state-dir /absolute/path/rekey-dev serve
 ```
 
 `serve` 在前台运行，启动后锁定。在另一个终端解锁同一目录，并在 App 中选择该目录完成凭据与规则签署：
 
 ```bash
-rekey --state-dir /absolute/path/rekey-04 unlock
-rekey --state-dir /absolute/path/rekey-04 status --passive
+rekey --state-dir /absolute/path/rekey-dev unlock
+rekey --state-dir /absolute/path/rekey-dev status --passive
 ```
 
 密码和 API Key 使用隐藏输入或显式 stdin，不能放进命令参数、环境变量、项目说明文件或 MCP 配置。恢复密钥应离线保存；它不是 Agent 的调用令牌。
@@ -51,15 +53,15 @@ rekey --state-dir /absolute/path/rekey-04 status --passive
 在项目目录先预览，再确认写入：
 
 ```bash
-rekey --state-dir /absolute/path/rekey-04 connect claude-code --print
-rekey --state-dir /absolute/path/rekey-04 connect claude-code
+rekey --state-dir /absolute/path/rekey-dev connect claude-code --print
+rekey --state-dir /absolute/path/rekey-dev connect claude-code
 ```
 
 支持 `claude-code`、`codex`、`cursor`。指定项目目录：
 
 ```bash
-rekey --state-dir /absolute/path/rekey-04 connect codex --project /absolute/path/project --print
-rekey --state-dir /absolute/path/rekey-04 connect codex --project /absolute/path/project
+rekey --state-dir /absolute/path/rekey-dev connect codex --project /absolute/path/project --print
+rekey --state-dir /absolute/path/rekey-dev connect codex --project /absolute/path/project
 ```
 
 命令更新受管 MCP 配置及 `CLAUDE.md` / `AGENTS.md` 的 Rekey 标记段，显示变更并要求确认，已有文件会保留私有备份。MCP、受管 CLI 说明及扫描钩子均绑定本次选择的 vault 绝对目录；更换目录后重新执行 `connect`。重复执行替换同一标记段，不写凭据或调用令牌。随后按客户端正常方式启动 Agent，让它先列出 Rekey 能力。
@@ -81,7 +83,7 @@ rekey connection list
 rekey describe github.list_issues
 ```
 
-`list` 返回可用的公共能力，包括已签署的 T1 派生能力；不会返回密钥或 T1 根凭据 ID。`connection list` 是管理员编辑视图，返回完整签名编辑基线。操作是否可用由当前策略决定，不凭命令名称假定授权。
+`list` 返回可用的公共能力，包括已签署的临时凭据入口；不会返回密钥或其根凭据 ID。`connection list` 是管理员编辑视图，返回完整签名编辑基线。操作是否可用由当前策略决定，不凭命令名称假定授权。
 
 以下例子假定 App 已激活名为 `github` 的 GitHub PAT Connection，绑定相应仓库规则。替换公开的 owner / repo 参数：
 
@@ -118,7 +120,7 @@ rekey await REQUEST_ID --timeout 120
 rekey await-unlock --timeout 120
 ```
 
-在 App 中添加凭据并激活对应规则后，再批准访问请求；批准请求不能绕过签名授权。请求 10 分钟过期，用户可拒绝或屏蔽调用方。CLI 错误中的 `next` 指示下一步，Agent 应照该提示处理；`rekey request` 和 MCP `request_access` 的返回另含 `user_hint`，供 Agent 提醒用户打开 Rekey。
+在 App 中添加凭据并激活对应规则后，再批准访问请求；批准请求不能绕过签名授权。请求 10 分钟过期，用户可拒绝或屏蔽调用方。CLI 错误在终端里直接运行时显示为中文说明和建议命令；通过管道调用（Agent、脚本）或设置 `REKEY_OUTPUT=json` 时输出单行 JSON，其中 `next` 指示下一步，Agent 应照该提示处理；`rekey request` 和 MCP `request_access` 的返回另含 `user_hint`，供 Agent 提醒用户打开 Rekey。
 
 App 运行时（包括窗口关闭、界面锁定或在后台）每 15 秒检查访问请求和本机审批。首次连接服务或首次出现请求时，App 请求系统通知权限，选择会保存，重启后保留；可在审批收件箱关闭或重新开启。允许通知时，每个新请求发一条带提示音、固定文案的系统通知，不含提供方、理由或任何密钥，点击只会打开收件箱，不会批准。macOS 默认的横幅约 5 秒后收起，错过时可在通知中心找到；想让它一直显示，到“系统设置 › 通知 › Rekey”把样式改为“提醒”。排查时运行 `/usr/bin/log show --last 30m --info --predicate 'subsystem == "com.starlight.rekey"'`，日志只含请求编号和系统通知设置。无论是否允许通知，Dock 图标角标都会显示待处理请求数。App 未运行时没有提醒。
 
@@ -154,7 +156,7 @@ CLI 只让 daemon 预览变量名、预设提示和未支持的行，不读取�
 ```bash
 rekey scan --staged
 rekey scan /absolute/path/project/file
-rekey --state-dir /absolute/path/rekey-04 connect claude-code --with-hooks
+rekey --state-dir /absolute/path/rekey-dev connect claude-code --with-hooks
 ```
 
 扫描使用保险库中完整秘密及支持的变体，结果仅含位置，不回显匹配内容。`--with-hooks` 安装受管 pre-commit 检查。扫描失败不等于文件安全；保险库锁定、超限或限速时应先处理错误。它不是对所有可能编码和历史提交的完整泄漏证明。
@@ -164,15 +166,15 @@ rekey --state-dir /absolute/path/rekey-04 connect claude-code --with-hooks
 ```bash
 rekey ssh-agent status
 rekey ssh-agent generate work-key
-rekey --state-dir /absolute/path/rekey-04 connect codex --with-ssh --ssh-host github.com --print
-rekey --state-dir /absolute/path/rekey-04 connect codex --with-ssh --ssh-host github.com
+rekey --state-dir /absolute/path/rekey-dev connect codex --with-ssh --ssh-host github.com --print
+rekey --state-dir /absolute/path/rekey-dev connect codex --with-ssh --ssh-host github.com
 ```
 
-macOS 默认生成 Secure Enclave P-256 密钥；软件 Ed25519 / P-256 只能用显式 `--mode` 选择。生成密钥本身不启用 SSH：策略还须包含签名公钥及 host 规则，公钥也须按目标服务要求登记。在 App 的个人策略编辑中加载完整 SSH 集合，或直接生成新密钥，复制公钥到目标服务；登记独立核对过的 host 公钥，选择 Allow/Approve/Deny 和 git 签名判定。可粘贴标准 OpenSSH 公钥、known_hosts 条目或 base64 wire blob。既有 host 与 rule ID 会保留，生成草稿时 HTTP、SSH 与 T1 三组完整一起审阅和签署。撤销 SSH 连接不删除保险库里的私钥。已有签名 SSH 授权的配置使用 `<state-dir>/ssh-agent.sock` 的 `IdentityAgent`，私钥不交给 Agent。已验证 session-bind 按签名 host 规则判定；未知 host 或缺少绑定需要审批，明确 deny 不能用窗口绕过。真实 OpenSSH 向 GitHub 测试仓库 push 已通过，临时 deploy key 和 ref 已清理；这不代替 App 真机上的生成、签署和 Touch ID 验收。
+macOS 默认生成 Secure Enclave P-256 密钥；软件 Ed25519 / P-256 只能用显式 `--mode` 选择。生成密钥本身不启用 SSH：策略还须包含签名公钥及 host 规则，公钥也须按目标服务要求登记。在 App 的个人策略编辑中加载完整 SSH 集合，或直接生成新密钥，复制公钥到目标服务；登记独立核对过的 host 公钥，选择 Allow/Approve/Deny 和 git 签名判定。可粘贴标准 OpenSSH 公钥、known_hosts 条目或 base64 wire blob。既有 host 与 rule ID 会保留，生成草稿时 HTTP、SSH 与临时凭据三组规则完整一起审阅和签署。撤销 SSH 连接不删除保险库里的私钥。已有签名 SSH 授权的配置使用 `<state-dir>/ssh-agent.sock` 的 `IdentityAgent`，私钥不交给 Agent。已验证 session-bind 按签名 host 规则判定；未知 host 或缺少绑定需要审批，明确 deny 不能用窗口绕过。真实 OpenSSH 向 GitHub 测试仓库 push 已通过，临时 deploy key 和 ref 已清理；这不代替 App 真机上的生成、签署和 Touch ID 验收。
 
 Git smart HTTP 使用独立 `github-git` 预设，固定 `https://github.com`、owner 和完整 `repo.git`。`info/refs` 与 `git-upload-pack` 为读，`git-receive-pack` 为写；PAT 在 daemon 内转换为固定 Basic 认证。通过本机 HTTP 使用时也要配置公开请求标记，例如只对该 URL 设置 Git 的 `http.extraHeader=Authorization: Bearer rekey`。默认请求正文上限为 1 MiB，不宣称无限仓库传输。
 
-## OAuth 与 T1
+## OAuth 与临时凭据
 
 OAuth 通过 App 保存用户自己的 client、签署有限操作和 scope ceiling，再打开浏览器：
 
@@ -183,7 +185,7 @@ rekey oauth login CONNECTION
 
 支持 Google Drive / Gmail / Calendar、GitHub OAuth App、Slack 和 Notion 的有限操作。Google / GitHub 使用本机随机回调；Slack / Notion 需填写登记的固定本机回调。Notion 的权限来自 Portal capabilities，不是 OAuth 请求 scope。OAuth token 保留在 Rekey；真实 provider 登录与刷新仍待验。
 
-T1 必须逐个签署开启，**Agent 进程会拿到临时值**：
+临时凭据入口必须逐个签署开启，**Agent 进程会拿到短期有效的凭据**（安全模型里称为 T1，见[安全模型与术语](security/README.md#调用结果与临时凭据)）：
 
 ```bash
 rekey aws-credentials CONNECTION
@@ -191,7 +193,7 @@ rekey kubectl-credentials CONNECTION
 rekey github-token CONNECTION
 ```
 
-AWS 返回 `credential_process` JSON，固定 role / region / session policy，TTL 为 900–3600 秒；EKS 返回 `ExecCredential`，固定 cluster / region，AWS 验证窗口约 15 分钟，客户端过期时间提前到约 14 分钟；GitHub App 返回安装令牌，固定 installation、repository IDs 与 permission ceiling，TTL 上限 3600 秒。调用方不能覆盖签名目标。根密钥不会返回；T1 stdout 本身包含临时秘密，不应贴进日志或提交。
+AWS 返回 `credential_process` JSON，固定 role / region / session policy，TTL 为 900–3600 秒；EKS 返回 `ExecCredential`，固定 cluster / region，AWS 验证窗口约 15 分钟，客户端过期时间提前到约 14 分钟；GitHub App 返回安装令牌，固定 installation、repository IDs 与 permission ceiling，TTL 上限 3600 秒。调用方不能覆盖签名目标。根密钥不会返回；这些命令的 stdout 本身包含临时秘密，不应贴进日志或提交。
 
 ## 日常维护
 

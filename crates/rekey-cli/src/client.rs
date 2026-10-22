@@ -20,6 +20,9 @@ use zeroize::Zeroizing;
 #[path = "client/macos_peer.rs"]
 mod macos_peer;
 
+#[path = "client/human.rs"]
+mod human;
+
 #[cfg(feature = "lab")]
 static ADMIN_SESSION_FILE: std::sync::OnceLock<Option<std::path::PathBuf>> =
     std::sync::OnceLock::new();
@@ -130,6 +133,10 @@ impl CliError {
     }
 
     pub fn print_stderr(&self) {
+        if human::enabled() {
+            eprintln!("{}", human::render(self));
+            return;
+        }
         eprintln!(
             "{}",
             serde_json::json!({

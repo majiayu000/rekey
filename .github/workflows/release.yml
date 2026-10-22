@@ -89,6 +89,7 @@ jobs:
           # Keep the shipped documentation links usable inside the archive.
           for doc in \
             apps/macos/README.md \
+            docs/security/README.md \
             docs/evidence/vault-kv-cloudflare-2026-09-10.json \
             docs/releases/v2.0.0-alpha.3.md \
             docs/superpowers/specs/2026-09-03-vault-dynamic-lease-source-p07b.md \
