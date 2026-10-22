@@ -80,10 +80,13 @@ pub(crate) fn private_session_file(path: &Path) -> Result<Zeroizing<Vec<u8>>, Cl
 
 pub const IO_TIMEOUT: Duration = Duration::from_secs(30);
 
+static WARNED_L1_DEV: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Under `REKEY_OUTPUT=json` stderr must stay a single JSON document, so the
+/// warning is carried in the error envelope instead of a plain line.
 fn warn_l1_dev() {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    static WARNED: AtomicBool = AtomicBool::new(false);
-    if !WARNED.swap(true, Ordering::Relaxed) {
+    use std::sync::atomic::Ordering;
+    if !WARNED_L1_DEV.swap(true, Ordering::Relaxed) && !json_output_forced() {
         eprintln!(
             "警告：L1-dev · 服务签名未校验。密码、恢复密钥或系统认证授权将发送给未验证签名的本地服务；请仅在可信开发环境使用。"
         );
@@ -156,17 +159,18 @@ impl CliError {
             eprintln!("{}", human::render(self));
             return;
         }
-        eprintln!(
-            "{}",
-            serde_json::json!({
-                "request_id": self.request_id,
-                "code": self.code,
-                "message": self.message,
-                "next": self.next,
-                "retryable": self.retryable,
-                "approval": self.approval,
-            })
-        );
+        let mut envelope = serde_json::json!({
+            "request_id": self.request_id,
+            "code": self.code,
+            "message": self.message,
+            "next": self.next,
+            "retryable": self.retryable,
+            "approval": self.approval,
+        });
+        if json_output_forced() && WARNED_L1_DEV.load(std::sync::atomic::Ordering::Relaxed) {
+            envelope["warnings"] = serde_json::json!(["L1_DEV_UNVERIFIED_SERVICE"]);
+        }
+        eprintln!("{envelope}");
     }
 
     /// Exit codes per the CLI contract.
