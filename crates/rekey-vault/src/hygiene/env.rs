@@ -205,15 +205,22 @@ fn preset_hint(entry: &ParsedEntry) -> Option<String> {
         ("QWEN_", "qwen"),
         ("OPENROUTER_", "openrouter"),
         ("GEMINI_", "gemini"),
-        ("STRIPE_", "stripe"),
     ];
+    // Only Stripe API keys fit the Bearer preset; webhook (`whsec_`) and
+    // publishable (`pk_`) values under STRIPE_ names are not API credentials.
+    let stripe_api_name = matches!(
+        key,
+        "STRIPE_SECRET_KEY" | "STRIPE_API_KEY" | "STRIPE_RESTRICTED_KEY"
+    ) && !value.starts_with(b"whsec_")
+        && !value.starts_with(b"pk_");
     if let Some((_, preset)) = named.iter().find(|(prefix, _)| key.starts_with(prefix)) {
         Some((*preset).to_owned())
     } else if value.starts_with(b"sk-or-") {
         Some("openrouter".to_owned())
-    } else if ["sk_live_", "sk_test_", "rk_live_", "rk_test_"]
-        .iter()
-        .any(|prefix| value.starts_with(prefix.as_bytes()))
+    } else if stripe_api_name
+        || ["sk_live_", "sk_test_", "rk_live_", "rk_test_"]
+            .iter()
+            .any(|prefix| value.starts_with(prefix.as_bytes()))
     {
         Some("stripe".to_owned())
     } else if key.starts_with("OPENAI_") || value.starts_with(b"sk-") {
@@ -478,7 +485,7 @@ mod preset_hint_tests {
     #[test]
     fn provider_named_keys_win_over_the_shared_sk_prefix() {
         let preview = super::preview_bytes(
-            b"DEEPSEEK_API_KEY=sk-a\nOPENROUTER_KEY=x\nX=sk-or-v1-a\nSTRIPE_SECRET_KEY=sk_test_a\nY=rk_live_a\nGEMINI_API_KEY=a\nOPENAI_API_KEY=sk-b\n",
+            b"DEEPSEEK_API_KEY=sk-a\nOPENROUTER_KEY=x\nX=sk-or-v1-a\nSTRIPE_SECRET_KEY=sk_test_a\nY=rk_live_a\nGEMINI_API_KEY=a\nOPENAI_API_KEY=sk-b\nSTRIPE_API_KEY=opaque\nSTRIPE_WEBHOOK_SECRET=whsec_a\nSTRIPE_PUBLISHABLE_KEY=pk_test_a\nSTRIPE_RESTRICTED_KEY=whsec_b\n",
         );
         let hints: Vec<_> = preview
             .entries
@@ -495,6 +502,10 @@ mod preset_hint_tests {
                 Some("stripe"),
                 Some("gemini"),
                 Some("openai"),
+                Some("stripe"),
+                None,
+                None,
+                None,
             ]
         );
     }

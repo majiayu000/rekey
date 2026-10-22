@@ -1049,28 +1049,42 @@ fn llm_connections_expose_only_declared_endpoints() {
 }
 
 #[test]
-fn openrouter_enforces_the_ceiling_through_max_completion_tokens() {
-    let c = llm_connection("openrouter");
-    let path = "/api/v1/chat/completions";
-    let within = post(
-        &c,
-        path,
-        r#"{"model":"fixture-model","max_completion_tokens":8}"#,
-    )
-    .unwrap();
-    assert_eq!(within.generation_max_output, Some(8));
-    assert!(
-        post(
+fn completion_token_providers_enforce_the_ceiling_through_max_completion_tokens() {
+    for (preset, path) in [
+        ("openrouter", "/api/v1/chat/completions"),
+        ("moonshot", "/v1/chat/completions"),
+        ("qwen", "/compatible-mode/v1/chat/completions"),
+    ] {
+        let c = llm_connection(preset);
+        let within = post(
             &c,
             path,
-            r#"{"model":"fixture-model","max_completion_tokens":33}"#
+            r#"{"model":"fixture-model","max_completion_tokens":8}"#,
         )
-        .is_err()
-    );
-    let omitted = post(&c, path, r#"{"model":"fixture-model"}"#).unwrap();
-    assert_eq!(omitted.generation_max_output, Some(32));
-    let sent: serde_json::Value = serde_json::from_slice(&omitted.request_body).unwrap();
-    assert_eq!(sent["max_completion_tokens"], 32);
+        .unwrap();
+        assert_eq!(within.generation_max_output, Some(8), "{preset}");
+        assert!(
+            post(
+                &c,
+                path,
+                r#"{"model":"fixture-model","max_completion_tokens":33}"#
+            )
+            .is_err(),
+            "{preset}"
+        );
+        let omitted = post(&c, path, r#"{"model":"fixture-model"}"#).unwrap();
+        assert_eq!(omitted.generation_max_output, Some(32), "{preset}");
+        let sent: serde_json::Value = serde_json::from_slice(&omitted.request_body).unwrap();
+        // Covers Qwen thinking models' reasoning too, unlike max_tokens.
+        assert_eq!(sent["max_completion_tokens"], 32, "{preset}");
+        assert!(sent.get("max_tokens").is_none(), "{preset}");
+        assert!(
+            c.operations[0].parameters["properties"]
+                .get("max_completion_tokens")
+                .is_some(),
+            "{preset}"
+        );
+    }
     let deepseek = llm_connection("deepseek");
     assert!(matches!(
         post(

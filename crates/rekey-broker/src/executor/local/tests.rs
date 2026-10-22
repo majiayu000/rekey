@@ -347,8 +347,8 @@ async fn openai_compatible_presets_enforce_signed_model_and_daily_budget() {
             "{preset}"
         );
         // Where max_completion_tokens is not honored upstream it cannot carry
-        // the ceiling; OpenRouter documents it and enforces the ceiling with it.
-        let field = if preset == "openrouter" {
+        // the ceiling; where documented it enforces the ceiling instead.
+        let field = if matches!(preset, "openrouter" | "moonshot" | "qwen") {
             "max_completion_tokens"
         } else {
             let alias = br#"{"model":"synthetic-model","messages":[],"max_completion_tokens":8}"#;

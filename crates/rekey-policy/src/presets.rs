@@ -346,9 +346,11 @@ pub fn openai_compatible_chat(preset: &str) -> bool {
 
 /// Chat presets whose upstream documents only `max_tokens` as the output
 /// limit; `max_completion_tokens` would bypass the signed ceiling there.
-/// OpenRouter documents `max_completion_tokens` and keeps the OpenAI rules.
+/// OpenRouter, Moonshot and Qwen document `max_completion_tokens` (for Qwen
+/// thinking models it is the only field that also caps reasoning), so they
+/// keep the OpenAI rules and get it injected when no limit is sent.
 pub fn chat_max_tokens_only(preset: &str) -> bool {
-    matches!(preset, "deepseek" | "moonshot" | "qwen" | "gemini")
+    matches!(preset, "deepseek" | "gemini")
 }
 
 /// Path under the origin that an OpenAI/Anthropic SDK base URL must include.
