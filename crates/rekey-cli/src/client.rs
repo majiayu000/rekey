@@ -104,17 +104,31 @@ pub struct CliError {
     pub retryable: bool,
 }
 
+/// Generic Agent guidance for locally raised errors; anything else in `next`
+/// is instance-specific and must survive human rendering.
+fn local_next(code: &str) -> &'static str {
+    match code {
+        "IPC_UNAVAILABLE" => {
+            "Open Rekey or start rekeyd serve; wait for unlock before issuing a new call. Do not replay a write whose outcome is unknown."
+        }
+        "USAGE" | "INVALID_INPUT" => {
+            "Check the command arguments; use describe for the named operation's parameters."
+        }
+        "UPSTREAM_ERROR" => {
+            "Inspect the returned status and sealed response body. Do not automatically repeat a write."
+        }
+        _ => {
+            "Review the error and Rekey status before taking another action. Do not automatically repeat a write."
+        }
+    }
+}
+
 impl CliError {
     pub fn local(code: &str, message: impl Into<String>) -> Self {
         Self {
             code: code.to_owned(),
             message: message.into(),
-            next: Some(match code {
-                "IPC_UNAVAILABLE" => "Open Rekey or start rekeyd serve; wait for unlock before issuing a new call. Do not replay a write whose outcome is unknown.",
-                "USAGE" | "INVALID_INPUT" => "Check the command arguments; use describe for the named operation's parameters.",
-                "UPSTREAM_ERROR" => "Inspect the returned status and sealed response body. Do not automatically repeat a write.",
-                _ => "Review the error and Rekey status before taking another action. Do not automatically repeat a write.",
-            }.to_owned()),
+            next: Some(local_next(code).to_owned()),
             approval: None,
             request_id: None,
             retryable: false,
