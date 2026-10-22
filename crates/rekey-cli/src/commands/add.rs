@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rekey_domain::connection::{Connection, Preset};
+use rekey_domain::connection::{Connection, OAUTH_PRESETS, Preset, is_llm_preset};
 use rekey_domain::credential::CredentialMetadata;
 use rekey_domain::ids::{CredentialId, PolicySignerId};
 use rekey_domain::ipc::{self, ConnectionListResponse, ProofKind, admin_msg};
@@ -20,15 +20,6 @@ use crate::client::{CliError, Client};
 
 /// Basic-mode software policy key, beside the vault it signs for.
 pub const SOFTWARE_SIGNER_FILE: &str = "policy-signer-p256.p8";
-const OAUTH_PRESETS: &[&str] = &[
-    "google-drive",
-    "google-gmail",
-    "google-calendar",
-    "github-oauth",
-    "slack",
-    "notion",
-];
-const LLM_PRESETS: &[&str] = &["anthropic", "openai", "glm", "glm-responses"];
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 
 pub struct AddRequest {
@@ -270,7 +261,7 @@ fn build_connection(
     } else {
         json!({})
     };
-    let llm = LLM_PRESETS.contains(&preset_name.as_str()).then(|| {
+    let llm = is_llm_preset(&preset_name).then(|| {
         json!({"models": models, "max_tokens": 4096, "max_requests_per_day": 100,
                "max_output_tokens_per_day": 100_000})
     });
@@ -298,7 +289,7 @@ fn build_connection(
 
 /// LLM presets need exact model names; ask once interactively, never guess.
 fn llm_models(request: &AddRequest) -> Result<Vec<String>, CliError> {
-    if !LLM_PRESETS.contains(&request.provider.as_str()) {
+    if !is_llm_preset(&request.provider) {
         return Ok(Vec::new());
     }
     let mut models = request.models.clone();

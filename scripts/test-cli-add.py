@@ -114,6 +114,18 @@ with tempfile.TemporaryDirectory(prefix='rk-add-') as root:
         listed = call(['list']).stdout
         assert b'glm.messages' in listed
 
+        # New presets: an OpenAI-compatible LLM keeps signed limits; Stripe is read-only.
+        call(['add', 'deepseek', '--model', 'deepseek-test', '--credential-id', glm_id, '--stdin-secrets'], password + '\n')
+        assert connections()['deepseek']['llm']['models'] == ['deepseek-test']
+        assert connections()['deepseek']['origin'] == 'https://api.deepseek.com'
+        fails(['add', 'qwen', '--name', 'qwen-no-model', '--credential-id', glm_id, '--stdin-secrets'], password + '\n', '--model')
+        call(['add', 'stripe', '--credential-id', glm_id, '--stdin-secrets'], password + '\n')
+        stripe = connections()['stripe']
+        assert stripe['llm'] is None and stripe['fixed_headers']['stripe-version']
+        assert any(rule['effect'] == 'deny' and rule['methods'] == 'write' for rule in stripe['rules']), stripe['rules']
+        listed = call(['list']).stdout
+        assert b'deepseek.chat' in listed and b'stripe.balance' in listed
+
         # OAuth presets are routed to the App, generic presets need an origin.
         fails(['add', 'slack', '--stdin-secrets'], password + '\n', '--app')
         fails(['add', 'generic-bearer', '--stdin-secrets'], password + '\n' + glm_key + '\n', '--origin')
@@ -121,7 +133,7 @@ with tempfile.TemporaryDirectory(prefix='rk-add-') as root:
         # A vault whose trust this CLI does not hold is refused, never re-keyed.
         key_file.rename(state / 'moved-signer.p8')
         fails(['add', 'anthropic', '--model', 'claude-test', '--stdin-secrets'], password + '\n' + glm_key + '\n', 'TRUST_MISMATCH')
-        assert set(connections()) == {'glm', 'openai', 'glm-second'}
+        assert set(connections()) == {'glm', 'openai', 'glm-second', 'deepseek', 'stripe'}
         # Remembered unlock survives a daemon restart without a password.
         (state / 'moved-signer.p8').rename(key_file)  # restore the signer moved above
         remembered = call(['unlock', '--password-stdin', '--remember', '7d'], password + '\n')

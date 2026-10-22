@@ -243,7 +243,7 @@ enum Command {
     /// Add an API key and activate its preset Connection in one step (basic
     /// mode: software policy key). Use --app to finish in the macOS App instead.
     Add {
-        #[arg(value_parser = ["anthropic", "openai", "glm", "glm-responses", "github-pat", "github-git", "google-drive", "google-gmail", "google-calendar", "github-oauth", "slack", "notion", "generic-bearer", "generic-header"])]
+        #[arg(value_parser = clap::builder::PossibleValuesParser::new(rekey_domain::connection::BUILTIN_PRESETS))]
         provider: String,
         /// Open the installed macOS App onboarding page instead.
         #[arg(long)]
@@ -2139,22 +2139,7 @@ mod policy_target_args_tests {
     #[test]
     fn onboarding_accepts_only_fixed_front_doors() {
         assert!(Cli::try_parse_from(["rekey", "setup"]).is_ok());
-        for preset in [
-            "anthropic",
-            "openai",
-            "glm",
-            "glm-responses",
-            "github-pat",
-            "github-git",
-            "google-drive",
-            "google-gmail",
-            "google-calendar",
-            "github-oauth",
-            "slack",
-            "notion",
-            "generic-bearer",
-            "generic-header",
-        ] {
+        for preset in rekey_domain::connection::BUILTIN_PRESETS {
             assert!(Cli::try_parse_from(["rekey", "add", preset]).is_ok());
         }
         for args in [

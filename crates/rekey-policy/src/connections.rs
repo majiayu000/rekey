@@ -109,7 +109,11 @@ pub fn evaluate_connection(
             && (o.path == path
                 || connection.preset == "github-git" && operation_path_matches(&o.path, &path))
     });
-    if connection.preset == "github-git" && matching_operation.is_none() {
+    // LLM Connections expose only their declared endpoints, so another
+    // generating path of the same provider never inherits a `/**` rule.
+    if (connection.preset == "github-git" || connection.llm.is_some())
+        && matching_operation.is_none()
+    {
         return Err(PolicyError::NotConfigured);
     }
     let semantics = operation
@@ -324,15 +328,9 @@ fn normalize_llm(
     if method != FixedMethod::Post {
         return Ok((None, None, false));
     }
-    let protocol = match path {
-        "/v1/messages" | "/api/anthropic/v1/messages" => {
-            crate::ProfileLlmProtocol::AnthropicMessages
-        }
-        "/v1/messages/count_tokens" => crate::ProfileLlmProtocol::CountTokens,
-        "/v1/chat/completions" => crate::ProfileLlmProtocol::OpenAiChat,
-        "/v1/responses" | "/api/v1/responses" => crate::ProfileLlmProtocol::OpenAiResponses,
-        "/v1/embeddings" => crate::ProfileLlmProtocol::Embeddings,
-        _ => return Ok((None, None, false)),
+    let protocol = match crate::connection_llm_protocol(path) {
+        None | Some(crate::ProfileLlmProtocol::Models) => return Ok((None, None, false)),
+        Some(protocol) => protocol,
     };
     crate::ensure_json_number_fidelity(body)?;
     let mut value = parse_unique_json(body).map_err(|_| PolicyError::InvalidParameters)?;
@@ -345,7 +343,13 @@ fn normalize_llm(
         max_requests_per_day: u64::from(limits.max_requests_per_day),
         max_output_tokens_per_day: limits.max_output_tokens_per_day,
     };
-    let normalized = crate::normalize_profile_llm_body(protocol, &adapter, body, &mut value)?;
+    let normalized = crate::normalize_profile_llm_body(
+        protocol,
+        &adapter,
+        body,
+        &mut value,
+        crate::presets::chat_max_tokens_only(&connection.preset),
+    )?;
     *body = normalized.bytes;
     Ok((normalized.model, normalized.maximum, normalized.streaming))
 }

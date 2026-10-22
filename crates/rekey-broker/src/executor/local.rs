@@ -343,17 +343,9 @@ fn connection_llm(
     let Some(limits) = &connection.llm else {
         return Ok(None);
     };
-    use rekey_policy::ProfileLlmProtocol::*;
     let path = action.target.fixed_path().map(|p| p.as_str()).unwrap_or("");
-    let protocol = match path {
-        "/v1/messages" | "/api/anthropic/v1/messages" => AnthropicMessages,
-        "/v1/messages/count_tokens" => CountTokens,
-        "/v1/chat/completions" => OpenAiChat,
-        "/v1/responses" | "/api/v1/responses" => OpenAiResponses,
-        "/v1/embeddings" => Embeddings,
-        "/v1/models" => Models,
-        _ => return Err(BrokerError::Denied("llm-operation-unsupported")),
-    };
+    let protocol = rekey_policy::connection_llm_protocol(path)
+        .ok_or(BrokerError::Denied("llm-operation-unsupported"))?;
     Ok(Some(super::llm::LlmExecution {
         protocol,
         streaming,

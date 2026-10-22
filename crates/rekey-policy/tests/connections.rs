@@ -746,6 +746,11 @@ fn all_builtins_preserve_baseline_provider_paths_and_caller_constraints() {
         ("openai", "/v1/responses"),
         ("glm", "/api/anthropic/v1/messages"),
         ("glm-responses", "/api/v1/responses"),
+        ("deepseek", "/v1/chat/completions"),
+        ("moonshot", "/v1/chat/completions"),
+        ("qwen", "/compatible-mode/v1/chat/completions"),
+        ("openrouter", "/api/v1/chat/completions"),
+        ("gemini", "/v1beta/openai/chat/completions"),
     ] {
         let p = builtin_preset(preset).unwrap();
         assert!(p.operations.iter().any(|o| o.path == path));
@@ -868,4 +873,259 @@ fn github_git_fixed_endpoints_bind_repo_and_classify_upload_as_read() {
         .method_class,
         MethodClass::Write
     );
+}
+
+#[test]
+fn every_builtin_preset_resolves_and_llm_presets_require_signed_limits() {
+    use rekey_domain::connection::{BUILTIN_PRESETS, LLM_PRESETS, OAUTH_PRESETS, ReadSemantics};
+    use rekey_policy::{ProfileLlmProtocol, connection_llm_protocol};
+    for name in BUILTIN_PRESETS {
+        if name.starts_with("generic-") {
+            continue;
+        }
+        let preset = builtin_preset(name).unwrap();
+        assert_eq!(preset.name, *name);
+        assert_eq!(
+            rekey_policy::presets::oauth_provider(name).is_some(),
+            OAUTH_PRESETS.contains(name),
+            "{name}"
+        );
+        if !LLM_PRESETS.contains(name) {
+            continue;
+        }
+        let mut c = preset.connection((*name).into(), CredentialId::new_random());
+        assert!(c.validate().is_err(), "{name} accepted without LLM limits");
+        c.llm = Some(ConnectionLlmLimits {
+            models: ["fixture-model".into()].into_iter().collect(),
+            max_tokens: 32,
+            max_requests_per_day: 10,
+            max_output_tokens_per_day: 100,
+        });
+        c.validate().unwrap();
+        for op in &preset.operations {
+            let protocol = connection_llm_protocol(&op.path);
+            if op.method == FixedMethod::Post {
+                assert_eq!(op.read_semantics, Some(ReadSemantics::Fixed), "{}", op.name);
+                assert!(
+                    protocol.is_some_and(|p| p != ProfileLlmProtocol::Models),
+                    "{}",
+                    op.name
+                );
+            } else {
+                assert_eq!(protocol, Some(ProfileLlmProtocol::Models), "{}", op.name);
+            }
+        }
+    }
+    for (name, base) in [
+        ("deepseek", "https://api.deepseek.com/v1"),
+        ("moonshot", "https://api.moonshot.cn/v1"),
+        ("moonshot-intl", "https://api.moonshot.ai/v1"),
+        ("qwen", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+        (
+            "qwen-intl",
+            "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        ),
+        (
+            "qwen-us",
+            "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+        ),
+        (
+            "qwen-hk",
+            "https://cn-hongkong.dashscope.aliyuncs.com/compatible-mode/v1",
+        ),
+        ("openrouter", "https://openrouter.ai/api/v1"),
+        (
+            "gemini",
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+        ),
+    ] {
+        let preset = builtin_preset(name).unwrap();
+        assert_eq!(
+            format!(
+                "{}{}",
+                preset.origin.as_str().trim_end_matches('/'),
+                rekey_policy::presets::sdk_base_path(name)
+            ),
+            base
+        );
+        assert_eq!(preset.auth.header_name.as_str(), "authorization");
+        assert_eq!(preset.auth.prefix.as_str(), "Bearer ");
+        // Regional presets keep the provider's operation names and endpoints.
+        let family = name.split_once('-').map_or(name, |(family, _)| family);
+        let models = if family == "qwen" {
+            "/api/v1/models".to_owned()
+        } else {
+            format!("{}/models", rekey_policy::presets::sdk_base_path(name))
+        };
+        assert!(
+            preset
+                .operations
+                .iter()
+                .any(|op| op.name == format!("{family}.models") && op.path == models),
+            "{name}"
+        );
+        assert!(
+            preset
+                .operations
+                .iter()
+                .any(|op| op.name == format!("{family}.chat")),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn stripe_preset_is_read_only_with_a_pinned_api_version() {
+    let preset = builtin_preset("stripe").unwrap();
+    assert_eq!(
+        preset.fixed_headers[&HeaderName::new("stripe-version").unwrap()],
+        "2026-09-30.endive"
+    );
+    assert!(
+        preset
+            .operations
+            .iter()
+            .all(|op| op.method == FixedMethod::Get)
+    );
+    let c = preset.connection("stripe".into(), CredentialId::new_random());
+    c.validate().unwrap();
+    for path in [
+        "/v1/balance",
+        "/v1/customers",
+        "/v1/customers/cus_123",
+        "/v1/charges",
+        "/v1/payment_intents",
+    ] {
+        assert_eq!(
+            call(&c, FixedMethod::Get, path).unwrap().effect,
+            RuleEffect::Allow,
+            "{path}"
+        );
+    }
+    for (method, path) in [
+        (FixedMethod::Post, "/v1/customers"),
+        (FixedMethod::Post, "/v1/refunds"),
+        (FixedMethod::Delete, "/v1/customers/cus_123"),
+        (FixedMethod::Get, "/v1/accounts"),
+    ] {
+        assert!(
+            !matches!(
+                call(&c, method, path).map(|a| a.effect),
+                Ok(RuleEffect::Allow | RuleEffect::Approve)
+            ),
+            "{} {path}",
+            method.as_str()
+        );
+    }
+}
+
+fn llm_connection(preset: &str) -> Connection {
+    let mut c = builtin_preset(preset)
+        .unwrap()
+        .connection(preset.into(), CredentialId::new_random());
+    c.llm = Some(ConnectionLlmLimits {
+        models: ["fixture-model".into()].into_iter().collect(),
+        max_tokens: 32,
+        max_requests_per_day: 10,
+        max_output_tokens_per_day: 100,
+    });
+    c
+}
+
+fn post(
+    c: &Connection,
+    path: &str,
+    body: &str,
+) -> Result<rekey_policy::connections::ConnectionAuthorization, PolicyError> {
+    evaluate_connection(
+        &snapshot(c),
+        &CallMeta::http(c.name.clone(), FixedMethod::Post, path.into()),
+        body.as_bytes(),
+        "unknown",
+        Timestamp::from_unix_ms(2),
+    )
+}
+
+#[test]
+fn llm_connections_expose_only_declared_endpoints() {
+    let openrouter = llm_connection("openrouter");
+    // A real OpenRouter generating endpoint the preset never declared.
+    assert!(matches!(
+        post(
+            &openrouter,
+            "/api/v1/responses",
+            r#"{"model":"fixture-model"}"#
+        ),
+        Err(PolicyError::NotConfigured)
+    ));
+    let qwen = llm_connection("qwen");
+    assert!(
+        qwen.operations
+            .iter()
+            .any(|op| op.name == "qwen.models" && op.path == "/api/v1/models")
+    );
+    assert_eq!(
+        call(&qwen, FixedMethod::Get, "/api/v1/models")
+            .unwrap()
+            .effect,
+        RuleEffect::Allow
+    );
+    assert!(matches!(
+        call(&qwen, FixedMethod::Get, "/compatible-mode/v1/models"),
+        Err(PolicyError::NotConfigured)
+    ));
+    // Existing presets are held to the same rule.
+    let glm = llm_connection("glm-responses");
+    assert!(matches!(
+        post(&glm, "/v1/responses", r#"{"model":"fixture-model"}"#),
+        Err(PolicyError::NotConfigured)
+    ));
+}
+
+#[test]
+fn completion_token_providers_enforce_the_ceiling_through_max_completion_tokens() {
+    for (preset, path) in [
+        ("openrouter", "/api/v1/chat/completions"),
+        ("moonshot", "/v1/chat/completions"),
+        ("qwen", "/compatible-mode/v1/chat/completions"),
+    ] {
+        let c = llm_connection(preset);
+        let within = post(
+            &c,
+            path,
+            r#"{"model":"fixture-model","max_completion_tokens":8}"#,
+        )
+        .unwrap();
+        assert_eq!(within.generation_max_output, Some(8), "{preset}");
+        assert!(
+            post(
+                &c,
+                path,
+                r#"{"model":"fixture-model","max_completion_tokens":33}"#
+            )
+            .is_err(),
+            "{preset}"
+        );
+        let omitted = post(&c, path, r#"{"model":"fixture-model"}"#).unwrap();
+        assert_eq!(omitted.generation_max_output, Some(32), "{preset}");
+        let sent: serde_json::Value = serde_json::from_slice(&omitted.request_body).unwrap();
+        // Covers Qwen thinking models' reasoning too, unlike max_tokens.
+        assert_eq!(sent["max_completion_tokens"], 32, "{preset}");
+        assert!(sent.get("max_tokens").is_none(), "{preset}");
+        assert!(
+            c.operations[0].parameters["properties"]
+                .get("max_completion_tokens")
+                .is_some(),
+            "{preset}"
+        );
+    }
+    let deepseek = llm_connection("deepseek");
+    assert!(matches!(
+        post(
+            &deepseek,
+            "/v1/chat/completions",
+            r#"{"model":"fixture-model","max_completion_tokens":8}"#
+        ),
+        Err(PolicyError::InvalidParameters)
+    ));
 }
