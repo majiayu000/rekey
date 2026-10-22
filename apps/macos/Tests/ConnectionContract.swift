@@ -4,7 +4,7 @@ import CryptoKit
 
 @main struct ConnectionContract {
     static func main() throws {
-        precondition(ConnectionPreset.apiKeyPresets.count==14 && Set(ConnectionPreset.apiKeyPresets+OAuthSetup.presets).count==20)
+        precondition(ConnectionPreset.apiKeyPresets.count==18 && Set(ConnectionPreset.apiKeyPresets+OAuthSetup.presets).count==24)
         for name in ConnectionPreset.apiKeyPresets+OAuthSetup.presets {
             precondition(OnboardingRoute(url:URL(string:"rekey://add/"+name)!) == .add(name))
         }

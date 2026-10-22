@@ -2221,7 +2221,7 @@ struct ConnectionDefinition: Codable, Equatable, Identifiable, Sendable {
 struct ConnectionPreset: Decodable, Sendable {
     let name:String;let origin:String;let auth:ConnectionDefinition.Auth;let rules:[ConnectionRule]
     let allowed_headers:[String];let fixed_headers:[String:String];let allowed_response_headers:[String];let query_allowlist:[String]?;let operations:[ConnectionOperation]
-    static let llmPresets=["anthropic","openai","glm","glm-responses","deepseek","moonshot","qwen","openrouter","gemini"]
+    static let llmPresets=["anthropic","openai","glm","glm-responses","deepseek","moonshot","moonshot-intl","qwen","qwen-intl","qwen-us","qwen-hk","openrouter","gemini"]
     /// API-key presets in picker order; OAuth presets are OAuthSetup.presets.
     static let apiKeyPresets=["github-pat","github-git"]+llmPresets+["stripe","generic-bearer","generic-header"]
     /// LLM Connections must sign a non-empty exact model allow-list; callers pass it.

@@ -75,8 +75,26 @@ pub fn builtin_preset(name: &str) -> Result<Preset, PolicyError> {
         "glm-responses" => ("https://open.bigmodel.cn", "authorization", "Bearer "),
         "github-pat" => ("https://api.github.com", "authorization", "Bearer "),
         "deepseek" => ("https://api.deepseek.com", "authorization", "Bearer "),
+        // Moonshot and Model Studio keys are bound to the region that issued
+        // them, so each documented regional host is its own preset.
         "moonshot" => ("https://api.moonshot.cn", "authorization", "Bearer "),
+        "moonshot-intl" => ("https://api.moonshot.ai", "authorization", "Bearer "),
         "qwen" => ("https://dashscope.aliyuncs.com", "authorization", "Bearer "),
+        "qwen-intl" => (
+            "https://dashscope-intl.aliyuncs.com",
+            "authorization",
+            "Bearer ",
+        ),
+        "qwen-us" => (
+            "https://dashscope-us.aliyuncs.com",
+            "authorization",
+            "Bearer ",
+        ),
+        "qwen-hk" => (
+            "https://cn-hongkong.dashscope.aliyuncs.com",
+            "authorization",
+            "Bearer ",
+        ),
         "openrouter" => ("https://openrouter.ai", "authorization", "Bearer "),
         "gemini" => (
             "https://generativelanguage.googleapis.com",
@@ -291,19 +309,21 @@ pub fn builtin_preset(name: &str) -> Result<Preset, PolicyError> {
             // provider's documented SDK base URL. Upstreams that document only
             // `max_tokens` do not get `max_completion_tokens` in the schema.
             let base = sdk_base_path(name);
+            // Regional variants share the provider's operation names.
+            let family = name.split_once('-').map_or(name, |(family, _)| family);
             let mut properties = json!({"model":{"type":"string"},"messages":{"type":"array"},"max_tokens":{"type":"integer","minimum":1},"stream":{"type":"boolean"},"tools":{"type":"array"},"temperature":{"type":"number"},"n":{"type":"integer"}});
             if !chat_max_tokens_only(name) {
                 properties["max_completion_tokens"] = json!({"type":"integer","minimum":1});
             }
             // Model Studio documents model listing on its native API only.
-            let models = if name == "qwen" {
+            let models = if family == "qwen" {
                 "/api/v1/models".to_owned()
             } else {
                 format!("{base}/models")
             };
             preset.operations = vec![
                 operation(
-                    &format!("{name}.chat"),
+                    &format!("{family}.chat"),
                     FixedMethod::Post,
                     &format!("{base}/chat/completions"),
                     properties,
@@ -311,7 +331,7 @@ pub fn builtin_preset(name: &str) -> Result<Preset, PolicyError> {
                     Some(ReadSemantics::Fixed),
                 ),
                 operation(
-                    &format!("{name}.models"),
+                    &format!("{family}.models"),
                     FixedMethod::Get,
                     &models,
                     json!({}),
@@ -340,7 +360,15 @@ pub fn builtin_preset(name: &str) -> Result<Preset, PolicyError> {
 pub fn openai_compatible_chat(preset: &str) -> bool {
     matches!(
         preset,
-        "deepseek" | "moonshot" | "qwen" | "openrouter" | "gemini"
+        "deepseek"
+            | "moonshot"
+            | "moonshot-intl"
+            | "qwen"
+            | "qwen-intl"
+            | "qwen-us"
+            | "qwen-hk"
+            | "openrouter"
+            | "gemini"
     )
 }
 
@@ -356,9 +384,9 @@ pub fn chat_max_tokens_only(preset: &str) -> bool {
 /// Path under the origin that an OpenAI/Anthropic SDK base URL must include.
 pub fn sdk_base_path(preset: &str) -> &'static str {
     match preset {
-        "openai" | "deepseek" | "moonshot" => "/v1",
+        "openai" | "deepseek" | "moonshot" | "moonshot-intl" => "/v1",
         "glm-responses" | "openrouter" => "/api/v1",
-        "qwen" => "/compatible-mode/v1",
+        "qwen" | "qwen-intl" | "qwen-us" | "qwen-hk" => "/compatible-mode/v1",
         "gemini" => "/v1beta/openai",
         "glm" => "/api/anthropic",
         _ => "",

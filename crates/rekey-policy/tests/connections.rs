@@ -919,7 +919,20 @@ fn every_builtin_preset_resolves_and_llm_presets_require_signed_limits() {
     for (name, base) in [
         ("deepseek", "https://api.deepseek.com/v1"),
         ("moonshot", "https://api.moonshot.cn/v1"),
+        ("moonshot-intl", "https://api.moonshot.ai/v1"),
         ("qwen", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+        (
+            "qwen-intl",
+            "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        ),
+        (
+            "qwen-us",
+            "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+        ),
+        (
+            "qwen-hk",
+            "https://cn-hongkong.dashscope.aliyuncs.com/compatible-mode/v1",
+        ),
         ("openrouter", "https://openrouter.ai/api/v1"),
         (
             "gemini",
@@ -937,6 +950,27 @@ fn every_builtin_preset_resolves_and_llm_presets_require_signed_limits() {
         );
         assert_eq!(preset.auth.header_name.as_str(), "authorization");
         assert_eq!(preset.auth.prefix.as_str(), "Bearer ");
+        // Regional presets keep the provider's operation names and endpoints.
+        let family = name.split_once('-').map_or(name, |(family, _)| family);
+        let models = if family == "qwen" {
+            "/api/v1/models".to_owned()
+        } else {
+            format!("{}/models", rekey_policy::presets::sdk_base_path(name))
+        };
+        assert!(
+            preset
+                .operations
+                .iter()
+                .any(|op| op.name == format!("{family}.models") && op.path == models),
+            "{name}"
+        );
+        assert!(
+            preset
+                .operations
+                .iter()
+                .any(|op| op.name == format!("{family}.chat")),
+            "{name}"
+        );
     }
 }
 
