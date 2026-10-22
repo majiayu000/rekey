@@ -1784,3 +1784,29 @@ fn errors_stay_json_on_pipes_and_render_for_people_on_request() {
     let json: serde_json::Value = serde_json::from_slice(forced_json.stderr.trim_ascii()).unwrap();
     assert_eq!(json["code"], "IPC_UNAVAILABLE");
 }
+
+#[test]
+fn argument_errors_use_the_json_envelope_when_requested() {
+    let forced = Command::new(rekey_bin())
+        .args(["status", "--no-such-flag"])
+        .env("REKEY_OUTPUT", "json")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(forced.status.code(), Some(2));
+    let json: serde_json::Value = serde_json::from_slice(forced.stderr.trim_ascii()).unwrap();
+    assert_eq!(json["code"], "INVALID_INPUT");
+    assert!(json["message"].as_str().unwrap().contains("--no-such-flag"));
+
+    let plain = run(&rekey_bin(), &["status", "--no-such-flag"], None);
+    assert_eq!(plain.status, 2);
+    assert!(plain.stderr.starts_with("error: "), "{}", plain.stderr);
+
+    let help = Command::new(rekey_bin())
+        .arg("--help")
+        .env("REKEY_OUTPUT", "json")
+        .output()
+        .unwrap();
+    assert_eq!(help.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&help.stdout).contains("Usage"));
+}

@@ -1195,7 +1195,24 @@ enum AuditRetentionCommand {
 }
 
 fn main() {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        // Agents asking for JSON get the same envelope for argument errors;
+        // help, version and human use keep clap's own output.
+        Err(err) if err.use_stderr() && client::json_output_forced() => {
+            let rendered = err.render().to_string();
+            let message = rendered
+                .lines()
+                .find(|line| !line.trim().is_empty())
+                .unwrap_or_default()
+                .trim_start_matches("error: ")
+                .to_owned();
+            let err = client::CliError::local("INVALID_INPUT", message);
+            err.print_stderr();
+            std::process::exit(err.exit_code());
+        }
+        Err(err) => err.exit(),
+    };
     let onboarding_inapplicable = cli.agent_socket.is_some();
     #[cfg(feature = "lab")]
     let onboarding_inapplicable = onboarding_inapplicable || cli.admin_session_file.is_some();
@@ -1204,7 +1221,7 @@ fn main() {
     let state_dir = match commands::resolve_state_dir(cli.state_dir) {
         Ok(dir) => dir,
         Err(err) => {
-            eprintln!("error: {}", err.message);
+            err.print_stderr();
             std::process::exit(err.exit_code());
         }
     };

@@ -1,6 +1,8 @@
 # Rekey
 
-Rekey 把 API Key 留在你的电脑上。Agent（Claude Code、Codex 等）需要调用模型或服务时，请 Rekey 代为调用；Rekey 按你签署的规则放行，把结果交回 Agent，Agent 看不到真实的 Key。
+Rekey 把 API Key 留在你的电脑上。Agent（Claude Code、Codex 等）需要调用模型或服务时，请 Rekey 代为调用；Rekey 按你签署的规则放行，把结果交回 Agent，Agent 拿不到真实的 Key。
+
+执行前持久审计，返回时检查凭据反射：上游响应里出现 Key 的原值或支持的可逆编码形式会被遮蔽。检查只覆盖这些明确支持的表示，不能阻止所有数据外泄或授权范围内的误用。
 
 > 当前源码是未发布的 0.5 开发版；最新公开版本以 [GitHub Releases](https://github.com/majiayu000/rekey/releases) 为准。版本格式、保护等级等细节见[安全模型与术语](docs/security/README.md)。
 
