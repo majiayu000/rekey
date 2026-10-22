@@ -3,6 +3,8 @@ mod audit_prune;
 mod audit_query;
 mod connection;
 mod integrity;
+pub(crate) mod legacy;
+pub(crate) mod migration;
 pub(crate) mod pki;
 mod policy;
 mod recovery;

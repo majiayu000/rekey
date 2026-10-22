@@ -299,6 +299,14 @@ enum Command {
         #[arg(long, default_value = "7d")]
         idle_lock: String,
     },
+    /// Upgrade a vault from an earlier release into a new empty --state-dir (delegates to rekeyd).
+    Migrate {
+        /// Source state directory from 0.3, 0.4 or 0.5; it is never modified.
+        #[arg(long)]
+        from: PathBuf,
+        #[arg(long)]
+        password_stdin: bool,
+    },
     /// Restore a backup into an empty state directory (delegates to rekeyd).
     Restore {
         #[arg(long)]
@@ -1427,6 +1435,15 @@ fn main() {
             }
             commands::delegate_rekeyd(&state_dir, "serve", &args, false)
         }
+        Command::Migrate {
+            from,
+            password_stdin,
+        } => commands::delegate_rekeyd(
+            &state_dir,
+            "migrate",
+            &["--from".into(), from.into_os_string()],
+            password_stdin,
+        ),
         Command::Restore {
             input,
             recovery,

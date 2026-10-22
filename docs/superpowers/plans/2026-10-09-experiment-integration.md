@@ -6,7 +6,7 @@
 - Connect-on-open repair: `5c21c0c` (denial-backoff fixture) and `0d74833` (native startup), based on that baseline.
 - Combined working branch: `integrate/experiments-20261009`. Main SSH kinds 11/12/13, Worker signer and signed Connection ownership are retained.
 - Experimental aggregate: `b57d84456136127a7277449120a1652306fa89d1`. This aggregate is a source of bounded changes, not a replacement checkout or a merge of its superseded product architecture.
-- Development format contract: [unified experiments](../specs/2026-10-09-unified-experiments.md), 0.5.0-alpha.1 / vault27 / policy8. There is no upgrade or migration for the user's installed App/vault; both are untouched by this integration.
+- Development format contract: [unified experiments](../specs/2026-10-09-unified-experiments.md), 0.5.0-alpha.1 / vault27 / policy8. The user's installed App/vault are untouched by this integration; they change only if the owner runs the offline `rekey migrate` into a new vault (unified SPEC, Upgrade migration).
 
 ## Branch disposition
 

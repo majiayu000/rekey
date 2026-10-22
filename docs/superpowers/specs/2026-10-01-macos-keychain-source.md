@@ -2,6 +2,7 @@
 
 > Status: Lab (v3 scope; enterprise reserve)
 > Existing contracts and evidence are retained; this capability is excluded from the default v3 build and release package.
+> 2026-10-22: the "no migration" statements below remain true for formats older than 25. Released formats 25+ may be copied into a new vault by offline `rekey migrate`; see [Upgrade migration](2026-10-09-unified-experiments.md#upgrade-migration).
 
 Frozen 2026-10-01 before code. Minimal accepted slice: one encrypted exact
 reference and native lookup inside the sole Authority Worker. Two new source

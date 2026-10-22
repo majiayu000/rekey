@@ -1,6 +1,6 @@
 # Install, upgrade, service, and uninstall
 
-This guide describes the published **0.4.0-alpha.1** (vault26 / policy7). Current source is the unreleased **0.5.0-alpha.1** development integration (vault27 / policy8); it requires a separate new vault and does not migrate or overwrite published vaults. Publication and available artifacts are determined by [GitHub Releases](https://github.com/majiayu000/rekey/releases), not this page. The 0.4 instructions below reject the 0.3 vault format: create a new state directory; there is no migration or overwrite.
+This guide describes the published **0.4.0-alpha.1** (vault26 / policy7). Current source is the unreleased **0.5.0-alpha.1** development integration (vault27 / policy8); it opens only vault27 and never overwrites published vaults; `rekey migrate` copies a 0.3/0.4 vault into a new vault27 directory (see [Format changes](#format-changes-and-restore)). Publication and available artifacts are determined by [GitHub Releases](https://github.com/majiayu000/rekey/releases), not this page. The 0.4 instructions below reject the 0.3 vault format: create a new state directory; 0.4 itself has no migration or overwrite.
 
 macOS distribution uses a Developer ID signed, notarized pkg with independently provisioned App and daemon, for macOS 14+ on Apple Silicon. Linux uses the released Ubuntu 24.04 x86_64 archive. No public Homebrew tap is claimed. Verify the actual completed release, package bytes, signature and public smoke before installation. Hardware Touch ID, SE, login-item and C16 checks are independent of software tests.
 
@@ -179,7 +179,25 @@ and [active SPEC](superpowers/specs/2026-10-05-rekey-agent-call-model.md).
 The 0.4 candidate uses vault/backup format **26** and policy snapshot format **7**.
 A 0.3 vault or backup cannot be opened or restored by 0.4. Keep the old binary,
 state directory and backups together; create a new empty 0.4 directory and add
-credentials/sign Connections again. No migration, backfill or overwrite occurs.
+credentials/sign Connections again. 0.4 performs no migration, backfill or overwrite.
+
+Starting with the 0.5 line, an old vault (0.3 vault25, 0.4 vault26 or 0.5
+vault27) can be copied into a **new** vault27 directory offline. Stop rekeyd and
+quit the App, move the old directory aside, then run the new binary:
+
+```bash
+mv ~/.rekey ~/.rekey-0.4
+rekey migrate --from ~/.rekey-0.4
+```
+
+The target (`--state-dir`, default `~/.rekey`) must be empty. The old directory
+is read from a private copy and never written. Credentials and policy trust
+carry over and every payload is verified; the new vault gets a new vault id and
+a new recovery key, shown once. Audit history, usage counters and remembered
+unlocks start fresh. The old signed policy cannot be reused: Connections are
+saved as `migrated-policy-request.json` for you to review and re-sign. If
+migration fails after the new vault was created, it stays unconfirmed and will
+not serve; remove that new directory and retry.
 
 Back up and verify a receipt before changing an installation. A supported
 same-format restore requires authenticated preview, visible source generation

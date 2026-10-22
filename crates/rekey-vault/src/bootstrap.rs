@@ -800,6 +800,14 @@ pub(crate) fn prove_integrity(
     vrk: &[u8; 32],
 ) -> Result<(), AuthorityError> {
     crate::crypto::generation::verify(vrk, header)?;
+    verify_integrity_mark(header, vrk)
+}
+
+/// The VRK-sealed integrity mark, shared with older released header formats.
+pub(crate) fn verify_integrity_mark(
+    header: &VaultHeaderRecord,
+    vrk: &[u8; 32],
+) -> Result<(), AuthorityError> {
     let plain = aead::open(
         vrk,
         &integrity_aad(header.vault_id),

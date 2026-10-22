@@ -203,26 +203,7 @@ impl SqliteRecordStore {
         generation: &mut GenerationAttempt<'_>,
     ) -> Result<(), AuthorityError> {
         let tx = self.conn.transaction().map_err(storage)?;
-        let inserted = tx.execute(
-            "INSERT OR IGNORE INTO credentials (credential_id, label, kind, state, current_version, created_at_ms, updated_at_ms, revoked_at_ms, state_nonce, state_ciphertext)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            params![
-                record.credential_id.as_bytes().as_slice(),
-                record.label,
-                record.kind.as_str(),
-                record.state.as_str(),
-                record.current_version as i64,
-                record.created_at_ms,
-                record.updated_at_ms,
-                record.revoked_at_ms,
-                record.state_nonce.as_slice(),
-                record.state_ciphertext.as_slice(),
-            ],
-        )
-        .map_err(storage)?;
-        if inserted == 0 {
-            return Err(AuthorityError::CredentialConflict);
-        }
+        insert_credential_row(&tx, record)?;
         insert_version(&tx, version)?;
         super::audit::insert(&tx, &audit)?;
         commit_generation(tx, generation)
@@ -775,7 +756,38 @@ fn snapshot_cut(conn: &Connection) -> Result<BackupSnapshotCut, AuthorityError> 
     })
 }
 
-fn insert_version(tx: &Transaction<'_>, v: &CredentialVersionRecord) -> Result<(), AuthorityError> {
+pub(super) fn insert_credential_row(
+    tx: &Transaction<'_>,
+    record: &CredentialRecord,
+) -> Result<(), AuthorityError> {
+    let inserted = tx
+        .execute(
+            "INSERT OR IGNORE INTO credentials (credential_id, label, kind, state, current_version, created_at_ms, updated_at_ms, revoked_at_ms, state_nonce, state_ciphertext)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                record.credential_id.as_bytes().as_slice(),
+                record.label,
+                record.kind.as_str(),
+                record.state.as_str(),
+                record.current_version as i64,
+                record.created_at_ms,
+                record.updated_at_ms,
+                record.revoked_at_ms,
+                record.state_nonce.as_slice(),
+                record.state_ciphertext.as_slice(),
+            ],
+        )
+        .map_err(storage)?;
+    if inserted == 0 {
+        return Err(AuthorityError::CredentialConflict);
+    }
+    Ok(())
+}
+
+pub(super) fn insert_version(
+    tx: &Transaction<'_>,
+    v: &CredentialVersionRecord,
+) -> Result<(), AuthorityError> {
     tx.execute(
         "INSERT INTO credential_versions (credential_id, version, state, aad_version, crypto_suite, dek_nonce, wrapped_dek, payload_nonce, encrypted_payload, created_at_ms, retired_at_ms)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
@@ -797,9 +809,9 @@ fn insert_version(tx: &Transaction<'_>, v: &CredentialVersionRecord) -> Result<(
     Ok(())
 }
 
-type RowResult<T> = Result<Result<T, AuthorityError>, rusqlite::Error>;
+pub(super) type RowResult<T> = Result<Result<T, AuthorityError>, rusqlite::Error>;
 
-fn wrapper_from_row(r: &rusqlite::Row<'_>) -> RowResult<KeyWrapperRecord> {
+pub(super) fn wrapper_from_row(r: &rusqlite::Row<'_>) -> RowResult<KeyWrapperRecord> {
     let wrapper_id: Vec<u8> = r.get(0)?;
     let kind: String = r.get(1)?;
     let state: String = r.get(2)?;
@@ -829,7 +841,7 @@ fn wrapper_from_row(r: &rusqlite::Row<'_>) -> RowResult<KeyWrapperRecord> {
     })())
 }
 
-fn credential_from_row(r: &rusqlite::Row<'_>) -> RowResult<CredentialRecord> {
+pub(super) fn credential_from_row(r: &rusqlite::Row<'_>) -> RowResult<CredentialRecord> {
     let credential_id: Vec<u8> = r.get(0)?;
     let label: String = r.get(1)?;
     let kind: String = r.get(2)?;
@@ -859,7 +871,7 @@ fn credential_from_row(r: &rusqlite::Row<'_>) -> RowResult<CredentialRecord> {
     })())
 }
 
-fn version_from_row(r: &rusqlite::Row<'_>) -> RowResult<CredentialVersionRecord> {
+pub(super) fn version_from_row(r: &rusqlite::Row<'_>) -> RowResult<CredentialVersionRecord> {
     let credential_id: Vec<u8> = r.get(0)?;
     let version: i64 = r.get(1)?;
     let state: String = r.get(2)?;

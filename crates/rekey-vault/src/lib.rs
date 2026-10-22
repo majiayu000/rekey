@@ -11,6 +11,7 @@ pub mod durable;
 pub mod error;
 pub mod generation_anchor;
 pub mod hygiene;
+pub mod migrate;
 pub mod model;
 pub mod secret;
 pub mod store;

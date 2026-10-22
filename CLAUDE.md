@@ -60,11 +60,16 @@ Cargo workspace, 7 crates + root integration-test host:
 - Current confirmed floor is L1-dev. Peer verification alone does not establish
   L1; V1/V2, protected anchors and actual isolation require separate evidence.
   Linux Profile netns and Codex Seatbelt limitations must not be hidden.
-- No migration, old-format double reader or backfill, permanently. Each release
-  line freezes its formats: 0.3 = vault25 / policy6, 0.4 = vault26 / policy7,
-  0.5 = vault27 / policy8. Non-current layouts are rejected; a new line needs a
-  new vault. Incompatible changes require a separately planned release line and
-  a prior SPEC revision. Never touch the user's existing vault or installed App.
+- Each release line freezes its formats: 0.3 = vault25 / policy6, 0.4 =
+  vault26 / policy7, 0.5 = vault27 / policy8. Open, unlock and restore accept
+  only the current layout; no in-place upgrade, runtime double reader or
+  backfill. The one upgrade path (owner decision 2026-10-22) is offline
+  `rekeyd migrate`: a frozen reader for released layouts 25+ unlocks the old
+  vault inside the Authority and writes a new vault with a new vault id; it
+  never writes the source, exports plaintext or runs through an Agent; formats
+  older than 25 stay rejected. Incompatible changes require a separately
+  planned release line and a prior SPEC revision. Never touch the user's
+  existing vault or installed App.
 - Default features are empty; enterprise execution requires `--features lab`.
 - Ordinary unlock is not rollback consent. Explicit confirmation binds current
   context; never delete or lower generation history to make a snapshot unlock.
