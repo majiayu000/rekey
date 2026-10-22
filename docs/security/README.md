@@ -35,7 +35,7 @@ Rekey 默认与 Agent 运行在同一系统用户下，当前确认的保护下�
 
 ## 调用结果与临时凭据
 
-- **T0（只返回结果）**：Agent 只拿到调用结果，看不到任何凭据。CLI、MCP、本机 HTTP 和 SSH agent 都属于这一类。
+- **T0（只返回结果）**：Agent 只拿到调用结果，不会直接拿到凭据；结果遮蔽只覆盖凭据原值和支持的可逆编码形式，不保护任意编码、哈希或隐蔽信道（见[威胁模型](../product-foundation/threat-model-v2.md)）。CLI、MCP、本机 HTTP 和 SSH agent 都属于这一类。
 - **T1（临时凭据）**：AWS `credential_process`、EKS kubectl 插件和 GitHub App 安装令牌会把**短期临时凭据**交给 Agent 进程。目标 role / cluster / installation、权限和有效期固定在签名规则里，调用方不能覆盖；每个 T1 入口须单独签署开启。
 
 两类在能力发现、界面和审计中分别标注。

@@ -1,6 +1,6 @@
 # Rekey
 
-Rekey 把 API Key 留在你的电脑上。Agent（Claude Code、Codex 等）需要调用模型或服务时，请 Rekey 代为调用；Rekey 按你签署的规则放行，把结果交回 Agent。通过 Rekey 的接口，Agent 拿不到真实的 Key（AWS、EKS、GitHub App 的临时凭据入口是显式开启的例外，只交出短期凭据）。
+Rekey 把 API Key 留在你的电脑上。Agent（Claude Code、Codex 等）需要调用模型或服务时，请 Rekey 代为调用；Rekey 按你签署的规则放行，把结果交回 Agent。通过 Rekey 的接口，Agent 不会直接拿到 Key；返回结果只遮蔽 Key 的原值和支持的可逆编码形式，不覆盖任意编码、哈希或隐蔽信道（AWS、EKS、GitHub App 的临时凭据入口是显式开启的例外，会交出短期凭据）。
 
 执行前持久审计，返回时检查凭据反射：上游响应里出现 Key 的原值或支持的可逆编码形式会被遮蔽。检查只覆盖这些明确支持的表示，不能阻止所有数据外泄或授权范围内的误用；同一系统用户下的恶意程序也不在防护范围内。
 
@@ -38,7 +38,7 @@ Rekey 把 API Key 留在你的电脑上。Agent（Claude Code、Codex 等）需�
 
 - CLI：`rekey list`、`rekey describe OPERATION`、`rekey call OPERATION --parameter value`、`rekey http CONNECTION GET /path`；`--dry-run` 返回判定，不访问上游。
 - MCP：`rekey-mcp` 提供发现、描述、调用、HTTP、访问请求和等待工具。Claude Code 插件位于 [plugins/rekey](plugins/rekey)。
-- 本机 HTTP：默认 `http://127.0.0.1:7787/c/CONNECTION/`，SDK Key 填 `rekey`；普通 HTTP 与 Git smart HTTP 显式带 `Authorization: Bearer rekey`。daemon 注入真实认证头，Agent 只得到调用结果。端口与地址保存在私有 `service.json`。
+- 本机 HTTP：默认 `http://127.0.0.1:7787/c/CONNECTION/`，SDK Key 填 `rekey`；普通 HTTP 与 Git smart HTTP 显式带 `Authorization: Bearer rekey`。daemon 注入真实认证头，Agent 只得到调用结果（结果中 Key 的原值和支持的可逆编码形式会被遮蔽）。端口与地址保存在私有 `service.json`。
 - SSH agent：私钥留在 Rekey，标准 OpenSSH 通过 `ssh-agent.sock` 请求签名；规则按已验证的服务器公钥授权。未知或未绑定目标需要审批。
 
 写审批可以一次放行，也可以对精确连接、规则和调用方开放时间窗，最长 8 小时；锁定或策略变更立即失效。被明确拒绝的规则不能通过审批放行。缺连接或权限时，Agent 用 `request_access` 描述需要的操作，用户在 App 处理；错误响应包含 `next`，引导 Agent 等待或重新调用。

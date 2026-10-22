@@ -1813,3 +1813,62 @@ fn argument_errors_use_the_json_envelope_when_requested() {
     assert_eq!(help.status.code(), Some(0));
     assert!(String::from_utf8_lossy(&help.stdout).contains("Usage"));
 }
+
+#[test]
+fn json_mode_keeps_stderr_a_single_json_document() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    let state = state_dir.to_str().unwrap();
+    let initialized = run(
+        &rekeyd_bin(),
+        &[
+            "init",
+            "--mode",
+            "team",
+            "--state-dir",
+            state,
+            "--password-stdin",
+        ],
+        Some(&format!("{PASSWORD}\n")),
+    );
+    assert_eq!(initialized.status, 0, "{}", initialized.stderr);
+    configure_test_service(&state_dir);
+    let child = Command::new(rekeyd_bin())
+        .args(["serve", "--state-dir", state, "--idle-lock", "15m"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let _guard = ServeGuard(Some(child));
+    for _ in 0..300 {
+        if state_dir.join("runtime/admin.sock").exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(state_dir.join("runtime/admin.sock").exists());
+
+    let mut child = Command::new(rekey_bin())
+        .args(["--state-dir", state, "unlock", "--password-stdin"])
+        .env("REKEY_OUTPUT", "json")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(b"not the vault password\n")
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert_ne!(output.status.code(), Some(0));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let json: serde_json::Value = serde_json::from_str(stderr.trim())
+        .unwrap_or_else(|err| panic!("stderr is not one JSON document ({err}): {stderr}"));
+    assert_eq!(json["code"], "INVALID_UNLOCK_CREDENTIAL", "{stderr}");
+    // Test binaries are unsigned, so the peer is L1-dev on every platform.
+    assert_eq!(json["warnings"][0], "L1_DEV_UNVERIFIED_SERVICE", "{stderr}");
+}

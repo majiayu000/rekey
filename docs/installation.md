@@ -58,7 +58,9 @@ claude
 Setup opens the App for mode selection, vault creation and human authentication.
 Save the recovery key when displayed. The App handles credential entry and
 Connection review/signing. Agent processes call Rekey without local tokens and
-receive call results, never the key. Temporary-credential helpers (AWS, EKS,
+receive call results rather than the key; response sealing covers only the
+key's raw value and supported reversible encodings, not arbitrary encodings,
+hashes or covert channels. Temporary-credential helpers (AWS, EKS,
 GitHub App) are the explicit exception and return short-lived credentials.
 If provisioning, login-item approval or policy signing is unavailable, fix that
 reported prerequisite; do not replace the signed daemon with a source binary.
