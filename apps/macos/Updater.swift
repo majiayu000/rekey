@@ -130,7 +130,11 @@ enum UpdateFeed {
     }
 
     /// Installer and Gatekeeper verify the Developer ID signature and notarization; the App never installs silently.
-    func install(_ package: URL) { NSWorkspace.shared.open(package) }
+    /// The App quits once Installer opens so reopening after installation launches the new bundle, not this process.
+    func install(_ package: URL) {
+        guard NSWorkspace.shared.open(package) else { state = .failed("无法打开安装器。"); return }
+        NSApp.terminate(nil)
+    }
 }
 
 struct UpdateSection: View {
@@ -148,8 +152,8 @@ struct UpdateSection: View {
                 Button("下载并校验") { updater.download(release) }
             case .downloading: HStack { ProgressView().controlSize(.small); Text("正在下载并校验 SHA-256…").font(.system(size: 13)) }
             case .ready(let release, let package):
-                Text("\(release.version) 安装包已通过 SHA-256 校验。安装会替换 Rekey.app 和内嵌后台服务。请先在本页停止服务；安装完成后重新打开 Rekey，后台服务会以新版本重新启动，正在进行的 Agent 请求会中断，需要重新解锁。保险库数据不会被删除。跨版本线升级（如 0.4 → 0.5）可能需要新的保险库，请先阅读发布说明。").font(.system(size: 13)).fixedSize(horizontal: false, vertical: true)
-                Button("打开安装器") { updater.install(package) }
+                Text("\(release.version) 安装包已通过 SHA-256 校验。安装会替换 Rekey.app 和内嵌后台服务。请先点击本页“停止并停用登录启动”，否则旧进程会继续运行。点击下方按钮后 Rekey 会打开安装器并退出；安装完成后重新打开 Rekey，后台服务会以新版本启动，正在进行的 Agent 请求会中断，需要重新解锁。保险库数据不会被删除。跨版本线升级（如 0.4 → 0.5）可能需要新的保险库，请先阅读发布说明。").font(.system(size: 13)).fixedSize(horizontal: false, vertical: true)
+                Button("打开安装器并退出 Rekey") { updater.install(package) }
             case .failed(let message):
                 Label(message, systemImage: "exclamationmark.circle").font(.system(size: 13)).foregroundStyle(.red)
                 Button("重试") { updater.check() }

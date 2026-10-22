@@ -636,7 +636,13 @@ jobs:
           git switch -c "$branch"
           git add Casks/rekey.rb
           git commit -m "rekey ${version}"
-          git push origin "$branch"
+          # A rerun replaces only this bot branch, and only if it still holds what was observed.
+          remote="$(git ls-remote --heads origin "refs/heads/$branch" | cut -f1)"
+          git push --force-with-lease="refs/heads/$branch:$remote" origin "$branch"
+          if [[ "$(gh pr list --repo "$TAP_REPOSITORY" --head "$branch" --state open --json number --jq length)" != 0 ]]; then
+            echo "::notice::A pull request for $branch already exists in ${TAP_REPOSITORY}."
+            exit 0
+          fi
           gh pr create --repo "$TAP_REPOSITORY" --head "$branch" \
             --title "rekey ${version}" \
             --body "Cask generated from the public, smoke-tested ${GITHUB_REF_NAME} package of ${GITHUB_REPOSITORY}."
