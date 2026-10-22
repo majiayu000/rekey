@@ -106,6 +106,15 @@ pub(super) fn render(err: &CliError) -> String {
         out.push_str(&format!("详情：{}\n", err.message));
     }
     out.push_str(&format!("下一步：{next}\n"));
+    // Server or call-site guidance is specific to this failure (OAuth
+    // settings, budget reset time, ...); keep it verbatim.
+    if let Some(specific) = err
+        .next
+        .as_deref()
+        .filter(|text| *text != super::local_next(&err.code))
+    {
+        out.push_str(&format!("具体建议：{specific}\n"));
+    }
     if let Some(approval) = &err.approval {
         out.push_str(&format!("批准请求：{}\n", approval.challenge_id));
     }
@@ -128,6 +137,18 @@ mod tests {
         assert!(text.contains("详情：vault is locked\n"));
         assert!(text.contains("`rekey unlock`"));
         assert!(text.ends_with("(LOCKED)"));
+    }
+
+    #[test]
+    fn keeps_specific_next_and_omits_generic_local_next() {
+        let generic = render(&CliError::local("INVALID_INPUT", "bad flag"));
+        assert!(!generic.contains("具体建议："));
+
+        let mut err = CliError::local("BUDGET_EXCEEDED", "daily budget exhausted");
+        err.next = Some("Retry after 2026-10-23T00:00:00Z.".to_owned());
+        let text = render(&err);
+        assert!(text.contains("下一步：等预算窗口重置后再试"));
+        assert!(text.contains("具体建议：Retry after 2026-10-23T00:00:00Z.\n"));
     }
 
     #[test]
