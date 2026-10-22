@@ -746,6 +746,11 @@ fn all_builtins_preserve_baseline_provider_paths_and_caller_constraints() {
         ("openai", "/v1/responses"),
         ("glm", "/api/anthropic/v1/messages"),
         ("glm-responses", "/api/v1/responses"),
+        ("deepseek", "/v1/chat/completions"),
+        ("moonshot", "/v1/chat/completions"),
+        ("qwen", "/compatible-mode/v1/chat/completions"),
+        ("openrouter", "/api/v1/chat/completions"),
+        ("gemini", "/v1beta/openai/chat/completions"),
     ] {
         let p = builtin_preset(preset).unwrap();
         assert!(p.operations.iter().any(|o| o.path == path));
@@ -868,4 +873,114 @@ fn github_git_fixed_endpoints_bind_repo_and_classify_upload_as_read() {
         .method_class,
         MethodClass::Write
     );
+}
+
+#[test]
+fn every_builtin_preset_resolves_and_llm_presets_require_signed_limits() {
+    use rekey_domain::connection::{BUILTIN_PRESETS, LLM_PRESETS, OAUTH_PRESETS, ReadSemantics};
+    use rekey_policy::{ProfileLlmProtocol, connection_llm_protocol};
+    for name in BUILTIN_PRESETS {
+        if name.starts_with("generic-") {
+            continue;
+        }
+        let preset = builtin_preset(name).unwrap();
+        assert_eq!(preset.name, *name);
+        assert_eq!(
+            rekey_policy::presets::oauth_provider(name).is_some(),
+            OAUTH_PRESETS.contains(name),
+            "{name}"
+        );
+        if !LLM_PRESETS.contains(name) {
+            continue;
+        }
+        let mut c = preset.connection((*name).into(), CredentialId::new_random());
+        assert!(c.validate().is_err(), "{name} accepted without LLM limits");
+        c.llm = Some(ConnectionLlmLimits {
+            models: ["fixture-model".into()].into_iter().collect(),
+            max_tokens: 32,
+            max_requests_per_day: 10,
+            max_output_tokens_per_day: 100,
+        });
+        c.validate().unwrap();
+        for op in &preset.operations {
+            let protocol = connection_llm_protocol(&op.path);
+            if op.method == FixedMethod::Post {
+                assert_eq!(op.read_semantics, Some(ReadSemantics::Fixed), "{}", op.name);
+                assert!(
+                    protocol.is_some_and(|p| p != ProfileLlmProtocol::Models),
+                    "{}",
+                    op.name
+                );
+            } else {
+                assert_eq!(protocol, Some(ProfileLlmProtocol::Models), "{}", op.name);
+            }
+        }
+    }
+    for (name, base) in [
+        ("deepseek", "https://api.deepseek.com/v1"),
+        ("moonshot", "https://api.moonshot.cn/v1"),
+        ("qwen", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+        ("openrouter", "https://openrouter.ai/api/v1"),
+        (
+            "gemini",
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+        ),
+    ] {
+        let preset = builtin_preset(name).unwrap();
+        assert_eq!(
+            format!(
+                "{}{}",
+                preset.origin.as_str().trim_end_matches('/'),
+                rekey_policy::presets::sdk_base_path(name)
+            ),
+            base
+        );
+        assert_eq!(preset.auth.header_name.as_str(), "authorization");
+        assert_eq!(preset.auth.prefix.as_str(), "Bearer ");
+    }
+}
+
+#[test]
+fn stripe_preset_is_read_only_with_a_pinned_api_version() {
+    let preset = builtin_preset("stripe").unwrap();
+    assert_eq!(
+        preset.fixed_headers[&HeaderName::new("stripe-version").unwrap()],
+        "2026-09-30.endive"
+    );
+    assert!(
+        preset
+            .operations
+            .iter()
+            .all(|op| op.method == FixedMethod::Get)
+    );
+    let c = preset.connection("stripe".into(), CredentialId::new_random());
+    c.validate().unwrap();
+    for path in [
+        "/v1/balance",
+        "/v1/customers",
+        "/v1/customers/cus_123",
+        "/v1/charges",
+        "/v1/payment_intents",
+    ] {
+        assert_eq!(
+            call(&c, FixedMethod::Get, path).unwrap().effect,
+            RuleEffect::Allow,
+            "{path}"
+        );
+    }
+    for (method, path) in [
+        (FixedMethod::Post, "/v1/customers"),
+        (FixedMethod::Post, "/v1/refunds"),
+        (FixedMethod::Delete, "/v1/customers/cus_123"),
+        (FixedMethod::Get, "/v1/accounts"),
+    ] {
+        assert!(
+            !matches!(
+                call(&c, method, path).map(|a| a.effect),
+                Ok(RuleEffect::Allow | RuleEffect::Approve)
+            ),
+            "{} {path}",
+            method.as_str()
+        );
+    }
 }

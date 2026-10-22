@@ -49,6 +49,16 @@ impl Fixture {
     }
 
     async fn build(hourly: u32, llm: bool, count: usize, oauth: bool) -> Self {
+        Self::build_preset(hourly, llm, count, oauth, "openai").await
+    }
+
+    async fn build_preset(
+        hourly: u32,
+        llm: bool,
+        count: usize,
+        oauth: bool,
+        llm_preset: &str,
+    ) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let state = dir.path().join("state");
         rekey_vault::bootstrap::init_vault(
@@ -98,7 +108,7 @@ impl Fixture {
             rekey_policy::presets::builtin_preset(if oauth {
                 "google-drive"
             } else if llm {
-                "openai"
+                llm_preset
             } else {
                 "github-pat"
             })
@@ -133,7 +143,13 @@ impl Fixture {
                 .push(rekey_domain::connection::ConnectionRule {
                     id: PolicyRuleId::new_random(),
                     methods: MethodSelector::Methods(vec![FixedMethod::Post]),
-                    path: "/v1/chat/completions".into(),
+                    path: preset
+                        .operations
+                        .iter()
+                        .find(|op| op.path.ends_with("/chat/completions"))
+                        .unwrap()
+                        .path
+                        .clone(),
                     effect: RuleEffect::Approve,
                 });
             connection.llm = Some(ConnectionLlmLimits {
@@ -295,6 +311,80 @@ impl Fixture {
         self.authority.join().unwrap();
         drop(self.executor);
         self.terminal.await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn openai_compatible_presets_enforce_signed_model_and_daily_budget() {
+    for (preset, host, path) in [
+        ("deepseek", "api.deepseek.com", "/v1/chat/completions"),
+        ("moonshot", "api.moonshot.cn", "/v1/chat/completions"),
+        (
+            "qwen",
+            "dashscope.aliyuncs.com",
+            "/compatible-mode/v1/chat/completions",
+        ),
+        ("openrouter", "openrouter.ai", "/api/v1/chat/completions"),
+        (
+            "gemini",
+            "generativelanguage.googleapis.com",
+            "/v1beta/openai/chat/completions",
+        ),
+    ] {
+        let f = Fixture::build_preset(10, true, 1, false, preset).await;
+        let wrong = br#"{"model":"unapproved","messages":[]}"#;
+        assert!(
+            f.call(Fixture::request(FixedMethod::Post, path, wrong, None))
+                .await
+                .is_err(),
+            "{preset}"
+        );
+        let over = br#"{"model":"synthetic-model","messages":[],"max_tokens":64}"#;
+        assert!(
+            f.call(Fixture::request(FixedMethod::Post, path, over, None))
+                .await
+                .is_err(),
+            "{preset}"
+        );
+        // max_completion_tokens is not honored upstream, so it cannot carry the ceiling.
+        let alias = br#"{"model":"synthetic-model","messages":[],"max_completion_tokens":8}"#;
+        assert!(
+            f.call(Fixture::request(FixedMethod::Post, path, alias, None))
+                .await
+                .is_err(),
+            "{preset}"
+        );
+        let body = br#"{"model":"synthetic-model","messages":[]}"#;
+        let id = f.approve(path, body).await;
+        f.fake.push_response(Ok(UpstreamResponse { status: 200,
+            headers: vec![("content-type".into(), "application/json".into())].into(),
+            body: br#"{"object":"chat.completion","choices":[{"finish_reason":"stop"}],"usage":{"completion_tokens":7}}"#.to_vec().into() }));
+        assert!(
+            f.call(Fixture::request(FixedMethod::Post, path, body, Some(id)))
+                .await
+                .is_ok(),
+            "{preset}"
+        );
+        {
+            let sent = f.fake.requests.lock().unwrap();
+            assert_eq!(sent.len(), 1, "{preset}");
+            assert_eq!((sent[0].host.as_str(), sent[0].path.as_str()), (host, path));
+            assert_eq!(sent[0].auth_name, "authorization");
+            assert_eq!(sent[0].auth_value, b"Bearer synthetic-upstream-key");
+            // An omitted output limit becomes the signed per-request ceiling.
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&sent[0].body).unwrap()["max_tokens"],
+                32
+            );
+        }
+        let id = f.approve(path, body).await;
+        let error = f
+            .call(Fixture::request(FixedMethod::Post, path, body, Some(id)))
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(error.code(), "BUDGET_EXCEEDED", "{preset}");
+        f.stop().await;
     }
 }
 

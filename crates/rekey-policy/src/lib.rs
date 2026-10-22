@@ -165,6 +165,27 @@ pub enum ProfileLlmProtocol {
     Models,
 }
 
+/// LLM Connection protocol by exact built-in upstream path; the one table both
+/// policy normalization and broker settlement read.
+pub fn connection_llm_protocol(path: &str) -> Option<ProfileLlmProtocol> {
+    use ProfileLlmProtocol::*;
+    Some(match path {
+        "/v1/messages" | "/api/anthropic/v1/messages" => AnthropicMessages,
+        "/v1/messages/count_tokens" => CountTokens,
+        "/v1/chat/completions"
+        | "/api/v1/chat/completions"
+        | "/compatible-mode/v1/chat/completions"
+        | "/v1beta/openai/chat/completions" => OpenAiChat,
+        "/v1/responses" | "/api/v1/responses" => OpenAiResponses,
+        "/v1/embeddings" => Embeddings,
+        "/v1/models"
+        | "/api/v1/models"
+        | "/compatible-mode/v1/models"
+        | "/v1beta/openai/models" => Models,
+        _ => return None,
+    })
+}
+
 /// The effective request is used unchanged for both approval and HTTP.
 /// Intentionally not Debug: bodies may contain private user input.
 pub struct ProfileLlmCanonicalRequest {
@@ -418,7 +439,7 @@ impl ValidatedSnapshot {
         };
         let llm_body = llm
             .map(|(protocol, limits)| {
-                normalize_profile_llm_body(protocol, limits, request.body, &mut value)
+                normalize_profile_llm_body(protocol, limits, request.body, &mut value, false)
             })
             .transpose()?;
         if llm_body
@@ -490,11 +511,14 @@ impl ValidatedSnapshot {
     }
 }
 
+/// `max_tokens_only`: the upstream honors only Chat `max_tokens`, so
+/// `max_completion_tokens` would bypass the signed ceiling and is refused.
 fn normalize_profile_llm_body(
     protocol: ProfileLlmProtocol,
     limits: &rekey_domain::profile::ProfileLlmLimit,
     original: &[u8],
     value: &mut Value,
+    max_tokens_only: bool,
 ) -> Result<ProfileBody, PolicyError> {
     use ProfileLlmProtocol::*;
     if protocol == Models {
@@ -538,12 +562,12 @@ fn normalize_profile_llm_body(
         }
         OpenAiChat => {
             if object.get("n").is_some_and(|n| n.as_u64() != Some(1))
-                || (object.contains_key("max_tokens")
-                    && object.contains_key("max_completion_tokens"))
+                || (object.contains_key("max_completion_tokens")
+                    && (max_tokens_only || object.contains_key("max_tokens")))
             {
                 return Err(PolicyError::InvalidParameters);
             }
-            if object.contains_key("max_tokens") {
+            if max_tokens_only || object.contains_key("max_tokens") {
                 "max_tokens"
             } else {
                 "max_completion_tokens"

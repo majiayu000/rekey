@@ -178,7 +178,7 @@ struct AddCredentialForm: View {
             if !OAuthSetup.presets.contains(preset) {TextField("密钥名称",text:$label).textFieldStyle(.roundedBorder).disabled(saved != nil)
             TextField("连接名称，例如 github-personal",text:$connectionName).textFieldStyle(.roundedBorder)}
             Picker("服务预设",selection:$preset) {
-                ForEach(["github-pat","github-git","anthropic","openai","glm","glm-responses","generic-bearer","generic-header"]+OAuthSetup.presets,id:\.self) {Text($0).tag($0)}
+                ForEach(ConnectionPreset.apiKeyPresets+OAuthSetup.presets,id:\.self) {Text($0).tag($0)}
             }.disabled(saved != nil)
             if OAuthSetup.presets.contains(preset) {OAuthAddForm(preset:preset).id(preset)} else {
             if generic {
@@ -1144,7 +1144,7 @@ struct AccessRequestsPanel:View {
                         Text(request.reason).textSelection(.enabled).font(.system(size:12)).padding(8).background(sage.opacity(0.3),in:RoundedRectangle(cornerRadius:6))
                         Text("有效期至："+displayDate(request.expires_at_ms)).font(.caption).foregroundStyle(.secondary)
                         HStack {
-                            Button("添加连接"){let provider=request.provider ?? "generic-bearer";model.addPreset=(["anthropic","openai","glm","glm-responses","github-pat","github-git"]+OAuthSetup.presets).contains(provider) ? provider:"generic-bearer";model.showAddCredential=true}
+                            Button("添加连接"){let provider=request.provider ?? "generic-bearer";model.addPreset=(ConnectionPreset.apiKeyPresets+OAuthSetup.presets).contains(provider) ? provider:"generic-bearer";model.showAddCredential=true}
                             Button("编辑规则"){model.onboardingConnection=nil;model.showPolicyDraft=true}
                             Button("规则已激活，完成请求"){Task{await model.resolveAccess(request,granted:true)}}
                             Button("拒绝",role:.destructive){Task{await model.resolveAccess(request,granted:false)}}
@@ -1194,7 +1194,7 @@ struct EnvImportView:View {
     @State private var activated=false
     @State private var message:String?
     @State private var authentication=PresenceReadContext()
-    private let presets=["anthropic","openai","glm","glm-responses","github-pat","generic-bearer","generic-header"]
+    private let presets=ConnectionPreset.apiKeyPresets.filter{$0 != "github-git"}
     var body:some View {
         VStack(alignment:.leading,spacing:14) {
             Text("从 .env 导入").font(.title2)

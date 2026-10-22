@@ -74,6 +74,16 @@ pub fn builtin_preset(name: &str) -> Result<Preset, PolicyError> {
         "openai" => ("https://api.openai.com", "authorization", "Bearer "),
         "glm-responses" => ("https://open.bigmodel.cn", "authorization", "Bearer "),
         "github-pat" => ("https://api.github.com", "authorization", "Bearer "),
+        "deepseek" => ("https://api.deepseek.com", "authorization", "Bearer "),
+        "moonshot" => ("https://api.moonshot.cn", "authorization", "Bearer "),
+        "qwen" => ("https://dashscope.aliyuncs.com", "authorization", "Bearer "),
+        "openrouter" => ("https://openrouter.ai", "authorization", "Bearer "),
+        "gemini" => (
+            "https://generativelanguage.googleapis.com",
+            "authorization",
+            "Bearer ",
+        ),
+        "stripe" => ("https://api.stripe.com", "authorization", "Bearer "),
         _ => return Err(PolicyError::NotConfigured),
     };
     let mut preset = generic_preset(
@@ -276,6 +286,31 @@ pub fn builtin_preset(name: &str) -> Result<Preset, PolicyError> {
                 ),
             ];
         }
+        _ if openai_compatible_chat(name) => {
+            // OpenAI-compatible Chat Completions only; the base path is the
+            // provider's documented SDK base URL. These upstreams document only
+            // `max_tokens`, so the schema omits `max_completion_tokens`.
+            let base = sdk_base_path(name);
+            preset.operations = vec![
+                operation(
+                    &format!("{name}.chat"),
+                    FixedMethod::Post,
+                    &format!("{base}/chat/completions"),
+                    json!({"model":{"type":"string"},"messages":{"type":"array"},"max_tokens":{"type":"integer","minimum":1},"stream":{"type":"boolean"},"tools":{"type":"array"},"temperature":{"type":"number"},"n":{"type":"integer"}}),
+                    &[],
+                    Some(ReadSemantics::Fixed),
+                ),
+                operation(
+                    &format!("{name}.models"),
+                    FixedMethod::Get,
+                    &format!("{base}/models"),
+                    json!({}),
+                    &[],
+                    None,
+                ),
+            ];
+        }
+        "stripe" => stripe_read_only(&mut preset)?,
         "glm-responses" => {
             preset.operations = vec![operation(
                 "glm.responses",
@@ -289,6 +324,113 @@ pub fn builtin_preset(name: &str) -> Result<Preset, PolicyError> {
         _ => {}
     }
     Ok(preset)
+}
+
+/// OpenAI-compatible Chat presets whose output ceiling is `max_tokens` only.
+pub fn openai_compatible_chat(preset: &str) -> bool {
+    matches!(
+        preset,
+        "deepseek" | "moonshot" | "qwen" | "openrouter" | "gemini"
+    )
+}
+
+/// Path under the origin that an OpenAI/Anthropic SDK base URL must include.
+pub fn sdk_base_path(preset: &str) -> &'static str {
+    match preset {
+        "openai" | "deepseek" | "moonshot" => "/v1",
+        "glm-responses" | "openrouter" => "/api/v1",
+        "qwen" => "/compatible-mode/v1",
+        "gemini" => "/v1beta/openai",
+        "glm" => "/api/anthropic",
+        _ => "",
+    }
+}
+
+/// Stripe accepts only form-encoded write bodies, while Connection operations
+/// send JSON, so the preset is read-only: fixed GET operations, writes denied.
+fn stripe_read_only(preset: &mut Preset) -> Result<(), PolicyError> {
+    preset.fixed_headers.insert(
+        HeaderName::new("stripe-version").map_err(|_| PolicyError::Invalid)?,
+        "2026-09-30.endive".into(),
+    );
+    let id = json!({"type":"string","pattern":"^[A-Za-z0-9_]{1,255}$","maxLength":255});
+    preset.operations = vec![
+        operation(
+            "stripe.balance",
+            FixedMethod::Get,
+            "/v1/balance",
+            json!({}),
+            &[],
+            None,
+        ),
+        operation(
+            "stripe.list_customers",
+            FixedMethod::Get,
+            "/v1/customers",
+            json!({}),
+            &[],
+            None,
+        ),
+        operation(
+            "stripe.get_customer",
+            FixedMethod::Get,
+            "/v1/customers/{customer_id}",
+            json!({"customer_id":id}),
+            &["customer_id"],
+            None,
+        ),
+        operation(
+            "stripe.list_charges",
+            FixedMethod::Get,
+            "/v1/charges",
+            json!({}),
+            &[],
+            None,
+        ),
+        operation(
+            "stripe.list_payment_intents",
+            FixedMethod::Get,
+            "/v1/payment_intents",
+            json!({}),
+            &[],
+            None,
+        ),
+    ];
+    preset.rules = preset
+        .operations
+        .iter()
+        .enumerate()
+        .map(|(i, op)| {
+            rule(
+                "stripe",
+                i,
+                MethodSelector::Methods(vec![op.method]),
+                &op.path.replace("{customer_id}", "*"),
+                RuleEffect::Allow,
+            )
+        })
+        .collect();
+    let index = preset.rules.len();
+    preset.rules.push(rule(
+        "stripe",
+        index,
+        MethodSelector::Class(MethodClass::Write),
+        "/**",
+        RuleEffect::Deny,
+    ));
+    preset.query_allowlist = Some(
+        [
+            "limit",
+            "starting_after",
+            "ending_before",
+            "customer",
+            "email",
+        ]
+        .map(str::to_owned)
+        .into_iter()
+        .collect(),
+    );
+    Ok(())
 }
 
 fn github_git_preset() -> Result<Preset, PolicyError> {
@@ -827,10 +969,7 @@ pub fn parse_and_verify_preset_package(
     );
     // LLM model selections belong to the user's Connection, outside the package.
     let mut validation = connection;
-    if matches!(
-        validation.preset.as_str(),
-        "anthropic" | "glm" | "openai" | "glm-responses"
-    ) {
+    if rekey_domain::connection::is_llm_preset(&validation.preset) {
         validation.llm = Some(rekey_domain::connection::ConnectionLlmLimits {
             models: ["model".into()].into_iter().collect(),
             max_tokens: 1,

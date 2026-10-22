@@ -904,7 +904,7 @@ enum OnboardingRoute: Equatable, Hashable, Sendable {
         if url.host == "oauth",url.path.isEmpty,let query=URLComponents(url:url,resolvingAgainstBaseURL:false)?.queryItems,query.count==1,query[0].name=="connection",let connection=query[0].value,!connection.isEmpty,connection.utf8.count<=100,connection.utf8.allSatisfy({$0>=48 && $0<=57 || $0>=65 && $0<=90 || $0>=97 && $0<=122 || [45,46,95].contains($0)}) {self = .oauth(connection);return}
         guard url.query == nil else{return nil}
         if url.host == "setup", url.path.isEmpty { self = .setup; return }
-        let presets = ["anthropic","openai","glm","glm-responses","github-pat","github-git","generic-bearer","generic-header","google-drive","google-gmail","google-calendar","github-oauth","slack","notion"]
+        let presets = ConnectionPreset.apiKeyPresets+OAuthSetup.presets
         guard url.host == "add", presets.contains(String(url.path.dropFirst())),url.path.hasPrefix("/") else { return nil }
         self = .add(String(url.path.dropFirst()))
     }
@@ -2221,7 +2221,9 @@ struct ConnectionDefinition: Codable, Equatable, Identifiable, Sendable {
 struct ConnectionPreset: Decodable, Sendable {
     let name:String;let origin:String;let auth:ConnectionDefinition.Auth;let rules:[ConnectionRule]
     let allowed_headers:[String];let fixed_headers:[String:String];let allowed_response_headers:[String];let query_allowlist:[String]?;let operations:[ConnectionOperation]
-    static let llmPresets=["anthropic","openai","glm","glm-responses"]
+    static let llmPresets=["anthropic","openai","glm","glm-responses","deepseek","moonshot","qwen","openrouter","gemini"]
+    /// API-key presets in picker order; OAuth presets are OAuthSetup.presets.
+    static let apiKeyPresets=["github-pat","github-git"]+llmPresets+["stripe","generic-bearer","generic-header"]
     /// LLM Connections must sign a non-empty exact model allow-list; callers pass it.
     func connection(name:String,credentialID:String,models:[String]=[])->ConnectionDefinition {
         ConnectionDefinition(name:name,preset:self.name,credential_id:credentialID,origin:origin,auth:auth,enabled:true,grade:"T0",rules:rules,bindings:self.name=="github-git" ? ["owner":[],"repo":[]]:[:],caller_overrides:[:],limits:.init(requests_per_hour:600,max_request_bytes:1_048_576,max_response_bytes:4_194_304),allowed_headers:allowed_headers,fixed_headers:fixed_headers,allowed_response_headers:allowed_response_headers,query_allowlist:query_allowlist,operations:operations,llm:Self.llmPresets.contains(self.name) ? .init(models:Array(Set(models)).sorted(),max_tokens:4096,max_requests_per_day:100,max_output_tokens_per_day:100_000):nil,oauth:nil)

@@ -139,6 +139,13 @@ SDK 的 key 设置为公开占位值 `rekey`，base URL 指向相应 Connection�
 | OpenAI | `http://127.0.0.1:7787/c/openai/v1` |
 | GLM Anthropic | `http://127.0.0.1:7787/c/glm/api/anthropic` |
 | GLM Responses | `http://127.0.0.1:7787/c/glm-responses/api/v1` |
+| DeepSeek | `http://127.0.0.1:7787/c/deepseek/v1` |
+| Moonshot（Kimi） | `http://127.0.0.1:7787/c/moonshot/v1` |
+| Qwen（百炼兼容模式） | `http://127.0.0.1:7787/c/qwen/compatible-mode/v1` |
+| OpenRouter | `http://127.0.0.1:7787/c/openrouter/api/v1` |
+| Gemini（OpenAI 兼容） | `http://127.0.0.1:7787/c/gemini/v1beta/openai` |
+
+DeepSeek、Moonshot、Qwen、OpenRouter 和 Gemini 预设只开放 Chat Completions 与模型列表，单次输出上限只认 `max_tokens`；带 `max_completion_tokens` 的请求会被拒绝。Stripe 预设只读：固定 `Stripe-Version`，只允许余额、客户、扣款和 PaymentIntent 的查询，写入和删除一律拒绝（Stripe 写请求要求表单编码，Connection 操作只发送 JSON）。
 
 在 App 中明确签署允许的模型、单次输出上限和日预算后再使用 LLM。CLI 与 HTTP 共用预算。预算按已结算用量准入，在途并发可能超出；它不保证对抗本机状态回滚的费用封顶。流式响应未完成或安全检查失败时应视为失败，不能把收到部分正文当成完整成功。
 

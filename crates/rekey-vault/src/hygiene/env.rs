@@ -196,7 +196,27 @@ fn parse_value(text: &str) -> Option<Zeroizing<Vec<u8>>> {
 fn preset_hint(entry: &ParsedEntry) -> Option<String> {
     let key = entry.key.as_str();
     let value = entry.value.as_slice();
-    if key.starts_with("OPENAI_") || value.starts_with(b"sk-") {
+    // Provider-named keys first: several providers also issue `sk-` keys.
+    let named = [
+        ("DEEPSEEK_", "deepseek"),
+        ("MOONSHOT_", "moonshot"),
+        ("KIMI_", "moonshot"),
+        ("DASHSCOPE_", "qwen"),
+        ("QWEN_", "qwen"),
+        ("OPENROUTER_", "openrouter"),
+        ("GEMINI_", "gemini"),
+        ("STRIPE_", "stripe"),
+    ];
+    if let Some((_, preset)) = named.iter().find(|(prefix, _)| key.starts_with(prefix)) {
+        Some((*preset).to_owned())
+    } else if value.starts_with(b"sk-or-") {
+        Some("openrouter".to_owned())
+    } else if ["sk_live_", "sk_test_", "rk_live_", "rk_test_"]
+        .iter()
+        .any(|prefix| value.starts_with(prefix.as_bytes()))
+    {
+        Some("stripe".to_owned())
+    } else if key.starts_with("OPENAI_") || value.starts_with(b"sk-") {
         Some("openai".to_owned())
     } else if key.starts_with("GITHUB_")
         || key == "GH_TOKEN"
@@ -451,4 +471,31 @@ pub fn rewrite_env(
     }
     mutation?;
     Ok(path.with_file_name(std::ffi::OsStr::from_bytes(backup_name.as_bytes())))
+}
+
+#[cfg(test)]
+mod preset_hint_tests {
+    #[test]
+    fn provider_named_keys_win_over_the_shared_sk_prefix() {
+        let preview = super::preview_bytes(
+            b"DEEPSEEK_API_KEY=sk-a\nOPENROUTER_KEY=x\nX=sk-or-v1-a\nSTRIPE_SECRET_KEY=sk_test_a\nY=rk_live_a\nGEMINI_API_KEY=a\nOPENAI_API_KEY=sk-b\n",
+        );
+        let hints: Vec<_> = preview
+            .entries
+            .iter()
+            .map(|entry| entry.preset_hint.as_deref())
+            .collect();
+        assert_eq!(
+            hints,
+            [
+                Some("deepseek"),
+                Some("openrouter"),
+                Some("openrouter"),
+                Some("stripe"),
+                Some("stripe"),
+                Some("gemini"),
+                Some("openai"),
+            ]
+        );
+    }
 }
