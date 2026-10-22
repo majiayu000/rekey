@@ -172,7 +172,21 @@ import CryptoKit
         precondition(receipt.entries.count==1 && receipt.entries[0].key=="SYNTHETIC_KEY")
         let rewritten=try client.rewriteImported(path:path,replacements:[.init(key:"SYNTHETIC_KEY",connection:"synthetic",base_url_variable:"SYNTHETIC_BASE_URL")],proof:String(repeating:"ab",count:32))
         precondition(rewritten.backup=="/tmp/synthetic.env.rekey-backup" && !FileManager.default.fileExists(atPath:path))
-        print("Connection App contracts passed: routing, bounded authentication context reuse, roundtrip, signed editing base, exact displayed definitions, OAuth scopes, T1 target/expiry, full HTTP/SSH/T1 draft stdin, preserved host rules and SSH generation proof boundaries.")
+        let ordered=["0.4.0-alpha.1","0.4.0","0.5.0-alpha.1","0.5.0-alpha.2","0.5.0-alpha.10","0.5.0-beta","0.5.0","0.10.0"].map{ReleaseVersion($0)!}
+        precondition(zip(ordered,ordered.dropFirst()).allSatisfy{$0 < $1} && ReleaseVersion("0.5.0+build")! == ReleaseVersion("0.5.0")!)
+        for bad in ["v0.5.0","0.5","0.5.0-","0.5.x","0.5.0-alpha..1"] {precondition(ReleaseVersion(bad)==nil)}
+        let base="https://github.com/\(UpdateFeed.repository)/releases/download/"
+        func release(_ tag:String,draft:Bool=false,host:String?=nil)->[String:Any] {
+            let pkg="rekey-\(tag)-macos.pkg",prefix=host ?? base+tag+"/"
+            return ["tag_name":tag,"html_url":"https://github.com/\(UpdateFeed.repository)/releases/tag/\(tag)","draft":draft,"assets":[["name":pkg,"browser_download_url":prefix+pkg],["name":pkg+".sha256","browser_download_url":prefix+pkg+".sha256"]]]
+        }
+        let feed=try JSONSerialization.data(withJSONObject:[release("v0.6.0",draft:true),release("v0.5.1",host:"https://example.com/"),release("v0.5.0-alpha.1"),release("v0.4.0-alpha.1")])
+        let upgrade=try UpdateFeed.newest(feed,current:"0.4.0-alpha.1"),current=try UpdateFeed.newest(feed,current:"0.5.0-alpha.1")
+        precondition(upgrade?.version=="0.5.0-alpha.1" && current==nil)
+        let digest=String(repeating:"ab",count:32)
+        precondition(UpdateFeed.expectedDigest("\(digest)  rekey-v0.5.0-alpha.1-macos.pkg\n",file:"rekey-v0.5.0-alpha.1-macos.pkg")==digest)
+        precondition(UpdateFeed.expectedDigest("\(digest)  other.pkg\nnot-hex  rekey.pkg",file:"rekey.pkg")==nil)
+        print("Connection App contracts passed: routing, bounded authentication context reuse, roundtrip, signed editing base, exact displayed definitions, OAuth scopes, T1 target/expiry, full HTTP/SSH/T1 draft stdin, preserved host rules, SSH generation proof boundaries and update feed selection.")
     }
     static func reviewResponse(_ review:[String:Any],id:String)throws->Data {
         let raw=try JSONSerialization.data(withJSONObject:review,options:[.sortedKeys,.withoutEscapingSlashes])
