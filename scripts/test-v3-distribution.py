@@ -100,6 +100,7 @@ class DistributionTests(unittest.TestCase):
         self.assertIn('launchctl: "com.rekey.rekeyd",', text)
         self.assertIn("strategy :github_releases do |json, regex|", text)
         self.assertIn('next if release["draft"]', text)
+        self.assertIn(r'regex(/^v?(0\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)$/i)', text)
         self.assertNotIn('release["prerelease"]', text)
         for directive in ["signal:", "delete:", "trash:", "zap ", "preflight", ":no_check"]:
             self.assertNotIn(directive, text)
