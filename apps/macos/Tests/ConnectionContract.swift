@@ -180,7 +180,7 @@ import CryptoKit
             let pkg="rekey-\(tag)-macos.pkg",prefix=host ?? base+tag+"/"
             return ["tag_name":tag,"html_url":"https://github.com/\(UpdateFeed.repository)/releases/tag/\(tag)","draft":draft,"assets":[["name":pkg,"browser_download_url":prefix+pkg],["name":pkg+".sha256","browser_download_url":prefix+pkg+".sha256"]]]
         }
-        let feed=try JSONSerialization.data(withJSONObject:[release("v0.6.0",draft:true),release("v0.5.1",host:"https://example.com/"),release("v0.5.0-alpha.1"),release("v0.4.0-alpha.1")])
+        let feed=try JSONSerialization.data(withJSONObject:[release("v3.0.0-alpha.4"),release("v2.0.0-alpha.2"),release("v0.6.0",draft:true),release("v0.5.1",host:"https://example.com/"),release("v0.5.0-alpha.1"),release("v0.4.0-alpha.1")])
         let upgrade=try UpdateFeed.newest(feed,current:"0.4.0-alpha.1"),current=try UpdateFeed.newest(feed,current:"0.5.0-alpha.1")
         precondition(upgrade?.version=="0.5.0-alpha.1" && current==nil)
         let digest=String(repeating:"ab",count:32)

@@ -48,12 +48,14 @@ enum UpdateFeed {
     private struct Asset: Decodable { let name: String, browser_download_url: URL }
 
     /// Newest published release (prereleases included) above `current` that ships a macOS pkg and its checksum.
+    /// Only the installed major line counts: v2.x/v3.x tags predate the 0.x renumbering and are not newer.
     static func newest(_ data: Data, current: String) throws -> UpdateRelease? {
         guard let installed = ReleaseVersion(current) else { throw UIError(message: "无法识别当前版本 \(current)。") }
         let prefix = "https://github.com/\(repository)/releases/download/"
         var best: (ReleaseVersion, UpdateRelease)?
         for release in try JSONDecoder().decode([Release].self, from: data) where !release.draft {
-            guard release.tag_name.hasPrefix("v"), let version = ReleaseVersion(String(release.tag_name.dropFirst())), installed < version else { continue }
+            guard release.tag_name.hasPrefix("v"), let version = ReleaseVersion(String(release.tag_name.dropFirst())),
+                  version.core[0] == installed.core[0], installed < version else { continue }
             let name = "rekey-\(release.tag_name)-macos.pkg"
             func asset(_ file: String) -> URL? {
                 release.assets.first { $0.name == file && $0.browser_download_url.absoluteString == prefix + release.tag_name + "/" + file }?.browser_download_url

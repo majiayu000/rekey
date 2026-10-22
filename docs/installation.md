@@ -198,8 +198,11 @@ replacing or removing files. For a cask installation, then run:
 brew uninstall --cask rekey
 ```
 
-The cask matches only the exact `com.starlight.rekey.pkg` receipt. It supplies
-no service-stop hook, signal, `zap`, vault deletion or Keychain deletion. For a
+On uninstall the cask quits the App (`quit: com.starlight.rekey`), removes the
+`com.rekey.rekeyd` login service with `launchctl`, which stops a running daemon,
+and deletes files from the exact `com.starlight.rekey.pkg` receipt. It has no
+`zap`, vault deletion or Keychain deletion; still shut down the daemon with a
+fresh proof in the App first. For a
 manual pkg installation, remove only `/Applications/Rekey.app` and the three
 `/usr/local/bin` links after verifying that each link still points into that
 App; forgetting a receipt alone does not remove its files. Preserve state and
