@@ -40,6 +40,28 @@ struct RekeyApp: App {
         .defaultSize(width: 1380, height: 870)
         .windowStyle(.hiddenTitleBar)
         .commands { CommandGroup(replacing: .newItem) {} }
+        // Pending Agent requests stay visible after the window is closed; the
+        // model's request poll keeps running without the window.
+        MenuBarExtra {
+            MenuBarContent().environmentObject(model)
+        } label: {
+            if model.pendingRequestCount > 0 {
+                Label("\(model.pendingRequestCount)", systemImage: "key.fill")
+            } else {
+                Image(systemName: "key")
+            }
+        }
+    }
+}
+
+struct MenuBarContent: View {
+    @EnvironmentObject var model: AppModel
+    var body: some View {
+        Text(model.pendingRequestCount > 0 ? "\(model.pendingRequestCount) 个待处理请求" : "没有待处理请求")
+        if model.basicMode { Text("基础模式 · 软件签名") }
+        Button("打开收件箱") { NSWorkspace.shared.open(NotificationRouter.inboxURL) }
+        Divider()
+        Button("退出 Rekey") { NSApp.terminate(nil) }
     }
 }
 

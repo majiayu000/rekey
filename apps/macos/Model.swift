@@ -49,6 +49,61 @@ struct DesktopSecuritySettings: Codable, Equatable {
 }
 
 // Each child receives fixed argv and a private stdin pipe. Nothing invokes a shell.
+/// Basic mode: the vault trusts the software P-256 key `rekey add` created
+/// (`policy-signer-p256.p8`, mode 0600, not Secure Enclave). The bundled
+/// rekey-policy-sign only signs daemon-issued personal policy envelopes.
+struct SoftwarePolicySigner: Sendable {
+    static let keyName = "policy-signer-p256.p8"
+    static let rememberedName = "remembered-unlock.key"
+    let tool: URL
+    let keyFile: URL
+
+    init?(cli: CLI) {
+        let key = URL(fileURLWithPath: cli.stateDirectory).appendingPathComponent(Self.keyName)
+        let tool = cli.binary.resolvingSymlinksInPath().deletingLastPathComponent().appendingPathComponent("rekey-policy-sign")
+        guard FileManager.default.fileExists(atPath: key.path), FileManager.default.isExecutableFile(atPath: tool.path) else { return nil }
+        self.tool = tool; self.keyFile = key
+    }
+
+    /// True only when this key is exactly the vault's installed trust root.
+    func matches(_ policy: PolicyStatus) -> Bool {
+        // Status names the signer only once a bundle is active; `rekey add` keeps it beside the key.
+        let idFile = keyFile.deletingPathExtension().appendingPathExtension("id")
+        let stored = (try? String(contentsOf: idFile, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard policy.trust_installed, let signer = policy.signer_id ?? stored, let expected = policy.trust_sha256,
+              let output = try? run(["trust", "--key-file", keyFile.path, "--signer-id", signer], input: Data()),
+              let object = try? JSONSerialization.jsonObject(with: output) as? [String: Any] else { return false }
+        return object["trust_sha256"] as? String == expected
+    }
+
+    func sign(_ message: Data) throws -> String {
+        let output = try run(["sign", "--key-file", keyFile.path], input: message)
+        guard let signature = String(data: output, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !signature.isEmpty else { throw UIError(message: "软件签名器没有返回签名，未提交激活。") }
+        return signature
+    }
+
+    private func run(_ arguments: [String], input: Data) throws -> Data {
+        let process = Process()
+        process.executableURL = tool
+        process.arguments = ["software-key"] + arguments
+        process.environment = ["PATH": "/usr/bin:/bin", "LANG": "en_US.UTF-8"]
+        let stdin = Pipe(), stdout = Pipe(), stderr = Pipe()
+        process.standardInput = stdin; process.standardOutput = stdout; process.standardError = stderr
+        try process.run()
+        // The signer reads all input before writing its short output.
+        try stdin.fileHandleForWriting.write(contentsOf: input)
+        try stdin.fileHandleForWriting.close()
+        let output = stdout.fileHandleForReading.readDataToEndOfFile()
+        _ = stderr.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationReason == .exit, process.terminationStatus == 0, output.count <= 4096 else {
+            throw UIError(message: "软件签名器执行失败，未提交激活。")
+        }
+        return output
+    }
+}
+
 struct CLI: Sendable {
     let binary: URL
     let stateDirectory: String
@@ -547,7 +602,9 @@ struct PersonalPolicyDraft: Sendable {
 }
 
 extension CLI {
-    func personalPolicyDraft(connections: [ConnectionDefinition], sshKeys:[SSHKeyDefinition]?=nil, derivedCredentials:[DerivedCredentialDefinition]?=nil, expectedPolicySHA256: String?, expiresAtMs: Int64, revision: UUID) throws -> PersonalPolicyDraft {
+    func personalPolicyDraft(connections unsorted: [ConnectionDefinition], sshKeys:[SSHKeyDefinition]?=nil, derivedCredentials:[DerivedCredentialDefinition]?=nil, expectedPolicySHA256: String?, expiresAtMs: Int64, revision: UUID) throws -> PersonalPolicyDraft {
+        // The daemon returns Connections in request order and drafts must be in name order.
+        let connections = unsorted.sorted { $0.name < $1.name }
         struct Request: Encodable {
             let connections: [ConnectionDefinition]; let ssh_keys:[SSHKeyDefinition]?; let derived_credentials:[DerivedCredentialDefinition]?;let expires_at_ms: Int64; let expected_policy_sha256: String?
             private enum CodingKeys: String, CodingKey { case connections, ssh_keys, derived_credentials, expires_at_ms, expected_policy_sha256 }
@@ -1030,6 +1087,9 @@ final class AppModel: ObservableObject {
     @Published var credentials: [Credential] = []
     @Published var actions: [FixedAction] = []
     @Published var policy: PolicyStatus?
+    /// Basic mode: this vault trusts the CLI's software policy key, so rules are
+    /// signed by rekey-policy-sign and K lives in remembered-unlock.key.
+    @Published private(set) var basicMode = false
     @Published var approvals: [PendingApproval] = []
     @Published var approvalDetails: ApprovalDetails?
     @Published var localApprovalDetails: LocalApprovalDetails?
@@ -1049,6 +1109,8 @@ final class AppModel: ObservableObject {
     @Published var onboardingCommand: String?
     @Published var showPolicyDraft = false
     @Published var addPreset="github-pat"
+    /// The Agent access request the add sheet was opened for; granted after activation.
+    @Published var addForAccessRequest:AccessRequestItem?
     @Published var accessInbox:AccessInbox?
     private var notifiedAccessIDs=Set<String>()
     @Published var importPath:String?
@@ -1311,6 +1373,14 @@ final class AppModel: ObservableObject {
         }
         presenceAuthenticating = true
         defer { presenceAuthenticating = false }
+        // Locked status carries no trust digest: with both basic-mode files present, read K
+        // from the remembered-unlock file. A stale K only fails to resume.
+        let state = URL(fileURLWithPath: client.stateDirectory)
+        if current.mode == nil, PresenceKey.basicFiles.file(vaultID) == nil,
+           FileManager.default.fileExists(atPath: state.appendingPathComponent(SoftwarePolicySigner.keyName).path),
+           FileManager.default.fileExists(atPath: state.appendingPathComponent(SoftwarePolicySigner.rememberedName).path) {
+            PresenceKey.basicFiles.set(state.appendingPathComponent(SoftwarePolicySigner.rememberedName), vaultID: vaultID)
+        }
         let key = try await Task.detached { try PresenceKey.validated(read(vaultID)) }.value
         presenceAuthenticating = false
         guard acceptsPresenceCompletion(revision, workspace: client.stateDirectory, allowLocked: allowLocked), !Task.isCancelled else {
@@ -1356,6 +1426,15 @@ final class AppModel: ObservableObject {
         guard acceptsNativeCompletion(revision,workspace:client.stateDirectory),!Task.isCancelled else {throw UIError(message:"草稿读取期间上下文已改变，请重新生成。")}
         return draft
     }
+    /// Adds one Connection to the current signed set and drafts it (90-day validity, like `rekey add`).
+    func prepareAddedConnection(_ connection:ConnectionDefinition) async throws -> PersonalPolicyDraft {
+        let baseline=try await loadConnectionEditor()
+        guard !baseline.connections.contains(where:{$0.name==connection.name}) else {throw UIError(message:"已有同名连接“\(connection.name)”，请换一个连接名称。")}
+        var keys=baseline.ssh_keys
+        for i in keys.indices {for j in keys[i].hosts.indices {keys[i].hosts[j].host_key=SSHHostDefinition.wireBlob(keys[i].hosts[j].host_key)}}
+        let expires=Int64(Date().addingTimeInterval(90*86400).timeIntervalSince1970*1000)
+        return try await personalPolicyDraft(connections:baseline.connections+[connection],sshKeys:keys,derivedCredentials:baseline.derived_credentials,expectedPolicySHA256:baseline.policy_sha256,expiresAtMs:expires)
+    }
     func loadPreset(_ name:String,origin:String="",header:String="",prefix:String="") async throws -> ConnectionPreset {
         guard !busy,unlocked else {throw UIError(message:"请先解锁保险库。")}
         busy=true;defer{busy=false};let client=cli,revision=nativeFlowRevision
@@ -1395,8 +1474,11 @@ final class AppModel: ObservableObject {
             throw UIError(message: "草稿上下文已失效，未请求签名。")
         }
         personalPolicySigning = true
+        let software = basicMode ? SoftwarePolicySigner(cli: client) : nil
+        if basicMode && software == nil { throw UIError(message: "基础模式的软件签名密钥或 rekey-policy-sign 不在本机，未提交激活。") }
         let signature = try await Task.detached {
-            try authentication.read(vaultID: draft.metadata.vault_id) {
+            if let software { return try software.sign(draft.signBytes) }
+            return try authentication.read(vaultID: draft.metadata.vault_id) {
                 try sign(draft.metadata.vault_id, draft.signBytes, draft.publicKey, $0)
             }
         }.value
@@ -1412,6 +1494,12 @@ final class AppModel: ObservableObject {
         _ = try await Task.detached { try client.activatePersonalPolicy(draft, signature: signature, proof: operationProof, recovery: recovery, presence: presence) }.value
         if acceptsNativeCompletion(draft.revision,workspace:draft.workspace),let seed=onboardingConnection,draft.connections.contains(where:{$0.name==seed.name}) {onboardingCommand="rekey connect claude-code"}
 
+    }
+    func applyBasicMode(_ basic: Bool, policy: PolicyStatus, stateDirectory: String) {
+        basicMode = basic
+        guard let vaultID = UUID(uuidString: policy.vault_id) else { return }
+        let file = URL(fileURLWithPath: stateDirectory).appendingPathComponent(SoftwarePolicySigner.rememberedName)
+        PresenceKey.basicFiles.set(basic ? file : nil, vaultID: vaultID)
     }
     var needsSetup: Bool {
         !FileManager.default.fileExists(atPath: stateDirectory + "/vault.sqlite3")
@@ -1583,8 +1671,10 @@ final class AppModel: ObservableObject {
                     (try client.decode(CredentialList.self,["credential","list"]),lab ? try client.decode(ActionList.self,["action","list"]).actions : [])
                 }.value
                 let loadedPolicy = try await Task.detached{try client.decode(PolicyStatus.self,["policy","status"])}.value
+                let basic = await Task.detached { SoftwarePolicySigner(cli: client)?.matches(loadedPolicy) ?? false }.value
                 guard currentRefresh(), !desktopLocked else { return }
                 credentials=lists.0.credentials;actions=lists.1;policy=loadedPolicy
+                applyBasicMode(basic, policy: loadedPolicy, stateDirectory: client.stateDirectory)
                 if !credentials.contains(where: { $0.id == selectedCredential }) { selectedCredential = credentials.first?.id }
             }
             switch page {
@@ -1747,6 +1837,10 @@ final class AppModel: ObservableObject {
                         throw UIError(message: "保险库或操作上下文已改变，未签发系统认证授权。")
                     }
                     guard securitySettings.passwordInterval != .everyUnlock else { throw UIError(message: "当前设置要求每次输入保险库密码，未签发系统认证授权。") }
+                    // Basic mode stores K in remembered-unlock.key, shared with `rekey unlock
+                    // --remember` and rekeyd's auto-resume, instead of a separate Keychain copy.
+                    let basic = await Task.detached { SoftwarePolicySigner(cli: client)?.matches(current) ?? false }.value
+                    applyBasicMode(basic, policy: current, stateDirectory: client.stateDirectory)
                     let rememberArgs = ["desktop-remember", "--ttl", "\(securitySettings.passwordInterval.rawValue)h"] + (recovery ? ["--recovery"] : [])
                     let receipt = try await Task.detached { try client.run(rememberArgs, input: requestInput, redacting: [operationProof]) }.value
                     let key = try PresenceKey.issuedKey(receipt)

@@ -20,6 +20,9 @@ use crate::client::{CliError, Client};
 
 /// Basic-mode software policy key, beside the vault it signs for.
 pub const SOFTWARE_SIGNER_FILE: &str = "policy-signer-p256.p8";
+/// Signer id of the installed basic-mode trust. Policy status reports the id only
+/// once a bundle is active, so keep it to verify trust before the first activation.
+pub const SOFTWARE_SIGNER_ID_FILE: &str = "policy-signer-p256.id";
 const OAUTH_PRESETS: &[&str] = &[
     "google-drive",
     "google-gmail",
@@ -106,14 +109,23 @@ pub fn add(state_dir: &Path, request: AddRequest) -> Result<(), CliError> {
         ));
     }
     let key_file = state_dir.join(SOFTWARE_SIGNER_FILE);
+    let id_file = state_dir.join(SOFTWARE_SIGNER_ID_FILE);
     let mut install_trust = None;
+    let install_signer_id = new_signer_id();
     if status.trust_installed {
-        let signer_id = status
-            .signer_id
-            .ok_or_else(|| CliError::local("INVALID_FRAME", "trust has no signer id"))?;
+        let signer_id = status.signer_id.or_else(|| {
+            std::fs::read_to_string(&id_file)
+                .ok()
+                .and_then(|text| text.trim().parse().ok())
+        });
         let matches = key_file.exists()
-            && software_trust(&signer, &key_file, signer_id)?.1
-                == status.trust_sha256.clone().unwrap_or_default();
+            && match signer_id {
+                Some(signer_id) => {
+                    software_trust(&signer, &key_file, signer_id)?.1
+                        == status.trust_sha256.clone().unwrap_or_default()
+                }
+                None => false,
+            };
         if !matches {
             return Err(CliError::local(
                 "TRUST_MISMATCH",
@@ -122,7 +134,7 @@ pub fn add(state_dir: &Path, request: AddRequest) -> Result<(), CliError> {
         }
     } else if key_file.exists() {
         // A key without installed trust: reuse it rather than orphaning it.
-        install_trust = Some(software_trust(&signer, &key_file, new_signer_id())?.0);
+        install_trust = Some(software_trust(&signer, &key_file, install_signer_id)?.0);
     }
     let models = llm_models(&request)?;
     let preset = load_preset(state_dir, &request)?;
@@ -140,11 +152,12 @@ pub fn add(state_dir: &Path, request: AddRequest) -> Result<(), CliError> {
             Some(trust) => trust,
             None => {
                 generate_key(&signer, &key_file)?;
-                software_trust(&signer, &key_file, new_signer_id())?.0
+                software_trust(&signer, &key_file, install_signer_id)?.0
             }
         };
         let body = proof_body(&proof);
         admin(state_dir)?.call(admin_msg::POLICY_TRUST_INSTALL, &trust, &body)?;
+        write_owner_only(&id_file, install_signer_id.to_string().as_bytes())?;
         eprintln!(
             "Installed basic-mode policy trust: software P-256 key {} (mode 0600, not Secure Enclave).",
             key_file.display()
@@ -507,4 +520,18 @@ fn now_ms() -> Result<i64, CliError> {
         .duration_since(UNIX_EPOCH)
         .map_err(|_| CliError::local("CLOCK", "system clock is before 1970"))?;
     i64::try_from(elapsed.as_millis()).map_err(|_| CliError::local("CLOCK", "clock overflow"))
+}
+
+fn write_owner_only(path: &Path, bytes: &[u8]) -> Result<(), CliError> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|err| CliError::local("IO", format!("cannot write {}: {err}", path.display())))?;
+    file.write_all(bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|err| CliError::local("IO", format!("cannot write {}: {err}", path.display())))
 }

@@ -167,8 +167,15 @@ struct AddCredentialForm: View {
     @State private var prefix=""
     @State private var models=""
     @State private var saved:Credential?
+    @State private var reuseID=""
+    @State private var draft:PersonalPolicyDraft?
+    @State private var confirmed=false
+    @State private var proof=""
+    @State private var activated=false
     @State private var message:String?
     private var generic:Bool {preset.hasPrefix("generic-")}
+    private var reusable:[Credential] {model.credentials.filter{$0.active && $0.kind=="opaque-token"}}
+    private var rememberedUnlock:Bool {FileManager.default.fileExists(atPath:model.stateDirectory+"/"+SoftwarePolicySigner.rememberedName)}
     private var llm:Bool {ConnectionPreset.llmPresets.contains(preset)}
     private var modelList:[String] {models.split(separator:",").map{$0.trimmingCharacters(in:.whitespaces)}.filter{!$0.isEmpty}}
     var body:some View {
@@ -190,25 +197,79 @@ struct AddCredentialForm: View {
                 TextField("允许的模型，逗号分隔（精确名称，例如 Agent 请求的模型）",text:$models).textFieldStyle(.roundedBorder)
                 Text("LLM 连接必须签署模型白名单与每日额度（100 次 / 10 万输出 token）。").font(.caption).foregroundStyle(.secondary)
             }
-            if saved==nil {SecureField("粘贴 API Key，无需 Bearer 前缀",text:$secret).textFieldStyle(.roundedBorder)}
-            else {Label("密钥已保存；连接尚未激活。继续审阅规则，不会再次添加密钥。",systemImage:"checkmark.shield")}
+            if saved==nil && !reusable.isEmpty {
+                Picker("密钥来源",selection:$reuseID){Text("粘贴新的 API Key").tag("");ForEach(reusable){Text("已保存："+$0.label).tag($0.id)}}.disabled(draft != nil)
+            }
+            if saved==nil && reuseID.isEmpty {SecureField("粘贴 API Key，无需 Bearer 前缀",text:$secret).textFieldStyle(.roundedBorder)}
+            else if saved != nil {Label("密钥已保存；连接尚未激活。继续即可，不会再次添加密钥。",systemImage:"checkmark.shield")}
+            if model.basicMode, let draft {
+                Divider()
+                Text("确认后签署并激活（基础模式 · 软件签名，非 Secure Enclave）").font(.headline)
+                ForEach(draft.connections.filter{$0.name==connectionName}){ConnectionSummary(connection:$0)}
+                Text("规则有效期至 \(displayDate(draft.expiresAtMs))，策略版本 \(draft.metadata.base_version.map(String.init) ?? "无") → \(draft.metadata.next_version)").font(.caption)
+                Toggle("我已确认这个连接的地址、读写规则和模型",isOn:$confirmed).disabled(model.busy || activated)
+                if !rememberedUnlock {SecureField("保险库密码",text:$proof).textFieldStyle(.roundedBorder)}
+            }
             PeerSecurityWarning()
             if !model.desktopReady {Text("请先解锁管理会话。").foregroundStyle(.secondary)}
-            if model.policy?.trust_installed != true {Text("请先在授权页完成此保险库的一次性签名密钥设置。").foregroundStyle(.secondary)}
+            if model.policy?.trust_installed != true {Text(model.basicMode ? "基础模式尚未安装签名信任根：请先在终端运行一次 rekey add <预设>。":"请先在授权页完成此保险库的一次性签名密钥设置。").foregroundStyle(.secondary)}
+            if activated {Label("连接已激活，Agent 现在可以调用。",systemImage:"checkmark.circle.fill").foregroundStyle(.green)}
             if let message {Text(message).foregroundStyle(.red).textSelection(.enabled)}
+            if model.basicMode {
+                HStack {Button(activated ? "完成":"取消"){secret="";proof="";dismiss()}.keyboardShortcut(.cancelAction);Spacer()
+                    if draft == nil {Button("保存并生成规则"){prepareBasic()}.buttonStyle(PrimaryButton()).disabled(model.busy || !model.desktopReady || model.policy?.trust_installed != true || connectionName.isEmpty || saved==nil && reuseID.isEmpty && (!singleLine(secret) || label.isEmpty) || generic && origin.isEmpty || llm && modelList.isEmpty)}
+                    else if !activated {Button("签署并激活"){activateBasic()}.buttonStyle(PrimaryButton()).disabled(model.busy || !confirmed || !rememberedUnlock && proof.isEmpty)}
+                }
+            } else {
             HStack {Button("取消"){secret="";dismiss()}.keyboardShortcut(.cancelAction);Spacer();Button(saved==nil ? "保存并审阅规则":"继续审阅规则"){prepare()}.buttonStyle(PrimaryButton()).disabled(model.busy || !model.desktopReady || model.policy?.trust_installed != true || connectionName.isEmpty || saved==nil && (!singleLine(secret) || label.isEmpty) || generic && origin.isEmpty || llm && modelList.isEmpty)}
             }
+            }
         }.padding(30).frame(width:530).background(canvas)
-        .onAppear{preset=model.addPreset}
-        .onDisappear{secret=""}
+        .onAppear{
+            preset=model.addPreset
+            if let request=model.addForAccessRequest, connectionName.isEmpty {connectionName=request.connection ?? request.provider ?? ""}
+        }
+        .onDisappear{secret="";proof="";model.addForAccessRequest=nil}
+    }
+    private func credential(value:String,name:String) async throws -> Credential {
+        if let prior=saved {return prior}
+        if let picked=reusable.first(where:{$0.id==reuseID}) {saved=picked;return picked}
+        let created=try await model.saveAPIKey(label:name,secret:value);saved=created;return created
+    }
+    /// Basic mode keeps the whole add in this sheet: nothing pends in a second
+    /// sheet whose close would discard it, and a failure keeps the saved key.
+    private func prepareBasic() {
+        let value=secret,name=label,connection=connectionName,selectedPreset=preset,selectedOrigin=origin,selectedHeader=header,selectedPrefix=prefix,selectedModels=modelList
+        secret="";message=nil
+        Task {
+            do {
+                let stored=try await credential(value:value,name:name)
+                let definition=try await model.loadPreset(selectedPreset,origin:selectedOrigin,header:selectedPreset=="generic-header" ? selectedHeader:"",prefix:selectedPreset=="generic-header" ? selectedPrefix:"")
+                draft=try await model.prepareAddedConnection(definition.connection(name:connection,credentialID:stored.id,models:selectedModels))
+            } catch {message=error.localizedDescription}
+        }
+    }
+    private func activateBasic() {
+        guard let draft else {return}
+        let password=proof,usePresence=rememberedUnlock
+        proof="";message=nil
+        Task {
+            do {
+                try await model.activatePersonalPolicy(draft,proof:password,recovery:false,presence:usePresence)
+                activated=true
+                // The Connection is active now, so the broker accepts the grant and the
+                // waiting Agent's await_access returns GRANTED.
+                if let request=model.addForAccessRequest {model.addForAccessRequest=nil;await model.resolveAccess(request,granted:true)}
+                await model.refresh()
+            } catch {message=error.localizedDescription;self.draft=nil;confirmed=false}
+        }
     }
     private func prepare() {
         let value=secret,name=label,connection=connectionName,selectedPreset=preset,selectedOrigin=origin,selectedHeader=header,selectedPrefix=prefix,selectedModels=modelList
         secret="";message=nil
         Task {
             do {
-                let credential:Credential
-                if let prior=saved {credential=prior}else{credential=try await model.saveAPIKey(label:name,secret:value);saved=credential}
+                let credential=try await credential(value:value,name:name)
                 let definition=try await model.loadPreset(selectedPreset,origin:selectedOrigin,header:selectedPreset=="generic-header" ? selectedHeader:"",prefix:selectedPreset=="generic-header" ? selectedPrefix:"")
                 model.onboardingConnection=definition.connection(name:connection,credentialID:credential.id,models:selectedModels)
                 dismiss()
@@ -1144,7 +1205,7 @@ struct AccessRequestsPanel:View {
                         Text(request.reason).textSelection(.enabled).font(.system(size:12)).padding(8).background(sage.opacity(0.3),in:RoundedRectangle(cornerRadius:6))
                         Text("有效期至："+displayDate(request.expires_at_ms)).font(.caption).foregroundStyle(.secondary)
                         HStack {
-                            Button("添加连接"){let provider=request.provider ?? "generic-bearer";model.addPreset=(["anthropic","openai","glm","glm-responses","github-pat","github-git"]+OAuthSetup.presets).contains(provider) ? provider:"generic-bearer";model.showAddCredential=true}
+                            Button(model.basicMode ? "添加密钥并授权":"添加连接"){let provider=request.provider ?? "generic-bearer";model.addPreset=(["anthropic","openai","glm","glm-responses","github-pat","github-git"]+OAuthSetup.presets).contains(provider) ? provider:"generic-bearer";model.addForAccessRequest=request;model.showAddCredential=true}
                             Button("编辑规则"){model.onboardingConnection=nil;model.showPolicyDraft=true}
                             Button("规则已激活，完成请求"){Task{await model.resolveAccess(request,granted:true)}}
                             Button("拒绝",role:.destructive){Task{await model.resolveAccess(request,granted:false)}}

@@ -42,11 +42,43 @@ final class PresenceReadContext: @unchecked Sendable {
     }
 }
 
+/// Basic mode keeps K in the 0600 `remembered-unlock.key` beside the vault, the
+/// same file `rekey unlock --remember` writes and rekeyd resumes from on start.
+/// It is readable by this user and not Keychain or Secure Enclave protected.
+final class BasicPresenceFiles: @unchecked Sendable {
+    private let lock = NSLock()
+    private var files: [UUID: URL] = [:]
+    func set(_ file: URL?, vaultID: UUID) { lock.withLock { files[vaultID] = file } }
+    func file(_ vaultID: UUID) -> URL? { lock.withLock { files[vaultID] } }
+}
+
 // Explicit user operations only. This K is separate from the cached A1 desktop
 // session and the Secure Enclave policy-signing private key. No key is cached here.
 enum PresenceKey {
     private static let service = "com.rekey.presence-key.v1"
     private static let reads = PresenceReadContext()
+    static let basicFiles = BasicPresenceFiles()
+
+    private static func readBasic(_ file: URL) throws -> String {
+        guard let text = try? String(contentsOf: file, encoding: .utf8) else {
+            throw UIError(message: "没有记住的解锁；请运行 rekey unlock --remember 7d，或在 App 中用密码解锁并记住。")
+        }
+        return try validated(text.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    private static func saveBasic(_ key: String, to file: URL) throws {
+        let staging = file.deletingLastPathComponent().appendingPathComponent("." + file.lastPathComponent + ".app.tmp")
+        try? FileManager.default.removeItem(at: staging)
+        guard FileManager.default.createFile(atPath: staging.path, contents: Data(try validated(key).utf8),
+                                             attributes: [.posixPermissions: 0o600]) else {
+            throw UIError(message: "无法保存记住的解锁。")
+        }
+        // rename(2) replaces atomically whether or not the file already exists.
+        guard Darwin.rename(staging.path, file.path) == 0 else {
+            try? FileManager.default.removeItem(at: staging)
+            throw UIError(message: "无法保存记住的解锁。")
+        }
+    }
 
     static func invalidateAuthentication() { reads.invalidate() }
 
@@ -65,11 +97,13 @@ enum PresenceKey {
     }
 
     static func read(vaultID: UUID) throws -> String {
-        try reads.read(vaultID: vaultID) { try read(vaultID: vaultID, context: $0) }
+        if let file = basicFiles.file(vaultID) { return try readBasic(file) }
+        return try reads.read(vaultID: vaultID) { try read(vaultID: vaultID, context: $0) }
     }
 
     // The policy activation owns this context and shares it with the SE signer.
     static func read(vaultID: UUID, context: LAContext) throws -> String {
+        if let file = basicFiles.file(vaultID) { return try readBasic(file) }
         var query = try identity(vaultID: vaultID)
         query[kSecUseAuthenticationContext as String] = context
         query[kSecMatchLimit as String] = kSecMatchLimitAll
@@ -94,6 +128,7 @@ enum PresenceKey {
 
     static func save(_ key: String, vaultID: UUID) throws {
         reads.invalidate()
+        if let file = basicFiles.file(vaultID) { return try saveBasic(key, to: file) }
         let bytes = Data(try validated(key).utf8)
         let context = authenticationContext("保存 Rekey 系统认证授权")
         defer { context.invalidate() }
@@ -125,6 +160,11 @@ enum PresenceKey {
 
     static func forget(vaultID: UUID) throws {
         reads.invalidate()
+        if let file = basicFiles.file(vaultID) {
+            do { try FileManager.default.removeItem(at: file) }
+            catch CocoaError.fileNoSuchFile {}
+            return
+        }
         let status = SecItemDelete(try identity(vaultID: vaultID) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else { throw failure(status) }
     }

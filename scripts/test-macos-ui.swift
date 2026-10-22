@@ -28,6 +28,59 @@ struct ConnectionUIContract {
         try await privacy()
         try await requestAlerts()
         try await live(binary: URL(fileURLWithPath: CommandLine.arguments[1]))
+        try await liveBasic(binary: URL(fileURLWithPath: CommandLine.arguments[1]))
+    }
+
+    /// Basic mode end to end: `rekey add` installs the software trust, then the App's
+    /// SoftwarePolicySigner detects it, signs a sorted draft the daemon accepts, and
+    /// PresenceKey reads K from remembered-unlock.key without Keychain or Touch ID.
+    static func liveBasic(binary: URL) async throws {
+        let root = try fixture()
+        defer { cleanup(root) }
+        let state = root.appendingPathComponent("basic").path
+        let client = CLI(binary: binary, stateDirectory: state)
+        let proof = "UI-SYNTHETIC-BASIC-PROOF", key = "UI-SYNTHETIC-BASIC-KEY-0001", other = "UI-SYNTHETIC-BASIC-KEY-0002"
+        _ = try client.run(["init", "--mode", "personal", "--password-stdin"], input: proof + "\n")
+        try writePrivateNew(JSONSerialization.data(withJSONObject: ["port": try reservePort()]), to: URL(fileURLWithPath: state).appendingPathComponent("service.json"))
+        let broker = Process()
+        broker.executableURL = binary.deletingLastPathComponent().appendingPathComponent("rekeyd")
+        broker.arguments = ["serve", "--state-dir", state]
+        broker.environment = ["HOME": NSHomeDirectory(), "PATH": "/usr/bin:/bin", "LANG": "en_US.UTF-8"]
+        broker.standardInput = FileHandle.nullDevice; broker.standardOutput = FileHandle.nullDevice; broker.standardError = FileHandle.nullDevice
+        try broker.run()
+        defer { if broker.isRunning { broker.terminate() }; broker.waitUntilExit() }
+        let deadline = Date().addingTimeInterval(10)
+        while !FileManager.default.fileExists(atPath: state + "/runtime/admin.sock") {
+            guard Date() < deadline && broker.isRunning else { throw UIError(message: "basic fixture startup failed") }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        _ = try client.run(["unlock", "--password-stdin", "--remember", "7d"], input: proof + "\n")
+        _ = try client.run(["add", "glm", "--model", "glm-test", "--stdin-secrets"], input: proof + "\n" + key + "\n")
+        let status = try client.decode(PolicyStatus.self, ["policy", "status"])
+        guard let signer = SoftwarePolicySigner(cli: client) else { throw UIError(message: "basic signer not found beside the CLI") }
+        try require(signer.matches(status), "App detects the CLI's basic-mode trust")
+        // A Connection whose name sorts before the existing one exercises draft ordering.
+        let credential = try JSONDecoder().decode(Credential.self, from: client.run(["credential", "add", "second key", "--stdin-secrets"], input: proof + "\n" + other + "\n"))
+        let preset = try client.decode(ConnectionPreset.self, ["connection", "preset", "anthropic"])
+        let added = preset.connection(name: "a-first", credentialID: credential.id, models: ["claude-test"])
+        let baseline = try client.decode(ConnectionList.self, ["connection", "list"])
+        let expires = Int64(Date().addingTimeInterval(600).timeIntervalSince1970 * 1000)
+        let draft = try client.personalPolicyDraft(connections: baseline.connections + [added], expectedPolicySHA256: baseline.policy_sha256, expiresAtMs: expires, revision: UUID())
+        try draft.validate(current: status)
+        _ = try client.activatePersonalPolicy(draft, signature: try signer.sign(draft.signBytes), proof: proof, recovery: false)
+        let active = try client.decode(ConnectionList.self, ["connection", "list"])
+        try require(active.connections.map(\.name) == ["a-first", "glm"], "software-signed sorted draft activates and keeps the existing Connection")
+        guard let vaultID = UUID(uuidString: status.vault_id) else { throw UIError(message: "invalid vault id") }
+        let remembered = URL(fileURLWithPath: state).appendingPathComponent(SoftwarePolicySigner.rememberedName)
+        PresenceKey.basicFiles.set(remembered, vaultID: vaultID)
+        defer { PresenceKey.basicFiles.set(nil, vaultID: vaultID) }
+        let presence = try PresenceKey.read(vaultID: vaultID)
+        try require(presence == (try String(contentsOf: remembered, encoding: .utf8)).trimmingCharacters(in: .whitespacesAndNewlines), "basic presence reads remembered-unlock.key")
+        _ = try client.run(["access", "list"])
+        for secret in [proof, key, other] {
+            try require(!String(decoding: try client.run(["audit", "list"]), as: UTF8.self).contains(secret), "basic flow keeps synthetic secrets private")
+        }
+        print("PASS: basic mode App signer detection, sorted software-signed activation and file-backed presence key.")
     }
 
     static func require(_ condition: @autoclosure () throws -> Bool, _ label: String) throws {
