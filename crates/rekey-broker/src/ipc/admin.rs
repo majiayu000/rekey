@@ -2051,12 +2051,7 @@ async fn import_admin(
                 .iter()
                 .find(|c| c.enabled && c.name == replacement.connection)
                 .ok_or(rekey_policy::PolicyError::NotConfigured)?;
-            let suffix = match connection.preset.as_str() {
-                "openai" => "/v1",
-                "glm-responses" => "/api/v1",
-                "glm" => "/api/anthropic",
-                _ => "",
-            };
+            let suffix = rekey_policy::presets::sdk_base_path(&connection.preset);
             replacements.push(rekey_vault::hygiene::env::EnvReplacement {
                 key: replacement.key,
                 base_url_variable: replacement.base_url_variable,

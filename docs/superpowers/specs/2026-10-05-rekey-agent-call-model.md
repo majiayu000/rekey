@@ -258,6 +258,7 @@ Profile、capability session、Action 这三个概念**不再暴露给个人用�
   - 默认规则：读 allow、写 approve、危险写 deny。例如 GitHub 的仓库删除、组织管理默认 deny；
   - **具名操作**：例如 `github.get_issue` 映射到 `GET /repos/{owner}/{repo}/issues/{number}`，并附参数说明，用于 MCP 工具和 `rekey call`；
   - LLM 类连接的模型白名单和 `max_tokens` 上限（沿用 v3 §8.5）。
+- **新增内置 Preset（2026-10-22 修订，0.5 开发线）**：`deepseek`、`moonshot` / `moonshot-intl`（`api.moonshot.cn` / `api.moonshot.ai`）、`qwen` / `qwen-intl` / `qwen-us` / `qwen-hk`（百炼兼容模式，北京 / 新加坡 / 弗吉尼亚 / 香港的 Dashscope 域名；Key 按地域签发，不能跨地域）、`openrouter`、`gemini`（OpenAI 兼容端点）为 LLM Preset，地域变体共享 `<provider>.chat` / `<provider>.models` 操作名，Bearer 注入，只声明 `POST <base>/chat/completions`（`ReadSemantics::Fixed`）与模型列表 GET（Qwen 为原生 `/api/v1/models`，其余为 `<base>/models`），同样要求签名的模型白名单与预算。LLM Connection 只放行已声明的操作端点，协议表里有但该预设未声明的路径（如 OpenRouter `/api/v1/responses`）不继承 `/**` 规则，直接拒绝。DeepSeek、Gemini 只认 `max_tokens`，请求带 `max_completion_tokens` 时拒绝，缺省时注入 `max_tokens`；OpenRouter、Moonshot、Qwen 文档推荐 `max_completion_tokens`（Qwen 思考模型中只有它限制思维链，`max_tokens` 只限回答），沿用 OpenAI 规则，缺省注入 `max_completion_tokens`。`stripe` 为只读 Preset：固定 `Stripe-Version`，只允许余额、客户（列表与单个）、扣款与 PaymentIntent 列表的 GET，所有写方法 deny；Stripe 写请求要求表单编码，而具名操作只发送 JSON，写操作需另行设计后再开放。内置 Preset 名单以 `rekey_domain::connection::BUILTIN_PRESETS` / `LLM_PRESETS` 为唯一来源，CLI 直接引用；LLM 协议按上游路径在 `rekey_policy::connection_llm_protocol` 一处判定。
 - `generic-bearer` 和 `generic-header` 让用户为任意 API 建立 Connection：填 origin 和注入方式，默认规则为"读 approve、写 approve"，用户可以放宽。
 - 团队自定义 Preset 沿用 `RKTEMPLATE` 签名包，改为 Preset 格式。
 

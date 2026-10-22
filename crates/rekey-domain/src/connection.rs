@@ -217,6 +217,63 @@ fn invalid(message: &str) -> DomainError {
     DomainError::InvalidActionDefinition(message.to_owned())
 }
 
+/// Built-in LLM presets; their Connections require signed model and budget limits.
+pub const LLM_PRESETS: &[&str] = &[
+    "anthropic",
+    "openai",
+    "glm",
+    "glm-responses",
+    "deepseek",
+    "moonshot",
+    "moonshot-intl",
+    "qwen",
+    "qwen-intl",
+    "qwen-us",
+    "qwen-hk",
+    "openrouter",
+    "gemini",
+];
+/// Built-in presets whose credential comes from a browser OAuth flow.
+pub const OAUTH_PRESETS: &[&str] = &[
+    "google-drive",
+    "google-gmail",
+    "google-calendar",
+    "github-oauth",
+    "slack",
+    "notion",
+];
+/// Every built-in preset name, the single list front doors accept.
+pub const BUILTIN_PRESETS: &[&str] = &[
+    "anthropic",
+    "openai",
+    "glm",
+    "glm-responses",
+    "deepseek",
+    "moonshot",
+    "moonshot-intl",
+    "qwen",
+    "qwen-intl",
+    "qwen-us",
+    "qwen-hk",
+    "openrouter",
+    "gemini",
+    "github-pat",
+    "github-git",
+    "stripe",
+    "google-drive",
+    "google-gmail",
+    "google-calendar",
+    "github-oauth",
+    "slack",
+    "notion",
+    "generic-bearer",
+    "generic-header",
+];
+
+pub fn is_llm_preset(preset: &str) -> bool {
+    LLM_PRESETS.contains(&preset)
+}
+
 /// Shared trusted-boundary path grammar. No decoding, normalization, or aliases.
 pub fn validate_request_path(path: &str) -> Result<(), DomainError> {
     if !path.starts_with('/')
@@ -270,11 +327,7 @@ impl Connection {
         {
             return Err(invalid("invalid connection or limits"));
         }
-        if matches!(
-            self.preset.as_str(),
-            "anthropic" | "openai" | "glm" | "glm-responses"
-        ) && self.llm.is_none()
-        {
+        if is_llm_preset(&self.preset) && self.llm.is_none() {
             return Err(invalid(
                 "LLM connections require signed model and budget limits",
             ));
