@@ -6,8 +6,7 @@ use std::io::IsTerminal;
 
 use super::CliError;
 
-/// True when the caller explicitly asked for the JSON error envelope.
-pub fn json_output_forced() -> bool {
+pub(super) fn json_output_forced() -> bool {
     std::env::var("REKEY_OUTPUT").as_deref() == Ok("json")
 }
 

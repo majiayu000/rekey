@@ -22,7 +22,11 @@ mod macos_peer;
 
 #[path = "client/human.rs"]
 mod human;
-pub use human::json_output_forced;
+
+/// True when the caller explicitly asked for the JSON error envelope.
+pub fn json_output_forced() -> bool {
+    human::json_output_forced()
+}
 
 #[cfg(feature = "lab")]
 static ADMIN_SESSION_FILE: std::sync::OnceLock<Option<std::path::PathBuf>> =
