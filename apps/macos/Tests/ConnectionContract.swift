@@ -184,24 +184,14 @@ import CryptoKit
         let ordered=["0.4.0-alpha.1","0.4.0","0.5.0-alpha.1","0.5.0-alpha.2","0.5.0-alpha.10","0.5.0-beta","0.5.0","0.10.0"].map{ReleaseVersion($0)!}
         precondition(zip(ordered,ordered.dropFirst()).allSatisfy{$0 < $1} && ReleaseVersion("0.5.0+build")! == ReleaseVersion("0.5.0")!)
         for bad in ["v0.5.0","0.5","0.5.0-","0.5.x","0.5.0-alpha..1"] {precondition(ReleaseVersion(bad)==nil)}
-        let base="https://github.com/\(UpdateFeed.repository)/releases/download/"
-        func release(_ tag:String,draft:Bool=false,host:String?=nil)->[String:Any] {
-            let pkg="rekey-\(tag)-macos.pkg",prefix=host ?? base+tag+"/"
-            return ["tag_name":tag,"html_url":"https://github.com/\(UpdateFeed.repository)/releases/tag/\(tag)","draft":draft,"assets":[["name":pkg,"browser_download_url":prefix+pkg],["name":pkg+".sha256","browser_download_url":prefix+pkg+".sha256"]]]
+        func release(_ tag:String,draft:Bool=false,page:String?=nil,pkg:Bool=true)->[String:Any] {
+            ["tag_name":tag,"html_url":page ?? "https://github.com/\(UpdateFeed.repository)/releases/tag/\(tag)","draft":draft,"assets":pkg ? [["name":"rekey-\(tag)-macos.pkg"]] : []]
         }
-        let feed=try JSONSerialization.data(withJSONObject:[release("v3.0.0-alpha.4"),release("v2.0.0-alpha.2"),release("v0.6.0",draft:true),release("v0.5.1",host:"https://example.com/"),release("v0.5.0-alpha.1"),release("v0.4.0-alpha.1")])
+        let feed=try JSONSerialization.data(withJSONObject:[release("v3.0.0-alpha.4"),release("v2.0.0-alpha.2"),release("v0.6.0",draft:true),release("v0.5.2",page:"https://example.com/releases/tag/v0.5.2"),release("v0.5.1",pkg:false),release("v0.5.0-alpha.1"),release("v0.4.0-alpha.1")])
         let upgrade=try UpdateFeed.newest(feed,current:"0.4.0-alpha.1"),current=try UpdateFeed.newest(feed,current:"0.5.0-alpha.1")
-        precondition(upgrade?.version=="0.5.0-alpha.1" && current==nil)
+        precondition(upgrade?.version=="0.5.0-alpha.1" && upgrade?.page.absoluteString=="https://github.com/\(UpdateFeed.repository)/releases/tag/v0.5.0-alpha.1" && current==nil)
         let major=try UpdateFeed.newest(try JSONSerialization.data(withJSONObject:[release("v3.0.0-alpha.4"),release("v1.0.0")]),current:"0.5.0-alpha.1")
         precondition(major?.version=="1.0.0")
-        let signed="Package \"rekey.pkg\":\n   Status: signed by a developer certificate issued by Apple for distribution\n   Certificate Chain:\n    1. Developer ID Installer: Synthetic (C5UWZ934C2)\n    2. Developer ID Certification Authority\n    3. Apple Root CA\n"
-        precondition(UpdateFeed.trustedSignature(signed,status:0) && !UpdateFeed.trustedSignature(signed,status:1))
-        precondition(!UpdateFeed.trustedSignature(signed.replacingOccurrences(of:"C5UWZ934C2",with:"ABCDE12345"),status:0))
-        precondition(!UpdateFeed.trustedSignature(signed.replacingOccurrences(of:"Developer ID Installer",with:"Developer ID Application"),status:0))
-        precondition(!UpdateFeed.trustedSignature("Package \"rekey.pkg\":\n   Status: no signature\n",status:0))
-        let digest=String(repeating:"ab",count:32)
-        precondition(UpdateFeed.expectedDigest("\(digest)  rekey-v0.5.0-alpha.1-macos.pkg\n",file:"rekey-v0.5.0-alpha.1-macos.pkg")==digest)
-        precondition(UpdateFeed.expectedDigest("\(digest)  other.pkg\nnot-hex  rekey.pkg",file:"rekey.pkg")==nil)
         print("Connection App contracts passed: routing, bounded authentication context reuse, roundtrip, signed editing base, exact displayed definitions, OAuth scopes, T1 target/expiry, full HTTP/SSH/T1 draft stdin, preserved host rules, SSH generation proof boundaries and update feed selection.")
     }
     static func reviewResponse(_ review:[String:Any],id:String)throws->Data {

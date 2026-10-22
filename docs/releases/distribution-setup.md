@@ -17,6 +17,6 @@ cask 声明 `livecheck`（GitHub Releases，包含预发布、跳过草稿和改
 
 ## App 内检查更新
 
-设置页的“检查更新”读取 `https://api.github.com/repos/majiayu000/rekey/releases`（含预发布，跳过草稿），只接受该仓库 `releases/download/<tag>/` 下的 `rekey-<tag>-macos.pkg` 与同名 `.sha256`。下载后核对 SHA-256，并用 `pkgutil --check-signature` 要求 Apple 签发的 Developer ID Installer 证书且 Team ID 为 `C5UWZ934C2`（`UpdateFeed.teamID`；更换签名 Team 时必须同步修改并发布新 App）。安装包保存为私有临时目录中的只读文件；点击安装时对同一文件再做两项复核，通过后才交给 Installer 打开并退出 App，Installer / Gatekeeper 再验证签名与公证。同一用户下的恶意进程仍可能抢在打开前替换文件，这不在本机威胁模型的防护范围内。每个 Release 必须保留 pkg 的 `.sha256` 资产（`release.yml` 已上传）。
+设置页的“检查更新”读取 `https://api.github.com/repos/majiayu000/rekey/releases`（含预发布，跳过草稿和改号前的 v2/v3 标签），只提示带 `rekey-<tag>-macos.pkg` 资产、且发布页地址为本仓库 `releases/tag/<tag>` 的更高版本，然后用“打开发布页”跳转到该页。App 不下载、不校验、不安装；用户在发布页下载 pkg，由 Installer / Gatekeeper 验证签名与公证。
 
-未认证的 GitHub API 每个 IP 每小时 60 次，App 只在用户点击时请求。App 不静默安装，也不自动停止服务（提示用户先“停止并停用登录启动”）；跨版本线升级（如 0.4 → 0.5）需要新的保险库，提示文字会引导用户先阅读发布说明。
+未认证的 GitHub API 每个 IP 每小时 60 次，App 只在用户点击时请求。提示文字提醒用户安装前先“停止并停用登录启动”并退出 App；跨版本线升级（如 0.4 → 0.5）需要新的保险库。
