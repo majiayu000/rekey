@@ -105,7 +105,7 @@ agent-run参考不能替代该保证；Codex Seatbelt仍有managed-preferences�
 
 当前账户 CLI 验收已另建独立个人库，经生产 Secure Enclave 签署和真实 daemon 完成信任根安装、GLM Profile 激活及 run 启动/退出撤销。证明材料仅在源码外私有目录，现有两份保险库保留；该签名 helper 路径不替代 App 首次接入、登录项生命周期或 T12。
 
-原 Clash 配置下普通 HTTPS→GLM 实测 200；修复前 Rekey→GLM 为 502/UPSTREAM_FAILED。原因定位到 I6 公网 DNS 筛查与 198.18.* fake-IP 的兼容性。仅系统全虚拟地址答案触发 Cloudflare DoH，查询 A/AAAA 后沿用全部公网检查、地址固定和 TLS 域名验证；不修改 Clash、不增加 provider 例外。签名修复候选实际 `rekey run` 的普通/流式 GLM 请求均返回 200、正常结束并返回用量；17 项上游回归通过。产物、检查及范围见[统一证据](../evidence/v3-release-acceptance-2026-10-04.json)的 `fake_ip_compatibility`，不代表 500 次、Claude Code/Codex 或新账户验收。
+原 Clash 配置下普通 HTTPS→GLM 实测 200；修复前 Rekey→GLM 为 502/UPSTREAM_FAILED。原因定位到 I6 公网 DNS 筛查与 198.18.* fake-IP 的兼容性。当时仅系统全虚拟地址答案触发 Cloudflare DoH，查询 A/AAAA 后沿用全部公网检查、地址固定和 TLS 域名验证；不修改 Clash、不增加 provider 例外。现行（0.5）行为：同样只在系统 DNS 全为 198.18.0.0/15 时触发；设置 `REKEY_DOH_URL` 则只用该解析器，未设置时依次回退到 223.5.5.5、1.1.1.1，目标主机名会发给这些公共解析器，无单独关闭开关，见威胁模型 I6。签名修复候选实际 `rekey run` 的普通/流式 GLM 请求均返回 200、正常结束并返回用量；17 项上游回归通过。产物、检查及范围见[统一证据](../evidence/v3-release-acceptance-2026-10-04.json)的 `fake_ip_compatibility`，不代表 500 次、Claude Code/Codex 或新账户验收。
 
 GLM Responses 接入合同：新增固定 `glm-responses@1`（POST `/api/v1/responses`、Bearer），复用 OpenAI Responses 网关与预算。App接入页明确选择GLM/Codex；源码与软件检查已通过，最终App/pkg已签名、公证、装订且通过Gatekeeper。正常屏幕解锁后，最终签名候选的真实Codex0.160.0已通过：单请求完成、输出11token、会话撤销且六类Key编码检查零命中。此前锁屏的-25308与过期短期测试策略拒绝保留；最终公证pkg现已安装；安装版SDK复测结果见下段。
 
