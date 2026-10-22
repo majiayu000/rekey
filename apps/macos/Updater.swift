@@ -1,7 +1,6 @@
 import Foundation
 import SwiftUI
 import AppKit
-import CryptoKit
 
 /// SemVer precedence (build metadata ignored); prereleases sort below their release.
 struct ReleaseVersion: Comparable {
@@ -32,14 +31,13 @@ struct ReleaseVersion: Comparable {
 }
 
 struct UpdateRelease: Equatable {
-    let version: String, page: URL, package: URL, checksum: URL
-    var packageName: String { package.lastPathComponent }
+    let version: String, page: URL
 }
 
+/// Checks GitHub Releases for a newer version and only links to its release page;
+/// downloading and installing stay with the user, Installer and Gatekeeper.
 enum UpdateFeed {
     static let repository = "majiayu000/rekey"
-    /// Developer ID Team that signs release packages (see scripts/build-macos-pkg.sh).
-    static let teamID = "C5UWZ934C2"
     /// Tags published before the 0.x renumbering; they are older lines, not upgrades.
     static let legacyTags: Set<String> = ["v2.0.0-alpha.1", "v2.0.0-alpha.2", "v3.0.0-alpha.1", "v3.0.0-alpha.2", "v3.0.0-alpha.3", "v3.0.0-alpha.4"]
     static var releasesURL: URL { URL(string: "https://api.github.com/repos/\(repository)/releases?per_page=30")! }
@@ -49,135 +47,40 @@ enum UpdateFeed {
     }
 
     private struct Release: Decodable { let tag_name: String, html_url: URL, draft: Bool, assets: [Asset] }
-    private struct Asset: Decodable { let name: String, browser_download_url: URL }
+    private struct Asset: Decodable { let name: String }
 
-    /// Newest published release (prereleases included) above `current` that ships a macOS pkg and its checksum.
+    /// Newest published release (prereleases included) above `current` that ships a macOS pkg.
     /// Pre-renumbering v2/v3 tags are skipped; any later major release is still offered.
+    /// Only this repository's own release tag page is ever opened.
     static func newest(_ data: Data, current: String) throws -> UpdateRelease? {
         guard let installed = ReleaseVersion(current) else { throw UIError(message: "无法识别当前版本 \(current)。") }
-        let prefix = "https://github.com/\(repository)/releases/download/"
         var best: (ReleaseVersion, UpdateRelease)?
         for release in try JSONDecoder().decode([Release].self, from: data) where !release.draft && !legacyTags.contains(release.tag_name) {
-            guard release.tag_name.hasPrefix("v"), let version = ReleaseVersion(String(release.tag_name.dropFirst())), installed < version else { continue }
-            let name = "rekey-\(release.tag_name)-macos.pkg"
-            func asset(_ file: String) -> URL? {
-                release.assets.first { $0.name == file && $0.browser_download_url.absoluteString == prefix + release.tag_name + "/" + file }?.browser_download_url
-            }
-            guard let package = asset(name), let checksum = asset(name + ".sha256") else { continue }
+            guard release.tag_name.hasPrefix("v"), let version = ReleaseVersion(String(release.tag_name.dropFirst())), installed < version,
+                  release.html_url.absoluteString == "https://github.com/\(repository)/releases/tag/\(release.tag_name)",
+                  release.assets.contains(where: { $0.name == "rekey-\(release.tag_name)-macos.pkg" }) else { continue }
             if best.map({ $0.0 < version }) ?? true {
-                best = (version, UpdateRelease(version: String(release.tag_name.dropFirst()), page: release.html_url, package: package, checksum: checksum))
+                best = (version, UpdateRelease(version: String(release.tag_name.dropFirst()), page: release.html_url))
             }
         }
         return best?.1
     }
-
-    /// Reads the `<hex>  <file>` line written by `shasum -a 256` for exactly this file.
-    static func expectedDigest(_ text: String, file: String) -> String? {
-        for line in text.split(whereSeparator: \.isNewline) {
-            let fields = line.split(separator: " ", omittingEmptySubsequences: true)
-            guard fields.count == 2, fields[1].trimmingCharacters(in: CharacterSet(charactersIn: "*")) == file else { continue }
-            let digest = fields[0].lowercased()
-            if digest.count == 64, digest.allSatisfy(\.isHexDigit) { return digest }
-        }
-        return nil
-    }
-
-    /// Accepts `pkgutil --check-signature` output only for an Apple-issued Developer ID Installer leaf of `teamID`.
-    static func trustedSignature(_ output: String, status: Int32) -> Bool {
-        let lines = output.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
-        guard status == 0, lines.contains("Status: signed by a developer certificate issued by Apple for distribution"),
-              let leaf = lines.first(where: { $0.hasPrefix("1. ") }) else { return false }
-        return leaf.hasPrefix("1. Developer ID Installer: ") && leaf.hasSuffix("(\(teamID))")
-    }
-
-    nonisolated static func checkSignature(_ package: URL) throws -> (String, Int32) {
-        let process = Process(), pipe = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/sbin/pkgutil")
-        process.arguments = ["--check-signature", package.path]
-        process.standardOutput = pipe
-        process.standardError = pipe
-        try process.run()
-        let output = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        return (String(decoding: output, as: UTF8.self), process.terminationStatus)
-    }
-
-    static func sha256(of file: URL) throws -> String {
-        let handle = try FileHandle(forReadingFrom: file)
-        defer { try? handle.close() }
-        var hasher = SHA256()
-        while let block = try handle.read(upToCount: 1 << 20), !block.isEmpty { hasher.update(data: block) }
-        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
-    }
 }
 
 @MainActor final class Updater: ObservableObject {
-    enum State: Equatable { case idle, checking, upToDate, available(UpdateRelease), downloading(UpdateRelease), ready(UpdateRelease, URL, String), failed(String) }
+    enum State: Equatable { case idle, checking, upToDate, available(UpdateRelease), failed(String) }
     @Published private(set) var state = State.idle
-
-    private func fetch(_ url: URL) async throws -> Data {
-        var request = URLRequest(url: url)
-        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw UIError(message: "GitHub 暂时无法访问，请稍后再试。") }
-        return data
-    }
 
     func check() {
         state = .checking
         Task {
             do {
-                let release = try UpdateFeed.newest(try await fetch(UpdateFeed.releasesURL), current: UpdateFeed.currentVersion)
-                state = release.map(State.available) ?? .upToDate
+                var request = URLRequest(url: UpdateFeed.releasesURL)
+                request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw UIError(message: "GitHub 暂时无法访问，请稍后再试。") }
+                state = try UpdateFeed.newest(data, current: UpdateFeed.currentVersion).map(State.available) ?? .upToDate
             } catch { state = .failed((error as? UIError)?.message ?? "检查更新失败：\(error.localizedDescription)") }
-        }
-    }
-
-    func download(_ release: UpdateRelease) {
-        state = .downloading(release)
-        Task {
-            do {
-                let text = String(decoding: try await fetch(release.checksum), as: UTF8.self)
-                guard let expected = UpdateFeed.expectedDigest(text, file: release.packageName) else { throw UIError(message: "发布缺少有效的 SHA-256 校验值，已停止。") }
-                let (temporary, response) = try await URLSession.shared.download(from: release.package)
-                guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw UIError(message: "安装包下载失败。") }
-                let folder = FileManager.default.temporaryDirectory.appendingPathComponent("RekeyUpdate-\(UUID().uuidString)", isDirectory: true)
-                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
-                let package = folder.appendingPathComponent(release.packageName)
-                try FileManager.default.moveItem(at: temporary, to: package)
-                // Read-only file in a read-only private folder: the verified bytes cannot be replaced by accident.
-                try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: package.path)
-                try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: folder.path)
-                try await verify(package, expected: expected)
-                state = .ready(release, package, expected)
-            } catch { state = .failed((error as? UIError)?.message ?? "下载失败：\(error.localizedDescription)") }
-        }
-    }
-
-    /// Checks the exact file that will be opened: release SHA-256 first, then the Developer ID Installer Team.
-    private func verify(_ package: URL, expected: String) async throws {
-        let folder = package.deletingLastPathComponent()
-        func reject(_ message: String) -> UIError {
-            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: folder.path)
-            try? FileManager.default.removeItem(at: folder)
-            return UIError(message: message)
-        }
-        guard try UpdateFeed.sha256(of: package) == expected else { throw reject("安装包 SHA-256 与发布校验值不一致，已删除下载文件。") }
-        let (output, status) = try await Task.detached { try UpdateFeed.checkSignature(package) }.value
-        guard UpdateFeed.trustedSignature(output, status: status) else { throw reject("安装包不是 Rekey 发布者（Team \(UpdateFeed.teamID)）签名的，已删除下载文件。") }
-    }
-
-    /// Re-verifies immediately before opening, so the file handed to Installer is the one that passed both checks.
-    /// Installer and Gatekeeper then verify signature and notarization; the App never installs silently. A process
-    /// running as the same user could still race the open, which the local threat model does not defend against.
-    /// The App quits once Installer opens so reopening after installation launches the new bundle, not this process.
-    func install(_ package: URL, expected: String) {
-        Task {
-            do { try await verify(package, expected: expected) } catch {
-                state = .failed((error as? UIError)?.message ?? "安装包复核失败：\(error.localizedDescription)"); return
-            }
-            guard NSWorkspace.shared.open(package) else { state = .failed("无法打开安装器。"); return }
-            NSApp.terminate(nil)
         }
     }
 }
@@ -192,13 +95,8 @@ struct UpdateSection: View {
             case .checking: ProgressView().controlSize(.small)
             case .upToDate: Text("已是最新版本。").font(.system(size: 13)); Button("重新检查") { updater.check() }
             case .available(let release):
-                Text("发现新版本 \(release.version)。").font(.system(size: 13, weight: .medium))
-                Link("阅读发布说明", destination: release.page).font(.system(size: 13))
-                Button("下载并校验") { updater.download(release) }
-            case .downloading: HStack { ProgressView().controlSize(.small); Text("正在下载并校验 SHA-256 与发布者签名…").font(.system(size: 13)) }
-            case .ready(let release, let package, let expected):
-                Text("\(release.version) 安装包已通过 SHA-256 与发布者签名校验。安装会替换 Rekey.app 和内嵌后台服务。请先点击本页“停止并停用登录启动”，否则旧进程会继续运行。点击下方按钮后 Rekey 会打开安装器并退出；安装完成后重新打开 Rekey，后台服务会以新版本启动，正在进行的 Agent 请求会中断，需要重新解锁。保险库数据不会被删除。跨版本线升级（如 0.4 → 0.5）可能需要新的保险库，请先阅读发布说明。").font(.system(size: 13)).fixedSize(horizontal: false, vertical: true)
-                Button("复核并打开安装器，然后退出 Rekey") { updater.install(package, expected: expected) }
+                Text("发现新版本 \(release.version)。请在发布页阅读说明并下载 macOS 安装包；安装前先在本页“停止并停用登录启动”并退出 Rekey。跨版本线升级（如 0.4 → 0.5）可能需要新的保险库。").font(.system(size: 13)).fixedSize(horizontal: false, vertical: true)
+                Button("打开发布页") { NSWorkspace.shared.open(release.page) }
             case .failed(let message):
                 Label(message, systemImage: "exclamationmark.circle").font(.system(size: 13)).foregroundStyle(.red)
                 Button("重试") { updater.check() }
