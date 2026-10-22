@@ -38,6 +38,10 @@ struct UpdateRelease: Equatable {
 
 enum UpdateFeed {
     static let repository = "majiayu000/rekey"
+    /// Developer ID Team that signs release packages (see scripts/build-macos-pkg.sh).
+    static let teamID = "C5UWZ934C2"
+    /// Tags published before the 0.x renumbering; they are older lines, not upgrades.
+    static let legacyTags: Set<String> = ["v2.0.0-alpha.1", "v2.0.0-alpha.2", "v3.0.0-alpha.1", "v3.0.0-alpha.2", "v3.0.0-alpha.3", "v3.0.0-alpha.4"]
     static var releasesURL: URL { URL(string: "https://api.github.com/repos/\(repository)/releases?per_page=30")! }
     static var currentVersion: String {
         let info = Bundle.main.infoDictionary
@@ -48,14 +52,13 @@ enum UpdateFeed {
     private struct Asset: Decodable { let name: String, browser_download_url: URL }
 
     /// Newest published release (prereleases included) above `current` that ships a macOS pkg and its checksum.
-    /// Only the installed major line counts: v2.x/v3.x tags predate the 0.x renumbering and are not newer.
+    /// Pre-renumbering v2/v3 tags are skipped; any later major release is still offered.
     static func newest(_ data: Data, current: String) throws -> UpdateRelease? {
         guard let installed = ReleaseVersion(current) else { throw UIError(message: "无法识别当前版本 \(current)。") }
         let prefix = "https://github.com/\(repository)/releases/download/"
         var best: (ReleaseVersion, UpdateRelease)?
-        for release in try JSONDecoder().decode([Release].self, from: data) where !release.draft {
-            guard release.tag_name.hasPrefix("v"), let version = ReleaseVersion(String(release.tag_name.dropFirst())),
-                  version.core[0] == installed.core[0], installed < version else { continue }
+        for release in try JSONDecoder().decode([Release].self, from: data) where !release.draft && !legacyTags.contains(release.tag_name) {
+            guard release.tag_name.hasPrefix("v"), let version = ReleaseVersion(String(release.tag_name.dropFirst())), installed < version else { continue }
             let name = "rekey-\(release.tag_name)-macos.pkg"
             func asset(_ file: String) -> URL? {
                 release.assets.first { $0.name == file && $0.browser_download_url.absoluteString == prefix + release.tag_name + "/" + file }?.browser_download_url
@@ -77,6 +80,26 @@ enum UpdateFeed {
             if digest.count == 64, digest.allSatisfy(\.isHexDigit) { return digest }
         }
         return nil
+    }
+
+    /// Accepts `pkgutil --check-signature` output only for an Apple-issued Developer ID Installer leaf of `teamID`.
+    static func trustedSignature(_ output: String, status: Int32) -> Bool {
+        let lines = output.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
+        guard status == 0, lines.contains("Status: signed by a developer certificate issued by Apple for distribution"),
+              let leaf = lines.first(where: { $0.hasPrefix("1. ") }) else { return false }
+        return leaf.hasPrefix("1. Developer ID Installer: ") && leaf.hasSuffix("(\(teamID))")
+    }
+
+    nonisolated static func checkSignature(_ package: URL) throws -> (String, Int32) {
+        let process = Process(), pipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/pkgutil")
+        process.arguments = ["--check-signature", package.path]
+        process.standardOutput = pipe
+        process.standardError = pipe
+        try process.run()
+        let output = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return (String(decoding: output, as: UTF8.self), process.terminationStatus)
     }
 
     static func sha256(of file: URL) throws -> String {
@@ -126,6 +149,11 @@ enum UpdateFeed {
                     try? FileManager.default.removeItem(at: folder)
                     throw UIError(message: "安装包 SHA-256 与发布校验值不一致，已删除下载文件。")
                 }
+                let (output, status) = try await Task.detached { try UpdateFeed.checkSignature(package) }.value
+                guard UpdateFeed.trustedSignature(output, status: status) else {
+                    try? FileManager.default.removeItem(at: folder)
+                    throw UIError(message: "安装包不是 Rekey 发布者（Team \(UpdateFeed.teamID)）签名的，已删除下载文件。")
+                }
                 state = .ready(release, package)
             } catch { state = .failed((error as? UIError)?.message ?? "下载失败：\(error.localizedDescription)") }
         }
@@ -154,7 +182,7 @@ struct UpdateSection: View {
                 Button("下载并校验") { updater.download(release) }
             case .downloading: HStack { ProgressView().controlSize(.small); Text("正在下载并校验 SHA-256…").font(.system(size: 13)) }
             case .ready(let release, let package):
-                Text("\(release.version) 安装包已通过 SHA-256 校验。安装会替换 Rekey.app 和内嵌后台服务。请先点击本页“停止并停用登录启动”，否则旧进程会继续运行。点击下方按钮后 Rekey 会打开安装器并退出；安装完成后重新打开 Rekey，后台服务会以新版本启动，正在进行的 Agent 请求会中断，需要重新解锁。保险库数据不会被删除。跨版本线升级（如 0.4 → 0.5）可能需要新的保险库，请先阅读发布说明。").font(.system(size: 13)).fixedSize(horizontal: false, vertical: true)
+                Text("\(release.version) 安装包已通过 SHA-256 与发布者签名校验。安装会替换 Rekey.app 和内嵌后台服务。请先点击本页“停止并停用登录启动”，否则旧进程会继续运行。点击下方按钮后 Rekey 会打开安装器并退出；安装完成后重新打开 Rekey，后台服务会以新版本启动，正在进行的 Agent 请求会中断，需要重新解锁。保险库数据不会被删除。跨版本线升级（如 0.4 → 0.5）可能需要新的保险库，请先阅读发布说明。").font(.system(size: 13)).fixedSize(horizontal: false, vertical: true)
                 Button("打开安装器并退出 Rekey") { updater.install(package) }
             case .failed(let message):
                 Label(message, systemImage: "exclamationmark.circle").font(.system(size: 13)).foregroundStyle(.red)
