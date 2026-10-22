@@ -178,10 +178,7 @@ pub fn connection_llm_protocol(path: &str) -> Option<ProfileLlmProtocol> {
         | "/v1beta/openai/chat/completions" => OpenAiChat,
         "/v1/responses" | "/api/v1/responses" => OpenAiResponses,
         "/v1/embeddings" => Embeddings,
-        "/v1/models"
-        | "/api/v1/models"
-        | "/compatible-mode/v1/models"
-        | "/v1beta/openai/models" => Models,
+        "/v1/models" | "/api/v1/models" | "/v1beta/openai/models" => Models,
         _ => return None,
     })
 }

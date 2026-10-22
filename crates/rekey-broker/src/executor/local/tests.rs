@@ -346,14 +346,20 @@ async fn openai_compatible_presets_enforce_signed_model_and_daily_budget() {
                 .is_err(),
             "{preset}"
         );
-        // max_completion_tokens is not honored upstream, so it cannot carry the ceiling.
-        let alias = br#"{"model":"synthetic-model","messages":[],"max_completion_tokens":8}"#;
-        assert!(
-            f.call(Fixture::request(FixedMethod::Post, path, alias, None))
-                .await
-                .is_err(),
-            "{preset}"
-        );
+        // Where max_completion_tokens is not honored upstream it cannot carry
+        // the ceiling; OpenRouter documents it and enforces the ceiling with it.
+        let field = if preset == "openrouter" {
+            "max_completion_tokens"
+        } else {
+            let alias = br#"{"model":"synthetic-model","messages":[],"max_completion_tokens":8}"#;
+            assert!(
+                f.call(Fixture::request(FixedMethod::Post, path, alias, None))
+                    .await
+                    .is_err(),
+                "{preset}"
+            );
+            "max_tokens"
+        };
         let body = br#"{"model":"synthetic-model","messages":[]}"#;
         let id = f.approve(path, body).await;
         f.fake.push_response(Ok(UpstreamResponse { status: 200,
@@ -373,8 +379,9 @@ async fn openai_compatible_presets_enforce_signed_model_and_daily_budget() {
             assert_eq!(sent[0].auth_value, b"Bearer synthetic-upstream-key");
             // An omitted output limit becomes the signed per-request ceiling.
             assert_eq!(
-                serde_json::from_slice::<serde_json::Value>(&sent[0].body).unwrap()["max_tokens"],
-                32
+                serde_json::from_slice::<serde_json::Value>(&sent[0].body).unwrap()[field],
+                32,
+                "{preset}"
             );
         }
         let id = f.approve(path, body).await;

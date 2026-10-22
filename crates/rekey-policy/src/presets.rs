@@ -288,22 +288,32 @@ pub fn builtin_preset(name: &str) -> Result<Preset, PolicyError> {
         }
         _ if openai_compatible_chat(name) => {
             // OpenAI-compatible Chat Completions only; the base path is the
-            // provider's documented SDK base URL. These upstreams document only
-            // `max_tokens`, so the schema omits `max_completion_tokens`.
+            // provider's documented SDK base URL. Upstreams that document only
+            // `max_tokens` do not get `max_completion_tokens` in the schema.
             let base = sdk_base_path(name);
+            let mut properties = json!({"model":{"type":"string"},"messages":{"type":"array"},"max_tokens":{"type":"integer","minimum":1},"stream":{"type":"boolean"},"tools":{"type":"array"},"temperature":{"type":"number"},"n":{"type":"integer"}});
+            if !chat_max_tokens_only(name) {
+                properties["max_completion_tokens"] = json!({"type":"integer","minimum":1});
+            }
+            // Model Studio documents model listing on its native API only.
+            let models = if name == "qwen" {
+                "/api/v1/models".to_owned()
+            } else {
+                format!("{base}/models")
+            };
             preset.operations = vec![
                 operation(
                     &format!("{name}.chat"),
                     FixedMethod::Post,
                     &format!("{base}/chat/completions"),
-                    json!({"model":{"type":"string"},"messages":{"type":"array"},"max_tokens":{"type":"integer","minimum":1},"stream":{"type":"boolean"},"tools":{"type":"array"},"temperature":{"type":"number"},"n":{"type":"integer"}}),
+                    properties,
                     &[],
                     Some(ReadSemantics::Fixed),
                 ),
                 operation(
                     &format!("{name}.models"),
                     FixedMethod::Get,
-                    &format!("{base}/models"),
+                    &models,
                     json!({}),
                     &[],
                     None,
@@ -326,12 +336,19 @@ pub fn builtin_preset(name: &str) -> Result<Preset, PolicyError> {
     Ok(preset)
 }
 
-/// OpenAI-compatible Chat presets whose output ceiling is `max_tokens` only.
+/// OpenAI-compatible Chat Completions presets.
 pub fn openai_compatible_chat(preset: &str) -> bool {
     matches!(
         preset,
         "deepseek" | "moonshot" | "qwen" | "openrouter" | "gemini"
     )
+}
+
+/// Chat presets whose upstream documents only `max_tokens` as the output
+/// limit; `max_completion_tokens` would bypass the signed ceiling there.
+/// OpenRouter documents `max_completion_tokens` and keeps the OpenAI rules.
+pub fn chat_max_tokens_only(preset: &str) -> bool {
+    matches!(preset, "deepseek" | "moonshot" | "qwen" | "gemini")
 }
 
 /// Path under the origin that an OpenAI/Anthropic SDK base URL must include.

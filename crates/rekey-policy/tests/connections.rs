@@ -984,3 +984,100 @@ fn stripe_preset_is_read_only_with_a_pinned_api_version() {
         );
     }
 }
+
+fn llm_connection(preset: &str) -> Connection {
+    let mut c = builtin_preset(preset)
+        .unwrap()
+        .connection(preset.into(), CredentialId::new_random());
+    c.llm = Some(ConnectionLlmLimits {
+        models: ["fixture-model".into()].into_iter().collect(),
+        max_tokens: 32,
+        max_requests_per_day: 10,
+        max_output_tokens_per_day: 100,
+    });
+    c
+}
+
+fn post(
+    c: &Connection,
+    path: &str,
+    body: &str,
+) -> Result<rekey_policy::connections::ConnectionAuthorization, PolicyError> {
+    evaluate_connection(
+        &snapshot(c),
+        &CallMeta::http(c.name.clone(), FixedMethod::Post, path.into()),
+        body.as_bytes(),
+        "unknown",
+        Timestamp::from_unix_ms(2),
+    )
+}
+
+#[test]
+fn llm_connections_expose_only_declared_endpoints() {
+    let openrouter = llm_connection("openrouter");
+    // A real OpenRouter generating endpoint the preset never declared.
+    assert!(matches!(
+        post(
+            &openrouter,
+            "/api/v1/responses",
+            r#"{"model":"fixture-model"}"#
+        ),
+        Err(PolicyError::NotConfigured)
+    ));
+    let qwen = llm_connection("qwen");
+    assert!(
+        qwen.operations
+            .iter()
+            .any(|op| op.name == "qwen.models" && op.path == "/api/v1/models")
+    );
+    assert_eq!(
+        call(&qwen, FixedMethod::Get, "/api/v1/models")
+            .unwrap()
+            .effect,
+        RuleEffect::Allow
+    );
+    assert!(matches!(
+        call(&qwen, FixedMethod::Get, "/compatible-mode/v1/models"),
+        Err(PolicyError::NotConfigured)
+    ));
+    // Existing presets are held to the same rule.
+    let glm = llm_connection("glm-responses");
+    assert!(matches!(
+        post(&glm, "/v1/responses", r#"{"model":"fixture-model"}"#),
+        Err(PolicyError::NotConfigured)
+    ));
+}
+
+#[test]
+fn openrouter_enforces_the_ceiling_through_max_completion_tokens() {
+    let c = llm_connection("openrouter");
+    let path = "/api/v1/chat/completions";
+    let within = post(
+        &c,
+        path,
+        r#"{"model":"fixture-model","max_completion_tokens":8}"#,
+    )
+    .unwrap();
+    assert_eq!(within.generation_max_output, Some(8));
+    assert!(
+        post(
+            &c,
+            path,
+            r#"{"model":"fixture-model","max_completion_tokens":33}"#
+        )
+        .is_err()
+    );
+    let omitted = post(&c, path, r#"{"model":"fixture-model"}"#).unwrap();
+    assert_eq!(omitted.generation_max_output, Some(32));
+    let sent: serde_json::Value = serde_json::from_slice(&omitted.request_body).unwrap();
+    assert_eq!(sent["max_completion_tokens"], 32);
+    let deepseek = llm_connection("deepseek");
+    assert!(matches!(
+        post(
+            &deepseek,
+            "/v1/chat/completions",
+            r#"{"model":"fixture-model","max_completion_tokens":8}"#
+        ),
+        Err(PolicyError::InvalidParameters)
+    ));
+}

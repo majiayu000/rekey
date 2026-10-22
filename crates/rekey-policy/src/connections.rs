@@ -109,7 +109,11 @@ pub fn evaluate_connection(
             && (o.path == path
                 || connection.preset == "github-git" && operation_path_matches(&o.path, &path))
     });
-    if connection.preset == "github-git" && matching_operation.is_none() {
+    // LLM Connections expose only their declared endpoints, so another
+    // generating path of the same provider never inherits a `/**` rule.
+    if (connection.preset == "github-git" || connection.llm.is_some())
+        && matching_operation.is_none()
+    {
         return Err(PolicyError::NotConfigured);
     }
     let semantics = operation
@@ -344,7 +348,7 @@ fn normalize_llm(
         &adapter,
         body,
         &mut value,
-        crate::presets::openai_compatible_chat(&connection.preset),
+        crate::presets::chat_max_tokens_only(&connection.preset),
     )?;
     *body = normalized.bytes;
     Ok((normalized.model, normalized.maximum, normalized.streaming))
