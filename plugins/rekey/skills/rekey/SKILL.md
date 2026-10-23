@@ -15,7 +15,7 @@ rekey describe github.create_issue
 rekey call github.create_issue --owner example --repo project --title "Bug report" --dry-run
 ```
 
-缺少权限或连接时调用 `request_access` 并说明理由，再用返回的请求 ID 调用 `await_access`；等到 `GRANTED` 后显式重试原请求，不要要求用户把 Key 交给 Agent。收到 `APPROVAL_REQUIRED` 时调用 `await_approval(request_id)`，然后按同一审批 ID 重试原请求；不要自动重试已完成或执行结果不确定的写操作。收到 `LOCKED` 时调用 `await_unlock` 后重试。
+缺少权限或连接时调用 `request_access` 并说明理由，再用返回的请求 ID 调用 `await_access`；等到 `GRANTED` 后显式重试原请求，不要要求用户把 Key 交给 Agent。收到 `APPROVAL_REQUIRED` 时，用错误里的 `approval.challenge_id`（不是顶层的 `request_id`）作为 `await_approval` 的 `request_id`，批准后把同一个 ID 作为 `approval_request_id` 重试原请求；不要自动重试已完成或执行结果不确定的写操作。收到 `LOCKED` 时调用 `await_unlock` 后重试。
 
 Agent 写的程序使用 `list_capabilities` 给出的本机服务地址和占位 Key `rekey`。T0 连接永不返回密钥；T1 派生连接会把短期派生凭证交给进程，必须明确区分。
 

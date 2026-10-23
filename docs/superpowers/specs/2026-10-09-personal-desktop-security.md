@@ -19,6 +19,13 @@ migration or reader fallback. Resume never extends expiry. Seven days remains th
 ordinary A1 desktop session maximum; remembering clamps that session to the
 selected shorter grant deadline when applicable.
 
+Revision 2026-10-22: DESKTOP_REMEMBER accepts optional `unlock_only` (default
+false). An unlock-only ticket keeps the 84-byte layout with magic `RKDSU001`
+(bound in AAD); its grant may resume/unlock but is never accepted as a presence
+proof. The basic-mode CLI `unlock --remember` file always uses it, because that
+file is readable by same-user processes. App tickets remain `RKDSK001`. Existing
+tickets are not reinterpreted or migrated; see the agent-call model §5.3/§5.4.
+
 Add admin opcode 72 DESKTOP_LOCK with strict {forget_remembered: bool} metadata.
 The current A1 desktop token travels in the body. Authenticate that exact session,
 revoke it immediately, optionally durably forget PresenceGrant, and append a

@@ -91,6 +91,10 @@ impl BrokerError {
     /// only, never source chains.
     pub fn agent_message(&self) -> String {
         match self {
+            // The resolved address itself is never echoed.
+            Self::Upstream("private-address") => {
+                "upstream host resolved to a non-public address".to_owned()
+            }
             // Agents must not distinguish missing, revoked, or undecryptable
             // credentials.
             Self::Authority(
@@ -114,6 +118,10 @@ impl BrokerError {
                 format!("Retry after {reset} UTC.")
             }
             Self::LocalCall(_, _, next) => (*next).to_owned(),
+            Self::Denied("approval-request-unknown") => {
+                "No pending approval has this ID. Pass approval.challenge_id from the APPROVAL_REQUIRED error, not its top-level request_id; an expired or used approval needs a new call."
+                    .to_owned()
+            }
             Self::UpstreamUnconfirmed(_) => {
                 "Check whether the upstream effect completed; do not retry automatically."
                     .to_owned()

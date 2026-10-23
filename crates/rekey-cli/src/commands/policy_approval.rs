@@ -10,7 +10,6 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use rekey_domain::action::HeaderName;
-use rekey_domain::authorization::ApproverSpec;
 use rekey_domain::ids::ApprovalRequestId;
 use rekey_domain::ipc::{self, admin_msg};
 #[cfg(feature = "lab")]
@@ -312,45 +311,15 @@ fn local_review_response<'a>(
     metadata: &[u8],
     body: &'a [u8],
 ) -> Result<LocalReviewOutput<'a>, CliError> {
-    let invalid = || {
-        CliError::local(
-            "INVALID_FRAME",
-            "broker returned invalid local approval review",
-        )
-    };
-    let metadata: ipc::LocalApprovalReviewResponse =
-        serde_json::from_slice(metadata).map_err(|_| invalid())?;
-    if metadata.approval_request_id != id
-        || metadata.record_type != "rekey.approval.local-review.v1"
-        || !lower_hex_digest(&metadata.review_sha256)
-        || metadata.body_len as usize != body.len()
-        || body.len() > ipc::RESPONSE_BODY_MAX_BYTES as usize
-    {
-        return Err(invalid());
-    }
-    let review_json = if body.is_empty() {
-        if matches!(
-            metadata.state,
-            ipc::LocalApprovalState::Pending | ipc::LocalApprovalState::Approved
-        ) {
-            return Err(invalid());
-        }
-        None
-    } else {
-        let original = std::str::from_utf8(body).map_err(|_| invalid())?;
-        let review: ipc::LocalApprovalReview =
-            serde_json::from_str(original).map_err(|_| invalid())?;
-        review.challenge.validate().map_err(|_| invalid())?;
-        if review.record_type != "rekey.approval.review.v1"
-            || review.challenge.approval_request_id != id
-            || !matches!(review.challenge.approver, ApproverSpec::LocalPresence {})
-        {
-            return Err(invalid());
-        }
-        // The App verifies the review digest. The IPC-only CLI preserves the
-        // daemon's complete UTF-8 bytes; no Value/JCS roundtrip changes numbers.
-        Some(original)
-    };
+    // The App verifies the review digest. The IPC-only CLI preserves the
+    // daemon's complete UTF-8 bytes; no Value/JCS roundtrip changes numbers.
+    let (metadata, review_json) =
+        ipc::validate_local_review_reply(id, metadata, body).map_err(|_| {
+            CliError::local(
+                "INVALID_FRAME",
+                "broker returned invalid local approval review",
+            )
+        })?;
     Ok(LocalReviewOutput {
         metadata,
         review_json,
@@ -392,6 +361,8 @@ pub fn approval_decide(
     review_sha256: &str,
     approve: bool,
     window_seconds: Option<u32>,
+    kind: ProofKind,
+    proof_stdin: bool,
 ) -> Result<(), CliError> {
     // Public input must fail before connecting or reading the presence proof.
     if !lower_hex_digest(review_sha256) {
@@ -407,8 +378,8 @@ pub fn approval_decide(
     })
     .map_err(|_| CliError::local("USAGE", "cannot encode local approval decision"))?;
     let mut client = admin(state_dir)?;
-    let proof = read_step_up(ProofKind::Presence, true)?;
-    let body = proof_body(ProofKind::Presence, &proof);
+    let proof = read_step_up(kind, proof_stdin)?;
+    let body = proof_body(kind, &proof);
     let operation = if approve {
         admin_msg::APPROVAL_LOCAL_APPROVE
     } else {

@@ -999,15 +999,31 @@ enum PolicyTrustCommand {
 }
 
 #[derive(Args)]
+#[command(group(clap::ArgGroup::new("approval_proof").required(true).args(["presence", "password"])))]
 struct LocalApprovalDecisionArgs {
     approval_request_id: ApprovalRequestId,
     #[arg(long)]
     review_sha256: String,
-    /// Use only the current presence key, explicitly read from stdin.
-    #[arg(long, required = true)]
+    /// Use the App's current presence key, explicitly read from stdin.
+    #[arg(long, requires = "password_stdin")]
     presence: bool,
-    #[arg(long, required = true)]
+    /// Basic mode: prove with the vault password (hidden prompt unless --password-stdin).
+    /// A remembered-unlock file is never accepted as an approval proof.
+    #[arg(long)]
+    password: bool,
+    /// Read the proof from stdin instead of a hidden prompt.
+    #[arg(long)]
     password_stdin: bool,
+}
+
+impl LocalApprovalDecisionArgs {
+    fn proof_kind(&self) -> rekey_domain::ipc::ProofKind {
+        if self.presence {
+            rekey_domain::ipc::ProofKind::Presence
+        } else {
+            rekey_domain::ipc::ProofKind::Password
+        }
+    }
 }
 
 #[derive(Args)]
@@ -1035,9 +1051,9 @@ enum ApprovalCommand {
     Review {
         approval_request_id: ApprovalRequestId,
     },
-    /// Approve a local review with an explicit presence proof.
+    /// Approve a local review with the App presence key or the vault password.
     Approve(LocalApprovalApproveArgs),
-    /// Reject a local review with an explicit presence proof.
+    /// Reject a local review with the App presence key or the vault password.
     Reject(LocalApprovalDecisionArgs),
     /// Wait up to 120 seconds for this caller's local approval.
     Await {
@@ -1987,6 +2003,8 @@ fn main() {
             &args.decision.review_sha256,
             true,
             args.window_seconds,
+            args.decision.proof_kind(),
+            args.decision.password_stdin,
         ),
         Command::Approval(ApprovalCommand::Reject(args)) => commands::approval_decide(
             &state_dir,
@@ -1994,6 +2012,8 @@ fn main() {
             &args.review_sha256,
             false,
             None,
+            args.proof_kind(),
+            args.password_stdin,
         ),
         Command::Approval(ApprovalCommand::Await {
             approval_request_id,

@@ -91,13 +91,13 @@ fn generic_tools() -> Vec<Value> {
         ),
         descriptor(
             "await_approval",
-            "Wait for a user's approval; this does not approve or execute the request.",
+            "Wait for a user's approval. Pass approval.challenge_id from the APPROVAL_REQUIRED error as request_id, not the error's top-level request_id. This does not approve or execute the request; afterwards retry the same call with approval_request_id set to that challenge_id.",
             json!({"request_id":{"type":"string","format":"uuid"},"timeout_s":{"type":"integer","minimum":1,"maximum":120,"default":120}}),
             &["request_id"],
         ),
         descriptor(
             "cancel_approval",
-            "Cancel a pending approval request; this does not execute the request.",
+            "Cancel a pending approval request. Pass approval.challenge_id from the APPROVAL_REQUIRED error as request_id. This does not execute the request.",
             json!({"request_id":{"type":"string","format":"uuid"}}),
             &["request_id"],
         ),
@@ -623,6 +623,80 @@ fn main() {
     if let Err(message) = run() {
         eprintln!("rekey-mcp: {message}");
         std::process::exit(1);
+    }
+}
+
+/// Agent-facing guidance shipped with Rekey. Every MCP tool it names must
+/// exist, so an Agent following it never calls a missing tool.
+#[cfg(test)]
+mod guidance_contract {
+    const GUIDANCE: [(&str, &str); 4] = [
+        (
+            "plugins/rekey/skills/rekey/SKILL.md",
+            include_str!("../../../../plugins/rekey/skills/rekey/SKILL.md"),
+        ),
+        (
+            "plugins/rekey/commands/rekey-list.md",
+            include_str!("../../../../plugins/rekey/commands/rekey-list.md"),
+        ),
+        (
+            "plugins/rekey/commands/rekey-request.md",
+            include_str!("../../../../plugins/rekey/commands/rekey-request.md"),
+        ),
+        (
+            "rekey connect managed section",
+            include_str!("../../../rekey-cli/src/commands/connect.rs"),
+        ),
+    ];
+    /// Snake-case argument and field names that guidance quotes but are not tools.
+    const FIELDS: [&str; 4] = [
+        "request_id",
+        "approval_request_id",
+        "timeout_s",
+        "challenge_id",
+    ];
+
+    fn quoted_identifiers(text: &str) -> Vec<&str> {
+        text.split('`')
+            .skip(1)
+            .step_by(2)
+            .map(|quoted| quoted.split('(').next().unwrap_or(quoted))
+            .filter(|word| {
+                word.contains('_')
+                    && word
+                        .bytes()
+                        .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_mcp_tool_named_in_agent_guidance_exists() {
+        let tools: Vec<String> = super::generic_tools()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap().to_owned())
+            .collect();
+        let mut checked = 0;
+        for (source, text) in GUIDANCE {
+            let text = if source.starts_with("rekey connect") {
+                let start = text.find("<!-- rekey:begin -->").unwrap();
+                let end = text.find("<!-- rekey:end -->").unwrap();
+                &text[start..end]
+            } else {
+                text
+            };
+            for word in quoted_identifiers(text) {
+                if FIELDS.contains(&word) {
+                    continue;
+                }
+                assert!(
+                    tools.iter().any(|tool| tool == word),
+                    "{source} names MCP tool `{word}`, which rekey-mcp does not provide"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked >= 6, "guidance should name the core tools");
     }
 }
 

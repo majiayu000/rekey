@@ -290,6 +290,7 @@ pub enum AuthorityCommand {
     DesktopRemember {
         proof: UnlockProof,
         lifetime_ms: i64,
+        unlock_only: bool,
         not_after: Option<std::time::Instant>,
         reply: Reply<(Zeroizing<Vec<u8>>, i64)>,
     },
@@ -353,7 +354,7 @@ pub enum AuthorityCommand {
         reply: Reply<()>,
     },
     AuthorizeLocalApproval {
-        proof: SecretInput,
+        proof: UnlockProof,
         draft: AuditDraft,
         not_after: Instant,
         wall_not_after_ms: i64,

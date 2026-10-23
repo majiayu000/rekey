@@ -802,8 +802,18 @@ async fn oauth_refresh_effect_survives_target_preflight_rejection_but_cache_hit_
                 "private-address",
             )));
         let result = f.agent(agent_msg::CALL, get_drive()).await;
-        assert_eq!(result.err_code(), "UPSTREAM_ERROR");
-        assert_eq!(result.metadata["message"], "upstream request failed");
+        // A refresh effect makes the outcome unconfirmed, which keeps the
+        // generic code; a plain pre-send refusal names the address block.
+        let (code, message) = if expected == "execution.blocked" {
+            (
+                "UPSTREAM_ADDRESS_BLOCKED",
+                "upstream host resolved to a non-public address",
+            )
+        } else {
+            ("UPSTREAM_ERROR", "upstream request failed")
+        };
+        assert_eq!(result.err_code(), code);
+        assert_eq!(result.metadata["message"], message);
         assert_eq!(
             result.metadata["retryable"],
             expected == "execution.blocked"
@@ -1091,11 +1101,18 @@ async fn aws_signed_target_and_presence_gate_issuance_and_actual_expiry_audit() 
         true
     );
     let decision = json!({"approval_request_id":request,"expected_review_sha256":review.metadata["review_sha256"]});
+    // Presence (App) or the vault password (basic mode) may decide; recovery never.
+    let mut recovery = Vec::new();
+    ipc::encode_proof_body(
+        ipc::ProofKind::Recovery,
+        b"synthetic-recovery",
+        &mut recovery,
+    );
     assert_eq!(
         f.admin(
             admin_msg::APPROVAL_LOCAL_APPROVE,
             decision.clone(),
-            &common::proof_body(common::PASSWORD)
+            &recovery
         )
         .await
         .err_code(),

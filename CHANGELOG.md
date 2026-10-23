@@ -16,6 +16,25 @@ JSON/SSE allocation changes and the lab child-exit event watcher. See the
 and [integration record](docs/superpowers/plans/2026-10-09-experiment-integration.md).
 This is source integration, with device/deployment/release gates separate.
 
+Basic-mode approvals (2026-10-22): `rekey approval review` accepts the
+Connection review body the daemon actually writes (it always failed with
+`INVALID_FRAME`), and `rekey approval approve|reject --password` approves with
+the vault password. `rekey unlock --remember` now issues an unlock-only ticket:
+the same-user readable file can no longer approve, reveal, stop the daemon or
+satisfy any other presence step-up. Files written earlier keep their old
+authority until `rekey unlock --remember` or `rekey lock --forget-remembered`
+is run again.
+
+Agent discovery (2026-10-23): `describe` returns the Connection's signed rules,
+caller overrides, limits, LLM model allow-list and rule expiry; named LLM
+operations list the allowed models as a schema `enum`, and `rekey list` shows
+models plus a warning within seven days of rule expiry. A target that resolves
+to a non-public address (often a proxy's fake-IP DNS) now fails with
+`UPSTREAM_ADDRESS_BLOCKED` and an actionable `next`. Approval guidance
+everywhere names `approval.challenge_id` as the ID to await and retry with,
+and tests check that shipped Agent guidance only names real MCP tools and
+`rekey` subcommands.
+
 ## 0.4.0-alpha.1
 
 **Requires a new vault.** Replace local capability/Profile launching with signed

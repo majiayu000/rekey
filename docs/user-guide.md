@@ -28,7 +28,9 @@ App 提前检查已安装信任根对应的签名密钥。已有 Secure Enclave 
 
 **减少密码输入**：在 App 安全设置中选择 30 天密码复核周期，并用原密码启用系统认证。有效期内，日常界面解锁和规则激活可使用系统认证；每次敏感操作仍需确认。30 天不是所有管理操作的免确认期。修改密码、恢复因素或续期系统认证仍需原因素。界面锁定保留已签署的 Agent 规则；锁定整个保险库会撤销访问。
 
-无 App、自定义目录或显式 `--stdin-secrets` 使用 CLI 基础模式，仍以原密码操作。CLI 的 `rekey unlock --remember 7d`（最长 30d）是另一种机制：0600 的 `remembered-unlock.key` 用于后台重启解锁，同用户可读，不等于 App 的受保护系统认证，本次 App 接入不会读取它来批准敏感操作。`rekey lock --forget-remembered` 可撤销此记住状态。
+无 App、自定义目录或显式 `--stdin-secrets` 使用 CLI 基础模式，仍以原密码操作。CLI 的 `rekey unlock --remember 7d`（最长 30d）是另一种机制：0600 的 `remembered-unlock.key` 用于后台重启解锁，同用户可读，不等于 App 的受保护系统认证，也不能代替敏感操作证明。`rekey lock --forget-remembered` 可撤销此记住状态。这把密钥**只能用于解锁**：它不能批准写操作，也不能代替任何二次验证（明文查看、关机等）。2026-10-22 之前用 `--remember` 写下的文件不会自动降级，请重新执行一次 `rekey unlock --remember` 或 `rekey lock --forget-remembered`。
+
+**不用 App 批准（基础模式）**：写操作进入审批后，先用 `rekey approval pending` 找到请求，用 `rekey approval review ID` 查看完整请求和 `review_sha256`，确认后执行 `rekey approval approve ID --review-sha256 HASH --password`，在隐藏输入里填保险库密码（脚本用 `--password-stdin`）；拒绝用 `reject`。连续输错会触发与解锁相同的限速。
 
 常用选项：`--name` 设置连接名，`--credential-id` 复用已保存密钥，`--model` 可重复，`--valid-days` 设置规则有效期（默认 90 天）。`--app` 明确要求走 App，不能与 `--stdin-secrets` 合用。OAuth 的 client 参数在 App 表单中填写。取消或草案失败后，可在凭据来源中选择已保存条目继续，无需再次粘贴 Key。
 
@@ -83,7 +85,7 @@ rekey connection list
 rekey describe github.list_issues
 ```
 
-`list` 返回可用的公共能力，包括已签署的 T1 派生能力；不会返回密钥或 T1 根凭据 ID。`connection list` 是管理员编辑视图，返回完整签名编辑基线。操作是否可用由当前策略决定，不凭命令名称假定授权。
+`list` 返回可用的公共能力，包括已签署的 T1 派生能力；不会返回密钥或 T1 根凭据 ID。LLM 连接会列出签名的模型白名单与额度，文本输出末尾提示签名规则还有几天过期（不足 7 天时警告）。`describe` 同时返回该 Connection 的签名规则、本调用方的附加规则、限额与过期时间；LLM 具名操作的 `model` 参数只接受白名单中的值。`connection list` 是管理员编辑视图，返回完整签名编辑基线。操作是否可用由当前策略决定，不凭命令名称假定授权。
 
 以下例子假定 App 已激活名为 `github` 的 GitHub PAT Connection，绑定相应仓库规则。替换公开的 owner / repo 参数：
 

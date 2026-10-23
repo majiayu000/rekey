@@ -380,7 +380,7 @@ const INSTRUCTIONS: &str = "<!-- rekey:begin -->
 ## 使用密钥
 - 需要调用外部 API、git push 或使用任何凭据时，使用 Rekey：MCP 工具 `list_capabilities` / `call`，或命令 `{rekey} list` / `{rekey} call`。
 - 不要向用户索要 API Key，不要读取或写入 .env 中的密钥，不要把密钥写进代码。
-- 缺少权限或连接时调用 `request_access` 并说明理由；收到 APPROVAL_REQUIRED 时调用 `await_approval`。
+- 缺少权限或连接时调用 `request_access` 并说明理由；收到 APPROVAL_REQUIRED 时用错误里的 `approval.challenge_id`（不是顶层 `request_id`）调用 `await_approval`，批准后带同一个 ID 重试原请求。
 - Agent 写的程序使用 `{rekey} list` 给出的本机服务地址和占位 Key `rekey`。
 <!-- rekey:end -->
 ";

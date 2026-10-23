@@ -393,14 +393,72 @@ pub fn parse_proof_body(body: &[u8]) -> Result<(ProofKind, &[u8]), FrameError> {
     Ok((kind, proof))
 }
 
-/// Local decisions accept only an explicit, nonempty Presence proof envelope.
+/// Local decisions accept an explicit, nonempty Presence (App) or vault
+/// Password (basic-mode CLI) envelope; Recovery is never an approval proof.
 /// Secret syntax and current-key verification remain in the Authority.
-pub fn parse_local_approval_proof_body(body: &[u8]) -> Result<&[u8], FrameError> {
+pub fn parse_local_approval_proof_body(body: &[u8]) -> Result<(ProofKind, &[u8]), FrameError> {
     let (kind, proof) = parse_proof_body(body)?;
-    if kind != ProofKind::Presence || proof.is_empty() {
+    if !matches!(kind, ProofKind::Presence | ProofKind::Password) || proof.is_empty() {
         return Err(FrameError::InvalidField);
     }
-    Ok(proof)
+    Ok((kind, proof))
+}
+
+/// Metadata record of `APPROVAL_LOCAL_REVIEW` and the review body written by
+/// Connection, SSH and derived-credential approvals.
+pub const LOCAL_APPROVAL_REVIEW_RECORD_TYPE: &str = "rekey.approval.local-review.v1";
+/// Review body written by the lab session approval path.
+pub const SESSION_APPROVAL_REVIEW_RECORD_TYPE: &str = "rekey.approval.review.v1";
+
+/// Validates one `APPROVAL_LOCAL_REVIEW` reply exactly as the daemon emits it.
+/// Returns the metadata and the original UTF-8 review body (None when the
+/// review was already cleared). Clients must not re-serialize the body: the
+/// review digest covers these exact bytes.
+pub fn validate_local_review_reply<'a>(
+    id: ApprovalRequestId,
+    metadata: &[u8],
+    body: &'a [u8],
+) -> Result<(LocalApprovalReviewResponse, Option<&'a str>), FrameError> {
+    let metadata: LocalApprovalReviewResponse =
+        serde_json::from_slice(metadata).map_err(|_| FrameError::InvalidField)?;
+    let lower_hex_digest = metadata.review_sha256.len() == 64
+        && metadata
+            .review_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+    if metadata.approval_request_id != id
+        || metadata.record_type != LOCAL_APPROVAL_REVIEW_RECORD_TYPE
+        || !lower_hex_digest
+        || metadata.body_len as usize != body.len()
+        || body.len() > RESPONSE_BODY_MAX_BYTES as usize
+    {
+        return Err(FrameError::InvalidField);
+    }
+    if body.is_empty() {
+        if matches!(
+            metadata.state,
+            LocalApprovalState::Pending | LocalApprovalState::Approved
+        ) {
+            return Err(FrameError::InvalidField);
+        }
+        return Ok((metadata, None));
+    }
+    let original = std::str::from_utf8(body).map_err(|_| FrameError::InvalidField)?;
+    let review: LocalApprovalReview =
+        serde_json::from_str(original).map_err(|_| FrameError::InvalidField)?;
+    review
+        .challenge
+        .validate()
+        .map_err(|_| FrameError::InvalidField)?;
+    if !matches!(
+        review.record_type.as_str(),
+        LOCAL_APPROVAL_REVIEW_RECORD_TYPE | SESSION_APPROVAL_REVIEW_RECORD_TYPE
+    ) || review.challenge.approval_request_id != id
+        || !matches!(review.challenge.approver, ApproverSpec::LocalPresence {})
+    {
+        return Err(FrameError::InvalidField);
+    }
+    Ok((metadata, Some(original)))
 }
 
 /// Zero-copy parse; the caller owns zeroization of the backing buffer.
@@ -453,7 +511,7 @@ impl ErrorEnvelope {
             message: "local approval required".to_owned(),
             retryable: false,
             approval: Some(approval),
-            next: Some("Call await_approval(request_id) to wait for the user decision.".into()),
+            next: Some("Call await_approval with request_id set to approval.challenge_id (not this error's request_id), then retry the same call with approval_request_id set to that challenge_id.".into()),
         }
     }
 }
@@ -1588,7 +1646,7 @@ mod tests {
     }
 
     #[test]
-    fn local_decisions_require_only_presence_and_review_debug_hides_request() {
+    fn local_decisions_require_presence_or_password_and_review_debug_hides_request() {
         let proof = b"synthetic-presence-input";
         for kind in [
             ProofKind::Password,
@@ -1597,8 +1655,11 @@ mod tests {
         ] {
             let mut body = Vec::new();
             encode_proof_body(kind, proof, &mut body);
-            if kind == ProofKind::Presence {
-                assert_eq!(parse_local_approval_proof_body(&body).unwrap(), proof);
+            if kind != ProofKind::Recovery {
+                assert_eq!(
+                    parse_local_approval_proof_body(&body).unwrap(),
+                    (kind, &proof[..])
+                );
                 body.push(0);
                 assert!(parse_local_approval_proof_body(&body).is_err());
             } else {
@@ -1628,6 +1689,76 @@ mod tests {
         let decoded: LocalApprovalReview = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded.canonical_request.get(), canonical);
         assert_eq!(LOCAL_APPROVAL_REVIEW_HASH_PREFIX, b"RKREVIEW\0\x01");
+    }
+
+    #[test]
+    fn local_review_reply_accepts_both_daemon_body_types_and_rejects_others() {
+        let challenge = approval_challenge(ApproverSpec::LocalPresence {});
+        let id = challenge.approval_request_id;
+        let reply = |record_type: &str, state: &str| {
+            let body = serde_json::to_vec(&serde_json::json!({
+                "record_type": record_type, "challenge": challenge,
+                "action_name": "trusted action", "origin": "https://example.com",
+                "method": "POST", "canonical_request": {"body": null}
+            }))
+            .unwrap();
+            let metadata = serde_json::to_vec(&serde_json::json!({
+                "record_type": LOCAL_APPROVAL_REVIEW_RECORD_TYPE,
+                "approval_request_id": id, "review_sha256": "ab".repeat(32),
+                "state": state, "body_len": body.len()
+            }))
+            .unwrap();
+            (metadata, body)
+        };
+        for record_type in [
+            LOCAL_APPROVAL_REVIEW_RECORD_TYPE,
+            SESSION_APPROVAL_REVIEW_RECORD_TYPE,
+        ] {
+            let (metadata, body) = reply(record_type, "pending");
+            let (parsed, original) = validate_local_review_reply(id, &metadata, &body).unwrap();
+            assert_eq!(parsed.state, LocalApprovalState::Pending);
+            assert_eq!(original.unwrap().as_bytes(), body);
+        }
+        let (metadata, body) = reply("rekey.approval.other.v1", "pending");
+        assert!(validate_local_review_reply(id, &metadata, &body).is_err());
+        let other = ApprovalRequestId::new_random();
+        let (metadata, body) = reply(LOCAL_APPROVAL_REVIEW_RECORD_TYPE, "pending");
+        assert!(validate_local_review_reply(other, &metadata, &body).is_err());
+        assert!(validate_local_review_reply(id, &metadata, &body[1..]).is_err());
+        let cleared = serde_json::to_vec(&serde_json::json!({
+            "record_type": LOCAL_APPROVAL_REVIEW_RECORD_TYPE,
+            "approval_request_id": id, "review_sha256": "ab".repeat(32),
+            "state": "consumed", "body_len": 0
+        }))
+        .unwrap();
+        assert!(
+            validate_local_review_reply(id, &cleared, &[])
+                .unwrap()
+                .1
+                .is_none()
+        );
+        let pending_empty = String::from_utf8(cleared)
+            .unwrap()
+            .replace("consumed", "pending");
+        assert!(validate_local_review_reply(id, pending_empty.as_bytes(), &[]).is_err());
+    }
+
+    #[test]
+    fn desktop_remember_unlock_only_is_optional_on_the_wire() {
+        let app: DesktopRememberMeta = serde_json::from_str(r#"{"lifetime_ms":1000}"#).unwrap();
+        assert!(!app.unlock_only);
+        assert_eq!(
+            serde_json::to_string(&app).unwrap(),
+            r#"{"lifetime_ms":1000}"#
+        );
+        let cli = DesktopRememberMeta {
+            lifetime_ms: 1000,
+            unlock_only: true,
+        };
+        assert_eq!(
+            serde_json::to_string(&cli).unwrap(),
+            r#"{"lifetime_ms":1000,"unlock_only":true}"#
+        );
     }
 
     fn approval_challenge(approver: ApproverSpec) -> ApprovalChallenge {
@@ -2281,6 +2412,9 @@ pub struct ConnectionCapability {
     pub read: crate::connection::RuleEffect,
     pub write: crate::connection::RuleEffect,
     pub operations: Vec<crate::connection::PresetOperation>,
+    /// Signed LLM model allow-list and budgets, when the Connection has them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm: Option<crate::connection::ConnectionLlmLimits>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -2288,6 +2422,9 @@ pub struct ListCapabilitiesResponse {
     pub connections: Vec<ConnectionCapability>,
     pub derived_credentials: Vec<DerivedCredentialCapability>,
     pub service_url: Option<String>,
+    /// When the active signed rules stop authorizing calls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_expires_at_ms: Option<i64>,
 }
 /// Public signed T1 authority. The source credential identifier is not part of
 /// agent discovery, and this record contains no issued credential values.
@@ -2306,6 +2443,18 @@ pub struct DerivedCredentialCapability {
 pub struct DescribeResponse {
     pub connection: String,
     pub operation: crate::connection::PresetOperation,
+    /// The Connection's public signed rules (never credential identifiers).
+    #[serde(default)]
+    pub rules: Vec<crate::connection::ConnectionRule>,
+    /// Signed overrides for this caller; omitted when there are none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub caller_rules: Vec<crate::connection::ConnectionRule>,
+    #[serde(default)]
+    pub limits: crate::connection::ConnectionLimits,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm: Option<crate::connection::ConnectionLlmLimits>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_expires_at_ms: Option<i64>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -2436,6 +2585,9 @@ pub struct OAuthLoginMeta {
 #[serde(deny_unknown_fields)]
 pub struct DesktopRememberMeta {
     pub lifetime_ms: i64,
+    /// Basic-mode file tickets: resume/unlock only, never a presence proof.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unlock_only: bool,
 }
 
 #[derive(Serialize, Deserialize)]

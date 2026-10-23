@@ -53,6 +53,9 @@ pub fn finish_runtime(state: &std::path::Path) -> Result<(), AuthorityError> {
     Ok(())
 }
 const MAGIC: &[u8; 8] = b"RKDSK001";
+// Same 84-byte layout; the magic is bound in AAD. Basic-mode file tickets may
+// resume/unlock but never authorize a presence proof.
+const MAGIC_UNLOCK_ONLY: &[u8; 8] = b"RKDSU001";
 const LIFETIME_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 const MAX_REMEMBER_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 
@@ -63,6 +66,7 @@ pub(super) struct PresenceGrant {
     issued_at_ms: i64,
     expires_at_ms: i64,
     monotonic_deadline: Instant,
+    step_up: bool,
 }
 
 // DeadlineOnly retains only a same-ticket lifetime constraint, never proof authority.
@@ -102,7 +106,12 @@ fn decode_presence_key(input: &[u8]) -> Result<Zeroizing<[u8; 32]>, AuthorityErr
 }
 
 impl PresenceGrant {
-    fn new(key: &[u8; 32], issued: i64, expires: i64) -> Result<Self, AuthorityError> {
+    fn new(
+        key: &[u8; 32],
+        issued: i64,
+        expires: i64,
+        step_up: bool,
+    ) -> Result<Self, AuthorityError> {
         let now = crate::now_ms()?;
         if !expires
             .checked_sub(issued)
@@ -120,6 +129,7 @@ impl PresenceGrant {
             issued_at_ms: issued,
             expires_at_ms: expires,
             monotonic_deadline,
+            step_up,
         })
     }
 
@@ -155,7 +165,7 @@ impl Worker {
         self.require_unlocked()?;
         let key = decode_presence_key(proof.expose())?;
         match &self.presence_grant {
-            Some(PresenceState::Active(grant)) => {
+            Some(PresenceState::Active(grant)) if grant.step_up => {
                 grant.verify_at(&key, crate::now_ms()?, Instant::now())
             }
             _ => Err(AuthorityError::InvalidUnlockCredential),
@@ -181,11 +191,22 @@ impl Worker {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn remember_desktop(
         &mut self,
         proof: UnlockProof,
         not_after: Option<Instant>,
         lifetime_ms: i64,
+    ) -> Result<(Zeroizing<Vec<u8>>, i64), AuthorityError> {
+        self.remember_desktop_with(proof, not_after, lifetime_ms, false)
+    }
+
+    pub(super) fn remember_desktop_with(
+        &mut self,
+        proof: UnlockProof,
+        not_after: Option<Instant>,
+        lifetime_ms: i64,
+        unlock_only: bool,
     ) -> Result<(Zeroizing<Vec<u8>>, i64), AuthorityError> {
         ensure_mutation_current(not_after)?;
         if !(1_000..=MAX_REMEMBER_MS).contains(&lifetime_ms) {
@@ -208,9 +229,13 @@ impl Worker {
                 .checked_add(lifetime_ms)
                 .ok_or(AuthorityError::ClockUnavailable)?;
             let key = Zeroizing::new(random_array::<32>()?);
-            let grant = PresenceGrant::new(&key, issued, expires)?;
+            let grant = PresenceGrant::new(&key, issued, expires, !unlock_only)?;
             let mut header = Vec::with_capacity(24);
-            header.extend_from_slice(MAGIC);
+            header.extend_from_slice(if unlock_only {
+                MAGIC_UNLOCK_ONLY
+            } else {
+                MAGIC
+            });
             header.extend_from_slice(&issued.to_be_bytes());
             header.extend_from_slice(&expires.to_be_bytes());
             let mut aad = header.clone();
@@ -323,12 +348,14 @@ impl Worker {
             file.take(85)
                 .read_to_end(&mut record)
                 .map_err(AuthorityError::storage)?;
-            if record.len() != 84 || &record[..8] != MAGIC {
-                return Err(AuthorityError::InvalidUnlockCredential);
-            }
+            let step_up = match record.get(..8) {
+                Some(magic) if record.len() == 84 && magic == MAGIC => true,
+                Some(magic) if record.len() == 84 && magic == MAGIC_UNLOCK_ONLY => false,
+                _ => return Err(AuthorityError::InvalidUnlockCredential),
+            };
             let issued = i64::from_be_bytes(record[8..16].try_into().unwrap());
             let expires = i64::from_be_bytes(record[16..24].try_into().unwrap());
-            let mut grant = PresenceGrant::new(&key, issued, expires)?;
+            let mut grant = PresenceGrant::new(&key, issued, expires, step_up)?;
             if let Some(previous) = &self.presence_grant {
                 grant.cap_to_same_ticket(previous.grant());
             }
@@ -593,7 +620,7 @@ mod tests {
             ));
         }
         let now = crate::now_ms().unwrap();
-        let grant = PresenceGrant::new(&key, now - 1000, now - 1000 + LIFETIME_MS).unwrap();
+        let grant = PresenceGrant::new(&key, now - 1000, now - 1000 + LIFETIME_MS, true).unwrap();
         grant.verify_at(&key, now, Instant::now()).unwrap();
         assert!(grant.verify_at(&[0xcd; 32], now, Instant::now()).is_err());
         assert!(
@@ -611,7 +638,7 @@ mod tests {
                 .verify_at(&key, now, grant.monotonic_deadline)
                 .is_err()
         );
-        assert!(PresenceGrant::new(&key, now, now + MAX_REMEMBER_MS + 1).is_err());
+        assert!(PresenceGrant::new(&key, now, now + MAX_REMEMBER_MS + 1, true).is_err());
     }
 
     #[test]
@@ -804,6 +831,44 @@ mod tests {
             worker.recovery_rotate(presence(&key), None),
             Err(AuthorityError::Locked)
         ));
+    }
+
+    #[test]
+    fn unlock_only_ticket_resumes_but_never_proves_presence() {
+        let (_dir, mut worker, _) = fixture();
+        let (key, _) = worker
+            .remember_desktop_with(password(), None, 604_800_000, true)
+            .unwrap();
+        let path = worker.config.state_dir.join(FILE);
+        assert_eq!(&fs::read(&path).unwrap()[..8], MAGIC_UNLOCK_ONLY);
+        assert!(worker.verify_proof(&presence(&key)).is_err());
+        worker.next_unlock_at = Instant::now();
+        // A daemon restart resumes from the same file; the grant stays unlock-only.
+        worker.set_locked("restart-test", true).unwrap();
+        worker
+            .resume_desktop(SecretInput::from_slice(&key), None)
+            .unwrap();
+        assert!(matches!(worker.state, VaultState::Unlocked { .. }));
+        assert!(worker.verify_proof(&presence(&key)).is_err());
+        worker.next_unlock_at = Instant::now();
+        // The magic is authenticated: relabeling the ticket cannot upgrade it.
+        worker.set_locked("restart-test", true).unwrap();
+        let mut ticket = fs::read(&path).unwrap();
+        ticket[..8].copy_from_slice(MAGIC);
+        fs::write(&path, &ticket).unwrap();
+        assert!(
+            worker
+                .resume_desktop(SecretInput::from_slice(&key), None)
+                .is_err()
+        );
+        assert!(matches!(worker.state, VaultState::Locked));
+        // An App ticket replaces it and proves presence as before.
+        worker.unlock(password()).unwrap();
+        let (app_key, _) = worker
+            .remember_desktop_with(password(), None, 604_800_000, false)
+            .unwrap();
+        assert_eq!(&fs::read(&path).unwrap()[..8], MAGIC);
+        worker.verify_proof(&presence(&app_key)).unwrap();
     }
 
     #[test]

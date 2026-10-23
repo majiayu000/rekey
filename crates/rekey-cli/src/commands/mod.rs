@@ -467,8 +467,13 @@ fn remember_unlock(
 ) -> Result<(), CliError> {
     let kind = proof_kind(recovery);
     let body = proof_body(kind, secret);
-    let metadata = serde_json::to_vec(&ipc::DesktopRememberMeta { lifetime_ms })
-        .map_err(|_| CliError::local("INVALID_FRAME", "invalid remember request"))?;
+    // The file is same-user readable: request an unlock-only ticket that the
+    // daemon never accepts as a presence proof (approvals, reveal, step-up).
+    let metadata = serde_json::to_vec(&ipc::DesktopRememberMeta {
+        lifetime_ms,
+        unlock_only: true,
+    })
+    .map_err(|_| CliError::local("INVALID_FRAME", "invalid remember request"))?;
     let (meta, key) = admin(state_dir)?.call(admin_msg::DESKTOP_REMEMBER, &metadata, &body)?;
     let key = Zeroizing::new(key);
     #[derive(Deserialize)]
@@ -1201,6 +1206,7 @@ pub fn desktop_restore_access(
     let metadata = match ttl {
         Some(ttl) => serde_json::to_vec(&ipc::DesktopRememberMeta {
             lifetime_ms: parse_ttl_ms(ttl)?,
+            unlock_only: false,
         })
         .map_err(|_| CliError::local("INVALID_FRAME", "invalid remember request"))?,
         None => b"{}".to_vec(),
