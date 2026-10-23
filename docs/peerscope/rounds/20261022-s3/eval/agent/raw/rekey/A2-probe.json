@@ -1,0 +1,14 @@
+{
+ "product": "rekey",
+ "surface": "mcp jsonrpc scripted probe (no LLM; rekey-mcp from main@f7d857a, isolated --state-dir)",
+ "k_index": 0,
+ "turns": null,
+ "recovered_from_error": null,
+ "llm_driven": false,
+ "success": true,
+ "wall_ms": 1204,
+ "leaked_key": false,
+ "trace": "evidence/self-rekey/mcp-probe-A2A3-separate-process.jsonl",
+ "finding": "http github GET /user -> status 401 'Bad credentials' (unauthenticated baseline is 'Requires authentication') => fake ghp_ injected and reached api.github.com; response has no key. httpbin echo path could not be used: local fake-ip DNS (198.18/15) is refused by Rekey with generic UPSTREAM_ERROR.",
+ "task": "A2"
+}

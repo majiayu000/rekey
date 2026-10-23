@@ -1,0 +1,300 @@
+crawlume	0	2026-10-22	false	true	
+awesome-grok-bot	72	2026-10-22	false	false	5468 live x.ai/bot shares for Grok Bot — curated catalog with shelf tiers, searchable Pages, bilingual README. Not a prompt dump.
+dsh-plugin-registry	3	2026-10-22	false	false	Searchable DeepSeek Harness plugin registry with curated listings and manifest-verified GitHub discovery.
+claude-skill-registry	687	2026-10-22	false	false	Searchable Claude Code skills catalog with source-linked guides and generated registry artifacts
+stealthprint	31	2026-10-22	false	false	Python toolkit for fingerprinting anonymous LLMs on OpenAI-compatible endpoints using tokenizer, context, error, and vision probes
+claude-skill-registry-core	23	2026-10-22	false	false	Source pipeline for Claude Skills Registry: discovery, archive validation, search indexes, and static skill guides
+resnode-radar	0	2026-10-22	false	false	VPS stock monitor and owner-run review site for Chinese cross-border operators.
+rekey	0	2026-10-22	false	false	Local Credential Authority for AI agents: fixed actions, capability tokens, no secret-read API
+orbit	0	2026-10-22	false	true	A local AI content operations system for research, creation, review, publishing, and analytics.
+cove	0	2026-10-22	false	false	Personal AI gateway in Go with a local web console, model routing, API keys, and usage tracking. Development preview.
+keepline	7	2026-10-22	false	false	Local CLI and dashboard for monitoring Codex and Claude Code sessions, recovering interrupted work where supported, and tracking usage and costs.
+spellbook	288	2026-10-22	false	false	Cross-runtime skills for Claude Code, Codex, and multi-agent workflows.
+skill-checkup	0	2026-10-22	false	false	Audit Agent Skills (SKILL.md) across Claude Code and Codex: broken, drifted, competing, never-triggering and one-sided skills. Read-only, offline.
+tsrs-doctor	0	2026-10-22	false	false	Compare tsgo (TypeScript 7) and tsrs, the Rust port of the TypeScript compiler, on your own repo. One command: diagnostics diff matched by file/line/code, speed and peak-memory benchmark, JSON/Markdown reports, and a committable VS Code setup for tsrs (oxc-project/tsrs#661).
+rust1100-check	0	2026-10-22	false	false	Rust 1.100 readiness check for CI: unquoted YAML versions read as Rust 1.1, string version compares in MSRV scripts, beta lint diff, Cargo min-publish-age cooldown preview
+trustsweep	0	2026-10-22	false	false	Find CA bundles in venvs, node_modules, wheels, jars, container images and binaries that still trust a revoked CA (eMudhra 2026, CVE-2026-111943) and the package to upgrade. Offline Rust CLI, SARIF output.
+exposewatch	0	2026-10-22	false	false	Find exposed homelab Docker containers running a vulnerable version with an actively exploited CVE (CISA KEV, EPSS). Ranked, with the fix. Catches Plex2Shell.
+loom	3	2026-10-22	false	false	The skill registry and projection control plane for AI coding agents
+claude-skill-registry-data	27	2026-10-22	false	false	Archived Claude Code skill files and metadata consumed by the Claude Skills Registry pipeline
+agent-releases	1	2026-10-22	false	false	Unofficial Chinese release tracker for Claude Code, Codex CLI/App and Grok Build. Previews drafts and tracks X publication state in SQLite.
+helixflow	0	2026-10-22	false	false	Local-first AI workflow orchestrator with an agent-built node graph, provider execution, and version rollback. Development is frozen.
+issue-lens	0	2026-10-21	false	false	Turn real-world GitHub issues into test-design inspiration: mine high-quality resolved issues from peer products by form (desktop/CLI), store in SQLite+FTS, render QA reports and search
+vibeguard	43	2026-10-21	false	false	Rust CLI with scoped review rules, native Bash and Git hooks, and installation diagnostics for Claude Code and Codex.
+page-lingo	0	2026-10-21	false	true	Lightweight Chrome MV3 immersive translation extension with ASR + side panel
+harness	85	2026-10-21	false	false	Run fleets of parallel coding agents with governance — Rust control plane for Claude Code & Codex: orchestration, policy, cross-agent review, observability.
+remem	34	2026-10-21	false	false	Local-first persistent memory for Claude Code & Codex CLI - Rust CLI, hooks, MCP server, SQLite/SQLCipher, auditable recall for long-running coding work.
+sage	12	2026-10-21	false	false	Rust-native AI coding agent CLI with multi-provider LLM support, Ollama, MCP tools, and resumable sessions
+jsonrepair-rs	4	2026-10-21	false	false	Repair broken JSON in Rust — fix quotes, commas, comments, truncation, and 30+ issues from LLM outputs
+ccstats	14	2026-10-21	false	false	Local-first CLI (and desktop) for token and cost analytics across AI coding agents
+quotabar	54	2026-10-21	false	false	Menubar app for Claude Code, Codex, Cursor and Grok quota windows, remaining limits and local cost estimates. Antigravity status preview.
+motionkit	0	2026-10-21	false	true	用代码做视频的基础设施：时间驱动的动画协议 + Studio 预览 + 检查 + 逐帧导出，附带模板，面向 code agent 设计
+palim	0	2026-10-21	false	false	JSON diff and patch library for Rust: reversible deltas, array identity moves, Unicode text, RFC 6902 JSON Patch and RFC 7396 Merge Patch
+knowledge-base	0	2026-10-21	false	true	Personal unified knowledge base — Obsidian vault + Git source of truth
+dsh-desk	15	2026-10-21	false	false	Installable Tauri desktop distribution for DeepSeek Harness with a bundled runtime, trusted plugin review, and daily compatibility checks.
+hermes-agent	0	2026-10-20	true	false	The agent that grows with you
+agent-learning-workbench	0	2026-10-20	false	true	Local-first, question-driven learning workbench for Markdown documentation and reviewable AI assistance
+model-chronicle	0	2026-10-20	false	false	模型编年史：大模型发布时间线、规格与基准对照
+Obsidian	0	2026-10-20	false	true	
+daily	0	2026-10-20	false	true	每日侦察 vault（知识/工具/综合 + ledger）
+astra-gallery	0	2026-10-19	false	false	GPT-6 Astra public build gallery with original sources, demos, and cost notes where available.
+1v1	0	2026-10-19	true	false	Claude Code skill for increasing efficiency and reliability of claude models at high stake and near impossible tasks. 
+awesome-jev	2	2026-10-19	false	false	A curated list of Jev / TypeSafe System One projects, SDKs, tutorials, and evaluations. English and 简体中文.
+rclean	1	2026-10-19	false	false	Rust-native CLI for finding and cleaning rebuildable developer artifacts
+zundujiadu	0	2026-10-16	false	true	
+testg	0	2026-10-16	false	true	
+test-loop	0	2026-10-16	false	false	Language-agnostic test-loop skills and preview scripts for drift detection, failure classification, reports, pre-commit hooks, and CI.
+react-admin	0	2026-10-16	false	true	
+code-rstore	0	2026-10-16	false	true	
+specrail	23	2026-10-16	false	false	Spec-first rails for agent-assisted repository workflows.
+server_config	0	2026-10-16	false	true	
+rs-view	0	2026-10-16	false	false	backend powered by RUST
+room	0	2026-10-16	false	true	
+FlaskWebProject1	0	2026-10-16	false	true	
+rnk	14	2026-10-16	false	false	Declarative TUI framework for Rust with React-like hooks, flexbox layout, and 45+ components
+math-prompt	0	2026-10-16	false	true	
+gateway	0	2026-10-16	false	true	
+My-blog	0	2026-10-16	false	true	
+chat-agent-bh	0	2026-10-16	false	true	
+chatgpt-for-desktop	4	2026-10-16	false	false	Small desktop app for ChatGPT
+chat-pdf-viewer	0	2026-10-16	false	false	
+caff	2	2026-10-16	false	false	macOS menu bar app that keeps the Mac awake during long-running agent tasks (Swift + IOKit)
+MessageCenter	0	2026-10-16	false	true	
+Algorithms	0	2026-10-16	false	true	My answer to leetcode
+agent-sessions	1	2026-10-16	false	false	Rust streaming parsers and JSONL format reference for Claude Code and Codex sessions: usage, messages, tools, and provenance.
+agent-base	0	2026-10-16	false	false	TypeScript toolkit for tool-using AI agents with streaming, context management, middleware, and agentic patterns through LiteLLM or OpenAI-compatible APIs.
+keyspoor	0	2026-10-15	false	false	Offline secret scanning for AI coding workflows. Read-only MCP, Git hooks and CI checks, redacted reports, and a reusable Rust engine.
+litellm-rs	121	2026-10-15	false	false	Self-hosted Rust LLM gateway with OpenAI-compatible APIs, load balancing, failover, and a reusable Rust kernel.
+rui	0	2026-10-15	false	false	Early-stage Rust UI framework for native macOS apps with Metal GPU rendering, declarative components, and flexbox layout
+video-ai-landscape	0	2026-10-13	false	false	16 家 AI 视频厂商 CLI / Agent Skills / MCP 调研报告与技能文档阅读站（2026 年 9 月快照）
+tokenpulse	1	2026-10-11	false	false	Embeddable LLM benchmark speed measurement and offline Codex/Claude Desktop analysis, with explicit timing boundaries and output verification.
+seo-agent-suite	1	2026-10-11	false	false	Codex SEO plugin suite for Shipwise discoverability audits
+shipwise	0	2026-10-11	false	false	Agent-facing guide for planning and running open-source launches: repo design, discoverability/SEO, platform rules, templates, checklists.
+filament	0	2026-10-11	false	false	Agent-native React UI components for thinking, tools, streaming, approvals, tasks, and cost
+StarLight	0	2026-10-11	false	false	Personal programming and AI/ML learning notes, notebooks, and examples covering Python, Go, JavaScript, Rust, databases, and RAG.
+indie-brief	0	2026-10-11	false	false	Read-only indie hacker brief API and Grok Bot template
+voxel-dungeon	0	2026-10-11	false	false	Minecraft-inspired first-person roguelike dungeon crawler built with three.js
+timberman-game	0	2026-10-11	false	false	Timberman 伐木人：纯 HTML/CSS/JavaScript 浏览器游戏，左右砍树、躲避树枝，支持键盘与触屏。
+leidian-codex	0	2026-10-11	false	false	雷霆突击：零依赖 HTML5 Canvas 纵版飞行射击游戏，支持键盘与触屏操作。
+biannianshi	0	2026-10-11	false	false	大模型编年史：GPT-2 至今的发布时间线、发布间隔与发布时评测成绩 · Model Chronicle
+game-dice	0	2026-10-11	false	false	多人在线吹牛骰（Liar’s Dice）游戏：React + TypeScript 客户端、Socket.IO 服务端，支持 2–6 人与 AI 玩家。
+claude-code-anime-sounds	0	2026-10-11	false	false	Anime-themed sound effects for Claude Code hooks
+stillmotion	0	2026-10-11	false	false	Turn browser animations into frame-exact MP4 videos with synthesized sound: CSS, SVG/SMIL and WebGL recorded in headless Chrome, soundtrack rendered from the same timeline.
+blog	0	2026-10-10	false	false	Personal blog built from fully rendered, self-contained HTML posts — Eleventy shell, Pagefind search, Cloudflare Pages
+star	0	2026-10-10	false	true	找北极星：我所有关于下一步做什么的分析
+vibe-video-kit	0	2026-10-09	false	true	Reusable components, ffmpeg recipes and a frame-by-frame review method, distilled from short-video technique analysis
+auto-contributor-dashboard	0	2026-10-08	false	false	Authenticated Next.js dashboard for Auto-Contributor: monitor GitHub issues, pull requests, processing statistics and repository blacklists.
+justin-sun-prize-awards	0	2026-10-08	true	false	Canonical, machine-checkable record of the Justin Sun Prize: rules, awards, candidates, and verification evidence.
+chatgpt-pro-max-pricing	3	2026-10-08	false	false	ChatGPT Pro Max 地区价格配置快照：人民币换算、税费口径与原始来源；独立整理，非官方实时报价。
+homebrew-rclean	0	2026-10-08	false	false	Homebrew tap for rclean
+leidian	0	2026-10-08	false	false	同一 Prompt 生成的雷电风格纵版射击游戏对比：HTML5 Canvas、模型切换、并排预览与评分。
+atlas-tutorials	0	2026-10-08	false	false	Atlas 多模态 Agent 中文教程全集：48 篇完整教程与离线阅读站。
+llm-launchpad	1	2026-10-08	false	false	在 Apple Silicon Mac 上部署本地 Qwen3.8-27B：Ollama、OpenAI 兼容 API、Claude Code 与 Codex CLI 启动脚本
+terminal-namer-vs-plugin	0	2026-10-08	false	false	
+majiayu000	3	2026-10-08	false	false	Personal GitHub profile showcasing coding-agent infrastructure, Rust systems, and open-source developer tools.
+open-source-repo-ledger	0	2026-10-08	false	false	Public GitHub repository readiness ledger: license, CI, releases, metadata, and next actions.
+cc-model-watch	0	2026-10-08	false	false	Local Python statusline script for Claude Code that warns when the selected model differs from the latest served model, with optional desktop alerts.
+voice-input	0	2026-10-08	false	false	Local-first macOS dictation app with Whisper/Metal speech recognition, a SwiftUI menu bar interface and optional LLM text refinement.
+refine	1	2026-10-08	false	false	Local-first Rust toolkit for AI conversation knowledge search, session analysis and cognitive signals, with SQLite storage and CLI/desktop tools.
+homebrew-tap	0	2026-10-08	false	false	Homebrew formulae for remem, ccstats, rust-litellm-gateway, and AtlasCloud CLI.
+you-are-here	0	2026-10-08	false	true	Let your coding agent work overnight; in the morning, open one page and see where the project is. A project-map skill for Claude Code, Codex and Grok.
+codex-undo	0	2026-10-08	false	false	Local file checkpoints and safe restore for official Codex hooks
+loopscope	0	2026-10-07	false	true	Turn one Codex or Claude Code session log into a one-file HTML replay that explains what the agent did and where the time and money went.
+CLIProxyAPI	0	2026-10-07	true	false	Wrap Gemini CLI, Antigravity, ChatGPT Codex, Claude Code, Qwen Code, iFlow as an OpenAI/Gemini/Claude/Codex compatible API service, allowing you to enjoy the free Gemini 2.5 Pro, GPT 5, Claude, Qwen model through API
+vibewrapped	0	2026-10-05	false	true	Your private, local AI coding year in eight shareable cards
+openbot	0	2026-10-03	false	false	Self-hosted multi-bot chat with persistent roles, conversations, memory, and scheduled work.
+stash	1	2026-10-02	false	false	Local-first task planning for macOS and the browser, with an optional Codex/Claude Code session workbench. Task data stays on your device.
+warp-celestial	0	2026-10-02	false	false	
+claude-skill-manager	19	2026-10-02	false	false	CLI tool to discover, install, and manage Claude Code skills from a curated community registry
+chat-archive-rs	0	2026-10-02	false	false	Rust CLI for incremental, encrypted backups of local Codex and Claude Code JSONL history, with integrity verification and restore.
+rss-scout	3	2026-10-02	false	false	Rust CLI for AI-development RSS and Atom discovery, filtering, scoring, and daily Markdown reports without feed API keys.
+spaceview	1	2026-10-02	false	false	High-performance disk space analyzer for macOS with treemap visualization
+argus	5	2026-10-02	false	false	Rust CLI and GitHub Action for static supply-chain scanning across eight package ecosystems, lockfiles, and coding-agent configuration.
+gh-mine	0	2026-10-02	false	false	List your own open GitHub issues and pull requests in one command.
+homebrew-caff	0	2026-10-02	false	false	Homebrew tap for Caff, a macOS menu bar app that keeps the Mac awake during long-running agent tasks.
+docsite	0	2026-10-02	false	false	通用 HTML 文档站：自包含 HTML 文档自动生成可分类、可搜索的静态站点（侧边栏分类树 + 标签云 + 搜索），git push 自动部署
+techpulse	5	2026-10-02	false	false	AI/Tech news aggregator - Automatically collect and filter tech news from HackerNews, Reddit, GitHub Trending, RSS feeds, and Lobsters
+crypto-coin-ticker	1	2026-10-02	false	false	Cross-platform system tray app for real-time crypto price monitoring (Rust)
+awesome-goal-prompts	51	2026-10-02	false	false	Source-backed /goal contracts for Claude Code, Codex and Cursor, with a searchable catalog and separate reusable seed patterns.
+auto-contributor	3	2026-10-02	false	false	Automated GitHub contribution bot powered by Claude Code CLI — finds issues, creates PRs
+looper-public	0	2026-10-02	false	false	Go scheduler for local shell and agent-skill automation, with cron workflows, a web observer, hot reload, and SQLite metrics.
+ccp	0	2026-10-02	false	false	Isolated profiles for Claude Code — run multiple API providers side by side without breaking old sessions. Local web GUI, macOS Keychain tokens.
+agent-patterns	1	2026-10-02	false	false	Reusable Codex and Claude Code workflow skills for PR review, CI diagnosis, context handoff, session pattern mining, and human review gates.
+claude-code-xray	0	2026-10-02	false	false	Evidence-backed Chinese mechanism atlas for Claude Code
+patch-tournament	0	2026-10-02	false	false	Compare coding-agent patches in isolated workspaces, grade them with caller-supplied checks, and measure task-owned diffs. Python CLI with a Codex plugin.
+agent-harness	0	2026-10-02	false	false	Claude Code plugin for turning GitHub issues into validated pull requests with persistent workpads, review sweeps, and explicit handoff.
+werewolf-nakama	2	2026-10-01	false	false	🐺 Online multiplayer Werewolf (狼人杀) game built with Nakama + React
+autodify	0	2026-10-01	false	false	Generate and edit Dify workflows using natural language
+profile-control-plane	65	2026-10-01	false	false	Compile a GitHub identity into an animated, dark/light, self-hosted profile README.
+ephemera	0	2026-10-01	false	false	Browser animations generated entirely by code: ray-traced black hole, a million GPU particles, synthwave with live-sequenced music, and an ink-wash short film. No images, no audio files.
+neural-cinema	0	2026-10-01	false	false	Interactive Three.js neural signal-flow visualization
+mysterious-revival	1	2026-10-01	false	false	神秘复苏：鬼域求生——基于小说《神秘复苏》的 Godot 4.5 / GDScript Roguelike 驭鬼游戏学习项目。
+games-monorepo	1	2026-10-01	false	false	🎮 Multiplayer games collection: Werewolf (狼人杀) + Poker | Built with Nakama + React
+better-macos	0	2026-10-01	false	false	Native macOS app for 7/14-day rolling bets, one daily focus and evidence-based reviews, with optional local Codex coaching.
+life-looper	0	2026-09-30	false	true	Multi-platform auto-reply orchestrator (Go cron + Claude Code skills)
+skills-registry-web	0	2026-09-30	false	true	Open Claude skills catalog with trust signals and install guidance
+trendhunter	0	2026-09-27	false	true	
+painhunter	0	2026-09-27	false	true	从 Reddit 和 Twitter 自动发掘用户痛点的 SaaS 平台
+loom-registry	0	2026-09-16	false	true	Local skill registry: governance policy, canonical skill sources, retirement/quarantine records
+ai-manju	1	2026-09-13	false	false	
+starship-old	0	2026-09-13	false	false	
+codia	1	2026-09-13	false	false	Web-based 3D AI virtual companion with voice interaction, lip sync, and emotional expressions
+hongbao	0	2026-09-13	false	false	微信红包封面 AI 生成工具 - 二次元动态红包封面制作
+workspaceguard-mcp	0	2026-09-13	false	false	Structured workspace runtime for long-running coding agents over MCP
+chatgptcli	1	2026-09-13	false	false	Web-backed ChatGPT CLI via opencli Browser Bridge
+rust-windows-app	0	2026-09-12	false	false	Simple Windows app built in Rust
+hce-0912-intake-routing	0	2026-09-12	false	true	
+hce-0912-intake-coverage	0	2026-09-12	false	true	
+hce-0912-definition-visibility	0	2026-09-12	false	true	
+hce-0912-durable-transcript	0	2026-09-12	false	true	
+hce-0912-bun-toolchain	0	2026-09-12	false	true	
+hce-0912-ccstats-pr	0	2026-09-12	false	true	
+hce-0912-issue-lifecycle	0	2026-09-12	false	true	
+hce-0912-startup-recovery	0	2026-09-12	false	true	
+hce-0912-techpulse-pr	0	2026-09-12	false	true	
+hce-0912-vibeguard-pr	0	2026-09-12	false	true	
+hce-0912-rekey-pr	0	2026-09-12	false	true	
+hce-0912-operator-snapshot-pr	0	2026-09-12	false	true	
+hce-0912-context-protocol	0	2026-09-12	false	true	
+hce-0912-loom-pr	0	2026-09-12	false	true	
+hce-0912-keepline-pr	0	2026-09-12	false	true	
+harness-prompt-replay-20260912	0	2026-09-12	false	true	
+harness-cursor-eval-20260910-152946	0	2026-09-12	false	true	Isolated real Cursor workflow evaluation using pinned historical Loom code.
+verdict	0	2026-09-12	false	false	Pin an AI agent skill capabilities, detect drift/rug-pull, and judge runtime behavior. Local-first Rust.
+fde	0	2026-09-12	false	true	Sevenonic mail-intake PO checker and local demo
+cre-om-generator-project	0	2026-09-09	false	true	CRE OM Generator - AI-powered Commercial Real Estate Offering Memorandum Generator
+tapnow-canvas	0	2026-09-08	false	true	TapNow canvas research shell and notes (private)
+cuter	0	2026-08-31	false	true	Cuter commercial AI video editor
+rekey-ci-dogfood	0	2026-08-30	false	false	Disposable CI verification mirror for Rekey
+cognition-daily-system	0	2026-08-30	false	true	
+rekey-dogfood	0	2026-08-29	false	true	Private disposable repository for Rekey fixed-action dogfood
+bidline	0	2026-08-29	false	true	Transparent sponsored leaderboard with Stripe Checkout and first-party analytics
+trainer-hub	0	2026-08-25	false	true	
+aperture-video-site	0	2026-08-25	false	true	APERTURE — 视频超分辨率与修复 API 的双语产品站：落地页 + 登录/注册，纯静态无依赖
+hype-radar-poc	0	2026-08-24	false	true	
+claude-design-extracted	0	2026-08-24	false	true	Private archive of Claude Code 2.1.234 design / design-sync skills extracted from the binary.
+act	0	2026-08-13	true	false	Run your GitHub Actions locally 🚀
+terraform-provider-github	0	2026-08-13	true	false	Terraform GitHub provider
+vllm	0	2026-08-12	true	false	A high-throughput and memory-efficient inference and serving engine for LLMs
+douyin-mcp	0	2026-08-07	false	true	
+remem-web	0	2026-07-18	false	true	
+rclean-ghsa-mx44-9hpr-hpff	0	2026-07-16	false	true	
+better	0	2026-07-03	false	true	Personal portfolio control plane — goals, capacity allocation, independent audit, and ROI loop on top of an AI coding fleet (harness/remem/vibeguard)
+keel	0	2026-07-02	false	true	
+hm-anki	0	2026-06-29	false	true	
+ChatGPT-Next-Web-online	0	2026-06-27	false	true	
+xhs-manager	0	2026-06-25	false	true	
+anosome-workflow	0	2026-06-23	false	false	Public collection of useful Claude Code dynamic workflows
+warp	0	2026-06-19	true	false	Warp is an agentic development environment, born out of the terminal.
+auto-run-agent	0	2026-06-12	false	true	Go orchestrator that lets Claude Code or Codex CLI run autonomously for hours
+codex-app-plugin-guide	0	2026-06-11	false	true	Guide and examples for Codex App plugins: app connector mappings, MCP servers, hooks, skills, marketplaces, and GUI install flows.
+ultra-studio-agent-panel	0	2026-06-08	false	true	Standalone Ultra Studio Agent chat panel
+open-claude-code	0	2026-06-06	false	true	
+computeruse	0	2026-06-06	false	true	Rust-first CLI for local desktop control by agents (macOS)
+agent-pipeline	0	2026-06-06	false	true	
+obsidian-sync-doctor	0	2026-05-19	false	true	Read-only local settings safety report for Obsidian vaults
+grok-without-heavy-guide	0	2026-05-18	false	true	Use Grok models without SuperGrok Heavy via official API-compatible endpoint
+twitter-mcp	0	2026-05-15	false	false	
+life-x	0	2026-05-14	false	true	X (Twitter) auto-reply monitor + reply skill
+om-gen	0	2026-05-14	false	true	
+om-generator-web	0	2026-05-14	false	true	
+atlascloud-cli	0	2026-05-12	false	true	Atlas CLI + MCP server monorepo (atlas + atlas-mcp binaries)
+agent-runtime	0	2026-05-06	false	true	Performance-first unified agent runtime
+pmm	0	2026-05-01	true	false	Percona Monitoring and Management: an open source database monitoring, observability and management tool
+my-config	0	2026-04-30	false	true	
+homebrew-sage	0	2026-04-30	false	false	Homebrew tap for Sage
+geminicli	0	2026-04-08	false	true	Web-backed Gemini CLI via opencli
+grokcli	0	2026-04-08	false	true	Web-backed Grok CLI via opencli
+langflow	0	2026-03-22	true	false	Langflow is a powerful tool for building and deploying AI-powered agents and workflows.
+vag	0	2026-03-20	false	true	VAG - Video Agent Generator: Agent-driven video generation orchestration service
+xhscli	0	2026-03-18	false	true	
+xiaohongshu-mcp	0	2026-03-16	false	true	
+xhs-mcp-v2	0	2026-03-15	false	true	
+boss-mcp	0	2026-03-15	false	true	
+reddit-bot	0	2026-03-15	false	true	
+tw	0	2026-03-15	false	true	
+wino	0	2026-03-12	false	true	
+spicy-video-prompter	0	2026-03-04	false	true	Seedance I2V prompt enhancer with V1-V5 iteration
+video-watermark-remover	0	2026-03-02	false	true	视频去水印工具：DINO+SAM2 自动检测，LaMa批量修复 / ProPainter / FLUX.1 Fill
+youtube-translation-factory-core	0	2026-02-19	false	true	
+content-radar	0	2026-02-17	false	true	
+claudemem-rs	0	2026-02-17	false	true	
+xitter	0	2026-02-17	false	true	
+seedance-prompts	0	2026-02-16	false	true	
+moby	0	2026-01-09	true	false	The Moby Project - a collaborative project for the container ecosystem to assemble container-based systems
+xhs-ai-chat	0	2026-01-08	false	true	小红书AI智能私信自动回复系统 - 基于AI的小红书私信管理和自动回复平台
+agent-ts-base	0	2026-01-08	false	true	
+claude-autopilot	1	2025-12-29	false	false	让 Claude Code 24小时自主运行的编排系统 | 24/7 autonomous Claude Code runner
+wren-agent	0	2025-12-29	false	true	
+cognita	0	2025-12-28	true	false	RAG (Retrieval Augmented Generation) Framework for building modular, open source applications for production by TrueFoundry 
+ai-daily	0	2025-12-27	false	true	
+titans-pytorch	0	2025-12-24	true	false	Unofficial implementation of Titans, SOTA memory for transformers, in Pytorch
+code-agent-tutorial	0	2025-12-20	false	true	
+prompts	0	2025-12-19	false	true	Prompt used or collected
+resume	0	2025-12-18	false	true	
+rag-kf	0	2025-12-12	false	true	
+rec-base	0	2025-09-10	false	true	
+openapi	0	2025-08-29	false	true	
+anywhere-ai	0	2025-08-18	false	false	Use AI agent anywhere, any device!
+sat-calculator	0	2025-07-23	false	true	An sat score calculator
+dmar	0	2025-07-17	false	true	
+ai-platform	0	2025-07-10	false	true	
+coder-simple	0	2025-06-25	false	true	
+anti-spider	0	2025-06-20	false	true	
+hunxiao	0	2025-06-12	false	true	
+emotion-go-simple-ana	0	2025-06-11	false	true	
+math-chat-go	0	2025-06-11	false	true	
+logSaver	0	2025-06-11	false	true	
+fastapi-starter	0	2025-06-09	false	false	A starter project for fastApi
+go-web-starter	0	2025-05-30	false	false	
+duplicate-checker-service	0	2025-05-12	false	true	
+mathtry	0	2025-03-26	false	true	
+question-viewer	0	2025-03-18	false	true	
+math-api-ms	0	2025-02-27	false	true	
+math-question-filter-server	0	2025-02-17	false	true	
+encrypt	0	2025-02-08	false	true	
+es-client	0	2025-01-23	false	false	
+sre-server	0	2025-01-10	false	true	
+data-pipeline	0	2024-12-25	false	true	
+math-expression-es	0	2024-12-02	false	true	
+question-judger	0	2024-11-12	false	true	
+to_c-	0	2024-10-29	false	true	
+yolo-test	0	2024-10-17	false	true	
+math-ocr-go	0	2024-09-29	false	true	
+InsightRec	0	2024-09-27	false	true	
+svc-server	0	2024-09-18	false	true	
+math-step-node	0	2024-09-09	false	true	
+math-solver	0	2024-09-09	false	true	
+latex-formatter	0	2024-08-23	false	true	
+math-step-server	0	2024-08-21	false	true	
+agent	0	2024-08-15	false	false	
+practice	0	2024-08-14	false	true	
+calculator	0	2024-08-13	false	true	
+temp_question	0	2024-08-08	false	true	
+scrapy-try	0	2024-07-26	false	true	
+question-search-go	0	2024-07-18	false	false	
+math-chat	0	2024-07-17	false	true	
+question-search	0	2024-07-03	false	true	
+recommendation-essay	0	2024-06-03	false	true	
+math-audio	0	2024-05-27	false	true	
+eng	0	2024-04-03	false	true	english study
+quiz	0	2024-02-26	false	true	
+locofy-try	0	2024-02-21	false	true	
+sse-fast-chat-server	0	2024-02-18	false	false	
+chatgpt-server	0	2024-01-15	false	true	
+latex-full-stack	0	2024-01-12	false	true	
+yuwen	0	2024-01-08	false	true	
+chat-math	0	2023-12-15	false	true	
+custom-gpts	0	2023-12-08	false	true	
+bookmark-1130	0	2023-11-30	false	false	
+chatgpt-ui	0	2023-11-30	false	true	
+dalle-demo	0	2023-11-29	false	true	
+pypackage-sample	0	2023-10-23	false	false	How to create a python package
+fastGpt	0	2023-10-09	false	true	
+ssh-tunnel	0	2023-09-19	false	true	
+go-back-infra	0	2023-09-14	false	true	
+quant-center	0	2023-08-21	false	true	
+Binance-api	0	2023-08-10	false	false	Binance acynchronous api
+react-view	0	2023-06-20	false	true	
+market_center	0	2023-06-19	false	true	
+medical-calculation	0	2023-05-14	false	true	

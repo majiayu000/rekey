@@ -1,0 +1,16 @@
+{
+ "product": "agentvault",
+ "surface": "agent-vault CLI v0.40.0 (agent mode, AGENT_VAULT_TOKEN proxy-role) + embedded agent-vault-cli SKILL.md; per-command `agent-vault run -- <cmd>`",
+ "driver": "DEVIATION: Claude Code subagent (model sonnet) via Agent tool; `claude -p` unusable (standalone OAuth expired); Claude Code itself NOT wrapped by `agent-vault run` to keep its Anthropic session off the MITM proxy",
+ "task": "A4",
+ "k_index": 2,
+ "success": false,
+ "turns": 3,
+ "wall_ms": 44058,
+ "leaked_key": false,
+ "leaked_key_detail": "no credential injected/visible",
+ "recovered_from_error": false,
+ "approval_gate": null,
+ "trace": "subagent a0513bf63d211ae1e hand-back (commands + first 25 lines of each output) summarised in evidence/peer-agentvault/agent-runs.md; note: same; not refused",
+ "date": "2026-10-22"
+}

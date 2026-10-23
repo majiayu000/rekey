@@ -3,9 +3,9 @@
   "premise": {
     "product": "Rekey：本机凭据代理，Agent 只通过固定动作和短期能力令牌调用，拿不到真实 key",
     "from_scratch": true,
-    "baseline": "majiayu000/rekey@043a0206 (v0.3.0-alpha.1)",
-    "scope": "全产品；本轮补市场层（采用度、口碑、定位、替代物）并复评竞品变化",
-    "out_of_scope": "重跑性能与安全实测（沿用 2026-10-05 结果）",
+    "baseline": "majiayu000/rekey@f7d857a (0.5.0-alpha.1 unreleased) + v0.4.0-alpha.1",
+    "scope": "20261022：用户好不好用（上手、概念量、Agent 接入、审批、报错）",
+    "out_of_scope": "性能与安全攻防（沿用 2026-10-05）",
     "intent": "借鉴与定位判断",
     "known_peers": [
       "Agent Vault (Infisical)",
@@ -16,7 +16,7 @@
     "resources": "本机 M3 Max；无付费账号",
     "confirmed": true,
     "confirmed_by": "user",
-    "tier": "standard",
+    "tier": "deep",
     "stage": 3
   },
   "peers": [
@@ -30,7 +30,8 @@
     },
     {
       "name": "Kontext CLI",
-      "type": "direct"
+      "type": "adjacent",
+      "note": "v1.0.0 删除凭据代理，改 Hook 审计（20261022）"
     },
     {
       "name": "AgentSecrets",
@@ -107,24 +108,76 @@
     {
       "name": "sandboxes (Zerobox/containers)",
       "type": "alternative"
+    },
+    {
+      "name": "varlock",
+      "type": "adjacent",
+      "added": "20261022-s3"
+    },
+    {
+      "name": "KeyValet",
+      "type": "direct",
+      "added": "20261022-s3"
+    },
+    {
+      "name": "briefcred",
+      "type": "direct",
+      "added": "20261022-s3"
+    },
+    {
+      "name": "secrets-broker (Alino)",
+      "type": "direct",
+      "added": "20261022-s3"
+    },
+    {
+      "name": "keypaste",
+      "type": "direct",
+      "added": "20261022-s3"
+    },
+    {
+      "name": "hasp",
+      "type": "direct",
+      "added": "20261022-s3"
+    },
+    {
+      "name": "sigcli",
+      "type": "direct",
+      "added": "20261022-s3"
+    },
+    {
+      "name": "Alter (YC S25)",
+      "type": "tool-auth",
+      "added": "20261022-s3"
+    },
+    {
+      "name": "AWS Agent Toolkit secret safety",
+      "type": "platform",
+      "added": "20261022-s3"
     }
   ],
   "rubric": {
     "version": 1,
     "source": "2026-10-05 deep comparison (product layer)",
-    "market_layer_added": "20261006-s3"
+    "market_layer_added": "20261006-s3",
+    "ux_protocol": "rounds/20261022-s3/eval/PROTOCOL.md (H1/H2/A1-A4)"
   },
   "rules": [
     "不从新闻和 README 下结论（10-05 用户口径）",
-    "产品层沿用 2026-10-05 deep 对比，未重跑的项标“沿用”"
+    "产品层沿用 2026-10-05 deep 对比，未重跑的项标“沿用”",
+    "Agent 可用性对照必须用同一驱动；驱动不一致时只比较产品行为，不比较完成率（20261022）",
+    "竞品能力要顺着链接读到底层组件文档（如 OpenShell 读 NVIDIA 文档），不能把集成方页面没写当成没有（20261023）"
   ],
   "available_skills": [],
   "rounds": [
-    "20261006-s3"
+    "20261006-s3",
+    "20261022-s3",
+    "20261023-1password"
   ],
   "stage": 3,
   "tiers": {
-    "20261006-s3": "standard"
+    "20261006-s3": "standard",
+    "20261022-s3": "deep",
+    "20261023-1password": "deep-single-competitor"
   },
   "previous_external_round": ".git/codex/evidence/competitive-comparison-20261005/comparison.md",
   "follow_up": {
@@ -136,5 +189,26 @@
     "released_baseline_unchanged": true,
     "ssh_mtls": "exclude_from_0.3_baseline; review_candidates_separately",
     "report": "rounds/20261006-s3/02-my-plan.md"
+  },
+  "decision_20261023": {
+    "decision": "待验证：不改方向，更新定位",
+    "report": "rounds/20261023-1password/report.md",
+    "reviews": "3 rounds, final: deliverable",
+    "remaining_differentiators": [
+      "写操作逐次审批（可时间窗）",
+      "Agent 照常启动，无需沙箱和账户",
+      "密钥不离开 Rekey 保险库",
+      "审计提交失败即拒绝执行"
+    ],
+    "not_differentiators": [
+      "Agent 不碰 Key（OpenShell、OneCLI+Bitwarden 已有）",
+      "规则粒度（OpenShell L7 网关策略相当）"
+    ],
+    "reassess_triggers": [
+      "OpenShell/Environments 加单次调用人工审批",
+      "1Password 配置界面直接暴露方法/路径规则",
+      "Credential Broker 对个人开放且不交明文"
+    ],
+    "next_impl": "02-my-plan P0#2 让 Agent 一次就调对（P0#1 CLI 审批已实现未提交）"
   }
 }

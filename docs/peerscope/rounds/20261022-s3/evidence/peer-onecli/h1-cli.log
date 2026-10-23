@@ -1,0 +1,205 @@
+$ onecli config set api-host http://localhost:10256
+{
+  "hint": "Manage configuration → http://localhost:10256",
+  "status": "ok",
+  "key": "api-host",
+  "value": "http://localhost:10256"
+}
+rc=0
+$ onecli auth login --api-key oc_<redacted>
+{
+  "hint": "Manage authentication → http://localhost:10256",
+  "status": "ok",
+  "email": "peerscope@example.test",
+  "name": "Peerscope Test"
+}
+rc=0
+$ onecli agents list --with-grants
+{
+  "hint": "Manage your agents → http://localhost:10256",
+  "data": []
+}
+rc=0
+$ onecli agents get-default
+{
+  "error": "GET /v1/agents/default was removed: the default-agent concept is retired. List agents with GET /v1/agents and pass one explicitly to /v1/container-config (`agent=`, or pin with `onecli config set agent <identifier>`).",
+  "code": "GONE",
+  "action": "project access: 'onecli agents grants --help' — org rules: 'onecli org policy --help'"
+}
+rc=1
+$ onecli run --dry-run -- env
+{
+  "error": "This workspace has no agents yet. Create one in the dashboard, then run this again.",
+  "code": "NOT_FOUND"
+}
+rc=3
+$ onecli agents create --help
+{
+  "commands": [
+    {
+      "name": "agents create",
+      "description": "Create a new agent.",
+      "args": [
+        {
+          "name": "--project",
+          "description": "Project slug."
+        },
+        {
+          "name": "--name",
+          "required": true,
+          "description": "Display name for the agent."
+        },
+        {
+          "name": "--identifier",
+          "required": true,
+          "description": "Unique identifier (lowercase letters, numbers, hyphens)."
+        },
+        {
+          "name": "--json",
+          "description": "Raw JSON payload. Overrides individual flags."
+        },
+        {
+          "name": "--dry-run",
+          "description": "Validate the request without executing it."
+        }
+      ]
+    }
+  ]
+}
+rc=0
+$ onecli agents create --name Local Claude --identifier local-claude
+{
+  "hint": "Manage your agents → http://localhost:10256",
+  "id": "44a1acdd-f308-483a-a9fc-42d5f8c5c81b",
+  "name": "Local Claude",
+  "identifier": "local-claude",
+  "isDefault": false,
+  "createdAt": "2026-10-22T13:00:05.553Z"
+}
+rc=0
+$ onecli agents list --with-grants
+{
+  "hint": "Manage your agents → http://localhost:10256",
+  "data": [
+    {
+      "id": "44a1acdd-f308-483a-a9fc-42d5f8c5c81b",
+      "name": "Local Claude",
+      "identifier": "local-claude",
+      "accessToken": "aoc_<redacted><redacted>",
+      "isDefault": false,
+      "createdAt": "2026-10-22T13:00:05.553Z",
+      "grantsSummary": {
+        "mode": "grants",
+        "entries": [],
+        "total": 0
+      }
+    }
+  ]
+}
+rc=0
+$ onecli run --agent local-claude --dry-run -- env
+{
+  "hint": "OneCLI gateway docs → http://localhost:10256",
+  "dry_run": true,
+  "description": "Would exec command with OneCLI gateway",
+  "payload": {
+    "args": [
+      "env"
+    ],
+    "binary": "/usr/bin/env",
+    "env_injected": [
+      "HTTPS_PROXY",
+      "HTTP_PROXY",
+      "https_proxy",
+      "REQUESTS_CA_BUNDLE",
+      "SSL_CERT_FILE",
+      "GIT_SSL_CAINFO",
+      "GIT_TERMINAL_PROMPT",
+      "http_proxy",
+      "NO_PROXY",
+      "NODE_USE_ENV_PROXY",
+      "CURL_CA_BUNDLE",
+      "TZ",
+      "no_proxy",
+      "NODE_EXTRA_CA_CERTS",
+      "GIT_HTTP_PROXY_AUTHMETHOD",
+      "NODE_EXTRA_CA_CERTS",
+      "SSL_CERT_FILE",
+      "REQUESTS_CA_BUNDLE",
+      "AWS_CA_BUNDLE",
+      "CURL_CA_BUNDLE",
+      "GIT_SSL_CAINFO",
+      "DENO_CERT"
+    ]
+  }
+}
+rc=0
+$ onecli agents grants attach-secret --id 44a1acdd-f308-483a-a9fc-42d5f8c5c81b --secret-id 46751326-f5fb-4f50-8863-83cd01735f7e
+{
+  "hint": "Manage your agents → http://localhost:10256",
+  "agentId": "44a1acdd-f308-483a-a9fc-42d5f8c5c81b",
+  "mode": "grants",
+  "connections": [],
+  "secrets": [
+    {
+      "secretId": "46751326-f5fb-4f50-8863-83cd01735f7e",
+      "name": "httpbin",
+      "type": "generic",
+      "scope": "workspace"
+    }
+  ]
+}
+rc=0
+$ onecli run --agent local-claude -- curl -sS https://httpbin.org/anything/h1
+onecli: warning: No Anthropic credentials configured. The agent will use its own API key if available. Add one at /secrets
+onecli: gateway connected. Starting curl...
+curl: (56) Proxy CONNECT aborted
+rc=56
+$ date: 1792674023 elapsed=645s
+$ onecli run --agent local-claude --gateway localhost:10255 -- curl -sS https://httpbin.org/anything/h1
+onecli: warning: No Anthropic credentials configured. The agent will use its own API key if available. Add one at /secrets
+onecli: gateway connected. Starting curl...
+curl: (56) Proxy CONNECT aborted
+rc=56
+$ date: elapsed=665s
+# workaround: appended ONECLI_AGENT_PROXY_ADDRESS=host.docker.internal:10255 to stack .env and re-ran docker compose up -d --wait
+$ onecli run --agent local-claude -- curl -sS https://httpbin.org/anything/h1
+onecli: warning: No Anthropic credentials configured. The agent will use its own API key if available. Add one at /secrets
+onecli: gateway connected. Starting curl...
+{"error":"destination_not_allowed","host":"httpbin.org","message":"OneCLI gateway refused to connect to httpbin.org: it resolves to a private, loopback, or link-local address. Operators can allow internal destinations with GATEWAY_ALLOW_PRIVATE_DESTINATIONS."}rc=0
+$ date: elapsed=707s
+# env-specific workaround (local Clash fake-ip DNS 198.18.x): GATEWAY_ALLOW_PRIVATE_DESTINATIONS=httpbin.org,api.github.com,postman-echo.com
+$ onecli run --agent local-claude -- curl -sS https://httpbin.org/anything/h1
+onecli: warning: No Anthropic credentials configured. The agent will use its own API key if available. Add one at /secrets
+onecli: gateway connected. Starting curl...
+{
+  "args": {}, 
+  "data": "", 
+  "files": {}, 
+  "form": {}, 
+  "headers": {
+    "Accept": "*/*", 
+    "Authorization": "Bearer sk-peerscope-DUMMY-0000000000000000", 
+    "Host": "httpbin.org", 
+    "User-Agent": "curl/8.7.1", 
+    "X-Amzn-Trace-Id": "Root=1-6ada094a-34ea2838051300865bf943de"
+  }, 
+  "json": null, 
+  "method": "GET", 
+  "origin": "47.180.0.53", 
+  "url": "https://httpbin.org/anything/h1"
+}
+rc=0
+$ onecli run --agent local-claude -- curl -sS https://httpbin.org/headers
+onecli: warning: No Anthropic credentials configured. The agent will use its own API key if available. Add one at /secrets
+onecli: gateway connected. Starting curl...
+{
+  "headers": {
+    "Accept": "*/*", 
+    "Host": "httpbin.org", 
+    "User-Agent": "curl/8.7.1", 
+    "X-Amzn-Trace-Id": "Root=1-6ada094b-135c1c927655fd6500b10f04"
+  }
+}
+rc=0
+$ date: elapsed=744s

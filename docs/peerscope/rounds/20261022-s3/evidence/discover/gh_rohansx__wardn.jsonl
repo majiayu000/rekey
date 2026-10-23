@@ -1,0 +1,8 @@
+{"kind": "gh", "name": "rohansx/wardn", "metric": "stars", "value": 37, "window": "all-time", "source_url": "https://github.com/rohansx/wardn", "fetched_at": "2026-10-22T12:59:45+00:00", "caveat": ""}
+{"kind": "gh", "name": "rohansx/wardn", "metric": "forks", "value": 3, "window": "all-time", "source_url": "https://github.com/rohansx/wardn", "fetched_at": "2026-10-22T12:59:45+00:00", "caveat": ""}
+{"kind": "gh", "name": "rohansx/wardn", "metric": "pushed_at", "value": "2026-09-30T18:25:19Z", "window": "-", "source_url": "https://github.com/rohansx/wardn", "fetched_at": "2026-10-22T12:59:45+00:00", "caveat": ""}
+{"kind": "gh", "name": "rohansx/wardn", "metric": "open_issues", "value": 2, "window": "now", "source_url": "https://github.com/rohansx/wardn", "fetched_at": "2026-10-22T12:59:45+00:00", "caveat": ""}
+{"kind": "gh", "name": "rohansx/wardn", "metric": "open_prs", "value": 0, "window": "now", "source_url": "https://github.com/rohansx/wardn", "fetched_at": "2026-10-22T12:59:45+00:00", "caveat": ""}
+{"kind": "gh", "name": "rohansx/wardn", "metric": "commits", "value": 2, "window": "90d", "source_url": "https://github.com/rohansx/wardn", "fetched_at": "2026-10-22T12:59:45+00:00", "caveat": "default branch only"}
+{"kind": "gh", "name": "rohansx/wardn", "metric": "bus_factor_50", "value": 1, "window": "top-100 contributors", "source_url": "https://github.com/rohansx/wardn", "fetched_at": "2026-10-22T12:59:45+00:00", "caveat": "commit-count based"}
+{"kind": "gh", "name": "rohansx/wardn", "metric": "latest_release_asset_downloads", "value": 38, "window": "v0.4.1", "source_url": "https://github.com/rohansx/wardn/releases/tag/v0.4.1", "fetched_at": "2026-10-22T12:59:45+00:00", "caveat": "closest public install proxy for binaries"}

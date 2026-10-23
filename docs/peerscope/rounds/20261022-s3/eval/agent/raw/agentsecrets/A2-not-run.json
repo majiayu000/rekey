@@ -1,0 +1,14 @@
+{
+ "product": "agentsecrets",
+ "task": "A2",
+ "k_index": null,
+ "success": null,
+ "verdict": "不可比",
+ "reason": "H1 not executed: every call path requires account (cloud or self-hosted server signup) + keychain-auth daemon writing to login keychain + possible sudo; protocol forbids account creation and keychain access",
+ "turns": null,
+ "wall_ms": null,
+ "leaked_key": null,
+ "recovered_from_error": null,
+ "trace": "see evidence/peer-agentsecrets/card.md",
+ "date": "2026-10-22"
+}

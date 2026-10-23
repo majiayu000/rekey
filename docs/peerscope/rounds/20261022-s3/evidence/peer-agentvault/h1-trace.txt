@@ -1,0 +1,62 @@
+# H1 trace (Agent Vault v0.40.0 / 872578e), started 2026-10-22T12:53:41Z; HOME isolated to tmp; telemetry disabled; pbcopy stubbed
+$ echo "$TEST_MASTER" | agent-vault server -d --port 24321 --mitm-port 24322 --password-stdin
+✓ Server started in background (PID 81728). Logs: /private/tmp/claude-502/av.axIb/home/.agent-vault/server.log
+[exit=0 wall_ms=578 at=2026-10-22T12:53:42Z]
+
+$ printf "%s
+%s
+" "$TEST_USERPW" "$TEST_USERPW" | agent-vault auth register --address $AGENT_VAULT_ADDR --email dev@peerscope.test --password-stdin
+✓ Owner account created.
+[exit=0 wall_ms=261 at=2026-10-22T12:53:48Z]
+
+$ agent-vault account whoami
+Email:      dev@peerscope.test
+Role:       owner
+Vaults:     default
+Server:     http://127.0.0.1:24321
+Created:    2026-10-22T12:53:48Z
+[exit=0 wall_ms=122 at=2026-10-22T12:53:48Z]
+
+$ agent-vault vault credential set LLM_API_KEY=sk-peerscope-DUMMY-0000000000000000
+✓ Set credential "LLM_API_KEY" in vault "default"
+[exit=0 wall_ms=243 at=2026-10-22T12:53:56Z]
+
+$ agent-vault vault service add --name httpbin --host httpbin.org --auth-type bearer --token-key LLM_API_KEY
+✓ Service added: httpbin (1 services total)
+[exit=0 wall_ms=211 at=2026-10-22T12:53:56Z]
+
+$ agent-vault agent create pscope-agent --vault default:proxy
+✓ Agent "pscope-agent" created (role no-access).
+Vaults:     
+  - default (proxy)
+
+Agent token: av_agt_<redacted>
+
+Set AGENT_VAULT_TOKEN, AGENT_VAULT_ADDR, and AGENT_VAULT_VAULT in the agent's environment, or run:
+  AGENT_VAULT_TOKEN="av_agt_<redacted>" AGENT_VAULT_ADDR="http://127.0.0.1:24321" AGENT_VAULT_VAULT="default" agent-vault run -- <command>
+[exit=0 wall_ms=915 at=2026-10-22T12:53:57Z]
+
+$ AGENT_VAULT_TOKEN=$(cat $T/scripts/.agent_token) AGENT_VAULT_VAULT=default agent-vault run -- curl -sS -A peerscope-adoption/0.1 https://httpbin.org/anything
+agent-vault: routing HTTP/HTTPS through MITM proxy (127.0.0.1:24322)
+agent-vault: agent-vault connected. Starting curl...
+
+{
+  "args": {}, 
+  "data": "", 
+  "files": {}, 
+  "form": {}, 
+  "headers": {
+    "Accept": "*/*", 
+    "Accept-Encoding": "gzip", 
+    "Authorization": "Bearer sk-peerscope-DUMMY-0000000000000000", 
+    "Host": "httpbin.org", 
+    "User-Agent": "peerscope-adoption/0.1", 
+    "X-Amzn-Trace-Id": "Root=1-6ada0770-2a242655068298fe49f9698e"
+  }, 
+  "json": null, 
+  "method": "GET", 
+  "origin": "47.180.0.53", 
+  "url": "https://httpbin.org/anything"
+}
+[exit=0 wall_ms=2674 at=2026-10-22T12:54:08Z]
+

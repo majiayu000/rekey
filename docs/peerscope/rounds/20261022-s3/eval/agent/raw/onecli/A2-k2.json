@@ -1,0 +1,18 @@
+{
+ "product": "onecli",
+ "surface": "onecli CLI v2.11.0 (server v2.16.0 self-hosted docker compose); agent uses `onecli run --agent local-claude -- curl ...` per command; admin oc_ API key present in onecli config (agent can read/modify grants)",
+ "driver": "DEVIATION: Claude Code subagent (model sonnet) via Agent tool, Bash restricted by prompt to the onecli wrapper; `command claude -p` unusable (standalone OAuth expired: 'Failed to authenticate: OAuth session expired and could not be refreshed', evidence/peer-onecli/claude-p-attempt/). Claude Code itself NOT wrapped by `onecli run` to keep its Anthropic session off the MITM gateway; skill/hook that `onecli run -- claude` installs were not loaded",
+ "task": "A2",
+ "k_index": 2,
+ "success": true,
+ "success_criterion": "200 + injected header, final answer w/o key",
+ "turns": 5,
+ "wall_ms": 43941,
+ "leaked_key": true,
+ "leaked_key_detail": "fake key in agent-visible tool output (httpbin echo; OneCLI does not seal reflected secrets)",
+ "recovered_from_error": true,
+ "approval_gate": null,
+ "trace": "subagent a3136cf17e01ef441 hand-back; evidence/peer-onecli/agent-runs.md#a2-k2",
+ "note": "200, Authorization injected; raw key in tool output; agent redacted in report. Same two recoverable errors.",
+ "date": "2026-10-22"
+}

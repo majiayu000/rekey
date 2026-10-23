@@ -1,0 +1,29 @@
+# proposal (approval) flow probe 2026-10-22T13:05:22Z
+$ [agent] agent-vault vault proposal create --name pecho --host postman-echo.com --auth-type bearer --token-key PE_KEY --credential PE_KEY="echo key" -m "need echo" --json
+{"approval_url":"http://127.0.0.1:24321/approve/1?token=av_appr_<redacted>","id":1,"message":"Proposal created. Approve here: http://127.0.0.1:24321/approve/1?token=av_appr_<redacted>","status":"pending","vault":"default"}
+
+
+$ [human] agent-vault vault proposal list
+[1m┌[0m[1m───[0m[1m┬[0m[1m─────────[0m[1m┬[0m[1m──────────────────[0m[1m┬[0m[1m───────────[0m[1m┐[0m
+[1m│[0m[1m # [0m[1m│[0m[1m STATUS  [0m[1m│[0m[1m CREATED          [0m[1m│[0m[1m MESSAGE   [0m[1m│[0m
+[1m├[0m[1m───[0m[1m┼[0m[1m─────────[0m[1m┼[0m[1m──────────────────[0m[1m┼[0m[1m───────────[0m[1m┤[0m
+│ 1 │ pending │ 2026-10-22 13:05 │ need echo │
+└───┴─────────┴──────────────────┴───────────┘
+$ [human] agent-vault vault proposal approve 1 PE_KEY=sk-peerscope-DUMMY-0000000000000000 --yes
+Proposal #1: need echo
+
+
+Proposed services:
+  + pecho postman-echo.com
+$ [agent] agent-vault vault proposal show 1
+Error: not logged in, run 'agent-vault auth login' first
+Usage:
+  agent-vault vault proposal show <number> [flags]
+
+Flags:
+  -h, --help   help for show
+$ [agent] run -- curl postman-echo
+agent-vault: routing HTTP/HTTPS through MITM proxy (127.0.0.1:24322)
+agent-vault: agent-vault connected. Starting curl...
+
+HTTP 200

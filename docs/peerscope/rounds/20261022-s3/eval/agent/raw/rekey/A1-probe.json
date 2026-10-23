@@ -1,0 +1,14 @@
+{
+ "product": "rekey",
+ "surface": "mcp jsonrpc scripted probe (no LLM; rekey-mcp from main@f7d857a, isolated --state-dir)",
+ "k_index": 0,
+ "turns": null,
+ "recovered_from_error": null,
+ "llm_driven": false,
+ "success": true,
+ "wall_ms": 4,
+ "leaked_key": false,
+ "trace": "evidence/self-rekey/mcp-probe-A1-tools-list.jsonl",
+ "finding": "tools/list = 9 generic tools + 6 per-operation github_* tools; list_capabilities returns connection/origin/operations/read/write that match connection list. describe returns parameters only, no rule/effect despite its description 'and applicable rules'.",
+ "task": "A1"
+}

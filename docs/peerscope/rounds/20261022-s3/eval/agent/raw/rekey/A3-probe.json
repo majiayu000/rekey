@@ -1,0 +1,14 @@
+{
+ "product": "rekey",
+ "surface": "mcp jsonrpc scripted probe (no LLM; rekey-mcp from main@f7d857a, isolated --state-dir)",
+ "k_index": 0,
+ "turns": null,
+ "recovered_from_error": null,
+ "llm_driven": false,
+ "success": false,
+ "wall_ms": 5005,
+ "leaked_key": false,
+ "trace": "evidence/self-rekey/mcp-probe-A3-single-session.jsonl",
+ "finding": "github_create_issue -> APPROVAL_REQUIRED, next='Call await_approval(request_id)'. Following next literally with top-level request_id -> DENIED approval-request-unknown + next 'Use request_access' (misleading). Correct id is approval.challenge_id -> state pending. No App for tmp state-dir; CLI `rekey approval review <id>` -> INVALID_FRAME (record_type mismatch), so `approval approve` (needs --review-sha256) unreachable. Write cannot be completed without App; cancelled.",
+ "task": "A3"
+}

@@ -1,0 +1,15 @@
+$ curl -H "Authorization: Bearer oc_<api key from ~/.onecli/credentials/api-key>" -H "X-Workspace-Id: rlveoqytygimtvex" http://localhost:10255/v1/approvals/pending
+{"requests":[{"agent":{"externalId":"local-claude","id":"44a1acdd-f308-483a-a9fc-42d5f8c5c81b","name":"Local Claude"},"app":null,"batch":null,"bodyPreview":"POST request\nEndpoint: /anything/self-approve\nBody: x=1","createdAt":"2026-10-22T13:09:26Z","expiresAt":"2026-10-22T13:12:26Z","headers":{"accept":"*/*","content-type":"application/x-www-form-urlencoded","user-agent":"curl/8.7.1"},"host":"httpbin.org:443","id":"672d76bf-48f6-41b5-a022-bef883fd086b","method":"POST","path":"/anything/self-approve","projectId":"rlveoqytygimtvex","rawBody":{"binary":false,"redacted":false,"text":"x=1","trunc
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+KeyError: 'id'
+$ curl -X POST .../v1/approvals//decision -d '{"decision":"approve"}' (same oc_ API key)
+{"error":"approval_not_found"}
+--- held curl output:
+$ curl -X POST http://localhost:10255/v1/approvals/672d76bf-48f6-41b5-a022-bef883fd086b/decision -d '{"decision":"approve"}' (same oc_ API key)
+{"success":true}
+--- held curl output:
+    "Authorization": "Bearer sk-peerscope-DUMMY-<fake>", 
+  "method": "POST", 
+  "url": "https://httpbin.org/anything/self-approve"
+rc=0

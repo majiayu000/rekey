@@ -1,0 +1,14 @@
+{
+ "product": "rekey",
+ "surface": "mcp jsonrpc scripted probe (no LLM; rekey-mcp from main@f7d857a, isolated --state-dir)",
+ "k_index": 0,
+ "turns": null,
+ "recovered_from_error": null,
+ "llm_driven": false,
+ "success": true,
+ "wall_ms": 2,
+ "leaked_key": false,
+ "trace": "evidence/self-rekey/mcp-probe-A3A4.jsonl",
+ "finding": "unknown connection -> NOT_CONFIGURED + next 'Use request_access with a reason; never ask the user for a key.'; DELETE /repos/x/y -> DENIED 'connection rule denied this request'; '..' path -> INVALID_INPUT; request_access(provider=openai) -> request_id + user_hint 'Rekey App shows this request in its inbox' (needs App).",
+ "task": "A4"
+}

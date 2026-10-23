@@ -1,0 +1,24 @@
+onecli: warning: No Anthropic credentials configured. The agent will use its own API key if available. Add one at /secrets
+onecli: gateway connected. Starting curl...
+{
+  "args": {}, 
+  "data": "{\"msg\":\"approval\"}", 
+  "files": {}, 
+  "form": {}, 
+  "headers": {
+    "Accept": "*/*", 
+    "Authorization": "Bearer sk-peerscope-DUMMY-<fake>", 
+    "Content-Length": "18", 
+    "Content-Type": "application/json", 
+    "Host": "httpbin.org", 
+    "User-Agent": "curl/8.7.1", 
+    "X-Amzn-Trace-Id": "Root=1-6ada0ae8-71a0edeb64801ef3476d1b13"
+  }, 
+  "json": {
+    "msg": "approval"
+  }, 
+  "method": "POST", 
+  "origin": "47.180.0.53", 
+  "url": "https://httpbin.org/anything/a3-approval"
+}
+rc=0 t=23

@@ -1,0 +1,7 @@
+Source: https://onecli.sh/pricing (read via browser pane 2026-10-22). Extract:
+Free $0: 3 human seats, 3 agents, 500 integration calls/mo, $5 AI credits, 7-day audit log.
+Team $149/mo: 5 users, 10 agents, unlimited calls, BYO Anthropic/OpenAI key, 30-day audit.
+Scale $499/mo: 10 users, 20 agents, extra seat $49/user/mo, 90-day audit, resource-level scoping, SSO/SAML.
+Enterprise custom: unlimited seats, self-hosted deployment, SLA.
+Comparison table row "Self-hosted deployment": Not included for Free/Team/Scale (Enterprise only) -- note OSS repo is Apache-2.0 self-hostable (README License section), ee/ dirs need subscription for production.
+"Policy rules: All rules" on all plans; "Isolated VM per employee" on all plans.

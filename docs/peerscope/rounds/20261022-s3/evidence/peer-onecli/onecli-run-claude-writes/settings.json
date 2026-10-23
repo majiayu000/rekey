@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "command": "bash /private/tmp/claude-502/onecli.KqIT/skillhome/.claude/hooks/UserPromptSubmit/onecli_gateway_detect.sh",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ]
+  }
+}

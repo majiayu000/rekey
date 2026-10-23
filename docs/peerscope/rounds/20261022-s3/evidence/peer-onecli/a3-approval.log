@@ -1,0 +1,33 @@
+$ onecli org policy rules create --name post-approval --action allow --require-approval --targets [network httpbin.org POST]
+{
+  "hint": "Manage organization-level resources → http://localhost:10256",
+  "rule": {
+    "id": "08ebadf9-ea45-4ab0-9c8d-89dd4f57545e",
+    "scope": "organization",
+    "status": "draft",
+    "generation": 0,
+    "priority": 1,
+    "enabled": true,
+    "isDefault": false,
+    "logicalId": "9855cff0-02fa-43ca-8f0f-6641741bf1df",
+    "source": "custom",
+    "name": "post-approval",
+    "description": null,
+    "action": "allow",
+    "rateLimit": null,
+    "rateLimitWindow": null,
+    "requireApproval": true,
+    "identities": [],
+    "targets": [
+      {
+        "kind": "network",
+        "hostPattern": "httpbin.org",
+        "method": "POST"
+      }
+    ],
+    "createdAt": "2026-10-22T13:08:33.432Z"
+  },
+  "published": true,
+  "generation": 2
+}
+rc=0
