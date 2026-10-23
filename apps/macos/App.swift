@@ -373,7 +373,7 @@ struct RootView: View {
             VStack(alignment: .leading, spacing: 25) {
                 if model.policy?.mode == .personal {
                     SectionCard(title: "个人策略", icon: "doc.text") {
-                        Text("按连接的 host、路径与读写规则授权。读操作可自动允许，写操作默认审批；调用方覆盖只能收紧。审阅完整变化后以本机 Secure Enclave 签署激活。")
+                        Text("按连接的 host、路径与读写规则授权。读操作可自动允许，写操作默认审批；调用方覆盖只能收紧。审阅完整变化后，使用此保险库已有的签名密钥签署激活。")
                         Button("管理连接与规则") { model.showPolicyDraft = true }
                             .disabled(model.busy || !model.unlocked || model.policy?.trust_installed != true)
                     }
@@ -399,7 +399,7 @@ struct RootView: View {
                             Button("激活签名策略") { importPolicy(trust: false) }
                         }
                     }.disabled(!model.unlocked || model.busy)
-                    Text(model.policy?.mode == .personal ? "个人策略签名需要系统在场认证，激活还需本次密码或恢复密钥验证。" : "导入由外部签名工具生成的文件。创建授权本身不会绕过默认拒绝策略。")
+                    Text(model.policy?.mode == .personal ? "签名方式会在审阅页显示。系统认证授权有效时，无需重复输入保险库密码；每次激活仍需明确确认。" : "导入由外部签名工具生成的文件。创建授权本身不会绕过默认拒绝策略。")
                         .font(.system(size: 12)).foregroundStyle(.secondary)
                 }
                 if model.status?.lab_enabled == true { SectionCard(title: "工作负载授权", icon: "person.badge.key") {

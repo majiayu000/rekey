@@ -15,6 +15,43 @@ This contract supersedes conflicting format and authorization clauses only for t
 
 No new Agent PKI admission is included, and this contract adds no HA. The single-host Docker recovery controller was integrated later under its own [contract](2026-10-09-docker-ha-controller.md); multi-host HA remains out of scope. No historical green test count is a unified-head result.
 
+## Personal desktop authentication correction (2026-10-23)
+
+Decision: use the existing App review and system-authentication flow for interactive
+`rekey add` on macOS when the App and default workspace are available. Explicit
+stdin and custom-workspace CLI usage retain the existing basic-mode path. Public
+connection options must survive the handoff; a launch receipt is not activation.
+No secret or management proof is included in a URL.
+
+The App checks signing availability before saving onboarding credentials. It uses
+the authenticated installed signer ID from `policy status` even before the first
+bundle is activated; locked/unavailable authority state does not expose it. It uses
+the key matching the installed trust: either the existing Secure Enclave key or
+the existing basic-mode software P-256 key through the bundled signer. It displays
+which protection applies, never generates a replacement or switches the trust,
+and fails before credential persistence when the key is unavailable or mismatched.
+Software signing does not claim hardware isolation. The daemon still requires
+fresh A2 proof for activation; an A1 desktop session cannot authorize it.
+
+The password recheck interval (including 30 days) only controls the existing
+system-authentication grant. Reviewed activation still requires fresh presence,
+or the original password/recovery proof. Grant renewal, password changes, and
+recovery-factor changes retain their original-factor requirements. The App handoff never reads `remembered-unlock.key` or uses it as a presence proof. Full vault lock and desktop privacy lock keep
+their existing distinct behavior.
+
+Draft metadata must project the canonical snapshot actually signed, including
+connection ordering. The App keeps its exact review/signature equality check.
+Saved credentials remain reusable after cancellation or later draft failure.
+
+Acceptance: unsorted multi-connection requests round-trip and activate; missing
+or mismatched signers fail before saving; software and hardware modes keep the
+installed trust; cancellation never activates; CLI options round-trip without
+secrets. With a valid system-authentication grant, add/review/activate requires
+zero master-password entries, targeting one system-authentication prompt (up to
+two if the OS separately protects the signing key). Hardware prompt counts need
+device evidence. Stop if this requires trust replacement, format changes, or a
+general authentication service; those are outside this correction.
+
 ## Verification
 
 Run repository format/check/Clippy/test and mechanical dependency gates on the combined head. Exercise real TLS client authentication, PKI CSR/serial/CRL/restart/backup/rotation/tamper paths, native SSH approval and cancellation/owner drains, and the current Connection/OAuth/T1 contracts. Keep hardware/Touch ID/Secure Enclave and real deployment evidence separate from software fixtures. Preserve the native startup regression from the auto-connect fix.

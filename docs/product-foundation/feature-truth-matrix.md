@@ -124,6 +124,13 @@ GLM Responses 接入合同：新增固定 `glm-responses@1`（POST `/api/v1/resp
 
 ## Unified experimental integration (2026-10-09)
 
+2026-10-23 authentication correction: the accepted contract is interactive CLI
+handoff to App review, signer preflight against the existing trust, explicit
+software versus Secure Enclave protection, and draft metadata derived from the
+actual signed snapshot. No trust replacement, vault-format change, or blanket
+30-day management authorization is included. Implementation/software evidence
+and installed-device prompt counts must be recorded separately.
+
 Implemented under [the unified contract](../superpowers/specs/2026-10-09-unified-experiments.md), using vault27 / policy8. The combined default workspace passed 1,032 tests with 0 failures and 13 explicit ignores. Native App compilation, Connection models (including mTLS and external SSH budget preservation), real Swift/CLI/Broker contracts, connect-on-open and human credential management software checks passed. See [the integration record](../superpowers/plans/2026-10-09-experiment-integration.md) for both configurations, dependency audit and provenance.
 
 | Added capability | Current software evidence | Remaining boundary |

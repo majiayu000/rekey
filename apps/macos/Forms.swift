@@ -167,10 +167,12 @@ struct AddCredentialForm: View {
     @State private var prefix=""
     @State private var models=""
     @State private var saved:Credential?
+    @State private var existingID=""
+    @State private var signerMode:PolicySigning.Mode?
     @State private var message:String?
     private var generic:Bool {preset.hasPrefix("generic-")}
     private var llm:Bool {ConnectionPreset.llmPresets.contains(preset)}
-    private var modelList:[String] {models.split(separator:",").map{$0.trimmingCharacters(in:.whitespaces)}.filter{!$0.isEmpty}}
+    private var modelList:[String] {models.split(separator:"\n").map{$0.trimmingCharacters(in:.whitespaces)}.filter{!$0.isEmpty}}
     var body:some View {
         VStack(alignment:.leading,spacing:18) {
             Text("添加密钥与连接").font(.system(size:24,weight:.semibold))
@@ -179,37 +181,65 @@ struct AddCredentialForm: View {
             TextField("连接名称，例如 github-personal",text:$connectionName).textFieldStyle(.roundedBorder)}
             Picker("服务预设",selection:$preset) {
                 ForEach(ConnectionPreset.apiKeyPresets+OAuthSetup.presets,id:\.self) {Text($0).tag($0)}
-            }.disabled(saved != nil)
-            if OAuthSetup.presets.contains(preset) {OAuthAddForm(preset:preset).id(preset)} else {
+            }.disabled(saved != nil || model.busy)
+            if OAuthSetup.presets.contains(preset) {OAuthAddForm(preset:preset,signerMode:$signerMode).id(preset)} else {
             if generic {
                 TextField("固定 origin，例如 https://api.example.com",text:$origin).textFieldStyle(.roundedBorder)
                 if preset=="generic-header" {TextField("凭据头名称",text:$header).textFieldStyle(.roundedBorder);TextField("头前缀（可为空）",text:$prefix).textFieldStyle(.roundedBorder)}
                 Text("自定义服务默认读和写都需要审批。").font(.caption).foregroundStyle(.secondary)
             }
             if llm {
-                TextField("允许的模型，逗号分隔（精确名称，例如 Agent 请求的模型）",text:$models).textFieldStyle(.roundedBorder)
+                Text("允许的精确模型 ID（每行一个）").font(.caption)
+                TextEditor(text:$models).frame(height:70).border(.secondary.opacity(0.3))
                 Text("LLM 连接必须签署模型白名单与每日额度（100 次 / 10 万输出 token）。").font(.caption).foregroundStyle(.secondary)
             }
-            if saved==nil {SecureField("粘贴 API Key，无需 Bearer 前缀",text:$secret).textFieldStyle(.roundedBorder)}
+            if saved==nil {
+                Picker("凭据来源",selection:$existingID) {
+                    Text("保存新的 API Key").tag("")
+                    ForEach(model.credentials.filter{$0.active && $0.kind=="opaque-token"}) {Text("使用已保存："+$0.label).tag($0.id)}
+                }
+                if existingID.isEmpty {SecureField("粘贴 API Key，无需 Bearer 前缀",text:$secret).textFieldStyle(.roundedBorder).disabled(signerMode == nil)}
+            }
             else {Label("密钥已保存；连接尚未激活。继续审阅规则，不会再次添加密钥。",systemImage:"checkmark.shield")}
             PeerSecurityWarning()
             if !model.desktopReady {Text("请先解锁管理会话。").foregroundStyle(.secondary)}
             if model.policy?.trust_installed != true {Text("请先在授权页完成此保险库的一次性签名密钥设置。").foregroundStyle(.secondary)}
+            if let signerMode {Text(signerMode.label).font(.caption).foregroundStyle(.secondary)}
+            else {Button("检查签名密钥"){Task{await checkSigner()}}.disabled(model.busy)}
             if let message {Text(message).foregroundStyle(.red).textSelection(.enabled)}
-            HStack {Button("取消"){secret="";dismiss()}.keyboardShortcut(.cancelAction);Spacer();Button(saved==nil ? "保存并审阅规则":"继续审阅规则"){prepare()}.buttonStyle(PrimaryButton()).disabled(model.busy || !model.desktopReady || model.policy?.trust_installed != true || connectionName.isEmpty || saved==nil && (!singleLine(secret) || label.isEmpty) || generic && origin.isEmpty || llm && modelList.isEmpty)}
+            HStack {Button("取消"){secret="";dismiss()}.keyboardShortcut(.cancelAction).disabled(model.busy);Spacer();Button(saved != nil || !existingID.isEmpty ? "继续审阅规则":"保存并审阅规则"){prepare()}.buttonStyle(PrimaryButton()).disabled(model.busy || signerMode == nil || !model.desktopReady || model.policy?.trust_installed != true || connectionName.isEmpty || saved==nil && existingID.isEmpty && (!singleLine(secret) || label.isEmpty) || generic && origin.isEmpty || llm && modelList.isEmpty)}
             }
-        }.padding(30).frame(width:530).background(canvas)
-        .onAppear{preset=model.addPreset}
+        }.padding(30).frame(width:530).background(canvas).interactiveDismissDisabled(model.busy)
+        .task {
+            preset=model.addPreset
+            if case .add(let request)=model.onboardingRoute {
+                connectionName=request.name ?? request.provider;label=request.label ?? connectionName
+                existingID=request.credentialID ?? "";origin=request.origin ?? "";header=request.header ?? "x-api-key";prefix=request.prefix ?? ""
+                models=request.models.joined(separator:"\n")
+            }
+            if !OAuthSetup.presets.contains(preset) {await checkSigner()}
+        }
         .onDisappear{secret=""}
     }
+    private func checkSigner() async {
+        do {signerMode=try await model.checkPolicySigner();message=nil}
+        catch {signerMode=nil;message=error.localizedDescription}
+    }
     private func prepare() {
-        let value=secret,name=label,connection=connectionName,selectedPreset=preset,selectedOrigin=origin,selectedHeader=header,selectedPrefix=prefix,selectedModels=modelList
+        let value=secret,name=label,connection=connectionName,reuseID=existingID,selectedPreset=preset,selectedOrigin=origin,selectedHeader=header,selectedPrefix=prefix,selectedModels=modelList
         secret="";message=nil
         Task {
             do {
-                let credential:Credential
-                if let prior=saved {credential=prior}else{credential=try await model.saveAPIKey(label:name,secret:value);saved=credential}
+                signerMode=try await model.checkPolicySigner()
                 let definition=try await model.loadPreset(selectedPreset,origin:selectedOrigin,header:selectedPreset=="generic-header" ? selectedHeader:"",prefix:selectedPreset=="generic-header" ? selectedPrefix:"")
+                let baseline=try await model.loadConnectionEditor()
+                guard !baseline.connections.contains(where:{$0.name==connection}) else {throw UIError(message:"已有同名连接，请在授权页编辑现有规则。")}
+                let credential:Credential
+                if let prior=saved {credential=prior}
+                else if !reuseID.isEmpty {
+                    guard let prior=model.credentials.first(where:{$0.id==reuseID && $0.active && $0.kind=="opaque-token"}) else {throw UIError(message:"所选凭据不可用，请刷新后重新选择。")}
+                    credential=prior
+                } else {credential=try await model.saveAPIKey(label:name,secret:value);saved=credential}
                 model.onboardingConnection=definition.connection(name:connection,credentialID:credential.id,models:selectedModels)
                 dismiss()
                 await Task.yield()
@@ -779,9 +809,11 @@ struct PersonalPolicyDraftForm:View {
     @State private var confirmed=false
     @State private var attempted=false
     @State private var message:String?
+    @State private var signerMode:PolicySigning.Mode?
     var body:some View {
         VStack(alignment:.leading,spacing:14) {
             Text("连接与规则 · 审阅后签署").font(.system(size:24,weight:.semibold))
+            if let signerMode {Text(signerMode.label).font(.caption).foregroundStyle(.secondary)}
             ScrollView {
                 VStack(alignment:.leading,spacing:14) {
                     if let draft {
@@ -854,6 +886,7 @@ struct PersonalPolicyDraftForm:View {
         guard baseline==nil,!model.busy else{return}
         let revision=model.nativeFlowRevision,workspace=model.stateDirectory
         do {
+            signerMode=try await model.checkPolicySigner()
             let loaded=try await model.loadConnectionEditor()
             guard model.acceptsNativeCompletion(revision,workspace:workspace)else{return}
             var all=loaded.connections
@@ -861,7 +894,8 @@ struct PersonalPolicyDraftForm:View {
             let sshStatus=try await model.loadSSHStatus()
             guard model.acceptsNativeCompletion(revision,workspace:workspace)else{return}
             baseline=loaded;connections=all;derived=loaded.derived_credentials;sshKeys=loaded.ssh_keys;sshSocket=sshStatus.socket;selectedIndex=all.isEmpty ? nil:all.count-1
-            if let expires=loaded.expires_at_ms,expires>Int64(Date().timeIntervalSince1970*1000){expiry=Date(timeIntervalSince1970:Double(expires)/1000)}
+            if seed != nil,case .add(let request)=model.onboardingRoute,let days=request.validDays {expiry=Date().addingTimeInterval(Double(days)*86400)}
+            else if let expires=loaded.expires_at_ms,expires>Int64(Date().timeIntervalSince1970*1000){expiry=Date(timeIntervalSince1970:Double(expires)/1000)}
         } catch{if model.acceptsNativeCompletion(revision,workspace:workspace){message=error.localizedDescription}}
     }
     private func generate(){
@@ -1194,10 +1228,12 @@ struct EnvImportView:View {
     @State private var activated=false
     @State private var message:String?
     @State private var authentication=PresenceReadContext()
+    @State private var signerMode:PolicySigning.Mode?
     private let presets=ConnectionPreset.apiKeyPresets.filter{$0 != "github-git"}
     var body:some View {
         VStack(alignment:.leading,spacing:14) {
             Text("从 .env 导入").font(.title2)
+            if let signerMode {Text(signerMode.label).font(.caption).foregroundStyle(.secondary)}
             Text(path).font(.system(size:12,design:.monospaced)).textSelection(.enabled)
             Text("这里只显示变量名和服务提示。选择要导入的密钥，审阅并签署连接规则，再明确选择是否替换原文件。").font(.callout)
             if model.policy?.mode != .personal || model.policy?.trust_installed != true {Text("请先解锁个人保险库，并在授权页完成签名密钥设置。").foregroundStyle(.secondary)}
@@ -1253,6 +1289,7 @@ struct EnvImportView:View {
     private func prepare(){
         let selected=items.filter(\.selected);let revision=model.nativeFlowRevision;message=nil
         Task {do{
+            signerMode=try await model.checkPolicySigner()
             let base=try await model.loadConnectionEditor();var next:[EnvImportConnection]=[]
             for item in selected {
                 let preset=try await model.loadPreset(item.preset,origin:item.origin,header:item.preset=="generic-header" ? item.header:"",prefix:item.preset=="generic-header" ? item.prefix:"")
@@ -1265,7 +1302,7 @@ struct EnvImportView:View {
     private func saveAndDraft(){
         guard let baseline else{return};message=nil
         Task {do{
-            if report==nil {importAttempted=true;report=try await model.importSelected(path:path,selections:prepared.map{.init(key:$0.key,label:$0.label)},authentication:authentication)}
+            if report==nil {signerMode=try await model.checkPolicySigner();importAttempted=true;report=try await model.importSelected(path:path,selections:prepared.map{.init(key:$0.key,label:$0.label)},authentication:authentication)}
             guard let report else{return}
             for i in prepared.indices {guard let entry=report.entries.first(where:{$0.key==prepared[i].key})else{throw UIError(message:"导入回执缺少所选变量，请检查凭证列表，勿重复保存。")};prepared[i].definition.credential_id=entry.credential.id}
             let names=Set(prepared.map{ $0.definition.name });let definitions=baseline.connections.filter{!names.contains($0.name)}+prepared.map(\.definition)
@@ -1322,6 +1359,7 @@ private struct OAuthAddForm:View {
     @EnvironmentObject var model:AppModel
     @Environment(\.dismiss) var dismiss
     let preset:String
+    @Binding var signerMode:PolicySigning.Mode?
     @State private var label="";@State private var connection="";@State private var clientID="";@State private var clientSecret=""
     @State private var write=false;@State private var definition:ConnectionPreset?;@State private var saved:Credential?;@State private var message:String?
     private var scopes:[String] {definition.map{OAuthSetup.scopeCeiling($0,write:write)} ?? []}
@@ -1337,15 +1375,18 @@ private struct OAuthAddForm:View {
             Text(preset=="notion" ? "需要配置的 Portal capabilities：":"请求的 scope ceiling：").font(.headline)
             Text(scopes.joined(separator:"\n")).font(.system(size:11,design:.monospaced)).textSelection(.enabled)
             PeerSecurityWarning()
+            if let signerMode {Text(signerMode.label).font(.caption).foregroundStyle(.secondary)}
+            else {Text("请先完成签名密钥检查。").foregroundStyle(.secondary)}
             if saved != nil {Text("凭据已加密保存；先签署连接，再从规则页面打开浏览器授权。失败不会重复保存。")}
             if let message{Text(message).foregroundStyle(.red).textSelection(.enabled)}
-            HStack{Button("取消"){clientSecret="";dismiss()};Spacer();Button("保存并审阅 OAuth 连接"){prepare()}.buttonStyle(PrimaryButton()).disabled(model.busy || !model.unlocked || model.policy?.trust_installed != true || definition==nil || label.isEmpty || connection.isEmpty || clientID.isEmpty || saved==nil && ["github","notion"].contains(OAuthSetup.provider(preset)) && clientSecret.isEmpty)}
-        }.id(preset).task{do{definition=try await model.loadPreset(preset)}catch{message=error.localizedDescription}}.onDisappear{clientSecret=""}
+            HStack{Button("取消"){clientSecret="";dismiss()};Spacer();Button("保存并审阅 OAuth 连接"){prepare()}.buttonStyle(PrimaryButton()).disabled(model.busy || signerMode == nil || !model.unlocked || model.policy?.trust_installed != true || definition==nil || label.isEmpty || connection.isEmpty || clientID.isEmpty || saved==nil && ["github","notion"].contains(OAuthSetup.provider(preset)) && clientSecret.isEmpty)}
+        }.id(preset).task{do{signerMode=try await model.checkPolicySigner();definition=try await model.loadPreset(preset)}catch{message=error.localizedDescription}}.onDisappear{clientSecret=""}
     }
     private func prepare(){
         guard let definition else{return};let chosenScopes=scopes,id=clientID,secret=clientSecret,name=label,connectionName=connection
         clientSecret="";message=nil
         Task{do{
+            _=try await model.checkPolicySigner()
             let credential:Credential
             if let saved{credential=saved}else{
                 var payload:[String:Any]=["credential_type":"oauth-grant-v1","provider":OAuthSetup.provider(preset),"client_id":id,"scopes":[]]

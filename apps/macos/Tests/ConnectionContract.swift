@@ -6,7 +6,7 @@ import CryptoKit
     static func main() throws {
         precondition(ConnectionPreset.apiKeyPresets.count==18 && Set(ConnectionPreset.apiKeyPresets+OAuthSetup.presets).count==24)
         for name in ConnectionPreset.apiKeyPresets+OAuthSetup.presets {
-            precondition(OnboardingRoute(url:URL(string:"rekey://add/"+name)!) == .add(name))
+            precondition(OnboardingRoute(url:URL(string:"rekey://add/"+name)!) == .add(OnboardingAddRequest(provider: name)))
         }
         precondition(OnboardingRoute(url:URL(string:"rekey://add/anthropic?secret=synthetic")!) == nil)
         precondition(OnboardingRoute(url:URL(string:"rekey://import?path=%2Ftmp%2Fsynthetic%20project%2F.env")!) == .importEnv("/tmp/synthetic project/.env"))
@@ -14,6 +14,14 @@ import CryptoKit
         precondition(OnboardingRoute(url:URL(string:"rekey://import?path=%2Ftmp%2Fa&path=%2Ftmp%2Fb")!) == nil)
         precondition(OnboardingRoute(url:URL(string:"rekey://oauth?connection=synthetic")!) == .oauth("synthetic"))
         for url in ["rekey://oauth?connection=a&connection=b","rekey://oauth?connection=a&secret=synthetic","rekey://oauth?connection=%2Fescape"] {precondition(OnboardingRoute(url:URL(string:url)!) == nil)}
+        let configured = URL(string: "rekey://add/generic-header?valid_days=30&name=team%20key%26other&label=%E6%B5%8B%E8%AF%95%20%24%28%29&credential_id=00000000-0000-4000-8000-000000000001&origin=https%3A%2F%2Fexample.com&header=x-api-key&prefix=Bearer%20&model=m%2Fa&model=m%2Bb")!
+        guard case .add(let options) = OnboardingRoute(url: configured) else { fatalError("public CLI options not decoded") }
+        precondition(options.name == "team key&other" && options.label == "测试 $()" && options.validDays == 30)
+        precondition(options.credentialID == "00000000-0000-4000-8000-000000000001" && options.origin == "https://example.com")
+        precondition(options.header == "x-api-key" && options.prefix == "Bearer " && options.models == ["m/a", "m+b"])
+        for invalid in ["rekey://add/glm?name=a&name=b", "rekey://add/glm?credential_id=invalid", "rekey://add/glm?valid_days=0", "rekey://add/glm?password=synthetic", "rekey://user@add/glm"] {
+            precondition(OnboardingRoute(url: URL(string: invalid)!) == nil)
+        }
         let authentication=PresenceReadContext(),vaultID=UUID(),start=ContinuousClock.Instant.now
         var contexts:[LAContext]=[]
         for elapsed in [0,1,11] {

@@ -215,6 +215,33 @@ impl Fixture {
 }
 
 #[tokio::test]
+async fn unsorted_connections_review_matches_signed_snapshot() {
+    let f = Fixture::new(PolicyMode::Personal, true).await;
+    let status = f.call(admin_msg::POLICY_STATUS, json!({}), &[]).await;
+    assert_eq!(status.ok()["signer_id"], json!(f.signer_id));
+    assert_eq!(status.ok()["bundle_persisted"], false);
+    let mut last = f.seed().await;
+    last.name = "z-last".into();
+    let mut first = last.clone();
+    first.name = "a-first".into();
+    let draft = f.draft(vec![last.clone(), first.clone()]).await;
+    let bundle = f.signed(&draft);
+    assert_eq!(
+        draft.metadata["connections"],
+        bundle["snapshot"]["connections"]
+    );
+    assert_eq!(draft.metadata["connections"], json!([first, last]));
+    f.activate(&draft, &bundle).await.ok();
+    let listed = f.call(admin_msg::PROFILE_LIST, json!({}), &[]).await;
+    let active: ipc::ConnectionListResponse = serde_json::from_slice(&listed.body).unwrap();
+    assert_eq!(
+        serde_json::to_value(active.connections).unwrap(),
+        draft.metadata["connections"]
+    );
+    f.finish().await;
+}
+
+#[tokio::test]
 async fn signed_connection_draft_readonly_idempotent_and_revocable() {
     let f = Fixture::new(PolicyMode::Personal, true).await;
     let connection = f.seed().await;

@@ -141,6 +141,11 @@ impl BrokerCtx {
             let base_version = previous
                 .as_ref()
                 .map(|bundle| bundle.snapshot().version().get());
+            // Project the reviewed definitions from the exact canonical snapshot.
+            // The generator sorts connections; request order is not signing order.
+            let snapshot: rekey_policy::PolicySnapshot =
+                serde_json::from_slice(draft.canonical_snapshot())
+                    .map_err(|_| rekey_policy::PolicyError::Malformed)?;
             let response = PersonalPolicyDraftResponse {
                 vault_id: self.authority.admin_status().await?.vault_id,
                 trust_sha256: data_encoding::HEXLOWER.encode(&rekey_policy::policy_trust_sha256(
@@ -165,7 +170,7 @@ impl BrokerCtx {
                     })
                     .collect(),
                 actions: Vec::new(),
-                connections: request.connections,
+                connections: snapshot.connections,
             };
             if draft.sign_bytes().len() > rekey_policy::SNAPSHOT_MAX_BYTES {
                 return Err(rekey_policy::PolicyError::TooLarge.into());
@@ -249,7 +254,10 @@ impl BrokerCtx {
             trust_installed: authority.policy_trust_installed,
             bundle_persisted: authority.policy_bundle_persisted,
             status: "unavailable".to_owned(),
-            signer_id: None,
+            signer_id: material
+                .as_ref()
+                .and_then(|value| value.trust.as_ref())
+                .map(|trust| trust.signer_id),
             version: None,
             expires_at_ms: None,
             policy_sha256: None,

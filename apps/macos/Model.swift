@@ -61,12 +61,23 @@ struct CLI: Sendable {
     }
 
     func run(_ arguments: [String], input: String = "", redacting: [String] = []) throws -> Data {
-        guard FileManager.default.isExecutableFile(atPath: binary.path) else {
+        try execute(binary, commandArguments(arguments), input: Data(input.utf8), redacting: redacting, operation: arguments)
+    }
+
+    // The signer accepts only public arguments and exact signing bytes on stdin.
+    // It shares the CLI's bounded capture, timeout and clean environment boundary.
+    func policySigner(_ arguments: [String], input: Data = Data()) throws -> Data {
+        try execute(binary.deletingLastPathComponent().appendingPathComponent("rekey-policy-sign"), arguments,
+                    input: input, redacting: [], operation: arguments)
+    }
+
+    private func execute(_ executable: URL, _ arguments: [String], input: Data, redacting: [String], operation: [String]) throws -> Data {
+        guard FileManager.default.isExecutableFile(atPath: executable.path) else {
             throw UIError(message: "找不到随应用安装的 rekey，请重新构建应用。")
         }
         let process = Process()
-        process.executableURL = binary
-        process.arguments = commandArguments(arguments)
+        process.executableURL = executable
+        process.arguments = arguments
         // Do not forward the host's API keys or other ambient credentials.
         process.environment = ["HOME": NSHomeDirectory(), "PATH": "/usr/bin:/bin", "LANG": "en_US.UTF-8"]
         let stdin = Pipe(), stdout = Pipe(), stderr = Pipe()
@@ -82,16 +93,16 @@ struct CLI: Sendable {
             errors.read(stderr.fileHandleForReading, process: process)
         }
         let timeout = DispatchWorkItem { if process.isRunning { process.terminate() } }
-        DispatchQueue.global().asyncAfter(deadline: .now() + (arguments.first == "backup" ? 310 : 150), execute: timeout)
+        DispatchQueue.global().asyncAfter(deadline: .now() + (operation.first == "backup" ? 310 : 150), execute: timeout)
         defer { timeout.cancel() }
         do {
-            try stdin.fileHandleForWriting.write(contentsOf: Data(input.utf8))
+            try stdin.fileHandleForWriting.write(contentsOf: input)
             try stdin.fileHandleForWriting.close()
         } catch {
             if process.isRunning { process.terminate() }
             throw UIError(message: "无法传递输入。操作结果未确认，请刷新后检查，勿自动重试。")
         }
-        let output = OutputCapture(limit: arguments.prefix(2) == ["approval", "review"] ? LocalApprovalDetails.stdoutLimit : arguments == ["connection", "list"] ? ConnectionList.stdoutLimit : arguments.prefix(2) == ["audit", "list"] ? AuditPage.stdoutLimit : 2 * 1024 * 1024)
+        let output = OutputCapture(limit: operation.prefix(2) == ["approval", "review"] ? LocalApprovalDetails.stdoutLimit : operation == ["connection", "list"] ? ConnectionList.stdoutLimit : operation.prefix(2) == ["audit", "list"] ? AuditPage.stdoutLimit : 2 * 1024 * 1024)
         output.read(stdout.fileHandleForReading, process: process)
         process.waitUntilExit()
         group.wait()
@@ -892,21 +903,48 @@ struct ActivitySnapshot {
     }
 }
 
+struct OnboardingAddRequest: Equatable, Hashable, Sendable {
+    let provider: String
+    var name: String? = nil
+    var label: String? = nil
+    var credentialID: String? = nil
+    var origin: String? = nil
+    var header: String? = nil
+    var prefix: String? = nil
+    var validDays: Int? = nil
+    var models: [String] = []
+}
+
 enum OnboardingRoute: Equatable, Hashable, Sendable {
     case setup
-    case add(String)
+    case add(OnboardingAddRequest)
     case importEnv(String)
     case oauth(String)
-    var rawValue: String { switch self { case .setup:return "rekey://setup";case .add(let preset):return "rekey://add/"+preset;case .importEnv(let path):return "import:"+path;case .oauth(let connection):return "oauth:"+connection } }
+    var rawValue: String { switch self { case .setup:return "rekey://setup";case .add(let request):return "rekey://add/"+request.provider;case .importEnv(let path):return "import:"+path;case .oauth(let connection):return "oauth:"+connection } }
     init?(url: URL) {
-        guard url.scheme == "rekey", url.fragment == nil else { return nil }
+        guard url.scheme == "rekey", url.fragment == nil, url.user == nil, url.password == nil, url.port == nil, url.absoluteString.utf8.count <= 8192 else { return nil }
         if url.host == "import",url.path.isEmpty,let components=URLComponents(url:url,resolvingAgainstBaseURL:false),let query=components.queryItems,query.count==1,query[0].name=="path",let path=query[0].value,path.hasPrefix("/"),!path.contains("\0") {self = .importEnv(path);return}
         if url.host == "oauth",url.path.isEmpty,let query=URLComponents(url:url,resolvingAgainstBaseURL:false)?.queryItems,query.count==1,query[0].name=="connection",let connection=query[0].value,!connection.isEmpty,connection.utf8.count<=100,connection.utf8.allSatisfy({$0>=48 && $0<=57 || $0>=65 && $0<=90 || $0>=97 && $0<=122 || [45,46,95].contains($0)}) {self = .oauth(connection);return}
-        guard url.query == nil else{return nil}
-        if url.host == "setup", url.path.isEmpty { self = .setup; return }
+        if url.host == "setup", url.query == nil, url.path.isEmpty { self = .setup; return }
         let presets = ConnectionPreset.apiKeyPresets+OAuthSetup.presets
         guard url.host == "add", presets.contains(String(url.path.dropFirst())),url.path.hasPrefix("/") else { return nil }
-        self = .add(String(url.path.dropFirst()))
+        var request = OnboardingAddRequest(provider: String(url.path.dropFirst()))
+        var seen = Set<String>()
+        for item in URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? [] {
+            guard let value = item.value, !value.contains("\0"), item.name == "model" || seen.insert(item.name).inserted else { return nil }
+            switch item.name {
+            case "name": request.name = value
+            case "label": request.label = value
+            case "credential_id": guard UUID(uuidString: value) != nil else { return nil }; request.credentialID = value.lowercased()
+            case "origin": request.origin = value
+            case "header": request.header = value
+            case "prefix": request.prefix = value
+            case "valid_days": guard let days = Int(value), (1...365).contains(days) else { return nil }; request.validDays = days
+            case "model": request.models.append(value)
+            default: return nil
+            }
+        }
+        self = .add(request)
     }
 }
 
@@ -1370,7 +1408,7 @@ final class AppModel: ObservableObject {
                                 client injectedClient: CLI? = nil,
                                 sharedAuthentication: PresenceReadContext? = nil,
                                 readPresence: @escaping @Sendable (UUID, LAContext) throws -> String = { try PresenceKey.read(vaultID: $0, context: $1) },
-                                sign: @escaping @Sendable (UUID, Data, Data, LAContext) throws -> String = { try PolicySigning.sign(vaultID: $0, message: $1, expectedPublicKey: $2, context: $3) }) async throws {
+                                sign: (@Sendable (UUID, Data, Data, LAContext) throws -> String)? = nil) async throws {
         guard !busy, acceptsNativeCompletion(draft.revision, workspace: draft.workspace),
               presence || (!proof.isEmpty && !proof.contains("\n") && !proof.contains("\r")) else {
             throw UIError(message: "草稿上下文或验证信息已失效，未提交激活。")
@@ -1397,7 +1435,9 @@ final class AppModel: ObservableObject {
         personalPolicySigning = true
         let signature = try await Task.detached {
             try authentication.read(vaultID: draft.metadata.vault_id) {
-                try sign(draft.metadata.vault_id, draft.signBytes, draft.publicKey, $0)
+                if let sign { return try sign(draft.metadata.vault_id, draft.signBytes, draft.publicKey, $0) }
+                return try PolicySigning.signExisting(current: current, client: client, message: draft.signBytes,
+                                                       expectedPublicKey: draft.publicKey, context: $0)
             }
         }.value
         personalPolicySigning = false
@@ -1492,7 +1532,17 @@ final class AppModel: ObservableObject {
             error = "请先完成当前操作，并在默认保险库工作区打开设置或接入页面。"; return
         }
         clearNativeFlow(); onboardingConnection = nil; onboardingCommand = nil; onboardingRoute = route
-        if case .add(let preset) = route { addPreset = preset }
+        if case .add(let request) = route { addPreset = request.provider }
+    }
+    func checkPolicySigner() async throws -> PolicySigning.Mode {
+        guard !busy, unlocked else { throw UIError(message: "请先解锁并等待当前操作完成。") }
+        busy = true; defer { busy = false }
+        let client = cli, revision = nativeFlowRevision
+        let mode = try await Task.detached {
+            try PolicySigning.available(current: client.decode(PolicyStatus.self, ["policy", "status"]), client: client)
+        }.value
+        guard acceptsNativeCompletion(revision, workspace: client.stateDirectory) else { throw UIError(message: "签名检查期间工作区已改变，请重试。") }
+        return mode
     }
     func saveAPIKey(label: String, secret: String, client injectedClient: CLI? = nil) async throws -> Credential {
         guard desktopReady, let token = desktopToken else { throw UIError(message: "管理会话已过期，请先解锁管理会话。") }
@@ -1501,7 +1551,9 @@ final class AppModel: ObservableObject {
         let client = injectedClient ?? cli, revision = nativeFlowRevision
         let data = try await Task.detached { try client.run(["desktop-add", label], input: token + "\n" + secret + "\n", redacting: [token, secret]) }.value
         guard acceptsNativeCompletion(revision, workspace: client.stateDirectory), !Task.isCancelled else { throw UIError(message: "上下文已改变，请检查已保存凭据，勿自动重试。") }
-        return try JSONDecoder().decode(Credential.self, from: data)
+        let credential = try JSONDecoder().decode(Credential.self, from: data)
+        credentials.removeAll { $0.id == credential.id }; credentials.append(credential)
+        return credential
     }
     func addAPIKey(label: String, secret: String) async -> Bool {
         do { _ = try await saveAPIKey(label: label, secret: secret); await refresh(); return true }
