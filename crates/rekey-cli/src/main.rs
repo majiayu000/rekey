@@ -240,12 +240,12 @@ enum Command {
     },
     /// Open the installed macOS App setup page; completion happens in the App.
     Setup,
-    /// Add an API key and activate its preset Connection in one step (basic
-    /// mode: software policy key). Use --app to finish in the macOS App instead.
+    /// Add a credential and review its preset Connection in the installed macOS
+    /// App. Headless/custom-workspace usage uses the basic software signer.
     Add {
         #[arg(value_parser = clap::builder::PossibleValuesParser::new(rekey_domain::connection::BUILTIN_PRESETS))]
         provider: String,
-        /// Open the installed macOS App onboarding page instead.
+        /// Require the installed macOS App (also the default for interactive use).
         #[arg(long)]
         app: bool,
         /// Connection name Agents call (default: the provider name).
@@ -1309,12 +1309,7 @@ fn main() {
         Command::Setup => commands::open_onboarding(&state_dir, None, onboarding_inapplicable),
         Command::Add {
             provider,
-            app: true,
-            ..
-        } => commands::open_onboarding(&state_dir, Some(&provider), onboarding_inapplicable),
-        Command::Add {
-            provider,
-            app: false,
+            app,
             name,
             label,
             credential_id,
@@ -1324,7 +1319,7 @@ fn main() {
             valid_days,
             models,
             stdin_secrets,
-        } => commands::add::add(
+        } => commands::add::dispatch(
             &state_dir,
             commands::add::AddRequest {
                 provider,
@@ -1338,6 +1333,8 @@ fn main() {
                 models,
                 stdin_secrets,
             },
+            app,
+            onboarding_inapplicable,
         ),
         Command::SshAgent(command) => match command {
             SshAgentCommand::Status => commands::ssh::status(&state_dir),

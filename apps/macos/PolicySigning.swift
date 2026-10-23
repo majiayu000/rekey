@@ -1,11 +1,81 @@
 import Foundation
 import LocalAuthentication
 import Security
+import CryptoKit
 
 // Call only from an explicit setup/sign action, off the UI thread. No method
-// exports private key bytes, removes a key, retries, or uses a software key.
+// exports private key bytes, removes a key, retries, or replaces installed trust.
 enum PolicySigning {
     private static let prefix = Data("RKPOLICY\0\u{01}".utf8)
+
+    enum Mode: Sendable {
+        case secureEnclave, software
+        var label: String {
+            switch self {
+            case .secureEnclave: return "Secure Enclave 签名 · 私钥不可导出"
+            case .software: return "基础模式 · 使用已有软件签名密钥，同一用户的进程可读取此密钥"
+            }
+        }
+    }
+
+    private struct SoftwareTrust: Decodable {
+        struct Trust: Decodable { let public_key: String }
+        let trust: Trust
+        let trust_sha256: String
+    }
+
+    private static func softwareTrust(current: PolicyStatus, client: CLI) throws -> SoftwareTrust {
+        guard let signer = current.signer_id else { throw UIError(message: "保险库尚未设置签名信任根。") }
+        return try JSONDecoder().decode(SoftwareTrust.self, from: client.policySigner([
+            "software-key", "trust", "--key-file", client.stateDirectory + "/policy-signer-p256.p8", "--signer-id", signer
+        ]))
+    }
+
+    // No authentication prompt or key generation during preflight. The algorithm
+    // label alone cannot distinguish hardware from the existing basic-mode key.
+    static func available(current: PolicyStatus, client: CLI, expectedPublicKey: Data? = nil,
+                          hardwarePublicKey: (UUID) throws -> Data? = existingPublicKey) throws -> Mode {
+        guard current.mode == .personal, current.trust_installed, current.algorithm == .secureEnclaveP256,
+              let vault = UUID(uuidString: current.vault_id), let signer = current.signer_id,
+              let digest = current.trust_sha256 else { throw UIError(message: "请先完成个人保险库的签名信任根设置。") }
+        // Existing basic-mode files can be checked without accessing Keychain.
+        if FileManager.default.fileExists(atPath: client.stateDirectory + "/policy-signer-p256.p8") {
+            let software = try softwareTrust(current: current, client: client)
+            if software.trust_sha256 == digest {
+                if let expectedPublicKey, software.trust.public_key != expectedPublicKey.map({ String(format: "%02x", $0) }).joined() {
+                    throw UIError(message: "软件签名密钥与草稿不一致，未签署。")
+                }
+                return .software
+            }
+        }
+        if let key = try hardwarePublicKey(vault) {
+            let trust: [String: Any] = ["algorithm": "secure-enclave-p256", "format_version": 1,
+                                       "public_key": key.map { String(format: "%02x", $0) }.joined(), "signer_id": signer]
+            // All four fields are ASCII strings/integers; sorted JSON is JCS here.
+            let canonical = try JSONSerialization.data(withJSONObject: trust, options: [.sortedKeys])
+            if SHA256.hash(data: canonical).map({ String(format: "%02x", $0) }).joined() == digest { return .secureEnclave }
+        }
+        throw UIError(message: "找不到与此保险库信任根匹配的签名密钥。请使用原签名设备；不会创建替代密钥。")
+    }
+
+    static func signExisting(current: PolicyStatus, client: CLI, message: Data, expectedPublicKey: Data, context: LAContext) throws -> String {
+        switch try available(current: current, client: client, expectedPublicKey: expectedPublicKey) {
+        case .secureEnclave:
+            guard let vault = UUID(uuidString: current.vault_id) else { throw UIError(message: "保险库标识无效。") }
+            return try sign(vaultID: vault, message: message, expectedPublicKey: expectedPublicKey, context: context)
+        case .software:
+            let output = try client.policySigner(["software-key", "sign", "--key-file", client.stateDirectory + "/policy-signer-p256.p8"], input: message)
+            return String(decoding: output, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
+
+    private static func existingPublicKey(vaultID: UUID) throws -> Data? {
+        let context = LAContext()
+        context.interactionNotAllowed = true
+        defer { context.invalidate() }
+        guard let key = try load(vaultID: vaultID, context: context) else { return nil }
+        return try publicKey(key)
+    }
 
     static func createOrLoadPublicKey(vaultID: UUID) throws -> Data {
         let context = LAContext()

@@ -1386,6 +1386,10 @@ pub fn open_onboarding(
     inapplicable: bool,
 ) -> Result<(), CliError> {
     let url = onboarding_url(state_dir, provider, inapplicable)?;
+    launch_onboarding(&url)
+}
+
+fn launch_onboarding(url: &str) -> Result<(), CliError> {
     #[cfg(target_os = "macos")]
     {
         if !Path::new("/Applications/Rekey.app").is_dir() {
@@ -1395,7 +1399,7 @@ pub fn open_onboarding(
             ));
         }
         let status = std::process::Command::new("/usr/bin/open")
-            .args(["-a", "/Applications/Rekey.app", &url])
+            .args(["-a", "/Applications/Rekey.app", url])
             .stdin(std::process::Stdio::null())
             .status()
             .map_err(|_| {

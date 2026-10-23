@@ -1048,7 +1048,8 @@ impl PolicyStatusResponse {
         match self.status.as_str() {
             "unavailable"
                 if self.activated_at_ms.is_none()
-                    && self.signer_id.is_none()
+                    && self.signer_id.is_some()
+                        == (self.mode.is_some() && self.trust_installed)
                     && self.version.is_none()
                     && self.expires_at_ms.is_none()
                     && self.policy_sha256.is_none()
@@ -2019,13 +2020,16 @@ mod tests {
             status: "unavailable".into(),
             trust_sha256: Some("a".repeat(64)),
             activated_at_ms: None,
-            signer_id: None,
+            signer_id: Some(PolicySignerId::new_random()),
             version: None,
             expires_at_ms: None,
             policy_sha256: None,
             bundle_sha256: None,
         };
         status.validate().unwrap();
+        let signer = status.signer_id.take();
+        assert!(status.validate().is_err());
+        status.signer_id = signer;
         status.trust_installed = false;
         assert!(status.validate().is_err());
         status.trust_installed = true;

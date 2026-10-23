@@ -35,6 +35,85 @@ pub struct AddRequest {
     pub stdin_secrets: bool,
 }
 
+/// Interactive default-workspace users share the App's review/presence flow.
+/// Explicit stdin and other workspaces retain the headless basic-mode command.
+pub fn dispatch(
+    state_dir: &Path,
+    request: AddRequest,
+    app: bool,
+    inapplicable: bool,
+) -> Result<(), CliError> {
+    let automatic = cfg!(target_os = "macos")
+        && !request.stdin_secrets
+        && !inapplicable
+        && state_dir == super::resolve_state_dir(None)?
+        && Path::new("/Applications/Rekey.app").is_dir();
+    if app || automatic {
+        let url = app_url(state_dir, &request, inapplicable)?;
+        super::launch_onboarding(&url)
+    } else {
+        add(state_dir, request)
+    }
+}
+
+fn app_url(state_dir: &Path, request: &AddRequest, inapplicable: bool) -> Result<String, CliError> {
+    let mut url = super::onboarding_url(state_dir, Some(&request.provider), inapplicable)?;
+    if request.stdin_secrets || !(1..=365).contains(&request.valid_days) {
+        return Err(CliError::local(
+            "USAGE",
+            "App onboarding does not accept stdin secrets; --valid-days must be 1..=365",
+        ));
+    }
+    if request
+        .credential_id
+        .as_deref()
+        .is_some_and(|id| id.parse::<CredentialId>().is_err())
+    {
+        return Err(CliError::local("USAGE", "invalid --credential-id"));
+    }
+    let encode = |value: &str| -> String {
+        value
+            .bytes()
+            .map(|b| {
+                if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+                    (b as char).to_string()
+                } else {
+                    format!("%{b:02X}")
+                }
+            })
+            .collect()
+    };
+    let mut query = vec![format!("valid_days={}", request.valid_days)];
+    for (key, value) in [
+        ("name", &request.name),
+        ("label", &request.label),
+        ("credential_id", &request.credential_id),
+        ("origin", &request.origin),
+        ("header", &request.header),
+        ("prefix", &request.prefix),
+    ] {
+        if let Some(value) = value {
+            query.push(format!("{key}={}", encode(value)));
+        }
+    }
+    for model in &request.models {
+        query.push(format!("model={}", encode(model)));
+    }
+    // OAuth has its own client-registration form; do not silently discard flags.
+    if OAUTH_PRESETS.contains(&request.provider.as_str()) && query.len() != 1 {
+        return Err(CliError::local(
+            "USAGE",
+            "OAuth connection options must be entered in the App",
+        ));
+    }
+    url.push('?');
+    url.push_str(&query.join("&"));
+    if url.len() > 8192 {
+        return Err(CliError::local("USAGE", "App onboarding URL is too large"));
+    }
+    Ok(url)
+}
+
 pub fn add(state_dir: &Path, request: AddRequest) -> Result<(), CliError> {
     if OAUTH_PRESETS.contains(&request.provider.as_str()) {
         return Err(CliError::local(
@@ -498,4 +577,40 @@ fn now_ms() -> Result<i64, CliError> {
         .duration_since(UNIX_EPOCH)
         .map_err(|_| CliError::local("CLOCK", "system clock is before 1970"))?;
     i64::try_from(elapsed.as_millis()).map_err(|_| CliError::local("CLOCK", "clock overflow"))
+}
+
+#[cfg(test)]
+mod app_handoff_tests {
+    use super::*;
+
+    #[test]
+    fn public_options_are_encoded_and_secrets_or_overrides_rejected() {
+        let state = super::super::resolve_state_dir(None).unwrap();
+        let mut request = AddRequest {
+            provider: "generic-header".into(),
+            name: Some("team key&other".into()),
+            label: Some("测试 $()".into()),
+            credential_id: Some("00000000-0000-4000-8000-000000000001".into()),
+            origin: Some("https://example.com".into()),
+            header: Some("x-api-key".into()),
+            prefix: Some("Bearer ".into()),
+            valid_days: 30,
+            models: vec!["m/a".into(), "m+b".into()],
+            stdin_secrets: false,
+        };
+        assert_eq!(
+            app_url(&state, &request, false).unwrap(),
+            "rekey://add/generic-header?valid_days=30&name=team%20key%26other&label=%E6%B5%8B%E8%AF%95%20%24%28%29&credential_id=00000000-0000-4000-8000-000000000001&origin=https%3A%2F%2Fexample.com&header=x-api-key&prefix=Bearer%20&model=m%2Fa&model=m%2Bb"
+        );
+        assert!(app_url(&state, &request, true).is_err());
+        assert!(app_url(&state.join("custom"), &request, false).is_err());
+        request.stdin_secrets = true;
+        assert!(app_url(&state, &request, false).is_err());
+        request.stdin_secrets = false;
+        request.valid_days = 0;
+        assert!(app_url(&state, &request, false).is_err());
+        request.valid_days = 30;
+        request.credential_id = Some("not-a-uuid".into());
+        assert!(app_url(&state, &request, false).is_err());
+    }
 }

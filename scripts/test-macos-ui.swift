@@ -1,6 +1,7 @@
 import Foundation
 import Darwin
 import CryptoKit
+import LocalAuthentication
 
 // Uses the production App's CLI, Connection and policy models. The software test
 // signer proves Swift/Rust interoperability; it does not attest Secure Enclave.
@@ -406,23 +407,67 @@ struct ConnectionUIContract {
         try require(try client.decode(CredentialList.self, ["credential", "list"]).credentials.first?.current_version == 2, "real rotation visible")
         // The algorithm tag is the production contract; this fixture intentionally
         // uses a software key and never calls Keychain, Touch ID or Secure Enclave.
-        let signer = P256.Signing.PrivateKey()
-        let trust: [String: Any] = ["format_version": 1, "signer_id": UUID().uuidString.lowercased(), "algorithm": "secure-enclave-p256",
-                                  "public_key": signer.publicKey.x963Representation.map { String(format: "%02x", $0) }.joined()]
+        // The CLI state path is selected by the fixture, not the real user vault.
+        let actualKeyFile = URL(fileURLWithPath: client.stateDirectory).appendingPathComponent("policy-signer-p256.p8")
+        _ = try client.policySigner(["software-key", "generate", "--key-file", actualKeyFile.path])
+        let signerID = UUID().uuidString.lowercased()
+        let trustOutput = try client.policySigner(["software-key", "trust", "--key-file", actualKeyFile.path, "--signer-id", signerID])
+        let trustEnvelope = try JSONSerialization.jsonObject(with: trustOutput) as! [String: Any]
+        let trust = trustEnvelope["trust"] as! [String: Any]
         let trustJSON = String(decoding: try JSONSerialization.data(withJSONObject: trust), as: UTF8.self)
         _ = try client.run(["policy", "trust", "install", "--stdin-request", "--step-up-stdin"], input: proof + "\n" + trustJSON + "\n")
+        let installed = try client.decode(PolicyStatus.self, ["policy", "status"])
+        print("CHECK: installed signer before first activation"); fflush(stdout)
+        try require(try PolicySigning.available(current: installed, client: client) == .software, "existing basic-mode key selected without Keychain")
+        var wrongTrust = try JSONSerialization.jsonObject(with: client.run(["policy", "status"])) as! [String: Any]
+        wrongTrust["trust_sha256"] = String(repeating: "0", count: 64)
+        let mismatched = try JSONDecoder().decode(PolicyStatus.self, from: JSONSerialization.data(withJSONObject: wrongTrust))
+        try rejected("different trust is never replaced") { _ = try PolicySigning.available(current: mismatched, client: client, hardwarePublicKey: { _ in nil }) }
+        let holding = actualKeyFile.appendingPathExtension("held")
+        try FileManager.default.moveItem(at: actualKeyFile, to: holding)
+        try rejected("missing private key is not generated") { _ = try PolicySigning.available(current: installed, client: client, hardwarePublicKey: { _ in nil }) }
+        try require(!FileManager.default.fileExists(atPath: actualKeyFile.path), "preflight never generates a key")
+        try FileManager.default.moveItem(at: holding, to: actualKeyFile)
         let preset = try client.decode(ConnectionPreset.self, ["connection", "preset", "github-pat"])
         var connection = preset.connection(name: "ui-fixture", credentialID: credential.id)
         connection.bindings = ["owner": ["example"], "repo": ["dedicated-test"]]
         let expires = Int64(Date().addingTimeInterval(600).timeIntervalSince1970 * 1000)
-        let draft = try client.personalPolicyDraft(connections: [connection], expectedPolicySHA256: nil, expiresAtMs: expires, revision: UUID())
-        try require(draft.connections == [connection], "displayed definitions equal actual sign bytes")
-        try draft.validate(current: client.decode(PolicyStatus.self, ["policy", "status"]))
-        let signature = try signer.signature(for: draft.signBytes).derRepresentation.base64EncodedString()
-            .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
-        _ = try client.activatePersonalPolicy(draft, signature: signature, proof: proof, recovery: false)
+        print("CHECK: signer preflight and unsorted review"); fflush(stdout)
+        let preferenceID = "rekey.auth-contract." + UUID().uuidString
+        let preferences = UserDefaults(suiteName: preferenceID)!
+        defer { preferences.removePersistentDomain(forName: preferenceID) }
+        let model = AppModel(stateDirectory: state, preferences: preferences, binary: binary)
+        model.status = try client.decode(ServiceStatus.self, ["status", "--passive"])
+        model.policy = installed
+        let remembered = try client.run(["desktop-remember", "--ttl", "720h"], input: proof + "\n")
+        let presenceProof = try PresenceKey.issuedKey(remembered)
+        await model.unlockWithPresence(revision: model.nativeFlowRevision, client: client, read: { _ in presenceProof })
+        try require(model.desktopReady, "synthetic 30-day grant resumes A1 desktop")
+        let otherPreset = try client.decode(ConnectionPreset.self, ["connection", "preset", "generic-bearer", "--origin", "https://example.net"])
+        let other = otherPreset.connection(name: "z-last", credentialID: credential.id)
+        let draft = try client.personalPolicyDraft(connections: [other, connection], expectedPolicySHA256: nil, expiresAtMs: expires, revision: model.nativeFlowRevision)
+        try require(draft.connections == [connection, other], "unsorted input returns exact signed definitions")
+        try draft.validate(current: installed)
+        do {
+            try await model.activatePersonalPolicy(draft, proof: "", recovery: false, presence: true, client: client,
+                readPresence: { _, _ in throw UIError(message: "synthetic authentication cancellation") })
+            throw UIError(message: "FAILED: cancelled presence activated")
+        } catch { try require(error.localizedDescription == "synthetic authentication cancellation", "cancelled presence stops activation") }
+        try require(try client.decode(PolicyStatus.self, ["policy", "status"]).bundle_persisted == false, "cancel leaves policy absent")
+        let desktopToken = model.desktopToken!
+        do {
+            try await model.activatePersonalPolicy(draft, proof: "", recovery: false, presence: true, client: client,
+                readPresence: { _, _ in desktopToken })
+            throw UIError(message: "FAILED: A1 desktop token activated policy")
+        } catch { try require(error.localizedDescription.contains("INVALID_UNLOCK_CREDENTIAL"), "A1 session is rejected as A2 presence") }
+        try require(try client.decode(PolicyStatus.self, ["policy", "status"]).bundle_persisted == false, "rejected proof leaves policy absent")
+        try await model.activatePersonalPolicy(draft, proof: "", recovery: false, presence: true, client: client,
+            readPresence: { _, _ in presenceProof })
         let active = try client.decode(ConnectionList.self, ["connection", "list"])
-        try require(active.connections == [connection] && active.policy_sha256 == draft.metadata.policy_sha256, "real signed Connection activation")
+        try require(active.connections == [connection, other] && active.policy_sha256 == draft.metadata.policy_sha256, "App software signature activates exact reviewed connections")
+        let afterSigning = try client.decode(PolicyStatus.self, ["policy", "status"])
+        try require(afterSigning.trust_sha256 == installed.trust_sha256, "signing retains installed trust")
+        print("CHECK: cancelled/A1 proof rejected; fresh presence activated without password; trust unchanged"); fflush(stdout)
         let capabilities = try client.run(["list", "--json"])
         let inventory = try JSONSerialization.jsonObject(with: capabilities) as! [String: Any]
         try require((inventory["connections"] as? [[String: Any]])?.first?["connection"] as? String == "ui-fixture", "token-free discovery")

@@ -22,13 +22,15 @@ rekey setup
 rekey add glm
 ```
 
-`setup` 在 App 中创建新的个人保险库并保存恢复密钥。`rekey add <预设>` 随后在终端一步完成：输入保险库密码、在隐藏输入中粘贴 Key（LLM 预设先填允许的精确模型名，逗号分隔），CLI 保存密钥、按预设生成 Connection（读允许、写审批）、签名并激活，规则默认 90 天有效（`--valid-days` 可改）。
+`setup` 在 App 中创建新的个人保险库并保存恢复密钥。**当前 0.5 开发版**在 macOS 默认目录且已安装 App 时，`rekey add <预设>` 会打开 App：保存或选择已有凭据，审阅完整连接规则，再系统认证签署并激活。CLI 的打开回执只表示已发起跳转，是否成功以 App 的激活结果为准。连接名、凭据 ID、模型白名单和有效期都会带入表单；用户仍须审阅确认。
 
-这是**基础模式**：签名私钥是状态目录中当前用户 0600 的 `policy-signer-p256.p8`，同用户进程可读，不是 Secure Enclave。第一次 `rekey add` 会为尚未安装信任根的保险库安装它；信任根装上后不能更换。已在 App 中用 Secure Enclave 建立信任的保险库请用 `rekey add <预设> --app`，命令行会以 `TRUST_MISMATCH` 拒绝软件签名。
+App 提前检查已安装信任根对应的签名密钥。已有 Secure Enclave 密钥继续由硬件签名；已有基础模式 `policy-signer-p256.p8` 继续由随 App 安装的签名器使用，并明确显示软件保护等级。后者是当前用户 0600 文件，同用户进程可读。找不到匹配密钥时停止，不创建替代密钥或更换信任根。
 
-**免重复解锁（基础模式）**：`rekey unlock --remember 7d`（最长 30d）解锁后，daemon 重启时会在有效期内自动解锁，无需再输密码。实现是把“记住此电脑”的解封密钥写成状态目录中 0600 的 `remembered-unlock.key`，同用户进程可读，不是 Secure Enclave；`rekey lock --forget-remembered` 删除它，之后重启保持锁定。
+**减少密码输入**：在 App 安全设置中选择 30 天密码复核周期，并用原密码启用系统认证。有效期内，日常界面解锁和规则激活可使用系统认证；每次敏感操作仍需确认。30 天不是所有管理操作的免确认期。修改密码、恢复因素或续期系统认证仍需原因素。界面锁定保留已签署的 Agent 规则；锁定整个保险库会撤销访问。
 
-其他常用选项：`--name` 设连接名（默认是预设名），`--credential-id` 复用已保存的密钥而不再输入 Key，`--model` 可重复，脚本中用 `--stdin-secrets` 依次读入密码和 Key。OAuth 预设需要浏览器授权，仍用 `--app`。
+无 App、自定义目录或显式 `--stdin-secrets` 使用 CLI 基础模式，仍以原密码操作。CLI 的 `rekey unlock --remember 7d`（最长 30d）是另一种机制：0600 的 `remembered-unlock.key` 用于后台重启解锁，同用户可读，不等于 App 的受保护系统认证，本次 App 接入不会读取它来批准敏感操作。`rekey lock --forget-remembered` 可撤销此记住状态。
+
+常用选项：`--name` 设置连接名，`--credential-id` 复用已保存密钥，`--model` 可重复，`--valid-days` 设置规则有效期（默认 90 天）。`--app` 明确要求走 App，不能与 `--stdin-secrets` 合用。OAuth 的 client 参数在 App 表单中填写。取消或草案失败后，可在凭据来源中选择已保存条目继续，无需再次粘贴 Key。
 
 需要独立目录的源码用户可在自己的终端中操作：
 
