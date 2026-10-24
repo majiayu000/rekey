@@ -19,4 +19,4 @@ cask 声明 `livecheck`（GitHub Releases，包含预发布、跳过草稿和改
 
 设置页的“检查更新”读取 `https://api.github.com/repos/majiayu000/rekey/releases`（含预发布，跳过草稿和改号前的 v2/v3 标签），只提示带 `rekey-<tag>-macos.pkg` 资产、且发布页地址为本仓库 `releases/tag/<tag>` 的更高版本，然后用“打开发布页”跳转到该页。App 不下载、不校验、不安装；用户在发布页下载 pkg，由 Installer / Gatekeeper 验证签名与公证。
 
-未认证的 GitHub API 每个 IP 每小时 60 次，App 只在用户点击时请求。提示文字提醒用户安装前先“停止并停用登录启动”并退出 App；跨版本线升级（如 0.4 → 0.5）需要新的保险库。
+未认证的 GitHub API 每个 IP 每小时 60 次，App 只在用户点击时请求。提示文字提醒用户安装前关闭登录启动（如已启用）、停止服务并退出 App；跨版本线升级（如 0.4 → 0.5）需要新的保险库。
