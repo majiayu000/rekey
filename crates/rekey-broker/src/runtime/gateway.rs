@@ -738,6 +738,34 @@ mod tests {
         assert!(!error.retryable());
     }
 
+    #[test]
+    fn unknown_approval_id_points_to_the_challenge_id() {
+        let next = BrokerError::Denied("approval-request-unknown").agent_next();
+        assert!(next.contains("approval.challenge_id"));
+        assert!(!next.contains("request_access"));
+    }
+
+    #[test]
+    fn private_address_refusal_is_actionable_without_echoing_the_address() {
+        let error = BrokerError::Upstream("private-address");
+        let code = crate::ipc::agent::local_agent_code(&error);
+        assert_eq!(code, "UPSTREAM_ADDRESS_BLOCKED");
+        assert_eq!(
+            error.agent_message(),
+            "upstream host resolved to a non-public address"
+        );
+        assert!(crate::ipc::frame::agent_next(code).contains("fake-IP"));
+        // Every other refusal reason keeps the generic public code.
+        for reason in ["upstream-timeout", "upstream-transport", "redirect"] {
+            let other = BrokerError::Upstream(reason);
+            assert_eq!(
+                crate::ipc::agent::local_agent_code(&other),
+                "UPSTREAM_ERROR"
+            );
+            assert_eq!(other.agent_message(), "upstream request failed");
+        }
+    }
+
     #[tokio::test(start_paused = true)]
     async fn stalled_client_write_times_out_without_waiting_for_upstream_or_reads() {
         let (stream, mut client) = tokio::io::duplex(8);

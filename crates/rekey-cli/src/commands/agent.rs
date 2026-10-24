@@ -64,6 +64,17 @@ pub fn list(socket: &Path, as_json: bool) -> Result<(), CliError> {
             connection.grade
         )
         .map_err(|e| CliError::local("OUTPUT_FAILED", e.to_string()))?;
+        if let Some(llm) = &connection.llm {
+            let models: Vec<&str> = llm.models.iter().map(String::as_str).collect();
+            writeln!(
+                output,
+                "  models: {}  max_tokens={} requests/day={}",
+                models.join(", "),
+                llm.max_tokens,
+                llm.max_requests_per_day
+            )
+            .map_err(|e| CliError::local("OUTPUT_FAILED", e.to_string()))?;
+        }
         for operation in connection.operations {
             writeln!(output, "  {}", operation.name)
                 .map_err(|e| CliError::local("OUTPUT_FAILED", e.to_string()))?;
@@ -77,12 +88,54 @@ pub fn list(socket: &Path, as_json: bool) -> Result<(), CliError> {
         )
         .map_err(|e| CliError::local("OUTPUT_FAILED", e.to_string()))?;
     }
+    if let Some(expires_at_ms) = typed.policy_expires_at_ms {
+        writeln!(output, "{}", policy_expiry_line(expires_at_ms, now_ms()))
+            .map_err(|e| CliError::local("OUTPUT_FAILED", e.to_string()))?;
+    }
     if let Some(url) = typed.service_url {
         writeln!(output, "Local service: {url}; placeholder key: rekey")
             .map_err(|e| CliError::local("OUTPUT_FAILED", e.to_string()))?;
     }
     Ok(())
 }
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as i64)
+}
+
+/// Signed rules expire silently otherwise; warn a week ahead.
+fn policy_expiry_line(expires_at_ms: i64, now_ms: i64) -> String {
+    const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+    let left = expires_at_ms - now_ms;
+    if left <= 0 {
+        return format!(
+            "Signed rules expired (unix ms {expires_at_ms}); re-sign them before calling."
+        );
+    }
+    let days = left / DAY_MS;
+    if left < 7 * DAY_MS {
+        format!(
+            "Warning: signed rules expire in {days} day(s) (unix ms {expires_at_ms}); re-sign them soon."
+        )
+    } else {
+        format!("Signed rules expire in {days} days (unix ms {expires_at_ms}).")
+    }
+}
+
+#[cfg(test)]
+mod expiry_tests {
+    use super::policy_expiry_line;
+
+    #[test]
+    fn expiry_line_warns_within_a_week_and_after_expiry() {
+        const DAY: i64 = 24 * 60 * 60 * 1000;
+        assert!(policy_expiry_line(90 * DAY, 0).starts_with("Signed rules expire in 90 days"));
+        assert!(policy_expiry_line(3 * DAY, 0).starts_with("Warning: signed rules expire in 3"));
+        assert!(policy_expiry_line(0, 1).starts_with("Signed rules expired"));
+    }
+}
+
 pub fn describe(socket: &Path, operation: String) -> Result<(), CliError> {
     let response: DescribeResponse = decode(public(
         socket,

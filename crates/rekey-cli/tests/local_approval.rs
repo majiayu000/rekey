@@ -228,6 +228,29 @@ fn review_preserves_complete_utf8_bytes_and_terminal_null() {
 }
 
 #[test]
+fn review_accepts_the_connection_body_record_type_written_by_the_daemon() {
+    // Connection, SSH and derived approvals (and the App) use local-review.v1
+    // for the body as well as the metadata; only the lab session path uses review.v1.
+    let mut connection = review();
+    connection["record_type"] = json!(ipc::LOCAL_APPROVAL_REVIEW_RECORD_TYPE);
+    let body = serde_json::to_vec(&connection).unwrap();
+    let expected = body.clone();
+    let output = exchange(
+        Channel::Admin,
+        &["approval", "review", ID],
+        &[],
+        move |_, _, _| Reply::Ok(review_metadata("pending", body.len()), body),
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["review_json"].as_str().unwrap().as_bytes(), expected);
+}
+
+#[test]
 fn review_rejects_mismatched_typed_context_and_empty_live_body() {
     for case in [
         "metadata-id",
@@ -361,7 +384,7 @@ fn explicit_presence_decisions_bind_hash_and_only_send_proof_in_body() {
                 );
                 assert_eq!(
                     ipc::parse_local_approval_proof_body(&body).unwrap(),
-                    &PRESENCE[..PRESENCE.len() - 1]
+                    (ipc::ProofKind::Presence, &PRESENCE[..PRESENCE.len() - 1])
                 );
                 Reply::Ok(state(result), Vec::new())
             },
@@ -377,6 +400,57 @@ fn explicit_presence_decisions_bind_hash_and_only_send_proof_in_body() {
         );
         assert!(!String::from_utf8_lossy(&output.stdout).contains("bbbbbbbb"));
         assert!(!String::from_utf8_lossy(&output.stderr).contains("bbbbbbbb"));
+    }
+}
+
+#[test]
+fn basic_mode_password_decisions_send_a_password_proof_and_presence_still_needs_stdin() {
+    const PASSWORD: &[u8] = b"synthetic-vault-password\n";
+    for (command, opcode, result) in [
+        ("approve", admin_msg::APPROVAL_LOCAL_APPROVE, "approved"),
+        ("reject", admin_msg::APPROVAL_LOCAL_REJECT, "cancelled"),
+    ] {
+        let output = exchange(
+            Channel::Admin,
+            &[
+                "approval",
+                command,
+                ID,
+                "--review-sha256",
+                DIGEST,
+                "--password",
+                "--password-stdin",
+            ],
+            PASSWORD,
+            move |request, _, body| {
+                assert_eq!(request.message_type, opcode);
+                assert_eq!(
+                    ipc::parse_local_approval_proof_body(&body).unwrap(),
+                    (ipc::ProofKind::Password, &PASSWORD[..PASSWORD.len() - 1])
+                );
+                Reply::Ok(state(result), Vec::new())
+            },
+        );
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("synthetic-vault-password"));
+    }
+    // A proof kind is mandatory, and the two kinds are exclusive.
+    for flags in [
+        &["--password-stdin"][..],
+        &["--presence"][..],
+        &["--presence", "--password", "--password-stdin"][..],
+    ] {
+        let mut args = vec!["approval", "approve", ID, "--review-sha256", DIGEST];
+        args.extend_from_slice(flags);
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_rekey"))
+            .args(&args)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{flags:?}");
     }
 }
 
@@ -630,7 +704,7 @@ fn only_explicit_approve_can_select_a_rule_time_window() {
             );
             assert_eq!(
                 ipc::parse_local_approval_proof_body(&body).unwrap(),
-                &PRESENCE[..PRESENCE.len() - 1]
+                (ipc::ProofKind::Presence, &PRESENCE[..PRESENCE.len() - 1])
             );
             Reply::Ok(state("approved"), Vec::new())
         },

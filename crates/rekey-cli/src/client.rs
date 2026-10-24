@@ -188,7 +188,11 @@ impl CliError {
             | "CLOCK_UNAVAILABLE"
             | "FAULTED"
             | "LAUNCHER_UNAVAILABLE" => 5,
-            "UPSTREAM_ERROR" | "UPSTREAM_FAILED" | "RESPONSE_TOO_LARGE" | "STREAM_INCOMPLETE" => 6,
+            "UPSTREAM_ERROR"
+            | "UPSTREAM_ADDRESS_BLOCKED"
+            | "UPSTREAM_FAILED"
+            | "RESPONSE_TOO_LARGE"
+            | "STREAM_INCOMPLETE" => 6,
             "RESPONSE_BLOCKED"
             | "RESPONSE_SECURITY_VIOLATION"
             | "STREAM_FAILED"

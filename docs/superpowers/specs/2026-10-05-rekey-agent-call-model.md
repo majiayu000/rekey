@@ -269,6 +269,7 @@ Profile、capability session、Action 这三个概念**不再暴露给个人用�
   - 信任根仍是每个保险库唯一且不可替换：首次 `rekey add` 在未安装信任时安装软件密钥的信任根；已信任 App Secure Enclave 密钥的保险库拒绝软件签名（`TRUST_MISMATCH`），只能用 `--app` 或新建保险库。
   - 安装的信任算法沿用现有 P-256 标签 `secure-enclave-p256`（该标签只描述曲线与签名编码，`signed.rs` 已声明不证明硬件位置），不新增持久格式。命令行输出与指南必须如实说明“软件签名、基础模式”，不得把基础模式称为 Secure Enclave 或 L1 以上。
   - 基础模式可选“记住解锁”：`rekey unlock --remember <期限>`（≤30 天）复用既有记住此电脑授权（`DESKTOP_REMEMBER`），把解封密钥写入状态目录 0600 文件；rekeyd 启动时若文件有效即调用既有 resume 路径解锁，失效或被删除则保持锁定。这同样是软件保护，不是 Secure Enclave。
+  - **（2026-10-22 修订）记住解锁只能解锁。** 该文件同用户进程可读，因此 CLI 以 `DESKTOP_REMEMBER {lifetime_ms, unlock_only: true}` 签发“仅解锁”票据：沿用 84 字节布局，magic 为 `RKDSU001`（App 票据仍为 `RKDSK001`），magic 属于 AEAD AAD，不能改写。由仅解锁票据恢复的 PresenceGrant 只用于 resume 解锁，**不能**作为任何 presence 证明（本机审批、明文查看、关机及其他 step-up）。`unlock_only` 缺省为 false，App 行为不变。修订前由 CLI 写下的 `RKDSK001` 文件不迁移、不重解释，仍具 presence 权限；基础模式用户须重新执行 `rekey unlock --remember` 或 `rekey lock --forget-remembered`。
   - LLM 预设必须签署非空的精确模型白名单与每日额度；CLI 交互时询问一次模型，`--stdin-secrets` 时必须给 `--model`，不猜测默认模型。
 - 团队模式沿用外部 Ed25519。
 - 删除"每次安装展开成 N 个 Action 再逐个签名"的流程。内部执行时，daemon 把一次请求规范化成一个临时 Action 视图，以复用渲染器、审批哈希和执行器。这个视图不持久化，不需要签名。
@@ -276,6 +277,7 @@ Profile、capability session、Action 这三个概念**不再暴露给个人用�
 ### 5.4 审批
 
 - 沿用 local-presence：daemon 生成审阅正文（含 method、完整 URL、请求头名、正文），绑定 `RKREVIEW` 哈希，只能使用一次。
+- **（2026-10-22 修订）本机审批的证明**：`APPROVAL_LOCAL_APPROVE/REJECT` 的证明体接受 presence（App）或保险库密码（基础模式 CLI：`rekey approval approve|reject ID --review-sha256 H --password`，隐藏输入或 `--password-stdin`）。恢复密钥不接受。审计 reason_code 分别为 `local-presence` 与 `local-password`；密码失败计入既有解锁失败限速。审阅元数据 `record_type` 为 `rekey.approval.local-review.v1`；审阅正文的 `record_type` 在 Connection/SSH/派生路径为 `rekey.approval.local-review.v1`，lab session 路径为 `rekey.approval.review.v1`，CLI 两者都接受，其余拒绝。校验规则定义在 `rekey-domain`，CLI 与 daemon 测试共用。
 - 调用方得到结构化的 `APPROVAL_REQUIRED{request_id, expires_at}`，可以等待或取消。CLI 默认等待（`--no-wait` 可关闭），MCP 返回后由 Agent 调用 `await_approval`。
 - HTTP Connection 重提只预留一次审批；同一个批准的并发重提不能同时取得预留。`approval.accepted` 与 `execution.started` 在同一 Authority 事务成功后才消费批准并清除审阅正文。忙、小时额度、日预算或 started 提交拒绝释放预留，尚有效批准可重试；已取消、过期、锁定或策略更新清除的批准不得恢复。两种时钟的审批期限也约束实际 started 提交。
 
@@ -389,6 +391,11 @@ OPENAI_API_KEY=rekey
 - `request_access(provider|connection, operation?, reason)`。
 - `await_access(request_id, timeout_s≤120)`：等待 App 处理访问请求；使用已有 AWAIT_ACCESS IPC，与 CLI `rekey await` 返回相同状态。
 - `await_approval(request_id, timeout_s≤120)`、`cancel_approval(request_id)`。
+- **（2026-10-23 修订）让 Agent 一次调对**：
+  - `list_capabilities` 每个 Connection 增加可选 `llm`（签名的模型白名单、max_tokens 与每日额度），响应增加 `policy_expires_at_ms`。`describe(operation)` 增加该 Connection 的签名 `rules`、本调用方的 `caller_rules`（为空时省略）、`limits`、`llm` 与 `policy_expires_at_ms`。有 `llm` 时，具名操作参数 schema 中的 `model` 属性加上 `enum`（等于签名白名单）。这些都是公开的签名规则，不含 credential_id、密钥或绑定细节。
+  - 审批 ID：`await_approval`/`cancel_approval` 的 `request_id` 参数取 `APPROVAL_REQUIRED` 错误中的 `approval.challenge_id`，不是错误信封顶层的 `request_id`（后者是本次帧的请求 ID）。`next` 文案、MCP 工具描述、插件 skill 与 `rekey connect` 写入的说明都必须这样写。
+  - 上游拒绝原因：出站前因目标解析到非公网地址而拒绝时，返回公开错误码 `UPSTREAM_ADDRESS_BLOCKED`（CLI 退出码与 `UPSTREAM_ERROR` 相同），`next` 说明“目标域名解析到了非公网地址，常见原因是本机代理的 fake-IP DNS；Rekey 不会连接非公网地址”。错误中不回显解析到的 IP。其他出站拒绝原因仍为 `UPSTREAM_ERROR`。
+  - 插件 skill、`rekey connect` 说明中出现的 MCP 工具名与 `rekey` 子命令，必须由测试核对确实存在。
 - `await_unlock(timeout_s≤120)`。
 
 **协议与返回**

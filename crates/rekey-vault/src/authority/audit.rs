@@ -11,13 +11,17 @@ use super::{VaultState, Worker, ensure_mutation_current, unlock_audit};
 impl Worker {
     pub(super) fn authorize_local_approval(
         &mut self,
-        proof: crate::secret::SecretInput,
+        proof: UnlockProof,
         draft: AuditDraft,
         not_after: std::time::Instant,
         wall_not_after_ms: i64,
     ) -> Result<(), AuthorityError> {
         self.require_unlocked()?;
-        let proof = UnlockProof::Presence(proof);
+        let reason = match &proof {
+            UnlockProof::Presence(_) => "local-presence",
+            UnlockProof::Password(_) => "local-password",
+            UnlockProof::Recovery(_) => return Err(AuthorityError::InvalidUnlockCredential),
+        };
         let verified = self.verify_proof(&proof);
         drop(proof);
         verified?;
@@ -34,7 +38,7 @@ impl Worker {
         };
         if !valid_decision
             || draft.outcome != outcome::SUCCESS
-            || draft.reason_code != "local-presence"
+            || draft.reason_code != reason
             || draft.session_id.is_none()
             || draft.action_id.is_none()
             || draft.action_version.is_none_or(|version| version == 0)

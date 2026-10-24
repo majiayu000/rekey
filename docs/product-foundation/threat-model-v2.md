@@ -5,6 +5,7 @@
 行为来源为 [Agent call SPEC](../superpowers/specs/2026-10-05-rekey-agent-call-model.md)。0.4 默认本机调用没有 capability token，连接和权限由用户签名决定。以下边界不继承旧版设备验收。
 
 - G1同用户程序可调用本机接口；调用方名称可伪造，仅记录/收紧，绝不能放宽默认权限。
+- 基础模式 CLI 新签发的记住解锁票据仅用于解锁，不能作为 Presence 进行审批或其他 A2 操作；本机审批可用保险库密码，拒绝恢复密钥。旧 CLI 票据与 App 票据使用相同格式，不能根据格式安全区分，不会自动降权：升级后须用新 CLI 重新执行 `rekey unlock --remember 7d` 或 `rekey lock --forget-remembered`，使旧密钥失效。此修复不提升同用户隔离等级。
 - A6网页/SDK请求：loopback IPv4绑定；Host只接受发布地址；要求公开rekey占位头，并拒绝Origin、Sec-Fetch-Site、CONNECT、Upgrade、混淆长度与真实认证头。抢占端口会使daemon启动失败；0600地址文件不代表对恶意同用户的网络隔离。
 - 签名规则固定host/方法/路径/查询键，默认读允许、写审批、危险写拒绝；参数规范化一次，规则和审计共享结果。写审批绑定具体规范请求、策略摘要与调用方；时间窗不覆盖Deny，锁定/策略变更即清除。
 - 源凭据用途分离：HTTP、SSH、OAuth和AWS源不能互相当作普通Bearer使用。SSH公共身份来自签名策略，私钥不为列举解密；服务器签名绑定校验后按host公钥判定，未知/未绑定需审批。

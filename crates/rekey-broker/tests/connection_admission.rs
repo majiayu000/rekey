@@ -178,6 +178,13 @@ impl Fixture {
             &[],
         )
         .await;
+        // Contract: the CLI validates exactly what the daemon emits.
+        let parsed_id: rekey_domain::ids::ApprovalRequestId = id.as_str().unwrap().parse().unwrap();
+        let review_metadata = serde_json::to_vec(review.ok()).unwrap();
+        ipc::validate_local_review_reply(parsed_id, &review_metadata, &review.body)
+            .unwrap()
+            .1
+            .unwrap();
         let remembered = common::call(
             &self.broker.admin_sock(),
             Channel::Admin,
@@ -309,6 +316,183 @@ async fn disconnected_calls_keep_agent_request_capacity_until_terminal() {
     f.wait_finished(capacity + 1).await;
     assert_eq!(f.broker.fake.requests.lock().unwrap().len(), capacity + 1);
     f.assert_paired_terminals(capacity + 1);
+    f.broker.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn discovery_publishes_signed_models_rules_and_expiry_so_agents_need_not_guess() {
+    let f = Fixture::new(1, 1000, true).await;
+    let agent = |opcode, metadata: Value| {
+        let sock = f.broker.agent_sock();
+        async move {
+            common::call(
+                &sock,
+                Channel::Agent,
+                opcode,
+                &serde_json::to_vec(&metadata).unwrap(),
+                &[],
+            )
+            .await
+        }
+    };
+    let listed = agent(agent_msg::LIST_CAPABILITIES, json!({})).await;
+    listed.ok();
+    let list: ipc::ListCapabilitiesResponse = serde_json::from_slice(&listed.body).unwrap();
+    assert_eq!(list.policy_expires_at_ms, Some(4_102_444_800_000));
+    let connection = &list.connections[0];
+    let llm = connection.llm.as_ref().unwrap();
+    assert_eq!(llm.models.iter().collect::<Vec<_>>(), ["synthetic-model"]);
+    let chat = connection
+        .operations
+        .iter()
+        .find(|operation| operation.name == "openai.chat")
+        .unwrap();
+    assert_eq!(
+        chat.parameters["properties"]["model"]["enum"],
+        json!(["synthetic-model"])
+    );
+    let described = agent(agent_msg::DESCRIBE, json!({"operation":"openai.chat"})).await;
+    described.ok();
+    let describe: ipc::DescribeResponse = serde_json::from_slice(&described.body).unwrap();
+    assert_eq!(describe.connection, "fixture-0");
+    assert_eq!(
+        describe.operation.parameters["properties"]["model"]["enum"],
+        json!(["synthetic-model"])
+    );
+    assert!(
+        describe
+            .rules
+            .iter()
+            .any(|rule| rule.path == "/v1/chat/completions")
+    );
+    assert!(describe.caller_rules.is_empty());
+    assert_eq!(describe.limits.requests_per_hour, 1000);
+    assert_eq!(describe.llm.unwrap().max_tokens, 32);
+    assert_eq!(describe.policy_expires_at_ms, Some(4_102_444_800_000));
+    // Discovery is public signed policy: no credential identifier is published.
+    let raw = String::from_utf8(described.body.clone()).unwrap();
+    assert!(!raw.contains("credential_id"));
+    f.broker.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn basic_mode_password_approves_but_unlock_only_remembered_key_cannot() {
+    let f = Fixture::new(1, 1000, false).await;
+    let mut write = json!({"connection":"fixture-0","method":"POST","path":"/repos/a/b/issues"});
+    let body = br#"{"title":"basic mode approval"}"#;
+    let required = f.call(&write, body).await;
+    assert_eq!(required.err_code(), "APPROVAL_REQUIRED");
+    let id = required.metadata["approval"]["challenge_id"].clone();
+    let admin = |opcode, metadata: Value, proof: Vec<u8>| {
+        let sock = f.broker.admin_sock();
+        async move {
+            common::call(
+                &sock,
+                Channel::Admin,
+                opcode,
+                &serde_json::to_vec(&metadata).unwrap(),
+                &proof,
+            )
+            .await
+        }
+    };
+    let review = admin(
+        admin_msg::APPROVAL_LOCAL_REVIEW,
+        json!({"approval_request_id":id}),
+        Vec::new(),
+    )
+    .await;
+    // Contract: the real Connection review body is accepted by the CLI validator.
+    let parsed_id: rekey_domain::ids::ApprovalRequestId = id.as_str().unwrap().parse().unwrap();
+    let (metadata, review_json) = ipc::validate_local_review_reply(
+        parsed_id,
+        &serde_json::to_vec(review.ok()).unwrap(),
+        &review.body,
+    )
+    .unwrap();
+    assert!(
+        review_json
+            .unwrap()
+            .contains(ipc::LOCAL_APPROVAL_REVIEW_RECORD_TYPE)
+    );
+    let decision =
+        json!({"approval_request_id":id,"expected_review_sha256":metadata.review_sha256});
+    let proof = |kind, secret: &[u8]| {
+        let mut body = Vec::new();
+        ipc::encode_proof_body(kind, secret, &mut body);
+        body
+    };
+
+    // `rekey unlock --remember` stores an unlock-only key in a same-user file.
+    let remembered = admin(
+        admin_msg::DESKTOP_REMEMBER,
+        json!({"lifetime_ms":604_800_000,"unlock_only":true}),
+        common::proof_body(common::PASSWORD),
+    )
+    .await;
+    remembered.ok();
+    let file_key = remembered.body.clone();
+    let denied = admin(
+        admin_msg::APPROVAL_LOCAL_APPROVE,
+        decision.clone(),
+        proof(ipc::ProofKind::Presence, &file_key),
+    )
+    .await;
+    assert_ne!(denied.err_code(), "");
+    // Resuming with the file key unlocks but still grants no approval authority.
+    admin(
+        admin_msg::DESKTOP_RESUME,
+        json!({}),
+        proof(ipc::ProofKind::Presence, &file_key),
+    )
+    .await
+    .ok();
+    let denied = admin(
+        admin_msg::APPROVAL_LOCAL_APPROVE,
+        decision.clone(),
+        proof(ipc::ProofKind::Presence, &file_key),
+    )
+    .await;
+    assert_ne!(denied.err_code(), "");
+    let recovery = admin(
+        admin_msg::APPROVAL_LOCAL_APPROVE,
+        decision.clone(),
+        proof(ipc::ProofKind::Recovery, b"synthetic-recovery"),
+    )
+    .await;
+    assert_ne!(recovery.err_code(), "");
+    assert_eq!(f.approval_state(&id).await, "pending");
+    assert_eq!(f.count("approval.approved"), 0);
+
+    // The vault password is the basic-mode approval proof.
+    let approved = admin(
+        admin_msg::APPROVAL_LOCAL_APPROVE,
+        decision,
+        proof(ipc::ProofKind::Password, common::PASSWORD),
+    )
+    .await;
+    approved.ok();
+    assert_eq!(f.approval_state(&id).await, "approved");
+    let reasons: Vec<String> = {
+        let db = f.db();
+        let mut statement = db
+            .prepare("SELECT reason_code FROM audit_events WHERE event_type='approval.approved'")
+            .unwrap();
+        statement
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    assert_eq!(reasons, ["local-password"]);
+    f.broker.fake.push_response(Ok(UpstreamResponse {
+        status: 200,
+        headers: vec![("content-type".into(), "application/json".into())].into(),
+        body: b"{}".to_vec().into(),
+    }));
+    write["approval_request_id"] = id;
+    f.call(&write, body).await.ok();
+    assert_eq!(f.broker.fake.requests.lock().unwrap().len(), 1);
     f.broker.shutdown().await;
 }
 

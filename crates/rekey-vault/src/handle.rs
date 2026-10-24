@@ -251,6 +251,24 @@ impl AuthorityHandle {
         call!(self, |reply| AuthorityCommand::DesktopRemember {
             proof,
             lifetime_ms,
+            unlock_only: false,
+            not_after,
+            reply
+        })
+    }
+
+    /// Basic-mode remembered unlock: the returned key resumes/unlocks the vault
+    /// but is never accepted as a presence proof (the file is same-user readable).
+    pub async fn desktop_remember_unlock_only(
+        &self,
+        proof: UnlockProof,
+        not_after: Option<std::time::Instant>,
+        lifetime_ms: i64,
+    ) -> Result<(Zeroizing<Vec<u8>>, i64), AuthorityError> {
+        call!(self, |reply| AuthorityCommand::DesktopRemember {
+            proof,
+            lifetime_ms,
+            unlock_only: true,
             not_after,
             reply
         })
@@ -347,6 +365,24 @@ impl AuthorityHandle {
     pub async fn authorize_local_approval(
         &self,
         proof: SecretInput,
+        draft: AuditDraft,
+        not_after: std::time::Instant,
+        wall_not_after_ms: i64,
+    ) -> Result<(), AuthorityError> {
+        self.authorize_local_approval_with(
+            UnlockProof::Presence(proof),
+            draft,
+            not_after,
+            wall_not_after_ms,
+        )
+        .await
+    }
+
+    /// Presence (App) or vault Password (basic-mode CLI); Recovery is refused.
+    /// The audit reason must be `local-presence` or `local-password` to match.
+    pub async fn authorize_local_approval_with(
+        &self,
+        proof: UnlockProof,
         draft: AuditDraft,
         not_after: std::time::Instant,
         wall_not_after_ms: i64,

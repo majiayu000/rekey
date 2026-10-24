@@ -20,6 +20,10 @@ use crate::runtime::BrokerCtx;
 
 /// Agents must not distinguish credential-layer failures.
 pub(crate) fn local_agent_code(err: &BrokerError) -> &'static str {
+    // A pre-send address refusal is actionable and reveals no credential state.
+    if matches!(err, BrokerError::Upstream("private-address")) {
+        return "UPSTREAM_ADDRESS_BLOCKED";
+    }
     match err.code() {
         "RESPONSE_SECURITY_VIOLATION" => "RESPONSE_BLOCKED",
         "UPSTREAM_FAILED" => "UPSTREAM_ERROR",
@@ -507,7 +511,7 @@ async fn dispatch_local(
                 .map_err(|_| ipc::FrameError::InvalidField)?;
             Ok((
                 b"{}".to_vec(),
-                serde_json::to_vec(&ctx.describe_operation(&meta.operation).await?)
+                serde_json::to_vec(&ctx.describe_operation(&meta.operation, caller).await?)
                     .map_err(|_| ipc::FrameError::InvalidField)?,
             ))
         }

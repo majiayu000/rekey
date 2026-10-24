@@ -8,6 +8,7 @@
 |---|---|---|
 | 无令牌 Connection | domain/connection、policy/connections、broker/executor/local；真实 IPC / HTTP / MCP tests | 调用方标注仅收紧；G1同用户模型 |
 | 默认读 / 写审批 / 危险写拒绝 | policy tests/connections、broker tests/personal_policy | Deny 不能被审批绕过；时间窗至多8h，锁定/策略变更清除 |
+| 基础模式密码审批与记住解锁 | CLI tests/local_approval、broker tests/connection_admission、vault authority/desktop tests | 新 CLI 票据只解锁；旧票据须显式重新签发或撤销才失去原权限。密码审批拒绝恢复密钥；App/Touch ID 实机验收另行进行 |
 | CLI / MCP / connect / 插件 | CLI tests/agent_call、connect、hygiene；broker tests/mcp_stdio | MCP、CLI说明与hook绑定所选vault；Claude本轮按用户要求不验，Codex结果见canonical验收报告 |
 | HTTP / LLM / SSE | runtime/gateway、executor/llm；personal_policy、MCP stdio | Host/Origin/入站真实Key拒绝，持久预算按Connection共享 |
 | Connection 准入与收尾 | lifecycle、execution_supervisor、audit、executor/local、runtime/local_calls；验收见 connection_admission tests | 合同为全局120 / 每Connection4，在途许可持有至终态审计完成；一次审批与小时额度只在 durable started 成功时消费；故障拒绝继续执行。软件回归不替代真实负载或设备验收 |

@@ -114,6 +114,15 @@ fn proof_from(kind: ProofKind, bytes: &[u8]) -> UnlockProof {
     }
 }
 
+/// Presence (App) or vault Password (basic-mode CLI) and its fixed audit reason.
+fn local_approval_proof(kind: ProofKind, bytes: &[u8]) -> (UnlockProof, &'static str) {
+    let reason = match kind {
+        ProofKind::Password => "local-password",
+        _ => "local-presence",
+    };
+    (proof_from(kind, bytes), reason)
+}
+
 fn meta<T: serde::de::DeserializeOwned>(frame: &IncomingFrame) -> Result<T, BrokerError> {
     serde_json::from_slice(&frame.metadata)
         .map_err(|_| BrokerError::Frame(rekey_domain::ipc::FrameError::InvalidField))
@@ -437,14 +446,17 @@ async fn dispatch_operation(
             let (kind, proof) = ipc::parse_proof_body(&frame.body)?;
             let _owner = ctx.lifecycle.coordinate_until(deadline).await?;
             ctx.lifecycle.reject_if_not_running()?;
-            let (key, expires) = ctx
-                .authority
-                .desktop_remember(
-                    proof_from(kind, proof),
-                    Some(deadline.into_std()),
-                    settings.lifetime_ms,
-                )
-                .await?;
+            let proof = proof_from(kind, proof);
+            let not_after = Some(deadline.into_std());
+            let (key, expires) = if settings.unlock_only {
+                ctx.authority
+                    .desktop_remember_unlock_only(proof, not_after, settings.lifetime_ms)
+                    .await?
+            } else {
+                ctx.authority
+                    .desktop_remember(proof, not_after, settings.lifetime_ms)
+                    .await?
+            };
             Ok((json(&serde_json::json!({"expires_at_ms": expires}))?, key))
         }
         admin_msg::DESKTOP_LOCK => {
@@ -1442,7 +1454,8 @@ async fn local_approval_decision(
     deadline: tokio::time::Instant,
 ) -> Result<AdminResponse, BrokerError> {
     let decision: ipc::LocalApprovalDecisionMeta = meta(frame)?;
-    let proof = SecretInput::from_slice(ipc::parse_local_approval_proof_body(&frame.body)?);
+    let (kind, proof) = ipc::parse_local_approval_proof_body(&frame.body)?;
+    let (proof, reason) = local_approval_proof(kind, proof);
     let _owner = ctx.lifecycle.coordinate_until(deadline).await?;
     ctx.lifecycle.reject_if_not_running()?;
     let local = ctx
@@ -1461,11 +1474,7 @@ async fn local_approval_decision(
     if local.state != ipc::LocalApprovalState::Pending
         && (approve || local.state != ipc::LocalApprovalState::Approved)
     {
-        authority_until(
-            deadline,
-            ctx.authority.verify_proof(UnlockProof::Presence(proof)),
-        )
-        .await?;
+        authority_until(deadline, ctx.authority.verify_proof(proof)).await?;
         reject_if_deadline_elapsed(deadline)?;
         let current = ctx
             .sessions
@@ -1526,14 +1535,14 @@ async fn local_approval_decision(
             event_type::APPROVAL_REJECTED
         },
         outcome: outcome::SUCCESS,
-        reason_code: "local-presence".into(),
+        reason_code: reason.into(),
         upstream_status: None,
         latency_ms: None,
     };
     let not_after = deadline.into_std().min(local.deadline);
     let result = authority_until(
         deadline,
-        ctx.authority.authorize_local_approval(
+        ctx.authority.authorize_local_approval_with(
             proof,
             draft,
             not_after,
@@ -1693,7 +1702,8 @@ async fn connection_approval_decision(
     {
         return Err(ipc::FrameError::InvalidField.into());
     }
-    let proof = SecretInput::from_slice(ipc::parse_local_approval_proof_body(&frame.body)?);
+    let (kind, proof) = ipc::parse_local_approval_proof_body(&frame.body)?;
+    let (proof, reason) = local_approval_proof(kind, proof);
     let _owner = ctx.lifecycle.coordinate_until(deadline).await?;
     ctx.lifecycle.reject_if_not_running()?;
     let local = ctx
@@ -1709,11 +1719,7 @@ async fn connection_approval_decision(
         return Err(BrokerError::Denied("approval-review-mismatch"));
     }
     if local.state != ipc::LocalApprovalState::Pending {
-        authority_until(
-            deadline,
-            ctx.authority.verify_proof(UnlockProof::Presence(proof)),
-        )
-        .await?;
+        authority_until(deadline, ctx.authority.verify_proof(proof)).await?;
         return Ok((json(&local.response())?, Zeroizing::new(Vec::new())));
     }
     ctx.check_local_approval_policy(&local.challenge).await?;
@@ -1783,7 +1789,7 @@ async fn connection_approval_decision(
             event_type::APPROVAL_REJECTED
         },
         outcome: outcome::SUCCESS,
-        reason_code: "local-presence".into(),
+        reason_code: reason.into(),
         upstream_status: None,
         latency_ms: None,
     };
@@ -1791,7 +1797,7 @@ async fn connection_approval_decision(
     let not_after = deadline.into_std().min(local.deadline);
     let result = authority_until(
         deadline,
-        ctx.authority.authorize_local_approval(
+        ctx.authority.authorize_local_approval_with(
             proof,
             draft,
             not_after,

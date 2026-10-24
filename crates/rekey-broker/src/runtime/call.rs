@@ -53,7 +53,8 @@ impl BrokerCtx {
                     grade: connection.grade,
                     read,
                     write,
-                    operations: connection.operations.clone(),
+                    operations: described_operations(connection),
+                    llm: connection.llm.clone(),
                 }
             })
             .collect();
@@ -84,11 +85,13 @@ impl BrokerCtx {
                 })
                 .collect(),
             service_url: self.gateway.service_url(),
+            policy_expires_at_ms: Some(active.snapshot().expires_at_ms()),
         })
     }
     pub(crate) async fn describe_operation(
         &self,
         operation: &str,
+        caller: &str,
     ) -> Result<ipc::DescribeResponse, BrokerError> {
         self.lifecycle.reject_if_not_running()?;
         let active = self
@@ -120,7 +123,16 @@ impl BrokerCtx {
         }
         Ok(ipc::DescribeResponse {
             connection: connection.name.clone(),
-            operation: operation.clone(),
+            operation: with_model_enum(operation.clone(), connection),
+            rules: connection.rules.clone(),
+            caller_rules: connection
+                .caller_overrides
+                .get(caller)
+                .cloned()
+                .unwrap_or_default(),
+            limits: connection.limits.clone(),
+            llm: connection.llm.clone(),
+            policy_expires_at_ms: Some(active.snapshot().expires_at_ms()),
         })
     }
     pub(crate) async fn dry_run_call(
@@ -217,4 +229,39 @@ impl BrokerCtx {
             }
         }
     }
+}
+
+fn described_operations(
+    connection: &rekey_domain::connection::Connection,
+) -> Vec<rekey_domain::connection::PresetOperation> {
+    connection
+        .operations
+        .iter()
+        .map(|operation| with_model_enum(operation.clone(), connection))
+        .collect()
+}
+
+/// Agents must not guess model names: publish the signed allow-list as the
+/// schema enum of a named operation's `model` parameter.
+fn with_model_enum(
+    mut operation: rekey_domain::connection::PresetOperation,
+    connection: &rekey_domain::connection::Connection,
+) -> rekey_domain::connection::PresetOperation {
+    if let Some(llm) = &connection.llm
+        && let Some(model) = operation
+            .parameters
+            .get_mut("properties")
+            .and_then(|properties| properties.get_mut("model"))
+            .and_then(serde_json::Value::as_object_mut)
+    {
+        model.insert(
+            "enum".into(),
+            llm.models
+                .iter()
+                .cloned()
+                .map(serde_json::Value::from)
+                .collect(),
+        );
+    }
+    operation
 }

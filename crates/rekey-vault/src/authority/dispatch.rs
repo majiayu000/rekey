@@ -258,10 +258,11 @@ impl Worker {
             AuthorityCommand::DesktopRemember {
                 proof,
                 lifetime_ms,
+                unlock_only,
                 not_after,
                 reply,
             } => {
-                let result = self.remember_desktop(proof, not_after, lifetime_ms);
+                let result = self.remember_desktop_with(proof, not_after, lifetime_ms, unlock_only);
                 self.touch_if_ok(&result);
                 let _ = reply.send(result);
             }
