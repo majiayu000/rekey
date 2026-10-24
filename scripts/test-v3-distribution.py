@@ -101,6 +101,8 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("strategy :github_releases do |json, regex|", text)
         self.assertIn('next if release["draft"] || %w[v2.0.0-alpha.1 v2.0.0-alpha.2 v3.0.0-alpha.1 v3.0.0-alpha.2 v3.0.0-alpha.3 v3.0.0-alpha.4].include?(release["tag_name"])', text)
         self.assertNotIn('release["prerelease"]', text)
+        self.assertIn("does not unregister", text)
+        self.assertIn("Disable login startup in the App before removal.", text)
         for directive in ["signal:", "delete:", "trash:", "zap ", "preflight", ":no_check"]:
             self.assertNotIn(directive, text)
         self.package.write_bytes(self.package.read_bytes() + b"changed after stapling")
@@ -108,6 +110,18 @@ class DistributionTests(unittest.TestCase):
         self.assertNotEqual(text, changed)
         self.assertIn(hashlib.sha256(self.package.read_bytes()).hexdigest(), changed)
         self.assertEqual(changed, self.success(self.cask()))
+
+    @unittest.skipUnless(shutil.which("ruby"), "Ruby unavailable; no livecheck claim")
+    def test_livecheck_accepts_hyphenated_prerelease_identifiers(self):
+        package = self.directory / "rekey-v1.0.0-rc-1-macos.pkg"
+        package.write_bytes(self.package.read_bytes())
+        text = self.success(self.cask("--package", package, "--version", "1.0.0-rc-1"))
+        line = next(line.strip() for line in text.splitlines() if line.strip().startswith("regex("))
+        regex = line[len("regex("):-1]
+        script = f"regex = {regex}; ARGV.each {{ |tag| abort(tag) unless regex.match?(tag) }}"
+        result = subprocess.run(["ruby", "-e", script, "v1.0.0-rc-1", "v0.5.0-alpha.1", "v1.0.0"],
+                                capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
 
     def test_cask_rejects_metadata_injection_and_version_mismatch(self):
         for args in [("--version", "v3.0.0"), ("--version", '3.0.0";system("id")'),

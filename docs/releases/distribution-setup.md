@@ -13,7 +13,7 @@
 3. 在 `majiayu000/rekey` → Settings → Secrets and variables → Actions 新建 repository secret `TAP_TOKEN`，值为上一步的 token。
 4. 发布后审阅并合并 tap 仓库里的 `rekey <版本>` PR。合并后用户可执行 `brew install --cask majiayu000/rekey/rekey`。
 
-cask 声明 `livecheck`（GitHub Releases，包含预发布、跳过草稿和改号前的 v2/v3 标签）、卸载时退出 `com.starlight.rekey`、移除 `com.rekey.rekeyd` 登录服务并按 receipt 删除 pkg 文件；不删除保险库数据或钥匙串条目。真实安装、升级与卸载验收仍需在签名设备上单独完成。
+cask 声明 `livecheck`（GitHub Releases，包含预发布、跳过草稿和改号前的 v2/v3 标签）、卸载时退出 `com.starlight.rekey`、尝试用 `launchctl` 停止 `com.rekey.rekeyd` 并按 receipt 删除 pkg 文件。`launchctl` 不能注销 SMAppService 登录项，卸载前仍须在 App 中关闭登录启动并以新的证明停止服务；不删除保险库数据或钥匙串条目。真实安装、升级与卸载验收仍需在签名设备上单独完成。
 
 ## App 内检查更新
 

@@ -47,7 +47,7 @@ def generate(package: pathlib.Path, version: str, repository: str) -> str:
 
   livecheck do
     url :url
-    regex(/^v?(\\d+(?:\\.\\d+)+(?:-[0-9A-Za-z.]+)?)$/i)
+    regex(/^v?(\\d+(?:\\.\\d+)+(?:-[0-9A-Za-z.-]+)?)$/i)
     strategy :github_releases do |json, regex|
       json.map do |release|
         # Tags published before the 0.x renumbering are older lines, not upgrades.
@@ -68,9 +68,10 @@ def generate(package: pathlib.Path, version: str, repository: str) -> str:
 
   caveats <<~EOS
     Before upgrade or uninstall, disable login startup and shut down the daemon
-    in Rekey.app with a fresh proof, then quit the App. Uninstall only quits the
-    App and removes the com.rekey.rekeyd login service as a fallback; it never
-    deletes vault data or Keychain items.
+    in Rekey.app with a fresh proof, then quit the App. The cask's launchctl
+    fallback only attempts to stop com.rekey.rekeyd; it does not unregister
+    the SMAppService login item. Disable login startup in the App before removal.
+    Uninstall never deletes vault data or Keychain items.
   EOS
 end
 '''

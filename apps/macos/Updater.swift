@@ -95,7 +95,7 @@ struct UpdateSection: View {
             case .checking: ProgressView().controlSize(.small)
             case .upToDate: Text("已是最新版本。").font(.system(size: 13)); Button("重新检查") { updater.check() }
             case .available(let release):
-                Text("发现新版本 \(release.version)。请在发布页阅读说明并下载 macOS 安装包；安装前先在本页“停止并停用登录启动”并退出 Rekey。跨版本线升级（如 0.4 → 0.5）可能需要新的保险库。").font(.system(size: 13)).fixedSize(horizontal: false, vertical: true)
+                Text("发现新版本 \(release.version)。请在发布页阅读说明并下载 macOS 安装包；安装前先关闭登录启动（如已启用），停止服务并退出 Rekey。跨版本线升级（如 0.4 → 0.5）可能需要新的保险库。").font(.system(size: 13)).fixedSize(horizontal: false, vertical: true)
                 Button("打开发布页") { NSWorkspace.shared.open(release.page) }
             case .failed(let message):
                 Label(message, systemImage: "exclamationmark.circle").font(.system(size: 13)).foregroundStyle(.red)
