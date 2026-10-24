@@ -28,11 +28,11 @@ Rekey 把 API Key 留在你的电脑上。Agent（Claude Code、Codex 等）需�
 
 ## 当前源码（0.5，未发布）的变化
 
-- **App 路径改名**：保护真实密钥用 `rekey add glm --app`，流程与上面第 3 步相同。
-- **基础模式（仅限测试，不安全）**：不带 `--app` 的 `rekey add glm --model glm-5.3-flash` 在命令行一步完成：输入保险库密码、粘贴 Key，自动生成并签署规则；`rekey unlock --remember 7d`（最长 30 天）让后台服务重启后自动解锁，`rekey lock --forget-remembered` 取消。
-- **中文错误提示**：在终端里直接运行时，出错会显示中文原因和下一步；Agent 和脚本通过管道调用、或设置 `REKEY_OUTPUT=json` 时仍是 JSON。`init`、`serve`、`restore` 由 `rekeyd` 执行，它们的失败输出由 `rekeyd` 直接给出，不走这套格式。
+- **App 添加入口**：在 macOS 默认目录且已安装 App 时，`rekey add glm` 会打开 App；`--app` 可明确要求该路径。App 复用保险库已有的签名密钥，软件密钥不会变成 Secure Enclave 密钥。
+- **基础模式（仅限测试，不安全）**：无 App、自定义目录或显式 `--stdin-secrets` 时，`rekey add` 在命令行完成：输入保险库密码、粘贴 Key，自动生成并签署规则；`rekey unlock --remember 7d`（最长 30 天）让后台服务重启后自动解锁，`rekey lock --forget-remembered` 取消。
+- **中文错误提示**：在终端里直接运行时，出错会显示中文原因和下一步；Agent 和脚本通过管道调用、或设置 `REKEY_OUTPUT=json` 时仍是 JSON。未校验服务签名时，失败 JSON 含 `warnings`，成功命令另在 stderr 输出一个 JSON 警告对象；成功结果的 stdout 不变。`init`、`serve`、`restore` 由 `rekeyd` 执行，它们的失败输出由 `rekeyd` 直接给出，不走这套格式。
 
-> **警告：基础模式（不带 `--app` 的 `rekey add`、`rekey unlock --remember`）仅限测试，不安全。** 基础模式的签名私钥（`~/.rekey/policy-signer-p256.p8`）和记住解锁的密钥（`remembered-unlock.key`）是同用户可读的文件。本机以你身份运行的任何程序——包括 AI Agent，尤其是跳过权限确认运行的 Agent——都能读到它们，从而自己批准访问请求和写操作、签出放宽的规则，甚至结合 `desktop-unlock.bin` 离线解密保险库。所以基础模式只用于开发和测试，不要存放需要保护的密钥；保护真实密钥请用 App 的 Secure Enclave 个人模式（`rekey add <预设> --app`）。同一个保险库第一次选定签名方式后不能互换，测试和真实使用请用不同的保险库。
+> **基础模式仅限测试，不安全。** 软件签名私钥和记住解锁密钥均为同用户可读文件：同用户程序可签出放宽的规则，或结合解封文件离线解密保险库。新 CLI 记住解锁票据不能用于在线审批；旧票据须重新记住或撤销才失去原权限。保护真实密钥请使用由 Secure Enclave 密钥签名的保险库；已安装的信任根不能替换，测试与真实使用应分开。
 
 ## 四个调用入口
 

@@ -6,10 +6,6 @@ use std::io::IsTerminal;
 
 use super::CliError;
 
-pub(super) fn json_output_forced() -> bool {
-    std::env::var("REKEY_OUTPUT").as_deref() == Ok("json")
-}
-
 /// `REKEY_OUTPUT=json` always wins; `REKEY_OUTPUT=human` forces this mode
 /// (tests, scripts that want the human text); otherwise a TTY stderr decides.
 pub(super) fn enabled() -> bool {
@@ -77,8 +73,8 @@ fn hint(code: &str) -> (&'static str, String) {
         ),
         "RATE_LIMITED" => ("请求太频繁。", "稍后再试；写操作不要自动重试。".into()),
         "AUTHORITY_BUSY" => (
-            "Rekey 正忙于处理其它请求，这次请求没有执行。",
-            "等几秒再重试同一条命令。".into(),
+            "Rekey 正忙，当前不能确认这次操作的结果。",
+            "先检查当前状态和下面的具体建议；写操作不要自动重试。".into(),
         ),
         "APPROVAL_REQUIRED" => ("这次调用需要你在本机批准。", format!("{APPROVE}。")),
         "DENIED" | "REQUEST_DENIED" | "ACTION_DENIED" => (
@@ -200,6 +196,18 @@ mod tests {
     fn ipc_failures_keep_the_no_replay_warning() {
         let text = render(&CliError::local("IPC_UNAVAILABLE", "broker unreachable"));
         assert!(text.contains("不要直接重放"), "{text}");
+    }
+
+    #[test]
+    fn busy_outcome_does_not_turn_an_uncertain_commit_into_a_retry() {
+        let mut err = CliError::local("AUTHORITY_BUSY", "installation may already have committed");
+        err.next = Some("Inspect installed Actions; do not retry automatically.".into());
+        let text = render(&err);
+        assert!(text.contains("不能确认"));
+        assert!(text.contains("写操作不要自动重试"));
+        assert!(text.contains("Inspect installed Actions; do not retry automatically."));
+        assert!(!text.contains("没有执行"));
+        assert!(!text.contains("重试同一条命令"));
     }
 
     #[test]

@@ -23,9 +23,9 @@ mod macos_peer;
 #[path = "client/human.rs"]
 mod human;
 
-/// True when the caller explicitly asked for the JSON error envelope.
-pub fn json_output_forced() -> bool {
-    human::json_output_forced()
+/// Pipes and explicit JSON use the same structured diagnostics contract.
+pub fn json_output() -> bool {
+    !human::enabled()
 }
 
 #[cfg(feature = "lab")]
@@ -82,13 +82,22 @@ pub const IO_TIMEOUT: Duration = Duration::from_secs(30);
 
 static WARNED_L1_DEV: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Under `REKEY_OUTPUT=json` stderr must stay a single JSON document, so the
-/// warning is carried in the error envelope instead of a plain line.
+/// Structured diagnostics are emitted once at command completion. Human
+/// warnings remain visible before any secret is prompted or transmitted.
 fn warn_l1_dev() {
     use std::sync::atomic::Ordering;
-    if !WARNED_L1_DEV.swap(true, Ordering::Relaxed) && !json_output_forced() {
+    if !WARNED_L1_DEV.swap(true, Ordering::Relaxed) && !json_output() {
         eprintln!(
             "警告：L1-dev · 服务签名未校验。密码、恢复密钥或系统认证授权将发送给未验证签名的本地服务；请仅在可信开发环境使用。"
+        );
+    }
+}
+
+pub fn print_success_warnings() {
+    if json_output() && WARNED_L1_DEV.load(std::sync::atomic::Ordering::Relaxed) {
+        eprintln!(
+            "{}",
+            serde_json::json!({"warnings": ["L1_DEV_UNVERIFIED_SERVICE"]})
         );
     }
 }
@@ -167,7 +176,7 @@ impl CliError {
             "retryable": self.retryable,
             "approval": self.approval,
         });
-        if json_output_forced() && WARNED_L1_DEV.load(std::sync::atomic::Ordering::Relaxed) {
+        if WARNED_L1_DEV.load(std::sync::atomic::Ordering::Relaxed) {
             envelope["warnings"] = serde_json::json!(["L1_DEV_UNVERIFIED_SERVICE"]);
         }
         eprintln!("{envelope}");

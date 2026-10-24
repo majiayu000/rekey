@@ -233,10 +233,8 @@ fn cli_end_to_end() {
         Some("wrong-password\n"),
     );
     assert_eq!(output.status, 3, "stderr: {}", output.stderr);
-    assert!(
-        output.stderr.contains("L1-dev"),
-        "unverified Admin must warn before accepting a proof"
-    );
+    let diagnostic: serde_json::Value = serde_json::from_str(output.stderr.trim()).unwrap();
+    assert_eq!(diagnostic["warnings"][0], "L1_DEV_UNVERIFIED_SERVICE");
 
     // correct unlock.
     let output = run(
@@ -1789,7 +1787,7 @@ fn errors_stay_json_on_pipes_and_render_for_people_on_request() {
 }
 
 #[test]
-fn argument_errors_use_the_json_envelope_when_requested() {
+fn argument_errors_use_the_json_envelope_for_pipes_and_explicit_json() {
     let forced = Command::new(rekey_bin())
         .args(["status", "--no-such-flag"])
         .env("REKEY_OUTPUT", "json")
@@ -1803,7 +1801,8 @@ fn argument_errors_use_the_json_envelope_when_requested() {
 
     let plain = run(&rekey_bin(), &["status", "--no-such-flag"], None);
     assert_eq!(plain.status, 2);
-    assert!(plain.stderr.starts_with("error: "), "{}", plain.stderr);
+    let json: serde_json::Value = serde_json::from_str(plain.stderr.trim()).unwrap();
+    assert_eq!(json["code"], "INVALID_INPUT");
 
     let help = Command::new(rekey_bin())
         .arg("--help")
@@ -1815,60 +1814,71 @@ fn argument_errors_use_the_json_envelope_when_requested() {
 }
 
 #[test]
-fn json_mode_keeps_stderr_a_single_json_document() {
-    let dir = tempfile::tempdir().unwrap();
-    let state_dir = dir.path().join("state");
-    let state = state_dir.to_str().unwrap();
-    let initialized = run(
-        &rekeyd_bin(),
-        &[
-            "init",
-            "--mode",
-            "team",
-            "--state-dir",
-            state,
-            "--password-stdin",
-        ],
-        Some(&format!("{PASSWORD}\n")),
-    );
-    assert_eq!(initialized.status, 0, "{}", initialized.stderr);
-    configure_test_service(&state_dir);
-    let child = Command::new(rekeyd_bin())
-        .args(["serve", "--state-dir", state, "--idle-lock", "15m"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let _guard = ServeGuard(Some(child));
-    for _ in 0..300 {
-        if state_dir.join("runtime/admin.sock").exists() {
-            break;
+fn structured_admin_diagnostics_keep_warnings_on_success_and_failure() {
+    for output_mode in [None, Some("json")] {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("state");
+        let state = state_dir.to_str().unwrap();
+        let initialized = run(
+            &rekeyd_bin(),
+            &[
+                "init",
+                "--mode",
+                "team",
+                "--state-dir",
+                state,
+                "--password-stdin",
+            ],
+            Some(&format!("{PASSWORD}\n")),
+        );
+        assert_eq!(initialized.status, 0, "{}", initialized.stderr);
+        configure_test_service(&state_dir);
+        let child = Command::new(rekeyd_bin())
+            .args(["serve", "--state-dir", state, "--idle-lock", "15m"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let _guard = ServeGuard(Some(child));
+        for _ in 0..300 {
+            if state_dir.join("runtime/admin.sock").exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
         }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(state_dir.join("runtime/admin.sock").exists());
+        assert!(state_dir.join("runtime/admin.sock").exists());
 
-    let mut child = Command::new(rekey_bin())
-        .args(["--state-dir", state, "unlock", "--password-stdin"])
-        .env("REKEY_OUTPUT", "json")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child
-        .stdin
-        .as_mut()
-        .unwrap()
-        .write_all(b"not the vault password\n")
-        .unwrap();
-    let output = child.wait_with_output().unwrap();
-    assert_ne!(output.status.code(), Some(0));
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    let json: serde_json::Value = serde_json::from_str(stderr.trim())
-        .unwrap_or_else(|err| panic!("stderr is not one JSON document ({err}): {stderr}"));
-    assert_eq!(json["code"], "INVALID_UNLOCK_CREDENTIAL", "{stderr}");
-    // Test binaries are unsigned, so the peer is L1-dev on every platform.
-    assert_eq!(json["warnings"][0], "L1_DEV_UNVERIFIED_SERVICE", "{stderr}");
+        let unlock = |input: &[u8]| {
+            let mut command = Command::new(rekey_bin());
+            command
+                .args(["--state-dir", state, "unlock", "--password-stdin"])
+                .env_remove("REKEY_OUTPUT")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            if let Some(mode) = output_mode {
+                command.env("REKEY_OUTPUT", mode);
+            }
+            let mut child = command.spawn().unwrap();
+            child.stdin.take().unwrap().write_all(input).unwrap();
+            child.wait_with_output().unwrap()
+        };
+        let successful = unlock(format!("{PASSWORD}\n").as_bytes());
+        assert!(
+            successful.status.success(),
+            "{}",
+            String::from_utf8_lossy(&successful.stderr)
+        );
+        let warnings: serde_json::Value = serde_json::from_slice(&successful.stderr).unwrap();
+        assert_eq!(warnings["warnings"][0], "L1_DEV_UNVERIFIED_SERVICE");
+        assert!(warnings["code"].is_null());
+        let output = unlock(b"not the vault password\n");
+        assert_ne!(output.status.code(), Some(0));
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        let json: serde_json::Value = serde_json::from_str(stderr.trim())
+            .unwrap_or_else(|err| panic!("stderr is not one JSON document ({err}): {stderr}"));
+        assert_eq!(json["code"], "INVALID_UNLOCK_CREDENTIAL", "{stderr}");
+        assert_eq!(json["warnings"][0], "L1_DEV_UNVERIFIED_SERVICE", "{stderr}");
+    }
 }

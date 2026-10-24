@@ -26,12 +26,12 @@ Rekey 默认与 Agent 运行在同一系统用户下，当前确认的保护下�
 
 每个保险库第一次安装的“信任根”决定之后用哪把密钥签署连接规则，装上后不能更换：
 
-- **基础模式**（`rekey add <预设>`，**仅限测试，不安全**）：签名私钥是状态目录中 0600 的软件 P-256 文件 `policy-signer-p256.p8`，同用户进程可读，**不是 Secure Enclave**。
-- **App 模式**（`rekey add <预设> --app`）：在 macOS App 中用 Secure Enclave 密钥签名。已用这种方式建立信任的保险库，命令行软件签名会以 `TRUST_MISMATCH` 拒绝。
+- **基础模式**（无 App、自定义目录或显式 `--stdin-secrets`，**仅限测试，不安全**）：签名私钥是状态目录中 0600 的软件 P-256 文件 `policy-signer-p256.p8`，同用户进程可读，**不是 Secure Enclave**。
+- **App 入口**：macOS 默认目录且已安装 App 时，`rekey add <预设>` 自动打开 App，`--app` 可明确要求这一路径。App 复用已有的 Secure Enclave 或软件签名密钥，不替换信任根。软件密钥不会因经过 App 而获得硬件保护。
 
-`rekey unlock --remember 7d` 同样是软件实现：解封密钥写成状态目录中 0600 的 `remembered-unlock.key`，同用户进程可读；`rekey lock --forget-remembered` 删除它。
+`rekey unlock --remember 7d` 将解封密钥写入状态目录中 0600 的 `remembered-unlock.key`，新票据只能解锁，不能作为 Presence 审批或执行其他敏感操作。旧 CLI 票据与 App 票据格式相同，升级不会自动降权；须重新执行记住解锁或 `rekey lock --forget-remembered`，使旧密钥失效。
 
-基础模式的签名私钥（`~/.rekey/policy-signer-p256.p8`）和记住解锁的密钥（`remembered-unlock.key`）是同用户可读的文件。本机以你身份运行的任何程序——包括 AI Agent，尤其是跳过权限确认运行的 Agent——都能读到它们，从而自己批准访问请求和写操作、签出放宽的规则，甚至结合 `desktop-unlock.bin` 离线解密保险库。所以基础模式只用于开发和测试，不要存放需要保护的密钥；保护真实密钥请用 App 的 Secure Enclave 个人模式（`rekey add <预设> --app`）。
+软件签名私钥和记住解锁密钥仍可被同用户进程读取：前者可签出放宽的规则，后者结合 `desktop-unlock.bin` 可离线解密保险库。基础模式只用于测试，不适合需要保护的真实密钥；在线审批修复不构成同用户隔离。保护真实密钥应使用由 Secure Enclave 密钥签名的保险库。
 
 ## 调用结果与临时凭据
 

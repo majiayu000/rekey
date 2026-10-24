@@ -1213,9 +1213,9 @@ enum AuditRetentionCommand {
 fn main() {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
-        // Agents asking for JSON get the same envelope for argument errors;
+        // Pipes and explicit JSON get the same envelope for argument errors;
         // help, version and human use keep clap's own output.
-        Err(err) if err.use_stderr() && client::json_output_forced() => {
+        Err(err) if err.use_stderr() && client::json_output() => {
             let rendered = err.render().to_string();
             let message = rendered
                 .lines()
@@ -2147,6 +2147,7 @@ fn main() {
         err.print_stderr();
         std::process::exit(err.exit_code());
     }
+    client::print_success_warnings();
 }
 
 #[cfg(test)]
