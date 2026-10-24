@@ -1008,7 +1008,7 @@ struct LocalApprovalDecisionArgs {
     #[arg(long, requires = "password_stdin")]
     presence: bool,
     /// Basic mode: prove with the vault password (hidden prompt unless --password-stdin).
-    /// A remembered-unlock file is never accepted as an approval proof.
+    /// New CLI remembered-unlock tickets cannot approve. Re-remember or forget old tickets after upgrading.
     #[arg(long)]
     password: bool,
     /// Read the proof from stdin instead of a hidden prompt.

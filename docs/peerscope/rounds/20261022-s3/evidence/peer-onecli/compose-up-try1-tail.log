@@ -1,5 +1,0 @@
- a9986cd6f37d Downloading 3.146MB
- Image ghcr.io/onecli/onecli-gateway:2.16.0 Error failed to resolve reference "ghcr.io/onecli/onecli-gateway:2.16.0": failed to do request: Head "https://ghcr.io/v2/onecli/onecli-gateway/manifests/2.16.0": context deadline exceeded
- Image ghcr.io/onecli/onecli-migrations:2.16.0 Interrupted 
-Error response from daemon: failed to resolve reference "ghcr.io/onecli/onecli-gateway:2.16.0": failed to do request: Head "https://ghcr.io/v2/onecli/onecli-gateway/manifests/2.16.0": context deadline exceeded
-docker compose -p peerscope-onecli up -d --wait  0.23s user 0.25s system 0% cpu 1:02.59 total

@@ -834,6 +834,48 @@ mod tests {
     }
 
     #[test]
+    fn replacing_old_presence_ticket_with_unlock_only_revokes_old_key() {
+        let (_dir, mut worker, _) = fixture();
+        // Older CLI and App tickets have the same authenticated format. An
+        // upgrade alone cannot distinguish them or silently reduce authority.
+        let (old, _) = worker
+            .remember_desktop(password(), None, 604_800_000)
+            .unwrap();
+        worker.set_locked("restart-test", true).unwrap();
+        worker
+            .resume_desktop(SecretInput::from_slice(&old), None)
+            .unwrap();
+        worker.verify_proof(&presence(&old)).unwrap();
+
+        let (new, _) = worker
+            .remember_desktop_with(password(), None, 604_800_000, true)
+            .unwrap();
+        assert!(worker.verify_proof(&presence(&old)).is_err());
+        assert!(worker.verify_proof(&presence(&new)).is_err());
+        worker.set_locked("restart-test", true).unwrap();
+        worker.next_unlock_at = Instant::now();
+        assert!(matches!(
+            worker.resume_desktop(SecretInput::from_slice(&old), None),
+            Err(AuthorityError::InvalidUnlockCredential)
+        ));
+        assert!(matches!(worker.state, VaultState::Locked));
+        worker.next_unlock_at = Instant::now();
+        worker
+            .resume_desktop(SecretInput::from_slice(&new), None)
+            .unwrap();
+        assert!(worker.verify_proof(&presence(&new)).is_err());
+
+        worker.forget_desktop().unwrap();
+        worker.set_locked("restart-test", true).unwrap();
+        worker.next_unlock_at = Instant::now();
+        assert!(matches!(
+            worker.resume_desktop(SecretInput::from_slice(&new), None),
+            Err(AuthorityError::InvalidUnlockCredential)
+        ));
+        assert!(matches!(worker.state, VaultState::Locked));
+    }
+
+    #[test]
     fn unlock_only_ticket_resumes_but_never_proves_presence() {
         let (_dir, mut worker, _) = fixture();
         let (key, _) = worker
