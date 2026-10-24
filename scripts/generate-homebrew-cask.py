@@ -45,14 +45,33 @@ def generate(package: pathlib.Path, version: str, repository: str) -> str:
   depends_on arch: :arm64
   depends_on macos: :sonoma
 
+  livecheck do
+    url :url
+    regex(/^v?(\\d+(?:\\.\\d+)+(?:-[0-9A-Za-z.-]+)?)$/i)
+    strategy :github_releases do |json, regex|
+      json.map do |release|
+        # Tags published before the 0.x renumbering are older lines, not upgrades.
+        next if release["draft"] || %w[v2.0.0-alpha.1 v2.0.0-alpha.2 v3.0.0-alpha.1 v3.0.0-alpha.2 v3.0.0-alpha.3 v3.0.0-alpha.4].include?(release["tag_name"])
+        match = release["tag_name"]&.match(regex)
+        next if match.blank?
+
+        match[1]
+      end
+    end
+  end
+
   pkg "{expected}"
 
-  uninstall pkgutil: "^com[.]starlight[.]rekey[.]pkg$"
+  uninstall quit:      "com.starlight.rekey",
+            launchctl: "com.rekey.rekeyd",
+            pkgutil:   "^com[.]starlight[.]rekey[.]pkg$"
 
   caveats <<~EOS
     Before upgrade or uninstall, disable login startup and shut down the daemon
-    in Rekey.app with a fresh proof, then quit the App. This cask does not stop
-    services or delete vault data or Keychain items.
+    in Rekey.app with a fresh proof, then quit the App. The cask's launchctl
+    fallback only attempts to stop com.rekey.rekeyd; it does not unregister
+    the SMAppService login item. Disable login startup in the App before removal.
+    Uninstall never deletes vault data or Keychain items.
   EOS
 end
 '''

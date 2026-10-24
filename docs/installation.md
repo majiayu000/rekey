@@ -1,8 +1,8 @@
 # Install, upgrade, service, and uninstall
 
-This guide describes the published **0.4.0-alpha.1**. Current source is the unreleased **0.5.0-alpha.1**; each release line needs its own new vault and never migrates or overwrites an older one, so keep old vaults and create a new state directory. Publication and available artifacts are determined by [GitHub Releases](https://github.com/majiayu000/rekey/releases), not this page. Data formats per release line are listed in [Security model and terms](security/README.md).
+This guide covers **0.5.0-alpha.1** (vault27 / policy8), prepared for release; until its tag is published on [GitHub Releases](https://github.com/majiayu000/rekey/releases) the latest download remains **0.4.0-alpha.1** (vault26 / policy7). 0.5 cannot open a 0.4 vault, rules or backups and does not migrate them: stop the 0.4 service, keep its directory, and create a new vault in a new empty directory. On macOS, install the 0.5 pkg from the release page (or, once the `majiayu000/homebrew-rekey` tap carries it, `brew install --cask majiayu000/rekey/rekey`); later versions can be found from **Settings → 检查更新** in the App, which links to the new version's GitHub Release page; download and install the pkg from there as described below. See the [0.5.0-alpha.1 release notes](releases/v0.5.0-alpha.1.md).
 
-macOS distribution uses a Developer ID signed, notarized pkg with independently provisioned App and daemon, for macOS 14+ on Apple Silicon. Linux uses the released Ubuntu 24.04 x86_64 archive. No public Homebrew tap is claimed. Verify the actual completed release, package bytes, signature and public smoke before installation. Touch ID, Secure Enclave and login-item checks on real hardware are separate from software tests.
+macOS distribution uses a Developer ID signed, notarized pkg with independently provisioned App and daemon, for macOS 14+ on Apple Silicon. Linux uses the released Ubuntu 24.04 x86_64 archive. A public Homebrew tap exists only once `majiayu000/homebrew-rekey` carries the cask. Verify the actual completed release, package bytes, signature and public smoke before installation. Hardware Touch ID, SE, login-item and C16 checks are independent of software tests.
 
 After installation, open the App with `rekey setup`, add a key with `rekey add github-pat`, review/sign its Connection, run `rekey connect claude-code` (or `codex`), then start the Agent normally. Local calls require no tokens; see the [README](../README.md) quick start.
 
@@ -176,10 +176,10 @@ or App; see [Security model and terms](security/README.md#lab-实验功能).
 
 ## Format changes and restore
 
-Each release line has its own vault/backup and policy format ([Security model and terms](security/README.md)).
-A 0.3 vault or backup cannot be opened or restored by 0.4. Keep the old binary,
-state directory and backups together; create a new empty 0.4 directory and add
-credentials/sign Connections again. No migration, backfill or overwrite occurs.
+0.5.0-alpha.1 uses vault/backup format **27** and policy snapshot format **8**.
+A 0.4 (vault26 / policy7) vault, rule set or backup cannot be opened or restored
+by 0.5. Keep the old binary, state directory and backups together; create a new
+empty 0.5 directory and add credentials/sign Connections again. No migration, backfill or overwrite occurs.
 
 Back up and verify a receipt before changing an installation. A supported
 same-format restore requires authenticated preview, visible source generation
@@ -198,8 +198,12 @@ replacing or removing files. For a cask installation, then run:
 brew uninstall --cask rekey
 ```
 
-The cask matches only the exact `com.starlight.rekey.pkg` receipt. It supplies
-no service-stop hook, signal, `zap`, vault deletion or Keychain deletion. For a
+On uninstall the cask quits the App (`quit: com.starlight.rekey`), attempts to
+stop `com.rekey.rekeyd` with `launchctl`, and deletes files from the exact
+`com.starlight.rekey.pkg` receipt. This fallback does not unregister the
+SMAppService login item: disable login startup in the App before removing it,
+then shut down the daemon with a fresh proof. The cask has no `zap`, vault
+deletion or Keychain deletion. For a
 manual pkg installation, remove only `/Applications/Rekey.app` and the three
 `/usr/local/bin` links after verifying that each link still points into that
 App; forgetting a receipt alone does not remove its files. Preserve state and

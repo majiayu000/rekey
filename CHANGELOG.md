@@ -4,9 +4,13 @@ All notable public changes are recorded here. The current source candidate is
 0.5.0-alpha.1 (vault27 / policy8). Actual published downloads are determined by
 GitHub Releases. Historical 0.3/v3/v2 entries below remain release history.
 
-## 0.5.0-alpha.1 (unreleased development integration)
+## 0.5.0-alpha.1 (prepared, not yet published)
 
-**Requires a new vault.** Integrate native connect-on-open, explicit Connection
+**Requires a new vault.** One-step `rekey add` with basic-mode
+software signing, `rekey unlock --remember 7d`, background request alerts,
+public DoH fallback behind fake-IP DNS, JSON content-type for named-operation
+calls, an in-App update check and an optional Homebrew tap PR job. See the
+[release notes](docs/releases/v0.5.0-alpha.1.md). Also integrates native connect-on-open, explicit Connection
 mTLS, administrator CA import/CSR/revocation/CRL operations, authenticated complete
 PKI/action collections, and SSH cancellation, one/two-person external approvals
 and per-socket budgets. Retain main's Worker-owned SSH signing and signed
