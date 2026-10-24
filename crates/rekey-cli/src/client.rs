@@ -20,6 +20,14 @@ use zeroize::Zeroizing;
 #[path = "client/macos_peer.rs"]
 mod macos_peer;
 
+#[path = "client/human.rs"]
+mod human;
+
+/// Pipes and explicit JSON use the same structured diagnostics contract.
+pub fn json_output() -> bool {
+    !human::enabled()
+}
+
 #[cfg(feature = "lab")]
 static ADMIN_SESSION_FILE: std::sync::OnceLock<Option<std::path::PathBuf>> =
     std::sync::OnceLock::new();
@@ -72,12 +80,24 @@ pub(crate) fn private_session_file(path: &Path) -> Result<Zeroizing<Vec<u8>>, Cl
 
 pub const IO_TIMEOUT: Duration = Duration::from_secs(30);
 
+static WARNED_L1_DEV: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Structured diagnostics are emitted once at command completion. Human
+/// warnings remain visible before any secret is prompted or transmitted.
 fn warn_l1_dev() {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    static WARNED: AtomicBool = AtomicBool::new(false);
-    if !WARNED.swap(true, Ordering::Relaxed) {
+    use std::sync::atomic::Ordering;
+    if !WARNED_L1_DEV.swap(true, Ordering::Relaxed) && !json_output() {
         eprintln!(
             "警告：L1-dev · 服务签名未校验。密码、恢复密钥或系统认证授权将发送给未验证签名的本地服务；请仅在可信开发环境使用。"
+        );
+    }
+}
+
+pub fn print_success_warnings() {
+    if json_output() && WARNED_L1_DEV.load(std::sync::atomic::Ordering::Relaxed) {
+        eprintln!(
+            "{}",
+            serde_json::json!({"warnings": ["L1_DEV_UNVERIFIED_SERVICE"]})
         );
     }
 }
@@ -101,17 +121,31 @@ pub struct CliError {
     pub retryable: bool,
 }
 
+/// Generic Agent guidance for locally raised errors; anything else in `next`
+/// is instance-specific and must survive human rendering.
+fn local_next(code: &str) -> &'static str {
+    match code {
+        "IPC_UNAVAILABLE" => {
+            "Open Rekey or start rekeyd serve; wait for unlock before issuing a new call. Do not replay a write whose outcome is unknown."
+        }
+        "USAGE" | "INVALID_INPUT" => {
+            "Check the command arguments; use describe for the named operation's parameters."
+        }
+        "UPSTREAM_ERROR" => {
+            "Inspect the returned status and sealed response body. Do not automatically repeat a write."
+        }
+        _ => {
+            "Review the error and Rekey status before taking another action. Do not automatically repeat a write."
+        }
+    }
+}
+
 impl CliError {
     pub fn local(code: &str, message: impl Into<String>) -> Self {
         Self {
             code: code.to_owned(),
             message: message.into(),
-            next: Some(match code {
-                "IPC_UNAVAILABLE" => "Open Rekey or start rekeyd serve; wait for unlock before issuing a new call. Do not replay a write whose outcome is unknown.",
-                "USAGE" | "INVALID_INPUT" => "Check the command arguments; use describe for the named operation's parameters.",
-                "UPSTREAM_ERROR" => "Inspect the returned status and sealed response body. Do not automatically repeat a write.",
-                _ => "Review the error and Rekey status before taking another action. Do not automatically repeat a write.",
-            }.to_owned()),
+            next: Some(local_next(code).to_owned()),
             approval: None,
             request_id: None,
             retryable: false,
@@ -130,17 +164,22 @@ impl CliError {
     }
 
     pub fn print_stderr(&self) {
-        eprintln!(
-            "{}",
-            serde_json::json!({
-                "request_id": self.request_id,
-                "code": self.code,
-                "message": self.message,
-                "next": self.next,
-                "retryable": self.retryable,
-                "approval": self.approval,
-            })
-        );
+        if human::enabled() {
+            eprintln!("{}", human::render(self));
+            return;
+        }
+        let mut envelope = serde_json::json!({
+            "request_id": self.request_id,
+            "code": self.code,
+            "message": self.message,
+            "next": self.next,
+            "retryable": self.retryable,
+            "approval": self.approval,
+        });
+        if WARNED_L1_DEV.load(std::sync::atomic::Ordering::Relaxed) {
+            envelope["warnings"] = serde_json::json!(["L1_DEV_UNVERIFIED_SERVICE"]);
+        }
+        eprintln!("{envelope}");
     }
 
     /// Exit codes per the CLI contract.

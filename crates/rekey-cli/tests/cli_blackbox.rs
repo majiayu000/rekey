@@ -233,10 +233,8 @@ fn cli_end_to_end() {
         Some("wrong-password\n"),
     );
     assert_eq!(output.status, 3, "stderr: {}", output.stderr);
-    assert!(
-        output.stderr.contains("L1-dev"),
-        "unverified Admin must warn before accepting a proof"
-    );
+    let diagnostic: serde_json::Value = serde_json::from_str(output.stderr.trim()).unwrap();
+    assert_eq!(diagnostic["warnings"][0], "L1_DEV_UNVERIFIED_SERVICE");
 
     // correct unlock.
     let output = run(
@@ -1748,4 +1746,139 @@ fn presence_cli_proof_rotation_and_restart_remain_explicit_and_private() {
         Some(&current_password),
     ));
     assert!(guard.finish().status.success());
+}
+
+#[test]
+fn errors_stay_json_on_pipes_and_render_for_people_on_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().to_str().unwrap();
+    let piped = run(&rekey_bin(), &["--state-dir", state_dir, "status"], None);
+    let json: serde_json::Value = serde_json::from_str(piped.stderr.trim()).unwrap();
+    assert_eq!(json["code"], "IPC_UNAVAILABLE");
+    assert!(json["next"].is_string());
+
+    let output = Command::new(rekey_bin())
+        .args(["--state-dir", state_dir, "status"])
+        .env("REKEY_OUTPUT", "human")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(output.status.code(), Some(piped.status));
+    assert!(
+        stderr.starts_with("错误：连不上 Rekey 后台服务。\n"),
+        "{stderr}"
+    );
+    // The start-service wording is platform specific (App vs systemd).
+    assert!(stderr.contains("下一步："), "{stderr}");
+    assert!(stderr.contains("`rekey status`"), "{stderr}");
+    assert!(stderr.contains("不要直接重放"), "{stderr}");
+    assert!(stderr.trim_end().ends_with("(IPC_UNAVAILABLE)"), "{stderr}");
+    assert!(serde_json::from_str::<serde_json::Value>(stderr.trim()).is_err());
+
+    let forced_json = Command::new(rekey_bin())
+        .args(["--state-dir", state_dir, "status"])
+        .env("REKEY_OUTPUT", "json")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(forced_json.stderr.trim_ascii()).unwrap();
+    assert_eq!(json["code"], "IPC_UNAVAILABLE");
+}
+
+#[test]
+fn argument_errors_use_the_json_envelope_for_pipes_and_explicit_json() {
+    let forced = Command::new(rekey_bin())
+        .args(["status", "--no-such-flag"])
+        .env("REKEY_OUTPUT", "json")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(forced.status.code(), Some(2));
+    let json: serde_json::Value = serde_json::from_slice(forced.stderr.trim_ascii()).unwrap();
+    assert_eq!(json["code"], "INVALID_INPUT");
+    assert!(json["message"].as_str().unwrap().contains("--no-such-flag"));
+
+    let plain = run(&rekey_bin(), &["status", "--no-such-flag"], None);
+    assert_eq!(plain.status, 2);
+    let json: serde_json::Value = serde_json::from_str(plain.stderr.trim()).unwrap();
+    assert_eq!(json["code"], "INVALID_INPUT");
+
+    let help = Command::new(rekey_bin())
+        .arg("--help")
+        .env("REKEY_OUTPUT", "json")
+        .output()
+        .unwrap();
+    assert_eq!(help.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&help.stdout).contains("Usage"));
+}
+
+#[test]
+fn structured_admin_diagnostics_keep_warnings_on_success_and_failure() {
+    for output_mode in [None, Some("json")] {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("state");
+        let state = state_dir.to_str().unwrap();
+        let initialized = run(
+            &rekeyd_bin(),
+            &[
+                "init",
+                "--mode",
+                "team",
+                "--state-dir",
+                state,
+                "--password-stdin",
+            ],
+            Some(&format!("{PASSWORD}\n")),
+        );
+        assert_eq!(initialized.status, 0, "{}", initialized.stderr);
+        configure_test_service(&state_dir);
+        let child = Command::new(rekeyd_bin())
+            .args(["serve", "--state-dir", state, "--idle-lock", "15m"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let _guard = ServeGuard(Some(child));
+        for _ in 0..300 {
+            if state_dir.join("runtime/admin.sock").exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(state_dir.join("runtime/admin.sock").exists());
+
+        let unlock = |input: &[u8]| {
+            let mut command = Command::new(rekey_bin());
+            command
+                .args(["--state-dir", state, "unlock", "--password-stdin"])
+                .env_remove("REKEY_OUTPUT")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            if let Some(mode) = output_mode {
+                command.env("REKEY_OUTPUT", mode);
+            }
+            let mut child = command.spawn().unwrap();
+            child.stdin.take().unwrap().write_all(input).unwrap();
+            child.wait_with_output().unwrap()
+        };
+        let successful = unlock(format!("{PASSWORD}\n").as_bytes());
+        assert!(
+            successful.status.success(),
+            "{}",
+            String::from_utf8_lossy(&successful.stderr)
+        );
+        let warnings: serde_json::Value = serde_json::from_slice(&successful.stderr).unwrap();
+        assert_eq!(warnings["warnings"][0], "L1_DEV_UNVERIFIED_SERVICE");
+        assert!(warnings["code"].is_null());
+        let output = unlock(b"not the vault password\n");
+        assert_ne!(output.status.code(), Some(0));
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        let json: serde_json::Value = serde_json::from_str(stderr.trim())
+            .unwrap_or_else(|err| panic!("stderr is not one JSON document ({err}): {stderr}"));
+        assert_eq!(json["code"], "INVALID_UNLOCK_CREDENTIAL", "{stderr}");
+        assert_eq!(json["warnings"][0], "L1_DEV_UNVERIFIED_SERVICE", "{stderr}");
+    }
 }

@@ -1,32 +1,44 @@
 # Rekey
 
-Rekey 把密钥留在本机，让 Agent 调用你签署规则允许的操作。
+Rekey 把 API Key 留在你的电脑上。Agent（Claude Code、Codex 等）需要调用模型或服务时，请 Rekey 代为调用；Rekey 按你签署的规则放行，把结果交回 Agent。通过 Rekey 的接口，Agent 不会直接拿到 Key；返回结果只遮蔽 Key 的原值和支持的可逆编码形式，不覆盖任意编码、哈希或隐蔽信道（AWS、EKS、GitHub App 的临时凭据入口是显式开启的例外，会交出短期凭据）。
 
-执行前持久审计，返回时检查凭据反射。检查覆盖明确支持的表示，不能阻止所有数据外泄或授权范围内的误用。
+执行前持久审计，返回时检查凭据反射：上游响应里出现 Key 的原值或支持的可逆编码形式会被遮蔽。检查只覆盖这些明确支持的表示，不能阻止所有数据外泄或授权范围内的误用；同一系统用户下的恶意程序也不在防护范围内。
 
-当前源码为 **0.5.0-alpha.1 开发整合候选**，使用 vault27 / policy8。已发布 0.4 的 vault26 / policy7 保持原样；公开版本与下载以 [GitHub Releases](https://github.com/majiayu000/rekey/releases) 为准；源码检查不代表新版本已经发布或通过真机安装验收。0.3 vault 需要在新目录重建，旧目录不会迁移或覆盖。
+> 最新公开版本是 0.4.0-alpha.1，以 [GitHub Releases](https://github.com/majiayu000/rekey/releases) 为准；当前源码是未发布的 0.5 开发版。版本格式、保护等级等细节见[安全模型与术语](docs/security/README.md)。
 
-## 开始使用
+## 快速开始（已发布的 0.4，macOS）
 
-安装后的主线是添加密钥、签署连接规则、接入正常启动的 Agent：
+1. **安装**：从 [GitHub Releases](https://github.com/majiayu000/rekey/releases) 下载签名的 `.pkg` 安装（也可以用随版本发布的 Homebrew cask，见[安装说明](docs/installation.md)）。
+2. **打开 Rekey，创建保险库**：运行 `rekey setup`，在 App 里设置密码并离线保存恢复密钥。
+3. **添加 Key**：
 
-```bash
-rekey setup
-rekey add glm
-rekey connect claude-code --print
-rekey connect claude-code
-claude
-```
+   ```bash
+   rekey add glm
+   ```
 
-`rekey add <预设>` 在命令行一步完成：输入保险库密码、粘贴 Key（LLM 预设再填允许的模型），随后自动保存密钥、生成预设连接、签名并激活。这是**基础模式**：规则用状态目录里的软件 P-256 私钥签名（0600 文件，不是 Secure Enclave）。想用 App 的 Secure Enclave 签名，用 `rekey add <预设> --app`；两种方式由保险库第一次安装的信任根决定，之后不能互换。`setup` 打开 macOS App 创建保险库。`connect` 在写入前展示配置与说明书差异；已有配置会备份，重复执行保持幂等。Codex 使用 `rekey connect codex`，然后正常启动 `codex`。本机调用不需要 capability 或令牌。
+   命令会打开 App：粘贴 Key、填写允许的模型，再用 Secure Enclave 签署规则。默认规则是读请求直接放行，写请求要你批准，危险写入拒绝；LLM 只允许签署的模型，并带每日预算。
+4. **接入 Agent**：
 
-每个连接绑定一个密钥、一个固定 host 和规则。默认读允许、写审批、危险写拒绝；路径、方法、模型与预算由签名规则限定。调用方名称只用于记录和收紧权限，同一系统用户的程序可以伪造名称。
+   ```bash
+   rekey connect claude-code
+   ```
+
+   先展示要改的配置，确认后写入（已有文件会备份）。Codex 用 `rekey connect codex`。
+5. **正常使用 Agent**：直接运行 `claude` 或 `codex`。读请求直接返回结果；**要写入时**（例如创建 issue）需要你在 Rekey App 中批准一次或在一段时间内放行，拒绝则不会执行。App 运行且允许通知时会发系统通知提醒；App 没在运行时不会提醒。
+
+## 当前源码（0.5，未发布）的变化
+
+- **App 添加入口**：在 macOS 默认目录且已安装 App 时，`rekey add glm` 会打开 App；`--app` 可明确要求该路径。App 复用保险库已有的签名密钥，软件密钥不会变成 Secure Enclave 密钥。
+- **基础模式（仅限测试，不安全）**：无 App、自定义目录或显式 `--stdin-secrets` 时，`rekey add` 在命令行完成：输入保险库密码、粘贴 Key，自动生成并签署规则；`rekey unlock --remember 7d`（最长 30 天）让后台服务重启后自动解锁，`rekey lock --forget-remembered` 取消。
+- **中文错误提示**：在终端里直接运行时，出错会显示中文原因和下一步；Agent 和脚本通过管道调用、或设置 `REKEY_OUTPUT=json` 时仍是 JSON。未校验服务签名时，失败 JSON 含 `warnings`，成功命令另在 stderr 输出一个 JSON 警告对象；成功结果的 stdout 不变。`init`、`serve`、`restore` 由 `rekeyd` 执行，它们的失败输出由 `rekeyd` 直接给出，不走这套格式。
+
+> **基础模式仅限测试，不安全。** 软件签名私钥和记住解锁密钥均为同用户可读文件：同用户程序可签出放宽的规则，或结合解封文件离线解密保险库。新 CLI 记住解锁票据不能用于在线审批；旧票据须重新记住或撤销才失去原权限。保护真实密钥请使用由 Secure Enclave 密钥签名的保险库；已安装的信任根不能替换，测试与真实使用应分开。
 
 ## 四个调用入口
 
 - CLI：`rekey list`、`rekey describe OPERATION`、`rekey call OPERATION --parameter value`、`rekey http CONNECTION GET /path`；`--dry-run` 返回判定，不访问上游。
 - MCP：`rekey-mcp` 提供发现、描述、调用、HTTP、访问请求和等待工具。Claude Code 插件位于 [plugins/rekey](plugins/rekey)。
-- 本机 HTTP：默认 `http://127.0.0.1:7787/c/CONNECTION/`，SDK Key 填 `rekey`；普通 HTTP 与 Git smart HTTP 显式带 `Authorization: Bearer rekey`。daemon 注入真实认证头，Agent 只得到调用结果。端口与地址保存在私有 `service.json`。
+- 本机 HTTP：默认 `http://127.0.0.1:7787/c/CONNECTION/`，SDK Key 填 `rekey`；普通 HTTP 与 Git smart HTTP 显式带 `Authorization: Bearer rekey`。daemon 注入真实认证头，Agent 只得到调用结果（结果中 Key 的原值和支持的可逆编码形式会被遮蔽）。端口与地址保存在私有 `service.json`。
 - SSH agent：私钥留在 Rekey，标准 OpenSSH 通过 `ssh-agent.sock` 请求签名；规则按已验证的服务器公钥授权。未知或未绑定目标需要审批。
 
 写审批可以一次放行，也可以对精确连接、规则和调用方开放时间窗，最长 8 小时；锁定或策略变更立即失效。被明确拒绝的规则不能通过审批放行。缺连接或权限时，Agent 用 `request_access` 描述需要的操作，用户在 App 处理；错误响应包含 `next`，引导 Agent 等待或重新调用。
@@ -47,7 +59,7 @@ rekey connect claude-code --with-hooks
 
 Google、GitHub、Slack、Notion 使用用户自己的 OAuth client。授权和 refresh 在 daemon 内完成，源令牌不会交给 Agent。各供应商的 PKCE、回调、refresh 与 Notion 持久 access token 例外见 [SPEC](docs/superpowers/specs/2026-10-05-rekey-agent-call-model.md)。
 
-AWS `credential_process`、EKS kubectl exec plugin 和 GitHub App 可以显式开启 **T1**：Agent 进程会收到临时凭据。目标 role / cluster / installation、仓库、权限和 TTL 均在签名规则中固定，调用方不能覆盖。
+AWS `credential_process`、EKS kubectl exec plugin 和 GitHub App 可以单独开启**临时凭据**：Agent 进程会收到短期有效的凭据。目标 role / cluster / installation、仓库、权限和 TTL 均在签名规则中固定，调用方不能覆盖。
 
 ```bash
 rekey aws-credentials CONNECTION
@@ -55,15 +67,13 @@ rekey kubectl-credentials CONNECTION
 rekey github-token CONNECTION
 ```
 
-T0 仅返回调用结果，T1 返回临时凭据；两者有不同的公开发现、界面和审计标注。
+其他入口只返回调用结果；临时凭据入口在界面和审计中单独标注，详见[安全模型与术语](docs/security/README.md#调用结果与临时凭据)。
 
 ## 安装、恢复与边界
 
 macOS 使用签名、公证的 pkg，Linux 使用归档；实际支持的发布平台见 [安装说明](docs/installation.md)。[macOS 构建说明](apps/macos/README.md)列出 Developer ID、双 provisioning profile、登录项和打包要求。
 
-本机默认运行于同一系统用户下，当前确认的保护下限为 L1-dev；历史 G1/G2 仅描述拓扑，不是当前保护等级。加密、签名规则、出站限制、响应遮蔽和审计共同限制 Rekey 接口；它们不阻止同用户的恶意程序读取其他进程内存、伪造调用方或使用另一个网络客户端。root 和恶意管理员不在保护范围内。真实 Keychain、Secure Enclave、Touch ID 和安装体验必须按设备证据验收，不能由单元测试推断或提升为 L1/L2。
-
-旧 `run`、Profile、本机 capability 和隔离启动器已退出默认个人产品；企业代码保留在 `lab`，旧运行时验收脚本归档，编译检查不宣称企业部署通过。备份、恢复、轮换、审计提交失败关闭等 Authority 合同继续保留。
+Rekey 与 Agent 运行在同一系统用户下。加密、签名规则、出站限制、响应遮蔽和审计约束的是 Rekey 自己的接口；它们不阻止同一用户下的恶意程序读取其他进程内存、冒充调用方或绕过 Rekey 直接联网。root 和恶意管理员不在保护范围内。保护等级、各版本数据格式、企业实验功能和验收边界见[安全模型与术语](docs/security/README.md)。
 
 ## 开发与验证
 
