@@ -39,6 +39,12 @@ everywhere names `approval.challenge_id` as the ID to await and retry with,
 and tests check that shipped Agent guidance only names real MCP tools and
 `rekey` subcommands.
 
+Dependency advisories (2026-11-16): update `rusqlite` 0.34 to 0.41, which moves
+the bundled SQLite from 3.49.1 to 3.54.1 (RUSTSEC-2026-0459), and `quinn-udp`
+to 0.5.16 (RUSTSEC-2026-0538). Storage code is unchanged: the `fallible_uint`
+feature keeps the previous checked `u64`/`usize` conversions, and the SQLite
+file format and vault27 layout are not affected.
+
 ## 0.4.0-alpha.1
 
 **Requires a new vault.** Replace local capability/Profile launching with signed

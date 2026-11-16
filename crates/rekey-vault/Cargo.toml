@@ -22,7 +22,7 @@ rand = "0.9.3"
 rcgen-signing = { package = "rcgen", version = "=0.14.10", default-features = false, features = ["aws_lc_rs", "pem", "x509-parser"] }
 rustls = { version = "=0.23.46", default-features = false, features = ["aws_lc_rs", "std"] }
 x509-parser = { version = "=0.18.1", features = ["verify-aws"] }
-rusqlite = { version = "0.34", features = ["bundled", "backup"] }
+rusqlite = { version = "0.41", features = ["bundled", "backup", "fallible_uint"] }
 secrecy = "0.10"
 serde = { workspace = true }
 serde_json = { workspace = true }
