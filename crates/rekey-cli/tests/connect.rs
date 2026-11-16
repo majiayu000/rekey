@@ -46,6 +46,9 @@ impl Fixture {
             .arg(self.project())
             .arg("--state-dir")
             .arg(state)
+            // Keep hook discovery inside the fixture, including Git spawned by the CLI.
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "true")
             .env("REKEY_CAPABILITY", CANARY)
             .env("REKEY_AGENT_SOCKET", CANARY);
         command

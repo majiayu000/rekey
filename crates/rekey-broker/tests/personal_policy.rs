@@ -1,5 +1,7 @@
 //! Synthetic software P-256 fixtures; these tests make no hardware-trust claim.
 mod common;
+#[path = "personal_policy/gateway.rs"]
+mod gateway;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -41,6 +43,14 @@ struct Fixture {
 
 impl Fixture {
     async fn new(mode: PolicyMode, install: bool) -> Self {
+        Self::with_transport(mode, install, None).await
+    }
+
+    async fn with_transport(
+        mode: PolicyMode,
+        install: bool,
+        transport: Option<Arc<dyn rekey_broker::upstream::UpstreamTransport>>,
+    ) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let state = dir.path().join("state");
         let initialized = rekey_vault::bootstrap::init_vault(
@@ -53,7 +63,7 @@ impl Fixture {
         rekey_vault::bootstrap::confirm_vault_init(&state).unwrap();
         let mut config = BrokerConfig::new(state.clone());
         let fake = Arc::new(FakeUpstreamTransport::new());
-        config.transport = Some(fake.clone());
+        config.transport = Some(transport.unwrap_or_else(|| fake.clone()));
         config.service_port = Some(0);
         config.unlock_backoff_base = Duration::from_millis(20);
         let task = tokio::spawn(serve(config));
