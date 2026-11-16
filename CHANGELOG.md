@@ -44,6 +44,11 @@ the bundled SQLite from 3.49.1 to 3.54.1 (RUSTSEC-2026-0459), and `quinn-udp`
 to 0.5.16 (RUSTSEC-2026-0538). Storage code is unchanged: the `fallible_uint`
 feature keeps the previous checked `u64`/`usize` conversions, and the SQLite
 file format and vault27 layout are not affected.
+Also update Tokio to 1.51.6 and rustix to 1.1.6 to resolve the remaining
+unsoundness advisories (RUSTSEC-2026-0386 and RUSTSEC-2026-0486). The peer-process
+watch and Linux plugin guardian wait now use Tokio's explicit unsafe registration
+API with owned descriptors kept valid until deregistration; registration errors
+still preserve their underlying IO cause. Both lockfiles are synchronized.
 
 ## 0.4.0-alpha.1
 

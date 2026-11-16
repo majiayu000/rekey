@@ -26,7 +26,10 @@ impl PeerProcess {
         let mut peer = Self {
             uid,
             // kqueue descriptors support readability, not a writable filter.
-            watch: AsyncFd::with_interest(fd, Interest::READABLE)?,
+            // SAFETY: watch_peer returns an exclusively owned, valid descriptor.
+            // AsyncFd owns it until deregistration; we only borrow it for queries
+            // and never close or replace it while the watch is registered.
+            watch: unsafe { AsyncFd::register_with_interest(fd, Interest::READABLE) }?,
             exited: false,
         };
         if peer.has_exited()? {
