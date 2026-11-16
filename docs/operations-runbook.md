@@ -97,7 +97,9 @@ rekey --state-dir /absolute/path/rekey-04 rollback-confirm \
 | 故障 | 操作 |
 |---|---|
 | `STORAGE_INTEGRITY_FAILED`、不支持格式、损坏的 crypto metadata | 停止服务，保留原目录、版本和诊断；从已验证备份恢复到另一个空目录。 |
-| `AUDIT_COMMIT_FAILED`、`FAULTED` | 执行与写操作已失败关闭。修复磁盘/文件系统后重新启动，核对审计及状态再恢复使用。 |
+| `AUDIT_COMMIT_FAILED`、`FAULTED` | 执行与写操作已失败关闭。修复磁盘/文件系统后重新启动，核对审计及状态再恢复使用。本机 HTTP 此时返回 503 `FAULTED`，发现与状态查询仍可用，服务不会自行退出。 |
+| `SERVICE_PORT_IN_USE`（启动失败） | 本机 HTTP 端口被占用，日志 `service.port_in_use` 含端口号。每个保险库一个端口：在该保险库目录的 `service.json` 写入空闲端口后重启。 |
+| 启动失败只显示 `ipc unavailable` | 查看同一条 `rekeyd.command_failed` 日志的 `cause`；`path must be shorter than SUN_LEN` 表示保险库目录过深，Unix socket 路径超过系统上限，换用更短的目录。 |
 | `POLICY_INVALID` / version conflict | 保留拒绝的工件和当前签名摘要，重新审阅并签署合法下一版本；不要直接编辑数据库或上传未签名快照。 |
 | 执行后审计失败或结果未知 | 上游副作用可能已经发生。用 request ID 和上游结果核对，不能自动重复写操作或派生签发。 |
 | `ENOSPC` / I/O 错误 | 停止新请求，检查 `df -h`、`df -i`，在 state directory 之外释放空间，保留 WAL 和 incomplete markers。 |

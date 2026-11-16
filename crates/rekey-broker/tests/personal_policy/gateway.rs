@@ -11,9 +11,9 @@ use rekey_broker::upstream::{
 use rekey_domain::connection::ConnectionLlmLimits;
 use tokio::sync::oneshot;
 
-const SECRET: &[u8] = b"synthetic-connection-token";
+pub(super) const SECRET: &[u8] = b"synthetic-connection-token";
 
-async fn activate(f: &Fixture, preset: &str) -> String {
+pub(super) async fn activate(f: &Fixture, preset: &str) -> String {
     let mut connection = rekey_policy::presets::builtin_preset(preset)
         .unwrap()
         .connection("fixture".into(), f.seed().await.credential_id);
@@ -32,7 +32,7 @@ async fn activate(f: &Fixture, preset: &str) -> String {
     format!("{}/c/fixture", list.service_url.unwrap())
 }
 
-fn post(url: &str, stream: bool) -> reqwest::RequestBuilder {
+pub(super) fn post(url: &str, stream: bool) -> reqwest::RequestBuilder {
     let body = if url.ends_with("/responses") {
         json!({"model":"synthetic-model","input":"test","max_output_tokens":16,"stream":stream})
     } else {
@@ -48,7 +48,7 @@ fn post(url: &str, stream: bool) -> reqwest::RequestBuilder {
         .body(body.to_string())
 }
 
-fn finished(f: &Fixture) -> i64 {
+pub(super) fn finished(f: &Fixture) -> i64 {
     rusqlite::Connection::open(rekey_vault::paths::vault_db(&f.state))
         .unwrap()
         .query_row(
@@ -126,7 +126,7 @@ impl UpstreamBody for StreamBody {
         })
     }
 }
-struct StreamTransport {
+pub(super) struct StreamTransport {
     response: Mutex<Option<UpstreamStreamResponse>>,
     auth_names: Mutex<Vec<String>>,
 }
@@ -161,7 +161,7 @@ impl UpstreamTransport for StreamTransport {
         })
     }
 }
-fn transport(
+pub(super) fn transport(
     status: u16,
     chunks: Vec<Vec<u8>>,
     release: Option<oneshot::Receiver<()>>,
@@ -198,7 +198,7 @@ fn transport(
     )
 }
 
-fn sse(protocol: &str) -> (String, String) {
+pub(super) fn sse(protocol: &str) -> (String, String) {
     let text = "safe output ".repeat(1024);
     let event = |v: Value| format!("data: {v}\n\n");
     match protocol {

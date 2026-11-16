@@ -2,6 +2,8 @@
 mod common;
 #[path = "personal_policy/gateway.rs"]
 mod gateway;
+#[path = "personal_policy/gateway_edges.rs"]
+mod gateway_edges;
 
 use std::path::PathBuf;
 use std::sync::Arc;

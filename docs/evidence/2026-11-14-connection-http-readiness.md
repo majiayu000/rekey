@@ -47,6 +47,7 @@ HTTP 客户端与 loopback 服务是真实连接；上游为注入的合成 tran
 expiry（旧产品语义已退出）、缓存发布失败、原始 socket 混淆长度和 body deadline、
 beta 查询 / 可选头、GET models、终态审计提交失败（本轮验证的是阻塞提交）。
 不能从本轮通过推断这些相邻场景全部通过，也不宣称完整 lab runtime 已可用。
+其中属于现行产品的场景已在 [2026-11-16 边界补测](2026-11-16-connection-http-edges.md)中重建。
 
 ## 软件验证
 

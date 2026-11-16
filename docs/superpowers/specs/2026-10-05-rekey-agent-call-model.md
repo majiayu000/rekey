@@ -349,7 +349,7 @@ rekey ssh-agent status                                # §8.1
 
 **监听**
 - 固定 `127.0.0.1:<port>`，默认 `7787`，可配置，写入 `~/.config/rekey/service.json`。
-- 只监听 loopback。启动时如果端口已被占用，直接失败并在 App 中报警，不换端口。
+- 只监听 loopback。启动时如果端口已被占用，直接失败并在 App 中报警，不换端口。`rekeyd` 的失败输出为 `SERVICE_PORT_IN_USE`，并记录被占用的端口和修改 `service.json` 的提示；失败的启动不留下 Unix socket。
 
 **路由**
 - 路由格式为 `/c/<connection>/<path>`，规则判定与 §5 一致。
@@ -369,6 +369,7 @@ rekey ssh-agent status                                # §8.1
 **其他行为**
 - 流式 SSE、遮蔽、预算、错误透传沿用执行器；SDK 的 `x-stainless-*` 与 Node fetch 的 `Accept-Language` / `Sec-Fetch-Mode` 作为传输元数据剥除，不转发或参与授权。Git smart HTTP 可用 `git -c http.extraHeader="Authorization: Bearer rekey" ...` 携带同一公开标记。
 - 调用方识别见 §4.3。
+- 运行状态拒绝先于 Connection 查找，统一返回 503 和 §6.1 的错误 JSON：锁定为 `LOCKED`（不得因锁定清除了生效策略而报 `NOT_CONFIGURED`），容量超限为可重试的 `AUTHORITY_BUSY`，停机中为 `DRAINING`，终态审计失败后为不可重试的 `FAULTED`。403 只表示规则或请求形态被拒绝，使 SDK 不把暂时不可用当成权限错误。
 - 端口抢占风险：rekeyd 未运行时，同 uid 进程可以先占用端口，收到的只是占位符和请求正文，拿不到任何 Secret。这一点写入威胁模型。
 
 **SDK 用法示例**

@@ -20,6 +20,14 @@ JSON/SSE allocation changes and the lab child-exit event watcher. See the
 and [integration record](docs/superpowers/plans/2026-10-09-experiment-integration.md).
 This is source integration, with device/deployment/release gates separate.
 
+Local HTTP refusals (2026-11-16): a locked vault now answers `LOCKED` with the
+`await_unlock` hint instead of `NOT_CONFIGURED`; lifecycle refusals (`LOCKED`,
+retryable `AUTHORITY_BUSY`, `DRAINING`, `FAULTED`) return 503 rather than 403,
+so SDK clients no longer read a temporary refusal as a permission error. An
+occupied service port fails startup with `SERVICE_PORT_IN_USE`, the port and
+the `service.json` fix; other startup IO failures log their OS cause, and a
+failed start removes the sockets it bound.
+
 Basic-mode approvals (2026-10-22): `rekey approval review` accepts the
 Connection review body the daemon actually writes (it always failed with
 `INVALID_FRAME`), and `rekey approval approve|reject --password` approves with

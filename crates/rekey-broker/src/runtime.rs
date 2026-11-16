@@ -1011,6 +1011,7 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
         ctx.publish_shutdown();
         let _ = execution_task.await;
         let _ = authority.shutdown(None).await;
+        shutdown::remove_sockets(&config.state_dir, &agent_socket);
         return Err(error);
     }
     resume_remembered_unlock(&ctx).await;
@@ -1234,9 +1235,7 @@ pub async fn serve(config: BrokerConfig) -> Result<(), BrokerError> {
         }
     }
 
-    let _ = fs::remove_file(paths::admin_socket(&config.state_dir));
-    let _ = fs::remove_file(ssh_socket);
-    let _ = fs::remove_file(agent_socket);
+    shutdown::remove_sockets(&config.state_dir, &agent_socket);
 
     drop(authority);
     while !authority_join.is_finished() && tokio::time::Instant::now() < stop_deadline {
