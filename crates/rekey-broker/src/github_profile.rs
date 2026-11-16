@@ -252,7 +252,7 @@ impl GitHubAppProfile {
             })
             .ok_or(GitHubError::WebhookSignature)?;
         let mut expected = [0u8; 32];
-        for (index, pair) in hex.as_bytes().chunks_exact(2).enumerate() {
+        for (index, pair) in hex.as_bytes().as_chunks::<2>().0.iter().enumerate() {
             expected[index] = (hex_nibble(pair[0]).ok_or(GitHubError::WebhookSignature)? << 4)
                 | hex_nibble(pair[1]).ok_or(GitHubError::WebhookSignature)?;
         }
