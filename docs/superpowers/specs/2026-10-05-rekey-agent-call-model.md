@@ -589,7 +589,7 @@ GitHub App 的根载荷为 `github-app-root-v1`（CredentialKind `github-app-ins
 - 新增事件类型：
   - `call.dry_run`
   - `access_request.created` / `.resolved`
-  - `ssh.sign`（目标主机公钥指纹、用途）
+  - `ssh.sign`（目标主机公钥指纹、用途）。**（2026-11-17 修订）** 沿用现有 `reason_code` 字段，不改审计格式：`ssh-sign;use=<auth|git|unknown>;host_key=<SHA256:指纹|none>`。指纹是 session-bind 签名已验证的 host 公钥 wire blob 的 SHA-256，按 OpenSSH `SHA256:` 无填充 base64 书写，未登记 host 同样记录；未绑定或仅有未验证 hostbound 名称时为 `none`。用途来自签名载荷：用户认证为 auth，`SSHSIG` git namespace 为 git，其余为 unknown。同一签名的 `execution.started` / `execution.finished` 仍为 `ssh-sign`。
   - `credential.derived_issued`
   - `scan.performed`（命中数）
   - `oauth.authorized` / `.refreshed` / `.refresh_failed`

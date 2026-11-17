@@ -12,7 +12,9 @@ use zeroize::Zeroizing;
 
 use super::{Worker, ensure_mutation_current};
 use crate::AuthorityError;
-use crate::command::{AuditDraft, SshIdentity, SshKeyMode, UnlockProof};
+use crate::command::{
+    AuditDraft, SshIdentity, SshKeyMode, SshSignPurpose, SshSignStart, UnlockProof,
+};
 use crate::model::{event_type, outcome};
 use crate::secret::SecretInput;
 
@@ -30,6 +32,21 @@ fn invalid() -> AuthorityError {
 fn string(out: &mut Vec<u8>, bytes: &[u8]) {
     out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
     out.extend_from_slice(bytes);
+}
+
+/// `ssh.sign` reason: a fixed grammar over public facts, reusing the existing
+/// reason_code field. The fingerprint is OpenSSH's `SHA256:` unpadded base64.
+fn sign_reason(purpose: SshSignPurpose, host_key_sha256: Option<[u8; 32]>) -> String {
+    let purpose = match purpose {
+        SshSignPurpose::Auth => "auth",
+        SshSignPurpose::Git => "git",
+        SshSignPurpose::Unknown => "unknown",
+    };
+    let host = host_key_sha256.map_or_else(
+        || "none".to_owned(),
+        |digest| format!("SHA256:{}", data_encoding::BASE64_NOPAD.encode(&digest)),
+    );
+    format!("ssh-sign;use={purpose};host_key={host}")
 }
 
 fn public_blob(kind: CredentialKind, public: &[u8]) -> Vec<u8> {
@@ -338,10 +355,15 @@ impl Worker {
         credential_id: CredentialId,
         public_key: Vec<u8>,
         data: Vec<u8>,
-        mut started: AuditDraft,
+        start: SshSignStart,
         mut approvals: Vec<AuditDraft>,
         not_after: Instant,
     ) -> Result<Vec<u8>, AuthorityError> {
+        let SshSignStart {
+            draft: mut started,
+            purpose,
+            host_key_sha256,
+        } = start;
         self.require_unlocked()?;
         ensure_mutation_current(Some(not_after))?;
         if started.event_type != event_type::EXECUTION_STARTED
@@ -409,6 +431,7 @@ impl Worker {
         if result.is_ok() {
             let mut signed = terminal.clone();
             signed.event_type = "ssh.sign";
+            signed.reason_code = sign_reason(purpose, host_key_sha256);
             self.append_audit(signed)?;
         }
         // Even a produced signature is discarded on a terminal audit failure.

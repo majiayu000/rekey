@@ -834,7 +834,7 @@ impl AuthorityHandle {
         credential_id: CredentialId,
         public_key: Vec<u8>,
         data: Vec<u8>,
-        started: AuditDraft,
+        started: crate::command::SshSignStart,
         approvals: Vec<AuditDraft>,
         not_after: std::time::Instant,
     ) -> Result<Vec<u8>, AuthorityError> {
