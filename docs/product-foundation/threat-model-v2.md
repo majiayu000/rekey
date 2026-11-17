@@ -20,7 +20,7 @@
 ## 新增实验能力边界
 
 - mTLS 只接受签名 Connection 中显式的 T0 固定 HTTPS 认证声明。客户端私钥由 Worker 验证当前策略摘要与已提交 started 后一次性交给 TLS owner；每次后端 poll 检查策略、期限与生命周期。轮换、撤销和策略激活确认前取消并排空旧 owner；不复用连接、TLS session 或重试。客户端认证不提升 G1 隔离等级。
-- CA signer 为独立类型，仅管理员逐次 A2 可导入、轮换、签发外部 CSR、撤销序列号与发布完整 CRL。Agent 无 CA 签名/读取入口。证书、CRL 与现有 HTTP action 的完整集合由 generation MAC 认证；授权变更只允许预期增量，触发器引起的额外删除拒绝提交。软件证据不代表真实 CA 运维与吊销分发已部署。
+- CA signer 为独立类型，仅管理员逐次 A2 可导入、轮换、签发外部 CSR、撤销序列号与发布完整 CRL。Agent 无 CA 签名/读取入口。证书、CRL 与现有 HTTP action 的完整集合由 generation MAC 认证；授权变更只允许预期增量，触发器引起的额外删除拒绝提交。证书与 CRL 只在终态提交后交付；存在证书预留时拒绝发布完整 CRL，不静默遗漏可能已签名的叶证书。从 Locked 解锁（启动或锁定后，含记住解锁恢复）时没有运行中的签发，残留预留（如 Worker 崩溃遗留）从未交付：解锁在同一 generation 提交中把它们终结为 Failed，并逐条写 `pki.certificate.finished` / `pki.crl.finished` 失败审计（`abandoned-on-unlock`），之后按序列号吊销与完整 CRL 恢复可用；终结的序列号从未签发，不可吊销、不进 CRL、不复用。已解锁期间出现的预留（如终态提交失败）仍阻止完整 CRL，直到下次从 Locked 解锁；重新认证不算恢复。确认回滚会丢弃快照之后的事实，包括快照内预留的后续完成。软件证据不代表真实 CA 运维与吊销分发已部署。
 - SSH 仍由 Worker 持有密钥。每个 socket 按签名策略限制签名次数和持续时间；一次授权不绕过该预算。外部审批需一人或两名不同的允许审批者，绑定完整 challenge 与请求 review；本机 Presence 不能代替外部签名。接受审批与 started 同事务提交，待审批连接 EOF/额外输入使 challenge 失效；Worker 入队后由原 owner 等待终态，所有输出按当前策略和生命周期门控。
 - Agent PKI 准入与 HA 没有实现；lab 编译、合成 TLS/SSH 与历史性能数据不代表这些能力或真实硬件验收。
 

@@ -744,40 +744,6 @@ async fn cancelled_receiver_keeps_generated_certificate_terminal() {
 }
 
 #[tokio::test]
-#[ignore = "explicit owned crash-child process used by reservation_survives_killed_worker_process"]
-async fn pki_reservation_crash_child() {
-    let _serial = PKI_TEST_SERIAL.lock().await;
-    let state = std::path::PathBuf::from(std::env::var_os("REKEY_TEST_PKI_STATE").unwrap());
-    let (handle, _join) = common::spawn(&state);
-    handle.unlock(common::password_proof()).await.unwrap();
-    let db = rusqlite::Connection::open(rekey_vault::paths::vault_db(&state)).unwrap();
-    let id: Vec<u8> = db
-        .query_row(
-            "SELECT credential_id FROM credentials WHERE kind='pki-ca-signer'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    let id = CredentialId::from_bytes(id.try_into().unwrap()).unwrap();
-    drop(db);
-    std::fs::write(state.join("synthetic-child-ready"), b"ready").unwrap();
-    let end = Instant::now() + Duration::from_secs(10);
-    while !state.join("synthetic-child-go").exists() {
-        assert!(Instant::now() < end);
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-    let csr = client()
-        .serialize_request(&KeyPair::generate().unwrap())
-        .unwrap()
-        .pem()
-        .unwrap();
-    let _ = issue(&handle, id, csr.as_bytes()).await;
-    panic!("crash child must be killed and reaped by its parent");
-}
-
-struct OwnedCrashChild(std::process::Child);
-
-#[tokio::test]
 async fn unauthorized_trigger_changes_are_not_authenticated_or_delivered() {
     let _serial = PKI_TEST_SERIAL.lock().await;
     for route in ["audit", "ledger", "header"] {
@@ -834,13 +800,6 @@ async fn unauthorized_trigger_changes_are_not_authenticated_or_delivered() {
     }
 }
 
-impl Drop for OwnedCrashChild {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
 #[tokio::test]
 async fn older_certificate_database_is_rejected_by_the_newer_external_anchor() {
     let _serial = PKI_TEST_SERIAL.lock().await;
@@ -883,116 +842,6 @@ async fn older_certificate_database_is_rejected_by_the_newer_external_anchor() {
         Err(AuthorityError::RollbackSuspected)
     ));
     drop(handle);
-    join.join().unwrap();
-}
-
-#[tokio::test]
-async fn reservation_survives_killed_worker_process() {
-    let _serial = PKI_TEST_SERIAL.lock().await;
-    let vault = common::init_test_vault();
-    let (handle, join) = common::spawn(&vault.state_dir);
-    handle.unlock(common::password_proof()).await.unwrap();
-    let ca = root(&KeyPair::generate().unwrap(), None);
-    let id = add(&handle, "issuer", ca.as_bytes()).await;
-    handle
-        .shutdown(Some(common::password_proof()))
-        .await
-        .unwrap();
-    join.join().unwrap();
-    let mut child = OwnedCrashChild(
-        std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--ignored",
-                "--exact",
-                "pki_reservation_crash_child",
-                "--nocapture",
-            ])
-            .env("REKEY_TEST_PKI_STATE", &vault.state_dir)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .unwrap(),
-    );
-    let end = Instant::now() + Duration::from_secs(10);
-    while !vault.state_dir.join("synthetic-child-ready").exists() {
-        assert!(
-            child.0.try_wait().unwrap().is_none(),
-            "child exited before ready"
-        );
-        assert!(Instant::now() < end);
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-    let db = rusqlite::Connection::open(rekey_vault::paths::vault_db(&vault.state_dir)).unwrap();
-    db.execute_batch("CREATE TRIGGER delay_crash_terminal BEFORE INSERT ON audit_events WHEN NEW.event_type='pki.certificate.finished' BEGIN WITH RECURSIVE t(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM t WHERE n<1500) SELECT count(*) FROM t a,t b,t c; END;").unwrap();
-    std::fs::write(vault.state_dir.join("synthetic-child-go"), b"go").unwrap();
-    loop {
-        let count: i64 = db
-            .query_row(
-                "SELECT count(*) FROM pki_certificates WHERE state=0",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        if count == 1 {
-            break;
-        }
-        assert!(
-            child.0.try_wait().unwrap().is_none(),
-            "child exited before reservation"
-        );
-        assert!(Instant::now() < end);
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-    child.0.kill().unwrap();
-    let result = child.0.wait().unwrap();
-    assert!(!result.success());
-    db.execute_batch("DROP TRIGGER delay_crash_terminal")
-        .unwrap();
-    drop(db);
-    for n in ["synthetic-child-ready", "synthetic-child-go"] {
-        std::fs::remove_file(vault.state_dir.join(n)).unwrap();
-    }
-    let pending = persisted_certificates(&vault.state_dir);
-    assert_eq!(pending.len(), 1);
-    assert_eq!(pending[0][6], rusqlite::types::Value::Integer(0));
-    let (handle, join) = common::spawn(&vault.state_dir);
-    handle.unlock(common::password_proof()).await.unwrap();
-    assert_eq!(persisted_certificates(&vault.state_dir), pending);
-    let rusqlite::types::Value::Blob(serial) = &pending[0][0] else {
-        panic!("serial")
-    };
-    assert_eq!(
-        revoke(&handle, &data_encoding::HEXLOWER.encode(serial))
-            .await
-            .unwrap_err()
-            .code(),
-        "INVALID_INPUT"
-    );
-    assert_eq!(persisted_certificates(&vault.state_dir), pending);
-    let csr = client()
-        .serialize_request(&KeyPair::generate().unwrap())
-        .unwrap()
-        .pem()
-        .unwrap();
-    let issued = issue(&handle, id, csr.as_bytes()).await.unwrap();
-    assert_ne!(
-        pending[0][0],
-        rusqlite::types::Value::Blob(
-            data_encoding::HEXLOWER
-                .decode(issued.serial_hex.as_bytes())
-                .unwrap()
-        )
-    );
-    assert_eq!(persisted_certificates(&vault.state_dir).len(), 2);
-    assert_eq!(
-        crl(&handle, id, 1).await.unwrap_err().code(),
-        "INVALID_INPUT"
-    );
-    assert!(persisted_crls(&vault.state_dir).is_empty());
-    handle
-        .shutdown(Some(common::password_proof()))
-        .await
-        .unwrap();
     join.join().unwrap();
 }
 

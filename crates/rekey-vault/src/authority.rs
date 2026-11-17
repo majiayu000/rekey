@@ -503,7 +503,7 @@ impl Worker {
                 });
                 // Once a wrapper has authenticated the candidate root, every
                 // header-load/authentication failure revokes prior authority.
-                let header = match header {
+                let mut header = match header {
                     Ok(header) => header,
                     Err(error) => {
                         self.fault("vault-header-integrity-failed");
@@ -530,9 +530,7 @@ impl Worker {
                     self.fault("lease-journal-integrity-failed");
                     return Err(error);
                 }
-                let pki = self.store.verified_certificates(&header);
-                self.fault_on_integrity(pki)?;
-                self.check_generation(&header)?;
+                self.verify_unlock_generation(&mut header, &vrk, recover_usage)?;
                 let usage = if recover_usage {
                     self.store
                         .recover_profile_usage(vrk.bytes(), header.vault_id)
