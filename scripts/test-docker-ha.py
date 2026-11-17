@@ -178,7 +178,9 @@ class Contracts(unittest.TestCase):
         self.assertNotEqual(receipt['output_path'], prior)
 
     def test_unlock_or_status_failure_after_fencing_keeps_fencing_and_primary(self):
-        for cli in (ha.HAError('rekey unlock failed with exit 3'), [{}, {'state': 'locked'}]):
+        # Unlock fails, status reports not unlocked, or the status call itself fails.
+        for cli in (ha.HAError('rekey unlock failed with exit 3'), [{}, {'state': 'locked'}],
+                    [{}, ha.HAError('rekey status timed out; outcome unconfirmed')]):
             self.state.update(phase='ready', primary=self.primary, standby=self.standby, generation=1)
             patches = self.promotion_patches(cli) + [patch.object(self.controller, 'new_node')]
             for item in patches:
