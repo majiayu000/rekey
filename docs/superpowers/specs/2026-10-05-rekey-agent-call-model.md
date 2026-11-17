@@ -574,7 +574,7 @@ GitHub App 的根载荷为 `github-app-root-v1`（CredentialKind `github-app-ins
 
 - `rekey connect --with-hooks` 或 `rekey hooks install` 写入 Git 实际使用的 pre-commit 钩子（`git rev-parse --git-path hooks`，含 `core.hooksPath`）；已有钩子时改为串联，不覆盖。与 §6.5 相同：先预览，TTY 确认，写前备份，O_NOFOLLOW 原子发布。
 - **串联方式（2026-11-17 修订）**：
-  - 没有钩子（或只有 shebang）：写入 Rekey 管理的 `#!/bin/sh` 包装脚本。
+  - 没有钩子（或钩子为空、只有一行 `#!/bin/sh`）：写入 Rekey 管理的 `#!/bin/sh` 包装脚本。
   - 可执行的 sh 系文本钩子（shebang 为 sh、bash、dash、ash、ksh、mksh 或 zsh，可经 `env`）：把标记段插在 shebang 之后。扫描先于原内容执行，原钩子以 `exit` 或 `exec` 结束也不会跳过扫描；`$0` 和文件位置不变，依赖 `$0` 的钩子管理器照常工作。
   - 其他钩子（python 等其他解释器、二进制、没有可执行位）：原钩子原样移到同目录的 `pre-commit.rekey-chained`（保留权限位），pre-commit 换成包装脚本。扫描通过后包装脚本以相同参数和标准输入 `exec` 原钩子；原钩子不可执行时不运行，与 Git 忽略它的行为一致。`pre-commit.rekey-chained` 已存在且内容不同，或存在该文件却没有 Rekey 包装脚本时，拒绝写入。
   - 扫描行是 `rekey scan --staged </dev/null || exit $?`（非默认 vault 带 `--state-dir`，见 §6.5）。扫描不读取钩子的标准输入；非零退出阻止提交。
