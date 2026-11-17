@@ -92,6 +92,12 @@ jobs:
 
       - name: Runtime fail-stop acceptance
         run: scripts/p0-runtime-faults.sh
+      - name: Connection-model P0 acceptance and crash recovery
+        run: |
+          # Release binaries, basic-mode software signer and tokenless CALL; the
+          # loopback target is refused by the production screen, so no network.
+          scripts/p0-acceptance.sh
+          scripts/p0-crash-recovery.sh
       - name: Backup and restore durability acceptance
         if: runner.os == 'macOS'
         run: scripts/p0-durability.sh

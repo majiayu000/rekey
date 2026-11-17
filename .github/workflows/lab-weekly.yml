@@ -36,9 +36,8 @@ jobs:
           set -euo pipefail
           # Legacy Action/Profile/run/G2 and enterprise fixtures must be updated together
           # with their commands (--features lab) and policy-7 fields before runtime reuse.
+          # The P0 acceptance and crash-recovery gates now run in security-gate.
           for script in \
-            scripts/p0-acceptance.sh \
-            scripts/p0-crash-recovery.sh \
             scripts/p1-policy-acceptance.sh \
             scripts/p3-approval-acceptance.sh \
             scripts/p1-streaming-sealing.sh \
