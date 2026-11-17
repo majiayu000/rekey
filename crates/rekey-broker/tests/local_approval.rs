@@ -52,7 +52,7 @@ impl Fixture {
             &broker,
             serde_json::json!({
                 "format_version": 8, "version": 1, "expires_at_ms": 4_102_444_800_000_i64,
-                "approvers": [], "connections":[], "ssh_keys":[], "profiles": [], "workload_identities": [],
+                "approvers": [], "connections":[], "ssh_keys":[], "profiles": [], "workload_identities": [], "derived_credentials": [],
                 "bindings": [{"action_id": action, "version": version,
                     "resource": {"type": "test-action", "id": action},
                     "parameter_schema_id": "test-any-json/v1", "parameter_schema": {}}],
@@ -285,32 +285,30 @@ async fn decision_requires_presence_matching_review_and_request_context() {
     let id = f.pending(b"{}").await;
     let review = f.review(id).await;
     let hash = review.ok()["review_sha256"].as_str().unwrap();
-    for kind in [ProofKind::Password, ProofKind::Recovery] {
-        assert_eq!(
-            f.decide(
-                admin_msg::APPROVAL_LOCAL_APPROVE,
-                id,
-                hash,
-                kind,
-                common::PASSWORD
-            )
-            .await
-            .err_code(),
-            "INVALID_FRAME"
-        );
-    }
+    // Recovery is never an approval proof; the wire refuses it before the Authority.
     assert_eq!(
         f.decide(
             admin_msg::APPROVAL_LOCAL_APPROVE,
             id,
             hash,
-            ProofKind::Presence,
-            b"bad"
+            ProofKind::Recovery,
+            common::PASSWORD
         )
         .await
         .err_code(),
-        "INVALID_UNLOCK_CREDENTIAL"
+        "INVALID_FRAME"
     );
+    for (kind, proof) in [
+        (ProofKind::Password, b"incorrect".as_slice()),
+        (ProofKind::Presence, b"bad".as_slice()),
+    ] {
+        assert_eq!(
+            f.decide(admin_msg::APPROVAL_LOCAL_APPROVE, id, hash, kind, proof)
+                .await
+                .err_code(),
+            "INVALID_UNLOCK_CREDENTIAL"
+        );
+    }
     assert_eq!(
         f.decide(
             admin_msg::APPROVAL_LOCAL_APPROVE,
@@ -324,6 +322,28 @@ async fn decision_requires_presence_matching_review_and_request_context() {
         "REQUEST_DENIED"
     );
     assert_eq!(f.review(id).await.ok()["state"], "pending");
+    // Since 2026-10-22 the vault Password (basic-mode CLI) also approves.
+    assert_eq!(
+        f.decide(
+            admin_msg::APPROVAL_LOCAL_APPROVE,
+            id,
+            hash,
+            ProofKind::Password,
+            common::PASSWORD
+        )
+        .await
+        .ok()["state"],
+        "approved"
+    );
+    let db = rusqlite::Connection::open(rekey_vault::paths::vault_db(&f.broker.state_dir)).unwrap();
+    let reason: String = db
+        .query_row(
+            "SELECT reason_code FROM audit_events WHERE event_type='approval.approved'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(reason, "local-password");
     f.approve(id).await;
     assert_eq!(
         f.execute(Some(id), br#"{"changed":true}"#).await.err_code(),
