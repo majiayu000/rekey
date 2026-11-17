@@ -1,6 +1,7 @@
-#![cfg(feature = "lab")]
 //! Actual CLI + Broker rollback confirmation and offline inspect/restore.
 //! Synthetic vault only: no system Keychain, profile or real credentials.
+//! The first case uses only default commands and opcodes; the second needs
+//! a lab capability session.
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -30,6 +31,7 @@ async fn cli(state: &Path, args: &[&str], proof: &[u8]) -> Output {
             .arg("--state-dir")
             .arg(state)
             .args(args)
+            .env("REKEY_OUTPUT", "json")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -61,11 +63,10 @@ fn error(output: Output, code: &str) {
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
     let stderr = String::from_utf8(output.stderr).unwrap();
-    let error_line = stderr.lines().find(|line| line.starts_with("error ["));
-    assert!(
-        error_line.is_some_and(|line| line.starts_with(&format!("error [{code}]: "))),
-        "{stderr}"
-    );
+    // JSON output mode writes exactly one error envelope to stderr.
+    let envelope: Value = serde_json::from_str(stderr.trim())
+        .unwrap_or_else(|error| panic!("stderr is not one JSON envelope ({error}): {stderr}"));
+    assert_eq!(envelope["code"], code, "{stderr}");
 }
 fn database_bytes(state: &Path) -> Vec<Option<Vec<u8>>> {
     ["vault.sqlite3", "vault.sqlite3-wal"]
@@ -231,6 +232,7 @@ async fn actual_cli_requires_separate_confirmation_and_restores_at_a_new_generat
     let _ = broker.shutdown_keep_dir().await;
 }
 
+#[cfg(feature = "lab")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ordinary_mutation_rollback_revokes_existing_session_before_error_reply() {
     use rekey_integration::harness::{

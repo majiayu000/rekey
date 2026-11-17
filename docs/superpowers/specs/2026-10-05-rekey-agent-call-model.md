@@ -638,6 +638,8 @@ GitHub App 的根载荷为 `github-app-root-v1`（CredentialKind `github-app-ins
 
 现有 P0、fuzz、性能门槛全部保留；新增 fuzz 目标：规则路径匹配器、dotenv 解析器、SSH agent 协议解析器。 性能夹具必须使用签名 Connection 和无令牌 CALL，保留生产 KDF、Authority 队列/IPC 容量、500 次审计、4 MiB 密封、备份干扰、锁定/关停和 soak；旧 capability 的每 Session 四 permit 指标随该模型作废，该 UDS 性能夹具测量实际 IPC 请求处理器容量。默认 CI 必须实际执行测试并生成本次报告，不能将 lab 条件下的零测试视为通过。
 
+（2026-11-17 修订）只依赖默认操作码或命令的用例不得放在 lab 门控文件里：真实 socket 上锁定与解锁两态的 A2 `SHUTDOWN` 证明、默认入口拒绝 lab 线协议入口及 §11 所列 Profile/会话操作码（`crates/rekey-broker/tests/default_admin_ipc.rs`），以及 `rollback-confirm` 与离线恢复的 CLI/IPC 端到端（`tests/rollback_cli.rs` 首个用例，按 stderr JSON 信封的 `code` 断言）由默认 `cargo test --workspace` 执行。需要 lab capability 会话的用例留在 lab。
+
 ---
 
 ## 13. 企业演进（只定映射）
