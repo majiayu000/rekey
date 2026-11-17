@@ -611,6 +611,8 @@ GitHub App 的根载荷为 `github-app-root-v1`（CredentialKind `github-app-ins
 
 **删除原则**：被取代的代码直接删除，不保留兼容开关（沿用"不向后兼容"）。删除行数必须写进每个里程碑的报告。
 
+**（2026-11-17 修订）默认构建不编入 Profile 会话。** 上表第一行属于 lab 储备的代码保留在 lab，不进默认构建：`ipc/owner.rs`、`ipc/admin/profile.rs`、`runtime/profile/{issue,inventory}.rs`、`session/profile.rs` 及其分派只在 `--features lab` 下编译，默认构建没有运行时开关。默认 daemon 对 admin 58 `PROFILE_GET`、59 `PROFILE_SESSION_CREATE`、12 `SESSION_CREATE`、13 `SESSION_REVOKE` 与 agent 8 `PROFILE_INVENTORY` 一律返回 `INVALID_FRAME`，锁定与解锁状态相同，在取得协调锁、访问 Authority 或写审计之前拒绝。签名 policy8 快照中的 `profiles` 仍按原规则在激活时校验，格式不变。admin 60 沿用历史常量名 `PROFILE_LIST`，自 0.4 起是默认的 Connection 列表（`rekey connection list` 与 App 使用），不是 Profile 接口，继续可用。
+
 ---
 
 ## 12. 验收矩阵

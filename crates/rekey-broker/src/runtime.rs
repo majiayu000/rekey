@@ -39,7 +39,6 @@ mod derived;
 mod gateway;
 pub(crate) mod local_calls;
 pub(crate) mod profile;
-mod profile_inventory;
 mod shutdown;
 #[cfg(feature = "lab")]
 mod workload;

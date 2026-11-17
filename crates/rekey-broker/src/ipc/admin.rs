@@ -37,6 +37,7 @@ mod audit_query;
 mod credential_profiles;
 mod github;
 mod password_lifecycle;
+#[cfg(feature = "lab")]
 mod profile;
 #[cfg(feature = "lab")]
 mod vault_kv;
@@ -218,7 +219,14 @@ pub async fn handle_admin_conn(
                 return;
             }
         };
-        let request_permit = match Arc::clone(&ctx.sessions.admin_requests).try_acquire_owned() {
+        // Lab-only Profile control connection; the default build refuses opcode
+        // 59 in dispatch_operation before any coordinator, Authority or audit.
+        #[cfg(feature = "lab")]
+        if frame.header.message_type == admin_msg::PROFILE_SESSION_CREATE {
+            profile::handle_control(stream, frame, ctx, shutdown).await;
+            return;
+        }
+        let _request_permit = match Arc::clone(&ctx.sessions.admin_requests).try_acquire_owned() {
             Ok(permit) => permit,
             Err(_) => {
                 let error = BrokerError::Admission(AuthorityError::AuthorityBusy);
@@ -232,24 +240,6 @@ pub async fn handle_admin_conn(
                 return;
             }
         };
-        if frame.header.message_type == admin_msg::PROFILE_SESSION_CREATE {
-            let control_owner = match ctx.sessions.reserve_control_owner() {
-                Ok(owner) => owner,
-                Err(error) => {
-                    let _ = write_admin_error(
-                        &mut stream,
-                        frame.header.message_type,
-                        frame.header.request_id,
-                        &BrokerError::Admission(error),
-                    )
-                    .await;
-                    return;
-                }
-            };
-            profile::handle_control(stream, frame, ctx, shutdown, request_permit, control_owner)
-                .await;
-            return;
-        }
         let request_id = frame.header.request_id;
         let is_shutdown = frame.header.message_type == admin_msg::SHUTDOWN;
         #[cfg(feature = "lab")]
@@ -1038,6 +1028,7 @@ async fn dispatch_operation(
             let response = ctx.profile_list_until(request_deadline).await?;
             Ok((b"{}".to_vec(), Zeroizing::new(json(&response)?)))
         }
+        #[cfg(feature = "lab")]
         admin_msg::PROFILE_GET => {
             if !frame.body.is_empty() {
                 return Err(ipc::FrameError::InvalidField.into());
