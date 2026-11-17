@@ -128,7 +128,7 @@ App 运行时（包括窗口关闭、界面锁定或在后台）每 15 秒检查
 
 ## 本机 HTTP 与 SDK
 
-服务默认监听 `127.0.0.1:7787`；实际端口见所选保险库的 `service.json`。每个保险库各用一个端口：端口已被另一个保险库或程序占用时，服务不会启动，`rekeyd` 报 `SERVICE_PORT_IN_USE` 并给出被占用的端口；在该保险库目录的 `service.json` 写入空闲端口（如 `{"port":7788}`，权限 0600）后重新启动，并相应修改 SDK 的 base URL。路由是 `/c/CONNECTION/UPSTREAM_PATH`。占位头必须是 `Authorization: Bearer rekey` 或 `x-api-key: rekey`；真实 Key 会被拒绝，不会转发。浏览器 Origin、异常 Host 和不允许的请求形态会被拒绝。
+服务默认监听 `127.0.0.1:7787`；实际端口见所选保险库的 `service.json`。每个保险库各用一个端口：端口已被另一个保险库或程序占用时，服务不会启动，`rekeyd` 报 `SERVICE_PORT_IN_USE` 并给出被占用的端口，0.5 开发版 App 会弹出“本机服务端口已被占用”，显示端口和该保险库 `service.json` 的完整路径；在该保险库目录的 `service.json` 写入空闲端口（如 `{"port":7788}`，权限 0600）后点“重试”或重新启动，并相应修改 SDK 的 base URL。App 不会自己改端口。路由是 `/c/CONNECTION/UPSTREAM_PATH`。占位头必须是 `Authorization: Bearer rekey` 或 `x-api-key: rekey`；真实 Key 会被拒绝，不会转发。浏览器 Origin、异常 Host 和不允许的请求形态会被拒绝。
 
 ```bash
 curl -H 'Authorization: Bearer rekey' \
@@ -216,6 +216,20 @@ rekey shutdown
 ```
 
 锁定立即终止本机授权和审批窗口。关闭 App 不等于停止 daemon。`shutdown` 和备份等写操作需要新的逐次证明。备份、恢复、磁盘故障和格式升级的具体步骤见[运维手册](operations-runbook.md)。公开安装包、真实设备验收和发布状态见[候选发布说明](releases/v0.4.0-alpha.1.md)。
+
+### 0.5 开发候选：状态标签与启动失败
+
+`rekey status` 的 `protection_level` 是当前保护等级：锁定且没有会话为 `L0`，解锁为 `L1-dev`，未知或故障为 `null`。`peer_security` 只说明服务签名是否已校验（`verified_signature` / `unverified`），不是等级。
+
+服务启动失败时，`rekeyd` 在该保险库目录留下 `startup-failure.json`：错误码、修复提示、被占用的端口和时间，不含密钥，启动成功后自动删除。App 连接失败并尝试启动服务后只读取这份记录，按原因提示：
+
+- 端口被占用：按上文修改 `service.json` 后点“重试”。
+- `UNSUPPORTED_VAULT_LAYOUT` / `UNSUPPORTED_FORMAT_VERSION`：目录来自其他版本线（例如 0.4）。保留旧目录和备份，在左侧“个人工作区”选择一个新的空目录，创建保险库后重新添加密钥。App 不读取、迁移或覆盖旧库；恢复旧备份时给出同样的提示。
+- 其他错误：显示错误码，修正后重试。
+
+目录权限过宽等在服务拿到锁之前发生的失败不会留下记录，App 显示服务退出时的原始输出；终端里可直接运行 `rekeyd serve` 查看。
+
+保存短于 16 字节的凭据时，CLI 和 App 会提示：结果遮蔽对这类密钥的嵌入编码检测有限，建议改用服务商提供的完整密钥。保存本身照常完成。
 
 ### 0.5 开发候选：管理界面锁定
 

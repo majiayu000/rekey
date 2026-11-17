@@ -2,6 +2,7 @@ import Foundation
 import Darwin
 import CryptoKit
 import LocalAuthentication
+import SQLite3
 
 // Uses the production App's CLI, Connection and policy models. The software test
 // signer proves Swift/Rust interoperability; it does not attest Secure Enclave.
@@ -16,6 +17,7 @@ struct ConnectionUIContract {
         if CommandLine.arguments == [CommandLine.arguments[0], "--privacy-only"] {
             try await privacy()
             try await requestAlerts()
+            try await startupRecords()
             return
         }
         if CommandLine.arguments == [CommandLine.arguments[0], "--startup-only"] {
@@ -28,6 +30,7 @@ struct ConnectionUIContract {
         try subprocessBoundary()
         try await privacy()
         try await requestAlerts()
+        try await startupRecords()
         try await live(binary: URL(fileURLWithPath: CommandLine.arguments[1]))
     }
 
@@ -138,7 +141,7 @@ struct ConnectionUIContract {
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
         let state = root.appendingPathComponent("state").path
         let model = AppModel(stateDirectory: state, preferences: preferences, binary: executable)
-        model.status = ServiceStatus(state: "unlocked", format_version: 27, runtime_version: "0.5.0-alpha.1", sessions_active: 1, peer_security: "same-user", lab_enabled: false, rollback: nil)
+        model.status = ServiceStatus(state: "unlocked", format_version: 27, runtime_version: "0.5.0-alpha.1", sessions_active: 1, peer_security: "unverified", protection_level: "L1-dev", lab_enabled: false, rollback: nil)
         let client = CLI(binary: executable, stateDirectory: state)
         func login() async { await model.perform(Operation(title: "login", detail: "synthetic", arguments: ["unlock"]), proof: "synthetic-proof", presenceRevision: model.nativeFlowRevision, client: client) }
         func settled() async throws {
@@ -301,6 +304,127 @@ struct ConnectionUIContract {
         print("PASS: background request alerts, persisted notification choice, static alert text and Dock badge fallback.")
     }
 
+    // Synthetic startup-failure records, CLI JSON diagnostics and status labels;
+    // no vault is created or read here.
+    @MainActor
+    static func startupRecords() async throws {
+        let root = try fixture()
+        let suite = "rekey.startup-records-test." + UUID().uuidString
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { preferences.removePersistentDomain(forName: suite); cleanup(root) }
+        let state = root.appendingPathComponent("state")
+        try FileManager.default.createDirectory(at: state, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        let attempt = Date(), file = state.appendingPathComponent(StartupFailure.fileName)
+        let fresh = Int64(attempt.timeIntervalSince1970 * 1000) + 1
+        func write(_ object: [String: Any], mode: Int = 0o600) throws {
+            if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
+            try writePrivateNew(JSONSerialization.data(withJSONObject: object), to: file)
+            try FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: file.path)
+        }
+        func record() -> StartupFailure? { StartupFailure.read(stateDirectory: state.path, notBefore: attempt) }
+        let port: [String: Any] = ["code": "SERVICE_PORT_IN_USE", "message": "the local HTTP service port is already in use", "next": "Write a free port to service.json", "port": 7787, "at_ms": fresh]
+        try write(port)
+        let conflict = record()
+        try require(conflict?.kind == .portInUse(7787) && conflict!.detail.contains("7787") && conflict!.detail.contains(state.appendingPathComponent("service.json").path), "port conflict alert names the port and the exact service.json fix")
+        try require(StartupFailure.read(stateDirectory: state.path, notBefore: attempt.addingTimeInterval(1)) == nil, "a record from an earlier start attempt is ignored")
+        try write(port, mode: 0o644)
+        try require(record() == nil, "a record readable by others is ignored")
+        try FileManager.default.removeItem(at: file)
+        let elsewhere = root.appendingPathComponent("elsewhere.json")
+        try writePrivateNew(JSONSerialization.data(withJSONObject: port), to: elsewhere)
+        try FileManager.default.createSymbolicLink(at: file, withDestinationURL: elsewhere)
+        try require(record() == nil, "a symlinked record is not followed")
+        var invalid = port; invalid["message"] = String(repeating: "x", count: 5000)
+        try write(invalid); try require(record() == nil, "an oversized record is ignored")
+        invalid = port; invalid["code"] = "service port"
+        try write(invalid); try require(record() == nil, "a malformed code is ignored")
+        invalid = port; invalid.removeValue(forKey: "at_ms")
+        try write(invalid); try require(record() == nil, "a record without a timestamp is ignored")
+        for code in ["UNSUPPORTED_VAULT_LAYOUT", "UNSUPPORTED_FORMAT_VERSION"] {
+            try write(["code": code, "message": "unsupported", "next": NSNull(), "port": NSNull(), "at_ms": fresh])
+            let failure = record()
+            try require(failure?.kind == .unsupportedFormat && failure!.detail.contains(CLI.rebuildText) && failure!.detail.contains(code), "old format shows only read-only rebuild guidance")
+        }
+        try write(["code": "STORAGE_UNAVAILABLE", "message": "storage is unavailable", "next": NSNull(), "port": NSNull(), "at_ms": fresh])
+        try require(record()?.kind == .other && record()!.summary.contains("STORAGE_UNAVAILABLE"), "other startup failures show their code")
+
+        // The dead `error [CODE]:` prefix is gone; only JSON codes select guidance.
+        let envelope = #"{"request_id":null,"code":"UNSUPPORTED_FORMAT_VERSION","message":"unsupported vault format version","next":null,"retryable":false,"approval":null}"#
+        try require(CLI.rebuildGuidance(stderr: envelope) == CLI.rebuildText, "CLI envelope code selects rebuild guidance")
+        let event = #"{"level":"ERROR","fields":{"event":"rekeyd.command_failed","code":5,"error_code":"UNSUPPORTED_VAULT_LAYOUT","message":"state directory does not contain a supported vault layout"}}"#
+        try require(CLI.rebuildGuidance(stderr: #"{"fields":{"event":"runtime.starting"}}"# + "\n" + event) == CLI.rebuildText, "rekeyd error_code selects rebuild guidance")
+        try require(CLI.rebuildGuidance(stderr: "error [UNSUPPORTED_FORMAT_VERSION]: unsupported vault format version") == nil && CLI.rebuildGuidance(stderr: #"{"code":"LOCKED"}"#) == nil, "prose and other codes select no guidance")
+        let warnings = CLIDiagnostics.warnings(Data((#"{"warnings":["SHORT_CREDENTIAL"]}"# + "\nwarning: prose\n" + #"{"warnings":["L1_DEV_UNVERIFIED_SERVICE"]}"# + "\n").utf8))
+        try require(warnings == ["SHORT_CREDENTIAL", "L1_DEV_UNVERIFIED_SERVICE"] && CLIDiagnostics.notice(warnings)?.contains("16 字节") == true && CLIDiagnostics.notice(["L1_DEV_UNVERIFIED_SERVICE"]) == nil, "warning codes come from stderr JSON lines")
+
+        func status(_ fields: [String: Any], without key: String? = nil) throws -> ServiceStatus {
+            var object: [String: Any] = ["state": "locked", "format_version": 27, "runtime_version": "0.5.0-alpha.1", "sessions_active": 0, "peer_security": "unverified", "protection_level": "L0", "lab_enabled": false, "rollback": NSNull()]
+            for (name, value) in fields { object[name] = value }
+            if let key { object.removeValue(forKey: key) }
+            return try JSONDecoder().decode(ServiceStatus.self, from: JSONSerialization.data(withJSONObject: object))
+        }
+        try require(try status([:]).protectionLabel.hasPrefix("L0 ·") && status([:]).identityLabel == "服务签名未校验", "locked shows L0 and a separate identity label")
+        let verified = try status(["state": "unlocked", "protection_level": "L1-dev", "peer_security": "verified_signature"])
+        try require(verified.protectionLabel.hasPrefix("L1-dev ·") && verified.identityLabel == "服务签名已校验", "a verified signature does not raise the L1-dev floor")
+        for fields in [["state": "faulted", "protection_level": NSNull()], ["state": "unlocked", "protection_level": "L2"]] as [[String: Any]] {
+            try require(try status(fields).protectionLabel.hasPrefix("保护状态未确认"), "an unknown or absent level claims none")
+        }
+        try rejected("status without protection_level") { _ = try status([:], without: "protection_level") }
+
+        let executable = root.appendingPathComponent("synthetic-cli")
+        let script = """
+        #!/usr/bin/python3
+        import json,sys
+        args=sys.argv[3:]
+        lines=sys.stdin.read().splitlines()
+        if args==['status']:
+            sys.stderr.write(json.dumps({'code':'IPC_UNAVAILABLE'}));sys.exit(7)
+        if args[0]=='desktop-login':sys.stdout.write('a'*64)
+        elif args[0]=='desktop-lock':print(json.dumps({'locked':True}))
+        elif args[0]=='desktop-add':
+            print(json.dumps({'id':'00000000-0000-4000-8000-00000000000'+str(len(lines[1])%10),'label':args[1],'kind':'opaque-token','state':'active','current_version':1}))
+            if len(lines[1])<16:sys.stderr.write(json.dumps({'warnings':['SHORT_CREDENTIAL']})+'\\n')
+        else:sys.exit(2)
+        """
+        try writePrivateNew(Data(script.utf8), to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        // SMAppService gives no exit status: the App waits for this attempt's record.
+        let model = AppModel(stateDirectory: state.path, preferences: preferences, binary: executable)
+        try write(port)
+        await model.awaitServiceStart(since: attempt, directory: state.path, timeout: 10)
+        try require(model.status == nil && model.startupFailure?.kind == .portInUse(7787) && model.error?.contains("service.json") == true, "a background start surfaces this attempt's port conflict")
+        model.startupFailure = nil; model.error = nil
+        await model.awaitServiceStart(since: Date().addingTimeInterval(1), directory: state.path, timeout: 0.5)
+        try require(model.startupFailure == nil && model.error == nil && model.connectionError != nil, "an earlier attempt's record is not shown as this failure")
+
+        let client = CLI(binary: executable, stateDirectory: state.path)
+        model.status = ServiceStatus(state: "unlocked", format_version: 27, runtime_version: "0.5.0-alpha.1", sessions_active: 0, peer_security: "unverified", protection_level: "L1-dev", lab_enabled: false, rollback: nil)
+        await model.perform(Operation(title: "login", detail: "synthetic", arguments: ["unlock"]), proof: "synthetic-proof", presenceRevision: model.nativeFlowRevision, client: client)
+        try require(model.desktopReady, "synthetic desktop session")
+        _ = try await model.saveAPIKey(label: "complete", secret: "synthetic-complete-key-0001", client: client)
+        try require(model.warning == nil, "a complete key raises no warning")
+        _ = try await model.saveAPIKey(label: "short", secret: "short-key", client: client)
+        try require(model.warning == CLIDiagnostics.notice(["SHORT_CREDENTIAL"]) && model.credentials.count == 2, "the App shows the CLI's short-key warning after saving")
+        model.lockDesktop()
+        let settled = Date().addingTimeInterval(10)
+        while model.pendingDesktopLocks > 0 && Date() < settled { try await Task.sleep(nanoseconds: 10_000_000) }
+        print("PASS: startup-failure record freshness/ownership/bounds, port/old-format/other alerts, JSON error and warning codes, separate level and identity labels, short-key notice.")
+    }
+
+    static func sqlite(_ file: URL, _ sql: String) throws {
+        var db: OpaquePointer?
+        defer { sqlite3_close(db) }
+        guard sqlite3_open(file.path, &db) == SQLITE_OK, sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else {
+            throw UIError(message: "fixture SQLite failed: " + String(cString: sqlite3_errmsg(db)))
+        }
+    }
+
+    /// A synthetic 0.4 layout: vault_header declares format 26 and the vault27 tables are absent.
+    static func legacyVault(_ file: URL) throws {
+        try sqlite(file, "PRAGMA journal_mode=WAL; CREATE TABLE vault_header (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), format_version INTEGER NOT NULL CHECK (format_version = 26)) STRICT; INSERT INTO vault_header VALUES (1, 26);")
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+    }
+
     @MainActor
     static func startup() async throws {
         let root = try fixture()
@@ -339,20 +463,69 @@ struct ConnectionUIContract {
         try await Task.sleep(nanoseconds: 300_000_000)
         await model.refresh(passive: true)
         try require(model.status == nil && !model.serviceIsRunning, "ordinary refresh does not restart an explicitly stopped service")
+        // A held port fails the next start: the App shows this attempt's record and the
+        // service.json fix; a retry after the fix starts the service and retires the record.
+        let serviceFile = URL(fileURLWithPath: client.stateDirectory).appendingPathComponent("service.json")
+        let record = URL(fileURLWithPath: client.stateDirectory).appendingPathComponent(StartupFailure.fileName)
+        let (occupant, held) = try occupyPort()
+        defer { close(occupant) }
+        try FileManager.default.removeItem(at: serviceFile)
+        try writePrivateNew(JSONSerialization.data(withJSONObject: ["port": held]), to: serviceFile)
+        await model.connectOnOpen()
+        // As a person reading the alert would, retry only after the launch's busy window.
+        try await waitFor("port conflict alert", model) { $0.startupFailure != nil && !$0.busy }
+        try require(model.startupFailure?.kind == .portInUse(held) && model.status == nil && model.error?.contains(serviceFile.path) == true && FileManager.default.fileExists(atPath: record.path), "a held port shows the conflict, the port and the service.json fix")
+        try FileManager.default.removeItem(at: serviceFile)
+        try writePrivateNew(JSONSerialization.data(withJSONObject: ["port": try reservePort()]), to: serviceFile)
+        await model.connectOnOpen()
+        try await waitFor("retry after the port fix", model, refreshing: true) { !$0.busy && $0.status != nil }
+        try require(model.startupFailure == nil && !FileManager.default.fileExists(atPath: record.path), "a successful retry removes the record")
+        _ = try client.run(["shutdown", "--password-stdin"], input: proof + "\n")
+        try await waitFor("explicit stop", model, refreshing: true) { !$0.serviceIsRunning }
+        // A synthetic 0.4 (vault26) directory gets read-only rebuild guidance; the App never
+        // reads, migrates or rebuilds it.
+        let legacyDirectory = root.appendingPathComponent("vault26")
+        try FileManager.default.createDirectory(at: legacyDirectory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        let legacyFile = legacyDirectory.appendingPathComponent("vault.sqlite3")
+        try legacyVault(legacyFile)
+        let original = try Data(contentsOf: legacyFile)
+        let legacy = AppModel(stateDirectory: legacyDirectory.path)
+        await legacy.connectOnOpen()
+        try await waitFor("old-format alert", legacy) { $0.startupFailure != nil }
+        try require(legacy.startupFailure?.kind == .unsupportedFormat && legacy.error?.contains(CLI.rebuildText) == true && legacy.status == nil && legacy.operation == nil && !legacy.needsSetup, "an old vault shows read-only rebuild guidance and offers no setup")
+        try require(try Data(contentsOf: legacyFile) == original, "the old vault is neither migrated nor rewritten")
+        // A failure before the serve lock (here: a group-readable directory) leaves no record;
+        // the App keeps the plain exit diagnostic.
         let malformed = root.appendingPathComponent("invalid")
         try FileManager.default.createDirectory(at: malformed, withIntermediateDirectories: false)
         try writePrivateNew(Data("synthetic-invalid-vault".utf8), to: malformed.appendingPathComponent("vault.sqlite3"))
         let invalid = AppModel(stateDirectory: malformed.path)
         await invalid.connectOnOpen()
-        try await Task.sleep(nanoseconds: 1_000_000_000)
-        try require(invalid.status == nil && invalid.error != nil, "automatic startup failure remains visible")
-        print("PASS: empty-directory setup, automatic locked startup, existing-service reuse, explicit-stop preservation and startup diagnostics.")
+        try await waitFor("startup diagnostics", invalid) { $0.error != nil }
+        try require(invalid.status == nil && invalid.startupFailure == nil && invalid.error?.hasPrefix("服务已退出") == true, "automatic startup failure remains visible")
+        print("PASS: empty-directory setup, automatic locked startup, existing-service reuse, explicit-stop preservation, port-conflict alert and retry, read-only old-format guidance and startup diagnostics.")
+    }
+
+    @MainActor
+    static func waitFor(_ label: String, _ model: AppModel, refreshing: Bool = false, _ done: (AppModel) -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(30)
+        while !done(model) {
+            guard Date() < deadline else { throw UIError(message: "FAILED: " + label + ": " + (model.error ?? model.connectionError ?? "no diagnostic")) }
+            try await Task.sleep(nanoseconds: 100_000_000)
+            if refreshing && !model.busy { await model.refresh() }
+        }
     }
 
     static func reservePort() throws -> Int {
+        let (descriptor, port) = try occupyPort()
+        close(descriptor)
+        return port
+    }
+
+    /// A listening loopback socket that holds its port until closed.
+    static func occupyPort() throws -> (Int32, Int) {
         let descriptor = socket(AF_INET, SOCK_STREAM, 0)
         guard descriptor >= 0 else { throw UIError(message: "fixture port socket failed") }
-        defer { close(descriptor) }
         var address = sockaddr_in()
         address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
         address.sin_family = sa_family_t(AF_INET)
@@ -361,12 +534,14 @@ struct ConnectionUIContract {
         let bound = withUnsafePointer(to: &address) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(descriptor, $0, length) }
         }
-        guard bound == 0 else { throw UIError(message: "fixture port bind failed") }
         let inspected = withUnsafeMutablePointer(to: &address) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(descriptor, $0, &length) }
         }
-        guard inspected == 0 else { throw UIError(message: "fixture port query failed") }
-        return Int(UInt16(bigEndian: address.sin_port))
+        guard bound == 0, inspected == 0, listen(descriptor, 1) == 0 else {
+            close(descriptor)
+            throw UIError(message: "fixture port bind failed")
+        }
+        return (descriptor, Int(UInt16(bigEndian: address.sin_port)))
     }
 
     @MainActor
@@ -393,11 +568,16 @@ struct ConnectionUIContract {
             guard Date() < deadline && broker.isRunning else { throw UIError(message: "fixture startup failed") }
             try await Task.sleep(nanoseconds: 50_000_000)
         }
-        try require(!(try client.decode(ServiceStatus.self, ["status", "--passive"])).unlocked, "daemon starts locked")
+        let lockedStatus = try client.decode(ServiceStatus.self, ["status", "--passive"])
+        try require(!lockedStatus.unlocked, "daemon starts locked")
+        // The real CLI reports the level and the identity as separate fields.
+        try require(lockedStatus.protection_level == "L0" && lockedStatus.protectionLabel.hasPrefix("L0 ·") && ["unverified", "verified_signature"].contains(lockedStatus.peer_security), "real locked status: L0 plus a separate identity label")
         try rejected("locked editing base is an error") { _ = try client.decode(ConnectionList.self, ["connection", "list"]) }
         try rejected("wrong proof rejected") { _ = try client.run(["unlock", "--password-stdin"], input: "synthetic-wrong-proof\n") }
         try await Task.sleep(nanoseconds: 1_100_000_000)
         _ = try client.run(["unlock", "--password-stdin"], input: proof + "\n")
+        let unlockedStatus = try client.decode(ServiceStatus.self, ["status", "--passive"])
+        try require(unlockedStatus.protection_level == "L1-dev" && unlockedStatus.protectionLabel.hasPrefix("L1-dev ·"), "real unlocked status: the L1-dev floor")
         let absent = try client.decode(ConnectionList.self, ["connection", "list"])
         try require(absent.connections.isEmpty && absent.ssh_keys.isEmpty && absent.derived_credentials.isEmpty && absent.policy_sha256 == nil, "explicit authenticated absent-policy base")
         let label = "UI literal $(touch " + root.appendingPathComponent("SHOULD-NOT-EXIST").path + ")"
@@ -493,6 +673,9 @@ struct ConnectionUIContract {
         // source lifecycle first so the fixture never continues a stale instance.
         _ = try client.run(["credential", "revoke", credential.id, "--password-stdin"], input: proof + "\n")
         try require(!(try client.decode(CredentialList.self, ["credential", "list"])).credentials[0].active, "real revocation")
+        let short = "UI-SHORT-KEY"
+        let (saved, warnings) = try client.runReportingWarnings(["credential", "add", "UI short", "--stdin-secrets"], input: proof + "\n" + short + "\n", redacting: [proof, short])
+        try require(try JSONDecoder().decode(Credential.self, from: saved).label == "UI short" && warnings.contains("SHORT_CREDENTIAL") && CLIDiagnostics.notice(warnings) != nil, "the real CLI reports a short key to the App instead of discarding it")
         _ = try client.run(["lock"])
         try rejected("locked mutation denied") { _ = try client.run(["credential", "add", "blocked", "--stdin-secrets"], input: proof + "\n" + first + "\n") }
         _ = try client.decode(AuditPage.self, ["audit", "list"])
@@ -502,6 +685,17 @@ struct ConnectionUIContract {
         let restoreArguments = ["restore", "--input", backup.path, "--sha256", receipt["sha256_hex"] as! String]
         let preview = try JSONDecoder().decode(RollbackContext.self, from: restored.run(restoreArguments + ["--inspect", "--password-stdin"], input: proof + "\n"))
         _ = try JSONDecoder().decode(RestoreReceipt.self, from: restored.run(restoreArguments + ["--expected-context", try preview.encodedArgument(), "--password-stdin"], input: proof + "\n"))
-        print("PASS: real Swift/CLI/Broker Connection signing, discovery, dry-run, credential lifecycle, audit and backup/restore. Software signer only; hardware acceptance remains separate.")
+        // An old backup is refused with read-only rebuild guidance; nothing is restored or rewritten.
+        let legacyBackup = root.appendingPathComponent("vault26-backup.sqlite3")
+        try legacyVault(legacyBackup)
+        let legacyBytes = try Data(contentsOf: legacyBackup)
+        let legacyHash = SHA256.hash(data: legacyBytes).map { String(format: "%02x", $0) }.joined()
+        let legacyTarget = CLI(binary: binary, stateDirectory: root.appendingPathComponent("restored-legacy").path)
+        do {
+            _ = try legacyTarget.run(["restore", "--input", legacyBackup.path, "--sha256", legacyHash, "--inspect", "--password-stdin"], input: proof + "\n", redacting: [proof])
+            throw UIError(message: "FAILED: old backup inspected")
+        } catch { try require(error.localizedDescription.contains(CLI.rebuildText), "an old backup shows the read-only rebuild guidance") }
+        try require(try Data(contentsOf: legacyBackup) == legacyBytes && !FileManager.default.fileExists(atPath: legacyTarget.stateDirectory), "the old backup is untouched and nothing is restored")
+        print("PASS: real Swift/CLI/Broker Connection signing, discovery, dry-run, credential lifecycle, audit, backup/restore, status labels, short-key warning and old-backup guidance. Software signer only; hardware acceptance remains separate.")
     }
 }

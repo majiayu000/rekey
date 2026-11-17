@@ -61,17 +61,17 @@ struct CLI: Sendable {
     }
 
     func run(_ arguments: [String], input: String = "", redacting: [String] = []) throws -> Data {
-        try execute(binary, commandArguments(arguments), input: Data(input.utf8), redacting: redacting, operation: arguments)
+        try execute(binary, commandArguments(arguments), input: Data(input.utf8), redacting: redacting, operation: arguments).stdout
     }
 
     // The signer accepts only public arguments and exact signing bytes on stdin.
     // It shares the CLI's bounded capture, timeout and clean environment boundary.
     func policySigner(_ arguments: [String], input: Data = Data()) throws -> Data {
         try execute(binary.deletingLastPathComponent().appendingPathComponent("rekey-policy-sign"), arguments,
-                    input: input, redacting: [], operation: arguments)
+                    input: input, redacting: [], operation: arguments).stdout
     }
 
-    private func execute(_ executable: URL, _ arguments: [String], input: Data, redacting: [String], operation: [String]) throws -> Data {
+    func execute(_ executable: URL, _ arguments: [String], input: Data, redacting: [String], operation: [String]) throws -> (stdout: Data, stderr: Data) {
         guard FileManager.default.isExecutableFile(atPath: executable.path) else {
             throw UIError(message: "找不到随应用安装的 rekey，请重新构建应用。")
         }
@@ -119,13 +119,7 @@ struct CLI: Sendable {
             let rebuild = Self.rebuildGuidance(stderr: detail).map { "\n" + $0 } ?? ""
             throw UIError(message: "操作未完成（\(process.terminationStatus)）\n\(detail)\(rebuild)")
         }
-        return output.data
-    }
-
-    static func rebuildGuidance(stderr: String) -> String? {
-        guard stderr.hasPrefix("error [UNSUPPORTED_FORMAT_VERSION]:") ||
-              stderr.hasPrefix("error [UNSUPPORTED_VAULT_LAYOUT]:") else { return nil }
-        return "此版本无法读取这个格式，不提供迁移。请保留原工作区和备份，在左侧“个人工作区”中选择一个新建的空目录，再创建保险库并重新添加密钥。不要覆盖或清空旧目录；本次操作不会自动重建。"
+        return (output.data, errors.data)
     }
 
     func decode<T: Decodable>(_ type: T.Type, _ arguments: [String]) throws -> T {
@@ -171,51 +165,6 @@ private final class OutputCapture: @unchecked Sendable {
     }
 }
 
-struct ServiceStatus: Decodable {
-    let state: String
-    let format_version: Int
-    let runtime_version: String
-    let sessions_active: Int
-    let peer_security: String
-    let lab_enabled: Bool
-    let rollback: RollbackContext?
-    var identityLabel: String {
-        peer_security == "verified_signature" ? "服务签名已校验" : "服务签名未校验"
-    }
-    var protectionLabel: String {
-        switch state {
-        case "locked" where sessions_active == 0: return "L0 · Agent 访问已锁定"
-        case "unlocked": return "L1-dev · 已确认的保护下限"
-        default: return "保护状态未确认 · 禁止执行"
-        }
-    }
-    var protectionDetail: String {
-        "L0 表示只保存凭据。L1-dev 表示 Agent 接口不返回密钥；当前构建的钥匙串访问和同用户内存隔离仍待设备验收，服务签名通过也不宣称 L1。同用户调用方可伪造标注；调用方规则只能收紧，不能扩大已签署权限。"
-    }
-    var unlocked: Bool { state == "unlocked" }
-    var label: String {
-        switch state {
-        case "unlocked": return "已解锁"
-        case "locked": return "已锁定"
-        case "faulted": return "服务故障"
-        case "rollback-suspected": return "疑似回滚 · 需明确确认"
-        default: return "状态：" + state
-        }
-    }
-}
-extension ServiceStatus {
-    private enum CodingKeys: String, CodingKey { case state, format_version, runtime_version, sessions_active, peer_security, lab_enabled, rollback }
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        state = try c.decode(String.self, forKey: .state)
-        format_version = try c.decode(Int.self, forKey: .format_version)
-        runtime_version = try c.decode(String.self, forKey: .runtime_version)
-        sessions_active = try c.decode(Int.self, forKey: .sessions_active)
-        peer_security = try c.decode(String.self, forKey: .peer_security)
-        lab_enabled = try c.decode(Bool.self, forKey: .lab_enabled)
-        rollback = try c.decode(RollbackContext?.self, forKey: .rollback)
-    }
-}
 struct RollbackContext: Codable, Equatable, Sendable {
     let vault_id: UUID
     let source_generation: UInt64
@@ -1116,7 +1065,9 @@ final class AppModel: ObservableObject {
     } }
     @Published var busy = false
     @Published var error: String?
+    @Published var warning: String?
     @Published var connectionError: String?
+    @Published var startupFailure: StartupFailure?
     @Published var operation: Operation?
     @Published var result: ResultMessage?
     @Published var oidcProfileFile: String?
@@ -1502,7 +1453,7 @@ final class AppModel: ObservableObject {
         guard acceptsRecoveryCompletion(revision, workspace: workspace), status?.rollback == expected else { throw UIError(message: "回滚确认结果未展示；提交可能已完成，请检查状态，勿自动重试。") }
         struct Receipt: Decodable { let locked: Bool }
         guard try JSONDecoder().decode(Receipt.self, from: data).locked, let prior = status else { throw UIError(message: "确认回执未表明锁定状态，请检查服务，勿自动重试。") }
-        status = ServiceStatus(state: "locked", format_version: prior.format_version, runtime_version: prior.runtime_version, sessions_active: 0, peer_security: prior.peer_security, lab_enabled: prior.lab_enabled, rollback: nil)
+        status = ServiceStatus(state: "locked", format_version: prior.format_version, runtime_version: prior.runtime_version, sessions_active: 0, peer_security: prior.peer_security, protection_level: "L0", lab_enabled: prior.lab_enabled, rollback: nil)
         clearCache()
         result = ResultMessage(title: "回滚快照已确认 · 保持锁定", text: "历史上限未降低。请另行执行普通解锁；本次确认没有提供密钥使用权限。")
     }
@@ -1549,10 +1500,10 @@ final class AppModel: ObservableObject {
         guard !busy else { throw UIError(message: "当前操作尚未完成，未保存凭据。") }
         busy = true; defer { busy = false }
         let client = injectedClient ?? cli, revision = nativeFlowRevision
-        let data = try await Task.detached { try client.run(["desktop-add", label], input: token + "\n" + secret + "\n", redacting: [token, secret]) }.value
+        let (data, warnings) = try await Task.detached { try client.runReportingWarnings(["desktop-add", label], input: token + "\n" + secret + "\n", redacting: [token, secret]) }.value
         guard acceptsNativeCompletion(revision, workspace: client.stateDirectory), !Task.isCancelled else { throw UIError(message: "上下文已改变，请检查已保存凭据，勿自动重试。") }
         let credential = try JSONDecoder().decode(Credential.self, from: data)
-        credentials.removeAll { $0.id == credential.id }; credentials.append(credential)
+        credentials.removeAll { $0.id == credential.id }; credentials.append(credential); warning = CLIDiagnostics.notice(warnings) ?? warning
         return credential
     }
     func addAPIKey(label: String, secret: String) async -> Bool {
@@ -1834,18 +1785,19 @@ final class AppModel: ObservableObject {
     }
     func startService() {
         guard !busy else { return }
-        error = nil
+        error = nil; startupFailure = nil
         if managesBackgroundService {
             guard !needsSetup else { beginSetup(); return }
             busy = true; error = nil
+            let attempt = Date(), directory = stateDirectory
             Task {
                 do {
                     try await BackgroundService.start()
                     busy = false
-                    await refresh()
+                    await awaitServiceStart(since: attempt, directory: directory)
                     if status != nil { await requestNotificationsIfUndecided() }
                     if backgroundServiceNeedsApproval { error = BackgroundService.statusDescription }
-                } catch { busy = false; self.error = error.localizedDescription }
+                } catch { busy = false; self.error = error.localizedDescription; showStartupFailure(in: directory, since: attempt) }
             }
             return
         }
@@ -1863,6 +1815,7 @@ final class AppModel: ObservableObject {
         child.standardOutput = FileHandle.nullDevice
         let errors = Pipe()
         child.standardError = errors
+        let launchedAt = Date()
         do {
             try child.run()
             launchedService = child
@@ -1876,7 +1829,7 @@ final class AppModel: ObservableObject {
                 errors.fileHandleForReading.readabilityHandler = nil
                 Task { @MainActor [weak self] in
                     guard let self, self.stateDirectory == serviceDirectory else { return }
-                    if process.terminationStatus != 0 { self.error = "服务已退出。\n" + captured.text }
+                    if process.terminationStatus != 0 { self.showStartupFailure(in: serviceDirectory, since: launchedAt, exited: captured.text) }
                     await self.refresh()
                 }
             }
@@ -2460,10 +2413,10 @@ extension AppModel {
         guard !busy,unlocked else{throw UIError(message:"请先解锁并等待当前操作完成。")}
         busy=true;defer{busy=false};let client=cli,revision=nativeFlowRevision
         let (proof,_)=try await readPresenceProof(client:client,revision:revision)
-        let data=try await Task.detached{try client.run(["credential","add",label,"--kind",kind,"--stdin-secrets","--presence"],input:proof+"\n"+secret+"\n",redacting:[proof,secret])}.value
+        let (data,warnings)=try await Task.detached{try client.runReportingWarnings(["credential","add",label,"--kind",kind,"--stdin-secrets","--presence"],input:proof+"\n"+secret+"\n",redacting:[proof,secret])}.value
         guard acceptsNativeCompletion(revision,workspace:client.stateDirectory),!Task.isCancelled else{throw UIError(message:"上下文已改变，请检查已保存凭据，勿自动重试。")}
         let credential=try JSONDecoder().decode(Credential.self,from:data)
-        credentials.append(credential)
+        credentials.append(credential);warning=CLIDiagnostics.notice(warnings) ?? warning
         return credential
     }
     func beginOAuth(_ connection:String,redirectURI:String) async throws -> OAuthLoginResult {

@@ -69,6 +69,14 @@ struct RootView: View {
                             Button { model.error = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain)
                         }.foregroundStyle(Color.red).padding(14).background(Color.red.opacity(0.05)).padding(.horizontal, 28).padding(.bottom, 16)
                     }
+                    if let warning = model.warning {
+                        HStack(alignment: .top) {
+                            Image(systemName: "exclamationmark.triangle")
+                            Text(warning).font(.system(size: 12)).textSelection(.enabled)
+                            Spacer()
+                            Button { model.warning = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain)
+                        }.foregroundStyle(Color.orange).padding(14).background(Color.orange.opacity(0.06)).padding(.horizontal, 28).padding(.bottom, 16)
+                    }
                     if model.status?.state == "rollback-suspected", model.page != .backup, model.page != .settings {
                         locked
                     } else if model.desktopLocked, model.status != nil, model.page != .settings, model.page != .backup {
@@ -124,6 +132,19 @@ struct RootView: View {
         .sheet(item: $model.approvalDetails) { ApprovalDetailView(details: $0).environmentObject(model) }
         .sheet(item: $model.localApprovalDetails) { _ in LocalApprovalView().environmentObject(model) }
         .sheet(item:$activityDetail){ActivityRecentView(row:$0).environmentObject(model)}
+        .alert(model.startupFailure?.title ?? "", isPresented: startupAlert, presenting: model.startupFailure) { failure in
+            // Guidance only: the App never edits service.json, reads the vault or rebuilds it.
+            switch failure.kind {
+            case .portInUse: Button("在 Finder 中显示 service.json") { failure.revealServiceFile() }
+            case .unsupportedFormat: Button("选择新的空目录") { if let url = chooseFile(directory: true) { model.changeDirectory(url.path) } }
+            case .other: EmptyView()
+            }
+            if failure.kind != .unsupportedFormat { Button("重试") { Task { await model.connectOnOpen() } } }
+            Button("关闭", role: .cancel) {}
+        } message: { failure in Text(failure.detail) }
+    }
+    private var startupAlert: Binding<Bool> {
+        Binding(get: { model.startupFailure != nil }, set: { if !$0 { model.startupFailure = nil } })
     }
 
     private var sidebar: some View {

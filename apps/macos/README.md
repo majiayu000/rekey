@@ -77,7 +77,7 @@ target/release/rekey-approval-sign --help
 cargo check --workspace
 xcrun swiftc -warnings-as-errors -swift-version 5 -O \
   -framework SwiftUI -framework AppKit -framework ServiceManagement \
-  apps/macos/BackgroundService.swift apps/macos/PolicySigning.swift apps/macos/PresenceKey.swift apps/macos/Model.swift apps/macos/Updater.swift scripts/test-macos-ui.swift -o /tmp/rekey-ui-contract
+  apps/macos/BackgroundService.swift apps/macos/PolicySigning.swift apps/macos/PresenceKey.swift apps/macos/Model.swift apps/macos/ServiceStartup.swift apps/macos/Updater.swift scripts/test-macos-ui.swift -o /tmp/rekey-ui-contract
 /tmp/rekey-ui-contract target/macos-ui/Rekey.app/Contents/Resources/bin/rekey
 ```
 
@@ -90,7 +90,7 @@ ln -s "$PWD/target/macos-ui/Rekey.app/Contents/Resources" /tmp/RekeyStartupContr
 /tmp/RekeyStartupContract.app/Contents/MacOS/RekeyStartupContract --startup-only
 ```
 
-覆盖空目录不自动初始化、保存恢复密钥后连接、已有保险库自动启动并保持锁定、复用已运行服务、显式停止后普通刷新不重启，以及启动失败诊断。CI 同样执行此检查。
+覆盖空目录不自动初始化、保存恢复密钥后连接、已有保险库自动启动并保持锁定、复用已运行服务、显式停止后普通刷新不重启、端口被占用时按启动失败记录报警并在修正后重试、合成 vault26 目录只显示重建引导且旧库字节不变，以及没有记录时的启动失败诊断。CI 同样执行此检查。
 
 连接 UI 软件契约检查：
 
@@ -98,7 +98,7 @@ ln -s "$PWD/target/macos-ui/Rekey.app/Contents/Resources" /tmp/RekeyStartupContr
 xcrun swiftc -warnings-as-errors -swift-version 5 \
   -framework SwiftUI -framework AppKit -framework ServiceManagement \
   apps/macos/BackgroundService.swift apps/macos/PolicySigning.swift apps/macos/PresenceKey.swift \
-  apps/macos/Model.swift apps/macos/Updater.swift apps/macos/Tests/ConnectionContract.swift -o /tmp/rekey-connection-app-contract
+  apps/macos/Model.swift apps/macos/ServiceStartup.swift apps/macos/Updater.swift apps/macos/Tests/ConnectionContract.swift -o /tmp/rekey-connection-app-contract
 /tmp/rekey-connection-app-contract
 ```
 
