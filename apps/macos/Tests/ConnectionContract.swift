@@ -203,7 +203,22 @@ import CryptoKit
         var envItems=EnvImportPlan.items(envPreview)
         precondition(envItems.map(\.preset)==["github-pat","generic-bearer","generic-bearer","generic-bearer"] && envItems.allSatisfy{$0.choice == .skip} && envItems[1].unsupportedProtocol=="aws")
         envItems[0].choice = .importKey;envItems[2].choice = .nonSecret
-        precondition(EnvImportPlan.report(envItems)==["未迁移：协议不支持代理：AWS_SECRET_ACCESS_KEY（AWS 签名），原值保留。","已跳过，仍以明文留在文件中：LEGACY","已标记为非密钥，原样保留：APP_MODE"])
+        let keptReceipt=["未迁移：协议不支持代理：AWS_SECRET_ACCESS_KEY（AWS 签名），原值保留。","已跳过，仍以明文留在文件中：LEGACY","已标记为非密钥，原样保留：APP_MODE"]
+        precondition(EnvImportPlan.report(envItems,rewritten:[])==keptReceipt && EnvImportPlan.report(envItems,rewritten:["GH_BASE_URL"])==keptReceipt)
+        // An existing OPENAI_BASE_URL / ANTHROPIC_BASE_URL line is what the SDK reads, so the default keeps the
+        // name and a rewrite replaces that line in place: the review and the receipt say so, never "kept".
+        let sdkPreview=try JSONDecoder().decode(EnvPreview.self,from:Data(#"{"entries":[{"key":"OPENAI_API_KEY","preset_hint":"openai","unsupported_protocol":null},{"key":"OPENAI_BASE_URL","preset_hint":null,"unsupported_protocol":null},{"key":"ANTHROPIC_API_KEY","preset_hint":"anthropic","unsupported_protocol":null},{"key":"ANTHROPIC_BASE_URL","preset_hint":null,"unsupported_protocol":null},{"key":"DB_PASSWORD","preset_hint":null,"unsupported_protocol":"password"}],"unsupported":[{"line":7,"key":"LEGACY_URL"}]}"#.utf8))
+        var sdkItems=EnvImportPlan.items(sdkPreview);sdkItems[0].choice = .importKey;sdkItems[2].choice = .importKey;sdkItems[3].choice = .nonSecret
+        let sdkVariables=EnvImportPlan.baseURLVariables(["OPENAI_API_KEY","ANTHROPIC_API_KEY"],reserved:["LEGACY_URL","DB_PASSWORD"])
+        let sdkConnections=zip(["OPENAI_API_KEY","ANTHROPIC_API_KEY"],sdkVariables).map{EnvImportConnection(key:$0,label:$0,baseURLVariable:$1,definition:connection)}
+        precondition(sdkVariables==["OPENAI_BASE_URL","ANTHROPIC_BASE_URL"] && sdkConnections.allSatisfy{EnvImportPlan.baseURLLine($0.baseURLVariable,connections:sdkConnections,preview:sdkPreview) == .replaces})
+        precondition(EnvImportPlan.baseURLNote(.replaces,variable:"OPENAI_BASE_URL")?.contains("原值只保留在备份中") == true && EnvImportPlan.baseURLNote(.appended,variable:"SYNTHETIC_BASE_URL")==nil)
+        precondition(EnvImportPlan.report(sdkItems,rewritten:sdkVariables)==["已替换为本机服务地址，原值只保留在备份中：OPENAI_BASE_URL、ANTHROPIC_BASE_URL","未迁移：协议不支持代理：DB_PASSWORD（口令），原值保留。"])
+        precondition(EnvImportPlan.report(sdkItems,rewritten:[])==["未迁移：协议不支持代理：DB_PASSWORD（口令），原值保留。","已跳过，仍以明文留在文件中：OPENAI_BASE_URL","已标记为非密钥，原样保留：ANTHROPIC_BASE_URL"])
+        // Names the daemon refuses to write are refused before signing; a new name is appended.
+        for refused in ["OPENAI_API_KEY","DB_PASSWORD","LEGACY_URL","","1_BASE_URL","OPENAI-BASE-URL","ÄPI_BASE_URL"] {precondition(EnvImportPlan.baseURLLine(refused,connections:sdkConnections,preview:sdkPreview) == .refused,refused)}
+        let shared=sdkConnections.map{EnvImportConnection(key:$0.key,label:$0.label,baseURLVariable:"SHARED_BASE_URL",definition:$0.definition)}
+        precondition(EnvImportPlan.baseURLLine("SHARED_BASE_URL",connections:shared,preview:sdkPreview) == .refused && EnvImportPlan.baseURLLine("SYNTHETIC_BASE_URL",connections:sdkConnections,preview:sdkPreview) == .appended)
         func signedBase(_ expires:Any)throws->ConnectionList {try JSONDecoder().decode(ConnectionList.self,from:JSONSerialization.data(withJSONObject:["connections":[],"ssh_keys":[],"derived_credentials":[],"policy_sha256":expires is NSNull ? NSNull() as Any:String(repeating:"ab",count:32),"expires_at_ms":expires]))}
         let reviewTime=Date(timeIntervalSince1970:1_000_000)
         let currentBase=try signedBase(Int64(4_000_000_000_000)),lapsedBase=try signedBase(Int64(999_999_000)),absentBase=try signedBase(NSNull())

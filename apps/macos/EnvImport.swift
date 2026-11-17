@@ -56,9 +56,19 @@ extension AppModel {
 }
 
 /// Per entry (agent-call 7.3): import it, skip it (it stays a plaintext secret), or mark it
-/// as not a secret. Skipped and non-secret lines both stay unchanged; only the receipt differs.
+/// as not a secret. Skipped and non-secret lines stay unchanged unless a rewrite uses one as
+/// a base-URL variable (`EnvBaseURLLine.replaces`); otherwise only the receipt differs.
 enum EnvImportChoice: Hashable, Sendable {
     case skip, importKey, nonSecret
+}
+
+/// What a confirmed rewrite does with one base-URL variable, as the daemon decides it. A name
+/// already in the file (a skipped or non-secret entry, such as an existing OPENAI_BASE_URL) is
+/// replaced in place and its value survives only in the backup; a new name is appended. The
+/// daemon refuses a name that is not a variable name, repeats, or is an imported key, an
+/// unproxyable entry or an unsupported line.
+enum EnvBaseURLLine: Equatable, Sendable {
+    case appended, replaces, refused
 }
 
 struct EnvImportItem: Identifiable {
@@ -140,15 +150,40 @@ enum EnvImportPlan {
         }
     }
 
-    /// The receipt's account of what stays in the file and why.
-    static func report(_ items: [EnvImportItem]) -> [String] {
+    /// Mirrors the daemon's rewrite checks for one base-URL variable of `connections`.
+    static func baseURLLine(_ variable: String, connections: [EnvImportConnection], preview: EnvPreview) -> EnvBaseURLLine {
+        let letter: (UInt8) -> Bool = { $0 == 95 || (65...90).contains($0) || (97...122).contains($0) }
+        let bytes = Array(variable.utf8)
+        guard let first = bytes.first, letter(first), bytes.allSatisfy({ letter($0) || (48...57).contains($0) }),
+              connections.filter({ $0.baseURLVariable == variable }).count <= 1, !connections.contains(where: { $0.key == variable }),
+              !preview.unsupported.contains(where: { $0.key == variable }),
+              !preview.entries.contains(where: { $0.key == variable && $0.unsupported_protocol != nil }) else { return .refused }
+        return preview.entries.contains { $0.key == variable } ? .replaces : .appended
+    }
+
+    /// The review's note on one base-URL variable; a new name needs none.
+    static func baseURLNote(_ line: EnvBaseURLLine, variable: String) -> String? {
+        switch line {
+        case .appended: return nil
+        case .replaces: return "文件中已有 \(variable)：改写会把这一行换成本机服务地址，原值只保留在备份中；若它原本指向兼容服务商，请确认所选预设与之一致。要保留这一行，请改用其他变量名。"
+        case .refused: return "不能用作 base URL 变量：须是合法且不重复的变量名，且不能是导入的密钥、无法代理的项或未支持的行。"
+        }
+    }
+
+    /// The receipt's account of the lines that were not imported. `rewritten` holds the
+    /// base-URL variables of a confirmed rewrite (empty when the file was left alone); an
+    /// existing line among them was replaced, so it is reported as replaced, never as kept.
+    static func report(_ items: [EnvImportItem], rewritten: [String]) -> [String] {
+        let replaced = items.filter { $0.choice != .importKey && rewritten.contains($0.key) }.map(\.key)
+        let kept = items.filter { !replaced.contains($0.key) }
         var lines: [String] = []
-        let unproxyable = items.filter { $0.unsupportedProtocol != nil && $0.choice != .nonSecret }
+        if !replaced.isEmpty { lines.append("已替换为本机服务地址，原值只保留在备份中：" + replaced.joined(separator: "、")) }
+        let unproxyable = kept.filter { $0.unsupportedProtocol != nil && $0.choice != .nonSecret }
             .map { "\($0.key)（\(protocolLabel($0.unsupportedProtocol ?? ""))）" }
         if !unproxyable.isEmpty { lines.append("未迁移：协议不支持代理：" + unproxyable.joined(separator: "、") + "，原值保留。") }
-        let skipped = items.filter { $0.unsupportedProtocol == nil && $0.choice == .skip }.map(\.key)
+        let skipped = kept.filter { $0.unsupportedProtocol == nil && $0.choice == .skip }.map(\.key)
         if !skipped.isEmpty { lines.append("已跳过，仍以明文留在文件中：" + skipped.joined(separator: "、")) }
-        let plain = items.filter { $0.choice == .nonSecret }.map(\.key)
+        let plain = kept.filter { $0.choice == .nonSecret }.map(\.key)
         if !plain.isEmpty { lines.append("已标记为非密钥，原样保留：" + plain.joined(separator: "、")) }
         return lines
     }

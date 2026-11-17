@@ -14,7 +14,7 @@ extension ConnectionUIContract {
         try await pendingHandoff()
         try await signerPreflight()
         try await envImportReview()
-        print("PASS: four device signals lock (none when disabled), late resume/remember/login tokens are revoked, a busy-time handoff is applied once idle, the signer preflight precedes the key save, and the .env import review keeps the signed expiry and SDK base-URL variables.")
+        print("PASS: four device signals lock (none when disabled), late resume/remember/login tokens are revoked, a busy-time handoff is applied once idle, the signer preflight precedes the key save, and the .env import review keeps the signed expiry and SDK base-URL variables and reports a replaced base-URL line.")
     }
 
     /// `delay-<name>` holds that command after it touches `<name>-started`; desktop-lock
@@ -276,7 +276,8 @@ extension ConnectionUIContract {
 
     // agent-call 7.3: the import review keeps the signed base's expiry (the whole snapshot is
     // signed), derives the variables the SDKs read and prepares only entries chosen for
-    // import. Nothing is saved before the review.
+    // import; an existing base-URL line it replaces is reported as replaced. Nothing is saved
+    // before the review.
     @MainActor
     static func envImportReview() async throws {
         let (root, executable) = try flowFixture()
@@ -290,8 +291,9 @@ extension ConnectionUIContract {
         func entry(_ name: String, _ hint: String?, _ unproxyable: String?) -> [String: Any] {
             ["key": name, "preset_hint": hint ?? NSNull(), "unsupported_protocol": unproxyable ?? NSNull()]
         }
+        // The file already sets OPENAI_BASE_URL, a common layout for OpenAI-compatible providers.
         let preview: [String: Any] = ["entries": [entry("OPENAI_API_KEY", "openai", nil), entry("ANTHROPIC_AUTH_TOKEN", "anthropic", nil),
-                                                  entry("AWS_SECRET_ACCESS_KEY", nil, "aws"), entry("APP_MODE", nil, nil)], "unsupported": []]
+                                                  entry("AWS_SECRET_ACCESS_KEY", nil, "aws"), entry("APP_MODE", nil, nil), entry("OPENAI_BASE_URL", nil, nil)], "unsupported": []]
         try JSONSerialization.data(withJSONObject: preview).write(to: root.appendingPathComponent("preview.json"))
         func signedBase(expiresAt: Int64) throws {
             let base: [String: Any] = ["connections": [], "ssh_keys": [], "derived_credentials": [], "policy_sha256": String(repeating: "ab", count: 32), "expires_at_ms": expiresAt]
@@ -301,10 +303,10 @@ extension ConnectionUIContract {
         try signedBase(expiresAt: expires)
         let fetched = try await model.previewEnv(root.appendingPathComponent("project/.env").path)
         var items = EnvImportPlan.items(fetched)
-        try require(items.map(\.preset) == ["openai", "anthropic", "generic-bearer", "generic-bearer"] && items.allSatisfy { $0.choice == .skip }
+        try require(items.map(\.preset) == ["openai", "anthropic", "generic-bearer", "generic-bearer", "generic-bearer"] && items.allSatisfy { $0.choice == .skip }
                     && items[2].unsupportedProtocol == "aws", "the preview maps to loadable presets and nothing is chosen by default")
         for i in items.indices { items[i].choice = .importKey }
-        items[3].choice = .nonSecret
+        items[3].choice = .nonSecret; items[4].choice = .nonSecret
         do {
             _ = try await model.prepareEnvImport(items, preview: fetched, hardwarePublicKey: { _ in nil })
             throw UIError(message: "FAILED: a review without the signer was accepted")
@@ -313,6 +315,10 @@ extension ConnectionUIContract {
         try require(prepared.mode == .secureEnclave && prepared.expiry == Date(timeIntervalSince1970: Double(expires) / 1000), "the review keeps the signed base's expiry")
         try require(prepared.connections.map(\.key) == ["OPENAI_API_KEY", "ANTHROPIC_AUTH_TOKEN"] && prepared.connections.map(\.baseURLVariable) == ["OPENAI_BASE_URL", "ANTHROPIC_BASE_URL"]
                     && prepared.connections.map(\.definition.preset) == ["openai", "anthropic"], "SDK base-URL variables; unproxyable and non-secret entries are not prepared")
+        let lines = prepared.connections.map { EnvImportPlan.baseURLLine($0.baseURLVariable, connections: prepared.connections, preview: fetched) }
+        try require(lines == [.replaces, .appended] && EnvImportPlan.report(items, rewritten: prepared.connections.map(\.baseURLVariable))
+                    == ["已替换为本机服务地址，原值只保留在备份中：OPENAI_BASE_URL", "未迁移：协议不支持代理：AWS_SECRET_ACCESS_KEY（AWS 签名），原值保留。", "已标记为非密钥，原样保留：APP_MODE"],
+                    "the existing OPENAI_BASE_URL line is reviewed and reported as replaced, not as kept")
         try require(!FileManager.default.fileExists(atPath: root.appendingPathComponent("adds.log").path), "nothing is saved before the review")
         try signedBase(expiresAt: 1_000)
         let expired = try await model.prepareEnvImport(items, preview: fetched, hardwarePublicKey: { _ in key })

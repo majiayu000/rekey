@@ -62,10 +62,14 @@ struct EnvImportView:View {
                     Toggle("我已审阅所有连接、规则、模型及预算",isOn:$confirmed).disabled(activationAttempted)
                     Toggle("激活后替换 .env 中选中的密钥，并创建备份",isOn:$rewrite).disabled(activationAttempted)
                     if rewrite {
-                        Text("所选密钥将替换为 rekey 占位值，以下变量将指向本机服务。其余行保持原样。原文件存为 0600 备份，备份含原始密钥。").font(.caption)
-                        ForEach(prepared.indices,id:\.self){i in HStack {Text(prepared[i].key).font(.system(size:12,design:.monospaced));TextField("base URL 变量名",text:$prepared[i].baseURLVariable).textFieldStyle(.roundedBorder).disabled(activationAttempted)}}
+                        Text("所选密钥将替换为 rekey 占位值，以下变量将指向本机服务：文件中已有的同名行原位替换，原值只保留在备份中；没有的追加到末尾。其余行保持原样。原文件存为 0600 备份，备份含原始密钥。").font(.caption)
+                        ForEach(prepared.indices,id:\.self){i in
+                            HStack {Text(prepared[i].key).font(.system(size:12,design:.monospaced));TextField("base URL 变量名",text:$prepared[i].baseURLVariable).textFieldStyle(.roundedBorder).disabled(activationAttempted)}
+                            let line=EnvImportPlan.baseURLLine(prepared[i].baseURLVariable,connections:prepared,preview:preview)
+                            if let note=EnvImportPlan.baseURLNote(line,variable:prepared[i].baseURLVariable) {Text(note).font(.caption).foregroundStyle(line == .refused ? Color.red:Color.orange)}
+                        }
                     }
-                    Button(activated ? "连接已激活":"系统认证、签署并激活"){activate(draft)}.buttonStyle(PrimaryButton()).disabled(model.busy || !confirmed || activationAttempted || rewrite && prepared.contains(where:{$0.baseURLVariable.isEmpty}))
+                    Button(activated ? "连接已激活":"系统认证、签署并激活"){activate(draft)}.buttonStyle(PrimaryButton()).disabled(model.busy || !confirmed || activationAttempted || rewrite && prepared.contains(where:{EnvImportPlan.baseURLLine($0.baseURLVariable,connections:prepared,preview:preview) == .refused}))
                 } else {
                     ForEach(prepared.indices,id:\.self){i in
                         Text("变量：\(prepared[i].key) · 密钥名称：\(prepared[i].label)").font(.headline)
@@ -106,11 +110,11 @@ struct EnvImportView:View {
     }
     private func activate(_ draft:PersonalPolicyDraft){
         activationAttempted=true;message=nil;let replacements=prepared.map{EnvReplacement(key:$0.key,connection:$0.definition.name,base_url_variable:$0.baseURLVariable)};let replace=rewrite
-        let receipt=EnvImportPlan.report(items)
+        let unchanged=EnvImportPlan.report(items,rewritten:[]),replacedReceipt=EnvImportPlan.report(items,rewritten:replacements.map(\.base_url_variable))
         Task {do{
             try await model.activatePersonalPolicy(draft,proof:"",recovery:false,presence:true,sharedAuthentication:authentication);activated=true
-            if replace {let result=try await model.rewriteImported(path:path,replacements:replacements,revision:draft.revision,authentication:authentication);message=(["连接已激活，文件已替换。",EnvImportPlan.backupNotice(result)]+receipt).joined(separator:"\n")}
-            else{message=(["连接已激活；原 .env 文件保持原样。"]+receipt).joined(separator:"\n")}
+            if replace {let result=try await model.rewriteImported(path:path,replacements:replacements,revision:draft.revision,authentication:authentication);message=(["连接已激活，文件已替换。",EnvImportPlan.backupNotice(result)]+replacedReceipt).joined(separator:"\n")}
+            else{message=(["连接已激活；原 .env 文件保持原样。"]+unchanged).joined(separator:"\n")}
             authentication.invalidate();await model.refresh()
         }catch{authentication.invalidate();message=(activated ? "连接已激活，文件替换结果未确认，请检查文件与备份（备份含原始密钥）。\n":"操作结果未确认，请检查凭证与策略状态，勿重复提交。\n")+error.localizedDescription}}
     }
