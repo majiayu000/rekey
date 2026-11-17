@@ -22,6 +22,7 @@ single-port proxy, or TCP passthrough exists anymore.
   - `rg -n 'REKEY_PASSWORD|get_secret_value|/proxy/|passthrough' crates tests src` → no matches
   - `rg -n 'get_secret\b|read_secret|export_secret' crates/rekey-domain crates/rekey-broker crates/rekey-cli` → no matches
   - `cargo tree -p rekey-cli -e normal` → no rusqlite / aes-gcm / argon2 / reqwest / rekey-vault / rekey-broker / rekey-connector
+  - `cargo test -p rekey-cli --test agent_call` and `cargo test -p rekey-broker --test personal_policy` → pass (local calls carry no capability token, a CALL that adds one is rejected, and the default CLI has no session, capability or reveal command; with the grep above this is the agent-call model §16 "no capability, no get/export" check)
 
 ## Architecture
 
@@ -82,8 +83,14 @@ Cargo workspace, 7 crates + root integration-test host:
 
 ## Spec & Baselines
 
-- Active v3 specification: `docs/superpowers/specs/2026-10-02-rekey-v3-personal-first.md`
-- Implemented versus pending v3 scope: `docs/superpowers/plans/2026-10-03-v3-implementation.md`
+- Active contracts (newest overrides older on conflict):
+  - 0.5: `docs/superpowers/specs/2026-10-09-unified-experiments.md`,
+    `docs/superpowers/specs/2026-10-09-personal-desktop-security.md`,
+    `docs/superpowers/specs/2026-10-09-docker-ha-controller.md`
+  - 0.4 Agent call model: `docs/superpowers/specs/2026-10-05-rekey-agent-call-model.md`
+  - 0.3 / v3 base contract (not the active 0.5 contract): `docs/superpowers/specs/2026-10-02-rekey-v3-personal-first.md`
+- Implementation/evidence trackers: `docs/superpowers/plans/2026-10-09-experiment-integration.md`,
+  `docs/superpowers/plans/2026-10-05-agent-call-implementation.md`, `docs/superpowers/plans/2026-10-03-v3-implementation.md`
 - Historical foundation (v3 supersedes conflicting clauses): `docs/superpowers/specs/2026-08-28-credential-authority-v2-foundation.md`
 - Public technical baselines:
   - `docs/product-foundation/feature-truth-matrix.md`

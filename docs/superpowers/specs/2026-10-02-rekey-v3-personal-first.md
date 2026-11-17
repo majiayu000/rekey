@@ -213,7 +213,7 @@ A2 针对的是"拿到明文或扩大权限"。A2 能做的事被限定为两类
   - 通常接受密码、恢复密钥或 presence key。签发 7 天授权与修改密码只接受密码或恢复密钥；恢复密钥轮换沿用仅接受当前密码的合同。这三项操作不得使用 presence，避免把临时授权续期或变成永久解锁因子。
   - 已解锁时的 step-up 验证与 unlock、锁定状态的 shutdown 共用现有失败计数和指数退避；切换操作不能绕过限速。只有成功的密码或恢复密钥证明清零计数，presence 成功不清零，避免用临时 K 维持密码猜测。
   - 唯一例外是 `LOCK`，任何人都可以锁定。
-- **I4**：客户端发送密码或 presence key 之前，必须确认对端是签名的 rekeyd。L1-dev 下无法确认，CLI 在交互式秘密输入前、App 在证明输入或认证控件旁提示；自动化 CLI 在发送证明前向 stderr 提示，不改变 stdout 的数据格式。
+- **I4**：客户端发送密码或 presence key 之前，必须确认对端是签名的 rekeyd。L1-dev 下无法确认，CLI 在交互式秘密输入前、App 在证明输入或认证控件旁提示。**（2026-11-17 修订，所有者决定，记录 #87 起的行为）** 交互式 TTY CLI（stderr 是终端且未设置 `REKEY_OUTPUT=json`，或设置 `REKEY_OUTPUT=human`）在发送任何证明之前向 stderr 打印警告；JSON / 管道模式（设置 `REKEY_OUTPUT=json`，或 stderr 不是终端且未设置 `REKEY_OUTPUT=human`）不在连接时提示，而是在命令结束时于 stderr 报告 `L1_DEV_UNVERIFIED_SERVICE`（成功时为单独一行 `{"warnings":[...]}`，失败时写入错误信封的 `warnings`），此时证明可能已经发出。两种模式都不改变 stdout 的数据格式。
 - **I5**：秘密不进入 argv、env、日志、审计或 JSON 元数据。capability 进入 `rekey run` 子进程的 env 是例外，见 §8.2。
 - **I6**：出站请求只能去往 Action 或模板声明的 origin；解析结果必须是公网 IP，连接钉在该 IP 上，禁止重定向。
   DoH 只在系统 DNS 对域名只返回 `198.18.0.0/15` 虚拟地址时触发（0.5 起）。若管理员为 daemon
@@ -364,7 +364,7 @@ A2 针对的是"拿到明文或扩大权限"。A2 能做的事被限定为两类
 
 Profile 会话签发的“管理会话”专指 daemon 当前已认证的 Unlocked 生命周期：与 §3.2 已允许的 A2 能力一致，只能按已激活签名 Profile 的固定范围签发，不要求新 CLI 从 App 取得或落盘管理 token。该窄入口不允许添加凭据或执行 A2；添加凭据仍需原有独立内存管理 token。Locked/过期/不存在的 Profile 返回错误，不触发后台认证。
 
-**修复 S2**：`SHUTDOWN` 在任何状态下都属于 A2。
+**修复 S2**：`SHUTDOWN` 在任何状态下都属于 A2，需要新的有效证明。**唯一例外（2026-11-17 所有者决定）**：Authority 已处于 Faulted 时不再校验证明：故障 Authority 以错误拒绝的任何管理请求（包括无需证明的 `LOCK` 和带任意证明的 `SHUTDOWN`）都会触发既有的故障停机（fail-stop），状态查询仍返回 `faulted`。同用户进程本来就能直接结束 daemon，此例外不让 A2 得到停机之外的能力；行为见 `crates/rekey-vault/tests/lifecycle_contract.rs` 的 `admin_shutdown_proof_fails_closed_on_faulted_worker` 与 `crates/rekey-broker/src/runtime/shutdown.rs`。
 
 step-up 授权与解密材料分开：`presence` 只在当前已解锁且本次运行已建立有效 verifier 时可用。
 锁定状态的 shutdown 仍需 password/recovery；离线 restore 仍需源备份的解密因子，VRK 轮换仍需密码与恢复密钥重包新根。
@@ -844,7 +844,7 @@ macOS pkg 的功能验收只使用实际安装的原生工具；归档专用 Pyt
 - 不删除已经通过验收的代码。
 - 不进入 v3 的能力移入 `lab` cargo feature：
   - 不进入默认构建、发布包和首页文档；
-  - 测试保留，CI 每周运行一次。
+  - 测试代码保留。**（2026-11-17 所有者决定）** lab 储备的 CI 每周只做 `--features lab` 的编译、Clippy 和归档脚本语法检查，不运行 lab 运行时测试，也不把它们当作通过证据（`.github/workflows/lab-weekly.yml`）。
 - 此处隔离实际执行、网络访问、命令入口和可选依赖；共享的纯模型、wire 编码及已有存储 schema 保留，避免仅为 feature 隔离改变 vault 格式。默认入口必须拒绝 `lab` 专属操作。
 - `lab` 是企业阶段的**储备**，不是废弃区。v4 时按 §12 的映射逐项重新评估、启用。
 

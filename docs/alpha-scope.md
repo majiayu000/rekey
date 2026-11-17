@@ -38,6 +38,6 @@ Rekey 保存密钥，提供 CLI、MCP、本机 HTTP 和 SSH agent。Agent 自行
 
 ## Lab 与历史材料
 
-旧 Agent Profile、`rekey run`、本机 capability、Seatbelt / netns 启动器和机构控制面不属于默认个人操作。保留代码只作为 `--features lab` 的企业储备；[lab CI](../.github/workflows/lab-weekly.yml)检查编译与归档脚本语法，明确不声称旧运行时夹具通过。
+旧 Agent Profile、`rekey run`、本机 capability、Seatbelt / netns 启动器和机构控制面不属于默认个人操作。保留代码只作为 `--features lab` 的企业储备；[lab CI](../.github/workflows/lab-weekly.yml)每周只做 `--features lab` 的编译、Clippy 和归档脚本语法检查，不运行 lab 运行时测试，也不声称旧运行时夹具通过。
 
 旧 0.3 的发布记录、验收 JSON 与安全审查属于历史证据，不为 0.4 新格式、新 App 或新调用接口背书。0.4 行为来源为[冻结 SPEC](superpowers/specs/2026-10-05-rekey-agent-call-model.md)。

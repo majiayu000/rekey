@@ -1,6 +1,6 @@
-# 0.4 运维手册
+# 运维手册（0.5 开发线）
 
-适用于 **2026-10-08 已公开预发布的 0.4.0-alpha.1，vault/backup26、policy7**；当前源码 0.5.0-alpha.1 尚未发布。请先核对实际二进制、服务用户和 state directory；默认目录是 `~/.rekey`。0.3 格式不能由 0.4 恢复或迁移，须另建新目录。验收与发布边界见[报告](evidence/agent-call-acceptance-2026-10-05.md)。
+适用于当前源码的 **0.5.0-alpha.1 开发线（未发布），vault/backup27、policy8**。最新公开预发布是 2026-10-08 的 0.4.0-alpha.1（vault/backup26、policy7）；标“0.5 起”的行为在 0.4 中不存在。请先核对实际二进制、服务用户和 state directory；默认目录是 `~/.rekey`。0.4 及更早的格式不能由 0.5 恢复或迁移，须另建新目录。0.4 的验收与发布边界见[报告](evidence/agent-call-acceptance-2026-10-05.md)。
 
 完整软件回归通过不代替当前安装包、真实设备或目标文件系统的恢复演练。正式签名包与便携源码二进制也应分别记录验收，不能把一种构建的成功回执复用为另一种构建的证明。
 
@@ -8,8 +8,8 @@
 
 ```bash
 rekey --version
-rekey --state-dir /absolute/path/rekey-04 status --passive
-rekey --state-dir /absolute/path/rekey-04 policy status
+rekey --state-dir /absolute/path/rekey-dev status --passive
+rekey --state-dir /absolute/path/rekey-dev policy status
 ```
 
 启动服务默认锁定。`serve` 前台运行；安装版 macOS 可使用 App 的服务控制，自定义目录先由 CLI 启动再让 App 连接。关闭 App 不停止服务。`lock` 立即撤销本机执行权限及窗口；`shutdown` 需要新的逐次证明。不要同时启动两个 daemon 管理同一目录。
@@ -17,8 +17,8 @@ rekey --state-dir /absolute/path/rekey-04 policy status
 state/runtime 目录应只属于服务用户，mode0700；数据库及 Unix sockets 为 mode0600。检查权限与所有权，不能通过放宽 Admin socket 或递归 chown 来解决未知原因。
 
 ```bash
-ls -ld /absolute/path/rekey-04 /absolute/path/rekey-04/runtime
-ls -l /absolute/path/rekey-04/runtime
+ls -ld /absolute/path/rekey-dev /absolute/path/rekey-dev/runtime
+ls -l /absolute/path/rekey-dev/runtime
 ```
 
 `IPC_UNAVAILABLE` 可能是未启动、路径或用户不一致、遗留 socket、符号链接或父目录权限异常。先定位实际原因。macOS 安装版可只读诊断 `launchctl print gui/$(id -u)/com.rekey.rekeyd`；不要另生成重复 LaunchAgent。Linux 已安装 user unit 时使用 `systemctl --user status rekey.service` 与 `journalctl --user -u rekey.service`。
@@ -28,17 +28,17 @@ ls -l /absolute/path/rekey-04/runtime
 Broker 必须已解锁，备份目标必须不存在。命令在终端中隐藏读取新的证明：
 
 ```bash
-rekey --state-dir /absolute/path/rekey-04 unlock
-rekey --state-dir /absolute/path/rekey-04 backup --output /absolute/path/backups/rekey-04-new.rkb
+rekey --state-dir /absolute/path/rekey-dev unlock
+rekey --state-dir /absolute/path/rekey-dev backup --output /absolute/path/backups/rekey-dev-new.rkb
 ```
 
 把成功回执（含 SHA-256、vault ID 和 generation）与备份分别保存，再校验文件：
 
 ```bash
-shasum -a 256 /absolute/path/backups/rekey-04-new.rkb
+shasum -a 256 /absolute/path/backups/rekey-dev-new.rkb
 ```
 
-必须与成功回执的完整 digest 一致。文件存在但没有成功回执不代表备份成功；不要把 staging / pending 文件改名为完成备份。备份包含加密凭据和签名授权，密码或恢复密钥仍须离线保存。改密码或轮换当前根密钥不会重新加密已经存在的历史备份；保留对应恢复材料。
+必须与成功回执的完整 digest 一致。文件存在但没有成功回执不代表备份成功；不要把 staging / pending 文件改名为完成备份。备份包含加密凭据和签名授权，密码或恢复密钥仍须离线保存。基础模式保险库（0.5 起）的签名私钥 `policy-signer-p256.p8` 在 state directory 中，**不在备份内**：须单独离线保存，副本同样是可签署规则的私钥；否则恢复后无法签署新规则或续签到期策略，只能新建保险库并重建授权。改密码或轮换当前根密钥不会重新加密已经存在的历史备份；保留对应恢复材料。
 
 外部调度器只可传输已完成备份及回执，不能持有解锁证明。默认产品不自动选择远端、传输计划或保留策略。操作员必须明确管理目的地权限并核对远端 digest。
 
@@ -47,17 +47,17 @@ shasum -a 256 /absolute/path/backups/rekey-04-new.rkb
 使用隔离的新目录，不能用生产目录验证恢复。先停止相关服务，选择 mode0700 的空目标；不要删除旧保险库、WAL 或外部 generation 记录来制造“空目录”。
 
 ```bash
-mkdir -m 700 /absolute/path/rekey-04-restore
-rekey --state-dir /absolute/path/rekey-04-restore restore \
-  --input /absolute/path/backups/rekey-04-new.rkb \
+mkdir -m 700 /absolute/path/rekey-dev-restore
+rekey --state-dir /absolute/path/rekey-dev-restore restore \
+  --input /absolute/path/backups/rekey-dev-new.rkb \
   --sha256 RECEIPT_SHA256 --inspect
 ```
 
 隐藏输入备份源的密码；使用恢复密钥时加 `--recovery`。审阅返回的 vault ID、source generation、high-water 和 history-missing。复制该次预览的**完整公共 JSON context**，明确接受后提交同一备份、同一 SHA 与新的证明：
 
 ```bash
-rekey --state-dir /absolute/path/rekey-04-restore restore \
-  --input /absolute/path/backups/rekey-04-new.rkb \
+rekey --state-dir /absolute/path/rekey-dev-restore restore \
+  --input /absolute/path/backups/rekey-dev-new.rkb \
   --sha256 RECEIPT_SHA256 --expected-context 'EXACT_PUBLIC_CONTEXT_JSON'
 ```
 
@@ -66,20 +66,20 @@ rekey --state-dir /absolute/path/rekey-04-restore restore \
 成功后保存新回执，在恢复目录启动服务、解锁，核对凭据和完整签名编辑基线：
 
 ```bash
-rekey --state-dir /absolute/path/rekey-04-restore serve
+rekey --state-dir /absolute/path/rekey-dev-restore serve
 ```
 
 另一个终端：
 
 ```bash
-rekey --state-dir /absolute/path/rekey-04-restore unlock
-rekey --state-dir /absolute/path/rekey-04-restore credential list
-rekey --state-dir /absolute/path/rekey-04-restore connection list
-rekey --state-dir /absolute/path/rekey-04-restore list --json
-rekey --state-dir /absolute/path/rekey-04-restore shutdown
+rekey --state-dir /absolute/path/rekey-dev-restore unlock
+rekey --state-dir /absolute/path/rekey-dev-restore credential list
+rekey --state-dir /absolute/path/rekey-dev-restore connection list
+rekey --state-dir /absolute/path/rekey-dev-restore list --json
+rekey --state-dir /absolute/path/rekey-dev-restore shutdown
 ```
 
-必要时对一个专用测试 Connection 先 dry-run，再进行无副作用读调用，确认凭据仍有效。签名策略过期时必须用合法签名流程激活新版本。记录二进制版本、备份 digest、预览 context 与新 generation，关闭演练服务；不要据此覆盖生产目录。
+必要时对一个专用测试 Connection 先 dry-run，再进行无副作用读调用，确认凭据仍有效。签名策略过期时必须用合法签名流程激活新版本。基础模式保险库（0.5 起）还须确认 `policy-signer-p256.p8` 的离线副本存在，并把它复制到恢复目录根下（当前用户所有的普通文件，mode 0600）；缺少它时恢复出的保险库无法签署或续签规则。记录二进制版本、备份 digest、预览 context、新 generation 与签名私钥副本的核对结果，关闭演练服务；不要据此覆盖生产目录。
 
 ## 中断、回滚与存储故障
 
@@ -88,7 +88,7 @@ rekey --state-dir /absolute/path/rekey-04-restore shutdown
 `ROLLBACK_SUSPECTED` 没有可用根密钥。先查看 `status` 的 `rollback` 对象，只能用密码或恢复密钥和完整公共 context 确认：
 
 ```bash
-rekey --state-dir /absolute/path/rekey-04 rollback-confirm \
+rekey --state-dir /absolute/path/rekey-dev rollback-confirm \
   --expected-context 'EXACT_PUBLIC_ROLLBACK_JSON'
 ```
 
@@ -97,9 +97,9 @@ rekey --state-dir /absolute/path/rekey-04 rollback-confirm \
 | 故障 | 操作 |
 |---|---|
 | `STORAGE_INTEGRITY_FAILED`、不支持格式、损坏的 crypto metadata | 停止服务，保留原目录、版本和诊断；从已验证备份恢复到另一个空目录。 |
-| `AUDIT_COMMIT_FAILED`、`FAULTED` | 执行与写操作已失败关闭。修复磁盘/文件系统后重新启动，核对审计及状态再恢复使用。本机 HTTP 此时返回 503 `FAULTED`，发现与状态查询仍可用，服务不会自行退出。 |
-| `SERVICE_PORT_IN_USE`（启动失败） | 本机 HTTP 端口被占用，日志 `service.port_in_use` 含端口号。每个保险库一个端口：在该保险库目录的 `service.json` 写入空闲端口后重启。同一原因写入该目录的 `startup-failure.json`（0.5 开发版，0600，不含密钥），App 据此提示，启动成功后自动删除。 |
-| 启动失败只显示 `ipc unavailable` | 查看同一条 `rekeyd.command_failed` 日志的 `cause`；`path must be shorter than SUN_LEN` 表示保险库目录过深，Unix socket 路径超过系统上限，换用更短的目录。0.5 开发版中该日志另带稳定字符串错误码 `error_code`；拿到服务锁后的启动失败也写在 `startup-failure.json` 的 `code` 中。 |
+| `AUDIT_COMMIT_FAILED`、`FAULTED` | 执行与写操作已失败关闭。修复磁盘/文件系统后重新启动，核对审计及状态再恢复使用。本机 HTTP 此时返回 503 `FAULTED`（0.5 起），发现与状态查询仍可用，服务不会自行退出；被故障 Authority 拒绝的管理请求（如 `rekey lock`；`rekey shutdown` 此时不校验所给证明）会触发故障停机，命令本身仍返回错误。 |
+| `SERVICE_PORT_IN_USE`（启动失败，0.5 起） | 本机 HTTP 端口被占用，日志 `service.port_in_use` 含端口号。每个保险库一个端口：在该保险库目录的 `service.json` 写入空闲端口后重启。同一原因写入该目录的 `startup-failure.json`（0.5 开发版，0600，不含密钥），App 据此提示，启动成功后自动删除。 |
+| 启动失败只显示 `ipc unavailable` | 查看同一条 `rekeyd.command_failed` 日志的 `cause`（0.5 起）；`path must be shorter than SUN_LEN` 表示保险库目录过深，Unix socket 路径超过系统上限，换用更短的目录。0.5 开发版中该日志另带稳定字符串错误码 `error_code`；拿到服务锁后的启动失败也写在 `startup-failure.json` 的 `code` 中。 |
 | `POLICY_INVALID` / version conflict | 保留拒绝的工件和当前签名摘要，重新审阅并签署合法下一版本；不要直接编辑数据库或上传未签名快照。 |
 | 执行后审计失败或结果未知 | 上游副作用可能已经发生。用 request ID 和上游结果核对，不能自动重复写操作或派生签发。 |
 | `ENOSPC` / I/O 错误 | 停止新请求，检查 `df -h`、`df -i`，在 state directory 之外释放空间，保留 WAL 和 incomplete markers。 |
@@ -107,8 +107,8 @@ rekey --state-dir /absolute/path/rekey-04 rollback-confirm \
 ## 审计与授权变更
 
 ```bash
-rekey --state-dir /absolute/path/rekey-04 audit list --limit 50
-rekey --state-dir /absolute/path/rekey-04 audit export --output /absolute/path/rekey-audit-new.jsonl
+rekey --state-dir /absolute/path/rekey-dev audit list --limit 50
+rekey --state-dir /absolute/path/rekey-dev audit export --output /absolute/path/rekey-audit-new.jsonl
 ```
 
 审计导出是 mode0600 的新文件，必须收到成功回执才算完成。部分文件作为失败证据保留，重试使用新路径，不续写。导出是经脱敏的操作 metadata，不是加密凭据备份；仍需控制访问。稳定遍历需保留返回的 snapshot-max-sequence 和 before-sequence。
@@ -129,8 +129,8 @@ OAuth 重新授权使用 App / 浏览器流程，不把 refresh token 发给 Age
 
 ## 升级与丢失恢复材料
 
-0.4 不读取 0.3 的 vault25 / policy6。旧二进制、旧 state 和旧备份一起保留，另建 0.4 目录并通过受支持添加流程重建密钥与 Connection。不能把旧备份当成 0.4 导入路径，不删除旧 generation 历史来降级。
+0.5 不读取 0.4 的 vault26 / policy7，也不读取 0.3 的 vault25 / policy6。旧二进制、旧 state 和旧备份一起保留，另建 0.5 目录并通过受支持添加流程重建密钥与 Connection。不能把旧备份当成 0.5 导入路径，不删除旧 generation 历史来降级。
 
-密码丢失而恢复密钥可用时，可用恢复密钥解锁并修改密码；恢复密钥丢失而密码可用时可轮换恢复密钥。两者均丢失时凭据和备份不可解密。个人策略签名私钥丢失也不能替换不可变 trust root，应新建 vault 并重建授权。历史备份保留旧因素边界。
+密码丢失而恢复密钥可用时，可用恢复密钥解锁并修改密码；恢复密钥丢失而密码可用时可轮换恢复密钥。两者均丢失时凭据和备份不可解密。个人策略签名私钥丢失也不能替换不可变 trust root，应新建 vault 并重建授权；基础模式的 `policy-signer-p256.p8` 不在备份内，从备份恢复不能找回它。历史备份保留旧因素边界。
 
 旧机构控制面、容器/namespace 故障切换与 Profile 工具仅作为 lab 企业储备保留，默认运维不运行它们；lab 编译与归档脚本语法通过不代表旧 runtime 验收完成。

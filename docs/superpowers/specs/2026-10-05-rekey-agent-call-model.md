@@ -148,7 +148,7 @@ Profile、capability session、Action 这三个概念**不再暴露给个人用�
   - 导入 `.env`、完成 OAuth 授权；
   - 生成或导入 SSH 私钥；
   - 启用 T1。
-- **I4**：客户端对 daemon 的签名校验沿用。新增约束：`rekey-mcp`、SSH agent 套接字和本机服务都由 daemon 自己提供或监听，客户端在向 daemon 发送任何管理证明之前，必须完成校验。
+- **I4**：客户端对 daemon 的签名校验沿用。新增约束：`rekey-mcp`、SSH agent 套接字和本机服务都由 daemon 自己提供或监听，客户端在向 daemon 发送任何管理证明之前，必须完成校验。L1-dev 提示的时机以 v3 I4 的 2026-11-17 修订为准：交互式 TTY CLI 在发送任何证明前警告；JSON / 管道模式在命令结束时于 stderr 报告 `L1_DEV_UNVERIFIED_SERVICE`（#87 起）。
 - **I5**：Secret 不进入 argv、env、日志、审计或 JSON 元数据。**取消 v3 的"capability 可以进入子进程 env"这一例外。**
 - **I6**：出站只能访问 Connection 声明的 origin；路径必须匹配规则；连接钉在公网 IP 上，禁止重定向。沿用。
 - **I7**：fail closed。沿用。
@@ -294,7 +294,7 @@ Profile、capability session、Action 这三个概念**不再暴露给个人用�
 - 审批面板提供三个选项：
   1. "只这一次"；
   2. "同一规则 30 分钟内放行"；
-  3. "同一规则在本次 vault 解锁期内放行"，最长 8 小时。
+  3. "同一规则在自定义时长内放行"：App 中填写 1–480 分钟，最长 8 小时（daemon 只接受 1–28,800 秒）。（2026-11-17 修订：原文“本次 vault 解锁期内”与实现不符；锁定仍使窗口立即失效，见下条。）
 - 选项 2、3 在内存中登记一条临时 allow：绑定 Connection、规则 ID 和调用方标注。锁定、规则变更或到期即失效，不持久化。
 - 时间窗审批只适用于 effect 为 `approve` 的规则，不能用于 `deny`。
 - **（2026-11-17 修订，0.5 开发线）**：窗口键为（策略摘要、Connection、规则 ID、调用方标注）。同一 Connection 上命中另一条 approve 规则的请求不受该窗口覆盖，仍进入审批。成功激活新的策略版本时显式清空全部时间窗，即使新版本的规则内容不变；同一已生效版本的精确重放不清空。新版本经其他路径生效时（例如激活超时后对账发现已生效），首次窗口查找即丢弃其他策略摘要的窗口。待审批的批准仍按 §5.4 绑定策略摘要，策略变化后不能再被批准或消费。
@@ -368,7 +368,7 @@ rekey aws-credentials|kubectl-credentials|github-token <connection> [--no-wait] 
 ### 6.3 本机 HTTP 服务（替代 0.3 网关）
 
 **监听**
-- 固定 `127.0.0.1:<port>`，默认 `7787`，可配置，写入 `~/.config/rekey/service.json`。
+- 固定 `127.0.0.1:<port>`，默认 `7787`，可配置。端口保存在所选保险库状态目录的 `<state_dir>/service.json`（默认目录下即 `~/.rekey/service.json`；文件不存在时用 7787，daemon 绑定后以 mode 0600 写回实际端口），不使用 `~/.config/rekey`（2026-11-17 修订，与实现一致）。
 - 只监听 loopback。启动时如果端口已被占用，直接失败并在 App 中报警，不换端口。`rekeyd` 的失败输出为 `SERVICE_PORT_IN_USE`，并记录被占用的端口和修改 `service.json` 的提示；失败的启动不留下 Unix socket。
 - **启动失败记录（2026-11-17 修订）**：持有 serve 锁的启动尝试失败时，`rekeyd` 在该保险库的 state 目录原子写入 `startup-failure.json`（0600，小于 1 KiB）。字段固定为 `code`（稳定错误码）、`message`（IPC 安全的错误文本）、`next`（修复提示或 `null`）、`port`（仅 `SERVICE_PORT_IN_USE` 时为被占用端口，否则 `null`）和 `at_ms`。记录不含密钥、证明或路径，不属于 vault 格式，不进入备份，rekeyd 不回读；本机服务绑定完成即视为启动成功并删除记录。没有 vault 状态的空目录不写记录，以免挡住之后的 `init`；没拿到 serve 锁的实例（例如已有实例在运行）不写也不删；拿锁前的失败（目录权限、命令行参数、`service.json` 解析）不写。`rekeyd.command_failed` 日志在数值 `code`（退出码）之外带字符串 `error_code`。
 - **App 报警**：App 连接失败后启动服务（经 SMAppService，或由 App 启动随包服务）时，只读取这份记录，且只采用 `at_ms` 不早于本次启动尝试的记录，不读取 vault。`SERVICE_PORT_IN_USE` 显示被占用的端口、该目录 `service.json` 的完整路径和写入空闲端口的方法，提供“在 Finder 中显示”和“重试”；`UNSUPPORTED_VAULT_LAYOUT` / `UNSUPPORTED_FORMAT_VERSION` 只显示重建引导（v3 §9.3）；其他错误显示错误码和错误文本，可重试。SMAppService 不提供退出状态，App 启动后最多等约 5 秒，期间服务就绪或出现本次记录即结束；没有本次记录时保留原来的连接错误或进程退出输出。App 不修改 `service.json`，不换端口。
@@ -637,7 +637,8 @@ GitHub App 的根载荷为 `github-app-root-v1`（CredentialKind `github-app-ins
 - 每次调用记录：
   - 调用方标注、Connection、method 类别、规范化路径（取值替换为占位）；
   - 判定结果和命中的规则 ID；
-  - 审批 ID、状态码、字节数、LLM token 数。
+  - 审批 ID、状态码、LLM token 数。
+- **（2026-11-17 修订）** 每次调用的请求 / 响应字节数不再是 0.5 的要求：已发布的 0.4 和 0.5 开发线都不记录这两项，0.5 的审计格式（vault27）已冻结，补字段属于格式变更。需要时须另行规划后续发布线，并先修订本 SPEC。
 - **不记录**：正文、查询值、头的值。
 - 执行审计的 `request_id` 由 daemon 为每次执行生成。Agent 帧里的 `request_id` 只做传输关联（错误信封回显它），重复使用既不得合并两次执行的审计配对，也不得触发 `one_execution_started_per_request` 唯一约束而使运行时故障。
 - 新增事件类型：
@@ -665,7 +666,7 @@ GitHub App 的根载荷为 `github-app-root-v1`（CredentialKind `github-app-ins
 | `rekey connect` | 按 §6.5 重写 |
 | 0.3 的 T9（退出 5 秒内吊销）、T11（`rekey run` 500 次）验收 | 作废，由 §12 取代 |
 
-**删除原则**：被取代的代码直接删除，不保留兼容开关（沿用"不向后兼容"）。删除行数必须写进每个里程碑的报告。
+**删除原则**：被取代的代码直接删除，不保留兼容开关（沿用"不向后兼容"）。删除行数必须写进每个里程碑的报告。（2026-11-17：实际没有按里程碑产出这份报告，所有者已豁免，见 §14。）
 
 **（2026-11-17 修订）默认构建不编入 Profile 会话。** 上表第一行属于 lab 储备的代码保留在 lab，不进默认构建：`ipc/owner.rs`、`ipc/admin/profile.rs`、`runtime/profile/{issue,inventory}.rs`、`session/profile.rs` 及其分派只在 `--features lab` 下编译，默认构建没有运行时开关。默认 daemon 对 admin 58 `PROFILE_GET`、59 `PROFILE_SESSION_CREATE`、12 `SESSION_CREATE`、13 `SESSION_REVOKE` 与 agent 8 `PROFILE_INVENTORY` 一律返回 `INVALID_FRAME`，锁定与解锁状态相同，在取得协调锁、访问 Authority 或写审计之前拒绝。签名 policy8 快照中的 `profiles` 仍按原规则在激活时校验，格式不变。admin 60 沿用历史常量名 `PROFILE_LIST`，自 0.4 起是默认的 Connection 列表（`rekey connection list` 与 App 使用），不是 Profile 接口，继续可用。
 
@@ -722,6 +723,8 @@ C1 的默认构建回归是 `crates/rekey-broker/tests/c1_canary_sweep.rs`：同
 
 每个里程碑结束都必须发布一个可下载的 0.4 预发布版本，并报告新增行数和删除行数。
 
+**执行记录与豁免（2026-11-17 所有者决定）**：M1–M7 没有分别发布预发布版本（只有汇总的 0.4.0-alpha.1 于 2026-10-08 公开预发布），也没有按里程碑产出生产代码和测试代码的新增 / 删除行数报告。所有者于 2026-11-17 豁免这两项，不追补。因此 §11 的删除行数报告和下方“每个里程碑生产代码净增量不超过 3,000 行”的目标都没有被证明。
+
 | 里程碑 | 内容 | 退出条件 |
 |---|---|---|
 | **M1 调用核心** | Connection + 规则语法 + 判定器；Preset 改写；daemon `CALL` 入口；CLI `list/describe/call/http`；dry-run；错误码与 `next`；调用方识别；删除 run / Profile / 本机 capability；格式 0.4 | C1、C2、C3、C4 |
@@ -735,7 +738,7 @@ C1 的默认构建回归是 `crates/rekey-broker/tests/c1_canary_sweep.rs`：同
 **实现约束**
 - 优先复用现有模块：渲染器、执行器、遮蔽、审批、用量账本、对端身份。
 - 新增 IPC 操作码不超过 12 个。
-- 每个里程碑的生产代码净增量目标为不超过 3,000 行，测试另计；超出时先在计划里说明原因。
+- 每个里程碑的生产代码净增量目标为不超过 3,000 行，测试另计；超出时先在计划里说明原因。（2026-11-17：没有按里程碑统计，该目标未被证明；行数报告已按本节开头的记录豁免。）
 - 不为 lab 功能新增任何东西。
 
 ---

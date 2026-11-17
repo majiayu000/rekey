@@ -344,13 +344,13 @@ enum Command {
         #[arg(long)]
         recovery: bool,
     },
-    /// Remember this desktop for an explicit duration; proof on stdin, key on stdout.
+    /// Remember this desktop (replaces any App/CLI remembered unlock); proof stdin, key stdout.
     DesktopRemember {
         #[arg(long, default_value = "168h")]
         ttl: String,
         #[arg(long)]
         recovery: bool,
-        #[arg(long, conflicts_with = "recovery")]
+        #[arg(long, conflicts_with = "recovery", help = "Always refused by rekeyd")]
         presence: bool,
     },
     /// Resume a remembered desktop; key on stdin, session on stdout.
@@ -376,14 +376,14 @@ enum Command {
         recovery: bool,
         #[arg(long)]
         password_stdin: bool,
-        /// Also unlock automatically after daemon restarts for this long
-        /// (e.g. 7d, max 30d). Basic mode: the key is a 0600 file, not Secure Enclave.
+        /// Also unlock after daemon restarts for this long (e.g. 7d, max 30d), from a 0600 file
+        /// (not Secure Enclave). Replaces an App remembered unlock; full or idle locks forget it.
         #[arg(long)]
         remember: Option<String>,
     },
-    /// Lock the running broker and revoke all sessions.
+    /// Lock the running broker, revoke all sessions and forget any remembered unlock (App or CLI).
     Lock {
-        /// Also delete the remembered unlock so restarts stay locked.
+        /// Also delete the local remembered-unlock.key; the lock alone keeps restarts locked.
         #[arg(long)]
         forget_remembered: bool,
     },
