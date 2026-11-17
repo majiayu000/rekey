@@ -190,6 +190,8 @@ rekey --state-dir /absolute/path/rekey-dev connect codex --with-ssh --ssh-host g
 rekey --state-dir /absolute/path/rekey-dev connect codex --with-ssh --ssh-host github.com
 ```
 
+`--with-ssh` 只为 `--ssh-host` 列出的具体主机（可重复，不接受通配符）在 `~/.ssh/config` 开头写入指向 `<state-dir>/ssh-agent.sock` 的 `IdentityAgent`，并以 `Match all` 结束这一段，文件里原有的全局设置（如 `Include`、`IdentityFile`）照旧对所有主机生效。改动前同样预览、确认并备份；再次执行替换这一段。
+
 macOS 默认生成 Secure Enclave P-256 密钥；软件 Ed25519 / P-256 只能用显式 `--mode` 选择。生成密钥本身不启用 SSH：策略还须包含签名公钥及 host 规则，公钥也须按目标服务要求登记。在 App 的个人策略编辑中加载完整 SSH 集合，或直接生成新密钥，复制公钥到目标服务；登记独立核对过的 host 公钥，选择 Allow/Approve/Deny 和 git 签名判定。可粘贴标准 OpenSSH 公钥、known_hosts 条目或 base64 wire blob。既有 host 与 rule ID 会保留，生成草稿时 HTTP、SSH 与临时凭据三组规则完整一起审阅和签署。撤销 SSH 连接不删除保险库里的私钥。已有签名 SSH 授权的配置使用 `<state-dir>/ssh-agent.sock` 的 `IdentityAgent`，私钥不交给 Agent。已验证 session-bind 按签名 host 规则判定；未知 host 或缺少绑定需要审批，明确 deny 不能用窗口绕过。真实 OpenSSH 向 GitHub 测试仓库 push 已通过，临时 deploy key 和 ref 已清理；这不代替 App 真机上的生成、签署和 Touch ID 验收。
 
 Git smart HTTP 使用独立 `github-git` 预设，固定 `https://github.com`、owner 和完整 `repo.git`。`info/refs` 与 `git-upload-pack` 为读，`git-receive-pack` 为写；PAT 在 daemon 内转换为固定 Basic 认证。通过本机 HTTP 使用时也要配置公开请求标记，例如只对该 URL 设置 Git 的 `http.extraHeader=Authorization: Bearer rekey`。默认请求正文上限为 1 MiB，不宣称无限仓库传输。

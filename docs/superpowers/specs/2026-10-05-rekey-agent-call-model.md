@@ -432,7 +432,7 @@ OPENAI_API_KEY=rekey
 ```
 
 3. **git 钩子（可选）**：`--with-hooks` 安装 pre-commit 钩子，与 `rekey hooks install` 使用同一写入逻辑（§9.2）。
-4. **SSH（可选）**：`--with-ssh` 在 `~/.ssh/config` 写入 `IdentityAgent` 指向 Rekey 的 SSH agent 套接字，只对选定的 host 生效（§8.1）。
+4. **SSH（可选）**：`--with-ssh` 在 `~/.ssh/config` 写入 `IdentityAgent` 指向 Rekey 的 SSH agent 套接字，只对选定的 host 生效（§8.1）。（2026-11-17 修订）受管段写在文件开头，使所选 host 的 `IdentityAgent` 先被采用（OpenSSH 取第一次出现的值），并以 `Match all` 结束，原文件开头的全局指令（`Include`、`IdentityFile` 等）仍对所有 host 生效。`--ssh-host` 只接受具体主机名，拒绝通配符、否定、逗号和空白。再次执行替换标记段，标记段之外的内容逐字保留。
 
 ### 6.6 插件分发
 
@@ -522,7 +522,7 @@ OPENAI_API_KEY=rekey
 **不能区分的内容**
 - SSH agent 看不到 push 的是哪个分支。分支级保护应交给 GitHub 的分支保护规则，Rekey 不做任何宣称。
 
-**接入**：`rekey connect --with-ssh` 为选定的 host 写入 `IdentityAgent`。不修改全局 `SSH_AUTH_SOCK`，以免影响用户其他用途。
+**接入**：`rekey connect --with-ssh` 为选定的 host 写入 `IdentityAgent`。不修改全局 `SSH_AUTH_SOCK`，以免影响用户其他用途；受管段以 `Match all` 结束，其他 host 的配置不变（§6.5）。
 
 ### 8.2 HTTPS git（T0）
 
@@ -642,7 +642,7 @@ GitHub App 的根载荷为 `github-app-root-v1`（CredentialKind `github-app-ins
 | C10 | SSH agent | 用 OpenSSH 客户端 `git push` 到测试仓库成功；未登记 host 进入审批；私钥无法导出；session-bind 缺失时按 approve |
 | C11 | OAuth | 合成 IdP（本地）完成 PKCE 授权与刷新；refresh 失败时返回 `NEEDS_REAUTH`；Agent 侧看不到任何 token |
 | C12 | T1 | AWS `credential_process` 返回的凭证有效期不超过设定值且附带 session policy（用模拟 STS）；未开启 T1 的 Connection 拒绝；审计标注 |
-| C13 | `rekey connect` | 前后 diff 准确、备份、重复执行幂等（标记段替换）、不写入任何令牌或密钥；默认 vault 不写本机绝对路径，非默认 vault 在预览中警告；已有 pre-commit 钩子以 exit/exec 结束或不是 sh 脚本时，串联后扫描仍先执行，卸载恢复原钩子（2026-11-17） |
+| C13 | `rekey connect` | 前后 diff 准确、备份、重复执行幂等（标记段替换）、不写入任何令牌或密钥；默认 vault 不写本机绝对路径，非默认 vault 在预览中警告；已有 pre-commit 钩子以 exit/exec 结束或不是 sh 脚本时，串联后扫描仍先执行，卸载恢复原钩子；`--with-ssh` 只改变选定 host 的 `IdentityAgent`（2026-11-17） |
 | C14 | 插件 | 安装插件后 Claude Code 能列出 MCP 工具，skill 可用；未安装 rekey 时给出提示 |
 | C15 | 真实 Agent | Claude Code 和 Codex 在不经任何包装的情况下完成 U2–U5（合成上游，加一次真实 GitHub 测试仓库） |
 | C16 | 体验 | 已安装用户：添加 GitHub PAT 到 Claude Code 首次成功调用，总时长不超过 2 分钟，密码最多 1 次，Touch ID 最多 2 次 |

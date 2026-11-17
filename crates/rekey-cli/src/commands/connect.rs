@@ -339,8 +339,10 @@ fn ssh_config(hosts: &[String], state_dir: &Path) -> Result<Edit, CliError> {
     if socket.contains(['\n', '\r', '"']) {
         return Err(invalid("SSH socket path cannot be quoted safely"));
     }
+    // First, so this IdentityAgent wins for the selected hosts; `Match all` then
+    // ends the Host block, so directives after it keep their original scope.
     let block = format!(
-        "# rekey:begin\nHost {}\n    IdentityAgent \"{}\"\n# rekey:end\n",
+        "# rekey:begin\nHost {}\n    IdentityAgent \"{}\"\nMatch all\n# rekey:end\n",
         hosts.join(" "),
         socket
     );
