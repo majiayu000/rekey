@@ -23,7 +23,7 @@ const GUIDANCE: [(&str, &str); 4] = [
     ),
 ];
 /// Quoted words that are arguments, fields or the placeholder Key, not tools.
-const NOT_TOOLS: [&str; 3] = ["request_id", "approval_request_id", "rekey"];
+const NOT_TOOLS: [&str; 4] = ["request_id", "approval_request_id", "connection", "rekey"];
 
 /// The connect source carries its managed section between the markers.
 fn section<'a>(source: &str, text: &'a str) -> &'a str {
