@@ -493,6 +493,48 @@ async fn basic_mode_password_approves_but_unlock_only_remembered_key_cannot() {
     write["approval_request_id"] = id;
     f.call(&write, body).await.ok();
     assert_eq!(f.broker.fake.requests.lock().unwrap().len(), 1);
+
+    // The vault password also rejects the next write.
+    write.as_object_mut().unwrap().remove("approval_request_id");
+    let required = f.call(&write, body).await;
+    assert_eq!(required.err_code(), "APPROVAL_REQUIRED");
+    let second = required.metadata["approval"]["challenge_id"].clone();
+    let review = admin(
+        admin_msg::APPROVAL_LOCAL_REVIEW,
+        json!({"approval_request_id":second}),
+        Vec::new(),
+    )
+    .await;
+    let reject =
+        json!({"approval_request_id":second,"expected_review_sha256":review.ok()["review_sha256"]});
+    admin(
+        admin_msg::APPROVAL_LOCAL_REJECT,
+        reject,
+        proof(ipc::ProofKind::Password, common::PASSWORD),
+    )
+    .await
+    .ok();
+    // Contract: `rekey audit list` validates every page it reads, so a page
+    // holding both password decisions must pass the same check.
+    let query: rekey_domain::audit::AuditQuery =
+        serde_json::from_value(json!({"limit":100})).unwrap();
+    let response = admin(
+        admin_msg::AUDIT_QUERY,
+        serde_json::to_value(&query).unwrap(),
+        Vec::new(),
+    )
+    .await;
+    response.ok();
+    let page: rekey_domain::audit::AuditPage = serde_json::from_slice(&response.body).unwrap();
+    page.validate_for(&query).unwrap();
+    let decisions: Vec<&str> = page
+        .events
+        .iter()
+        .filter(|event| event.reason_code == "local-password")
+        .map(|event| event.event_type.as_str())
+        .collect();
+    assert_eq!(decisions, ["approval.rejected", "approval.approved"]);
+    assert_eq!(f.broker.fake.requests.lock().unwrap().len(), 1);
     f.broker.shutdown().await;
 }
 
