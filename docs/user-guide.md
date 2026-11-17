@@ -162,7 +162,7 @@ rekey import /absolute/path/project/.env --dry-run
 rekey import /absolute/path/project/.env
 ```
 
-CLI 只让 daemon 预览变量名、识别结果和未支持的行，不读取或显示变量值。AWS 密钥、数据库或消息队列连接串和口令（如 `*_PASSWORD`）无法经本机服务代理：预览在 `unsupported_protocol` 中写明原因（`aws`、`database`、`password`），App 显示为“未迁移：协议不支持代理”；它们不能导入或改写，原值留在文件中。第二条命令打开 App：逐项选择导入、跳过或标记为非密钥，导入凭据后审阅并签署 Connection，策略有效期默认沿用当前已签署的策略；原文件默认不变。明确确认改写后，daemon 创建 mode-0600 备份、把选中的值替换成 `rekey` 占位值并写入 base URL（默认变量名去掉 `_API_KEY`、`_AUTH_TOKEN`、`_KEY` 或 `_TOKEN` 后缀，例如 `OPENAI_API_KEY` 对应 `OPENAI_BASE_URL`），再原子发布新文件。文件里已有这个变量时（例如兼容服务商常用的 `OPENAI_BASE_URL`），即使它选了跳过或非密钥，这一行也会被换成本机服务地址，原值只留在备份中；审阅页逐行标出，回执列为“已替换为本机服务地址”。要保留原行，请在审阅页改用其他变量名；若原地址指向兼容服务商，请确认所选预设与它一致。备份含原始密钥：回执会说明 git 是否忽略它，确认替换无误后请删除，或确认它已在 `.gitignore` 中。不要同时用编辑器或脚本修改该文件；元数据检查与 rename 之间不构成并发写入的原子比较交换。
+CLI 只让 daemon 预览变量名、识别结果和未支持的行，不读取或显示变量值。AWS 密钥、数据库或消息队列连接串和口令（如 `*_PASSWORD`）无法经本机服务代理：预览在 `unsupported_protocol` 中写明原因（`aws`、`database`、`password`），App 显示为“未迁移：协议不支持代理”；它们不能导入或改写，原值留在文件中。第二条命令打开 App：逐项选择导入、跳过或标记为非密钥，导入凭据后审阅并签署 Connection，策略有效期默认沿用当前已签署的策略；原文件默认不变。明确确认改写后，daemon 创建 mode-0600 备份、把选中的值替换成 `rekey` 占位值并写入 base URL（默认变量名去掉 `_API_KEY`、`_AUTH_TOKEN`、`_KEY` 或 `_TOKEN` 后缀，例如 `OPENAI_API_KEY` 对应 `OPENAI_BASE_URL`），再原子发布新文件。文件里已有这个变量时（例如兼容服务商常用的 `OPENAI_BASE_URL`），即使它选了跳过或非密钥，这一行也会被换成本机服务地址，原值只留在备份中；审阅页逐行标出，回执列为“已替换为本机服务地址”。要保留原行，请在审阅页改用其他变量名；若原地址指向兼容服务商，请确认所选预设与它一致。备份含原始密钥：回执会说明 git 是否忽略它，确认替换无误后请删除，或确认它已在 `.gitignore` 中。没装开发者工具（Command Line Tools 或 Xcode）的 Mac 上不运行系统自带的 git，以免弹出安装对话框，回执显示“未能确认 git 是否忽略它”。不要同时用编辑器或脚本修改该文件；元数据检查与 rename 之间不构成并发写入的原子比较交换。
 
 ```bash
 rekey scan --staged
